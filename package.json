@@ -1,0 +1,174 @@
+{
+  "name": "awdesk",
+  "version": "0.1.0-beta.2",
+  "description": "A realtime character presence for desktop voice experiences.",
+  "author": {
+    "name": "xikhar",
+    "email": "xikhar@users.noreply.github.com"
+  },
+  "desktopName": "desk.desktop",
+  "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/xikhar/persona#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xikhar/persona.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xikhar/persona/issues"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "allowScripts": {
+    "@swc/core@1.15.46": true,
+    "electron@39.8.10": true,
+    "electron-winstaller@5.4.0": true,
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true
+  },
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "tsc -b && vite build",
+    "build:pg-only": "node scripts/filter-pg.mjs && npm run build",
+    "test": "npm run test:node && npm run test:renderer",
+    "test:node": "node --test electron/*.test.cjs scripts/*.test.cjs",
+    "test:renderer": "vitest run",
+    "lint": "eslint .",
+    "start": "electron .",
+    "demo": "npm run build && electron .",
+    "assets:check": "node scripts/check-assets.cjs",
+    "assets:release": "node scripts/check-assets.cjs --release",
+    "native:build": "node scripts/build-native.cjs",
+    "native:test": "node scripts/test-native.cjs",
+    "audit:production": "npm audit --omit=dev --audit-level=high",
+    "check": "npm run lint && npm test && npm run assets:check && npm run audit:production && npm run build",
+    "dist:linux": "npm run build && node scripts/build-linux.cjs",
+    "dist:appimage": "npm run build && electron-builder --linux AppImage --publish never",
+    "dist:windows": "npm run native:build && npm run native:test && npm run build && electron-builder --win nsis --publish never",
+    "dist:mac": "npm run native:build && npm run native:test && npm run build && electron-builder --mac dmg zip --publish never",
+    "dist:pg-windows": "npm run build:pg-only && electron-builder --win nsis --publish never",
+    "dist:pg-linux": "npm run build:pg-only && electron-builder --linux AppImage --publish never",
+    "dist:pg-mac": "npm run build:pg-only && electron-builder --mac dmg zip --publish never"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@pixiv/three-vrm": "^3.4.4",
+    "@pixiv/three-vrm-animation": "^3.4.4",
+    "@pmndrs/assets": "^1.7.0",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.4.2",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.182.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "@vitejs/plugin-react-swc": "^4.2.2",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.15.7",
+    "eslint": "^10.8.0",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.3",
+    "globals": "^17.8.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "three": "^0.182.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.4",
+    "vite": "^7.2.5",
+    "vitest": "^4.0.14",
+    "wait-on": "^9.0.3"
+  },
+  "build": {
+    "appId": "com.xikhar.awdesk",
+    "productName": "Desk",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "protocols": [
+      {
+        "name": "Desk",
+        "schemes": [
+          "desk"
+        ]
+      }
+    ],
+    "files": [
+      "dist/**/*",
+      "electron/**/*.cjs",
+      "!electron/**/*.test.cjs",
+      "build/icon.png",
+      "LICENSE",
+      "package.json"
+    ],
+    "linux": {
+      "category": "Utility",
+      "executableName": "desk",
+      "icon": "build/icon.png",
+      "syncDesktopName": true,
+      "artifactName": "Desk-${version}-linux-${arch}.${ext}",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "Desk-${version}-windows-${arch}-setup.${ext}",
+      "icon": "build/icon.png",
+      "requestedExecutionLevel": "asInvoker",
+      "signExts": [
+        "desk-audio-listener.exe"
+      ],
+      "extraResources": [
+        {
+          "from": "native/bin/win32/desk-audio-listener.exe",
+          "to": "native/win32/desk-audio-listener.exe"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Desk"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "artifactName": "Desk-${version}-macos-${arch}.${ext}",
+      "category": "public.app-category.utilities",
+      "icon": "build/icon.png",
+      "minimumSystemVersion": "14.2.0",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "binaries": [
+        "Contents/Resources/native/darwin/desk-audio-listener"
+      ],
+      "extendInfo": {
+        "NSAudioCaptureUsageDescription": "Desk listens to supported voice-app output levels to animate your character. Audio is processed in memory and is never stored."
+      },
+      "extraResources": [
+        {
+          "from": "native/bin/darwin/desk-audio-listener",
+          "to": "native/darwin/desk-audio-listener"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  }
+}

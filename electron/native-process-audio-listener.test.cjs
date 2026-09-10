@@ -1,0 +1,94 @@
+"use strict";
+
+const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
+const test = require("node:test");
+const {
+  NativeProcessAudioListener,
+  createNdjsonParser,
+  resolveNativeHelperPath,
+} = require("./native-process-audio-listener.cjs");
+
+function fakeChild() {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => child.emit("exit", 0, "SIGTERM");
+  return child;
+}
+
+test("NDJSON parser buffers partial messages and rejects malformed lines", () => {
+  const messages = [];
+  const invalid = [];
+  const parse = createNdjsonParser(
+    (message) => messages.push(message),
+    (line) => invalid.push(line),
+  );
+  parse('{"type":"rea');
+  parse('dy"}\nnot-json\n{"type":"level","level":0.2}\n');
+  assert.deepEqual(messages, [
+    { type: "ready" },
+    { type: "level", level: 0.2 },
+  ]);
+  assert.deepEqual(invalid, ["not-json"]);
+});
+
+test("resolves development and packaged helper locations on both native platforms", () => {
+  assert.equal(
+    resolveNativeHelperPath({
+      platform: "win32",
+      projectRoot: "C:\\project",
+      isPackaged: true,
+      resourcesPath: "C:\\resources",
+    }),
+    "C:\\resources\\native\\win32\\desk-audio-listener.exe",
+  );
+  assert.equal(
+    resolveNativeHelperPath({
+      platform: "win32",
+      projectRoot: "C:\\project",
+      isPackaged: false,
+    }),
+    "C:\\project\\native\\bin\\win32\\desk-audio-listener.exe",
+  );
+  assert.equal(
+    resolveNativeHelperPath({
+      platform: "darwin",
+      projectRoot: "/project",
+      isPackaged: false,
+    }),
+    "/project/native/bin/darwin/desk-audio-listener",
+  );
+});
+
+test("native listener activates on audio, smooths speech, and never hides the window", async () => {
+  const activities = [];
+  const sessions = [];
+  const statuses = [];
+  const child = fakeChild();
+  const listener = new NativeProcessAudioListener({
+    platform: "darwin",
+    helperPath: __filename,
+    processDiscovery: async () => ({ pids: [10, 11], rootPids: [10] }),
+    spawnProcess: () => child,
+    onActivity: (activity) => activities.push(activity),
+    onSession: (active) => sessions.push(active),
+    onStatus: (status) => statuses.push(status),
+    sessionIdleMs: 35,
+    speechReleaseMs: 15,
+  });
+
+  await listener.start();
+  child.stdout.emit("data", '{"type":"ready","source":"Codex"}\n');
+  child.stdout.emit("data", '{"type":"level","level":0.3}\n');
+  child.stdout.emit("data", '{"type":"level","level":0}\n');
+  await new Promise((resolve) => setTimeout(resolve, 22));
+
+  assert.deepEqual(sessions, [true]);
+  assert.deepEqual(activities, ["listening", "speaking", "listening"]);
+  assert.equal(statuses.at(-1).capturing, true);
+
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.deepEqual(sessions, [true, false]);
+  listener.stop();
+});

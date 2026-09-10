@@ -1,0 +1,70 @@
+# Dependencies
+node_modules/
+
+# Generated application and installer output
+dist/
+release/
+native/bin/
+coverage/
+.vite/
+.cache/
+.eslintcache
+.nyc_output/
+*.tsbuildinfo
+*.tgz
+
+# Local character media (the default model ships via `git add -f` once its
+# embedded VRM 1.0 license is verified — see ASSET_LICENSES.md)
+*.vrm
+*.vrma
+
+# Local roster and runtime state (per-user, never shipped)
+characters/
+.active-character
+.recent-characters
+
+# Session junk (old trees left by parallel/previous sessions)
+.orphaned-session-work-*/
+dist.abandoned-src-build/
+__pycache__/
+scripts/__pycache__/
+scripts/stage-*-2026-*.py
+IMPLEMENTATION_SUMMARY.md
+
+# Native compiler output
+*.dSYM/
+*.exp
+*.ilk
+*.lib
+*.obj
+*.pdb
+core
+core.*
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.p12
+*.pfx
+*.pem
+
+# Logs and package-manager diagnostics
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*~
+.idea/
+.vscode/
+
+# Original local implementation brief
+INSTRUCTIONS.md

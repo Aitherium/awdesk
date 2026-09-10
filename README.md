@@ -1,0 +1,157 @@
+<p align="center">
+  <img src="./public/assets/avatar.png" alt="Desk avatar" width="144" />
+</p>
+
+<h1 align="center">Desk</h1>
+
+<p align="center">
+  The AitherOS desktop hub — a realtime character presence that bridges your
+  desktop to the whole Aitherium world.
+</p>
+
+---
+
+Desk began as a desktop character for voice conversations. It has grown into
+the **hub that connects your physical desktop to everything else**, seamlessly,
+whether the backend is aitherium.com or your own local node:
+
+- **Avatar presence** — VRM characters with lip-sync, reacting to any app's
+  voice output (the original core, still here).
+- **Living Desktop host** — one tray switch between the Living Desktop,
+  Desktop Anywhere, the AitherShell cockpit, and GobboNet, rendered over your
+  real desktop (ghost mode) or in their own windows.
+- **Agent embodiment** — the local MCP server (`:47831`) lets any agent drive
+  the avatar, and the bridge server relays voice/animation events from native
+  listeners.
+- **Decision cards** — the tray tracks the open decision-card queue
+  (`~/.aither/decisions`), raises a native notification when an agent needs
+  you, and one click opens the shared answer window (see
+  `electron/decision-cards.cjs`).
+
+## Platform support
+
+| Platform    | Automatic voice output listener | Distribution               |
+| ----------- | ------------------------------- | -------------------------- |
+| Linux       | PipeWire process-stream capture | AppImage and DEB           |
+| Windows     | WASAPI process-loopback capture | NSIS installer             |
+| macOS 14.2+ | Core Audio process tap          | DMG and ZIP, arm64 and x64 |
+
+Linux requires `pw-dump` and `pw-record` on `PATH`. Windows process-loopback
+requires Windows 10 build 20348 or newer. macOS asks once for System Audio
+Recording permission.
+
+Each listener is scoped to the supported application's playback process. Desk
+does not capture the microphone, save audio, produce speech, transcribe content,
+or send audio over the network.
+
+## Try Desk locally
+
+Requirements:
+
+- Node.js 24 or newer
+- npm
+- A desktop session with hardware-accelerated graphics
+
+Character media is not part of the repository. Before launching, place local
+test media or redistributable media in the exact slots documented below.
+
+```bash
+npm install
+npm run demo
+```
+
+`npm run demo` builds the current renderer and launches Desk with normal
+automatic voice-output detection.
+
+For a background launch:
+
+```bash
+npm start -- --background
+```
+
+## Connect Desk to Codex
+
+With Desk running, register its local MCP server:
+
+```bash
+codex mcp add desk --url http://127.0.0.1:47831/mcp
+```
+
+New Codex sessions can then ask Desk to play an installed animation, show or
+hide its window, and report whether the local character and voice listener are
+active. Desk remains a separate desktop application; the MCP connection
+only exposes its own visual controls.
+
+The window intentionally contains no controls:
+
+- Scroll to zoom.
+- Left-drag to orbit.
+- Right-drag to pan.
+- Use your window manager's move gesture to reposition the window.
+
+On Hyprland, Desk also applies floating, pinned, topmost, full-opacity,
+no-blur, no-shadow, and decoration-free properties. macOS uses an all-Spaces
+topmost window. Other desktops use the strongest supported Electron window
+hints.
+
+## Build native packages
+
+Build on the operating system you are targeting:
+
+```bash
+npm run dist:linux
+npm run dist:windows
+npm run dist:mac
+```
+
+Outputs are written to `release/`. Windows needs Visual Studio Build Tools with
+the C++ desktop workload. macOS needs Xcode Command Line Tools and macOS 14.2+
+SDK support.
+
+GitHub Actions runs the full JavaScript, renderer, native compile, and native
+self-test suite on Linux, Windows, and macOS. Prerelease tags shaped like
+`v0.1.0-beta.0` create native packages and a checksum file, but only after the
+asset release gate passes. See [Releasing](docs/RELEASING.md).
+
+## Character assets
+
+Desk ships exactly one redistributed asset: `public/assets/model.vrm`, the
+default character — "Gyigi" v1.1 by Robotnik, redistributed under the VRM 1.0
+license in its own embedded metadata (corporate commercial use permitted,
+redistribution allowed, **credit required** — the attribution lives in the
+tray's About Desk item and in [ASSET_LICENSES.md](ASSET_LICENSES.md)).
+
+Everything else under `assets/` is per-user runtime media, never shipped:
+
+- `animations/*.vrma` — VRoid Hub personality motions. They are downloaded
+  through the user's own VRoid Hub license when a character is enrolled, so a
+  fresh install has none; the avatar stays in its idle pose until then, and
+  enrolling any roster character fills the slots.
+- `model-slot<N>.vrm` — per-slot copies for spawned extra avatars.
+
+The stable asset contract (`scripts/check-assets.cjs`) requires exactly the
+licensed model, complete manifest metadata, and `distributionAllowed: true`
+before any release tag. See [Releasing](docs/RELEASING.md) and
+[Asset licenses](ASSET_LICENSES.md).
+
+## Development
+
+```bash
+npm run check
+npm run native:build
+npm run native:test
+```
+
+The native listener is required before running Desk from source on macOS or
+Windows. Linux captures activity through PipeWire and does not build a helper.
+
+More detail:
+
+- [Architecture and development](docs/DEVELOPMENT.md)
+- [Codex and integration API](docs/INTEGRATIONS.md)
+- [Release process](docs/RELEASING.md)
+- [Security policy](SECURITY.md)
+
+Desk application source is licensed under the [MIT License](LICENSE).
+Bundled character assets are excluded from that license and remain test-only
+until replaced and documented.
