@@ -31,3 +31,34 @@ jobs:
         run: npm run assets:release
       - name: Require tag to match package version
         run: node scripts/check-release-tag.cjs "${GITHUB_REF_NAME}"
+
+  package:
+    name: Package ${{ matrix.name }}
+    needs: release-gate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            platform: linux
+            runner: ubuntu-latest
+            artifact: desk-linux-x64
+            command: npm run dist:linux
+          - name: Windows x64
+            platform: windows
+            runner: windows-latest
+            artifact: desk-windows-x64
+            command: npm run dist:windows
+          - name: macOS arm64
+            platform: macos
+            runner: macos-15
+            artifact: desk-macos-arm64
+            command: npm run dist:mac -- --arm64
+          - name: macOS x64
+            platform: macos
+            runner: macos-15-intel
+            artifact: desk-macos-x64
+            command: npm run dist:mac -- --x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - run: echo package-ok
