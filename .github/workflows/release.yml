@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  # The tag path startup-failed with zero jobs on this repo's first two
+  # release attempts (2026-09-12); dispatch on the tag ref carries the same
+  # GITHUB_REF_NAME the version gate reads.
+  workflow_dispatch:
+  # The tag path startup-failed twice with ZERO jobs (2026-09-12, the first
+  # release attempt in this repo's history) while CI on the same tag/event ran
+  # fine, and this file is duplicate-key-free and the workflow active -- so the
+  # release must not depend on that path alone. Dispatch on the tag ref:
+  # GITHUB_REF_NAME is then the tag itself, which is what the version gate reads.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-gate:
+    name: Validate release inputs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Require distributable, licensed assets
+        run: npm run assets:release
+
+      - name: Require tag to match package version
+        run: node scripts/check-release-tag.cjs "${GITHUB_REF_NAME}"
+
+  package:
+    name: Package ${{ matrix.name }}
+    needs: release-gate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            platform: linux
+            runner: ubuntu-latest
+            artifact: desk-linux-x64
+            command: npm run dist:linux
+          - name: Windows x64
+            platform: windows
+            runner: windows-latest
+            artifact: desk-windows-x64
+            command: npm run dist:windows
+          - name: macOS arm64
+            platform: macos
+            runner: macos-15
+            artifact: desk-macos-arm64
+            command: npm run dist:mac -- --arm64
+          - name: macOS x64
+            platform: macos
+            runner: macos-15-intel
+            artifact: desk-macos-x64
+            command: npm run dist:mac -- --x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint and test
+        run: npm run check
+
+      # NO signing env here, deliberately. Any DEFINED CSC_LINK /
+      # CSC_KEY_PASSWORD — including one set to the empty string from an
+      # absent secret — switches electron-builder onto the explicit-signing
+      # path, and it then resolves the empty cert path to the project dir
+      # and dies with "⨯ <projectDir> not a file" (measured twice on
+      # 2026-08-25, macOS jobs; even CSC_IDENTITY_AUTO_DISCOVERY=false does
+      # not rescue a defined-but-empty CSC_LINK). With no signing env at
+      # all, the builder finds no identity on the runner and skips signing —
+      # the documented unsigned-packages fallback (RELEASING.md). When
+      # certificates are added, bring back an env block that sets CSC_LINK
+      # etc. ONLY from real secrets.
+      - name: Build native installer
+        run: ${{ matrix.command }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.dmg
+            release/*.exe
+            release/*.zip
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    name: Publish GitHub release
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Download native installers
+        uses: actions/download-artifact@v8
+        with:
+          pattern: desk-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Write SHA-256 checksums
+        run: node scripts/write-checksums.cjs release-artifacts
+
+      - name: Create the GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            release-artifacts/*.AppImage
+            release-artifacts/*.deb
+            release-artifacts/*.dmg
+            release-artifacts/*.exe
+            release-artifacts/*.zip
+            release-artifacts/SHA256SUMS.txt
