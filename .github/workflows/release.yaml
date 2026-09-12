@@ -61,4 +61,28 @@ jobs:
             command: npm run dist:mac -- --x64
     runs-on: ${{ matrix.runner }}
     steps:
-      - run: echo package-ok
+      - name: Check out source
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint and test
+        run: npm run lint && npm test
+      - name: Build native installer
+        run: ${{ matrix.command }}
+      - name: Upload installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.dmg
+            release/*.exe
+            release/*.zip
+          if-no-files-found: error
+          compression-level: 0
