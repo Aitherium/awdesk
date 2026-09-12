@@ -86,3 +86,36 @@ jobs:
             release/*.zip
           if-no-files-found: error
           compression-level: 0
+
+  publish:
+    name: Publish GitHub release
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Download native installers
+        uses: actions/download-artifact@v8
+        with:
+          pattern: desk-*
+          path: release-artifacts
+          merge-multiple: true
+      - name: Write SHA-256 checksums
+        run: node scripts/write-checksums.cjs release-artifacts
+      - name: Create the GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            release-artifacts/*.AppImage
+            release-artifacts/*.deb
+            release-artifacts/*.dmg
+            release-artifacts/*.exe
+            release-artifacts/*.zip
+            release-artifacts/SHA256SUMS.txt
