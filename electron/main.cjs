@@ -34,6 +34,10 @@ const { routeDrop, synthesizeVerdict, stagePath, cleanupStage } = require("./dro
 const { desktopSnapshot } = require("./browser-client.cjs");
 const { connectSnapshot } = require("./connect-client.cjs");
 const { createBridgeServer, DEFAULT_PORT } = require("./bridge-server.cjs");
+// awrise wakes (scheduled jobs) - read and mutated ONLY through the awdk
+// harness daemon's /wakes window, so the desk, Discord, AitherDesktop and the
+// MCP tool share one reader and one semantics (see wakes-feed.cjs header).
+const wakesFeedClient = require("./wakes-feed.cjs");
 const {
   createDeskMcpHandler,
   getAnimationEventName,
@@ -229,6 +233,14 @@ let tray = null;
 let openDecisions = [];
 let relayFeed = [];
 let relayFeedTimer = null;
+// The awrise wake snapshot the deck renders. `source` is "none" until the first
+// poll answers, then "daemon" or "stale" - the panel says which, because a
+// cached list presented as live is the failure this feed exists to prevent.
+let wakesFeed = wakesFeedClient.emptyFeed({ source: "none" });
+let wakesWatchStop = null;
+// Names with a mutation in flight, so a double-click cannot fire a wake twice
+// before the daemon's own 409 answers.
+const wakesPending = new Set();
 // The local room (awdk daemon :8362, works with the fleet down) and the relay
 // poller that turns messages typed anywhere in the relay into work orders.
 let roomFeed = [];
@@ -1263,6 +1275,10 @@ function deckState() {
     // (owner: "why would awask + awdesk not be integrated into awrelay").
     relay: relayFeed,
     relayChannel: RELAY_CHANNEL,
+    // awrise's scheduled jobs + whether its clock is still ticking. A green job
+    // list with no ticks is the failure that hides itself, so the liveness
+    // fields ride on the same object the rows do.
+    wakes: wakesFeed,
     // The local room (awdk daemon): command requests/replies beside every
     // session's tool calls — the half of the company room that outlives the fleet.
     room: roomFeed,
@@ -1296,6 +1312,15 @@ setInterval(() => {
 
 /** Poll #agents for the deck's relay section. [] on refusal — the section
  *  renders "relay unavailable" rather than pretending the channel is empty. */
+/** Pull the wake list from the harness daemon. Keeps the previous snapshot so
+ *  an unreachable daemon renders as "stale, showing X from N ago" instead of an
+ *  empty list that reads as "no jobs configured". */
+async function refreshWakesFeed() {
+  const before = wakesFeedClient.feedSignature(wakesFeed);
+  wakesFeed = await wakesFeedClient.fetchWakes({ previous: wakesFeed, nowMs: Date.now() });
+  if (wakesFeedClient.feedSignature(wakesFeed) !== before) sendDeckState();
+}
+
 async function refreshRelayFeed() {
   const rows = await fetchRelayHistory();
   relayFeed = rows;
@@ -1883,6 +1908,32 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
           if (win && !win.isDestroyed()) addMenu.popup({ window: win });
           return true;
         }
+
+        // awrise wakes. Every verb goes to the harness daemon's /wakes window:
+        // it holds the bearer check, the name gate, the argv control and the
+        // per-name in-flight slot. The desk spawns no awrise and writes no
+        // scheduler state - one implementation, every surface.
+        case "wake-enable":
+        case "wake-disable":
+        case "wake-run": {
+          if (typeof arg !== "string" || !wakesFeedClient.WAKE_NAME_RE.test(arg)) {
+            return { ok: false, detail: "invalid wake name" };
+          }
+          const verb = name.slice("wake-".length);
+          const key = `${verb}:${arg}`;
+          // Client-side single-flight: the daemon's 409 is the backstop, not
+          // the first line - a double-click should not need a round trip to be
+          // refused, and `run` holds its request open for 15 s.
+          if (wakesPending.has(key)) return { ok: false, detail: "already in flight" };
+          wakesPending.add(key);
+          try {
+            const result = await wakesFeedClient.mutate({ name: arg, verb });
+            await refreshWakesFeed();
+            return result;
+          } finally {
+            wakesPending.delete(key);
+          }
+        }
         case "chat":
           createChatWindow();
           return true;
@@ -2077,6 +2128,9 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       // /api/decisions is a build stub — this loopback read is how its bell
       // sees the queue at all. Read-only; answering stays in the queue window.
       decisionsProvider: () => decisionCards.listOpen(),
+      // Read-only: the hosted web surfaces see the same wake snapshot the deck
+      // does. Mutations are NOT offered here - they go to the daemon window.
+      wakesProvider: () => wakesFeed,
       fleetHandler: (verb) => fleetAction(verb === "open" ? "open_panel" : verb, { fresh: false }),
       // awsh /desktop, adk desk desktop, awconnect's popup and `desk://` all land here.
       desktopHandler: (mode) => {
@@ -2126,6 +2180,17 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // — it is a summary, not a client.
     void refreshRelayFeed();
     relayFeedTimer = setInterval(() => void refreshRelayFeed(), 60_000);
+
+    // awrise wakes: poll the daemon every 30 s and push only when something
+    // moved (the feed signature excludes fetched_at, so a stable list does not
+    // re-render every tick; it INCLUDES source/stale_since so the chip flips
+    // the moment the daemon goes away).
+    wakesWatchStop = wakesFeedClient.watch({
+      onChange: (feed) => {
+        wakesFeed = feed;
+        sendDeckState();
+      },
+    }).stop;
     relayFeedTimer.unref?.();
 
     // The company room, wired both ways (owner, 2026-09-08: "full integration
@@ -2222,6 +2287,7 @@ app.on("before-quit", () => {
   isQuitting = true;
   clearTimeout(hyprlandConfigurationTimer);
   if (relayFeedTimer) clearInterval(relayFeedTimer);
+  wakesWatchStop?.();
   decisionWatchStop?.();
   audioListener?.stop();
   globalShortcut.unregisterAll();

@@ -191,6 +191,11 @@ function createBridgeServer({
   onEvent,
   mcpHandler = null,
   decisionsProvider = null,
+  // () => the awrise wake snapshot main holds (jobs, clock liveness, staleness).
+  // READ ONLY on this bridge: mutations go to the harness daemon's /wakes
+  // window, which owns the bearer check and the argv control. A second
+  // mutating door here would be a rival window with its own credential story.
+  wakesProvider = null,
   fleetHandler = null,
   commandHandler = null,
   // The two desktop surfaces: POST /desktop/overlay | /desktop/app raise a
@@ -255,6 +260,67 @@ function createBridgeServer({
       }
       response.writeHead(200, { ...cors, "content-type": "application/json" });
       response.end(JSON.stringify({ decisions, count: decisions.length }));
+      return;
+    }
+
+    // The awrise wake list, read-only, for the surfaces Desk hosts (the same
+    // trust class as /decisions: loopback host, and CORS-readable only by the
+    // owner's own origins). `clock_stale`/`last_tick_at` ride along because a
+    // job list WITHOUT them reads as healthy while the scheduler is dead, and
+    // `source`/`stale_since` say whether this is live or a cached snapshot.
+    if (request.url === "/wakes") {
+      if (!decisionsReadOriginAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      const cors = origin
+        ? { "access-control-allow-origin": origin, vary: "Origin" }
+        : {};
+      if (request.method === "OPTIONS") {
+        response.writeHead(204, {
+          ...cors,
+          "access-control-allow-methods": "GET, OPTIONS",
+          "access-control-allow-headers": "content-type",
+        });
+        response.end();
+        return;
+      }
+      if (request.method !== "GET") {
+        response.writeHead(405, { allow: "GET, OPTIONS" });
+        response.end();
+        return;
+      }
+      if (wakesProvider == null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      let feed;
+      try {
+        feed = wakesProvider();
+      } catch {
+        feed = null;
+      }
+      const wakes = Array.isArray(feed?.wakes) ? feed.wakes : [];
+      response.writeHead(200, { ...cors, "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          source: feed?.source ?? "none",
+          stale_since: feed?.stale_since ?? null,
+          installed: feed?.installed ?? null,
+          schema: feed?.schema ?? null,
+          migration: feed?.migration ?? null,
+          wakes,
+          count: wakes.length,
+          failing: Number(feed?.failing) || 0,
+          disabled: Number(feed?.disabled) || 0,
+          running: Number(feed?.running) || 0,
+          last_tick_at: feed?.last_tick_at ?? null,
+          clock_stale: feed?.clock_stale === true,
+          error: feed?.error ?? (feed ? null : "unavailable"),
+        }),
+      );
       return;
     }
 
