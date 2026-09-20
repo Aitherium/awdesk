@@ -36,53 +36,6 @@ export interface RelayRow {
   agent: boolean;
 }
 
-/** One awrise scheduled job, as main's wakes-feed shapes it. */
-export interface WakeRow {
-  name: string;
-  enabled: boolean;
-  every: string;
-  intervalS: number | null;
-  run: string;
-  at: string | null;
-  lastState: string;
-  /** WHY it ended that way ("exit 1", "timeout after 300s"). The row is nearly
-   *  useless without it: "failure" alone sends the owner to a terminal. */
-  lastReason: string;
-  lastStartedAt: string | null;
-  lastFinishedAt: string | null;
-  lastWakeId: string | null;
-  consecutiveFailures: number;
-  running: boolean;
-  runningSince: string | null;
-  nextDueAt: string | null;
-  /** The decision card awrise raised for this failing streak, when it did. */
-  cardId: string;
-  error: string;
-}
-
-/** The wake snapshot + whether it is LIVE. `source` is the honesty field:
- *  "daemon" = just read, "stale" = the last good snapshot while the daemon is
- *  unreachable, "none" = nothing polled yet. */
-export interface WakesFeed {
-  source: 'none' | 'daemon' | 'stale';
-  /** true/false once known; null while unknown (no token, daemon down). */
-  installed: boolean | null;
-  schema: number | null;
-  migration: string | null;
-  wakes: WakeRow[];
-  count: number;
-  failing: number;
-  disabled: number;
-  running: number;
-  /** The newest clock tick awrise wrote. null = it has never ticked. */
-  lastTickAt: string | null;
-  /** True when the scheduler's clock is silent — the failure that hides itself. */
-  clockStale: boolean;
-  /** When this snapshot first went stale (ms), so the chip can age it. */
-  staleSince: number | null;
-  error: string | null;
-}
-
 export interface DeckState {
   decisions: DeckDecision[];
   openCount: number;
@@ -101,8 +54,6 @@ export interface DeckState {
    *  messages — the half of the company room that works with the fleet down. */
   room: RoomRow[];
   roomStatus: string;
-  /** awrise's scheduled jobs and whether its clock is still ticking. */
-  wakes: WakesFeed;
 }
 
 export interface RoomRow {
@@ -131,21 +82,6 @@ export const EMPTY_DECK_STATE: DeckState = {
   relayChannel: '#agents',
   room: [],
   roomStatus: 'not started',
-  wakes: {
-    source: 'none',
-    installed: null,
-    schema: null,
-    migration: null,
-    wakes: [],
-    count: 0,
-    failing: 0,
-    disabled: 0,
-    running: 0,
-    lastTickAt: null,
-    clockStale: false,
-    staleSince: null,
-    error: null,
-  },
 };
 
 /** WHERE a card came from, so a row can name it — a toast with no identity is
@@ -190,133 +126,4 @@ export function secondaryChoice(
   if (!defer) return null;
   if (card.options.length === 1) return null;
   return { key: defer.key, label: defer.label };
-}
-
-
-/** The chip a wake row wears. RUNNING beats FAILING: a job that is executing
- *  right now is not "broken", whatever its last streak said, and showing it as
- *  failing sends the owner to kill something that is already fixing itself. */
-export function wakeBadge(wake: WakeRow): 'running' | 'failing' | 'disabled' | 'ok' {
-  if (wake.running) return 'running';
-  if (wake.consecutiveFailures >= 1) return 'failing';
-  if (!wake.enabled) return 'disabled';
-  return 'ok';
-}
-
-/** "3m" / "2h" / "never" for an ISO timestamp — the same wall-clock age the
- *  card rows use, so one panel does not mix ages and dates. */
-export function isoAgeLabel(iso: string | null, nowMs: number): string {
-  if (!iso) return 'never';
-  const at = Date.parse(iso);
-  if (!Number.isFinite(at)) return 'unknown';
-  return formatAge(Math.floor(at / 1000), nowMs);
-}
-
-/** What a row says about its own timing: how long it has been running, or when
- *  it last ran. `next_due_at` is null for at-anchored and never-run jobs by
- *  design (awrise owns due-ness), so the row says "—" rather than guessing. */
-export function wakeAgeLabel(wake: WakeRow, nowMs: number): string {
-  if (wake.running) return `running ${isoAgeLabel(wake.runningSince, nowMs)}`;
-  if (wake.lastFinishedAt) return `ran ${isoAgeLabel(wake.lastFinishedAt, nowMs)} ago`;
-  if (wake.lastStartedAt) return `started ${isoAgeLabel(wake.lastStartedAt, nowMs)} ago`;
-  return 'never run';
-}
-
-/** Did this snapshot actually MEASURE the scheduler's clock? Only a live daemon
- *  read that did not error, on a host where awrise is known installed, did. A
- *  cached ('stale') snapshot carries a clock_stale flag frozen at whatever the
- *  daemon last said, and an errored read carries the EMPTY default (false) —
- *  neither is evidence. This predicate is why the panel can no longer fabricate
- *  health out of an absence. */
-function clockWasMeasured(feed: WakesFeed): boolean {
-  return feed.source === 'daemon' && feed.installed === true && !feed.error;
-}
-
-/** The three ways the clock line can read. `ok` is reserved for a live read of a
- *  clock that has actually ticked; everything else is `stale` (measured silent)
- *  or `unknown` (not measured). The renderer styles on this, so an unmeasured
- *  clock cannot wear the healthy class either. */
-export function clockTone(feed: WakesFeed): 'ok' | 'stale' | 'unknown' {
-  if (!clockWasMeasured(feed)) return 'unknown';
-  if (feed.clockStale) return 'stale';
-  return feed.lastTickAt ? 'ok' : 'unknown';
-}
-
-/** The CLOCK line, rendered before any job row. A green list of enabled jobs
- *  with a clock that has not ticked is the scheduler failure that looks
- *  healthy; this is the sentence that stops it reading that way.
- *
- *  It must never say "ok" from an ABSENCE. A feed whose fetch failed (no token,
- *  401/403, HTTP 500, unparseable JSON, "daemon has no /wakes window") arrives
- *  with clockStale=false and lastTickAt=null purely because those are the empty
- *  defaults — it learned nothing, and says so. */
-export function clockLabel(feed: WakesFeed, nowMs: number): string {
-  if (feed.installed === false) return 'awrise not installed';
-  if (!clockWasMeasured(feed)) {
-    return feed.lastTickAt
-      ? `clock liveness unknown — last known tick ${isoAgeLabel(feed.lastTickAt, nowMs)} ago`
-      : 'clock liveness unknown';
-  }
-  if (feed.clockStale) {
-    return feed.lastTickAt ? `clock silent since ${feed.lastTickAt}` : 'clock silent — never ticked';
-  }
-  return feed.lastTickAt
-    ? `clock ok — last tick ${isoAgeLabel(feed.lastTickAt, nowMs)} ago`
-    : 'clock never ticked';
-}
-
-/** The staleness chip: how old the shown snapshot is, or that there is none. */
-export function staleLabel(feed: WakesFeed, nowMs: number): string {
-  if (feed.source !== 'stale') return '';
-  if (feed.staleSince === null) return 'daemon down — showing a cached snapshot';
-  if (feed.wakes.length === 0) return 'daemon down — nothing cached';
-  return `daemon down — showing snapshot from ${formatAge(Math.floor(feed.staleSince / 1000), nowMs)} ago`;
-}
-
-/** Main sends the raw feed object wakes-feed.cjs built (snake_case for the
- *  snapshot-level fields it mirrors from the daemon). This is the ONE place
- *  that translates it; a field forgotten here is a field the panel silently
- *  drops, which is why it is a pure function with its own arms. */
-export function normalizeWakes(raw: unknown): WakesFeed {
-  const base = EMPTY_DECK_STATE.wakes;
-  if (!raw || typeof raw !== 'object') return base;
-  const value = raw as Record<string, unknown>;
-  const rows = Array.isArray(value.wakes) ? (value.wakes as WakeRow[]) : [];
-  const source = value.source === 'daemon' || value.source === 'stale' ? value.source : 'none';
-  return {
-    source,
-    installed: typeof value.installed === 'boolean' ? value.installed : null,
-    schema: typeof value.schema === 'number' ? value.schema : null,
-    migration: typeof value.migration === 'string' ? value.migration : null,
-    wakes: rows,
-    count: typeof value.count === 'number' ? value.count : rows.length,
-    failing: typeof value.failing === 'number' ? value.failing : 0,
-    disabled: typeof value.disabled === 'number' ? value.disabled : 0,
-    running: typeof value.running === 'number' ? value.running : 0,
-    lastTickAt: typeof value.last_tick_at === 'string' ? value.last_tick_at : null,
-    clockStale: value.clock_stale === true,
-    staleSince: typeof value.stale_since === 'number' ? value.stale_since : null,
-    error: typeof value.error === 'string' ? value.error : null,
-  };
-}
-
-export interface WakeActionResult {
-  ok?: boolean;
-  status?: number;
-  detail?: string;
-  exitCode?: number | null;
-  started?: boolean;
-  pid?: number | null;
-}
-
-/** One line the row shows after an action. Every branch says something: a
- *  silent button is indistinguishable from a broken one, and `run` usually
- *  returns BEFORE the wake finishes (202), which must not read as success. */
-export function wakeActionMessage(verb: string, result: WakeActionResult | boolean | null): string {
-  if (result === null || result === undefined) return `${verb}: no answer from the desk`;
-  if (typeof result === 'boolean') return result ? `${verb}: ok` : `${verb}: refused`;
-  if (result.started) return `started (pid ${result.pid ?? '?'}) — outcome in the list`;
-  if (result.ok) return `${verb}: ${result.detail || 'ok'}`;
-  const code = result.exitCode === null || result.exitCode === undefined ? '' : ` (exit ${result.exitCode})`;
-  return `${verb} failed: ${result.detail || 'refused'}${code}`;
 }

@@ -5,10 +5,6 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { filterCharacters, isHidden } = require("./content-rating.cjs");
-const {
-  packProvides,
-  packContentDir,
-} = require("./content-rating-loader.cjs");
 
 const ROOT = path.join(__dirname, "..");
 // Test seam: content-rating.test.cjs points this at a per-process temp dir so
@@ -26,37 +22,7 @@ const ASSET_DIRS = [
   path.join(ROOT, "dist", "assets"),
 ];
 
-/**
- * Get pack characters if the desk:characters-mature capability is available.
- * Returns a list of character names from the pack, or [] if unavailable.
- */
-function getPackCharacters() {
-  if (!packProvides("persona:characters-mature")) {
-    return [];
-  }
-  const packDir = packContentDir("persona:characters-mature", "persona");
-  if (!packDir) {
-    return [];
-  }
-  try {
-    const charDir = path.join(packDir, "characters");
-    if (!fs.existsSync(charDir)) {
-      return [];
-    }
-    const entries = fs.readdirSync(charDir, { withFileTypes: true });
-    return entries
-      .filter(
-        (entry) =>
-          entry.isDirectory() &&
-          fs.existsSync(path.join(charDir, entry.name, "model.vrm")),
-      )
-      .map((entry) => entry.name);
-  } catch {
-    return [];
-  }
-}
-
-/** Every character on disk (dev tree + pack), ratings ignored. Internal — callers that show a
+/** Every character on disk, ratings ignored. Internal — callers that show a
  *  character to a human must use listCharacters() instead. */
 function listAllCharacters() {
   let devCharacters;
@@ -73,9 +39,7 @@ function listAllCharacters() {
     devCharacters = [];
   }
 
-  const packCharacters = getPackCharacters();
-  const combined = [...devCharacters, ...packCharacters];
-  return Array.from(new Set(combined)).sort();
+  return Array.from(new Set(devCharacters)).sort();
 }
 
 /** The roster as a human may see it: R18/R15 characters are dropped entirely
@@ -135,18 +99,13 @@ function getActiveCharacter() {
 function installCharacter(name) {
   if (isHidden(name)) return false;
 
-  // Try dev tree first, then pack
-  let source = path.join(ROSTER_DIR, name);
-  let model = path.join(source, "model.vrm");
-
-  if (!fs.existsSync(model)) {
-    // Try loading from pack
-    const packDir = packContentDir("persona:characters-mature", "persona");
-    if (packDir) {
-      source = path.join(packDir, "characters", name);
-      model = path.join(source, "model.vrm");
-    }
-  }
+  // 🚩 The roster dir is the ONLY source (owner, 2026-09-19: "help people connect
+  // and find their own avatars"). The mature content pack that used to be the
+  // fallback here is gone from the product; the per-character age-rating gate
+  // (content-rating.cjs) stays, because VRoid Hub models arrive with r15/r18
+  // flags and honouring them is what keeps a downloaded roster safe.
+  const source = path.join(ROSTER_DIR, name);
+  const model = path.join(source, "model.vrm");
 
   if (!fs.existsSync(model)) return false;
 
@@ -202,48 +161,72 @@ function enrollNewestDownload(preferredName = null) {
   return base;
 }
 
-/** Copy a character's model (and optional animation overrides) into asset trees
- *  for a spawned slot (not the default slot). Returns the relative asset URL
- *  to load (e.g. './assets/model-slot1.vrm') on success, or null on failure.
+/** Where a spawned slot's model comes from and where it must land -- decided
+ *  synchronously and CHEAPLY (existence checks only), so the caller can refuse a
+ *  bad spawn at once. The bytes move in `copyIfChanged`, off the event loop.
  *
- *  Unlike installCharacter(), this does NOT write ACTIVE_FILE or call
- *  rememberCharacter() — those are roster-wide concepts for slot 0, not
- *  per-slot. Refuses a hidden character (same gate as installCharacter). */
-function installCharacterToSlot(name, slotId) {
+ *  Measured 2026-09-18 (`/health.stage.mainLag`): the old synchronous
+ *  `copyFileSync` of an 18-66 MB model into two asset trees blocked the main
+ *  process for 516 ms and 949 ms on consecutive spawns -- IPC and every window's
+ *  input stall with it.
+ *
+ *  Does NOT write ACTIVE_FILE or call rememberCharacter() (slot-0 concepts).
+ *  Refuses a hidden character (same gate as installCharacter). Returns
+ *  `{ url, copies: [{ from, to }] }` or null. */
+function planSlotInstall(name, slotId) {
   if (isHidden(name)) return null;
 
-  // Try dev tree first, then pack
-  let source = path.join(ROSTER_DIR, name);
-  let model = path.join(source, "model.vrm");
-
-  if (!fs.existsSync(model)) {
-    // Try loading from pack
-    const packDir = packContentDir("persona:characters-mature", "persona");
-    if (packDir) {
-      source = path.join(packDir, "characters", name);
-      model = path.join(source, "model.vrm");
-    }
-  }
+  // 🚩 The roster dir is the ONLY source (owner, 2026-09-19: "help people connect
+  // and find their own avatars"). The mature content pack that used to be the
+  // fallback here is gone from the product; the per-character age-rating gate
+  // (content-rating.cjs) stays, because VRoid Hub models arrive with r15/r18
+  // flags and honouring them is what keeps a downloaded roster safe.
+  const source = path.join(ROSTER_DIR, name);
+  const model = path.join(source, "model.vrm");
 
   if (!fs.existsSync(model)) return null;
 
   const modelFilename = `model-${slotId}.vrm`;
+  const animations = path.join(source, "animations");
+  const clips = fs.existsSync(animations) ? fs.readdirSync(animations).filter((file) => file.endsWith(".vrma")) : [];
+  const copies = [];
   for (const assetDir of ASSET_DIRS) {
-    fs.mkdirSync(path.join(assetDir, "animations"), { recursive: true });
-    fs.copyFileSync(model, path.join(assetDir, modelFilename));
-    const animations = path.join(source, "animations");
-    if (fs.existsSync(animations)) {
-      for (const file of fs.readdirSync(animations)) {
-        if (file.endsWith(".vrma")) {
-          fs.copyFileSync(
-            path.join(animations, file),
-            path.join(assetDir, "animations", file),
-          );
-        }
-      }
-    }
+    copies.push({ from: model, to: path.join(assetDir, modelFilename) });
+    for (const file of clips) copies.push({ from: path.join(animations, file), to: path.join(assetDir, "animations", file) });
   }
-  return `./assets/${modelFilename}`;
+  return { url: `./assets/${modelFilename}`, copies };
+}
+
+/** Copy each pair without blocking the event loop, skipping a destination that
+ *  already holds the same bytes (same size, not older than the source) -- the
+ *  same character re-spawned, or a clip shared by every character, costs a stat.
+ *  Resolves `{ copied, skipped }`; rejects on the first real failure. */
+async function copyIfChanged(copies, fsp = fs.promises) {
+  let copied = 0;
+  let skipped = 0;
+  for (const { from, to } of copies) {
+    const src = await fsp.stat(from);
+    const dst = await fsp.stat(to).catch(() => null);
+    if (dst && dst.size === src.size && dst.mtimeMs >= src.mtimeMs) {
+      skipped += 1;
+      continue;
+    }
+    await fsp.mkdir(path.dirname(to), { recursive: true });
+    await fsp.copyFile(from, to);
+    copied += 1;
+  }
+  return { copied, skipped };
+}
+
+/** One install at a time. Every character shares the clip files under
+ *  `animations/`, so two spawns copying concurrently write the SAME destination
+ *  and Windows answers EBUSY -- measured 2026-09-18: three quick spawns, the
+ *  second body never appeared. A failed install does not poison the queue. */
+let installChain = Promise.resolve();
+function queueInstall(copies, fsp = fs.promises) {
+  const run = installChain.then(() => copyIfChanged(copies, fsp));
+  installChain = run.catch(() => {});
+  return run;
 }
 
 module.exports = {
@@ -252,7 +235,9 @@ module.exports = {
   enrollNewestDownload,
   getActiveCharacter,
   installCharacter,
-  installCharacterToSlot,
+  copyIfChanged,
+  planSlotInstall,
+  queueInstall,
   listAllCharacters,
   listCharacters,
 };

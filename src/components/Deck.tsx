@@ -4,21 +4,12 @@ import { renderVrmThumbnail } from '../thumbnails';
 import {
   EMPTY_DECK_STATE,
   cardWhere,
-  clockLabel,
-  clockTone,
   formatAge,
-  normalizeWakes,
   primaryChoice,
   secondaryChoice,
-  staleLabel,
-  wakeActionMessage,
-  wakeAgeLabel,
-  wakeBadge,
   type DeckDecision,
   type DeckState,
   type RelayRow,
-  type WakeActionResult,
-  type WakeRow,
 } from '../deck/deck-types';
 
 /**
@@ -113,9 +104,7 @@ interface BridgeDeck {
   open(): void;
   close(): void;
   answer(id: string, choice: string): Promise<boolean>;
-  /** Most verbs answer a boolean; the wake verbs answer the daemon's
-   *  {ok, detail, exitCode, started, pid} so the row can say what happened. */
-  action(name: string, arg?: string): Promise<boolean | WakeActionResult>;
+  action(name: string, arg?: string): Promise<boolean>;
   /** The thread under a relay message — the per-agent direct chat read path. */
   relayThread(messageId: string): Promise<RelayRow[]>;
 }
@@ -162,119 +151,6 @@ const URGENCY_TONE: Record<string, string> = {
 
 function urgencyTone(urgency: string): string {
   return URGENCY_TONE[urgency] ?? URGENCY_TONE.normal;
-}
-
-/** WAKES — awrise's scheduled jobs.
- *
- * Order matters here, and it is the point of the section: the CLOCK line comes
- * before any job row. A list of enabled jobs with a silent clock looks healthy
- * and is not, and that is the failure this pane exists to catch. The staleness
- * chip comes first of all, because rows from a snapshot taken an hour ago must
- * never be read as live.
- *
- * Every action goes to main -> the harness daemon. The pane spawns nothing and
- * parses no scheduler state: one reader, one semantics, every surface.
- */
-function WakesSection({
-  wakes,
-  nowMs,
-  notes,
-  pending,
-  onAction,
-}: {
-  wakes: DeckState['wakes'];
-  nowMs: number;
-  notes: Record<string, string>;
-  pending: Set<string>;
-  onAction: (verb: 'enable' | 'disable' | 'run', name: string) => void;
-}) {
-  const stale = wakes.source === 'stale';
-  const live = wakes.source === 'daemon' && wakes.installed === true;
-  const notice = stale
-    ? staleLabel(wakes, nowMs)
-    : wakes.installed === false
-      ? 'awrise not installed — no scheduled jobs on this host.'
-      : wakes.error
-        ? wakes.error
-        : wakes.source === 'none'
-          ? 'Reading the scheduler…'
-          : '';
-  return (
-    <section className="deck-section" aria-label="Wakes">
-      <h2 className="deck-section-head">
-        <span className="deck-section-icon"><ChipIcon /></span>
-        Wakes
-        {wakes.failing > 0 ? <span className="deck-section-count">{wakes.failing}</span> : null}
-      </h2>
-      {notice ? <p className="deck-empty">{notice}</p> : null}
-      {/* The clock, BEFORE any row. */}
-      {wakes.installed !== false && wakes.source !== 'none' ? (
-        <p className={`deck-wake-clock deck-wake-clock-${clockTone(wakes)}`}>
-          {clockLabel(wakes, nowMs)}
-        </p>
-      ) : null}
-      {wakes.schema === 1 ? (
-        <p className="deck-empty">
-          {wakes.migration || 'the awrise job file is v1 — run `awrise list` on this host to migrate it'}
-        </p>
-      ) : null}
-      {wakes.wakes.length === 0 ? (
-        live ? <p className="deck-empty">No wakes scheduled.</p> : null
-      ) : (
-        wakes.wakes.map((wake: WakeRow) => {
-          const badge = wakeBadge(wake);
-          return (
-            <div className="deck-wake-row" key={wake.name}>
-              <span className={`deck-wake-badge deck-wake-${badge}`}>{badge}</span>
-              <span className="deck-wake-text">
-                <strong title={wake.run || wake.name}>{wake.name}</strong>
-                <span className="deck-wake-meta">
-                  {wake.every || (wake.at ? `at ${wake.at}` : 'no schedule')}
-                  {' · '}
-                  {wakeAgeLabel(wake, nowMs)}
-                  {wake.nextDueAt ? ` · next ${wake.nextDueAt}` : ' · next —'}
-                  {wake.consecutiveFailures > 0 ? ` · ${wake.consecutiveFailures}x failed` : ''}
-                  {/* awrise raises the failing-streak card through the awask
-                      ladder; naming its id ties this row to the card already
-                      sitting in the Decisions section above. No card code here. */}
-                  {wake.cardId ? ` · card ${wake.cardId}` : ''}
-                </span>
-                {/* The REASON, never truncated away entirely: the full text is
-                    the title, so "failure" is always one hover from "why". */}
-                {wake.lastReason ? (
-                  <span className="deck-wake-reason" title={wake.lastReason}>
-                    {wake.lastState ? `${wake.lastState} — ` : ''}
-                    {wake.lastReason.length > 60 ? `${wake.lastReason.slice(0, 60)}…` : wake.lastReason}
-                  </span>
-                ) : null}
-                {notes[wake.name] ? (
-                  <span className="deck-wake-note">{notes[wake.name]}</span>
-                ) : null}
-              </span>
-              <span className="deck-wake-actions">
-                <button
-                  className="deck-btn"
-                  disabled={!live || pending.has(wake.name)}
-                  title={wake.enabled ? 'Stop scheduling this wake' : 'Schedule this wake again'}
-                  onClick={() => onAction(wake.enabled ? 'disable' : 'enable', wake.name)}
-                >
-                  {wake.enabled ? 'Disable' : 'Enable'}
-                </button>
-                <button
-                  className="deck-btn deck-btn-primary"
-                  disabled={!live || wake.running || pending.has(wake.name)}
-                  title="Fire this wake once now — the schedule and the streak are unchanged"
-                  onClick={() => onAction('run', wake.name)}
-                >
-                  Run now
-                </button>
-              </span>
-            </div>
-          );
-        })
-      )}
-    </section>
-  );
 }
 
 function RelaySection({
@@ -1039,11 +915,6 @@ export function Deck() {
   // Drop-to-avatar (2026-08-29): the drag state + the verdict list. The
   // verdicts are LOCAL to this panel (the relay feed is where the agent
   // conversation continues — main posts the notice there itself).
-  // Wake actions: the daemon's answer per job (an inline line under the row)
-  // and the names with a mutation in flight, so a second click is ignored here
-  // rather than relying on the daemon's 409 as the first line of defence.
-  const [wakeNotes, setWakeNotes] = useState<Record<string, string>>({});
-  const [wakePending, setWakePending] = useState<Set<string>>(() => new Set());
   const [dragOver, setDragOver] = useState(false);
   const [drops, setDrops] = useState<DropVerdict[]>([]);
   const [dropBusy, setDropBusy] = useState(false);
@@ -1071,10 +942,7 @@ export function Deck() {
     if (!deck) return;
     let alive = true;
     void deck.getState().then((next) => {
-      // Same normalisation as the push path — the initial PULL carries main's
-      // raw feed too, and skipping it here made the section render once with
-      // undefined clock fields.
-      if (alive && next) setState({ ...next, wakes: normalizeWakes(next.wakes) });
+      if (alive && next) setState(next);
     });
     const unsubscribe = bridgeSubscribe((event) => {
       if (event.type === 'deck-state') {
@@ -1092,9 +960,6 @@ export function Deck() {
           relayChannel: (event.relayChannel as string) ?? '#agents',
           room: (event.room as DeckState['room']) ?? [],
           roomStatus: (event.roomStatus as string) ?? 'not started',
-          // A field missing from THIS copy is dropped on the first push after
-          // the initial pull — the section would render once and then empty.
-          wakes: normalizeWakes(event.wakes),
         });
       }
     });
@@ -1139,33 +1004,6 @@ export function Deck() {
 
   const runAction = useCallback((name: string, arg?: string) => {
     void bridgeDeck()?.action(name, arg);
-  }, []);
-
-  /** Fire one wake verb and SAY what came back. `run` answers 202 with a pid
-   *  long before the wake finishes — reporting that as plain success would be
-   *  the lie this line exists to prevent. */
-  const handleWakeAction = useCallback((verb: 'enable' | 'disable' | 'run', name: string) => {
-    setWakePending((current) => {
-      if (current.has(name)) return current;
-      const next = new Set(current);
-      next.add(name);
-      return next;
-    });
-    void bridgeDeck()
-      ?.action(`wake-${verb}`, name)
-      .then((result) => {
-        setWakeNotes((current) => ({ ...current, [name]: wakeActionMessage(verb, result) }));
-      })
-      .catch(() => {
-        setWakeNotes((current) => ({ ...current, [name]: `${verb} failed: the desk did not answer` }));
-      })
-      .finally(() => {
-        setWakePending((current) => {
-          const next = new Set(current);
-          next.delete(name);
-          return next;
-        });
-      });
   }, []);
 
   /** Open the per-agent DIRECT chat: the relay thread under the agent's most
@@ -1316,14 +1154,6 @@ export function Deck() {
             </button>
           ) : null}
         </section>
-
-        <WakesSection
-          wakes={state.wakes}
-          nowMs={nowMs}
-          notes={wakeNotes}
-          pending={wakePending}
-          onAction={handleWakeAction}
-        />
 
         <RelaySection
           relay={state.relay}

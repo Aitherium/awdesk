@@ -270,137 +270,6 @@ test("without a provider the route is absent (404), not an empty success", async
   assert.equal(res.status, 404);
 });
 
-function wakeSnapshot(overrides = {}) {
-  return {
-    source: "daemon",
-    stale_since: null,
-    installed: true,
-    schema: 2,
-    migration: null,
-    failing: 1,
-    disabled: 0,
-    running: 1,
-    last_tick_at: "2026-09-18T07:41:00+00:00",
-    clock_stale: false,
-    error: null,
-    wakes: [
-      { name: "nightly-sync", enabled: true, lastState: "failure", lastReason: "exit 1", consecutiveFailures: 3, running: false },
-      { name: "hourly-probe", enabled: true, lastState: "running", lastReason: "", consecutiveFailures: 0, running: true },
-    ],
-    ...overrides,
-  };
-}
-
-test("bridge serves the wake list read-only, clock liveness included", async (context) => {
-  const bridge = createBridgeServer({
-    port: 0,
-    onEvent: () => {},
-    wakesProvider: () => wakeSnapshot(),
-  });
-  const address = await bridge.listen();
-  context.after(() => bridge.close());
-
-  const ok = await requestServer(address, {
-    path: "/wakes",
-    headers: { origin: "https://aitherium.com" },
-  });
-  assert.equal(ok.status, 200);
-  assert.equal(ok.headers["access-control-allow-origin"], "https://aitherium.com");
-  const body = JSON.parse(ok.body);
-  assert.equal(body.count, 2);
-  assert.equal(body.failing, 1);
-  assert.equal(body.running, 1);
-  assert.equal(body.source, "daemon");
-  assert.equal(body.stale_since, null);
-  // Without these a green job list reads as healthy while the scheduler is dead.
-  assert.equal(body.clock_stale, false);
-  assert.equal(body.last_tick_at, "2026-09-18T07:41:00+00:00");
-  assert.equal(body.wakes[0].lastReason, "exit 1");
-
-  const preflight = await requestServer(address, {
-    path: "/wakes",
-    method: "OPTIONS",
-    headers: { origin: "https://aitherium.com" },
-  });
-  assert.equal(preflight.status, 204);
-  assert.equal(preflight.headers["access-control-allow-methods"], "GET, OPTIONS");
-});
-
-test("a stale wake snapshot keeps its age and says it is not live", async (context) => {
-  const bridge = createBridgeServer({
-    port: 0,
-    onEvent: () => {},
-    wakesProvider: () => wakeSnapshot({ source: "stale", stale_since: 1700000000000, error: "daemon unreachable" }),
-  });
-  const address = await bridge.listen();
-  context.after(() => bridge.close());
-  const res = await requestServer(address, { path: "/wakes" });
-  assert.equal(res.status, 200);
-  const body = JSON.parse(res.body);
-  assert.equal(body.source, "stale");
-  assert.equal(body.stale_since, 1700000000000);
-  assert.equal(body.error, "daemon unreachable");
-});
-
-test("the wake route never accepts a WRITE and refuses a foreign origin", async (context) => {
-  const bridge = createBridgeServer({
-    port: 0,
-    onEvent: () => {},
-    wakesProvider: () => wakeSnapshot(),
-  });
-  const address = await bridge.listen();
-  context.after(() => bridge.close());
-
-  // Mutations belong to the harness daemon (bearer + entitlement + argv
-  // control). A second mutating door here would be a rival window.
-  const mutated = await requestServer(address, {
-    path: "/wakes",
-    method: "POST",
-    headers: { origin: "https://aitherium.com" },
-    body: "{}",
-  });
-  assert.equal(mutated.status, 405, "the bridge must never accept a wake WRITE");
-
-  const denied = await requestServer(address, {
-    path: "/wakes",
-    headers: { origin: "https://evil.example" },
-  });
-  assert.equal(denied.status, 403);
-
-  const offHost = await requestServer(address, {
-    path: "/wakes",
-    headers: { host: "example.com" },
-  });
-  assert.equal(offHost.status, 403, "loopback Host only");
-});
-
-test("a throwing wakes provider answers an empty list with a reason, never a 500", async (context) => {
-  const bridge = createBridgeServer({
-    port: 0,
-    onEvent: () => {},
-    wakesProvider: () => {
-      throw new Error("main is mid-restart");
-    },
-  });
-  const address = await bridge.listen();
-  context.after(() => bridge.close());
-  const res = await requestServer(address, { path: "/wakes" });
-  assert.equal(res.status, 200);
-  const body = JSON.parse(res.body);
-  assert.deepEqual(body.wakes, []);
-  assert.equal(body.count, 0);
-  assert.equal(body.error, "unavailable");
-  assert.equal(body.source, "none");
-});
-
-test("without a wakes provider the route is absent (404), not an empty success", async (context) => {
-  const bridge = createBridgeServer({ port: 0, onEvent: () => {} });
-  const address = await bridge.listen();
-  context.after(() => bridge.close());
-  const res = await requestServer(address, { path: "/wakes" });
-  assert.equal(res.status, 404);
-});
-
 test("command route: GET /command/history returns history from handler", async (context) => {
   const mockHistory = [
     { id: "1", text: "test1", reply: "ok1" },
@@ -523,6 +392,23 @@ test("bearer: the right bearer reaches the fleet handler", async (context) => {
   });
   assert.equal(ok.status, 200);
   assert.deepEqual(JSON.parse(ok.body), { ok: true, verb: "down" });
+});
+
+test("GET /fleet/status?maxAgeMs=0 reaches the handler as fresh; a bare status does not", async (context) => {
+  const seen = [];
+  const address = await fleetBridge(context, {
+    fleetHandler: (verb, opts) => { seen.push({ verb, fresh: !!opts?.fresh }); return { ok: true, verb }; },
+  });
+  assert.equal((await requestServer(address, { path: "/fleet/status" })).status, 200);
+  assert.equal((await requestServer(address, { path: "/fleet/status?maxAgeMs=0" })).status, 200);
+  assert.equal((await requestServer(address, { path: "/fleet/status?fresh=1" })).status, 200);
+  assert.equal((await requestServer(address, { path: "/fleet/status?maxAgeMs=5000" })).status, 200);
+  assert.deepEqual(seen, [
+    { verb: "status", fresh: false },
+    { verb: "status", fresh: true },
+    { verb: "status", fresh: true },
+    { verb: "status", fresh: false },
+  ]);
 });
 
 test("bearer: GET /fleet/status and POST /fleet/open stay open on loopback", async (context) => {
