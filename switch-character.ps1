@@ -1,4 +1,4 @@
-# Desk character switcher — swap the active VRM character from a local roster.
+﻿# Desk character switcher — swap the active VRM character from a local roster.
 #
 # Roster layout (one dir per character):
 #   D:\desk\characters\<name>\model.vrm            (required)
