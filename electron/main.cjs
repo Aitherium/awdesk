@@ -1224,9 +1224,49 @@ function micMuted() {
   }
 }
 
+function talkMode() {
+  try {
+    const { load, resolveInput } = require("./cast-config.cjs");
+    return resolveInput(load().snapshot).talkMode || "toggle";
+  } catch {
+    return "toggle";
+  }
+}
+
+/**
+ * Open mic (Settings -> Talk mode -> Open mic). The renderer does the speech
+ * detection (src/voice/handsFree.ts); main only says on/off and remembers it,
+ * so a renderer reload (a character switch) gets it back from get-snapshot.
+ */
+let openMicOn = false;
+
+function setOpenMic(on, { announce = false } = {}) {
+  const next = Boolean(on);
+  const changed = next !== openMicOn;
+  openMicOn = next;
+  if (next && (!avatarWindow || avatarWindow.isDestroyed())) showOverlay();
+  sendToAvatar("open-mic", { on: next });
+  if (changed && announce) {
+    void speakAloud(next ? "Open mic is on. Just talk." : "Open mic is off.", undefined, undefined, "slot0", "service:awdesk-voice");
+  }
+  refreshTrayMenu();
+}
+
+/** Bring open mic in line with Settings: on exactly when mode=open and unmuted. */
+function applyTalkMode({ announce = false } = {}) {
+  setOpenMic(talkMode() === "open" && !micMuted(), { announce });
+}
+
 function toggleListening() {
   if (micMuted()) {
     void speakAloud("Microphone is muted. Unmute it in Settings.", undefined, undefined, "slot0", "service:awdesk-voice");
+    return;
+  }
+  const mode = talkMode();
+  // Open mic: the hotkey is the on/off switch -- there is nothing to press
+  // per sentence.
+  if (mode === "open") {
+    setOpenMic(!openMicOn, { announce: true });
     return;
   }
   if (!avatarWindow || avatarWindow.isDestroyed()) {
@@ -1236,9 +1276,28 @@ function toggleListening() {
   }
   const want = !listeningNow();
   listenState = want ? "listening" : "transcribing";
-  sendToAvatar("listen", { listening: want });
+  // Hold: a global shortcut reports the key going down, never coming up, so
+  // the hotkey records until the owner goes quiet (oneShot) instead. A second
+  // press still stops it at once.
+  sendToAvatar("listen", { listening: want, oneShot: want && mode === "hold" });
   refreshTrayMenu();
 }
+
+// A session asks the owner aloud and gets the spoken answer back (voice-ask.cjs).
+// While it waits, the next transcript is the ANSWER, not a new command.
+const voiceAsk = require("./voice-ask.cjs").createVoiceAsk({
+  speak: (question) => speakAloud(question, undefined, undefined, "slot0", "mcp:speak"),
+  listen: () => {
+    if (micMuted()) return { ok: false, error: "microphone is muted" };
+    // Open mic already hears the next sentence; otherwise record until quiet.
+    if (openMicOn) return { ok: true };
+    if (!avatarWindow || avatarWindow.isDestroyed()) showOverlay();
+    listenState = "listening";
+    sendToAvatar("listen", { listening: true, oneShot: true });
+    refreshTrayMenu();
+    return { ok: true };
+  },
+});
 
 function toggleMicMute() {
   try {
@@ -1247,6 +1306,7 @@ function toggleMicMute() {
     const next = !nowMuted;
     write((draft) => { draft.input = { ...(draft.input || {}), micMuted: next }; });
     void speakAloud(next ? "Muted." : "Unmuted.", undefined, undefined, "slot0", "service:awdesk-voice");
+    applyTalkMode();
     refreshTrayMenu();
   } catch (error) {
     debugLog("toggleMicMute failed", error && error.message);
@@ -1688,6 +1748,8 @@ function commandContext() {
     decisionsTotal: inboxCounts().total,
     listening: listeningNow(),
     micMuted: micMuted(),
+    talkMode: talkMode(),
+    openMic: openMicOn,
     overlayOpen: desktop.open,
     overlayVisible: desktop.visible,
     overlayShell: desktop.shell,
@@ -2519,6 +2581,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
           });
         }
         if (avatarSlots.size > 0) debugLog("replayed avatar slots", avatarSlots.size);
+        // A fresh renderer has no mic open; open mic survives a reload.
+        if (openMicOn) avatarWindow.webContents.send("desk:event", { type: "open-mic", on: true });
       }
       // The snapshot the renderer asked for is the LAST STATE event; capture it
       // before the physics replay below, which goes through emitToRenderer and
@@ -2687,7 +2751,12 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         const result = write((draft) => {
           draft.input = { ...(draft.input || {}), ...clean };
         });
-        if (result.ok) refreshTrayMenu();
+        if (result.ok) {
+          // Only a talk-mode or mute change moves the open mic: picking a new
+          // device must not re-open a mic the owner just switched off.
+          if ("talkMode" in clean || "micMuted" in clean) applyTalkMode({ announce: true });
+          refreshTrayMenu();
+        }
         return result;
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
@@ -2769,6 +2838,10 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       refreshTrayMenu();
       if (!said) return { ok: false, error: "nothing was heard" };
       debugLog("voice heard", said.slice(0, 120));
+      if (voiceAsk.offer(said)) {
+        void speakAloud("Got it.", undefined, undefined, "slot0", "service:awdesk-voice");
+        return { ok: true, text: said, answered: true };
+      }
       try {
         void speakAloud("On it, asking now.", undefined, undefined, "slot0", "service:awdesk-voice");
         const result = await commandAction(said, { source: "voice" });
@@ -2782,12 +2855,20 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     ipcMain.on("desk:voice-listen-state", (_event, state) => {
       const next = String(state || "idle");
       const prev = listenState;
+      // A failed capture ends a waiting ask with the reason. Under open mic a
+      // cough is not an answer: keep waiting until the ask's own timeout.
+      if (next.startsWith("error:") && !openMicOn) voiceAsk.fail(next.slice(6).trim());
       listenState = next;
       refreshTrayMenu();
       // The toggle was INVISIBLE (state only reached the tray label) -- so a
       // press looked like "nothing happened" (owner, 2026-09-22). Speak the
       // transitions and every error through the avatar so the owner always knows.
       try {
+        // Open mic hears every sentence: announcing each one would talk over
+        // the owner, and "nothing was heard" is just a cough the detector let through.
+        if (openMicOn && (next === "listening" || next === "transcribing" || /nothing was (heard|recorded)/.test(next))) {
+          return;
+        }
         if (next === "listening" && prev !== "listening") {
           void speakAloud("Listening.", undefined, undefined, "slot0", "service:awdesk-voice");
         } else if (next === "transcribing") {
@@ -3296,6 +3377,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       // U28: the MCP `speak` tool door -- origin STAMPED here, same reason as
       // the bridge's speakHandler above.
       onSpeak: ({ text, voice, speed }) => speakAloud(text, voice, speed, undefined, "mcp:speak"),
+      onAsk: ({ question, timeoutMs }) => voiceAsk.ask(question, { timeoutMs }),
       onDesktop: (surface) => {
         if (surface === "overlay") showLivingDesktop();
         else if (surface === "app") showDesktopApp();
@@ -3522,6 +3604,9 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // we could not get lands in deadAccels and its label stops promising it.
     // (CommandOrControl+Shift+= / - / A / Space / D at the time of writing.)
     applyHotkeys();
+    // Open mic from Settings comes back on at boot; the renderer picks it up
+    // from get-snapshot when it mounts (a push now would beat its listener).
+    openMicOn = talkMode() === "open" && !micMuted();
     refreshJumpList();
     handleProtocolArgv(process.argv);
 
