@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "1",
+  "name": "awdesk",
+  "description": "Aither World Desk -- the desktop body of AitherOS Online: tray, avatars, decision cards, the Living Desktop as an overlay.",
+  "url": "https://aitherium.github.io/awdesk/",
+  "repository": "https://github.com/Aitherium/awdesk",
+  "kind": "runtime",
+  "status": "public",
+  "adopt": "Run it, and the next decision card an agent raises pops on your desktop instead of scrolling past in a log.",
+  "pairs_with": [
+    "awdk",
+    "awsh",
+    "awvoice",
+    "awvision",
+    "awsprite",
+    "awavatar",
+    "AitherConnect",
+    "awdaemons",
+    "awsettings"
+  ],
+  "includes": [],
+  "metrics": {
+    "files": {
+      "value": 278,
+      "as_of": "2026-09-23T03:25:16Z"
+    },
+    "tests": {
+      "value": 0,
+      "as_of": "2026-09-23T03:25:16Z"
+    }
+  }
+}
