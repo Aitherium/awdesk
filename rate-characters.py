@@ -32,16 +32,19 @@ Usage:
     python rate-characters.py --apply --vision --capture   # ask the running desk for
                                                   # full-body frames first (best)
     python rate-characters.py --set <name> r18    # rate one by hand
+    python rate-characters.py --only <name> --apply --vision --capture   # judge ONE
+                                                  # (what the desk runs after an enroll)
     python rate-characters.py --apply --force     # re-resolve even rated ones
 
 Exit codes: 0 ok, 1 nothing could be resolved, 2 the roster could not be read.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
-import re
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -91,10 +94,22 @@ def installed_characters() -> list[str]:
     if not ROSTER.is_dir():
         print(f"ERROR: roster not found at {ROSTER}", file=sys.stderr)
         raise SystemExit(2)
+
+    # A FORK owns no model.vrm -- it is a recipe over a base (fork-character.py),
+    # and it still has to be judged, because the recipe changes what the body
+    # shows. Include any directory that either holds a mesh or names a base.
+    def has_model_or_base(entry):
+        if (entry / "model.vrm").exists():
+            return True
+        try:
+            return bool(
+                json.loads((entry / "character.json").read_text(encoding="utf-8")).get("base")
+            )
+        except (OSError, ValueError):
+            return False
+
     return sorted(
-        entry.name
-        for entry in ROSTER.iterdir()
-        if entry.is_dir() and (entry / "model.vrm").exists()
+        entry.name for entry in ROSTER.iterdir() if entry.is_dir() and has_model_or_base(entry)
     )
 
 
@@ -109,12 +124,30 @@ def read_rating(name: str) -> tuple[str, str]:
 
 
 def write_rating(name: str, rating: str, source: str) -> bool:
+    """MERGE the verdict into character.json -- never rewrite the file.
+
+    🚩 This used to write `{"rating", "source"}` and nothing else, which silently
+    DELETED every other key. Measured 2026-09-20 the first time the rater met a
+    fork: `base` and `customise` vanished and the variant became an ordinary
+    character pointing at no mesh -- i.e. rating a fork destroyed the fork. The
+    same shape as electron/content-rating.cjs setRating, which spreads the
+    existing record for exactly this reason.
+    """
     if rating not in VALID_RATINGS:
         print(f"  ERROR invalid rating '{rating}' for {name}", file=sys.stderr)
         return False
+    target = ROSTER / name / "character.json"
     try:
-        (ROSTER / name / "character.json").write_text(
-            json.dumps({"rating": rating, "source": source}, indent=2),
+        existing = json.loads(target.read_text(encoding="utf-8"))
+        if not isinstance(existing, dict):
+            existing = {}
+    except (OSError, ValueError):
+        existing = {}
+    try:
+        target.write_text(
+            json.dumps(
+                {**existing, "rating": rating, "source": source}, indent=2, ensure_ascii=False
+            ),
             encoding="utf-8",
         )
         return True
@@ -159,10 +192,21 @@ _VISION_RUBRIC = (
 )
 _SEVERITY = {"general": 0, "r15": 1, "r18": 2}
 _VISION_WORDS = {
-    "general": "general", "safe": "general", "sfw": "general", "pg": "general",
-    "r15": "r15", "r-15": "r15", "suggestive": "r15", "revealing": "r15",
-    "r18": "r18", "r-18": "r18", "explicit": "r18", "nude": "r18", "nudity": "r18",
-    "nsfw": "r18", "adult": "r18",
+    "general": "general",
+    "safe": "general",
+    "sfw": "general",
+    "pg": "general",
+    "r15": "r15",
+    "r-15": "r15",
+    "suggestive": "r15",
+    "revealing": "r15",
+    "r18": "r18",
+    "r-18": "r18",
+    "explicit": "r18",
+    "nude": "r18",
+    "nudity": "r18",
+    "nsfw": "r18",
+    "adult": "r18",
 }
 
 
@@ -192,7 +236,11 @@ def vision_rating(name: str, timeout: float = 90.0) -> tuple[str | None, str]:
     try:
         proc = subprocess.run(
             [tool, "ask", str(image), _VISION_RUBRIC],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         return None, f"awvision failed: {error}"
@@ -217,12 +265,16 @@ def _bridge_token() -> str | None:
     if token:
         return token
     try:
-        return (Path.home() / ".aither" / "harness_token").read_text(encoding="utf-8").strip() or None
+        return (Path.home() / ".aither" / "harness_token").read_text(
+            encoding="utf-8"
+        ).strip() or None
     except OSError:
         return None
 
 
-def capture_fullbody(names: list[str], force: bool = False, timeout_s: float = 900.0) -> tuple[int, str]:
+def capture_fullbody(
+    names: list[str], force: bool = False, timeout_s: float = 900.0
+) -> tuple[int, str]:
     """Ask the desk for fullbody.jpg of every character that lacks one; wait.
 
     Returns (captured, why). 0 with a reason when the desk is not running, the
@@ -234,14 +286,20 @@ def capture_fullbody(names: list[str], force: bool = False, timeout_s: float = 9
         return 0, "no bridge token (~/.aither/harness_token) -- the desk's capture door needs it"
     body = json.dumps({"names": names, "force": force}).encode("utf-8")
     req = urllib.request.Request(
-        f"{DESK_BRIDGE}/roster/capture", data=body, method="POST",
+        f"{DESK_BRIDGE}/roster/capture",
+        data=body,
+        method="POST",
         headers={"content-type": "application/json", "authorization": f"Bearer {token}"},
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             started = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
-        return 0, f"desk refused the capture: HTTP {error.code} {error.read().decode('utf-8', 'replace')[:120]}"
+        return (
+            0,
+            f"desk refused the capture: HTTP {error.code} "
+            f"{error.read().decode('utf-8', 'replace')[:120]}",
+        )
     except (urllib.error.URLError, OSError, ValueError) as error:
         return 0, f"desk not reachable at {DESK_BRIDGE}: {error}"
     requested = int(started.get("requested") or 0)
@@ -265,7 +323,11 @@ def capture_fullbody(names: list[str], force: bool = False, timeout_s: float = 9
             last_done = done
         if not status.get("pending"):
             return done, "captured"
-    return max(last_done, 0), f"timed out after {int(timeout_s)}s with {requested - max(last_done, 0)} frame(s) still pending"
+    return (
+        max(last_done, 0),
+        f"timed out after {int(timeout_s)}s with "
+        f"{requested - max(last_done, 0)} frame(s) still pending",
+    )
 
 
 def stronger(a: str | None, b: str | None) -> str | None:
@@ -333,8 +395,21 @@ def report() -> int:
     return 0
 
 
-def apply(force: bool, use_hub: bool, use_vision: bool = False, capture: bool = False) -> int:
+def apply(
+    force: bool,
+    use_hub: bool,
+    use_vision: bool = False,
+    capture: bool = False,
+    only: list[str] | None = None,
+) -> int:
     names = installed_characters()
+    if only:
+        wanted = {n for n in only}
+        missing = wanted - set(names)
+        if missing:
+            print(f"ERROR: no character named {', '.join(sorted(missing))}", file=sys.stderr)
+            return 2
+        names = [n for n in names if n in wanted]
     if capture:
         captured, why = capture_fullbody(names, force=force)
         print(f"  full-body capture: {captured} ({why})")
@@ -349,7 +424,12 @@ def apply(force: bool, use_hub: bool, use_vision: bool = False, capture: bool = 
         # head-crop verdict ("vision-thumb") is re-judged the moment a
         # full-body frame exists: the whole point of the frame.
         upgradable = current_source == "vision-thumb" and (ROSTER / name / "fullbody.jpg").is_file()
-        if current != "unrated" and current_source not in ("", "default") and not force and not upgradable:
+        if (
+            current != "unrated"
+            and current_source not in ("", "default")
+            and not force
+            and not upgradable
+        ):
             skipped += 1
             continue
         rating = hub_map.get(name)
@@ -377,7 +457,10 @@ def apply(force: bool, use_hub: bool, use_vision: bool = False, capture: bool = 
             written += 1
             if rating != "general" or source != "default":
                 print(f"  {name} -> {rating} ({source})")
-    print(f"\n  wrote {written}, left {skipped} already-judged untouched, {unjudged_left} still unjudged")
+    print(
+        f"\n  wrote {written}, left {skipped} already-judged untouched, "
+        f"{unjudged_left} still unjudged"
+    )
     if written == 0 and skipped == 0:
         print("  ERROR: nothing was rated", file=sys.stderr)
         return 1
@@ -390,9 +473,20 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="write ratings")
     parser.add_argument("--force", action="store_true", help="re-resolve rated ones too")
     parser.add_argument("--no-hub", action="store_true", help="skip VRoid Hub lookups")
-    parser.add_argument("--vision", action="store_true", help="look at each unjudged model (awvision)")
-    parser.add_argument("--capture", action="store_true",
-                        help="ask the running desk for full-body frames before looking")
+    parser.add_argument(
+        "--vision", action="store_true", help="look at each unjudged model (awvision)"
+    )
+    parser.add_argument(
+        "--capture",
+        action="store_true",
+        help="ask the running desk for full-body frames before looking",
+    )
+    parser.add_argument(
+        "--only",
+        metavar="NAME",
+        action="append",
+        help="judge only this character (repeatable); the enroll path uses it",
+    )
     parser.add_argument("--set", nargs=2, metavar=("NAME", "RATING"), help="rate one by hand")
     args = parser.parse_args()
 
@@ -403,7 +497,13 @@ def main() -> int:
             return 1
         return 0 if write_rating(name, rating.lower(), "manual") else 1
     if args.apply:
-        return apply(force=args.force, use_hub=not args.no_hub, use_vision=args.vision, capture=args.capture)
+        return apply(
+            force=args.force,
+            use_hub=not args.no_hub,
+            use_vision=args.vision,
+            capture=args.capture,
+            only=args.only,
+        )
     return report()
 
 
