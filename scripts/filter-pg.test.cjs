@@ -165,3 +165,32 @@ test("run through a symlink/junction the gate still judges (never 0 on silence)"
   assert.match(result.stderr, /\.pgship/);
   assert.match(result.stderr, /package\.json/);
 });
+
+for (const [label, entry] of [
+  ["a FileSet from characters/", { from: "characters", to: "characters" }],
+  ["a root FileSet filtered to characters/", { from: ".", filter: ["characters/**/*"] }],
+  ["a root FileSet with no filter", { from: "./" }],
+]) {
+  test(`${label} in build.files fails the build`, (context) => {
+    const root = tree(context, {
+      ".pgship": "public/**\n",
+      "package.json": JSON.stringify({ build: { files: ["dist/**/*", entry] } }),
+    });
+    const result = run(root);
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stderr, /characters/);
+  });
+}
+
+test("a FileSet that packs something else is not refused", (context) => {
+  const root = tree(context, {
+    ".pgship": "public/**\n",
+    "package.json": JSON.stringify({
+      build: {
+        files: ["dist/**/*"],
+        win: { extraResources: [{ from: "native/bin/win32/x.exe", to: "x.exe" }] },
+      },
+    }),
+  });
+  assert.equal(run(root).status, 0);
+});

@@ -55,6 +55,22 @@ function checkPgShip(root) {
   return entries.length ? [] : ['.pgship is empty — the PG allowlist names nothing'];
 }
 
+/**
+ * The source patterns of one electron-builder files/extraResources entry. A
+ * FileSet (`{from, to, filter}`) packs `from` filtered by `filter`, so both are
+ * judged; dropping object entries would leave a FileSet over characters/ unjudged.
+ */
+function entryPatterns(entry) {
+  if (typeof entry === 'string') return [entry];
+  if (!entry || typeof entry !== 'object') return [];
+  const from = typeof entry.from === 'string' ? entry.from.replace(/^\.\/?/, '').replace(/\/+$/, '') : '';
+  const filters = Array.isArray(entry.filter) ? entry.filter : typeof entry.filter === 'string' ? [entry.filter] : [];
+  const kept = filters.filter((f) => typeof f === 'string' && !f.startsWith('!'));
+  // No positive filter = the whole of `from`; `from` at the root = everything.
+  if (!kept.length) return [from ? `${from}/**` : '**'];
+  return kept.map((f) => (from ? `${from}/${f}` : f));
+}
+
 function checkBuilderConfig(root) {
   const pkgPath = join(root, 'package.json');
   if (!existsSync(pkgPath)) return [`package.json not found at ${pkgPath}`];
@@ -65,17 +81,14 @@ function checkBuilderConfig(root) {
     return [`package.json is unreadable: ${error.message}`];
   }
   const build = pkg.build || {};
-  const patterns = [...(build.files || [])];
+  const entries = [...(build.files || []), ...(build.extraResources || [])];
   for (const platform of ['win', 'mac', 'linux']) {
-    for (const res of (build[platform] && build[platform].extraResources) || []) {
-      patterns.push(typeof res === 'string' ? res : res.from || '');
-    }
+    const cfg = build[platform] || {};
+    entries.push(...(cfg.files || []), ...(cfg.extraResources || []));
   }
-  for (const res of build.extraResources || []) {
-    patterns.push(typeof res === 'string' ? res : res.from || '');
-  }
-  return patterns
-    .filter((p) => typeof p === 'string' && !p.startsWith('!'))
+  return entries
+    .flatMap(entryPatterns)
+    .filter((p) => !p.startsWith('!'))
     .filter((p) => /^(\.\/)?characters(\/|$)/.test(p) || /^\*\*/.test(p))
     .map((p) => `electron-builder packs "${p}", which reaches the per-user characters/ roster`);
 }
