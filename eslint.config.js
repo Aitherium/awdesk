@@ -16,6 +16,12 @@ export default tseslint.config(
       'dist.abandoned-src-build/**',
       '.orphaned-session-work-*/**',
       '__pycache__/**',
+      // docs/ is the GitHub Pages site. Its scripts are browser code written
+      // by AitherOS/scripts/publish_ecosystem_surfaces.py (the shared,
+      // byte-identical aither-constellation.js), not this app's source; linting
+      // them under the default node-less scope failed CI on all four OS legs
+      // with no-undef document/window/fetch (run 35815216886).
+      'docs/**',
     ],
   },
   js.configs.recommended,
