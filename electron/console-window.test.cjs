@@ -20,7 +20,7 @@ test("every pane resolves to a page that exists", () => {
   const panes = paneSources("http://127.0.0.1:5173");
   // The count is asserted so a pane cannot be DROPPED by an edit that only meant
   // to reorder the rail; bump it deliberately when one is added.
-  assert.equal(panes.length, 10);  // Plan: Settings pane added 2026-09-22
+  assert.equal(panes.length, 11);  // Ops pane added 2026-09-26 (platform-ops S01)
   for (const pane of panes) {
     if (pane.kind !== "file") continue;
     assert.ok(
@@ -35,7 +35,7 @@ test("the rail is in this exact order -- a drop or a reorder must fail here", ()
   // Listed explicitly rather than derived from PANES, so an edit that silently
   // drops or reshuffles an entry is caught here instead of only downstream.
   assert.deepEqual(PANES.map((p) => p.id),
-    ["cards", "command", "fleet", "sessions", "chat", "stage", "cast", "settings",
+    ["cards", "command", "fleet", "ops", "sessions", "chat", "stage", "cast", "settings",
     "characters", "desktop"]);
 });
 

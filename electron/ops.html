@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<title>Ops</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  /* Colours come from aither-tokens.css (generated from Veil's tokens). Only what
+     this pane MEANS by a colour is declared here, same as sessions.html. */
+  :root { --amber: var(--warning); --red: var(--destructive); --green: var(--success); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 13px/1.45 var(--font-sans); }
+  body { display: grid; grid-template-rows: 44px 36px 1fr; height: 100vh; }
+  .bar { display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    border-bottom: 1px solid var(--line); }
+  .embedded .bar .title { display: none; }
+  .bar .title { font-weight: 600; }
+  .bar .state { color: var(--muted); font-size: 12px; flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar .state.err { color: var(--red); }
+  .tabs { display: flex; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--line); align-items: end; }
+  .tab { appearance: none; background: none; border: 0; border-bottom: 2px solid transparent;
+    color: var(--muted); padding: 8px 10px; cursor: pointer; font: inherit; }
+  .tab.active { color: var(--fg); border-bottom-color: var(--brand); }
+  .chip { appearance: none; border: 1px solid var(--line); background: var(--btn);
+    color: var(--muted); border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; }
+  .chip:hover { background: var(--btn-hi); color: var(--fg); }
+  .chip:disabled { opacity: .5; cursor: default; }
+  .chip.primary { color: var(--fg); border-color: color-mix(in oklch, var(--brand), var(--background) 50%); }
+  .chip.danger { color: var(--red); border-color: color-mix(in oklch, var(--red), var(--background) 55%); }
+
+  main { display: grid; grid-template-columns: minmax(320px, 42%) 1fr; min-height: 0; }
+  .col { overflow-y: auto; min-height: 0; }
+  .col + .col { border-left: 1px solid var(--line); }
+  section { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  h3 { margin: 0 0 8px; font-size: 10px; font-weight: 650; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--surface-400); display: flex; gap: 8px; align-items: center; }
+  h3 .grow { flex: 1; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .check { display: grid; grid-template-columns: 16px 1fr; gap: 6px; padding: 4px 0; }
+  .check .mark.ok { color: var(--green); }
+  .check .mark.bad { color: var(--red); }
+  .check .detail { color: var(--muted); font-size: 11px; grid-column: 2; word-break: break-word; }
+  .summary { margin-bottom: 6px; }
+  .summary.ok { color: var(--green); }
+  .summary.bad { color: var(--red); }
+  .muted { color: var(--muted); }
+  .row { padding: 7px 0; border-bottom: 1px solid var(--btn); cursor: pointer; display: grid; gap: 2px; }
+  .row:hover { background: var(--btn); }
+  .row .top { display: flex; gap: 8px; align-items: baseline; }
+  .row .op { font-weight: 600; flex: 1; }
+  .row .meta { color: var(--muted); font-size: 11px; }
+  .pill { font-size: 10px; border-radius: 999px; padding: 1px 7px; border: 1px solid var(--line);
+    color: var(--muted); white-space: nowrap; }
+  .pill.succeeded { color: var(--green); }
+  .pill.failed, .pill.blocked { color: var(--red); }
+  .pill.running, .pill.verifying, .pill.planned { color: var(--brand); }
+  .pill.awaiting_approval { color: var(--amber); }
+  .confirm { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-top: 10px;
+    background: var(--panel); }
+  .confirm .actions { margin-top: 8px; }
+  pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font: 11px/1.5 var(--font-mono);
+    color: var(--muted); max-height: 240px; overflow: auto; }
+  .note { color: var(--amber); font-size: 12px; margin-top: 6px; }
+  .placeholder { color: var(--muted); padding: 12px 0; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <span class="title">Ops</span>
+    <span class="state" id="state">loading…</span>
+    <button class="chip" id="refresh">Refresh</button>
+  </div>
+  <nav class="tabs"><button class="tab active" id="tab-backups" data-tab="backups">Backups</button></nav>
+  <main id="pane-backups">
+    <div class="col">
+      <section>
+        <h3>State <span class="grow"></span><span class="muted" id="stateAge"></span></h3>
+        <div id="checks"><div class="placeholder">loading backup state…</div></div>
+      </section>
+      <section>
+        <h3>Actions</h3>
+        <div class="actions">
+          <button class="chip primary" id="verify">Verify now</button>
+          <button class="chip" id="delegate">Delegate verify to Genesis</button>
+          <button class="chip" id="backup">Run backup</button>
+        </div>
+        <div id="confirmBox"></div>
+      </section>
+      <section>
+        <h3>Recent runs</h3>
+        <div id="runs"><div class="placeholder">loading runs…</div></div>
+      </section>
+    </div>
+    <div class="col">
+      <section>
+        <h3>Live run <span class="grow"></span><button class="chip danger" id="cancel" hidden>Cancel</button></h3>
+        <div id="live"><div class="placeholder">Start or pick a run to watch it here.</div></div>
+      </section>
+    </div>
+  </main>
+
+<script>
+"use strict";
+// The Ops pane: platform-ops over the MCP gateway (ops-client.cjs). Every action
+// shows its ops_plan dry run FIRST and needs a second click before ops_run. All
+// content is rendered with textContent: run results are DATA, never markup.
+const ops = window.aitherOps;
+const $ = (id) => document.getElementById(id);
+const stateEl = $("state");
+const TERMINAL = ["succeeded", "failed", "blocked", "cancelled"];
+let watching = null;
+
+function say(text, isError) {
+  stateEl.textContent = text || "";
+  stateEl.classList.toggle("err", Boolean(isError));
+}
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = String(text);
+  return e;
+}
+function pill(state) { return el("span", "pill " + String(state || ""), String(state || "?").replace("_", " ")); }
+function when(ts) {
+  if (!ts) return "";
+  const d = new Date(typeof ts === "number" && ts < 1e12 ? ts * 1000 : ts);
+  return isNaN(d) ? String(ts) : d.toLocaleString();
+}
+
+function renderProof(target, proof) {
+  target.replaceChildren();
+  if (!proof || typeof proof !== "object") {
+    target.appendChild(el("div", "placeholder", "No proof recorded."));
+    return;
+  }
+  target.appendChild(el("div", "summary " + (proof.passed ? "ok" : "bad"),
+    proof.passed ? "All checks passed" : ("Failing" + (proof.reason ? ": " + proof.reason : ""))));
+  for (const c of proof.checks || []) {
+    const row = el("div", "check");
+    row.appendChild(el("span", "mark " + (c.ok ? "ok" : "bad"), c.ok ? "✓" : "✗"));
+    row.appendChild(el("span", "", c.name || "(unnamed)"));
+    if (c.detail != null && c.detail !== "") {
+      row.appendChild(el("span", "detail", typeof c.detail === "string" ? c.detail : JSON.stringify(c.detail)));
+    }
+    target.appendChild(row);
+  }
+}
+
+async function loadState() {
+  const box = $("checks");
+  const res = await ops.state("backups");
+  if (!res || !res.ok) {
+    box.replaceChildren(el("div", "summary bad", "Could not read backup state: " + ((res && res.error) || "no answer")));
+    return false;
+  }
+  const run = (res.data && res.data.run) || {};
+  $("stateAge").textContent = when(run.finished_at || run.updated_at);
+  renderProof(box, run.proof);
+  return true;
+}
+
+async function loadRuns() {
+  const box = $("runs");
+  const res = await ops.recent("backups", 20);
+  if (!res || !res.ok) {
+    box.replaceChildren(el("div", "summary bad", "Could not list runs: " + ((res && res.error) || "no answer")));
+    return false;
+  }
+  const runs = (res.data && res.data.runs) || [];
+  box.replaceChildren();
+  if (!runs.length) { box.appendChild(el("div", "placeholder", "No backup runs yet.")); return true; }
+  for (const run of runs) {
+    const row = el("div", "row");
+    const top = el("div", "top");
+    top.appendChild(el("span", "op", run.op));
+    top.appendChild(pill(run.state));
+    row.appendChild(top);
+    const who = run.actor ? [run.actor.kind, run.actor.id, run.actor.via && ("via " + run.actor.via)].filter(Boolean).join(" ") : "";
+    row.appendChild(el("div", "meta", [when(run.created_at), who, run.delegate_to && ("→ " + run.delegate_to)].filter(Boolean).join(" · ")));
+    row.addEventListener("click", () => watch(run.id, run));
+    box.appendChild(row);
+  }
+  return true;
+}
+
+async function refresh() {
+  say("refreshing…");
+  const [a, b] = await Promise.all([loadState(), loadRuns()]);
+  say(a && b ? "updated " + new Date().toLocaleTimeString() : "some reads failed -- see below", !(a && b));
+}
+
+function renderRun(run, error) {
+  const box = $("live");
+  box.replaceChildren();
+  if (!run) {
+    box.appendChild(el("div", "summary bad", error || "no run"));
+    return;
+  }
+  const top = el("div", "top");
+  top.style.display = "flex"; top.style.gap = "8px"; top.style.alignItems = "baseline";
+  top.appendChild(el("strong", "", run.op));
+  top.appendChild(pill(run.state));
+  box.appendChild(top);
+  box.appendChild(el("div", "muted", "run " + run.id + (run.risk ? " · risk " + run.risk : "")
+    + (run.delegate_to ? " · delegated to " + run.delegate_to : "")));
+  if (run.state === "awaiting_approval") {
+    box.appendChild(el("div", "note", "Awaiting approval — approve in Veil / ActionHub."));
+  }
+  if (run.error) box.appendChild(el("div", "summary bad", typeof run.error === "string" ? run.error : JSON.stringify(run.error)));
+  if (run.proof) { const p = el("div"); p.style.marginTop = "8px"; renderProof(p, run.proof); box.appendChild(p); }
+  if (run.result != null) box.appendChild(el("pre", "", JSON.stringify(run.result, null, 2)));
+  if (error) box.appendChild(el("div", "summary bad", "poll error: " + error));
+  $("cancel").hidden = TERMINAL.includes(run.state);
+}
+
+async function watch(runId, initial) {
+  if (!runId) return;
+  watching = runId;
+  if (initial) renderRun(initial);
+  const res = await ops.watch(runId);
+  if (watching !== runId) return;
+  if (!res || !res.ok) { say("watch stopped: " + ((res && res.error) || "no answer"), true); return; }
+  if (res.data && res.data.timedOut) say("stopped watching (timeout) — state " + ((res.data.run && res.data.run.state) || "?"));
+  void loadRuns();
+  if (res.data && res.data.run && res.data.run.op === "backups.verify") void loadState();
+}
+ops.onRunUpdate((payload) => {
+  if (!payload || payload.runId !== watching) return;
+  if (payload.run) renderRun(payload.run);
+  else if (payload.error) say("poll error: " + payload.error, true);
+});
+
+// Plan first, then confirm, then run. Never one click to a side effect.
+async function propose(op, delegateTo, label) {
+  const box = $("confirmBox");
+  box.replaceChildren(el("div", "placeholder", "planning " + label + "…"));
+  const res = await ops.plan(op, delegateTo);
+  box.replaceChildren();
+  if (!res || !res.ok) {
+    box.appendChild(el("div", "summary bad", "Plan refused: " + ((res && res.error) || "no answer")));
+    return;
+  }
+  const plan = res.data || {};
+  const card = el("div", "confirm");
+  card.appendChild(el("strong", "", "Dry run: " + label));
+  const facts = [];
+  if (plan.op && plan.op.risk) facts.push("risk " + plan.op.risk);
+  if (plan.delegate_to) facts.push("delegated to " + plan.delegate_to);
+  if (plan.approval_required) facts.push("needs a human approval card");
+  if (facts.length) card.appendChild(el("div", "muted", facts.join(" · ")));
+  if (plan.approval_required) card.appendChild(el("div", "note", "After you confirm, the run waits for approval in Veil / ActionHub."));
+  card.appendChild(el("pre", "", JSON.stringify(plan.would || {}, null, 2)));
+  const actions = el("div", "actions");
+  const go = el("button", "chip primary", "Confirm — run it");
+  const no = el("button", "chip", "Cancel");
+  actions.append(go, no);
+  card.appendChild(actions);
+  box.appendChild(card);
+  no.addEventListener("click", () => box.replaceChildren());
+  go.addEventListener("click", async () => {
+    go.disabled = true; no.disabled = true;
+    const ran = await ops.run(op, delegateTo);
+    box.replaceChildren();
+    if (!ran || !ran.ok) {
+      box.appendChild(el("div", "summary bad", "Run refused: " + ((ran && ran.error) || "no answer")));
+      return;
+    }
+    const run = ran.data && ran.data.run;
+    if (!run) { box.appendChild(el("div", "summary bad", "Run answered without a run record")); return; }
+    say("started " + run.op + " (" + run.state + ")");
+    void loadRuns();
+    void watch(run.id, run);
+  });
+}
+
+$("verify").addEventListener("click", () => propose("backups.verify", "", "verify backups"));
+$("delegate").addEventListener("click", () => propose("backups.verify", "genesis", "verify backups (delegated to Genesis)"));
+$("backup").addEventListener("click", () => propose("backups.run", "", "run a backup"));
+$("refresh").addEventListener("click", () => void refresh());
+$("cancel").addEventListener("click", async () => {
+  if (!watching) return;
+  const res = await ops.cancel(watching);
+  if (!res || !res.ok) say("cancel failed: " + ((res && res.error) || "no answer"), true);
+  else if (res.data && res.data.run) renderRun(res.data.run);
+});
+
+if (!ops) say("no ops bridge in this frame", true);
+else void refresh();
+</script>
+</body>
+</html>

@@ -72,6 +72,13 @@ const PANES = Object.freeze([
     id: "fleet", label: "Fleet", hint: "Containers, VRAM, doors", section: "Control", icon: "server",
     kind: "file", file: "fleet-control.html",
   }),
+  // Platform ops (platform-ops S01): backups state/verify/run through the ops_*
+  // MCP tools -- gateway-mcp.cjs is the only transport (ops-client.cjs). IPC and
+  // the detached twin live in ops-window.cjs, like sessions-window.cjs.
+  Object.freeze({
+    id: "ops", label: "Ops", hint: "Backups: state, verify, run", section: "Control", icon: "archive",
+    kind: "file", file: "ops.html",
+  }),
   // Slice 1 of COCKPIT-DESIGN: the unified session directory (daemon-owned
   // sessions + DISCOVERED interactive Claude Code tabs), read-only with live
   // tails. No detach wiring on purpose yet — a pane that cannot come back out

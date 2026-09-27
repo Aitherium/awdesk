@@ -34,6 +34,7 @@ const { showConsole, PANES, paneSources } = require("./console-window.cjs");
 const { ensureCommandIpc } = require("./command-window.cjs");
 const { ensureFleetIpc, getControl: getFleetControl } = require("./fleet-window.cjs");
 const { ensureSessionsIpc } = require("./sessions-window.cjs");
+const { ensureOpsIpc } = require("./ops-window.cjs");
 const { ensureStageIpc } = require("./stage-window.cjs");
 
 const results = [];
@@ -48,6 +49,7 @@ const EXPECTED_BRIDGE = {
   command: "command",
   fleet: "fleet",
   sessions: "aitherSessions",
+  ops: "aitherOps",
   cards: "deskBridge",
   chat: "deskBridge",
   stage: "aitherStage",
@@ -76,6 +78,7 @@ async function run() {
   ensureFleetIpc();
   ensureCommandIpc(getFleetControl(), { createFleetWindow: () => {} });
   ensureSessionsIpc();
+  ensureOpsIpc();
   // Stubbed the way main wires it: the pane must ANSWER, not merely have a bridge.
   ensureStageIpc({
     bodies: () => [{ slotId: "slot0", name: "Aither", agent: "aither", resident: true }],

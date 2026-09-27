@@ -129,6 +129,13 @@ const {
   closeSessionsWindow,
   isSessionsWindowOpen,
 } = require("./sessions-window.cjs");
+// Platform ops (backups) pane: IPC + detached twin, gateway-mcp as its only transport.
+const {
+  ensureOpsIpc,
+  createOpsWindow,
+  closeOpsWindow,
+  isOpsWindowOpen,
+} = require("./ops-window.cjs");
 // The company room, both halves: the awdk daemon room (local, fleet-independent)
 // and the relay channels (#command / #agents) that the poller executes from.
 // `steerEvent` is the pure envelope builder for an ADDRESSED steer (U18); the
@@ -2333,6 +2340,7 @@ function openConsole() {
   ensureFleetIpc();
   ensureCommandIpc(getFleetControl(), { createFleetWindow });
   ensureSessionsIpc();
+  ensureOpsIpc();
   ensureStageIpc(stagePaneImpl());
   // The Cast pane (U03/U07): who appears, and how they sound. Guarded --
   // cast-window.cjs may not exist on this box yet (see the guarded require
@@ -2371,6 +2379,11 @@ function openConsole() {
         open: () => createSessionsWindow(),
         close: closeSessionsWindow,
         isOpen: isSessionsWindowOpen,
+      },
+      ops: {
+        open: () => createOpsWindow(),
+        close: closeOpsWindow,
+        isOpen: isOpsWindowOpen,
       },
       cards: {
         open: () => createDeckWindow(),
