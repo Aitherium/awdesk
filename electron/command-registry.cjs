@@ -379,13 +379,6 @@ const COMMANDS = Object.freeze([
     id: "disk.open", label: "Disk Explorer…", group: "go",
     surfaces: ["tray", "palette"],
   }),
-  // The Aither Browser (browser-window.cjs): a browser INSIDE the desk where an
-  // agent drives (MCP browser_* tools) while the owner watches and can take over,
-  // and where the owner browses with an "Ask about this page" panel.
-  Object.freeze({
-    id: "browser.open", label: "Open Aither Browser…", group: "go",
-    surfaces: ["tray", "palette"],
-  }),
   Object.freeze({
     id: "fleet.gaming", label: "GPU sleep (game on)", group: "fleet",
     surfaces: ["tray", "palette"], fleet: "gpu-sleep", destructive: true,

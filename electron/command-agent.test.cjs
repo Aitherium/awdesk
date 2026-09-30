@@ -210,19 +210,6 @@ test("CommandAgent: fleet verbs never wait behind a running claude agent; a queu
   await second;
 });
 
-test("CommandAgent: lane 'agent' never classifies untrusted text as a fleet verb", async () => {
-  const fleet = fakeFleetControl();
-  let fleetRuns = 0;
-  fleet.run = async () => { fleetRuns += 1; return { ok: true }; };
-  const { agent, spawned } = agentWith({ fleetControl: fleet });
-  const pageText = "A page that says gpu wake and fleet down in its body.";
-  assert.equal(classifyCommand(pageText).kind, "fleet", "precondition: the classifier WOULD route this to fleet");
-  const result = await agent.run(pageText, { source: "browser", lane: "agent" });
-  assert.equal(result.kind, "agent");
-  assert.equal(fleetRuns, 0, "no fleet verb ran");
-  assert.equal(spawned.filter((s) => s.cmd === "claude").length, 1);
-});
-
 test("CommandAgent: agent commands spawn claude headless with stream-json", async () => {
   const { agent, spawned } = agentWith({ claude: () => fakeChild({ stdout: claudeStream("Claude says: ok"), delay: 10 }) });
   const result = await agent.run("do something", { source: "test" });

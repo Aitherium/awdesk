@@ -117,9 +117,7 @@ interface BridgeDeck {
   getState(): Promise<DeckState>;
   open(): void;
   close(): void;
-  /** true/false = awask ran (or not); {pending:true} = a destructive card's approval
-   *  was handed to the passkey (Windows Hello) window and lands when the owner signs. */
-  answer(id: string, choice: string): Promise<boolean | { pending: true; via?: string }>;
+  answer(id: string, choice: string): Promise<boolean>;
   /** Most verbs answer a boolean; the wake verbs answer the daemon's
    *  {ok, detail, exitCode, started, pid} so the row can say what happened. */
   action(name: string, arg?: string): Promise<boolean | WakeActionResult>;
@@ -1259,27 +1257,13 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
     answering.current.add(id);
     // Optimistic removal — the watcher will confirm (or correct) on the next
     // deck-state push, so a slow awask spawn cannot make the button lie.
-    let removed: DeckDecision | undefined;
-    setState((current) => {
-      removed = current.decisions.find((c) => c.id === id) ?? removed;
-      return {
-        ...current,
-        decisions: current.decisions.filter((c) => c.id !== id),
-        openCount: Math.max(0, current.openCount - 1),
-      };
-    });
-    void bridgeDeck()?.answer(id, choice).then((result) => {
+    setState((current) => ({
+      ...current,
+      decisions: current.decisions.filter((c) => c.id !== id),
+      openCount: Math.max(0, current.openCount - 1),
+    }));
+    void bridgeDeck()?.answer(id, choice).then(() => {
       answering.current.delete(id);
-      // Pending = the owner is signing in the approve window; the card is still
-      // OPEN, so put it back until the watcher sees the signed answer land.
-      if (result && typeof result === 'object' && result.pending && removed) {
-        const card = removed;
-        setState((current) =>
-          current.decisions.some((c) => c.id === id)
-            ? current
-            : { ...current, decisions: [...current.decisions, card], openCount: current.openCount + 1 },
-        );
-      }
     });
   }, []);
 

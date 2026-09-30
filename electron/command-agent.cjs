@@ -270,16 +270,12 @@ class CommandAgent extends EventEmitter {
    * @param {{ source: string }} opts - metadata (e.g. { source: "command-window" })
    * @returns {Promise<{ ok: boolean, id: string, reply: string, kind: "fleet"|"agent", verdict?: object }>}
    */
-  async run(text, { source = "unknown", lane = null } = {}) {
+  async run(text, { source = "unknown" } = {}) {
     ensureTranscriptDir();
     const id = randomUUID();
     const request = { id, timestamp: new Date().toISOString(), source, text, kind: null, verdict: null };
 
-    // lane "agent" skips the verb classifier. The Aither Browser's "Ask about
-    // this page" carries UNTRUSTED page text, and classifyCommand matches a fleet
-    // verb anywhere in the string -- a page that says "gpu wake" would otherwise
-    // run a fleet verb from a question about a recipe.
-    const classify = lane === "agent" ? { kind: "agent" } : classifyCommand(text);
+    const classify = classifyCommand(text);
     request.kind = classify.kind;
 
     // Record request immediately.
@@ -515,7 +511,7 @@ class CommandAgent extends EventEmitter {
         systemPrompt = builtinPrompt;
       }
       if (sessionsNote) systemPrompt = `${systemPrompt}\n\n${sessionsNote}`;
-      let pageNote;
+      let pageNote = "";
       try {
         pageNote = typeof this.pageContext === "function" ? String(this.pageContext() || "") : "";
       } catch {

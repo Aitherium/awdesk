@@ -38,11 +38,11 @@ function parseJson(stdout) {
   if (!text) return null;
   try {
     return JSON.parse(text);
-  } catch {
+  } catch (_) {
     // adk may print a line before the JSON (update notice); take the last object.
     const at = text.lastIndexOf("\n{");
     if (at >= 0) {
-      try { return JSON.parse(text.slice(at + 1)); } catch { /* fall through */ }
+      try { return JSON.parse(text.slice(at + 1)); } catch (_) { /* fall through */ }
     }
     return null;
   }

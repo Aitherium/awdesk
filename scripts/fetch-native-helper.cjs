@@ -25,7 +25,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const REPO = "wizzense/awdesk";
+const REPO = "wizzense/persona";
 const PROJECT_ROOT = path.join(__dirname, "..");
 const HELPER_SRC = path.join("native", "windows", "DeskAudioListener.cpp");
 const TARGET = path.join(PROJECT_ROOT, "native", "bin", "win32", "desk-audio-listener.exe");
