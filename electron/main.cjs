@@ -67,6 +67,7 @@ if (/^\d{2,5}$/.test(String(process.env.DESK_CDP_PORT || ""))) {
   app.commandLine.appendSwitch("remote-debugging-port", String(process.env.DESK_CDP_PORT));
 }
 const decisionCards = require("./decision-cards.cjs");
+const signedApproval = require("./signed-approval.cjs");
 const {
   fetchChannels: fetchRelayChannels,
   fetchHistory: fetchRelayHistory,
@@ -130,6 +131,9 @@ const {
   setDiskExplorerSignInHandler,
   getDiskExplorerClient,
 } = require("./disk-explorer-window.cjs");
+// The Aither Browser: a browser window inside the desk an agent drives (MCP
+// browser_* tools) while the owner watches and can take over.
+const browserWindow = require("./browser-window.cjs");
 const {
   createCommandWindow,
   ensureCommandIpc,
@@ -1831,7 +1835,7 @@ async function refreshAwconnectStatus() {
     latestAwconnectStatus = await awconnectSetup.probeAwconnect({
       execFile: require("node:child_process").execFile,
     });
-  } catch (err) {
+  } catch {
     latestAwconnectStatus = { state: "unknown", line: "Awconnect: status unavailable", hits: [] };
   }
   if (tray) refreshTrayMenu();
@@ -1959,6 +1963,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       createDiskExplorerWindow();
       return;
     }
+    case "browser.open": return void browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
     case "inference.open": {
       // Sign-in must land the cookie in the living-desktop PARTITION, which
       // opening the overlay does (it syncs the portal session on open).
@@ -2396,6 +2401,13 @@ async function fleetAction(action, { fresh = false } = {}) {
   return control.run(action);
 }
 
+/** The Aither Browser's "Ask about this page": the SAME CommandAgent every other
+ *  surface uses, forced onto the agent lane because the prompt carries untrusted
+ *  page text (a page saying "gpu wake" must never run a fleet verb). */
+function browserAskAgent(prompt) {
+  return getCommandAgent(getFleetControl()).run(prompt, { source: "browser", lane: "agent" });
+}
+
 /** ONE entry point for every command surface (window, bridge, MCP): the request
  *  lands on the single CommandAgent so history and queue are consistent. */
 async function commandAction(text, { source = "unknown" } = {}) {
@@ -2752,6 +2764,29 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     });
     ipcMain.handle("desk:deck-answer", (_event, payload) => {
       const { id, choice } = payload || {};
+      // A destructive card (awstorage proposal/plan) is approved only by a SIGNED
+      // answer, which needs a fresh passkey session: open Veil's /approve page
+      // (Windows Hello) instead of the unsigned `awask answer`. The route is
+      // decided from the card FILE, never from the renderer's payload. Reject and
+      // ordinary cards keep using awask. {pending:true} = the answer lands when
+      // the owner finishes in that window; the watcher then drops the card.
+      if (typeof id === "string" && typeof choice === "string" && choice) {
+        const raw = signedApproval.readCardRaw(id, decisionCards.storeDir());
+        if (signedApproval.answerRoute(raw, choice) === "window") {
+          try {
+            signedApproval.openApproveWindow({
+              BrowserWindow,
+              parent: deckWindow && !deckWindow.isDestroyed() ? deckWindow : null,
+              url: signedApproval.approveUrl(id, choice),
+              log: debugLog,
+            });
+            return { pending: true, via: "approve-window" };
+          } catch (err) {
+            debugLog(`[approve] window failed for ${id}: ${err && err.message}`);
+            return false;
+          }
+        }
+      }
       const ok = decisionCards.answerCard(id, choice);
       if (ok) {
         // The loop closes only if the SESSIONS see the answer: post it to the
@@ -3543,6 +3578,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       // the bridge's speakHandler above.
       onSpeak: ({ text, voice, speed }) => speakAloud(text, voice, speed, undefined, "mcp:speak"),
       onAsk: ({ question, timeoutMs }) => voiceAsk.ask(question, { timeoutMs }),
+      // The Aither Browser's agent tools: the take-over gate runs before any of them.
+      onBrowser: (action, args) => browserWindow.browserAgent({ askAgent: browserAskAgent })(action, args),
       onDesktop: (surface) => {
         if (surface === "overlay") showLivingDesktop();
         else if (surface === "app") showDesktopApp();

@@ -1,13 +1,16 @@
 {
   "generatedBy": "AitherOS/dev/tools/gen_desk_tokens.py",
-  "default": "dark-glass",
+  "default": "family",
+  "legacy": {
+    "dark-glass": "family"
+  },
   "themes": [
     {
-      "id": "dark-glass",
-      "name": "Dark Glass",
+      "id": "family",
+      "name": "Family",
       "category": "dark",
-      "accent": "#7c6fc4",
-      "bodyBg": "#030308"
+      "accent": "#5ec9cc",
+      "bodyBg": "#050507"
     },
     {
       "id": "midnight-ocean",
@@ -53,7 +56,7 @@
     },
     {
       "id": "rose-gold",
-      "name": "Ros\u00e9 Gold",
+      "name": "Rosé Gold",
       "category": "warm",
       "accent": "#f9a8d4",
       "bodyBg": "#0d0408"

@@ -46,6 +46,10 @@ Desk exposes these tools:
 | `speak` | `text`; optional `voice`, `speed` | Says a line aloud through AitherVoice with lip sync |
 | `ask_owner` | `question`; optional `timeout_s` | Asks the owner aloud and waits for the spoken answer |
 | `desktop_open` | `surface`: `overlay`, `app`, or `status` | Opens an AitherOS desktop surface |
+| `browser_open` | `url`: http(s) or a bare host | Opens a page in the Aither Browser window (other schemes refused; refused while the owner has taken over) |
+| `browser_read` | None | Reads the Aither Browser page: url, title, visible text, links (untrusted content) |
+| `browser_click` | `selector` | Clicks the first element matching a CSS selector in the Aither Browser |
+| `browser_type` | `selector`, `text` | Sets a field's value in the Aither Browser and fires input/change (does not submit) |
 | `fleet_status` | optional `fresh` | Reads the AitherOS fleet status (cached unless `fresh`) |
 | `fleet_control` | `action`: `down`, `up`, `gaming`, `resume`, `adopt`, `open_panel`, `arc-status`, `arc-start`, `arc-now`, `arc-stop` | Runs a fleet action; the same implementation as the Fleet window |
 | `desk_command` | `text` | Runs a command in the Aither Command window |

@@ -107,7 +107,7 @@ function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 function readNodesValue(dotted, nodesPath) {
   let text;
   try {
-    text = fs.readFileSync(nodesPath || defaultNodesYaml(), "utf8").replace(/^﻿/, "");
+    text = fs.readFileSync(nodesPath || defaultNodesYaml(), "utf8").replace(/^\uFEFF/, "");
   } catch {
     return null;
   }

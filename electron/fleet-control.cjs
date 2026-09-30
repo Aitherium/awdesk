@@ -756,7 +756,6 @@ module.exports = {
   inFleetHost,
   classify,
   holdIsStale,
-  distroName,
   parseVerdict,
   summarize,
   toDistroPath,

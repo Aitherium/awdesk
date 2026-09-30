@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<title>Aither Browser</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  /* The toolbar + banner strip above the page view. Height is CHROME_HEIGHT (84)
+     in browser-window.cjs: 44 toolbar + 40 banner. */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 84px; overflow: hidden; background: var(--bg); color: var(--fg);
+    font: 13px/1.4 var(--font-sans); }
+  .bar { height: 44px; display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  .bar button { height: 30px; min-width: 30px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--btn); color: var(--fg); cursor: pointer; }
+  .bar button:disabled { opacity: .4; cursor: default; }
+  #url { flex: 1; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
+    color: var(--fg); padding: 0 10px; font: inherit; }
+  #err { color: var(--destructive); font-size: 12px; max-width: 30%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .banner { height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 12px; color: var(--muted); }
+  .banner.driving { background: color-mix(in srgb, var(--agent-purple) 22%, transparent); color: var(--fg); }
+  .banner.paused { background: color-mix(in srgb, var(--warning) 22%, transparent); color: var(--fg); }
+  .banner .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--surface-500); }
+  .banner.driving .dot { background: var(--agent-purple); }
+  .banner.paused .dot { background: var(--warning); }
+  .banner .msg { flex: 1; }
+  .banner button { height: 26px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--btn); color: var(--fg); cursor: pointer; font-weight: 600; }
+  .banner button[hidden] { display: none; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <button id="back" title="Back" aria-label="Back">&#8592;</button>
+    <button id="forward" title="Forward" aria-label="Forward">&#8594;</button>
+    <button id="reload" title="Reload" aria-label="Reload">&#8635;</button>
+    <input id="url" spellcheck="false" autocomplete="off" aria-label="Address" placeholder="Type an http(s) address" />
+    <span id="err" role="status"></span>
+  </div>
+  <div id="banner" class="banner" role="status" aria-live="polite">
+    <span class="dot"></span>
+    <span id="msg" class="msg">You are browsing. An agent can drive this window through the desk's browser tools.</span>
+    <button id="takeover" hidden>Take over</button>
+    <button id="handback" hidden>Let the agent continue</button>
+  </div>
+<script>
+  const api = window.aitherBrowser;
+  const $ = (id) => document.getElementById(id);
+  let editing = false;
+  $("url").addEventListener("focus", () => { editing = true; $("url").select(); });
+  $("url").addEventListener("blur", () => { editing = false; });
+  $("url").addEventListener("keydown", async (e) => {
+    if (e.key !== "Enter") return;
+    const verdict = await api.navigate($("url").value);
+    $("err").textContent = verdict && verdict.ok ? "" : (verdict && verdict.reason) || "refused";
+    if (verdict && verdict.ok) $("url").blur();
+  });
+  $("back").onclick = () => api.back();
+  $("forward").onclick = () => api.forward();
+  $("reload").onclick = () => api.reload();
+  $("takeover").onclick = () => api.takeOver();
+  $("handback").onclick = () => api.handBack();
+
+  function render(s) {
+    if (!s) return;
+    if (!editing && typeof s.url === "string") $("url").value = s.url;
+    $("back").disabled = !s.canGoBack;
+    $("forward").disabled = !s.canGoForward;
+    $("reload").textContent = s.loading ? "×" : "↻";
+    $("reload").onclick = s.loading ? () => api.stop() : () => api.reload();
+    document.title = s.title ? `${s.title} — Aither Browser` : "Aither Browser";
+    const a = s.agent || {};
+    const banner = $("banner");
+    banner.className = "banner" + (a.paused ? " paused" : a.driving ? " driving" : "");
+    if (a.paused) {
+      $("msg").textContent = "You have control. Agent browser tools are paused and refused until you hand back.";
+    } else if (a.driving) {
+      const last = a.lastAction ? ` (last: ${a.lastAction.tool})` : "";
+      $("msg").textContent = `Agent is driving${last}. You can watch, or take over at any time.`;
+    } else {
+      $("msg").textContent = "You are browsing. An agent can drive this window through the desk's browser tools.";
+    }
+    $("takeover").hidden = Boolean(a.paused);
+    $("handback").hidden = !a.paused;
+  }
+  api.onState(render);
+  api.state().then(render);
+</script>
+</body>
+</html>
