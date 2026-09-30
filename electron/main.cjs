@@ -1994,6 +1994,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     // AitherOS Online. `desktop.shell.*` is data on the record (default branch).
     case "desktop.overlay.toggle": return void toggleLivingDesktop();
     case "desktop.app.open": return void showDesktopApp();
+    case "hearth.open": return void showDesktopApp({ app: "hearth" });
     case "desktop.overlay.ghost": return void setGhostMode(!desktopStatus().overlay.ghost);
     case "desktop.overlay.solid": return void setSolidBackground(desktopStatus().overlay.transparent);
     case "desktop.overlay.reload": return void reloadLivingDesktop();

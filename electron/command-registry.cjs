@@ -386,6 +386,13 @@ const COMMANDS = Object.freeze([
     id: "browser.open", label: "Open Aither Browser…", group: "go",
     surfaces: ["tray", "palette"],
   }),
+  // Aither Hearth (2026-09-30): the owner's PLATFORM Hearth -- reminders, approval
+  // cards, signed receipts -- as the `hearth` window on the AitherDesktop app. The
+  // cards are answered there, by the owner; no row here approves anything.
+  Object.freeze({
+    id: "hearth.open", label: "Hearth…", group: "go",
+    surfaces: ["tray", "palette"],
+  }),
   Object.freeze({
     id: "fleet.gaming", label: "GPU sleep (game on)", group: "fleet",
     surfaces: ["tray", "palette"], fleet: "gpu-sleep", destructive: true,

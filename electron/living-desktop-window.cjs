@@ -482,11 +482,13 @@ function pushDeskState() {
 const DESKTOP_APP_SHELL = "aither-desktop";
 let appWin = null;
 
-function desktopAppUrl() {
+// `app` opens one window on arrival: both desktop shells read `?app=<id>` once.
+function desktopAppUrl(app = "") {
   try {
     const url = new URL(BASE_URL);
     url.searchParams.delete("mode");
     url.searchParams.set("shell", DESKTOP_APP_SHELL);
+    if (app) url.searchParams.set("app", app);
     return url.href;
   } catch {
     return BASE_URL;
@@ -497,9 +499,11 @@ function isAppOpen() {
   return appWin != null && !appWin.isDestroyed();
 }
 
-function showDesktopApp() {
+function showDesktopApp({ app = "" } = {}) {
   if (isAppOpen()) {
     if (appWin.isMinimized()) appWin.restore();
+    // The shells read `?app=` once per load, so a named app needs a navigation.
+    if (app) void appWin.loadURL(desktopAppUrl(app));
     appWin.show();
     appWin.focus();
     return appWin;
@@ -568,7 +572,7 @@ function showDesktopApp() {
   appWin.on("closed", () => {
     appWin = null;
   });
-  const target = desktopAppUrl();
+  const target = desktopAppUrl(app);
   log(`[app] opening ${target}`);
   void (async () => {
     await syncPortalSessionCookie();
