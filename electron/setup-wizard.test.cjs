@@ -488,7 +488,7 @@ test("a failed apply keeps desk-present (the [oobe] terminal must not start its 
   const calls = [];
   const runner = {
     kind: "wsl", distro: "awnix",
-    run: async (cmd, opts = {}) => {
+    run: async (cmd) => {
       calls.push(cmd);
       if (cmd[0] === "openssl") return { code: 0, stdout: "$6$abc$HASHEDVALUE\n", stderr: "" };
       if (cmd.includes("--seed")) return { code: 1, stdout: JSON.stringify({ event: "error", message: "boom" }) + "\n", stderr: "" };

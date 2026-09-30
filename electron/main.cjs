@@ -1835,7 +1835,7 @@ async function refreshAwconnectStatus() {
     latestAwconnectStatus = await awconnectSetup.probeAwconnect({
       execFile: require("node:child_process").execFile,
     });
-  } catch (err) {
+  } catch {
     latestAwconnectStatus = { state: "unknown", line: "Awconnect: status unavailable", hits: [] };
   }
   if (tray) refreshTrayMenu();

@@ -515,7 +515,7 @@ class CommandAgent extends EventEmitter {
         systemPrompt = builtinPrompt;
       }
       if (sessionsNote) systemPrompt = `${systemPrompt}\n\n${sessionsNote}`;
-      let pageNote = "";
+      let pageNote;
       try {
         pageNote = typeof this.pageContext === "function" ? String(this.pageContext() || "") : "";
       } catch {

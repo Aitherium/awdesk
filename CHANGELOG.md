@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 - 2026-09-29
+
+- Same as 0.1.2, which never shipped: its release build failed on 7 lint errors,
+  now fixed.
+
 ## 0.1.2 - 2026-09-29
 
 - Windows open again in the installed app. The packager listed only `*.cjs`, so
