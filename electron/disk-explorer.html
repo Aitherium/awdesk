@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<title>Disk Explorer</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  /* Colours come from aither-tokens.css (generated from Veil's tokens), same as ops.html. */
+  :root { --amber: var(--warning); --red: var(--destructive); --green: var(--success); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 13px/1.45 var(--font-sans); }
+  body { display: grid; grid-template-rows: 44px 36px 1fr; height: 100vh; }
+  .bar { display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+  .bar .title { font-weight: 600; }
+  .bar .state { color: var(--muted); font-size: 12px; flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar .state.err { color: var(--red); }
+  .tabs { display: flex; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--line); align-items: end; }
+  .tab { appearance: none; background: none; border: 0; border-bottom: 2px solid transparent;
+    color: var(--muted); padding: 8px 10px; cursor: pointer; font: inherit; }
+  .tab.active { color: var(--fg); border-bottom-color: var(--brand); }
+  .chip { appearance: none; border: 1px solid var(--line); background: var(--btn);
+    color: var(--muted); border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; }
+  .chip:hover { background: var(--btn-hi); color: var(--fg); }
+  .chip:disabled { opacity: .5; cursor: default; }
+  .chip.primary { color: var(--fg); border-color: color-mix(in oklch, var(--brand), var(--background) 50%); }
+  input, select { background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font: inherit; }
+  main { overflow: auto; min-height: 0; padding: 12px 14px; }
+  .pane[hidden] { display: none; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .controls .grow { flex: 1; min-width: 200px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--surface-400); font-weight: 650; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--btn); vertical-align: top; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.path { font: 12px/1.4 var(--font-mono); word-break: break-all; }
+  tr.dir td.name { cursor: pointer; color: var(--brand); }
+  .muted { color: var(--muted); }
+  .placeholder { color: var(--muted); padding: 12px 0; }
+  .err { color: var(--red); }
+  .note { color: var(--amber); font-size: 12px; margin: 6px 0; }
+  .crumbs { font: 12px var(--font-mono); color: var(--muted); margin-bottom: 8px; }
+  .crumbs button { background: none; border: 0; color: var(--brand); cursor: pointer; font: inherit; padding: 0 2px; }
+  .pill { font-size: 10px; border-radius: 999px; padding: 1px 7px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.proposed { color: var(--amber); }
+  .pill.approved, .pill.applied, .pill.published { color: var(--green); }
+  .pill.rejected, .pill.failed { color: var(--red); }
+  details summary { cursor: pointer; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <span class="title">Disk Explorer</span>
+    <span class="state" id="state">loading…</span>
+    <label class="muted">node <input id="node" size="14" placeholder="all my nodes" list="nodeList" /></label>
+    <datalist id="nodeList"></datalist>
+    <button class="chip" id="signin" hidden>Sign in</button>
+    <button class="chip" id="refresh">Refresh</button>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="tree">Tree</button>
+    <button class="tab" data-tab="search">Search</button>
+    <button class="tab" data-tab="dupes">Duplicates</button>
+    <button class="tab" data-tab="proposals">Proposals</button>
+    <button class="tab" data-tab="shares">Shares</button>
+  </nav>
+  <main>
+    <section class="pane" id="pane-tree">
+      <div class="crumbs" id="crumbs"></div>
+      <div id="treeBody" class="placeholder">pick a node, then Refresh</div>
+    </section>
+    <section class="pane" id="pane-search" hidden>
+      <form class="controls" id="searchForm">
+        <input class="grow" id="q" placeholder="search file paths (e.g. invoice 2025)" />
+        <input id="ext" size="6" placeholder="ext" />
+        <input id="minBytes" size="9" placeholder="min bytes" />
+        <input id="newer" size="7" placeholder="newer d" />
+        <button class="chip primary" type="submit">Search</button>
+      </form>
+      <div id="searchBody" class="placeholder">search every indexed file on your nodes</div>
+    </section>
+    <section class="pane" id="pane-dupes" hidden>
+      <div class="controls">
+        <label class="muted">min size <select id="dupeMin">
+          <option value="1048576">1 MB</option>
+          <option value="104857600">100 MB</option>
+          <option value="0">any</option>
+        </select></label>
+        <span class="grow muted" id="dupeTotal"></span>
+      </div>
+      <p class="note">Reclaiming duplicates is a proposal: raise its decision card on the Proposals tab and a human answers it. Nothing is deleted from here.</p>
+      <div id="dupesBody" class="placeholder"></div>
+    </section>
+    <section class="pane" id="pane-proposals" hidden>
+      <div class="controls">
+        <label class="muted">status <select id="propStatus">
+          <option value="proposed">proposed</option>
+          <option value="all">all</option>
+        </select></label>
+      </div>
+      <p class="note">Hardlink / quarantine-copy / archive / share proposals. Each runs only after a human answers its decision card. Manage is platform-nodes-only until card recipients land.</p>
+      <div id="proposalsBody" class="placeholder"></div>
+    </section>
+    <section class="pane" id="pane-shares" hidden>
+      <form class="controls" id="shareForm">
+        <input class="grow" id="sharePath" placeholder="path to share (on the node above)" />
+        <label class="muted"><input type="checkbox" id="seal" /> seal</label>
+        <button class="chip primary" type="submit">Propose share</button>
+      </form>
+      <p class="note">A node-path share is always a decision-card proposal. Recipients, expiry and revoke live at aitherium.com/share, and workspace files are shared from there.</p>
+      <div id="sharesBody" class="placeholder"></div>
+    </section>
+  </main>
+<script>
+(() => {
+  const api = window.diskExplorer;
+  const $ = (id) => document.getElementById(id);
+  const stateEl = $("state");
+  let tab = "tree";
+  let treePath = "";
+  let hostNode = "";
+
+  function el(tag, attrs, ...kids) {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (k === "class") e.className = v;
+      else if (k === "onclick") e.addEventListener("click", v);
+      else e.setAttribute(k, v);
+    }
+    for (const kid of kids) e.append(kid instanceof Node ? kid : document.createTextNode(String(kid ?? "")));
+    return e;
+  }
+
+  function bytes(n) {
+    if (n === null || n === undefined || !Number.isFinite(Number(n))) return "-";
+    const u = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let v = Math.abs(Number(n)); let i = 0;
+    while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+    return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${u[i]}`;
+  }
+
+  function when(m) {
+    if (m === null || m === undefined || m === "") return "-";
+    if (typeof m === "string") return m.slice(0, 16).replace("T", " ");
+    const d = new Date(m > 1e12 ? m : m * 1000);
+    return Number.isNaN(d.getTime()) ? "-" : d.toISOString().slice(0, 16).replace("T", " ");
+  }
+
+  function node() { return $("node").value.trim(); }
+
+  // The caller's nodes (GET /files/nodes) and their tenant: manage/share buttons show
+  // only on PLATFORM nodes until decision-card recipients land (contract A7).
+  let nodeTenants = {};
+  function manageable(n) { return Boolean(n) && nodeTenants[n] === "platform"; }
+
+  const FIRST_RUN = "awstorage files scan --all-volumes && awstorage push";
+  /** The three distinct empty states (A5): not indexed, stale, no match. */
+  function emptyText(data, what) {
+    if (data && Array.isArray(data.indexed_roots) && data.indexed_roots.length === 0) {
+      return `no node is indexed yet -- run \`${FIRST_RUN}\` on the machine, then Refresh`;
+    }
+    if (data && data.stale) return `the index is stale -- ${what} may be missing; re-run \`${FIRST_RUN}\``;
+    return `no ${what}`;
+  }
+  function staleNote(data) {
+    return data && data.stale ? el("div", { class: "note" }, `index is stale -- re-run ${FIRST_RUN}`) : null;
+  }
+
+  function setState(text, bad) {
+    stateEl.textContent = text;
+    stateEl.classList.toggle("err", Boolean(bad));
+  }
+
+  /** A failed verdict is RENDERED, never an empty table. */
+  function failure(target, r) {
+    target.replaceChildren(el("div", { class: "err" },
+      r.signedOut ? "not signed in to aitherium.com" : `could not load: ${r.error || "unknown error"}${r.status ? ` (HTTP ${r.status})` : ""}`));
+    $("signin").hidden = !r.signedOut;
+    setState(r.signedOut ? "signed out" : "error", true);
+  }
+
+  function table(headers, rows) {
+    const t = el("table", {}, el("thead", {}, el("tr", {}, ...headers.map((h) => el("th", {}, h)))));
+    const body = el("tbody");
+    rows.forEach((r) => body.append(r));
+    t.append(body);
+    return t;
+  }
+
+  async function loadTree() {
+    const body = $("treeBody");
+    const crumbs = $("crumbs");
+    crumbs.replaceChildren(el("button", { onclick: () => { treePath = ""; void loadTree(); } }, "/"));
+    const parts = treePath.split(/[\\/]/).filter(Boolean);
+    let acc = "";
+    for (const p of parts) {
+      acc = acc ? `${acc}/${p}` : (treePath.startsWith("/") ? `/${p}` : p);
+      const target = acc;
+      crumbs.append(" / ", el("button", { onclick: () => { treePath = target; void loadTree(); } }, p));
+    }
+    body.className = "placeholder"; body.textContent = "loading…";
+    const r = await api.tree({ node: node() || undefined, path: treePath || undefined, depth: 1 });
+    if (!r.ok) return failure(body, r);
+    body.className = "";
+    const kids = (r.data && r.data.children) || [];
+    if (!kids.length) { body.className = "placeholder"; body.textContent = emptyText(r.data, "entries in this folder"); return; }
+    const rows = [...kids].sort((a, b) => (b.bytes || 0) - (a.bytes || 0)).map((c) => {
+      const isDir = c.kind === "dir";
+      const base = r.data.path || treePath;
+      const next = base ? `${base.replace(/[\\/]+$/, "")}/${c.name}` : c.name;
+      return el("tr", { class: isDir ? "dir" : "" },
+        el("td", { class: "name", onclick: isDir ? () => { treePath = next; void loadTree(); } : () => {} }, isDir ? `${c.name}/` : c.name),
+        el("td", { class: "num" }, bytes(c.bytes)),
+        el("td", { class: "num" }, c.files ?? "-"),
+        el("td", {}, when(c.newest_mtime)),
+        el("td", {}, manageable(node()) ? el("button", { class: "chip", onclick: () => proposeShare(next) }, "Share…") : ""));
+    });
+    const extras = [staleNote(r.data), r.data.truncated ? el("div", { class: "note" }, "more entries than shown (truncated)") : null].filter(Boolean);
+    body.replaceChildren(...extras, table(["Name", "Size", "Files", "Newest", ""], rows));
+    setState(`${kids.length} entries under ${r.data.path || treePath || "/"}`);
+  }
+
+  async function loadSearch(cursor) {
+    const body = $("searchBody");
+    const q = $("q").value.trim();
+    if (!q) { body.className = "placeholder"; body.textContent = "type something to search for"; return; }
+    body.className = "placeholder"; body.textContent = "searching…";
+    const r = await api.search({
+      q, node: node() || undefined, ext: $("ext").value.trim() || undefined,
+      minBytes: $("minBytes").value ? Number($("minBytes").value) : undefined,
+      newerDays: $("newer").value ? Number($("newer").value) : undefined,
+      limit: 200, cursor,
+    });
+    if (!r.ok) return failure(body, r);
+    const items = (r.data && r.data.items) || [];
+    body.className = "";
+    if (!items.length) { body.className = "placeholder"; body.textContent = emptyText(r.data, "indexed file matched"); return; }
+    const rows = items.map((f) => el("tr", {},
+      el("td", {}, f.node || "?"),
+      el("td", { class: "num" }, bytes(f.bytes ?? f.size)),
+      el("td", {}, when(f.mtime)),
+      el("td", { class: "path" }, f.path || "?"),
+      el("td", {}, manageable(f.node) ? el("button", { class: "chip", onclick: () => proposeShare(f.path, f.node) }, "Share…") : "")));
+    const kids = [staleNote(r.data), r.data.partial ? el("div", { class: "note" }, "partial: more files matched than were scanned -- narrow the search") : null,
+      table(["Node", "Size", "Modified", "Path", ""], rows)].filter(Boolean);
+    if (r.data.next_cursor) kids.push(el("button", { class: "chip", onclick: () => loadSearch(r.data.next_cursor) }, "Next page"));
+    body.replaceChildren(...kids);
+    setState(`${items.length}${r.data.next_cursor ? "+" : ""} match(es) for "${q}"`);
+  }
+
+  async function loadDupes() {
+    const body = $("dupesBody");
+    body.className = "placeholder"; body.textContent = "loading…";
+    const r = await api.dupes({ node: node() || undefined, minBytes: Number($("dupeMin").value), limit: 100 });
+    if (!r.ok) return failure(body, r);
+    const groups = (r.data && r.data.groups) || [];
+    // Reclaimable = ACTIONABLE bytes (same volume, not in git, single-linked, not
+    // sensitive); raw duplicated bytes are shown beside it, never as the promise.
+    const reclaim = groups.reduce((a, g) => a + (Number(g.actionable_bytes) || 0), 0);
+    $("dupeTotal").textContent = `${groups.length} group(s), ${bytes(reclaim)} reclaimable, ${bytes(r.data.total_wasted_bytes)} duplicated`;
+    body.className = "";
+    if (!groups.length) { body.className = "placeholder"; body.textContent = emptyText(r.data, "duplicate content in the indexed files"); return; }
+    const rows = [...groups].sort((a, b) => (b.wasted_bytes || 0) - (a.wasted_bytes || 0)).map((g) => {
+      const list = el("details", {}, el("summary", {}, `${g.count ?? (g.paths || []).length} copies`),
+        ...(g.paths || []).map((p) => el("div", { class: "path muted" }, `${p.node}:${p.path}`)),
+        ...(g.paths_truncated ? [el("div", { class: "note" }, "more copies not shown (truncated)")] : []));
+      return el("tr", {},
+        el("td", { class: "num" }, bytes(g.actionable_bytes ?? 0)),
+        el("td", { class: "num" }, bytes(g.bytes ?? g.size)),
+        el("td", { class: "path" }, String(g.sha256 || "").slice(0, 12)),
+        el("td", {}, list));
+    });
+    body.replaceChildren(...[staleNote(r.data)].filter(Boolean), table(["Reclaimable", "Size", "SHA-256", "Copies"], rows));
+    setState(`${groups.length} duplicate group(s)`);
+  }
+
+  async function loadProposals() {
+    const body = $("proposalsBody");
+    body.className = "placeholder"; body.textContent = "loading…";
+    const r = await api.proposals({ node: node() || undefined, limit: 200 });
+    if (!r.ok) return failure(body, r);
+    const want = $("propStatus").value;
+    const rows = ((r.data && r.data.proposals) || []).filter((p) => want === "all" || p.status === want);
+    body.className = "";
+    if (!rows.length) {
+      body.className = "placeholder";
+      body.textContent = r.data && r.data.scope === "tenant"
+        ? "manage proposals are platform-nodes-only until decision-card recipients land"
+        : "nothing is waiting on a decision";
+      return;
+    }
+    const trs = rows.map((p) => {
+      const id = p.id ?? p.proposal_id;
+      const btn = el("button", { class: "chip primary" }, "Raise decision card");
+      btn.addEventListener("click", async () => {
+        btn.disabled = true; btn.textContent = "raising…";
+        const res = await api.raiseCard(id);
+        btn.textContent = res.ok ? "card raised — answer it in the Inbox" : `failed: ${res.error}`;
+        if (!res.ok) btn.disabled = false;
+      });
+      return el("tr", {},
+        el("td", {}, String(id ?? "?")),
+        el("td", {}, el("span", { class: `pill ${p.status || ""}` }, p.status || "?")),
+        el("td", {}, p.cls || p.action || p.class || "?"),
+        el("td", {}, p.node || "?"),
+        el("td", { class: "num" }, bytes(p.bytes)),
+        el("td", { class: "path" }, p.path || (Array.isArray(p.paths) ? p.paths[0] : "") || "-"),
+        el("td", {}, p.status === "proposed" && manageable(p.node) ? btn : ""));
+    });
+    body.replaceChildren(table(["ID", "Status", "Action", "Node", "Bytes", "Path", ""], trs));
+    setState(`${rows.length} proposal(s)`);
+  }
+
+  async function loadShares() {
+    const body = $("sharesBody");
+    body.className = "placeholder"; body.textContent = "loading…";
+    const r = await api.shares();
+    if (!r.ok) return failure(body, r);
+    const rows = (r.data && (r.data.shares || r.data.items)) || [];
+    body.className = "";
+    if (!rows.length) { body.className = "placeholder"; body.textContent = "no shares yet"; return; }
+    body.replaceChildren(table(["ID", "Status", "Node", "Path", "Handle"], rows.map((s) => el("tr", {},
+      el("td", {}, String(s.id ?? s.proposal_id ?? "?")),
+      el("td", {}, el("span", { class: `pill ${s.status || ""}` }, s.status || "?")),
+      el("td", {}, s.node || "?"),
+      el("td", { class: "path" }, s.path || "-"),
+      el("td", { class: "path" }, s.handle || s.fetch_handle || "-")))));
+    setState(`${rows.length} share(s)`);
+  }
+
+  async function proposeShare(path, onNode) {
+    const target = onNode || node() || hostNode;
+    if (!path || !target) { setState("pick a node first", true); return; }
+    if (!manageable(target)) {
+      setState(`sharing from ${target} is not available yet: node shares are platform-nodes-only (use aitherium.com/share for workspace files)`, true);
+      return;
+    }
+    const r = await api.share(target, path, false);
+    if (!r.ok) { setState(`share failed: ${r.error}`, true); return; }
+    const d = r.data || {};
+    setState(`share proposed: #${d.proposal_id ?? d.id ?? "?"} (${d.status || "proposed"})${d.card_id ? " — answer the card in the Inbox" : ""}`);
+  }
+
+  const loaders = { tree: loadTree, search: () => loadSearch(), dupes: loadDupes, proposals: loadProposals, shares: loadShares };
+
+  function show(name) {
+    tab = name;
+    for (const b of document.querySelectorAll(".tab")) b.classList.toggle("active", b.dataset.tab === name);
+    for (const p of document.querySelectorAll(".pane")) p.hidden = p.id !== `pane-${name}`;
+    void loaders[name]();
+  }
+
+  $("tabs").addEventListener("click", (e) => { const t = e.target.closest(".tab"); if (t) show(t.dataset.tab); });
+  $("refresh").addEventListener("click", () => void loaders[tab]());
+  $("signin").addEventListener("click", () => api.signIn());
+  $("searchForm").addEventListener("submit", (e) => { e.preventDefault(); void loadSearch(); });
+  $("dupeMin").addEventListener("change", () => void loadDupes());
+  $("propStatus").addEventListener("change", () => void loadProposals());
+  $("shareForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    await proposeShare($("sharePath").value.trim());
+    void loadShares();
+  });
+
+  if (!api) { setState("disk explorer bridge unavailable", true); return; }
+  void api.nodes().then((r) => {
+    const list = (r && r.ok && r.data && r.data.nodes) || [];
+    nodeTenants = {};
+    const dl = $("nodeList");
+    dl.replaceChildren(...list.map((n) => {
+      nodeTenants[n.node] = n.tenant || "platform";
+      return el("option", { value: n.node });
+    }));
+  });
+  void api.host().then((r) => {
+    hostNode = (r && r.ok && r.data && r.data.node) || "";
+    if (hostNode && !$("node").value) $("node").value = hostNode;
+    show("tree");
+  });
+})();
+</script>
+</body>
+</html>

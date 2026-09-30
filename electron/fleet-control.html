@@ -96,7 +96,7 @@
   <header>
     <div>
       <h1>Aither Fleet</h1>
-      <div class="sub">rootful podman quadlets · Debian WSL2 · one implementation behind every button</div>
+      <div class="sub">rootful podman quadlets · awnix WSL2 · one implementation behind every button</div>
     </div>
     <div id="pill" data-state="UNKNOWN">…</div>
   </header>
@@ -118,21 +118,27 @@
   </div>
 
   <div class="actions">
-    <button id="b-down" class="down" data-action="down">
-      <span class="t">Fleet DOWN</span>
-      <span class="d">Stop + mask every aither unit and container. Holds against restarts.</span>
+    <!-- The owner's verb set: fleet_verbs.py, the same verbs awsh, adk, awnode and
+         AitherZero run. Old action names (down/up/gaming/resume) are aliases. -->
+    <button id="b-down" class="down" data-action="fleet-sleep">
+      <span class="t">Fleet sleep</span>
+      <span class="d">Stop + mask every aither unit and container, recorded. Customer-facing set stays up.</span>
     </button>
-    <button id="b-up" class="up" data-action="up">
-      <span class="t">Fleet UP</span>
-      <span class="d">Unmask and bring back exactly what was stopped. GPU models one at a time.</span>
+    <button id="b-up" class="up" data-action="fleet-wake">
+      <span class="t">Fleet wake</span>
+      <span class="d">Restore exactly what was recorded, health-gated. GPU only if the GPU is awake.</span>
     </button>
-    <button id="b-gaming" class="quiet" data-action="gaming">
-      <span class="t">GPU quiet (game on)</span>
-      <span class="d">Stop the GPU models + routine runners, keep the rest of the fleet up.</span>
+    <button id="b-gaming" class="quiet" data-action="gpu-sleep">
+      <span class="t">GPU sleep (game on)</span>
+      <span class="d">Gaming lock, posture gaming (lanes to the Spark), park every 5090 GPU unit.</span>
     </button>
-    <button id="b-resume" class="up" data-action="resume">
-      <span class="t">GPU resume (game off)</span>
-      <span class="d">Bring the GPU models and runners back through the sequencer.</span>
+    <button id="b-resume" class="up" data-action="gpu-wake">
+      <span class="t">GPU wake (game off)</span>
+      <span class="d">GPU units back one at a time, previous posture, lanes home, lock released.</span>
+    </button>
+    <button id="b-critical" class="quiet" data-action="fleet-critical">
+      <span class="t">Fleet critical</span>
+      <span class="d">Only the critical profile (login, MCP, relay, web, tenants) + GPU sleep.</span>
     </button>
   </div>
 
@@ -152,6 +158,39 @@
     <button id="b-arc-stop" class="down" data-action="arc-stop">
       <span class="t">ARC stop</span>
       <span class="d">Stop the solver. The world model stays up.</span>
+    </button>
+  </div>
+
+  <!-- The fleet HOST: the WSL distro itself (fleet_host.py -- the engine adk fleet-host,
+       awnode's fleet_host_* MCP tools and the setup-awnix-fleet-host playbook share). -->
+  <div class="holders" id="host">
+    <div class="k">Fleet host (the WSL distro: systemd, podman, data attach, tiers)</div>
+    <div class="none" id="host-line">not probed yet -- click "Host status"</div>
+  </div>
+  <div class="actions" id="host-actions">
+    <button id="b-host-status" class="quiet" data-action="host-status">
+      <span class="t">Host status</span>
+      <span class="d">Distro, systemd, podman, data disk attached, tier targets, keeper tasks. Read-only.</span>
+    </button>
+    <button id="b-host-start" class="up" data-action="host-start">
+      <span class="t">Host start</span>
+      <span class="d">Boot the distro and start the aither-tier targets. Refused while another distro runs.</span>
+    </button>
+    <button id="b-host-restart" class="down" data-action="host-restart">
+      <span class="t">Host restart</span>
+      <span class="d">Stop the tier targets (autoheal first), then start them again.</span>
+    </button>
+    <button id="b-host-stop" class="down" data-action="host-stop">
+      <span class="t">Host stop</span>
+      <span class="d">Stop autoheal and every tier target. The distro stays registered.</span>
+    </button>
+    <button id="b-host-reattach" class="quiet" data-action="host-reattach">
+      <span class="t">Re-attach data</span>
+      <span class="d">Run the AitherOS-AttachFleetData task and restart aither-attach-fleet-data.</span>
+    </button>
+    <button id="b-host-migrate" class="quiet" data-action="host-migrate-dryrun">
+      <span class="t">Migration preflight</span>
+      <span class="d">migrate-fleet-to-awnix in -DryRun: what a live migration would stop on.</span>
     </button>
   </div>
 
@@ -176,7 +215,22 @@
   const log = $("log");
   const pill = $("pill");
   const buttons = [...document.querySelectorAll("button[data-action]")];
-  const DESTRUCTIVE = new Set(["down", "gaming", "arc-stop"]);
+  const DESTRUCTIVE = new Set(["down", "gaming", "gpu-sleep", "fleet-sleep", "fleet-critical", "arc-stop",
+    "host-start", "host-stop", "host-restart", "host-reattach"]);
+
+  // One line for the fleet HOST verdict (fleet_host.py status --json).
+  function renderHost(v) {
+    const node = $("host-line");
+    if (!v) { node.textContent = "not probed yet"; return; }
+    if (v.cannotJudge && !v.distro) { node.textContent = `CANNOT JUDGE: ${v.error || "no verdict"}`; return; }
+    const pr = v.probe || {};
+    const bits = [`${v.distro || "?"} (${v.distro_source || "?"})`, v.verdict || "?", `state ${v.state || "?"}`];
+    if (pr.systemd) bits.push(`systemd ${pr.systemd}`);
+    if (pr.running != null) bits.push(`${pr.running} containers`);
+    const issues = [...(v.problems || []), ...(v.warnings || [])];
+    node.textContent = bits.join(" · ") + (issues.length ? ` -- ${issues.join("; ")}` : "");
+    node.className = v.verdict === "HEALTHY" ? "ok" : "none";
+  }
   let armed = null;      // button awaiting its confirming second click
   let armTimer = null;
   let busy = null;
@@ -199,11 +253,19 @@
     return everProbed ? "not in this verdict" : "not probed yet";
   }
 
+  // Mirrors fleet-control.cjs holdIsStale: a HOLD a reboot left behind (scope=all record,
+  // fleet running, almost nothing masked) is not a quiet GPU (2026-09-28, awnix restart).
+  function holdIsStale(st) {
+    const fl = (st && st.fleet) || {};
+    return Boolean(st && st.held && fl.scope === "all" && (fl.running ?? 0) > 0
+      && (fl.masked ?? 0) < (fl.units ?? 0) / 2);
+  }
+
   function classify(st) {
     if (!st || st.cannotJudge) return "UNKNOWN";
     const fl = st.fleet || {};
     if (fl.running === 0 && (fl.masked ?? 0) > 0) return "DOWN";
-    if (st.held) return "GPU QUIET";
+    if (st.held && !holdIsStale(st)) return "GPU QUIET";
     if ((fl.masked ?? 0) > 0) return "MIXED";
     if ((fl.running ?? 0) > 0) return "UP";
     return "UNKNOWN";
@@ -296,7 +358,7 @@
     stat("s-vram", v ? `${(v.used_mib / 1024).toFixed(1)} <small>/ ${(v.total_mib / 1024).toFixed(0)} GiB</small>${age}` : "?");
     // GPU hold is a yes/no that must never DEFAULT to "free": with no verdict the
     // answer is unknown. `null && x` reading as "free" was exactly that lie.
-    stat("s-hold", !src || src.cannotJudge ? "?" : (src.held ? "HELD" : "free"));
+    stat("s-hold", !src || src.cannotJudge ? "?" : (src.held ? (holdIsStale(src) ? "stale" : "HELD") : "free"));
     renderHolders(src && src.gpu_holders, src && src.gpu_holders_error);
     renderSurfaces(src && src.surfaces);
     const state = stateFor(st, stale);
@@ -420,6 +482,16 @@
     try {
       const verdict = await window.fleet.run(action);
       if (verdict.busy) { line(verdict.error, "err"); }
+      else if (action === "host-status") {
+        renderHost(verdict);
+        line(`host-status: ${verdict.verdict || verdict.error || "no verdict"}`, verdict.ok ? "ok" : "err");
+        for (const p of verdict.problems || []) line(`  ${p}`, "err");
+      }
+      else if (action.startsWith("host-")) {
+        for (const c of verdict.commands || []) line(`  $ ${c}`, "cmd");
+        for (const r of verdict.results || []) line(`  rc=${r.rc} ${r.tail || ""}`, r.rc === 0 ? "ok" : "err");
+        line(`${action}: ${verdict.ok ? "ok" : (verdict.error || "failed")}`, verdict.ok ? "ok" : "err");
+      }
       else if (action.startsWith("arc-") && !verdict.cannotJudge) {
         const wm = verdict.world_model || {};
         const steps = wm.train_steps != null ? ` · train_steps ${wm.train_steps}` : "";

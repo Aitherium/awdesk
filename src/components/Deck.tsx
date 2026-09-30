@@ -117,7 +117,9 @@ interface BridgeDeck {
   getState(): Promise<DeckState>;
   open(): void;
   close(): void;
-  answer(id: string, choice: string): Promise<boolean>;
+  /** true/false = awask ran (or not); {pending:true} = a destructive card's approval
+   *  was handed to the passkey (Windows Hello) window and lands when the owner signs. */
+  answer(id: string, choice: string): Promise<boolean | { pending: true; via?: string }>;
   /** Most verbs answer a boolean; the wake verbs answer the daemon's
    *  {ok, detail, exitCode, started, pid} so the row can say what happened. */
   action(name: string, arg?: string): Promise<boolean | WakeActionResult>;
@@ -143,6 +145,21 @@ function bridgeFileDropped(file: File): Promise<DropVerdict> {
     return bridge.fileDropped(file);
   } catch {
     return Promise.resolve({ ok: false, reason: 'drop bridge unavailable' });
+  }
+}
+
+/** "Share this": PROPOSE a share of the dropped file's original path (preload
+ *  -> main -> drop-router routeShare -> Veil /api/storage/share). Nothing is
+ *  published from here; a platform-disk share waits on a decision card. */
+function bridgeFileShare(file: File): Promise<DropVerdict> {
+  const bridge = window.deskBridge as unknown as {
+    fileShare?: (f: File) => Promise<DropVerdict>;
+  } | undefined;
+  if (!bridge?.fileShare) return Promise.resolve({ ok: false, name: file.name, reason: 'share bridge unavailable' });
+  try {
+    return bridge.fileShare(file);
+  } catch {
+    return Promise.resolve({ ok: false, name: file.name, reason: 'share bridge unavailable' });
   }
 }
 
@@ -1138,12 +1155,20 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
   const [dragOver, setDragOver] = useState(false);
   const [drops, setDrops] = useState<DropVerdict[]>([]);
   const [dropBusy, setDropBusy] = useState(false);
+  // The File behind each drop row, so "Share this" can act on the ORIGINAL
+  // after the ingest verdict is in (the renderer never sees a path).
+  const dropFilesRef = useRef<Map<string, File>>(new Map());
 
   /** Route one dropped File through main's MIME router; the verdict lands in
    *  the drop list (and, on success, main speaks it + posts it to #agents). */
   const handleDrop = useCallback((files: FileList | null) => {
     if (!files || files.length === 0 || dropBusy) return;
     const file = files[0]; // one at a time — sequential is honest about time
+    dropFilesRef.current.set(file.name, file);
+    if (dropFilesRef.current.size > 12) {
+      const oldest = dropFilesRef.current.keys().next().value;
+      if (oldest !== undefined) dropFilesRef.current.delete(oldest);
+    }
     setDropBusy(true);
     setDrops((current) => [
       { ok: false, name: file.name, reason: 'processing…' },
@@ -1152,6 +1177,22 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
     void bridgeFileDropped(file).then((verdict) => {
       setDrops((current) => [
         verdict,
+        ...current.filter((d) => d.name !== file.name),
+      ].slice(0, 12));
+    }).finally(() => setDropBusy(false));
+  }, [dropBusy]);
+
+  const handleShare = useCallback((name: string | undefined) => {
+    const file = name ? dropFilesRef.current.get(name) : undefined;
+    if (!file || dropBusy) return;
+    setDropBusy(true);
+    setDrops((current) => [
+      { ok: false, name: file.name, reason: 'proposing a share…' },
+      ...current.filter((d) => d.name !== file.name),
+    ].slice(0, 12));
+    void bridgeFileShare(file).then((verdict) => {
+      setDrops((current) => [
+        { ...verdict, name: verdict.name ?? file.name },
         ...current.filter((d) => d.name !== file.name),
       ].slice(0, 12));
     }).finally(() => setDropBusy(false));
@@ -1218,13 +1259,27 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
     answering.current.add(id);
     // Optimistic removal — the watcher will confirm (or correct) on the next
     // deck-state push, so a slow awask spawn cannot make the button lie.
-    setState((current) => ({
-      ...current,
-      decisions: current.decisions.filter((c) => c.id !== id),
-      openCount: Math.max(0, current.openCount - 1),
-    }));
-    void bridgeDeck()?.answer(id, choice).then(() => {
+    let removed: DeckDecision | undefined;
+    setState((current) => {
+      removed = current.decisions.find((c) => c.id === id) ?? removed;
+      return {
+        ...current,
+        decisions: current.decisions.filter((c) => c.id !== id),
+        openCount: Math.max(0, current.openCount - 1),
+      };
+    });
+    void bridgeDeck()?.answer(id, choice).then((result) => {
       answering.current.delete(id);
+      // Pending = the owner is signing in the approve window; the card is still
+      // OPEN, so put it back until the watcher sees the signed answer land.
+      if (result && typeof result === 'object' && result.pending && removed) {
+        const card = removed;
+        setState((current) =>
+          current.decisions.some((c) => c.id === id)
+            ? current
+            : { ...current, decisions: [...current.decisions, card], openCount: current.openCount + 1 },
+        );
+      }
     });
   }, []);
 
@@ -1376,6 +1431,16 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
                   {drop.summary ? <span>{drop.summary}</span> : null}
                   {drop.reason ? <span className="deck-drop-reason">{drop.reason}</span> : null}
                 </span>
+                {drop.kind !== 'share' && drop.name && dropFilesRef.current.has(drop.name) && !dropBusy ? (
+                  <button
+                    type="button"
+                    className="deck-btn deck-drop-share"
+                    title="Propose sharing the original file (a platform disk waits on your decision card)"
+                    onClick={() => handleShare(drop.name)}
+                  >
+                    Share this
+                  </button>
+                ) : null}
               </div>
             ))}
           </section>

@@ -94,8 +94,12 @@ test("classifyCommand detects fleet verbs", () => {
     "game on", "game off", "shut the fleet down", "bring the fleet up", "FLEET STATUS", "  fleet   status  "]) {
     assert.equal(classifyCommand(t).kind, "fleet", t);
   }
-  assert.equal(classifyCommand("fleet down").action, "down");
-  assert.equal(classifyCommand("game on").action, "gaming");
+  assert.equal(classifyCommand("fleet down").action, "fleet-sleep");
+  assert.equal(classifyCommand("game on").action, "gpu-sleep");
+  assert.equal(classifyCommand("gpu sleep").action, "gpu-sleep");
+  assert.equal(classifyCommand("fleet wake").action, "fleet-wake");
+  assert.equal(classifyCommand("fleet critical").action, "fleet-critical");
+  assert.equal(classifyCommand("gpu wake").action, "gpu-wake");
 });
 
 test("classifyCommand routes non-fleet text to agent", () => {
@@ -126,9 +130,9 @@ test("CommandAgent: fleet commands route to FleetControl and answer with the fle
   // A destructive verb ARMS; the second, exact word fires it.
   const down = await agent.run("fleet down", { source: "test" });
   assert.equal(down.verdict.armed, true);
-  assert.match(down.reply, /^Fleet down is armed .* Type "confirm"/);
+  assert.match(down.reply, /^Fleet sleep is armed .* Type "confirm"/);
   const fired = await agent.run("confirm", { source: "test" });
-  assert.match(fired.reply, /^Fleet down: done/);
+  assert.match(fired.reply, /^Fleet sleep: done/);
 });
 
 test("CommandAgent: a destructive verb is armed by the sentence and fired by the confirm word, from the same surface", async () => {
@@ -137,10 +141,10 @@ test("CommandAgent: a destructive verb is armed by the sentence and fired by the
   fleet.run = async (action, opts) => { calls.push([action, opts]); return { ok: true, fleet_running_after: 3 }; };
   const { agent } = agentWith({ fleetControl: fleet });
 
-  // "gpu quiet" answers in the owner's words, not the script's ("gaming").
+  // "gpu quiet" answers in the owner's words, not the script's ("gaming" / "gpu-sleep").
   const armed = await agent.run("gpu quiet", { source: "command-window" });
   assert.equal(armed.ok, true);
-  assert.match(armed.reply, /^GPU quiet is armed — it stops every LLM\/GPU container/);
+  assert.match(armed.reply, /^GPU sleep is armed — it takes the gaming lock/);
   assert.equal(calls.length, 0, "nothing ran on the sentence alone");
 
   // A confirm from ANOTHER surface is refused and disarms.
@@ -160,8 +164,8 @@ test("CommandAgent: a destructive verb is armed by the sentence and fired by the
   // Arm and confirm: FleetControl is called WITH confirm:true, reply is labelled.
   await agent.run("gpu quiet", { source: "command-window" });
   const fired = await agent.run("confirm", { source: "command-window" });
-  assert.deepEqual(calls, [["gaming", { confirm: true }]]);
-  assert.match(fired.reply, /^GPU quiet: done — 3 container\(s\) still running/);
+  assert.deepEqual(calls, [["gpu-sleep", { confirm: true }]]);
+  assert.match(fired.reply, /^GPU sleep: done — 3 container\(s\) still running/);
 
   // A sentence that merely MENTIONS the phrase from the relay never arms anything.
   const relay = await agent.run("why is fleet down red", { source: "relay:agents" });
@@ -178,11 +182,11 @@ test("CommandAgent: a destructive verb is armed by the sentence and fired by the
 
 test("CommandAgent: a non-destructive fleet verb runs at once and speaks plain words when the distro is gone", async () => {
   const fleet = fakeFleetControl();
-  fleet.run = async () => ({ ok: false, cannotJudge: true, wslDown: true, error: "the Debian WSL distro did not answer (wsl.exe failed)" });
+  fleet.run = async () => ({ ok: false, cannotJudge: true, wslDown: true, error: "the awnix WSL distro did not answer (wsl.exe failed)" });
   const { agent } = agentWith({ fleetControl: fleet });
   const r = await agent.run("gpu resume", { source: "test" });
   assert.equal(r.ok, false);
-  assert.match(r.reply, /^GPU resume: could not reach the fleet — the Debian WSL distro did not answer/);
+  assert.match(r.reply, /^GPU wake: could not reach the fleet — the awnix WSL distro did not answer/);
   fleet.run = async () => ({ ok: false, busy: "resume", error: "busy" });
   const b = await agent.run("fleet status", { source: "test" });
   assert.match(b.reply, /could not reach the fleet|busy/);
@@ -204,6 +208,19 @@ test("CommandAgent: fleet verbs never wait behind a running claude agent; a queu
     "the queued command is announced where the owner is looking");
   await long;
   await second;
+});
+
+test("CommandAgent: lane 'agent' never classifies untrusted text as a fleet verb", async () => {
+  const fleet = fakeFleetControl();
+  let fleetRuns = 0;
+  fleet.run = async () => { fleetRuns += 1; return { ok: true }; };
+  const { agent, spawned } = agentWith({ fleetControl: fleet });
+  const pageText = "A page that says gpu wake and fleet down in its body.";
+  assert.equal(classifyCommand(pageText).kind, "fleet", "precondition: the classifier WOULD route this to fleet");
+  const result = await agent.run(pageText, { source: "browser", lane: "agent" });
+  assert.equal(result.kind, "agent");
+  assert.equal(fleetRuns, 0, "no fleet verb ran");
+  assert.equal(spawned.filter((s) => s.cmd === "claude").length, 1);
 });
 
 test("CommandAgent: agent commands spawn claude headless with stream-json", async () => {

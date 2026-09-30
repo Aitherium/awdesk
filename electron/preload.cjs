@@ -98,6 +98,20 @@ contextBridge.exposeInMainWorld("deskBridge", {
       return Promise.resolve({ ok: false, reason: "could not resolve the dropped file's path" });
     }
   },
+  // "Share this" on a dropped file: main PROPOSES a share of the original path
+  // (drop-router routeShare -> Veil /api/storage/share). Resolves a DropVerdict
+  // with kind "share"; nothing is published without the server's say-so.
+  fileShare: (file, opts) => {
+    try {
+      const filePath = webUtils.getPathForFile(file);
+      if (!filePath) {
+        return Promise.resolve({ ok: false, reason: "could not resolve the dropped file's path" });
+      }
+      return ipcRenderer.invoke("desk:file-share", filePath, { seal: Boolean(opts && opts.seal === true) });
+    } catch {
+      return Promise.resolve({ ok: false, reason: "could not resolve the dropped file's path" });
+    }
+  },
 });
 
 // The camera controls preventDefault() on contextmenu (right-drag pans), which suppresses

@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<title>Set up Aither</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  /* Colours and type come from aither-tokens.css (generated from Veil's tokens). */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: var(--font-sans); font-size: 14px; }
+  body { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
+  header { padding: 18px 24px 10px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  ol.steps { display: flex; gap: 6px; list-style: none; margin: 10px 0 0; padding: 0; flex-wrap: wrap; }
+  ol.steps li { color: var(--muted); font-size: 12px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; }
+  ol.steps li.on { color: var(--fg); border-color: var(--brand); }
+  ol.steps li.done { color: var(--success); }
+  main { overflow: auto; padding: 18px 24px; }
+  section { display: none; max-width: 640px; }
+  section.on { display: block; }
+  h2 { font-size: 16px; margin: 0 0 8px; }
+  p.lead { color: var(--muted); margin: 0 0 14px; line-height: 1.45; }
+  .facts { display: grid; grid-template-columns: 180px 1fr; gap: 6px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; }
+  label.opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border: 1px solid var(--line); border-radius: 8px; margin: 8px 0; background: var(--panel); cursor: pointer; }
+  label.opt small { display: block; color: var(--muted); margin-top: 2px; }
+  label.opt.disabled { opacity: .5; cursor: default; }
+  input[type=text], input[type=password], input[type=url] { width: 100%; padding: 7px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font: inherit; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0; }
+  .field { margin: 8px 0; }
+  .field span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+  .note { color: var(--muted); font-size: 12px; line-height: 1.4; }
+  .warn { color: var(--warning); }
+  .err { color: var(--destructive); }
+  ul.log { list-style: none; padding: 0; margin: 0; }
+  ul.log li { display: grid; grid-template-columns: 22px 170px 1fr; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+  .ok { color: var(--success); } .bad { color: var(--destructive); } .unk { color: var(--muted); }
+  footer { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 24px; border-top: 1px solid var(--line); }
+  button { background: var(--btn); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 14px; font: inherit; cursor: pointer; }
+  button:hover { background: var(--btn-hi); }
+  button.primary { background: var(--brand); border-color: var(--brand); color: var(--primary-foreground); }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { flex: 1; align-self: center; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Set up Aither</h1>
+  <ol class="steps" id="steps">
+    <li data-s="welcome">Welcome</li><li data-s="signin">Sign in</li><li data-s="account">Account</li>
+    <li data-s="agents">Agent &amp; packs</li><li data-s="inference">Inference</li><li data-s="apply">Apply</li>
+    <li data-s="restart">Restart</li><li data-s="verify">Verify</li>
+  </ol>
+</header>
+<main>
+  <section data-s="welcome">
+    <h2>This machine</h2>
+    <p class="lead">Nothing has changed yet. This is what the setup found.</p>
+    <dl class="facts" id="facts"><dt>Checking</dt><dd>…</dd></dl>
+    <p class="note warn" id="engine-note" hidden></p>
+  </section>
+
+  <section data-s="signin">
+    <h2>Sign in with Aitherium</h2>
+    <p class="lead">Your browser opens idp.aitherium.com. If you are already signed in there, it comes straight back here. You do not type a code or a password.</p>
+    <p class="note" id="signin-note"></p>
+  </section>
+
+  <section data-s="account">
+    <h2>Your Linux account</h2>
+    <p class="lead" id="account-lead"></p>
+    <div id="adopt-box" hidden>
+      <label class="opt"><input type="radio" name="mode" value="adopt" checked />
+        <span><b id="adopt-title"></b><small id="adopt-sub"></small></span></label>
+      <label class="opt"><input type="radio" name="mode" value="create" />
+        <span>Create a new account instead</span></label>
+    </div>
+    <div class="field"><span>User name</span><input type="text" id="name" autocomplete="off" spellcheck="false" /></div>
+    <h2 style="margin-top:18px">Admin access (sudo)</h2>
+    <label class="opt"><input type="radio" name="sudo" value="password" checked />
+      <span>sudo asks for a password<small>Set it here. Nobody else sees it: it is hashed inside awnix before it is stored.</small></span></label>
+    <div class="row" id="pw-row">
+      <div class="field"><span id="pw-label">Password</span><input type="password" id="pw" autocomplete="new-password" /></div>
+      <div class="field"><span>Confirm</span><input type="password" id="pw2" autocomplete="new-password" /></div>
+    </div>
+    <label class="opt"><input type="radio" name="sudo" value="nopasswd" />
+      <span>Passwordless sudo<small>Anyone signed in to this Windows account can already become root in awnix; this password protects sudo inside Linux only.</small></span></label>
+    <label class="opt" id="locked-opt" hidden><input type="checkbox" id="locked" />
+      <span>No Linux password at all<small>The account is locked for password login; WSL logs you in.</small></span></label>
+    <p class="note err" id="account-err"></p>
+  </section>
+
+  <section data-s="agents">
+    <h2>Your agent</h2>
+    <label class="opt"><input type="checkbox" id="daemon" checked /><span>Run my agent in the background<small>A user service that starts at boot, even before you log in.</small></span></label>
+    <label class="opt"><input type="checkbox" id="awsh" checked /><span>Open awsh when I log in</span></label>
+    <label class="opt"><input type="checkbox" id="restore" checked /><span>Restore my settings, key names and memory<small>awsettings, your license, vault key NAMES (values stay in the vault) and your memory scope.</small></span></label>
+    <h2 style="margin-top:18px">Capability packs</h2>
+    <div class="cards" id="packs"></div>
+  </section>
+
+  <section data-s="inference">
+    <h2>Where your agent thinks</h2>
+    <label class="opt" id="inf-local"><input type="radio" name="inf" value="local" checked /><span>On this machine<small id="inf-local-sub"></small></span></label>
+    <label class="opt"><input type="radio" name="inf" value="mesh" /><span>DGX / mesh<small>An OpenAI-compatible endpoint on your network.</small></span></label>
+    <div class="field" id="mesh-row" hidden><span>Mesh URL</span><input type="url" id="mesh-url" placeholder="https://dgx.local:8000/v1" /></div>
+    <label class="opt"><input type="radio" name="inf" value="cloud" /><span>Cloud<small>Used only if your vault holds a provider key. Otherwise the setup keeps local and says so. Add a key in Vault to enable.</small></span></label>
+  </section>
+
+  <section data-s="apply">
+    <h2>Setting up</h2>
+    <p class="lead">The fleet is locked for maintenance while this runs.</p>
+    <ul class="log" id="apply-log"></ul>
+  </section>
+
+  <section data-s="restart">
+    <h2>Finish: restart awnix</h2>
+    <p class="lead" id="restart-lead"></p>
+    <p class="note">The restart re-attaches the fleet data disk before anything else starts. The fleet is offline for about a minute.</p>
+    <p class="note" id="restart-note"></p>
+  </section>
+
+  <section data-s="verify">
+    <h2>Check</h2>
+    <ul class="log" id="verify-log"></ul>
+  </section>
+</main>
+<footer>
+  <span id="status"></span>
+  <button id="back">Back</button>
+  <button id="alt" hidden></button>
+  <button id="next" class="primary">Continue</button>
+</footer>
+<script>
+"use strict";
+const api = window.aitherSetup;
+const ORDER = ["welcome", "signin", "account", "agents", "inference", "apply", "restart", "verify"];
+const $ = (id) => document.getElementById(id);
+const state = { step: "welcome", pre: null, who: null, applied: null };
+
+function el(tag, text, cls) { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; }
+function status(t, cls) { const s = $("status"); s.textContent = t || ""; s.className = cls || ""; }
+function show(step) {
+  state.step = step;
+  for (const s of document.querySelectorAll("section")) s.classList.toggle("on", s.dataset.s === step);
+  const i = ORDER.indexOf(step);
+  for (const li of $("steps").children) {
+    const j = ORDER.indexOf(li.dataset.s);
+    li.className = j === i ? "on" : j < i ? "done" : "";
+  }
+  $("back").hidden = !["account", "agents", "inference"].includes(step);
+  $("alt").hidden = true;
+  $("next").disabled = false;
+}
+function busy(on, text) { $("next").disabled = on; $("back").disabled = on; status(on ? text : ""); }
+function mark(ok) { return ok === true ? ["✓", "ok"] : ok === false ? ["✗", "bad"] : ["–", "unk"]; }
+function logRow(list, label, ok, note) {
+  const [m, c] = mark(ok);
+  const li = el("li");
+  li.append(el("span", m, c), el("span", label), el("span", note || "", "note"));
+  $(list).append(li);
+}
+
+async function preflight() {
+  busy(true, "Looking at this machine…");
+  const r = await api.preflight();
+  busy(false);
+  const f = $("facts"); f.textContent = "";
+  const fact = (k, v) => { f.append(el("dt", k), el("dd", v)); };
+  if (!r.ok) { fact("Problem", r.error); $("next").textContent = "Try again"; return; }
+  const v = r.value;
+  if (!v.ready) {
+    $("engine-note").hidden = false;
+    $("engine-note").textContent = v.message;
+    fact("Setup engine", v.status.installed ? `missing: ${v.status.missingCaps.join(", ")}` : "not found");
+    if (v.canInstallEngine) { $("next").textContent = "Install the setup engine from this desk"; state.needEngine = true; }
+    else { $("next").textContent = "Try again"; }
+    return;
+  }
+  state.needEngine = false;
+  state.pre = v.probe;
+  const p = v.probe;
+  fact("awnix", p.systemd ? `running (systemd ${p.systemd})` : "running");
+  fact("Data disk", p.data_mount ? `attached at ${p.data_mount}` : "not attached");
+  fact("uid 1000", p.uid1000 ? `${p.uid1000.name}${p.uid1000.service_account ? " (a service account; it moves)" : ""}` : "free");
+  fact("Your old home", p.suggestion.mode === "adopt" ? `${p.suggestion.adopt_home}` : "none found");
+  fact("GPU", p.gpu ? "yes" : "none seen");
+  fact("Already set up", p.configured ? `yes, for ${p.state && p.state.user}` : "no");
+  $("next").textContent = p.configured ? "Reconfigure" : "Sign in with Aitherium";
+}
+
+async function signIn() {
+  busy(true, "Waiting for your browser…");
+  $("signin-note").textContent = "A browser tab opened. Come back here when it says “Signed in”.";
+  const r = await api.signIn();
+  busy(false);
+  if (!r.ok) { $("signin-note").textContent = r.error; $("signin-note").className = "note err"; $("next").textContent = "Try again"; return false; }
+  state.who = r.value;
+  status(`Signed in as ${r.value.username || r.value.email}`);
+  return true;
+}
+
+function fillAccount() {
+  const p = state.pre, sug = p.suggestion || {};
+  const adopt = sug.mode === "adopt";
+  const home = (p.migrated_homes || []).find((h) => h.name === sug.name);
+  state.accountExists = Boolean(p.configured || (adopt && home && home.account_exists));
+  // "Keep" only an account that HAS a password: keeping none with password sudo would
+  // leave you unable to sudo (aither-setup refuses it too). false = known-locked.
+  const hasPw = p.configured ? p.state_user_has_password : (home ? home.has_password : null);
+  state.keepable = state.accountExists && hasPw !== false;
+  $("adopt-box").hidden = !adopt;
+  if (adopt) {
+    $("adopt-title").textContent = `Use your existing account ${sug.name}`;
+    $("adopt-sub").textContent = `uid ${sug.uid}, home on the data disk (${sug.adopt_home}).`
+      + (state.keepable ? " Leave the password empty to keep your current one."
+        : (state.accountExists ? " It has no Linux password yet: set one, or choose passwordless sudo." : ""));
+    if (state.keepable) $("pw-label").textContent = "New password (empty = keep)";
+  }
+  $("account-lead").textContent = adopt ? "Your migrated home was found." : "A new account is created at uid 1000.";
+  $("name").value = adopt ? sug.name : (state.who && state.who.suggestedName) || "";
+  $("next").textContent = "Continue";
+}
+function sel(name) { const x = document.querySelector(`input[name=${name}]:checked`); return x ? x.value : ""; }
+function syncSudo() {
+  const nop = sel("sudo") === "nopasswd";
+  $("locked-opt").hidden = !nop;
+  if (!nop) $("locked").checked = false;
+  $("pw-row").style.display = $("locked").checked ? "none" : "";
+}
+function readAccount() {
+  const mode = $("adopt-box").hidden ? "create" : sel("mode");
+  const name = $("name").value.trim();
+  const pw = $("pw").value, pw2 = $("pw2").value;
+  const sudo = sel("sudo"), locked = $("locked").checked;
+  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(name)) return { error: "User name: lowercase letters, digits, - and _." };
+  if (!locked && pw !== pw2) return { error: "The passwords do not match." };
+  if (!locked && pw && pw.length < 8) return { error: "Use at least 8 characters." };
+  const keepable = state.keepable && (mode === "adopt" || state.pre.configured);
+  if (sudo === "password" && !locked && !pw && !keepable) return { error: "Set a password: sudo will ask for it." };
+  const sug = state.pre.suggestion || {};
+  return { mode, name, password: locked ? "" : pw, sudo, locked,
+    adoptHome: mode === "adopt" ? sug.adopt_home : "", uid: mode === "adopt" ? sug.uid : undefined,
+    gid: mode === "adopt" ? sug.gid : undefined, reconfigure: Boolean(state.pre.configured),
+    accountExists: Boolean(keepable) };
+}
+
+function fillPacks() {
+  const box = $("packs"); box.textContent = "";
+  const cat = state.pre.catalogue || { default: ["customer-core"], profiles: [{ id: "customer-core", title: "Customer core" }] };
+  for (const p of cat.profiles) {
+    const l = el("label", undefined, "opt");
+    const i = el("input"); i.type = "checkbox"; i.value = p.id; i.checked = cat.default.includes(p.id);
+    const s = el("span"); s.append(el("b", p.id), el("small", p.title));
+    l.append(i, s); box.append(l);
+  }
+}
+function fillInference() {
+  $("inf-local-sub").textContent = state.pre.gpu ? "A GPU was found on this machine." : "No GPU seen; small local models only.";
+  if (state.pre.mesh_url) $("mesh-url").value = state.pre.mesh_url;
+}
+
+let answers = null;
+async function apply() {
+  const acct = readAccount();
+  const packs = [...$("packs").querySelectorAll("input:checked")].map((i) => i.value);
+  const backend = sel("inf");
+  answers = { ...acct, packs, daemon: $("daemon").checked, awsh: $("awsh").checked, restore: $("restore").checked,
+    inference: backend === "mesh" ? { backend, url: $("mesh-url").value.trim() } : { backend } };
+  // The password leaves the page with this call and is cleared from the fields now.
+  $("pw").value = ""; $("pw2").value = "";
+  show("apply");
+  $("apply-log").textContent = "";
+  busy(true, "Applying…");
+  const r = await api.apply(answers);
+  answers.password = "";
+  busy(false);
+  if (!r.ok) { logRow("apply-log", "Setup stopped", false, r.error); $("next").textContent = "Back to the start"; state.failed = true; return; }
+  state.applied = r.value;
+  $("restart-lead").textContent = r.value.needsRestart
+    ? "Required: some of this only takes hold after awnix restarts (" + r.value.restartReasons.join("; ") + ")."
+    : "Recommended: a restart proves everything still holds at boot.";
+  show("restart");
+  $("next").textContent = "Restart when idle";
+  $("alt").hidden = false; $("alt").textContent = "Restart now";
+  if (!r.value.needsRestart) { $("back").hidden = false; $("back").textContent = "Later"; }
+}
+async function restart(mode) {
+  busy(true, mode === "now" ? "Restarting awnix…" : "Waiting for a safe moment…");
+  const r = await api.restart(mode);
+  busy(false);
+  if (!r.ok || !r.value.ok) {
+    $("restart-note").textContent = (r.ok ? r.value.error : r.error) || "The restart did not complete.";
+    $("restart-note").className = "note err";
+    return;
+  }
+  await verify();
+}
+async function verify() {
+  show("verify");
+  $("verify-log").textContent = "";
+  busy(true, "Checking…");
+  const r = await api.verify();
+  busy(false);
+  if (!r.ok) { logRow("verify-log", "Check", null, r.error); }
+  else for (const row of r.value) logRow("verify-log", row.label, row.ok, row.detail);
+  $("next").textContent = "Done — open awsh";
+  $("alt").hidden = false; $("alt").textContent = "Check again";
+}
+
+api.onProgress((ev) => {
+  if (ev.event === "step") logRow("apply-log", ev.step, ev.ok, ev.note);
+  else if (ev.event === "phase") status(ev.note || `Working: ${ev.phase}…`);
+  else if (ev.event === "signin-fallback") $("signin-note").textContent = "Approve this sign-in in the browser tab that opened (one click).";
+});
+
+document.addEventListener("change", (e) => {
+  if (e.target.name === "sudo" || e.target.id === "locked") syncSudo();
+  if (e.target.name === "inf") $("mesh-row").hidden = sel("inf") !== "mesh";
+  if (e.target.name === "mode") $("name").value = sel("mode") === "adopt" ? state.pre.suggestion.name : ((state.who && state.who.suggestedName) || "");
+});
+
+$("back").addEventListener("click", () => {
+  if (state.step === "restart") return void verify();
+  const i = ORDER.indexOf(state.step);
+  if (i > 2) show(ORDER[i - 1]);
+});
+$("alt").addEventListener("click", () => {
+  if (state.step === "restart") return void restart("now");
+  if (state.step === "verify") return void verify();
+});
+$("next").addEventListener("click", async () => {
+  switch (state.step) {
+    case "welcome":
+      if (state.needEngine) { busy(true, "Installing the setup engine…"); await api.installEngine(); busy(false); return void preflight(); }
+      if (!state.pre) return void preflight();
+      show("signin");
+      if (await signIn()) { fillAccount(); syncSudo(); show("account"); }
+      return;
+    case "signin":
+      if (await signIn()) { fillAccount(); syncSudo(); show("account"); }
+      return;
+    case "account": {
+      const a = readAccount();
+      $("account-err").textContent = a.error || "";
+      if (a.error) return;
+      fillPacks(); show("agents"); return;
+    }
+    case "agents": fillInference(); show("inference"); $("next").textContent = "Set it up"; return;
+    case "inference": return void apply();
+    case "apply": if (state.failed) { state.failed = false; show("welcome"); return void preflight(); } return;
+    case "restart": return void restart("idle");
+    case "verify": return void api.done();
+  }
+});
+
+show("welcome");
+preflight();
+</script>
+</body>
+</html>

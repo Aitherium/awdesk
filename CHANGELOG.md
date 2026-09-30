@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2 - 2026-09-29
+
+- Windows open again in the installed app. The packager listed only `*.cjs`, so
+  0.1.1's installers shipped without the HTML, CSS and JSON the windows load. A test
+  now fails if any page the app loads is left out.
+- Aither Browser: a browser window with an assistant panel. An agent can open, read,
+  click and type through the desk's MCP tools while a banner shows it is driving, and
+  "Take over" pauses it. Only http/https addresses open; page content gets no bridge
+  into the desk, and camera/mic/location/notification requests are denied.
+
 ## 0.1.1 - 2026-09-13
 
 - Hair no longer floats after a reboot: the avatar's saved SCALE was the cause.

@@ -118,7 +118,7 @@ type AvatarBridgeEvent =
 /** The verdict of a dropped file (preload -> main -> drop-router). */
 interface DropVerdict {
   ok: boolean;
-  kind?: 'image' | 'audio' | 'video' | 'doc';
+  kind?: 'image' | 'audio' | 'video' | 'doc' | 'share';
   name?: string;
   summary?: string;
   detail?: string;

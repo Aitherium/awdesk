@@ -87,7 +87,7 @@ function mount({ status } = {}) {
   ids.pill.textContent = "…";
   for (const box of ["holders", "surfaces"]) ids[box].appendChild(new Element("div")); // the .k caption
   const actions = [];
-  for (const [id, action] of [["b-down", "down"], ["b-up", "up"], ["b-gaming", "gaming"], ["b-resume", "resume"]]) {
+  for (const [id, action] of [["b-down", "fleet-sleep"], ["b-up", "fleet-wake"], ["b-gaming", "gpu-sleep"], ["b-resume", "gpu-wake"]]) {
     const b = byId(id, "button");
     b.dataset.action = action;
     const d = new Element("span"); d.className = "d"; d.textContent = `desc ${action}`;

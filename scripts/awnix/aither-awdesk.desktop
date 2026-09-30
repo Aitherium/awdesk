@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AitherOS Desk (awnix)
+Comment=awdesk running on the awnix fleet host
+Exec=/bin/sh /opt/aitheros/awdesk/scripts/awnix/awdesk-awnix-open.sh --fleet
+Icon=/opt/aitheros/awdesk/build/icon.png
+Terminal=false
+Categories=Utility;
+StartupWMClass=desk

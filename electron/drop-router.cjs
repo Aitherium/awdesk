@@ -44,6 +44,7 @@ const http = require("node:http");
 const https = require("node:https");
 
 const { callTool, parseMaybeJson } = require("./gateway-mcp.cjs");
+const { fleetDistro } = require("./fleet-distro.cjs");
 
 // The one path bridge (see module docstring). Host side is a Windows path,
 // container side is what the gateway's tools actually read.
@@ -371,6 +372,54 @@ async function routeDrop({ filePath, mime = "" }, deps = {}) {
 }
 
 /**
+ * "Share this" (disk index contract, Surfaces lane): the SECOND thing a drop can
+ * mean. Instead of ingesting the file, ask Genesis to share it from THIS node.
+ *
+ * Nothing is staged, copied or published here. The answer is a proposal
+ * (`POST /api/storage/share` through the Veil proxy on the signed-in session):
+ * ALWAYS card-gated -- a human answers that card, and tenant nodes are refused
+ * (409) until card recipients land. Workspace files go through aitherium.com/share.
+ * The node id is `awstorageWhoami()` (AWSTORAGE_NODE, ~/.aither/node-id, then
+ * hostname -- the `awstorage whoami` order), never a bare os.hostname() guess,
+ * and it is never an authorization claim: Genesis decides.
+ *
+ * deps: {share(body) -> Promise<{ok, data|error}>, node, stat}. Resolves a
+ * DropVerdict-shaped object; never rejects.
+ */
+async function routeShare({ filePath, seal = false }, deps = {}) {
+  try {
+    if (typeof filePath !== "string" || filePath.length === 0) {
+      return { ok: false, reason: "no file received" };
+    }
+    const name = path.basename(filePath);
+    try {
+      (deps.stat || fs.statSync)(filePath);
+    } catch {
+      return { ok: false, name, reason: `cannot read ${name} — the file may have moved` };
+    }
+    if (typeof deps.share !== "function") {
+      return { ok: false, name, reason: "share lane unavailable (no disk client)" };
+    }
+    const node = String(deps.node || require("./disk-explorer-client.cjs").awstorageWhoami().node);
+    const verdict = await deps.share({ node, path: filePath, seal: seal === true });
+    if (!verdict || !verdict.ok) {
+      const why = verdict && verdict.signedOut ? "sign in to aitherium.com to share" : (verdict && verdict.error) || "no answer";
+      return { ok: false, kind: "share", name, reason: `share not proposed: ${String(why).slice(0, 200)}` };
+    }
+    const d = verdict.data || {};
+    const id = d.proposal_id ?? d.id ?? "?";
+    const card = d.card_id || d.decision_id;
+    const handle = d.handle || d.fetch_handle;
+    const summary = handle
+      ? `shared from ${node} — handle ${handle}`
+      : `share proposed from ${node} (#${id}${card ? ", waiting on your decision card" : ", no card raised yet"})`;
+    return { ok: true, kind: "share", name, summary };
+  } catch (error) {
+    return { ok: false, kind: "share", reason: String(error?.message || error).slice(0, 300) };
+  }
+}
+
+/**
  * TTS the verdict so the avatar can SPEAK it. Direct host route to
  * AitherVoice's /voice/synthesize with return_base64 (proven 2026-08-29;
  * the gateway synthesize_speech tool is ledgered). Fail-soft:
@@ -514,7 +563,7 @@ function wslHost() {
   if (WSL_HOST !== undefined) return WSL_HOST;
   WSL_HOST = null;
   try {
-    const out = execFileSync("wsl", ["-d", "Debian", "-u", "root", "hostname", "-I"], {
+    const out = execFileSync("wsl", ["-d", fleetDistro(), "-u", "root", "hostname", "-I"], {
       encoding: "utf8", timeout: 15000, windowsHide: true,
     });
     const hit = String(out).trim().split(/\s+/).find((a) => /^\d+\.\d+\.\d+\.\d+$/.test(a));
@@ -696,6 +745,7 @@ function attemptSynthesis(attempt, endpoint, body) {
 
 module.exports = {
   routeDrop,
+  routeShare,
   synthesizeVerdict,
   voiceSpeed,
   SPEED_DEFAULT,

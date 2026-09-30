@@ -34,6 +34,11 @@ function parseProtocolUrl(rawUrl, protocolScheme = "desk") {
     if (action === "console") {
       return [{ type: "console" }];
     }
+    // desk://setup -> "Set up Aither" (the awnix [oobe] terminal opens it through WSL
+    // interop, so first boot of the image lands in the window, not a terminal prompt).
+    if (action === "setup") {
+      return [{ type: "setup" }];
+    }
     // desk://overlay -> the AitherOS overlay (aitherium.com Living Desktop over the
     // Windows desktop); desk://desktop -> the AitherDesktop app window.
     if (action === "overlay" || action === "living-desktop") {

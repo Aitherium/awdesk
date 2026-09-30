@@ -1,0 +1,51 @@
+# aither-awdesk.service -- awdesk running ON the awnix fleet host, drawn on the
+# Windows desktop through WSLg (every window a native taskbar entry).
+#
+# Installed by scripts/awnix/install-awdesk-awnix.sh to /etc/systemd/system/.
+# A system unit, not --user: awnix runs as root with no lingering user session,
+# and the fleet verbs the desk runs need rootful podman.
+#
+# NOT WantedBy=multi-user.target by default: a GUI app autostarting on a fleet
+# host that may boot headless (bootc image, CI, the ISO) would crash-loop on a
+# missing display. The installer enables it only when /mnt/wslg exists, and the
+# launcher exits 2 (could-not-judge) with the reason when the display never shows.
+[Unit]
+Description=awdesk (AitherOS desktop presence) under WSLg on the fleet host
+Documentation=file:///opt/aitheros/awdesk/scripts/awnix/README.md
+After=network-online.target aither-attach-fleet-data.service
+Wants=network-online.target
+ConditionPathExists=/mnt/wslg
+# One fleet brain per host: the full desk runs fleet verbs too.
+Conflicts=aither-awdesk-brain.service
+ConditionPathExists=/opt/aitheros/awdesk/node_modules/electron/dist/electron
+
+[Service]
+Type=simple
+# HOME pins userData (~/.config/Desk) and with it the Chromium SingletonLock: a unit
+# has no HOME, so without this the launcher's second instance (the taskbar click)
+# found no lock and started a SECOND desk instead of handing off (measured 2026-09-27).
+Environment=HOME=/root
+Environment=DISPLAY=:0
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir
+Environment=PULSE_SERVER=unix:/mnt/wslg/PulseServer
+Environment=AWDESK_FLEET_LOCAL=1
+# 47931 is the Windows desk's, 48931 the headless brain's (aither-awdesk-brain.service);
+# this full desk takes 47951 until a switch-over sets 47931 in /etc/sysconfig/aither-awdesk.
+Environment=DESK_BRIDGE_PORT=47951
+EnvironmentFile=-/etc/sysconfig/aither-awdesk
+ExecStart=/bin/sh /opt/aitheros/awdesk/scripts/awnix/awdesk-awnix-launch.sh --background
+Restart=on-failure
+RestartSec=10
+# exit 2 = no display / no install: a restart cannot fix either; say so and stop.
+RestartPreventExitStatus=2
+# Fleet host first: the desk is a guest on it. Keep it off the GPU tier's cores
+# and cap it so a runaway renderer cannot starve the fleet.
+Nice=5
+CPUWeight=50
+MemoryHigh=3G
+MemoryMax=4G
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

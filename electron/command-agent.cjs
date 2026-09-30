@@ -31,17 +31,24 @@ const RELAY_TIMEOUT_MS = 10 * 1000; // 10 s
 
 /** Fleet verbs that can be classified from text. */
 const FLEET_VERBS = Object.freeze({
-  "fleet down": "down",
-  "fleet up": "up",
+  // The owner's verb set (2026-09-27): the same words in awsh, adk, awnode, AitherZero.
+  "gpu sleep": "gpu-sleep",
+  "gpu wake": "gpu-wake",
+  "fleet sleep": "fleet-sleep",
+  "fleet wake": "fleet-wake",
+  "fleet critical": "fleet-critical",
+  // The older phrases land on the SAME verbs.
+  "fleet down": "fleet-sleep",
+  "fleet up": "fleet-wake",
   "fleet status": "status",
   "fleet quiesce": "quiesce",
-  "fleet resume": "resume",
-  "shut the fleet down": "down",
-  "bring the fleet up": "up",
-  "gpu quiet": "gaming",
-  "game on": "gaming",
-  "gpu resume": "resume",
-  "game off": "resume",
+  "fleet resume": "gpu-wake",
+  "shut the fleet down": "fleet-sleep",
+  "bring the fleet up": "fleet-wake",
+  "gpu quiet": "gpu-sleep",
+  "game on": "gpu-sleep",
+  "gpu resume": "gpu-wake",
+  "game off": "gpu-wake",
   // ARC command and control (owner, 2026-09-19). Longer phrases first: the
   // classifier matches by inclusion, so "arc run now" must be seen before "arc".
   "arc run now": "arc-now",
@@ -59,11 +66,16 @@ const FLEET_VERBS = Object.freeze({
  *  a reply headed "Fleet gaming" answered a verb nobody typed (2026-09-21). */
 const FLEET_LABELS = Object.freeze({
   status: "Fleet status",
-  down: "Fleet down",
-  up: "Fleet up",
+  "gpu-sleep": "GPU sleep",
+  "gpu-wake": "GPU wake",
+  "fleet-sleep": "Fleet sleep",
+  "fleet-wake": "Fleet wake",
+  "fleet-critical": "Fleet critical",
+  down: "Fleet sleep",
+  up: "Fleet wake",
   quiesce: "Fleet quiesce",
-  resume: "GPU resume",
-  gaming: "GPU quiet",
+  resume: "GPU wake",
+  gaming: "GPU sleep",
   adopt: "Fleet adopt",
   "arc-status": "ARC status",
   "arc-start": "ARC start",
@@ -72,10 +84,15 @@ const FLEET_LABELS = Object.freeze({
 });
 
 /** What a DESTRUCTIVE verb will do, said before it does it. */
+const GPU_SLEEP_SAYS = "takes the gaming lock, moves the model lanes to the Spark and parks every 5090 GPU unit until GPU wake";
+const FLEET_SLEEP_SAYS = "stops the WHOLE fleet (every container but the customer-facing set) and holds it down until fleet wake";
 const FLEET_CONSEQUENCE = Object.freeze({
-  gaming: "stops every LLM/GPU container and holds them down until GPU resume",
+  "gpu-sleep": GPU_SLEEP_SAYS,
+  gaming: GPU_SLEEP_SAYS,
+  "fleet-sleep": FLEET_SLEEP_SAYS,
+  down: FLEET_SLEEP_SAYS,
+  "fleet-critical": "stops everything outside the critical profile and puts the GPU to sleep until fleet wake",
   quiesce: "stops the LLM containers and holds them down until fleet resume",
-  down: "stops the WHOLE fleet (every container) and holds it down until fleet up",
   "arc-stop": "stops the ARC solver (the world model stays up)",
 });
 
@@ -187,8 +204,14 @@ async function defaultSessionsContext() {
 
 class CommandAgent extends EventEmitter {
   constructor({ fleetControl = null, spawnImpl = spawn, claudePath = null, relayPath = null,
-    transcriptFile = null, backendResolver = undefined, sessionsContext = undefined } = {}) {
+    transcriptFile = null, backendResolver = undefined, sessionsContext = undefined,
+    pageContext = undefined } = {}) {
     super();
+    // The page the owner last sent from awconnect (page-context.cjs), labelled
+    // as untrusted data. Tests with a fake spawn get none unless they ask.
+    this.pageContext = pageContext !== undefined
+      ? pageContext
+      : (spawnImpl === spawn ? () => require("./page-context.cjs").brief() : null);
     this._backendResolver = backendResolver;
     // What the owner's other sessions are doing, added to every agent prompt.
     // Only the REAL spawn reads the live daemon by default: a test with a fake
@@ -247,12 +270,16 @@ class CommandAgent extends EventEmitter {
    * @param {{ source: string }} opts - metadata (e.g. { source: "command-window" })
    * @returns {Promise<{ ok: boolean, id: string, reply: string, kind: "fleet"|"agent", verdict?: object }>}
    */
-  async run(text, { source = "unknown" } = {}) {
+  async run(text, { source = "unknown", lane = null } = {}) {
     ensureTranscriptDir();
     const id = randomUUID();
     const request = { id, timestamp: new Date().toISOString(), source, text, kind: null, verdict: null };
 
-    const classify = classifyCommand(text);
+    // lane "agent" skips the verb classifier. The Aither Browser's "Ask about
+    // this page" carries UNTRUSTED page text, and classifyCommand matches a fleet
+    // verb anywhere in the string -- a page that says "gpu wake" would otherwise
+    // run a fleet verb from a question about a recipe.
+    const classify = lane === "agent" ? { kind: "agent" } : classifyCommand(text);
     request.kind = classify.kind;
 
     // Record request immediately.
@@ -488,6 +515,13 @@ class CommandAgent extends EventEmitter {
         systemPrompt = builtinPrompt;
       }
       if (sessionsNote) systemPrompt = `${systemPrompt}\n\n${sessionsNote}`;
+      let pageNote = "";
+      try {
+        pageNote = typeof this.pageContext === "function" ? String(this.pageContext() || "") : "";
+      } catch {
+        pageNote = ""; // page context is a help, never a reason to refuse the command
+      }
+      if (pageNote) systemPrompt = `${systemPrompt}\n\n${pageNote}`;
 
       const args = [
         "-p",

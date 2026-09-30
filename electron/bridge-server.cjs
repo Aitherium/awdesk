@@ -27,6 +27,62 @@ const ANIMATIONS = new Set([
 
 const FILE_ANIMATION_PATTERN = /^FILE:[\w.-]+\.vrma$/;
 
+// The awconnect browser extension. Both of its manifests carry the same public
+// key, so every install has this id. Only these EXACT origins get the desk
+// surfaces (health, decisions read, desktop, speak, events, console open);
+// fleet verbs, /command, /commands, /roster and /mcp stay local-only.
+// AWDESK_TRUSTED_EXTENSION_IDS (comma-separated ids) replaces the default;
+// anything that is not a 32-char a-p id is dropped, so "*" cannot widen it.
+const PINNED_EXTENSION_ID = "hlmfknhcfhjjngckfpacgleffckpmphe";
+const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
+
+function trustedExtensionOrigins(env = process.env) {
+  const raw = env.AWDESK_TRUSTED_EXTENSION_IDS;
+  const ids = raw == null ? [PINNED_EXTENSION_ID] : String(raw).split(",");
+  return new Set(
+    ids.map((id) => id.trim()).filter((id) => EXTENSION_ID_PATTERN.test(id))
+      .map((id) => `chrome-extension://${id}`),
+  );
+}
+
+function extensionOriginAllowed(origin, env = process.env) {
+  return typeof origin === "string" && trustedExtensionOrigins(env).has(origin);
+}
+
+// Emotions a caller may name instead of a clip; each maps to a built-in clip.
+const EMOTION_ANIMATIONS = {
+  neutral: "IDLE",
+  idle: "IDLE",
+  hello: "GREETING",
+  greet: "GREETING",
+  talk: "TALK",
+  happy: "HAPPY",
+  joy: "HAPPY",
+  playful: "FINGER_GUN",
+  excited: "DANCE",
+  celebrate: "DANCE",
+};
+const PAGE_SELECTION_MAX = 4000;
+const PAGE_TITLE_MAX = 300;
+const PAGE_URL_MAX = 2048;
+
+function normalizePage(value) {
+  let url;
+  try {
+    url = new URL(String(value?.url || ""));
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  const href = url.href;
+  if (href.length > PAGE_URL_MAX) return null;
+  const title = typeof value?.title === "string" ? value.title.trim().slice(0, PAGE_TITLE_MAX) : "";
+  const selection = typeof value?.selection === "string"
+    ? value.selection.trim().slice(0, PAGE_SELECTION_MAX)
+    : "";
+  return { type: "awconnect.page", url: href, title, ...(selection ? { selection } : {}) };
+}
+
 function isVoiceState(value) {
   return (
     value != null &&
@@ -48,6 +104,21 @@ function normalizeEvent(value) {
       value.bands != null && typeof value.bands === "object" ? value.bands : undefined;
     return { type: "audio-level", level, ...(bands ? { bands } : {}) };
   }
+  if (value?.type === "page") {
+    return normalizePage(value);
+  }
+  // The reverse channel: a caller asks the avatar to react. Only built-in clips
+  // or a named emotion; never a file path from a browser.
+  if (value?.type === "react") {
+    if (ANIMATIONS.has(value.animation)) {
+      return { type: "animation", animation: value.animation, source: "react" };
+    }
+    const emotion = typeof value.emotion === "string" ? value.emotion.trim().toLowerCase() : "";
+    if (Object.prototype.hasOwnProperty.call(EMOTION_ANIMATIONS, emotion)) {
+      return { type: "animation", animation: EMOTION_ANIMATIONS[emotion], source: "react", emotion };
+    }
+    return null;
+  }
   if (value?.type === "animation") {
     if (ANIMATIONS.has(value.animation)) {
       return { type: "animation", animation: value.animation };
@@ -61,6 +132,11 @@ function normalizeEvent(value) {
 
 function originAllowed(origin) {
   return origin == null || TRUSTED_ORIGIN.test(origin);
+}
+
+// The desk surfaces the pinned awconnect extension may also use.
+function deskOriginAllowed(origin, env = process.env) {
+  return originAllowed(origin) || extensionOriginAllowed(origin, env);
 }
 
 // Mutating routes (POST /fleet/<verb> except open, POST /command) need a bearer.
@@ -126,7 +202,7 @@ const DECISIONS_READ_ORIGINS = new Set([
 function decisionsReadOriginAllowed(origin) {
   // Local surfaces (the overlay's own file:// -> null origin, dev servers)
   // keep the same trust the rest of the bridge gives them.
-  return originAllowed(origin) || DECISIONS_READ_ORIGINS.has(origin);
+  return deskOriginAllowed(origin) || DECISIONS_READ_ORIGINS.has(origin);
 }
 
 function hostAllowed(hostHeader) {
@@ -362,7 +438,7 @@ function createBridgeServer({
     // Living Desktop over the Windows desktop, app = the full AitherDesktop
     // window. Raising a window on the owner's own screen needs no bearer.
     if (request.url === "/desktop/status" || request.url.startsWith("/desktop/")) {
-      if (!originAllowed(origin)) {
+      if (!deskOriginAllowed(origin)) {
         response.writeHead(403);
         response.end();
         return;
@@ -453,7 +529,7 @@ function createBridgeServer({
     }
 
     if (request.url === "/console/open") {
-      if (!originAllowed(origin)) {
+      if (!deskOriginAllowed(origin)) {
         response.writeHead(403);
         response.end();
         return;
@@ -546,7 +622,7 @@ function createBridgeServer({
     }
 
     if (request.url === "/speak") {
-      if (!originAllowed(origin)) {
+      if (!deskOriginAllowed(origin)) {
         response.writeHead(403);
         response.end();
         return;
@@ -785,7 +861,7 @@ function createBridgeServer({
       return;
     }
 
-    if (request.method === "OPTIONS" && request.url === "/events" && originAllowed(origin)) {
+    if (request.method === "OPTIONS" && request.url === "/events" && deskOriginAllowed(origin)) {
       response.writeHead(204, {
         "access-control-allow-origin": origin,
         "access-control-allow-methods": "POST, OPTIONS",
@@ -796,7 +872,7 @@ function createBridgeServer({
       return;
     }
 
-    if (request.method !== "POST" || request.url !== "/events" || !originAllowed(origin)) {
+    if (request.method !== "POST" || request.url !== "/events" || !deskOriginAllowed(origin)) {
       response.writeHead(404);
       response.end();
       return;
@@ -849,8 +925,12 @@ module.exports = {
   createBridgeServer,
   readBridgeToken,
   decisionsReadOriginAllowed,
+  deskOriginAllowed,
+  extensionOriginAllowed,
   hostAllowed,
   isVoiceState,
   normalizeEvent,
   originAllowed,
+  PINNED_EXTENSION_ID,
+  trustedExtensionOrigins,
 };

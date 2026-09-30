@@ -365,13 +365,53 @@ const COMMANDS = Object.freeze([
     id: "fleet.open", label: "Fleet window…", group: "fleet",
     surfaces: ["tray", "palette"], fleet: "open_panel",
   }),
+  // The inference widget (owner, 2026-09-27): a compact always-on-top list of
+  // every inference node and model with live load, and Restart / Probe / Logs
+  // through the same Veil actions API the web board /workspace/ops uses.
   Object.freeze({
-    id: "fleet.gaming", label: "GPU quiet (game on)", group: "fleet",
-    surfaces: ["tray", "palette"], fleet: "gaming", destructive: true,
+    id: "inference.open", label: "Inference ops widget…", group: "fleet",
+    surfaces: ["tray", "palette"],
+  }),
+  // The Disk Explorer (disk index contract, Surfaces lane): tree / search / dupes
+  // / proposals / shares over the caller's own indexed disks. Every destructive
+  // outcome is a proposal whose decision card a human answers -- never a verb here.
+  Object.freeze({
+    id: "disk.open", label: "Disk Explorer…", group: "go",
+    surfaces: ["tray", "palette"],
+  }),
+  // The Aither Browser (browser-window.cjs): a browser INSIDE the desk where an
+  // agent drives (MCP browser_* tools) while the owner watches and can take over,
+  // and where the owner browses with an "Ask about this page" panel.
+  Object.freeze({
+    id: "browser.open", label: "Open Aither Browser…", group: "go",
+    surfaces: ["tray", "palette"],
   }),
   Object.freeze({
-    id: "fleet.resume", label: "GPU resume (game off)", group: "fleet",
-    surfaces: ["tray", "palette"], fleet: "resume",
+    id: "fleet.gaming", label: "GPU sleep (game on)", group: "fleet",
+    surfaces: ["tray", "palette"], fleet: "gpu-sleep", destructive: true,
+  }),
+  Object.freeze({
+    id: "fleet.resume", label: "GPU wake (game off)", group: "fleet",
+    surfaces: ["tray", "palette"], fleet: "gpu-wake",
+  }),
+  // Model postures (owner, 2026-09-27): one click swaps what runs on the 5090 and the
+  // DGX Spark, through awmodels -- the same engine Claude Code / awsh reach as the
+  // models_status / models_use MCP tools. Switches are confirm-first.
+  Object.freeze({
+    id: "models.status", label: "Models: what is running where", group: "fleet",
+    surfaces: ["tray", "palette"], fleet: "models-status",
+  }),
+  Object.freeze({
+    id: "models.full-mesh", label: "Models: full mesh (DeepSeek split + drafter + gemma4)", group: "fleet",
+    surfaces: ["tray", "palette"], fleet: "models-full-mesh", destructive: true,
+  }),
+  Object.freeze({
+    id: "models.pool-fast", label: "Models: pool fast (DeepSeek max tok/s, no gemma4)", group: "fleet",
+    surfaces: ["tray", "palette"], fleet: "models-pool-fast", destructive: true,
+  }),
+  Object.freeze({
+    id: "models.pool-lean", label: "Models: pool lean (DeepSeek local + gemma4, no backends)", group: "fleet",
+    surfaces: ["tray", "palette"], fleet: "models-pool-lean", destructive: true,
   }),
   Object.freeze({
     id: "arc.status", label: "ARC: is it solving?", menuLabel: "Is it solving?", group: "arc",
@@ -418,6 +458,20 @@ const COMMANDS = Object.freeze([
     prompt: Object.freeze({ placeholder: "Slug of the draft to review and publish" }),
     whySingle: "Needs a typed slug; the palette is the only surface with a text field. "
       + "Opens the editor -- publishing itself is the human's click there.",
+  }),
+  Object.freeze({
+    // The browser extension. The label says what a click will do given the last
+    // `adk awconnect status` (awconnect-setup.cjs); main runs the adk command.
+    id: "awconnect.setup",
+    label: (ctx) => require("./awconnect-setup.cjs").setupLabel(ctx && ctx.awconnect),
+    group: "app", surfaces: ["tray", "palette"],
+  }),
+  // First-time setup of this machine as ONE window (owner, 2026-09-28: "WE NEED A
+  // BETTER WAY TO DO THIS" -- after being handed a python script and a terminal
+  // password prompt). setup-window.cjs; also the Start-menu shortcut (`--setup`).
+  Object.freeze({
+    id: "setup.open", label: "Set up Aither…", group: "app",
+    surfaces: ["tray", "palette", "jumplist"],
   }),
   Object.freeze({
     id: "about", label: "About Desk", group: "app",

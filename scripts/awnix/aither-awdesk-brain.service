@@ -1,0 +1,40 @@
+# aither-awdesk-brain.service -- the HEADLESS awdesk on the awnix fleet host: the
+# fleet brain. Bridge + MCP + fleet control only (electron/brain.cjs); no window,
+# no display, no decision-card polling, so it needs no WSLg and cannot duplicate
+# the Windows desk's cards. The Windows desk (D:\desk) keeps the overlay and the
+# cards and sends its fleet verbs here (fleet-control.cjs brainUrl, default
+# http://127.0.0.1:48931 via WSL localhost forwarding), falling back to its own
+# wsl.exe hop when this unit is down.
+#
+# Installed + enabled by: install-awdesk-awnix.sh --brain
+[Unit]
+Description=awdesk fleet brain (headless: bridge + MCP + fleet control) on the fleet host
+Documentation=file:///opt/aitheros/awdesk/scripts/awnix/README.md
+After=network-online.target aither-attach-fleet-data.service
+Wants=network-online.target
+ConditionPathExists=/opt/aitheros/awdesk/electron/brain.cjs
+
+[Service]
+Type=simple
+Environment=HOME=/root
+Environment=ELECTRON_RUN_AS_NODE=1
+Environment=AWDESK_FLEET_LOCAL=1
+Environment=AWDESK_PYTHON=python3
+Environment=DESK_BRIDGE_PORT=48931
+# AWDESK_BRIDGE_TOKEN_FILE (the Windows profile's harness_token) is written here
+# by the installer; without it the brain answers reads but refuses mutations (503)
+# and the Windows desk runs those locally.
+EnvironmentFile=-/etc/sysconfig/aither-awdesk-brain
+WorkingDirectory=/opt/aitheros/awdesk
+ExecStart=/opt/aitheros/awdesk/node_modules/electron/dist/electron /opt/aitheros/awdesk/electron/brain.cjs
+Restart=always
+RestartSec=5
+# exit 2 = misconfigured (AWDESK_FLEET_LOCAL unset): a restart cannot fix it.
+RestartPreventExitStatus=2
+Nice=5
+CPUWeight=50
+MemoryHigh=512M
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

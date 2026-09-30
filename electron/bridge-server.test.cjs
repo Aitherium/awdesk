@@ -648,3 +648,91 @@ test("desktop routes: absent without a handler (404), never an empty success", a
   context.after(() => bridge.close());
   assert.equal((await requestServer(address, { path: "/desktop/status" })).status, 404);
 });
+
+// ── awconnect: the pinned extension origin reaches the desk surfaces only ──
+const PINNED_EXT = "chrome-extension://hlmfknhcfhjjngckfpacgleffckpmphe";
+const OTHER_EXT = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+
+async function extBridge(context, events, spoken) {
+  const bridge = createBridgeServer({
+    host: "127.0.0.1",
+    port: 0,
+    onEvent: (event) => events.push(event),
+    bridgeToken: "test-token",
+    fleetHandler: (verb) => ({ ok: true, verb }),
+    commandHandler: async () => ({ ok: true, id: "c1", reply: "PONG" }),
+    speakHandler: async (req) => { spoken.push(req); return { ok: true }; },
+    desktopHandler: (mode) => ({ ok: true, mode }),
+    decisionsProvider: () => [{ id: "d-2345" }],
+  });
+  context.after(() => bridge.close());
+  return bridge.listen();
+}
+
+function postJson(address, path, origin, body) {
+  return requestServer(address, {
+    path,
+    method: "POST",
+    headers: { origin, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+test("awconnect: the pinned extension origin may /speak and post /events", async (context) => {
+  const events = [];
+  const spoken = [];
+  const address = await extBridge(context, events, spoken);
+  const speak = await postJson(address, "/speak", PINNED_EXT, { text: "hello from the browser" });
+  assert.equal(speak.status, 200);
+  assert.equal(spoken[0].text, "hello from the browser");
+  const page = await postJson(address, "/events", PINNED_EXT, {
+    type: "page", url: "https://example.com/a", title: "A", selection: "x".repeat(5000),
+  });
+  assert.equal(page.status, 202);
+  assert.equal(events[0].type, "awconnect.page");
+  assert.equal(events[0].selection.length, 4000);
+  const react = await postJson(address, "/events", PINNED_EXT, { type: "react", emotion: "happy" });
+  assert.equal(react.status, 202);
+  assert.deepEqual([events[1].type, events[1].animation], ["animation", "HAPPY"]);
+  const decisions = await requestServer(address, { path: "/decisions", headers: { origin: PINNED_EXT } });
+  assert.equal(decisions.status, 200);
+  const desk = await requestServer(address, { path: "/desktop/status", headers: { origin: PINNED_EXT } });
+  assert.equal(desk.status, 200);
+});
+
+test("awconnect: another extension id is refused on every desk surface", async (context) => {
+  const events = [];
+  const spoken = [];
+  const address = await extBridge(context, events, spoken);
+  assert.equal((await postJson(address, "/speak", OTHER_EXT, { text: "hi" })).status, 403);
+  assert.equal((await postJson(address, "/events", OTHER_EXT, { type: "react", emotion: "happy" })).status, 404);
+  assert.equal((await requestServer(address, { path: "/decisions", headers: { origin: OTHER_EXT } })).status, 403);
+  assert.equal((await requestServer(address, { path: "/desktop/status", headers: { origin: OTHER_EXT } })).status, 403);
+  assert.deepEqual([events.length, spoken.length], [0, 0]);
+});
+
+test("awconnect: fleet verbs and /command still refuse the extension without a bearer", async (context) => {
+  const address = await extBridge(context, [], []);
+  const down = await postJson(address, "/fleet/down", PINNED_EXT, {});
+  assert.equal(down.status, 403);
+  const cmd = await postJson(address, "/command", PINNED_EXT, { text: "stop everything" });
+  assert.equal(cmd.status, 403);
+  const status = await requestServer(address, { path: "/fleet/status", headers: { origin: PINNED_EXT } });
+  assert.equal(status.status, 403);
+});
+
+test("awconnect: a wildcard in AWDESK_TRUSTED_EXTENSION_IDS cannot widen the set", () => {
+  const { extensionOriginAllowed, trustedExtensionOrigins } = require("./bridge-server.cjs");
+  assert.equal(extensionOriginAllowed(PINNED_EXT, {}), true);
+  assert.equal(extensionOriginAllowed(OTHER_EXT, {}), false);
+  const env = { AWDESK_TRUSTED_EXTENSION_IDS: "*,chrome-extension://*" };
+  assert.equal(trustedExtensionOrigins(env).size, 0);
+  assert.equal(extensionOriginAllowed(PINNED_EXT, env), false);
+});
+
+test("awconnect: page events accept http(s) only and react refuses file clips", () => {
+  assert.equal(normalizeEvent({ type: "page", url: "javascript:alert(1)" }), null);
+  assert.equal(normalizeEvent({ type: "page", url: "file:///c:/x" }), null);
+  assert.equal(normalizeEvent({ type: "react", animation: "FILE:evil.vrma" }), null);
+  assert.equal(normalizeEvent({ type: "react", emotion: "__proto__" }), null);
+});

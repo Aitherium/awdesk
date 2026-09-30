@@ -1,6 +1,6 @@
 {
   "name": "awdesk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A realtime character presence for desktop voice experiences.",
   "author": {
     "name": "xikhar",
@@ -104,6 +104,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*.cjs",
+      "electron/**/*.{html,css,json,js,svg,png}",
       "!electron/**/*.test.cjs",
       "build/icon.png",
       "LICENSE",
@@ -134,10 +135,19 @@
         {
           "from": "native/bin/win32/desk-audio-listener.exe",
           "to": "native/win32/desk-audio-listener.exe"
+        },
+        {
+          "from": "../standalone/bootc/aither-setup.py",
+          "to": "aither-setup/aither-setup.py"
+        },
+        {
+          "from": "../standalone/bootc/aither-setup.json",
+          "to": "aither-setup/aither-setup.json"
         }
       ]
     },
     "nsis": {
+      "include": "build/installer.nsh",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,

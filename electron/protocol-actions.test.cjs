@@ -40,3 +40,8 @@ test("desk://overlay and desk://desktop map to the two desktop surfaces", () => 
   assert.deepEqual(parseProtocolUrl("desk://desktop"), [{ type: "desktop" }]);
   assert.deepEqual(parseProtocolUrl("desk:///aither-desktop"), [{ type: "desktop" }]);
 });
+
+test("desk://setup opens Set up Aither (the awnix [oobe] terminal's hand-off)", () => {
+  assert.deepEqual(parseProtocolUrl("desk://setup"), [{ type: "setup" }]);
+  assert.equal(parseProtocolUrl("other://setup"), null);
+});

@@ -67,6 +67,7 @@ if (/^\d{2,5}$/.test(String(process.env.DESK_CDP_PORT || ""))) {
   app.commandLine.appendSwitch("remote-debugging-port", String(process.env.DESK_CDP_PORT));
 }
 const decisionCards = require("./decision-cards.cjs");
+const signedApproval = require("./signed-approval.cjs");
 const {
   fetchChannels: fetchRelayChannels,
   fetchHistory: fetchRelayHistory,
@@ -83,7 +84,7 @@ const marketClient = require("./market-client.cjs");
 const { systemSnapshot } = require("./system-client.cjs");
 const { voiceSnapshot } = require("./voice-client.cjs");
 const { visionSnapshot } = require("./vision-client.cjs");
-const { routeDrop, synthesizeVerdict, stagePath, cleanupStage } = require("./drop-router.cjs");
+const { routeDrop, routeShare, synthesizeVerdict, stagePath, cleanupStage } = require("./drop-router.cjs");
 const { desktopSnapshot } = require("./browser-client.cjs");
 const { connectSnapshot } = require("./connect-client.cjs");
 const { createBridgeServer, DEFAULT_PORT } = require("./bridge-server.cjs");
@@ -112,6 +113,27 @@ const {
   getControl: getFleetControl,
   fleetSummaryCached,
 } = require("./fleet-window.cjs");
+// The compact always-on-top inference widget (owner, 2026-09-27): nodes + models
+// with live load, acting through the Veil /api/ops/actions door.
+const {
+  createInferenceOpsWindow,
+  setSignInHandler: setInferenceOpsSignInHandler,
+} = require("./inference-window.cjs");
+// "Set up Aither": first-time machine setup as one window (setup-window.cjs).
+// Required lazily in runCommand so a desk without it still boots.
+function setupWindow() {
+  return require("./setup-window.cjs");
+}
+// The Disk Explorer (disk index contract, Surfaces lane): the caller's own indexed
+// disks through the Veil /api/storage proxy on the signed-in session.
+const {
+  createDiskExplorerWindow,
+  setDiskExplorerSignInHandler,
+  getDiskExplorerClient,
+} = require("./disk-explorer-window.cjs");
+// The Aither Browser: a browser window inside the desk an agent drives (MCP
+// browser_* tools) while the owner watches and can take over.
+const browserWindow = require("./browser-window.cjs");
 const {
   createCommandWindow,
   ensureCommandIpc,
@@ -123,6 +145,7 @@ const {
 const { showConsole, focusPane, closeConsole, setInboxBadge } = require("./console-window.cjs");
 const { badgeBitmap, badgeTooltip, drawBadge } = require("./badge.cjs");
 const { voiceTrayItems } = require("./voice-tray-line.cjs");
+const awconnectSetup = require("./awconnect-setup.cjs");
 const {
   ensureSessionsIpc,
   createSessionsWindow,
@@ -348,6 +371,8 @@ let bridge = null;
 let isQuitting = false;
 let latestEvent = null;
 let latestListenerStatus = null;
+// Last `adk awconnect status` (awconnect-setup.cjs); null until the first probe.
+let latestAwconnectStatus = null;
 let latestVoiceState = null;
 let audioListener = null;
 let tray = null;
@@ -724,6 +749,13 @@ function handleBridgeEvent(event) {
     showOverlay();
   } else if (event.type === "animation") {
     showOverlay();
+  } else if (event.type === "awconnect.page") {
+    // "Send page to desk": the command agent gets it as context (page-context.cjs),
+    // and the avatar says in a bubble what it now has.
+    require("./page-context.cjs").setPage(event);
+    showOverlay();
+    sendBubble("slot0", `Got the page: ${event.title || event.url}`, { muted: true, durationMs: 4000 });
+    return;
   }
   emitToRenderer(event);
 }
@@ -935,6 +967,7 @@ function handleProtocolUrl(rawUrl) {
     else if (command.type === "fleet") createFleetWindow();
     else if (command.type === "command") createCommandWindow(getFleetControl(), { createFleetWindow });
     else if (command.type === "console") openConsole();
+    else if (command.type === "setup") runCommand("setup.open");
     else if (command.type === "overlay") showLivingDesktop();
     else if (command.type === "desktop") showDesktopApp();
     else if (command.type === "event") handleBridgeEvent(command.event);
@@ -1792,7 +1825,43 @@ function commandContext() {
     overlayGhost: desktop.ghost,
     overlaySolid: !desktop.transparent,
     deadAccels: [...deadAccels],
+    awconnect: latestAwconnectStatus,
   };
+}
+
+/** Re-ask adk where Awconnect is; the tray row and the command label read it. */
+async function refreshAwconnectStatus() {
+  try {
+    latestAwconnectStatus = await awconnectSetup.probeAwconnect({
+      execFile: require("node:child_process").execFile,
+    });
+  } catch (err) {
+    latestAwconnectStatus = { state: "unknown", line: "Awconnect: status unavailable", hits: [] };
+  }
+  if (tray) refreshTrayMenu();
+  return latestAwconnectStatus;
+}
+
+/** "Set up Awconnect" -- adk stages it, opens the extensions page, copies the path. */
+async function runAwconnectSetupCommand({ surface = "menu" } = {}) {
+  const verdict = await awconnectSetup.runAwconnectSetup({
+    execFile: require("node:child_process").execFile,
+    status: latestAwconnectStatus && latestAwconnectStatus.state !== "unknown"
+      ? latestAwconnectStatus : undefined,
+  });
+  console.log(`[desk] awconnect.setup: ${verdict.message}`);
+  if (surface !== "palette") {
+    void dialog.showMessageBox({
+      type: verdict.ok ? "info" : "warning",
+      title: "Awconnect",
+      message: verdict.message || (verdict.ok ? "Done" : "Failed"),
+    });
+  }
+  // The owner's two clicks land in the browser's profile files a few seconds
+  // later; re-probe then so the tray line catches up without a restart.
+  setTimeout(() => { void refreshAwconnectStatus(); }, 45_000).unref?.();
+  void refreshAwconnectStatus();
+  return verdict;
 }
 
 /**
@@ -1853,8 +1922,10 @@ function refreshTrayMenu() {
   // group rather than declared in the registry.
   const voiceRows = voiceTrayItems(latestListenerStatus, app.isPackaged);
   const appGroupAt = trayTemplate.findIndex((row) => row.label === "About Desk");
-  if (voiceRows.length && appGroupAt > 0) trayTemplate.splice(appGroupAt - 1, 0, ...voiceRows);
-  else trayTemplate.push(...voiceRows);
+  // Where the browser extension is (or that it is nowhere) -- same splice as voice.
+  const statusRows = [...voiceRows, ...awconnectSetup.awconnectTrayItems(latestAwconnectStatus)];
+  if (statusRows.length && appGroupAt > 0) trayTemplate.splice(appGroupAt - 1, 0, ...statusRows);
+  else trayTemplate.push(...statusRows);
   tray?.setContextMenu(Menu.buildFromTemplate(trayTemplate));
 }
 
@@ -1885,6 +1956,21 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "window.size.smaller": return void shrinkWindow();
     // U27's cast.open record -- the one door onto cast.json from tray/avatar-
     // menu/palette (see console-window.cjs's `cast` pane).
+    case "disk.open": {
+      // Same sign-in story as the inference widget: the cookie must land in the
+      // living-desktop partition, which opening the overlay does.
+      setDiskExplorerSignInHandler(() => showLivingDesktop());
+      createDiskExplorerWindow();
+      return;
+    }
+    case "browser.open": return void browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
+    case "inference.open": {
+      // Sign-in must land the cookie in the living-desktop PARTITION, which
+      // opening the overlay does (it syncs the portal session on open).
+      setInferenceOpsSignInHandler(() => showLivingDesktop());
+      createInferenceOpsWindow();
+      return;
+    }
     case "cast.open": {
       openConsole();
       focusPane("cast");
@@ -1919,7 +2005,9 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "avatar.frame-all": return void sendToAvatar("focus-avatar", { slotId: null });
     case "avatar.reset": return void sendToAvatar("reset-avatar-layout", { slotId });
     case "avatar.remove": return void (slotId && removeAvatarSlot(slotId));
+    case "setup.open": return void setupWindow().createSetupWindow({ openAwsh: () => openConsole() });
     case "about": return void showAboutDesk();
+    case "awconnect.setup": return runAwconnectSetupCommand({ surface });
     case "quit":
       isQuitting = true;
       return void app.quit();
@@ -2006,6 +2094,9 @@ function inboxCounts() {
 function deckState() {
   const counts = inboxCounts();
   return {
+    // The fleet HOST (the WSL distro) as last judged by fleet_host.py -- a cache
+    // read, never a wsl.exe spawn; null when nothing judged it in the last 15 min.
+    fleetHost: require("./fleet-host-cache.cjs").readFleetHostSummary(),
     decisions: openDecisions,
     openCount: counts.waiting,
     totalCount: counts.total,
@@ -2310,6 +2401,13 @@ async function fleetAction(action, { fresh = false } = {}) {
   return control.run(action);
 }
 
+/** The Aither Browser's "Ask about this page": the SAME CommandAgent every other
+ *  surface uses, forced onto the agent lane because the prompt carries untrusted
+ *  page text (a page saying "gpu wake" must never run a fleet verb). */
+function browserAskAgent(prompt) {
+  return getCommandAgent(getFleetControl()).run(prompt, { source: "browser", lane: "agent" });
+}
+
 /** ONE entry point for every command surface (window, bridge, MCP): the request
  *  lands on the single CommandAgent so history and queue are consistent. */
 async function commandAction(text, { source = "unknown" } = {}) {
@@ -2463,6 +2561,7 @@ function createTray() {
   trayBaseIcon = icon;
   tray = new Tray(icon);
   refreshTrayMenu();
+  void refreshAwconnectStatus();
   refreshNotificationBadges();
   tray.on("click", toggleOverlay);
   // The console is the front door; the tray is the doorbell.
@@ -2512,6 +2611,14 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     }
     if (argv.includes("--fleet")) {
       createFleetWindow();
+      return;
+    }
+    if (argv.includes("--inference")) {
+      runCommand("inference.open");
+      return;
+    }
+    if (argv.includes("--setup")) {
+      runCommand("setup.open");
       return;
     }
     if (argv.includes("--console")) {
@@ -2657,6 +2764,29 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     });
     ipcMain.handle("desk:deck-answer", (_event, payload) => {
       const { id, choice } = payload || {};
+      // A destructive card (awstorage proposal/plan) is approved only by a SIGNED
+      // answer, which needs a fresh passkey session: open Veil's /approve page
+      // (Windows Hello) instead of the unsigned `awask answer`. The route is
+      // decided from the card FILE, never from the renderer's payload. Reject and
+      // ordinary cards keep using awask. {pending:true} = the answer lands when
+      // the owner finishes in that window; the watcher then drops the card.
+      if (typeof id === "string" && typeof choice === "string" && choice) {
+        const raw = signedApproval.readCardRaw(id, decisionCards.storeDir());
+        if (signedApproval.answerRoute(raw, choice) === "window") {
+          try {
+            signedApproval.openApproveWindow({
+              BrowserWindow,
+              parent: deckWindow && !deckWindow.isDestroyed() ? deckWindow : null,
+              url: signedApproval.approveUrl(id, choice),
+              log: debugLog,
+            });
+            return { pending: true, via: "approve-window" };
+          } catch (err) {
+            debugLog(`[approve] window failed for ${id}: ${err && err.message}`);
+            return false;
+          }
+        }
+      }
       const ok = decisionCards.answerCard(id, choice);
       if (ok) {
         // The loop closes only if the SESSIONS see the answer: post it to the
@@ -3029,6 +3159,14 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       });
       return verdict;
     });
+    // "Share this" (disk index contract): the other thing a drop can mean. It
+    // PROPOSES a share of the original path from this node -- nothing is staged
+    // or published here; Genesis answers with a proposal (card-gated on a
+    // platform disk) and a human answers the card.
+    ipcMain.handle("desk:file-share", async (_event, filePath, opts) => routeShare(
+      { filePath, seal: Boolean(opts && opts.seal === true) },
+      { share: (body) => getDiskExplorerClient().share(body) },
+    ));
     ipcMain.handle("desk:vision-snapshot", () => visionSnapshot());
     ipcMain.handle("desk:desktop-snapshot", () => desktopSnapshot());
     ipcMain.handle("desk:connect-snapshot", () => connectSnapshot());
@@ -3440,6 +3578,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       // the bridge's speakHandler above.
       onSpeak: ({ text, voice, speed }) => speakAloud(text, voice, speed, undefined, "mcp:speak"),
       onAsk: ({ question, timeoutMs }) => voiceAsk.ask(question, { timeoutMs }),
+      // The Aither Browser's agent tools: the take-over gate runs before any of them.
+      onBrowser: (action, args) => browserWindow.browserAgent({ askAgent: browserAskAgent })(action, args),
       onDesktop: (surface) => {
         if (surface === "overlay") showLivingDesktop();
         else if (surface === "app") showDesktopApp();
@@ -3516,6 +3656,14 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     createTray();
     maybePromptForFirstCharacter();
     if (process.argv.includes("--fleet")) createFleetWindow();
+    if (process.argv.includes("--inference")) runCommand("inference.open");
+    if (process.argv.includes("--setup")) runCommand("setup.open");
+    // Not set up yet? Open "Set up Aither" by itself -- only when awnix is already
+    // RUNNING (a status read never boots it) and reports configured:false.
+    else setTimeout(() => {
+      setupWindow().maybeAutoOpen({ openAwsh: () => openConsole() })
+        .catch((error) => console.warn("[desk] setup auto-open check failed:", error?.message || error));
+    }, 15_000);
     if (process.argv.includes("--command")) createCommandWindow(getFleetControl(), { createFleetWindow });
     if (process.argv.includes("--overlay")) showLivingDesktop();
     if (process.argv.includes("--desktop")) showDesktopApp();

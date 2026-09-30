@@ -989,6 +989,7 @@ body {
   font-weight: 600;
 }
 .deck-drop-reason { color: #e06060; }
+.deck-drop-share { margin-left: auto; flex: 0 0 auto; font-size: 11px; padding: 2px 8px; }
 
 /* ── Wakes (awrise scheduled jobs) ───────────────────────────────────────── */
 /* The clock line sits ABOVE the rows on purpose: a list of enabled jobs with a
