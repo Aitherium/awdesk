@@ -35,6 +35,41 @@ function harnessToken() {
   }
 }
 
+const FOCUS_ROOT = process.env.AITHER_FOCUS_DIR || path.join(os.homedir(), ".aither", "focus");
+
+/** The goal / next step a Claude Code session left behind (written by the
+ *  session-focus.py Stop hook as <FOCUS_ROOT>/<project>/<session_id>.json).
+ *  A row that says WHAT it was doing is what makes resume pick the right one.
+ *  Missing or unreadable -> null, never a thrown error. */
+function focusFor(sessionId, root = FOCUS_ROOT) {
+  const sid = String(sessionId || "");
+  if (!sid || /[\\/]|\.\./.test(sid)) return null;
+  let projects = [];
+  try {
+    projects = fs.readdirSync(root);
+  } catch {
+    return null;
+  }
+  for (const proj of projects) {
+    try {
+      const rec = JSON.parse(fs.readFileSync(path.join(root, proj, `${sid}.json`), "utf8"));
+      if (rec && typeof rec === "object") {
+        return { goal: rec.first_ask || "", latest: rec.last_ask || "", next: rec.next || "", ended: rec.report || "" };
+      }
+    } catch {
+      // not in this project dir, or unreadable: keep looking
+    }
+  }
+  return null;
+}
+
+function withFocus(sessions, root = FOCUS_ROOT) {
+  return sessions.map((s) => {
+    const focus = focusFor(s.harness_session_id || s.session_id || s.id, root);
+    return focus ? { ...s, focus } : s;
+  });
+}
+
 async function listSessions({ fetchImpl = globalThis.fetch, timeoutMs = 6000 } = {}) {
   const token = harnessToken();
   if (!token) {
@@ -52,7 +87,7 @@ async function listSessions({ fetchImpl = globalThis.fetch, timeoutMs = 6000 } =
     }
     if (!res.ok) return { ok: false, sessions: [], note: `daemon answered ${res.status}` };
     const body = await res.json();
-    const sessions = Array.isArray(body.sessions) ? body.sessions : [];
+    const sessions = withFocus(Array.isArray(body.sessions) ? body.sessions : []);
     return { ok: true, sessions, note: `${sessions.length} session(s)` };
   } catch (error) {
     const why = error && error.name === "AbortError"
@@ -132,4 +167,4 @@ function sessionsBrief(result, { max = 15 } = {}) {
   );
 }
 
-module.exports = { listSessions, tailTranscript, harnessToken, sessionsBrief, DAEMON };
+module.exports = { listSessions, tailTranscript, harnessToken, sessionsBrief, focusFor, withFocus, DAEMON };

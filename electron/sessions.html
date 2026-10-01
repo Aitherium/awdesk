@@ -212,6 +212,16 @@ function renderList() {
     sum.className = "sum";
     sum.textContent = [split.where, s.last_activity_summary || s.cwd || ""].filter(Boolean).join("  ·  ");
     row.append(top, sum);
+    if (s.focus && (s.focus.next || s.focus.goal)) {
+      // session-focus.py: what this session was for and where it stopped
+      const focus = document.createElement("div");
+      focus.className = "sum";
+      focus.textContent = s.focus.next ? "next: " + s.focus.next : "goal: " + s.focus.goal;
+      focus.title = ["goal: " + (s.focus.goal || "?"), s.focus.latest ? "latest: " + s.focus.latest : "",
+        s.focus.ended ? "ended: " + s.focus.ended : ""].filter(Boolean).join("
+");
+      row.appendChild(focus);
+    }
     const badges = document.createElement("div");
     badges.className = "top";
     badges.append(steerPill(s.steer_capability));

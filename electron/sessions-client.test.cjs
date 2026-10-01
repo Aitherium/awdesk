@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { listSessions, tailTranscript } = require("./sessions-client.cjs");
+const { listSessions, tailTranscript, focusFor, withFocus } = require("./sessions-client.cjs");
 
 function fakeFetch({ status = 200, body = { sessions: [] }, throws = null } = {}) {
   return async (_url, opts) => {
@@ -120,4 +120,18 @@ test("sessionsBrief: working first, capped, and 'could not look' is never an emp
   assert.ok(brief.includes("awsh_send"));
   assert.match(sessionsBrief({ ok: false, sessions: [], note: "daemon unreachable" }), /unknown right now \(daemon unreachable\)/);
   assert.equal(sessionsBrief({ ok: true, sessions: [] }), "The owner has no active agent sessions right now.");
+});
+
+test("withFocus: attaches the session-focus record by session id, skips missing/broken", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "focus-"));
+  fs.mkdirSync(path.join(root, "c-repo"));
+  fs.writeFileSync(path.join(root, "c-repo", "abc.json"), JSON.stringify({ first_ask: "fix login", next: "ship it" }));
+  fs.writeFileSync(path.join(root, "c-repo", "bad.json"), "{broken");
+  const rows = withFocus([{ id: "abc" }, { id: "bad" }, { id: "none" }], root);
+  assert.deepEqual(rows[0].focus, { goal: "fix login", latest: "", next: "ship it", ended: "" });
+  assert.equal(rows[1].focus, undefined);
+  assert.equal(rows[2].focus, undefined);
+  assert.equal(focusFor("../escape", root), null);
+  assert.equal(focusFor("..\\escape", root), null);
+  assert.equal(focusFor("a\\b", root), null);
 });
