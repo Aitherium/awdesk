@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 - 2026-10-01
+
+- The Sessions pane shows what each Claude Code session was for and its next step
+  (hover a row for the latest ask and where it stopped), from the session-focus
+  records.
+
 ## 0.1.3 - 2026-09-29
 
 - Same as 0.1.2, which never shipped: its release build failed on 7 lint errors,

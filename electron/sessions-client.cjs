@@ -44,7 +44,7 @@ const FOCUS_ROOT = process.env.AITHER_FOCUS_DIR || path.join(os.homedir(), ".ait
 function focusFor(sessionId, root = FOCUS_ROOT) {
   const sid = String(sessionId || "");
   if (!sid || /[\\/]|\.\./.test(sid)) return null;
-  let projects = [];
+  let projects;
   try {
     projects = fs.readdirSync(root);
   } catch {
