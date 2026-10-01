@@ -27,6 +27,10 @@
   label.opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border: 1px solid var(--line); border-radius: 8px; margin: 8px 0; background: var(--panel); cursor: pointer; }
   label.opt small { display: block; color: var(--muted); margin-top: 2px; }
   label.opt.disabled { opacity: .5; cursor: default; }
+  /* Native radios/checkboxes render a near-invisible dot on this dark theme: colour them and
+     outline the chosen card so the current choice is readable at a glance. */
+  label.opt input[type=radio], label.opt input[type=checkbox] { accent-color: var(--brand); width: 16px; height: 16px; margin: 2px 0 0; flex: none; }
+  label.opt:has(input:checked) { border-color: var(--brand); }
   input[type=text], input[type=password], input[type=url] { width: 100%; padding: 7px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font: inherit; }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0; }
   .field { margin: 8px 0; }
