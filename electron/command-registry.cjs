@@ -190,9 +190,24 @@ const COMMANDS = Object.freeze([
     group: "desktop", surfaces: ["tray", "avatar-menu", "palette"],
     enabled: (ctx = {}) => Boolean(ctx.overlayOpen),
   }),
+  // Owner, 2026-10-01: "AITHERDESKTOP DOESNT SHOW ME AS SIGNED IN ... THERE IS NOWHERE
+  // TO EVEN SIGN IN". The row now SAYS who the AitherDesktop window and the overlay
+  // are signed in as (`ctx.account`, living-desktop-window.cjs accountStatus()), and
+  // the click signs in BOTH windows (desk-session.cjs: auth.json, then the system
+  // browser's idp.aitherium.com session -- nothing typed).
   Object.freeze({
-    id: "desktop.signin", label: "AitherOS Online: sign in…", menuLabel: "Sign in…",
-    group: "desktop", surfaces: ["tray", "avatar-menu", "palette"],
+    id: "desktop.signin", group: "desktop", surfaces: ["tray", "avatar-menu", "palette"],
+    label: (ctx = {}) => (ctx.account && ctx.account.signedIn
+      ? `AitherOS Online: signed in as ${ctx.account.username || "you"} (refresh)`
+      : "AitherOS Online: sign in…"),
+    menuLabel: (ctx = {}) => (ctx.account && ctx.account.signedIn
+      ? `Signed in as ${ctx.account.username || "you"}`
+      : "Sign in…"),
+  }),
+  Object.freeze({
+    id: "desktop.signout", label: "AitherOS Online: sign out", menuLabel: "Sign out",
+    group: "desktop", surfaces: ["tray", "palette"],
+    when: (ctx = {}) => Boolean(ctx.account && ctx.account.signedIn),
   }),
   Object.freeze({
     id: "avatar.toggle", group: "avatar", accel: "Ctrl+Shift+A",

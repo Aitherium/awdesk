@@ -220,6 +220,10 @@ const {
   setSolidBackground,
   reloadLivingDesktop,
   beginSignIn: beginDesktopSignIn,
+  signOut: signOutDesktop,
+  accountStatus: desktopAccount,
+  onAccountChange: onDesktopAccountChange,
+  refreshAccount: refreshDesktopAccount,
   ensureDesktopSession,
   portalLoginUrl,
 } = require("./living-desktop-window.cjs");
@@ -1826,6 +1830,8 @@ function commandContext() {
     overlaySolid: !desktop.transparent,
     deadAccels: [...deadAccels],
     awconnect: latestAwconnectStatus,
+    // Who the AitherDesktop window + overlay are signed in as (never a token).
+    account: desktopAccount(),
   };
 }
 
@@ -1999,6 +2005,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "desktop.overlay.solid": return void setSolidBackground(desktopStatus().overlay.transparent);
     case "desktop.overlay.reload": return void reloadLivingDesktop();
     case "desktop.signin": return void beginDesktopSignIn();
+    case "desktop.signout": return void signOutDesktop();
     case "window.outline": return void toggleWindowOutline();
     case "layout.reset-all": return void resetAvatarLayout();
     // The body verbs: `slotId` is the body that was right-clicked.
@@ -2563,6 +2570,10 @@ function createTray() {
   tray = new Tray(icon);
   refreshTrayMenu();
   void refreshAwconnectStatus();
+  // The sign-in row names the account: learn it at boot (cookie + auth.json, no
+  // window), and re-render the tray whenever it changes.
+  onDesktopAccountChange(() => { if (tray) refreshTrayMenu(); });
+  void refreshDesktopAccount().catch(() => {});
   refreshNotificationBadges();
   tray.on("click", toggleOverlay);
   // The console is the front door; the tray is the doorbell.

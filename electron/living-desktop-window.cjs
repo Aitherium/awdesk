@@ -156,28 +156,81 @@ function stopGhostLoop() {
 
 // ── Session (why the shell shows "sign in" instead of david@) ─────────────────────
 // This window is its OWN browser profile (the persist: partition) — the login living in
-// the owner's normal Chrome never reaches it. One sign-in INSIDE the overlay sets
-// aither_auth_token on Domain=.aitherium.com in the partition and persists 30 days.
-async function hasSessionCookie() {
+// the owner's normal Chrome never reaches it. desk-session.cjs decides what the
+// partition's aither_auth_token should be: the cookie it holds if Identity still
+// accepts it, else the user's own login from ~/.aither/auth.json (adk login / Set up
+// Aither), else the vault's portal token (the owner box's last resort). A cookie is
+// never trusted on presence alone: a revoked one used to block every refresh.
+const deskSession = require("./desk-session.cjs");
+
+/** Who the windows are signed in as. Never carries a token. */
+let account = { signedIn: false, username: "", source: "", state: "unknown", checkedAt: 0 };
+const ACCOUNT_RECHECK_MS = 5 * 60 * 1000;
+const accountListeners = new Set();
+function setAccount(next) {
+  const changed = next.signedIn !== account.signedIn || next.username !== account.username;
+  account = { ...next, checkedAt: Date.now() };
+  if (changed) {
+    for (const fn of accountListeners) {
+      try {
+        fn(accountStatus());
+      } catch {
+        /* a listener must never break the session plane */
+      }
+    }
+  }
+}
+function accountStatus() {
+  return {
+    signedIn: account.signedIn, username: account.username, source: account.source, state: account.state,
+    line: deskSession.accountLine(account),
+  };
+}
+function onAccountChange(fn) {
+  accountListeners.add(fn);
+  return () => accountListeners.delete(fn);
+}
+
+async function partitionCookieToken() {
   try {
     const cookies = await session
       .fromPartition(PARTITION)
-      .cookies.get({ name: "aither_auth_token" });
-    return cookies.some((c) => (c.domain || "").includes("aitherium.com") && c.value);
+      .cookies.get({ name: deskSession.COOKIE_NAME });
+    const hit = cookies.find((c) => (c.domain || "").includes("aitherium.com") && c.value);
+    return hit ? hit.value : "";
   } catch (err) {
     log(`cookie check failed: ${err}`);
-    return false;
+    return "";
   }
 }
 
-// ── Automatic session link (owner-approved 2026-08-25) ─────────────────────────────
-// The owner runs the FLEET on this box and the vault holds the platform's portal
-// session token (AITHER_PORTAL_TOKEN — the token portal login mints). Injecting it as
-// aither_auth_token into this partition makes the overlay shell render signed-in with
-// no login click, and it refreshes every time the overlay opens. The token is
-// materialized with the sanctioned vault reader (--to-file, never stdout) into a temp
-// file read and deleted here — the value never reaches a transcript, a log, or an env
-// var.
+async function hasSessionCookie() {
+  return Boolean(await partitionCookieToken());
+}
+
+async function setPartitionToken(token, expiresAt = null) {
+  await session.fromPartition(PARTITION).cookies.set(deskSession.cookieDetails(token, { expiresAt }));
+}
+
+async function clearPartitionToken() {
+  const ses = session.fromPartition(PARTITION);
+  // Every variant: the apex host-only shadow and the canonical domain cookie.
+  for (const url of ["https://aitherium.com", "https://www.aitherium.com", "https://api.aitherium.com"]) {
+    try {
+      await ses.cookies.remove(url, deskSession.COOKIE_NAME);
+    } catch {
+      /* not there */
+    }
+  }
+}
+
+// ── Vault rung (owner-approved 2026-08-25) ────────────────────────────────────────
+// On the owner's own fleet box the vault holds the platform's portal session token
+// (AITHER_PORTAL_TOKEN). It is now the LAST rung -- after the cookie and the user's own
+// auth.json -- and runs only when both are missing or dead. Materialized with the
+// sanctioned vault reader (--to-file, never stdout) into a temp file read and deleted
+// here; the value never reaches a transcript, a log, or an env var. On a machine with
+// no monorepo checkout the reader is absent and this rung yields nothing.
 const PORTAL_TOKEN_FILE = path.join(os.tmpdir(), "desk-portal-token");
 // The vault reader executes in the DISTRO (WSL) and refuses Windows-style --to-file
 // targets ("C:/... is a relative directory named C:") — hand it the same physical
@@ -185,10 +238,9 @@ const PORTAL_TOKEN_FILE = path.join(os.tmpdir(), "desk-portal-token");
 const PORTAL_TOKEN_FILE_DISTRO =
   "/mnt/c/" + PORTAL_TOKEN_FILE.replace(/\\/g, "/").replace(/^[A-Za-z]:\//, "");
 const VAULT_READER = "C:\\AitherOS-Fresh\\AitherOS\\dev\\tools\\aither_secret.py";
-async function syncPortalSessionCookie() {
-  if (await hasSessionCookie()) return;
-  // Cap the reader wait: opening the overlay must never stall on a slow/hung
-  // vault — the window just renders signed-out and the next open retries.
+async function readVaultPortalToken() {
+  if (!fs.existsSync(VAULT_READER)) return "";
+  // Cap the reader wait: opening a window must never stall on a slow/hung vault.
   await new Promise((resolve) => {
     const { spawn } = require("node:child_process");
     const child = spawn(
@@ -197,7 +249,7 @@ async function syncPortalSessionCookie() {
       { stdio: "ignore", windowsHide: true },
     );
     const cap = setTimeout(() => {
-      log("portal token reader exceeded 5s — opening signed-out, will retry next open");
+      log("portal token reader exceeded 5s — skipping the vault rung this time");
       try {
         child.kill();
       } catch {
@@ -217,37 +269,118 @@ async function syncPortalSessionCookie() {
   try {
     const token = fs.readFileSync(PORTAL_TOKEN_FILE, "utf-8").trim();
     fs.unlinkSync(PORTAL_TOKEN_FILE);
-    if (!token) return;
-    await session.fromPartition(PARTITION).cookies.set({
-      url: "https://aitherium.com",
-      name: "aither_auth_token",
-      value: token,
-      domain: ".aitherium.com",
-      path: "/",
-      secure: true,
-      httpOnly: true,
-    });
-    log("portal session token injected into overlay partition (from vault)");
-  } catch (err) {
-    log(`portal token sync failed: ${err}`);
+    return token;
+  } catch {
     try {
       fs.unlinkSync(PORTAL_TOKEN_FILE);
     } catch {
       /* already gone */
     }
+    return "";
   }
 }
 
-let signInPoll = null;
+/**
+ * Make the partition signed-in if any rung can, and record who it is. `force`
+ * re-validates even a cookie checked a moment ago (Sign in, an explicit reload).
+ */
+// An explicit Sign out holds until an explicit Sign in: without this the next window
+// open would re-link auth.json and the owner could never leave. (In-run only; a desk
+// restart links again, the way every other local tool reads auth.json.)
+let userSignedOut = false;
+
+async function syncPortalSessionCookie({ force = false, useVault = true } = {}) {
+  const cookieToken = await partitionCookieToken();
+  if (userSignedOut && !force) return accountStatus();
+  if (!force && cookieToken && account.signedIn && Date.now() - account.checkedAt < ACCOUNT_RECHECK_MS) {
+    return accountStatus();
+  }
+  let verdict;
+  try {
+    verdict = await deskSession.resolveSession({
+      cookieToken,
+      authStore: () => deskSession.readAuthStoreToken(),
+      vault: useVault ? readVaultPortalToken : async () => "",
+      check: (t) => deskSession.checkToken(t),
+    });
+  } catch (err) {
+    log(`session resolve failed: ${err}`);
+    return accountStatus();
+  }
+  try {
+    if (verdict.action === "set") {
+      await setPartitionToken(verdict.token, verdict.expiresAt);
+      log(`session set in the window partition from ${verdict.source} (${verdict.state})`);
+    } else if (verdict.action === "clear") {
+      await clearPartitionToken();
+      log("the window partition's session was rejected by Identity and nothing replaced it — cleared");
+    }
+  } catch (err) {
+    log(`session write failed: ${err}`);
+  }
+  const signedIn = verdict.action === "keep" || verdict.action === "set";
+  setAccount({ signedIn, username: verdict.username || "", source: verdict.source, state: verdict.state });
+  return accountStatus();
+}
+
+/** Reload every open window so the shell re-reads the session it now has. */
+function reloadSignedInWindows() {
+  if (isOpen()) void desktopWin.loadURL(urlFor(transparentMode));
+  if (isAppOpen()) void appWin.loadURL(desktopAppUrl());
+}
+
+let signInRunning = null;
+/**
+ * "Sign in…" -- for BOTH windows, the AitherDesktop app as much as the overlay.
+ * 1. A login this machine already has (auth.json / vault) is used with no browser.
+ * 2. Otherwise the desk's own OIDC sign-in opens in the SYSTEM browser, which already
+ *    holds the idp.aitherium.com session, so nothing is typed; the new desk session
+ *    goes to auth.json and into the windows.
+ * 3. If that cannot run, the old in-window aitherium.com/login page, in the window
+ *    the owner is looking at, with a cookie watch that returns him to the desktop.
+ */
 function beginSignIn() {
-  if (!isOpen()) showLivingDesktop();
-  void desktopWin.loadURL(PORTAL_LOGIN_URL);
+  if (signInRunning) return signInRunning;
+  userSignedOut = false;
+  signInRunning = (async () => {
+    try {
+      const now = await syncPortalSessionCookie({ force: true });
+      if (now.signedIn) {
+        log(`sign-in: already signed in (${now.source}) — reloading the windows`);
+        if (!isOpen() && !isAppOpen()) showDesktopApp();
+        else reloadSignedInWindows();
+        return now;
+      }
+      log("sign-in: no usable login on this machine — opening the browser sign-in");
+      const got = await deskSession.signInWithBrowser({ openExternal: (url) => shell.openExternal(url) });
+      await setPartitionToken(got.token, got.expiresAt);
+      got.token = null;
+      setAccount({ signedIn: true, username: got.username, source: `browser:${got.via}`, state: "valid" });
+      log(`sign-in: signed in via the browser (${got.via}); auth.json updated`);
+      if (!isOpen() && !isAppOpen()) showDesktopApp();
+      else reloadSignedInWindows();
+      return accountStatus();
+    } catch (err) {
+      log(`sign-in: browser sign-in did not complete (${err && err.code ? err.code : err}) — in-window login`);
+      signInInWindow();
+      return accountStatus();
+    } finally {
+      signInRunning = null;
+    }
+  })();
+  return signInRunning;
+}
+
+let signInPoll = null;
+function signInInWindow() {
+  const target = isAppOpen() ? appWin : showLivingDesktop();
+  void target.loadURL(PORTAL_LOGIN_URL);
   // Portal's open-redirect guard strips foreign returnUrls, so instead of trusting a
-  // bounce-back we watch for the cookie to appear and return to the overlay ourselves.
+  // bounce-back we watch for the cookie to appear and return to the desktop ourselves.
   if (signInPoll) clearInterval(signInPoll);
   const startedAt = Date.now();
   signInPoll = setInterval(async () => {
-    if (!isOpen() || Date.now() - startedAt > 10 * 60 * 1000) {
+    if ((!isOpen() && !isAppOpen()) || Date.now() - startedAt > 10 * 60 * 1000) {
       clearInterval(signInPoll);
       signInPoll = null;
       return;
@@ -255,10 +388,21 @@ function beginSignIn() {
     if (await hasSessionCookie()) {
       clearInterval(signInPoll);
       signInPoll = null;
-      log("sign-in detected (aither_auth_token set in partition) — returning to overlay");
-      if (isOpen()) void desktopWin.loadURL(urlFor(transparentMode));
+      log("sign-in detected (aither_auth_token set in partition) — returning to the desktop");
+      await syncPortalSessionCookie({ force: true, useVault: false });
+      reloadSignedInWindows();
     }
   }, 2000);
+}
+
+/** Sign the WINDOWS out (the partition cookie). auth.json is adk's; it stays. */
+async function signOut() {
+  userSignedOut = true;
+  await clearPartitionToken();
+  setAccount({ signedIn: false, username: "", source: "", state: "signed-out" });
+  log("signed out of the window partition");
+  reloadSignedInWindows();
+  return accountStatus();
 }
 
 function log(line) {
@@ -398,12 +542,12 @@ function createWindow() {
   log(`opening ${target} (transparent=${transparentMode}, ghost=${ghostMode})`);
   // Link the session BEFORE the first paint so the shell never flashes signed-out.
   void (async () => {
-    await syncPortalSessionCookie();
+    const acct = await syncPortalSessionCookie();
     if (win.isDestroyed()) return;
     await win.loadURL(target);
-    void hasSessionCookie().then((signedIn) =>
-      log(signedIn ? "session cookie present — shell will see the signed-in account" : "NO session cookie — shell renders signed-out; use Sign in from the Aitheros Online menu"),
-    );
+    log(acct.signedIn
+      ? `session linked (${acct.source}) — shell will see ${acct.username || "the signed-in account"}`
+      : "NO usable session — shell renders signed-out; use Sign in from the tray or the AitherOS Online menu");
   })();
   startGhostLoop();
   return win;
@@ -606,8 +750,14 @@ function closeDesktopApp() {
  * the marketing landing page inside his own console (screenshot, 2026-09-20).
  */
 async function ensureDesktopSession() {
-  await syncPortalSessionCookie();
-  return hasSessionCookie();
+  const acct = await syncPortalSessionCookie();
+  return acct.signedIn;
+}
+
+/** Refresh who the windows are signed in as WITHOUT opening one (tray label at boot).
+ *  Cookie and auth.json only: the vault rung waits until a window actually opens. */
+function refreshAccount() {
+  return syncPortalSessionCookie({ useVault: false });
 }
 
 module.exports = {
@@ -629,6 +779,10 @@ module.exports = {
   setGhostMode,
   reloadLivingDesktop,
   beginSignIn,
+  signOut,
+  accountStatus,
+  onAccountChange,
+  refreshAccount,
   setDeskStateProvider,
   pushDeskState,
   isOpen,
