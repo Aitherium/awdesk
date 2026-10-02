@@ -653,3 +653,25 @@ test("validateCast + resolveActor: a physics block with one bad knob is DROPPED 
   const unknown = cast.validateCast({ version: 1, defaults: { physics: { bounce: 2 } } });
   assert.ok(unknown.problems.some((p) => /unknown key/.test(p.reason)), "an unknown knob is reported, never silently kept");
 });
+
+test('"" is the unset that survives a sync: the built-in answers and nothing is reported', () => {
+  // The settings store deletes a null, and a deleted key never overwrites this
+  // machine's copy on pull -- so the web page clears a field by writing "".
+  const snapshot = {
+    version: 1,
+    voice: { defaultVoice: "", defaultSpeed: "" },
+    models: { commandProfile: "" },
+    prompts: { commandPersona: "", commandAppend: "" },
+    vision: { imagePrompt: "" },
+  };
+  const desk = cast.resolveDesk(snapshot, { env: {} });
+  assert.equal(desk.prompts.commandAppend, null);
+  assert.equal(desk.prompts.commandAppendFrom, "builtin");
+  assert.equal(desk.prompts.commandPersona, null);
+  assert.equal(desk.vision.imagePrompt, null);
+  assert.equal(desk.models.commandProfile, "deepseek");
+  assert.deepEqual(desk.problems, []);
+  assert.deepEqual(cast.validateCast(snapshot).problems, []);
+  // ...and a string of spaces is still a mistake worth naming, not an unset.
+  assert.ok(cast.resolveDesk({ version: 1, prompts: { commandAppend: "   " } }, { env: {} }).problems.length === 1);
+});

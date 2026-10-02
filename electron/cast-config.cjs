@@ -640,7 +640,9 @@ function validateRecord(raw, fields, prefix, problems, { extraKeys = [] } = {}) 
       });
       continue;
     }
-    if (value === null || value === undefined) continue; // explicit "unset"
+    // "" is the unset that survives a sync: the settings store deletes a null,
+    // and a deleted key never overwrites another machine's copy.
+    if (value === null || value === undefined || value === "") continue; // explicit "unset"
     const verdict = validate(value);
     if (!verdict.ok) {
       pushProblem(problems, prefix, key, value, verdict);
@@ -1319,7 +1321,7 @@ function readField(record, field, prefix, problems, validate) {
   const rec = plainObject(record);
   if (!(field in rec)) return null;
   const value = rec[field];
-  if (value === null || value === undefined) return null; // explicit "unset"
+  if (value === null || value === undefined || value === "") return null; // explicit "unset"
   const verdict = (validate || ACTOR_FIELDS[field])(value);
   if (!verdict.ok) {
     pushProblem(problems, prefix, field, value, verdict);
