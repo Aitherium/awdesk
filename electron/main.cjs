@@ -3086,6 +3086,19 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // Account: link this machine to aitherium.com through `adk link` (awdk owns
     // the device grant, the shared sign-in and the role-aware bundle).
     ipcMain.handle("desk:link-status", async () => require("./link-client.cjs").linkStatus());
+    // Connections: is every piece (account, gateway, adk, awsh, awconnect) joined up?
+    ipcMain.handle("desk:connections", async () => require("./connections.cjs").connections({
+      linkStatus: () => require("./link-client.cjs").linkStatus(),
+      awconnect: latestAwconnectStatus,
+    }));
+    ipcMain.handle("desk:connections-run", async (_event, id) => {
+      const name = String(id || "");
+      if (!require("./connections.cjs").RUNNABLE.includes(name) || name === "link") {
+        return { ok: false, error: `${name} cannot run from Connections` };
+      }
+      if (name === "console.open") { openConsole(); focusPane("sessions"); return { ok: true }; }
+      return (await runCommand(name, undefined, { surface: "palette" })) || { ok: true };
+    });
     ipcMain.handle("desk:link-start", async () => {
       const res = await require("./link-client.cjs").linkStart();
       const url = res.ok && res.data && res.data.approve_url;

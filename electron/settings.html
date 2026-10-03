@@ -45,6 +45,12 @@
   <div class="bar"><div class="title">Settings</div></div>
   <div id="content">
     <section>
+      <h2>Connections</h2>
+      <p class="lede">Every piece of Aither on this machine, and whether it is joined up right now.</p>
+      <div id="connections"><span class="note">checking…</span></div>
+    </section>
+
+    <section>
       <h2>Account</h2>
       <p class="lede">Link this machine to aitherium.com. One sign-in for awdesk, awsh and adk; what you get depends on your role.</p>
       <div class="row">
@@ -382,6 +388,45 @@
 
   refresh();
 })();
+
+  // ── Connections ──
+  async function refreshConnections() {
+    const host = document.getElementById("connections");
+    let rows = [];
+    try { rows = await bridge.connections(); } catch (error) { rows = []; }
+    host.textContent = "";
+    if (!Array.isArray(rows) || !rows.length) {
+      host.textContent = "Could not check connections.";
+      return;
+    }
+    for (const row of rows) {
+      const line = document.createElement("div");
+      line.className = "row";
+      const mark = document.createElement("span");
+      mark.textContent = row.ok ? "●" : "○";
+      mark.style.cssText = `width:16px;color:${row.ok ? "var(--green, #4ade80)" : "var(--amber, #f59e0b)"}`;
+      const text = document.createElement("span");
+      text.style.flex = "1";
+      text.textContent = `${row.label} — ${row.detail}`;
+      line.append(mark, text);
+      if (row.action) {
+        const button = document.createElement("button");
+        button.className = "small";
+        button.textContent = row.action.label;
+        button.addEventListener("click", async () => {
+          if (row.action.id === "link") { linkBtn.click(); return; }
+          button.disabled = true;
+          await bridge.runConnection(row.action.id);
+          button.disabled = false;
+          refreshConnections();
+        });
+        line.appendChild(button);
+      }
+      host.appendChild(line);
+    }
+  }
+  refreshConnections();
+  setInterval(refreshConnections, 30_000);
 </script>
 </body>
 </html>

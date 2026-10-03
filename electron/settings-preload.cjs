@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld("settingsBridge", {
   setHotkey: (id, accel) => ipcRenderer.invoke("desk:settings-set-hotkey", id, accel),
   clearHotkey: (id) => ipcRenderer.invoke("desk:settings-set-hotkey", id, ""),
   linkStatus: () => ipcRenderer.invoke("desk:link-status"),
+  connections: () => ipcRenderer.invoke("desk:connections"),
+  runConnection: (id) => ipcRenderer.invoke("desk:connections-run", String(id || "")),
   linkStart: () => ipcRenderer.invoke("desk:link-start"),
   linkPoll: (deviceCode) => ipcRenderer.invoke("desk:link-poll", deviceCode),
   bricksList: () => ipcRenderer.invoke("desk:bricks-list"),
