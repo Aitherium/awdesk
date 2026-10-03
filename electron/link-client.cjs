@@ -27,31 +27,62 @@ function adkBin() {
   }
 }
 
-/** Run `adk link <args> --json`; resolves {ok, data} or {ok:false, error}. */
-function runLink(args, { execFileImpl = execFile, bin = adkBin(), timeoutMs = 30000 } = {}) {
+/** The interpreter for the `python -m adk.cli` fallback (same rule as awconnect-setup.cjs). */
+function pythonBin() {
+  return process.env.AITHER_PYTHON || (process.platform === "win32" ? "python" : "python3");
+}
+
+/** A spawn that never STARTED (vs. adk that ran and failed). Windows reports a
+ *  launcher it refuses to execute as UNKNOWN (-4094) or EACCES. */
+function spawnFailed(error) {
+  return Boolean(error && ["UNKNOWN", "EACCES", "ENOENT", "EPERM"].includes(error.code));
+}
+
+/** The JSON object in adk's stdout (it may print an update notice first). */
+function parseJson(stdout) {
+  const text = String(stdout || "").trim();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    const at = text.indexOf("{");
+    if (at < 0) return null;
+    try { return JSON.parse(text.slice(at)); } catch { return null; }
+  }
+}
+
+function runOnce(execFileImpl, file, argv, timeoutMs) {
   return new Promise((resolve) => {
-    execFileImpl(
-      bin,
-      ["link", ...args, "--json"],
-      { timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 },
-      (error, stdout, stderr) => {
-        let data = null;
-        try {
-          data = JSON.parse(String(stdout || "").trim() || "null");
-        } catch {
-          /* judged below */
-        }
-        if (data && typeof data === "object") {
-          const ok = data.ok !== false;
-          return resolve(ok ? { ok: true, data } : { ok: false, data, error: data.error || "failed" });
-        }
-        const why = error
-          ? (error.code === "ENOENT" ? "adk is not installed or not on PATH" : String(error.message || error))
-          : "adk link returned no JSON";
-        return resolve({ ok: false, error: `${why}${stderr ? `: ${String(stderr).slice(-300)}` : ""}` });
-      },
-    );
+    execFileImpl(file, argv, { timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 },
+      (error, stdout, stderr) => resolve({ error, stdout, stderr }));
   });
+}
+
+/**
+ * Run `adk link <args> --json`; resolves {ok, data} or {ok:false, error}.
+ *
+ * Owner, 2026-10-03: the Link button did nothing and Connections said "could not
+ * check (spawn UNKNOWN)". An adk upgrade had rewritten the pip launcher adk.exe at
+ * 11:54 and Windows refused to execute it ("Permission denied") while
+ * `python -m adk.cli` ran fine. A launcher that will not START is now retried
+ * through the interpreter -- the path awconnect-setup.cjs already uses.
+ */
+async function runLink(args, { execFileImpl = execFile, bin = adkBin(), timeoutMs = 30000 } = {}) {
+  const argv = ["link", ...args, "--json"];
+  let run = await runOnce(execFileImpl, bin, argv, timeoutMs);
+  if (spawnFailed(run.error)) {
+    run = await runOnce(execFileImpl, pythonBin(), ["-m", "adk.cli", ...argv], timeoutMs);
+  }
+  const { error, stdout, stderr } = run;
+  const data = parseJson(stdout);
+  if (data && typeof data === "object") {
+    const ok = data.ok !== false;
+    return ok ? { ok: true, data } : { ok: false, data, error: data.error || "failed" };
+  }
+  const why = error
+    ? (error.code === "ENOENT" ? "adk is not installed or not on PATH" : String(error.message || error))
+    : "adk link returned no JSON";
+  return { ok: false, error: `${why}${stderr ? `: ${String(stderr).slice(-300)}` : ""}` };
 }
 
 const linkStatus = (opts) => runLink(["status"], opts);

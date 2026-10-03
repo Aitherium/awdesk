@@ -45,6 +45,28 @@ test("a poll that failed exits non-zero but its JSON verdict is still read", asy
   assert.deepEqual(fx.calls[0].argv, ["link", "poll", "dc-0123456789", "--json"]);
 });
 
+test("a launcher Windows refuses to start (spawn UNKNOWN) is retried as python -m adk.cli", async () => {
+  // 2026-10-03: an adk upgrade left adk.exe un-executable; the Link button did nothing.
+  const calls = [];
+  const impl = (bin, argv, opts, cb) => {
+    calls.push({ bin, argv });
+    if (calls.length === 1) {
+      return setImmediate(() => cb(Object.assign(new Error("spawn UNKNOWN"), { code: "UNKNOWN" }), "", ""));
+    }
+    return setImmediate(() => cb(null, "adk 3.8.49 is available\n" + JSON.stringify({ linked: false, signed_in: true }), ""));
+  };
+  const res = await linkStatus({ execFileImpl: impl, bin: "C:/x/adk.exe" });
+  assert.equal(res.ok, true, res.error);
+  assert.equal(res.data.signed_in, true);
+  assert.deepEqual(calls[1].argv, ["-m", "adk.cli", "link", "status", "--json"]);
+});
+
+test("adk that RAN and failed is not retried", async () => {
+  const fx = fakeExec({ error: Object.assign(new Error("exit 2"), { code: 2 }), stdout: "" });
+  await linkStatus({ execFileImpl: fx.impl, bin: "adk" });
+  assert.equal(fx.calls.length, 1);
+});
+
 test("a missing adk says so; garbage output is an error, never 'not linked'", async () => {
   const missing = fakeExec({ error: Object.assign(new Error("spawn adk ENOENT"), { code: "ENOENT" }) });
   assert.match((await linkStatus({ execFileImpl: missing.impl, bin: "adk" })).error, /not installed or not on PATH/);

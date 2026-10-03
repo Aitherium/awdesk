@@ -29,6 +29,7 @@ const { spawn } = require("node:child_process");
 const { EventEmitter } = require("node:events");
 const { readGpuHolders, summarizeHolders } = require("./gpu-holders.cjs");
 const { probeSurfaces, summarizeSurfaces } = require("./surfaces.cjs");
+const { readKvSwarm, summarizeKvSwarm } = require("./kv-swarm.cjs");
 const { fleetDistro } = require("./fleet-distro.cjs");
 const { readBridgeToken } = require("./bridge-server.cjs");
 
@@ -385,10 +386,11 @@ function summarize(status) {
   // with 0 containers running the number alone was a riddle (2026-09-08).
   const holders = summarizeHolders(status.gpu_holders);
   const surfaces = summarizeSurfaces(status.surfaces);
+  const kv = summarizeKvSwarm(status.kv_swarm);  // phones lending memory (adk kvholder workspace)
   const access = status.gpu_access && status.gpu_access !== "ok" ? `, GPU access ${status.gpu_access}` : "";
   const hold = status.held ? (holdIsStale(status) ? "stale (gpu wake releases it)" : "yes") : "no";
   return `Fleet: ${running} container(s) running, ${masked} units masked, ${gpu}${holders ? ` (${holders})` : ""}, HOLD ${hold}${access}` +
-    (fl.scope ? `, scope=${fl.scope}` : "") + (surfaces ? `, ${surfaces}` : "");
+    (fl.scope ? `, scope=${fl.scope}` : "") + (surfaces ? `, ${surfaces}` : "") + (kv ? `, ${kv}` : "");
 }
 
 /** The single word the window's big pill shows. Derived from reality (the
@@ -414,7 +416,7 @@ function classify(status) {
 }
 
 class FleetControl extends EventEmitter {
-  constructor({ spawnImpl = spawn, script, arcScript, distro, gpuHolders = null, surfaces = null,
+  constructor({ spawnImpl = spawn, script, arcScript, distro, gpuHolders = null, surfaces = null, kvSwarm = null,
     statusRetries = 1, retryDelayMs = 8000, brainUrl, fetchImpl = globalThis.fetch,
     brainToken = undefined, hostSteps = null } = {}) {
     super();
@@ -440,6 +442,7 @@ class FleetControl extends EventEmitter {
     // doors answer. Injectable; a fake spawn gets no host probes unless asked.
     this.gpuHolders = gpuHolders !== null ? gpuHolders : (spawnImpl === spawn ? () => readGpuHolders() : null);
     this.surfaces = surfaces !== null ? surfaces : (spawnImpl === spawn ? () => probeSurfaces() : null);
+    this.kvSwarm = kvSwarm !== null ? kvSwarm : (spawnImpl === spawn ? () => readKvSwarm() : null);
     // The Windows-side ComfyUI step (HOST_STEPS). On for the real spawn; a fake spawn
     // opts in explicitly, so no test can reach the owner's running ComfyUI by accident.
     // Windows only: an awdesk running under WSLg (#9806) cannot see the Windows process,
@@ -718,6 +721,7 @@ class FleetControl extends EventEmitter {
       if (holders.error) verdict.gpu_holders_error = holders.error;
     }
     if (surfaces) verdict.surfaces = Array.isArray(surfaces) ? surfaces : [];
+    if (this.kvSwarm) verdict.kv_swarm = this.kvSwarm();
     return verdict;
   }
 

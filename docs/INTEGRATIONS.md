@@ -114,6 +114,16 @@ to target another desktop voice application:
 DESK_TARGET_PROCESS_PATTERN='my-voice-app' desk
 ```
 
+## KV holder swarm
+
+The Fleet line shows the phones lending memory to the owner's model, for example
+`KV 2 phones 6.0 GB lent, 1 waiting for you`, or `KV relay off`. `kv-swarm.cjs` reads the
+snapshot `adk kvholder workspace serve` writes to `~/.aither/kvholder/workspace.json`
+(override with `AITHER_KVHOLDER_WORKSPACE_STATUS`) every 5 seconds: holders by device id,
+the owner's grants, devices waiting for a yes, and whether identity answered. The snapshot
+holds no tokens. A snapshot older than 15 seconds reads as the relay being off. Allowing or
+denying a device stays an owner command: `adk kvholder workspace allow|deny <device>`.
+
 ## URL protocol
 
 Installed packages register `desk://`.
