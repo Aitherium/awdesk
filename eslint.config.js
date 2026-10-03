@@ -81,6 +81,7 @@ export default tseslint.config(
       globals: {
         ...globals.node,
         window: 'readonly',
+        document: 'readonly',
         Element: 'readonly',
       },
     },

@@ -84,6 +84,7 @@ const NO_VERDICT = "the daemon did not say what this session allows (older adk -
  * A row with no verdict gets every verb off with a reason -- never a guess.
  */
 function withActions(row) {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- dropped on purpose (rest omits it)
   const { steer_capability: _dropped, actions: raw, ...rest } = row || {};
   const given = raw && typeof raw === "object" ? raw : null;
   const whyIn = given && given.why_not && typeof given.why_not === "object" ? given.why_not : {};

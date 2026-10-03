@@ -23,6 +23,7 @@ app.setPath("userData", path.join(os.tmpdir(), `awdesk-browser-tabs-smoke-${proc
 process.on("unhandledRejection", (e) => { console.log("REJECT " + ((e && e.stack) || e)); app.exit(2); });
 setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 60000);
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for ad-hoc smoke pages
 const page = (title) => "data:text/html;charset=utf-8," + encodeURIComponent(
   `<!doctype html><title>${title}</title><input aria-label="Box"><a href="#" onclick="window.open('data:text/html,<title>Popup</title>');return false">pop</a>`);
 
