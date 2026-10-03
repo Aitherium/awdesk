@@ -78,6 +78,10 @@ const {
   RELAY_NICK,
 } = require("./relay-feed.cjs");
 const marketClient = require("./market-client.cjs");
+// The Deck's avatar store (W4-04): choosing a library or VRoid model installs it.
+const avatarLibrarySync = require("./avatar-library-sync.cjs");
+/** VRoid models the broker last returned, by id -- the install handler's source of truth. */
+const vroidSeen = new Map();
 // Full system awareness (#9): the five snapshot clients the deck's System
 // section renders. Each fails soft (ok:true + per-source ERROR notes) — a
 // down gateway is a rendered state, never a broken panel.
@@ -990,7 +994,9 @@ function openModelBrowser() {
   // Owner-overruled 2026-08-25: the standalone python page (model-browser.py
   // on :47836) was "still fucking lame" and its marketplace tab never
   // existed — the deck panel's Models & Market section IS the browser now
-  // (search + roster characters + the live Aitherium marketplace feed).
+  // (search + roster characters + the live Aitherium marketplace feed, and
+  // since W4-04 your avatar library and VRoid Hub search; model-browser.py is
+  // deleted).
   const win = createDeckWindow();
   // The deck opens at the TOP (quick actions first — the 2026-08-25 ordering
   // fix), but Models & market sits below notifications and system awareness,
@@ -2845,6 +2851,48 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // (MCP to the local gateway, session bearer — same story as relay).
     ipcMain.handle("desk:market-browse", (_event, query) =>
       marketClient.browse(typeof query === "string" ? query : "", "", 24));
+    // The avatar store (W4-04): the person's own library and VRoid Hub search,
+    // both through the broker (market-client.cjs -> portal /api/avatars). The
+    // renderer names a library id or a VRoid model id, never a path, a rating or
+    // a "downloadable" flag: a VRoid install is looked up in the results THIS
+    // process last received from the broker, so the age flags that gate it are
+    // the broker's, not the renderer's.
+    ipcMain.handle("desk:avatar-library", () => avatarLibrarySync.libraryView());
+    ipcMain.handle("desk:vroid-browse", async (_event, payload) => {
+      const { source, keyword, cursor } = payload || {};
+      const result = await marketClient.vroidBrowse(
+        typeof source === "string" ? source : "search",
+        typeof keyword === "string" ? keyword : "",
+        typeof cursor === "string" ? cursor : "",
+      );
+      // While the adult-content gate is closed no R15/R18 row reaches the Deck
+      // (ACG004, carried over from model-browser.py); only listed models enter
+      // vroidSeen, so an unlisted one cannot be installed either.
+      const models = avatarLibrarySync.visibleVroidModels(result.models, avatarLibrarySync.gateOpen());
+      for (const model of models) {
+        if (model && typeof model.id === "string") vroidSeen.set(model.id, model);
+      }
+      while (vroidSeen.size > 500) vroidSeen.delete(vroidSeen.keys().next().value);
+      return { ...result, models };
+    });
+    ipcMain.handle("desk:avatar-install", async (_event, payload) => {
+      const { kind, id } = payload || {};
+      if (typeof id !== "string" || !id) return { ok: false, reason: "no avatar named" };
+      const deps = { apply: applyCharacter };
+      let result;
+      if (kind === "library") {
+        result = await avatarLibrarySync.installLibraryAvatar(id, deps);
+      } else if (kind === "vroid") {
+        const model = vroidSeen.get(id);
+        if (!model) return { ok: false, reason: "search VRoid Hub again, then choose the model" };
+        result = await avatarLibrarySync.installVroidModel(model, deps);
+      } else {
+        return { ok: false, reason: "unknown avatar source" };
+      }
+      if (result.ok) sendDeckState();
+      else debugLog("avatar install refused:", result.reason);
+      return result;
+    });
     // Avatar previews (owner, 2026-09-10: "let it give real previews"): the
     // deck asks for a character's cached preview and hands back one it just
     // rendered offscreen. Names are slug-validated — the renderer never names

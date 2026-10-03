@@ -571,6 +571,178 @@ function avatarInitials(name: string): string {
   return (letters || name.slice(0, 2)).toUpperCase();
 }
 
+/** One avatar in the person's own library (main's libraryView shape). */
+interface LibraryAvatar {
+  id: string;
+  name: string;
+  rating: string;
+  installed: boolean;
+}
+
+/** One VRoid Hub model as the broker shapes it. */
+interface VroidModel {
+  id: string;
+  name: string;
+  image?: string;
+  downloadable: boolean;
+  hearts?: number;
+  r15?: boolean;
+  r18?: boolean;
+}
+
+type InstallResult = { ok: boolean; name?: string | null; installed?: boolean; applied?: boolean; reason?: string | null };
+
+interface StoreBridge {
+  avatarLibrary?: () => Promise<{ ok: boolean; avatars: LibraryAvatar[]; reason?: string | null }>;
+  vroidBrowse?: (source: string, keyword: string, cursor: string) => Promise<{
+    ok: boolean; models: VroidModel[]; closed?: boolean; linked?: boolean | null; reason?: string;
+  }>;
+  avatarInstall?: (kind: 'library' | 'vroid', id: string) => Promise<InstallResult>;
+}
+
+/** The sentence an install result earns, for the status line under the store. */
+function installSentence(result: InstallResult): string {
+  if (!result.ok) return reasonText(result.reason, 'could not install');
+  const who = result.name ?? 'it';
+  if (result.applied === false) return reasonText(result.reason, `${who} is installed but hidden`);
+  return result.installed ? `${who} installed and on stage` : `${who} is already here — switched to it`;
+}
+
+/**
+ * Your avatars + VRoid Hub (W4-04): the person's own avatar library and a VRoid
+ * search with their own VRoid account, both through the broker. Choosing one
+ * installs it into characters/ (once) and puts it on stage. This replaced
+ * model-browser.py, the separate python page.
+ */
+function storeBridge(): StoreBridge | undefined {
+  return (window.deskBridge as unknown as { deck?: StoreBridge } | undefined)?.deck;
+}
+
+function AvatarStore() {
+  const [library, setLibrary] = useState<{ ok: boolean; avatars: LibraryAvatar[]; reason?: string | null } | null>(null);
+  const [keyword, setKeyword] = useState('');
+  const [source, setSource] = useState<'search' | 'hearts' | 'mine' | 'staff_picks'>('search');
+  const [vroid, setVroid] = useState<{ ok: boolean; models: VroidModel[]; closed?: boolean; reason?: string } | null>(null);
+  const [busy, setBusy] = useState('');
+  const [status, setStatus] = useState('');
+
+  const loadLibrary = useCallback(() => {
+    const api = storeBridge();
+    if (!api?.avatarLibrary) return;
+    void api.avatarLibrary()
+      .catch((err: unknown) => ({ ok: false, avatars: [], reason: reasonText(err) }))
+      .then((res) => setLibrary(res ?? { ok: false, avatars: [], reason: 'unreachable' }));
+  }, []);
+
+  useEffect(() => {
+    loadLibrary();
+  }, [loadLibrary]);
+
+  const search = useCallback((src: typeof source, kw: string) => {
+    const api = storeBridge();
+    if (!api?.vroidBrowse) return;
+    setBusy('vroid');
+    void api.vroidBrowse(src, kw, '')
+      .catch((err: unknown) => ({ ok: false, models: [], reason: reasonText(err) }))
+      .then((res) => {
+        setVroid(res ?? { ok: false, models: [], reason: 'unreachable' });
+        setBusy('');
+      });
+  }, []);
+
+  const install = useCallback((kind: 'library' | 'vroid', id: string) => {
+    const api = storeBridge();
+    if (!api?.avatarInstall || busy) return;
+    setBusy(`${kind}:${id}`);
+    setStatus('Installing…');
+    void api.avatarInstall(kind, id)
+      .catch((err: unknown) => ({ ok: false, reason: reasonText(err) }))
+      .then((res) => {
+        setStatus(installSentence(res ?? { ok: false, reason: 'unreachable' }));
+        setBusy('');
+        if (kind === 'library') loadLibrary();
+      });
+  }, [busy, loadLibrary]);
+
+  if (!storeBridge()?.avatarLibrary) return null;
+  const avatars = library?.avatars ?? [];
+
+  return (
+    <div className="deck-avatar-store" aria-label="Your avatars and VRoid Hub">
+      <p className="deck-empty">
+        Your library {library == null ? '— loading…' : library.ok ? `— ${avatars.length} avatars` : `— ${reasonText(library.reason)}`}
+      </p>
+      {avatars.map((a) => (
+        <div className="deck-row deck-row-static" key={a.id}>
+          <span className="deck-row-label">
+            {a.name}
+            <span className="deck-card-age"> · {a.rating}{a.installed ? ' · on this desk' : ''}</span>
+          </span>
+          <button
+            className="deck-chip"
+            disabled={busy !== ''}
+            title={a.installed ? `Switch the desk to ${a.name}` : `Install ${a.name} on this desk and switch to it`}
+            onClick={() => install('library', a.id)}
+          >
+            {a.installed ? 'Use' : 'Install'}
+          </button>
+        </div>
+      ))}
+      <p className="deck-empty">VRoid Hub — with your own VRoid account</p>
+      <div className="deck-row deck-row-static">
+        <select
+          className="deck-chip"
+          aria-label="VRoid Hub source"
+          value={source}
+          onChange={(event) => {
+            const next = event.target.value as typeof source;
+            setSource(next);
+            search(next, keyword.trim());
+          }}
+        >
+          <option value="search">Search</option>
+          <option value="hearts">Your hearts</option>
+          <option value="mine">Your models</option>
+          <option value="staff_picks">Staff picks</option>
+        </select>
+        <input
+          className="deck-relay-input"
+          placeholder="Search VRoid Hub…"
+          value={keyword}
+          onChange={(event) => setKeyword(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') search(source, keyword.trim());
+          }}
+        />
+      </div>
+      {busy === 'vroid' ? <p className="deck-empty">Searching VRoid Hub…</p> : null}
+      {vroid && !vroid.ok ? <p className="deck-empty">{reasonText(vroid.reason)}</p> : null}
+      {vroid?.ok && vroid.models.length === 0 ? <p className="deck-empty">Nothing found.</p> : null}
+      {(vroid?.models ?? []).slice(0, 24).map((m) => (
+        <div className="deck-row deck-row-static" key={m.id}>
+          <span className="deck-row-label">
+            {m.name || m.id}
+            <span className="deck-card-age">
+              {m.r18 ? ' · R18' : m.r15 ? ' · R15' : ''}{m.downloadable ? '' : ' · not downloadable'}
+            </span>
+          </span>
+          {m.downloadable ? (
+            <button
+              className="deck-chip"
+              disabled={busy !== ''}
+              title={`Download ${m.name || m.id} with your VRoid account and put it on this desk`}
+              onClick={() => install('vroid', m.id)}
+            >
+              Install
+            </button>
+          ) : null}
+        </div>
+      ))}
+      {status ? <p className="deck-empty" role="status">{status}</p> : null}
+    </div>
+  );
+}
+
 function ModelsMarketSection({
   characters,
   characterModels,
@@ -729,6 +901,7 @@ function ModelsMarketSection({
           })}
         </div>
       )}
+      <AvatarStore />
       <p className="deck-empty">
         Aitherium market {marketBusy ? '— searching…' : market.ok ? `— ${(market.listings ?? []).length} packs` : `— ${reasonText(market.reason)}`}
       </p>

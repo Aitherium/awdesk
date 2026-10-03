@@ -393,8 +393,64 @@ async function enrollNewestDownloadChecked(preferredName = null, options = {}) {
   // unjudged character is hidden with the adult ones -- so without this the owner
   // drops a .vrm in and it silently never appears. Judge it now. Fire-and-forget:
   // the enroll already succeeded and a rater that cannot run must not undo it.
-  const rating = rateOnEnroll(name, options);
+  // `rateOnEnroll: false` is enrollFileChecked's: the source already judged it.
+  const rating = options.rateOnEnroll === false ? null : rateOnEnroll(name, options);
   return { ok: true, name, reason: null, verdict, rating };
+}
+
+/** Ratings a source outside this desk may hand us as already judged. */
+const KNOWN_RATINGS = new Set(["general", "r15", "r18"]);
+
+/**
+ * enrollFileChecked — the same safety funnel as `enrollNewestDownloadChecked`, for a
+ * .vrm the desk fetched itself (avatar-library-sync.cjs: the person's own library, or
+ * a VRoid Hub model through the broker) rather than one found in Downloads.
+ *
+ * `plan` is `{ base, from }` (roster name, temp file). `meta.rating` is the rating
+ * the source already holds (`general` | `r15` | `r18`; VRoid's own age flags or the
+ * rating the library recorded at upload); it is written to character.json with
+ * `meta.source` and `meta.extra` so the gate judges the character at once. Anything
+ * else (`unknown`, absent) goes to the rater exactly like a hand-enrolled model --
+ * an unjudged character stays hidden until it is looked at.
+ *
+ * @returns {{ok: boolean, name: string|null, reason: string|null, verdict: object|null}}
+ */
+async function enrollFileChecked(plan, meta = {}, options = {}) {
+  if (!plan || !plan.base || !plan.from || !/^[a-z0-9][a-z0-9-]{0,127}$/.test(plan.base)) {
+    return { ok: false, name: null, reason: "not an enrollable roster name", verdict: null };
+  }
+  const rating = String(meta.rating || "").toLowerCase();
+  const extra = meta.extra && typeof meta.extra === "object" ? meta.extra : {};
+  return enrollNewestDownloadChecked(null, {
+    ...options,
+    plan,
+    perform: (p) => {
+      const name = performEnrollment(p);
+      if (!name) return name;
+      const file = path.join(ROSTER_DIR, name, "character.json");
+      let existing;
+      try {
+        existing = JSON.parse(fs.readFileSync(file, "utf8")) || {};
+      } catch {
+        existing = {};
+      }
+      const record = { ...existing, ...extra };
+      if (KNOWN_RATINGS.has(rating)) {
+        record.rating = rating;
+        record.source = String(meta.source || "manual");
+      }
+      // A record with no judged rating is left for the rater (rateOnEnroll writes the
+      // pending marker only when character.json is absent, so write nothing then).
+      if (KNOWN_RATINGS.has(rating) || Object.keys(existing).length) {
+        fs.writeFileSync(file, JSON.stringify(record, null, 2));
+      } else if (Object.keys(extra).length) {
+        fs.writeFileSync(file, JSON.stringify({ rating: "unrated", source: "pending", ...extra }, null, 2));
+      }
+      return name;
+    },
+    // Judged at the source: no rater run.
+    ...(KNOWN_RATINGS.has(rating) ? { rateOnEnroll: false } : {}),
+  });
 }
 
 /**
@@ -534,6 +590,7 @@ module.exports = {
   getRecentCharacters,
   enrollNewestDownload,
   enrollNewestDownloadChecked,
+  enrollFileChecked,
   planEnrollment,
   performEnrollment,
   getActiveCharacter,

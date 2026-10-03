@@ -36,6 +36,12 @@ contextBridge.exposeInMainWorld("deskBridge", {
     // (market-client.cjs speaks MCP to the local gateway with the session
     // bearer; same credential story as the relay feed).
     marketBrowse: (query) => ipcRenderer.invoke("desk:market-browse", query ?? ""),
+    // The avatar store (W4-04): your own library and VRoid Hub search through the
+    // broker; install names an id only (main looks up everything else).
+    avatarLibrary: () => ipcRenderer.invoke("desk:avatar-library"),
+    vroidBrowse: (source, keyword, cursor) =>
+      ipcRenderer.invoke("desk:vroid-browse", { source: source ?? "search", keyword: keyword ?? "", cursor: cursor ?? "" }),
+    avatarInstall: (kind, id) => ipcRenderer.invoke("desk:avatar-install", { kind, id }),
     // Per-avatar direct chat: the thread under an agent's message.
     relayThread: (messageId) => ipcRenderer.invoke("desk:relay-thread", messageId ?? ""),
     // Avatar previews: read a character's cached thumbnail (data URL or null),
