@@ -42,7 +42,7 @@ AitherDesktop. This file is the order of work. Each slice ships on its own.
    through one API. Still to come: MCP agent tools that reach your Chrome through
    awconnect 4, and the assistant panel becoming awconnect's Connect panel (swap
    `ASSISTANT_PANEL`, nothing else).
-6. **Living desktop overlay: this PR.** The desk hosts AitherOS Online's page plane
+6. **Living desktop overlay: SHIPPED (#11102).** The desk hosts AitherOS Online's page plane
    (`overlay-browser-host.cjs`). Every request goes through the browser's agent gate
    and tab-ownership rule. Page context gives text only for an agent's tab. The
    desk-state push now carries the browser's status, and a card in AitherOS Online
@@ -52,8 +52,12 @@ AitherDesktop. This file is the order of work. Each slice ships on its own.
    opened it (`browser-tabs.cjs`). An agent drives only its own tabs (marked with a
    purple dot) and can never read, switch to or close the owner's. `browser_tabs`,
    `browser_switch_tab`, `browser_close_tab`, and `browser_open` with `new_tab`. Popups
-   open as tabs beside their opener. Still to come: a downloads shelf, history and
-   bookmarks.
+   open as tabs beside their opener. History, bookmarks and downloads: this PR.
+   History and bookmarks (`browser-library.cjs`, one JSON file in userData) feed
+   address-bar suggestions: your bookmarks first, then your history, then pages an
+   agent visited. No agent tool reads them. Downloads (`browser-downloads.cjs`)
+   appear in the side panel, including a download an agent started, which is
+   blocked and shown rather than silently dropped.
 
 Iframes (captchas, embedded sign-in, card fields) stay out of the agent's reach on
 purpose: slice 3 hands those to the owner.

@@ -34,6 +34,8 @@ const path = require("node:path");
 const policy = require("./browser-policy.cjs");
 const contextPush = require("./browser-context-push.cjs");
 const { TabSet } = require("./browser-tabs.cjs");
+const { createLibrary } = require("./browser-library.cjs");
+const { createDownloads } = require("./browser-downloads.cjs");
 
 const PARTITION = "persist:aither-browser";
 const CHROME_HEIGHT = 118; // tab strip (34) + toolbar (44) + banner (40); browser-chrome.html matches
@@ -77,6 +79,14 @@ let sessionHardened = false;
 let askAgent = null;
 let agentHandle = null;
 let pushTimer = null;
+/** History + bookmarks (browser-library.json in userData), opened on first use. */
+let library = null;
+function getLibrary() {
+  if (!library) library = createLibrary({ file: path.join(electron().app.getPath("userData"), "browser-library.json") });
+  return library;
+}
+/** The downloads shelf: every download is a row, including one an agent was refused. */
+const downloads = createDownloads();
 /** The last AitherDesktop push: {ok, status, url, at} -- shown in state() so a dead feed is visible. */
 let lastContextPush = null;
 const gate = new policy.AgentGate();
@@ -141,6 +151,8 @@ function state() {
     agent: gate.snapshot(),
     contextPush: lastContextPush,
     tabs: tabList(),
+    bookmarked: getLibrary().isBookmarked(wc.getURL()),
+    downloads: downloads.list(),
   };
 }
 
@@ -159,10 +171,28 @@ function hardenSession(ses) {
   if (typeof ses.setDevicePermissionHandler === "function") ses.setDevicePermissionHandler(() => false);
   // A download an AGENT triggers lands on the owner's disk unseen; while the agent
   // drives (and the owner has not taken over) downloads are cancelled. The owner
-  // takes over to download.
+  // takes over to download. Either way it is a ROW on the shelf (browser-downloads):
+  // a silent cancel read as "the download button is broken".
   ses.on("will-download", (_event, item) => {
     const g = gate.snapshot();
-    if (g.driving && !g.paused) item.cancel();
+    const meta = { filename: item.getFilename(), url: item.getURL(), total: item.getTotalBytes() };
+    if (g.driving && !g.paused) {
+      item.cancel();
+      downloads.start({ ...meta, blocked: true });
+      pushState();
+      return;
+    }
+    const id = downloads.start(meta);
+    item.on("updated", (_e, st) => {
+      downloads.update(id, { received: item.getReceivedBytes(), total: item.getTotalBytes(),
+        state: st === "interrupted" ? "interrupted" : "progressing" });
+      pushState();
+    });
+    item.once("done", (_e, st) => {
+      downloads.update(id, { state: st, received: item.getReceivedBytes(), path: item.getSavePath() });
+      pushState();
+    });
+    pushState();
   });
 }
 
@@ -265,6 +295,11 @@ function wirePage(wc, id) {
     wc.on(name, () => pushState());
   }
   wc.on("did-stop-loading", () => scheduleContextPush(id));
+  // History: the finished page, remembered with WHO opened its tab.
+  wc.on("did-stop-loading", () => {
+    const tab = tabs.get(id);
+    if (tab) getLibrary().visit(wc.getURL(), wc.getTitle(), tab.by);
+  });
 }
 
 /**
@@ -722,6 +757,29 @@ function wireIpc() {
     const opened = openTab("you", homeUrl());
     return opened.ok ? { ok: true, id: opened.id } : opened;
   });
+  // History + bookmarks: the OWNER's toolbar only. No agent tool reads them.
+  ipcMain.handle("desk:browser-suggest", (event, text) => {
+    if (!fromChrome(event)) return [];
+    return getLibrary().suggest(typeof text === "string" ? text.slice(0, 200) : "");
+  });
+  ipcMain.handle("desk:browser-bookmark", (event) => {
+    const view = activeView();
+    if (!fromChrome(event) || !view) return { ok: false };
+    const on = getLibrary().toggleBookmark(view.webContents.getURL(), view.webContents.getTitle());
+    pushState();
+    return { ok: true, bookmarked: on };
+  });
+  // Downloads: the panel shows the shelf; "Show" opens only a FINISHED file's folder.
+  ipcMain.on("desk:browser-downloads-clear", (event) => {
+    if (!fromPanel(event)) return;
+    downloads.clearFinished();
+    pushState();
+  });
+  ipcMain.on("desk:browser-download-show", (event, id) => {
+    if (!fromPanel(event)) return;
+    const row = downloads.get(Number(id));
+    if (row && row.state === "completed" && row.path) electron().shell.showItemInFolder(row.path);
+  });
   ipcMain.on("desk:browser-tab-activate", (event, id) => {
     if (fromChrome(event)) showTab(Number(id));
   });
@@ -795,6 +853,7 @@ module.exports = {
   getGate: () => gate,
   getTabs: () => tabs,
   getState: () => state(),
+  getLibrary,
   screenPage,
   /** The owner clicking a tab, for browser-tabs-smoke.cjs (the strip's IPC needs a real sender). */
   __showTabForTest: (id) => showTab(id),

@@ -47,6 +47,12 @@ app.whenReady().then(async () => {
   // http(s) only: serve the pages from a local server.
   const http = require("node:http");
   const server = http.createServer((req, res) => {
+    if (req.url === "/file.bin") {
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("Content-Disposition", "attachment; filename=payload.bin");
+      res.end("x".repeat(64));
+      return;
+    }
     res.setHeader("Content-Type", "text/html");
     const name = decodeURIComponent(req.url.slice(1)) || "Root";
     res.end(`<!doctype html><title>${name}</title><input aria-label="Box ${name}">`
@@ -88,6 +94,15 @@ app.whenReady().then(async () => {
   const list = await agent("tabs", {});
   expect("browser_tabs lists every tab with its owner and title", list.ok && list.tabs.length === after.tabs.length
     && list.tabs.some((t) => t.by === "you"), list);
+
+  // History remembers the agent's pages AS the agent's.
+  const hist = bw.getLibrary().history(20);
+  expect("history records the agent's pages with who visited", hist.some((h) => h.title === "AgentOne" && h.by === "agent"), hist);
+  // A download an agent starts is cancelled AND shown, never silently dropped.
+  await agent("open", { url: `${base}/file.bin` }).catch(() => null);
+  await new Promise((r) => setTimeout(r, 800));
+  const rows = bw.getState().downloads || [];
+  expect("an agent's download is a visible blocked row", rows.some((d) => d.filename === "payload.bin" && d.state === "blocked"), rows);
 
   const closed = await agent("close_tab", { tab: a2.tab });
   expect("the agent closes its own tab", closed.ok, closed);

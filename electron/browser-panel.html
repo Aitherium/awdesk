@@ -20,6 +20,16 @@
   #ask:disabled { opacity: .5; cursor: default; }
   #reply { flex: 1; overflow: auto; padding: 0 14px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
   #reply.err { color: var(--destructive); }
+  #downloads { border-top: 1px solid var(--line); padding: 10px 14px; max-height: 40%; overflow: auto; }
+  #downloads[hidden] { display: none; }
+  #downloads h2 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px;
+    display: flex; justify-content: space-between; align-items: center; }
+  #downloads h2 button, .dl button { border: 1px solid var(--line); background: var(--btn); color: var(--fg); border-radius: 6px;
+    font-size: 11px; padding: 2px 8px; cursor: pointer; }
+  .dl { display: flex; gap: 8px; align-items: center; padding: 5px 0; font-size: 12px; }
+  .dl .n { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dl .s { color: var(--muted); white-space: nowrap; }
+  .dl.blocked .s { color: var(--warning); }
 </style>
 </head>
 <body>
@@ -29,11 +39,45 @@
   </header>
   <button id="ask">Ask about this page</button>
   <div id="reply" aria-live="polite"></div>
+  <section id="downloads" hidden aria-label="Downloads">
+    <h2>Downloads <button id="dlclear">Clear finished</button></h2>
+    <div id="dllist"></div>
+  </section>
 <script>
   const api = window.aitherAssist;
   const $ = (id) => document.getElementById(id);
+  const STATE_TEXT = { progressing: "downloading", completed: "done", cancelled: "cancelled",
+    interrupted: "failed", blocked: "blocked: an agent started it. Take over, then download it yourself" };
+  function renderDownloads(rows) {
+    const box = $("downloads");
+    box.hidden = !rows || rows.length === 0;
+    const list = $("dllist");
+    list.textContent = "";
+    for (const r of rows || []) {
+      const row = document.createElement("div");
+      row.className = "dl " + r.state;
+      const name = document.createElement("span");
+      name.className = "n";
+      name.textContent = r.filename; // never innerHTML: a filename is the server's choice
+      name.title = r.url;
+      const st = document.createElement("span");
+      st.className = "s";
+      const pct = r.state === "progressing" && r.total ? ` ${Math.floor((100 * r.received) / r.total)}%` : "";
+      st.textContent = (STATE_TEXT[r.state] || r.state) + pct;
+      row.append(name, st);
+      if (r.state === "completed") {
+        const show = document.createElement("button");
+        show.textContent = "Show";
+        show.onclick = () => api.showDownload(r.id);
+        row.appendChild(show);
+      }
+      list.appendChild(row);
+    }
+  }
+  $("dlclear").onclick = () => api.clearDownloads();
   function render(s) {
     if (!s) return;
+    renderDownloads(s.downloads);
     $("title").textContent = s.title || "—";
     $("url").textContent = s.url || "";
   }
