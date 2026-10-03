@@ -397,9 +397,12 @@ const COMMANDS = Object.freeze([
   // The Aither Browser (browser-window.cjs): a browser INSIDE the desk where an
   // agent drives (MCP browser_* tools) while the owner watches and can take over,
   // and where the owner browses with an "Ask about this page" panel.
+  // 2026-10-03: it was tray + palette only, with no icon, and the owner could find
+  // no app to launch it from. It is a bead, a body-menu row, a jump-list task and
+  // an Aither Console launcher (console-window.cjs LAUNCHERS) now.
   Object.freeze({
-    id: "browser.open", label: "Open Aither Browser…", group: "go",
-    surfaces: ["tray", "palette"],
+    id: "browser.open", label: "Aither Browser…", group: "go", icon: "globe",
+    surfaces: ["tray", "avatar-menu", "palette", "beads", "jumplist"],
   }),
   // Aither Hearth (2026-09-30): the owner's PLATFORM Hearth -- reminders, approval
   // cards, signed receipts -- as the `hearth` window on the AitherDesktop app. The

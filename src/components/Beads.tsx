@@ -65,10 +65,20 @@ function MicIcon() {
   );
 }
 
+function GlobeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z" />
+    </svg>
+  );
+}
+
 /** Icon NAME (registry data) -> drawing. An unknown name draws the grid rather
  *  than nothing: a bead with no glyph is a button nobody can read. */
 const ICONS: Record<string, () => React.ReactElement> = {
-  bell: BellIcon, chat: ChatIcon, grid: GridIcon, desktop: DesktopIcon, mic: MicIcon,
+  bell: BellIcon, chat: ChatIcon, grid: GridIcon, desktop: DesktopIcon, mic: MicIcon, globe: GlobeIcon,
 };
 
 interface CommandRow { id: string; label: string; icon: string | null; group: string }

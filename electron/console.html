@@ -568,6 +568,7 @@ const ICON_PATHS = {
   users: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.6M21 20a6 6 0 0 0-3.5-5.4"/>',
   mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
   desktop: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z"/>',
   archive: '<rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M10 13h4"/>',
   grid: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
@@ -637,6 +638,45 @@ document.getElementById("open-palette").addEventListener("click", () => { void o
     tab.append(name, hint, badge);
     tab.addEventListener("click", () => select(pane.id));
     rail.appendChild(tab);
+  }
+  // Launchers: rows that open their own window (the Aither Browser). Same row
+  // grammar as a pane, but a click RUNS the registry command; nothing is selected.
+  let launchers = [];
+  try {
+    if (typeof window.aitherConsole.launchers === "function") launchers = await window.aitherConsole.launchers();
+  } catch (error) {
+    say("could not load launchers: " + String(error && error.message ? error.message : error));
+  }
+  for (const launcher of Array.isArray(launchers) ? launchers : []) {
+    if (launcher.section && launcher.section !== section) {
+      section = launcher.section;
+      const heading = document.createElement("div");
+      heading.className = "section";
+      heading.textContent = section;
+      rail.appendChild(heading);
+    }
+    const row = document.createElement("button");
+    row.className = "tab launcher";
+    row.id = "launch-" + launcher.id;
+    row.title = launcher.hint || launcher.label;
+    row.insertAdjacentHTML("afterbegin", iconSvg(launcher.icon));
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = launcher.label;
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = "opens";
+    row.append(name, badge);
+    row.addEventListener("click", async () => {
+      say("");
+      try {
+        const out = await window.aitherConsole.runCommand(launcher.command);
+        if (out && out.ok === false) say(out.message || out.error || ("could not open " + launcher.label));
+      } catch (error) {
+        say(String(error && error.message ? error.message : error));
+      }
+    });
+    rail.appendChild(row);
   }
   await refreshDetached();
   started = true;

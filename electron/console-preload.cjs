@@ -82,6 +82,8 @@ contextBridge.exposeInMainWorld("aitherConsole", {
   setAppearance: (patch) => ipcRenderer.invoke("desk:appearance-set", patch || {}),
   /** The rail, with each pane's resolved src. Main decides, never the page. */
   panes: () => ipcRenderer.invoke("desk:console-panes"),
+  /** Rail rows that open their own window (the Aither Browser); each runs a command. */
+  launchers: () => ipcRenderer.invoke("desk:console-launchers"),
   /** Hand a pane to its standalone window. */
   detach: (paneId) => ipcRenderer.invoke("desk:console-detach", String(paneId)),
   /** Take it back: close the standalone window, re-embed the pane. */

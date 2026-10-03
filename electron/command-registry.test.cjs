@@ -246,7 +246,7 @@ test("shortcuts are registered FROM the registry, and a dead key is not advertis
 
 test("the beads are registry rows, and the deck-action door accepts an id", () => {
   const rows = rowsFor("beads", { decisionsWaiting: 3 });
-  assert.deepEqual(rows.map((r) => r.id), ["inbox.open", "console.open", "chat.open", "desktop.overlay.toggle"]);
+  assert.deepEqual(rows.map((r) => r.id), ["inbox.open", "console.open", "browser.open", "chat.open", "desktop.overlay.toggle"]);
   assert.ok(rows.every((r) => r.icon), "a bead with no icon is a blank circle");
   const beads = fs.readFileSync(path.join(__dirname, "..", "src", "components", "Beads.tsx"), "utf8");
   assert.match(beads, /commands\?\.\('beads'\)/, "the bead rail is a typed list again");

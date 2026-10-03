@@ -137,6 +137,22 @@ const PANES = Object.freeze([
   }),
 ]);
 
+/**
+ * Rail rows that OPEN a window instead of showing a pane. The Aither Browser is
+ * its own window (a page view in its own partition + the take-over toolbar), so it
+ * cannot be framed; until 2026-10-03 the tray and the palette were the only ways
+ * in, and the owner found no app to launch it from. A launcher runs a registry
+ * command by id, so the console, the tray and the palette open the same thing.
+ * Kept OUT of PANES on purpose: a launcher has no surface state, no detach and no
+ * stage rectangle.
+ */
+const LAUNCHERS = Object.freeze([
+  Object.freeze({
+    id: "browser", label: "Browser", hint: "Aither Browser: you browse, or an agent drives while you watch",
+    section: "Online", icon: "globe", command: "browser.open",
+  }),
+]);
+
 let consoleWindow = null;
 let wired = false;
 /** { <paneId>: { open(), close(), isOpen() } } — injected by main.cjs. */
@@ -410,6 +426,7 @@ function wireIpc() {
   ipcMain.handle("desk:console-stage", (_event, payload) =>
     placeHosted(payload && payload.pane, (payload && payload.rect) || null));
   ipcMain.handle("desk:console-panes", () => paneSources(resolveRendererUrl()));
+  ipcMain.handle("desk:console-launchers", () => LAUNCHERS);
   ipcMain.handle("desk:console-detach", (_event, paneId) => callWindow(paneId, "open"));
   ipcMain.handle("desk:console-reattach", (_event, paneId) => callWindow(paneId, "close"));
   ipcMain.handle("desk:console-detached", () => detachedIds());
@@ -639,5 +656,6 @@ module.exports = {
   detachedIds,
   callWindow,
   PANES,
+  LAUNCHERS,
   __setWindowsForTest,
 };

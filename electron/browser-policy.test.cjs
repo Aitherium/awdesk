@@ -180,8 +180,18 @@ test("browser-window: page scripts embed selector and text as JSON literals", ()
 test("browser.open is a registry command main answers, and the MCP tools are wired", () => {
   const cmd = byId("browser.open");
   assert.ok(cmd, "browser.open missing from the registry");
-  assert.equal(cmd.label, "Open Aither Browser…");
-  assert.ok(cmd.surfaces.includes("tray") && cmd.surfaces.includes("palette"));
+  assert.equal(cmd.label, "Aither Browser…");
+  // The owner could find no app to launch it from (2026-10-03): it must be on every
+  // surface a person clicks, carry an icon, and be a launcher in the Aither Console.
+  for (const surface of ["tray", "avatar-menu", "palette", "beads", "jumplist"]) {
+    assert.ok(cmd.surfaces.includes(surface), `browser.open missing from ${surface}`);
+  }
+  assert.equal(cmd.icon, "globe");
+  const { LAUNCHERS } = require("./console-window.cjs");
+  const launcher = LAUNCHERS.find((l) => l.command === "browser.open");
+  assert.ok(launcher, "the Aither Console has no Browser launcher");
+  assert.match(read("console.html"), /globe:/, "the console rail has no globe glyph");
+  assert.match(read("console-preload.cjs"), /launchers: \(\) => ipcRenderer\.invoke\("desk:console-launchers"\)/);
   const main = read("main.cjs");
   assert.match(main, /case "browser\.open":/);
   assert.match(main, /onBrowser: \(action, args\) => browserWindow\.browserAgent/);
