@@ -30,6 +30,7 @@
 
 const path = require("node:path");
 const policy = require("./browser-policy.cjs");
+const contextPush = require("./browser-context-push.cjs");
 
 const PARTITION = "persist:aither-browser";
 const CHROME_HEIGHT = 84; // toolbar (44) + banner (40); browser-chrome.html matches
@@ -48,6 +49,8 @@ const READ_LINKS = 60;
 const IDLE_WAIT_MS = 10_000;
 /** browser_snapshot lists at most this many elements; `truncated` says when it cut. */
 const SNAPSHOT_MAX = 200;
+/** A page that settles is pushed to AitherDesktop once, this long after it stops loading. */
+const CONTEXT_PUSH_DELAY_MS = 1500;
 /** browser_screenshot is scaled down to this width so one image stays readable in a turn. */
 const SCREENSHOT_MAX_WIDTH = 1280;
 /** PRESSABLE_KEYS (browser-policy) -> Electron sendInputEvent keyCode. */
@@ -68,6 +71,9 @@ let ipcWired = false;
 let sessionHardened = false;
 let askAgent = null;
 let agentHandle = null;
+let pushTimer = null;
+/** The last AitherDesktop push: {ok, status, url, at} -- shown in state() so a dead feed is visible. */
+let lastContextPush = null;
 const gate = new policy.AgentGate();
 gate.on("change", (snap) => {
   pushState();
@@ -100,6 +106,7 @@ function state() {
     canGoBack: history ? history.canGoBack() : false,
     canGoForward: history ? history.canGoForward() : false,
     agent: gate.snapshot(),
+    contextPush: lastContextPush,
   };
 }
 
@@ -159,6 +166,30 @@ function wirePage(wc) {
   for (const name of ["did-navigate", "did-navigate-in-page", "page-title-updated", "did-start-loading", "did-stop-loading"]) {
     wc.on(name, () => pushState());
   }
+  wc.on("did-stop-loading", () => scheduleContextPush(wc));
+}
+
+/**
+ * Tell AitherDesktop what this window has open (browser-context-push.cjs): the
+ * page's machine layer, never its text or a field value. Debounced, so a page
+ * that redirects twice is pushed once.
+ */
+function scheduleContextPush(wc) {
+  if (!contextPush.enabled()) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(async () => {
+    if (!alive(pageView) || pageView.webContents !== wc) return;
+    const url = wc.getURL();
+    if (!contextPush.pushable(url)) return;
+    try {
+      const page = await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: contextPush.CONTEXT_SCRIPT }], false);
+      const verdict = await contextPush.postPush(contextPush.buildPush(page, { trigger: "page_loaded" }));
+      lastContextPush = { ...verdict, url, at: Date.now() };
+    } catch (error) {
+      lastContextPush = { ok: false, status: 0, reason: String(error && error.message || error).slice(0, 200), url, at: Date.now() };
+    }
+    pushState();
+  }, CONTEXT_PUSH_DELAY_MS);
 }
 
 /**

@@ -136,7 +136,8 @@ class AgentGate extends EventEmitter {
    */
   check(tool) {
     if (this.paused) {
-      const waiting = this.handoff ? `You handed it to them for: ${this.handoff.reason}. ` : "";
+      const why = this.handoff ? this.handoff.reason.replace(/[\s.]+$/, "") : "";
+      const waiting = this.handoff ? `You handed it to them for: ${why}. ` : "";
       return {
         ok: false,
         paused: true,

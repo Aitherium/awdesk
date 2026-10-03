@@ -20,7 +20,7 @@ const bw = require("./browser-window.cjs");
 app.setPath("userData", path.join(os.tmpdir(), `awdesk-browser-smoke-${process.pid}`));
 process.on("unhandledRejection", (e) => { console.log("REJECT " + ((e && e.stack) || e)); app.exit(2); });
 setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 60000);
-const FORM = `<!doctype html><html><body>
+const FORM = `<!doctype html><html><body><form action="/send">
 <label>Name<div><input></div></label>
 <label>E-mail address<div><input type="email"></div></label>
 <label>Support topic<div><select><option value=""></option><option value="mp">1. Multiplayer</option><option value="other">Other</option></select></div></label>
@@ -30,6 +30,7 @@ const FORM = `<!doctype html><html><body>
 <div role="checkbox" aria-checked="false" aria-label="Fancy" tabindex="0" onclick="this.setAttribute('aria-checked', this.getAttribute('aria-checked') !== 'true')">x</div>
 <input type="hidden" name="secret" value="nope">
 <button>Send</button>
+</form>
 <iframe srcdoc="<p>captcha</p>"></iframe>
 </body></html>`;
 
@@ -70,6 +71,16 @@ app.whenReady().then(async () => {
   expect("type by selector", bySel.ok && bySel.label === "Details", bySel);
   const hl = await run("highlight", { target: { ref: name } });
   expect("highlight", hl.ok, hl);
+
+  // AitherDesktop push: the machine layer, field NAMES and labels -- never a value.
+  const { CONTEXT_SCRIPT } = require("./browser-context-push.cjs");
+  const ctx = await wc.executeJavaScriptInIsolatedWorld(1017, [{ code: CONTEXT_SCRIPT }], false);
+  expect("context script reads the page", ctx && typeof ctx.title === "string" && Array.isArray(ctx.forms), ctx);
+  const fields = (ctx.forms[0] || { fields: [] }).fields;
+  expect("context lists the form's fields by label", fields.some((f) => f.label === "Password") && fields.some((f) => f.label === "Name"), ctx.forms);
+  // The page URL is a data: URL holding the whole HTML, so judge what the script READ, not the URL.
+  const read = JSON.stringify({ ...ctx, url: "", pathname: "" });
+  expect("context push carries no typed value or password", !read.includes("David") && !read.includes("hunter2") && !read.includes("nope"), read);
 
   // A navigation clears the refs: a stale ref must say so, never hit another element.
   await win.loadURL("data:text/html,<input aria-label=Other>");

@@ -20,19 +20,22 @@ AitherDesktop. This file is the order of work. Each slice ships on its own.
 
 1. **Launch it from everywhere: SHIPPED (#11066).** Globe bead, body menu, jump list,
    and a Browser row in the Aither Console rail (`console-window.cjs` LAUNCHERS).
-2. **Eyes and hands: this PR.** `browser_snapshot` lists every visible field, button,
+2. **Eyes and hands: SHIPPED (#11071).** `browser_snapshot` lists every visible field, button,
    link, select and checkbox with a ref (`e1`, `e2`, …), its label, value and options.
    `browser_click`, `browser_type`, `browser_select` and `browser_check` take that ref
    and return the field's label so the agent can confirm it hit the right one; `type`
    reads the value back. `browser_press` sends an allowlisted key. `browser_screenshot`
    returns a PNG. Refs live in the isolated world, so page script cannot read or forge them.
-3. **Hand to the owner: this PR.** `browser_hand_to_owner(reason, ref?)` raises and
+3. **Hand to the owner: SHIPPED (#11071).** `browser_hand_to_owner(reason, ref?)` raises and
    flashes the window, outlines the element, shows "Your turn: …" in the toolbar and
    pauses every agent call until the owner presses "Let the agent continue". It covers
    captchas, passwords, payments, accepting terms, and a final Send in the owner's name.
-4. **AitherDesktop awareness.** The window posts its page context to Genesis
-   `/browser/agent-context`, so `browser_context`/`browser_context_history` and the
-   desktop snapshot cover the Aither Browser as well as the extension.
+4. **AitherDesktop awareness: this PR.** Each page that settles is pushed to Genesis
+   `/browser/agent-context/push` (`browser-context-push.cjs`) through Veil's loopback
+   bridge, the door awconnect uses. `browser_context`/`browser_context_history` and the
+   desktop snapshot now cover this window too. It sends the machine layer only: title,
+   OpenGraph, JSON-LD, feeds, and form field names and labels. It never sends page
+   text or a field value. `DESK_BROWSER_CONTEXT_PUSH=0` turns it off.
 5. **awconnect.** One browser tool contract over two backends: this window, and the
    owner's own Chrome through awconnect 4. The assistant panel becomes awconnect's
    Connect panel (swap `ASSISTANT_PANEL`, nothing else).
