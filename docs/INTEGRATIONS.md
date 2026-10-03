@@ -59,6 +59,14 @@ Desk exposes these tools:
 | `browser_tabs` | None | Lists every tab with its owner (`you` or `agent`), title and url |
 | `browser_switch_tab` | `tab` | Moves the agent to one of its OWN tabs and shows it; the owner's tabs are refused |
 | `browser_close_tab` | `tab` | Closes one of the agent's own tabs; the owner's tabs are refused |
+| `chrome_tabs` | None | Lists the owner's Chrome tabs through awconnect: id, title, host, approved (no page content) |
+| `chrome_request_tab` | `tab`, `reason` | Asks the owner, by notification, to allow an agent on that tab; Allow covers that tab on that site only |
+| `chrome_read` | `tab` | Reads an approved Chrome tab (untrusted content); refused on any other tab |
+| `chrome_snapshot` | `tab` | Lists the controls of an approved Chrome tab with refs; never a password value |
+| `chrome_click` | `tab`, `ref` or `selector` | Clicks in an approved Chrome tab |
+| `chrome_type` | `tab`, `ref` or `selector`, `text` | Sets a field in an approved Chrome tab and reads it back |
+| `chrome_select` | `tab`, `ref` or `selector`, `option` | Picks a dropdown option in an approved Chrome tab |
+| `chrome_check` | `tab`, `ref` or `selector`, `checked` | Ticks or unticks a checkbox in an approved Chrome tab |
 | `fleet_status` | optional `fresh` | Reads the AitherOS fleet status (cached unless `fresh`) |
 | `fleet_control` | `action`: `down`, `up`, `gaming`, `resume`, `adopt`, `open_panel`, `arc-status`, `arc-start`, `arc-now`, `arc-stop` | Runs a fleet action; the same implementation as the Fleet window |
 | `desk_command` | `text` | Runs a command in the Aither Command window |

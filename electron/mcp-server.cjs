@@ -168,6 +168,8 @@ function createDeskMcpServer({
   onAsk = null,
   // The Aither Browser's dispatcher (browser-policy.createBrowserAgent): (action, args) => verdict.
   onBrowser = null,
+  // The owner's OWN Chrome through awconnect (chrome-bridge.cjs call): (action, args) => verdict.
+  onChrome = null,
   // Test/override seam for cast_describe (see describeCast). Production never
   // sets this — cast-config resolves CAST_FILE() itself (app.getPath("userData"),
   // or DESK_CAST_FILE).
@@ -663,6 +665,73 @@ function createDeskMcpServer({
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], isError: result?.ok === false };
       },
     );
+  }
+
+  if (onChrome != null) {
+    // The owner's own Chrome, through awconnect. awconnect holds the rule: every page
+    // action on a tab the owner has not approved (chrome_request_tab -> Allow) comes
+    // back REFUSED, and an approval ends when the tab changes site or closes.
+    const chromeResult = (result) => ({
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      isError: result?.ok === false,
+    });
+    const tabArg = { tab: z.number().int().nonnegative().describe("A tab id from chrome_tabs.") };
+    const target = {
+      ref: z.string().max(8).optional().describe("Element ref from chrome_snapshot, e.g. e12."),
+      selector: z.string().max(512).optional().describe("CSS selector, when there is no ref."),
+    };
+    const ann = (readOnly) => ({ readOnlyHint: readOnly, destructiveHint: false, idempotentHint: readOnly, openWorldHint: true });
+    server.registerTool("chrome_tabs", {
+      title: "List the owner's Chrome tabs",
+      description: "The owner's open Chrome tabs (via awconnect): {id, title, host, active, approved}. No page content. " +
+        "Only an approved tab can be read or driven; ask with chrome_request_tab.",
+      annotations: ann(true),
+    }, async () => chromeResult(await onChrome("tabs", {})));
+    server.registerTool("chrome_request_tab", {
+      title: "Ask the owner to let you use one of their Chrome tabs",
+      description: "Shows the owner a notification: '<site>: <reason>' with Allow on this tab / Deny, and waits up to " +
+        "60 s. Allow approves THAT tab on THAT site only; it ends when the tab changes site or closes. Say plainly why.",
+      inputSchema: { ...tabArg, reason: z.string().min(1).max(160).describe("Why you need this tab, in one short sentence.") },
+      annotations: ann(false),
+    }, async ({ tab, reason }) => chromeResult(await onChrome("request_tab", { tab, reason })));
+    server.registerTool("chrome_read", {
+      title: "Read an approved Chrome tab",
+      description: "url, title and visible text of an APPROVED tab (untrusted content). Refused on any other tab.",
+      inputSchema: tabArg,
+      annotations: ann(true),
+    }, async ({ tab }) => chromeResult(await onChrome("read", { tab })));
+    server.registerTool("chrome_snapshot", {
+      title: "List what can be clicked or filled in an approved Chrome tab",
+      description: "Every visible field, button, link, select and checkbox with a ref (e1...), label, value and options; " +
+        "never a password value. Refused on a tab the owner has not approved.",
+      inputSchema: tabArg,
+      annotations: ann(true),
+    }, async ({ tab }) => chromeResult(await onChrome("snapshot", { tab })));
+    server.registerTool("chrome_click", {
+      title: "Click in an approved Chrome tab",
+      description: "Click one element (ref or selector) in an APPROVED tab. Do not submit anything in the owner's name " +
+        "(a purchase, a message, a sign-up) without asking them first.",
+      inputSchema: { ...tabArg, ...target },
+      annotations: ann(false),
+    }, async ({ tab, ref, selector }) => chromeResult(await onChrome("click", { tab, ref, selector })));
+    server.registerTool("chrome_type", {
+      title: "Type into a field in an approved Chrome tab",
+      description: "Set a field's value (ref or selector) in an APPROVED tab and read it back. Never type a password.",
+      inputSchema: { ...tabArg, ...target, text: z.string().max(8192) },
+      annotations: ann(false),
+    }, async ({ tab, ref, selector, text }) => chromeResult(await onChrome("type", { tab, ref, selector, text })));
+    server.registerTool("chrome_select", {
+      title: "Choose a dropdown option in an approved Chrome tab",
+      description: "Pick a <select> option by value or visible text in an APPROVED tab.",
+      inputSchema: { ...tabArg, ...target, option: z.string().min(1).max(512) },
+      annotations: ann(false),
+    }, async ({ tab, ref, selector, option }) => chromeResult(await onChrome("select", { tab, ref, selector, option })));
+    server.registerTool("chrome_check", {
+      title: "Tick or untick a checkbox in an approved Chrome tab",
+      description: "Set a checkbox or radio in an APPROVED tab. Never accept terms on the owner's behalf without asking.",
+      inputSchema: { ...tabArg, ...target, checked: z.boolean() },
+      annotations: ann(false),
+    }, async ({ tab, ref, selector, checked }) => chromeResult(await onChrome("check", { tab, ref, selector, checked })));
   }
 
   if (onBrowser != null) {

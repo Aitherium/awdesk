@@ -285,6 +285,10 @@ function createBridgeServer({
   // Browser (awconnect's "Open in Aither Browser"). Same class as /console/open: it
   // raises a window, it does not let anything drive one.
   browserHandler = null,
+  // GET /chrome/next + POST /chrome/result: awconnect's half of chrome-bridge.cjs
+  // (agents driving an owner-APPROVED Chrome tab). The pinned extension ONLY: a
+  // local page or process answering here could feed an agent forged page content.
+  chromeBridge = null,
   commandsHandler = null,
   // () => {x, y, width, height} of the visible avatar window, or null.
   avatarBoundsProvider = null,
@@ -528,6 +532,50 @@ function createBridgeServer({
           if (response.headersSent) return;
           response.writeHead(500, { "content-type": "application/json" });
           response.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+        });
+      return;
+    }
+
+    if (request.url === "/chrome/next" || request.url === "/chrome/result") {
+      if (!extensionOriginAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      if (chromeBridge == null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      if (request.url === "/chrome/next") {
+        if (request.method !== "GET") {
+          response.writeHead(405, { allow: "GET" });
+          response.end();
+          return;
+        }
+        chromeBridge.next().then((next) => {
+          if (response.headersSent) return;
+          if (!next) {
+            response.writeHead(204);
+            response.end();
+            return;
+          }
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify(next));
+        });
+        return;
+      }
+      if (request.method !== "POST") {
+        response.writeHead(405, { allow: "POST" });
+        response.end();
+        return;
+      }
+      readJsonBody(request)
+        .catch(() => ({}))
+        .then((body) => {
+          const accepted = chromeBridge.result(body?.id, body?.result);
+          response.writeHead(accepted ? 200 : 404, { "content-type": "application/json" });
+          response.end(JSON.stringify({ ok: accepted }));
         });
       return;
     }

@@ -141,6 +141,8 @@ const {
 const browserWindow = require("./browser-window.cjs");
 const overlayBrowserHost = require("./overlay-browser-host.cjs");
 const browserPolicy = require("./browser-policy.cjs");
+// Agents driving an owner-approved Chrome tab, through awconnect (chrome-bridge.cjs).
+const chromeBridge = require("./chrome-bridge.cjs").createChromeBridge();
 const {
   createCommandWindow,
   ensureCommandIpc,
@@ -3721,6 +3723,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       onAsk: ({ question, timeoutMs }) => voiceAsk.ask(question, { timeoutMs }),
       // The Aither Browser's agent tools: the take-over gate runs before any of them.
       onBrowser: (action, args) => browserWindow.browserAgent({ askAgent: browserAskAgent })(action, args),
+      onChrome: (action, args) => chromeBridge.call(action, args),
       onDesktop: (surface) => {
         if (surface === "overlay") showLivingDesktop();
         else if (surface === "app") showDesktopApp();
@@ -3757,6 +3760,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       },
       // awconnect's "Open in Aither Browser": a new tab of the OWNER's, never an
       // agent's -- sending a page here does not hand it to any agent.
+      chromeBridge,
       browserHandler: (url) => {
         const verdict = browserPolicy.sanitizeUrl(url);
         if (!verdict.ok) return { ok: false, error: verdict.reason };

@@ -36,12 +36,19 @@ AitherDesktop. This file is the order of work. Each slice ships on its own.
    desktop snapshot now cover this window too. It sends the machine layer only: title,
    OpenGraph, JSON-LD, feeds, and form field names and labels. It never sends page
    text or a field value. `DESK_BROWSER_CONTEXT_PUSH=0` turns it off.
-5. **awconnect.** One page protocol over two hosts: this PR makes the desk answer
-   the same `os→page` / `os-page-context` protocol (Veil `overlay-host.ts`) that
-   awconnect answers over your Chrome tab, so AitherOS Online drives either one
-   through one API. Still to come: MCP agent tools that reach your Chrome through
-   awconnect 4, and the assistant panel becoming awconnect's Connect panel (swap
-   `ASSISTANT_PANEL`, nothing else).
+5. **awconnect: PARTIAL.** Shipped: one page protocol over two hosts (#11102). The
+   desk answers the same `os→page` / `os-page-context` protocol (Veil
+   `overlay-host.ts`) that awconnect answers over your Chrome tab. awconnect also has
+   an "Open in Aither Browser" menu item (#11113, desk `POST /browser/open`) that
+   opens the page in a new tab of yours. Agents can drive your own Chrome, one
+   approved tab at a time (owner, 2026-10-03: "Yes, but ask each time"). Desk
+   `chrome_*` MCP tools queue requests (`chrome-bridge.cjs`). awconnect long-polls
+   them over `/chrome/next` (pinned extension origin only) and answers from
+   `shared/chrome-agent.js`. A tab works only after you press "Allow on this tab" on
+   a notification. The approval covers that tab on that site, and ends when the tab
+   changes site or closes. An approved tab shows an "AI" badge. The panel swap
+   waits: awkit's Connect panel does not exist yet; when it does, swap
+   `ASSISTANT_PANEL`, nothing else.
 6. **Living desktop overlay: SHIPPED (#11102).** The desk hosts AitherOS Online's page plane
    (`overlay-browser-host.cjs`). Every request goes through the browser's agent gate
    and tab-ownership rule. Page context gives text only for an agent's tab. The
@@ -52,7 +59,7 @@ AitherDesktop. This file is the order of work. Each slice ships on its own.
    opened it (`browser-tabs.cjs`). An agent drives only its own tabs (marked with a
    purple dot) and can never read, switch to or close the owner's. `browser_tabs`,
    `browser_switch_tab`, `browser_close_tab`, and `browser_open` with `new_tab`. Popups
-   open as tabs beside their opener. History, bookmarks and downloads: this PR.
+   open as tabs beside their opener. History, bookmarks and downloads: SHIPPED (#11106).
    History and bookmarks (`browser-library.cjs`, one JSON file in userData) feed
    address-bar suggestions: your bookmarks first, then your history, then pages an
    agent visited. No agent tool reads them. Downloads (`browser-downloads.cjs`)
