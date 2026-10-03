@@ -5,6 +5,7 @@
  * main.cjs so main gains three lines: start it, route desk://enroll to it, show its summary.
  */
 
+const { spawn, execFile } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -13,13 +14,37 @@ const { KvLend, holderJsPath } = require("./kv-lend.cjs");
 
 const IDLE_S = 300; // "idle": no input for 5 minutes
 
-function startKvLend({ app, BrowserWindow, ipcMain, powerMonitor, notify = () => {}, log = console.log }) {
-  const dir = path.join(app.getPath("userData"), "device");
+/**
+ * @param external  optional (settings) => ChildProcess|null: run the engine in a separate
+ *                  process instead of a hidden window here (lendProcessSpawner); null = here.
+ * @param dataDir   where the device key and kv-lend.json live (default: userData)
+ */
+function startKvLend({ app, BrowserWindow, ipcMain, powerMonitor, notify = () => {}, log = console.log,
+  external = null, dataDir = app.getPath("userData"), probeOverride = null }) {
+  const dir = path.join(dataDir, "device");
   const identity = new DeviceIdentity(dir);
   const engineJs = holderJsPath();
   const pageJs = path.join(__dirname, "kv-lend-page.js");
 
   const makeWindow = () => {
+    const child = external ? external(lend.settings()) : null;
+    if (child) {
+      // the engine in its own process: its status lines come back on stdout
+      let buf = "";
+      child.stdout.on("data", (d) => {
+        buf += d.toString("utf8");
+        let i;
+        while ((i = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, i).trim();
+          buf = buf.slice(i + 1);
+          if (line.startsWith("KVLEND ")) {
+            try { lend.onStatus(JSON.parse(line.slice(7))); } catch { /* partial line */ }
+          }
+        }
+      });
+      child.on("exit", (code) => log(`kv-lend: engine process exited (${code})`));
+      return { destroy: () => child.kill(), webContents: null };
+    }
     const win = new BrowserWindow({
       show: false,
       width: 320,
@@ -47,21 +72,21 @@ function startKvLend({ app, BrowserWindow, ipcMain, powerMonitor, notify = () =>
   };
 
   const gamingLock = path.join(os.homedir(), ".aither", "gaming.lock");
-  const probe = () => ({
+  const probe = probeOverride || (() => ({
     onBattery: !!(powerMonitor.isOnBatteryPower && powerMonitor.isOnBatteryPower()),
     idle: powerMonitor.getSystemIdleTime() >= IDLE_S,
     gaming: fs.existsSync(gamingLock),
-  });
+  }));
 
   const lend = new KvLend({
     identity,
-    settingsFile: path.join(app.getPath("userData"), "kv-lend.json"),
+    settingsFile: path.join(dataDir, "kv-lend.json"),
     makeWindow,
     probe,
     log,
   });
 
-  const fromPage = (event) => lend.win && event.sender === lend.win.webContents;
+  const fromPage = (event) => lend.win && lend.win.webContents && event.sender === lend.win.webContents;
   ipcMain.handle("kvlend:config", (event) => (fromPage(event) ? lend.pageConfig() : null));
   ipcMain.handle("kvlend:hello", (event) => (fromPage(event) ? lend.hello() : null));
   ipcMain.on("kvlend:status", (event, st) => {
@@ -95,4 +120,68 @@ function startKvLend({ app, BrowserWindow, ipcMain, powerMonitor, notify = () =>
   return { identity, lend, enrollFromUrl };
 }
 
-module.exports = { IDLE_S, startKvLend };
+const LEND_PROCESS_ARG = "--kv-lend-process=";
+const DISCRETE = "GpuPreference=2;";
+const PREF_KEY = ["HKCU", "Software", "Microsoft", "DirectX", "UserGpuPreferences"].join(String.fromCharCode(92));
+
+/**
+ * Windows pins Desk.exe to the integrated GPU (present-policy.cjs: presenting on the dGPU stalls
+ * the avatar), and Windows applies that per EXECUTABLE PATH, so no Chromium switch moves WebGPU
+ * off it (measured 2026-10-03: force_high_performance_gpu and use-webgpu-power-preference both
+ * still gave the AMD iGPU). The lender therefore runs as a second process from a hard link of
+ * the same executable ("Desk Lend.exe", no copy, same folder) that Windows lets use the
+ * discrete GPU. It draws nothing on screen, so the stall that pinned Desk does not apply.
+ */
+function lendProcessSpawner({ app, dataDir, log = console.log }) {
+  const exe = process.execPath;
+  const link = path.join(path.dirname(exe), "Desk Lend" + path.extname(exe));
+  return (settings) => {
+    if (settings && settings.gpu === "low-power") return null; // the integrated GPU: stay in-process
+    try {
+      if (!fs.existsSync(link)) fs.linkSync(exe, link);
+    } catch (e) {
+      log(`kv-lend: no lend executable (${e.message}); using the integrated GPU`);
+    }
+    const bin = fs.existsSync(link) ? link : exe;
+    if (bin === link) {
+      execFile("reg", ["add", PREF_KEY, "/v", link, "/t", "REG_SZ", "/d", DISCRETE, "/f"],
+        { windowsHide: true }, () => {});
+    }
+    const args = app.isPackaged ? [] : [app.getAppPath()];
+    args.push(LEND_PROCESS_ARG + dataDir);
+    return spawn(bin, args, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+  };
+}
+
+/** True when this process is the lender started by lendProcessSpawner. */
+function isLendProcess(argv = process.argv) {
+  return argv.some((a) => a.startsWith(LEND_PROCESS_ARG));
+}
+
+/** The lender's whole life: the engine window, always on (the parent decides when), status
+ *  lines on stdout, gone with its parent. */
+function runLendProcess({ app, BrowserWindow, ipcMain, powerMonitor }) {
+  const dataDir = process.argv.find((a) => a.startsWith(LEND_PROCESS_ARG)).slice(LEND_PROCESS_ARG.length);
+  app.setPath("userData", path.join(dataDir, "lend-process"));
+  app.on("window-all-closed", (e) => e.preventDefault());
+  app.whenReady().then(() => {
+    const rt = startKvLend({
+      app, BrowserWindow, ipcMain, powerMonitor, dataDir,
+      probeOverride: () => ({ onBattery: false, idle: true, gaming: false }),
+      log: (line) => process.stdout.write(`${line}\n`),
+    });
+    rt.lend.setSettings = () => rt.lend.settings(); // settings belong to the parent
+    const report = rt.lend.onStatus.bind(rt.lend);
+    rt.lend.onStatus = (st) => {
+      report(st);
+      process.stdout.write(`KVLEND ${JSON.stringify(st)}\n`);
+    };
+    rt.lend.evaluate();
+  });
+  const ppid = process.ppid;
+  setInterval(() => {
+    try { process.kill(ppid, 0); } catch { app.exit(0); } // the parent is gone
+  }, 5000).unref?.();
+}
+
+module.exports = { IDLE_S, isLendProcess, lendProcessSpawner, runLendProcess, startKvLend };

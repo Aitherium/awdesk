@@ -38,7 +38,7 @@ test("the engine window opens when policy allows and closes when it stops", () =
   });
   assert.equal(lend.evaluate(), "");
   assert.equal(made.length, 1);
-  assert.deepEqual(lend.pageConfig(), { relay: "wss://kv.aitherium.com/holder", deviceId: "fdev_1", mb: 2048 });
+  assert.deepEqual(lend.pageConfig(), { relay: "wss://kv.aitherium.com/holder", deviceId: "fdev_1", mb: 2048, gpu: "high-performance" });
   assert.deepEqual(lend.hello(), { relay: "kv.aitherium.com" });
   env = { ...idle, onBattery: true };
   assert.match(lend.evaluate(), /battery/);
@@ -57,4 +57,14 @@ test("the vendored holder.js is byte-identical to awdk's (in the monorepo)", (t)
   if (!fs.existsSync(upstream)) return t.skip("awdk is not beside this tree (the public mirror)");
   assert.equal(fs.readFileSync(holderJsPath(), "utf8"), fs.readFileSync(upstream, "utf8"),
     "refresh it: cp awdk/adk/webui/kvholder/holder.js .DEPLOYMENT/awdesk/electron/kvholder/holder.js");
+});
+
+test("the lender gets its own process unless the owner chose the integrated GPU", () => {
+  const { isLendProcess, lendProcessSpawner } = require("./kv-lend-electron.cjs");
+  assert.equal(isLendProcess(["electron", ".", "--kv-lend-process=C:/x"]), true);
+  assert.equal(isLendProcess(["electron", "."]), false);
+  const spawnFor = lendProcessSpawner({ app: { isPackaged: true, getAppPath: () => "." }, dataDir: "x" });
+  assert.equal(spawnFor({ gpu: "low-power" }), null);
+  assert.equal(normalize({ gpu: "nonsense" }).gpu, "high-performance");
+  assert.equal(normalize({ gpu: "battery" }).gpu, "battery");
 });

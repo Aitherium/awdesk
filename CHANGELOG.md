@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.6 - 2026-10-03
+
+- Lend memory uses the fast GPU. On Windows, Desk keeps itself on the integrated GPU so the
+  avatar never stutters, and Windows applies that choice to the whole program. The lending
+  engine now runs as its own process ("Desk Lend", a link to the same program, no copy) that
+  may use the discrete GPU: measured 11 ms per attention call on an RTX 5090, against 33 ms on
+  the integrated GPU. `"gpu": "low-power"` in kv-lend.json keeps lending on the integrated GPU,
+  and `"battery"` does so only while a laptop runs on battery.
+- This build is not code-signed: on Windows choose More info, then Run anyway; check the
+  download against SHA256SUMS.txt.
+
 ## 0.1.5 - 2026-10-03
 
 - Connect this computer to your workspace with one click: "Connect this device" on

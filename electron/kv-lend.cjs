@@ -18,7 +18,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const DEFAULT_RELAY = "wss://kv.aitherium.com/holder";
-const DEFAULTS = Object.freeze({ enabled: true, maxMb: 2048, onlyOnAc: true, onlyIdle: true });
+const DEFAULTS = Object.freeze({ enabled: true, maxMb: 2048, onlyOnAc: true, onlyIdle: true, gpu: "high-performance" });
+// which GPU lends (holder.js resolvePower): the fast one, the integrated one, or the
+// integrated one only while the laptop runs on battery
+const GPU_CHOICES = Object.freeze(["high-performance", "low-power", "battery"]);
 const MB_CHOICES = Object.freeze([512, 1024, 2048, 4096, 8192, 16384]);
 
 /** "" = lend now; otherwise the reason it does not. */
@@ -42,6 +45,7 @@ function normalize(raw) {
   s.onlyIdle = s.onlyIdle !== false;
   const mb = Number(s.maxMb);
   s.maxMb = MB_CHOICES.includes(mb) ? mb : DEFAULTS.maxMb;
+  if (!GPU_CHOICES.includes(s.gpu)) s.gpu = DEFAULTS.gpu;
   return s;
 }
 
@@ -91,7 +95,8 @@ class KvLend {
   /** What the page needs: the relay, this device and how much to lend. No secrets. */
   pageConfig() {
     const st = this.identity.enrolled() || {};
-    return { relay: this.relay, deviceId: st.deviceId || "", mb: this.settings().maxMb };
+    const s = this.settings();
+    return { relay: this.relay, deviceId: st.deviceId || "", mb: s.maxMb, gpu: s.gpu };
   }
 
   /** Called by the page for each dial: a fresh signature, made here; the key stays in main. */
@@ -146,4 +151,4 @@ class KvLend {
   }
 }
 
-module.exports = { DEFAULTS, DEFAULT_RELAY, KvLend, MB_CHOICES, holderJsPath, normalize, shouldLend, whyNot };
+module.exports = { DEFAULTS, DEFAULT_RELAY, GPU_CHOICES, KvLend, MB_CHOICES, holderJsPath, normalize, shouldLend, whyNot };

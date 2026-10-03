@@ -6,7 +6,10 @@
   'use strict';
   const cfg = await window.kvlend.config();
   let engine = null, holder = null, state = 'connecting', backoff = 1000, lastErr = '';
-  try { if (navigator.gpu) engine = await KVHolder.GpuEngine.create(navigator.gpu, {}); } catch { engine = null; }
+  let battery;
+  try { battery = navigator.getBattery ? await navigator.getBattery() : null; } catch { battery = null; }
+  const power = KVHolder.resolvePower(cfg.gpu, battery);
+  try { if (navigator.gpu) engine = await KVHolder.GpuEngine.create(navigator.gpu, {power}); } catch { engine = null; }
   if (!engine) engine = new KVHolder.CpuEngine();
   holder = new KVHolder.Holder(engine, cfg.mb * 1048576, cfg.deviceId);
   const report = () => window.kvlend.status({

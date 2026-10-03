@@ -17,6 +17,17 @@ const {
   Tray,
 } = require("electron");
 
+// The "Lend memory" engine runs as its own process on Windows (kv-lend-electron.cjs,
+// lendProcessSpawner): that process is this same file, and it must skip ALL of Desk below,
+// the GPU pinning in present-policy.cjs first of all.
+{
+  const kvLendProcess = require("./kv-lend-electron.cjs");
+  if (kvLendProcess.isLendProcess()) {
+    kvLendProcess.runLendProcess({ app, BrowserWindow, ipcMain, powerMonitor });
+    return;
+  }
+}
+
 // A transparent always-on-top overlay must never be treated as "in the
 // background". Measured 2026-09-18 over CDP with an IDLE renderer (0.7 s of work
 // per 6 s): frame gaps of almost exactly 1000 ms, several per 10 s -- Chromium's
@@ -197,7 +208,7 @@ const {
 const { createAudioListener } = require("./audio-listener.cjs");
 const { isAllowedRendererNavigation } = require("./navigation-policy.cjs");
 const { parseProtocolUrl, voiceState } = require("./protocol-actions.cjs");
-const { startKvLend } = require("./kv-lend-electron.cjs");
+const { lendProcessSpawner, startKvLend } = require("./kv-lend-electron.cjs");
 // "Connect this device" + "Lend memory" (kv-lend-electron.cjs); enroll links that arrive
 // before it starts are queued.
 let kvLendRuntime = null;
@@ -3997,8 +4008,13 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     openMicOn = talkMode() === "open" && !micMuted();
     refreshJumpList();
     try {
+      // Desk itself is pinned to the integrated GPU on Windows; lend from the fast one in a
+      // separate process unless the owner chose the integrated GPU for lending
+      const external = process.platform === "win32" && presentState.gpu === "integrated"
+        ? lendProcessSpawner({ app, dataDir: app.getPath("userData"), log: (l) => console.log(`[desk] ${l}`) })
+        : null;
       kvLendRuntime = startKvLend({
-        app, BrowserWindow, ipcMain, powerMonitor,
+        app, BrowserWindow, ipcMain, powerMonitor, external,
         notify: (title, body) => { if (Notification.isSupported()) new Notification({ title, body }).show(); },
         log: (line) => console.log(`[desk] ${line}`),
       });
