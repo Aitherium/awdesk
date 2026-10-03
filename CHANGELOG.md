@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.5 - 2026-10-03
+
+- Connect this computer to your workspace with one click: "Connect this device" on
+  aitherium.com opens Desk with a single-use code (`desk://enroll?...`). Desk makes its
+  own device key, which never leaves the computer, and joins as that device. No terminal and
+  no admin rights.
+- Lend memory (tray and palette): while on mains power, idle and with no game running, Desk
+  holds part of your model's context in a hidden window (WebGPU, or the CPU) and connects
+  outward to your workspace relay. Nothing listens on your computer. Your workspace decides
+  whether it may lend, and removing the device stops it.
+- This build is not code-signed. On Windows, SmartScreen says "Windows protected your PC":
+  choose More info, then Run anyway. Check the download against SHA256SUMS.txt.
+
 ## 0.1.4 - 2026-10-01
 
 - The Sessions pane shows what each Claude Code session was for and its next step

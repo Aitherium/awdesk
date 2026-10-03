@@ -400,6 +400,13 @@ const COMMANDS = Object.freeze([
   // DATA: main hands the verb to the same runner the Fleet window and the MCP
   // `fleet_control` tool use, so a tray click, a palette row, an awsh command
   // and an agent call execute the same script with the same argv.
+  // Lend memory (kv-lend.cjs): this computer holds part of the owner's model context, only
+  // on AC power, idle and with no game running; the owner's workspace still decides.
+  Object.freeze({
+    id: "kvlend.toggle", label: "Lend memory to my models", menuLabel: "Lend memory",
+    group: "fleet", surfaces: ["tray", "palette"],
+    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.kvLend),
+  }),
   Object.freeze({
     id: "fleet.open", label: "Fleet window…", group: "fleet",
     surfaces: ["tray", "palette"], fleet: "open_panel",

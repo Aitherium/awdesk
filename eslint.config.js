@@ -10,6 +10,8 @@ export default tseslint.config(
     // junk (old trees left by a 2026-08-24 session); they never exist in CI
     // but dominated the local lint output (4,2xx of 4,272 errors).
     ignores: [
+      // vendored verbatim from awdk/adk/webui/kvholder (linted there; kv-lend.test.cjs pins it)
+      'electron/kvholder/**',
       'dist/**',
       'release/**',
       'node_modules/**',

@@ -114,6 +114,23 @@ to target another desktop voice application:
 DESK_TARGET_PROCESS_PATTERN='my-voice-app' desk
 ```
 
+## Connect this device and Lend memory
+
+`desk://enroll?c=<code>&d=<device id>&i=https://idp.aitherium.com` connects this computer to
+the owner's workspace with no terminal. aitherium.com's "Connect this device" mints the code
+(identity pairing, single use, 5 minutes). Desk makes an Ed25519 device key that never leaves
+the machine (`device-identity.cjs`, in Desk's user-data folder) and confirms the code with it.
+Links that name any identity host other than `*.aitherium.com` are refused.
+
+"Lend memory" (tray, palette: `kvlend.toggle`) then runs the KV holder engine (`holder.js`,
+shipped as `resources/kvholder/holder.js`) in a hidden window: WebGPU when available, else
+CPU. It dials `wss://kv.aitherium.com/holder` outbound and signs each dial with the device
+key, so nothing listens on this computer. By default it lends only on AC power, after 5
+minutes idle, and never while `~/.aither/gaming.lock` exists; `kv-lend.json` in the user-data
+folder holds `enabled`, `maxMb`, `onlyOnAc` and `onlyIdle`. Whether the relay takes the
+memory is the owner's decision there (the household `kv_lend` switch or the relay's allow
+list), and removing the device from the workspace revokes it.
+
 ## KV holder swarm
 
 The Fleet line shows the phones lending memory to the owner's model, for example

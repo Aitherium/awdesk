@@ -47,6 +47,11 @@ function parseProtocolUrl(rawUrl, protocolScheme = "desk") {
     if (action === "desktop" || action === "aither-desktop") {
       return [{ type: "desktop" }];
     }
+    // desk://enroll?c=<code>&d=<device>&i=<identity> -> "Connect this device" from
+    // aitherium.com: device-identity.cjs validates and confirms it.
+    if (action === "enroll") {
+      return [{ type: "enroll", url: rawUrl }];
+    }
     if (action === "listening") {
       return [{ type: "event", event: voiceState("listening") }];
     }

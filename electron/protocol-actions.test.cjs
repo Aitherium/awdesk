@@ -45,3 +45,8 @@ test("desk://setup opens Set up Aither (the awnix [oobe] terminal's hand-off)", 
   assert.deepEqual(parseProtocolUrl("desk://setup"), [{ type: "setup" }]);
   assert.equal(parseProtocolUrl("other://setup"), null);
 });
+
+test("desk://enroll hands the whole link to the enroller", () => {
+  const url = "desk://enroll?c=AB3K9Q2Z&d=fdev_1&i=https://idp.aitherium.com";
+  assert.deepEqual(parseProtocolUrl(url), [{ type: "enroll", url }]);
+});

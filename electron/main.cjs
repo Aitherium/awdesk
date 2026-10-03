@@ -10,6 +10,8 @@ const {
   ipcMain,
   Menu,
   nativeImage,
+  Notification,
+  powerMonitor,
   screen,
   shell,
   Tray,
@@ -195,6 +197,11 @@ const {
 const { createAudioListener } = require("./audio-listener.cjs");
 const { isAllowedRendererNavigation } = require("./navigation-policy.cjs");
 const { parseProtocolUrl, voiceState } = require("./protocol-actions.cjs");
+const { startKvLend } = require("./kv-lend-electron.cjs");
+// "Connect this device" + "Lend memory" (kv-lend-electron.cjs); enroll links that arrive
+// before it starts are queued.
+let kvLendRuntime = null;
+const pendingEnroll = [];
 const {
   ROSTER_DIR,
   getRecentCharacters,
@@ -985,6 +992,10 @@ function handleProtocolUrl(rawUrl) {
     else if (command.type === "overlay") showLivingDesktop();
     else if (command.type === "desktop") showDesktopApp();
     else if (command.type === "event") handleBridgeEvent(command.event);
+    else if (command.type === "enroll") {
+      if (kvLendRuntime) void kvLendRuntime.enrollFromUrl(command.url);
+      else pendingEnroll.push(command.url);
+    }
   }
   return true;
 }
@@ -1841,6 +1852,7 @@ function commandContext() {
     overlayShell: desktop.shell,
     overlayGhost: desktop.ghost,
     overlaySolid: !desktop.transparent,
+    kvLend: Boolean(kvLendRuntime && kvLendRuntime.lend.settings().enabled),
     deadAccels: [...deadAccels],
     awconnect: latestAwconnectStatus,
     // Who the AitherDesktop window + overlay are signed in as (never a token).
@@ -1968,6 +1980,12 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
   if (tray) setImmediate(() => refreshTrayMenu());
   switch (id) {
     case "console.open": return void openConsole();
+    case "kvlend.toggle": {
+      if (!kvLendRuntime) return;
+      const on = !kvLendRuntime.lend.settings().enabled;
+      kvLendRuntime.lend.setSettings({ enabled: on });
+      return;
+    }
     case "inbox.open": return void openInbox();
     case "avatar.toggle": return void toggleOverlay();
     case "voice.talk": return void toggleListening();
@@ -3978,6 +3996,16 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // from get-snapshot when it mounts (a push now would beat its listener).
     openMicOn = talkMode() === "open" && !micMuted();
     refreshJumpList();
+    try {
+      kvLendRuntime = startKvLend({
+        app, BrowserWindow, ipcMain, powerMonitor,
+        notify: (title, body) => { if (Notification.isSupported()) new Notification({ title, body }).show(); },
+        log: (line) => console.log(`[desk] ${line}`),
+      });
+      for (const url of pendingEnroll.splice(0)) void kvLendRuntime.enrollFromUrl(url);
+    } catch (e) {
+      console.warn(`[desk] lend memory unavailable: ${e && e.message}`);
+    }
     handleProtocolArgv(process.argv);
 
     audioListener = createAudioListener({
