@@ -393,10 +393,14 @@
   async function refreshConnections() {
     const host = document.getElementById("connections");
     let rows = [];
-    try { rows = await bridge.connections(); } catch (error) { rows = []; }
+    // window.settingsBridge, not `bridge`: that const lives inside the page's own
+    // block, and this section is outside it -- the ReferenceError read as "could not check".
+    const api = window.settingsBridge;
+    let failure = "";
+    try { rows = await api.connections(); } catch (error) { rows = []; failure = String(error && error.message || error); }
     host.textContent = "";
     if (!Array.isArray(rows) || !rows.length) {
-      host.textContent = "Could not check connections.";
+      host.textContent = "Could not check connections" + (failure ? ": " + failure : ".");
       return;
     }
     for (const row of rows) {
@@ -414,9 +418,9 @@
         button.className = "small";
         button.textContent = row.action.label;
         button.addEventListener("click", async () => {
-          if (row.action.id === "link") { linkBtn.click(); return; }
+          if (row.action.id === "link") { document.getElementById("linkBtn").click(); return; }
           button.disabled = true;
-          await bridge.runConnection(row.action.id);
+          await api.runConnection(row.action.id);
           button.disabled = false;
           refreshConnections();
         });
