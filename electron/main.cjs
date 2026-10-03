@@ -95,6 +95,7 @@ const commandRegistry = require("./command-registry.cjs");
 // Machine paths create DRAFTS; `blog.publish` opens the Veil editor for a human
 // (owner ruling 2026-09-19, .claude/rules/blog-voice.md).
 const { runBlogCommand } = require("./blog-commands.cjs");
+const { readInnerState } = require("./sense-commands.cjs");
 // awrise wakes (scheduled jobs) — read and mutated ONLY through the awdk
 // harness daemon's /wakes window, so the desk, Discord, AitherDesktop and the
 // MCP tool share one reader and one semantics (see wakes-feed.cjs header).
@@ -2015,6 +2016,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "avatar.remove": return void (slotId && removeAvatarSlot(slotId));
     case "setup.open": return void setupWindow().createSetupWindow({ openAwsh: () => openConsole() });
     case "about": return void showAboutDesk();
+    case "aeon.state": return runAeonStateCommand({ surface });
     case "awconnect.setup": return runAwconnectSetupCommand({ surface });
     case "quit":
       isQuitting = true;
@@ -2376,6 +2378,21 @@ async function runFleetCommand(command) {
 /** A blog record from a menu or the palette. The verdict goes back to the
  *  caller; a tray click (nothing awaits it) gets a dialog instead. Nothing here
  *  publishes -- see blog-commands.cjs. */
+/** Aeon's inner state from the gateway's sense_inner_state tool. Returned for the
+ *  palette; a tray click (nothing awaits it) gets a dialog. */
+async function runAeonStateCommand({ surface = "menu" } = {}) {
+  const verdict = await readInnerState();
+  console.log(`[desk] aeon.state: ${verdict.message}`);
+  if (surface !== "palette") {
+    void dialog.showMessageBox({
+      type: verdict.ok ? "info" : "warning",
+      title: "Aeon",
+      message: verdict.message,
+    });
+  }
+  return verdict;
+}
+
 async function runBlogMenuCommand(command, arg, { surface = "menu" } = {}) {
   const verdict = await runBlogCommand(command, arg, {
     openExternal: (url) => shell.openExternal(url),

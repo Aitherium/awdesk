@@ -481,6 +481,13 @@ const COMMANDS = Object.freeze([
     whySingle: "Needs a typed slug; the palette is the only surface with a text field. "
       + "Opens the editor -- publishing itself is the human's click there.",
   }),
+  // Aeon's inner state (owner, 2026-10-02: Aeon/Sense/Daydream must be integrated
+  // with the desk). One read of the gateway's sense_inner_state tool -- the same
+  // data Veil's Sense Command Center shows -- through gateway-mcp.cjs.
+  Object.freeze({
+    id: "aeon.state", label: "Aeon: how is the agent feeling?", menuLabel: "How is Aeon feeling?", group: "app",
+    surfaces: ["tray", "palette"],
+  }),
   Object.freeze({
     // The browser extension. The label says what a click will do given the last
     // `adk awconnect status` (awconnect-setup.cjs); main runs the adk command.
