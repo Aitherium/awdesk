@@ -285,7 +285,7 @@ function createBridgeServer({
   // Browser (awconnect's "Open in Aither Browser"). Same class as /console/open: it
   // raises a window, it does not let anything drive one.
   browserHandler = null,
-  // GET /chrome/next + POST /chrome/result: awconnect's half of chrome-bridge.cjs
+  // POST /chrome/next + POST /chrome/result: awconnect's half of chrome-bridge.cjs
   // (agents driving an owner-APPROVED Chrome tab). The pinned extension ONLY: a
   // local page or process answering here could feed an agent forged page content.
   chromeBridge = null,
@@ -548,8 +548,10 @@ function createBridgeServer({
         return;
       }
       if (request.url === "/chrome/next") {
-        if (request.method !== "GET") {
-          response.writeHead(405, { allow: "GET" });
+        // POST, not GET: Chrome sends no Origin on an extension's GET, and this route
+        // is decided BY the Origin (measured 2026-10-03: a GET long-poll was 403 forever).
+        if (request.method !== "POST") {
+          response.writeHead(405, { allow: "POST" });
           response.end();
           return;
         }

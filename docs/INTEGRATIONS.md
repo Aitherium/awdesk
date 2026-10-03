@@ -60,7 +60,7 @@ Desk exposes these tools:
 | `browser_switch_tab` | `tab` | Moves the agent to one of its OWN tabs and shows it; the owner's tabs are refused |
 | `browser_close_tab` | `tab` | Closes one of the agent's own tabs; the owner's tabs are refused |
 | `chrome_tabs` | None | Lists the owner's Chrome tabs through awconnect: id, title, host, approved (no page content) |
-| `chrome_request_tab` | `tab`, `reason` | Asks the owner, by notification, to allow an agent on that tab; Allow covers that tab on that site only |
+| `chrome_request_tab` | `host`, `reason` | Asks the owner (awconnect window, then Chrome's own site prompt) to allow an agent on their tab on that site; ends when the tab changes site or closes |
 | `chrome_read` | `tab` | Reads an approved Chrome tab (untrusted content); refused on any other tab |
 | `chrome_snapshot` | `tab` | Lists the controls of an approved Chrome tab with refs; never a password value |
 | `chrome_click` | `tab`, `ref` or `selector` | Clicks in an approved Chrome tab |

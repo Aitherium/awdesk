@@ -1,7 +1,7 @@
 "use strict";
 
 // End to end on the desk side: an agent's chrome_* MCP call -> the queue -> a
-// (fake) awconnect long-polling GET /chrome/next over real HTTP -> POST
+// (fake) awconnect long-polling POST /chrome/next over real HTTP -> POST
 // /chrome/result -> the agent's answer. And the origin rule: ONLY the pinned
 // extension may poll or answer -- a local page answering would feed an agent
 // forged page content.
@@ -52,11 +52,13 @@ test("an agent's chrome_read reaches awconnect over the bridge and comes back", 
   }
 
   // A local page may NOT pose as awconnect.
-  assert.equal((await request(port, { method: "GET", path: "/chrome/next", origin: "http://localhost:3000" })).status, 403);
-  assert.equal((await request(port, { method: "GET", path: "/chrome/next" })).status, 403, "no origin is not awconnect either");
+  assert.equal((await request(port, { method: "POST", path: "/chrome/next", origin: "http://localhost:3000" })).status, 403);
+  assert.equal((await request(port, { method: "POST", path: "/chrome/next" })).status, 403, "no origin is not awconnect either");
+  assert.equal((await request(port, { method: "GET", path: "/chrome/next", origin: EXTENSION })).status, 405,
+    "GET carries no Origin from an extension, so the long-poll is POST");
 
   const agent = client.callTool({ name: "chrome_read", arguments: { tab: 42 } });
-  const polled = await request(port, { method: "GET", path: "/chrome/next", origin: EXTENSION });
+  const polled = await request(port, { method: "POST", path: "/chrome/next", origin: EXTENSION, body: {} });
   assert.equal(polled.status, 200);
   assert.equal(polled.body.action, "read");
   assert.deepEqual(polled.body.args, { tab: 42 });

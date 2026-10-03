@@ -689,11 +689,15 @@ function createDeskMcpServer({
     }, async () => chromeResult(await onChrome("tabs", {})));
     server.registerTool("chrome_request_tab", {
       title: "Ask the owner to let you use one of their Chrome tabs",
-      description: "Shows the owner a notification: '<site>: <reason>' with Allow on this tab / Deny, and waits up to " +
-        "60 s. Allow approves THAT tab on THAT site only; it ends when the tab changes site or closes. Say plainly why.",
-      inputSchema: { ...tabArg, reason: z.string().min(1).max(160).describe("Why you need this tab, in one short sentence.") },
+      description: "Ask the owner to let you use their tab on ONE site. awconnect shows them '<site>: <reason>' with " +
+        "Allow / Deny, then Chrome asks them to confirm the site. Waits up to 75 s. Allow approves their open tab on that " +
+        "site (returned as `tab`); it ends when the tab changes site or closes. Say plainly why.",
+      inputSchema: {
+        host: z.string().min(3).max(253).describe("The site, e.g. www.amazon.com (no path, no wildcard)."),
+        reason: z.string().min(1).max(160).describe("Why you need it, in one short sentence."),
+      },
       annotations: ann(false),
-    }, async ({ tab, reason }) => chromeResult(await onChrome("request_tab", { tab, reason })));
+    }, async ({ host, reason }) => chromeResult(await onChrome("request_tab", { host, reason })));
     server.registerTool("chrome_read", {
       title: "Read an approved Chrome tab",
       description: "url, title and visible text of an APPROVED tab (untrusted content). Refused on any other tab.",

@@ -6,7 +6,7 @@
  *
  * An MV3 extension cannot listen on a port, so the desk holds a QUEUE: an agent's
  * chrome_* MCP tool enqueues a request and waits; awconnect long-polls
- * GET /chrome/next (its pinned origin only), runs the request in the tab, and
+ * POST /chrome/next (its pinned origin only; POST because Chrome sends no Origin on an extension GET), runs the request in the tab, and
  * posts POST /chrome/result. The desk never decides whether a tab may be driven:
  * awconnect does, because it is the side that can ASK the owner (a notification
  * per tab: Allow / Deny) and the side the owner's real sessions live in. Every
