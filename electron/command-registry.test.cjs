@@ -37,35 +37,41 @@ test("a capability with ONE entry point must say why", () => {
   }
 });
 
-test("window size reaches the tray, the avatar menu AND the palette", () => {
+test("window size lives on the Stage page, the palette and its hotkeys -- not two menus", () => {
+  // Owner, 2026-10-03: too many separate menus for one stage. The "Avatar window"
+  // submenu sat on the tray AND on every body's menu; it is the Stage page's
+  // "Avatar window" row now (stage-window.cjs STAGE_RUNNABLE), the palette, and the
+  // two global keys. A size preset with none of those would be unreachable.
+  const { STAGE_RUNNABLE } = require("./stage-window.cjs");
   const sizes = COMMANDS.filter((command) => command.group === "window-size");
   assert.ok(sizes.length >= 4, "the size group lost its presets");
   for (const command of sizes) {
-    for (const surface of ["tray", "avatar-menu", "palette"]) {
-      assert.ok(command.surfaces.includes(surface), `${command.id} is missing from ${surface}`);
-    }
+    assert.ok(command.surfaces.includes("palette"), `${command.id} is missing from the palette`);
+    assert.ok(STAGE_RUNNABLE.includes(command.id), `${command.id} has no button on the Stage page`);
+    assert.ok(!command.surfaces.includes("tray") && !command.surfaces.includes("avatar-menu"),
+      `${command.id} crept back onto a menu`);
   }
-  // Flat rows for the palette, nested under one label for a menu -- one list.
+  assert.equal(byId("window.size.bigger").accel, "Ctrl+Shift+=");
+  assert.equal(byId("window.size.smaller").accel, "Ctrl+Shift+-");
   const rows = require("./command-registry.cjs").paletteRows({});
   assert.equal(rows.filter((row) => row.group === "window-size").length, sizes.length);
 });
 
 test("U27: configuration is reachable from three surfaces, not one gesture", () => {
-  // The regression this unit exists for: assigning a character's cast/voice
-  // identity had exactly one door, a tray submenu that only bound whichever
-  // avatar was resident. cast.open puts it on all three; room.steer needs a
-  // scoped body/row first, so it skips tray on purpose (not a whySingle case --
-  // it still names two surfaces).
+  // The regression this unit exists for: a character's cast/voice identity had ONE
+  // door. Since 2026-10-03 the door is stage.open -- the Stage pane, whose tabs are
+  // On stage / Characters / Voices -- on the tray, every body's menu and the palette.
+  const door = byId("stage.open");
+  assert.ok(door, "stage.open is missing from the registry");
+  assert.deepEqual(door.surfaces, ["tray", "avatar-menu", "palette"]);
   const cast = byId("cast.open");
-  assert.ok(cast, "cast.open is missing from the registry");
-  assert.equal(cast.group, "avatar");
-  assert.deepEqual(cast.surfaces, ["tray", "avatar-menu", "palette"]);
-  assert.equal(cast.whySingle, undefined, "cast.open is multi-surface, whySingle is not its job");
+  assert.ok(cast && cast.surfaces.includes("palette"), "the Voices tab lost its keyboard path");
+  const { PANES } = require("./console-window.cjs");
+  assert.equal(PANES.find((p) => p.id === "cast").tabOf, "stage", "Voices is a tab of Stage");
+  assert.equal(PANES.find((p) => p.id === "characters").tabOf, "stage", "Characters is a tab of Stage");
 
   const steer = byId("room.steer");
   assert.ok(steer, "room.steer is missing from the registry");
-  // Grouped with the other two ways to reach whoever is behind a body (speak,
-  // chat), so a body's menu reads as one block rather than three separated rows.
   assert.equal(steer.group, "talk");
   assert.deepEqual(steer.surfaces, ["avatar-menu", "palette"]);
   assert.equal(steer.whySingle, undefined, "room.steer names two surfaces, not one");
@@ -100,12 +106,16 @@ test("every surface renders, and separators come from groups", () => {
 });
 
 test("a dynamic command with no submenu is DROPPED, never rendered dead", () => {
+  // The roster picker left both menus for the Stage pane (2026-10-03), so no menu
+  // carries a dynamic row today; buildMenu must still drop one it is not fed.
   const labels = (template) => template.map((row) => row.label).filter(Boolean);
-  const bare = labels(buildMenu("tray", () => {}, { submenus: {} }));
-  assert.ok(!bare.includes("Characters"), "a roster picker with no roster behind it is a row that does nothing");
-  assert.ok(bare.includes("Aither Console…"), "static rows must still render");
-  const fed = labels(buildMenu("tray", () => {}, { submenus: { "characters.pick": [{ label: "x" }] } }));
-  assert.ok(fed.includes("Characters"), "a supplied submenu must render");
+  for (const surface of ["tray", "avatar-menu"]) {
+    const bare = labels(buildMenu(surface, () => {}, { submenus: {}, ctx: { slotId: "slot1" } }));
+    assert.ok(!bare.includes("Characters"), `${surface}: a roster row came back`);
+    assert.ok(bare.includes("Stage & characters…"), `${surface}: the one stage door is missing`);
+    assert.ok(bare.includes("Aither Console…"), `${surface}: static rows must still render`);
+  }
+  assert.ok(byId("characters.pick").dynamic, "the picker is still dynamic in the palette");
 });
 
 // ── 2026-09-20: "the whole tray menu is completely different and disconnected
@@ -145,7 +155,9 @@ test("a command on BOTH menus reads the same and sits under the same parent", ()
     assert.equal(onBody.label, onTray.label, `${id} is labelled differently on the two menus`);
     assert.equal(onBody.parent, onTray.parent, `${id} sits under a different parent on the two menus`);
   }
-  assert.ok(shared >= 20, `only ${shared} commands are shared -- the menus have come apart again`);
+  // 2026-10-03 the menus were cut to what each is FOR (tray: where to go; a body:
+  // talk to it, place it). What both still carry must read the same.
+  assert.ok(shared >= 5, `only ${shared} commands are shared -- the menus have come apart again`);
   // A nested group has ONE name, and it lives in the registry, not at a call site.
   for (const name of Object.keys(GROUPS)) assert.ok(GROUPS[name].menu.length > 2);
 });
@@ -343,7 +355,9 @@ test("blog: drafts everywhere, publishing nowhere (owner ruling 2026-09-19)", ()
   const blog = COMMANDS.filter((command) => command.group === "blog");
   assert.deepEqual(blog.map((c) => c.id), ["blog.list", "blog.draft", "blog.show", "blog.publish"]);
   for (const command of blog) assert.ok(BLOG_VERBS.includes(command.blog), `${command.id} has no blog verb`);
-  assert.deepEqual(byId("blog.list").surfaces, ["tray", "palette"], "listing needs no typing: two surfaces");
+  // Off the tray since 2026-10-03 (one-line menus); the palette lists without typing.
+  assert.deepEqual(byId("blog.list").surfaces, ["palette"], "listing lives in the palette");
+  assert.ok(byId("blog.list").whySingle, "blog.list is single-surface and says why");
   for (const id of ["blog.draft", "blog.show", "blog.publish"]) {
     const command = byId(id);
     assert.ok(command.prompt && command.prompt.placeholder.length > 5, `${id} needs an argument and declares none`);

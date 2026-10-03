@@ -248,7 +248,11 @@ test("browser.open is a registry command main answers, and the MCP tools are wir
   assert.equal(cmd.label, "Aither Browser…");
   // The owner could find no app to launch it from (2026-10-03): it must be on every
   // surface a person clicks, carry an icon, and be a launcher in the Aither Console.
-  for (const surface of ["tray", "avatar-menu", "palette", "beads", "jumplist"]) {
+  // Off the two menus since 2026-10-03 (the console rail's Browser launcher is its
+  // door, beside the bead, the palette and the jump list).
+  assert.ok(require("./console-window.cjs").LAUNCHERS.some((l) => l.command === "browser.open"),
+    "the console rail lost its Browser launcher");
+  for (const surface of ["palette", "beads", "jumplist"]) {
     assert.ok(cmd.surfaces.includes(surface), `browser.open missing from ${surface}`);
   }
   assert.equal(cmd.icon, "globe");

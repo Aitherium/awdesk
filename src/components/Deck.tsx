@@ -1588,7 +1588,10 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
         {/* Drop-to-avatar inbox: newest first. The verdict line is the whole
             feedback — images/audio get a description/transcript, docs get
             chunk/entity counts, failures get the reason. */}
-        {drops.length > 0 ? (
+        {/* The Characters tab is BODIES only. Until 2026-10-03 it rendered the whole inbox
+            (drops, decisions, wakes, relay) above the avatars -- the owner opened Characters
+            and got the Inbox. Every inbox section below is gated on !isCharacters. */}
+        {!isCharacters && drops.length > 0 ? (
           <section className="deck-section" aria-label="Drops">
             <h2 className="deck-section-head">
               <span className="deck-section-icon"><DeskIcon /></span>
@@ -1623,6 +1626,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
             then what the agents are saying, then the room. The launchers that
             used to sit above it are console panes and tray items now; the
             avatar controls moved to the avatar's own right-click menu. */}
+        {!isCharacters ? (<>
         <section className="deck-section" aria-label="Decisions">
           <h2 className="deck-section-head">
             <span className="deck-section-icon"><BellIcon /></span>
@@ -1663,6 +1667,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
         />
 
         <SystemSection />
+        </>) : null}
 
         <section className="deck-section" aria-label="Avatars" hidden={!isCharacters}>
           <h2 className="deck-section-head">
@@ -1755,9 +1760,11 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
 
       </div>
 
-      <footer className="deck-footer">
-        inbox · {state.openCount} waiting · {state.relay.length} in {state.relayChannel}
-      </footer>
+      {!isCharacters ? (
+        <footer className="deck-footer">
+          inbox · {state.openCount} waiting · {state.relay.length} in {state.relayChannel}
+        </footer>
+      ) : null}
     </main>
   );
 }

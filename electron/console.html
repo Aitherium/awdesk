@@ -92,6 +92,12 @@
   .placeholder strong { display: block; color: var(--fg); font-size: 15px; margin-bottom: 8px; }
   .placeholder p { margin: 0 0 16px; font-size: 12px; line-height: 1.6; }
   #error { color: var(--bad); font-size: 11px; padding: 0 14px 8px; min-height: 0; }
+  /* One rail item, several tabs (Stage: On stage / Characters / Voices). */
+  #subtabs { display: flex; gap: 4px; padding: 0 14px 8px; border-bottom: 1px solid var(--line); }
+  #subtabs[hidden] { display: none; }
+  #subtabs button { appearance: none; border: 1px solid var(--line); background: none; color: var(--surface-300);
+    border-radius: 999px; padding: 4px 12px; font: 12px var(--font-sans); cursor: pointer; }
+  #subtabs button[aria-selected="true"] { background: var(--surface-800); color: var(--fg); border-color: var(--brand); }
 
   /* The palette: one keystroke to everything, because a capability that lives
      only in a menu is one gesture change away from being unreachable. */
@@ -142,6 +148,7 @@
       <button class="chip" id="btn-close" hidden>Close</button>
     </div>
     <div id="error"></div>
+    <div id="subtabs" role="tablist" hidden></div>
     <div class="stage" id="stage"></div>
   </main>
 
@@ -249,14 +256,41 @@ if (window.aitherConsole && typeof window.aitherConsole.onInboxCount === "functi
   });
 }
 
+/** The rail item a pane lives under: itself, or the pane it is a tab of. */
+function groupOf(pane) {
+  return pane ? (pane.tabOf || pane.id) : null;
+}
+
+function renderSubtabs() {
+  const host = document.getElementById("subtabs");
+  const current = panes.find((p) => p.id === selected);
+  const group = groupOf(current);
+  const members = panes.filter((p) => groupOf(p) === group);
+  host.hidden = members.length < 2;
+  host.textContent = "";
+  if (host.hidden) return;
+  for (const member of members) {
+    const button = document.createElement("button");
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(member.id === selected));
+    button.textContent = member.tabLabel || member.label;
+    button.title = member.hint || "";
+    button.addEventListener("click", () => select(member.id));
+    host.appendChild(button);
+  }
+}
+
 function render() {
+  renderSubtabs();
+  const selectedGroup = groupOf(panes.find((p) => p.id === selected));
   for (const pane of panes) {
     const isSelected = pane.id === selected;
     const isDetached = detached.has(pane.id);
 
     const tab = document.getElementById("tab-" + pane.id);
     if (tab) {
-      tab.setAttribute("aria-selected", String(isSelected));
+      // A rail row stays lit while any of its tabs is showing.
+      tab.setAttribute("aria-selected", String(pane.id === selectedGroup));
       const badge = tab.querySelector(".badge");
       const count = pane.id === "cards" && inboxCount > 0 && !isDetached;
       badge.textContent = isDetached ? "detached" : (count ? String(inboxCount) : "");
@@ -278,7 +312,8 @@ function render() {
     if (isSelected) {
       const node = isDetached ? placeholderFor(pane) : frameFor(pane);
       node.classList.add("active");
-      barTitle.textContent = pane.label;
+      const root = panes.find((p) => p.id === groupOf(pane)) || pane;
+      barTitle.textContent = root.label;
       barState.textContent = isDetached ? "detached" : pane.hint;
       btnDetach.hidden = isDetached;
       btnReattach.hidden = !isDetached;
@@ -613,6 +648,7 @@ document.getElementById("open-palette").addEventListener("click", () => { void o
   }
   let section = null;
   for (const pane of panes) {
+    if (pane.tabOf) continue; // a tab of another rail item, drawn by renderSubtabs()
     if (pane.section && pane.section !== section) {
       section = pane.section;
       const heading = document.createElement("div");

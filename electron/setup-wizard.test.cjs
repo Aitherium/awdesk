@@ -398,7 +398,9 @@ test("the door is everywhere: Start menu, tray, palette, jump list, --setup", ()
   const reg = require("./command-registry.cjs");
   const cmd = reg.byId("setup.open");
   assert.ok(cmd, "no setup.open command");
-  for (const s of ["tray", "palette", "jumplist"]) assert.ok(cmd.surfaces.includes(s), s);
+  // Off the tray since 2026-10-03; it offers itself once (setup-auto-offered.json)
+  // and is otherwise the palette, the jump list, the Start menu and --setup.
+  for (const s of ["palette", "jumplist"]) assert.ok(cmd.surfaces.includes(s), s);
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.match(main, /case "setup\.open":/);
   assert.match(main, /argv\.includes\("--setup"\)/);

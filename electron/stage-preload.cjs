@@ -21,4 +21,6 @@ contextBridge.exposeInMainWorld("aitherStage", {
   focus: (slotId) => ipcRenderer.invoke("desk:stage-focus", slotId || null),
   /** Send one body away (the resident stays; main refuses that). */
   remove: (slotId) => ipcRenderer.invoke("desk:stage-remove", String(slotId || "")),
+  /** Run one of the avatar-window commands (stage-window.cjs STAGE_RUNNABLE). */
+  run: (id) => ipcRenderer.invoke("desk:stage-run", String(id || "")),
 });

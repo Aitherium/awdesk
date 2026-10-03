@@ -199,8 +199,37 @@ function createSetupWindow(options = {}) {
  * read must never boot a stopped distro), has a new-enough engine and reports not set up.
  * AITHER_SETUP_AUTO=0 turns it off.
  */
+/** Where "the setup already offered itself here" is remembered. Owner, 2026-10-03:
+ *  "it is now having me set up aitheros all over again??" -- on a machine whose
+ *  fleet was already serving, awnix still reports configured:false, so every desk
+ *  start (and every restart) popped the wizard again. It offers itself ONCE; after
+ *  that it is a palette / jump-list command the owner opens on purpose. */
+function autoOfferMarker() {
+  try {
+    return path.join(require("electron").app.getPath("userData"), "setup-auto-offered.json");
+  } catch {
+    return null;
+  }
+}
+
+function alreadyOffered() {
+  const marker = autoOfferMarker();
+  return Boolean(marker && require("node:fs").existsSync(marker));
+}
+
+function rememberOffered() {
+  const marker = autoOfferMarker();
+  if (!marker) return;
+  try {
+    require("node:fs").writeFileSync(marker, JSON.stringify({ offeredAt: new Date().toISOString() }));
+  } catch (error) {
+    console.warn("[desk] could not remember the setup offer:", error?.message || error);
+  }
+}
+
 async function maybeAutoOpen(options = {}) {
   if (process.env.AITHER_SETUP_AUTO === "0" || process.platform !== "win32") return false;
+  if (alreadyOffered()) return false;
   const distro = resolveFleetDistro().name;
   const l = await spawnRun("wsl.exe", ["-l", "--running", "--quiet"], { timeoutMs: 20_000 });
   const running = Buffer.from(l.stdout, "utf8").toString().replace(/\0/g, "").split(/\r?\n/).map((s) => s.trim());
@@ -210,6 +239,7 @@ async function maybeAutoOpen(options = {}) {
   await w.prov.resolveEngine();
   const st = await w.prov.status();
   if (!st.ok || st.missingCaps.length || st.configured) return false;
+  rememberOffered();
   createSetupWindow(options);
   return true;
 }

@@ -1417,6 +1417,7 @@ function stagePaneImpl() {
       return { mature: isAdultContentVisible() ? "allowed" : "hidden" };
     },
     focus: (slotId) => sendToAvatar("focus-avatar", { slotId: slotId || null }),
+    run: (id) => runCommand(id, undefined, { surface: "palette" }),
     remove: (slotId) => {
       if (!removeAvatarSlot(slotId)) throw new Error(`${slotId} is not a removable body`);
     },
@@ -1987,6 +1988,13 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "cast.open": {
       openConsole();
       focusPane("cast");
+      return;
+    }
+    // ONE door to everything about bodies: who is on stage, their looks, voices,
+    // and the avatar window's size (the Stage pane and its tabs).
+    case "stage.open": {
+      openConsole();
+      focusPane("stage");
       return;
     }
     // Plan: the settings page the owner asked for by name. kind:"file" pane,

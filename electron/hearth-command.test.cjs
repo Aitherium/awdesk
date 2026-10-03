@@ -16,7 +16,8 @@ const read = (f) => fs.readFileSync(path.join(__dirname, f), "utf8");
 test("the registry lists Hearth on the tray and the palette", () => {
   const row = COMMANDS.find((c) => c.id === "hearth.open");
   assert.ok(row, "hearth.open is not in the command registry");
-  assert.deepEqual([...row.surfaces], ["tray", "palette"]);
+  // Palette only since 2026-10-03 (tray cut to where-to-go rows).
+  assert.deepEqual([...row.surfaces], ["palette"]);
 });
 
 test("runCommand opens the desktop app on the hearth window", () => {

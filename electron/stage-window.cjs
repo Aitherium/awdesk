@@ -35,6 +35,13 @@ let wired = false;
 /** Injected by main.cjs: { bodies(), arrange(name, opts), focus(slotId), remove(slotId) }. */
 let stageImpl = {};
 
+/** Registry commands the Stage page may run: the avatar window's size and layout. */
+const STAGE_RUNNABLE = Object.freeze([
+  "avatar.toggle", "window.size.small", "window.size.medium", "window.size.large",
+  "window.size.xlarge", "window.size.bigger", "window.size.smaller", "window.outline",
+  "layout.reset-all",
+]);
+
 function ensureStageIpc(impl) {
   if (impl) stageImpl = impl;
   if (wired) return;
@@ -66,6 +73,13 @@ function ensureStageIpc(impl) {
   }));
   ipcMain.handle("desk:stage-remove", (_event, slotId) => call("remove", () => {
     stageImpl.remove?.(String(slotId || ""));
+  }));
+  // The avatar WINDOW's controls live on this page now (owner, 2026-10-03: too many
+  // separate menus for one stage). Only these registry ids may run from here.
+  ipcMain.handle("desk:stage-run", (_event, id) => call("run", () => {
+    const name = String(id || "");
+    if (!STAGE_RUNNABLE.includes(name)) throw new Error(`${name} cannot run from the stage page`);
+    stageImpl.run?.(name);
   }));
 }
 
@@ -115,4 +129,4 @@ function isStageWindowOpen() {
   return Boolean(stageWindow && !stageWindow.isDestroyed());
 }
 
-module.exports = { ensureStageIpc, createStageWindow, closeStageWindow, isStageWindowOpen };
+module.exports = { ensureStageIpc, createStageWindow, closeStageWindow, isStageWindowOpen, STAGE_RUNNABLE };

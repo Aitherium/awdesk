@@ -30,33 +30,28 @@ const MAIN = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
 const registry = require("./command-registry.cjs");
 
 test("window size is reachable from the TRAY, not only from a gesture", () => {
-  // The tray is the path that cannot be lost to a gesture change, a hidden
-  // avatar or a stolen accelerator. Since slice 1 the tray is RENDERED from the
-  // registry, so this is two facts: the registry puts size on the tray, and main
-  // supplies the presets behind it (a dynamic command with no submenu is dropped).
-  assert.ok(
-    registry.groupFor("window-size", "tray").length >= 4,
-    "the registry no longer puts the size commands on the tray",
-  );
+  // The tray is the path that cannot be lost to a gesture change, a hidden avatar or
+  // a stolen accelerator. Since 2026-10-03 it is ONE row -- "Stage & characters…" --
+  // onto the Stage pane, whose "Avatar window" row runs every size command.
+  const ids = registry.commandsFor("tray").map((c) => c.id);
+  assert.ok(ids.includes("stage.open"), "the tray lost its door to the Stage pane");
   const at = MAIN.indexOf("buildMenu(\"tray\"");
   assert.ok(at > 0, "the tray is no longer rendered from the registry");
-  // The parent label is registry DATA (GROUPS) since 2026-09-20: each call site
-  // used to pass its own `nest` map, and the tray and the body's menu named the
-  // same group differently.
-  assert.ok(registry.GROUPS["window-size"] && registry.GROUPS["window-size"].menu,
-    "the size group must nest under one label, or it renders eight flat rows");
-  const tray = registry.buildMenu("tray", () => {}, {});
-  const nested = tray.find((row) => row.label === registry.GROUPS["window-size"].menu);
-  assert.ok(nested && nested.submenu.length >= 6, "the tray lost its size submenu");
+  assert.match(MAIN, /case "stage\.open":[\s\S]{0,120}focusPane\("stage"\)/, "stage.open does not open the Stage pane");
+  const { STAGE_RUNNABLE } = require("./stage-window.cjs");
+  const page = fs.readFileSync(path.join(__dirname, "stage.html"), "utf8");
+  for (const command of registry.COMMANDS.filter((c) => c.group === "window-size")) {
+    assert.ok(STAGE_RUNNABLE.includes(command.id), `${command.id} may not run from the Stage page`);
+    assert.ok(page.includes(`"${command.id}"`), `${command.id} has no button on the Stage page`);
+  }
+  assert.match(MAIN, /run: \(id\) => runCommand\(id/, "the Stage page's runner is not wired to main");
 });
 
-test("the avatar's own menu keeps its size submenu too", () => {
-  const at = MAIN.indexOf("function popupAvatarMenu");
-  assert.ok(at > 0, "popupAvatarMenu is gone");
-  assert.match(MAIN.slice(at, at + 2500), /buildMenu\(\s*"avatar-menu"/);
+test("the avatar's own menu reaches the Stage pane (size lives there)", () => {
   const body = registry.buildMenu("avatar-menu", () => {}, { ctx: { slotId: "slot1" } });
-  const nested = body.find((row) => row.label === registry.GROUPS["window-size"].menu);
-  assert.ok(nested && nested.submenu.length >= 6, "a body's menu lost its size submenu");
+  const labels = body.map((row) => row.label).filter(Boolean);
+  assert.ok(labels.includes("Stage & characters…"), "a body's menu lost its door to the Stage pane");
+  assert.ok(!labels.includes(registry.GROUPS["window-size"].menu), "the size submenu crept back onto a body's menu");
 });
 
 test("a size shortcut that could not be registered SAYS so", () => {

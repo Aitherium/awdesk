@@ -56,6 +56,11 @@ function electron() {
  * comes up blank in the other.
  */
 const PANES = Object.freeze([
+  // Owner, 2026-10-03: "why so many separate menus and screens and options just to
+  // manage stage/avatars/vroid". Stage, Characters and Voices are ONE rail item now:
+  // a pane with `tabOf` is a TAB of that pane (the shell draws the tab strip), never
+  // its own rail row. Sections are named once each -- the rail had CONTROL and
+  // PRESENCE twice because the order interleaved them.
   // FIRST on purpose (owner, 2026-09-13: "no proper notification area"): the
   // inbox — decision cards and the agents' messages — is what the tray badge,
   // the taskbar overlay and the bell all open. Same renderer as the old "Desk
@@ -65,19 +70,12 @@ const PANES = Object.freeze([
     kind: "view", query: "deck=1",
   }),
   Object.freeze({
-    id: "command", label: "Command", hint: "Say it in a sentence", section: "Control", icon: "terminal",
+    id: "command", label: "Command", hint: "Say it in a sentence", section: "Agents", icon: "terminal",
     kind: "file", file: "command.html",
   }),
   Object.freeze({
-    id: "fleet", label: "Fleet", hint: "Containers, VRAM, doors", section: "Control", icon: "server",
-    kind: "file", file: "fleet-control.html",
-  }),
-  // Platform ops (platform-ops S01): backups state/verify/run through the ops_*
-  // MCP tools -- gateway-mcp.cjs is the only transport (ops-client.cjs). IPC and
-  // the detached twin live in ops-window.cjs, like sessions-window.cjs.
-  Object.freeze({
-    id: "ops", label: "Ops", hint: "Backups: state, verify, run", section: "Control", icon: "archive",
-    kind: "file", file: "ops.html",
+    id: "chat", label: "Chat", hint: "The company room", section: "Agents", icon: "chat",
+    kind: "view", query: "chat=1",
   }),
   // Slice 1 of COCKPIT-DESIGN: the unified session directory (daemon-owned
   // sessions + DISCOVERED interactive Claude Code tabs), read-only with live
@@ -88,32 +86,14 @@ const PANES = Object.freeze([
     id: "sessions", label: "Sessions", hint: "Every Claude session, live", section: "Agents", icon: "layers",
     kind: "file", file: "sessions.html",
   }),
-  Object.freeze({
-    id: "chat", label: "Chat", hint: "The company room", section: "Agents", icon: "chat",
-    kind: "view", query: "chat=1",
-  }),
   // Plan 40 slice G, the surface half: who is standing on the stage and the
   // arrangements, in a list. Every other way to manage a body is a GESTURE on
   // that body (drag, right-drag, wheel, right-click) -- useless when the body is
   // hidden, tiny or behind a window, which is how the owner lost control of the
   // stage in the first place.
   Object.freeze({
-    id: "stage", label: "Stage", hint: "Who is standing, and where", section: "Presence", icon: "users",
+    id: "stage", label: "Stage", tabLabel: "On stage", hint: "Who is on stage, how they look and sound", section: "Stage", icon: "users",
     kind: "file", file: "stage.html",
-  }),
-  // Plan 40 cast pane: who appears and how they sound, authored in cast.json
-  // (U01) instead of a nested tray submenu click. `kind: "file"` on purpose --
-  // it needs no vite build, and src/** is the peer's territory this unit does
-  // not touch.
-  Object.freeze({
-    id: "cast", label: "Cast", hint: "Who appears, and how they sound", section: "Presence", icon: "mic",
-    kind: "file", file: "cast.html",
-  }),
-  // Plan: the ONE shared settings page (owner 2026-09-22: "there still isnt
-  // just a shared settings page"). kind:"file" -- no vite build.
-  Object.freeze({
-    id: "settings", label: "Settings", hint: "Voice, hotkeys, devices", section: "Control", icon: "settings",
-    kind: "file", file: "settings.html",
   }),
   // Owner, 2026-09-20: the Inbox pane was rendering decision cards, wakes, relay messages,
   // the stage slots, the spawn chips AND the whole Models & Market grid in one scroll
@@ -121,8 +101,33 @@ const PANES = Object.freeze([
   // Stage and Cast. Same bundle and the SAME deck-state subscription as the inbox — it is one
   // component with a view prop, so the two panes cannot drift.
   Object.freeze({
-    id: "characters", label: "Characters", hint: "Bodies, spawns and the market", section: "Presence", icon: "users",
+    id: "characters", label: "Characters", tabOf: "stage", hint: "Bodies, spawns and the market", section: "Stage", icon: "users",
     kind: "view", query: "characters=1",
+  }),
+  // Plan 40 cast pane: who appears and how they sound, authored in cast.json
+  // (U01) instead of a nested tray submenu click. `kind: "file"` on purpose --
+  // it needs no vite build, and src/** is the peer's territory this unit does
+  // not touch.
+  Object.freeze({
+    id: "cast", label: "Voices", tabOf: "stage", hint: "How each body sounds and moves", section: "Stage", icon: "mic",
+    kind: "file", file: "cast.html",
+  }),
+  Object.freeze({
+    id: "fleet", label: "Fleet", hint: "Containers, VRAM, doors", section: "System", icon: "server",
+    kind: "file", file: "fleet-control.html",
+  }),
+  // Platform ops (platform-ops S01): backups state/verify/run through the ops_*
+  // MCP tools -- gateway-mcp.cjs is the only transport (ops-client.cjs). IPC and
+  // the detached twin live in ops-window.cjs, like sessions-window.cjs.
+  Object.freeze({
+    id: "ops", label: "Ops", hint: "Backups: state, verify, run", section: "System", icon: "archive",
+    kind: "file", file: "ops.html",
+  }),
+  // Plan: the ONE shared settings page (owner 2026-09-22: "there still isnt
+  // just a shared settings page"). kind:"file" -- no vite build.
+  Object.freeze({
+    id: "settings", label: "Settings", hint: "Voice, hotkeys, devices", section: "System", icon: "settings",
+    kind: "file", file: "settings.html",
   }),
   // 🚩 HOSTED, not framed, and the difference is the login. The AitherDesktop
   // shell keeps its session in the persist:living-desktop partition -- that is

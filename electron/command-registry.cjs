@@ -150,44 +150,44 @@ const COMMANDS = Object.freeze([
   }),
   Object.freeze({
     id: "desktop.app.open", label: "AitherOS Online: open as a window…", menuLabel: "Open as a window…",
-    group: "desktop", surfaces: ["tray", "avatar-menu", "palette"],
+    group: "desktop", surfaces: ["tray", "palette"],
   }),
   // The shells mirror Veil's SHELL_REGISTRY (components/os/shell-registry.tsx). An
   // id Veil does not know falls back to the Living OS server-side, so a stale row
   // here degrades to the default rather than to a blank overlay.
   Object.freeze({
     id: "desktop.shell.living-os", label: "AitherOS Online shell: Living Desktop", menuLabel: "Shell: Living Desktop",
-    group: "desktop", surfaces: ["tray", "avatar-menu", "palette"],
+    group: "desktop", surfaces: ["tray", "palette"],
     shell: null, type: "radio", checked: (ctx = {}) => !ctx.overlayShell,
   }),
   Object.freeze({
     id: "desktop.shell.aither-desktop", label: "AitherOS Online shell: Desktop Anywhere", menuLabel: "Shell: Desktop Anywhere",
-    group: "desktop", surfaces: ["tray", "avatar-menu", "palette"],
+    group: "desktop", surfaces: ["tray", "palette"],
     shell: "aither-desktop", type: "radio", checked: (ctx = {}) => ctx.overlayShell === "aither-desktop",
   }),
   Object.freeze({
     id: "desktop.shell.aither-shell", label: "AitherOS Online shell: awsh cockpit", menuLabel: "Shell: awsh cockpit",
-    group: "desktop", surfaces: ["tray", "avatar-menu", "palette"],
+    group: "desktop", surfaces: ["tray", "palette"],
     shell: "aither-shell", type: "radio", checked: (ctx = {}) => ctx.overlayShell === "aither-shell",
   }),
   Object.freeze({
     id: "desktop.shell.gobbonet", label: "AitherOS Online shell: GobboNet", menuLabel: "Shell: GobboNet",
-    group: "desktop", surfaces: ["tray", "avatar-menu", "palette"],
+    group: "desktop", surfaces: ["tray", "palette"],
     shell: "gobbonet", type: "radio", checked: (ctx = {}) => ctx.overlayShell === "gobbonet",
   }),
   Object.freeze({
     id: "desktop.overlay.ghost", label: "AitherOS Online: click-through desktop", menuLabel: "Click-through desktop",
-    group: "desktop", surfaces: ["tray", "avatar-menu", "palette"],
+    group: "desktop", surfaces: ["tray", "palette"],
     type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayGhost),
   }),
   Object.freeze({
     id: "desktop.overlay.solid", label: "AitherOS Online: solid background", menuLabel: "Solid background",
-    group: "desktop", surfaces: ["tray", "avatar-menu", "palette"],
+    group: "desktop", surfaces: ["tray", "palette"],
     type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlaySolid),
   }),
   Object.freeze({
     id: "desktop.overlay.reload", label: "AitherOS Online: reload", menuLabel: "Reload",
-    group: "desktop", surfaces: ["tray", "avatar-menu", "palette"],
+    group: "desktop", surfaces: ["tray", "palette"],
     enabled: (ctx = {}) => Boolean(ctx.overlayOpen),
   }),
   // Owner, 2026-10-01: "AITHERDESKTOP DOESNT SHOW ME AS SIGNED IN ... THERE IS NOWHERE
@@ -196,7 +196,7 @@ const COMMANDS = Object.freeze([
   // the click signs in BOTH windows (desk-session.cjs: auth.json, then the system
   // browser's idp.aitherium.com session -- nothing typed).
   Object.freeze({
-    id: "desktop.signin", group: "desktop", surfaces: ["tray", "avatar-menu", "palette"],
+    id: "desktop.signin", group: "desktop", surfaces: ["tray", "palette"],
     label: (ctx = {}) => (ctx.account && ctx.account.signedIn
       ? `AitherOS Online: signed in as ${ctx.account.username || "you"} (refresh)`
       : "AitherOS Online: sign in…"),
@@ -224,41 +224,49 @@ const COMMANDS = Object.freeze([
   // unreachable from everywhere except one gesture.
   Object.freeze({
     id: "window.size.small", label: "Small", group: "window-size",
-    surfaces: ["tray", "avatar-menu", "palette"], size: Object.freeze({ width: 430, height: 680 }),
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", size: Object.freeze({ width: 430, height: 680 }),
   }),
   Object.freeze({
     id: "window.size.medium", label: "Medium", group: "window-size",
-    surfaces: ["tray", "avatar-menu", "palette"], size: Object.freeze({ width: 600, height: 950 }),
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", size: Object.freeze({ width: 600, height: 950 }),
   }),
   Object.freeze({
     id: "window.size.large", label: "Large", group: "window-size",
-    surfaces: ["tray", "avatar-menu", "palette"], size: Object.freeze({ width: 800, height: 1266 }),
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", size: Object.freeze({ width: 800, height: 1266 }),
   }),
   Object.freeze({
     id: "window.size.xlarge", label: "Extra large", group: "window-size",
-    surfaces: ["tray", "avatar-menu", "palette"], size: Object.freeze({ width: 1000, height: 1583 }),
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", size: Object.freeze({ width: 1000, height: 1583 }),
   }),
   Object.freeze({
     id: "window.size.bigger", label: "Avatar window: bigger", menuLabel: "Bigger",
     group: "window-size", accel: "Ctrl+Shift+=",
-    surfaces: ["tray", "avatar-menu", "palette"],
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
   Object.freeze({
     id: "window.size.smaller", label: "Avatar window: smaller", menuLabel: "Smaller",
     group: "window-size", accel: "Ctrl+Shift+-",
-    surfaces: ["tray", "avatar-menu", "palette"],
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
   // These two lived ONLY in the hand-written avatar menu, appended after the
   // registry's size rows -- so the tray's "Avatar window size" and the body's
   // "Avatar window" were different menus with different contents.
   Object.freeze({
     id: "window.outline", label: "Avatar window: show / hide its boundary", menuLabel: "Show / hide boundary",
-    group: "window-size", surfaces: ["tray", "avatar-menu", "palette"],
+    group: "window-size", surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
   Object.freeze({
     id: "layout.reset-all", label: "Avatar window: reset every avatar's layout (reload)",
     menuLabel: "Reset every avatar's layout (reload)",
-    group: "window-size", surfaces: ["tray", "avatar-menu", "palette"],
+    group: "window-size", surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
   // 🚩 "Talk" meant TWO things under THREE labels (measured 2026-09-20): the tray's
   // "Talk to the agents" toggled the MICROPHONE, the avatar menu's "Talk to <agent>"
@@ -290,7 +298,7 @@ const COMMANDS = Object.freeze([
   // build) so it ships without touching the React bundle.
   Object.freeze({
     id: "settings.open", group: "avatar", accel: "Ctrl+Shift+,", icon: "settings",
-    surfaces: ["tray", "avatar-menu", "palette"],
+    surfaces: ["tray", "palette"],
     label: "Settings…",
   }),
   Object.freeze({
@@ -329,15 +337,26 @@ const COMMANDS = Object.freeze([
   }),
   Object.freeze({
     id: "characters.pick", label: "Characters", group: "avatar",
-    surfaces: ["tray", "avatar-menu", "palette"], dynamic: true,
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", dynamic: true,
   }),
   // U27 (owner, 2026-09-19): today the ONLY way to assign an agent's avatar a
   // voice/cast identity is the same nested tray submenu this file was built to
   // replace -- reachable only from whichever character is resident right now.
+  // ONE door to everything about bodies (owner, 2026-10-03: "why so many separate
+  // menus and screens and options just to manage stage/avatars/vroid"): the console's
+  // Stage pane -- who is on stage, Characters (VRoid/market) and Voices as tabs, and
+  // the avatar window's size. It replaces Stage ▸, Avatar window ▸, Characters ▸ and
+  // Cast & voices… on the tray and on every body's menu.
+  Object.freeze({
+    id: "stage.open", label: "Stage & characters…", group: "avatar",
+    surfaces: ["tray", "avatar-menu", "palette"],
+  }),
   // cast.open is the one door onto cast.json (U01) from all three surfaces.
   Object.freeze({
     id: "cast.open", label: "Cast & voices…", group: "avatar",
-    surfaces: ["tray", "avatar-menu", "palette"],
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
   // Plan 40 slice G, "think macOS Stage Manager": the verbs for a stage with
   // several bodies on it. Arranging four avatars by dragging each one is the work
@@ -345,23 +364,28 @@ const COMMANDS = Object.freeze([
   // there is. The renderer owns the geometry; a command only names the shape.
   Object.freeze({
     id: "stage.row", label: "Stage: line them up", menuLabel: "Line them up", group: "stage",
-    surfaces: ["tray", "avatar-menu", "palette"], arrangement: "row",
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", arrangement: "row",
   }),
   Object.freeze({
     id: "stage.arc", label: "Stage: gather in an arc", menuLabel: "Gather in an arc", group: "stage",
-    surfaces: ["tray", "avatar-menu", "palette"], arrangement: "arc",
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", arrangement: "arc",
   }),
   Object.freeze({
     id: "stage.pair", label: "Stage: face each other", menuLabel: "Face each other", group: "stage",
-    surfaces: ["tray", "avatar-menu", "palette"], arrangement: "pair",
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", arrangement: "pair",
   }),
   Object.freeze({
     id: "stage.focus", label: "Stage: focus one, others step back", menuLabel: "Focus one, others step back", group: "stage",
-    surfaces: ["tray", "avatar-menu", "palette"], arrangement: "focus",
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", arrangement: "focus",
   }),
   Object.freeze({
     id: "stage.reset", label: "Stage: reset everyone", menuLabel: "Reset everyone", group: "stage",
-    surfaces: ["tray", "avatar-menu", "palette"], arrangement: "reset",
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", arrangement: "reset",
   }),
   Object.freeze({
     id: "avatar.remove", label: "Remove this avatar", group: "slot", scope: "slot",
@@ -385,14 +409,16 @@ const COMMANDS = Object.freeze([
   // through the same Veil actions API the web board /workspace/ops uses.
   Object.freeze({
     id: "inference.open", label: "Inference ops widget…", group: "fleet",
-    surfaces: ["tray", "palette"],
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
   // The Disk Explorer (disk index contract, Surfaces lane): tree / search / dupes
   // / proposals / shares over the caller's own indexed disks. Every destructive
   // outcome is a proposal whose decision card a human answers -- never a verb here.
   Object.freeze({
     id: "disk.open", label: "Disk Explorer…", group: "go",
-    surfaces: ["tray", "palette"],
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
   // The Aither Browser (browser-window.cjs): a browser INSIDE the desk where an
   // agent drives (MCP browser_* tools) while the owner watches and can take over,
@@ -402,14 +428,15 @@ const COMMANDS = Object.freeze([
   // an Aither Console launcher (console-window.cjs LAUNCHERS) now.
   Object.freeze({
     id: "browser.open", label: "Aither Browser…", group: "go", icon: "globe",
-    surfaces: ["tray", "avatar-menu", "palette", "beads", "jumplist"],
+    surfaces: ["palette", "beads", "jumplist"],
   }),
   // Aither Hearth (2026-09-30): the owner's PLATFORM Hearth -- reminders, approval
   // cards, signed receipts -- as the `hearth` window on the AitherDesktop app. The
   // cards are answered there, by the owner; no row here approves anything.
   Object.freeze({
     id: "hearth.open", label: "Hearth…", group: "go",
-    surfaces: ["tray", "palette"],
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
   Object.freeze({
     id: "fleet.gaming", label: "GPU sleep (game on)", group: "fleet",
@@ -424,35 +451,43 @@ const COMMANDS = Object.freeze([
   // models_status / models_use MCP tools. Switches are confirm-first.
   Object.freeze({
     id: "models.status", label: "Models: what is running where", group: "fleet",
-    surfaces: ["tray", "palette"], fleet: "models-status",
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", fleet: "models-status",
   }),
   Object.freeze({
     id: "models.full-mesh", label: "Models: full mesh (DeepSeek split + drafter + gemma4)", group: "fleet",
-    surfaces: ["tray", "palette"], fleet: "models-full-mesh", destructive: true,
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", fleet: "models-full-mesh", destructive: true,
   }),
   Object.freeze({
     id: "models.pool-fast", label: "Models: pool fast (DeepSeek max tok/s, no gemma4)", group: "fleet",
-    surfaces: ["tray", "palette"], fleet: "models-pool-fast", destructive: true,
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", fleet: "models-pool-fast", destructive: true,
   }),
   Object.freeze({
     id: "models.pool-lean", label: "Models: pool lean (DeepSeek local + gemma4, no backends)", group: "fleet",
-    surfaces: ["tray", "palette"], fleet: "models-pool-lean", destructive: true,
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", fleet: "models-pool-lean", destructive: true,
   }),
   Object.freeze({
     id: "arc.status", label: "ARC: is it solving?", menuLabel: "Is it solving?", group: "arc",
-    surfaces: ["tray", "palette"], fleet: "arc-status",
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", fleet: "arc-status",
   }),
   Object.freeze({
     id: "arc.now", label: "ARC: run now (4 h, overrides quiet hours)", menuLabel: "Run now (4 h, overrides quiet hours)", group: "arc",
-    surfaces: ["tray", "palette"], fleet: "arc-now",
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", fleet: "arc-now",
   }),
   Object.freeze({
     id: "arc.start", label: "ARC: start (respect quiet hours)", menuLabel: "Start (respect quiet hours)", group: "arc",
-    surfaces: ["tray", "palette"], fleet: "arc-start",
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", fleet: "arc-start",
   }),
   Object.freeze({
     id: "arc.stop", label: "ARC: stop the solver", menuLabel: "Stop the solver", group: "arc",
-    surfaces: ["tray", "palette"], fleet: "arc-stop", destructive: true,
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", fleet: "arc-stop", destructive: true,
   }),
   // Blog (owner ruling 2026-09-19, .claude/rules/blog-voice.md): machine paths
   // create DRAFTS; a human publishes. These records speak to the gateway's
@@ -462,7 +497,8 @@ const COMMANDS = Object.freeze([
   // slug, where the owner reads the draft and flips the status with a click.
   Object.freeze({
     id: "blog.list", label: "Blog: list posts (drafts included)", menuLabel: "List posts (drafts included)", group: "blog",
-    surfaces: ["tray", "palette"], blog: "list",
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", blog: "list",
   }),
   Object.freeze({
     id: "blog.draft", label: "Blog: new draft…", group: "blog",
@@ -489,25 +525,28 @@ const COMMANDS = Object.freeze([
   // data Veil's Sense Command Center shows -- through gateway-mcp.cjs.
   Object.freeze({
     id: "aeon.state", label: "Aeon: how is the agent feeling?", menuLabel: "How is Aeon feeling?", group: "app",
-    surfaces: ["tray", "palette"],
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
   Object.freeze({
     // The browser extension. The label says what a click will do given the last
     // `adk awconnect status` (awconnect-setup.cjs); main runs the adk command.
     id: "awconnect.setup",
     label: (ctx) => require("./awconnect-setup.cjs").setupLabel(ctx && ctx.awconnect),
-    group: "app", surfaces: ["tray", "palette"],
+    group: "app", surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
   // First-time setup of this machine as ONE window (owner, 2026-09-28: "WE NEED A
   // BETTER WAY TO DO THIS" -- after being handed a python script and a terminal
   // password prompt). setup-window.cjs; also the Start-menu shortcut (`--setup`).
   Object.freeze({
     id: "setup.open", label: "Set up Aither…", group: "app",
-    surfaces: ["tray", "palette", "jumplist"],
+    surfaces: ["palette", "jumplist"],
   }),
   Object.freeze({
     id: "about", label: "About Desk", group: "app",
-    surfaces: ["tray", "palette"],
+    surfaces: ["palette"],
+    whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
   Object.freeze({
     id: "quit", label: "Quit", group: "app", surfaces: ["tray"],

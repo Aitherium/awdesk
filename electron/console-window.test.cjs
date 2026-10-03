@@ -35,8 +35,16 @@ test("the rail is in this exact order -- a drop or a reorder must fail here", ()
   // Listed explicitly rather than derived from PANES, so an edit that silently
   // drops or reshuffles an entry is caught here instead of only downstream.
   assert.deepEqual(PANES.map((p) => p.id),
-    ["cards", "command", "fleet", "ops", "sessions", "chat", "stage", "cast", "settings",
-    "characters", "desktop"]);
+    ["cards", "command", "chat", "sessions", "stage", "characters", "cast", "fleet", "ops",
+    "settings", "desktop"]);
+  // Each section heading appears ONCE (the rail had CONTROL and PRESENCE twice), and a
+  // tab pane follows the pane it is a tab of.
+  const rail = PANES.filter((p) => !p.tabOf).map((p) => p.section);
+  const runs = rail.filter((section, i) => section !== rail[i - 1]);
+  assert.equal(new Set(runs).size, runs.length, `a section repeats: ${runs.join(", ")}`);
+  for (const pane of PANES.filter((p) => p.tabOf)) {
+    assert.ok(PANES.some((p) => p.id === pane.tabOf && !p.tabOf), `${pane.id} is a tab of nothing`);
+  }
 });
 
 test("the Cast pane is a FILE pane, src resolved the same in dev-server and file:// modes", () => {

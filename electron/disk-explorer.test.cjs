@@ -235,7 +235,8 @@ test("the page talks only to the bridge and never builds HTML from data", () => 
 test("disk.open is a registry command main answers", () => {
   const cmd = byId("disk.open");
   assert.ok(cmd, "disk.open missing from the registry");
-  assert.ok(cmd.surfaces.includes("palette") && cmd.surfaces.includes("tray"));
+  // Palette (Ctrl+K) since 2026-10-03: the tray keeps only where-to-go rows.
+  assert.ok(cmd.surfaces.includes("palette"));
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.match(main, /case "disk\.open":/);
   assert.match(main, /ipcMain\.handle\("desk:file-share"/);

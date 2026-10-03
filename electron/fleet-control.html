@@ -280,15 +280,27 @@
 
   // The VRAM number with 0 containers running was a riddle; this is the answer
   // line by line: pid, GiB, what it is. Host counters — the distro cannot see them.
+  // A failed probe used to print the whole PowerShell command line into the panel.
+  // Say it in one line; the raw text stays one hover away for whoever debugs it.
+  function unreadable(error) {
+    const raw = String(error || "");
+    const line = /timed? ?out/i.test(raw) ? "the Windows GPU counters timed out"
+      : /Command failed/i.test(raw) ? "the Windows GPU counters could not be read"
+      : raw.split(/\r?\n/)[0].slice(0, 140);
+    const node = el("div", "none", `not readable right now: ${line}`);
+    node.title = raw;
+    return node;
+  }
+
   function renderHolders(holders, error) {
     const box = $("holders");
     while (box.childElementCount > 1) box.removeChild(box.lastChild);
     if (!Array.isArray(holders)) {
-      box.appendChild(el("div", "none", error ? `not readable: ${error}` : emptyState()));
+      box.appendChild(error ? unreadable(error) : el("div", "none", emptyState()));
       return;
     }
     if (holders.length === 0) {
-      box.appendChild(el("div", "none", error ? `not readable: ${error}` : "no process holds more than 0.1 GiB"));
+      box.appendChild(error ? unreadable(error) : el("div", "none", "no process holds more than 0.1 GiB"));
       return;
     }
     for (const h of holders) {

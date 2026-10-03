@@ -60,6 +60,7 @@
   </div>
 
   <div class="arrangements" id="arrangements"></div>
+  <div class="arrangements" id="window-controls" aria-label="Avatar window"></div>
 
   <div id="list"></div>
 
@@ -110,6 +111,7 @@ async function call(promise, what) {
 }
 
 function renderArrangements() {
+  renderWindowControls();
   const holder = document.getElementById("arrangements");
   holder.replaceChildren();
   for (const item of ARRANGEMENTS) {
@@ -217,6 +219,35 @@ document.getElementById("refresh").addEventListener("click", () => void refresh(
 // pushed: the pane must not show a stage that emptied five minutes ago.
 setInterval(() => void refresh(), 4000);
 void refresh();
+
+// The avatar WINDOW (not the bodies): its size, its outline, its saved layout and
+// whether it shows at all. These were a whole "Avatar window" submenu on two menus.
+function windowControls() { return [
+  { id: "avatar.toggle", label: "Show / hide avatar" },
+  { id: "window.size.small", label: "Small" },
+  { id: "window.size.medium", label: "Medium" },
+  { id: "window.size.large", label: "Large" },
+  { id: "window.size.xlarge", label: "Extra large" },
+  { id: "window.size.smaller", label: "Smaller" },
+  { id: "window.size.bigger", label: "Bigger" },
+  { id: "window.outline", label: "Show outline" },
+  { id: "layout.reset-all", label: "Reset window layout" },
+]; }
+function renderWindowControls() {
+  const holder = document.getElementById("window-controls");
+  if (!holder || holder.childElementCount || !window.aitherStage.run) return;
+  const label = document.createElement("span");
+  label.textContent = "Avatar window:";
+  label.style.cssText = "align-self:center;color:var(--muted);font-size:12px";
+  holder.appendChild(label);
+  for (const item of windowControls()) {
+    const button = document.createElement("button");
+    button.className = "chip";
+    button.textContent = item.label;
+    button.addEventListener("click", () => call(window.aitherStage.run(item.id)));
+    holder.appendChild(button);
+  }
+}
 </script>
 </body>
 </html>
