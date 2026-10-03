@@ -46,10 +46,19 @@ Desk exposes these tools:
 | `speak` | `text`; optional `voice`, `speed` | Says a line aloud through AitherVoice with lip sync |
 | `ask_owner` | `question`; optional `timeout_s` | Asks the owner aloud and waits for the spoken answer |
 | `desktop_open` | `surface`: `overlay`, `app`, or `status` | Opens an AitherOS desktop surface |
-| `browser_open` | `url`: http(s) or a bare host | Opens a page in the Aither Browser window (other schemes refused; refused while the owner has taken over) |
-| `browser_read` | None | Reads the Aither Browser page: url, title, visible text, links (untrusted content) |
-| `browser_click` | `selector` | Clicks the first element matching a CSS selector in the Aither Browser |
-| `browser_type` | `selector`, `text` | Sets a field's value in the Aither Browser and fires input/change (does not submit) |
+| `browser_open` | `url`: http(s) or a bare host; optional `new_tab` | Opens a page in the agent's own Aither Browser tab (other schemes refused; refused while the owner has taken over) |
+| `browser_read` | None | Reads the agent's tab: url, title, visible text, links (untrusted content) |
+| `browser_snapshot` | None | Lists every visible field, button, link, select and checkbox in the agent's tab with a ref (`e1`…), label, value and options; never a password value |
+| `browser_screenshot` | None | A PNG of the agent's tab, scaled to 1280 px wide |
+| `browser_click` | `ref` or `selector` | Clicks one element in the agent's tab and returns its label |
+| `browser_type` | `ref` or `selector`, `text` | Sets a field's value, fires input/change and reads it back (does not submit) |
+| `browser_select` | `ref` or `selector`, `option` | Picks a `<select>` option by value or visible text |
+| `browser_check` | `ref` or `selector`, `checked` | Ticks or unticks a checkbox, radio or switch and reads it back |
+| `browser_press` | `key` (Enter, Tab, Escape, arrows…; no chords) | Sends one key to the focused element in the agent's tab |
+| `browser_hand_to_owner` | `reason`; optional `ref` or `selector` | Raises the window, outlines the element, shows "Your turn" and pauses the agent until the owner hands back |
+| `browser_tabs` | None | Lists every tab with its owner (`you` or `agent`), title and url |
+| `browser_switch_tab` | `tab` | Moves the agent to one of its OWN tabs and shows it; the owner's tabs are refused |
+| `browser_close_tab` | `tab` | Closes one of the agent's own tabs; the owner's tabs are refused |
 | `fleet_status` | optional `fresh` | Reads the AitherOS fleet status (cached unless `fresh`) |
 | `fleet_control` | `action`: `down`, `up`, `gaming`, `resume`, `adopt`, `open_panel`, `arc-status`, `arc-start`, `arc-now`, `arc-stop` | Runs a fleet action; the same implementation as the Fleet window |
 | `desk_command` | `text` | Runs a command in the Aither Command window |

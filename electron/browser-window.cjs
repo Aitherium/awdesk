@@ -445,6 +445,15 @@ function scriptFor(action, args = {}) {
       links: Array.from(document.querySelectorAll("a[href]")).slice(0, ${READ_LINKS})
         .map((a) => ({ text: (a.innerText || "").trim().slice(0, 120), href: a.href })) }))()`;
   }
+  if (action === "overview") {
+    // What the overlay host shows AitherOS Online about the tab on screen.
+    return `(() => { const clean = (t, n) => String(t == null ? "" : t).replace(/\\s+/g, " ").trim().slice(0, n);
+      const meta = document.querySelector('meta[name="description"], meta[property="og:description"]');
+      return { ok: true, url: location.href, title: document.title,
+        description: meta ? clean(meta.getAttribute("content"), 300) : "",
+        headings: Array.from(document.querySelectorAll("h1, h2, h3")).slice(0, 20).map((h) => clean(h.innerText, 160)),
+        text: (document.body ? document.body.innerText : "").slice(0, ${READ_TEXT_CHARS}) }; })()`;
+  }
   if (action === "snapshot") {
     return `(() => { ${PAGE_HELPERS}
       const refs = new Map();
@@ -753,6 +762,18 @@ function wireIpc() {
   });
 }
 
+/**
+ * The tab on screen, for the overlay host (overlay-browser-host.cjs decides what of
+ * it AitherOS Online may see). The OWNER's read, so it does not pass the agent gate.
+ */
+async function screenPage() {
+  const view = activeView();
+  if (!view) return { page: null, by: null };
+  const tab = tabs.get(tabs.active);
+  const page = await runInPage("overview", {}, "owner").catch(() => null);
+  return { page, by: tab ? tab.by : null };
+}
+
 function closeBrowserWindow() {
   if (win && !win.isDestroyed()) win.close();
 }
@@ -773,6 +794,8 @@ module.exports = {
   createBrowserWindow,
   getGate: () => gate,
   getTabs: () => tabs,
+  getState: () => state(),
+  screenPage,
   /** The owner clicking a tab, for browser-tabs-smoke.cjs (the strip's IPC needs a real sender). */
   __showTabForTest: (id) => showTab(id),
   isBrowserWindowOpen,

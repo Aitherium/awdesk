@@ -94,6 +94,32 @@ ipcMain.on("living-desktop:regions", (event, payload) => {
   hitState.reportedAt = Date.now();
 });
 
+// ── The overlay as a HOST for AitherOS Online (overlay-browser-host.cjs) ────────
+// AitherOS Online's overlay-host.ts asks its host to read and drive a page. The
+// desk answers with the Aither Browser. Handlers are injected by main (it owns the
+// browser); only OUR overlay and app windows may call them.
+let overlayHost = null;
+function setOverlayHost(handlers) {
+  overlayHost = handlers || null;
+}
+function fromOverlay(event) {
+  const senders = [desktopWin, appWin].filter((w) => w && !w.isDestroyed()).map((w) => w.webContents);
+  return senders.includes(event.sender);
+}
+ipcMain.handle("living-desktop:host-page", async (event, msg) => {
+  if (!fromOverlay(event)) return { ok: false, error: "not the AitherOS Online overlay" };
+  if (!overlayHost || typeof overlayHost.page !== "function") return { ok: false, error: "the desk has no browser host wired" };
+  return overlayHost.page(msg && typeof msg === "object" ? msg : {});
+});
+ipcMain.handle("living-desktop:host-context", async (event) => {
+  if (!fromOverlay(event) || !overlayHost || typeof overlayHost.context !== "function") return null;
+  return overlayHost.context();
+});
+ipcMain.on("living-desktop:desk-command", (event, id) => {
+  if (!fromOverlay(event) || !overlayHost || typeof overlayHost.command !== "function") return;
+  overlayHost.command(String(id || ""));
+});
+
 function cursorOverInteractive() {
   if (Date.now() - hitState.reportedAt > REGIONS_FRESH_MS) return true; // fail-interactive
   const bounds = desktopWin.getContentBounds();
@@ -784,6 +810,7 @@ module.exports = {
   onAccountChange,
   refreshAccount,
   setDeskStateProvider,
+  setOverlayHost,
   pushDeskState,
   isOpen,
   LOG_FILE,

@@ -36,12 +36,19 @@ AitherDesktop. This file is the order of work. Each slice ships on its own.
    desktop snapshot now cover this window too. It sends the machine layer only: title,
    OpenGraph, JSON-LD, feeds, and form field names and labels. It never sends page
    text or a field value. `DESK_BROWSER_CONTEXT_PUSH=0` turns it off.
-5. **awconnect.** One browser tool contract over two backends: this window, and the
-   owner's own Chrome through awconnect 4. The assistant panel becomes awconnect's
-   Connect panel (swap `ASSISTANT_PANEL`, nothing else).
-6. **Living desktop overlay.** The overlay shows an "agent is driving" card for this
-   window with Take over and a link to raise it, and AitherOS Online can open it as a window.
-7. **A browser people can live in.** Tabs: this PR. Each tab belongs to whoever
+5. **awconnect.** One page protocol over two hosts: this PR makes the desk answer
+   the same `os→page` / `os-page-context` protocol (Veil `overlay-host.ts`) that
+   awconnect answers over your Chrome tab, so AitherOS Online drives either one
+   through one API. Still to come: MCP agent tools that reach your Chrome through
+   awconnect 4, and the assistant panel becoming awconnect's Connect panel (swap
+   `ASSISTANT_PANEL`, nothing else).
+6. **Living desktop overlay: this PR.** The desk hosts AitherOS Online's page plane
+   (`overlay-browser-host.cjs`). Every request goes through the browser's agent gate
+   and tab-ownership rule. Page context gives text only for an agent's tab. The
+   desk-state push now carries the browser's status, and a card in AitherOS Online
+   (`desk-browser-card.tsx`) shows who is driving or "Your turn", with Open, Take
+   over and Let the agent continue, from a fixed command allowlist.
+7. **A browser people can live in.** Tabs: SHIPPED (#11092). Each tab belongs to whoever
    opened it (`browser-tabs.cjs`). An agent drives only its own tabs (marked with a
    purple dot) and can never read, switch to or close the owner's. `browser_tabs`,
    `browser_switch_tab`, `browser_close_tab`, and `browser_open` with `new_tab`. Popups

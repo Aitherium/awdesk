@@ -185,14 +185,33 @@ test("resolveSpeech: a malformed cast file falls to the LAST-GOOD snapshot, not 
 
 // ─── fail-open on an internal error ─────────────────────────────────────────
 
+/**
+ * Run `fn` against a box with NO cast.json. The no-argument path reads the box's
+ * real config, and an owner who muted voice there (2026-10-03: voice.muted on the
+ * owner's desk) turned "fails open" into a failure on exactly the machine that
+ * matters. A muted owner is a CHOICE, not the defect these tests guard.
+ */
+function withNoCastFile(fn) {
+  const before = process.env.DESK_CAST_FILE;
+  process.env.DESK_CAST_FILE = path.join(os.tmpdir(), `awdesk-no-cast-${process.pid}-${Date.now()}.json`);
+  try {
+    return fn();
+  } finally {
+    if (before === undefined) delete process.env.DESK_CAST_FILE;
+    else process.env.DESK_CAST_FILE = before;
+  }
+}
+
 test("resolveSpeech: never throws -- a garbage ctx still returns an allowed verdict", () => {
-  assert.doesNotThrow(() => {
-    const gate = resolveSpeech(undefined);
-    assert.equal(gate.allowed, true);
-  });
-  assert.doesNotThrow(() => {
-    const gate = resolveSpeech({ origin: 12345, slotId: {}, text: null });
-    assert.equal(typeof gate.allowed, "boolean");
+  withNoCastFile(() => {
+    assert.doesNotThrow(() => {
+      const gate = resolveSpeech(undefined);
+      assert.equal(gate.allowed, true);
+    });
+    assert.doesNotThrow(() => {
+      const gate = resolveSpeech({ origin: 12345, slotId: {}, text: null });
+      assert.equal(typeof gate.allowed, "boolean");
+    });
   });
 });
 
@@ -246,13 +265,15 @@ test("resolveSpeech: the fail-open verdict is FULL volume, never silence", () =>
   assert.equal(gate.volume, 1, "and at FULL volume — the fail-open default is not a quiet one");
 });
 
-test("resolveSpeech: with no context at all it still fails OPEN on the real config", () => {
-  // The no-argument path reads whatever this box has configured, so the NUMBER is the owner's
-  // to choose and is not asserted here. What must hold on any box is that it neither throws nor
-  // silences: an agent that never speaks is the failure this guards.
-  const gate = resolveSpeech(undefined);
-  assert.equal(gate.allowed, true, "no context must never resolve to muted");
-  assert.ok(typeof gate.volume === "number" && gate.volume > 0, `a positive volume: ${gate.volume}`);
+test("resolveSpeech: with no context at all it still fails OPEN with no config", () => {
+  // The no-argument path with nothing configured: it must neither throw nor silence --
+  // an agent that never speaks is the failure this guards. (An owner who MUTES voice in
+  // cast.json is obeyed; that is why this runs against a box with no cast.json.)
+  withNoCastFile(() => {
+    const gate = resolveSpeech(undefined);
+    assert.equal(gate.allowed, true, "no context must never resolve to muted");
+    assert.ok(typeof gate.volume === "number" && gate.volume > 0, `a positive volume: ${gate.volume}`);
+  });
 });
 
 // ─── the caption verdict rides the same gate ────────────────────────────────

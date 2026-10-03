@@ -30,3 +30,38 @@ window.addEventListener("message", (event) => {
 ipcRenderer.on("living-desktop:desk-state", (_event, payload) => {
   window.postMessage(Object.assign({ __aither: "desk-state" }, payload), "*");
 });
+
+// The desk as an overlay HOST (2026-10-03, overlay-browser-host.cjs). Veil's
+// overlay-host.ts only spoke to a FRAMING parent (awconnect's iframe); this window
+// loads AitherOS Online top-level, so it marks the document and answers the same
+// protocol on the page's own window. Only messages the page posts to ITSELF, from
+// its own origin, are relayed; replies go back pinned to that origin.
+function markHost() {
+  if (document.documentElement) document.documentElement.setAttribute("data-aither-host", "desk");
+}
+markHost();
+window.addEventListener("DOMContentLoaded", markHost);
+window.addEventListener("load", markHost);
+
+window.addEventListener("message", async (event) => {
+  if (event.source !== window || event.origin !== window.location.origin) return;
+  const data = event.data;
+  if (!data || typeof data.__aither !== "string") return;
+  const reply = (payload) => window.postMessage(payload, window.location.origin);
+  if (data.__aither === "os→page") {
+    const result = await ipcRenderer.invoke("living-desktop:host-page", {
+      action: data.action, selector: data.selector, text: data.text, key: data.key,
+    }).catch((error) => ({ ok: false, error: String((error && error.message) || error) }));
+    reply(Object.assign({}, result, { __aither: "page→os", reqId: data.reqId }));
+  } else if (data.__aither === "os-page-context-request") {
+    const context = await ipcRenderer.invoke("living-desktop:host-context").catch(() => null);
+    if (context) reply({ __aither: "os-page-context", context });
+  } else if (data.__aither === "desk-command") {
+    // A HUMAN click only. "Let the agent continue" lifts the owner's pause, so a
+    // page script must not be able to send it on its own: the page's transient
+    // user activation is set only by a real click or key press, moments ago.
+    const activation = navigator.userActivation;
+    if (!activation || !activation.isActive) return;
+    ipcRenderer.send("living-desktop:desk-command", String(data.id || ""));
+  }
+});

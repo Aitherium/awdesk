@@ -139,6 +139,7 @@ const {
 // The Aither Browser: a browser window inside the desk an agent drives (MCP
 // browser_* tools) while the owner watches and can take over.
 const browserWindow = require("./browser-window.cjs");
+const overlayBrowserHost = require("./overlay-browser-host.cjs");
 const {
   createCommandWindow,
   ensureCommandIpc,
@@ -214,6 +215,7 @@ const {
   desktopStatus,
   pushDeskState,
   setDeskStateProvider,
+  setOverlayHost,
   showDesktopApp,
   showLivingDesktop,
   closeDesktopApp,
@@ -2186,7 +2188,24 @@ function sendDeckState() {
 // { __aither: 'desk-state' } postMessages (relayed by living-desktop-preload.cjs).
 // Polled lightly: deckState() is cheap and the overlay is a separate renderer, so
 // nothing here can lag the avatar window.
-setDeskStateProvider(() => deckState());
+setDeskStateProvider(() => ({ ...deckState(), browser: overlayBrowserHost.browserSummary(browserWindow.getState()) }));
+// AitherOS Online on the desk drives and reads the Aither Browser through the SAME
+// agent dispatcher every MCP browser_* tool uses (gate + tab ownership), and its
+// card runs only overlay-browser-host's allowlisted commands.
+setOverlayHost({
+  page: (msg) => overlayBrowserHost.hostPageAction(browserWindow.browserAgent({ askAgent: browserAskAgent }), msg),
+  context: async () => {
+    const { page, by } = await browserWindow.screenPage();
+    return overlayBrowserHost.hostContext(page, by);
+  },
+  command: (id) => {
+    if (!overlayBrowserHost.allowedCommand(id)) return;
+    if (id === "browser.open") browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
+    else if (id === "browser.takeover") browserWindow.getGate().takeOver();
+    else if (id === "browser.handback") browserWindow.getGate().handBack();
+    pushDeskState();
+  },
+});
 setInterval(() => {
   pushDeskState();
 }, 5000);
