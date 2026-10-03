@@ -10,9 +10,11 @@
  *   window webContents  browser-chrome.html + browser-chrome-preload.cjs: URL bar,
  *                       back/forward/reload, the "Agent is driving" banner and
  *                       the Take over / Let the agent continue button.
- *   page view           a WebContentsView in its OWN partition, contextIsolation,
- *                       sandbox, no node, and NO preload -- web content gets no
- *                       bridge into the desk at all.
+ *   page views          ONE WebContentsView PER TAB, all in the browser's OWN
+ *                       partition, contextIsolation, sandbox, no node, and NO
+ *                       preload -- web content gets no bridge into the desk at
+ *                       all. Tabs belong to whoever opened them (browser-tabs.cjs):
+ *                       an agent drives only its own tabs, never the owner's.
  *   panel view          ONE self-contained, swappable assistant view, created by
  *                       createAssistantPanel() -- today browser-panel.html (a
  *                       URL/title header + "Ask about this page", which hands the
@@ -31,9 +33,10 @@
 const path = require("node:path");
 const policy = require("./browser-policy.cjs");
 const contextPush = require("./browser-context-push.cjs");
+const { TabSet } = require("./browser-tabs.cjs");
 
 const PARTITION = "persist:aither-browser";
-const CHROME_HEIGHT = 84; // toolbar (44) + banner (40); browser-chrome.html matches
+const CHROME_HEIGHT = 118; // tab strip (34) + toolbar (44) + banner (40); browser-chrome.html matches
 const PANEL_WIDTH = 340;
 // The assistant panel: one HTML file + one preload. Point these at the awkit
 // Connect panel to swap it (see createAssistantPanel).
@@ -65,7 +68,9 @@ function electron() {
 }
 
 let win = null;
-let pageView = null;
+/** tab id -> its WebContentsView. The TabSet decides; this map only holds the views. */
+const views = new Map();
+let tabs = new TabSet();
 let panelView = null;
 let ipcWired = false;
 let sessionHardened = false;
@@ -94,9 +99,37 @@ function alive(view) {
   return Boolean(view && view.webContents && !view.webContents.isDestroyed());
 }
 
+function viewOf(id) {
+  const view = id == null ? null : views.get(id);
+  return alive(view) ? view : null;
+}
+
+/** The tab on screen (the owner's toolbar, Ask about this page, the context push). */
+function activeView() {
+  return viewOf(tabs.active);
+}
+
+/** Every tab, with what the strip shows. */
+function tabList() {
+  const snap = tabs.snapshot();
+  return snap.tabs.map((t) => {
+    const view = viewOf(t.id);
+    return {
+      id: t.id,
+      by: t.by,
+      active: t.id === snap.active,
+      agentTarget: t.id === snap.agentTarget,
+      url: view ? view.webContents.getURL() : "",
+      title: view ? view.webContents.getTitle() : "",
+      loading: view ? view.webContents.isLoading() : false,
+    };
+  });
+}
+
 function state() {
-  if (!alive(pageView)) return { open: false, agent: gate.snapshot() };
-  const wc = pageView.webContents;
+  const view = activeView();
+  if (!win || win.isDestroyed() || !view) return { open: false, agent: gate.snapshot(), tabs: [] };
+  const wc = view.webContents;
   const history = wc.navigationHistory;
   return {
     open: true,
@@ -107,6 +140,7 @@ function state() {
     canGoForward: history ? history.canGoForward() : false,
     agent: gate.snapshot(),
     contextPush: lastContextPush,
+    tabs: tabList(),
   };
 }
 
@@ -132,9 +166,9 @@ function hardenSession(ses) {
   });
 }
 
-async function loadInView(url) {
+async function loadInView(view, url) {
   try {
-    await pageView.webContents.loadURL(url);
+    await view.webContents.loadURL(url);
   } catch (error) {
     // A redirect or a client-side navigation aborts the first load (-3); the
     // page still arrives. Anything else is a real failure.
@@ -147,14 +181,78 @@ function layout() {
   const { width, height } = win.getContentBounds();
   const bodyH = Math.max(0, height - CHROME_HEIGHT);
   const panelW = Math.min(PANEL_WIDTH, Math.floor(width / 2));
-  if (alive(pageView)) pageView.setBounds({ x: 0, y: CHROME_HEIGHT, width: Math.max(0, width - panelW), height: bodyH });
+  for (const [id, view] of views) {
+    if (!alive(view)) continue;
+    const shown = id === tabs.active;
+    view.setVisible(shown);
+    if (shown) view.setBounds({ x: 0, y: CHROME_HEIGHT, width: Math.max(0, width - panelW), height: bodyH });
+  }
   if (alive(panelView)) panelView.setBounds({ x: width - panelW, y: CHROME_HEIGHT, width: panelW, height: bodyH });
 }
 
-function wirePage(wc) {
-  // Popups stay in the view (http/https only); nothing opens a second window.
+/**
+ * Open a tab owned by `by` ("you" | "agent") and load `url` in it.
+ * @returns {{ok: true, id: number, view: object} | {ok: false, error: string}}
+ */
+function openTab(by, url, { activate = true, after = null } = {}) {
+  if (!win || win.isDestroyed()) return { ok: false, error: "The Aither Browser is not open." };
+  const added = tabs.add(by, { activate, after });
+  if (!added.ok) return added;
+  const { WebContentsView } = electron();
+  const view = new WebContentsView({
+    webPreferences: {
+      partition: PARTITION,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      // Deliberately no preload -- web content gets no bridge into the desk.
+    },
+  });
+  views.set(added.id, view);
+  wirePage(view.webContents, added.id);
+  win.contentView.addChildView(view);
+  // The panel stays on top of every page view.
+  if (alive(panelView)) win.contentView.addChildView(panelView);
+  layout();
+  pushState();
+  void loadInView(view, url).catch(() => {});
+  return { ok: true, id: added.id, view };
+}
+
+/** Close a tab (the owner, or the agent for its own). The last tab closing opens a fresh home tab. */
+function closeTab(id, by = "you") {
+  const closed = tabs.close(id, by);
+  if (!closed.ok) return closed;
+  const view = views.get(id);
+  views.delete(id);
+  if (alive(view)) {
+    if (win && !win.isDestroyed()) win.contentView.removeChildView(view);
+    view.webContents.close();
+  }
+  if (tabs.tabs.length === 0 && win && !win.isDestroyed()) openTab("you", homeUrl());
+  layout();
+  pushState();
+  return { ok: true, closed: id, active: tabs.active };
+}
+
+function showTab(id) {
+  const shown = tabs.activate(id);
+  if (shown.ok) {
+    layout();
+    pushState();
+    scheduleContextPush(id);
+  }
+  return shown;
+}
+
+function wirePage(wc, id) {
+  // A popup becomes a TAB beside its opener, owned by the opener's owner (an agent
+  // page's popup is still the agent's); http/https only, never a second window.
   wc.setWindowOpenHandler(({ url }) => {
-    if (policy.isNavigable(url)) void loadInView(url).catch(() => {});
+    const opener = tabs.get(id);
+    if (opener && policy.isNavigable(url)) openTab(opener.by, url, { activate: true, after: id });
     return { action: "deny" };
   });
   const guard = (event, url) => {
@@ -166,7 +264,7 @@ function wirePage(wc) {
   for (const name of ["did-navigate", "did-navigate-in-page", "page-title-updated", "did-start-loading", "did-stop-loading"]) {
     wc.on(name, () => pushState());
   }
-  wc.on("did-stop-loading", () => scheduleContextPush(wc));
+  wc.on("did-stop-loading", () => scheduleContextPush(id));
 }
 
 /**
@@ -174,11 +272,15 @@ function wirePage(wc) {
  * page's machine layer, never its text or a field value. Debounced, so a page
  * that redirects twice is pushed once.
  */
-function scheduleContextPush(wc) {
-  if (!contextPush.enabled()) return;
+function scheduleContextPush(id) {
+  if (!contextPush.enabled() || id !== tabs.active) return;
   clearTimeout(pushTimer);
   pushTimer = setTimeout(async () => {
-    if (!alive(pageView) || pageView.webContents !== wc) return;
+    // Only the tab on screen is "what the user is looking at".
+    if (id !== tabs.active) return;
+    const view = viewOf(id);
+    if (!view) return;
+    const wc = view.webContents;
     const url = wc.getURL();
     if (!contextPush.pushable(url)) return;
     try {
@@ -203,7 +305,8 @@ function createBrowserWindow({ askAgent: ask = null, url = null } = {}) {
   if (win && !win.isDestroyed()) {
     win.show();
     win.focus();
-    if (target && target.ok) void loadInView(target.url).catch(() => {});
+    // A link the OWNER opened from elsewhere in the desk: a new tab of theirs.
+    if (target && target.ok) openTab("you", target.url);
     return win;
   }
   const { BrowserWindow, WebContentsView, session } = electron();
@@ -228,21 +331,8 @@ function createBrowserWindow({ askAgent: ask = null, url = null } = {}) {
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event) => event.preventDefault());
 
-  pageView = new WebContentsView({
-    webPreferences: {
-      partition: PARTITION,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      webSecurity: true,
-      allowRunningInsecureContent: false,
-      // Deliberately no preload -- web content gets no bridge into the desk.
-    },
-  });
+  tabs = new TabSet();
   panelView = createAssistantPanel(WebContentsView);
-  wirePage(pageView.webContents);
-
-  win.contentView.addChildView(pageView);
   win.contentView.addChildView(panelView);
   win.on("resize", layout);
   win.once("ready-to-show", () => {
@@ -252,18 +342,18 @@ function createBrowserWindow({ askAgent: ask = null, url = null } = {}) {
     pushState();
   });
   win.on("closed", () => {
-    for (const view of [pageView, panelView]) {
+    for (const view of [...views.values(), panelView]) {
       if (alive(view)) view.webContents.close();
     }
+    views.clear();
+    tabs = new TabSet();
     win = null;
-    pageView = null;
     panelView = null;
     gate.release();
   });
 
   void win.loadFile(path.join(__dirname, "browser-chrome.html"));
-  layout();
-  void loadInView(target && target.ok ? target.url : homeUrl()).catch(() => {});
+  openTab("you", target && target.ok ? target.url : homeUrl());
   return win;
 }
 
@@ -490,21 +580,67 @@ function scriptFor(action, args = {}) {
   throw new Error(`no page script for ${action}`);
 }
 
-async function runInPage(action, args) {
-  if (!alive(pageView)) return { ok: false, error: "The Aither Browser is not open; call browser_open first." };
-  const wc = pageView.webContents;
+/**
+ * The view an action runs in. The AGENT acts in its target tab only (never one of
+ * the owner's); the owner's own read ("Ask about this page") uses the tab on screen.
+ */
+function viewFor(who) {
+  if (!win || win.isDestroyed()) return { ok: false, error: "The Aither Browser is not open; call browser_open first." };
+  if (who === "owner") {
+    const view = activeView();
+    return view ? { ok: true, view } : { ok: false, error: "no tab is open" };
+  }
+  const target = tabs.target();
+  if (!target.ok) return target;
+  const view = viewOf(target.id);
+  return view ? { ok: true, view, id: target.id } : { ok: false, error: "the agent's tab is gone; call browser_open" };
+}
+
+async function runInPage(action, args, who = "agent") {
+  const picked = viewFor(who);
+  if (!picked.ok) return { ok: false, error: picked.error };
+  const wc = picked.view.webContents;
   await waitForIdle(wc);
   const result = await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: scriptFor(action, args) }], false);
   return result && typeof result === "object" ? result : { ok: false, error: "page returned nothing" };
 }
 
 const driver = {
-  async open(url) {
+  /**
+   * Open a page in the agent's tab (a new agent tab when it has none, or when
+   * newTab is set). The tab is SHOWN, so the owner watches where the agent went.
+   */
+  async open(url, { newTab = false } = {}) {
     createBrowserWindow({ url: null });
-    await loadInView(url);
-    const s = state();
-    return { ok: true, url: s.url, title: s.title };
+    const target = tabs.target();
+    let id;
+    let view;
+    if (target.ok && !newTab) {
+      id = target.id;
+      view = viewOf(id);
+      tabs.agentSwitch(id);
+      layout();
+      pushState();
+      await loadInView(view, url);
+    } else {
+      const opened = openTab("agent", url);
+      if (!opened.ok) return opened;
+      id = opened.id;
+      view = opened.view;
+      await waitForIdle(view.webContents);
+    }
+    return { ok: true, tab: id, url: view.webContents.getURL(), title: view.webContents.getTitle() };
   },
+  tabs: async () => ({ ok: true, tabs: tabList() }),
+  async switchTab(id) {
+    const switched = tabs.agentSwitch(id);
+    if (!switched.ok) return switched;
+    layout();
+    pushState();
+    const view = viewOf(id);
+    return { ok: true, tab: id, url: view ? view.webContents.getURL() : "", title: view ? view.webContents.getTitle() : "" };
+  },
+  closeTab: async (id) => closeTab(id, "agent"),
   read: () => runInPage("read", {}),
   snapshot: () => runInPage("snapshot", {}),
   click: (target) => runInPage("click", { target }),
@@ -514,10 +650,11 @@ const driver = {
   highlight: (target) => runInPage("highlight", { target }),
   /** A key goes to whatever has focus in the page, as a real input event. */
   async press(key) {
-    if (!alive(pageView)) return { ok: false, error: "The Aither Browser is not open; call browser_open first." };
+    const picked = viewFor("agent");
+    if (!picked.ok) return { ok: false, error: picked.error };
     const keyCode = KEY_CODES[key];
     if (!keyCode) return { ok: false, error: `no key mapping for ${key}` };
-    const wc = pageView.webContents;
+    const wc = picked.view.webContents;
     await waitForIdle(wc);
     wc.focus();
     wc.sendInputEvent({ type: "keyDown", keyCode });
@@ -527,8 +664,9 @@ const driver = {
   },
   /** The page as a PNG, scaled to SCREENSHOT_MAX_WIDTH. */
   async screenshot() {
-    if (!alive(pageView)) return { ok: false, error: "The Aither Browser is not open; call browser_open first." };
-    const wc = pageView.webContents;
+    const picked = viewFor("agent");
+    if (!picked.ok) return { ok: false, error: picked.error };
+    const wc = picked.view.webContents;
     await waitForIdle(wc);
     let image = await wc.capturePage();
     const size = image.getSize();
@@ -564,13 +702,27 @@ function wireIpc() {
   ipcMain.handle("desk:browser-navigate", async (event, input) => {
     if (!fromChrome(event)) return { ok: false, reason: "not the browser toolbar" };
     const verdict = policy.sanitizeUrl(input);
-    if (!verdict.ok || !alive(pageView)) return verdict.ok ? { ok: false, reason: "browser closed" } : verdict;
-    void loadInView(verdict.url).catch(() => {});
+    const view = activeView();
+    if (!verdict.ok || !view) return verdict.ok ? { ok: false, reason: "browser closed" } : verdict;
+    void loadInView(view, verdict.url).catch(() => {});
     return { ok: true, url: verdict.url };
   });
+  // Tabs: the OWNER's strip. They may show or close any tab; a new one is theirs.
+  ipcMain.handle("desk:browser-tab-new", (event) => {
+    if (!fromChrome(event)) return { ok: false, reason: "not the browser toolbar" };
+    const opened = openTab("you", homeUrl());
+    return opened.ok ? { ok: true, id: opened.id } : opened;
+  });
+  ipcMain.on("desk:browser-tab-activate", (event, id) => {
+    if (fromChrome(event)) showTab(Number(id));
+  });
+  ipcMain.on("desk:browser-tab-close", (event, id) => {
+    if (fromChrome(event)) closeTab(Number(id), "you");
+  });
   ipcMain.on("desk:browser-nav", (event, verb) => {
-    if (!fromChrome(event) || !alive(pageView)) return;
-    const wc = pageView.webContents;
+    const view = activeView();
+    if (!fromChrome(event) || !view) return;
+    const wc = view.webContents;
     const history = wc.navigationHistory;
     if (verb === "back" && history.canGoBack()) history.goBack();
     else if (verb === "forward" && history.canGoForward()) history.goForward();
@@ -587,7 +739,7 @@ function wireIpc() {
     if (!fromPanel(event)) return { ok: false, reply: "not the browser panel" };
     if (typeof askAgent !== "function") return { ok: false, reply: "The desk's agent is not wired to this window." };
     // The OWNER's read: not an agent tool call, so it does not pass the gate.
-    const page = await runInPage("read", {}).catch((error) => ({ ok: false, error: String(error.message || error) }));
+    const page = await runInPage("read", {}, "owner").catch((error) => ({ ok: false, error: String(error.message || error) }));
     if (!page || page.ok === false) return { ok: false, reply: `Could not read the page: ${page && page.error}` };
     const prompt = policy.buildAskPrompt({
       url: page.url, title: page.title, text: page.text, question: typeof question === "string" ? question.slice(0, 2000) : "",
@@ -620,6 +772,9 @@ module.exports = {
   createAssistantPanel,
   createBrowserWindow,
   getGate: () => gate,
+  getTabs: () => tabs,
+  /** The owner clicking a tab, for browser-tabs-smoke.cjs (the strip's IPC needs a real sender). */
+  __showTabForTest: (id) => showTab(id),
   isBrowserWindowOpen,
   scriptFor,
 };

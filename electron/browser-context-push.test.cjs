@@ -66,7 +66,7 @@ test("postPush: POSTs JSON with the bearer to Veil's Genesis bridge, and a failu
 
 test("browser-window pushes on did-stop-loading, debounced, and shows the last verdict in its state", () => {
   const src = fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
-  assert.match(src, /wc\.on\("did-stop-loading", \(\) => scheduleContextPush\(wc\)\)/);
+  assert.match(src, /wc\.on\("did-stop-loading", \(\) => scheduleContextPush\(id\)\)/);
   assert.match(src, /contextPush: lastContextPush/);
-  assert.match(src, /if \(!contextPush\.enabled\(\)\) return;/);
+  assert.match(src, /if \(!contextPush\.enabled\(\) \|\| id !== tabs\.active\) return;/, "only the tab on screen is pushed");
 });

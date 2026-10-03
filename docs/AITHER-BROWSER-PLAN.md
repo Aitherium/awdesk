@@ -30,7 +30,7 @@ AitherDesktop. This file is the order of work. Each slice ships on its own.
    flashes the window, outlines the element, shows "Your turn: …" in the toolbar and
    pauses every agent call until the owner presses "Let the agent continue". It covers
    captchas, passwords, payments, accepting terms, and a final Send in the owner's name.
-4. **AitherDesktop awareness: this PR.** Each page that settles is pushed to Genesis
+4. **AitherDesktop awareness: SHIPPED (#11086).** Each page that settles is pushed to Genesis
    `/browser/agent-context/push` (`browser-context-push.cjs`) through Veil's loopback
    bridge, the door awconnect uses. `browser_context`/`browser_context_history` and the
    desktop snapshot now cover this window too. It sends the machine layer only: title,
@@ -41,8 +41,12 @@ AitherDesktop. This file is the order of work. Each slice ships on its own.
    Connect panel (swap `ASSISTANT_PANEL`, nothing else).
 6. **Living desktop overlay.** The overlay shows an "agent is driving" card for this
    window with Take over and a link to raise it, and AitherOS Online can open it as a window.
-7. **A browser people can live in.** Tabs, a downloads shelf, history and bookmarks.
-   The owner sees every tab the agent opened.
+7. **A browser people can live in.** Tabs: this PR. Each tab belongs to whoever
+   opened it (`browser-tabs.cjs`). An agent drives only its own tabs (marked with a
+   purple dot) and can never read, switch to or close the owner's. `browser_tabs`,
+   `browser_switch_tab`, `browser_close_tab`, and `browser_open` with `new_tab`. Popups
+   open as tabs beside their opener. Still to come: a downloads shelf, history and
+   bookmarks.
 
 Iframes (captchas, embedded sign-in, card fields) stay out of the agent's reach on
 purpose: slice 3 hands those to the owner.

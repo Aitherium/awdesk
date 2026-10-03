@@ -40,7 +40,7 @@ const REF_PATTERN = /^e\d{1,5}$/;
 const PRESSABLE_KEYS = Object.freeze(["Enter", "Tab", "Escape", "Space", "Backspace", "Delete",
   "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End"]);
 const BROWSER_ACTIONS = Object.freeze(["open", "read", "snapshot", "screenshot", "click", "type", "select",
-  "check", "press", "handoff"]);
+  "check", "press", "handoff", "tabs", "switch_tab", "close_tab"]);
 /** Actions that address ONE element, by `ref` (preferred) or CSS `selector`. */
 const TARGETED_ACTIONS = Object.freeze(["click", "type", "select", "check"]);
 
@@ -239,6 +239,10 @@ function createBrowserAgent({ gate, driver }) {
       return badArg(`option must be the option's value or visible text (at most ${MAX_OPTION_LENGTH} characters)`);
     }
     if (action === "check" && typeof a.checked !== "boolean") return badArg("checked must be true or false");
+    if ((action === "switch_tab" || action === "close_tab") && !(Number.isInteger(a.tab) && a.tab > 0)) {
+      return badArg("tab must be a tab id from browser_tabs");
+    }
+    if (action === "open" && a.new_tab != null && typeof a.new_tab !== "boolean") return badArg("new_tab must be true or false");
     if (action === "press" && !PRESSABLE_KEYS.includes(a.key)) {
       return badArg(`key must be one of ${PRESSABLE_KEYS.join(", ")}`);
     }
@@ -254,7 +258,10 @@ function createBrowserAgent({ gate, driver }) {
     const refusal = gate.check(`browser_${action}`);
     if (refusal) return refusal;
     try {
-      if (action === "open") return await driver.open(url);
+      if (action === "open") return await driver.open(url, { newTab: a.new_tab === true });
+      if (action === "tabs") return await driver.tabs();
+      if (action === "switch_tab") return await driver.switchTab(a.tab);
+      if (action === "close_tab") return await driver.closeTab(a.tab);
       if (action === "read") return await driver.read();
       if (action === "snapshot") return await driver.snapshot();
       if (action === "screenshot") return await driver.screenshot();

@@ -682,13 +682,48 @@ function createDeskMcpServer({
       {
         title: "Open a page in the Aither Browser",
         description:
-          "Open an http(s) URL in the owner's Aither Browser window (opens the window if needed); the owner sees an " +
-          "'Agent is driving' banner. Other schemes (javascript:, file:, data:, custom) are refused. Refused while " +
-          "the owner has taken over. Returns {ok, url, title}.",
-        inputSchema: { url: z.string().min(1).max(4096).describe("http(s) URL, or a bare host like example.com.") },
+          "Open an http(s) URL in YOUR tab of the owner's Aither Browser (a new agent tab the first time, or with " +
+          "new_tab). The tab is shown so the owner watches; agent tabs carry a purple dot. You only ever drive your " +
+          "own tabs, never the owner's. Other schemes (javascript:, file:, data:, custom) are refused. Refused while " +
+          "the owner has taken over. Returns {ok, tab, url, title}.",
+        inputSchema: {
+          url: z.string().min(1).max(4096).describe("http(s) URL, or a bare host like example.com."),
+          new_tab: z.boolean().optional().describe("Open in a new agent tab instead of your current one."),
+        },
         annotations: browserAnnotations(false),
       },
-      async ({ url }) => browserResult(await onBrowser("open", { url })),
+      async ({ url, new_tab }) => browserResult(await onBrowser("open", { url, new_tab })),
+    );
+    server.registerTool(
+      "browser_tabs",
+      {
+        title: "List the Aither Browser's tabs",
+        description:
+          "Every tab: {id, by: you|agent, active (on screen), agentTarget (the one your tools act on), url, title}. " +
+          "You may switch to or close only tabs where by is agent. Refused while the owner has taken over.",
+        annotations: browserAnnotations(true),
+      },
+      async () => browserResult(await onBrowser("tabs", {})),
+    );
+    server.registerTool(
+      "browser_switch_tab",
+      {
+        title: "Switch to one of your tabs in the Aither Browser",
+        description: "Make one of YOUR tabs (by: agent) the one your tools act on, and show it. The owner's tabs are refused.",
+        inputSchema: { tab: z.number().int().positive().describe("A tab id from browser_tabs.") },
+        annotations: browserAnnotations(false),
+      },
+      async ({ tab }) => browserResult(await onBrowser("switch_tab", { tab })),
+    );
+    server.registerTool(
+      "browser_close_tab",
+      {
+        title: "Close one of your tabs in the Aither Browser",
+        description: "Close a tab you opened (by: agent). The owner's tabs are refused.",
+        inputSchema: { tab: z.number().int().positive().describe("A tab id from browser_tabs.") },
+        annotations: browserAnnotations(false),
+      },
+      async ({ tab }) => browserResult(await onBrowser("close_tab", { tab })),
     );
     server.registerTool(
       "browser_read",

@@ -520,6 +520,9 @@ test("browser_* tools register only with onBrowser, and a take-over pause comes 
       check: async (target, checked) => { driven.push(["check", target, checked]); return { ok: true, checked }; },
       press: async (key) => { driven.push(["press", key]); return { ok: true, pressed: key }; },
       highlight: async () => ({ ok: true }),
+      tabs: async () => ({ ok: true, tabs: [{ id: 1, by: "you" }, { id: 2, by: "agent", agentTarget: true }] }),
+      switchTab: async (id) => { driven.push(["switchTab", id]); return { ok: true, tab: id }; },
+      closeTab: async (id) => { driven.push(["closeTab", id]); return { ok: true, closed: id }; },
     },
   });
   const base = {
@@ -539,7 +542,8 @@ test("browser_* tools register only with onBrowser, and a take-over pause comes 
 
   const names = (await client.listTools()).tools.map((t) => t.name);
   for (const tool of ["browser_open", "browser_read", "browser_click", "browser_type", "browser_snapshot",
-    "browser_screenshot", "browser_select", "browser_check", "browser_press", "browser_hand_to_owner"]) {
+    "browser_screenshot", "browser_select", "browser_check", "browser_press", "browser_hand_to_owner", "browser_tabs",
+    "browser_switch_tab", "browser_close_tab"]) {
     assert.ok(names.includes(tool), `${tool} must be registered when onBrowser is supplied`);
   }
   const bareNames = (await bare.listTools()).tools.map((t) => t.name);
@@ -563,6 +567,13 @@ test("browser_* tools register only with onBrowser, and a take-over pause comes 
   assert.equal((await client.callTool({ name: "browser_press", arguments: { key: "Enter" } })).isError, false);
   const chord = await client.callTool({ name: "browser_press", arguments: { key: "Ctrl+W" } });
   assert.equal(chord.isError, true, "a chord is refused by the schema");
+  const listed = await client.callTool({ name: "browser_tabs", arguments: {} });
+  assert.equal(JSON.parse(listed.content[0].text).tabs.length, 2);
+  assert.equal((await client.callTool({ name: "browser_switch_tab", arguments: { tab: 2 } })).isError, false);
+  assert.deepEqual(driven.at(-1), ["switchTab", 2]);
+  assert.equal((await client.callTool({ name: "browser_close_tab", arguments: { tab: 0 } })).isError, true, "tab ids are positive");
+  const newTab = await client.callTool({ name: "browser_open", arguments: { url: "example.org", new_tab: true } });
+  assert.equal(newTab.isError, false);
   const handed = await client.callTool({ name: "browser_hand_to_owner", arguments: { reason: "Tick the captcha." } });
   assert.equal(JSON.parse(handed.content[0].text).handedOff, true);
   gate.handBack();

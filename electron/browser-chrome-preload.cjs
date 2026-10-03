@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   forward: () => ipcRenderer.send("desk:browser-nav", "forward"),
   reload: () => ipcRenderer.send("desk:browser-nav", "reload"),
   stop: () => ipcRenderer.send("desk:browser-nav", "stop"),
+  newTab: () => ipcRenderer.invoke("desk:browser-tab-new"),
+  activateTab: (id) => ipcRenderer.send("desk:browser-tab-activate", Number(id)),
+  closeTab: (id) => ipcRenderer.send("desk:browser-tab-close", Number(id)),
   takeOver: () => ipcRenderer.send("desk:browser-takeover"),
   handBack: () => ipcRenderer.send("desk:browser-handback"),
   onState: (listener) => {

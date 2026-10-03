@@ -211,8 +211,10 @@ test("buildAskPrompt: page text is fenced as untrusted data and capped", () => {
 
 test("browser-window: page view has no preload, is sandboxed, isolated, and popups/permissions are held", () => {
   const src = read("browser-window.cjs");
-  const page = src.match(/pageView = new WebContentsView\(\{[\s\S]*?\n {2}\}\);/);
+  // One page view per tab, all built in openTab().
+  const page = src.match(/const view = new WebContentsView\(\{[\s\S]*?\n {2}\}\);/);
   assert.ok(page, "page view construction found");
+  assert.equal((src.match(/new WebContentsView\(/g) || []).length, 2, "one page-view builder (openTab) + the panel");
   assert.doesNotMatch(page[0], /preload:/, "page content must get NO preload");
   assert.match(page[0], /contextIsolation: true/);
   assert.match(page[0], /nodeIntegration: false/);
