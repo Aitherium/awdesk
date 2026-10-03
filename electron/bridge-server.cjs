@@ -27,18 +27,20 @@ const ANIMATIONS = new Set([
 
 const FILE_ANIMATION_PATTERN = /^FILE:[\w.-]+\.vrma$/;
 
-// The awconnect browser extension. Both of its manifests carry the same public
-// key, so every install has this id. Only these EXACT origins get the desk
+// The awconnect browser extension. An unpacked install carries the manifest's
+// public key, so it has PINNED_EXTENSION_ID; the Chrome Web Store refuses a key
+// and assigns its own id, STORE_EXTENSION_ID (item created 2026-10-03). Only these EXACT origins get the desk
 // surfaces (health, decisions read, desktop, speak, events, console open);
 // fleet verbs, /command, /commands, /roster and /mcp stay local-only.
 // AWDESK_TRUSTED_EXTENSION_IDS (comma-separated ids) replaces the default;
 // anything that is not a 32-char a-p id is dropped, so "*" cannot widen it.
 const PINNED_EXTENSION_ID = "hlmfknhcfhjjngckfpacgleffckpmphe";
+const STORE_EXTENSION_ID = "peeojgjhjficedkncdejbfnacooodbak";
 const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
 
 function trustedExtensionOrigins(env = process.env) {
   const raw = env.AWDESK_TRUSTED_EXTENSION_IDS;
-  const ids = raw == null ? [PINNED_EXTENSION_ID] : String(raw).split(",");
+  const ids = raw == null ? [PINNED_EXTENSION_ID, STORE_EXTENSION_ID] : String(raw).split(",");
   return new Set(
     ids.map((id) => id.trim()).filter((id) => EXTENSION_ID_PATTERN.test(id))
       .map((id) => `chrome-extension://${id}`),
@@ -1019,5 +1021,6 @@ module.exports = {
   normalizeEvent,
   originAllowed,
   PINNED_EXTENSION_ID,
+  STORE_EXTENSION_ID,
   trustedExtensionOrigins,
 };

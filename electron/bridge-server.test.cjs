@@ -651,7 +651,17 @@ test("desktop routes: absent without a handler (404), never an empty success", a
 
 // ── awconnect: the pinned extension origin reaches the desk surfaces only ──
 const PINNED_EXT = "chrome-extension://hlmfknhcfhjjngckfpacgleffckpmphe";
+const STORE_EXT = "chrome-extension://peeojgjhjficedkncdejbfnacooodbak";
 const OTHER_EXT = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+
+test("awconnect: the Web Store install is trusted too, an unknown extension is not", async (context) => {
+  const events = [];
+  const spoken = [];
+  const address = await extBridge(context, events, spoken);
+  assert.equal((await postJson(address, "/speak", STORE_EXT, { text: "from the store build" })).status, 200);
+  assert.equal((await postJson(address, "/speak", OTHER_EXT, { text: "x" })).status, 403);
+  assert.equal(spoken.length, 1);
+});
 
 async function extBridge(context, events, spoken) {
   const bridge = createBridgeServer({
