@@ -39,7 +39,7 @@ const castConfig = require("./cast-config.cjs");
  *     Desk is Node — a cross-language read needs SOME artifact) by
  *     `python AitherOS/dev/tools/gen_desk_agent_roster.py` into agent-roster.generated.json.
  *  2. AitherOS/Library/packs/<pack-name>/{agent.yaml,brain_pack.yaml} — the REAL, larger, growing set
- *     of pack-defined agents (gargbot, saga, dgg, vera, chaos, jgames, ...) that the
+ *     of pack-defined agents (gargbot, saga, dgg, vera, chaos, ...) that the
  *     sovereign roster does not and should not know about (it is Genesis's list, not the
  *     owner's product-agent list). Discovery rule taken directly from awdk's own
  *     adk/pack_discovery.py (`_find_library_packs` / `discover_agent_yaml`), not
@@ -48,7 +48,7 @@ const castConfig = require("./cast-config.cjs");
  *     neither.
  *
  *  Measured 2026-08-24: source (1) alone had 13 names and was MISSING 9 real agents that
- *  exist as packs (gargbot, saga, dgg, dgg-devops, vera, chaos, jgames, gobbonet,
+ *  exist as packs (gargbot, saga, dgg, dgg-devops, vera, chaos, gobbonet,
  *  lyra-wiki, aitherium) — a "fixed" roster that was still a stub of the owner's actual
  *  fleet, just a bigger one. */
 const GENERATED_ROSTER_FILE = path.join(__dirname, "agent-roster.generated.json");
