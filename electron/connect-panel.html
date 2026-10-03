@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<title>Connect</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<!-- The Connect panel: awconnect's side panel inside the Aither Browser
+     (browser-window.cjs ASSISTANT_PANEL). Chat about the page with history and
+     quick actions, "Do it" (an agent does a task in its own tab), Open in Chrome,
+     and the downloads shelf. Every page string is rendered with textContent. -->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--panel); color: var(--fg); font: 13px/1.45 var(--font-sans); }
+  body { display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+  header { padding: 10px 12px 8px; border-bottom: 1px solid var(--line); }
+  .row { display: flex; align-items: center; gap: 8px; }
+  #title { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #host { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .who { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; padding: 1px 6px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); }
+  .who.agent { color: var(--agent-purple); border-color: var(--agent-purple); }
+  #status { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  #status.turn { color: var(--warning); }
+  #status.driving { color: var(--agent-purple); }
+  nav { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--line); }
+  nav button { border: 0; background: none; color: var(--muted); padding: 6px 10px; cursor: pointer; font: inherit;
+    border-bottom: 2px solid transparent; }
+  nav button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--brand, var(--agent-purple)); }
+  nav .count { font-size: 10px; margin-left: 4px; color: var(--muted); }
+  section { flex: 1; display: none; flex-direction: column; min-height: 0; }
+  section.on { display: flex; }
+  #thread { flex: 1; overflow: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { padding: 8px 10px; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+  .msg.me { align-self: flex-end; background: var(--btn); }
+  .msg.ai { align-self: flex-start; background: color-mix(in srgb, var(--agent-purple) 12%, transparent); }
+  .msg.err { color: var(--destructive); }
+  .hint { color: var(--muted); font-size: 12px; padding: 4px 2px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px 0; }
+  .chips button, .actions button { border: 1px solid var(--line); background: var(--btn); color: var(--fg); border-radius: 999px;
+    padding: 3px 10px; font-size: 12px; cursor: pointer; }
+  .chips button:disabled, .actions button:disabled { opacity: .5; cursor: default; }
+  .composer { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 6px; }
+  textarea { width: 100%; min-height: 56px; max-height: 160px; resize: vertical; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--fg); padding: 8px; font: inherit; }
+  .composer .row label { color: var(--muted); font-size: 12px; display: flex; gap: 4px; align-items: center; flex: 1; }
+  .primary { height: 30px; padding: 0 14px; border-radius: 8px; border: 0; background: var(--agent-purple); color: #fff;
+    font-weight: 600; cursor: pointer; }
+  .primary:disabled { opacity: .5; cursor: default; }
+  #taskOut { flex: 1; overflow: auto; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .actions { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--line); }
+  #dllist { flex: 1; overflow: auto; padding: 8px 12px; }
+  .dl { display: flex; gap: 8px; align-items: center; padding: 5px 0; font-size: 12px; }
+  .dl .n { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dl .s { color: var(--muted); white-space: nowrap; }
+  .dl.blocked .s { color: var(--warning); }
+  .dl button { border: 1px solid var(--line); background: var(--btn); color: var(--fg); border-radius: 6px; font-size: 11px; padding: 2px 8px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="row"><span id="title">—</span><span id="who" class="who">yours</span></div>
+    <div id="host"></div>
+    <div id="status" role="status" aria-live="polite"></div>
+  </header>
+  <nav role="tablist">
+    <button id="t-chat" role="tab" aria-selected="true">Chat</button>
+    <button id="t-task" role="tab" aria-selected="false">Do it</button>
+    <button id="t-dl" role="tab" aria-selected="false">Downloads<span id="dlcount" class="count"></span></button>
+  </nav>
+
+  <section id="p-chat" class="on" aria-label="Chat about this page">
+    <div id="thread">
+      <div class="hint">Ask anything about this page. The page is read as data: nothing on it can instruct the assistant.</div>
+    </div>
+    <div class="chips">
+      <button data-q="Summarise this page and tell me what matters on it.">Summarize</button>
+      <button data-q="List the key facts, numbers and dates on this page.">Key facts</button>
+      <button data-q="Explain the part I selected in plain words." data-sel="1">Explain selection</button>
+      <button data-q="Is this page safe to trust? Look for scams, dark patterns, hidden costs or risky terms.">Is this safe?</button>
+    </div>
+    <div class="composer">
+      <textarea id="q" placeholder="Ask about this page…" aria-label="Your question"></textarea>
+      <div class="row">
+        <label><input id="usesel" type="checkbox" /> Include my selection</label>
+        <button id="send" class="primary">Ask</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="p-task" aria-label="Have an agent do it">
+    <div id="taskOut" class="hint">Tell an agent what to do here: fill a form, compare prices, collect the details.
+It works in its own tab with a purple dot. Captchas, passwords, payments and the final Send come back to you as "Your turn".</div>
+    <div class="composer">
+      <textarea id="task" placeholder="e.g. Fill this form with my details and stop before Send" aria-label="Task for the agent"></textarea>
+      <div class="row"><span class="hint" id="taskState"></span><button id="go" class="primary">Start</button></div>
+    </div>
+  </section>
+
+  <section id="p-dl" aria-label="Downloads">
+    <div id="dllist"><div class="hint">No downloads yet.</div></div>
+    <div class="actions"><button id="dlclear">Clear finished</button></div>
+  </section>
+
+  <div class="actions">
+    <button id="chrome" title="Open this page in your own browser (your signed-in Chrome)">Open in Chrome</button>
+  </div>
+<script>
+  const api = window.aitherAssist;
+  const $ = (id) => document.getElementById(id);
+  let current = { url: "" };
+  let history = []; // [{q, a}] for the page on screen; cleared when the page changes
+  let busy = false;
+
+  // Tabs
+  const tabs = { chat: ["t-chat", "p-chat"], task: ["t-task", "p-task"], dl: ["t-dl", "p-dl"] };
+  function show(name) {
+    for (const [key, [tab, panel]] of Object.entries(tabs)) {
+      $(tab).setAttribute("aria-selected", String(key === name));
+      $(panel).classList.toggle("on", key === name);
+    }
+  }
+  $("t-chat").onclick = () => show("chat");
+  $("t-task").onclick = () => show("task");
+  $("t-dl").onclick = () => show("dl");
+
+  // Chat
+  function bubble(text, who, err) {
+    const div = document.createElement("div");
+    div.className = "msg " + who + (err ? " err" : "");
+    div.textContent = text; // never innerHTML: replies quote the page
+    $("thread").appendChild(div);
+    $("thread").scrollTop = $("thread").scrollHeight;
+    return div;
+  }
+  function setBusy(on) {
+    busy = on;
+    $("send").disabled = on;
+    for (const b of document.querySelectorAll(".chips button")) b.disabled = on;
+  }
+  async function ask(question, withSelection) {
+    if (busy || !question.trim()) return;
+    setBusy(true);
+    bubble(question, "me");
+    const pending = bubble("Thinking…", "ai");
+    try {
+      let selection = "";
+      if (withSelection) {
+        const sel = await api.selection();
+        selection = (sel && sel.text) || "";
+        if (!selection) { pending.textContent = "Select some text on the page first."; pending.classList.add("err"); return; }
+      }
+      const res = await api.ask(question, { selection, history });
+      pending.textContent = (res && res.reply) || "(no reply)";
+      if (!res || !res.ok) pending.classList.add("err");
+      else history.push({ q: question, a: pending.textContent });
+      if (history.length > 6) history = history.slice(-6);
+    } catch (e) {
+      pending.textContent = String((e && e.message) || e);
+      pending.classList.add("err");
+    } finally {
+      setBusy(false);
+    }
+  }
+  $("send").onclick = () => { const q = $("q").value; $("q").value = ""; void ask(q, $("usesel").checked); };
+  $("q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("send").click(); } });
+  for (const b of document.querySelectorAll(".chips button")) {
+    b.onclick = () => void ask(b.dataset.q, b.dataset.sel === "1");
+  }
+
+  // Do it
+  $("go").onclick = async () => {
+    const instruction = $("task").value.trim();
+    if (!instruction) return;
+    $("go").disabled = true;
+    $("taskState").textContent = "An agent is on it…";
+    $("taskOut").classList.remove("hint");
+    $("taskOut").textContent = "Working. Watch its tab (purple dot). You will get \"Your turn\" for anything only you may do.";
+    try {
+      const res = await api.task(instruction);
+      $("taskOut").textContent = (res && res.reply) || "(no reply)";
+      $("taskState").textContent = res && res.ok ? "Done." : "It stopped.";
+    } catch (e) {
+      $("taskOut").textContent = String((e && e.message) || e);
+      $("taskState").textContent = "It stopped.";
+    } finally {
+      $("go").disabled = false;
+    }
+  };
+
+  // Open in Chrome
+  $("chrome").onclick = async () => {
+    const res = await api.openExternal();
+    if (!res || !res.ok) $("status").textContent = (res && res.error) || "could not open it in Chrome";
+  };
+
+  // Downloads
+  const STATE_TEXT = { progressing: "downloading", completed: "done", cancelled: "cancelled",
+    interrupted: "failed", blocked: "blocked: an agent started it. Take over, then download it yourself" };
+  function renderDownloads(rows) {
+    const list = $("dllist");
+    list.textContent = "";
+    $("dlcount").textContent = rows && rows.length ? String(rows.length) : "";
+    if (!rows || !rows.length) {
+      const empty = document.createElement("div");
+      empty.className = "hint";
+      empty.textContent = "No downloads yet.";
+      list.appendChild(empty);
+      return;
+    }
+    for (const r of rows) {
+      const row = document.createElement("div");
+      row.className = "dl " + r.state;
+      const name = document.createElement("span");
+      name.className = "n";
+      name.textContent = r.filename;
+      name.title = r.url;
+      const st = document.createElement("span");
+      st.className = "s";
+      const pct = r.state === "progressing" && r.total ? ` ${Math.floor((100 * r.received) / r.total)}%` : "";
+      st.textContent = (STATE_TEXT[r.state] || r.state) + pct;
+      row.append(name, st);
+      if (r.state === "completed") {
+        const btn = document.createElement("button");
+        btn.textContent = "Show";
+        btn.onclick = () => api.showDownload(r.id);
+        row.appendChild(btn);
+      }
+      list.appendChild(row);
+    }
+  }
+  $("dlclear").onclick = () => api.clearDownloads();
+
+  // State from main
+  function render(s) {
+    if (!s) return;
+    if (s.url !== current.url) {
+      // A new page is a new conversation: answers about the last one would mislead.
+      history = [];
+      if (current.url) bubble("Now on: " + (s.title || s.url), "ai").classList.add("hint");
+    }
+    current = s;
+    $("title").textContent = s.title || "—";
+    try { $("host").textContent = s.url ? new URL(s.url).host : ""; } catch { $("host").textContent = s.url || ""; }
+    const tab = (s.tabs || []).find((t) => t.active);
+    const agentTab = tab && tab.by === "agent";
+    $("who").textContent = agentTab ? "agent tab" : "yours";
+    $("who").className = "who" + (agentTab ? " agent" : "");
+    const a = s.agent || {};
+    const status = $("status");
+    status.className = "";
+    if (a.paused && a.handoff) { status.textContent = "Your turn: " + a.handoff.reason; status.className = "turn"; }
+    else if (a.paused) { status.textContent = "You have control; agents are paused."; }
+    else if (a.driving) { status.textContent = "An agent is browsing" + (a.lastAction ? " (last: " + a.lastAction.tool + ")" : ""); status.className = "driving"; }
+    else status.textContent = "";
+    renderDownloads(s.downloads);
+  }
+  api.onState(render);
+  api.state().then(render);
+</script>
+</body>
+</html>

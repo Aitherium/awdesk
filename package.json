@@ -54,6 +54,7 @@
     "dist:pg-mac": "npm run build:pg-only && electron-builder --mac dmg zip --publish never",
     "test:console": "electron electron/console-smoke.cjs",
     "test:browser": "electron electron/browser-smoke.cjs",
+    "test:connect-panel": "electron electron/connect-panel-smoke.cjs",
     "test:overlay-host": "electron electron/overlay-host-smoke.cjs",
     "test:browser-tabs": "electron electron/browser-tabs-smoke.cjs",
     "native:fetch": "node scripts/fetch-native-helper.cjs",

@@ -16,13 +16,14 @@
  *                       all. Tabs belong to whoever opened them (browser-tabs.cjs):
  *                       an agent drives only its own tabs, never the owner's.
  *   panel view          ONE self-contained, swappable assistant view, created by
- *                       createAssistantPanel() -- today browser-panel.html (a
- *                       URL/title header + "Ask about this page", which hands the
+ *                       createAssistantPanel() -- the Connect panel,
+ *                       connect-panel.html (awconnect's side panel in the desk:
+ *                       chat about the page with history, quick actions, "Do it"
+ *                       for an agent, Open in Chrome, downloads). It hands the
  *                       page, fenced as untrusted data, to the desk's one
- *                       CommandAgent). awconnect is being rebuilt on awkit and its
- *                       Connect panel will replace this one: that PR changes
- *                       ASSISTANT_PANEL and nothing else. Take over lives on the
- *                       toolbar, not the panel, so a swapped panel cannot lose it.
+ *                       CommandAgent. Swapping it changes ASSISTANT_PANEL and
+ *                       nothing else. Take over lives on the toolbar, not the
+ *                       panel, so a swapped panel cannot lose it.
  *
  * Every decision (URL scheme, permissions, the take-over gate, the ask prompt)
  * lives in browser-policy.cjs so it is tested without a window; this module is
@@ -43,8 +44,11 @@ const PANEL_WIDTH = 340;
 // The assistant panel: one HTML file + one preload. Point these at the awkit
 // Connect panel to swap it (see createAssistantPanel).
 const ASSISTANT_PANEL = Object.freeze({
-  html: "browser-panel.html",
-  preload: "browser-panel-preload.cjs",
+  // The Connect panel (2026-10-03): awconnect's side panel, in the desk's browser --
+  // chat about the page with history, quick actions, "have an agent do it", open in
+  // Chrome, and the downloads shelf.
+  html: "connect-panel.html",
+  preload: "connect-panel-preload.cjs",
 });
 // Page scripts run in an isolated world: the page's own JS cannot patch
 // querySelector/click under the agent (they share the DOM, not the globals).
@@ -480,6 +484,9 @@ function scriptFor(action, args = {}) {
       links: Array.from(document.querySelectorAll("a[href]")).slice(0, ${READ_LINKS})
         .map((a) => ({ text: (a.innerText || "").trim().slice(0, 120), href: a.href })) }))()`;
   }
+  if (action === "selection") {
+    return `(() => ({ ok: true, text: String(window.getSelection ? window.getSelection() : "").slice(0, 4000) }))()`;
+  }
   if (action === "overview") {
     // What the overlay host shows AitherOS Online about the tab on screen.
     return `(() => { const clean = (t, n) => String(t == null ? "" : t).replace(/\\s+/g, " ").trim().slice(0, n);
@@ -769,6 +776,34 @@ function wireIpc() {
     pushState();
     return { ok: true, bookmarked: on };
   });
+  // The Connect panel: what the owner has selected, an agent task, and "Open in Chrome".
+  ipcMain.handle("desk:browser-selection", async (event) => {
+    if (!fromPanel(event)) return { ok: false, text: "" };
+    return runInPage("selection", {}, "owner").catch(() => ({ ok: false, text: "" }));
+  });
+  ipcMain.handle("desk:browser-task", async (event, instruction) => {
+    if (!fromPanel(event)) return { ok: false, reply: "not the browser panel" };
+    if (typeof askAgent !== "function") return { ok: false, reply: "The desk's agent is not wired to this window." };
+    const text = typeof instruction === "string" ? instruction.trim() : "";
+    if (!text) return { ok: false, reply: "Say what the agent should do." };
+    const view = activeView();
+    if (!view) return { ok: false, reply: "No tab is open." };
+    const prompt = policy.buildTaskPrompt({ url: view.webContents.getURL(), title: view.webContents.getTitle(), instruction: text });
+    try {
+      const result = await askAgent(prompt);
+      return { ok: result?.ok !== false, reply: String(result?.reply || "") };
+    } catch (error) {
+      return { ok: false, reply: String(error?.message || error) };
+    }
+  });
+  ipcMain.handle("desk:browser-open-external", async (event) => {
+    if (!fromPanel(event)) return { ok: false };
+    const view = activeView();
+    const url = view ? view.webContents.getURL() : "";
+    if (!policy.isNavigable(url)) return { ok: false, error: "only http(s) pages open in Chrome" };
+    await electron().shell.openExternal(url);
+    return { ok: true, url };
+  });
   // Downloads: the panel shows the shelf; "Show" opens only a FINISHED file's folder.
   ipcMain.on("desk:browser-downloads-clear", (event) => {
     if (!fromPanel(event)) return;
@@ -802,14 +837,17 @@ function wireIpc() {
   ipcMain.on("desk:browser-handback", (event) => {
     if (fromChrome(event)) gate.handBack();
   });
-  ipcMain.handle("desk:browser-ask", async (event, question) => {
+  ipcMain.handle("desk:browser-ask", async (event, question, extra) => {
     if (!fromPanel(event)) return { ok: false, reply: "not the browser panel" };
     if (typeof askAgent !== "function") return { ok: false, reply: "The desk's agent is not wired to this window." };
     // The OWNER's read: not an agent tool call, so it does not pass the gate.
     const page = await runInPage("read", {}, "owner").catch((error) => ({ ok: false, error: String(error.message || error) }));
     if (!page || page.ok === false) return { ok: false, reply: `Could not read the page: ${page && page.error}` };
-    const prompt = policy.buildAskPrompt({
+    const opts = extra && typeof extra === "object" ? extra : {};
+    const prompt = policy.buildConnectPrompt({
       url: page.url, title: page.title, text: page.text, question: typeof question === "string" ? question.slice(0, 2000) : "",
+      selection: typeof opts.selection === "string" ? opts.selection : "",
+      history: Array.isArray(opts.history) ? opts.history : [],
     });
     try {
       const result = await askAgent(prompt);

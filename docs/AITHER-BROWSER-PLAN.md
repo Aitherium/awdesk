@@ -36,7 +36,7 @@ AitherDesktop. This file is the order of work. Each slice ships on its own.
    desktop snapshot now cover this window too. It sends the machine layer only: title,
    OpenGraph, JSON-LD, feeds, and form field names and labels. It never sends page
    text or a field value. `DESK_BROWSER_CONTEXT_PUSH=0` turns it off.
-5. **awconnect: PARTIAL.** Shipped: one page protocol over two hosts (#11102). The
+5. **awconnect: SHIPPED.** Shipped: one page protocol over two hosts (#11102). The
    desk answers the same `os→page` / `os-page-context` protocol (Veil
    `overlay-host.ts`) that awconnect answers over your Chrome tab. awconnect also has
    an "Open in Aither Browser" menu item (#11113, desk `POST /browser/open`) that
@@ -46,9 +46,11 @@ AitherDesktop. This file is the order of work. Each slice ships on its own.
    them over `/chrome/next` (pinned extension origin only) and answers from
    `shared/chrome-agent.js`. A tab works only after you press "Allow on this tab" on
    a notification. The approval covers that tab on that site, and ends when the tab
-   changes site or closes. An approved tab shows an "AI" badge. The panel swap
-   waits: awkit's Connect panel does not exist yet; when it does, swap
-   `ASSISTANT_PANEL`, nothing else.
+   changes site or closes. An approved tab shows an "AI" badge. The Connect panel
+   (`connect-panel.html`, now in `ASSISTANT_PANEL`) is awconnect's side panel inside
+   the browser: chat about the page with history and quick actions (Summarize, Key
+   facts, Explain selection, Is this safe?), Do it (an agent does a task in its own
+   tab, handing you the Your-turn steps), Open in Chrome, and downloads.
 6. **Living desktop overlay: SHIPPED (#11102).** The desk hosts AitherOS Online's page plane
    (`overlay-browser-host.cjs`). Every request goes through the browser's agent gate
    and tab-ownership rule. Page context gives text only for an agent's tab. The
