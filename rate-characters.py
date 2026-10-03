@@ -360,6 +360,7 @@ def hub_ratings() -> dict[str, str]:
         print(f"  (VRoid Hub unavailable: {error}) — heuristic only")
         return {}
 
+    vroid_sync.ensure_app_credentials()
     hub = VRoidHub()
     ratings: dict[str, str] = {}
     for endpoint in ("/api/hearts", "/api/account/character_models"):

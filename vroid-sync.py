@@ -7,7 +7,8 @@ arrive — and they stay local (never committed, never redistributed).
 Setup (once):
   1. Register the app at https://hub.vroid.com/oauth/applications/ with redirect URI
      http://127.0.0.1:47835/callback and scope `default`.
-  2. Set VROID_HUB_CLIENT_ID / VROID_HUB_CLIENT_SECRET (owner: AitherSecrets holds them).
+  2. Nothing to set: the app credentials are read from the vault (AitherSecrets,
+     VROID_HUB_CLIENT_ID / VROID_HUB_CLIENT_SECRET) when the environment has none.
   3. python vroid-sync.py login
 
 Then:
@@ -30,6 +31,44 @@ if MONOREPO_LIB.exists():
     sys.path.insert(0, str(MONOREPO_LIB))
 
 from lib.integrations.vroid_hub import VRoidHub, VRoidHubError  # noqa: E402
+
+CREDENTIAL_NAMES = ("VROID_HUB_CLIENT_ID", "VROID_HUB_CLIENT_SECRET")
+_TOOL_DIRS = (MONOREPO_LIB / "dev" / "tools", Path(r"C:\AitherOS-Fresh\AitherOS\dev\tools"))
+
+
+def ensure_app_credentials(fetch=None) -> list:
+    """Fill the app credentials from the vault into THIS process's environment.
+
+    Only names the environment lacks are fetched, and the values never leave the
+    process (nothing printed, nothing written). Returns the names it filled. The
+    vault replaced the old ~/.aither/vroid_hub.env file. ``fetch`` is
+    ``aither_secret.fetch``'s shape, (name) -> (value | None, how); tests pass one.
+    """
+    missing = [n for n in CREDENTIAL_NAMES if not os.environ.get(n)]
+    if not missing:
+        return []
+    unwrap = None
+    if fetch is None:
+        for tools in _TOOL_DIRS:
+            if (tools / "aither_secret.py").is_file():
+                sys.path.insert(0, str(tools))
+                try:
+                    import aither_secret  # type: ignore[import-not-found]
+                except ImportError:
+                    continue
+                fetch, unwrap = aither_secret.fetch, aither_secret.unwrap
+                break
+        if fetch is None:
+            return []
+    filled = []
+    for name in missing:
+        value, _how = fetch(name)
+        if value and unwrap is not None:
+            value, _note = unwrap(value)
+        if value:
+            os.environ[name] = value.strip()
+            filled.append(name)
+    return filled
 
 
 def slugify(name: str) -> str:
@@ -161,6 +200,7 @@ def main() -> int:
     args = sys.argv[1:]
     command = args[0] if args else "list"
 
+    ensure_app_credentials()
     hub = VRoidHub()
     if command == "login":
         hub.authorize_interactive()
