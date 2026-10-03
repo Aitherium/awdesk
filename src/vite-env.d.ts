@@ -45,6 +45,8 @@ type AvatarBridgeEvent =
   // frames THAT avatar only; slotId null frames everyone again. reset-avatar-layout
   // drops the slot's stored spot/scale so it returns to the default transform.
   | { type: 'focus-avatar'; slotId: string | null }
+  // Aeon's committed mood word (main polls sense_inner_state); src/hooks/aeonMood.ts.
+  | { type: 'aeon-mood'; mood: string | null }
   | { type: 'reset-avatar-layout'; slotId: string }
   // Plan 40 slice G: main names an ARRANGEMENT and the renderer places every
   // live body (src/stage/arrangements.ts holds the geometry, beside the bounds).

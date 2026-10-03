@@ -13,6 +13,7 @@ import { getLevel } from '../hooks/voiceLevels';
 import { useVrmAnimation } from '../hooks/useVrmAnimation';
 import { useAmplitudeLipSync } from '../hooks/useAmplitudeLipSync';
 import { useBlink } from '../hooks/useBlink';
+import { easeExpressions, NEUTRAL_WEIGHTS } from '../hooks/aeonMood';
 import type { AnimationType } from '../animation-catalog';
 
 export interface AvatarProps {
@@ -45,6 +46,7 @@ function AvatarModel({
   const { play, update: updateAnimation } = useVrmAnimation(vrm);
   const updateLipSync = useAmplitudeLipSync(vrm);
   const updateBlink = useBlink(vrm);
+  const moodWeights = useRef(NEUTRAL_WEIGHTS);
 
   // The completion callback rides a ref: for a stage body the parent hands a
   // fresh `() => {}` on every render, and as an effect dependency that re-fired
@@ -77,6 +79,7 @@ function AvatarModel({
     const level = Math.max(audioLevel, getLevel(slotId ?? 'slot0'));
     updateAnimation(step);
     updateBlink(step);
+    moodWeights.current = easeExpressions(vrm, moodWeights.current, step);
     updateLipSync(step, level, speaking || level > 0.02);
     vrm.update(step);
   });

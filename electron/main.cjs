@@ -2399,6 +2399,27 @@ async function runAeonStateCommand({ surface = "menu" } = {}) {
   return verdict;
 }
 
+/** Aeon's mood on the avatar's face (owner, 2026-10-03: integrate Aeon with the
+ *  desk). One gateway read a minute; the word goes to every body as `aeon-mood`
+ *  (src/hooks/aeonMood.ts eases the VRM expressions). A failed read keeps the
+ *  last face rather than snapping to neutral. */
+let aeonMoodTimer = null;
+function startAeonMoodFeed(intervalMs = 60_000) {
+  if (aeonMoodTimer) return;
+  const tick = async () => {
+    try {
+      const verdict = await readInnerState();
+      if (verdict.ok && verdict.state && verdict.state.mood) {
+        sendToAvatar("aeon-mood", { mood: String(verdict.state.mood) });
+      }
+    } catch (err) {
+      debugLog("aeon-mood", String(err && err.message ? err.message : err));
+    }
+  };
+  setTimeout(tick, 10_000);
+  aeonMoodTimer = setInterval(tick, intervalMs);
+}
+
 async function runBlogMenuCommand(command, arg, { surface = "menu" } = {}) {
   const verdict = await runBlogCommand(command, arg, {
     openExternal: (url) => shell.openExternal(url),
@@ -2735,6 +2756,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       runSmokeTest();
       return;
     }
+    // Aeon's mood on every body's face (src/hooks/aeonMood.ts).
+    startAeonMoodFeed();
     // Unpackaged runs (npx electron .) have no Start Menu shortcut registering
     // the AUMID, so Windows shows the RAW id as every toast's header — the
     // owner's decision-card notification read "com.xikhar.persona" instead of
