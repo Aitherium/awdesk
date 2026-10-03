@@ -90,6 +90,11 @@ export function easeExpressions(
     next[name] = applied[name] + (target[name] - applied[name]) * k;
     if (manager.getExpression(name)) manager.setValue(name, next[name]);
   }
+  // Read-only diagnostic: what the face is easing toward and what it shows now.
+  // Lets a probe prove the mood reached the face (pixel diffs drown in idle motion).
+  if (typeof window !== 'undefined') {
+    (window as unknown as { __deskAeonMood?: unknown }).__deskAeonMood = { target, applied: next };
+  }
   return next;
 }
 
