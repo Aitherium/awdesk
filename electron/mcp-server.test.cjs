@@ -512,8 +512,14 @@ test("browser_* tools register only with onBrowser, and a take-over pause comes 
     driver: {
       open: async (url) => { driven.push(["open", url]); return { ok: true, url, title: "Example" }; },
       read: async () => { driven.push(["read"]); return { ok: true, url: "https://example.com/", title: "Example", text: "hello", links: [] }; },
-      click: async (selector) => { driven.push(["click", selector]); return { ok: true, clicked: "a" }; },
-      type: async (selector, text) => { driven.push(["type", selector, text]); return { ok: true, typed: text.length }; },
+      snapshot: async () => { driven.push(["snapshot"]); return { ok: true, elements: [{ ref: "e1", tag: "input", label: "Name" }] }; },
+      screenshot: async () => { driven.push(["screenshot"]); return { ok: true, png: "iVBORw0KGgo=", width: 2, height: 2 }; },
+      click: async (target) => { driven.push(["click", target]); return { ok: true, clicked: "a" }; },
+      type: async (target, text) => { driven.push(["type", target, text]); return { ok: true, typed: text.length }; },
+      select: async (target, option) => { driven.push(["select", target, option]); return { ok: true, selected: option }; },
+      check: async (target, checked) => { driven.push(["check", target, checked]); return { ok: true, checked }; },
+      press: async (key) => { driven.push(["press", key]); return { ok: true, pressed: key }; },
+      highlight: async () => ({ ok: true }),
     },
   });
   const base = {
@@ -532,7 +538,8 @@ test("browser_* tools register only with onBrowser, and a take-over pause comes 
   await bare.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${a2.port}/mcp`)));
 
   const names = (await client.listTools()).tools.map((t) => t.name);
-  for (const tool of ["browser_open", "browser_read", "browser_click", "browser_type"]) {
+  for (const tool of ["browser_open", "browser_read", "browser_click", "browser_type", "browser_snapshot",
+    "browser_screenshot", "browser_select", "browser_check", "browser_press", "browser_hand_to_owner"]) {
     assert.ok(names.includes(tool), `${tool} must be registered when onBrowser is supplied`);
   }
   const bareNames = (await bare.listTools()).tools.map((t) => t.name);
@@ -545,6 +552,20 @@ test("browser_* tools register only with onBrowser, and a take-over pause comes 
   assert.equal(refusedScheme.isError, true);
   assert.match(JSON.parse(refusedScheme.content[0].text).error, /^REFUSED: only http and https/);
   assert.equal((await client.callTool({ name: "browser_type", arguments: { selector: "#q", text: "hi" } })).isError, false);
+  const snap = await client.callTool({ name: "browser_snapshot", arguments: {} });
+  assert.equal(JSON.parse(snap.content[0].text).elements[0].ref, "e1");
+  assert.equal((await client.callTool({ name: "browser_type", arguments: { ref: "e1", text: "David" } })).isError, false);
+  assert.deepEqual(driven.at(-1), ["type", { ref: "e1" }, "David"]);
+  const shot = await client.callTool({ name: "browser_screenshot", arguments: {} });
+  assert.equal(shot.content[0].type, "image");
+  assert.equal(shot.content[0].mimeType, "image/png");
+  assert.ok(!shot.content[1].text.includes("iVBOR"), "the PNG rides as an image block, not inside the JSON text");
+  assert.equal((await client.callTool({ name: "browser_press", arguments: { key: "Enter" } })).isError, false);
+  const chord = await client.callTool({ name: "browser_press", arguments: { key: "Ctrl+W" } });
+  assert.equal(chord.isError, true, "a chord is refused by the schema");
+  const handed = await client.callTool({ name: "browser_hand_to_owner", arguments: { reason: "Tick the captcha." } });
+  assert.equal(JSON.parse(handed.content[0].text).handedOff, true);
+  gate.handBack();
 
   gate.takeOver();
   const before = driven.length;

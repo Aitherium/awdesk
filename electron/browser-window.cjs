@@ -46,6 +46,16 @@ const ISOLATED_WORLD_ID = 1017;
 const READ_TEXT_CHARS = 20_000;
 const READ_LINKS = 60;
 const IDLE_WAIT_MS = 10_000;
+/** browser_snapshot lists at most this many elements; `truncated` says when it cut. */
+const SNAPSHOT_MAX = 200;
+/** browser_screenshot is scaled down to this width so one image stays readable in a turn. */
+const SCREENSHOT_MAX_WIDTH = 1280;
+/** PRESSABLE_KEYS (browser-policy) -> Electron sendInputEvent keyCode. */
+const KEY_CODES = Object.freeze({
+  Enter: "Enter", Tab: "Tab", Escape: "Escape", Space: "Space", Backspace: "Backspace", Delete: "Delete",
+  ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right",
+  PageUp: "PageUp", PageDown: "PageDown", Home: "Home", End: "End",
+});
 
 function electron() {
   return require("electron");
@@ -59,7 +69,15 @@ let sessionHardened = false;
 let askAgent = null;
 let agentHandle = null;
 const gate = new policy.AgentGate();
-gate.on("change", () => pushState());
+gate.on("change", (snap) => {
+  pushState();
+  // An agent handing the wheel over must be SEEN: raise the window and flash it.
+  if (snap && snap.handoff && win && !win.isDestroyed()) {
+    win.show();
+    win.focus();
+    win.flashFrame(true);
+  }
+});
 
 function homeUrl() {
   const verdict = policy.sanitizeUrl(process.env.DESK_BROWSER_HOME || "https://aitherium.com");
@@ -254,40 +272,189 @@ function waitForIdle(wc, timeoutMs = IDLE_WAIT_MS) {
   });
 }
 
+// Shared by every page script. Pure strings; nothing here reads an argument.
+const PAGE_HELPERS = `
+  const clean = (t, n = 120) => String(t == null ? "" : t).replace(/\\s+/g, " ").trim().slice(0, n);
+  const labelOf = (el) => {
+    const aria = el.getAttribute("aria-label");
+    if (aria && clean(aria)) return clean(aria);
+    const by = el.getAttribute("aria-labelledby");
+    if (by) {
+      const t = by.split(/\\s+/).map((id) => document.getElementById(id)).filter(Boolean).map((n) => n.innerText).join(" ");
+      if (clean(t)) return clean(t);
+    }
+    if (el.id) {
+      try {
+        const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+        if (l && clean(l.innerText)) return clean(l.innerText);
+      } catch (e) { /* an id CSS.escape cannot handle */ }
+    }
+    const wrap = el.closest("label");
+    if (wrap) {
+      // The label's OWN words: a <select> inside its label would otherwise lend it
+      // every option ("Support topic 1. Multiplayer Other").
+      const copy = wrap.cloneNode(true);
+      copy.querySelectorAll("select, textarea, input, button, option").forEach((n) => n.remove());
+      if (clean(copy.textContent)) return clean(copy.textContent);
+    }
+    if (el.placeholder) return clean(el.placeholder);
+    const tag = el.tagName;
+    if (tag === "A" || tag === "BUTTON" || tag === "SUMMARY" || el.getAttribute("role")) {
+      const t = clean(el.innerText || el.value);
+      if (t) return t;
+    }
+    if (el.title) return clean(el.title);
+    if (el.name) return clean(el.name);
+    return "";
+  };
+`;
+
 /**
  * The page-side script for one agent action. Pure; every argument is embedded
- * with JSON.stringify so a selector or text can never break out of its literal.
+ * with JSON.stringify so a selector, ref or text can never break out of its literal.
+ *
+ * Element actions take a TARGET: {ref} from the last browser_snapshot (the map
+ * lives in the isolated world, so page JS can neither read nor forge it, and a
+ * navigation clears it), or {selector}.
  */
 function scriptFor(action, args = {}) {
-  const find = `(() => { try { return document.querySelector(${JSON.stringify(String(args.selector || ""))}); }
-    catch (e) { return { invalid: String(e && e.message || e) }; } })()`;
   if (action === "read") {
     return `(() => ({ ok: true, url: location.href, title: document.title,
       text: (document.body ? document.body.innerText : "").slice(0, ${READ_TEXT_CHARS}),
       links: Array.from(document.querySelectorAll("a[href]")).slice(0, ${READ_LINKS})
         .map((a) => ({ text: (a.innerText || "").trim().slice(0, 120), href: a.href })) }))()`;
   }
-  if (action === "click") {
-    return `(() => { const el = ${find};
+  if (action === "snapshot") {
+    return `(() => { ${PAGE_HELPERS}
+      const refs = new Map();
+      window.__aitherRefs = refs;
+      const SELECTOR = 'input:not([type=hidden]), textarea, select, button, a[href], summary, [contenteditable=""], '
+        + '[contenteditable="true"], [role=button], [role=link], [role=checkbox], [role=radio], [role=switch], '
+        + '[role=tab], [role=menuitem], [role=option], [role=combobox], [role=textbox]';
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        const cs = getComputedStyle(el);
+        return cs.visibility !== "hidden" && cs.display !== "none";
+      };
+      const elements = [];
+      let total = 0;
+      for (const el of document.querySelectorAll(SELECTOR)) {
+        if (!visible(el)) continue;
+        total += 1;
+        if (elements.length >= ${SNAPSHOT_MAX}) continue;
+        const ref = "e" + (elements.length + 1);
+        refs.set(ref, el);
+        const tag = el.tagName.toLowerCase();
+        const role = el.getAttribute("role");
+        const item = { ref, tag, label: labelOf(el) };
+        if (role) item.role = role;
+        if (tag === "input") item.type = String(el.type || "text").toLowerCase();
+        if (el.disabled) item.disabled = true;
+        if (el.required) item.required = true;
+        const box = item.type === "checkbox" || item.type === "radio" || role === "checkbox" || role === "radio" || role === "switch";
+        if (box) {
+          item.checked = typeof el.checked === "boolean" ? el.checked : el.getAttribute("aria-checked") === "true";
+        } else if (tag === "select") {
+          const chosen = el.options[el.selectedIndex];
+          item.value = chosen ? clean(chosen.text, 80) : "";
+          item.options = Array.from(el.options).slice(0, 30).map((o) => clean(o.text, 80));
+        } else if (tag === "input" || tag === "textarea") {
+          // A password's VALUE never leaves the page; only whether it is filled.
+          item.value = item.type === "password" ? (el.value ? "(filled)" : "") : clean(el.value, 160);
+        } else if (el.isContentEditable) {
+          item.value = clean(el.innerText, 160);
+        }
+        if (tag === "a") item.href = String(el.href).slice(0, 200);
+        elements.push(item);
+      }
+      const frames = document.querySelectorAll("iframe").length;
+      const out = { ok: true, url: location.href, title: document.title, count: elements.length, total,
+        truncated: total > elements.length, elements };
+      if (frames) {
+        out.frames = frames;
+        out.note = "Elements inside iframes (captchas, embedded sign-in, card fields) are not listed. "
+          + "Hand those steps to the owner with browser_hand_to_owner.";
+      }
+      return out; })()`;
+  }
+  const target = args.target && typeof args.target === "object" ? args.target : { selector: String(args.selector || "") };
+  const find = `${PAGE_HELPERS}
+      const target = ${JSON.stringify({ ref: target.ref || null, selector: target.selector || null })};
+      const el = (() => {
+        if (target.ref) {
+          const map = window.__aitherRefs;
+          const hit = map && map.get(target.ref);
+          return hit && hit.isConnected ? hit : { stale: true };
+        }
+        try { return document.querySelector(target.selector); }
+        catch (e) { return { invalid: String(e && e.message || e) }; }
+      })();
       if (!el) return { ok: false, error: "no element matches the selector" };
+      if (el.stale) return { ok: false, error: "ref " + target.ref + " is stale (the page changed or navigated); call browser_snapshot again" };
       if (el.invalid) return { ok: false, error: "invalid selector: " + el.invalid };
+      const label = labelOf(el);`;
+  if (action === "click") {
+    return `(() => { ${find}
       el.scrollIntoView({ block: "center" }); el.click();
-      return { ok: true, clicked: el.tagName.toLowerCase(), text: (el.innerText || el.value || "").trim().slice(0, 120) }; })()`;
+      return { ok: true, clicked: el.tagName.toLowerCase(), label, text: clean(el.innerText || el.value) }; })()`;
   }
   if (action === "type") {
-    return `(() => { const el = ${find};
-      if (!el) return { ok: false, error: "no element matches the selector" };
-      if (el.invalid) return { ok: false, error: "invalid selector: " + el.invalid };
+    return `(() => { ${find}
       const text = ${JSON.stringify(String(args.text ?? ""))};
+      el.scrollIntoView({ block: "center" });
       el.focus();
-      if (el.isContentEditable) { el.textContent = text; }
-      else if ("value" in el) {
+      let now;
+      if (el.isContentEditable) { el.textContent = text; now = el.textContent; }
+      else if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
         const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value");
         if (desc && desc.set) desc.set.call(el, text); else el.value = text;
-      } else { return { ok: false, error: "element is not a text field" }; }
+        now = el.value;
+      } else { return { ok: false, error: "element is not a text field (" + el.tagName.toLowerCase() + ")", label }; }
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
-      return { ok: true, typed: text.length, into: el.tagName.toLowerCase() }; })()`;
+      // Read it back: a field that rewrote or refused the text says so here.
+      return { ok: now === text, typed: text.length, into: el.tagName.toLowerCase(), label,
+        error: now === text ? undefined : "the field did not keep the text (it holds " + String(now).length + " characters)" }; })()`;
+  }
+  if (action === "select") {
+    return `(() => { ${find}
+      if (el.tagName !== "SELECT") return { ok: false, error: "element is not a <select> (" + el.tagName.toLowerCase() + "); click it and its options instead", label };
+      const want = ${JSON.stringify(String(args.option ?? ""))};
+      const options = Array.from(el.options);
+      let i = options.findIndex((o) => o.value === want);
+      if (i < 0) i = options.findIndex((o) => clean(o.text) === clean(want));
+      if (i < 0) i = options.findIndex((o) => clean(o.text).toLowerCase().includes(clean(want).toLowerCase()));
+      if (i < 0) return { ok: false, error: "no option matches", label, options: options.slice(0, 30).map((o) => clean(o.text, 80)) };
+      const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+      if (desc && desc.set) desc.set.call(el, options[i].value); else el.value = options[i].value;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      const chosen = el.options[el.selectedIndex];
+      return { ok: el.selectedIndex === i, selected: chosen ? clean(chosen.text, 80) : "", label }; })()`;
+  }
+  if (action === "check") {
+    return `(() => { ${find}
+      const want = ${JSON.stringify(Boolean(args.checked))};
+      const read = () => (typeof el.checked === "boolean" ? el.checked : el.getAttribute("aria-checked") === "true");
+      const isBox = el.type === "checkbox" || el.type === "radio" || ["checkbox", "radio", "switch"].includes(el.getAttribute("role"));
+      if (!isBox) return { ok: false, error: "element is not a checkbox, radio or switch", label };
+      if (read() !== want) { el.scrollIntoView({ block: "center" }); el.click(); }
+      const now = read();
+      return { ok: now === want, checked: now, label,
+        error: now === want ? undefined : "the box did not change (the page may handle it elsewhere; click its label)" }; })()`;
+  }
+  if (action === "highlight") {
+    return `(() => { ${find}
+      el.scrollIntoView({ block: "center" });
+      el.style.outline = "3px solid #a855f7";
+      el.style.outlineOffset = "3px";
+      return { ok: true, label }; })()`;
+  }
+  if (action === "focus") {
+    return `(() => { ${find}
+      el.scrollIntoView({ block: "center" }); el.focus();
+      return { ok: true, label }; })()`;
   }
   throw new Error(`no page script for ${action}`);
 }
@@ -308,8 +475,37 @@ const driver = {
     return { ok: true, url: s.url, title: s.title };
   },
   read: () => runInPage("read", {}),
-  click: (selector) => runInPage("click", { selector }),
-  type: (selector, text) => runInPage("type", { selector, text }),
+  snapshot: () => runInPage("snapshot", {}),
+  click: (target) => runInPage("click", { target }),
+  type: (target, text) => runInPage("type", { target, text }),
+  select: (target, option) => runInPage("select", { target, option }),
+  check: (target, checked) => runInPage("check", { target, checked }),
+  highlight: (target) => runInPage("highlight", { target }),
+  /** A key goes to whatever has focus in the page, as a real input event. */
+  async press(key) {
+    if (!alive(pageView)) return { ok: false, error: "The Aither Browser is not open; call browser_open first." };
+    const keyCode = KEY_CODES[key];
+    if (!keyCode) return { ok: false, error: `no key mapping for ${key}` };
+    const wc = pageView.webContents;
+    await waitForIdle(wc);
+    wc.focus();
+    wc.sendInputEvent({ type: "keyDown", keyCode });
+    if (key === "Enter" || key === "Space") wc.sendInputEvent({ type: "char", keyCode: key === "Enter" ? "\r" : " " });
+    wc.sendInputEvent({ type: "keyUp", keyCode });
+    return { ok: true, pressed: key };
+  },
+  /** The page as a PNG, scaled to SCREENSHOT_MAX_WIDTH. */
+  async screenshot() {
+    if (!alive(pageView)) return { ok: false, error: "The Aither Browser is not open; call browser_open first." };
+    const wc = pageView.webContents;
+    await waitForIdle(wc);
+    let image = await wc.capturePage();
+    const size = image.getSize();
+    if (size.width > SCREENSHOT_MAX_WIDTH) image = image.resize({ width: SCREENSHOT_MAX_WIDTH });
+    const out = image.getSize();
+    return { ok: true, url: wc.getURL(), title: wc.getTitle(), width: out.width, height: out.height,
+      png: image.toPNG().toString("base64") };
+  },
 };
 
 /** The dispatcher the MCP browser_* tools call (gate first, then the driver). */
@@ -386,6 +582,7 @@ module.exports = {
   ASSISTANT_PANEL,
   CHROME_HEIGHT,
   ISOLATED_WORLD_ID,
+  KEY_CODES,
   PARTITION,
   browserAgent,
   closeBrowserWindow,

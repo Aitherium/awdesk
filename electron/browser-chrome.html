@@ -73,7 +73,10 @@
     const a = s.agent || {};
     const banner = $("banner");
     banner.className = "banner" + (a.paused ? " paused" : a.driving ? " driving" : "");
-    if (a.paused) {
+    if (a.paused && a.handoff) {
+      // The AGENT asked for this step (a captcha, a password, a final Send).
+      $("msg").textContent = `Your turn: ${a.handoff.reason} Press "Let the agent continue" when you are done.`;
+    } else if (a.paused) {
       $("msg").textContent = "You have control. Agent browser tools are paused and refused until you hand back.";
     } else if (a.driving) {
       const last = a.lastAction ? ` (last: ${a.lastAction.tool})` : "";

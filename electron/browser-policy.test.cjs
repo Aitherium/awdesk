@@ -78,8 +78,14 @@ function fakeDriver() {
     calls,
     open: async (url) => { calls.push(["open", url]); return { ok: true, url, title: "t" }; },
     read: async () => { calls.push(["read"]); return { ok: true, url: "https://x/", title: "x", text: "hi", links: [] }; },
-    click: async (s) => { calls.push(["click", s]); return { ok: true }; },
-    type: async (s, t) => { calls.push(["type", s, t]); return { ok: true }; },
+    snapshot: async () => { calls.push(["snapshot"]); return { ok: true, elements: [] }; },
+    screenshot: async () => { calls.push(["screenshot"]); return { ok: true, png: "AAAA" }; },
+    click: async (t) => { calls.push(["click", t]); return { ok: true }; },
+    type: async (t, text) => { calls.push(["type", t, text]); return { ok: true }; },
+    select: async (t, o) => { calls.push(["select", t, o]); return { ok: true }; },
+    check: async (t, c) => { calls.push(["check", t, c]); return { ok: true }; },
+    press: async (k) => { calls.push(["press", k]); return { ok: true }; },
+    highlight: async (t) => { calls.push(["highlight", t]); return { ok: true }; },
   };
 }
 
@@ -99,8 +105,10 @@ test("take-over gate: agent tools act while driving, are REFUSED while the owner
 
   gate.takeOver();
   const before = driver.calls.length;
-  for (const [action, args] of [["open", { url: "https://example.com" }], ["read", {}],
-    ["click", { selector: "a" }], ["type", { selector: "input", text: "x" }]]) {
+  for (const [action, args] of [["open", { url: "https://example.com" }], ["read", {}], ["snapshot", {}],
+    ["screenshot", {}], ["click", { selector: "a" }], ["type", { selector: "input", text: "x" }],
+    ["select", { ref: "e2", option: "Other" }], ["check", { ref: "e3", checked: true }], ["press", { key: "Enter" }],
+    ["handoff", { reason: "Tick the captcha." }]]) {
     const verdict = await handle(action, args);
     assert.equal(verdict.ok, false, `${action} must be refused while paused`);
     assert.equal(verdict.paused, true);
@@ -111,7 +119,7 @@ test("take-over gate: agent tools act while driving, are REFUSED while the owner
 
   gate.handBack();
   assert.equal((await handle("click", { selector: "#go" })).ok, true);
-  assert.deepEqual(driver.calls.at(-1), ["click", "#go"]);
+  assert.deepEqual(driver.calls.at(-1), ["click", { selector: "#go" }]);
   assert.ok(changes.some((s) => s.paused) && changes.at(-1).paused === false);
 
   gate.takeOver();
@@ -129,6 +137,16 @@ test("createBrowserAgent: bad arguments are refused before the gate or the drive
   assert.equal((await handle("click", { selector: "" })).ok, false);
   assert.equal((await handle("type", { selector: "input" })).ok, false);
   assert.equal((await handle("navigate", {})).ok, false);
+  // refs: shape-checked, and ref XOR selector
+  assert.match((await handle("click", { ref: "button" })).error, /ref must look like e12/);
+  assert.match((await handle("click", { ref: "e1", selector: "a" })).error, /not both/);
+  assert.equal((await handle("select", { ref: "e1" })).ok, false, "select needs an option");
+  assert.equal((await handle("check", { ref: "e1", checked: "yes" })).ok, false, "checked must be boolean");
+  // press: a named allowlist; a chord that could close the window never reaches it
+  for (const key of ["Ctrl+W", "Alt+F4", "F5", "a"]) {
+    assert.match((await handle("press", { key })).error, /key must be one of/, key);
+  }
+  assert.equal((await handle("handoff", { reason: "" })).ok, false, "a handoff says what the owner should do");
   assert.equal(driver.calls.length, 0);
   assert.equal(gate.snapshot().driving, false, "a refused call is not 'the agent driving'");
 });
@@ -139,6 +157,45 @@ test("createBrowserAgent: a throwing driver becomes a verdict, never an exceptio
   const verdict = await handle("read");
   assert.equal(verdict.ok, false);
   assert.match(verdict.error, /browser_read failed: view gone/);
+});
+
+test("element actions hand the driver a {ref} or {selector} target, never a bare string", async () => {
+  const gate = new AgentGate();
+  const driver = fakeDriver();
+  const handle = createBrowserAgent({ gate, driver });
+  assert.equal((await handle("type", { ref: "e7", text: "David" })).ok, true);
+  assert.equal((await handle("select", { ref: "e3", option: "Other" })).ok, true);
+  assert.equal((await handle("check", { selector: "#agree", checked: true })).ok, true);
+  assert.equal((await handle("press", { key: "Tab" })).ok, true);
+  assert.deepEqual(driver.calls, [
+    ["type", { ref: "e7" }, "David"],
+    ["select", { ref: "e3" }, "Other"],
+    ["check", { selector: "#agree" }, true],
+    ["press", "Tab"],
+  ]);
+});
+
+test("hand to owner: outlines the element, pauses the agent with the reason, and hand-back clears it", async () => {
+  const gate = new AgentGate({ now: () => 5 });
+  const driver = fakeDriver();
+  const handle = createBrowserAgent({ gate, driver });
+  const out = await handle("handoff", { reason: "Tick I'm not a robot and press Send.", ref: "e9" });
+  assert.equal(out.ok, true);
+  assert.equal(out.handedOff, true);
+  assert.equal(out.highlighted, true);
+  assert.deepEqual(driver.calls.at(-1), ["highlight", { ref: "e9" }]);
+  assert.deepEqual(gate.snapshot().handoff, { reason: "Tick I'm not a robot and press Send.", at: 5 });
+  assert.equal(gate.snapshot().paused, true);
+  const refused = await handle("click", { ref: "e1" });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /You handed it to them for: Tick I'm not a robot/);
+  gate.handBack();
+  assert.equal(gate.snapshot().handoff, null);
+  assert.equal((await handle("click", { ref: "e1" })).ok, true);
+  // a handoff with no element still pauses; it just outlines nothing
+  const bare = await handle("handoff", { reason: "Sign in." });
+  assert.equal(bare.highlighted, false);
+  assert.equal(gate.snapshot().paused, true);
 });
 
 test("buildAskPrompt: page text is fenced as untrusted data and capped", () => {
@@ -174,6 +231,14 @@ test("browser-window: page scripts embed selector and text as JSON literals", ()
   assert.ok(click.includes(JSON.stringify(evil)), "selector is a JSON string literal");
   const type = scriptFor("type", { selector: "input", text: "`${x}` </script>" });
   assert.ok(type.includes(JSON.stringify("`${x}` </script>")));
+  const sel = scriptFor("select", { target: { ref: "e1" }, option: evil });
+  assert.ok(sel.includes(JSON.stringify(evil)), "option is a JSON string literal");
+  // every page script is valid JS (a template slip would only show in the live window)
+  for (const action of ["read", "snapshot", "click", "type", "select", "check", "highlight", "focus"]) {
+    assert.doesNotThrow(() => new Function(`return ${scriptFor(action, { target: { ref: "e1" }, text: "t", option: "o", checked: true })}`), action);
+  }
+  // a password's value never leaves the page through a snapshot
+  assert.match(scriptFor("snapshot"), /"password" \? \(el\.value \? "\(filled\)" : ""\)/);
   assert.throws(() => scriptFor("eval", {}));
 });
 

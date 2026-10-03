@@ -30,7 +30,19 @@ const MAX_SELECTOR_LENGTH = 512;
 const MAX_TYPE_LENGTH = 8192;
 /** Page text handed to an agent prompt; a long page is cut, never streamed whole. */
 const MAX_ASK_PAGE_CHARS = 12_000;
-const BROWSER_ACTIONS = Object.freeze(["open", "read", "click", "type"]);
+const MAX_REASON_LENGTH = 300;
+const MAX_OPTION_LENGTH = 512;
+/** Element refs come from browser_snapshot ("e1".."e99999"); a ref is only valid
+ *  until the next snapshot or navigation. */
+const REF_PATTERN = /^e\d{1,5}$/;
+/** Keys an agent may press. A named allowlist, not free text: a chord like
+ *  Ctrl+W or Alt+F4 must never reach the window through the page. */
+const PRESSABLE_KEYS = Object.freeze(["Enter", "Tab", "Escape", "Space", "Backspace", "Delete",
+  "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End"]);
+const BROWSER_ACTIONS = Object.freeze(["open", "read", "snapshot", "screenshot", "click", "type", "select",
+  "check", "press", "handoff"]);
+/** Actions that address ONE element, by `ref` (preferred) or CSS `selector`. */
+const TARGETED_ACTIONS = Object.freeze(["click", "type", "select", "check"]);
 
 // A bare host the owner typed ("example.com", "localhost:3000"): no scheme, no
 // spaces, at least one dot or a port, or the literal localhost.
@@ -110,10 +122,12 @@ class AgentGate extends EventEmitter {
     this.driving = false;
     this.paused = false;
     this.lastAction = null;
+    /** Set when the AGENT handed the wheel to the owner: {reason, at}. */
+    this.handoff = null;
   }
 
   snapshot() {
-    return { driving: this.driving, paused: this.paused, lastAction: this.lastAction };
+    return { driving: this.driving, paused: this.paused, lastAction: this.lastAction, handoff: this.handoff };
   }
 
   /**
@@ -122,10 +136,12 @@ class AgentGate extends EventEmitter {
    */
   check(tool) {
     if (this.paused) {
+      const waiting = this.handoff ? `You handed it to them for: ${this.handoff.reason}. ` : "";
       return {
         ok: false,
         paused: true,
-        error: `REFUSED: the owner has taken over the Aither Browser, so ${tool} did not run. `
+        handoff: this.handoff,
+        error: `REFUSED: the owner has taken over the Aither Browser, so ${tool} did not run. ${waiting}`
           + "Agent control is paused until they press \"Let the agent continue\". Do not retry in a loop; "
           + "tell the owner what you were about to do and wait.",
       };
@@ -141,8 +157,18 @@ class AgentGate extends EventEmitter {
     this.emit("change", this.snapshot());
   }
 
+  /** The AGENT asks the owner to do a step only a person may do (a captcha, a
+   *  password, a payment, a final Send). Same pause as Take over, plus the reason
+   *  the toolbar shows. */
+  handToOwner(reason) {
+    this.paused = true;
+    this.handoff = { reason: String(reason || "").slice(0, MAX_REASON_LENGTH), at: this.now() };
+    this.emit("change", this.snapshot());
+  }
+
   handBack() {
     this.paused = false;
+    this.handoff = null;
     this.emit("change", this.snapshot());
   }
 
@@ -160,10 +186,31 @@ function badArg(error) {
 }
 
 /**
+ * The element an action addresses: a snapshot `ref` (preferred -- it names the
+ * exact element the agent saw) or a CSS `selector`. Exactly one.
+ * @returns {{ok: true, target: {ref?: string, selector?: string}} | {ok: false, error: string}}
+ */
+function targetOf(a) {
+  const hasRef = typeof a.ref === "string" && a.ref.length > 0;
+  const hasSelector = typeof a.selector === "string" && a.selector.trim().length > 0;
+  if (hasRef && hasSelector) return { ok: false, error: "pass ref OR selector, not both" };
+  if (hasRef) {
+    if (!REF_PATTERN.test(a.ref)) return { ok: false, error: "ref must look like e12 (from browser_snapshot)" };
+    return { ok: true, target: { ref: a.ref } };
+  }
+  if (!hasSelector) return { ok: false, error: "pass a ref from browser_snapshot, or a non-empty CSS selector" };
+  if (a.selector.length > MAX_SELECTOR_LENGTH) {
+    return { ok: false, error: `selector longer than ${MAX_SELECTOR_LENGTH} characters` };
+  }
+  return { ok: true, target: { selector: a.selector } };
+}
+
+/**
  * The one dispatcher behind the MCP browser_* tools.
  *
- * @param {{gate: AgentGate, driver: {open(url: string): Promise<object>, read(): Promise<object>,
- *   click(selector: string): Promise<object>, type(selector: string, text: string): Promise<object>}}} deps
+ * Element actions hand the driver a TARGET ({ref} or {selector}), never a bare
+ * string; `driver.highlight` is optional (handoff uses it to point at a field).
+ * @param {{gate: AgentGate, driver: object}} deps
  * @returns {(action: string, args?: object) => Promise<object>} never throws
  */
 function createBrowserAgent({ gate, driver }) {
@@ -178,20 +225,56 @@ function createBrowserAgent({ gate, driver }) {
       if (!verdict.ok) return badArg(`REFUSED: ${verdict.reason}`);
       url = verdict.url;
     }
-    if (action === "click" || action === "type") {
-      if (typeof a.selector !== "string" || !a.selector.trim()) return badArg("selector must be a non-empty CSS selector");
-      if (a.selector.length > MAX_SELECTOR_LENGTH) return badArg(`selector longer than ${MAX_SELECTOR_LENGTH} characters`);
+    let target = null;
+    if (TARGETED_ACTIONS.includes(action)) {
+      const verdict = targetOf(a);
+      if (!verdict.ok) return badArg(verdict.error);
+      target = verdict.target;
     }
     if (action === "type" && (typeof a.text !== "string" || a.text.length > MAX_TYPE_LENGTH)) {
       return badArg(`text must be a string of at most ${MAX_TYPE_LENGTH} characters`);
+    }
+    if (action === "select" && (typeof a.option !== "string" || !a.option.trim() || a.option.length > MAX_OPTION_LENGTH)) {
+      return badArg(`option must be the option's value or visible text (at most ${MAX_OPTION_LENGTH} characters)`);
+    }
+    if (action === "check" && typeof a.checked !== "boolean") return badArg("checked must be true or false");
+    if (action === "press" && !PRESSABLE_KEYS.includes(a.key)) {
+      return badArg(`key must be one of ${PRESSABLE_KEYS.join(", ")}`);
+    }
+    if (action === "handoff" && (typeof a.reason !== "string" || !a.reason.trim() || a.reason.length > MAX_REASON_LENGTH)) {
+      return badArg(`reason must say what the owner should do (at most ${MAX_REASON_LENGTH} characters)`);
+    }
+    let handoffTarget = null;
+    if (action === "handoff" && (a.ref || a.selector)) {
+      const verdict = targetOf(a);
+      if (!verdict.ok) return badArg(verdict.error);
+      handoffTarget = verdict.target;
     }
     const refusal = gate.check(`browser_${action}`);
     if (refusal) return refusal;
     try {
       if (action === "open") return await driver.open(url);
       if (action === "read") return await driver.read();
-      if (action === "click") return await driver.click(a.selector);
-      return await driver.type(a.selector, a.text);
+      if (action === "snapshot") return await driver.snapshot();
+      if (action === "screenshot") return await driver.screenshot();
+      if (action === "click") return await driver.click(target);
+      if (action === "type") return await driver.type(target, a.text);
+      if (action === "select") return await driver.select(target, a.option);
+      if (action === "check") return await driver.check(target, a.checked);
+      if (action === "press") return await driver.press(a.key);
+      // handoff: show the owner WHERE (best effort), then pause the agent.
+      let shown = null;
+      if (handoffTarget && typeof driver.highlight === "function") {
+        shown = await driver.highlight(handoffTarget).catch(() => null);
+      }
+      gate.handToOwner(a.reason.trim());
+      return {
+        ok: true,
+        handedOff: true,
+        highlighted: Boolean(shown && shown.ok),
+        message: "The owner has the wheel and sees your reason in the toolbar. Every browser call is refused "
+          + "until they press \"Let the agent continue\"; tell them what you need and stop.",
+      };
     } catch (error) {
       return badArg(`browser_${action} failed: ${String(error && error.message ? error.message : error).slice(0, 300)}`);
     }
@@ -223,6 +306,9 @@ function buildAskPrompt({ url = "", title = "", text = "", question = "" } = {})
 module.exports = {
   ALLOWED_PROTOCOLS,
   BROWSER_ACTIONS,
+  PRESSABLE_KEYS,
+  REF_PATTERN,
+  TARGETED_ACTIONS,
   MAX_ASK_PAGE_CHARS,
   MAX_SELECTOR_LENGTH,
   MAX_TYPE_LENGTH,
@@ -232,4 +318,5 @@ module.exports = {
   createBrowserAgent,
   isNavigable,
   sanitizeUrl,
+  targetOf,
 };
