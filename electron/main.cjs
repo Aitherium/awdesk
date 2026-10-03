@@ -209,6 +209,9 @@ const { createAudioListener } = require("./audio-listener.cjs");
 const { isAllowedRendererNavigation } = require("./navigation-policy.cjs");
 const { parseProtocolUrl, voiceState } = require("./protocol-actions.cjs");
 const { lendProcessSpawner, startKvLend } = require("./kv-lend-electron.cjs");
+const { createDeviceConnect } = require("./device-connect.cjs");
+const { installLinuxIntegration } = require("./linux-integration.cjs");
+let deviceConnect = null;
 // "Connect this device" + "Lend memory" (kv-lend-electron.cjs); enroll links that arrive
 // before it starts are queued.
 let kvLendRuntime = null;
@@ -1991,6 +1994,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
   if (tray) setImmediate(() => refreshTrayMenu());
   switch (id) {
     case "console.open": return void openConsole();
+    case "device.connect": return void (deviceConnect && deviceConnect.open());
     case "kvlend.toggle": {
       if (!kvLendRuntime) return;
       const on = !kvLendRuntime.lend.settings().enabled;
@@ -4019,6 +4023,13 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         log: (line) => console.log(`[desk] ${line}`),
       });
       for (const url of pendingEnroll.splice(0)) void kvLendRuntime.enrollFromUrl(url);
+      // a downloaded AppImage: a launcher (so desk:// links reach it) and autostart, this user only
+      if (process.platform === "linux") {
+        const li = installLinuxIntegration();
+        if (li.installed && li.changed) console.log("[desk] installed the launcher, desk:// handler and autostart");
+      }
+      deviceConnect = createDeviceConnect({ BrowserWindow, ipcMain, shell, runtime: kvLendRuntime, dataDir: app.getPath("userData") });
+      if (!process.argv.some((a) => a.startsWith("desk://enroll"))) deviceConnect.maybeOpenFirstRun();
     } catch (e) {
       console.warn(`[desk] lend memory unavailable: ${e && e.message}`);
     }

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.7 - 2026-10-03
+
+- Steam Deck and Linux by clicks only. The first run of the downloaded AppImage adds Desk to
+  your app launcher, starts it at login, and makes "Open Aither Desktop" links from
+  aitherium.com open it, all for your user only. A "Connect this computer" window takes the
+  8-character code from aitherium.com (Family, then "Make this computer a fleet node"), so no
+  link handler is needed the first time. Tray: "Connect this computer…".
+- Lend memory pauses while a Steam game runs (the same rule as the Deck installer's guard) and,
+  by default, lends only on mains power.
+- A downloaded AppImage is not executable yet: in Dolphin right-click it, choose Properties,
+  Permissions, tick "Is executable", then double-click it (or choose Execute when Dolphin asks).
+- This build is not code-signed; check downloads against SHA256SUMS.txt.
+
 ## 0.1.6 - 2026-10-03
 
 - Lend memory uses the fast GPU. On Windows, Desk keeps itself on the integrated GPU so the

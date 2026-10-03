@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline';" />
+<title>Connect this computer</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<!-- "Connect this computer": the first-run door on a computer where no desk:// link can arrive
+     yet (a fresh Steam Deck). The owner gets an 8-character code on aitherium.com and types it
+     here, or presses "Open Aither Desktop" there, which lands in the same place. -->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--panel); color: var(--fg); font: 14px/1.5 var(--font-sans); }
+  main { padding: 22px 24px; display: flex; flex-direction: column; gap: 14px; }
+  h1 { font-size: 18px; margin: 0; }
+  p { margin: 0; color: var(--muted); }
+  ol { margin: 0; padding-left: 20px; color: var(--muted); }
+  .row { display: flex; gap: 8px; }
+  input { flex: 1; font: 600 20px/1 var(--font-mono, monospace); letter-spacing: .18em; text-transform: uppercase;
+    padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--btn); color: var(--fg); }
+  button { font: inherit; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--btn);
+    color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--brand, var(--agent-purple)); border-color: transparent; color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { min-height: 1.5em; }
+  #status.ok { color: var(--success, #3fb950); }
+  #status.err { color: var(--destructive); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Connect this computer</h1>
+  <p>Join your Aither workspace so this computer can lend memory to your models while it is idle and plugged in.</p>
+  <ol>
+    <li>On aitherium.com, open Family, then "Make this computer a fleet node".</li>
+    <li>Type the 8-character code here, or press "Open Aither Desktop" on that page.</li>
+  </ol>
+  <div class="row">
+    <input id="code" maxlength="16" autocomplete="off" spellcheck="false" placeholder="ABCD2345" aria-label="Code from aitherium.com" />
+    <button id="go" class="primary">Connect</button>
+  </div>
+  <div class="row">
+    <button id="open">Get a code on aitherium.com</button>
+    <button id="later">Not now</button>
+  </div>
+  <div id="status" role="status"></div>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const status = (text, cls) => { $("status").textContent = text; $("status").className = cls || ""; };
+  const valid = () => /^[A-Z0-9]{6,16}$/.test($("code").value.trim().toUpperCase());
+  const refresh = () => { $("go").disabled = !valid(); };
+  $("code").addEventListener("input", refresh);
+  $("code").addEventListener("keydown", (e) => { if (e.key === "Enter" && valid()) $("go").click(); });
+  $("open").onclick = () => window.deskConnect.openPage();
+  $("later").onclick = () => window.close();
+  $("go").onclick = async () => {
+    $("go").disabled = true;
+    status("Connecting...");
+    const r = await window.deskConnect.enroll($("code").value.trim().toUpperCase());
+    if (r && r.ok) { status("Connected as " + r.deviceId + ". You can close this window.", "ok"); setTimeout(() => window.close(), 2500); }
+    else { status(r && r.status === 400 ? "That code expired or was used. Get a new one." : "Could not connect" + (r && r.status ? " (" + r.status + ")" : "") + ".", "err"); refresh(); }
+  };
+  window.deskConnect.state().then((st) => {
+    if (st && st.deviceId) status("Already connected as " + st.deviceId + ".", "ok");
+  });
+  refresh();
+  $("code").focus();
+</script>
+</body>
+</html>

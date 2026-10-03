@@ -403,6 +403,10 @@ const COMMANDS = Object.freeze([
   // Lend memory (kv-lend.cjs): this computer holds part of the owner's model context, only
   // on AC power, idle and with no game running; the owner's workspace still decides.
   Object.freeze({
+    id: "device.connect", label: "Connect this computer to my workspace…", menuLabel: "Connect this computer…",
+    group: "fleet", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
     id: "kvlend.toggle", label: "Lend memory to my models", menuLabel: "Lend memory",
     group: "fleet", surfaces: ["tray", "palette"],
     type: "checkbox", checked: (ctx = {}) => Boolean(ctx.kvLend),

@@ -9,7 +9,8 @@ const { spawn, execFile } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { DeviceIdentity, parseEnrollUrl } = require("./device-identity.cjs");
+const { DeviceIdentity, defaultDeviceId, parseEnrollUrl } = require("./device-identity.cjs");
+const { steamGameRunning } = require("./linux-integration.cjs");
 const { KvLend, holderJsPath } = require("./kv-lend.cjs");
 
 const IDLE_S = 300; // "idle": no input for 5 minutes
@@ -75,7 +76,7 @@ function startKvLend({ app, BrowserWindow, ipcMain, powerMonitor, notify = () =>
   const probe = probeOverride || (() => ({
     onBattery: !!(powerMonitor.isOnBatteryPower && powerMonitor.isOnBatteryPower()),
     idle: powerMonitor.getSystemIdleTime() >= IDLE_S,
-    gaming: fs.existsSync(gamingLock),
+    gaming: fs.existsSync(gamingLock) || (process.platform === "linux" && steamGameRunning()),
   }));
 
   const lend = new KvLend({
@@ -104,6 +105,16 @@ function startKvLend({ app, BrowserWindow, ipcMain, powerMonitor, notify = () =>
   async function enrollFromUrl(raw) {
     const req = parseEnrollUrl(raw);
     if (!req) return false;
+    await enroll(req);
+    return true;
+  }
+
+  /** A code typed into "Connect this computer" (device-connect.cjs). */
+  function enrollCode(code) {
+    return enroll({ code, deviceId: defaultDeviceId(), identity: "https://idp.aitherium.com" });
+  }
+
+  async function enroll(req) {
     const r = await identity.enroll(req);
     if (r.ok) {
       log(`kv-lend: enrolled as ${r.deviceId}`);
@@ -114,10 +125,10 @@ function startKvLend({ app, BrowserWindow, ipcMain, powerMonitor, notify = () =>
         r.status === 400 ? "The link expired. Open Connect this device again." : `Identity said ${r.status}.`);
     }
     lend.evaluate();
-    return true;
+    return r;
   }
 
-  return { identity, lend, enrollFromUrl };
+  return { identity, lend, enrollFromUrl, enrollCode };
 }
 
 const LEND_PROCESS_ARG = "--kv-lend-process=";
