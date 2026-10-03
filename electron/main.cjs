@@ -140,6 +140,7 @@ const {
 // browser_* tools) while the owner watches and can take over.
 const browserWindow = require("./browser-window.cjs");
 const overlayBrowserHost = require("./overlay-browser-host.cjs");
+const browserPolicy = require("./browser-policy.cjs");
 const {
   createCommandWindow,
   ensureCommandIpc,
@@ -3753,6 +3754,14 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
           const verdict = await runCommand(id, arg, { surface: "bridge" });
           return { ok: true, id, label: commandRegistry.labelOf(command, commandContext()), ...(verdict && typeof verdict === "object" ? { verdict } : {}) };
         },
+      },
+      // awconnect's "Open in Aither Browser": a new tab of the OWNER's, never an
+      // agent's -- sending a page here does not hand it to any agent.
+      browserHandler: (url) => {
+        const verdict = browserPolicy.sanitizeUrl(url);
+        if (!verdict.ok) return { ok: false, error: verdict.reason };
+        browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
+        return { ok: true, url: verdict.url };
       },
       consoleHandler: (pane) => {
         if (pane === "inbox" || pane === "cards") return { ok: openInbox() !== false, pane: "inbox" };

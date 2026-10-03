@@ -281,6 +281,10 @@ function createBridgeServer({
   speakHandler = null,
   // POST /console/open {pane?}: raise the Aither Console on a pane (default inbox).
   consoleHandler = null,
+  // POST /browser/open {url}: open an http(s) page in a NEW OWNER tab of the Aither
+  // Browser (awconnect's "Open in Aither Browser"). Same class as /console/open: it
+  // raises a window, it does not let anything drive one.
+  browserHandler = null,
   commandsHandler = null,
   // () => {x, y, width, height} of the visible avatar window, or null.
   avatarBoundsProvider = null,
@@ -518,6 +522,39 @@ function createBridgeServer({
           if (response.headersSent) return;
           const refused = result && result.ok === false;
           response.writeHead(refused ? 404 : 200, { "content-type": "application/json" });
+          response.end(JSON.stringify(result ?? { ok: true }));
+        })
+        .catch((error) => {
+          if (response.headersSent) return;
+          response.writeHead(500, { "content-type": "application/json" });
+          response.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+        });
+      return;
+    }
+
+    if (request.url === "/browser/open") {
+      if (!deskOriginAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      if (browserHandler == null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      if (request.method !== "POST") {
+        response.writeHead(405, { allow: "POST" });
+        response.end();
+        return;
+      }
+      readJsonBody(request)
+        .catch(() => ({}))
+        .then((body) => browserHandler(typeof body?.url === "string" ? body.url.slice(0, 4096) : ""))
+        .then((result) => {
+          if (response.headersSent) return;
+          const ok = !result || result.ok !== false;
+          response.writeHead(ok ? 200 : 400, { "content-type": "application/json" });
           response.end(JSON.stringify(result ?? { ok: true }));
         })
         .catch((error) => {
