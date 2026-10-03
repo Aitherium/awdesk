@@ -97,7 +97,7 @@
 <script>
 "use strict";
 // The Sessions pane — slice 1 of COCKPIT-DESIGN: OBSERVE, never steer. Rows
-// carry each session's steer_capability so a later slice can honestly enable
+// carry the daemon's actions + why_not so a later slice can honestly enable
 // steering only where the daemon can deliver it. All content is rendered with
 // textContent: a transcript is model output and is DATA, never markup.
 
@@ -138,11 +138,20 @@ function statusClass(status) {
   return "";
 }
 
-function steerPill(cap) {
-  const c = String(cap || "none");
-  if (c === "full") return pill("steerable", "steer");
-  if (c === "turn-boundary") return pill("steer @ turn", "steer turn");
-  return pill("watch only", "steer none");
+/** One pill per verb, straight from the daemon's verdict (sessions-client.cjs lifts
+ *  row.actions to s.actions + s.why_not). This pane does not decide what a row can
+ *  do -- it used to map steer_capability to its own label, a third rule set. It
+ *  stays observe-only: the pills are information, the reason is the tooltip. */
+const VERBS = ["message", "interrupt", "focus", "input"];
+function actionPills(s) {
+  const actions = (s && s.actions) || {};
+  const whyNot = (s && s.why_not) || {};
+  return VERBS.map((verb) => {
+    const on = actions[verb] === true;
+    const el = pill(verb, on ? "steer" : "steer none");
+    el.title = on ? verb + ": available" : verb + ": " + (whyNot[verb] || "not offered");
+    return el;
+  });
 }
 
 /**
@@ -218,13 +227,12 @@ function renderList() {
       focus.className = "sum";
       focus.textContent = s.focus.next ? "next: " + s.focus.next : "goal: " + s.focus.goal;
       focus.title = ["goal: " + (s.focus.goal || "?"), s.focus.latest ? "latest: " + s.focus.latest : "",
-        s.focus.ended ? "ended: " + s.focus.ended : ""].filter(Boolean).join("
-");
+        s.focus.ended ? "ended: " + s.focus.ended : ""].filter(Boolean).join("\n");
       row.appendChild(focus);
     }
     const badges = document.createElement("div");
     badges.className = "top";
-    badges.append(steerPill(s.steer_capability));
+    badges.append(...actionPills(s));
     row.appendChild(badges);
     row.addEventListener("click", () => select(s));
     listEl.appendChild(row);

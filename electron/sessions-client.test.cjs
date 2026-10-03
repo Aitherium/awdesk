@@ -122,6 +122,52 @@ test("sessionsBrief: working first, capped, and 'could not look' is never an emp
   assert.equal(sessionsBrief({ ok: true, sessions: [] }), "The owner has no active agent sessions right now.");
 });
 
+test("listSessions: every row carries the daemon's actions + why_not, and no steer_capability label", async () => {
+  process.env.AITHER_HARNESS_TOKEN = "test-token";
+  try {
+    const decided = {
+      message: true, interrupt: false, focus: true, input: false,
+      why_not: { input: "discovered tab", interrupt: "discovered tab" },
+    };
+    const fetchImpl = fakeFetch({
+      body: {
+        sessions: [
+          { id: "s1", status: "working", steer_capability: "turn-boundary", actions: decided },
+          // An older daemon that sends no actions: the client must NOT re-derive
+          // them from steer_capability (a third rule set) -- every verb is off,
+          // and each says why.
+          { id: "s2", status: "idle", steer_capability: "full" },
+        ],
+      },
+    });
+    const result = await listSessions({ fetchImpl });
+    assert.equal(result.ok, true);
+    const [a, b] = result.sessions;
+    assert.deepEqual(a.actions, { message: true, interrupt: false, focus: true, input: false });
+    assert.deepEqual(a.why_not, { input: "discovered tab", interrupt: "discovered tab" });
+    assert.deepEqual(b.actions, { message: false, interrupt: false, focus: false, input: false });
+    for (const verb of ["message", "interrupt", "focus", "input"]) {
+      assert.match(b.why_not[verb], /did not say/);
+    }
+    for (const row of result.sessions) {
+      assert.equal("steer_capability" in row, false, "the capability label must not reach the pane");
+    }
+  } finally {
+    delete process.env.AITHER_HARNESS_TOKEN;
+  }
+});
+
+test("sessions.html: the pane script parses and renders the daemon's verdict, not a capability label", () => {
+  const html = fs.readFileSync(path.join(__dirname, "sessions.html"), "utf8");
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  assert.equal(scripts.length, 1);
+  // A raw newline inside a string literal once made this whole script a
+  // SyntaxError: the pane rendered "loading..." forever.
+  assert.doesNotThrow(() => new Function(scripts[0]));
+  assert.doesNotMatch(scripts[0], /steer_capability\s*\)|steerPill/);
+  assert.match(scripts[0], /why_not/);
+});
+
 test("withFocus: attaches the session-focus record by session id, skips missing/broken", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "focus-"));
   fs.mkdirSync(path.join(root, "c-repo"));

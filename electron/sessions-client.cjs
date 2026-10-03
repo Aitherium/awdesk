@@ -7,7 +7,8 @@
  * WHY (2026-09-12, owner: "a proper interactive awsh/aithershell"): the daemon
  * already merges daemon-owned sessions with DISCOVERED interactive Claude Code
  * tabs (pid + start-time, so no cooperation is needed from the tab), and every
- * row carries its honest steer_capability. Slice 1 of COCKPIT-DESIGN.md is
+ * row carries the daemon's own verdict on what may be done to it (`actions` +
+ * `why_not`, from adk.harnesses.session_verbs.row_actions). Slice 1 of COCKPIT-DESIGN.md is
  * read-only — "stop tab-cycling to check on things" — and this pane IS that
  * view: list + live tail, saying what it cannot do instead of pretending.
  *
@@ -70,6 +71,31 @@ function withFocus(sessions, root = FOCUS_ROOT) {
   });
 }
 
+/** The verbs the daemon decides per row (adk.harnesses.session_verbs.VERBS). */
+const VERBS = ["message", "interrupt", "focus", "input"];
+const NO_VERDICT = "the daemon did not say what this session allows (older adk -- update it)";
+
+/**
+ * Lift the daemon's per-row verdict (`row.actions` = {verb: bool, why_not:
+ * {verb: reason}}) to `actions` + `why_not`, and DROP `steer_capability`.
+ * The daemon's row_actions() is the one rule set for what a row can do; the
+ * pane used to map steer_capability to its own "steerable / steer @ turn /
+ * watch only" label, a third rule set that disagreed with the other two.
+ * A row with no verdict gets every verb off with a reason -- never a guess.
+ */
+function withActions(row) {
+  const { steer_capability: _dropped, actions: raw, ...rest } = row || {};
+  const given = raw && typeof raw === "object" ? raw : null;
+  const whyIn = given && given.why_not && typeof given.why_not === "object" ? given.why_not : {};
+  const actions = {};
+  const whyNot = {};
+  for (const verb of VERBS) {
+    actions[verb] = given ? given[verb] === true : false;
+    if (!actions[verb]) whyNot[verb] = given ? String(whyIn[verb] || "not offered for this session") : NO_VERDICT;
+  }
+  return { ...rest, actions, why_not: whyNot };
+}
+
 async function listSessions({ fetchImpl = globalThis.fetch, timeoutMs = 6000 } = {}) {
   const token = harnessToken();
   if (!token) {
@@ -87,7 +113,7 @@ async function listSessions({ fetchImpl = globalThis.fetch, timeoutMs = 6000 } =
     }
     if (!res.ok) return { ok: false, sessions: [], note: `daemon answered ${res.status}` };
     const body = await res.json();
-    const sessions = withFocus(Array.isArray(body.sessions) ? body.sessions : []);
+    const sessions = withFocus(Array.isArray(body.sessions) ? body.sessions : []).map(withActions);
     return { ok: true, sessions, note: `${sessions.length} session(s)` };
   } catch (error) {
     const why = error && error.name === "AbortError"
@@ -167,4 +193,4 @@ function sessionsBrief(result, { max = 15 } = {}) {
   );
 }
 
-module.exports = { listSessions, tailTranscript, harnessToken, sessionsBrief, focusFor, withFocus, DAEMON };
+module.exports = { listSessions, tailTranscript, harnessToken, sessionsBrief, focusFor, withFocus, withActions, VERBS, DAEMON };
