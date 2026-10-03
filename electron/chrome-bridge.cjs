@@ -18,7 +18,7 @@
 
 const ACTIONS = Object.freeze(["tabs", "request_tab", "read", "snapshot", "click", "type", "select", "check"]);
 /** The owner's Allow / Deny can take a while; everything else should be quick. */
-const TIMEOUTS_MS = Object.freeze({ request_tab: 75_000, default: 25_000 });
+const TIMEOUTS_MS = Object.freeze({ request_tab: 55_000, default: 25_000 }); // under an MCP client's 60 s
 /** awconnect is "connected" if it polled this recently. */
 const CONNECTED_WINDOW_MS = 40_000;
 const MAX_QUEUE = 20;

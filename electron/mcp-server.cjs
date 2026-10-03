@@ -690,7 +690,7 @@ function createDeskMcpServer({
     server.registerTool("chrome_request_tab", {
       title: "Ask the owner to let you use one of their Chrome tabs",
       description: "Ask the owner to let you use their tab on ONE site. awconnect shows them '<site>: <reason>' with " +
-        "Allow / Deny, then Chrome asks them to confirm the site. Waits up to 75 s. Allow approves their open tab on that " +
+        "Allow / Deny, then Chrome asks them to confirm the site. Waits up to 55 s. Allow approves their open tab on that " +
         "site (returned as `tab`); it ends when the tab changes site or closes. Say plainly why.",
       inputSchema: {
         host: z.string().min(3).max(253).describe("The site, e.g. www.amazon.com (no path, no wildcard)."),
