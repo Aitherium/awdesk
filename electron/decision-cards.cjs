@@ -182,7 +182,14 @@ function listOpen(dir = storeDir()) {
 const DEFAULT_TRIAGE_PATTERNS = Object.freeze({
   decision_kinds: ["credential", "blocked"],
   context_phrases: [],
+  context_kinds: ["info"],
 });
+
+// kind=info is a REPORT whatever else it carries. A deadline on an info card
+// used to make it a "decision", so a digest with a deadline lit the bell — the
+// noise the badge was rebuilt to keep out. Kept even when the daemon's patterns
+// predate `context_kinds`, so an older daemon cannot re-open the leak.
+const ALWAYS_CONTEXT_KINDS = Object.freeze(["info"]);
 
 function triageCard(card, patterns) {
   if (!patterns || typeof patterns !== "object") patterns = DEFAULT_TRIAGE_PATTERNS;
@@ -190,6 +197,18 @@ function triageCard(card, patterns) {
   const kind = (card.kind || "decision").toLowerCase();
   const options = Array.isArray(card.options) ? card.options : [];
   const hasDeadline = card.deadline !== null && card.deadline !== undefined;
+
+  // Info is never a decision, deadline or not (the store refuses an info card
+  // with options, so an optionless one is the only shape that exists).
+  const contextKinds = Array.isArray(patterns.context_kinds)
+    ? patterns.context_kinds
+    : ALWAYS_CONTEXT_KINDS;
+  if (
+    options.length === 0 &&
+    (ALWAYS_CONTEXT_KINDS.includes(kind) || contextKinds.includes(kind))
+  ) {
+    return "context";
+  }
 
   // Credentials and blocked cards are always decisions.
   if (patterns.decision_kinds && patterns.decision_kinds.includes(kind)) {

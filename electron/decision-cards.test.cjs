@@ -151,6 +151,22 @@ test("actionableCount counts cards WAITING on the owner, never info digests", ()
   );
 });
 
+test("an info card with a future deadline never counts toward 'N decisions waiting'", () => {
+  const dir = tmpStore();
+  const future = Date.now() / 1000 + 3600;
+  writeCard(dir, "d-info-dl", { kind: "info", options: [], deadline: future });
+  writeCard(dir, "d-ask-dl", { kind: "decision", options: [], deadline: future });
+  const open = listOpen(dir);
+  const info = open.find((c) => c.id === "d-info-dl");
+  assert.equal(cards.triageCard(info), "context", "default patterns: info is a report");
+  // An older daemon whose patterns predate `context_kinds` must not re-open the leak.
+  assert.equal(
+    cards.triageCard(info, { decision_kinds: ["credential", "blocked"], context_phrases: [] }),
+    "context",
+  );
+  assert.equal(actionableCount(open), 1, "only the decision with a deadline counts");
+});
+
 test("an unreadable store is 'unreadable', never mistaken for empty-and-fine", () => {
   assert.equal(signature(path.join(os.tmpdir(), "desk-no-such-dir-xyz")), "unreadable");
   assert.deepEqual(listOpen(path.join(os.tmpdir(), "desk-no-such-dir-xyz")), []);
