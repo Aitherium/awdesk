@@ -383,6 +383,50 @@ async function okAsync(name, fn) {
     assert.ok(Date.now() - started < 5000, "a refused connection must resolve immediately, not wait out the 90s timeout");
   });
 
+  // ── custom voices: "custom:<name>" goes to Genesis /voice-builds, never 8084 ──
+  await okAsync("synthesizeVerdict: a custom:<name> voice never dials the stock endpoint", async () => {
+    let stockHits = 0;
+    const server = await withFakeVoiceServer((req, res) => {
+      stockHits += 1;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true, audio_base64: "SUQz" }));
+    });
+    try {
+      const calls = [];
+      const verdict = await synthesizeVerdict("hello in my own voice", "custom:ana", {
+        speed: 1.5,
+        endpoint: { host: "127.0.0.1", port: server.port, path: "/voice/synthesize" },
+        customSynth: async (text, voice, o) => {
+          calls.push({ text, voice, o });
+          return { ok: true, audioBase64: "UklGRg==", durationMs: 700 };
+        },
+      });
+      assert.deepStrictEqual(verdict, { ok: true, audioBase64: "UklGRg==", durationMs: 700 });
+      assert.strictEqual(stockHits, 0, "a custom voice must not reach AitherVoice :8084");
+      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(calls[0].voice, "custom:ana");
+      assert.strictEqual(calls[0].text, "hello in my own voice");
+      assert.strictEqual(calls[0].o.speed, 1.5);
+
+      // ...and a stock voice on the same call shape still dials the stock endpoint.
+      const stock = await synthesizeVerdict("hello", "nova", {
+        endpoint: { host: "127.0.0.1", port: server.port, path: "/voice/synthesize" },
+        customSynth: async () => { throw new Error("stock voice must not take the custom path"); },
+      });
+      assert.ok(stock.ok, stock.reason);
+      assert.strictEqual(stockHits, 1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  await okAsync("synthesizeVerdict: a failed custom voice is {ok:false}, not a swap to a stock voice", async () => {
+    const verdict = await synthesizeVerdict("hello", "custom:ghost", {
+      customSynth: async () => ({ ok: false, reason: "custom voice ghost not found in this workspace" }),
+    });
+    assert.deepStrictEqual(verdict, { ok: false, reason: "custom voice ghost not found in this workspace" });
+  });
+
   console.log(`drop-router: ${passed} checks passed`);
   process.exit(process.exitCode ?? 0);
 })();

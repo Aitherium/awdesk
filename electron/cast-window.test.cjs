@@ -38,6 +38,9 @@ const DOCUMENTED_CHANNELS = [
   // platform, which is the only thing that can attest age verification. Turning it
   // OFF is local and unconditional.
   "desk:cast-set-adult-content",
+  // Added deliberately 2026-10-03: read-only, async -- the workspace's custom-built
+  // voices (Genesis /voice-builds/voices) for the voice picker.
+  "desk:cast-custom-voices",
   "desk:cast-capture-stage",
   "desk:cast-mute-origin",
   "desk:cast-reveal",
@@ -47,7 +50,7 @@ function handlersFor(impl) {
   return castHandlers(() => impl);
 }
 
-test("the desk:cast-* channel set is EXACTLY the documented twelve -- nothing dropped, nothing extra", () => {
+test("the desk:cast-* channel set is EXACTLY the documented thirteen -- nothing dropped, nothing extra", () => {
   const handlers = handlersFor({});
   assert.deepEqual(Object.keys(handlers).sort(), [...DOCUMENTED_CHANNELS].sort());
   for (const channel of DOCUMENTED_CHANNELS) {

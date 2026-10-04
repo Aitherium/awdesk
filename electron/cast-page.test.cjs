@@ -59,7 +59,7 @@ class Node {
   walk() { return [this, ...this.children.flatMap((c) => (c.walk ? c.walk() : []))]; }
 }
 
-function boot(describeResult) {
+function boot(describeResult, { customVoices } = {}) {
   const byId = new Map();
   const body = new Node("body");
   const document = {
@@ -87,6 +87,7 @@ function boot(describeResult) {
     captureStage: record("captureStage"),
     muteOrigin: record("muteOrigin"), reveal: record("reveal"),
   };
+  if (customVoices !== undefined) aitherCast.customVoices = () => Promise.resolve(customVoices);
   const sandbox = { document, window: { aitherCast }, setInterval: () => 0, console };
   vm.createContext(sandbox);
   vm.runInContext(`${SCRIPT}\n;globalThis.__refresh = refresh;`, sandbox);
@@ -283,4 +284,30 @@ test("cast pane: every desk/sync key the page writes is one cast-config VALIDATE
     sync: { enabled: true, profile: "D:/p.json", url: "https://h.invalid/p", tokenFile: "C:/b", pullOnStart: true, pushOnChange: false },
   });
   assert.deepEqual(problems, []);
+});
+
+const voiceOptions = (body) => body.walk().find((n) => n.tagName === "DATALIST" && n.id === "voice-options");
+
+test("cast pane: the voice picker gains a custom:<name> option for each built voice", async () => {
+  const page = boot({ snapshot: SNAPSHOT, onStage: [], seen: {}, roster: [], problems: [] },
+    { customVoices: { ok: true, voices: [{ id: "custom:ana", name: "ana", language: "en-US", gate: null }] } });
+  await page.refresh();
+  const list = voiceOptions(page.body);
+  assert.ok(list, "no voice-options datalist");
+  const values = list.children.map((o) => o.value);
+  assert.ok(values.includes("nova"), "the stock list must still be there");
+  assert.equal(values[values.length - 1], "custom:ana");
+  assert.equal(list.children[list.children.length - 1].label, "ana (custom, en-US)");
+});
+
+test("cast pane: no custom voices (or Genesis down) leaves the stock picker unchanged", async () => {
+  const stock = boot({ snapshot: SNAPSHOT, onStage: [], seen: {}, roster: [], problems: [] });
+  await stock.refresh();
+  const baseline = voiceOptions(stock.body).children.map((o) => o.value);
+  for (const customVoices of [{ ok: true, voices: [] }, { ok: false, voices: [] }]) {
+    const page = boot({ snapshot: SNAPSHOT, onStage: [], seen: {}, roster: [], problems: [] }, { customVoices });
+    await page.refresh();
+    assert.deepEqual(voiceOptions(page.body).children.map((o) => o.value), baseline);
+  }
+  assert.ok(!baseline.some((v) => v.startsWith("custom:")));
 });

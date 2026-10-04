@@ -112,6 +112,17 @@ function castHandlers(getImpl) {
       }
     },
 
+    // Read-only and async: the workspace's custom-built voices (Genesis
+    // /voice-builds/voices) for the voice picker. {ok:false, voices:[]} when the
+    // bridge is down -- the picker then shows the stock list exactly as before.
+    "desk:cast-custom-voices": async () => {
+      try {
+        return await require("./custom-voice.cjs").listCustomVoices();
+      } catch (error) {
+        return { ok: false, voices: [], error: `customVoices: ${String((error && error.message) || error)}` };
+      }
+    },
+
     "desk:cast-set-actor": (_event, key, patch) =>
       invalidArg("setActor", key, "key") ||
       call("setActor", () => impl().setActor?.({ key: String(key), patch: isPlainObject(patch) ? patch : {} })),

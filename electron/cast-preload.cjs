@@ -5,7 +5,7 @@
  * because the pane is an iframe under nodeIntegrationInSubFrames -- same
  * wiring stage-preload.cjs uses for stage.html.
  *
- * Twelve verbs over cast-config.cjs's (U01) write surface and
+ * Thirteen verbs over cast-config.cjs's (U01) write surface and
  * room-stage-host.cjs's castPaneImpl (U07) read surface. See cast-window.cjs
  * for the desk:cast-* channel names this mirrors 1:1, and its `call()` for
  * why every one of these resolves to `{ok, ...}` rather than ever rejecting.
@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld("aitherCast", {
    *  the safe (content-rating-filtered) roster, the seen-but-silent book,
    *  and any parse problems. */
   describe: () => ipcRenderer.invoke("desk:cast-describe"),
+  /** The workspace's custom-built voices -- {ok, voices:[{id:"custom:<name>", name,
+   *  language, gate}]}; {ok:false, voices:[]} when Genesis cannot be reached. */
+  customVoices: () => ipcRenderer.invoke("desk:cast-custom-voices"),
   /** Merge `patch` into `actors[key]` (creating the record if absent). */
   setActor: (key, patch) => ipcRenderer.invoke("desk:cast-set-actor", String(key || ""), patch || {}),
   /** Drop `actors[key]` entirely -- reverts to whatever the tier below it grants. */

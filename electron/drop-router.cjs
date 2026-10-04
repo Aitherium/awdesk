@@ -45,6 +45,7 @@ const https = require("node:https");
 
 const { callTool, parseMaybeJson } = require("./gateway-mcp.cjs");
 const { fleetDistro } = require("./fleet-distro.cjs");
+const customVoice = require("./custom-voice.cjs");
 
 // The one path bridge (see module docstring). Host side is a Windows path,
 // container side is what the gateway's tools actually read.
@@ -609,6 +610,15 @@ async function synthesizeVerdict(text, voice = "nova", opts = {}) {
     path: (explicitEndpoint && explicitEndpoint.path) || (voiceConfig && voiceConfig.endpoint.path) || DEFAULT_ENDPOINT.path,
   };
   const resolvedSpeed = voiceSpeed(speed, { config: voiceConfig });
+  // A workspace-built voice ("custom:<name>") is synthesized by Genesis
+  // /voice-builds, not AitherVoice -- branching HERE, below every door's cast
+  // and safety gates, routes bridge /speak, mcp speak, room-stage, drops and the
+  // game stage alike. Stock voices fall through untouched. `opts.customSynth` is
+  // a test seam.
+  if (customVoice.isCustomVoice(voice)) {
+    const synth = typeof opts.customSynth === "function" ? opts.customSynth : customVoice.synthesizeCustom;
+    return synth(short, voice, { speed: resolvedSpeed, maxChars });
+  }
   const body = JSON.stringify({ text: short, voice, speed: resolvedSpeed, return_base64: true });
 
   // Try each (host, scheme) in turn. Only a CONNECTION failure moves on: a

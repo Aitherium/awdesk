@@ -1032,6 +1032,25 @@ for (const name of VOICES) {
 }
 document.body.appendChild(datalist);
 
+// The workspace's OWN built voices ("custom:<name>", Genesis /voice-builds), added
+// once at load after the stock list. None built, or Genesis unreachable, adds
+// nothing -- the picker is then exactly the stock list.
+async function addCustomVoices() {
+  try {
+    const result = await window.aitherCast.customVoices?.();
+    for (const v of (result && result.ok && Array.isArray(result.voices)) ? result.voices : []) {
+      if (!v || typeof v.id !== "string" || !v.id.startsWith("custom:")) continue;
+      const opt = document.createElement("option");
+      opt.value = v.id;
+      opt.label = `${v.name || v.id.slice(7)} (custom${v.language ? `, ${v.language}` : ""})`;
+      datalist.appendChild(opt);
+    }
+  } catch {
+    // A picker without custom voices is still a picker.
+  }
+}
+void addCustomVoices();
+
 // A body arrives/leaves as the room speaks and a mute is a one-click action
 // elsewhere (the tray, another Cast window) — poll rather than push, same
 // interval stage.html uses, so this pane never shows an arrangement that
