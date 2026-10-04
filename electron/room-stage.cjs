@@ -104,8 +104,12 @@ function slotFor(author, { actorId = "", actorKind = "" } = {}) {
 /**
  * voiceFor — the voice a row speaks with. `resolution.voice` (cast-config's
  * own precedence: actors > relay:<channel> > <kind>:* > seats[n] > authors >
- * defaults > voice.defaultVoice > hash) wins whenever it is present; the hash
- * here is only the floor for when no resolver is wired at all.
+ * roster.<agent> > defaults > voice.defaultVoice > hash) wins whenever it is
+ * present; the hash here is only the floor for when no resolver is wired at
+ * all. `roster.<agent>` is the platform roster's declared voice for that agent
+ * (config/identities desk_presence, via agent-roster.generated.json), handed in
+ * by room-stage-host's resolver -- so each crew agent speaks with ITS voice on a
+ * desk whose cast.json never named it, and the owner's authors.<agent> still wins.
  *
  * `seed` must be the ORIGIN key (or `author:seat`), never the bare author —
  * that is precisely what let two parallel Claude Code tabs of one repo share
@@ -244,6 +248,21 @@ function stripSteeringEnvelope(text) {
   return t.trim() || String(text);
 }
 
+/**
+ * speakerOf -- WHO a queued line is, in the terms the TTS gate re-resolves it
+ * with (main.cjs speakAloud -> voice-resolve.resolveSpeech): the row's own
+ * origin key, its author/agent and the seat it was resolved at. Without this
+ * the gate saw every stage line as "service:awdesk" with no author, so a
+ * file-wide voice.defaultVoice / defaults.voice replaced the agent's roster
+ * voice (and an authors.<x>.seats[n] voice) after the stage had picked it.
+ */
+function speakerOf(u, resolution) {
+  const origin = (u.origin && u.origin.key) || (resolution && resolution.key) || null;
+  const author = (resolution && resolution.author) || u.author || null;
+  const seat = resolution && Number.isInteger(resolution.seat) ? resolution.seat : null;
+  return { origin, author, agent: author, seat };
+}
+
 class RoomStage {
   /**
    * @param {object} io
@@ -256,7 +275,8 @@ class RoomStage {
    *   once, in cast-config.cjs, behind whatever the host wires this to.
    * @param {(slotId, character, agent, place) => boolean} io.spawn
    * @param {(slotId) => boolean} io.remove
-   * @param {(text, voice, slotId, speed) => Promise<{ok:boolean, durationMs?:number, reason?:string}>} io.speak
+   * @param {(text, voice, slotId, speed, speaker) => Promise<{ok:boolean, durationMs?:number, reason?:string}>} io.speak
+   *   `speaker` is speakerOf(row, resolution): {origin, author, agent, seat}.
    * @param {(slotId) => void} [io.onEvict]  best-effort notification fired
    *   whenever a slot leaves the stage, whether by the idle sweep or an
    *   explicit evict() — e.g. so the Cast pane's "on stage" list updates.
@@ -501,6 +521,7 @@ class RoomStage {
       slotId,
       voice: voiceFor(seed, resolution),
       speed,
+      speaker: speakerOf(u, resolution),
     });
     while (this.queue.length > MAX_QUEUE) this.queue.shift();
   }
@@ -578,7 +599,7 @@ class RoomStage {
     try {
       while (this.queue.length > 0) {
         const u = this.queue.shift();
-        const verdict = await this.io.speak(u.text, u.voice, u.slotId, u.speed);
+        const verdict = await this.io.speak(u.text, u.voice, u.slotId, u.speed, u.speaker);
         if (verdict && verdict.ok) {
           this.spoken += 1;
           this.lastSpokenAt = this.now();
@@ -613,6 +634,7 @@ module.exports = {
   readsLikeSpeech,
   selectUtterances,
   shouldVoice,
+  speakerOf,
   slotFor,
   truncateText,
   voiceFor,

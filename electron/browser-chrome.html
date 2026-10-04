@@ -24,6 +24,10 @@
   .tab .x { width: 18px; height: 18px; border-radius: 4px; border: 0; background: none; color: inherit; cursor: pointer;
     line-height: 18px; padding: 0; flex: none; }
   .tab .x:hover { background: var(--surface-800, var(--line)); }
+  .tab.pinned { flex: 0 0 auto; min-width: 0; padding-right: 10px; }
+  .tab.aither .who { background: var(--primary, var(--fg)); opacity: .7; }
+  .tab .badge { min-width: 18px; height: 16px; padding: 0 5px; border-radius: 8px; font-size: 10px; line-height: 16px;
+    text-align: center; background: var(--destructive); color: var(--fg); flex: none; }
   #newtab { height: 26px; width: 28px; margin-bottom: 2px; border-radius: 6px; border: 0; background: none;
     color: var(--muted); cursor: pointer; font-size: 16px; flex: none; }
   #newtab:hover { color: var(--fg); background: var(--surface-900, var(--panel)); }
@@ -56,7 +60,7 @@
     <button id="back" title="Back" aria-label="Back">&#8592;</button>
     <button id="forward" title="Forward" aria-label="Forward">&#8594;</button>
     <button id="reload" title="Reload" aria-label="Reload">&#8635;</button>
-    <input id="url" list="sugg" spellcheck="false" autocomplete="off" aria-label="Address" placeholder="Type an http(s) address" />
+    <input id="url" list="sugg" spellcheck="false" autocomplete="off" aria-label="Address" placeholder="Type an address, or an Aither page (aither://settings)" />
     <datalist id="sugg"></datalist>
     <button id="star" title="Bookmark this page" aria-label="Bookmark this page" aria-pressed="false">&#9734;</button>
     <span id="err" role="status"></span>
@@ -107,21 +111,35 @@
     for (const node of Array.from(strip.querySelectorAll(".tab"))) node.remove();
     for (const t of list || []) {
       const tab = document.createElement("div");
-      tab.className = "tab" + (t.active ? " active" : "") + (t.by === "agent" ? " agent" : "");
+      tab.className = "tab" + (t.active ? " active" : "") + (t.by === "agent" ? " agent" : "")
+        + (t.pinned ? " pinned" : "") + (t.kind === "internal" || t.kind === "hosted" ? " aither" : "");
       tab.setAttribute("role", "tab");
       tab.setAttribute("aria-selected", String(Boolean(t.active)));
-      tab.title = (t.by === "agent" ? "Agent's tab: " : "") + (t.title || t.url || "New tab");
+      tab.title = (t.by === "agent" ? "Agent's tab: " : "") + (t.label || t.title || t.url || "New tab");
       const who = document.createElement("span");
       who.className = "who";
       const label = document.createElement("span");
       label.className = "t";
-      label.textContent = t.loading && !t.title ? "Loading…" : (t.title || t.url || "New tab"); // never innerHTML
-      const close = document.createElement("button");
-      close.className = "x";
-      close.textContent = "×";
-      close.setAttribute("aria-label", "Close tab");
-      close.onclick = (e) => { e.stopPropagation(); api.closeTab(t.id); };
-      tab.append(who, label, close);
+      // A pinned tab keeps its NAME (Inbox, AitherOS Online, Workspace), whatever the page calls itself.
+      label.textContent = t.pinned && t.label ? t.label
+        : t.loading && !t.title ? "Loading…" : (t.title || t.url || "New tab"); // never innerHTML
+      tab.append(who, label);
+      if (t.badge > 0) {
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = t.badge > 99 ? "99+" : String(t.badge);
+        badge.setAttribute("aria-label", `${t.badge} waiting`);
+        tab.append(badge);
+      }
+      // Pinned tabs are the console's front door: they do not close from the strip.
+      if (!t.pinned) {
+        const close = document.createElement("button");
+        close.className = "x";
+        close.textContent = "×";
+        close.setAttribute("aria-label", "Close tab");
+        close.onclick = (e) => { e.stopPropagation(); api.closeTab(t.id); };
+        tab.append(close);
+      }
       tab.onclick = () => api.activateTab(t.id);
       tab.onauxclick = (e) => { if (e.button === 1) api.closeTab(t.id); };
       strip.insertBefore(tab, $("newtab"));

@@ -114,6 +114,16 @@ function LEGACY_AVATARS_FILE() {
   return path.join(__dirname, "..", ".agent-avatars.json");
 }
 
+/** The platform roster mirror (gen_desk_agent_roster.py writes it from
+ *  config/identities). Its `presence` map is each agent's DECLARED voice and
+ *  desk character -- the tier resolveActor reads BELOW cast.json `authors`.
+ *  DESK_AGENT_ROSTER_FILE is a test seam, like DESK_CAST_FILE. */
+function AGENT_ROSTER_FILE() {
+  const override = process.env.DESK_AGENT_ROSTER_FILE;
+  if (override && String(override).trim()) return path.resolve(String(override).trim());
+  return path.join(__dirname, "agent-roster.generated.json");
+}
+
 // ─── the built-in tier (the floor under the file, the env and the hash) ──────
 
 const SPEED_MIN = 0.25;
@@ -603,6 +613,48 @@ const SYNC_FIELDS = Object.freeze({
   pushOnChange: vBool,
 });
 
+/** One explorer root: an absolute path (or "~"-relative) and a label. The
+ *  AGENT grant is deliberately NOT here: cast.json syncs across machines
+ *  (awsettings), so the per-root grant lives in the machine-local
+ *  ~/.aither/desk-file-grants.json (files-access.cjs). A stray `agentRead`
+ *  key in cast.json is dropped, never honoured. */
+const FILE_ROOTS_MAX = 32;
+function vFileRoot(value) {
+  const raw = typeof value === "string" ? { path: value } : value;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, reason: "expected a path or {path, label}" };
+  }
+  const where = vString(raw.path, { max: 1024 });
+  if (!where.ok) return { ok: false, reason: `path: ${where.reason}` };
+  const p = where.value;
+  const absolute = path.win32.isAbsolute(p) || path.posix.isAbsolute(p) || /^~([\\/]|$)/.test(p);
+  if (!absolute) return { ok: false, reason: "path must be absolute (or start with ~)" };
+  const out = { path: p, label: null };
+  if (raw.label !== undefined && raw.label !== null && raw.label !== "") {
+    const label = vString(raw.label, { max: 60 });
+    if (!label.ok) return { ok: false, reason: `label: ${label.reason}` };
+    out.label = label.value;
+  }
+  return { ok: true, value: out };
+}
+function vFileRoots(value) {
+  if (!Array.isArray(value)) return { ok: false, reason: "expected a list of roots" };
+  if (value.length > FILE_ROOTS_MAX) return { ok: false, reason: `at most ${FILE_ROOTS_MAX} roots` };
+  const out = [];
+  for (let i = 0; i < value.length; i += 1) {
+    const verdict = vFileRoot(value[i]);
+    if (!verdict.ok) return { ok: false, reason: verdict.reason, at: String(i) };
+    out.push(verdict.value);
+  }
+  return { ok: true, value: out };
+}
+
+/** files.* -> files-access.cjs: the Files pane's roots. Unset = the owner's
+ *  home folders, none of them readable by agents until granted on this machine. */
+const FILES_FIELDS = Object.freeze({
+  roots: vFileRoots,
+});
+
 const BUILTIN_DESK = Object.freeze({
   models: Object.freeze({ commandProfile: "deepseek" }),
   prompts: Object.freeze({ commandPersona: null, commandAppend: null }),
@@ -610,6 +662,7 @@ const BUILTIN_DESK = Object.freeze({
   sync: Object.freeze({
     enabled: false, profile: null, url: null, tokenFile: null, pullOnStart: true, pushOnChange: true,
   }),
+  files: Object.freeze({ roots: null }),
 });
 
 const DESK_SECTIONS = Object.freeze({
@@ -617,6 +670,7 @@ const DESK_SECTIONS = Object.freeze({
   prompts: PROMPTS_FIELDS,
   vision: VISION_FIELDS,
   sync: SYNC_FIELDS,
+  files: FILES_FIELDS,
 });
 
 function pushProblem(problems, prefix, field, raw, verdict) {
@@ -680,6 +734,7 @@ function emptyConfig() {
     prompts: {},
     vision: {},
     sync: {},
+    files: {},
     content: {},
     input: {},
     hotkeys: {},
@@ -690,7 +745,7 @@ function emptyConfig() {
 
 const TOP_LEVEL_KEYS = [
   "version", "stage", "voice", "input", "hotkeys", "defaults", "authors", "actors",
-  "channels", "models", "prompts", "vision", "sync", "content", "appearance",
+  "channels", "models", "prompts", "vision", "sync", "files", "content", "appearance",
   "migratedLegacyAt",
 ];
 
@@ -1303,6 +1358,63 @@ function stableVoice(seed, resolution) {
   return names[hash33(String(seed == null ? "" : seed).toLowerCase()) % names.length];
 }
 
+// ─── the roster tier (an agent's DECLARED voice and character) ───────────────
+
+/** The fields the roster may speak to. Everything else about an actor --
+ *  presence, speak, volume, place -- is the owner's to author, never the
+ *  platform's to declare. */
+const ROSTER_FIELDS = Object.freeze(["voice", "character"]);
+
+/**
+ * validateRosterPresence -- the generated mirror's `presence` map, reduced to
+ * {agent: {voice?, character?}} through the SAME ACTOR_FIELDS validators the
+ * file uses, so a value cast.json would drop is dropped here too. Pure; never
+ * throws. Agent keys are normalised the way resolveActor normalises an author.
+ * Accepts the whole mirror document or the bare map.
+ */
+function validateRosterPresence(raw) {
+  const doc = plainObject(raw);
+  const map = plainObject("presence" in doc ? doc.presence : doc);
+  const out = {};
+  for (const [agent, record] of Object.entries(map)) {
+    const key = normaliseAuthor(agent);
+    const rec = plainObject(record);
+    if (!key) continue;
+    const entry = {};
+    for (const field of ROSTER_FIELDS) {
+      if (!(field in rec)) continue;
+      const verdict = ACTOR_FIELDS[field](rec[field]);
+      if (verdict.ok) entry[field] = verdict.value;
+    }
+    if (Object.keys(entry).length > 0) out[key] = entry;
+  }
+  return out;
+}
+
+const rosterPresenceCache = new Map(); // resolved file -> { mtimeMs, presence }
+
+/**
+ * loadRosterPresence -- read the roster mirror's `presence` map, fail soft:
+ * a missing or malformed mirror yields {} (the tier simply says nothing), it
+ * never throws into a poll. Cached by mtime, so a hot resolve() per utterance
+ * costs one stat, and a regenerated mirror is picked up without a restart.
+ */
+function loadRosterPresence({ file = AGENT_ROSTER_FILE() } = {}) {
+  const resolved = path.resolve(file);
+  const mtimeMs = statMtime(resolved);
+  if (mtimeMs === null) return {};
+  const cached = rosterPresenceCache.get(resolved);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.presence;
+  let presence = {};
+  try {
+    presence = validateRosterPresence(JSON.parse(fs.readFileSync(resolved, "utf8")));
+  } catch {
+    presence = {};
+  }
+  rosterPresenceCache.set(resolved, { mtimeMs, presence });
+  return presence;
+}
+
 // ─── resolution ──────────────────────────────────────────────────────────────
 
 function normaliseSnapshot(snapshot) {
@@ -1321,6 +1433,7 @@ function normaliseSnapshot(snapshot) {
     prompts: plainObject(snapshot.prompts),
     vision: plainObject(snapshot.vision),
     sync: plainObject(snapshot.sync),
+    files: plainObject(snapshot.files),
     content: plainObject(snapshot.content),
     input: plainObject(snapshot.input),
     hotkeys: plainObject(snapshot.hotkeys),
@@ -1535,6 +1648,13 @@ function resolveVoice(snapshot, { env = process.env } = {}) {
  *   actors["<kind>:*"]                 (the class grant)
  *   authors.<author>.seats[<seat>]     (this parallel session)
  *   authors.<author>
+ *   roster.<agent>                     (voice and character ONLY: the agent's
+ *                                       DECLARED desk_presence from the platform
+ *                                       roster, ctx.agentRoster. Below every
+ *                                       owner record that names this agent, so
+ *                                       the owner's override always wins; above
+ *                                       `defaults`, because a file-wide default
+ *                                       is not a choice about THIS agent)
  *   defaults
  *   voice.defaultVoice / voice.defaultSpeed / voice.maxChars,
  *   stage.cooldownSeconds / stage.idleSeconds    (file-wide defaults)
@@ -1554,7 +1674,9 @@ function resolveVoice(snapshot, { env = process.env } = {}) {
  * @param {object} snapshot  from load()
  * @param {object} ctx
  *   {author, actorId, actorKind|kind, id, channel, nick, key, origin, seat,
- *    roster (SAFE character names), taken, resident, voices, env}
+ *    roster (SAFE character names), taken, resident, voices, env,
+ *    agentRoster ({agent: {voice?, character?}}, loadRosterPresence()'s
+ *    shape; omitted = no roster tier)}
  * @returns {object} ActorResolution — never throws.
  */
 function resolveActor(snapshot, ctx = {}) {
@@ -1596,6 +1718,10 @@ function resolveActor(snapshot, ctx = {}) {
     tiers.push({ prefix: `authors.${author}.seats[${seat}]`, record: authorRecord.seats[seat] });
   }
   if (authorRecord) tiers.push({ prefix: `authors.${author}`, record: authorRecord });
+  if (agentName && ctx.agentRoster && typeof ctx.agentRoster === "object") {
+    const declared = validateRosterPresence(ctx.agentRoster)[agentName];
+    if (declared) tiers.push({ prefix: `roster.${agentName}`, record: declared, only: ROSTER_FIELDS });
+  }
   tiers.push({ prefix: "defaults", record: cfg.defaults });
 
   const pick = (field, validate) => {
@@ -2044,9 +2170,11 @@ module.exports = {
   knownThemes,
   BUILTIN_CONTENT,
   BUILTIN_DESK,
+  FILE_ROOTS_MAX,
   BUILTIN_PHYSICS,
   BUILTIN_STAGE,
   BUILTIN_VOICE,
+  AGENT_ROSTER_FILE,
   CAST_FILE,
   INVALID_FILE,
   LEGACY_AGENT_VOICES,
@@ -2068,6 +2196,7 @@ module.exports = {
   characterOrder,
   hash33,
   load,
+  loadRosterPresence,
   migrateLegacy,
   normaliseAuthor,
   noteSeen,
@@ -2083,6 +2212,8 @@ module.exports = {
   stableCharacter,
   stableVoice,
   validateCast,
+  validateRosterPresence,
+  ROSTER_FIELDS,
   watch,
   write,
 };

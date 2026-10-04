@@ -89,14 +89,40 @@ Shipped first (#11687, #11690):
 
 Each slice below ships alone and is verifiable alone. In order:
 
-8. **`aither://` pages.** A privileged scheme served by `browser-internal.cjs`. Each page gets a
-   preload that exposes only that page's IPC (the console panes already have these channels).
+8. **`aither://` pages: SHIPPED.** A privileged scheme served by `browser-internal.cjs`. Each page
+   gets a preload that exposes only that page's IPC (the console panes already have these channels).
+   - Every entry of `PANES` (console-window.cjs) is a page, derived at call time, so a pane added
+     there needs no edit here: `file` -> its HTML, `view` -> the renderer bundle with its query
+     flag, `hosted` -> AitherOS Online in its own signed-in partition.
+   - The handler lives on ONE session (`persist:aither-internal`); web tabs have no handler, and
+     `navigationVerdict` refuses aither:// from a web tab (navigate, redirect, frame). An internal
+     tab sends a web link to a new web tab. Responses carry `frame-ancestors 'none'`.
+   - `browser-internal-preload.cjs` requires exactly one pane preload, only on an aither: origin.
+     The table matches `console-preload.cjs`, including its `plane-*.html` arm
+     (`plane-preload.cjs`), and a test runs console-preload against every PANES entry.
+   - A file pane's origin serves a `.js` file only when that pane's own HTML names it in
+     `<script src>`, as with `plane-page.js`. A `.cjs` file is never served.
+   - Permissions: an aither: page gets the microphone and nothing else. That is the grant the
+     console's default session gave its panes, and it covers Inbox dictation and the Settings
+     "Grant mic" button. Camera requests are refused. Web tabs still have every permission
+     denied.
+   - Character thumbnails: an aither: page cannot load `file://` models. Its deck state
+     therefore names `/_models/<name>.vrm`, which main resolves from the roster.
+   - Storage reset: each view pane now has its own `aither://<pane>` origin in a new partition.
+     Any `localStorage` the console wrote under `file://`, such as Chat view state, starts
+     empty once, and these panes no longer share it with each other.
+   - Verified: `node --test electron/browser-internal.test.cjs` and
+     `npm run test:browser-internal` (real Electron, hidden windows).
    - First pages: `aither://inbox`, `command`, `chat`, `sessions`, `stage`, `fleet`, `ops` and
      `settings`, the same HTML the console loads today.
    - Verify: `test:browser` opens each page, and a web tab cannot reach the scheme's IPC.
-9. **The console becomes a shim.** `openConsole(pane)` focuses the browser at `aither://<pane>`.
-   - Pinned tabs: Inbox, AitherOS Online (`app.aitherium.com`) and Workspace.
+9. **The console becomes a shim: SHIPPED.** `openConsole(pane)` focuses the browser at
+   `aither://<pane>`. `DESK_LEGACY_CONSOLE=1` brings the old console window back (rollback).
+   - Pinned tabs: Inbox, AitherOS Online (`app.aitherium.com`; `DESK_ONLINE_URL` overrides it,
+     but only with an aitherium.com URL) and Workspace.
    - Menus: "Aither Console…" becomes "Open Aither".
+   - Not yet: the console's Ctrl+K palette has no browser twin (the tray, beads and avatar menu
+     still list every command).
    - Verify: every console launcher lands on a tab, and no second window exists.
 10. **Planes as pages.** These are thin pages over gateway MCP tools (`gateway-mcp.cjs`):
     - `aither://files`: a local file explorer over `cast.json` roots. It can open, reveal and

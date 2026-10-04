@@ -590,3 +590,49 @@ test("browser_* tools register only with onBrowser, and a take-over pause comes 
   gate.handBack();
   assert.equal((await client.callTool({ name: "browser_read", arguments: {} })).isError, false);
 });
+
+/**
+ * Slice 10: the files_* tools exist only when main hands over the Files page's
+ * agent half, are all read-only, and refuse a folder the owner has not shared.
+ * Driven end to end through the real MCP transport, not the pure helper.
+ */
+test("files_* tools: read-only, and only under a folder the owner switched on", async (context) => {
+  const { createFilesAccess } = require("./files-access.cjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "desk-mcp-files-"));
+  context.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const shared = path.join(dir, "shared");
+  fs.mkdirSync(shared);
+  fs.writeFileSync(path.join(shared, "plan.md"), "the plan\n");
+  const castFile = path.join(dir, "cast.json");
+  fs.writeFileSync(castFile, JSON.stringify({ version: 1, files: { roots: [{ path: shared, label: "Shared" }] } }));
+  const files = createFilesAccess({ castFile, home: dir });
+
+  const mcpHandler = createDeskMcpHandler({
+    onAnimation: () => true,
+    onWindowAction: () => true,
+    getStatus: () => ({ windowVisible: true, voiceState: null, listener: null }),
+    filesAccess: files.agent,
+  });
+  const bridge = createBridgeServer({ port: 0, onEvent: () => {}, mcpHandler });
+  const address = await bridge.listen();
+  const client = new Client({ name: "desk-test-files", version: "1.0.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`));
+  context.after(async () => {
+    await client.close();
+    await bridge.close();
+  });
+  await client.connect(transport);
+
+  const tools = (await client.listTools()).tools.filter((t) => t.name.startsWith("files_"));
+  assert.deepEqual(tools.map((t) => t.name), ["files_roots", "files_list", "files_read"]);
+  for (const t of tools) assert.equal(t.annotations?.readOnlyHint, true, `${t.name} must be read-only`);
+
+  const refused = await client.callTool({ name: "files_read", arguments: { root: "Shared", path: "plan.md" } });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /not shared with agents/);
+
+  files.setAgentRead(files.roots().roots[0].id, true);
+  const read = await client.callTool({ name: "files_read", arguments: { root: "Shared", path: "plan.md" } });
+  assert.notEqual(read.isError, true);
+  assert.equal(JSON.parse(read.content[0].text).text, "the plan\n");
+});

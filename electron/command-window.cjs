@@ -66,12 +66,15 @@ function wireIpc() {
   ipcWired = true;
   ipcMain.handle("desk:command-send", (_event, text) => getAgent(fleetControlInstance).run(text, { source: "command-window" }));
   ipcMain.handle("desk:command-history", (_event, limit) => getAgent(fleetControlInstance).history(limit ?? 50));
-  ipcMain.on("desk:command-close", () => {
-    if (commandWindow && !commandWindow.isDestroyed()) { commandWindow.close(); return; }
+  ipcMain.on("desk:command-close", (event) => {
+    if (commandWindow && !commandWindow.isDestroyed() && (!event || event.sender === commandWindow.webContents)) {
+      commandWindow.close();
+      return;
+    }
     // No standalone window means the sender is the console's Command PANE, whose
     // close button would otherwise be dead: the handler existed, found nothing to
     // close, and returned -- a button that does nothing and says nothing.
-    if (typeof closeFallback === "function") closeFallback();
+    if (typeof closeFallback === "function") closeFallback(event);
   });
   ipcMain.on("desk:command-open-fleet", () => {
     if (createFleetWindowImpl) createFleetWindowImpl();

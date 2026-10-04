@@ -107,6 +107,21 @@ function safeRoster(deps, { all = false } = {}) {
   }
 }
 
+/** Each platform agent's DECLARED voice and desk character (the roster
+ *  mirror's `presence` map, from config/identities desk_presence), handed to
+ *  resolveActor as the tier BELOW cast.json `authors` -- so atlas sounds like
+ *  atlas on a desk with no cast.json, and the owner's authors.atlas still wins.
+ *  `deps.agentRosterFile` is the test seam (a path, or a function returning
+ *  one). Fail-soft: an unreadable mirror is {} (the tier says nothing). */
+function agentRosterPresence(deps) {
+  try {
+    const raw = typeof deps.agentRosterFile === "function" ? deps.agentRosterFile() : deps.agentRosterFile;
+    return cast.loadRosterPresence(raw ? { file: raw } : {});
+  } catch {
+    return {};
+  }
+}
+
 /**
  * liveResident — the character NAME the resident avatar (slot0) currently
  * wears, so a hash-picked visitor never lands on the same body. `stage.resident`
@@ -178,6 +193,7 @@ function buildResolver(deps, castFile, getSnapshot) {
       roster: safeRoster(deps),
       taken: takenCharacters(),
       resident: liveResident(deps, snapshot),
+      agentRoster: agentRosterPresence(deps),
       env,
     });
   };
@@ -375,8 +391,8 @@ function reconcileOnStage(deps, stage, resolve) {
  * @param {object} deps.roomPublisher   .recentChat(opts) -> Promise<rows>
  * @param {(slotId, character, agent, place, physics) => boolean} deps.spawnAvatarSlot
  * @param {(slotId) => boolean} deps.removeAvatarSlot
- * @param {(text, voice, speed, slotId) => Promise<{ok, durationMs?, reason?}>} deps.speakAloud
- *   main's REAL signature (text, voice, speed, slotId) -- see the io.speak
+ * @param {(text, voice, speed, slotId, origin, speaker) => Promise<{ok, durationMs?, reason?}>} deps.speakAloud
+ *   main's REAL signature (text, voice, speed, slotId, origin, speaker) -- see the io.speak
  *   wrapper below; the OLD wiring always passed `speed=undefined`, which is
  *   why per-actor speed never reached the voice service until now.
  * @param {() => string[]} deps.listCharacters
@@ -421,7 +437,12 @@ function startRoomStage(deps = {}) {
       // (text, voice, speed, slotId). Reordering here (not renaming main's
       // signature, which is peer-held) is what lets resolution.speed reach
       // the voice service at all -- the prior wiring hardcoded `undefined`.
-      speak: (text, voice, slotId, speed) => deps.speakAloud(text, voice, speed, slotId),
+      // `speaker` ({origin, author, agent, seat}) rides along so main's TTS
+      // gate (voice-resolve.resolveSpeech) re-resolves the line as the SAME
+      // speaker the stage resolved -- not as "service:awdesk" with no author,
+      // which let a file-wide default voice replace the agent's roster voice.
+      speak: (text, voice, slotId, speed, speaker) =>
+        deps.speakAloud(text, voice, speed, slotId, (speaker && speaker.origin) || undefined, speaker || null),
     },
     {
       idleMs: knobs.idleMs,
@@ -719,6 +740,7 @@ function castPaneImpl(deps = {}) {
 
 module.exports = {
   DEFAULT_PLACE,
+  agentRosterPresence,
   buildResolver,
   castPaneImpl,
   evictSlot,

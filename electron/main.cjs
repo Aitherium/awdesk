@@ -1,7 +1,7 @@
 "use strict";
 
 const path = require("node:path");
-const { pathToFileURL } = require("node:url");
+const { fileURLToPath, pathToFileURL } = require("node:url");
 const {
   app,
   BrowserWindow,
@@ -152,6 +152,11 @@ const {
 // The Aither Browser: a browser window inside the desk an agent drives (MCP
 // browser_* tools) while the owner watches and can take over.
 const browserWindow = require("./browser-window.cjs");
+// The aither:// scheme: every console pane as a page of the Aither Browser (plan
+// slices 8+9). Privileged schemes must be registered BEFORE app ready, exactly once.
+const browserInternal = require("./browser-internal.cjs");
+browserInternal.registerPrivilegedScheme(require("electron").protocol);
+const agentsPanel = require("./agents-panel.cjs");
 const overlayBrowserHost = require("./overlay-browser-host.cjs");
 const browserPolicy = require("./browser-policy.cjs");
 // Agents driving an owner-approved Chrome tab, through awconnect (chrome-bridge.cjs).
@@ -164,7 +169,13 @@ const {
   isCommandWindowOpen,
   getAgent: getCommandAgent,
 } = require("./command-window.cjs");
-const { showConsole, focusPane, closeConsole, setInboxBadge } = require("./console-window.cjs");
+const {
+  ensureConsoleIpc,
+  showConsole,
+  focusPane: focusConsolePane,
+  closeConsole,
+  setInboxBadge: setConsoleInboxBadge,
+} = require("./console-window.cjs");
 const { badgeBitmap, badgeTooltip, drawBadge } = require("./badge.cjs");
 const { voiceTrayItems } = require("./voice-tray-line.cjs");
 const awconnectSetup = require("./awconnect-setup.cjs");
@@ -181,6 +192,27 @@ const {
   closeOpsWindow,
   isOpsWindowOpen,
 } = require("./ops-window.cjs");
+// Plane pages (plan slice 10): Files, Secrets, and one read-only status page per
+// platform plane. Each owns its IPC and its detached twin, like ops-window.cjs.
+const {
+  ensureFilesIpc,
+  createFilesWindow,
+  closeFilesWindow,
+  isFilesWindowOpen,
+  setFilesHandOff,
+} = require("./files-window.cjs");
+const {
+  ensureSecretsIpc,
+  createSecretsWindow,
+  closeSecretsWindow,
+  isSecretsWindowOpen,
+} = require("./secrets-window.cjs");
+const {
+  ensurePlaneIpc,
+  createPlaneWindow,
+  closePlaneWindow,
+  isPlaneWindowOpen,
+} = require("./plane-window.cjs");
 // The company room, both halves: the awdk daemon room (local, fleet-independent)
 // and the relay channels (#command / #agents) that the poller executes from.
 // `steerEvent` is the pure envelope builder for an ADDRESSED steer (U18); the
@@ -265,6 +297,7 @@ const {
   createStageWindow,
   closeStageWindow,
   isStageWindowOpen,
+  withVoiceState,
 } = require("./stage-window.cjs");
 const {
   createSettingsWindow,
@@ -294,8 +327,9 @@ try {
 }
 let resolveSpeech = null;
 let effectiveVoiceFor = (requested, gate, fallback) => (gate && gate.voice) || requested || fallback;
+let speechCtxFor = ({ text, slotId, origin, slotAgent }) => ({ origin, slotId, text, agent: slotAgent });
 try {
-  ({ resolveSpeech, effectiveVoice: effectiveVoiceFor } = require("./voice-resolve.cjs")); // U06: the per-origin audibility gate
+  ({ resolveSpeech, effectiveVoice: effectiveVoiceFor, speechCtx: speechCtxFor } = require("./voice-resolve.cjs")); // U06: the per-origin audibility gate
 } catch (error) {
   console.warn("[desk] voice-resolve.cjs not present yet (U06) -- speakAloud is ungated:", error?.message || error);
 }
@@ -700,6 +734,8 @@ function createWindow() {
     if (win) win.minimize();
   });
   ipcMain.on("desk:window-close", (event) => {
+    // The Inbox/Chat page in an aither:// tab closes ITS TAB, never the whole browser.
+    if (browserWindow.closeInternalTabOf(event.sender)) return;
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win) win.close();
   });
@@ -848,7 +884,21 @@ function agentForSlot(slotId) {
   return info ? info.agent || info.name || null : null;
 }
 
-async function speakAloud(text, voice = "nova", speed = undefined, slotId = "slot0", origin = "service:awdesk") {
+/**
+ * `speaker` is IN-PROCESS only: room-stage-host hands the {author, agent, seat}
+ * a stage row was resolved with, so the gate below resolves the same tiers
+ * (authors.<x>, roster.<agent>) and does not swap the agent's voice for a
+ * file-wide default. No HTTP/MCP door passes it -- a request body never names
+ * its own author.
+ */
+async function speakAloud(
+  text,
+  voice = "nova",
+  speed = undefined,
+  slotId = "slot0",
+  origin = "service:awdesk",
+  speaker = null,
+) {
   let effectiveVoice = voice || "nova";
   let effectiveSpeed = speed;
   let effectiveMaxChars = 2000;
@@ -861,7 +911,7 @@ async function speakAloud(text, voice = "nova", speed = undefined, slotId = "slo
   if (typeof resolveSpeech === "function") {
     let gate;
     try {
-      gate = resolveSpeech({ origin, slotId, text, agent: agentForSlot(slotId) });
+      gate = resolveSpeech(speechCtxFor({ text, slotId, origin, speaker, slotAgent: agentForSlot(slotId) }));
     } catch (error) {
       debugLog("voice-resolve gate threw; failing open", origin, error?.message || error);
       gate = null;
@@ -1068,8 +1118,7 @@ function openModelBrowser() {
 function openTalkWindow() {
   // "Talk to Aither" used to open the deck panel — a list of buttons, not a
   // conversation. The conversation is the console's Chat pane.
-  openConsole();
-  focusPane("chat");
+  openConsole("chat");
 }
 
 /** The ONE way to the inbox (decision cards + agent messages): the detached
@@ -1095,8 +1144,7 @@ function openInbox(cardId = null) {
     deckWindow.focus();
     return true;
   }
-  openConsole();
-  return focusPane("cards", cardId);
+  return openConsole("cards", cardId) !== false;
 }
 
 /** Toggleable "invisible glass" boundary: a dashed edge + faint tint so the
@@ -1153,13 +1201,16 @@ function refreshNotificationBadges(cards = openDecisions) {
     tray.setToolTip(tooltip);
     if (trayBaseIcon) tray.setImage(badgedImage(trayBaseIcon, waiting));
   }
-  setInboxBadge({
+  const inboxBadge = {
     count: waiting,
     image: waiting > 0
       ? nativeImage.createFromBitmap(badgeBitmap(waiting, 16), { width: 16, height: 16 })
       : null,
     tooltip,
-  });
+  };
+  // Both console hosts: the legacy window, and the browser's pinned Inbox tab.
+  setConsoleInboxBadge(inboxBadge);
+  browserWindow.setInboxBadge(inboxBadge);
   // The dock (macOS) and Unity launcher draw their own numeral; on Windows the
   // overlay above IS the taskbar badge, and setBadgeCount would fight it.
   if (process.platform !== "win32") app.setBadgeCount?.(waiting);
@@ -1465,8 +1516,29 @@ function toggleMicMute() {
   }
 }
 
+/** The room's master switch. Holds the in-flight target while "Voices off." is
+ *  spoken, so the tray, the Stage pane and a quick off-then-on agree (voice-master.cjs). */
+let voiceMasterInstance = null;
+function voiceMaster() {
+  if (!voiceMasterInstance) {
+    voiceMasterInstance = require("./voice-master.cjs").createVoiceMaster({
+      cast: require("./cast-config.cjs"),
+      speak: (text) => speakAloud(text, undefined, undefined, "slot0", "service:awdesk-voice"),
+      onChange: () => refreshTrayMenu(),
+      log: (...args) => debugLog("voice master", ...args),
+    });
+  }
+  return voiceMasterInstance;
+}
+
+/** The state the room is heading to: a mute still being announced counts as muted. */
 function voiceAllMuted() {
-  try { return require("./cast-config.cjs").allMuted(); } catch { return false; }
+  try { return voiceMaster().target(); } catch { return false; }
+}
+
+/** One read of voice.mutedAgents for a whole body list (the Stage pane polls). */
+function voiceMutedAgents() {
+  try { return require("./cast-config.cjs").mutedAgents(); } catch { return []; }
 }
 
 function agentVoiceMuted(agent) {
@@ -1476,16 +1548,18 @@ function agentVoiceMuted(agent) {
 /** Every voice on/off. Captions stay either way, so a muted room is still readable. */
 function toggleAllVoices() {
   try {
-    const cast = require("./cast-config.cjs");
-    const next = !cast.allMuted();
-    if (!next) cast.setAllMuted(false);
-    // Say it BEFORE muting, after unmuting: the confirmation must be audible.
-    void speakAloud(next ? "Voices off." : "Voices on.", undefined, undefined, "slot0", "service:awdesk-voice")
-      .finally(() => { if (next) cast.setAllMuted(true); refreshTrayMenu(); });
-    if (!next) refreshTrayMenu();
+    setAllVoicesMuted(!voiceAllMuted());
   } catch (error) {
     debugLog("toggleAllVoices failed", error && error.message);
   }
+}
+
+/** The master switch, set to a STATE rather than flipped: the Stage pane's
+ *  "All voices" button names the state it wants, so a double click cannot undo
+ *  itself. Returns the state the room is heading to; a mute lands after its spoken
+ *  confirmation, and an unmute inside that sentence cancels it (voice-master.cjs). */
+function setAllVoicesMuted(muted) {
+  return voiceMaster().set(muted);
 }
 
 /** ONE agent's voice on/off, from that body's right-click. */
@@ -1493,20 +1567,32 @@ function toggleAgentVoice(slotId) {
   const agent = agentForSlot(slotId);
   if (!agent) return;
   try {
-    const cast = require("./cast-config.cjs");
-    const next = !cast.isAgentMuted(agent);
-    cast.setAgentMuted(agent, next);
-    sendBubble(slotId || "slot0", next ? `${agent}'s voice is off` : `${agent}'s voice is on`, { muted: next });
-    if (!next) void speakAloud("I'm back.", undefined, undefined, slotId || "slot0", "service:awdesk-voice");
-    refreshTrayMenu();
+    setAgentVoiceMuted(slotId, !require("./cast-config.cjs").isAgentMuted(agent));
   } catch (error) {
     debugLog("toggleAgentVoice failed", error && error.message);
   }
 }
 
+/** ONE body's voice set to a state (the Stage pane's per-row speaker). Throws when
+ *  the slot names no agent, so the pane says so instead of showing a dead toggle. */
+function setAgentVoiceMuted(slotId, muted) {
+  const agent = agentForSlot(slotId);
+  if (!agent) throw new Error(`${slotId || "?"} is not a body on the stage`);
+  const cast = require("./cast-config.cjs");
+  const next = Boolean(muted);
+  if (next === cast.isAgentMuted(agent)) return next;
+  cast.setAgentMuted(agent, next);
+  sendBubble(slotId || "slot0", next ? `${agent}'s voice is off` : `${agent}'s voice is on`, { muted: next });
+  if (!next) void speakAloud("I'm back.", undefined, undefined, slotId || "slot0", "service:awdesk-voice");
+  refreshTrayMenu();
+  return next;
+}
+
 function stagePaneImpl() {
   return {
-    bodies: () => [
+    // voiceMuted rides on every body (stage-window.cjs withVoiceState): the pane's
+    // per-row speaker was a right-click-only switch before.
+    bodies: () => withVoiceState([
       { slotId: "slot0", name: getActiveCharacter() || "Aither", agent: "aither", resident: true },
       ...[...avatarSlots.entries()].map(([slotId, info]) => ({
         slotId,
@@ -1514,7 +1600,10 @@ function stagePaneImpl() {
         agent: info.agent || "",
         resident: false,
       })),
-    ],
+    ], { agentFor: agentForSlot, mutedAgents: voiceMutedAgents() }),
+    allVoicesMuted: () => voiceAllMuted(),
+    setVoiceMuted: (slotId, muted) => setAgentVoiceMuted(slotId, muted),
+    setAllVoicesMuted: (muted) => setAllVoicesMuted(muted),
     arrange: (arrangement, options = {}) => {
       sendToAvatar("stage-arrange", {
         arrangement,
@@ -2106,22 +2195,19 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       return;
     }
     case "cast.open": {
-      openConsole();
-      focusPane("cast");
+      openConsole("cast");
       return;
     }
     // ONE door to everything about bodies: who is on stage, their looks, voices,
     // and the avatar window's size (the Stage pane and its tabs).
     case "stage.open": {
-      openConsole();
-      focusPane("stage");
+      openConsole("stage");
       return;
     }
     // Plan: the settings page the owner asked for by name. kind:"file" pane,
     // no vite build (see console-window.cjs PANES).
     case "settings.open": {
-      openConsole();
-      focusPane("settings");
+      openConsole("settings");
       return;
     }
     case "voice.mute": return void toggleMicMute();
@@ -2292,6 +2378,49 @@ function deckState() {
   };
 }
 
+/**
+ * Answer an open card from a desk surface -- the ONE answer path. The deck, the
+ * console Inbox (desk:deck-answer) and the browser side panel's Agents tab
+ * (browser-window setAgentsHost) all land here, so a destructive card is routed
+ * to the signed approval window from every surface, never to awask unsigned.
+ * `parent` is the window the approval dialog belongs to.
+ */
+function answerDeckCard(id, choice, parent) {
+  // A destructive card (awstorage proposal/plan) is approved only by a SIGNED
+  // answer, which needs a fresh passkey session: open Veil's /approve page
+  // (Windows Hello) instead of the unsigned `awask answer`. The route is
+  // decided from the card FILE, never from the renderer's payload. Reject and
+  // ordinary cards keep using awask. {pending:true} = the answer lands when
+  // the owner finishes in that window; the watcher then drops the card.
+  if (typeof id === "string" && typeof choice === "string" && choice) {
+    const raw = signedApproval.readCardRaw(id, decisionCards.storeDir());
+    if (signedApproval.answerRoute(raw, choice) === "window") {
+      try {
+        signedApproval.openApproveWindow({
+          BrowserWindow,
+          parent: parent && !parent.isDestroyed() ? parent : null,
+          url: signedApproval.approveUrl(id, choice),
+          log: debugLog,
+        });
+        return { pending: true, via: "approve-window" };
+      } catch (err) {
+        debugLog(`[approve] window failed for ${id}: ${err && err.message}`);
+        return false;
+      }
+    }
+  }
+  const ok = decisionCards.answerCard(id, choice);
+  if (ok) {
+    // The loop closes only if the SESSIONS see the answer: post it to the
+    // coordination channel the fleet already reads. Best-effort — a quiet
+    // relay must never make the answer look undone.
+    void postToRelay(RELAY_CHANNEL, `answered ${id}: ${choice} (via desk)`).then(() => {
+      void refreshRelayFeed();
+    });
+  }
+  return ok;
+}
+
 /** Push fresh state to every window rendering the deck feed. */
 function sendDeckState() {
   const event = { type: "deck-state", ...deckState() };
@@ -2303,6 +2432,29 @@ function sendDeckState() {
   if (chatWindow && !chatWindow.isDestroyed()) {
     chatWindow.webContents.send("desk:event", event);
   }
+  // The Inbox / Chat / Characters pages as aither:// tabs render the same feed.
+  browserWindow.sendToInternalTabs("desk:event", deckStateForInternal(event));
+}
+
+/**
+ * deck-state for a page on an aither:// origin: the character models it cannot
+ * load as file:// URLs are re-addressed to its own /_models/ route
+ * (browser-internal internalModelUrls; main's modelFile resolves them back).
+ */
+function deckStateForInternal(state) {
+  return { ...state, characterModels: browserInternal.internalModelUrls(state.characterModels) };
+}
+
+/** deckState() for whoever asked: an aither:// sender gets its re-addressed copy. */
+function deckStateFor(sender) {
+  const state = deckState();
+  let url = "";
+  try {
+    url = sender && typeof sender.getURL === "function" ? sender.getURL() : "";
+  } catch {
+    url = "";
+  }
+  return browserInternal.isInternalUrl(url) ? deckStateForInternal(state) : state;
 }
 
 // Feed the Aitheros Online overlay the same snapshot the deck panel consumes, so the
@@ -2331,6 +2483,22 @@ setOverlayHost({
 setInterval(() => {
   pushDeskState();
 }, 5000);
+// The browser side panel's Agents tab (connect-panel.html): the same session
+// directory, open cards and room feed the desk already holds, and the same answer
+// path as the Inbox. agents-panel.cjs shapes it; awconnect-next renders that shape.
+browserWindow.setAgentsHost(agentsPanel.createAgentsSource({
+  listSessions: () => require("./sessions-client.cjs").listSessions(),
+  getCards: () => openDecisions,
+  getRoom: () => roomFeed,
+  getRoomStatus: () => (roomPublisher ? (roomPublisher.lastError || "ok") : "not started"),
+  // Wrapped by createAgentsSource: an answered id stays unanswerable until the
+  // decision watcher drops the card (awask's success is "spawned", not "took it").
+  answer: (id, choice, parent) => {
+    const result = answerDeckCard(id, choice, parent);
+    if (result && typeof result === "object" && result.pending) return { ok: true, pending: true, via: result.via };
+    return result ? { ok: true } : { ok: false, error: "awask did not take the answer" };
+  },
+}));
 
 /** Poll #agents for the deck's relay section. [] on refusal — the section
  *  renders "relay unavailable" rather than pretending the channel is empty. */
@@ -2627,8 +2795,24 @@ async function commandAction(text, { source = "unknown" } = {}) {
  * window on demand, and takes it back on reattach, which is why every entry
  * carries all three of open/close/isOpen. A detach with no way back would leave
  * the owner exactly where this started.
+ *
+ * Owner, 2026-10-04: "make the browser the console" (plan slice 9). openConsole is
+ * now a SHIM: it raises the Aither Browser on aither://<pane>, with the Inbox,
+ * AitherOS Online and Workspace pinned, and no second window. DESK_LEGACY_CONSOLE=1
+ * brings the old console window back for rollback.
+ *
+ * @param pane   a console pane id (PANES in console-window.cjs); the Inbox when null
+ * @param param  a focus parameter for the pane (a decision card id)
+ * @returns truthy when a surface is showing that pane
  */
-function openConsole() {
+function openConsole(pane = null, param = null) {
+  const legacy = browserInternal.legacyConsole();
+  wireConsoleHost(legacy);
+  if (legacy) return pane ? focusConsolePane(pane, param) : true;
+  return browserWindow.openInternal(pane || "cards", param, { askAgent: browserAskAgent });
+}
+
+function wireConsoleHost(legacy) {
   // 🚩 Wire the pane handlers FIRST. Both pages talk to main the moment they load
   // -- fleet-control.html probes on load, command.html sends on the first Enter --
   // and their handlers used to be installed only as a side effect of creating the
@@ -2640,17 +2824,41 @@ function openConsole() {
   ensureCommandIpc(getFleetControl(), { createFleetWindow });
   ensureSessionsIpc();
   ensureOpsIpc();
+  ensureFilesIpc();
+  ensureSecretsIpc();
+  ensurePlaneIpc();
   ensureStageIpc(stagePaneImpl());
   // The Cast pane (U03/U07): who appears, and how they sound. Guarded --
   // cast-window.cjs may not exist on this box yet (see the guarded require
   // up top); the console still opens with every OTHER pane when it is absent.
   if (ensureCastIpc) ensureCastIpc(roomStageHost.castPaneImpl(roomStageDeps()));
-  // And "close" inside a pane now closes the console, rather than looking for a
-  // standalone window that does not exist and silently doing nothing.
-  setFleetCloseFallback(closeConsole);
-  setCommandCloseFallback(closeConsole);
-  return showConsole({
+  // And "close" inside a pane now closes the console (legacy) or that pane's
+  // aither:// tab, rather than looking for a standalone window that does not exist
+  // and silently doing nothing.
+  const closePane = legacy ? closeConsole : (event) => browserWindow.closeInternalTabOf(event && event.sender);
+  setFleetCloseFallback(closePane);
+  setCommandCloseFallback(closePane);
+  if (!legacy) {
+    browserWindow.configureInternal({
+      rendererUrl,
+      // aither://desktop -- AitherOS Online at app.aitherium.com (the one page host;
+      // DESK_ONLINE_URL overrides), signed in BEFORE it loads, in its partition. The
+      // session cookie is the .aitherium.com domain cookie, so the app host sees it.
+      hostedUrl: () => browserInternal.onlineUrl(),
+      hostedPrepare: ensureDesktopSession,
+      // aither://<view>/_models/<name>.vrm -- the deck's character thumbnails.
+      modelFile: (name) => {
+        const url = characterModelUrl(name);
+        return url ? fileURLToPath(url) : null;
+      },
+    });
+  }
+  // Legacy: open the console window. Shim: its IPC only (appearance, palette), so
+  // the aither:// pages get the same answers the console's frames did.
+  return (legacy ? showConsole : ensureConsoleIpc)({
     rendererUrl,
+    // A theme set from the Settings page repaints the browser's aither:// tabs too.
+    onAppearance: (appearance) => browserWindow.sendToInternalTabs("desk:appearance-changed", appearance),
     // The palette reads the SAME registry the tray and the avatar menu render
     // from, with labels resolved against live counts, so it can never offer a
     // stale set -- and no capability is gesture-only again.
@@ -2683,6 +2891,41 @@ function openConsole() {
         open: () => createOpsWindow(),
         close: closeOpsWindow,
         isOpen: isOpsWindowOpen,
+      },
+      files: {
+        open: () => createFilesWindow(),
+        close: closeFilesWindow,
+        isOpen: isFilesWindowOpen,
+      },
+      secrets: {
+        open: () => createSecretsWindow(),
+        close: closeSecretsWindow,
+        isOpen: isSecretsWindowOpen,
+      },
+      strata: {
+        open: () => createPlaneWindow("strata"),
+        close: () => closePlaneWindow("strata"),
+        isOpen: () => isPlaneWindowOpen("strata"),
+      },
+      pulse: {
+        open: () => createPlaneWindow("pulse"),
+        close: () => closePlaneWindow("pulse"),
+        isOpen: () => isPlaneWindowOpen("pulse"),
+      },
+      watch: {
+        open: () => createPlaneWindow("watch"),
+        close: () => closePlaneWindow("watch"),
+        isOpen: () => isPlaneWindowOpen("watch"),
+      },
+      flux: {
+        open: () => createPlaneWindow("flux"),
+        close: () => closePlaneWindow("flux"),
+        isOpen: () => isPlaneWindowOpen("flux"),
+      },
+      nexus: {
+        open: () => createPlaneWindow("nexus"),
+        close: () => closePlaneWindow("nexus"),
+        isOpen: () => isPlaneWindowOpen("nexus"),
       },
       cards: {
         open: () => createDeckWindow(),
@@ -2749,6 +2992,14 @@ function openConsole() {
     begin: { desktop: beginDesktopSignIn },
   });
 }
+
+// An aither:// page opened from the ADDRESS BAR or a link (not through openConsole)
+// still gets its pane handlers and the renderer/hosted URLs: the browser asks first.
+browserWindow.configureInternal({
+  beforeInternal: () => {
+    if (!browserInternal.legacyConsole()) wireConsoleHost(false);
+  },
+});
 
 // The LAST independent popup source folds in (owner, 2026-09-08: "I WANT TO
 // CONSOLIDATE AND DEDUPE"). A decision card had three unrelated homes -- awask's
@@ -2967,46 +3218,14 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // subscribes to desk:event pushes for updates, and routes every action
     // back through the same functions the old menus used — no second path to
     // drift from.
-    ipcMain.handle("desk:deck-get-state", () => deckState());
+    ipcMain.handle("desk:deck-get-state", (event) => deckStateFor(event && event.sender));
     ipcMain.on("desk:deck-open", () => createDeckWindow());
     ipcMain.on("desk:deck-close", () => {
       if (deckWindow && !deckWindow.isDestroyed()) deckWindow.close();
     });
     ipcMain.handle("desk:deck-answer", (_event, payload) => {
       const { id, choice } = payload || {};
-      // A destructive card (awstorage proposal/plan) is approved only by a SIGNED
-      // answer, which needs a fresh passkey session: open Veil's /approve page
-      // (Windows Hello) instead of the unsigned `awask answer`. The route is
-      // decided from the card FILE, never from the renderer's payload. Reject and
-      // ordinary cards keep using awask. {pending:true} = the answer lands when
-      // the owner finishes in that window; the watcher then drops the card.
-      if (typeof id === "string" && typeof choice === "string" && choice) {
-        const raw = signedApproval.readCardRaw(id, decisionCards.storeDir());
-        if (signedApproval.answerRoute(raw, choice) === "window") {
-          try {
-            signedApproval.openApproveWindow({
-              BrowserWindow,
-              parent: deckWindow && !deckWindow.isDestroyed() ? deckWindow : null,
-              url: signedApproval.approveUrl(id, choice),
-              log: debugLog,
-            });
-            return { pending: true, via: "approve-window" };
-          } catch (err) {
-            debugLog(`[approve] window failed for ${id}: ${err && err.message}`);
-            return false;
-          }
-        }
-      }
-      const ok = decisionCards.answerCard(id, choice);
-      if (ok) {
-        // The loop closes only if the SESSIONS see the answer: post it to the
-        // coordination channel the fleet already reads. Best-effort — a quiet
-        // relay must never make the answer look undone.
-        void postToRelay(RELAY_CHANNEL, `answered ${id}: ${choice} (via desk)`).then(() => {
-          void refreshRelayFeed();
-        });
-      }
-      return ok;
+      return answerDeckCard(id, choice, deckWindow);
     });
     // STEER a card: "none of these options — do this instead". The card plane's
     // write verb the deck never had (integration-map gap 3): without it, a card
@@ -3240,7 +3459,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       if (!require("./connections.cjs").RUNNABLE.includes(name) || name === "link") {
         return { ok: false, error: `${name} cannot run from Connections` };
       }
-      if (name === "console.open") { openConsole(); focusPane("sessions"); return { ok: true }; }
+      if (name === "console.open") { openConsole("sessions"); return { ok: true }; }
       return (await runCommand(name, undefined, { surface: "palette" })) || { ok: true };
     });
     ipcMain.handle("desk:link-start", async () => {
@@ -3428,6 +3647,15 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // PROPOSES a share of the original path from this node -- nothing is staged
     // or published here; Genesis answers with a proposal (card-gated on a
     // platform disk) and a human answers the card.
+    // Files page "Hand to agent": the path lands in the same #agents line a drop
+    // makes, so the chat shows it and every agent sees it. The line itself says
+    // whether the place is shared with agents (files-window.cjs handOffLine);
+    // posting grants nothing. No focus change: the owner stays where he clicked.
+    setFilesHandOff(async (text) => {
+      const sent = await postToRelay(RELAY_CHANNEL, text);
+      if (sent && sent.ok) void refreshRelayFeed();
+      return sent;
+    });
     ipcMain.handle("desk:file-share", async (_event, filePath, opts) => routeShare(
       { filePath, seal: Boolean(opts && opts.seal === true) },
       { share: (body) => getDiskExplorerClient().share(body) },
@@ -3794,6 +4022,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     });
 
     const mcpHandler = createDeskMcpHandler({
+      // Files page grants: agents read ONLY the folders the owner switched on.
+      filesAccess: require("./files-access.cjs").createFilesAccess().agent,
       onAnimation: (animation) => {
         let animationEvent;
         if (animation.startsWith("FILE:")) {
@@ -3891,8 +4121,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       },
       consoleHandler: (pane) => {
         if (pane === "inbox" || pane === "cards") return { ok: openInbox() !== false, pane: "inbox" };
-        openConsole();
-        return { ok: focusPane(pane) !== false, pane };
+        return { ok: openConsole(pane) !== false, pane };
       },
       stageStatusProvider: () => ({ ...(roomStageHost.status() || { room: false }), mainLag, present: { mode: presentState.present, gpu: presentState.gpu } }),
       // POST /roster/capture (bearer): full-body frames for the rater. GET: progress.

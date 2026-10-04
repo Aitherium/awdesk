@@ -59,6 +59,7 @@
   .field { display: grid; gap: 2px; }
   .field label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
   .field .from { font-size: 10px; color: var(--muted); }
+  .field .muted-agents { display: flex; flex-wrap: wrap; gap: 6px; }
   /* The physics faders: one stacked block per body, each fader with its own readout. */
   .field.physics { flex: 1 1 100%; gap: 4px; }
   .field.physics .controls { flex-wrap: nowrap; }
@@ -355,12 +356,26 @@ function rosterSelect(current) {
   return select;
 }
 
+/** The provenance line under a control. A `roster.<agent>` value is the
+ *  agent's DECLARED voice/character from the platform roster: it is said in
+ *  words, because the order is a choice the owner should see -- any record of
+ *  yours naming this agent (actors, authors, seats) beats it, and it beats
+ *  your file-wide defaults (defaults.voice, voice.defaultVoice). */
+function provenanceText(fromText) {
+  if (typeof fromText !== "string" || !fromText) return fromText;
+  if (/^roster\./.test(fromText)) {
+    return `${fromText} -- the agent's declared default; set it here to override. ` +
+      "It outranks your file-wide defaults.";
+  }
+  return fromText;
+}
+
 function fieldBlock(labelText, control, fromText) {
   const field = el("div", "field");
   const label = el("label", null, labelText);
   field.appendChild(label);
   field.appendChild(control);
-  if (fromText) field.appendChild(el("div", "from", fromText));
+  if (fromText) field.appendChild(el("div", "from", provenanceText(fromText)));
   return field;
 }
 
@@ -843,6 +858,29 @@ function renderPhysics() {
   }));
 }
 
+/** voice.mutedAgents, shown: each agent whose own voice is off (set from a body's
+ *  right-click or the Stage pane's per-row speaker), with a way back on. Without
+ *  this the only place the list was visible was the file. */
+function mutedAgentsField(list, save) {
+  const names = Array.isArray(list) ? list.filter((n) => typeof n === "string" && n) : [];
+  const wrap = el("div", "field");
+  wrap.appendChild(el("label", null, "Muted agents"));
+  if (!names.length) {
+    wrap.appendChild(el("span", "from", "none: every agent's own voice is on"));
+    return wrap;
+  }
+  const holder = el("div", "muted-agents");
+  for (const name of names) {
+    const button = el("button", "chip small", `${name}: turn voice on`);
+    // The whole remaining list, never a delta: setVoice is a shallow merge, so the
+    // list it writes IS the list. An empty list is a valid "nobody muted".
+    button.addEventListener("click", () => save({ mutedAgents: names.filter((n) => n !== name) }));
+    holder.appendChild(button);
+  }
+  wrap.appendChild(holder);
+  return wrap;
+}
+
 function renderVoice() {
   const grid = document.getElementById("voiceGrid");
   grid.replaceChildren();
@@ -863,6 +901,7 @@ function renderVoice() {
     { min: 0, max: 1, step: 0.05 }, (v) => save({ volume: v })));
   grid.appendChild(checkField("Mute everyone", "silence the whole room; speech bubbles keep showing the words",
     voice.muted === true, (v) => save({ muted: v })));
+  grid.appendChild(mutedAgentsField(voice.mutedAgents, save));
 
   const voiceWrap = el("div", "field");
   voiceWrap.appendChild(el("label", null, "Default voice"));

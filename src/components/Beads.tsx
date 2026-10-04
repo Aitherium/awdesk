@@ -88,7 +88,7 @@ interface CommandRow { id: string; label: string; icon: string | null; group: st
 const FALLBACK_ROWS: CommandRow[] = [
   { id: 'inbox.open', label: 'Inbox', icon: 'bell', group: 'go' },
   { id: 'chat.open', label: 'Chat with Aither…', icon: 'chat', group: 'talk' },
-  { id: 'console.open', label: 'Aither Console…', icon: 'grid', group: 'go' },
+  { id: 'console.open', label: 'Open Aither', icon: 'grid', group: 'go' },
 ];
 
 interface BeadDeckBridge {

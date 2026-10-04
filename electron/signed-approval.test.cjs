@@ -112,10 +112,28 @@ test("main.cjs routes desk:deck-answer through signed-approval before awask", ()
   const src = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   const i = src.indexOf('ipcMain.handle("desk:deck-answer"');
   assert.ok(i > 0);
-  const body = src.slice(i, i + 2500);
+  // The handler delegates to the ONE answer path every desk surface shares.
+  assert.match(src.slice(i, i + 300), /return answerDeckCard\(id, choice, deckWindow\)/);
+  const f = src.indexOf("function answerDeckCard(id, choice, parent)");
+  assert.ok(f > 0, "answerDeckCard is the shared answer path");
+  const body = src.slice(f, f + 2500);
   const route = body.indexOf("signedApproval.answerRoute(");
   const awask = body.indexOf("decisionCards.answerCard(");
   assert.ok(route > 0 && awask > route, "answerRoute must be consulted before answerCard");
   assert.match(body, /readCardRaw\(id, decisionCards\.storeDir\(\)\)/);
   assert.match(body, /pending: true/);
+});
+
+test("the browser side panel's Agents tab answers through the same answerDeckCard", () => {
+  const src = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  const i = src.indexOf("browserWindow.setAgentsHost(agentsPanel.createAgentsSource({");
+  assert.ok(i > 0, "main installs the Agents host");
+  const body = src.slice(i, i + 1200);
+  assert.match(body, /answerDeckCard\(id, choice, parent\)/);
+  assert.doesNotMatch(body, /decisionCards\.answerCard\(/, "no second, unsigned answer path");
+  assert.match(body, /getCards: \(\) => openDecisions/);
+  assert.match(body, /getRoom: \(\) => roomFeed/);
+  // The answer is handed to createAgentsSource, which holds an answered id until the
+  // watcher drops the card -- not spread beside it, where nothing would wrap it.
+  assert.match(body, /^  answer: \(id, choice, parent\) =>/m);
 });

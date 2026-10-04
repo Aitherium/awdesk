@@ -32,7 +32,8 @@ function electron() {
 
 let stageWindow = null;
 let wired = false;
-/** Injected by main.cjs: { bodies(), arrange(name, opts), focus(slotId), remove(slotId) }. */
+/** Injected by main.cjs: { bodies(), arrange(name, opts), focus(slotId), remove(slotId),
+ *  run(id), safety(), allVoicesMuted(), setVoiceMuted(slotId, on), setAllVoicesMuted(on) }. */
 let stageImpl = {};
 
 /** Registry commands the Stage page may run: the avatar window's size and layout. */
@@ -42,12 +43,37 @@ const STAGE_RUNNABLE = Object.freeze([
   "layout.reset-all",
 ]);
 
-function ensureStageIpc(impl) {
-  if (impl) stageImpl = impl;
-  if (wired) return;
-  wired = true;
-  const { ipcMain } = electron();
+/** Body names are stored lowercased (cast-config normaliseAuthor); compare the same way. */
+function voiceKey(agent) {
+  return String(agent == null ? "" : agent).trim().toLowerCase().slice(0, 80);
+}
 
+/**
+ * Stamp `voiceMuted` on every body. `agentFor(slotId)` names the agent a body
+ * speaks for (main's agentForSlot -- the SAME lookup the right-click mute keys
+ * on, so the pane and the menu can never disagree about whose voice a row is),
+ * and `mutedAgents` is voice.mutedAgents read ONCE for the whole list.
+ */
+function withVoiceState(bodies, { agentFor, mutedAgents } = {}) {
+  const muted = new Set((Array.isArray(mutedAgents) ? mutedAgents : []).map(voiceKey).filter(Boolean));
+  return (Array.isArray(bodies) ? bodies : []).map((body) => {
+    const agent = voiceKey((typeof agentFor === "function" && agentFor(body.slotId)) || body.agent);
+    return { ...body, voiceMuted: Boolean(agent) && muted.has(agent) };
+  });
+}
+
+/** A strict boolean from the renderer, or null: a toggle with no stated target is refused. */
+function asState(value) {
+  return value === true || value === false ? value : null;
+}
+
+/**
+ * Every desk:stage-* verb as a plain function over `getImpl()` -- the seam that
+ * lets stage-window.test.cjs drive them without Electron (same shape as
+ * cast-window.cjs's castHandlers).
+ */
+function stageHandlers(getImpl) {
+  const impl = () => getImpl() || {};
   const call = (name, fn) => {
     try {
       return { ok: true, ...(fn() || {}) };
@@ -57,30 +83,61 @@ function ensureStageIpc(impl) {
       return { ok: false, error: `${name}: ${String((error && error.message) || error)}` };
     }
   };
+  return {
+    "desk:stage-bodies": () => call("bodies", () => ({
+      bodies: (impl().bodies && impl().bodies()) || [],
+      // The master voice switch rides with the list so the pane's "All voices"
+      // button and the rows are painted from one answer.
+      allVoicesMuted: Boolean(impl().allVoicesMuted && impl().allVoicesMuted()),
+      // Plan 40 slice F: the safety setting is enforced at every door that shows a
+      // body, so the pane that lists bodies is where its state belongs. Read-only
+      // on purpose -- the desk does not own the flip, it obeys it.
+      safety: (impl().safety && impl().safety()) || null,
+    })),
+    "desk:stage-arrange": (_event, name, options) => call("arrange", () => {
+      impl().arrange?.(String(name || ""), options || {});
+    }),
+    "desk:stage-focus": (_event, slotId) => call("focus", () => {
+      impl().focus?.(slotId ? String(slotId) : null);
+    }),
+    "desk:stage-remove": (_event, slotId) => call("remove", () => {
+      impl().remove?.(String(slotId || ""));
+    }),
+    // The avatar WINDOW's controls live on this page now (owner, 2026-10-03: too many
+    // separate menus for one stage). Only these registry ids may run from here.
+    "desk:stage-run": (_event, id) => call("run", () => {
+      const name = String(id || "");
+      if (!STAGE_RUNNABLE.includes(name)) throw new Error(`${name} cannot run from the stage page`);
+      impl().run?.(name);
+    }),
+    // ONE body's voice, set to a stated state (not flipped: a double click must not
+    // undo itself). Was reachable only from that body's right-click menu.
+    "desk:stage-voice": (_event, slotId, muted) => call("voice", () => {
+      const slot = String(slotId || "");
+      const state = asState(muted);
+      if (!slot) throw new Error("no body named");
+      if (state === null) throw new Error("muted must be true or false");
+      if (!impl().setVoiceMuted) throw new Error("voice control is not wired");
+      return { slotId: slot, voiceMuted: Boolean(impl().setVoiceMuted(slot, state)) };
+    }),
+    // Every voice at once. Captions keep showing the words either way.
+    "desk:stage-all-voices": (_event, muted) => call("all voices", () => {
+      const state = asState(muted);
+      if (state === null) throw new Error("muted must be true or false");
+      if (!impl().setAllVoicesMuted) throw new Error("voice control is not wired");
+      return { allVoicesMuted: Boolean(impl().setAllVoicesMuted(state)) };
+    }),
+  };
+}
 
-  ipcMain.handle("desk:stage-bodies", () => call("bodies", () => ({
-    bodies: (stageImpl.bodies && stageImpl.bodies()) || [],
-    // Plan 40 slice F: the safety setting is enforced at every door that shows a
-    // body, so the pane that lists bodies is where its state belongs. Read-only
-    // on purpose -- the desk does not own the flip, it obeys it.
-    safety: (stageImpl.safety && stageImpl.safety()) || null,
-  })));
-  ipcMain.handle("desk:stage-arrange", (_event, name, options) => call("arrange", () => {
-    stageImpl.arrange?.(String(name || ""), options || {});
-  }));
-  ipcMain.handle("desk:stage-focus", (_event, slotId) => call("focus", () => {
-    stageImpl.focus?.(slotId ? String(slotId) : null);
-  }));
-  ipcMain.handle("desk:stage-remove", (_event, slotId) => call("remove", () => {
-    stageImpl.remove?.(String(slotId || ""));
-  }));
-  // The avatar WINDOW's controls live on this page now (owner, 2026-10-03: too many
-  // separate menus for one stage). Only these registry ids may run from here.
-  ipcMain.handle("desk:stage-run", (_event, id) => call("run", () => {
-    const name = String(id || "");
-    if (!STAGE_RUNNABLE.includes(name)) throw new Error(`${name} cannot run from the stage page`);
-    stageImpl.run?.(name);
-  }));
+function ensureStageIpc(impl) {
+  if (impl) stageImpl = impl;
+  if (wired) return;
+  wired = true;
+  const { ipcMain } = electron();
+  for (const [channel, handler] of Object.entries(stageHandlers(() => stageImpl))) {
+    ipcMain.handle(channel, handler);
+  }
 }
 
 function createStageWindow() {
@@ -129,4 +186,12 @@ function isStageWindowOpen() {
   return Boolean(stageWindow && !stageWindow.isDestroyed());
 }
 
-module.exports = { ensureStageIpc, createStageWindow, closeStageWindow, isStageWindowOpen, STAGE_RUNNABLE };
+module.exports = {
+  ensureStageIpc,
+  createStageWindow,
+  closeStageWindow,
+  isStageWindowOpen,
+  stageHandlers,
+  withVoiceState,
+  STAGE_RUNNABLE,
+};

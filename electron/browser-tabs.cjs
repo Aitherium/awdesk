@@ -14,9 +14,16 @@
  * The owner can click any tab to watch it; that changes what is SHOWN (active),
  * never what the agent drives (target). A popup inherits its opener's owner, so a
  * link an agent page spawns is still the agent's.
+ *
+ * Since the browser became the console (plan slice 9) a tab also has a KIND --
+ * "web", "internal" (an aither:// page) or "hosted" (AitherOS Online, signed in) --
+ * and may be PINNED. Pinned tabs (Inbox, AitherOS Online, Workspace) sit at the
+ * front of the strip and cannot be closed from it; only an owner tab may be pinned
+ * or non-web, so an agent can never hold a console page.
  */
 
 const OWNERS = Object.freeze(["you", "agent"]);
+const KINDS = Object.freeze(["web", "internal", "hosted"]);
 const MAX_TABS = 30;
 
 class TabSet {
@@ -28,12 +35,20 @@ class TabSet {
   }
 
   /** @returns {{ok: true, id: number} | {ok: false, error: string}} */
-  add(by, { activate = true, after = null } = {}) {
+  add(by, { activate = true, after = null, kind = "web", pinned = false, key = null } = {}) {
     if (!OWNERS.includes(by)) return { ok: false, error: `unknown tab owner ${by}` };
+    if (!KINDS.includes(kind)) return { ok: false, error: `unknown tab kind ${kind}` };
+    if (by === "agent" && (kind !== "web" || pinned)) {
+      return { ok: false, error: "an agent may only open web tabs; Aither pages belong to the owner" };
+    }
     if (this.tabs.length >= MAX_TABS) return { ok: false, error: `the Aither Browser is at its ${MAX_TABS}-tab limit; close one first` };
-    const tab = { id: this.nextId++, by };
-    const at = after == null ? -1 : this.tabs.findIndex((t) => t.id === after);
-    if (at >= 0) this.tabs.splice(at + 1, 0, tab);
+    const tab = { id: this.nextId++, by, kind, pinned: Boolean(pinned), key: key == null ? null : String(key) };
+    const lastPinned = this.tabs.reduce((last, t, i) => (t.pinned ? i : last), -1);
+    let at = after == null ? -1 : this.tabs.findIndex((t) => t.id === after);
+    // Pinned tabs stay at the front, in the order they were pinned; nothing lands among them.
+    if (tab.pinned) at = lastPinned;
+    else if (at >= 0 && at < lastPinned) at = lastPinned;
+    if (at >= 0 || tab.pinned) this.tabs.splice(at + 1, 0, tab);
     else this.tabs.push(tab);
     if (activate || this.active == null) this.active = tab.id;
     if (by === "agent") this.agentTarget = tab.id;
@@ -42,6 +57,11 @@ class TabSet {
 
   get(id) {
     return this.tabs.find((t) => t.id === id) || null;
+  }
+
+  /** The pinned tab with this key ("inbox", "online", "workspace"), or null. */
+  byKey(key) {
+    return this.tabs.find((t) => t.key != null && t.key === String(key)) || null;
   }
 
   /** The owner shows a tab (any tab). */
@@ -71,6 +91,7 @@ class TabSet {
     if (by === "agent" && this.tabs[index].by !== "agent") {
       return { ok: false, error: `tab ${id} is the owner's; an agent may only close tabs it opened` };
     }
+    if (this.tabs[index].pinned) return { ok: false, error: `tab ${id} is pinned` };
     this.tabs.splice(index, 1);
     if (this.agentTarget === id) {
       const agentTabs = this.tabs.filter((t) => t.by === "agent");
@@ -94,9 +115,9 @@ class TabSet {
     return {
       active: this.active,
       agentTarget: this.agentTarget,
-      tabs: this.tabs.map((t) => ({ id: t.id, by: t.by })),
+      tabs: this.tabs.map((t) => ({ id: t.id, by: t.by, kind: t.kind, pinned: t.pinned })),
     };
   }
 }
 
-module.exports = { MAX_TABS, OWNERS, TabSet };
+module.exports = { KINDS, MAX_TABS, OWNERS, TabSet };

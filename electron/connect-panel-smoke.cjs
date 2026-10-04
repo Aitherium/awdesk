@@ -4,23 +4,39 @@
  * Does the Connect panel WORK, not just parse? A real Electron run
  * (`npm run test:connect-panel`): the real connect-panel.html, with a stub
  * aitherAssist behind it, clicked through Chat (question, quick action, history),
- * Do it, Open in Chrome and Downloads -- and a hostile reply must render as text.
+ * Do it, Open in Chrome, Downloads and Agents (a card answered in place, sessions,
+ * the room) -- and a hostile reply or room line must render as text.
  * Exit 0 all pass, 1 a check failed, 2 the run broke, 3 it hung.
  */
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { app, BrowserWindow } = require("electron");
+const { buildAgentsView } = require("./agents-panel.cjs");
 
 app.setPath("userData", path.join(os.tmpdir(), `awdesk-connect-smoke-${process.pid}`));
 process.on("unhandledRejection", (e) => { console.log("REJECT " + ((e && e.stack) || e)); app.exit(2); });
 setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 45000);
+
+// The Agents tab's view, shaped by the REAL agents-panel.cjs from desk-shaped inputs.
+const AGENTS = buildAgentsView({
+  sessions: { ok: true, sessions: [
+    { id: "s-idle", title: "docs pass", status: "idle", harness: "claude_code", last_activity_at: 1 },
+    { id: "s-ask", title: "fleet fix", status: "waiting-input", harness: "claude_code", last_activity_at: 2,
+      last_activity_summary: "asked which port" },
+  ] },
+  cards: [{ id: "d-1", title: "Ship it?", summary: "PR is green", urgency: "high", createdAt: 1, agent: "demiurge",
+    options: [{ key: "yes", label: "Ship" }, { key: "no", label: "Hold", consequence: "nothing ships" }], defaultKey: "yes" }],
+  room: [{ id: "r1", author: "lyra", text: "<b onclick=x>bold</b>", agent: true, at: 1 }],
+});
 
 // A stub preload: the same aitherAssist shape, recording every call.
 const STUB = [
   'const { contextBridge } = require("electron");',
   "const calls = [];",
   "let listener = null;",
+  `const AGENTS0 = ${JSON.stringify(AGENTS)};`,
+  "let agents = AGENTS0;",
   'const state = { url: "https://shop.test/cart", title: "Cart", tabs: [{ id: 1, by: "you", active: true }],',
   '  agent: { driving: false, paused: true, handoff: { reason: "Tick the captcha." } },',
   '  downloads: [{ id: 1, filename: "invoice.pdf", url: "https://shop.test/i.pdf", state: "completed", received: 1, total: 1 },',
@@ -34,9 +50,15 @@ const STUB = [
   '  clearDownloads: () => calls.push(["clear"]),',
   '  showDownload: (id) => calls.push(["show", id]),',
   "  onState: (fn) => { listener = fn; },",
+  "  agents: async () => agents,",
+  "  answerCard: async (id, key) => { calls.push(['answer', id, key]);",
+  "    agents = Object.assign({}, agents, { waiting: 0, cards: Object.assign({}, agents.cards, { rows: [] }) });",
+  "    return { ok: true }; },",
   "});",
   'contextBridge.exposeInMainWorld("__smoke", { calls: () => JSON.parse(JSON.stringify(calls)),',
-  "  push: (s) => listener && listener(Object.assign({}, state, s)) });",
+  "  push: (s) => listener && listener(Object.assign({}, state, s)),",
+  // The watcher has not fired yet: the answered card is still in the open list.
+  "  reopen: () => { agents = AGENTS0; } });",
 ].join("\n");
 
 app.whenReady().then(async () => {
@@ -101,6 +123,31 @@ app.whenReady().then(async () => {
   await js("document.querySelector('#dllist .dl button').click(); document.getElementById('dlclear').click()");
   const after = await js("window.__smoke.calls()");
   expect("Open in Chrome, Show and Clear reach the desk", ["external", "show", "clear"].every((k) => after.some((c) => c[0] === k)), after);
+
+  await js("document.getElementById('t-agents').click()");
+  await wait(300);
+  expect("the Agents tab counts the card waiting", (await js("document.getElementById('agcount').textContent")) === "1");
+  const sess = await js("Array.from(document.querySelectorAll('#ag-sess .sess .st')).map((n) => n.textContent)");
+  expect("sessions list, the one that needs you first", sess.join(",") === "needs you,idle", sess);
+  const opts = await js("Array.from(document.querySelectorAll('#ag-cards .card .opts button')).map((b) => b.className + ':' + b.textContent)");
+  expect("the card offers ITS options, the recommended one marked", opts.join(",") === "rec:Ship,:Hold", opts);
+  const room = await js("document.querySelectorAll('#ag-room b').length + '|' + document.querySelector('#ag-room .line').textContent");
+  expect("a hostile room line renders as TEXT", room === "0|lyra<b onclick=x>bold</b>", room);
+  await js("document.querySelector('#ag-cards .card .opts button').click()");
+  await wait(400);
+  const answered = (await js("window.__smoke.calls()")).find((c) => c[0] === "answer");
+  const gone = await js("document.querySelectorAll('#ag-cards .card').length + '|' + document.getElementById('ag-cards').textContent");
+  expect("answering in place sends (id, key) and the card leaves with a receipt",
+    answered && answered[1] === "d-1" && answered[2] === "yes" && gone.startsWith("0|") && gone.includes("Answered"), { answered, gone });
+
+  await js("window.__smoke.reopen(); document.getElementById('t-agents').click()");
+  await wait(300);
+  const stale = await js("Array.from(document.querySelectorAll('#ag-cards .card .opts button')).map((b) => b.disabled)");
+  await js("const b = document.querySelector('#ag-cards .card .opts button'); if (b) b.click()");
+  await wait(300);
+  const answers = (await js("window.__smoke.calls()")).filter((c) => c[0] === "answer");
+  expect("a card still listed after its answer cannot be answered again",
+    stale.length > 0 && stale.every(Boolean) && answers.length === 1, { stale, answers });
 
   console.log(fails.length ? `FAILED ${fails.length}` : "ALL PASS");
   app.exit(fails.length ? 1 : 0);

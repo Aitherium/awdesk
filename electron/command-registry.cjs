@@ -127,7 +127,9 @@ const COMMANDS = Object.freeze([
     },
   }),
   Object.freeze({
-    id: "console.open", label: "Aither Console…", group: "go", icon: "grid",
+    // "Open Aither" since the browser became the console (plan slice 9): it raises the
+    // Aither Browser on the Inbox, with AitherOS Online and Workspace pinned beside it.
+    id: "console.open", label: "Open Aither", group: "go", icon: "grid",
     surfaces: ["tray", "avatar-menu", "palette", "beads", "jumplist"],
   }),
   // 🚩 AitherOS Online -- the Living Desktop held over the real one. It is what the

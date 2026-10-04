@@ -121,14 +121,33 @@ function matchedTier(resolution) {
   return froms.some((from) => typeof from === "string" && /^(actors\[|channels\[|authors\.)/.test(from));
 }
 
+// ─── the roster tier ─────────────────────────────────────────────────────────
+
+/** The agent-roster presence map for this call: ctx.agentRoster when a caller
+ *  (a test) hands one, else the mirror via cast.loadRosterPresence (mtime-
+ *  cached, fail-soft to {}). ctx.agentRosterFile is the file test seam. */
+function rosterFor(ctx) {
+  if (ctx.agentRoster && typeof ctx.agentRoster === "object") return ctx.agentRoster;
+  try {
+    return cast.loadRosterPresence(ctx.agentRosterFile ? { file: ctx.agentRosterFile } : {});
+  } catch {
+    return {};
+  }
+}
+
 // ─── the gate ────────────────────────────────────────────────────────────────
 
 /**
  * resolveSpeech — allowed?, and if so what to say it with.
  *
  * @param {object} ctx
- *   {origin: string, slotId?: string, agent?: string, text?: string, file?: string}
- *   `agent` is the body's agent; voice.mutedAgents silences it.
+ *   {origin: string, slotId?: string, agent?: string, author?: string,
+ *    seat?: number, text?: string, file?: string, agentRoster?: object,
+ *    agentRosterFile?: string}
+ *   `agent` is the body's agent; voice.mutedAgents silences it, and it keys
+ *   the roster tier (roster.<agent>). `author`/`seat` are what a room-stage
+ *   row was resolved with (main.cjs's speakAloud `speaker` argument) -- never
+ *   a request body's field.
  *   `file` is a TEST SEAM (see cast-config.cjs's own DESK_CAST_FILE doc) --
  *   production never sets it, so cast.CAST_FILE() (which honours
  *   DESK_CAST_FILE) picks the snapshot.
@@ -144,7 +163,21 @@ function resolveSpeech(ctx = {}) {
   try {
     const { snapshot } = currentSnapshot({ file: resolvedFile });
     const origin = originFromKey(ctx.origin);
-    const resolution = cast.resolveActor(snapshot, { origin, roster: null, agent: ctx.agent || null });
+    const resolution = cast.resolveActor(snapshot, {
+      origin,
+      roster: null,
+      agent: ctx.agent || null,
+      // A room-stage row hands its OWN author + seat, so this gate walks the
+      // same authors.<x>.seats[n] / authors.<x> tiers the stage resolved the
+      // line's voice from -- without them the platform roster tier (below)
+      // would outrank an owner's authors record here and undo it at TTS time.
+      author: ctx.author || null,
+      seat: Number.isInteger(ctx.seat) && ctx.seat >= 0 ? ctx.seat : null,
+      // The agent's DECLARED voice (config/identities desk_presence, mirrored
+      // into agent-roster.generated.json). Without it every voice.defaultVoice
+      // / defaults.voice replaced the roster voice the stage had picked.
+      agentRoster: rosterFor(ctx),
+    });
 
     if (!matchedTier(resolution)) {
       // Best-effort by construction (cast-config.noteSeen never throws) --
@@ -236,9 +269,28 @@ function effectiveVoice(requested, gate, fallback = "nova") {
   return asked || gateVoice || fallback;
 }
 
+/**
+ * speechCtx -- the resolveSpeech ctx main.cjs's speakAloud builds, factored out
+ * so a test can drive the SAME mapping main uses. `speaker` is the in-process
+ * {agent, author, seat} a room-stage row was resolved with (null for every
+ * HTTP/MCP door); `slotAgent` is main's agentForSlot(slotId) fallback.
+ */
+function speechCtx({ text, slotId, origin, speaker, slotAgent } = {}) {
+  const who = speaker && typeof speaker === "object" ? speaker : {};
+  return {
+    origin,
+    slotId,
+    text,
+    agent: who.agent || slotAgent || null,
+    author: who.author || null,
+    seat: Number.isInteger(who.seat) ? who.seat : null,
+  };
+}
+
 module.exports = {
   resolveSpeech,
   effectiveVoice,
+  speechCtx,
 };
 
 if (require.main === module) {

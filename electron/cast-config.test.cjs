@@ -706,3 +706,117 @@ test("master mute: setAllMuted round-trips, so the menu can always turn voices b
   cast.setAllMuted(true, { file });
   assert.equal(cast.allMuted({ file }), true);
 });
+
+// ─── the roster tier: an agent's DECLARED voice/character, below the owner ───
+
+const ROSTER = Object.freeze({
+  atlas: { voice: "en-US-MichelleNeural", character: "charlie" },
+  hydra: { voice: "en-US-AvaNeural", character: "vrm-1-0" },
+});
+
+test("resolveActor: the roster tier gives an unauthored agent its declared voice and character", () => {
+  const r = cast.resolveActor({}, { author: "atlas", roster: ["charlie", "Nova"], agentRoster: ROSTER });
+  assert.equal(r.voice, "en-US-MichelleNeural");
+  assert.equal(r.voiceFrom, "roster.atlas.voice");
+  assert.equal(r.character, "charlie");
+  assert.equal(r.characterFrom, "roster.atlas.character");
+});
+
+test("resolveActor: cast.json authors.<agent> BEATS the roster, per field (owner override wins)", () => {
+  const snapshot = { authors: { atlas: { voice: "en-US-AnaNeural" } } };
+  const r = cast.resolveActor(snapshot, { author: "atlas", roster: ["charlie"], agentRoster: ROSTER });
+  assert.equal(r.voice, "en-US-AnaNeural");
+  assert.equal(r.voiceFrom, "authors.atlas.voice");
+  // the owner said nothing about atlas's body, so the roster still answers it
+  assert.equal(r.character, "charlie");
+  assert.equal(r.characterFrom, "roster.atlas.character");
+  // and a seat record beats the roster too
+  const seated = cast.resolveActor(
+    { authors: { atlas: { seats: [{ character: "Nova" }] } } },
+    { author: "atlas", seat: 0, roster: ["charlie", "Nova"], agentRoster: ROSTER },
+  );
+  assert.equal(seated.character, "Nova");
+  assert.equal(seated.characterFrom, "authors.atlas.seats[0].character");
+});
+
+test("resolveActor: an actors[...] record beats the roster; the roster beats defaults and voice.defaultVoice", () => {
+  const snapshot = {
+    actors: { "agent:atlas": { voice: "onyx" } },
+    defaults: { voice: "alloy", character: "Nova" },
+    voice: { defaultVoice: "echo" },
+  };
+  const byKey = cast.resolveActor(snapshot, {
+    author: "atlas", kind: "agent", id: "atlas", roster: ["charlie", "Nova"], agentRoster: ROSTER,
+  });
+  assert.equal(byKey.voice, "onyx");
+  const byRoster = cast.resolveActor(snapshot, { author: "atlas", roster: ["charlie", "Nova"], agentRoster: ROSTER });
+  assert.equal(byRoster.voice, "en-US-MichelleNeural");
+  assert.equal(byRoster.character, "charlie");
+  const other = cast.resolveActor(snapshot, { author: "saga", roster: ["charlie", "Nova"], agentRoster: ROSTER });
+  assert.equal(other.voiceFrom, "defaults.voice");
+  assert.equal(other.characterFrom, "defaults.character");
+});
+
+test("resolveActor: no agentRoster in ctx = no roster tier (the hash still answers)", () => {
+  const r = cast.resolveActor({}, { author: "atlas", roster: ["charlie", "Nova"] });
+  assert.equal(r.voiceFrom, "hash");
+  assert.equal(r.characterFrom, "hash");
+});
+
+test("resolveActor: the roster speaks ONLY to voice/character -- never presence, speak or volume", () => {
+  const r = cast.resolveActor({}, {
+    author: "atlas",
+    agentRoster: { atlas: { voice: "nova", presence: "off", speak: false, volume: 0 } },
+  });
+  assert.equal(r.voice, "nova");
+  assert.equal(r.presence, "normal");
+  assert.equal(r.speak, true);
+  assert.equal(r.voiced, true);
+});
+
+test("resolveActor: a roster character missing from the SAFE roster falls through to the hash", () => {
+  const r = cast.resolveActor({}, { author: "atlas", roster: ["Nova"], agentRoster: ROSTER });
+  assert.equal(r.character, "Nova");
+  assert.equal(r.characterFrom, "hash");
+  assert.equal(r.voiceFrom, "roster.atlas.voice");
+});
+
+test("validateRosterPresence: keeps voice/character only, drops what the file would drop, normalises keys", () => {
+  const out = cast.validateRosterPresence({
+    agents: ["atlas"],
+    presence: {
+      Atlas: { voice: "en-US-MichelleNeural", character: "charlie", presence: "off" },
+      bad: { voice: "v".repeat(41) },
+      empty: {},
+      notobj: "nova",
+    },
+  });
+  assert.deepEqual(out, { atlas: { voice: "en-US-MichelleNeural", character: "charlie" } });
+  assert.deepEqual(cast.validateRosterPresence(null), {});
+  assert.deepEqual(cast.validateRosterPresence({ hydra: { voice: "en-US-AvaNeural" } }), {
+    hydra: { voice: "en-US-AvaNeural" },
+  });
+});
+
+test("loadRosterPresence: fail-soft on a missing or malformed mirror; re-reads a regenerated one", () => {
+  const dir = tmpDir();
+  const file = path.join(dir, "agent-roster.generated.json");
+  assert.deepEqual(cast.loadRosterPresence({ file }), {});
+  fs.writeFileSync(file, "{not json", "utf8");
+  assert.deepEqual(cast.loadRosterPresence({ file }), {});
+  fs.writeFileSync(file, JSON.stringify({ agents: ["atlas"], presence: ROSTER }), "utf8");
+  const later = new Date(Date.now() + 5000);
+  fs.utimesSync(file, later, later);
+  assert.deepEqual(cast.loadRosterPresence({ file }), ROSTER);
+});
+
+test("the committed roster mirror declares the owner's 2026-10-04 cast for the seven crew agents", () => {
+  const presence = cast.loadRosterPresence({ file: path.join(__dirname, "agent-roster.generated.json") });
+  assert.deepEqual(presence.aither, { voice: "en-US-AnaNeural", character: "mermaid" });
+  assert.deepEqual(presence.atlas, { voice: "en-US-MichelleNeural", character: "charlie" });
+  assert.deepEqual(presence.demiurge, { voice: "en-US-EmmaNeural", character: "celisia-arcroid" });
+  assert.deepEqual(presence.lyra, { voice: "en-US-JennyNeural", character: "clara-hsr-vrm-0-0" });
+  assert.deepEqual(presence.iris, { voice: "en-US-AriaNeural", character: "herta-hsr-vrm-0-0" });
+  assert.deepEqual(presence.hydra, { voice: "en-US-AvaNeural", character: "vrm-1-0" });
+  assert.deepEqual(presence.athena, { voice: "en-US-AriaNeural", character: "siren-head" });
+});

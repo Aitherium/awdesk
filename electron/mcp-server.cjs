@@ -96,7 +96,9 @@ async function describeCast({ castFile, listCharacters } = {}) {
   }
 
   const cfg = snapshot && typeof snapshot === "object" ? snapshot : {};
-  const ctxBase = { roster };
+  // agentRoster: the platform-declared voice/character tier (below authors), so this
+  // provenance view names the SAME tier the live room-stage resolves through.
+  const ctxBase = { roster, agentRoster: cast.loadRosterPresence() };
   const resolved = [];
   for (const key of Object.keys(cfg.actors || {})) {
     resolved.push({
@@ -166,6 +168,9 @@ function createDeskMcpServer({
   onDesktop = null,
   onSpeak = null,
   onAsk = null,
+  // files-access.cjs createFilesAccess().agent: READ-ONLY access to the folders the
+  // owner switched on in the Files page. Null = the files_* tools are absent.
+  filesAccess = null,
   // The Aither Browser's dispatcher (browser-policy.createBrowserAgent): (action, args) => verdict.
   onBrowser = null,
   // The owner's OWN Chrome through awconnect (chrome-bridge.cjs call): (action, args) => verdict.
@@ -933,6 +938,56 @@ function createDeskMcpServer({
         annotations: browserAnnotations(false),
       },
       async ({ reason, ref, selector }) => browserResult(await onBrowser("handoff", { reason, ref, selector })),
+    );
+  }
+
+  // files_* -- read-only, and only under the folders the owner shared in the
+  // Files page (machine-local ~/.aither/desk-file-grants.json). No write/move/delete tool
+  // exists; keys, tokens and .env files are withheld even inside a shared folder.
+  if (filesAccess != null) {
+    const { agentToolCall } = require("./files-access.cjs");
+    const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+    server.registerTool(
+      "files_roots",
+      {
+        title: "List the owner's folders shared with agents",
+        description:
+          "The folders the owner has shared with agents from the desk's Files page (id, label, path). " +
+          "Empty means nothing is shared -- ask the owner to switch a folder on; do not look elsewhere.",
+        annotations: readOnly,
+      },
+      async () => agentToolCall(filesAccess, "files_roots", {}),
+    );
+    server.registerTool(
+      "files_list",
+      {
+        title: "List a folder the owner shared",
+        description: "List one folder under a shared root (read-only). `path` is relative to the root; '' is the root.",
+        inputSchema: {
+          root: z.string().min(1).max(200).describe("Root id or label from files_roots."),
+          path: z.string().max(2048).optional().describe("Folder path relative to the root."),
+        },
+        annotations: readOnly,
+      },
+      async ({ root, path: rel }) => agentToolCall(filesAccess, "files_list", { root, path: rel || "" }),
+    );
+    server.registerTool(
+      "files_read",
+      {
+        title: "Read a text file the owner shared",
+        description:
+          "Read one text file under a shared root (read-only, at most 256 KiB per call; use offset to page). " +
+          "Binary files answer metadata only.",
+        inputSchema: {
+          root: z.string().min(1).max(200).describe("Root id or label from files_roots."),
+          path: z.string().min(1).max(2048).describe("File path relative to the root."),
+          offset: z.number().int().min(0).optional().describe("Byte offset to start at (default 0)."),
+          max_bytes: z.number().int().min(1).max(262144).optional().describe("Bytes to read (default 262144)."),
+        },
+        annotations: readOnly,
+      },
+      async ({ root, path: rel, offset, max_bytes }) => agentToolCall(filesAccess, "files_read",
+        { root, path: rel, offset, max_bytes }),
     );
   }
 

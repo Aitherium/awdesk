@@ -32,6 +32,9 @@
     font: 12px/1.2 system-ui; }
   .chip:hover { background: var(--btn-hi); color: var(--fg); }
   .chip.on { color: var(--fg); border-color: color-mix(in oklch, var(--brand), var(--background) 60%); }
+  /* A voice that is off reads as OFF at a glance: struck through, not just dimmer. */
+  .chip.voice.off { color: var(--muted); text-decoration: line-through; }
+  .chip.voice.room-off { opacity: 0.6; }
   .chip.danger:hover { color: var(--red); border-color: color-mix(in oklch, var(--bad), var(--background) 62%); }
 
   .arrangements { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 14px;
@@ -56,6 +59,7 @@
   <div class="bar">
     <span class="title">Stage</span>
     <span class="state" id="state">reading the stage…</span>
+    <button class="chip voice" id="allVoices" aria-pressed="false" title="Every voice on or off; speech bubbles keep showing the words">All voices on</button>
     <button class="chip" id="refresh">Refresh</button>
   </div>
 
@@ -89,6 +93,46 @@ const ARRANGEMENTS = [
 
 let bodies = [];
 let selected = null;
+// Main reports the state the room is HEADING to (a mute still being announced
+// counts as muted), so the pane paints main's answer and keeps no timer of its own.
+let allVoicesMuted = false;
+
+/** The master switch's face: it names the CURRENT state and offers the flip. */
+function renderAllVoices() {
+  const button = document.getElementById("allVoices");
+  button.textContent = allVoicesMuted ? "All voices off" : "All voices on";
+  button.className = "chip voice" + (allVoicesMuted ? " off" : " on");
+  button.setAttribute("aria-pressed", allVoicesMuted ? "true" : "false");
+}
+
+async function setAllVoices(muted) {
+  const result = await call(window.aitherStage.setAllVoices(muted), "All voices");
+  if (!result) return;
+  allVoicesMuted = result.allVoicesMuted === true;
+  renderAllVoices();
+  renderBodies();
+}
+
+async function setVoice(entry, muted) {
+  const result = await call(window.aitherStage.setVoice(entry.slotId, muted), "Voice");
+  if (!result) return;
+  entry.voiceMuted = result.voiceMuted === true;
+  renderBodies();
+}
+
+function voiceButton(entry) {
+  const button = document.createElement("button");
+  const off = entry.voiceMuted === true;
+  button.className = "chip voice" + (off ? " off" : " on") + (allVoicesMuted ? " room-off" : "");
+  button.textContent = off ? "Voice off" : "Voice on";
+  button.dataset.voice = entry.slotId;
+  button.setAttribute("aria-pressed", off ? "true" : "false");
+  button.title = allVoicesMuted
+    ? "Every voice is off right now; this sets this body's own switch for when they come back"
+    : (off ? "Turn this body's voice back on" : "Turn this body's voice off (its bubbles stay)");
+  button.addEventListener("click", () => void setVoice(entry, !off));
+  return button;
+}
 
 function say(message) {
   errEl.textContent = message || "";
@@ -179,7 +223,7 @@ function renderBodies() {
     frame.textContent = "Frame";
     frame.addEventListener("click", () => call(window.aitherStage.focus(entry.slotId), "Frame"));
 
-    row.append(who, tag, select, frame);
+    row.append(who, tag, voiceButton(entry), select, frame);
 
     // The resident is the desk's own avatar; main refuses to remove it, so the
     // button is not offered rather than offered and refused.
@@ -202,6 +246,8 @@ function renderBodies() {
 async function refresh() {
   const result = await call(window.aitherStage.bodies(), "Bodies");
   bodies = (result && result.bodies) || [];
+  if (result) allVoicesMuted = result.allVoicesMuted === true;
+  renderAllVoices();
   if (selected && !bodies.some((b) => b.slotId === selected)) selected = null;
   const safety = (result && result.safety) || null;
   document.getElementById("safety").textContent = safety
@@ -215,6 +261,7 @@ async function refresh() {
 }
 
 document.getElementById("refresh").addEventListener("click", () => void refresh());
+document.getElementById("allVoices").addEventListener("click", () => void setAllVoices(!allVoicesMuted));
 // A body arrives when a room agent speaks, so the list is polled rather than
 // pushed: the pane must not show a stage that emptied five minutes ago.
 setInterval(() => void refresh(), 4000);

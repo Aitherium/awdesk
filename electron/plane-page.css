@@ -1,0 +1,54 @@
+/* The plane pages (plane-<id>.html). Colours come from aither-tokens.css
+   (generated from Veil's tokens); only what a plane page MEANS by a colour is
+   declared here, the same rule as ops.html and sessions.html. */
+:root { --amber: var(--warning); --red: var(--destructive); --green: var(--success); }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+  font: 13px/1.45 var(--font-sans); }
+body { display: grid; grid-template-rows: 44px 1fr; height: 100vh; }
+.bar { display: flex; align-items: center; gap: 10px; padding: 0 14px;
+  border-bottom: 1px solid var(--line); }
+.embedded .bar .title { display: none; }
+.bar .title { font-weight: 600; }
+.bar .state { color: var(--muted); font-size: 12px; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar .state.err { color: var(--red); }
+.chip { appearance: none; border: 1px solid var(--line); background: var(--btn);
+  color: var(--muted); border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; }
+.chip:hover { background: var(--btn-hi); color: var(--fg); }
+.chip:disabled { opacity: .5; cursor: default; }
+.chip.on { color: var(--fg); border-color: color-mix(in oklch, var(--brand), var(--background) 50%); }
+main { overflow-y: auto; min-height: 0; padding: 12px 14px; display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); align-content: start; }
+section.card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  padding: 10px 12px; min-width: 0; }
+section.card.wide { grid-column: 1 / -1; }
+h3 { margin: 0 0 8px; font-size: 10px; font-weight: 650; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--surface-400); display: flex; gap: 8px; align-items: center; }
+h3 .grow { flex: 1; }
+h3 .tool { text-transform: none; letter-spacing: 0; font-weight: 400; font-family: var(--font-mono); }
+.pill { font-size: 10px; border-radius: 999px; padding: 1px 7px; border: 1px solid var(--line);
+  color: var(--muted); white-space: nowrap; text-transform: none; letter-spacing: 0; }
+.pill.ok { color: var(--green); }
+.pill.bad { color: var(--red); }
+.pill.warn { color: var(--amber); }
+.summary.bad { color: var(--red); word-break: break-word; }
+.muted { color: var(--muted); }
+.placeholder { color: var(--muted); padding: 8px 0; }
+.kv { display: grid; grid-template-columns: minmax(90px, max-content) 1fr; gap: 3px 12px; }
+.kv .k { color: var(--muted); font-size: 12px; word-break: break-word; }
+.kv .v { word-break: break-word; }
+.v.yes { color: var(--green); }
+.v.no { color: var(--red); }
+details { margin: 4px 0; }
+details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+details > .inner { padding: 4px 0 4px 12px; border-left: 1px solid var(--line); margin-left: 4px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th { text-align: left; color: var(--muted); font-weight: 500; padding: 3px 6px 3px 0;
+  border-bottom: 1px solid var(--line); }
+td { padding: 3px 6px 3px 0; border-bottom: 1px solid var(--btn); vertical-align: top; word-break: break-word; }
+ul.list { margin: 0; padding-left: 16px; }
+ul.list li { word-break: break-word; }
+pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font: 11px/1.5 var(--font-mono);
+  color: var(--muted); max-height: 240px; overflow: auto; }
+.more { color: var(--muted); font-size: 11px; padding-top: 4px; }

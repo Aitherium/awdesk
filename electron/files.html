@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<title>Files</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  /* Colours come from aither-tokens.css (generated from Veil's tokens). */
+  :root { --amber: var(--warning); --red: var(--destructive); --green: var(--success); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 13px/1.45 var(--font-sans); }
+  body { display: grid; grid-template-rows: 44px 1fr; height: 100vh; }
+  .bar { display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    border-bottom: 1px solid var(--line); }
+  .embedded .bar .title { display: none; }
+  .bar .title { font-weight: 600; }
+  .bar .state { color: var(--muted); font-size: 12px; flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar .state.err { color: var(--red); }
+  .chip { appearance: none; border: 1px solid var(--line); background: var(--btn);
+    color: var(--muted); border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; }
+  .chip:hover { background: var(--btn-hi); color: var(--fg); }
+  .chip:disabled { opacity: .5; cursor: default; }
+  .chip.primary { color: var(--fg); border-color: color-mix(in oklch, var(--brand), var(--background) 50%); }
+  .chip.small { padding: 2px 8px; font-size: 11px; }
+  main { display: grid; grid-template-columns: minmax(240px, 30%) 1fr; min-height: 0; }
+  .col { overflow-y: auto; min-height: 0; }
+  .col + .col { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto auto 1fr; overflow: hidden; }
+  section { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  h3 { margin: 0 0 8px; font-size: 10px; font-weight: 650; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--surface-400); display: flex; gap: 8px; align-items: center; }
+  h3 .grow { flex: 1; }
+  .root { padding: 7px 8px; border-radius: 8px; cursor: pointer; display: grid; gap: 3px; margin-bottom: 4px;
+    border: 1px solid transparent; }
+  .root:hover { background: var(--btn); }
+  .root.active { background: var(--panel); border-color: var(--line); }
+  .root .top { display: flex; align-items: center; gap: 8px; }
+  .root .label { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .root .where { color: var(--muted); font-size: 11px; word-break: break-all; }
+  .root.missing .label { color: var(--muted); text-decoration: line-through; }
+  .grant { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); cursor: pointer; }
+  .grant input { margin: 0; accent-color: var(--brand); }
+  .grant.on { color: var(--amber); }
+  .crumbs { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding: 10px 14px;
+    border-bottom: 1px solid var(--line); font-size: 12px; }
+  .crumbs button { appearance: none; background: none; border: 0; color: var(--muted); cursor: pointer;
+    font: inherit; padding: 2px 4px; border-radius: 4px; }
+  .crumbs button:hover { color: var(--fg); background: var(--btn); }
+  .crumbs .sep { color: var(--surface-400); }
+  .crumbs .grow { flex: 1; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 14px;
+    border-bottom: 1px solid var(--line); min-height: 44px; }
+  .actions .picked { color: var(--muted); font-size: 12px; flex: 1; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .list { overflow-y: auto; min-height: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; position: sticky; top: 0;
+    background: var(--bg); border-bottom: 1px solid var(--line); }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--btn); white-space: nowrap; }
+  td.name { width: 100%; white-space: normal; word-break: break-all; }
+  tr.entry { cursor: pointer; }
+  tr.entry:hover { background: var(--btn); }
+  tr.entry.sel { background: var(--panel); }
+  tr.entry.hidden-file td.name { color: var(--muted); }
+  .glyph { display: inline-block; width: 18px; color: var(--muted); }
+  .muted { color: var(--muted); }
+  .summary.bad { color: var(--red); word-break: break-word; padding: 12px 14px; }
+  .note { color: var(--amber); font-size: 12px; }
+  .ok-note { color: var(--green); font-size: 12px; }
+  .placeholder { color: var(--muted); padding: 12px 14px; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <span class="title">Files</span>
+    <span class="state" id="state">loading…</span>
+    <button class="chip" id="refresh">Refresh</button>
+  </div>
+  <main>
+    <div class="col">
+      <section>
+        <h3>Places <span class="grow"></span><button class="chip small" id="addRoot">Add folder</button></h3>
+        <div id="roots"><div class="placeholder">loading places…</div></div>
+      </section>
+      <section>
+        <h3>Agent access</h3>
+        <div class="muted" style="font-size:12px">Agents can read a place only when its switch is on —
+          read-only, text files, never keys or .env files. Everything stays off until you turn it on.</div>
+      </section>
+    </div>
+    <div class="col">
+      <div class="crumbs" id="crumbs"></div>
+      <div class="actions">
+        <span class="picked" id="picked">Pick a file or folder.</span>
+        <label class="grant" style="margin-right:6px"><input type="checkbox" id="showHidden" /> hidden</label>
+        <button class="chip" id="open" disabled>Open</button>
+        <button class="chip" id="reveal" disabled>Show in Explorer</button>
+        <button class="chip primary" id="hand" disabled>Hand to agent</button>
+      </div>
+      <div class="list" id="list"><div class="placeholder">Pick a place.</div></div>
+    </div>
+  </main>
+<script>
+"use strict";
+// The Files page: the owner's local explorer. Everything is rendered with
+// textContent; file names are DATA, never markup. Open/Reveal act on the owner's
+// own machine; "Hand to agent" posts the path into the chat; the switch on each
+// place is the only way an agent ever reads a file (desk MCP files_read).
+const files = window.aitherFiles;
+const $ = (id) => document.getElementById(id);
+const stateEl = $("state");
+let roots = [];
+let current = { rootId: null, rel: "" };
+let listing = null;
+let picked = null; // {rel, kind, name}
+
+function say(text, isError) {
+  stateEl.textContent = text || "";
+  stateEl.classList.toggle("err", Boolean(isError));
+}
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = String(text);
+  return e;
+}
+function size(n) {
+  if (n == null) return "";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0; let x = Number(n);
+  while (x >= 1024 && i < u.length - 1) { x /= 1024; i += 1; }
+  return (i ? x.toFixed(x >= 100 ? 0 : 1) : String(x)) + " " + u[i];
+}
+function when(ms) { return ms ? new Date(ms).toLocaleString() : ""; }
+function rootById(id) { return roots.find((r) => r.id === id) || null; }
+
+function renderRoots() {
+  const box = $("roots");
+  box.replaceChildren();
+  if (!roots.length) { box.appendChild(el("div", "placeholder", "No places. Add a folder.")); return; }
+  for (const r of roots) {
+    const row = el("div", "root" + (r.id === current.rootId ? " active" : "") + (r.exists ? "" : " missing"));
+    const top = el("div", "top");
+    top.appendChild(el("span", "label", r.label));
+    const rm = el("button", "chip small", "Remove");
+    rm.title = "Remove this place from the list (the folder is not touched)";
+    rm.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      const res = await files.removeRoot(r.id);
+      if (!res || !res.ok) say("remove failed: " + ((res && res.error) || "no answer"), true);
+      if (current.rootId === r.id) current = { rootId: null, rel: "" };
+      await loadRoots();
+    });
+    top.appendChild(rm);
+    row.appendChild(top);
+    row.appendChild(el("div", "where", r.exists ? r.path : r.path + " (not on this machine)"));
+    const grant = el("label", "grant" + (r.agentRead ? " on" : ""));
+    const box2 = document.createElement("input");
+    box2.type = "checkbox";
+    box2.checked = Boolean(r.agentRead);
+    box2.addEventListener("click", (ev) => ev.stopPropagation());
+    box2.addEventListener("change", async () => {
+      box2.disabled = true;
+      const res = await files.grant(r.id, box2.checked);
+      if (!res || !res.ok) say("could not change agent access: " + ((res && res.error) || "no answer"), true);
+      else say(box2.checked ? "agents may now read " + r.label : "agents can no longer read " + r.label);
+      await loadRoots();
+    });
+    grant.appendChild(box2);
+    grant.appendChild(document.createTextNode(r.agentRead ? "Agents can read (read-only)" : "Agents cannot read"));
+    grant.addEventListener("click", (ev) => ev.stopPropagation());
+    row.appendChild(grant);
+    if (r.exists) row.addEventListener("click", () => go(r.id, ""));
+    box.appendChild(row);
+  }
+}
+
+function renderCrumbs() {
+  const box = $("crumbs");
+  box.replaceChildren();
+  const root = rootById(current.rootId);
+  if (!root) { box.appendChild(el("span", "muted", "No place picked")); return; }
+  const top = el("button", "", root.label);
+  top.addEventListener("click", () => go(root.id, ""));
+  box.appendChild(top);
+  const parts = current.rel ? current.rel.split("/") : [];
+  parts.forEach((part, i) => {
+    box.appendChild(el("span", "sep", "/"));
+    const b = el("button", "", part);
+    const rel = parts.slice(0, i + 1).join("/");
+    b.addEventListener("click", () => go(root.id, rel));
+    box.appendChild(b);
+  });
+  box.appendChild(el("span", "grow"));
+  box.appendChild(el("span", root.agentRead ? "note" : "muted", root.agentRead ? "shared with agents" : "private"));
+}
+
+function pick(entry) {
+  picked = entry;
+  const root = rootById(current.rootId);
+  const where = entry ? entry.rel : current.rel;
+  $("picked").textContent = root ? (root.path + (where ? "/" + where : "")) : "Pick a file or folder.";
+  const have = Boolean(root);
+  $("open").disabled = !have;
+  $("reveal").disabled = !have;
+  $("hand").disabled = !have;
+  for (const tr of document.querySelectorAll("tr.entry")) tr.classList.toggle("sel", Boolean(entry) && tr.dataset.rel === entry.rel);
+}
+
+function renderList() {
+  const box = $("list");
+  if (!listing) return;
+  const showHidden = $("showHidden").checked;
+  const rows = listing.entries.filter((e) => showHidden || !e.hidden);
+  box.replaceChildren();
+  const table = el("table");
+  const head = el("tr");
+  for (const c of ["Name", "Size", "Modified"]) head.appendChild(el("th", "", c));
+  table.appendChild(head);
+  if (listing.parent !== null) {
+    const up = el("tr", "entry");
+    up.appendChild(el("td", "name", "‥ up"));
+    up.appendChild(el("td", "", ""));
+    up.appendChild(el("td", "", ""));
+    up.addEventListener("click", () => go(current.rootId, listing.parent));
+    table.appendChild(up);
+  }
+  for (const e of rows) {
+    const tr = el("tr", "entry" + (e.hidden ? " hidden-file" : ""));
+    tr.dataset.rel = e.rel;
+    const name = el("td", "name");
+    name.appendChild(el("span", "glyph", e.kind === "dir" ? "▸" : "·"));
+    name.appendChild(document.createTextNode(e.name));
+    tr.appendChild(name);
+    tr.appendChild(el("td", "muted", e.kind === "file" ? size(e.size) : ""));
+    tr.appendChild(el("td", "muted", when(e.mtimeMs)));
+    tr.addEventListener("click", () => pick(e));
+    tr.addEventListener("dblclick", () => (e.kind === "dir" ? go(current.rootId, e.rel) : act("open")));
+    table.appendChild(tr);
+  }
+  box.appendChild(table);
+  if (!rows.length) box.appendChild(el("div", "placeholder", listing.entries.length ? "Only hidden files here." : "This folder is empty."));
+  if (listing.truncated) box.appendChild(el("div", "placeholder", "Showing the first " + listing.entries.length + " of " + listing.total + "."));
+}
+
+async function go(rootId, rel) {
+  current = { rootId, rel: rel || "" };
+  renderRoots();
+  renderCrumbs();
+  $("list").replaceChildren(el("div", "placeholder", "reading…"));
+  const res = await files.list(rootId, current.rel);
+  if (!res || !res.ok) {
+    listing = null;
+    $("list").replaceChildren(el("div", "summary bad", "Could not list this folder: " + ((res && res.error) || "no answer")));
+    say("list failed", true);
+    return;
+  }
+  listing = res.data;
+  renderList();
+  pick(null);
+  say(listing.total + " items");
+}
+
+async function act(verb) {
+  const root = rootById(current.rootId);
+  if (!root) return;
+  const rel = picked ? picked.rel : current.rel;
+  const res = await files[verb](root.id, rel);
+  if (!res || !res.ok) { say(verb + " failed: " + ((res && res.error) || "no answer"), true); return; }
+  if (verb === "hand") say(res.data.agentRead ? "posted to the chat — agents can read it" : "posted to the chat — its place is NOT shared with agents");
+  else if (verb === "open") say("opened " + (picked ? picked.name : root.label));
+  else say("shown in Explorer");
+}
+
+async function loadRoots() {
+  const res = await files.roots();
+  if (!res || !res.ok) {
+    $("roots").replaceChildren(el("div", "summary bad", "Could not read places: " + ((res && res.error) || "no answer")));
+    say("read failed", true);
+    return false;
+  }
+  roots = res.data.roots || [];
+  renderRoots();
+  renderCrumbs();
+  if (res.data.error) say(res.data.error, true);
+  else if ((res.data.problems || []).length) say("cast.json files: " + res.data.problems[0].reason, true);
+  return true;
+}
+
+async function refresh() {
+  say("refreshing…");
+  if (!(await loadRoots())) return;
+  const root = rootById(current.rootId) || roots.find((r) => r.exists);
+  if (root) await go(root.id, root.id === current.rootId ? current.rel : "");
+  else say("no places on this machine — add a folder");
+}
+
+$("open").addEventListener("click", () => void act("open"));
+$("reveal").addEventListener("click", () => void act("reveal"));
+$("hand").addEventListener("click", () => void act("hand"));
+$("showHidden").addEventListener("change", renderList);
+$("refresh").addEventListener("click", () => void refresh());
+$("addRoot").addEventListener("click", async () => {
+  const res = await files.addRoot();
+  if (!res || !res.ok) { say("add failed: " + ((res && res.error) || "no answer"), true); return; }
+  if (res.data && res.data.cancelled) return;
+  await loadRoots();
+  if (res.data && res.data.id) await go(res.data.id, "");
+});
+
+if (!files) say("no files bridge in this frame", true);
+else void refresh();
+</script>
+</body>
+</html>

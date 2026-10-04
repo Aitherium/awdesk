@@ -343,3 +343,101 @@ test("effectiveVoice: end to end -- an unconfigured origin no longer re-voices a
   const gate2 = resolveSpeech({ origin: "bridge:/speak", slotId: "slot0", text: "hi", file });
   assert.equal(effectiveVoice("en-US-JennyNeural", gate2), "en-US-AnaNeural");
 });
+
+// ─── the roster tier reaches the TTS gate ────────────────────────────────────
+
+const { effectiveVoice, speechCtx } = require("./voice-resolve.cjs");
+
+function rosterFileIn(dir) {
+  const file = path.join(dir, "agent-roster.generated.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      agents: ["aither", "atlas"],
+      presence: {
+        aither: { voice: "en-US-AnaNeural", character: "mermaid" },
+        atlas: { voice: "en-US-MichelleNeural", character: "charlie" },
+      },
+    }),
+    "utf8",
+  );
+  return file;
+}
+
+// The owner's real cast.json sets BOTH file-wide voices; before the gate read
+// the roster these replaced every agent's declared voice at TTS time.
+const FILE_WIDE = {
+  version: 1,
+  defaults: { voice: "en-US-JennyNeural" },
+  voice: { defaultVoice: "en-US-JennyNeural" },
+};
+
+test("resolveSpeech: a stage speaker's ROSTER voice beats defaults.voice / voice.defaultVoice", () => {
+  const dir = tmpDir();
+  const file = castFileIn(dir);
+  writeCast(file, FILE_WIDE);
+  const agentRosterFile = rosterFileIn(dir);
+  const ctx = speechCtx({
+    text: "hi",
+    slotId: "room-atlas",
+    origin: "adk_agent:a1",
+    speaker: { origin: "adk_agent:a1", author: "atlas", agent: "atlas", seat: 0 },
+    slotAgent: "atlas",
+  });
+  const gate = resolveSpeech({ ...ctx, file, agentRosterFile });
+  assert.equal(gate.allowed, true);
+  assert.equal(gate.voice, "en-US-MichelleNeural");
+  assert.equal(gate.provenance.voiceFrom, "roster.atlas.voice");
+  // What main.cjs then synthesises with: the stage asked for Michelle too.
+  assert.equal(effectiveVoice("en-US-MichelleNeural", gate), "en-US-MichelleNeural");
+});
+
+test("resolveSpeech: authors.<agent> still beats the roster at the gate when the stage hands its author", () => {
+  const dir = tmpDir();
+  const file = castFileIn(dir);
+  writeCast(file, { ...FILE_WIDE, authors: { atlas: { voice: "en-US-EmmaNeural" } } });
+  const agentRosterFile = rosterFileIn(dir);
+  const speaker = { origin: "adk_agent:a1", author: "atlas", agent: "atlas", seat: 0 };
+  const gate = resolveSpeech({
+    ...speechCtx({ text: "hi", slotId: "room-atlas", origin: speaker.origin, speaker }),
+    file,
+    agentRosterFile,
+  });
+  assert.equal(gate.voice, "en-US-EmmaNeural");
+  assert.equal(gate.provenance.voiceFrom, "authors.atlas.voice");
+});
+
+test("resolveSpeech: the resident (slot0 = aither) gets its roster voice over voice.defaultVoice, "
+  + "but an actors[\"service:awdesk\"] voice still wins", () => {
+  const dir = tmpDir();
+  const file = castFileIn(dir);
+  writeCast(file, { version: 1, voice: { defaultVoice: "en-US-JennyNeural" } });
+  const agentRosterFile = rosterFileIn(dir);
+  const ctx = speechCtx({ text: "hi", slotId: "slot0", origin: "service:awdesk", slotAgent: "aither" });
+  const plain = resolveSpeech({ ...ctx, file, agentRosterFile });
+  assert.equal(plain.voice, "en-US-AnaNeural");
+  assert.equal(plain.provenance.voiceFrom, "roster.aither.voice");
+
+  writeCast(file, {
+    version: 1,
+    voice: { defaultVoice: "en-US-JennyNeural" },
+    actors: { "service:awdesk": { voice: "custom:aither" } },
+  });
+  const owned = resolveSpeech({ ...ctx, file, agentRosterFile });
+  assert.equal(owned.voice, "custom:aither");
+  assert.match(owned.provenance.voiceFrom, /^actors\[/);
+});
+
+test("speechCtx: an HTTP/MCP door (no speaker) never names an author; the slot's agent keys the roster", () => {
+  const ctx = speechCtx({ text: "x", slotId: "slot0", origin: "bridge:/speak", speaker: null, slotAgent: "aither" });
+  assert.deepEqual(ctx, {
+    origin: "bridge:/speak", slotId: "slot0", text: "x", agent: "aither", author: null, seat: null,
+  });
+  const staged = speechCtx({
+    text: "x", slotId: "room-atlas", origin: "adk_agent:a1",
+    speaker: { author: "atlas", agent: "atlas", seat: 2 }, slotAgent: "ignored",
+  });
+  assert.equal(staged.agent, "atlas");
+  assert.equal(staged.author, "atlas");
+  assert.equal(staged.seat, 2);
+});

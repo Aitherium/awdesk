@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src file:; img-src data:;" />
+<title>Flux</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<link rel="stylesheet" href="plane-page.css" />
+</head>
+<!-- One plane page per platform plane; plane-page.js renders all of them from
+     data-plane. Reads: plane-client.cjs PLANES.flux (read-only gateway MCP tools). -->
+<body data-plane="flux">
+  <div class="bar">
+    <span class="title">Flux</span>
+    <span class="state" id="state">loading…</span>
+    <button class="chip" id="auto">Auto: on</button>
+    <button class="chip" id="refresh">Refresh</button>
+  </div>
+  <main id="reads"><div class="placeholder">reading Flux…</div></main>
+  <script src="plane-page.js"></script>
+</body>
+</html>

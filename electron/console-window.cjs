@@ -112,6 +112,18 @@ const PANES = Object.freeze([
     id: "cast", label: "Voices", tabOf: "stage", hint: "How each body sounds and moves", section: "Stage", icon: "mic",
     kind: "file", file: "cast.html",
   }),
+  // Plane pages (plan slice 10). Files: the owner's local explorer, roots from
+  // cast.json `files`, and the per-root switch that is the ONLY way an agent
+  // reads a file (files-access.cjs). Secrets: names + masked hints over the
+  // gateway list tools -- a value never reaches a renderer (secrets-window.cjs).
+  Object.freeze({
+    id: "files", label: "Files", hint: "Your folders; share one with agents", section: "Data", icon: "folder",
+    kind: "file", file: "files.html",
+  }),
+  Object.freeze({
+    id: "secrets", label: "Secrets", hint: "Names and masked hints, never values", section: "Data", icon: "key",
+    kind: "file", file: "secrets.html",
+  }),
   Object.freeze({
     id: "fleet", label: "Fleet", hint: "Containers, VRAM, doors", section: "System", icon: "server",
     kind: "file", file: "fleet-control.html",
@@ -128,6 +140,29 @@ const PANES = Object.freeze([
   Object.freeze({
     id: "settings", label: "Settings", hint: "Voice, hotkeys, devices", section: "System", icon: "settings",
     kind: "file", file: "settings.html",
+  }),
+  // One read-only status page per platform plane, all rendered by plane-page.js
+  // over plane-client.cjs's fixed reads (gateway MCP tools). Detach opens the
+  // same page in plane-window.cjs, one window per plane.
+  Object.freeze({
+    id: "strata", label: "Strata", hint: "Storage tiers, artifacts, health", section: "Planes", icon: "database",
+    kind: "file", file: "plane-strata.html",
+  }),
+  Object.freeze({
+    id: "pulse", label: "Pulse", hint: "Heartbeat and disk headroom", section: "Planes", icon: "activity",
+    kind: "file", file: "plane-pulse.html",
+  }),
+  Object.freeze({
+    id: "watch", label: "Watch", hint: "Startup state, plugins, alerts", section: "Planes", icon: "eye",
+    kind: "file", file: "plane-watch.html",
+  }),
+  Object.freeze({
+    id: "flux", label: "Flux", hint: "Live system context and events", section: "Planes", icon: "zap",
+    kind: "file", file: "plane-flux.html",
+  }),
+  Object.freeze({
+    id: "nexus", label: "Nexus", hint: "Knowledge search and bases", section: "Planes", icon: "network",
+    kind: "file", file: "plane-nexus.html",
   }),
   // 🚩 HOSTED, not framed, and the difference is the login. The AitherDesktop
   // shell keeps its session in the persist:living-desktop partition -- that is
@@ -182,8 +217,14 @@ function appearanceNow() {
   return { theme: appearance.theme, uiScale: appearance.uiScale, themes };
 }
 
+/** Told about every appearance change too (main: the browser's aither:// tabs). */
+let appearanceListener = null;
+
 /** Every frame of the console, not just the shell: a pane is its own document. */
 function broadcastAppearance(appearance) {
+  if (appearanceListener) {
+    try { appearanceListener(appearance); } catch { /* a listener never blocks the console */ }
+  }
   if (!consoleWindow || consoleWindow.isDestroyed()) return;
   for (const frame of consoleWindow.webContents.mainFrame.framesInSubtree) {
     try { frame.send("desk:appearance-changed", appearance); } catch { /* a frame mid-navigation */ }
@@ -500,7 +541,30 @@ function wireIpc() {
 }
 
 /**
- * Raise the console.
+ * Install the console's IPC (appearance, palette, panes) WITHOUT opening its window.
+ *
+ * Since the Aither Browser became the console (plan slice 9) the panes run as
+ * aither:// tabs, and they still need `desk:appearance-get/-set` answered -- the
+ * settings page sets the theme through it. `onAppearance` hears every change, so
+ * main can repaint the browser's aither:// tabs as well as the legacy frames.
+ */
+function ensureConsoleIpc({
+  windows = {}, rendererUrl = null, urls = {}, commands = null,
+  prepare = {}, signIn = {}, begin = {}, onAppearance = null,
+} = {}) {
+  windowsImpl = windows || {};
+  rendererUrlImpl = rendererUrl;
+  hostedUrls = urls || {};
+  hostedPrepare = prepare || {};
+  hostedSignIn = signIn || {};
+  hostedBegin = begin || {};
+  commandsImpl = commands;
+  appearanceListener = typeof onAppearance === "function" ? onAppearance : null;
+  wireIpc();
+}
+
+/**
+ * Raise the console (the LEGACY window: DESK_LEGACY_CONSOLE=1, see main.cjs openConsole).
  *
  * @param windows      { command|fleet|cards|chat: {open, close, isOpen} } — the
  *                     EXISTING standalone-window creators, injected rather than
@@ -510,16 +574,9 @@ function wireIpc() {
  */
 function showConsole({
   windows = {}, rendererUrl = null, urls = {}, autoShow = true, commands = null,
-  prepare = {}, signIn = {}, begin = {},
+  prepare = {}, signIn = {}, begin = {}, onAppearance = null,
 } = {}) {
-  windowsImpl = windows || {};
-  rendererUrlImpl = rendererUrl;
-  hostedUrls = urls || {};
-  hostedPrepare = prepare || {};
-  hostedSignIn = signIn || {};
-  hostedBegin = begin || {};
-  commandsImpl = commands;
-  wireIpc();
+  ensureConsoleIpc({ windows, rendererUrl, urls, commands, prepare, signIn, begin, onAppearance });
 
   if (consoleWindow && !consoleWindow.isDestroyed()) {
     if (consoleWindow.isMinimized()) consoleWindow.restore();
@@ -660,6 +717,7 @@ function __setWindowsForTest(windows) {
 }
 
 module.exports = {
+  ensureConsoleIpc,
   showConsole,
   focusPane,
   setInboxBadge,

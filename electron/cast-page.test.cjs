@@ -311,3 +311,42 @@ test("cast pane: no custom voices (or Genesis down) leaves the stock picker unch
   }
   assert.ok(!baseline.some((v) => v.startsWith("custom:")));
 });
+
+// ─── per-agent voice mutes (voice.mutedAgents) ──────────────────────────────
+
+test("cast pane: Voice defaults lists each muted agent and unmutes ONE by writing the rest", async () => {
+  const snapshot = { ...SNAPSHOT, voice: { ...SNAPSHOT.voice, mutedAgents: ["atlas", "lyra"] } };
+  const page = boot({ snapshot, onStage: [], seen: {}, roster: [], problems: [] });
+  await page.refresh();
+  const block = field(page.body, "Muted agents");
+  const buttons = block.walk().filter((n) => n.tagName === "BUTTON");
+  assert.deepEqual(buttons.map((b) => b.textContent), ["atlas: turn voice on", "lyra: turn voice on"]);
+  buttons[0].fire("click");
+  assert.deepEqual(page.writes, [{ name: "setVoice", args: [{ mutedAgents: ["lyra"] }] }]);
+});
+
+test("cast pane: no muted agents says so, and an emptied list is one cast-config validates", async () => {
+  const page = boot({ snapshot: SNAPSHOT, onStage: [], seen: {}, roster: [], problems: [] });
+  await page.refresh();
+  const block = field(page.body, "Muted agents");
+  assert.match(block.textContent, /none/);
+  assert.equal(block.walk().filter((n) => n.tagName === "BUTTON").length, 0);
+  const cast = require("./cast-config.cjs");
+  for (const mutedAgents of [[], ["lyra"]]) {
+    assert.deepEqual(cast.validateCast({ version: 1, voice: { mutedAgents } }).problems, []);
+  }
+});
+
+test("cast pane: a roster-declared voice says where it came from AND that the owner's record beats it", async () => {
+  const fromRoster = {
+    ...ACTOR,
+    agent: "atlas",
+    resolution: { ...ACTOR.resolution, voice: "en-US-MichelleNeural", voiceFrom: "roster.atlas.voice" },
+  };
+  const page = boot({ snapshot: SNAPSHOT, onStage: [fromRoster], seen: {}, roster: [], problems: [] });
+  await page.refresh();
+  const text = field(page.body, "Voice").textContent;
+  assert.match(text, /roster\.atlas\.voice/);
+  assert.match(text, /set it here to override/);
+  assert.match(text, /outranks your file-wide defaults/);
+});

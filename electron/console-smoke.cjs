@@ -35,6 +35,9 @@ const { ensureCommandIpc } = require("./command-window.cjs");
 const { ensureFleetIpc, getControl: getFleetControl } = require("./fleet-window.cjs");
 const { ensureSessionsIpc } = require("./sessions-window.cjs");
 const { ensureOpsIpc } = require("./ops-window.cjs");
+const { ensureFilesIpc } = require("./files-window.cjs");
+const { ensureSecretsIpc } = require("./secrets-window.cjs");
+const { ensurePlaneIpc } = require("./plane-window.cjs");
 const { ensureStageIpc } = require("./stage-window.cjs");
 
 const results = [];
@@ -55,6 +58,14 @@ const EXPECTED_BRIDGE = {
   stage: "aitherStage",
   // The Cast pane (cast.html / cast-preload.cjs): who appears and how they sound.
   cast: "aitherCast",
+  // Plane pages (plan slice 10).
+  files: "aitherFiles",
+  secrets: "aitherSecrets",
+  strata: "aitherPlane",
+  pulse: "aitherPlane",
+  watch: "aitherPlane",
+  flux: "aitherPlane",
+  nexus: "aitherPlane",
 };
 
 async function run() {
@@ -79,6 +90,9 @@ async function run() {
   ensureCommandIpc(getFleetControl(), { createFleetWindow: () => {} });
   ensureSessionsIpc();
   ensureOpsIpc();
+  ensureFilesIpc();
+  ensureSecretsIpc();
+  ensurePlaneIpc();
   // Stubbed the way main wires it: the pane must ANSWER, not merely have a bridge.
   ensureStageIpc({
     bodies: () => [{ slotId: "slot0", name: "Aither", agent: "aither", resident: true }],
@@ -96,7 +110,7 @@ async function run() {
     commands: {
       list: () => [
         { id: "window.size.large", label: "Large", group: "window-size" },
-        { id: "console.open", label: "Aither Console…", group: "go" },
+        { id: "console.open", label: "Open Aither", group: "go" },
       ],
       run: (id) => paletteRan.push(id),
     },

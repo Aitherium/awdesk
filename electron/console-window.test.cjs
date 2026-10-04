@@ -20,7 +20,7 @@ test("every pane resolves to a page that exists", () => {
   const panes = paneSources("http://127.0.0.1:5173");
   // The count is asserted so a pane cannot be DROPPED by an edit that only meant
   // to reorder the rail; bump it deliberately when one is added.
-  assert.equal(panes.length, 11);  // Ops pane added 2026-09-26 (platform-ops S01)
+  assert.equal(panes.length, 18);  // +7 plane pages (files, secrets, strata..nexus), slice 10
   for (const pane of panes) {
     if (pane.kind !== "file") continue;
     assert.ok(
@@ -35,8 +35,8 @@ test("the rail is in this exact order -- a drop or a reorder must fail here", ()
   // Listed explicitly rather than derived from PANES, so an edit that silently
   // drops or reshuffles an entry is caught here instead of only downstream.
   assert.deepEqual(PANES.map((p) => p.id),
-    ["cards", "command", "chat", "sessions", "stage", "characters", "cast", "fleet", "ops",
-    "settings", "desktop"]);
+    ["cards", "command", "chat", "sessions", "stage", "characters", "cast", "files", "secrets",
+    "fleet", "ops", "settings", "strata", "pulse", "watch", "flux", "nexus", "desktop"]);
   // Each section heading appears ONCE (the rail had CONTROL and PRESENCE twice), and a
   // tab pane follows the pane it is a tab of.
   const rail = PANES.filter((p) => !p.tabOf).map((p) => p.section);
@@ -201,8 +201,10 @@ test("EVERY pane is reachable from main, both directions", () => {
   // The rail is only honest if main really injected open/close/isOpen for each
   // pane id. A pane with no close is a detach button with no way back -- the exact
   // failure the console exists to remove.
+  // The windows table lives in wireConsoleHost since openConsole became the browser
+  // shim (plan slice 9); the legacy console (DESK_LEGACY_CONSOLE=1) still detaches.
   const main = read("main.cjs");
-  const block = main.slice(main.indexOf("function openConsole()"));
+  const block = main.slice(main.indexOf("function wireConsoleHost("));
   for (const pane of PANES) {
     const entry = block.slice(block.indexOf(`${pane.id}: {`));
     assert.ok(block.includes(`${pane.id}: {`), `openConsole names no window for ${pane.id}`);
@@ -254,18 +256,25 @@ test("openConsole wires the pane handlers BEFORE it shows the window", () => {
   // genuinely down) and a Command pane that threw "No handler registered". Both
   // surfaces look finished and answer nothing, which is why this is asserted on
   // ORDER and not merely on presence.
+  // Since slice 9 the same ORDER holds for both hosts: the legacy window
+  // (showConsole) and the aither:// tabs (ensureConsoleIpc + openInternal).
   const main = read("main.cjs");
-  const block = main.slice(main.indexOf("function openConsole()"));
-  const show = block.indexOf("showConsole({");
+  const opener = main.slice(main.indexOf("function openConsole("), main.indexOf("function wireConsoleHost("));
+  assert.ok(opener.indexOf("wireConsoleHost(legacy)") < opener.indexOf("browserWindow.openInternal("),
+    "the pane handlers must be wired before the browser opens a pane");
+  const block = main.slice(main.indexOf("function wireConsoleHost("));
+  const show = block.indexOf("(legacy ? showConsole : ensureConsoleIpc)({");
+  assert.ok(show > 0, "wireConsoleHost no longer chooses the host");
   for (const call of ["ensureFleetIpc()", "ensureCommandIpc("]) {
     const at = block.indexOf(call);
-    assert.ok(at !== -1, `openConsole must call ${call}`);
-    assert.ok(at < show, `${call} must run before showConsole`);
+    assert.ok(at !== -1, `wireConsoleHost must call ${call}`);
+    assert.ok(at < show, `${call} must run before the console host`);
   }
   // A pane's own close button has no standalone window to close; without a
-  // fallback it is a dead control that reports nothing.
-  assert.ok(block.indexOf("setFleetCloseFallback(closeConsole)") < show);
-  assert.ok(block.indexOf("setCommandCloseFallback(closeConsole)") < show);
+  // fallback it is a dead control that reports nothing. In a tab it closes the tab.
+  assert.match(block, /const closePane = legacy \? closeConsole : \(event\) => browserWindow\.closeInternalTabOf\(/);
+  assert.ok(block.indexOf("setFleetCloseFallback(closePane)") < show);
+  assert.ok(block.indexOf("setCommandCloseFallback(closePane)") < show);
 });
 
 test("a hosted pane is hidden by a rect of NULL, not by being left painted", () => {
@@ -315,5 +324,58 @@ test("Sign out clears the page host app.aitherium.com too", () => {
   for (const host of ["https://aitherium.com", "https://www.aitherium.com", "https://api.aitherium.com",
     "https://app.aitherium.com"]) {
     assert.ok(fn.includes(`"${host}"`), `clearPartitionToken misses ${host}`);
+  }
+});
+
+test("the console's IPC is wired WITHOUT its window, for the aither:// tabs (plan slice 9)", () => {
+  // The browser shim never opens the console window, yet the Settings page still sets
+  // the theme through desk:appearance-set -- so the IPC must be installable alone, and
+  // an appearance change must reach the browser's tabs, not only the console's frames.
+  const mod = require("./console-window.cjs");
+  assert.equal(typeof mod.ensureConsoleIpc, "function");
+  const src = read("console-window.cjs");
+  const show = src.slice(src.indexOf("function showConsole("), src.indexOf("function focusPane("));
+  assert.match(show, /ensureConsoleIpc\(\{ windows, rendererUrl, urls, commands, prepare, signIn, begin, onAppearance \}\);/);
+  const ensure = src.slice(src.indexOf("function ensureConsoleIpc("), src.indexOf("function showConsole("));
+  assert.doesNotMatch(ensure, /new BrowserWindow/, "wiring the IPC must not open a window");
+  assert.match(ensure, /wireIpc\(\);/);
+  const broadcast = src.slice(src.indexOf("function broadcastAppearance("), src.indexOf("function paneSources("));
+  assert.ok(broadcast.indexOf("appearanceListener(appearance)") < broadcast.indexOf("if (!consoleWindow"),
+    "the listener must hear a change even when the console window is closed");
+  assert.match(read("main.cjs"), /onAppearance: \(appearance\) => browserWindow\.sendToInternalTabs\("desk:appearance-changed", appearance\)/);
+});
+
+test("plane pages: every one is a FILE pane whose page the console preload hands its bridge", () => {
+  // Slice 10: Files, Secrets and the five plane status pages. A pane whose
+  // preload route is missing is a page that says "no bridge in this frame".
+  const preload = read("console-preload.cjs");
+  const want = {
+    files: ["files.html", "./files-preload.cjs"],
+    secrets: ["secrets.html", "./secrets-preload.cjs"],
+    strata: ["plane-strata.html", "./plane-preload.cjs"],
+    pulse: ["plane-pulse.html", "./plane-preload.cjs"],
+    watch: ["plane-watch.html", "./plane-preload.cjs"],
+    flux: ["plane-flux.html", "./plane-preload.cjs"],
+    nexus: ["plane-nexus.html", "./plane-preload.cjs"],
+  };
+  for (const [id, [file, dep]] of Object.entries(want)) {
+    const pane = PANES.find((p) => p.id === id);
+    assert.ok(pane, `${id} is not in PANES`);
+    assert.equal(pane.kind, "file");
+    assert.equal(pane.file, file);
+    assert.ok(preload.includes(`require("${dep}")`), `console-preload must require ${dep}`);
+  }
+  // The plane route is a pattern; prove it matches every plane file and not ops.html.
+  const route = preload.match(/else if \((\/.+\/)\.test\(href\)\)/);
+  assert.ok(route, "console-preload has no plane-page route");
+  const re = new RegExp(route[1].slice(1, -1));
+  for (const id of ["strata", "pulse", "watch", "flux", "nexus"]) {
+    assert.ok(re.test(`file:///x/electron/plane-${id}.html`), `plane route misses ${id}`);
+  }
+  assert.ok(!re.test("file:///x/electron/ops.html"));
+  // Each new pane's icon is drawn, not the grid fallback.
+  const html = read("console.html");
+  for (const icon of ["folder", "key", "database", "activity", "eye", "zap", "network"]) {
+    assert.ok(new RegExp(`\n  ${icon}: '<`).test(html), `console.html has no ${icon} icon`);
   }
 });

@@ -10,16 +10,27 @@
  *   window webContents  browser-chrome.html + browser-chrome-preload.cjs: URL bar,
  *                       back/forward/reload, the "Agent is driving" banner and
  *                       the Take over / Let the agent continue button.
- *   page views          ONE WebContentsView PER TAB, all in the browser's OWN
- *                       partition, contextIsolation, sandbox, no node, and NO
- *                       preload -- web content gets no bridge into the desk at
- *                       all. Tabs belong to whoever opened them (browser-tabs.cjs):
- *                       an agent drives only its own tabs, never the owner's.
+ *   page views          ONE WebContentsView PER TAB. A WEB tab lives in the
+ *                       browser's OWN partition, contextIsolation, sandbox, no
+ *                       node, and NO preload -- web content gets no bridge into
+ *                       the desk at all. Tabs belong to whoever opened them
+ *                       (browser-tabs.cjs): an agent drives only its own tabs.
+ *   aither:// tabs      THE CONSOLE (plan slices 8+9). Every Aither Console pane is
+ *                       a page, aither://<pane> (browser-internal.cjs), in its own
+ *                       INTERNAL partition -- the only session that resolves the
+ *                       scheme -- with ONLY that pane's preload. A web tab can
+ *                       neither navigate to nor frame one, and an internal tab
+ *                       sends any web link to a new web tab. Hosted panes
+ *                       (AitherOS Online) open as HOSTED tabs in the pane's own
+ *                       signed-in partition. Inbox, AitherOS Online and Workspace
+ *                       are pinned at the front of the strip.
  *   panel view          ONE self-contained, swappable assistant view, created by
  *                       createAssistantPanel() -- the Connect panel,
  *                       connect-panel.html (awconnect's side panel in the desk:
  *                       chat about the page with history, quick actions, "Do it"
- *                       for an agent, Open in Chrome, downloads). It hands the
+ *                       for an agent, Open in Chrome, downloads, and the Agents
+ *                       tab: live sessions, open cards answerable in place, the
+ *                       room -- agents-panel.cjs). It hands the
  *                       page, fenced as untrusted data, to the desk's one
  *                       CommandAgent. Swapping it changes ASSISTANT_PANEL and
  *                       nothing else. Take over lives on the toolbar, not the
@@ -33,10 +44,12 @@
 
 const path = require("node:path");
 const policy = require("./browser-policy.cjs");
+const internal = require("./browser-internal.cjs");
 const contextPush = require("./browser-context-push.cjs");
 const { TabSet } = require("./browser-tabs.cjs");
 const { createLibrary } = require("./browser-library.cjs");
 const { createDownloads } = require("./browser-downloads.cjs");
+const agentsPanel = require("./agents-panel.cjs");
 
 const PARTITION = "persist:aither-browser";
 const CHROME_HEIGHT = 118; // tab strip (34) + toolbar (44) + banner (40); browser-chrome.html matches
@@ -80,8 +93,20 @@ let tabs = new TabSet();
 let panelView = null;
 let ipcWired = false;
 let sessionHardened = false;
+let internalReady = false;
+/** What main injects so aither:// pages resolve (configureInternal). */
+let internalConfig = { rendererUrl: "", hostedUrl: null, hostedPrepare: null, beforeInternal: null,
+  workspaceUrl: null, modelFile: null };
+/** The inbox count, shown on the pinned Inbox tab and the taskbar button. */
+let inbox = { count: 0, image: null, tooltip: "" };
 let askAgent = null;
 let agentHandle = null;
+/**
+ * The Connect panel's Agents tab: {view(), check(id, choice), answer(id, choice, win)}.
+ * main installs it (setAgentsHost) because the sources -- the session directory,
+ * the open cards, the room feed and the ONE answer path the Inbox uses -- live there.
+ */
+let agentsHost = null;
 let pushTimer = null;
 /** History + bookmarks (browser-library.json in userData), opened on first use. */
 let library = null;
@@ -128,9 +153,14 @@ function tabList() {
   const snap = tabs.snapshot();
   return snap.tabs.map((t) => {
     const view = viewOf(t.id);
+    const tab = tabs.get(t.id) || {};
     return {
       id: t.id,
       by: t.by,
+      kind: t.kind || "web",
+      pinned: Boolean(t.pinned),
+      label: tab.label || "",
+      badge: tab.key === "inbox" && inbox.count > 0 ? inbox.count : 0,
       active: t.id === snap.active,
       agentTarget: t.id === snap.agentTarget,
       url: view ? view.webContents.getURL() : "",
@@ -225,24 +255,77 @@ function layout() {
 }
 
 /**
+ * What a URL opens as: a web page, an aither:// page (internal), or a hosted pane
+ * (AitherOS Online in its own signed-in partition). Unknown aither:// pages refuse.
+ */
+function classify(url) {
+  const parsed = internal.parseInternalUrl(url);
+  if (!parsed) return { kind: "web", url, paneId: null, partition: null };
+  const route = internal.resolveRequest(url, { rendererUrl: internalConfig.rendererUrl,
+    hostedUrl: internalConfig.hostedUrl });
+  if (route.type === "hosted") return { kind: "hosted", url: route.url, paneId: parsed.paneId, partition: route.partition };
+  if (route.type === "missing" && route.status === 404) return { kind: "refused", error: route.reason };
+  return { kind: "internal", url, paneId: parsed.paneId, partition: null };
+}
+
+/** The aither:// handler, on the internal session only, once. */
+function ensureInternalSession() {
+  if (internalReady) return;
+  const { session } = electron();
+  const ses = session.fromPartition(internal.INTERNAL_PARTITION);
+  internal.installInternalProtocol(ses, {
+    rendererUrl: () => (typeof internalConfig.rendererUrl === "function"
+      ? internalConfig.rendererUrl() : internalConfig.rendererUrl),
+    hostedUrl: internalConfig.hostedUrl,
+    // Read at request time: main may configure after the session exists.
+    modelFile: (name) => (typeof internalConfig.modelFile === "function" ? internalConfig.modelFile(name) : null),
+  });
+  // The microphone, for an aither: page only -- the grant the console's default
+  // session gave its panes (Inbox dictation, Settings "Grant mic"). Web tabs live
+  // in another session and keep policy.allowPermission's deny-all.
+  internal.installInternalPermissions(ses);
+  internalReady = true;
+}
+
+/** A hosted tab is signed in BEFORE it loads, the way the console's hosted pane is. */
+async function loadHostedTab(view, url) {
+  const prepare = internalConfig.hostedPrepare;
+  if (typeof prepare === "function") {
+    try { await prepare(); } catch { /* it still loads; the site shows its own sign-in */ }
+  }
+  if (alive(view)) await loadInView(view, url);
+}
+
+/**
  * Open a tab owned by `by` ("you" | "agent") and load `url` in it.
  * @returns {{ok: true, id: number, view: object} | {ok: false, error: string}}
  */
-function openTab(by, url, { activate = true, after = null } = {}) {
+function openTab(by, url, { activate = true, after = null, pinned = false, key = null, label = "",
+  hostedPartition = null } = {}) {
   if (!win || win.isDestroyed()) return { ok: false, error: "The Aither Browser is not open." };
-  const added = tabs.add(by, { activate, after });
+  // Main wires the pane's handlers (and where the bundle and AitherOS Online are)
+  // BEFORE the page is classified or loads: a pane talks to main the moment it loads.
+  if (by === "you" && internal.isInternalUrl(url) && typeof internalConfig.beforeInternal === "function") {
+    try { internalConfig.beforeInternal(); } catch { /* the page shows its own error */ }
+  }
+  const target = classify(url);
+  if (target.kind === "refused") return { ok: false, error: target.error };
+  // A pinned https tab that names a partition (Workspace) is hosted too: same login as Online.
+  const hosted = target.kind === "web" && hostedPartition && internal.isHostedSite(url);
+  const kind = hosted ? "hosted" : target.kind;
+  const added = tabs.add(by, { activate, after, kind, pinned, key });
   if (!added.ok) return added;
+  const tab = tabs.get(added.id);
+  tab.paneId = target.paneId;
+  tab.label = label;
+  if (kind === "internal") ensureInternalSession();
   const { WebContentsView } = electron();
+  // Web content gets NO preload (tabPreferences("web")); an aither:// tab gets the
+  // one internal preload, which hands the page only its own pane's bridge.
   const view = new WebContentsView({
-    webPreferences: {
-      partition: PARTITION,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      webSecurity: true,
-      allowRunningInsecureContent: false,
-      // Deliberately no preload -- web content gets no bridge into the desk.
-    },
+    webPreferences: internal.tabPreferences(kind, {
+      webPartition: PARTITION, hostedPartition: target.partition || hostedPartition,
+    }),
   });
   views.set(added.id, view);
   wirePage(view.webContents, added.id);
@@ -251,8 +334,90 @@ function openTab(by, url, { activate = true, after = null } = {}) {
   if (alive(panelView)) win.contentView.addChildView(panelView);
   layout();
   pushState();
-  void loadInView(view, url).catch(() => {});
+  if (kind === "hosted") void loadHostedTab(view, target.url).catch(() => {});
+  else void loadInView(view, target.url).catch(() => {});
   return { ok: true, id: added.id, view };
+}
+
+/** The pinned front of the strip: Inbox, AitherOS Online, Workspace -- opened once each. */
+function ensurePinned() {
+  for (const pin of internal.pinnedTabs({ workspaceUrl: internalConfig.workspaceUrl })) {
+    if (tabs.byKey(pin.key)) continue;
+    openTab("you", pin.url, { activate: false, pinned: true, key: pin.key, label: pin.label,
+      hostedPartition: pin.hostedPartition || null });
+  }
+}
+
+/** The owner's tab already showing a pane (aither://<pane>), or null. */
+function tabForPane(paneId) {
+  return tabs.tabs.find((t) => t.paneId === paneId && t.by === "you") || null;
+}
+
+/**
+ * THE console door (plan slice 9): raise the browser on aither://<pane>, with the
+ * pinned tabs in place. Reuses the pane's tab; `param` (a card id) reloads it on
+ * that card. Returns false for a pane that does not exist.
+ */
+function openInternal(paneId, param = null, opts = {}) {
+  const pane = internal.paneById(paneId);
+  if (!pane) return false;
+  const url = internal.internalUrl(pane, param);
+  createBrowserWindow({ ...opts, url: null, home: false });
+  ensurePinned();
+  const existing = tabForPane(pane.id);
+  if (existing) {
+    showTab(existing.id);
+    const view = viewOf(existing.id);
+    if (param != null && view && existing.kind === "internal" && view.webContents.getURL() !== url) {
+      void loadInView(view, url).catch(() => {});
+    }
+  } else {
+    const opened = openTab("you", url, { activate: true });
+    if (!opened.ok) return false;
+  }
+  return true;
+}
+
+/** Main's hooks for aither:// pages: where the renderer bundle and hosted panes are. */
+function configureInternal(config = {}) {
+  internalConfig = { ...internalConfig, ...config };
+}
+
+/** Every internal tab hears a broadcast (the theme changing, say). */
+function sendToInternalTabs(channel, payload) {
+  for (const t of tabs.tabs) {
+    if (t.kind !== "internal") continue;
+    const view = viewOf(t.id);
+    if (view) {
+      try { view.webContents.send(channel, payload); } catch { /* a page mid-navigation */ }
+    }
+  }
+}
+
+/**
+ * A pane's own "close" (Esc, its close button) from an aither:// tab closes THAT tab,
+ * never the browser. True when the sender was an internal tab.
+ */
+function closeInternalTabOf(sender) {
+  for (const t of tabs.tabs) {
+    const view = viewOf(t.id);
+    if (view && view.webContents === sender && t.kind === "internal") {
+      if (!t.pinned) closeTab(t.id, "you");
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The inbox count on the pinned Inbox tab and the browser's taskbar button. */
+function setInboxBadge({ count = 0, image = null, tooltip = "" } = {}) {
+  inbox = { count: Number(count) || 0, image, tooltip };
+  if (win && !win.isDestroyed()) {
+    try {
+      win.setOverlayIcon(inbox.count > 0 ? inbox.image : null, inbox.count > 0 ? inbox.tooltip : "");
+    } catch { /* not every platform draws overlays; the tab still carries the number */ }
+  }
+  pushState();
 }
 
 /** Close a tab (the owner, or the agent for its own). The last tab closing opens a fresh home tab. */
@@ -282,18 +447,39 @@ function showTab(id) {
 }
 
 function wirePage(wc, id) {
+  const kindOf = () => (tabs.get(id) || {}).kind || "web";
   // A popup becomes a TAB beside its opener, owned by the opener's owner (an agent
-  // page's popup is still the agent's); http/https only, never a second window.
+  // page's popup is still the agent's), never a second window. A web page may only
+  // open web pages; an aither:// page may open another Aither page or a web tab.
   wc.setWindowOpenHandler(({ url }) => {
     const opener = tabs.get(id);
-    if (opener && policy.isNavigable(url)) openTab(opener.by, url, { activate: true, after: id });
+    if (!opener) return { action: "deny" };
+    if (policy.isNavigable(url)) {
+      openTab(opener.by, url, { activate: true, after: id });
+    } else if (opener.kind === "internal" && internal.isInternalUrl(url)) {
+      openTab("you", url, { activate: true, after: id });
+    }
     return { action: "deny" };
   });
+  // Navigation is judged per tab KIND (browser-internal navigationVerdict): a web
+  // tab never reaches aither://; an internal tab sends a web link to a web tab.
   const guard = (event, url) => {
-    if (!policy.isNavigable(url)) event.preventDefault();
+    const verdict = internal.navigationVerdict(kindOf(), url);
+    if (verdict === "allow") return;
+    event.preventDefault();
+    const opener = tabs.get(id);
+    if (verdict === "web-tab" && opener) openTab(opener.by, url, { activate: true, after: id });
   };
   wc.on("will-navigate", guard);
-  wc.on("will-redirect", guard);
+  // A redirect cannot be split into another tab: anything but "allow" stops it.
+  wc.on("will-redirect", (event, url) => {
+    if (internal.navigationVerdict(kindOf(), url) !== "allow") event.preventDefault();
+  });
+  // Frames: a web page cannot frame aither:// (its session has no handler either).
+  wc.on("will-frame-navigate", (details) => {
+    if (!details || details.isMainFrame) return;
+    if (internal.navigationVerdict(kindOf(), details.url, { frame: true }) !== "allow") details.preventDefault();
+  });
   wc.on("will-attach-webview", (event) => event.preventDefault());
   for (const name of ["did-navigate", "did-navigate-in-page", "page-title-updated", "did-start-loading", "did-stop-loading"]) {
     wc.on(name, () => pushState());
@@ -302,7 +488,8 @@ function wirePage(wc, id) {
   // History: the finished page, remembered with WHO opened its tab.
   wc.on("did-stop-loading", () => {
     const tab = tabs.get(id);
-    if (tab) getLibrary().visit(wc.getURL(), wc.getTitle(), tab.by);
+    // Console pages are not "history": the address bar suggests them by name instead.
+    if (tab && tab.kind === "web") getLibrary().visit(wc.getURL(), wc.getTitle(), tab.by);
   });
 }
 
@@ -313,6 +500,9 @@ function wirePage(wc, id) {
  */
 function scheduleContextPush(id) {
   if (!contextPush.enabled() || id !== tabs.active) return;
+  // Only WEB pages are "what the user is browsing"; a console page or the signed-in
+  // desktop is the desk itself.
+  if ((tabs.get(id) || {}).kind !== "web") return;
   clearTimeout(pushTimer);
   pushTimer = setTimeout(async () => {
     // Only the tab on screen is "what the user is looking at".
@@ -337,11 +527,12 @@ function scheduleContextPush(id) {
  * Open (or raise) the Aither Browser.
  * @param {{askAgent?: (prompt: string) => Promise<{ok?: boolean, reply?: string}>, url?: string}} [opts]
  */
-function createBrowserWindow({ askAgent: ask = null, url = null } = {}) {
+function createBrowserWindow({ askAgent: ask = null, url = null, home = true } = {}) {
   if (typeof ask === "function") askAgent = ask;
   wireIpc();
   const target = url ? policy.sanitizeUrl(url) : null;
   if (win && !win.isDestroyed()) {
+    if (win.isMinimized()) win.restore();
     win.show();
     win.focus();
     // A link the OWNER opened from elsewhere in the desk: a new tab of theirs.
@@ -378,7 +569,7 @@ function createBrowserWindow({ askAgent: ask = null, url = null } = {}) {
     layout();
     win.show();
     win.focus();
-    pushState();
+    setInboxBadge(inbox);
   });
   win.on("closed", () => {
     for (const view of [...views.values(), panelView]) {
@@ -392,7 +583,9 @@ function createBrowserWindow({ askAgent: ask = null, url = null } = {}) {
   });
 
   void win.loadFile(path.join(__dirname, "browser-chrome.html"));
-  openTab("you", target && target.ok ? target.url : homeUrl());
+  // `home: false` is the console door (openInternal): it opens its own pane tab,
+  // so a home page underneath it would be one more tab nobody asked for.
+  if (home || (target && target.ok)) openTab("you", target && target.ok ? target.url : homeUrl());
   return win;
 }
 
@@ -752,9 +945,24 @@ function wireIpc() {
   ipcMain.handle("desk:browser-state", (event) => (fromChrome(event) || fromPanel(event) ? state() : null));
   ipcMain.handle("desk:browser-navigate", async (event, input) => {
     if (!fromChrome(event)) return { ok: false, reason: "not the browser toolbar" };
+    // The OWNER typing aither://<pane> into the address bar opens that console page.
+    // Only here: sanitizeUrl (what agents and links pass through) still refuses it.
+    const typed = typeof input === "string" ? input.trim() : "";
+    const page = internal.parseInternalUrl(typed);
+    if (page) {
+      return openInternal(page.paneId) ? { ok: true, url: internal.internalUrl(page.paneId) }
+        : { ok: false, reason: `no Aither page called ${page.paneId}` };
+    }
     const verdict = policy.sanitizeUrl(input);
     const view = activeView();
     if (!verdict.ok || !view) return verdict.ok ? { ok: false, reason: "browser closed" } : verdict;
+    // A console page or a signed-in hosted tab never turns into an arbitrary web
+    // page: the address opens in a new web tab instead.
+    const active = tabs.get(tabs.active);
+    if (active && internal.navigationVerdict(active.kind, verdict.url) !== "allow") {
+      const opened = openTab("you", verdict.url);
+      return opened.ok ? { ok: true, url: verdict.url, tab: opened.id } : { ok: false, reason: opened.error };
+    }
     void loadInView(view, verdict.url).catch(() => {});
     return { ok: true, url: verdict.url };
   });
@@ -767,7 +975,10 @@ function wireIpc() {
   // History + bookmarks: the OWNER's toolbar only. No agent tool reads them.
   ipcMain.handle("desk:browser-suggest", (event, text) => {
     if (!fromChrome(event)) return [];
-    return getLibrary().suggest(typeof text === "string" ? text.slice(0, 200) : "");
+    const q = typeof text === "string" ? text.slice(0, 200) : "";
+    // The console's pages first ("settings", "aither://fle"), then bookmarks and history.
+    const pages = internal.suggestInternal(q).slice(0, 4);
+    return [...pages, ...getLibrary().suggest(q, Math.max(0, 8 - pages.length))];
   });
   ipcMain.handle("desk:browser-bookmark", (event) => {
     const view = activeView();
@@ -837,6 +1048,28 @@ function wireIpc() {
   ipcMain.on("desk:browser-handback", (event) => {
     if (fromChrome(event)) gate.handBack();
   });
+  // The Agents tab: live sessions, the open cards and the room, read-only except for
+  // answering a card with one of its OWN options through main's answer path.
+  ipcMain.handle("desk:browser-agents", async (event) => {
+    if (!fromPanel(event)) return null;
+    if (!agentsHost) return agentsPanel.unavailableView("the desk has not wired the Agents tab");
+    try {
+      return await agentsHost.view();
+    } catch (error) {
+      return agentsPanel.unavailableView(String(error?.message || error));
+    }
+  });
+  ipcMain.handle("desk:browser-agents-answer", async (event, id, choice) => {
+    if (!fromPanel(event)) return { ok: false, error: "not the browser panel" };
+    if (!agentsHost) return { ok: false, error: "the desk has not wired the Agents tab" };
+    const verdict = agentsHost.check(id, choice);
+    if (!verdict.ok) return verdict;
+    try {
+      return await agentsHost.answer(id, choice, win && !win.isDestroyed() ? win : null);
+    } catch (error) {
+      return { ok: false, error: String(error?.message || error) };
+    }
+  });
   ipcMain.handle("desk:browser-ask", async (event, question, extra) => {
     if (!fromPanel(event)) return { ok: false, reply: "not the browser panel" };
     if (typeof askAgent !== "function") return { ok: false, reply: "The desk's agent is not wired to this window." };
@@ -870,6 +1103,13 @@ async function screenPage() {
   return { page, by: tab ? tab.by : null };
 }
 
+/** main installs the Agents tab's sources + answer path (see agentsHost). */
+function setAgentsHost(host) {
+  const ok = host && typeof host.view === "function" && typeof host.check === "function"
+    && typeof host.answer === "function";
+  agentsHost = ok ? host : null;
+}
+
 function closeBrowserWindow() {
   if (win && !win.isDestroyed()) win.close();
 }
@@ -881,6 +1121,12 @@ function isBrowserWindowOpen() {
 module.exports = {
   ASSISTANT_PANEL,
   CHROME_HEIGHT,
+  classify,
+  closeInternalTabOf,
+  configureInternal,
+  openInternal,
+  sendToInternalTabs,
+  setInboxBadge,
   ISOLATED_WORLD_ID,
   KEY_CODES,
   PARTITION,
@@ -897,4 +1143,5 @@ module.exports = {
   __showTabForTest: (id) => showTab(id),
   isBrowserWindowOpen,
   scriptFor,
+  setAgentsHost,
 };

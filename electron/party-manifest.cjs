@@ -216,10 +216,13 @@ function buildParty({ castFile = undefined, rosterDir = roster.ROSTER_DIR, now =
   // whole actor vanish from the party just because its fallback hash landed on a
   // hidden body.
   const safeNames = names.filter((n) => !hiddenNow(ratingOf(readCharacterJson(rosterDir, n))));
+  // The platform-declared voice/character tier (below cast.json authors), so a
+  // party member sounds like the agent it is on a desk that never authored it.
+  const agentRoster = cast.loadRosterPresence();
   const resolve = (ctx) => {
-    const full = cast.resolveActor(snapshot, { roster: names, ...ctx });
+    const full = cast.resolveActor(snapshot, { roster: names, agentRoster, ...ctx });
     if (full.characterFrom !== "hash") return full;
-    return cast.resolveActor(snapshot, { roster: safeNames, ...ctx });
+    return cast.resolveActor(snapshot, { roster: safeNames, agentRoster, ...ctx });
   };
 
   const rows = [];

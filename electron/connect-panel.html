@@ -8,7 +8,10 @@
 <!-- The Connect panel: awconnect's side panel inside the Aither Browser
      (browser-window.cjs ASSISTANT_PANEL). Chat about the page with history and
      quick actions, "Do it" (an agent does a task in its own tab), Open in Chrome,
-     and the downloads shelf. Every page string is rendered with textContent. -->
+     the downloads shelf, and Agents (live sessions, the cards waiting on you,
+     answerable in place, and the room; agents-panel.cjs shapes it and
+     awconnect-next renders the same shape in Edge/Chrome). Every page and agent
+     string is rendered with textContent. -->
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--panel); color: var(--fg); font: 13px/1.45 var(--font-sans); }
@@ -55,6 +58,32 @@
   .dl .s { color: var(--muted); white-space: nowrap; }
   .dl.blocked .s { color: var(--warning); }
   .dl button { border: 1px solid var(--line); background: var(--btn); color: var(--fg); border-radius: 6px; font-size: 11px; padding: 2px 8px; cursor: pointer; }
+  #agents { flex: 1; overflow: auto; padding: 4px 12px 10px; }
+  .ag-h { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 10px 0 4px;
+    display: flex; gap: 6px; align-items: baseline; }
+  .ag-h .note { text-transform: none; letter-spacing: 0; font-size: 11px; }
+  .ag-h .note.bad { color: var(--warning); }
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 6px 0; }
+  .card.urgent { border-color: var(--warning); }
+  .card .t { font-weight: 600; overflow-wrap: anywhere; }
+  .card .s, .card .from, .card .res { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; margin-top: 2px; }
+  .card .res.err { color: var(--destructive); }
+  .card .opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .card .opts button { border: 1px solid var(--line); background: var(--btn); color: var(--fg); border-radius: 999px;
+    padding: 3px 10px; font-size: 12px; cursor: pointer; }
+  .card .opts button.rec { border-color: var(--agent-purple); color: var(--agent-purple); }
+  .card .opts button:disabled { opacity: .5; cursor: default; }
+  .sess { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; font-size: 12px; }
+  .sess .st { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; padding: 0 6px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .sess .st.working { color: var(--agent-purple); border-color: var(--agent-purple); }
+  .sess .st.needs { color: var(--warning); border-color: var(--warning); }
+  .sess .body { flex: 1; min-width: 0; }
+  .sess .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess .d { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .line { font-size: 12px; padding: 3px 0; overflow-wrap: anywhere; }
+  .line .a { font-weight: 600; margin-right: 6px; }
+  .line.agent .a { color: var(--agent-purple); }
 </style>
 </head>
 <body>
@@ -67,6 +96,7 @@
     <button id="t-chat" role="tab" aria-selected="true">Chat</button>
     <button id="t-task" role="tab" aria-selected="false">Do it</button>
     <button id="t-dl" role="tab" aria-selected="false">Downloads<span id="dlcount" class="count"></span></button>
+    <button id="t-agents" role="tab" aria-selected="false">Agents<span id="agcount" class="count"></span></button>
   </nav>
 
   <section id="p-chat" class="on" aria-label="Chat about this page">
@@ -102,6 +132,17 @@ It works in its own tab with a purple dot. Captchas, passwords, payments and the
     <div class="actions"><button id="dlclear">Clear finished</button></div>
   </section>
 
+  <section id="p-agents" aria-label="Agents: sessions, decisions and the room">
+    <div id="agents">
+      <div class="ag-h">Needs you <span id="ag-cards-note" class="note"></span></div>
+      <div id="ag-cards"></div>
+      <div class="ag-h">Sessions <span id="ag-sess-note" class="note"></span></div>
+      <div id="ag-sess"></div>
+      <div class="ag-h">Room <span id="ag-room-note" class="note"></span></div>
+      <div id="ag-room"></div>
+    </div>
+  </section>
+
   <div class="actions">
     <button id="chrome" title="Open this page in your own browser (your signed-in Chrome)">Open in Chrome</button>
   </div>
@@ -113,16 +154,18 @@ It works in its own tab with a purple dot. Captchas, passwords, payments and the
   let busy = false;
 
   // Tabs
-  const tabs = { chat: ["t-chat", "p-chat"], task: ["t-task", "p-task"], dl: ["t-dl", "p-dl"] };
+  const tabs = { chat: ["t-chat", "p-chat"], task: ["t-task", "p-task"], dl: ["t-dl", "p-dl"], agents: ["t-agents", "p-agents"] };
   function show(name) {
     for (const [key, [tab, panel]] of Object.entries(tabs)) {
       $(tab).setAttribute("aria-selected", String(key === name));
       $(panel).classList.toggle("on", key === name);
     }
+    if (name === "agents") void loadAgents();
   }
   $("t-chat").onclick = () => show("chat");
   $("t-task").onclick = () => show("task");
   $("t-dl").onclick = () => show("dl");
+  $("t-agents").onclick = () => show("agents");
 
   // Chat
   function bubble(text, who, err) {
@@ -230,6 +273,121 @@ It works in its own tab with a purple dot. Captchas, passwords, payments and the
     }
   }
   $("dlclear").onclick = () => api.clearDownloads();
+
+  // Agents: AGENTS_VIEW v1 from agents-panel.cjs. The same sections, words and order
+  // as awconnect-next's Agents panel, so Edge/Chrome and the Aither Browser match.
+  const answered = new Map(); // card id -> {text, err}: the outcome stays visible after the card leaves
+  let answering = "";
+  // Main holds an answered card unanswerable for 2 min (agents-panel.cjs answeredTtlMs);
+  // the panel matches it, so a refused answer can still be retried after that.
+  const ANSWER_HOLD_MS = 120000;
+  function held(id) {
+    const done = answered.get(id);
+    return Boolean(done && !done.err && Date.now() - done.at < ANSWER_HOLD_MS);
+  }
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+  function note(id, section) {
+    const n = $(id);
+    n.textContent = section ? section.note || "" : "";
+    n.className = "note" + (section && section.ok === false ? " bad" : "");
+  }
+  function renderCards(section) {
+    const box = $("ag-cards");
+    box.textContent = "";
+    note("ag-cards-note", section);
+    for (const c of (section && section.rows) || []) {
+      const card = el("div", "card" + (c.urgency === "high" || c.urgency === "critical" ? " urgent" : ""));
+      card.dataset.id = c.id;
+      card.appendChild(el("div", "t", c.title));
+      if (c.summary) card.appendChild(el("div", "s", c.summary));
+      if (c.from) card.appendChild(el("div", "from", "from " + c.from));
+      if (c.answerable) {
+        const opts = el("div", "opts");
+        for (const o of c.options) {
+          const b = el("button", o.recommended ? "rec" : "", o.label);
+          if (o.consequence) b.title = o.consequence;
+          // An answer that went through stays answered until the card leaves the view:
+          // the store only drops it when the decision watcher fires.
+          b.disabled = answering === c.id || held(c.id);
+          b.onclick = () => void answerCard(c, o);
+          opts.appendChild(b);
+        }
+        card.appendChild(opts);
+      } else if (c.whyNot) {
+        card.appendChild(el("div", "s", c.whyNot));
+      }
+      const res = answered.get(c.id);
+      if (res) card.appendChild(el("div", "res" + (res.err ? " err" : ""), res.text));
+      box.appendChild(card);
+    }
+    const open = new Set(((section && section.rows) || []).map((c) => c.id));
+    for (const [id, res] of answered) {
+      if (!open.has(id) && !res.err) box.appendChild(el("div", "hint", res.text));
+    }
+  }
+  function renderSessions(section) {
+    const box = $("ag-sess");
+    box.textContent = "";
+    note("ag-sess-note", section);
+    for (const s of (section && section.rows) || []) {
+      const row = el("div", "sess");
+      const needs = s.status === "waiting-permission" || s.status === "waiting-input" || s.status === "blocked?";
+      row.appendChild(el("span", "st" + (s.status === "working" ? " working" : needs ? " needs" : ""), s.statusText));
+      const body = el("div", "body");
+      const name = el("div", "n", s.title);
+      name.title = (s.harness ? s.harness + " · " : "") + s.id;
+      body.appendChild(name);
+      const detail = s.summary || s.next || s.goal;
+      if (detail) body.appendChild(el("div", "d", detail));
+      row.appendChild(body);
+      box.appendChild(row);
+    }
+  }
+  function renderRoom(section) {
+    const box = $("ag-room");
+    box.textContent = "";
+    note("ag-room-note", section);
+    for (const r of (section && section.rows) || []) {
+      const line = el("div", "line" + (r.agent ? " agent" : ""));
+      line.appendChild(el("span", "a", r.author));
+      line.appendChild(document.createTextNode(r.text));
+      box.appendChild(line);
+    }
+  }
+  function renderAgents(view) {
+    if (!view) return;
+    $("agcount").textContent = view.waiting ? String(view.waiting) : "";
+    renderCards(view.cards);
+    renderSessions(view.sessions);
+    renderRoom(view.room);
+  }
+  let agentsLoading = false;
+  async function loadAgents() {
+    if (agentsLoading) return;
+    agentsLoading = true;
+    try { renderAgents(await api.agents()); } catch { /* the next poll says why */ } finally { agentsLoading = false; }
+  }
+  async function answerCard(card, option) {
+    if (answering || held(card.id)) return;
+    answering = card.id;
+    answered.delete(card.id);
+    await loadAgents();
+    let res;
+    try { res = await api.answerCard(card.id, option.key); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+    answering = "";
+    if (res && res.ok && res.pending) answered.set(card.id, { text: "Finish approving in the window that opened (Windows Hello).", err: false, at: Date.now() });
+    else if (res && res.ok) answered.set(card.id, { text: "Answered \u201c" + option.label + "\u201d: " + card.title, err: false, at: Date.now() });
+    else answered.set(card.id, { text: (res && res.error) || "The answer did not go through.", err: true, at: Date.now() });
+    await loadAgents();
+  }
+  // The badge keeps counting while another tab is open; nothing polls a hidden panel.
+  setInterval(() => { if (!document.hidden) void loadAgents(); }, 10000);
+  void loadAgents();
 
   // State from main
   function render(s) {

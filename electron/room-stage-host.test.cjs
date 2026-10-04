@@ -553,3 +553,103 @@ test("castPaneImpl.describe lists the resident FIRST with its service:awdesk res
   assert.equal(first.resolution.physics.weight, 0.4);
   assert.equal(first.resolution.physicsFrom.weight, "defaults.physics.weight");
 });
+
+test("buildResolver: an agent with no cast.json record speaks with its ROSTER voice; authors.<agent> still wins", () => {
+  const dir = tmpDir();
+  const file = castFileIn(dir);
+  const rosterFile = path.join(dir, "agent-roster.generated.json");
+  fs.writeFileSync(
+    rosterFile,
+    JSON.stringify({
+      agents: ["atlas", "hydra"],
+      presence: {
+        atlas: { voice: "en-US-MichelleNeural", character: "Luna" },
+        hydra: { voice: "en-US-AvaNeural" },
+      },
+    }),
+    "utf8",
+  );
+  writeCast(file, { version: 1, authors: { hydra: { voice: "en-US-AnaNeural" } } });
+  const deps = baseDeps({ castFile: file, agentRosterFile: rosterFile });
+  const resolve = host.buildResolver(deps, () => file, null);
+  const atlas = resolve({ author: "atlas", actorId: "a1", actorKind: "agent" });
+  assert.equal(atlas.voice, "en-US-MichelleNeural");
+  assert.equal(atlas.voiceFrom, "roster.atlas.voice");
+  assert.equal(atlas.character, "Luna");
+  const hydra = resolve({ author: "hydra", actorId: "h1", actorKind: "agent" });
+  assert.equal(hydra.voice, "en-US-AnaNeural");
+  assert.equal(hydra.voiceFrom, "authors.hydra.voice");
+});
+
+test("agentRosterPresence: an unreadable mirror path is {} (fail-soft), never a throw", () => {
+  const deps = baseDeps({ agentRosterFile: path.join(tmpDir(), "missing.json") });
+  assert.deepEqual(host.agentRosterPresence(deps), {});
+  assert.deepEqual(host.agentRosterPresence(baseDeps({ agentRosterFile: () => { throw new Error("x"); } })), {});
+});
+
+test("end to end: a stage line reaches TTS with the agent's ROSTER voice on a desk that sets "
+  + "defaults.voice AND voice.defaultVoice", async () => {
+  // The REAL RoomStage (timers off) + the REAL resolver + main.cjs's own gate
+  // mapping (voice-resolve.speechCtx -> resolveSpeech -> effectiveVoice). The
+  // fake speakAloud elsewhere in this file never went through the gate, which
+  // is how a file-wide default kept replacing every roster voice unnoticed.
+  const { RoomStage } = require("./room-stage.cjs");
+  const { resolveSpeech, effectiveVoice, speechCtx } = require("./voice-resolve.cjs");
+  const cast = require("./cast-config.cjs");
+  class QuietStage extends RoomStage {
+    start() {}
+  }
+  const dir = tmpDir();
+  const file = castFileIn(dir);
+  const rosterFile = path.join(dir, "agent-roster.generated.json");
+  fs.writeFileSync(
+    rosterFile,
+    JSON.stringify({ agents: ["atlas"], presence: { atlas: { voice: "en-US-MichelleNeural", character: "Luna" } } }),
+    "utf8",
+  );
+  writeCast(file, {
+    version: 1,
+    defaults: { voice: "en-US-JennyNeural" },
+    voice: { defaultVoice: "en-US-JennyNeural" },
+  });
+  const synthesised = [];
+  const slotAgents = new Map();
+  const speakAloud = async (text, voice, speed, slotId, origin = "service:awdesk", speaker = null) => {
+    const ctx = speechCtx({ text, slotId, origin, speaker, slotAgent: slotAgents.get(slotId) || null });
+    const gate = resolveSpeech({ ...ctx, file, agentRosterFile: rosterFile });
+    if (!gate.allowed) return { ok: false, reason: gate.reason };
+    synthesised.push({ voice: effectiveVoice(voice, gate, voice || "nova"), origin, from: gate.provenance.voiceFrom });
+    return { ok: true, durationMs: 0 };
+  };
+  const deps = baseDeps({
+    castFile: file,
+    agentRosterFile: rosterFile,
+    RoomStage: QuietStage,
+    spawnAvatarSlot: (slotId, character, agent) => {
+      slotAgents.set(slotId, agent);
+      return true;
+    },
+    speakAloud,
+  });
+  host.stopRoomStage();
+  const stage = host.startRoomStage(deps);
+  try {
+    stage.gapMs = 0;
+    stage.enqueue({
+      seq: 1,
+      author: "atlas",
+      actorId: "a1",
+      actorKind: "adk_agent",
+      kind: "agent_message",
+      text: "the build is green",
+      origin: cast.originOf({ kind: "adk_agent", id: "a1" }),
+    });
+    await stage.drain();
+  } finally {
+    host.stopRoomStage();
+  }
+  assert.equal(synthesised.length, 1, "the line must reach synthesis");
+  assert.equal(synthesised[0].voice, "en-US-MichelleNeural", "the roster voice, not the file-wide Jenny");
+  assert.equal(synthesised[0].from, "roster.atlas.voice");
+  assert.equal(synthesised[0].origin, "adk_agent:a1", "the gate resolves the row's OWN origin");
+});

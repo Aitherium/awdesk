@@ -45,6 +45,9 @@ Desk exposes these tools:
 | `export_to_aithershell` | None | Renders the current character into AitherShell |
 | `speak` | `text`; optional `voice`, `speed` | Says a line aloud through AitherVoice with lip sync |
 | `ask_owner` | `question`; optional `timeout_s` | Asks the owner aloud and waits for the spoken answer |
+| `files_roots` | None | Lists the folders the owner shared with agents in the Files page on this machine (empty until they switch one on; the grant is stored in `~/.aither/desk-file-grants.json` and does not sync) |
+| `files_list` | `root`; optional `path` | Lists one folder under a shared root, read-only; keys, tokens, credential stores and `.env` files are withheld, judged on the real path (short names and links do not get round it) |
+| `files_read` | `root`, `path`; optional `offset`, `max_bytes` | Reads a text file under a shared root (256 KiB per call); binary files answer metadata only |
 | `desktop_open` | `surface`: `overlay`, `app`, or `status` | Opens an AitherOS desktop surface |
 | `browser_open` | `url`: http(s) or a bare host; optional `new_tab` | Opens a page in the agent's own Aither Browser tab (other schemes refused; refused while the owner has taken over) |
 | `browser_read` | None | Reads the agent's tab: url, title, visible text, links (untrusted content) |

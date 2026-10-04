@@ -618,3 +618,21 @@ test("the steering envelope is stripped from bubble text; plain text passes thro
     text: '(Another Claude session sent a message: <agent-message from="p">done</agent-message>)' });
   assert.equal(stage.queue[0].text, "peer says: done");
 });
+
+test("speakerOf: a queued line carries its own origin, author and seat to the TTS gate", () => {
+  const { speakerOf } = require("./room-stage.cjs");
+  const origin = originOf({ kind: "adk_agent", id: "a1" });
+  assert.deepEqual(speakerOf({ author: "Atlas", origin }, { key: "adk_agent:a1", author: "atlas", seat: 1 }), {
+    origin: "adk_agent:a1",
+    author: "atlas",
+    agent: "atlas",
+    seat: 1,
+  });
+  // No resolution (a resolver-less host): the row's own fields, never "service:awdesk".
+  assert.deepEqual(speakerOf({ author: "atlas", origin }, null), {
+    origin: "adk_agent:a1",
+    author: "atlas",
+    agent: "atlas",
+    seat: null,
+  });
+});

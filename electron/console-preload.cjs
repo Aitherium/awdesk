@@ -35,6 +35,12 @@ if (href.includes("settings.html")) {
   require("./cast-preload.cjs");
 } else if (href.includes("/ops.html")) {
   require("./ops-preload.cjs");
+} else if (href.includes("/files.html")) {
+  require("./files-preload.cjs");
+} else if (href.includes("/secrets.html")) {
+  require("./secrets-preload.cjs");
+} else if (/\/plane-[a-z]+\.html/.test(href)) {
+  require("./plane-preload.cjs");
 } else if (!href.includes("console.html")) {
   // The renderer bundle: ?deck=1 and ?chat=1 both live here. Loaded ONLY for
   // those frames, because preload.cjs also installs middle-drag window-move

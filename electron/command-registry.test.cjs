@@ -113,7 +113,7 @@ test("a dynamic command with no submenu is DROPPED, never rendered dead", () => 
     const bare = labels(buildMenu(surface, () => {}, { submenus: {}, ctx: { slotId: "slot1" } }));
     assert.ok(!bare.includes("Characters"), `${surface}: a roster row came back`);
     assert.ok(bare.includes("Stage & characters…"), `${surface}: the one stage door is missing`);
-    assert.ok(bare.includes("Aither Console…"), `${surface}: static rows must still render`);
+    assert.ok(bare.includes("Open Aither"), `${surface}: static rows must still render`);
   }
   assert.ok(byId("characters.pick").dynamic, "the picker is still dynamic in the palette");
 });

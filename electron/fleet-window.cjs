@@ -59,11 +59,14 @@ function wireIpc() {
     getControl().status(opts && typeof opts === "object" ? opts : {}));
   ipcMain.handle("desk:fleet-run", (_event, action) => getControl().run(String(action)));
   ipcMain.handle("desk:fleet-doors", () => require("./surfaces.cjs").probeSurfaces().catch(() => []));
-  ipcMain.on("desk:fleet-close", () => {
-    if (fleetWindow && !fleetWindow.isDestroyed()) { fleetWindow.close(); return; }
+  ipcMain.on("desk:fleet-close", (event) => {
+    if (fleetWindow && !fleetWindow.isDestroyed() && (!event || event.sender === fleetWindow.webContents)) {
+      fleetWindow.close();
+      return;
+    }
     // No standalone window means the sender is the console's Fleet PANE, whose
     // close button (and Escape) would otherwise be dead.
-    if (typeof closeFallback === "function") closeFallback();
+    if (typeof closeFallback === "function") closeFallback(event);
   });
   // A door chip was clicked. Only the probed SURFACES may be opened — a
   // renderer-supplied URL never reaches the shell.

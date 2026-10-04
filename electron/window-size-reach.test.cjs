@@ -37,7 +37,7 @@ test("window size is reachable from the TRAY, not only from a gesture", () => {
   assert.ok(ids.includes("stage.open"), "the tray lost its door to the Stage pane");
   const at = MAIN.indexOf("buildMenu(\"tray\"");
   assert.ok(at > 0, "the tray is no longer rendered from the registry");
-  assert.match(MAIN, /case "stage\.open":[\s\S]{0,120}focusPane\("stage"\)/, "stage.open does not open the Stage pane");
+  assert.match(MAIN, /case "stage\.open":[\s\S]{0,120}openConsole\("stage"\)/, "stage.open does not open the Stage pane");
   const { STAGE_RUNNABLE } = require("./stage-window.cjs");
   const page = fs.readFileSync(path.join(__dirname, "stage.html"), "utf8");
   for (const command of registry.COMMANDS.filter((c) => c.group === "window-size")) {

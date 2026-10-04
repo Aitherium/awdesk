@@ -216,10 +216,17 @@ test("browser-window: page view has no preload, is sandboxed, isolated, and popu
   assert.ok(page, "page view construction found");
   assert.equal((src.match(/new WebContentsView\(/g) || []).length, 2, "one page-view builder (openTab) + the panel");
   assert.doesNotMatch(page[0], /preload:/, "page content must get NO preload");
-  assert.match(page[0], /contextIsolation: true/);
-  assert.match(page[0], /nodeIntegration: false/);
-  assert.match(page[0], /sandbox: true/);
-  assert.match(page[0], /partition: PARTITION/);
+  // Since aither:// (plan slice 8) the preferences come from ONE pure function, per
+  // tab kind; a WEB tab's are asserted here, the internal/hosted ones in
+  // browser-internal.test.cjs.
+  assert.match(page[0], /webPreferences: internal\.tabPreferences\(kind, \{\s*webPartition: PARTITION,/);
+  const { tabPreferences } = require("./browser-internal.cjs");
+  const web = tabPreferences("web", { webPartition: "persist:aither-browser" });
+  assert.equal(web.preload, undefined, "a web tab must get NO preload");
+  assert.equal(web.contextIsolation, true);
+  assert.equal(web.nodeIntegration, false);
+  assert.equal(web.sandbox, true);
+  assert.equal(web.partition, require("./browser-window.cjs").PARTITION);
   assert.match(src, /setWindowOpenHandler\(\(\{ url \}\) => \{[\s\S]*?return \{ action: "deny" \};/);
   assert.match(src, /setPermissionRequestHandler\(\(_wc, permission, callback\) => callback\(policy\.allowPermission\(permission\)\)\)/);
   assert.match(src, /wc\.on\("will-navigate", guard\)/);
