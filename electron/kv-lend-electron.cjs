@@ -21,7 +21,7 @@ const IDLE_S = 300; // "idle": no input for 5 minutes
  * @param dataDir   where the device key and kv-lend.json live (default: userData)
  */
 function startKvLend({ app, BrowserWindow, ipcMain, powerMonitor, notify = () => {}, log = console.log,
-  external = null, dataDir = app.getPath("userData"), probeOverride = null }) {
+  external = null, dataDir = app.getPath("userData"), probeOverride = null, onEnrolled = () => {} }) {
   const dir = path.join(dataDir, "device");
   const identity = new DeviceIdentity(dir);
   const engineJs = holderJsPath();
@@ -119,6 +119,7 @@ function startKvLend({ app, BrowserWindow, ipcMain, powerMonitor, notify = () =>
     if (r.ok) {
       log(`kv-lend: enrolled as ${r.deviceId}`);
       notify("This computer is connected", `It joined your workspace as ${r.deviceId}.`);
+      try { onEnrolled(r); } catch (e) { log(`kv-lend: after-connect step failed: ${e && e.message}`); }
     } else {
       log(`kv-lend: enrollment refused (${r.status})`);
       notify("Could not connect this computer",

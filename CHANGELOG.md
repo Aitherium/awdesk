@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.10 - 2026-10-04
+
+- Install the full local stack, with nothing typed. Tray or palette: "Install the full local
+  stack…". It also starts on its own once, right after "Connect this computer" (and on the
+  first launch of this version on a computer that is already connected). It uses Desk's own
+  sign-in (your browser only if Desk is not signed in yet), then installs awdk, awnode, the
+  aither terminal, your household devices, your mesh and your settings into your home folder,
+  with a live row per step. No sudo and no system packages, so it works on a Steam Deck.
+- Desk updates itself. The AppImage checks the latest release shortly after it starts and
+  every few hours, checks the download against the release's SHA256SUMS.txt, swaps it in and
+  restarts (never in the middle of an install). AWDESK_NO_UPDATE=1 turns it off.
+
 ## 0.1.9 - 2026-10-04
 
 - Clicking the avatar with the microphone muted no longer talks over it. It used to say

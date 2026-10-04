@@ -425,6 +425,12 @@ const COMMANDS = Object.freeze([
     id: "device.connect", label: "Connect this computer to my workspace…", menuLabel: "Connect this computer…",
     group: "fleet", surfaces: ["tray", "palette"],
   }),
+  // Owner, 2026-10-04 (Steam Deck): nothing typed. awdk, awnode, awsh, household and mesh
+  // install per-user from here (local-stack.cjs runs aitherium.com/install.sh).
+  Object.freeze({
+    id: "local.install", label: "Install the full local stack…", menuLabel: "Install the full local stack…",
+    group: "fleet", surfaces: ["tray", "palette"],
+  }),
   Object.freeze({
     id: "kvlend.toggle", label: "Lend memory to my models", menuLabel: "Lend memory",
     group: "fleet", surfaces: ["tray", "palette"],

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline';" />
+<title>Install the full local stack</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<!-- "Install the full local stack": awdk, awnode, awsh, household, mesh and settings on this
+     computer with one click (owner, 2026-10-04: nothing typed on the Steam Deck). The work is
+     aitherium.com/install.sh run per-user; this page draws its checklist. -->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--panel); color: var(--fg); font: 14px/1.5 var(--font-sans); }
+  main { padding: 22px 24px; display: flex; flex-direction: column; gap: 12px; height: 100%; }
+  h1 { font-size: 18px; margin: 0; }
+  p { margin: 0; color: var(--muted); }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  li { display: grid; grid-template-columns: 22px 150px 1fr; gap: 8px; align-items: baseline; }
+  li .d { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ok { color: var(--success, #3fb950); }
+  .fail { color: var(--destructive); }
+  .running { color: var(--brand, #5EC9CC); }
+  .row { display: flex; gap: 8px; }
+  button { font: inherit; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--btn);
+    color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--brand, var(--agent-purple)); border-color: transparent; color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  pre { flex: 1; min-height: 90px; margin: 0; padding: 8px; overflow: auto; border-radius: 8px; border: 1px solid var(--line);
+    font: 11px/1.4 var(--font-mono, monospace); color: var(--muted); white-space: pre-wrap; }
+  #status { min-height: 1.5em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Install the full local stack</h1>
+  <p>Puts the Aither tools on this computer for you, with nothing to type. It uses your Aither Desktop sign-in (or your browser, if Desk is not signed in yet), then installs everything into your home folder: no admin password, safe on a Steam Deck.</p>
+  <ul id="steps"></ul>
+  <div class="row">
+    <button id="go" class="primary">Install the full local stack</button>
+    <button id="close">Close</button>
+  </div>
+  <div id="status" role="status"></div>
+  <pre id="log" aria-label="Installer output"></pre>
+</main>
+<script>
+  const LABELS = { signin: "Sign in", python: "Python", installer: "Python tools (uv)", node: "Node.js",
+    awdk: "awdk + adk", awnode: "awnode", awsh: "aither terminal", household: "Household devices",
+    mesh: "Your mesh", settings: "Your settings", mcp: "MCP for IDEs", done: "Finished" };
+  const ICON = { ok: "✓", fail: "✕", skip: "–", running: "…" };
+  const $ = (id) => document.getElementById(id);
+  let steps = {};
+  function draw() {
+    $("steps").replaceChildren(...Object.keys(LABELS).map((k) => {
+      const s = steps[k] || { status: "", detail: "" };
+      const li = document.createElement("li");
+      li.dataset.step = k;
+      li.dataset.status = s.status || "";
+      const i = document.createElement("span");
+      i.textContent = ICON[s.status] || "·";
+      i.className = s.status || "";
+      const n = document.createElement("span");
+      n.textContent = LABELS[k];
+      const d = document.createElement("span");
+      d.className = "d";
+      d.textContent = s.detail || "";
+      d.title = s.detail || "";
+      li.append(i, n, d);
+      return li;
+    }));
+  }
+  function setState(st) {
+    $("go").disabled = st === "running";
+    $("go").textContent = st === "failed" ? "Try again" : st === "done" ? "Run it again" : "Install the full local stack";
+    $("status").textContent = st === "running" ? "Installing. You can leave this window open."
+      : st === "done" ? ((steps.mesh || {}).status === "ok"
+        ? "Done. Everything is installed and this computer is on your mesh."
+        : "Installed. Joining your mesh did not finish: the output below says why, and Run it again retries.")
+      : st === "failed" ? "Stopped. The output below says where." : "";
+    $("status").className = st === "done" ? "ok" : st === "failed" ? "fail" : "";
+  }
+  function addLog(line) {
+    const pre = $("log");
+    pre.textContent += line + "\n";
+    pre.scrollTop = pre.scrollHeight;
+  }
+  window.localStack.onProgress((ev) => {
+    if (ev.kind === "step") { steps[ev.step] = { status: ev.status, detail: ev.detail }; draw(); }
+    else if (ev.kind === "line") addLog(ev.line);
+    else if (ev.kind === "state") setState(ev.state);
+  });
+  $("go").onclick = async () => {
+    steps = {};
+    $("log").textContent = "";
+    draw();
+    const s = await window.localStack.run();
+    if (s) setState(s.state);
+  };
+  $("close").onclick = () => window.localStack.close();
+  window.localStack.state().then((s) => {
+    if (!s) return;
+    steps = s.steps || {};
+    draw();
+    (s.log || []).forEach(addLog);
+    if (!s.supported) {
+      $("go").disabled = true;
+      $("status").textContent = "On Windows, use 'Set up Aither' instead.";
+      return;
+    }
+    setState(s.state);
+  });
+  draw();
+</script>
+</body>
+</html>

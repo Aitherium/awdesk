@@ -242,9 +242,12 @@ const { isAllowedRendererNavigation } = require("./navigation-policy.cjs");
 const { parseProtocolUrl, voiceState } = require("./protocol-actions.cjs");
 const { lendProcessSpawner, startKvLend } = require("./kv-lend-electron.cjs");
 const { createDeviceConnect } = require("./device-connect.cjs");
+const { createLocalStackWindow } = require("./local-stack-window.cjs");
+const { DeskUpdater } = require("./desk-update.cjs");
 const { installLinuxIntegration } = require("./linux-integration.cjs");
 const { installMacIntegration } = require("./macos-integration.cjs");
 let deviceConnect = null;
+let localStack = null;
 // "Connect this device" + "Lend memory" (kv-lend-electron.cjs); enroll links that arrive
 // before it starts are queued.
 let kvLendRuntime = null;
@@ -2166,6 +2169,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
   switch (id) {
     case "console.open": return void openConsole();
     case "device.connect": return void (deviceConnect && deviceConnect.open());
+    case "local.install": return void (localStack && localStack.open());
     case "kvlend.toggle": {
       if (!kvLendRuntime) return;
       const on = !kvLendRuntime.lend.settings().enabled;
@@ -4344,6 +4348,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         app, BrowserWindow, ipcMain, powerMonitor, external,
         notify: (title, body) => { if (Notification.isSupported()) new Notification({ title, body }).show(); },
         log: (line) => console.log(`[desk] ${line}`),
+        // "Connect this computer" done: install the full local stack once, nothing typed.
+        onEnrolled: () => { if (localStack) localStack.maybeAutoStart(); },
       });
       for (const url of pendingEnroll.splice(0)) void kvLendRuntime.enrollFromUrl(url);
       // a downloaded AppImage: a launcher (so desk:// links reach it) and autostart, this user only
@@ -4359,10 +4365,29 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       }
       deviceConnect = createDeviceConnect({ BrowserWindow, ipcMain, shell, runtime: kvLendRuntime, dataDir: app.getPath("userData") });
       if (!process.argv.some((a) => a.startsWith("desk://enroll"))) deviceConnect.maybeOpenFirstRun();
+      localStack = createLocalStackWindow({ BrowserWindow, ipcMain, shell, dataDir: app.getPath("userData"),
+        log: (line) => console.log(`[desk] ${line}`) });
+      // Connected before this version existed (the Steam Deck on 0.1.9): the first launch
+      // after the update is the "first launch after Connect".
+      if (kvLendRuntime.identity.enrolled()) localStack.maybeAutoStart();
     } catch (e) {
       console.warn(`[desk] lend memory unavailable: ${e && e.message}`);
     }
     handleProtocolArgv(process.argv);
+
+    // Self-update (AppImage only): the latest Aitherium/awdesk release, SHA-256 checked,
+    // swapped in and relaunched -- never in the middle of a local-stack install.
+    if (process.platform === "linux" && process.env.APPIMAGE) {
+      new DeskUpdater({
+        version: app.getVersion(),
+        canRestart: () => !(localStack && localStack.stack.state === "running"),
+        relaunch: (target) => {
+          app.relaunch({ execPath: target, args: process.argv.slice(1).filter((a) => !a.startsWith("desk://")) });
+          app.exit(0);
+        },
+        log: (line) => console.log(`[desk] ${line}`),
+      }).start();
+    }
 
     audioListener = createAudioListener({
       isPackaged: app.isPackaged,
