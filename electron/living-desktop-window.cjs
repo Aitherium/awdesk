@@ -241,7 +241,11 @@ async function setPartitionToken(token, expiresAt = null) {
 async function clearPartitionToken() {
   const ses = session.fromPartition(PARTITION);
   // Every variant: the apex host-only shadow and the canonical domain cookie.
-  for (const url of ["https://aitherium.com", "https://www.aitherium.com", "https://api.aitherium.com"]) {
+  // app.aitherium.com is the page host since 2026-10-04: a host-only shadow there would
+  // survive Sign out and still read as signed in (partitionCookieToken matches any
+  // *.aitherium.com cookie).
+  for (const url of ["https://aitherium.com", "https://www.aitherium.com", "https://api.aitherium.com",
+    "https://app.aitherium.com"]) {
     try {
       await ses.cookies.remove(url, deskSession.COOKIE_NAME);
     } catch {

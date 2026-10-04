@@ -70,3 +70,57 @@ AitherDesktop. This file is the order of work. Each slice ships on its own.
 
 Iframes (captchas, embedded sign-in, card fields) stay out of the agent's reach on
 purpose: slice 3 hands those to the owner.
+
+## Part two: the browser IS the console (owner, 2026-10-04)
+
+Owner, verbatim intent: "collapse the awdesk Aither Console into awdesk + AitherBrowser —
+make the browser the console", "make AitherBrowser also a local file explorer + integrate
+secrets/lockbox/strata/pulse/watch/flux/nexus", built around awconnect, awnode, awsh/awdk,
+the local orchestrator/Bonsai, the AitherOS Online living desktop and aitherium.com/workspaces,
+with "decision cards that aren't a piece of shit" and agent comms that "flow naturally through
+terminals / Claude Code / Discord / email / AitherRelay / the desktop".
+
+Shipped first (#11687, #11690):
+- per-agent voice mute and unmute from a body's menu, plus all voices from the tray;
+- cards no longer open windows on their own, and an answer reaches the session once;
+- the Ops pane's `[object Object]` 404;
+- the relay refusing the signed-in owner's own nick;
+- Relay as its own window again.
+
+Each slice below ships alone and is verifiable alone. In order:
+
+8. **`aither://` pages.** A privileged scheme served by `browser-internal.cjs`. Each page gets a
+   preload that exposes only that page's IPC (the console panes already have these channels).
+   - First pages: `aither://inbox`, `command`, `chat`, `sessions`, `stage`, `fleet`, `ops` and
+     `settings`, the same HTML the console loads today.
+   - Verify: `test:browser` opens each page, and a web tab cannot reach the scheme's IPC.
+9. **The console becomes a shim.** `openConsole(pane)` focuses the browser at `aither://<pane>`.
+   - Pinned tabs: Inbox, AitherOS Online (`app.aitherium.com`) and Workspace.
+   - Menus: "Aither Console…" becomes "Open Aither".
+   - Verify: every console launcher lands on a tab, and no second window exists.
+10. **Planes as pages.** These are thin pages over gateway MCP tools (`gateway-mcp.cjs`):
+    - `aither://files`: a local file explorer over `cast.json` roots. It can open, reveal and
+      "hand to agent". Agents get read-only access per root, and only when the owner grants it.
+    - `aither://secrets`: names and masks only, via MCP `list_secrets` and `lockbox_user_*`.
+      A value never enters the renderer.
+    - `strata`, `pulse`, `watch`, `flux` and `nexus`: one page each over the existing status tools.
+11. **One side panel, two hosts.** `connect-panel.html` gains an Agents tab: live sessions, open
+    cards (answer in place) and the room. awconnect-next ships the same bundle, so Edge/Chrome
+    and the Aither Browser look identical.
+12. **Cards are relay messages.** A card is posted to `#decisions/<session>` with its options as
+    buttons, and an answer is a reply. The desk, browser, phone, Discord and terminal all render
+    that one message, so there is no separate popup plane left to storm.
+13. **Relay, redesigned.** Shaped like Slack/Notion, on the existing channel model (`scope`
+    global/platform/workspace, `is_private`, threads):
+    - the rail: Workspaces, then channels, DMs and Boards;
+    - agent presence in the right rail;
+    - IRC kept (`AitherRelayIRCD.py`);
+    - the community forum host routed to `/forum`.
+14. **Workspace sync.** `adk sync packs` reads `/api/me/workspaces` and `/v1/link/bundle`, then
+    activates agent, skill and tool packs and apps through `pack_registry` and
+    `agent_binding_client`. The browser's Workspace tab shows the diff; the desk, awsh and
+    awconnect run it.
+15. **Presence.** The agent roster gains `voice:` and `character:`, which awavatar/persona
+    honour. Aeon, Room and the company room become an `aither://room` tab with bodies speaking in
+    turn. Hearth, Learn, Sprite and Spaces open as OS apps in the pinned Online tab, never as new
+    installables (one app per platform).

@@ -292,3 +292,28 @@ test("a pane asked for while the console is cold-opening is HELD, not replaced b
     "start() must honour the held request before falling back to the first pane");
   assert.doesNotMatch(start, /\n {2}if \(panes\.length\) select\(panes\[0\]\.id\);/, "start() selects the first pane unconditionally again");
 });
+
+// 2026-10-04 owner: "if I'm already signed into awdesk I should not have to sign in
+// again". A signed-out console pane used to load the aitherium.com PASSWORD page; it now
+// runs the desk's own sign-in (auth.json -> system-browser OIDC -> device flow), which
+// signs the partition, auth.json and the system browser in one go.
+test("a signed-out hosted pane runs the desk's sign-in, not the password page", () => {
+  const src = read("console-window.cjs");
+  const body = src.slice(src.indexOf("async function loadHosted"), src.indexOf("function placeHosted"));
+  assert.match(body, /const begin = typeof hostedBegin\[paneId\] === "function"/);
+  assert.match(body, /if \(!signedIn && begin\)[\s\S]*?begin\(\)/);
+  // The password page is the fallback only when there is no desk sign-in to run.
+  assert.match(body, /const signIn = !begin && typeof hostedSignIn\[paneId\]/);
+  // ...and the pane still waits for the session and then shows the desktop.
+  assert.match(body, /if \(!signedIn && \(signIn \|\| begin\)\)/);
+  assert.match(read("main.cjs"), /begin: \{ desktop: beginDesktopSignIn \}/);
+});
+
+test("Sign out clears the page host app.aitherium.com too", () => {
+  const src = read("living-desktop-window.cjs");
+  const fn = src.slice(src.indexOf("async function clearPartitionToken"), src.indexOf("// ── Vault rung"));
+  for (const host of ["https://aitherium.com", "https://www.aitherium.com", "https://api.aitherium.com",
+    "https://app.aitherium.com"]) {
+    assert.ok(fn.includes(`"${host}"`), `clearPartitionToken misses ${host}`);
+  }
+});

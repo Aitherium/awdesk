@@ -334,6 +334,10 @@ let hostedUrls = {};
 let hostedPrepare = {};
 /** { <paneId>: () => string } -- where to send a pane that could not be signed in. */
 let hostedSignIn = {};
+/** { <paneId>: () => Promise } -- the desk's own sign-in (system browser OIDC, then the
+ *  device flow). Preferred over hostedSignIn's password page: it signs in auth.json, the
+ *  partition AND the system browser at once, so the owner signs in ONCE (2026-10-04). */
+let hostedBegin = {};
 
 /**
  * Load a hosted pane: prepare its session FIRST, then decide what to show.
@@ -350,9 +354,13 @@ async function loadHosted(paneId, view, url) {
     try { signedIn = Boolean(await prepare()); } catch { signedIn = false; }
   }
   if (view.webContents.isDestroyed()) return;
-  const signIn = typeof hostedSignIn[paneId] === "function" ? hostedSignIn[paneId]() : "";
+  const begin = typeof hostedBegin[paneId] === "function" ? hostedBegin[paneId] : null;
+  if (!signedIn && begin) {
+    try { void Promise.resolve(begin()).catch(() => {}); } catch { /* the poll below still waits */ }
+  }
+  const signIn = !begin && typeof hostedSignIn[paneId] === "function" ? hostedSignIn[paneId]() : "";
   const target = signedIn || !signIn ? url : signIn;
-  if (!signedIn && signIn) {
+  if (!signedIn && (signIn || begin)) {
     // Once the login lands (the cookie appears), go to the desktop on our own:
     // portal's open-redirect guard strips foreign returnUrls, so nothing bounces back.
     const poll = setInterval(async () => {
@@ -502,13 +510,14 @@ function wireIpc() {
  */
 function showConsole({
   windows = {}, rendererUrl = null, urls = {}, autoShow = true, commands = null,
-  prepare = {}, signIn = {},
+  prepare = {}, signIn = {}, begin = {},
 } = {}) {
   windowsImpl = windows || {};
   rendererUrlImpl = rendererUrl;
   hostedUrls = urls || {};
   hostedPrepare = prepare || {};
   hostedSignIn = signIn || {};
+  hostedBegin = begin || {};
   commandsImpl = commands;
   wireIpc();
 

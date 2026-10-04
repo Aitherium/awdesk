@@ -1,7 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.1.9 - 2026-10-04
 
+- Clicking the avatar with the microphone muted no longer talks over it. It used to say
+  "Microphone is muted" in the avatar's own voice and cut off whatever it was saying; now a
+  silent notification appears, at most once every 30 seconds.
+- One sign-in. When a Desk window needs you to sign in, it runs Desk's own sign-in (your saved
+  login, then your browser) instead of a password page, so your browser is signed in too.
+- Sign out now also clears app.aitherium.com, so a leftover cookie there no longer keeps you
+  looking signed in.
+
+## 0.1.8 - 2026-10-04
+
+- Desk can speak in your workspace's own voices. Pick a voice like "custom:aither" in the
+  cast window and the avatar, /speak, the MCP speak tool and drop verdicts all use it.
 - Mac: Desk starts at login in the background (Lend memory and the device check-in resume
   after a restart), for your user only. It is set up the first time Desk runs from
   Applications; a copy run from the disk image is left alone.

@@ -1359,9 +1359,30 @@ function applyTalkMode({ announce = false } = {}) {
   setOpenMic(talkMode() === "open" && !micMuted(), { announce });
 }
 
+// A click on the avatar (or the hotkey) with the mic muted used to SPEAK "Microphone is
+// muted..." on slot0 -- the avatar's own voice slot -- which cut off whatever the avatar
+// was saying, every single click (owner, 2026-10-04: "that's annoying"). The hint is now
+// SILENT and on screen, and at most once every 30 s.
+let lastMutedHintAt = 0;
+function hintMicMuted() {
+  const now = Date.now();
+  if (now - lastMutedHintAt < 30_000) return;
+  lastMutedHintAt = now;
+  try {
+    const { Notification } = require("electron");
+    if (Notification.isSupported()) {
+      new Notification({
+        title: "Microphone is muted",
+        body: "Unmute it from the tray or Settings to talk to the avatar.",
+        silent: true,
+      }).show();
+    }
+  } catch { /* no notification surface: stay quiet rather than talk over the avatar */ }
+}
+
 function toggleListening() {
   if (micMuted()) {
-    void speakAloud("Microphone is muted. Unmute it in Settings.", undefined, undefined, "slot0", "service:awdesk-voice");
+    hintMicMuted();
     return;
   }
   const mode = talkMode();
@@ -2723,6 +2744,9 @@ function openConsole() {
     // BEFORE it loads, or it renders the apex signed-out -- the landing page.
     prepare: { desktop: ensureDesktopSession },
     signIn: { desktop: portalLoginUrl },
+    // The desk's own sign-in wins over the password page: one sign-in for auth.json,
+    // the partition and the system browser.
+    begin: { desktop: beginDesktopSignIn },
   });
 }
 
