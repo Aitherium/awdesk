@@ -241,7 +241,7 @@ function createFilesAccess({
       if (forAgent && st.isSymbolicLink()) {
         // A link is judged by what it points at: outside the root or at a
         // denied name, an agent never learns it exists.
-        let real = null;
+        let real;
         try { real = realNative(path.join(where.real, name)); } catch { real = null; }
         if (!real || !within(where.realRoot, real)
           || agentDeniedRel(path.relative(where.realRoot, real))) {

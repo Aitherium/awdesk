@@ -363,7 +363,7 @@ function resolveRequest(url, { panes = consolePanes(), rendererUrl = "", hostedU
   if (pane.kind === "view" && rel.startsWith(MODEL_PREFIX)) {
     // A roster character's model, for the deck's thumbnails (internalModelUrls).
     const name = modelNameOf(rel);
-    let file = null;
+    let file;
     try {
       file = name && typeof modelFile === "function" ? modelFile(name) : null;
     } catch {

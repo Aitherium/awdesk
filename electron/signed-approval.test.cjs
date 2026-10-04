@@ -135,5 +135,5 @@ test("the browser side panel's Agents tab answers through the same answerDeckCar
   assert.match(body, /getRoom: \(\) => roomFeed/);
   // The answer is handed to createAgentsSource, which holds an answered id until the
   // watcher drops the card -- not spread beside it, where nothing would wrap it.
-  assert.match(body, /^  answer: \(id, choice, parent\) =>/m);
+  assert.match(body, /^ {2}answer: \(id, choice, parent\) =>/m);
 });

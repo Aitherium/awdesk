@@ -1405,7 +1405,7 @@ function loadRosterPresence({ file = AGENT_ROSTER_FILE() } = {}) {
   if (mtimeMs === null) return {};
   const cached = rosterPresenceCache.get(resolved);
   if (cached && cached.mtimeMs === mtimeMs) return cached.presence;
-  let presence = {};
+  let presence;
   try {
     presence = validateRosterPresence(JSON.parse(fs.readFileSync(resolved, "utf8")));
   } catch {

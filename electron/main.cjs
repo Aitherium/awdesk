@@ -2452,7 +2452,7 @@ function deckStateForInternal(state) {
 /** deckState() for whoever asked: an aither:// sender gets its re-addressed copy. */
 function deckStateFor(sender) {
   const state = deckState();
-  let url = "";
+  let url;
   try {
     url = sender && typeof sender.getURL === "function" ? sender.getURL() : "";
   } catch {

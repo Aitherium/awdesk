@@ -46,7 +46,7 @@ function pickServiceRow(name, data) {
     ? data.services : null;
   if (!rows) return data;
   const want = String(name).toLowerCase();
-  let key = null;
+  let key;
   if (Array.isArray(rows)) {
     const row = rows.find((r) => r && typeof r === "object"
       && String(r.name || r.service || "").toLowerCase() === want);
