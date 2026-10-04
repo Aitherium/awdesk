@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Mac: Desk starts at login in the background (Lend memory and the device check-in resume
+  after a restart), for your user only. It is set up the first time Desk runs from
+  Applications; a copy run from the disk image is left alone.
+
 ## 0.1.7 - 2026-10-03
 
 - Steam Deck and Linux by clicks only. The first run of the downloaded AppImage adds Desk to

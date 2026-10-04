@@ -211,6 +211,7 @@ const { parseProtocolUrl, voiceState } = require("./protocol-actions.cjs");
 const { lendProcessSpawner, startKvLend } = require("./kv-lend-electron.cjs");
 const { createDeviceConnect } = require("./device-connect.cjs");
 const { installLinuxIntegration } = require("./linux-integration.cjs");
+const { installMacIntegration } = require("./macos-integration.cjs");
 let deviceConnect = null;
 // "Connect this device" + "Lend memory" (kv-lend-electron.cjs); enroll links that arrive
 // before it starts are queued.
@@ -4027,6 +4028,12 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       if (process.platform === "linux") {
         const li = installLinuxIntegration();
         if (li.installed && li.changed) console.log("[desk] installed the launcher, desk:// handler and autostart");
+      }
+      // an installed Mac app: a login agent that starts it in the background, this user only
+      if (process.platform === "darwin" && app.isPackaged) {
+        const mi = installMacIntegration({ exe: app.getPath("exe") });
+        if (mi.installed && mi.changed) console.log("[desk] installed the login agent");
+        else if (!mi.installed) console.log(`[desk] no login agent: ${mi.reason}`);
       }
       deviceConnect = createDeviceConnect({ BrowserWindow, ipcMain, shell, runtime: kvLendRuntime, dataDir: app.getPath("userData") });
       if (!process.argv.some((a) => a.startsWith("desk://enroll"))) deviceConnect.maybeOpenFirstRun();
