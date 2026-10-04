@@ -449,6 +449,37 @@ const COMMANDS = Object.freeze([
     surfaces: ["palette"],
     whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
+  // The Aither app's own apps (2026-10-03, one app per platform): the same OS windows the
+  // phone's shortcuts open, on the AitherDesktop app window (`?app=<osApp>`). DATA rows:
+  // main.cjs opens any record that carries `osApp`, so a new one is a line here.
+  Object.freeze({
+    id: "osapp.family", label: "Family…", group: "go", osApp: "family",
+    surfaces: ["palette", "jumplist"],
+  }),
+  Object.freeze({
+    id: "osapp.learn", label: "Learn…", group: "go", osApp: "learn",
+    surfaces: ["palette", "jumplist"],
+  }),
+  Object.freeze({
+    id: "osapp.sprite", label: "Sprite…", group: "go", osApp: "sprite",
+    surfaces: ["palette", "jumplist"],
+  }),
+  Object.freeze({
+    id: "osapp.academy", label: "Academy…", group: "go", osApp: "academy",
+    surfaces: ["palette", "jumplist"],
+  }),
+  Object.freeze({
+    id: "osapp.spaces", label: "Spaces…", group: "go", osApp: "spaces",
+    surfaces: ["palette", "jumplist"],
+  }),
+  Object.freeze({
+    id: "osapp.avatar", label: "Avatar…", group: "go", osApp: "avatar",
+    surfaces: ["palette", "jumplist"],
+  }),
+  Object.freeze({
+    id: "osapp.control", label: "Aither Control…", group: "go", osApp: "control",
+    surfaces: ["palette", "jumplist"],
+  }),
   Object.freeze({
     id: "fleet.gaming", label: "GPU sleep (game on)", group: "fleet",
     surfaces: ["tray", "palette"], fleet: "gpu-sleep", destructive: true,

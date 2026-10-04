@@ -2092,6 +2092,8 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
         });
       }
       if (command && "shell" in command) return void setDesktopShell(command.shell);
+      // An Aither OS app (Family, Learn, Sprite, Academy, Spaces, Avatar, Control).
+      if (command && command.osApp) return void showDesktopApp({ app: command.osApp });
       if (command && command.fleet) {
         // Fleet and ARC verbs: the same runner the Fleet window, the bridge and
         // MCP fleet_control use, so a tray click is not a second implementation.

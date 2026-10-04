@@ -326,6 +326,12 @@ test("every command either has a handler or a dynamic submenu", () => {
         `${command.id} names blog verb "${command.blog}" that blog-commands.cjs does not know`);
       continue;
     }
+    if (command.osApp) {
+      // The Aither apps are data too: the default branch opens the record's OS app on
+      // the AitherDesktop app window (aither-apps.test.cjs pins the set).
+      assert.match(body, /showDesktopApp\(\{ app: command\.osApp \}\)/, "the osApp branch is gone");
+      continue;
+    }
     if ("shell" in command) {
       // The overlay's shells are data too: the default branch hands the id to the
       // overlay module, so a new shell is one record and no case.
