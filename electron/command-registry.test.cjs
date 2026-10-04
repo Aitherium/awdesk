@@ -241,7 +241,7 @@ test("an exported overlay opener has a caller", () => {
 test("shortcuts are registered FROM the registry, and a dead key is not advertised", () => {
   const keys = shortcuts();
   assert.deepEqual(keys.map((k) => k.accel).sort(),
-    ["Ctrl+Shift+,", "Ctrl+Shift+-", "Ctrl+Shift+=", "Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+Shift+M", "Ctrl+Shift+Space"]);
+    ["Ctrl+Alt+M", "Ctrl+Shift+,", "Ctrl+Shift+-", "Ctrl+Shift+=", "Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+Shift+M", "Ctrl+Shift+Space"]);
   assert.ok(keys.every((k) => k.electron.startsWith("CommandOrControl+")));
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   // Plan: configurable hotkeys -- main now passes cast.json overrides through,
@@ -407,4 +407,18 @@ test("voice.talk names what the hotkey does in the current talk mode", () => {
   says({ talkMode: "open", openMic: true }, "Turn open mic off");
   says({ talkMode: "hold", listening: true }, "Stop listening");
   says({}, "Speak to the agents (microphone)");
+});
+
+test("voices can be unmuted from a body and the tray (owner 2026-10-04: no way to unmute)", () => {
+  const body = buildMenu("avatar-menu", () => {}, { submenus: {}, ctx: { slotId: "slot1", agent: "atlas", agentMuted: true, voiceMuted: true } });
+  const rows = body.map((r) => r.label).filter(Boolean);
+  assert.ok(rows.includes("Unmute atlas's voice"), rows.join(" | "));
+  assert.ok(rows.some((l) => l.startsWith("Unmute all voices")), rows.join(" | "));
+  const live = buildMenu("avatar-menu", () => {}, { submenus: {}, ctx: { slotId: "slot1", agent: "atlas" } }).map((r) => r.label);
+  assert.ok(live.includes("Mute atlas's voice"));
+  const tray = buildMenu("tray", () => {}, { ctx: { voiceMuted: true } }).map((r) => r.label);
+  assert.ok(tray.some((l) => l && l.startsWith("Unmute all voices")), tray.join(" | "));
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /case "voice\.mute-all"/);
+  assert.match(main, /case "voice\.mute-agent"/);
 });

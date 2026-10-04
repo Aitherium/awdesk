@@ -303,6 +303,16 @@ function vBool(value) {
     : { ok: false, reason: "expected true or false" };
 }
 
+function vAgentList(value) {
+  if (!Array.isArray(value)) return { ok: false, reason: "expected a list of agent names" };
+  const out = [];
+  for (const item of value) {
+    const name = normaliseAuthor(item);
+    if (name && !out.includes(name)) out.push(name);
+  }
+  return { ok: true, value: out.slice(0, 64) };
+}
+
 function vNumber(value, { min = -Infinity, max = Infinity } = {}) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return { ok: false, reason: "expected a finite number" };
@@ -476,6 +486,10 @@ const VOICE_FIELDS = Object.freeze({
   affectIntensity: (v) => vNumber(v, { min: 0, max: 1 }),
   volume: (v) => vNumber(v, { min: 0, max: MASTER_VOLUME_MAX }),
   muted: vBool,
+  // Per-AGENT mute (owner, 2026-10-04: "there is no way to unmute an agent
+  // voice"). Keyed by agent name, not origin: a body's right-click knows its
+  // agent, never the origin key its next line will carry.
+  mutedAgents: vAgentList,
 });
 
 const ENDPOINT_FIELDS = Object.freeze({
@@ -1558,6 +1572,7 @@ function resolveActor(snapshot, ctx = {}) {
           key: ctx.key,
         });
   const author = normaliseAuthor(ctx.author);
+  const agentName = normaliseAuthor(ctx.agent || ctx.author);
   const seat = Number.isInteger(ctx.seat) && ctx.seat >= 0 ? ctx.seat : null;
   const chKey = origin.channel;
   const channelRecord = chKey ? plainObject(cfg.channels[chKey]) : null;
@@ -1646,7 +1661,9 @@ function resolveActor(snapshot, ctx = {}) {
   const masterVolume = masterVolumeHit ? masterVolumeHit.value : BUILTIN_VOICE.volume;
   const mutedHit = readField(cfg.voice, "muted", "voice", problems, VOICE_FIELDS.muted);
   const muted = mutedHit ? mutedHit.value : BUILTIN_VOICE.muted;
-  const effectiveVolume = muted ? 0 : masterVolume * volume;
+  const mutedAgentsHit = readField(cfg.voice, "mutedAgents", "voice", problems, VOICE_FIELDS.mutedAgents);
+  const agentMuted = Boolean(agentName && mutedAgentsHit && mutedAgentsHit.value.includes(agentName));
+  const effectiveVolume = muted || agentMuted ? 0 : masterVolume * volume;
 
   // ── presence / speak / body / place ──
   const presenceHit = pick("presence");
@@ -1683,6 +1700,9 @@ function resolveActor(snapshot, ctx = {}) {
     // agent has speak=false" is true and beside the point.
     voiced = false;
     voicedReason = `voice.muted (${mutedHit ? mutedHit.from : "builtin"})`;
+  } else if (agentMuted) {
+    voiced = false;
+    voicedReason = `voice.mutedAgents has ${agentName}`;
   } else if (speak === false) {
     // A hard mute BEATS presence and keeps the body: "be here, say nothing".
     voiced = false;
@@ -1774,6 +1794,7 @@ function resolveActor(snapshot, ctx = {}) {
     masterVolumeFrom: masterVolumeHit ? masterVolumeHit.from : "builtin",
     muted,
     mutedFrom: mutedHit ? mutedHit.from : "builtin",
+    agentMuted,
     effectiveVolume,
     bubble,
     bubbleFrom: bubbleHit ? bubbleHit.from : "builtin",
@@ -1962,7 +1983,56 @@ function migrateLegacy({ file = CAST_FILE(), avatarsFile = undefined, now = Date
   };
 }
 
+// ─── mute switches (the menus write these; nothing else needs the shape) ────
+
+/** Agents whose voice is off. Empty when the file is unreadable. */
+function mutedAgents({ file = CAST_FILE() } = {}) {
+  const { snapshot } = load({ file });
+  const raw = plainObject(normaliseSnapshot(snapshot).voice).mutedAgents;
+  const verdict = vAgentList(raw === undefined ? [] : raw);
+  return verdict.ok ? verdict.value : [];
+}
+
+function isAgentMuted(agent, opts) {
+  const name = normaliseAuthor(agent);
+  return Boolean(name) && mutedAgents(opts).includes(name);
+}
+
+/** Mute or unmute ONE agent's voice. Returns the new state. */
+function setAgentMuted(agent, on, { file = CAST_FILE() } = {}) {
+  const name = normaliseAuthor(agent);
+  if (!name) throw new Error("setAgentMuted needs an agent name");
+  const result = write((draft) => {
+    draft.voice = { ...plainObject(draft.voice) };
+    const list = vAgentList(Array.isArray(draft.voice.mutedAgents) ? draft.voice.mutedAgents : []).value;
+    const next = on ? [...new Set([...list, name])] : list.filter((n) => n !== name);
+    if (next.length) draft.voice.mutedAgents = next;
+    else delete draft.voice.mutedAgents;
+  }, { file });
+  if (!result.ok) throw new Error(result.error || "cast.json write failed");
+  return Boolean(on);
+}
+
+/** The master switch: every voice off (captions stay). */
+function setAllMuted(on, { file = CAST_FILE() } = {}) {
+  const result = write((draft) => {
+    draft.voice = { ...plainObject(draft.voice), muted: Boolean(on) };
+  }, { file });
+  if (!result.ok) throw new Error(result.error || "cast.json write failed");
+  return Boolean(on);
+}
+
+function allMuted({ file = CAST_FILE() } = {}) {
+  const { snapshot } = load({ file });
+  return plainObject(normaliseSnapshot(snapshot).voice).muted === true;
+}
+
 module.exports = {
+  allMuted,
+  isAgentMuted,
+  mutedAgents,
+  setAgentMuted,
+  setAllMuted,
   ACTOR_FIELDS,
   BUILTIN_INPUT,
   INPUT_FIELDS,

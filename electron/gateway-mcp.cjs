@@ -85,9 +85,13 @@ async function mcpCall(method, params) {
           // UNREACHABLE (exit 1), never as MODULE BROKEN (exit 2).
           if (res.statusCode < 200 || res.statusCode >= 300) {
             const j = parseMaybeJson(text) || {};
-            const why = j.message || j.reason || j.error || text.slice(0, 120) || res.statusMessage;
+            // j.error is an OBJECT on a JSON-RPC envelope: printed raw it read
+            // "HTTP 404: [object Object]" in the Ops pane (owner, 2026-10-04).
+            const why = j.message || j.reason || (j.error != null ? errorText(j.error) : "") || text.slice(0, 120) || res.statusMessage;
             const retry = res.headers["retry-after"] ? ` (retry-after ${res.headers["retry-after"]})` : "";
-            return reject(new Error(`HTTP ${res.statusCode}: ${why}${retry}`));
+            const err = new Error(`HTTP ${res.statusCode}: ${why}${retry}`);
+            err.status = res.statusCode;
+            return reject(err);
           }
           try {
             if (text.trim().startsWith("event:")) {
@@ -136,7 +140,17 @@ async function ensureSession() {
  */
 async function callTool(name, args = {}) {
   await ensureSession();
-  const res = await mcpCall("tools/call", { name, arguments: args });
+  let res;
+  try {
+    res = await mcpCall("tools/call", { name, arguments: args });
+  } catch (error) {
+    // A 404 on a held session id means the gateway restarted and forgot it:
+    // re-initialize once instead of failing every call until the TTL lapses.
+    if (!error || error.status !== 404 || !_session) throw error;
+    resetSession();
+    await ensureSession();
+    res = await mcpCall("tools/call", { name, arguments: args });
+  }
   if (res?.error) throw new Error(`${name}: ${errorText(res.error)}`);
   const content = res?.result?.content;
   if (!content) throw new Error(`${name}: no content`);

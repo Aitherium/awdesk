@@ -157,3 +157,42 @@ test("callTool: a tool error THROWS with the tool's name, and no bearer refuses 
     delete require.cache[require.resolve("./gateway-mcp.cjs")];
   }
 });
+
+test("callTool: a 404 on a stale session re-initializes once; a JSON-RPC error body never prints [object Object]", async () => {
+  // Owner, 2026-10-04: the Ops pane read "HTTP 404: [object Object]" for ten
+  // minutes after a gateway restart. Two faults: the object was stringified,
+  // and the stale Mcp-Session-Id was kept until the TTL lapsed.
+  let inits = 0;
+  const gw = await fakeGateway((rpc) => {
+    if (rpc.method === "initialize") { inits += 1; return { sessionId: `sess-${inits}`, reply: { result: {} } }; }
+    if (rpc.method === "notifications/initialized") return { reply: { result: {} } };
+    if (rpc.method === "tools/call" && inits === 1) {
+      return { status: 404, reply: { error: { code: -32001, message: "Session not found" } } };
+    }
+    return { reply: { result: { content: [{ type: "text", text: "ok" }] } } };
+  });
+  try {
+    const client = loadClient(gw.url, "t");
+    assert.equal(await client.callTool("ops_state", { noun: "backups" }), "ok");
+    assert.equal(inits, 2, "re-initialized exactly once");
+    const calls = gw.seen.filter((s) => s.rpc.method === "tools/call");
+    assert.equal(calls[1].headers["mcp-session-id"], "sess-2", "the retry carries the NEW session");
+
+    const dead = await fakeGateway(() => ({ status: 404, reply: { error: { code: -32001, message: "Session not found" } } }));
+    try {
+      const c2 = loadClient(dead.url, "t");
+      await assert.rejects(() => c2.callTool("ops_state", {}), (e) => {
+        assert.doesNotMatch(e.message, /object Object/);
+        assert.match(e.message, /HTTP 404: Session not found/);
+        return true;
+      });
+    } finally {
+      await done(dead.server);
+    }
+  } finally {
+    await done(gw.server);
+    delete process.env.AWDESK_GATEWAY_URL;
+    delete process.env.AWDESK_SESSION_BEARER_FILE;
+    delete require.cache[require.resolve("./gateway-mcp.cjs")];
+  }
+});

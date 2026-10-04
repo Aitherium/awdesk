@@ -675,3 +675,34 @@ test('"" is the unset that survives a sync: the built-in answers and nothing is 
   // ...and a string of spaces is still a mistake worth naming, not an unset.
   assert.ok(cast.resolveDesk({ version: 1, prompts: { commandAppend: "   " } }, { env: {} }).problems.length === 1);
 });
+
+test("per-agent mute: setAgentMuted silences ONE agent, keeps others, and unmutes again", () => {
+  const dir = tmpDir();
+  const file = path.join(dir, "cast.json");
+  fs.writeFileSync(file, JSON.stringify({ version: 1, voice: { muted: false } }));
+  cast.setAgentMuted("Atlas", true, { file });
+  assert.deepEqual(cast.mutedAgents({ file }), ["atlas"]);
+  assert.equal(cast.isAgentMuted("atlas", { file }), true);
+  const { snapshot } = cast.load({ file });
+  const atlas = cast.resolveActor(snapshot, { origin: { keys: ["service:x"], key: "service:x" }, agent: "atlas", roster: null });
+  assert.equal(atlas.voiced, false);
+  assert.match(atlas.voicedReason, /mutedAgents has atlas/);
+  assert.equal(atlas.effectiveVolume, 0);
+  assert.equal(atlas.captioned, true, "a muted agent is still readable");
+  const lyra = cast.resolveActor(snapshot, { origin: { keys: ["service:x"], key: "service:x" }, agent: "lyra", roster: null });
+  assert.equal(lyra.voiced, true);
+  cast.setAgentMuted("atlas", false, { file });
+  assert.deepEqual(cast.mutedAgents({ file }), []);
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).voice.mutedAgents, undefined, "an empty list is removed, not left behind");
+});
+
+test("master mute: setAllMuted round-trips, so the menu can always turn voices back ON", () => {
+  const dir = tmpDir();
+  const file = path.join(dir, "cast.json");
+  fs.writeFileSync(file, JSON.stringify({ version: 1, voice: { muted: true } }));
+  assert.equal(cast.allMuted({ file }), true);
+  cast.setAllMuted(false, { file });
+  assert.equal(cast.allMuted({ file }), false);
+  cast.setAllMuted(true, { file });
+  assert.equal(cast.allMuted({ file }), true);
+});

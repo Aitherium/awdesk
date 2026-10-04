@@ -840,6 +840,14 @@ function sendBubble(slotId, text, { muted = false, durationMs = 0 } = {}) {
   return delivered;
 }
 
+/** The agent a body speaks for: the resident body is Aither, a spawned body
+ *  carries the agent it was spawned for (else its character name). */
+function agentForSlot(slotId) {
+  if (!slotId || slotId === "slot0" || slotId === "default") return "aither";
+  const info = avatarSlots.get(slotId);
+  return info ? info.agent || info.name || null : null;
+}
+
 async function speakAloud(text, voice = "nova", speed = undefined, slotId = "slot0", origin = "service:awdesk") {
   let effectiveVoice = voice || "nova";
   let effectiveSpeed = speed;
@@ -853,7 +861,7 @@ async function speakAloud(text, voice = "nova", speed = undefined, slotId = "slo
   if (typeof resolveSpeech === "function") {
     let gate;
     try {
-      gate = resolveSpeech({ origin, slotId, text });
+      gate = resolveSpeech({ origin, slotId, text, agent: agentForSlot(slotId) });
     } catch (error) {
       debugLog("voice-resolve gate threw; failing open", origin, error?.message || error);
       gate = null;
@@ -1069,6 +1077,18 @@ function openTalkWindow() {
  *  Every bell, badge and menu item lands here, so there is exactly one place a
  *  notification can be found (owner, 2026-09-13: "no proper notification area").
  *  A card id focuses that card. */
+/** May the desk open a card window by ITSELF? Never by default: an
+ *  unrequested always-on-top window is the complaint, not the feature. */
+function cardWindowsMayOpen() {
+  if (process.env.DESK_CARDS_AUTO_OPEN !== "1") return false;
+  try {
+    const off = path.join(require("node:os").homedir(), ".aither", "decisions", ".popup-off");
+    return !fs.existsSync(off);
+  } catch {
+    return false;
+  }
+}
+
 function openInbox(cardId = null) {
   if (deckWindow && !deckWindow.isDestroyed()) {
     deckWindow.show();
@@ -1424,6 +1444,45 @@ function toggleMicMute() {
   }
 }
 
+function voiceAllMuted() {
+  try { return require("./cast-config.cjs").allMuted(); } catch { return false; }
+}
+
+function agentVoiceMuted(agent) {
+  try { return Boolean(agent) && require("./cast-config.cjs").isAgentMuted(agent); } catch { return false; }
+}
+
+/** Every voice on/off. Captions stay either way, so a muted room is still readable. */
+function toggleAllVoices() {
+  try {
+    const cast = require("./cast-config.cjs");
+    const next = !cast.allMuted();
+    if (!next) cast.setAllMuted(false);
+    // Say it BEFORE muting, after unmuting: the confirmation must be audible.
+    void speakAloud(next ? "Voices off." : "Voices on.", undefined, undefined, "slot0", "service:awdesk-voice")
+      .finally(() => { if (next) cast.setAllMuted(true); refreshTrayMenu(); });
+    if (!next) refreshTrayMenu();
+  } catch (error) {
+    debugLog("toggleAllVoices failed", error && error.message);
+  }
+}
+
+/** ONE agent's voice on/off, from that body's right-click. */
+function toggleAgentVoice(slotId) {
+  const agent = agentForSlot(slotId);
+  if (!agent) return;
+  try {
+    const cast = require("./cast-config.cjs");
+    const next = !cast.isAgentMuted(agent);
+    cast.setAgentMuted(agent, next);
+    sendBubble(slotId || "slot0", next ? `${agent}'s voice is off` : `${agent}'s voice is on`, { muted: next });
+    if (!next) void speakAloud("I'm back.", undefined, undefined, slotId || "slot0", "service:awdesk-voice");
+    refreshTrayMenu();
+  } catch (error) {
+    debugLog("toggleAgentVoice failed", error && error.message);
+  }
+}
+
 function stagePaneImpl() {
   return {
     bodies: () => [
@@ -1497,7 +1556,7 @@ function popupAvatarMenu(slotId) {
       "avatar-menu",
       (id) => runCommand(id, undefined, { surface: "avatar-menu", slotId }),
       {
-        ctx: { ...commandContext(), slotId, agent, removable: !isDefault, sessionAddress },
+        ctx: { ...commandContext(), slotId, agent: agentForSlot(slotId) || agent, agentMuted: agentVoiceMuted(agentForSlot(slotId)), removable: !isDefault, sessionAddress },
         submenus: { "characters.pick": buildCharacterMenu() },
       },
     ),
@@ -1860,6 +1919,7 @@ function commandContext() {
     decisionsTotal: inboxCounts().total,
     listening: listeningNow(),
     micMuted: micMuted(),
+    voiceMuted: voiceAllMuted(),
     talkMode: talkMode(),
     openMic: openMicOn,
     overlayOpen: desktop.open,
@@ -2044,6 +2104,8 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       return;
     }
     case "voice.mute": return void toggleMicMute();
+    case "voice.mute-all": return void toggleAllVoices();
+    case "voice.mute-agent": return void toggleAgentVoice(slotId);
     // U27's room.steer record (palette surface only -- no slot in hand here;
     // the avatar menu's OWN "Message this session…" item, added in
     // popupAvatarMenu below, already knows its slot and does not reach this
@@ -3953,6 +4015,11 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         } else {
           try { void speakAloud(phrase, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { /* best-effort */ }
         }
+        // Owner, 2026-10-04: "decision cards still pop out on their own". The
+        // bell, the tray count and the line above ARE the prompt; a window
+        // only opens when the owner opted in (DESK_CARDS_AUTO_OPEN=1) and has
+        // not switched popups off (~/.aither/decisions/.popup-off).
+        if (!cardWindowsMayOpen()) return;
         try {
           if (isBacklog) {
             openInbox();                          // backlog: ONE console, no 30-popup storm

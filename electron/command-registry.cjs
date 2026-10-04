@@ -293,6 +293,23 @@ const COMMANDS = Object.freeze([
     surfaces: ["tray", "avatar-menu", "palette"],
     label: (ctx = {}) => (ctx.micMuted ? "Unmute microphone" : "Mute microphone"),
   }),
+  // Agent VOICES, not the mic (owner, 2026-10-04: "there is no way to unmute an
+  // agent voice"). voice.muted lived only behind a checkbox in the Voices pane,
+  // so once set it looked permanent. Both rows say which way they go.
+  Object.freeze({
+    id: "voice.mute-all", group: "talk", accel: "Ctrl+Alt+M", icon: "volume-off",
+    surfaces: ["tray", "avatar-menu", "palette"],
+    label: (ctx = {}) => (ctx.voiceMuted ? "Unmute all voices" : "Mute all voices"),
+  }),
+  Object.freeze({
+    id: "voice.mute-agent", group: "talk", scope: "slot", icon: "volume-off",
+    surfaces: ["avatar-menu"],
+    label: (ctx = {}) => {
+      const who = ctx.agent || "this agent";
+      return ctx.agentMuted ? `Unmute ${who}'s voice` : `Mute ${who}'s voice`;
+    },
+    whySingle: "Mutes the agent behind the body that was right-clicked; voice.mute-all is the everywhere twin.",
+  }),
   // The settings page the owner asked for by name ("there still isnt just a
   // shared settings page"). Opens as a console pane (kind:"file", no vite
   // build) so it ships without touching the React bundle.

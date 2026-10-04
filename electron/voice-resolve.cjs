@@ -127,7 +127,8 @@ function matchedTier(resolution) {
  * resolveSpeech — allowed?, and if so what to say it with.
  *
  * @param {object} ctx
- *   {origin: string, slotId?: string, text?: string, file?: string}
+ *   {origin: string, slotId?: string, agent?: string, text?: string, file?: string}
+ *   `agent` is the body's agent; voice.mutedAgents silences it.
  *   `file` is a TEST SEAM (see cast-config.cjs's own DESK_CAST_FILE doc) --
  *   production never sets it, so cast.CAST_FILE() (which honours
  *   DESK_CAST_FILE) picks the snapshot.
@@ -143,7 +144,7 @@ function resolveSpeech(ctx = {}) {
   try {
     const { snapshot } = currentSnapshot({ file: resolvedFile });
     const origin = originFromKey(ctx.origin);
-    const resolution = cast.resolveActor(snapshot, { origin, roster: null });
+    const resolution = cast.resolveActor(snapshot, { origin, roster: null, agent: ctx.agent || null });
 
     if (!matchedTier(resolution)) {
       // Best-effort by construction (cast-config.noteSeen never throws) --
