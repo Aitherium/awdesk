@@ -151,6 +151,7 @@ It works in its own tab with a purple dot. Captchas, passwords, payments and the
   const $ = (id) => document.getElementById(id);
   let current = { url: "" };
   let history = []; // [{q, a}] for the page on screen; cleared when the page changes
+  let announcePending = false; // the page changed; say so once its title is known
   let busy = false;
 
   // Tabs
@@ -395,7 +396,17 @@ It works in its own tab with a purple dot. Captchas, passwords, payments and the
     if (s.url !== current.url) {
       // A new page is a new conversation: answers about the last one would mislead.
       history = [];
-      if (current.url) bubble("Now on: " + (s.title || s.url), "ai").classList.add("hint");
+      if (current.url) announcePending = true;
+    }
+    // ONE divider, and only after a conversation it separates. It used to add a bubble
+    // per state push -- "Now on:" with an empty title while the page loaded, again per
+    // tab switch -- a column of chips nobody asked about (owner screenshot 2026-10-04).
+    if (announcePending && s.title && !s.loading) {
+      announcePending = false;
+      const thread = $("thread");
+      const last = thread.lastElementChild;
+      if (last && last.classList.contains("nowon")) last.textContent = "Now on: " + s.title;
+      else if (last && last.classList.contains("msg")) bubble("Now on: " + s.title, "ai").classList.add("hint", "nowon");
     }
     current = s;
     $("title").textContent = s.title || "—";

@@ -71,7 +71,11 @@ const GROUPS = Object.freeze({
  */
 const LAYOUT = Object.freeze({
   tray: Object.freeze(["go", "desktop", "avatar", "window-size", "talk", "stage", "fleet", "arc", "blog", "app"]),
-  "avatar-menu": Object.freeze(["talk", "body", "stage", "window-size", "avatar", "slot", "desktop", "go"]),
+  // ONE menu (owner, 2026-10-04: "the 3 different menu surfaces are still confusing").
+  // A body's menu is the tray's menu with what is about THAT body on top: the rows
+  // after "body"/"slot" read in exactly the tray's order, and the browser's Aither
+  // button pops the tray's menu itself.
+  "avatar-menu": Object.freeze(["talk", "body", "slot", "go", "desktop", "avatar", "window-size", "stage"]),
   // The rail reads top to bottom: what is waiting, where to go, who to talk to,
   // the desktop. The bell stays on top -- it is the one bead read without a click.
   beads: Object.freeze(["go", "talk", "desktop"]),
@@ -215,6 +219,15 @@ const COMMANDS = Object.freeze([
     id: "avatar.toggle", group: "avatar", accel: "Ctrl+Shift+A",
     surfaces: ["tray", "palette"],
     label: (ctx = {}) => (ctx.avatarShown ? "Hide avatar" : "Show avatar"),
+  }),
+  // The layers (owner, 2026-10-04: "the avatar should be attached to the Aither
+  // Browser and the browser just forms around it like a shell"). Docked, the avatar
+  // sits in the browser rail and moves with it; floating, it is the desktop overlay
+  // it always was. avatar-dock.cjs; the rail's layer strip runs the same id.
+  Object.freeze({
+    id: "avatar.dock", group: "avatar", icon: "layers",
+    surfaces: ["tray", "avatar-menu", "palette"],
+    label: (ctx = {}) => (ctx.avatarDocked ? "Float the avatar on the desktop" : "Dock the avatar in the browser"),
   }),
   // 🚩 The commands this registry was born for. They are on the tray as well as
   // the avatar's own menu because that menu needs a right-click that lands on a

@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   closeTab: (id) => ipcRenderer.send("desk:browser-tab-close", Number(id)),
   takeOver: () => ipcRenderer.send("desk:browser-takeover"),
   handBack: () => ipcRenderer.send("desk:browser-handback"),
+  /** The rail: "page" <pane id> | "command" <allowlisted id> | "menu" | "collapse" <bool>. */
+  rail: (action, arg) => ipcRenderer.invoke("desk:browser-rail", String(action ?? ""),
+    typeof arg === "boolean" ? arg : String(arg ?? "")),
   onState: (listener) => {
     const handler = (_event, payload) => listener(payload);
     ipcRenderer.on("desk:browser-state", handler);

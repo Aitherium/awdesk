@@ -55,3 +55,7 @@ Releases up to and including `v0.1.0-beta.0` shipped `public/assets/model.vrm`,
 in its embedded metadata, which required credit. The attribution is archived
 here because those releases keep that obligation; current releases contain no
 model and no such obligation.
+
+## xterm.js (vendored)
+
+`electron/vendor/xterm/` holds @xterm/xterm 6.0.0 and @xterm/addon-fit 0.11.0, MIT licensed (`electron/vendor/xterm/LICENSE`). They render the Terminal page (aither://terminal).

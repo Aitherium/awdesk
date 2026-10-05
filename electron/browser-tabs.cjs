@@ -23,7 +23,7 @@
  */
 
 const OWNERS = Object.freeze(["you", "agent"]);
-const KINDS = Object.freeze(["web", "internal", "hosted"]);
+const KINDS = Object.freeze(["web", "internal", "hosted", "extension"]);
 const MAX_TABS = 30;
 
 class TabSet {

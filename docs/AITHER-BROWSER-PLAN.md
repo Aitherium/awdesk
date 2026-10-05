@@ -150,3 +150,50 @@ Each slice below ships alone and is verifiable alone. In order:
     honour. Aeon, Room and the company room become an `aither://room` tab with bodies speaking in
     turn. Hearth, Learn, Sprite and Spaces open as OS apps in the pinned Online tab, never as new
     installables (one app per platform).
+
+## Part three: layers, one menu (owner, 2026-10-04)
+
+Owner, verbatim intent: "it doesn't have all the proper ways to navigate to the various pages
+that we collapsed from the Aither Console", "the 3 different menu surfaces are still
+confusing", "the avatar should be attached to the Aither Browser and the browser just forms
+around it like a shell, and then AitherDesktop forms around that dynamically ... multiple
+layers: awsh -> awdesk/avatar -> browser -> AitherOS Online overlay".
+
+The model, innermost first. Each layer wraps the one inside it and can be brought up or put
+away without the others moving:
+
+| Layer | What it is | Where it lives |
+|---|---|---|
+| awsh | the shell: say it in a sentence, sessions, agents | `aither://command`, the side panel's Chat / Do it / Agents |
+| Avatar | the body of that shell | docked in the browser rail, or floating on the desktop |
+| Browser | pages, tabs, every Aither page in a rail | the Aither Browser window |
+| Online | AitherOS Online around everything | the overlay (Ctrl+Shift+D) |
+
+16. **The rail: SHIPPED.** `browser-rail.cjs` + `browser-chrome.html`: a left rail with the
+    Aither button, the avatar's slot, every `aither://` page grouped by section (generic over
+    `console-window.cjs` PANES, so a new pane appears with no edit), the OS apps, and a layer
+    strip (awsh, Avatar, Browser, Online). It collapses to icons. The rail may run only
+    `RAIL_COMMANDS`.
+17. **The avatar docks: SHIPPED.** `avatar-dock.cjs`: docked, the one avatar window becomes an
+    owned window of the browser on the rail slot, not always-on-top, following every move and
+    resize; floating restores the bounds it had. Closing the browser floats it and keeps the
+    wish (`avatar-dock.json` in userData, default docked). `avatar.dock` is on the tray, a
+    body's menu and the palette.
+18. **One menu: SHIPPED.** The browser's Aither button pops the tray's menu itself
+    (`trayTemplateNow`). A body's right-click is that menu with the body's rows on top, then
+    the tray's order. Three surfaces, one menu.
+19. **Resizable, foldable: SHIPPED.** Drag the gutters to resize the rail and the assistant
+    panel; fold rail sections; hide the panel; all kept in `browser-layout.json`.
+20. **The taskbar along the bottom: desk side SHIPPED.** `browser-taskbar.cjs` shows Veil's real
+    `<Taskbar/>` from `app.aitherium.com/embed/taskbar` in Online's signed-in partition. A click
+    opens the app in the Online tab, and the page's title grows the view while Start is open.
+    Until that route is live, the strip stays hidden.
+21. **awsh = terminal tabs: SHIPPED.** `aither://terminal` runs shells and coding agents (Shell,
+    Claude Code, Aither, Codex, Gemini, OpenCode, Aider) as tabs over the awsh harness daemon's
+    pty sessions (`terminal-client.cjs`, xterm.js vendored). The rail's awsh layer opens it.
+    `npm run test:terminal` proves it against the real daemon.
+22. **awconnect built in: SHIPPED.** `browser-extensions.cjs` loads adk's staged awconnect build
+    into the browser's web partition. `awconnect-compat-preload.cjs` fills the chrome.* APIs
+    Electron lacks, so its background worker and UI start here. `npm run test:awconnect-builtin`.
+23. **Next.** Hide the avatar's own bead rail and speech bubble while it is docked (the rail
+    already holds those doors). When the overlay is up, the browser sits inside AitherOS Online.

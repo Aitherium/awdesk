@@ -65,9 +65,23 @@ const PANES = Object.freeze([
   // inbox — decision cards and the agents' messages — is what the tray badge,
   // the taskbar overlay and the bell all open. Same renderer as the old "Desk
   // panel" (?deck=1), so a detached inbox is that window.
+  // Search, deep research and the door to Media Forge (owner, 2026-10-04): awfind
+  // (AitherSearch), awresearch, mediaforge. search-client.cjs; IPC in search-window.cjs.
+  // The address bar sends plain words here (aither://search/?q=...).
+  Object.freeze({
+    id: "search", label: "Search", hint: "Web + platform search, deep research, Media Forge", section: "Now", icon: "search",
+    kind: "file", file: "search.html",
+  }),
   Object.freeze({
     id: "cards", label: "Inbox", hint: "Decisions and messages", section: "Now", icon: "bell",
     kind: "view", query: "deck=1",
+  }),
+  // The awsh layer (owner, 2026-10-04: "WHERE IS THE AWSH LAYER?? ... TERMINAL
+  // TABS/SESSIONS"): shells and coding agents as tabs, run by the awsh harness
+  // daemon (terminal-client.cjs); IPC in terminal-window.cjs. aither://terminal.
+  Object.freeze({
+    id: "terminal", label: "Terminal", hint: "awsh: shells and coding agents in tabs", section: "Agents", icon: "terminal",
+    kind: "file", file: "terminal.html",
   }),
   Object.freeze({
     id: "command", label: "Command", hint: "Say it in a sentence", section: "Agents", icon: "terminal",

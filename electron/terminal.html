@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src file:; img-src data:; font-src file:;" />
+<title>Terminal</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<link rel="stylesheet" href="vendor/xterm/xterm.css" />
+<style>
+  /* aither://terminal -- the awsh layer: terminal tabs over the awsh harness daemon
+     (terminal-client.cjs). One xterm per tab; only the active one is shown. */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+    font: 13px/1.4 var(--font-sans); }
+  body { display: flex; flex-direction: column; }
+  .strip { flex: none; height: 38px; display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0;
+    background: var(--bg-deep, var(--bg)); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+  .tab { display: flex; align-items: center; gap: 7px; height: 32px; max-width: 240px; padding: 0 6px 0 10px;
+    border-radius: 8px 8px 0 0; border: 1px solid transparent; border-bottom: 0; background: none; color: var(--muted);
+    cursor: pointer; font: inherit; font-size: 12px; flex: none; }
+  .tab:hover { color: var(--fg); background: var(--surface-900, var(--panel)); }
+  .tab.active { background: var(--bg); border-color: var(--line); color: var(--fg); }
+  .tab .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success, #3c9); flex: none; }
+  .tab.exited .dot { background: var(--surface-500, #666); }
+  .tab .t { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .tab .x { width: 18px; height: 18px; border: 0; border-radius: 4px; background: none; color: inherit; cursor: pointer; padding: 0; }
+  .tab .x:hover { background: var(--surface-800, var(--line)); }
+  #add { height: 28px; padding: 0 10px; margin-bottom: 2px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; flex: none; }
+  #menu { position: fixed; top: 40px; left: 8px; z-index: 10; min-width: 260px; padding: 6px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--panel, var(--bg)); box-shadow: 0 12px 30px rgba(0,0,0,.4); }
+  #menu[hidden] { display: none; }
+  #menu .h { margin: 6px 6px 2px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  #menu button { display: block; width: 100%; text-align: left; height: 30px; padding: 0 10px; border: 0; border-radius: 7px;
+    background: none; color: var(--fg); cursor: pointer; font: inherit; }
+  #menu button:hover { background: var(--surface-900, var(--line)); }
+  #menu input { width: calc(100% - 12px); margin: 4px 6px 6px; height: 28px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--fg); padding: 0 8px; font: inherit; font-size: 12px; }
+  #menu .sub { color: var(--muted); font-size: 11px; margin-left: 6px; }
+  #panes { flex: 1; position: relative; min-height: 0; }
+  .pane { position: absolute; inset: 0; padding: 6px 4px 4px 8px; background: #0b0d12; }
+  .pane[hidden] { display: none; }
+  #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; }
+  #empty[hidden] { display: none; }
+  #empty b { color: var(--fg); }
+  #status { position: absolute; right: 10px; bottom: 6px; font-size: 11px; color: var(--destructive); }
+</style>
+</head>
+<body>
+  <div class="strip" id="strip" role="tablist" aria-label="Terminal sessions">
+    <button id="add" title="New session: a shell, Claude Code, Aither, Codex...">+ New</button>
+  </div>
+  <div id="menu" hidden role="menu"></div>
+  <div id="panes">
+    <div id="empty"><div><b>awsh</b><br />Shells and coding agents, run by the awsh daemon on this machine.<br />Press <b>+ New</b> to open one.</div></div>
+    <span id="status" role="status"></span>
+  </div>
+  <script src="vendor/xterm/xterm.js"></script>
+  <script src="vendor/xterm/addon-fit.js"></script>
+  <script src="terminal-page.js"></script>
+</body>
+</html>

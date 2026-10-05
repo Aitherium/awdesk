@@ -214,12 +214,22 @@ test("browser-window: page view has no preload, is sandboxed, isolated, and popu
   // One page view per tab, all built in openTab().
   const page = src.match(/const view = new WebContentsView\(\{[\s\S]*?\n {2}\}\);/);
   assert.ok(page, "page view construction found");
-  assert.equal((src.match(/new WebContentsView\(/g) || []).length, 2, "one page-view builder (openTab) + the panel");
+  assert.equal((src.match(/new WebContentsView\(/g) || []).length, 3,
+    "one page-view builder (openTab) + the panel + the taskbar");
+  // The taskbar is web content too (app.aitherium.com/embed/taskbar): hosted prefs, no preload.
+  const bar = src.match(/taskbarView = new WebContentsView\(\{[\s\S]*?\n {2}\}\);/);
+  assert.ok(bar, "taskbar view construction found");
+  assert.doesNotMatch(bar[0], /preload:/, "the taskbar page must get NO preload");
+  assert.match(bar[0], /internal\.tabPreferences\("hosted"/);
   assert.doesNotMatch(page[0], /preload:/, "page content must get NO preload");
   // Since aither:// (plan slice 8) the preferences come from ONE pure function, per
   // tab kind; a WEB tab's are asserted here, the internal/hosted ones in
   // browser-internal.test.cjs.
-  assert.match(page[0], /webPreferences: internal\.tabPreferences\(kind, \{\s*webPartition: PARTITION,/);
+  assert.match(page[0], /webPreferences: extensions\.withCompat\(kind, internal\.tabPreferences\(kind === "extension" \? "web" : kind, \{\s*webPartition: PARTITION,/);
+  // withCompat adds a preload for awconnect's own tab and for nothing else.
+  const { withCompat } = require("./browser-extensions.cjs");
+  for (const k of ["web", "internal", "hosted"]) assert.deepEqual(withCompat(k, { a: 1 }), { a: 1 });
+  assert.match(withCompat("extension", {}).preload, /awconnect-compat-preload\.cjs$/);
   const { tabPreferences } = require("./browser-internal.cjs");
   const web = tabPreferences("web", { webPartition: "persist:aither-browser" });
   assert.equal(web.preload, undefined, "a web tab must get NO preload");

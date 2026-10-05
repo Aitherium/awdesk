@@ -6,11 +6,78 @@
 <title>Aither Browser</title>
 <link rel="stylesheet" href="aither-tokens.css" />
 <style>
-  /* The tab strip + toolbar + banner above the page views. Height is CHROME_HEIGHT
-     (118) in browser-window.cjs: 34 tabs + 44 toolbar + 40 banner. */
+  /* The whole window's own page. LEFT: the rail (browser-rail.cjs) -- the avatar's
+     slot, every Aither page, the layer strip. TOP RIGHT: the tab strip + toolbar +
+     banner, CHROME_HEIGHT (118) in browser-window.cjs: 34 tabs + 44 toolbar + 40
+     banner. The page views and the panel are laid over the rest. */
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 118px; overflow: hidden; background: var(--bg); color: var(--fg);
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
     font: 13px/1.4 var(--font-sans); }
+  :root { --rail-w: 248px; }
+  #top { position: fixed; top: 0; left: var(--rail-w); right: 0; height: 118px; }
+  #rail { position: fixed; top: 0; left: 0; bottom: 0; width: var(--rail-w); display: flex; flex-direction: column;
+    background: var(--bg-deep, var(--bg)); border-right: 1px solid var(--line); }
+  .brand { height: 44px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 8px; }
+  #aither { flex: 1; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; font-weight: 600; }
+  #aither .mark { width: 18px; height: 18px; border-radius: 50%; flex: none;
+    background: radial-gradient(circle at 35% 35%, var(--primary, #7cd), var(--agent-purple, #96f)); }
+  #aither .caret { margin-left: auto; color: var(--muted); font-weight: 400; }
+  #collapse { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: none;
+    color: var(--muted); cursor: pointer; flex: none; }
+  #slot { flex: none; position: relative; margin: 0; border-radius: 12px;
+    background: radial-gradient(ellipse at 50% 70%, color-mix(in srgb, var(--agent-purple, #96f) 18%, transparent), transparent 70%); }
+  #slot[hidden] { display: none; }
+  #dockrow { flex: none; margin: 4px 8px 6px; }
+  #dockrow button { width: 100%; height: 30px; border-radius: 8px; border: 1px dashed var(--line); background: none;
+    color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; }
+  #dockrow button:hover { color: var(--fg); border-color: var(--fg); }
+  #nav { flex: 1; overflow-y: auto; padding: 4px 6px 8px; scrollbar-width: thin; }
+  .sec { margin: 10px 8px 4px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .row { width: 100%; display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 8px; border: 0;
+    border-radius: 7px; background: none; color: var(--fg); cursor: pointer; font: inherit; text-align: left; }
+  .row:hover { background: var(--surface-900, var(--panel)); }
+  .row.active { background: color-mix(in srgb, var(--primary, #7cd) 18%, transparent); }
+  .row .ic { width: 22px; height: 22px; border-radius: 6px; flex: none; display: grid; place-items: center; font-size: 11px;
+    font-weight: 700; background: var(--surface-800, var(--line)); color: var(--fg); }
+  .row.cmd .ic { background: none; border: 1px solid var(--line); }
+  .row .l { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .row .n { min-width: 18px; height: 16px; padding: 0 5px; border-radius: 8px; font-size: 10px; line-height: 16px;
+    text-align: center; background: var(--destructive); color: var(--fg); }
+  #layers { flex: none; height: 92px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 6px 8px 8px;
+    border-top: 1px solid var(--line); }
+  .layer { display: flex; flex-direction: column; justify-content: center; padding: 2px 8px; border-radius: 8px;
+    border: 1px solid var(--line); background: none; color: var(--muted); cursor: pointer; font: inherit; text-align: left; }
+  .layer b { color: var(--fg); font-size: 12px; font-weight: 600; }
+  .layer span { font-size: 10px; }
+  .layer.on { border-color: color-mix(in srgb, var(--primary, #7cd) 60%, var(--line)); }
+  .layer.here { cursor: default; }
+  body.collapsed #aither .t, body.collapsed #aither .caret, body.collapsed .sec,
+  body.collapsed .row .l, body.collapsed .row .n, body.collapsed #dockrow, body.collapsed .layer span { display: none; }
+  body.collapsed .brand { flex-direction: column; height: auto; padding: 6px 0; gap: 6px; }
+  body.collapsed #aither { flex: none; width: 36px; padding: 0; justify-content: center; }
+  body.collapsed .row { justify-content: center; padding: 0; }
+  body.collapsed #layers { grid-template-columns: 1fr; height: auto; }
+  body.collapsed .layer { align-items: center; padding: 4px 0; }
+  /* Drag handles live in the gutters the page views leave (browser-rail GUTTER). */
+  .grip { position: fixed; z-index: 5; cursor: col-resize; }
+  .grip::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; border-radius: 1px;
+    background: transparent; transition: background .12s; }
+  .grip:hover::after, body.dragging .grip.on::after { background: var(--primary, #7cd); }
+  .grip[hidden] { display: none; }
+  body.dragging, body.dragging * { cursor: col-resize !important; user-select: none; }
+  .sec { cursor: pointer; display: flex; align-items: center; gap: 6px; }
+  .sec::before { content: "BE"; font-size: 9px; opacity: .6; }
+  .sec.folded::before { content: "B8"; }
+  #custom { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: none;
+    color: var(--muted); cursor: pointer; flex: none; }
+  #customize { margin: 0 8px 6px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; font-size: 12px; }
+  #customize[hidden] { display: none; }
+  #customize label { display: flex; align-items: center; gap: 8px; height: 26px; cursor: pointer; }
+  #customize button { margin-top: 4px; height: 26px; width: 100%; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; }
+  #customize .note { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  body.collapsed #customize, body.collapsed #custom { display: none; }
   .tabs { height: 34px; display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0; background: var(--bg-deep, var(--bg));
     overflow-x: auto; scrollbar-width: none; }
   .tab { display: flex; align-items: center; gap: 6px; height: 30px; min-width: 60px; max-width: 220px; flex: 0 1 200px;
@@ -53,6 +120,28 @@
 </style>
 </head>
 <body>
+  <nav id="rail" aria-label="Aither">
+    <div class="brand">
+      <button id="aither" title="The Aither menu: the same one as the tray and a body's right-click">
+        <span class="mark"></span><span class="t">Aither</span><span class="caret">&#9662;</span>
+      </button>
+      <button id="custom" title="Customize the layout" aria-label="Customize the layout" aria-expanded="false">&#9881;</button>
+      <button id="collapse" title="Collapse the rail" aria-label="Collapse the rail">&#171;</button>
+    </div>
+    <div id="customize" hidden>
+      <label><input type="checkbox" id="opt-panel" /> Assistant panel</label>
+      <label><input type="checkbox" id="opt-taskbar" /> AitherOS taskbar</label>
+      <div class="note">Drag the edges of the rail and the panel to resize. Click a section name to fold it.</div>
+      <button id="opt-reset">Reset layout</button>
+    </div>
+    <div id="slot" hidden aria-label="The avatar, docked"></div>
+    <div id="dockrow"><button id="dock" title="Put the avatar here; the browser forms around it">Dock the avatar here</button></div>
+    <div id="nav"></div>
+    <div id="layers" aria-label="Layers"></div>
+  </nav>
+  <div id="grip-rail" class="grip" title="Drag to resize the rail"></div>
+  <div id="grip-panel" class="grip" title="Drag to resize the panel"></div>
+  <div id="top">
   <div id="tabs" class="tabs" role="tablist" aria-label="Tabs">
     <button id="newtab" title="New tab" aria-label="New tab">+</button>
   </div>
@@ -63,6 +152,7 @@
     <input id="url" list="sugg" spellcheck="false" autocomplete="off" aria-label="Address" placeholder="Type an address, or an Aither page (aither://settings)" />
     <datalist id="sugg"></datalist>
     <button id="star" title="Bookmark this page" aria-label="Bookmark this page" aria-pressed="false">&#9734;</button>
+    <button id="paneltoggle" title="Show or hide the assistant panel" aria-label="Show or hide the assistant panel">&#9707;</button>
     <span id="err" role="status"></span>
   </div>
   <div id="banner" class="banner" role="status" aria-live="polite">
@@ -70,6 +160,7 @@
     <span id="msg" class="msg">You are browsing. An agent can drive this window through the desk's browser tools.</span>
     <button id="takeover" hidden>Take over</button>
     <button id="handback" hidden>Let the agent continue</button>
+  </div>
   </div>
 <script>
   const api = window.aitherBrowser;
@@ -147,8 +238,141 @@
   }
   $("handback").onclick = () => api.handBack();
 
+  // The rail: every Aither page, the OS apps, the avatar slot and the layers.
+  $("aither").onclick = () => api.rail("menu");
+  $("dock").onclick = () => api.rail("command", "avatar.dock");
+  let collapsed = false;
+  $("collapse").onclick = () => api.rail("collapse", !collapsed);
+  const tile = (label) => String(label || "?").replace(/^AitherOS\s+/, "").slice(0, 2);
+  let railKey = "";
+  let lastRail = null;
+  $("custom").onclick = () => {
+    const box = $("customize");
+    box.hidden = !box.hidden;
+    $("custom").setAttribute("aria-expanded", String(!box.hidden));
+  };
+  $("opt-panel").onchange = (e) => api.rail("panel", !e.target.checked);
+  $("opt-taskbar").onchange = (e) => api.rail("taskbar", e.target.checked);
+  $("opt-reset").onclick = () => api.rail("reset-layout");
+  $("paneltoggle").onclick = () => api.rail("panel", !(lastRail && lastRail.panel && lastRail.panel.collapsed));
+
+  // Gutter drags. While one runs, main hides the page views so this page keeps the
+  // mouse the whole way (a view under the cursor would swallow mousemove/mouseup).
+  function startDrag(which, e) {
+    e.preventDefault();
+    const grip = $(which === "rail" ? "grip-rail" : "grip-panel");
+    grip.classList.add("on");
+    document.body.classList.add("dragging");
+    void api.rail("drag", true);
+    let frame = 0;
+    let x = e.clientX;
+    const send = () => {
+      frame = 0;
+      if (which === "rail") api.rail("rail-width", Math.round(x));
+      else api.rail("panel-width", Math.round(window.innerWidth - x));
+    };
+    const move = (ev) => { x = ev.clientX; if (!frame) frame = requestAnimationFrame(send); };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      if (frame) cancelAnimationFrame(frame);
+      send();
+      grip.classList.remove("on");
+      document.body.classList.remove("dragging");
+      void api.rail("drag", false);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
+  $("grip-rail").onmousedown = (e) => startDrag("rail", e);
+  $("grip-panel").onmousedown = (e) => startDrag("panel", e);
+
+  function placeGrips(r) {
+    const g = r.gutter || 6;
+    const bottom = (r.taskbar && r.taskbar.height) || 0;
+    const rg = $("grip-rail");
+    rg.hidden = Boolean(r.collapsed);
+    Object.assign(rg.style, { left: `${r.width}px`, width: `${g}px`, top: "0px", bottom: `${bottom}px` });
+    const pg = $("grip-panel");
+    const p = r.panel;
+    pg.hidden = !p || p.collapsed || !p.width;
+    if (p && p.width) Object.assign(pg.style, { left: `${p.x - g}px`, width: `${g}px`, top: "118px", bottom: `${bottom}px` });
+    $("opt-panel").checked = !(p && p.collapsed);
+    $("opt-taskbar").checked = Boolean(r.taskbar && r.taskbar.on);
+    $("opt-taskbar").parentElement.title = r.taskbar && r.taskbar.status === "unavailable"
+      ? "AitherOS Online did not serve its taskbar yet" : "";
+    $("paneltoggle").classList.toggle("on", !(p && p.collapsed));
+  }
+
+  function renderRail(r, tabsNow) {
+    if (!r) return;
+    lastRail = r;
+    placeGrips(r);
+    // The rail ends above the taskbar.
+    $("rail").style.bottom = `${(r.taskbar && r.taskbar.height) || 0}px`;
+    collapsed = Boolean(r.collapsed);
+    document.body.classList.toggle("collapsed", collapsed);
+    document.documentElement.style.setProperty("--rail-w", `${r.width}px`);
+    $("collapse").innerHTML = collapsed ? "&#187;" : "&#171;";
+    $("collapse").title = collapsed ? "Expand the rail" : "Collapse the rail";
+    $("slot").hidden = !r.slot;
+    if (r.slot) $("slot").style.height = `${r.slot.height}px`;
+    $("dock").textContent = r.docked ? "Float the avatar on the desktop" : "Dock the avatar here";
+    const inbox = (tabsNow || []).find((t) => t.badge > 0);
+    const key = JSON.stringify([r.sections, r.layers, inbox && inbox.badge, r.collapsedSections]);
+    if (key === railKey) return; // a state push per page load; rebuild only on change
+    railKey = key;
+    const nav = $("nav");
+    nav.textContent = "";
+    for (const sec of r.sections || []) {
+      const folded = (r.collapsedSections || []).includes(sec.name);
+      const head = document.createElement("div");
+      head.className = "sec" + (folded ? " folded" : "");
+      head.textContent = sec.name;
+      head.title = folded ? `Show ${sec.name}` : `Fold ${sec.name}`;
+      head.onclick = () => api.rail("section", sec.name);
+      nav.append(head);
+      for (const row of folded ? [] : sec.rows || []) {
+        const b = document.createElement("button");
+        b.className = "row" + (row.active ? " active" : "") + (row.kind === "command" ? " cmd" : "");
+        b.title = row.hint ? `${row.label}: ${row.hint}` : row.label;
+        const ic = document.createElement("span");
+        ic.className = "ic";
+        ic.textContent = tile(row.label);
+        const l = document.createElement("span");
+        l.className = "l";
+        l.textContent = row.label; // never innerHTML
+        b.append(ic, l);
+        if (row.id === "cards" && inbox) {
+          const n = document.createElement("span");
+          n.className = "n";
+          n.textContent = inbox.badge > 99 ? "99+" : String(inbox.badge);
+          b.append(n);
+        }
+        b.onclick = () => api.rail(row.kind === "page" ? "page" : row.kind === "browser" ? "browser" : "command", row.id);
+        nav.append(b);
+      }
+    }
+    const layers = $("layers");
+    layers.textContent = "";
+    for (const layer of r.layers || []) {
+      const b = document.createElement("button");
+      b.className = "layer" + (layer.on ? " on" : "") + (layer.key === "browser" ? " here" : "");
+      b.title = layer.hint;
+      const name = document.createElement("b");
+      name.textContent = layer.label;
+      const st = document.createElement("span");
+      st.textContent = layer.state;
+      b.append(name, st);
+      if (layer.page) b.onclick = () => api.rail("page", layer.page);
+      else if (layer.command) b.onclick = () => api.rail("command", layer.command);
+      layers.append(b);
+    }
+  }
+
   function render(s) {
     if (!s) return;
+    renderRail(s.rail, s.tabs);
     renderTabs(s.tabs);
     $("star").innerHTML = s.bookmarked ? "&#9733;" : "&#9734;";
     $("star").classList.toggle("on", Boolean(s.bookmarked));

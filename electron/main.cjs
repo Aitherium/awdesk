@@ -152,6 +152,7 @@ const {
 // The Aither Browser: a browser window inside the desk an agent drives (MCP
 // browser_* tools) while the owner watches and can take over.
 const browserWindow = require("./browser-window.cjs");
+const { createAvatarDock, DOCKED_CSS } = require("./avatar-dock.cjs");
 // The aither:// scheme: every console pane as a page of the Aither Browser (plan
 // slices 8+9). Privileged schemes must be registered BEFORE app ready, exactly once.
 const browserInternal = require("./browser-internal.cjs");
@@ -415,6 +416,8 @@ function saveSize(width, height) {
  *  window partly off-screen on a smaller one. */
 function setWindowSize(width, height) {
   if (!avatarWindow || avatarWindow.isDestroyed()) return;
+  // Docked, the browser rail owns the avatar's bounds (avatar-dock.cjs).
+  if (avatarDock && avatarDock.isDocked()) return;
   const bounds = avatarWindow.getBounds();
   const area = screen.getDisplayMatching(bounds).workAreaSize;
   const w = Math.max(320, Math.min(Math.round(width), area.width));
@@ -449,6 +452,8 @@ const protocolScheme = "desk";
 const debugEnabled = process.env.DESK_DEBUG === "1";
 
 let avatarWindow = null;
+/** avatar-dock.cjs: the avatar docked in the browser rail (created once main is wired). */
+let avatarDock = null;
 let deckWindow = null;
 let chatWindow = null;
 let bridge = null;
@@ -540,6 +545,7 @@ function scheduleHyprlandWindowConfiguration({
   reposition = !hyprlandConfigured,
 } = {}) {
   if (
+    (avatarDock && avatarDock.isDocked()) ||
     (hyprlandConfigured && !force) ||
     hyprlandConfiguring ||
     !avatarWindow ||
@@ -652,6 +658,8 @@ function createWindow() {
     scheduleHyprlandWindowConfiguration();
   });
   avatarWindow.on("show", () => {
+    // Docked in the browser it is an owned window: never always-on-top, never moved.
+    if (avatarDock && avatarDock.isDocked()) return void avatarDock.sync();
     avatarWindow.setAlwaysOnTop(true, "floating");
     avatarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     avatarWindow.setOpacity(1);
@@ -686,6 +694,11 @@ function createWindow() {
   // WINDOW, not the page inside it) and no signal anywhere that anything had gone wrong.
   // A JS exception in React reads identically from every existing check: healthy process,
   // healthy MCP server, "visible" window, nothing on screen.
+  // A reload drops inserted CSS: put the docked look back.
+  avatarWindow.webContents.on("did-finish-load", () => {
+    dockedCssKey = null;
+    if (avatarDock) void applyDockedCss();
+  });
   avatarWindow.webContents.on("render-process-gone", (_event, details) => {
     debugLog("RENDERER PROCESS GONE", details.reason, details.exitCode);
   });
@@ -2053,6 +2066,7 @@ function commandContext() {
     overlayShell: desktop.shell,
     overlayGhost: desktop.ghost,
     overlaySolid: !desktop.transparent,
+    avatarDocked: Boolean(avatarDock && avatarDock.isDocked()),
     kvLend: Boolean(kvLendRuntime && kvLendRuntime.lend.settings().enabled),
     deadAccels: [...deadAccels],
     awconnect: latestAwconnectStatus,
@@ -2087,6 +2101,11 @@ async function refreshSpendStatus() {
 
 // The Pulse card's "Open spend report" and the tray row land on the same page.
 setSpendOpener(() => openConsole("spend"));
+// The awsh layer: aither://terminal's IPC (terminal tabs over the harness daemon).
+require("./terminal-window.cjs").ensureTerminalIpc();
+// Search, deep research, Media Forge: aither://search's IPC; Media Forge opens as a web tab.
+require("./search-window.cjs").ensureSearchIpc();
+require("./search-window.cjs").setForgeOpener((url) => browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url }));
 
 /** "Set up Awconnect" -- adk stages it, opens the extensions page, copies the path. */
 async function runAwconnectSetupCommand({ surface = "menu" } = {}) {
@@ -2134,6 +2153,27 @@ function refreshJumpList() {
   }
 }
 
+/** THE menu: the tray's, also popped by the browser rail's Aither button. */
+function trayTemplateNow() {
+  const trayTemplate = commandRegistry.buildMenu("tray", runCommand, {
+    ctx: commandContext(),
+    submenus: { "characters.pick": buildCharacterMenu() },
+  });
+  // A dead voice listener is otherwise INVISIBLE (see voice-tray-line.cjs). It is
+  // a STATUS line rather than a command, so it is spliced in after the avatar
+  // group rather than declared in the registry.
+  const voiceRows = voiceTrayItems(latestListenerStatus, app.isPackaged);
+  const appGroupAt = trayTemplate.findIndex((row) => row.label === "About Desk");
+  // Where the browser extension is (or that it is nowhere) -- same splice as voice.
+  // Cloud LLM spend today + the DeepSeek balance; a click opens aither://spend. An
+  // absent cloud_spend tool reads "not deployed yet", never "$0.00".
+  const statusRows = [...voiceRows, ...awconnectSetup.awconnectTrayItems(latestAwconnectStatus),
+    ...spendTrayItems(latestSpend, () => openConsole("spend"))];
+  if (statusRows.length && appGroupAt > 0) trayTemplate.splice(appGroupAt - 1, 0, ...statusRows);
+  else trayTemplate.push(...statusRows);
+  return trayTemplate;
+}
+
 function refreshTrayMenu() {
   invalidateGate();
   refreshSafetyPosture();
@@ -2159,23 +2199,7 @@ function refreshTrayMenu() {
   // avatar window's size ended up reachable through exactly one gesture. The
   // registry owns the inventory, which surfaces carry each entry, and the ONE
   // label each nested group goes by. Slice 1 of docs/UX-REIMPLEMENTATION.md.
-  const trayTemplate = commandRegistry.buildMenu("tray", runCommand, {
-    ctx: commandContext(),
-    submenus: { "characters.pick": buildCharacterMenu() },
-  });
-  // A dead voice listener is otherwise INVISIBLE (see voice-tray-line.cjs). It is
-  // a STATUS line rather than a command, so it is spliced in after the avatar
-  // group rather than declared in the registry.
-  const voiceRows = voiceTrayItems(latestListenerStatus, app.isPackaged);
-  const appGroupAt = trayTemplate.findIndex((row) => row.label === "About Desk");
-  // Where the browser extension is (or that it is nowhere) -- same splice as voice.
-  // Cloud LLM spend today + the DeepSeek balance; a click opens aither://spend. An
-  // absent cloud_spend tool reads "not deployed yet", never "$0.00".
-  const statusRows = [...voiceRows, ...awconnectSetup.awconnectTrayItems(latestAwconnectStatus),
-    ...spendTrayItems(latestSpend, () => openConsole("spend"))];
-  if (statusRows.length && appGroupAt > 0) trayTemplate.splice(appGroupAt - 1, 0, ...statusRows);
-  else trayTemplate.push(...statusRows);
-  tray?.setContextMenu(Menu.buildFromTemplate(trayTemplate));
+  tray?.setContextMenu(Menu.buildFromTemplate(trayTemplateNow()));
 }
 
 /**
@@ -2208,6 +2232,13 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     }
     case "inbox.open": return void openInbox();
     case "avatar.toggle": return void toggleOverlay();
+    case "avatar.dock": {
+      // Docking opens the browser it docks into; floating leaves the browser alone.
+      if (avatarDock.isDocked()) return void avatarDock.undock();
+      createWindow();
+      browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
+      return void avatarDock.dock();
+    }
     case "voice.talk": return void toggleListening();
     case "window.size.bigger": return void growWindow();
     case "window.size.smaller": return void shrinkWindow();
@@ -2533,6 +2564,64 @@ browserWindow.setAgentsHost(agentsPanel.createAgentsSource({
     return result ? { ok: true } : { ok: false, error: "awask did not take the answer" };
   },
 }));
+
+// The layers (owner, 2026-10-04: "awsh -> awdesk/avatar -> browser -> AitherOS Online
+// overlay"). The avatar docks into the browser rail and follows it; the rail pops
+// THE menu (the tray's) and runs its allowlisted commands through runCommand.
+const AVATAR_DOCK_PATH = () => path.join(app.getPath("userData"), "avatar-dock.json");
+avatarDock = createAvatarDock({
+  avatar: () => (avatarWindow && !avatarWindow.isDestroyed() ? avatarWindow : null),
+  browser: () => browserWindow.getWindow(),
+  slotRect: () => browserWindow.avatarSlotRect(),
+  load: () => {
+    try {
+      return JSON.parse(fs.readFileSync(AVATAR_DOCK_PATH(), "utf-8")).docked !== false;
+    } catch {
+      return true; // the owner's ask: the avatar lives in the browser unless floated
+    }
+  },
+  save: (docked) => {
+    try {
+      fs.mkdirSync(path.dirname(AVATAR_DOCK_PATH()), { recursive: true });
+      fs.writeFileSync(AVATAR_DOCK_PATH(), JSON.stringify({ docked }), "utf-8");
+    } catch {
+      /* best-effort: the next launch docks by default */
+    }
+  },
+  onChange: () => {
+    applyDockedCss();
+    browserWindow.refreshShell();
+    if (tray) refreshTrayMenu();
+  },
+});
+/** The docked look (avatar-dock DOCKED_CSS): on while docked, off when floating, re-applied on a reload. */
+let dockedCssKey = null;
+let dockedCssFor = null;
+async function applyDockedCss() {
+  const win = avatarWindow && !avatarWindow.isDestroyed() ? avatarWindow : null;
+  if (!win) return;
+  const wc = win.webContents;
+  const want = avatarDock.isDocked();
+  if (dockedCssFor !== wc) { dockedCssKey = null; dockedCssFor = wc; }
+  try {
+    if (want && !dockedCssKey) dockedCssKey = await wc.insertCSS(DOCKED_CSS);
+    else if (!want && dockedCssKey) {
+      const key = dockedCssKey;
+      dockedCssKey = null;
+      await wc.removeInsertedCSS(key);
+    }
+  } catch { /* a page mid-load: did-finish-load applies it */ }
+}
+browserWindow.onGeometry((reason) => {
+  if (reason === "closed") avatarDock.browserClosed();
+  else avatarDock.sync();
+});
+browserWindow.setShellHost({
+  docked: () => avatarDock.isDocked(),
+  overlayVisible: () => Boolean(desktopStatus().overlay.visible),
+  popupMenu: (win) => Menu.buildFromTemplate(trayTemplateNow()).popup({ window: win }),
+  run: (id) => runCommand(id, undefined, { surface: "browser-rail" }),
+});
 
 /** Poll #agents for the deck's relay section. [] on refusal — the section
  *  renders "relay unavailable" rather than pretending the channel is empty. */
@@ -2926,6 +3015,17 @@ function wireConsoleHost(legacy) {
         open: () => createOpsWindow(),
         close: closeOpsWindow,
         isOpen: isOpsWindowOpen,
+      },
+      // The awsh layer has no detached twin: "detach" opens it in the browser.
+      search: {
+        open: () => browserWindow.openInternal("search", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
+      terminal: {
+        open: () => browserWindow.openInternal("terminal", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
       },
       spend: {
         open: () => createSpendWindow(),

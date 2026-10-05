@@ -39,6 +39,10 @@ if (href.includes("settings.html")) {
   require("./files-preload.cjs");
 } else if (href.includes("/secrets.html")) {
   require("./secrets-preload.cjs");
+} else if (href.includes("/search.html")) {
+  require("./search-preload.cjs");
+} else if (href.includes("/terminal.html")) {
+  require("./terminal-preload.cjs");
 } else if (href.includes("/spend.html")) {
   require("./spend-preload.cjs");
 } else if (/\/plane-[a-z]+\.html/.test(href)) {

@@ -395,8 +395,13 @@ test("main.cjs RENDERS the tray from the registry, it does not hand-write it", (
   const set = main.indexOf("tray?.setContextMenu(");
   assert.ok(built > 0, "the tray is no longer rendered from the registry");
   assert.ok(set > built, "the tray menu is set before it is rendered");
-  // and what it sets is that template, not a second hand-written one.
-  assert.match(main.slice(set, set + 200), /Menu\.buildFromTemplate\(trayTemplate\)/);
+  // and what it sets is that template, not a second hand-written one: the ONE
+  // builder (trayTemplateNow) that the browser rail's Aither button pops too.
+  assert.match(main.slice(set, set + 200), /Menu\.buildFromTemplate\(trayTemplateNow\(\)\)/);
+  const builder = main.indexOf("function trayTemplateNow()");
+  assert.ok(builder > 0 && builder < built && built < set, "trayTemplateNow is not the registry render");
+  assert.match(main, /popupMenu: \(win\) => Menu\.buildFromTemplate\(trayTemplateNow\(\)\)/,
+    "the browser's Aither button pops a menu other than the tray's");
 });
 
 test("voice.talk names what the hotkey does in the current talk mode", () => {
