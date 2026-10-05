@@ -192,6 +192,17 @@ const {
   closeOpsWindow,
   isOpsWindowOpen,
 } = require("./ops-window.cjs");
+// Cloud LLM spend (owner 2026-10-04): the Spend pane, its detached twin, the IPC the
+// Pulse card shares, and the tray's spend line -- all over ONE cached spend client.
+const {
+  ensureSpendIpc,
+  createSpendWindow,
+  closeSpendWindow,
+  isSpendWindowOpen,
+  spendClient,
+  setSpendOpener,
+} = require("./spend-window.cjs");
+const { spendTrayItems } = require("./spend-client.cjs");
 // Plane pages (plan slice 10): Files, Secrets, and one read-only status page per
 // platform plane. Each owns its IPC and its detached twin, like ops-window.cjs.
 const {
@@ -446,6 +457,8 @@ let latestEvent = null;
 let latestListenerStatus = null;
 // Last `adk awconnect status` (awconnect-setup.cjs); null until the first probe.
 let latestAwconnectStatus = null;
+// Last cloud_spend answer (spend-client.cjs) for the tray line; null until the first read.
+let latestSpend = null;
 let latestVoiceState = null;
 let audioListener = null;
 let tray = null;
@@ -2061,6 +2074,20 @@ async function refreshAwconnectStatus() {
   return latestAwconnectStatus;
 }
 
+/** Re-read cloud spend (24 h) for the tray line; the client caches 60 s. */
+async function refreshSpendStatus() {
+  try {
+    latestSpend = await spendClient().report(24);
+  } catch (error) {
+    latestSpend = { ok: false, notDeployed: false, reason: String((error && error.message) || error) };
+  }
+  if (tray) refreshTrayMenu();
+  return latestSpend;
+}
+
+// The Pulse card's "Open spend report" and the tray row land on the same page.
+setSpendOpener(() => openConsole("spend"));
+
 /** "Set up Awconnect" -- adk stages it, opens the extensions page, copies the path. */
 async function runAwconnectSetupCommand({ surface = "menu" } = {}) {
   const verdict = await awconnectSetup.runAwconnectSetup({
@@ -2142,7 +2169,10 @@ function refreshTrayMenu() {
   const voiceRows = voiceTrayItems(latestListenerStatus, app.isPackaged);
   const appGroupAt = trayTemplate.findIndex((row) => row.label === "About Desk");
   // Where the browser extension is (or that it is nowhere) -- same splice as voice.
-  const statusRows = [...voiceRows, ...awconnectSetup.awconnectTrayItems(latestAwconnectStatus)];
+  // Cloud LLM spend today + the DeepSeek balance; a click opens aither://spend. An
+  // absent cloud_spend tool reads "not deployed yet", never "$0.00".
+  const statusRows = [...voiceRows, ...awconnectSetup.awconnectTrayItems(latestAwconnectStatus),
+    ...spendTrayItems(latestSpend, () => openConsole("spend"))];
   if (statusRows.length && appGroupAt > 0) trayTemplate.splice(appGroupAt - 1, 0, ...statusRows);
   else trayTemplate.push(...statusRows);
   tray?.setContextMenu(Menu.buildFromTemplate(trayTemplate));
@@ -2828,6 +2858,7 @@ function wireConsoleHost(legacy) {
   ensureCommandIpc(getFleetControl(), { createFleetWindow });
   ensureSessionsIpc();
   ensureOpsIpc();
+  ensureSpendIpc();
   ensureFilesIpc();
   ensureSecretsIpc();
   ensurePlaneIpc();
@@ -2895,6 +2926,11 @@ function wireConsoleHost(legacy) {
         open: () => createOpsWindow(),
         close: closeOpsWindow,
         isOpen: isOpsWindowOpen,
+      },
+      spend: {
+        open: () => createSpendWindow(),
+        close: closeSpendWindow,
+        isOpen: isSpendWindowOpen,
       },
       files: {
         open: () => createFilesWindow(),
@@ -3021,6 +3057,8 @@ function createTray() {
   tray = new Tray(icon);
   refreshTrayMenu();
   void refreshAwconnectStatus();
+  void refreshSpendStatus();
+  setInterval(() => void refreshSpendStatus(), 5 * 60_000).unref?.();
   // The sign-in row names the account: learn it at boot (cookie + auth.json, no
   // window), and re-render the tray whenever it changes.
   onDesktopAccountChange(() => { if (tray) refreshTrayMenu(); });

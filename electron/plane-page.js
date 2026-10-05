@@ -85,7 +85,38 @@
     return cols;
   }
 
-  const pure = { humanBytes, formatScalar, serviceVerdict, tableColumns, MAX_ROWS, MAX_COLS };
+  /**
+   * The Pulse page's cloud-spend card from one aitherSpend-shaped answer
+   * ({ok, data} | {ok:false, reason, notDeployed}). An absent tool says so and
+   * a failed read says why -- neither is ever drawn as $0.00.
+   */
+  function spendCardModel(result) {
+    if (!result) return { pill: "no answer", tone: "bad", lines: ["The desk did not answer."] };
+    if (!result.ok) {
+      return result.notDeployed
+        ? { pill: "not deployed", tone: "warn", lines: ["Spend reporting is not deployed yet."] }
+        : { pill: "failed", tone: "bad", lines: ["Could not read spend: " + (result.reason || "no answer")] };
+    }
+    const d = result.data || {};
+    const usd = (n) => "$" + (Number(n) || 0).toFixed(2);
+    const lines = ["Last 24h: " + usd(d.total_usd) + " over " + (Number(d.requests) || 0) + " requests"];
+    if (Number(d.unpriced_requests) > 0) lines.push(d.unpriced_requests + " unpriced request(s) not in the total");
+    for (const p of (d.providers || []).slice(0, 3)) {
+      lines.push(p.provider + ": " + usd(p.usd) + " · " + (Number(p.requests) || 0) + " req"
+        + (Number(p.failed) > 0 ? " · " + p.failed + " failed" : ""));
+    }
+    const ds = d.balance && d.balance.deepseek;
+    if (ds) {
+      const n = Number(ds.total_balance);
+      const amount = Number.isFinite(n) ? n.toFixed(2) : String(ds.total_balance);
+      lines.push(ds.available
+        ? "DeepSeek balance: " + (ds.currency === "USD" ? "$" + amount : amount + " " + ds.currency)
+        : "DeepSeek balance unavailable" + (ds.error ? " (" + ds.error + ")" : ""));
+    }
+    return { pill: usd(d.total_usd), tone: Number(d.unpriced_requests) > 0 ? "warn" : "ok", lines };
+  }
+
+  const pure = { humanBytes, formatScalar, serviceVerdict, tableColumns, spendCardModel, MAX_ROWS, MAX_COLS };
   if (typeof module === "object" && module.exports) {
     module.exports = pure;
     return;
@@ -208,11 +239,32 @@
     return card;
   }
 
+  function renderSpendCard(result) {
+    const m = spendCardModel(result);
+    const card = el("section", "card");
+    const h = el("h3");
+    h.appendChild(el("span", "", "Cloud LLM spend"));
+    h.appendChild(el("span", "grow"));
+    h.appendChild(el("span", "tool muted", "cloud_spend"));
+    h.appendChild(el("span", "pill " + m.tone, m.pill));
+    card.appendChild(h);
+    for (const line of m.lines) card.appendChild(el("div", m.tone === "bad" ? "summary bad" : "", line));
+    const open = el("button", "chip", "Open spend report");
+    open.style.marginTop = "8px";
+    open.addEventListener("click", () => { void bridge.openSpend(); });
+    card.appendChild(open);
+    return card;
+  }
+
   async function refresh() {
     if (busy) return;
     busy = true;
     say("refreshing…");
     try {
+      // Pulse also carries the cloud-spend card (spend-window.cjs answers it).
+      const spendAsk = planeId === "pulse" && typeof bridge.spend === "function"
+        ? bridge.spend(24).catch((e) => ({ ok: false, reason: String((e && e.message) || e) }))
+        : null;
       const res = await bridge.snapshot(planeId);
       if (!res || !res.ok) {
         grid.replaceChildren(el("div", "summary bad", "Could not read " + planeId + ": "
@@ -223,6 +275,7 @@
       const snap = res.data || {};
       const reads = Array.isArray(snap.reads) ? snap.reads : [];
       grid.replaceChildren(...reads.map(renderRead));
+      if (spendAsk) grid.appendChild(renderSpendCard(await spendAsk));
       if (!reads.length) grid.appendChild(el("div", "placeholder", "This plane has no reads."));
       const failed = Number(snap.failed) || 0;
       say(failed ? failed + " of " + reads.length + " reads failed -- see below"

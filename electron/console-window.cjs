@@ -135,6 +135,13 @@ const PANES = Object.freeze([
     id: "ops", label: "Ops", hint: "Backups: state, verify, run", section: "System", icon: "archive",
     kind: "file", file: "ops.html",
   }),
+  // Cloud LLM spend (owner, 2026-10-04: "where do I see DeepSeek API spend/token
+  // usage?"). Read-only over the gateway `cloud_spend` tool (spend-client.cjs);
+  // IPC and the detached twin live in spend-window.cjs. aither://spend in the browser.
+  Object.freeze({
+    id: "spend", label: "Spend", hint: "Cloud LLM spend, tokens, balance", section: "System", icon: "wallet",
+    kind: "file", file: "spend.html",
+  }),
   // Plan: the ONE shared settings page (owner 2026-09-22: "there still isnt
   // just a shared settings page"). kind:"file" -- no vite build.
   Object.freeze({

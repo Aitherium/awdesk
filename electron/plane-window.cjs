@@ -63,6 +63,9 @@ function ensurePlaneIpc() {
   wired = true;
   const { ipcMain } = electron();
   for (const [channel, handler] of Object.entries(planeHandlers())) ipcMain.handle(channel, handler);
+  // The Pulse page's spend card asks through the plane bridge; its channels are
+  // spend-window.cjs's, wired here too so a DETACHED Pulse window has them.
+  require("./spend-window.cjs").ensureSpendIpc();
 }
 
 function createPlaneWindow(planeId) {
