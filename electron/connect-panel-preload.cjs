@@ -18,9 +18,18 @@ contextBridge.exposeInMainWorld("aitherAssist", {
   /** The Agents tab: AGENTS_VIEW v1 (agents-panel.cjs) -- live sessions, open cards, the room. */
   agents: () => ipcRenderer.invoke("desk:browser-agents"),
   /** Answer an open card with one of ITS option keys (main re-checks both, then the Inbox's path). */
+  /** Notes and memory about the page on screen: "related" | "save" | "remember" (knowledge-client.cjs). */
+  knowledge: (action, args) => ipcRenderer.invoke("desk:browser-knowledge", String(action ?? ""),
+    { comment: String((args && args.comment) || "").slice(0, 4000) }),
   answerCard: (id, choice) => ipcRenderer.invoke("desk:browser-agents-answer", String(id ?? ""), String(choice ?? "")),
   clearDownloads: () => ipcRenderer.send("desk:browser-downloads-clear"),
   showDownload: (id) => ipcRenderer.send("desk:browser-download-show", Number(id)),
+  /** The owner asked about this page by VOICE: {q, a: null} while it thinks, then {q, a, ok}. */
+  onVoice: (listener) => {
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on("desk:browser-voice", handler);
+    return () => ipcRenderer.off("desk:browser-voice", handler);
+  },
   onState: (listener) => {
     const handler = (_event, payload) => listener(payload);
     ipcRenderer.on("desk:browser-state", handler);

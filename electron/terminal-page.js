@@ -1,4 +1,4 @@
-/* global window, document, localStorage, getComputedStyle, requestAnimationFrame, ResizeObserver, setTimeout, clearTimeout */
+/* global window, document, localStorage, getComputedStyle, requestAnimationFrame, ResizeObserver, setTimeout, clearTimeout, URLSearchParams, location, history */
 /* aither://terminal -- the awsh layer's page (terminal.html). Talks only to
    window.aitherTerminal (terminal-preload.cjs); renders with the vendored xterm.js. */
 (function () {
@@ -186,8 +186,23 @@
     resizeTimer = setTimeout(() => { const t = tabs.get(active); if (t) fitTab(t); }, 80);
   }).observe($("panes"));
 
+  // aither://terminal/?harness=claude&cwd=C:\\repo (Projects' "here" links): start that
+  // session once, then drop the query so a reload does not start a second one.
+  async function startFromQuery() {
+    const q = new URLSearchParams(location.search);
+    const harness = q.get("harness");
+    if (!harness) return;
+    try { history.replaceState(null, "", location.pathname); } catch { /* fine */ }
+    status("Starting " + harness + "\u2026");
+    const r = await api.create({ harness, cwd: q.get("cwd") || "", rows: 30, cols: 100 });
+    if (!r || !r.ok) return status((r && r.error) || "could not start");
+    status("");
+    addTab(r.session);
+  }
+
   // Reopen the tabs this page had, if their sessions are still known to the daemon.
   (async () => {
+    await startFromQuery();
     const want = remembered();
     if (!want.length) return renderStrip();
     const l = await api.list();

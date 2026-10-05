@@ -106,6 +106,18 @@ const PLANES = Object.freeze({
       Object.freeze({ id: "kbs", label: "Knowledge bases", tool: "list_knowledge_bases", args: Object.freeze({}) }),
     ]),
   }),
+  // The distributed fleet (owner, 2026-10-04: "aithermesh / aithernet home LAN and
+  // distributed fleet management"): every registered node, what each machine stores,
+  // and the network policies in force. Read-only, like every plane.
+  mesh: Object.freeze({
+    label: "Mesh", hint: "Your machines: nodes, storage, network policy",
+    reads: Object.freeze([
+      serviceRead("Mesh"),
+      Object.freeze({ id: "nodes", label: "Compute nodes", tool: "compute_list_nodes", args: Object.freeze({ include_offline: true }) }),
+      Object.freeze({ id: "storage", label: "Storage by machine", tool: "storage_nodes", args: Object.freeze({}) }),
+      Object.freeze({ id: "policies", label: "AitherNet policies", tool: "aithernet_policies", args: Object.freeze({}) }),
+    ]),
+  }),
 });
 
 const PLANE_IDS = Object.freeze(Object.keys(PLANES));

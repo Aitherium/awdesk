@@ -53,6 +53,12 @@ const agentsPanel = require("./agents-panel.cjs");
 const rail = require("./browser-rail.cjs");
 const taskbar = require("./browser-taskbar.cjs");
 const extensions = require("./browser-extensions.cjs");
+const overlayMod = require("./browser-overlay.cjs");
+let knowledgeImpl = null;
+function knowledgeClient() {
+  if (!knowledgeImpl) knowledgeImpl = require("./knowledge-client.cjs").createKnowledgeClient();
+  return knowledgeImpl;
+}
 
 const PARTITION = "persist:aither-browser";
 const CHROME_HEIGHT = 118; // tab strip (34) + toolbar (44) + banner (40); browser-chrome.html matches
@@ -151,6 +157,12 @@ let dragging = false;
 let taskbarView = null;
 let taskbarOpen = false;
 let taskbarStatus = "off";
+/**
+ * Popped-out tabs (owner, 2026-10-04: "pop out any screen into its own floating window").
+ * tab id -> its own BrowserWindow. The tab stays in the TabSet (same owner, same agent
+ * rules); only its VIEW lives in the pop window. Closing that window docks it back.
+ */
+const popped = new Map();
 /** awconnect loaded into the web partition (browser-extensions.cjs): {ok, id, version} | {ok: false, error}. */
 let awconnect = { ok: false, error: "not loaded yet" };
 let awconnectLoading = null;
@@ -166,18 +178,41 @@ function ensureAwconnect() {
   return awconnectLoading;
 }
 
-/** Open awconnect's own UI as a tab of yours (reusing one that is open). */
-async function openAwconnect() {
-  const loaded = awconnect.ok ? awconnect : await ensureAwconnect();
-  if (!loaded || !loaded.ok) return { ok: false, error: (loaded && loaded.error) || "awconnect is not loaded" };
-  const url = extensions.uiUrl(loaded.id, loaded.ui);
-  const open = tabs.tabs.find((t) => t.kind === "extension");
+/** Is `url` a page of an extension loaded into the web session (awconnect or one you added)? */
+function isLoadedExtensionPage(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    if (parsed.protocol !== "chrome-extension:") return false;
+    const ses = electron().session.fromPartition(PARTITION);
+    const api = ses.extensions || ses;
+    return Boolean(typeof api.getExtension === "function" && api.getExtension(parsed.hostname));
+  } catch {
+    return false;
+  }
+}
+
+/** An extension's own page (side panel, else popup) as a tab of yours, reusing one open on it. */
+function openExtensionUi(id) {
+  const ses = electron().session.fromPartition(PARTITION);
+  const api = ses.extensions || ses;
+  const ext = typeof api.getExtension === "function" ? api.getExtension(String(id || "")) : null;
+  if (!ext) return { ok: false, error: "no such extension" };
+  const url = extensions.uiUrl(ext.id, extensions.uiPath(ext.manifest));
+  const open = tabs.tabs.find((t) => t.kind === "extension" && (viewOf(t.id) || { webContents: { getURL: () => "" } })
+    .webContents.getURL().startsWith(`chrome-extension://${ext.id}/`));
   if (open) {
     showTab(open.id);
     return { ok: true };
   }
-  const opened = openTab("you", url, { kind: "extension", label: "awconnect" });
+  const opened = openTab("you", url, { kind: "extension", label: ext.name || "extension" });
   return opened.ok ? { ok: true } : { ok: false, error: opened.error };
+}
+
+/** Open awconnect's own UI as a tab of yours (reusing one that is open). */
+async function openAwconnect() {
+  const loaded = awconnect.ok ? awconnect : await ensureAwconnect();
+  if (!loaded || !loaded.ok) return { ok: false, error: (loaded && loaded.error) || "awconnect is not loaded" };
+  return openExtensionUi(loaded.id);
 }
 /** Told whenever the window moves, resizes, hides or closes (main re-seats the docked avatar). */
 const geometryListeners = new Set();
@@ -185,6 +220,14 @@ function notifyGeometry(reason) {
   for (const listener of geometryListeners) {
     try { listener(reason); } catch { /* one listener never stops the others */ }
   }
+}
+/** Is the desk linked as the platform OWNER? Unknown counts as no: the owner-only rows stay hidden. */
+function hostOwner() {
+  try { return Boolean(shellHost && typeof shellHost.isOwner === "function" && shellHost.isOwner()); } catch { return false; }
+}
+/** Is the Online partition signed in (the desk's account)? Unknown counts as yes: the platform still gates. */
+function hostSignedIn() {
+  try { return !shellHost || typeof shellHost.signedIn !== "function" || Boolean(shellHost.signedIn()); } catch { return true; }
 }
 function hostDocked() {
   try { return Boolean(shellHost && shellHost.docked()); } catch { return false; }
@@ -248,6 +291,7 @@ function tabList() {
       url: view ? view.webContents.getURL() : "",
       title: view ? view.webContents.getTitle() : "",
       loading: view ? view.webContents.isLoading() : false,
+      popped: popped.has(t.id),
     };
   });
 }
@@ -324,12 +368,13 @@ async function loadInView(view, url) {
 }
 
 function layout() {
+  syncPageTaskbars();
   if (!win || win.isDestroyed()) return;
   // The rail (avatar slot, every Aither page, the layer strip) is the chrome page's
   // own left column; page views and the panel sit to its right (browser-rail.cjs).
   const rects = currentRects();
   for (const [id, view] of views) {
-    if (!alive(view)) continue;
+    if (!alive(view) || popped.has(id)) continue;
     const shown = id === tabs.active && !dragging;
     view.setVisible(shown);
     if (shown) view.setBounds(rects.page);
@@ -359,6 +404,90 @@ function avatarSlotRect() {
   const slot = currentRectsFor(bounds, true).avatar;
   return slot ? { x: bounds.x + slot.x, y: bounds.y + slot.y, width: slot.width, height: slot.height } : null;
 }
+/** The strip is on screen (enabled, and the route is served). */
+function stripShown() {
+  return Boolean(getPrefs().taskbar) && taskbarStatus !== "unavailable";
+}
+
+// One taskbar: while the strip shows, a page that draws its own (AitherOS Online) has
+// that copy hidden. The key of the inserted sheet, per page document.
+const pageTaskbarCss = new WeakMap();
+function syncPageTaskbar(wc) {
+  if (!wc || wc.isDestroyed()) return;
+  const want = stripShown() && taskbar.pageHasOwnTaskbar(wc.getURL());
+  const key = pageTaskbarCss.get(wc);
+  if (want && !key) {
+    pageTaskbarCss.set(wc, "pending");
+    wc.insertCSS(taskbar.PAGE_TASKBAR_CSS).then((k) => pageTaskbarCss.set(wc, k), () => pageTaskbarCss.delete(wc));
+  } else if (!want && key && key !== "pending") {
+    pageTaskbarCss.delete(wc);
+    void wc.removeInsertedCSS(key).catch(() => {});
+  }
+}
+// AitherOS Online over web pages (browser-overlay.cjs), one per window's web tabs.
+let overlay = null;
+function getOverlay() {
+  if (!overlay) {
+    overlay = overlayMod.createOverlay({
+      dir: () => extensions.awconnectDir(),
+      session: () => { try { return electron().session.fromPartition(onlinePartition()); } catch { return null; } },
+    });
+  }
+  return overlay;
+}
+function overlayWanted(tabId) {
+  const tab = tabs.get(tabId);
+  return Boolean(getPrefs().overlay && tab && tab.kind === "web");
+}
+/** Bring a web tab's overlay in line with the pref (on its new document, or on a toggle). */
+function syncOverlay(tabId) {
+  const view = viewOf(tabId);
+  if (!alive(view)) return;
+  const wc = view.webContents;
+  if (overlayWanted(tabId) && overlayMod.overlayAllowed(wc.getURL())) void getOverlay().inject(wc).catch(() => {});
+  else void getOverlay().remove(wc);
+}
+function setOverlay(on) {
+  setPrefs({ overlay: Boolean(on) });
+  for (const id of views.keys()) syncOverlay(id);
+  pushState();
+  return true;
+}
+// Read aloud: the selection, else the page's main text, from the tab on screen. Read in
+// the isolated world (a web tab has no preload); the page never sees the call.
+const READ_ALOUD_SCRIPT = `(() => {
+  const sel = String(getSelection ? getSelection() : "").trim();
+  if (sel) return sel;
+  const main = document.querySelector("article, main, [role=main]") || document.body;
+  return main ? String(main.innerText || "").replace(/\\s+/g, " ").trim() : "";
+})()`;
+async function readAloud() {
+  if (!shellHost || typeof shellHost.speak !== "function") return { ok: false, error: "the desk has no voice wired" };
+  const view = activeView();
+  if (!alive(view)) return { ok: false, error: "no page" };
+  let text;
+  try { text = await view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: READ_ALOUD_SCRIPT }]); } catch { text = ""; }
+  text = String(text || "").slice(0, 2000);
+  if (!text) return { ok: false, error: "nothing to read on this page" };
+  void Promise.resolve(shellHost.speak(text)).catch(() => {});
+  return { ok: true, chars: text.length };
+}
+
+/** AitherOS Online is hovering on the real desktop (the desk's overlay window). */
+function overlayOnDesktop() {
+  try { return Boolean(shellHost && shellHost.overlayVisible()); } catch { return false; }
+}
+
+/** The OS frame of the overlay on the tab on screen, when there is one. */
+function activeOverlayFrame() {
+  const view = activeView();
+  return getPrefs().overlay && alive(view) ? getOverlay().osFrame(view.webContents) : null;
+}
+
+function syncPageTaskbars() {
+  for (const view of views.values()) if (alive(view)) syncPageTaskbar(view.webContents);
+}
+
 function currentRectsFor(bounds, docked) {
   const p = getPrefs();
   return rail.railLayout(bounds, {
@@ -404,9 +533,10 @@ function railState() {
     docked,
     slot: rects ? rects.avatar : null,
     sections: withAwconnectRow(rail.railSections(require("./console-window.cjs").PANES,
-      { activePane: active && active.by === "you" ? active.paneId || null : null }), active),
+      { activePane: active && active.by === "you" ? active.paneId || null : null, signedIn: hostSignedIn(),
+        owner: hostOwner() }), active),
     awconnect: awconnect.ok ? { ok: true, version: awconnect.version } : { ok: false, error: awconnect.error },
-    layers: rail.layerRows({ docked, overlayVisible, browserOpen: true }),
+    layers: rail.layerRows({ docked, overlayVisible, browserOpen: true, overPages: getPrefs().overlay }),
   };
 }
 
@@ -463,10 +593,35 @@ function openFromTaskbar(url) {
   const route = taskbar.routeFor(url);
   if (route === "web") return void openTab("you", url);
   if (route !== "online") return;
+  // Online is drawn over the page on screen: the app opens there, over the page.
+  const over = activeOverlayFrame();
+  const overId = over ? taskbar.spawnIdOf(url) : null;
+  if (overId) {
+    over.executeJavaScript(taskbar.openAppScript(overId), true)
+      .then((ok) => { if (!ok) openFromOnlineTab(url); })
+      .catch(() => openFromOnlineTab(url));
+    return;
+  }
+  openFromOnlineTab(url);
+}
+
+function openFromOnlineTab(url) {
   openInternal("desktop", null);
   const tab = tabForPane("desktop");
   const view = tab ? viewOf(tab.id) : null;
-  if (view && view.webContents.getURL() !== url) void loadHostedTab(view, url).catch(() => {});
+  if (!view) return;
+  const wc = view.webContents;
+  const id = taskbar.spawnIdOf(url);
+  let here = null;
+  try { here = new URL(wc.getURL()); } catch { /* not loaded yet */ }
+  // The desktop is already up: open the app in it, no reload (its windows stay open).
+  if (id && here && here.origin === new URL(url).origin && here.pathname === "/" && !wc.isLoading()) {
+    wc.executeJavaScript(taskbar.openAppScript(id), true)
+      .then((ok) => { if (!ok && alive(view)) return loadHostedTab(view, url); })
+      .catch(() => {});
+    return;
+  }
+  if (wc.getURL() !== url) void loadHostedTab(view, url).catch(() => {});
 }
 
 /** The living desktop's taskbar along the bottom (browser-taskbar.cjs), created once per window. */
@@ -546,8 +701,8 @@ function openTab(by, url, { activate = true, after = null, pinned = false, key =
   }
   // awconnect's own pages: only the owner, only the loaded extension's id.
   const extensionTab = wantKind === "extension";
-  if (extensionTab && (by !== "you" || !extensions.isExtensionPage(url, awconnect.id))) {
-    return { ok: false, error: "not an awconnect page" };
+  if (extensionTab && (by !== "you" || !isLoadedExtensionPage(url))) {
+    return { ok: false, error: "not a page of a loaded extension" };
   }
   // (a chrome-extension: URL classifies as "web"; extensionTab below makes it its own kind)
   const target = classify(url);
@@ -566,10 +721,12 @@ function openTab(by, url, { activate = true, after = null, pinned = false, key =
   // one internal preload, which hands the page only its own pane's bridge.
   // awconnect's own page gets the compat shim its worker has (withCompat adds a preload
   // for kind "extension" ONLY; a web tab's preferences pass through untouched).
+  // The pinned AitherOS Online tab is a DESK HOST (internal.withDeskHost): the full
+  // context the overlay window has. Every other hosted or web tab stays preload-free.
   const view = new WebContentsView({
-    webPreferences: extensions.withCompat(kind, internal.tabPreferences(kind === "extension" ? "web" : kind, {
+    webPreferences: internal.withDeskHost(kind, target.paneId, extensions.withCompat(kind, internal.tabPreferences(kind === "extension" ? "web" : kind, {
       webPartition: PARTITION, hostedPartition: target.partition || hostedPartition,
-    })),
+    }))),
   });
   views.set(added.id, view);
   wirePage(view.webContents, added.id);
@@ -593,6 +750,37 @@ function openSearch(text) {
   if (!view) return false;
   void loadInView(view, `aither://search/?q=${encodeURIComponent(String(text).slice(0, 500))}`).catch(() => {});
   return true;
+}
+
+/**
+ * An agent app (browser-rail AGENT_APPS) in the pinned AitherOS Online tab:
+ * <online>/?spawn=<id>. The platform's own gate (ACTA / sign-in / owner) decides what
+ * opens; the desk refuses only an id that is not on its list.
+ */
+function openAgentApp(id) {
+  if (!rail.isAgentApp(id)) return { ok: false, error: "not an agent app" };
+  const url = new URL(internal.onlineUrl());
+  url.pathname = "/";
+  url.search = `?spawn=${encodeURIComponent(id)}`;
+  openFromTaskbar(url.href);
+  return { ok: true };
+}
+
+/** A workspace page (browser-rail WORKSPACE_PAGES) in the pinned, signed-in Workspace tab. */
+function openWorkspacePage(pagePath) {
+  // Command & control pages open only for the owner (the site's RBAC still decides).
+  const admin = rail.isAdminPage(pagePath);
+  if (admin && !hostOwner()) return { ok: false, error: "owner only" };
+  if (!admin && !rail.isWorkspacePage(pagePath)) return { ok: false, error: "not a workspace page" };
+  const url = new URL(pagePath, internal.onlineUrl()).href;
+  createBrowserWindow({ url: null, home: false });
+  ensurePinned();
+  const tab = tabs.byKey("workspace");
+  const view = tab ? viewOf(tab.id) : null;
+  if (!view) return { ok: false, error: "the Workspace tab is not open" };
+  showTab(tab.id);
+  void loadHostedTab(view, url).catch(() => {});
+  return { ok: true };
 }
 
 /** Media Forge's own UI in a web tab of yours (search-client forgeUrl finds where it runs). */
@@ -688,6 +876,13 @@ function setInboxBadge({ count = 0, image = null, tooltip = "" } = {}) {
 function closeTab(id, by = "you") {
   const closed = tabs.close(id, by);
   if (!closed.ok) return closed;
+  const pop = popped.get(id);
+  popped.delete(id);
+  if (pop && !pop.isDestroyed()) {
+    const v = views.get(id);
+    if (alive(v)) pop.contentView.removeChildView(v);
+    pop.destroy();
+  }
   const view = views.get(id);
   views.delete(id);
   if (alive(view)) {
@@ -700,7 +895,70 @@ function closeTab(id, by = "you") {
   return { ok: true, closed: id, active: tabs.active };
 }
 
+/** Move a tab's view into its own window (a floating pane you can put on any monitor). */
+function popOutTab(id) {
+  const view = viewOf(id);
+  const tab = tabs.get(id);
+  if (!view || !tab || !win || win.isDestroyed()) return { ok: false, error: "no such tab" };
+  const existing = popped.get(id);
+  if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return { ok: true }; }
+  const { BrowserWindow } = electron();
+  const main = win.getBounds();
+  const pop = new BrowserWindow({
+    width: 1000, height: 720, x: main.x + 60, y: main.y + 60, minWidth: 360, minHeight: 240,
+    title: view.webContents.getTitle() || "Aither", autoHideMenuBar: true, backgroundColor: "#0f1218",
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  pop.loadURL("about:blank").catch(() => {});
+  win.contentView.removeChildView(view);
+  pop.contentView.addChildView(view);
+  const fit = () => {
+    if (pop.isDestroyed() || !alive(view)) return;
+    const { width, height } = pop.getContentBounds();
+    view.setVisible(true);
+    view.setBounds({ x: 0, y: 0, width, height });
+  };
+  fit();
+  pop.on("resize", fit);
+  const retitle = () => { if (!pop.isDestroyed()) pop.setTitle(`${view.webContents.getTitle() || "Aither"} \u2014 popped out`); };
+  view.webContents.on("page-title-updated", retitle);
+  retitle();
+  pop.on("closed", () => dockTab(id, { closing: true }));
+  popped.set(id, pop);
+  // The strip moves on to another tab; the popped one keeps its place in the list.
+  const next = tabs.tabs.find((t) => t.id !== id && !popped.has(t.id));
+  if (next && tabs.active === id) tabs.activate(next.id);
+  layout();
+  pushState();
+  return { ok: true };
+}
+
+/** Bring a popped-out tab's view back into the browser and close its window. */
+function dockTab(id, { closing = false } = {}) {
+  const pop = popped.get(id);
+  popped.delete(id);
+  const view = views.get(id);
+  if (pop && !pop.isDestroyed() && alive(view)) pop.contentView.removeChildView(view);
+  if (alive(view) && win && !win.isDestroyed()) {
+    win.contentView.addChildView(view);
+    if (alive(panelView)) win.contentView.addChildView(panelView);
+    if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
+    tabs.activate(id);
+  }
+  if (pop && !closing && !pop.isDestroyed()) pop.close();
+  layout();
+  pushState();
+  return { ok: true };
+}
+
 function showTab(id) {
+  // A popped-out tab lives in its own window: clicking it on the strip summons that window.
+  const pop = popped.get(id);
+  if (pop && !pop.isDestroyed()) {
+    pop.show();
+    pop.focus();
+    return { ok: true };
+  }
   const shown = tabs.activate(id);
   if (shown.ok) {
     layout();
@@ -727,9 +985,18 @@ function wirePage(wc, id) {
   });
   // Navigation is judged per tab KIND (browser-internal navigationVerdict): a web
   // tab never reaches aither://; an internal tab sends a web link to a web tab.
+  // An extension tab stays on ITS extension's pages (never hops to another extension's).
+  const sameExtension = (url) => {
+    try {
+      return new URL(url).protocol === "chrome-extension:" && new URL(url).hostname === new URL(wc.getURL()).hostname
+        && isLoadedExtensionPage(url);
+    } catch {
+      return false;
+    }
+  };
   const verdictFor = (url, opts) => (kindOf() === "extension"
     // awconnect's pages stay on awconnect; a web link from it opens a web tab.
-    ? (extensions.isExtensionPage(url, awconnect.id) ? "allow" : (opts && opts.frame) ? "deny"
+    ? (sameExtension(url) ? "allow" : (opts && opts.frame) ? "deny"
       : internal.navigationVerdict("web", url) === "allow" ? "web-tab" : "deny")
     : internal.navigationVerdict(kindOf(), url, opts));
   const guard = (event, url) => {
@@ -755,6 +1022,26 @@ function wirePage(wc, id) {
   for (const name of ["did-navigate", "did-navigate-in-page", "page-title-updated", "did-start-loading", "did-stop-loading"]) {
     wc.on(name, () => pushState());
   }
+  // Onto an AitherOS Online page: hide ITS taskbar, the strip stays (one taskbar).
+  wc.on("did-navigate", () => { pageTaskbarCss.delete(wc); if (overlay) overlay.forget(wc); }); // a new document drops both
+  wc.on("dom-ready", () => { if (overlayWanted(id)) syncOverlay(id); });
+  // The overlay's own taskbar is hidden while the strip shows (one taskbar, over pages too).
+  wc.on("did-frame-finish-load", (_e, isMain, processId, routingId) => {
+    if (isMain || !overlayWanted(id) || !stripShown()) return;
+    let frame = null;
+    try { frame = electron().webFrameMain.fromId(processId, routingId); } catch { /* gone */ }
+    if (!frame || frame.origin !== overlayMod.OS_ORIGIN) return;
+    const css = JSON.stringify(taskbar.PAGE_TASKBAR_CSS);
+    void frame.executeJavaScript(`(() => { const s = document.createElement("style"); s.textContent = ${css}; document.head.append(s); })()`).catch(() => {});
+  });
+  // Alt+O, awconnect's own key for the overlay.
+  wc.on("before-input-event", (event, input) => {
+    if (input.type === "keyDown" && input.alt && !input.control && !input.meta && String(input.key).toLowerCase() === "o") {
+      event.preventDefault();
+      setOverlay(!getPrefs().overlay);
+    }
+  });
+  for (const name of ["dom-ready", "did-navigate-in-page"]) wc.on(name, () => syncPageTaskbar(wc));
   wc.on("did-stop-loading", () => scheduleContextPush(id));
   // History: the finished page, remembered with WHO opened its tab.
   wc.on("did-stop-loading", () => {
@@ -813,6 +1100,8 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   const { BrowserWindow, WebContentsView, session } = electron();
   hardenSession(session.fromPartition(PARTITION));
   void ensureAwconnect();
+  // Extensions you added on aither://extensions load with the browser.
+  void require("./extensions-window.cjs").loadSaved(session.fromPartition(PARTITION)).catch(() => {});
 
   win = new BrowserWindow({
     width: 1320,
@@ -856,6 +1145,8 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     taskbarView = null;
     taskbarOpen = false;
     taskbarStatus = "off";
+    for (const [, pop] of popped) if (pop && !pop.isDestroyed()) pop.destroy();
+    popped.clear();
     views.clear();
     tabs = new TabSet();
     win = null;
@@ -1226,11 +1517,29 @@ function wireIpc() {
   // these, never the page view (which has no preload anyway) or another window.
   ipcMain.handle("desk:browser-state", (event) => (fromChrome(event) || fromPanel(event) ? state() : null));
   // The rail: open an Aither page, run an allowlisted command, pop THE menu, collapse.
+  ipcMain.handle("desk:browser-tab-popout", (event, id) => (fromChrome(event) ? popOutTab(Number(id)) : { ok: false }));
+  ipcMain.handle("desk:browser-tab-dock", (event, id) => (fromChrome(event) ? dockTab(Number(id)) : { ok: false }));
   ipcMain.handle("desk:browser-rail", (event, action, arg) => {
     if (!fromChrome(event)) return { ok: false, error: "not the browser's own chrome" };
     const relayout = () => { layout(); pushState(); return { ok: true }; };
     if (action === "collapse") return setPrefs({ railCollapsed: Boolean(arg) }) && relayout();
     if (action === "panel") return setPrefs({ panelCollapsed: Boolean(arg) }) && relayout();
+    if (action === "overlay") {
+      // Back from the desktop (or off): the desk's overlay window steps down first.
+      if (overlayOnDesktop()) shellHost.run("desktop.overlay.toggle");
+      setOverlay(Boolean(arg));
+      setTimeout(() => { layout(); pushState(); }, 150);
+      return { ok: true };
+    }
+    if (action === "overlay-detach") {
+      // Detach (owner, 2026-10-04): Online leaves the page and hovers on the real desktop
+      // -- the desk's click-through overlay window (living-desktop), the same OS.
+      if (!shellHost) return { ok: false, error: "the desk is still starting" };
+      setOverlay(false);
+      if (!overlayOnDesktop()) shellHost.run("desktop.overlay.toggle");
+      setTimeout(() => { layout(); pushState(); }, 150);
+      return { ok: true };
+    }
     if (action === "taskbar") {
       setPrefs({ taskbar: Boolean(arg) });
       if (arg) ensureTaskbar();
@@ -1262,9 +1571,18 @@ function wireIpc() {
       setTimeout(() => { layout(); pushState(); }, 150);
       return { ok: true };
     }
+    if (action === "online") return openAgentApp(String(arg || ""));
+    if (action === "workspace") return openWorkspacePage(String(arg || ""));
+    if (action === "local") {
+      // The owner's loopback tools (Grafana, Prometheus): owner-only, fixed URLs.
+      if (!hostOwner() || !rail.isOwnerLocal(arg)) return { ok: false, error: "not available" };
+      const opened = openTab("you", String(arg));
+      return opened.ok ? { ok: true } : { ok: false, error: opened.error };
+    }
     if (action === "browser") {
       if (arg === "awconnect") return openAwconnect();
       if (arg === "forge") return openForge();
+      if (arg === "read-aloud") return readAloud();
       return { ok: false, error: "unknown browser action" };
     }
     if (action === "menu") {
@@ -1324,6 +1642,21 @@ function wireIpc() {
     return { ok: true, bookmarked: on };
   });
   // The Connect panel: what the owner has selected, an agent task, and "Open in Chrome".
+  // Notes and memory about the page on screen (knowledge-client.cjs). The PANEL asks;
+  // main supplies the page's title and address and the owner's selection itself.
+  ipcMain.handle("desk:browser-knowledge", async (event, action, args) => {
+    if (!fromPanel(event)) return { ok: false, error: "not the side panel" };
+    const view = activeView();
+    const page = view ? { title: view.webContents.getTitle(), url: view.webContents.getURL() } : { title: "", url: "" };
+    const kc = knowledgeClient();
+    const comment = String((args && args.comment) || "");
+    if (action === "related") return kc.related(page);
+    if (action !== "save" && action !== "remember") return { ok: false, error: "unknown notes action" };
+    const sel = await runInPage("selection", {}, "owner").catch(() => ({ text: "" }));
+    const selection = String((sel && sel.text) || "");
+    if (action === "save") return kc.savePage({ ...page, selection, comment });
+    return kc.rememberText({ text: [selection, comment].filter(Boolean).join("\n\n"), ...page });
+  });
   ipcMain.handle("desk:browser-selection", async (event) => {
     if (!fromPanel(event)) return { ok: false, text: "" };
     return runInPage("selection", {}, "owner").catch(() => ({ ok: false, text: "" }));
@@ -1408,23 +1741,60 @@ function wireIpc() {
   });
   ipcMain.handle("desk:browser-ask", async (event, question, extra) => {
     if (!fromPanel(event)) return { ok: false, reply: "not the browser panel" };
-    if (typeof askAgent !== "function") return { ok: false, reply: "The desk's agent is not wired to this window." };
-    // The OWNER's read: not an agent tool call, so it does not pass the gate.
-    const page = await runInPage("read", {}, "owner").catch((error) => ({ ok: false, error: String(error.message || error) }));
-    if (!page || page.ok === false) return { ok: false, reply: `Could not read the page: ${page && page.error}` };
-    const opts = extra && typeof extra === "object" ? extra : {};
-    const prompt = policy.buildConnectPrompt({
-      url: page.url, title: page.title, text: page.text, question: typeof question === "string" ? question.slice(0, 2000) : "",
-      selection: typeof opts.selection === "string" ? opts.selection : "",
-      history: Array.isArray(opts.history) ? opts.history : [],
-    });
-    try {
-      const result = await askAgent(prompt);
-      return { ok: result?.ok !== false, reply: String(result?.reply || "") };
-    } catch (error) {
-      return { ok: false, reply: String(error?.message || error) };
-    }
+    return askAboutPage(question, extra);
   });
+}
+
+/**
+ * Ask about the page on screen: the panel's chat, and the owner's VOICE while the browser
+ * has focus (main desk:voice-heard -> voiceAsk). The OWNER's read of the page, their notes
+ * and memories as graph-RAG context, one agent answer.
+ */
+async function askAboutPage(question, extra) {
+  if (typeof askAgent !== "function") return { ok: false, reply: "The desk's agent is not wired to this window." };
+  // The OWNER's read: not an agent tool call, so it does not pass the gate.
+  const page = await runInPage("read", {}, "owner").catch((error) => ({ ok: false, error: String(error.message || error) }));
+  if (!page || page.ok === false) return { ok: false, reply: `Could not read the page: ${page && page.error}` };
+  const opts = extra && typeof extra === "object" ? extra : {};
+  // Graph RAG, the owner's half: their notes and memories that match this page ride
+  // along (knowledge-client related()), bounded so a slow memory never stalls an answer.
+  const related = await Promise.race([
+    knowledgeClient().related({ title: page.title, url: page.url }).catch(() => null),
+    new Promise((resolve) => setTimeout(() => resolve(null), 4000)),
+  ]);
+  const knowledge = related ? [
+    ...(related.notes || []).map((n) => ({ kind: "note", text: `${n.title}: ${n.snippet}` })),
+    ...(related.memories || []).map((m) => ({ kind: "memory", text: m.text })),
+  ] : [];
+  const prompt = policy.buildConnectPrompt({
+    knowledge,
+    url: page.url, title: page.title, text: page.text, question: typeof question === "string" ? question.slice(0, 2000) : "",
+    selection: typeof opts.selection === "string" ? opts.selection : "",
+    history: Array.isArray(opts.history) ? opts.history : [],
+  });
+  try {
+    const result = await askAgent(prompt);
+    return { ok: result?.ok !== false, reply: String(result?.reply || "") };
+  } catch (error) {
+    return { ok: false, reply: String(error?.message || error) };
+  }
+}
+
+/** The browser (or a page popped out of it) has focus: the owner's voice is about this page. */
+function hasVoiceFocus() {
+  if (win && !win.isDestroyed() && win.isFocused()) return true;
+  for (const pop of popped.values()) if (pop && !pop.isDestroyed() && pop.isFocused()) return true;
+  return false;
+}
+
+/** A spoken question about the page: answered by askAboutPage, shown in the panel's chat too. */
+async function voiceAsk(said) {
+  const question = String(said || "").slice(0, 2000);
+  const sendPanel = (payload) => { if (alive(panelView)) panelView.webContents.send("desk:browser-voice", payload); };
+  sendPanel({ q: question, a: null });
+  const result = await askAboutPage(question, {});
+  sendPanel({ q: question, a: result.reply, ok: result.ok });
+  return result;
 }
 
 /**
@@ -1445,6 +1815,12 @@ function setAgentsHost(host) {
     && typeof host.answer === "function";
   agentsHost = ok ? host : null;
 }
+
+require("./extensions-window.cjs").setExtensionsHost({
+  session: () => electron().session.fromPartition(PARTITION),
+  awconnectId: () => (awconnect.ok ? awconnect.id : null),
+  openExtensionUi: (id) => openExtensionUi(id),
+});
 
 /** main installs the layers around the browser (see shellHost). */
 function setShellHost(host) {
@@ -1490,6 +1866,18 @@ module.exports = {
   screenPage,
   /** The owner clicking a tab, for browser-tabs-smoke.cjs (the strip's IPC needs a real sender). */
   __showTabForTest: (id) => showTab(id),
+  /** AitherOS Online over web pages (browser-overlay.cjs): the Online layer / Alt+O. */
+  setOverlay,
+  /** Read the selection, else the page, aloud (the Voice section's Read aloud). */
+  readAloud,
+  /** The owner's voice, while the browser has focus, goes to the page's agent (main desk:voice-heard). */
+  hasVoiceFocus,
+  voiceAsk,
+  /** The pinned Online tab(s) carrying the desk-host preload, for living-desktop-window's fence. */
+  deskHostContents: () => tabs ? tabs.tabs.filter((t) => t.kind === "hosted" && t.paneId === "desktop")
+    .map((t) => viewOf(t.id)).filter(alive).map((v) => v.webContents) : [],
+  /** A tab the owner opened, for overlay-smoke.cjs. */
+  __openTabForTest: (url) => openTab("you", url),
   isBrowserWindowOpen,
   scriptFor,
   setAgentsHost,
@@ -1497,6 +1885,18 @@ module.exports = {
   refreshShell,
   avatarSlotRect,
   getWindow: () => (win && !win.isDestroyed() ? win : null),
+  /** Popped-out tab windows, for the window manager: key pop:<host> -> window. */
+  poppedWindows: () => {
+    const out = {};
+    for (const [id, pop] of popped) {
+      if (!pop || pop.isDestroyed()) continue;
+      const view = views.get(id);
+      let host = String(id);
+      try { host = new URL(view.webContents.getURL()).host || host; } catch { /* keep the id */ }
+      out[`pop:${host}`] = () => pop;
+    }
+    return out;
+  },
   onGeometry: (listener) => {
     geometryListeners.add(listener);
     return () => geometryListeners.delete(listener);

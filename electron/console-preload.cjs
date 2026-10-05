@@ -39,6 +39,14 @@ if (href.includes("settings.html")) {
   require("./files-preload.cjs");
 } else if (href.includes("/secrets.html")) {
   require("./secrets-preload.cjs");
+} else if (href.includes("/windows.html")) {
+  require("./windows-preload.cjs");
+} else if (href.includes("/bricks.html")) {
+  require("./bricks-preload.cjs");
+} else if (href.includes("/extensions.html")) {
+  require("./extensions-preload.cjs");
+} else if (href.includes("/projects.html")) {
+  require("./projects-preload.cjs");
 } else if (href.includes("/search.html")) {
   require("./search-preload.cjs");
 } else if (href.includes("/terminal.html")) {

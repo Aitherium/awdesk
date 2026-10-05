@@ -83,9 +83,10 @@ test("the taskbar takes the bottom strip, full width; the rail and pages end abo
 test("a hand-edited layout file cannot wedge the window", () => {
   assert.deepEqual(rail.normalizeLayout({ railWidth: "abc", panelWidth: -4, collapsedSections: [1, "Apps", "Apps"] }),
     { railWidth: rail.RAIL_WIDTH, panelWidth: rail.PANEL_MIN, railCollapsed: false, panelCollapsed: false,
-      taskbar: true, collapsedSections: ["Apps"] });
+      taskbar: true, overlay: false, collapsedSections: ["Apps"] });
   assert.equal(rail.normalizeLayout({ railWidth: null }).railWidth, rail.RAIL_WIDTH, "reset means default, not minimum");
   assert.equal(rail.normalizeLayout({ taskbar: false }).taskbar, false);
+  assert.equal(rail.normalizeLayout({ overlay: "yes" }).overlay, false, "on only when exactly true");
 });
 
 test("the avatar slot follows a dragged rail width", () => {
@@ -119,4 +120,79 @@ test("the chrome page's rail matches the module's sizes", () => {
   }
   // Labels are text, never markup: a pane label cannot inject into the chrome.
   assert.doesNotMatch(chromeHtml, /l\.innerHTML|name\.innerHTML|st\.innerHTML/);
+});
+
+test("agent apps: every one the owner named, as Online rows, locked when signed out", () => {
+  const ids = rail.AGENT_APPS.map((a) => a.app);
+  for (const want of ["aitherchat", "aeon", "demi", "forge", "builder", "atlas", "atlas-pm", "lyra", "saga", "vera", "hera"]) {
+    assert.ok(ids.includes(want), `${want} missing`);
+  }
+  const sec = rail.railSections(PANES, { signedIn: false }).find((s) => s.name === "Agent apps");
+  assert.ok(sec.rows.every((r) => r.kind === "online" && r.locked));
+  assert.ok(rail.railSections(PANES).find((s) => s.name === "Agent apps").rows.every((r) => !r.locked));
+  assert.equal(rail.isAgentApp("aeon"), true);
+  assert.equal(rail.isAgentApp("darkmatters"), false, "only the listed apps; the platform gates the rest anyway");
+  assert.equal(rail.isAgentApp("../x"), false);
+});
+
+test("spaces & sprites: the owner's list, opened through Online like the agent apps", () => {
+  const ids = rail.SPACE_APPS.map((a) => a.app);
+  for (const want of ["spaces", "myspace", "homestead", "sprite", "persona"]) assert.ok(ids.includes(want), want);
+  const sec = rail.railSections(PANES).find((s) => s.name === "Spaces & sprites");
+  assert.deepEqual(sec.rows.map((r) => r.id), ids);
+  assert.ok(ids.every((id) => rail.isAgentApp(id)), "the rail may open each of them");
+  const names = rail.railSections(PANES).map((s) => s.name);
+  assert.ok(names.indexOf("Spaces & sprites") < names.indexOf("Stage"), "beside Stage (Characters: VRoid + market)");
+});
+
+test("network & platform: mesh, fleet, lockbox, tunnels, packs -- Online apps, platform-gated", () => {
+  const ids = rail.PLATFORM_APPS.map((a) => a.app);
+  for (const want of ["control", "fleet", "netmon", "tunnel", "lockbox", "marketplace", "admin"]) assert.ok(ids.includes(want), want);
+  assert.ok(ids.every((id) => rail.isAgentApp(id)));
+  assert.ok(rail.railSections(PANES).some((s) => s.name === "Network & platform"));
+});
+
+test("workspace: BusinessPilot, managed agents, fleet, nodes, devices -- fixed paths on the signed-in workspace", () => {
+  const paths = rail.WORKSPACE_PAGES.map((w) => w.path);
+  for (const want of ["/workspace/business", "/workspace/agents", "/workspace/fleet", "/workspace/nodes", "/settings/connected-devices"]) {
+    assert.ok(paths.includes(want), want);
+  }
+  assert.ok(paths.every((p) => /^\/[a-z/-]+$/.test(p)), "plain same-site paths only");
+  assert.equal(rail.isWorkspacePage("https://evil.test/"), false);
+  assert.equal(rail.isWorkspacePage("/workspace/secrets"), false, "only the listed pages");
+  const sec = rail.railSections(PANES).find((s) => s.name === "Workspace");
+  assert.ok(sec && sec.rows.every((r) => r.kind === "workspace"));
+});
+
+test("security: Sentry (Online app) and Chaos (site page) in one section", () => {
+  const sec = rail.railSections(PANES).find((s) => s.name === "Security");
+  assert.deepEqual(sec.rows.map((r) => [r.kind, r.id]), [["online", "sentry"], ["workspace", "/chaos"]]);
+  assert.equal(rail.isAgentApp("sentry"), true);
+  assert.equal(rail.isWorkspacePage("/chaos"), true);
+});
+
+test("observability is the owner's only: Grafana, Prometheus, Pulse, Tunnel", () => {
+  assert.equal(rail.railSections(PANES).some((s) => s.name === "Observability"), false, "hidden unless owner");
+  const sec = rail.railSections(PANES, { owner: true }).find((s) => s.name === "Observability");
+  assert.deepEqual(sec.rows.map((r) => r.label), ["Grafana", "Prometheus", "Pulse", "Tunnel"]);
+  assert.ok(rail.OWNER_LOCAL.every((o) => /^http:\/\/127\.0\.0\.1:\d+\//.test(o.url)), "loopback only");
+  assert.equal(rail.isOwnerLocal("http://127.0.0.1:3002/"), true);
+  assert.equal(rail.isOwnerLocal("http://evil.test/"), false);
+});
+
+test("command & control: tenants, users, moderation, support, forums, relay -- owner only", () => {
+  assert.equal(rail.railSections(PANES).some((s) => s.name === "Command & control"), false);
+  const sec = rail.railSections(PANES, { owner: true }).find((s) => s.name === "Command & control");
+  const paths = sec.rows.map((r) => r.id);
+  for (const want of ["/admin/tenants", "/admin/users", "/admin/moderation", "/support", "/forum", "/relay"]) assert.ok(paths.includes(want), want);
+  assert.equal(rail.isAdminPage("/admin/tenants"), true);
+  assert.equal(rail.isWorkspacePage("/admin/tenants"), false, "never through the member path");
+});
+
+test("the Online layer: over pages, or detached onto the desktop; either reads on", () => {
+  const row = (o) => rail.layerRows(o).find((l) => l.key === "online");
+  assert.equal(row({}).on, false);
+  assert.deepEqual([row({ overPages: true }).on, row({ overPages: true }).state], [true, "over pages"]);
+  assert.deepEqual([row({ overlayVisible: true }).on, row({ overlayVisible: true }).state], [true, "around you"]);
+  assert.equal(row({}).detach, "overlay-detach");
 });

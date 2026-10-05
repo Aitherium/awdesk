@@ -81,6 +81,55 @@ function routeFor(url) {
   return "deny";
 }
 
+/**
+ * Does the page on screen draw ITS OWN AitherOS taskbar? The AitherOS Online desktop
+ * (the pinned Online tab) and the site's dock-shell pages (Spaces, Relay, Forum ...) do;
+ * workspace, admin and settings pages do not. When it does, THAT copy is hidden
+ * (PAGE_TASKBAR_CSS) and the browser's strip stays: one taskbar, always the browser's,
+ * always at the bottom (owner, 2026-10-04: "why wouldn't it just stay at the bottom of
+ * aither browser and just not appear on the other pages").
+ */
+function pageHasOwnTaskbar(url) {
+  let parsed;
+  try { parsed = new URL(String(url || "")); } catch { return false; }
+  if (parsed.protocol !== "https:" || !isAitheriumHost(parsed.hostname)) return false;
+  if (isTaskbarPage(url)) return false;
+  return !/^\/(workspace|admin|settings|portal|embed|login|auth|learn)(\/|$)/.test(parsed.pathname);
+}
+
+/** Hides the page's own taskbar (Veil dock.tsx Taskbar: the os-hit bar holding the launcher). */
+const PAGE_TASKBAR_CSS = "[data-os-hit]:has(> div > button[data-launcher-toggle]) { display: none !important; }";
+
+const APP_ID = /^[a-z0-9][a-z0-9:_-]{0,63}$/;
+
+/** The app a strip click asked for (`https://<aitherium>/?spawn=<id>`), or null. */
+function spawnIdOf(url) {
+  let parsed;
+  try { parsed = new URL(String(url || "")); } catch { return null; }
+  if (parsed.protocol !== "https:" || !isAitheriumHost(parsed.hostname) || parsed.pathname !== "/") return null;
+  const id = parsed.searchParams.get("spawn");
+  return id && APP_ID.test(id) ? id : null;
+}
+
+/**
+ * Opens an app on the desktop ALREADY on screen, with no reload (its open windows stay):
+ * Veil desk-host.ts useDeskOpenApp answers `desk-open-app` with `desk-open-app-ok`.
+ * Resolves false when nothing answers in time (an older Veil): the caller loads ?spawn=.
+ */
+function openAppScript(id) {
+  if (!APP_ID.test(String(id || ""))) throw new Error("not an app id");
+  return `new Promise((done) => {
+    const id = ${JSON.stringify(id)};
+    const on = (e) => {
+      if (e.source !== window || !e.data || e.data.__aither !== "desk-open-app-ok" || e.data.id !== id) return;
+      clearTimeout(t); window.removeEventListener("message", on); done(true);
+    };
+    const t = setTimeout(() => { window.removeEventListener("message", on); done(false); }, 1500);
+    window.addEventListener("message", on);
+    window.postMessage({ __aither: "desk-open-app", id }, location.origin);
+  })`;
+}
+
 /** A main-frame response that means "there is no taskbar here" (not deployed, an error). */
 function isUnavailable(httpResponseCode) {
   const code = Number(httpResponseCode);
@@ -105,6 +154,10 @@ module.exports = {
   isOpenTitle,
   isTaskbarPage,
   isUnavailable,
+  pageHasOwnTaskbar,
+  PAGE_TASKBAR_CSS,
+  spawnIdOf,
+  openAppScript,
   routeFor,
   taskbarUrl,
 };

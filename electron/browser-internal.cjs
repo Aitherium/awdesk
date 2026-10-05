@@ -578,6 +578,19 @@ function tabPreferences(kind, { webPartition, hostedPartition = null } = {}) {
 }
 
 /**
+ * The pinned AitherOS Online tab (pane "desktop", hosted) is a DESK HOST: it gets the
+ * overlay window's preload (living-desktop-preload.cjs), so desk state, the page plane
+ * over the agent's tab and desk commands reach Online in the browser as they reach the
+ * overlay (owner, 2026-10-04: "full context experience"). living-desktop-window fences
+ * every one of those channels to this tab's webContents. Nothing else gets a preload.
+ */
+const DESK_HOST_PRELOAD = "living-desktop-preload.cjs";
+function withDeskHost(kind, paneId, prefs) {
+  if (kind !== "hosted" || paneId !== "desktop") return prefs;
+  return { ...prefs, preload: path.join(ELECTRON_DIR, DESK_HOST_PRELOAD) };
+}
+
+/**
  * The pinned tabs every console door opens to: the Inbox, AitherOS Online and the
  * Workspace. Online and Workspace share the hosted pane's signed-in partition.
  */
@@ -663,4 +676,5 @@ module.exports = {
   scriptSources,
   suggestInternal,
   tabPreferences,
+  withDeskHost,
 };

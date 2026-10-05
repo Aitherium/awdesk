@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src file:; img-src data:;" />
+<title>Windows</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  /* aither://windows -- every desk window on the monitor you choose, and arrangements you
+     save and bring back (window-manager.cjs). */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px/1.45 var(--font-sans); }
+  body { overflow-y: auto; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 18px 20px 60px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 22px 0 8px; }
+  .sub { color: var(--muted); margin-bottom: 12px; }
+  #map { display: flex; gap: 10px; align-items: flex-end; margin: 6px 0 14px; flex-wrap: wrap; }
+  .mon { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 6px 8px; font-size: 11px; color: var(--muted); }
+  .mon b { color: var(--fg); }
+  .w { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px;
+    margin-bottom: 8px; background: var(--panel); }
+  .w .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .w .k { color: var(--muted); font-size: 11px; }
+  .w.hidden .t { opacity: .55; }
+  select, input { height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+    font: inherit; padding: 0 8px; }
+  button { height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--btn);
+    color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; }
+  button.on { border-color: var(--primary, #7cd); }
+  .row { display: flex; gap: 8px; margin-bottom: 10px; }
+  #status { color: var(--muted); min-height: 18px; }
+  #status.err { color: var(--destructive); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Windows</h1>
+    <div class="sub">Put each desk window on the monitor you want, summon or hide it, pin it on top, and save the whole arrangement to bring back later. Pop a browser tab out with the ⧉ on its tab.</div>
+    <div id="map" aria-label="Monitors"></div>
+    <div id="status" role="status" aria-live="polite"></div>
+    <div id="list"></div>
+    <h2>Arrangements</h2>
+    <div class="row">
+      <input id="name" placeholder="Name this arrangement (e.g. Two monitors, Gaming)" aria-label="Arrangement name" maxlength="40" />
+      <button id="save">Save current</button>
+    </div>
+    <div id="layouts"></div>
+  </div>
+  <script src="windows-page.js"></script>
+</body>
+</html>

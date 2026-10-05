@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src file:; img-src data:;" />
+<title>Extensions</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  /* aither://extensions -- the browser's extensions (extensions-window.cjs). */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px/1.45 var(--font-sans); }
+  body { overflow-y: auto; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 18px 20px 60px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin-bottom: 14px; }
+  .bar { display: flex; gap: 8px; margin-bottom: 12px; }
+  button { height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--btn);
+    color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; }
+  #status { color: var(--muted); min-height: 18px; margin-bottom: 8px; }
+  #status.err { color: var(--destructive); }
+  .x { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; background: var(--panel); }
+  .x .top { display: flex; gap: 10px; align-items: baseline; }
+  .x .name { font-weight: 700; font-size: 14px; flex: 1; }
+  .x .ver { color: var(--muted); font-size: 11px; }
+  .x .tag { font-size: 11px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); }
+  .x .desc { margin: 6px 0; }
+  .x .path { color: var(--muted); font-size: 11px; word-break: break-all; }
+  .x .acts { display: flex; gap: 6px; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Extensions</h1>
+    <div class="sub">Browser extensions running in the Aither Browser. awconnect is built in. Add an unpacked extension folder to run another.</div>
+    <div class="bar"><button id="add">Add an unpacked extension…</button><button id="refresh">Refresh</button></div>
+    <div id="status" role="status" aria-live="polite"></div>
+    <div id="list"></div>
+    <h1 style="margin-top:22px">Plugins</h1>
+    <div class="sub">The awsh plugin that every Claude Code and awsh session loads (its hooks, panes and tools).</div>
+    <div id="plugins"></div>
+  </div>
+  <script src="extensions-page.js"></script>
+</body>
+</html>

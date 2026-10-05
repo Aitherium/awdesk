@@ -52,6 +52,11 @@
   .layer span { font-size: 10px; }
   .layer.on { border-color: color-mix(in srgb, var(--primary, #7cd) 60%, var(--line)); }
   .layer.here { cursor: default; }
+  .layerwrap { position: relative; display: grid; }
+  .detach { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; padding: 0; border-radius: 6px;
+    border: 1px solid var(--line); background: transparent; color: inherit; font-size: 11px; line-height: 1; cursor: pointer; }
+  .detach:hover { border-color: color-mix(in srgb, var(--primary, #7cd) 60%, var(--line)); }
+  body.collapsed .detach { display: none; }
   body.collapsed #aither .t, body.collapsed #aither .caret, body.collapsed .sec,
   body.collapsed .row .l, body.collapsed .row .n, body.collapsed #dockrow, body.collapsed .layer span { display: none; }
   body.collapsed .brand { flex-direction: column; height: auto; padding: 6px 0; gap: 6px; }
@@ -222,6 +227,15 @@
         badge.setAttribute("aria-label", `${t.badge} waiting`);
         tab.append(badge);
       }
+      // Pop out into its own window (put it on any monitor); a popped tab docks back.
+      const pop = document.createElement("button");
+      pop.className = "x";
+      pop.textContent = t.popped ? "\u21a9" : "\u29c9";
+      pop.title = t.popped ? "Dock back into the browser" : "Pop out into its own window";
+      pop.setAttribute("aria-label", pop.title);
+      pop.onclick = (e) => { e.stopPropagation(); void (t.popped ? api.dock(t.id) : api.popOut(t.id)); };
+      tab.append(pop);
+      if (t.popped) tab.style.opacity = "0.7";
       // Pinned tabs are the console's front door: they do not close from the strip.
       if (!t.pinned) {
         const close = document.createElement("button");
@@ -349,7 +363,9 @@
           n.textContent = inbox.badge > 99 ? "99+" : String(inbox.badge);
           b.append(n);
         }
-        b.onclick = () => api.rail(row.kind === "page" ? "page" : row.kind === "browser" ? "browser" : "command", row.id);
+        if (row.locked) b.style.opacity = "0.55";
+        b.onclick = () => api.rail(row.kind === "page" ? "page" : row.kind === "browser" ? "browser"
+          : row.kind === "online" ? "online" : row.kind === "workspace" ? "workspace" : row.kind === "local" ? "local" : "command", row.id);
         nav.append(b);
       }
     }
@@ -366,6 +382,21 @@
       b.append(name, st);
       if (layer.page) b.onclick = () => api.rail("page", layer.page);
       else if (layer.command) b.onclick = () => api.rail("command", layer.command);
+      else if (layer.action === "overlay") b.onclick = () => api.rail("overlay", layer.state !== "over pages");
+      if (layer.detach) {
+        // Detach: Online leaves the page and floats over the real desktop.
+        const wrap = document.createElement("div");
+        wrap.className = "layerwrap";
+        const d = document.createElement("button");
+        d.className = "detach";
+        d.textContent = "⇱";
+        d.title = layer.state === "around you" ? "On your desktop now" : "Detach onto your desktop";
+        d.setAttribute("aria-label", "Detach AitherOS Online onto the desktop");
+        d.onclick = () => api.rail(layer.detach);
+        wrap.append(b, d);
+        layers.append(wrap);
+        continue;
+      }
       layers.append(b);
     }
   }

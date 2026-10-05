@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   toggleBookmark: () => ipcRenderer.invoke("desk:browser-bookmark"),
   activateTab: (id) => ipcRenderer.send("desk:browser-tab-activate", Number(id)),
   closeTab: (id) => ipcRenderer.send("desk:browser-tab-close", Number(id)),
+  popOut: (id) => ipcRenderer.invoke("desk:browser-tab-popout", Number(id)),
+  dock: (id) => ipcRenderer.invoke("desk:browser-tab-dock", Number(id)),
   takeOver: () => ipcRenderer.send("desk:browser-takeover"),
   handBack: () => ipcRenderer.send("desk:browser-handback"),
   /** The rail: "page" <pane id> | "command" <allowlisted id> | "menu" | "collapse" <bool>. */

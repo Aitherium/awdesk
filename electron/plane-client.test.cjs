@@ -21,8 +21,8 @@ function recorder(answers) {
   return { call, calls };
 }
 
-test("the five planes exist, each with a service read first", () => {
-  assert.deepEqual(PLANE_IDS, ["strata", "pulse", "watch", "flux", "nexus"]);
+test("the planes exist, each with a service read first", () => {
+  assert.deepEqual(PLANE_IDS, ["strata", "pulse", "watch", "flux", "nexus", "mesh"]);
   for (const id of PLANE_IDS) {
     const first = PLANES[id].reads[0];
     assert.equal(first.tool, "get_service_status", `${id} starts with its service row`);

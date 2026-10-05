@@ -102,9 +102,19 @@ let overlayHost = null;
 function setOverlayHost(handlers) {
   overlayHost = handlers || null;
 }
+// The Aither Browser's pinned AitherOS Online tab is a desk host too (owner, 2026-10-04:
+// "full context experience"): the same preload, the same planes. main names its
+// webContents; nothing else is let in.
+let extraHosts = () => [];
+function setExtraHosts(fn) {
+  extraHosts = typeof fn === "function" ? fn : () => [];
+}
+function extraHostContents() {
+  try { return (extraHosts() || []).filter((wc) => wc && !wc.isDestroyed()); } catch { return []; }
+}
 function fromOverlay(event) {
   const senders = [desktopWin, appWin].filter((w) => w && !w.isDestroyed()).map((w) => w.webContents);
-  return senders.includes(event.sender);
+  return senders.includes(event.sender) || extraHostContents().includes(event.sender);
 }
 ipcMain.handle("living-desktop:host-page", async (event, msg) => {
   if (!fromOverlay(event)) return { ok: false, error: "not the AitherOS Online overlay" };
@@ -638,10 +648,14 @@ function setDeskStateProvider(fn) {
   deskStateProvider = fn;
 }
 function pushDeskState() {
-  if (!isOpen() || typeof deskStateProvider !== "function") return;
+  if (typeof deskStateProvider !== "function") return;
+  const targets = [...(isOpen() ? [desktopWin.webContents] : []), ...extraHostContents()];
+  if (!targets.length) return;
   const snapshot = deskStateProvider();
   if (!snapshot) return;
-  desktopWin.webContents.send("living-desktop:desk-state", snapshot);
+  for (const wc of targets) {
+    try { wc.send("living-desktop:desk-state", snapshot); } catch { /* gone mid-push */ }
+  }
 }
 
 // ── The AitherDesktop APP window ────────────────────────────────────────────────────
@@ -815,6 +829,7 @@ module.exports = {
   refreshAccount,
   setDeskStateProvider,
   setOverlayHost,
+  setExtraHosts,
   pushDeskState,
   isOpen,
   LOG_FILE,

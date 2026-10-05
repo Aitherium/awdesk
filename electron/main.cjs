@@ -288,6 +288,7 @@ const {
   pushDeskState,
   setDeskStateProvider,
   setOverlayHost,
+  setExtraHosts,
   showDesktopApp,
   showLivingDesktop,
   closeDesktopApp,
@@ -2105,6 +2106,21 @@ setSpendOpener(() => openConsole("spend"));
 require("./terminal-window.cjs").ensureTerminalIpc();
 // Search, deep research, Media Forge: aither://search's IPC; Media Forge opens as a web tab.
 require("./search-window.cjs").ensureSearchIpc();
+// Your repositories: aither://projects's IPC (awgit state, gh PR + CI).
+require("./projects-window.cjs").ensureProjectsIpc();
+// The browser's extensions page (aither://extensions).
+require("./extensions-window.cjs").ensureExtensionsIpc();
+// The aw* stack page (aither://bricks): the awkno catalog and man pages.
+require("./bricks-window.cjs").ensureBricksIpc();
+// Windows: every desk window on any monitor, saved arrangements (aither://windows). Named
+// windows here; any other desk window is listed by its title. The avatar is listed only
+// while it floats -- docked, the browser places it.
+require("./windows-window.cjs").setRegistered(() => ({
+  browser: () => browserWindow.getWindow(),
+  avatar: () => (avatarDock && avatarDock.isDocked() ? null : avatarWindow),
+  ...browserWindow.poppedWindows(),
+}));
+require("./windows-window.cjs").ensureWindowsIpc();
 require("./search-window.cjs").setForgeOpener((url) => browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url }));
 
 /** "Set up Awconnect" -- adk stages it, opens the extensions page, copies the path. */
@@ -2545,6 +2561,8 @@ setOverlayHost({
     pushDeskState();
   },
 });
+// The browser's pinned Online tab hosts the same planes (full context in the browser too).
+setExtraHosts(() => browserWindow.deskHostContents());
 setInterval(() => {
   pushDeskState();
 }, 5000);
@@ -2616,11 +2634,30 @@ browserWindow.onGeometry((reason) => {
   if (reason === "closed") avatarDock.browserClosed();
   else avatarDock.sync();
 });
+// The desk's role from `adk link` (owner / member): owner-only rail rows read it. Cached,
+// refreshed every 10 minutes; unknown is "not owner".
+let linkedRole = null;
+async function refreshLinkedRole() {
+  try {
+    const r = await require("./link-client.cjs").linkStatus();
+    linkedRole = r && r.ok && r.data && r.data.linked ? String(r.data.role || "") : null;
+  } catch {
+    linkedRole = null;
+  }
+  browserWindow.refreshShell();
+}
+void refreshLinkedRole();
+setInterval(() => void refreshLinkedRole(), 10 * 60 * 1000).unref?.();
 browserWindow.setShellHost({
+  isOwner: () => linkedRole === "owner",
+  signedIn: () => Boolean(desktopAccount() && desktopAccount().signedIn),
   docked: () => avatarDock.isDocked(),
   overlayVisible: () => Boolean(desktopStatus().overlay.visible),
   popupMenu: (win) => Menu.buildFromTemplate(trayTemplateNow()).popup({ window: win }),
   run: (id) => runCommand(id, undefined, { surface: "browser-rail" }),
+  // Read aloud from the browser: AitherVoice through the desk's one speech path (the
+  // master/actor faders, mutes and pronunciation apply), in the docked body's voice.
+  speak: (text) => speakAloud(String(text || "").slice(0, 2000)),
 });
 
 /** Poll #agents for the deck's relay section. [] on refusal — the section
@@ -3017,6 +3054,26 @@ function wireConsoleHost(legacy) {
         isOpen: isOpsWindowOpen,
       },
       // The awsh layer has no detached twin: "detach" opens it in the browser.
+      windows: {
+        open: () => browserWindow.openInternal("windows", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
+      bricks: {
+        open: () => browserWindow.openInternal("bricks", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
+      extensions: {
+        open: () => browserWindow.openInternal("extensions", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
+      projects: {
+        open: () => browserWindow.openInternal("projects", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
       search: {
         open: () => browserWindow.openInternal("search", null, { askAgent: browserAskAgent }),
         close: () => {},
@@ -3061,6 +3118,11 @@ function wireConsoleHost(legacy) {
         open: () => createPlaneWindow("flux"),
         close: () => closePlaneWindow("flux"),
         isOpen: () => isPlaneWindowOpen("flux"),
+      },
+      mesh: {
+        open: () => createPlaneWindow("mesh"),
+        close: () => closePlaneWindow("mesh"),
+        isOpen: () => isPlaneWindowOpen("mesh"),
       },
       nexus: {
         open: () => createPlaneWindow("nexus"),
@@ -3662,7 +3724,11 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       }
       try {
         void speakAloud("On it, asking now.", undefined, undefined, "slot0", "service:awdesk-voice");
-        const result = await commandAction(said, { source: "voice" });
+        // The Aither Browser has focus: the words are about the page on screen, so the
+        // browser's agent answers with the page as context (shown in its panel too).
+        const result = browserWindow.hasVoiceFocus()
+          ? await browserWindow.voiceAsk(said)
+          : await commandAction(said, { source: "voice" });
         const spoken = String((result && (result.reply || (result.result && result.result.reply) || result.text || result.summary)) || "").trim();
         if (spoken) void speakAloud(spoken.slice(0, 800), undefined, undefined, "slot0", "service:awdesk-voice-answer");
         return { ok: true, text: said, result };

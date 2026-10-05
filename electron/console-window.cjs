@@ -83,6 +83,12 @@ const PANES = Object.freeze([
     id: "terminal", label: "Terminal", hint: "awsh: shells and coding agents in tabs", section: "Agents", icon: "terminal",
     kind: "file", file: "terminal.html",
   }),
+  // Your repositories (owner, 2026-10-04: "project and git integration"): awgit state,
+  // the branch's PR and CI from gh, and doors into Terminal. projects-client.cjs.
+  Object.freeze({
+    id: "projects", label: "Projects", hint: "Your repositories: branch, changes, PR and CI", section: "Agents", icon: "folder",
+    kind: "file", file: "projects.html",
+  }),
   Object.freeze({
     id: "command", label: "Command", hint: "Say it in a sentence", section: "Agents", icon: "terminal",
     kind: "file", file: "command.html",
@@ -162,6 +168,24 @@ const PANES = Object.freeze([
     id: "settings", label: "Settings", hint: "Voice, hotkeys, devices", section: "System", icon: "settings",
     kind: "file", file: "settings.html",
   }),
+  // The browser's extensions, like chrome://extensions (owner, 2026-10-04: "like plugins
+  // and extensions"): awconnect built in, unpacked folders you add. extensions-window.cjs.
+  Object.freeze({
+    id: "extensions", label: "Extensions", hint: "Browser extensions: awconnect and any you add", section: "System", icon: "layers",
+    kind: "file", file: "extensions.html",
+  }),
+  // Every desk window on the monitor you choose, saved arrangements, summon / hide (owner,
+  // 2026-10-04: "like macOS Stage Manager but better"). window-manager.cjs.
+  Object.freeze({
+    id: "windows", label: "Windows", hint: "Monitors, arrangements, summon and hide", section: "System", icon: "layers",
+    kind: "file", file: "windows.html",
+  }),
+  // The aw* stack (owner, 2026-10-04): the awkno catalog joined with what adk says is
+  // installed, each brick's man page, upgrade / test. bricks-window.cjs.
+  Object.freeze({
+    id: "bricks", label: "Bricks", hint: "The aw* stack: installed, updates, each brick's page", section: "System", icon: "layers",
+    kind: "file", file: "bricks.html",
+  }),
   // One read-only status page per platform plane, all rendered by plane-page.js
   // over plane-client.cjs's fixed reads (gateway MCP tools). Detach opens the
   // same page in plane-window.cjs, one window per plane.
@@ -184,6 +208,10 @@ const PANES = Object.freeze([
   Object.freeze({
     id: "nexus", label: "Nexus", hint: "Knowledge search and bases", section: "Planes", icon: "network",
     kind: "file", file: "plane-nexus.html",
+  }),
+  Object.freeze({
+    id: "mesh", label: "Mesh", hint: "Your machines: nodes, storage, network policy", section: "Planes", icon: "server",
+    kind: "file", file: "plane-mesh.html",
   }),
   // 🚩 HOSTED, not framed, and the difference is the login. The AitherDesktop
   // shell keeps its session in the persist:living-desktop partition -- that is

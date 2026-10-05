@@ -22,7 +22,8 @@
  */
 
 /** Section order, top to bottom. A section not named here follows in PANES order. */
-const SECTION_ORDER = Object.freeze(["Now", "Agents", "Stage", "Apps", "Data", "System", "Planes", "Online"]);
+const SECTION_ORDER = Object.freeze(["Now", "Voice", "Agents", "Agent apps", "Workspace", "Spaces & sprites", "Stage", "Apps", "Data",
+  "System", "Network & platform", "Security", "Command & control", "Observability", "Planes", "Online"]);
 const RAIL_WIDTH = 248;
 const RAIL_COLLAPSED_WIDTH = 56;
 /** Drag limits (owner, 2026-10-04: "side bars need to be draggable/customizable"). */
@@ -48,6 +49,18 @@ const LAYERS_HEIGHT = 92;
 const RAIL_COMMANDS = Object.freeze([
   "osapp.family", "osapp.learn", "osapp.sprite", "osapp.academy", "osapp.spaces",
   "avatar.dock", "desktop.overlay.toggle",
+  "voice.talk", "voice.mute", "voice.mute-all",
+]);
+
+/**
+ * Voice in the browser (owner, 2026-10-04: "awvoice / aithervoice"): the desk's own
+ * voice commands, plus Read aloud (the selection, else the page) in AitherVoice.
+ */
+const VOICE_ROWS = Object.freeze([
+  Object.freeze({ kind: "command", id: "voice.talk", label: "Talk", hint: "Push to talk to Aither (Ctrl+Shift+Space)" }),
+  Object.freeze({ kind: "browser", id: "read-aloud", label: "Read aloud", hint: "The selection, else this page, in AitherVoice" }),
+  Object.freeze({ kind: "command", id: "voice.mute", label: "Mute my mic", hint: "Stop listening (Ctrl+Shift+M)" }),
+  Object.freeze({ kind: "command", id: "voice.mute-all", label: "Voices on / off", hint: "Every agent voice (Ctrl+Alt+M)" }),
 ]);
 
 /** The OS apps (they open inside AitherOS Online, never as new installables). */
@@ -60,6 +73,147 @@ const APP_ROWS = Object.freeze([
 ]);
 
 /**
+ * The agent apps (owner, 2026-10-04: "integrating all of the agent apps like aither,
+ * aeon, demi, atlas, lyra, saga, iris, vera/hera and the demi forge ide ... entitlement
+ * gated and permissioned to me as platform owner"). Each is an AitherOS Online app, so a
+ * row opens it in the pinned Online tab (app.aitherium.com/?spawn=<id>), signed in as
+ * the desk's account. The PLATFORM gates each one (ACTA / sign-in / owner, Veil
+ * app-permissions); the desk only refuses an id not on this list.
+ */
+const AGENT_APPS = Object.freeze([
+  Object.freeze({ app: "aitherchat", label: "Aither", hint: "Talk to Aither" }),
+  Object.freeze({ app: "aeon", label: "Aeon", hint: "Agent group chat: the council" }),
+  Object.freeze({ app: "demi", label: "Demi", hint: "Code that builds itself" }),
+  Object.freeze({ app: "forge", label: "Forge", hint: "Demi's IDE: describe it, watch it build" }),
+  Object.freeze({ app: "builder", label: "Iris", hint: "Tell her what should exist" }),
+  Object.freeze({ app: "atlas", label: "Atlas", hint: "Plan anything" }),
+  Object.freeze({ app: "atlas-pm", label: "Atlas PM", hint: "Expeditions, board, agents" }),
+  Object.freeze({ app: "lyra", label: "Lyra", hint: "Research with receipts" }),
+  Object.freeze({ app: "saga", label: "Saga", hint: "Stories and video" }),
+  Object.freeze({ app: "vera", label: "Vera", hint: "The librarian writes" }),
+  Object.freeze({ app: "hera", label: "Hera", hint: "The wire: live news" }),
+]);
+
+/**
+ * Spaces and sprites (owner, 2026-10-04: "integrating with aither spaces / retro spaces
+ * / myspace + sprites so people can grow their personal agent sprites visibly ... create
+ * and customize their own sprite avatars or choose premade ones from the VRoid store").
+ * Online apps, opened the same way as the agent apps. The desk's own Characters page
+ * (VRoid Hub and the market) and Stage sit beside them in the Stage section.
+ */
+const SPACE_APPS = Object.freeze([
+  Object.freeze({ app: "spaces", label: "AitherSpaces", hint: "Friends, agents, rooms: the neighborhood" }),
+  Object.freeze({ app: "myspace", label: "My Space", hint: "Your Space and every public one" }),
+  Object.freeze({ app: "homestead", label: "Homestead", hint: "Your own site" }),
+  Object.freeze({ app: "sprite", label: "Sprite", hint: "Hatch it, teach it, watch it grow" }),
+  Object.freeze({ app: "persona", label: "Avatar", hint: "Make and dress your avatar" }),
+]);
+
+/**
+ * Network and platform (owner, 2026-10-04: "aithermesh / aithernet home LAN and
+ * distributed fleet management + lockbox and aithertunnel / secure tunnels + licenses,
+ * apps / agent packs"). Online apps, platform-gated (Control and Admin are owner/RBAC).
+ */
+const PLATFORM_APPS = Object.freeze([
+  Object.freeze({ app: "control", label: "Aither Control", hint: "Your devices, lending and models (owner only)" }),
+  Object.freeze({ app: "fleet", label: "Fleet", hint: "Agents and endpoints: mission control" }),
+  Object.freeze({ app: "netmon", label: "Network", hint: "Live health: is it reachable" }),
+  Object.freeze({ app: "tunnel", label: "Tunnel", hint: "Your machines: shell, VPN, containers" }),
+  Object.freeze({ app: "lockbox", label: "Lockbox", hint: "Secrets, keys, tokens: your vault" }),
+  Object.freeze({ app: "connections", label: "Connections", hint: "GitHub, chat channels, keys, sign-in" }),
+  Object.freeze({ app: "services", label: "Services", hint: "Where your services run" }),
+  Object.freeze({ app: "marketplace", label: "Packs & licenses", hint: "Agent packs, powers and apps" }),
+  Object.freeze({ app: "shop", label: "Shop", hint: "Buy agents, studios, packs" }),
+  Object.freeze({ app: "admin", label: "Platform Admin", hint: "The admin suite (RBAC-gated)" }),
+]);
+
+/**
+ * The workspace (owner, 2026-10-04: "the old /workspace surface / UI / apps =
+ * BusinessPilot + Aitherium managed agents + ... + local fleet config + MDM for
+ * phones / tablets / laptops ... anything that runs awdk"). Pages of the signed-in
+ * Workspace (app.aitherium.com), opened in the pinned Workspace tab. Paths are a fixed
+ * list; the workspace's own auth decides what each shows.
+ */
+const WORKSPACE_PAGES = Object.freeze([
+  Object.freeze({ path: "/workspace/business", label: "BusinessPilot", hint: "Your business, run by agents" }),
+  Object.freeze({ path: "/workspace/agents", label: "Managed agents", hint: "Your Aitherium-managed agents" }),
+  Object.freeze({ path: "/workspace/fleet", label: "Fleet", hint: "Your agent fleet: instances and telemetry" }),
+  Object.freeze({ path: "/workspace/fleet/provision", label: "Provision", hint: "Stand up a new instance" }),
+  Object.freeze({ path: "/workspace/nodes", label: "Nodes", hint: "Every machine running awdk" }),
+  Object.freeze({ path: "/workspace/infrastructure", label: "Infrastructure", hint: "Nodes, tunnels, the stack" }),
+  Object.freeze({ path: "/settings/connected-devices", label: "Devices", hint: "Phones, tablets and laptops you connected" }),
+  Object.freeze({ path: "/workspace/self-host", label: "Self-host", hint: "Run it on your own machines" }),
+  Object.freeze({ path: "/workspace/packs/licenses", label: "Licenses", hint: "Your packs and licenses" }),
+  Object.freeze({ path: "/workspace/skills", label: "Skills", hint: "Installed, learned and community skills" }),
+  Object.freeze({ path: "/workspace/routines", label: "Routines", hint: "What runs on a schedule" }),
+  Object.freeze({ path: "/workspace/runs", label: "Runs", hint: "Every agent run" }),
+  Object.freeze({ path: "/workspace/members", label: "Members", hint: "People in your workspace" }),
+]);
+
+/**
+ * Security (owner, 2026-10-04: "aitherfirewall / sentinel / sentry / chaos + awfirewall /
+ * awtunnel"). Sentry is an Online app; Chaos is a page of the signed-in site. The firewall
+ * and tunnel BRICKS (awwall, awtunnel) are on the Bricks page with the rest of the stack.
+ */
+const SECURITY_APPS = Object.freeze([
+  Object.freeze({ app: "sentry", label: "Sentry", hint: "The watchtower: threats, live" }),
+]);
+const SECURITY_PAGES = Object.freeze([
+  Object.freeze({ path: "/chaos", label: "Chaos", hint: "Chaos drills: break it on purpose, watch it heal" }),
+]);
+
+/**
+ * Observability, the owner's (owner, 2026-10-04: "tunnel / pulse / grafana integrated for
+ * my entitlements"). Grafana and Prometheus run on THIS machine's fleet, on loopback, and
+ * open as web tabs; Pulse is the desk's plane page; Tunnel is the Online app. The whole
+ * section is shown only when the desk is linked as the platform owner (adk link role).
+ */
+const OWNER_LOCAL = Object.freeze([
+  Object.freeze({ url: "http://127.0.0.1:3002/", label: "Grafana", hint: "Live dashboards: models, tools, GPU, end to end" }),
+  Object.freeze({ url: "http://127.0.0.1:9090/prometheus/", label: "Prometheus", hint: "Every scrape target and series" }),
+]);
+
+/**
+ * Command & control, the platform owner's (owner, 2026-10-04: "command / control all of
+ * my platform tenants / customer workspaces / users -- moderate my community and support /
+ * feedback in one place, integrated with forums + AitherRelay"). Pages of the signed-in
+ * site; shown, and opened, only when the desk is linked as owner -- and the site's own
+ * RBAC still decides each page.
+ */
+const ADMIN_PAGES = Object.freeze([
+  Object.freeze({ path: "/admin/tenants", label: "Tenants", hint: "Every customer workspace" }),
+  Object.freeze({ path: "/admin/users", label: "Users", hint: "Every account" }),
+  Object.freeze({ path: "/admin/entitlements", label: "Entitlements", hint: "Who may use what" }),
+  Object.freeze({ path: "/admin/licensing", label: "Licensing", hint: "Licenses and packs" }),
+  Object.freeze({ path: "/admin/moderation", label: "Moderation", hint: "Reports, boards, community" }),
+  Object.freeze({ path: "/support", label: "Support & feedback", hint: "Tickets and feedback in one place" }),
+  Object.freeze({ path: "/forum", label: "Forums", hint: "The community boards" }),
+  Object.freeze({ path: "/relay", label: "Relay", hint: "AitherRelay: channels, DMs, rooms" }),
+  Object.freeze({ path: "/admin/marketplace/review", label: "Marketplace review", hint: "Packs and apps waiting for review" }),
+  Object.freeze({ path: "/admin/registrations", label: "Registrations", hint: "New sign-ups" }),
+  Object.freeze({ path: "/admin/security", label: "Security", hint: "Platform security posture" }),
+  Object.freeze({ path: "/admin/platform", label: "Platform", hint: "The platform admin home" }),
+]);
+
+function isAdminPage(p) {
+  return ADMIN_PAGES.some((a) => a.path === String(p || ""));
+}
+
+function isOwnerLocal(url) {
+  return OWNER_LOCAL.some((o) => o.url === String(url || ""));
+}
+
+function isWorkspacePage(p) {
+  const want = String(p || "");
+  return WORKSPACE_PAGES.some((w) => w.path === want) || SECURITY_PAGES.some((w) => w.path === want);
+}
+
+function isAgentApp(id) {
+  const want = String(id || "");
+  return [AGENT_APPS, SPACE_APPS, PLATFORM_APPS, SECURITY_APPS].some((list) => list.some((a) => a.app === want));
+}
+
+/**
  * The layers, innermost first. Each row says what it is and the ONE thing a click
  * does, so the stack the owner described is visible instead of implied.
  */
@@ -67,7 +221,11 @@ const LAYERS = Object.freeze([
   Object.freeze({ key: "shell", label: "awsh", hint: "The shell: terminal tabs, Claude Code, Aither, Codex", page: "terminal" }),
   Object.freeze({ key: "avatar", label: "Avatar", hint: "Dock it here, or float it on the desktop", command: "avatar.dock" }),
   Object.freeze({ key: "browser", label: "Browser", hint: "This window: pages, tabs, the agent panel" }),
-  Object.freeze({ key: "online", label: "Online", hint: "AitherOS Online around everything", command: "desktop.overlay.toggle" }),
+  // In the browser, the Online layer is AitherOS Online drawn OVER the page (awconnect's
+  // overlay, browser-overlay.cjs; Alt+O). Around the whole screen stays in the Aither menu.
+  // Its ⇱ detaches it onto the real desktop (the desk's click-through overlay window);
+  // a click on the layer brings it back over the page.
+  Object.freeze({ key: "online", label: "Online", hint: "AitherOS Online over this page (Alt+O); ⇱ detaches it onto your desktop", action: "overlay", detach: "overlay-detach" }),
 ]);
 
 /**
@@ -79,7 +237,7 @@ const LAYERS = Object.freeze([
  * @param {Array<object>} panes console-window.cjs PANES
  * @param {{activePane?: string|null}} [opts]
  */
-function railSections(panes, { activePane = null } = {}) {
+function railSections(panes, { activePane = null, signedIn = true, owner = false } = {}) {
   const groups = new Map();
   const add = (name, row) => {
     if (!groups.has(name)) groups.set(name, []);
@@ -92,8 +250,34 @@ function railSections(panes, { activePane = null } = {}) {
       icon: pane.icon || null, active: pane.id === activePane,
     });
   }
+  for (const v of VOICE_ROWS) add("Voice", { ...v, icon: null, active: false });
   for (const app of APP_ROWS) {
     add("Apps", { kind: "command", id: app.command, label: app.label, hint: app.hint, icon: app.icon, active: false });
+  }
+  const online = (section, apps) => {
+    for (const a of apps) {
+      add(section, { kind: "online", id: a.app, label: a.label,
+        hint: signedIn ? a.hint : `${a.hint} (sign in to AitherOS Online first)`, icon: null, active: false,
+        locked: !signedIn });
+    }
+  };
+  online("Agent apps", AGENT_APPS);
+  online("Spaces & sprites", SPACE_APPS);
+  online("Network & platform", PLATFORM_APPS);
+  const pages = (section, list) => {
+    for (const w of list) {
+      add(section, { kind: "workspace", id: w.path, label: w.label,
+        hint: signedIn ? w.hint : `${w.hint} (sign in to AitherOS Online first)`, icon: null, active: false, locked: !signedIn });
+    }
+  };
+  pages("Workspace", WORKSPACE_PAGES);
+  online("Security", SECURITY_APPS);
+  pages("Security", SECURITY_PAGES);
+  if (owner) {
+    for (const a of ADMIN_PAGES) add("Command & control", { kind: "workspace", id: a.path, label: a.label, hint: a.hint, icon: null, active: false });
+    for (const o of OWNER_LOCAL) add("Observability", { kind: "local", id: o.url, label: o.label, hint: o.hint, icon: null, active: false });
+    add("Observability", { kind: "page", id: "pulse", label: "Pulse", hint: "Heartbeat and disk headroom", icon: "activity", active: activePane === "pulse" });
+    add("Observability", { kind: "online", id: "tunnel", label: "Tunnel", hint: "Your machines: shell, VPN, containers", icon: null, active: false });
   }
   const names = [...groups.keys()];
   const ordered = [...SECTION_ORDER.filter((n) => groups.has(n)), ...names.filter((n) => !SECTION_ORDER.includes(n))];
@@ -119,14 +303,14 @@ function railMayRun(id) {
 }
 
 /** The layer strip's rows with live state. */
-function layerRows({ docked = false, overlayVisible = false, browserOpen = true } = {}) {
+function layerRows({ docked = false, overlayVisible = false, browserOpen = true, overPages = false } = {}) {
   return LAYERS.map((layer) => ({
     ...layer,
     on: layer.key === "avatar" ? Boolean(docked)
-      : layer.key === "online" ? Boolean(overlayVisible)
+      : layer.key === "online" ? Boolean(overPages || overlayVisible)
         : layer.key === "browser" ? Boolean(browserOpen) : true,
     state: layer.key === "avatar" ? (docked ? "docked" : "floating")
-      : layer.key === "online" ? (overlayVisible ? "around you" : "off")
+      : layer.key === "online" ? (overPages ? "over pages" : overlayVisible ? "around you" : "off")
         : layer.key === "browser" ? "here" : "ready",
   }));
 }
@@ -149,6 +333,8 @@ function normalizeLayout(raw = {}) {
     railCollapsed: Boolean(r.railCollapsed),
     panelCollapsed: Boolean(r.panelCollapsed),
     taskbar: r.taskbar !== false,
+    // AitherOS Online drawn over web pages (browser-overlay.cjs): off until asked for.
+    overlay: r.overlay === true,
     collapsedSections: Array.isArray(r.collapsedSections)
       ? [...new Set(r.collapsedSections.filter((n) => typeof n === "string" && n.length <= 40))].slice(0, 20) : [],
   };
@@ -219,6 +405,18 @@ function avatarSlotRect(contentBounds, opts) {
 }
 
 module.exports = {
+  AGENT_APPS,
+  SPACE_APPS,
+  PLATFORM_APPS,
+  WORKSPACE_PAGES,
+  SECURITY_APPS,
+  SECURITY_PAGES,
+  OWNER_LOCAL,
+  isOwnerLocal,
+  ADMIN_PAGES,
+  isAdminPage,
+  isWorkspacePage,
+  isAgentApp,
   GUTTER,
   PANEL_MAX,
   PANEL_MIN,

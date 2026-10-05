@@ -63,6 +63,19 @@
     display: flex; gap: 6px; align-items: baseline; }
   .ag-h .note { text-transform: none; letter-spacing: 0; font-size: 11px; }
   .ag-h .note.bad { color: var(--warning); }
+  /* Notes tab: your notes and memory beside this page (knowledge-client.cjs). */
+  #kn { padding: 8px 12px; overflow-y: auto; flex: 1; }
+  #kn .kn-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  #kn .kn-actions button { height: 28px; padding: 0 10px; border-radius: 14px; border: 1px solid var(--line);
+    background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; }
+  #kn textarea { width: 100%; min-height: 54px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg);
+    color: var(--fg); padding: 6px 8px; font: inherit; font-size: 12px; resize: vertical; }
+  #kn .kn-row { padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; margin: 0 0 6px; }
+  #kn .kn-row b { display: block; font-size: 12px; }
+  #kn .kn-row span { color: var(--muted); font-size: 12px; }
+  #kn .kn-empty { color: var(--muted); font-size: 12px; margin: 2px 0 8px; }
+  #kn-msg { font-size: 12px; min-height: 16px; margin: 2px 0 4px; color: var(--muted); }
+  #kn-msg.err { color: var(--destructive); }
   .card { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 6px 0; }
   .card.urgent { border-color: var(--warning); }
   .card .t { font-weight: 600; overflow-wrap: anywhere; }
@@ -97,6 +110,7 @@
     <button id="t-task" role="tab" aria-selected="false">Do it</button>
     <button id="t-dl" role="tab" aria-selected="false">Downloads<span id="dlcount" class="count"></span></button>
     <button id="t-agents" role="tab" aria-selected="false">Agents<span id="agcount" class="count"></span></button>
+    <button id="t-notes" role="tab" aria-selected="false" title="Your notes and memory about this page">Notes<span id="kncount" class="count"></span></button>
   </nav>
 
   <section id="p-chat" class="on" aria-label="Chat about this page">
@@ -143,6 +157,21 @@ It works in its own tab with a purple dot. Captchas, passwords, payments and the
     </div>
   </section>
 
+  <section id="p-notes" aria-label="Your notes and memory about this page">
+    <div id="kn">
+      <div class="kn-actions">
+        <button id="kn-save" title="A note with this page's title, address, your selection and your comment">Save page to notes</button>
+        <button id="kn-remember" title="Long-term memory: your selection (or your comment), with where it came from">Remember</button>
+      </div>
+      <textarea id="kn-comment" placeholder="Add a comment (optional)" aria-label="Comment"></textarea>
+      <div id="kn-msg" role="status" aria-live="polite"></div>
+      <div class="ag-h">Notes about this <span id="kn-q" class="note"></span></div>
+      <div id="kn-notes"></div>
+      <div class="ag-h">From memory</div>
+      <div id="kn-mem"></div>
+    </div>
+  </section>
+
   <div class="actions">
     <button id="chrome" title="Open this page in your own browser (your signed-in Chrome)">Open in Chrome</button>
   </div>
@@ -155,18 +184,72 @@ It works in its own tab with a purple dot. Captchas, passwords, payments and the
   let busy = false;
 
   // Tabs
-  const tabs = { chat: ["t-chat", "p-chat"], task: ["t-task", "p-task"], dl: ["t-dl", "p-dl"], agents: ["t-agents", "p-agents"] };
+  const tabs = { chat: ["t-chat", "p-chat"], task: ["t-task", "p-task"], dl: ["t-dl", "p-dl"], agents: ["t-agents", "p-agents"],
+    notes: ["t-notes", "p-notes"] };
   function show(name) {
     for (const [key, [tab, panel]] of Object.entries(tabs)) {
       $(tab).setAttribute("aria-selected", String(key === name));
       $(panel).classList.toggle("on", key === name);
     }
     if (name === "agents") void loadAgents();
+    if (name === "notes") void loadRelated(true);
   }
   $("t-chat").onclick = () => show("chat");
   $("t-task").onclick = () => show("task");
   $("t-dl").onclick = () => show("dl");
   $("t-agents").onclick = () => show("agents");
+  $("t-notes").onclick = () => show("notes");
+  // A host without the notes bridge (awconnect-next ships this same panel) shows no Notes tab.
+  if (typeof api.knowledge !== "function") $("t-notes").hidden = true;
+
+  // Notes: your notes and memory about the page on screen (knowledge-client.cjs).
+  let relatedFor = "";
+  function knRow(title, sub) {
+    const row = document.createElement("div");
+    row.className = "kn-row";
+    const b = document.createElement("b");
+    b.textContent = title; // never innerHTML: notes and memories are data
+    const s = document.createElement("span");
+    s.textContent = sub || "";
+    row.append(b, s);
+    return row;
+  }
+  function knEmpty(text) {
+    const d = document.createElement("div");
+    d.className = "kn-empty";
+    d.textContent = text;
+    return d;
+  }
+  function knMsg(text, err) { $("kn-msg").textContent = text || ""; $("kn-msg").className = err ? "err" : ""; }
+  async function loadRelated(force) {
+    const url = current && current.url;
+    if (!url || (!force && url === relatedFor)) return;
+    relatedFor = url;
+    const r = await api.knowledge("related").catch(() => null);
+    if (!r || current.url !== url) return;
+    $("kn-q").textContent = r.query ? "\u201c" + r.query + "\u201d" : "";
+    const notes = $("kn-notes"); notes.textContent = "";
+    const mem = $("kn-mem"); mem.textContent = "";
+    for (const n of r.notes || []) notes.append(knRow(n.title, n.snippet));
+    if (!(r.notes || []).length) notes.append(knEmpty("No notes match this page yet."));
+    for (const m of r.memories || []) mem.append(knRow(m.category || "memory", m.text));
+    if (!(r.memories || []).length) mem.append(knEmpty("Nothing remembered about this yet."));
+    const count = (r.notes || []).length + (r.memories || []).length;
+    $("kncount").textContent = count ? String(count) : "";
+    if ((r.errors || []).length) knMsg(r.errors.join(" \u00b7 "), true);
+  }
+  $("kn-save").onclick = async () => {
+    knMsg("Saving\u2026");
+    const r = await api.knowledge("save", { comment: $("kn-comment").value });
+    if (r && r.ok) { knMsg("Saved to your notes."); $("kn-comment").value = ""; void loadRelated(true); }
+    else knMsg((r && r.error) || "not saved", true);
+  };
+  $("kn-remember").onclick = async () => {
+    knMsg("Remembering\u2026");
+    const r = await api.knowledge("remember", { comment: $("kn-comment").value });
+    if (r && r.ok) { knMsg("Remembered."); $("kn-comment").value = ""; void loadRelated(true); }
+    else knMsg((r && r.error) || "not remembered", true);
+  };
 
   // Chat
   function bubble(text, who, err) {
@@ -205,6 +288,19 @@ It works in its own tab with a purple dot. Captchas, passwords, payments and the
     } finally {
       setBusy(false);
     }
+  }
+  // Voice: the owner asked about this page out loud (main desk:voice-heard).
+  let voicePending = null;
+  if (typeof api.onVoice === "function") {
+    api.onVoice((v) => {
+      if (!v || typeof v.q !== "string") return;
+      if (v.a == null) { bubble("(voice) " + v.q, "me"); voicePending = bubble("Thinking…", "ai"); return; }
+      const target = voicePending || bubble("", "ai");
+      voicePending = null;
+      target.textContent = String(v.a || "(no reply)");
+      if (!v.ok) target.classList.add("err");
+      else { history.push({ q: v.q, a: target.textContent }); if (history.length > 6) history = history.slice(-6); }
+    });
   }
   $("send").onclick = () => { const q = $("q").value; $("q").value = ""; void ask(q, $("usesel").checked); };
   $("q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("send").click(); } });
@@ -409,6 +505,7 @@ It works in its own tab with a purple dot. Captchas, passwords, payments and the
       else if (last && last.classList.contains("msg")) bubble("Now on: " + s.title, "ai").classList.add("hint", "nowon");
     }
     current = s;
+    if ($("p-notes").classList.contains("on") && !s.loading) void loadRelated(false);
     $("title").textContent = s.title || "—";
     try { $("host").textContent = s.url ? new URL(s.url).host : ""; } catch { $("host").textContent = s.url || ""; }
     const tab = (s.tabs || []).find((t) => t.active);

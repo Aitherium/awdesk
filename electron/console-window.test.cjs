@@ -20,7 +20,7 @@ test("every pane resolves to a page that exists", () => {
   const panes = paneSources("http://127.0.0.1:5173");
   // The count is asserted so a pane cannot be DROPPED by an edit that only meant
   // to reorder the rail; bump it deliberately when one is added.
-  assert.equal(panes.length, 21);  // +7 plane pages (slice 10), +1 spend, +1 terminal, +1 search (2026-10-04)
+  assert.equal(panes.length, 26);  // +7 plane pages (slice 10), +1 spend, +1 terminal, +1 search, +1 projects, +1 extensions, +1 mesh (2026-10-04)
   for (const pane of panes) {
     if (pane.kind !== "file") continue;
     assert.ok(
@@ -35,8 +35,8 @@ test("the rail is in this exact order -- a drop or a reorder must fail here", ()
   // Listed explicitly rather than derived from PANES, so an edit that silently
   // drops or reshuffles an entry is caught here instead of only downstream.
   assert.deepEqual(PANES.map((p) => p.id),
-    ["search", "cards", "terminal", "command", "chat", "sessions", "stage", "characters", "cast", "files", "secrets",
-    "fleet", "ops", "spend", "settings", "strata", "pulse", "watch", "flux", "nexus", "desktop"]);
+    ["search", "cards", "terminal", "projects", "command", "chat", "sessions", "stage", "characters", "cast", "files", "secrets",
+    "fleet", "ops", "spend", "settings", "extensions", "windows", "bricks", "strata", "pulse", "watch", "flux", "nexus", "mesh", "desktop"]);
   // Each section heading appears ONCE (the rail had CONTROL and PRESENCE twice), and a
   // tab pane follows the pane it is a tab of.
   const rail = PANES.filter((p) => !p.tabOf).map((p) => p.section);
