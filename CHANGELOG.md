@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.11 - 2026-10-05
+
+- Settings → Connections no longer dead-ends a computer that has not been set up yet. A
+  daemon that is down shows **Set up** — and one running without its platform tools shows
+  **Fix** — right on its row; one click opens "Install the full local stack", the same
+  installer that signs you in and sets everything up with nothing typed. (Owner 2026-10-05,
+  onboarding a laptop: the row said the adk daemon was not running and offered no way to
+  set it up and connect.)
+
 ## 0.1.10 - 2026-10-04
 
 - Install the full local stack, with nothing typed. Tray or palette: "Install the full local
