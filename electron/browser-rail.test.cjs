@@ -149,7 +149,7 @@ test("network & platform: mesh, fleet, lockbox, tunnels, packs -- Online apps, p
   const ids = rail.PLATFORM_APPS.map((a) => a.app);
   for (const want of ["control", "fleet", "netmon", "tunnel", "lockbox", "marketplace", "admin"]) assert.ok(ids.includes(want), want);
   assert.ok(ids.every((id) => rail.isAgentApp(id)));
-  assert.ok(rail.railSections(PANES).some((s) => s.name === "Network & platform"));
+  assert.ok(rail.railSections(PANES).some((s) => s.name === "Platform"));
 });
 
 test("workspace: BusinessPilot, managed agents, fleet, nodes, devices -- fixed paths on the signed-in workspace", () => {

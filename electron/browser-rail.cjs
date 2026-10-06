@@ -116,7 +116,7 @@ const SPACE_APPS = Object.freeze([
  */
 const PLATFORM_APPS = Object.freeze([
   Object.freeze({ app: "control", label: "Aither Control", hint: "Your devices, lending and models (owner only)" }),
-  Object.freeze({ app: "fleet", label: "Fleet", hint: "Agents and endpoints: mission control" }),
+  Object.freeze({ app: "fleet", label: "Mission Control", hint: "Agents, endpoints, labs: the command deck" }),
   Object.freeze({ app: "netmon", label: "Network", hint: "Live health: is it reachable" }),
   Object.freeze({ app: "tunnel", label: "Tunnel", hint: "Your machines: shell, VPN, containers" }),
   Object.freeze({ app: "lockbox", label: "Lockbox", hint: "Secrets, keys, tokens: your vault" }),
@@ -137,7 +137,7 @@ const PLATFORM_APPS = Object.freeze([
 const WORKSPACE_PAGES = Object.freeze([
   Object.freeze({ path: "/workspace/business", label: "BusinessPilot", hint: "Your business, run by agents" }),
   Object.freeze({ path: "/workspace/agents", label: "Managed agents", hint: "Your Aitherium-managed agents" }),
-  Object.freeze({ path: "/workspace/fleet", label: "Fleet", hint: "Your agent fleet: instances and telemetry" }),
+  Object.freeze({ path: "/workspace/fleet", label: "Fleet instances", hint: "Your agent fleet: instances and telemetry" }),
   Object.freeze({ path: "/workspace/fleet/provision", label: "Provision", hint: "Stand up a new instance" }),
   Object.freeze({ path: "/workspace/nodes", label: "Nodes", hint: "Every machine running awdk" }),
   Object.freeze({ path: "/workspace/infrastructure", label: "Infrastructure", hint: "Nodes, tunnels, the stack" }),
@@ -263,7 +263,7 @@ function railSections(panes, { activePane = null, signedIn = true, owner = false
   };
   online("Agent apps", AGENT_APPS);
   online("Spaces & sprites", SPACE_APPS);
-  online("Network & platform", PLATFORM_APPS);
+  online("Platform", PLATFORM_APPS);
   const pages = (section, list) => {
     for (const w of list) {
       add(section, { kind: "workspace", id: w.path, label: w.label,
