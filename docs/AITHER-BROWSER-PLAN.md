@@ -195,5 +195,9 @@ away without the others moving:
 22. **awconnect built in: SHIPPED.** `browser-extensions.cjs` loads adk's staged awconnect build
     into the browser's web partition. `awconnect-compat-preload.cjs` fills the chrome.* APIs
     Electron lacks, so its background worker and UI start here. `npm run test:awconnect-builtin`.
+    Sign in works too: `awconnect-webauth.cjs` gives the shim a real
+    `chrome.identity.launchWebAuthFlow` -- an auth window on the extension's own session,
+    resolving on the first navigation to `https://<id>.chromiumapp.org/`, in the extension's
+    page AND its MV3 worker. `npm run test:awconnect-webauth`.
 23. **Next.** Hide the avatar's own bead rail and speech bubble while it is docked (the rail
     already holds those doors). When the overlay is up, the browser sits inside AitherOS Online.

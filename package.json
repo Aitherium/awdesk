@@ -63,6 +63,7 @@
     "test:taskbar": "electron electron/taskbar-smoke.cjs",
     "test:overlay": "electron electron/overlay-smoke.cjs",
     "test:awconnect-builtin": "electron electron/awconnect-builtin-smoke.cjs",
+    "test:awconnect-webauth": "electron electron/awconnect-webauth-smoke.cjs",
     "test:smoke:browser": "npm run test:browser && npm run test:browser-internal && npm run test:browser-tabs && npm run test:connect-panel",
     "native:fetch": "node scripts/fetch-native-helper.cjs",
     "game-stage": "node electron/game-stage-runner.cjs"

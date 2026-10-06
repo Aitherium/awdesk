@@ -10,8 +10,10 @@
  * watchdog) and its background worker run on the pages you browse here, exactly as
  * in Edge. Its full UI opens as a tab (chrome-extension://<id>/sidepanel/index.html).
  *
- * What Electron cannot give an MV3 extension (sidePanel, offscreen, identity, omnibox,
+ * What Electron cannot give an MV3 extension (sidePanel, offscreen, omnibox,
  * contextMenus) it simply does not get; the desk's Connect panel stays the side panel.
+ * chrome.identity it does get now -- awconnect-webauth.cjs answers the shim's
+ * launchWebAuthFlow, so awconnect's own Sign in works (see awconnect-compat-preload.cjs).
  * DESK_AWCONNECT_DIR points at another unpacked build; DESK_AWCONNECT=0 turns it off.
  *
  * Pure decisions here (which folder, which URLs); the one Electron call is injected.

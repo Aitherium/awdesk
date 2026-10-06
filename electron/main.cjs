@@ -3535,6 +3535,15 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     app.dock?.hide();
     if (app.isPackaged) app.setAsDefaultProtocolClient(protocolScheme);
 
+    // chrome.identity for the extensions the Aither Browser loads (awconnect's own
+    // Sign in). awconnect-webauth.cjs owns the auth window + callback interception;
+    // this only wires its channel, and MUST happen before the browser window opens,
+    // because the extension's MV3 worker can ask at any moment after it loads.
+    require("./awconnect-webauth.cjs").install({
+      ipcMain,
+      session: require("electron").session.fromPartition(browserWindow.PARTITION),
+    });
+
     ipcMain.handle("desk:get-snapshot", () => {
       // The renderer pulls this once per mount — including after the window
       // reload applyCharacter() does. Spawned avatar slots live only in main's

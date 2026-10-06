@@ -69,3 +69,63 @@ test("the compat shim fills only what is missing, maps storage.sync to local, an
   delete globalThis.chrome;
   delete globalThis.location;
 });
+
+test("identity: getRedirectURL is a real synchronous callback URL on the extension's own host", () => {
+  const { compatShim } = require("./awconnect-compat-preload.cjs");
+  const id = "hlmfknhcfhjjngckfpacgleffckpmphe";
+  globalThis.location = { protocol: "chrome-extension:", host: id };
+  globalThis.chrome = { runtime: { id } };
+  compatShim(null);
+  const identity = globalThis.chrome.identity;
+  assert.equal(typeof identity.getRedirectURL(), "string", "a string, not the Promise the old stub returned");
+  assert.equal(identity.getRedirectURL(), `https://${id}.chromiumapp.org/`);
+  assert.equal(identity.getRedirectURL("cb"), `https://${id}.chromiumapp.org/cb`);
+  assert.equal(identity.getRedirectURL("/cb?x=1"), `https://${id}.chromiumapp.org/cb?x=1`);
+  assert.equal(identity.getRedirectURL("https://evil.example/x"), `https://${id}.chromiumapp.org/`, "an absolute URL never leaves the callback host");
+  assert.equal(identity.getRedirectURL("//evil.example/x"), `https://${id}.chromiumapp.org/`, "protocol-relative never leaves the callback host");
+  assert.equal(identity.getRedirectURL("../x"), `https://${id}.chromiumapp.org/x`);
+  assert.equal(typeof identity.getProfileUserInfo, "function", "members the desk cannot fill stay stubs");
+  delete globalThis.chrome;
+  delete globalThis.location;
+});
+
+test("identity: launchWebAuthFlow goes through the bridged desk call, and the callback form has parity", async () => {
+  const { compatShim } = require("./awconnect-compat-preload.cjs");
+  const id = "hlmfknhcfhjjngckfpacgleffckpmphe";
+  const seen = [];
+  const bridge = {
+    launchWebAuthFlow: (details) => {
+      seen.push(details);
+      return Promise.resolve(`https://${id}.chromiumapp.org/?code=C&state=S`);
+    },
+  };
+  globalThis.location = { protocol: "chrome-extension:", host: id };
+  globalThis.chrome = { runtime: { id } };
+  compatShim(bridge);
+  const p = globalThis.chrome.identity.launchWebAuthFlow({ url: "https://idp/authorize" });
+  assert.equal(typeof p.then, "function");
+  assert.equal(await p, `https://${id}.chromiumapp.org/?code=C&state=S`);
+  assert.deepEqual(seen, [{ url: "https://idp/authorize", interactive: true }]);
+  await globalThis.chrome.identity.launchWebAuthFlow({ url: "https://idp/authorize", interactive: false });
+  assert.equal(seen[1].interactive, false);
+  let got;
+  const silent = globalThis.chrome.identity.launchWebAuthFlow({ url: "https://idp/authorize" }, (u) => { got = u; });
+  assert.equal(silent, undefined, "the callback form returns no promise (a rejected one would be unhandled)");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(got, `https://${id}.chromiumapp.org/?code=C&state=S`);
+  delete globalThis.chrome;
+  delete globalThis.location;
+});
+
+test("identity: without a bridge it stays inert, and the id can come from location.host", async () => {
+  const { compatShim } = require("./awconnect-compat-preload.cjs");
+  const id = "hlmfknhcfhjjngckfpacgleffckpmphe";
+  globalThis.location = { protocol: "chrome-extension:", host: id };
+  globalThis.chrome = {}; // no runtime.id: location.host is the fallback (measured in the worker world)
+  compatShim();
+  assert.equal(globalThis.chrome.identity.getRedirectURL(), `https://${id}.chromiumapp.org/`);
+  assert.equal(await globalThis.chrome.identity.launchWebAuthFlow({ url: "https://idp/authorize" }), undefined,
+    "no bridge = exactly as on a browser without the API");
+  delete globalThis.chrome;
+  delete globalThis.location;
+});
