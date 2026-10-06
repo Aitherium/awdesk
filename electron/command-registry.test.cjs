@@ -427,3 +427,13 @@ test("voices can be unmuted from a body and the tray (owner 2026-10-04: no way t
   assert.match(main, /case "voice\.mute-all"/);
   assert.match(main, /case "voice\.mute-agent"/);
 });
+
+test("the family osApp opens as a browser TAB, other apps stay on the desktop shell", () => {
+  // Owner, 2026-10-05: the Family app must not force the full Aitheros Online overlay.
+  const { osAppTabUrl } = require("./command-registry.cjs");
+  assert.equal(osAppTabUrl("family"), "https://app.aitherium.com/family");
+  assert.equal(osAppTabUrl("learn"), null);
+  assert.equal(osAppTabUrl(""), null);
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /commandRegistry\.osAppTabUrl\(command\.osApp\)/);
+});

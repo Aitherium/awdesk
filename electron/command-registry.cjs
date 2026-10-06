@@ -836,7 +836,20 @@ function conformance(commands = COMMANDS) {
   return problems;
 }
 
+// osApps that open as a PAGE in an Aither Browser tab instead of the AitherDesktop
+// shell (owner, 2026-10-05: "the family app forces the full aitheros online overlay
+// to open -- it should just open in a new browser tab in aitherbrowser"). One line
+// to move another app. Consumed by main.cjs's osApp dispatch.
+const OSAPP_BROWSER_TAB = Object.freeze({
+  family: "https://app.aitherium.com/family",
+});
+
+/** The browser-tab URL for an osApp, or null when it opens the desktop shell. */
+function osAppTabUrl(osApp) {
+  return OSAPP_BROWSER_TAB[String(osApp || "")] || null;
+}
+
 module.exports = {
   SURFACES, GROUPS, LAYOUT, COMMANDS, commandsFor, groupFor, paletteRows, rowsFor, byId, labelOf,
-  buildMenu, conformance, shortcuts, electronAccel, appliesTo,
+  buildMenu, conformance, shortcuts, electronAccel, appliesTo, osAppTabUrl,
 };
