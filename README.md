@@ -26,9 +26,15 @@ whether the backend is aitherium.com or your own local node:
 - **Decision cards** — the tray tracks the open decision-card queue
   (`~/.aither/decisions`) and shows the waiting count as a badge on the tray
   icon and tooltip, the console's taskbar button and its Inbox tab; one click
-  opens the shared answer window (see `electron/decision-cards.cjs`). There is
-  no native toast (removed 2026-08-31 by owner decision); the Discord fanout
-  carries the push off-desk.
+  opens the shared answer window (see `electron/decision-cards.cjs`). A new
+  card lands in the Inbox almost instantly (the store is watched with
+  `fs.watch`, not polled) and a high-urgency one opens it on its own;
+  credential cards are answered in the row itself — a masked field whose value
+  goes straight to the vault, never through the card. While the desk is
+  running, awask raises go to THIS Inbox instead of spawning their own pop-up
+  window (the desk keeps a `~/.aither/decisions/.desk-alive` heartbeat awask
+  honours before it opens one). There is no native toast (removed 2026-08-31
+  by owner decision); the Discord fanout carries the push off-desk.
 
 ## Platform support
 

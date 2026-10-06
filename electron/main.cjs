@@ -493,6 +493,16 @@ let roomPublisher = null;
 let settingsSync = null;
 let relayPoller = null;
 let decisionWatchStop = null;
+// The liveness heartbeat's stop handle (decision-cards.cjs startHeartbeat).
+let deskHeartbeatStop = null;
+// How often an ORDINARY (low|normal) announcement may pull the Inbox open on
+// its own. A high|critical card bypasses this entirely (see announceDecisions):
+// the ask that must not wait out a quiet period is exactly the one whose
+// urgency says so. The window is per app run, not persisted — a restart is a
+// deliberate act, and the desk coming up on "N waiting" IS the surface.
+const INBOX_OPEN_MIN_MS = 10 * 60_000;
+let lastInboxOpenAt = 0;
+const URGENT_URGENCIES = new Set(["high", "critical"]);
 let hyprlandConfigured = false;
 let hyprlandConfiguring = false;
 let hyprlandConfigurationTimer = null;
@@ -1156,16 +1166,27 @@ function openTalkWindow() {
  *  Every bell, badge and menu item lands here, so there is exactly one place a
  *  notification can be found (owner, 2026-09-13: "no proper notification area").
  *  A card id focuses that card. */
+/** The owner's explicit "no card windows" switch — the same kill-file the awask
+ *  side reads (~/.aither/decisions/.popup-off). Split out of cardWindowsMayOpen
+ *  so a HIGH-URGENCY card can bypass the auto-open OPT-IN while still honouring
+ *  this deliberate off switch: the opt-in defaults off because unrequested
+ *  windows are the complaint, but a switch the owner flipped must never be
+ *  overridden by urgency. */
+function cardPopupsOff() {
+  try {
+    const off = path.join(require("node:os").homedir(), ".aither", "decisions", ".popup-off");
+    return fs.existsSync(off);
+  } catch {
+    // An unreadable home is not a reason to start popping windows.
+    return true;
+  }
+}
+
 /** May the desk open a card window by ITSELF? Never by default: an
  *  unrequested always-on-top window is the complaint, not the feature. */
 function cardWindowsMayOpen() {
   if (process.env.DESK_CARDS_AUTO_OPEN !== "1") return false;
-  try {
-    const off = path.join(require("node:os").homedir(), ".aither", "decisions", ".popup-off");
-    return !fs.existsSync(off);
-  } catch {
-    return false;
-  }
+  return !cardPopupsOff();
 }
 
 function openInbox(cardId = null) {
@@ -1176,6 +1197,121 @@ function openInbox(cardId = null) {
   }
   return openConsole("cards", cardId) !== false;
 }
+
+/**
+ * AitherOS/scripts/secret_prompt.py — the ONE masked door that writes a
+ * credential to the vault and closes the card. Same resolution convention the
+ * desk's other scripts use (fleet-control.cjs): an env override first, then a
+ * walk up from the app tree so a checkout that carries the script needs no env
+ * var, then the absolute path that matches the rest of this file's defaults.
+ */
+function secretPromptScript() {
+  const override = String(process.env.AWDESK_SECRET_PROMPT_SCRIPT || "").trim();
+  if (override) return override;
+  const rel = ["AitherOS", "scripts", "secret_prompt.py"];
+  let dir = __dirname;
+  for (let i = 0; i < 6; i += 1) {
+    const candidate = path.join(dir, ...rel);
+    try { if (fs.existsSync(candidate)) return candidate; } catch { /* keep walking */ }
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return "C:\\AitherOS-Fresh\\AitherOS\\scripts\\secret_prompt.py";
+}
+
+/**
+ * Store a credential the owner typed into a desk card row.
+ *
+ * The value's whole journey: renderer -> this handler -> the child's stdin ->
+ * the vault. It is NEVER an argv element (the process table is world-readable),
+ * never an env var, never a log line, never a deck-state field, and it is not
+ * kept in this process after the write settles — `value` is one local that dies
+ * with the call. Which key it lands under is resolved HERE from main's own view
+ * of the open card, never from the renderer: a compromised page must not be
+ * able to redirect a typed secret to a name of its choosing.
+ */
+function storeCardCredential(id, value) {
+  if (typeof id !== "string" || !/^d-[a-z0-9]{4,12}$/.test(id)) {
+    return { ok: false, error: "not a card id" };
+  }
+  if (typeof value !== "string" || value.length === 0) {
+    return { ok: false, error: "nothing entered" };
+  }
+  const card = (openDecisions || []).find((c) => c && c.id === id);
+  if (!card) return { ok: false, error: "that card is not open any more — reopen the Inbox" };
+  if (String(card.kind || "").toLowerCase() !== "credential") {
+    return { ok: false, error: "not a credential card" };
+  }
+  const script = secretPromptScript();
+  try {
+    if (!fs.existsSync(script)) {
+      return { ok: false, error: `secret_prompt.py not found at ${script} — set AWDESK_SECRET_PROMPT_SCRIPT` };
+    }
+  } catch {
+    return { ok: false, error: "secret_prompt.py is not readable from here" };
+  }
+  // The card names the secret and the store, so the write cannot land under a
+  // name the card did not ask for. `--name` mirrors what the GUI launcher
+  // passes; the script re-reads the card itself when either is missing.
+  const args = [script, "--card", id, "--value-stdin"];
+  if (card.secretName) args.push("--name", card.secretName);
+  if (card.credentialScope) args.push("--scope", card.credentialScope);
+  if (String(card.credentialFormat || "").toLowerCase() === "totp_seed") args.push("--totp");
+  return new Promise((resolve) => {
+    let child;
+    try {
+      // `stdio: pipe` on all three: stdin carries the value, stdout carries the
+      // "stored, N chars" receipt, stderr carries the reason on failure.
+      const { spawn } = require("node:child_process");
+      const python = require("./command-agent.cjs").resolveBin("python", "AWDESK_PYTHON_BIN");
+      child = spawn(python, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    } catch (error) {
+      resolve({ ok: false, error: `could not start the vault write (${error && error.message ? error.message : "spawn failed"})` });
+      return;
+    }
+    let out = "";
+    let err = "";
+    // The vault write retries HTTP 000 up to three times with 2 s sleeps, so a
+    // slow answer is normal; the ceiling only exists so a wedged child cannot
+    // leave the row's button spinning forever.
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* already gone */ }
+      resolve({ ok: false, error: "the vault write timed out — check the fleet, then retry" });
+    }, 180_000);
+    const settle = (verdict) => {
+      clearTimeout(timer);
+      value = ""; // drop this process's only reference to the secret, promptly
+      resolve(verdict);
+    };
+    child.on("error", (error) => {
+      settle({ ok: false, error: `could not start the vault write (${error && error.message ? error.message : "spawn failed"})` });
+    });
+    child.stdout.on("data", (chunk) => { out += chunk; });
+    child.stderr.on("data", (chunk) => { err += chunk; });
+    // An EPIPE on stdin (the child died before reading it — a missing python,
+    // say) must not surface as an unhandled 'error' event and take the main
+    // process down; the close/error handlers report the outcome.
+    child.stdin.on("error", () => { /* reported via close/error */ });
+    child.on("close", (code) => {
+      settle({
+        ok: code === 0,
+        code,
+        receipt: out.trim().slice(-400),
+        detail: err.trim().slice(-400) || undefined,
+      });
+    });
+    try {
+      // One write, then EOF: the script reads one line and refuses anything
+      // after it, so nothing here can be truncated silently.
+      child.stdin.write(value);
+      child.stdin.end();
+    } catch {
+      /* the close/error handler reports the outcome */
+    }
+  });
+}
+
 
 /** Toggleable "invisible glass" boundary: a dashed edge + faint tint so the
  *  avatar window's borders are visible while arranging it (owner 2026-08-25).
@@ -2343,7 +2479,16 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       }
       if (command && "shell" in command) return void setDesktopShell(command.shell);
       // An Aither OS app (Family, Learn, Sprite, Academy, Spaces, Avatar, Control).
-      if (command && command.osApp) return void showDesktopApp({ app: command.osApp });
+      if (command && command.osApp) {
+        // Family opens as a plain page in an Aither Browser tab -- the full
+        // Aitheros Online overlay was the wrong door for a family console
+        // (owner, 2026-10-05). Map + resolver: command-registry.osAppTabUrl.
+        const tabUrl = commandRegistry.osAppTabUrl(command.osApp);
+        if (tabUrl) {
+          return void browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: tabUrl });
+        }
+        return void showDesktopApp({ app: command.osApp });
+      }
       if (command && command.fleet) {
         // Fleet and ARC verbs: the same runner the Fleet window, the bridge and
         // MCP fleet_control use, so a tray click is not a second implementation.
@@ -3445,6 +3590,16 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       }
       return ok;
     });
+    // A credential typed into a desk card row. The row's masked field hands the
+    // value straight here; main pipes it into secret_prompt.py's stdin door and
+    // learns only "stored, N chars" — the value is never logged, never kept in
+    // a deck-state field, and never an argv element (see storeCardCredential).
+    // Until this existed the desk's only door to a credential card was the
+    // standalone Tk dialog — the separate dialogue the owner vetoed.
+    ipcMain.handle("desk:card-credential", (_event, payload) => {
+      const { id, value } = payload || {};
+      return storeCardCredential(id, value);
+    });
     // One-stop-shop data: the Aitherium marketplace via market-client.cjs
     // (MCP to the local gateway, session bearer — same story as relay).
     ipcMain.handle("desk:market-browse", (_event, query) =>
@@ -4470,31 +4625,43 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
               : `${n} decisions need you. The latest is: ${title}.`);
         // A NEW card is a spoken question the owner can answer out loud
         // (voice-card.cjs); a backlog, a muted mic or an ask already waiting
-        // keeps the plain announcement. The popups below still open either way.
+        // keeps the plain announcement. The Inbox opens below either way.
         if (!isBacklog && lead.id && !micMuted() && !voiceAsk.waiting) {
           void answerCardByVoice(lead);
         } else {
           try { void speakAloud(phrase, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { /* best-effort */ }
         }
-        // Owner, 2026-10-04: "decision cards still pop out on their own". The
-        // bell, the tray count and the line above ARE the prompt; a window
-        // only opens when the owner opted in (DESK_CARDS_AUTO_OPEN=1) and has
-        // not switched popups off (~/.aither/decisions/.popup-off).
-        if (!cardWindowsMayOpen()) return;
+        // WHICH card leads decides how loud the desk may be (owner, 2026-10-05:
+        // a card "needs to actually come up in awdesk … not a separate thing").
+        // The NEWEST actionable card's urgency is the lever:
+        //
+        //   high|critical -> open/focus the Inbox the moment it lands. The
+        //     throttle below is bypassed on purpose: a critical ask that waited
+        //     out a quiet period is the pile-up this whole plane exists to end.
+        //     The owner's own kill-file still wins — urgency may lift the
+        //     auto-open OPT-IN, never a switch they flipped deliberately.
+        //   low|normal -> one Inbox open per INBOX_OPEN_MIN_MS, and only when
+        //     the owner opted in (DESK_CARDS_AUTO_OPEN=1, no .popup-off).
+        // Owner, 2026-10-04: "decision cards still pop out on their own" — the
+        // bell, the tray count and the line above ARE the prompt, and the desk
+        // Inbox replaced the per-card Tk pop-out that used to spawn from here
+        // (up to three topmost windows beside the desk — the separate dialogue).
+        const newest = list.reduce(
+          (best, c) => (c && c.createdAt >= ((best && best.createdAt) ?? -1) ? c : best), null,
+        ) || lead;
+        const urgent = URGENT_URGENCIES.has(
+          String((newest && newest.urgency) || "normal").toLowerCase(),
+        );
+        const nowMs = Date.now();
         try {
-          if (isBacklog) {
-            openInbox();                          // backlog: ONE console, no 30-popup storm
-          } else {
-            const _cp = require("node:child_process"); // spawn the REAL topmost popup,
-            for (const c of list.slice(0, 3)) {                // bypassing the deck router
-              if (!c || !c.id) continue;
-              try {
-                _cp.spawn(require("./command-agent.cjs").resolveBin("python", "AWDESK_PYTHON_BIN"), ["-m", "awask.popup", String(c.id)], {
-                  detached: true, stdio: "ignore",
-                  env: { ...process.env, AITHER_DECISIONS_POPUP: "1" },
-                }).unref();
-              } catch { /* best-effort */ }
+          if (urgent) {
+            if (!cardPopupsOff()) {
+              openInbox(newest && newest.id ? newest.id : null);
+              lastInboxOpenAt = nowMs;
             }
+          } else if (cardWindowsMayOpen() && nowMs - lastInboxOpenAt >= INBOX_OPEN_MIN_MS) {
+            openInbox();                          // backlog: ONE console, no 30-popup storm
+            lastInboxOpenAt = nowMs;
           }
         } catch { /* best-effort */ }
       } catch { /* a prompt must never crash the poll */ }
@@ -4527,6 +4694,11 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         if (fresh.length > 0) announceDecisions(fresh, false);
       },
     });
+    // The liveness heartbeat awask reads before opening its own Tk window
+    // (adk.decisions.notify.desk_alive): while the desk is up, the card is the
+    // DESK's to surface — this watch just proved it is watching. Beat every
+    // 20 s; stopped (and removed) on quit in before-quit.
+    deskHeartbeatStop = decisionCards.startHeartbeat();
 
     // 🚩 register() RETURNS whether it got the accelerator, and the answer was
     // thrown away. Another app holding Ctrl+Shift+= takes the only keyboard path
@@ -4645,6 +4817,9 @@ app.on("before-quit", () => {
   if (relayFeedTimer) clearInterval(relayFeedTimer);
   wakesWatchStop?.();
   decisionWatchStop?.();
+  // Removed (best-effort) before the app is gone, so awask goes back to its own
+  // Tk window immediately instead of waiting out the 90 s staleness window.
+  deskHeartbeatStop?.();
   settingsSync?.stop();
   audioListener?.stop();
   globalShortcut.unregisterAll();

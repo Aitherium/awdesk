@@ -25,6 +25,10 @@ contextBridge.exposeInMainWorld("deskBridge", {
     open: () => ipcRenderer.send("desk:deck-open"),
     close: () => ipcRenderer.send("desk:deck-close"),
     answer: (id, choice) => ipcRenderer.invoke("desk:deck-answer", { id, choice }),
+    // A credential typed into a card row. The value is sent EXACTLY once, to
+    // main, which pipes it into the vault write and keeps only the receipt —
+    // it is never broadcast on the deck feed and never stored by the renderer.
+    credential: (id, value) => ipcRenderer.invoke("desk:card-credential", { id, value }),
     // "None of these — do this instead": the card plane's steer verb, so a card
     // whose right answer is not one of its options no longer needs a terminal.
     steer: (id, text) => ipcRenderer.invoke("desk:deck-steer", { id, text }),

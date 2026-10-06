@@ -91,6 +91,15 @@ function cardFromRaw(raw) {
 if (!raw || typeof raw !== "object" || raw.status !== "open") return null;
 if (typeof raw.id !== "string" || raw.id.length === 0) return null;
   const source = raw.source && typeof raw.source === "object" ? raw.source : {};
+  const kind = typeof raw.kind === "string" ? raw.kind : "decision";
+  // A credential card asks the owner for a secret. The VALUE never travels on
+  // this feed — the desk's masked field hands it to main, which pipes it into
+  // the vault write and forgets it — but the desk must know WHICH key the card
+  // wants, WHY, and into WHICH store, or its only options are the standalone
+  // Tk dialog (the separate dialogue the owner vetoed, 2026-10-05) or nothing.
+  // Carried for credential cards ONLY: on any other kind these fields do not
+  // exist, and rendering them would be inventing an ask.
+  const credential = String(kind).toLowerCase() === "credential";
   // The card's OWN answer choices, so a desk surface can offer exactly what
   // the raiser defined (a waiting notice is ack/later; a product decision may
   // be three options) instead of hardcoding buttons that do not exist on the
@@ -117,7 +126,7 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
     id: raw.id,
     title: typeof raw.title === "string" ? raw.title : "Decision needed",
     summary: typeof raw.summary === "string" ? raw.summary : "",
-    kind: typeof raw.kind === "string" ? raw.kind : "decision",
+    kind,
     urgency: typeof raw.urgency === "string" ? raw.urgency : "normal",
     createdAt: Number(raw.created_at) || 0,
     // The deadline is the card's OWN answer: an unanswered recipe card applies
@@ -139,6 +148,22 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
     tab: typeof source.tab_title === "string" ? source.tab_title : "",
     cwd: typeof source.cwd === "string" ? source.cwd : "",
     agent: typeof source.agent === "string" ? source.agent : "",
+    // kind==='credential' only (see `credential` above); ""/null on every other
+    // kind so a surface concatenating these into text never prints `undefined`.
+    secretName: credential && typeof raw.secret_name === "string"
+      ? raw.secret_name.slice(0, 120) : "",
+    credentialScope: credential && typeof raw.credential_scope === "string"
+      ? raw.credential_scope.slice(0, 40) : "",
+    credentialDescription: credential && typeof raw.credential_description === "string"
+      ? raw.credential_description.slice(0, 300) : "",
+    credentialFormat: credential && typeof raw.credential_format === "string"
+      ? raw.credential_format.slice(0, 40) : "",
+    // The signed audit of a CLOSED card (what was vaulted, where, which door,
+    // a digest — never the value). A listed card is open so this is normally
+    // null; carried so a surface that found a closed one could show proof
+    // rather than re-ask.
+    credentialReceipt: credential && raw.credential_receipt
+      && typeof raw.credential_receipt === "object" ? raw.credential_receipt : null,
   };
 }
 
@@ -434,11 +459,27 @@ function lastOpen(dir = storeDir()) {
   return lastOpenCards ?? listOpen(dir);
 }
 
+/** fs.watch fires a burst of events per write (tmp create, rename, ...); one scan
+ *  per burst is enough, and the signature diff makes an extra scan harmless. */
+const WATCH_DEBOUNCE_MS = 300;
+
+/** The FALLBACK poll cadence. fs.watch is the primary mechanism (a card must be on
+ *  the owner's screen within ~a second of the write, not up to 15 s later — the
+ *  awask Tk window it replaces appeared instantly, and a desk that is slower reads
+ *  as "the desk never showed it"). The interval stays as the safety net for a
+ *  directory fs.watch cannot watch (a network mount, a watcher error). */
+const WATCH_FALLBACK_MS = 30_000;
+
 /**
- * Poll the store; call onChange(cards) whenever the signature moves (and once at
- * start). Injectable timers/dir for tests. Returns a stop function.
+ * Watch the store; call onChange(cards) when the signature moves (and once at
+ * start). Primary mechanism: `fs.watch` on the directory with a ~300 ms
+ * debounce; fallback: a 30 s interval, used automatically when the OS watcher
+ * cannot be created (or dies) and whenever the injected interval is ticked by
+ * hand in tests. A poll never stacks (the `running` guard) and a quiet poll
+ * never fires onChange (the signature diff). Injectable pieces for tests.
+ * Returns a stop function that closes both mechanisms.
  */
-function watch({ intervalMs = 15000, onChange, dir = storeDir(), setIntervalFn = setInterval, clearIntervalFn = clearInterval, scanFn = scanAsync } = {}) {
+function watch({ intervalMs = WATCH_FALLBACK_MS, onChange, dir = storeDir(), setIntervalFn = setInterval, clearIntervalFn = clearInterval, scanFn = scanAsync, watchFn = fs.watch, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout } = {}) {
   if (typeof onChange !== "function") throw new TypeError("watch requires onChange");
   let lastSig = null;
   let running = false;
@@ -462,7 +503,78 @@ function watch({ intervalMs = 15000, onChange, dir = storeDir(), setIntervalFn =
   };
   void poll();
   const handle = setIntervalFn(() => poll(), intervalMs);
-  return () => clearIntervalFn(handle);
+  // The OS watcher. `persistent: false` so a watcher never holds the process
+  // open (tests, and a quit that is already in flight). Creation can throw
+  // (missing dir, unsupported FS) and the watcher can error later (the dir
+  // vanished); both fall back to the interval, which is why it stays.
+  let watcher = null;
+  let debounce = null;
+  const onFsEvent = () => {
+    if (debounce) clearTimeoutFn(debounce);
+    debounce = setTimeoutFn(() => {
+      debounce = null;
+      void poll();
+    }, WATCH_DEBOUNCE_MS);
+    if (debounce && typeof debounce.unref === "function") debounce.unref();
+  };
+  try {
+    watcher = watchFn(dir, { persistent: false }, onFsEvent);
+    if (watcher && typeof watcher.on === "function") {
+      watcher.on("error", () => {
+        try { watcher.close(); } catch { /* already gone */ }
+        watcher = null;
+      });
+    }
+  } catch {
+    watcher = null; // no OS watcher here: the interval carries the watch alone
+  }
+  return () => {
+    clearIntervalFn(handle);
+    if (debounce) clearTimeoutFn(debounce);
+    if (watcher) {
+      try { watcher.close(); } catch { /* already gone */ }
+      watcher = null;
+    }
+  };
+}
+
+// ── the desk's liveness heartbeat ───────────────────────────────────────────
+//
+// awask reads this file (adk.decisions.notify.desk_alive) before it spawns its
+// own Tk card window: while the desk is up, the card is the DESK's to surface
+// — the owner's words (2026-10-05): the notifications "need to actually come up
+// in awdesk … not a separate thing". The MTIME is the signal: the file's
+// content is informational, and a killed app leaves the file behind, so a
+// heartbeat nobody is refreshing must read as dead (awask's staleness window is
+// 90 s against this 20 s beat).
+const DESK_ALIVE_FILENAME = ".desk-alive";
+const HEARTBEAT_MS = 20_000;
+
+/**
+ * Write <store>/.desk-alive now and every `intervalMs`, until stop(). The beat
+ * is UNREF'D (it must never hold the app open) and every failure is swallowed —
+ * a heartbeat that cannot be written must not take the desk down; the cost is
+ * only that awask falls back to its own Tk window.
+ */
+function startHeartbeat({ dir = storeDir(), intervalMs = HEARTBEAT_MS, setIntervalFn = setInterval, clearIntervalFn = clearInterval } = {}) {
+  const beatPath = path.join(dir, DESK_ALIVE_FILENAME);
+  const beat = () => {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(beatPath, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+    } catch {
+      /* best-effort: see above */
+    }
+  };
+  beat();
+  const handle = setIntervalFn(beat, intervalMs);
+  if (handle && typeof handle.unref === "function") handle.unref();
+  return () => {
+    clearIntervalFn(handle);
+    // Best-effort cleanup on quit: awask goes back to its own window the moment
+    // this lands, instead of waiting out the staleness window.
+    try { fs.rmSync(beatPath, { force: true }); } catch { /* best-effort */ }
+  };
 }
 
 module.exports = {
@@ -481,4 +593,5 @@ module.exports = {
   cancelCard,
   steerCard,
   watch,
+  startHeartbeat,
 };

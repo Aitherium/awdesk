@@ -7,7 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { signature, listOpen, actionableCount, watch, answerCard, cancelCard,
-  steerCard,
+  steerCard, startHeartbeat,
 } = require("./decision-cards.cjs");
 const cards = require("./decision-cards.cjs");
 
@@ -177,6 +177,8 @@ test("watch fires at start and on change, not on quiet polls", async () => {
   writeCard(dir, "d-1");
   const seen = [];
   let tick = null;
+  // A stub OS watcher: these arms drive the interval by hand, and a REAL
+  // fs.watch would fire its own debounced polls mid-assertion.
   const stop = watch({
     dir,
     onChange: (cards) => seen.push(cards.map((c) => c.id)),
@@ -187,6 +189,7 @@ test("watch fires at start and on change, not on quiet polls", async () => {
     clearIntervalFn: () => {
       tick = null;
     },
+    watchFn: () => ({ on() {}, close() {} }),
   });
   // The scan is asynchronous now (it must not block the main process): wait for
   // the initial one instead of assuming it finished inside watch().
@@ -203,6 +206,160 @@ test("watch fires at start and on change, not on quiet polls", async () => {
 
   stop();
   assert.equal(tick, null, "stop clears the interval");
+});
+
+test("watch: the fs.watch event is the primary mechanism, debounced into one scan", async () => {
+  // A card must land on the owner's screen within ~a second of the write, not
+  // up to 15 s later — the Tk window this replaces appeared instantly. So the
+  // directory watcher drives the scan and the interval is only the fallback.
+  const dir = tmpStore();
+  writeCard(dir, "d-1");
+  const seen = [];
+  let fsListener = null;
+  let debounceFn = null;
+  let timerDelay = null;
+  let watcherClosed = 0;
+  const stop = watch({
+    dir,
+    onChange: (cards) => seen.push(cards.map((c) => c.id)),
+    watchFn: (target, _opts, listener) => {
+      assert.equal(target, dir, "the watcher must watch the store directory itself");
+      fsListener = listener;
+      return { on() {}, close() { watcherClosed += 1; } };
+    },
+    setTimeoutFn: (fn, ms) => { debounceFn = fn; timerDelay = ms; return { unref() {} }; },
+    clearTimeoutFn: () => { debounceFn = null; },
+    setIntervalFn: () => 2,
+    clearIntervalFn: () => {},
+  });
+  for (let i = 0; i < 200 && seen.length === 0; i += 1) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(seen.length, 1, "initial scan seeds the queue");
+  assert.ok(fsListener, "an fs.watch listener must be installed");
+
+  writeCard(dir, "d-2");
+  fsListener(); // the OS event
+  assert.equal(timerDelay, 300, "the debounce is ~300 ms, not a poll interval");
+  assert.equal(seen.length, 1, "nothing fires before the debounce elapses");
+  debounceFn();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(seen[seen.length - 1].sort(), ["d-1", "d-2"],
+    "the debounced scan reports the new card");
+
+  // A burst of events inside the debounce window collapses into ONE scan.
+  let fires = 0;
+  const countListener = () => { fires += 1; fsListener(); };
+  countListener(); countListener(); countListener();
+  assert.equal(fires, 3);
+  debounceFn();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(seen.length, 2, "a burst with no store change must not re-fire onChange");
+
+  stop();
+  assert.equal(watcherClosed, 1, "stop closes the OS watcher");
+});
+
+test("watch: a watcher that cannot be created falls back to the interval alone", async () => {
+  const dir = tmpStore();
+  writeCard(dir, "d-1");
+  const seen = [];
+  const stop = watch({
+    dir,
+    onChange: (cards) => seen.push(cards.map((c) => c.id)),
+    watchFn: () => { throw new Error("ENOSYS: this filesystem cannot be watched"); },
+    setIntervalFn: () => 3,
+    clearIntervalFn: () => {},
+  });
+  for (let i = 0; i < 200 && seen.length === 0; i += 1) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(seen, [["d-1"]], "the interval fallback still reports the queue");
+  stop();
+});
+
+test("startHeartbeat writes a fresh .desk-alive and removes it on stop", () => {
+  const dir = path.join(tmpStore(), "not-created-yet");
+  let beatFn = null;
+  const stop = startHeartbeat({
+    dir,
+    setIntervalFn: (fn) => { beatFn = fn; return { unref() {} }; },
+    clearIntervalFn: () => { beatFn = null; },
+  });
+  const beatPath = path.join(dir, ".desk-alive");
+  assert.ok(fs.existsSync(beatPath), "the first beat lands immediately — app ready, not 20 s later");
+  const first = JSON.parse(fs.readFileSync(beatPath, "utf8"));
+  assert.equal(first.pid, process.pid);
+  assert.ok(typeof first.at === "string" && first.at.length > 0, "the content says when");
+  assert.ok(beatFn, "the interval keeps it fresh");
+
+  // awask's staleness window is mtime-based; a beat must actually touch the file.
+  const before = fs.statSync(beatPath).mtimeMs;
+  const later = new Date(before + 1000);
+  fs.utimesSync(beatPath, later, later);
+  beatFn();
+  assert.ok(fs.statSync(beatPath).mtimeMs < later.getTime(), "a beat refreshes the mtime");
+
+  stop();
+  assert.equal(beatFn, null, "stop clears the interval");
+  assert.equal(fs.existsSync(beatPath), false, "quit removes the heartbeat — awask back on its own window");
+});
+
+test("the heartbeat filename is ONE contract across the two languages", () => {
+  // The desk WRITES this file; awask READS it (adk.decisions.notify.desk_alive).
+  // Two spellings of the filename would be a silent split: the desk beats into
+  // a file nobody reads, awask keeps opening its own window, and both sides
+  // test green. Pin the two spellings to each other; skip only when the repo
+  // layout is absent (a packaged app cannot see the source tree).
+  const notifyPy = path.join(__dirname, "..", "..", "..", "awdk", "adk", "decisions", "notify.py");
+  if (!fs.existsSync(notifyPy)) return;
+  const text = fs.readFileSync(notifyPy, "utf8");
+  const declared = text.match(/DESK_ALIVE_FILENAME\s*=\s*"([^"]+)"/);
+  assert.ok(declared, "notify.py no longer declares DESK_ALIVE_FILENAME — desk_alive() moved");
+  const dir = tmpStore();
+  const stop = startHeartbeat({ dir, setIntervalFn: () => ({ unref() {} }), clearIntervalFn: () => {} });
+  const written = fs.readdirSync(dir).filter((n) => n.startsWith("."));
+  stop();
+  assert.deepEqual(written, [declared[1]],
+    "the file the desk beats into must be the file awask stats");
+});
+
+test("listOpen carries the credential card's fields — and ONLY on credential cards", () => {
+  // The desk Inbox's masked field needs the key name, why, and which store —
+  // and must never see these on any other card kind (rendering them there
+  // would be inventing an ask). The VALUE never travels on this feed at all.
+  const dir = tmpStore();
+  writeCard(dir, "d-cred", {
+    kind: "credential",
+    secret_name: "STRIPE_API_KEY",
+    credential_scope: "user",
+    credential_description: "so the billing lane can read invoices",
+    credential_format: "api_key",
+    credential_receipt: null,
+  });
+  writeCard(dir, "d-plain", {
+    secret_name: "SHOULD_NOT_LEAK",
+    credential_scope: "platform",
+    credential_description: "nope",
+  });
+  const cred = listOpen(dir).find((c) => c.id === "d-cred");
+  assert.equal(cred.kind, "credential");
+  assert.equal(cred.secretName, "STRIPE_API_KEY");
+  assert.equal(cred.credentialScope, "user");
+  assert.match(cred.credentialDescription, /billing lane/);
+  assert.equal(cred.credentialFormat, "api_key");
+  assert.equal(cred.credentialReceipt, null);
+
+  const plain = listOpen(dir).find((c) => c.id === "d-plain");
+  assert.equal(plain.secretName, "", "a non-credential card must not wear credential fields");
+  assert.equal(plain.credentialScope, "");
+  assert.equal(plain.credentialDescription, "");
+
+  // Bounded: a desk row is not a place to render an unbounded string.
+  writeCard(dir, "d-cred-long", {
+    kind: "credential",
+    secret_name: "K".repeat(400),
+    credential_description: "d".repeat(900),
+  });
+  const long = listOpen(dir).find((c) => c.id === "d-cred-long");
+  assert.equal(long.secretName.length, 120);
+  assert.equal(long.credentialDescription.length, 300);
 });
 
 test("scanAsync agrees with the sync signature and list, and re-reads only what changed", async () => {

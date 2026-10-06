@@ -1009,6 +1009,7 @@ function DecisionRow({
   const primary = primaryChoice(card);
   const others = otherChoices(card);
   const where = cardWhere(card);
+  const isCredential = card.kind === 'credential';
   return (
     <article className="deck-card">
       <header className="deck-card-head">
@@ -1018,37 +1019,130 @@ function DecisionRow({
       </header>
       {card.summary ? <p className="deck-card-summary">{card.summary}</p> : null}
       {where ? <p className="deck-card-where">{where}</p> : null}
-      <footer className="deck-card-actions">
-        {primary ? (
-          <button
-            className="deck-btn deck-btn-primary"
-            title={`Answer "${primary.label}" — recorded, and the asking session is told right away`}
-            onClick={() => onAnswer(card.id, primary.key)}
-          >
-            {primary.label}
-          </button>
-        ) : (
-          <button
-            className="deck-btn deck-btn-primary"
-            title="Open this card in the full answer window"
-            onClick={() => void bridgeDeck()?.action('popup')}
-          >
-            Open answer window
-          </button>
-        )}
-        {others.map((option) => (
-          <button
-            key={option.key}
-            className="deck-btn"
-            title={`Answer "${option.label}" instead`}
-            onClick={() => onAnswer(card.id, option.key)}
-          >
-            {option.label}
-          </button>
-        ))}
-      </footer>
+      {isCredential ? (
+        <CredentialRow card={card} />
+      ) : (
+        <footer className="deck-card-actions">
+          {primary ? (
+            <button
+              className="deck-btn deck-btn-primary"
+              title={`Answer "${primary.label}" — recorded, and the asking session is told right away`}
+              onClick={() => onAnswer(card.id, primary.key)}
+            >
+              {primary.label}
+            </button>
+          ) : (
+            <button
+              className="deck-btn deck-btn-primary"
+              title="Open this card in the full answer window"
+              onClick={() => void bridgeDeck()?.action('popup')}
+            >
+              Open answer window
+            </button>
+          )}
+          {others.map((option) => (
+            <button
+              key={option.key}
+              className="deck-btn"
+              title={`Answer "${option.label}" instead`}
+              onClick={() => onAnswer(card.id, option.key)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </footer>
+      )}
       <SteerBox card={card} />
     </article>
+  );
+}
+
+/**
+ * The credential door IN the desk (owner, 2026-10-05: the awask/awdesk
+ * notification dialogue "needs to actually come up in awdesk … not a separate
+ * thing", the secure cards included). A masked field for the secret the card
+ * asks for; submitting hands the value to main ONCE (`deck.credential`), which
+ * pipes it into secret_prompt.py's stdin door — vault write, read-back, then
+ * the card closes with "stored, N chars".
+ *
+ * The value lives in React state for exactly as long as it is typed: the field
+ * is cleared the instant it is submitted, it is never put on the deck feed, and
+ * the server side never learns more than the receipt.
+ */
+function CredentialRow({ card }: { card: DeckDecision }) {
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const secretName = card.secretName || 'the secret';
+  const scope = card.credentialScope || 'platform';
+
+  const submit = () => {
+    if (!value) return;
+    const typed = value;
+    setValue(''); // cleared NOW, before the await — the field must not hold it a tick longer
+    setNote(null);
+    const deck = bridgeDeck() as unknown as {
+      credential?: (id: string, value: string) => Promise<{
+        ok?: boolean; receipt?: string; error?: string; detail?: string;
+      }>;
+    } | null;
+    if (typeof deck?.credential !== 'function') {
+      setNote('Storing from the desk needs a newer Desk build — use the terminal: awask answer ' + card.id);
+      return;
+    }
+    setBusy(true);
+    void deck
+      .credential(card.id, typed)
+      .then((res) => {
+        if (res && res.ok) {
+          // The receipt ("stored, N chars — card d-xxxx closed…"), never the value.
+          setNote(res.receipt || 'Stored in the vault.');
+        } else {
+          setNote((res && (res.detail || res.error)) || 'Not stored — no answer from the vault.');
+        }
+      })
+      .catch(() => setNote('Not stored — the desk could not reach the vault.'))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="deck-card-credential">
+      <p className="deck-card-credential-name">
+        {secretName}
+        <span className="deck-card-credential-scope"> · {scope} vault</span>
+      </p>
+      {card.credentialDescription ? (
+        <p className="deck-card-credential-why">{card.credentialDescription}</p>
+      ) : null}
+      <p className="deck-card-credential-note">
+        Typed here only — it goes straight to the vault, never to the assistant,
+        a transcript or the card.
+      </p>
+      <div className="deck-card-credential-row">
+        <input
+          type="password"
+          className="deck-card-credential-input"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={`Enter ${secretName}`}
+          value={value}
+          disabled={busy}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') submit();
+          }}
+        />
+        <button
+          className="deck-btn deck-btn-primary"
+          disabled={busy || !value}
+          title={`Write this value to the ${scope} vault and close ${card.id}`}
+          onClick={submit}
+        >
+          {busy ? 'Storing…' : 'Store in vault'}
+        </button>
+      </div>
+      {note ? <p className="deck-card-credential-why">{note}</p> : null}
+    </div>
   );
 }
 

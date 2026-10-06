@@ -8,6 +8,8 @@ export interface DeckDecision {
   id: string;
   title: string;
   summary: string;
+  /** Optional: an older main does not send it; treat missing as "decision". */
+  kind?: string;
   urgency: string;
   createdAt: number;
   options: Array<{ key: string; label: string; recommended: boolean }>;
@@ -15,6 +17,17 @@ export interface DeckDecision {
   tab: string;
   cwd: string;
   agent: string;
+  /** WHERE the value goes when it is entered. Only ever carries a secret NAME,
+   *  a scope and why — the VALUE itself never travels on the deck feed (it goes
+   *  from the row's masked field straight into main's vault write). Absent/"" on
+   *  every non-credential card. */
+  secretName?: string;
+  credentialScope?: string;
+  credentialDescription?: string;
+  credentialFormat?: string;
+  /** The signed audit of a CLOSED credential card (never the value). Normally
+   *  null — a listed card is open by definition. */
+  credentialReceipt?: unknown;
 }
 
 export interface DeckSlot {
