@@ -12,6 +12,12 @@ export default tseslint.config(
     ignores: [
       // vendored verbatim from awdk/adk/webui/kvholder (linted there; kv-lend.test.cjs pins it)
       'electron/kvholder/**',
+      // vendored verbatim: the xterm terminal bundle (electron/vendor/xterm/,
+      // landed with the layered shell #11816). Minified third-party code --
+      // scanning it turned every leg of the v0.1.11 release red with ~1,800
+      // no-useless-escape / no-unused-expressions (run 37423763500), the same
+      // class kvholder/** is ignored for.
+      'electron/vendor/**',
       'dist/**',
       'release/**',
       'node_modules/**',
