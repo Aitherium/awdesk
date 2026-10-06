@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.12 - 2026-10-06
+
+- Sign in to awconnect inside the Aither Browser. Chromium gives an embedded browser no
+  sign-in window for extensions, so the extension's Sign in button used to die with
+  "sign-in window closed". Desk now hosts the real auth window itself: it opens on the
+  browser's own session, catches the return to the extension's callback before that host is
+  ever contacted, and hands the result back -- with Chromium's own wording when the window
+  is closed early or a page fails to load, and the exact reason available to older callers
+  through the standard error channel.
+
 ## 0.1.11 - 2026-10-05
 
 - Settings → Connections no longer dead-ends a computer that has not been set up yet. A

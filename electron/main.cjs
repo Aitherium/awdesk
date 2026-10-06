@@ -3539,10 +3539,14 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // Sign in). awconnect-webauth.cjs owns the auth window + callback interception;
     // this only wires its channel, and MUST happen before the browser window opens,
     // because the extension's MV3 worker can ask at any moment after it loads.
-    require("./awconnect-webauth.cjs").install({
+    const webauth = require("./awconnect-webauth.cjs").install({
       ipcMain,
       session: require("electron").session.fromPartition(browserWindow.PARTITION),
     });
+    if (webauth && webauth.ok === false) {
+      // A mis-wired session would silently degrade to the inert stub: say so.
+      console.error("[awconnect] chrome.identity bridge did not install:", webauth.error || webauth);
+    }
 
     ipcMain.handle("desk:get-snapshot", () => {
       // The renderer pulls this once per mount — including after the window

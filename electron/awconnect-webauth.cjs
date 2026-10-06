@@ -38,7 +38,9 @@ const CHANNEL = "awconnect:identity:webauth";
 const EXTENSION_ID = /^[a-p]{32}$/;
 /** Chrome hands the callback back on https://<id>.chromiumapp.org/; so do we. */
 const CALLBACK_SUFFIX = ".chromiumapp.org";
-/** Chromium's own budget for an interactive auth flow. */
+/** A generous budget for an interactive flow. Chromium's own auth window is
+ *  commonly cited at ~5 minutes, so this is deliberately LONGER, not a copy of
+ *  it; it also bounds how long the single-flow lock can be held. */
 const DEFAULT_TIMEOUT_MS = 900000;
 
 const MESSAGES = {
@@ -150,6 +152,11 @@ function createWebAuthFlows({ BrowserWindow, timeoutMs = DEFAULT_TIMEOUT_MS, set
       flow.win = win;
       flow.timer = setTimer(() => settle(new Error(MESSAGES.timedOut)), timeoutMs);
       const wc = win.webContents;
+      // A popup opened by the auth page would share this window's session and is
+      // never intercepted (no flow can complete through one): refuse them.
+      if (typeof wc.setWindowOpenHandler === "function") {
+        wc.setWindowOpenHandler(() => ({ action: "deny" }));
+      }
       // The measured IdP flow arrives as a server redirect: catch it here and cancel
       // before chromiumapp.org is ever contacted.
       wc.on("will-redirect", (event, target, _inPlace, isMainFrame) => {
@@ -235,14 +242,20 @@ function install({ ipcMain, session, BrowserWindow = null, timeoutMs = DEFAULT_T
       if (!worker || hooked.has(worker)) return false;
       const id = extensionIdFromUrl(worker.scope || "");
       if (!id) return false; // only an extension's own worker may ask
-      hooked.add(worker);
+      // The same gate the page path applies (senderExtension): the id must name a
+      // LOADED extension of this session, not merely a chrome-extension-shaped one.
+      const api = session.extensions || session;
+      if (typeof api.getExtension === "function" && !api.getExtension(id)) return false;
       try {
         worker.ipc.handle(CHANNEL, (event, payload) =>
           runFor(id, (event && event.session) || session, payload));
-        return true;
       } catch {
         return false;
       }
+      // Only after a SUCCESSFUL handle: a worker whose handle threw must get
+      // another chance on its next start (the WeakSet would otherwise hide it).
+      hooked.add(worker);
+      return true;
     };
     const hookRunning = () => {
       let infos;
