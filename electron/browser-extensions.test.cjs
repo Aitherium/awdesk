@@ -117,8 +117,34 @@ test("identity: launchWebAuthFlow goes through the bridged desk call, and the ca
   delete globalThis.location;
 });
 
-test("identity: without a bridge it stays inert, and the id can come from location.host", async () => {
+test("identity: the callback form reports WHY via runtime.lastError (Chromium semantics)", async () => {
   const { compatShim } = require("./awconnect-compat-preload.cjs");
+  const id = "hlmfknhcfhjjngckfpacgleffckpmphe";
+  const bridge = {
+    launchWebAuthFlow: () => Promise.reject(new Error("The user did not approve access.")),
+  };
+  globalThis.location = { protocol: "chrome-extension:", host: id };
+  globalThis.chrome = { runtime: { id } };
+  compatShim(bridge);
+  let got = "unset";
+  let errDuring = null;
+  globalThis.chrome.identity.launchWebAuthFlow({ url: "https://idp/authorize" }, (u) => {
+    got = u;
+    errDuring = globalThis.chrome.runtime.lastError;
+  });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(got, undefined, "the callback form hands back undefined on failure");
+  assert.equal(
+    errDuring && errDuring.message,
+    "The user did not approve access.",
+    "a legacy caller reads the reason from runtime.lastError during the callback",
+  );
+  assert.equal(globalThis.chrome.runtime.lastError, undefined, "and it is cleared after");
+  delete globalThis.chrome;
+  delete globalThis.location;
+});
+
+test("identity: without a bridge it stays inert, and the id can come from location.host", async () => {  const { compatShim } = require("./awconnect-compat-preload.cjs");
   const id = "hlmfknhcfhjjngckfpacgleffckpmphe";
   globalThis.location = { protocol: "chrome-extension:", host: id };
   globalThis.chrome = {}; // no runtime.id: location.host is the fallback (measured in the worker world)

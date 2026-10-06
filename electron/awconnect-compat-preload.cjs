@@ -102,7 +102,26 @@ function compatShim(identity) {
     if (!cb) return p;
     // The Chromium callback form (MV2-style callers): the flow's value goes to the
     // callback and no promise is returned -- a rejected return would be unhandled.
-    p.then((url) => cb(url), () => cb(undefined));
+    // Chromium sets runtime.lastError for the DURATION of the callback and the
+    // callback form reads it to learn WHY. Without this a legacy caller
+    // (awconnect/shared/oidc-pkce.js) read undefined and reported "sign-in window
+    // closed" for user-close, timeout AND load failure alike -- review finding,
+    // 2026-10-06.
+    p.then(
+      (url) => {
+        try { cb(url); } finally {
+          try { delete c.runtime.lastError; } catch { /* the namespace may be frozen */ }
+        }
+      },
+      (e) => {
+        try {
+          c.runtime.lastError = { message: String((e && e.message) || e) };
+        } catch { /* the namespace may be frozen */ }
+        try { cb(undefined); } finally {
+          try { delete c.runtime.lastError; } catch { /* the namespace may be frozen */ }
+        }
+      },
+    );
     return undefined;
   };
   const names = ["cookies", "contextMenus", "omnibox", "sidePanel", "offscreen", "identity", "notifications",
@@ -113,6 +132,17 @@ function compatShim(identity) {
     storage: { sync: (t) => {
       try { return t.sync || t.local; } catch { return t.local; }
     } },
+    runtime: {
+      // Chromium: runtime.lastError is the ERROR OBJECT during a failing callback
+      // and ABSENT otherwise. The wrap proxy fabricates a filler for absent
+      // members, so without this accessor `if (chrome.runtime.lastError)` read
+      // TRUTHY after every successful callback-form call.
+      lastError: (t) => {
+        try {
+          return Object.prototype.hasOwnProperty.call(t, "lastError") ? t.lastError : undefined;
+        } catch { return undefined; }
+      },
+    },
     identity: {
       getRedirectURL: () => redirectUrl,
       launchWebAuthFlow: () => launchWebAuthFlow,
