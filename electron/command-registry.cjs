@@ -498,6 +498,12 @@ const COMMANDS = Object.freeze([
     id: "osapp.family", label: "Family…", group: "go", osApp: "family",
     surfaces: ["palette", "jumplist"],
   }),
+  // Owner, 2026-10-05: "why is mission control so buried???" It lives at
+  // app.aitherium.com/mission-control; this row is its palette/tray door.
+  Object.freeze({
+    id: "missioncontrol.open", label: "Mission Control", group: "go",
+    surfaces: ["palette", "tray"],
+  }),
   Object.freeze({
     id: "osapp.learn", label: "Learn…", group: "go", osApp: "learn",
     surfaces: ["palette", "jumplist"],

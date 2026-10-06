@@ -449,3 +449,14 @@ test("Restart Desk is a tray row wired to app.relaunch", () => {
   assert.match(main, /function restartDesk\(\)/);
   assert.match(main, /app\.relaunch\(\)/);
 });
+
+test("Mission Control has a palette/tray door that opens the page in a browser tab", () => {
+  // Owner, 2026-10-05: "why is mission control so buried???"
+  const { byId } = require("./command-registry.cjs");
+  const row = byId("missioncontrol.open");
+  assert.ok(row, "no missioncontrol.open row in the registry");
+  assert.ok(row.surfaces.includes("palette") && row.surfaces.includes("tray"), row.surfaces);
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /case "missioncontrol\.open"/);
+  assert.match(main, /app\.aitherium\.com\/mission-control/);
+});

@@ -2461,6 +2461,10 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       isQuitting = true;
       return void app.quit();
     case "desk.restart": return void restartDesk();
+    case "missioncontrol.open":
+      // The page host, plain: mission control is a page, not an OS window.
+      return void browserWindow.createBrowserWindow({
+        askAgent: browserAskAgent, url: "https://app.aitherium.com/mission-control" });
     default: {
       // The size presets and the stage arrangements are DATA on their registry
       // records, so a new one is a line there and needs no case here.
