@@ -30,9 +30,14 @@ test("a running adk daemon on built-in tools only is not ok, and says why (measu
   const adk = rows.find((r) => r.id === "adk");
   assert.equal(adk.ok, false);
   assert.match(adk.detail, /built-in tools only -- plaintext gateway/);
+  // Owner 2026-10-05: a not-joined daemon offered NO fix from the desk. It now
+  // points at the one installer this product has (local-stack.cjs), and the
+  // label says Fix (running) vs Set up (down).
+  assert.equal(adk.action.id, "local.install");
+  assert.equal(adk.action.label, "Fix");
 });
 
-test("down daemons and an unlinked account say so, with the fix where the desk has one", async () => {
+test("down daemons say so, and the adk/awsh rows open the local-stack installer", async () => {
   const rows = await connections({
     fetchJson: fetchFrom({}),
     linkStatus: async () => ({ ok: true, data: { linked: false, signed_in: true } }),
@@ -46,6 +51,13 @@ test("down daemons and an unlinked account say so, with the fix where the desk h
     assert.equal(by[id].ok, false);
     assert.match(by[id].detail, /not answering/);
   }
+  // A down daemon's row offers the desk's own setup door, and says so in the
+  // detail -- never a dead end, never a shell command to copy.
+  assert.equal(by.adk.action.id, "local.install");
+  assert.equal(by.adk.action.label, "Set up");
+  assert.match(by.adk.detail, /Set up installs it/);
+  assert.equal(by.awsh.action.id, "local.install");
+  assert.match(by.awsh.detail, /Set up installs it/);
   assert.equal(by.awconnect.action.id, "awconnect.setup");
   for (const row of rows) if (row.action) assert.ok(RUNNABLE.includes(row.action.id), row.action.id);
 });

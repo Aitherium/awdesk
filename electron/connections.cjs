@@ -65,22 +65,28 @@ async function connections({ fetchJson = defaultFetchJson, linkStatus, awconnect
   // `gateway_connected` -- that one is the opt-in cloud agent registry.
   const tools = (adk.ok && adk.data && adk.data.tools) || {};
   const adkJoined = adk.ok && tools.mode !== "builtin-only" && Number(tools.registered || 0) > 0;
+  // A down (or un-attached) daemon points at the ONE door this product already has
+  // for exactly this: "Install the full local stack" (local-stack.cjs -- desk
+  // sign-in, setup code, install.sh, nothing typed). Owner 2026-10-05: the row said
+  // "not answering on :9001" and offered no way to fix it from the desk.
   rows.push({
     id: "adk", label: "awdk daemon",
     ok: Boolean(adkJoined),
-    detail: !adk.ok ? `not answering on :9001 (${adk.error})`
+    detail: !adk.ok ? `not answering on :9001 (${adk.error}) — Set up installs it on this computer`
       : adkJoined ? `v${adk.data.version || "?"}, ${tools.registered} platform tools from the gateway`
         : `v${adk.data.version || "?"} running with built-in tools only`
           + (tools.last_error ? ` -- ${String(tools.last_error).slice(0, 160)}` : ""),
-    action: null,
+    action: adkJoined ? null : { id: "local.install", label: adk.ok ? "Fix" : "Set up" },
   });
 
+  const awshUp = Boolean(awsh.ok && awsh.data && awsh.data.ok === true);
   rows.push({
     id: "awsh", label: "awsh harness daemon",
-    ok: awsh.ok && awsh.data && awsh.data.ok === true,
+    ok: awshUp,
     detail: awsh.ok ? `${(awsh.data.harnesses_installed || []).length} harnesses, ${awsh.data.sessions ?? 0} sessions on :8362`
-      : `not answering on :8362 (${awsh.error})`,
-    action: { id: "console.open", label: "Sessions" },
+      : `not answering on :8362 (${awsh.error}) — Set up installs it on this computer`,
+    action: awshUp ? { id: "console.open", label: "Sessions" }
+      : { id: "local.install", label: "Set up" },
   });
 
   const state = awconnect && awconnect.state;
@@ -95,6 +101,6 @@ async function connections({ fetchJson = defaultFetchJson, linkStatus, awconnect
 }
 
 /** Action ids the Settings page may ask main to run. */
-const RUNNABLE = Object.freeze(["link", "awconnect.setup", "console.open"]);
+const RUNNABLE = Object.freeze(["link", "awconnect.setup", "console.open", "local.install"]);
 
 module.exports = { connections, LOCAL, RUNNABLE };
