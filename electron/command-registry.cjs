@@ -158,6 +158,10 @@ const COMMANDS = Object.freeze([
     id: "desktop.app.open", label: "AitherOS Online: open as a window…", menuLabel: "Open as a window…",
     group: "desktop", surfaces: ["tray", "palette"],
   }),
+  // Owner, 2026-10-05: closing the Desk left no way back but a terminal. One tap.
+  Object.freeze({
+    id: "desk.restart", label: "Restart Desk", group: "desktop", surfaces: ["tray", "palette"],
+  }),
   // The shells mirror Veil's SHELL_REGISTRY (components/os/shell-registry.tsx). An
   // id Veil does not know falls back to the Living OS server-side, so a stale row
   // here degrades to the default rather than to a blank overlay.

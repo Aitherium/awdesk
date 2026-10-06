@@ -437,3 +437,15 @@ test("the family osApp opens as a browser TAB, other apps stay on the desktop sh
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.match(main, /commandRegistry\.osAppTabUrl\(command\.osApp\)/);
 });
+
+test("Restart Desk is a tray row wired to app.relaunch", () => {
+  // Owner, 2026-10-05: "there isn't a restart button... I closed it and can't start it again."
+  const { byId } = require("./command-registry.cjs");
+  const row = byId("desk.restart");
+  assert.ok(row, "no desk.restart row in the registry");
+  assert.ok(row.surfaces.includes("tray") && row.surfaces.includes("palette"), row.surfaces);
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /case "desk\.restart": return void restartDesk\(\)/);
+  assert.match(main, /function restartDesk\(\)/);
+  assert.match(main, /app\.relaunch\(\)/);
+});

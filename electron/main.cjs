@@ -2460,6 +2460,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "quit":
       isQuitting = true;
       return void app.quit();
+    case "desk.restart": return void restartDesk();
     default: {
       // The size presets and the stage arrangements are DATA on their registry
       // records, so a new one is a line there and needs no case here.
@@ -2502,6 +2503,15 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       console.warn(`[desk] command ${id} has no handler`);
     }
   }
+}
+
+/** Relaunch the whole Desk (owner, 2026-10-05: closing it left no way back but a
+ *  terminal -- this is the tray/palette door). app.relaunch replaces the process;
+ *  isQuitting suppresses the close interceptors, exactly like Quit. */
+function restartDesk() {
+  isQuitting = true;
+  app.relaunch();
+  app.exit(0);
 }
 
 function showAboutDesk() {
