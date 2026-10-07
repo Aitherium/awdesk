@@ -25,6 +25,10 @@ const os = require("node:os");
 const path = require("node:path");
 
 const HELLO_DOMAIN = "aither-kvholder-hello/1";
+const MACHINE_ID_DOMAIN = "aither-machine-id/1";
+/** Who beats for the device when several Aither programs run here (adk device_identity). */
+const FACET_PRIORITY = { awnode: 3, daemon: 2, node_beat: 2, desk: 1 };
+const LEASE_MISSED = 3;
 const DEVICE_ID = /^[A-Za-z0-9._:-]{1,96}$/;
 const CODE = /^[A-Z0-9]{4,16}$/;
 
@@ -60,14 +64,128 @@ function parseEnrollUrl(raw, env = process.env) {
   return { code, deviceId, identity };
 }
 
-function defaultDeviceId() {
+// ── one device, many facets ──────────────────────────────────────────────────
+// Desk, the adk daemon and awnode on one computer share ~/.aither/device.json and one
+// machine id (a one-way hash of the OS machine id; adk.device_identity computes the
+// same value, pinned by a shared test vector), so Identity keeps ONE row per computer.
+
+function sharedDeviceFile(env = process.env) {
+  const v = String(env.AITHER_DEVICE_FILE || "").trim();
+  return v || path.join(os.homedir(), ".aither", "device.json");
+}
+
+function loadShared(file = sharedDeviceFile()) {
+  try {
+    const d = JSON.parse(fs.readFileSync(file, "utf8"));
+    return d && typeof d === "object" && !Array.isArray(d) ? d : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveShared(data, file = sharedDeviceFile()) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fs.renameSync(tmp, file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The OS's own machine id, "" when this platform offers none. */
+function osMachineId() {
+  const { execFileSync } = require("node:child_process");
+  try {
+    if (process.platform === "win32") {
+      const out = execFileSync("reg", ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid", "/reg:64"],
+        { encoding: "utf8", windowsHide: true, timeout: 5000 });
+      const m = /MachineGuid\s+REG_SZ\s+(\S+)/i.exec(out);
+      return m ? m[1].trim() : "";
+    }
+    if (process.platform === "darwin") {
+      const out = execFileSync("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], { encoding: "utf8", timeout: 5000 });
+      const m = /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(out);
+      return m ? m[1].trim() : "";
+    }
+    for (const p of ["/etc/machine-id", "/var/lib/dbus/machine-id"]) {
+      try {
+        const v = fs.readFileSync(p, "utf8").trim();
+        if (v) return v;
+      } catch { /* next */ }
+    }
+  } catch { /* no OS id: a stored one is used */ }
+  return "";
+}
+
+/** One-way, tenant-free hash of a raw OS machine id (what the device sends). */
+function machineKey(raw) {
+  return nodeCrypto.createHash("sha256").update(`${MACHINE_ID_DOMAIN}\n${String(raw).trim().toLowerCase()}`).digest("hex");
+}
+
+/** What Identity stores: HMAC-SHA256(tenant, machineKey). */
+function tenantMachineId(tenantId, key) {
+  return nodeCrypto.createHmac("sha256", String(tenantId)).update(String(key)).digest("hex");
+}
+
+/** This computer's machine id, recorded in the shared device.json. */
+function machineId({ file = sharedDeviceFile(), osId = osMachineId } = {}) {
+  const data = loadShared(file);
+  const raw = osId();
+  let key;
+  let source;
+  if (raw) {
+    key = machineKey(raw);
+    source = "os";
+  } else if (data.machine_id) {
+    key = String(data.machine_id);
+    source = data.machine_id_source || "stored";
+  } else {
+    key = machineKey(nodeCrypto.randomUUID());
+    source = "random";
+  }
+  if (data.machine_id !== key) saveShared({ ...data, machine_id: key, machine_id_source: source }, file);
+  return key;
+}
+
+/** True when this process should send the device's heartbeat now (and renews the lease). */
+function claimLease(facet, intervalS, { pid = process.pid, now = Date.now() / 1000, file = sharedDeviceFile() } = {}) {
+  const data = loadShared(file);
+  const lease = data.leader && typeof data.leader === "object" ? data.leader : null;
+  const mine = lease && lease.pid === pid && lease.facet === facet;
+  if (lease && !mine) {
+    const stale = now - Number(lease.ts || 0) > Number(lease.interval || intervalS) * LEASE_MISSED;
+    const outranks = (FACET_PRIORITY[facet] || 0) > (FACET_PRIORITY[lease.facet] || 0);
+    if (!stale && !outranks) return false;
+  }
+  saveShared({ ...data, leader: { facet, pid, ts: now, interval: intervalS } }, file);
+  return true;
+}
+
+function releaseLease(facet, { pid = process.pid, file = sharedDeviceFile() } = {}) {
+  const data = loadShared(file);
+  if (data.leader && data.leader.pid === pid && data.leader.facet === facet) {
+    delete data.leader;
+    saveShared(data, file);
+  }
+}
+
+/** The id this computer already has (another facet registered it), else a stable
+ *  desk-<host>-<machine hash prefix>. No random part: a reinstall gets the same id. */
+function defaultDeviceId({ file = sharedDeviceFile(), osId = osMachineId } = {}) {
+  const known = String(loadShared(file).node_id || "");
+  if (DEVICE_ID.test(known)) return known;
   const host = os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 40) || "pc";
-  return `desk-${host}-${nodeCrypto.randomBytes(2).toString("hex")}`;
+  return `desk-${host}-${machineId({ file, osId }).slice(0, 8)}`;
 }
 
 class DeviceIdentity {
-  constructor(dir) {
+  constructor(dir, { sharedFile = sharedDeviceFile(), osId = osMachineId } = {}) {
     this.dir = dir;
+    this.sharedFile = sharedFile;
+    this.osId = osId;
     this.keyFile = path.join(dir, "ed25519.pem");
     this.stateFile = path.join(dir, "device.json");
   }
@@ -122,6 +240,9 @@ class DeviceIdentity {
       platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : "linux",
       node_class: "laptop",
       seal_pubkey: this.publicHex(),
+      // one device, many facets: Identity answers with the id this computer already has
+      machine_id: machineId({ file: this.sharedFile, osId: this.osId }),
+      facet: "desk",
       cpu_count: os.cpus().length,
       ram_mb: Math.round(os.totalmem() / 1048576),
       capabilities: ["kvholder"],
@@ -146,6 +267,12 @@ class DeviceIdentity {
     } catch {
       reg = {};
     }
+    // Identity may answer with the id another facet of this computer registered first.
+    if (reg && typeof reg.node_id === "string" && DEVICE_ID.test(reg.node_id)) deviceId = reg.node_id;
+    const shared = loadShared(this.sharedFile);
+    shared.node_id = deviceId;
+    shared.facets = { ...(shared.facets || {}), desk: { node_id: deviceId, pid: process.pid, at: Math.floor(Date.now() / 1000), capabilities: body.capabilities } };
+    saveShared(shared, this.sharedFile);
     // keep what later steps need (the command channel key among it); never log it
     this._write(this.stateFile, JSON.stringify({
       deviceId,
@@ -168,4 +295,8 @@ class DeviceIdentity {
   }
 }
 
-module.exports = { DeviceIdentity, HELLO_DOMAIN, defaultDeviceId, identityAllowed, parseEnrollUrl };
+module.exports = {
+  DeviceIdentity, HELLO_DOMAIN, MACHINE_ID_DOMAIN, FACET_PRIORITY, LEASE_MISSED,
+  defaultDeviceId, identityAllowed, parseEnrollUrl,
+  machineKey, tenantMachineId, machineId, osMachineId, sharedDeviceFile, claimLease, releaseLease,
+};

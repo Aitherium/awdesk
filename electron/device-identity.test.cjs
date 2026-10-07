@@ -6,9 +6,15 @@ const nodeCrypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { DeviceIdentity, HELLO_DOMAIN, parseEnrollUrl } = require("./device-identity.cjs");
+const {
+  DeviceIdentity, HELLO_DOMAIN, parseEnrollUrl, defaultDeviceId,
+  machineKey, tenantMachineId, machineId, claimLease, releaseLease,
+} = require("./device-identity.cjs");
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "desk-dev-"));
+// Enrollment writes the shared ~/.aither/device.json; never the developer's real one.
+process.env.AITHER_DEVICE_FILE = path.join(tmp(), "device.json");
+const RAW = "4C4C4544-0042-3510-8051-B4C04F4E4B32";
 
 test("an enroll link from the owner's identity parses; anything else is refused", () => {
   const ok = parseEnrollUrl("desk://enroll?c=ab3k9q2z&d=fdev_1a2b&i=https://idp.aitherium.com", {});
@@ -63,4 +69,60 @@ test("the hello is the relay's format and verifies with the enrolled key; the ke
   assert.ok(nodeCrypto.verify(null, Buffer.from(msg), pub, Buffer.from(h.sig, "base64")));
   assert.equal(h.auth, "device");
   assert.equal(new DeviceIdentity(dir).publicHex(), id.publicHex());
+});
+
+// ── one device, many facets ─────────────────────────────────────────────────
+
+test("the machine id matches the vector adk and Identity pin (adk.device_identity.MACHINE_ID_VECTORS)", () => {
+  const key = machineKey(RAW);
+  assert.equal(key, "b29b563a42ede6b8309258b8e2d048f4d51649d3f4e62c45b75decd7e2cfa02b");
+  assert.equal(tenantMachineId("tnt_acme", key), "d7e41ebcc79d72015735b98b7084bab5a45ee4228c7721d5117075b55426028b");
+  assert.equal(machineKey(`  ${RAW.toLowerCase()}\n`), key);
+});
+
+test("the machine id survives a reinstall and is shared through device.json", () => {
+  const file = path.join(tmp(), "device.json");
+  assert.equal(machineId({ file, osId: () => RAW }), machineKey(RAW));
+  fs.rmSync(file);
+  assert.equal(machineId({ file, osId: () => RAW }), machineKey(RAW));
+  const stored = machineId({ file: path.join(tmp(), "d.json"), osId: () => "" });
+  assert.match(stored, /^[0-9a-f]{64}$/);
+});
+
+test("a new install's id has no random part, and the machine's existing id wins", () => {
+  const file = path.join(tmp(), "device.json");
+  const a = defaultDeviceId({ file, osId: () => RAW });
+  assert.equal(a, defaultDeviceId({ file, osId: () => RAW }));
+  assert.ok(a.endsWith(`-${machineKey(RAW).slice(0, 8)}`));
+  fs.writeFileSync(file, JSON.stringify({ node_id: "adk-aaaa-1111" }));
+  assert.equal(defaultDeviceId({ file, osId: () => RAW }), "adk-aaaa-1111");
+});
+
+test("enroll sends the machine id as the desk facet and adopts the id Identity answers", async () => {
+  const sharedFile = path.join(tmp(), "device.json");
+  const id = new DeviceIdentity(tmp(), { sharedFile, osId: () => RAW });
+  let body = null;
+  const fetchImpl = async (url, init) => {
+    body = JSON.parse(init.body);
+    return { status: 200, text: async () => JSON.stringify({ node_id: "adk-aaaa-1111" }) };
+  };
+  const r = await id.enroll({ code: "AB3K9Q2Z", deviceId: "desk-pc-1234", identity: "https://idp.aitherium.com" }, { fetchImpl });
+  assert.equal(body.machine_id, machineKey(RAW));
+  assert.equal(body.facet, "desk");
+  assert.deepEqual(r, { ok: true, deviceId: "adk-aaaa-1111" });
+  const shared = JSON.parse(fs.readFileSync(sharedFile, "utf8"));
+  assert.equal(shared.node_id, "adk-aaaa-1111");
+  assert.equal(shared.facets.desk.node_id, "adk-aaaa-1111");
+});
+
+test("the lease: one holder, higher facets take over, takeover after 3 missed intervals", () => {
+  const file = path.join(tmp(), "device.json");
+  assert.ok(claimLease("desk", 60, { pid: 3, now: 0, file }));
+  assert.ok(claimLease("daemon", 60, { pid: 1, now: 1, file }));       // daemon outranks desk
+  assert.ok(!claimLease("desk", 60, { pid: 3, now: 2, file }));        // desk stands by
+  assert.ok(claimLease("daemon", 60, { pid: 1, now: 60, file }));      // holder renews
+  assert.ok(!claimLease("desk", 60, { pid: 3, now: 240, file }));      // exactly 3 missed
+  assert.ok(claimLease("desk", 60, { pid: 3, now: 241, file }));       // past 3 missed
+  releaseLease("desk", { pid: 3, file });
+  assert.ok(claimLease("desk", 60, { pid: 4, now: 242, file }));
 });
