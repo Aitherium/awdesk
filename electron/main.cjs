@@ -1204,20 +1204,10 @@ function openInbox(cardId = null) {
  * desk's other scripts use (fleet-control.cjs): an env override first, then a
  * walk up from the app tree so a checkout that carries the script needs no env
  * var, then the absolute path that matches the rest of this file's defaults.
+ * Copies that do not speak `--value-stdin` are skipped (secret-prompt-path.cjs).
  */
 function secretPromptScript() {
-  const override = String(process.env.AWDESK_SECRET_PROMPT_SCRIPT || "").trim();
-  if (override) return override;
-  const rel = ["AitherOS", "scripts", "secret_prompt.py"];
-  let dir = __dirname;
-  for (let i = 0; i < 6; i += 1) {
-    const candidate = path.join(dir, ...rel);
-    try { if (fs.existsSync(candidate)) return candidate; } catch { /* keep walking */ }
-    const up = path.dirname(dir);
-    if (up === dir) break;
-    dir = up;
-  }
-  return "C:\\AitherOS-Fresh\\AitherOS\\scripts\\secret_prompt.py";
+  return require("./secret-prompt-path.cjs").resolveSecretPromptScript({ startDir: __dirname });
 }
 
 /**
@@ -1243,7 +1233,11 @@ function storeCardCredential(id, value) {
   if (String(card.kind || "").toLowerCase() !== "credential") {
     return { ok: false, error: "not a credential card" };
   }
-  const script = secretPromptScript();
+  const resolved = secretPromptScript();
+  const script = resolved.path;
+  if (resolved.stale) {
+    return { ok: false, error: `secret_prompt.py at ${script} is too old (no --value-stdin) — update that checkout or set AWDESK_SECRET_PROMPT_SCRIPT` };
+  }
   try {
     if (!fs.existsSync(script)) {
       return { ok: false, error: `secret_prompt.py not found at ${script} — set AWDESK_SECRET_PROMPT_SCRIPT` };
