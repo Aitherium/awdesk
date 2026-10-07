@@ -8,7 +8,11 @@
  * (`adk awconnect status` -> latest.path) -- is loaded into the browser's OWN web
  * partition, so its content scripts (the aitherium.com portal bridge, the freeze
  * watchdog) and its background worker run on the pages you browse here, exactly as
- * in Edge. Its full UI opens as a tab (chrome-extension://<id>/sidepanel/index.html).
+ * in Edge. Its full UI opens as a tab at the manifest's own side_panel.default_path
+ * (4.x: chrome-extension://<id>/sidepanel.html; 3.x: sidepanel/sidepanel.html, which
+ * stays the fallback for a manifest that names none -- uiPath). The overlay over web
+ * pages reuses the staged content scripts too (browser-overlay.cjs: the 4.x
+ * living-os-core.js + living-os-bridge.js pair, else 3.x aither-overlay-bridge.js).
  *
  * What Electron cannot give an MV3 extension (sidePanel, offscreen, omnibox,
  * contextMenus) it simply does not get; the desk's Connect panel stays the side panel.

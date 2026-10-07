@@ -501,6 +501,24 @@ async function probeRendered(win) {
   }
 }
 
+/** ── Stage Manager: OS focus of this window IS attention on the overlay ────────
+ *  When the user clicks another app or the bare Windows desktop, this window LOSES OS
+ *  FOCUS -- the same gesture awconnect's bridge reports from a page click for the
+ *  browser overlay (living-os-bridge.js posts os-host-focus on a background
+ *  pointerdown). Forward it to the Veil shell (`os-host-focus`, via the preload),
+ *  which collapses its windows into the stage strip and brings them back on refocus
+ *  (overlay-host.ts subscribeHostFocus -> desktop.tsx). Ghost mode keeps the pixels
+ *  below clickable; this keeps the WINDOWS honest about where attention actually is.
+ *  Its own function so a unit test can drive it with a fake window. */
+function wireHostFocus(win) {
+  const send = (focused) => {
+    if (win.isDestroyed()) return;
+    try { win.webContents.send("living-desktop:host-focus", focused); } catch { /* closing */ }
+  };
+  win.on("blur", () => send(false));
+  win.on("focus", () => send(true));
+}
+
 function createWindow() {
   const { workArea } = screen.getPrimaryDisplay();
   const win = new BrowserWindow({
@@ -577,6 +595,7 @@ function createWindow() {
   });
   win.on("show", startGhostLoop);
   win.on("hide", stopGhostLoop);
+  wireHostFocus(win);
 
   const target = urlFor(transparentMode);
   log(`opening ${target} (transparent=${transparentMode}, ghost=${ghostMode})`);
@@ -832,5 +851,6 @@ module.exports = {
   setExtraHosts,
   pushDeskState,
   isOpen,
+  wireHostFocus,
   LOG_FILE,
 };

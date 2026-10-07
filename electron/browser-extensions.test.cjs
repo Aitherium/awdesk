@@ -29,6 +29,9 @@ test("a tab may hold only the loaded extension's own pages", () => {
   assert.equal(ext.uiPath({ side_panel: { default_path: "../../etc.html" } }), ext.UI_PAGE);
   assert.equal(ext.uiPath({ side_panel: { default_path: "https://evil/x.html" } }), ext.UI_PAGE);
   assert.equal(ext.uiUrl("../x"), null);
+  // awconnect 4.x's manifest (store 4.1.4 / staged 4.1.5): a root-level side panel.
+  assert.equal(ext.uiPath({ side_panel: { default_path: "sidepanel.html" }, options_page: "options.html" }), "sidepanel.html");
+  assert.equal(ext.uiUrl(ID, "sidepanel.html"), `chrome-extension://${ID}/sidepanel.html`);
 });
 
 test("load: once per folder, through ses.extensions when Electron has it", async () => {

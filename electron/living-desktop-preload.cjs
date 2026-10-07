@@ -31,6 +31,15 @@ ipcRenderer.on("living-desktop:desk-state", (_event, payload) => {
   window.postMessage(Object.assign({ __aither: "desk-state" }, payload), "*");
 });
 
+// Desk -> Aitheros Online OS focus (2026-10-06): "attention left the overlay"
+// (the window blurred -- another app or the bare Windows desktop has focus) and
+// its return. Same shape as the channels above; the Veil shell answers it with
+// the Stage Manager collapse / restore (overlay-host.ts subscribeHostFocus).
+// Anything but an explicit false reads as focused: a garbled send never hides windows.
+ipcRenderer.on("living-desktop:host-focus", (_event, focused) => {
+  window.postMessage({ __aither: "os-host-focus", focused: focused !== false }, "*");
+});
+
 // The desk as an overlay HOST (2026-10-03, overlay-browser-host.cjs). Veil's
 // overlay-host.ts only spoke to a FRAMING parent (awconnect's iframe); this window
 // loads AitherOS Online top-level, so it marks the document and answers the same

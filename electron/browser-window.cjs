@@ -444,8 +444,11 @@ function syncOverlay(tabId) {
   const view = viewOf(tabId);
   if (!alive(view)) return;
   const wc = view.webContents;
-  if (overlayWanted(tabId) && overlayMod.overlayAllowed(wc.getURL())) void getOverlay().inject(wc).catch(() => {});
-  else void getOverlay().remove(wc);
+  if (overlayWanted(tabId) && overlayMod.overlayAllowed(wc.getURL())) {
+    // Once per session (idempotent): a sign-out in Online reaches the OS over pages.
+    getOverlay().watchAuth();
+    void getOverlay().inject(wc).catch(() => {});
+  } else void getOverlay().remove(wc);
 }
 function setOverlay(on) {
   setPrefs({ overlay: Boolean(on) });
