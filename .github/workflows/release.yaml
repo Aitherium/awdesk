@@ -153,6 +153,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
+          # The monorepo's build-awdesk.yml publishes v* releases here and its tag
+          # push lands on this workflow too: an existing release is already done.
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "::notice::${GITHUB_REF_NAME} is already released; nothing to publish."
+            exit 0
+          fi
           test -n "$(ls -A release-artifacts)" || { echo "no artifacts to release"; exit 1; }
           extra=""
           case "${GITHUB_REF_NAME}" in *-*) extra="--prerelease" ;; esac

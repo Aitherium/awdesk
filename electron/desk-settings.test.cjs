@@ -186,3 +186,26 @@ test("backend resolver: switching the profile is NOT served the previous backend
     desk.resetCacheForTests();
   }
 });
+
+// ─── updates: the self-update opt-out (desk-update.cjs reads it every check) ─
+
+test("updates.enabled: on by default, off when the file says so, junk is a named problem", () => {
+  assert.equal(desk.current({ file: castFile(), env: {} }).updates.enabled, true);
+  const off = desk.current({ file: castFile({ version: 1, updates: { enabled: false } }), env: {} });
+  assert.equal(off.updates.enabled, false);
+  assert.equal(off.updates.enabledFrom, "updates.enabled");
+  const junk = cast.resolveDesk({ version: 1, updates: { enabled: "nope" } }, { env: {} });
+  assert.equal(junk.updates.enabled, true, "an unreadable value must not silently stop updates");
+  assert.ok(junk.problems.some((p) => p.path === "updates.enabled"), JSON.stringify(junk.problems));
+});
+
+test("updates.enabled: what the cast pane writes, the updater obeys", async () => {
+  const { DeskUpdater } = require("./desk-update.cjs");
+  const file = castFile({ version: 1, updates: { enabled: false } });
+  let asked = 0;
+  const u = new DeskUpdater({ kind: "nsis", version: "0.1.9", env: {},
+    fetchImpl: async () => { asked += 1; return { status: 500 }; },
+    allowed: () => desk.current({ file, env: {} }).updates.enabled !== false });
+  assert.equal((await u.check()).reason, "disabled");
+  assert.equal(asked, 0);
+});

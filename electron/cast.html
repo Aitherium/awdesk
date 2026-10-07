@@ -994,6 +994,11 @@ function renderDesk() {
   grid.appendChild(areaField("What to look for", vision.imagePrompt,
     "(the built-in description prompt)", null,
     (v) => save("vision", { imagePrompt: v })));
+  const updates = snapshot.updates || {};
+  const ru = resolved.updates || {};
+  grid.appendChild(checkField("Updates", "check for a new Desk every few hours and install it",
+    (ru.enabled !== undefined ? ru.enabled : updates.enabled) !== false,
+    (v) => save("updates", { enabled: v })));
 }
 
 function syncLine(label, row) {

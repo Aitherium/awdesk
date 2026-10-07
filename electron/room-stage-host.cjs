@@ -663,7 +663,7 @@ function castPaneImpl(deps = {}) {
   // `content` is on this list because it can only ever HIDE more (a ceiling,
   //  not a grant) -- the adult gate itself is the platform's, and no door here
   //  can open it. See content-rating.cjs's three-limits note.
-  const DESK_SECTIONS = ["models", "prompts", "vision", "sync", "content"];
+  const DESK_SECTIONS = ["models", "prompts", "vision", "sync", "updates", "content"];
   function setSection({ section, patch } = {}) {
     if (!DESK_SECTIONS.includes(section)) {
       return { ok: false, snapshot: null, problems: [], error: `setSection: unknown section ${JSON.stringify(section)}` };

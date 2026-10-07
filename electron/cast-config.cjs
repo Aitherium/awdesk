@@ -655,6 +655,13 @@ const FILES_FIELDS = Object.freeze({
   roots: vFileRoots,
 });
 
+/** updates.* -> desk-update.cjs. `enabled: false` stops the 6-hourly release check on
+ *  every platform (AppImage swap, Windows silent install, Mac restart offer, .deb notice);
+ *  it is re-read on every check, so it lands without a restart. On unless turned off. */
+const UPDATES_FIELDS = Object.freeze({
+  enabled: vBool,
+});
+
 const BUILTIN_DESK = Object.freeze({
   models: Object.freeze({ commandProfile: "deepseek" }),
   prompts: Object.freeze({ commandPersona: null, commandAppend: null }),
@@ -663,6 +670,7 @@ const BUILTIN_DESK = Object.freeze({
     enabled: false, profile: null, url: null, tokenFile: null, pullOnStart: true, pushOnChange: true,
   }),
   files: Object.freeze({ roots: null }),
+  updates: Object.freeze({ enabled: true }),
 });
 
 const DESK_SECTIONS = Object.freeze({
@@ -671,6 +679,7 @@ const DESK_SECTIONS = Object.freeze({
   vision: VISION_FIELDS,
   sync: SYNC_FIELDS,
   files: FILES_FIELDS,
+  updates: UPDATES_FIELDS,
 });
 
 function pushProblem(problems, prefix, field, raw, verdict) {
@@ -735,6 +744,7 @@ function emptyConfig() {
     vision: {},
     sync: {},
     files: {},
+    updates: {},
     content: {},
     input: {},
     hotkeys: {},
@@ -745,7 +755,7 @@ function emptyConfig() {
 
 const TOP_LEVEL_KEYS = [
   "version", "stage", "voice", "input", "hotkeys", "defaults", "authors", "actors",
-  "channels", "models", "prompts", "vision", "sync", "files", "content", "appearance",
+  "channels", "models", "prompts", "vision", "sync", "files", "updates", "content", "appearance",
   "migratedLegacyAt",
 ];
 
@@ -1434,6 +1444,7 @@ function normaliseSnapshot(snapshot) {
     vision: plainObject(snapshot.vision),
     sync: plainObject(snapshot.sync),
     files: plainObject(snapshot.files),
+    updates: plainObject(snapshot.updates),
     content: plainObject(snapshot.content),
     input: plainObject(snapshot.input),
     hotkeys: plainObject(snapshot.hotkeys),

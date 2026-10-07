@@ -255,7 +255,52 @@ const { parseProtocolUrl, voiceState } = require("./protocol-actions.cjs");
 const { lendProcessSpawner, startKvLend } = require("./kv-lend-electron.cjs");
 const { createDeviceConnect } = require("./device-connect.cjs");
 const { createLocalStackWindow } = require("./local-stack-window.cjs");
-const { DeskUpdater } = require("./desk-update.cjs");
+const { DeskUpdater, installKind, safeReleaseUrl, updateTrayItems } = require("./desk-update.cjs");
+/** The running updater (null until the app is ready); its Windows installer runs on quit. */
+let deskUpdater = null;
+let updateNotice = null; // held, or a collected Notification loses its click handler
+/** Windows logging off / shutting down: a silent install now could be killed mid-way. */
+let sessionEnding = false;
+app.on("browser-window-created", (_event, win) => {
+  win.on("query-session-end", () => { sessionEnding = true; });
+  win.on("session-end", () => { sessionEnding = true; });
+});
+
+/** One update notice. Windows and Mac: a click is "Restart to update". Mac builds are not
+ *  signed by Apple, so the notice says why it asks instead of doing it quietly; a Mac whose
+ *  Applications folder this user cannot write is shown the verified download. .deb: a
+ *  click opens the release page -- the package manager installs it, not Desk. */
+function showUpdateNotice(update) {
+  // The tray carries "Restart to update" too: the toast is easy to miss, or denied, on a
+  // dock-less Mac Desk, and a click is the only way a Mac update is ever applied.
+  if (tray) refreshTrayMenu();
+  if (!Notification.isSupported()) return;
+  const version = String(update.tag || "").replace(/^(?:awdesk-)?v/, "");
+  const notes = {
+    restart: {
+      title: `Desk ${version} is ready`,
+      body: update.kind === "mac"
+        ? "Downloaded and checksum-verified. This build isn't signed by Apple, so it can't replace itself in the background -- click to restart into it."
+        : "Downloaded and checksum-verified. Click to restart now, or it installs the next time Desk quits.",
+      click: () => deskUpdater?.restartNow(),
+    },
+    reveal: {
+      title: `Desk ${version} is downloaded`,
+      body: "Checksum-verified, but Desk can't write to its own folder. Click to show the download, then drag Desk into Applications.",
+      click: () => shell.showItemInFolder(update.file),
+    },
+    open: {
+      title: `Desk ${version} is available`,
+      body: "Installed from a .deb, so the package manager updates it. Click for the download.",
+      click: () => void shell.openExternal(safeReleaseUrl(update.page || update.url)),
+    },
+  };
+  const note = notes[update.action];
+  if (!note) return;
+  updateNotice = new Notification({ title: note.title, body: note.body });
+  updateNotice.on("click", note.click);
+  updateNotice.show();
+}
 const { installLinuxIntegration } = require("./linux-integration.cjs");
 const { installMacIntegration } = require("./macos-integration.cjs");
 let deviceConnect = null;
@@ -2314,7 +2359,8 @@ function trayTemplateNow() {
   // Cloud LLM spend today + the DeepSeek balance; a click opens aither://spend. An
   // absent cloud_spend tool reads "not deployed yet", never "$0.00".
   const statusRows = [...voiceRows, ...awconnectSetup.awconnectTrayItems(latestAwconnectStatus),
-    ...spendTrayItems(latestSpend, () => openConsole("spend"))];
+    ...spendTrayItems(latestSpend, () => openConsole("spend")),
+    ...updateTrayItems(deskUpdater?.staged, deskUpdater?.kind, () => deskUpdater?.restartNow())];
   if (statusRows.length && appGroupAt > 0) trayTemplate.splice(appGroupAt - 1, 0, ...statusRows);
   else trayTemplate.push(...statusRows);
   return trayTemplate;
@@ -4772,18 +4818,29 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     }
     handleProtocolArgv(process.argv);
 
-    // Self-update (AppImage only): the latest Aitherium/awdesk release, SHA-256 checked,
-    // swapped in and relaunched -- never in the middle of a local-stack install.
-    if (process.platform === "linux" && process.env.APPIMAGE) {
-      new DeskUpdater({
+    // Self-update: the latest Aitherium/awdesk release, SHA-256 checked. An AppImage is
+    // swapped in and relaunched (never in the middle of a local-stack install); Windows
+    // installs silently on quit; a Mac offers "Restart to update"; a .deb is told where
+    // the download is. Off with the cast pane's "Updates" box or AWDESK_NO_UPDATE=1.
+    {
+      const kind = installKind({ isPackaged: app.isPackaged, exe: app.getPath("exe") });
+      deskUpdater = new DeskUpdater({
+        kind,
+        exe: app.getPath("exe"),
         version: app.getVersion(),
+        downloadDir: path.join(app.getPath("temp"), "desk-update"),
+        allowed: () => require("./desk-settings.cjs").current().updates?.enabled !== false,
         canRestart: () => !(localStack && localStack.stack.state === "running"),
         relaunch: (target) => {
           app.relaunch({ execPath: target, args: process.argv.slice(1).filter((a) => !a.startsWith("desk://")) });
           app.exit(0);
         },
+        quit: () => app.quit(),
+        notify: (update) => showUpdateNotice(update),
         log: (line) => console.log(`[desk] ${line}`),
-      }).start();
+      });
+      deskUpdater.start();
+      powerMonitor.on("shutdown", () => { sessionEnding = true; });
     }
 
     audioListener = createAudioListener({
@@ -4834,6 +4891,8 @@ app.on("activate", () => showOverlay({ focus: true }));
 
 app.on("before-quit", () => {
   isQuitting = true;
+  // Windows: a verified installer waiting for this quit runs now, silently, no relaunch.
+  deskUpdater?.installOnQuit({ sessionEnding });
   clearTimeout(hyprlandConfigurationTimer);
   if (relayFeedTimer) clearInterval(relayFeedTimer);
   wakesWatchStop?.();
