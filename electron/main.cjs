@@ -1020,7 +1020,10 @@ async function speakAloud(
   // said. AitherSafety filters rather than refusing, so a rewritten line is spoken in its
   // filtered form: muting here would be a gate that gets switched off, and an unreachable
   // safety plane must not silence the fleet (safety-gate.cjs fails open and records it).
-  let spoken = text;
+  // First, what the line SOUNDS like: no "*waves*", emoji or markdown read out
+  // (speakable.cjs, the same rule as the web, the voice plane and the Android app).
+  let spoken = require("./speakable.cjs").speakable(text);
+  if (!spoken) return { ok: false, reason: "nothing speakable in that line", captioned: false };
   if (safetyGate && typeof safetyGate.consultSpeech === "function") {
     try {
       const verdict = await safetyGate.consultSpeech(text);
