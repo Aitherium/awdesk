@@ -154,7 +154,7 @@ test("network & platform: mesh, fleet, lockbox, tunnels, packs -- Online apps, p
 
 test("workspace: BusinessPilot, managed agents, fleet, nodes, devices -- fixed paths on the signed-in workspace", () => {
   const paths = rail.WORKSPACE_PAGES.map((w) => w.path);
-  for (const want of ["/workspace/business", "/workspace/agents", "/workspace/fleet", "/workspace/nodes", "/settings/connected-devices"]) {
+  for (const want of ["/workspace/business", "/workspace/agents", "/workspace/fleet", "/workspace/nodes", "/settings/connected-devices", "/settings/wallet"]) {
     assert.ok(paths.includes(want), want);
   }
   assert.ok(paths.every((p) => /^\/[a-z/-]+$/.test(p)), "plain same-site paths only");

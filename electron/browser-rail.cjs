@@ -142,6 +142,7 @@ const WORKSPACE_PAGES = Object.freeze([
   Object.freeze({ path: "/workspace/nodes", label: "Nodes", hint: "Every machine running awdk" }),
   Object.freeze({ path: "/workspace/infrastructure", label: "Infrastructure", hint: "Nodes, tunnels, the stack" }),
   Object.freeze({ path: "/settings/connected-devices", label: "Devices", hint: "Phones, tablets and laptops you connected" }),
+  Object.freeze({ path: "/settings/wallet", label: "Wallet", hint: "Link your Solana wallet (you sign; no key leaves it)" }),
   Object.freeze({ path: "/workspace/self-host", label: "Self-host", hint: "Run it on your own machines" }),
   Object.freeze({ path: "/workspace/packs/licenses", label: "Licenses", hint: "Your packs and licenses" }),
   Object.freeze({ path: "/workspace/skills", label: "Skills", hint: "Installed, learned and community skills" }),
