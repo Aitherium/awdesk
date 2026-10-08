@@ -528,6 +528,12 @@ const COMMANDS = Object.freeze([
     id: "osapp.control", label: "Aither Control…", group: "go", osApp: "control",
     surfaces: ["palette", "jumplist"],
   }),
+  // The customer Image Studio (craft brick B4, 2026-10-07): the Living OS `image-studio`
+  // window -- library, canvas mask, inpaint / edit / cut-out on the hosted credits lane.
+  Object.freeze({
+    id: "osapp.image-studio", label: "Image Studio…", group: "go", osApp: "image-studio",
+    surfaces: ["palette", "jumplist"],
+  }),
   Object.freeze({
     id: "fleet.gaming", label: "GPU sleep (game on)", group: "fleet",
     surfaces: ["tray", "palette"], fleet: "gpu-sleep", destructive: true,

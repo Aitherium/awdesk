@@ -12,7 +12,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { COMMANDS, conformance } = require("./command-registry.cjs");
 
-const APPS = ["family", "learn", "sprite", "academy", "spaces", "avatar", "control"];
+const APPS = ["family", "learn", "sprite", "academy", "spaces", "avatar", "control", "image-studio"];
 
 test("every Aither app has a palette + jump-list row", () => {
   for (const app of APPS) {
