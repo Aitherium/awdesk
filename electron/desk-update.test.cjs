@@ -58,7 +58,7 @@ test("a versioned AppImage moves to the new name; a stable name is replaced in p
 test("check: newer release -> verified, swapped in, executable, relaunched", async () => {
   const cur = oldAppImage();
   let relaunched = "";
-  const u = new du.DeskUpdater({ appimage: cur, version: "0.1.9", fetchImpl: fetcher(), env: {},
+  const u = new du.DeskUpdater({ arch: "x64", appimage: cur, version: "0.1.9", fetchImpl: fetcher(), env: {},
     relaunch: (p) => { relaunched = p; } });
   const r = await u.check();
   assert.equal(r.updated, true);
@@ -73,7 +73,7 @@ test("check: newer release -> verified, swapped in, executable, relaunched", asy
 test("check: a checksum mismatch installs nothing", async () => {
   const cur = oldAppImage();
   let relaunched = false;
-  const u = new du.DeskUpdater({ appimage: cur, version: "0.1.9", env: {},
+  const u = new du.DeskUpdater({ arch: "x64", appimage: cur, version: "0.1.9", env: {},
     fetchImpl: fetcher({ sums: `${"0".repeat(64)}  ${NAME}\n` }), relaunch: () => { relaunched = true; } });
   const r = await u.check();
   assert.equal(r.updated, false);
@@ -86,10 +86,10 @@ test("check: a checksum mismatch installs nothing", async () => {
 test("check: current version, no AppImage, or opted out -> nothing happens", async () => {
   const cur = oldAppImage();
   const relaunch = () => assert.fail("must not relaunch");
-  assert.equal((await new du.DeskUpdater({ appimage: cur, version: "0.1.10", env: {}, fetchImpl: fetcher(), relaunch })
+  assert.equal((await new du.DeskUpdater({ arch: "x64", appimage: cur, version: "0.1.10", env: {}, fetchImpl: fetcher(), relaunch })
     .check()).reason, "current");
-  assert.equal(await new du.DeskUpdater({ appimage: "", version: "0.1.9", env: {}, relaunch }).start(), false);
-  assert.equal(new du.DeskUpdater({ appimage: cur, version: "0.1.9", env: { AWDESK_NO_UPDATE: "1" }, relaunch })
+  assert.equal(await new du.DeskUpdater({ arch: "x64", appimage: "", version: "0.1.9", env: {}, relaunch }).start(), false);
+  assert.equal(new du.DeskUpdater({ arch: "x64", appimage: cur, version: "0.1.9", env: { AWDESK_NO_UPDATE: "1" }, relaunch })
     .enabled(), false);
 });
 
@@ -97,7 +97,7 @@ test("check: an install in progress defers the restart, the next check performs 
   const cur = oldAppImage("Desk.AppImage");
   let busy = true;
   let relaunched = "";
-  const u = new du.DeskUpdater({ appimage: cur, version: "0.1.9", env: {}, fetchImpl: fetcher(),
+  const u = new du.DeskUpdater({ arch: "x64", appimage: cur, version: "0.1.9", env: {}, fetchImpl: fetcher(),
     canRestart: () => !busy, relaunch: (p) => { relaunched = p; } });
   const first = await u.check();
   assert.equal(first.restarted, false);
@@ -244,9 +244,9 @@ test("opt-out: the setting (re-read every tick) and the env both stop every plat
   on = false;
   assert.equal((await u.check()).reason, "disabled");
   assert.equal(seen.length, 0, "not even the release API is asked");
-  assert.equal(new du.DeskUpdater({ kind: "mac", exe: "/Applications/Desk.app/Contents/MacOS/Desk",
+  assert.equal(new du.DeskUpdater({ arch: "x64", kind: "mac", exe: "/Applications/Desk.app/Contents/MacOS/Desk",
     env: { AWDESK_NO_UPDATE: "1" } }).enabled(), false);
-  assert.equal(new du.DeskUpdater({ kind: "deb", env: {}, allowed: () => false }).start(), false);
+  assert.equal(new du.DeskUpdater({ arch: "x64", kind: "deb", env: {}, allowed: () => false }).start(), false);
 });
 
 test("macOS: verified zip unpacked beside the bundle, swapped only on Restart to update", async () => {
