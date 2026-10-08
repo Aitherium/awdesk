@@ -254,6 +254,7 @@ const { isAllowedRendererNavigation } = require("./navigation-policy.cjs");
 const { parseProtocolUrl, voiceState } = require("./protocol-actions.cjs");
 const { lendProcessSpawner, startKvLend } = require("./kv-lend-electron.cjs");
 const { createDeviceConnect } = require("./device-connect.cjs");
+const { createNearbyDevices } = require("./nearby-devices.cjs");
 const { createLocalStackWindow } = require("./local-stack-window.cjs");
 const { DeskUpdater, installKind, safeReleaseUrl, updateTrayItems } = require("./desk-update.cjs");
 /** The running updater (null until the app is ready); its Windows installer runs on quit. */
@@ -304,6 +305,7 @@ function showUpdateNotice(update) {
 const { installLinuxIntegration } = require("./linux-integration.cjs");
 const { installMacIntegration } = require("./macos-integration.cjs");
 let deviceConnect = null;
+let nearbyDevices = null;
 let localStack = null;
 // "Connect this device" + "Lend memory" (kv-lend-electron.cjs); enroll links that arrive
 // before it starts are queued.
@@ -2418,6 +2420,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
   switch (id) {
     case "console.open": return void openConsole();
     case "device.connect": return void (deviceConnect && deviceConnect.open());
+    case "device.nearby": return void (nearbyDevices && nearbyDevices.open());
     case "local.install": return void (localStack && localStack.open());
     case "kvlend.toggle": {
       if (!kvLendRuntime) return;
@@ -4811,6 +4814,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       }
       deviceConnect = createDeviceConnect({ BrowserWindow, ipcMain, shell, runtime: kvLendRuntime, dataDir: app.getPath("userData") });
       if (!process.argv.some((a) => a.startsWith("desk://enroll"))) deviceConnect.maybeOpenFirstRun();
+      nearbyDevices = createNearbyDevices({ BrowserWindow, ipcMain, shell });
       localStack = createLocalStackWindow({ BrowserWindow, ipcMain, shell, dataDir: app.getPath("userData"),
         log: (line) => console.log(`[desk] ${line}`) });
       // Connected before this version existed (the Steam Deck on 0.1.9): the first launch

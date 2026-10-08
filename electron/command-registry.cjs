@@ -442,6 +442,12 @@ const COMMANDS = Object.freeze([
     id: "device.connect", label: "Connect this computer to my workspace…", menuLabel: "Connect this computer…",
     group: "fleet", surfaces: ["tray", "palette"],
   }),
+  // Nearby devices (nearby-devices.cjs): what is in pairing mode on this Wi-Fi, for 5 minutes;
+  // approving opens the signed-in Devices tab where the device's code and number are typed.
+  Object.freeze({
+    id: "device.nearby", label: "Add a nearby device…", menuLabel: "Nearby devices…",
+    group: "fleet", surfaces: ["tray", "palette"],
+  }),
   // Owner, 2026-10-04 (Steam Deck): nothing typed. awdk, awnode, awsh, household and mesh
   // install per-user from here (local-stack.cjs runs aitherium.com/install.sh).
   Object.freeze({

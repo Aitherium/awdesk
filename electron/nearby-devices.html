@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline';" />
+<title>Nearby devices</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<!-- Nearby devices: what is in pairing mode on this Wi-Fi (lan-pair.cjs). Names come from the
+     network and are NOT verified; every value is set with textContent, never as HTML. -->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--panel); color: var(--fg); font: 14px/1.5 var(--font-sans); }
+  main { padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; }
+  h1 { font-size: 18px; margin: 0; }
+  p { margin: 0; color: var(--muted); }
+  ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+  li .who { flex: 1; min-width: 0; }
+  li .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  li .meta { color: var(--muted); font-size: 12px; }
+  button { font: inherit; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--btn);
+    color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--brand, var(--agent-purple)); border-color: transparent; color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { min-height: 1.5em; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Nearby devices</h1>
+  <p>Devices on this Wi-Fi that are waiting to join. On the new device, choose "Add to my Aither" first. You will type the code it shows and check its 6-digit number.</p>
+  <ul id="list" aria-live="polite"></ul>
+  <div id="status" role="status"></div>
+  <div><button id="again">Look again</button></div>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let until = 0;
+  function render(devices) {
+    const ul = $("list");
+    ul.replaceChildren();
+    for (const d of devices) {
+      const li = document.createElement("li");
+      const who = document.createElement("div");
+      who.className = "who";
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = d.label || "Unnamed device";
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = d.class + " · name not verified";
+      who.append(name, meta);
+      const btn = document.createElement("button");
+      btn.className = "primary";
+      btn.textContent = "Approve…";
+      btn.onclick = async () => {
+        btn.disabled = true;
+        const r = await window.deskNearby.approve(d.rid);
+        $("status").textContent = r && r.ok
+          ? "Finish in your browser: type the code the device shows."
+          : "That device is no longer waiting.";
+        btn.disabled = false;
+      };
+      li.append(who, btn);
+      ul.append(li);
+    }
+    tick();
+  }
+  function tick() {
+    const left = Math.max(0, Math.round((until - Date.now()) / 1000));
+    const n = $("list").children.length;
+    if (!left) $("status").textContent = n ? "Stopped looking." : "Stopped looking. Nothing found.";
+    else if (!n) $("status").textContent = "Looking… (" + Math.ceil(left / 60) + " min left)";
+  }
+  async function start() {
+    const r = await window.deskNearby.start();
+    if (!r || !r.listening) { $("status").textContent = "This computer cannot listen on the network."; return; }
+    until = r.until;
+    render([]);
+  }
+  window.deskNearby.onChange(render);
+  $("again").onclick = start;
+  setInterval(tick, 5000);
+  start();
+</script>
+</body>
+</html>
