@@ -422,23 +422,39 @@ function awrelayBin() {
   return _awrelayBin;
 }
 
+/**
+ * The environment for an awrelay child: this process's env with the bearer as
+ * AWRELAY_TOKEN, which the awrelay CLI reads when --token is absent. No bearer
+ * -> AWRELAY_TOKEN is REMOVED rather than inherited, so the CLI falls back to
+ * its own session-bearer read exactly as before.
+ */
+function awrelayEnv() {
+  const env = { ...process.env };
+  const token = bearer();
+  if (token) env.AWRELAY_TOKEN = token;
+  else delete env.AWRELAY_TOKEN;
+  return env;
+}
+
 /** Run the awrelay CLI detached + windowless; resolve({code, stdout}). */
 function runAwrelay(args, execFn = spawn) {
   return new Promise((resolve) => {
-    // Global flags must come BEFORE the subcommand: a --token appended after
-    // `history` is parsed as a history option and refused ("unrecognized
-    // arguments") — measured live 2026-08-25, the deck then rendered the
-    // healthy relay as empty.
-    const token = bearer();
-    const fullArgs = ["--url", RELAY_URL];
-    if (token) fullArgs.push("--token", token);
-    fullArgs.push(...args);
+    // Global flags must come BEFORE the subcommand ("unrecognized arguments"
+    // otherwise -- measured live 2026-08-25).
+    //
+    // The bearer travels in the CHILD'S ENVIRONMENT, never on argv: this runs
+    // every few seconds and argv is readable by any process on the box (WMI
+    // Win32_Process.CommandLine, Task Manager, `ps`). Measured 2026-10-08: the
+    // session bearer sat in every process listing. relay-token-argv.test.cjs
+    // fails if any awrelay spawn passes --token again.
+    const fullArgs = ["--url", RELAY_URL, ...args];
     let stdout = "";
     let child;
     try {
       child = execFn(awrelayBin(), fullArgs, {
         windowsHide: true,
         stdio: ["ignore", "pipe", "ignore"],
+        env: awrelayEnv(),
       });
     } catch {
       resolve({ code: 2, stdout: "" });
@@ -741,6 +757,7 @@ module.exports = {
   _resetJoinForTests,
   _resetDoorForTests,
   _setBearerSourceForTests,
+  _runAwrelayForTests: runAwrelay,
   RELAY_URL,
   RELAY_CHANNEL,
   RELAY_NICK,
