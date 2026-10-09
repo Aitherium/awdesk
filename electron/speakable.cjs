@@ -21,7 +21,7 @@ const STAR = /(?<!\*)\*(?![*\s])([^*\n]{1,60}?)(?<!\s)\*(?!\*)/g;
 const UNDER = /(?<![\w_])_(?![_\s])([^_\n]{1,60}?)(?<!\s)_(?![\w_])/g;
 const PAREN = new RegExp(`\\((${WORDS})\\)`, "g");
 const SQUARE = new RegExp(`\\[(${WORDS})\\](?!\\()`, "g");
-const EMOJI = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{E0020}-\u{E007F}‍⃣⌀-⏿←-⇿〰〽㊗㊙]+/gu;
+const EMOJI = /(?:[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{E0020}-\u{E007F}\u{2300}-\u{23FF}\u{2190}-\u{21FF}\u{3030}\u{303D}\u{3297}\u{3299}]|[\u{FE00}-\u{FE0F}]|\u{200D}|\u{20E3})+/gu;
 const LINE_MARK = /^[ \t]*(#{1,6}|>|[-*+•]|\d+[.)])[ \t]+/gm;
 const MARKS = /(?<!\w)[*_]+|[*_]+(?!\w)|`+|~~|#+(?=\s)/g;
 const ORPHAN = /^[\s,.;:!?\-–—]+/;
