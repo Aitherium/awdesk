@@ -52,6 +52,73 @@ function transcribeHostFile(hostPath) {
   });
 }
 
+/** Aither's own recognizer in the cloud: POST {base}/api/voice/hear (multipart
+ *  `audio`, <= 60 s, any signed-in account; Veil verifies the session and sends
+ *  the clip to AitherVoice, which keeps nothing). The lane a customer's desk has
+ *  when no fleet runs beside it. Uses the user's own login (~/.aither/auth.json,
+ *  written by "Set up Aither" / `adk login`), else the desk session bearer.
+ *  Resolves the transcript ("" = nobody spoke), or null on ANY failure so the
+ *  caller falls through to the next lane. The token is never logged. */
+const CLOUD_HEAR_BASE = String(process.env.AWDESK_CLOUD_API_URL || "https://api.aitherium.com").replace(/\/+$/, "");
+const CLOUD_HEAR_PATH = "/api/voice/hear";
+const CLOUD_HEAR_MAX_BYTES = 10 * 1024 * 1024;
+
+function cloudToken() {
+  try {
+    const picked = require("./desk-session.cjs").readAuthStoreToken();
+    if (picked && picked.token) return picked.token;
+  } catch { /* no auth store: try the session bearer */ }
+  try { return require("./gateway-mcp.cjs").bearer(); } catch { return ""; }
+}
+
+/** The multipart body /api/voice/hear reads: one `audio` part. */
+function hearBody(audio, ext, boundary) {
+  return Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="audio"; filename="clip.${ext}"\r\n`
+      + "Content-Type: application/octet-stream\r\n\r\n"),
+    audio,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+}
+
+function transcribeCloud(hostPath, { base = CLOUD_HEAR_BASE, token, request = null } = {}) {
+  return new Promise((resolve) => {
+    const bearerToken = token === undefined ? cloudToken() : token;
+    if (!bearerToken) return resolve(null);
+    let audio;
+    try { audio = _fs.readFileSync(hostPath); } catch { return resolve(null); }
+    if (!audio.length || audio.length > CLOUD_HEAR_MAX_BYTES) return resolve(null);
+    const ext = (String(hostPath).split(".").pop() || "wav").toLowerCase();
+    const boundary = `awdesk${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+    const body = hearBody(audio, ext, boundary);
+    let req;
+    try {
+      const url = String(base).replace(/\/+$/, "") + CLOUD_HEAR_PATH;
+      const mod = request || require(url.startsWith("https:") ? "node:https" : "node:http");
+      req = mod.request(url, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${bearerToken}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": body.length,
+        },
+        timeout: 95000,
+      }, (res) => {
+        let t = ""; res.setEncoding("utf8");
+        res.on("data", (c) => { t += c; });
+        res.on("end", () => {
+          if (res.statusCode !== 200) return resolve(null);
+          try { const j = JSON.parse(t); resolve(typeof j.text === "string" ? j.text : null); } catch { resolve(null); }
+        });
+      });
+    } catch { return resolve(null); }
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+    req.end(body);
+  });
+}
+
 async function voiceStatus(call = callTool) {
   const text = await call("get_voice_status", {});
   return parseMaybeJson(text) ?? { note: text.slice(0, 300) };
@@ -97,7 +164,7 @@ async function voiceSnapshot(call = callTool) {
   }
 }
 
-module.exports = { voiceStatus, listVoices, synthesize, transcribe, transcribeHostFile, voiceSnapshot };
+module.exports = { voiceStatus, listVoices, synthesize, transcribe, transcribeHostFile, transcribeCloud, voiceSnapshot };
 
 if (require.main === module) {
   // Self-test: read-only. Exit 0 = service up, 1 = service down/unreachable

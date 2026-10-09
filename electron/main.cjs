@@ -4038,6 +4038,14 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
           const { transcribeHostFile } = require("./voice-client.cjs");
           const shimText = await transcribeHostFile(wav);
           if (shimText && shimText.trim()) { fs.unlink(wav, () => {}); return shimText.trim(); }
+        } catch { /* fall through to the cloud lane */ }
+        // Aither's recognizer in the cloud (POST /api/voice/hear with the user's own
+        // login): the lane a desk has when no fleet runs beside it. "" is an honest
+        // "nobody spoke"; null means try the gateway lane.
+        try {
+          const { transcribeCloud } = require("./voice-client.cjs");
+          const cloudText = await transcribeCloud(wav);
+          if (cloudText !== null) { fs.unlink(wav, () => {}); return cloudText.trim(); }
         } catch { /* fall through to the gateway lane */ }
         const staged = stagePath(wav);
         let out;
