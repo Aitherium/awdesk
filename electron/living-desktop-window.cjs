@@ -168,6 +168,14 @@ ipcMain.handle("living-desktop:thread-get", async (event) => {
   if (!fromOverlay(event) || !overlayHost || typeof overlayHost.thread !== "function") return { threadId: null };
   return { threadId: overlayHost.thread().get() };
 });
+// The Aither Browser as an OS window (aither-host/1 desk-window, browser-in-online.cjs).
+// From the OVERLAY window only: the app window and the browser's own Online tab never
+// frame the browser. main lays the browser over the rect, in this window's coordinates.
+ipcMain.on("living-desktop:desk-window", (event, msg) => {
+  if (!isOpen() || event.sender !== desktopWin.webContents) return;
+  if (!overlayHost || typeof overlayHost.window !== "function") return;
+  overlayHost.window(msg && typeof msg === "object" ? msg : {}, desktopWin);
+});
 ipcMain.on("living-desktop:desk-command", (event, id) => {
   if (!fromOverlay(event) || !overlayHost || typeof overlayHost.command !== "function") return;
   overlayHost.command(String(id || ""));
@@ -558,7 +566,20 @@ function wireHostFocus(win) {
     if (win.isDestroyed()) return;
     try { win.webContents.send("living-desktop:host-focus", focused); } catch { /* closing */ }
   };
-  win.on("blur", () => send(false));
+  // A click into a window this one OWNS (the Aither Browser inside Online,
+  // browser-in-online.cjs) is attention staying in the OS, not leaving it: sweeping the
+  // windows aside would hide the very browser the owner just clicked.
+  const children = () => {
+    try { return typeof win.getChildWindows === "function" ? win.getChildWindows() : []; } catch { return []; }
+  };
+  win.on("blur", () => {
+    if (!children().length) return send(false);
+    setTimeout(() => {
+      if (win.isDestroyed()) return;
+      const inside = children().some((c) => c && !c.isDestroyed() && c.isFocused());
+      if (!inside) send(false);
+    }, 60);
+  });
   win.on("focus", () => send(true));
 }
 
@@ -724,14 +745,25 @@ let deskStateProvider = null;
 function setDeskStateProvider(fn) {
   deskStateProvider = fn;
 }
+/**
+ * The overlay frames an open browser as an OS window (browser-in-online.cjs): only its
+ * copy of the snapshot says `browser.frame`. The browser's own pinned Online tab gets the
+ * plain snapshot, so it never frames the window it lives in.
+ */
+function framedForOverlay(snapshot) {
+  const b = snapshot && snapshot.browser;
+  if (!b || typeof b !== "object" || !b.open) return snapshot;
+  return { ...snapshot, browser: { ...b, frame: true } };
+}
 function pushDeskState() {
   if (typeof deskStateProvider !== "function") return;
   const targets = [...(isOpen() ? [desktopWin.webContents] : []), ...extraHostContents()];
   if (!targets.length) return;
   const snapshot = deskStateProvider();
   if (!snapshot) return;
+  const overlayWc = isOpen() ? desktopWin.webContents : null;
   for (const wc of targets) {
-    try { wc.send("living-desktop:desk-state", snapshot); } catch { /* gone mid-push */ }
+    try { wc.send("living-desktop:desk-state", wc === overlayWc && desktopWin.isVisible() ? framedForOverlay(snapshot) : snapshot); } catch { /* gone mid-push */ }
   }
 }
 
@@ -936,10 +968,13 @@ module.exports = {
   setOverlayHost,
   setExtraHosts,
   pushDeskState,
+  framedForOverlay,
   pushHostAuth,
   pushHostThread,
   pushOsCommand,
   isOpen,
+  /** The overlay is up and on screen (browser-in-online.cjs: inside Online only then). */
+  isOverlayVisible: () => isOpen() && desktopWin.isVisible(),
   onVisibilityChange,
   wireHostFocus,
   LOG_FILE,

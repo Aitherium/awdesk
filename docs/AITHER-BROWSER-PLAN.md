@@ -199,5 +199,12 @@ away without the others moving:
     `chrome.identity.launchWebAuthFlow` -- an auth window on the extension's own session,
     resolving on the first navigation to `https://<id>.chromiumapp.org/`, in the extension's
     page AND its MV3 worker. `npm run test:awconnect-webauth`.
-23. **Next.** Hide the avatar's own bead rail and speech bubble while it is docked (the rail
-    already holds those doors). When the overlay is up, the browser sits inside AitherOS Online.
+23. **The browser sits inside Online: first slice SHIPPED.** While the overlay is up with the
+    browser open, the overlay's desk-state says `browser.frame` and the OS opens an `Aither
+    Browser` window (Veil `desk-browser-window.tsx`): in the taskbar and stage strip, focused,
+    minimized and closed by the window manager. Its body's rect goes to the desk as
+    aither-host/1 `desk-window` (overlay window only), and `browser-in-online.cjs` makes the
+    browser an owned window of the overlay laid over that body; minimize or a stage sweep hides
+    it, closing the OS window or hiding the overlay puts it back where it was. Known edge: an
+    owned window sits above every OS window, so another OS window cannot overlap it yet.
+    Still next: hide the avatar's own bead rail and speech bubble while it is docked.

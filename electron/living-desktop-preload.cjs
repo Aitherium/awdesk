@@ -152,6 +152,18 @@ window.addEventListener("message", async (event) => {
   } else if (data.__aither === "os-page-context-request") {
     const context = await ipcRenderer.invoke("living-desktop:host-context").catch(() => null);
     if (context) reply({ __aither: "os-page-context", context });
+  } else if (data.__aither === "desk-window") {
+    // The browser as an OS window (browser-in-online.cjs): where the OS drew its frame's
+    // body, or that the frame went away. The overlay only -- the browser's own Online tab
+    // never frames itself. Shaped here; main re-checks it and takes it from the overlay
+    // window alone. No user gesture needed: the frame follows drags and the window manager.
+    if (browserTab || data.id !== "browser") return;
+    const state = ["shown", "hidden", "detached"].includes(data.state) ? data.state : "";
+    if (!state) return;
+    const r = data.rect && typeof data.rect === "object" ? data.rect : null;
+    const rect = r && [r.x, r.y, r.w, r.h].every((n) => typeof n === "number" && Number.isFinite(n))
+      ? { x: r.x, y: r.y, w: r.w, h: r.h } : null;
+    ipcRenderer.send("living-desktop:desk-window", { state, rect, focus: data.focus === true });
   } else if (data.__aither === "desk-command") {
     // A HUMAN click only. "Let the agent continue" lifts the owner's pause, so a
     // page script must not be able to send it on its own: the page's transient

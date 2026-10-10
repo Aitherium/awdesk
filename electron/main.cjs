@@ -153,6 +153,7 @@ const {
 // browser_* tools) while the owner watches and can take over.
 const browserWindow = require("./browser-window.cjs");
 const { createAvatarDock, DOCKED_CSS } = require("./avatar-dock.cjs");
+const { createBrowserInOnline } = require("./browser-in-online.cjs");
 // The aither:// scheme: every console pane as a page of the Aither Browser (plan
 // slices 8+9). Privileged schemes must be registered BEFORE app ready, exactly once.
 const browserInternal = require("./browser-internal.cjs");
@@ -2823,6 +2824,9 @@ function deckStateFor(sender) {
 // { __aither: 'desk-state' } postMessages (relayed by living-desktop-preload.cjs).
 // Polled lightly: deckState() is cheap and the overlay is a separate renderer, so
 // nothing here can lag the avatar window.
+// Slice 23: while the overlay is up, the Aither Browser is a window OF AitherOS Online
+// (browser-in-online.cjs): the OS draws its frame, the browser is laid over the body.
+const browserInOnline = createBrowserInOnline({ browser: () => browserWindow.getWindow() });
 setDeskStateProvider(() => ({ ...deckState(), browser: overlayBrowserHost.browserSummary(browserWindow.getState()) }));
 // AitherOS Online on the desk drives and reads the Aither Browser through the SAME
 // agent dispatcher every MCP browser_* tool uses (gate + tab ownership), and its
@@ -2839,6 +2843,8 @@ setOverlayHost({
   thread: () => browserWindow.getDeskThread(),
   // Local-node calls from a desk-hosted OS page: the awconnect overlay's own allowlist.
   local: (msg) => browserWindow.overlayAnswer(msg),
+  // The browser as an OS window of the overlay (aither-host/1 desk-window).
+  window: (msg, overlay) => browserInOnline.apply(msg, overlay),
   command: (id) => {
     if (!overlayBrowserHost.allowedCommand(id)) return;
     if (id === "browser.open") browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
@@ -2920,6 +2926,7 @@ async function applyDockedCss() {
   } catch { /* a page mid-load: did-finish-load applies it */ }
 }
 browserWindow.onGeometry((reason) => {
+  if (reason === "closed") browserInOnline.browserClosed();
   if (reason === "closed") avatarDock.browserClosed();
   else avatarDock.sync();
 });
@@ -2938,7 +2945,12 @@ async function refreshLinkedRole() {
 void refreshLinkedRole();
 setInterval(() => void refreshLinkedRole(), 10 * 60 * 1000).unref?.();
 // One taskbar owner: the browser's strip hides while the desktop overlay (and its dock) is up.
-require("./living-desktop-window.cjs").onVisibilityChange(() => browserWindow.refreshShell());
+require("./living-desktop-window.cjs").onVisibilityChange(() => {
+  browserWindow.refreshShell();
+  // Online went away: the browser is its own window again, where it was before.
+  if (!require("./living-desktop-window.cjs").isOverlayVisible()) browserInOnline.detach();
+  pushDeskState();
+});
 browserWindow.setShellHost({
   isOwner: () => linkedRole === "owner",
   signedIn: () => Boolean(desktopAccount() && desktopAccount().signedIn),

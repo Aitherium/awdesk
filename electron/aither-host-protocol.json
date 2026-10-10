@@ -15,7 +15,7 @@
     "site": "the host page's site adapter and its right-click (os-site-adapter, os-host-contextmenu)",
     "focus": "attention left the OS (os-host-focus)",
     "interactive": "take or release pointer input (os-interactive)",
-    "desk": "awdesk state and its fixed command allowlist",
+    "desk": "awdesk state, its fixed command allowlist, and the browser as an OS window (desk-window)",
     "thread": "the one server conversation thread every surface shares (os-thread)",
     "command": "open a surface such as awsh from anywhere (os-command)"
   },
@@ -54,6 +54,7 @@
     "desk-command": { "dir": "os→host", "plane": "desk", "fields": [ "id" ] },
     "desk-open-app": { "dir": "host→os", "plane": "desk", "fields": [ "id" ] },
     "desk-open-app-ok": { "dir": "os→host", "plane": "desk", "fields": [ "id" ] },
+    "desk-window": { "dir": "os→host", "plane": "desk", "fields": [ "id", "state", "rect", "focus" ] },
     "os-thread": { "dir": "both", "plane": "thread", "fields": [ "threadId", "title", "source" ] },
     "os-command": { "dir": "both", "plane": "command", "fields": [ "id", "args" ] }
   }
