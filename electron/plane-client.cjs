@@ -2,44 +2,38 @@
 
 /**
  * plane-client — read-only status of the platform planes (Strata, Pulse, Watch,
- * Flux, Nexus) for the console's plane pages.
+ * Flux, Nexus, Mesh) for the console's plane pages.
  *
- * CONTRACT, same as ops-client.cjs: the ONLY transport is gateway-mcp.cjs. Each
- * plane is a fixed list of READS -- existing gateway MCP tools, named here and
- * nowhere else (AitherOS/apps/awnode/tools/mcp/: mcp_strata.py, mcp_watch.py,
- * mcp_flux_context.py, mcp_search.py, mcp_services.py). No plane page can run a
- * mutating tool: watch_restart_component, /disk/reclaim and every artifact
- * write are absent from this table on purpose, and planeHandlers refuses any
- * plane id that is not in it.
+ * TRANSPORT: Veil's operator-only route GET https://api.aitherium.com/api/admin/planes/<id>
+ * (AitherVeil src/app/api/admin/planes/[plane]/route.ts, table lib/plane-reads.ts),
+ * carrying the desk's ONE identity -- the Online session's platform bearer
+ * (browser-window onlineToken(), the same bearer desk-thread.cjs sends to
+ * api.aitherium.com). Veil verifies that bearer at Identity, requires a platform
+ * operator, and reads the services in-network with the fleet internal key.
+ *
+ * Why not the gateway any more: these reads were gateway MCP tools (get_strata_stats,
+ * pulse_disk_status, ...) that the gateway's tier rules refuse to the owner's platform
+ * tier ("Tool 'get_strata_stats' is not available on the platform tier"). Those tier
+ * rules are the owner's call and are not changed; the read data comes through Veil.
+ *
+ * Read-only by construction: each plane is a fixed list of read ids that Veil maps to
+ * fixed GETs; there is no verb here but a snapshot, and planeHandlers refuses any
+ * plane id that is not in PLANES.
  *
  * 🚩 A failure must never read as an empty result. Every read is answered on
  * its own ({ok:true,data} | {ok:false,error}), so one dead service costs its
- * own section, and a tool that answers {"error": ...} is a FAILED read, never
- * "nothing to show" -- the same rule ops-client.cjs carries.
+ * own section; a whole-route failure (signed out, 403, offline) fails every read,
+ * and each then falls back to its own last good answer (last-good-cache.cjs).
  */
 
-const { callTool } = require("./gateway-mcp.cjs");
-
-/**
- * Genesis /services row for a plane: is the service itself up.
- *
- * 🚩 Genesis GET /services IGNORES the `services` filter and answers the whole
- * services.yaml inventory (~160 rows). The arg is still sent (harmless, and
- * right if Genesis ever honours it), but `service` names the ONE row this
- * plane is about and pickServiceRow() keeps only that row -- otherwise every
- * plane page graded the whole fleet.
- */
-function serviceRead(name) {
-  return Object.freeze({
-    id: "service", label: `${name} service`, tool: "get_service_status", service: name,
-    args: Object.freeze({ services: name }),
-  });
-}
+const API_BASE = "https://api.aitherium.com";
+const ROUTE = "/api/admin/planes/";
+const FETCH_TIMEOUT_MS = 45000;
 
 /**
  * Keep only `name`'s row of a /services answer: {service, listed, services:{Name: row}}.
- * A missing row is `listed:false` with no rows -- the page says "not listed",
- * never borrows another service's status. A non-inventory answer is passed through.
+ * Veil already picks the row; this stays so a full inventory can never grade a page.
+ * A missing row is `listed:false` with no rows. A non-inventory answer is passed through.
  */
 function pickServiceRow(name, data) {
   const rows = data && !Array.isArray(data) && data.services && typeof data.services === "object"
@@ -60,50 +54,53 @@ function pickServiceRow(name, data) {
   return { service: name, listed: true, services: { [key]: rows[key] } };
 }
 
+/** One read: its id in Veil's table, its card label, and the upstream it names. */
+function readSpec(id, label, tool, extra = {}) {
+  return Object.freeze({ id, label, tool, ...extra });
+}
+function serviceRead(name) {
+  return readSpec("service", `${name} service`, "genesis /services", { service: name });
+}
+
 const PLANES = Object.freeze({
   strata: Object.freeze({
     label: "Strata", hint: "Storage tiers, artifacts, health",
     reads: Object.freeze([
       serviceRead("Strata"),
-      Object.freeze({ id: "stats", label: "Tiers and health", tool: "get_strata_stats", args: Object.freeze({}) }),
-      Object.freeze({
-        id: "artifacts", label: "Recent artifacts (warm)", tool: "list_artifacts",
-        args: Object.freeze({ tier: "warm", limit: 25 }),
-      }),
+      readSpec("stats", "Tiers and health", "strata /strata/stats"),
+      readSpec("pools", "Storage tier pools", "strata /disks/pools"),
+      readSpec("artifacts", "Recent artifacts (warm)", "strata /strata/list/warm/artifacts"),
     ]),
   }),
   pulse: Object.freeze({
     label: "Pulse", hint: "Platform heartbeat and disk headroom",
     reads: Object.freeze([
       serviceRead("Pulse"),
-      Object.freeze({ id: "disk", label: "Disk headroom", tool: "pulse_disk_status", args: Object.freeze({}) }),
+      readSpec("disk", "Disk headroom", "pulse /disk/status"),
     ]),
   }),
   watch: Object.freeze({
     label: "Watch", hint: "Startup state, plugins, alerts",
     reads: Object.freeze([
       serviceRead("Watch"),
-      Object.freeze({ id: "alerts", label: "Plugin alerts", tool: "watch_plugin_alerts", args: Object.freeze({}) }),
-      Object.freeze({ id: "startup", label: "Startup status", tool: "watch_startup_status", args: Object.freeze({}) }),
-      Object.freeze({ id: "plugins", label: "Loaded plugins", tool: "watch_list_plugins", args: Object.freeze({}) }),
+      readSpec("alerts", "Plugin alerts", "watch /plugins/alerts"),
+      readSpec("startup", "Startup status", "watch /debug/all-startup"),
+      readSpec("plugins", "Loaded plugins", "watch /plugins"),
     ]),
   }),
   flux: Object.freeze({
-    label: "Flux", hint: "Live system context and events",
+    label: "Flux", hint: "Event bus: stats and connected services",
     reads: Object.freeze([
       serviceRead("Flux"),
-      Object.freeze({ id: "context", label: "System context", tool: "flux_context", args: Object.freeze({ aspect: "all" }) }),
-      Object.freeze({
-        id: "events", label: "Recent events", tool: "flux_recent_events",
-        args: Object.freeze({ event_type: "", limit: 30 }),
-      }),
+      readSpec("stats", "Event bus stats", "flux /stats"),
+      readSpec("services", "Services on the bus", "flux /services"),
     ]),
   }),
   nexus: Object.freeze({
-    label: "Nexus", hint: "Knowledge search and mirrored bases",
+    label: "Nexus", hint: "Knowledge collections",
     reads: Object.freeze([
       serviceRead("Nexus"),
-      Object.freeze({ id: "kbs", label: "Knowledge bases", tool: "list_knowledge_bases", args: Object.freeze({}) }),
+      readSpec("collections", "Knowledge collections", "nexus /collections"),
     ]),
   }),
   // The distributed fleet (owner, 2026-10-04: "aithermesh / aithernet home LAN and
@@ -113,9 +110,9 @@ const PLANES = Object.freeze({
     label: "Mesh", hint: "Your machines: nodes, storage, network policy",
     reads: Object.freeze([
       serviceRead("Mesh"),
-      Object.freeze({ id: "nodes", label: "Compute nodes", tool: "compute_list_nodes", args: Object.freeze({ include_offline: true }) }),
-      Object.freeze({ id: "storage", label: "Storage by machine", tool: "storage_nodes", args: Object.freeze({}) }),
-      Object.freeze({ id: "policies", label: "AitherNet policies", tool: "aithernet_policies", args: Object.freeze({}) }),
+      readSpec("nodes", "Compute nodes", "genesis /compute/nodes"),
+      readSpec("storage", "Storage by machine", "genesis /api/v1/storage/nodes"),
+      readSpec("policies", "AitherNet policies", "aithernet /policies"),
     ]),
   }),
 });
@@ -156,22 +153,65 @@ function errorText(error) {
 }
 
 /**
- * Build a client over an injectable `call(name, args) -> Promise<string>`
- * (gateway-mcp's callTool by default) so tests need no live gateway.
+ * The default transport: one GET per plane to Veil with the desk's Online bearer.
+ * Resolves Veil's body ({plane, reads:{id:{ok,data}|{ok:false,error}}}); throws on a
+ * missing bearer, a non-200 or an unusable body -- the caller turns that into a
+ * failed read for every read of the plane.
+ */
+function veilPlaneFetcher({ token, fetchImpl = globalThis.fetch, apiBase = API_BASE, timeoutMs = FETCH_TIMEOUT_MS } = {}) {
+  return async function fetchPlane(planeId) {
+    let bearer = null;
+    try { bearer = token ? await token() : null; } catch { bearer = null; }
+    if (!bearer) throw new Error("signed out: sign in on the desk to read the platform planes");
+    let res;
+    try {
+      res = await fetchImpl(`${apiBase}${ROUTE}${encodeURIComponent(planeId)}`, {
+        headers: { Authorization: `Bearer ${bearer}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      throw new Error(`plane route unreachable: ${errorText(error)}`);
+    }
+    const text = await res.text().catch(() => "");
+    if (res.status === 401) throw new Error("HTTP 401: the desk session is not signed in (or expired) -- sign in again");
+    if (res.status === 403) throw new Error("HTTP 403: platform operator only");
+    if (!res.ok) throw new Error(`HTTP ${res.status}${text ? `: ${text.trim().slice(0, 200)}` : ""}`);
+    const body = parseToolJson("plane route", text);
+    if (!body || typeof body.reads !== "object" || body.reads === null || Array.isArray(body.reads)) {
+      throw new Error("plane route: answer has no reads");
+    }
+    return body;
+  };
+}
+
+/** The desk's Online bearer, resolved lazily so requiring this module needs no Electron. */
+function deskToken() {
+  return require("./browser-window.cjs").onlineToken();
+}
+
+/**
+ * Build a client over an injectable `fetchPlane(planeId) -> Promise<{reads}>` (Veil by
+ * default) so tests need no network.
  *
  * `store` (last-good-cache.cjs) keeps each read's last good answer on disk. A failed
  * read with a saved answer comes back `ok:true, stale:true` with `savedAt` and the live
  * `error`, so the page shows the offline copy under a stale pill instead of a blank
  * card. A failed read with nothing saved is still `ok:false` -- never an empty result.
  */
-function createPlaneClient({ call = callTool, now = () => Date.now(), store = null } = {}) {
-  async function read(spec, planeId) {
-    const started = now();
+function createPlaneClient({ fetchPlane = veilPlaneFetcher({ token: deskToken }), now = () => Date.now(), store = null } = {}) {
+  function answerOf(spec, body) {
+    const r = body.reads[spec.id];
+    if (!r || typeof r !== "object") throw new Error(`${spec.tool}: the plane route did not answer this read`);
+    if (r.ok !== true) throw new Error(String(r.error || `${spec.tool}: failed`));
+    if (r.data == null || typeof r.data !== "object") throw new Error(`${spec.tool}: empty answer`);
+    return spec.service ? pickServiceRow(spec.service, r.data) : r.data;
+  }
+
+  function settle(spec, planeId, started, body, failure) {
     const key = `plane-${planeId}-${spec.id}`;
     try {
-      const text = await call(spec.tool, { ...spec.args });
-      const parsed = parseToolJson(spec.tool, text);
-      const data = spec.service ? pickServiceRow(spec.service, parsed) : parsed;
+      if (failure) throw failure;
+      const data = answerOf(spec, body);
       if (store) store.remember(key, data);
       return { id: spec.id, label: spec.label, tool: spec.tool, ok: true, data, ms: now() - started };
     } catch (error) {
@@ -189,12 +229,16 @@ function createPlaneClient({ call = callTool, now = () => Date.now(), store = nu
     planes: () => PLANE_IDS.map((id) => ({ id, label: PLANES[id].label, hint: PLANES[id].hint,
       tools: PLANES[id].reads.map((r) => r.tool) })),
 
-    /** Every read of one plane, in parallel; never throws for a failed READ. */
+    /** Every read of one plane (one route call); never throws for a failed READ. */
     snapshot: async (planeId) => {
       const id = String(planeId || "");
       const plane = Object.prototype.hasOwnProperty.call(PLANES, id) ? PLANES[id] : null;
       if (!plane) throw new Error(`unknown plane ${id || "(none)"}`);
-      const reads = await Promise.all(plane.reads.map((spec) => read(spec, id)));
+      const started = now();
+      let body = null;
+      let failure = null;
+      try { body = await fetchPlane(id); } catch (error) { failure = error instanceof Error ? error : new Error(errorText(error)); }
+      const reads = plane.reads.map((spec) => settle(spec, id, started, body, failure));
       const failed = reads.filter((r) => !r.ok).length;
       const stale = reads.filter((r) => r.stale).length;
       return { plane: id, label: plane.label, hint: plane.hint, at: new Date(now()).toISOString(),
@@ -203,4 +247,4 @@ function createPlaneClient({ call = callTool, now = () => Date.now(), store = nu
   };
 }
 
-module.exports = { createPlaneClient, parseToolJson, pickServiceRow, PLANES, PLANE_IDS };
+module.exports = { createPlaneClient, veilPlaneFetcher, parseToolJson, pickServiceRow, PLANES, PLANE_IDS, API_BASE, ROUTE };

@@ -187,7 +187,7 @@ const PANES = Object.freeze([
     kind: "file", file: "bricks.html",
   }),
   // One read-only status page per platform plane, all rendered by plane-page.js
-  // over plane-client.cjs's fixed reads (gateway MCP tools). Detach opens the
+  // over plane-client.cjs's fixed reads (Veil /api/admin/planes). Detach opens the
   // same page in plane-window.cjs, one window per plane.
   Object.freeze({
     id: "strata", label: "Strata", hint: "Storage tiers, artifacts, health", section: "Planes", icon: "database",
@@ -202,11 +202,11 @@ const PANES = Object.freeze([
     kind: "file", file: "plane-watch.html",
   }),
   Object.freeze({
-    id: "flux", label: "Flux", hint: "Live system context and events", section: "Planes", icon: "zap",
+    id: "flux", label: "Flux", hint: "Event bus: stats and connected services", section: "Planes", icon: "zap",
     kind: "file", file: "plane-flux.html",
   }),
   Object.freeze({
-    id: "nexus", label: "Nexus", hint: "Knowledge search and bases", section: "Planes", icon: "network",
+    id: "nexus", label: "Nexus", hint: "Knowledge collections", section: "Planes", icon: "network",
     kind: "file", file: "plane-nexus.html",
   }),
   Object.freeze({

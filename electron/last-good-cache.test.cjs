@@ -135,12 +135,15 @@ test("spend page: budget view per window, day bars fill gaps, share, stale line"
 test("plane client: a failed read serves its last good answer stale; snapshot counts stale apart from failed", async () => {
   const store = createLastGoodCache({ dir: tmpDir() });
   let down = false;
-  const call = async (tool) => {
-    if (down) throw new Error("gateway 502");
-    if (tool === "get_service_status") return JSON.stringify({ services: { Nexus: { status: "running" } } });
-    return JSON.stringify({ bases: ["docs"] });
+  const fetchPlane = async (planeId) => {
+    if (down) throw new Error("plane route 502");
+    if (planeId !== "nexus") throw new Error("plane route 502");
+    return { ok: true, reads: {
+      service: { ok: true, data: { services: { Nexus: { status: "running" } } } },
+      collections: { ok: true, data: { bases: ["docs"] } },
+    } };
   };
-  const client = createPlaneClient({ call, store });
+  const client = createPlaneClient({ fetchPlane, store });
   const live = await client.snapshot("nexus");
   assert.equal(live.ok, true);
   assert.equal(live.stale, 0);
@@ -149,14 +152,14 @@ test("plane client: a failed read serves its last good answer stale; snapshot co
   assert.equal(offline.failed, 0);
   assert.equal(offline.stale, 2);
   assert.equal(offline.ok, false);
-  const kbs = offline.reads.find((r) => r.id === "kbs");
+  const kbs = offline.reads.find((r) => r.id === "collections");
   assert.deepEqual(kbs.data, { bases: ["docs"] });
-  assert.match(kbs.error, /gateway 502/);
+  assert.match(kbs.error, /plane route 502/);
   // A plane never read live has nothing to fall back on.
   const strata = await client.snapshot("strata");
-  assert.equal(strata.failed, 3);
+  assert.equal(strata.failed, strata.reads.length);
   const page = loadPage("plane-page.js");
-  assert.match(page.staleNote(kbs), /Offline copy from .* -- live read failed: gateway 502/);
+  assert.match(page.staleNote(kbs), /Offline copy from .* -- live read failed: plane route 502/);
   const card = page.spendCardModel({ ok: true, stale: true, savedAt: "2026-10-10T00:00:00Z", data: shapeSpend(report()) });
   assert.equal(card.tone, "warn");
   assert.match(card.lines[0], /Offline copy/);
