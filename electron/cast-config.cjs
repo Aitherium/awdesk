@@ -137,6 +137,13 @@ const SCALE_MAX = 10;
 
 const PRESENCE_LEVELS = ["off", "quiet", "normal", "chatty"];
 
+/** What renders a body: the VRM model (default) or a picture of Virt-A-Mate
+ *  (vam-avatar.cjs -- the DarkLink frame server on 127.0.0.1:9341 shows it, the
+ *  avatar server on 127.0.0.1:9342 moves its face). One VaM process renders one
+ *  Person, so main honours `vam` for the RESIDENT body only; any other actor
+ *  resolves the field but keeps its VRM. */
+const AVATAR_SOURCES = ["vrm", "vam"];
+
 /** Loudness is a MIXER, not an override: the effective gain is the master
  *  fader times the speaker's own fader. An override would make "turn everyone
  *  down" a walk through every record, and would let one authored actor ignore
@@ -474,6 +481,7 @@ const ACTOR_FIELDS = Object.freeze({
   body: vBool,
   place: vPlace,
   physics: vPhysics,
+  avatar: (v) => vEnum(v, AVATAR_SOURCES),
   cooldownSeconds: (v) => vNumber(v, { min: 0 }),
   idleSeconds: (v) => vInt(v, { min: 30 }),
   maxChars: (v) => vInt(v, { min: 40, max: 2000 }),
@@ -831,6 +839,8 @@ function validateAppearance(raw, problems) {
  *   jiggle 0-2 } -- multipliers over the model's authored springs, resolved
  *   per sub-key (see PHYSICS_FIELDS). The resident avatar (slot0) reads
  *   `actors["service:awdesk"]`, the same key its own voice does.
+ * ActorConfig.avatar: "vrm" (default) | "vam" -- what renders the body. Only
+ *   the resident honours "vam" (vam-avatar.cjs; one VaM renders one Person).
  *
  * @returns {{config: object|null, problems: Array<{path,value,reason}>, fatal: boolean}}
  *   `fatal` marks a whole-file, parse-class refusal (not an object, or a
@@ -1808,6 +1818,7 @@ function resolveActor(snapshot, ctx = {}) {
   const speakHit = pick("speak");
   const speak = speakHit ? speakHit.value : BUILTIN_ACTOR.speak;
   const bodyHit = pick("body");
+  const avatarHit = pick("avatar");
   const body = bodyHit ? bodyHit.value : BUILTIN_ACTOR.body;
   const placeHit = pick("place");
   const displayNameHit = pick("displayName");
@@ -1949,6 +1960,8 @@ function resolveActor(snapshot, ctx = {}) {
     speakFrom: speakHit ? speakHit.from : "builtin",
     body,
     bodyFrom: bodyHit ? bodyHit.from : "builtin",
+    avatar: avatarHit ? avatarHit.value : "vrm",
+    avatarFrom: avatarHit ? avatarHit.from : "builtin",
     place: placeHit ? placeHit.value : null,
     placeFrom: placeHit ? placeHit.from : "builtin",
     physics,
@@ -2171,6 +2184,7 @@ module.exports = {
   setAgentMuted,
   setAllMuted,
   ACTOR_FIELDS,
+  AVATAR_SOURCES,
   BUILTIN_INPUT,
   INPUT_FIELDS,
   TALK_MODES,

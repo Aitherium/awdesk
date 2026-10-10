@@ -1220,3 +1220,39 @@ body {
 .deck-relay-kind-finding { color: var(--background); background: var(--pastel-sky); }
 .deck-relay-kind-ack { color: var(--surface-300); background: var(--surface-800); }
 .deck-relay-to { font-size: 11px; color: var(--deck-muted); margin-right: 8px; }
+
+/* The `vam` avatar source (src/components/VamAvatarView.tsx): VaM's window as
+   the resident body, under the canvas so spawned VRM bodies still stand in
+   front of it; the badge says why a requested VaM is not on screen. */
+.vam-avatar {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
+}
+
+.app canvas {
+  position: relative;
+  z-index: 1;
+}
+
+.avatar-source-badge {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 5;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(20, 20, 28, 0.78);
+  color: #f2f2f5;
+  font: 11px/1.3 system-ui, sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}

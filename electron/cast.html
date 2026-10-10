@@ -467,6 +467,23 @@ function actorRow({ key, title, subtitle, resolution, record, tag, resident = fa
   });
   controls.appendChild(volumeBlock);
 
+  if (resident) {
+    // The resident's BODY: its VRM model, or a live picture of Virt-A-Mate
+    // (vam-avatar.cjs). One VaM renders one Person, so only the resident offers it.
+    const avatarSelect = document.createElement("select");
+    for (const [value, text] of [["vrm", "VRM model"], ["vam", "VaM (Virt-A-Mate)"]]) {
+      const opt = el("option", null, text);
+      opt.value = value;
+      avatarSelect.appendChild(opt);
+    }
+    avatarSelect.value = (resolution ? resolution.avatar : record && record.avatar) || "vrm";
+    avatarSelect.addEventListener("change", () => {
+      void call(window.aitherCast.setActor(key, { avatar: avatarSelect.value }), "Avatar");
+      void refresh();
+    });
+    controls.appendChild(fieldBlock("Avatar", avatarSelect, resolution ? resolution.avatarFrom : null));
+  }
+
   if (!resident) {
   const presenceSelect = document.createElement("select");
   for (const level of PRESENCE_LEVELS) {

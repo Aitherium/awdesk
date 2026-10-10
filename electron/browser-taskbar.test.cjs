@@ -117,5 +117,5 @@ test("the shared preload marks data-host=desk in the BROWSER TAB only; the deskt
   assert.deepEqual(load(["electron"]), { aither: "desk", host: null, stored: null }, "the Ctrl+Shift+D overlay keeps its dock");
   assert.deepEqual(load(["electron", tb.DESK_TAB_ARG], "awconnect"), { aither: "desk", host: null, stored: "awconnect" },
     "another host's flag is not overwritten");
-  assert.match(src, new RegExp(tb.DESK_TAB_ARG.replace(/[-]/g, "\-")), "the preload names the same argument");
+  assert.match(src, new RegExp(tb.DESK_TAB_ARG.replace(/[-]/g, "\\-")), "the preload names the same argument");
 });

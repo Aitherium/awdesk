@@ -51,6 +51,9 @@ interface SceneProps {
    *  `./assets/model.vrm`. Set by App.tsx from the `?solo=` query param a detached
    *  avatar window is opened with (see detached-avatar-window.cjs). */
   modelUrl?: string;
+  /** The resident is shown as a VaM picture (VamAvatarView), so slot0's VRM
+   *  is not mounted. Extra slots are unaffected. */
+  hideResident?: boolean;
 }
 
 interface TargetControls {
@@ -762,6 +765,7 @@ export function Scene(props: SceneProps) {
       <FullBodyCamera objects={allObjects} focusUuid={focusUuid} />
       {/* Slot 0: default avatar, drives voice/animation/audio — unchanged. Now individually
           draggable/scalable like every other slot; camera framing unions ALL avatars. */}
+      {props.hideResident ? null : (
       <PlacedAvatar
         slotId="slot0"
         transform={getTransform('slot0')}
@@ -774,6 +778,7 @@ export function Scene(props: SceneProps) {
         physics={physicsBySlot.slot0}
         customise={customiseBySlot.slot0}
       />
+      )}
       {/* Extra slots: spawned avatars, each independently draggable/scalable — no longer
           pinned to a fixed side-by-side offset once the owner has moved one. */}
       {extraSlots.map((slot) => {
