@@ -32,7 +32,7 @@ const ROUTES = Object.freeze([
   ["GET", /^\/fs\/list\?path=[^&#]*$/],
   ["GET", /^\/fs\/read\?path=[^&#]*$/],
   ["POST", /^\/fs\/write$/],
-  ["GET", /^\/git\/status\?path=[^&#]*$/],
+  ["GET", /^\/git\/status\?path=[^&#]*(&untracked=[01])?$/],
   ["GET", /^\/git\/diff\?path=[^&#]*(&staged=[01])?$/],
   ["GET", new RegExp(`^/sessions/${ID}/transcript(\\?[A-Za-z0-9_=&.%:-]*)?$`)],
   ["POST", /^\/sessions$/],

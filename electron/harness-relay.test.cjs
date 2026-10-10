@@ -13,7 +13,7 @@ test("exactly AitherShell's routes pass; traversal, encoded slashes and other ve
     ["GET", "/sessions/s-1/transcript?after=3&limit=200"], ["POST", "/sessions"], ["POST", "/sessions/s-1/input"],
     ["POST", "/sessions/s-1/message"], ["POST", "/sessions/s-1/resize"], ["POST", "/sessions/s-1/interrupt"],
     ["POST", "/sessions/s-1/focus"], ["DELETE", "/sessions/s-1"],
-    ["POST", "/fs/write"], ["GET", "/git/status?path=C%3A%5Crepo"], ["GET", "/git/diff?path=a.txt"],
+    ["POST", "/fs/write"], ["GET", "/git/status?path=C%3A%5Crepo"], ["GET", "/git/status?path=C%3A%5Crepo&untracked=1"], ["GET", "/git/diff?path=a.txt"],
     ["GET", "/git/diff?path=a.txt&staged=1"], ["GET", "/git/diff?path=a.txt&staged=0"],
   ]) assert.equal(allowedRoute(m, p), true, `${m} ${p}`);
   for (const [m, p] of [
