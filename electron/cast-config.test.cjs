@@ -820,3 +820,23 @@ test("the committed roster mirror declares the owner's 2026-10-04 cast for the s
   assert.deepEqual(presence.hydra, { voice: "en-US-AvaNeural", character: "vrm-1-0" });
   assert.deepEqual(presence.athena, { voice: "en-US-AriaNeural", character: "siren-head" });
 });
+
+// ─── avatar: the resident's body source (vrm | vam) ─────────────────────────
+
+test("resolveActor: the resident's `avatar` resolves under service:awdesk; default vrm; a bad value is dropped and reported", () => {
+  const origin = cast.originOf({ key: cast.ORIGIN_LITERALS.SERVICE_AWDESK });
+  const ctx = { actorKind: origin.kind, actorId: origin.id, origin, roster: null };
+
+  const bare = cast.resolveActor({ version: 1 }, ctx);
+  assert.equal(bare.avatar, "vrm");
+  assert.equal(bare.avatarFrom, "builtin");
+
+  const vam = cast.resolveActor({ version: 1, actors: { "service:awdesk": { avatar: "vam" } } }, ctx);
+  assert.equal(vam.avatar, "vam");
+  assert.equal(vam.avatarFrom, 'actors["service:awdesk"].avatar');
+
+  const { config, problems } = cast.validateCast({ version: 1, actors: { "service:awdesk": { avatar: "unreal" } } });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].reason, /vrm \| vam/);
+  assert.equal(cast.resolveActor(config, ctx).avatar, "vrm");
+});

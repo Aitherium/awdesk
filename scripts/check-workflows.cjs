@@ -38,12 +38,19 @@ function validateWorkflow(content, file) {
   const lines = content.split(/\r?\n/).map((l) => l.replace(/#.*$/, ""));
 
   // W001: indent +2 after a non-colon, non-|, non-list-item line.
+  // Block-scalar BODIES (`run: |` shell scripts) are opaque text: an `if ...; then`
+  // followed by an indented body is shell, not YAML, so it is never judged.
   let prev = null;
+  let blockIndent = null;
   for (let i = 0; i < lines.length; i += 1) {
     const raw = lines[i];
     if (!raw.trim()) continue;
     const indent = raw.length - raw.trimStart().length;
     const text = raw.trim();
+    if (blockIndent !== null) {
+      if (indent > blockIndent) continue;
+      blockIndent = null;
+    }
     if (prev !== null) {
       const jumped = indent - prev.indent >= 2;
       const opener =
@@ -56,6 +63,7 @@ function validateWorkflow(content, file) {
       }
     }
     prev = { indent, text };
+    if (/(?:^|[:\s])[|>][-+]?\d*$/.test(text)) blockIndent = indent;
   }
 
   // W002: no signing env at all (comments stripped above).
@@ -105,6 +113,39 @@ function selfTest() {
         "      - name: Build native installer",
         "        run: ${{ matrix.command }}",
         "          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}",
+        "",
+      ].join("\n"),
+      expect: /W001/,
+    },
+    {
+      name: "W001 not fooled by an indented shell body inside run: |",
+      content: [
+        "jobs:",
+        "  release:",
+        "    steps:",
+        "      - name: Publish",
+        "        run: |",
+        "          if gh release view x; then",
+        "            exit 0",
+        "          fi",
+        "      - name: Next",
+        "        run: y",
+        "",
+      ].join("\n"),
+      expect: /W001/,
+      wantFire: false,
+    },
+    {
+      name: "W001 still fires after a block scalar ends",
+      content: [
+        "jobs:",
+        "  release:",
+        "    steps:",
+        "      - name: Publish",
+        "        run: |",
+        "          echo hi",
+        "        run: ${{ matrix.command }}",
+        "          WIN_CSC_LINK: x",
         "",
       ].join("\n"),
       expect: /W001/,

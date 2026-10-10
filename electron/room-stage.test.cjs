@@ -429,7 +429,11 @@ test("RoomStage: past the body cap a newcomer is heard through the resident, not
     { seq: 8, agent: true, author: "hydra", actorKind: "adk_agent", actorId: "h1", kind: "agent_message", text: "three" },
   ];
   await h.stage.tick();
-  await new Promise((r) => setTimeout(r, 40));
+  // The queue drains asynchronously: wait (bounded) for hydra's line, never a fixed
+  // sleep -- a loaded CI runner took longer than 40 ms and read lyra's line instead.
+  const deadline = Date.now() + 2000;
+  const heard = () => h.calls.speak.some((c) => c[0] === "hydra says: three");
+  while (!heard() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
   assert.equal(h.calls.spawn.length, 2, "only two bodies");
   const last = h.calls.speak[h.calls.speak.length - 1];
   assert.equal(last[2], "slot0");

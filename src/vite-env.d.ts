@@ -47,6 +47,17 @@ type AvatarBridgeEvent =
   | { type: 'focus-avatar'; slotId: string | null }
   // Aeon's committed mood word (main polls sense_inner_state); src/hooks/aeonMood.ts.
   | { type: 'aeon-mood'; mood: string | null }
+  // The resident body's source (electron/vam-avatar.cjs resolveSource): VRM, or a
+  // live VaM picture. `reason` is why a requested VaM fell back to the VRM.
+  | {
+      type: 'avatar-source';
+      slotId?: string;
+      requested: 'vrm' | 'vam';
+      source: 'vrm' | 'vam';
+      streamUrl: string | null;
+      reason: string | null;
+      from?: string;
+    }
   | { type: 'reset-avatar-layout'; slotId: string }
   // Plan 40 slice G: main names an ARRANGEMENT and the renderer places every
   // live body (src/stage/arrangements.ts holds the geometry, beside the bounds).

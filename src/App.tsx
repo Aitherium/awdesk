@@ -17,6 +17,8 @@ import { bubbleDurationMs, bubbleText, type SpeechBubble } from './speech-bubble
 import { Deck } from './components/Deck';
 import { ChatView } from './components/ChatView';
 import { Beads } from './components/Beads';
+import { VamAvatarView } from './components/VamAvatarView';
+import { avatarSourceFromEvent, avatarView, VRM_SOURCE, type AvatarSource } from './avatar-source';
 import { renderVrmFullBody, renderVrmTurntable } from './thumbnails';
 import type { AnimationType } from './animation-catalog';
 import {
@@ -151,6 +153,11 @@ function AvatarSceneApp() {
   // same speaker REPLACES its bubble (and restarts its timer) rather than
   // stacking, which is what keeps a chatty agent from papering over the stage.
   const [bubbles, setBubbles] = useState<Record<string, SpeechBubble>>({});
+  // The resident body's source (cast.json `avatar`, decided and probed by main;
+  // electron/vam-avatar.cjs). The stream error is the renderer's own half: the
+  // <img> dying between main's probes.
+  const [avatarSource, setAvatarSource] = useState<AvatarSource>(VRM_SOURCE);
+  const [vamStreamError, setVamStreamError] = useState<string | null>(null);
   const bubbleTimers = useRef(new Map<string, number>());
   const bubbleSeq = useRef(0);
   useEffect(() => {
@@ -257,6 +264,9 @@ function AvatarSceneApp() {
           if (override) setBodyOverride(override);
           else setVoiceAnimation(event.animation as AnimationType);
         }
+      } else if (event.type === 'avatar-source') {
+        setAvatarSource(avatarSourceFromEvent(event));
+        setVamStreamError(null);
       } else if (event.type === 'spawn-avatar') {
         // Idempotent by slotId: main replays every tracked slot on each
         // snapshot pull (that is how slots survive the window reload a
@@ -440,6 +450,8 @@ function AvatarSceneApp() {
   }, [speaking, voice.activity, voice.outputMuted, voice.phase]);
 
   const animation = resolveBodyAnimation(voiceAnimation, bodyOverride);
+  // A detached solo window is a view of ONE character's VRM; VaM is the desk's.
+  const bodyView = avatarView(soloModelUrl ? VRM_SOURCE : avatarSource, vamStreamError);
   const animationRequest =
     bodyOverride?.requestId ?? (animation === 'TALK' ? talkTurn : 0);
   const overrideRequestId = bodyOverride?.requestId ?? null;
@@ -460,6 +472,11 @@ function AvatarSceneApp() {
           to stay a real interactive surface. This is a dedicated, separate
           drag handle instead: a thin strip along the top edge only. */}
       <div className="drag-handle" />
+      <VamAvatarView
+        view={bodyView}
+        streamUrl={avatarSource.streamUrl}
+        onStreamError={setVamStreamError}
+      />
       <Scene
         animation={animation}
         animationRequest={animationRequest}
@@ -471,6 +488,7 @@ function AvatarSceneApp() {
         slotVoices={slotVoices}
         bubbles={bubbles}
         modelUrl={soloModelUrl ?? undefined}
+        hideResident={bodyView.showVam}
       />
       {/* Floating beads — the notification badge + quick actions that live ON
           the avatar box. Not in solo mode: a detached single-character window

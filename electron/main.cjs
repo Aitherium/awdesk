@@ -236,6 +236,7 @@ const { RelayPoller } = require("./relay-poller.cjs");
 // below and CAST004 (check_desk_cast_config.py), the static assert that this
 // delegation, and the resolver it carries, both stay wired.
 const roomStageHost = require("./room-stage-host.cjs");
+const vamAvatar = require("./vam-avatar.cjs");
 // room-address (U19): "which of these parallel tabs am I talking to?" -- the
 // text-address fallback the "room-steer" deck-action uses when the renderer
 // hands over free text instead of an already-picked session id.
@@ -877,6 +878,7 @@ function ensureRendererLoadHook() {
 }
 
 function emitToRenderer(event) {
+  forwardToVam(event);
   latestEvent = event;
   pendingRendererEvents.set(event.type, event);
   if (!avatarWindow || avatarWindow.isDestroyed()) return;
@@ -886,6 +888,72 @@ function emitToRenderer(event) {
   }
   avatarWindow.webContents.send("desk:event", event);
   pendingRendererEvents.delete(event.type);
+}
+
+// ─── the `vam` avatar source (vam-avatar.cjs) ────────────────────────────────
+// The resident's cast.json `avatar` picks its body: "vrm" (the model) or "vam"
+// (a live picture of Virt-A-Mate from 127.0.0.1:9341, its face moved through
+// 127.0.0.1:9342). When VaM is wanted but /health fails the renderer keeps the
+// VRM and shows the reason; the probe repeats so VaM starting or closing flips
+// the body without a reload.
+let vamSource = vamAvatar.resolveSource("vrm", null);
+let vamForwarder = null;
+let vamProbeTimer = null;
+let vamProbing = null;
+
+function vamForwarderOrNull() {
+  if (vamSource.requested !== "vam") return null;
+  if (!vamForwarder) vamForwarder = vamAvatar.createVamForwarder({ log: (...a) => debugLog(...a) });
+  return vamForwarder;
+}
+
+/** Every desk event the avatar window gets is ALSO offered to VaM while the
+ *  persona wants it (speaking edges, Aeon's mood, react emotions). */
+function forwardToVam(event) {
+  const fwd = vamForwarderOrNull();
+  if (!fwd) return;
+  try {
+    void fwd.fromDeskEvent(event);
+  } catch (error) {
+    debugLog("vam forward threw", error?.message || error);
+  }
+}
+
+/** Re-resolve the persona's avatar source and, for vam, probe the frame
+ *  server. Sends `avatar-source` to the renderer when the verdict changed
+ *  (or always, with `force`, for a fresh renderer). Never throws. */
+function refreshAvatarSource({ force = false } = {}) {
+  if (vamProbing) return vamProbing;
+  vamProbing = (async () => {
+    const wanted = roomStageHost.residentAvatar(roomStageDeps());
+    const probe = wanted.avatar === "vam" ? await vamAvatar.probeFrames() : null;
+    const next = vamAvatar.resolveSource(wanted.avatar, probe, wanted.from);
+    const changed = JSON.stringify(next) !== JSON.stringify(vamSource);
+    vamSource = next;
+    if (next.requested !== "vam" && vamForwarder) {
+      void vamForwarder.speakingStop();
+      vamForwarder.close();
+      vamForwarder = null;
+    }
+    if (changed) debugLog("avatar source", next.source, next.reason || "", `(${next.from})`);
+    if (changed || force) sendToAvatar("avatar-source", next);
+    return next;
+  })()
+    .catch((error) => {
+      debugLog("avatar source refresh failed", error?.message || error);
+      return vamSource;
+    })
+    .finally(() => {
+      vamProbing = null;
+    });
+  return vamProbing;
+}
+
+function startAvatarSourceWatch() {
+  if (vamProbeTimer) return;
+  void refreshAvatarSource({ force: true });
+  vamProbeTimer = setInterval(() => void refreshAvatarSource(), vamAvatar.PROBE_INTERVAL_MS);
+  if (typeof vamProbeTimer.unref === "function") vamProbeTimer.unref();
 }
 
 /** Fire-and-forget event at the avatar window (menus, stage arrangements).
@@ -1064,6 +1132,11 @@ async function speakAloud(
     }
   }
   if (delivered === 0) return { ok: false, reason: "no avatar window to speak from" };
+  // The resident's words drive VaM's jaw for the clip's length when it is the body.
+  if ((slotId || "slot0") === "slot0") {
+    const fwd = vamForwarderOrNull();
+    if (fwd) void fwd.speakingStart(spoken, tts.durationMs || 0);
+  }
   return { ok: true, chars: text.length, windows: delivered, durationMs: tts.durationMs || 0, slotId: slotId || "slot0" };
 }
 
@@ -3106,6 +3179,7 @@ function startAeonMoodFeed(intervalMs = 60_000) {
       const verdict = await readInnerState();
       if (verdict.ok && verdict.state && verdict.state.mood) {
         sendToAvatar("aeon-mood", { mood: String(verdict.state.mood) });
+        forwardToVam({ type: "aeon-mood", mood: String(verdict.state.mood) });
       }
     } catch (err) {
       debugLog("aeon-mood", String(err && err.message ? err.message : err));
@@ -3210,7 +3284,19 @@ function wireConsoleHost(legacy) {
   // The Cast pane (U03/U07): who appears, and how they sound. Guarded --
   // cast-window.cjs may not exist on this box yet (see the guarded require
   // up top); the console still opens with every OTHER pane when it is absent.
-  if (ensureCastIpc) ensureCastIpc(roomStageHost.castPaneImpl(roomStageDeps()));
+  if (ensureCastIpc) {
+    const castImpl = roomStageHost.castPaneImpl(roomStageDeps());
+    // An `avatar` change (VRM <-> VaM) shows NOW, not at the next 15 s probe.
+    const setActor = castImpl.setActor;
+    castImpl.setActor = (args) => {
+      const result = setActor(args);
+      if (args && args.patch && Object.prototype.hasOwnProperty.call(args.patch, "avatar")) {
+        void refreshAvatarSource();
+      }
+      return result;
+    };
+    ensureCastIpc(castImpl);
+  }
   // And "close" inside a pane now closes the console (legacy) or that pane's
   // aither:// tab, rather than looking for a standalone window that does not exist
   // and silently doing nothing.
@@ -3583,6 +3669,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     }
     // Aeon's mood on every body's face (src/hooks/aeonMood.ts).
     startAeonMoodFeed();
+    // The resident's body: VRM, or VaM when its persona asks (vam-avatar.cjs).
+    startAvatarSourceWatch();
     // Unpackaged runs (npx electron .) have no Start Menu shortcut registering
     // the AUMID, so Windows shows the RAW id as every toast's header — the
     // owner's decision-card notification read "com.xikhar.persona" instead of
@@ -3650,6 +3738,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         } catch (error) {
           debugLog("replayPhysics failed", error?.message || error);
         }
+        // A fresh renderer has no body choice either: tell it (VRM or VaM + why).
+        void refreshAvatarSource({ force: true });
       }
       return snapshot;
     });
@@ -4930,6 +5020,11 @@ app.on("before-quit", () => {
   deskUpdater?.installOnQuit({ sessionEnding });
   clearTimeout(hyprlandConfigurationTimer);
   if (relayFeedTimer) clearInterval(relayFeedTimer);
+  if (vamProbeTimer) clearInterval(vamProbeTimer);
+  if (vamForwarder) {
+    void vamForwarder.speakingStop();
+    vamForwarder.close();
+  }
   wakesWatchStop?.();
   decisionWatchStop?.();
   // Removed (best-effort) before the app is gone, so awask goes back to its own

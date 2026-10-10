@@ -286,6 +286,22 @@ function residentPhysics(resolve) {
   return resolve({ actorKind: origin.kind, actorId: origin.id, origin }).physics;
 }
 
+/** The resident's avatar source (cast.json `avatar`, "vrm" | "vam") with its
+ *  provenance, resolved under the same `service:awdesk` origin as its physics.
+ *  Fails soft to VRM: a cast file that cannot be resolved never costs the body. */
+function residentAvatar(deps) {
+  try {
+    const resolve = activeStage && liveSnapshot
+      ? buildResolver(deps, () => resolveCastFile(deps), () => liveSnapshot)
+      : buildResolver(deps, () => resolveCastFile(deps), null);
+    const origin = cast.originOf({ key: cast.ORIGIN_LITERALS.SERVICE_AWDESK });
+    const r = resolve({ actorKind: origin.kind, actorId: origin.id, origin });
+    return { avatar: r.avatar === "vam" ? "vam" : "vrm", from: r.avatarFrom || "builtin" };
+  } catch (error) {
+    return { avatar: "vrm", from: `error: ${error && error.message ? error.message : error}` };
+  }
+}
+
 /**
  * replayPhysics — main's desk:get-snapshot hook. The renderer keeps the knobs
  * only in memory (cast.json is the ONE plane; nothing physics-shaped is
@@ -746,6 +762,7 @@ module.exports = {
   evictSlot,
   physicsForBody,
   reconcileOnStage,
+  residentAvatar,
   replayPhysics,
   resolveStageKnobs,
   startRoomStage,
