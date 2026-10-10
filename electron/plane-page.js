@@ -113,10 +113,22 @@
         ? "DeepSeek balance: " + (ds.currency === "USD" ? "$" + amount : amount + " " + ds.currency)
         : "DeepSeek balance unavailable" + (ds.error ? " (" + ds.error + ")" : ""));
     }
-    return { pill: usd(d.total_usd), tone: Number(d.unpriced_requests) > 0 ? "warn" : "ok", lines };
+    if (result.stale) lines.unshift("Offline copy (saved " + (result.savedAt || "earlier") + ") -- live read failed");
+    return { pill: usd(d.total_usd), tone: result.stale || Number(d.unpriced_requests) > 0 ? "warn" : "ok", lines };
   }
 
-  const pure = { humanBytes, formatScalar, serviceVerdict, tableColumns, spendCardModel, MAX_ROWS, MAX_COLS };
+  /** The note on a card showing an offline copy: when it was saved and why the live read failed. */
+  function staleNote(read, nowMs) {
+    const ms = Math.max(0, (nowMs || Date.now()) - Date.parse(read && read.savedAt));
+    let ago = "at an unknown time";
+    if (Number.isFinite(ms)) {
+      ago = ms < 90000 ? "just now" : ms < 5400000 ? Math.round(ms / 60000) + " min ago"
+        : ms < 172800000 ? Math.round(ms / 3600000) + " h ago" : Math.round(ms / 86400000) + " d ago";
+    }
+    return "Offline copy from " + ago + " -- live read failed: " + ((read && read.error) || "no answer");
+  }
+
+  const pure = { humanBytes, formatScalar, serviceVerdict, tableColumns, spendCardModel, staleNote, MAX_ROWS, MAX_COLS };
   if (typeof module === "object" && module.exports) {
     module.exports = pure;
     return;
@@ -225,6 +237,7 @@
     h.appendChild(el("span", "tool muted", read.tool));
     let pill;
     if (!read.ok) pill = el("span", "pill bad", "failed");
+    else if (read.stale) pill = el("span", "pill warn", "offline copy");
     else if (read.id === "service") {
       const v = serviceVerdict(read.data);
       pill = el("span", "pill " + (v.state === "up" ? "ok" : v.state === "down" ? "bad" : "warn"), v.text);
@@ -234,6 +247,10 @@
     if (!read.ok) {
       card.appendChild(el("div", "summary bad", "Could not read: " + (read.error || "no answer")));
       return card;
+    }
+    if (read.stale) {
+      card.classList.add("stale");
+      card.appendChild(el("div", "summary warn", staleNote(read)));
     }
     card.appendChild(renderValue(read.data, 0));
     return card;
@@ -278,8 +295,10 @@
       if (spendAsk) grid.appendChild(renderSpendCard(await spendAsk));
       if (!reads.length) grid.appendChild(el("div", "placeholder", "This plane has no reads."));
       const failed = Number(snap.failed) || 0;
+      const stale = Number(snap.stale) || 0;
       say(failed ? failed + " of " + reads.length + " reads failed -- see below"
-        : "updated " + new Date().toLocaleTimeString(), failed > 0);
+        : stale ? "OFFLINE COPY · " + stale + " of " + reads.length + " reads are the last good answer"
+          : "updated " + new Date().toLocaleTimeString(), failed > 0 || stale > 0);
     } catch (error) {
       say("refresh failed: " + String((error && error.message) || error), true);
     } finally {

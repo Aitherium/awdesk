@@ -25,8 +25,21 @@ let openerImpl = null;
 
 /** The shared client (tray + pane + Pulse card). */
 function spendClient() {
-  if (!clientImpl) clientImpl = require("./spend-client.cjs").createSpendClient();
+  if (!clientImpl) {
+    clientImpl = require("./spend-client.cjs").createSpendClient({ store: require("./last-good-cache.cjs").deskCache() });
+  }
   return clientImpl;
+}
+
+let budgetImpl = null;
+/** The owner's daily/monthly budget, userData/spend-budget.json. */
+function budgetStore() {
+  if (!budgetImpl) {
+    budgetImpl = require("./spend-client.cjs").createBudgetStore({
+      file: () => path.join(electron().app.getPath("userData"), "spend-budget.json"),
+    });
+  }
+  return budgetImpl;
 }
 
 /** main.cjs says how "open the spend page" is done (aither://spend in the browser). */
@@ -35,8 +48,24 @@ function setSpendOpener(fn) {
 }
 
 /** The handler table, pure over an injected client so it is testable without Electron. */
-function spendHandlers(client = spendClient(), opener = () => openerImpl) {
+function spendHandlers(client = spendClient(), opener = () => openerImpl, budgets = null) {
+  const store = () => budgets || budgetStore();
   return {
+    "desk:spend-budget-get": () => {
+      try {
+        return { ok: true, data: store().get() };
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+    },
+    // The page sends {daily_usd, monthly_usd}; shapeBudget clamps anything else to 0.
+    "desk:spend-budget-set": (_e, raw) => {
+      try {
+        return { ok: true, data: store().set(raw) };
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+    },
     // Never throws across the bridge: the client already answers {ok, ...}.
     "desk:spend-report": async (_e, hours, opts) => {
       try {

@@ -158,16 +158,28 @@ function errorText(error) {
 /**
  * Build a client over an injectable `call(name, args) -> Promise<string>`
  * (gateway-mcp's callTool by default) so tests need no live gateway.
+ *
+ * `store` (last-good-cache.cjs) keeps each read's last good answer on disk. A failed
+ * read with a saved answer comes back `ok:true, stale:true` with `savedAt` and the live
+ * `error`, so the page shows the offline copy under a stale pill instead of a blank
+ * card. A failed read with nothing saved is still `ok:false` -- never an empty result.
  */
-function createPlaneClient({ call = callTool, now = () => Date.now() } = {}) {
-  async function read(spec) {
+function createPlaneClient({ call = callTool, now = () => Date.now(), store = null } = {}) {
+  async function read(spec, planeId) {
     const started = now();
+    const key = `plane-${planeId}-${spec.id}`;
     try {
       const text = await call(spec.tool, { ...spec.args });
       const parsed = parseToolJson(spec.tool, text);
       const data = spec.service ? pickServiceRow(spec.service, parsed) : parsed;
+      if (store) store.remember(key, data);
       return { id: spec.id, label: spec.label, tool: spec.tool, ok: true, data, ms: now() - started };
     } catch (error) {
+      const saved = store ? store.recall(key) : null;
+      if (saved && saved.value != null) {
+        return { id: spec.id, label: spec.label, tool: spec.tool, ok: true, stale: true, data: saved.value,
+          savedAt: saved.savedAt, error: errorText(error), ms: now() - started };
+      }
       return { id: spec.id, label: spec.label, tool: spec.tool, ok: false, error: errorText(error),
         ms: now() - started };
     }
@@ -182,10 +194,11 @@ function createPlaneClient({ call = callTool, now = () => Date.now() } = {}) {
       const id = String(planeId || "");
       const plane = Object.prototype.hasOwnProperty.call(PLANES, id) ? PLANES[id] : null;
       if (!plane) throw new Error(`unknown plane ${id || "(none)"}`);
-      const reads = await Promise.all(plane.reads.map(read));
+      const reads = await Promise.all(plane.reads.map((spec) => read(spec, id)));
       const failed = reads.filter((r) => !r.ok).length;
+      const stale = reads.filter((r) => r.stale).length;
       return { plane: id, label: plane.label, hint: plane.hint, at: new Date(now()).toISOString(),
-        reads, failed, ok: failed === 0 };
+        reads, failed, stale, ok: failed === 0 && stale === 0 };
     },
   };
 }

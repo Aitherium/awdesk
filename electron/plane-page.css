@@ -33,6 +33,8 @@ h3 .tool { text-transform: none; letter-spacing: 0; font-weight: 400; font-famil
 .pill.bad { color: var(--red); }
 .pill.warn { color: var(--amber); }
 .summary.bad { color: var(--red); word-break: break-word; }
+.summary.warn { color: var(--amber); word-break: break-word; font-size: 12px; margin-bottom: 6px; }
+section.card.stale { border-color: color-mix(in oklch, var(--amber), var(--background) 40%); }
 .muted { color: var(--muted); }
 .placeholder { color: var(--muted); padding: 8px 0; }
 .kv { display: grid; grid-template-columns: minmax(90px, max-content) 1fr; gap: 3px 12px; }

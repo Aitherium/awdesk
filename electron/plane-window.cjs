@@ -26,7 +26,9 @@ let wired = false;
 let clientImpl = null;
 
 function client() {
-  if (!clientImpl) clientImpl = require("./plane-client.cjs").createPlaneClient();
+  if (!clientImpl) {
+    clientImpl = require("./plane-client.cjs").createPlaneClient({ store: require("./last-good-cache.cjs").deskCache() });
+  }
   return clientImpl;
 }
 
