@@ -39,10 +39,15 @@ test("expanded, the view runs from under the toolbar to the bottom, full width",
 });
 
 test("no double taskbar: which Online pages draw their own (that copy gets hidden)", () => {
+  // Every aitherium page: /workspace/agents drew the desktop's dock over the strip
+  // (owner screenshot 2026-10-10). The flag is a no-op where there is no dock.
   for (const u of ["https://app.aitherium.com/", "https://app.aitherium.com/?spawn=aeon", "https://app.aitherium.com/relay",
-    "https://app.aitherium.com/spaces", "https://app.aitherium.com/forum"]) assert.equal(tb.pageHasOwnTaskbar(u), true, u);
-  for (const u of ["https://app.aitherium.com/workspace/business", "https://app.aitherium.com/admin/tenants",
-    "https://app.aitherium.com/settings/connected-devices", "https://app.aitherium.com/embed/taskbar",
+    "https://app.aitherium.com/spaces", "https://app.aitherium.com/forum",
+    "https://app.aitherium.com/workspace/agents", "https://app.aitherium.com/workspace/business",
+    "https://app.aitherium.com/admin/tenants", "https://app.aitherium.com/settings/connected-devices"]) {
+    assert.equal(tb.pageHasOwnTaskbar(u), true, u);
+  }
+  for (const u of ["https://app.aitherium.com/embed/taskbar",
     "https://www.reddit.com/", "aither://search/", "http://127.0.0.1:3002/"]) assert.equal(tb.pageHasOwnTaskbar(u), false, u);
 });
 
@@ -118,4 +123,17 @@ test("the shared preload marks data-host=desk in the BROWSER TAB only; the deskt
   assert.deepEqual(load(["electron", tb.DESK_TAB_ARG], "awconnect"), { aither: "desk", host: null, stored: "awconnect" },
     "another host's flag is not overwritten");
   assert.match(src, new RegExp(tb.DESK_TAB_ARG.replace(/[-]/g, "\\-")), "the preload names the same argument");
+});
+
+test("a strip click opens a window in place before any page load (owner 2026-10-10)", () => {
+  assert.deepEqual(tb.inPlaceTargets({ spawnId: "spaces", overlay: true, activeUrl: "https://www.reddit.com/" }),
+    ["overlay", "online"]);
+  assert.deepEqual(tb.inPlaceTargets({ spawnId: "spaces", activeUrl: "https://app.aitherium.com/workspace/agents" }),
+    ["active", "online"], "an AitherOS tab on screen opens the window itself, no Online-tab switch");
+  assert.deepEqual(tb.inPlaceTargets({ spawnId: "spaces", activeUrl: "https://app.aitherium.com/embed/taskbar" }),
+    ["online"]);
+  assert.deepEqual(tb.inPlaceTargets({ spawnId: null, activeUrl: "https://app.aitherium.com/" }), ["online"]);
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "browser-window.cjs"), "utf8");
+  assert.doesNotMatch(src, /here\.pathname === "\/" && !wc\.isLoading\(\)/,
+    "the Online tab answers desk-open-app on any path, not only the root");
 });

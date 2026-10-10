@@ -82,19 +82,22 @@ function routeFor(url) {
 }
 
 /**
- * Does the page on screen draw ITS OWN AitherOS taskbar? The AitherOS Online desktop
- * (the pinned Online tab) and the site's dock-shell pages (Spaces, Relay, Forum ...) do;
- * workspace, admin and settings pages do not. When it does, THAT copy is hidden (the
- * page is marked data-host="desk", below) and the browser's strip stays: one taskbar,
- * always the browser's, always at the bottom (owner, 2026-10-04: "why wouldn't it just
- * stay at the bottom of aither browser and just not appear on the other pages").
+ * Does the page on screen draw ITS OWN AitherOS taskbar? Any aitherium.com page may:
+ * the Online desktop, the dock-shell pages (Spaces, Relay, Forum ...) AND, on the one
+ * page host, /workspace/* -- app.aitherium.com/workspace/agents boots the desktop with
+ * its dock (owner screenshot 2026-10-10 012414: two taskbars stacked, the page's over
+ * the strip). Listing the routes that "do not" was the bug: the flag only hides a
+ * [data-os-dock] and zeroes --os-dock-h, so on a page with no dock it is a no-op, and
+ * the safe default is ON for every aitherium page. Only the strip's own page is
+ * excluded. When it does, THAT copy is hidden (data-host="desk", below) and the
+ * browser's strip stays: one taskbar, always the browser's, always at the bottom
+ * (owner, 2026-10-04).
  */
 function pageHasOwnTaskbar(url) {
   let parsed;
   try { parsed = new URL(String(url || "")); } catch { return false; }
   if (parsed.protocol !== "https:" || !isAitheriumHost(parsed.hostname)) return false;
-  if (isTaskbarPage(url)) return false;
-  return !/^\/(workspace|admin|settings|portal|embed|login|auth|learn)(\/|$)/.test(parsed.pathname);
+  return !isTaskbarPage(url);
 }
 
 /**
@@ -193,6 +196,25 @@ function openAppScript(id) {
   })`;
 }
 
+/**
+ * Where a strip click for app `spawnId` opens, in order of preference -- ALWAYS a window
+ * on a desktop already on screen before a page load (owner, 2026-10-10: "skip just
+ * launch the full full screen aitheros to open the app windows"):
+ *   "overlay"  the in-tab OS overlay over the page on screen
+ *   "active"   the tab on screen is itself an AitherOS page (any path: /workspace/*
+ *              boots the desktop too); its desktop answers desk-open-app
+ *   "online"   the pinned Online tab (it too tries desk-open-app before any reload)
+ * Every in-place attempt falls back to the next on no answer.
+ */
+function inPlaceTargets({ spawnId, overlay = false, activeUrl = "" } = {}) {
+  if (!spawnId) return ["online"];
+  const out = [];
+  if (overlay) out.push("overlay");
+  if (pageHasOwnTaskbar(activeUrl)) out.push("active");
+  out.push("online");
+  return out;
+}
+
 /** A main-frame response that means "there is no taskbar here" (not deployed, an error). */
 function isUnavailable(httpResponseCode) {
   const code = Number(httpResponseCode);
@@ -226,6 +248,7 @@ module.exports = {
   hostFlagScript,
   stripOwner,
   spawnIdOf,
+  inPlaceTargets,
   openAppScript,
   routeFor,
   taskbarUrl,

@@ -674,16 +674,24 @@ function openFromTaskbar(url) {
   const route = taskbar.routeFor(url);
   if (route === "web") return void openTab("you", url);
   if (route !== "online") return;
-  // Online is drawn over the page on screen: the app opens there, over the page.
+  // A window on a desktop already on screen, never a page load (browser-taskbar.cjs
+  // inPlaceTargets): the overlay over the page, then the tab on screen when it is an
+  // AitherOS page itself, then the pinned Online tab.
+  const id = taskbar.spawnIdOf(url);
   const over = activeOverlayFrame();
-  const overId = over ? taskbar.spawnIdOf(url) : null;
-  if (overId) {
-    over.executeJavaScript(taskbar.openAppScript(overId), true)
-      .then((ok) => { if (!ok) openFromOnlineTab(url); })
-      .catch(() => openFromOnlineTab(url));
-    return;
-  }
-  openFromOnlineTab(url);
+  const active = activeView();
+  const targets = taskbar.inPlaceTargets({
+    spawnId: id, overlay: Boolean(over), activeUrl: alive(active) ? active.webContents.getURL() : "",
+  });
+  const tryAt = (i) => {
+    const kind = targets[i];
+    if (kind === "online" || !kind) return openFromOnlineTab(url);
+    const runner = kind === "overlay" ? over : active.webContents;
+    runner.executeJavaScript(taskbar.openAppScript(id), true)
+      .then((ok) => { if (!ok) tryAt(i + 1); })
+      .catch(() => tryAt(i + 1));
+  };
+  tryAt(0);
 }
 
 function openFromOnlineTab(url) {
@@ -696,7 +704,8 @@ function openFromOnlineTab(url) {
   let here = null;
   try { here = new URL(wc.getURL()); } catch { /* not loaded yet */ }
   // The desktop is already up: open the app in it, no reload (its windows stay open).
-  if (id && here && here.origin === new URL(url).origin && here.pathname === "/" && !wc.isLoading()) {
+  // Any path: /workspace/* boots the same desktop, and it answers desk-open-app too.
+  if (id && here && here.origin === new URL(url).origin && !wc.isLoading()) {
     wc.executeJavaScript(taskbar.openAppScript(id), true)
       .then((ok) => { if (!ok && alive(view)) return loadHostedTab(view, url); })
       .catch(() => {});
