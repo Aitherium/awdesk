@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { filterCharacters, isHidden } = require("./content-rating.cjs");
+const { cardBodyToCustomise } = require("./card-body.cjs");
 
 const ROOT = path.join(__dirname, "..");
 // Test seam: content-rating.test.cjs points this at a per-process temp dir so
@@ -44,7 +45,12 @@ function resolveModelFile(name, { depth = 8 } = {}) {
 }
 
 /** The customise recipe for a character, MERGED down its base chain (a
- *  variant's own values win). `{}` when nothing is customised. */
+ *  variant's own values win). `{}` when nothing is customised.
+ *
+ *  A character.json that carries a DarkLink card body (`appearance.body`,
+ *  see card-body.cjs) contributes its bone scales UNDER that character's own
+ *  `customise`, so a hand-tuned recipe always wins over the card. A body the
+ *  reader refuses contributes nothing. */
 function customiseOf(name, { depth = 8 } = {}) {
   const chain = [];
   const seen = new Set();
@@ -53,6 +59,9 @@ function customiseOf(name, { depth = 8 } = {}) {
     seen.add(node);
     const record = contentRating().ratingRecord(node);
     if (record && typeof record.customise === "object" && record.customise) chain.push(record.customise);
+    const body = record && record.appearance && record.appearance.body;
+    const fromCard = body ? cardBodyToCustomise(body) : null;
+    if (fromCard) chain.push(fromCard);   // pushed AFTER customise: the reverse below puts it under it
     node = contentRating().baseOf(node);
   }
   // Furthest base first, so a nearer variant overrides it section by section.
