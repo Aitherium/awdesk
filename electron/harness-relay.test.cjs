@@ -13,11 +13,15 @@ test("exactly AitherShell's routes pass; traversal, encoded slashes and other ve
     ["GET", "/sessions/s-1/transcript?after=3&limit=200"], ["POST", "/sessions"], ["POST", "/sessions/s-1/input"],
     ["POST", "/sessions/s-1/message"], ["POST", "/sessions/s-1/resize"], ["POST", "/sessions/s-1/interrupt"],
     ["POST", "/sessions/s-1/focus"], ["DELETE", "/sessions/s-1"],
+    ["POST", "/fs/write"], ["GET", "/git/status?path=C%3A%5Crepo"], ["GET", "/git/diff?path=a.txt"],
+    ["GET", "/git/diff?path=a.txt&staged=1"], ["GET", "/git/diff?path=a.txt&staged=0"],
   ]) assert.equal(allowedRoute(m, p), true, `${m} ${p}`);
   for (const [m, p] of [
     ["POST", "/shell/exec"], ["GET", "/sessions/../config"], ["DELETE", "/sessions"], ["PUT", "/sessions/s-1"],
     ["POST", "/sessions/s-1/kill"], ["GET", "/sessions%2F..%2Fsecrets"], ["GET", "/fs/write?path=x"],
     ["GET", "/fs/list?path=a&evil=1"], ["GET", "sessions"], ["POST", "/sessions/a b/input"],
+    ["PUT", "/fs/write"], ["POST", "/fs/write?path=x"], ["POST", "/git/status?path=a"],
+    ["GET", "/git/status?path=a&x=1"], ["GET", "/git/diff?path=a&staged=2"], ["GET", "/git/commit"],
   ]) assert.equal(allowedRoute(m, p), false, `${m} ${p}`);
 });
 
