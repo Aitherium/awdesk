@@ -1,7 +1,7 @@
 {
   "protocol": "aither-host/1",
   "envelope": "__aither",
-  "notes": "ONE contract for every surface that hosts AitherOS Online: the awconnect overlay (an iframe over any page), the awdesk overlay window and the Aither Browser's pinned Online tab (top-level, answered by the desk preload on the page's own window). Byte-identical copies live in AitherVeil/src/components/os, awconnect-next/public/content and .DEPLOYMENT/awdesk/electron; each tree's tests pin its code to its copy and Veil's test pins the three copies together. A host that predates host-hello (awconnect 3.x/4.x) is still served: the OS falls back to the legacy planes below.",
+  "notes": "ONE contract for every surface that hosts AitherOS Online: the awconnect overlay (an iframe over any page), the awdesk overlay window and the Aither Browser's pinned Online tab (top-level, answered by the desk preload on the page's own window). Byte-identical copies ship with the OS, the awconnect extension and the awdesk app; each one's tests pin its code to its copy, and the OS tests pin the three copies together. A host that predates host-hello (awconnect 3.x/4.x) is still served: the OS falls back to the legacy planes below.",
   "planes": {
     "handshake": "host-hello / os-hello: who hosts, which planes it answers, who draws the taskbar",
     "regions": "where OS chrome is, so a host can clip and pass clicks through",
