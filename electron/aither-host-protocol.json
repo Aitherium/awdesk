@@ -1,0 +1,60 @@
+{
+  "protocol": "aither-host/1",
+  "envelope": "__aither",
+  "notes": "ONE contract for every surface that hosts AitherOS Online: the awconnect overlay (an iframe over any page), the awdesk overlay window and the Aither Browser's pinned Online tab (top-level, answered by the desk preload on the page's own window). Byte-identical copies live in AitherVeil/src/components/os, awconnect-next/public/content and .DEPLOYMENT/awdesk/electron; each tree's tests pin its code to its copy and Veil's test pins the three copies together. A host that predates host-hello (awconnect 3.x/4.x) is still served: the OS falls back to the legacy planes below.",
+  "planes": {
+    "handshake": "host-hello / os-hello: who hosts, which planes it answers, who draws the taskbar",
+    "regions": "where OS chrome is, so a host can clip and pass clicks through",
+    "page": "drive the page the OS floats over (os→page / page→os)",
+    "context": "what that page is (os-page-context)",
+    "identity": "who is signed in (os-identity)",
+    "token": "a bearer for /api calls (os-token); token:null is sign-out on every surface",
+    "node": "is a local node running (os-node-probe / os-local-node)",
+    "daemon": "relay an allowlisted call to the local node (os-daemon-call)",
+    "compose": "compose text on this device (os-compose)",
+    "site": "the host page's site adapter and its right-click (os-site-adapter, os-host-contextmenu)",
+    "focus": "attention left the OS (os-host-focus)",
+    "interactive": "take or release pointer input (os-interactive)",
+    "desk": "awdesk state and its fixed command allowlist",
+    "thread": "the one server conversation thread every surface shares (os-thread)",
+    "command": "open a surface such as awsh from anywhere (os-command)"
+  },
+  "legacyPlanes": {
+    "overlay": ["regions", "page", "context", "identity", "token", "node", "daemon", "compose", "site", "focus", "interactive"],
+    "desk": ["regions", "page", "context", "focus", "desk"]
+  },
+  "chrome": {
+    "taskbar": ["os", "host"]
+  },
+  "messages": {
+    "host-hello": { "dir": "host→os", "plane": "handshake", "fields": [ "protocol", "host", "planes", "chrome" ] },
+    "os-hello": { "dir": "os→host", "plane": "handshake", "fields": [ "protocol", "planes" ] },
+    "os-ready": { "dir": "os→host", "plane": "handshake", "alias": "os-hello", "fields": [] },
+    "os-regions": { "dir": "os→host", "plane": "regions", "fields": [ "regions", "dock" ] },
+    "os→page": { "dir": "os→host", "plane": "page", "fields": [ "reqId", "action", "selector", "text", "key" ] },
+    "page→os": { "dir": "host→os", "plane": "page", "fields": [ "reqId", "ok", "error", "text", "url", "title" ] },
+    "os-page-context-request": { "dir": "os→host", "plane": "context", "fields": [] },
+    "os-page-context": { "dir": "host→os", "plane": "context", "fields": [ "context" ] },
+    "os-identity-request": { "dir": "os→host", "plane": "identity", "fields": [] },
+    "os-identity": { "dir": "host→os", "plane": "identity", "fields": [ "identity" ] },
+    "os-token-request": { "dir": "os→host", "plane": "token", "fields": [] },
+    "os-token": { "dir": "host→os", "plane": "token", "fields": [ "token" ] },
+    "os-node-probe": { "dir": "os→host", "plane": "node", "fields": [] },
+    "os-local-node": { "dir": "host→os", "plane": "node", "fields": [ "node" ] },
+    "os-daemon-call": { "dir": "os→host", "plane": "daemon", "fields": [ "reqId", "method", "path", "body" ] },
+    "os-daemon-result": { "dir": "host→os", "plane": "daemon", "fields": [ "reqId", "ok", "status", "data", "baseUrl", "error" ] },
+    "os-compose": { "dir": "os→host", "plane": "compose", "fields": [ "reqId", "prompt", "maxTokens", "temperature" ] },
+    "os-compose-result": { "dir": "host→os", "plane": "compose", "fields": [ "reqId", "ok", "text", "reason", "error" ] },
+    "os-site-adapter-request": { "dir": "os→host", "plane": "site", "fields": [] },
+    "os-site-adapter": { "dir": "host→os", "plane": "site", "fields": [ "adapter" ] },
+    "os-host-contextmenu": { "dir": "host→os", "plane": "site", "fields": [ "x", "y" ] },
+    "os-host-focus": { "dir": "host→os", "plane": "focus", "fields": [ "focused" ] },
+    "os-interactive": { "dir": "os→host", "plane": "interactive", "fields": [ "on" ] },
+    "desk-state": { "dir": "host→os", "plane": "desk", "fields": [ "browser" ] },
+    "desk-command": { "dir": "os→host", "plane": "desk", "fields": [ "id" ] },
+    "desk-open-app": { "dir": "host→os", "plane": "desk", "fields": [ "id" ] },
+    "desk-open-app-ok": { "dir": "os→host", "plane": "desk", "fields": [ "id" ] },
+    "os-thread": { "dir": "both", "plane": "thread", "fields": [ "threadId", "title", "source" ] },
+    "os-command": { "dir": "both", "plane": "command", "fields": [ "id", "args" ] }
+  }
+}

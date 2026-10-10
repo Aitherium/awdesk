@@ -70,6 +70,18 @@ function markHost() {
   if (ours) d.setAttribute("data-host", "desk");
 }
 markHost();
+
+// aither-host/1 (aither-host-protocol.json beside this file; the same bytes as Veil's
+// and awconnect's copies). The OS says os-hello; the desk answers host-hello with the
+// planes it serves and who draws the taskbar: the browser's strip in the hosted tab
+// (DESK_TAB_ARG), the OS's own dock in the desktop overlay window. Kept inline: a
+// sandboxed preload cannot require a local file. host-protocol.test.cjs pins it.
+const HOST_PROTOCOL = "aither-host/1";
+const DESK_PLANES = Object.freeze(["regions", "page", "context", "focus", "desk"]);
+function hostHello() {
+  return { __aither: "host-hello", protocol: HOST_PROTOCOL, host: "desk", planes: DESK_PLANES.slice(),
+    chrome: { taskbar: browserTab ? "host" : "os" } };
+}
 window.addEventListener("DOMContentLoaded", markHost);
 window.addEventListener("load", markHost);
 
@@ -78,7 +90,9 @@ window.addEventListener("message", async (event) => {
   const data = event.data;
   if (!data || typeof data.__aither !== "string") return;
   const reply = (payload) => window.postMessage(payload, window.location.origin);
-  if (data.__aither === "os→page") {
+  if (data.__aither === "os-hello") {
+    reply(hostHello());
+  } else if (data.__aither === "os→page") {
     const result = await ipcRenderer.invoke("living-desktop:host-page", {
       action: data.action, selector: data.selector, text: data.text, key: data.key,
     }).catch((error) => ({ ok: false, error: String((error && error.message) || error) }));
