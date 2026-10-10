@@ -34,6 +34,14 @@
 
 /** The one channel(awconnect-compat-preload.cjs CHANNEL; a test pins the two together). */
 const CHANNEL = "awconnect:identity:webauth";
+/**
+ * ONE identity (2026-10-09): the desk's built-in awconnect takes the desk's own Online
+ * session instead of running its own OIDC flow. The shim asks over this channel and gets
+ * {token} -- the platform bearer the OS overlay already receives (browser-overlay.cjs
+ * token()); never the local daemon token or a harness token. Only served when install()
+ * is given a `deskSession` provider, and the provider decides WHICH extension may have it.
+ */
+const DESK_SESSION_CHANNEL = "awconnect:identity:desk-session";
 /** Chromium extension ids: exactly 32 letters a-p. */
 const EXTENSION_ID = /^[a-p]{32}$/;
 /** Chrome hands the callback back on https://<id>.chromiumapp.org/; so do we. */
@@ -201,7 +209,7 @@ const handlerIpcMains = new WeakSet();
  *
  * @returns {{ ok: true, flows } | { ok: false, error: string }}
  */
-function install({ ipcMain, session, BrowserWindow = null, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+function install({ ipcMain, session, BrowserWindow = null, timeoutMs = DEFAULT_TIMEOUT_MS, deskSession = null } = {}) {
   if (!ipcMain || typeof ipcMain.handle !== "function" || !session) {
     return { ok: false, error: "install needs an ipcMain and the browser's session" };
   }
@@ -231,6 +239,17 @@ function install({ ipcMain, session, BrowserWindow = null, timeoutMs = DEFAULT_T
       if (!id) return Promise.reject(new Error(MESSAGES.notExtension));
       return runFor(id, ses, payload);
     });
+    if (typeof deskSession === "function") {
+      ipcMain.handle(DESK_SESSION_CHANNEL, (event) => {
+        const frame = event && event.senderFrame;
+        const wc = event && event.sender;
+        const frameUrl = (frame && frame.url) || (wc && typeof wc.getURL === "function" ? wc.getURL() : "");
+        const ses = (wc && wc.session) || null;
+        const api = ses && (ses.extensions || ses);
+        const id = ses ? senderExtension(frameUrl, (x) => api && typeof api.getExtension === "function" && api.getExtension(x)) : "";
+        return answerDeskSession(deskSession, id, ses);
+      });
+    }
   }
 
   // The MV3 background worker: its invokes land on the worker's OWN ipc (measured), so
@@ -249,6 +268,10 @@ function install({ ipcMain, session, BrowserWindow = null, timeoutMs = DEFAULT_T
       try {
         worker.ipc.handle(CHANNEL, (event, payload) =>
           runFor(id, (event && event.session) || session, payload));
+        if (typeof deskSession === "function") {
+          worker.ipc.handle(DESK_SESSION_CHANNEL, (event) =>
+            answerDeskSession(deskSession, id, (event && event.session) || session));
+        }
       } catch {
         return false;
       }
@@ -299,6 +322,22 @@ function install({ ipcMain, session, BrowserWindow = null, timeoutMs = DEFAULT_T
   return { ok: true, flows };
 }
 
+/**
+ * The desk session for extension `id`: {token} (null when the desk is signed out, which
+ * the extension reads as SIGN-OUT), or {} when this extension may not have it. Never
+ * rejects: a refusal must not look like a network failure the extension retries.
+ */
+async function answerDeskSession(provider, id, ses) {
+  if (!id) return {};
+  try {
+    const res = await provider(id, ses);
+    if (!res || typeof res !== "object" || !("token" in res)) return {};
+    return { token: typeof res.token === "string" && res.token ? res.token : null };
+  } catch {
+    return {};
+  }
+}
+
 /** A one-shot timer that never keeps the process alive; used for the worker wake retry. */
 function setTimerOnce(fn, ms) {
   const timer = setTimeout(fn, ms);
@@ -308,6 +347,8 @@ function setTimerOnce(fn, ms) {
 
 module.exports = {
   CHANNEL,
+  DESK_SESSION_CHANNEL,
+  answerDeskSession,
   DEFAULT_TIMEOUT_MS,
   MESSAGES,
   createWebAuthFlows,

@@ -40,6 +40,35 @@ ipcRenderer.on("living-desktop:host-focus", (_event, focused) => {
   window.postMessage({ __aither: "os-host-focus", focused: focused !== false }, "*");
 });
 
+// ONE identity (2026-10-09): the Online session signed in or out. Out reaches the OS as
+// token:null + identity:null (contract C2: every surface drops the bearer); in, as a
+// fresh bearer from main. Posted only to this window, pinned to its origin.
+ipcRenderer.on("living-desktop:auth", async (_event, signedIn) => {
+  const origin = window.location.origin;
+  if (signedIn !== true) {
+    window.postMessage({ __aither: "os-token", token: null }, origin);
+    window.postMessage({ __aither: "os-identity", identity: null }, origin);
+    return;
+  }
+  const res = await ipcRenderer.invoke("living-desktop:host-token").catch(() => null);
+  if (res && typeof res.token === "string" && res.token) window.postMessage({ __aither: "os-token", token: res.token }, origin);
+});
+
+// ONE THREAD: main moved the shared thread (another OS page, the overlay, the connect panel).
+ipcRenderer.on("living-desktop:thread", (_event, threadId) => {
+  if (typeof threadId !== "string" || !threadId) return;
+  window.postMessage({ __aither: "os-thread", threadId, source: "desk" }, window.location.origin);
+});
+
+// awsh from anywhere: main asks the OS to open a surface (the Aither Browser's Ctrl+K).
+// Only the fixed ids Veil's os-command.ts accepts mean anything; Veil re-checks.
+ipcRenderer.on("living-desktop:os-command", (_event, cmd) => {
+  const id = cmd && typeof cmd.id === "string" ? cmd.id : "";
+  if (!id) return;
+  const args = cmd.args && typeof cmd.args === "object" ? cmd.args : {};
+  window.postMessage({ __aither: "os-command", id, args, source: "desk" }, window.location.origin);
+});
+
 // The desk as an overlay HOST (2026-10-03, overlay-browser-host.cjs). Veil's
 // overlay-host.ts only spoke to a FRAMING parent (awconnect's iframe); this window
 // loads AitherOS Online top-level, so it marks the document and answers the same
@@ -70,6 +99,19 @@ function markHost() {
   if (ours) d.setAttribute("data-host", "desk");
 }
 markHost();
+
+// aither-host/1 (aither-host-protocol.json beside this file; the same bytes as Veil's
+// and awconnect's copies). The OS says os-hello; the desk answers host-hello with the
+// planes it serves and who draws the taskbar: the browser's strip in the hosted tab
+// (DESK_TAB_ARG), the OS's own dock in the desktop overlay window. Kept inline: a
+// sandboxed preload cannot require a local file. host-protocol.test.cjs pins it.
+const HOST_PROTOCOL = "aither-host/1";
+const DESK_PLANES = Object.freeze(["regions", "page", "context", "focus", "desk", "identity", "token", "thread",
+  "daemon", "command"]);
+function hostHello() {
+  return { __aither: "host-hello", protocol: HOST_PROTOCOL, host: "desk", planes: DESK_PLANES.slice(),
+    chrome: { taskbar: browserTab ? "host" : "os" } };
+}
 window.addEventListener("DOMContentLoaded", markHost);
 window.addEventListener("load", markHost);
 
@@ -78,11 +120,35 @@ window.addEventListener("message", async (event) => {
   const data = event.data;
   if (!data || typeof data.__aither !== "string") return;
   const reply = (payload) => window.postMessage(payload, window.location.origin);
-  if (data.__aither === "os→page") {
+  if (data.__aither === "os-hello") {
+    reply(hostHello());
+    // ONE THREAD: tell the OS which shared conversation the desk is in, if it knows one.
+    const t = await ipcRenderer.invoke("living-desktop:thread-get").catch(() => null);
+    if (t && typeof t.threadId === "string" && t.threadId) reply({ __aither: "os-thread", threadId: t.threadId, source: "desk" });
+  } else if (data.__aither === "os-daemon-call") {
+    // awsh's Shell tab (target "harness" -> :8362) or a local-node call (the awconnect
+    // overlay's allowlist), relayed by main, which holds every token. Always answered.
+    const res = await ipcRenderer.invoke("living-desktop:daemon-call", {
+      target: data.target === "harness" ? "harness" : "node", method: data.method, path: data.path, body: data.body,
+    }).catch((error) => ({ ok: false, error: String((error && error.message) || error) }));
+    reply(Object.assign({}, res && typeof res === "object" ? res : { ok: false }, { __aither: "os-daemon-result", reqId: data.reqId }));
+  } else if (data.__aither === "os-thread") {
+    // The OS moved the thread. Our own post (source "desk") comes back here too: not news.
+    if (data.source !== "desk" && typeof data.threadId === "string") ipcRenderer.send("living-desktop:thread", data.threadId);
+  } else if (data.__aither === "os→page") {
     const result = await ipcRenderer.invoke("living-desktop:host-page", {
       action: data.action, selector: data.selector, text: data.text, key: data.key,
     }).catch((error) => ({ ok: false, error: String((error && error.message) || error) }));
     reply(Object.assign({}, result, { __aither: "page→os", reqId: data.reqId }));
+  } else if (data.__aither === "os-token-request") {
+    // ONE identity: the Online session's platform bearer, from main (the same source
+    // as browser-overlay.cjs). {token:null} = signed out; an IPC failure posts nothing.
+    const res = await ipcRenderer.invoke("living-desktop:host-token").catch(() => null);
+    if (res && "token" in res) reply({ __aither: "os-token", token: res.token || null });
+  } else if (data.__aither === "os-identity-request") {
+    // The OS verifies WHO with its own session; the desk only ever says signed OUT.
+    const res = await ipcRenderer.invoke("living-desktop:host-identity").catch(() => null);
+    if (res && "identity" in res && res.identity === null) reply({ __aither: "os-identity", identity: null });
   } else if (data.__aither === "os-page-context-request") {
     const context = await ipcRenderer.invoke("living-desktop:host-context").catch(() => null);
     if (context) reply({ __aither: "os-page-context", context });

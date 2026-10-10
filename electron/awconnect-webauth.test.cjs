@@ -277,3 +277,36 @@ test("the desk's channel string is the one the preload bridge calls", () => {
   const preload = require("./awconnect-compat-preload.cjs");
   assert.equal(preload.CHANNEL, webauth.CHANNEL);
 });
+
+test("one identity: the desk-session channel answers only a loaded extension, through the provider", async () => {
+  const handlers = new Map();
+  const ipcMain = { handle: (channel, fn) => handlers.set(channel, fn) };
+  const { session } = fakeSession({ getExtension: (id) => (id === ID ? { id } : null) });
+  const asked = [];
+  webauth.install({ ipcMain, session, BrowserWindow: FakeWindow,
+    deskSession: async (id) => { asked.push(id); return { token: "platform-bearer" }; } });
+  const handler = handlers.get(webauth.DESK_SESSION_CHANNEL);
+  assert.equal(typeof handler, "function");
+  const from = (url) => ({ senderFrame: { url }, sender: { session } });
+  assert.deepEqual(await handler(from("https://example.com/")), {}, "a web page gets nothing");
+  assert.deepEqual(await handler(from(`chrome-extension://${"b".repeat(32)}/x.html`)), {}, "an unloaded extension gets nothing");
+  assert.deepEqual(await handler(from(`chrome-extension://${ID}/sidepanel.html`)), { token: "platform-bearer" });
+  assert.deepEqual(asked, [ID], "the provider is asked only for the loaded extension");
+});
+
+test("one identity: answerDeskSession never rejects, and an empty token is a sign-out", async () => {
+  assert.deepEqual(await webauth.answerDeskSession(async () => ({ token: "" }), ID), { token: null });
+  assert.deepEqual(await webauth.answerDeskSession(async () => ({ token: null }), ID), { token: null });
+  assert.deepEqual(await webauth.answerDeskSession(async () => { throw new Error("x"); }, ID), {});
+  assert.deepEqual(await webauth.answerDeskSession(async () => ({}), ID), {}, "a refusal is not a sign-out");
+  assert.deepEqual(await webauth.answerDeskSession(async () => ({ token: "t" }), ""), {});
+  const preload = require("./awconnect-compat-preload.cjs");
+  assert.equal(preload.DESK_SESSION_CHANNEL, webauth.DESK_SESSION_CHANNEL);
+});
+
+test("one identity: without a provider the desk-session channel is not served at all", () => {
+  const handled = [];
+  const { session } = fakeSession({ getExtension: () => null });
+  webauth.install({ ipcMain: { handle: (c) => handled.push(c) }, session, BrowserWindow: FakeWindow });
+  assert.equal(handled.includes(webauth.DESK_SESSION_CHANNEL), false);
+});

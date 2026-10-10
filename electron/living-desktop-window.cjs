@@ -125,6 +125,49 @@ ipcMain.handle("living-desktop:host-context", async (event) => {
   if (!fromOverlay(event) || !overlayHost || typeof overlayHost.context !== "function") return null;
   return overlayHost.context();
 });
+// ONE identity (aither-host/1 identity + token planes): the desk-hosted OS asks for the
+// Online session's platform bearer, the same one awconnect's overlay frames get. Fenced
+// like the planes above. Never the local daemon token or a harness token.
+ipcMain.handle("living-desktop:host-token", async (event) => {
+  if (!fromOverlay(event) || !overlayHost || typeof overlayHost.token !== "function") return {};
+  try {
+    const token = await overlayHost.token();
+    return { token: typeof token === "string" && token ? token : null };
+  } catch {
+    return {};
+  }
+});
+// Identity: the OS verifies who is signed in with its own session; the desk only says
+// SIGNED OUT ({identity:null}). Signed in = {} (no key), so the OS keeps what it verified.
+ipcMain.handle("living-desktop:host-identity", async (event) => {
+  if (!fromOverlay(event) || !overlayHost || typeof overlayHost.token !== "function") return {};
+  try {
+    return (await overlayHost.token()) ? {} : { identity: null };
+  } catch {
+    return {};
+  }
+});
+// awsh's Shell tab and local-node calls from a desk-hosted OS page (aither-host/1 daemon
+// plane). target "harness" -> harness-relay.cjs (AitherShell's routes, :8362); anything
+// else -> the awconnect overlay's local-node allowlist (overlayHost.local). Tokens stay here.
+ipcMain.handle("living-desktop:daemon-call", async (event, msg) => {
+  if (!fromOverlay(event)) return { ok: false, error: "not the AitherOS Online overlay" };
+  const m = msg && typeof msg === "object" ? msg : {};
+  if (m.target === "harness") return require("./harness-relay.cjs").relayHarness(m);
+  if (!overlayHost || typeof overlayHost.local !== "function") return { ok: false, error: "the desk has no local-node relay wired" };
+  return overlayHost.local({ type: "daemon-call", method: m.method, path: m.path, body: m.body });
+});
+
+// ONE THREAD (aither-host/1 thread plane): a desk-hosted OS page moved the shared thread,
+// or asks which it is. Fenced like every plane; the id is re-checked in desk-thread.cjs.
+ipcMain.on("living-desktop:thread", (event, threadId) => {
+  if (!fromOverlay(event) || !overlayHost || typeof overlayHost.thread !== "function") return;
+  overlayHost.thread().set(String(threadId || ""), "os");
+});
+ipcMain.handle("living-desktop:thread-get", async (event) => {
+  if (!fromOverlay(event) || !overlayHost || typeof overlayHost.thread !== "function") return { threadId: null };
+  return { threadId: overlayHost.thread().get() };
+});
 ipcMain.on("living-desktop:desk-command", (event, id) => {
   if (!fromOverlay(event) || !overlayHost || typeof overlayHost.command !== "function") return;
   overlayHost.command(String(id || ""));
@@ -692,6 +735,34 @@ function pushDeskState() {
   }
 }
 
+/**
+ * The Online session signed in or out: tell every desk-hosted OS page. The preload turns
+ * a sign-out into os-token {token:null} + os-identity {identity:null} (contract C2) and a
+ * sign-in into a fresh os-token.
+ */
+function pushHostAuth(signedIn) {
+  const own = [desktopWin, appWin].filter((w) => w && !w.isDestroyed()).map((w) => w.webContents);
+  for (const wc of [...own, ...extraHostContents()]) {
+    try { wc.send("living-desktop:auth", Boolean(signedIn)); } catch { /* gone mid-push */ }
+  }
+}
+
+/** The shared thread moved: every desk-hosted OS page follows (the preload posts os-thread). */
+/** Ask every desk-hosted OS page to run an os-command (Veil allowlists it: awsh.open). */
+function pushOsCommand(id, args = {}) {
+  const own = [desktopWin, appWin].filter((w) => w && !w.isDestroyed()).map((w) => w.webContents);
+  for (const wc of [...own, ...extraHostContents()]) {
+    try { wc.send("living-desktop:os-command", { id: String(id || ""), args }); } catch { /* gone mid-push */ }
+  }
+}
+
+function pushHostThread(threadId) {
+  const own = [desktopWin, appWin].filter((w) => w && !w.isDestroyed()).map((w) => w.webContents);
+  for (const wc of [...own, ...extraHostContents()]) {
+    try { wc.send("living-desktop:thread", String(threadId || "")); } catch { /* gone mid-push */ }
+  }
+}
+
 // ── The AitherDesktop APP window ────────────────────────────────────────────────────
 // Owner, 2026-09-08: "one is an overlay that goes on top of the OS/browser, the
 // other is a fully AitherDesktop app ... the same AitherDesktop on aitherium.com".
@@ -865,6 +936,9 @@ module.exports = {
   setOverlayHost,
   setExtraHosts,
   pushDeskState,
+  pushHostAuth,
+  pushHostThread,
+  pushOsCommand,
   isOpen,
   onVisibilityChange,
   wireHostFocus,

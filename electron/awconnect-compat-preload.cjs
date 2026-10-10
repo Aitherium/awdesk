@@ -146,6 +146,11 @@ function compatShim(identity) {
     identity: {
       getRedirectURL: () => redirectUrl,
       launchWebAuthFlow: () => launchWebAuthFlow,
+      // Not a Chrome API: the desk's one sign-in (awconnect-webauth.cjs DESK_SESSION_CHANNEL).
+      // Present only inside the desk, so awconnect can tell "in the desk" from Chrome.
+      ...(identity && typeof identity.deskSession === "function"
+        ? { aitherDeskSession: () => () => Promise.resolve(identity.deskSession()) }
+        : {}),
     },
   };
   for (const name of names) {
@@ -163,6 +168,8 @@ const { contextBridge, ipcRenderer } = electron || {};
 
 /** The one channel the desk serves (awconnect-webauth.cjs CHANNEL; a test pins them). */
 const CHANNEL = "awconnect:identity:webauth";
+/** The desk's Online session (awconnect-webauth.cjs DESK_SESSION_CHANNEL). */
+const DESK_SESSION_CHANNEL = "awconnect:identity:desk-session";
 
 /**
  * The shim's ONLY privileged handle. It lives in this isolated world (where ipcRenderer
@@ -180,6 +187,15 @@ const isolatedBridge = ipcRenderer && typeof ipcRenderer.invoke === "function"
         throw new Error(message, { cause: error });
       }
     },
+    // {token} from the desk's Online session, {} when refused; never throws into the page.
+    deskSession: async () => {
+      try {
+        const res = await ipcRenderer.invoke(DESK_SESSION_CHANNEL);
+        return res && typeof res === "object" ? res : {};
+      } catch {
+        return {};
+      }
+    },
   }
   : null;
 
@@ -192,4 +208,4 @@ if (contextBridge && typeof contextBridge.executeInMainWorld === "function") {
   }
 }
 
-if (typeof module !== "undefined" && module.exports) module.exports = { CHANNEL, compatShim };
+if (typeof module !== "undefined" && module.exports) module.exports = { CHANNEL, DESK_SESSION_CHANNEL, compatShim };

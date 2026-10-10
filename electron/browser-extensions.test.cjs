@@ -158,3 +158,18 @@ test("identity: without a bridge it stays inert, and the id can come from locati
   delete globalThis.chrome;
   delete globalThis.location;
 });
+
+test("one identity: chrome.identity.aitherDeskSession exists only with the desk's bridge", async () => {
+  const { compatShim } = require("./awconnect-compat-preload.cjs");
+  const id = "hlmfknhcfhjjngckfpacgleffckpmphe";
+  globalThis.location = { protocol: "chrome-extension:", host: id };
+  globalThis.chrome = { runtime: { id } };
+  compatShim({ launchWebAuthFlow: async () => undefined, deskSession: async () => ({ token: "platform-bearer" }) });
+  assert.deepEqual(await globalThis.chrome.identity.aitherDeskSession(), { token: "platform-bearer" });
+  delete globalThis.chrome;
+  globalThis.chrome = { runtime: { id } };
+  compatShim(null);
+  assert.equal(Object.prototype.hasOwnProperty.call(globalThis.chrome.identity, "aitherDeskSession"), false);
+  delete globalThis.chrome;
+  delete globalThis.location;
+});
