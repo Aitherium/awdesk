@@ -11,7 +11,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const Module = require("node:module");
 
-const { INSIDE_MIN, createBrowserInOnline, screenRect } = require("./browser-in-online.cjs");
+const { INSIDE_MIN, createBrowserInOnline, screenRect, shapeFor, subtractRect, visibleRects } = require("./browser-in-online.cjs");
 
 function stubWin(bounds = { x: 100, y: 100, width: 1200, height: 800 }) {
   const calls = [];
@@ -32,6 +32,7 @@ function stubWin(bounds = { x: 100, y: 100, width: 1200, height: 800 }) {
     showInactive: () => { calls.push(["showInactive"]); visible = true; },
     hide: () => { calls.push(["hide"]); visible = false; },
     focus: () => calls.push(["focus"]),
+    setShape: (rects) => calls.push(["setShape", rects]),
     isDestroyed: () => destroyed,
     destroy: () => { destroyed = true; },
   };
@@ -134,6 +135,63 @@ test("never inside an overlay that is not on screen; a closed browser is forgott
   assert.doesNotThrow(() => bio.apply({ state: "shown", rect: RECT }, stubOverlay()));
 });
 
+// ── z-order: OS windows above the browser clip it ───────────────────────────────
+
+test("visibleRects: what no occluder covers, relative to the body", () => {
+  const body = { x: 100, y: 100, w: 400, h: 300 };
+  assert.deepEqual(visibleRects(body, []), [{ x: 0, y: 0, w: 400, h: 300 }]);
+  assert.deepEqual(visibleRects(body, [{ x: 0, y: 0, w: 50, h: 50 }]), [{ x: 0, y: 0, w: 400, h: 300 }], "a window elsewhere covers nothing");
+  // A window over the right half: the left half stays.
+  assert.deepEqual(visibleRects(body, [{ x: 300, y: 0, w: 900, h: 900 }]), [{ x: 0, y: 0, w: 200, h: 300 }]);
+  // A window in the middle: four bands around it, covering exactly the rest.
+  const parts = visibleRects(body, [{ x: 200, y: 200, w: 100, h: 100 }]);
+  assert.equal(parts.reduce((a, p) => a + p.w * p.h, 0), 400 * 300 - 100 * 100);
+  assert.deepEqual(visibleRects(body, [{ x: 0, y: 0, w: 9999, h: 9999 }]), [], "fully covered");
+  assert.deepEqual(visibleRects(body, [{ x: 0, y: 0, w: "big", h: 1 }, null]), [{ x: 0, y: 0, w: 400, h: 300 }], "junk is ignored");
+  assert.deepEqual(subtractRect({ x: 0, y: 0, w: 10, h: 10 }, { x: 20, y: 20, w: 5, h: 5 }), [{ x: 0, y: 0, w: 10, h: 10 }]);
+  assert.deepEqual(shapeFor([{ x: 1, y: 2, w: 3, h: 4 }], 2), [{ x: 2, y: 4, width: 6, height: 8 }]);
+});
+
+test("stacking: another OS window on top clips the browser; covering it hides it; raising it makes it whole", () => {
+  const b = stubWin();
+  const o = stubOverlay();
+  const bio = createBrowserInOnline({ browser: () => b });
+  bio.apply({ state: "shown", rect: RECT }, o);
+  assert.equal(bio.isClipped(), false);
+  // Another window focused over the browser's right part (viewport px).
+  b.calls.length = 0;
+  bio.apply({ state: "shown", rect: RECT, occluders: [{ x: 700, y: 0, w: 1000, h: 2000 }] }, o);
+  assert.deepEqual(b.calls.find((c) => c[0] === "setShape"), ["setShape", [{ x: 0, y: 0, width: 500, height: 600 }]]);
+  assert.equal(bio.isClipped(), true);
+  assert.equal(b.isVisible(), true);
+  // A maximized window over all of it: hidden, not merely clipped.
+  bio.apply({ state: "shown", rect: RECT, occluders: [{ x: 0, y: 0, w: 4000, h: 4000 }] }, o);
+  assert.equal(b.isVisible(), false);
+  assert.equal(bio.isCovered(), true);
+  // Its taskbar or stage entry raised it: nothing above, whole, shown and focused.
+  b.calls.length = 0;
+  bio.apply({ state: "shown", rect: RECT, occluders: [] }, o);
+  bio.apply({ state: "shown", focus: true }, o);
+  assert.deepEqual(b.calls.find((c) => c[0] === "setShape"), ["setShape", [{ x: 0, y: 0, width: 900, height: 600 }]]);
+  assert.equal(b.isVisible(), true);
+  assert.ok(b.calls.some((c) => c[0] === "focus"));
+  assert.equal(bio.isClipped(), false);
+  assert.equal(bio.isCovered(), false);
+});
+
+test("stacking: a detach never leaves the free browser clipped", () => {
+  const b = stubWin();
+  const o = stubOverlay();
+  const bio = createBrowserInOnline({ browser: () => b });
+  bio.apply({ state: "shown", rect: RECT, occluders: [{ x: 700, y: 0, w: 1000, h: 2000 }] }, o);
+  b.calls.length = 0;
+  bio.detach();
+  const shape = b.calls.find((c) => c[0] === "setShape");
+  assert.ok(shape, "the shape is reset");
+  assert.ok(b.calls.indexOf(shape) > b.calls.findIndex((c) => c[0] === "setBounds"), "reset AFTER the resize");
+  assert.deepEqual(shape[1], [{ x: 0, y: 0, width: 1200, height: 800 }], "the whole free window");
+});
+
 // ── the wiring, through the real modules ────────────────────────────────────────
 
 function loadPreload({ argv = [] } = {}) {
@@ -162,10 +220,13 @@ test("the overlay preload relays desk-window, shaped; the browser's own Online t
   await p.send({ __aither: "desk-window", id: "browser", state: "shown", rect: { ...RECT, extra: 1 }, focus: true });
   await p.send({ __aither: "desk-window", id: "browser", state: "hidden", rect: { x: "1" } });
   await p.send({ __aither: "desk-window", id: "browser", state: "maximise" });
+  await p.send({ __aither: "desk-window", id: "browser", state: "shown", rect: RECT,
+    occluders: [{ x: 1, y: 2, w: 3, h: 4, z: 9 }, { x: "1" }, null] });
   await p.send({ __aither: "desk-window", id: "avatar", state: "shown" });
   assert.deepEqual(p.sent(), [
-    ["living-desktop:desk-window", { state: "shown", rect: RECT, focus: true }],
-    ["living-desktop:desk-window", { state: "hidden", rect: null, focus: false }],
+    ["living-desktop:desk-window", { state: "shown", rect: RECT, focus: true, occluders: [] }],
+    ["living-desktop:desk-window", { state: "hidden", rect: null, focus: false, occluders: [] }],
+    ["living-desktop:desk-window", { state: "shown", rect: RECT, focus: false, occluders: [{ x: 1, y: 2, w: 3, h: 4 }] }],
   ]);
   const tab = loadPreload({ argv: ["--aither-desk-surface=browser-tab"] });
   await tab.send({ __aither: "desk-window", id: "browser", state: "shown", rect: RECT });

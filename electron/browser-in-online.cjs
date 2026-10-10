@@ -15,6 +15,7 @@
  *   hidden    minimized in the OS, or swept into the stage strip: the browser hides.
  *   detached  the OS window closed, or the overlay went away: the browser is its own
  *             window again, at the bounds it had before it went in.
+ *   occluders (with shown) OS windows stacked above it: the browser is clipped to the rest.
  *
  * Electron-free: windows are injected, so the state machine runs under `node --test`
  * with plain stubs (browser-in-online.test.cjs), like avatar-dock.cjs.
@@ -45,6 +46,54 @@ function screenRect(rect, content, zoom = 1) {
 }
 
 /**
+ * Z-ORDER (owner, 2026-10-10): a native window cannot sit BETWEEN two DOM windows of the
+ * overlay, so the OS sends `occluders` -- the rects of its windows stacked ABOVE the
+ * browser's frame -- and the browser is clipped to what is left (BrowserWindow.setShape).
+ * Fully covered, it hides; raised (taskbar, stage strip, its title bar), nothing is above
+ * it and it is whole again. Pure rect arithmetic, in the page's CSS px.
+ */
+function subtractRect(r, o) {
+  const ox1 = Math.max(r.x, o.x);
+  const oy1 = Math.max(r.y, o.y);
+  const ox2 = Math.min(r.x + r.w, o.x + o.w);
+  const oy2 = Math.min(r.y + r.h, o.y + o.h);
+  if (ox1 >= ox2 || oy1 >= oy2) return [r];
+  const out = [];
+  if (oy1 > r.y) out.push({ x: r.x, y: r.y, w: r.w, h: oy1 - r.y }); // above
+  if (oy2 < r.y + r.h) out.push({ x: r.x, y: oy2, w: r.w, h: r.y + r.h - oy2 }); // below
+  if (ox1 > r.x) out.push({ x: r.x, y: oy1, w: ox1 - r.x, h: oy2 - oy1 }); // left
+  if (ox2 < r.x + r.w) out.push({ x: ox2, y: oy1, w: r.x + r.w - ox2, h: oy2 - oy1 }); // right
+  return out;
+}
+
+const isRect = (r) => Boolean(r && typeof r === "object"
+  && [r.x, r.y, r.w, r.h].every((n) => typeof n === "number" && Number.isFinite(n)) && r.w > 0 && r.h > 0);
+
+/**
+ * The parts of `body` no occluder covers, as rects RELATIVE to the body (CSS px).
+ * Empty = fully covered. At most 64 occluders are honoured (a page cannot make this hot).
+ */
+function visibleRects(body, occluders) {
+  if (!isRect(body)) return [];
+  let parts = [{ x: body.x, y: body.y, w: body.w, h: body.h }];
+  const list = Array.isArray(occluders) ? occluders.filter(isRect).slice(0, 64) : [];
+  for (const o of list) {
+    parts = parts.flatMap((p) => subtractRect(p, o));
+    if (!parts.length) break;
+  }
+  return parts.map((p) => ({ x: p.x - body.x, y: p.y - body.y, w: p.w, h: p.h }));
+}
+
+/** Body-relative CSS px rects -> a setShape() list in window DIP. */
+function shapeFor(parts, zoom = 1) {
+  const z = typeof zoom === "number" && zoom > 0 && Number.isFinite(zoom) ? zoom : 1;
+  return parts.map((p) => ({
+    x: Math.round(p.x * z), y: Math.round(p.y * z),
+    width: Math.max(1, Math.round(p.w * z)), height: Math.max(1, Math.round(p.h * z)),
+  }));
+}
+
+/**
  * @param {{
  *   browser: () => object|null,   the Aither Browser BrowserWindow (or null)
  *   onChange?: (inside: boolean) => void,
@@ -55,6 +104,15 @@ function createBrowserInOnline({ browser, onChange = () => {} }) {
   let owner = null;
   let freeBounds = null;
   let freeMin = null;
+  let covered = false; // hidden because OS windows cover all of it
+  let clipped = false;  // a shape is applied
+
+  function unclip(b) {
+    if (!clipped || !live(b) || typeof b.setShape !== "function") { clipped = false; return; }
+    const { width, height } = b.getBounds();
+    b.setShape([{ x: 0, y: 0, width, height }]);
+    clipped = false;
+  }
 
   const live = (w) => Boolean(w && !(typeof w.isDestroyed === "function" && w.isDestroyed()));
 
@@ -68,10 +126,12 @@ function createBrowserInOnline({ browser, onChange = () => {} }) {
       if (typeof b.setParentWindow === "function") b.setParentWindow(null);
       if (freeMin && typeof b.setMinimumSize === "function") b.setMinimumSize(freeMin[0], freeMin[1]);
       if (freeBounds) b.setBounds(freeBounds);
+      unclip(b); // after the resize: a window shape does not grow with the window
       if (typeof b.isVisible === "function" && !b.isVisible()) b.show();
     }
     freeBounds = null;
     freeMin = null;
+    covered = false;
     onChange(false);
     return true;
   }
@@ -111,10 +171,29 @@ function createBrowserInOnline({ browser, onChange = () => {} }) {
     if (!rect && !inside) return false; // a bare focus before any frame: nothing to raise
     attach(b, overlay);
     if (rect) b.setBounds(rect);
+    // Stacking: a message with the body's rect carries what is above it.
+    if (m.rect) {
+      const parts = visibleRects(m.rect, m.occluders);
+      const whole = parts.length === 1 && parts[0].x === 0 && parts[0].y === 0
+        && parts[0].w === m.rect.w && parts[0].h === m.rect.h;
+      covered = parts.length === 0;
+      if (covered) {
+        if (typeof b.isVisible === "function" && b.isVisible()) b.hide();
+        return true;
+      }
+      if (whole) unclip(b);
+      else if (typeof b.setShape === "function") {
+        b.setShape(shapeFor(parts, zoom));
+        clipped = true;
+      }
+    }
     if (m.focus) {
+      // Raised in the OS: nothing is above it any more.
+      covered = false;
+      unclip(b);
       b.show();
       b.focus();
-    } else if (typeof b.isVisible === "function" && !b.isVisible()) {
+    } else if (!covered && typeof b.isVisible === "function" && !b.isVisible()) {
       b.showInactive();
     }
     return true;
@@ -130,10 +209,14 @@ function createBrowserInOnline({ browser, onChange = () => {} }) {
       owner = null;
       freeBounds = null;
       freeMin = null;
+      covered = false;
+      clipped = false;
       if (was) onChange(false);
     },
     isInside: () => inside,
+    isCovered: () => covered,
+    isClipped: () => clipped,
   };
 }
 
-module.exports = { INSIDE_MIN, createBrowserInOnline, screenRect };
+module.exports = { INSIDE_MIN, createBrowserInOnline, screenRect, shapeFor, subtractRect, visibleRects };

@@ -54,7 +54,7 @@
     "desk-command": { "dir": "os→host", "plane": "desk", "fields": [ "id" ] },
     "desk-open-app": { "dir": "host→os", "plane": "desk", "fields": [ "id" ] },
     "desk-open-app-ok": { "dir": "os→host", "plane": "desk", "fields": [ "id" ] },
-    "desk-window": { "dir": "os→host", "plane": "desk", "fields": [ "id", "state", "rect", "focus" ] },
+    "desk-window": { "dir": "os→host", "plane": "desk", "fields": [ "id", "state", "rect", "focus", "occluders" ] },
     "os-thread": { "dir": "both", "plane": "thread", "fields": [ "threadId", "title", "source" ] },
     "os-command": { "dir": "both", "plane": "command", "fields": [ "id", "args" ] }
   }

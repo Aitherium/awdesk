@@ -163,7 +163,11 @@ window.addEventListener("message", async (event) => {
     const r = data.rect && typeof data.rect === "object" ? data.rect : null;
     const rect = r && [r.x, r.y, r.w, r.h].every((n) => typeof n === "number" && Number.isFinite(n))
       ? { x: r.x, y: r.y, w: r.w, h: r.h } : null;
-    ipcRenderer.send("living-desktop:desk-window", { state, rect, focus: data.focus === true });
+    // OS windows stacked above the browser's frame (z-order); at most 64, rects only.
+    const occluders = Array.isArray(data.occluders) ? data.occluders.slice(0, 64)
+      .filter((o) => o && [o.x, o.y, o.w, o.h].every((n) => typeof n === "number" && Number.isFinite(n)))
+      .map((o) => ({ x: o.x, y: o.y, w: o.w, h: o.h })) : [];
+    ipcRenderer.send("living-desktop:desk-window", { state, rect, focus: data.focus === true, occluders });
   } else if (data.__aither === "desk-command") {
     // A HUMAN click only. "Let the agent continue" lifts the owner's pause, so a
     // page script must not be able to send it on its own: the page's transient

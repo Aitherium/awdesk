@@ -205,6 +205,8 @@ away without the others moving:
     minimized and closed by the window manager. Its body's rect goes to the desk as
     aither-host/1 `desk-window` (overlay window only), and `browser-in-online.cjs` makes the
     browser an owned window of the overlay laid over that body; minimize or a stage sweep hides
-    it, closing the OS window or hiding the overlay puts it back where it was. Known edge: an
-    owned window sits above every OS window, so another OS window cannot overlap it yet.
+    it, closing the OS window or hiding the overlay puts it back where it was. Z-order follows the
+    window manager: the OS sends the rects of its windows stacked above the frame
+    (`occluders`), the desk clips the browser to the rest (`setShape`) or hides it when fully
+    covered, and raising its window (taskbar, stage strip) makes it whole again.
     Still next: hide the avatar's own bead rail and speech bubble while it is docked.
