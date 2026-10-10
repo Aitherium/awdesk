@@ -41,7 +41,7 @@
     "os-token": { "dir": "host→os", "plane": "token", "fields": [ "token" ] },
     "os-node-probe": { "dir": "os→host", "plane": "node", "fields": [] },
     "os-local-node": { "dir": "host→os", "plane": "node", "fields": [ "node" ] },
-    "os-daemon-call": { "dir": "os→host", "plane": "daemon", "fields": [ "reqId", "method", "path", "body" ] },
+    "os-daemon-call": { "dir": "os→host", "plane": "daemon", "fields": [ "reqId", "method", "path", "body", "target" ] },
     "os-daemon-result": { "dir": "host→os", "plane": "daemon", "fields": [ "reqId", "ok", "status", "data", "baseUrl", "error" ] },
     "os-compose": { "dir": "os→host", "plane": "compose", "fields": [ "reqId", "prompt", "maxTokens", "temperature" ] },
     "os-compose-result": { "dir": "host→os", "plane": "compose", "fields": [ "reqId", "ok", "text", "reason", "error" ] },

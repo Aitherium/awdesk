@@ -454,6 +454,34 @@ function getOverlay() {
   }
   return overlay;
 }
+/** A local-node / compose / adapter answer, exactly as the overlay over a web tab gets it. */
+function overlayAnswer(msg) {
+  return getOverlay().answer(msg);
+}
+
+/** Ctrl+K (Cmd+K on macOS), no other modifier: the browser's awsh key. Pure. */
+function isAwshKey(input) {
+  if (!input || input.type !== "keyDown" || input.alt || input.shift) return false;
+  if (!(input.control || input.meta)) return false;
+  return String(input.key || "").toLowerCase() === "k";
+}
+
+/**
+ * awsh from anywhere (aither-host/1 os-command): raise the pinned AitherOS Online tab and
+ * ask it to open awsh. The tab's desk-host preload turns the IPC into os-command.
+ */
+function openAwsh(args = {}) {
+  if (!win || win.isDestroyed()) createBrowserWindow({ url: null, home: false });
+  ensurePinned();
+  const online = tabs.byKey("online");
+  if (!online) return false;
+  showTab(online.id);
+  const view = viewOf(online.id);
+  if (!alive(view)) return false;
+  try { view.webContents.send("living-desktop:os-command", { id: "awsh.open", args }); } catch { return false; }
+  return true;
+}
+
 /** ONE THREAD (desk-thread.cjs): the conversation every surface shares, the desk's copy. */
 let deskThread = null;
 function getDeskThread() {
@@ -1093,6 +1121,12 @@ function wirePage(wc, id) {
     if (input.type === "keyDown" && input.alt && !input.control && !input.meta && String(input.key).toLowerCase() === "o") {
       event.preventDefault();
       setOverlay(!getPrefs().overlay);
+      return;
+    }
+    // Ctrl+K: awsh from any tab (os-command). Console pages keep their own palette key.
+    if (isAwshKey(input) && kindOf() !== "internal") {
+      event.preventDefault();
+      openAwsh();
     }
   });
   for (const name of ["dom-ready", "did-navigate-in-page"]) wc.on(name, () => syncPageTaskbar(wc));
@@ -1931,6 +1965,10 @@ module.exports = {
   onlineToken,
   watchOnlineAuth,
   getDeskThread,
+  overlayAnswer,
+  /** awsh from anywhere: raise Online and open awsh there (Ctrl+K in the browser). */
+  openAwsh,
+  isAwshKey,
   awconnectDeskSession,
   /** Read the selection, else the page, aloud (the Voice section's Read aloud). */
   readAloud,

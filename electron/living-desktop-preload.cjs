@@ -60,6 +60,15 @@ ipcRenderer.on("living-desktop:thread", (_event, threadId) => {
   window.postMessage({ __aither: "os-thread", threadId, source: "desk" }, window.location.origin);
 });
 
+// awsh from anywhere: main asks the OS to open a surface (the Aither Browser's Ctrl+K).
+// Only the fixed ids Veil's os-command.ts accepts mean anything; Veil re-checks.
+ipcRenderer.on("living-desktop:os-command", (_event, cmd) => {
+  const id = cmd && typeof cmd.id === "string" ? cmd.id : "";
+  if (!id) return;
+  const args = cmd.args && typeof cmd.args === "object" ? cmd.args : {};
+  window.postMessage({ __aither: "os-command", id, args, source: "desk" }, window.location.origin);
+});
+
 // The desk as an overlay HOST (2026-10-03, overlay-browser-host.cjs). Veil's
 // overlay-host.ts only spoke to a FRAMING parent (awconnect's iframe); this window
 // loads AitherOS Online top-level, so it marks the document and answers the same
@@ -97,7 +106,8 @@ markHost();
 // (DESK_TAB_ARG), the OS's own dock in the desktop overlay window. Kept inline: a
 // sandboxed preload cannot require a local file. host-protocol.test.cjs pins it.
 const HOST_PROTOCOL = "aither-host/1";
-const DESK_PLANES = Object.freeze(["regions", "page", "context", "focus", "desk", "identity", "token", "thread"]);
+const DESK_PLANES = Object.freeze(["regions", "page", "context", "focus", "desk", "identity", "token", "thread",
+  "daemon", "command"]);
 function hostHello() {
   return { __aither: "host-hello", protocol: HOST_PROTOCOL, host: "desk", planes: DESK_PLANES.slice(),
     chrome: { taskbar: browserTab ? "host" : "os" } };
@@ -115,6 +125,13 @@ window.addEventListener("message", async (event) => {
     // ONE THREAD: tell the OS which shared conversation the desk is in, if it knows one.
     const t = await ipcRenderer.invoke("living-desktop:thread-get").catch(() => null);
     if (t && typeof t.threadId === "string" && t.threadId) reply({ __aither: "os-thread", threadId: t.threadId, source: "desk" });
+  } else if (data.__aither === "os-daemon-call") {
+    // awsh's Shell tab (target "harness" -> :8362) or a local-node call (the awconnect
+    // overlay's allowlist), relayed by main, which holds every token. Always answered.
+    const res = await ipcRenderer.invoke("living-desktop:daemon-call", {
+      target: data.target === "harness" ? "harness" : "node", method: data.method, path: data.path, body: data.body,
+    }).catch((error) => ({ ok: false, error: String((error && error.message) || error) }));
+    reply(Object.assign({}, res && typeof res === "object" ? res : { ok: false }, { __aither: "os-daemon-result", reqId: data.reqId }));
   } else if (data.__aither === "os-thread") {
     // The OS moved the thread. Our own post (source "desk") comes back here too: not news.
     if (data.source !== "desk" && typeof data.threadId === "string") ipcRenderer.send("living-desktop:thread", data.threadId);

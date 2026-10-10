@@ -2764,6 +2764,8 @@ setOverlayHost({
   token: () => browserWindow.onlineToken(),
   // One thread: the conversation every surface shares (desk-thread.cjs).
   thread: () => browserWindow.getDeskThread(),
+  // Local-node calls from a desk-hosted OS page: the awconnect overlay's own allowlist.
+  local: (msg) => browserWindow.overlayAnswer(msg),
   command: (id) => {
     if (!overlayBrowserHost.allowedCommand(id)) return;
     if (id === "browser.open") browserWindow.createBrowserWindow({ askAgent: browserAskAgent });

@@ -147,6 +147,17 @@ ipcMain.handle("living-desktop:host-identity", async (event) => {
     return {};
   }
 });
+// awsh's Shell tab and local-node calls from a desk-hosted OS page (aither-host/1 daemon
+// plane). target "harness" -> harness-relay.cjs (AitherShell's routes, :8362); anything
+// else -> the awconnect overlay's local-node allowlist (overlayHost.local). Tokens stay here.
+ipcMain.handle("living-desktop:daemon-call", async (event, msg) => {
+  if (!fromOverlay(event)) return { ok: false, error: "not the AitherOS Online overlay" };
+  const m = msg && typeof msg === "object" ? msg : {};
+  if (m.target === "harness") return require("./harness-relay.cjs").relayHarness(m);
+  if (!overlayHost || typeof overlayHost.local !== "function") return { ok: false, error: "the desk has no local-node relay wired" };
+  return overlayHost.local({ type: "daemon-call", method: m.method, path: m.path, body: m.body });
+});
+
 // ONE THREAD (aither-host/1 thread plane): a desk-hosted OS page moved the shared thread,
 // or asks which it is. Fenced like every plane; the id is re-checked in desk-thread.cjs.
 ipcMain.on("living-desktop:thread", (event, threadId) => {
@@ -737,6 +748,14 @@ function pushHostAuth(signedIn) {
 }
 
 /** The shared thread moved: every desk-hosted OS page follows (the preload posts os-thread). */
+/** Ask every desk-hosted OS page to run an os-command (Veil allowlists it: awsh.open). */
+function pushOsCommand(id, args = {}) {
+  const own = [desktopWin, appWin].filter((w) => w && !w.isDestroyed()).map((w) => w.webContents);
+  for (const wc of [...own, ...extraHostContents()]) {
+    try { wc.send("living-desktop:os-command", { id: String(id || ""), args }); } catch { /* gone mid-push */ }
+  }
+}
+
 function pushHostThread(threadId) {
   const own = [desktopWin, appWin].filter((w) => w && !w.isDestroyed()).map((w) => w.webContents);
   for (const wc of [...own, ...extraHostContents()]) {
@@ -919,6 +938,7 @@ module.exports = {
   pushDeskState,
   pushHostAuth,
   pushHostThread,
+  pushOsCommand,
   isOpen,
   onVisibilityChange,
   wireHostFocus,

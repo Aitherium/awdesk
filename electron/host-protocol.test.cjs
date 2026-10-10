@@ -154,3 +154,38 @@ test("one thread: main's move reaches the OS; on hello the desk names its thread
   ]);
   assert.ok(p.posted.find(([m]) => m.__aither === "host-hello")[0].planes.includes("thread"));
 });
+
+test("awsh: os-daemon-call {target:harness} goes to main and is always answered with its reqId", async () => {
+  const seen = [];
+  const p = loadPreload({ invoke: async (ch, msg) => { seen.push([ch, msg]); return { ok: true, status: 200, data: { sessions: [] } }; } });
+  await p.send({ __aither: "os-daemon-call", reqId: "r1", target: "harness", method: "GET", path: "/sessions" });
+  assert.deepEqual(JSON.parse(JSON.stringify(seen)), [["living-desktop:daemon-call", { target: "harness", method: "GET", path: "/sessions" }]]);
+  assert.deepEqual(p.posted, [[{ ok: true, status: 200, data: { sessions: [] }, __aither: "os-daemon-result", reqId: "r1" }, "https://aitherium.com"]]);
+  const failing = loadPreload({ invoke: async () => { throw new Error("main gone"); } });
+  await failing.send({ __aither: "os-daemon-call", reqId: "r2", method: "GET", path: "/health" });
+  assert.equal(failing.posted[0][0].reqId, "r2");
+  assert.equal(failing.posted[0][0].ok, false);
+});
+
+test("awsh: main's os-command reaches the page; the desk declares daemon + command", async () => {
+  const p = loadPreload();
+  p.ipcOn["living-desktop:os-command"]({}, { id: "awsh.open", args: { tab: "shell" } });
+  p.ipcOn["living-desktop:os-command"]({}, { id: "" });
+  assert.deepEqual(p.posted, [[{ __aither: "os-command", id: "awsh.open", args: { tab: "shell" }, source: "desk" }, "https://aitherium.com"]]);
+  await p.send({ __aither: "os-hello" });
+  const hello = p.posted.find(([m]) => m.__aither === "host-hello")[0];
+  for (const plane of ["daemon", "command"]) assert.ok(hello.planes.includes(plane), plane);
+  const win = fs.readFileSync(path.join(__dirname, "living-desktop-window.cjs"), "utf8");
+  assert.match(win, /"living-desktop:daemon-call"[^\n]*\n\s*if \(!fromOverlay\(event\)\)/);
+});
+
+test("awsh: Ctrl+K (or Cmd+K) alone is the browser's awsh key", () => {
+  const src = fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
+  const fn = new Function(`${src.match(/function isAwshKey\(input\) \{[\s\S]*?\n\}/)[0]}; return isAwshKey;`)();
+  assert.equal(fn({ type: "keyDown", control: true, key: "k" }), true);
+  assert.equal(fn({ type: "keyDown", meta: true, key: "K" }), true);
+  assert.equal(fn({ type: "keyDown", control: true, shift: true, key: "k" }), false);
+  assert.equal(fn({ type: "keyUp", control: true, key: "k" }), false);
+  assert.equal(fn({ type: "keyDown", key: "k" }), false);
+  assert.match(src, /if \(isAwshKey\(input\) && kindOf\(\) !== "internal"\)/, "console pages keep their own Ctrl+K palette");
+});
