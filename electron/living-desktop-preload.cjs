@@ -54,6 +54,12 @@ ipcRenderer.on("living-desktop:auth", async (_event, signedIn) => {
   if (res && typeof res.token === "string" && res.token) window.postMessage({ __aither: "os-token", token: res.token }, origin);
 });
 
+// ONE THREAD: main moved the shared thread (another OS page, the overlay, the connect panel).
+ipcRenderer.on("living-desktop:thread", (_event, threadId) => {
+  if (typeof threadId !== "string" || !threadId) return;
+  window.postMessage({ __aither: "os-thread", threadId, source: "desk" }, window.location.origin);
+});
+
 // The desk as an overlay HOST (2026-10-03, overlay-browser-host.cjs). Veil's
 // overlay-host.ts only spoke to a FRAMING parent (awconnect's iframe); this window
 // loads AitherOS Online top-level, so it marks the document and answers the same
@@ -91,7 +97,7 @@ markHost();
 // (DESK_TAB_ARG), the OS's own dock in the desktop overlay window. Kept inline: a
 // sandboxed preload cannot require a local file. host-protocol.test.cjs pins it.
 const HOST_PROTOCOL = "aither-host/1";
-const DESK_PLANES = Object.freeze(["regions", "page", "context", "focus", "desk", "identity", "token"]);
+const DESK_PLANES = Object.freeze(["regions", "page", "context", "focus", "desk", "identity", "token", "thread"]);
 function hostHello() {
   return { __aither: "host-hello", protocol: HOST_PROTOCOL, host: "desk", planes: DESK_PLANES.slice(),
     chrome: { taskbar: browserTab ? "host" : "os" } };
@@ -106,6 +112,12 @@ window.addEventListener("message", async (event) => {
   const reply = (payload) => window.postMessage(payload, window.location.origin);
   if (data.__aither === "os-hello") {
     reply(hostHello());
+    // ONE THREAD: tell the OS which shared conversation the desk is in, if it knows one.
+    const t = await ipcRenderer.invoke("living-desktop:thread-get").catch(() => null);
+    if (t && typeof t.threadId === "string" && t.threadId) reply({ __aither: "os-thread", threadId: t.threadId, source: "desk" });
+  } else if (data.__aither === "os-thread") {
+    // The OS moved the thread. Our own post (source "desk") comes back here too: not news.
+    if (data.source !== "desk" && typeof data.threadId === "string") ipcRenderer.send("living-desktop:thread", data.threadId);
   } else if (data.__aither === "os→page") {
     const result = await ipcRenderer.invoke("living-desktop:host-page", {
       action: data.action, selector: data.selector, text: data.text, key: data.key,

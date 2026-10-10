@@ -334,6 +334,7 @@ const {
   desktopStatus,
   pushDeskState,
   pushHostAuth,
+  pushHostThread,
   setDeskStateProvider,
   setOverlayHost,
   setExtraHosts,
@@ -2761,6 +2762,8 @@ setOverlayHost({
   },
   // One identity: the Online session's platform bearer (browser-overlay.cjs token()).
   token: () => browserWindow.onlineToken(),
+  // One thread: the conversation every surface shares (desk-thread.cjs).
+  thread: () => browserWindow.getDeskThread(),
   command: (id) => {
     if (!overlayBrowserHost.allowedCommand(id)) return;
     if (id === "browser.open") browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
@@ -2771,6 +2774,9 @@ setOverlayHost({
 });
 // The browser's pinned Online tab hosts the same planes (full context in the browser too).
 setExtraHosts(() => browserWindow.deskHostContents());
+// One thread: whoever moved it (an OS page, the overlay over a web tab, the connect panel's
+// first persisted answer), every desk-hosted OS page follows.
+browserWindow.getDeskThread().onChange((threadId) => pushHostThread(threadId));
 setInterval(() => {
   pushDeskState();
 }, 5000);

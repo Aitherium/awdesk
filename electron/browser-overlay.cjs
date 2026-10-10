@@ -56,6 +56,7 @@ const LIVING_OS_MESSAGE = "awconnect:living-os";
 const LIVING_OS_OPS = Object.freeze({
   "probe-node": "probe-node", "daemon-call": "daemon-call", "site-adapter": "site-adapter",
   "identity": "os-identity-request", "token": "os-token-request", "os-compose": "os-compose",
+  "thread-get": "thread-get", "thread-set": "thread-set",
 });
 const OS_ORIGIN = "https://aitherium.com";
 const TOKEN_COOKIE = "aither_auth_token";
@@ -226,7 +227,7 @@ function adapterFor(adapters, url) {
  * @param {Function} [deps.fetchImpl]
  * @param {object} [deps.fsImpl]
  */
-function createOverlay({ dir, session, fetchImpl = globalThis.fetch, fsImpl = fs,
+function createOverlay({ dir, session, thread = null, fetchImpl = globalThis.fetch, fsImpl = fs,
   tokenFile = path.join(require("node:os").homedir(), ".aither", "daemon-token") }) {
   let adapterCache = null;
   const loops = new WeakMap(); // webContents -> generation; a navigation ends its loop
@@ -409,6 +410,10 @@ function createOverlay({ dir, session, fetchImpl = globalThis.fetch, fsImpl = fs
     if (type === "site-adapter") return { ok: true, adapter: adapterFor(adapters(), msg.url) };
     if (type === "daemon-call") return daemonCall(msg.method, msg.path, msg.body);
     if (type === "os-compose") return compose(msg);
+    // ONE THREAD (desk-thread.cjs): the OS over a web page reads and moves the desk's thread.
+    const store = typeof thread === "function" ? thread() : null;
+    if (type === "thread-get") return { threadId: store ? store.get() : null };
+    if (type === "thread-set") return { ok: store ? store.set(msg && msg.threadId, "awconnect") : false };
     return { ok: false, error: `${String(type || "this request")} is not answered inside the Aither Browser yet` };
   }
 

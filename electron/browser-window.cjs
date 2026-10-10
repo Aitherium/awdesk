@@ -448,10 +448,17 @@ function getOverlay() {
   if (!overlay) {
     overlay = overlayMod.createOverlay({
       dir: () => extensions.awconnectDir(),
+      thread: () => getDeskThread(),
       session: () => { try { return electron().session.fromPartition(onlinePartition()); } catch { return null; } },
     });
   }
   return overlay;
+}
+/** ONE THREAD (desk-thread.cjs): the conversation every surface shares, the desk's copy. */
+let deskThread = null;
+function getDeskThread() {
+  if (!deskThread) deskThread = require("./desk-thread.cjs").createDeskThread({ token: () => onlineToken() });
+  return deskThread;
 }
 /**
  * ONE identity: the Online partition's platform bearer, the same one the OS overlay gets.
@@ -472,7 +479,7 @@ function watchOnlineAuth(fn) {
  */
 async function awconnectDeskSession(id, ses) {
   const api = ses && (ses.extensions || ses);
-  let ext = null;
+  let ext;
   try { ext = api && typeof api.getExtension === "function" ? api.getExtension(id) : null; } catch { ext = null; }
   const dir = extensions.awconnectDir();
   if (!ext || !dir || require("node:path").resolve(String(ext.path || "")) !== require("node:path").resolve(dir)) return {};
@@ -1821,7 +1828,12 @@ async function askAboutPage(question, extra) {
   });
   try {
     const result = await askAgent(prompt);
-    return { ok: result?.ok !== false, reply: String(result?.reply || "") };
+    const ok = result?.ok !== false;
+    const reply = String(result?.reply || "");
+    // ONE THREAD: the local brain's answer joins the shared server thread, so awconnect and
+    // AitherOS Online see it too. Fire-and-forget: a signed-out desk keeps it local only.
+    if (ok && reply) void getDeskThread().persistTurn(question, reply).catch(() => null);
+    return { ok, reply };
   } catch (error) {
     return { ok: false, reply: String(error?.message || error) };
   }
@@ -1918,6 +1930,7 @@ module.exports = {
   /** One identity: the Online session's bearer, its sign-in/out, and awconnect's view of it. */
   onlineToken,
   watchOnlineAuth,
+  getDeskThread,
   awconnectDeskSession,
   /** Read the selection, else the page, aloud (the Voice section's Read aloud). */
   readAloud,

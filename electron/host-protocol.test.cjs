@@ -135,3 +135,22 @@ test("one identity: the desk declares the identity and token planes, and no rend
     assert.match(win, new RegExp(`"living-desktop:${channel}"[^\\n]*\\n\\s*if \\(!fromOverlay\\(event\\)`), channel);
   }
 });
+
+test("one thread: the OS's os-thread goes to main; the desk's own echo does not loop", async () => {
+  const p = loadPreload();
+  await p.send({ __aither: "os-thread", threadId: "sess-1", source: "os" });
+  await p.send({ __aither: "os-thread", threadId: "sess-1", source: "desk" });
+  assert.deepEqual(p.ipcSent, [["living-desktop:thread", "sess-1"]]);
+});
+
+test("one thread: main's move reaches the OS; on hello the desk names its thread", async () => {
+  const p = loadPreload({ invoke: async (ch) => (ch === "living-desktop:thread-get" ? { threadId: "sess-3" } : null) });
+  p.ipcOn["living-desktop:thread"]({}, "sess-2");
+  await p.send({ __aither: "os-hello" });
+  const threads = p.posted.filter(([m]) => m.__aither === "os-thread");
+  assert.deepEqual(threads, [
+    [{ __aither: "os-thread", threadId: "sess-2", source: "desk" }, "https://aitherium.com"],
+    [{ __aither: "os-thread", threadId: "sess-3", source: "desk" }, "https://aitherium.com"],
+  ]);
+  assert.ok(p.posted.find(([m]) => m.__aither === "host-hello")[0].planes.includes("thread"));
+});

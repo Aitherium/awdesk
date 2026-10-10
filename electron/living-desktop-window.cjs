@@ -147,6 +147,16 @@ ipcMain.handle("living-desktop:host-identity", async (event) => {
     return {};
   }
 });
+// ONE THREAD (aither-host/1 thread plane): a desk-hosted OS page moved the shared thread,
+// or asks which it is. Fenced like every plane; the id is re-checked in desk-thread.cjs.
+ipcMain.on("living-desktop:thread", (event, threadId) => {
+  if (!fromOverlay(event) || !overlayHost || typeof overlayHost.thread !== "function") return;
+  overlayHost.thread().set(String(threadId || ""), "os");
+});
+ipcMain.handle("living-desktop:thread-get", async (event) => {
+  if (!fromOverlay(event) || !overlayHost || typeof overlayHost.thread !== "function") return { threadId: null };
+  return { threadId: overlayHost.thread().get() };
+});
 ipcMain.on("living-desktop:desk-command", (event, id) => {
   if (!fromOverlay(event) || !overlayHost || typeof overlayHost.command !== "function") return;
   overlayHost.command(String(id || ""));
@@ -726,6 +736,14 @@ function pushHostAuth(signedIn) {
   }
 }
 
+/** The shared thread moved: every desk-hosted OS page follows (the preload posts os-thread). */
+function pushHostThread(threadId) {
+  const own = [desktopWin, appWin].filter((w) => w && !w.isDestroyed()).map((w) => w.webContents);
+  for (const wc of [...own, ...extraHostContents()]) {
+    try { wc.send("living-desktop:thread", String(threadId || "")); } catch { /* gone mid-push */ }
+  }
+}
+
 // ── The AitherDesktop APP window ────────────────────────────────────────────────────
 // Owner, 2026-09-08: "one is an overlay that goes on top of the OS/browser, the
 // other is a fully AitherDesktop app ... the same AitherDesktop on aitherium.com".
@@ -900,6 +918,7 @@ module.exports = {
   setExtraHosts,
   pushDeskState,
   pushHostAuth,
+  pushHostThread,
   isOpen,
   onVisibilityChange,
   wireHostFocus,
