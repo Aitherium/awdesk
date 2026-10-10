@@ -182,18 +182,24 @@ const OWNER_LOCAL = Object.freeze([
  * RBAC still decides each page.
  */
 const ADMIN_PAGES = Object.freeze([
-  Object.freeze({ path: "/admin/tenants", label: "Tenants", hint: "Every customer workspace" }),
-  Object.freeze({ path: "/admin/users", label: "Users", hint: "Every account" }),
-  Object.freeze({ path: "/admin/entitlements", label: "Entitlements", hint: "Who may use what" }),
-  Object.freeze({ path: "/admin/licensing", label: "Licensing", hint: "Licenses and packs" }),
-  Object.freeze({ path: "/admin/moderation", label: "Moderation", hint: "Reports, boards, community" }),
-  Object.freeze({ path: "/support", label: "Support & feedback", hint: "Tickets and feedback in one place" }),
-  Object.freeze({ path: "/forum", label: "Forums", hint: "The community boards" }),
+  // Each row opens the page that actually renders it (audited 2026-10-10): the /admin/*
+  // spellings are retired redirects (route-map.yaml), and the desktop boot turned every
+  // /admin/* into the generic admin hub, so Users, Security and the rest landed on an
+  // empty desktop. The canonical Mission Control views open straight in place.
+  Object.freeze({ path: "/mission-control?tab=tenants", label: "Tenants", hint: "Every customer workspace" }),
+  Object.freeze({ path: "/mission-control?tab=tenants&view=users", label: "People & customers", hint: "Users, tenants and paying customers, joined" }),
+  Object.freeze({ path: "/mission-control?tab=tenants&view=entitlements", label: "Entitlements", hint: "Who may use what" }),
+  Object.freeze({ path: "/mission-control?tab=tenants&view=licensing", label: "Licensing", hint: "Licenses and packs" }),
+  Object.freeze({ path: "/mission-control?tab=moderation&view=spaces", label: "Moderation", hint: "Reported spaces and Relay messages" }),
+  // Support and feedback are forum boards (Relay categories `support`, `ideas`): one
+  // surface with the community boards, not two rows (owner, 2026-10-10).
+  Object.freeze({ path: "/?channel=people&board=support", label: "Support & forums", hint: "Support, feedback and the community boards" }),
+  Object.freeze({ path: "/mission-control?tab=support", label: "Support desk", hint: "Tickets, requests and the outbox" }),
   Object.freeze({ path: "/relay", label: "Relay", hint: "AitherRelay: channels, DMs, rooms" }),
-  Object.freeze({ path: "/admin/marketplace/review", label: "Marketplace review", hint: "Packs and apps waiting for review" }),
-  Object.freeze({ path: "/admin/registrations", label: "Registrations", hint: "New sign-ups" }),
-  Object.freeze({ path: "/admin/security", label: "Security", hint: "Platform security posture" }),
-  Object.freeze({ path: "/admin/platform", label: "Platform", hint: "The platform admin home" }),
+  Object.freeze({ path: "/mission-control?tab=moderation&view=marketplace", label: "Marketplace review", hint: "Packs and apps waiting for review" }),
+  Object.freeze({ path: "/mission-control?tab=tenants&view=registrations", label: "Registrations", hint: "New sign-ups" }),
+  Object.freeze({ path: "/mission-control?tab=platform&view=security", label: "Security", hint: "Platform security posture" }),
+  Object.freeze({ path: "/mission-control", label: "Platform", hint: "Mission Control: the platform admin home" }),
 ]);
 
 function isAdminPage(p) {

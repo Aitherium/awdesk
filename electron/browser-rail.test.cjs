@@ -180,13 +180,24 @@ test("observability is the owner's only: Grafana, Prometheus, Pulse, Tunnel", ()
   assert.equal(rail.isOwnerLocal("http://evil.test/"), false);
 });
 
-test("command & control: tenants, users, moderation, support, forums, relay -- owner only", () => {
+test("command & control: tenants, people, moderation, support+forums, relay -- owner only", () => {
   assert.equal(rail.railSections(PANES).some((s) => s.name === "Command & control"), false);
   const sec = rail.railSections(PANES, { owner: true }).find((s) => s.name === "Command & control");
   const paths = sec.rows.map((r) => r.id);
-  for (const want of ["/admin/tenants", "/admin/users", "/admin/moderation", "/support", "/forum", "/relay"]) assert.ok(paths.includes(want), want);
-  assert.equal(rail.isAdminPage("/admin/tenants"), true);
-  assert.equal(rail.isWorkspacePage("/admin/tenants"), false, "never through the member path");
+  for (const want of ["/mission-control?tab=tenants", "/mission-control?tab=tenants&view=users",
+    "/mission-control?tab=moderation&view=spaces", "/?channel=people&board=support", "/relay"]) assert.ok(paths.includes(want), want);
+  assert.equal(rail.isAdminPage("/mission-control?tab=tenants"), true);
+  assert.equal(rail.isWorkspacePage("/mission-control?tab=tenants"), false, "never through the member path");
+});
+
+test("command & control rows open the page that renders, never a retired /admin/* redirect", () => {
+  for (const a of rail.ADMIN_PAGES) {
+    assert.ok(!/^\/admin\//.test(a.path), `${a.label}: ${a.path} is a retired redirect`);
+    assert.ok(!["/support", "/forum"].includes(a.path), `${a.label}: support and forums are one surface`);
+  }
+  const labels = rail.ADMIN_PAGES.map((a) => a.label);
+  assert.equal(labels.filter((l) => /forum/i.test(l)).length, 1, "one support & forums row");
+  assert.equal(new Set(rail.ADMIN_PAGES.map((a) => a.path)).size, rail.ADMIN_PAGES.length, "no duplicate targets");
 });
 
 test("the Online layer: over pages, or detached onto the desktop; either reads on", () => {

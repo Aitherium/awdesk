@@ -138,7 +138,18 @@ async function ensureSession() {
  * Call one gateway tool by name; resolves the joined text content. Throws on
  * any failure — callers wrap and turn it into their {ok:false, reason} shape.
  */
-async function callTool(name, args = {}) {
+// One tool call at a time on the shared MCP session. Measured 2026-10-10: the secrets
+// page fired list_secrets, workspace_secrets_list and lockbox_user_list together; each
+// answers in < 1 s alone, but in parallel on one session the second sat until the 15 s
+// socket timeout ("platform vault: gateway timeout"). Queued, the three take < 1 s.
+let _queue = Promise.resolve();
+function callTool(name, args = {}) {
+  const run = _queue.then(() => callToolNow(name, args));
+  _queue = run.catch(() => {});
+  return run;
+}
+
+async function callToolNow(name, args = {}) {
   await ensureSession();
   let res;
   try {

@@ -196,3 +196,34 @@ test("callTool: a 404 on a stale session re-initializes once; a JSON-RPC error b
     delete require.cache[require.resolve("./gateway-mcp.cjs")];
   }
 });
+
+test("callTool: concurrent calls run one at a time on the shared session (never overlap)", async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      const rpc = JSON.parse(body);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      setTimeout(() => {
+        inFlight -= 1;
+        res.setHeader("Content-Type", "application/json");
+        if (rpc.method === "initialize") res.setHeader("Mcp-Session-Id", "sess-q");
+        const result = rpc.method === "tools/call" ? { content: [{ type: "text", text: rpc.params.name }] } : {};
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result }));
+      }, 20);
+    });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const client = loadClient(`http://127.0.0.1:${server.address().port}`, "tok");
+  const out = await Promise.all(["a", "b", "c"].map((n) => client.callTool(n, {})));
+  assert.deepEqual(out, ["a", "b", "c"]);
+  assert.equal(maxInFlight, 1, "the secrets page's three scopes timed out when they overlapped");
+  // A failed call does not wedge the queue: the next one still runs (and fails fast).
+  await done(server);
+  client.resetSession();
+  await assert.rejects(client.callTool("x", {}));
+  await assert.rejects(client.callTool("y", {}));
+});
