@@ -333,6 +333,7 @@ const { exportToAitherShell } = require("./aithershell-export.cjs");
 const {
   desktopStatus,
   pushDeskState,
+  pushHostAuth,
   setDeskStateProvider,
   setOverlayHost,
   setExtraHosts,
@@ -2758,6 +2759,8 @@ setOverlayHost({
     const { page, by } = await browserWindow.screenPage();
     return overlayBrowserHost.hostContext(page, by);
   },
+  // One identity: the Online session's platform bearer (browser-overlay.cjs token()).
+  token: () => browserWindow.onlineToken(),
   command: (id) => {
     if (!overlayBrowserHost.allowedCommand(id)) return;
     if (id === "browser.open") browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
@@ -3590,7 +3593,14 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     const webauth = require("./awconnect-webauth.cjs").install({
       ipcMain,
       session: require("electron").session.fromPartition(browserWindow.PARTITION),
+      // ONE identity: the built-in awconnect takes the desk's Online session instead of
+      // its own OIDC flow (only the staged awconnect build; any other extension gets {}).
+      deskSession: (id, ses) => browserWindow.awconnectDeskSession(id, ses),
     });
+    // One identity: a sign-in/out of the Online session reaches every desk-hosted OS page
+    // at once (the overlay frames over web pages already follow it, browser-overlay.cjs).
+    // Here, after ready: the Online partition's session does not exist before it.
+    browserWindow.watchOnlineAuth((signedIn) => pushHostAuth(signedIn));
     if (webauth && webauth.ok === false) {
       // A mis-wired session would silently degrade to the inert stub: say so.
       console.error("[awconnect] chrome.identity bridge did not install:", webauth.error || webauth);

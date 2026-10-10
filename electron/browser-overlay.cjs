@@ -478,6 +478,13 @@ function createOverlay({ dir, session, fetchImpl = globalThis.fetch, fsImpl = fs
    */
   const watched = new WeakSet();
   let authTimer = null;
+  // Other surfaces that follow the same session (the desk-hosted OS pages, step 3 of one
+  // identity): told signed-in/out with the same debounced cookie-jar verdict.
+  const authListeners = new Set();
+  function onAuth(fn) {
+    if (typeof fn === "function") authListeners.add(fn);
+    return () => authListeners.delete(fn);
+  }
   function watchAuth() {
     const ses = session();
     if (!ses || !ses.cookies || typeof ses.cookies.on !== "function" || watched.has(ses)) return false;
@@ -485,12 +492,17 @@ function createOverlay({ dir, session, fetchImpl = globalThis.fetch, fsImpl = fs
     ses.cookies.on("changed", (_event, cookie) => {
       if (!cookie || cookie.name !== TOKEN_COOKIE) return;
       clearTimeout(authTimer);
-      authTimer = setTimeout(() => { void token().then((t) => authChanged(Boolean(t))).catch(() => {}); }, 250);
+      authTimer = setTimeout(() => {
+        void token().then((t) => {
+          for (const fn of authListeners) { try { fn(Boolean(t)); } catch { /* one listener */ } }
+          return authChanged(Boolean(t));
+        }).catch(() => {});
+      }, 250);
     });
     return true;
   }
 
-  return { inject, remove, forget, osFrame, answer, authChanged, watchAuth, bridgeSource, bridgeSources };
+  return { inject, remove, forget, osFrame, answer, authChanged, watchAuth, onAuth, token, bridgeSource, bridgeSources };
 }
 
 module.exports = { WORLD, OS_ORIGIN, SHIM, TEARDOWN, BRIDGE_SETS, LIVING_OS_MESSAGE, DAEMON_ALLOWED, BROWSER_SAFE_TOOLS,

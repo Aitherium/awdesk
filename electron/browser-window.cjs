@@ -453,6 +453,31 @@ function getOverlay() {
   }
   return overlay;
 }
+/**
+ * ONE identity: the Online partition's platform bearer, the same one the OS overlay gets.
+ * The desk-hosted OS pages (living-desktop-window host-token) and the built-in awconnect
+ * (awconnect-webauth desk-session) read it here; never a local daemon or harness token.
+ */
+function onlineToken() {
+  return getOverlay().token();
+}
+/** Follow the Online session's sign-in/out (cookie jar verdict, debounced). */
+function watchOnlineAuth(fn) {
+  getOverlay().watchAuth();
+  return getOverlay().onAuth(fn);
+}
+/**
+ * The desk session for an extension, only for the awconnect build the desk staged and
+ * loaded (its path is browser-extensions awconnectDir); any other extension gets {}.
+ */
+async function awconnectDeskSession(id, ses) {
+  const api = ses && (ses.extensions || ses);
+  let ext = null;
+  try { ext = api && typeof api.getExtension === "function" ? api.getExtension(id) : null; } catch { ext = null; }
+  const dir = extensions.awconnectDir();
+  if (!ext || !dir || require("node:path").resolve(String(ext.path || "")) !== require("node:path").resolve(dir)) return {};
+  return { token: await onlineToken() };
+}
 function overlayWanted(tabId) {
   const tab = tabs.get(tabId);
   return Boolean(getPrefs().overlay && tab && tab.kind === "web");
@@ -1890,6 +1915,10 @@ module.exports = {
   __showTabForTest: (id) => showTab(id),
   /** AitherOS Online over web pages (browser-overlay.cjs): the Online layer / Alt+O. */
   setOverlay,
+  /** One identity: the Online session's bearer, its sign-in/out, and awconnect's view of it. */
+  onlineToken,
+  watchOnlineAuth,
+  awconnectDeskSession,
   /** Read the selection, else the page, aloud (the Voice section's Read aloud). */
   readAloud,
   /** The owner's voice, while the browser has focus, goes to the page's agent (main desk:voice-heard). */
