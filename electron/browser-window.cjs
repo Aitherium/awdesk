@@ -404,23 +404,41 @@ function avatarSlotRect() {
   const slot = currentRectsFor(bounds, true).avatar;
   return slot ? { x: bounds.x + slot.x, y: bounds.y + slot.y, width: slot.width, height: slot.height } : null;
 }
-/** The strip is on screen (enabled, and the route is served). */
-function stripShown() {
+/** The strip is enabled and its route is served (it may still step aside, below). */
+function stripEnabled() {
   return Boolean(getPrefs().taskbar) && taskbarStatus !== "unavailable";
 }
+/** Who owns the browser's taskbar right now (browser-taskbar.cjs stripOwner). */
+function currentStripOwner() {
+  return taskbar.stripOwner({ overlayUp: overlayOnDesktop(), tabOverlay: Boolean(getPrefs().overlay) });
+}
+/** The strip is on screen: enabled, and no desktop overlay owns the taskbar. */
+function stripShown() {
+  return stripEnabled() && currentStripOwner() === "host";
+}
 
-// One taskbar: while the strip shows, a page that draws its own (AitherOS Online) has
-// that copy hidden. The key of the inserted sheet, per page document.
+// One taskbar: while the strip is enabled, a page that draws its own (AitherOS Online,
+// the dock-shell pages) is marked data-host="desk" and Veil drops its dock (the same
+// rule is inserted here for a Veil build that predates host "desk"). While the desktop
+// overlay owns the taskbar the strip hides and the page's dock STAYS hidden: the
+// overlay's dock is the screen's one taskbar. Per page document: { css, flag }.
 const pageTaskbarCss = new WeakMap();
 function syncPageTaskbar(wc) {
   if (!wc || wc.isDestroyed()) return;
-  const want = stripShown() && taskbar.pageHasOwnTaskbar(wc.getURL());
-  const key = pageTaskbarCss.get(wc);
-  if (want && !key) {
-    pageTaskbarCss.set(wc, "pending");
-    wc.insertCSS(taskbar.PAGE_TASKBAR_CSS).then((k) => pageTaskbarCss.set(wc, k), () => pageTaskbarCss.delete(wc));
-  } else if (!want && key && key !== "pending") {
-    pageTaskbarCss.delete(wc);
+  const want = stripEnabled() && taskbar.pageHasOwnTaskbar(wc.getURL());
+  const state = pageTaskbarCss.get(wc) || { css: null, flag: null };
+  pageTaskbarCss.set(wc, state);
+  if (state.flag !== want) {
+    state.flag = want;
+    void wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: taskbar.hostFlagScript(want) }])
+      .catch(() => { if (pageTaskbarCss.get(wc) === state) state.flag = null; });
+  }
+  if (want && !state.css) {
+    state.css = "pending";
+    wc.insertCSS(taskbar.HOST_DOCK_CSS).then((k) => { state.css = k; }, () => { state.css = null; });
+  } else if (!want && state.css && state.css !== "pending") {
+    const key = state.css;
+    state.css = null;
     void wc.removeInsertedCSS(key).catch(() => {});
   }
 }
@@ -496,7 +514,7 @@ function currentRectsFor(bounds, docked) {
   return rail.railLayout(bounds, {
     collapsed: p.railCollapsed, docked, chromeHeight: CHROME_HEIGHT, railWidth: p.railWidth,
     panelWidth: p.panelWidth, panelCollapsed: p.panelCollapsed,
-    taskbarHeight: p.taskbar && taskbarStatus !== "unavailable" ? rail.TASKBAR_HEIGHT : 0,
+    taskbarHeight: stripShown() ? rail.TASKBAR_HEIGHT : 0,
   });
 }
 
@@ -531,7 +549,7 @@ function railState() {
     width: rects ? rects.rail.width : rail.railWidth(p.railCollapsed, p.railWidth),
     gutter: rail.GUTTER,
     panel: rects ? { x: rects.panel.x, width: rects.panel.width, collapsed: p.panelCollapsed } : null,
-    taskbar: { on: p.taskbar, status: taskbarStatus, height: rects ? rects.taskbar.height : 0 },
+    taskbar: { on: p.taskbar, status: taskbarStatus, height: rects ? rects.taskbar.height : 0, owner: currentStripOwner() },
     collapsedSections: p.collapsedSections,
     docked,
     slot: rects ? rects.avatar : null,
@@ -1025,17 +1043,18 @@ function wirePage(wc, id) {
   for (const name of ["did-navigate", "did-navigate-in-page", "page-title-updated", "did-start-loading", "did-stop-loading"]) {
     wc.on(name, () => pushState());
   }
-  // Onto an AitherOS Online page: hide ITS taskbar, the strip stays (one taskbar).
+  // Onto an AitherOS Online page: mark it data-host="desk" so ITS taskbar drops, the strip stays (one taskbar).
   wc.on("did-navigate", () => { pageTaskbarCss.delete(wc); if (overlay) overlay.forget(wc); }); // a new document drops both
   wc.on("dom-ready", () => { if (overlayWanted(id)) syncOverlay(id); });
-  // The overlay's own taskbar is hidden while the strip shows (one taskbar, over pages too).
+  // The in-tab overlay's own taskbar drops while the strip is enabled (one taskbar, over
+  // pages too): the OS frame is marked data-host="desk", the same flag as the Online tab.
   wc.on("did-frame-finish-load", (_e, isMain, processId, routingId) => {
-    if (isMain || !overlayWanted(id) || !stripShown()) return;
+    if (isMain || !overlayWanted(id) || !stripEnabled()) return;
     let frame = null;
     try { frame = electron().webFrameMain.fromId(processId, routingId); } catch { /* gone */ }
     if (!frame || frame.origin !== overlayMod.OS_ORIGIN) return;
-    const css = JSON.stringify(taskbar.PAGE_TASKBAR_CSS);
-    void frame.executeJavaScript(`(() => { const s = document.createElement("style"); s.textContent = ${css}; document.head.append(s); })()`).catch(() => {});
+    const css = JSON.stringify(taskbar.HOST_DOCK_CSS);
+    void frame.executeJavaScript(`(() => { ${taskbar.hostFlagScript(true)}; const s = document.createElement("style"); s.textContent = ${css}; document.head.append(s); })()`).catch(() => {});
   });
   // Alt+O, awconnect's own key for the overlay.
   wc.on("before-input-event", (event, input) => {

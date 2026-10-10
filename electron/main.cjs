@@ -2853,6 +2853,8 @@ async function refreshLinkedRole() {
 }
 void refreshLinkedRole();
 setInterval(() => void refreshLinkedRole(), 10 * 60 * 1000).unref?.();
+// One taskbar owner: the browser's strip hides while the desktop overlay (and its dock) is up.
+require("./living-desktop-window.cjs").onVisibilityChange(() => browserWindow.refreshShell());
 browserWindow.setShellHost({
   isOwner: () => linkedRole === "owner",
   signedIn: () => Boolean(desktopAccount() && desktopAccount().signedIn),

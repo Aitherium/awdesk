@@ -84,10 +84,10 @@ function routeFor(url) {
 /**
  * Does the page on screen draw ITS OWN AitherOS taskbar? The AitherOS Online desktop
  * (the pinned Online tab) and the site's dock-shell pages (Spaces, Relay, Forum ...) do;
- * workspace, admin and settings pages do not. When it does, THAT copy is hidden
- * (PAGE_TASKBAR_CSS) and the browser's strip stays: one taskbar, always the browser's,
- * always at the bottom (owner, 2026-10-04: "why wouldn't it just stay at the bottom of
- * aither browser and just not appear on the other pages").
+ * workspace, admin and settings pages do not. When it does, THAT copy is hidden (the
+ * page is marked data-host="desk", below) and the browser's strip stays: one taskbar,
+ * always the browser's, always at the bottom (owner, 2026-10-04: "why wouldn't it just
+ * stay at the bottom of aither browser and just not appear on the other pages").
  */
 function pageHasOwnTaskbar(url) {
   let parsed;
@@ -97,8 +97,71 @@ function pageHasOwnTaskbar(url) {
   return !/^\/(workspace|admin|settings|portal|embed|login|auth|learn)(\/|$)/.test(parsed.pathname);
 }
 
-/** Hides the page's own taskbar (Veil dock.tsx Taskbar: the os-hit bar holding the launcher). */
-const PAGE_TASKBAR_CSS = "[data-os-hit]:has(> div > button[data-launcher-toggle]) { display: none !important; }";
+/**
+ * ONE taskbar owner per context (owner, 2026-10-09: awconnect, the desk, the Aither
+ * Browser and the desktop overlay must feel like one surface -- never two stacked
+ * taskbars). Who draws the taskbar the browser window shows:
+ *   "host"  the browser's own strip (this module's view). Pages under it that draw a
+ *           dock of their own -- the Online tab, the in-tab OS overlay over web pages
+ *           (tabOverlay) -- are marked data-host="desk" and drop theirs.
+ *   "os"    the desktop overlay (Ctrl+Shift+D, living-desktop-window.cjs) is up and
+ *           KEEPS its dock; the strip steps aside so the screen carries one taskbar.
+ * The in-tab overlay never takes the taskbar: it is the OS drawn INSIDE a tab, under
+ * the strip, so it owns no edge of the window.
+ */
+function stripOwner({ overlayUp = false, tabOverlay = false } = {}) {
+  void tabOverlay;
+  return overlayUp ? "os" : "host";
+}
+
+/** The hosted-mode flag Veil reads (lib/host-chrome.ts HostChrome "desk"). */
+const DESK_HOST = "desk";
+const HOST_ATTR = "data-host";
+/** sessionStorage key Veil's markHostChrome re-reads after hydration and on navigation. */
+const HOST_SESSION_KEY = "aither-host";
+/**
+ * The preload argument that marks a webContents as the HOSTED BROWSER TAB (the pinned
+ * Online tab), where the strip owns the taskbar. The desktop overlay window loads the
+ * same preload WITHOUT it and keeps its dock.
+ */
+const DESK_TAB_ARG = "--aither-desk-surface=browser-tab";
+
+/**
+ * The data-host rule, inserted by the desk as well so it holds on a Veil build that
+ * predates host "desk" (Veil globals.css carries the same rule). Keyed on the flag, never
+ * on the dock's DOM shape: an attribute the desk sets is the one switch.
+ */
+const HOST_DOCK_CSS = `html[${HOST_ATTR}="${DESK_HOST}"] [data-os-dock] { display: none !important; }`;
+
+/**
+ * Sets (on) or clears (off) the desk flag in a page: the attribute, and the session key
+ * that makes it survive hydration and client-side navigation. Clearing only touches a
+ * "desk" value -- another host's flag is not ours.
+ */
+function hostFlagScript(on) {
+  const want = Boolean(on);
+  return `(() => {
+    const d = document.documentElement; if (!d) return false;
+    try {
+      if (${want}) sessionStorage.setItem(${JSON.stringify(HOST_SESSION_KEY)}, ${JSON.stringify(DESK_HOST)});
+      else if (sessionStorage.getItem(${JSON.stringify(HOST_SESSION_KEY)}) === ${JSON.stringify(DESK_HOST)}) sessionStorage.removeItem(${JSON.stringify(HOST_SESSION_KEY)});
+    } catch (e) { /* storage blocked: the attribute still holds this document */ }
+    if (${want}) d.setAttribute(${JSON.stringify(HOST_ATTR)}, ${JSON.stringify(DESK_HOST)});
+    else if (d.getAttribute(${JSON.stringify(HOST_ATTR)}) === ${JSON.stringify(DESK_HOST)}) d.removeAttribute(${JSON.stringify(HOST_ATTR)});
+    // Hydration strips attributes added before it (Veil embed-chrome-flag.tsx); a Veil
+    // build without host "desk" would not put it back. Re-apply while the flag is ours.
+    if (${want} && typeof MutationObserver === "function" && !window.__aitherDeskHostWatch) {
+      window.__aitherDeskHostWatch = new MutationObserver(() => {
+        let ours = true;
+        try { ours = sessionStorage.getItem(${JSON.stringify(HOST_SESSION_KEY)}) === ${JSON.stringify(DESK_HOST)}; } catch (e) { ours = window.__aitherDeskHostOn !== false; }
+        if (ours && window.__aitherDeskHostOn !== false && !d.hasAttribute(${JSON.stringify(HOST_ATTR)})) d.setAttribute(${JSON.stringify(HOST_ATTR)}, ${JSON.stringify(DESK_HOST)});
+      });
+      window.__aitherDeskHostWatch.observe(d, { attributes: true, attributeFilter: [${JSON.stringify(HOST_ATTR)}] });
+    }
+    if (typeof window === "object") window.__aitherDeskHostOn = ${want};
+    return ${want};
+  })()`;
+}
 
 const APP_ID = /^[a-z0-9][a-z0-9:_-]{0,63}$/;
 
@@ -155,7 +218,13 @@ module.exports = {
   isTaskbarPage,
   isUnavailable,
   pageHasOwnTaskbar,
-  PAGE_TASKBAR_CSS,
+  DESK_HOST,
+  DESK_TAB_ARG,
+  HOST_ATTR,
+  HOST_DOCK_CSS,
+  HOST_SESSION_KEY,
+  hostFlagScript,
+  stripOwner,
   spawnIdOf,
   openAppScript,
   routeFor,

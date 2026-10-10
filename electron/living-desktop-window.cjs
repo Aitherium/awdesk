@@ -592,9 +592,10 @@ function createWindow() {
   win.on("closed", () => {
     stopGhostLoop();
     desktopWin = null;
+    notifyVisibility();
   });
-  win.on("show", startGhostLoop);
-  win.on("hide", stopGhostLoop);
+  win.on("show", () => { startGhostLoop(); notifyVisibility(); });
+  win.on("hide", () => { stopGhostLoop(); notifyVisibility(); });
   wireHostFocus(win);
 
   const target = urlFor(transparentMode);
@@ -610,6 +611,20 @@ function createWindow() {
   })();
   startGhostLoop();
   return win;
+}
+
+// The overlay came up or went away: the Aither Browser's strip steps aside while it is
+// up (browser-taskbar.cjs stripOwner -- one taskbar on screen, the overlay's dock).
+const visibilityListeners = new Set();
+function onVisibilityChange(fn) {
+  if (typeof fn !== "function") return () => {};
+  visibilityListeners.add(fn);
+  return () => visibilityListeners.delete(fn);
+}
+function notifyVisibility() {
+  for (const fn of visibilityListeners) {
+    try { fn(); } catch (e) { log(`visibility listener: ${(e && e.message) || e}`); }
+  }
 }
 
 function showLivingDesktop() {
@@ -851,6 +866,7 @@ module.exports = {
   setExtraHosts,
   pushDeskState,
   isOpen,
+  onVisibilityChange,
   wireHostFocus,
   LOG_FILE,
 };

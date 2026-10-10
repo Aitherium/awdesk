@@ -45,8 +45,29 @@ ipcRenderer.on("living-desktop:host-focus", (_event, focused) => {
 // loads AitherOS Online top-level, so it marks the document and answers the same
 // protocol on the page's own window. Only messages the page posts to ITSELF, from
 // its own origin, are relayed; replies go back pinned to that origin.
+//
+// ONE taskbar owner per context (2026-10-09, browser-taskbar.cjs stripOwner). Only the
+// HOSTED BROWSER TAB -- the pinned Online tab, launched with DESK_TAB_ARG by
+// browser-internal.cjs withDeskHost -- is also marked data-host="desk": the browser's
+// strip owns the taskbar there, so Veil drops its dock. The desktop overlay window
+// (Ctrl+Shift+D) loads this preload WITHOUT the argument and keeps its dock. The session
+// key is what Veil's markHostChrome re-reads after hydration strips the attribute;
+// browser-window.cjs clears both if the strip is switched off.
+const DESK_TAB_ARG = "--aither-desk-surface=browser-tab";
+const browserTab = typeof process === "object" && process && Array.isArray(process.argv)
+  && process.argv.includes(DESK_TAB_ARG);
 function markHost() {
-  if (document.documentElement) document.documentElement.setAttribute("data-aither-host", "desk");
+  const d = document.documentElement;
+  if (!d) return;
+  d.setAttribute("data-aither-host", "desk");
+  if (!browserTab) return;
+  let ours = true;
+  try {
+    const stored = sessionStorage.getItem("aither-host");
+    if (stored === null) sessionStorage.setItem("aither-host", "desk");
+    else ours = stored === "desk"; // main cleared it (strip off) or another host owns it
+  } catch { /* storage blocked: the attribute still holds this document */ }
+  if (ours) d.setAttribute("data-host", "desk");
 }
 markHost();
 window.addEventListener("DOMContentLoaded", markHost);

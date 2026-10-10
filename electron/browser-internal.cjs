@@ -585,9 +585,14 @@ function tabPreferences(kind, { webPartition, hostedPartition = null } = {}) {
  * every one of those channels to this tab's webContents. Nothing else gets a preload.
  */
 const DESK_HOST_PRELOAD = "living-desktop-preload.cjs";
+const { DESK_TAB_ARG } = require("./browser-taskbar.cjs");
 function withDeskHost(kind, paneId, prefs) {
   if (kind !== "hosted" || paneId !== "desktop") return prefs;
-  return { ...prefs, preload: path.join(ELECTRON_DIR, DESK_HOST_PRELOAD) };
+  // DESK_TAB_ARG: this preload runs in a BROWSER TAB, where the strip owns the taskbar
+  // (browser-taskbar.cjs stripOwner); the desktop overlay window loads it without.
+  const args = Array.isArray(prefs.additionalArguments) ? prefs.additionalArguments : [];
+  return { ...prefs, preload: path.join(ELECTRON_DIR, DESK_HOST_PRELOAD),
+    additionalArguments: [...args.filter((a) => a !== DESK_TAB_ARG), DESK_TAB_ARG] };
 }
 
 /**

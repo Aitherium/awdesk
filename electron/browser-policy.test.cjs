@@ -229,6 +229,9 @@ test("browser-window: page view has no preload, is sandboxed, isolated, and popu
   // withDeskHost: the desk-host preload for the pinned Online tab ONLY.
   const { withDeskHost } = require("./browser-internal.cjs");
   assert.match(withDeskHost("hosted", "desktop", {}).preload, /living-desktop-preload\.cjs$/);
+  // ...launched as a BROWSER TAB: the strip owns the taskbar there (browser-taskbar stripOwner).
+  assert.deepEqual(withDeskHost("hosted", "desktop", { additionalArguments: ["--x"] }).additionalArguments,
+    ["--x", "--aither-desk-surface=browser-tab"]);
   for (const [k, p] of [["hosted", "workspace"], ["hosted", null], ["web", "desktop"], ["internal", "desktop"], ["extension", "desktop"]]) {
     assert.deepEqual(withDeskHost(k, p, { a: 1 }), { a: 1 }, `${k}/${p}`);
   }

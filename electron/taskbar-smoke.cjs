@@ -57,21 +57,20 @@ app.whenReady().then(async () => {
     onOnline = st.rail.taskbar;
     const view = bw.getWindow().contentView.children.find((v) => /app\.aitherium\.com\/(\?|$)/.test(v.webContents.getURL()));
     // A signed-out temp profile shows the boot screen, not the desktop, so the smoke
-    // plants Veil's dock shape (dock.tsx Taskbar: [data-os-hit] > div > button
-    // [data-launcher-toggle]) and asks the page whether the inserted sheet hides it.
+    // plants Veil's dock (dock.tsx Taskbar root: [data-os-hit][data-os-dock]) and asks
+    // the page whether it is marked data-host="desk" and the dock hidden by that flag.
     pageBars = view ? await view.webContents.executeJavaScript(`(() => {
       let bar = document.getElementById("smoke-bar");
       if (!bar) {
         bar = document.createElement("div"); bar.id = "smoke-bar"; bar.setAttribute("data-os-hit", "");
-        const box = document.createElement("div"); const btn = document.createElement("button");
-        btn.setAttribute("data-launcher-toggle", ""); box.append(btn); bar.append(box); document.body.append(bar);
+        bar.setAttribute("data-os-dock", ""); document.body.append(bar);
       }
-      return [getComputedStyle(bar).display];
+      return [document.documentElement.getAttribute("data-host") === "desk" ? "none" : "unmarked", getComputedStyle(bar).display];
     })()`) : null;
     if (onOnline.height === 56 && pageBars && pageBars.every((d) => d === "none")) break;
   }
   expect("on the Online desktop the strip stays (56 px)", onOnline && onOnline.height === 56, onOnline);
-  expect("and the page's own taskbar is hidden", pageBars && pageBars.length > 0 && pageBars.every((d) => d === "none"), pageBars);
+  expect("and the page is marked data-host=desk, its own taskbar hidden", pageBars && pageBars.length > 0 && pageBars.every((d) => d === "none"), pageBars);
 
   // Full context (owner, 2026-10-04): the pinned Online tab is a desk host -- marked by
   // the overlay's preload, and the desk's state reaches it.

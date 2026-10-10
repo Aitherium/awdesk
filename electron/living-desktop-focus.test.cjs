@@ -66,7 +66,11 @@ test("blur/focus of the overlay window reach the shell's host-focus channel", ()
 
 test("createWindow wires host focus next to its show/hide handlers", () => {
   const src = fs.readFileSync(path.join(__dirname, "living-desktop-window.cjs"), "utf8");
-  assert.match(src, /win\.on\("hide", stopGhostLoop\);\n\s*wireHostFocus\(win\);/);
+  assert.match(src, /win\.on\("hide", [^\n]*stopGhostLoop[^\n]*\);\n\s*wireHostFocus\(win\);/);
+  // ...and tells the browser when it comes up or goes away (one taskbar owner: the
+  // strip steps aside while the overlay's dock is on screen).
+  assert.match(src, /win\.on\("show", [^\n]*notifyVisibility\(\)/);
+  assert.match(src, /win\.on\("hide", [^\n]*notifyVisibility\(\)/);
 });
 
 test("the preload turns the channel into os-host-focus on the page's own window", () => {
