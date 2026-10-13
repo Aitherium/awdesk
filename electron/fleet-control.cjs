@@ -51,7 +51,11 @@ const DEFAULT_SERVICES_SCRIPT = "C:\\AitherOS-Fresh\\.DEPLOYMENT\\scripts\\fleet
  *  with awnix, like GPU sleep and fleet sleep"). HOST-side through
  *  AitherOS/dev/tools/fleet_verbs.py -- the ONE implementation awsh, adk, awnode and
  *  AitherZero run too -- which sequences the in-distro engine, awmodels postures, the
- *  MicroScheduler gaming lanes and the gaming lock. A click is the consent: --execute. */
+ *  MicroScheduler gaming lanes and the gaming lock. A click is the consent: --execute.
+ *  2026-10-13: `fleet sleep` IS the "game mode: sleep everything" verb (fleet stopped + held,
+ *  then the awnix VM terminated so the PC gets RAM/CPU/GPU back) and `fleet wake` boots it
+ *  through AitherOS-AttachFleetData; the old in-VM stop is `fleet park`. The buttons below
+ *  needed no new argv -- the meaning moved in fleet_verbs.py, for every surface at once. */
 const VERB_ACTIONS = Object.freeze({
   "verbs-status": ["status", "--json"],
   "gpu-sleep": ["gpu", "sleep", "--execute", "--json"],
@@ -163,8 +167,8 @@ const TIMEOUT_MS = Object.freeze({
   gaming: 1_800_000,
   "gpu-wake": 4_800_000,
   resume: 4_800_000,
-  "fleet-sleep": 1_200_000,
-  down: 1_200_000,
+  "fleet-sleep": 2_700_000, // quiesce --all --dark (900 s) + hold (600 s) + terminate + 75 s settle
+  down: 2_700_000,
   "fleet-wake": 5_400_000,
   up: 5_400_000,
   "fleet-critical": 2_400_000,
