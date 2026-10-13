@@ -3,207 +3,301 @@
 <head>
 <meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Aither Fleet</title>
 <link rel="stylesheet" href="aither-tokens.css" />
 <style>
   /* Colours, type and scrollbars come from aither-tokens.css -- GENERATED from Veil's
-     tokens by AitherOS/dev/tools/gen_desk_tokens.py. This pane used to re-declare its
-     own --bg/--panel/--line/--fg palette by hand; five panes did, none matched the
-     family. What stays here is only what this pane MEANS by a colour. */
+     tokens by AitherOS/dev/tools/gen_desk_tokens.py. What stays here is only what this
+     pane MEANS by a colour.
+
+     Bead-space (owner, 2026-10-13: "so many long lists of things in different sections
+     ... use 3d space/bead-space"). The fleet is ONE spatial view: the awnix host is the
+     core, the fleet / GPU / ARC clusters orbit it, the doors ride an outer ring and the
+     VRAM holders circle the GPU bead. A bead is the desk's bead (src/styles.css .bead:
+     a round glass disc, hairline edge, lift on hover). Selecting a bead opens a dock
+     with ONLY that bead's verbs. The scene is projected by hand (DOM beads + a canvas
+     for orbits): the CSP admits no script file, so no three.js -- and nothing to
+     degrade from when WebGL is missing. */
   :root {
     --up: var(--success);
     --down: var(--destructive);
     --quiet: var(--warning);
     --mixed: var(--agent-purple);
     --unknown: var(--surface-500);
+    --glass: color-mix(in oklch, var(--card), transparent 22%);
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
-    font: 14px/1.4 var(--font-sans); }
-  body { display: grid; grid-template-rows: auto auto auto auto auto auto 1fr auto; height: 100vh; }
-  .holders { margin: -4px 18px 8px; padding: 8px 12px; background: var(--panel); border: 1px solid var(--line);
-    border-radius: 10px; font-size: 12px; color: var(--surface-300); }
-  .holders .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 4px; }
-  .holders .h { display: flex; gap: 8px; align-items: baseline; font-variant-numeric: tabular-nums; }
-  .holders .h .g { min-width: 62px; font-weight: 600; color: var(--fg); }
-  .holders .h .n { min-width: 90px; }
-  .holders .h .hint { color: var(--muted); }
-  .holders .none { color: var(--muted); }
-  .surfaces { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 18px 8px; }
-  .surfaces .k { width: 100%; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
-  .surface { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px;
-    border: 1px solid var(--line); background: var(--btn); font-size: 12px; font-weight: 500; cursor: pointer; }
-  .surface:hover { background: var(--btn-hi); }
-  .surface .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--unknown); }
-  .surface[data-up="1"] .dot { background: var(--up); }
-  .surface[data-up="0"] .dot { background: var(--down); }
-  .surface .d { color: var(--muted); font-weight: 400; }
-  header { display: flex; align-items: center; gap: 12px; padding: 14px 18px 8px; }
-  /* ONE chrome. Inside the console the shell's bar already names this pane, so the
-     pane's own title is the double header from the owner's 2026-09-20 screenshots.
-     console-preload.cjs sets .embedded per frame; detached into its own window the
-     page is not embedded and keeps its title, because there it is the only one. */
+    font: 14px/1.4 var(--font-sans); overflow: hidden; }
+  body { display: flex; flex-direction: column; height: 100vh; min-width: 0; }
+  [hidden] { display: none !important; }
+
+  /* ── header: title, one HUD line, the pill ─────────────────────────────── */
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 16px 6px; flex-wrap: wrap; min-width: 0; }
+  /* ONE chrome. Inside the console the shell's bar already names this pane. */
   .embedded header h1 { display: none; }
   header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
-  header .sub { color: var(--muted); font-size: 12px; }
-  #pill { margin-left: auto; padding: 6px 14px; border-radius: 999px; font-weight: 700;
-    font-size: 13px; letter-spacing: .06em; background: var(--unknown); color: var(--bg-sunk); }
+  .hud { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 12px; min-width: 0; }
+  .hud .stat { display: inline-flex; gap: 5px; align-items: baseline; white-space: nowrap; }
+  .hud .k { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+  .hud .v { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .hud .v small { color: var(--muted); font-weight: 400; }
+  .hud .v.probing { color: var(--muted); font-weight: 500; animation: pulse 1.2s ease-in-out infinite; }
+  #statusline { color: var(--bad); font-size: 12px; min-width: 0; flex: 1 1 200px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #pill { margin-left: auto; padding: 5px 13px; border-radius: 999px; font-weight: 700;
+    font-size: 12px; letter-spacing: .06em; background: var(--unknown); color: var(--bg-sunk); white-space: nowrap; }
   #pill[data-state="UP"] { background: var(--up); }
   #pill[data-state="DOWN"] { background: var(--down); color: var(--foreground); }
   #pill[data-state="GPU QUIET"] { background: var(--quiet); }
   #pill[data-state="MIXED"] { background: var(--mixed); }
   #pill[data-state="BUSY"] { background: var(--primary); color: var(--foreground); }
-  /* PROBING is BUSY's sibling: blue = "something is running", pulsing = "right now".
-     The 2026-09-18 07:20 screenshot was a grey UNKNOWN pill over four "?" for the
-     whole first probe, and it read as broken. */
+  /* PROBING is BUSY's sibling: blue = "something is running", pulsing = "right now". */
   #pill[data-state="PROBING"] { background: var(--primary); color: var(--foreground); animation: pulse 1.2s ease-in-out infinite; }
   #pill[data-state="CANNOT JUDGE"] { background: var(--down); color: var(--foreground); }
   #pill[data-state="STALE"] { background: var(--quiet); }
   @keyframes pulse { 50% { opacity: .5; } }
-  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 6px 18px 10px; }
-  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
-  .stat .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
-  .stat .v { font-size: 20px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
-  .stat .v small { font-size: 12px; color: var(--muted); font-weight: 400; }
-  .stat .v.probing { font-size: 14px; font-weight: 500; color: var(--muted); animation: pulse 1.2s ease-in-out infinite; }
-  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 4px 18px 10px; }
+
+  .hero { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 4px 16px 8px; }
+  .hero button { padding: 12px 14px; border-width: 2px; }
+  .hero button .t { display: block; font-size: 16px; }
+  .hero button .d { display: block; color: var(--muted); font-weight: 400; font-size: 11px; margin-top: 2px; }
+  @media (max-width: 520px) { .hero { padding: 2px 12px 6px; } .hero button { padding: 10px 12px; }
+    .hero button .t { font-size: 15px; } .hero button .d { display: none; }
+    .hero button.confirm .d { display: block; } }
+
+  /* ── the stage: canvas orbits under DOM beads ──────────────────────────── */
+  #stage { position: relative; flex: 1 1 auto; min-height: 260px; overflow: hidden; touch-action: none;
+    background: radial-gradient(ellipse at 50% 48%, color-mix(in oklch, var(--brand), transparent 90%), transparent 62%); }
+  #sky { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .bead { position: absolute; left: 0; top: 0; width: 46px; height: 46px; margin: 0; padding: 0;
+    border-radius: 50%; border: 1px solid var(--line); color: var(--fg); cursor: pointer;
+    background: radial-gradient(circle at 35% 30%, color-mix(in oklch, var(--h), var(--foreground) 30%) 0%,
+      color-mix(in oklch, var(--h), transparent 35%) 38%, var(--glass) 72%);
+    box-shadow: 0 0 0 1px color-mix(in oklch, var(--h), transparent 55%), 0 0 22px color-mix(in oklch, var(--h), transparent 70%),
+      0 4px 16px color-mix(in oklch, var(--bg-sunk), transparent 30%);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    font: inherit; will-change: transform; --h: var(--unknown); }
+  .bead[data-health="up"] { --h: var(--up); }
+  .bead[data-health="down"] { --h: var(--down); }
+  .bead[data-health="quiet"] { --h: var(--quiet); }
+  .bead[data-health="mixed"] { --h: var(--mixed); }
+  .bead:hover { border-color: var(--h); }
+  .bead:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; }
+  .bead[aria-pressed="true"] { border-color: var(--brand); box-shadow: 0 0 0 2px var(--brand), 0 0 28px color-mix(in oklch, var(--brand), transparent 55%); }
+  /* the label rides under the bead, outside it: a 30 px disc cannot hold a word */
+  .bead .bl, .bead .bv { position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap;
+    pointer-events: none; text-shadow: 0 1px 3px var(--bg-sunk); }
+  .bead .bl { top: calc(100% + 4px); font-size: 12px; font-weight: 600; }
+  .bead .bv { top: calc(100% + 20px); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .bead.core { width: 78px; height: 78px; }
+  .bead.core .bl { font-size: 13px; }
+  .bead.door { width: 26px; height: 26px; }
+  .bead.door .bl { font-size: 11px; font-weight: 500; top: calc(100% + 3px); }
+  .bead.door .bv { top: calc(100% + 17px); font-size: 10px; }
+  .bead.door[data-up="1"] { --h: var(--up); }
+  .bead.door[data-up="0"] { --h: var(--down); }
+  /* GPU: the disc fills to the VRAM in use */
+  .bead.gpu { background: conic-gradient(from 180deg, color-mix(in oklch, var(--h), transparent 20%) 0 var(--fill, 0%),
+      var(--glass) var(--fill, 0%) 100%); }
+  .holder { position: absolute; left: 0; top: 0; width: 14px; height: 14px; border-radius: 50%;
+    background: color-mix(in oklch, var(--cyan), transparent 25%); border: 1px solid var(--cyan); pointer-events: auto; }
+  .holder .hn { position: absolute; left: calc(100% + 4px); top: 50%; transform: translateY(-50%); font-size: 10px;
+    color: var(--surface-300); white-space: nowrap; pointer-events: none; }
+  .busy .bead.core { animation: pulse 1.2s ease-in-out infinite; }
+  .empty { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); color: var(--muted); font-size: 12px; }
+  .hintline { position: absolute; left: 12px; top: 6px; color: var(--muted); font-size: 11px; pointer-events: none; }
+
+  /* ── the dock: one bead's verbs ────────────────────────────────────────── */
+  #dock { position: absolute; left: 12px; right: 12px; bottom: 10px; max-height: 62%; overflow: auto;
+    background: color-mix(in oklch, var(--card), transparent 8%); border: 1px solid var(--line); border-radius: 14px;
+    padding: 10px 12px; box-shadow: 0 10px 30px color-mix(in oklch, var(--bg-sunk), transparent 20%);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); z-index: 5000; }
+  #dock-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+  #dock-title { font-weight: 600; font-size: 14px; }
+  #dock-close { margin-left: auto; padding: 2px 9px; border-radius: 999px; font-weight: 500; }
+  .detail { font-size: 12px; color: var(--surface-300); margin-bottom: 8px; overflow-wrap: anywhere; }
+  .detail .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 3px; }
+  .detail .h { display: flex; gap: 8px; align-items: baseline; font-variant-numeric: tabular-nums; min-width: 0; }
+  .detail .h .g { min-width: 62px; font-weight: 600; color: var(--fg); }
+  .detail .h .hint { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .detail .none { color: var(--muted); }
+  .detail .ok { color: var(--ok); }
+  #dock-verbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
   button { appearance: none; border: 1px solid var(--line); background: var(--btn); color: var(--fg);
-    border-radius: 10px; padding: 14px 12px; font: inherit; font-weight: 600; cursor: pointer;
+    border-radius: 10px; padding: 8px 10px; font: inherit; font-weight: 600; cursor: pointer;
     text-align: left; transition: background .12s, border-color .12s; }
-  button:hover:not(:disabled) { background: var(--btn-hi); }
+  /* :not(.bead) -- this rule outranks .bead and wiped a hovered bead's glass to flat grey */
+  button:not(.bead):hover:not(:disabled) { background: var(--btn-hi); }
+  button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
   button:disabled { opacity: .45; cursor: not-allowed; }
-  button .t { display: block; font-size: 15px; }
-  button .d { display: block; color: var(--muted); font-weight: 400; font-size: 12px; margin-top: 3px; }
+  #dock-verbs button .t { display: block; font-size: 13px; }
+  #dock-verbs button .d { display: block; color: var(--muted); font-weight: 400; font-size: 11px; margin-top: 2px; }
   button.down { border-color: color-mix(in oklch, var(--bad), var(--background) 70%); } button.down:hover:not(:disabled) { background: color-mix(in oklch, var(--bad), var(--background) 78%); border-color: var(--down); }
   button.up { border-color: color-mix(in oklch, var(--ok), var(--background) 72%); } button.up:hover:not(:disabled) { background: color-mix(in oklch, var(--ok), var(--background) 80%); border-color: var(--up); }
   button.quiet { border-color: color-mix(in oklch, var(--warn), var(--background) 72%); } button.quiet:hover:not(:disabled) { background: color-mix(in oklch, var(--warn), var(--background) 80%); border-color: var(--quiet); }
   button.confirm { background: var(--down) !important; border-color: var(--down) !important; color: var(--foreground); }
   button.confirm .d { color: color-mix(in oklch, var(--bad), var(--foreground) 60%); }
-  .row { display: flex; gap: 10px; padding: 0 18px 8px; align-items: center; }
-  .row button { padding: 8px 12px; font-weight: 500; }
+
+  /* ── bottom: toolbar, log, hints ───────────────────────────────────────── */
+  .row { display: flex; gap: 8px; padding: 6px 16px; align-items: center; flex-wrap: wrap; }
+  .row button { padding: 5px 11px; font-weight: 500; font-size: 12px; }
   .row .spacer { flex: 1; }
   .row .hint { color: var(--muted); font-size: 12px; }
-  #log { margin: 0 18px 10px; background: var(--bg-sunk); border: 1px solid var(--line); border-radius: 10px;
-    padding: 10px 12px; overflow: auto; font: 12px/1.5 var(--font-mono); color: var(--surface-300);
-    white-space: pre-wrap; min-height: 80px; }
+  #b-help { border-radius: 999px; width: 26px; padding: 4px 0; text-align: center; }
+  #log { margin: 0 16px 8px; background: var(--bg-sunk); border: 1px solid var(--line); border-radius: 10px;
+    padding: 6px 10px; overflow: auto; font: 12px/1.5 var(--font-mono); color: var(--surface-300);
+    white-space: pre-wrap; overflow-wrap: anywhere; height: 92px; flex: none; }
   #log .err { color: var(--bad); } #log .warn { color: var(--warn); } #log .ok { color: var(--ok); } #log .cmd { color: var(--brand); }
-  footer { padding: 8px 18px 12px; color: var(--muted); font-size: 11px; display: flex; gap: 12px; }
+  footer { padding: 0 16px 10px; color: var(--muted); font-size: 11px; display: flex; gap: 12px; flex-wrap: wrap; }
   footer code { color: var(--surface-300); }
-  @media (max-width: 520px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  @media (min-width: 760px) { #dock { left: auto; top: 10px; width: 350px; max-height: none; }
+    #dock-verbs { grid-template-columns: 1fr; } }
+  @media (max-width: 520px) { header { padding: 10px 12px 4px; } #dock { left: 6px; right: 6px; } #dock-verbs { grid-template-columns: 1fr; } }
+  @media (prefers-reduced-motion: reduce) { #pill, .hud .v.probing, .busy .bead.core { animation: none; } button { transition: none; } }
 </style>
 </head>
 <body>
   <header>
-    <div>
-      <h1>Aither Fleet</h1>
-      <div class="sub">rootful podman quadlets · awnix WSL2 · one implementation behind every button</div>
+    <h1>Aither Fleet</h1>
+    <div class="hud" id="hud" aria-live="polite">
+      <span class="stat"><span class="k">running</span><span class="v" id="s-running">–</span></span>
+      <span class="stat"><span class="k">masked</span><span class="v" id="s-masked">–</span></span>
+      <span class="stat"><span class="k">VRAM</span><span class="v" id="s-vram">–</span></span>
+      <span class="stat"><span class="k">hold</span><span class="v" id="s-hold">–</span></span>
     </div>
+    <div id="statusline" role="status" hidden></div>
     <div id="pill" data-state="UNKNOWN">…</div>
   </header>
 
-  <div class="stats">
-    <div class="stat"><div class="k">Containers running</div><div class="v" id="s-running">–</div></div>
-    <div class="stat"><div class="k">Units masked</div><div class="v" id="s-masked">–</div></div>
-    <div class="stat"><div class="k">GPU VRAM</div><div class="v" id="s-vram">–</div></div>
-    <div class="stat"><div class="k">GPU hold</div><div class="v" id="s-hold">–</div></div>
-  </div>
-
-  <div class="holders" id="holders">
-    <div class="k">Who holds the VRAM (Windows host, not the distro)</div>
-    <div class="none">not probed yet</div>
-  </div>
-
-  <div class="surfaces" id="surfaces">
-    <div class="k">Doors · click to open</div>
-  </div>
-
-  <div class="actions">
-    <!-- The owner's verb set: fleet_verbs.py, the same verbs awsh, adk, awnode and
-         AitherZero run. Old action names (down/up/gaming/resume) are aliases. -->
-    <button id="b-down" class="down" data-action="fleet-sleep">
-      <span class="t">Fleet sleep</span>
-      <span class="d">Stop + mask every aither unit and container, recorded. Customer-facing set stays up.</span>
+  <!-- EASY buttons (owner, 2026-10-13): always visible, one tap + confirm. They run the
+       SAME actions the Fleet bead's dock used to carry (fleet-sleep / fleet-wake), so each
+       action still lives in exactly one place. -->
+  <div class="hero" id="hero">
+    <button id="b-down" class="down" data-action="fleet-sleep" data-bead="hero">
+      <span class="t">Sleep everything (game)</span>
+      <span class="d">Fleet sleep: stop + mask every aither unit and container, recorded. Customer-facing set stays up.</span>
     </button>
-    <button id="b-up" class="up" data-action="fleet-wake">
-      <span class="t">Fleet wake</span>
-      <span class="d">Restore exactly what was recorded, health-gated. GPU only if the GPU is awake.</span>
-    </button>
-    <button id="b-gaming" class="quiet" data-action="gpu-sleep">
-      <span class="t">GPU sleep (game on)</span>
-      <span class="d">Gaming lock, posture gaming (lanes to the Spark), park every 5090 GPU unit.</span>
-    </button>
-    <button id="b-resume" class="up" data-action="gpu-wake">
-      <span class="t">GPU wake (game off)</span>
-      <span class="d">GPU units back one at a time, previous posture, lanes home, lock released.</span>
-    </button>
-    <button id="b-critical" class="quiet" data-action="fleet-critical">
-      <span class="t">Fleet critical</span>
-      <span class="d">Only the critical profile (login, MCP, relay, web, tenants) + GPU sleep.</span>
+    <button id="b-up" class="up" data-action="fleet-wake" data-bead="hero">
+      <span class="t">Wake fleet</span>
+      <span class="d">Fleet wake: restore exactly what was recorded, health-gated. GPU only if the GPU is awake.</span>
     </button>
   </div>
 
-  <div class="actions" id="arc-actions">
-    <button id="b-arc-now" class="up" data-action="arc-now">
-      <span class="t">ARC run now</span>
-      <span class="d">Solve + learn for 4 h, overriding quiet hours and any GPU hold. Attributed, self-expiring.</span>
-    </button>
-    <button id="b-arc-start" class="up" data-action="arc-start">
-      <span class="t">ARC start</span>
-      <span class="d">Unmask the solver and world model; quiet hours (23:00–07:00 PT) still apply.</span>
-    </button>
-    <button id="b-arc-status" class="quiet" data-action="arc-status">
-      <span class="t">ARC status</span>
-      <span class="d">Is it solving and is the world model learning (train_steps climbing)?</span>
-    </button>
-    <button id="b-arc-stop" class="down" data-action="arc-stop">
-      <span class="t">ARC stop</span>
-      <span class="d">Stop the solver. The world model stays up.</span>
-    </button>
-  </div>
+  <!-- The scene. Beads are real buttons in DOM order: Tab walks them, Enter opens the
+       dock, arrow keys step between them, Escape closes the dock. -->
+  <div id="stage" aria-label="Fleet bead-space">
+    <canvas id="sky" aria-hidden="true"></canvas>
+    <div class="hintline" id="stage-hint">drag to turn · select a bead for its verbs</div>
+    <button class="bead core" id="bead-host" data-bead="host" aria-pressed="false" aria-label="awnix host">
+      <span class="bl">awnix host</span><span class="bv">–</span></button>
+    <button class="bead" id="bead-fleet" data-bead="fleet" aria-pressed="false" aria-label="Fleet containers">
+      <span class="bl">Fleet</span><span class="bv">–</span></button>
+    <button class="bead gpu" id="bead-gpu" data-bead="gpu" aria-pressed="false" aria-label="GPU">
+      <span class="bl">GPU</span><span class="bv">–</span></button>
+    <button class="bead" id="bead-arc" data-bead="arc" aria-pressed="false" aria-label="ARC solver">
+      <span class="bl">ARC</span><span class="bv">run status</span></button>
+    <div id="orbit" aria-hidden="true"></div>
+    <div id="surfaces" aria-label="Doors">
+      <div class="k" hidden>Doors</div>
+    </div>
 
-  <!-- The fleet HOST: the WSL distro itself (fleet_host.py -- the engine adk fleet-host,
-       awnode's fleet_host_* MCP tools and the setup-awnix-fleet-host playbook share). -->
-  <div class="holders" id="host">
-    <div class="k">Fleet host (the WSL distro: systemd, podman, data attach, tiers)</div>
-    <div class="none" id="host-line">not probed yet -- click "Host status"</div>
-  </div>
-  <div class="actions" id="host-actions">
-    <button id="b-host-status" class="quiet" data-action="host-status">
-      <span class="t">Host status</span>
-      <span class="d">Distro, systemd, podman, data disk attached, tier targets, keeper tasks. Read-only.</span>
-    </button>
-    <button id="b-host-start" class="up" data-action="host-start">
-      <span class="t">Host start</span>
-      <span class="d">Boot the distro and start the aither-tier targets. Refused while another distro runs.</span>
-    </button>
-    <button id="b-host-restart" class="down" data-action="host-restart">
-      <span class="t">Host restart</span>
-      <span class="d">Stop the tier targets (autoheal first), then start them again.</span>
-    </button>
-    <button id="b-host-stop" class="down" data-action="host-stop">
-      <span class="t">Host stop</span>
-      <span class="d">Stop autoheal and every tier target. The distro stays registered.</span>
-    </button>
-    <button id="b-host-reattach" class="quiet" data-action="host-reattach">
-      <span class="t">Re-attach data</span>
-      <span class="d">Run the AitherOS-AttachFleetData task and restart aither-attach-fleet-data.</span>
-    </button>
-    <button id="b-host-migrate" class="quiet" data-action="host-migrate-dryrun">
-      <span class="t">Migration preflight</span>
-      <span class="d">migrate-fleet-to-awnix in -DryRun: what a live migration would stop on.</span>
-    </button>
+    <div id="dock" role="dialog" aria-labelledby="dock-title" hidden>
+      <div id="dock-head">
+        <span id="dock-title">–</span>
+        <button id="dock-close" aria-label="Close the dock">Esc</button>
+      </div>
+      <!-- one detail block per bead; the dock shows the selected one -->
+      <div class="detail" id="fleet-detail" data-for="fleet"></div>
+      <div class="detail" id="holders" data-for="gpu">
+        <div class="k">Who holds the VRAM (Windows host, not the distro)</div>
+        <div class="none">not probed yet</div>
+      </div>
+      <div class="detail" id="arc-detail" data-for="arc"><span class="none">not asked yet -- ARC status reads it</span></div>
+      <div class="detail" id="host" data-for="host">
+        <div class="none" id="host-line">not probed yet -- Host status reads it</div>
+      </div>
+      <div class="detail" id="door-detail" data-for="door"></div>
+      <div id="dock-verbs">
+        <!-- The owner's verb set: fleet_verbs.py, the same verbs awsh, adk, awnode and
+             AitherZero run. Each action lives in exactly ONE bead's dock (data-bead). -->
+        <button id="b-critical" class="quiet" data-action="fleet-critical" data-bead="fleet">
+          <span class="t">Fleet critical</span>
+          <span class="d">Only the critical profile (login, MCP, relay, web, tenants) + GPU sleep.</span>
+        </button>
+        <button id="b-adopt" data-bead="fleet" title="The fleet was stopped by hand (masks exist but nothing is recorded): record the masked set so Fleet UP knows what to start">
+          <span class="t">Adopt hand-stopped state</span>
+          <span class="d">Record the masked set so Fleet wake knows what to start.</span>
+        </button>
+        <button id="b-gaming" class="quiet" data-action="gpu-sleep" data-bead="gpu">
+          <span class="t">GPU sleep (game on)</span>
+          <span class="d">Gaming lock, posture gaming (lanes to the Spark), park every 5090 GPU unit.</span>
+        </button>
+        <button id="b-resume" class="up" data-action="gpu-wake" data-bead="gpu">
+          <span class="t">GPU wake (game off)</span>
+          <span class="d">GPU units back one at a time, previous posture, lanes home, lock released.</span>
+        </button>
+        <button id="b-arc-now" class="up" data-action="arc-now" data-bead="arc">
+          <span class="t">ARC run now</span>
+          <span class="d">Solve + learn for 4 h, overriding quiet hours and any GPU hold. Attributed, self-expiring.</span>
+        </button>
+        <button id="b-arc-start" class="up" data-action="arc-start" data-bead="arc">
+          <span class="t">ARC start</span>
+          <span class="d">Unmask the solver and world model; quiet hours (23:00–07:00 PT) still apply.</span>
+        </button>
+        <button id="b-arc-status" class="quiet" data-action="arc-status" data-bead="arc">
+          <span class="t">ARC status</span>
+          <span class="d">Is it solving and is the world model learning (train_steps climbing)?</span>
+        </button>
+        <button id="b-arc-stop" class="down" data-action="arc-stop" data-bead="arc">
+          <span class="t">ARC stop</span>
+          <span class="d">Stop the solver. The world model stays up.</span>
+        </button>
+        <!-- The fleet HOST: the WSL distro itself (fleet_host.py -- the engine adk fleet-host,
+             awnode's fleet_host_* MCP tools and the setup-awnix-fleet-host playbook share). -->
+        <button id="b-host-status" class="quiet" data-action="host-status" data-bead="host">
+          <span class="t">Host status</span>
+          <span class="d">Distro, systemd, podman, data disk attached, tier targets, keeper tasks. Read-only.</span>
+        </button>
+        <button id="b-host-start" class="up" data-action="host-start" data-bead="host">
+          <span class="t">Host start</span>
+          <span class="d">Boot the distro and start the aither-tier targets. Refused while another distro runs.</span>
+        </button>
+        <button id="b-host-restart" class="down" data-action="host-restart" data-bead="host">
+          <span class="t">Host restart</span>
+          <span class="d">Stop the tier targets (autoheal first), then start them again.</span>
+        </button>
+        <button id="b-host-stop" class="down" data-action="host-stop" data-bead="host">
+          <span class="t">Host stop</span>
+          <span class="d">Stop autoheal and every tier target. The distro stays registered.</span>
+        </button>
+        <button id="b-host-reattach" class="quiet" data-action="host-reattach" data-bead="host">
+          <span class="t">Re-attach data</span>
+          <span class="d">Run the AitherOS-AttachFleetData task and restart aither-attach-fleet-data.</span>
+        </button>
+        <button id="b-host-migrate" class="quiet" data-action="host-migrate-dryrun" data-bead="host">
+          <span class="t">Migration preflight</span>
+          <span class="d">migrate-fleet-to-awnix in -DryRun: what a live migration would stop on.</span>
+        </button>
+        <button id="b-open-door" class="up" data-bead="door">
+          <span class="t">Open</span>
+          <span class="d">Open this door in the browser.</span>
+        </button>
+      </div>
+    </div>
   </div>
 
   <div class="row">
     <button id="b-refresh">Refresh status</button>
-    <button id="b-adopt" title="The fleet was stopped by hand (masks exist but nothing is recorded): record the masked set so Fleet UP knows what to start">Adopt hand-stopped state</button>
-    <span class="spacer"></span>
     <span class="hint" id="hint">auto-refresh every 30 s</span>
+    <span class="spacer"></span>
+    <button id="b-help" aria-expanded="false" aria-controls="cli-hints" title="The same verbs from a terminal">?</button>
   </div>
 
-  <div id="log"></div>
+  <div id="log" role="log" aria-live="polite"></div>
 
-  <footer>
+  <footer id="cli-hints" hidden>
     <span>CLI: <code>game down</code> · <code>game up</code> · <code>game on</code> · <code>game off</code> · <code>game status</code></span>
     <span>MCP: <code>fleet_status</code> · <code>fleet_control</code></span>
     <span>awsh: <code>/fleet</code> · adk: <code>adk desk fleet</code></span>
@@ -217,12 +311,24 @@
   const buttons = [...document.querySelectorAll("button[data-action]")];
   const DESTRUCTIVE = new Set(["down", "gaming", "gpu-sleep", "fleet-sleep", "fleet-critical", "arc-stop",
     "host-start", "host-stop", "host-restart", "host-reattach"]);
+  const W = window;
+  const setVar = (node, k, v) => { if (node && node.style && node.style.setProperty) node.style.setProperty(k, v); };
+  const setAttr = (node, k, v) => { if (node && node.setAttribute) node.setAttribute(k, v); };
+
+  // ── state ────────────────────────────────────────────────────────────────
+  let lastStatus = null;   // the newest verdict render() painted
+  let hostVerdict = null;  // the newest host-status verdict
+  let arcVerdict = null;   // the newest arc-* verdict
+  let selected = null;     // "host" | "fleet" | "gpu" | "arc" | "door:<i>"
+  let doors = [];          // the newest surfaces rows
+  let adoptable = false;
 
   // One line for the fleet HOST verdict (fleet_host.py status --json).
   function renderHost(v) {
+    hostVerdict = v || null;
     const node = $("host-line");
     if (!v) { node.textContent = "not probed yet"; return; }
-    if (v.cannotJudge && !v.distro) { node.textContent = `CANNOT JUDGE: ${v.error || "no verdict"}`; return; }
+    if (v.cannotJudge && !v.distro) { node.textContent = `CANNOT JUDGE: ${v.error || "no verdict"}`; paintBeads(); return; }
     const pr = v.probe || {};
     const bits = [`${v.distro || "?"} (${v.distro_source || "?"})`, v.verdict || "?", `state ${v.state || "?"}`];
     if (pr.systemd) bits.push(`systemd ${pr.systemd}`);
@@ -230,16 +336,32 @@
     const issues = [...(v.problems || []), ...(v.warnings || [])];
     node.textContent = bits.join(" · ") + (issues.length ? ` -- ${issues.join("; ")}` : "");
     node.className = v.verdict === "HEALTHY" ? "ok" : "none";
+    paintBeads();
   }
   let armed = null;      // button awaiting its confirming second click
   let armTimer = null;
   let busy = null;
 
+  // The log says a thing ONCE. The owner's screenshot (2026-10-13) was the same red
+  // CANNOT JUDGE line four times, one per auto-refresh. A line equal to the previous
+  // one (numbers aside -- "42 s old" and "72 s old" are the same news) updates in
+  // place and counts: "... (x4)".
+  let lastKey = null;
+  let lastNode = null;
+  let lastCount = 0;
   function line(text, cls) {
+    const key = `${cls || ""}|${String(text).replace(/\d+(\.\d+)?/g, "#")}`;
+    if (key === lastKey && lastNode && log.lastChild === lastNode) {
+      lastCount += 1;
+      lastNode.textContent = `${text} (x${lastCount})`;
+      log.scrollTop = log.scrollHeight;
+      return;
+    }
     const el = document.createElement("div");
     if (cls) el.className = cls;
     el.textContent = text;
     log.appendChild(el);
+    lastKey = key; lastNode = el; lastCount = 1;
     while (log.childElementCount > 400) log.removeChild(log.firstChild);
     log.scrollTop = log.scrollHeight;
   }
@@ -278,23 +400,30 @@
     return node;
   }
 
-  // The VRAM number with 0 containers running was a riddle; this is the answer
-  // line by line: pid, GiB, what it is. Host counters — the distro cannot see them.
-  // A failed probe used to print the whole PowerShell command line into the panel.
-  // Say it in one line; the raw text stays one hover away for whoever debugs it.
+  // A failed GPU-counter probe says it in one line; the raw text stays one hover away.
   function unreadable(error) {
     const raw = String(error || "");
-    const line = /timed? ?out/i.test(raw) ? "the Windows GPU counters timed out"
+    const msg = /timed? ?out/i.test(raw) ? "the Windows GPU counters timed out"
       : /Command failed/i.test(raw) ? "the Windows GPU counters could not be read"
       : raw.split(/\r?\n/)[0].slice(0, 140);
-    const node = el("div", "none", `not readable right now: ${line}`);
+    const node = el("div", "none", `not readable right now: ${msg}`);
     node.title = raw;
     return node;
   }
 
+  /** "C:\\x\\python.exe -m comfy ..." -> "python"; a name is already short. */
+  function shortName(h) {
+    const base = String(h.name || "").split(/[\\/]/).pop().replace(/\.exe$/i, "");
+    return base.length > 16 ? `${base.slice(0, 15)}…` : base || `pid ${h.pid}`;
+  }
+
+  // The VRAM holders: a list in the GPU dock (pid, GiB, a short hint -- the full command
+  // line only on hover) and a small orbit of beads around the GPU bead.
   function renderHolders(holders, error) {
     const box = $("holders");
+    const orbit = $("orbit");
     while (box.childElementCount > 1) box.removeChild(box.lastChild);
+    while (orbit.childElementCount > 0) orbit.removeChild(orbit.lastChild);
     if (!Array.isArray(holders)) {
       box.appendChild(error ? unreadable(error) : el("div", "none", emptyState()));
       return;
@@ -306,37 +435,50 @@
     for (const h of holders) {
       const row = el("div", "h");
       row.appendChild(el("span", "g", `${h.gib.toFixed(2)} GiB`));
-      row.appendChild(el("span", "n", `${h.name} (pid ${h.pid})`));
-      row.appendChild(el("span", "hint", h.hint || h.cmd || ""));
-      row.title = h.cmd || "";
+      row.appendChild(el("span", "n", `${shortName(h)} (pid ${h.pid})`));
+      row.appendChild(el("span", "hint", h.hint || ""));
+      row.title = h.cmd || h.hint || "";
       box.appendChild(row);
+      const dot = el("div", "holder");
+      dot.title = `${h.gib.toFixed(2)} GiB · ${h.name} (pid ${h.pid})${h.cmd ? `\n${h.cmd}` : ""}`;
+      dot.appendChild(el("span", "hn", shortName(h)));
+      dot.dataset.gib = String(h.gib);
+      dot.addEventListener("click", () => select("gpu"));
+      orbit.appendChild(dot);
     }
   }
 
-  // Every door the owner asked for, probed; click opens it in the browser.
+  /** "Genesis via MCP gateway" -> "Genesis"; "awdk daemon (rooms, decisions)" -> "awdk daemon". */
+  function doorName(label) {
+    return String(label || "").replace(/\s*\(.*$/, "").replace(/\s+via\s.*$/i, "");
+  }
+
+  // Every door the owner asked for, probed, as a bead on the outer ring.
   function renderSurfaces(rows) {
     const box = $("surfaces");
     while (box.childElementCount > 1) box.removeChild(box.lastChild);
-    if (!Array.isArray(rows) || rows.length === 0) {
-      box.appendChild(el("span", "surface", emptyState()));
+    doors = Array.isArray(rows) ? rows : [];
+    if (!doors.length) {
+      box.appendChild(el("span", "empty", `doors: ${emptyState()}`));
+      if (selected && selected.startsWith("door:")) closeDock();
       return;
     }
-    for (const s of rows) {
-      const chip = el("button", "surface");
-      chip.dataset.up = s.up ? "1" : "0";
-      chip.appendChild(el("span", "dot"));
-      chip.appendChild(el("span", null, s.label));
-      chip.appendChild(el("span", "d", s.up ? (s.detail && !/^HTTP/.test(s.detail) ? s.detail : `${s.ms} ms`) : `DOWN · ${s.detail}`));
-      chip.title = `${s.url}\n${s.detail}`;
-      chip.addEventListener("click", () => window.fleet.open(s.url));
-      box.appendChild(chip);
-    }
+    doors.forEach((s, i) => {
+      const bead = el("button", "bead door");
+      bead.dataset.up = s.up ? "1" : "0";
+      bead.dataset.bead = `door:${i}`;
+      setAttr(bead, "aria-pressed", selected === `door:${i}` ? "true" : "false");
+      setAttr(bead, "aria-label", `${s.label}: ${s.up ? "up" : "down"}`);
+      bead.appendChild(el("span", "bl", doorName(s.label)));
+      bead.appendChild(el("span", "bv", s.up ? (s.detail && !/^HTTP/.test(s.detail) ? s.detail : `${s.ms} ms`) : "DOWN"));
+      bead.title = `${s.url}\n${s.detail}`;
+      bead.addEventListener("click", () => select(`door:${i}`));
+      box.appendChild(bead);
+    });
+    if (selected && selected.startsWith("door:")) select(selected, { keepFocus: true });
   }
 
-  /** The pill's word. BUSY (an action runs) > PROBING (no verdict yet, one is
-   *  being fetched) > CANNOT JUDGE / STALE (the probe failed, with or without
-   *  older numbers to show) > the fleet's real state. "UNKNOWN" is left for a
-   *  verdict that classifies as nothing -- never for "we have not looked yet". */
+  /** The pill's word. BUSY > PROBING > CANNOT JUDGE / STALE > the fleet's real state. */
   function stateFor(st, stale) {
     if (busy) return "BUSY";
     if (!st) return probing ? "PROBING" : "UNKNOWN";
@@ -345,19 +487,13 @@
   }
 
   function render(st) {
-    // A stale verdict carries the last GOOD numbers with their age and the
-    // reason the fresh probe failed. Bare "?" with no context was the owner's
-    // 2026-09-12 screenshot: the pane read as broken while the fleet was UP --
-    // the numbers exist even when the newest probe could not fetch them.
+    lastStatus = st;
+    // A stale verdict carries the last GOOD numbers with their age and the reason the
+    // fresh probe failed; bare "?" with no context read as broken (2026-09-12).
     const stale = st && st.cannotJudge && st.stale ? st.stale : null;
     const src = stale ? stale.verdict : st;
     const fl = (src && src.fleet) || {};
     const age = stale ? ` <small>· ${Math.round(stale.age_ms / 1000)} s ago</small>` : "";
-    // No verdict at all: either the first probe is in flight (say so -- it walks
-    // the distro, the doors and the GPU counters, measured 24-73 s on 2026-09-18)
-    // or nothing has been asked. "?" is reserved for a verdict that DID come back
-    // without the number; a placeholder that cannot tell those apart is the
-    // owner's 07:20 screenshot.
     const blank = src ? null : (probing ? "probing…" : "?");
     const stat = (id, html) => {
       const node = $(id);
@@ -368,9 +504,18 @@
     stat("s-masked", fl.masked == null ? "?" : `${fl.masked} <small>/ ${fl.units ?? "?"}</small>${age}`);
     const v = src && src.vram;
     stat("s-vram", v ? `${(v.used_mib / 1024).toFixed(1)} <small>/ ${(v.total_mib / 1024).toFixed(0)} GiB</small>${age}` : "?");
-    // GPU hold is a yes/no that must never DEFAULT to "free": with no verdict the
-    // answer is unknown. `null && x` reading as "free" was exactly that lie.
+    // GPU hold must never DEFAULT to "free": with no verdict the answer is unknown.
     stat("s-hold", !src || src.cannotJudge ? "?" : (src.held ? (holdIsStale(src) ? "stale" : "HELD") : "free"));
+    // ONE status line instead of four "?" when nothing can be judged (owner, 2026-10-13).
+    const nothing = Boolean(st && st.cannotJudge && !stale);
+    $("hud").hidden = nothing;
+    const sl = $("statusline");
+    sl.hidden = !nothing;
+    if (nothing) {
+      const why = String(st.error || "no verdict");
+      sl.textContent = `CANNOT JUDGE — ${why.split(/(?<=\.)\s|\s--\s/)[0]}`;
+      sl.title = why;
+    }
     renderHolders(src && src.gpu_holders, src && src.gpu_holders_error);
     renderSurfaces(src && src.surfaces);
     const state = stateFor(st, stale);
@@ -381,18 +526,155 @@
     } else if (st && st.cannotJudge) {
       line(`CANNOT JUDGE: ${st.error || "no verdict"}`, "err");
     }
-    // Adopt only makes sense when masks exist but nothing recorded them.
     // Adopt = masks exist that no record explains (a hand-stopped fleet).
     const rec = (st && st.state) || {};
     const recordedCount = (rec.units || []).length + (rec.runners || []).length + (rec.all_units || []).length;
-    $("b-adopt").disabled = !!busy || !((fl.masked ?? 0) > recordedCount);
+    adoptable = (fl.masked ?? 0) > recordedCount;
+    $("b-adopt").disabled = !!busy || !adoptable;
+    paintBeads();
   }
+
+  // ── beads: health, value, size ───────────────────────────────────────────
+  function paintBead(id, health, value, label) {
+    const node = $(id);
+    if (!node) return;
+    node.dataset.health = health;
+    const bv = node.querySelector(".bv");
+    if (bv) bv.textContent = value;
+    if (label) setAttr(node, "aria-label", label);
+  }
+
+  function paintBeads() {
+    const st = lastStatus;
+    const stale = st && st.cannotJudge && st.stale ? st.stale : null;
+    const src = stale ? stale.verdict : st;
+    const fl = (src && src.fleet) || {};
+    // host core: the distro answers or it does not; host-status sharpens it.
+    let hostHealth = !st ? "unknown" : (st.cannotJudge && !stale ? "down" : stale ? "quiet" : "up");
+    if (hostVerdict && hostVerdict.verdict) hostHealth = hostVerdict.verdict === "HEALTHY" ? "up" : "quiet";
+    const hostValue = !st ? emptyState() : st.cannotJudge && !stale ? "not answering" : stale ? "slow" : (hostVerdict && hostVerdict.verdict) || "answering";
+    paintBead("bead-host", hostHealth, hostValue, `awnix host: ${hostValue}`);
+    // fleet cluster
+    const running = fl.running;
+    const masked = fl.masked ?? 0;
+    const fleetHealth = running == null ? "unknown" : running === 0 && masked > 0 ? "down"
+      : masked > 0 ? "mixed" : running > 0 ? "up" : "unknown";
+    const fleetValue = running == null ? "?" : `${running} up${masked ? ` · ${masked} masked` : ""}`;
+    paintBead("bead-fleet", fleetHealth, fleetValue, `Fleet: ${fleetValue}`);
+    const fleetSize = running == null ? 46 : 40 + Math.round(26 * Math.min(1, Math.sqrt(running / 160)));
+    sizeBead($("bead-fleet"), fleetSize);
+    // GPU
+    const v = src && src.vram;
+    const frac = v && v.total_mib ? Math.min(1, v.used_mib / v.total_mib) : null;
+    const gpuHealth = !src || src.cannotJudge ? "unknown" : src.held && !holdIsStale(src) ? "quiet"
+      : frac != null && frac > 0.95 ? "mixed" : "up";
+    const gpuValue = v ? `${(v.used_mib / 1024).toFixed(1)}/${(v.total_mib / 1024).toFixed(0)} GiB${src.held ? " · held" : ""}` : "?";
+    paintBead("bead-gpu", gpuHealth, gpuValue, `GPU: ${gpuValue}`);
+    setVar($("bead-gpu"), "--fill", `${Math.round((frac || 0) * 100)}%`);
+    sizeBead($("bead-gpu"), 42 + Math.round(24 * (frac || 0)));
+    // ARC: known only once an arc-* verb answered
+    const a = arcVerdict;
+    const arcHealth = !a ? "unknown" : a.cannotJudge || !a.ok ? "down" : (a.problems || []).length ? "quiet" : "up";
+    const arcValue = !a ? "run status" : a.verdict || (a.ok ? "ok" : "refused");
+    paintBead("bead-arc", arcHealth, arcValue, `ARC: ${arcValue}`);
+    // fleet detail line for the dock
+    const fd = $("fleet-detail");
+    if (fd) {
+      fd.textContent = running == null ? `containers: ${emptyState()}`
+        : `${running} container(s) running · ${masked}/${fl.units ?? "?"} units masked${fl.scope ? ` · scope ${fl.scope}` : ""}${stale ? ` · ${Math.round(stale.age_ms / 1000)} s old` : ""}`;
+    }
+    const ad = $("arc-detail");
+    if (ad && a) {
+      const wm = a.world_model || {};
+      ad.textContent = `${arcValue}${wm.train_steps != null ? ` · train_steps ${wm.train_steps}` : ""}${(a.problems || []).length ? ` · ${a.problems.join("; ")}` : ""}`;
+    }
+    scene.dirty = true;
+    if (!scene.loop) draw(0);
+  }
+
+  function sizeBead(node, px) {
+    if (!node || !node.style) return;
+    node.style.width = `${px}px`;
+    node.style.height = `${px}px`;
+    node.dataset.size = String(px);
+  }
+
+  // ── the dock: one bead's verbs ───────────────────────────────────────────
+  const DOCK_TITLES = { host: "awnix host — the WSL distro", fleet: "Fleet — every aither unit", gpu: "GPU — the 5090", arc: "ARC — solver + world model" };
+  const VERB_BUTTONS = [...buttons.filter((b) => b.dataset.bead !== "hero"), $("b-adopt"), $("b-open-door")].filter(Boolean);
+  const DETAILS = { fleet: "fleet-detail", gpu: "holders", arc: "arc-detail", host: "host", door: "door-detail" };
+  const BEAD_IDS = ["bead-host", "bead-fleet", "bead-gpu", "bead-arc"];
+
+  function allBeads() {
+    const list = BEAD_IDS.map($).filter(Boolean);
+    const box = $("surfaces");
+    for (const c of box.children || []) if (c.dataset && c.dataset.bead) list.push(c);
+    return list;
+  }
+
+  function select(which, opts = {}) {
+    const kind = which.startsWith("door:") ? "door" : which;
+    selected = which;
+    const dock = $("dock");
+    dock.hidden = false;
+    let title = DOCK_TITLES[kind] || which;
+    if (kind === "door") {
+      const s = doors[Number(which.slice(5))];
+      if (!s) { closeDock(); return; }
+      title = s.label;
+      const dd = $("door-detail");
+      dd.textContent = `${s.up ? `up · ${s.ms} ms` : "DOWN"} · ${s.detail || ""} · ${s.url}`;
+    }
+    $("dock-title").textContent = title;
+    for (const [k, id] of Object.entries(DETAILS)) { const n = $(id); if (n) n.hidden = k !== kind; }
+    let first = null;
+    for (const b of VERB_BUTTONS) {
+      b.hidden = b.dataset.bead !== kind;
+      if (!b.hidden && !first && !b.disabled) first = b;
+    }
+    if (armed && armed.hidden) disarm();
+    for (const b of allBeads()) setAttr(b, "aria-pressed", b.dataset.bead === which ? "true" : "false");
+    scene.paused = true;
+    if (!opts.keepFocus && first && first.focus) first.focus();
+  }
+
+  function closeDock() {
+    const was = selected;
+    selected = null;
+    $("dock").hidden = true;
+    disarm();
+    for (const b of allBeads()) setAttr(b, "aria-pressed", "false");
+    scene.paused = false;
+    const back = was && allBeads().find((b) => b.dataset.bead === was);
+    if (back && back.focus) back.focus();
+  }
+
+  for (const id of BEAD_IDS) {
+    const b = $(id);
+    if (b) b.addEventListener("click", () => (selected === b.dataset.bead ? closeDock() : select(b.dataset.bead)));
+  }
+  const dockClose = $("dock-close");
+  if (dockClose) dockClose.addEventListener("click", () => closeDock());
+  const openDoor = $("b-open-door");
+  if (openDoor) openDoor.addEventListener("click", () => {
+    const s = selected && selected.startsWith("door:") ? doors[Number(selected.slice(5))] : null;
+    if (s) window.fleet.open(s.url);
+  });
+  const help = $("b-help");
+  if (help) help.addEventListener("click", () => {
+    const f = $("cli-hints");
+    f.hidden = !f.hidden;
+    setAttr(help, "aria-expanded", f.hidden ? "false" : "true");
+  });
 
   function setBusy(action) {
     busy = action;
     for (const b of buttons) b.disabled = !!action;
     $("b-refresh").disabled = !!action;
+    $("b-adopt").disabled = !!action || !adoptable;
     $("hint").textContent = action ? `running "${action}" — progress below` : "auto-refresh every 30 s";
+    const stage = $("stage");
+    if (stage && stage.classList) stage.classList.toggle("busy", !!action);
     if (!action) disarm();
   }
 
@@ -402,17 +684,11 @@
     clearTimeout(armTimer);
   }
 
-  // 🚩 "not probed yet" and "a probe is running RIGHT NOW" are different states and
-  // read identically. The first probe walks the distro, seven doors and the GPU
-  // counters -- seconds -- and a window of em-dashes with no sign of life reads as
-  // broken (owner screenshot, 2026-09-08). One flag, and the empty states say which.
+  // 🚩 "not probed yet" and "a probe is running RIGHT NOW" are different states.
   const PROBE_DEADLINE_S = 90;
 
-  // 🚩 A slow hop is NOT "usually a busy fleet". On 2026-09-21 this page said
-  // exactly that for 5 minutes while every fleet port was closed and the WSL
-  // distro had been dead since 12:35 (fifth death that day). Busy and dead read
-  // identically through the hop; they read differently at the DOORS, which the
-  // host can probe in 3 s. Say which one it is.
+  // 🚩 A slow hop is NOT "usually a busy fleet" (2026-09-21): busy and dead read
+  // identically through the hop and differently at the DOORS, probed in 3 s.
   async function doorsVerdict() {
     let rows = [];
     try { rows = (await window.fleet.doors()) || []; } catch { rows = []; }
@@ -436,15 +712,9 @@
     } else if (!busy) {
       $("hint").textContent = "refreshing…";
     }
-    // 🚩 A probe with no clock reads as a hang. On the owner's screen (2026-09-20) every
-    // tile said "probing…" for as long as he looked, because the guest was starved
-    // (load 110, two image builds) and `podman ps` took its whole 60 s budget. The
-    // probe was alive; the PAGE gave no sign of it. So: count the seconds where the
-    // eye already is, say what a slow answer usually means, and stop waiting at a
-    // deadline of our own rather than inheriting whatever the slowest call does.
+    // 🚩 A probe with no clock reads as a hang (2026-09-20): count the seconds where the
+    // eye already is and stop waiting at a deadline of our own.
     const startedAt = Date.now();
-    // setTimeout chain, not setInterval: the page has exactly ONE interval (the 30 s
-    // auto-refresh) and both timers here are cleared the moment a verdict lands.
     let clockTimer = null;
     const tick = () => {
       const secs = Math.round((Date.now() - startedAt) / 1000);
@@ -462,20 +732,17 @@
       deadlineTimer = setTimeout(async () => resolve({
         ok: false, cannotJudge: true,
         error: `no answer from the fleet probe in ${PROBE_DEADLINE_S} s -- ${await doorsVerdict()}. `
-          + "Nothing was changed; the actions below still work once it answers.",
+          + "Nothing was changed; the actions still work once it answers.",
       }), PROBE_DEADLINE_S * 1000);
     });
     let st;
     try {
       st = await Promise.race([window.fleet.status(force ? { maxAgeMs: 0 } : {}), deadline]);
     } catch (error) {
-      // The IPC itself failed (no handler, window torn down mid-probe). That is a
-      // verdict too -- leaving "probing…" up forever is the old silence.
+      // The IPC itself failed: that is a verdict too.
       st = { ok: false, cannotJudge: true, error: (error && error.message) || String(error) };
     } finally {
-      // 🚩 Cleared BEFORE render, not after: render() reads it to label the empty
-      // boxes, and a verdict without holders used to render as "probing…" for
-      // the next 30 s because the flag was still up when it painted.
+      // 🚩 Cleared BEFORE render: render() reads it to label the empty boxes.
       probing = false;
       clearTimeout(clockTimer);
       clearTimeout(deadlineTimer);
@@ -505,12 +772,14 @@
         line(`${action}: ${verdict.ok ? "ok" : (verdict.error || "failed")}`, verdict.ok ? "ok" : "err");
       }
       else if (action.startsWith("arc-") && !verdict.cannotJudge) {
+        arcVerdict = verdict;
         const wm = verdict.world_model || {};
         const steps = wm.train_steps != null ? ` · train_steps ${wm.train_steps}` : "";
         const problems = (verdict.problems || []).length ? ` · ${verdict.problems.join("; ")}` : "";
         line(`${action}: ${verdict.verdict || (verdict.ok ? "ok" : "refused")}${steps}${problems}`, verdict.ok ? "ok" : "err");
       }
       else if (!verdict.ok) {
+        if (action.startsWith("arc-")) arcVerdict = verdict;
         line(`${action}: ${verdict.error || "refused"}`, "err");
         for (const f of verdict.failed || []) line(`  FAILED ${f.name || f.unit}: ${f.error || f.reason || ""}`, "err");
       } else {
@@ -560,7 +829,218 @@
     }
   });
 
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") window.fleet.close(); });
+  // ── the scene: a hand-projected 3D orbit (no WebGL needed, nothing to degrade) ──
+  const reduceMotion = Boolean(W.matchMedia && W.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const raf = typeof W.requestAnimationFrame === "function" ? W.requestAnimationFrame.bind(W) : null;
+  const scene = { yaw: 0.6, pitch: 0.42, t: 0, paused: false, hover: false, drag: null, dirty: true, loop: false, colors: null };
+  // where the clusters sit on the inner orbit (radians around the core)
+  const CLUSTERS = [["bead-fleet", 0], ["bead-gpu", 2.1], ["bead-arc", 4.2]];
+
+  function project(x, y, z, cx, cy) {
+    const cyw = Math.cos(scene.yaw), syw = Math.sin(scene.yaw);
+    const x1 = x * cyw - z * syw;
+    const z1 = x * syw + z * cyw;
+    const cp = Math.cos(scene.pitch), sp = Math.sin(scene.pitch);
+    const y2 = y * cp - z1 * sp;
+    const z2 = y * sp + z1 * cp;
+    const D = 900;
+    const s = D / (D + z2);
+    return { x: cx + x1 * s, y: cy + y2 * s, s, z: z2 };
+  }
+
+  function place(node, p, base) {
+    if (!node || !node.style) return;
+    const size = base || Number(node.dataset.size) || node.offsetWidth || 46;
+    // depth scale times the scene scale: a phone-width scene shrinks its beads with it
+    const k = Math.max(0.55, Math.min(1.25, p.s)) * (scene.k || 1);
+    node.style.transform = `translate(${(p.x - size / 2).toFixed(1)}px, ${(p.y - size / 2).toFixed(1)}px) scale(${k.toFixed(3)})`;
+    node.style.zIndex = String(1000 - Math.round(p.z));
+    node.style.opacity = String(Math.max(0.5, Math.min(1, 0.8 + (1 - p.s) * -2.2 + 0.2)));
+  }
+
+  function tokenColor(name, fallback) {
+    try {
+      const probe = document.createElement("span");
+      probe.style.color = `var(${name})`;
+      document.body.appendChild(probe);
+      const c = W.getComputedStyle(probe).color;
+      document.body.removeChild(probe);
+      return c || fallback;
+    } catch { return fallback; }
+  }
+
+  function draw(dt) {
+    const stage = $("stage");
+    const w = (stage && stage.clientWidth) || 640;
+    const h = (stage && stage.clientHeight) || 420;
+    // the dock is a side panel on a wide window and a bottom sheet on a narrow one;
+    // the scene re-centres in whatever space it leaves
+    const side = Boolean(selected) && w >= 760;
+    const dock = $("dock");
+    const dockH = selected && !side ? (dock && dock.offsetHeight) || 0 : 0;
+    const sw = side ? w - 372 : w;
+    const sh = Math.max(120, h - dockH);
+    const cx = sw / 2;
+    const cy = sh / 2 + 8;
+    // the outer ring's vertical half-extent is ~0.4 R, plus ~36 px of labels
+    const R = Math.max(60, Math.min(sw * 0.44, (sh / 2 - 36) / 0.4));
+    const r1 = R * 0.46;
+    const r2 = R * 0.92;
+    scene.k = Math.max(0.6, Math.min(1, R / 240));
+    const spin = !reduceMotion && !scene.paused && !scene.hover && !scene.drag;
+    if (spin) scene.yaw += dt * 0.00007;
+    scene.t += reduceMotion ? 0 : dt;
+
+    const core = project(0, 0, 0, cx, cy);
+    place($("bead-host"), core, 78);
+    const pos = {};
+    for (const [id, a] of CLUSTERS) {
+      const p = project(Math.cos(a) * r1, 0, Math.sin(a) * r1, cx, cy);
+      pos[id] = p;
+      place($(id), p);
+    }
+    // doors: outer ring, alternating a little above/below the plane
+    const box = $("surfaces");
+    // Array.from: the real DOM hands back an HTMLCollection, which has no .filter
+    const doorBeads = Array.from(box.children || []).filter((c) => c.dataset && c.dataset.bead);
+    const doorPos = doorBeads.map((d, i) => {
+      const a = (i / Math.max(1, doorBeads.length)) * Math.PI * 2 + 0.35;
+      const p = project(Math.cos(a) * r2, (i % 2 ? -1 : 1) * R * 0.06, Math.sin(a) * r2, cx, cy);
+      place(d, p, 26);
+      return p;
+    });
+    // VRAM holders: a small tilted orbit around the GPU bead
+    const orbit = $("orbit");
+    const holders = Array.from((orbit && orbit.children) || []);
+    const g = pos["bead-gpu"];
+    const hr = Math.max(34, R * 0.17);
+    holders.forEach((hd, i) => {
+      const a = (i / Math.max(1, holders.length)) * Math.PI * 2 + scene.t * 0.0004;
+      const gib = Number(hd.dataset.gib) || 0;
+      const size = 10 + Math.round(14 * Math.min(1, gib / 12));
+      if (hd.style) { hd.style.width = `${size}px`; hd.style.height = `${size}px`; }
+      const p = { x: g.x + Math.cos(a) * hr * g.s, y: g.y + Math.sin(a) * hr * 0.45 * g.s, s: g.s, z: g.z + Math.sin(a) * 20 };
+      place(hd, p, size);
+    });
+
+    // canvas: orbits, spokes, and the fleet's unit dust
+    const canvas = $("sky");
+    const ctx = canvas && canvas.getContext ? canvas.getContext("2d") : null;
+    if (!ctx) return;
+    const dpr = W.devicePixelRatio || 1;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    if (!scene.colors) {
+      scene.colors = {
+        line: tokenColor("--line", "gray"), brand: tokenColor("--brand", "teal"),
+        up: tokenColor("--up", "green"), quiet: tokenColor("--quiet", "orange"), down: tokenColor("--down", "red"),
+        unknown: tokenColor("--unknown", "gray"),
+      };
+    }
+    const C = scene.colors;
+    const ring = (r, y, color, alpha) => {
+      ctx.beginPath();
+      for (let i = 0; i <= 96; i++) {
+        const a = (i / 96) * Math.PI * 2;
+        const p = project(Math.cos(a) * r, y, Math.sin(a) * r, cx, cy);
+        if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+      }
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    };
+    ring(r1, 0, C.brand, 0.35);
+    ring(r2, 0, C.line, 0.6);
+    for (const id of Object.keys(pos)) {
+      const p = pos[id];
+      ctx.beginPath(); ctx.moveTo(core.x, core.y); ctx.lineTo(p.x, p.y);
+      ctx.globalAlpha = 0.25; ctx.strokeStyle = C.brand; ctx.stroke(); ctx.globalAlpha = 1;
+    }
+    doorPos.forEach((p, i) => {
+      const up = doorBeads[i].dataset.up === "1";
+      ctx.beginPath(); ctx.moveTo(core.x, core.y); ctx.lineTo(p.x, p.y);
+      ctx.setLineDash([2, 5]);
+      ctx.globalAlpha = 0.35; ctx.strokeStyle = up ? C.up : C.down; ctx.stroke();
+      ctx.setLineDash([]); ctx.globalAlpha = 1;
+    });
+    // unit dust: one mote per ~N units around the fleet bead, running vs masked
+    const st = lastStatus;
+    const src = st && st.cannotJudge && st.stale ? st.stale.verdict : st;
+    const fl = (src && src.fleet) || {};
+    const units = fl.units || fl.running || 0;
+    if (units > 0) {
+      const motes = Math.min(64, units);
+      const per = units / motes;
+      const runningMotes = Math.round((fl.running || 0) / per);
+      const f = pos["bead-fleet"];
+      const fr = Math.max(30, R * 0.15);
+      for (let i = 0; i < motes; i++) {
+        const a = (i / motes) * Math.PI * 2 + scene.t * 0.00025;
+        const wob = 1 + 0.18 * Math.sin(i * 2.3);
+        const x = f.x + Math.cos(a) * fr * wob * f.s;
+        const y = f.y + Math.sin(a) * fr * 0.42 * wob * f.s;
+        ctx.beginPath();
+        ctx.arc(x, y, 1.6 * f.s, 0, Math.PI * 2);
+        ctx.fillStyle = i < runningMotes ? C.up : C.quiet;
+        ctx.globalAlpha = Math.sin(a) > 0 ? 0.9 : 0.45;
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function frame(now) {
+    const dt = scene.last ? Math.min(64, now - scene.last) : 16;
+    scene.last = now;
+    draw(dt);
+    raf(frame);
+  }
+  if (raf) { scene.loop = true; raf(frame); } else { draw(0); }
+
+  // drag to turn; pointer over the stage pauses the drift so beads hold still to click
+  const stage = $("stage");
+  if (stage) {
+    stage.addEventListener("pointerenter", () => { scene.hover = true; });
+    stage.addEventListener("pointerleave", () => { scene.hover = false; scene.drag = null; });
+    stage.addEventListener("pointerdown", (e) => {
+      if (e.target !== stage && e.target !== $("sky")) return;
+      scene.drag = { x: e.clientX, y: e.clientY, yaw: scene.yaw, pitch: scene.pitch };
+    });
+    stage.addEventListener("pointermove", (e) => {
+      if (!scene.drag) return;
+      scene.yaw = scene.drag.yaw + (e.clientX - scene.drag.x) * 0.008;
+      scene.pitch = Math.max(0.12, Math.min(1.1, scene.drag.pitch + (e.clientY - scene.drag.y) * 0.005));
+      if (!raf) draw(0);
+    });
+    stage.addEventListener("pointerup", () => { scene.drag = null; });
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (selected) { closeDock(); return; }
+      window.fleet.close();
+      return;
+    }
+    // arrow keys step between beads (Tab works too); turn the scene to keep up
+    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+      const list = allBeads();
+      const at = list.indexOf(document.activeElement);
+      if (at < 0) return;
+      const step = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
+      const next = list[(at + step + list.length) % list.length];
+      if (next && next.focus) { next.focus(); e.preventDefault && e.preventDefault(); }
+    }
+  });
+
+  // for the page test (node --test): the dock's map, read-only
+  W.fleetPane = Object.freeze({ select, closeDock, verbsFor: (k) => VERB_BUTTONS.filter((b) => b.dataset.bead === k).map((b) => b.dataset.action || b.id) });
+
   void refresh(true);
   setInterval(() => { if (!busy) void refresh(true); }, 30_000);
 })();

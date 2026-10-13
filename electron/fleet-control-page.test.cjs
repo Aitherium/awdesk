@@ -25,6 +25,13 @@ const vm = require("node:vm");
 
 const HTML = fs.readFileSync(path.join(__dirname, "fleet-control.html"), "utf8");
 
+/** Every <button> carrying data-bead in the html: { id, action, bead }. */
+const VERBS = [...HTML.matchAll(/<button id="([^"]+)"[^>]*?data-bead="([^"]+)"[^>]*>/g)].map((m) => ({
+  id: m[1], bead: m[2], action: (/data-action="([^"]+)"/.exec(m[0]) || [])[1] || null,
+}));
+
+const focused = { el: null };
+
 class Element {
   constructor(tag) {
     this.tagName = String(tag).toUpperCase();
@@ -38,8 +45,14 @@ class Element {
     this.scrollTop = 0;
     this.listeners = {};
     this._text = "";
+    this.hidden = false;
+    this.attrs = {};
+    this.style = { setProperty(k, v) { this[k] = v; } };
     this.classList = classListOf(this);
   }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  getAttribute(k) { return this.attrs[k] ?? null; }
+  focus() { focused.el = this; }
   get childElementCount() { return this.children.length; }
   get firstChild() { return this.children[0] ?? null; }
   get lastChild() { return this.children[this.children.length - 1] ?? null; }
@@ -80,42 +93,58 @@ function byId(id, tag = "div") { const e = new Element(tag); e.id = id; return e
 /** Load the page's script over a fresh paper document with a controllable `window.fleet`. */
 function mount({ status } = {}) {
   const ids = {};
-  for (const id of ["log", "pill", "s-running", "s-masked", "s-vram", "s-hold", "holders", "surfaces", "hint"]) {
+  for (const id of ["log", "pill", "s-running", "s-masked", "s-vram", "s-hold", "holders", "surfaces", "hint",
+    "hud", "statusline", "stage", "sky", "orbit", "dock", "dock-title", "dock-close", "fleet-detail", "arc-detail",
+    "host", "host-line", "door-detail", "b-help", "cli-hints"]) {
     ids[id] = byId(id);
   }
   ids.pill.dataset.state = "UNKNOWN";
   ids.pill.textContent = "…";
+  ids.dock.hidden = true;
   for (const box of ["holders", "surfaces"]) ids[box].appendChild(new Element("div")); // the .k caption
-  const actions = [];
-  for (const [id, action] of [["b-down", "fleet-sleep"], ["b-up", "fleet-wake"], ["b-gaming", "gpu-sleep"], ["b-resume", "gpu-wake"]]) {
+  for (const [id, bead] of [["bead-host", "host"], ["bead-fleet", "fleet"], ["bead-gpu", "gpu"], ["bead-arc", "arc"]]) {
     const b = byId(id, "button");
-    b.dataset.action = action;
-    const d = new Element("span"); d.className = "d"; d.textContent = `desc ${action}`;
-    b.appendChild(d);
+    b.dataset.bead = bead;
+    const bv = new Element("span"); bv.className = "bv"; b.appendChild(bv);
     ids[id] = b;
-    actions.push(b);
+  }
+  // Every verb button the html declares, with its bead -- parsed, not retyped here.
+  const actions = [];
+  for (const v of VERBS) {
+    const b = byId(v.id, "button");
+    if (v.action) b.dataset.action = v.action;
+    b.dataset.bead = v.bead;
+    const d = new Element("span"); d.className = "d"; d.textContent = `desc ${v.action || v.id}`;
+    b.appendChild(d);
+    ids[v.id] = b;
+    if (v.action) actions.push(b);
   }
   ids["b-refresh"] = byId("b-refresh", "button");
-  ids["b-adopt"] = byId("b-adopt", "button");
 
   const calls = [];
+  const runs = [];
+  const opened = [];
+  const keydown = [];
   const fleet = {
     status: (opts) => { calls.push(opts); return status ? status(opts) : Promise.resolve(null); },
-    run: () => Promise.resolve({ ok: true }),
+    doors: () => Promise.resolve([]),
+    run: (a) => { runs.push(a); return Promise.resolve({ ok: true }); },
     onProgress: () => () => {},
     close: () => {},
-    open: () => {},
+    open: (u) => { opened.push(u); },
   };
   const document = {
     getElementById: (id) => ids[id] ?? null,
     querySelectorAll: (sel) => (sel === "button[data-action]" ? actions : []),
     createElement: (tag) => new Element(tag),
-    addEventListener: () => {},
+    addEventListener: (type, fn) => { if (type === "keydown") keydown.push(fn); },
+    get activeElement() { return focused.el; },
   };
   const intervals = [];
+  const win = { fleet };
   const sandbox = {
     document,
-    window: { fleet },
+    window: win,
     setInterval: (fn, ms) => { intervals.push({ fn, ms }); return 1; },
     setTimeout,
     clearTimeout,
@@ -125,7 +154,8 @@ function mount({ status } = {}) {
   assert.ok(script, "fleet-control.html has one inline script");
   vm.runInNewContext(script[1], vm.createContext(sandbox), { filename: "fleet-control.html" });
   const text = (id) => ids[id].textContent;
-  return { ids, calls, intervals, text, pill: ids.pill, logLines: () => ids.log.children.map((c) => c.textContent) };
+  return { ids, calls, intervals, text, runs, opened, keydown, pill: ids.pill,
+    logLines: () => ids.log.children.map((c) => c.textContent) };
 }
 
 const GOOD = () => ({
@@ -254,4 +284,133 @@ test("a later refresh keeps the last numbers up and says refreshing… in the hi
   await tick(); await tick();
   assert.equal(page.text("s-running"), "140");
   assert.equal(page.text("hint"), "auto-refresh every 30 s");
+});
+
+// ── bead-space (owner, 2026-10-13): one spatial view, verbs by context ──────
+
+/** The fifteen actions the list layout carried. None may be lost or doubled. */
+const ORIGINAL_ACTIONS = ["fleet-sleep", "fleet-wake", "gpu-sleep", "gpu-wake", "fleet-critical",
+  "arc-now", "arc-start", "arc-status", "arc-stop",
+  "host-status", "host-start", "host-restart", "host-stop", "host-reattach", "host-migrate-dryrun"];
+
+test("every original action is reachable exactly once, from the bead that owns it", () => {
+  const withAction = VERBS.filter((v) => v.action);
+  const counted = {};
+  for (const v of withAction) counted[v.action] = (counted[v.action] || 0) + 1;
+  for (const a of ORIGINAL_ACTIONS) assert.equal(counted[a], 1, `${a} appears ${counted[a] || 0} times`);
+  assert.deepEqual(Object.keys(counted).sort(), [...ORIGINAL_ACTIONS].sort(), "no new action slipped in");
+  const owner = Object.fromEntries(withAction.map((v) => [v.action, v.bead]));
+  // the easy buttons: always visible, never inside a dock
+  assert.equal(owner["fleet-sleep"], "hero");
+  assert.equal(owner["fleet-wake"], "hero");
+  assert.equal(owner["fleet-critical"], "fleet");
+  for (const a of ["gpu-sleep", "gpu-wake"]) assert.equal(owner[a], "gpu", a);
+  for (const a of ORIGINAL_ACTIONS.filter((x) => x.startsWith("arc-"))) assert.equal(owner[a], "arc", a);
+  for (const a of ORIGINAL_ACTIONS.filter((x) => x.startsWith("host-"))) assert.equal(owner[a], "host", a);
+  const adopt = VERBS.find((v) => v.id === "b-adopt");
+  assert.ok(adopt && adopt.bead === "fleet" && !adopt.action, "Adopt lives in the Fleet dock, wired by id");
+  // the page still double-confirms exactly what it did before
+  assert.match(HTML, /DESTRUCTIVE = new Set\(\["down", "gaming", "gpu-sleep", "fleet-sleep", "fleet-critical", "arc-stop",\s*"host-start", "host-stop", "host-restart", "host-reattach"\]\)/);
+});
+
+test("selecting a bead shows only its verbs; the hero buttons never hide", async () => {
+  const page = mount({ status: () => Promise.resolve(GOOD()) });
+  await tick(); await tick();
+  assert.ok(page.ids.dock.hidden, "no dock before a selection");
+  for (const bead of ["host", "fleet", "gpu", "arc"]) {
+    page.ids[`bead-${bead}`].click();
+    assert.equal(page.ids.dock.hidden, false, `${bead} opens the dock`);
+    const shown = VERBS.filter((v) => v.bead !== "hero" && !page.ids[v.id].hidden).map((v) => v.id);
+    const expected = VERBS.filter((v) => v.bead === bead).map((v) => v.id);
+    assert.deepEqual(shown, expected, `${bead} dock`);
+    assert.equal(page.ids[`bead-${bead}`].getAttribute("aria-pressed"), "true");
+    assert.equal(page.ids["b-down"].hidden, false, "Sleep everything stays visible");
+    assert.equal(page.ids["b-up"].hidden, false, "Wake fleet stays visible");
+    assert.ok(VERBS.some((v) => v.bead === bead && focused.el === page.ids[v.id]), `${bead}: focus moves into the dock`);
+  }
+  for (const fn of page.keydown) fn({ key: "Escape" });
+  assert.ok(page.ids.dock.hidden, "Escape closes the dock first");
+  assert.equal(focused.el, page.ids["bead-arc"], "and hands focus back to the bead");
+});
+
+test("dock verbs keep the two-click confirm and run the SAME action", async () => {
+  const page = mount({ status: () => Promise.resolve(GOOD()) });
+  await tick(); await tick();
+  page.ids["bead-gpu"].click();
+  page.ids["b-gaming"].click();
+  assert.equal(page.runs.length, 0, "one click only arms gpu-sleep");
+  assert.ok(page.ids["b-gaming"].classList.contains("confirm"));
+  page.ids["b-gaming"].click();
+  for (let i = 0; i < 6; i++) await tick();
+  assert.deepEqual([...page.runs], ["gpu-sleep"]);
+  // the hero button: one tap + confirm, fleet-sleep exactly
+  page.ids["b-down"].click();
+  assert.equal(page.runs.length, 1, "one tap only arms Sleep everything");
+  page.ids["b-down"].click();
+  for (let i = 0; i < 6; i++) await tick();
+  assert.deepEqual([...page.runs], ["gpu-sleep", "fleet-sleep"]);
+});
+
+test("doors are beads; selecting one offers Open, which opens that door's url", async () => {
+  const page = mount({ status: () => Promise.resolve(GOOD()) });
+  await tick(); await tick();
+  const door = page.ids.surfaces.children.find((c) => c.dataset.bead === "door:0");
+  assert.ok(door, "the Pulse door is a bead");
+  assert.equal(door.dataset.up, "1");
+  door.click();
+  assert.match(page.text("dock-title"), /Pulse/);
+  assert.equal(page.ids["b-open-door"].hidden, false);
+  page.ids["b-open-door"].click();
+  assert.deepEqual([...page.opened], ["https://pulse.example"]);
+});
+
+test("the log says a repeated verdict once, with a count", async () => {
+  const page = mount({ status: () => Promise.resolve({ ok: false, cannotJudge: true, error: "the awnix WSL distro did not answer" }) });
+  await tick(); await tick();
+  for (let i = 0; i < 3; i++) { page.intervals[0].fn(); await tick(); await tick(); }
+  const lines = page.logLines().filter((l) => /CANNOT JUDGE/.test(l));
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.match(lines[0], /\(x4\)$/);
+});
+
+test("lines that differ only in their numbers are the same news (STALE 72 s / 102 s)", async () => {
+  let age = 42_000;
+  const page = mount({
+    status: () => Promise.resolve({ ok: false, cannotJudge: true, error: "podman ps timed out",
+      stale: { age_ms: (age += 30_000), at: 1, reason: "podman ps timed out", verdict: GOOD() } }),
+  });
+  await tick(); await tick();
+  page.intervals[0].fn(); await tick(); await tick();
+  const lines = page.logLines().filter((l) => /STALE/.test(l));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /STALE \(102 s old.*\(x2\)$/);
+});
+
+test("CANNOT JUDGE: one status line replaces the four tiles", async () => {
+  const page = mount({ status: () => Promise.resolve({ ok: false, cannotJudge: true, error: "the awnix WSL distro did not answer. Long tail here." }) });
+  await tick(); await tick();
+  assert.equal(page.ids.hud.hidden, true, "the four '?' tiles are hidden");
+  assert.equal(page.ids.statusline.hidden, false);
+  assert.equal(page.text("statusline"), "CANNOT JUDGE — the awnix WSL distro did not answer.");
+  assert.equal(page.ids["bead-host"].dataset.health, "down", "the core says the host does not answer");
+  const good = mount({ status: () => Promise.resolve(GOOD()) });
+  await tick(); await tick();
+  assert.equal(good.ids.hud.hidden, false, "a verdict brings the tiles back");
+  assert.equal(good.ids.statusline.hidden, true);
+  assert.equal(good.ids["bead-fleet"].dataset.health, "up");
+});
+
+test("the CLI hints sit behind the ? toggle", () => {
+  assert.match(HTML, /<footer id="cli-hints" hidden>/);
+  const page = mount({ status: () => Promise.resolve(GOOD()) });
+  page.ids["cli-hints"].hidden = true; // as the html ships it
+  page.ids["b-help"].click();
+  assert.equal(page.ids["cli-hints"].hidden, false);
+  assert.equal(page.ids["b-help"].getAttribute("aria-expanded"), "true");
+});
+
+test("reduced motion is honoured and nothing pulls a script past the CSP", () => {
+  assert.match(HTML, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(HTML, /matchMedia\("\(prefers-reduced-motion: reduce\)"\)/);
+  assert.doesNotMatch(HTML, /<script src=/, "the CSP admits inline script only");
 });
