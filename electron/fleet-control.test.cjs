@@ -75,6 +75,36 @@ test("parseVerdict: a wsl.exe failure is CANNOT JUDGE in plain words, never a ba
   assert.equal(plain.error, "podman: no such container");
 });
 
+test("parseVerdict: a host-side python killed with -1 is NOT blamed on wsl.exe (2026-10-13)", () => {
+  // gpu-sleep runs `python fleet_verbs.py` on Windows; it was terminated mid-run and the
+  // pane said "the awnix WSL distro did not answer (wsl.exe failed)" -- wsl.exe was fine.
+  const v = parseVerdict("", 4294967295, "", "fleet_verbs.py");
+  assert.equal(v.ok, false);
+  assert.equal(v.cannotJudge, true);
+  assert.equal(v.killed, true);
+  assert.notEqual(v.wslDown, true);
+  assert.match(v.error, /fleet_verbs\.py was terminated/);
+  assert.doesNotMatch(v.error, /wsl\.exe failed|did not answer/);
+  // the real wsl.exe hop keeps its wording, and a python whose stderr names a WSL error too
+  assert.equal(parseVerdict("", 4294967295, "", "wsl.exe").wslDown, true);
+  assert.equal(parseVerdict("", 1, "Wsl/Service/CreateInstance/0x800705b4", "fleet_verbs.py").wslDown, true);
+});
+
+test("FleetControl names the host-side script when a verb's python is killed", async () => {
+  const fake = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => {};
+    setImmediate(() => child.emit("close", 4294967295));
+    return child;
+  };
+  const fc = new FleetControl({ spawnImpl: fake, brainUrl: null });
+  const v = await fc.run("gpu-sleep");
+  assert.equal(v.killed, true);
+  assert.match(v.error, /fleet_verbs\.py was terminated/);
+});
+
 test("parseVerdict: JSON wins, rc 2 is CANNOT_JUDGE never ok, garbage is a refusal", () => {
   const ok = parseVerdict('progress noise\n{"ok": true, "fleet": {"running": 0}}', 0);
   assert.equal(ok.ok, true);

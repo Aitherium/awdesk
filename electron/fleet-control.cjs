@@ -319,7 +319,7 @@ function mergeHostStep(verdict, step) {
  *  stderr). rc 2 = CANNOT_JUDGE (no distro / no podman / no python3) and must
  *  never read as a healthy fleet — a window that says "UP" because the probe
  *  could not run is the exact silence this surface exists to end. */
-function parseVerdict(stdout, code, stderrTail = "") {
+function parseVerdict(stdout, code, stderrTail = "", child = "wsl.exe") {
   const text = String(stdout ?? "");
   // A LIST verb answers with a top-level JSON ARRAY of service rows, not an object.
   // Seeking "{" alone found the first row's brace INSIDE the array, and parsing from
@@ -360,7 +360,23 @@ function parseVerdict(stdout, code, stderrTail = "") {
   // in plain words -- not "exit 4294967295", which is what the owner read on
   // 2026-09-21 while the fleet had been dead for 20 minutes.
   const wslErr = /Wsl\/Service|0x8007[0-9a-f]{4}|Catastrophic failure/i.test(stderrTail);
-  if (code === 4294967295 || code === -1 || wslErr) {
+  const killed = code === 4294967295 || code === -1;
+  // A HOST-side child (python: fleet_verbs.py, fleet_host.py, awmodels) that exits -1 with
+  // no verdict was TERMINATED from outside (TerminateProcess(-1) = .NET Process.Kill /
+  // Stop-Process) -- python never exits -1 by itself and catches its own wsl.exe failures
+  // into a JSON verdict. Measured 2026-10-13: `gpu-sleep` read "the awnix WSL distro did not
+  // answer (wsl.exe failed)" while wsl.exe from the same desk answered in 11 s; the child
+  // was python, killed mid `awmodels use gaming` (which itself logged rc 4294967295).
+  if (killed && !wslErr && !/^wsl(\.exe)?$/i.test(String(child))) {
+    return {
+      ok: false,
+      cannotJudge: true,
+      killed: true,
+      error: `the host-side ${String(child)} was terminated (exit -1) before it printed a verdict`
+        + " -- killed from outside, not a WSL failure; the step it was on may be half-done, run Status",
+    };
+  }
+  if (killed || wslErr) {
     return {
       ok: false,
       cannotJudge: true,
@@ -567,7 +583,9 @@ class FleetControl extends EventEmitter {
             stderrTail = (stderrTail + "\n" + stderrBuf).slice(-2000);
             this.emit("progress", { action, line: stderrBuf.trim(), phase: "run" });
           }
-          const verdict = parseVerdict(stdout, code ?? 1, stderrTail);
+          const child = cmd.file === "wsl.exe" ? cmd.file
+            : String(cmd.args[0] || cmd.file).split(/[\\/]/).pop();
+          const verdict = parseVerdict(stdout, code ?? 1, stderrTail, child);
           if (action === "status" && verdict.cannotJudge && retriesLeft > 0) {
             this.emit("progress", {
               action,

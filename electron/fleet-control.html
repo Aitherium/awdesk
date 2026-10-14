@@ -177,7 +177,7 @@
   <div class="hero" id="hero">
     <button id="b-down" class="down" data-action="fleet-sleep" data-bead="hero">
       <span class="t">Sleep everything (game)</span>
-      <span class="d">Fleet sleep: stop + mask every aither unit and container, recorded. Customer-facing set stays up.</span>
+      <span class="d">Fleet sleep: EVERYTHING stops, customer-facing sites included, recorded and held; then the awnix VM shuts off so the PC gets its RAM, CPU and GPU back.</span>
     </button>
     <button id="b-up" class="up" data-action="fleet-wake" data-bead="hero">
       <span class="t">Wake fleet</span>
@@ -554,6 +554,20 @@
     if (hostVerdict && hostVerdict.verdict) hostHealth = hostVerdict.verdict === "HEALTHY" ? "up" : "quiet";
     const hostValue = !st ? emptyState() : st.cannotJudge && !stale ? "not answering" : stale ? "slow" : (hostVerdict && hostVerdict.verdict) || "answering";
     paintBead("bead-host", hostHealth, hostValue, `awnix host: ${hostValue}`);
+    // Until Host status runs, the dock line says what the fleet probe ALREADY proved
+    // (distro answered, systemd state, containers) -- "not probed yet" beside a pane
+    // showing 69 running read as broken (owner, 2026-10-13).
+    if (!hostVerdict) {
+      const hl = $("host-line");
+      if (hl && src && !(st && st.cannotJudge && !stale)) {
+        const bits = ["distro answers"];
+        if (src.systemd) bits.push(`systemd ${src.systemd}`);
+        if (fl.running != null) bits.push(`${fl.running} containers`);
+        hl.textContent = `${bits.join(" · ")} -- Host status for the full probe (disk, tiers, keepers)`;
+      } else if (hl && st && st.cannotJudge && !stale) {
+        hl.textContent = "the distro did not answer -- Host status says why";
+      }
+    }
     // fleet cluster
     const running = fl.running;
     const masked = fl.masked ?? 0;

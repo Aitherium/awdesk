@@ -414,3 +414,17 @@ test("reduced motion is honoured and nothing pulls a script past the CSP", () =>
   assert.match(HTML, /matchMedia\("\(prefers-reduced-motion: reduce\)"\)/);
   assert.doesNotMatch(HTML, /<script src=/, "the CSP admits inline script only");
 });
+
+test("the host line says what the fleet probe proved, not 'not probed yet' (2026-10-13)", async () => {
+  const st = GOOD(); st.systemd = "degraded";
+  const page = mount({ status: () => Promise.resolve(st) });
+  await tick(); await tick();
+  assert.match(page.text("host-line"), /distro answers · systemd degraded · 145 containers/);
+  assert.doesNotMatch(page.text("host-line"), /not probed yet/);
+});
+
+test("the Sleep button no longer promises the customer-facing set stays up", () => {
+  // fleet sleep = sleep EVERYTHING, customer sites included (owner-approved, #12771)
+  assert.doesNotMatch(HTML, /Customer-facing set stays up/);
+  assert.match(HTML, /customer-facing sites included/);
+});
