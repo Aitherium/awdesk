@@ -746,3 +746,26 @@ test("awconnect: page events accept http(s) only and react refuses file clips", 
   assert.equal(normalizeEvent({ type: "react", animation: "FILE:evil.vrma" }), null);
   assert.equal(normalizeEvent({ type: "react", emotion: "__proto__" }), null);
 });
+
+test("/speak: a POLICY refusal (voice.muted) answers 409 with the reason; a dead voice service stays 502", async (context) => {
+  // Measured 2026-10-14: the escalation ladder logged "desk did not speak (HTTP
+  // 502)" for cards while the owner had muted the desk voice on purpose. A
+  // muted desk is a decision, not an outage, and must not read as one.
+  const verdicts = [
+    { ok: false, refused: "policy", reason: "voice.muted (master mute)", captioned: true },
+    { ok: false, reason: "voice service unavailable", captioned: true },
+  ];
+  const bridge = createBridgeServer({
+    host: "127.0.0.1",
+    port: 0,
+    bridgeToken: "test-token",
+    speakHandler: async () => verdicts.shift(),
+  });
+  context.after(() => bridge.close());
+  const address = await bridge.listen();
+  const muted = await postJson(address, "/speak", PINNED_EXT, { text: "a card is waiting" });
+  assert.equal(muted.status, 409);
+  assert.match(JSON.parse(muted.body).reason, /voice\.muted/);
+  const down = await postJson(address, "/speak", PINNED_EXT, { text: "a card is waiting" });
+  assert.equal(down.status, 502);
+});

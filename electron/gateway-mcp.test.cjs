@@ -227,3 +227,151 @@ test("callTool: concurrent calls run one at a time on the shared session (never 
   await assert.rejects(client.callTool("x", {}));
   await assert.rejects(client.callTool("y", {}));
 });
+
+// ── off the fleet PC: the cloud door ────────────────────────────────────────
+
+/** A loopback port nothing listens on: connecting is refused at once. */
+async function refusedUrl() {
+  const s = http.createServer();
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  const port = s.address().port;
+  await done(s);
+  return `http://127.0.0.1:${port}`;
+}
+
+function loadWithCloud(primary, cloud, bearerText = "tok") {
+  process.env.AWDESK_CLOUD_GATEWAY_URL = cloud;
+  try {
+    return loadClient(primary, bearerText);
+  } finally {
+    delete process.env.AWDESK_CLOUD_GATEWAY_URL;
+  }
+}
+
+function toolGateway(label) {
+  return fakeGateway((rpc) => {
+    if (rpc.method === "initialize") return { sessionId: `sess-${label}`, reply: { result: {} } };
+    if (rpc.method === "notifications/initialized") return { reply: { result: {} } };
+    return { reply: { result: { content: [{ type: "text", text: `${label}:${rpc.params.name}` }] } } };
+  });
+}
+
+test("cloud door: a REFUSED loopback socket moves the call to the cloud gateway, with the same bearer", async () => {
+  const cloud = await toolGateway("cloud");
+  try {
+    const client = loadWithCloud(await refusedUrl(), cloud.url, "tok-laptop");
+    assert.equal(await client.callTool("decisions_count", {}), "cloud:decisions_count");
+    assert.equal(client.gatewayStatus().remote, true, "the desk says it is on the cloud door");
+    assert.equal(cloud.seen[0].headers.authorization, "Bearer tok-laptop");
+    assert.equal(cloud.seen[0].headers["mcp-session-id"], undefined, "a fresh session on the new door");
+    // The next call stays on the cloud door (no second refused probe per call).
+    assert.equal(await client.callTool("time_now", {}), "cloud:time_now");
+    assert.equal(cloud.seen.filter((r) => r.rpc.method === "initialize").length, 1);
+  } finally {
+    await done(cloud.server);
+  }
+});
+
+test("cloud door: an HTTP verdict from loopback is the gateway's answer and is NOT routed around", async () => {
+  const cloud = await toolGateway("cloud");
+  const local = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.statusCode = 401;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: "invalid bearer" }));
+    });
+  });
+  await new Promise((r) => local.listen(0, "127.0.0.1", r));
+  try {
+    const client = loadWithCloud(`http://127.0.0.1:${local.address().port}`, cloud.url);
+    await assert.rejects(client.callTool("time_now", {}), /HTTP 401: invalid bearer/);
+    assert.equal(cloud.seen.length, 0, "a 401 is not an outage; the cloud door is never tried");
+    assert.equal(client.gatewayStatus().remote, false);
+  } finally {
+    await done(local);
+    await done(cloud.server);
+  }
+});
+
+test("cloud door: AWDESK_CLOUD_GATEWAY_URL=off and an explicit gateway with no cloud both mean no fallback", async () => {
+  const client = loadWithCloud(await refusedUrl(), "off");
+  await assert.rejects(client.callTool("time_now", {}), /ECONNREFUSED/);
+  assert.equal(client.resolveCloudGatewayUrl({}, ""), "https://mcp.aitherium.com", "the default install has the cloud door");
+  assert.equal(client.resolveCloudGatewayUrl({}, "http://127.0.0.1:9"), "", "an explicit primary turns it off");
+  assert.equal(client.resolveCloudGatewayUrl({ AWDESK_CLOUD_GATEWAY_URL: "https://mcp.example.test/" }, "x"), "https://mcp.example.test");
+  assert.equal(client.resolveCloudGatewayUrl({ AWDESK_CLOUD_GATEWAY_URL: "ftp://nope" }, ""), "", "only http(s)");
+});
+
+/** A loopback gateway that answers initialize, then on tools/call either hangs
+ *  (never answers) or resets the socket after reading the body. */
+async function stallingLoopback(mode) {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      const rpc = JSON.parse(body);
+      if (rpc.method === "tools/call") {
+        calls.push(rpc.params.name);
+        if (mode === "reset") req.socket.destroy();
+        return; // "hang": the tool is "running"; no answer ever comes
+      }
+      res.setHeader("Content-Type", "application/json");
+      if (rpc.method === "initialize") res.setHeader("Mcp-Session-Id", "sess-loop");
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result: {} }));
+    });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  return { calls, server, url: `http://127.0.0.1:${server.address().port}` };
+}
+
+for (const mode of ["hang", "reset"]) {
+  test(`cloud door: a tools/call that reached loopback and then ${mode === "hang" ? "timed out" : "was reset"} is NOT replayed on the cloud door`, async () => {
+    // Review finding on #12845: ops_run silent > 15 s on the fleet PC timed out
+    // on loopback and was replayed through mcp.aitherium.com -> the same fleet
+    // ran the op twice. A delivered request must be reported, never replayed.
+    const cloud = await toolGateway("cloud");
+    const local = await stallingLoopback(mode);
+    process.env.AWDESK_GATEWAY_TIMEOUT_MS = "300";
+    try {
+      const client = loadWithCloud(local.url, cloud.url);
+      await assert.rejects(client.callTool("ops_run", { op: "backup" }), mode === "hang" ? /gateway timeout/ : /socket hang up|ECONNRESET/);
+      assert.deepEqual(local.calls, ["ops_run"], "the tool reached loopback once");
+      assert.equal(cloud.seen.filter((r) => r.rpc.method === "tools/call").length, 0, "the cloud door never receives the tools/call");
+      assert.equal(client.gatewayStatus().remote, false, "the desk stays on loopback");
+    } finally {
+      delete process.env.AWDESK_GATEWAY_TIMEOUT_MS;
+      await done(local.server);
+      await done(cloud.server);
+    }
+  });
+}
+
+test("canFailOver: only never-connected errors, or socket failures before any tools/call", () => {
+  const client = loadClient("http://127.0.0.1:9", "t");
+  const err = (props, msg = "x") => Object.assign(new Error(msg), props);
+  assert.equal(client.canFailOver(err({ transport: true, code: "ECONNREFUSED" })), true);
+  assert.equal(client.canFailOver(err({ delivered: true }, "gateway timeout")), false, "timeout after connect");
+  assert.equal(client.canFailOver(err({ delivered: true, code: "ECONNRESET" })), false, "reset after connect");
+  assert.equal(client.canFailOver(err({ delivered: true, beforeToolCall: true }, "gateway timeout")), true, "initialize timed out: no tool ran");
+  assert.equal(client.canFailOver(err({ status: 503, beforeToolCall: true })), false, "an HTTP verdict is never routed around");
+  assert.equal(client.canFailOver(err({ code: "ECONNRESET" })), false, "untagged reset is not proof of non-delivery");
+  assert.equal(client.canFailOver(err({}, "gateway timeout")), false, "untagged timeout is not proof of non-delivery");
+});
+
+test("primaryReachable: any HTTP answer is reachable, a refused socket is not", async () => {
+  const health = http.createServer((req, res) => {
+    res.statusCode = 503; // even a sick gateway is THERE: the cloud door is for a missing one
+    res.end("{}");
+  });
+  await new Promise((r) => health.listen(0, "127.0.0.1", r));
+  try {
+    const up = loadClient(`http://127.0.0.1:${health.address().port}`, "t");
+    assert.equal(await up.primaryReachable(), true);
+  } finally {
+    await done(health);
+  }
+  const down = loadClient(await refusedUrl(), "t");
+  assert.equal(await down.primaryReachable(), false);
+});

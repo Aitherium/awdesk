@@ -16,6 +16,16 @@
  * store and re-implementing it in JS would be a rival store that drifts
  * (the DCS001 class). Desk opens the queue window (`awask window`) and the
  * owner answers there — one implementation, every surface.
+ *
+ * OFF THE FLEET PC (2026-10-14). A second laptop has no store directory and no
+ * loopback gateway, so its decisions pane was empty while 90 cards waited on
+ * the PC. When the loopback gateway does not answer (and a cloud gateway and a
+ * session bearer exist), the watcher reads the SAME store through the gateway's
+ * `decisions_list` and the write verbs go through `decisions_answer` /
+ * `decisions_cancel` -- the daemon's own write path, so this is still not a
+ * rival store. AWDESK_DECISIONS_SOURCE=local|gateway pins either side; the
+ * default `auto` decides per poll and falls back to the local store when the
+ * gateway read fails.
  */
 
 const fs = require("node:fs");
@@ -361,6 +371,7 @@ function openCardWindow(id) {
 function answerCard(id, choice, note = "", spawnFn = spawn) {
   if (typeof id !== "string" || id.length === 0) return false;
   if (typeof choice !== "string" || choice.length === 0) return false;
+  if (lastSource === "gateway") return answerRemote(id, choice, note);
   const args = ["answer", id, choice, "--via", "desk"];
   if (note) args.push("--note", String(note).slice(0, 2000));
   return runAwask(args, spawnFn);
@@ -373,6 +384,7 @@ function answerCard(id, choice, note = "", spawnFn = spawn) {
  */
 function cancelCard(id, note = "", spawnFn = spawn) {
   if (typeof id !== "string" || id.length === 0) return false;
+  if (lastSource === "gateway") return remoteWrite("decisions_cancel", { decision_id: id, note: String(note || "").slice(0, 500) });
   const args = ["cancel", id, "--note", String(note || "").slice(0, 2000)];
   return runAwask(args, spawnFn);
 }
@@ -390,9 +402,133 @@ function steerCard(id, text, spawnFn = spawn) {
   if (typeof id !== "string" || id.length === 0) return false;
   const body = String(text || "").trim();
   if (!body) return false;
+  // The gateway has no steer verb: steering writes the raising session's local
+  // mailbox, which only the PC can reach. Say no rather than pretend.
+  if (lastSource === "gateway") {
+    lastRemoteError = "steer needs the fleet PC (the gateway has no steer verb)";
+    return false;
+  }
   // `awask steer <id> <text...>` -- the text is positional and variadic; pass it
   // as ONE argv element so a sentence is not re-split into flags.
   return runAwask(["steer", id, body.slice(0, 2000), "--via", "desk"], spawnFn);
+}
+
+// ── off-PC: the same store through the gateway (see the module header) ─────
+
+/** How often a gateway-backed watcher re-reads: no fs.watch event exists for a
+ *  card raised on another machine, so this is the only freshness it has. */
+const REMOTE_POLL_MS = 15_000;
+// decisions_list defaults to 50; the PC queue has held 90+ open cards.
+const REMOTE_LIST_LIMIT = 500;
+
+let gatewayImpl = null; // test injection; null = gateway-mcp.cjs
+function gateway() {
+  return gatewayImpl || require("./gateway-mcp.cjs");
+}
+
+// Which side the watcher last read: "local" (the store directory) or "gateway".
+// The write verbs follow it, so a card is answered where it was read.
+let lastSource = "local";
+let lastRemoteError = "";
+// id -> the raw card the gateway returned, for callers that need more than the
+// shaped card (the signed-approval route reads `kind`/facts off the raw card).
+const remoteRaw = new Map();
+
+function sourceSetting(env = process.env) {
+  const v = String(env.AWDESK_DECISIONS_SOURCE || "auto").trim().toLowerCase();
+  return v === "local" || v === "gateway" ? v : "auto";
+}
+
+/** Should this poll read through the gateway? Never throws; any doubt is local. */
+async function useRemote() {
+  const setting = sourceSetting();
+  if (setting === "local") return false;
+  if (setting === "gateway") return true;
+  try {
+    const g = gateway();
+    if (!g.gatewayStatus().cloud || !g.bearer()) return false;
+    return !(await g.primaryReachable());
+  } catch {
+    return false;
+  }
+}
+
+/** Open cards via `decisions_list`. Throws on anything that is not a card list
+ *  (a refusal, a Genesis error), so the caller falls back instead of showing
+ *  an empty queue that is really an outage. */
+async function scanRemote() {
+  const g = gateway();
+  const text = await g.callTool("decisions_list", { status: "open", limit: REMOTE_LIST_LIMIT });
+  const parsed = g.parseMaybeJson(text);
+  if (parsed && !Array.isArray(parsed) && parsed.error) {
+    throw new Error(`decisions_list: ${g.errorText(parsed.error)}`);
+  }
+  const rows = Array.isArray(parsed) ? parsed : parsed && Array.isArray(parsed.decisions) ? parsed.decisions : null;
+  if (!rows) throw new Error("decisions_list: not a card list");
+  const cards = [];
+  const raws = new Map();
+  for (const raw of rows) {
+    const card = cardFromRaw(raw);
+    if (!card) continue;
+    cards.push(card);
+    raws.set(card.id, raw);
+  }
+  remoteRaw.clear();
+  for (const [id, raw] of raws) remoteRaw.set(id, raw);
+  cards.sort((a, b) => a.createdAt - b.createdAt);
+  const ids = cards.map((c) => c.id).sort().join(",");
+  return { signature: `gateway:${cards.length}:${ids}`, cards };
+}
+
+/** The raw card the gateway last returned for `id`, or null (local mode). */
+function rawCard(id) {
+  return lastSource === "gateway" ? remoteRaw.get(id) || null : null;
+}
+
+/** Where the watcher is reading and why the last gateway step failed. */
+function sourceStatus() {
+  return { source: lastSource, setting: sourceSetting(), lastRemoteError };
+}
+
+let remoteWriteHook = null; // the watcher's "re-read now", set while it runs
+
+/** Fire one gateway write. Same contract as runAwask: true = sent (the store
+ *  decides; the next read shows the effect), false = refused before sending. */
+function remoteWrite(tool, args) {
+  try {
+    void gateway().callTool(tool, args)
+      .then((text) => {
+        const parsed = gateway().parseMaybeJson(text);
+        lastRemoteError = parsed && parsed.error ? `${tool}: ${gateway().errorText(parsed.error)}` : "";
+      })
+      .catch((error) => {
+        lastRemoteError = `${tool}: ${String((error && error.message) || error).slice(0, 200)}`;
+      })
+      .finally(() => {
+        if (remoteWriteHook) remoteWriteHook();
+      });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function answerRemote(id, choice, note) {
+  // A destructive card is approved only by a SIGNED answer (signed-approval.cjs).
+  // decisions_answer is unsigned, so it may carry a decline but never an approve:
+  // main routes those to the approval window using rawCard().
+  try {
+    const { answerRoute } = require("./signed-approval.cjs");
+    if (answerRoute(remoteRaw.get(id) || null, choice) === "window") {
+      lastRemoteError = `${id}: a signed approval cannot go through decisions_answer`;
+      return false;
+    }
+  } catch {
+    return false; // cannot judge the card: refuse rather than answer unsigned
+  }
+  const args = { decision_id: id, choice, via: "desk" };
+  if (note) args.note = String(note).slice(0, 1000);
+  return remoteWrite("decisions_answer", args);
 }
 
 /**
@@ -479,17 +615,66 @@ const WATCH_FALLBACK_MS = 30_000;
  * never fires onChange (the signature diff). Injectable pieces for tests.
  * Returns a stop function that closes both mechanisms.
  */
-function watch({ intervalMs = WATCH_FALLBACK_MS, onChange, dir = storeDir(), setIntervalFn = setInterval, clearIntervalFn = clearInterval, scanFn = scanAsync, watchFn = fs.watch, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout } = {}) {
+function watch({
+  intervalMs = WATCH_FALLBACK_MS,
+  onChange,
+  dir = storeDir(),
+  setIntervalFn = setInterval,
+  clearIntervalFn = clearInterval,
+  scanFn = scanAsync,
+  watchFn = fs.watch,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
+  // Off-PC reads apply to the OWNER's store only: a watcher on any other
+  // directory (tests, a scratch store) never reaches for the gateway.
+  useRemoteFn = dir === storeDir() ? useRemote : async () => false,
+  remoteScanFn = scanRemote,
+  remotePollMs = REMOTE_POLL_MS,
+} = {}) {
   if (typeof onChange !== "function") throw new TypeError("watch requires onChange");
   let lastSig = null;
   let running = false;
+  let stopped = false;
+  let remoteTimer = null;
   const cache = new Map();
+  const scheduleRemote = () => {
+    if (stopped || remoteTimer) return;
+    remoteTimer = setTimeoutFn(() => {
+      remoteTimer = null;
+      void poll();
+    }, remotePollMs);
+    if (remoteTimer && typeof remoteTimer.unref === "function") remoteTimer.unref();
+  };
+  const read = async () => {
+    let remote = false;
+    try { remote = await useRemoteFn(); } catch { remote = false; }
+    if (remote) {
+      try {
+        const result = await remoteScanFn();
+        lastSource = "gateway";
+        lastRemoteError = "";
+        return result;
+      } catch (error) {
+        lastRemoteError = String((error && error.message) || error).slice(0, 200);
+      }
+    }
+    const local = await scanFn(dir, cache);
+    // A laptop's store is empty (or absent; the heartbeat creates the directory):
+    // one failed gateway read must not blank a queue the gateway showed a moment
+    // ago. Keep it; the next poll retries. sourceStatus() carries the error.
+    if (remote && local.cards.length === 0 && lastSource === "gateway" && lastOpenCards) {
+      return { signature: lastSig, cards: lastOpenCards };
+    }
+    lastSource = "local";
+    return local;
+  };
   const poll = async () => {
     if (running) return; // a slow disk must not stack scans
     running = true;
     try {
-      const { signature: sig, cards } = await scanFn(dir, cache);
-      if (dir === storeDir()) lastOpenCards = cards;
+      const { signature: sig, cards } = await read();
+      if (lastSource === "gateway") scheduleRemote();
+      if (dir === storeDir() || lastSource === "gateway") lastOpenCards = cards;
       if (sig === lastSig) return;
       lastSig = sig;
       try {
@@ -528,9 +713,15 @@ function watch({ intervalMs = WATCH_FALLBACK_MS, onChange, dir = storeDir(), set
   } catch {
     watcher = null; // no OS watcher here: the interval carries the watch alone
   }
+  // A gateway write re-reads at once, so the answered card leaves the pane
+  // without waiting out REMOTE_POLL_MS.
+  remoteWriteHook = () => { if (!stopped) void poll(); };
   return () => {
+    stopped = true;
+    remoteWriteHook = null;
     clearIntervalFn(handle);
     if (debounce) clearTimeoutFn(debounce);
+    if (remoteTimer) clearTimeoutFn(remoteTimer);
     if (watcher) {
       try { watcher.close(); } catch { /* already gone */ }
       watcher = null;
@@ -594,4 +785,14 @@ module.exports = {
   steerCard,
   watch,
   startHeartbeat,
+  rawCard,
+  scanRemote,
+  sourceStatus,
+  REMOTE_POLL_MS,
+  _setGatewayForTests(g) {
+    gatewayImpl = g || null;
+    lastSource = "local";
+    lastRemoteError = "";
+    remoteRaw.clear();
+  },
 };

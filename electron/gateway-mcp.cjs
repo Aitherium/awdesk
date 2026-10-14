@@ -18,7 +18,23 @@
  *   session exists.
  * - node:http, NOT global fetch: the gateway is plain HTTP and undici's
  *   keep-alive handles die in libuv teardown (UV_HANDLE_CLOSING, exit 127),
- *   which poisoned the standalone self-test.
+ *   which poisoned the standalone self-test. (node:https for the cloud door.)
+ *
+ * OFF THE FLEET PC (2026-10-14). A second laptop has no 127.0.0.1:8182, and
+ * every desk plane that rides this module (decisions, relay, market) showed
+ * empty. The SAME gateway is published at https://mcp.aitherium.com/mcp and
+ * accepts the same ~/.aither/session-bearer, so when the loopback door refuses
+ * the socket (a transport failure -- never an HTTP verdict, which is the
+ * gateway's own answer) the call is retried there and the desk stays on the
+ * cloud door until LOOPBACK_RECHECK_MS passes, then tries loopback again.
+ * A tools/call is replayed ONLY when it provably never reached loopback (the
+ * socket never connected). A timeout or reset after connect may mean the tool
+ * already ran -- ops_run, decisions_answer, relay_send are not idempotent and
+ * the cloud door tunnels to the same fleet -- so that error is reported, never
+ * replayed. A failure inside initialize (no tools/call sent yet) may fail over.
+ * AWDESK_CLOUD_GATEWAY_URL overrides the cloud door ("off" disables it); an
+ * explicit AWDESK_GATEWAY_URL (tests, a box with a non-default gateway) turns
+ * the fallback off unless AWDESK_CLOUD_GATEWAY_URL is set too.
  */
 
 const fs = require("node:fs");
@@ -28,7 +44,30 @@ const path = require("node:path");
 // AWDESK_GATEWAY_URL exists for the test harness (a fake gateway on an
 // ephemeral port) and for a box whose gateway is not on :8182. It is never
 // `localhost` by default -- see the trap above.
-const GATEWAY_URL = String(process.env.AWDESK_GATEWAY_URL || "http://127.0.0.1:8182").replace(/\/+$/, "");
+const LOOPBACK_GATEWAY_URL = "http://127.0.0.1:8182";
+const EXPLICIT_GATEWAY_URL = String(process.env.AWDESK_GATEWAY_URL || "").trim();
+const GATEWAY_URL = String(EXPLICIT_GATEWAY_URL || LOOPBACK_GATEWAY_URL).replace(/\/+$/, "");
+const DEFAULT_CLOUD_GATEWAY_URL = "https://mcp.aitherium.com";
+
+/** The cloud door, or "" when there is none (see the header for the rules). */
+function resolveCloudGatewayUrl(env = process.env, explicitPrimary = EXPLICIT_GATEWAY_URL) {
+  const raw = env.AWDESK_CLOUD_GATEWAY_URL;
+  if (raw !== undefined) {
+    const v = String(raw).trim();
+    if (!v || /^(off|none|0|false)$/i.test(v)) return "";
+    return /^https?:\/\//i.test(v) ? v.replace(/\/+$/, "") : "";
+  }
+  return explicitPrimary ? "" : DEFAULT_CLOUD_GATEWAY_URL;
+}
+const CLOUD_GATEWAY_URL = resolveCloudGatewayUrl();
+// How long the desk stays on the cloud door before trying loopback again. A
+// refused loopback socket costs milliseconds, so the re-check is cheap.
+const LOOPBACK_RECHECK_MS = 60 * 1000;
+// Socket idle timeout per request. AWDESK_GATEWAY_TIMEOUT_MS exists for the
+// test harness (a gateway that accepts and never answers).
+const REQUEST_TIMEOUT_MS = Number(process.env.AWDESK_GATEWAY_TIMEOUT_MS) > 0
+  ? Number(process.env.AWDESK_GATEWAY_TIMEOUT_MS)
+  : 15000;
 const MCP_ACCEPT = "application/json, text/event-stream";
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const BEARER_FILE = process.env.AWDESK_SESSION_BEARER_FILE
@@ -44,12 +83,87 @@ function bearer() {
 
 let _session = null; // {id} — the MCP session, reused across calls
 let _sessionAt = 0;
+// Which door the session lives on. A session id is per gateway, so switching
+// doors always forgets it.
+let _active = GATEWAY_URL;
+let _activeSince = 0;
 
 /** Forget the MCP session (tests; a gateway that restarted answers 404 on the
- *  old id, and the next ensureSession re-initializes). */
+ *  old id, and the next ensureSession re-initializes). Also returns to the
+ *  primary door, so a test starts from a known place. */
 function resetSession() {
   _session = null;
   _sessionAt = 0;
+  _active = GATEWAY_URL;
+  _activeSince = 0;
+  _probe = null;
+}
+
+function useGateway(url) {
+  if (_active === url) return;
+  _active = url;
+  _activeSince = Date.now();
+  _session = null;
+  _sessionAt = 0;
+}
+
+/** Where calls go right now: {active, primary, cloud, remote}. `remote` is
+ *  true while the desk is on the cloud door because loopback refused. */
+function gatewayStatus() {
+  return {
+    active: _active,
+    primary: GATEWAY_URL,
+    cloud: CLOUD_GATEWAY_URL,
+    remote: Boolean(CLOUD_GATEWAY_URL) && _active === CLOUD_GATEWAY_URL && _active !== GATEWAY_URL,
+  };
+}
+
+/** The request provably never reached the door: the socket never connected
+ *  (refused, unreachable, DNS). Safe to replay ANY call elsewhere. A timeout or
+ *  reset after connect is NOT this -- the gateway may have run the tool. An HTTP
+ *  status is the gateway's own verdict and is reported, never routed around. */
+function isTransportError(error) {
+  if (!error) return false;
+  if (error.delivered === true) return false;
+  if (error.transport === true) return true;
+  return /ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN/i
+    .test(`${error.code || ""} ${error.message || ""}`);
+}
+
+/** Any socket-level failure (incl. timeout/reset after connect). Only safe to
+ *  fail over on when no tools/call was in flight (see callToolNow). */
+function isSocketError(error) {
+  return Boolean(error) && (error.transport === true || error.delivered === true);
+}
+
+/**
+ * Does the primary (loopback) door answer at all? Any HTTP status counts; only
+ * a refused/timed-out socket is "no". Cached for LOOPBACK_RECHECK_MS so a poll
+ * loop does not probe on every tick. Never rejects.
+ */
+let _probe = null; // {at, ok}
+function primaryReachable({ timeoutMs = 2000, now = Date.now } = {}) {
+  if (_probe && now() - _probe.at < LOOPBACK_RECHECK_MS) return Promise.resolve(_probe.ok);
+  return new Promise((resolve) => {
+    const settle = (ok) => {
+      _probe = { at: now(), ok };
+      resolve(ok);
+    };
+    let req;
+    try {
+      const client = /^https:/i.test(GATEWAY_URL) ? require("node:https") : require("node:http");
+      req = client.request(`${GATEWAY_URL}/health`, { method: "GET", timeout: timeoutMs, headers: { Connection: "close" } }, (res) => {
+        res.resume();
+        settle(true);
+      });
+    } catch {
+      settle(false);
+      return;
+    }
+    req.on("timeout", () => req.destroy(new Error("probe timeout")));
+    req.on("error", () => settle(false));
+    req.end();
+  });
 }
 
 async function mcpCall(method, params) {
@@ -61,11 +175,12 @@ async function mcpCall(method, params) {
   };
   if (_session) headers["Mcp-Session-Id"] = _session.id;
   const body = JSON.stringify({ jsonrpc: "2.0", id: String(Date.now()), method, params });
+  const base = _active;
   return await new Promise((resolve, reject) => {
-    const http = require("node:http");
-    const req = http.request(
-      `${GATEWAY_URL}/mcp`,
-      { method: "POST", headers, timeout: 15000 },
+    const client = /^https:/i.test(base) ? require("node:https") : require("node:http");
+    const req = client.request(
+      `${base}/mcp`,
+      { method: "POST", headers, timeout: REQUEST_TIMEOUT_MS },
       (res) => {
         let text = "";
         res.setEncoding("utf8");
@@ -107,8 +222,21 @@ async function mcpCall(method, params) {
         });
       },
     );
+    // Did the socket connect? After that the body may have reached the gateway
+    // and the tool may be running, so the error must not be replayed elsewhere.
+    let connected = false;
+    req.on("socket", (sock) => {
+      if (!sock.connecting) connected = true;
+      else sock.once("connect", () => { connected = true; });
+    });
     req.on("timeout", () => req.destroy(new Error("gateway timeout")));
-    req.on("error", reject);
+    req.on("error", (error) => {
+      if (error && typeof error === "object") {
+        if (connected) error.delivered = true;
+        else error.transport = true;
+      }
+      reject(error);
+    });
     req.write(body);
     req.end();
   });
@@ -150,7 +278,38 @@ function callTool(name, args = {}) {
 }
 
 async function callToolNow(name, args = {}) {
-  await ensureSession();
+  // On the cloud door long enough: give loopback another chance (the PC woke,
+  // the fleet came back). A refusal falls straight back below.
+  if (_active !== GATEWAY_URL && Date.now() - _activeSince >= LOOPBACK_RECHECK_MS) {
+    useGateway(GATEWAY_URL);
+  }
+  try {
+    return await callOnActive(name, args);
+  } catch (error) {
+    if (!CLOUD_GATEWAY_URL || _active === CLOUD_GATEWAY_URL || !canFailOver(error)) throw error;
+    useGateway(CLOUD_GATEWAY_URL);
+    return await callOnActive(name, args);
+  }
+}
+
+/** Replay on the cloud door only if the tool provably did not run on loopback:
+ *  the tools/call never connected, or the failure was in initialize. */
+function canFailOver(error) {
+  if (isTransportError(error)) return true;
+  return Boolean(error) && error.beforeToolCall === true && isSocketError(error);
+}
+
+async function sessionOrTag() {
+  try {
+    await ensureSession();
+  } catch (error) {
+    if (error && typeof error === "object") error.beforeToolCall = true;
+    throw error;
+  }
+}
+
+async function callOnActive(name, args) {
+  await sessionOrTag();
   let res;
   try {
     res = await mcpCall("tools/call", { name, arguments: args });
@@ -158,8 +317,9 @@ async function callToolNow(name, args = {}) {
     // A 404 on a held session id means the gateway restarted and forgot it:
     // re-initialize once instead of failing every call until the TTL lapses.
     if (!error || error.status !== 404 || !_session) throw error;
-    resetSession();
-    await ensureSession();
+    _session = null;
+    _sessionAt = 0;
+    await sessionOrTag();
     res = await mcpCall("tools/call", { name, arguments: args });
   }
   if (res?.error) throw new Error(`${name}: ${errorText(res.error)}`);
@@ -177,7 +337,21 @@ function parseMaybeJson(text) {
   }
 }
 
-module.exports = { bearer, callTool, errorText, parseMaybeJson, resetSession, GATEWAY_URL };
+module.exports = {
+  bearer,
+  callTool,
+  errorText,
+  canFailOver,
+  gatewayStatus,
+  isTransportError,
+  parseMaybeJson,
+  primaryReachable,
+  resetSession,
+  resolveCloudGatewayUrl,
+  CLOUD_GATEWAY_URL,
+  GATEWAY_URL,
+  LOOPBACK_RECHECK_MS,
+};
 
 if (require.main === module) {
   // Self-test: one live round-trip through a cheap, side-effect-free tool.
@@ -186,7 +360,7 @@ if (require.main === module) {
   (async () => {
     try {
       const now = await callTool("time_now", {});
-      console.log(`GATEWAY MCP OK: ${String(now).slice(0, 80)}`);
+      console.log(`GATEWAY MCP OK via ${gatewayStatus().active}: ${String(now).slice(0, 80)}`);
       process.exit(0);
     } catch (error) {
       const msg = String(error?.message || error);

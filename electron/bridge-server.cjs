@@ -743,7 +743,12 @@ function createBridgeServer({
         })
         .then((result) => {
           if (result == null || response.headersSent) return;
-          response.writeHead(result.ok === false ? 502 : 200, { "content-type": "application/json" });
+          // A POLICY refusal (the owner muted the voice in the Cast pane) is a
+          // decision, not an outage: 409 with the reason. 502 stays for a voice
+          // service that failed. Measured 2026-10-14: awask-fanout.log's "desk did not
+          // speak (HTTP 502)" lines traced to cast.json voice.muted, not to TTS.
+          const status = result.ok === false ? (result.refused === "policy" ? 409 : 502) : 200;
+          response.writeHead(status, { "content-type": "application/json" });
           response.end(JSON.stringify(result));
         })
         .catch((error) => {

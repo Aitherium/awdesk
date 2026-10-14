@@ -18,6 +18,7 @@ const {
   DOOR_PRESENT_URL,
   DOOR_HEADER,
 } = require("./relay-feed.cjs");
+const topModule = require("./relay-feed.cjs");
 const { sharedBridge, _resetSharedForTests } = require("./relay-room-bridge.cjs");
 
 function fakeSpawn(handler) {
@@ -487,3 +488,129 @@ test("door: a plain 403 (no door in the reason) never knocks", async () => {
   assert.equal(w.log.filter((e) => e.kind === "knock").length, 0);
   _resetDoorForTests();
 });
+
+// ── off the fleet PC: env-overridable endpoints and the gateway rung ────────
+
+/** A fresh relay-feed module loaded with `env` set (the URLs are read at load). */
+function loadRelayFeed(env) {
+  const saved = {};
+  for (const [k, v] of Object.entries(env)) {
+    saved[k] = process.env[k];
+    process.env[k] = v;
+  }
+  try {
+    const modPath = require.resolve("./relay-feed.cjs");
+    delete require.cache[modPath];
+    return require(modPath);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    delete require.cache[require.resolve("./relay-feed.cjs")];
+  }
+}
+
+function fakeRelayGateway(answers) {
+  const calls = [];
+  return {
+    calls,
+    parseMaybeJson: (t) => { try { return JSON.parse(t); } catch { return null; } },
+    callTool: async (name, args) => {
+      calls.push([name, args]);
+      const a = answers[name];
+      if (a instanceof Error) throw a;
+      return JSON.stringify(a);
+    },
+  };
+}
+
+async function refusedHttpsUrl() {
+  const s = require("node:http").createServer();
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  const port = s.address().port;
+  await new Promise((r) => s.close(r));
+  return `https://127.0.0.1:${port}`;
+}
+
+test("endpoints: AWDESK_RELAY_URL / AWDESK_GATEWAY_URL override the loopback pins", () => {
+  const feed = loadRelayFeed({
+    AWDESK_RELAY_URL: "https://relay.example.test/prefix/",
+    AWDESK_GATEWAY_URL: "https://gw.example.test",
+  });
+  assert.equal(feed.RELAY_URL, "https://relay.example.test/prefix");
+  assert.equal(feed.DOOR_KNOCK_URL, "https://gw.example.test/doors/knock");
+  const t = feed._requestTargetForTests("/v1/channels/%23agents/messages");
+  assert.deepEqual([t.hostname, t.port, t.path], ["relay.example.test", 443, "/prefix/v1/channels/%23agents/messages"]);
+  assert.deepEqual(t.tls, {}, "a public host is verified against the system roots, not the internal CA alone");
+  // The default stays the loopback relay, and the absolute door URL is used as is.
+  const local = feed._requestTargetForTests("/v1/agent/join", "https://127.0.0.1:8205");
+  assert.deepEqual([local.hostname, local.port, local.path], ["127.0.0.1", "8205", "/v1/agent/join"]);
+  const door = feed._requestTargetForTests("http://127.0.0.1:8182/doors/knock");
+  assert.deepEqual([door.hostname, door.path], ["127.0.0.1", "/doors/knock"]);
+});
+
+test("gateway rung: history reads relay_history and shapes the rows like the CLI's", async () => {
+  const gw = fakeRelayGateway({
+    relay_history: [{ id: "m1", channel: "#agents", nick: "atlas", content: "[finding] fleet is green", timestamp: "2026-10-14T11:32:00Z" }],
+  });
+  relayFeedModule()._setGatewayForTests(gw);
+  try {
+    const rows = await relayFeedModule()._historyViaGatewayForTests("#agents", 12);
+    assert.deepEqual(gw.calls[0], ["relay_history", { channel: "#agents", limit: 12 }]);
+    assert.equal(rows.length, 1);
+    assert.deepEqual([rows[0].author, rows[0].text, rows[0].kind], ["atlas", "fleet is green", "finding"]);
+    // Today's gateway answers 403 for #agents until it forwards the caller's
+    // bearer: that is "unavailable" ([]), never a crash.
+    relayFeedModule()._setGatewayForTests(fakeRelayGateway({
+      relay_history: { error: "GET /v1/channels/#agents/messages -> 403: restricted to platform operators" },
+    }));
+    assert.deepEqual(await relayFeedModule()._historyViaGatewayForTests("#agents", 12), []);
+  } finally {
+    relayFeedModule()._setGatewayForTests(null);
+  }
+});
+
+test("gateway rung: a post whose loopback relay does not answer goes through relay_send", async () => {
+  const feed = loadRelayFeed({ AWDESK_RELAY_URL: await refusedHttpsUrl() });
+  feed._setBearerSourceForTests(() => "tok");
+  const gw = fakeRelayGateway({ relay_send: { success: true, message: { id: "gw-1" } } });
+  feed._setGatewayForTests(gw);
+  try {
+    const sent = await feed.post("#agents", "  from the laptop  ");
+    assert.equal(sent.ok, true);
+    assert.equal(sent.id, "gw-1", "the stored id still feeds loop protection");
+    assert.equal(sent.via, "gateway");
+    assert.deepEqual(gw.calls[0], ["relay_send", { channel: "#agents", text: "from the laptop", kind: "MESSAGE", nick: "david" }]);
+
+    // The gateway refusing says BOTH rungs' reasons.
+    feed._setGatewayForTests(fakeRelayGateway({ relay_send: { error: "403: restricted to platform operators" } }));
+    const refused = await feed.post("#agents", "again");
+    assert.equal(refused.ok, false);
+    assert.match(refused.detail, /relay did not answer.*gateway relay_send: 403/);
+  } finally {
+    feed._setGatewayForTests(null);
+    feed._setBearerSourceForTests(null);
+  }
+});
+
+test("gateway rung: an injected transport never falls through to the gateway", async () => {
+  _resetJoinForTests();
+  const feed = relayFeedModule();
+  const gw = fakeRelayGateway({ relay_send: { success: true } });
+  feed._setGatewayForTests(gw);
+  try {
+    const dead = async () => ({ status: 0, body: "" });
+    const r = await post("#agents", "hi", dead);
+    assert.equal(r.ok, false);
+    assert.equal(gw.calls.length, 0, "a test or a caller's own relay sees its own verdict");
+  } finally {
+    feed._setGatewayForTests(null);
+    _resetJoinForTests();
+  }
+});
+
+/** The module instance this file imported at the top (shared state with `post`). */
+function relayFeedModule() {
+  return topModule;
+}

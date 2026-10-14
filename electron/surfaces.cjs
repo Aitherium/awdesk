@@ -30,7 +30,24 @@ const LOCAL_SURFACES = [
   { id: "mcp", label: "Genesis via MCP gateway", open: "http://127.0.0.1:8182/health", probe: "http://127.0.0.1:8182/health", scope: "fleet" },
   { id: "daemon", label: "awdk daemon (rooms, decisions)", open: "http://127.0.0.1:8362/health", probe: "http://127.0.0.1:8362/health", scope: "host" },
   { id: "registry", label: "Registry", open: "https://127.0.0.1:8149/health", probe: "https://127.0.0.1:8149/health", scope: "fleet" },
+  { id: "relay", label: "Relay (#agents)", open: "https://127.0.0.1:8205/health", probe: "https://127.0.0.1:8205/health", scope: "fleet" },
 ];
+
+// The platform's remote-access doors -- the planes a phone or a second laptop
+// reaches the fleet through (owner audit 2026-10-14: the pane could not show
+// them). These are the PLATFORM's hostnames, the same ones the desk already
+// opens (browser-internal.cjs, gateway-mcp.cjs), not an operator's own, so they
+// ship with the desk. AWDESK_PLATFORM_SURFACES=off drops them for a self-hosted
+// install with no Aitherium account; an operator row with the same id wins.
+const PLATFORM_SURFACES = [
+  { id: "app", label: "app.aitherium.com (web + phone app)", open: "https://app.aitherium.com/", probe: "https://app.aitherium.com/", scope: "public" },
+  { id: "mcp-cloud", label: "mcp.aitherium.com (remote MCP gateway)", open: "https://mcp.aitherium.com/health", probe: "https://mcp.aitherium.com/health", scope: "public" },
+  { id: "gateway", label: "gateway.aitherium.com (API gateway)", open: "https://gateway.aitherium.com/health", probe: "https://gateway.aitherium.com/health", scope: "public" },
+];
+
+function platformSurfaces(env = process.env) {
+  return /^(off|0|false|none)$/i.test(String(env.AWDESK_PLATFORM_SURFACES || "").trim()) ? [] : PLATFORM_SURFACES;
+}
 
 // An operator's PUBLIC doors (their tunnel, edge pulse, dashboards) are their own
 // hostnames, so they are configuration, not source: a JSON array of rows (or
@@ -64,7 +81,13 @@ function loadOperatorSurfaces(file = defaultSurfacesFile()) {
   }
 }
 
-const SURFACES = [...loadOperatorSurfaces(), ...LOCAL_SURFACES];
+/** Operator rows first; a platform row whose id an operator row already uses is dropped. */
+function buildSurfaces(operator = loadOperatorSurfaces(), platform = platformSurfaces()) {
+  const taken = new Set(operator.map((s) => s.id));
+  return [...operator, ...platform.filter((s) => !taken.has(s.id)), ...LOCAL_SURFACES];
+}
+
+const SURFACES = buildSurfaces();
 
 const OPENABLE = new Set(SURFACES.map((s) => s.open));
 
@@ -200,6 +223,9 @@ function summarizeSurfaces(rows) {
 
 module.exports = {
   LOCAL_SURFACES,
+  PLATFORM_SURFACES,
+  buildSurfaces,
+  platformSurfaces,
   OPENABLE,
   SURFACES,
   defaultRequest,

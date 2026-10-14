@@ -21,6 +21,9 @@ process.env.AWDESK_SURFACES_FILE = OPERATOR_FILE;
 
 const {
   LOCAL_SURFACES,
+  PLATFORM_SURFACES,
+  buildSurfaces,
+  platformSurfaces,
   OPENABLE,
   SURFACES,
   judge,
@@ -97,7 +100,7 @@ test("probeSurfaces probes every door concurrently and a throwing probe is a DOW
 
 test("operator doors are configuration: no file means the loopback doors only", () => {
   assert.deepEqual(loadOperatorSurfaces(path.join(FIXTURE_DIR, "absent.json")), []);
-  assert.deepEqual(LOCAL_SURFACES.map((s) => s.id), ["mcp", "daemon", "registry"]);
+  assert.deepEqual(LOCAL_SURFACES.map((s) => s.id), ["mcp", "daemon", "registry", "relay"]);
 });
 
 test("an unusable operator file contributes nothing, and a non-http(s) row never becomes openable", () => {
@@ -110,4 +113,22 @@ test("an unusable operator file contributes nothing, and a non-http(s) row never
     { id: "js", label: "JS", open: "javascript:alert(1)", probe: "https://x.example.test/" },
   ] }));
   assert.deepEqual(loadOperatorSurfaces(mixed).map((s) => s.id), ["ok"]);
+});
+
+test("the remote-access doors (app, mcp, gateway, relay) are rows a phone or second laptop depends on", () => {
+  // Owner audit 2026-10-14: the pane listed tunnel/pulse/grafana but not the
+  // planes the owner reaches the fleet THROUGH when he is away from the PC.
+  const ids = SURFACES.map((s) => s.id);
+  for (const id of ["app", "mcp-cloud", "gateway", "relay"]) assert.ok(ids.includes(id), `missing ${id}`);
+  for (const s of PLATFORM_SURFACES) {
+    assert.match(s.probe, /^https:\/\/[a-z]+\.aitherium\.com\//, `${s.id} probes the platform host over https`);
+    assert.ok(OPENABLE.has(s.open));
+  }
+  assert.equal(SURFACES.find((s) => s.id === "relay").probe, "https://127.0.0.1:8205/health");
+  // A self-hosted install turns them off; an operator row with the same id wins.
+  assert.deepEqual(platformSurfaces({ AWDESK_PLATFORM_SURFACES: "off" }), []);
+  const mine = { id: "app", label: "My app", open: "https://app.example.test/", probe: "https://app.example.test/" };
+  const rows = buildSurfaces([mine], PLATFORM_SURFACES);
+  assert.equal(rows.filter((s) => s.id === "app").length, 1);
+  assert.equal(rows.find((s) => s.id === "app").label, "My app");
 });

@@ -50,14 +50,20 @@ const { spawn, execFileSync } = require("node:child_process");
 const http = require("node:http");
 const https = require("node:https");
 
-const RELAY_URL = "https://127.0.0.1:8205";
+// OFF THE FLEET PC (2026-10-14): both endpoints were hard-pinned to loopback,
+// so a second laptop showed "relay unavailable" for ever. AWDESK_RELAY_URL /
+// AWDESK_GATEWAY_URL override them (the gateway one is the same variable
+// gateway-mcp.cjs reads), and when the loopback relay does not answer at all,
+// history and posts go through the gateway's relay_history / relay_send tools
+// (gateway-mcp.cjs falls back to the cloud gateway on its own).
+const RELAY_URL = String(process.env.AWDESK_RELAY_URL || "https://127.0.0.1:8205").trim().replace(/\/+$/, "");
 const RELAY_CHANNEL = "#agents";
 const HISTORY_LIMIT = 12;
 const RELAY_NICK = "david";
 // The door protocol is served by genesis THROUGH the MCP gateway (rung 1 of
 // the dispatch ladder — genesis publishes no host port). Today the gateway
 // answers 404 for /doors/*; when the passthrough goes live it is these paths.
-const GATEWAY_URL = "http://127.0.0.1:8182";
+const GATEWAY_URL = String(process.env.AWDESK_GATEWAY_URL || "http://127.0.0.1:8182").trim().replace(/\/+$/, "");
 const DOOR_KNOCK_URL = `${GATEWAY_URL}/doors/knock`;
 const DOOR_PRESENT_URL = `${GATEWAY_URL}/doors/present`;
 const DOOR_HEADER = "X-Door-Attestation";
@@ -80,6 +86,33 @@ const DETAIL_NO_HUMANITY = "no humanity attestation on this machine -- take the 
 const { internalCaOptions: relayCa } = require("./internal-ca.cjs");
 
 /**
+ * Where a request goes. A relay-relative path ("/v1/...") resolves against
+ * RELAY_URL; an absolute URL (the gateway's door endpoints) is used as is.
+ * The internal CA is trusted for in-fleet hosts only: a public host
+ * (relay behind the tunnel) is verified against the system roots, and adding
+ * the internal chain there would make Node trust ONLY that chain.
+ */
+function requestTarget(urlPath, relayUrl = RELAY_URL) {
+  const absolute = /^https?:\/\//i.test(urlPath);
+  const u = new URL(absolute ? urlPath : relayUrl);
+  const secure = u.protocol === "https:";
+  const host = u.hostname.replace(/^\[|\]$/g, "");
+  const inFleet = host === "127.0.0.1" || host === "::1" || host === "localhost"
+    || !host.includes(".") || /^aitheros-/i.test(host);
+  // A relay URL with a path prefix keeps it ("https://host/relay" + "/v1/x").
+  const reqPath = absolute
+    ? u.pathname + u.search
+    : u.pathname.replace(/\/+$/, "") + (urlPath.startsWith("/") ? urlPath : `/${urlPath}`);
+  return {
+    client: secure ? https : http,
+    hostname: host,
+    port: u.port || (secure ? 443 : 80),
+    path: reqPath,
+    tls: secure && inFleet ? relayCa() : {},
+  };
+}
+
+/**
  * One JSON request as the owner. `urlPath` is relay-relative ("/v1/...") or
  * an absolute URL (the gateway's door endpoints); `headers` are extra request
  * headers (the door attestation). The injectable requestFn in post() /
@@ -94,17 +127,11 @@ function relayRequest(method, urlPath, body, { headers = {} } = {}) {
     }
     const payload = JSON.stringify(body);
     let target;
-    if (/^https?:\/\//i.test(urlPath)) {
-      const u = new URL(urlPath);
-      target = {
-        client: u.protocol === "https:" ? https : http,
-        hostname: u.hostname,
-        port: u.port || (u.protocol === "https:" ? 443 : 80),
-        path: u.pathname + u.search,
-        tls: u.protocol === "https:" ? relayCa() : {},
-      };
-    } else {
-      target = { client: https, hostname: "127.0.0.1", port: 8205, path: urlPath, tls: relayCa() };
+    try {
+      target = requestTarget(urlPath);
+    } catch {
+      resolve({ status: 0, body: "" });
+      return;
     }
     const req = target.client.request(
       {
@@ -156,6 +183,7 @@ let joinState = "pending"; // "pending" | "joined" | "failed"
 let joinPromise = null;
 let joinedBearer = null;
 let lastJoinDetail = ""; // the relay's OWN refusal reason from the last join
+let lastJoinUnreachable = false; // the last join got no answer at all (status 0)
 function ensureJoined(requestFn = relayRequest) {
   // The bearer ROTATES on device-flow refresh: a new bearer is a new
   // identity and must join again. Compare before trusting the cache.
@@ -174,6 +202,7 @@ function ensureJoined(requestFn = relayRequest) {
     const ok = r.status >= 200 && r.status < 300 && r.body.includes("is_agent");
     if (ok) joinedBearer = bearer();
     joinState = ok ? "joined" : "failed";
+    lastJoinUnreachable = !ok && r.status === 0;
     if (!ok) {
       lastJoinDetail = r.status === 0
         ? "the relay did not answer (it may be restarting)"
@@ -394,12 +423,64 @@ async function doorGatedWrite(channel, urlPath, payload, requestFn) {
     // falls back to the room marker for loop protection.
     return { ok: true, detail: "", id: storedMessageId(parsed), body: parsed };
   }
+  if (r.status === 0) {
+    return { ok: false, detail: "the relay did not answer (it may be restarting)", unreachable: true };
+  }
   return {
     ok: false,
-    detail: r.status === 0
-      ? "the relay did not answer (it may be restarting)"
-      : `relay HTTP ${r.status}${refusalDetail(r.body) ? ` — ${refusalDetail(r.body)}` : ""}`,
+    detail: `relay HTTP ${r.status}${refusalDetail(r.body) ? ` — ${refusalDetail(r.body)}` : ""}`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The gateway rung: the loopback relay did not answer at all (a laptop with no
+// fleet, or the relay restarting). The gateway's relay_* tools reach the same
+// relay from inside the fleet, under the caller's own bearer.
+// ---------------------------------------------------------------------------
+
+let gatewayImpl = null; // test injection; null = gateway-mcp.cjs
+function gateway() {
+  return gatewayImpl || require("./gateway-mcp.cjs");
+}
+
+/** Call a relay_* tool; resolve the parsed JSON, or {error} — never throws. */
+async function gatewayRelayCall(tool, args) {
+  try {
+    const g = gateway();
+    const text = await g.callTool(tool, args);
+    const parsed = g.parseMaybeJson(text);
+    if (parsed === null) return { error: `${tool}: not JSON` };
+    return parsed;
+  } catch (error) {
+    return { error: `${tool}: ${String((error && error.message) || error).slice(0, 200)}` };
+  }
+}
+
+function gatewayError(parsed) {
+  if (!parsed || Array.isArray(parsed) || parsed.error == null) return "";
+  return typeof parsed.error === "string" ? parsed.error : JSON.stringify(parsed.error);
+}
+
+/** History through the gateway: shaped rows, or [] (the panel says unavailable). */
+async function historyViaGateway(channel, limit) {
+  const parsed = await gatewayRelayCall("relay_history", { channel, limit });
+  if (gatewayError(parsed)) return [];
+  return shapeRows(parsed, channel, limit);
+}
+
+/** A post through the gateway, in post()'s verdict shape. */
+async function postViaGateway(channel, text, relayDetail) {
+  const parsed = await gatewayRelayCall("relay_send", {
+    channel,
+    text: text.trim().slice(0, 1500),
+    kind: "MESSAGE",
+    nick: RELAY_NICK,
+  });
+  const why = gatewayError(parsed);
+  if (why) {
+    return { ok: false, detail: `${relayDetail}; gateway relay_send: ${why.slice(0, 200)}` };
+  }
+  return { ok: true, detail: "", id: storedMessageId(parsed), body: parsed, via: "gateway" };
 }
 
 /**
@@ -586,14 +667,22 @@ async function fetchHistory(channel = RELAY_CHANNEL, limit = HISTORY_LIMIT, exec
     ["--json", "history", channel, "--limit", String(limit)],
     execFn,
   );
-  if (code !== 0) return [];
-  try {
-    const rows = shapeRows(JSON.parse(stdout), channel, limit);
-    mirrorToRoom(channel, rows);
-    return rows;
-  } catch {
-    return [];
+  let rows = null;
+  if (code === 0) {
+    try {
+      rows = shapeRows(JSON.parse(stdout), channel, limit);
+    } catch {
+      rows = null;
+    }
   }
+  // The CLI could not read the loopback relay (no fleet on this machine, or
+  // no awrelay installed): the gateway rung, for the real transport only.
+  if (rows === null && execFn === spawn) {
+    rows = await historyViaGateway(channel, limit);
+  }
+  if (!rows) return [];
+  mirrorToRoom(channel, rows);
+  return rows;
 }
 
 /** Hand fresh rows to the room bridge. Never throws, never awaited. */
@@ -619,17 +708,19 @@ function mirrorToRoom(channel, rows) {
  */
 async function fetchChannels(execFn = spawn) {
   const { code, stdout } = await runAwrelay(["--json", "channels"], execFn);
-  if (code !== 0) return [];
-  try {
-    const parsed = JSON.parse(stdout);
-    const rows = Array.isArray(parsed) ? parsed : parsed?.channels;
-    if (!Array.isArray(rows)) return [];
-    return rows
-      .map((row) => (typeof row === "string" ? row : row && typeof row.name === "string" ? row.name : ""))
-      .filter(Boolean);
-  } catch {
-    return [];
+  let parsed = null;
+  if (code === 0) {
+    try { parsed = JSON.parse(stdout); } catch { parsed = null; }
   }
+  if (parsed === null && execFn === spawn) {
+    const viaGateway = await gatewayRelayCall("relay_channels", {});
+    if (!gatewayError(viaGateway)) parsed = viaGateway;
+  }
+  const rows = Array.isArray(parsed) ? parsed : parsed?.channels;
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => (typeof row === "string" ? row : row && typeof row.name === "string" ? row.name : ""))
+    .filter(Boolean);
 }
 
 /**
@@ -663,8 +754,17 @@ async function post(channel = RELAY_CHANNEL, text, requestFn = relayRequest) {
   if (typeof text !== "string" || !text.trim()) return { ok: false, detail: "empty message" };
   // Join first (lazy, once per bearer): #agents is agent-only and an
   // unjoined identity is silently 403'd.
+  // The gateway rung is for the REAL transport only: an injected requestFn is
+  // a test or a caller that chose its own relay, and must see its own verdict.
+  const gatewayRung = requestFn === relayRequest;
   if (!(await ensureJoined(requestFn))) {
-    return { ok: false, detail: lastJoinDetail || "could not join the relay identity" };
+    const detail = lastJoinDetail || "could not join the relay identity";
+    if (gatewayRung && lastJoinUnreachable) {
+      const viaGateway = await postViaGateway(channel, text, detail);
+      noteOursToRoom(viaGateway);
+      return viaGateway;
+    }
+    return { ok: false, detail };
   }
   const q = channel.replace("#", "%23");
   const payload = {
@@ -672,7 +772,10 @@ async function post(channel = RELAY_CHANNEL, text, requestFn = relayRequest) {
     nick: RELAY_NICK,
     content: text.trim().slice(0, 1500),
   };
-  const result = await doorGatedWrite(channel, `/v1/channels/${q}/messages`, payload, requestFn);
+  let result = await doorGatedWrite(channel, `/v1/channels/${q}/messages`, payload, requestFn);
+  if (!result.ok && result.unreachable && gatewayRung) {
+    result = await postViaGateway(channel, text, result.detail);
+  }
   // Tell the room bridge this row is OURS, by id: the desk posts under the
   // owner's own nick, so nothing else distinguishes what we wrote from what
   // the owner wrote, and mirroring our own post would loop the room and the
@@ -739,6 +842,11 @@ function _resetDoorForTests() {
   bearerSource = null;
 }
 
+/** Test-only: the gateway client (callTool/parseMaybeJson); null = gateway-mcp.cjs. */
+function _setGatewayForTests(g) {
+  gatewayImpl = g || null;
+}
+
 /** Test-only: where bearer() reads from (a () => string); null = the file. */
 function _setBearerSourceForTests(fn) {
   bearerSource = typeof fn === "function" ? fn : null;
@@ -757,7 +865,11 @@ module.exports = {
   _resetJoinForTests,
   _resetDoorForTests,
   _setBearerSourceForTests,
+  _setGatewayForTests,
   _runAwrelayForTests: runAwrelay,
+  _requestTargetForTests: requestTarget,
+  _historyViaGatewayForTests: historyViaGateway,
+  _postViaGatewayForTests: postViaGateway,
   RELAY_URL,
   RELAY_CHANNEL,
   RELAY_NICK,

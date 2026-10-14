@@ -1078,7 +1078,10 @@ async function speakAloud(
     if (gate && gate.allowed === false) {
       // Refused for SOUND, not for sight: a muted speaker still gets its caption.
       const shown = captioned ? sendBubble(slotId, text, { muted: true }) : 0;
-      return { ok: false, reason: gate.reason || `${origin} is not audible`, captioned: shown > 0 };
+      // `refused: "policy"` = the owner's cast said no (voice.muted, a muted
+      // agent): the bridge answers 409, not 502, so a caller reads a decision
+      // and not a broken voice service.
+      return { ok: false, refused: "policy", reason: gate.reason || `${origin} is not audible`, captioned: shown > 0 };
     }
     if (gate) {
       // An authored voice beats the caller; a HASH-derived one does not (voice-resolve.effectiveVoice).
@@ -2760,7 +2763,10 @@ function answerDeckCard(id, choice, parent) {
   // ordinary cards keep using awask. {pending:true} = the answer lands when
   // the owner finishes in that window; the watcher then drops the card.
   if (typeof id === "string" && typeof choice === "string" && choice) {
-    const raw = signedApproval.readCardRaw(id, decisionCards.storeDir());
+    // Off the fleet PC there is no card file: the raw card the gateway returned
+    // (decision-cards rawCard) decides the route instead, so a destructive card
+    // still goes to the signed window rather than an unsigned answer.
+    const raw = decisionCards.rawCard(id) || signedApproval.readCardRaw(id, decisionCards.storeDir());
     if (signedApproval.answerRoute(raw, choice) === "window") {
       try {
         signedApproval.openApproveWindow({

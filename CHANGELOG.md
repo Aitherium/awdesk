@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.15 - 2026-10-14
+
+- Desk works on a second laptop. When this machine has no local gateway, the decisions
+  pane reads and answers the same queue through the cloud gateway (mcp.aitherium.com, with
+  your session sign-in), so a laptop shows the same cards as the PC. Approving a
+  destructive card still opens the signed approval window. Steering a card still needs the
+  PC; Desk says so instead of pretending.
+- Desk switches to the cloud gateway only when the local gateway could not be reached at
+  all. If a request reached the local gateway and then went quiet or dropped (for example
+  a long backup or restart), Desk reports the error and does not send it again through
+  the cloud, so an action never runs twice.
+- The relay feed falls back to the gateway's relay tools when the local relay does not
+  answer, and its endpoints can be set with AWDESK_RELAY_URL / AWDESK_GATEWAY_URL.
+- The Fleet pane shows the remote-access doors: app.aitherium.com, mcp.aitherium.com,
+  gateway.aitherium.com and the relay.
+- A muted desk voice answers `/speak` with 409 and the reason (for example `voice.muted`)
+  instead of 502, so callers see a setting, not a broken voice service. Desk does not
+  unmute itself.
+
 ## 0.1.12 - 2026-10-06
 
 - Sign in to awconnect inside the Aither Browser. Chromium gives an embedded browser no

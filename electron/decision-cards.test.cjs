@@ -502,3 +502,142 @@ test("listOpen carries what an answer will DO — consequence, recipe, deadline"
   const long = listOpen(dir).find((c) => c.id === "d-long");
   assert.equal(long.options[0].consequence.length, 200);
 });
+
+// ── off the fleet PC: the same store through the gateway ────────────────────
+
+/** A gateway-mcp stand-in: records every tool call, answers from `answers`. */
+function fakeGateway(answers) {
+  const calls = [];
+  return {
+    calls,
+    bearer: () => "tok",
+    gatewayStatus: () => ({ cloud: "https://mcp.example.test", remote: true }),
+    primaryReachable: async () => false,
+    parseMaybeJson: (t) => { try { return JSON.parse(t); } catch { return null; } },
+    errorText: (e) => (typeof e === "string" ? e : JSON.stringify(e)),
+    callTool: async (name, args) => {
+      calls.push([name, args]);
+      const a = answers[name];
+      if (a instanceof Error) throw a;
+      return typeof a === "function" ? a(args) : JSON.stringify(a ?? {});
+    },
+  };
+}
+
+function rawCard(id, extra = {}) {
+  return { id, status: "open", title: `card ${id}`, kind: "decision", created_at: 1, options: [{ key: "yes", label: "Yes" }, { key: "reject", label: "Reject" }], ...extra };
+}
+
+async function settle() {
+  for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
+}
+
+test("off-PC: the watcher reads decisions_list, and answer/cancel go through the gateway", async () => {
+  const answers = {
+    decisions_list: {
+      decisions: [
+        rawCard("d-r1", { created_at: 1 }),
+        rawCard("d-s1", { created_at: 2, kind: "awstorage-manage" }),
+        { ...rawCard("d-gone"), status: "answered" },
+      ],
+    },
+    decisions_answer: { id: "d-r1", status: "answered" },
+    decisions_cancel: { id: "d-r1", status: "cancelled" },
+  };
+  const gw = fakeGateway(answers);
+  cards._setGatewayForTests(gw);
+  const seen = [];
+  let remoteTick = null;
+  const stop = watch({
+    dir: path.join(os.tmpdir(), "desk-no-store-on-this-laptop-xyz"),
+    onChange: (list) => seen.push(list.map((c) => c.id)),
+    useRemoteFn: async () => true,
+    setIntervalFn: () => 1,
+    clearIntervalFn: () => {},
+    watchFn: () => ({ on() {}, close() {} }),
+    setTimeoutFn: (fn) => { remoteTick = fn; return { unref() {} }; },
+    clearTimeoutFn: () => {},
+  });
+  try {
+    for (let i = 0; i < 200 && seen.length === 0; i += 1) await new Promise((r) => setTimeout(r, 5));
+    assert.deepEqual(seen[0], ["d-r1", "d-s1"], "open cards only, oldest first");
+    assert.deepEqual(gw.calls[0], ["decisions_list", { status: "open", limit: 500 }],
+      "the default limit of 50 would hide most of a 90-card queue");
+    assert.equal(cards.sourceStatus().source, "gateway");
+    assert.deepEqual(cards.lastOpen().map((c) => c.id), ["d-r1", "d-s1"], "the bridge's /decisions reads the gateway cards");
+    assert.equal(cards.rawCard("d-s1").kind, "awstorage-manage", "main routes signed cards off the raw card");
+    assert.ok(remoteTick, "a gateway-backed watcher schedules its own re-read");
+
+    assert.equal(answerCard("d-r1", "yes", "fine"), true);
+    await settle();
+    assert.deepEqual(gw.calls.find((c) => c[0] === "decisions_answer"),
+      ["decisions_answer", { decision_id: "d-r1", choice: "yes", via: "desk", note: "fine" }]);
+
+    // decisions_answer is UNSIGNED: an approve on a destructive card is refused,
+    // a decline goes through.
+    const before = gw.calls.length;
+    assert.equal(answerCard("d-s1", "yes"), false);
+    assert.equal(gw.calls.length, before, "nothing was sent for the signed approve");
+    assert.equal(answerCard("d-s1", "reject"), true);
+
+    assert.equal(steerCard("d-r1", "do this instead"), false, "the gateway has no steer verb");
+    assert.match(cards.sourceStatus().lastRemoteError, /steer/);
+
+    assert.equal(cancelCard("d-r1", "not now"), true);
+    await settle();
+    assert.deepEqual(gw.calls.find((c) => c[0] === "decisions_cancel"),
+      ["decisions_cancel", { decision_id: "d-r1", note: "not now" }]);
+
+    // A failed gateway read on a machine with no store keeps the queue it had.
+    const shown = seen.length;
+    answers.decisions_list = new Error("gateway timeout");
+    remoteTick();
+    await settle();
+    assert.equal(seen.length, shown, "one failed read must not blank the pane");
+    assert.deepEqual(cards.lastOpen().map((c) => c.id), ["d-r1", "d-s1"]);
+    assert.match(cards.sourceStatus().lastRemoteError, /gateway timeout/);
+  } finally {
+    stop();
+    cards._setGatewayForTests(null);
+  }
+});
+
+test("off-PC: a refusal or a Genesis error from decisions_list is an outage, never an empty queue", async () => {
+  cards._setGatewayForTests(fakeGateway({
+    decisions_list: { error: "Decision cards are platform-operator only", status: 403 },
+  }));
+  try {
+    await assert.rejects(cards.scanRemote(), /platform-operator only/);
+  } finally {
+    cards._setGatewayForTests(null);
+  }
+  cards._setGatewayForTests(fakeGateway({ decisions_list: { error: "Failed to list decisions: boom", decisions: [] } }));
+  try {
+    await assert.rejects(cards.scanRemote(), /boom/);
+  } finally {
+    cards._setGatewayForTests(null);
+  }
+});
+
+test("off-PC: with the store readable, a failed gateway read falls back to the local cards", async () => {
+  const dir = tmpStore();
+  writeCard(dir, "d-local");
+  cards._setGatewayForTests(fakeGateway({ decisions_list: new Error("ECONNREFUSED") }));
+  const seen = [];
+  const stop = watch({
+    dir,
+    onChange: (list) => seen.push(list.map((c) => c.id)),
+    useRemoteFn: async () => true,
+    setIntervalFn: () => 1,
+    clearIntervalFn: () => {},
+    watchFn: () => ({ on() {}, close() {} }),
+  });
+  try {
+    for (let i = 0; i < 200 && seen.length === 0; i += 1) await new Promise((r) => setTimeout(r, 5));
+    assert.deepEqual(seen[0], ["d-local"]);
+    assert.equal(cards.sourceStatus().source, "local", "answers then go through awask again");
+  } finally {
+    stop();
+    cards._setGatewayForTests(null);
+  }
+});
