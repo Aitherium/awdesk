@@ -65,6 +65,19 @@
     color: var(--muted); max-height: 240px; overflow: auto; }
   .note { color: var(--amber); font-size: 12px; margin-top: 6px; }
   .placeholder { color: var(--muted); padding: 12px 0; }
+  /* Training tab: one column of run cards; stale = driver silent > 10 min. */
+  main.single { grid-template-columns: 1fr; }
+  main[hidden] { display: none; }
+  .trun { padding: 8px 0; border-bottom: 1px solid var(--btn); display: grid; gap: 3px; }
+  .trun .top { display: flex; gap: 8px; align-items: baseline; }
+  .trun .id { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trun .meta { color: var(--muted); font-size: 11px; }
+  .trun.stale { opacity: .6; }
+  .bar-track { height: 4px; border-radius: 2px; background: var(--btn); overflow: hidden; }
+  .bar-fill { height: 100%; background: var(--brand); }
+  .pill.stale { color: var(--amber); }
+  .pill.completed { color: var(--green); }
+  .pill.training, .pill.evaluating, .pill.running, .pill.starting { color: var(--brand); }
 </style>
 </head>
 <body>
@@ -73,7 +86,10 @@
     <span class="state" id="state">loading…</span>
     <button class="chip" id="refresh">Refresh</button>
   </div>
-  <nav class="tabs"><button class="tab active" id="tab-backups" data-tab="backups">Backups</button></nav>
+  <nav class="tabs">
+    <button class="tab active" id="tab-backups" data-tab="backups">Backups</button>
+    <button class="tab" id="tab-training" data-tab="training">Training</button>
+  </nav>
   <main id="pane-backups">
     <div class="col">
       <section>
@@ -98,6 +114,16 @@
       <section>
         <h3>Live run <span class="grow"></span><button class="chip danger" id="cancel" hidden>Cancel</button></h3>
         <div id="live"><div class="placeholder">Start or pick a run to watch it here.</div></div>
+      </section>
+    </div>
+  </main>
+  <main id="pane-training" class="single" hidden>
+    <div class="col">
+      <section>
+        <h3>Live runs <span class="grow"></span><span class="muted" id="trainSummary"></span>
+          <button class="chip" id="toggleStale">Show stale</button></h3>
+        <div id="trainRuns"><div class="placeholder">loading training runs…</div></div>
+        <div class="muted" id="trainSource" style="font-size:11px;margin-top:8px"></div>
       </section>
     </div>
   </main>
@@ -279,12 +305,109 @@ async function propose(op, delegateTo, label) {
 $("verify").addEventListener("click", () => propose("backups.verify", "", "verify backups"));
 $("delegate").addEventListener("click", () => propose("backups.verify", "genesis", "verify backups (delegated to Genesis)"));
 $("backup").addEventListener("click", () => propose("backups.run", "", "run a backup"));
-$("refresh").addEventListener("click", () => void refresh());
+$("refresh").addEventListener("click", () => void (activeTab === "training" ? loadTraining() : refresh()));
 $("cancel").addEventListener("click", async () => {
   if (!watching) return;
   const res = await ops.cancel(watching);
   if (!res || !res.ok) say("cancel failed: " + ((res && res.error) || "no answer"), true);
   else if (res.data && res.data.run) renderRun(res.data.run);
+});
+
+// ── Training tab ─────────────────────────────────────────────────────────
+// Read-only: the gateway's training_runs_live tool over the ONE telemetry spool
+// (the same reader the tunnel and Veil's /api/training/live sit on). Polls every
+// 30 s while the tab is showing; a failed read says so and never shows "no runs".
+let activeTab = "backups";
+let showStale = false;
+let trainTimer = null;
+let lastTraining = null;
+
+function num(v, digits) {
+  return typeof v === "number" && isFinite(v) ? v.toFixed(digits) : null;
+}
+function eta(sec) {
+  if (typeof sec !== "number" || !isFinite(sec) || sec <= 0) return null;
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return h ? h + "h" + String(m).padStart(2, "0") + "m" : m + "m";
+}
+function ago(sec) {
+  if (typeof sec !== "number" || !isFinite(sec)) return "";
+  if (sec < 90) return Math.round(sec) + "s ago";
+  if (sec < 5400) return Math.round(sec / 60) + "m ago";
+  if (sec < 172800) return Math.round(sec / 3600) + "h ago";
+  return Math.round(sec / 86400) + "d ago";
+}
+
+function renderTraining(data) {
+  const box = $("trainRuns");
+  box.replaceChildren();
+  const runs = (data && data.runs) || [];
+  const stale = runs.filter((r) => r.stale).length;
+  $("trainSummary").textContent = (data.live || 0) + " live · " + stale + " stale · " + (data.total || runs.length) + " total";
+  $("toggleStale").textContent = showStale ? "Hide stale" : "Show stale";
+  $("trainSource").textContent = "spool " + (data.spool_dir || "?") + " · reader " + (data.reader || "?");
+  const shown = showStale ? runs : runs.filter((r) => !r.stale);
+  if (!shown.length) {
+    box.appendChild(el("div", "placeholder", runs.length ? "Nothing live — " + stale + " stale run(s) hidden." : "No runs in the telemetry spool."));
+    return;
+  }
+  for (const r of shown) {
+    const card = el("div", "trun" + (r.stale ? " stale" : ""));
+    const top = el("div", "top");
+    top.appendChild(el("span", "id", r.run_id || "(no id)"));
+    if (r.kind) top.appendChild(el("span", "muted", r.kind));
+    top.appendChild(pill(r.stale ? "stale" : r.state));
+    card.appendChild(top);
+    const step = typeof r.step === "number" ? r.step : null;
+    const total = typeof r.total_steps === "number" && r.total_steps > 0 ? r.total_steps : null;
+    if (step != null && total != null) {
+      const track = el("div", "bar-track");
+      const fill = el("div", "bar-fill");
+      fill.style.width = Math.min(100, (100 * step) / total).toFixed(1) + "%";
+      track.appendChild(fill);
+      card.appendChild(track);
+    }
+    const facts = [];
+    if (step != null) facts.push("step " + step + (total != null ? " / " + total + " (" + ((100 * step) / total).toFixed(1) + "%)" : ""));
+    if (num(r.loss, 4)) facts.push("loss " + num(r.loss, 4));
+    if (eta(r.eta_s)) facts.push("eta " + eta(r.eta_s));
+    if (num(r.cost_so_far_usd, 2)) facts.push("$" + num(r.cost_so_far_usd, 2) + (num(r.usd_per_hr, 2) ? " @ $" + num(r.usd_per_hr, 2) + "/h" : ""));
+    if (r.gpu) facts.push(String(r.gpu));
+    if (facts.length) card.appendChild(el("div", "meta", facts.join(" · ")));
+    card.appendChild(el("div", "meta", [r.message, ago(r.age_s)].filter(Boolean).join(" · ")));
+    box.appendChild(card);
+  }
+}
+
+async function loadTraining() {
+  if (trainTimer) { clearTimeout(trainTimer); trainTimer = null; }
+  const res = await ops.training(50);
+  if (!res || !res.ok) {
+    $("trainRuns").replaceChildren(el("div", "summary bad", "Could not read training runs: " + ((res && res.error) || "no answer")));
+    say("training read failed", true);
+  } else {
+    lastTraining = res.data || {};
+    renderTraining(lastTraining);
+    say("updated " + new Date().toLocaleTimeString());
+  }
+  if (activeTab === "training" && !document.hidden) trainTimer = setTimeout(() => void loadTraining(), 30000);
+}
+
+function selectTab(tab) {
+  activeTab = tab === "training" ? "training" : "backups";
+  for (const b of document.querySelectorAll(".tab")) b.classList.toggle("active", b.dataset.tab === activeTab);
+  $("pane-backups").hidden = activeTab !== "backups";
+  $("pane-training").hidden = activeTab !== "training";
+  if (activeTab === "training") void loadTraining();
+  else if (trainTimer) { clearTimeout(trainTimer); trainTimer = null; }
+}
+for (const b of document.querySelectorAll(".tab")) b.addEventListener("click", () => selectTab(b.dataset.tab));
+$("toggleStale").addEventListener("click", () => {
+  showStale = !showStale;
+  if (lastTraining) renderTraining(lastTraining);
+});
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && activeTab === "training") void loadTraining();
 });
 
 if (!ops) say("no ops bridge in this frame", true);

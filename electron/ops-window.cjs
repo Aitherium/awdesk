@@ -66,6 +66,8 @@ function opsHandlers(ops = client()) {
     "desk:ops-status": (_e, query) => answer(() => ops.status(
       typeof query === "string" ? query : { noun: (query && query.noun) || "backups", limit: (query && query.limit) || 20 })),
     "desk:ops-cancel": (_e, runId) => answer(() => ops.cancel(String(runId || ""))),
+    // Training tab: read-only, the pane polls it while visible.
+    "desk:ops-training": (_e, limit) => answer(() => ops.trainingLive(Number(limit) || 20)),
     // Live run view: main polls, the frame that asked hears every change.
     "desk:ops-watch": (event, runId) => answer(() => ops.watch(String(runId || ""), (run, error) => {
       const sender = event && event.sender;

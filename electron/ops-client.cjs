@@ -102,6 +102,22 @@ function createOpsClient({ call = callTool, sleep = (ms) => new Promise((r) => s
     },
 
     /**
+     * Live training runs (owner 2026-10-14: "make sure I can follow along on my
+     * phone / awdesk"). Read-only `training_runs_live` (mcp_training_live.py),
+     * which reads the ONE telemetry spool through lib/training/train_telemetry.py
+     * -- the same reader AitherTunnel's /tunnel/operations/training and Veil's
+     * /api/training/live sit on. `{ok:false}` throws like `{error}` does: a spool
+     * the gateway cannot reach must never render as "nothing is training".
+     */
+    trainingLive: async (limit = 20) => {
+      const n = Math.min(200, Math.max(1, Math.trunc(Number(limit)) || 20));
+      const answer = await tool("training_runs_live", { limit: n });
+      if (answer.ok === false) throw new Error("training_runs_live: answered ok:false");
+      if (!Array.isArray(answer.runs)) throw new Error("training_runs_live: answer carried no runs list");
+      return answer;
+    },
+
+    /**
      * Poll ops_status until the run reaches a terminal state (or the timeout).
      * onUpdate(run) fires on every poll whose state/updated_at moved. Resolves
      * {run, done:true} on a terminal state, {run, done:false, timedOut:true} on

@@ -151,3 +151,34 @@ test("ops-window handlers answer {ok,error}, fence the op list, and push watch u
   assert.equal(sent[0][0], "desk:ops-run-update");
   assert.equal(sent[0][1].run.state, "succeeded");
 });
+
+test("trainingLive() reads training_runs_live, clamps limit, and never turns a dead spool into 'no runs'", async () => {
+  const runs = [{ run_id: "diclefb2broad", kind: "eval", state: "evaluating", stale: false, step: 22109, total_steps: 140620 }];
+  const { call, calls } = recorder({ training_runs_live: { ok: true, live: 1, total: 1, runs } });
+  const ops = createOpsClient({ call });
+  const out = await ops.trainingLive(5000);
+  assert.equal(calls[0].name, "training_runs_live");
+  assert.equal(calls[0].args.limit, 200, "limit is clamped to the tool's 1-200 range");
+  assert.equal(out.runs[0].run_id, "diclefb2broad");
+
+  const dead = createOpsClient({ call: recorder({ training_runs_live: { ok: false, error: "spool unreachable" } }).call });
+  await assert.rejects(dead.trainingLive(), /spool unreachable/);
+  const okFalse = createOpsClient({ call: recorder({ training_runs_live: { ok: false } }).call });
+  await assert.rejects(okFalse.trainingLive(), /ok:false/);
+  const noList = createOpsClient({ call: recorder({ training_runs_live: { ok: true } }).call });
+  await assert.rejects(noList.trainingLive(), /no runs list/);
+
+  const { opsHandlers } = require("./ops-window.cjs");
+  const answer = await opsHandlers(dead)["desk:ops-training"]({}, 20);
+  assert.equal(answer.ok, false);
+  assert.match(answer.error, /spool unreachable/);
+});
+
+test("ops.html has a Training tab wired to the preload's training verb", () => {
+  const html = fs.readFileSync(path.join(__dirname, "ops.html"), "utf8");
+  assert.match(html, /data-tab="training"/);
+  assert.match(html, /id="pane-training"/);
+  assert.match(html, /ops\.training\(/);
+  const preload = fs.readFileSync(path.join(__dirname, "ops-preload.cjs"), "utf8");
+  assert.match(preload, /training: \(limit\) => ipcRenderer\.invoke\("desk:ops-training"/);
+});

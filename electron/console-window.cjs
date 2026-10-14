@@ -152,7 +152,7 @@ const PANES = Object.freeze([
   // MCP tools -- gateway-mcp.cjs is the only transport (ops-client.cjs). IPC and
   // the detached twin live in ops-window.cjs, like sessions-window.cjs.
   Object.freeze({
-    id: "ops", label: "Ops", hint: "Backups: state, verify, run", section: "System", icon: "archive",
+    id: "ops", label: "Ops", hint: "Backups; live training runs", section: "System", icon: "archive",
     kind: "file", file: "ops.html",
   }),
   // Cloud LLM spend (owner, 2026-10-04: "where do I see DeepSeek API spend/token

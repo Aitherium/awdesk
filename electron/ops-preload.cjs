@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("aitherOps", {
   status: (runId) => ipcRenderer.invoke("desk:ops-status", String(runId || "")),
   cancel: (runId) => ipcRenderer.invoke("desk:ops-cancel", String(runId || "")),
   watch: (runId) => ipcRenderer.invoke("desk:ops-watch", String(runId || "")),
+  training: (limit) => ipcRenderer.invoke("desk:ops-training", Number(limit) || 20),
   onRunUpdate: (listener) => {
     const handler = (_event, payload) => listener(payload || {});
     ipcRenderer.on("desk:ops-run-update", handler);
