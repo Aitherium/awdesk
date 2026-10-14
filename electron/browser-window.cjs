@@ -51,6 +51,7 @@ const { createLibrary } = require("./browser-library.cjs");
 const { createDownloads } = require("./browser-downloads.cjs");
 const agentsPanel = require("./agents-panel.cjs");
 const rail = require("./browser-rail.cjs");
+const launchModes = require("./launch-modes.cjs");
 const taskbar = require("./browser-taskbar.cjs");
 const extensions = require("./browser-extensions.cjs");
 const overlayMod = require("./browser-overlay.cjs");
@@ -615,7 +616,7 @@ function railState() {
     slot: rects ? rects.avatar : null,
     sections: withAwconnectRow(rail.railSections(require("./console-window.cjs").PANES,
       { activePane: active && active.by === "you" ? active.paneId || null : null, signedIn: hostSignedIn(),
-        owner: hostOwner() }), active),
+        owner: hostOwner(), modes: p.launchModes }), active),
     awconnect: awconnect.ok ? { ok: true, version: awconnect.version } : { ok: false, error: awconnect.error },
     layers: rail.layerRows({ docked, overlayVisible, browserOpen: true, overPages: getPrefs().overlay }),
   };
@@ -843,17 +844,46 @@ function openSearch(text) {
 }
 
 /**
- * An agent app (browser-rail AGENT_APPS) in the pinned AitherOS Online tab:
- * <online>/?spawn=<id>. The platform's own gate (ACTA / sign-in / owner) decides what
- * opens; the desk refuses only an id that is not on its list.
+ * A rail Online app (browser-rail AGENT_APPS, SPACE_APPS, ...). The platform's own gate
+ * (ACTA / sign-in / owner) decides what opens; the desk refuses only an id that is not
+ * on its list. WHERE it opens is the owner's per-app launch mode (launch-modes.cjs).
  */
 function openAgentApp(id) {
   if (!rail.isAgentApp(id)) return { ok: false, error: "not an agent app" };
-  const url = new URL(internal.onlineUrl());
-  url.pathname = "/";
-  url.search = `?spawn=${encodeURIComponent(id)}`;
-  openFromTaskbar(url.href);
-  return { ok: true };
+  return openOnlineApp(id);
+}
+
+/**
+ * Open AitherOS Online app `id` in its launch mode (owner, 2026-10-13: Sprite, Academy
+ * and Spaces all booted the FULL Living Desktop; "we need to be able to configure this"):
+ *   tab      <online>/solo?app=<id> in its own signed-in tab, reused when already open
+ *   window   that tab popped out into its own window
+ *   desktop  <online>/?spawn=<id> on the pinned Online desktop (the old behaviour)
+ * Callers vet `id` (the rail's list, main's command registry); this checks only its shape.
+ */
+function openOnlineApp(id) {
+  if (!launchModes.isAppId(id)) return { ok: false, error: "not an app id" };
+  if (!win || win.isDestroyed()) createBrowserWindow({ url: null, home: false });
+  const mode = launchModes.launchModeFor(getPrefs().launchModes, id);
+  const url = launchModes.appUrl(internal.onlineUrl(), id, mode);
+  if (!url) return { ok: false, error: "no AitherOS Online address" };
+  if (mode === "desktop") {
+    openFromTaskbar(url);
+    return { ok: true, mode };
+  }
+  const key = `app:${id}`;
+  let tab = tabs.byKey(key);
+  if (!tab || !viewOf(tab.id)) {
+    const opened = openTab("you", url, { key, hostedPartition: onlinePartition() });
+    if (!opened.ok) return { ok: false, error: opened.error };
+    tab = tabs.get(opened.id);
+  } else if (!popped.has(tab.id)) {
+    showTab(tab.id);
+  }
+  if (mode === "window") return { ...popOutTab(tab.id), mode };
+  // Asked for a tab and it is popped out: bring that window forward rather than steal the view.
+  if (popped.has(tab.id)) return { ...popOutTab(tab.id), mode };
+  return { ok: true, mode };
 }
 
 /** A workspace page (browser-rail WORKSPACE_PAGES) in the pinned, signed-in Workspace tab. */
@@ -1669,6 +1699,14 @@ function wireIpc() {
       return { ok: true };
     }
     if (action === "online") return openAgentApp(String(arg || ""));
+    // "<id>:<mode>" -- the rail row's mode chip (launch-modes.cjs). Persisted per app.
+    if (action === "launch-mode") {
+      const want = launchModes.parseModeArg(arg);
+      if (!want || !rail.isAgentApp(want.id)) return { ok: false, error: "not an app launch mode" };
+      setPrefs({ launchModes: launchModes.withMode(getPrefs().launchModes, want.id, want.mode) });
+      pushState();
+      return { ok: true, mode: want.mode };
+    }
     if (action === "workspace") return openWorkspacePage(String(arg || ""));
     if (action === "local") {
       // The owner's loopback tools (Grafana, Prometheus): owner-only, fixed URLs.
@@ -1961,6 +1999,7 @@ module.exports = {
   closeBrowserWindow,
   createAssistantPanel,
   createBrowserWindow,
+  openOnlineApp,
   getGate: () => gate,
   getTabs: () => tabs,
   getState: () => state(),

@@ -2614,7 +2614,12 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
         if (tabUrl) {
           return void browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: tabUrl });
         }
-        return void showDesktopApp({ app: command.osApp });
+        // Every other osApp opens in its per-app launch mode (launch-modes.cjs): a tab
+        // by default, its own window, or the full Living Desktop. showDesktopApp's
+        // `?app=` handed off to the Living Desktop at `/`, so Sprite/Academy/Spaces
+        // always booted the FULL desktop (owner, 2026-10-13).
+        browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: null, home: false });
+        return void browserWindow.openOnlineApp(command.osApp);
       }
       if (command && command.fleet) {
         // Fleet and ARC verbs: the same runner the Fleet window, the bridge and

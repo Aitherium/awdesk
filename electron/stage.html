@@ -6,50 +6,114 @@
 <link rel="stylesheet" href="aither-tokens.css" />
 <style>
   /* Colours, type and scrollbars come from aither-tokens.css -- GENERATED from Veil's
-     tokens by AitherOS/dev/tools/gen_desk_tokens.py. This pane used to re-declare its
-     own --bg/--panel/--line/--fg palette by hand; five panes did, none matched the
-     family. What stays here is only what this pane MEANS by a colour. */
+     tokens by AitherOS/dev/tools/gen_desk_tokens.py. What stays here is only what this
+     pane MEANS by a colour. */
   :root {
     --red: var(--destructive);
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
     font: 13px/1.45 var(--font-sans); }
-  body { display: grid; grid-template-rows: 44px auto 1fr auto; height: 100vh; }
+  /* ONE track per top-level region (header / scroller / footer). The 2026-10-13
+     "giant vertical bars" were a fifth region added under a four-track grid: the
+     avatar-window row landed on the 1fr track and every button stretched to its
+     full height. stage-page.test.cjs counts tracks against regions. */
+  body { display: grid; grid-template-rows: 44px 1fr auto; height: 100vh; }
 
-  .bar { display: flex; align-items: center; gap: 10px; padding: 0 14px;
+  .bar { display: flex; align-items: center; gap: 8px; padding: 0 14px;
     border-bottom: 1px solid var(--line); }
-  /* ONE chrome. Inside the console the shell's bar already names this pane, so the
-     pane's own title is the double header from the owner's 2026-09-20 screenshots.
-     console-preload.cjs sets .embedded per frame; detached into its own window the
-     page is not embedded and keeps its title, because there it is the only one. */
+  /* ONE chrome. Inside the console the shell's bar already names this pane. */
   .embedded .bar .title { display: none; }
   .bar .title { font-weight: 600; }
   .bar .state { color: var(--muted); font-size: 12px; flex: 1; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
   .chip { appearance: none; border: 1px solid var(--line); background: var(--btn);
-    color: var(--muted); border-radius: 6px; padding: 5px 10px; cursor: pointer;
-    font: 12px/1.2 system-ui; }
+    color: var(--muted); border-radius: 999px; padding: 5px 12px; cursor: pointer;
+    font: 12px/1.2 var(--font-sans); white-space: nowrap; }
   .chip:hover { background: var(--btn-hi); color: var(--fg); }
+  .chip:disabled { opacity: 0.45; cursor: default; }
   .chip.on { color: var(--fg); border-color: color-mix(in oklch, var(--brand), var(--background) 60%); }
-  /* A voice that is off reads as OFF at a glance: struck through, not just dimmer. */
   .chip.voice.off { color: var(--muted); text-decoration: line-through; }
   .chip.voice.room-off { opacity: 0.6; }
   .chip.danger:hover { color: var(--red); border-color: color-mix(in oklch, var(--bad), var(--background) 62%); }
+  .icon-btn { appearance: none; border: 1px solid transparent; background: transparent;
+    color: var(--muted); border-radius: 8px; width: 30px; height: 30px; cursor: pointer;
+    font: 16px/1 var(--font-sans); display: inline-grid; place-items: center; }
+  .icon-btn:hover, .icon-btn[aria-expanded="true"] { background: var(--btn); color: var(--fg);
+    border-color: var(--line); }
 
-  .arrangements { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 14px;
-    border-bottom: 1px solid var(--line); }
+  main { overflow-y: auto; min-height: 0; padding: 14px; display: flex;
+    flex-direction: column; gap: 14px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+  .panel-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px 0; }
+  .panel-head h2 { margin: 0; font-size: 12px; font-weight: 600; color: var(--muted);
+    letter-spacing: 0.04em; text-transform: uppercase; flex: 1; }
 
-  #list { overflow-y: auto; min-height: 0; padding: 6px 0; }
-  .row { display: flex; align-items: center; gap: 10px; padding: 9px 14px;
-    border-bottom: 1px solid var(--btn); }
+  /* The stage preview: a floor with a token per body. Illustrative -- the real
+     positions live in the avatar window (src/stage/arrangements.ts). */
+  .stage { position: relative; height: 210px; margin: 10px 12px; border-radius: 10px;
+    overflow: hidden; border: 1px solid var(--line);
+    background:
+      radial-gradient(ellipse 70% 55% at 50% 100%, color-mix(in oklch, var(--brand), transparent 78%), transparent 70%),
+      linear-gradient(to bottom, var(--bg-sunk), var(--bg)); }
+  .stage::after { content: ""; position: absolute; left: 6%; right: 6%; bottom: 18%;
+    height: 1px; background: color-mix(in oklch, var(--brand), transparent 70%); }
+  .stage .empty-stage { position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--muted); font-size: 12px; padding: 0 20px; text-align: center; }
+  .token { position: absolute; transform: translate(-50%, 0); appearance: none; border: 0;
+    background: transparent; color: var(--fg); cursor: pointer; display: grid;
+    justify-items: center; gap: 6px; padding: 0; transition: left .35s ease, bottom .35s ease, scale .35s ease;
+    font: 11px/1.2 var(--font-sans); z-index: 1; }
+  .token .avatar { width: 52px; height: 52px; font-size: 20px;
+    box-shadow: 0 8px 18px color-mix(in oklch, var(--bg-deep), transparent 30%); }
+  .token .label { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--muted); }
+  .token.selected .avatar { outline: 2px solid var(--brand); outline-offset: 3px; }
+  .token.selected .label { color: var(--fg); }
+
+  .avatar { flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid;
+    place-items: center; font-weight: 700; font-size: 16px; color: var(--bg-deep);
+    background: var(--pastel-sky); }
+
+  /* A segmented control: one pill holding equal options, never a wall of buttons. */
+  .seg { display: inline-flex; align-items: center; gap: 2px; padding: 3px;
+    border: 1px solid var(--line); border-radius: 999px; background: var(--bg-sunk);
+    flex-wrap: wrap; }
+  .seg .chip { border-color: transparent; background: transparent; }
+  .seg .chip:hover { background: var(--btn); }
+  .seg .chip.on { background: var(--btn-hi); color: var(--fg); border-color: var(--line); }
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 0 12px 12px; }
+  .toolbar .hint { color: var(--muted); font-size: 11px; }
+
+  .menu-wrap { position: relative; }
+  .menu { position: absolute; right: 0; top: calc(100% + 4px); min-width: 190px; z-index: 10;
+    background: var(--popover); border: 1px solid var(--line); border-radius: 10px; padding: 4px;
+    box-shadow: 0 12px 30px color-mix(in oklch, var(--bg-deep), transparent 20%); }
+  .menu[hidden] { display: none; }
+  .menu button { display: block; width: 100%; text-align: left; appearance: none; border: 0;
+    background: transparent; color: var(--fg); padding: 7px 10px; border-radius: 6px;
+    cursor: pointer; font: 12px/1.3 var(--font-sans); }
+  .menu button:hover { background: var(--btn); }
+  .menu button.danger { color: var(--red); }
+
+  #list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 10px; padding: 10px 12px 12px; align-content: start; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 10px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--bg-elevated); min-width: 0; }
+  .row.selected { border-color: color-mix(in oklch, var(--brand), var(--background) 45%); }
+  .row .pick { appearance: none; border: 0; background: transparent; color: inherit;
+    display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; padding: 0;
+    cursor: pointer; text-align: left; font: inherit; }
   .row .who { flex: 1; min-width: 0; display: grid; gap: 2px; }
   .row .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row .sub { color: var(--muted); font-size: 11px; }
-  .row .tag { font-size: 10px; border-radius: 999px; padding: 1px 7px;
-    border: 1px solid var(--line); color: var(--muted); }
-  .empty { color: var(--muted); padding: 22px 14px; }
+  .row .sub { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .row .tag { font-size: 10px; border-radius: 999px; padding: 1px 7px; margin-left: 6px;
+    border: 1px solid var(--line); color: var(--muted); font-weight: 400; }
+  .empty { color: var(--muted); padding: 10px 2px; grid-column: 1 / -1; }
   .empty strong { display: block; color: var(--fg); margin-bottom: 6px; }
+
   footer { border-top: 1px solid var(--line); padding: 8px 14px; color: var(--muted);
     font-size: 11px; display: flex; gap: 10px; align-items: center; }
   footer .err { color: var(--red); flex: 1; }
@@ -60,18 +124,37 @@
     <span class="title">Stage</span>
     <span class="state" id="state">reading the stage…</span>
     <button class="chip voice" id="allVoices" aria-pressed="false" title="Every voice on or off; speech bubbles keep showing the words">All voices on</button>
-    <button class="chip" id="refresh">Refresh</button>
+    <button class="icon-btn" id="refresh" title="Refresh" aria-label="Refresh">⟳</button>
+    <span class="menu-wrap">
+      <button class="icon-btn" id="window-menu-btn" aria-haspopup="menu" aria-expanded="false" title="Avatar window options" aria-label="Avatar window options">⋯</button>
+      <div class="menu" id="window-menu" role="menu" hidden></div>
+    </span>
   </div>
 
-  <div class="arrangements" id="arrangements"></div>
-  <div class="arrangements" id="window-controls" aria-label="Avatar window"></div>
+  <main>
+    <section class="panel" aria-label="Stage preview">
+      <div class="panel-head"><h2>On stage</h2></div>
+      <div class="stage" id="stage"></div>
+      <div class="toolbar">
+        <div class="seg" id="arrangements" role="group" aria-label="Arrangement"></div>
+      </div>
+    </section>
 
-  <div id="list"></div>
+    <section class="panel" aria-label="Avatar window">
+      <div class="panel-head"><h2>Avatar window</h2></div>
+      <div class="toolbar" id="window-controls" style="padding-top:10px"></div>
+    </section>
+
+    <section class="panel" aria-label="Bodies">
+      <div class="panel-head"><h2>Bodies</h2></div>
+      <div id="list"></div>
+    </section>
+  </main>
 
   <footer>
     <span class="err" id="err"></span>
     <span id="safety"></span>
-    <span>Bodies are also draggable on the stage itself — this pane is the path that needs no aim.</span>
+    <span>Bodies are also draggable on the stage itself.</span>
   </footer>
 
 <script>
@@ -79,6 +162,7 @@
 
 // The Stage pane. It holds no geometry and no state: main lists the bodies, the
 // renderer places them (src/stage/arrangements.ts). Everything here is a name.
+// The preview floor below is a SKETCH of the last arrangement asked for.
 const listEl = document.getElementById("list");
 const stateEl = document.getElementById("state");
 const errEl = document.getElementById("err");
@@ -91,11 +175,37 @@ const ARRANGEMENTS = [
   { id: "reset", label: "Reset everyone" },
 ];
 
+const AVATAR_HUES = ["--pastel-sky", "--pastel-lavender", "--pastel-mint", "--pastel-peach",
+  "--pastel-rose", "--pastel-aqua", "--pastel-lemon", "--pastel-coral"];
+
 let bodies = [];
 let selected = null;
+let arrangement = "row";
+let lastSize = null;
+let openMenu = null; // { key, menu, button }
 // Main reports the state the room is HEADING to (a mute still being announced
 // counts as muted), so the pane paints main's answer and keeps no timer of its own.
 let allVoicesMuted = false;
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function nameOf(entry) { return entry.agent || entry.name || entry.slotId; }
+
+/** A monogram disc, coloured by the body's name so it stays the same across polls. */
+function avatarFor(entry) {
+  const who = String(nameOf(entry) || "?");
+  let hash = 0;
+  for (let i = 0; i < who.length; i += 1) hash = (hash * 31 + who.charCodeAt(i)) >>> 0;
+  const disc = el("span", "avatar", who.charAt(0).toUpperCase());
+  disc.style.background = `var(${AVATAR_HUES[hash % AVATAR_HUES.length]})`;
+  disc.setAttribute("aria-hidden", "true");
+  return disc;
+}
 
 /** The master switch's face: it names the CURRENT state and offers the flip. */
 function renderAllVoices() {
@@ -154,91 +264,198 @@ async function call(promise, what) {
   }
 }
 
+// ---- overflow menus ---------------------------------------------------------
+
+function closeMenus() {
+  if (!openMenu) return;
+  openMenu.menu.hidden = true;
+  openMenu.button.setAttribute("aria-expanded", "false");
+  openMenu = null;
+}
+
+function showMenu(key, menu, button) {
+  closeMenus();
+  menu.hidden = false;
+  button.setAttribute("aria-expanded", "true");
+  openMenu = { key, menu, button };
+}
+
+/** Wire a ⋯ button to its menu; `key` lets a menu survive the 4 s repaint. */
+function bindMenu(key, button, menu) {
+  menu.hidden = true;
+  button.addEventListener("click", (event) => {
+    if (event && event.stopPropagation) event.stopPropagation();
+    if (openMenu && openMenu.key === key) closeMenus();
+    else showMenu(key, menu, button);
+  });
+  if (openMenu && openMenu.key === key) showMenu(key, menu, button);
+}
+
+function menuItem(menu, label, onPick, className) {
+  const item = el("button", className || "", label);
+  item.setAttribute("role", "menuitem");
+  item.addEventListener("click", (event) => {
+    if (event && event.stopPropagation) event.stopPropagation();
+    closeMenus();
+    return onPick();
+  });
+  menu.appendChild(item);
+  return item;
+}
+
+if (typeof document.addEventListener === "function") {
+  document.addEventListener("click", closeMenus);
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeMenus(); });
+}
+
+// ---- arrangements + preview ------------------------------------------------
+
 function renderArrangements() {
   renderWindowControls();
   const holder = document.getElementById("arrangements");
   holder.replaceChildren();
   for (const item of ARRANGEMENTS) {
     const button = document.createElement("button");
-    button.className = "chip";
+    button.className = "chip" + (item.id === arrangement ? " on" : "");
     button.textContent = item.label;
     button.dataset.arrangement = item.id;
     // `focus` needs a subject; without a selection it would silently focus the
     // resident, which reads as "the button picked the wrong body".
-    if (item.id === "focus" && !selected) button.disabled = true;
+    if (item.id === "focus" && !selected) {
+      button.disabled = true;
+      button.title = "Pick a body first";
+    }
     button.addEventListener("click", async () => {
-      await call(window.aitherStage.arrange(item.id, {
+      const done = await call(window.aitherStage.arrange(item.id, {
         slotId: item.id === "focus" ? selected : null,
         pair: item.id === "pair" && selected ? [selected] : [],
       }), item.label);
+      if (done) {
+        arrangement = item.id === "reset" ? "row" : item.id;
+        renderArrangements();
+        renderStage();
+      }
     });
     holder.appendChild(button);
   }
 }
 
+/** Where each token stands on the preview floor: [left %, bottom %, scale]. */
+function placements(count) {
+  const spots = [];
+  for (let i = 0; i < count; i += 1) {
+    const t = (i + 1) / (count + 1);
+    if (arrangement === "arc") {
+      const depth = Math.sin(Math.PI * t);
+      spots.push([8 + t * 84, 16 + depth * 34, 1 - depth * 0.2]);
+    } else {
+      spots.push([8 + t * 84, 16, 1]);
+    }
+  }
+  if (arrangement === "pair" && count >= 2) {
+    // The pair meets in the middle; everyone else steps to the wings.
+    const first = Math.max(0, bodies.findIndex((b) => b.slotId === selected));
+    const second = first === 0 ? 1 : 0;
+    const rest = [];
+    for (let i = 0; i < count; i += 1) if (i !== first && i !== second) rest.push(i);
+    spots[first] = [41, 18, 1.05];
+    spots[second] = [59, 18, 1.05];
+    rest.forEach((index, n) => {
+      const left = n % 2 === 0;
+      const step = Math.floor(n / 2);
+      spots[index] = [left ? 12 + step * 9 : 88 - step * 9, 22, 0.85];
+    });
+  }
+  if (arrangement === "focus" && selected) {
+    const at = bodies.findIndex((b) => b.slotId === selected);
+    if (at >= 0) spots[at] = [spots[at][0], spots[at][1], 1.25];
+  }
+  return spots;
+}
+
+function selectBody(slotId) {
+  selected = selected === slotId ? null : slotId;
+  renderBodies();
+  renderArrangements();
+}
+
+function renderStage() {
+  const floor = document.getElementById("stage");
+  floor.replaceChildren();
+  if (!bodies.length) {
+    floor.appendChild(el("div", "empty-stage", "The stage is empty. The resident avatar appears once its window is open."));
+    return;
+  }
+  const spots = placements(bodies.length);
+  bodies.forEach((entry, index) => {
+    const [left, bottom, scale] = spots[index];
+    const token = el("button", "token" + (selected === entry.slotId ? " selected" : ""));
+    token.dataset.slot = entry.slotId;
+    token.title = `${nameOf(entry)} -- click to ${selected === entry.slotId ? "deselect" : "select"}`;
+    token.style.left = `${left}%`;
+    token.style.bottom = `${bottom}%`;
+    token.style.scale = String(scale);
+    token.append(avatarFor(entry), el("span", "label", nameOf(entry)));
+    token.addEventListener("click", () => selectBody(entry.slotId));
+    floor.appendChild(token);
+  });
+}
+
+// ---- body cards ---------------------------------------------------------------
+
 function renderBodies() {
+  renderStage();
   listEl.replaceChildren();
   if (!bodies.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty";
-    const head = document.createElement("strong");
-    head.textContent = "Nobody is on the stage";
-    const body = document.createElement("p");
-    body.textContent = "The resident avatar appears here once the window is open, and room "
-      + "agents appear as they speak. Arrangements apply to whoever is standing.";
-    empty.append(head, body);
+    const empty = el("div", "empty");
+    empty.append(el("strong", "", "Nobody is on the stage"),
+      el("p", "", "The resident avatar appears here once the window is open, and room "
+        + "agents appear as they speak. Arrangements apply to whoever is standing."));
     listEl.appendChild(empty);
     return;
   }
   for (const entry of bodies) {
-    const row = document.createElement("div");
-    row.className = "row";
+    const isSelected = selected === entry.slotId;
+    const row = el("div", "row" + (isSelected ? " selected" : ""));
+    row.dataset.slot = entry.slotId;
 
-    const who = document.createElement("div");
-    who.className = "who";
-    const name = document.createElement("div");
-    name.className = "name";
-    // WHO first (the agent or session), the body's file name second.
-    name.textContent = entry.agent || entry.name || entry.slotId;
-    const sub = document.createElement("div");
-    sub.className = "sub";
-    sub.textContent = [entry.agent ? `body ${entry.name || "?"}` : null, entry.slotId].filter(Boolean).join(" · ");
+    // The avatar + name ARE the select control (was a separate "Select" chip).
+    const pick = el("button", "pick");
+    pick.dataset.select = entry.slotId;
+    pick.setAttribute("aria-pressed", isSelected ? "true" : "false");
+    pick.title = isSelected ? "Selected -- click to deselect" : "Select";
+    const who = el("span", "who");
+    const name = el("span", "name", nameOf(entry));
+    name.appendChild(el("span", "tag", entry.resident ? "resident" : "room"));
+    const sub = el("span", "sub",
+      [entry.agent ? `body ${entry.name || "?"}` : null, entry.slotId].filter(Boolean).join(" · "));
     who.append(name, sub);
+    pick.append(avatarFor(entry), who);
+    pick.addEventListener("click", () => selectBody(entry.slotId));
 
-    const tag = document.createElement("span");
-    tag.className = "tag";
-    tag.textContent = entry.resident ? "resident" : "room";
-
-    const select = document.createElement("button");
-    select.className = "chip" + (selected === entry.slotId ? " on" : "");
-    select.textContent = selected === entry.slotId ? "Selected" : "Select";
-    select.addEventListener("click", () => {
-      selected = selected === entry.slotId ? null : entry.slotId;
-      renderBodies();
-      renderArrangements();
-    });
-
-    const frame = document.createElement("button");
-    frame.className = "chip";
-    frame.textContent = "Frame";
-    frame.addEventListener("click", () => call(window.aitherStage.focus(entry.slotId), "Frame"));
-
-    row.append(who, tag, voiceButton(entry), select, frame);
-
+    const wrap = el("span", "menu-wrap");
+    const more = el("button", "icon-btn", "⋯");
+    more.dataset.more = entry.slotId;
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
+    more.setAttribute("aria-label", `More for ${nameOf(entry)}`);
+    const menu = el("div", "menu");
+    menu.setAttribute("role", "menu");
+    menuItem(menu, "Frame", () => call(window.aitherStage.focus(entry.slotId), "Frame"));
     // The resident is the desk's own avatar; main refuses to remove it, so the
-    // button is not offered rather than offered and refused.
+    // item is not offered rather than offered and refused.
     if (!entry.resident) {
-      const remove = document.createElement("button");
-      remove.className = "chip danger";
-      remove.textContent = "Send away";
-      remove.addEventListener("click", async () => {
+      menuItem(menu, "Send away", async () => {
         if (await call(window.aitherStage.remove(entry.slotId), "Send away")) {
           if (selected === entry.slotId) selected = null;
           void refresh();
         }
-      });
-      row.appendChild(remove);
+      }, "danger");
     }
+    wrap.append(more, menu);
+    bindMenu(`body:${entry.slotId}`, more, menu);
+
+    row.append(pick, voiceButton(entry), wrap);
     listEl.appendChild(row);
   }
 }
@@ -262,39 +479,91 @@ async function refresh() {
 
 document.getElementById("refresh").addEventListener("click", () => void refresh());
 document.getElementById("allVoices").addEventListener("click", () => void setAllVoices(!allVoicesMuted));
+
+// ---- the avatar WINDOW (not the bodies) -----------------------------------------
+// Its size, its outline, its saved layout and whether it shows at all. Every id is
+// in stage-window.cjs STAGE_RUNNABLE; the page only chooses where each one sits.
+const SIZE_PRESETS = [
+  { id: "window.size.small", label: "S", title: "Small" },
+  { id: "window.size.medium", label: "M", title: "Medium" },
+  { id: "window.size.large", label: "L", title: "Large" },
+  { id: "window.size.xlarge", label: "XL", title: "Extra large" },
+];
+const SIZE_STEPS = [
+  { id: "window.size.smaller", label: "−", title: "Smaller" },
+  { id: "window.size.bigger", label: "+", title: "Bigger" },
+];
+const WINDOW_MENU = [
+  { id: "window.outline", label: "Show outline" },
+  { id: "layout.reset-all", label: "Reset window layout" },
+];
+const WINDOW_TOGGLE = { id: "avatar.toggle", label: "Show / hide avatar" };
+function windowControls() { return [WINDOW_TOGGLE, ...SIZE_PRESETS, ...SIZE_STEPS, ...WINDOW_MENU]; }
+
+function runButton(item, className) {
+  const button = el("button", className, item.label);
+  button.dataset.run = item.id;
+  if (item.title) { button.title = item.title; button.setAttribute("aria-label", item.title); }
+  button.addEventListener("click", () => runWindow(item));
+  return button;
+}
+
+async function runWindow(item) {
+  const done = await call(window.aitherStage.run(item.id), item.title || item.label);
+  if (done && SIZE_PRESETS.some((p) => p.id === item.id)) {
+    lastSize = item.id;
+    paintSizes();
+  }
+  return done;
+}
+
+function paintSizes() {
+  const group = document.getElementById("size-presets");
+  if (!group) return;
+  for (const button of group.children) {
+    const on = button.dataset.run === lastSize;
+    button.className = "chip" + (on ? " on" : "");
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+
+let windowControlsBuilt = false;
+function renderWindowControls() {
+  const holder = document.getElementById("window-controls");
+  if (!holder || windowControlsBuilt || !window.aitherStage.run) return;
+  windowControlsBuilt = true;
+
+  holder.appendChild(runButton(WINDOW_TOGGLE, "chip"));
+
+  const sizes = el("div", "seg");
+  sizes.id = "size-presets";
+  sizes.setAttribute("role", "group");
+  sizes.setAttribute("aria-label", "Window size");
+  for (const item of SIZE_PRESETS) sizes.appendChild(runButton(item, "chip"));
+  holder.appendChild(sizes);
+
+  const steps = el("div", "seg");
+  steps.id = "size-steps";
+  steps.setAttribute("role", "group");
+  steps.setAttribute("aria-label", "Nudge size");
+  for (const item of SIZE_STEPS) steps.appendChild(runButton(item, "chip"));
+  holder.appendChild(steps);
+  holder.appendChild(el("span", "hint", "Ctrl+Shift+− / + also nudge it"));
+
+  const menu = document.getElementById("window-menu");
+  menu.replaceChildren();
+  for (const item of WINDOW_MENU) {
+    const entry = menuItem(menu, item.label, () => runWindow(item));
+    entry.dataset.run = item.id;
+  }
+  bindMenu("window", document.getElementById("window-menu-btn"), menu);
+  paintSizes();
+}
+
 // A body arrives when a room agent speaks, so the list is polled rather than
 // pushed: the pane must not show a stage that emptied five minutes ago.
 setInterval(() => void refresh(), 4000);
 void refresh();
-
-// The avatar WINDOW (not the bodies): its size, its outline, its saved layout and
-// whether it shows at all. These were a whole "Avatar window" submenu on two menus.
-function windowControls() { return [
-  { id: "avatar.toggle", label: "Show / hide avatar" },
-  { id: "window.size.small", label: "Small" },
-  { id: "window.size.medium", label: "Medium" },
-  { id: "window.size.large", label: "Large" },
-  { id: "window.size.xlarge", label: "Extra large" },
-  { id: "window.size.smaller", label: "Smaller" },
-  { id: "window.size.bigger", label: "Bigger" },
-  { id: "window.outline", label: "Show outline" },
-  { id: "layout.reset-all", label: "Reset window layout" },
-]; }
-function renderWindowControls() {
-  const holder = document.getElementById("window-controls");
-  if (!holder || holder.childElementCount || !window.aitherStage.run) return;
-  const label = document.createElement("span");
-  label.textContent = "Avatar window:";
-  label.style.cssText = "align-self:center;color:var(--muted);font-size:12px";
-  holder.appendChild(label);
-  for (const item of windowControls()) {
-    const button = document.createElement("button");
-    button.className = "chip";
-    button.textContent = item.label;
-    button.addEventListener("click", () => call(window.aitherStage.run(item.id)));
-    holder.appendChild(button);
-  }
-}
 </script>
 </body>
 </html>

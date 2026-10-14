@@ -44,6 +44,12 @@
   .row .l { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .row .n { min-width: 18px; height: 16px; padding: 0 5px; border-radius: 8px; font-size: 10px; line-height: 16px;
     text-align: center; background: var(--destructive); color: var(--fg); }
+  /* Where an Online app opens (launch-modes.cjs): tab / window / full desktop. Click cycles. */
+  .row .lm { flex: none; width: 20px; height: 18px; border-radius: 5px; font-size: 11px; line-height: 18px;
+    text-align: center; color: var(--muted); opacity: 0; border: 1px solid transparent; }
+  .row:hover .lm, .row .lm.set { opacity: 1; }
+  .row .lm:hover { border-color: var(--line); color: var(--fg); }
+  body.collapsed .row .lm { display: none; }
   #layers { flex: none; height: 92px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 6px 8px 8px;
     border-top: 1px solid var(--line); }
   .layer { display: flex; flex-direction: column; justify-content: center; padding: 2px 8px; border-radius: 8px;
@@ -170,6 +176,12 @@
 <script>
   const api = window.aitherBrowser;
   const $ = (id) => document.getElementById(id);
+  // Mirrors launch-modes.cjs MODES / MODE_LABELS (this page has no require).
+  const LAUNCH = Object.freeze({
+    tab: { glyph: "▭", hint: "Opens in a tab", label: "in a tab", next: "window" },
+    window: { glyph: "⧉", hint: "Opens in its own window", label: "in its own window", next: "desktop" },
+    desktop: { glyph: "⌂", hint: "Opens on the full AitherOS desktop", label: "on the full AitherOS desktop", next: "tab" },
+  });
   let editing = false;
   $("url").addEventListener("focus", () => { editing = true; $("url").select(); });
   $("url").addEventListener("blur", () => { editing = false; });
@@ -362,6 +374,18 @@
           n.className = "n";
           n.textContent = inbox.badge > 99 ? "99+" : String(inbox.badge);
           b.append(n);
+        }
+        if (row.kind === "online" && LAUNCH[row.launch]) {
+          // The launch-mode chip: tab -> window -> desktop, saved per app.
+          const lm = document.createElement("span");
+          const mode = LAUNCH[row.launch];
+          lm.className = "lm" + (row.launch !== "tab" ? " set" : "");
+          lm.textContent = mode.glyph;
+          lm.title = `${mode.hint}. Click to open it ${LAUNCH[mode.next].label} instead.`;
+          lm.setAttribute("role", "button");
+          lm.setAttribute("aria-label", `${row.label}: ${mode.hint.toLowerCase()}; change`);
+          lm.onclick = (e) => { e.stopPropagation(); api.rail("launch-mode", `${row.id}:${mode.next}`); };
+          b.append(lm);
         }
         if (row.locked) b.style.opacity = "0.55";
         b.onclick = () => api.rail(row.kind === "page" ? "page" : row.kind === "browser" ? "browser"

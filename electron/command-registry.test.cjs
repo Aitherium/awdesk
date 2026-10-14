@@ -327,9 +327,9 @@ test("every command either has a handler or a dynamic submenu", () => {
       continue;
     }
     if (command.osApp) {
-      // The Aither apps are data too: the default branch opens the record's OS app on
-      // the AitherDesktop app window (aither-apps.test.cjs pins the set).
-      assert.match(body, /showDesktopApp\(\{ app: command\.osApp \}\)/, "the osApp branch is gone");
+      // The Aither apps are data too: the default branch opens the record's OS app in
+      // its per-app launch mode (launch-modes.cjs; aither-apps.test.cjs pins the set).
+      assert.match(body, /browserWindow\.openOnlineApp\(command\.osApp\)/, "the osApp branch is gone");
       continue;
     }
     if ("shell" in command) {

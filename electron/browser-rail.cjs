@@ -21,6 +21,8 @@
  * docks the avatar window onto avatarSlotRect().
  */
 
+const launchModes = require("./launch-modes.cjs");
+
 /** Section order, top to bottom. A section not named here follows in PANES order. */
 const SECTION_ORDER = Object.freeze(["Now", "Voice", "Agents", "Agent apps", "Workspace", "Spaces & sprites", "Stage", "Apps", "Data",
   "System", "Network & platform", "Security", "Command & control", "Observability", "Planes", "Online"]);
@@ -244,7 +246,7 @@ const LAYERS = Object.freeze([
  * @param {Array<object>} panes console-window.cjs PANES
  * @param {{activePane?: string|null}} [opts]
  */
-function railSections(panes, { activePane = null, signedIn = true, owner = false } = {}) {
+function railSections(panes, { activePane = null, signedIn = true, owner = false, modes = {} } = {}) {
   const groups = new Map();
   const add = (name, row) => {
     if (!groups.has(name)) groups.set(name, []);
@@ -265,7 +267,7 @@ function railSections(panes, { activePane = null, signedIn = true, owner = false
     for (const a of apps) {
       add(section, { kind: "online", id: a.app, label: a.label,
         hint: signedIn ? a.hint : `${a.hint} (sign in to AitherOS Online first)`, icon: null, active: false,
-        locked: !signedIn });
+        locked: !signedIn, launch: launchModes.launchModeFor(modes, a.app) });
     }
   };
   online("Agent apps", AGENT_APPS);
@@ -284,7 +286,8 @@ function railSections(panes, { activePane = null, signedIn = true, owner = false
     for (const a of ADMIN_PAGES) add("Command & control", { kind: "workspace", id: a.path, label: a.label, hint: a.hint, icon: null, active: false });
     for (const o of OWNER_LOCAL) add("Observability", { kind: "local", id: o.url, label: o.label, hint: o.hint, icon: null, active: false });
     add("Observability", { kind: "page", id: "pulse", label: "Pulse", hint: "Heartbeat and disk headroom", icon: "activity", active: activePane === "pulse" });
-    add("Observability", { kind: "online", id: "tunnel", label: "Tunnel", hint: "Your machines: shell, VPN, containers", icon: null, active: false });
+    add("Observability", { kind: "online", id: "tunnel", label: "Tunnel", hint: "Your machines: shell, VPN, containers", icon: null, active: false,
+      launch: launchModes.launchModeFor(modes, "tunnel") });
   }
   const names = [...groups.keys()];
   const ordered = [...SECTION_ORDER.filter((n) => groups.has(n)), ...names.filter((n) => !SECTION_ORDER.includes(n))];
@@ -344,6 +347,8 @@ function normalizeLayout(raw = {}) {
     overlay: r.overlay === true,
     collapsedSections: Array.isArray(r.collapsedSections)
       ? [...new Set(r.collapsedSections.filter((n) => typeof n === "string" && n.length <= 40))].slice(0, 20) : [],
+    // Where each Online app opens: tab (default) | window | desktop (launch-modes.cjs).
+    launchModes: launchModes.normalizeLaunchModes(r.launchModes),
   };
 }
 

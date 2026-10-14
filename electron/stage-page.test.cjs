@@ -66,10 +66,10 @@ function boot({ bodies, allVoicesMuted = false, answers = {} }) {
   const aitherStage = {
     bodies: () => Promise.resolve({ ok: true, bodies: JSON.parse(JSON.stringify(state.bodies)),
       allVoicesMuted: state.allVoicesMuted, safety: null }),
-    arrange: () => Promise.resolve({ ok: true }),
-    focus: () => Promise.resolve({ ok: true }),
-    remove: () => Promise.resolve({ ok: true }),
-    run: () => Promise.resolve({ ok: true }),
+    arrange: (name, options) => { calls.push(["arrange", name, options]); return Promise.resolve({ ok: true }); },
+    focus: (slotId) => { calls.push(["focus", slotId]); return Promise.resolve({ ok: true }); },
+    remove: (slotId) => { calls.push(["remove", slotId]); return Promise.resolve({ ok: true }); },
+    run: (id) => { calls.push(["run", id]); return Promise.resolve({ ok: true }); },
     setVoice: (slotId, muted) => {
       calls.push(["setVoice", slotId, muted]);
       return Promise.resolve(answers.setVoice || { ok: true, slotId, voiceMuted: muted });
@@ -182,4 +182,87 @@ test("the master switch's in-flight target lives in main, not a pane timer", () 
   assert.match(main, /function setAllVoicesMuted\(muted\) \{\n\s*return voiceMaster\(\)\.set\(muted\);/);
   const html = fs.readFileSync(path.join(__dirname, "stage.html"), "utf8");
   assert.doesNotMatch(html, /pendingAll|PENDING_ALL_MS/, "the pane must not guess speech length");
+});
+
+// ---- layout + redesign (owner 2026-10-13: "look at how dogshit the ... staging UI is") ----
+
+/** Top-level element children of <body>, in order (scripts take no grid track). */
+function bodyRegions(html) {
+  const inner = html.slice(html.indexOf("<body>") + 6, html.indexOf("<script>"));
+  const regions = [];
+  let depth = 0;
+  for (const m of inner.matchAll(/<(\/?)([a-zA-Z][\w-]*)[^>]*?(\/?)>/g)) {
+    const [, closing, tag, selfClose] = m;
+    if (/^(br|img|input|hr|meta|link)$/i.test(tag) || selfClose) { if (depth === 0) regions.push(tag); continue; }
+    if (closing) { depth -= 1; continue; }
+    if (depth === 0) regions.push(tag);
+    depth += 1;
+  }
+  return regions;
+}
+
+test("stage pane: the body grid has ONE track per top-level region (the giant-bars bug)", () => {
+  // 2026-10-13: five regions under `grid-template-rows: 44px auto 1fr auto` put the
+  // avatar-window row on the 1fr track; its nine buttons stretched to 412 px tall.
+  const css = HTML.slice(HTML.indexOf("<style>"), HTML.indexOf("</style>"));
+  const rule = css.match(/\bbody\s*\{[^}]*grid-template-rows:\s*([^;]+);/);
+  assert.ok(rule, "body no longer declares its rows -- re-check this guard");
+  const tracks = rule[1].trim().split(/\s+/);
+  const regions = bodyRegions(HTML);
+  assert.equal(tracks.length, regions.length,
+    `${regions.length} regions (${regions.join(", ")}) under ${tracks.length} tracks (${tracks.join(" ")})`);
+  const flexible = tracks.findIndex((t) => /fr$/.test(t));
+  assert.ok(flexible >= 0, "no flexible track");
+  assert.equal(regions[flexible], "main", "the 1fr track must hold the scrolling main, not a button row");
+});
+
+test("stage pane: every avatar-window command has exactly one control and runs its own id", async () => {
+  const { STAGE_RUNNABLE } = require("./stage-window.cjs");
+  const page = boot({ bodies: BODIES });
+  await page.refresh();
+  const controls = page.body.walk().filter((n) => n.tagName === "BUTTON" && n.dataset.run);
+  assert.deepEqual(controls.map((n) => n.dataset.run).sort(), [...STAGE_RUNNABLE].sort());
+  for (const control of controls) await control.fire("click");
+  await flush();
+  assert.deepEqual(page.calls.map((c) => c[1]).sort(), [...STAGE_RUNNABLE].sort());
+  assert.ok(page.calls.every((c) => c[0] === "run"));
+  // Sizes are ONE segmented control; outline + reset live in the overflow menu.
+  const presets = page.body.walk().find((n) => n.id === "size-presets");
+  assert.ok(presets && /\bseg\b/.test(presets.className), "the size presets are not a segmented control");
+  assert.deepEqual(presets.children.map((n) => n.dataset.run),
+    ["window.size.small", "window.size.medium", "window.size.large", "window.size.xlarge"]);
+  const menu = page.byId.get("window-menu");
+  assert.deepEqual(menu.children.map((n) => n.dataset.run), ["window.outline", "layout.reset-all"]);
+});
+
+test("stage pane: a body card has an avatar, and its menu frames / sends away THAT slot", async () => {
+  const page = boot({ bodies: BODIES });
+  await page.refresh();
+  const rows = page.byId.get("list").children;
+  assert.equal(rows.length, 2);
+  for (const row of rows) {
+    assert.ok(row.walk().some((n) => /\bavatar\b/.test(n.className) && n.textContent.length === 1), "card has no avatar");
+  }
+  const menuOf = (slot) => rows.find((r) => r.dataset.slot === slot).walk().find((n) => n.className === "menu");
+  const items = (slot) => menuOf(slot).children.map((n) => n.textContent);
+  assert.deepEqual(items("slot0"), ["Frame"], "the resident must not offer Send away");
+  assert.deepEqual(items("slot1"), ["Frame", "Send away"]);
+  await menuOf("slot1").children[0].fire("click");
+  await flush();
+  await menuOf("slot1").children[1].fire("click");
+  await flush();
+  assert.deepEqual(page.calls, [["focus", "slot1"], ["remove", "slot1"]]);
+});
+
+test("stage pane: picking a card selects it and arms Focus with that slot", async () => {
+  const page = boot({ bodies: BODIES });
+  await page.refresh();
+  const focusButton = () => page.byId.get("arrangements").children.find((n) => n.dataset.arrangement === "focus");
+  assert.equal(focusButton().disabled, true);
+  const pick = page.body.walk().find((n) => n.dataset.select === "slot1");
+  await pick.fire("click");
+  assert.equal(focusButton().disabled, false);
+  await focusButton().fire("click");
+  await flush();
+  assert.equal(JSON.stringify(page.calls), JSON.stringify([["arrange", "focus", { slotId: "slot1", pair: [] }]]));
 });
