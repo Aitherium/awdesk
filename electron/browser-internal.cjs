@@ -510,6 +510,27 @@ function isHostedSite(url) {
   }
 }
 
+/**
+ * The partition an owner-opened https tab rides, or null for the plain web partition.
+ *
+ * Owner, 2026-10-13: "WHY AM I GETTING PROMPTED FOR AITHERIDENTITY FOR APPS WHEN I'M
+ * ALREADY SIGNED IN LOCALLY". Measured: Family (command-registry OSAPP_BROWSER_TAB)
+ * opened https://app.aitherium.com/family as a WEB tab, in the browser's own
+ * persist:aither-browser partition -- the one session the desk never signs in (only
+ * the Online partition gets the desk session, via hostedPrepare). So every
+ * aitherium.com page opened as a tab bounced to /login while Online sat signed in.
+ *
+ * An aitherium.com page the OWNER opens rides the Online partition (signed in before
+ * it loads), as a hosted tab: its navigation fence keeps it on aitherium.com and
+ * sends any other site to a plain web tab. An AGENT's tab never gets the owner's
+ * session: it stays in the web partition. An explicit partition (a pinned tab) wins.
+ */
+function ownerHostedPartition(by, url, { explicit = null, online = null } = {}) {
+  if (!isHostedSite(url)) return null;
+  if (explicit) return explicit;
+  return by === "you" && online ? online : null;
+}
+
 function schemeOf(url) {
   try {
     return new URL(String(url || "")).protocol;
@@ -666,6 +687,7 @@ module.exports = {
   internalUrl,
   isHostedSite,
   isInternalUrl,
+  ownerHostedPartition,
   legacyConsole,
   modelNameOf,
   navigationVerdict,

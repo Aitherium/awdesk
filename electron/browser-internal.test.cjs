@@ -518,3 +518,40 @@ test("the pinned AitherOS Online tab opens app.aitherium.com (the one page host)
   assert.match(main, /hostedUrl: \(\) => browserInternal\.onlineUrl\(\)/,
     "main must hand the browser app.aitherium.com, not desktopAppUrl() (the apex)");
 });
+
+// Owner, 2026-10-13: signed in on the desk, yet Family (https://app.aitherium.com/family)
+// opened as a WEB tab in persist:aither-browser -- a partition the desk never signs in --
+// and showed the AitherIdentity login. An owner's aitherium.com tab rides Online's.
+test("an owner's aitherium.com tab rides the signed-in Online partition", () => {
+  const online = "persist:living-desktop";
+  const family = "https://app.aitherium.com/family";
+  assert.equal(internal.ownerHostedPartition("you", family, { online }), online);
+  assert.equal(internal.ownerHostedPartition("you", "https://aitherium.com/x", { online }), online);
+  // An explicit partition (a pinned tab) wins.
+  assert.equal(internal.ownerHostedPartition("you", family, { explicit: "persist:other", online }), "persist:other");
+});
+
+test("the owner's session never reaches an agent's tab or a non-aitherium site", () => {
+  const online = "persist:living-desktop";
+  assert.equal(internal.ownerHostedPartition("agent", "https://app.aitherium.com/family", { online }), null);
+  for (const url of [
+    "https://example.com/", "http://app.aitherium.com/family", "https://aitherium.com.evil.example/",
+    "https://evilaitherium.com/", "aither://desktop/", "", "not a url",
+  ]) {
+    assert.equal(internal.ownerHostedPartition("you", url, { online }), null, url);
+  }
+});
+
+test("openTab routes owner aitherium.com tabs through ownerHostedPartition; main signs them in first", () => {
+  const src = read("browser-window.cjs");
+  const body = src.slice(src.indexOf("function openTab("), src.indexOf("function openSearch("));
+  assert.match(body, /internal\.ownerHostedPartition\(by, url, \{ explicit: hostedPartition, online: onlinePartition\(\) \}\)/);
+  // The hosted fence keeps such a tab on aitherium.com; anything else opens as a web tab.
+  assert.equal(internal.navigationVerdict("hosted", "https://example.com/"), "web-tab");
+  assert.equal(internal.navigationVerdict("hosted", "https://app.aitherium.com/family"), "allow");
+  // The module-level configureInternal (not only the console host) carries hostedPrepare,
+  // so a Family tab opened before any aither:// page is signed in before it loads.
+  const main = read("main.cjs");
+  const top = main.slice(main.indexOf("// An aither:// page opened from the ADDRESS BAR"));
+  assert.match(top.slice(0, 600), /hostedPrepare: ensureDesktopSession/);
+});

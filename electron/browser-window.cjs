@@ -798,9 +798,14 @@ function openTab(by, url, { activate = true, after = null, pinned = false, key =
   // (a chrome-extension: URL classifies as "web"; extensionTab below makes it its own kind)
   const target = classify(url);
   if (target.kind === "refused") return { ok: false, error: target.error };
-  // A pinned https tab that names a partition (Workspace) is hosted too: same login as Online.
-  const hosted = target.kind === "web" && hostedPartition && internal.isHostedSite(url);
-  const kind = extensionTab ? "extension" : hosted ? "hosted" : target.kind;
+  // An aitherium.com page the OWNER opens (Family, a pinned Workspace, a link) is hosted:
+  // the same signed-in partition as Online, signed in before it loads. An agent's tab
+  // never rides the owner's session (browser-internal.ownerHostedPartition).
+  const signedInPartition = target.kind === "web" && !extensionTab
+    ? internal.ownerHostedPartition(by, url, { explicit: hostedPartition, online: onlinePartition() })
+    : null;
+  if (signedInPartition) hostedPartition = signedInPartition;
+  const kind = extensionTab ? "extension" : signedInPartition ? "hosted" : target.kind;
   const added = tabs.add(by, { activate, after, kind, pinned, key });
   if (!added.ok) return added;
   const tab = tabs.get(added.id);

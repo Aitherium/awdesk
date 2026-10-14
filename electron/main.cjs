@@ -3528,6 +3528,9 @@ browserWindow.configureInternal({
   beforeInternal: () => {
     if (!browserInternal.legacyConsole()) wireConsoleHost(false);
   },
+  // An aitherium.com tab opened before any aither:// page (Family from the rail) is
+  // signed in before it loads too -- not only once the console host is wired.
+  hostedPrepare: ensureDesktopSession,
 });
 
 // The LAST independent popup source folds in (owner, 2026-09-08: "I WANT TO
