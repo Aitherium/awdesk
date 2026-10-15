@@ -183,7 +183,11 @@ const {
   focusPane: focusConsolePane,
   closeConsole,
   setInboxBadge: setConsoleInboxBadge,
+  sendToPaneFrames: sendToConsolePaneFrames,
 } = require("./console-window.cjs");
+// The aither://space/ pane (BeadSpace universe): its IPC and the universe client.
+const { ensureSpaceIpc } = require("./space-window.cjs");
+const { createSpaceClient } = require("./space-client.cjs");
 const { badgeBitmap, badgeTooltip, drawBadge } = require("./badge.cjs");
 const needsYouLib = require("./needs-you.cjs");
 const { voiceTrayItems } = require("./voice-tray-line.cjs");
@@ -3044,8 +3048,28 @@ function sendDeckState() {
   if (chatWindow && !chatWindow.isDestroyed()) {
     chatWindow.webContents.send("desk:event", event);
   }
-  // The Inbox / Chat / Characters pages as aither:// tabs render the same feed.
+  // The Inbox / Chat / Characters / Space pages as aither:// tabs render the same feed.
   browserWindow.sendToInternalTabs("desk:event", deckStateForInternal(event));
+  // The legacy console's Space frame (the same per-frame send as broadcastAppearance):
+  // its asks glow from this feed.
+  sendToConsolePaneFrames("space=1", "desk:event", event);
+}
+
+/** The universe client for the space pane, one per desk (main-side TTL 15 s). */
+let spaceClientInstance = null;
+function spaceClient() {
+  if (!spaceClientInstance) {
+    spaceClientInstance = createSpaceClient({
+      store: require("./last-good-cache.cjs").deskCache(),
+      // The cached verdict only, WITH its time: a pane poll must never spawn a fleet
+      // probe, and space-client lets it win only while fresh (deskFleetVerdict).
+      fleetStatus: () => {
+        const control = getFleetControl();
+        return { verdict: control.lastStatus, at: control.lastStatusAt, changedAt: control.lastChangeAt };
+      },
+    });
+  }
+  return spaceClientInstance;
 }
 
 /**
@@ -3556,6 +3580,16 @@ function wireConsoleHost(legacy) {
   ensureFilesIpc();
   ensureSecretsIpc();
   ensurePlaneIpc();
+  // The space pane: verbs run through the SAME FleetControl as the tray, the Fleet pane
+  // and MCP; explore runs on the agent lane (a node's text can never become a fleet verb).
+  ensureSpaceIpc({
+    getControl: getFleetControl,
+    client: spaceClient(),
+    askAgent: (prompt) => getCommandAgent(getFleetControl()).run(prompt, { source: "space", lane: "agent" }),
+    openInternal: (pane) => openConsole(pane),
+    // Main's own open cards: a virtual moon (a card's subject with no node) is rebuilt from these.
+    cards: () => openDecisions,
+  });
   ensureStageIpc(stagePaneImpl());
   // The Cast pane (U03/U07): who appears, and how they sound. Guarded --
   // cast-window.cjs may not exist on this box yet (see the guarded require
@@ -3708,6 +3742,12 @@ function wireConsoleHost(legacy) {
         open: () => createPlaneWindow("nexus"),
         close: () => closePlaneWindow("nexus"),
         isOpen: () => isPlaneWindowOpen("nexus"),
+      },
+      // The space pane has no standalone twin: "detach" opens it in the browser.
+      space: {
+        open: () => browserWindow.openInternal("space", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
       },
       cards: {
         open: () => createDeckWindow(),

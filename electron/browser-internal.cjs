@@ -156,15 +156,52 @@ function isInternalUrl(url) {
 }
 
 /**
+ * The deep-link keys a typed aither:// address may carry through to its page, each
+ * with the only values it may hold (aither://space/?at=<id> | focus=next | card=<id>).
+ * Anything else in the query is dropped: the page's own flag (space=1) is main's.
+ */
+const DEEP_LINK_KEYS = Object.freeze({
+  at: /^(platform|[a-z]+:[A-Za-z0-9._/@:-]{1,160})$/,
+  focus: /^next$/,
+  card: /^[A-Za-z0-9_-]{1,80}$/,
+});
+
+/** {at?, focus?, card?} from a parsed address's search, or null when it has none. */
+function deepLinkOf(parsed) {
+  if (!parsed || typeof parsed.search !== "string" || !parsed.search) return null;
+  let params;
+  try {
+    params = new URLSearchParams(parsed.search);
+  } catch {
+    return null;
+  }
+  const out = {};
+  for (const [key, re] of Object.entries(DEEP_LINK_KEYS)) {
+    const value = params.get(key);
+    if (value != null && re.test(value)) out[key] = value;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/**
  * The aither:// address of a pane. `param` is the console's focus parameter (a card
  * id): it rides as `card=` exactly as console.html's applyFocus adds it to a frame.
+ * An object `param` is a deep link ({at, focus, card}, see DEEP_LINK_KEYS); each key
+ * rides only when its value passes that key's rule.
  */
 function internalUrl(paneOrId, param = null, panes = consolePanes()) {
   const pane = typeof paneOrId === "object" && paneOrId ? paneOrId : paneById(paneOrId, panes);
   if (!pane || !PANE_ID.test(String(pane.id || ""))) return null;
   const query = [];
   if (pane.kind === "view" && pane.query) query.push(String(pane.query));
-  if (param != null && param !== "") query.push(`card=${encodeURIComponent(String(param))}`);
+  if (param != null && typeof param === "object") {
+    for (const [key, re] of Object.entries(DEEP_LINK_KEYS)) {
+      const value = param[key];
+      if (typeof value === "string" && re.test(value)) query.push(`${key}=${encodeURIComponent(value)}`);
+    }
+  } else if (param != null && param !== "") {
+    query.push(`card=${encodeURIComponent(String(param))}`);
+  }
   return `${SCHEME}://${pane.id}/${query.length ? `?${query.join("&")}` : ""}`;
 }
 
@@ -696,6 +733,8 @@ module.exports = {
   internalModelUrls,
   internalPages,
   internalUrl,
+  deepLinkOf,
+  DEEP_LINK_KEYS,
   isHostedSite,
   isInternalUrl,
   ownerHostedPartition,

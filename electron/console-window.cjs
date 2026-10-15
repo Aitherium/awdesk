@@ -68,6 +68,13 @@ const PANES = Object.freeze([
   // Search, deep research and the door to Media Forge (owner, 2026-10-04): awfind
   // (AitherSearch), awresearch, mediaforge. search-client.cjs; IPC in search-window.cjs.
   // The address bar sends plain words here (aither://search/?q=...).
+  // BeadSpace (owner, 2026-10-15: "everything as BeadSpace, explorable like a game"): the
+  // whole platform as one universe; an ask glows on the thing it concerns. FIRST: it is
+  // the new home. Deep links: aither://space/?at=<id> | focus=next | card=<id>.
+  Object.freeze({
+    id: "space", label: "Space", hint: "Everything, explorable; asks glow where they belong", section: "Now", icon: "globe",
+    kind: "view", query: "space=1",
+  }),
   Object.freeze({
     id: "search", label: "Search", hint: "Web + platform search, deep research, Media Forge", section: "Now", icon: "search",
     kind: "file", file: "search.html",
@@ -281,6 +288,20 @@ function broadcastAppearance(appearance) {
   if (!consoleWindow || consoleWindow.isDestroyed()) return;
   for (const frame of consoleWindow.webContents.mainFrame.framesInSubtree) {
     try { frame.send("desk:appearance-changed", appearance); } catch { /* a frame mid-navigation */ }
+  }
+}
+
+/**
+ * Send to every console frame whose URL contains `match` (e.g. "space=1"), the same
+ * per-frame send as broadcastAppearance. Quiet when there is no console.
+ */
+function sendToPaneFrames(match, channel, payload) {
+  if (!consoleWindow || consoleWindow.isDestroyed()) return;
+  const want = String(match || "");
+  if (!want) return;
+  for (const frame of consoleWindow.webContents.mainFrame.framesInSubtree) {
+    if (!String(frame.url || "").includes(want)) continue;
+    try { frame.send(channel, payload); } catch { /* a frame mid-navigation */ }
   }
 }
 
@@ -774,6 +795,7 @@ module.exports = {
   showConsole,
   focusPane,
   setInboxBadge,
+  sendToPaneFrames,
   placeHosted,
   closeConsole,
   isConsoleOpen,

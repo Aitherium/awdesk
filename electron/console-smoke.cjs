@@ -53,6 +53,7 @@ const EXPECTED_BRIDGE = {
   fleet: "fleet",
   sessions: "aitherSessions",
   ops: "aitherOps",
+  space: "deskBridge",
   cards: "deskBridge",
   chat: "deskBridge",
   stage: "aitherStage",

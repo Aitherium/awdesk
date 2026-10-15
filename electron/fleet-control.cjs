@@ -473,6 +473,9 @@ class FleetControl extends EventEmitter {
     this.inflight = null; // the promise of the running action (a second status() joins it)
     this.lastStatus = null;
     this.lastStatusAt = 0;
+    // When the last verb that can CHANGE the fleet finished (anything but a *status
+    // read). A lastStatus older than this describes a fleet that may no longer exist.
+    this.lastChangeAt = 0;
   }
 
   get busy() {
@@ -521,6 +524,7 @@ class FleetControl extends EventEmitter {
         if (fallbackTag) Object.assign(verdict, fallbackTag);
         this.current = null;
         this.inflight = null;
+        if (!/(^|-)status$/.test(action)) this.lastChangeAt = Date.now();
         if (action === "status" && !verdict.cannotJudge) {
           this.lastStatus = verdict;
           this.lastStatusAt = Date.now();

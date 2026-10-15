@@ -19,6 +19,13 @@ export interface DeckDecision {
   agent: string;
   /** WHICH session is waiting (an id, never a path). Optional on older mains. */
   sessionId?: string;
+  /** The universe object this card concerns (`svc:Secrets`, `secret:NAME`); "" = none. */
+  subject?: string;
+  /** WHICH machine raised it, as the raiser labelled it. */
+  host?: string;
+  /** The producer's identity for the question, and the recipe it was built from. */
+  dedupeKey?: string;
+  recipe?: string;
   branch?: string;
   /** A session stopped on the owner (kind=blocked or blocking=true). */
   blocking?: boolean;

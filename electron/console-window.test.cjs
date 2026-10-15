@@ -20,7 +20,7 @@ test("every pane resolves to a page that exists", () => {
   const panes = paneSources("http://127.0.0.1:5173");
   // The count is asserted so a pane cannot be DROPPED by an edit that only meant
   // to reorder the rail; bump it deliberately when one is added.
-  assert.equal(panes.length, 26);  // +7 plane pages (slice 10), +1 spend, +1 terminal, +1 search, +1 projects, +1 extensions, +1 mesh (2026-10-04)
+  assert.equal(panes.length, 27);  // +7 plane pages (slice 10), +1 spend, +1 terminal, +1 search, +1 projects, +1 extensions, +1 mesh (2026-10-04), +1 space (2026-10-15)
   for (const pane of panes) {
     if (pane.kind !== "file") continue;
     assert.ok(
@@ -35,7 +35,7 @@ test("the rail is in this exact order -- a drop or a reorder must fail here", ()
   // Listed explicitly rather than derived from PANES, so an edit that silently
   // drops or reshuffles an entry is caught here instead of only downstream.
   assert.deepEqual(PANES.map((p) => p.id),
-    ["search", "cards", "terminal", "projects", "command", "chat", "sessions", "stage", "characters", "cast", "files", "secrets",
+    ["space", "search", "cards", "terminal", "projects", "command", "chat", "sessions", "stage", "characters", "cast", "files", "secrets",
     "fleet", "ops", "spend", "settings", "extensions", "windows", "bricks", "strata", "pulse", "watch", "flux", "nexus", "mesh", "desktop"]);
   // Each section heading appears ONCE (the rail had CONTROL and PRESENCE twice), and a
   // tab pane follows the pane it is a tab of.
@@ -45,6 +45,15 @@ test("the rail is in this exact order -- a drop or a reorder must fail here", ()
   for (const pane of PANES.filter((p) => p.tabOf)) {
     assert.ok(PANES.some((p) => p.id === pane.tabOf && !p.tabOf), `${pane.id} is a tab of nothing`);
   }
+});
+
+test("Space is the first Now row: a view pane on the renderer bundle with ?space=1", () => {
+  const space = PANES[0];
+  assert.deepEqual({ ...space }, {
+    id: "space", label: "Space", hint: "Everything, explorable; asks glow where they belong", section: "Now", icon: "globe",
+    kind: "view", query: "space=1",
+  });
+  assert.equal(PANES.find((p) => p.section === "Now"), space);
 });
 
 test("the Cast pane is a FILE pane, src resolved the same in dev-server and file:// modes", () => {
@@ -62,6 +71,7 @@ test("view panes carry the renderer base and their own query flag", () => {
   const byId = Object.fromEntries(paneSources("http://127.0.0.1:5173").map((p) => [p.id, p]));
   assert.equal(byId.cards.src, "http://127.0.0.1:5173?deck=1");
   assert.equal(byId.chat.src, "http://127.0.0.1:5173?chat=1");
+  assert.equal(byId.space.src, "http://127.0.0.1:5173?space=1");
 
   // A base that already carries a query keeps it.
   const withQuery = Object.fromEntries(paneSources("file:///d/dist/index.html?x=1")

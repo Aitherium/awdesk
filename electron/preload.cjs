@@ -63,6 +63,15 @@ contextBridge.exposeInMainWorld("deskBridge", {
     saveCharacterTurntable: (name, shot, dataUrl) =>
       ipcRenderer.invoke("desk:save-character-turntable", name ?? "", Number(shot) || 0, dataUrl ?? ""),
   },
+  // The space pane (aither://space/, space-window.cjs). The page names a node and a
+  // verb or an explore index; main re-reads the node from its own snapshot and decides
+  // what runs. Card answers stay on deck.answer / deck.credential.
+  space: {
+    get: () => ipcRenderer.invoke("desk:space-get"),
+    verb: (nodeId, verbId, confirmed) => ipcRenderer.invoke("desk:space-verb", { nodeId, verbId, confirmed: !!confirmed }),
+    explore: (nodeId, exploreIndex, question) =>
+      ipcRenderer.invoke("desk:space-explore", { nodeId, exploreIndex, question }),
+  },
   // Full system awareness (#9): the five snapshot sources the System section
   // renders. Read-only; every one fails soft to ok:true + ERROR notes.
   system: {

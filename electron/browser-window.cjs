@@ -1800,7 +1800,9 @@ function wireIpc() {
     const typed = typeof input === "string" ? input.trim() : "";
     const page = internal.parseInternalUrl(typed);
     if (page) {
-      return openInternal(page.paneId) ? { ok: true, url: internal.internalUrl(page.paneId) }
+      // A deep link (aither://space/?at=<id>) keeps its validated keys; nothing else rides.
+      const link = internal.deepLinkOf(page);
+      return openInternal(page.paneId, link) ? { ok: true, url: internal.internalUrl(page.paneId, link) }
         : { ok: false, reason: `no Aither page called ${page.paneId}` };
     }
     const verdict = policy.sanitizeUrl(input);

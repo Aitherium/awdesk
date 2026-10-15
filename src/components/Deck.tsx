@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 
 import { renderVrmThumbnail } from '../thumbnails';
+import { useDeckState } from '../deck/use-deck-state';
 import {
-  EMPTY_DECK_STATE,
   cardFocusParam,
   cardWhere,
   splitFlipper,
   clockLabel,
   clockTone,
   formatAge,
-  normalizeWakes,
   cardLabel,
   dueLabel,
   sharedCause,
@@ -1496,7 +1495,9 @@ function SystemSection() {
  */
 export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {}) {
   const isCharacters = view === 'characters';
-  const [state, setState] = useState<DeckState>(EMPTY_DECK_STATE);
+  // The deck-state subscription lives in deck/use-deck-state.ts: the Space pane renders
+  // the same feed, and two copies would drift.
+  const [state, setState] = useDeckState();
   const [nowMs, setNowMs] = useState(() => Date.now());
   // The card to show: ?card=<id> on load (console / aither://cards/?card=),
   // then every 'deck:focus-card' main sends (openInbox(cardId)).
@@ -1566,47 +1567,9 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
   }, [dropBusy]);
 
   useEffect(() => {
-    const deck = bridgeDeck();
-    if (!deck) return;
-    let alive = true;
-    void deck.getState().then((next) => {
-      // Same normalisation as the push path — the initial PULL carries main's
-      // raw feed too, and skipping it here made the section render once with
-      // undefined clock fields.
-      if (alive && next) setState({ ...next, wakes: normalizeWakes(next.wakes) });
-    });
-    const unsubscribe = bridgeSubscribe((event) => {
-      if (event.type === 'deck-state') {
-        setState({
-          decisions: (event.decisions as DeckDecision[]) ?? [],
-          openCount: (event.openCount as number) ?? 0,
-          totalCount: event.totalCount as number | undefined,
-          needsYouIds: (event.needsYouIds as string[] | undefined) ?? [],
-          fyiIds: (event.fyiIds as string[] | undefined) ?? [],
-          deskVisible: (event.deskVisible as boolean) ?? false,
-          slots: (event.slots as DeckState['slots']) ?? [],
-          agents: (event.agents as string[]) ?? [],
-          characters: (event.characters as string[]) ?? [],
-          characterModels: (event.characterModels as Record<string, string>) ?? {},
-          activeCharacter: (event.activeCharacter as string) ?? '',
-          agentCharacters: (event.agentCharacters as Record<string, string>) ?? {},
-          relay: (event.relay as DeckState['relay']) ?? [],
-          relayChannel: (event.relayChannel as string) ?? '#agents',
-          room: (event.room as DeckState['room']) ?? [],
-          roomStatus: (event.roomStatus as string) ?? 'not started',
-          spaceAvailable: (event.spaceAvailable as boolean | undefined) ?? false,
-          // A field missing from THIS copy is dropped on the first push after
-          // the initial pull — the section would render once and then empty.
-          wakes: normalizeWakes(event.wakes),
-        });
-      }
-    });
+    if (!bridgeDeck()) return;
     const tick = window.setInterval(() => setNowMs(Date.now()), 30_000);
-    return () => {
-      alive = false;
-      unsubscribe();
-      window.clearInterval(tick);
-    };
+    return () => window.clearInterval(tick);
   }, []);
 
   // "Browse models" opens the deck at the TOP (quick actions first — the
@@ -1661,7 +1624,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
         );
       }
     });
-  }, []);
+  }, [setState]);
 
   const runAction = useCallback((name: string, arg?: string) => {
     void bridgeDeck()?.action(name, arg);

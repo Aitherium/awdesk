@@ -1,4 +1,6 @@
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useRef,
@@ -27,6 +29,9 @@ import {
   resolveBodyAnimation,
   type BodyAnimationOverride,
 } from './animation-priority';
+
+// aither://space/ (?space=1): its own chunk, so the avatar window never loads the universe.
+const SpaceView = lazy(() => import('./space/SpaceView'));
 
 const INITIAL_STATE: VoiceState = {
   activity: 'idle',
@@ -117,8 +122,10 @@ export function App() {
   // ONE hook, then the returns: a second useState after `if (isDeck) return`
   // was itself the conditional-hook shape this comment warns about (lint
   // measured it again 2026-09-18).
-  const [mode] = useState<'deck' | 'characters' | 'chat' | 'avatar'>(() => {
+  const [mode] = useState<'deck' | 'characters' | 'chat' | 'space' | 'avatar'>(() => {
     const params = new URLSearchParams(window.location.search);
+    // ?space=1 -- the BeadSpace universe, the console's first Now pane.
+    if (params.get('space') === '1') return 'space';
     if (params.get('deck') === '1') return 'deck';
     // ?characters=1 — the same bundle and the same deck-state subscription as the inbox,
     // rendering the BODIES half (stage slots, spawn chips, installed + market roster).
@@ -126,6 +133,13 @@ export function App() {
     if (params.get('chat') === '1') return 'chat';
     return 'avatar';
   });
+  if (mode === 'space') {
+    return (
+      <Suspense fallback={null}>
+        <SpaceView />
+      </Suspense>
+    );
+  }
   if (mode === 'deck') return <Deck view="inbox" />;
   if (mode === 'characters') return <Deck view="characters" />;
   if (mode === 'chat') return <ChatView />;

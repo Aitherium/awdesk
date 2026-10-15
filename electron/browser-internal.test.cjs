@@ -558,3 +558,19 @@ test("openTab routes owner aitherium.com tabs through ownerHostedPartition; main
   const top = main.slice(main.indexOf("// An aither:// page opened from the ADDRESS BAR"));
   assert.match(top.slice(0, 600), /hostedPrepare: ensureDesktopSession/);
 });
+
+test("aither://space/ deep links reach the renderer as ?space=1&<key>=, validated", () => {
+  const link = (url) => internal.deepLinkOf(internal.parseInternalUrl(url));
+  assert.equal(internal.internalUrl("space", link("aither://space/?at=svc:Secrets"), PANES),
+    "aither://space/?space=1&at=svc%3ASecrets");
+  assert.equal(internal.internalUrl("space", link("aither://space/?focus=next"), PANES), "aither://space/?space=1&focus=next");
+  assert.equal(internal.internalUrl("space", link("aither://space/?card=d-9y4p"), PANES), "aither://space/?space=1&card=d-9y4p");
+  // Junk keys and bad values never ride; the page flag is main's, not the address's.
+  assert.equal(link("aither://space/?space=0&evil=1&focus=prev&at=%3Cscript%3E&card=a%20b"), null);
+  assert.equal(internal.internalUrl("space", null, PANES), "aither://space/?space=1");
+  // The old string param is unchanged: a card id rides as card=.
+  assert.equal(internal.internalUrl("cards", "d-1", PANES), "aither://cards/?deck=1&card=d-1");
+  // The address bar passes the link through (browser-window desk:browser-navigate).
+  const bw = read("browser-window.cjs");
+  assert.match(bw, /const link = internal\.deepLinkOf\(page\);\s*return openInternal\(page\.paneId, link\)/);
+});
