@@ -420,6 +420,16 @@ body {
 }
 .deck-card-credential-scope { color: var(--deck-muted, #8a93a6); font-family: inherit; }
 .deck-card-credential-why { margin: 0; font-size: 11px; color: var(--deck-muted, #8a93a6); }
+/* A failed store: red, bordered, never a muted footnote (2026-10-15). */
+.deck-card-credential-error {
+  margin: 4px 0 0;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: #ff6b6b;
+  border-left: 3px solid #ff6b6b;
+  background: rgba(255, 107, 107, 0.08);
+  overflow-wrap: anywhere;
+}
 /* What / Why / Asked by / Goes to -- four lines, fixed order. */
 .deck-card-credential-facts { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 0; font-size: 12px; }
 .deck-card-credential-facts dt { color: var(--deck-muted, #8a93a6); font-weight: 600; }

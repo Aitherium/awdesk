@@ -11,6 +11,12 @@
  * the owner's secret never landed. Stale copies are skipped; when every copy is
  * stale the first one comes back with `stale: true` so the row names the file to
  * update instead of surfacing an argparse error.
+ *
+ * 2026-10-15: speaking `--value-stdin` is no longer enough. A loose
+ * D:\AitherOS\scripts\secret_prompt.py from 10-07 had the flag, wrote the
+ * vault, could not close the card, printed "NOT closed" and exited 0. A copy
+ * must now carry `DESK_DOOR_PROTOCOL = <n>` with n >= DESK_DOOR_PROTOCOL here:
+ * the version of the contract "exit 0 means the card was closed with a receipt".
  */
 
 const nodeFs = require("node:fs");
@@ -18,9 +24,20 @@ const nodePath = require("node:path");
 
 const DEFAULT_SCRIPT = "C:\\AitherOS-Fresh\\AitherOS\\scripts\\secret_prompt.py";
 const REL = ["AitherOS", "scripts", "secret_prompt.py"];
+const DESK_DOOR_PROTOCOL = 2;
+const MARKER = /^DESK_DOOR_PROTOCOL\s*(?::\s*int\s*)?=\s*(\d+)\s*$/m;
 
+/** The door protocol a script declares, or 0 when it declares none. */
+function doorProtocol(file, fs = nodeFs) {
+  try {
+    const m = MARKER.exec(fs.readFileSync(file, "utf8"));
+    return m ? Number(m[1]) : 0;
+  } catch { return 0; }
+}
+
+/** Does this copy speak the desk door the desk expects? */
 function speaksStdin(file, fs = nodeFs) {
-  try { return fs.readFileSync(file, "utf8").includes("--value-stdin"); } catch { return false; }
+  return doorProtocol(file, fs) >= DESK_DOOR_PROTOCOL;
 }
 
 function resolveSecretPromptScript({
@@ -49,4 +66,4 @@ function resolveSecretPromptScript({
   return { path: fallback, stale: false };
 }
 
-module.exports = { resolveSecretPromptScript, speaksStdin, DEFAULT_SCRIPT };
+module.exports = { resolveSecretPromptScript, speaksStdin, doorProtocol, DESK_DOOR_PROTOCOL, DEFAULT_SCRIPT };

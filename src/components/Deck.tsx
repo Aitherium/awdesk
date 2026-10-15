@@ -1008,7 +1008,8 @@ function CardFlipper({
           Pop out
         </button>
       </div>
-      <DecisionRow card={card} nowMs={nowMs} onAnswer={onAnswer} />
+      {/* key: a new card is a new row -- never carry the last card's field or verdict over. */}
+      <DecisionRow key={card.id} card={card} nowMs={nowMs} onAnswer={onAnswer} />
     </div>
   );
 }
@@ -1089,6 +1090,9 @@ function CredentialRow({ card }: { card: DeckDecision }) {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // A failed store is RED and announced; 2026-10-15 it was a small grey line
+  // under a card that stayed open, and read as success.
+  const [failed, setFailed] = useState(false);
   const secretName = card.secretName || 'the secret';
   const scope = card.credentialScope || 'platform';
   // WHICH session waits: agent, branch, a short session id. Never a path.
@@ -1099,10 +1103,17 @@ function CredentialRow({ card }: { card: DeckDecision }) {
   /** "Later" (4 h off the needs-you strip) and "Not needed" (withdraw the card). */
   const act = (verb: 'card-later' | 'card-not-needed', done: string) => {
     setNote(null);
+    setFailed(false);
     void bridgeDeck()
       ?.action(verb, card.id)
-      .then((ok) => setNote(ok ? done : 'Refused — the desk could not do that.'))
-      .catch(() => setNote('Refused — the desk is unreachable.'));
+      .then((ok) => {
+        setFailed(!ok);
+        setNote(ok ? done : 'Refused — the desk could not do that.');
+      })
+      .catch(() => {
+        setFailed(true);
+        setNote('Refused — the desk is unreachable.');
+      });
   };
 
   const submit = () => {
@@ -1110,12 +1121,14 @@ function CredentialRow({ card }: { card: DeckDecision }) {
     const typed = value;
     setValue(''); // cleared NOW, before the await — the field must not hold it a tick longer
     setNote(null);
+    setFailed(false);
     const deck = bridgeDeck() as unknown as {
       credential?: (id: string, value: string) => Promise<{
         ok?: boolean; receipt?: string; error?: string; detail?: string;
       }>;
     } | null;
     if (typeof deck?.credential !== 'function') {
+      setFailed(true);
       setNote('Storing from the desk needs a newer Desk build — use the terminal: awask answer ' + card.id);
       return;
     }
@@ -1127,10 +1140,16 @@ function CredentialRow({ card }: { card: DeckDecision }) {
           // The receipt ("stored, N chars — card d-xxxx closed…"), never the value.
           setNote(res.receipt || 'Stored in the vault.');
         } else {
-          setNote((res && (res.detail || res.error)) || 'Not stored — no answer from the vault.');
+          // `error` first: main's verdict ("Not confirmed — card is open") is
+          // the sentence the owner needs; `detail` is the child's stderr tail.
+          setFailed(true);
+          setNote((res && (res.error || res.detail)) || 'Not stored — no answer from the vault.');
         }
       })
-      .catch(() => setNote('Not stored — the desk could not reach the vault.'))
+      .catch(() => {
+        setFailed(true);
+        setNote('Not stored — the desk could not reach the vault.');
+      })
       .finally(() => setBusy(false));
   };
 
@@ -1192,7 +1211,13 @@ function CredentialRow({ card }: { card: DeckDecision }) {
           Not needed
         </button>
       </div>
-      {note ? <p className="deck-card-credential-why">{note}</p> : null}
+      {note ? (
+        failed ? (
+          <p className="deck-card-credential-error" role="alert">{note}</p>
+        ) : (
+          <p className="deck-card-credential-why">{note}</p>
+        )
+      ) : null}
     </div>
   );
 }

@@ -1551,7 +1551,7 @@ function speakNeedsYou(actionable, isBacklog) {
  * desk's other scripts use (fleet-control.cjs): an env override first, then a
  * walk up from the app tree so a checkout that carries the script needs no env
  * var, then the absolute path that matches the rest of this file's defaults.
- * Copies that do not speak `--value-stdin` are skipped (secret-prompt-path.cjs).
+ * Copies without DESK_DOOR_PROTOCOL >= 2 are skipped (secret-prompt-path.cjs).
  */
 function secretPromptScript() {
   return require("./secret-prompt-path.cjs").resolveSecretPromptScript({ startDir: __dirname });
@@ -1580,76 +1580,16 @@ function storeCardCredential(id, value) {
   if (String(card.kind || "").toLowerCase() !== "credential") {
     return { ok: false, error: "not a credential card" };
   }
-  const resolved = secretPromptScript();
-  const script = resolved.path;
-  if (resolved.stale) {
-    return { ok: false, error: `secret_prompt.py at ${script} is too old (no --value-stdin) — update that checkout or set AWDESK_SECRET_PROMPT_SCRIPT` };
-  }
-  try {
-    if (!fs.existsSync(script)) {
-      return { ok: false, error: `secret_prompt.py not found at ${script} — set AWDESK_SECRET_PROMPT_SCRIPT` };
-    }
-  } catch {
-    return { ok: false, error: "secret_prompt.py is not readable from here" };
-  }
-  // The card names the secret and the store, so the write cannot land under a
-  // name the card did not ask for. `--name` mirrors what the GUI launcher
-  // passes; the script re-reads the card itself when either is missing.
-  const args = [script, "--card", id, "--value-stdin"];
-  if (card.secretName) args.push("--name", card.secretName);
-  if (card.credentialScope) args.push("--scope", card.credentialScope);
-  if (String(card.credentialFormat || "").toLowerCase() === "totp_seed") args.push("--totp");
-  return new Promise((resolve) => {
-    let child;
-    try {
-      // `stdio: pipe` on all three: stdin carries the value, stdout carries the
-      // "stored, N chars" receipt, stderr carries the reason on failure.
-      const { spawn } = require("node:child_process");
-      const python = require("./command-agent.cjs").resolveBin("python", "AWDESK_PYTHON_BIN");
-      child = spawn(python, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    } catch (error) {
-      resolve({ ok: false, error: `could not start the vault write (${error && error.message ? error.message : "spawn failed"})` });
-      return;
-    }
-    let out = "";
-    let err = "";
-    // The vault write retries HTTP 000 up to three times with 2 s sleeps, so a
-    // slow answer is normal; the ceiling only exists so a wedged child cannot
-    // leave the row's button spinning forever.
-    const timer = setTimeout(() => {
-      try { child.kill(); } catch { /* already gone */ }
-      resolve({ ok: false, error: "the vault write timed out — check the fleet, then retry" });
-    }, 180_000);
-    const settle = (verdict) => {
-      clearTimeout(timer);
-      value = ""; // drop this process's only reference to the secret, promptly
-      resolve(verdict);
-    };
-    child.on("error", (error) => {
-      settle({ ok: false, error: `could not start the vault write (${error && error.message ? error.message : "spawn failed"})` });
-    });
-    child.stdout.on("data", (chunk) => { out += chunk; });
-    child.stderr.on("data", (chunk) => { err += chunk; });
-    // An EPIPE on stdin (the child died before reading it — a missing python,
-    // say) must not surface as an unhandled 'error' event and take the main
-    // process down; the close/error handlers report the outcome.
-    child.stdin.on("error", () => { /* reported via close/error */ });
-    child.on("close", (code) => {
-      settle({
-        ok: code === 0,
-        code,
-        receipt: out.trim().slice(-400),
-        detail: err.trim().slice(-400) || undefined,
-      });
-    });
-    try {
-      // One write, then EOF: the script reads one line and refuses anything
-      // after it, so nothing here can be truncated silently.
-      child.stdin.write(value);
-      child.stdin.end();
-    } catch {
-      /* the close/error handler reports the outcome */
-    }
+  // card-credential.cjs: spawn the door with the value on stdin, then re-read
+  // the CARD — exit 0 alone is never success (2026-10-15: a stale door exited 0
+  // with the card still open). One JSONL line per attempt, never the value.
+  const { spawn } = require("node:child_process");
+  return require("./card-credential.cjs").storeCredential({
+    card,
+    value,
+    resolveScript: secretPromptScript,
+    python: require("./command-agent.cjs").resolveBin("python", "AWDESK_PYTHON_BIN"),
+    spawnFn: spawn,
   });
 }
 
