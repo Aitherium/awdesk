@@ -272,6 +272,8 @@ const deskTenant = require("./desk-tenant.cjs");
 const deskTenantAuto = require("./desk-tenant-auto.cjs");
 /** The running updater (null until the app is ready); its Windows installer runs on quit. */
 let deskUpdater = null;
+/** Crash/error reports + "Send feedback" to the company app (desk-support.cjs); tenant installs only. */
+let deskSupport = null;
 let updateNotice = null; // held, or a collected Notification loses its click handler
 /** Windows logging off / shutting down: a silent install now could be killed mid-way. */
 let sessionEnding = false;
@@ -2669,7 +2671,8 @@ function trayTemplateNow() {
     ...awconnectSetup.awconnectTrayItems(latestAwconnectStatus),
     ...spendTrayItems(latestSpend, () => openConsole("spend")),
     ...updateTrayItems(deskUpdater?.staged, deskUpdater?.kind, () => deskUpdater?.restartNow(),
-      deskUpdater?.available, () => deskUpdater?.installNow())];
+      deskUpdater?.available, () => deskUpdater?.installNow()),
+    ...require("./desk-support.cjs").trayItems(deskSupport && (() => void deskSupport.openFeedback()))];
   if (statusRows.length && appGroupAt > 0) trayTemplate.splice(appGroupAt - 1, 0, ...statusRows);
   else trayTemplate.push(...statusRows);
   // Row 0: what only the owner can unblock ("Secret needed: <name> (from ...)").
@@ -3860,6 +3863,16 @@ function runSmokeTest() {
 if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  // Tenant installs only (desk-tenant.json carries `api`); a failure here never stops Desk.
+  try {
+    const support = require("./desk-support.cjs");
+    if (!smokeIsRequested && support.tenantApi()) {
+      const { crashReporter, desktopCapturer } = require("electron");
+      deskSupport = support.startDeskSupport({ app, crashReporter, BrowserWindow, ipcMain, desktopCapturer });
+    }
+  } catch (err) {
+    console.warn("[desk] support reports not started:", err?.message || err);
+  }
   app.on("second-instance", (_event, argv) => {
     const handled = argv.some((value) => value.startsWith(`${protocolScheme}://`));
     handleProtocolArgv(argv);
