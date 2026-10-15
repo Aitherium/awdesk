@@ -137,3 +137,50 @@ test("a strip click opens a window in place before any page load (owner 2026-10-
   assert.doesNotMatch(src, /here\.pathname === "\/" && !wc\.isLoading\(\)/,
     "the Online tab answers desk-open-app on any path, not only the root");
 });
+
+/* A refusal is an answer (review 2026-10-14). Silence made the desk reload the pinned
+   Online desktop at ?spawn=: the same gates refused the same id there, and the windows it
+   had open were gone. Veil desk-host.ts answers a refusal with desk-open-app-ok +
+   refused:true -- one message, so a desk without this code still stops at it. */
+function runOpenAppScript(id, reply) {
+  const vm = require("node:vm");
+  const listeners = new Set();
+  const win = {
+    addEventListener: (_t, fn) => listeners.add(fn),
+    removeEventListener: (_t, fn) => listeners.delete(fn),
+    postMessage: (data) => {
+      const answer = reply(data);
+      if (answer) for (const fn of [...listeners]) fn({ source: win, data: answer });
+    },
+  };
+  const ctx = { window: win, location: { origin: "https://aitherium.com" }, setTimeout, clearTimeout, Promise };
+  return vm.runInNewContext(tb.openAppScript(id), ctx);
+}
+
+test("openAppScript tells opened, refused and silence apart", async () => {
+  assert.equal(await runOpenAppScript("shop", (d) => ({ __aither: "desk-open-app-ok", id: d.id })), true);
+  assert.equal(await runOpenAppScript("company-room",
+    (d) => ({ __aither: "desk-open-app-ok", id: d.id, refused: true })), tb.OPEN_REFUSED);
+  assert.equal(await runOpenAppScript("shop",
+    () => ({ __aither: "desk-open-app-ok", id: "other", refused: true })), false, "another id's answer is not ours");
+  assert.equal(await runOpenAppScript("shop", () => null), false, "no answer: an older Veil");
+});
+
+test("a refusal by the Online desktop is final -- never a ?spawn= reload", () => {
+  assert.equal(tb.nextAfterAnswer("online", tb.OPEN_REFUSED), "done", "a reload refuses again and loses the windows");
+  assert.equal(tb.nextAfterAnswer("online", true), "done");
+  assert.equal(tb.nextAfterAnswer("online", false), "reload", "silence = an older Veil: ?spawn= as before");
+  for (const kind of ["overlay", "active"]) {
+    assert.equal(tb.nextAfterAnswer(kind, true), "done", kind);
+    assert.equal(tb.nextAfterAnswer(kind, tb.OPEN_REFUSED), "next", `${kind}: the Online tab may be entitled`);
+    assert.equal(tb.nextAfterAnswer(kind, false), "next", kind);
+  }
+});
+
+test("browser-window decides every in-place answer with nextAfterAnswer", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "browser-window.cjs"), "utf8");
+  const body = src.slice(src.indexOf("function openFromTaskbar("), src.indexOf("function ensureTaskbar("));
+  assert.match(body, /nextAfterAnswer\(kind, answer\) === "next"/);
+  assert.match(body, /nextAfterAnswer\("online", answer\) === "reload"/);
+  assert.doesNotMatch(body, /if \(!ok/, "a truthy 'refused' must never read as 'no answer'");
+});

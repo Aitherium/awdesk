@@ -383,3 +383,115 @@ test("safeReleaseUrl opens only Desk's own GitHub release pages", () => {
     assert.equal(du.safeReleaseUrl(bad), du.RELEASES_PAGE, String(bad));
   }
 });
+
+// ─── "Update available": the owner always hears about a newer release ─────
+
+function winUpdater(over = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "du-avail-"));
+  const { calls, spawnImpl } = spawnRecorder();
+  const notes = [];
+  const opened = [];
+  let changed = 0;
+  let quit = 0;
+  const u = new du.DeskUpdater({ kind: "nsis", arch: "x64", version: "0.1.9", env: {}, downloadDir: dir, spawnImpl,
+    fetchImpl: anyFetcher(), notify: (n) => notes.push(n), openUrl: (x) => opened.push(x),
+    onChange: () => { changed += 1; }, quit: () => { quit += 1; }, ...over });
+  return { u, dir, calls, notes, opened, get changed() { return changed; }, get quit() { return quit; } };
+}
+
+test("available: a newer release with a failed download still notifies once and offers install", async () => {
+  // The download 503s: before, the owner heard nothing at all.
+  const base = anyFetcher();
+  let fail = true;
+  const t = winUpdater({ fetchImpl: async (url) => (fail && url.endsWith(WIN) ? { status: 503 } : base(url)) });
+  const r = await t.u.check();
+  assert.equal(r.updated, false);
+  assert.equal(r.reason, "download 503");
+  assert.deepEqual(t.notes.map((n) => [n.kind, n.action, n.tag]), [["nsis", "available", "v0.1.10"]]);
+  assert.equal(t.u.available.tag, "v0.1.10");
+  assert.equal(t.changed, 1, "the tray is refreshed when the update is first seen");
+  await t.u.check();
+  assert.equal(t.notes.length, 1, "one notice per version, not one per 6-hour tick");
+  const [item] = du.updateTrayItems(t.u.staged, t.u.kind, () => t.u.restartNow(), t.u.available, () => t.u.installNow());
+  assert.equal(item.label, "Update available — install (0.1.10)");
+  // The line is clicked once the network is back: verified download, then the installer, then quit.
+  fail = false;
+  const done = await t.u.installNow();
+  assert.equal(done.restarted, true, JSON.stringify(done));
+  assert.equal(t.calls.length, 1);
+  assert.equal(t.calls[0].cmd, path.join(t.dir, WIN));
+  assert.deepEqual(t.calls[0].args, ["/S", "--updated", "--force-run"]);
+  assert.equal(t.quit, 1);
+  assert.deepEqual(t.opened, []);
+});
+
+test("available: a staged update turns the line into Restart to update with no extra notice", async () => {
+  const t = winUpdater();
+  const r = await t.u.check();
+  assert.equal(r.updated, true);
+  assert.deepEqual(t.notes.map((n) => n.action), ["restart"], "no 'available' toast on top of 'ready'");
+  const [item] = du.updateTrayItems(t.u.staged, t.u.kind, () => t.u.restartNow(), t.u.available, () => t.u.installNow());
+  assert.equal(item.label, "Restart to update (0.1.10)");
+  assert.equal((await t.u.installNow()).restarted, true);
+  assert.equal(t.calls.length, 1);
+});
+
+test("available: the tray is rebuilt once the installer is staged, not only when first seen", async () => {
+  const labels = [];
+  let t = null;
+  t = winUpdater({ onChange: () => {
+    const [item] = du.updateTrayItems(t.u.staged, t.u.kind, () => {}, t.u.available, () => {});
+    labels.push(item && item.label);
+  } });
+  assert.equal((await t.u.check()).updated, true);
+  assert.equal(labels[labels.length - 1], "Restart to update (0.1.10)",
+    `the last tray rebuild must show the staged update, saw ${JSON.stringify(labels)}`);
+});
+
+test("available: same version, older version and an unreachable feed are silent and never throw", async () => {
+  for (const [label, fetchImpl] of [
+    ["same", anyFetcher({ rel: fullRelease("v0.1.9") })],
+    ["older", anyFetcher({ rel: fullRelease("v0.1.8") })],
+    ["503", async () => ({ status: 503 })],
+    ["offline", async () => { throw new Error("getaddrinfo ENOTFOUND api.github.com"); }],
+    ["garbage", async () => ({ status: 200, json: async () => { throw new SyntaxError("bad json"); } })],
+  ]) {
+    const t = winUpdater({ fetchImpl });
+    const r = await t.u.check();
+    assert.equal(r.updated, false, label);
+    assert.deepEqual(t.notes, [], `${label}: no notice`);
+    assert.equal(t.u.available, null, `${label}: nothing offered`);
+    assert.deepEqual(du.updateTrayItems(t.u.staged, t.u.kind, () => {}, t.u.available, () => {}), [], label);
+    assert.deepEqual(await t.u.installNow(), { installed: false, reason: "nothing available" }, label);
+    assert.equal(t.calls.length, 0, label);
+  }
+});
+
+test("available: a .deb / a failed retry opens Desk's own release page, never an arbitrary URL", async () => {
+  const deb = winUpdater({ kind: "deb" });
+  await deb.u.check();
+  assert.deepEqual(deb.notes.map((n) => n.action), ["open"], "the .deb keeps its single 'open' notice");
+  assert.equal((await deb.u.installNow()).opened, "https://github.com/Aitherium/awdesk/releases/tag/v0.1.10");
+  assert.deepEqual(deb.opened, ["https://github.com/Aitherium/awdesk/releases/tag/v0.1.10"]);
+
+  const rel = fullRelease();
+  rel.html_url = "https://evil.example/x";
+  const win = winUpdater({ fetchImpl: anyFetcher({ rel, sums: "" }) }); // no checksum -> never staged
+  assert.equal((await win.u.check()).reason, `no checksum for ${WIN}`);
+  assert.deepEqual(win.notes.map((n) => n.action), ["available"]);
+  const r = await win.u.installNow();
+  assert.equal(r.opened, du.RELEASES_PAGE);
+  assert.equal(win.calls.length, 0, "an unverified installer is never run");
+});
+
+test("available: the release check sends no personal data -- one anonymous GET", async () => {
+  const seen = [];
+  const t = winUpdater({ fetchImpl: async (url, opts) => { seen.push({ url, opts }); return { status: 304 }; } });
+  await t.u.check();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].url, du.RELEASE_API);
+  assert.equal(seen[0].opts.method, undefined, "GET");
+  assert.equal(seen[0].opts.body, undefined);
+  assert.deepEqual(Object.keys(seen[0].opts.headers).sort(), ["Accept", "User-Agent"]);
+  assert.equal(seen[0].opts.headers["User-Agent"], "aither-desk");
+});

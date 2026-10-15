@@ -241,6 +241,34 @@ test("bridge serves the decision queue read-only to an allowed origin", async (c
   assert.equal(mutated.status, 405, "the bridge must never accept a decision WRITE");
 });
 
+test("an async provider's {source, stale} rides through, and /needs-you serves its own list", async (context) => {
+  const cred = { id: "d-cred", kind: "credential", secretName: "X" };
+  const bridge = createBridgeServer({
+    port: 0,
+    onEvent: () => {},
+    decisionsProvider: async () => ({ decisions: [cred, { id: "d-2" }], source: "daemon", stale: false }),
+    needsYouProvider: async () => ({ decisions: [cred], source: "local", stale: true, error: "daemon HTTP 0" }),
+  });
+  const address = await bridge.listen();
+  context.after(() => bridge.close());
+  const all = JSON.parse((await requestServer(address, { path: "/decisions" })).body);
+  assert.equal(all.count, 2);
+  assert.equal(all.source, "daemon");
+  assert.equal(all.stale, false);
+  const ny = await requestServer(address, { path: "/needs-you", headers: { origin: "https://aitherium.com" } });
+  assert.equal(ny.status, 200);
+  const body = JSON.parse(ny.body);
+  assert.equal(body.needs_you[0].id, "d-cred");
+  assert.equal(body.count, 1);
+  assert.equal(body.stale, true, "a local fallback is LABELLED stale");
+  const rejected = createBridgeServer({ port: 0, onEvent: () => {}, decisionsProvider: () => Promise.reject(new Error("x")) });
+  const addr2 = await rejected.listen();
+  context.after(() => rejected.close());
+  const r = JSON.parse((await requestServer(addr2, { path: "/decisions" })).body);
+  assert.deepEqual([r.count, r.stale], [0, true], "a rejected provider is an empty STALE queue, never a 500");
+  assert.equal((await requestServer(addr2, { path: "/needs-you" })).status, 404, "no needs-you provider = no route");
+});
+
 test("a throwing decisions provider answers an empty queue, never a 500", async (context) => {
   const bridge = createBridgeServer({
     port: 0,

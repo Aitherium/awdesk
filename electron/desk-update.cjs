@@ -22,6 +22,13 @@
  *   deb       belongs to the package manager (installing needs root): the owner is told a
  *             newer version exists and where to download it, once per version.
  *
+ * The owner is never left in the dark: the moment a newer release is SEEN the tray grows
+ * "Update available -- install (x.y.z)", and if the download, the checksum or the staging
+ * then fails (a flaky line, a missing SHA256SUMS entry) a native "Desk x.y.z is available"
+ * notice appears once per version. Its click (and the tray line's) retries the verified
+ * install, and opens Desk's own release page when this install cannot update itself. The
+ * check sends nothing about the owner: one anonymous GET of the public release feed.
+ *
  * Never a downgrade: only a strictly newer x.y.z tag is acted on. The owner turns it off
  * with the "Updates" checkbox in the cast pane (cast.json updates.enabled = false) or
  * AWDESK_NO_UPDATE=1.
@@ -149,14 +156,38 @@ class DeskUpdater {
     relaunch, quit = () => {}, notify = () => {}, canRestart = () => true, allowed = () => true,
     env = process.env, log = () => {}, setTimer = setTimeout, setRepeat = setInterval,
     downloadDir = path.join(os.tmpdir(), "desk-update"), spawnImpl = childProcess.spawn,
-    unzip = defaultUnzip, pid = process.pid } = {}) {
+    unzip = defaultUnzip, pid = process.pid, openUrl = () => {}, onChange = () => {} } = {}) {
     if (kind === undefined) kind = appimage ? "appimage" : "";
     Object.assign(this, { kind, appimage, exe, arch, version, fetchImpl, relaunch, quit, notify, canRestart,
-      allowed, env, log, setTimer, setRepeat, downloadDir, spawnImpl, unzip, pid });
+      allowed, env, log, setTimer, setRepeat, downloadDir, spawnImpl, unzip, pid, openUrl, onChange });
     this.busy = false;
     this.pending = "";
     this.staged = null; // nsis / mac: { tag, file, ... } waiting for a quit or a click
     this.noticed = ""; // deb: the tag already announced, so the owner hears it once
+    this.available = null; // { tag, page, url }: a newer release seen, staged or not
+    this.availableNoticed = ""; // the tag whose "is available" notice was already shown
+  }
+
+  /** A newer release was seen: remember it (the tray's "Update available" line) once per tag. */
+  markAvailable(asset) {
+    if (this.available && this.available.tag === asset.tag) return;
+    this.available = { tag: asset.tag, page: asset.page, url: asset.url };
+    this.refreshTray();
+  }
+
+  /** Rebuild the tray menu: its update line follows `available` and `staged`. */
+  refreshTray() {
+    try { this.onChange(); } catch { /* a tray refresh never breaks a check */ }
+  }
+
+  /** The download path failed after a newer release was seen: tell the owner, once per tag. */
+  noticeAvailable(result) {
+    const a = this.available;
+    if (!a || this.availableNoticed === a.tag || (this.staged && this.staged.tag === a.tag)) return result;
+    this.availableNoticed = a.tag;
+    this.notify({ kind: this.kind, tag: a.tag, page: a.page, url: a.url, action: "available",
+      reason: result && result.reason });
+    return result;
   }
 
   /** Re-asked on every tick, so turning the setting off stops the next check, no restart. */
@@ -184,6 +215,7 @@ class DeskUpdater {
     if (this.pending) return this.maybeRestart();
     if (this.busy) return { updated: false, reason: "busy" };
     this.busy = true;
+    let seen = false; // a newer release is known; a failure past here is shown, not swallowed
     try {
       const res = await this.fetchImpl(RELEASE_API, { headers: { "User-Agent": "aither-desk",
         Accept: "application/vnd.github+json" } });
@@ -193,17 +225,22 @@ class DeskUpdater {
       if (!asset) return { updated: false, reason: `no ${suffix || this.kind} in the latest release` };
       if (!isNewer(asset.tag, this.version)) return { updated: false, reason: "current", tag: asset.tag };
       if (this.staged && this.staged.tag === asset.tag) return { updated: false, tag: asset.tag, reason: "staged" };
+      this.markAvailable(asset);
       if (this.kind === "deb") return this.announce(asset);
+      seen = true;
       const sums = await this.fetchImpl(asset.sumsUrl, { headers: { "User-Agent": "aither-desk" } });
       const want = sums.status === 200 ? expectedHash(await sums.text(), asset.name) : "";
-      if (!want) return { updated: false, reason: `no checksum for ${asset.name}` };
+      if (!want) return this.noticeAvailable({ updated: false, reason: `no checksum for ${asset.name}` });
       const bin = await this.fetchImpl(asset.url, { headers: { "User-Agent": "aither-desk" } });
-      if (bin.status !== 200) return { updated: false, reason: `download ${bin.status}` };
+      if (bin.status !== 200) return this.noticeAvailable({ updated: false, reason: `download ${bin.status}` });
       const bytes = Buffer.from(await bin.arrayBuffer());
       const got = nodeCrypto.createHash("sha256").update(bytes).digest("hex");
-      if (got !== want) return { updated: false, reason: "checksum mismatch" };
+      if (got !== want) return this.noticeAvailable({ updated: false, reason: "checksum mismatch" });
       if (this.kind === "nsis") return this.stageInstaller(asset, bytes);
-      if (this.kind === "mac") return await this.stageBundle(asset, bytes);
+      if (this.kind === "mac") {
+        const r = await this.stageBundle(asset, bytes);
+        return r.updated ? r : this.noticeAvailable(r);
+      }
       const target = targetPath(this.appimage, asset.name);
       const tmp = `${target}.part`;
       fs.writeFileSync(tmp, bytes, { mode: 0o755 });
@@ -216,9 +253,34 @@ class DeskUpdater {
       this.log(`desk-update: ${asset.tag} installed at ${target}`);
       return this.maybeRestart(asset.tag);
     } catch (e) {
-      return { updated: false, reason: e && e.message ? e.message : String(e) };
+      const r = { updated: false, reason: e && e.message ? e.message : String(e) };
+      return seen ? this.noticeAvailable(r) : r;
     } finally {
       this.busy = false;
+    }
+  }
+
+  /** "Update available -- install" (the tray line or the notice). A staged update is
+   *  restarted into; otherwise the verified download is retried and, once staged, run; an
+   *  install that cannot update itself (a .deb, a read-only Mac folder, a download that
+   *  failed again) gets Desk's own release page. Resolves what it did; never throws. */
+  async installNow() {
+    try {
+      if (!this.available && !this.staged) return { installed: false, reason: "nothing available" };
+      const restartable = () => Boolean(this.staged)
+        && (this.kind === "nsis" || (this.kind === "mac" && Boolean(this.staged.bundle)));
+      if (restartable()) return this.restartNow();
+      if ((this.kind === "nsis" || this.kind === "mac" || this.kind === "appimage") && this.enabled()) {
+        const r = await this.check();
+        if (r && r.updated && this.kind === "appimage") return { installed: true, tag: r.tag, restarted: Boolean(r.restarted) };
+        if (restartable()) return this.restartNow();
+      }
+      const a = this.available || {};
+      const url = safeReleaseUrl(a.page || a.url);
+      this.openUrl(url);
+      return { installed: false, opened: url };
+    } catch (e) {
+      return { installed: false, reason: e && e.message ? e.message : String(e) };
     }
   }
 
@@ -251,6 +313,7 @@ class DeskUpdater {
   stageInstaller(asset, bytes) {
     const file = this.writeVerified(asset.name, bytes);
     this.staged = { tag: asset.tag, file };
+    this.refreshTray(); // "Update available -- install" becomes "Restart to update"
     this.log(`desk-update: ${asset.tag} installer verified at ${file}; it runs when Desk quits`);
     this.notify({ kind: "nsis", tag: asset.tag, file, action: "restart" });
     return { updated: true, tag: asset.tag, restarted: false, reason: "installs on quit" };
@@ -283,6 +346,7 @@ class DeskUpdater {
       return { updated: false, tag: asset.tag, reason: `the zip holds no ${path.basename(bundle)}` };
     }
     this.staged = { tag: asset.tag, file, bundle: staged, dir };
+    this.refreshTray();
     this.log(`desk-update: ${asset.tag} verified and unpacked at ${staged}; waiting for "Restart to update"`);
     this.notify({ kind: "mac", tag: asset.tag, file, action: "restart" });
     return { updated: true, tag: asset.tag, restarted: false, reason: "waiting for the owner" };
@@ -348,10 +412,16 @@ class DeskUpdater {
 /** The tray's "Restart to update" line while a Windows or Mac update is staged; none
  *  otherwise. The notification is easy to miss (or denied) on a dock-less Mac Desk, and
  *  restartNow is the only way a Mac update is ever applied. Pure. */
-function updateTrayItems(staged, kind, restartNow) {
-  if (!staged || !(kind === "nsis" || (kind === "mac" && staged.bundle))) return [];
-  const version = String(staged.tag || "").replace(/^(?:awdesk-)?v/, "");
-  return [{ label: `Restart to update (${version})`, click: () => restartNow() }];
+function updateTrayItems(staged, kind, restartNow, available = null, installNow = null) {
+  if (staged && (kind === "nsis" || (kind === "mac" && staged.bundle))) {
+    const version = String(staged.tag || "").replace(/^(?:awdesk-)?v/, "");
+    return [{ label: `Restart to update (${version})`, click: () => restartNow() }];
+  }
+  if (available && available.tag && typeof installNow === "function") {
+    const version = String(available.tag).replace(/^(?:awdesk-)?v/, "");
+    return [{ label: `Update available — install (${version})`, click: () => { void installNow(); } }];
+  }
+  return [];
 }
 
 const RELEASES_PAGE = "https://github.com/Aitherium/awdesk/releases";

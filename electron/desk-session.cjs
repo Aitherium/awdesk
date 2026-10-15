@@ -38,6 +38,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const oidc = require("./desk-oidc.cjs");
+const tenantAuto = require("./desk-tenant-auto.cjs");
 
 /** Profiles tried in order after the store's own active_profile. */
 const PROFILE_ORDER = Object.freeze(["portal", "cloud"]);
@@ -136,7 +137,12 @@ async function checkToken(token, { idp = oidc.DEFAULT_IDP, fetchImpl = globalThi
     } catch {
       body = {};
     }
-    return { state: "valid", username: String((body && (body.username || body.preferred_username)) || "") };
+    // The tenant fields only (desk-tenant-auto.cjs finds the workspace host from them).
+    const identity = tenantAuto.tenantIdentity(body);
+    return {
+      state: "valid", username: String((body && (body.username || body.preferred_username)) || ""),
+      ...(identity ? { identity } : {}),
+    };
   } catch {
     return { state: "unknown", username: "" };
   } finally {
@@ -150,7 +156,7 @@ async function checkToken(token, { idp = oidc.DEFAULT_IDP, fetchImpl = globalThi
  *   cookieToken   the aither_auth_token value the partition holds now ("" if none)
  *   authStore()   => pickAuthStoreToken result | null
  *   vault()       => Promise<string>  the owner box's vault token ("" if none)
- *   check(token)  => Promise<{state, username}>
+ *   check(token)  => Promise<{state, username, identity?}>
  *
  * Resolves { action: "keep"|"set"|"clear"|"none", token?, source, username, state }.
  * "set" carries the token the caller writes; "clear" means the cookie is dead and
@@ -161,7 +167,7 @@ async function resolveSession({ cookieToken = "", authStore = () => null, vault 
   if (cookieToken) {
     const v = await check(cookieToken);
     if (v.state !== "invalid") {
-      return { action: "keep", source: "cookie", username: v.username, state: v.state };
+      return { action: "keep", source: "cookie", username: v.username, state: v.state, identity: v.identity || null };
     }
     cookieDead = true;
   }
@@ -172,6 +178,7 @@ async function resolveSession({ cookieToken = "", authStore = () => null, vault 
       return {
         action: "set", token: stored.token, source: `auth.json:${stored.profile}`,
         username: v.username || stored.username, state: v.state, expiresAt: stored.expiresAt,
+        identity: v.identity || null,
       };
     }
   }
@@ -184,7 +191,8 @@ async function resolveSession({ cookieToken = "", authStore = () => null, vault 
   if (vaultToken && vaultToken !== cookieToken) {
     const v = await check(vaultToken);
     if (v.state !== "invalid") {
-      return { action: "set", token: vaultToken, source: "vault", username: v.username, state: v.state };
+      return { action: "set", token: vaultToken, source: "vault", username: v.username, state: v.state,
+        identity: v.identity || null };
     }
   }
   return { action: cookieDead ? "clear" : "none", source: "", username: "", state: "signed-out" };

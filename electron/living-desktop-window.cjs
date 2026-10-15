@@ -27,7 +27,15 @@ const os = require("node:os");
 const fs = require("node:fs");
 const { BrowserWindow, ipcMain, screen, session, shell } = require("electron");
 
-const BASE_URL = process.env.LIVING_DESKTOP_URL || "https://aitherium.com/";
+const deskTenant = require("./desk-tenant.cjs");
+
+//: Tenant mode (desk-tenant.cjs): a validated tenant host replaces the apex; no tenant
+//: config -> the apex, unchanged. LIVING_DESKTOP_URL stays the developer override.
+//: overlayBaseUrl, NOT baseUrl: only a first-party (*.aitherium.com) tenant may become the
+//: overlay origin -- this webContents holds the host bearer, daemon relay and host-page
+//: planes (fromOverlay), so an allowed_hosts tenant stays browser/tray-only.
+let TENANT = deskTenant.currentTenant();
+let BASE_URL = process.env.LIVING_DESKTOP_URL || deskTenant.overlayBaseUrl(TENANT, "https://aitherium.com/");
 const LOG_FILE = path.join(os.tmpdir(), "desk-living-desktop.log");
 
 /** `?mode=overlay` is Aitheros Online's OWN first-party overlay mode (Veil
@@ -154,6 +162,11 @@ ipcMain.handle("living-desktop:daemon-call", async (event, msg) => {
   if (!fromOverlay(event)) return { ok: false, error: "not the AitherOS Online overlay" };
   const m = msg && typeof msg === "object" ? msg : {};
   if (m.target === "harness") return require("./harness-relay.cjs").relayHarness(m);
+  // "Start on this PC": the desk's own node supervisor (local-node.cjs), not a relay.
+  if (m.target === "supervisor") {
+    if (!overlayHost || typeof overlayHost.supervisor !== "function") return { ok: false, error: "the desk has no node supervisor wired" };
+    return overlayHost.supervisor({ method: m.method, path: m.path });
+  }
   if (!overlayHost || typeof overlayHost.local !== "function") return { ok: false, error: "the desk has no local-node relay wired" };
   return overlayHost.local({ type: "daemon-call", method: m.method, path: m.path, body: m.body });
 });
@@ -179,6 +192,18 @@ ipcMain.on("living-desktop:desk-window", (event, msg) => {
 ipcMain.on("living-desktop:desk-command", (event, id) => {
   if (!fromOverlay(event) || !overlayHost || typeof overlayHost.command !== "function") return;
   overlayHost.command(String(id || ""));
+});
+// aither-host/1 desk-browse: the OS's Browser app opens a URL in a NEW OWNER tab of the
+// Aither Browser (the same act as the bridge's POST /browser/open). Fenced like every
+// plane; main sanitizes the URL. Always answered so the page can fall back at once.
+ipcMain.handle("living-desktop:browse", async (event, url) => {
+  if (!fromOverlay(event)) return { ok: false, error: "not the AitherOS Online overlay" };
+  if (!overlayHost || typeof overlayHost.browse !== "function") return { ok: false, error: "the desk has no browser wired" };
+  try {
+    return await overlayHost.browse(String(url || "").slice(0, 4096));
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error) };
+  }
 });
 
 function cursorOverInteractive() {
@@ -411,8 +436,35 @@ async function syncPortalSessionCookie({ force = false, useVault = true } = {}) 
   }
   const signedIn = verdict.action === "keep" || verdict.action === "set";
   setAccount({ signedIn, username: verdict.username || "", source: verdict.source, state: verdict.state });
+  if (signedIn && verdict.identity) await adoptWorkspaceHost(verdict.identity);
   return accountStatus();
 }
+
+// ── The user's own workspace (desk-tenant-auto.cjs) ─────────────────────────────
+// The signed-in account belongs to a workspace whose host declares it: Desk moves there
+// with no desk-tenant.json to write by hand. The adopter is shared with main (the Online
+// tab's own sign-in reaches it too); every window follows its ONE change notice below.
+const deskTenantAuto = require("./desk-tenant-auto.cjs");
+const APEX_BASE_URL = "https://aitherium.com/";
+async function adoptWorkspaceHost(identity) {
+  if (process.env.LIVING_DESKTOP_URL || !identity) return false;
+  const result = await deskTenantAuto.adoptIdentity(identity);
+  return Boolean(result.adopted || result.cleared);
+}
+/** The tenant changed (adopted, replaced, or forgotten): move the base, then the windows. */
+function followTenant() {
+  TENANT = deskTenant.currentTenant();
+  if (process.env.LIVING_DESKTOP_URL) return false;
+  const next = deskTenant.overlayBaseUrl(TENANT, APEX_BASE_URL);
+  if (next === BASE_URL) return false;
+  BASE_URL = next;
+  log(`workspace host is now ${new URL(BASE_URL).hostname} (from the signed-in account)`);
+  // A window already showing a page moves now; one still opening loads the new base.
+  if (isOpen() && desktopWin.webContents.getURL()) void desktopWin.loadURL(urlFor(transparentMode)).catch(() => {});
+  if (isAppOpen() && appWin.webContents.getURL()) void appWin.loadURL(desktopAppUrl()).catch(() => {});
+  return true;
+}
+deskTenantAuto.onWorkspaceChange(() => followTenant());
 
 /** Reload every open window so the shell re-reads the session it now has. */
 function reloadSignedInWindows() {
@@ -445,8 +497,10 @@ function beginSignIn() {
       log("sign-in: no usable login on this machine — opening the browser sign-in");
       const got = await deskSession.signInWithBrowser({ openExternal: (url) => shell.openExternal(url) });
       await setPartitionToken(got.token, got.expiresAt);
+      const checked = await deskSession.checkToken(got.token);
       got.token = null;
       setAccount({ signedIn: true, username: got.username, source: `browser:${got.via}`, state: "valid" });
+      if (checked.identity) await adoptWorkspaceHost(checked.identity);
       log(`sign-in: signed in via the browser (${got.via}); auth.json updated`);
       if (!isOpen() && !isAppOpen()) showDesktopApp();
       else reloadSignedInWindows();
@@ -490,6 +544,8 @@ function signInInWindow() {
 async function signOut() {
   userSignedOut = true;
   await clearPartitionToken();
+  // A workspace that sign-in picked goes with the account (a hand-written one stays).
+  deskTenantAuto.signedOut();
   setAccount({ signedIn: false, username: "", source: "", state: "signed-out" });
   log("signed out of the window partition");
   reloadSignedInWindows();
@@ -598,7 +654,7 @@ function createWindow() {
     // NOT alwaysOnTop: the avatar windows are alwaysOnTop and must float ABOVE the
     // Aitheros Online, the way they float above everything else.
     skipTaskbar: false, // a real surface the owner alt-tabs to and can close from the taskbar
-    title: "AitherOS Aitheros Online",
+    title: deskTenant.decorateTitle("AitherOS Aitheros Online", TENANT),
     webPreferences: {
       partition: PARTITION,
       preload: path.join(__dirname, "living-desktop-preload.cjs"),
@@ -662,13 +718,13 @@ function createWindow() {
   win.on("hide", () => { stopGhostLoop(); notifyVisibility(); });
   wireHostFocus(win);
 
-  const target = urlFor(transparentMode);
-  log(`opening ${target} (transparent=${transparentMode}, ghost=${ghostMode})`);
+  log(`opening ${urlFor(transparentMode)} (transparent=${transparentMode}, ghost=${ghostMode})`);
   // Link the session BEFORE the first paint so the shell never flashes signed-out.
   void (async () => {
     const acct = await syncPortalSessionCookie();
     if (win.isDestroyed()) return;
-    await win.loadURL(target);
+    // Computed AFTER the sync: it may have adopted the account's workspace host.
+    await win.loadURL(urlFor(transparentMode));
     log(acct.signedIn
       ? `session linked (${acct.source}) — shell will see ${acct.username || "the signed-in account"}`
       : "NO usable session — shell renders signed-out; use Sign in from the tray or the AitherOS Online menu");
@@ -699,6 +755,18 @@ function showLivingDesktop() {
   }
   desktopWin = createWindow();
   return desktopWin;
+}
+
+/**
+ * Bring an ALREADY-OPEN overlay forward without taking focus (a notification, when the
+ * user allowed that -- overlay-policy.cjs). Never creates the window: a notice must not
+ * be the thing that opens a full-screen surface. @returns {boolean} raised
+ */
+function raiseLivingDesktop() {
+  if (!isOpen()) return false;
+  if (!desktopWin.isVisible()) desktopWin.showInactive();
+  if (typeof desktopWin.moveTop === "function") desktopWin.moveTop();
+  return true;
 }
 
 function hideLivingDesktop() {
@@ -843,7 +911,7 @@ function showDesktopApp({ app = "" } = {}) {
     frame: true,
     autoHideMenuBar: true,
     backgroundColor: "#0b0d12",
-    title: "AitherDesktop",
+    title: deskTenant.decorateTitle("AitherDesktop", TENANT),
     webPreferences: {
       partition: PARTITION,
       preload: path.join(__dirname, "living-desktop-preload.cjs"),
@@ -897,11 +965,11 @@ function showDesktopApp({ app = "" } = {}) {
   appWin.on("closed", () => {
     appWin = null;
   });
-  const target = desktopAppUrl(app);
-  log(`[app] opening ${target}`);
+  log(`[app] opening ${desktopAppUrl(app)}`);
   void (async () => {
     await syncPortalSessionCookie();
-    if (appWin && !appWin.isDestroyed()) await appWin.loadURL(target);
+    // Computed AFTER the sync: it may have adopted the account's workspace host.
+    if (appWin && !appWin.isDestroyed()) await appWin.loadURL(desktopAppUrl(app));
   })();
   return appWin;
 }
@@ -955,6 +1023,7 @@ module.exports = {
   SHELL_CHOICES,
   DESKTOP_APP_SHELL,
   hideLivingDesktop,
+  raiseLivingDesktop,
   toggleLivingDesktop,
   setSolidBackground,
   setGhostMode,

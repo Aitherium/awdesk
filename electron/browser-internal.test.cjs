@@ -292,7 +292,10 @@ test("the console is a shim over the browser; DESK_LEGACY_CONSOLE=1 brings the w
   for (const pane of ["chat", "cast", "stage", "settings", "sessions"]) {
     assert.match(main, new RegExp(`openConsole\\("${pane}"\\)`), `${pane} door`);
   }
-  assert.match(main, /return openConsole\("cards", cardId\) !== false;/, "the inbox door carries the card id");
+  assert.match(main, /const opened = openConsole\("cards", id\) !== false;/, "the inbox door carries the card id");
+  // ...and an Inbox already open (deck window or tab) is TOLD which card to show.
+  assert.match(main, /deckWindow\.webContents\.send\("desk:event", focus\)/, "an open deck hears deck:focus-card");
+  assert.match(main, /sendToInternalTabs\("desk:event", focus\)/, "an open Inbox tab hears deck:focus-card");
   // The browser half: the console door reuses a pane's tab and pins the front door.
   const bw = read("browser-window.cjs");
   const door = bw.slice(bw.indexOf("function openInternal("), bw.indexOf("function configureInternal("));

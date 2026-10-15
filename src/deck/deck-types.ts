@@ -17,6 +17,11 @@ export interface DeckDecision {
   tab: string;
   cwd: string;
   agent: string;
+  /** WHICH session is waiting (an id, never a path). Optional on older mains. */
+  sessionId?: string;
+  branch?: string;
+  /** A session stopped on the owner (kind=blocked or blocking=true). */
+  blocking?: boolean;
   /** WHERE the value goes when it is entered. Only ever carries a secret NAME,
    *  a scope and why — the VALUE itself never travels on the deck feed (it goes
    *  from the row's masked field straight into main's vault write). Absent/"" on
@@ -107,6 +112,10 @@ export interface DeckState {
   openCount: number;
   /** Every open card, FYI ones included. Optional: an older main does not send it. */
   totalCount?: number;
+  /** Ids only the owner can unblock (credential / blocked), pinned first. */
+  needsYouIds?: string[];
+  /** Ids of FYI cards: collapsed below the flipper, never in its "N of M". */
+  fyiIds?: string[];
   deskVisible: boolean;
   slots: DeckSlot[];
   agents: string[];
@@ -442,4 +451,32 @@ export function wakeActionMessage(verb: string, result: WakeActionResult | boole
   if (result.ok) return `${verb}: ${result.detail || 'ok'}`;
   const code = result.exitCode === null || result.exitCode === undefined ? '' : ` (exit ${result.exitCode})`;
   return `${verb} failed: ${result.detail || 'refused'}${code}`;
+}
+
+/**
+ * The flipper's list and the collapsed FYI list. Needs-you cards are pinned at
+ * index 0.. (in main's rank order), then the rest of the decisions; FYI cards
+ * go below. With an older main (no ids) every card stays in the flipper.
+ */
+export function splitFlipper(state: Pick<DeckState, 'decisions' | 'needsYouIds' | 'fyiIds'>): {
+  flipper: DeckDecision[];
+  fyi: DeckDecision[];
+} {
+  const fyiSet = new Set(state.fyiIds ?? []);
+  const pinned = state.needsYouIds ?? [];
+  const byId = new Map(state.decisions.map((c) => [c.id, c]));
+  const head = pinned.map((id) => byId.get(id)).filter((c): c is DeckDecision => Boolean(c));
+  const headIds = new Set(head.map((c) => c.id));
+  const rest = state.decisions.filter((c) => !headIds.has(c.id) && !fyiSet.has(c.id));
+  return { flipper: [...head, ...rest], fyi: state.decisions.filter((c) => fyiSet.has(c.id) && !headIds.has(c.id)) };
+}
+
+/** The card a ?card= query names, or null (ids are d-<token>). */
+export function cardFocusParam(search: string): string | null {
+  try {
+    const id = new URLSearchParams(search).get('card');
+    return id && /^d-[A-Za-z0-9_-]{1,64}$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
 }

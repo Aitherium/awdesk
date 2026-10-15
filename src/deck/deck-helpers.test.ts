@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   cardLabel,
+  cardFocusParam,
+  splitFlipper,
   cardWhere,
   dueLabel,
   reasonLabel,
@@ -402,5 +404,27 @@ describe('transport errors are sentences, and one cause is said once', () => {
     expect(sharedCause([down, 'up', down, down])).toBeNull();
     expect(sharedCause(['up', 'up'])).toBeNull();
     expect(sharedCause([down])).toBeNull();
+  });
+});
+
+describe('splitFlipper', () => {
+  const a = card({ id: 'd-a' });
+  const cred = card({ id: 'd-cred', kind: 'credential' });
+  const info = card({ id: 'd-info', kind: 'info' });
+  it('pins needs-you first and collapses FYI out of the flipper count', () => {
+    const split = splitFlipper({ decisions: [a, info, cred], needsYouIds: ['d-cred'], fyiIds: ['d-info'] });
+    expect(split.flipper.map((c) => c.id)).toEqual(['d-cred', 'd-a']);
+    expect(split.fyi.map((c) => c.id)).toEqual(['d-info']);
+  });
+  it('an older main (no ids) keeps every card in the flipper', () => {
+    expect(splitFlipper({ decisions: [a, info] }).flipper).toHaveLength(2);
+  });
+});
+
+describe('cardFocusParam', () => {
+  it('reads a card id from ?card= and refuses junk', () => {
+    expect(cardFocusParam('?deck=1&card=d-nwh4')).toBe('d-nwh4');
+    expect(cardFocusParam('?deck=1')).toBeNull();
+    expect(cardFocusParam('?card=..%2F..%2Fx')).toBeNull();
   });
 });

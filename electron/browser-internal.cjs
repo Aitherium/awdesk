@@ -651,10 +651,21 @@ function suggestInternal(text, panes = consolePanes(), limit = 8) {
 /**
  * Where the pinned "AitherOS Online" tab (the hosted pane) goes: app.aitherium.com,
  * the one page host. DESK_ONLINE_URL overrides it, but only to an aitherium.com page.
+ *
+ * Tenant mode (desk-tenant.cjs, including a host sign-in discovery adopted): the
+ * tenant's own host instead. Its taskbar, app launches and page opens all build on this
+ * URL, so they follow. overlayBaseUrl, never baseUrl: this tab is a desk host (it gets
+ * living-desktop-preload.cjs), so only a first-party *.aitherium.com tenant may own it.
+ * Read per call: an account's workspace adopted mid-run moves the next load.
  */
-function onlineUrl(env = process.env) {
+function onlineUrl(env = process.env, tenant = undefined) {
   const wanted = String((env && env.DESK_ONLINE_URL) || "");
-  return isHostedSite(wanted) ? wanted : DEFAULT_HOSTED_URL;
+  if (isHostedSite(wanted)) return wanted;
+  let current = tenant;
+  if (current === undefined) {
+    try { current = require("./desk-tenant.cjs").currentTenant(); } catch { current = null; }
+  }
+  return require("./desk-tenant.cjs").overlayBaseUrl(current, DEFAULT_HOSTED_URL);
 }
 
 /** DESK_LEGACY_CONSOLE=1 brings back the old console window (rollback). */

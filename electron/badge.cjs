@@ -28,13 +28,18 @@ const GLYPHS = {
   "8": ["111", "101", "111", "101", "111"],
   "9": ["111", "101", "111", "001", "111"],
   "+": ["000", "010", "111", "010", "000"],
+  // A key: bow (ring) on top, shaft, one bit. Drawn instead of the numeral
+  // while a credential/blocked card waits -- "a secret is needed" must read
+  // differently from "N things to look at" (owner, 2026-10-14).
+  key: ["111", "101", "111", "010", "011"],
 };
 
 const DISC = { b: 0x4d, g: 0x48, r: 0xe5, a: 0xff }; // #e5484d
 const INK = { b: 0xff, g: 0xff, r: 0xff, a: 0xff };
 
 /** What the badge says for a count: "", "1".."9", or "9+". */
-function badgeLabel(count) {
+function badgeLabel(count, { key = false } = {}) {
+  if (key) return "key";
   const n = Number(count) || 0;
   if (n <= 0) return "";
   return n > 9 ? "9+" : String(n);
@@ -54,8 +59,8 @@ function put(pixels, width, x, y, c) {
  * case it is centred (the taskbar overlay is the badge alone). A count of 0
  * draws nothing. Returns the label drawn.
  */
-function drawBadge(pixels, width, height, count, { diameter = 12, fill = false } = {}) {
-  const label = badgeLabel(count);
+function drawBadge(pixels, width, height, count, { diameter = 12, fill = false, key = false } = {}) {
+  const label = badgeLabel(count, { key });
   if (!label) return "";
   const d = Math.max(7, Math.min(diameter, width, height));
   const x0 = fill ? Math.floor((width - d) / 2) : width - d;
@@ -70,11 +75,12 @@ function drawBadge(pixels, width, height, count, { diameter = 12, fill = false }
       if (dx * dx + dy * dy <= r * r) put(pixels, width, x, y, DISC);
     }
   }
-  // Glyph run: 3 wide each, 1 gap; centred on the disc.
-  const runW = label.length * 3 + (label.length - 1);
+  // Glyph run: 3 wide each, 1 gap; centred on the disc. The key is ONE glyph.
+  const glyphs = label === "key" ? ["key"] : [...label];
+  const runW = glyphs.length * 3 + (glyphs.length - 1);
   let gx = Math.round(cx - (runW - 1) / 2);
   const gy = Math.round(cy - 2);
-  for (const ch of label) {
+  for (const ch of glyphs) {
     const rows = GLYPHS[ch];
     for (let ry = 0; ry < 5; ry += 1) {
       for (let rx = 0; rx < 3; rx += 1) {
@@ -91,16 +97,21 @@ function drawBadge(pixels, width, height, count, { diameter = 12, fill = false }
 }
 
 /** A transparent size x size BGRA bitmap holding only the badge (for setOverlayIcon). */
-function badgeBitmap(count, size = 16) {
+function badgeBitmap(count, size = 16, { key = false } = {}) {
   const pixels = Buffer.alloc(size * size * 4, 0);
-  drawBadge(pixels, size, size, count, { diameter: size, fill: true });
+  drawBadge(pixels, size, size, count, { diameter: size, fill: true, key });
   return pixels;
 }
 
 /** The tray/taskbar tooltip for the same count. */
-function badgeTooltip(count, total = count) {
+function badgeTooltip(count, total = count, needsYou = null) {
   const n = Number(count) || 0;
   const t = Number(total) || 0;
+  const lead = Array.isArray(needsYou) ? needsYou[0] : null;
+  if (lead) {
+    const what = lead.secretName ? `Secret needed: ${lead.secretName}` : `Needs you: ${lead.title || lead.id}`;
+    return `Desk — ${what}`.slice(0, 120) + (n > 1 ? ` · ${n} decisions waiting` : "");
+  }
   if (n > 0) {
     return `Desk — ${n} decision${n === 1 ? "" : "s"} waiting`
       + (t > n ? ` · ${t} cards in the inbox` : "");

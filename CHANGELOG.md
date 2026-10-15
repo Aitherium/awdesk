@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.16 - 2026-10-14
+
+- Desk can open your company's workspace instead of the public Aitherium desktop. When the
+  setup page installs Desk it writes your workspace address, and the desktop overlay, the
+  Aither Browser home page and the tray "Open workspace" item all go there. Only Aitherium
+  workspace addresses are accepted; anything else falls back to the standard desktop.
+- Desk tells you when a newer version is available (at start and every 6 hours) and can
+  install it from the tray.
+- Desk now shows Aitherium as its publisher. Existing installs upgrade in place.
+
 ## 0.1.15 - 2026-10-14
 
 - Desk works on a second laptop. When this machine has no local gateway, the decisions

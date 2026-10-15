@@ -128,9 +128,16 @@ window.addEventListener("message", async (event) => {
   } else if (data.__aither === "os-daemon-call") {
     // awsh's Shell tab (target "harness" -> :8362) or a local-node call (the awconnect
     // overlay's allowlist), relayed by main, which holds every token. Always answered.
-    const res = await ipcRenderer.invoke("living-desktop:daemon-call", {
-      target: data.target === "harness" ? "harness" : "node", method: data.method, path: data.path, body: data.body,
-    }).catch((error) => ({ ok: false, error: String((error && error.message) || error) }));
+    // target "supervisor": the desk's own node supervisor (local-node.cjs, "Start on this
+    // PC"). Reading its status is free; starting or stopping processes takes a real click.
+    const target = data.target === "harness" || data.target === "supervisor" ? data.target : "node";
+    const activation = navigator.userActivation;
+    const res = target === "supervisor" && String(data.method || "GET").toUpperCase() !== "GET"
+      && !(activation && activation.isActive)
+      ? { ok: false, status: 403, error: "starting the node takes a click" }
+      : await ipcRenderer.invoke("living-desktop:daemon-call", {
+        target, method: data.method, path: data.path, body: data.body,
+      }).catch((error) => ({ ok: false, error: String((error && error.message) || error) }));
     reply(Object.assign({}, res && typeof res === "object" ? res : { ok: false }, { __aither: "os-daemon-result", reqId: data.reqId }));
   } else if (data.__aither === "os-thread") {
     // The OS moved the thread. Our own post (source "desk") comes back here too: not news.
@@ -168,6 +175,22 @@ window.addEventListener("message", async (event) => {
       .filter((o) => o && [o.x, o.y, o.w, o.h].every((n) => typeof n === "number" && Number.isFinite(n)))
       .map((o) => ({ x: o.x, y: o.y, w: o.w, h: o.h })) : [];
     ipcRenderer.send("living-desktop:desk-window", { state, rect, focus: data.focus === true, occluders });
+  } else if (data.__aither === "desk-browse") {
+    // The OS's Browser app opening a URL in the desk's NATIVE Aither Browser (a new
+    // owner tab -- never an agent's), instead of a remote session. Like desk-command it
+    // opens a window, so it needs a HUMAN gesture moments ago; always answered, so the
+    // page falls back to its remote session at once instead of waiting out a timeout.
+    // main re-checks the URL (browser-policy sanitizeUrl: http/https only).
+    const reqId = typeof data.reqId === "string" ? data.reqId.slice(0, 80) : "";
+    const url = typeof data.url === "string" ? data.url.slice(0, 4096) : "";
+    const activation = navigator.userActivation;
+    const res = !activation || !activation.isActive
+      ? { ok: false, error: "opening the Aither Browser needs a click or key press" }
+      : await ipcRenderer.invoke("living-desktop:browse", url)
+        .catch((error) => ({ ok: false, error: String((error && error.message) || error) }));
+    const r = res && typeof res === "object" ? res : {};
+    reply({ __aither: "desk-browse-result", reqId, ok: r.ok === true,
+      url: typeof r.url === "string" ? r.url : "", error: typeof r.error === "string" ? r.error : "" });
   } else if (data.__aither === "desk-command") {
     // A HUMAN click only. "Let the agent continue" lifts the owner's pause, so a
     // page script must not be able to send it on its own: the page's transient

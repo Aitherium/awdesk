@@ -50,3 +50,17 @@ test("desk://enroll hands the whole link to the enroller", () => {
   const url = "desk://enroll?c=AB3K9Q2Z&d=fdev_1&i=https://idp.aitherium.com";
   assert.deepEqual(parseProtocolUrl(url), [{ type: "enroll", url }]);
 });
+
+test("desk://browse carries one http(s) page to the desk's Aither Browser, nothing else", () => {
+  const target = "https://github.com/a?b=1&c=2";
+  assert.deepEqual(parseProtocolUrl(`desk://browse?url=${encodeURIComponent(target)}`), [
+    { type: "browse", url: target },
+  ]);
+  assert.deepEqual(parseProtocolUrl("desk:///browse?url=http%3A%2F%2Fexample.com"), [
+    { type: "browse", url: "http://example.com" },
+  ]);
+  assert.equal(parseProtocolUrl("desk://browse"), null);
+  assert.equal(parseProtocolUrl(`desk://browse?url=${encodeURIComponent("javascript:alert(1)")}`), null);
+  assert.equal(parseProtocolUrl(`desk://browse?url=${encodeURIComponent("file:///C:/Windows")}`), null);
+  assert.equal(parseProtocolUrl("other://browse?url=https%3A%2F%2Fx.test"), null);
+});

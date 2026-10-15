@@ -641,3 +641,122 @@ test("off-PC: with the store readable, a failed gateway read falls back to the l
     cards._setGatewayForTests(null);
   }
 });
+
+// ── ONE ranking, pinned by the fixture the Python rank also reads ─────────────
+// awdk/tests/fixtures/card_rank_cases.json. In the public awdesk fork the
+// monorepo fixture is absent; the case runner says so and skips rather than
+// passing on nothing.
+function rankFixture() {
+  let dir = __dirname;
+  for (let i = 0; i < 6; i += 1) {
+    const candidate = path.join(dir, "awdk", "tests", "fixtures", "card_rank_cases.json");
+    if (fs.existsSync(candidate)) return JSON.parse(fs.readFileSync(candidate, "utf8"));
+    dir = path.dirname(dir);
+  }
+  return null;
+}
+
+test("rankCards: the JS constants ARE the fixture's rules", (t) => {
+  const fixture = rankFixture();
+  if (!fixture) return t.skip("card_rank_cases.json not in this tree (public fork)");
+  assert.deepEqual(cards.RANK_RULES.rank_first_kinds, fixture.rank_first_kinds);
+  assert.deepEqual({ ...cards.RANK_RULES.urgency_rank }, fixture.urgency_rank);
+  assert.equal(cards.RANK_RULES.stale_after_seconds, fixture.stale_after_seconds);
+});
+
+test("rankCards: every case the Python rank runs (the d-nwh4 credential leads)", (t) => {
+  const fixture = rankFixture();
+  if (!fixture) return t.skip("card_rank_cases.json not in this tree (public fork)");
+  assert.ok(fixture.cases.length >= 5, "the fixture lost its cases");
+  assert.ok(fixture.cases.some((c) => c.expected[0] === "d-nwh4"), "the measured case is pinned");
+  for (const c of fixture.cases) {
+    const shaped = c.cards.map((raw) => cards.cardFromRaw({ status: "open", ...raw }));
+    assert.deepEqual(cards.rankCards(shaped, c.now).map((x) => x.id), c.expected, c.name);
+    // "N of M" equals the badge: the flipper list is what actionableCount counts
+    // (every needs-you card is in it, and nothing else that triage calls a report).
+    const split = cards.partitionCards(shaped, { nowSec: c.now });
+    assert.equal(split.decisions.length + split.fyi.length, shaped.length, `${c.name} (nothing dropped)`);
+    for (const card of split.needsYou) assert.ok(split.decisions.includes(card), `${c.name} (needs-you in the flipper)`);
+  }
+});
+
+test("rankCards: a normal credential outranks a high PR review; info goes to FYI", () => {
+  const shaped = [
+    { id: "d-pr", kind: "decision", urgency: "high", created_at: 100, options: [{ key: "m", label: "Merge" }] },
+    { id: "d-digest", kind: "info", urgency: "high", created_at: 50 },
+    { id: "d-nwh4", kind: "credential", urgency: "normal", created_at: 300, secret_name: "x" },
+  ].map((raw) => cards.cardFromRaw({ status: "open", ...raw }));
+  const split = cards.partitionCards(shaped, { nowSec: 400 });
+  assert.equal(cards.rankCards(shaped, 400)[0].id, "d-nwh4");
+  assert.deepEqual(split.needsYou.map((c) => c.id), ["d-nwh4"]);
+  assert.deepEqual(split.decisions.map((c) => c.id), ["d-nwh4", "d-pr"]);
+  assert.deepEqual(split.fyi.map((c) => c.id), ["d-digest"]);
+  assert.equal(split.decisions.length, actionableCount(shaped), "badge parity");
+});
+
+test("listOpen and scanAsync both return rank order: the d-nwh4 shape leads a 41-card queue", async () => {
+  const dir = tmpStore();
+  for (let i = 0; i < 40; i += 1) {
+    writeCard(dir, `d-pr${i}`, { created_at: 100 + i, urgency: i % 2 ? "high" : "critical", options: [{ key: "ok", label: "OK" }] });
+  }
+  writeCard(dir, "d-nwh4", { created_at: 9999, kind: "credential", urgency: "normal", secret_name: "proton_bridge_pw" });
+  writeCard(dir, "d-info", { created_at: 1, kind: "info", urgency: "critical" });
+  assert.equal(listOpen(dir)[0].id, "d-nwh4");
+  const scanned = await cards.scanAsync(dir);
+  assert.equal(scanned.cards[0].id, "d-nwh4");
+  const split = cards.partitionCards(scanned.cards);
+  assert.deepEqual(split.needsYou.map((c) => c.id), ["d-nwh4"]);
+  assert.deepEqual(split.fyi.map((c) => c.id), ["d-info"]);
+  assert.equal(split.decisions.length, 41);
+});
+
+test("partitionCards: a snoozed credential leaves needs-you but stays in the flipper", () => {
+  const shaped = [cards.cardFromRaw({ id: "d-c", status: "open", kind: "credential", created_at: 1 })];
+  const split = cards.partitionCards(shaped, { snoozed: new Set(["d-c"]) });
+  assert.deepEqual(split.needsYou, []);
+  assert.deepEqual(split.decisions.map((c) => c.id), ["d-c"]);
+});
+
+test("cardFromRaw carries the session id and branch, never the transcript path", () => {
+  const card = cards.cardFromRaw({
+    id: "d-s", status: "open", kind: "credential",
+    source: { session_id: "0e0031f6-3b7e", branch: "develop", transcript: "C:\\Users\\x\\t.jsonl" },
+  });
+  assert.equal(card.sessionId, "0e0031f6-3b7e");
+  assert.equal(card.branch, "develop");
+  assert.ok(!JSON.stringify(card).includes("t.jsonl"));
+  assert.equal(cards.cardFromRaw({ id: "d-b", status: "open", kind: "blocked" }).blocking, true);
+});
+
+test("bridgeQueue: the daemon's list when it answers, the local read LABELLED stale when not", async () => {
+  const local = [cards.cardFromRaw({ id: "d-local", status: "open", created_at: 1 })];
+  const fromDaemon = await cards.bridgeQueue({
+    fetchOpen: async () => [cards.cardFromRaw({ id: "d-daemon", status: "open" })],
+    localOpen: () => local,
+  });
+  assert.deepEqual([fromDaemon.source, fromDaemon.stale, fromDaemon.count], ["daemon", false, 1]);
+  const down = await cards.bridgeQueue({
+    fetchOpen: async () => { throw new Error("daemon HTTP 0"); },
+    localOpen: () => local,
+  });
+  assert.deepEqual([down.source, down.stale, down.decisions[0].id], ["local", true, "d-local"]);
+  assert.match(down.error, /daemon HTTP 0/);
+});
+
+test("fetchDaemonOpen asks for status=open with the bearer and ranks the answer", async () => {
+  const seen = [];
+  const fetchFn = async (url, opts) => {
+    seen.push([url, opts.headers.Authorization]);
+    return {
+      status: 200,
+      json: async () => ({ decisions: [
+        { id: "d-pr", status: "open", urgency: "high", created_at: 1, options: [{ key: "a", label: "A" }] },
+        { id: "d-cred", status: "open", kind: "credential", urgency: "normal", created_at: 5 },
+      ] }),
+    };
+  };
+  const list = await cards.fetchDaemonOpen({ fetchFn, base: "http://127.0.0.1:1", token: "tok" });
+  assert.deepEqual(list.map((c) => c.id), ["d-cred", "d-pr"]);
+  assert.deepEqual(seen[0], ["http://127.0.0.1:1/decisions?status=open", "Bearer tok"]);
+  await assert.rejects(cards.fetchDaemonOpen({ fetchFn: async () => ({ status: 401 }), base: "x", token: "t" }), /401/);
+});

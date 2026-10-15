@@ -52,6 +52,16 @@ function parseProtocolUrl(rawUrl, protocolScheme = "desk") {
     if (action === "enroll") {
       return [{ type: "enroll", url: rawUrl }];
     }
+    // desk://browse?url=<http(s) URL> -> open that page in a new OWNER tab of the
+    // desk's Aither Browser. The plain-web hand-off from the OS's Browser app: a
+    // workspace member's browsing runs HERE, on their computer, never on the
+    // platform's remote session (owner 2026-10-14). Only http(s) is carried; the
+    // window applies browser-policy sanitizeUrl again before loading anything.
+    if (action === "browse") {
+      const target = String(url.searchParams.get("url") || "").trim();
+      if (!/^https?:\/\//i.test(target)) return null;
+      return [{ type: "browse", url: target.slice(0, 4096) }];
+    }
     if (action === "listening") {
       return [{ type: "event", event: voiceState("listening") }];
     }

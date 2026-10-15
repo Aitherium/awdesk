@@ -149,6 +149,11 @@ const {
   setDiskExplorerSignInHandler,
   getDiskExplorerClient,
 } = require("./disk-explorer-window.cjs");
+// Darkmatter Link: agents in the owner's games -- supervisor, health, consent.
+const {
+  createDarkmatterLinkWindow,
+  stopDarkmatterSupervisor,
+} = require("./darkmatter-link-window.cjs");
 // The Aither Browser: a browser window inside the desk an agent drives (MCP
 // browser_* tools) while the owner watches and can take over.
 const browserWindow = require("./browser-window.cjs");
@@ -179,6 +184,7 @@ const {
   setInboxBadge: setConsoleInboxBadge,
 } = require("./console-window.cjs");
 const { badgeBitmap, badgeTooltip, drawBadge } = require("./badge.cjs");
+const needsYouLib = require("./needs-you.cjs");
 const { voiceTrayItems } = require("./voice-tray-line.cjs");
 const awconnectSetup = require("./awconnect-setup.cjs");
 const {
@@ -259,6 +265,11 @@ const { createDeviceConnect } = require("./device-connect.cjs");
 const { createNearbyDevices } = require("./nearby-devices.cjs");
 const { createLocalStackWindow } = require("./local-stack-window.cjs");
 const { DeskUpdater, installKind, safeReleaseUrl, updateTrayItems } = require("./desk-update.cjs");
+// Tenant mode (desk-tenant.cjs): the workspace host this Desk opens, from argv/env/the
+// config file, or adopted from the signed-in account (desk-tenant-auto.cjs). Read per
+// use (currentTenant()), so a host adopted mid-run reaches the tray and titles too.
+const deskTenant = require("./desk-tenant.cjs");
+const deskTenantAuto = require("./desk-tenant-auto.cjs");
 /** The running updater (null until the app is ready); its Windows installer runs on quit. */
 let deskUpdater = null;
 let updateNotice = null; // held, or a collected Notification loses its click handler
@@ -296,6 +307,12 @@ function showUpdateNotice(update) {
       title: `Desk ${version} is available`,
       body: "Installed from a .deb, so the package manager updates it. Click for the download.",
       click: () => void shell.openExternal(safeReleaseUrl(update.page || update.url)),
+    },
+    // A newer release was seen but the verified download did not finish: say so anyway.
+    available: {
+      title: `Desk ${version} is available`,
+      body: "An update is out. Click to install it (or use \"Update available\" in the tray).",
+      click: () => void deskUpdater?.installNow(),
     },
   };
   const note = notes[update.action];
@@ -346,6 +363,7 @@ const {
   desktopAppUrl,
   isAppOpen,
   toggleLivingDesktop,
+  raiseLivingDesktop,
   setShell: setDesktopShell,
   setGhostMode,
   setSolidBackground,
@@ -491,6 +509,25 @@ function shrinkWindow(factor = 1.15) {
 }
 
 const startInBackground = process.argv.includes("--background");
+
+// First run with --tenant-host=<host> (the setup door's shortcut): keep it, so autostart
+// and a plain shortcut open the same workspace. Never overwrites an existing config.
+{
+  const tenantArg = deskTenant.currentResolution().argHost;
+  if (tenantArg) {
+    try { deskTenant.persistFirstRunHost(tenantArg); } catch (err) { console.warn(`[desk] tenant host not saved: ${err && err.code ? err.code : err}`); }
+  }
+}
+
+/** The Online tab's session (browserWindow.onlineToken) -> the account's workspace host. */
+async function adoptWorkspaceFromOnline() {
+  if (process.env.LIVING_DESKTOP_URL) return null;
+  try {
+    return await deskTenantAuto.adoptFromToken(await browserWindow.onlineToken());
+  } catch {
+    return null;
+  }
+}
 /** "Open the Desk panel at startup" — the owner's quick path into the panel, and a
  *  deterministic way to verify the deck live (restart with this flag, screenshot). */
 const deckIsRequested = process.argv.includes("--open-deck");
@@ -524,6 +561,12 @@ let tray = null;
 // 2026-08-31 (owner decision) — the tray badge, deck and Discord fanout carry
 // the push; DTOAST001 gates the notify.py twins against Windows toasts.
 let openDecisions = [];
+// The asks only the owner can unblock (credential / blocked / blocking), in rank
+// order, snoozed ones removed -- the tray's row 0, the red key, the chip and the
+// voice lead (needs-you.cjs). Recomputed with every watcher change.
+let needsYou = [];
+let needsYouChip = null; // needs-you.cjs createChip(), made on first use
+let needsYouSpokenAt = 0;
 let relayFeed = [];
 let relayFeedTimer = null;
 // The awrise wake snapshot the deck renders. `source` is "none" until the first
@@ -1234,6 +1277,20 @@ function handleProtocolUrl(rawUrl) {
     else if (command.type === "overlay") showLivingDesktop();
     else if (command.type === "desktop") showDesktopApp();
     else if (command.type === "event") handleBridgeEvent(command.event);
+    else if (command.type === "browse") {
+      // The same act and URL policy as the bridge's POST /browser/open and the
+      // overlay's desk-browse: a new OWNER tab, never an agent's.
+      const open = () => {
+        const verdict = browserPolicy.sanitizeUrl(command.url);
+        if (!verdict.ok) {
+          console.warn(`[desk] desk://browse refused: ${verdict.reason}`);
+          return;
+        }
+        browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
+      };
+      if (app.isReady()) open();
+      else void app.whenReady().then(open);
+    }
     else if (command.type === "enroll") {
       if (kvLendRuntime) void kvLendRuntime.enrollFromUrl(command.url);
       else pendingEnroll.push(command.url);
@@ -1318,13 +1375,172 @@ function cardWindowsMayOpen() {
   return !cardPopupsOff();
 }
 
+// ── When the desk may raise a surface BY ITSELF (overlay-policy.cjs) ────────────────
+// Report, 2026-10-14: the AitherOS Online overlay "randomly pops up on the side of the
+// monitor". Every door that shows the overlay (or the Inbox) without a click names its
+// trigger here; cast.json `overlay` decides. Explicit actions never come through this.
+const overlayPolicy = require("./overlay-policy.cjs");
+
+/** The user's overlay settings, resolved (defaults: every automatic door off). */
+function overlaySettings() {
+  try {
+    return overlayPolicy.normalize(require("./desk-settings.cjs").current().overlay);
+  } catch {
+    return overlayPolicy.normalize({}); // unreadable settings = the quiet defaults
+  }
+}
+
+/** May `trigger` raise `what` now? A refusal is logged, never silent. */
+function overlayMayRaise(trigger, what = "overlay") {
+  const verdict = overlayPolicy.decide(overlaySettings(), trigger);
+  if (!verdict.allow) debugLog(`[overlay-policy] ${what} not raised (${trigger}): ${verdict.reason}`);
+  return verdict.allow;
+}
+
+/** A notice that does not take the screen: a tray balloon (Windows), else an OS notification. */
+function notifyQuietly(title, body) {
+  try {
+    if (process.platform === "win32" && tray && !tray.isDestroyed?.()) {
+      tray.displayBalloon({ title: String(title).slice(0, 63), content: String(body).slice(0, 255), iconType: "info" });
+      return;
+    }
+    if (Notification.isSupported()) new Notification({ title: String(title), body: String(body), silent: true }).show();
+  } catch (error) {
+    debugLog("quiet notice failed", error?.message || error);
+  }
+}
+
+/** Persist an overlay settings patch (known keys only) and apply it. */
+function setOverlaySettings(patch) {
+  const clean = overlayPolicy.cleanPatch(patch);
+  if (!Object.keys(clean).length) return { ok: false, error: "no valid overlay setting in the patch" };
+  const { write } = require("./cast-config.cjs");
+  const result = write((draft) => {
+    draft.overlay = { ...(draft.overlay || {}), ...clean };
+  });
+  if (result.ok) {
+    syncEdgeReveal();
+    if (tray) refreshTrayMenu();
+  }
+  return result;
+}
+
+/** Flip one boolean overlay setting (the tray rows). */
+function toggleOverlaySetting(key) {
+  return setOverlaySettings({ [key]: !overlaySettings()[key] });
+}
+
+// Edge reveal: a cursor poll that runs ONLY while overlay.edgeReveal is on (and do not
+// disturb is off). The watcher re-reads the policy on every tick; the 30 s resync picks
+// up an edit made outside the desk (the cast pane, awsettings, a sync pull).
+let edgeRevealTimer = null;
+let edgeRevealWatcher = null;
+function syncEdgeReveal() {
+  const s = overlaySettings();
+  const want = s.edgeReveal && !s.doNotDisturb;
+  if (want && !edgeRevealTimer) {
+    edgeRevealWatcher = overlayPolicy.createEdgeWatcher({
+      settings: overlaySettings,
+      cursor: () => screen.getCursorScreenPoint(),
+      bounds: () => screen.getPrimaryDisplay().bounds,
+      visible: () => Boolean(desktopStatus().overlay.visible),
+      reveal: () => {
+        debugLog("[overlay-policy] edge reveal");
+        showLivingDesktop();
+      },
+    });
+    edgeRevealTimer = setInterval(() => edgeRevealWatcher.tick(), 100);
+    edgeRevealTimer.unref?.();
+  } else if (!want && edgeRevealTimer) {
+    clearInterval(edgeRevealTimer);
+    edgeRevealTimer = null;
+    edgeRevealWatcher = null;
+  }
+}
+
+/** Another program asked for the overlay (MCP desktop_open, POST /desktop/overlay). */
+function requestLivingDesktop() {
+  const verdict = requestLivingDesktop.check();
+  if (verdict.ok) showLivingDesktop();
+  return verdict;
+}
+/** The REQUEST verdict alone ({ok} or the refusal an agent can read). */
+requestLivingDesktop.check = () => (overlayMayRaise(overlayPolicy.TRIGGERS.REQUEST)
+  ? { ok: true }
+  : { ok: false, suppressed: true, error: "Do not disturb is on in Desk; the overlay was not opened (open it from the tray or Ctrl+Shift+D)" });
+
 function openInbox(cardId = null) {
+  const id = typeof cardId === "string" && cardId ? cardId : null;
+  // The card id must REACH the flipper (2026-10-14: a click on "Secret needed"
+  // used to show/focus an existing deck on whatever card it last showed).
+  const focus = id ? { type: "deck:focus-card", id } : null;
   if (deckWindow && !deckWindow.isDestroyed()) {
     deckWindow.show();
     deckWindow.focus();
+    if (focus) deckWindow.webContents.send("desk:event", focus);
     return true;
   }
-  return openConsole("cards", cardId) !== false;
+  const opened = openConsole("cards", id) !== false;
+  // An Inbox tab that is already open on THIS card is not reloaded by
+  // openInternal (same URL); the event refocuses it either way.
+  if (focus) {
+    try { browserWindow.sendToInternalTabs("desk:event", focus); } catch { /* no browser yet */ }
+  }
+  return opened;
+}
+
+/** Where "Later" snoozes live: the desk's own userData, never the decision store. */
+function needsYouSnoozeDir() {
+  try { return app.getPath("userData"); } catch { return null; }
+}
+
+/** Recompute the needs-you list from the open queue (rank order, snoozes removed). */
+function computeNeedsYou(cards = openDecisions) {
+  try {
+    const snoozed = needsYouLib.snoozedIds(needsYouSnoozeDir());
+    return decisionCards.partitionCards(cards, { snoozed }).needsYou;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The "Needs you" chip: a small always-on-top window, focusable:false and shown
+ * INACTIVE, so it is visible under .popup-off without ever taking focus. A click
+ * is a navigation main intercepts (needs-you.cjs chipTarget) -> openInbox(id).
+ */
+function syncNeedsYouChip() {
+  if (!needsYouChip) {
+    needsYouChip = needsYouLib.createChip({
+      BrowserWindow,
+      screen,
+      onOpen: (id) => openInbox(id),
+      log: debugLog,
+    });
+  }
+  // Do not disturb hides it; .popup-off does NOT (it never takes focus).
+  void needsYouChip.sync(needsYou, { hidden: overlaySettings().doNotDisturb });
+}
+
+/** "Later" on a needs-you card: off the strip for 4 h, still open everywhere. */
+function snoozeNeedsYou(id) {
+  if (typeof id !== "string" || !openDecisions.some((c) => c.id === id)) return false;
+  needsYouLib.snooze(needsYouSnoozeDir(), id);
+  needsYou = computeNeedsYou();
+  refreshTrayMenu();
+  refreshNotificationBadges();
+  syncNeedsYouChip();
+  sendDeckState();
+  return true;
+}
+
+/** Speak the needs-you lead. Honors the mic mute (a muted desk stays silent). */
+function speakNeedsYou(actionable, isBacklog) {
+  if (micMuted()) return false;
+  const line = needsYouLib.voiceLine(needsYou, actionable, isBacklog);
+  needsYouSpokenAt = Date.now();
+  try { void speakAloud(line, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { /* best-effort */ }
+  return true;
 }
 
 /**
@@ -1477,23 +1693,25 @@ function resetAvatarLayout() {
  *  (overlay icon) and its Inbox tab, and the tooltip. Native toasts stay
  *  removed (owner decision 2026-08-31); a badge is a fact, a toast is noise. */
 let trayBaseIcon = null;
-function badgedImage(base, count) {
+function badgedImage(base, count, key = false) {
   const { width, height } = base.getSize();
   const bmp = Buffer.from(base.toBitmap());
-  drawBadge(bmp, width, height, count, { diameter: Math.round(Math.min(width, height) * 0.6) });
+  drawBadge(bmp, width, height, count, { diameter: Math.round(Math.min(width, height) * 0.6), key });
   return nativeImage.createFromBitmap(bmp, { width, height });
 }
 function refreshNotificationBadges(cards = openDecisions) {
-  const waiting = decisionCards.actionableCount(cards);
-  const tooltip = badgeTooltip(waiting, cards.length);
+  const waiting = inboxCounts(cards).waiting;
+  // A red KEY instead of the numeral while a secret / blocked session waits.
+  const key = needsYou.length > 0;
+  const tooltip = deskTenant.decorateTitle(badgeTooltip(waiting, cards.length, needsYou), deskTenant.currentTenant());
   if (tray) {
     tray.setToolTip(tooltip);
-    if (trayBaseIcon) tray.setImage(badgedImage(trayBaseIcon, waiting));
+    if (trayBaseIcon) tray.setImage(badgedImage(trayBaseIcon, waiting, key));
   }
   const inboxBadge = {
     count: waiting,
-    image: waiting > 0
-      ? nativeImage.createFromBitmap(badgeBitmap(waiting, 16), { width: 16, height: 16 })
+    image: waiting > 0 || key
+      ? nativeImage.createFromBitmap(badgeBitmap(waiting, 16, { key }), { width: 16, height: 16 })
       : null,
     tooltip,
   };
@@ -2326,6 +2544,8 @@ function commandContext() {
     overlayShell: desktop.shell,
     overlayGhost: desktop.ghost,
     overlaySolid: !desktop.transparent,
+    // When the desk may raise the overlay by itself (the four Settings switches).
+    overlayPolicy: overlaySettings(),
     avatarDocked: Boolean(avatarDock && avatarDock.isDocked()),
     kvLend: Boolean(kvLendRuntime && kvLendRuntime.lend.settings().enabled),
     deadAccels: [...deadAccels],
@@ -2442,11 +2662,19 @@ function trayTemplateNow() {
   // Where the browser extension is (or that it is nowhere) -- same splice as voice.
   // Cloud LLM spend today + the DeepSeek balance; a click opens aither://spend. An
   // absent cloud_spend tool reads "not deployed yet", never "$0.00".
-  const statusRows = [...voiceRows, ...awconnectSetup.awconnectTrayItems(latestAwconnectStatus),
+  const statusRows = [...voiceRows,
+    // "Open workspace — <name>": only in tenant mode; opens the host in the Aither Browser.
+    ...deskTenant.tenantTrayItems(deskTenant.currentTenant(),
+      (url) => void browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url })),
+    ...awconnectSetup.awconnectTrayItems(latestAwconnectStatus),
     ...spendTrayItems(latestSpend, () => openConsole("spend")),
-    ...updateTrayItems(deskUpdater?.staged, deskUpdater?.kind, () => deskUpdater?.restartNow())];
+    ...updateTrayItems(deskUpdater?.staged, deskUpdater?.kind, () => deskUpdater?.restartNow(),
+      deskUpdater?.available, () => deskUpdater?.installNow())];
   if (statusRows.length && appGroupAt > 0) trayTemplate.splice(appGroupAt - 1, 0, ...statusRows);
   else trayTemplate.push(...statusRows);
+  // Row 0: what only the owner can unblock ("Secret needed: <name> (from ...)").
+  // A click opens the Inbox ON that card; nothing here opens by itself.
+  trayTemplate.unshift(...needsYouLib.trayRows(needsYou, (id) => openInbox(id)));
   return trayTemplate;
 }
 
@@ -2496,6 +2724,13 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
   // Re-render AFTER it ran rather than let the tray show the state from before
   // the click; setImmediate fires once this synchronous switch has returned.
   if (tray) setImmediate(() => refreshTrayMenu());
+  // POST /commands/run is another PROGRAM running the registry (awsh /desk, an agent):
+  // a command that would put the overlay on screen is a REQUEST there, so Do not
+  // disturb refuses it. Every other surface is the user's own click or key.
+  if (surface === "bridge" && overlayPolicy.wouldShowOverlay(id, commandRegistry.byId(id), desktopStatus().overlay)) {
+    const verdict = requestLivingDesktop.check();
+    if (!verdict.ok) return verdict;
+  }
   switch (id) {
     case "console.open": return void openConsole();
     case "device.connect": return void (deviceConnect && deviceConnect.open());
@@ -2528,6 +2763,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       createDiskExplorerWindow();
       return;
     }
+    case "darkmatter.open": return void createDarkmatterLinkWindow();
     case "browser.open": return void browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
     case "inference.open": {
       // Sign-in must land the cookie in the living-desktop PARTITION, which
@@ -2571,6 +2807,11 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "desktop.overlay.reload": return void reloadLivingDesktop();
     case "desktop.signin": return void beginDesktopSignIn();
     case "desktop.signout": return void signOutDesktop();
+    // When the desk may raise the overlay by itself (overlay-policy.cjs, cast.json overlay).
+    case "desktop.overlay.auto-start": return void toggleOverlaySetting("autoOpenOnStart");
+    case "desktop.overlay.edge-reveal": return void toggleOverlaySetting("edgeReveal");
+    case "desktop.overlay.raise-on-notify": return void toggleOverlaySetting("raiseOnNotifications");
+    case "desktop.overlay.dnd": return void toggleOverlaySetting("doNotDisturb");
     case "window.outline": return void toggleWindowOutline();
     case "layout.reset-all": return void resetAvatarLayout();
     // The body verbs: `slotId` is the body that was right-clicked.
@@ -2688,11 +2929,15 @@ function showAboutDesk() {
  * used `waiting`, the pane and the bell used `total` under the word "waiting".
  * Every surface reads THIS now, so "waiting" means one thing.
  */
-function inboxCounts() {
-  return {
-    waiting: decisionCards.actionableCount(openDecisions),
-    total: openDecisions.length,
-  };
+function inboxCounts(cards = openDecisions) {
+  // partitionCards is the flipper's own split, so the badge and "N of M" agree.
+  let waiting;
+  try {
+    waiting = decisionCards.partitionCards(cards).decisions.length;
+  } catch {
+    waiting = decisionCards.actionableCount(cards);
+  }
+  return { waiting, total: cards.length };
 }
 
 function deckState() {
@@ -2704,6 +2949,12 @@ function deckState() {
     decisions: openDecisions,
     openCount: counts.waiting,
     totalCount: counts.total,
+    // The split the flipper renders: needs-you ids pinned first, FYI ids
+    // collapsed below it (decision-cards partitionCards).
+    needsYouIds: needsYou.map((c) => c.id),
+    fyiIds: (() => {
+      try { return decisionCards.partitionCards(openDecisions).fyi.map((c) => c.id); } catch { return []; }
+    })(),
     deskVisible: Boolean(
       avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible(),
     ),
@@ -2839,6 +3090,8 @@ function deckStateFor(sender) {
 // (browser-in-online.cjs): the OS draws its frame, the browser is laid over the body.
 const browserInOnline = createBrowserInOnline({ browser: () => browserWindow.getWindow() });
 setDeskStateProvider(() => ({ ...deckState(), browser: overlayBrowserHost.browserSummary(browserWindow.getState()) }));
+// This computer's local node, started and supervised on the user's click (local-node.cjs).
+const localNode = require("./local-node.cjs").createLocalNode({ log: (line) => console.log(`[desk] ${line}`) });
 // AitherOS Online on the desk drives and reads the Aither Browser through the SAME
 // agent dispatcher every MCP browser_* tool uses (gate + tab ownership), and its
 // card runs only overlay-browser-host's allowlisted commands.
@@ -2854,8 +3107,20 @@ setOverlayHost({
   thread: () => browserWindow.getDeskThread(),
   // Local-node calls from a desk-hosted OS page: the awconnect overlay's own allowlist.
   local: (msg) => browserWindow.overlayAnswer(msg),
+  // "Start on this PC": the desk starts and supervises the node itself (local-node.cjs).
+  supervisor: (msg) => localNode.call(msg),
   // The browser as an OS window of the overlay (aither-host/1 desk-window).
   window: (msg, overlay) => browserInOnline.apply(msg, overlay),
+  // aither-host/1 desk-browse: the OS's Browser app opens a URL HERE, in a new OWNER
+  // tab -- the same act (and the same URL policy) as the bridge's POST /browser/open,
+  // so no remote AitherBrowser session is needed inside the desk.
+  browse: (url) => {
+    const verdict = browserPolicy.sanitizeUrl(url);
+    if (!verdict.ok) return { ok: false, error: verdict.reason };
+    browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
+    pushDeskState();
+    return { ok: true, url: verdict.url };
+  },
   command: (id) => {
     if (!overlayBrowserHost.allowedCommand(id)) return;
     if (id === "browser.open") browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
@@ -3722,7 +3987,21 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // One identity: a sign-in/out of the Online session reaches every desk-hosted OS page
     // at once (the overlay frames over web pages already follow it, browser-overlay.cjs).
     // Here, after ready: the Online partition's session does not exist before it.
-    browserWindow.watchOnlineAuth((signedIn) => pushHostAuth(signedIn));
+    browserWindow.watchOnlineAuth((signedIn) => {
+      pushHostAuth(signedIn);
+      // Signed in on the Online tab itself (no auth.json, no terminal): that session is
+      // the door that knows the account, so the workspace host is looked up from it too.
+      if (signedIn) void adoptWorkspaceFromOnline();
+    });
+    // The account's workspace host was adopted or forgotten: every surface follows.
+    deskTenantAuto.onWorkspaceChange((result) => {
+      console.log(`[desk] workspace host ${result.cleared ? "forgotten" : `adopted: ${result.host}`}`);
+      browserWindow.followTenant();
+      refreshNotificationBadges();
+      if (tray) refreshTrayMenu();
+    });
+    // Already signed in when the Desk starts: the Online session's own bearer.
+    void adoptWorkspaceFromOnline();
     if (webauth && webauth.ok === false) {
       // A mis-wired session would silently degrade to the inert stub: say so.
       console.error("[awconnect] chrome.identity bridge did not install:", webauth.error || webauth);
@@ -3950,7 +4229,17 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
           const label = command ? commandRegistry.labelOf(command, ctx) : k.id;
           return { ...k, label, dead: deadAccels.has(k.accel) };
         });
-        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels] };
+        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings() };
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+    });
+    // The overlay switches (overlay-policy.cjs): known keys only, validated twice
+    // (cleanPatch here, cast-config's OVERLAY_FIELDS on write).
+    ipcMain.handle("desk:settings-set-overlay", (_event, patch) => {
+      try {
+        const result = setOverlaySettings(patch);
+        return result.ok ? { ok: true, overlay: overlaySettings() } : { ok: false, error: result.error };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }
@@ -4408,6 +4697,15 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         case "inbox":
           openInbox(typeof arg === "string" && arg ? arg : null);
           return true;
+        // The credential row's "Later": off the needs-you strip for 4 h.
+        case "card-later":
+          return snoozeNeedsYou(arg);
+        // The credential row's "Not needed": withdraw the card through awask
+        // (which tells the raising session). Only a card main itself sees open.
+        case "card-not-needed": {
+          if (typeof arg !== "string" || !openDecisions.some((c) => c.id === arg)) return false;
+          return decisionCards.cancelCard(arg, "owner: not needed");
+        }
         case "quit":
           isQuitting = true;
           app.quit();
@@ -4656,9 +4954,12 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       // The Aither Browser's agent tools: the take-over gate runs before any of them.
       onBrowser: (action, args) => browserWindow.browserAgent({ askAgent: browserAskAgent })(action, args),
       onChrome: (action, args) => chromeBridge.call(action, args),
+      // An agent asked (MCP desktop_open): a REQUEST trigger -- Do not disturb refuses it.
       onDesktop: (surface) => {
-        if (surface === "overlay") showLivingDesktop();
-        else if (surface === "app") showDesktopApp();
+        if (surface === "overlay") {
+          const verdict = requestLivingDesktop();
+          if (!verdict.ok) return { ...verdict, opened: null, ...desktopStatus() };
+        } else if (surface === "app") showDesktopApp();
         return { ok: true, opened: surface === "status" ? null : surface, ...desktopStatus() };
       },
     });
@@ -4669,7 +4970,12 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       // The Aitheros Online overlay renders the STATIC site, whose
       // /api/decisions is a build stub — this loopback read is how its bell
       // sees the queue at all. Read-only; answering stays in the queue window.
-      decisionsProvider: () => decisionCards.lastOpen(),
+      // The daemon's list (it expires due cards; the file read does not), the
+      // local read only when the daemon is down -- labelled stale.
+      decisionsProvider: () => decisionCards.bridgeQueue(),
+      needsYouProvider: () => decisionCards.bridgeNeedsYou({
+        snoozed: needsYouLib.snoozedIds(needsYouSnoozeDir()),
+      }),
       // Read-only: the hosted web surfaces see the same wake snapshot the deck
       // does. Mutations are NOT offered here — they go to the daemon window.
       wakesProvider: () => wakesFeed,
@@ -4710,9 +5016,13 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()
           ? avatarWindow.getBounds()
           : null,
+      // POST /desktop/overlay from another program (the browser extension, the harness
+      // daemon): a REQUEST trigger -- Do not disturb refuses it (overlay-policy.cjs).
       desktopHandler: (mode) => {
-        if (mode === "overlay") showLivingDesktop();
-        else if (mode === "app") showDesktopApp();
+        if (mode === "overlay") {
+          const verdict = requestLivingDesktop();
+          if (!verdict.ok) return { ...verdict, opened: null, ...desktopStatus() };
+        } else if (mode === "app") showDesktopApp();
         return { ok: true, opened: mode === "status" ? null : mode, ...desktopStatus() };
       },
       commandHandler: (req) => {
@@ -4749,7 +5059,13 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         .catch((error) => console.warn("[desk] setup auto-open check failed:", error?.message || error));
     }, 15_000);
     if (process.argv.includes("--command")) createCommandWindow(getFleetControl(), { createFleetWindow });
+    // `--overlay` is the user's own shortcut asking for it. Without it the overlay
+    // opens at start ONLY when the user turned that on (overlay.autoOpenOnStart, off
+    // by default; Do not disturb wins) -- overlay-policy.cjs.
     if (process.argv.includes("--overlay")) showLivingDesktop();
+    else if (overlayMayRaise(overlayPolicy.TRIGGERS.START)) showLivingDesktop();
+    syncEdgeReveal();
+    setInterval(syncEdgeReveal, 30_000).unref?.();
     if (process.argv.includes("--desktop")) showDesktopApp();
     // Keep the tray's Fleet line honest: re-render the menu after every verdict.
     getFleetControl().on("progress", (p) => {
@@ -4830,6 +5146,15 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // click or respond to"). speakAloud + openInbox exist; wire them here.
     const announceDecisions = (list, isBacklog) => {
       try {
+        // A needs-you card LEADS the spoken line, backlog or not (needs-you.cjs):
+        // a credential cannot be answered by voice, so it is said, not asked.
+        // The window ladder below still runs -- speaking is not raising.
+        // Only on the backlog line or when a needs-you card is among the NEW ones:
+        // an unrelated CI notice must not re-say the credential every time
+        // (the hourly reminder below carries the repeat).
+        const spokeNeedsYou = needsYou.length > 0
+          && (isBacklog || list.some((c) => decisionCards.isNeedsYou(c)));
+        if (spokeNeedsYou) speakNeedsYou(list, isBacklog); // silent while the mic is muted
         const lead = (list[isBacklog ? 0 : list.length - 1]) || {};
         const title = String(lead.title || "a decision").slice(0, 120);
         const n = list.length;
@@ -4843,7 +5168,9 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         // A NEW card is a spoken question the owner can answer out loud
         // (voice-card.cjs); a backlog, a muted mic or an ask already waiting
         // keeps the plain announcement. The Inbox opens below either way.
-        if (!isBacklog && lead.id && !micMuted() && !voiceAsk.waiting) {
+        if (spokeNeedsYou) {
+          /* said above, needs-you first */
+        } else if (!isBacklog && lead.id && !micMuted() && !voiceAsk.waiting) {
           void answerCardByVoice(lead);
         } else {
           try { void speakAloud(phrase, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { /* best-effort */ }
@@ -4870,13 +5197,20 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
           String((newest && newest.urgency) || "normal").toLowerCase(),
         );
         const nowMs = Date.now();
+        // overlay-policy.cjs (2026-10-14): raising a window for a card is a
+        // NOTIFICATION trigger -- off by default (overlay.raiseOnNotifications) and
+        // silenced by Do not disturb; the card then lands as a tray balloon instead.
         try {
+          const mayRaise = !cardPopupsOff() && overlayMayRaise(overlayPolicy.TRIGGERS.NOTIFICATION, "inbox");
           if (urgent) {
-            if (!cardPopupsOff()) {
+            if (mayRaise) {
               openInbox(newest && newest.id ? newest.id : null);
+              raiseLivingDesktop();               // an already-open overlay comes forward too
               lastInboxOpenAt = nowMs;
+            } else if (!overlaySettings().doNotDisturb) {
+              notifyQuietly("Aither — a decision needs you", String((newest && newest.title) || title).slice(0, 200));
             }
-          } else if (cardWindowsMayOpen() && nowMs - lastInboxOpenAt >= INBOX_OPEN_MIN_MS) {
+          } else if (mayRaise && cardWindowsMayOpen() && nowMs - lastInboxOpenAt >= INBOX_OPEN_MIN_MS) {
             openInbox();                          // backlog: ONE console, no 30-popup storm
             lastInboxOpenAt = nowMs;
           }
@@ -4887,6 +5221,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     decisionWatchStop = decisionCards.watch({
       onChange: (cards) => {
         openDecisions = cards;
+        needsYou = computeNeedsYou(cards);
+        syncNeedsYouChip();
         refreshTrayMenu();
         refreshNotificationBadges(cards);
         sendDeckState();
@@ -4916,6 +5252,22 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // DESK's to surface — this watch just proved it is watching. Beat every
     // 20 s; stopped (and removed) on quit in before-quit.
     deskHeartbeatStop = decisionCards.startHeartbeat();
+    // Unanswered needs-you cards are re-spoken hourly (micMuted wins; a snooze
+    // drops the card from the list). Also notices snoozes running out.
+    const needsYouTimer = setInterval(() => {
+      const before = needsYouLib.needsYouSignature(needsYou);
+      needsYou = computeNeedsYou();
+      if (needsYouLib.needsYouSignature(needsYou) !== before) {
+        refreshTrayMenu();
+        refreshNotificationBadges();
+        syncNeedsYouChip();
+        sendDeckState();
+      }
+      if (needsYouLib.respeakDue({ needsYou, lastSpokenAt: needsYouSpokenAt, muted: micMuted() })) {
+        speakNeedsYou(openDecisions.filter((c) => decisionCards.triageCard(c) === "decision"), false);
+      }
+    }, 5 * 60_000);
+    needsYouTimer.unref?.();
 
     // 🚩 register() RETURNS whether it got the accelerator, and the answer was
     // thrown away. Another app holding Ctrl+Shift+= takes the only keyboard path
@@ -4988,6 +5340,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         },
         quit: () => app.quit(),
         notify: (update) => showUpdateNotice(update),
+        openUrl: (url) => void shell.openExternal(url),
+        onChange: () => { if (tray) refreshTrayMenu(); },
         log: (line) => console.log(`[desk] ${line}`),
       });
       deskUpdater.start();
@@ -5051,11 +5405,15 @@ app.on("before-quit", () => {
     void vamForwarder.speakingStop();
     vamForwarder.close();
   }
+  // The Darkmatter Link pawn supervisor is the desk's child; it leaves with the desk.
+  stopDarkmatterSupervisor();
   wakesWatchStop?.();
   decisionWatchStop?.();
   // Removed (best-effort) before the app is gone, so awask goes back to its own
   // Tk window immediately instead of waiting out the 90 s staleness window.
   deskHeartbeatStop?.();
+  // Only the node processes the desk itself started (local-node.cjs); never anyone else's.
+  localNode.stopOwned();
   settingsSync?.stop();
   audioListener?.stop();
   globalShortcut.unregisterAll();

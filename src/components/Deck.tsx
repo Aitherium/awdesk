@@ -3,7 +3,9 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from 're
 import { renderVrmThumbnail } from '../thumbnails';
 import {
   EMPTY_DECK_STATE,
+  cardFocusParam,
   cardWhere,
+  splitFlipper,
   clockLabel,
   clockTone,
   formatAge,
@@ -951,13 +953,27 @@ function CardFlipper({
   nowMs,
   onAnswer,
   onPopout,
+  focus,
 }: {
   cards: DeckDecision[];
   nowMs: number;
   onAnswer: (id: string, choice: string) => void;
   onPopout: (id: string) => void;
+  /** A card the owner clicked somewhere else (tray row, chip, ?card=): show it.
+   *  `nonce` re-applies the same id after the owner flipped away. */
+  focus?: { id: string; nonce: number } | null;
 }) {
   const [index, setIndex] = useState(0);
+  // Applied once per nonce, and only once the card is IN the list (the first
+  // deck-state can land after the focus request).
+  const appliedFocus = useRef(0);
+  useEffect(() => {
+    if (!focus || appliedFocus.current === focus.nonce) return;
+    const at = cards.findIndex((c) => c.id === focus.id);
+    if (at < 0) return;
+    appliedFocus.current = focus.nonce;
+    setIndex(at);
+  }, [focus, cards]);
   // An answered card shrinks the list; keep the index legal and on the SAME
   // visual position (the next card slides into view).
   const clamped = Math.min(index, Math.max(0, cards.length - 1));
@@ -973,7 +989,7 @@ function CardFlipper({
         >
           <ChevronLeftIcon />
         </button>
-        <span className="deck-flipper-count">
+        <span className="deck-flipper-count" data-card-id={card.id}>
           {clamped + 1} of {cards.length}
         </span>
         <button
@@ -1075,6 +1091,19 @@ function CredentialRow({ card }: { card: DeckDecision }) {
   const [note, setNote] = useState<string | null>(null);
   const secretName = card.secretName || 'the secret';
   const scope = card.credentialScope || 'platform';
+  // WHICH session waits: agent, branch, a short session id. Never a path.
+  const session = [card.agent || card.tab, card.branch, card.sessionId ? `session ${card.sessionId.slice(0, 8)}` : '']
+    .filter(Boolean)
+    .join(' · ');
+
+  /** "Later" (4 h off the needs-you strip) and "Not needed" (withdraw the card). */
+  const act = (verb: 'card-later' | 'card-not-needed', done: string) => {
+    setNote(null);
+    void bridgeDeck()
+      ?.action(verb, card.id)
+      .then((ok) => setNote(ok ? done : 'Refused — the desk could not do that.'))
+      .catch(() => setNote('Refused — the desk is unreachable.'));
+  };
 
   const submit = () => {
     if (!value) return;
@@ -1107,13 +1136,17 @@ function CredentialRow({ card }: { card: DeckDecision }) {
 
   return (
     <div className="deck-card-credential">
-      <p className="deck-card-credential-name">
-        {secretName}
-        <span className="deck-card-credential-scope"> · {scope} vault</span>
-      </p>
-      {card.credentialDescription ? (
-        <p className="deck-card-credential-why">{card.credentialDescription}</p>
-      ) : null}
+      {/* Four lines, always the same order: what, why, which session, where it goes. */}
+      <dl className="deck-card-credential-facts">
+        <dt>What</dt>
+        <dd className="deck-card-credential-name">{secretName}</dd>
+        <dt>Why</dt>
+        <dd className="deck-card-credential-why">{card.credentialDescription || card.summary || 'The asking session did not say.'}</dd>
+        <dt>Asked by</dt>
+        <dd>{session || 'an unnamed session'}</dd>
+        <dt>Goes to</dt>
+        <dd className="deck-card-credential-scope">the {scope} vault</dd>
+      </dl>
       <p className="deck-card-credential-note">
         Typed here only — it goes straight to the vault, never to the assistant,
         a transcript or the card.
@@ -1139,6 +1172,24 @@ function CredentialRow({ card }: { card: DeckDecision }) {
           onClick={submit}
         >
           {busy ? 'Storing…' : 'Store in vault'}
+        </button>
+      </div>
+      <div className="deck-card-credential-row">
+        <button
+          className="deck-btn"
+          disabled={busy}
+          title="Not now: off the Needs-you strip for 4 hours (the card stays open)"
+          onClick={() => act('card-later', 'Snoozed for 4 hours.')}
+        >
+          Later
+        </button>
+        <button
+          className="deck-btn"
+          disabled={busy}
+          title={`Withdraw ${card.id}; the asking session is told "owner: not needed"`}
+          onClick={() => act('card-not-needed', 'Withdrawn — the session was told.')}
+        >
+          Not needed
         </button>
       </div>
       {note ? <p className="deck-card-credential-why">{note}</p> : null}
@@ -1404,6 +1455,12 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
   const isCharacters = view === 'characters';
   const [state, setState] = useState<DeckState>(EMPTY_DECK_STATE);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  // The card to show: ?card=<id> on load (console / aither://cards/?card=),
+  // then every 'deck:focus-card' main sends (openInbox(cardId)).
+  const [focusCard, setFocusCard] = useState<{ id: string; nonce: number } | null>(() => {
+    const id = typeof window !== 'undefined' ? cardFocusParam(window.location.search) : null;
+    return id ? { id, nonce: 1 } : null;
+  });
   const answering = useRef<Set<string>>(new Set());
   // The per-agent DIRECT chat (owner ask 2026-08-25): one open conversation at
   // a time, anchored on the agent's most recent #agents message — the relay
@@ -1480,6 +1537,9 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
         setState({
           decisions: (event.decisions as DeckDecision[]) ?? [],
           openCount: (event.openCount as number) ?? 0,
+          totalCount: event.totalCount as number | undefined,
+          needsYouIds: (event.needsYouIds as string[] | undefined) ?? [],
+          fyiIds: (event.fyiIds as string[] | undefined) ?? [],
           deskVisible: (event.deskVisible as boolean) ?? false,
           slots: (event.slots as DeckState['slots']) ?? [],
           agents: (event.agents as string[]) ?? [],
@@ -1510,6 +1570,15 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
   // notifications and system awareness, so the button read as dead
   // (owner, 2026-08-27). Main sends scroll-to-section on that action;
   // scroll the section into view here.
+  useEffect(() => {
+    return bridgeSubscribe((event) => {
+      if (event.type !== 'deck:focus-card' || typeof event.id !== 'string') return;
+      const id = event.id;
+      setFocusCard((current) => ({ id, nonce: (current?.nonce ?? 0) + 1 }));
+      document.querySelector('[aria-label="Decisions"]')?.scrollIntoView({ block: 'start' });
+    });
+  }, []);
+
   useEffect(() => {
     return bridgeSubscribe((event) => {
       if (event.type !== 'scroll-to-section') return;
@@ -1639,6 +1708,9 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
     }
   }, [chatRootId, chatTarget, runAction, state.relayChannel]);
 
+  // Needs-you pinned first, FYI collapsed below: the flipper's "N of M" is the badge.
+  const split = splitFlipper(state);
+
   return (
     <main
       className="deck"
@@ -1727,16 +1799,27 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
             Decisions
             {state.openCount > 0 ? <span className="deck-section-count">{state.openCount}</span> : null}
           </h2>
-          {state.decisions.length === 0 ? (
+          {split.flipper.length === 0 ? (
             <p className="deck-empty">Nothing waiting — every session is unblocked.</p>
           ) : (
             <CardFlipper
-              cards={state.decisions}
+              cards={split.flipper}
               nowMs={nowMs}
               onAnswer={handleAnswer}
               onPopout={(id) => runAction('popout-card', id)}
+              focus={focusCard}
             />
           )}
+          {split.fyi.length > 0 ? (
+            <details className="deck-fyi">
+              <summary>{split.fyi.length} FYI — nothing to answer</summary>
+              {split.fyi.map((card) => (
+                <p className="deck-card-summary" key={card.id}>
+                  <strong>{card.title}</strong> · {formatAge(card.createdAt, nowMs)}
+                </p>
+              ))}
+            </details>
+          ) : null}
           {state.decisions.length > 0 ? (
             <button className="deck-row" title="Every waiting card in its own answer window" onClick={() => runAction('popup')}>
               <span className="deck-row-icon"><TerminalIcon /></span>

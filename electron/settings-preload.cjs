@@ -11,6 +11,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("settingsBridge", {
   get: () => ipcRenderer.invoke("desk:settings-get"),
   setInput: (patch) => ipcRenderer.invoke("desk:settings-set-input", patch),
+  setOverlay: (patch) => ipcRenderer.invoke("desk:settings-set-overlay", patch),
   probeAccel: (accel, excludeId) => ipcRenderer.invoke("desk:settings-probe-accel", accel, excludeId),
   setHotkey: (id, accel) => ipcRenderer.invoke("desk:settings-set-hotkey", id, accel),
   clearHotkey: (id) => ipcRenderer.invoke("desk:settings-set-hotkey", id, ""),

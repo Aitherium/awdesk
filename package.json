@@ -1,21 +1,22 @@
 {
   "name": "awdesk",
-  "version": "0.1.15",
-  "description": "A realtime character presence for desktop voice experiences.",
+  "version": "0.1.17",
+  "description": "Aither Desk: your Aitherium agent, browser and workspace on the desktop.",
   "author": {
-    "name": "xikhar",
-    "email": "xikhar@users.noreply.github.com"
+    "name": "Aitherium",
+    "email": "hello@aitherium.com",
+    "url": "https://aitherium.com"
   },
   "desktopName": "desk.desktop",
   "private": true,
   "license": "MIT",
-  "homepage": "https://github.com/xikhar/persona#readme",
+  "homepage": "https://github.com/Aitherium/awdesk#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xikhar/persona.git"
+    "url": "git+https://github.com/Aitherium/awdesk.git"
   },
   "bugs": {
-    "url": "https://github.com/xikhar/persona/issues"
+    "url": "https://github.com/Aitherium/awdesk/issues"
   },
   "engines": {
     "node": ">=24"
@@ -57,6 +58,7 @@
     "test:browser-internal": "electron electron/browser-internal-smoke.cjs",
     "test:connect-panel": "electron electron/connect-panel-smoke.cjs",
     "test:overlay-host": "electron electron/overlay-host-smoke.cjs",
+    "test:needs-you": "electron electron/needs-you-smoke.cjs",
     "test:browser-tabs": "electron electron/browser-tabs-smoke.cjs",
     "test:terminal": "electron electron/terminal-smoke.cjs",
     "test:search": "electron electron/search-smoke.cjs",
@@ -101,6 +103,7 @@
   "build": {
     "appId": "com.xikhar.awdesk",
     "productName": "Desk",
+    "copyright": "Copyright © Aitherium",
     "asar": true,
     "directories": {
       "output": "release"
@@ -164,7 +167,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Desk"
+      "shortcutName": "Aither Desk",
+      "uninstallDisplayName": "Aither Desk"
     },
     "mac": {
       "target": [

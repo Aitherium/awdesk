@@ -269,6 +269,9 @@ function createBridgeServer({
   onEvent,
   mcpHandler = null,
   decisionsProvider = null,
+  // GET /needs-you: the open cards only the owner can unblock (credential /
+  // blocked / blocking), in rank order. Same read-only trust class as /decisions.
+  needsYouProvider = null,
   // () => the awrise wake snapshot main holds (jobs, clock liveness, staleness).
   // READ ONLY on this bridge: mutations go to the harness daemon's /wakes
   // window, which owns the bearer check and the argv control. A second
@@ -339,7 +342,7 @@ function createBridgeServer({
     // stays with the shared queue window / daemon — this bridge never mutates
     // the store, so a compromised page could at worst READ titles, not answer
     // an ask on the owner's behalf.
-    if (request.url === "/decisions") {
+    if (request.url === "/decisions" || request.url === "/needs-you") {
       if (!decisionsReadOriginAllowed(origin)) {
         response.writeHead(403);
         response.end();
@@ -362,19 +365,38 @@ function createBridgeServer({
         response.end();
         return;
       }
-      if (decisionsProvider == null) {
+      const needsYouRoute = request.url === "/needs-you";
+      const provider = needsYouRoute ? needsYouProvider : decisionsProvider;
+      if (provider == null) {
         response.writeHead(404);
         response.end();
         return;
       }
-      let decisions;
+      // A provider answers an ARRAY (the plain local read) or a promise/object
+      // `{decisions, source, stale, ...}` (main proxies the harness daemon, so
+      // the bridge and the daemon cannot disagree on the count). A throw or a
+      // rejection is an empty queue, never a 500 -- with `stale` saying so.
+      const send = (value) => {
+        let body;
+        if (Array.isArray(value)) body = { decisions: value, count: value.length };
+        else if (value && typeof value === "object" && Array.isArray(value.decisions)) {
+          body = { ...value, count: value.decisions.length };
+        } else body = { decisions: [], count: 0 };
+        if (needsYouRoute) body = { needs_you: body.decisions, ...body };
+        response.writeHead(200, { ...cors, "content-type": "application/json" });
+        response.end(JSON.stringify(body));
+      };
+      let value;
       try {
-        decisions = decisionsProvider();
+        value = provider();
       } catch {
-        decisions = [];
+        value = [];
       }
-      response.writeHead(200, { ...cors, "content-type": "application/json" });
-      response.end(JSON.stringify({ decisions, count: decisions.length }));
+      if (value && typeof value.then === "function") {
+        value.then(send, () => send({ decisions: [], stale: true, error: "provider failed" }));
+      } else {
+        send(value);
+      }
       return;
     }
 

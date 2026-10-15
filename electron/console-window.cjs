@@ -240,6 +240,10 @@ const LAUNCHERS = Object.freeze([
     id: "browser", label: "Browser", hint: "Aither Browser: you browse, or an agent drives while you watch",
     section: "Online", icon: "globe", command: "browser.open",
   }),
+  Object.freeze({
+    id: "darkmatter", label: "Darkmatter Link", hint: "Agents in your games: pawn supervisor, game health, consent",
+    section: "Online", icon: "layers", command: "darkmatter.open",
+  }),
 ]);
 
 let consoleWindow = null;

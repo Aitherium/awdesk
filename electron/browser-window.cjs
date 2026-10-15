@@ -55,6 +55,7 @@ const launchModes = require("./launch-modes.cjs");
 const taskbar = require("./browser-taskbar.cjs");
 const extensions = require("./browser-extensions.cjs");
 const overlayMod = require("./browser-overlay.cjs");
+const deskTenant = require("./desk-tenant.cjs");
 let knowledgeImpl = null;
 function knowledgeClient() {
   if (!knowledgeImpl) knowledgeImpl = require("./knowledge-client.cjs").createKnowledgeClient();
@@ -255,9 +256,44 @@ gate.on("change", (snap) => {
   }
 });
 
+/** The home page: DESK_BROWSER_HOME, else the tenant's host (desk-tenant.cjs), else the apex. */
 function homeUrl() {
-  const verdict = policy.sanitizeUrl(process.env.DESK_BROWSER_HOME || "https://aitherium.com");
+  const verdict = policy.sanitizeUrl(process.env.DESK_BROWSER_HOME
+    || deskTenant.baseUrl(deskTenant.currentTenant(), "https://aitherium.com"));
   return verdict.ok ? verdict.url : "https://aitherium.com/";
+}
+
+/**
+ * The account's workspace host was adopted (or forgotten) mid-run (desk-tenant-auto.cjs):
+ * the pinned AitherOS Online tab and the taskbar move to it now, so the owner is not left
+ * on the platform OS until the next launch. A tab already on that origin is left alone
+ * (its open windows stay). Returns what moved.
+ */
+function followTenant() {
+  const moved = { online: false, taskbar: false };
+  if (!win || win.isDestroyed()) return moved;
+  try { win.setTitle(deskTenant.decorateTitle("Aither Browser", deskTenant.currentTenant())); } catch { /* closing */ }
+  const target = internal.onlineUrl();
+  const online = tabs.byKey("online");
+  const view = online ? viewOf(online.id) : null;
+  if (alive(view)) {
+    let here = "";
+    try { here = new URL(view.webContents.getURL()).origin; } catch { /* not loaded yet */ }
+    if (here && here !== new URL(target).origin) {
+      void loadHostedTab(view, target).catch(() => {});
+      moved.online = true;
+    }
+  }
+  if (alive(taskbarView)) {
+    let here = "";
+    try { here = new URL(taskbarView.webContents.getURL()).origin; } catch { /* not loaded yet */ }
+    const next = taskbar.taskbarUrl(target);
+    if (next && here && here !== new URL(next).origin) {
+      void taskbarView.webContents.loadURL(next).catch(() => {});
+      moved.taskbar = true;
+    }
+  }
+  return moved;
 }
 
 function alive(view) {
@@ -689,7 +725,7 @@ function openFromTaskbar(url) {
     if (kind === "online" || !kind) return openFromOnlineTab(url);
     const runner = kind === "overlay" ? over : active.webContents;
     runner.executeJavaScript(taskbar.openAppScript(id), true)
-      .then((ok) => { if (!ok) tryAt(i + 1); })
+      .then((answer) => { if (taskbar.nextAfterAnswer(kind, answer) === "next") tryAt(i + 1); })
       .catch(() => tryAt(i + 1));
   };
   tryAt(0);
@@ -707,8 +743,11 @@ function openFromOnlineTab(url) {
   // The desktop is already up: open the app in it, no reload (its windows stay open).
   // Any path: /workspace/* boots the same desktop, and it answers desk-open-app too.
   if (id && here && here.origin === new URL(url).origin && !wc.isLoading()) {
+    // A refusal is final: a reload applies the same gates and loses the open windows.
     wc.executeJavaScript(taskbar.openAppScript(id), true)
-      .then((ok) => { if (!ok && alive(view)) return loadHostedTab(view, url); })
+      .then((answer) => {
+        if (taskbar.nextAfterAnswer("online", answer) === "reload" && alive(view)) return loadHostedTab(view, url);
+      })
       .catch(() => {});
     return;
   }
@@ -1241,7 +1280,7 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     minWidth: 720,
     minHeight: 480,
     show: false,
-    title: "Aither Browser",
+    title: deskTenant.decorateTitle("Aither Browser", deskTenant.currentTenant()),
     backgroundColor: "#0f1218",
     autoHideMenuBar: true,
     webPreferences: {
@@ -2016,6 +2055,7 @@ module.exports = {
   setOverlay,
   /** One identity: the Online session's bearer, its sign-in/out, and awconnect's view of it. */
   onlineToken,
+  followTenant,
   watchOnlineAuth,
   getDeskThread,
   overlayAnswer,

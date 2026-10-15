@@ -670,6 +670,20 @@ const UPDATES_FIELDS = Object.freeze({
   enabled: vBool,
 });
 
+/** overlay.* -> overlay-policy.cjs: when the desk may raise the AitherOS Online overlay
+ *  (and the Inbox) by ITSELF. Every automatic door is off by default; an explicit
+ *  click, hotkey or menu row ignores all of these. doNotDisturb silences every
+ *  automatic door at once. */
+const overlayPolicy = require("./overlay-policy.cjs");
+const OVERLAY_FIELDS = Object.freeze({
+  autoOpenOnStart: vBool,
+  edgeReveal: vBool,
+  edge: (v) => vEnum(v, overlayPolicy.EDGES),
+  edgeDwellMs: (v) => vInt(v, { min: overlayPolicy.DWELL_MIN_MS, max: overlayPolicy.DWELL_MAX_MS }),
+  raiseOnNotifications: vBool,
+  doNotDisturb: vBool,
+});
+
 const BUILTIN_DESK = Object.freeze({
   models: Object.freeze({ commandProfile: "deepseek" }),
   prompts: Object.freeze({ commandPersona: null, commandAppend: null }),
@@ -679,6 +693,7 @@ const BUILTIN_DESK = Object.freeze({
   }),
   files: Object.freeze({ roots: null }),
   updates: Object.freeze({ enabled: true }),
+  overlay: overlayPolicy.DEFAULTS,
 });
 
 const DESK_SECTIONS = Object.freeze({
@@ -688,6 +703,7 @@ const DESK_SECTIONS = Object.freeze({
   sync: SYNC_FIELDS,
   files: FILES_FIELDS,
   updates: UPDATES_FIELDS,
+  overlay: OVERLAY_FIELDS,
 });
 
 function pushProblem(problems, prefix, field, raw, verdict) {
@@ -753,6 +769,7 @@ function emptyConfig() {
     sync: {},
     files: {},
     updates: {},
+    overlay: {},
     content: {},
     input: {},
     hotkeys: {},
@@ -763,7 +780,7 @@ function emptyConfig() {
 
 const TOP_LEVEL_KEYS = [
   "version", "stage", "voice", "input", "hotkeys", "defaults", "authors", "actors",
-  "channels", "models", "prompts", "vision", "sync", "files", "updates", "content", "appearance",
+  "channels", "models", "prompts", "vision", "sync", "files", "updates", "overlay", "content", "appearance",
   "migratedLegacyAt",
 ];
 
@@ -1455,6 +1472,7 @@ function normaliseSnapshot(snapshot) {
     sync: plainObject(snapshot.sync),
     files: plainObject(snapshot.files),
     updates: plainObject(snapshot.updates),
+    overlay: plainObject(snapshot.overlay),
     content: plainObject(snapshot.content),
     input: plainObject(snapshot.input),
     hotkeys: plainObject(snapshot.hotkeys),

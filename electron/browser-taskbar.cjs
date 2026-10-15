@@ -177,10 +177,16 @@ function spawnIdOf(url) {
   return id && APP_ID.test(id) ? id : null;
 }
 
+/** What a desktop answered to `desk-open-app`: a window opened, it refused, or silence. */
+const OPEN_REFUSED = "refused";
+
 /**
  * Opens an app on the desktop ALREADY on screen, with no reload (its open windows stay):
- * Veil desk-host.ts useDeskOpenApp answers `desk-open-app` with `desk-open-app-ok`.
- * Resolves false when nothing answers in time (an older Veil): the caller loads ?spawn=.
+ * Veil desk-host.ts useDeskOpenApp answers `desk-open-app` with `desk-open-app-ok`,
+ * carrying `refused: true` when that desktop may not open the id (tenant entitlement, a
+ * gate, an unready app) -- the same message, so a desk that predates the flag still stops
+ * there instead of reloading. Resolves true (opened), OPEN_REFUSED, or false when nothing
+ * answers in time (an older Veil). The caller decides with nextAfterAnswer.
  */
 function openAppScript(id) {
   if (!APP_ID.test(String(id || ""))) throw new Error("not an app id");
@@ -188,7 +194,8 @@ function openAppScript(id) {
     const id = ${JSON.stringify(id)};
     const on = (e) => {
       if (e.source !== window || !e.data || e.data.__aither !== "desk-open-app-ok" || e.data.id !== id) return;
-      clearTimeout(t); window.removeEventListener("message", on); done(true);
+      clearTimeout(t); window.removeEventListener("message", on);
+      done(e.data.refused === true ? ${JSON.stringify(OPEN_REFUSED)} : true);
     };
     const t = setTimeout(() => { window.removeEventListener("message", on); done(false); }, 1500);
     window.addEventListener("message", on);
@@ -213,6 +220,21 @@ function inPlaceTargets({ spawnId, overlay = false, activeUrl = "" } = {}) {
   if (pageHasOwnTaskbar(activeUrl)) out.push("active");
   out.push("online");
   return out;
+}
+
+/**
+ * What to do after in-place target `kind` answered `answer` (openAppScript's result):
+ *   "done"    a window opened, or the pinned Online desktop REFUSED -- final. Reloading it
+ *             at ?spawn= would apply the same gates to the same session, still open
+ *             nothing, and throw away the windows it had open (review 2026-10-14).
+ *   "next"    the overlay / the active tab refused or was silent: try the next target
+ *             (the pinned Online tab may hold a session that is entitled).
+ *   "reload"  the Online desktop was silent (an older Veil): load ?spawn= as before.
+ */
+function nextAfterAnswer(kind, answer) {
+  if (answer === true) return "done";
+  if (kind === "online") return answer === OPEN_REFUSED ? "done" : "reload";
+  return "next";
 }
 
 /** A main-frame response that means "there is no taskbar here" (not deployed, an error). */
@@ -249,6 +271,8 @@ module.exports = {
   stripOwner,
   spawnIdOf,
   inPlaceTargets,
+  nextAfterAnswer,
+  OPEN_REFUSED,
   openAppScript,
   routeFor,
   taskbarUrl,

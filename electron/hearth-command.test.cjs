@@ -27,5 +27,6 @@ test("runCommand opens the desktop app on the hearth window", () => {
 test("the desktop app URL carries ?app= and the first load uses it", () => {
   const src = read("living-desktop-window.cjs");
   assert.match(src, /if \(app\) url\.searchParams\.set\("app", app\);/);
-  assert.match(src, /const target = desktopAppUrl\(app\);/);
+  // Computed after the session sync (it may move the base to the workspace host).
+  assert.match(src, /appWin\.loadURL\(desktopAppUrl\(app\)\)/);
 });

@@ -420,6 +420,12 @@ body {
 }
 .deck-card-credential-scope { color: var(--deck-muted, #8a93a6); font-family: inherit; }
 .deck-card-credential-why { margin: 0; font-size: 11px; color: var(--deck-muted, #8a93a6); }
+/* What / Why / Asked by / Goes to -- four lines, fixed order. */
+.deck-card-credential-facts { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 0; font-size: 12px; }
+.deck-card-credential-facts dt { color: var(--deck-muted, #8a93a6); font-weight: 600; }
+.deck-card-credential-facts dd { margin: 0; overflow-wrap: anywhere; }
+.deck-fyi { margin-top: 8px; font-size: 12px; color: var(--deck-muted, #8a93a6); }
+.deck-fyi summary { cursor: pointer; }
 .deck-card-credential-note { margin: 2px 0 0; font-size: 11px; color: var(--deck-soft, inherit); opacity: 0.85; }
 .deck-card-credential-row { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
 .deck-card-credential-input {

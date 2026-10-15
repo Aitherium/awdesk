@@ -219,6 +219,32 @@ const COMMANDS = Object.freeze([
     group: "desktop", surfaces: ["tray", "palette"],
     when: (ctx = {}) => Boolean(ctx.account && ctx.account.signedIn),
   }),
+  // When the desk may raise the overlay BY ITSELF (overlay-policy.cjs, 2026-10-14: it
+  // "randomly pops up on the side of the monitor"). All off by default; the rows above
+  // (and the hotkey) always work. Same switches as Settings -> Desktop overlay.
+  Object.freeze({
+    id: "desktop.overlay.auto-start", label: "Open the desktop overlay when Desk starts",
+    menuLabel: "Open the desktop overlay when Desk starts",
+    group: "desktop", surfaces: ["tray", "palette"],
+    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.autoOpenOnStart),
+  }),
+  Object.freeze({
+    id: "desktop.overlay.edge-reveal", label: "Reveal the overlay at the screen edge",
+    menuLabel: "Reveal the overlay at the screen edge",
+    group: "desktop", surfaces: ["tray", "palette"],
+    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.edgeReveal),
+  }),
+  Object.freeze({
+    id: "desktop.overlay.raise-on-notify", label: "Bring the overlay forward for notifications",
+    menuLabel: "Bring the overlay forward for notifications",
+    group: "desktop", surfaces: ["tray", "palette"],
+    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.raiseOnNotifications),
+  }),
+  Object.freeze({
+    id: "desktop.overlay.dnd", label: "Do not disturb", menuLabel: "Do not disturb",
+    group: "desktop", surfaces: ["tray", "palette"],
+    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.doNotDisturb),
+  }),
   Object.freeze({
     id: "avatar.toggle", group: "avatar", accel: "Ctrl+Shift+A",
     surfaces: ["tray", "palette"],
@@ -478,6 +504,13 @@ const COMMANDS = Object.freeze([
     id: "disk.open", label: "Disk Explorer…", group: "go",
     surfaces: ["palette"],
     whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
+  }),
+  // Darkmatter Link (2026-10-14): agents inside the owner's games, as an app in the desk --
+  // never its own installer (one installable app per platform). Supervisor, game health,
+  // pawn personas, model access and the opt-in training-data toggle (darkmatter-link.cjs).
+  Object.freeze({
+    id: "darkmatter.open", label: "Darkmatter Link…", group: "go",
+    surfaces: ["palette", "jumplist"],
   }),
   // The Aither Browser (browser-window.cjs): a browser INSIDE the desk where an
   // agent drives (MCP browser_* tools) while the owner watches and can take over,

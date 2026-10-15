@@ -158,6 +158,13 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
     tab: typeof source.tab_title === "string" ? source.tab_title : "",
     cwd: typeof source.cwd === "string" ? source.cwd : "",
     agent: typeof source.agent === "string" ? source.agent : "",
+    // WHICH session is waiting (the credential row's third line). An id, never
+    // a transcript path: the path names the owner's home directory.
+    sessionId: typeof source.session_id === "string" ? source.session_id.slice(0, 64) : "",
+    branch: typeof source.branch === "string" ? source.branch.slice(0, 120) : "",
+    // A session STOPPED on the owner (kind=blocked, or a raiser's explicit
+    // blocking=true). With credential cards these are the needs-you strip.
+    blocking: raw.blocking === true || String(kind).toLowerCase() === "blocked",
     // kind==='credential' only (see `credential` above); ""/null on every other
     // kind so a surface concatenating these into text never prints `undefined`.
     secretName: credential && typeof raw.secret_name === "string"
@@ -177,7 +184,90 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
   };
 }
 
-/** Open cards, oldest first — the one blocking longest is the one to surface. */
+// ── ONE ranking (owner, 2026-10-14: "theres no fucking card in awdesk") ─────
+//
+// Oldest-first put the Proton Bridge credential card at #28 of 41: the one ask
+// only the owner can answer sat under 27 PR reviews and CI notices. This is the
+// SAME key as the awdk store's rank_key; both are pinned by the shared fixture
+// awdk/tests/fixtures/card_rank_cases.json (decision-cards.test.cjs asserts these
+// constants equal its fields, then runs every case):
+//   1. credential / blocked first;  2. urgency (unknown = normal);
+//   3. fresh before straggler (open and older than stale_after_seconds);
+//   4. created_at, oldest first;    5. id (code-point order, like Python's str <).
+const RANK_RULES = Object.freeze({
+  rank_first_kinds: Object.freeze(["credential", "blocked"]),
+  urgency_rank: Object.freeze({ critical: 0, high: 1, normal: 2, low: 3 }),
+  stale_after_seconds: 604800,
+});
+
+/** Same override the store honours (AITHER_DECISIONS_STALE_DAYS). */
+function staleAfterSeconds(env = process.env) {
+  const raw = String(env.AITHER_DECISIONS_STALE_DAYS || "").trim();
+  const days = Number(raw);
+  return raw && Number.isFinite(days) && days > 0 ? days * 86400 : RANK_RULES.stale_after_seconds;
+}
+
+/** A card only the OWNER can unblock: a secret to type, or a session stopped on him.
+ *  (`blocking` is a raiser's explicit flag; the rank itself reads the kind only.) */
+function isNeedsYou(card) {
+  if (!card || typeof card !== "object") return false;
+  const kind = String(card.kind || "").trim().toLowerCase();
+  return RANK_RULES.rank_first_kinds.includes(kind) || card.blocking === true;
+}
+
+/** The rank key as a tuple -- the store's rank_key, term for term. */
+function rankKey(card, nowSec) {
+  const kind = String(card.kind || "").trim().toLowerCase();
+  const urgency = RANK_RULES.urgency_rank[String(card.urgency || "").trim().toLowerCase()];
+  const created = Number(card.createdAt) || 0;
+  return [
+    RANK_RULES.rank_first_kinds.includes(kind) ? 0 : 1,
+    urgency === undefined ? 2 : urgency,
+    nowSec - created > staleAfterSeconds() ? 1 : 0,
+    created,
+    String(card.id || ""),
+  ];
+}
+
+function compareKeys(a, b) {
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] < b[i]) return -1;
+    if (a[i] > b[i]) return 1;
+  }
+  return 0;
+}
+
+/** The cards in queue order (a new array; the input is not touched). */
+function rankCards(cards, nowSec = Date.now() / 1000) {
+  const keyed = (Array.isArray(cards) ? cards.filter(Boolean) : []).map((c) => [rankKey(c, nowSec), c]);
+  keyed.sort((x, y) => compareKeys(x[0], y[0]));
+  return keyed.map(([, c]) => c);
+}
+
+/**
+ * Split a ranked list for the surfaces: `needsYou` (credential / blocked /
+ * blocking — the pinned strip, the tray's row 0, the red key), `decisions`
+ * (what the badge counts — triageCard === "decision", so the flipper's "N of M"
+ * IS the badge) and `fyi` (everything else, collapsed below the flipper).
+ * `snoozed` is a Set of ids the owner put off with "Later": they stay in the
+ * flipper but leave the needs-you strip until the snooze runs out.
+ */
+function partitionCards(cards, { patterns, snoozed = null, nowSec } = {}) {
+  const ranked = rankCards(cards, nowSec);
+  const decisions = [];
+  const fyi = [];
+  for (const card of ranked) {
+    let verdict = "decision";
+    try { verdict = triageCard(card, patterns); } catch { verdict = "decision"; }
+    if (verdict === "decision" || isNeedsYou(card)) decisions.push(card);
+    else fyi.push(card);
+  }
+  // needs-you cards lead the strip whatever the rank put between them.
+  const needsYou = decisions.filter((c) => isNeedsYou(c) && !(snoozed && snoozed.has(c.id)));
+  return { needsYou, decisions, fyi };
+}
+
+/** Open cards in rank order (see rankCards) — credential/blocked first, then urgency, then oldest. */
 function listOpen(dir = storeDir()) {
   let entries;
   try {
@@ -197,8 +287,7 @@ function listOpen(dir = storeDir()) {
     const card = cardFromRaw(raw);
     if (card) cards.push(card);
   }
-  cards.sort((a, b) => a.createdAt - b.createdAt);
-  return cards;
+  return rankCards(cards);
 }
 
 /**
@@ -475,9 +564,9 @@ async function scanRemote() {
   }
   remoteRaw.clear();
   for (const [id, raw] of raws) remoteRaw.set(id, raw);
-  cards.sort((a, b) => a.createdAt - b.createdAt);
-  const ids = cards.map((c) => c.id).sort().join(",");
-  return { signature: `gateway:${cards.length}:${ids}`, cards };
+  const ranked = rankCards(cards);
+  const ids = ranked.map((c) => c.id).sort().join(",");
+  return { signature: `gateway:${ranked.length}:${ids}`, cards: ranked };
 }
 
 /** The raw card the gateway last returned for `id`, or null (local mode). */
@@ -583,9 +672,76 @@ async function scanAsync(dir = storeDir(), cache = new Map(), fsp = fs.promises,
     );
   }
   for (const name of [...cache.keys()]) if (!seen.has(name)) cache.delete(name);
-  const cards = [...cache.values()].map((v) => v.card).filter(Boolean);
-  cards.sort((a, b) => a.createdAt - b.createdAt);
+  const cards = rankCards([...cache.values()].map((v) => v.card));
   return { signature: `${count}:${newest}:${total}`, cards };
+}
+
+// ── the bridge's /decisions = the daemon's list (one count, every surface) ──
+//
+// Measured 2026-10-14: the bridge said 41 open while the harness daemon said
+// 30 -- the daemon EXPIRES due cards as it lists them, the file reader below
+// does not. The bridge therefore proxies the daemon and reads the files only
+// when the daemon cannot answer, saying so (`stale: true`).
+const DAEMON_READ_TIMEOUT_MS = 2500;
+
+function daemonBase(env = process.env) {
+  const host = String(env.AITHER_HARNESS_HOST || "").trim() || "127.0.0.1";
+  const port = String(env.AITHER_HARNESS_PORT || "").trim() || "8362";
+  return `http://${host}:${port}`;
+}
+
+/** GET <daemon>/decisions?status=open -> ranked shaped cards. Throws on anything else. */
+async function fetchDaemonOpen({
+  fetchFn = globalThis.fetch,
+  base = daemonBase(),
+  token = null,
+  timeoutMs = DAEMON_READ_TIMEOUT_MS,
+} = {}) {
+  if (!token) {
+    try { token = require("./bridge-server.cjs").readBridgeToken(); } catch { token = null; }
+  }
+  if (!token) throw new Error("no harness token");
+  if (typeof fetchFn !== "function") throw new Error("no fetch");
+  const response = await fetchFn(`${base}/decisions?status=open`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const status = Number(response && response.status) || 0;
+  if (status < 200 || status >= 300) throw new Error(`daemon HTTP ${status}`);
+  const payload = await response.json();
+  const rows = payload && Array.isArray(payload.decisions) ? payload.decisions : null;
+  if (!rows) throw new Error("daemon answered no card list");
+  return rankCards(rows.map(cardFromRaw));
+}
+
+/**
+ * The queue as the bridge serves it: the daemon's list when it answers
+ * (`source: "daemon"`), else the watcher's local read labelled `stale: true`
+ * with the reason. Never throws.
+ */
+async function bridgeQueue({ fetchOpen = fetchDaemonOpen, localOpen = () => lastOpen() } = {}) {
+  try {
+    const decisions = await fetchOpen();
+    return { decisions, count: decisions.length, source: "daemon", stale: false };
+  } catch (error) {
+    let decisions = [];
+    try { decisions = rankCards(localOpen()); } catch { decisions = []; }
+    return {
+      decisions,
+      count: decisions.length,
+      source: "local",
+      stale: true,
+      error: String((error && error.message) || error).slice(0, 200),
+    };
+  }
+}
+
+/** GET /needs-you: bridgeQueue narrowed to the needs-you cards (snoozes removed). */
+async function bridgeNeedsYou({ snoozed = null, ...queueOpts } = {}) {
+  const queue = await bridgeQueue(queueOpts);
+  const list = partitionCards(queue.decisions, { snoozed }).needsYou;
+  return { ...queue, decisions: list, count: list.length };
 }
 
 // What the watcher last saw -- the answer for synchronous readers (the bridge's
@@ -774,6 +930,13 @@ module.exports = {
   listOpen,
   lastOpen,
   scanAsync,
+  RANK_RULES,
+  isNeedsYou,
+  rankCards,
+  partitionCards,
+  fetchDaemonOpen,
+  bridgeQueue,
+  bridgeNeedsYou,
   cardFromRaw,
   triageCard,
   actionableCount,
