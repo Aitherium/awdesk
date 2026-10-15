@@ -40,6 +40,8 @@ IMPLEMENTATION_SUMMARY.md
 *.pdb
 core
 core.*
+# The vendored bead-space renderer has a real core/ source dir (vendor_bead_space.py).
+!src/vendor/bead-space/core/
 
 # Local configuration and credentials
 .env
