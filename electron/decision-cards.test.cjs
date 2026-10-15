@@ -760,3 +760,26 @@ test("fetchDaemonOpen asks for status=open with the bearer and ranks the answer"
   assert.deepEqual(seen[0], ["http://127.0.0.1:1/decisions?status=open", "Bearer tok"]);
   await assert.rejects(cards.fetchDaemonOpen({ fetchFn: async () => ({ status: 401 }), base: "x", token: "t" }), /401/);
 });
+
+test("cardFromRaw carries subject, host and sessionId", () => {
+  const card = cards.cardFromRaw({
+    id: "d-subj", status: "open", created_at: 1, subject: "svc:Secrets",
+    source: { session_id: "sess-1", host: "desk-pc" },
+  });
+  assert.equal(card.subject, "svc:Secrets");
+  assert.equal(card.host, "desk-pc");
+  assert.equal(card.sessionId, "sess-1");
+  const platform = cards.cardFromRaw({ id: "d-plat", status: "open", subject: "platform" });
+  assert.equal(platform.subject, "platform");
+  const long = cards.cardFromRaw({ id: "d-host", status: "open", source: { host: "h".repeat(300) } });
+  assert.equal(long.host.length, 120);
+});
+
+test("cardFromRaw drops an invalid subject and a missing host to empty strings", () => {
+  for (const bad of ["Svc:Secrets", "svc:", "svc:has space", "nokind", 42, null, "svc:" + "x".repeat(161)]) {
+    const card = cards.cardFromRaw({ id: "d-bad", status: "open", subject: bad });
+    assert.equal(card.subject, "", `subject ${String(bad).slice(0, 20)} must be dropped`);
+    assert.equal(card.host, "");
+  }
+  assert.equal(cards.subjectFromRaw(" repo:Aitherium/AitherOS "), "repo:Aitherium/AitherOS");
+});

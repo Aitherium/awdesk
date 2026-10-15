@@ -96,6 +96,20 @@ function signature(dir = storeDir()) {
   return `${count}:${newest}:${total}`;
 }
 
+/**
+ * The id grammar of a universe object: `platform` or `<kind>:<rest>`
+ * (`svc:Secrets`, `secret:NAME`, `session:<id>`). A card's `subject` names the
+ * object it concerns so the space view can draw it there; anything else is "".
+ */
+const SUBJECT_RE = /^(platform|[a-z]+:[A-Za-z0-9._/@:-]{1,160})$/;
+
+/** `value` when it is a well-formed universe object id, else "". */
+function subjectFromRaw(value) {
+  if (typeof value !== "string") return "";
+  const text = value.trim();
+  return SUBJECT_RE.test(text) ? text : "";
+}
+
 /** One stored card → the shape every desk surface reads, or null when it is not an open card. */
 function cardFromRaw(raw) {
 if (!raw || typeof raw !== "object" || raw.status !== "open") return null;
@@ -161,6 +175,11 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
     // WHICH session is waiting (the credential row's third line). An id, never
     // a transcript path: the path names the owner's home directory.
     sessionId: typeof source.session_id === "string" ? source.session_id.slice(0, 64) : "",
+    // WHICH machine raised it, as the raiser labelled it (display only).
+    host: typeof source.host === "string" ? source.host.slice(0, 120) : "",
+    // The universe object this card concerns ("" = not attached to one). The
+    // space view glows the card on it; it is NOT the dedupe identity above.
+    subject: subjectFromRaw(raw.subject),
     branch: typeof source.branch === "string" ? source.branch.slice(0, 120) : "",
     // A session STOPPED on the owner (kind=blocked, or a raiser's explicit
     // blocking=true). With credential cards these are the needs-you strip.
@@ -938,6 +957,8 @@ module.exports = {
   bridgeQueue,
   bridgeNeedsYou,
   cardFromRaw,
+  subjectFromRaw,
+  SUBJECT_RE,
   triageCard,
   actionableCount,
   setWindowRouter,
