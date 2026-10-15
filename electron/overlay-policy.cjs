@@ -46,6 +46,8 @@ const DEFAULTS = Object.freeze({
   edgeDwellMs: 600,
   raiseOnNotifications: false,
   doNotDisturb: false,
+  // Not a door: where the Inbox and Fleet doors LEAD (space-home.cjs). Off = as before.
+  spaceHome: false,
 });
 
 /** Which setting gates which automatic trigger. */
@@ -68,6 +70,7 @@ function normalize(raw) {
     edgeDwellMs: dwell,
     raiseOnNotifications: bool("raiseOnNotifications"),
     doNotDisturb: bool("doNotDisturb"),
+    spaceHome: bool("spaceHome"),
   };
 }
 
@@ -79,7 +82,7 @@ function normalize(raw) {
 function cleanPatch(patch) {
   const p = patch && typeof patch === "object" && !Array.isArray(patch) ? patch : {};
   const out = {};
-  for (const key of ["autoOpenOnStart", "edgeReveal", "raiseOnNotifications", "doNotDisturb"]) {
+  for (const key of ["autoOpenOnStart", "edgeReveal", "raiseOnNotifications", "doNotDisturb", "spaceHome"]) {
     if (typeof p[key] === "boolean") out[key] = p[key];
   }
   if (EDGES.includes(p.edge)) out.edge = p.edge;

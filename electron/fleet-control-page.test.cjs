@@ -91,7 +91,7 @@ function classListOf(el) {
 function byId(id, tag = "div") { const e = new Element(tag); e.id = id; return e; }
 
 /** Load the page's script over a fresh paper document with a controllable `window.fleet`. */
-function mount({ status } = {}) {
+function mount({ status, spaceAvailable } = {}) {
   const ids = {};
   for (const id of ["log", "pill", "s-running", "s-masked", "s-vram", "s-hold", "holders", "surfaces", "hint",
     "hud", "statusline", "stage", "sky", "orbit", "dock", "dock-title", "dock-close", "fleet-detail", "arc-detail",
@@ -120,6 +120,10 @@ function mount({ status } = {}) {
     if (v.action) actions.push(b);
   }
   ids["b-refresh"] = byId("b-refresh", "button");
+  // "Open in Space": the anchor's data-space, read from the html like the verbs.
+  ids["b-space"] = byId("b-space", "a");
+  ids["b-space"].dataset.space = (/<a id="b-space"[^>]*data-space="([^"]+)"/.exec(HTML) || [])[1];
+  ids["b-space"].hidden = /<a id="b-space" hidden/.test(HTML); // as the html ships it
 
   const calls = [];
   const runs = [];
@@ -133,6 +137,7 @@ function mount({ status } = {}) {
     close: () => {},
     open: (u) => { opened.push(u); },
   };
+  if (spaceAvailable !== undefined) fleet.spaceAvailable = () => spaceAvailable();
   const document = {
     getElementById: (id) => ids[id] ?? null,
     querySelectorAll: (sel) => (sel === "button[data-action]" ? actions : []),
@@ -427,4 +432,29 @@ test("the Sleep button no longer promises the customer-facing set stays up", () 
   // fleet sleep = sleep EVERYTHING, customer sites included (owner-approved, #12771)
   assert.doesNotMatch(HTML, /Customer-facing set stays up/);
   assert.match(HTML, /customer-facing sites included/);
+});
+
+test("Open in Space: one quiet link, sent through window.fleet.open (never a navigation or inline handler)", async () => {
+  const tag = (/<a id="b-space"[^>]*>[^<]*<\/a>/.exec(HTML) || [])[0];
+  assert.ok(tag, "fleet-control.html carries the b-space link");
+  assert.match(tag, /data-space="aither:\/\/space\/\?at=galaxy:fleet"/, "it targets the fleet galaxy");
+  assert.match(tag, />Open in Space</);
+  assert.doesNotMatch(tag, /\son[a-z]+=/i, "no inline event handler on the link");
+  const page = mount({ status: () => Promise.resolve(GOOD()), spaceAvailable: () => Promise.resolve(true) });
+  await tick(); await tick();
+  assert.equal(page.ids["b-space"].hidden, false, "main reported a Space pane: the link shows");
+  let prevented = false;
+  for (const fn of page.ids["b-space"].listeners.click || []) fn({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, true, "the anchor never navigates the page itself");
+  assert.deepEqual(page.opened, ["aither://space/?at=galaxy:fleet"], "the bridge carries the deep link");
+});
+
+test("Open in Space stays hidden unless main reports a Space pane (no dead link on a build without one)", async () => {
+  assert.match(HTML, /<a id="b-space" hidden /, "the html ships the link hidden");
+  for (const [label, answer] of [["no Space pane", () => Promise.resolve(false)],
+    ["a failed probe", () => Promise.reject(new Error("no handler"))], ["an older preload", undefined]]) {
+    const page = mount({ status: () => Promise.resolve(GOOD()), spaceAvailable: answer });
+    await tick(); await tick();
+    assert.equal(page.ids["b-space"].hidden, true, label);
+  }
 });

@@ -24,7 +24,7 @@ test("defaults are quiet: nothing opens at start, at an edge or for a notificati
   const d = policy.normalize({});
   assert.deepEqual(d, {
     autoOpenOnStart: false, edgeReveal: false, edge: "right", edgeDwellMs: 600,
-    raiseOnNotifications: false, doNotDisturb: false,
+    raiseOnNotifications: false, doNotDisturb: false, spaceHome: false,
   });
   for (const t of [TRIGGERS.START, TRIGGERS.EDGE, TRIGGERS.NOTIFICATION]) {
     assert.equal(policy.decide({}, t).allow, false, `${t} must be off by default`);

@@ -27,6 +27,7 @@ import {
   type WakeActionResult,
   type WakeRow,
 } from '../deck/deck-types';
+import { SPACE_NEXT_LINK, spaceCardLink } from '../deck/space-links';
 
 /**
  * The Desk panel — the "full UI/UX" that opens on right-click (owner redesign
@@ -953,12 +954,15 @@ function CardFlipper({
   nowMs,
   onAnswer,
   onPopout,
+  onSpace,
   focus,
 }: {
   cards: DeckDecision[];
   nowMs: number;
   onAnswer: (id: string, choice: string) => void;
   onPopout: (id: string) => void;
+  /** Open a BeadSpace link; absent when this desk build has no Space pane. */
+  onSpace?: (link: string) => void;
   /** A card the owner clicked somewhere else (tray row, chip, ?card=): show it.
    *  `nonce` re-applies the same id after the owner flipped away. */
   focus?: { id: string; nonce: number } | null;
@@ -1007,6 +1011,20 @@ function CardFlipper({
         >
           Pop out
         </button>
+        {onSpace && spaceCardLink(card.id) ? (
+          <a
+            className="deck-space-link"
+            href={spaceCardLink(card.id) ?? undefined}
+            title="Show this ask on the system it concerns, in Space"
+            onClick={(event) => {
+              event.preventDefault();
+              const link = spaceCardLink(card.id);
+              if (link) onSpace(link);
+            }}
+          >
+            in space
+          </a>
+        ) : null}
       </div>
       {/* key: a new card is a new row -- never carry the last card's field or verdict over. */}
       <DecisionRow key={card.id} card={card} nowMs={nowMs} onAnswer={onAnswer} />
@@ -1576,6 +1594,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
           relayChannel: (event.relayChannel as string) ?? '#agents',
           room: (event.room as DeckState['room']) ?? [],
           roomStatus: (event.roomStatus as string) ?? 'not started',
+          spaceAvailable: (event.spaceAvailable as boolean | undefined) ?? false,
           // A field missing from THIS copy is dropped on the first push after
           // the initial pull — the section would render once and then empty.
           wakes: normalizeWakes(event.wakes),
@@ -1765,6 +1784,19 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
           {state.openCount > 0 ? `${state.openCount} waiting` : 'all clear'}
           {(state.totalCount ?? 0) > state.openCount ? ` · ${(state.totalCount ?? 0) - state.openCount} FYI` : ''}
         </span>
+        {!isCharacters && state.spaceAvailable ? (
+          <a
+            className="deck-space-link"
+            href={SPACE_NEXT_LINK}
+            title="The same asks as glowing objects on the systems they concern"
+            onClick={(event) => {
+              event.preventDefault();
+              void bridgeDeck()?.action('space', SPACE_NEXT_LINK);
+            }}
+          >
+            See in Space
+          </a>
+        ) : null}
         <button
           className="deck-close"
           aria-label="Close panel"
@@ -1832,6 +1864,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
               nowMs={nowMs}
               onAnswer={handleAnswer}
               onPopout={(id) => runAction('popout-card', id)}
+              onSpace={state.spaceAvailable ? (link) => void bridgeDeck()?.action('space', link) : undefined}
               focus={focusCard}
             />
           )}

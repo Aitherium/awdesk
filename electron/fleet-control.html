@@ -146,6 +146,9 @@
   .row .spacer { flex: 1; }
   .row .hint { color: var(--muted); font-size: 12px; }
   #b-help { border-radius: 999px; width: 26px; padding: 4px 0; text-align: center; }
+  #b-space[hidden] { display: none; }
+  #b-space { color: var(--muted); font-size: 12px; text-decoration: none; }
+  #b-space:hover, #b-space:focus-visible { color: var(--brand); text-decoration: underline; }
   #log { margin: 0 16px 8px; background: var(--bg-sunk); border: 1px solid var(--line); border-radius: 10px;
     padding: 6px 10px; overflow: auto; font: 12px/1.5 var(--font-mono); color: var(--surface-300);
     white-space: pre-wrap; overflow-wrap: anywhere; height: 92px; flex: none; }
@@ -292,6 +295,13 @@
     <button id="b-refresh">Refresh status</button>
     <span class="hint" id="hint">auto-refresh every 30 s</span>
     <span class="spacer"></span>
+    <!-- BeadSpace (owner, 2026-10-15): the same fleet as one explorable space. This page
+         stays the CSP-safe fallback; the link goes through window.fleet.open, which main
+         re-builds from its parts (space-home.cjs) and never hands to the OS shell. -->
+    <!-- Hidden until main says this desk build HAS a Space pane (window.fleet.spaceAvailable):
+         a build or a legacy console without one never shows a link that does nothing. -->
+    <a id="b-space" hidden href="aither://space/?at=galaxy:fleet" data-space="aither://space/?at=galaxy:fleet"
+       title="See the fleet in Space: every service, GPU and node as one map">Open in Space</a>
     <button id="b-help" aria-expanded="false" aria-controls="cli-hints" title="The same verbs from a terminal">?</button>
   </div>
 
@@ -674,6 +684,17 @@
     const s = selected && selected.startsWith("door:") ? doors[Number(selected.slice(5))] : null;
     if (s) window.fleet.open(s.url);
   });
+  const toSpace = $("b-space");
+  if (toSpace) toSpace.addEventListener("click", (event) => {
+    if (event && event.preventDefault) event.preventDefault();
+    window.fleet.open(toSpace.dataset.space || "aither://space/?at=galaxy:fleet");
+  });
+  // Shown only on a real yes from main; an older preload (no spaceAvailable) keeps it hidden.
+  if (toSpace && typeof window.fleet.spaceAvailable === "function") {
+    Promise.resolve(window.fleet.spaceAvailable())
+      .then((yes) => { toSpace.hidden = yes !== true; })
+      .catch(() => { toSpace.hidden = true; });
+  }
   const help = $("b-help");
   if (help) help.addEventListener("click", () => {
     const f = $("cli-hints");

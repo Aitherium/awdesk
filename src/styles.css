@@ -689,6 +689,21 @@ body {
   color: var(--deck-text);
 }
 
+/* The quiet doors into BeadSpace: a link, never a button or a menu. */
+.deck-space-link {
+  color: var(--deck-muted);
+  font-size: 11.5px;
+  text-decoration: none;
+  padding: 0 6px;
+  -webkit-app-region: no-drag;
+}
+
+.deck-space-link:hover,
+.deck-space-link:focus-visible {
+  color: var(--deck-accent);
+  text-decoration: underline;
+}
+
 .deck-chip-avatar {
   color: var(--deck-muted);
   font-size: 10.5px;

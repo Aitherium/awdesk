@@ -126,6 +126,7 @@ const {
   createFleetWindow,
   ensureFleetIpc,
   setCloseFallback: setFleetCloseFallback,
+  setSpaceOpener: setFleetSpaceOpener,
   closeFleetWindow,
   isFleetWindowOpen,
   getControl: getFleetControl,
@@ -1432,6 +1433,43 @@ function toggleOverlaySetting(key) {
   return setOverlaySettings({ [key]: !overlaySettings()[key] });
 }
 
+// ── BeadSpace as home (space-home.cjs) ──────────────────────────────────────────
+// overlay.spaceHome (default false) sends the Inbox and Fleet doors into
+// aither://space/. Off -- or a desk build with no Space pane, or the legacy console --
+// every door goes exactly where it went before. The list Inbox stays either way.
+const spaceHome = require("./space-home.cjs");
+
+/** The Space pane record, or null when this build (or the legacy console) has none. */
+function spacePane() {
+  try {
+    if (browserInternal.legacyConsole()) return null;
+    return browserInternal.paneById(spaceHome.SPACE_PANE) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where `paneId`'s door leads now: a Space deep link, or null for "as before". */
+function spaceHomeTarget(paneId, cardId = null) {
+  return spaceHome.spaceTarget(paneId, {
+    spaceHome: spaceHome.spaceHomeOn(overlaySettings()),
+    spacePane: spacePane(),
+    cardId,
+  });
+}
+
+/** Open a Space deep link a surface asked for, re-built from its parts. */
+function openSpaceLink(url) {
+  const pane = spacePane();
+  const target = pane ? spaceHome.canonicalSpaceLink(url, pane) : null;
+  if (!target) {
+    debugLog(`[space-home] not opened: ${pane ? "refused link" : "no Space pane in this desk build"}`);
+    return false;
+  }
+  wireConsoleHost(false);
+  return browserWindow.openInternalUrl(target, { askAgent: browserAskAgent });
+}
+
 // Edge reveal: a cursor poll that runs ONLY while overlay.edgeReveal is on (and do not
 // disturb is off). The watcher re-reads the policy on every tick; the 30 s resync picks
 // up an edit made outside the desk (the cast pane, awsettings, a sync pull).
@@ -1473,6 +1511,10 @@ requestLivingDesktop.check = () => (overlayMayRaise(overlayPolicy.TRIGGERS.REQUE
 
 function openInbox(cardId = null) {
   const id = typeof cardId === "string" && cardId ? cardId : null;
+  // BeadSpace as home: the bell, the needs-you line and every Inbox door land in the
+  // Space (on that card when one was named, else on the next ask). Off = below, unchanged.
+  const space = spaceHomeTarget("cards", id);
+  if (space && openSpaceLink(space)) return true;
   // The card id must REACH the flipper (2026-10-14: a click on "Secret needed"
   // used to show/focus an existing deck on whatever card it last showed).
   const focus = id ? { type: "deck:focus-card", id } : null;
@@ -2755,6 +2797,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "desktop.overlay.edge-reveal": return void toggleOverlaySetting("edgeReveal");
     case "desktop.overlay.raise-on-notify": return void toggleOverlaySetting("raiseOnNotifications");
     case "desktop.overlay.dnd": return void toggleOverlaySetting("doNotDisturb");
+    case "desktop.space-home": return void toggleOverlaySetting("spaceHome");
     case "window.outline": return void toggleWindowOutline();
     case "layout.reset-all": return void resetAvatarLayout();
     // The body verbs: `slotId` is the body that was right-clicked.
@@ -2939,6 +2982,8 @@ function deckState() {
     roomStatus: roomPublisher ? (roomPublisher.lastError || "ok") : "not started",
     roomStage: roomStageHost.status(),
     relayPoller: relayPoller ? relayPoller.status() : null,
+    // The Inbox's "See in Space" links render only when this build has the pane.
+    spaceAvailable: Boolean(spacePane()),
   };
 }
 
@@ -3739,7 +3784,13 @@ browserWindow.configureInternal({
   // An aitherium.com tab opened before any aither:// page (Family from the rail) is
   // signed in before it loads too -- not only once the console host is wired.
   hostedPrepare: ensureDesktopSession,
+  // The rail's Inbox and Fleet rows (space-home.cjs): null = the pane, as before.
+  homeFor: (paneId) => spaceHomeTarget(paneId),
 });
+
+// The Fleet page's "Open in Space" (fleet-window.cjs hands the raw link; we re-build it).
+// The page shows the link only when this build has a Space pane (Boolean(spacePane())).
+setFleetSpaceOpener((url) => openSpaceLink(url), () => Boolean(spacePane()));
 
 // The LAST independent popup source folds in (owner, 2026-09-08: "I WANT TO
 // CONSOLIDATE AND DEDUPE"). A decision card had three unrelated homes -- awask's
@@ -4499,6 +4550,10 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         return true;
       }
       switch (name) {
+        // The Inbox's "See in Space" and a card row's "in space": arg is the deep link
+        // the deck built (src/deck/space-links.ts); openSpaceLink re-builds it or refuses.
+        case "space":
+          return typeof arg === "string" && openSpaceLink(arg);
         // Right-click on a bead: the SAME menu the tray shows, at the cursor. It
         // used to open the inbox, which made the avatar's corner the one place
         // with no way to reach anything else.

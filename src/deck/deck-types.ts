@@ -133,6 +133,9 @@ export interface DeckState {
   roomStatus: string;
   /** awrise's scheduled jobs and whether its clock is still ticking. */
   wakes: WakesFeed;
+  /** This desk build has the BeadSpace pane (aither://space/): the Inbox links to it.
+   *  Optional: an older main does not send it, and then there is no link. */
+  spaceAvailable?: boolean;
 }
 
 export interface RoomRow {

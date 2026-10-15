@@ -115,6 +115,9 @@
       <div class="row">
         <label style="min-width:0"><input type="checkbox" id="ovDnd"> Do not disturb</label>
       </div>
+      <div class="row">
+        <label style="min-width:0"><input type="checkbox" id="ovSpaceHome"> Inbox and Fleet open into Space</label>
+      </div>
       <p class="note">With notifications off, a decision that needs you shows a small notice by the tray instead. Do not disturb stops everything that opens on its own, including requests from agents.</p>
     </section>
 
@@ -179,6 +182,7 @@
     edgeReveal: document.getElementById("ovEdge"),
     raiseOnNotifications: document.getElementById("ovNotify"),
     doNotDisturb: document.getElementById("ovDnd"),
+    spaceHome: document.getElementById("ovSpaceHome"),
   };
   const ovEdgeSide = document.getElementById("ovEdgeSide");
   const ovDwell = document.getElementById("ovDwell");

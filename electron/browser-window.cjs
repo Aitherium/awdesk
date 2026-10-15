@@ -106,7 +106,7 @@ let sessionHardened = false;
 let internalReady = false;
 /** What main injects so aither:// pages resolve (configureInternal). */
 let internalConfig = { rendererUrl: "", hostedUrl: null, hostedPrepare: null, beforeInternal: null,
-  workspaceUrl: null, modelFile: null };
+  workspaceUrl: null, modelFile: null, homeFor: null };
 /** The inbox count, shown on the pinned Inbox tab and the taskbar button. */
 let inbox = { count: 0, image: null, tooltip: "" };
 let askAgent = null;
@@ -977,14 +977,32 @@ function tabForPane(paneId) {
 function openInternal(paneId, param = null, opts = {}) {
   const pane = internal.paneById(paneId);
   if (!pane) return false;
-  const url = internal.internalUrl(pane, param);
+  return showInternal(pane, internal.internalUrl(pane, param), param != null, opts);
+}
+
+/**
+ * Open a full aither:// address (a BeadSpace deep link: aither://space/?focus=next).
+ * Reuses the pane's tab and loads the address into it when it differs. Callers hand
+ * a URL they built or re-built themselves (space-home.cjs), never a page's raw string.
+ */
+function openInternalUrl(url, opts = {}) {
+  const parsed = internal.parseInternalUrl(url);
+  const pane = parsed && internal.paneById(parsed.paneId);
+  if (!pane) return false;
+  // "always": a deep link is read once when the page mounts, so the same link clicked
+  // again (after the owner wandered off inside the pane) must reload to refocus.
+  return showInternal(pane, String(url), "always", opts);
+}
+
+function showInternal(pane, url, reload, opts) {
   createBrowserWindow({ ...opts, url: null, home: false });
   ensurePinned();
   const existing = tabForPane(pane.id);
   if (existing) {
     showTab(existing.id);
     const view = viewOf(existing.id);
-    if (param != null && view && existing.kind === "internal" && view.webContents.getURL() !== url) {
+    if (reload && view && existing.kind === "internal"
+        && (reload === "always" || view.webContents.getURL() !== url)) {
       void loadInView(view, url).catch(() => {});
     }
   } else {
@@ -1732,6 +1750,10 @@ function wireIpc() {
     if (action === "rail-width") return setPrefs({ railWidth: Number(arg), railCollapsed: false }) && relayout();
     if (action === "panel-width") return setPrefs({ panelWidth: Number(arg), panelCollapsed: false }) && relayout();
     if (action === "page") {
+      // Main may send a door somewhere else (space-home.cjs: Inbox/Fleet -> BeadSpace
+      // when overlay.spaceHome is on). null = the pane itself, exactly as before.
+      const home = typeof internalConfig.homeFor === "function" ? internalConfig.homeFor(String(arg || "")) : null;
+      if (home && openInternalUrl(home)) return { ok: true };
       const ok = openInternal(String(arg || ""), null);
       return ok ? { ok: true } : { ok: false, error: `no Aither page called ${arg}` };
     }
@@ -2034,6 +2056,7 @@ module.exports = {
   closeInternalTabOf,
   configureInternal,
   openInternal,
+  openInternalUrl,
   sendToInternalTabs,
   setInboxBadge,
   ISOLATED_WORLD_ID,

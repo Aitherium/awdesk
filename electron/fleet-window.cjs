@@ -28,6 +28,27 @@ function setCloseFallback(fn) {
   closeFallback = typeof fn === "function" ? fn : null;
 }
 
+/** Main's opener for a BeadSpace deep link (the page's "Open in Space"). It gets the
+ *  URL the page sent and must re-build it itself (space-home.canonicalSpaceLink). */
+let spaceOpener = null;
+/** Main's answer to "is there a Space pane in this build?" -- the link's only gate. */
+let spaceAvailable = null;
+
+function setSpaceOpener(fn, isAvailable = null) {
+  spaceOpener = typeof fn === "function" ? fn : null;
+  spaceAvailable = typeof isAvailable === "function" ? isAvailable : null;
+}
+
+/** True only when an opener is wired AND main reports a Space pane. */
+function fleetSpaceAvailable() {
+  if (!spaceOpener || !spaceAvailable) return false;
+  try {
+    return spaceAvailable() === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Wire the IPC without opening a window.
  *
@@ -58,6 +79,7 @@ function wireIpc() {
   ipcMain.handle("desk:fleet-status", (_event, opts) =>
     getControl().status(opts && typeof opts === "object" ? opts : {}));
   ipcMain.handle("desk:fleet-run", (_event, action) => getControl().run(String(action)));
+  ipcMain.handle("desk:fleet-space", () => fleetSpaceAvailable());
   ipcMain.handle("desk:fleet-doors", () => require("./surfaces.cjs").probeSurfaces().catch(() => []));
   ipcMain.on("desk:fleet-close", (event) => {
     if (fleetWindow && !fleetWindow.isDestroyed() && (!event || event.sender === fleetWindow.webContents)) {
@@ -71,7 +93,16 @@ function wireIpc() {
   // A door chip was clicked. Only the probed SURFACES may be opened — a
   // renderer-supplied URL never reaches the shell.
   ipcMain.on("desk:fleet-open", (_event, url) => {
-    if (typeof url === "string" && OPENABLE.has(url)) void shell.openExternal(url);
+    if (typeof url !== "string") return;
+    // "Open in Space" rides the same call: an aither://space/ link goes to main,
+    // which re-builds it from its parts; it never reaches the OS shell.
+    if (url.startsWith("aither://space/")) {
+      if (spaceOpener) {
+        try { spaceOpener(url); } catch { /* the page stays as it is */ }
+      }
+      return;
+    }
+    if (OPENABLE.has(url)) void shell.openExternal(url);
   });
 }
 
@@ -132,6 +163,8 @@ module.exports = {
   createFleetWindow,
   ensureFleetIpc,
   setCloseFallback,
+  setSpaceOpener,
+  fleetSpaceAvailable,
   closeFleetWindow,
   isFleetWindowOpen,
   getControl,

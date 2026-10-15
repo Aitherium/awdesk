@@ -20,4 +20,6 @@ contextBridge.exposeInMainWorld("fleet", {
   // Open one of the probed doors (tunnel, pulse, grafana, ...) in the browser.
   // Main only opens URLs from its own SURFACES list — the renderer cannot pick.
   open: (url) => ipcRenderer.send("desk:fleet-open", String(url)),
+  // Does this desk build have a BeadSpace pane? The page shows "Open in Space" only on true.
+  spaceAvailable: () => ipcRenderer.invoke("desk:fleet-space"),
 });

@@ -245,6 +245,14 @@ const COMMANDS = Object.freeze([
     group: "desktop", surfaces: ["tray", "palette"],
     type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.doNotDisturb),
   }),
+  // BeadSpace as home (space-home.cjs): the Settings pane's row, and this id for the
+  // palette and POST /commands/run. Deliberately NOT on the tray: one switch, one place.
+  Object.freeze({
+    id: "desktop.space-home", label: "Inbox and Fleet open into Space",
+    group: "desktop", surfaces: ["palette"],
+    whySingle: "A settings switch, not a door: its row is in Settings (Desktop overlay); the palette and POST /commands/run are its keyboard and agent paths (owner, 2026-10-15: no more menus).",
+    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.spaceHome),
+  }),
   Object.freeze({
     id: "avatar.toggle", group: "avatar", accel: "Ctrl+Shift+A",
     surfaces: ["tray", "palette"],

@@ -682,6 +682,8 @@ const OVERLAY_FIELDS = Object.freeze({
   edgeDwellMs: (v) => vInt(v, { min: overlayPolicy.DWELL_MIN_MS, max: overlayPolicy.DWELL_MAX_MS }),
   raiseOnNotifications: vBool,
   doNotDisturb: vBool,
+  // Inbox and Fleet open into BeadSpace (space-home.cjs). Reversible; off by default.
+  spaceHome: vBool,
 });
 
 const BUILTIN_DESK = Object.freeze({
