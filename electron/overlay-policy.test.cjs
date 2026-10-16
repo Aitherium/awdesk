@@ -200,7 +200,7 @@ test("tray rows: the four switches, plain labels, checked from ctx.overlayPolicy
   const registry = require("./command-registry.cjs");
   assert.deepEqual(registry.conformance(), []);
   const rows = {
-    "desktop.overlay.auto-start": ["Open the desktop overlay when Desk starts", "autoOpenOnStart"],
+    "desktop.overlay.auto-start": ["Open the desktop overlay when Aither starts", "autoOpenOnStart"],
     "desktop.overlay.edge-reveal": ["Reveal the overlay at the screen edge", "edgeReveal"],
     "desktop.overlay.raise-on-notify": ["Bring the overlay forward for notifications", "raiseOnNotifications"],
     "desktop.overlay.dnd": ["Do not disturb", "doNotDisturb"],

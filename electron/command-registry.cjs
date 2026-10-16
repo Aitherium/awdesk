@@ -160,7 +160,7 @@ const COMMANDS = Object.freeze([
   }),
   // Owner, 2026-10-05: closing the Desk left no way back but a terminal. One tap.
   Object.freeze({
-    id: "desk.restart", label: "Restart Desk", group: "desktop", surfaces: ["tray", "palette"],
+    id: "desk.restart", label: "Restart Aither", group: "desktop", surfaces: ["tray", "palette"],
   }),
   // The shells mirror Veil's SHELL_REGISTRY (components/os/shell-registry.tsx). An
   // id Veil does not know falls back to the Living OS server-side, so a stale row
@@ -223,8 +223,8 @@ const COMMANDS = Object.freeze([
   // "randomly pops up on the side of the monitor"). All off by default; the rows above
   // (and the hotkey) always work. Same switches as Settings -> Desktop overlay.
   Object.freeze({
-    id: "desktop.overlay.auto-start", label: "Open the desktop overlay when Desk starts",
-    menuLabel: "Open the desktop overlay when Desk starts",
+    id: "desktop.overlay.auto-start", label: "Open the desktop overlay when Aither starts",
+    menuLabel: "Open the desktop overlay when Aither starts",
     group: "desktop", surfaces: ["tray", "palette"],
     type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.autoOpenOnStart),
   }),
@@ -687,7 +687,7 @@ const COMMANDS = Object.freeze([
     surfaces: ["palette", "jumplist"],
   }),
   Object.freeze({
-    id: "about", label: "About Desk", group: "app",
+    id: "about", label: "About Aither", group: "app",
     surfaces: ["palette"],
     whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),

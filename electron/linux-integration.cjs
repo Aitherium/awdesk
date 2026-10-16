@@ -29,7 +29,7 @@ function desktopEntries(appimage) {
   const launcher = [
     "[Desktop Entry]",
     "Type=Application",
-    "Name=Aither Desktop",
+    "Name=Aither",
     "Comment=Your AI, on this computer",
     `Exec=${exec} %U`,
     "Terminal=false",
@@ -41,7 +41,7 @@ function desktopEntries(appimage) {
   const autostart = [
     "[Desktop Entry]",
     "Type=Application",
-    "Name=Aither Desktop",
+    "Name=Aither",
     `Exec=${exec} --background`,
     "Terminal=false",
     "X-GNOME-Autostart-enabled=true",

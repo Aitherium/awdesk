@@ -91,8 +91,8 @@ jobs:
         run: |
           set -e
           sudo dpkg -i release/*.deb || sudo apt-get -y -f install
-          test -x /opt/Desk/desk
-          xvfb-run -a /opt/Desk/desk --no-sandbox --disable-gpu --smoke
+          test -x /opt/Aither/desk
+          xvfb-run -a /opt/Aither/desk --no-sandbox --disable-gpu --smoke
       - name: Smoke test the installed app
         if: matrix.platform == 'windows'
         timeout-minutes: 10
@@ -162,4 +162,4 @@ jobs:
           test -n "$(ls -A release-artifacts)" || { echo "no artifacts to release"; exit 1; }
           extra=""
           case "${GITHUB_REF_NAME}" in *-*) extra="--prerelease" ;; esac
-          gh release create "${GITHUB_REF_NAME}" release-artifacts/* --repo "${GITHUB_REPOSITORY}" --title "Desk ${GITHUB_REF_NAME}" --generate-notes ${extra}
+          gh release create "${GITHUB_REF_NAME}" release-artifacts/* --repo "${GITHUB_REPOSITORY}" --title "Aither ${GITHUB_REF_NAME}" --generate-notes ${extra}

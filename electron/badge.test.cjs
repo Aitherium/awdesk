@@ -57,8 +57,8 @@ test("badgeBitmap: transparent outside the disc, filled inside, sized as asked",
 });
 
 test("badgeTooltip: waiting vs info-only vs quiet", () => {
-  assert.equal(badgeTooltip(0, 0), "Desk");
-  assert.equal(badgeTooltip(1, 1), "Desk — 1 decision waiting");
-  assert.equal(badgeTooltip(2, 5), "Desk — 2 decisions waiting · 5 cards in the inbox");
-  assert.equal(badgeTooltip(0, 3), "Desk — 3 info cards (nothing to answer)");
+  assert.equal(badgeTooltip(0, 0), "Aither");
+  assert.equal(badgeTooltip(1, 1), "Aither — 1 decision waiting");
+  assert.equal(badgeTooltip(2, 5), "Aither — 2 decisions waiting · 5 cards in the inbox");
+  assert.equal(badgeTooltip(0, 3), "Aither — 3 info cards (nothing to answer)");
 });

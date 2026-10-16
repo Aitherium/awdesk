@@ -10,10 +10,15 @@
 // (Software\<guid>, ...\Uninstall\<guid>); main.cjs also sets it as the Windows
 // AppUserModelId that toasts and taskbar pins bind to. Changing it would make the
 // next installer treat every existing install as a different app: a second copy,
-// orphaned shortcuts and pins. productName stays "Desk" for the same reason (it is
-// the install dir and Electron's userData folder name). Only the shortcut and
-// uninstall display names change; electron-builder renames the old "Desk.lnk" on
-// update (keepShortcuts) or the old uninstaller removes it on a full reinstall.
+// orphaned shortcuts and pins.
+//
+// Product rename 2026-10-15: Desk -> Aither. productName is "Aither" (installer title,
+// Start menu, uninstall entry, Dock/menu bar), but win/mac.executableName pins the
+// FILES to "Desk": Desk.exe, the Programs\Desk install dir (electron-builder's
+// APP_FILENAME = productFilename), "Uninstall Desk.exe" (3268_Install-Desk.ps1 keys on
+// it) and Desk.app (desk-update.cjs swaps that bundle). userData stays "Desk" through
+// app.setName(INTERNAL_APP_NAME) -- see app-identity.test.cjs. electron-builder renames
+// the old "Aither Desk.lnk" shortcut to "Aither.lnk" on upgrade (oldShortcutName).
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -49,13 +54,25 @@ test("customer-facing metadata names Aitherium, not the upstream fork", () => {
 
 test("install identity is unchanged so existing installs upgrade in place", () => {
   assert.equal(pkg.build.appId, "com.xikhar.awdesk");
-  assert.equal(pkg.build.productName, "Desk");
   assert.equal(pkg.name, "awdesk");
+  // Files on disk keep the internal name, so an upgrade lands on the same paths.
+  assert.equal(pkg.build.win.executableName, "Desk");
+  assert.equal(pkg.build.mac.executableName, "Desk");
+  assert.equal(pkg.build.linux.executableName, "desk");
+  assert.equal(pkg.desktopName, "desk.desktop");
   const mainSrc = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.ok(mainSrc.includes(`"${pkg.build.appId}"`), "main.cjs AppUserModelId must match build.appId");
 });
 
-test("Windows installer shows Aither Desk", () => {
-  assert.equal(pkg.build.nsis.shortcutName, "Aither Desk");
-  assert.equal(pkg.build.nsis.uninstallDisplayName, "Aither Desk");
+test("the product is called Aither everywhere a customer looks", () => {
+  assert.equal(pkg.build.productName, "Aither");
+  assert.equal(pkg.build.nsis.shortcutName, "Aither");
+  assert.equal(pkg.build.nsis.uninstallDisplayName, "Aither");
+  assert.match(pkg.description, /^Aither:/);
+});
+
+test("release asset names are unchanged (3268, desk-update.cjs and adk match Desk-<ver>-...)", () => {
+  assert.equal(pkg.build.win.artifactName, "Desk-${version}-windows-${arch}-setup.${ext}");
+  assert.equal(pkg.build.mac.artifactName, "Desk-${version}-macos-${arch}.${ext}");
+  assert.equal(pkg.build.linux.artifactName, "Desk-${version}-linux-${arch}.${ext}");
 });

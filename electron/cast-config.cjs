@@ -70,7 +70,7 @@ function userDataDir() {
   } catch {
     /* not running inside Electron — fall through to the mirrored path */
   }
-  const name = "Desk";
+  const name = require("./app-identity.cjs").INTERNAL_APP_NAME; // the on-disk name, not the product name
   if (process.platform === "win32") {
     return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), name);
   }

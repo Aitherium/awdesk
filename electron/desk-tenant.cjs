@@ -275,7 +275,7 @@ function overlayBaseUrl(tenant, fallback = APEX_URL) {
   return fallback;
 }
 
-/** "Desk" -> "Desk · <tenant name>"; unchanged with no tenant. */
+/** "Aither" -> "Aither · <tenant name>"; unchanged with no tenant. */
 function decorateTitle(title, tenant) {
   if (!tenant || !tenant.name) return title;
   return `${title} · ${tenant.name}`;

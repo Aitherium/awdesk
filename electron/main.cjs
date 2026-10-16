@@ -274,6 +274,7 @@ const { DeskUpdater, installKind, safeReleaseUrl, updateTrayItems } = require(".
 // config file, or adopted from the signed-in account (desk-tenant-auto.cjs). Read per
 // use (currentTenant()), so a host adopted mid-run reaches the tray and titles too.
 const deskTenant = require("./desk-tenant.cjs");
+const { PRODUCT_NAME, INTERNAL_APP_NAME, userDataDirFor } = require("./app-identity.cjs");
 const deskTenantAuto = require("./desk-tenant-auto.cjs");
 /** The running updater (null until the app is ready); its Windows installer runs on quit. */
 let deskUpdater = null;
@@ -299,25 +300,25 @@ function showUpdateNotice(update) {
   const version = String(update.tag || "").replace(/^(?:awdesk-)?v/, "");
   const notes = {
     restart: {
-      title: `Desk ${version} is ready`,
+      title: `${PRODUCT_NAME} ${version} is ready`,
       body: update.kind === "mac"
         ? "Downloaded and checksum-verified. This build isn't signed by Apple, so it can't replace itself in the background -- click to restart into it."
-        : "Downloaded and checksum-verified. Click to restart now, or it installs the next time Desk quits.",
+        : "Downloaded and checksum-verified. Click to restart now, or it installs the next time Aither quits.",
       click: () => deskUpdater?.restartNow(),
     },
     reveal: {
-      title: `Desk ${version} is downloaded`,
-      body: "Checksum-verified, but Desk can't write to its own folder. Click to show the download, then drag Desk into Applications.",
+      title: `${PRODUCT_NAME} ${version} is downloaded`,
+      body: "Checksum-verified, but Aither can't write to its own folder. Click to show the download, then drag Aither into Applications.",
       click: () => shell.showItemInFolder(update.file),
     },
     open: {
-      title: `Desk ${version} is available`,
+      title: `${PRODUCT_NAME} ${version} is available`,
       body: "Installed from a .deb, so the package manager updates it. Click for the download.",
       click: () => void shell.openExternal(safeReleaseUrl(update.page || update.url)),
     },
     // A newer release was seen but the verified download did not finish: say so anyway.
     available: {
-      title: `Desk ${version} is available`,
+      title: `${PRODUCT_NAME} ${version} is available`,
       body: "An update is out. Click to install it (or use \"Update available\" in the tray).",
       click: () => void deskUpdater?.installNow(),
     },
@@ -613,7 +614,12 @@ let mcpAnimationRequestId = 0;
 const pendingRendererEvents = new Map();
 const avatarSlots = new Map(); // Map<slotId, { name, modelUrl }> — tracks spawned slots (not slot 0)
 
-app.setName("Desk");
+// The INTERNAL name, not the product name (app-identity.cjs): it is the userData dir and
+// the Linux WM_CLASS. Customers see PRODUCT_NAME ("Aither"); the dir stays %APPDATA%\Desk
+// so an upgrade keeps tenant config, sessions and settings. Pinned explicitly too, so a
+// future setName() cannot silently move every customer onto an empty profile.
+app.setName(INTERNAL_APP_NAME);
+app.setPath("userData", userDataDirFor(app.getPath("appData")));
 
 // ── awdesk rename: migrate the legacy userData dir once ──────────────────────
 // app.setName() decides the userData path, so renaming Persona -> Desk points
@@ -751,7 +757,7 @@ function createWindow() {
     autoHideMenuBar: true,
     alwaysOnTop: true,
     skipTaskbar: true,
-    title: "Desk",
+    title: PRODUCT_NAME,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -1511,7 +1517,7 @@ function requestLivingDesktop() {
 /** The REQUEST verdict alone ({ok} or the refusal an agent can read). */
 requestLivingDesktop.check = () => (overlayMayRaise(overlayPolicy.TRIGGERS.REQUEST)
   ? { ok: true }
-  : { ok: false, suppressed: true, error: "Do not disturb is on in Desk; the overlay was not opened (open it from the tray or Ctrl+Shift+D)" });
+  : { ok: false, suppressed: true, error: "Do not disturb is on in Aither; the overlay was not opened (open it from the tray or Ctrl+Shift+D)" });
 
 function openInbox(cardId = null) {
   const id = typeof cardId === "string" && cardId ? cardId : null;
@@ -2399,8 +2405,8 @@ function maybePromptForFirstCharacter() {
     void dialog
       .showMessageBox({
         type: "info",
-        title: "Desk has no character yet",
-        message: "Desk ships no character models — add your own",
+        title: `${PRODUCT_NAME} has no character yet`,
+        message: `${PRODUCT_NAME} ships no character models — add your own`,
         detail: [
           "Get a VRM from VRoid Hub (free, and the models state their own",
           "license), then drop it in or use the tray:",
@@ -2646,7 +2652,7 @@ function trayTemplateNow() {
   // a STATUS line rather than a command, so it is spliced in after the avatar
   // group rather than declared in the registry.
   const voiceRows = voiceTrayItems(latestListenerStatus, app.isPackaged);
-  const appGroupAt = trayTemplate.findIndex((row) => row.label === "About Desk");
+  const appGroupAt = trayTemplate.findIndex((row) => row.label === `About ${PRODUCT_NAME}`);
   // Where the browser extension is (or that it is nowhere) -- same splice as voice.
   // Cloud LLM spend today + the DeepSeek balance; a click opens aither://spend. An
   // absent cloud_spend tool reads "not deployed yet", never "$0.00".
@@ -2886,12 +2892,12 @@ function showAboutDesk() {
   void dialog
     .showMessageBox({
       type: "info",
-      title: "About Desk",
-      message: `Desk ${app.getVersion()}`,
+      title: `About ${PRODUCT_NAME}`,
+      message: `${PRODUCT_NAME} ${app.getVersion()}`,
       detail: [
         "The AitherOS desktop hub — avatar presence, decision cards, model & agent browsing, relay.",
         "",
-        "Desk ships no character models. Add your own — VRoid Hub is the guided path;",
+        "Aither ships no character models. Add your own — VRoid Hub is the guided path;",
         "any VRM 1.0 file you have the rights to works. Your models stay on this machine.",
         "Full asset policy: ASSET_LICENSES.md.",
       ].join("\n"),
@@ -3328,7 +3334,7 @@ function createDeckWindow() {
     // In the taskbar on purpose: an always-on-top frameless panel the owner
     // cannot find again once it loses focus is a trap, not a feature.
     skipTaskbar: false,
-    title: "Desk",
+    title: PRODUCT_NAME,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -3384,7 +3390,7 @@ function createChatWindow() {
   chatWindow = new BrowserWindow({
     x, y, width, height, minWidth: 340, minHeight: 420,
     show: false, frame: false, transparent: true, alwaysOnTop: true,
-    skipTaskbar: false, title: "Desk chat",
+    skipTaskbar: false, title: `${PRODUCT_NAME} chat`,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true, nodeIntegration: false, sandbox: true,
@@ -4013,7 +4019,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // packaged installs carry the awdesk id. Changing the AUMID resets toast
     // grouping and per-app notification settings once — the deliberate cost
     // of the rename, not a regression to chase.
-    app.setAppUserModelId(app.isPackaged ? "com.xikhar.awdesk" : "Desk");
+    app.setAppUserModelId(app.isPackaged ? "com.xikhar.awdesk" : INTERNAL_APP_NAME);
     app.dock?.hide();
     if (app.isPackaged) app.setAsDefaultProtocolClient(protocolScheme);
 

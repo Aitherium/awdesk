@@ -158,7 +158,7 @@
     </section>
 
     <section id="deskSection">
-      <h2>Desk behaviour</h2>
+      <h2>Aither behaviour</h2>
       <p class="lede">Which backend the Command window's agent runs on, what it is told, and
         whether the desk looks at images you drop on it. Each was an environment variable or a
         constant in code; the small print under a field says where its current value comes from.</p>
@@ -1013,7 +1013,7 @@ function renderDesk() {
     (v) => save("vision", { imagePrompt: v })));
   const updates = snapshot.updates || {};
   const ru = resolved.updates || {};
-  grid.appendChild(checkField("Updates", "check for a new Desk every few hours and install it",
+  grid.appendChild(checkField("Updates", "check for a new Aither every few hours and install it",
     (ru.enabled !== undefined ? ru.enabled : updates.enabled) !== false,
     (v) => save("updates", { enabled: v })));
 }

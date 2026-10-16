@@ -192,7 +192,7 @@ export function Beads() {
   };
   const deck = bridgeDeck();
   return (
-    <div className="beads" aria-label="Desk beads">
+    <div className="beads" aria-label="Aither beads">
       {rows.map((row) => {
         const Icon = ICONS[row.icon ?? ''] ?? GridIcon;
         return (

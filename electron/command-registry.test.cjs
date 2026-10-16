@@ -438,7 +438,7 @@ test("the family osApp opens as a browser TAB, other apps stay on the desktop sh
   assert.match(main, /commandRegistry\.osAppTabUrl\(command\.osApp\)/);
 });
 
-test("Restart Desk is a tray row wired to app.relaunch", () => {
+test("Restart Aither is a tray row wired to app.relaunch", () => {
   // Owner, 2026-10-05: "there isn't a restart button... I closed it and can't start it again."
   const { byId } = require("./command-registry.cjs");
   const row = byId("desk.restart");

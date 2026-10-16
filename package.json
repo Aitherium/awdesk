@@ -1,7 +1,7 @@
 {
   "name": "awdesk",
   "version": "0.1.18",
-  "description": "Aither Desk: your Aitherium agent, browser and workspace on the desktop.",
+  "description": "Aither: your Aitherium agent, browser and workspace on the desktop.",
   "author": {
     "name": "Aitherium",
     "email": "hello@aitherium.com",
@@ -103,7 +103,7 @@
   },
   "build": {
     "appId": "com.xikhar.awdesk",
-    "productName": "Desk",
+    "productName": "Aither",
     "copyright": "Copyright © Aitherium",
     "asar": true,
     "directories": {
@@ -111,7 +111,7 @@
     },
     "protocols": [
       {
-        "name": "Desk",
+        "name": "Aither",
         "schemes": [
           "desk"
         ]
@@ -138,6 +138,7 @@
       ]
     },
     "win": {
+      "executableName": "Desk",
       "target": [
         "nsis"
       ],
@@ -168,10 +169,11 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Aither Desk",
-      "uninstallDisplayName": "Aither Desk"
+      "shortcutName": "Aither",
+      "uninstallDisplayName": "Aither"
     },
     "mac": {
+      "executableName": "Desk",
       "target": [
         "dmg",
         "zip"
@@ -187,7 +189,7 @@
         "Contents/Resources/native/darwin/desk-audio-listener"
       ],
       "extendInfo": {
-        "NSAudioCaptureUsageDescription": "Desk listens to supported voice-app output levels to animate your character. Audio is processed in memory and is never stored."
+        "NSAudioCaptureUsageDescription": "Aither listens to supported voice-app output levels to animate your character. Audio is processed in memory and is never stored."
       },
       "extraResources": [
         {

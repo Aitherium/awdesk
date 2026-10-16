@@ -80,6 +80,6 @@ test("badge: a red KEY replaces the numeral while a secret waits; tooltip names 
   const px = badgeBitmap(0, 16, { key: true });
   assert.ok(px.some((b) => b !== 0), "the key draws even with zero numeric waiting");
   assert.notDeepEqual(badgeBitmap(1, 16, { key: true }), badgeBitmap(1, 16), "key differs from the numeral");
-  assert.match(badgeTooltip(3, 5, [CRED]), /^Desk — Secret needed: proton_bridge_pw/);
-  assert.equal(badgeTooltip(3, 5), "Desk — 3 decisions waiting · 5 cards in the inbox");
+  assert.match(badgeTooltip(3, 5, [CRED]), /^Aither — Secret needed: proton_bridge_pw/);
+  assert.equal(badgeTooltip(3, 5), "Aither — 3 decisions waiting · 5 cards in the inbox");
 });

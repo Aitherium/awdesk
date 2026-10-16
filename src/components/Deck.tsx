@@ -864,7 +864,7 @@ function ModelsMarketSection({
       </p>
       {characters.length === 0 ? (
         <div className="deck-avatar-empty">
-          <p>No characters yet — Desk ships none.</p>
+          <p>No characters yet — Aither ships none.</p>
           <button className="deck-chip" onClick={() => onAction('add-character')}>
             Get one from VRoid Hub…
           </button>
@@ -1146,7 +1146,7 @@ function CredentialRow({ card }: { card: DeckDecision }) {
     } | null;
     if (typeof deck?.credential !== 'function') {
       setFailed(true);
-      setNote('Storing from the desk needs a newer Desk build — use the terminal: awask answer ' + card.id);
+      setNote('Storing from the desk needs a newer Aither build — use the terminal: awask answer ' + card.id);
       return;
     }
     setBusy(true);
@@ -1256,7 +1256,7 @@ function SteerBox({ card }: { card: DeckDecision }) {
     if (!body) return;
     const deck = bridgeDeck() as unknown as { steer?: (id: string, t: string) => Promise<boolean> } | null;
     if (!deck?.steer) {
-      setNote('Steering needs a newer Desk build.');
+      setNote('Steering needs a newer Aither build.');
       return;
     }
     setText('');

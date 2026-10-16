@@ -58,7 +58,7 @@ function openDetachedAvatar(slotId, modelUrl, title, { onMergeBack } = {}) {
     autoHideMenuBar: true,
     alwaysOnTop: true,
     skipTaskbar: true,
-    title: title || "Desk",
+    title: title || "Aither",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

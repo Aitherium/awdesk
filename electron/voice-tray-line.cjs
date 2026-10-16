@@ -16,7 +16,7 @@ function voiceTrayItems(status, isPackaged) {
   if (!status || status.available !== false) return [];
   return [{
     label: isPackaged
-      ? "Voice: listener unavailable — reinstall Desk"
+      ? "Voice: listener unavailable — reinstall Aither"
       : "Voice: listener missing — run `npm run native:fetch`",
     enabled: false,
   }];

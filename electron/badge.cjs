@@ -110,14 +110,14 @@ function badgeTooltip(count, total = count, needsYou = null) {
   const lead = Array.isArray(needsYou) ? needsYou[0] : null;
   if (lead) {
     const what = lead.secretName ? `Secret needed: ${lead.secretName}` : `Needs you: ${lead.title || lead.id}`;
-    return `Desk — ${what}`.slice(0, 120) + (n > 1 ? ` · ${n} decisions waiting` : "");
+    return `Aither — ${what}`.slice(0, 120) + (n > 1 ? ` · ${n} decisions waiting` : "");
   }
   if (n > 0) {
-    return `Desk — ${n} decision${n === 1 ? "" : "s"} waiting`
+    return `Aither — ${n} decision${n === 1 ? "" : "s"} waiting`
       + (t > n ? ` · ${t} cards in the inbox` : "");
   }
-  if (t > 0) return `Desk — ${t} info card${t === 1 ? "" : "s"} (nothing to answer)`;
-  return "Desk";
+  if (t > 0) return `Aither — ${t} info card${t === 1 ? "" : "s"} (nothing to answer)`;
+  return "Aither";
 }
 
 module.exports = { GLYPHS, badgeBitmap, badgeLabel, badgeTooltip, drawBadge };

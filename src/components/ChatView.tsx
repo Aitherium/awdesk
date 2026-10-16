@@ -324,7 +324,7 @@ export function ChatView() {
     if (!text) return;
     const deck = bridgeDeck();
     if (!deck) {
-      setSendError('Desk bridge unavailable — reopen the chat window.');
+      setSendError('Aither bridge unavailable — reopen the chat window.');
       return;
     }
     setDraft('');

@@ -75,7 +75,7 @@ function installKind({ platform = process.platform, appimage = process.env.APPIM
   exe = "" } = {}) {
   if (platform === "linux") {
     if (appimage) return "appimage";
-    // electron-builder's .deb installs to /opt/<productName>/ (release.yaml's smoke: /opt/Desk/desk)
+    // electron-builder's .deb installs to /opt/<productName>/ (build-awdesk.yml smoke: /opt/Aither/desk since the 2026-10-15 rename)
     return isPackaged && String(exe).startsWith("/opt/") ? "deb" : "";
   }
   if (!isPackaged) return "";
