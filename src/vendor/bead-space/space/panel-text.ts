@@ -79,9 +79,37 @@ export interface LensSummary {
   /** Summed measured RAM of the tier's services, and of every measured service. */
   ramMb: number;
   fleetMb: number;
-  /** Services in the tier, and how many of them had a RAM reading. */
+  /** Things in the tier, and how many of them had a RAM reading. */
   count: number;
   measured: number;
+  /**
+   * 'containers' when the figures are galaxy:fleet `tier_ram` -- every container the
+   * tier's sidecar keeps, the same set `llm-quiesce-distro.py profile` keeps (Postgres,
+   * the tunnel, DNS, the Genesis pair included). 'services' when only the beads' own
+   * readings were available, which leaves out every unit no services.yaml bead carries.
+   */
+  noun: 'containers' | 'services';
+}
+
+interface TierRam {
+  mb: number;
+  measured: number;
+  containers: number;
+}
+
+/** galaxy:fleet meta.tier_ram[tier] + meta.fleet_ram_mb, when universe.py measured them. */
+function applySetRam(data: UniverseData, tier: ProfileTier): (TierRam & { fleetMb: number }) | null {
+  const fleet = data.nodes.find((n) => n.id === 'galaxy:fleet');
+  const all = fleet?.meta?.tier_ram;
+  const row = all && typeof all === 'object' ? (all as Record<string, unknown>)[tier] : null;
+  const fleetMb = num(fleet?.meta?.fleet_ram_mb);
+  if (!row || typeof row !== 'object' || fleetMb === null) return null;
+  const r = row as Record<string, unknown>;
+  const mb = num(r.mb);
+  const measured = num(r.measured);
+  const containers = num(r.containers);
+  if (mb === null || measured === null || containers === null) return null;
+  return { mb, measured, containers, fleetMb };
 }
 
 /** The decision view: which services a tier keeps and what they cost. Pure. */
@@ -106,13 +134,19 @@ export function lensOf(data: UniverseData | null, tier: LensTier): LensSummary |
       measured += 1;
     }
   }
-  return { tier, dimIds, ramMb, fleetMb, count, measured };
+  const apply = applySetRam(data, tier);
+  if (apply) {
+    return { tier, dimIds, ramMb: apply.mb, fleetMb: apply.fleetMb, count: apply.containers,
+      measured: apply.measured, noun: 'containers' };
+  }
+  return { tier, dimIds, ramMb, fleetMb, count, measured, noun: 'services' };
 }
 
-/** "business 16.4 GB of 22.4 GB · 37 services (31 measured)". */
+/** "business 16.4 GB of 22.4 GB · 43 containers (40 measured)". */
 export function lensSentence(s: LensSummary): string {
   const ram = s.fleetMb > 0 ? `${formatMb(s.ramMb)} of ${formatMb(s.fleetMb)}` : 'RAM not measured';
-  return `${s.tier} ${ram} · ${s.count} service${s.count === 1 ? '' : 's'}`
+  const noun = s.count === 1 ? s.noun.slice(0, -1) : s.noun;
+  return `${s.tier} ${ram} · ${s.count} ${noun}`
     + (s.measured < s.count ? ` (${s.measured} measured)` : '');
 }
 

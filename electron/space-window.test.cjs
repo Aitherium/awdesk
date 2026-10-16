@@ -245,7 +245,8 @@ const PROFILE_UNIVERSE = {
   ],
 };
 
-function profileRig({ verdict = { ok: true, pr_url: "https://github.com/x/y/pull/1" } } = {}) {
+// stack_profiles.py --pr --json's real verdict shape: the PR url is `pr`, not `pr_url`.
+function profileRig({ verdict = { ok: true, action: "add", pr: "https://github.com/x/y/pull/1" } } = {}) {
   const argvs = [];
   const runs = [];
   const handlers = spaceHandlers({
@@ -263,8 +264,10 @@ test("profile argv is built in main from the node id and the verb id", async () 
   const r = await verb({ nodeId: "svc:Veil", verbId: "profile-add:business", key: "Genesis", argv: ["rm", "-rf"] });
   assert.equal(r.ok, true, r.error);
   assert.equal(r.pr_url, "https://github.com/x/y/pull/1");
-  // The renderer's key and argv are ignored: the key is node.id's.
-  assert.deepEqual(argvs, [["add", "business", "Veil", "--pr", "--json"]]);
+  // The renderer's key and argv are ignored: the key is node.id's. An add carries the
+  // --why stack_profiles.py refuses to go without (STK011).
+  assert.deepEqual(argvs, [["add", "business", "Veil", "--why", "kept by the owner from BeadSpace: Veil",
+    "--pr", "--json"]]);
 });
 
 test("a hand-added row can be removed; a derived member cannot, its edge can be moved", async () => {
@@ -296,6 +299,20 @@ test("why-kept renders meta and executes nothing", async () => {
   assert.deepEqual(r, { ok: true, text: "Will(core) -> Axiom(compound in CognitionAdvanced)" });
   assert.deepEqual(argvs, []);
   assert.deepEqual(runs, []);
+});
+
+test("an older pr_url verdict still renders; a non-https url never does", async () => {
+  assert.equal((await profileRig({ verdict: { ok: true, pr_url: "https://x/pull/3" } }).verb(
+    { nodeId: "svc:Veil", verbId: "profile-add:business" })).pr_url, "https://x/pull/3");
+  const r = await profileRig({ verdict: { ok: true, pr: "javascript:alert(1)" } }).verb(
+    { nodeId: "svc:Veil", verbId: "profile-add:business" });
+  assert.equal(r.pr_url, undefined);
+});
+
+test("profileArgv strips a title down to plain words in --why", () => {
+  const r = profileArgv({ id: "svc:Veil", title: "Veil`$(x)\";", meta: {} }, "profile-add:business");
+  assert.equal(r.ok, true);
+  assert.equal(r.argv[4], "kept by the owner from BeadSpace: Veil(x)");
 });
 
 test("profileArgv refuses a tier or shape it does not know", () => {

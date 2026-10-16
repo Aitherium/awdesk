@@ -138,7 +138,11 @@ function profileArgv(node, verbId) {
     if (p[1] === "remove" && why && !why.startsWith(ADDED_PREFIX)) {
       return { ok: false, error: `${node.title} is kept by its dependencies (${why.slice(0, 120)}); move the edge instead` };
     }
-    return { ok: true, argv: [p[1], p[2], key, "--pr", "--json"] };
+    // stack_profiles.py refuses an add row without --why (STK011): the row says who kept
+    // it and from where, so the PR and the sidecar both carry a reason.
+    const title = String(node.title || key).replace(/[^\w .:/()-]/g, "").slice(0, 60);
+    const addWhy = ["--why", `kept by the owner from BeadSpace: ${title}`];
+    return { ok: true, argv: [p[1], p[2], key, ...(p[1] === "add" ? addWhy : []), "--pr", "--json"] };
   }
   const e = EDGE_VERB_RE.exec(String(verbId || ""));
   if (e) return { ok: true, argv: ["reclassify-edge", e[1], e[2], "--pr", "--json"] };
@@ -175,6 +179,13 @@ function runStackProfiles(argv, { execFile = require("node:child_process").execF
         resolve(error ? { ok: false, error: tail || errorText(error) } : { ok: false, error: "stack_profiles.py printed no verdict" });
       });
   });
+}
+
+/** The PR a profile verb opened: stack_profiles.py says `pr`, older callers `pr_url`. */
+function prUrlOf(verdict) {
+  if (!verdict || typeof verdict !== "object") return {};
+  const url = [verdict.pr_url, verdict.pr].find((u) => typeof u === "string" && /^https:\/\//.test(u));
+  return url ? { pr_url: url } : {};
 }
 
 /** A verdict worth showing (an inference lane table, a PR) rides back as `result`. */
@@ -278,7 +289,8 @@ function spaceHandlers({ getControl, client, askAgent, openInternal, cards = () 
       .then((verdict) => ({
         ok: Boolean(verdict && verdict.ok),
         ...(verdict && !verdict.ok ? { error: String(verdict.error || "the profile edit failed").slice(0, 300) } : {}),
-        ...(verdict && typeof verdict.pr_url === "string" ? { pr_url: verdict.pr_url } : {}),
+        // stack_profiles.py --pr answers {pr: <url>}; the panel renders pr_url.
+        ...prUrlOf(verdict),
         ...resultOf(verdict),
       }), (error) => ({ ok: false, error: errorText(error) }));
     return raceWithPending(running);
