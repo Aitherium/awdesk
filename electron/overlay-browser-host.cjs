@@ -21,7 +21,9 @@
  */
 
 /** What the overlay card may ask the desk to do. Nothing else crosses. */
-const DESK_COMMANDS = Object.freeze(["browser.open", "browser.takeover", "browser.handback"]);
+// desk.hide / desk.quit (2026-10-16): the overlay's own Hide and Quit buttons. A customer
+// had to kill the desk from Task Scheduler because quit existed only in the tray menu.
+const DESK_COMMANDS = Object.freeze(["browser.open", "browser.takeover", "browser.handback", "desk.hide", "desk.quit"]);
 const PAGE_ACTIONS = Object.freeze(["click", "type", "read", "scroll", "info", "key"]);
 const CONTEXT_TEXT_CHARS = 12_000;
 

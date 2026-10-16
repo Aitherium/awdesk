@@ -429,6 +429,7 @@ const {
   setGhostMode,
   setSolidBackground,
   reloadLivingDesktop,
+  hideLivingDesktop,
   beginSignIn: beginDesktopSignIn,
   signOut: signOutDesktop,
   accountStatus: desktopAccount,
@@ -3210,6 +3211,11 @@ setOverlayHost({
   },
   command: (id) => {
     if (!overlayBrowserHost.allowedCommand(id)) return;
+    if (id === "desk.hide") return void hideLivingDesktop();
+    if (id === "desk.quit") {
+      isQuitting = true;
+      return void app.quit();
+    }
     if (id === "browser.open") browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
     else if (id === "browser.takeover") browserWindow.getGate().takeOver();
     else if (id === "browser.handback") browserWindow.getGate().handBack();
