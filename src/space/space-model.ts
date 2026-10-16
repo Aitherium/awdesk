@@ -15,7 +15,9 @@
  *
  * Nothing here moves the camera. A new ask only glows; flying is a deep link or a click.
  */
-import { allAsks, attachCards } from '../vendor/bead-space/universe';
+import { allAsks, attachCards, indexUniverse } from '../vendor/bead-space/universe';
+import { lensOf } from '../vendor/bead-space/space/panel-text';
+import type { LensSummary, LensTier } from '../vendor/bead-space/space/panel-text';
 import type { DeskCard, UniverseData } from '../vendor/bead-space/types';
 import type { DeckDecision, DeckState } from '../deck/deck-types';
 
@@ -104,6 +106,45 @@ export function buildSpaceModel(result: SpaceGetResult | null, deck: Pick<DeckSt
     urgency: ask.urgency,
   }));
   return { data, nextAsks, badge: badgeOf(result), error: result?.error ? String(result.error) : '' };
+}
+
+export interface DeskLens {
+  summary: LensSummary;
+  /** Planet ids to draw dim: svc outside the tier, and containers holding ONLY such svc. */
+  dim: Set<string>;
+}
+
+/**
+ * The profile lens for the desk's one-level-at-a-time planets. A service outside the
+ * tier is dim; a galaxy/solar planet is dim only when every service under it is (a
+ * container with one kept service stays lit, so the eye finds it). Status is untouched.
+ */
+export function deskLensOf(data: UniverseData | null, tier: LensTier): DeskLens | null {
+  const summary = lensOf(data, tier);
+  if (!data || !summary) return null;
+  const { children } = indexUniverse(data);
+  const dim = new Set(summary.dimIds);
+  const memo = new Map<string, { svc: number; dimmed: number }>();
+  const count = (id: string, seen: Set<string>): { svc: number; dimmed: number } => {
+    const hit = memo.get(id);
+    if (hit) return hit;
+    if (seen.has(id)) return { svc: 0, dimmed: 0 };
+    seen.add(id);
+    const own = id.startsWith('svc:') ? { svc: 1, dimmed: summary.dimIds.has(id) ? 1 : 0 } : { svc: 0, dimmed: 0 };
+    for (const kid of children.get(id) ?? []) {
+      const c = count(kid.id, seen);
+      own.svc += c.svc;
+      own.dimmed += c.dimmed;
+    }
+    memo.set(id, own);
+    return own;
+  };
+  for (const node of data.nodes) {
+    if (node.id.startsWith('svc:')) continue;
+    const c = count(node.id, new Set());
+    if (c.svc > 0 && c.dimmed === c.svc) dim.add(node.id);
+  }
+  return { summary, dim };
 }
 
 /** The node an open card sits on, or null. */

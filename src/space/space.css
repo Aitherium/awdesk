@@ -118,6 +118,11 @@
   opacity: 0.45;
 }
 
+/* The profile lens: outside the chosen tier. Dim only -- its status rim is untouched. */
+.bead-space .bs-node.desk-lensed {
+  opacity: 0.3;
+}
+
 /* Parked = off: grey and faint, not a tinted (muddy) planet. */
 .bead-space .bs-node.status-deferred {
   opacity: 0.42;

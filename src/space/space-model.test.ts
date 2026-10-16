@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DeckDecision } from '../deck/deck-types';
 import type { UniverseData, UniverseNode } from '../vendor/bead-space/types';
-import { buildSpaceModel, deepLinkOf, deepLinkTarget, deskCardOf } from './space-model';
+import { buildSpaceModel, deepLinkOf, deepLinkTarget, deskCardOf, deskLensOf } from './space-model';
 
 const AT = '2026-10-15T00:00:00Z';
 
@@ -118,5 +118,34 @@ describe('deep links', () => {
   it('ignores malformed values', () => {
     expect(deepLinkOf('?at=<script>&card=a b&focus=prev')).toEqual({ at: null, focusNext: false, card: null });
     expect(deepLinkTarget(deepLinkOf('?at=svc:Nope'), model)).toBeNull();
+  });
+});
+
+describe('deskLensOf (the profile lens on the desk planets)', () => {
+  function lensUniverse(): UniverseData {
+    const u = universe();
+    const meta = (id: string, m: Record<string, unknown>) => {
+      const n = u.nodes.find((x) => x.id === id)!;
+      n.meta = m;
+    };
+    meta('svc:Secrets', { profiles: ['business', 'full'], mem_mb: 300 });
+    meta('svc:Pulse', { profiles: ['full'], mem_mb: 700 });
+    return u;
+  }
+
+  it('dims services outside the tier and containers holding only those', () => {
+    const lens = deskLensOf(lensUniverse(), 'business')!;
+    expect([...lens.dim].sort()).toEqual(['galaxy:fleet', 'svc:Pulse']);
+    // platform holds a kept service (Secrets): it stays lit.
+    expect(lens.dim.has('platform')).toBe(false);
+    expect(lens.summary.ramMb).toBe(300);
+    expect(lens.summary.fleetMb).toBe(1000);
+  });
+
+  it('none is no lens, and status is never touched', () => {
+    const u = lensUniverse();
+    expect(deskLensOf(u, 'none')).toBeNull();
+    deskLensOf(u, 'business');
+    expect(u.nodes.every((n) => n.health.state === 'ok')).toBe(true);
   });
 });

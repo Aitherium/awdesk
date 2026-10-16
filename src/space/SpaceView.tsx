@@ -48,7 +48,9 @@ import { MAX_LEVEL_NODES, beadLevel, clickIntent, normaliseUniverse } from './be
 import type { BeadLevelData } from './bead-level';
 import { contextLine, tooltipLines } from './tooltip';
 import './space.css';
-import { buildSpaceModel, deepLinkOf, deepLinkTarget } from './space-model';
+import { buildSpaceModel, deepLinkOf, deepLinkTarget, deskLensOf } from './space-model';
+import { LENS_TIERS, lensSentence } from '../vendor/bead-space/space/panel-text';
+import type { LensTier } from '../vendor/bead-space/space/panel-text';
 import type { SpaceGetResult } from './space-model';
 
 const POLL_MS = 20_000;
@@ -211,11 +213,12 @@ function svgEl(tag: string, attrs: Record<string, string | number>): SVGElement 
  * every create / update() -- update() rewrites each group's class, which carries
  * desk-asking / desk-unreported.
  */
-function decorate(host: HTMLElement, level: BeadLevelData) {
+function decorate(host: HTMLElement, level: BeadLevelData, dim: ReadonlySet<string> | null = null) {
   const byId = new Map(level.nodes.map((n) => [n.id, n]));
   for (const g of host.querySelectorAll<SVGGElement>('g.bs-node')) {
     const n = byId.get((g as DataEl).__data__?.id ?? '');
     let deco = g.querySelector<SVGGElement>(':scope > g.desk-deco');
+    g.classList.toggle('desk-lensed', Boolean(n && dim?.has(n.id)));
     if (!n) {
       deco?.remove();
       continue;
@@ -357,6 +360,11 @@ export default function SpaceView() {
   const model = useMemo(() => buildSpaceModel(result, deck), [result, deck]);
   // "Infra" and "Infrastructure" become one planet before anything is drawn or selected.
   const data = useMemo(() => (model.data ? normaliseUniverse(model.data) : null), [model.data]);
+  // The profile lens: dims what a tier would NOT keep and sums what it would cost.
+  const [lens, setLens] = useState<LensTier>('none');
+  const deskLens = useMemo(() => deskLensOf(data, lens), [data, lens]);
+  const lensDimRef = useRef<ReadonlySet<string> | null>(null);
+  lensDimRef.current = deskLens ? deskLens.dim : null;
 
   // ---- selection: the package's universe reducer over the CURRENT data ---------------
   const dataRef = useRef<UniverseData | null>(data);
@@ -431,7 +439,7 @@ export default function SpaceView() {
       };
       optionsRef.current = options;
       handleRef.current = engine.createBeadSpace(el, { nodes: first.nodes, links: first.links }, options);
-      decorate(el, first);
+      decorate(el, first, lensDimRef.current);
       window.setTimeout(() => placeBadges(el), 2600);
       shownFocus.current = first.focusId;
       setEngineReady(true);
@@ -448,6 +456,11 @@ export default function SpaceView() {
     handleRef.current = null;
   }, []);
 
+  // A lens change re-dims the drawn planets in place; nothing moves, no status changes.
+  useEffect(() => {
+    if (handleRef.current && hostRef.current && level) decorate(hostRef.current, level, deskLens ? deskLens.dim : null);
+  }, [deskLens, level]);
+
   // A new level (a drill, or a refresh of this one) goes in through update().
   useEffect(() => {
     const handle = handleRef.current;
@@ -458,7 +471,7 @@ export default function SpaceView() {
     }
     paletteRef.current.splice(0, paletteRef.current.length, ...level.palette);
     handle.update({ nodes: level.nodes, links: level.links });
-    if (hostRef.current) decorate(hostRef.current, level);
+    if (hostRef.current) decorate(hostRef.current, level, lensDimRef.current);
     if (shownFocus.current === level.focusId) return undefined;
     shownFocus.current = level.focusId;
     handle.fit();
@@ -685,6 +698,22 @@ export default function SpaceView() {
       </nav>
       <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
         <AsksBar data={data} level={level} index={askCursor} onNext={onNext} onFly={flyToAsk} />
+        <div data-space-lens={lens} style={{ position: 'absolute', left: 16, top: 64, pointerEvents: 'auto' }}>
+          <div role="group" aria-label="Profile lens" style={{ display: 'inline-flex', gap: 4 }}>
+            {[...LENS_TIERS, 'none' as const].map((t) => (
+              <button key={t} type="button" aria-pressed={lens === t} onClick={() => setLens(t)}
+                style={{ ...chip, padding: '4px 10px', fontSize: 11, color: lens === t ? '#FFFFFF' : PALETTE.quiet,
+                  borderColor: lens === t ? PALETTE.aitherium : undefined }}>
+                {t}
+              </button>
+            ))}
+          </div>
+          {deskLens ? (
+            <div data-space-lens-sum style={{ marginTop: 4, fontFamily: FONTS.metric, fontSize: 11, color: '#C9D3DD' }}>
+              {lensSentence(deskLens.summary)}
+            </div>
+          ) : null}
+        </div>
         {selected ? (
           <div style={{ position: 'absolute', top: 56, right: 16, maxHeight: 'calc(100% - 140px)', overflowY: 'auto', pointerEvents: 'auto' }}>
             <SelectionPanel

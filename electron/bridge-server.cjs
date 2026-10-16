@@ -279,6 +279,10 @@ function createBridgeServer({
   wakesProvider = null,
   fleetHandler = null,
   commandHandler = null,
+  // POST /space/verb {nodeId, verbId, confirmed}: the space pane's desk:space-verb, for
+  // Genesis POST /beadspace/verbs (aitherium.com). Bearer required; main re-derives the
+  // node from ITS snapshot, so the body names a node and a verb and nothing else.
+  spaceVerbHandler = null,
   // The two desktop surfaces: POST /desktop/overlay | /desktop/app raise a
   // window (no bearer — same class as /fleet/open); GET /desktop/status reads.
   desktopHandler = null,
@@ -772,6 +776,42 @@ function createBridgeServer({
           const status = result.ok === false ? (result.refused === "policy" ? 409 : 502) : 200;
           response.writeHead(status, { "content-type": "application/json" });
           response.end(JSON.stringify(result));
+        })
+        .catch((error) => {
+          if (response.headersSent) return;
+          response.writeHead(500, { "content-type": "application/json" });
+          response.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+        });
+      return;
+    }
+
+    if (request.url === "/space/verb") {
+      if (!originAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      const handler = typeof spaceVerbHandler === "function" ? spaceVerbHandler() : null;
+      if (handler == null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      if (request.method !== "POST") {
+        response.writeHead(405, { allow: "POST" });
+        response.end();
+        return;
+      }
+      if (denyUnlessBearer(request, response, token)) return;
+      void readJsonBody(request)
+        .then((body) => handler({}, {
+          nodeId: typeof body?.nodeId === "string" ? body.nodeId : "",
+          verbId: typeof body?.verbId === "string" ? body.verbId : "",
+          confirmed: body?.confirmed === true,
+        }))
+        .then((result) => {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify(result ?? { ok: false, error: "no verdict" }));
         })
         .catch((error) => {
           if (response.headersSent) return;

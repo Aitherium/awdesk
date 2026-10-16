@@ -12,7 +12,12 @@
  * re-checks a fleet verb against fleet-control.cjs ACTION_NAMES and DESTRUCTIVE (a
  * destructive verb needs confirmed === true), and runs it through the same
  * FleetControl the tray, the Fleet pane and MCP use. An `open` verb opens a plane
- * pane and nothing else. The explore prompt is BUILT here from the node, so the
+ * pane and nothing else. An `info` verb (why-kept) answers the node's own meta and runs
+ * nothing. A `profile` verb (profile-add|remove:<tier>, reclassify-edge:<a>:<b>) runs
+ * AitherOS/dev/tools/stack_profiles.py with argv built HERE (profileArgv): the key from
+ * node.id, the tier from the verb id; core is refused, and so is removing a derived
+ * member. The bridge's POST /space/verb (aitherium.com relayed by Genesis) lands on this
+ * same handler. The explore prompt is BUILT here from the node, so the
  * page cannot smuggle a fleet verb into it -- and it runs on lane "agent", where
  * the CommandAgent never classifies text as a fleet verb anyway.
  *
@@ -110,6 +115,75 @@ function virtualNodeOf(nodeId, cards, universe) {
   };
 }
 
+const PROFILE_VERB_RE = /^profile-(add|remove):(business|platform|critical)$/;
+const EDGE_VERB_RE = /^reclassify-edge:([A-Za-z][A-Za-z0-9._-]{0,60}):([A-Za-z][A-Za-z0-9._-]{0,60})$/;
+const SVC_KEY_RE = /^svc:([A-Za-z][A-Za-z0-9._-]{0,80})$/;
+/** universe.py ADDED_PREFIX: only a hand add: row may be removed from a tier. */
+const ADDED_PREFIX = "added: ";
+
+/**
+ * argv for AitherOS/dev/tools/stack_profiles.py, from MAIN's copy of the node. Pure.
+ * The key is the node id's, the tier the verb id's; a core node (criticality core) gets
+ * nothing, and a remove of anything not hand-added (a derived closure member) is refused.
+ */
+function profileArgv(node, verbId) {
+  const keyMatch = SVC_KEY_RE.exec(String((node && node.id) || ""));
+  if (!keyMatch) return { ok: false, error: "only a service can change profile" };
+  const meta = node.meta && typeof node.meta === "object" ? node.meta : {};
+  if (meta.criticality === "core") return { ok: false, error: `${node.title} is core: never stopped, never edited` };
+  const key = keyMatch[1];
+  const p = PROFILE_VERB_RE.exec(String(verbId || ""));
+  if (p) {
+    const why = typeof meta.kept_because === "string" ? meta.kept_because : "";
+    if (p[1] === "remove" && why && !why.startsWith(ADDED_PREFIX)) {
+      return { ok: false, error: `${node.title} is kept by its dependencies (${why.slice(0, 120)}); move the edge instead` };
+    }
+    return { ok: true, argv: [p[1], p[2], key, "--pr", "--json"] };
+  }
+  const e = EDGE_VERB_RE.exec(String(verbId || ""));
+  if (e) return { ok: true, argv: ["reclassify-edge", e[1], e[2], "--pr", "--json"] };
+  return { ok: false, error: `${String(verbId || "").slice(0, 60)} is not a profile verb` };
+}
+
+const DEFAULT_STACK_PROFILES_SCRIPT = "C:\\AitherOS-Fresh\\AitherOS\\dev\\tools\\stack_profiles.py";
+/** Worktree + regenerate + check_stack_map + PR: minutes, not seconds. */
+const PROFILE_TIMEOUT_MS = 900_000;
+
+/**
+ * Run stack_profiles.py with an argv profileArgv built. Its --json verdict is the LAST
+ * JSON object on stdout; a non-zero exit with none is a failure carrying stderr's tail.
+ */
+function runStackProfiles(argv, { execFile = require("node:child_process").execFile, env = process.env } = {}) {
+  const script = env.AWDESK_STACK_PROFILES_SCRIPT || DEFAULT_STACK_PROFILES_SCRIPT;
+  const file = env.AWDESK_PYTHON || "python";
+  return new Promise((resolve) => {
+    execFile(file, [script, ...argv], { windowsHide: true, timeout: PROFILE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        const lines = String(stdout || "").trim().split(/\r?\n/).reverse();
+        for (const line of lines) {
+          const t = line.trim();
+          if (!t.startsWith("{")) continue;
+          try {
+            const doc = JSON.parse(t);
+            if (doc && typeof doc === "object") {
+              resolve(error && doc.ok !== false ? { ...doc, ok: false, error: doc.error || errorText(error) } : doc);
+              return;
+            }
+          } catch { /* not the verdict line */ }
+        }
+        const tail = String(stderr || "").trim().split(/\r?\n/).slice(-3).join(" ").slice(0, 300);
+        resolve(error ? { ok: false, error: tail || errorText(error) } : { ok: false, error: "stack_profiles.py printed no verdict" });
+      });
+  });
+}
+
+/** A verdict worth showing (an inference lane table, a PR) rides back as `result`. */
+function resultOf(verdict) {
+  if (!verdict || typeof verdict !== "object") return {};
+  const extra = Object.keys(verdict).filter((k) => !["ok", "error", "message", "busy"].includes(k));
+  return extra.length ? { result: verdict } : {};
+}
+
 /** The generic explore prompt, the same words as bead-space universe/verbs exploreFor. */
 function genericExplore(node) {
   return {
@@ -138,7 +212,8 @@ function explorePrompt(node, exploreIndex, question) {
  *          askAgent: (prompt: string) => Promise<{ok?: boolean, reply?: string}>,
  *          openInternal: (paneId: string) => unknown, cards?: () => object[], pendingMs?: number}} deps
  */
-function spaceHandlers({ getControl, client, askAgent, openInternal, cards = () => [], pendingMs = VERB_PENDING_MS }) {
+function spaceHandlers({ getControl, client, askAgent, openInternal, cards = () => [], pendingMs = VERB_PENDING_MS,
+  runProfile = null }) {
   async function nodeOf(nodeId) {
     if (typeof nodeId !== "string" || !nodeId) return null;
     let universe = client.current();
@@ -175,7 +250,12 @@ function spaceHandlers({ getControl, client, askAgent, openInternal, cards = () 
       .then((verdict) => ({
         ok: Boolean(verdict && verdict.ok),
         ...(verdict && !verdict.ok ? { error: String(verdict.error || verdict.message || "the fleet refused").slice(0, 300) } : {}),
+        ...resultOf(verdict),
       }), (error) => ({ ok: false, error: errorText(error) }));
+    return raceWithPending(running);
+  }
+
+  async function raceWithPending(running) {
     let timer = null;
     const pending = new Promise((resolve) => {
       timer = setTimeout(() => resolve({ ok: true, pending: true }), pendingMs);
@@ -186,6 +266,22 @@ function spaceHandlers({ getControl, client, askAgent, openInternal, cards = () 
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** profile / reclassify-edge: argv built HERE from main's node, never from the page. */
+  async function runProfileVerb(node, verb) {
+    const argv = profileArgv(node, verb.id);
+    if (!argv.ok) return { ok: false, error: argv.error };
+    if (typeof runProfile !== "function") return { ok: false, error: "profile edits are not available in this desk" };
+    const running = Promise.resolve()
+      .then(() => runProfile(argv.argv))
+      .then((verdict) => ({
+        ok: Boolean(verdict && verdict.ok),
+        ...(verdict && !verdict.ok ? { error: String(verdict.error || "the profile edit failed").slice(0, 300) } : {}),
+        ...(verdict && typeof verdict.pr_url === "string" ? { pr_url: verdict.pr_url } : {}),
+        ...resultOf(verdict),
+      }), (error) => ({ ok: false, error: errorText(error) }));
+    return raceWithPending(running);
   }
 
   return {
@@ -210,6 +306,12 @@ function spaceHandlers({ getControl, client, askAgent, openInternal, cards = () 
         }
         return runFleet(verb.id);
       }
+      if (verb.transport === "info") {
+        // why-kept: the node's own meta, rendered. Nothing runs.
+        const meta = node.meta && typeof node.meta === "object" ? node.meta : {};
+        return { ok: true, text: String(meta.kept_because || "") };
+      }
+      if (verb.transport === "profile") return runProfileVerb(node, verb);
       if (verb.transport === "open") {
         const m = /^open-plane:([a-z]+)$/.exec(verb.id);
         if (!m || !PLANE_IDS.includes(m[1])) return { ok: false, error: `${verb.id} opens nothing the desk knows` };
@@ -240,19 +342,27 @@ function spaceHandlers({ getControl, client, askAgent, openInternal, cards = () 
   };
 }
 
-let wired = false;
+let wired = null;
 
 /**
  * Register the space IPC once. main.cjs calls this in wireConsoleHost next to
- * ensurePlaneIpc; the smoke calls it with a stub client.
+ * ensurePlaneIpc; the smoke calls it with a stub client. Returns the handler table, so
+ * the bridge's POST /space/verb (aitherium.com's relay) runs the SAME desk:space-verb.
  */
 function ensureSpaceIpc(deps) {
-  if (wired) return;
-  wired = true;
+  if (wired) return wired;
+  wired = spaceHandlers(deps);
   const { ipcMain } = require("electron");
-  for (const [channel, handler] of Object.entries(spaceHandlers(deps))) ipcMain.handle(channel, handler);
+  for (const [channel, handler] of Object.entries(wired)) ipcMain.handle(channel, handler);
+  return wired;
+}
+
+/** The registered desk:space-verb, or null before the console host wired it. */
+function spaceVerbHandler() {
+  return wired ? wired["desk:space-verb"] : null;
 }
 
 module.exports = {
-  ensureSpaceIpc, spaceHandlers, explorePrompt, virtualNodeOf, cardSubjects, QUESTION_MAX, VERB_PENDING_MS,
+  ensureSpaceIpc, spaceVerbHandler, spaceHandlers, explorePrompt, virtualNodeOf, cardSubjects, profileArgv,
+  runStackProfiles, QUESTION_MAX, VERB_PENDING_MS,
 };

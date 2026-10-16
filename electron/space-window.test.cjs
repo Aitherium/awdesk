@@ -3,7 +3,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { spaceHandlers, explorePrompt, virtualNodeOf, QUESTION_MAX } = require("./space-window.cjs");
+const {
+  spaceHandlers, explorePrompt, virtualNodeOf, profileArgv, runStackProfiles, QUESTION_MAX,
+} = require("./space-window.cjs");
 
 function node(id, verbs = [], extra = {}) {
   return { id, title: id.split(":").pop(), level: "system", parent: "platform", health: { state: "down", reason: "stopped" },
@@ -217,4 +219,134 @@ test("virtualNodeOf follows attach.ts: explicit subject, session and wake-job mo
   assert.equal(virtualNodeOf("session:abc-123", cards, UNIVERSE).title, "abc-123");
   assert.equal(virtualNodeOf("routine:backup", cards, UNIVERSE).parent, "galaxy:fleet");
   assert.equal(virtualNodeOf("svc:Secrets", cards, UNIVERSE), null, "svc is never virtual");
+});
+
+// ---- the profile overlay: info and profile transports ------------------------------
+
+const PV = (id, label) => ({ id, label, danger: "none", transport: "profile" });
+const PROFILE_UNIVERSE = {
+  universe_version: 1,
+  links: [],
+  nodes: [
+    node("svc:Veil", [PV("profile-add:business", "Add to business")],
+      { meta: { criticality: "important", unit: "aither-veil", profiles: ["platform"] } }),
+    node("svc:Gargbot", [PV("profile-remove:business", "Remove from business")],
+      { meta: { unit: "aither-aitheros-gargbot", kept_because: "added: paying customer" } }),
+    node("svc:CognitionAdvanced", [
+      { id: "why-kept", label: "Why kept", danger: "none", transport: "info" },
+      // A renderer- or snapshot-forged remove on a derived member: main must refuse it.
+      PV("profile-remove:business", "Remove from business"),
+      PV("reclassify-edge:Will:Axiom", "Make Will -> Axiom soft"),
+    ], { meta: { unit: "aither-cognition-advanced", kept_because: "Will(core) -> Axiom(compound in CognitionAdvanced)" } }),
+    // Core with a forged add verb: refused all the same.
+    node("svc:Chronicle", [PV("profile-add:business", "Add"), PV("profile-remove:critical", "Remove")],
+      { meta: { criticality: "core", kept_because: "core: never stopped" } }),
+    node("galaxy:dgx", [{ id: "inference-status", label: "Inference status", danger: "none", transport: "fleet", primary: true }]),
+  ],
+};
+
+function profileRig({ verdict = { ok: true, pr_url: "https://github.com/x/y/pull/1" } } = {}) {
+  const argvs = [];
+  const runs = [];
+  const handlers = spaceHandlers({
+    getControl: () => ({ run: async (id) => { runs.push(id); return { ok: true, mode: "dgx", lanes: [{ lane: "orchestrator", verdict: "PASS" }] }; } }),
+    client: { current: () => PROFILE_UNIVERSE, get: async () => ({ universe: PROFILE_UNIVERSE }) },
+    askAgent: async () => ({}),
+    openInternal: () => true,
+    runProfile: async (argv) => { argvs.push(argv); return verdict; },
+  });
+  return { verb: (p) => handlers["desk:space-verb"]({}, p), argvs, runs };
+}
+
+test("profile argv is built in main from the node id and the verb id", async () => {
+  const { verb, argvs } = profileRig();
+  const r = await verb({ nodeId: "svc:Veil", verbId: "profile-add:business", key: "Genesis", argv: ["rm", "-rf"] });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.pr_url, "https://github.com/x/y/pull/1");
+  // The renderer's key and argv are ignored: the key is node.id's.
+  assert.deepEqual(argvs, [["add", "business", "Veil", "--pr", "--json"]]);
+});
+
+test("a hand-added row can be removed; a derived member cannot, its edge can be moved", async () => {
+  const { verb, argvs } = profileRig();
+  assert.equal((await verb({ nodeId: "svc:Gargbot", verbId: "profile-remove:business" })).ok, true);
+  const refused = await verb({ nodeId: "svc:CognitionAdvanced", verbId: "profile-remove:business" });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /kept by its dependencies/);
+  assert.equal((await verb({ nodeId: "svc:CognitionAdvanced", verbId: "reclassify-edge:Will:Axiom" })).ok, true);
+  assert.deepEqual(argvs, [
+    ["remove", "business", "Gargbot", "--pr", "--json"],
+    ["reclassify-edge", "Will", "Axiom", "--pr", "--json"],
+  ]);
+});
+
+test("core is refused every profile verb, even one the snapshot carries", async () => {
+  const { verb, argvs } = profileRig();
+  for (const verbId of ["profile-add:business", "profile-remove:critical"]) {
+    const r = await verb({ nodeId: "svc:Chronicle", verbId, confirmed: true });
+    assert.equal(r.ok, false, verbId);
+    assert.match(r.error, /core/);
+  }
+  assert.deepEqual(argvs, []);
+});
+
+test("why-kept renders meta and executes nothing", async () => {
+  const { verb, argvs, runs } = profileRig();
+  const r = await verb({ nodeId: "svc:CognitionAdvanced", verbId: "why-kept" });
+  assert.deepEqual(r, { ok: true, text: "Will(core) -> Axiom(compound in CognitionAdvanced)" });
+  assert.deepEqual(argvs, []);
+  assert.deepEqual(runs, []);
+});
+
+test("profileArgv refuses a tier or shape it does not know", () => {
+  const n = { id: "svc:Veil", title: "Veil", meta: {} };
+  assert.equal(profileArgv(n, "profile-add:full").ok, false);
+  assert.equal(profileArgv(n, "profile-add:business;rm").ok, false);
+  assert.equal(profileArgv({ id: "galaxy:fleet", title: "f", meta: {} }, "profile-add:business").ok, false);
+});
+
+test("a failed profile edit says so, never green", async () => {
+  const { verb } = profileRig({ verdict: { ok: false, error: "check_stack_map failed" } });
+  const r = await verb({ nodeId: "svc:Veil", verbId: "profile-add:business" });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /check_stack_map failed/);
+});
+
+test("runStackProfiles reads the last JSON verdict and fails loudly without one", async () => {
+  const calls = [];
+  const fake = (out, err, code) => (file, args, opts, cb) => {
+    calls.push({ file, args, opts });
+    cb(code ? Object.assign(new Error("exit"), { code }) : null, out, err);
+  };
+  const env = { AWDESK_STACK_PROFILES_SCRIPT: "S.py", AWDESK_PYTHON: "py" };
+  const ok = await runStackProfiles(["add", "business", "Veil", "--pr", "--json"],
+    { execFile: fake('working...\n{"ok": true, "pr_url": "https://x/pull/2"}\n', "", 0), env });
+  assert.deepEqual(ok, { ok: true, pr_url: "https://x/pull/2" });
+  assert.deepEqual(calls[0].args, ["S.py", "add", "business", "Veil", "--pr", "--json"]);
+  assert.equal(calls[0].file, "py");
+  assert.equal(calls[0].opts.windowsHide, true);
+  const missing = await runStackProfiles(["add"], { execFile: fake("", "can't open file 'S.py'", 2), env });
+  assert.equal(missing.ok, false);
+  assert.match(missing.error, /can't open file/);
+  const lied = await runStackProfiles(["add"], { execFile: fake('{"ok": true}', "", 1), env });
+  assert.equal(lied.ok, false, "a non-zero exit is never green");
+});
+
+test("a fleet verdict worth showing rides back as result (the inference lane table)", async () => {
+  const handlers = spaceHandlers({
+    getControl: () => ({ run: async () => ({ ok: true, mode: "dgx", lanes: [{ lane: "orchestrator", verdict: "PASS" }] }) }),
+    client: { current: () => PROFILE_UNIVERSE, get: async () => ({ universe: PROFILE_UNIVERSE }) },
+    askAgent: async () => ({}),
+    openInternal: () => true,
+  });
+  // inference-status is not in ACTION_NAMES until brief B lands: refused, fail closed.
+  const r = await handlers["desk:space-verb"]({}, { nodeId: "galaxy:dgx", verbId: "inference-status" });
+  const { ACTION_NAMES } = require("./fleet-control.cjs");
+  if (ACTION_NAMES.includes("inference-status")) {
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.result.lanes, [{ lane: "orchestrator", verdict: "PASS" }]);
+  } else {
+    assert.equal(r.ok, false);
+    assert.match(r.error, /not a fleet action/);
+  }
 });

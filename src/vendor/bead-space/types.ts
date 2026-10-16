@@ -217,8 +217,11 @@ export interface BeadVerb {
   label: string;
   /** `confirm` = destructive: it arms on the first click and runs on a second within 6 s. */
   danger: 'none' | 'confirm';
-  /** `fleet` runs through the host's action table; `open` opens a surface. */
-  transport: 'fleet' | 'open';
+  /**
+   * `fleet` runs through the host's action table; `open` opens a surface; `info` renders
+   * the node's own meta and runs nothing; `profile` edits a profile tier through a PR.
+   */
+  transport: 'fleet' | 'open' | 'info' | 'profile';
   primary?: boolean;
 }
 

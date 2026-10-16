@@ -3,7 +3,7 @@
   "bundle_sha256": "d843f0cf3c009c81fdb4f1a7c0dabfa515d558b75ac88af9ef30ea623e98545e",
   "inputs": {
     "package-lock.json": "ee94b90f9c78780ce6272d305cb296516dfceb7fb718b1c9e940f12765588500",
-    "package.json": "c807f16c8b7b0c16962c13f64fbb09c058dd5fe10cb96aa0c6a09cf1f553ef98",
+    "package.json": "bff563c448f9cc3951559bf2bfa16651edecdcedc8179ed6801f62bdac544753",
     "src/adapters/agents.ts": "731076369b7cafa3e1f3b332865a15e6342754ea227dedbfb936ec3fcdd772d5",
     "src/adapters/compute.ts": "9884c6932eb1a531cba6a6083231acb44670544b3d8fc4502f62d3484ad1a0c6",
     "src/adapters/devices.ts": "a3ae17d374943bb2616973194324e99c3b1ab68511916ca537f176e7a37b3243",
@@ -21,7 +21,7 @@
     "src/core/bead-space.ts": "ba831641304ddfddb98e5686df154b71a1b66600373ef98000ca4925fcaada11",
     "src/core/geometry.ts": "e60807d6b2dabd785b227472e710b7fcb919632f01ebd525dc0ba374034c379e",
     "src/core/hash.ts": "0e5c2d6273ff1cb48520e31b5e60a9b565c8fc65c974d792e8ac8ba53a25362f",
-    "src/types.ts": "4378ed28fe97959f3629bec45c313daeb787535155231cede978459e8f3b2754"
+    "src/types.ts": "f7256940a964aef8c40d3cd81c3846a95d60d02666a55fee5a7f7d087583ea78"
   },
   "package": "@aitherium/bead-space@0.2.0"
 }

@@ -797,3 +797,41 @@ test("/speak: a POLICY refusal (voice.muted) answers 409 with the reason; a dead
   const down = await postJson(address, "/speak", PINNED_EXT, { text: "a card is waiting" });
   assert.equal(down.status, 502);
 });
+
+test("space verb route: bearer required, body reduced to node/verb/confirmed, answer verbatim", async (context) => {
+  const seen = [];
+  const bridge = createBridgeServer({
+    port: 0,
+    onEvent: () => {},
+    bridgeToken: "test-token",
+    spaceVerbHandler: () => async (_event, payload) => {
+      seen.push(payload);
+      return { ok: true, result: { mode: "dgx", lanes: [] } };
+    },
+  });
+  const address = await bridge.listen();
+  context.after(() => bridge.close());
+  const body = JSON.stringify({ nodeId: "galaxy:dgx", verbId: "inference-status", confirmed: "true", argv: ["rm"] });
+  const denied = await requestServer(address, { path: "/space/verb", method: "POST", body,
+    headers: { "content-type": "application/json" } });
+  assert.equal(denied.status, 401);
+  assert.deepEqual(seen, []);
+  const get = await requestServer(address, { path: "/space/verb", headers: { authorization: "Bearer test-token" } });
+  assert.equal(get.status, 405);
+  const ok = await requestServer(address, { path: "/space/verb", method: "POST", body,
+    headers: { "content-type": "application/json", authorization: "Bearer test-token" } });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(JSON.parse(ok.body), { ok: true, result: { mode: "dgx", lanes: [] } });
+  // "true" is not true, and nothing beyond the three fields reaches the handler.
+  assert.deepEqual(seen, [{ nodeId: "galaxy:dgx", verbId: "inference-status", confirmed: false }]);
+});
+
+test("space verb route: 404 until the console host wired the space handlers", async (context) => {
+  const bridge = createBridgeServer({ port: 0, onEvent: () => {}, bridgeToken: "test-token",
+    spaceVerbHandler: () => null });
+  const address = await bridge.listen();
+  context.after(() => bridge.close());
+  const res = await requestServer(address, { path: "/space/verb", method: "POST", body: "{}",
+    headers: { authorization: "Bearer test-token" } });
+  assert.equal(res.status, 404);
+});

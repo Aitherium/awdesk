@@ -211,7 +211,7 @@ const {
   sendToPaneFrames: sendToConsolePaneFrames,
 } = require("./console-window.cjs");
 // The aither://space/ pane (BeadSpace universe): its IPC and the universe client.
-const { ensureSpaceIpc } = require("./space-window.cjs");
+const { ensureSpaceIpc, runStackProfiles, spaceVerbHandler } = require("./space-window.cjs");
 const { createSpaceClient } = require("./space-client.cjs");
 const { badgeBitmap, badgeTooltip, drawBadge } = require("./badge.cjs");
 const needsYouLib = require("./needs-you.cjs");
@@ -3632,6 +3632,9 @@ function wireConsoleHost(legacy) {
     openInternal: (pane) => openConsole(pane),
     // Main's own open cards: a virtual moon (a card's subject with no node) is rebuilt from these.
     cards: () => openDecisions,
+    // profile-add|remove / reclassify-edge: stack_profiles.py opens the PR; argv is built
+    // in space-window.cjs from main's node, never from the page.
+    runProfile: (argv) => runStackProfiles(argv),
   });
   ensureStageIpc(stagePaneImpl());
   // The Cast pane (U03/U07): who appears, and how they sound. Guarded --
@@ -5110,6 +5113,9 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       // does. Mutations are NOT offered here — they go to the daemon window.
       wakesProvider: () => wakesFeed,
       fleetHandler: (verb, { fresh = false } = {}) => fleetAction(verb === "open" ? "open_panel" : verb, { fresh }),
+      // Genesis POST /beadspace/verbs (aitherium.com) relays here: the SAME desk:space-verb
+      // the space pane runs, re-checked against main's own universe snapshot.
+      spaceVerbHandler,
       // awsh /desktop, adk desk desktop, awconnect's popup and `desk://` all land here.
       // U28: this is the POST /speak door -- origin STAMPED here, never read
       // off the request body (see speakAloud's own doc).

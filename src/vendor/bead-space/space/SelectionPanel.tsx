@@ -1,7 +1,8 @@
 // GENERATED from @aitherium/bead-space 0.2.0 by vendor_bead_space.py -- edit the package and re-run.
 /**
  * What you see when you click a thing: who it is, the one question it has for you, what
- * you can do to it, and "Explore with Aither". At most five blocks, never a list.
+ * you can do to it, what it is doing (role, load, the profile tiers that keep it and
+ * why), and "Explore with Aither". At most five blocks, never a list.
  *
  * The package executes nothing: every action is a host callback that returns a promise.
  * A credential is read from an UNCONTROLLED input (a ref, never React state), handed to
@@ -13,7 +14,10 @@ import type { CSSProperties, ReactNode } from 'react';
 import type { BeadAsk, BeadVerb, UniverseNode } from '../types';
 import { topAskOf, verbsFor } from '../universe/verbs';
 import { FONTS, PALETTE } from './palette';
-import { CONFIRM_WINDOW_MS, stateSentence } from './panel-text';
+import {
+  CONFIRM_WINDOW_MS, LENS_TIERS, doingLine, hasDoing, isCore, isProfileVerb, keptBecause, laneRowsOf,
+  profilesOf, stateSentence,
+} from './panel-text';
 
 export interface ActionResult {
   ok: boolean;
@@ -23,6 +27,12 @@ export interface ActionResult {
 export interface VerbResult extends ActionResult {
   /** The host accepted it and is still working. */
   pending?: boolean;
+  /** An `info` verb's text (why-kept). */
+  text?: string;
+  /** A profile edit's pull request. */
+  pr_url?: string;
+  /** The host's verdict when it carries more than ok (e.g. an inference lane table). */
+  result?: unknown;
 }
 
 export interface ExploreResult extends ActionResult {
@@ -56,7 +66,7 @@ export interface SelectionPanelProps extends SpaceActions {
 type Status =
   | { kind: 'idle' }
   | { kind: 'pending'; note?: string }
-  | { kind: 'ok'; note: string }
+  | { kind: 'ok'; note: string; reply?: VerbResult }
   | { kind: 'error'; note: string };
 
 function errorText(err: unknown): string {
@@ -119,9 +129,47 @@ function StatusLine({ status }: { status: Status }) {
     return <div style={S.note(PALETTE.quiet)}>{status.note ?? 'working…'}</div>;
   }
   if (status.kind === 'ok') {
-    return <div style={S.note(PALETTE.healthy)}>✓ {status.note}</div>;
+    return (
+      <>
+        <div style={S.note(PALETTE.healthy)}>✓ {status.note}</div>
+        {status.reply ? <ReplyDetail reply={status.reply} /> : null}
+      </>
+    );
   }
   return <div role="alert" style={S.note(PALETTE.danger)}>{status.note}</div>;
+}
+
+/** What a verb answered beyond ok: why-kept text, a PR link, an inference lane table. */
+function ReplyDetail({ reply }: { reply: VerbResult }) {
+  const lanes = laneRowsOf(reply.result);
+  const pr = typeof reply.pr_url === 'string' && /^https:\/\//.test(reply.pr_url) ? reply.pr_url : '';
+  if (!reply.text && !pr && !lanes.length) return null;
+  return (
+    <div style={{ marginTop: 6, fontSize: 12, color: PALETTE.ink }} data-reply>
+      {reply.text ? <div style={{ whiteSpace: 'pre-wrap' }} data-reply-text>{reply.text}</div> : null}
+      {pr ? (
+        <a href={pr} target="_blank" rel="noopener noreferrer" style={{ color: PALETTE.aitherium }} data-reply-pr>
+          {pr}
+        </a>
+      ) : null}
+      {lanes.length ? (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: FONTS.metric, fontSize: 11 }} data-lanes>
+          <tbody>
+            {lanes.map((l) => (
+              <tr key={l.lane}>
+                <td style={{ padding: '2px 4px' }}>{l.lane}</td>
+                <td style={{ padding: '2px 4px', color: l.verdict === 'PASS' ? PALETTE.healthy : PALETTE.danger }}>{l.verdict}</td>
+                <td style={{ padding: '2px 4px', color: PALETTE.quiet }}>{l.servedBy}</td>
+                <td style={{ padding: '2px 4px', color: PALETTE.quiet, textAlign: 'right' }}>
+                  {l.latencyMs === null ? '' : `${Math.round(l.latencyMs)} ms`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+    </div>
+  );
 }
 
 function AskBlock({ ask, onAnswer, onCredential, children }: {
@@ -257,7 +305,9 @@ function VerbBlock({ node, preArmVerbId, onVerb, demote = false }: {
   /** An ask holds the one big button; the verbs become secondary chips. */
   demote?: boolean;
 }) {
-  const { primary, secondary } = verbsFor(node, preArmVerbId);
+  // Profile verbs live on the tier chips of the "What it is doing" block.
+  const { primary, secondary } = verbsFor(
+    { ...node, verbs: (node.verbs ?? []).filter((v) => !isProfileVerb(v)) }, preArmVerbId);
   const [armed, setArmed] = useState<string | null>(null);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -283,7 +333,8 @@ function VerbBlock({ node, preArmVerbId, onVerb, demote = false }: {
     try {
       const result = await onVerb(node, verb, { confirmed });
       if (result && result.ok === true) {
-        setStatus(result.pending ? { kind: 'pending', note: `${verb.label}: under way` } : { kind: 'ok', note: `${verb.label}: done` });
+        setStatus(result.pending ? { kind: 'pending', note: `${verb.label}: under way` }
+          : { kind: 'ok', note: `${verb.label}: done`, reply: result });
       } else {
         setStatus({ kind: 'error', note: result?.error || `${verb.label} failed` });
       }
@@ -342,6 +393,82 @@ function VerbBlock({ node, preArmVerbId, onVerb, demote = false }: {
           </button>
         ))}
       </div>
+      <StatusLine status={status} />
+    </div>
+  );
+}
+
+/**
+ * "What it is doing": role · state · CPU/RAM/disk · dependents, one chip per profile
+ * tier, and why it is kept. A tier chip the node can join or leave is a button carrying
+ * that profile verb (the host opens a PR); core shows a fixed label and no buttons.
+ */
+function DoingBlock({ node, onVerb }: { node: UniverseNode; onVerb?: SpaceActions['onVerb'] }) {
+  const [status, setStatus] = useState<Status>({ kind: 'idle' });
+  if (!hasDoing(node)) return null;
+  const tiers = profilesOf(node);
+  const core = isCore(node);
+  const why = keptBecause(node);
+  const verbs = (node.verbs ?? []).filter(isProfileVerb);
+  const verbFor = (prefix: string) => verbs.find((v) => v.id === prefix);
+  const edge = verbs.find((v) => v.id.startsWith('reclassify-edge:'));
+
+  const run = async (verb: BeadVerb) => {
+    if (!onVerb || status.kind === 'pending') return;
+    setStatus({ kind: 'pending', note: `${verb.label}: opening a pull request…` });
+    try {
+      const result = await onVerb(node, verb, { confirmed: false });
+      if (result && result.ok === true) {
+        setStatus(result.pending ? { kind: 'pending', note: `${verb.label}: under way` }
+          : { kind: 'ok', note: `${verb.label}: done`, reply: result });
+      } else setStatus({ kind: 'error', note: result?.error || `${verb.label} failed` });
+    } catch (err) {
+      setStatus({ kind: 'error', note: errorText(err) });
+    }
+  };
+
+  const chip = (on: boolean): CSSProperties => ({
+    display: 'inline-block',
+    padding: '2px 8px',
+    marginRight: 4,
+    marginTop: 6,
+    borderRadius: 999,
+    border: `1px solid ${on ? PALETTE.aitherium : PALETTE.hairline}`,
+    background: on ? `${PALETTE.aitherium}22` : 'transparent',
+    color: on ? PALETTE.ink : PALETTE.quiet,
+    fontFamily: FONTS.metric,
+    fontSize: 11,
+  });
+
+  return (
+    <div style={S.block} data-block="doing">
+      <div style={{ fontSize: 11, color: PALETTE.quiet, letterSpacing: 0.4 }}>What it is doing</div>
+      <div style={{ marginTop: 2, fontSize: 12, color: PALETTE.ink }} data-doing-line>{doingLine(node)}</div>
+      <div data-profiles>
+        {LENS_TIERS.map((t) => {
+          const on = tiers.includes(t);
+          const verb = !core ? verbFor(on ? `profile-remove:${t}` : `profile-add:${t}`) : undefined;
+          if (verb && onVerb) {
+            return (
+              <button key={t} type="button" style={{ ...chip(on), cursor: 'pointer' }} data-tier={t}
+                data-in={on ? 'true' : undefined} title={verb.label} onClick={() => void run(verb)}>
+                {on ? `${t} −` : `+ ${t}`}
+              </button>
+            );
+          }
+          return <span key={t} style={chip(on)} data-tier={t} data-in={on ? 'true' : undefined}>{t}</span>;
+        })}
+      </div>
+      {core ? (
+        <div style={{ marginTop: 6, fontSize: 12, color: PALETTE.gold }} data-core aria-disabled="true">{why}</div>
+      ) : why ? (
+        <div style={{ marginTop: 6, fontSize: 12, color: '#9AA6B2' }} data-kept>kept because {why}</div>
+      ) : null}
+      {edge && onVerb && !core ? (
+        <button type="button" style={S.ghost(PALETTE.quiet)} data-edge onClick={() => void run(edge)}>
+          {edge.label}
+        </button>
+      ) : null}
       <StatusLine status={status} />
     </div>
   );
@@ -466,6 +593,7 @@ export function SelectionPanel(props: SelectionPanelProps) {
       ) : (
         <VerbBlock node={node} preArmVerbId={props.preArmVerbId} onVerb={props.onVerb} />
       )}
+      <DoingBlock node={node} onVerb={props.onVerb} />
       <ExploreBlock node={node} onExplore={props.onExplore} onOpenChat={props.onOpenChat} onExploring={props.onExploring} />
       {impact ? <div style={{ ...S.block, color: PALETTE.quiet, fontSize: 12 }} data-block="impact">{impact}</div> : null}
     </div>
