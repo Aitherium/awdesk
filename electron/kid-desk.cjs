@@ -22,8 +22,13 @@
  * (a launch flag, a user environment variable, a file in their AppData) can turn it on or
  * off -- those are child-removable and are not read at all:
  *   - Windows: HKLM\SOFTWARE\Policies\Aitherium\AWDesk  KidDesk (REG_DWORD) = 1, or
- *   - %ProgramData%\Aitherium\awdesk\kid-desk.json = {"enabled": true}, written by an
- *     administrator (an admin-created ProgramData file is read-only to standard users);
+ *   - <machine ProgramData>\Aitherium\awdesk\kid-desk.json = {"enabled": true}, written by
+ *     an administrator (an admin-created ProgramData file is read-only to standard users).
+ *     "Machine ProgramData" is read from HKLM (ProfileList\ProgramData, its %SystemDrive%
+ *     expanded from HKLM too), NEVER from the process environment: a standard account can
+ *     set a per-user ProgramData variable (or launch the desk with any env it likes) and
+ *     point the lookup at an empty folder, which would turn kid mode OFF. If HKLM cannot
+ *     be read, the file is not read at all and only the HKLM policy value counts;
  *   - macOS: /Library/Application Support/Aitherium/awdesk/kid-desk.json;
  *     Linux: /etc/aitherium/awdesk/kid-desk.json (root-owned).
  * The policy file may carry "classroom_origin" (an https aitherium.com page host; honoured
@@ -43,6 +48,13 @@ const FILE = "kid-desk.json";
 const PARTITION = "persist:awdesk-kid";
 const REG_KEY = "HKLM\\SOFTWARE\\Policies\\Aitherium\\AWDesk";
 const REG_VALUE = "KidDesk";
+/** reg.exe by ABSOLUTE path: a bare "reg" is searched in the working directory and the
+ *  PATH first, both of which the launching (child) account controls. */
+const REG_EXE = "C:\\Windows\\System32\\reg.exe";
+const PROFILE_LIST_KEY = "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList";
+const SESSION_ENV_KEY = "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment";
+const NT_CURRENT_KEY = "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+const REG_OPTS = { encoding: "utf8", windowsHide: true, timeout: 5000, stdio: ["ignore", "pipe", "ignore"] };
 
 /** Is `hostname` on the aitherium.com page host family? Only vets the policy's
  *  classroom_origin; navigation is checked against the ONE classroom origin. */
@@ -51,11 +63,54 @@ function isAitheriumHost(hostname) {
   return h === "aitherium.com" || h.endsWith(".aitherium.com");
 }
 
-/** Where the machine policy file lives on this platform (admin/root-writable only). */
-function policyFilePath({ platform = process.platform, env = process.env } = {}) {
+/** One HKLM string value via reg.exe (REG_SZ / REG_EXPAND_SZ, unexpanded), or "". */
+function regString(key, value, { execFileSync = null } = {}) {
+  try {
+    const run = execFileSync || require("node:child_process").execFileSync;
+    const out = String(run(REG_EXE, ["query", key, "/v", value], REG_OPTS));
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.match(/^\s*(\S+)\s+REG_(?:EXPAND_)?SZ\s+(.+?)\s*$/);
+      if (m && m[1].toLowerCase() === value.toLowerCase()) return m[2];
+    }
+    return "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The MACHINE's ProgramData folder, from HKLM only (never the environment): ProfileList's
+ * ProgramData value with %SystemDrive% / %SystemRoot% expanded from HKLM as well. Any other
+ * variable, a relative result or an unreadable key = "" (the caller then skips the file).
+ */
+function machineProgramData({ platform = process.platform, execFileSync = null } = {}) {
+  if (platform !== "win32") return "";
+  const q = (key, value) => regString(key, value, { execFileSync });
+  const raw = q(PROFILE_LIST_KEY, "ProgramData");
+  if (!raw) return "";
+  let systemRoot = null;
+  const root = () => (systemRoot === null ? (systemRoot = q(NT_CURRENT_KEY, "SystemRoot")) : systemRoot);
+  const vars = {
+    systemdrive: () => q(SESSION_ENV_KEY, "SystemDrive") || (/^[A-Za-z]:/.test(root()) ? root().slice(0, 2) : ""),
+    systemroot: root,
+  };
+  let unresolved = false;
+  const expanded = raw.replace(/%([^%]+)%/g, (_m, name) => {
+    const get = vars[String(name).toLowerCase()];
+    const v = get ? get() : "";
+    if (!v) unresolved = true;
+    return v;
+  });
+  if (unresolved || expanded.includes("%") || !/^[A-Za-z]:\\/.test(expanded)) return "";
+  return path.win32.normalize(expanded);
+}
+
+/** Where the machine policy file lives on this platform (admin/root-writable only), or ""
+ *  on Windows when the machine ProgramData cannot be read from HKLM. */
+function policyFilePath({ platform = process.platform, programData = undefined, execFileSync = null } = {}) {
   if (platform === "win32") {
-    const root = (env && (env.ProgramData || env.PROGRAMDATA)) || "C:\\ProgramData";
-    return path.win32.join(root, "Aitherium", "awdesk", FILE);
+    const root = programData === undefined ? machineProgramData({ platform, execFileSync }) : programData;
+    return root ? path.win32.join(root, "Aitherium", "awdesk", FILE) : "";
   }
   if (platform === "darwin") return path.posix.join("/Library/Application Support/Aitherium/awdesk", FILE);
   return path.posix.join("/etc/aitherium/awdesk", FILE);
@@ -66,8 +121,7 @@ function readRegistryPolicy({ platform = process.platform, execFileSync = null }
   if (platform !== "win32") return false;
   try {
     const run = execFileSync || require("node:child_process").execFileSync;
-    const out = String(run("reg", ["query", REG_KEY, "/v", REG_VALUE],
-      { encoding: "utf8", windowsHide: true, timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }));
+    const out = String(run(REG_EXE, ["query", REG_KEY, "/v", REG_VALUE], REG_OPTS));
     const m = out.match(/KidDesk\s+REG_DWORD\s+0x([0-9a-f]+)/i);
     return Boolean(m && parseInt(m[1], 16) !== 0);
   } catch {
@@ -75,8 +129,9 @@ function readRegistryPolicy({ platform = process.platform, execFileSync = null }
   }
 }
 
-/** The machine policy file as an object. Missing or unreadable = {}. */
+/** The machine policy file as an object. Missing, unreadable or no path = {}. */
 function readPolicyFile(file) {
+  if (!file) return {};
   try {
     const raw = JSON.parse(fs.readFileSync(file, "utf8"));
     return raw && typeof raw === "object" ? raw : {};
@@ -100,9 +155,9 @@ function classroomOrigin(wanted) {
  * Is kid-desk mode on? Reads ONLY machine policy (see the header): `readRegistry` and
  * `policyFile` are injectable for tests; production passes neither.
  */
-function resolveKidDesk({ platform = process.platform, env = process.env, policyFile = "", readRegistry = null } = {}) {
+function resolveKidDesk({ platform = process.platform, policyFile = "", readRegistry = null } = {}) {
   const fromRegistry = Boolean((readRegistry || (() => readRegistryPolicy({ platform })))());
-  const policy = readPolicyFile(policyFile || policyFilePath({ platform, env }));
+  const policy = readPolicyFile(policyFile || policyFilePath({ platform }));
   const fromFile = policy.enabled === true;
   const enabled = fromRegistry || fromFile;
   return Object.freeze({
@@ -131,6 +186,30 @@ function allowNavigation(target, state) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Debug doors a child could open from their own scope to drive the classroom window
+ * (CDP can navigate anywhere and run script in it): the DESK_CDP_PORT env var main.cjs
+ * honours, and Chromium's own --remote-debugging-* switches on the launch line. In kid
+ * mode none is honoured. `commandLine` is Electron's app.commandLine (before ready).
+ */
+const DEBUG_SWITCHES = ["remote-debugging-port", "remote-debugging-pipe", "remote-debugging-address"];
+function allowCdpPort(state) {
+  return !(state && state.enabled);
+}
+function scrubDebugSwitches(state, commandLine) {
+  if (!(state && state.enabled) || !commandLine) return [];
+  const removed = [];
+  for (const name of DEBUG_SWITCHES) {
+    try {
+      if (commandLine.hasSwitch(name)) {
+        commandLine.removeSwitch(name);
+        removed.push(name);
+      }
+    } catch { /* an Electron without removeSwitch: nothing to scrub */ }
+  }
+  return removed;
 }
 
 /** The roster in kid mode: empty. Outside kid mode: unchanged. */
@@ -194,8 +273,14 @@ module.exports = {
   DEFAULT_ONLINE,
   FILE,
   PARTITION,
+  DEBUG_SWITCHES,
+  NT_CURRENT_KEY,
+  PROFILE_LIST_KEY,
+  REG_EXE,
   REG_KEY,
   REG_VALUE,
+  SESSION_ENV_KEY,
+  allowCdpPort,
   allowCharacterChange,
   allowNavigation,
   classroomOrigin,
@@ -203,8 +288,11 @@ module.exports = {
   gateRoster,
   isAitheriumHost,
   kidTrayTemplate,
+  machineProgramData,
   openClassroomWindow,
   policyFilePath,
   readRegistryPolicy,
+  regString,
   resolveKidDesk,
+  scrubDebugSwitches,
 };

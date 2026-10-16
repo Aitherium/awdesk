@@ -73,10 +73,27 @@ const mainLag = { maxMs: 0, over100: 0, windowS: 10, worst: [] };
   }, 50).unref();
 }
 
+// Kid desk (kid-desk.cjs): a guardian turns it on for a child's PC through MACHINE policy
+// (HKLM / the HKLM-named ProgramData), never anything in the child's own scope. Resolved
+// HERE, before any env-driven door below, so kid mode can close those doors too. Then the
+// roster is EMPTY and no character can be switched to, installed or spawned -- every
+// caller goes through listCharacters/installCharacter, so no path reaches an adult body.
+const kidDesk = require("./kid-desk.cjs");
+let kidDeskState = null;
+function kidDeskMode() {
+  if (!kidDeskState) {
+    kidDeskState = kidDesk.resolveKidDesk();
+  }
+  return kidDeskState;
+}
+// In kid mode no CDP door opens: not Chromium's --remote-debugging-* launch switches and
+// not DESK_CDP_PORT (a child sets either from their own scope and could then drive the
+// classroom window anywhere).
+kidDesk.scrubDebugSwitches(kidDeskMode(), app.commandLine);
 // Opt-in diagnostics door: DESK_CDP_PORT=9223 exposes the renderer over CDP so
 // scripts/perf-gate.cjs (and cdp-probe / cdp-profile) can measure the running
-// app from outside. Must be set before the app is ready; off by default.
-if (/^\d{2,5}$/.test(String(process.env.DESK_CDP_PORT || ""))) {
+// app from outside. Must be set before the app is ready; off by default; never in kid mode.
+if (kidDesk.allowCdpPort(kidDeskMode()) && /^\d{2,5}$/.test(String(process.env.DESK_CDP_PORT || ""))) {
   app.commandLine.appendSwitch("remote-debugging-port", String(process.env.DESK_CDP_PORT));
 }
 const decisionCards = require("./decision-cards.cjs");
@@ -348,18 +365,7 @@ const {
   queueInstall,
   listCharacters: rosterListCharacters,
 } = require("./character-roster.cjs");
-// Kid desk (kid-desk.cjs): a guardian turns it on for a child's PC through MACHINE policy
-// (HKLM / ProgramData), never anything in the child's own scope. Then the roster is
-// EMPTY and no character can be switched to, installed or spawned -- every caller below
-// goes through these two wrappers, so no path can reach an adult body in kid mode.
-const kidDesk = require("./kid-desk.cjs");
-let kidDeskState = null;
-function kidDeskMode() {
-  if (!kidDeskState) {
-    kidDeskState = kidDesk.resolveKidDesk();
-  }
-  return kidDeskState;
-}
+// Kid desk wrappers (kidDeskMode is resolved at the top of this file).
 function listCharacters() {
   return kidDesk.gateRoster(kidDeskMode(), rosterListCharacters());
 }
@@ -1404,6 +1410,7 @@ function cardPopupsOff() {
 /** May the desk open a card window by ITSELF? Never by default: an
  *  unrequested always-on-top window is the complaint, not the feature. */
 function cardWindowsMayOpen() {
+  if (kidDeskMode().enabled) return false;  // kid mode: the classroom is the only window
   if (process.env.DESK_CARDS_AUTO_OPEN !== "1") return false;
   return !cardPopupsOff();
 }
