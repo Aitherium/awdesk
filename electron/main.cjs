@@ -343,11 +343,29 @@ const {
   getRecentCharacters,
   enrollNewestDownloadChecked,
   getActiveCharacter,
-  installCharacter,
+  installCharacter: rosterInstallCharacter,
   planSlotInstall,
   queueInstall,
-  listCharacters,
+  listCharacters: rosterListCharacters,
 } = require("./character-roster.cjs");
+// Kid desk (kid-desk.cjs): a guardian turns it on for a child's PC through MACHINE policy
+// (HKLM / ProgramData), never anything in the child's own scope. Then the roster is
+// EMPTY and no character can be switched to, installed or spawned -- every caller below
+// goes through these two wrappers, so no path can reach an adult body in kid mode.
+const kidDesk = require("./kid-desk.cjs");
+let kidDeskState = null;
+function kidDeskMode() {
+  if (!kidDeskState) {
+    kidDeskState = kidDesk.resolveKidDesk();
+  }
+  return kidDeskState;
+}
+function listCharacters() {
+  return kidDesk.gateRoster(kidDeskMode(), rosterListCharacters());
+}
+function installCharacter(name) {
+  return kidDesk.allowCharacterChange(kidDeskMode()) && rosterInstallCharacter(name);
+}
 const { invalidateGate, isHidden } = require("./content-rating.cjs");
 const fs = require("node:fs");
 const {
@@ -544,7 +562,8 @@ const consoleIsRequested = process.argv.includes("--console");
  *  runs this against the INSTALLED app on every platform (job: package, step:
  *  "Smoke test the installed app"), so a package that cannot start fails the
  *  release, not the user's first launch. */
-const smokeIsRequested = process.argv.includes("--smoke");
+// Never in kid mode: --smoke skips the single-instance lock, so it would be a second desk.
+const smokeIsRequested = process.argv.includes("--smoke") && !kidDeskMode().enabled;
 const protocolScheme = "desk";
 const debugEnabled = process.env.DESK_DEBUG === "1";
 
@@ -1217,7 +1236,8 @@ function roomStageDeps() {
     // SAFE roster only: the content-rating gate decides what may have a body.
     filterCharacters: require("./content-rating.cjs").filterCharacters,
     // UNFILTERED, for the Cast pane's "what is hidden and why" list ONLY.
-    listAllCharacters: require("./character-roster.cjs").listAllCharacters,
+    listAllCharacters: () => kidDesk.gateRoster(kidDeskMode(),
+      require("./character-roster.cjs").listAllCharacters()),
     getActiveCharacter,
     sendToRenderer: emitToRenderer,
     log: (...args) => debugLog(...args),
@@ -2318,7 +2338,9 @@ function isValidCharacterName(name) {
  *  rating, so it must see the ones the gate hides. `done` is what the rater
  *  polls for; a renderer that never answers leaves a name pending. */
 const rosterCapture = { requested: new Set(), done: new Set(), startedAt: 0 };
-const { listAllCharacters } = require("./character-roster.cjs");
+function listAllCharacters() {
+  return kidDesk.gateRoster(kidDeskMode(), require("./character-roster.cjs").listAllCharacters());
+}
 
 function captureRoster({ names = null, force = false, angles = 1 } = {}) {
   const installed = listAllCharacters();
@@ -3847,6 +3869,29 @@ setFleetSpaceOpener((url) => openSpaceLink(url), () => Boolean(spacePane()));
 // console, and awask's popup only when neither is there to take it.
 decisionCards.setWindowRouter((_kind, id) => openInbox(id));
 
+/** Kid desk: one classroom window (the child's own Learn page and sprite) and a tray with
+ *  "My classroom" only. See kid-desk.cjs. */
+let kidDeskWindow = null;
+/** Open or bring forward the one classroom window (the only window kid mode ever shows). */
+function openKidClassroom() {
+  if (!app.isReady()) return;
+  kidDeskWindow = kidDesk.openClassroomWindow({ BrowserWindow }, { state: kidDeskMode(), existing: kidDeskWindow });
+}
+function startKidDesk() {
+  const open = openKidClassroom;
+  open();
+  try {
+    const iconPath = path.join(__dirname, "..", "build", "icon.png");
+    tray = new Tray(nativeImage.createFromPath(iconPath).resize({ width: 20, height: 20 }));
+    tray.setToolTip("My classroom");
+    tray.setContextMenu(Menu.buildFromTemplate(kidDesk.kidTrayTemplate({ openClassroom: open })));
+    tray.on("click", open);
+  } catch (error) {
+    debugLog("kid desk tray unavailable", error?.message || error);
+  }
+  debugLog("kid desk mode on", kidDeskMode().source);
+}
+
 function createTray() {
   const iconPath = path.join(__dirname, "..", "build", "icon.png");
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 20, height: 20 });
@@ -3911,6 +3956,12 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     console.warn("[desk] support reports not started:", err?.message || err);
   }
   app.on("second-instance", (_event, argv) => {
+    // Kid mode: whatever the second launch asked for (--open-deck, --fleet, --console,
+    // --run=, a desk:// link), the child gets their classroom and nothing else.
+    if (kidDeskMode().enabled) {
+      openKidClassroom();
+      return;
+    }
     const handled = argv.some((value) => value.startsWith(`${protocolScheme}://`));
     handleProtocolArgv(argv);
     if (argv.includes("--open-deck")) {
@@ -3957,6 +4008,10 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
 
   app.on("open-url", (event, url) => {
     event.preventDefault();
+    if (kidDeskMode().enabled) {
+      openKidClassroom();
+      return;
+    }
     handleProtocolUrl(url);
   });
 
@@ -4006,6 +4061,12 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     setTimeout(() => require("./process-priority.cjs").keepDeskResponsive(app), 5000);
     if (smokeIsRequested) {
       runSmokeTest();
+      return;
+    }
+    // Kid desk: the child's classroom and nothing else -- no avatar overlay, roster, agent
+    // apps, palette, shortcuts, bridge or MCP. Everything adult below is never started.
+    if (kidDeskMode().enabled) {
+      startKidDesk();
       return;
     }
     // Aeon's mood on every body's face (src/hooks/aeonMood.ts).
@@ -5446,7 +5507,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
   });
 }
 
-app.on("activate", () => showOverlay({ focus: true }));
+app.on("activate", () => (kidDeskMode().enabled ? openKidClassroom() : showOverlay({ focus: true })));
 
 app.on("before-quit", () => {
   isQuitting = true;
