@@ -63,15 +63,35 @@ const VERB_ACTIONS = Object.freeze({
   "fleet-sleep": ["fleet", "sleep", "--execute", "--json"],
   "fleet-wake": ["fleet", "wake", "--execute", "--json"],
   "fleet-critical": ["fleet", "critical", "--execute", "--json"],
+  // `fleet profile <tier>` (2026-10-15): tiers DERIVED from services.yaml criticality, so
+  // criticality:core never stops; full = everything back (the engine's resume).
+  "profile-business": ["fleet", "profile", "business", "--execute", "--json"],
+  "profile-platform": ["fleet", "profile", "platform", "--execute", "--json"],
+  "profile-critical": ["fleet", "profile", "critical", "--execute", "--json"],
+  "profile-full": ["fleet", "profile", "full", "--execute", "--json"],
+  // THE inference toggle: one verb, proven by a real completion per lane through
+  // MicroScheduler (served_by checked) -- the same JSON {mode, lanes[]} on every surface.
+  "inference-on": ["inference", "on", "--execute", "--json"],
+  "inference-dgx": ["inference", "dgx", "--execute", "--json"],
+  "inference-off": ["inference", "off", "--execute", "--json"],
+  "inference-status": ["inference", "status", "--json"],
 });
 /** The pre-2026-09-27 names, kept so a palette row, an awsh `game on` or an MCP caller that
- *  still says `gaming` lands on the SAME verb (not the old `quiesce --deep`). */
+ *  still says `gaming` lands on the SAME verb (not the old `quiesce --deep`).
+ *  2026-10-15: `down` is no longer the VM-off sleep (that took garg-api dark on a host with a
+ *  paying tenant): it is fleet_verbs `game down` = business profile + inference dgx. The
+ *  VM-off sleep is only ever "fleet-sleep" by name. gpu-sleep/gpu-wake ARE inference dgx/on
+ *  inside fleet_verbs.py, so their buttons now get the lane proof too. */
 const ALIASES = Object.freeze({
   gaming: "gpu-sleep",
   resume: "gpu-wake",
-  down: "fleet-sleep",
+  down: "game-down",
   up: "fleet-wake",
   critical: "fleet-critical",
+});
+/** Alias targets that are not buttons of their own. */
+const ALIAS_ONLY_ACTIONS = Object.freeze({
+  "game-down": ["game", "down", "--execute", "--json"],
 });
 function canonicalAction(action) {
   return ALIASES[action] || action;
@@ -84,7 +104,8 @@ const ACTIONS = Object.freeze({
   quiesce: ["quiesce"],
   adopt: ["adopt"],
   ...VERB_ACTIONS,
-  ...Object.fromEntries(Object.entries(ALIASES).map(([a, v]) => [a, VERB_ACTIONS[v]])),
+  ...ALIAS_ONLY_ACTIONS,
+  ...Object.fromEntries(Object.entries(ALIASES).map(([a, v]) => [a, VERB_ACTIONS[v] || ALIAS_ONLY_ACTIONS[v]])),
   // ARC: is it solving and learning; start it (hold off, mask off, both units);
   // run it NOW for four hours despite quiet hours (attributed, self-expiring);
   // stop the solver (the world model stays up).
@@ -130,7 +151,8 @@ const HOST_ACTIONS = new Set(["host-status", "host-start", "host-stop", "host-re
 const DEFAULT_FLEET_HOST_SCRIPT = "C:\\AitherOS-Fresh\\AitherOS\\dev\\tools\\fleet_host.py";
 const DEFAULT_FLEET_VERBS_SCRIPT = "C:\\AitherOS-Fresh\\AitherOS\\dev\\tools\\fleet_verbs.py";
 /** Every action that runs fleet_verbs.py (the verbs and their aliases). */
-const VERB_ACTION_NAMES = new Set([...Object.keys(VERB_ACTIONS), ...Object.keys(ALIASES)]);
+const VERB_ACTION_NAMES = new Set([...Object.keys(VERB_ACTIONS), ...Object.keys(ALIAS_ONLY_ACTIONS),
+  ...Object.keys(ALIASES)]);
 // ComfyUI runs WINDOWS-NATIVE (D:\ComfyUI on the host driver, 2026-09-27): the distro
 // script cannot see it. `stop` writes ~/.aither/gaming.lock first (the AitherOS-ComfyUI
 // supervisor task honours it); `start` clears it and adopts a running instance.
@@ -146,7 +168,11 @@ const ACTION_NAMES = Object.freeze(Object.keys(ACTIONS));
 /** Actions that take the fleet (or part of it) DOWN — the window double-confirms these. */
 const DESTRUCTIVE = new Set(["down", "gaming", "quiesce", "arc-stop",
   // the owner's verbs: sleeping takes models / the fleet down; critical takes most of it
-  "gpu-sleep", "fleet-sleep", "fleet-critical", "critical",
+  "gpu-sleep", "fleet-sleep", "fleet-critical", "critical", "game-down",
+  // a profile stops everything outside its tier; inference dgx/off take the 5090 (and,
+  // for off, every LLM lane) away. inference-on and profile-full only bring things back.
+  "profile-business", "profile-platform", "profile-critical",
+  "inference-dgx", "inference-off",
   // a posture switch relaunches the DeepSeek pool and can park gemma4
   "models-full-mesh", "models-pool-fast", "models-pool-lean",
   // the fleet HOST: stop/restart take every container down; start/reattach change
@@ -173,6 +199,18 @@ const TIMEOUT_MS = Object.freeze({
   up: 5_400_000,
   "fleet-critical": 2_400_000,
   critical: 2_400_000,
+  "game-down": 2_400_000, // profile business (1800 s engine budget) + inference dgx
+  "profile-business": 2_400_000,
+  "profile-platform": 2_400_000,
+  "profile-critical": 2_400_000,
+  "profile-full": 5_400_000, // = resume: gpu-boot one at a time
+  // inference: on = gpu-boot resume (3900 s) + lane proof; dgx = awmodels gaming + quiesce
+  // + proof; off = dgx + park + proof; status = one tiny completion per lane
+  "inference-on": 3_900_000,
+  "inference-dgx": 2_400_000,
+  // not 600 s: off RUNS the dgx path first (awmodels gaming alone may take 1500 s)
+  "inference-off": 2_400_000,
+  "inference-status": 240_000,
   services: 240_000,
   "services-sick": 240_000,
   "services-boot": 180_000,

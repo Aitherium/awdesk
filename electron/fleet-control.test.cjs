@@ -443,7 +443,8 @@ test("the owner's verbs run fleet_verbs.py on the HOST, and the old names are al
       assert.deepEqual(cmd.args, ["C:\\x\\fleet_verbs.py", ...argv], action);
     }
     // old names: same argv as the verb they now mean (NOT the old quiesce --deep)
-    for (const [old, verb] of Object.entries({ gaming: "gpu-sleep", resume: "gpu-wake", down: "fleet-sleep", up: "fleet-wake", critical: "fleet-critical" })) {
+    // `down` = game down (business profile + inference dgx): the VM-off sleep is "fleet-sleep" by name only
+    for (const [old, verb] of Object.entries({ gaming: "gpu-sleep", resume: "gpu-wake", down: "game-down", up: "fleet-wake", critical: "fleet-critical" })) {
       assert.equal(ALIASES[old], verb);
       assert.equal(canonicalAction(old), verb);
       assert.deepEqual(buildCommand(old).args, buildCommand(verb).args, `${old} is an alias of ${verb}`);
@@ -564,4 +565,59 @@ test("with the awnix brain configured, the owner's verbs still run host-side; st
   order.length = 0;
   await mk().run("gpu-wake");
   assert.deepEqual(order, ["host:fleet_verbs.py"]);
+});
+
+test("inference + profile actions map to the exact fleet_verbs.py argv", () => {
+  const prev = process.env.AWDESK_FLEET_VERBS_SCRIPT;
+  process.env.AWDESK_FLEET_VERBS_SCRIPT = "C:\\x\\fleet_verbs.py";
+  try {
+    const expect = {
+      "inference-on": ["inference", "on", "--execute", "--json"],
+      "inference-dgx": ["inference", "dgx", "--execute", "--json"],
+      "inference-off": ["inference", "off", "--execute", "--json"],
+      "inference-status": ["inference", "status", "--json"],
+      "profile-business": ["fleet", "profile", "business", "--execute", "--json"],
+      "profile-platform": ["fleet", "profile", "platform", "--execute", "--json"],
+      "profile-critical": ["fleet", "profile", "critical", "--execute", "--json"],
+      "profile-full": ["fleet", "profile", "full", "--execute", "--json"],
+      "game-down": ["game", "down", "--execute", "--json"],
+      down: ["game", "down", "--execute", "--json"],
+    };
+    for (const [action, argv] of Object.entries(expect)) {
+      assert.ok(VERB_ACTION_NAMES.has(action), `${action} runs the host core`);
+      const cmd = buildCommand(action);
+      assert.notEqual(cmd.file, "wsl.exe", `${action}: fleet_verbs picks the transport`);
+      assert.deepEqual(cmd.args, ["C:\\x\\fleet_verbs.py", ...argv], action);
+      assert.ok(TIMEOUT_MS[action] > 0, `${action} has a timeout`);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.AWDESK_FLEET_VERBS_SCRIPT;
+    else process.env.AWDESK_FLEET_VERBS_SCRIPT = prev;
+  }
+  assert.equal(TIMEOUT_MS["inference-on"], 3_900_000);
+  assert.equal(TIMEOUT_MS["inference-dgx"], 2_400_000);
+  assert.equal(TIMEOUT_MS["inference-status"], 240_000);
+  assert.ok(TIMEOUT_MS["inference-off"] >= TIMEOUT_MS["inference-dgx"], "off runs the dgx path first");
+  // the VM-off sleep keeps its explicit name
+  assert.equal(ACTIONS["fleet-sleep"].join(" "), "fleet sleep --execute --json");
+});
+
+test("DESTRUCTIVE: dgx/off and the trimming profiles confirm first; on/status/full do not", () => {
+  for (const a of ["inference-dgx", "inference-off", "profile-business", "profile-platform",
+    "profile-critical", "game-down", "down"]) {
+    assert.ok(DESTRUCTIVE.has(a), `${a} takes something down: confirm first`);
+  }
+  for (const a of ["inference-on", "inference-status", "profile-full"]) {
+    assert.ok(!DESTRUCTIVE.has(a), `${a} only brings things back / reads`);
+  }
+});
+
+test("an inference verdict keeps its lane table through parseVerdict", () => {
+  const doc = { verb: "inference-status", ok: false, rc: 1, mode: "DEGRADED",
+    lanes: [{ lane: "orchestrator", verdict: "DOWN", http: 502, served_by: null }],
+    drift: ["DEGRADED: orchestrator DOWN: http 502"] };
+  const v = parseVerdict(JSON.stringify(doc), 1, "");
+  assert.equal(v.ok, false);
+  assert.equal(v.mode, "DEGRADED");
+  assert.equal(v.lanes[0].lane, "orchestrator");
 });
