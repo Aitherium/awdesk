@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DeckDecision } from '../deck/deck-types';
 import type { UniverseData, UniverseNode } from '../vendor/bead-space/types';
-import { buildSpaceModel, deepLinkOf, deepLinkTarget, deskCardOf, deskLensOf } from './space-model';
+import { buildSpaceModel, deepLinkOf, deepLinkTarget, deskAuditOf, deskCardOf, deskLensOf } from './space-model';
 
 const AT = '2026-10-15T00:00:00Z';
 
@@ -147,5 +147,46 @@ describe('deskLensOf (the profile lens on the desk planets)', () => {
     expect(deskLensOf(u, 'none')).toBeNull();
     deskLensOf(u, 'business');
     expect(u.nodes.every((n) => n.health.state === 'ok')).toBe(true);
+  });
+});
+
+describe('deskAuditOf (the audit lens on the desk planets)', () => {
+  function auditUniverse(): UniverseData {
+    const u = universe();
+    const meta = (id: string, m: Record<string, unknown>) => {
+      u.nodes.find((x) => x.id === id)!.meta = m;
+    };
+    meta('svc:Secrets', { verdict: 'core', run_state: 'running', mem_mb: 120 });
+    meta('svc:Pulse', { verdict: 'trim-candidate', run_state: 'running', mem_mb: 300, frees_mb: 300 });
+    u.nodes.push({ ...node('svc:Shop', 'galaxy:fleet', 'system', 'Shop'),
+      meta: { verdict: 'breaking', run_state: 'parked', mem_mb: 999 } });
+    u.nodes.find((x) => x.id === 'galaxy:fleet')!.meta = { audit: {
+      running: 2, ram_mb: 420, frees_mb: 300, by_verdict: { breaking: 1, core: 1, 'trim-candidate': 1 },
+      generated_at: AT, logs_scanned: true } };
+    return u;
+  }
+
+  it('a parent shows the WORST verdict under it; RAM sums only what runs', () => {
+    const a = deskAuditOf(auditUniverse())!;
+    expect(a.verdict.get('svc:Pulse')).toBe('trim-candidate');
+    expect(a.verdict.get('galaxy:fleet')).toBe('breaking');
+    expect(a.verdict.get('galaxy:data')).toBe('core');
+    expect(a.verdict.get('platform')).toBe('breaking');
+    // the parked Shop's last reading is not counted as RAM in use
+    expect(a.ramMb.get('galaxy:fleet')).toBe(300);
+    expect(a.ramMb.get('platform')).toBe(420);
+    expect(a.summary?.freesMb).toBe(300);
+  });
+
+  it('no verdicts anywhere: no rings, no summary', () => {
+    const a = deskAuditOf(universe())!;
+    expect(a.verdict.size).toBe(0);
+    expect(a.summary).toBeNull();
+  });
+
+  it('a universe read straight from Genesis is live: badge "direct", never "stale"', () => {
+    const m = buildSpaceModel({ ok: true, universe: universe(), source: 'genesis', stale: false,
+      error: 'universe route unreachable' }, { decisions: [] });
+    expect(m.badge).toBe('direct');
   });
 });

@@ -16,7 +16,9 @@
  * nothing. A `profile` verb (profile-add|remove:<tier>, reclassify-edge:<a>:<b>) runs
  * AitherOS/dev/tools/stack_profiles.py with argv built HERE (profileArgv): the key from
  * node.id, the tier from the verb id; core is refused, and so is removing a derived
- * member. The bridge's POST /space/verb (aitherium.com relayed by Genesis) lands on this
+ * member. A `unit` verb (unit-start|unit-park:<unit>, the BeadSpace audit lens) runs
+ * fleet-inventory-distro.py start|park <unit>.service: the unit must be the node's own,
+ * core is refused, park needs confirmed. The bridge's POST /space/verb (aitherium.com relayed by Genesis) lands on this
  * same handler. The explore prompt is BUILT here from the node, so the
  * page cannot smuggle a fleet verb into it -- and it runs on lane "agent", where
  * the CommandAgent never classifies text as a fleet verb anyway.
@@ -35,7 +37,7 @@
 
 const { ACTION_NAMES, DESTRUCTIVE } = require("./fleet-control.cjs");
 const { PLANE_IDS } = require("./plane-client.cjs");
-const { ID_RE } = require("./space-client.cjs");
+const { ID_RE, UNIT_VERB_RE } = require("./space-client.cjs");
 
 const QUESTION_MAX = 500;
 /** A fleet verb still running after this answers {ok:true, pending:true}; it keeps going. */
@@ -149,7 +151,24 @@ function profileArgv(node, verbId) {
   return { ok: false, error: `${String(verbId || "").slice(0, 60)} is not a profile verb` };
 }
 
-const DEFAULT_STACK_PROFILES_SCRIPT = "C:\\AitherOS-Fresh\\AitherOS\\dev\\tools\\stack_profiles.py";
+/**
+ * [start|park, "<unit>.service"] for fleet-inventory-distro.py, from MAIN's copy of the
+ * node. Pure. The unit is the verb id's and must be the node's own meta.unit; core is
+ * refused here (and again by the script, from the sidecars); park needs confirmed === true.
+ */
+function unitArgv(node, verbId, confirmed) {
+  const m = UNIT_VERB_RE.exec(String(verbId || ""));
+  if (!m) return { ok: false, error: `${String(verbId || "").slice(0, 60)} is not a unit verb` };
+  const meta = node && node.meta && typeof node.meta === "object" ? node.meta : {};
+  if (meta.criticality === "core") return { ok: false, error: `${node.title} is core: never stopped, never parked` };
+  if (meta.unit !== m[2]) return { ok: false, error: `${node.title} does not run ${m[2]}` };
+  if (m[1] === "park" && confirmed !== true) {
+    return { ok: false, error: `Park takes ${node.title} down: confirm it first` };
+  }
+  return { ok: true, verb: m[1], unit: `${m[2]}.service` };
+}
+
+const DEFAULT_STACK_PROFILES_SCRIPT ="C:\\AitherOS-Fresh\\AitherOS\\dev\\tools\\stack_profiles.py";
 /** Worktree + regenerate + check_stack_map + PR: minutes, not seconds. */
 const PROFILE_TIMEOUT_MS = 900_000;
 
@@ -224,7 +243,7 @@ function explorePrompt(node, exploreIndex, question) {
  *          openInternal: (paneId: string) => unknown, cards?: () => object[], pendingMs?: number}} deps
  */
 function spaceHandlers({ getControl, client, askAgent, openInternal, cards = () => [], pendingMs = VERB_PENDING_MS,
-  runProfile = null }) {
+  runProfile = null, runUnit = null }) {
   async function nodeOf(nodeId) {
     if (typeof nodeId !== "string" || !nodeId) return null;
     let universe = client.current();
@@ -296,6 +315,25 @@ function spaceHandlers({ getControl, client, askAgent, openInternal, cards = () 
     return raceWithPending(running);
   }
 
+  /** start / park ONE unit (the audit lens): argv built HERE from main's node. */
+  async function runUnitVerbOf(node, verb, confirmed) {
+    const a = unitArgv(node, verb.id, confirmed);
+    if (!a.ok) return { ok: false, error: a.error };
+    if (typeof runUnit !== "function") return { ok: false, error: "unit verbs are not available in this desk" };
+    const running = Promise.resolve()
+      .then(() => runUnit(a.verb, a.unit))
+      .then((verdict) => {
+        // the desk's fleet verdict is old now: re-probe quietly, like a fleet verb
+        try { refreshStatus(getControl(), verb.id); } catch { /* the next poll catches up */ }
+        return {
+          ok: Boolean(verdict && verdict.ok),
+          ...(verdict && !verdict.ok ? { error: String(verdict.error || verdict.why || "the unit verb failed").slice(0, 300) } : {}),
+          ...(verdict && verdict.verified ? { text: String(verdict.verified).slice(0, 300) } : {}),
+        };
+      }, (error) => ({ ok: false, error: errorText(error) }));
+    return raceWithPending(running);
+  }
+
   return {
     "desk:space-get": async () => {
       try {
@@ -324,6 +362,7 @@ function spaceHandlers({ getControl, client, askAgent, openInternal, cards = () 
         return { ok: true, text: String(meta.kept_because || "") };
       }
       if (verb.transport === "profile") return runProfileVerb(node, verb);
+      if (verb.transport === "unit") return runUnitVerbOf(node, verb, confirmed);
       if (verb.transport === "open") {
         const m = /^open-plane:([a-z]+)$/.exec(verb.id);
         if (!m || !PLANE_IDS.includes(m[1])) return { ok: false, error: `${verb.id} opens nothing the desk knows` };
@@ -376,5 +415,5 @@ function spaceVerbHandler() {
 
 module.exports = {
   ensureSpaceIpc, spaceVerbHandler, spaceHandlers, explorePrompt, virtualNodeOf, cardSubjects, profileArgv,
-  runStackProfiles, QUESTION_MAX, VERB_PENDING_MS,
+  unitArgv, runStackProfiles, QUESTION_MAX, VERB_PENDING_MS,
 };

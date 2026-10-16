@@ -323,6 +323,43 @@ function buildCommand(action, { script = scriptPath(), arcScript = arcScriptPath
   return { file: "wsl.exe", args: ["-d", distro, "-u", "root", "sh", "-c", inner] };
 }
 
+/** ONE unit, by name: the BeadSpace audit lens's start / park (fleet-inventory-distro.py). */
+const UNIT_VERB_ARG_RE = /^(start|park)$/;
+const UNIT_NAME_ARG_RE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,120}\.service$/;
+const UNIT_VERB_TIMEOUT_MS = 660_000;
+
+/**
+ * The process for `fleet-inventory-distro.py <start|park> <unit>.service --json`. Both
+ * arguments are validated against a closed grammar BEFORE they are put in the one
+ * `sh -c` string, so nothing a node carries can become shell. Throws on anything else.
+ */
+function buildUnitCommand(verb, unit, { servicesScript = servicesScriptPath(), distro = distroName(), local = inFleetHost() } = {}) {
+  if (!UNIT_VERB_ARG_RE.test(String(verb))) throw new Error(`unit verb must be start or park, not ${String(verb).slice(0, 40)}`);
+  if (!UNIT_NAME_ARG_RE.test(String(unit))) throw new Error(`not a <name>.service unit: ${String(unit).slice(0, 80)}`);
+  const inner = `python3 '${toDistroPath(servicesScript)}' ${verb} ${unit} --json`;
+  if (local) return { file: "sh", args: ["-c", inner] };
+  return { file: "wsl.exe", args: ["-d", distro, "-u", "root", "sh", "-c", inner] };
+}
+
+/** Run ONE unit verb; resolves the script's JSON verdict ({ok, refused?, why?, verified?}). */
+function runUnitVerb(verb, unit, { execFile = require("node:child_process").execFile, timeoutMs = UNIT_VERB_TIMEOUT_MS } = {}) {
+  let cmd;
+  try {
+    cmd = buildUnitCommand(verb, unit);
+  } catch (error) {
+    return Promise.resolve({ ok: false, error: String(error.message || error) });
+  }
+  return new Promise((resolve) => {
+    execFile(cmd.file, cmd.args, { windowsHide: true, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        const code = error ? (typeof error.code === "number" ? error.code : 1) : 0;
+        const verdict = parseVerdict(stdout, code, String(stderr || "").slice(-600), cmd.file);
+        if (verdict && verdict.refused && verdict.why) verdict.error = `${verdict.refused}: ${verdict.why}`;
+        resolve(verdict);
+      });
+  });
+}
+
 /** The host-side ComfyUI step an action implies, or null. */
 function hostStepCommand(action) {
   // The core (fleet_verbs.py) already runs the ComfyUI step for its verbs and aliases --
@@ -821,6 +858,8 @@ module.exports = {
   brainUrlFromEnv,
   FleetControl,
   buildCommand,
+  buildUnitCommand,
+  runUnitVerb,
   inFleetHost,
   classify,
   holdIsStale,

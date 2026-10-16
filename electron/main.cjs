@@ -233,7 +233,7 @@ const {
 } = require("./console-window.cjs");
 // The aither://space/ pane (BeadSpace universe): its IPC and the universe client.
 const { ensureSpaceIpc, runStackProfiles, spaceVerbHandler } = require("./space-window.cjs");
-const { createSpaceClient } = require("./space-client.cjs");
+const { createSpaceClient, defaultLocalFetcher } = require("./space-client.cjs");
 const { badgeBitmap, badgeTooltip, drawBadge } = require("./badge.cjs");
 const needsYouLib = require("./needs-you.cjs");
 const { voiceTrayItems } = require("./voice-tray-line.cjs");
@@ -3134,6 +3134,8 @@ function spaceClient() {
   if (!spaceClientInstance) {
     spaceClientInstance = createSpaceClient({
       store: require("./last-good-cache.cjs").deskCache(),
+      // Veil down or signed out: read the same universe straight from Genesis on the fleet.
+      fetchLocal: defaultLocalFetcher(),
       // The cached verdict only, WITH its time: a pane poll must never spawn a fleet
       // probe, and space-client lets it win only while fresh (deskFleetVerdict).
       fleetStatus: () => {
@@ -3665,6 +3667,8 @@ function wireConsoleHost(legacy) {
     // profile-add|remove / reclassify-edge: stack_profiles.py opens the PR; argv is built
     // in space-window.cjs from main's node, never from the page.
     runProfile: (argv) => runStackProfiles(argv),
+    // unit-start / unit-park (the audit lens): fleet-inventory-distro.py on the fleet host.
+    runUnit: (verb, unit) => require("./fleet-control.cjs").runUnitVerb(verb, unit),
   });
   ensureStageIpc(stagePaneImpl());
   // The Cast pane (U03/U07): who appears, and how they sound. Guarded --

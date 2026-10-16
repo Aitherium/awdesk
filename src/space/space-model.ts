@@ -16,12 +16,13 @@
  * Nothing here moves the camera. A new ask only glows; flying is a deep link or a click.
  */
 import { allAsks, attachCards, indexUniverse } from '../vendor/bead-space/universe';
-import { lensOf } from '../vendor/bead-space/space/panel-text';
-import type { LensSummary, LensTier } from '../vendor/bead-space/space/panel-text';
+import { AUDIT_VERDICTS, auditSummaryOf, lensOf, verdictOf } from '../vendor/bead-space/space/panel-text';
+import type { AuditSummary, AuditVerdict, LensSummary, LensTier } from '../vendor/bead-space/space/panel-text';
 import type { DeskCard, UniverseData } from '../vendor/bead-space/types';
 import type { DeckDecision, DeckState } from '../deck/deck-types';
 
-export type SpaceSource = 'remote' | 'last-good' | 'local';
+/** `genesis`: Veil was unreachable, so main read the same universe straight from Genesis. */
+export type SpaceSource = 'remote' | 'genesis' | 'last-good' | 'local';
 
 /** What desk:space-get answers (electron/space-client.cjs get()). */
 export interface SpaceGetResult {
@@ -85,6 +86,8 @@ export function deskCardOf(card: DeckDecision): DeskCard {
 export function badgeOf(result: SpaceGetResult | null): string {
   if (!result || !result.ok) return '';
   if (result.source === 'local') return 'local view';
+  // Live, just not through api.aitherium.com: say so, never "stale".
+  if (result.source === 'genesis') return 'direct';
   if (result.source === 'last-good' || result.stale) return 'stale';
   return '';
 }
@@ -145,6 +148,53 @@ export function deskLensOf(data: UniverseData | null, tier: LensTier): DeskLens 
     if (c.svc > 0 && c.dimmed === c.svc) dim.add(node.id);
   }
   return { summary, dim };
+}
+
+export interface DeskAudit {
+  summary: AuditSummary | null;
+  /** Every planet's verdict: its own, or the WORST under it (a group with one breaking
+   *  service reads breaking, so the eye finds it from the top). */
+  verdict: Map<string, AuditVerdict>;
+  /** Every planet's RAM: its own reading, or the sum of the RUNNING readings under it. */
+  ramMb: Map<string, number>;
+}
+
+/**
+ * The audit lens over the desk's one-level-at-a-time planets. Pure. Status is untouched:
+ * the lens only rings and labels what the audit (fleet_audit.py, via universe.py) said.
+ */
+export function deskAuditOf(data: UniverseData | null): DeskAudit | null {
+  if (!data) return null;
+  const { byId, children } = indexUniverse(data);
+  const rank = new Map(AUDIT_VERDICTS.map((v, i) => [v as string, i]));
+  const verdict = new Map<string, AuditVerdict>();
+  const ramMb = new Map<string, number>();
+  const memo = new Map<string, { v: AuditVerdict | null; ram: number }>();
+  const visit = (id: string, seen: Set<string>): { v: AuditVerdict | null; ram: number } => {
+    const hit = memo.get(id);
+    if (hit) return hit;
+    if (seen.has(id)) return { v: null, ram: 0 };
+    seen.add(id);
+    const node = byId.get(id);
+    let v = verdictOf(node);
+    const own = node?.meta?.mem_mb;
+    const running = node?.meta?.run_state === 'running' || (node?.meta?.run_state == null && verdictOf(node) != null);
+    let ram = typeof own === 'number' && Number.isFinite(own) && running ? own : 0;
+    for (const kid of children.get(id) ?? []) {
+      const c = visit(kid.id, seen);
+      ram += c.ram;
+      if (c.v && (!v || (rank.get(c.v) ?? 99) < (rank.get(v) ?? 99))) v = c.v;
+    }
+    const out = { v, ram };
+    memo.set(id, out);
+    return out;
+  };
+  for (const node of data.nodes) {
+    const r = visit(node.id, new Set());
+    if (r.v) verdict.set(node.id, r.v);
+    if (r.ram > 0) ramMb.set(node.id, Math.round(r.ram * 10) / 10);
+  }
+  return { summary: auditSummaryOf(data), verdict, ramMb };
 }
 
 /** The node an open card sits on, or null. */

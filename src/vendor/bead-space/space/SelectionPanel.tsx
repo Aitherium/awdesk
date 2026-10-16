@@ -15,8 +15,8 @@ import type { BeadAsk, BeadVerb, UniverseNode } from '../types';
 import { topAskOf, verbsFor } from '../universe/verbs';
 import { FONTS, PALETTE } from './palette';
 import {
-  CONFIRM_WINDOW_MS, LENS_TIERS, doingLine, hasDoing, isCore, isProfileVerb, keptBecause, laneRowsOf,
-  profilesOf, stateSentence,
+  CONFIRM_WINDOW_MS, LENS_TIERS, VERDICT_COLORS, auditLine, doingLine, hasDoing, isCore, isProfileVerb,
+  keptBecause, laneRowsOf, profilesOf, stateSentence, verdictOf,
 } from './panel-text';
 
 export interface ActionResult {
@@ -474,6 +474,29 @@ function DoingBlock({ node, onVerb }: { node: UniverseNode; onVerb?: SpaceAction
   );
 }
 
+/**
+ * The fleet audit's word on this thing: its verdict (coloured as the audit lens draws
+ * it), what it frees and how much it was used, and the evidence line the verdict rests on.
+ */
+function AuditBlock({ node }: { node: UniverseNode }) {
+  const v = verdictOf(node);
+  if (!v) return null;
+  const evidence = typeof node.meta?.evidence === 'string' ? node.meta.evidence : '';
+  const color = VERDICT_COLORS[v];
+  return (
+    <div style={S.block} data-block="audit" data-verdict={v}>
+      <div style={{ fontSize: 11, color: PALETTE.quiet, letterSpacing: 0.4 }}>Audit</div>
+      <div style={{ marginTop: 2, fontSize: 12, color: PALETTE.ink }}>
+        <span aria-hidden style={{
+          display: 'inline-block', width: 8, height: 8, borderRadius: 999, background: color, marginRight: 6,
+        }} />
+        {auditLine(node)}
+      </div>
+      {evidence ? <div style={{ marginTop: 4, fontSize: 12, color: '#9AA6B2' }} data-evidence>{evidence}</div> : null}
+    </div>
+  );
+}
+
 function ExploreBlock({ node, onExplore, onOpenChat, onExploring }: {
   node: UniverseNode;
   onExplore?: SpaceActions['onExplore'];
@@ -593,6 +616,7 @@ export function SelectionPanel(props: SelectionPanelProps) {
       ) : (
         <VerbBlock node={node} preArmVerbId={props.preArmVerbId} onVerb={props.onVerb} />
       )}
+      <AuditBlock node={node} />
       <DoingBlock node={node} onVerb={props.onVerb} />
       <ExploreBlock node={node} onExplore={props.onExplore} onOpenChat={props.onOpenChat} onExploring={props.onExploring} />
       {impact ? <div style={{ ...S.block, color: PALETTE.quiet, fontSize: 12 }} data-block="impact">{impact}</div> : null}

@@ -148,3 +148,29 @@
 .bead-space .bs-tooltip[data-desk-selected] {
   display: none;
 }
+
+/*
+ * The audit lens (fleet_audit.py verdicts): a ring outside the health rim in the verdict's
+ * colour (set inline from VERDICT_COLORS), and the planet's RAM under its name.
+ */
+.bead-space .desk-verdict {
+  fill: none;
+  stroke-width: 3px;
+  stroke-opacity: 0.95;
+}
+
+.bead-space .desk-verdict.breaking,
+.bead-space .desk-verdict.crashed {
+  stroke-width: 4px;
+  stroke-dasharray: 6 3;
+}
+
+.bead-space .desk-ram {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  fill: #c9d3dd;
+  paint-order: stroke;
+  stroke: #0b1020;
+  stroke-width: 3px;
+  pointer-events: none;
+}

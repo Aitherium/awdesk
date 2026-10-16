@@ -21,7 +21,7 @@
     "src/core/bead-space.ts": "ba831641304ddfddb98e5686df154b71a1b66600373ef98000ca4925fcaada11",
     "src/core/geometry.ts": "e60807d6b2dabd785b227472e710b7fcb919632f01ebd525dc0ba374034c379e",
     "src/core/hash.ts": "0e5c2d6273ff1cb48520e31b5e60a9b565c8fc65c974d792e8ac8ba53a25362f",
-    "src/types.ts": "f7256940a964aef8c40d3cd81c3846a95d60d02666a55fee5a7f7d087583ea78"
+    "src/types.ts": "28172a67a13d2819a0069a3695331745b465c66b8d4e61e0a9482d9e26e2518a"
   },
   "package": "@aitherium/bead-space@0.2.0"
 }

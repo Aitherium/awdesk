@@ -31,7 +31,7 @@
  * a key, the Next pill, or a deep link (?at= | focus=next | card=).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
 
 import { useDeckState } from '../deck/use-deck-state';
 import { FONTS, PALETTE } from '../vendor/bead-space/space/palette';
@@ -48,10 +48,15 @@ import { MAX_LEVEL_NODES, beadLevel, clickIntent, normaliseUniverse } from './be
 import type { BeadLevelData } from './bead-level';
 import { contextLine, tooltipLines } from './tooltip';
 import './space.css';
-import { buildSpaceModel, deepLinkOf, deepLinkTarget, deskLensOf } from './space-model';
-import { LENS_TIERS, lensSentence } from '../vendor/bead-space/space/panel-text';
+import { buildSpaceModel, deepLinkOf, deepLinkTarget, deskAuditOf, deskLensOf } from './space-model';
+import {
+  AUDIT_VERDICTS, LENS_TIERS, VERDICT_COLORS, VERDICT_WORDS, auditSentence, formatMb, lensSentence,
+} from '../vendor/bead-space/space/panel-text';
 import type { LensTier } from '../vendor/bead-space/space/panel-text';
-import type { SpaceGetResult } from './space-model';
+import type { DeskAudit, SpaceGetResult } from './space-model';
+
+/** The lens row: a profile tier, the fleet audit, or nothing. */
+type DeskLensMode = LensTier | 'audit';
 
 const POLL_MS = 20_000;
 
@@ -213,7 +218,8 @@ function svgEl(tag: string, attrs: Record<string, string | number>): SVGElement 
  * every create / update() -- update() rewrites each group's class, which carries
  * desk-asking / desk-unreported.
  */
-function decorate(host: HTMLElement, level: BeadLevelData, dim: ReadonlySet<string> | null = null) {
+function decorate(host: HTMLElement, level: BeadLevelData, dim: ReadonlySet<string> | null = null,
+  audit: DeskAudit | null = null) {
   const byId = new Map(level.nodes.map((n) => [n.id, n]));
   for (const g of host.querySelectorAll<SVGGElement>('g.bs-node')) {
     const n = byId.get((g as DataEl).__data__?.id ?? '');
@@ -231,8 +237,13 @@ function decorate(host: HTMLElement, level: BeadLevelData, dim: ReadonlySet<stri
     const rim = r * 1.3 + 4;
     const ring = rim + 7;
     const label = g.querySelector<SVGTextElement>('.bs-label');
-    label?.setAttribute('y', String(Math.round((asks > 0 ? ring : rim) + 14)));
-    const sig = JSON.stringify([r, mix, asks]);
+    const labelY = Math.round((asks > 0 ? ring : rim) + 14);
+    label?.setAttribute('y', String(labelY));
+    // The audit lens: a verdict ring outside everything else, and the RAM under the name.
+    const verdict = audit?.verdict.get(n.id) ?? null;
+    const ram = audit?.ramMb.get(n.id) ?? null;
+    g.classList.toggle('desk-audited', Boolean(verdict));
+    const sig = JSON.stringify([r, mix, asks, verdict, ram]);
     if (deco && deco.dataset.sig === sig) continue;
     if (!deco) {
       deco = svgEl('g', { class: 'desk-deco' }) as SVGGElement;
@@ -263,6 +274,20 @@ function decorate(host: HTMLElement, level: BeadLevelData, dim: ReadonlySet<stri
       t.textContent = asks > 9 ? '9+' : String(asks);
       badge.append(t);
       parts.push(badge);
+    }
+    if (verdict) {
+      const vr = (asks > 0 ? ring : rim) + 5;
+      const vring = svgEl('circle', { class: `desk-verdict ${verdict}`, r: vr.toFixed(2) });
+      vring.style.stroke = VERDICT_COLORS[verdict];
+      const title = svgEl('title', {});
+      title.textContent = VERDICT_WORDS[verdict];
+      vring.append(title);
+      parts.push(vring);
+    }
+    if (ram !== null) {
+      const t = svgEl('text', { class: 'desk-ram', 'text-anchor': 'middle', y: labelY + 14 });
+      t.textContent = formatMb(ram);
+      parts.push(t);
     }
     deco.replaceChildren(...parts);
   }
@@ -360,11 +385,17 @@ export default function SpaceView() {
   const model = useMemo(() => buildSpaceModel(result, deck), [result, deck]);
   // "Infra" and "Infrastructure" become one planet before anything is drawn or selected.
   const data = useMemo(() => (model.data ? normaliseUniverse(model.data) : null), [model.data]);
-  // The profile lens: dims what a tier would NOT keep and sums what it would cost.
-  const [lens, setLens] = useState<LensTier>('none');
-  const deskLens = useMemo(() => deskLensOf(data, lens), [data, lens]);
+  // The profile lens: dims what a tier would NOT keep and sums what it would cost. The
+  // audit lens: rings every planet with the fleet audit's verdict and labels its RAM.
+  const [lens, setLens] = useState<DeskLensMode>('none');
+  const deskLens = useMemo(() => deskLensOf(data, lens === 'audit' ? 'none' : lens), [data, lens]);
+  const deskAudit = useMemo(() => (lens === 'audit' ? deskAuditOf(data) : null), [data, lens]);
   const lensDimRef = useRef<ReadonlySet<string> | null>(null);
   lensDimRef.current = deskLens ? deskLens.dim : null;
+  const auditRef = useRef<DeskAudit | null>(null);
+  auditRef.current = deskAudit;
+  // Right-click on a planet: select it with its start/park verb in the primary slot.
+  const [preArm, setPreArm] = useState<{ nodeId: string; verbId: string } | null>(null);
 
   // ---- selection: the package's universe reducer over the CURRENT data ---------------
   const dataRef = useRef<UniverseData | null>(data);
@@ -439,7 +470,7 @@ export default function SpaceView() {
       };
       optionsRef.current = options;
       handleRef.current = engine.createBeadSpace(el, { nodes: first.nodes, links: first.links }, options);
-      decorate(el, first, lensDimRef.current);
+      decorate(el, first, lensDimRef.current, auditRef.current);
       window.setTimeout(() => placeBadges(el), 2600);
       shownFocus.current = first.focusId;
       setEngineReady(true);
@@ -458,8 +489,10 @@ export default function SpaceView() {
 
   // A lens change re-dims the drawn planets in place; nothing moves, no status changes.
   useEffect(() => {
-    if (handleRef.current && hostRef.current && level) decorate(hostRef.current, level, deskLens ? deskLens.dim : null);
-  }, [deskLens, level]);
+    if (handleRef.current && hostRef.current && level) {
+      decorate(hostRef.current, level, deskLens ? deskLens.dim : null, deskAudit);
+    }
+  }, [deskLens, deskAudit, level]);
 
   // A new level (a drill, or a refresh of this one) goes in through update().
   useEffect(() => {
@@ -471,7 +504,7 @@ export default function SpaceView() {
     }
     paletteRef.current.splice(0, paletteRef.current.length, ...level.palette);
     handle.update({ nodes: level.nodes, links: level.links });
-    if (hostRef.current) decorate(hostRef.current, level, lensDimRef.current);
+    if (hostRef.current) decorate(hostRef.current, level, lensDimRef.current, auditRef.current);
     if (shownFocus.current === level.focusId) return undefined;
     shownFocus.current = level.focusId;
     handle.fit();
@@ -603,6 +636,21 @@ export default function SpaceView() {
     }
   }, []);
 
+  // Right-click a planet: select it with its start / park verb pre-armed in the primary
+  // slot (park still needs its second, confirming click). No menu: the panel is the menu.
+  const onContextMenu = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+    const target = e.target as Element | null;
+    const g = (target && typeof target.closest === 'function' ? target.closest('g.bs-node') : null) as DataEl | null;
+    const id = g?.__data__?.id;
+    const current = dataRef.current;
+    if (!id || !current) return;
+    e.preventDefault();
+    const node = indexUniverse(current).byId.get(id);
+    const unitVerb = (node?.verbs ?? []).find((v) => v.transport === 'unit');
+    setPreArm(unitVerb ? { nodeId: id, verbId: unitVerb.id } : null);
+    dispatch({ type: 'select', id });
+  }, [dispatch]);
+
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
     if (target.closest('input, textarea, [contenteditable="true"]')) return;
@@ -652,7 +700,7 @@ export default function SpaceView() {
   const up = level.path.length > 1 ? level.path[level.path.length - 2] : null;
   return (
     <div style={shell} data-space="ready" data-source={result?.source ?? ''} data-focus={level.focusId}
-      tabIndex={0} onKeyDown={onKeyDown}>
+      tabIndex={0} onKeyDown={onKeyDown} onContextMenu={onContextMenu}>
       <div ref={bindHost} data-space-engine="bead-space" style={{ position: 'absolute', inset: 0 }} />
       {engineError ? (
         <div role="alert" style={{ position: 'absolute', top: '45%', width: '100%', textAlign: 'center', color: PALETTE.danger }}>
@@ -689,7 +737,8 @@ export default function SpaceView() {
           <span
             data-space-badge={model.badge}
             title={model.badge === 'local view' ? `The platform universe is not reachable${model.error ? `: ${model.error}` : ''}; this is what the desk sees by itself.`
-              : `Last good copy${model.error ? ` -- live read failed: ${model.error}` : ''}`}
+              : model.badge === 'direct' ? `Live, read straight from Genesis on the fleet${model.error ? ` (api.aitherium.com: ${model.error})` : ''}`
+                : `Last good copy${model.error ? ` -- live read failed: ${model.error}` : ''}`}
             style={{ ...chip, cursor: 'default', color: PALETTE.quiet }}
           >
             {model.badge}
@@ -700,7 +749,7 @@ export default function SpaceView() {
         <AsksBar data={data} level={level} index={askCursor} onNext={onNext} onFly={flyToAsk} />
         <div data-space-lens={lens} style={{ position: 'absolute', left: 16, top: 64, pointerEvents: 'auto' }}>
           <div role="group" aria-label="Profile lens" style={{ display: 'inline-flex', gap: 4 }}>
-            {[...LENS_TIERS, 'none' as const].map((t) => (
+            {[...LENS_TIERS, 'audit' as const, 'none' as const].map((t) => (
               <button key={t} type="button" aria-pressed={lens === t} onClick={() => setLens(t)}
                 style={{ ...chip, padding: '4px 10px', fontSize: 11, color: lens === t ? '#FFFFFF' : PALETTE.quiet,
                   borderColor: lens === t ? PALETTE.aitherium : undefined }}>
@@ -713,12 +762,31 @@ export default function SpaceView() {
               {lensSentence(deskLens.summary)}
             </div>
           ) : null}
+          {deskAudit ? (
+            <div data-space-audit style={{ marginTop: 4, fontFamily: FONTS.metric, fontSize: 11, color: '#C9D3DD' }}>
+              <div data-space-audit-sum>
+                {deskAudit.summary ? auditSentence(deskAudit.summary)
+                  : 'audit not measured yet (aither-fleet-audit.timer writes it every 15 min)'}
+              </div>
+              {deskAudit.summary ? (
+                <div data-space-audit-legend style={{ marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {AUDIT_VERDICTS.filter((v) => deskAudit.summary?.byVerdict[v]).map((v) => (
+                    <span key={v} title={VERDICT_WORDS[v]} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      <span aria-hidden style={{ width: 8, height: 8, borderRadius: 999, background: VERDICT_COLORS[v] }} />
+                      {v} {deskAudit.summary?.byVerdict[v]}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         {selected ? (
           <div style={{ position: 'absolute', top: 56, right: 16, maxHeight: 'calc(100% - 140px)', overflowY: 'auto', pointerEvents: 'auto' }}>
             <SelectionPanel
               key={selected.id}
               node={selected}
+              preArmVerbId={preArm && preArm.nodeId === selected.id ? preArm.verbId : null}
               onVerb={onVerb}
               onAnswer={onAnswer}
               onCredential={onCredential}

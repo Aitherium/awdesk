@@ -9,6 +9,12 @@
  *
  * The pane is never blank. In order:
  *   remote     the live universe;
+ *   genesis    the SAME universe read straight from Genesis on the fleet host when Veil
+ *              (api.aitherium.com) or the desk's sign-in is down: `podman exec
+ *              aitheros-genesis-a curl https://localhost:8001/beadspace/universe` over the
+ *              WSL hop (a direct in-container socket is an attested platform caller). Live,
+ *              not stale -- 2026-10-16 05:00 the lens read "stale / business 0 services"
+ *              for hours only because Veil was down while Genesis was fine;
  *   last-good  the last remote answer saved on disk (last-good-cache.cjs), stale;
  *   local      a skeleton built from what the desk alone knows (localSkeleton):
  *              the platform, the six galaxies (health unknown), the fleet galaxy
@@ -24,7 +30,7 @@
  *     sees it; the IPC in space-window.cjs re-checks both on every click anyway.
  */
 
-const { ACTION_NAMES, DESTRUCTIVE, classify, summarize } = require("./fleet-control.cjs");
+const { ACTION_NAMES, DESTRUCTIVE, classify, distroName, inFleetHost, summarize } = require("./fleet-control.cjs");
 const { PLANE_IDS } = require("./plane-client.cjs");
 
 const API_BASE = "https://api.aitherium.com";
@@ -34,6 +40,12 @@ const CACHE_TTL_MS = 15000;
 /** The desk's own fleet verdict outranks the server's only while it is this fresh. */
 const FLEET_VERDICT_MAX_AGE_MS = 120000;
 const CACHE_KEY = "space-universe";
+
+/** Genesis instances the local fallback asks, in order (the LB name is haproxy's). */
+const LOCAL_GENESIS_CONTAINERS = Object.freeze(["aitheros-genesis-a", "aitheros-genesis-b"]);
+const LOCAL_FETCH_TIMEOUT_MS = 30000;
+/** universe.py unit verbs: start / park ONE unit (space-window.cjs runs them). */
+const UNIT_VERB_RE = /^unit-(start|park):([A-Za-z0-9][A-Za-z0-9_.@-]{0,120})$/;
 
 /** The U1 id grammar. */
 const ID_RE = /^(platform|[a-z]+:[A-Za-z0-9._/@:-]{1,160})$/;
@@ -180,10 +192,13 @@ function normaliseVerb(verb) {
   } else if (verb.transport === "open") {
     const m = /^open-plane:([a-z]+)$/.exec(id);
     if (!m || !PLANE_IDS.includes(m[1])) return null;
+  } else if (verb.transport === "unit") {
+    if (!UNIT_VERB_RE.test(id)) return null;
   } else {
     return null;
   }
-  const out = { id, label, danger: DESTRUCTIVE.has(id) ? "confirm" : "none", transport: verb.transport };
+  const risky = DESTRUCTIVE.has(id) || id.startsWith("unit-park:");
+  const out = { id, label, danger: risky ? "confirm" : "none", transport: verb.transport };
   if (verb.primary === true) out.primary = true;
   return out;
 }
@@ -244,6 +259,57 @@ function veilUniverseFetcher({ token, fetchImpl = globalThis.fetch, apiBase = AP
   };
 }
 
+/**
+ * argv to read the universe straight from ONE Genesis instance on the fleet host. No shell
+ * anywhere: `wsl.exe -e` executes podman directly, and every argument is a literal here.
+ */
+function localGenesisArgv(container, { distro = distroName(), local = inFleetHost() } = {}) {
+  if (!LOCAL_GENESIS_CONTAINERS.includes(container)) throw new Error(`not a Genesis instance: ${container}`);
+  const inner = ["podman", "exec", container, "curl", "-sk", "--max-time", "20",
+    "-H", "X-Caller-Type: platform", "-H", "Accept: application/json",
+    "https://localhost:8001/beadspace/universe"];
+  if (local) return { file: inner[0], args: inner.slice(1) };
+  return { file: "wsl.exe", args: ["-d", distro, "-u", "root", "-e", ...inner] };
+}
+
+/**
+ * The fallback transport: Genesis on the fleet host, -a then -b. Resolves
+ * {universe, etag}; throws with every instance's reason when none answers a U1 universe.
+ */
+function localGenesisFetcher({ execFile = require("node:child_process").execFile, containers = LOCAL_GENESIS_CONTAINERS,
+  argvOf = localGenesisArgv, timeoutMs = LOCAL_FETCH_TIMEOUT_MS } = {}) {
+  return async function fetchLocal() {
+    const why = [];
+    for (const container of containers) {
+      let cmd;
+      try { cmd = argvOf(container); } catch (error) { why.push(errorText(error)); continue; }
+      const out = await new Promise((resolve) => {
+        execFile(cmd.file, cmd.args, { windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
+          (error, stdout) => resolve({ error, text: String(stdout || "") }));
+      });
+      if (!out.text.trim()) {
+        why.push(`${container}: ${out.error ? errorText(out.error).slice(0, 120) : "no answer"}`);
+        continue;
+      }
+      let body;
+      try { body = JSON.parse(out.text); } catch { why.push(`${container}: unparseable answer`); continue; }
+      if (!isUniverse(body)) {
+        const detail = body && typeof body === "object" && body.detail ? String(body.detail).slice(0, 120) : "not a U1 universe";
+        why.push(`${container}: ${detail}`);
+        continue;
+      }
+      return { universe: body, etag: body.etag || null };
+    }
+    throw new Error(`local Genesis: ${why.join("; ") || "no instance"}`);
+  };
+}
+
+/** The local fallback this desk can use: on the Windows host or inside the fleet host. */
+function defaultLocalFetcher({ platform = process.platform, env = process.env } = {}) {
+  if (env.AWDESK_SPACE_LOCAL === "0") return null;
+  return platform === "win32" || env.AWDESK_FLEET_LOCAL === "1" ? localGenesisFetcher() : null;
+}
+
 /** The desk's Online bearer, resolved lazily so requiring this module needs no Electron. */
 function deskToken() {
   return require("./browser-window.cjs").onlineToken();
@@ -259,6 +325,8 @@ function deskToken() {
  */
 function createSpaceClient({
   fetchUniverse = veilUniverseFetcher({ token: deskToken }),
+  // main.cjs passes defaultLocalFetcher(); null here so a test never spawns wsl.exe
+  fetchLocal = null,
   store = null,
   fleetStatus = () => null,
   now = () => Date.now(),
@@ -279,7 +347,7 @@ function createSpaceClient({
     const universe = raw ? normaliseUniverse(raw, fleet.verdict, fleet.at)
       : localSkeleton(fleet.verdict, now(), fleet);
     handed = universe;
-    const out = { ok: true, universe, stale: source !== "remote", source };
+    const out = { ok: true, universe, stale: source !== "remote" && source !== "genesis", source };
     if (extra.error) out.error = extra.error;
     if (extra.savedAt) out.savedAt = extra.savedAt;
     return out;
@@ -287,6 +355,7 @@ function createSpaceClient({
 
   function fromLast() {
     if (last.source === "remote") return finish("remote", snapshot);
+    if (last.source === "genesis") return finish("genesis", last.raw, last);
     if (last.source === "last-good") return finish("last-good", last.raw, last);
     return finish("local", null, last);
   }
@@ -309,7 +378,21 @@ function createSpaceClient({
       last = { at: now(), source: "remote" };
       return fromLast();
     } catch (error) {
-      const why = errorText(error).slice(0, 240);
+      let why = errorText(error).slice(0, 240);
+      if (typeof fetchLocal === "function") {
+        try {
+          const answer = await fetchLocal();
+          if (answer && isUniverse(answer.universe)) {
+            if (store) {
+              try { store.remember(CACHE_KEY, answer.universe); } catch { /* memory still holds it */ }
+            }
+            last = { at: now(), source: "genesis", raw: answer.universe, error: why };
+            return fromLast();
+          }
+        } catch (localError) {
+          why = `${why}; ${errorText(localError)}`.slice(0, 400);
+        }
+      }
       let saved = null;
       if (store) {
         try { saved = store.recall(CACHE_KEY); } catch { saved = null; }
@@ -335,6 +418,11 @@ function createSpaceClient({
 module.exports = {
   createSpaceClient,
   veilUniverseFetcher,
+  localGenesisFetcher,
+  localGenesisArgv,
+  defaultLocalFetcher,
+  LOCAL_GENESIS_CONTAINERS,
+  UNIT_VERB_RE,
   localSkeleton,
   normaliseUniverse,
   normaliseVerb,

@@ -150,6 +150,109 @@ export function lensSentence(s: LensSummary): string {
     + (s.measured < s.count ? ` (${s.measured} measured)` : '');
 }
 
+/**
+ * The fleet audit's verdicts (AitherOS/dev/tools/fleet_audit.py via universe.py), worst
+ * first: a parent planet shows the worst verdict under it.
+ */
+export const AUDIT_VERDICTS = [
+  'breaking', 'crashed', 'dead', 'waste', 'trim-candidate', 'parked', 'business', 'core',
+] as const;
+export type AuditVerdict = (typeof AUDIT_VERDICTS)[number];
+
+/** One colour per verdict -- none of them the ask gold. */
+export const VERDICT_COLORS: Record<AuditVerdict, string> = {
+  breaking: '#FF4D4F',
+  crashed: '#FF922B',
+  dead: '#ADB5BD',
+  waste: '#DA77F2',
+  'trim-candidate': '#FFE066',
+  parked: '#495057',
+  business: '#4DABF7',
+  core: '#69DB7C',
+};
+
+/** The verdict as the owner reads it. */
+export const VERDICT_WORDS: Record<AuditVerdict, string> = {
+  breaking: 'Breaking: something running misses it',
+  crashed: 'Crashed',
+  dead: 'Dead: a leftover nothing runs',
+  waste: 'Waste: serves nothing',
+  'trim-candidate': 'Trim candidate',
+  parked: 'Parked',
+  business: 'Kept by business',
+  core: 'Core: never stopped',
+};
+
+export function verdictOf(node: UniverseNode | null | undefined): AuditVerdict | null {
+  const v = node?.meta?.verdict;
+  return typeof v === 'string' && (AUDIT_VERDICTS as readonly string[]).includes(v)
+    ? (v as AuditVerdict) : null;
+}
+
+/** "Trim candidate · frees 99 MB · 6 requests in 13 h" -- what was not measured is left out. */
+export function auditLine(node: UniverseNode): string {
+  const v = verdictOf(node);
+  if (!v) return '';
+  const m = node.meta ?? {};
+  const parts: string[] = [VERDICT_WORDS[v]];
+  const frees = num(m.frees_mb);
+  if (frees !== null && frees > 0) parts.push(`frees ${formatMb(frees)}`);
+  const req = num(m.requests);
+  const hours = num(m.log_hours);
+  if (req !== null) {
+    const window = hours === null ? '' : hours >= 1 ? ` in ${Math.round(hours)} h` : ' in <1 h';
+    parts.push(`${req} request${req === 1 ? '' : 's'}${window}`);
+  }
+  const mem = num(m.mem_mb);
+  if (mem !== null && frees === null) parts.push(`RAM ${formatMb(mem)}`);
+  return parts.join(' · ');
+}
+
+export interface AuditSummary {
+  headline: string;
+  running: number | null;
+  ramMb: number | null;
+  freesMb: number | null;
+  byVerdict: Partial<Record<AuditVerdict, number>>;
+  generatedAt: string;
+  logsScanned: boolean;
+}
+
+/** galaxy:fleet meta.audit, or null when the universe carries no audit. */
+export function auditSummaryOf(data: UniverseData | null): AuditSummary | null {
+  const fleet = data?.nodes.find((n) => n.id === 'galaxy:fleet');
+  const raw = fleet?.meta?.audit;
+  if (!raw || typeof raw !== 'object') return null;
+  const a = raw as Record<string, unknown>;
+  const by: Partial<Record<AuditVerdict, number>> = {};
+  const rawBy = a.by_verdict && typeof a.by_verdict === 'object' ? (a.by_verdict as Record<string, unknown>) : {};
+  for (const v of AUDIT_VERDICTS) {
+    const n = num(rawBy[v]);
+    if (n) by[v] = n;
+  }
+  return {
+    headline: text(a.headline),
+    running: num(a.running),
+    ramMb: num(a.ram_mb),
+    freesMb: num(a.frees_mb),
+    byVerdict: by,
+    generatedAt: text(a.generated_at),
+    logsScanned: a.logs_scanned === true,
+  };
+}
+
+/** "56 running · 19.9 GB · trim frees 3.2 GB · measured 12 min ago". */
+export function auditSentence(s: AuditSummary, nowMs: number = Date.now()): string {
+  const head = s.running !== null && s.ramMb !== null
+    ? `${s.running} running · ${formatMb(s.ramMb)} · trim frees ${formatMb(s.freesMb ?? 0)}`
+    : s.headline || 'audit not measured';
+  const at = Date.parse(s.generatedAt);
+  if (!Number.isFinite(at)) return head;
+  const mins = Math.max(0, Math.round((nowMs - at) / 60000));
+  const age = mins < 1 ? 'just now' : mins < 90 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`;
+  return `${head} · measured ${age}`;
+}
+
 export interface LaneRow {
   lane: string;
   verdict: string;

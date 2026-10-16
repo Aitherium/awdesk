@@ -219,9 +219,10 @@ export interface BeadVerb {
   danger: 'none' | 'confirm';
   /**
    * `fleet` runs through the host's action table; `open` opens a surface; `info` renders
-   * the node's own meta and runs nothing; `profile` edits a profile tier through a PR.
+   * the node's own meta and runs nothing; `profile` edits a profile tier through a PR;
+   * `unit` starts or parks ONE fleet unit (`unit-start:<unit>` / `unit-park:<unit>`).
    */
-  transport: 'fleet' | 'open' | 'info' | 'profile';
+  transport: 'fleet' | 'open' | 'info' | 'profile' | 'unit';
   primary?: boolean;
 }
 
