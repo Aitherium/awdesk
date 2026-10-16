@@ -1,0 +1,364 @@
+/*
+ * bead-space — scoped styles.
+ *
+ * Ported from upstream `src/styles.css` (MIT — see NOTICE.md). Upstream styled the whole
+ * document (`body`, `*`, `h1`, `button`, `#map`) because it owned the page. Everything here is
+ * scoped under `.bead-space` so the engine can be dropped into a panel without bleeding.
+ *
+ * Two other deliberate differences:
+ *   - the tooltip is `position: absolute` inside `.bead-space` (upstream: `fixed` on the window)
+ *   - SVG `filter:` references moved into JS, because filter ids are per-instance so that
+ *     several universes can share one page. Do not re-add `filter: url("#glow")` here.
+ *
+ * Colours are overridable via the custom properties on `.bead-space`.
+ */
+
+.bead-space {
+  --bs-link: #7390a9;
+  --bs-link-related: #b88be4;
+  --bs-link-blocks: #ff9274;
+  --bs-planet-fill: #172236;
+  --bs-planet-stroke: #5e7590;
+  --bs-selection: #eaf7ff;
+  --bs-star: #d9ecff;
+  --bs-surface: rgb(15 27 43 / 94%);
+  --bs-surface-border: rgb(146 190 227 / 48%);
+  --bs-text: #eaf6ff;
+  --bs-text-muted: #9eb1c5;
+  --bs-accent: #72d7ff;
+
+  /* Map backdrop. Tokenised 2026-08-15: every other colour here was already
+     overridable, but the map's own background was hardcoded, so a host could
+     re-ink the planets and links and still be left with a black sky — which
+     made a light theme impossible without forking the sheet. The three
+     defaults below are the previous literals VERBATIM, so every existing
+     consumer renders identically; only a host that overrides them moves. */
+  --bs-backdrop-glow-a: rgb(39 91 132 / 30%);
+  --bs-backdrop-glow-b: rgb(67 42 111 / 20%);
+  --bs-backdrop-base: linear-gradient(145deg, #07101c, #111b2d 48%, #080d17);
+
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: inherit;
+}
+
+.bead-space-map {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  background:
+    radial-gradient(ellipse at 18% 28%, var(--bs-backdrop-glow-a), transparent 38%),
+    radial-gradient(ellipse at 76% 72%, var(--bs-backdrop-glow-b), transparent 42%),
+    var(--bs-backdrop-base);
+}
+
+.bead-space-map:active {
+  cursor: grabbing;
+}
+
+/* ── links ──────────────────────────────────────────────────────────────────── */
+
+.bead-space .bs-link {
+  stroke: var(--bs-link);
+  stroke-width: 1.4;
+  stroke-opacity: 0.6;
+}
+
+.bead-space .bs-link.related {
+  stroke: var(--bs-link-related);
+  stroke-dasharray: 4 6;
+}
+
+.bead-space .bs-link.blocks {
+  stroke: var(--bs-link-blocks);
+  stroke-dasharray: 8 5;
+}
+
+/* ── planets ────────────────────────────────────────────────────────────────── */
+
+.bead-space .bs-node {
+  cursor: grab;
+  transition: opacity 180ms ease;
+  filter: drop-shadow(0 0 6px rgb(111 188 255 / 28%));
+}
+
+.bead-space .bs-node:active {
+  cursor: grabbing;
+}
+
+/* Planets are focusable (tabindex 0) for the keyboard; a MOUSE click must not leave the
+   browser's square focus box around the sprite. Keyboard focus keeps its outline. */
+.bead-space .bs-node:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.bead-space .bs-planet-core {
+  fill: var(--bs-planet-fill);
+  stroke: var(--bs-planet-stroke);
+  stroke-width: 1.4px;
+}
+
+.bead-space .bs-planet-sprite,
+.bead-space .bs-ship,
+.bead-space .bs-station {
+  pointer-events: none;
+}
+
+.bead-space .bs-selection-ring {
+  fill: none;
+  stroke: var(--bs-selection);
+  stroke-width: 2.3px;
+  opacity: 0;
+}
+
+.bead-space .bs-node.selected .bs-selection-ring {
+  opacity: 1;
+}
+
+/*
+ * Labels — an AitherOS addition. Upstream showed nothing until you hovered, which is fine
+ * for fictional data you are not trying to read. On a real map you must be able to tell what
+ * you are looking at without pointing at every planet in turn.
+ *
+ * Hidden by default on a crowded map (the engine toggles `.bs-labels-on` by node count and
+ * zoom level), but the selected node and its neighbours are always labelled.
+ */
+.bead-space .bs-label {
+  fill: #cfe3f5;
+  font-family: inherit;
+  font-size: 10px;
+  text-anchor: middle;
+  pointer-events: none;
+  opacity: 0;
+  paint-order: stroke;
+  stroke: rgb(6 12 21 / 88%);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  transition: opacity 140ms ease;
+}
+
+.bead-space.bs-labels-on .bs-label,
+.bead-space .bs-node.selected .bs-label {
+  opacity: 1;
+}
+
+.bead-space .bs-node.selected .bs-label {
+  fill: #fff;
+  font-weight: 600;
+}
+
+/* A dimmed planet's label would just be noise around the thing you selected. */
+.bead-space .bs-node.dim .bs-label {
+  opacity: 0;
+}
+
+/*
+ * Status affordances — an AitherOS addition. Upstream rendered `blocked`, `deferred` and
+ * `done` identically to `open`, which is fine for fictional data but loses real signal.
+ */
+.bead-space .bs-node.status-blocked .bs-planet-core {
+  stroke: var(--bs-link-blocks);
+  stroke-width: 2px;
+}
+
+.bead-space .bs-node.status-deferred {
+  opacity: 0.62;
+}
+
+.bead-space .bs-node.status-done {
+  opacity: 0.4;
+}
+
+.bead-space .bs-node.status-done .bs-planet-core {
+  stroke-dasharray: 3 3;
+}
+
+/* ── ships, trails, stations ─────────────────────────────────────────────────── */
+
+.bead-space .bs-ship-tail {
+  fill: none;
+  stroke-linecap: round;
+  stroke-width: 2.8px;
+  pointer-events: none;
+}
+
+.bead-space .bs-patrol-route {
+  fill: none;
+  stroke-width: 1px;
+  stroke-dasharray: 2 12;
+  stroke-linecap: round;
+  opacity: 0.09;
+  pointer-events: none;
+}
+
+.bead-space .bs-patrol-trail {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.bead-space .bs-station {
+  filter: drop-shadow(0 0 4px rgb(159 210 255 / 58%));
+}
+
+.bead-space .bs-ship-hit {
+  fill: transparent;
+  stroke: transparent;
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.bead-space .bs-star {
+  fill: var(--bs-star);
+  pointer-events: none;
+}
+
+.bead-space .dim {
+  opacity: 0.12 !important;
+}
+
+/* ── tooltip ────────────────────────────────────────────────────────────────── */
+
+.bead-space .bs-tooltip {
+  position: absolute;
+  z-index: 3;
+  width: min(360px, calc(100% - 32px));
+  padding: 12px 14px;
+  pointer-events: none;
+  border: 1px solid var(--bs-surface-border);
+  border-radius: 9px;
+  color: var(--bs-text);
+  background: var(--bs-surface);
+  box-shadow: 0 16px 42px rgb(0 0 0 / 52%);
+  font-size: 13px;
+  line-height: 1.4;
+  backdrop-filter: blur(12px);
+  /*
+   * Real titles are not one line. A tech-debt description runs to thousands of characters and
+   * would otherwise grow the tooltip off the screen.
+   */
+  max-height: 40vh;
+  overflow: hidden;
+}
+
+.bead-space .bs-tooltip .bs-tip-body {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+  overflow: hidden;
+}
+
+.bead-space .bs-tooltip[hidden] {
+  display: none;
+}
+
+.bead-space .bs-tooltip strong {
+  display: block;
+  margin-bottom: 3px;
+  color: #fff;
+  font-weight: 600;
+}
+
+.bead-space .bs-tooltip small {
+  display: block;
+  margin-top: 6px;
+  color: var(--bs-text-muted);
+}
+
+/* ── follow-mode pill ───────────────────────────────────────────────────────── */
+
+.bead-space .bs-follow-mode {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid rgb(117 210 255 / 55%);
+  border-radius: 999px;
+  color: #eaf8ff;
+  background: rgb(9 24 39 / 88%);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 42%);
+  backdrop-filter: blur(12px);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.bead-space .bs-follow-mode[hidden] {
+  display: none;
+}
+
+.bead-space .bs-follow-mode strong {
+  color: #8edcff;
+}
+
+.bead-space .bs-follow-mode small {
+  color: #8297ab;
+}
+
+.bead-space .bs-follow-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bs-accent);
+  box-shadow: 0 0 10px var(--bs-accent);
+  animation: bs-follow-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes bs-follow-pulse {
+  50% {
+    opacity: 0.45;
+    transform: scale(0.72);
+  }
+}
+
+/*
+ * Cheap modes. A paused universe (`.bs-paused`, toggled by the engine) is a frozen frame,
+ * usually covered by other UI; a host may also ask for `.bs-lowfx` (on the root or any
+ * ancestor) when the universe is only an ambient backdrop. Either way the GLOW filters go:
+ * every drop-shadow / feGaussianBlur is re-rasterised on every repaint above it, and a live
+ * profile counted ~390 filtered elements behind the Living OS desktop. Planet TINT filters
+ * (on `.bs-planet-sprite`) stay — they are the planet's colour, not decoration.
+ * `filter: none` beats the per-instance `filter="url(#…)"` presentation attributes.
+ */
+.bead-space.bs-paused .bs-node,
+.bead-space.bs-paused .bs-station,
+.bead-space.bs-paused .bs-selection-ring,
+.bead-space.bs-paused .bs-ship-tail,
+.bead-space.bs-paused .bs-patrol-trail,
+.bs-lowfx .bead-space .bs-node,
+.bs-lowfx .bead-space .bs-station,
+.bs-lowfx .bead-space .bs-selection-ring,
+.bs-lowfx .bead-space .bs-ship-tail,
+.bs-lowfx .bead-space .bs-patrol-trail,
+.bead-space.bs-lowfx .bs-node,
+.bead-space.bs-lowfx .bs-station,
+.bead-space.bs-lowfx .bs-selection-ring,
+.bead-space.bs-lowfx .bs-ship-tail,
+.bead-space.bs-lowfx .bs-patrol-trail {
+  filter: none;
+}
+
+.bead-space.bs-paused .bs-follow-pulse {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bead-space .bs-follow-pulse {
+    animation: none;
+  }
+
+  .bead-space .bs-node {
+    transition: none;
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "built_by": "vendor_bead_space.py via the package's `npm run build:browser`",
+  "bundle_sha256": "d843f0cf3c009c81fdb4f1a7c0dabfa515d558b75ac88af9ef30ea623e98545e",
+  "inputs": {
+    "package-lock.json": "ee94b90f9c78780ce6272d305cb296516dfceb7fb718b1c9e940f12765588500",
+    "package.json": "c807f16c8b7b0c16962c13f64fbb09c058dd5fe10cb96aa0c6a09cf1f553ef98",
+    "src/adapters/agents.ts": "731076369b7cafa3e1f3b332865a15e6342754ea227dedbfb936ec3fcdd772d5",
+    "src/adapters/compute.ts": "9884c6932eb1a531cba6a6083231acb44670544b3d8fc4502f62d3484ad1a0c6",
+    "src/adapters/devices.ts": "a3ae17d374943bb2616973194324e99c3b1ab68511916ca537f176e7a37b3243",
+    "src/adapters/ecosystem.ts": "d160003c039ce0b2237fa7d59288b819d1425ca5077b5fecd9d057281580e72e",
+    "src/adapters/graph.ts": "4877999e29c126ebdae8f455466444fd3a201280b7c8a87099489865e3968832",
+    "src/adapters/index.ts": "8e2f290e19d9857753a54ae61d327ccbec1e5f8647404ca4f154250d2676ddba",
+    "src/adapters/mesh.ts": "3390e3fec61e7faa0c0627d6abbaeaf35d2a7aacfee7ad7a626c8150e0e0d593",
+    "src/adapters/pipeline.ts": "a2bbadd9dc9c670233cedeb9ec13bb6d09cb886fd1b2ffb8302737507e93e606",
+    "src/adapters/platform.ts": "9099a0bcf3ea813fe180bf38e6d67e6a29b8343b4711903c033c3fd4f2738250",
+    "src/adapters/saga.ts": "fff406bda44593b3010fc5a43c30e3014c4933bce3afbda40e4089aa1d1bec3e",
+    "src/adapters/triage.ts": "40404e19388ed4780951d2d211b3c6fff9bae7d0e63f1edcb4827d9adc4df118",
+    "src/adapters/work-universe.ts": "e12ef6b1fefbc4c57b1cb4f9b2b6cabc673d82d8995ba18d8de46fa2772c5141",
+    "src/adapters/work.ts": "331518efb4ee6e197631b7be9eefd43db28a999897f6b78ff5d32bc8e39665c4",
+    "src/browser.ts": "92616c22fdd63303f2a051f58f2bac22d51386738d4abd33dd6070c4833050bc",
+    "src/core/bead-space.ts": "ba831641304ddfddb98e5686df154b71a1b66600373ef98000ca4925fcaada11",
+    "src/core/geometry.ts": "e60807d6b2dabd785b227472e710b7fcb919632f01ebd525dc0ba374034c379e",
+    "src/core/hash.ts": "0e5c2d6273ff1cb48520e31b5e60a9b565c8fc65c974d792e8ac8ba53a25362f",
+    "src/types.ts": "4378ed28fe97959f3629bec45c313daeb787535155231cede978459e8f3b2754"
+  },
+  "package": "@aitherium/bead-space@0.2.0"
+}

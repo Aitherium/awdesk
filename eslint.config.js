@@ -18,6 +18,9 @@ export default tseslint.config(
       // no-useless-escape / no-unused-expressions (run 37423763500), the same
       // class kvholder/** is ignored for.
       'electron/vendor/**',
+      // the bead-space engine's minified browser build (vendor_bead_space.py; linted
+      // and tested as source in AitherOS/apps/packages/bead-space)
+      'src/vendor/bead-space/engine/**',
       'dist/**',
       'release/**',
       'node_modules/**',

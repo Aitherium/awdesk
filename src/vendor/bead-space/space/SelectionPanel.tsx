@@ -8,7 +8,7 @@
  * the host once, and the field is cleared in the same tick.
  */
 import { useEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
 import type { BeadAsk, BeadVerb, UniverseNode } from '../types';
 import { topAskOf, verbsFor } from '../universe/verbs';
@@ -44,6 +44,11 @@ export interface SelectionPanelProps extends SpaceActions {
   preArmVerbId?: string | null;
   /** Fired with the node id while an explore is in flight, then null. */
   onExploring?: (id: string | null) => void;
+  /**
+   * A host-written line under the name (how it is doing, where it sits, what it
+   * touches). Replaces the bare state sentence and is shown even with an ask open.
+   */
+  context?: string;
   className?: string;
   style?: CSSProperties;
 }
@@ -92,16 +97,17 @@ const S = {
     fontWeight: 500,
     cursor: 'pointer',
   }),
+  /** Every secondary action: one look, one row. A ghost outline read as a heading. */
   ghost: (color: string): CSSProperties => ({
-    padding: '5px 10px',
-    marginTop: 6,
+    padding: '7px 12px',
+    marginTop: 8,
     marginRight: 6,
-    border: `1px solid ${color}`,
-    borderRadius: 999,
-    background: 'transparent',
-    color,
+    border: `1px solid ${color === PALETTE.ink || color === PALETTE.quiet ? '#2B3D50' : `${color}99`}`,
+    borderRadius: 8,
+    background: PALETTE.raised,
+    color: color === PALETTE.quiet ? PALETTE.ink : color,
     fontFamily: FONTS.name,
-    fontSize: 12,
+    fontSize: 13,
     cursor: 'pointer',
   }),
   note: (color: string): CSSProperties => ({ marginTop: 6, fontSize: 12, color }),
@@ -118,10 +124,12 @@ function StatusLine({ status }: { status: Status }) {
   return <div role="alert" style={S.note(PALETTE.danger)}>{status.note}</div>;
 }
 
-function AskBlock({ ask, onAnswer, onCredential }: {
+function AskBlock({ ask, onAnswer, onCredential, children }: {
   ask: BeadAsk;
   onAnswer?: SpaceActions['onAnswer'];
   onCredential?: SpaceActions['onCredential'];
+  /** The node's own verbs, demoted: they share the ask's one row of secondary chips. */
+  children?: ReactNode;
 }) {
   const secretRef = useRef<HTMLInputElement | null>(null);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
@@ -171,7 +179,7 @@ function AskBlock({ ask, onAnswer, onCredential }: {
   const color = PALETTE.gold;
   return (
     <div style={S.block} data-block="ask">
-      <div style={{ color }}>{ask.title}</div>
+      <div style={{ color, fontSize: 15, fontWeight: 500, lineHeight: 1.35 }} data-ask-title>{ask.title}</div>
       {ask.credential ? (
         <>
           <input
@@ -201,6 +209,7 @@ function AskBlock({ ask, onAnswer, onCredential }: {
           <button type="button" disabled={busy} style={S.big(color)} onClick={() => void store()}>
             Store in vault
           </button>
+          {children ? <div>{children}</div> : null}
         </>
       ) : (
         <>
@@ -232,6 +241,7 @@ function AskBlock({ ask, onAnswer, onCredential }: {
                 </button>
               ))
               : null}
+            {children}
           </div>
         </>
       )}
@@ -240,10 +250,12 @@ function AskBlock({ ask, onAnswer, onCredential }: {
   );
 }
 
-function VerbBlock({ node, preArmVerbId, onVerb }: {
+function VerbBlock({ node, preArmVerbId, onVerb, demote = false }: {
   node: UniverseNode;
   preArmVerbId?: string | null;
   onVerb?: SpaceActions['onVerb'];
+  /** An ask holds the one big button; the verbs become secondary chips. */
+  demote?: boolean;
 }) {
   const { primary, secondary } = verbsFor(node, preArmVerbId);
   const [armed, setArmed] = useState<string | null>(null);
@@ -282,6 +294,26 @@ function VerbBlock({ node, preArmVerbId, onVerb }: {
 
   const labelOf = (verb: BeadVerb) => (armed === verb.id ? `Click again to ${verb.label.toLowerCase()}` : verb.label);
   const tint = (verb: BeadVerb) => (verb.danger === 'confirm' ? PALETTE.danger : PALETTE.ink);
+
+  if (demote) {
+    // display:contents -- the chips flow on in the ask's row (AskBlock children).
+    return (
+      <div style={{ display: 'contents' }} data-block="verbs">
+        {[primary, ...secondary].map((verb) => (
+          <button
+            key={verb.id}
+            type="button"
+            style={S.ghost(tint(verb))}
+            data-armed={armed === verb.id ? 'true' : undefined}
+            onClick={() => void run(verb)}
+          >
+            {labelOf(verb)}
+          </button>
+        ))}
+        <StatusLine status={status} />
+      </div>
+    );
+  }
 
   return (
     <div style={S.block} data-block="verbs">
@@ -406,6 +438,10 @@ export function SelectionPanel(props: SelectionPanelProps) {
     ? String(node.meta.metric)
     : '';
   const impact = typeof node.meta?.impact === 'string' ? node.meta.impact : '';
+  // With an ask on screen, "Healthy" next to "restart it?" contradicts it: say only
+  // what is wrong, and let the ask be the headline.
+  const healthy = node.health == null || node.health.state === 'ok' || node.health.state === 'unknown';
+  const showState = !ask || !healthy;
   return (
     <div
       className={className}
@@ -419,10 +455,17 @@ export function SelectionPanel(props: SelectionPanelProps) {
       <div data-block="name">
         <h3 style={S.name}>{node.title}</h3>
         {metric ? <div style={S.metric}>{metric}</div> : null}
-        <div style={{ marginTop: 4, color: PALETTE.quiet }}>{stateSentence(node)}</div>
+        {props.context ? (
+          <div style={{ marginTop: 4, color: '#9AA6B2', fontSize: 13 }} data-state data-context>{props.context}</div>
+        ) : showState ? <div style={{ marginTop: 4, color: '#9AA6B2' }} data-state>{stateSentence(node)}</div> : null}
       </div>
-      {ask ? <AskBlock key={ask.cardId} ask={ask} onAnswer={props.onAnswer} onCredential={props.onCredential} /> : null}
-      <VerbBlock node={node} preArmVerbId={props.preArmVerbId} onVerb={props.onVerb} />
+      {ask ? (
+        <AskBlock key={ask.cardId} ask={ask} onAnswer={props.onAnswer} onCredential={props.onCredential}>
+          <VerbBlock node={node} preArmVerbId={props.preArmVerbId} onVerb={props.onVerb} demote />
+        </AskBlock>
+      ) : (
+        <VerbBlock node={node} preArmVerbId={props.preArmVerbId} onVerb={props.onVerb} />
+      )}
       <ExploreBlock node={node} onExplore={props.onExplore} onOpenChat={props.onOpenChat} onExploring={props.onExploring} />
       {impact ? <div style={{ ...S.block, color: PALETTE.quiet, fontSize: 12 }} data-block="impact">{impact}</div> : null}
     </div>

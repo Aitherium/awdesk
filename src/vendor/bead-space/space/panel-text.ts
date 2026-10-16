@@ -5,11 +5,23 @@ import type { UniverseNode } from '../types';
 /** Destructive verbs arm on the first click and run on a second within this window. */
 export const CONFIRM_WINDOW_MS = 6000;
 
-/** One plain sentence about how the node is doing. */
+/**
+ * A health source's reason as a phrase: "Watch: online" -> "Watch online". Sources
+ * write `<who>: <what>`; behind a state word that read as "Healthy: Watch: online."
+ */
+export function reasonPhrase(reason: string | undefined): string {
+  const text = (reason ?? '').trim().replace(/\.$/, '');
+  if (!text) return '';
+  // Case kept: the first word is often a service name ("ArcPlayground: Watch: offline").
+  return text.replace(/:\s+/g, ' ');
+}
+
+/** One plain line about how the node is doing: "Healthy · Watch online". */
 export function stateSentence(node: UniverseNode): string {
-  if (node.virtual) return 'Known only from an open card.';
+  if (node.virtual) return 'Known only from an open card';
   const h = node.health;
-  const reason = h?.reason ? `: ${h.reason}` : '';
+  const phrase = reasonPhrase(h?.reason);
+  const reason = phrase ? ` · ${phrase}` : '';
   const r = h?.rollup;
   if (r) {
     const total = r.ok + r.degraded + r.down + r.starting + r.unknown;
@@ -20,21 +32,21 @@ export function stateSentence(node: UniverseNode): string {
         r.starting ? `${r.starting} starting` : '',
         r.unknown ? `${r.unknown} not reporting` : '',
       ].filter(Boolean);
-      return `${r.ok} of ${total} healthy${bad.length ? `, ${bad.join(', ')}` : ''}.`;
+      return `${r.ok} of ${total} healthy${bad.length ? ` · ${bad.join(', ')}` : ''}`;
     }
   }
   switch (h?.state) {
     case 'ok':
-      return `Healthy${reason}.`;
+      return `Healthy${reason}`;
     case 'degraded':
-      return `Degraded${reason}.`;
+      return `Degraded${reason}`;
     case 'down':
-      return `Down${reason}.`;
+      return `Down${reason}`;
     case 'starting':
-      return `Starting up${reason}.`;
+      return `Starting up${reason}`;
     case 'parked':
-      return `Parked on purpose${reason}.`;
+      return `Parked on purpose${reason}`;
     default:
-      return 'No source has reported on this yet.';
+      return 'Not reporting yet';
   }
 }
