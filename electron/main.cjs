@@ -86,6 +86,14 @@ function kidDeskMode() {
   }
   return kidDeskState;
 }
+// Kid mode refuses to run at all when the launch opened a debug door (--inspect*,
+// --remote-debugging-*, --js-flags, run-as-node, NODE_OPTIONS, a live inspector).
+// The release binary's fuses already close the Node doors; this also holds on an unfused build.
+require("./kid-launch-guard.cjs").refuseOpenDoors(kidDeskMode(), {
+  argv: process.argv,
+  vars: process.env,
+  inspectorUrl: require("node:inspector").url() || "",
+}, { inspector: require("node:inspector") });
 // In kid mode no CDP door opens: not Chromium's --remote-debugging-* launch switches and
 // not DESK_CDP_PORT (a child sets either from their own scope and could then drive the
 // classroom window anywhere).
@@ -5451,6 +5459,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       const kind = installKind({ isPackaged: app.isPackaged, exe: app.getPath("exe") });
       deskUpdater = new DeskUpdater({
         kind,
+        // The Windows installer is per-machine: run it through UAC (desk-update.cjs installerLaunch).
+        elevate: kind === "nsis",
         exe: app.getPath("exe"),
         version: app.getVersion(),
         downloadDir: path.join(app.getPath("temp"), "desk-update"),

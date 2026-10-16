@@ -210,6 +210,27 @@ test("Windows: a newer verified installer is staged, runs silently on quit, neve
   assert.equal(u.installOnQuit(), false, "once");
 });
 
+test("Windows: the per-machine installer is started through UAC (ShellExecute), path never parsed", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "du-win-"));
+  const { calls, spawnImpl } = spawnRecorder();
+  const u = new du.DeskUpdater({ kind: "nsis", arch: "x64", version: "0.1.9", env: { PATH: "p" },
+    fetchImpl: anyFetcher(), downloadDir: dir, spawnImpl, elevate: true });
+  await u.check();
+  assert.equal(u.installOnQuit(), true);
+  assert.equal(calls[0].cmd, du.POWERSHELL_EXE);
+  assert.equal(du.POWERSHELL_EXE, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+  const script = calls[0].args[calls[0].args.length - 1];
+  assert.equal(script, "Start-Process -FilePath $env:AWDESK_UPDATE_INSTALLER -ArgumentList '/S','--updated'");
+  assert.equal(calls[0].opts.env.AWDESK_UPDATE_INSTALLER, path.join(dir, WIN));
+  assert.equal(calls[0].opts.env.PATH, "p");
+  assert.equal(calls[0].opts.detached, true);
+  const relaunch = du.installerLaunch({ file: "x.exe", relaunch: true, elevate: true });
+  assert.match(relaunch.args[relaunch.args.length - 1], /-ArgumentList '\/S','--updated','--force-run'$/);
+  assert.equal(du.installerLaunch({ file: "x.exe", relaunch: false }).cmd, "x.exe", "no elevate: direct");
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /new DeskUpdater\(\{\s*kind,[^}]*elevate: kind === "nsis",/s);
+});
+
 test("Windows: Restart to update runs the installer with --force-run and quits", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "du-win-"));
   const { calls, spawnImpl } = spawnRecorder();

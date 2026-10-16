@@ -132,6 +132,28 @@ function installerArgs({ relaunch }) {
   return relaunch ? ["/S", "--updated", "--force-run"] : ["/S", "--updated"];
 }
 
+/** PowerShell by ABSOLUTE path (a bare name is searched in the cwd and PATH first). */
+const POWERSHELL_EXE = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+
+/** How the NSIS installer is started. The installer is per-machine (package.json
+ *  build.nsis.perMachine: a child account must not be able to replace Desk), so it asks
+ *  for elevation, and a plain CreateProcess of it fails (ERROR_ELEVATION_REQUIRED). With
+ *  `elevate`, it goes through ShellExecute (PowerShell Start-Process), which raises the UAC
+ *  prompt; the path rides in an environment variable so it is never parsed as script.
+ *  Without `elevate` (tests, an older per-user install) it is spawned directly. Pure. */
+function installerLaunch({ file, relaunch, elevate = false, env = {} }) {
+  const args = installerArgs({ relaunch });
+  const opts = { detached: true, stdio: "ignore", windowsHide: true };
+  if (!elevate) return { cmd: file, args, opts };
+  const list = args.map((a) => `'${a}'`).join(",");
+  return {
+    cmd: POWERSHELL_EXE,
+    args: ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
+      `Start-Process -FilePath $env:AWDESK_UPDATE_INSTALLER -ArgumentList ${list}`],
+    opts: { ...opts, env: { ...env, AWDESK_UPDATE_INSTALLER: file } },
+  };
+}
+
 /** The detached swap for an unsigned Mac bundle: wait for Desk (pid $1) to exit, move the
  *  old bundle aside, move the staged one in (putting the old one back if that fails), open
  *  it. Paths travel as positional arguments, never spliced into the script text. */
@@ -156,10 +178,10 @@ class DeskUpdater {
     relaunch, quit = () => {}, notify = () => {}, canRestart = () => true, allowed = () => true,
     env = process.env, log = () => {}, setTimer = setTimeout, setRepeat = setInterval,
     downloadDir = path.join(os.tmpdir(), "desk-update"), spawnImpl = childProcess.spawn,
-    unzip = defaultUnzip, pid = process.pid, openUrl = () => {}, onChange = () => {} } = {}) {
+    unzip = defaultUnzip, pid = process.pid, openUrl = () => {}, onChange = () => {}, elevate = false } = {}) {
     if (kind === undefined) kind = appimage ? "appimage" : "";
     Object.assign(this, { kind, appimage, exe, arch, version, fetchImpl, relaunch, quit, notify, canRestart,
-      allowed, env, log, setTimer, setRepeat, downloadDir, spawnImpl, unzip, pid, openUrl, onChange });
+      allowed, env, log, setTimer, setRepeat, downloadDir, spawnImpl, unzip, pid, openUrl, onChange, elevate });
     this.busy = false;
     this.pending = "";
     this.staged = null; // nsis / mac: { tag, file, ... } waiting for a quit or a click
@@ -401,8 +423,8 @@ class DeskUpdater {
   runInstaller({ relaunch }) {
     const { file, tag } = this.staged;
     this.staged = null;
-    const child = this.spawnImpl(file, installerArgs({ relaunch }), { detached: true, stdio: "ignore",
-      windowsHide: true });
+    const { cmd, args, opts } = installerLaunch({ file, relaunch, elevate: this.elevate, env: this.env });
+    const child = this.spawnImpl(cmd, args, opts);
     if (child && child.unref) child.unref();
     this.log(`desk-update: running the ${tag} installer silently${relaunch ? " and relaunching" : ""}`);
     return true;
@@ -438,5 +460,5 @@ function safeReleaseUrl(url) {
 }
 
 module.exports = { ASSET_SUFFIX, DeskUpdater, KINDS, MAC_SWAP_SCRIPT, RELEASE_API, assetSuffix, expectedHash,
-  RELEASES_PAGE, installKind, installerArgs, isNewer, macBundle, pickAsset, safeReleaseUrl, targetPath,
-  updateTrayItems };
+  POWERSHELL_EXE, RELEASES_PAGE, installKind, installerArgs, installerLaunch, isNewer, macBundle, pickAsset,
+  safeReleaseUrl, targetPath, updateTrayItems };

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Desk.exe is locked down. It can no longer be started as a plain Node shell
+  (ELECTRON_RUN_AS_NODE), NODE_OPTIONS and --inspect are ignored, it only loads its own
+  app.asar, and an edited app.asar refuses to start. Cookies are encrypted on disk.
+- On Windows, Desk now installs for all users under Program Files, so a standard account
+  cannot replace it. Updates ask for administrator approval (UAC). An existing per-user
+  copy in %LOCALAPPDATA%\Programs is not removed by the new installer: uninstall it from
+  each account (on a kid-desk PC, from the child's account) after upgrading.
+- Kid desk: Desk will not start at all if it is launched with a debugging switch
+  (--inspect, --remote-debugging-*, --js-flags) or with ELECTRON_RUN_AS_NODE or
+  NODE_OPTIONS set.
+
 ## 0.1.16 - 2026-10-14
 
 - Desk can open your company's workspace instead of the public Aitherium desktop. When the
