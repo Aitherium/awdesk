@@ -22,6 +22,50 @@ window.addEventListener("message", (event) => {
   });
 });
 
+// The point probe (2026-10-16): a page that sends no os-regions (a tenant's workspace
+// page) used to make the whole overlay swallow the customer's desktop. While the window
+// ignores the mouse, Windows still forwards mousemove here; this reports what the element
+// under the cursor PAINTS (it and up to 11 ancestors), and main's overlay-hit.cjs decides
+// whether that is UI (take the click) or bare backdrop (let Windows have it). At most one
+// report per 40 ms, and only while the mouse moves.
+const alphaOf = (color) => {
+  const m = /rgba?\(([^)]+)\)/.exec(String(color || ""));
+  if (!m) return String(color || "") === "transparent" ? 0 : 1;
+  const parts = m[1].split(/[\s,/]+/).filter(Boolean);
+  return parts.length >= 4 ? Number(parts[3]) || 0 : 1;
+};
+let lastPointAt = 0;
+window.addEventListener("mousemove", (event) => {
+  const now = Date.now();
+  if (now - lastPointAt < 40) return;
+  lastPointAt = now;
+  try {
+    const vw = Math.max(1, window.innerWidth);
+    const vh = Math.max(1, window.innerHeight);
+    const chain = [];
+    let el = document.elementFromPoint(event.clientX, event.clientY);
+    while (el && el !== document.body && el !== document.documentElement && chain.length < 12) {
+      const cs = window.getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      chain.push({
+        tag: String(el.tagName || "").toLowerCase().slice(0, 16),
+        role: String(el.getAttribute("role") || "").slice(0, 16),
+        bgAlpha: alphaOf(cs.backgroundColor),
+        bgImage: cs.backgroundImage !== "none",
+        borderWidth: parseFloat(cs.borderTopWidth) || 0,
+        borderAlpha: alphaOf(cs.borderTopColor),
+        opacity: Number(cs.opacity),
+        pointerEvents: cs.pointerEvents,
+        area: Math.min(1, (Math.max(0, r.width) * Math.max(0, r.height)) / (vw * vh)),
+      });
+      el = el.parentElement;
+    }
+    ipcRenderer.send("living-desktop:point", { x: event.clientX, y: event.clientY, chain });
+  } catch {
+    /* a page mid-teardown */
+  }
+}, { passive: true, capture: true });
+
 // Desk -> Aitheros Online state channel (2026-08-25): main pushes the Desk snapshot
 // (decision cards, avatar slots, agents, relay feed) and this forwards it into the
 // page as a postMessage the Veil shell can listen for — the same family as the

@@ -107,3 +107,25 @@ test("a floating wish never docks", () => {
   assert.equal(dock.isDocked(), false);
   assert.notEqual(avatar.parent, browser);
 });
+
+// Garg, 2026-10-16: every browser layout re-seated the docked avatar with setBounds even
+// when nothing moved -- 64 % of the main process's CPU and the native memory growth sat
+// under a.setBounds. An unchanged slot is now a no-op.
+test("sync with an unchanged slot never calls setBounds again", () => {
+  const { avatar, dock } = setup();
+  let calls = 0;
+  const real = avatar.setBounds;
+  avatar.setBounds = (b) => { calls += 1; real(b); };
+  dock.sync();
+  const first = calls;
+  for (let i = 0; i < 1000; i += 1) dock.sync();
+  assert.equal(calls, first, "1000 syncs with the same slot: no extra setBounds");
+});
+
+test("sync still follows a slot that really moved", () => {
+  const { avatar, dock, setRect } = setup();
+  dock.sync();
+  setRect({ x: 20, y: 70, width: 248, height: 360 });
+  dock.sync();
+  assert.deepEqual(avatar.bounds, { x: 20, y: 70, width: 248, height: 360 });
+});

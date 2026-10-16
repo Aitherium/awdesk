@@ -38,14 +38,17 @@ function shouldLend(settings, env) {
   return whyNot(settings, env) === "";
 }
 
-function normalize(raw) {
-  const s = { ...DEFAULTS, ...(raw && typeof raw === "object" ? raw : {}) };
+/** `base` overrides DEFAULTS for a setting the user never saved (a customer desk starts
+ *  with Lend memory OFF, desk-posture.cjs); a value in kv-lend.json always wins. */
+function normalize(raw, base = null) {
+  const defaults = { ...DEFAULTS, ...(base && typeof base === "object" ? base : {}) };
+  const s = { ...defaults, ...(raw && typeof raw === "object" ? raw : {}) };
   s.enabled = s.enabled !== false;
   s.onlyOnAc = s.onlyOnAc !== false;
   s.onlyIdle = s.onlyIdle !== false;
   const mb = Number(s.maxMb);
-  s.maxMb = MB_CHOICES.includes(mb) ? mb : DEFAULTS.maxMb;
-  if (!GPU_CHOICES.includes(s.gpu)) s.gpu = DEFAULTS.gpu;
+  s.maxMb = MB_CHOICES.includes(mb) ? mb : defaults.maxMb;
+  if (!GPU_CHOICES.includes(s.gpu)) s.gpu = defaults.gpu;
   return s;
 }
 
@@ -64,8 +67,9 @@ class KvLend {
    *   probe           () => {onBattery, idle, gaming}
    *   relay           wss URL
    */
-  constructor({ identity, settingsFile, makeWindow, probe, relay = DEFAULT_RELAY, log = () => {} }) {
+  constructor({ identity, settingsFile, makeWindow, probe, relay = DEFAULT_RELAY, log = () => {}, defaults = null }) {
     this.identity = identity;
+    this.defaults = defaults;
     this.settingsFile = settingsFile;
     this.makeWindow = makeWindow;
     this.probe = probe;
@@ -78,14 +82,14 @@ class KvLend {
 
   settings() {
     try {
-      return normalize(JSON.parse(fs.readFileSync(this.settingsFile, "utf8")));
+      return normalize(JSON.parse(fs.readFileSync(this.settingsFile, "utf8")), this.defaults);
     } catch {
-      return normalize(null);
+      return normalize(null, this.defaults);
     }
   }
 
   setSettings(patch) {
-    const next = normalize({ ...this.settings(), ...patch });
+    const next = normalize({ ...this.settings(), ...patch }, this.defaults);
     fs.mkdirSync(path.dirname(this.settingsFile), { recursive: true });
     fs.writeFileSync(this.settingsFile, JSON.stringify(next, null, 1));
     this.evaluate();

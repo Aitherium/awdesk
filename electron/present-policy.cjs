@@ -38,12 +38,17 @@ function pick(value, allowed) {
   return allowed.includes(v) ? v : "auto";
 }
 
-/** Pure: env + platform → { present, gpu, switches[], gpuPreference|null }. */
-function presentPolicy({ env = process.env, platform = process.platform } = {}) {
+/** Pure: env + platform (+ desk-posture) → { present, gpu, switches[], gpuPreference|null }.
+ *  The software-present default answers a lock on the OWNER's fleet GPU; a customer desk
+ *  (desk-posture.cjs) has no fleet polling its adapter, and software compositing there is
+ *  pure CPU cost (Garg 2026-10-16: the GPU process alone at 22 % of a core, idle). So a
+ *  customer desk presents on the GPU and leaves the adapter choice to Windows. */
+function presentPolicy({ env = process.env, platform = process.platform, posture = null } = {}) {
   const wantPresent = pick(env.DESK_PRESENT, PRESENT_MODES);
   const wantGpu = pick(env.DESK_GPU, GPU_CHOICES);
+  const customer = Boolean(posture && posture.present === "gpu");
   // The lock is a WDDM behaviour; other platforms keep Chromium's default.
-  const present = wantPresent === "auto" ? (platform === "win32" ? "software" : "gpu") : wantPresent;
+  const present = wantPresent === "auto" ? (platform === "win32" && !customer ? "software" : "gpu") : wantPresent;
   // Software present must not read frames back from the contended adapter.
   const gpu = wantGpu === "auto" ? (present === "software" ? "integrated" : "default") : wantGpu;
   const switches = present === "software" ? ["disable-gpu-compositing"] : [];
@@ -61,8 +66,9 @@ function gpuPreferenceCommand(exePath, preference) {
  * by Windows at process start, so a changed value governs the NEXT launch --
  * the returned `gpuPreferencePending` says so instead of pretending.
  */
-function applyPresentPolicy(app, { env = process.env, platform = process.platform, execFile, exePath = process.execPath } = {}) {
-  const policy = presentPolicy({ env, platform });
+function applyPresentPolicy(app, { env = process.env, platform = process.platform, posture = null, execFile,
+  exePath = process.execPath } = {}) {
+  const policy = presentPolicy({ env, platform, posture });
   for (const name of policy.switches) app.commandLine.appendSwitch(name);
   let gpuPreferencePending = false;
   if (policy.gpuPreference != null && typeof execFile === "function") {

@@ -45,6 +45,82 @@ function isOpenTitle(title) {
   return String(title || "").trim() === OPEN_TITLE;
 }
 
+/**
+ * The open/closed signal, made safe to act on.
+ *
+ * Measured on Garg's tenant 2026-10-16: two title watchers on the taskbar page (the
+ * tenant brand and the popover signal) kept overwriting each other ~3,000 times a second.
+ * Acting on every page-title-updated re-laid the browser and re-seated the docked avatar
+ * on each flip, and the main process grew ~150 MB/s to 6 GB and stopped answering. So:
+ *
+ *   - a change is applied at most once per `minIntervalMs` (the latest state wins);
+ *   - more than `flapLimit` state flips inside `flapWindowMs` is a FIGHT, not a user: the
+ *     strip collapses (the safe 56 px state) and titles are ignored until they have been
+ *     quiet for `quietMs`.
+ *
+ * Pure apart from the injected clock/timers. `apply(open)` is called only on a change.
+ */
+function createOpenSignal({ apply, onFlap = () => {}, minIntervalMs = 250, flapLimit = 8, flapWindowMs = 2000,
+  quietMs = 5000, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+  let applied = false; // what the view shows
+  let latest = false; // what the page says now
+  let lastRaw = false;
+  let lastAppliedAt = -Infinity;
+  let timer = null;
+  let flips = [];
+  let suppressedUntil = -Infinity;
+
+  const commit = () => {
+    timer = null;
+    if (now() < suppressedUntil) return;
+    if (latest === applied) return;
+    applied = latest;
+    lastAppliedAt = now();
+    apply(applied);
+  };
+
+  function title(t) {
+    const t0 = now();
+    const want = isOpenTitle(t);
+    if (want !== lastRaw) {
+      lastRaw = want;
+      flips.push(t0);
+      while (flips.length && flips[0] < t0 - flapWindowMs) flips.shift();
+      if (flips.length > flapLimit) {
+        // A fight: collapse once, then ignore until it has been quiet for quietMs.
+        const started = t0 >= suppressedUntil;
+        suppressedUntil = t0 + quietMs;
+        if (timer) { clearTimer(timer); timer = null; }
+        if (applied) {
+          applied = false;
+          lastAppliedAt = t0;
+          apply(false);
+        }
+        // Re-check once it has been quiet; a still-flapping title pushes this out again.
+        timer = setTimer(() => { timer = null; if (now() >= suppressedUntil) { flips = []; commit(); } }, quietMs);
+        // Tell the owner of the view once per fight (browser-window unloads the page: the
+        // fight itself burns its renderer, measured ~1.3 cores on the 0.1.19 CI build).
+        if (started) {
+          try { onFlap(); } catch { /* the signal outlives a failing listener */ }
+        }
+      }
+    }
+    latest = want;
+    if (t0 < suppressedUntil) return;
+    if (timer) return; // a trailing commit is already due and will read `latest`
+    const wait = lastAppliedAt + minIntervalMs - t0;
+    if (wait <= 0) commit();
+    else timer = setTimer(commit, wait);
+  }
+
+  return {
+    title,
+    current: () => applied,
+    flapping: () => now() < suppressedUntil,
+    dispose() { if (timer) clearTimer(timer); timer = null; },
+  };
+}
+
 /** Is `url` the taskbar page itself (the one place the view may stay)? */
 function isTaskbarPage(url) {
   try {
@@ -257,6 +333,7 @@ module.exports = {
   OPEN_TITLE,
   SETTLE_MS,
   TASKBAR_PATH,
+  createOpenSignal,
   expandedRect,
   isOpenTitle,
   isTaskbarPage,

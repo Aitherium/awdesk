@@ -86,7 +86,12 @@ function createAvatarDock({ avatar, browser, slotRect, load = () => true, save =
       docked = true;
       onChange(snapshot());
     }
-    a.setBounds(rect);
+    // Only when the slot really moved: an identical setBounds still reallocates the
+    // window's native surfaces (Garg 2026-10-16: 64 % of the main process under it).
+    const now = typeof a.getBounds === "function" ? a.getBounds() : null;
+    if (!now || now.x !== rect.x || now.y !== rect.y || now.width !== rect.width || now.height !== rect.height) {
+      a.setBounds(rect);
+    }
     return snapshot();
   }
 

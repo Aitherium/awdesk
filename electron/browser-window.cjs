@@ -56,6 +56,7 @@ const taskbar = require("./browser-taskbar.cjs");
 const extensions = require("./browser-extensions.cjs");
 const overlayMod = require("./browser-overlay.cjs");
 const deskTenant = require("./desk-tenant.cjs");
+const tabDiscard = require("./tab-discard.cjs");
 let knowledgeImpl = null;
 function knowledgeClient() {
   if (!knowledgeImpl) knowledgeImpl = require("./knowledge-client.cjs").createKnowledgeClient();
@@ -158,6 +159,8 @@ let dragging = false;
 /** The living desktop's taskbar (browser-taskbar.cjs): its view, and whether its menu is open. */
 let taskbarView = null;
 let taskbarOpen = false;
+/** The taskbar page's open/closed signal, rate-limited (browser-taskbar.cjs createOpenSignal). */
+let openSignal = null;
 let taskbarStatus = "off";
 /**
  * Popped-out tabs (owner, 2026-10-04: "pop out any screen into its own floating window").
@@ -325,8 +328,8 @@ function tabList() {
       badge: tab.key === "inbox" && inbox.count > 0 ? inbox.count : 0,
       active: t.id === snap.active,
       agentTarget: t.id === snap.agentTarget,
-      url: view ? view.webContents.getURL() : "",
-      title: view ? view.webContents.getTitle() : "",
+      url: view ? view.webContents.getURL() : (discarded.get(t.id) || {}).url || "",
+      title: view ? view.webContents.getTitle() : (discarded.get(t.id) || {}).title || "",
       loading: view ? view.webContents.isLoading() : false,
       popped: popped.has(t.id),
     };
@@ -354,7 +357,27 @@ function state() {
   };
 }
 
+/**
+ * Send the strip/panel state, at most once per PUSH_MIN_MS (the latest state wins).
+ *
+ * Every tab event (title, navigation, load start/stop) calls this. A page that rewrites
+ * its own title thousands of times a second (two title watchers fighting, measured on a
+ * customer's workspace 2026-10-16) turned each write into a full state build plus two
+ * IPC sends; the renderers could not drain them and the main process grew without bound.
+ */
+const PUSH_MIN_MS = 100;
+let pushPending = null;
+let lastPushAt = 0;
 function pushState() {
+  if (pushPending) return;
+  const wait = Math.max(0, lastPushAt + PUSH_MIN_MS - Date.now());
+  pushPending = setTimeout(() => {
+    pushPending = null;
+    lastPushAt = Date.now();
+    pushStateNow();
+  }, wait);
+}
+function pushStateNow() {
   const payload = state();
   if (win && !win.isDestroyed()) win.webContents.send("desk:browser-state", payload);
   if (alive(panelView)) panelView.webContents.send("desk:browser-state", payload);
@@ -404,30 +427,125 @@ async function loadInView(view, url) {
   }
 }
 
+// What each view was last given, so an unchanged layout touches no native window. Measured
+// on Garg's tenant 2026-10-16: re-setting identical bounds on every pass (and re-seating
+// the docked avatar after each) was where a title storm turned into 6 GB of native memory.
+const lastBounds = new WeakMap();
+const lastVisible = new WeakMap();
+let lastLayoutKey = "";
+function placeView(view, visible, rect) {
+  if (lastVisible.get(view) !== visible) {
+    lastVisible.set(view, visible);
+    view.setVisible(visible);
+  }
+  if (!visible || !rect) return;
+  const prev = lastBounds.get(view);
+  if (prev && prev.x === rect.x && prev.y === rect.y && prev.width === rect.width && prev.height === rect.height) return;
+  lastBounds.set(view, { x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+  view.setBounds(rect);
+}
+
+/** Something else placed this view (a pop-out window): the next layout sets it afresh. */
+function forgetPlacement(view) {
+  lastBounds.delete(view);
+  lastVisible.delete(view);
+}
+
 function layout() {
   syncPageTaskbars();
   if (!win || win.isDestroyed()) return;
+  // A discarded tab put on screen gets its renderer back first (tab-discard.cjs).
+  restoreDiscarded(tabs.active);
   // The rail (avatar slot, every Aither page, the layer strip) is the chrome page's
   // own left column; page views and the panel sit to its right (browser-rail.cjs).
   const rects = currentRects();
+  const now = Date.now();
   for (const [id, view] of views) {
     if (!alive(view) || popped.has(id)) continue;
     const shown = id === tabs.active && !dragging;
-    view.setVisible(shown);
-    if (shown) view.setBounds(rects.page);
+    if (shown) shownAt.set(id, now);
+    placeView(view, shown, rects.page);
   }
-  if (alive(panelView)) {
-    panelView.setVisible(!dragging && rects.panel.width > 0);
-    panelView.setBounds(rects.panel);
-  }
+  if (alive(panelView)) placeView(panelView, !dragging && rects.panel.width > 0, rects.panel);
   if (alive(taskbarView)) {
     const shown = !dragging && rects.taskbar.height > 0;
-    taskbarView.setVisible(shown);
     // Its Start menu and tray popovers open UPWARD: while one is open the view grows
     // over the page (the page is still there underneath; closing it shrinks back).
-    if (shown) taskbarView.setBounds(taskbarOpen ? taskbar.expandedRect(rects) : rects.taskbar);
+    placeView(taskbarView, shown, taskbarOpen ? taskbar.expandedRect(rects) : rects.taskbar);
   }
-  notifyGeometry("layout");
+  // The docked avatar follows the rail only when the rail really moved.
+  const key = JSON.stringify([rects.avatar || null, rects.page, win.getContentBounds()]);
+  const layoutChanged = key !== lastLayoutKey;
+  lastLayoutKey = key;
+  if (layoutChanged) notifyGeometry("layout");
+}
+
+// ── Hidden tabs give their renderer back (tab-discard.cjs) ─────────────────────────
+const shownAt = new Map(); // tab id -> when it was last on screen
+const discarded = new Map(); // tab id -> { url, title }
+let discardTimer = null;
+
+function tabFacts() {
+  return tabs.tabs.map((t) => {
+    const view = views.get(t.id);
+    let audible = false;
+    try { audible = alive(view) && view.webContents.isCurrentlyAudible(); } catch { /* gone */ }
+    return { id: t.id, by: t.by, kind: t.kind, pinned: t.pinned, active: t.id === tabs.active, popped: popped.has(t.id),
+      audible, discarded: discarded.has(t.id), shownAt: shownAt.get(t.id) || 0 };
+  });
+}
+
+/** Close the renderers of hidden tabs nobody is looking at; their place and address stay. */
+function discardHiddenTabs({ pressure = false } = {}) {
+  if (!win || win.isDestroyed() || !tabs) return 0;
+  let n = 0;
+  for (const id of tabDiscard.pickDiscards(tabFacts(), { now: Date.now(), pressure })) {
+    const view = views.get(id);
+    if (!alive(view)) continue;
+    const wc = view.webContents;
+    discarded.set(id, { url: wc.getURL(), title: wc.getTitle() });
+    views.delete(id);
+    try { win.contentView.removeChildView(view); } catch { /* already detached */ }
+    try { wc.close(); } catch { /* already closing */ }
+    n += 1;
+  }
+  if (n) pushState();
+  return n;
+}
+
+/** A discarded tab is about to be shown: give it a renderer and reload its address. */
+function restoreDiscarded(id) {
+  const gone = id == null ? null : discarded.get(id);
+  if (!gone || !win || win.isDestroyed()) return;
+  const tab = tabs.get(id);
+  discarded.delete(id);
+  if (!tab || !tab.viewSpec) return;
+  const spec = tab.viewSpec;
+  const view = createPageView(spec.kind, { paneId: spec.paneId, partition: spec.partition }, null);
+  views.set(id, view);
+  wirePage(view.webContents, id);
+  win.contentView.addChildView(view);
+  if (alive(panelView)) win.contentView.addChildView(panelView);
+  if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
+  if (spec.kind === "hosted") void loadHostedTab(view, gone.url || spec.url).catch(() => {});
+  else void loadInView(view, gone.url || spec.url).catch(() => {});
+}
+
+/**
+ * THE page-view builder: every tab's view (a new tab, a discarded tab coming back) is made
+ * here. Web content gets NO preload (tabPreferences("web")); an aither:// tab gets the one
+ * internal preload, which hands the page only its own pane's bridge. awconnect's own page
+ * gets the compat shim its worker has (withCompat adds a preload for kind "extension"
+ * ONLY). The pinned AitherOS Online tab is a DESK HOST (internal.withDeskHost).
+ */
+function createPageView(kind, target, hostedPartition) {
+  const { WebContentsView } = electron();
+  const view = new WebContentsView({
+    webPreferences: internal.withDeskHost(kind, target.paneId, extensions.withCompat(kind, internal.tabPreferences(kind === "extension" ? "web" : kind, {
+      webPartition: PARTITION, hostedPartition: target.partition || hostedPartition,
+    }))),
+  });
+  return view;
 }
 
 function currentRects() {
@@ -754,6 +872,24 @@ function openFromOnlineTab(url) {
   if (wc.getURL() !== url) void loadHostedTab(view, url).catch(() => {});
 }
 
+/** Close the taskbar strip's page and hide the strip until the browser is opened again. */
+function unloadTaskbar(why) {
+  setImmediate(() => {
+    const view = taskbarView;
+    if (!alive(view)) return;
+    console.warn(`[desk] taskbar strip unloaded: ${why}`);
+    taskbarView = null;
+    taskbarOpen = false;
+    taskbarStatus = "unavailable";
+    if (openSignal) openSignal.dispose();
+    openSignal = null;
+    try { if (win && !win.isDestroyed()) win.contentView.removeChildView(view); } catch { /* detached */ }
+    try { view.webContents.close(); } catch { /* closing */ }
+    layout();
+    pushState();
+  });
+}
+
 /** The living desktop's taskbar along the bottom (browser-taskbar.cjs), created once per window. */
 function ensureTaskbar() {
   if (!win || win.isDestroyed() || alive(taskbarView) || !getPrefs().taskbar) return;
@@ -802,11 +938,22 @@ function ensureTaskbar() {
     layout();
     pushState();
   });
+  // The title is the page's open/closed signal (Start, the tray). Rate-limited and
+  // flap-proof (browser-taskbar.cjs createOpenSignal): a title fight on the page must
+  // never become a layout storm here.
+  if (openSignal) openSignal.dispose();
+  openSignal = taskbar.createOpenSignal({
+    apply: (open) => {
+      if (open === taskbarOpen) return;
+      taskbarOpen = open;
+      layout();
+    },
+    // A page whose title fights itself burns its own renderer whatever Desk does with the
+    // signal: unload the strip (the browser works without it; the next open retries).
+    onFlap: () => unloadTaskbar("its title is fighting itself"),
+  });
   wc.on("page-title-updated", (_event, title) => {
-    const open = taskbar.isOpenTitle(title);
-    if (open === taskbarOpen) return;
-    taskbarOpen = open;
-    layout();
+    if (openSignal) openSignal.title(title);
   });
   win.contentView.addChildView(taskbarView);
   layout();
@@ -851,18 +998,10 @@ function openTab(by, url, { activate = true, after = null, pinned = false, key =
   tab.paneId = target.paneId;
   tab.label = label;
   if (kind === "internal") ensureInternalSession();
-  const { WebContentsView } = electron();
-  // Web content gets NO preload (tabPreferences("web")); an aither:// tab gets the
-  // one internal preload, which hands the page only its own pane's bridge.
-  // awconnect's own page gets the compat shim its worker has (withCompat adds a preload
-  // for kind "extension" ONLY; a web tab's preferences pass through untouched).
-  // The pinned AitherOS Online tab is a DESK HOST (internal.withDeskHost): the full
-  // context the overlay window has. Every other hosted or web tab stays preload-free.
-  const view = new WebContentsView({
-    webPreferences: internal.withDeskHost(kind, target.paneId, extensions.withCompat(kind, internal.tabPreferences(kind === "extension" ? "web" : kind, {
-      webPartition: PARTITION, hostedPartition: target.partition || hostedPartition,
-    }))),
-  });
+  // The view comes from the ONE page-view builder (createPageView: no preload for web
+  // content). viewSpec lets a discarded tab be rebuilt the same way (tab-discard.cjs).
+  tab.viewSpec = { kind, paneId: target.paneId, partition: target.partition || hostedPartition, url: target.url };
+  const view = createPageView(kind, target, hostedPartition);
   views.set(added.id, view);
   wirePage(view.webContents, added.id);
   win.contentView.addChildView(view);
@@ -1067,6 +1206,8 @@ function closeTab(id, by = "you") {
   }
   const view = views.get(id);
   views.delete(id);
+  discarded.delete(id);
+  shownAt.delete(id);
   if (alive(view)) {
     if (win && !win.isDestroyed()) win.contentView.removeChildView(view);
     view.webContents.close();
@@ -1097,6 +1238,7 @@ function popOutTab(id) {
   const fit = () => {
     if (pop.isDestroyed() || !alive(view)) return;
     const { width, height } = pop.getContentBounds();
+    forgetPlacement(view);
     view.setVisible(true);
     view.setBounds({ x: 0, y: 0, width, height });
   };
@@ -1122,6 +1264,7 @@ function dockTab(id, { closing = false } = {}) {
   const view = views.get(id);
   if (pop && !pop.isDestroyed() && alive(view)) pop.contentView.removeChildView(view);
   if (alive(view) && win && !win.isDestroyed()) {
+    forgetPlacement(view);
     win.contentView.addChildView(view);
     if (alive(panelView)) win.contentView.addChildView(panelView);
     if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
@@ -1327,7 +1470,17 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     win.focus();
     setInboxBadge(inbox);
   });
+  if (discardTimer) clearInterval(discardTimer);
+  discardTimer = setInterval(() => discardHiddenTabs(), 60 * 1000);
+  if (typeof discardTimer.unref === "function") discardTimer.unref();
   win.on("closed", () => {
+    if (discardTimer) clearInterval(discardTimer);
+    discardTimer = null;
+    if (openSignal) openSignal.dispose();
+    openSignal = null;
+    discarded.clear();
+    shownAt.clear();
+    lastLayoutKey = "";
     for (const view of [...views.values(), panelView, taskbarView]) {
       if (alive(view)) view.webContents.close();
     }
@@ -2052,6 +2205,8 @@ function isBrowserWindowOpen() {
 }
 
 module.exports = {
+  /** Memory pressure (resource-watchdog.cjs): close hidden tabs' renderers now. */
+  discardHiddenTabs,
   ASSISTANT_PANEL,
   CHROME_HEIGHT,
   classify,

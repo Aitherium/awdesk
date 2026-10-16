@@ -21,7 +21,7 @@ const IDLE_S = 300; // "idle": no input for 5 minutes
  * @param dataDir   where the device key and kv-lend.json live (default: userData)
  */
 function startKvLend({ app, BrowserWindow, ipcMain, powerMonitor, notify = () => {}, log = console.log,
-  external = null, dataDir = app.getPath("userData"), probeOverride = null, onEnrolled = () => {} }) {
+  external = null, dataDir = app.getPath("userData"), probeOverride = null, onEnrolled = () => {}, defaults = null }) {
   const dir = path.join(dataDir, "device");
   const identity = new DeviceIdentity(dir);
   const engineJs = holderJsPath();
@@ -85,6 +85,8 @@ function startKvLend({ app, BrowserWindow, ipcMain, powerMonitor, notify = () =>
     makeWindow,
     probe,
     log,
+    // a customer desk starts with Lend memory OFF (desk-posture.cjs); kv-lend.json still wins
+    defaults,
   });
 
   const fromPage = (event) => lend.win && lend.win.webContents && event.sender === lend.win.webContents;

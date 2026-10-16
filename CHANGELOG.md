@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.19 - 2026-10-16
+
+Aither on a customer's PC is now light, gets out of the way of the Windows desktop,
+and can always be quit.
+
+- The Aither Browser no longer grows without limit on a workspace (company) site. A
+  title fight on the workspace taskbar page made Desk re-lay its window thousands of
+  times a second; on one customer PC Desk reached 7 GB and had to be ended from Task
+  Manager. Desk now acts on that signal at most four times a second and ignores it
+  while it flaps, re-sizes nothing that did not move, and the docked avatar is moved
+  only when its slot really moves.
+- Clicks and hover reach your real Windows desktop everywhere the AitherOS overlay is
+  not drawing. Before, a page that did not report where its windows are made the whole
+  screen belong to the overlay.
+- Quit Aither is on the taskbar: right-click the Aither icon. It also ends an Aither
+  that has stopped responding. Quit Aither is still on the tray menu.
+- Desk watches its own memory: it closes hidden browser tabs and clears caches under
+  pressure, restarts itself if it passes a hard limit, and ends itself if its main
+  process stops responding. Hidden tabs you have not looked at for 10 minutes give
+  their memory back and reload when you open them.
+- On a company (workspace) install Desk uses the light settings: normal process
+  priority, Chromium's own throttling for hidden and covered windows, and Lend memory
+  off until you turn it on. The avatar stage stays hidden until you add a character or
+  show it from the tray, and only the windows you asked for open at start. Opening
+  Aither again brings up your workspace. Your own machine (no workspace) is unchanged;
+  AWDESK_POSTURE=owner or customer chooses explicitly.
+
 ## Unreleased
 
 - Desk.exe is locked down. It can no longer be started as a plain Node shell

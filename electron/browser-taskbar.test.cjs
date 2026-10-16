@@ -184,3 +184,109 @@ test("browser-window decides every in-place answer with nextAfterAnswer", () => 
   assert.match(body, /nextAfterAnswer\("online", answer\) === "reload"/);
   assert.doesNotMatch(body, /if \(!ok/, "a truthy 'refused' must never read as 'no answer'");
 });
+
+// Garg, 2026-10-16: two title watchers on the tenant taskbar page flipped the title about
+// 3,000 times a second; every flip re-laid the browser and re-seated the docked avatar
+// and the main process grew ~150 MB/s to 6 GB. The open signal is now rate-limited and a
+// title that flaps is ignored (the strip stays collapsed) until it settles.
+function signalHarness(opts = {}) {
+  let t = 0;
+  const timers = [];
+  const applied = [];
+  const sig = tb.createOpenSignal({
+    apply: (open) => applied.push(open),
+    now: () => t,
+    setTimer: (fn, ms) => { const h = { fn, at: t + ms, live: true }; timers.push(h); return h; },
+    clearTimer: (h) => { if (h) h.live = false; },
+    ...opts,
+  });
+  const advance = (ms) => {
+    const end = t + ms;
+    for (;;) {
+      const due = timers.filter((h) => h.live && h.at <= end).sort((a, b) => a.at - b.at)[0];
+      if (!due) break;
+      t = due.at;
+      due.live = false;
+      due.fn();
+    }
+    t = end;
+  };
+  return { sig, applied, advance };
+}
+
+test("open signal: a real open and close each apply once", () => {
+  const { sig, applied, advance } = signalHarness();
+  sig.title(tb.OPEN_TITLE);
+  advance(1000);
+  sig.title("Aither taskbar");
+  advance(1000);
+  assert.deepEqual(applied, [true, false]);
+});
+
+test("open signal: a title storm (3k flips/s) applies at most a handful of layouts, then holds the strip collapsed", () => {
+  const { sig, applied, advance } = signalHarness();
+  const titles = ["Aither taskbar", "GargBot", tb.OPEN_TITLE, "GARG · open"];
+  for (let i = 0; i < 3000; i += 1) {
+    sig.title(titles[i % titles.length]);
+    advance(1000 / 3000);
+  }
+  assert.equal(sig.flapping(), true, "a fight is recognised while it lasts");
+  assert.ok(applied.length <= 6, `applied ${applied.length} layouts in one second of storm`);
+  assert.equal(applied.length === 0 || applied[applied.length - 1] === false, true, "a flapping title leaves the strip collapsed");
+  advance(10_000);
+  assert.ok(applied.length <= 6);
+});
+
+test("open signal: after the storm stops the real state is applied again", () => {
+  const { sig, applied, advance } = signalHarness();
+  for (let i = 0; i < 400; i += 1) {
+    sig.title(i % 2 ? tb.OPEN_TITLE : "GargBot");
+    advance(1);
+  }
+  advance(20_000);
+  sig.title(tb.OPEN_TITLE);
+  advance(1000);
+  assert.equal(applied[applied.length - 1], true);
+  assert.equal(sig.flapping(), false);
+});
+
+// Measured on the 0.1.19 CI build 2026-10-16: with the layout storm gone, the fighting
+// taskbar PAGE itself still burned ~1.3 cores in its own renderer. A fight unloads the strip.
+test("open signal: a fight calls onFlap exactly once, and again only after a quiet spell", () => {
+  let flaps = 0;
+  const { sig, advance } = signalHarness({ onFlap: () => { flaps += 1; } });
+  for (let i = 0; i < 3000; i += 1) {
+    sig.title(i % 2 ? tb.OPEN_TITLE : "GargBot");
+    advance(1000 / 3000);
+  }
+  assert.equal(flaps, 1);
+  advance(20_000);
+  for (let i = 0; i < 100; i += 1) {
+    sig.title(i % 2 ? tb.OPEN_TITLE : "GargBot");
+    advance(1);
+  }
+  assert.equal(flaps, 2);
+});
+
+test("browser-window unloads a taskbar page whose title fights itself", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "browser-window.cjs"), "utf8");
+  const body = src.slice(src.indexOf("openSignal = taskbar.createOpenSignal({"), src.indexOf('wc.on("page-title-updated"', src.indexOf("openSignal = taskbar.createOpenSignal({")));
+  assert.match(body, /onFlap: \(\) => unloadTaskbar\(/);
+  assert.match(src, /function unloadTaskbar\(/);
+});
+
+test("browser-window drives the taskbar view through createOpenSignal, not straight off page-title-updated", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "browser-window.cjs"), "utf8");
+  const at = src.indexOf('wc.on("page-title-updated"', src.indexOf("function ensureTaskbar("));
+  assert.ok(at > 0);
+  const handler = src.slice(at, src.indexOf("});", at));
+  assert.match(handler, /openSignal\.title\(/);
+  assert.doesNotMatch(handler, /layout\(\)/);
+});
+
+test("browser-window re-seats the avatar only when the layout really changed", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "browser-window.cjs"), "utf8");
+  const body = src.slice(src.indexOf("function layout() {"), src.indexOf("function currentRects() {"));
+  assert.match(body, /if \(layoutChanged\b/);
+  assert.doesNotMatch(body, /^\s{2}notifyGeometry\("layout"\);/m, "no unconditional notify");
+});

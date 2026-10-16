@@ -28,6 +28,15 @@ const {
   }
 }
 
+// Owner's PC or a customer's (desk-posture.cjs)? A workspace install runs light: normal
+// priority, Chromium throttling ON for hidden/occluded windows, Lend memory off by default,
+// no empty avatar stage. Garg 2026-10-16: the owner-box tuning cost a customer 31.6 % CPU.
+const deskPostureState = require("./desk-posture.cjs").deskPosture({
+  env: process.env,
+  tenant: (() => { try { return require("./desk-tenant.cjs").currentTenant(); } catch { return null; } })(),
+});
+console.log(`[desk] posture: ${deskPostureState.customer ? "customer" : "owner"} (${deskPostureState.reason})`);
+
 // A transparent always-on-top overlay must never be treated as "in the
 // background". Measured 2026-09-18 over CDP with an IDLE renderer (0.7 s of work
 // per 6 s): frame gaps of almost exactly 1000 ms, several per 10 s -- Chromium's
@@ -36,14 +45,26 @@ const {
 // windows all day) or the renderer "backgrounded". On screen that is the avatar
 // freezing for a second at a time. The window-level half is
 // `backgroundThrottling: false` on the avatar BrowserWindow below.
-app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+// On a CUSTOMER desk Chromium's throttling stays on: a hidden tab, a covered window and the
+// hidden avatar drop to 1 fps instead of burning a stranger's CPU (desk-posture.cjs).
+if (!deskPostureState.throttle) app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 // How frames reach the screen (software present + the integrated adapter on
 // Windows): the measurement and the knobs live in present-policy.cjs.
 const presentState = require("./present-policy.cjs").applyPresentPolicy(app, {
   execFile: require("node:child_process").execFile,
+  posture: deskPostureState,
 });
-app.commandLine.appendSwitch("disable-renderer-backgrounding");
-app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+if (!deskPostureState.throttle) {
+  app.commandLine.appendSwitch("disable-renderer-backgrounding");
+  app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+}
+// Chromium starts an unsandboxed DX12 info-collection GPU process two minutes after start.
+// On a GPU-present test build it never exited and burned ~65 % of a core (measured
+// 2026-10-16: `--type=gpu-process --use-gl=disabled`, 158 s of CPU in 4 min). The info only
+// feeds Chromium's own stats; a customer desk does without it, whatever DESK_PRESENT says.
+if (deskPostureState.customer) {
+  app.commandLine.appendSwitch("disable-gpu-process-for-dx12-info-collection");
+}
 
 // Main-process event-loop lag, measured not guessed: a 50 ms ticker records how
 // late each tick fires. A block here (sync fs, execFileSync, a big JSON.parse)
@@ -652,7 +673,13 @@ const avatarSlots = new Map(); // Map<slotId, { name, modelUrl }> — tracks spa
 // so an upgrade keeps tenant config, sessions and settings. Pinned explicitly too, so a
 // future setName() cannot silently move every customer onto an empty profile.
 app.setName(INTERNAL_APP_NAME);
-app.setPath("userData", userDataDirFor(app.getPath("appData")));
+// An explicit --user-data-dir (a support probe, an isolated measurement of a customer
+// build) keeps its own profile and single-instance lock instead of being folded onto
+// the real one -- where its second-instance event used to reach the user's running Desk.
+// Never in kid mode: the child's Desk always uses the one profile.
+if (kidDeskMode().enabled || !app.commandLine.hasSwitch("user-data-dir")) {
+  app.setPath("userData", userDataDirFor(app.getPath("appData")));
+}
 
 // ── awdesk rename: migrate the legacy userData dir once ──────────────────────
 // app.setName() decides the userData path, so renaming Persona -> Desk points
@@ -796,8 +823,9 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      // Never throttle the overlay's animation loop (see the switches at the top).
-      backgroundThrottling: false,
+      // Never throttle the overlay's animation loop on the owner's box (see the switches
+      // at the top); a customer desk lets Chromium throttle it while it is hidden.
+      backgroundThrottling: deskPostureState.throttle,
     },
   });
 
@@ -2668,7 +2696,9 @@ function refreshJumpList() {
   try {
     app.setUserTasks(commandRegistry.rowsFor("jumplist", { deadAccels: [...deadAccels] }).map((row) => ({
       program: process.execPath,
-      arguments: `${prefix}--run=${row.id}`,
+      // Quit launches `--quit`, which also ends a Desk whose main thread is not answering
+      // (quit-others.cjs); every other row is a command the running Desk performs.
+      arguments: `${prefix}${row.id === "quit" ? "--quit" : `--run=${row.id}`}`,
       iconPath: process.execPath,
       iconIndex: 0,
       title: row.label.replace(/\s+\(Ctrl[^)]*\)$/, ""),
@@ -3960,7 +3990,20 @@ function runSmokeTest() {
   });
 }
 
-if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
+if (!smokeIsRequested && process.argv.includes("--quit")) {
+  // `Desk.exe --quit` (the jump list's "Quit Aither"): ask the running Desk to quit through
+  // the single-instance channel, and end it if it is still there after 3 s -- a main thread
+  // stuck in a loop never reads the request (Garg 2026-10-16, Task Manager). Never starts
+  // a Desk. A kid desk does not quit this way.
+  if (app.requestSingleInstanceLock() || kidDeskMode().enabled) {
+    app.exit(0);
+  } else {
+    require("./quit-others.cjs").quitRunningDesk()
+      .then((r) => console.log(`[desk] --quit: ${r.asked} running, ${r.forced} ended`))
+      .catch((error) => console.warn("[desk] --quit:", error?.message || error))
+      .finally(() => app.exit(0));
+  }
+} else if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   // Tenant installs only (desk-tenant.json carries `api`); a failure here never stops Desk.
@@ -3982,6 +4025,13 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     }
     const handled = argv.some((value) => value.startsWith(`${protocolScheme}://`));
     handleProtocolArgv(argv);
+    // `Desk.exe --quit` (the jump list's "Quit Aither"): quit now. The launcher ends this
+    // process itself if this line never runs (quit-others.cjs).
+    if (argv.includes("--quit")) {
+      isQuitting = true;
+      app.quit();
+      return;
+    }
     if (argv.includes("--open-deck")) {
       createDeckWindow();
       return;
@@ -4021,7 +4071,12 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       showDesktopApp();
       return;
     }
-    if (!handled && !argv.includes("--background")) showOverlay({ focus: true });
+    // Launched again from the Start menu or taskbar: a customer desk brings up its
+    // workspace (the overlay they work in), not an avatar stage they never asked for.
+    if (!handled && !argv.includes("--background")) {
+      if (deskPostureState.customer) showLivingDesktop();
+      else showOverlay({ focus: true });
+    }
   });
 
   app.on("open-url", (event, url) => {
@@ -4076,7 +4131,27 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     } catch { /* permission API absent: capture would fail, not silently pass */ }
     // Ahead of batch work on a saturated host (process-priority.cjs). The first
     // sweep runs once the GPU process and the windows exist; the timer catches later ones.
-    setTimeout(() => require("./process-priority.cjs").keepDeskResponsive(app), 5000);
+    setTimeout(() => require("./process-priority.cjs").keepDeskResponsive(app, { posture: deskPostureState }), 5000);
+    // Desk bounds its own weight and never needs Task Manager (resource-watchdog.cjs):
+    // reclaim under memory pressure, restart past a hard budget, and a utility process
+    // ends a main process that has stopped answering (Garg 2026-10-16).
+    if (!smokeIsRequested) {
+      const { session: electronSession, utilityProcess } = require("electron");
+      require("./resource-watchdog.cjs").startResourceWatchdog({
+        app,
+        posture: deskPostureState,
+        reclaim: ({ pressure }) => {
+          try { browserWindow.discardHiddenTabs({ pressure }); } catch { /* no browser */ }
+          for (const ses of [electronSession.defaultSession, electronSession.fromPartition(browserWindow.PARTITION)]) {
+            try { void ses.clearCache(); } catch { /* best effort */ }
+          }
+        },
+        notify: (body) => {
+          try { if (Notification.isSupported()) new Notification({ title: PRODUCT_NAME, body }).show(); } catch { /* no toast */ }
+        },
+      });
+      require("./resource-watchdog.cjs").startHangWatchdog({ utilityProcess });
+    }
     if (smokeIsRequested) {
       runSmokeTest();
       return;
@@ -4686,7 +4761,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
           Menu.buildFromTemplate(commandRegistry.buildMenu("tray", runCommand, {
             ctx: commandContext(),
             submenus: { "characters.pick": buildCharacterMenu() },
-          }).filter((row, i, all) => !(row.label === "Quit" || (row.type === "separator" && i === all.length - 1))))
+          }).filter((row, i, all) => !(row.label === "Quit Aither" || (row.type === "separator" && i === all.length - 1))))
             .popup(avatarWindow && !avatarWindow.isDestroyed() ? { window: avatarWindow } : {});
           return true;
         case "models":
@@ -5184,13 +5259,16 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     }
 
     createTray();
-    maybePromptForFirstCharacter();
+    // A customer desk opens nothing on its own at start but what its shortcut asked for
+    // (Garg 2026-10-16: three extra windows on first run -- the character prompt, Set up
+    // Aither, Connect this computer). Each stays one click away on the tray.
+    if (!deskPostureState.customer) maybePromptForFirstCharacter();
     if (process.argv.includes("--fleet")) createFleetWindow();
     if (process.argv.includes("--inference")) runCommand("inference.open");
     if (process.argv.includes("--setup")) runCommand("setup.open");
     // Not set up yet? Open "Set up Aither" by itself -- only when awnix is already
     // RUNNING (a status read never boots it) and reports configured:false.
-    else setTimeout(() => {
+    else if (!deskPostureState.customer) setTimeout(() => {
       setupWindow().maybeAutoOpen({ openAwsh: () => openConsole() })
         .catch((error) => console.warn("[desk] setup auto-open check failed:", error?.message || error));
     }, 15_000);
@@ -5427,6 +5505,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         : null;
       kvLendRuntime = startKvLend({
         app, BrowserWindow, ipcMain, powerMonitor, external,
+        // Off until the user turns it on, on a customer desk (desk-posture.cjs).
+        defaults: deskPostureState.lendByDefault ? null : { enabled: false },
         notify: (title, body) => { if (Notification.isSupported()) new Notification({ title, body }).show(); },
         log: (line) => console.log(`[desk] ${line}`),
         // "Connect this computer" done: install the full local stack once, nothing typed.
@@ -5445,7 +5525,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         else if (!mi.installed) console.log(`[desk] no login agent: ${mi.reason}`);
       }
       deviceConnect = createDeviceConnect({ BrowserWindow, ipcMain, shell, runtime: kvLendRuntime, dataDir: app.getPath("userData") });
-      if (!process.argv.some((a) => a.startsWith("desk://enroll"))) deviceConnect.maybeOpenFirstRun();
+      if (!deskPostureState.customer && !process.argv.some((a) => a.startsWith("desk://enroll"))) deviceConnect.maybeOpenFirstRun();
       nearbyDevices = createNearbyDevices({ BrowserWindow, ipcMain, shell });
       localStack = createLocalStackWindow({ BrowserWindow, ipcMain, shell, dataDir: app.getPath("userData"),
         log: (line) => console.log(`[desk] ${line}`) });
@@ -5523,7 +5603,10 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       // owner's typing ("stealing context"). The window is alwaysOnTop, so it
       // is seen either way; the owner's own gestures (tray "Show avatar", a
       // second launch, macOS activate) still pass { focus: true } below.
-      showOverlay();
+      // A customer desk with no character has nothing to draw: its avatar stage cost
+      // ~20 % of a core idle (GPU + renderer, measured 2026-10-16). It stays hidden until
+      // the user asks for it (tray "Show avatar") or a character is added.
+      if (!deskPostureState.customer || listCharacters().length > 0) showOverlay();
     }
     if (deckIsRequested) createDeckWindow();
     if (consoleIsRequested) openConsole();

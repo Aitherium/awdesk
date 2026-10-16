@@ -310,7 +310,8 @@ test("an aither:// page opened from the address bar still gets its pane handlers
   const hook = open.indexOf("internalConfig.beforeInternal()");
   assert.ok(hook > 0, "openTab never asks main to wire the pane");
   assert.ok(hook < open.indexOf("const target = classify(url);"), "the handlers must be wired before the page is classified");
-  assert.ok(hook < open.indexOf("new WebContentsView("), "...and before the page can load");
+  const build = open.indexOf("createPageView("); // the one page-view builder
+  assert.ok(build > 0 && hook < build, "...and before the page can load");
   const main = read("main.cjs");
   assert.match(main, /browserWindow\.configureInternal\(\{\s*beforeInternal: \(\) => \{\s*if \(!browserInternal\.legacyConsole\(\)\) wireConsoleHost\(false\);/);
   // The owner typing aither://<pane> is routed; sanitizeUrl (agents, links) is not widened.

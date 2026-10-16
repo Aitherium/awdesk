@@ -212,6 +212,23 @@ test("the AitherOS Online overlay is reachable BY HAND, from every menu", () => 
   }
 });
 
+// Garg, 2026-10-16: the only Quit was a tray row, and Windows 11 hides tray icons under
+// the overflow arrow -- the customer killed Desk from Task Manager. Quit is now on the
+// taskbar's own right-click (jump list) too, by name, and that row starts Desk with
+// --quit, which ends a running Desk even when its main thread is stuck.
+test("Quit Aither is on the tray AND the taskbar jump list", () => {
+  const quit = byId("quit");
+  assert.ok(quit);
+  assert.equal(quit.label, "Quit Aither");
+  assert.ok(quit.surfaces.includes("tray"));
+  assert.ok(quit.surfaces.includes("jumplist"));
+  assert.ok(!quit.surfaces.includes("avatar-menu") && !quit.surfaces.includes("palette"), "still not a misclick on a body");
+  assert.deepEqual(conformance(), []);
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  const jl = main.slice(main.indexOf("function refreshJumpList("), main.indexOf("function trayTemplateNow("));
+  assert.match(jl, /row\.id === "quit" \? "--quit"/, "the jump-list Quit row must use --quit, which works on a hung Desk");
+});
+
 test("main.cjs RENDERS the avatar menu from the registry too", () => {
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   const at = main.indexOf("function popupAvatarMenu(");

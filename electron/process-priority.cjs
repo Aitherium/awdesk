@@ -15,9 +15,12 @@ const os = require("node:os");
 
 const LEVELS = { above: os.constants.priority.PRIORITY_ABOVE_NORMAL, normal: os.constants.priority.PRIORITY_NORMAL };
 
-/** Pure: env → the priority to apply, or null to leave the processes alone. */
-function wantedPriority(env = process.env) {
-  const v = String(env.DESK_PRIORITY || "above").trim().toLowerCase();
+/** Pure: env (+ desk-posture) → the priority to apply, or null to leave the processes alone.
+ *  A customer desk (desk-posture.cjs) stays at normal unless DESK_PRIORITY=above asks:
+ *  above-normal on someone else's PC is Desk putting itself ahead of their work. */
+function wantedPriority(env = process.env, posture = null) {
+  const fallback = posture && posture.priority === "normal" ? "normal" : "above";
+  const v = String(env.DESK_PRIORITY || fallback).trim().toLowerCase();
   if (v === "normal") return null;
   return LEVELS.above;
 }
@@ -41,8 +44,9 @@ function raisePriorities(pids, priority, setPriority = os.setPriority, done = ne
 }
 
 /** Wire it to an Electron app: now, and on a slow timer for windows opened later. */
-function keepDeskResponsive(app, { env = process.env, intervalMs = 30000, setIntervalFn = setInterval, setPriority = os.setPriority } = {}) {
-  const priority = wantedPriority(env);
+function keepDeskResponsive(app, { env = process.env, posture = null, intervalMs = 30000, setIntervalFn = setInterval,
+  setPriority = os.setPriority } = {}) {
+  const priority = wantedPriority(env, posture);
   if (priority == null) return { enabled: false };
   const done = new Set();
   const sweep = () => raisePriorities(app.getAppMetrics().map((m) => m.pid), priority, setPriority, done);

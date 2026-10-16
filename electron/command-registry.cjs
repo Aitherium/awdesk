@@ -692,9 +692,12 @@ const COMMANDS = Object.freeze([
     whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.",
   }),
   Object.freeze({
-    id: "quit", label: "Quit", group: "app", surfaces: ["tray"],
-    whySingle: "Quitting from a palette or a body's context menu is a misclick with "
-      + "no undo; the tray is the deliberate place for it.",
+    // Not on the palette or a body's context menu: there it is a misclick with no undo.
+    // The tray and the taskbar's own right-click (jump list) are deliberate places, and
+    // the tray alone was not enough: Windows 11 hides tray icons under the overflow
+    // arrow, and a customer (Garg, 2026-10-16) ended Desk from Task Manager. The jump
+    // list row launches `--quit` (main.cjs), which also ends a Desk that is not answering.
+    id: "quit", label: "Quit Aither", group: "app", surfaces: ["tray", "jumplist"],
   }),
 ]);
 

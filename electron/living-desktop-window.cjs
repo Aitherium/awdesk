@@ -85,13 +85,15 @@ let ghostMode = true; // click-through everywhere the Aitheros Online isn't draw
 
 // ── Ghost mode (click-through) ─────────────────────────────────────────────────
 // The overlay page reports its interactive hit-rects (see living-desktop-preload.cjs);
-// a main-process poll flips setIgnoreMouseEvents by cursor position. Fail-INTERACTIVE:
-// if no regions report arrived recently (page changed, solid mode, protocol drift) the
-// whole window stays clickable — a silently un-clickable Aitheros Online would read as
-// "just broken", which is worse than losing click-through.
+// a main-process poll flips setIgnoreMouseEvents by cursor position (overlay-hit.cjs).
+// It used to fail INTERACTIVE: with no fresh report the whole window took every click,
+// and on a customer's tenant page (which never reports) his real Windows desktop could
+// not be clicked or hovered at all (Garg, 2026-10-16). Now a stale report keeps its last
+// known layout, the preload's own point probe answers any page, and with nothing at all
+// only a bottom dock band is clickable.
+const overlayHit = require("./overlay-hit.cjs");
 const hitState = { regions: [], dock: null, reportedAt: 0 };
-const REGIONS_FRESH_MS = 5000;
-const REGION_PAD = 8;
+let pointProbe = null; // { x, y, at, chain } from the preload, window DIP
 let ghostTimer = null;
 let ignoringMouse = false;
 
@@ -100,6 +102,15 @@ ipcMain.on("living-desktop:regions", (event, payload) => {
   hitState.regions = payload.regions;
   hitState.dock = payload.dock;
   hitState.reportedAt = Date.now();
+});
+// The preload's probe at the cursor (forwarded mousemove reaches the page even while the
+// window ignores the mouse): what the element under the cursor paints, for pages that send
+// no hit-areas. Bounded: at most 12 ancestors, numbers and short strings only.
+ipcMain.on("living-desktop:point", (event, payload) => {
+  if (!isOpen() || event.sender !== desktopWin.webContents) return;
+  const p = payload && typeof payload === "object" ? payload : {};
+  if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Array.isArray(p.chain)) return;
+  pointProbe = { x: p.x, y: p.y, at: Date.now(), chain: p.chain.slice(0, 12) };
 });
 
 // ── The overlay as a HOST for AitherOS Online (overlay-browser-host.cjs) ────────
@@ -207,35 +218,11 @@ ipcMain.handle("living-desktop:browse", async (event, url) => {
 });
 
 function cursorOverInteractive() {
-  if (Date.now() - hitState.reportedAt > REGIONS_FRESH_MS) return true; // fail-interactive
-  const bounds = desktopWin.getContentBounds();
-  const cursor = screen.getCursorScreenPoint();
-  const x = cursor.x - bounds.x;
-  const y = cursor.y - bounds.y;
-  if (x < 0 || y < 0 || x > bounds.width || y > bounds.height) return false;
-  const dock = hitState.dock;
-  if (dock && typeof dock.thickness === "number") {
-    const t = dock.thickness + REGION_PAD;
-    if (
-      (dock.edge === "bottom" && y >= bounds.height - t) ||
-      (dock.edge === "top" && y <= t) ||
-      (dock.edge === "left" && x <= t) ||
-      (dock.edge === "right" && x >= bounds.width - t)
-    ) {
-      return true;
-    }
-  }
-  for (const r of hitState.regions) {
-    if (
-      x >= r.x - REGION_PAD &&
-      x <= r.x + r.w + REGION_PAD &&
-      y >= r.y - REGION_PAD &&
-      y <= r.y + r.h + REGION_PAD
-    ) {
-      return true;
-    }
-  }
-  return false;
+  const verdict = overlayHit.hitVerdict({
+    now: Date.now(), bounds: desktopWin.getContentBounds(), cursor: screen.getCursorScreenPoint(),
+    hit: hitState, point: pointProbe,
+  });
+  return verdict.interactive;
 }
 
 function applyGhostTick() {
@@ -678,6 +665,13 @@ function createWindow() {
     }
   });
 
+  // A new page has not said where its UI is yet: forget the last page's layout.
+  win.webContents.on("did-navigate", () => {
+    hitState.regions = [];
+    hitState.dock = null;
+    hitState.reportedAt = 0;
+    pointProbe = null;
+  });
   win.webContents.on("did-fail-load", (_e, code, desc, failedUrl, isMainFrame) => {
     if (isMainFrame) log(`did-fail-load ${failedUrl}: ${code} ${desc}`);
   });

@@ -56,6 +56,7 @@ test("nothing in the packaged app relies on RunAsNode", () => {
   // No module fork()s a script through the Desk executable as node.
   for (const f of sources) {
     const src = fs.readFileSync(path.join(dir, f), "utf8");
-    assert.doesNotMatch(src, /\.fork\(/, `${f} forks a node child (use utilityProcess.fork)`);
+    // utilityProcess.fork is Electron's own child process (resource-watchdog.cjs): no RunAsNode.
+    assert.doesNotMatch(src.replace(/utilityProcess\.fork\(/g, ""), /\.fork\(/, `${f} forks a node child (use utilityProcess.fork)`);
   }
 });
