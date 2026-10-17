@@ -113,6 +113,52 @@ function listRoster(rosterDir) {
   }
 }
 
+/** Folders under rosterDir with NO model.vrm that an imported companion owns: a
+ *  character.json pinning a valid persona_id and carrying the `companion` object
+ *  (lib/companion/character_cards.py write_roster_entry). Bodiless until the user
+ *  picks a body. A forked variant (`base`) or any other bodiless folder is still
+ *  skipped, exactly as listRoster skips it. */
+function listBodilessCompanions(rosterDir) {
+  try {
+    return fs
+      .readdirSync(rosterDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !fs.existsSync(path.join(rosterDir, e.name, "model.vrm")))
+      .map((e) => e.name)
+      .filter((name) => {
+        const cj = readCharacterJson(rosterDir, name);
+        return (
+          !cj.base &&
+          cj.companion && typeof cj.companion === "object" && !Array.isArray(cj.companion) &&
+          slugPersona(cj.persona_id) === cj.persona_id
+        );
+      })
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** One bodiless companion member: no character, no vrm, the built-in voice. */
+function bodilessMemberFor(rosterDir, name) {
+  const characterJson = readCharacterJson(rosterDir, name);
+  const rating = ratingOf(characterJson);
+  const display = typeof characterJson.display_name === "string" && characterJson.display_name.trim();
+  const member = {
+    persona_id: characterJson.persona_id,
+    display_name: String(display || characterJson.persona_id).slice(0, 128),
+    character: null,
+    vrm: null,
+    animations: [],
+    voice: { voice: cast.BUILTIN_VOICE.defaultVoice, speed: cast.BUILTIN_VOICE.defaultSpeed },
+    presence: cast.BUILTIN_ACTOR.presence,
+    rating,
+    saga: pickIdObject(characterJson.saga, ["project_id", "character_id"]),
+    sprite: pickIdObject(characterJson.sprite, ["sprite_id"]),
+    origin_key: null,
+  };
+  return { member, hidden: hiddenNow(rating) };
+}
+
 function listAnimations(rosterDir, name) {
   const dir = path.join(rosterDir, name, "animations");
   try {
@@ -272,12 +318,15 @@ function buildParty({ castFile = undefined, rosterDir = roster.ROSTER_DIR, now =
     const resolved = cast.resolveActor(snapshot, { roster: names, key: `roster:${name}` });
     admit(memberFor({ resolved, character: name, rosterDir, originKey: null }));
   }
+  // Imported companions with no body yet (a roster folder IS a persona, decision 2).
+  const bodiless = listBodilessCompanions(rosterDir);
+  for (const name of bodiless) admit(bodilessMemberFor(rosterDir, name));
 
   const manifest = {
     version: SCHEMA_VERSION,
     exported_at: now().toISOString(),
     source: SOURCE,
-    roster_dir: names.length ? path.resolve(rosterDir) : null,
+    roster_dir: names.length || bodiless.length ? path.resolve(rosterDir) : null,
     members,
   };
   return { manifest, excluded, problems };

@@ -55,6 +55,22 @@ character("nyx", { animations: ["idle.vrma"] }, {
 });
 character("unbound", {}, null);
 fs.mkdirSync(path.join(rosterDir, "no-model-here"), { recursive: true }); // not a character
+// An imported companion with no body yet: the shape lib/companion/character_cards.py
+// write_roster_entry writes. A bodiless folder WITHOUT the companion marker, and a
+// forked variant carrying one, must still be skipped.
+function bodiless(name, json) {
+  fs.mkdirSync(path.join(rosterDir, name), { recursive: true });
+  fs.writeFileSync(path.join(rosterDir, name, "character.json"), JSON.stringify(json));
+}
+bodiless("mira", {
+  persona_id: "mira",
+  display_name: "Mira",
+  rating: "unknown",
+  companion: { source_format: "card-v2", persona_file: "persona.txt", avatar: null, untrusted_source: true },
+});
+bodiless("plain-bodiless", { persona_id: "plain-bodiless", rating: "general" });
+bodiless("fork-of-aria", { persona_id: "fork-of-aria", base: "aria", companion: { source_format: "card-v2" } });
+bodiless("bad-pin", { persona_id: "has space", companion: { source_format: "card-v2" } });
 
 const castFile = path.join(scratch, "cast.json");
 fs.writeFileSync(
@@ -249,4 +265,23 @@ test("party_export is an MCP tool on the Desk server and returns the export resu
   assert.ok(body.members >= 2, JSON.stringify(body));
   assert.equal(calls.length, 1);
   assert.ok(fs.existsSync(path.join(scratch, "mcp-party.json")));
+});
+
+test("a bodiless imported companion joins the party with no body; other bodiless folders stay out", () => {
+  setGate(false);
+  const { manifest, problems } = party.buildParty({ castFile, rosterDir });
+  assert.deepEqual(problems, []);
+  const mira = manifest.members.find((m) => m.persona_id === "mira");
+  assert.ok(mira, "the imported companion is a member");
+  assert.equal(mira.display_name, "Mira");
+  assert.equal(mira.character, null, "bodiless: no roster body is claimed");
+  assert.equal(mira.vrm, null);
+  assert.deepEqual(mira.animations, []);
+  assert.equal(mira.rating, "unknown");
+  assert.equal(mira.origin_key, null);
+  const ids = manifest.members.map((m) => m.persona_id);
+  for (const out of ["plain-bodiless", "fork-of-aria", "has-space", "has space", "no-model-here"]) {
+    assert.ok(!ids.includes(out), `${out} must not join the party`);
+  }
+  assert.deepEqual(party.validateParty(manifest), []);
 });
