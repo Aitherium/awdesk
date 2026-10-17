@@ -157,3 +157,20 @@ test("a signed-out desk reports why and changes nothing", async () => {
   assert.match(out.reason, /Sign in/);
   assert.equal(agents.getAgentAvatar("lyra"), before);
 });
+
+test("a first sync seeds an EMPTY catalog from this desk, and never a populated one", async () => {
+  const bytes = fakeVrm("helen");
+  writeCharacter("helen", bytes, { rating: "general" });
+  agents.setAgentAvatar("scribe", "helen");
+  const empty = fakeClient();
+  const seeded = await sync.seedIfCatalogEmpty({ client: empty });
+  assert.equal(seeded.seeded, true);
+  assert.ok(empty.calls.put.some(([a]) => a === "scribe"));
+
+  const populated = fakeClient({ map: { aither: "x-1" } });
+  const skipped = await sync.seedIfCatalogEmpty({ client: populated });
+  assert.equal(skipped.seeded, false);
+  assert.equal(populated.calls.upload.length, 0);
+  assert.equal(populated.calls.put.length, 0);
+});
+

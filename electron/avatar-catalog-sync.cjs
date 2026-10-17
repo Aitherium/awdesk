@@ -21,7 +21,10 @@
  *         avatar by the same name, so the `authors` row awsettings carries between
  *         machines means the same thing on each of them -- no per-machine flapping.
  *   seed  seedFromDesk(): push every assignment this desk already has -- how the owner's
- *         existing setup becomes the catalog on day one.
+ *         existing setup becomes the catalog on day one. startCatalogSync does it ONCE by
+ *         itself when the catalog names no agent yet and this desk has assignments (the
+ *         person's own desk, signed in as them, uploading their own files to their own
+ *         private library), so nobody has to run a command.
  *
  * Nothing here sends an owner, tenant or user id: the person's Identity token decides
  * (market-client.cjs storeRequest). A kid desk never starts this (main.cjs returns before).
@@ -169,13 +172,30 @@ async function seedFromDesk(deps = {}) {
   return { ok: results.every((r) => r.ok), results };
 }
 
+/** First run on a desk: an empty catalog + local assignments -> seed, then pull. */
+async function seedIfCatalogEmpty(deps = {}) {
+  const d = defaults(deps);
+  const cat = await d.client.avatarCatalog(deps.clientDeps);
+  if (!cat.ok || Object.keys(cat.agents || {}).length > 0) return { ok: cat.ok, seeded: false };
+  const map = d.agents.loadMap ? d.agents.loadMap() : {};
+  if (!Object.values(map || {}).some(Boolean)) return { ok: true, seeded: false };
+  const out = await seedFromDesk(deps);
+  d.log("avatar catalog seeded from this desk", out.results.map((r) => [r.agent, r.ok ? r.id : r.reason]));
+  return { ok: out.ok, seeded: true, results: out.results };
+}
+
 /** Pull now and every PULL_INTERVAL_MS (and on resume). Returns a stop function. */
 function startCatalogSync(deps = {}) {
   let running = false;
+  let first = true;
   const tick = async () => {
     if (running) return;
     running = true;
     try {
+      if (first) {
+        first = false;
+        await seedIfCatalogEmpty(deps);
+      }
       await syncFromCatalog(deps);
     } catch (error) {
       (deps.log || (() => {}))("avatar catalog sync failed", String((error && error.message) || error));
@@ -193,6 +213,7 @@ module.exports = {
   PULL_INTERVAL_MS,
   pushAssignment,
   seedFromDesk,
+  seedIfCatalogEmpty,
   startCatalogSync,
   syncFromCatalog,
 };
