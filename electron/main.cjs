@@ -28,6 +28,34 @@ const {
   }
 }
 
+// `Desk.exe --quit` (the jump list's "Quit Aither", the Start menu): ask the running Desk to
+// quit through the single-instance channel, and end it if it is still there after 3 s -- a
+// main thread stuck in a loop never reads the request (Garg 2026-10-16, Task Manager).
+// Decided HERE, before the rest of Desk loads: below this line the launch took 3.4-8.9 s
+// just to reach the old branch (measured on 0.1.21, 2026-10-17). Never starts a Desk. A kid
+// desk does not quit this way. The lock is the real profile's: same name and userData dir
+// as the Desk below sets (app-identity.cjs), an explicit --user-data-dir keeping its own.
+if (process.argv.includes("--quit")) {
+  const kidQuit = require("./kid-desk.cjs").resolveKidDesk();
+  if (!(process.argv.includes("--smoke") && !kidQuit.enabled)) {
+    const { INTERNAL_APP_NAME, userDataDirFor } = require("./app-identity.cjs");
+    app.setName(INTERNAL_APP_NAME);
+    if (kidQuit.enabled || !app.commandLine.hasSwitch("user-data-dir")) {
+      app.setPath("userData", userDataDirFor(app.getPath("appData")));
+    }
+    if (app.requestSingleInstanceLock() || kidQuit.enabled) {
+      app.exit(0);
+    } else {
+      // own: this launch's GPU/network children are Desk.exe too; never wait for or end them.
+      require("./quit-others.cjs").quitRunningDesk({ own: () => app.getAppMetrics().map((m) => m.pid) })
+        .then((r) => console.log(`[desk] --quit: ${r.asked} running, ${r.forced} ended`))
+        .catch((error) => console.warn("[desk] --quit:", error?.message || error))
+        .finally(() => app.exit(0));
+    }
+    return;
+  }
+}
+
 // Owner's PC or a customer's (desk-posture.cjs)? A workspace install runs light: normal
 // priority, Chromium throttling ON for hidden/occluded windows, Lend memory off by default,
 // no empty avatar stage. Garg 2026-10-16: the owner-box tuning cost a customer 31.6 % CPU.
@@ -4010,20 +4038,8 @@ function runSmokeTest() {
   });
 }
 
-if (!smokeIsRequested && process.argv.includes("--quit")) {
-  // `Desk.exe --quit` (the jump list's "Quit Aither"): ask the running Desk to quit through
-  // the single-instance channel, and end it if it is still there after 3 s -- a main thread
-  // stuck in a loop never reads the request (Garg 2026-10-16, Task Manager). Never starts
-  // a Desk. A kid desk does not quit this way.
-  if (app.requestSingleInstanceLock() || kidDeskMode().enabled) {
-    app.exit(0);
-  } else {
-    require("./quit-others.cjs").quitRunningDesk()
-      .then((r) => console.log(`[desk] --quit: ${r.asked} running, ${r.forced} ended`))
-      .catch((error) => console.warn("[desk] --quit:", error?.message || error))
-      .finally(() => app.exit(0));
-  }
-} else if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
+// (`Desk.exe --quit` is decided at the top of this file, before any of this loads.)
+if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   // Tenant installs only (desk-tenant.json carries `api`); a failure here never stops Desk.

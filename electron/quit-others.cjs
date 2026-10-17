@@ -43,22 +43,41 @@ function taskkillArgs(pids) {
   return args;
 }
 
-/** Wait for the others to leave; end the ones that do not. @returns {{asked, forced}} */
-async function quitRunning({ list, kill, sleep, timeoutMs = 3000, stepMs = 250 }) {
-  const first = await list();
+/**
+ * Wait for the others to leave; end the ones that do not. @returns {{asked, forced}}
+ *
+ * - `own()` names THIS launch's processes (its GPU / network / utility children are the
+ *   same image): they are never waited for or ended. Measured 2026-10-17 on 0.1.20: without
+ *   it the listing never emptied and the --quit launch ended its own children.
+ * - Only the processes seen at the FIRST look are targets, so a Desk the user starts again
+ *   while this waits is never ended.
+ * - The wait is wall-clock (`now`): one `tasklist` takes 1.2-3 s, so counting steps made a
+ *   3 s wait take ~40 s.
+ */
+async function quitRunning({ list, kill, sleep, own = () => [], now = Date.now, timeoutMs = 3000, stepMs = 250 }) {
+  const ownPids = () => {
+    try { return new Set(own() || []); } catch { return new Set(); }
+  };
+  const others = async () => {
+    const mine = ownPids();
+    return (await list()).filter((pid) => !mine.has(pid));
+  };
+  const first = await others();
   if (!first.length) return { asked: 0, forced: 0 };
+  const targets = new Set(first);
+  const start = now();
   let left = first;
-  for (let waited = 0; waited < timeoutMs; waited += stepMs) {
+  while (now() - start < timeoutMs) {
     await sleep(stepMs);
-    left = await list();
+    left = (await others()).filter((pid) => targets.has(pid));
     if (!left.length) return { asked: first.length, forced: 0 };
   }
   await kill(left);
   return { asked: first.length, forced: left.length };
 }
 
-/** The real thing, for main.cjs. */
-function quitRunningDesk({ exePath = process.execPath, platform = process.platform, timeoutMs = 3000 } = {}) {
+/** The real thing, for main.cjs. `own` = this launch's pids (app.getAppMetrics()). */
+function quitRunningDesk({ exePath = process.execPath, platform = process.platform, timeoutMs = 3000, own = () => [] } = {}) {
   const image = path.basename(exePath);
   const run = (cmd, args) => new Promise((resolve) => {
     childProcess.execFile(cmd, args, { windowsHide: true, timeout: 10_000 }, (_error, stdout) => resolve(String(stdout || "")));
@@ -72,7 +91,8 @@ function quitRunningDesk({ exePath = process.execPath, platform = process.platfo
   const kill = platform === "win32"
     ? async (pids) => { await run("taskkill", taskkillArgs(pids)); }
     : async (pids) => { for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } };
-  return quitRunning({ list, kill, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), timeoutMs });
+  const self = () => [process.pid, ...own()];
+  return quitRunning({ list, kill, own: self, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), timeoutMs });
 }
 
 module.exports = { parseTasklistCsv, quitRunning, quitRunningDesk, taskkillArgs, tasklistArgs };

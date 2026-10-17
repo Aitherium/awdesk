@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.21 - 2026-10-17
+
+Quit Aither finishes in seconds.
+
+- "Quit Aither" (the taskbar jump list and the Start menu) closed Aither within about
+  4 seconds, but its own helper process stayed for 40 seconds or more. It kept waiting
+  for its own background processes, and at the end it could close an Aither you had
+  just started again. It now ignores its own processes, waits 3 seconds of real time,
+  and only ever closes the Aither that was running when you chose Quit.
+- Quit Aither also starts faster: it no longer loads the rest of Aither before asking
+  the running one to close (that alone took 3 to 9 seconds).
+
 ## 0.1.20 - 2026-10-16
 
 Every Aither on Windows can update itself again.

@@ -45,6 +45,93 @@ test("a Desk still running after 3 s is ended", async () => {
   assert.deepEqual(killed, [10, 11]);
 });
 
+// Measured 2026-10-17 on the released 0.1.20 (garg tenant, isolated profile): the running
+// Desk was gone 4 s after `Desk.exe --quit`, but the --quit launch itself took 39-60+ s to
+// exit. Its OWN GPU and network processes are Desk.exe too, so the listing never emptied;
+// each `tasklist` takes 1.2-3 s, so twelve "250 ms" steps became ~40 s; and at the end it
+// ended its own children -- or a Desk the customer had started again meanwhile.
+test("this launch's own processes are never waited for or ended", async () => {
+  const killed = [];
+  let listed = 0;
+  const out = await q.quitRunning({
+    // the running Desk (10, 11) leaves after one look; this launch's own 20, 21 stay
+    list: async () => (listed++ < 1 ? [10, 11, 20, 21] : [20, 21]),
+    own: () => [20, 21],
+    kill: async (pids) => killed.push(...pids),
+    sleep: async () => {},
+    timeoutMs: 3000, stepMs: 250,
+  });
+  assert.deepEqual(killed, [], "it ended its own GPU/network process");
+  assert.equal(out.forced, 0);
+  assert.equal(out.asked, 2);
+});
+
+test("a Desk started after the first look is never ended", async () => {
+  const killed = [];
+  let listed = 0;
+  const out = await q.quitRunning({
+    list: async () => (listed++ < 1 ? [10] : [10, 30]),
+    kill: async (pids) => killed.push(...pids),
+    sleep: async () => {},
+    timeoutMs: 3000, stepMs: 250,
+  });
+  assert.deepEqual(killed, [10], "only the Desk that was running when Quit was asked");
+  assert.equal(out.forced, 1);
+});
+
+test("the 3 s wait is wall-clock: a slow listing does not stretch it to 40 s", async () => {
+  let clock = 0;
+  let calls = 0;
+  const killed = [];
+  await q.quitRunning({
+    list: async () => { calls += 1; clock += 1500; return [10]; }, // tasklist: 1.2-3 s measured
+    kill: async (pids) => killed.push(...pids),
+    sleep: async (ms) => { clock += ms; },
+    now: () => clock,
+    timeoutMs: 3000, stepMs: 250,
+  });
+  assert.deepEqual(killed, [10]);
+  assert.ok(clock <= 6000, `the wait took ${clock} ms of a 3000 ms budget`);
+  assert.ok(calls <= 4, `${calls} listings for a 3 s wait`);
+});
+
+test("an own() that throws changes nothing", async () => {
+  const killed = [];
+  const out = await q.quitRunning({
+    list: async () => [10],
+    own: () => { throw new Error("no metrics yet"); },
+    kill: async (pids) => killed.push(...pids),
+    sleep: async () => {},
+    timeoutMs: 3000, stepMs: 250,
+  });
+  assert.deepEqual(killed, [10]);
+  assert.equal(out.forced, 1);
+});
+
+// The same 0.1.21 build, measured on the owner's PC: `Desk.exe --quit` with NO Desk running
+// took 3.4-8.9 s, all of it loading the ~4,000 lines of main.cjs above the old --quit branch.
+test("main.cjs decides --quit before it loads the rest of Desk", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "main.cjs"), "utf8");
+  const at = src.indexOf('process.argv.includes("--quit")');
+  const heavy = src.indexOf('require("./desk-posture.cjs")');
+  assert.ok(at > 0 && heavy > 0);
+  assert.ok(at < heavy, "--quit must be decided before desk-posture and everything after it load");
+  const branch = src.slice(at, src.indexOf("\n}\n", at));
+  assert.match(branch, /app\.setName\(INTERNAL_APP_NAME\)/, "the lock must be the real profile's lock");
+  assert.match(branch, /userDataDirFor\(/);
+  assert.match(branch, /requestSingleInstanceLock\(\)/);
+  assert.match(branch, /\breturn;/, "nothing else of Desk may start in a --quit launch");
+  assert.equal((src.match(/process\.argv\.includes\("--quit"\)/g) || []).length, 1, "one --quit decision, not two");
+});
+
+test("main.cjs tells the --quit launch which processes are its own", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "main.cjs"), "utf8");
+  const at = src.indexOf("quitRunningDesk(");
+  assert.ok(at > 0);
+  assert.match(src.slice(at, at + 300), /own:\s*\(\)\s*=>[^\n]*getAppMetrics\(\)/,
+    "--quit must pass this launch's app.getAppMetrics() pids as its own");
+});
+
 test("the Windows commands name only this user's processes of this image", () => {
   const listArgs = q.tasklistArgs("Aither.exe", "jmorse");
   assert.deepEqual(listArgs, ["/FI", "IMAGENAME eq Aither.exe", "/FI", "USERNAME eq jmorse", "/FO", "CSV", "/NH"]);
