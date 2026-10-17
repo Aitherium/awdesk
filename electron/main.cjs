@@ -139,6 +139,9 @@ const {
 const marketClient = require("./market-client.cjs");
 // The Deck's avatar store (W4-04): choosing a library or VRoid model installs it.
 const avatarLibrarySync = require("./avatar-library-sync.cjs");
+// The agent avatars follow the person (2026-10-16): the platform catalog says which avatar
+// each agent wears on every device; this desk pulls it and pushes its own choices.
+const avatarCatalogSync = require("./avatar-catalog-sync.cjs");
 /** VRoid models the broker last returned, by id -- the install handler's source of truth. */
 const vroidSeen = new Map();
 // Full system awareness (#9): the five snapshot clients the deck's System
@@ -2520,6 +2523,10 @@ function buildAgentMenu() {
             setAgentAvatar(agent, active);
             refreshTrayMenu();
             debugLog("agent avatar assigned", agent, active);
+            // Every other device learns it too (uploads a desk-only model once).
+            void avatarCatalogSync.pushAssignment(agent, active)
+              .then((r) => debugLog("agent avatar pushed to your library", agent, r.ok ? r.id : r.reason))
+              .catch((error) => debugLog("agent avatar push failed", agent, String(error)));
           },
         },
       ],
@@ -4176,6 +4183,9 @@ if (!smokeIsRequested && process.argv.includes("--quit")) {
     startAeonMoodFeed();
     // The resident's body: VRM, or VaM when its persona asks (vam-avatar.cjs).
     startAvatarSourceWatch();
+    // Which avatar each agent wears, from the person's catalog (after the kid-desk return
+    // above: a child's desk never pulls an adult library).
+    avatarCatalogSync.startCatalogSync({ log: debugLog });
     // Unpackaged runs (npx electron .) have no Start Menu shortcut registering
     // the AUMID, so Windows shows the RAW id as every toast's header — the
     // owner's decision-card notification read "com.xikhar.persona" instead of

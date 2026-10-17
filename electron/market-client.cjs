@@ -125,7 +125,7 @@ function refusalText(status, text) {
  * Resolves {ok:true, status, body} (JSON, or a Buffer when `binary`) or
  * {ok:false, status, refused, reason}. Never throws, never logs the token.
  */
-async function storeRequest(pathname, { method = "GET", query = null, binary = false, ...deps } = {}) {
+async function storeRequest(pathname, { method = "GET", query = null, binary = false, json = undefined, form = null, ...deps } = {}) {
   const { origin, token, fetchImpl } = storeDeps(deps);
   if (!token) {
     return { ok: false, status: 0, refused: "signed_out", reason: "Sign in to Aitherium on this desk to see your avatars." };
@@ -140,9 +140,18 @@ async function storeRequest(pathname, { method = "GET", query = null, binary = f
   const ctl = typeof AbortController === "function" ? new AbortController() : null;
   const timer = ctl ? setTimeout(() => ctl.abort(), deps.timeoutMs || STORE_TIMEOUT_MS) : null;
   try {
+    const headers = { Authorization: `Bearer ${token}`, Accept: binary ? "model/gltf-binary" : "application/json" };
+    let body;
+    if (json !== undefined) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(json);
+    } else if (form) {
+      body = form; // FormData: fetch writes the multipart boundary itself
+    }
     const res = await fetchImpl(url.toString(), {
       method,
-      headers: { Authorization: `Bearer ${token}`, Accept: binary ? "model/gltf-binary" : "application/json" },
+      headers,
+      body,
       signal: ctl ? ctl.signal : undefined,
     });
     if (res.status < 200 || res.status >= 300) {
@@ -180,6 +189,52 @@ async function avatarLibrary(deps = {}) {
   if (!r.ok) return { ok: false, avatars: [], active: null, reason: r.reason, refused: r.refused };
   const avatars = Array.isArray(r.body && r.body.avatars) ? r.body.avatars : [];
   return { ok: true, avatars, active: (r.body && r.body.active) || null };
+}
+
+const AGENT_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+
+/**
+ * The ONE catalog every device reads (aither-avatars GET /avatars/catalog, 2026-10-16):
+ * {ok, avatars, starters, agents:{agent: avatarId}, active, reason}. Shapes always present.
+ */
+async function avatarCatalog(deps = {}) {
+  const r = await storeRequest("/catalog", deps);
+  if (!r.ok) return { ok: false, avatars: [], starters: [], agents: {}, active: null, reason: r.reason, refused: r.refused };
+  const b = r.body || {};
+  const agents = {};
+  for (const [k, v] of Object.entries(b.agents && typeof b.agents === "object" ? b.agents : {})) {
+    if (AGENT_RE.test(k) && typeof v === "string") agents[k] = v;
+  }
+  return {
+    ok: true,
+    avatars: Array.isArray(b.avatars) ? b.avatars : [],
+    starters: Array.isArray(b.starters) ? b.starters : [],
+    agents,
+    active: b.active || null,
+  };
+}
+
+/** Dress (or with null, undress) one agent in the person's library: {ok, reason}. */
+async function putAgentAvatar(agent, avatarId, deps = {}) {
+  if (!AGENT_RE.test(String(agent || ""))) return { ok: false, reason: "not an agent name" };
+  if (avatarId !== null && !AVATAR_ID_RE.test(String(avatarId || ""))) return { ok: false, reason: "not an avatar id" };
+  const r = await storeRequest(`/agents/${agent}`, { ...deps, method: "PUT", json: { id: avatarId } });
+  return r.ok ? { ok: true } : { ok: false, reason: r.reason, refused: r.refused };
+}
+
+/** Upload one .vrm the person owns into their library: {ok, record} | {ok:false, reason}. */
+async function uploadAvatar(bytes, name, rating = "unknown", deps = {}) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0) return { ok: false, reason: "no model bytes" };
+  if (bytes.length > MAX_MODEL_BYTES) return { ok: false, reason: "the model is larger than an avatar may be" };
+  if (typeof FormData !== "function" || typeof Blob !== "function") return { ok: false, reason: "no FormData in this runtime" };
+  const form = new FormData();
+  form.append("file", new Blob([bytes], { type: "model/gltf-binary" }), "model.vrm");
+  form.append("name", String(name || "avatar").slice(0, 80));
+  form.append("rating", ["general", "r15", "r18"].includes(rating) ? rating : "unknown");
+  const r = await storeRequest("", { ...deps, method: "POST", form, timeoutMs: deps.timeoutMs || 120000 });
+  return r.ok && r.body && typeof r.body.id === "string"
+    ? { ok: true, record: r.body }
+    : { ok: false, reason: r.reason || "the library did not return a record", refused: r.refused };
 }
 
 /** The bytes of one of the caller's own library avatars: {ok, bytes} | {ok:false, reason}. */
@@ -231,6 +286,9 @@ module.exports = {
   browse,
   detail,
   avatarLibrary,
+  avatarCatalog,
+  putAgentAvatar,
+  uploadAvatar,
   libraryModel,
   vroidBrowse,
   vroidModel,

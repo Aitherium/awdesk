@@ -116,6 +116,78 @@ function finish(d, name, installed) {
   };
 }
 
+/** The roster folder already holding library avatar `record` (by library_id, else its
+ *  own roster name with the same digest), or null. A model the person uploaded FROM this
+ *  desk keeps its original folder (avatar-catalog-sync stamps library_id into it), so a
+ *  sync never downloads a second copy of bytes that are already here. */
+function findInstalled(rosterDir, record) {
+  const id = String((record && record.id) || "");
+  const sha = String((record && record.sha256) || "");
+  const own = libraryRosterName(record);
+  if (own && hasModel(rosterDir, own) && (!sha || readRecord(rosterDir, own).library_sha256 === sha)) return own;
+  let names = [];
+  try {
+    names = fs.readdirSync(rosterDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    const rec = readRecord(rosterDir, name);
+    if (rec.library_id === id && hasModel(rosterDir, name) && (!sha || rec.library_sha256 === sha)) return name;
+  }
+  return null;
+}
+
+/**
+ * Make sure library avatar `record` is on this desk, WITHOUT putting it on stage
+ * (the background catalog sync: an agent's avatar arrives before it is needed).
+ * Downloads only when no folder here holds the same digest.
+ * @returns {Promise<{ok, name, installed, reason}>}
+ */
+async function ensureLibraryAvatar(record, deps = {}) {
+  const d = defaults(deps);
+  const here = findInstalled(d.rosterDir, record);
+  if (here) return { ok: true, name: here, installed: false, reason: null };
+  const name = libraryRosterName(record);
+  if (!name) return { ok: false, name: null, installed: false, reason: "that avatar has no usable id" };
+  const sha = String(record.sha256 || "");
+  const got = await d.client.libraryModel(record.id, deps.clientDeps);
+  if (!got.ok) return { ok: false, name, installed: false, reason: got.reason };
+  if (!looksLikeVrm(got.bytes)) return { ok: false, name, installed: false, reason: "the library returned something that is not a .vrm" };
+  if (sha && nodeCrypto.createHash("sha256").update(got.bytes).digest("hex") !== sha) {
+    return { ok: false, name, installed: false, reason: "the downloaded model does not match your library's copy" };
+  }
+  const enrolled = await enrollBytes(d, name, got.bytes, {
+    rating: libraryRating(record),
+    source: "library",
+    extra: { library_id: record.id, library_sha256: sha, display_name: String(record.name || name).slice(0, 80) },
+  });
+  if (!enrolled.ok) return { ok: false, name, installed: false, reason: enrolled.reason };
+  return { ok: true, name, installed: true, reason: null };
+}
+
+/** The same for a VRoid reference in the library (bytes fetched with the person's own
+ *  VRoid link, kept on THIS desk only -- local use by the authorising account). */
+async function ensureVroidReference(record, deps = {}) {
+  const d = defaults(deps);
+  const ref = String((record && record.ref) || "");
+  const name = vroidRosterName(ref);
+  if (!name) return { ok: false, name: null, installed: false, reason: "not a VRoid model id" };
+  if (hasModel(d.rosterDir, name) && readRecord(d.rosterDir, name).vroid_model_id === ref) {
+    return { ok: true, name, installed: false, reason: null };
+  }
+  const got = await d.client.vroidModel(ref, deps.clientDeps);
+  if (!got.ok) return { ok: false, name, installed: false, reason: got.reason };
+  if (!looksLikeVrm(got.bytes)) return { ok: false, name, installed: false, reason: "VRoid Hub returned something that is not a .vrm" };
+  const enrolled = await enrollBytes(d, name, got.bytes, {
+    rating: libraryRating(record),
+    source: "vroid",
+    extra: { vroid_model_id: ref, library_id: String(record.id || ""), display_name: String(record.name || name).slice(0, 80) },
+  });
+  if (!enrolled.ok) return { ok: false, name, installed: false, reason: enrolled.reason };
+  return { ok: true, name, installed: true, reason: null };
+}
+
 /**
  * Install one of the person's own library avatars on this desk.
  * @returns {Promise<{ok, name, installed, applied, reason, party}>}
@@ -219,6 +291,9 @@ function visibleVroidModels(models, open) {
 }
 
 module.exports = {
+  ensureLibraryAvatar,
+  ensureVroidReference,
+  findInstalled,
   installLibraryAvatar,
   installVroidModel,
   libraryView,

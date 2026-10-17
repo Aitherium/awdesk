@@ -169,3 +169,46 @@ test("store: ids outside the grammar never reach the network", async () => {
   assert.equal((await client.vroidModel("1/../2", { ...STORE, fetchImpl: f.impl })).ok, false);
   assert.equal(f.seen.length, 0);
 });
+
+// ─── the catalog every device reads (aither-avatars, 2026-10-16) ─────────────
+
+test("catalog: one read, shapes always present, bad agent keys dropped", async () => {
+  const f = fakeFetch({ "GET /api/avatars/catalog": json(200, {
+    avatars: [{ id: "mira-1a2b3c4d" }], starters: [{ id: "starter-sora" }],
+    agents: { aither: "mira-1a2b3c4d", "Bad Key": "x", lyra: 3 }, active: "mira-1a2b3c4d",
+  }) });
+  const r = await client.avatarCatalog({ ...STORE, fetchImpl: f.impl });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.agents, { aither: "mira-1a2b3c4d" });
+  assert.equal(r.starters[0].id, "starter-sora");
+  const down = await client.avatarCatalog({ ...STORE, fetchImpl: fakeFetch({}).impl });
+  assert.equal(down.ok, false);
+  assert.deepEqual([down.avatars, down.starters, down.agents], [[], [], {}]);
+});
+
+test("catalog: dressing an agent is a PUT carrying only the id", async () => {
+  let body = null;
+  const f = fakeFetch({ "PUT /api/avatars/agents/aither": () => json(200, { agent: "aither" }) });
+  const impl = async (url, init) => {
+    body = init.body;
+    return f.impl(url, init);
+  };
+  const r = await client.putAgentAvatar("aither", "mira-1a2b3c4d", { ...STORE, fetchImpl: impl });
+  assert.equal(r.ok, true);
+  assert.deepEqual(JSON.parse(body), { id: "mira-1a2b3c4d" });
+  assert.equal((await client.putAgentAvatar("../x", "mira", { ...STORE, fetchImpl: impl })).ok, false);
+  assert.equal((await client.putAgentAvatar("aither", "../etc", { ...STORE, fetchImpl: impl })).ok, false);
+});
+
+test("catalog: an upload is multipart with the person's bearer and returns the record", async () => {
+  const seen = [];
+  const impl = async (url, init) => {
+    seen.push({ path: new URL(url).pathname, method: init.method, form: init.body instanceof FormData });
+    return json(200, { id: "mermaid-12345678", name: "Mermaid" });
+  };
+  const r = await client.uploadAvatar(Buffer.from("glTF0000"), "Mermaid", "general", { ...STORE, fetchImpl: impl });
+  assert.equal(r.ok, true);
+  assert.equal(r.record.id, "mermaid-12345678");
+  assert.deepEqual(seen, [{ path: "/api/avatars", method: "POST", form: true }]);
+  assert.equal((await client.uploadAvatar(Buffer.alloc(0), "x", "general", { ...STORE, fetchImpl: impl })).ok, false);
+});
