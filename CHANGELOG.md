@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.20 - 2026-10-16
+
+Every Aither on Windows can update itself again.
+
+- 0.1.19 installs for all users, so its installer was marked "administrator only".
+  Aither 0.1.18 and older start their downloaded update without asking Windows for
+  administrator rights, and Windows refuses to start such an installer that way. So
+  no PC running 0.1.18 or older could ever update to 0.1.19. The installer now starts
+  normally and asks for administrator approval itself: one Windows prompt when the
+  update installs. Click Yes and Aither updates and restarts.
+- Upgrading from a per-user Aither (0.1.18 or older) removes that copy, so the Start
+  menu and desktop shortcuts open the new version. Your settings and sign-in stay.
+- Hide and Quit Aither are on the AitherOS dock. Hide puts the overlay away, like Esc;
+  Quit ends Aither, like the tray's Quit. The dock shows them only on an Aither that
+  can do them (0.1.20 and later), so an older one never shows a button that does nothing.
+- The company setup page now starts the newest installed Aither, and does not
+  reinstall it every time it runs, when an older per-user copy is still registered.
+
 ## 0.1.19 - 2026-10-16
 
 Aither on a customer's PC is now light, gets out of the way of the Windows desktop,
@@ -34,8 +52,9 @@ and can always be quit.
   app.asar, and an edited app.asar refuses to start. Cookies are encrypted on disk.
 - On Windows, Desk now installs for all users under Program Files, so a standard account
   cannot replace it. Updates ask for administrator approval (UAC). An existing per-user
-  copy in %LOCALAPPDATA%\Programs is not removed by the new installer: uninstall it from
-  each account (on a kid-desk PC, from the child's account) after upgrading.
+  copy in %LOCALAPPDATA%\Programs of the account that approves the install is removed;
+  a copy under another account (on a kid-desk PC, the child's) is uninstalled from that
+  account.
 - Kid desk: Desk will not start at all if it is launched with a debugging switch
   (--inspect, --remote-debugging-*, --js-flags) or with ELECTRON_RUN_AS_NODE or
   NODE_OPTIONS set.

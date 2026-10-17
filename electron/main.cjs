@@ -3184,7 +3184,10 @@ function deckStateFor(sender) {
 // Slice 23: while the overlay is up, the Aither Browser is a window OF AitherOS Online
 // (browser-in-online.cjs): the OS draws its frame, the browser is laid over the body.
 const browserInOnline = createBrowserInOnline({ browser: () => browserWindow.getWindow() });
-setDeskStateProvider(() => ({ ...deckState(), browser: overlayBrowserHost.browserSummary(browserWindow.getState()) }));
+setDeskStateProvider(() => ({ ...deckState(), browser: overlayBrowserHost.browserSummary(browserWindow.getState()),
+  // Which desk-command ids this desk answers: Veil's dock draws Hide / Quit only when listed
+  // (desk-window-controls.tsx), so an older desk that would refuse them shows no dead button.
+  commands: overlayBrowserHost.DESK_COMMANDS }));
 // This computer's local node, started and supervised on the user's click (local-node.cjs).
 const localNode = require("./local-node.cjs").createLocalNode({ log: (line) => console.log(`[desk] ${line}`) });
 // AitherOS Online on the desk drives and reads the Aither Browser through the SAME
