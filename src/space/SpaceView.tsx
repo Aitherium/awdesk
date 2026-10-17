@@ -766,8 +766,15 @@ export default function SpaceView() {
             <div data-space-audit style={{ marginTop: 4, fontFamily: FONTS.metric, fontSize: 11, color: '#C9D3DD' }}>
               <div data-space-audit-sum>
                 {deskAudit.summary ? auditSentence(deskAudit.summary)
-                  : 'audit not measured yet (aither-fleet-audit.timer writes it every 15 min)'}
+                  : 'audit not measured yet (fleet_audit.py --write measures it)'}
               </div>
+              {deskAudit.drift ? (
+                <div data-space-audit-drift style={{ marginTop: 3, color: VERDICT_COLORS['trim-candidate'] }}>
+                  {`fleet moved since: ${deskAudit.drift.running} running now (desk probe${
+                    deskAudit.drift.at ? ` ${new Date(deskAudit.drift.at).toLocaleTimeString()}` : ''
+                  }); rings are the measured state`}
+                </div>
+              ) : null}
               {deskAudit.summary ? (
                 <div data-space-audit-legend style={{ marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                   {AUDIT_VERDICTS.filter((v) => deskAudit.summary?.byVerdict[v]).map((v) => (

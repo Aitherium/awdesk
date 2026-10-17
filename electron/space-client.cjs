@@ -211,6 +211,11 @@ function normaliseVerb(verb) {
  */
 function normaliseUniverse(universe, fleetStatus, atMs = Date.now()) {
   const fleet = fleetStatus ? fleetHealth(fleetStatus, atMs) : null;
+  // The running count the desk measured itself: the audit lens compares it with the
+  // audit's, so a fleet that moved since the last measure says so (2026-10-16: the lens
+  // read "61 running" while podman ran 78 -- a peer had woken 17 units 4 min earlier).
+  const deskRunning = fleetStatus && fleetStatus.fleet && Number.isFinite(fleetStatus.fleet.running)
+    ? fleetStatus.fleet.running : null;
   const nodes = universe.nodes
     .filter((n) => n && typeof n === "object" && typeof n.id === "string" && ID_RE.test(n.id))
     .map((n) => {
@@ -218,6 +223,10 @@ function normaliseUniverse(universe, fleetStatus, atMs = Date.now()) {
       if (n.id === "galaxy:fleet" && fleet) {
         copy.health = { ...fleet, ...(n.health && n.health.rollup ? { rollup: n.health.rollup } : {}) };
         copy.status = STATUS_OF_HEALTH[fleet.state] || "open";
+        if (deskRunning !== null) {
+          copy.meta = { ...(n.meta && typeof n.meta === "object" ? n.meta : {}),
+            desk_running: deskRunning, desk_running_at: new Date(atMs).toISOString() };
+        }
       }
       return copy;
     });

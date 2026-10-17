@@ -16,7 +16,7 @@
  * Nothing here moves the camera. A new ask only glows; flying is a deep link or a click.
  */
 import { allAsks, attachCards, indexUniverse } from '../vendor/bead-space/universe';
-import { AUDIT_VERDICTS, auditSummaryOf, lensOf, verdictOf } from '../vendor/bead-space/space/panel-text';
+import { auditSummaryOf, lensOf, verdictOf } from '../vendor/bead-space/space/panel-text';
 import type { AuditSummary, AuditVerdict, LensSummary, LensTier } from '../vendor/bead-space/space/panel-text';
 import type { DeskCard, UniverseData } from '../vendor/bead-space/types';
 import type { DeckDecision, DeckState } from '../deck/deck-types';
@@ -157,7 +157,35 @@ export interface DeskAudit {
   verdict: Map<string, AuditVerdict>;
   /** Every planet's RAM: its own reading, or the sum of the RUNNING readings under it. */
   ramMb: Map<string, number>;
+  /** The fleet moved since the audit measured it: the desk's own running count (and when
+   *  the desk took it) differs from the audit's. null when they agree or either is missing. */
+  drift: { running: number; at: string } | null;
 }
+
+/**
+ * The desk's live running count vs the audit's. Pure. The verdict rings are the audit's
+ * word at its measure time; a fleet that woke or slept since must say so, never let the
+ * old count read as now (2026-10-16: "61 running" while podman ran 78).
+ */
+export function auditDriftOf(data: UniverseData | null, summary: AuditSummary | null): DeskAudit['drift'] {
+  if (!data || !summary || summary.running === null) return null;
+  const meta = data.nodes.find((n) => n.id === 'galaxy:fleet')?.meta;
+  const live = meta?.desk_running;
+  if (typeof live !== 'number' || !Number.isFinite(live) || live === summary.running) return null;
+  const at = typeof meta?.desk_running_at === 'string' ? meta.desk_running_at : '';
+  return { running: live, at };
+}
+
+/**
+ * Which verdict a GROUP wears, most attention-worthy first. Not AUDIT_VERDICTS' order:
+ * there `parked` outranks `business`/`core`, so every group holding one parked unit read
+ * "parked" (grey) over its running core services -- measured live 2026-10-16, Security
+ * (secrets, security-core running) and 13 more fleet groups ringed grey. Parked asks
+ * nothing of the owner; a group reads parked only when nothing under it runs.
+ */
+const ROLLUP_ORDER: readonly AuditVerdict[] = [
+  'breaking', 'crashed', 'dead', 'waste', 'trim-candidate', 'business', 'core', 'parked',
+];
 
 /**
  * The audit lens over the desk's one-level-at-a-time planets. Pure. Status is untouched:
@@ -166,7 +194,7 @@ export interface DeskAudit {
 export function deskAuditOf(data: UniverseData | null): DeskAudit | null {
   if (!data) return null;
   const { byId, children } = indexUniverse(data);
-  const rank = new Map(AUDIT_VERDICTS.map((v, i) => [v as string, i]));
+  const rank = new Map(ROLLUP_ORDER.map((v, i) => [v as string, i]));
   const verdict = new Map<string, AuditVerdict>();
   const ramMb = new Map<string, number>();
   const memo = new Map<string, { v: AuditVerdict | null; ram: number }>();
@@ -194,7 +222,8 @@ export function deskAuditOf(data: UniverseData | null): DeskAudit | null {
     if (r.v) verdict.set(node.id, r.v);
     if (r.ram > 0) ramMb.set(node.id, Math.round(r.ram * 10) / 10);
   }
-  return { summary: auditSummaryOf(data), verdict, ramMb };
+  const summary = auditSummaryOf(data);
+  return { summary, verdict, ramMb, drift: auditDriftOf(data, summary) };
 }
 
 /** The node an open card sits on, or null. */

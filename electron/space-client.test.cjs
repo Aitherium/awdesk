@@ -125,6 +125,19 @@ test("galaxy:fleet health is the desk's when it has a verdict, whatever the serv
   assert.equal(normaliseUniverse(universe(), null).nodes.find((n) => n.id === "galaxy:fleet").health.state, "ok");
 });
 
+test("the desk's own running count rides on galaxy:fleet, stamped when it was measured", () => {
+  const at = Date.parse("2026-10-17T03:40:00Z");
+  const fleet = normaliseUniverse(universe(), { ...UP, fleet: { ...(UP.fleet || {}), running: 78 } }, at)
+    .nodes.find((n) => n.id === "galaxy:fleet");
+  assert.equal(fleet.meta.desk_running, 78);
+  assert.equal(fleet.meta.desk_running_at, "2026-10-17T03:40:00.000Z");
+  // No desk verdict (or one without a count): nothing is invented.
+  assert.equal((normaliseUniverse(universe(), null).nodes.find((n) => n.id === "galaxy:fleet").meta || {}).desk_running,
+    undefined);
+  assert.equal((normaliseUniverse(universe(), { fleet: {} }).nodes.find((n) => n.id === "galaxy:fleet").meta || {})
+    .desk_running, undefined);
+});
+
 test("danger is the desk's: DESTRUCTIVE -> confirm, everything else none", () => {
   const verbs = [
     { id: "fleet-sleep", label: "Sleep fleet", danger: "none", transport: "fleet" }, // server under-claimed

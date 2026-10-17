@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DeckDecision } from '../deck/deck-types';
 import type { UniverseData, UniverseNode } from '../vendor/bead-space/types';
-import { buildSpaceModel, deepLinkOf, deepLinkTarget, deskAuditOf, deskCardOf, deskLensOf } from './space-model';
+import { auditDriftOf, buildSpaceModel, deepLinkOf, deepLinkTarget, deskAuditOf, deskCardOf, deskLensOf } from './space-model';
 
 const AT = '2026-10-15T00:00:00Z';
 
@@ -176,6 +176,28 @@ describe('deskAuditOf (the audit lens on the desk planets)', () => {
     expect(a.ramMb.get('galaxy:fleet')).toBe(300);
     expect(a.ramMb.get('platform')).toBe(420);
     expect(a.summary?.freesMb).toBe(300);
+  });
+
+  it('the fleet moved since the measure: drift carries the desk count; agreement is silent', () => {
+    const u = auditUniverse();
+    const fleet = u.nodes.find((x) => x.id === 'galaxy:fleet')!;
+    expect(deskAuditOf(u)!.drift).toBeNull();
+    fleet.meta = { ...fleet.meta, desk_running: 78, desk_running_at: '2026-10-17T03:40:00.000Z' };
+    expect(deskAuditOf(u)!.drift).toEqual({ running: 78, at: '2026-10-17T03:40:00.000Z' });
+    fleet.meta = { ...fleet.meta, desk_running: 2 };
+    expect(deskAuditOf(u)!.drift).toBeNull();
+    expect(auditDriftOf(universe(), null)).toBeNull();
+  });
+
+  it('a group with a running core service and a parked one reads core; only an all-parked group reads parked', () => {
+    const u = universe();
+    u.nodes.push({ ...node('svc:Vault', 'galaxy:data', 'system', 'Vault'), meta: { verdict: 'parked', run_state: 'parked' } });
+    u.nodes.find((x) => x.id === 'svc:Secrets')!.meta = { verdict: 'core', run_state: 'running', mem_mb: 120 };
+    u.nodes.find((x) => x.id === 'svc:Pulse')!.meta = { verdict: 'parked', run_state: 'parked' };
+    const a = deskAuditOf(u)!;
+    expect(a.verdict.get('galaxy:data')).toBe('core');
+    expect(a.verdict.get('galaxy:fleet')).toBe('parked');
+    expect(a.verdict.get('platform')).toBe('core');
   });
 
   it('no verdicts anywhere: no rings, no summary', () => {
