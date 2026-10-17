@@ -4168,6 +4168,23 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // Ahead of batch work on a saturated host (process-priority.cjs). The first
     // sweep runs once the GPU process and the windows exist; the timer catches later ones.
     setTimeout(() => require("./process-priority.cjs").keepDeskResponsive(app, { posture: deskPostureState }), 5000);
+    // "Game on" (host posture / gaming.lock): Desk stands down -- every window throttled,
+    // the overlay hidden, every Desk process BELOW_NORMAL -- and comes back after the
+    // game (game-posture.cjs; 2026-10-16 the owner's game lagged in its start menu).
+    if (!smokeIsRequested) {
+      setTimeout(() => {
+        const { wantedPriority } = require("./process-priority.cjs");
+        require("./game-posture.cjs").startGamePosture({
+          app,
+          BrowserWindow,
+          overlayVisible: () => Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()),
+          hideOverlay,
+          showOverlay: () => showOverlay(),
+          restorePriority: wantedPriority(process.env, deskPostureState) ?? require("node:os").constants.priority.PRIORITY_NORMAL,
+          log: debugLog,
+        });
+      }, 6000);
+    }
     // Desk bounds its own weight and never needs Task Manager (resource-watchdog.cjs):
     // reclaim under memory pressure, restart past a hard budget, and a utility process
     // ends a main process that has stopped answering (Garg 2026-10-16).
