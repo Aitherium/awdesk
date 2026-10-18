@@ -581,6 +581,14 @@ const COMMANDS = Object.freeze([
     id: "osapp.image-studio", label: "Image Studio…", group: "go", osApp: "image-studio",
     surfaces: ["palette", "jumplist"],
   }),
+  // My agent sessions on every machine (2026-10-18, owner: awdk/awsh in the Aither app): the
+  // OS Agents window, which lands on its Running tab -- the same awkit AgentSessionsPanel
+  // the phone's "Running agents" row opens. The browser side panel's Agents tab stays the
+  // in-page glance; this is the full window (read, answer, start).
+  Object.freeze({
+    id: "osapp.agents", label: "Agents…", group: "go", osApp: "agents",
+    surfaces: ["palette", "jumplist"],
+  }),
   Object.freeze({
     id: "fleet.gaming", label: "GPU sleep (game on)", group: "fleet",
     surfaces: ["tray", "palette"], fleet: "gpu-sleep", destructive: true,
