@@ -20,6 +20,14 @@
  *         a hard link, no second copy of the bytes). Every desk then calls that agent's
  *         avatar by the same name, so the `authors` row awsettings carries between
  *         machines means the same thing on each of them -- no per-machine flapping.
+ *   library  seedLibraryFromDesk(): every OTHER character on this desk goes into the
+ *         person's own library too (owner ask 2026-10-17: the desk avatars sync into the
+ *         Avatar library), skipped when the library already holds those bytes (sha256) or
+ *         the folder is stamped with a library id it still has. Each upload carries the
+ *         character's EFFECTIVE desk rating (content-rating.getRating: an unjudged one goes
+ *         up "unknown", never "general"), so a child's Sprite-body picker -- which grants
+ *         only "general" (lib/avatars/sprite_body.py grantable) -- never sees an adult or
+ *         unjudged body. VRoid Hub references and forks (no mesh of their own) never upload.
  *   seed  seedFromDesk(): push every assignment this desk already has -- how the owner's
  *         existing setup becomes the catalog on day one. startCatalogSync does it ONCE by
  *         itself when the catalog names no agent yet and this desk has assignments (the
@@ -36,7 +44,13 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
+const nodeCrypto = require("node:crypto");
+
 const PULL_INTERVAL_MS = 10 * 60 * 1000;
+const LIBRARY_RATINGS = new Set(["general", "r15", "r18"]);
+/** Stop a library pass after this many failures in a row (the service is down: the
+ *  next tick retries, instead of timing out on every remaining character now). */
+const LIBRARY_FAIL_STREAK = 3;
 
 function defaults(deps = {}) {
   const roster = deps.roster || require("./character-roster.cjs");
@@ -46,6 +60,7 @@ function defaults(deps = {}) {
     agents: deps.agents || require("./agent-avatars.cjs"),
     roster,
     rosterDir: deps.rosterDir || roster.ROSTER_DIR,
+    rating: deps.contentRating || null,
     log: deps.log || (() => {}),
   };
 }
@@ -129,6 +144,19 @@ function adoptCanonical(d, character, record) {
   }
 }
 
+/** The rating a desk character goes up with: its EFFECTIVE desk rating, never the raw
+ *  character.json field (a rater "default" stamp reads "general" there but means nobody
+ *  looked). Anything but general/r15/r18 is "unknown" -- private, never child-grantable. */
+function uploadRating(d, character) {
+  try {
+    const cr = d.rating || require("./content-rating.cjs");
+    const rating = String(cr.getRating(character) || "").toLowerCase();
+    return LIBRARY_RATINGS.has(rating) ? rating : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 /** The library id for a desk character, uploading it first when it lives only here. */
 async function libraryIdFor(d, character, deps) {
   const rec = readRecord(d.rosterDir, character);
@@ -140,11 +168,121 @@ async function libraryIdFor(d, character, deps) {
   if (!model || !fs.existsSync(model)) return { ok: false, reason: `${character} has no model file on this desk` };
   const bytes = fs.readFileSync(model);
   const name = String(rec.display_name || (rec.profile && rec.profile.name) || character).slice(0, 80);
-  const up = await d.client.uploadAvatar(bytes, name, String(rec.rating || "unknown"), deps.clientDeps);
+  const up = await d.client.uploadAvatar(bytes, name, uploadRating(d, character), deps.clientDeps);
   if (!up.ok) return { ok: false, reason: up.reason };
   stampLibraryId(d.rosterDir, character, up.record);
   const canonical = adoptCanonical(d, character, up.record);
   return { ok: true, id: up.record.id, uploaded: true, canonical };
+}
+
+const GATED_RATINGS = new Set(["r15", "r18"]);
+
+/** Is this desk's adult-content gate open? Unreadable reads CLOSED (content-rating). */
+function adultGateOpen(d) {
+  try {
+    const cr = d.rating || require("./content-rating.cjs");
+    return Boolean(cr.isAdultContentVisible && cr.isAdultContentVisible());
+  } catch {
+    return false;
+  }
+}
+
+/** Every desk character with a mesh of its own (forks and VRoid references excluded). */
+function ownMeshCharacters(d) {
+  let names = [];
+  try {
+    names = d.roster.listAllCharacters ? d.roster.listAllCharacters()
+      : fs.readdirSync(d.rosterDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    names = [];
+  }
+  return names.filter((name) => fs.existsSync(path.join(d.rosterDir, name, "model.vrm")));
+}
+
+/**
+ * Library seed: every desk character the person's library does not hold yet is uploaded
+ * into it (their own files, their own private library). Idempotent: a folder stamped with
+ * a library id the library still lists is skipped without reading the model; otherwise the
+ * model's sha256 is matched against the library's records and a match is only stamped.
+ * r15/r18 are HELD while the adult-content gate is closed (the library refuses them then).
+ * Returns {ok, reason, uploaded, present, skipped, held, failed, results}; ok=false with
+ * `unavailable` when the library could not be listed (the caller retries later).
+ */
+async function seedLibraryFromDesk(deps = {}) {
+  const d = defaults(deps);
+  const lib = await d.client.avatarLibrary(deps.clientDeps);
+  const out = { ok: false, reason: "", uploaded: 0, present: 0, skipped: 0, held: 0, failed: 0, results: [] };
+  if (!lib.ok) return { ...out, reason: lib.reason || "the avatar library is unavailable", unavailable: true };
+  const ids = new Set();
+  const byHash = new Map();
+  for (const r of lib.avatars || []) {
+    if (!r || typeof r.id !== "string") continue;
+    ids.add(r.id);
+    if (r.sha256) byHash.set(String(r.sha256).toLowerCase(), r);
+  }
+  let streak = 0;
+  for (const name of ownMeshCharacters(d)) {
+    const rec = readRecord(d.rosterDir, name);
+    if (typeof rec.vroid_model_id === "string" && rec.vroid_model_id) {
+      out.skipped += 1;
+      out.results.push({ name, ok: true, skipped: "a VRoid Hub reference, never uploaded" });
+      continue;
+    }
+    if (typeof rec.library_id === "string" && ids.has(rec.library_id)) {
+      out.present += 1;
+      continue;
+    }
+    let bytes;
+    try {
+      bytes = fs.readFileSync(path.join(d.rosterDir, name, "model.vrm"));
+    } catch (error) {
+      out.failed += 1;
+      out.results.push({ name, ok: false, reason: String((error && error.message) || error) });
+      continue;
+    }
+    const digest = nodeCrypto.createHash("sha256").update(bytes).digest("hex");
+    const held = byHash.get(digest);
+    if (held) {
+      stampLibraryId(d.rosterDir, name, held);
+      out.present += 1;
+      out.results.push({ name, ok: true, id: held.id, present: true });
+      continue;
+    }
+    const label = String(rec.display_name || (rec.profile && rec.profile.name) || name).slice(0, 80);
+    const rating = uploadRating(d, name);
+    if (GATED_RATINGS.has(rating) && !adultGateOpen(d)) {
+      // The library refuses r15/r18 while the person's adult-content gate is closed
+      // ("rating r15 needs the content gate open"): held, not failed -- a later tick
+      // uploads it once they open the gate.
+      out.held += 1;
+      continue;
+    }
+    const up = await d.client.uploadAvatar(bytes, label, rating, deps.clientDeps);
+    if (!up.ok && /content gate/i.test(String(up.reason || ""))) {
+      out.held += 1;
+      continue;
+    }
+    if (!up.ok) {
+      out.failed += 1;
+      out.results.push({ name, ok: false, reason: up.reason });
+      streak += 1;
+      if (streak >= LIBRARY_FAIL_STREAK) {
+        out.reason = `stopped after ${streak} failures in a row: ${up.reason}`;
+        out.unavailable = true;
+        break;
+      }
+      continue;
+    }
+    streak = 0;
+    stampLibraryId(d.rosterDir, name, up.record);
+    ids.add(String(up.record.id));
+    if (up.record.sha256) byHash.set(String(up.record.sha256).toLowerCase(), up.record);
+    out.uploaded += 1;
+    out.results.push({ name, ok: true, id: up.record.id, uploaded: true, rating });
+  }
+  out.ok = out.failed === 0;
+  d.log("avatar library seeded from this desk", { uploaded: out.uploaded, present: out.present, failed: out.failed });
+  return out;
 }
 
 /** Push: the catalog learns which avatar `agent` wears (the desk's own choice). */
@@ -217,6 +355,12 @@ function startCatalogSync(deps = {}) {
         if (!out.ok) (deps.log || (() => {}))("avatar catalog seed will retry", out.reason || out.failed);
       }
       await syncFromCatalog(deps);
+      // Every tick: new desk characters keep syncing, a failed pass (service down) is
+      // simply tried again. Cheap once seeded -- stamped folders are never re-read.
+      if (deps.librarySeed !== false) {
+        const lib = await seedLibraryFromDesk(deps);
+        if (!lib.ok) (deps.log || (() => {}))("avatar library seed will retry", lib.reason || lib.failed);
+      }
     } catch (error) {
       (deps.log || (() => {}))("avatar catalog sync failed", String((error && error.message) || error));
     } finally {
@@ -234,17 +378,31 @@ module.exports = {
   SEED_MAX_TRIES,
   pushAssignment,
   seedFromDesk,
+  seedLibraryFromDesk,
   seedIfCatalogEmpty,
   startCatalogSync,
   syncFromCatalog,
 };
 
 if (require.main === module) {
-  const mode = process.argv.includes("--seed") ? "seed" : process.argv.includes("--sync") ? "sync" : "";
+  const mode = process.argv.includes("--seed") ? "seed" : process.argv.includes("--sync") ? "sync"
+    : process.argv.includes("--library") ? "library" : "";
   if (!mode) {
-    process.stderr.write("usage: node electron/avatar-catalog-sync.cjs --seed | --sync\n");
+    process.stderr.write("usage: node electron/avatar-catalog-sync.cjs --seed | --sync | --library\n");
     process.exit(2);
   }
+  if (mode === "library") {
+    seedLibraryFromDesk({ log: () => {} }).then((out) => {
+      for (const r of out.results) {
+        process.stdout.write(`${r.ok ? "ok  " : "FAIL"} ${r.name}${r.id ? ` -> ${r.id}` : ""}${r.rating ? ` [${r.rating}]` : ""}${r.present ? " (already in library)" : ""}${r.uploaded ? " (uploaded)" : ""}${r.skipped ? ` (${r.skipped})` : ""}${r.reason ? `: ${r.reason}` : ""}\n`);
+      }
+      process.stdout.write(`uploaded=${out.uploaded} present=${out.present} skipped=${out.skipped} held=${out.held} failed=${out.failed}${out.reason ? ` reason=${out.reason}` : ""}\n`);
+      process.exit(out.ok ? 0 : 1);
+    }, (error) => {
+      process.stderr.write(`DEAD ${String((error && error.message) || error)}\n`);
+      process.exit(2);
+    });
+  } else {
   // The roster's own install funnel (safety consult + rater) runs exactly as in the app.
   const run = mode === "seed" ? seedFromDesk() : syncFromCatalog();
   run.then((out) => {
@@ -257,4 +415,5 @@ if (require.main === module) {
     process.stderr.write(`DEAD ${String((error && error.message) || error)}\n`);
     process.exit(2);
   });
+  }
 }

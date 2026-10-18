@@ -42,9 +42,15 @@ const sha = (b) => nodeCrypto.createHash("sha256").update(b).digest("hex");
 const ENROLL = { consultInstall: async () => ({ allow: true, reachable: true }), spawn: () => ({ unref() {} }) };
 
 function fakeClient({ avatars = [], starters = [], map = {}, bytes = {} } = {}) {
-  const calls = { libraryModel: [], put: [], upload: [] };
+  const calls = { libraryModel: [], put: [], upload: [], library: 0 };
+  const held = [...avatars];
   return {
     calls,
+    held,
+    async avatarLibrary() {
+      calls.library += 1;
+      return { ok: true, avatars: [...held], active: null };
+    },
     async avatarCatalog() {
       return { ok: true, avatars, starters, agents: { ...map }, active: null };
     },
@@ -63,7 +69,9 @@ function fakeClient({ avatars = [], starters = [], map = {}, bytes = {} } = {}) 
     async uploadAvatar(buf, name, rating) {
       const id = `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${sha(buf).slice(0, 8)}`;
       calls.upload.push({ name, rating, size: buf.length });
-      return { ok: true, record: { id, name, sha256: sha(buf), size: buf.length, rating } };
+      const record = { id, name, sha256: sha(buf), size: buf.length, rating };
+      held.push(record);
+      return { ok: true, record };
     },
   };
 }
@@ -100,7 +108,7 @@ test("a failed download leaves the agent's current character alone", async () =>
 
 test("pushing a desk-only character uploads it once, stamps it, and a pull reuses the folder", async () => {
   const bytes = fakeVrm("mermaid");
-  writeCharacter("mermaid", bytes, { rating: "general", display_name: "Mermaid" });
+  writeCharacter("mermaid", bytes, { rating: "general", source: "manual", display_name: "Mermaid" });
   const map = {};
   const client = fakeClient({ map });
   const pushed = await sync.pushAssignment("aither", "mermaid", { client });
@@ -224,4 +232,123 @@ test("a partly failed seed retries only the failed agents the catalog still lack
   const again = await sync.seedIfCatalogEmpty({ client }, first.failed);
   assert.equal(again.ok, true);
   assert.deepEqual(live.calls.put.slice(before).map(([a]) => a), ["athena"]);
+});
+
+// ── library seed: every desk character, not only the agents' (owner ask 2026-10-17) ──
+function freshRoster() {
+  for (const e of fs.readdirSync(ROSTER)) fs.rmSync(path.join(ROSTER, e), { recursive: true, force: true });
+}
+
+test("an unjudged character goes up 'unknown', never the raw 'general' stamp", async () => {
+  freshRoster();
+  writeCharacter("nobodylooked", fakeVrm("nobodylooked"), { rating: "general", source: "default" });
+  const client = fakeClient();
+  const pushed = await sync.pushAssignment("lyra", "nobodylooked", { client });
+  assert.equal(pushed.ok, true);
+  assert.deepEqual(client.calls.upload.map((u) => u.rating), ["unknown"]);
+});
+
+test("the library seed uploads every desk character with its own rating, once", async () => {
+  freshRoster();
+  writeCharacter("kindfox", fakeVrm("kindfox"), { rating: "general", source: "manual", display_name: "Kind Fox" });
+  writeCharacter("spicy", fakeVrm("spicy"), { rating: "r18", source: "vroid" });
+  writeCharacter("teen", fakeVrm("teen"), { rating: "r15", source: "manual" });
+  writeCharacter("unjudged", fakeVrm("unjudged"), { rating: "general", source: "default" });
+  writeCharacter("hubref", fakeVrm("hubref"), { rating: "general", source: "vroid", vroid_model_id: "123" });
+  const client = fakeClient();
+  const gateOpen = { ...require("./content-rating.cjs"), isAdultContentVisible: () => true };
+  const first = await sync.seedLibraryFromDesk({ client, contentRating: gateOpen });
+  assert.equal(first.ok, true);
+  assert.equal(first.uploaded, 4);
+  assert.equal(first.skipped, 1, "a VRoid Hub reference is never uploaded");
+  const byName = Object.fromEntries(client.calls.upload.map((u) => [u.name, u.rating]));
+  assert.deepEqual(byName, { "Kind Fox": "general", spicy: "r18", teen: "r15", unjudged: "unknown" });
+  // only the judged General one could ever reach a child's Sprite-body picker
+  assert.deepEqual(client.held.filter((r) => r.rating === "general").map((r) => r.name), ["Kind Fox"]);
+
+  const again = await sync.seedLibraryFromDesk({ client, contentRating: gateOpen });
+  assert.equal(again.uploaded, 0, "idempotent: stamped folders are skipped");
+  assert.equal(again.present, 4);
+  assert.equal(client.calls.upload.length, 4);
+});
+
+test("r15/r18 are held while the adult-content gate is closed, and land once it opens", async () => {
+  freshRoster();
+  writeCharacter("plain", fakeVrm("plain"), { rating: "general", source: "manual" });
+  writeCharacter("r18one", fakeVrm("r18one"), { rating: "r18", source: "vroid" });
+  writeCharacter("r15one", fakeVrm("r15one"), { rating: "r15", source: "manual" });
+  const client = fakeClient();
+  const closed = { ...require("./content-rating.cjs"), isAdultContentVisible: () => false };
+  const out = await sync.seedLibraryFromDesk({ client, contentRating: closed });
+  assert.equal(out.ok, true, "held is not a failure");
+  assert.equal(out.held, 2);
+  assert.deepEqual(client.calls.upload.map((u) => u.name), ["plain"]);
+  const open = { ...closed, isAdultContentVisible: () => true };
+  const later = await sync.seedLibraryFromDesk({ client, contentRating: open });
+  assert.equal(later.uploaded, 2);
+  assert.equal(later.held, 0);
+});
+
+test("a server content-gate refusal is held, not a failure streak", async () => {
+  freshRoster();
+  for (const n of ["g1", "g2", "g3", "g4"]) writeCharacter(n, fakeVrm(n), { rating: "r15", source: "manual" });
+  const live = fakeClient();
+  const client = { ...live, async uploadAvatar() { return { ok: false, reason: "rating r15 needs the content gate open" }; } };
+  const open = { ...require("./content-rating.cjs"), isAdultContentVisible: () => true };
+  const out = await sync.seedLibraryFromDesk({ client, contentRating: open });
+  assert.equal(out.ok, true);
+  assert.equal(out.held, 4);
+  assert.equal(out.failed, 0);
+});
+
+test("a character whose bytes the library already holds is stamped, not uploaded", async () => {
+  freshRoster();
+  const bytes = fakeVrm("twin");
+  writeCharacter("twin", bytes, { rating: "general", source: "manual" });
+  const rec = { id: "Twin-cccc3333", name: "Twin", rating: "general", sha256: sha(bytes), source: "upload" };
+  const client = fakeClient({ avatars: [rec] });
+  const out = await sync.seedLibraryFromDesk({ client });
+  assert.equal(out.uploaded, 0);
+  assert.equal(out.present, 1);
+  assert.equal(client.calls.upload.length, 0);
+  const stamped = JSON.parse(fs.readFileSync(path.join(ROSTER, "twin", "character.json"), "utf8"));
+  assert.equal(stamped.library_id, rec.id);
+});
+
+test("library unavailable: nothing uploads, the next tick does it", async () => {
+  freshRoster();
+  writeCharacter("later", fakeVrm("later"), { rating: "general", source: "manual" });
+  const live = fakeClient();
+  let up = false;
+  const client = {
+    ...live,
+    async avatarLibrary() {
+      return up ? live.avatarLibrary() : { ok: false, avatars: [], reason: "HTTP 502" };
+    },
+  };
+  const loop = sync.startCatalogSync({ client, intervalMs: 3600000 });
+  try {
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(live.calls.upload.length, 0);
+    up = true;
+    await loop.tick();
+    assert.deepEqual(live.calls.upload.map((u) => u.name), ["later"]);
+    writeCharacter("newone", fakeVrm("newone"), { rating: "general", source: "manual" });
+    await loop.tick();
+    assert.deepEqual(live.calls.upload.map((u) => u.name), ["later", "newone"], "new desk characters keep syncing");
+  } finally {
+    loop.stop();
+  }
+});
+
+test("a down upload service stops the pass after a short failure streak", async () => {
+  freshRoster();
+  for (const n of ["a1", "a2", "a3", "a4", "a5"]) writeCharacter(n, fakeVrm(n), { rating: "general", source: "manual" });
+  const live = fakeClient();
+  let tries = 0;
+  const client = { ...live, async uploadAvatar() { tries += 1; return { ok: false, reason: "HTTP 503" }; } };
+  const out = await sync.seedLibraryFromDesk({ client });
+  assert.equal(out.ok, false);
+  assert.equal(out.unavailable, true);
+  assert.equal(tries, 3);
 });
