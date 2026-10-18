@@ -174,3 +174,54 @@ test("a first sync seeds an EMPTY catalog from this desk, and never a populated 
   assert.equal(populated.calls.put.length, 0);
 });
 
+
+test("the seed retries when the catalog was unreachable at desk start (2026-10-17)", async () => {
+  // The owner's desk started before aither-avatars answered; the one seed attempt saw no
+  // catalog and his library stayed empty for good.
+  const bytes = fakeVrm("fexa");
+  writeCharacter("fexa", bytes, { rating: "general" });
+  agents.setAgentAvatar("iris", "fexa");
+  const live = fakeClient();
+  let up = false;
+  const client = {
+    ...live,
+    async avatarCatalog() {
+      return up ? live.avatarCatalog() : { ok: false, reason: "HTTP 502", agents: {}, avatars: [], starters: [] };
+    },
+  };
+  const loop = sync.startCatalogSync({ client, intervalMs: 3600000 });
+  try {
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(live.calls.put.length, 0);
+    up = true;
+    await loop.tick();
+    assert.ok(live.calls.put.some(([a]) => a === "iris"), "seed landed once the catalog answered");
+    const puts = live.calls.put.length;
+    await loop.tick();
+    assert.equal(live.calls.put.length, puts, "a landed seed is not pushed again");
+  } finally {
+    loop.stop();
+  }
+});
+
+test("a partly failed seed retries only the failed agents the catalog still lacks", async () => {
+  writeCharacter("ellie", fakeVrm("ellie"), { rating: "general" });
+  agents.setAgentAvatar("athena", "ellie");
+  const live = fakeClient();
+  let fail = true;
+  const client = {
+    ...live,
+    async uploadAvatar(buf, name, rating) {
+      if (fail && name === "ellie") return { ok: false, reason: "HTTP 503" };
+      return live.uploadAvatar(buf, name, rating);
+    },
+  };
+  const first = await sync.seedIfCatalogEmpty({ client });
+  assert.equal(first.ok, false);
+  assert.deepEqual(first.failed, ["athena"]);
+  fail = false;
+  const before = live.calls.put.length;
+  const again = await sync.seedIfCatalogEmpty({ client }, first.failed);
+  assert.equal(again.ok, true);
+  assert.deepEqual(live.calls.put.slice(before).map(([a]) => a), ["athena"]);
+});

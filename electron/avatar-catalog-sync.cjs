@@ -172,29 +172,49 @@ async function seedFromDesk(deps = {}) {
   return { ok: results.every((r) => r.ok), results };
 }
 
-/** First run on a desk: an empty catalog + local assignments -> seed, then pull. */
-async function seedIfCatalogEmpty(deps = {}) {
+/** First run on a desk: an empty catalog + local assignments -> seed, then pull.
+ *  `retryAgents` (from a seed that partly failed) pushes just those agents again, and only
+ *  while the catalog still names no avatar for them -- another device's choice wins. */
+async function seedIfCatalogEmpty(deps = {}, retryAgents = null) {
   const d = defaults(deps);
   const cat = await d.client.avatarCatalog(deps.clientDeps);
-  if (!cat.ok || Object.keys(cat.agents || {}).length > 0) return { ok: cat.ok, seeded: false };
+  if (!cat.ok) return { ok: false, seeded: false, reason: cat.reason, failed: retryAgents || [] };
+  const named = cat.agents || {};
+  if (!retryAgents && Object.keys(named).length > 0) return { ok: true, seeded: false, failed: [] };
   const map = d.agents.loadMap ? d.agents.loadMap() : {};
-  if (!Object.values(map || {}).some(Boolean)) return { ok: true, seeded: false };
-  const out = await seedFromDesk(deps);
-  d.log("avatar catalog seeded from this desk", out.results.map((r) => [r.agent, r.ok ? r.id : r.reason]));
-  return { ok: out.ok, seeded: true, results: out.results };
+  const todo = Object.entries(map || {}).filter(([agent, character]) =>
+    character && (!retryAgents || (retryAgents.includes(agent) && !named[agent])));
+  if (!todo.length) return { ok: true, seeded: false, failed: [] };
+  const results = [];
+  for (const [agent, character] of todo) results.push(await pushAssignment(agent, character, deps));
+  d.log("avatar catalog seeded from this desk", results.map((r) => [r.agent, r.ok ? r.id : r.reason]));
+  const failed = results.filter((r) => !r.ok).map((r) => r.agent);
+  return { ok: failed.length === 0, seeded: true, results, failed };
 }
 
 /** Pull now and every PULL_INTERVAL_MS (and on resume). Returns a stop function. */
+/**
+ * The seed is retried on every tick until it lands (at most SEED_MAX_TRIES times per desk
+ * start). It used to be tried ONCE: the owner's desk started at 06:43Z on 2026-10-17, before
+ * aither-avatars answered, so the one attempt saw no catalog and his library stayed empty.
+ */
+const SEED_MAX_TRIES = 12;
+
 function startCatalogSync(deps = {}) {
   let running = false;
-  let first = true;
+  let seedPending = true;
+  let seedTries = 0;
+  let retryAgents = null;
   const tick = async () => {
     if (running) return;
     running = true;
     try {
-      if (first) {
-        first = false;
-        await seedIfCatalogEmpty(deps);
+      if (seedPending && seedTries < SEED_MAX_TRIES) {
+        seedTries += 1;
+        const out = await seedIfCatalogEmpty(deps, retryAgents);
+        if (out.ok) seedPending = false;
+        else if (out.seeded) retryAgents = out.failed;
+        if (!out.ok) (deps.log || (() => {}))("avatar catalog seed will retry", out.reason || out.failed);
       }
       await syncFromCatalog(deps);
     } catch (error) {
@@ -211,6 +231,7 @@ function startCatalogSync(deps = {}) {
 
 module.exports = {
   PULL_INTERVAL_MS,
+  SEED_MAX_TRIES,
   pushAssignment,
   seedFromDesk,
   seedIfCatalogEmpty,
