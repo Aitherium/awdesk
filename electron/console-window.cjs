@@ -251,6 +251,10 @@ const LAUNCHERS = Object.freeze([
     id: "darkmatter", label: "Darkmatter Link", hint: "Agents in your games: pawn supervisor, game health, consent",
     section: "Online", icon: "layers", command: "darkmatter.open",
   }),
+  Object.freeze({
+    id: "darkmatters", label: "Dark Matters", hint: "Play: starts the local engine on :8799 if it is down, then opens the game",
+    section: "Online", icon: "play", command: "darkmatters.play",
+  }),
 ]);
 
 let consoleWindow = null;

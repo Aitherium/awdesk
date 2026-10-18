@@ -520,6 +520,18 @@ const COMMANDS = Object.freeze([
     id: "darkmatter.open", label: "Darkmatter Link…", group: "go",
     surfaces: ["palette", "jumplist"],
   }),
+  // Play Dark Matters (owner, 2026-10-18: "WE NEED A BETTER WAY TO START/LAUNCH
+  // DARKMATTER"). Runs the game repo's idempotent launcher hidden: engine already up on
+  // :8799 -> just open the game; down -> start it, wait for /health, open it
+  // (darkmatters-launch.cjs). Restart replaces only the process listening on :8799.
+  Object.freeze({
+    id: "darkmatters.play", label: "Play Dark Matters", group: "go", icon: "play",
+    surfaces: ["tray", "palette", "jumplist"],
+  }),
+  Object.freeze({
+    id: "darkmatters.restart", label: "Dark Matters: restart engine", group: "go",
+    surfaces: ["palette", "jumplist"],
+  }),
   // The Aither Browser (browser-window.cjs): a browser INSIDE the desk where an
   // agent drives (MCP browser_* tools) while the owner watches and can take over,
   // and where the owner browses with an "Ask about this page" panel.

@@ -232,6 +232,8 @@ const {
   createDarkmatterLinkWindow,
   stopDarkmatterSupervisor,
 } = require("./darkmatter-link-window.cjs");
+// Play Dark Matters: the game repo's idempotent launcher, run hidden.
+const darkmattersLaunch = require("./darkmatters-launch.cjs");
 // The Aither Browser: a browser window inside the desk an agent drives (MCP
 // browser_* tools) while the owner watches and can take over.
 const browserWindow = require("./browser-window.cjs");
@@ -2862,6 +2864,14 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       return;
     }
     case "darkmatter.open": return void createDarkmatterLinkWindow();
+    case "darkmatters.play":
+    case "darkmatters.restart":
+      return void darkmattersLaunch.launch({
+        restart: id === "darkmatters.restart",
+        spawn: require("node:child_process").spawn,
+        exists: (p) => require("node:fs").existsSync(p),
+        openExternal: (url) => void shell.openExternal(url),
+      });
     case "browser.open": return void browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
     case "inference.open": {
       // Sign-in must land the cookie in the living-desktop PARTITION, which
