@@ -1386,6 +1386,11 @@ function handleProtocolUrl(rawUrl) {
     else if (command.type === "overlay") showLivingDesktop();
     else if (command.type === "desktop") showDesktopApp();
     else if (command.type === "event") handleBridgeEvent(command.event);
+    else if (command.type === "run" && command.command === "darkmatters.play") {
+      const run = () => runCommand("darkmatters.play");
+      if (app.isReady()) run();
+      else void app.whenReady().then(run);
+    }
     else if (command.type === "browse") {
       // The same act and URL policy as the bridge's POST /browser/open and the
       // overlay's desk-browse: a new OWNER tab, never an agent's.
