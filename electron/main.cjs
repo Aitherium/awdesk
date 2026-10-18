@@ -4262,6 +4262,16 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     });
     // Already signed in when the Desk starts: the Online session's own bearer.
     void adoptWorkspaceFromOnline();
+    // "Message everyone -> My devices" (Hearth broadcast): this person's own messages to
+    // themselves, as a desktop notification, spoken when they asked (desk-inbox.cjs).
+    require("./desk-inbox.cjs").createDeskInbox({
+      token: () => browserWindow.onlineToken(),
+      notify: (title, body, urgent) => {
+        const { Notification } = require("electron");
+        if (Notification.isSupported()) new Notification({ title, body, urgency: urgent ? "critical" : "normal" }).show();
+      },
+      speak: (text) => speakAloud(text, undefined, undefined, "slot0", "service:awdesk"),
+    }).start();
     if (webauth && webauth.ok === false) {
       // A mis-wired session would silently degrade to the inert stub: say so.
       console.error("[awconnect] chrome.identity bridge did not install:", webauth.error || webauth);
