@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.22 - 2026-10-18
+
+Your running agents, from the palette.
+
+- New "Agents…" row in the command palette (Ctrl+K) and the taskbar jump list. It opens
+  the Agents window on its Running tab: your agent sessions on every computer, which one
+  needs you, and a Start button to begin one on a machine you pick. The same screen is
+  in AitherOS Online and in the Aither phone app.
+- Also in this release: Hearth "message everyone", every desk character syncs into your
+  Avatar library, and the Shop open / After hours / Game on posture.
+
 ## 0.1.21 - 2026-10-17
 
 Quit Aither finishes in seconds.
