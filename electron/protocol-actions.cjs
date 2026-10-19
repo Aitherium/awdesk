@@ -49,6 +49,12 @@ function parseProtocolUrl(rawUrl, protocolScheme = "desk") {
     }
     // desk://enroll?c=<code>&d=<device>&i=<identity> -> "Connect this device" from
     // aitherium.com: device-identity.cjs validates and confirms it.
+    // desk://darkmatters -> "Play Dark Matters" (the Living OS app's Start button): the
+    // idempotent launcher -- start the local engine if it is down, open the game. Only
+    // PLAY is reachable from a web link; restart (which ends a running engine) is not.
+    if (action === "darkmatters") {
+      return [{ type: "run", command: "darkmatters.play" }];
+    }
     if (action === "enroll") {
       return [{ type: "enroll", url: rawUrl }];
     }

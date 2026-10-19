@@ -64,3 +64,9 @@ test("desk://browse carries one http(s) page to the desk's Aither Browser, nothi
   assert.equal(parseProtocolUrl(`desk://browse?url=${encodeURIComponent("file:///C:/Windows")}`), null);
   assert.equal(parseProtocolUrl("other://browse?url=https%3A%2F%2Fx.test"), null);
 });
+
+test("desk://darkmatters runs Play Dark Matters; no web link can restart the engine", () => {
+  assert.deepEqual(parseProtocolUrl("desk://darkmatters"), [{ type: "run", command: "darkmatters.play" }]);
+  assert.deepEqual(parseProtocolUrl("desk://darkmatters?restart=1"), [{ type: "run", command: "darkmatters.play" }]);
+  assert.equal(parseProtocolUrl("desk://darkmatters.restart"), null);
+});
