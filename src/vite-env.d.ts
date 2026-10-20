@@ -95,6 +95,9 @@ type AvatarBridgeEvent =
         materials?: { tint?: string; tintStrength?: number; outlineWidth?: number };
       };
     }
+  // A body's injuries (electron/injuries.cjs): the character.json export + the tier THIS desk's
+  // viewer may see, decided in main from the adult-content mirror. null injuries clears the overlay.
+  | { type: 'injuries-avatar'; slotId: string; injuries: unknown; viewerTier: 'pg' | 'blood' | 'gore' }
   // Drop-to-avatar (2026-08-29): main TTS'd the drop verdict and hands the
   // audio over for playback + lip sync in the avatar window.
   // `volume` is cast.json's master x actor fader, already multiplied (0..2).

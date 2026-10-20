@@ -16,6 +16,7 @@ import type { VRM } from '@pixiv/three-vrm';
 import { applySpringScale, applyCustomise, sanitizeSpringTuning, DEFAULT_SPRING_TUNING, type DeskSpringTuning, type DeskCustomise } from '../hooks/useVrmLoader';
 import type { SpeechBubble } from '../speech-bubble';
 import { SpeechBubbleView } from './SpeechBubbleView';
+import { sanitizeDeskInjuries, useInjuryOverlay, type DeskInjuries } from '../injuries/useInjuryOverlay';
 
 /** How long an authored placement waits for its slot to go live (see applyPlace).
  *  One render is all it needs; a second is generous and keeps a placement for a
@@ -219,6 +220,9 @@ interface PlacedAvatarProps {
    *  `customise-avatar` event): this body renders its BASE's mesh with these
    *  deltas applied. Absent for an ordinary character. */
   customise?: DeskCustomise;
+  /** The body's injuries + the tier this desk's viewer may see them at (an `injuries-avatar`
+   *  event; electron/injuries.cjs). Drawn on the RAW bones by injuries/injury-overlay.ts. */
+  injuries?: DeskInjuries;
 }
 
 /** ALL avatars share ONE OrbitControls, so "disable on my drag start / enable on my drag
@@ -247,7 +251,7 @@ function resumeOrbit(orbit: { enabled?: boolean } | null) {
  *  position is committed to persisted layout state ONCE, on pointerup. All live values
  *  (y, scale) are read through refs so a re-render mid-drag can never strand the drag on
  *  a stale closure. */
-function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProps, onReady, bubble, physics, customise }: PlacedAvatarProps) {
+function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProps, onReady, bubble, physics, customise, injuries }: PlacedAvatarProps) {
   const getThreeState = useThree((state) => state.get);
   const groupRef = useRef<THREE.Group>(null);
   const transformRef = useRef(transform);
@@ -276,6 +280,7 @@ function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProp
   // The VRM behind this slot, once loaded: the spring compensation below needs
   // it, and only the loader hangs it on the scene (scene.userData.vrm).
   const vrmRef = useRef<VRM | null>(null);
+  const drawInjuries = useInjuryOverlay(vrmRef, injuries);
   // The head bone the caption is parented to. STATE, not a ref: the bubble has to
   // re-render into the bone the moment the model lands.
   const [headBone, setHeadBone] = useState<THREE.Object3D | null>(null);
@@ -350,11 +355,13 @@ function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProp
       // The fork's own look, on the shared mesh. Before onReady, so nothing
       // downstream measures the body at its un-customised proportions.
       if (vrm) applyCustomise(vrm, customiseRef.current);
+      // Injuries after the recipe: a fork's bone scales are its own; the overlay measures the result.
+      if (vrm) drawInjuries(vrm, true);
       setHeadBone(vrm?.humanoid?.getNormalizedBoneNode('head') ?? null);
       setReady(true);
       onReadyRef.current(scene);
     },
-    [],
+    [drawInjuries],
   );
 
   return (
@@ -594,6 +601,7 @@ export function Scene(props: SceneProps) {
   // slot below, so a reused id never inherits the last body's feel.
   const [physicsBySlot, setPhysicsBySlot] = useState<Record<string, DeskSpringTuning>>({});
   const [customiseBySlot, setCustomiseBySlot] = useState<Record<string, DeskCustomise>>({});
+  const [injuriesBySlot, setInjuriesBySlot] = useState<Record<string, DeskInjuries>>({});
   // A removed slot's stored spot must not leak onto whatever LATER slot reuses that id
   // (nextFreeSlotId() reuses freed ids), so clear it the moment it drops out of extraSlots.
   const previousExtraIdsRef = useState(() => new Set<string>())[0];
@@ -712,6 +720,10 @@ export function Scene(props: SceneProps) {
         const id = event.slotId;
         if (typeof id !== 'string' || !id) return;
         setCustomiseBySlot((current) => ({ ...current, [id]: event.customise || {} }));
+      } else if (event.type === 'injuries-avatar') {
+        const id = event.slotId;
+        if (typeof id !== 'string' || !id) return;
+        setInjuriesBySlot((current) => ({ ...current, [id]: sanitizeDeskInjuries(event) }));
       } else if (event.type === 'place-avatar') {
         // One AUTHORED body, from the cast file via main: an exact spot for a named
         // agent, which is what the single free lane per side cannot express (see
@@ -777,6 +789,7 @@ export function Scene(props: SceneProps) {
         bubble={props.bubbles?.slot0}
         physics={physicsBySlot.slot0}
         customise={customiseBySlot.slot0}
+        injuries={injuriesBySlot.slot0}
       />
       )}
       {/* Extra slots: spawned avatars, each independently draggable/scalable — no longer
@@ -806,6 +819,7 @@ export function Scene(props: SceneProps) {
             bubble={props.bubbles?.[slot.slotId]}
             physics={physicsBySlot[slot.slotId]}
             customise={customiseBySlot[slot.slotId]}
+            injuries={injuriesBySlot[slot.slotId]}
           />
         );
       })}

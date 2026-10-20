@@ -52,6 +52,12 @@ const MEMBER_FIELDS = Object.freeze([
   "sprite",
   "origin_key",
 ]);
+/** OPTIONAL member keys: the desk never writes them, but a manifest it validates (another
+ *  writer's, e.g. Dark Matters' party.dark-matters.json) may carry them. PM005 diffs this list.
+ *  `injuries` = the body's injury export (awavatar character_spec `injuries` shape). */
+const OPTIONAL_MEMBER_FIELDS = Object.freeze(["injuries"]);
+const INJURY_TIERS = Object.freeze(["pg", "blood", "gore"]);
+const INJURIES_MAX_BYTES = 16 * 1024;
 const TOP_FIELDS = Object.freeze(["version", "exported_at", "source", "members"]);
 const PRESENCE_LEVELS = Object.freeze(["off", "quiet", "normal", "chatty"]);
 const RATINGS = Object.freeze(["g", "r15", "r18", "unknown"]);
@@ -363,7 +369,19 @@ function validateParty(manifest) {
     const at = (f) => `members[${i}].${f}`;
     if (!m || typeof m !== "object" || Array.isArray(m)) return bad(`members[${i}]`, "must be an object");
     for (const f of MEMBER_FIELDS) if (!(f in m)) bad(at(f), "missing required field");
-    for (const k of Object.keys(m)) if (!MEMBER_FIELDS.includes(k)) bad(at(k), "unknown member field");
+    for (const k of Object.keys(m)) if (!MEMBER_FIELDS.includes(k) && !OPTIONAL_MEMBER_FIELDS.includes(k)) bad(at(k), "unknown member field");
+    if ("injuries" in m && m.injuries !== null) {
+      const inj = m.injuries;
+      if (!inj || typeof inj !== "object" || Array.isArray(inj)) bad(at("injuries"), "object or null");
+      else {
+        if (!INJURY_TIERS.includes(inj.tier)) bad(at("injuries.tier"), `one of ${INJURY_TIERS.join("|")}`);
+        if (!Array.isArray(inj.wounds) || inj.wounds.some((w) => !w || typeof w !== "object" || Array.isArray(w))) bad(at("injuries.wounds"), "array of objects");
+        else if (inj.tier === "pg" && ((typeof inj.blood === "number" && inj.blood > 0) || inj.wounds.some((w) => w.bleeding === true))) {
+          bad(at("injuries"), "a pg projection may not carry blood or bleeding");
+        }
+        if (JSON.stringify(inj).length > INJURIES_MAX_BYTES) bad(at("injuries"), `larger than ${INJURIES_MAX_BYTES} bytes`);
+      }
+    }
     if (typeof m.persona_id !== "string" || !PERSONA_ID_RE.test(m.persona_id) || m.persona_id.length > PERSONA_ID_MAX) {
       bad(at("persona_id"), "must match ^[A-Za-z0-9][A-Za-z0-9._-]*$ (1-128 chars)");
     }
@@ -438,6 +456,7 @@ function exportParty({ castFile = undefined, rosterDir = roster.ROSTER_DIR, file
 
 module.exports = {
   MEMBER_FIELDS,
+  OPTIONAL_MEMBER_FIELDS,
   PARTY_FILE,
   PERSONA_ID_RE,
   SCHEMA_VERSION,

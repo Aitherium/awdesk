@@ -232,8 +232,6 @@ const {
   createDarkmatterLinkWindow,
   stopDarkmatterSupervisor,
 } = require("./darkmatter-link-window.cjs");
-// Play Dark Matters: the game repo's idempotent launcher, run hidden.
-const darkmattersLaunch = require("./darkmatters-launch.cjs");
 // The Aither Browser: a browser window inside the desk an agent drives (MCP
 // browser_* tools) while the owner watches and can take over.
 const browserWindow = require("./browser-window.cjs");
@@ -1113,6 +1111,26 @@ function startAvatarSourceWatch() {
  *  as well as from a body's own menu -- as a local it was a ReferenceError the
  *  moment the arrangement was picked anywhere but the menu (caught by eslint,
  *  no-undef, before it ever ran). */
+/** One body's injuries -> the avatar window (electron/injuries.cjs decides the viewer's tier from
+ *  the adult-content mirror; the renderer only ever clamps lower). Sent on a change, or forced for
+ *  a fresh body/renderer. Never throws. */
+function sendInjuries(slotId, name, { force = false } = {}) {
+  if (!avatarWindow || avatarWindow.isDestroyed()) return;
+  try {
+    const injuries = require("./injuries.cjs");
+    const event = injuries.injuriesEvent(slotId, name || "");
+    const fresh = injuries.changed(event);
+    if (force || fresh) avatarWindow.webContents.send("desk:event", event);
+  } catch (error) {
+    debugLog("injuries failed", slotId, error?.message || error);
+  }
+}
+/** The resident + every spawned slot (a renderer mount, or the gate moved). */
+function replayInjuries({ force = false } = {}) {
+  sendInjuries("slot0", getActiveCharacter() || "", { force });
+  for (const [slotId, info] of avatarSlots) sendInjuries(slotId, info.name, { force });
+}
+
 function sendToAvatar(type, payload = {}) {
   if (avatarWindow && !avatarWindow.isDestroyed()) {
     avatarWindow.webContents.send("desk:event", { type, ...payload });
@@ -1386,11 +1404,6 @@ function handleProtocolUrl(rawUrl) {
     else if (command.type === "overlay") showLivingDesktop();
     else if (command.type === "desktop") showDesktopApp();
     else if (command.type === "event") handleBridgeEvent(command.event);
-    else if (command.type === "run" && command.command === "darkmatters.play") {
-      const run = () => runCommand("darkmatters.play");
-      if (app.isReady()) run();
-      else void app.whenReady().then(run);
-    }
     else if (command.type === "browse") {
       // The same act and URL policy as the bridge's POST /browser/open and the
       // overlay's desk-browse: a new OWNER tab, never an agent's.
@@ -1910,6 +1923,8 @@ function spawnAvatarSlot(slotId, name, agent, place, physics) {
         } catch (error) {
           debugLog("customiseOf failed", name, error?.message || error);
         }
+        // Its injuries (character.json), at the tier this desk's viewer may see -- same timing.
+        sendInjuries(slotId, name, { force: true });
       }
     },
     (error) => {
@@ -2791,6 +2806,8 @@ function refreshTrayMenu() {
   // is what it observed and when -- which is the part a desk can honestly claim.
   require("./content-rating.cjs").noteGateState();
   enforceActiveCharacterRating();
+  // The gate may have moved: re-tell every body its injury tier (sent only when it changed).
+  replayInjuries();
   // SLIMMED 2026-08-25 (owner redesign: "move away from nested menus"). The
   // deck panel (right-click the avatar, or "Open the Desk panel") carries the
   // decision cards, models, talk, Aitheros Online, avatar slots and size
@@ -2869,14 +2886,6 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       return;
     }
     case "darkmatter.open": return void createDarkmatterLinkWindow();
-    case "darkmatters.play":
-    case "darkmatters.restart":
-      return void darkmattersLaunch.launch({
-        restart: id === "darkmatters.restart",
-        spawn: require("node:child_process").spawn,
-        exists: (p) => require("node:fs").existsSync(p),
-        openExternal: (url) => void shell.openExternal(url),
-      });
     case "browser.open": return void browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
     case "inference.open": {
       // Sign-in must land the cookie in the living-desktop PARTITION, which
@@ -4330,6 +4339,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         }
         // A fresh renderer has no body choice either: tell it (VRM or VaM + why).
         void refreshAvatarSource({ force: true });
+        // ...nor any injuries: the resident's and every replayed slot's, at the current gate.
+        replayInjuries({ force: true });
       }
       return snapshot;
     });
