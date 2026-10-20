@@ -41,12 +41,15 @@ test("restart passes -Restart and honours the port/launcher overrides", () => {
   assert.ok(args.includes("-Restart") && args.includes("X:\\dm\\launch.ps1") && args.includes("8811"));
 });
 
-test("no launcher on disk still opens the game URL and spawns nothing", () => {
+test("no launcher on disk opens the Living OS Dark Matters window and spawns nothing", () => {
   const f = fakes();
   const r = dm.launch({ env: {}, exists: () => false, ...f });
   assert.equal(r.mode, "open-only");
   assert.equal(f.calls.spawn.length, 0);
-  assert.deepEqual(f.calls.open, ["http://localhost:8799"]);
+  assert.deepEqual(f.calls.open, ["https://app.aitherium.com/?app=darkmatters"]);
+  const o = fakes();
+  dm.launch({ env: { AWDESK_DM_OS_URL: "https://x.test/?app=darkmatters" }, exists: () => false, ...o });
+  assert.deepEqual(o.calls.open, ["https://x.test/?app=darkmatters"]);
 });
 
 test("a bad port override falls back to 8799", () => {

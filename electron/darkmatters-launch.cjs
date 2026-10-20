@@ -41,6 +41,18 @@ function gameUrl(env = process.env) {
   return `http://localhost:${port(env)}`;
 }
 
+/**
+ * The Dark Matters app in the Living OS (app.aitherium.com, registry id `darkmatters`). Its
+ * window is local-first: it frames http://localhost:8799 when the engine answers, else the
+ * owner-only fleet gate (api.aitherium.com/dark-matters, which refuses top-level navigation,
+ * so it cannot be opened directly). With no launcher on this machine that is the one door
+ * that still reaches a game; AWDESK_DM_OS_URL overrides it.
+ */
+const DEFAULT_OS_APP_URL = "https://app.aitherium.com/?app=darkmatters";
+function osAppUrl(env = process.env) {
+  return String(env.AWDESK_DM_OS_URL || DEFAULT_OS_APP_URL);
+}
+
 /** argv for powershell.exe. `restart` replaces ONLY the process listening on the port. */
 function launcherArgs({ script, port: p, restart = false }) {
   const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
@@ -59,9 +71,13 @@ function launch({ restart = false, env = process.env, spawn, exists, openExterna
   const script = launcherPath(env);
   const url = gameUrl(env);
   if (!exists(script)) {
-    log(`launcher missing at ${script}; opening ${url} (start the engine yourself)`);
-    openExternal(url);
-    return { ok: false, mode: "open-only", url, reason: "launcher-missing" };
+    // Not http://localhost:<port>: with no launcher nothing will be listening there, and the
+    // page would be a dead "refused to connect". The OS window frames the local engine if
+    // one is up anyway, and the fleet engine otherwise.
+    const os = osAppUrl(env);
+    log(`launcher missing at ${script}; opening the Living OS window ${os}`);
+    openExternal(os);
+    return { ok: false, mode: "open-only", url: os, reason: "launcher-missing" };
   }
   const args = launcherArgs({ script, port: port(env), restart });
   const child = spawn("powershell.exe", args, {
@@ -81,4 +97,4 @@ function launch({ restart = false, env = process.env, spawn, exists, openExterna
   return { ok: true, mode: restart ? "restart" : "launch", url, script };
 }
 
-module.exports = { DEFAULT_LAUNCHER, DEFAULT_PORT, launcherPath, port, gameUrl, launcherArgs, launch };
+module.exports = { DEFAULT_LAUNCHER, DEFAULT_PORT, DEFAULT_OS_APP_URL, launcherPath, port, gameUrl, osAppUrl, launcherArgs, launch };
