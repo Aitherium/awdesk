@@ -966,7 +966,7 @@ function createWindow() {
     dragOrigin = null;
   });
 
-  // Click-through (src/hooks/clickThrough.ts, garg 2026-10-20): the transparent avatar
+  // Click-through (src/hooks/clickThrough.ts, customer report 2026-10-20): the transparent avatar
   // window caught every click in its 600x950 rect, painted or not. The renderer says
   // whether something is drawn under the cursor; forward:true keeps mouse moves flowing
   // while ignored so it can say "interactive" again. Sender-scoped like the drag above.

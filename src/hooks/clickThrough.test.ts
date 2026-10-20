@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { decideInteractive } from './clickThrough';
 
 describe('avatar window click-through', () => {
-  it('passes clicks through empty pixels (the garg "blocks my input" report)', () => {
+  it('passes clicks through empty pixels (the "blocks my input" report)', () => {
     expect(decideInteractive({ buttons: 0, overAvatar: false, backdrop: true })).toBe(false);
   });
   it('keeps the beads, bubbles and the avatar body clickable', () => {

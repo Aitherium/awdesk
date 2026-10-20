@@ -1,5 +1,5 @@
 /**
- * Click-through for the avatar window (garg, 2026-10-20: "the side bar with the alert
+ * Click-through for the avatar window (customer report, 2026-10-20: "the side bar with the alert
  * thing really does just block my input to my applications").
  *
  * The avatar window is a 600x950 transparent, always-on-top rectangle. Before this it

@@ -626,7 +626,7 @@ function wireHostFocus(win, { onChrome = () => cursorOnChrome(win) } = {}) {
     // A native <select> popup, a file picker or an IME window takes OS focus from this
     // window while the click that opened it landed on OS chrome. That is attention
     // staying in the OS: sweeping the windows aside closed the Documents window every
-    // time a customer opened its "Move to" dropdown (garg, 2026-10-20).
+    // time a customer opened its "Move to" dropdown (customer report, 2026-10-20).
     if (onChrome()) return;
     if (!children().length) return send(false);
     setTimeout(() => {
