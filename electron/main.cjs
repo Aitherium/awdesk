@@ -966,6 +966,18 @@ function createWindow() {
     dragOrigin = null;
   });
 
+  // Click-through (src/hooks/clickThrough.ts, garg 2026-10-20): the transparent avatar
+  // window caught every click in its 600x950 rect, painted or not. The renderer says
+  // whether something is drawn under the cursor; forward:true keeps mouse moves flowing
+  // while ignored so it can say "interactive" again. Sender-scoped like the drag above.
+  ipcMain.removeAllListeners("desk:set-interactive");
+  ipcMain.on("desk:set-interactive", (event, interactive) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    if (process.env.AITHER_DESK_CLICK_THROUGH === "0") return win.setIgnoreMouseEvents(false);
+    win.setIgnoreMouseEvents(interactive !== true, { forward: true });
+  });
+
   // Sender-scoped window controls: any window (deck, chat) can minimize or
   // close ITSELF — the chat window shipped frameless with no way out,
   // which read as half-done (2026-08-25).

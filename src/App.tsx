@@ -19,6 +19,7 @@ import { bubbleDurationMs, bubbleText, type SpeechBubble } from './speech-bubble
 import { Deck } from './components/Deck';
 import { ChatView } from './components/ChatView';
 import { Beads } from './components/Beads';
+import { installClickThrough } from './hooks/clickThrough';
 import { VamAvatarView } from './components/VamAvatarView';
 import { avatarSourceFromEvent, avatarView, VRM_SOURCE, type AvatarSource } from './avatar-source';
 import { renderVrmFullBody, renderVrmTurntable } from './thumbnails';
@@ -174,6 +175,8 @@ function AvatarSceneApp() {
   const [vamStreamError, setVamStreamError] = useState<string | null>(null);
   const bubbleTimers = useRef(new Map<string, number>());
   const bubbleSeq = useRef(0);
+  // Clicks pass through everything this window does not draw (hooks/clickThrough.ts).
+  useEffect(() => installClickThrough(), []);
   useEffect(() => {
     const timers = bubbleTimers.current;
     return () => {

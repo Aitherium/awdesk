@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld("deskBridge", {
   // below is suppressed for avatar hits via a dataset flag the renderer sets on the
   // canvas at pointerdown — the deck opening behind the avatar menu reads as a bug.
   avatarContextMenu: (slotId) => ipcRenderer.send("desk:avatar-context-menu", slotId),
+  // Click-through (src/hooks/clickThrough.ts): false = nothing drawn under the cursor,
+  // let the click reach the app below. main applies it to the SENDING window only.
+  setInteractive: (interactive) => ipcRenderer.send("desk:set-interactive", interactive === true),
   subscribe: (listener) => {
     const handler = (_event, payload) => listener(payload);
     ipcRenderer.on("desk:event", handler);

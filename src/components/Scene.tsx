@@ -12,6 +12,7 @@ import { arrange, isArrangement } from '../stage/arrangements';
 import { useAvatarDrag } from '../hooks/useAvatarDrag';
 import { authoredFields, freeSpot } from '../hooks/stagePlacement';
 import { anyoneAudible } from '../hooks/voiceLevels';
+import { avatarPointerOut, avatarPointerOver } from '../hooks/clickThrough';
 import type { VRM } from '@pixiv/three-vrm';
 import { applySpringScale, applyCustomise, sanitizeSpringTuning, DEFAULT_SPRING_TUNING, type DeskSpringTuning, type DeskCustomise } from '../hooks/useVrmLoader';
 import type { SpeechBubble } from '../speech-bubble';
@@ -452,9 +453,11 @@ function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProp
           }}
           onPointerOver={() => {
             document.body.style.cursor = 'grab';
+            avatarPointerOver();
           }}
           onPointerOut={() => {
             document.body.style.cursor = '';
+            avatarPointerOut();
           }}
           onWheel={(event) => {
             event.stopPropagation();

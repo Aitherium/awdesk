@@ -64,6 +64,23 @@ test("blur/focus of the overlay window reach the shell's host-focus channel", ()
   assert.doesNotThrow(() => throwing.handlers.blur(), "a send during close never throws into Electron");
 });
 
+test("a blur while the cursor is on OS chrome (a <select> popup) never sweeps the windows", () => {
+  const ldw = loadWindowModule();
+  const win = fakeWin();
+  let onChrome = true;
+  ldw.wireHostFocus(win, { onChrome: () => onChrome });
+  win.handlers.blur();
+  assert.deepEqual(win.sent, [], "the Move-to dropdown opened over a window: attention stayed in the OS");
+  onChrome = false;
+  win.handlers.blur();
+  assert.deepEqual(win.sent, [["living-desktop:host-focus", false]], "a click on another app still sweeps");
+  // The default check answers false for any window that is not the open overlay.
+  const other = fakeWin();
+  ldw.wireHostFocus(other);
+  other.handlers.blur();
+  assert.deepEqual(other.sent, [["living-desktop:host-focus", false]]);
+});
+
 test("createWindow wires host focus next to its show/hide handlers", () => {
   const src = fs.readFileSync(path.join(__dirname, "living-desktop-window.cjs"), "utf8");
   assert.match(src, /win\.on\("hide", [^\n]*stopGhostLoop[^\n]*\);\n\s*wireHostFocus\(win\);/);

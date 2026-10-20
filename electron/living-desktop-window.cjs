@@ -225,6 +225,13 @@ function cursorOverInteractive() {
   return verdict.interactive;
 }
 
+/** Is the cursor over OS chrome of THIS overlay right now? Any window but the open
+ *  overlay answers false, and so does a throw, so a blur with no answer still sweeps. */
+function cursorOnChrome(win) {
+  if (!win || win !== desktopWin || !isOpen()) return false;
+  try { return cursorOverInteractive(); } catch { return false; }
+}
+
 function applyGhostTick() {
   if (!isOpen() || !desktopWin.isVisible()) return;
   const shouldInteract = !ghostMode || !transparentMode || cursorOverInteractive();
@@ -604,7 +611,7 @@ async function probeRendered(win) {
  *  (overlay-host.ts subscribeHostFocus -> desktop.tsx). Ghost mode keeps the pixels
  *  below clickable; this keeps the WINDOWS honest about where attention actually is.
  *  Its own function so a unit test can drive it with a fake window. */
-function wireHostFocus(win) {
+function wireHostFocus(win, { onChrome = () => cursorOnChrome(win) } = {}) {
   const send = (focused) => {
     if (win.isDestroyed()) return;
     try { win.webContents.send("living-desktop:host-focus", focused); } catch { /* closing */ }
@@ -616,6 +623,11 @@ function wireHostFocus(win) {
     try { return typeof win.getChildWindows === "function" ? win.getChildWindows() : []; } catch { return []; }
   };
   win.on("blur", () => {
+    // A native <select> popup, a file picker or an IME window takes OS focus from this
+    // window while the click that opened it landed on OS chrome. That is attention
+    // staying in the OS: sweeping the windows aside closed the Documents window every
+    // time a customer opened its "Move to" dropdown (garg, 2026-10-20).
+    if (onChrome()) return;
     if (!children().length) return send(false);
     setTimeout(() => {
       if (win.isDestroyed()) return;
