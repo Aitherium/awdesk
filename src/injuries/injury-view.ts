@@ -79,6 +79,12 @@ export interface RegionView {
   splinted: boolean;
   missing: Missing;
   stump: StumpLook;
+  /** The worst unbound open wound's kind ('' = none): which wound decal to cut (a slash, a stab, a bite, welts). */
+  wound: '' | 'cut' | 'stab' | 'bite' | 'lash';
+  /** An unbound open wound is here (any tier): at pg it shows as a scrape / a tear in the cloth, never red. */
+  torn: boolean;
+  /** Which bone of the limb is broken (the splint goes on that one). */
+  brokenAt: '' | 'upper' | 'lower';
 }
 
 export interface InjuryView {
@@ -193,7 +199,7 @@ export function parseInjuries(raw: unknown): InjurySpec | null {
 }
 
 function blankRegion(): RegionView {
-  return { bandage: false, bruise: 0, blood: 0, open: 0, burn: 0, scar: 0, broken: false, splinted: false, missing: '', stump: '' };
+  return { bandage: false, bruise: 0, blood: 0, open: 0, burn: 0, scar: 0, broken: false, splinted: false, missing: '', stump: '', wound: '', torn: false, brokenAt: '' };
 }
 
 // Dark Matters BodyPart -> depth of loss, and the VRM humanoid bone that goes with it.
@@ -234,6 +240,7 @@ export function injuryView(spec: InjurySpec | null, viewerTier: InjuryTier, now:
   const regions = Object.fromEntries(INJURY_REGIONS.map((r) => [r, blankRegion()])) as Record<InjuryRegion, RegionView>;
   for (const m of spec.scars) regions[m.region].scar++;
   let closed = 0;
+  const worstOpen = new Map<InjuryRegion, number>();
   for (const w of live) {
     const R = regions[w.region];
     if (w.closedNow) {
@@ -248,6 +255,11 @@ export function injuryView(spec: InjurySpec | null, viewerTier: InjuryTier, now:
     if (w.kind === 'fracture') { R.broken = true; R.splinted = R.splinted || w.bandaged; R.bruise = Math.max(R.bruise, 1); continue; }
     if (w.kind === 'stump') continue; // drawn through `severed`
     if (w.kind === 'burn') { R.burn = Math.max(R.burn, depth); if (!red) continue; }
+    if (w.kind !== 'burn' && !w.bandaged) {
+      R.torn = true;
+      const worst = worstOpen.get(w.region) ?? 0;
+      if (w.severity >= worst) { worstOpen.set(w.region, w.severity); R.wound = w.kind as RegionView['wound']; }
+    }
     if (red) {
       R.blood = Math.max(R.blood, w.bandaged ? 1 : w.bleedingNow ? w.severity : Math.max(1, Math.round(w.severity * fresh * 0.6)));
       if (!w.bandaged && w.kind !== 'burn') R.open = Math.max(R.open, depth);
@@ -282,6 +294,7 @@ export function injuryView(spec: InjurySpec | null, viewerTier: InjuryTier, now:
     const fx = live.find((w) => w.kind === 'fracture' && w.region === region);
     if (fx && fx.closedNow) continue; // the bone has knit since the export
     regions[region].broken = true;
+    regions[region].brokenAt = /UpperArm|Thigh/.test(part) ? 'upper' : 'lower';
   }
   for (const r of INJURY_REGIONS) {
     if (T === 'pg') { regions[r].blood = 0; regions[r].open = 0; }
@@ -312,7 +325,7 @@ export function injuryView(spec: InjurySpec | null, viewerTier: InjuryTier, now:
 
   const key = [T, blood >> 3, grime >> 3, limp, ...INJURY_REGIONS.map((r) => {
     const R = regions[r];
-    return `${R.bandage ? 'b' : ''}${R.bruise}${R.blood}${R.open}${R.burn}${Math.min(R.scar, 3)}${R.broken ? (R.splinted ? 'S' : 'k') : ''}${R.missing}${R.stump}`;
+    return `${R.bandage ? 'b' : ''}${R.bruise}${R.blood}${R.open}${R.burn}${Math.min(R.scar, 3)}${R.broken ? (R.splinted ? 'S' : 'k') + R.brokenAt : ''}${R.missing}${R.stump}${R.torn ? 't' : ''}${R.wound}`;
   })].join('|');
   return { tier: T, regions, blood, grime, limp, severedBones, descriptors, open, closed, any, key };
 }

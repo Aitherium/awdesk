@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { injuryView, parseInjuries, viewerInjuryTier, type InjurySpec } from './injury-view';
-import { applyInjuryOverlay, clearInjuryOverlay, type VrmLike } from './injury-overlay';
+import { RED_KINDS, applyInjuryOverlay, clearInjuryOverlay, hairCovers, type VrmLike } from './injury-overlay';
 
 const AS_OF = '2026-10-19T12:00:00.000Z';
 const T0 = Date.parse(AS_OF);
@@ -153,14 +153,18 @@ describe('injuryView — heals and fades with the spec timestamps', () => {
   });
 });
 
-// ── the overlay, on a real three.js skeleton shaped like a VRM humanoid ─────────────────────────────
-function skeleton(): VrmLike {
+// ── the overlay, on a real three.js skinned body shaped like a VRM humanoid ────────────────────────
+interface Rig { vrm: VrmLike; bones: Record<string, THREE.Bone> }
+
+/** A skinned "VRM": a skeleton plus one skinned mesh of cylinders (limbs, torso) and a sphere (head), each vertex
+ *  weighted to its segment's bone; optional hair over the char-left temple. */
+function body(opts: { hair?: boolean } = {}): Rig {
   const scene = new THREE.Group();
   const bones: Record<string, THREE.Bone> = {};
-  const add = (name: string, parent: THREE.Object3D, x: number, y: number) => {
+  const add = (name: string, parent: THREE.Object3D, x: number, y: number, z = 0) => {
     const b = new THREE.Bone();
     b.name = name;
-    b.position.set(x, y, 0);
+    b.position.set(x, y, z);
     parent.add(b);
     bones[name] = b;
     return b;
@@ -168,58 +172,181 @@ function skeleton(): VrmLike {
   const hips = add('hips', scene, 0, 0.9);
   const spine = add('spine', hips, 0, 0.1);
   const chest = add('chest', spine, 0, 0.15);
-  add('head', add('neck', chest, 0, 0.2), 0, 0.08);
+  const neck = add('neck', chest, 0, 0.2);
+  add('head', neck, 0, 0.08);
   for (const [side, sx] of [['left', 1], ['right', -1]] as const) {
-    add(`${side}Hand`, add(`${side}LowerArm`, add(`${side}UpperArm`, chest, sx * 0.18, 0.15), sx * 0.27, 0), sx * 0.25, 0);
+    // arms hang at the sides; legs straight
+    add(`${side}Hand`, add(`${side}LowerArm`, add(`${side}UpperArm`, chest, sx * 0.18, 0.15), 0, -0.27), 0, -0.25);
     add(`${side}Foot`, add(`${side}LowerLeg`, add(`${side}UpperLeg`, hips, sx * 0.1, -0.05), 0, -0.42), 0, -0.4);
   }
   scene.updateMatrixWorld(true);
-  return { scene, humanoid: { getRawBoneNode: (n: string) => bones[n] ?? null } };
+  const list = Object.values(bones);
+  const wp = (b: THREE.Object3D) => b.getWorldPosition(new THREE.Vector3());
+  const parts: Array<{ geo: THREE.BufferGeometry; bone: THREE.Bone }> = [];
+  const limb = (from: string, to: string, r: number) => {
+    const a = wp(bones[from]), b = wp(bones[to]);
+    const g = new THREE.CylinderGeometry(r, r, a.distanceTo(b), 16, 8, true);
+    g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize()));
+    g.translate((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+    parts.push({ geo: g, bone: bones[from] });
+  };
+  for (const side of ['left', 'right']) {
+    limb(`${side}UpperArm`, `${side}LowerArm`, 0.045);
+    limb(`${side}LowerArm`, `${side}Hand`, 0.04);
+    limb(`${side}UpperLeg`, `${side}LowerLeg`, 0.07);
+    limb(`${side}LowerLeg`, `${side}Foot`, 0.055);
+  }
+  limb('hips', 'chest', 0.14);
+  limb('chest', 'neck', 0.15);
+  const head = new THREE.SphereGeometry(0.11, 32, 24);
+  head.translate(0, wp(bones.head).y + 0.06, 0);
+  parts.push({ geo: head, bone: bones.head });
+  const skinned = (geos: typeof parts, name: string) => {
+    let n = 0;
+    for (const p of geos) n += p.geo.attributes.position.count;
+    const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3), si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
+    const index: number[] = [];
+    let o = 0;
+    for (const p of geos) {
+      const g = p.geo;
+      const c = g.attributes.position.count;
+      pos.set(g.attributes.position.array as Float32Array, o * 3);
+      nrm.set(g.attributes.normal.array as Float32Array, o * 3);
+      for (let i = 0; i < c; i++) { si[(o + i) * 4] = list.indexOf(p.bone); sw[(o + i) * 4] = 1; }
+      const idx = g.index as THREE.BufferAttribute;
+      for (let i = 0; i < idx.count; i++) index.push(idx.getX(i) + o);
+      o += c;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+    geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+    geo.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
+    geo.setIndex(index);
+    const mat = new THREE.MeshStandardMaterial();
+    mat.name = name;
+    const mesh = new THREE.SkinnedMesh(geo, mat);
+    scene.add(mesh);
+    mesh.bind(new THREE.Skeleton(list));
+    return mesh;
+  };
+  skinned(parts, 'Body_00_SKIN');
+  if (opts.hair) {
+    // a lock of hair hanging over the char-left temple
+    const lock = new THREE.SphereGeometry(0.016, 12, 8);
+    const H = wp(bones.head);
+    lock.translate(0.071, H.y + 0.035, 0.117);
+    skinned([{ geo: lock, bone: bones.head }], 'Hair_00_HAIR');
+  }
+  scene.updateMatrixWorld(true);
+  return { vrm: { scene, humanoid: { getRawBoneNode: (n: string) => bones[n] ?? null } }, bones };
 }
-const pieces = (vrm: VrmLike) => {
+const count = (vrm: VrmLike, pred: (o: THREE.Object3D) => boolean) => {
   let n = 0;
-  vrm.scene.traverse((o) => { if (o.name === 'aither-injury') n++; });
+  vrm.scene.traverse((o) => { if (pred(o)) n++; });
   return n;
 };
-const reds = (vrm: VrmLike) => {
-  const out: number[] = [];
-  vrm.scene.traverse((o) => {
-    const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
-    if (o.name === 'aither-injury' && m?.color) {
-      const c = m.color;
-      if (c.r > 0.3 && c.g < 0.15 && c.b < 0.15) out.push(c.getHex());
-    }
-  });
-  return out;
-};
+const marks = (vrm: VrmLike) => count(vrm, (o) => Boolean(o.userData.aitherInjury));
+const rings = (vrm: VrmLike) => count(vrm, (o) => (o as THREE.Mesh).geometry instanceof THREE.CylinderGeometry && Boolean(o.userData.aitherInjury));
+const kindsOf = (drawn: Record<string, number>) => new Set(Object.keys(drawn).map((k) => k.split(':')[1]));
 
-describe('applyInjuryOverlay', () => {
-  it('pg: draws marks, collapses the severed forearm, and nothing is red', () => {
-    const vrm = skeleton();
-    const forearm = vrm.humanoid!.getRawBoneNode('leftLowerArm')!;
+describe('applyInjuryOverlay — marks ON the surface, not bands round it', () => {
+  it('pg: skinned decals on the body, a dressed stump, nothing red, no rings; dispose restores', () => {
+    const { vrm, bones } = body();
     const h = applyInjuryOverlay(THREE, vrm, injuryView(spec(), 'pg', T0));
-    expect(pieces(vrm)).toBeGreaterThan(5);
-    expect(forearm.scale.x).toBeLessThan(0.01);
-    expect(reds(vrm)).toEqual([]);
+    const kinds = kindsOf(h.drawn);
+    expect(h.drawn['aitherWound:bruise']).toBeGreaterThan(0);
+    expect(kinds.has('scrape')).toBe(true); // the unbound stab at pg: a scrape, dark not red
+    expect(h.drawn['aitherWoundStump:stump']).toBeGreaterThan(0);
+    for (const red of RED_KINDS) expect(kinds.has(red)).toBe(false);
+    expect(rings(vrm)).toBe(0);
+    let skinnedMarks = 0;
+    vrm.scene.traverse((o) => { if (o.userData.aitherInjury && (o as THREE.SkinnedMesh).isSkinnedMesh) skinnedMarks++; });
+    expect(skinnedMarks).toBe(marks(vrm)); // every mark rides the skeleton
+    expect(bones.leftLowerArm.scale.x).toBeLessThan(0.01);
     h.dispose();
-    expect(pieces(vrm)).toBe(0);
-    expect(forearm.scale.x).toBe(1);
+    expect(marks(vrm)).toBe(0);
+    expect(bones.leftLowerArm.scale.x).toBe(1);
   });
-  it('gore: red appears; re-applying replaces (never stacks); clear restores', () => {
-    const vrm = skeleton();
+
+  it('gore: open wounds, a raw stump with runs of blood, spatter; re-apply replaces, clear restores', () => {
+    const { vrm, bones } = body();
+    const h = applyInjuryOverlay(THREE, vrm, injuryView(spec(), 'gore', T0));
+    const kinds = kindsOf(h.drawn);
+    expect(kinds.has('wound')).toBe(true);
+    expect(kinds.has('drips')).toBe(true);
+    expect(kinds.has('spatter')).toBe(true);
+    const first = marks(vrm);
     applyInjuryOverlay(THREE, vrm, injuryView(spec(), 'gore', T0));
-    const first = pieces(vrm);
-    expect(reds(vrm).length).toBeGreaterThan(0);
-    applyInjuryOverlay(THREE, vrm, injuryView(spec(), 'gore', T0));
-    expect(pieces(vrm)).toBe(first);
+    expect(marks(vrm)).toBe(first);
     clearInjuryOverlay(vrm);
-    expect(pieces(vrm)).toBe(0);
-    expect(vrm.humanoid!.getRawBoneNode('leftLowerArm')!.scale.x).toBe(1);
+    expect(marks(vrm)).toBe(0);
+    expect(bones.leftLowerArm.scale.x).toBe(1);
   });
+
+  it('bandaged: limb wraps follow the limb; the head gets a pad, never a band; a SET break gets slats', () => {
+    const { vrm } = body();
+    const bandaged = parseInjuries(goreSpec({
+      wounds: [
+        { region: 'head', kind: 'cut', severity: 2, bleeding: false, bandaged: true, healed: 0.1, heal_days: 5 },
+        { region: 'rightArm', kind: 'cut', severity: 2, bleeding: false, bandaged: true, healed: 0.1, heal_days: 5 },
+        { region: 'rightLeg', kind: 'fracture', severity: 2, bleeding: false, bandaged: true, healed: 0.1, heal_days: 16 },
+      ],
+      severed: [],
+      broken: ['rightCalf'],
+    }));
+    const h = applyInjuryOverlay(THREE, vrm, injuryView(bandaged, 'pg', T0));
+    expect(h.drawn['aitherWoundWrap:gauze']).toBeGreaterThan(0);
+    expect(h.drawn['aitherWound:pad']).toBe(1);
+    expect(h.drawn['aitherWoundSplint:wood']).toBe(2);
+    expect(rings(vrm)).toBe(0);
+    // an UNSET break gets no splint
+    const unset = parseInjuries(goreSpec({ wounds: [{ region: 'rightLeg', kind: 'fracture', severity: 2, bandaged: false, healed: 0, heal_days: 18 }], severed: [], broken: ['rightCalf'] }));
+    expect(applyInjuryOverlay(THREE, vrm, injuryView(unset, 'pg', T0)).drawn['aitherWoundSplint:wood']).toBeUndefined();
+  });
+
+  it('head marks move clear of hair (temple -> cheek)', () => {
+    const headOnly = parseInjuries(goreSpec({
+      wounds: [{ region: 'head', kind: 'cut', severity: 2, bleeding: false, bandaged: true, healed: 0.1, heal_days: 5 }],
+      severed: [], broken: [], scars: [], blood: 0,
+    }));
+    const centreY = (vrm: VrmLike) => {
+      const box = new THREE.Box3();
+      vrm.scene.traverse((o) => {
+        if (!o.userData.aitherInjury) return;
+        const p = (o as THREE.Mesh).geometry.attributes.position;
+        for (let i = 0; i < p.count; i++) box.expandByPoint(new THREE.Vector3(p.getX(i), p.getY(i), p.getZ(i)));
+      });
+      return box.getCenter(new THREE.Vector3()).y;
+    };
+    const bare = body();
+    applyInjuryOverlay(THREE, bare.vrm, injuryView(headOnly, 'pg', T0));
+    const haired = body({ hair: true });
+    const h = applyInjuryOverlay(THREE, haired.vrm, injuryView(headOnly, 'pg', T0));
+    expect(h.drawn['aitherWound:pad']).toBe(1);
+    expect(centreY(haired.vrm)).toBeLessThan(centreY(bare.vrm) - 0.03);
+  });
+
+  it('hairCovers: a hair vertex on the ray in front of the spot covers it; one behind does not', () => {
+    const C = new THREE.Vector3(0, 0, 0), out = new THREE.Vector3(0, 0, 1);
+    expect(hairCovers([{ P: new Float32Array([0, 0.005, 0.03]), n: 1 }], C, out)).toBe(true);
+    expect(hairCovers([{ P: new Float32Array([0, 0, -0.03]), n: 1 }], C, out)).toBe(false);
+    expect(hairCovers([{ P: new Float32Array([0.05, 0, 0.03]), n: 1 }], C, out)).toBe(false);
+  });
+
   it('a null view or a model without a humanoid draws nothing and never throws', () => {
-    const vrm = skeleton();
+    const { vrm } = body();
     applyInjuryOverlay(THREE, vrm, null);
-    expect(pieces(vrm)).toBe(0);
+    expect(marks(vrm)).toBe(0);
     expect(() => applyInjuryOverlay(THREE, { scene: new THREE.Group(), humanoid: null }, injuryView(spec(), 'gore', T0))).not.toThrow();
+  });
+
+  it('a bones-only rig falls back to small patches, still never rings', () => {
+    const { vrm } = body();
+    vrm.scene.traverse((o) => { if ((o as THREE.SkinnedMesh).isSkinnedMesh) o.visible = false; });
+    const h = applyInjuryOverlay(THREE, vrm, injuryView(spec(), 'pg', T0));
+    expect(Object.keys(h.drawn).length).toBeGreaterThan(0);
+    expect(Object.keys(h.drawn).every((k) => k.startsWith('aitherWoundPatch:'))).toBe(true);
+    expect(rings(vrm)).toBe(0);
   });
 });
