@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.23 - 2026-10-20
+
+Clicks reach your apps again.
+
+- The avatar window no longer blocks clicks. Its empty area, including the space around
+  the side buttons, used to catch every click; now clicks go through to the app
+  underneath. The buttons and the avatar still respond.
+- Opening a dropdown in an AitherOS Online window (Documents "Move to") no longer hides
+  every window.
+
 ## 0.1.22 - 2026-10-18
 
 Your running agents, from the palette.
