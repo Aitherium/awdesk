@@ -589,6 +589,13 @@ const COMMANDS = Object.freeze([
     id: "osapp.agents", label: "Agents…", group: "go", osApp: "agents",
     surfaces: ["palette", "jumplist"],
   }),
+  // The MoE view (owner 2026-10-20: "make it easy to view the MoE selection and routing
+  // visually + context + agents"): the Living OS `moe` window -- V4.1's 40x384 expert atlas,
+  // per-layer device tiers, keep-set coverage, llama-server slots and the agents in flight.
+  Object.freeze({
+    id: "osapp.moe", label: "MoE view…", group: "go", osApp: "moe",
+    surfaces: ["palette", "jumplist"],
+  }),
   Object.freeze({
     id: "fleet.gaming", label: "GPU sleep (game on)", group: "fleet",
     surfaces: ["tray", "palette"], fleet: "gpu-sleep", destructive: true,
