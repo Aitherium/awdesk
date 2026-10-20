@@ -212,3 +212,16 @@ test("catalog: an upload is multipart with the person's bearer and returns the r
   assert.deepEqual(seen, [{ path: "/api/avatars", method: "POST", form: true }]);
   assert.equal((await client.uploadAvatar(Buffer.alloc(0), "x", "general", { ...STORE, fetchImpl: impl })).ok, false);
 });
+
+test("uploadAvatar refuses a local-only imported body before any request", async () => {
+  let js = Buffer.from(JSON.stringify({ asset: { version: "2.0", extras: { dm_import: { local_only: true } } } }));
+  if (js.length % 4) js = Buffer.concat([js, Buffer.alloc(4 - (js.length % 4), 0x20)]);
+  const h = Buffer.alloc(20);
+  h.writeUInt32LE(0x46546c67, 0); h.writeUInt32LE(2, 4); h.writeUInt32LE(20 + js.length, 8); h.writeUInt32LE(js.length, 12); h.writeUInt32LE(0x4e4f534a, 16);
+  let called = 0;
+  const impl = async () => { called += 1; return new Response("{}", { status: 200 }); };
+  const r = await client.uploadAvatar(Buffer.concat([h, js]), "Mara", "general", { origin: "https://example.invalid", token: "t", fetchImpl: impl });
+  assert.equal(r.ok, false);
+  assert.equal(r.refused, "local-only");
+  assert.equal(called, 0, "no request leaves the machine");
+});

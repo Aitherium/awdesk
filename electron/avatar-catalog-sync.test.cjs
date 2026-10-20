@@ -352,3 +352,30 @@ test("a down upload service stops the pass after a short failure streak", async 
   assert.equal(out.unavailable, true);
   assert.equal(tries, 3);
 });
+
+/** A GLB whose glTF JSON carries the import rung's local-only stamp (asset.extras.dm_import). */
+function importedVrm(tag) {
+  let js = Buffer.from(JSON.stringify({ asset: { version: "2.0", extras: { dm_import: { local_only: true, not_for_distribution: true, tag } } } }));
+  if (js.length % 4) js = Buffer.concat([js, Buffer.alloc(4 - (js.length % 4), 0x20)]);
+  const h = Buffer.alloc(20);
+  h.writeUInt32LE(0x46546c67, 0); h.writeUInt32LE(2, 4); h.writeUInt32LE(20 + js.length, 8); h.writeUInt32LE(js.length, 12); h.writeUInt32LE(0x4e4f534a, 16);
+  return Buffer.concat([h, js]);
+}
+
+test("a local-only imported body is never uploaded: not by the seed, not by an assignment push", async () => {
+  freshRoster();
+  writeCharacter("plain", fakeVrm("plain"), { rating: "general", source: "manual" });
+  writeCharacter("marked", fakeVrm("marked"), { rating: "general", source: "import", local_only: true, private: true, distribution: "local-only" });
+  writeCharacter("stamped", importedVrm("stamped"), { rating: "general", source: "manual" });   // bytes-only mark (no record flag)
+  const client = fakeClient();
+  const gateOpen = { ...require("./content-rating.cjs"), isAdultContentVisible: () => true };
+  const out = await sync.seedLibraryFromDesk({ client, contentRating: gateOpen });
+  assert.equal(out.ok, true);
+  assert.deepEqual(client.calls.upload.map((u) => u.name), ["plain"]);
+  assert.equal(out.skipped, 2);
+  for (const who of ["marked", "stamped"]) {
+    const pushed = await sync.pushAssignment("lyra", who, { client });
+    assert.equal(pushed.ok, false, `${who}: an assignment push must not upload it`);
+  }
+  assert.equal(client.calls.upload.length, 1);
+});

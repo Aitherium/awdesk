@@ -45,6 +45,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const nodeCrypto = require("node:crypto");
+const localOnly = require("./local-only.cjs");
 
 const PULL_INTERVAL_MS = 10 * 60 * 1000;
 const LIBRARY_RATINGS = new Set(["general", "r15", "r18"]);
@@ -160,6 +161,7 @@ function uploadRating(d, character) {
 /** The library id for a desk character, uploading it first when it lives only here. */
 async function libraryIdFor(d, character, deps) {
   const rec = readRecord(d.rosterDir, character);
+  if (localOnly.isLocalOnlyRecord(rec)) return { ok: false, reason: localOnly.LOCAL_ONLY_REASON, localOnly: true };
   if (typeof rec.library_id === "string" && rec.library_id) return { ok: true, id: rec.library_id, uploaded: false };
   if (typeof rec.vroid_model_id === "string" && rec.vroid_model_id) {
     return { ok: true, id: `vroid-${rec.vroid_model_id}`, uploaded: false };
@@ -167,6 +169,7 @@ async function libraryIdFor(d, character, deps) {
   const model = d.roster.resolveModelFile ? d.roster.resolveModelFile(character) : path.join(d.rosterDir, character, "model.vrm");
   if (!model || !fs.existsSync(model)) return { ok: false, reason: `${character} has no model file on this desk` };
   const bytes = fs.readFileSync(model);
+  if (localOnly.isLocalOnlyModel(bytes)) return { ok: false, reason: localOnly.LOCAL_ONLY_REASON, localOnly: true };
   const name = String(rec.display_name || (rec.profile && rec.profile.name) || character).slice(0, 80);
   const up = await d.client.uploadAvatar(bytes, name, uploadRating(d, character), deps.clientDeps);
   if (!up.ok) return { ok: false, reason: up.reason };
@@ -223,6 +226,11 @@ async function seedLibraryFromDesk(deps = {}) {
   let streak = 0;
   for (const name of ownMeshCharacters(d)) {
     const rec = readRecord(d.rosterDir, name);
+    if (localOnly.isLocalOnlyRecord(rec)) {
+      out.skipped += 1;
+      out.results.push({ name, ok: true, skipped: "a local-only imported body, never uploaded" });
+      continue;
+    }
     if (typeof rec.vroid_model_id === "string" && rec.vroid_model_id) {
       out.skipped += 1;
       out.results.push({ name, ok: true, skipped: "a VRoid Hub reference, never uploaded" });
@@ -238,6 +246,11 @@ async function seedLibraryFromDesk(deps = {}) {
     } catch (error) {
       out.failed += 1;
       out.results.push({ name, ok: false, reason: String((error && error.message) || error) });
+      continue;
+    }
+    if (localOnly.isLocalOnlyModel(bytes)) {
+      out.skipped += 1;
+      out.results.push({ name, ok: true, skipped: "a local-only imported body, never uploaded" });
       continue;
     }
     const digest = nodeCrypto.createHash("sha256").update(bytes).digest("hex");

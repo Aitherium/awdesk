@@ -226,6 +226,9 @@ async function putAgentAvatar(agent, avatarId, deps = {}) {
 async function uploadAvatar(bytes, name, rating = "unknown", deps = {}) {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0) return { ok: false, reason: "no model bytes" };
   if (bytes.length > MAX_MODEL_BYTES) return { ok: false, reason: "the model is larger than an avatar may be" };
+  // the owner's imported bodies (asset.extras.dm_import) are local-only: refused here, whoever the caller is
+  const localOnly = require("./local-only.cjs");
+  if (localOnly.isLocalOnlyModel(bytes)) return { ok: false, reason: localOnly.LOCAL_ONLY_REASON, refused: "local-only" };
   if (typeof FormData !== "function" || typeof Blob !== "function") return { ok: false, reason: "no FormData in this runtime" };
   const form = new FormData();
   form.append("file", new Blob([bytes], { type: "model/gltf-binary" }), "model.vrm");
