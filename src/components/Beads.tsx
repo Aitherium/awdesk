@@ -147,7 +147,9 @@ export function Beads() {
     // the rows are re-read whenever main says something changed.
     const pullRows = () => {
       void deck.commands?.('beads').then((next) => {
-        if (alive && Array.isArray(next) && next.length) setRows(next);
+        // An EMPTY list is an answer (the desktop dock is up: no rail); only a failed
+        // call from an older main keeps the fallback rows.
+        if (alive && Array.isArray(next)) setRows(next);
       }).catch(() => { /* older main: keep the fallback rows */ });
     };
     pullRows();
@@ -160,7 +162,7 @@ export function Beads() {
     let unsubscribe = () => {};
     try {
       unsubscribe = bridge?.subscribe?.((event) => {
-        if (event.type === 'decisions-changed') {
+        if (event.type === 'decisions-changed' || event.type === 'beads-changed') {
           setOpenCount(event.openCount ?? 0);
           pullRows();
         }
@@ -191,6 +193,7 @@ export function Beads() {
     try { window.localStorage.removeItem('desk.beads-hint-dismissed'); } catch { /* best-effort */ }
   };
   const deck = bridgeDeck();
+  if (rows.length === 0) return null;
   return (
     <div className="beads" aria-label="Aither beads">
       {rows.map((row) => {

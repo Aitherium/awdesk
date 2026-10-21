@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.24 - 2026-10-20
+
+No more floating buttons on your desktop.
+
+- While the AitherOS desktop and its bottom taskbar are on screen, the round buttons that
+  floated at the right edge are gone. The taskbar already has the same buttons. They come
+  back only when the desktop is hidden.
+- Opening Aither on a company computer now opens straight to the AitherOS taskbar.
+- Aither checks for updates every hour (was every six) and shows a notice when one is ready.
+
 ## 0.1.23 - 2026-10-20
 
 Clicks reach your apps again.

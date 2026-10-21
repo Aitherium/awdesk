@@ -273,6 +273,16 @@ test("shortcuts are registered FROM the registry, and a dead key is not advertis
   assert.doesNotMatch(dead.submenu[0].label, /Ctrl/, "a key another app holds is still promised");
 });
 
+test("the floating bead rail is empty while the desktop overlay's dock is on screen", () => {
+  assert.ok(rowsFor("beads", { overlayVisible: false }).length > 0, "no overlay: the rail is there");
+  assert.deepEqual(rowsFor("beads", { overlayVisible: true }), [], "overlay up: its dock owns the doors");
+  assert.ok(rowsFor("tray", { overlayVisible: true }).length > 0, "only the bead rail steps aside");
+  const beads = fs.readFileSync(path.join(__dirname, "..", "src", "components", "Beads.tsx"), "utf8");
+  assert.match(beads, /if \(rows\.length === 0\) return null;/, "an empty list draws nothing, not the fallback");
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /onVisibilityChange\([\s\S]{0,600}type: "beads-changed"/, "a visibility change re-pulls the rail");
+});
+
 test("the beads are registry rows, and the deck-action door accepts an id", () => {
   const rows = rowsFor("beads", { decisionsWaiting: 3 });
   assert.deepEqual(rows.map((r) => r.id), ["inbox.open", "console.open", "browser.open", "chat.open", "desktop.overlay.toggle"]);

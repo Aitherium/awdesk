@@ -3393,6 +3393,8 @@ require("./living-desktop-window.cjs").onVisibilityChange(() => {
   // Online went away: the browser is its own window again, where it was before.
   if (!require("./living-desktop-window.cjs").isOverlayVisible()) browserInOnline.detach();
   pushDeskState();
+  // The bead rail steps aside while the overlay's dock is up (command-registry rowsFor).
+  if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.webContents.send("desk:event", { type: "beads-changed" });
 });
 browserWindow.setShellHost({
   isOwner: () => linkedRole === "owner",
@@ -5381,6 +5383,9 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // opens at start ONLY when the user turned that on (overlay.autoOpenOnStart, off
     // by default; Do not disturb wins) -- overlay-policy.cjs.
     if (process.argv.includes("--overlay")) showLivingDesktop();
+    // A customer desk opens on its taskbar (customer report 2026-10-20: "when he opens the
+    // Aither app he just wants the taskbar") -- the same surface a second launch brings up.
+    else if (deskPostureState.customer && !startInBackground) showLivingDesktop();
     else if (overlayMayRaise(overlayPolicy.TRIGGERS.START)) showLivingDesktop();
     syncEdgeReveal();
     setInterval(syncEdgeReveal, 30_000).unref?.();

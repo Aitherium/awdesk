@@ -846,6 +846,11 @@ function buildMenu(surface, run, { ctx = {}, submenus = {} } = {}) {
  * gets data and sends the id back.
  */
 function rowsFor(surface, ctx = {}) {
+  // One taskbar owner (customer report 2026-10-20: "the side bar with the alert thing
+  // really does just block my input ... this can almost be removed, I really enjoy the
+  // bottom deskbar"). While the desktop overlay is on screen its dock carries the same
+  // doors, so the floating bead rail is empty and draws nothing.
+  if (surface === "beads" && ctx.overlayVisible) return [];
   const wanted = commandsFor(surface).filter((command) => appliesTo(command, ctx) && !command.dynamic);
   return groupOrder(surface, wanted)
     .flatMap((group) => wanted.filter((command) => command.group === group))

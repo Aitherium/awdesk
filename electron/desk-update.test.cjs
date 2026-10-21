@@ -516,3 +516,13 @@ test("available: the release check sends no personal data -- one anonymous GET",
   assert.deepEqual(Object.keys(seen[0].opts.headers).sort(), ["Accept", "User-Agent"]);
   assert.equal(seen[0].opts.headers["User-Agent"], "aither-desk");
 });
+
+test("a running Desk checks for a release within 90 s of start and then every hour", () => {
+  const timers = [];
+  const u = new du.DeskUpdater({ kind: "nsis", exe: "C:/Program Files/Aither/Aither.exe", version: "0.1.0",
+    env: {}, setTimer: (fn, ms) => { timers.push(["once", ms]); return {}; },
+    setRepeat: (fn, ms) => { timers.push(["every", ms]); return {}; } });
+  assert.equal(u.start(), true);
+  assert.deepEqual(timers, [["once", 90_000], ["every", 3_600_000]],
+    "a customer running Desk all day must hear of a fix within the hour, not six");
+});

@@ -5,7 +5,7 @@
  *
  * Until v0.1.10 Desk had NO update path: every fix reached a Steam Deck only if the owner
  * downloaded the AppImage again by hand (2026-10-04). Now a running install checks the
- * latest GitHub release of Aitherium/awdesk shortly after start and every few hours, and
+ * latest GitHub release of Aitherium/awdesk shortly after start and every hour, and
  * every byte it acts on is first checked against the release's own SHA256SUMS.txt (the
  * install_awdesk rule in install.sh). What happens next depends on how Desk was installed:
  *
@@ -45,7 +45,9 @@ const path = require("node:path");
 const RELEASE_API = "https://api.github.com/repos/Aitherium/awdesk/releases/latest";
 const ASSET_SUFFIX = "-linux-x86_64.AppImage";
 const FIRST_CHECK_MS = 90_000;
-const EVERY_MS = 6 * 3600 * 1000;
+// Hourly (was 6 h): a customer running Desk all day waited up to six hours to even hear
+// of a fix shipped for him (2026-10-20). One anonymous GET of a public feed per hour.
+const EVERY_MS = 3600 * 1000;
 const KINDS = Object.freeze(["appimage", "nsis", "mac", "deb"]);
 
 /** "v0.1.10" > "0.1.9"? Numeric, dotted; the monorepo's "awdesk-v" tag prefix is allowed;
