@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.26 - 2026-10-22
 
 - Aither tells you when a big upload to your workspace pauses, finishes or fails, once per upload. Click the notice to open your workspace.
 
