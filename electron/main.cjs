@@ -406,6 +406,34 @@ function showUpdateNotice(update) {
   updateNotice.on("click", note.click);
   updateNotice.show();
 }
+/** Upload notices held until clicked or closed, or a collected one loses its click. */
+const uploadNoticesHeld = new Set();
+/** Poll the workspace's upload list; silent with no workspace, no session or no route. */
+function startUploadNotices() {
+  try {
+    const { session: electronSession } = require("electron");
+    const ses = electronSession.fromPartition(browserWindow.PARTITION);
+    require("./upload-notices.cjs").createUploadNotices({
+      origin: () => deskTenant.currentTenant()?.origin || "",
+      appName: () => deskTenant.currentTenant()?.name || "",
+      fetchImpl: (url, init) => ses.fetch(url, { ...init, credentials: "include" }),
+      notify: (title, body, onClick) => {
+        if (!Notification.isSupported()) return;
+        const n = new Notification({ title, body });
+        uploadNoticesHeld.add(n);
+        const release = () => uploadNoticesHeld.delete(n);
+        n.on("click", () => { release(); onClick(); });
+        n.on("close", release);
+        n.show();
+      },
+      open: (url) => void browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url }),
+      store: require("./upload-notices.cjs").fileStore(path.join(app.getPath("userData"), "upload-notices.json")),
+      log: (line) => console.log(`[desk] ${line}`),
+    }).start();
+  } catch (e) {
+    console.warn(`[desk] upload notices unavailable: ${e && e.message}`);
+  }
+}
 const { installLinuxIntegration } = require("./linux-integration.cjs");
 const { installMacIntegration } = require("./macos-integration.cjs");
 let deviceConnect = null;
@@ -5377,6 +5405,9 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // Workspace offline + a local model answering: one toast that opens Local AI.
     require("./local-ai-window.cjs").startOfflineWatch(
       () => browserWindow.openInternal("local-ai", null, { askAgent: browserAskAgent }));
+    // A big workspace upload paused, finished or failed: one notice per upload per state
+    // (upload-notices.cjs), read with the Aither Browser's own signed-in cookie jar.
+    if (!smokeIsRequested) startUploadNotices();
     // A customer desk opens nothing on its own at start but what its shortcut asked for
     // (Garg 2026-10-16: three extra windows on first run -- the character prompt, Set up
     // Aither, Connect this computer). Each stays one click away on the tray.

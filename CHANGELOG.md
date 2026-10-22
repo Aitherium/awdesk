@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Aither tells you when a big upload to your workspace pauses, finishes or fails, once per upload. Click the notice to open your workspace.
+
 ## 0.1.25 - 2026-10-22
 
 Run Aither on this PC when your workspace is offline.
