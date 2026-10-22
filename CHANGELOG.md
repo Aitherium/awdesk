@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.25 - 2026-10-22
+
+Run Aither on this PC when your workspace is offline.
+
+- New **Local AI** in the tray menu: install a Bonsai model on this computer with one click. Aither recommends the size that fits your PC; other sizes are under **Other sizes**. It starts by itself when you sign in.
+- If your workspace can't be reached, Aither shows **Your workspace is offline** and opens a local chat. Local chat works without company documents.
+- **Remove** deletes the local model.
+
 ## 0.1.24 - 2026-10-20
 
 No more floating buttons on your desktop.
