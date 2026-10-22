@@ -20,7 +20,7 @@ test("every pane resolves to a page that exists", () => {
   const panes = paneSources("http://127.0.0.1:5173");
   // The count is asserted so a pane cannot be DROPPED by an edit that only meant
   // to reorder the rail; bump it deliberately when one is added.
-  assert.equal(panes.length, 27);  // +7 plane pages (slice 10), +1 spend, +1 terminal, +1 search, +1 projects, +1 extensions, +1 mesh (2026-10-04), +1 space (2026-10-15)
+  assert.equal(panes.length, 28);  // +7 plane pages (slice 10), +1 spend, +1 terminal, +1 search, +1 projects, +1 extensions, +1 mesh (2026-10-04), +1 space (2026-10-15), +1 local-ai (2026-10-22)
   for (const pane of panes) {
     if (pane.kind !== "file") continue;
     assert.ok(
@@ -36,7 +36,7 @@ test("the rail is in this exact order -- a drop or a reorder must fail here", ()
   // drops or reshuffles an entry is caught here instead of only downstream.
   assert.deepEqual(PANES.map((p) => p.id),
     ["space", "search", "cards", "terminal", "projects", "command", "chat", "sessions", "stage", "characters", "cast", "files", "secrets",
-    "fleet", "ops", "spend", "settings", "extensions", "windows", "bricks", "strata", "pulse", "watch", "flux", "nexus", "mesh", "desktop"]);
+    "fleet", "ops", "spend", "settings", "extensions", "windows", "bricks", "local-ai", "strata", "pulse", "watch", "flux", "nexus", "mesh", "desktop"]);
   // Each section heading appears ONCE (the rail had CONTROL and PRESENCE twice), and a
   // tab pane follows the pane it is a tab of.
   const rail = PANES.filter((p) => !p.tabOf).map((p) => p.section);
@@ -216,8 +216,10 @@ test("EVERY pane is reachable from main, both directions", () => {
   const main = read("main.cjs");
   const block = main.slice(main.indexOf("function wireConsoleHost("));
   for (const pane of PANES) {
-    const entry = block.slice(block.indexOf(`${pane.id}: {`));
-    assert.ok(block.includes(`${pane.id}: {`), `openConsole names no window for ${pane.id}`);
+    // A hyphenated id is a quoted key ("local-ai": {).
+    const key = /^[a-z]\w*$/.test(pane.id) ? `${pane.id}: {` : `"${pane.id}": {`;
+    const entry = block.slice(block.indexOf(key));
+    assert.ok(block.includes(key), `openConsole names no window for ${pane.id}`);
     for (const verb of ["open:", "close:", "isOpen:"]) {
       assert.ok(
         entry.slice(0, 500).includes(verb),

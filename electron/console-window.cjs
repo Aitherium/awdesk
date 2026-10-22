@@ -193,6 +193,12 @@ const PANES = Object.freeze([
     id: "bricks", label: "Bricks", hint: "The aw* stack: installed, updates, each brick's page", section: "System", icon: "layers",
     kind: "file", file: "bricks.html",
   }),
+  // A Bonsai model on this computer, and the chat that works when the workspace is
+  // offline (local-ai.cjs over adk bonsai-local). local-ai-window.cjs.
+  Object.freeze({
+    id: "local-ai", label: "Local AI", hint: "An AI model on this computer; chat when offline", section: "System", icon: "server",
+    kind: "file", file: "local-ai.html",
+  }),
   // One read-only status page per platform plane, all rendered by plane-page.js
   // over plane-client.cjs's fixed reads (Veil /api/admin/planes). Detach opens the
   // same page in plane-window.cjs, one window per plane.

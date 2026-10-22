@@ -520,6 +520,13 @@ const COMMANDS = Object.freeze([
     id: "darkmatter.open", label: "Darkmatter Link…", group: "go",
     surfaces: ["palette", "jumplist"],
   }),
+  // Local AI (customer ask 2026-10-22): a model on THIS computer that keeps the chat going
+  // when the workspace is offline (local-ai.cjs). On the tray so a customer finds it in
+  // two clicks, and on the jump list for when the workspace window will not load.
+  Object.freeze({
+    id: "localai.open", label: "Local AI…", group: "go",
+    surfaces: ["tray", "palette", "jumplist"],
+  }),
   // The Aither Browser (browser-window.cjs): a browser INSIDE the desk where an
   // agent drives (MCP browser_* tools) while the owner watches and can take over,
   // and where the owner browses with an "Ask about this page" panel.

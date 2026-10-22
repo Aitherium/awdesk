@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src file:; img-src data:;" />
+<title>Local AI</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  /* aither://local-ai -- an AI model on this computer (local-ai.cjs over adk bonsai-local).
+     OS frame: true black, one cyan, Inter light display, JetBrains Mono system voice,
+     one primary action per view. Fits 390x844 without scrolling the frame. */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--fk-bg); color: var(--fk-ink);
+    font: 14px/1.5 var(--font-sans); }
+  body { display: flex; justify-content: center; }
+  #frame { width: 100%; max-width: 560px; height: 100%; display: flex; flex-direction: column;
+    padding: 20px 20px 16px; gap: 14px; }
+  .sys { font: 11px/1.4 var(--font-mono); letter-spacing: .08em; text-transform: uppercase;
+    color: var(--fk-dim); }
+  h1 { font-weight: 300; font-size: 26px; letter-spacing: -.01em; margin: 2px 0 0; }
+  #state { font: 12px/1.4 var(--font-mono); color: var(--fk-dim); display: flex; gap: 8px; align-items: center; }
+  #state .dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(237,239,245,.25); flex: none; }
+  #state .dot.on { background: var(--fk-accent); box-shadow: 0 0 10px var(--fk-accent-glow); }
+  .tabs { display: flex; gap: 4px; border: 1px solid var(--fk-hairline); border-radius: 10px; padding: 3px; }
+  .tabs button { flex: 1; height: 34px; border: 0; border-radius: 8px; background: none; color: var(--fk-dim);
+    font: 13px var(--font-sans); cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--fk-raise); color: var(--fk-ink);
+    box-shadow: inset 0 0 0 1px var(--fk-hairline); }
+  .banner { border: 1px solid color-mix(in srgb, var(--fk-accent) 40%, transparent); background: var(--fk-accent-wash);
+    border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+  .banner[hidden] { display: none; }
+  .view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+  .view[hidden] { display: none; }
+  .card { border: 1px solid var(--fk-hairline); background: var(--fk-raise); border-radius: 12px; padding: 16px; }
+  .card .name { font-weight: 300; font-size: 22px; }
+  .card .meta { font: 12px/1.5 var(--font-mono); color: var(--fk-dim); margin-top: 2px; }
+  button.primary { height: 44px; width: 100%; margin-top: 14px; border: 0; border-radius: 10px;
+    background: var(--fk-accent); color: var(--fk-on-accent); font: 500 15px var(--font-sans); cursor: pointer; }
+  button.primary:disabled { opacity: .45; cursor: default; }
+  button.quiet { height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--fk-hairline);
+    background: none; color: var(--fk-ink); font: 13px var(--font-sans); cursor: pointer; }
+  button.quiet:disabled { color: var(--fk-dim); cursor: default; }
+  #progress { font: 12px/1.4 var(--font-mono); color: var(--fk-dim); min-height: 17px; }
+  #progress.err { color: var(--destructive, #f87171); }
+  details { border-top: 1px solid var(--fk-hairline); padding-top: 8px; }
+  summary { cursor: pointer; color: var(--fk-dim); font-size: 13px; padding: 4px 0; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  #sizes { overflow-y: auto; max-height: 220px; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--fk-hairline); }
+  .row:last-child { border-bottom: 0; }
+  .row .t { flex: 1; min-width: 0; }
+  .row .n { font-size: 14px; }
+  .row .m { font: 11px/1.4 var(--font-mono); color: var(--fk-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #installed { display: flex; gap: 8px; }
+  #installed[hidden] { display: none; }
+  #log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 2px; }
+  .msg { max-width: 88%; padding: 9px 12px; border-radius: 12px; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { align-self: flex-end; background: var(--fk-accent-wash); border: 1px solid color-mix(in srgb, var(--fk-accent) 30%, transparent); }
+  .msg.ai { align-self: flex-start; background: var(--fk-raise); border: 1px solid var(--fk-hairline); }
+  .msg.err { color: var(--destructive, #f87171); }
+  .empty { color: var(--fk-dim); font-size: 13px; margin: auto; text-align: center; max-width: 320px; }
+  form { display: flex; gap: 8px; }
+  #q { flex: 1; height: 44px; border-radius: 10px; border: 1px solid var(--fk-hairline); background: var(--fk-raise);
+    color: var(--fk-ink); padding: 0 12px; font: 14px var(--font-sans); }
+  #q:focus { outline: none; border-color: var(--fk-accent); }
+  #ask button.primary { width: 80px; flex: none; margin: 0; }
+</style>
+</head>
+<body>
+<main id="frame">
+  <div>
+    <div class="sys">Local AI · this computer</div>
+    <h1>AI on this computer</h1>
+  </div>
+  <div id="state" role="status"><span class="dot"></span><span id="stateText">Looking at this computer…</span></div>
+  <div class="banner" id="banner" hidden></div>
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tabChat" aria-selected="false">Chat</button>
+    <button role="tab" id="tabModel" aria-selected="true">Model</button>
+  </div>
+
+  <section class="view" id="viewModel">
+    <div class="card" id="rec">
+      <div class="sys" id="recLabel">Recommended for this computer</div>
+      <div class="name" id="recName">…</div>
+      <div class="meta" id="recMeta"></div>
+      <button class="primary" id="recBtn" disabled>Install</button>
+    </div>
+    <div id="installed" hidden>
+      <button class="quiet" id="chatBtn">Chat with it</button>
+      <button class="quiet" id="removeBtn">Remove</button>
+    </div>
+    <div id="progress" role="status"></div>
+    <details id="more">
+      <summary>Other sizes</summary>
+      <div id="sizes"></div>
+    </details>
+  </section>
+
+  <section class="view" id="viewChat" hidden>
+    <div id="log"><div class="empty" id="empty">Ask anything. Answers come from this computer and never leave it.</div></div>
+    <form id="ask">
+      <input id="q" autocomplete="off" placeholder="Message" aria-label="Message" />
+      <button class="primary" type="submit" id="send">Send</button>
+    </form>
+  </section>
+</main>
+<script src="local-ai-page.js"></script>
+</body>
+</html>

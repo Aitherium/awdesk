@@ -43,6 +43,8 @@ if (href.includes("settings.html")) {
   require("./windows-preload.cjs");
 } else if (href.includes("/bricks.html")) {
   require("./bricks-preload.cjs");
+} else if (href.includes("/local-ai.html")) {
+  require("./local-ai-preload.cjs");
 } else if (href.includes("/extensions.html")) {
   require("./extensions-preload.cjs");
 } else if (href.includes("/projects.html")) {

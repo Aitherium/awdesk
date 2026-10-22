@@ -2720,6 +2720,9 @@ require("./projects-window.cjs").ensureProjectsIpc();
 require("./extensions-window.cjs").ensureExtensionsIpc();
 // The aw* stack page (aither://bricks): the awkno catalog and man pages.
 require("./bricks-window.cjs").ensureBricksIpc();
+// Local AI (aither://local-ai): a Bonsai model on this computer via adk bonsai-local, and
+// the chat that keeps working when the workspace or its model cannot be reached.
+require("./local-ai-window.cjs").ensureLocalAiIpc();
 // Windows: every desk window on any monitor, saved arrangements (aither://windows). Named
 // windows here; any other desk window is listed by its title. The avatar is listed only
 // while it floats -- docked, the browser places it.
@@ -2898,6 +2901,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       return;
     }
     case "darkmatter.open": return void createDarkmatterLinkWindow();
+    case "localai.open": return void browserWindow.openInternal("local-ai", null, { askAgent: browserAskAgent });
     case "browser.open": return void browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
     case "inference.open": {
       // Sign-in must land the cookie in the living-desktop PARTITION, which
@@ -3837,6 +3841,11 @@ function wireConsoleHost(legacy) {
       },
       bricks: {
         open: () => browserWindow.openInternal("bricks", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
+      "local-ai": {
+        open: () => browserWindow.openInternal("local-ai", null, { askAgent: browserAskAgent }),
         close: () => {},
         isOpen: () => false,
       },
@@ -5365,6 +5374,9 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     }
 
     createTray();
+    // Workspace offline + a local model answering: one toast that opens Local AI.
+    require("./local-ai-window.cjs").startOfflineWatch(
+      () => browserWindow.openInternal("local-ai", null, { askAgent: browserAskAgent }));
     // A customer desk opens nothing on its own at start but what its shortcut asked for
     // (Garg 2026-10-16: three extra windows on first run -- the character prompt, Set up
     // Aither, Connect this computer). Each stays one click away on the tray.
