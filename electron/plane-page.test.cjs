@@ -59,3 +59,39 @@ test("serviceVerdict grades only the named row of a whole-fleet answer", () => {
   assert.equal(page.serviceVerdict({ service: "Flux", listed: true,
     services: { Flux: { status: "running" } } }).state, "up");
 });
+
+test("meshHealthModel: a number Strata could not read is 'unknown', never 0", () => {
+  const m = page.meshHealthModel({
+    state: "unknown", unknown: ["under_replicated", "repair_queue"], under_replicated: null,
+    repair_queue: null, repair_queue_total: null, enroll_pending: 0, objects: null,
+    capacity: { peers: 2, live: 2, failure_domains: 2, free_bytes: 1024, contributed_bytes: 2048 },
+  });
+  assert.equal(m.pill, "unknown");
+  assert.equal(m.tone, "warn");
+  const text = m.lines.join("\n");
+  assert.match(text, /Under-replicated: unknown/);
+  assert.doesNotMatch(text, /Under-replicated: 0/);
+  assert.match(text, /Repair queue: unknown/);
+  assert.match(text, /Not readable: under_replicated, repair_queue/);
+  assert.match(text, /2 live of 2 · 2 failure domains/);
+  // A missing capacity block is unknown too -- not "0 live".
+  assert.match(page.meshHealthModel({ state: "healthy" }).lines.join("\n"), /Capacity: unknown/);
+  assert.equal(page.meshHealthModel(null).pill, "unknown");
+});
+
+test("meshHealthModel: known zeros are healthy; owed copies are degraded", () => {
+  const ok = page.meshHealthModel({
+    state: "healthy", unknown: [], under_replicated: 0, objects: 12, enroll_pending: 0,
+    repair_queue: { rereplicate: 0, purge: 0, drop: 0, delete_fanout: 0 }, repair_queue_total: 0,
+    capacity: { peers: 2, live: 2, failure_domains: 2, free_bytes: 0, contributed_bytes: 0 },
+    last_repair: { ok: true, at: "2026-10-22T10:00:00", repaired: 4 },
+  });
+  assert.equal(ok.tone, "ok");
+  assert.match(ok.lines.join("\n"), /Under-replicated: 0 of 12 objects/);
+  assert.match(ok.lines.join("\n"), /Last repair pass: ok at 2026-10-22T10:00:00 · 4 placed/);
+  const bad = page.meshHealthModel({ state: "degraded", under_replicated: 5, misplaced: 1,
+    repair_queue: { rereplicate: 5, purge: 0, drop: 0, delete_fanout: 0 }, repair_queue_total: 5 });
+  assert.equal(bad.tone, "bad");
+  assert.match(bad.lines.join("\n"), /1 replica\(s\) on a peer not allowed to hold them/);
+  assert.equal(page.meshHealthModel({ state: "bogus" }).pill, "unknown");
+});

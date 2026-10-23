@@ -117,6 +117,48 @@
     return { pill: usd(d.total_usd), tone: result.stale || Number(d.unpriced_requests) > 0 ? "warn" : "ok", lines };
   }
 
+  /**
+   * The Strata plane's storage-pool card from GET /strata/mesh/health (mesh SAN
+   * milestone 1). Strata sends null for a number it could not read and names it in
+   * `unknown`; this draws it "unknown" -- NEVER 0. "Under-replicated: 0" is a claim
+   * that every owed copy exists, so it may only appear when Strata knows it.
+   */
+  function meshHealthModel(data) {
+    if (!data || typeof data !== "object") {
+      return { pill: "unknown", tone: "warn", lines: ["Strata sent no pool health."] };
+    }
+    const num = (v) => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v))
+      ? null : Number(v));
+    const show = (v) => (num(v) === null ? "unknown" : String(num(v)));
+    const bytes = (v) => (num(v) === null ? "unknown" : humanBytes(num(v)));
+    const state = ["healthy", "degraded", "unknown", "off"].includes(data.state) ? data.state : "unknown";
+    const tone = state === "healthy" ? "ok" : state === "degraded" ? "bad" : "warn";
+    const lines = [];
+    lines.push("Under-replicated: " + show(data.under_replicated)
+      + (num(data.objects) === null ? "" : " of " + show(data.objects) + " objects"));
+    const q = data.repair_queue && typeof data.repair_queue === "object" ? data.repair_queue : null;
+    lines.push(q
+      ? "Repair queue: " + show(data.repair_queue_total) + " (re-replicate " + show(q.rereplicate)
+        + ", purge " + show(q.purge) + ", drop " + show(q.drop) + ", delete fan-out " + show(q.delete_fanout) + ")"
+      : "Repair queue: unknown");
+    lines.push("Enrolment pending: " + show(data.enroll_pending));
+    const cap = data.capacity && typeof data.capacity === "object" ? data.capacity : null;
+    lines.push(cap
+      ? "Peers: " + show(cap.live) + " live of " + show(cap.peers) + " · " + show(cap.failure_domains)
+        + " failure domains · " + bytes(cap.free_bytes) + " free of " + bytes(cap.contributed_bytes) + " lent"
+      : "Capacity: unknown");
+    if (num(data.misplaced) > 0) lines.push(show(data.misplaced) + " replica(s) on a peer not allowed to hold them");
+    if (data.replicate === false) lines.push("Peer placement is OFF (distributed.enabled false)");
+    const last = data.last_repair && typeof data.last_repair === "object" ? data.last_repair : null;
+    lines.push(last
+      ? "Last repair pass: " + (last.ok === false ? "FAILED " + String(last.error || "") : "ok")
+        + (last.at ? " at " + String(last.at) : "") + (num(last.repaired) === null ? "" : " · " + show(last.repaired) + " placed")
+      : "Last repair pass: none yet");
+    const unknown = Array.isArray(data.unknown) ? data.unknown.map(String) : [];
+    if (unknown.length) lines.push("Not readable: " + unknown.join(", "));
+    return { pill: state, tone, lines };
+  }
+
   /** The note on a card showing an offline copy: when it was saved and why the live read failed. */
   function staleNote(read, nowMs) {
     const ms = Math.max(0, (nowMs || Date.now()) - Date.parse(read && read.savedAt));
@@ -128,7 +170,8 @@
     return "Offline copy from " + ago + " -- live read failed: " + ((read && read.error) || "no answer");
   }
 
-  const pure = { humanBytes, formatScalar, serviceVerdict, tableColumns, spendCardModel, staleNote, MAX_ROWS, MAX_COLS };
+  const pure = { humanBytes, formatScalar, serviceVerdict, tableColumns, spendCardModel, meshHealthModel, staleNote,
+    MAX_ROWS, MAX_COLS };
   if (typeof module === "object" && module.exports) {
     module.exports = pure;
     return;
@@ -241,6 +284,9 @@
     else if (read.id === "service") {
       const v = serviceVerdict(read.data);
       pill = el("span", "pill " + (v.state === "up" ? "ok" : v.state === "down" ? "bad" : "warn"), v.text);
+    } else if (read.id === "mesh") {
+      const m = meshHealthModel(read.data);
+      pill = el("span", "pill " + m.tone, m.pill);
     } else pill = el("span", "pill ok", "ok");
     h.appendChild(pill);
     card.appendChild(h);
@@ -251,6 +297,17 @@
     if (read.stale) {
       card.classList.add("stale");
       card.appendChild(el("div", "summary warn", staleNote(read)));
+    }
+    if (read.id === "mesh") {
+      const m = meshHealthModel(read.data);
+      for (const line of m.lines) card.appendChild(el("div", m.tone === "bad" ? "summary bad" : "summary", line));
+      const d = el("details");
+      d.appendChild(el("summary", "", "details"));
+      const inner = el("div", "inner");
+      inner.appendChild(renderValue(read.data, 1));
+      d.appendChild(inner);
+      card.appendChild(d);
+      return card;
     }
     card.appendChild(renderValue(read.data, 0));
     return card;

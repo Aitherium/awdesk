@@ -70,6 +70,10 @@ const PLANES = Object.freeze({
       readSpec("stats", "Tiers and health", "strata /strata/stats"),
       readSpec("pools", "Storage tier pools", "strata /disks/pools"),
       readSpec("artifacts", "Recent artifacts (warm)", "strata /strata/list/warm/artifacts"),
+      // Mesh SAN milestone 1: the storage pool's health -- capacity over live peers,
+      // the repair queue, under-replicated objects. plane-page.js draws it as its
+      // own card; a part Strata could not read is "unknown", never 0.
+      readSpec("mesh", "Storage pool health", "strata /strata/mesh/health"),
     ]),
   }),
   pulse: Object.freeze({

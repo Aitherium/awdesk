@@ -46,6 +46,12 @@ test("the planes exist, each with a service read first", () => {
   }
 });
 
+test("the Strata plane reads the storage pool health (mesh SAN milestone 1)", () => {
+  const mesh = PLANES.strata.reads.find((r) => r.id === "mesh");
+  assert.ok(mesh, "strata has a mesh read");
+  assert.equal(mesh.tool, "strata /strata/mesh/health");
+});
+
 test("no plane names a mutating read -- the read table is the whole surface", () => {
   const all = PLANE_IDS.flatMap((id) => PLANES[id].reads.map((r) => `${r.id} ${r.tool}`));
   for (const r of all) {

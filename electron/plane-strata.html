@@ -8,7 +8,10 @@
 <link rel="stylesheet" href="plane-page.css" />
 </head>
 <!-- One plane page per platform plane; plane-page.js renders all of them from
-     data-plane. Reads: plane-client.cjs PLANES.strata (read-only, via Veil /api/admin/planes). -->
+     data-plane. Reads: plane-client.cjs PLANES.strata (read-only, via Veil /api/admin/planes).
+     The "Storage pool health" card (mesh SAN milestone 1) is plane-page.js meshHealthModel:
+     capacity, repair queue and under-replicated counts from /strata/mesh/health, where a
+     number Strata could not read shows "unknown", never 0. -->
 <body data-plane="strata">
   <div class="bar">
     <span class="title">Strata</span>
