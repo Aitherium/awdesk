@@ -124,11 +124,84 @@ export interface BeadSpaceOptions {
   onFollow?: (owner: string | null) => void;
   /** Fired whenever the dataset changes, so the host can render a summary line. */
   onStats?: (stats: BeadStats) => void;
+
+  // ── Semantic zoom (ADD-ONLY, 2026-10-22) ────────────────────────────────────
+  // A host that shows ONE level of a hierarchy at a time (universe → galaxy → system)
+  // needs bodies sized and lit by meaning, pinned where the level puts them, labels that
+  // never pile up, and camera moves it can chain into a level change. All optional; a
+  // host that sets none of these renders exactly as before.
+
+  /** Body radius in world px. Return null/undefined for the engine's degree-based size. */
+  nodeRadius?: (node: BeadNode) => number | null | undefined;
+  /** Planet tint. Return null/undefined for the owner/cluster colour. */
+  nodeColor?: (node: BeadNode) => string | null | undefined;
+  /** Extra classes on the planet group (e.g. `bs-busy`, `bs-cold`, `bs-coming`). */
+  nodeClass?: (node: BeadNode) => string | null | undefined;
+  /**
+   * Pin a node: world-px offset `[dx, dy]` from the centre of the view. Pinned nodes do
+   * not drift with the force layout and spring back after a drag. null = force layout.
+   */
+  fixedPosition?: (node: BeadNode) => [number, number] | null | undefined;
+  /** The hover/selection tooltip (id, title, status). Default true; a host with its own sheet turns it off. */
+  tooltips?: boolean;
+  /** Hide labels whose screen boxes collide; the most important body keeps its label. */
+  labelCollision?: boolean;
+  /** A plain wheel zooms (use inside an app window; on a long page leave it off). */
+  wheelZoom?: boolean;
+  /** Camera zoom limits. Default `[0.3, 5]`. */
+  scaleExtent?: [number, number];
+  /** Two starfield layers drift at different rates with the camera. */
+  parallax?: boolean;
+  /**
+   * Every camera change. `fitK` is the scale that frames the level; `user` is false for
+   * programmatic moves (flights, fits), so a host can act on gestures only.
+   */
+  onZoom?: (view: { k: number; fitK: number; user: boolean }) => void;
+  /** Right-click, or a ~0.5 s long-press on touch, on a planet. */
+  onContextMenu?: (node: BeadNode, at: { clientX: number; clientY: number }) => void;
+}
+
+/** How `update()` brings a new level on screen. */
+export interface BeadUpdateOptions {
+  /**
+   * `in`: the new level grows out of the centre (you flew INTO something).
+   * `out`: the camera starts close on `anchorId` and pulls back (you came OUT of it).
+   * Omitted: a normal in-place refresh.
+   */
+  enter?: 'in' | 'out';
+  anchorId?: string | null;
 }
 
 export interface BeadSpaceHandle {
-  /** Replace the dataset. Existing nodes keep their positions; the sim restarts gently. */
-  update(data: BeadData): void;
+  /**
+   * Replace the dataset. Existing nodes keep their positions; the sim restarts gently.
+   * With `opts.enter` the data is a NEW LEVEL: full settle, and an animated arrival.
+   */
+  update(data: BeadData, opts?: BeadUpdateOptions): void;
+  /**
+   * Fly the camera to centre `id` at `scale` (default 3x the current zoom). Resolves when
+   * the flight lands (at once when motion is reduced or the id is unknown).
+   */
+  flyTo(id: string, opts?: { scale?: number; duration?: number }): Promise<void>;
+  /** Zoom about the view centre by `factor`, animated. Resolves when it lands. */
+  zoomBy(factor: number, opts?: { duration?: number }): Promise<void>;
+  /** The node drawn closest to the centre of the view, or null on an empty level. */
+  nodeNearCenter(): BeadNode | null;
+  /**
+   * Activity as motion: a ring flares out of `id` (a live event touched it). `color`
+   * defaults to the body's tint. No-op for an unknown id or when motion is reduced.
+   */
+  pulse(id: string, opts?: { color?: string; strength?: number }): void;
+  /**
+   * A packet travels from one body to another (an LLM call agent -> MicroScheduler, a job
+   * routine -> worker). Returns false when either end is not on this level, so the host
+   * can aggregate it one level up. Reduced motion: both ends pulse instead.
+   */
+  packet(fromId: string, toId: string, opts?: { color?: string; duration?: number }): boolean;
+  /** A probe body (the world-model explorer) glides to `id`; null hides it. */
+  probe(id: string | null, opts?: { color?: string; label?: string }): void;
+  /** Screen position (container px) of a body, or null when it is not on this level. */
+  screenPosition(id: string): { x: number; y: number } | null;
   /** Programmatically select a node (or clear with `null`). */
   select(id: string | null): void;
   /** Programmatically follow an owner's ship (or stop with `null`). */

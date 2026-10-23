@@ -362,3 +362,89 @@
     transition: none;
   }
 }
+
+/* ── semantic zoom + live activity (2026-10-22) ──────────────────────────────────
+   Hosts that drive levels (universe -> galaxy -> system) opt in through options;
+   nothing below changes a host that sets none of them. */
+
+.bead-space .bs-node.bs-label-hidden .bs-label {
+  opacity: 0 !important;
+}
+
+/* A new level fades in while the camera flies (the flight itself is d3). */
+.bead-space.bs-arriving .bead-space-map > g:not(.bs-starfield) {
+  animation: bs-arrive 760ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes bs-arrive {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.bead-space .bs-starfield-far .bs-star {
+  fill: #9fb7d6;
+}
+
+/* Activity: a ring flares out of a body a live event touched. */
+.bead-space .bs-pulse-ring {
+  fill: none;
+  stroke-width: 1.6px;
+  pointer-events: none;
+}
+.bead-space .bs-packet {
+  pointer-events: none;
+}
+.bead-space .bs-probe-body {
+  stroke: #eaffff;
+  stroke-width: 0.8px;
+}
+.bead-space .bs-probe-label {
+  fill: #bff3f4;
+  font-size: 9px;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: rgb(5 5 7 / 85%);
+  stroke-width: 3px;
+  pointer-events: none;
+}
+
+/* Liveness classes a host sets via nodeClass. */
+.bead-space .bs-node.bs-busy {
+  filter: drop-shadow(0 0 10px var(--bs-busy-glow, rgb(94 201 204 / 55%)));
+}
+.bead-space .bs-node.bs-cold {
+  opacity: 0.38;
+  filter: grayscale(0.7);
+}
+.bead-space .bs-node.bs-galaxy .bs-planet-sprite {
+  opacity: 0.55;
+}
+.bead-space .bs-node.bs-galaxy .bs-planet-core {
+  stroke-width: 0;
+}
+.bead-space .bs-node.bs-flash .bs-selection-ring {
+  opacity: 0.8;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bead-space.bs-arriving .bead-space-map > g {
+    animation: none;
+  }
+}
+.bead-space .bs-node.bs-galaxy .bs-planet-core {
+  fill: var(--bs-core-tint, #5ec9cc);
+  fill-opacity: 0.22;
+}
+.bead-space .bs-node.bs-busy {
+  --bs-busy-glow: var(--bs-core-tint, rgb(94 201 204 / 55%));
+}
+/* A galaxy / sun is a smooth glowing disc, not a meteor sprite. */
+.bead-space .bs-node.bs-galaxy .bs-planet-sprite {
+  display: none;
+}
+.bead-space .bs-sheen {
+  display: none;
+  pointer-events: none;
+}
+.bead-space .bs-node.bs-galaxy .bs-sheen {
+  display: inline;
+}
