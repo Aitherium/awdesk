@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.27 - 2026-10-24
+
+- The tray shows the house posture (Shop open, After hours, Game on, Dark) as a coloured dot, with a Posture menu and Wake or Sleep for each on-demand group.
+
 ## 0.1.26 - 2026-10-22
 
 - Aither tells you when a big upload to your workspace pauses, finishes or fails, once per upload. Click the notice to open your workspace.
