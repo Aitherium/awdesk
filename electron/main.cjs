@@ -293,6 +293,9 @@ const {
   setSpendOpener,
 } = require("./spend-window.cjs");
 const { spendTrayItems } = require("./spend-client.cjs");
+// The HOUSE posture (Shop open / After hours / Game on / Dark / On schedule) and the
+// on-demand wake groups, owner 2026-10-24: "i should see this everywhere i interact".
+const housePosture = require("./house-posture.cjs");
 // Plane pages (plan slice 10): Files, Secrets, and one read-only status page per
 // platform plane. Each owns its IPC and its detached twin, like ops-window.cjs.
 const {
@@ -675,6 +678,9 @@ let latestListenerStatus = null;
 let latestAwconnectStatus = null;
 // Last cloud_spend answer (spend-client.cjs) for the tray line; null until the first read.
 let latestSpend = null;
+// Last house posture + wake groups read (house-posture.cjs); null until the first read.
+let latestHouse = null;
+let _houseClient = null;
 let latestVoiceState = null;
 let audioListener = null;
 let tray = null;
@@ -1845,6 +1851,8 @@ let trayBaseIcon = null;
 function badgedImage(base, count, key = false) {
   const { width, height } = base.getSize();
   const bmp = Buffer.from(base.toBitmap());
+  // The house posture dot, top-left (the count owns bottom-right); owner desk only.
+  if (latestHouse && !deskPostureState.customer) housePosture.drawPostureDot(bmp, width, height, latestHouse.word);
   drawBadge(bmp, width, height, count, { diameter: Math.round(Math.min(width, height) * 0.6), key });
   return nativeImage.createFromBitmap(bmp, { width, height });
 }
@@ -1852,9 +1860,13 @@ function refreshNotificationBadges(cards = openDecisions) {
   const waiting = inboxCounts(cards).waiting;
   // A red KEY instead of the numeral while a secret / blocked session waits.
   const key = needsYou.length > 0;
-  const tooltip = deskTenant.decorateTitle(badgeTooltip(waiting, cards.length, needsYou), deskTenant.currentTenant());
+  const houseLine = deskPostureState.customer ? "" : housePosture.houseTooltipLine(latestHouse);
+  const tooltip = deskTenant.decorateTitle(badgeTooltip(waiting, cards.length, needsYou), deskTenant.currentTenant())
+    + (houseLine ? ` · ${houseLine}` : "");
   if (tray) {
     tray.setToolTip(tooltip);
+    // The macOS menu bar has room for the word itself.
+    if (process.platform === "darwin" && houseLine) tray.setTitle(` ${latestHouse.label}`);
     if (trayBaseIcon) tray.setImage(badgedImage(trayBaseIcon, waiting, key));
   }
   const inboxBadge = {
@@ -2736,6 +2748,57 @@ async function refreshSpendStatus() {
   return latestSpend;
 }
 
+/** The house posture is the OWNER's (the gateway tools refuse anyone else): a customer
+ *  desk never asks, so its tray carries no row that could only ever say "owner only". */
+function houseClient() {
+  if (!_houseClient) {
+    _houseClient = housePosture.createHousePostureClient({
+      call: (name, args) => require("./gateway-mcp.cjs").callTool(name, args),
+    });
+  }
+  return _houseClient;
+}
+
+/** Re-read the house posture + groups for the tray (the client caches 30 s). */
+async function refreshHouseStatus({ fresh = false } = {}) {
+  if (deskPostureState.customer) return null;
+  try {
+    latestHouse = await houseClient().read({ fresh });
+  } catch (error) {
+    latestHouse = { ok: false, word: "unknown", label: "unknown", problem: String((error && error.message) || error), groups: [] };
+  }
+  if (tray) {
+    refreshTrayMenu();
+    refreshNotificationBadges();
+  }
+  return latestHouse;
+}
+
+/** One tray action on the house: say the answer quietly, then re-read (twice: a wake or a
+ *  flip takes a while to show). */
+async function houseAct(run, title) {
+  let res;
+  try {
+    res = await run();
+  } catch (error) {
+    res = { ok: false, message: String((error && error.message) || error) };
+  }
+  notifyQuietly(title, res.message);
+  void refreshHouseStatus({ fresh: true });
+  setTimeout(() => void refreshHouseStatus({ fresh: true }), 20_000).unref?.();
+  return res;
+}
+
+function houseTrayRows() {
+  if (deskPostureState.customer) return [];
+  return housePosture.housePostureTrayItems(latestHouse, {
+    setPosture: (word) => void houseAct(() => houseClient().setPosture(word), "House posture"),
+    wake: (name) => void houseAct(() => houseClient().wake(name), `Wake ${name}`),
+    sleep: (name) => void houseAct(() => houseClient().sleep(name), `Sleep ${name}`),
+    open: () => void refreshHouseStatus({ fresh: true }),
+  });
+}
+
 // The Pulse card's "Open spend report" and the tray row land on the same page.
 setSpendOpener(() => openConsole("spend"));
 // The awsh layer: aither://terminal's IPC (terminal tabs over the harness daemon).
@@ -2837,7 +2900,8 @@ function trayTemplateNow() {
   else trayTemplate.push(...statusRows);
   // Row 0: what only the owner can unblock ("Secret needed: <name> (from ...)").
   // A click opens the Inbox ON that card; nothing here opens by itself.
-  trayTemplate.unshift(...needsYouLib.trayRows(needsYou, (id) => openInbox(id)));
+  // Then the house: "● House: Dark", the Posture switcher and a Wake/Sleep row per group.
+  trayTemplate.unshift(...needsYouLib.trayRows(needsYou, (id) => openInbox(id)), ...houseTrayRows());
   return trayTemplate;
 }
 
@@ -4072,6 +4136,8 @@ function createTray() {
   void refreshAwconnectStatus();
   void refreshSpendStatus();
   setInterval(() => void refreshSpendStatus(), 5 * 60_000).unref?.();
+  void refreshHouseStatus();
+  if (!deskPostureState.customer) setInterval(() => void refreshHouseStatus(), 60_000).unref?.();
   // The sign-in row names the account: learn it at boot (cookie + auth.json, no
   // window), and re-render the tray whenever it changes.
   onDesktopAccountChange(() => { if (tray) refreshTrayMenu(); });
