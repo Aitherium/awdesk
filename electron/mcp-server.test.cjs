@@ -636,3 +636,61 @@ test("files_* tools: read-only, and only under a folder the owner switched on", 
   assert.notEqual(read.isError, true);
   assert.equal(JSON.parse(read.content[0].text).text, "the plan\n");
 });
+
+/**
+ * files_ask is a CONDITIONAL registration (same shape as list_characters): the
+ * test above proves a desk with no TokenGate seam advertises only the three
+ * files_* read tools; this one proves a wired desk passes the shared file and
+ * the question straight through to the lane.
+ */
+test("files_ask is registered when the TokenGate lane is wired and passes the question through", async (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "desk-mcp-ask-"));
+  context.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const shared = path.join(dir, "shared");
+  fs.mkdirSync(shared);
+  fs.writeFileSync(path.join(shared, "plan.md"), "the plan\n");
+  const castFile = path.join(dir, "cast.json");
+  fs.writeFileSync(castFile, JSON.stringify({ version: 1, files: { roots: [{ path: shared, label: "Shared" }] } }));
+  const { createFilesAccess } = require("./files-access.cjs");
+  const files = createFilesAccess({ castFile, home: dir });
+  files.setAgentRead(files.roots().roots[0].id, true);
+
+  const asked = [];
+  const fileAsk = {
+    ask: async (args) => {
+      asked.push(args);
+      return { ok: true, answer: "ship it", evidence: [{ text: "the plan", start: 0, end: 8, kept: 2 }],
+        reader: "tokengate" };
+    },
+  };
+  const mcpHandler = createDeskMcpHandler({
+    onAnimation: () => true,
+    onWindowAction: () => true,
+    getStatus: () => ({ windowVisible: true, voiceState: null, listener: null }),
+    filesAccess: files.agent,
+    fileAsk,
+  });
+  const bridge = createBridgeServer({ port: 0, onEvent: () => {}, mcpHandler });
+  const address = await bridge.listen();
+  const client = new Client({ name: "desk-test-ask", version: "1.0.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`));
+  context.after(async () => {
+    await client.close();
+    await bridge.close();
+  });
+  await client.connect(transport);
+
+  const tool = (await client.listTools()).tools.find((t) => t.name === "files_ask");
+  assert.ok(tool, "files_ask must be registered when fileAsk is supplied");
+  assert.equal(tool.annotations?.readOnlyHint, true);
+
+  const result = await client.callTool({
+    name: "files_ask",
+    arguments: { root: "Shared", path: "plan.md", question: "should I ship?", max_kept_tokens: 256 },
+  });
+  assert.equal(result.isError, false);
+  const body = JSON.parse(result.content[0].text);
+  assert.equal(body.answer, "ship it");
+  assert.deepEqual(body.evidence, [{ text: "the plan", start: 0, end: 8, kept: 2 }]);
+  assert.deepEqual(asked, [{ root: "Shared", path: "plan.md", question: "should I ship?", maxKeptTokens: 256 }]);
+});

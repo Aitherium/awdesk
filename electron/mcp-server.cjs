@@ -171,6 +171,10 @@ function createDeskMcpServer({
   // files-access.cjs createFilesAccess().agent: READ-ONLY access to the folders the
   // owner switched on in the Files page. Null = the files_* tools are absent.
   filesAccess = null,
+  // file-ask.cjs createFileAsk({files}): the "ask about this file" lane. Null =
+  // files_ask is absent, so a desk with no TokenGate wiring advertises no tool
+  // that could only refuse.
+  fileAsk = null,
   // The Aither Browser's dispatcher (browser-policy.createBrowserAgent): (action, args) => verdict.
   onBrowser = null,
   // The owner's OWN Chrome through awconnect (chrome-bridge.cjs call): (action, args) => verdict.
@@ -989,6 +993,38 @@ function createDeskMcpServer({
       async ({ root, path: rel, offset, max_bytes }) => agentToolCall(filesAccess, "files_read",
         { root, path: rel, offset, max_bytes }),
     );
+
+    // files_ask -- "ask about this file". Registered only when main hands over
+    // the TokenGate seam (main.cjs: createFileAsk({files: filesAgent})), the same
+    // conditional shape as list_characters: a desk with nothing wired to answer
+    // must not advertise a tool whose only outcome is a refusal.
+    if (fileAsk != null) {
+      const { askToolCall } = require("./file-ask.cjs");
+      server.registerTool(
+        "files_ask",
+        {
+          title: "Ask a question about a file the owner shared",
+          description:
+            "Ask a question about one text file under a shared root. Reads the file (read-only, same grant " +
+            "and confinement as files_read) and sends it to TokenGate, the desk's local answering lane, which " +
+            "keeps only the passages the answer can use. Returns {answer, evidence:[{text,start,end,kept}], " +
+            "kept_tokens, file, reader, reader_label}. Every answer carries reader_label (\"read by TokenGate " +
+            "(<checkpoint>), experimental\"): the released gates are task-specific and this is not an " +
+            "authoritative citation. PDF/DOCX (no extractor in Desk), binary files, an unshared folder and " +
+            "a document over the 32,768-token ceiling are refused with the reason -- never answered on a guess.",
+          inputSchema: {
+            root: z.string().min(1).max(200).describe("Root id or label from files_roots."),
+            path: z.string().min(1).max(2048).describe("File path relative to the root."),
+            question: z.string().min(1).max(2000).describe("The question about this file."),
+            max_kept_tokens: z.number().int().min(1).max(32768).optional()
+              .describe("Optional cap on how many tokens of evidence TokenGate keeps."),
+          },
+          annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+        },
+        async ({ root, path: rel, question, max_kept_tokens }) => askToolCall(fileAsk,
+          { root, path: rel, question, max_kept_tokens }),
+      );
+    }
   }
 
   if (onAsk != null) {

@@ -5316,9 +5316,13 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       }
     });
 
+    // Files page grants: agents read ONLY the folders the owner switched on.
+    // The same grant half backs files_ask, whose text goes to TokenGate
+    // (TOKENGATE_URL overrides the default http://127.0.0.1:8172).
+    const filesAgent = require("./files-access.cjs").createFilesAccess().agent;
     const mcpHandler = createDeskMcpHandler({
-      // Files page grants: agents read ONLY the folders the owner switched on.
-      filesAccess: require("./files-access.cjs").createFilesAccess().agent,
+      filesAccess: filesAgent,
+      fileAsk: require("./file-ask.cjs").createFileAsk({ files: filesAgent }),
       onAnimation: (animation) => {
         let animationEvent;
         if (animation.startsWith("FILE:")) {
