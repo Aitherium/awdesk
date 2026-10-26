@@ -5784,6 +5784,28 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       powerMonitor.on("shutdown", () => { sessionEnding = true; });
     }
 
+    // The local agent and the other installed bricks: a fix shipped to PyPI reached
+    // nobody until they opened Settings > Bricks (owner, 2026-10-25). Same opt-out as the
+    // desk's own updates; the click runs `adk bricks upgrade`, which tests and rolls back.
+    try {
+      const { listBricks, actOnBrick } = require("./bricks-client.cjs");
+      require("./agent-update.cjs").createAgentUpdateNotices({
+        listBricks,
+        actOnBrick,
+        allowed: () => require("./desk-settings.cjs").current().updates?.enabled !== false
+          && process.env.AWDESK_NO_UPDATE !== "1",
+        notify: ({ title, body, click }) => {
+          if (!Notification.isSupported()) return;
+          const n = new Notification({ title, body });
+          if (click) n.on("click", click);
+          n.show();
+        },
+        log: (line) => console.log(`[desk] ${line}`),
+      }).start();
+    } catch (e) {
+      console.warn(`[desk] agent update notices unavailable: ${e && e.message}`);
+    }
+
     audioListener = createAudioListener({
       isPackaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
