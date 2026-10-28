@@ -96,6 +96,12 @@ const PANES = Object.freeze([
     id: "projects", label: "Projects", hint: "Your repositories: branch, changes, PR and CI", section: "Agents", icon: "folder",
     kind: "file", file: "projects.html",
   }),
+  // Agent notebooks (owner, 2026-10-27: "how do I discover / find them, view them, replay
+  // them"): this computer's index first, offline; the platform merged in. notebooks-client.cjs.
+  Object.freeze({
+    id: "notebooks", label: "Notebooks", hint: "Every notebook your agent sessions produced", section: "Agents", icon: "book",
+    kind: "file", file: "notebooks.html",
+  }),
   Object.freeze({
     id: "command", label: "Command", hint: "Say it in a sentence", section: "Agents", icon: "terminal",
     kind: "file", file: "command.html",

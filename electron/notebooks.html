@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src file:; img-src data:;" />
+<title>Notebooks</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  /* aither://notebooks -- every agent notebook this computer recorded (works offline),
+     merged with the platform's when it answers. notebooks-client.cjs does the reading. */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px/1.45 var(--font-sans); }
+  body { overflow-y: auto; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 18px 20px 60px; }
+  .head { display: flex; align-items: baseline; gap: 10px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin-bottom: 14px; }
+  .bar { display: flex; gap: 8px; margin-bottom: 12px; }
+  #filter { flex: 1; height: 32px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel); color: var(--fg);
+    padding: 0 10px; font: inherit; }
+  button { height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--btn);
+    color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { color: var(--muted); min-height: 18px; margin-bottom: 8px; }
+  #status.err { color: var(--destructive); }
+  .chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); }
+  .chip.ok { color: var(--success, #3c9); border-color: color-mix(in srgb, var(--success, #3c9) 50%, var(--line)); }
+  .chip.bad { color: var(--destructive); border-color: color-mix(in srgb, var(--destructive) 50%, var(--line)); }
+  .chip.warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 50%, var(--line)); }
+  .n { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; margin-bottom: 8px; background: var(--panel); }
+  .n .top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .n .id { font-weight: 700; font-family: var(--font-mono, monospace); }
+  .n .meta { color: var(--muted); font-size: 11px; }
+  .n .acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .n .out { font-size: 12px; margin-top: 6px; color: var(--muted); white-space: pre-wrap; }
+  .n .out.err { color: var(--destructive); }
+  .empty { color: var(--muted); padding: 20px 0; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head"><h1>Notebooks</h1><span id="live" class="chip">checking…</span></div>
+    <div class="sub">Every notebook an agent session on this computer produced — readable even when the platform is down.</div>
+    <div class="bar">
+      <input id="filter" spellcheck="false" placeholder="Filter by session, notebook id or date (2026-10-27)" aria-label="Filter notebooks" />
+      <button type="button" id="refresh">Refresh</button>
+    </div>
+    <div id="status" role="status" aria-live="polite"></div>
+    <div id="list"></div>
+  </div>
+  <script src="notebooks-page.js"></script>
+</body>
+</html>

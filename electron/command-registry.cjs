@@ -527,6 +527,13 @@ const COMMANDS = Object.freeze([
     id: "localai.open", label: "Local AI…", group: "go",
     surfaces: ["tray", "palette", "jumplist"],
   }),
+  // Agent notebooks (owner, 2026-10-27: "how do I discover / find them, view them, replay
+  // them"): aither://notebooks -- this computer's index first, the platform merged in.
+  Object.freeze({
+    id: "notebooks.open", label: "Notebooks…", group: "go",
+    surfaces: ["palette"],
+    whySingle: "A Console pane (Agents section) already; the palette (Ctrl+K) is its keyboard path.",
+  }),
   // The Aither Browser (browser-window.cjs): a browser INSIDE the desk where an
   // agent drives (MCP browser_* tools) while the owner watches and can take over,
   // and where the owner browses with an "Ask about this page" panel.

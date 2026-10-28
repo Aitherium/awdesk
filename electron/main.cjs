@@ -2807,6 +2807,10 @@ require("./terminal-window.cjs").ensureTerminalIpc();
 require("./search-window.cjs").ensureSearchIpc();
 // Your repositories: aither://projects's IPC (awgit state, gh PR + CI).
 require("./projects-window.cjs").ensureProjectsIpc();
+// Agent notebooks: aither://notebooks's IPC; View opens AitherOne in the Aither browser.
+require("./notebooks-window.cjs").ensureNotebooksIpc({
+  openUrl: (url) => void browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url }),
+});
 // The browser's extensions page (aither://extensions).
 require("./extensions-window.cjs").ensureExtensionsIpc();
 // The aw* stack page (aither://bricks): the awkno catalog and man pages.
@@ -2994,6 +2998,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     }
     case "darkmatter.open": return void createDarkmatterLinkWindow();
     case "localai.open": return void browserWindow.openInternal("local-ai", null, { askAgent: browserAskAgent });
+    case "notebooks.open": return void browserWindow.openInternal("notebooks", null, { askAgent: browserAskAgent });
     case "browser.open": return void browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
     case "inference.open": {
       // Sign-in must land the cookie in the living-desktop PARTITION, which
@@ -3948,6 +3953,11 @@ function wireConsoleHost(legacy) {
       },
       projects: {
         open: () => browserWindow.openInternal("projects", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
+      notebooks: {
+        open: () => browserWindow.openInternal("notebooks", null, { askAgent: browserAskAgent }),
         close: () => {},
         isOpen: () => false,
       },
