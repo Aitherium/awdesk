@@ -139,6 +139,9 @@ contextBridge.exposeInMainWorld("aitherConsole", {
     ipcRenderer.on("desk:console-inbox-count", handler);
     return () => ipcRenderer.off("desk:console-inbox-count", handler);
   },
+  /** New agent notebooks since the Notebooks pane was last opened (its rail badge). */
+  notebooksCount: (opts) => ipcRenderer.invoke("desk:notebooks-count",
+    { markSeen: Boolean(opts && opts.markSeen) }),
   /** Everything Desk can do, for the palette (Ctrl+K). Resolved labels, no logic. */
   commands: () => ipcRenderer.invoke("desk:console-commands"),
   /** Run one of them by id; `arg` is the typed text for a row with `prompt`. */

@@ -54,10 +54,13 @@
     let allow = false;
     if (acting.length) {
       const list = acting.map(([k, v]) => v + " × " + k).join(", ");
-      // The owner decides: a replay hands each recorded tool call to an agent again.
-      allow = window.confirm("This notebook re-runs recorded tool calls that can change things:\n\n"
-        + list + "\n\nRun them again anyway?");
-      if (!allow) return say(out, "Not replayed — it would re-run " + list + ".", false);
+      const empty = look.emptyTask
+        ? "\n\n" + look.emptyTask + " of them have no prompt (recorded tool calls): each would start an agent with an EMPTY task."
+        : "";
+      // The owner decides: each of these cells runs an agent with full tools, a script or a call.
+      allow = window.confirm("A replay runs these cells, and each can change things:\n\n"
+        + list + empty + "\n\nRun it anyway?");
+      if (!allow) return say(out, "Not replayed — it would run " + list + ".", false);
     }
     say(out, "Replaying " + look.cellCount + " cells on the platform…", false);
     const run = await api.replay(row.notebook, { allowSideEffects: allow });
@@ -68,8 +71,11 @@
   function card(row) {
     const box = el("div", "n");
     const top = el("div", "top");
+    // What the work was first; the id is the handle, not the headline.
+    const title = row.title || row.name || "";
+    if (title) top.append(el("span", "title", title));
     top.append(el("span", "id", row.notebook));
-    if (row.name) top.append(el("span", "", row.name));
+    if (row.name && row.name !== title) top.append(el("span", "", row.name));
     const where = { host: "this computer", platform: "platform", both: "this computer + platform" }[row.source] || row.source;
     top.append(el("span", "chip", where));
     box.append(top);
@@ -99,11 +105,16 @@
     return box;
   }
 
+  let lastSummary = { text: "", err: false };
+
   function render() {
     const q = String($("filter").value || "").trim().toLowerCase();
-    const shown = q ? rows.filter((r) => [r.notebook, r.session, r.created, r.name].join(" ").toLowerCase().includes(q)) : rows;
+    const shown = q ? rows.filter((r) => [r.notebook, r.session, r.created, r.name, r.title].join(" ").toLowerCase().includes(q)) : rows;
     const list = $("list");
     list.replaceChildren();
+    // The status line counts what is SHOWN while a filter is on, never the total alone.
+    if (q) status(shown.length + " of " + rows.length + " notebooks match “" + q + "”", false);
+    else if (lastSummary.text) status(lastSummary.text, lastSummary.err);
     if (!shown.length) {
       list.append(el("div", "empty", rows.length ? "Nothing matches that filter." : "No notebooks yet."));
       return;
@@ -120,15 +131,18 @@
     return { text: (data.notebooks || []).length + " notebooks", err: false };
   }
 
+  function show(data) {
+    lastSummary = summary(data);
+    render();
+  }
+
   async function load() {
     if (!api) return status("This page needs the Aither desk.", true);
     // This computer first: instant and offline.
     const local = await api.list({ localOnly: true });
     if (local && local.ok) {
       rows = local.notebooks || [];
-      render();
-      const s = summary(local);
-      status(s.text, s.err);
+      show(local);
     }
     badge(lastLive);
     const full = await api.list({ localOnly: false });
@@ -136,9 +150,7 @@
       rows = full.notebooks || rows;
       lastLive = full.live;
       badge(full.live);
-      render();
-      const s = summary(full);
-      status(s.text, s.err);
+      show(full);
     } else {
       status("Could not list notebooks: " + ((full && full.error) || "no answer"), true);
     }

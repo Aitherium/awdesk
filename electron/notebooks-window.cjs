@@ -15,9 +15,10 @@ const { createNotebooksClient, validId, viewUrl } = require("./notebooks-client.
 
 let wired = false;
 let clientImpl = null;
+let tokenProvider = null;
 
 function client() {
-  if (!clientImpl) clientImpl = createNotebooksClient();
+  if (!clientImpl) clientImpl = createNotebooksClient({ token: tokenProvider });
   return clientImpl;
 }
 
@@ -60,6 +61,15 @@ function notebooksHandlers(c = client(), { isNotebooks = fromNotebooksPage, open
       else await sh().openExternal(url);
       return { ok: true, url };
     }),
+    // The console's Notebooks badge: a count, nothing more, so any desk page may ask;
+    // the console passes markSeen when the owner opens the pane.
+    "desk:notebooks-count": async (_event, opts) => {
+      try {
+        return c.unseen({ markSeen: Boolean(opts && opts.markSeen) });
+      } catch (error) {
+        return { ok: false, count: 0, error: String((error && error.message) || error) };
+      }
+    },
     "desk:notebooks-transcript": guard((logPath) => {
       const file = String(logPath || "");
       if (!file.toLowerCase().endsWith(".jsonl") || !exists(file)) {
@@ -71,9 +81,11 @@ function notebooksHandlers(c = client(), { isNotebooks = fromNotebooksPage, open
   };
 }
 
-function ensureNotebooksIpc({ openUrl = null } = {}) {
+/** `token`: the desk's signed-in Online bearer (async; null when signed out). */
+function ensureNotebooksIpc({ openUrl = null, token = null } = {}) {
   if (wired) return;
   wired = true;
+  tokenProvider = token;
   const { ipcMain } = require("electron");
   for (const [channel, handler] of Object.entries(notebooksHandlers(client(), { openUrl }))) {
     ipcMain.handle(channel, handler);

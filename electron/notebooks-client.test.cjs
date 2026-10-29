@@ -57,15 +57,34 @@ test("a missing or broken index is reported, never an empty success", () => {
   assert.equal(readIndex({ dir }).readable, false);
 });
 
-test("replay census: recorded writes act, reads and prompts do not (fixture shared with awsh)", () => {
-  const writes = replayCensus({ cells: [
-    { type: "tool_call", config: { tool: "Read" } }, { type: "tool_call", config: { tool: "Bash" } },
-    { type: "tool_call", config: { tool: "Write" } }, { type: "tool_call", config: { tool: "Bash" } }] });
-  assert.deepEqual(writes.acting, { "tool_call:Bash": 2, "tool_call:Write": 1 });
-  const safe = replayCensus({ cells: [{ type: "context" }, { type: "prompt" },
-    { type: "tool_call", config: { tool: "Grep" } }] });
-  assert.deepEqual(safe.acting, {});
-  assert.deepEqual(safe.census, { context: 1, prompt: 1, "tool_call:Grep": 1 });
+// The replay rule, pinned with the same cases as awdk tests/test_mcp_stdio.py _RECORDED.
+const RECORDED = [
+  { type: "context", config: { title: "s" } },
+  { type: "tool_call", config: { tool: "Read", input: { p: "a" } } },
+  { type: "tool_call", config: { tool: "Bash", input: { c: "rm" } } },
+  { type: "prompt", config: { prompt: "summarise" } },
+  { type: "agent_delegate", config: { agent: "demiurge", task: "fix" } },
+];
+
+test("replay census: every agent cell acts -- prompts, delegates, even a recorded Read", () => {
+  // Genesis hands tool_call, prompt and agent_delegate cells to an agent with full tools
+  // (verifier, 2026-10-28: the old rule let prompt/agent_delegate replay with no consent).
+  const out = replayCensus({ cells: RECORDED });
+  assert.deepEqual(out.acting, { "tool_call:Read": 1, "tool_call:Bash": 1, prompt: 1, agent_delegate: 1 });
+  assert.equal(out.emptyTask, 2, "the recorded tool calls carry no prompt");
+  const inert = replayCensus({ cells: [{ type: "context" }, { type: "note" }, { type: "checkpoint" }] });
+  assert.deepEqual(inert.acting, {});
+  assert.deepEqual(replayCensus({ cells: [{ type: "brand_new_kind" }] }).acting, { brand_new_kind: 1 },
+    "an unknown cell type fails closed");
+});
+
+test("rows carry the brief's title; an archived (deleted) platform row is hidden", () => {
+  const dir = indexDir();
+  fs.writeFileSync(path.join(dir, "sess-new.md"), "EXECUTIVE-BRIEF: Notebooks get a desk page\n\nbody\n", "utf8");
+  const rows = readIndex({ dir }).rows;
+  assert.deepEqual(rows.map((r) => r.title), ["Notebooks get a desk page", ""]);
+  const merged = mergeRows(rows, [{ id: "nb_probe01", status: "archived" }, { id: "nb_web00003", name: "web" }]);
+  assert.deepEqual(merged.map((r) => r.notebook), ["nb_new00002", "nb_old00001", "nb_web00003"]);
 });
 
 test("platform up: rows merge by id and Live needs Genesis itself", async () => {
@@ -128,6 +147,7 @@ test("replay refuses recorded side effects unless the owner confirmed them", asy
   const refused = await c.replay("nb_new00002");
   assert.equal(refused.refused, true);
   assert.deepEqual(refused.acting, { "tool_call:Bash": 1 });
+  assert.equal(refused.emptyTask, 1, "a recorded tool call has no prompt");
   assert.ok(!calls.some((call) => call.method === "POST"), "nothing ran");
   const run = await c.replay("nb_new00002", { allowSideEffects: true });
   assert.deepEqual(run, { ok: true, runId: "nbrun_1", status: "completed" });
@@ -182,4 +202,50 @@ test("main answers only the aither://notebooks page", async () => {
   assert.equal((await handlers["desk:notebooks-transcript"](page, "C:/Windows/notepad.exe")).ok, false);
   assert.deepEqual(shown, ["C:/t/new.jsonl"]);
   assert.equal(fromNotebooksPage({ getURL: () => "aither://projects/" }), false);
+});
+
+test("the Notebooks badge counts what is new since the pane was last opened", () => {
+  const dir = indexDir();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "nb-home-"));
+  const env = { ...ENV, AITHER_HOME_DIR: home };
+  const c = createNotebooksClient({ env, dir });
+  assert.deepEqual(c.unseen(), { ok: true, count: 0, seenAt: "2026-10-27T20:00:00" },
+    "a computer with no mark records one: a fresh desk does not show every notebook");
+  const later = { ...INDEX, "sess-3": { created: "2026-10-28T09:00:00", surfaces: { notebook: { id: "nb_three003" } } } };
+  fs.writeFileSync(path.join(dir, "index.json"), JSON.stringify(later), "utf8");
+  assert.equal(c.unseen().count, 1);
+  assert.equal(c.unseen({ markSeen: true }).count, 0);
+  assert.equal(c.unseen().count, 0, "opening the pane clears it");
+  const broken = createNotebooksClient({ env, dir: path.join(os.tmpdir(), "nb-none-" + Date.now()) }).unseen();
+  assert.equal(broken.ok, false, "an unreadable index is reported, not a zero");
+});
+
+test("main answers the badge count to the console, and marks seen only when asked", async () => {
+  const marks = [];
+  const handlers = notebooksHandlers({ unseen: (o) => (marks.push(o), { ok: true, count: o.markSeen ? 0 : 2 }) },
+    { isNotebooks: () => false });
+  assert.deepEqual(await handlers["desk:notebooks-count"]({ sender: {} }, {}), { ok: true, count: 2 });
+  assert.deepEqual(await handlers["desk:notebooks-count"]({ sender: {} }, { markSeen: true }), { ok: true, count: 0 });
+  assert.deepEqual(marks, [{ markSeen: false }, { markSeen: true }]);
+});
+
+test("one identity: the desk's Online session is the bearer; signed out falls back to adk login", async () => {
+  const seen = [];
+  const routes = { "/api/notebooks": [200, { notebooks: [] }], "/api/bridge/genesis/notebooks/sessions": [200, { sessions: [] }] };
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "nb-auth-"));
+  fs.mkdirSync(path.join(home, ".aither"));
+  fs.writeFileSync(path.join(home, ".aither", "auth.json"),
+    JSON.stringify({ active_profile: "p", profiles: { p: { access_token: "adk-login" } } }), "utf8");
+  const env = { AITHER_PORTAL_URL: "https://portal.test", AITHER_HOME_DIR: home };
+  const desk = createNotebooksClient({ env, dir: indexDir(), token: async () => "desk-online", fetchImpl: fakeFetch(routes, seen) });
+  assert.equal((await desk.list()).live.live, true);
+  assert.ok(seen.length && seen.every((c) => c.auth === "Bearer desk-online"), "every call carries the desk session");
+  seen.length = 0;
+  const signedOut = createNotebooksClient({ env, dir: indexDir(), token: async () => null, fetchImpl: fakeFetch(routes, seen) });
+  await signedOut.list();
+  assert.ok(seen.every((c) => c.auth === "Bearer adk-login"), "signed out on the desk: the adk login profile");
+  seen.length = 0;
+  const broken = createNotebooksClient({ env, dir: indexDir(), token: async () => { throw new Error("no partition"); }, fetchImpl: fakeFetch(routes, seen) });
+  await broken.list();
+  assert.ok(seen.every((c) => c.auth === "Bearer adk-login"), "a failing provider never blanks the bearer");
 });

@@ -2810,6 +2810,9 @@ require("./projects-window.cjs").ensureProjectsIpc();
 // Agent notebooks: aither://notebooks's IPC; View opens AitherOne in the Aither browser.
 require("./notebooks-window.cjs").ensureNotebooksIpc({
   openUrl: (url) => void browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url }),
+  // One identity: Genesis is called as the desk's signed-in Online session (the bearer
+  // awconnect also gets), falling back to the `adk login` profile when signed out.
+  token: () => browserWindow.onlineToken(),
 });
 // The browser's extensions page (aither://extensions).
 require("./extensions-window.cjs").ensureExtensionsIpc();
