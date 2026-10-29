@@ -46,7 +46,7 @@ const path = require("node:path");
 const policy = require("./browser-policy.cjs");
 const internal = require("./browser-internal.cjs");
 const contextPush = require("./browser-context-push.cjs");
-const { TabSet } = require("./browser-tabs.cjs");
+const { TabSet, agentTabView } = require("./browser-tabs.cjs");
 const { createLibrary } = require("./browser-library.cjs");
 const { createDownloads } = require("./browser-downloads.cjs");
 const agentsPanel = require("./agents-panel.cjs");
@@ -322,12 +322,16 @@ function activeView() {
   return viewOf(tabs.active);
 }
 
-/** Every tab, with what the strip shows. */
+/**
+ * Every tab, with what the strip shows. This is the OWNER's view (the strip, the
+ * panel); an agent gets agentTabView(tabList()), which withholds the owner's tabs.
+ */
 function tabList() {
   const snap = tabs.snapshot();
   return snap.tabs.map((t) => {
     const view = viewOf(t.id);
     const tab = tabs.get(t.id) || {};
+    const url = view ? view.webContents.getURL() : (discarded.get(t.id) || {}).url || "";
     return {
       id: t.id,
       by: t.by,
@@ -337,10 +341,11 @@ function tabList() {
       badge: tab.key === "inbox" && inbox.count > 0 ? inbox.count : 0,
       active: t.id === snap.active,
       agentTarget: t.id === snap.agentTarget,
-      url: view ? view.webContents.getURL() : (discarded.get(t.id) || {}).url || "",
+      url,
       title: view ? view.webContents.getTitle() : (discarded.get(t.id) || {}).title || "",
       loading: view ? view.webContents.isLoading() : false,
       popped: popped.has(t.id),
+      shared: t.by === "you" && tabs.isShared(t.id, url),
     };
   });
 }
@@ -1521,6 +1526,24 @@ function wirePage(wc, id) {
   });
 }
 
+/** May an agent see tab `id` as it is now: its own, or an owner tab shared on this page's origin. */
+function agentMaySee(id) {
+  const tab = tabs.get(id);
+  if (!tab) return false;
+  if (tab.by === "agent") return true;
+  const view = viewOf(id);
+  return tabs.isShared(id, view ? view.webContents.getURL() : "");
+}
+
+/** The owner's "Share with agent" toggle on one of their tabs (the strip's button). */
+function shareTab(id, on) {
+  const view = viewOf(id);
+  const result = tabs.share(id, on ? (view ? view.webContents.getURL() : "") : null);
+  if (result.ok && result.shared) scheduleContextPush(id);
+  pushState();
+  return result;
+}
+
 /**
  * Tell AitherDesktop what this window has open (browser-context-push.cjs): the
  * page's machine layer, never its text or a field value. Debounced, so a page
@@ -1528,6 +1551,10 @@ function wirePage(wc, id) {
  */
 function scheduleContextPush(id) {
   if (!contextPush.enabled() || id !== tabs.active) return;
+  // BROWSER-5: the push feeds every agent's browser_context / browser_context_history,
+  // so an OWNER tab goes only when they shared it. Their own question about the page
+  // ("Ask about this page", desk:browser-ask) is the other door and needs no push.
+  if (!agentMaySee(id)) return;
   // Only WEB pages are "what the user is browsing"; a console page or the signed-in
   // desktop is the desk itself.
   if ((tabs.get(id) || {}).kind !== "web") return;
@@ -1539,7 +1566,7 @@ function scheduleContextPush(id) {
     if (!view) return;
     const wc = view.webContents;
     const url = wc.getURL();
-    if (!contextPush.pushable(url)) return;
+    if (!contextPush.pushable(url) || !agentMaySee(id)) return;
     try {
       const page = await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: contextPush.CONTEXT_SCRIPT }], false);
       const verdict = await contextPush.postPush(contextPush.buildPush(page, { trigger: "page_loaded" }));
@@ -1934,7 +1961,8 @@ const driver = {
     }
     return { ok: true, tab: id, url: view.webContents.getURL(), title: view.webContents.getTitle() };
   },
-  tabs: async () => ({ ok: true, tabs: tabList() }),
+  // BROWSER-5: the agent sees its own tabs whole, the owner's as ids and a count.
+  tabs: async () => ({ ok: true, ...agentTabView(tabList()) }),
   async switchTab(id) {
     const switched = tabs.agentSwitch(id);
     if (!switched.ok) return switched;
@@ -2219,6 +2247,7 @@ function wireIpc() {
     const row = downloads.get(Number(id));
     if (row && row.state === "completed" && row.path) electron().shell.showItemInFolder(row.path);
   });
+  ipcMain.handle("desk:browser-tab-share", (event, id, on) => (fromChrome(event) ? shareTab(Number(id), Boolean(on)) : { ok: false }));
   ipcMain.on("desk:browser-tab-activate", (event, id) => {
     if (fromChrome(event)) showTab(Number(id));
   });

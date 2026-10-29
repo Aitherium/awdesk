@@ -781,8 +781,10 @@ function createDeskMcpServer({
       {
         title: "List the Aither Browser's tabs",
         description:
-          "Every tab: {id, by: you|agent, active (on screen), agentTarget (the one your tools act on), url, title}. " +
-          "You may switch to or close only tabs where by is agent. Refused while the owner has taken over.",
+          "Your tabs in full: {id, by: agent, active (on screen), agentTarget (the one your tools act on), url, title}. " +
+          "The owner's tabs are withheld ({id, by: you, withheld: true}; owner.count says how many) unless the owner " +
+          "shared one with you ({shared: true, url, title}). You may switch to or close only tabs where by is agent. " +
+          "Refused while the owner has taken over.",
         annotations: browserAnnotations(true),
       },
       async () => browserResult(await onBrowser("tabs", {})),

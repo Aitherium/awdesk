@@ -20,6 +20,13 @@
  * and may be PINNED. Pinned tabs (Inbox, AitherOS Online, Workspace) sit at the
  * front of the strip and cannot be closed from it; only an owner tab may be pinned
  * or non-web, so an agent can never hold a console page.
+ *
+ * What an agent may SEE (BROWSER-5, 2026-10-29): its own tabs in full; the owner's
+ * tabs as an id and a count, never a URL or a title -- unless the owner SHARES one
+ * ("Share with agent" on the tab). A share is bound to the origin it was given on:
+ * the tab navigating to another site withdraws it, so a tab shared on a docs page
+ * does not leak the bank the owner follows a link to. Sharing shows a tab; it never
+ * lets an agent drive it (agentSwitch/close still refuse an owner tab).
  */
 
 const OWNERS = Object.freeze(["you", "agent"]);
@@ -42,7 +49,7 @@ class TabSet {
       return { ok: false, error: "an agent may only open web tabs; Aither pages belong to the owner" };
     }
     if (this.tabs.length >= MAX_TABS) return { ok: false, error: `the Aither Browser is at its ${MAX_TABS}-tab limit; close one first` };
-    const tab = { id: this.nextId++, by, kind, pinned: Boolean(pinned), key: key == null ? null : String(key) };
+    const tab = { id: this.nextId++, by, kind, pinned: Boolean(pinned), key: key == null ? null : String(key), sharedOrigin: null };
     const lastPinned = this.tabs.reduce((last, t, i) => (t.pinned ? i : last), -1);
     let at = after == null ? -1 : this.tabs.findIndex((t) => t.id === after);
     // Pinned tabs stay at the front, in the order they were pinned; nothing lands among them.
@@ -104,6 +111,35 @@ class TabSet {
     return { ok: true, closed: id, active: this.active };
   }
 
+  /**
+   * The owner shares (url = the page it shows now) or withdraws (url = null) one of
+   * THEIR web tabs with the agent. Agent tabs are already visible; console pages
+   * (internal/hosted/extension) are the desk itself and are never shared.
+   */
+  share(id, url) {
+    const tab = this.get(id);
+    if (!tab) return { ok: false, error: `no tab ${id}` };
+    if (tab.by !== "you") return { ok: false, error: `tab ${id} is the agent's; it is already visible to it` };
+    if (url == null) {
+      tab.sharedOrigin = null;
+      return { ok: true, id, shared: false };
+    }
+    if (tab.kind !== "web") return { ok: false, error: `tab ${id} is an Aither page; only web tabs can be shared` };
+    const origin = originOf(url);
+    if (!origin) return { ok: false, error: `tab ${id} has no web page to share` };
+    tab.sharedOrigin = origin;
+    return { ok: true, id, shared: true };
+  }
+
+  /** Is owner tab `id` shared for the page it shows now (`url`)? A navigation off-origin withdraws it. */
+  isShared(id, url) {
+    const tab = this.get(id);
+    if (!tab || tab.by !== "you" || !tab.sharedOrigin) return false;
+    if (originOf(url) === tab.sharedOrigin) return true;
+    tab.sharedOrigin = null;
+    return false;
+  }
+
   /** The tab an agent tool acts on, or a refusal that says what to do. */
   target() {
     const tab = this.agentTarget == null ? null : this.get(this.agentTarget);
@@ -115,9 +151,47 @@ class TabSet {
     return {
       active: this.active,
       agentTarget: this.agentTarget,
-      tabs: this.tabs.map((t) => ({ id: t.id, by: t.by, kind: t.kind, pinned: t.pinned })),
+      tabs: this.tabs.map((t) => ({ id: t.id, by: t.by, kind: t.kind, pinned: t.pinned, shared: Boolean(t.sharedOrigin) })),
     };
   }
 }
 
-module.exports = { KINDS, MAX_TABS, OWNERS, TabSet };
+/** The http(s) origin of a URL, or "" (an aither:// page, about:blank, garbage). */
+function originOf(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The tab list as an AGENT may see it (browser_tabs). Agent tabs and shared owner
+ * tabs pass through whole; every other owner tab becomes {id, by, withheld} -- no
+ * url, title, label, badge or kind. `rows` is the strip's list (each row carries
+ * `shared`, already resolved against its current URL).
+ * @returns {{tabs: object[], owner: {count: number, shared: number, withheld: number}}}
+ */
+function agentTabView(rows) {
+  const tabs = [];
+  let count = 0;
+  let shared = 0;
+  for (const row of rows || []) {
+    if (row.by === "agent") {
+      tabs.push(row);
+      continue;
+    }
+    count += 1;
+    if (row.shared) {
+      shared += 1;
+      tabs.push({ id: row.id, by: row.by, shared: true, active: Boolean(row.active),
+        url: row.url || "", title: row.title || "", loading: Boolean(row.loading) });
+    } else {
+      tabs.push({ id: row.id, by: row.by, withheld: true });
+    }
+  }
+  return { tabs, owner: { count, shared, withheld: count - shared } };
+}
+
+module.exports = { KINDS, MAX_TABS, OWNERS, TabSet, agentTabView, originOf };

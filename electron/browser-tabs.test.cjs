@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { MAX_TABS, TabSet } = require("./browser-tabs.cjs");
+const { MAX_TABS, TabSet, agentTabView } = require("./browser-tabs.cjs");
 
 test("an agent has no tab until it opens one; then it drives that tab", () => {
   const tabs = new TabSet();
@@ -75,7 +75,7 @@ test("pinned tabs sit at the front, keep their order, and do not close from the 
   assert.equal(tabs.byKey("nope"), null);
   assert.match(tabs.close(inbox, "you").error, /pinned/);
   assert.equal(tabs.get(inbox).kind, "internal");
-  assert.deepEqual(tabs.snapshot().tabs[0], { id: inbox, by: "you", kind: "internal", pinned: true });
+  assert.deepEqual(tabs.snapshot().tabs[0], { id: inbox, by: "you", kind: "internal", pinned: true, shared: false });
   assert.equal(tabs.active, pop, "a pinned tab opened in the background does not steal the strip");
 });
 
@@ -88,4 +88,63 @@ test("an agent can never hold an Aither page or a pinned tab", () => {
   const mine = tabs.add("you", { kind: "internal" }).id;
   assert.match(tabs.agentSwitch(mine).error, /owner's/);
   assert.equal(tabs.add("agent").ok, true, "a web tab is still the agent's to open");
+});
+
+// BROWSER-5: what an agent may SEE of the strip.
+const BANK = "https://bank.example/accounts?id=42";
+const strip = (tabs, urls) => tabs.snapshot().tabs.map((t) => ({
+  id: t.id, by: t.by, kind: t.kind, pinned: t.pinned, label: t.pinned ? "Inbox" : "", badge: t.pinned ? 123 : 0,
+  active: t.id === tabs.active, agentTarget: t.id === tabs.agentTarget, url: urls[t.id] || "",
+  title: `title of ${urls[t.id] || "blank"}`, loading: false, popped: false,
+  shared: t.by === "you" && tabs.isShared(t.id, urls[t.id]),
+}));
+
+test("an owner tab's url and title never reach the agent's view unless shared", () => {
+  const tabs = new TabSet();
+  const inbox = tabs.add("you", { kind: "internal", pinned: true, key: "inbox" }).id;
+  const bank = tabs.add("you").id;
+  const urls = { [inbox]: "aither://inbox/", [bank]: BANK };
+  const view = agentTabView(strip(tabs, urls));
+  const text = JSON.stringify(view);
+  assert.ok(!text.includes("bank.example") && !text.includes("title of") && !text.includes("inbox") && !text.includes("123"), text);
+  assert.deepEqual(view.tabs, [{ id: inbox, by: "you", withheld: true }, { id: bank, by: "you", withheld: true }]);
+  assert.deepEqual(view.owner, { count: 2, shared: 0, withheld: 2 });
+});
+
+test("agent tabs pass through the agent's view unchanged", () => {
+  const tabs = new TabSet();
+  tabs.add("you");
+  const mine = tabs.add("agent").id;
+  const rows = strip(tabs, { [mine]: "https://docs.example/a" });
+  const view = agentTabView(rows);
+  assert.deepEqual(view.tabs[1], rows[1]);
+  assert.equal(view.tabs[1].url, "https://docs.example/a");
+  assert.equal(view.owner.count, 1);
+});
+
+test("a shared owner tab is visible, and a navigation off its origin withdraws the share", () => {
+  const tabs = new TabSet();
+  const id = tabs.add("you").id;
+  assert.deepEqual(tabs.share(id, "https://docs.example/page"), { ok: true, id, shared: true });
+  let view = agentTabView(strip(tabs, { [id]: "https://docs.example/other" }));
+  assert.equal(view.tabs[0].url, "https://docs.example/other", "same origin stays shared");
+  assert.deepEqual(view.owner, { count: 1, shared: 1, withheld: 0 });
+  view = agentTabView(strip(tabs, { [id]: BANK }));
+  assert.deepEqual(view.tabs[0], { id, by: "you", withheld: true }, "the bank it navigated to is withheld");
+  assert.equal(tabs.isShared(id, "https://docs.example/page"), false, "and going back does not re-share");
+});
+
+test("only the owner's web tabs can be shared, and sharing never lets the agent drive one", () => {
+  const tabs = new TabSet();
+  const pane = tabs.add("you", { kind: "internal" }).id;
+  const web = tabs.add("you").id;
+  const mine = tabs.add("agent").id;
+  assert.match(tabs.share(pane, "https://x.example/").error, /Aither page/);
+  assert.match(tabs.share(mine, "https://x.example/").error, /already visible/);
+  assert.match(tabs.share(web, "about:blank").error, /no web page/);
+  assert.ok(tabs.share(web, "https://x.example/").ok);
+  assert.match(tabs.agentSwitch(web).error, /owner's/);
+  assert.match(tabs.close(web, "agent").error, /owner's/);
+  assert.deepEqual(tabs.share(web, null), { ok: true, id: web, shared: false });
+  assert.equal(tabs.isShared(web, "https://x.example/"), false);
 });

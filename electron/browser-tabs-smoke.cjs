@@ -15,6 +15,8 @@ const path = require("node:path");
 
 process.env.DESK_BROWSER_HOME = "http://127.0.0.1:1/";
 process.env.DESK_BROWSER_CONTEXT_PUSH = "0";
+// The BROWSER-5 checks turn the push on; it may only ever aim at a dead port.
+process.env.DESK_GENESIS_BRIDGE_URL = "http://127.0.0.1:1";
 
 const { app } = require("electron");
 const bw = require("./browser-window.cjs");
@@ -93,8 +95,9 @@ app.whenReady().then(async () => {
     && after.tabs.findIndex((t) => t.id === popup.id) === after.tabs.findIndex((t) => t.id === a1.tab) + 1, after);
 
   const list = await agent("tabs", {});
-  expect("browser_tabs lists every tab with its owner and title", list.ok && list.tabs.length === after.tabs.length
-    && list.tabs.some((t) => t.by === "you"), list);
+  expect("browser_tabs lists every tab with its owner; the owner's are withheld", list.ok && list.tabs.length === after.tabs.length
+    && list.tabs.some((t) => t.by === "you" && t.withheld && !("url" in t) && !("title" in t))
+    && list.tabs.filter((t) => t.by === "agent").every((t) => t.title && t.url), list);
 
   // History remembers the agent's pages AS the agent's.
   const hist = bw.getLibrary().history(20);
@@ -118,6 +121,37 @@ app.whenReady().then(async () => {
     chrome = await drawn();
   }
   expect("the strip draws every tab and marks the agent's", chrome === want(), `${chrome} vs ${want()}`);
+
+  // BROWSER-5: an owner tab's URL and title reach neither browser_tabs nor the context push
+  // until the owner shares it with the strip's real button, and an off-origin navigation unshares it.
+  process.env.DESK_BROWSER_CONTEXT_PUSH = "1";
+  const pushedUrl = () => (bw.getState().contextPush || {}).url || "";
+  const settle = (ms = 2200) => new Promise((r) => setTimeout(r, ms));
+  const owned = bw.__openTabForTest(`${base}/OwnerPrivate`);
+  await settle();
+  const hidden = await agent("tabs", {});
+  const hiddenText = JSON.stringify(hidden);
+  expect("an owner tab's url and title never reach browser_tabs", hidden.ok && !hiddenText.includes("OwnerPrivate")
+    && hidden.tabs.some((t) => t.id === owned.id && t.withheld) && hidden.owner && hidden.owner.withheld >= 2, hidden);
+  expect("an owner tab is never pushed to the context feed", !pushedUrl().includes("OwnerPrivate"), bw.getState().contextPush);
+  const shared = await win.webContents.executeJavaScript(`window.aitherBrowser.shareTab(${owned.id}, true)`);
+  await settle();
+  const seen = await agent("tabs", {});
+  const row = seen.tabs.find((t) => t.id === owned.id) || {};
+  expect("Share with agent shows that tab's url and title", shared.ok && row.shared && row.title === "OwnerPrivate", { shared, row });
+  expect("a shared owner tab is pushed", pushedUrl().endsWith("/OwnerPrivate"), bw.getState().contextPush);
+  const elsewhere = base.replace("127.0.0.1", "localhost") + "/OwnerElsewhere";
+  await win.webContents.executeJavaScript(`window.aitherBrowser.navigate(${JSON.stringify(elsewhere)})`);
+  await settle();
+  const after2 = JSON.stringify(await agent("tabs", {}));
+  expect("navigating a shared tab to another site withdraws the share", !after2.includes("OwnerElsewhere")
+    && !pushedUrl().includes("OwnerElsewhere"), { after2, push: bw.getState().contextPush });
+  const sw2 = await agent("switch_tab", { tab: owned.id });
+  expect("sharing never lets the agent drive the owner's tab", !sw2.ok && /owner's/.test(sw2.error), sw2);
+  const agentPush = await agent("open", { url: `${base}/AgentPushed` });
+  await settle();
+  expect("the agent's own page is still pushed", agentPush.ok && pushedUrl().endsWith("/AgentPushed"), bw.getState().contextPush);
+  process.env.DESK_BROWSER_CONTEXT_PUSH = "0";
 
   server.close();
   console.log(fails.length ? `FAILED ${fails.length}` : "ALL PASS");

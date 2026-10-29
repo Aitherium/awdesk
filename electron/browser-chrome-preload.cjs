@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   closeTab: (id) => ipcRenderer.send("desk:browser-tab-close", Number(id)),
   popOut: (id) => ipcRenderer.invoke("desk:browser-tab-popout", Number(id)),
   dock: (id) => ipcRenderer.invoke("desk:browser-tab-dock", Number(id)),
+  /** "Share with agent": an owner tab's URL and title reach the agent only while shared. */
+  shareTab: (id, on) => ipcRenderer.invoke("desk:browser-tab-share", Number(id), Boolean(on)),
   takeOver: () => ipcRenderer.send("desk:browser-takeover"),
   handBack: () => ipcRenderer.send("desk:browser-handback"),
   /** The rail: "page" <pane id> | "command" <allowlisted id> | "menu" | "collapse" <bool>. */

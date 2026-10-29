@@ -107,6 +107,7 @@
   .tab .x { width: 18px; height: 18px; border-radius: 4px; border: 0; background: none; color: inherit; cursor: pointer;
     line-height: 18px; padding: 0; flex: none; }
   .tab .x:hover { background: var(--surface-800, var(--line)); }
+  .tab .x.share.on { color: var(--accent, #a78bfa); }
   .tab.pinned { flex: 0 0 auto; min-width: 0; padding-right: 10px; }
   .tab.aither .who { background: var(--primary, var(--fg)); opacity: .7; }
   .tab .badge { min-width: 18px; height: 16px; padding: 0 5px; border-radius: 8px; font-size: 10px; line-height: 16px;
@@ -261,6 +262,17 @@
       pop.setAttribute("aria-label", pop.title);
       pop.onclick = (e) => { e.stopPropagation(); void (t.popped ? api.dock(t.id) : api.popOut(t.id)); };
       tab.append(pop);
+      // Share with agent: the owner's tabs are hidden from agents (id only) until shared.
+      if (t.by === "you" && t.kind === "web") {
+        const share = document.createElement("button");
+        share.className = "x share" + (t.shared ? " on" : "");
+        share.textContent = t.shared ? "◉" : "○";
+        share.title = t.shared ? "Shared with the agent (click to stop sharing)" : "Share with agent";
+        share.setAttribute("aria-label", share.title);
+        share.setAttribute("aria-pressed", String(Boolean(t.shared)));
+        share.onclick = (e) => { e.stopPropagation(); void api.shareTab(t.id, !t.shared); };
+        tab.append(share);
+      }
       if (t.popped) tab.style.opacity = "0.7";
       // Pinned tabs are the console's front door: they do not close from the strip.
       if (!t.pinned) {
