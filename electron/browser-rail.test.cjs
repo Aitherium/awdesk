@@ -83,10 +83,53 @@ test("the taskbar takes the bottom strip, full width; the rail and pages end abo
 test("a hand-edited layout file cannot wedge the window", () => {
   assert.deepEqual(rail.normalizeLayout({ railWidth: "abc", panelWidth: -4, collapsedSections: [1, "Apps", "Apps"] }),
     { railWidth: rail.RAIL_WIDTH, panelWidth: rail.PANEL_MIN, railCollapsed: false, panelCollapsed: false,
-      taskbar: true, overlay: false, collapsedSections: ["Apps"], launchModes: {} });
+      taskbar: true, dock: true, dockOpen: false, dockHeight: rail.DOCK_HEIGHT, overlay: false,
+      collapsedSections: ["Apps"], launchModes: {} });
   assert.equal(rail.normalizeLayout({ railWidth: null }).railWidth, rail.RAIL_WIDTH, "reset means default, not minimum");
   assert.equal(rail.normalizeLayout({ taskbar: false }).taskbar, false);
   assert.equal(rail.normalizeLayout({ overlay: "yes" }).overlay, false, "on only when exactly true");
+});
+
+test("the terminal dock sits under page and panel, above the taskbar, behind a gutter", () => {
+  const G = rail.GUTTER;
+  const r = rail.railLayout({ width: 1320, height: 880 }, { chromeHeight: 118, panelWidth: 340,
+    taskbarHeight: rail.TASKBAR_HEIGHT, dockHeight: 300 });
+  assert.deepEqual(r.dock, { x: r.page.x, y: 880 - rail.TASKBAR_HEIGHT - 300, width: 1320 - r.page.x, height: 300 });
+  assert.equal(r.page.y + r.page.height + G, r.dock.y, "the gutter between page and dock is the drag handle");
+  assert.equal(r.panel.height, r.page.height, "the panel ends above the dock too");
+  assert.equal(r.dock.y + r.dock.height, r.taskbar.y);
+  assert.equal(r.rail.height, r.taskbar.y, "the rail keeps its full height");
+  const none = rail.railLayout({ width: 1320, height: 880 }, { chromeHeight: 118 });
+  assert.equal(none.dock.height, 0);
+  assert.equal(none.page.height, 880 - 118, "no dock, no gutter");
+});
+
+test("a dock dragged too tall gives way to the page; the strip always fits", () => {
+  const r = rail.railLayout({ width: 1000, height: 700 }, { chromeHeight: 118, dockHeight: 5000 });
+  assert.equal(r.page.height, rail.PAGE_MIN_HEIGHT);
+  assert.equal(r.dock.height, 700 - 118 - rail.GUTTER - rail.PAGE_MIN_HEIGHT);
+  const short = rail.railLayout({ width: 1000, height: 200 }, { chromeHeight: 118, dockHeight: 400 });
+  assert.equal(short.dock.height, rail.DOCK_STRIP_HEIGHT, "a short window still shows the strip");
+  assert.ok(short.page.height >= 0);
+});
+
+test("dock height: off, strip when closed, the dragged height when open (persisted, clamped)", () => {
+  assert.equal(rail.dockHeightFor({ dock: false, dockOpen: true }), 0);
+  assert.equal(rail.dockHeightFor({ dockOpen: false, dockHeight: 500 }), rail.DOCK_STRIP_HEIGHT);
+  assert.equal(rail.dockHeightFor({ dockOpen: true, dockHeight: 500 }), 500);
+  assert.equal(rail.dockHeightFor({ dockOpen: true, dockHeight: 3 }), rail.DOCK_MIN);
+  const saved = rail.normalizeLayout({ dockOpen: true, dockHeight: 444 });
+  assert.equal(saved.dockOpen, true);
+  assert.equal(saved.dockHeight, 444);
+  assert.equal(rail.normalizeLayout({ dockHeight: "x" }).dockHeight, rail.DOCK_HEIGHT);
+  assert.equal(rail.normalizeLayout({ dockOpen: "yes" }).dockOpen, false, "open only when exactly true");
+  assert.equal(rail.normalizeLayout({ dock: false }).dock, false);
+});
+
+test("dragging the dock's top edge: up opens it at that height, down past the strip closes it", () => {
+  assert.deepEqual(rail.dockHeightFromDrag(500, { height: 880, taskbarHeight: 56 }), { dockOpen: true, dockHeight: 324 });
+  assert.deepEqual(rail.dockHeightFromDrag(820, { height: 880, taskbarHeight: 56 }), { dockOpen: false });
+  assert.deepEqual(rail.dockHeightFromDrag(-9000, { height: 880 }), { dockOpen: true, dockHeight: rail.DOCK_MAX });
 });
 
 test("the avatar slot follows a dragged rail width", () => {

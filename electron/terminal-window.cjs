@@ -18,6 +18,14 @@ function electron() {
 
 let wired = false;
 let clientImpl = null;
+/**
+ * The browser window's dock verbs (browser-window.cjs installs {run(action, arg)}):
+ * open/close/toggle the bottom dock, pop a session out to a full terminal tab.
+ */
+let dockHost = null;
+function setDockHost(host) {
+  dockHost = host && typeof host.run === "function" ? host : null;
+}
 /** `${webContentsId}:${sessionId}` -> AbortController of its stream. */
 const streams = new Map();
 
@@ -43,7 +51,7 @@ function stopStream(key) {
 }
 
 /** The handler table, pure over an injected client so it is testable without Electron. */
-function terminalHandlers(c = client(), { isTerminal = fromTerminalPage } = {}) {
+function terminalHandlers(c = client(), { isTerminal = fromTerminalPage, dock = () => dockHost } = {}) {
   const guard = (fn) => async (event, ...args) => {
     if (!event || !event.sender || !isTerminal(event.sender)) return { ok: false, error: "not the terminal page" };
     try {
@@ -55,6 +63,15 @@ function terminalHandlers(c = client(), { isTerminal = fromTerminalPage } = {}) 
   return {
     "desk:terminal-harnesses": guard(() => c.harnesses()),
     "desk:terminal-list": guard(() => c.list()),
+    /** Claude Code tabs the daemon DISCOVERED (not its own): resumable here, never typed into. */
+    "desk:terminal-external": guard(() => c.external()),
+    "desk:terminal-resume": guard((_e, id, cwd) => c.resume(id, { cwd })),
+    /** The bottom dock's window verbs; a terminal page with no browser window gets a refusal. */
+    "desk:terminal-dock": guard((_e, action, arg) => {
+      const host = dock();
+      if (!host) return { ok: false, error: "no browser window holds a terminal dock" };
+      return host.run(String(action || ""), arg == null ? null : String(arg));
+    }),
     "desk:terminal-create": guard((_e, opts) => c.create(opts || {})),
     "desk:terminal-input": guard((_e, id, text) => c.input(id, text)),
     "desk:terminal-resize": guard((_e, id, rows, cols) => c.resize(id, rows, cols)),
@@ -94,4 +111,4 @@ function ensureTerminalIpc() {
   for (const [channel, handler] of Object.entries(terminalHandlers())) ipcMain.handle(channel, handler);
 }
 
-module.exports = { ensureTerminalIpc, fromTerminalPage, terminalHandlers };
+module.exports = { ensureTerminalIpc, fromTerminalPage, setDockHost, terminalHandlers };

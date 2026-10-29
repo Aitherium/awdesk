@@ -77,6 +77,10 @@
   .grip:hover::after, body.dragging .grip.on::after { background: var(--primary, #7cd); }
   .grip[hidden] { display: none; }
   body.dragging, body.dragging * { cursor: col-resize !important; user-select: none; }
+  /* The terminal dock's top edge (browser-rail dock rect): a horizontal grip. */
+  .grip.row { cursor: row-resize; }
+  .grip.row::after { top: 2px; bottom: auto; left: 0; right: 0; width: auto; height: 2px; }
+  body.dragging.rows, body.dragging.rows * { cursor: row-resize !important; }
   .sec { cursor: pointer; display: flex; align-items: center; gap: 6px; }
   .sec::before { content: "BE"; font-size: 9px; opacity: .6; }
   .sec.folded::before { content: "B8"; }
@@ -142,6 +146,7 @@
     <div id="customize" hidden>
       <label><input type="checkbox" id="opt-panel" /> Assistant panel</label>
       <label><input type="checkbox" id="opt-taskbar" /> AitherOS taskbar</label>
+      <label><input type="checkbox" id="opt-dock" /> Terminal dock (Ctrl+`)</label>
       <div class="note">Drag the edges of the rail and the panel to resize. Click a section name to fold it.</div>
       <button id="opt-reset">Reset layout</button>
     </div>
@@ -152,6 +157,7 @@
   </nav>
   <div id="grip-rail" class="grip" title="Drag to resize the rail"></div>
   <div id="grip-panel" class="grip" title="Drag to resize the panel"></div>
+  <div id="grip-dock" class="grip row" title="Drag to resize the terminal dock; double-click to open or close it"></div>
   <div id="top">
   <div id="tabs" class="tabs" role="tablist" aria-label="Tabs">
     <button id="newtab" title="New tab" aria-label="New tab">+</button>
@@ -279,6 +285,7 @@
   };
   $("opt-panel").onchange = (e) => api.rail("panel", !e.target.checked);
   $("opt-taskbar").onchange = (e) => api.rail("taskbar", e.target.checked);
+  $("opt-dock").onchange = (e) => api.rail("dock-on", e.target.checked);
   $("opt-reset").onclick = () => api.rail("reset-layout");
   $("paneltoggle").onclick = () => api.rail("panel", !(lastRail && lastRail.panel && lastRail.panel.collapsed));
 
@@ -286,18 +293,21 @@
   // mouse the whole way (a view under the cursor would swallow mousemove/mouseup).
   function startDrag(which, e) {
     e.preventDefault();
-    const grip = $(which === "rail" ? "grip-rail" : "grip-panel");
+    const grip = $(which === "rail" ? "grip-rail" : which === "dock" ? "grip-dock" : "grip-panel");
     grip.classList.add("on");
     document.body.classList.add("dragging");
+    document.body.classList.toggle("rows", which === "dock");
     void api.rail("drag", true);
     let frame = 0;
     let x = e.clientX;
+    let y = e.clientY;
     const send = () => {
       frame = 0;
       if (which === "rail") api.rail("rail-width", Math.round(x));
+      else if (which === "dock") api.rail("dock-drag", Math.round(y));
       else api.rail("panel-width", Math.round(window.innerWidth - x));
     };
-    const move = (ev) => { x = ev.clientX; if (!frame) frame = requestAnimationFrame(send); };
+    const move = (ev) => { x = ev.clientX; y = ev.clientY; if (!frame) frame = requestAnimationFrame(send); };
     const up = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
@@ -312,6 +322,8 @@
   }
   $("grip-rail").onmousedown = (e) => startDrag("rail", e);
   $("grip-panel").onmousedown = (e) => startDrag("panel", e);
+  $("grip-dock").onmousedown = (e) => startDrag("dock", e);
+  $("grip-dock").ondblclick = () => api.rail("dock");
 
   function placeGrips(r) {
     const g = r.gutter || 6;
@@ -322,7 +334,14 @@
     const pg = $("grip-panel");
     const p = r.panel;
     pg.hidden = !p || p.collapsed || !p.width;
-    if (p && p.width) Object.assign(pg.style, { left: `${p.x - g}px`, width: `${g}px`, top: "118px", bottom: `${bottom}px` });
+    const d = r.dock && r.dock.rect && r.dock.rect.height ? r.dock.rect : null;
+    // The panel's grip ends where the dock's gutter starts.
+    const above = d ? window.innerHeight - d.y + g : bottom;
+    if (p && p.width) Object.assign(pg.style, { left: `${p.x - g}px`, width: `${g}px`, top: "118px", bottom: `${above}px` });
+    const dg = $("grip-dock");
+    dg.hidden = !d;
+    if (d) Object.assign(dg.style, { left: `${d.x}px`, width: `${d.width}px`, top: `${d.y - g}px`, height: `${g}px` });
+    $("opt-dock").checked = Boolean(r.dock && r.dock.on);
     $("opt-panel").checked = !(p && p.collapsed);
     $("opt-taskbar").checked = Boolean(r.taskbar && r.taskbar.on);
     $("opt-taskbar").parentElement.title = r.taskbar && r.taskbar.status === "unavailable"

@@ -57,6 +57,7 @@ const extensions = require("./browser-extensions.cjs");
 const overlayMod = require("./browser-overlay.cjs");
 const deskTenant = require("./desk-tenant.cjs");
 const tabDiscard = require("./tab-discard.cjs");
+const terminalWindow = require("./terminal-window.cjs");
 let knowledgeImpl = null;
 function knowledgeClient() {
   if (!knowledgeImpl) knowledgeImpl = require("./knowledge-client.cjs").createKnowledgeClient();
@@ -162,6 +163,14 @@ let taskbarOpen = false;
 /** The taskbar page's open/closed signal, rate-limited (browser-taskbar.cjs createOpenSignal). */
 let openSignal = null;
 let taskbarStatus = "off";
+/**
+ * The terminal dock (owner, 2026-10-28): aither://terminal/?dock=1 along the bottom of
+ * every page, above the taskbar. It IS the terminal page, so terminal-window.cjs's
+ * sender check passes it and nothing else. "off" | "loading" | "ok" | "unavailable".
+ */
+let dockView = null;
+let dockStatus = "off";
+const DOCK_URL = "aither://terminal/?dock=1";
 /**
  * Popped-out tabs (owner, 2026-10-04: "pop out any screen into its own floating window").
  * tab id -> its own BrowserWindow. The tab stays in the TabSet (same owner, same agent
@@ -473,6 +482,7 @@ function layout() {
     // over the page (the page is still there underneath; closing it shrinks back).
     placeView(taskbarView, shown, taskbarOpen ? taskbar.expandedRect(rects) : rects.taskbar);
   }
+  if (alive(dockView)) placeView(dockView, !dragging && rects.dock.height > 0, rects.dock);
   // The docked avatar follows the rail only when the rail really moved.
   const key = JSON.stringify([rects.avatar || null, rects.page, win.getContentBounds()]);
   const layoutChanged = key !== lastLayoutKey;
@@ -730,6 +740,103 @@ function currentRectsFor(bounds, docked) {
     collapsed: p.railCollapsed, docked, chromeHeight: CHROME_HEIGHT, railWidth: p.railWidth,
     panelWidth: p.panelWidth, panelCollapsed: p.panelCollapsed,
     taskbarHeight: stripShown() ? rail.TASKBAR_HEIGHT : 0,
+    dockHeight: dockShown() ? rail.dockHeightFor(p) : 0,
+  });
+}
+
+/** The dock takes its strip: enabled, and its page did not fail to load. */
+function dockShown() {
+  return Boolean(getPrefs().dock) && dockStatus !== "unavailable";
+}
+
+/** Ctrl+` (Cmd+` on macOS), no other modifier: the terminal dock's key (VS Code's). Pure. */
+function isDockKey(input) {
+  if (!input || input.type !== "keyDown" || input.alt || input.shift) return false;
+  if (!(input.control || input.meta)) return false;
+  return input.code === "Backquote" || input.key === "`";
+}
+
+/** Tell the dock page whether it is open, so its strip draws the right chevron. */
+function sendDockState() {
+  if (!alive(dockView)) return;
+  const p = getPrefs();
+  try {
+    dockView.webContents.send("desk:terminal-dock-state", { open: Boolean(p.dockOpen), height: p.dockHeight });
+  } catch { /* the page is going away */ }
+}
+
+/** Open, close (or flip, when `open` is undefined) the dock; opening focuses it. */
+function setDockOpen(open) {
+  const want = open === undefined ? !getPrefs().dockOpen : Boolean(open);
+  setPrefs({ dockOpen: want, dock: true });
+  ensureDock();
+  layout();
+  pushState();
+  sendDockState();
+  if (want && alive(dockView)) dockView.webContents.focus();
+  return { ok: true, open: want };
+}
+
+/** What the dock page may ask of the window (terminal-window.cjs desk:terminal-dock). */
+function dockAction(action, arg) {
+  if (action === "toggle") return setDockOpen(undefined);
+  if (action === "open") return setDockOpen(true);
+  if (action === "close") return setDockOpen(false);
+  if (action === "state") return { ok: true, open: Boolean(getPrefs().dockOpen) };
+  if (action === "popout") {
+    // The session moves to the full aither://terminal tab; the dock keeps its strip.
+    const id = String(arg || "");
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(id)) return { ok: false, error: "bad session id" };
+    return openInternalUrl(`aither://terminal/?attach=${encodeURIComponent(id)}`)
+      ? { ok: true } : { ok: false, error: "the terminal page is not available" };
+  }
+  return { ok: false, error: `no dock action ${action}` };
+}
+terminalWindow.setDockHost({ run: dockAction });
+
+/** The terminal dock along the bottom (an aither://terminal page), created once per window. */
+function ensureDock() {
+  if (!win || win.isDestroyed() || alive(dockView) || !getPrefs().dock) return;
+  ensureInternalSession();
+  dockView = createPageView("internal", { paneId: "terminal", partition: null }, null);
+  dockStatus = "loading";
+  const view = dockView;
+  const wc = view.webContents;
+  // The dock never leaves the terminal page: a web link opens as a tab.
+  wc.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(String(url))) openTab("you", url, { activate: true });
+    return { action: "deny" };
+  });
+  wc.on("will-navigate", (event, url) => {
+    if (!String(url).startsWith("aither://terminal/")) event.preventDefault();
+  });
+  wc.on("before-input-event", (event, input) => {
+    if (isDockKey(input)) { event.preventDefault(); setDockOpen(undefined); }
+  });
+  wc.on("did-finish-load", () => { dockStatus = "ok"; sendDockState(); });
+  wc.on("did-fail-load", (_e, code, desc, _url, isMain) => {
+    if (!isMain || code === -3) return;
+    console.warn(`[desk] terminal dock did not load: ${desc} (${code})`);
+    dockStatus = "unavailable";
+    layout();
+    pushState();
+  });
+  wc.on("render-process-gone", () => {
+    // A crashed dock comes back rather than leaving a hole above the taskbar.
+    if (dockView !== view) return;
+    try { win.contentView.removeChildView(view); } catch { /* already detached */ }
+    dockView = null;
+    dockStatus = "off";
+    setTimeout(() => { ensureDock(); layout(); }, 1000);
+  });
+  win.contentView.addChildView(view);
+  // The taskbar's menus open upward over the dock: keep the taskbar on top.
+  if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
+  void loadInView(view, DOCK_URL).catch(() => {
+    if (dockView !== view) return;
+    dockStatus = "unavailable";
+    layout();
+    pushState();
   });
 }
 
@@ -765,6 +872,7 @@ function railState() {
     gutter: rail.GUTTER,
     panel: rects ? { x: rects.panel.x, width: rects.panel.width, collapsed: p.panelCollapsed } : null,
     taskbar: { on: p.taskbar, status: taskbarStatus, height: rects ? rects.taskbar.height : 0, owner: currentStripOwner() },
+    dock: { on: p.dock, open: p.dockOpen, status: dockStatus, rect: rects ? rects.dock : null },
     collapsedSections: p.collapsedSections,
     docked,
     slot: rects ? rects.avatar : null,
@@ -1367,6 +1475,12 @@ function wirePage(wc, id) {
       setOverlay(!getPrefs().overlay);
       return;
     }
+    // Ctrl+`: the terminal dock, from any tab.
+    if (isDockKey(input)) {
+      event.preventDefault();
+      setDockOpen(undefined);
+      return;
+    }
     // Ctrl+K: awsh from any tab (os-command). Console pages keep their own palette key.
     if (isAwshKey(input) && kindOf() !== "internal") {
       event.preventDefault();
@@ -1453,6 +1567,9 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   });
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event) => event.preventDefault());
+  win.webContents.on("before-input-event", (event, input) => {
+    if (isDockKey(input)) { event.preventDefault(); setDockOpen(undefined); }
+  });
 
   tabs = new TabSet();
   panelView = createAssistantPanel(WebContentsView);
@@ -1464,6 +1581,7 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     win.on(evt, () => notifyGeometry(evt));
   }
   win.once("ready-to-show", () => {
+    ensureDock();
     ensureTaskbar();
     layout();
     win.show();
@@ -1481,9 +1599,11 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     discarded.clear();
     shownAt.clear();
     lastLayoutKey = "";
-    for (const view of [...views.values(), panelView, taskbarView]) {
+    for (const view of [...views.values(), panelView, taskbarView, dockView]) {
       if (alive(view)) view.webContents.close();
     }
+    dockView = null;
+    dockStatus = "off";
     taskbarView = null;
     taskbarOpen = false;
     taskbarStatus = "off";
@@ -1894,7 +2014,23 @@ function wireIpc() {
       return setPrefs({ collapsedSections: [...folded] }) && relayout();
     }
     if (action === "reset-layout") return setPrefs({ railWidth: null, panelWidth: null, railCollapsed: false,
-      panelCollapsed: false, taskbar: true, collapsedSections: [] }) && relayout();
+      panelCollapsed: false, taskbar: true, collapsedSections: [], dock: true, dockOpen: false, dockHeight: null })
+      && (ensureDock(), relayout());
+    // The terminal dock: on/off for good, open/closed, and a drag of its top edge.
+    if (action === "dock-on") {
+      setPrefs({ dock: Boolean(arg) });
+      if (arg) ensureDock();
+      else if (alive(dockView)) placeView(dockView, false, null);
+      return relayout();
+    }
+    if (action === "dock") return setDockOpen(arg == null ? undefined : Boolean(arg));
+    if (action === "dock-drag") {
+      const bounds = win.getContentBounds();
+      setPrefs(rail.dockHeightFromDrag(Number(arg), { height: bounds.height,
+        taskbarHeight: stripShown() ? rail.TASKBAR_HEIGHT : 0 }));
+      sendDockState();
+      return relayout();
+    }
     // A gutter drag: "drag" true/false brackets it, "rail-width"/"panel-width" carry the size.
     if (action === "drag") {
       dragging = Boolean(arg);
@@ -2242,6 +2378,9 @@ module.exports = {
   /** awsh from anywhere: raise Online and open awsh there (Ctrl+K in the browser). */
   openAwsh,
   isAwshKey,
+  /** Ctrl+`: the terminal dock; and the dock page's verbs (open/close/toggle/popout). */
+  isDockKey,
+  dockAction,
   awconnectDeskSession,
   /** Read the selection, else the page, aloud (the Voice section's Read aloud). */
   readAloud,

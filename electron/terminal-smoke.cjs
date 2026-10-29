@@ -74,6 +74,22 @@ app.whenReady().then(async () => {
     await client.input(fresh.id, "echo desk-smoke-42\r");
     const echoed = await until(wc, `((document.querySelector(".pane:not([hidden]) .xterm-rows") || {}).textContent || "").includes("desk-smoke-42") || null`, 30000);
     expect("typed input round-trips through the pty to the screen", Boolean(echoed));
+
+    // The dock (?dock=1) MIRRORS the daemon: a session it did not start is a tab in its
+    // strip within one poll, and a click attaches it with the scrollback replayed.
+    const dock = new BrowserWindow({ show: false, width: 1100, height: 320,
+      webPreferences: internal.tabPreferences("internal", { webPartition: "persist:terminal-smoke" }) });
+    await dock.loadURL("aither://terminal/?dock=1");
+    const dwc = dock.webContents;
+    expect("the dock page is in dock mode", await dwc.executeJavaScript(`document.body.classList.contains("dock")`) === true);
+    const mirrored = await until(dwc, `[...document.querySelectorAll(".tab.mirror")].some((t) => t.title.includes(${JSON.stringify(fresh.harness)})) || null`, 10000);
+    expect("the dock mirrors a session started elsewhere", Boolean(mirrored));
+    const summary = await dwc.executeJavaScript(`document.getElementById("summary").textContent`);
+    expect("the strip counts running sessions", /running/.test(summary), summary);
+    await dwc.executeJavaScript(`document.querySelector(".tab.mirror").click()`);
+    const replay = await until(dwc, `((document.querySelector(".pane:not([hidden]) .xterm-rows") || {}).textContent || "").includes("desk-smoke-42") || null`, 20000);
+    expect("attaching from the dock replays the session's scrollback", Boolean(replay));
+    dock.destroy();
     await wc.executeJavaScript(`document.querySelector(".tab .x").click()`);
     await sleep(2500);
     const after = ((await client.list()).sessions || []).find((s) => s.id === fresh.id);

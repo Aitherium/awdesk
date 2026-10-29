@@ -26,3 +26,29 @@ test("every channel refuses another sender before touching the client", async ()
   assert.equal(ok.ok, true);
   assert.equal(touched, 1);
 });
+
+test("the dock's verbs reach the browser window only from the terminal page", async () => {
+  const runs = [];
+  const host = { run: (action, arg) => { runs.push([action, arg]); return { ok: true }; } };
+  const handlers = terminalHandlers({}, { dock: () => host });
+  const refused = await handlers["desk:terminal-dock"]({ sender: sender("https://example.com/") }, "toggle");
+  assert.equal(refused.ok, false);
+  assert.equal(runs.length, 0);
+  const ok = await handlers["desk:terminal-dock"]({ sender: sender("aither://terminal/?dock=1") }, "popout", "abc");
+  assert.equal(ok.ok, true);
+  assert.deepEqual(runs, [["popout", "abc"]]);
+  const none = terminalHandlers({}, { dock: () => null });
+  const lone = await none["desk:terminal-dock"]({ sender: sender("aither://terminal/") }, "open");
+  assert.equal(lone.ok, false, "a terminal page with no browser window has no dock to drive");
+});
+
+test("Ctrl+` (or Cmd+`) alone toggles the dock; popout refuses a bad id", () => {
+  const bw = require("./browser-window.cjs");
+  assert.equal(bw.isDockKey({ type: "keyDown", control: true, code: "Backquote", key: "`" }), true);
+  assert.equal(bw.isDockKey({ type: "keyDown", meta: true, key: "`" }), true);
+  assert.equal(bw.isDockKey({ type: "keyDown", control: true, shift: true, code: "Backquote" }), false);
+  assert.equal(bw.isDockKey({ type: "keyUp", control: true, code: "Backquote" }), false);
+  assert.equal(bw.isDockKey({ type: "keyDown", code: "Backquote" }), false);
+  assert.equal(bw.dockAction("popout", "../../etc").ok, false);
+  assert.equal(bw.dockAction("rm -rf").ok, false);
+});

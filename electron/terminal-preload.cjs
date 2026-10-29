@@ -25,6 +25,15 @@ contextBridge.exposeInMainWorld("aitherTerminal", {
   close: (id) => ipcRenderer.invoke("desk:terminal-close", String(id)),
   attach: (id, since) => ipcRenderer.invoke("desk:terminal-attach", String(id), Number(since) || 0),
   detach: (id) => ipcRenderer.invoke("desk:terminal-detach", String(id)),
+  external: () => ipcRenderer.invoke("desk:terminal-external"),
+  resume: (id, cwd) => ipcRenderer.invoke("desk:terminal-resume", String(id), String(cwd || "")),
+  /** The browser's bottom dock: "open" | "close" | "toggle" | "state" | "popout" (arg = session id). */
+  dock: (action, arg) => ipcRenderer.invoke("desk:terminal-dock", String(action), arg == null ? null : String(arg)),
+  onDockState: (listener) => {
+    const handler = (_event, s) => listener({ open: Boolean(s && s.open) });
+    ipcRenderer.on("desk:terminal-dock-state", handler);
+    return () => ipcRenderer.off("desk:terminal-dock-state", handler);
+  },
   onEvent: (listener) => {
     const handler = (_event, id, payload) => listener(String(id), payload);
     ipcRenderer.on("desk:terminal-event", handler);

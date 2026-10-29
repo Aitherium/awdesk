@@ -44,11 +44,35 @@
   #empty[hidden] { display: none; }
   #empty b { color: var(--fg); }
   #status { position: absolute; right: 10px; bottom: 6px; font-size: 11px; color: var(--destructive); }
+  /* ?dock=1: the browser's bottom dock. Closed it is only this strip (32 px, browser-rail
+     DOCK_STRIP_HEIGHT): every daemon session as a tab, the running count, the toggle. */
+  .docktools { display: none; }
+  body.dock .strip { height: 32px; align-items: center; padding: 0 6px; gap: 3px; border-top: 1px solid var(--line); }
+  body.dock .tab { height: 24px; border-radius: 6px; border: 1px solid transparent; font-size: 11.5px; max-width: 200px; }
+  body.dock .tab.active { border-color: var(--line); background: var(--surface-900, var(--panel)); }
+  body.dock .tab.mirror { opacity: .72; }
+  body.dock .tab.mirror .dot { background: transparent; border: 1px solid var(--success, #3c9); }
+  body.dock #add { height: 24px; margin: 0; padding: 0 8px; font-size: 11.5px; }
+  body.dock .docktools { display: flex; align-items: center; gap: 4px; margin-left: auto; flex: none; position: sticky; right: 0;
+    background: var(--bg-deep, var(--bg)); padding-left: 6px; }
+  body.dock .docktools button { height: 24px; min-width: 26px; padding: 0 6px; border-radius: 6px; border: 1px solid transparent;
+    background: none; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; }
+  body.dock .docktools button:hover:not(:disabled) { color: var(--fg); border-color: var(--line); }
+  body.dock .docktools button:disabled { opacity: .35; cursor: default; }
+  body.dock #summary { color: var(--muted); font-size: 11px; white-space: nowrap; padding: 0 6px; }
+  body.dock #menu { top: 34px; }
+  body.dock #empty { font-size: 12px; }
 </style>
 </head>
 <body>
   <div class="strip" id="strip" role="tablist" aria-label="Terminal sessions">
     <button id="add" title="New session: a shell, Claude Code, Aither, Codex...">+ New</button>
+    <div class="docktools">
+      <span id="summary" role="status"></span>
+      <button id="dock-detach" title="Detach: stop showing this session here (it keeps running)" aria-label="Detach">&#9167;</button>
+      <button id="dock-pop" title="Pop out to a full terminal tab" aria-label="Pop out to a full terminal tab">&#8599;</button>
+      <button id="dock-toggle" title="Open the terminal dock (Ctrl+`)" aria-label="Open or close the terminal dock">&#9652;</button>
+    </div>
   </div>
   <div id="menu" hidden role="menu"></div>
   <div id="panes">
@@ -57,6 +81,7 @@
   </div>
   <script src="vendor/xterm/xterm.js"></script>
   <script src="vendor/xterm/addon-fit.js"></script>
+  <script src="terminal-dock-model.js"></script>
   <script src="terminal-page.js"></script>
 </body>
 </html>

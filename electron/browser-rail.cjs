@@ -37,6 +37,17 @@ const PANEL_MAX = 640;
 const GUTTER = 6;
 /** The living desktop's taskbar along the bottom (Veil's <Taskbar/>, EDGE_ROOT h-14). */
 const TASKBAR_HEIGHT = 56;
+/**
+ * The terminal dock (owner, 2026-10-28: "an always active bottom 'terminal' bar"): an
+ * aither://terminal/?dock=1 view under the page and panel, above the taskbar. Closed it
+ * is still a strip -- the session tabs and the running count -- so it never disappears.
+ */
+const DOCK_STRIP_HEIGHT = 32;
+const DOCK_MIN = 120;
+const DOCK_MAX = 1200;
+const DOCK_HEIGHT = 300;
+/** What the page keeps when the dock is dragged tall: the dock gives way, not the page. */
+const PAGE_MIN_HEIGHT = 120;
 /** The brand row: the Aither button that opens THE menu (the tray's), and the collapse toggle. */
 const BRAND_HEIGHT = 44;
 /** The avatar's slot, portrait like the floating window's default (430 x 680). */
@@ -343,6 +354,10 @@ function normalizeLayout(raw = {}) {
     railCollapsed: Boolean(r.railCollapsed),
     panelCollapsed: Boolean(r.panelCollapsed),
     taskbar: r.taskbar !== false,
+    // The terminal dock: open (dragged height) or its strip; present unless switched off.
+    dock: r.dock !== false,
+    dockOpen: r.dockOpen === true,
+    dockHeight: clamp(r.dockHeight, DOCK_MIN, DOCK_MAX, DOCK_HEIGHT),
     // AitherOS Online drawn over web pages (browser-overlay.cjs): off until asked for.
     overlay: r.overlay === true,
     collapsedSections: Array.isArray(r.collapsedSections)
@@ -350,6 +365,22 @@ function normalizeLayout(raw = {}) {
     // Where each Online app opens: tab (default) | window | desktop (launch-modes.cjs).
     launchModes: launchModes.normalizeLaunchModes(r.launchModes),
   };
+}
+
+/** The dock's wanted height from the owner's layout: 0 off, the strip closed, the drag open. */
+function dockHeightFor({ dock = true, dockOpen = false, dockHeight = DOCK_HEIGHT } = {}) {
+  if (!dock) return 0;
+  return dockOpen ? clamp(dockHeight, DOCK_MIN, DOCK_MAX, DOCK_HEIGHT) : DOCK_STRIP_HEIGHT;
+}
+
+/**
+ * A drag of the dock's top edge to `pointerY` (content coordinates): the height it asks
+ * for, before railLayout fits it. Dragged below the strip = closed.
+ */
+function dockHeightFromDrag(pointerY, { height, taskbarHeight = 0 }) {
+  const want = Math.round(height - taskbarHeight - Number(pointerY || 0));
+  if (!Number.isFinite(want) || want < DOCK_MIN / 2) return { dockOpen: false };
+  return { dockOpen: true, dockHeight: clamp(want, DOCK_MIN, DOCK_MAX, DOCK_HEIGHT) };
 }
 
 function railWidth(collapsed, width = RAIL_WIDTH) {
@@ -360,20 +391,30 @@ function railWidth(collapsed, width = RAIL_WIDTH) {
  * Where every view goes inside the window's content area.
  *
  *   rail | gutter | page | gutter | panel     (top: chrome, bottom: taskbar)
+ *        |        ------ gutter ------
+ *        |        dock (page + panel width)
  *
+ * The dock sits under the page AND the panel (VS Code's bottom panel), above the
+ * taskbar; the rail keeps its full height. A tall dock gives way before the page
+ * drops under PAGE_MIN_HEIGHT.
  * The gutters are the chrome page's own pixels: the drag handles live there.
  *
  * @param {{width: number, height: number}} content the window's content size
  */
 function railLayout(content, { collapsed = false, docked = false, chromeHeight, panelWidth = 340,
-  railWidth: wantRail = RAIL_WIDTH, panelCollapsed = false, taskbarHeight = 0 }) {
+  railWidth: wantRail = RAIL_WIDTH, panelCollapsed = false, taskbarHeight = 0, dockHeight = 0 }) {
   const width = Math.max(0, Math.floor(content.width || 0));
   const height = Math.max(0, Math.floor(content.height || 0));
   const railW = Math.min(railWidth(collapsed, wantRail), width);
   const rest = Math.max(0, width - railW - GUTTER);
   const panelW = panelCollapsed ? 0 : Math.min(clamp(panelWidth, PANEL_MIN, PANEL_MAX, 340), Math.floor(rest / 2));
   const taskH = Math.min(Math.max(0, taskbarHeight), Math.max(0, height - chromeHeight));
-  const bodyH = Math.max(0, height - chromeHeight - taskH);
+  const room = Math.max(0, height - chromeHeight - taskH);
+  const wantDock = Math.max(0, Math.floor(Number(dockHeight) || 0));
+  // The strip always fits when there is room for it; an open dock stops at the page's floor.
+  const dockH = wantDock ? Math.max(Math.min(wantDock, room - GUTTER - PAGE_MIN_HEIGHT),
+    Math.min(DOCK_STRIP_HEIGHT, Math.max(0, room - GUTTER)), 0) : 0;
+  const bodyH = Math.max(0, room - (dockH ? dockH + GUTTER : 0));
   const pageX = railW + GUTTER;
   const pageW = Math.max(0, width - pageX - (panelW ? panelW + GUTTER : 0));
   return {
@@ -381,6 +422,7 @@ function railLayout(content, { collapsed = false, docked = false, chromeHeight, 
     page: { x: pageX, y: chromeHeight, width: pageW, height: bodyH },
     panel: { x: width - panelW, y: chromeHeight, width: panelW, height: bodyH },
     taskbar: { x: 0, y: height - taskH, width, height: taskH },
+    dock: { x: pageX, y: height - taskH - dockH, width: Math.max(0, width - pageX), height: dockH },
     avatar: avatarSlot({ width, height: height - taskH }, { collapsed, docked, railWidth: railW }),
   };
 }
@@ -435,6 +477,13 @@ module.exports = {
   RAIL_MAX,
   RAIL_MIN,
   TASKBAR_HEIGHT,
+  DOCK_STRIP_HEIGHT,
+  DOCK_MIN,
+  DOCK_MAX,
+  DOCK_HEIGHT,
+  PAGE_MIN_HEIGHT,
+  dockHeightFor,
+  dockHeightFromDrag,
   normalizeLayout,
   APP_ROWS,
   AVATAR_SLOT_HEIGHT,

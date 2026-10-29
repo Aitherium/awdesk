@@ -73,6 +73,21 @@ function tabRow(s) {
   };
 }
 
+/**
+ * A /sessions/unified row the dock may offer to RESUME: a Claude Code tab the daemon
+ * discovered (origin "discovered"), not one it runs. null for anything else.
+ */
+function externalRow(s) {
+  if (!s || s.origin !== "discovered" || s.harness !== "claude" || !validId(s.id)) return null;
+  return {
+    id: String(s.id),
+    label: String(s.name || s.title || s.id).slice(0, 120),
+    cwd: String(s.cwd || ""),
+    status: String(s.status || ""),
+    lastActivityAt: Number(s.last_activity_at) || 0,
+  };
+}
+
 function createTerminalClient({ fetchImpl = globalThis.fetch, base = DAEMON, token = harnessToken } = {}) {
   const headers = (json = false) => {
     const h = { authorization: `Bearer ${typeof token === "function" ? token() : token}` };
@@ -117,6 +132,27 @@ function createTerminalClient({ fetchImpl = globalThis.fetch, base = DAEMON, tok
       if (!r.ok) return r;
       const rows = Array.isArray(r.data) ? r.data : (r.data && r.data.sessions) || [];
       return { ok: true, sessions: rows.map(tabRow).filter((s) => validId(s.id)) };
+    },
+    /**
+     * Claude Code tabs the daemon DISCOVERED running elsewhere (Windows Terminal, an IDE).
+     * Their pty is not the daemon's, so they cannot be typed into or mirrored; what a
+     * terminal tab CAN do is resume one (`claude --resume <id>` under the daemon).
+     */
+    async external() {
+      const r = await call("GET", "/sessions/unified", undefined, { timeoutMs: 8000 });
+      if (!r.ok) return r;
+      const rows = (r.data && Array.isArray(r.data.sessions)) ? r.data.sessions : [];
+      return { ok: true, sessions: rows.map(externalRow).filter(Boolean) };
+    },
+    /** Reopen a Claude Code session by its own id, as a daemon pty tab (claude-tty). */
+    async resume(id, { cwd = "", rows = 30, cols = 100 } = {}) {
+      if (!validId(id)) return { ok: false, error: "bad session id" };
+      const r = await call("POST", "/sessions", { harness: "claude-tty", resume_session_id: id,
+        cwd: String(cwd || ""), title: "" }, { timeoutMs: 60000 });
+      if (!r.ok) return r;
+      const session = tabRow(r.data || {});
+      if (validId(session.id)) await call("POST", `/sessions/${session.id}/resize`, { rows, cols }).catch(() => {});
+      return { ok: true, session };
     },
     async create({ harness = "terminal", cwd = "", title = "", rows = 30, cols = 100 } = {}) {
       if (!HARNESS_ORDER.includes(harness)) return { ok: false, error: `not a terminal harness: ${harness}` };
@@ -179,4 +215,4 @@ function createTerminalClient({ fetchImpl = globalThis.fetch, base = DAEMON, tok
   };
 }
 
-module.exports = { HARNESS_LABELS, HARNESS_ORDER, createSseParser, createTerminalClient, tabRow, validId };
+module.exports = { HARNESS_LABELS, HARNESS_ORDER, createSseParser, createTerminalClient, externalRow, tabRow, validId };

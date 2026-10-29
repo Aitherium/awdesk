@@ -73,3 +73,70 @@ test("a dead daemon is an answer, not a throw", async () => {
   assert.equal(r.ok, false);
   assert.match(r.error, /did not answer/);
 });
+
+test("external: only DISCOVERED Claude Code tabs, never a daemon's own or another harness", async () => {
+  const { impl } = fakeFetch({ "GET /sessions/unified": { body: { sessions: [
+    { id: "ext-1", origin: "discovered", harness: "claude", name: "repo dev 10:01", cwd: "C:\r", status: "idle", last_activity_at: 5 },
+    { id: "own-1", origin: "daemon", harness: "claude", title: "mine" },
+    { id: "ext-g", origin: "discovered", harness: "gemini" },
+    { id: "bad id!", origin: "discovered", harness: "claude" },
+  ] } } });
+  const c = createTerminalClient({ fetchImpl: impl, base: "http://d", token: "t" });
+  const r = await c.external();
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.sessions, [{ id: "ext-1", label: "repo dev 10:01", cwd: "C:\r", status: "idle", lastActivityAt: 5 }]);
+});
+
+test("resume: a claude-tty pty session carrying the old id, sized like a new tab", async () => {
+  const { impl, calls } = fakeFetch({
+    "POST /sessions": { body: { id: "new1", harness: "claude-tty", state: "ready" } },
+    "POST /sessions/new1/resize": { body: {} },
+  });
+  const c = createTerminalClient({ fetchImpl: impl, base: "http://d", token: "t" });
+  const r = await c.resume("ext-1", { cwd: "C:\r" });
+  assert.equal(r.ok, true);
+  assert.equal(r.session.id, "new1");
+  assert.deepEqual(calls[0].body, { harness: "claude-tty", resume_session_id: "ext-1", cwd: "C:\r", title: "" });
+  assert.equal((await c.resume("../x")).ok, false);
+});
+
+/** terminal-dock-model.js is a page script (the package is ESM, so no require): load it as the page does. */
+function dockModel() {
+  const vm = require("node:vm");
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const self = {};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "terminal-dock-model.js"), "utf8"), { self });
+  return self.TerminalDockModel;
+}
+
+test("dock model: the strip mirrors the daemon, running first, without reshuffling", () => {
+  const model = dockModel();
+  const rows = [
+    { id: "b", state: "exited", createdAt: 1 },
+    { id: "c", state: "ready", createdAt: 3 },
+    { id: "a", state: "running", createdAt: 2 },
+  ];
+  assert.deepEqual(model.stripOrder(rows, []).map((s) => s.id), ["a", "c"], "an exited session nobody shows drops out");
+  assert.deepEqual(model.stripOrder(rows, new Set(["b"])).map((s) => s.id), ["a", "c", "b"], "a shown exited tab stays, last");
+  assert.equal(model.runningCount(rows), 2);
+  assert.equal(model.summary(rows), "2 running");
+  assert.equal(model.summary([]), "no sessions");
+  assert.equal(model.summary(rows, { daemonUp: false }), "awsh daemon offline");
+});
+
+test("dock model: a re-read reports what changed, and nothing when nothing did", () => {
+  const model = dockModel();
+  const prev = [{ id: "a", state: "running", label: "Shell" }, { id: "b", state: "running", label: "Claude" }];
+  assert.equal(model.diffSessions(prev, prev.map((s) => ({ ...s }))).same, true);
+  const d = model.diffSessions(prev, [{ id: "a", state: "exited", label: "Shell" }, { id: "n", state: "running", label: "new" }]);
+  // JSON: the arrays come from the vm realm, and deepEqual compares prototypes.
+  assert.deepEqual(JSON.parse(JSON.stringify([d.added, d.changed, d.removed, d.same])), [["n"], ["a"], ["b"], false]);
+});
+
+test("dock model: resume offers external tabs not already ours, newest first", () => {
+  const model = dockModel();
+  const ext = [{ id: "x", lastActivityAt: 1 }, { id: "y", lastActivityAt: 9 }, { id: "mine", lastActivityAt: 99 }];
+  assert.deepEqual(model.resumeChoices(ext, [{ id: "mine" }]).map((s) => s.id), ["y", "x"]);
+  assert.equal(model.resumeChoices(ext, [], 1).length, 1);
+});
