@@ -67,22 +67,27 @@ function runOnce(execFileImpl, file, argv, timeoutMs) {
  * `python -m adk.cli` ran fine. A launcher that will not START is now retried
  * through the interpreter -- the path awconnect-setup.cjs already uses.
  */
-async function runLink(args, { execFileImpl = execFile, bin = adkBin(), timeoutMs = 30000 } = {}) {
-  const argv = ["link", ...args, "--json"];
+async function runLink(args, opts = {}) {
+  return runAdk(["link", ...args, "--json"], opts);
+}
+
+/** Run `adk <argv>` (argv only, never a shell); resolves {ok, data, stdout} or {ok:false, error, stdout}. */
+async function runAdk(argv, { execFileImpl = execFile, bin = adkBin(), timeoutMs = 30000 } = {}) {
   let run = await runOnce(execFileImpl, bin, argv, timeoutMs);
   if (spawnFailed(run.error)) {
     run = await runOnce(execFileImpl, pythonBin(), ["-m", "adk.cli", ...argv], timeoutMs);
   }
   const { error, stdout, stderr } = run;
+  const out = String(stdout || "");
   const data = parseJson(stdout);
   if (data && typeof data === "object") {
     const ok = data.ok !== false;
-    return ok ? { ok: true, data } : { ok: false, data, error: data.error || "failed" };
+    return ok ? { ok: true, data, stdout: out } : { ok: false, data, error: data.error || "failed", stdout: out };
   }
   const why = error
     ? (error.code === "ENOENT" ? "adk is not installed or not on PATH" : String(error.message || error))
-    : "adk link returned no JSON";
-  return { ok: false, error: `${why}${stderr ? `: ${String(stderr).slice(-300)}` : ""}` };
+    : `adk ${argv[0]} returned no JSON`;
+  return { ok: false, error: `${why}${stderr ? `: ${String(stderr).slice(-300)}` : ""}`, stdout: out };
 }
 
 const linkStatus = (opts) => runLink(["status"], opts);
@@ -96,4 +101,4 @@ function linkPoll(deviceCode, opts) {
   return runLink(["poll", String(deviceCode)], opts);
 }
 
-module.exports = { runLink, linkStatus, linkStart, linkPoll, adkBin };
+module.exports = { runAdk, runLink, linkStatus, linkStart, linkPoll, adkBin };

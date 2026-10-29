@@ -2547,6 +2547,8 @@ module.exports = {
   /** Ctrl+`: the terminal dock; and the dock page's verbs (open/close/toggle/popout). */
   isDockKey,
   dockAction,
+  /** A linked phone opening one of the owner's tabs (phone-link.cjs tab.show). */
+  showTab: (id) => showTab(String(id || "")),
   awconnectDeskSession,
   /** Read the selection, else the page, aloud (the Voice section's Read aloud). */
   readAloud,

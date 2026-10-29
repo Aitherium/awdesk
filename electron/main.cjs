@@ -2942,7 +2942,8 @@ function trayTemplateNow() {
     ...spendTrayItems(latestSpend, () => openConsole("spend")),
     ...updateTrayItems(deskUpdater?.staged, deskUpdater?.kind, () => deskUpdater?.restartNow(),
       deskUpdater?.available, () => deskUpdater?.installNow()),
-    ...require("./desk-support.cjs").trayItems(deskSupport && (() => void deskSupport.openFeedback()))];
+    ...require("./desk-support.cjs").trayItems(deskSupport && (() => void deskSupport.openFeedback())),
+    ...phoneTrayRows()];
   if (statusRows.length && appGroupAt > 0) trayTemplate.splice(appGroupAt - 1, 0, ...statusRows);
   else trayTemplate.push(...statusRows);
   // Row 0: what only the owner can unblock ("Secret needed: <name> (from ...)").
@@ -4182,6 +4183,173 @@ function startKidDesk() {
     debugLog("kid desk tray unavailable", error?.message || error);
   }
   debugLog("kid desk mode on", kidDeskMode().source);
+}
+
+// ── Phone on the USB cable (owner, 2026-10-29) ──────────────────────────────
+// phone-usb.cjs sees the phone through adb; phone-link.cjs serves it one 127.0.0.1
+// server per cable, reversed onto the phone's 47937, behind the phone's own signed
+// device hello and the owner's one-time approval here. Every action below calls a
+// surface the desk already has; the allowlist is phone-link.cjs ACTIONS.
+let phoneUsb = null;
+let phoneLink = null;
+
+function phoneTrayRows() {
+  if (!phoneUsb || !phoneLink) return [];
+  return require("./phone-link.cjs").trayItems(phoneUsb.phones(), phoneLink.links(), {
+    use: (serial) => void usePhone(serial),
+    unlink: (serial) => void unlinkPhone(serial),
+    forget: (deviceId, serial) => { phoneLink.forget(deviceId); void unlinkPhone(serial); },
+  });
+}
+
+async function usePhone(serial) {
+  const phone = phoneUsb.phones().find((p) => p.serial === serial && p.state === "device");
+  if (!phone) return;
+  try {
+    const port = await phoneLink.openFor(serial, phone.model);
+    const rev = await phoneUsb.reverse(serial, port);
+    if (!rev.ok) throw new Error(`adb reverse failed: ${(rev.stderr || rev.error?.message || "").slice(0, 200)}`);
+    const launched = await phoneUsb.launch(serial);
+    if (!launched.ok) console.warn(`[desk] phone link: could not open Aither on the phone: ${launched.stderr.slice(0, 200)}`);
+  } catch (e) {
+    phoneLink.closeFor(serial);
+    dialog.showErrorBox("Phone link", String(e?.message || e));
+  }
+  if (tray) refreshTrayMenu();
+}
+
+async function unlinkPhone(serial) {
+  phoneLink.closeFor(serial);
+  await phoneUsb.unreverse(serial).catch(() => {});
+  if (tray) refreshTrayMenu();
+}
+
+function phoneLinkActions() {
+  const { clipboard } = require("electron");
+  const downloads = app.getPath("downloads");
+  const shelf = require("./phone-link.cjs").createFileShelf({
+    inbox: path.join(downloads, "From phone"), outbox: path.join(downloads, "To phone"),
+  });
+  const term = require("./terminal-client.cjs").createTerminalClient();
+  const agent = () => getCommandAgent(getFleetControl());
+  const tabs = () => (browserWindow.getState().tabs || []).map((t) => ({
+    id: t.id, by: t.by, kind: t.kind, label: t.label, title: t.title, url: t.url, active: Boolean(t.active),
+  }));
+  const ensureBrowser = () => {
+    if (!browserWindow.isBrowserWindowOpen()) browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
+  };
+  return {
+    state: async () => {
+      const sessions = await term.list();
+      return { ok: true, desktop: desktopStatus(), tabs: tabs(), terminals: sessions.ok ? sessions.sessions : [],
+        agent: agent().history(10) };
+    },
+    "desktop.show": async ({ surface = "overlay" }) => {
+      if (surface === "app") showDesktopApp();
+      else if (surface === "browser") ensureBrowser();
+      else {
+        const v = requestLivingDesktop();
+        if (!v.ok) return { ...v, ...desktopStatus() };
+      }
+      return { ok: true, ...desktopStatus() };
+    },
+    "desktop.hide": async () => { await hideOverlay(); return { ok: true, ...desktopStatus() }; },
+    "console.open": async ({ pane = null }) => ({ ok: openConsole(typeof pane === "string" ? pane : null) !== false }),
+    "tab.list": async () => ({ ok: true, tabs: tabs() }),
+    "tab.show": async ({ id }) => { ensureBrowser(); return browserWindow.showTab(id); },
+    "tab.open": async ({ url }) => {
+      const verdict = browserPolicy.sanitizeUrl(String(url || ""));
+      if (!verdict.ok) return { ok: false, error: verdict.reason };
+      browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
+      return { ok: true, url: verdict.url };
+    },
+    "terminal.list": () => term.list(),
+    "terminal.input": ({ id, text }) => term.input(String(id || ""), String(text ?? "")),
+    "terminal.show": async ({ id }) => { ensureBrowser(); return browserWindow.dockAction("popout", String(id || "")); },
+    // A window of recent output: the stream from `since`, for at most 1.5 s.
+    "terminal.read": async ({ id, since = 0 }) => {
+      const ctl = new AbortController();
+      const events = [];
+      const timer = setTimeout(() => ctl.abort(), 1500);
+      const r = await term.stream(String(id || ""), Number(since) || 0,
+        (e) => { if (events.length < 2000) events.push(e); }, ctl.signal);
+      clearTimeout(timer);
+      if (r && r.ok === false && !ctl.signal.aborted) return r;
+      return { ok: true, events };
+    },
+    "agent.send": async ({ text }) => {
+      const t = String(text || "").trim().slice(0, 8000);
+      if (!t) return { ok: false, error: "empty task" };
+      // started, not awaited: the phone watches with agent.history
+      void commandAction(t, { source: "phone" }).catch(() => {});
+      return { ok: true, started: true };
+    },
+    "agent.history": async ({ limit = 20 }) => agent().history(Math.min(Number(limit) || 20, 100)),
+    "command.list": async () => ({ ok: true, commands: commandRegistry.paletteRows(commandContext()) }),
+    "command.run": async ({ id, arg }) => {
+      const command = commandRegistry.byId(String(id || ""));
+      if (!command || !command.surfaces.includes("palette") || command.dynamic) return { ok: false, error: "unknown command" };
+      const verdict = await runCommand(command.id, arg, { surface: "phone" });
+      return { ok: true, id: command.id, ...(verdict && typeof verdict === "object" ? { verdict } : {}) };
+    },
+    "clipboard.get": async () => ({ ok: true, text: clipboard.readText().slice(0, 64 * 1024) }),
+    "clipboard.set": async ({ text }) => { clipboard.writeText(String(text ?? "").slice(0, 64 * 1024)); return { ok: true }; },
+    "file.send": async (a) => {
+      const r = shelf.send(a);
+      if (r.ok && Notification.isSupported()) new Notification({ title: "From your phone", body: r.saved }).show();
+      return r;
+    },
+    "file.list": async () => shelf.list(),
+    "file.get": async (a) => shelf.get(a),
+  };
+}
+
+function startPhoneLink() {
+  if (process.env.AWDESK_NO_PHONE_LINK === "1" || kidDeskMode().enabled) return;
+  const { createPhoneUsb } = require("./phone-usb.cjs");
+  const { createPhoneLink, adkEnrollment } = require("./phone-link.cjs");
+  const { runAdk } = require("./link-client.cjs");
+  const { defaultDeviceId } = require("./device-identity.cjs");
+  phoneLink = createPhoneLink({
+    dataDir: app.getPath("userData"),
+    deskId: () => kvLendRuntime?.identity?.enrolled()?.deviceId || defaultDeviceId(),
+    deskName: require("node:os").hostname(),
+    enrollment: (deviceId) => adkEnrollment(runAdk, deviceId),
+    approve: async ({ deviceId, model }) => {
+      const { response } = await dialog.showMessageBox({
+        type: "question",
+        buttons: ["Allow", "Not now"],
+        defaultId: 1,
+        cancelId: 1,
+        title: "Use this phone with Aither?",
+        message: `Let ${model} control this PC over the USB cable?`,
+        detail: `Device ${deviceId} is enrolled in your workspace. While the cable is in it can show and hide the desktop, open your tabs and terminal sessions, start agent tasks, and swap files and the clipboard. Forget it from the tray or the phone at any time.`,
+      });
+      return response === 0;
+    },
+    actions: phoneLinkActions(),
+    onChange: () => { if (tray) refreshTrayMenu(); },
+  });
+  phoneUsb = createPhoneUsb({
+    onChange: ({ added, removed }) => {
+      // the cable is out: that phone's server goes with it
+      for (const p of removed) phoneLink.closeFor(p.serial);
+      for (const p of added) {
+        if (p.state === "device" && Notification.isSupported()) {
+          const n = new Notification({ title: `Phone connected: ${p.model}`, body: "Click to use this phone with Aither" });
+          n.on("click", () => void usePhone(p.serial));
+          n.show();
+        }
+      }
+      if (tray) refreshTrayMenu();
+    },
+  });
+  phoneUsb.start();
+  app.on("before-quit", () => {
+    phoneUsb.stop();
+    for (const l of phoneLink.links()) void phoneUsb.unreverse(l.serial).catch(() => {});
+    phoneLink.closeAll();
+  });
 }
 
 function createTray() {
@@ -5821,6 +5989,11 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       console.warn(`[desk] lend memory unavailable: ${e && e.message}`);
     }
     handleProtocolArgv(process.argv);
+    try {
+      startPhoneLink();
+    } catch (e) {
+      console.warn(`[desk] phone link unavailable: ${e && e.message}`);
+    }
 
     // Self-update: the latest Aitherium/awdesk release, SHA-256 checked. An AppImage is
     // swapped in and relaunched (never in the middle of a local-stack install); Windows
