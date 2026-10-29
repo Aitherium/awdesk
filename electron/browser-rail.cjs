@@ -148,6 +148,10 @@ const PLATFORM_APPS = Object.freeze([
  * list; the workspace's own auth decides what each shows.
  */
 const WORKSPACE_PAGES = Object.freeze([
+  // Mail (MAIL-3, 2026-10-29): the desk had no mail surface at all. /workspace/mail is the
+  // route-map door onto the mail view (/workspace/one?tab=mail), which reads the owner's
+  // real mailbox (aitheros-mail); the site's RBAC decides who may open it.
+  Object.freeze({ path: "/workspace/mail", label: "Mail", hint: "Your inbox: the real mail, unread first" }),
   Object.freeze({ path: "/workspace/business", label: "BusinessPilot", hint: "Your business, run by agents" }),
   Object.freeze({ path: "/workspace/agents", label: "Managed agents", hint: "Your Aitherium-managed agents" }),
   Object.freeze({ path: "/workspace/fleet", label: "Fleet instances", hint: "Your agent fleet: instances and telemetry" }),

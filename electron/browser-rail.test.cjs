@@ -207,6 +207,16 @@ test("workspace: BusinessPilot, managed agents, fleet, nodes, devices -- fixed p
   assert.ok(sec && sec.rows.every((r) => r.kind === "workspace"));
 });
 
+test("mail: a Workspace row opens the mail view's route-map door (MAIL-3)", () => {
+  assert.equal(rail.isWorkspacePage("/workspace/mail"), true);
+  const sec = rail.railSections(PANES).find((s) => s.name === "Workspace");
+  const row = sec.rows.find((r) => r.label === "Mail");
+  assert.ok(row, "a Mail row in the Workspace section");
+  assert.deepEqual([row.kind, row.id], ["workspace", "/workspace/mail"]);
+  const locked = rail.railSections(PANES, { signedIn: false }).find((s) => s.name === "Workspace").rows.find((r) => r.label === "Mail");
+  assert.equal(locked.locked, true, "signed out, the row says sign in first");
+});
+
 test("security: Sentry (Online app) and Chaos (site page) in one section", () => {
   const sec = rail.railSections(PANES).find((s) => s.name === "Security");
   assert.deepEqual(sec.rows.map((r) => [r.kind, r.id]), [["online", "sentry"], ["workspace", "/chaos"]]);
