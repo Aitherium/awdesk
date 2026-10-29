@@ -250,3 +250,13 @@ test("the Online layer: over pages, or detached onto the desktop; either reads o
   assert.deepEqual([row({ overlayVisible: true }).on, row({ overlayVisible: true }).state], [true, "around you"]);
   assert.equal(row({}).detach, "overlay-detach");
 });
+
+test("the panel grip starts where the chrome ends, never at a hard-coded height", () => {
+  // The chrome shrank 118 -> 78 when the agent banner became a toolbar dot; a literal
+  // top left the panel's grab strip 40px below the panel's top edge.
+  const line = chromeHtml.split("\n").find((l) => l.includes("Object.assign(pg.style"));
+  assert.ok(line, "placeGrips still positions the panel grip");
+  assert.doesNotMatch(line, /top:\s*"\d+px"/);
+  const r = rail.railLayout({ width: 1600, height: 900 }, { chromeHeight: 78, panelWidth: 360 });
+  assert.equal(r.panel.y, 78);
+});
