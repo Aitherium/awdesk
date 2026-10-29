@@ -142,6 +142,7 @@ const PLATFORM_APPS = Object.freeze([
   Object.freeze({ app: "fleet", label: "Mission Control", hint: "Agents, endpoints, labs: the command deck" }),
   Object.freeze({ app: "netmon", label: "Network", hint: "Live health: is it reachable" }),
   Object.freeze({ app: "tunnel", label: "Tunnel", hint: "Your machines: shell, VPN, containers" }),
+  Object.freeze({ app: "devplane", label: "Dev", hint: "Tunnels, sandboxes, worktrees — each line a probe" }),
   Object.freeze({ app: "lockbox", label: "Lockbox", hint: "Secrets, keys, tokens: your vault" }),
   Object.freeze({ app: "connections", label: "Connections", hint: "GitHub, chat channels, keys, sign-in" }),
   Object.freeze({ app: "services", label: "Services", hint: "Where your services run" }),
