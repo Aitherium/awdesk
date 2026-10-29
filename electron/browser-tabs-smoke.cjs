@@ -108,8 +108,16 @@ app.whenReady().then(async () => {
   const closed = await agent("close_tab", { tab: a2.tab });
   expect("the agent closes its own tab", closed.ok, closed);
 
-  const chrome = await win.webContents.executeJavaScript("document.querySelectorAll('#tabs .tab').length + ':' + document.querySelectorAll('#tabs .tab.agent').length");
-  expect("the strip draws every tab and marks the agent's", chrome === `${tabs.snapshot().tabs.length}:${tabs.snapshot().tabs.filter((t) => t.by === "agent").length}`, chrome);
+  // The strip redraws on the next state push after close_tab resolves, so wait for it
+  // (up to 3 s) instead of reading the frame the close raced; a strip that never matches still fails.
+  const want = () => `${tabs.snapshot().tabs.length}:${tabs.snapshot().tabs.filter((t) => t.by === "agent").length}`;
+  const drawn = () => win.webContents.executeJavaScript("document.querySelectorAll('#tabs .tab').length + ':' + document.querySelectorAll('#tabs .tab.agent').length");
+  let chrome = await drawn();
+  for (let i = 0; i < 30 && chrome !== want(); i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    chrome = await drawn();
+  }
+  expect("the strip draws every tab and marks the agent's", chrome === want(), `${chrome} vs ${want()}`);
 
   server.close();
   console.log(fails.length ? `FAILED ${fails.length}` : "ALL PASS");
