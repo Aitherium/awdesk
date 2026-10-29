@@ -4323,13 +4323,32 @@ function startPhoneLink() {
         cancelId: 1,
         title: "Use this phone with Aither?",
         message: `Let ${model} control this PC over the USB cable?`,
-        detail: `Device ${deviceId} is enrolled in your workspace. While the cable is in it can show and hide the desktop, open your tabs and terminal sessions, start agent tasks, and swap files and the clipboard. Forget it from the tray or the phone at any time.`,
+        detail: `Device ${deviceId} is enrolled in your workspace. It can show and hide the desktop, open your tabs and terminal sessions, start agent tasks, and swap files and the clipboard: over the cable, and later over your mesh or the Aither tunnel (signed in as you). Forget it from the tray or the phone at any time.`,
       });
       return response === 0;
     },
     actions: phoneLinkActions(),
-    onChange: () => { if (tray) refreshTrayMenu(); },
+    onChange: () => { syncPhoneMesh(); if (tray) refreshTrayMenu(); },
   });
+  // The mesh/remote listener: only while a phone is approved and this PC has a tailnet
+  // address (the Aither tunnel reaches it there). AWDESK_PHONE_MESH=0 keeps it cable-only.
+  const { meshAddressOf } = require("./phone-link.cjs");
+  let meshBusy = false;
+  function syncPhoneMesh() {
+    if (meshBusy) return;
+    const addr = process.env.AWDESK_PHONE_MESH === "0" ? null : meshAddressOf(require("node:os").networkInterfaces());
+    const want = Boolean(addr && Object.keys(phoneLink.pinned()).length);
+    const have = phoneLink.meshAddress();
+    if (have && (!want || have.addr !== addr)) phoneLink.closeMesh();
+    else if (want && !have) {
+      meshBusy = true;
+      phoneLink.openMesh(addr)
+        .catch((e) => console.warn(`[desk] phone link: no mesh listener on ${addr}: ${e?.message || e}`))
+        .finally(() => { meshBusy = false; });
+    }
+  }
+  syncPhoneMesh();
+  setInterval(syncPhoneMesh, 60_000).unref?.();
   phoneUsb = createPhoneUsb({
     onChange: ({ added, removed }) => {
       // the cable is out: that phone's server goes with it

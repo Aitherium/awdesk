@@ -134,7 +134,7 @@ test("a browser page on the phone (it sends an Origin) gets nothing", async () =
   const { link } = setup();
   const port = await link.openFor("R5CT", "Pixel 8");
   assert.equal((await call(port, "/link/info", { method: "GET", origin: "https://evil.example" })).status, 403);
-  assert.equal((await call(port, "/link/info", { method: "GET" })).body.desk, DESK);
+  assert.equal((await call(port, "/link/info", { method: "GET" })).body.desk_id, DESK);
   link.closeAll();
 });
 
@@ -271,4 +271,101 @@ test("made-up device ids do not spawn an Identity lookup per request", async () 
   for (let i = 0; i < 5; i += 1) await call(port, "/link/hello", { header: hello(k, "phone-x") });
   assert.equal(lookups, 1);
   link.closeAll();
+});
+
+// ── mesh + remote: the same session rules, a different listener ───────────────
+
+async function meshCall(port, route, { header, body, via } = {}) {
+  const headers = { "content-type": "application/json" };
+  if (header) headers["x-aither-device-hello"] = header;
+  if (via) headers["x-aither-via"] = via;
+  const res = await fetch(`http://127.0.0.1:${port}${route}`, { method: route === "/link/info" ? "GET" : "POST", headers,
+    body: route === "/link/info" ? undefined : JSON.stringify(body || {}) });
+  return { status: res.status, transport: res.headers.get("x-aither-transport"), body: await res.json() };
+}
+
+test("mesh/remote: only a phone approved over the cable; never a new approval prompt", async () => {
+  const k = phoneKey();
+  const { link, approvals } = setup({ enrolled: { "phone-1": k.pub } });
+  const mport = await link.openMesh("127.0.0.1", 0);
+  const before = await meshCall(mport, "/link/hello", { header: hello(k, "phone-1") });
+  assert.equal(before.status, 403);
+  assert.match(before.body.error, /over the USB cable first/);
+  await settle();
+  assert.equal(approvals.length, 0);
+  // approve over the cable, then the mesh answers with the same session rules
+  const cport = await link.openFor("R5CT", "Pixel 8");
+  const cableHello = await call(cport, "/link/hello", { header: hello(k, "phone-1") });
+  assert.equal(cableHello.body.state, "pending");
+  await settle();
+  const approved = await call(cport, "/link/hello", { header: hello(k, "phone-1") });
+  assert.deepEqual(approved.body.mesh, { addr: "127.0.0.1", port: mport });
+  const m = await meshCall(mport, "/link/hello", { header: hello(k, "phone-1") });
+  assert.equal(m.body.state, "approved");
+  assert.equal(m.transport, "mesh");
+  const r = await meshCall(mport, "/link/do", { header: hello(k, "phone-1"), body: { action: "state" }, via: "tunnel" });
+  assert.equal(r.status, 200);
+  assert.equal(r.transport, "remote");
+  // the same allowlist on every transport
+  assert.equal((await meshCall(mport, "/link/do", { header: hello(k, "phone-1"), body: { action: "shell.exec" } })).status, 403);
+  const info = await meshCall(mport, "/link/info");
+  assert.equal(info.body.desk_id, DESK);
+  assert.equal(info.body.name, undefined, "the mesh does not tell strangers the PC's name");
+  link.closeAll();
+});
+
+test("remote session idles out; the phone must say hello again", async () => {
+  const k = phoneKey();
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "phone-link-"));
+  let t = Date.now();
+  const { IDLE_MS } = require("./phone-link.cjs");
+  const link = createPhoneLink({ dataDir, deskId: () => DESK, now: () => t, approve: async () => true,
+    enrollment: async () => ({ status: "enrolled", pub: k.pub }), actions: { state: async () => ({ ok: true }) } });
+  const cport = await link.openFor("R5CT", "Pixel 8");
+  const sign = () => hello(k, "phone-1", { ts: Math.floor(t / 1000) });
+  await call(cport, "/link/hello", { header: sign() });
+  await settle();
+  link.closeFor("R5CT");
+  const mport = await link.openMesh("127.0.0.1", 0);
+  await meshCall(mport, "/link/hello", { header: sign() });
+  assert.equal((await meshCall(mport, "/link/do", { header: sign(), body: { action: "state" } })).status, 200);
+  t += IDLE_MS + 1000;
+  const idle = await meshCall(mport, "/link/do", { header: sign(), body: { action: "state" } });
+  assert.equal(idle.status, 403);
+  assert.equal(idle.body.idle, true);
+  await meshCall(mport, "/link/hello", { header: sign() });
+  assert.equal((await meshCall(mport, "/link/do", { header: sign(), body: { action: "state" } })).status, 200);
+  link.closeAll();
+});
+
+test("revocation kills every transport at once", async () => {
+  const k = phoneKey();
+  const { link } = setup({ enrolled: { "phone-1": k.pub } });
+  const cport = await link.openFor("R5CT", "Pixel 8");
+  await call(cport, "/link/hello", { header: hello(k, "phone-1") });
+  await settle();
+  await call(cport, "/link/hello", { header: hello(k, "phone-1") });
+  const mport = await link.openMesh("127.0.0.1", 0);
+  await meshCall(mport, "/link/hello", { header: hello(k, "phone-1"), via: "tunnel" });
+  // forgotten from the phone over the REMOTE path
+  assert.equal((await meshCall(mport, "/link/revoke", { header: hello(k, "phone-1"), via: "tunnel" })).body.state, "forgotten");
+  assert.equal((await call(cport, "/link/do", { header: hello(k, "phone-1"), body: { action: "state" } })).status, 403);
+  assert.equal((await meshCall(mport, "/link/do", { header: hello(k, "phone-1"), body: { action: "state" } })).status, 403);
+  assert.deepEqual(link.sessions(), []);
+  link.closeAll();
+});
+
+test("meshAddressOf picks the tailnet (100.64.0.0/10) address only", () => {
+  const { meshAddressOf } = require("./phone-link.cjs");
+  assert.equal(meshAddressOf({ Ethernet: [{ family: "IPv4", address: "192.168.1.5" }],
+    Tailscale: [{ family: "IPv6", address: "fd7a::1" }, { family: "IPv4", address: "100.64.0.31" }] }), "100.64.0.31");
+  assert.equal(meshAddressOf({ x: [{ family: "IPv4", address: "100.128.0.1" }] }), null);
+  assert.equal(meshAddressOf({}), null);
+});
+
+test("the desk_id field name is the one the Android bridge reads (in the monorepo)", (t) => {
+  const java = path.join(__dirname, "..", "..", "..", "awdk", "android", "aither", "src", "com", "aitherium", "aither", "DeskLink.java");
+  if (!fs.existsSync(java)) return t.skip("not in the monorepo");
+  assert.match(fs.readFileSync(java, "utf8"), /DESK_ID_FIELD = "desk_id";/);
+  assert.match(fs.readFileSync(path.join(__dirname, "phone-link.cjs"), "utf8"), /\{ v: 1, desk_id: deskId\(\)/);
 });

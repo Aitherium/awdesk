@@ -38,6 +38,10 @@ const MAX_BODY = 64 * 1024;
 const MAX_FILE_BODY = 24 * 1024 * 1024;
 const RECHECK_MS = 10 * 60_000;
 const LOOKUP_TTL_MS = 60_000;
+/** The desk link on the tailnet (the phone's cable port + 1). */
+const MESH_PORT = 47938;
+/** A mesh/remote session with no call for this long must say hello again. */
+const IDLE_MS = 15 * 60_000;
 
 /** What a linked phone may do. The handler for each comes from main.cjs. */
 const ACTIONS = Object.freeze(new Set([
@@ -160,6 +164,8 @@ function createPhoneLink({ dataDir, deskId, deskName = "", enrollment, approve, 
   const refused = new Set(); // `${serial}|${deviceId}`: "Not now" holds for this cable session
   const checkedAt = new Map();
   const lookups = new Map(); // unpinned deviceId -> {e, at}
+  const sessions = new Map(); // mesh/remote: deviceId -> {at, transport}
+  let mesh = null; // {server, host, port}
 
   function rememberNonce(n) {
     const t = now();
@@ -223,18 +229,28 @@ function createPhoneLink({ dataDir, deskId, deskName = "", enrollment, approve, 
     pending.set(deviceId, p);
   }
 
-  async function handle(serial, req, res) {
+  /**
+   * One request on any transport. ctx.kind "cable" (ctx.serial: this USB phone's server)
+   * or "mesh" (the desk's tailnet listener; the Aither tunnel proxies onto it and says
+   * so with x-aither-via: tunnel, which only changes the label). The rules differ in two
+   * places: only the cable may ASK the owner for a new phone, and a mesh/remote session
+   * idles out after IDLE_MS without a call.
+   */
+  async function handle(ctx, req, res) {
+    const transport = ctx.kind === "cable" ? "cable" : req.headers["x-aither-via"] === "tunnel" ? "remote" : "mesh";
     const send = (status, body) => {
-      res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+      res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", "x-aither-transport": transport });
       res.end(JSON.stringify(body));
     };
     // The app's native bridge sends no Origin. A web page on the phone that found this
     // port does: it gets nothing, not even /link/info.
     if (req.headers.origin) return send(403, { error: "browser pages cannot use the desk link" });
     const route = String(req.url || "").split("?")[0];
-    const entry = servers.get(serial);
+    const entry = ctx.kind === "cable" ? servers.get(ctx.serial) : null;
     if (req.method === "GET" && route === "/link/info") {
-      return send(200, { v: 1, desk: deskId(), name: deskName, linked: Boolean(entry && entry.deviceId) });
+      // `desk_id` is the contract: DeskLinkBridge.remember reads exactly this field
+      return send(200, { v: 1, desk_id: deskId(), transport,
+        ...(ctx.kind === "cable" ? { name: deskName, linked: Boolean(entry && entry.deviceId) } : {}) });
     }
     if (req.method !== "POST" || !["/link/hello", "/link/do", "/link/revoke"].includes(route)) {
       return send(404, { error: "not a desk link route" });
@@ -252,25 +268,36 @@ function createPhoneLink({ dataDir, deskId, deskName = "", enrollment, approve, 
       return send(409, { error: "another phone is linked on this cable" });
     }
     if (route === "/link/revoke") {
-      pins.unpin(who.deviceId);
-      if (entry) entry.deviceId = "";
-      onChange();
+      forget(who.deviceId);
       return send(200, { ok: true, state: "forgotten" });
     }
     if (route === "/link/hello") {
       if (who.pinned) {
         if (entry) entry.deviceId = who.deviceId;
+        else sessions.set(who.deviceId, { at: now(), transport });
         onChange();
-        return send(200, { state: "approved", desk: deskId(), name: deskName });
+        const where = meshAddress();
+        return send(200, { state: "approved", desk_id: deskId(), name: deskName, transport, ...(where ? { mesh: where } : {}) });
       }
-      if (refused.has(`${serial}|${who.deviceId}`)) return send(200, { state: "refused" });
+      if (ctx.kind !== "cable") {
+        return send(403, { error: "approve this phone on the PC over the USB cable first" });
+      }
+      if (refused.has(`${ctx.serial}|${who.deviceId}`)) return send(200, { state: "refused" });
       const model = String((body && body.model) || (entry && entry.model) || "phone").slice(0, 40);
-      ask(serial, who.deviceId, who.pub, model);
+      ask(ctx.serial, who.deviceId, who.pub, model);
       return send(200, { state: "pending", message: "Approve this phone on the PC" });
     }
     // /link/do
-    if (!who.pinned || !entry || entry.deviceId !== who.deviceId) {
-      return send(403, { error: "this phone is not linked: POST /link/hello and approve it on the PC" });
+    if (!who.pinned) return send(403, { error: "this phone is not linked: POST /link/hello and approve it on the PC" });
+    if (entry) {
+      if (entry.deviceId !== who.deviceId) return send(403, { error: "this phone is not linked: POST /link/hello first" });
+    } else {
+      const sess = sessions.get(who.deviceId);
+      if (!sess || now() - sess.at > IDLE_MS) {
+        sessions.delete(who.deviceId);
+        return send(403, { error: "idle: the remote session timed out, say hello again", idle: true });
+      }
+      sess.at = now();
     }
     const action = String((body && body.action) || "");
     if (!ACTIONS.has(action) || typeof actions[action] !== "function") {
@@ -284,12 +311,54 @@ function createPhoneLink({ dataDir, deskId, deskName = "", enrollment, approve, 
     }
   }
 
+  /** Revocation from any side: the pin goes, and so does every transport's session. */
+  function forget(deviceId) {
+    const had = pins.unpin(deviceId);
+    for (const s of servers.values()) if (s.deviceId === deviceId) s.deviceId = "";
+    sessions.delete(deviceId);
+    onChange();
+    return had;
+  }
+
+  function meshAddress() {
+    return mesh ? { addr: mesh.host, port: mesh.port } : null;
+  }
+
+  /**
+   * The desk on the mesh (its tailnet address, MESH_PORT): reachable from a phone on the
+   * tailnet and from the Aither tunnel's proxy. Approved phones only.
+   */
+  function openMesh(host, port = MESH_PORT) {
+    if (mesh) return Promise.resolve(mesh.port);
+    const server = http.createServer((req, res) => {
+      handle({ kind: "mesh" }, req, res).catch(() => { try { res.writeHead(500); res.end(); } catch { /* gone */ } });
+    });
+    return new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(port, host, () => {
+        mesh = { server, host, port: server.address().port };
+        onChange();
+        resolve(mesh.port);
+      });
+    });
+  }
+
+  function closeMesh() {
+    if (!mesh) return false;
+    mesh.server.close();
+    if (typeof mesh.server.closeAllConnections === "function") mesh.server.closeAllConnections();
+    mesh = null;
+    sessions.clear();
+    onChange();
+    return true;
+  }
+
   /** One server for one cable. Resolves the PC port to reverse the phone's 47937 onto. */
   function openFor(serial, model) {
     const have = servers.get(serial);
     if (have) return Promise.resolve(have.port);
     const server = http.createServer((req, res) => {
-      handle(serial, req, res).catch(() => { try { res.writeHead(500); res.end(); } catch { /* gone */ } });
+      handle({ kind: "cable", serial }, req, res).catch(() => { try { res.writeHead(500); res.end(); } catch { /* gone */ } });
     });
     return new Promise((resolve, reject) => {
       server.once("error", reject);
@@ -317,10 +386,14 @@ function createPhoneLink({ dataDir, deskId, deskName = "", enrollment, approve, 
   return {
     openFor,
     closeFor,
-    forget: (deviceId) => { const had = pins.unpin(deviceId); for (const s of servers.values()) if (s.deviceId === deviceId) s.deviceId = ""; onChange(); return had; },
+    forget,
+    openMesh,
+    closeMesh,
+    meshAddress,
+    sessions: () => [...sessions.entries()].map(([deviceId, x]) => ({ deviceId, transport: x.transport, at: x.at })),
     links: () => [...servers.entries()].map(([serial, s]) => ({ serial, port: s.port, model: s.model, deviceId: s.deviceId })),
     pinned: () => pins.all(),
-    closeAll: () => { for (const serial of [...servers.keys()]) closeFor(serial); },
+    closeAll: () => { for (const serial of [...servers.keys()]) closeFor(serial); closeMesh(); },
   };
 }
 
@@ -365,6 +438,18 @@ async function adkEnrollment(runAdk, deviceId) {
   return { status: "unknown", error: String((r && r.error) || "identity did not answer").slice(0, 120) };
 }
 
+/** This PC's tailnet (CGNAT 100.64.0.0/10) IPv4 from os.networkInterfaces(), or null. */
+function meshAddressOf(ifaces) {
+  for (const list of Object.values(ifaces || {})) {
+    for (const a of list || []) {
+      if (a.family !== "IPv4" && a.family !== 4) continue;
+      const [x, y] = String(a.address).split(".").map(Number);
+      if (x === 100 && y >= 64 && y <= 127) return a.address;
+    }
+  }
+  return null;
+}
+
 /**
  * The tray rows for the phones on the cable: "Phone connected: <model>" and the one
  * click, "Use this phone with Aither"; once linked, "Unlink" and "Forget this phone".
@@ -393,6 +478,6 @@ function trayItems(phones, links, { use, unlink, forget }) {
 }
 
 module.exports = {
-  ACTIONS, trayItems, CLOCK_SKEW_S, HELLO_DOMAIN, PinStore, adkEnrollment, audienceOf, createFileShelf,
+  ACTIONS, IDLE_MS, MESH_PORT, meshAddressOf, trayItems, CLOCK_SKEW_S, HELLO_DOMAIN, PinStore, adkEnrollment, audienceOf, createFileShelf,
   createPhoneLink, helloMessage, parseHelloHeader, safeFileName, verifySig,
 };
