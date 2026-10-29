@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The Inbox is one line per item: Needs you (grouped Credentials, Blocked, Approve, Choose; answer in place, j/k/Enter), Broken (only failing routines; the healthy ones fold into one line), Agents (requests and alerts first) and System (only what is down, in plain words).
+- "You are browsing" is a dot in the toolbar instead of a full row; Take over appears while an agent drives.
+- A terminal dock under every browser window (Ctrl+`): every awsh session shows up on its own, click to attach with scrollback, start a shell or Claude Code, pop it out to a tab.
+- The side panel's resize handle lines up with the panel again.
+
 ## 0.1.27 - 2026-10-24
 
 - The tray shows the house posture (Shop open, After hours, Game on, Dark) as a coloured dot, with a Posture menu and Wake or Sleep for each on-demand group.
