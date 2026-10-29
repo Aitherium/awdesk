@@ -12,8 +12,9 @@
  *   2. within 10 s GET /needs-you[0].id is the probe, tray item 0 names
  *      OWNER_ASK_PROBE, and NO window gained focus (the chip is focusable:false
  *      and shown inactive);
- *   3. the deck, sent 'deck:focus-card' (what main.openInbox(id) sends an open
- *      deck), shows the probe; loaded with ?card=<id> it starts on the probe.
+ *   3. the deck lists the needs-you cards first; sent 'deck:focus-card' (what
+ *      main.openInbox(id) sends an open deck) it opens the probe in place; loaded
+ *      with ?card=<id> it starts with the probe open.
  *
  * main.cjs itself is not started (it would take the running desk's instance
  * lock and speak); the pieces it wires are. Nothing touches ~/.aither.
@@ -162,23 +163,27 @@ app.whenReady().then(async () => {
     for (const ch of ["system", "voice", "vision", "desktop", "connect"]) {
       ipcMain.handle(`desk:${ch}-snapshot`, () => ({ ok: false, reason: "smoke" }));
     }
+    // The open card of the Needs-you list (redesign 2026-10-28: a list, not a pager).
     const current = async (w) => w.webContents.executeJavaScript(
-      "(document.querySelector('.deck-flipper-count')||{dataset:{}}).dataset.cardId || ''");
-    const load = async (query) => {
+      "(document.querySelector('[aria-label=\"Needs you\"]')||{dataset:{}}).dataset.currentCard || ''");
+    const firstRow = async (w) => w.webContents.executeJavaScript(
+      "(document.querySelector('[data-ny-id]')||{dataset:{}}).dataset.nyId || ''");
+    const load = async (query, ready = current) => {
       const w = new BrowserWindow({ show: false, title: "deck-smoke", webPreferences: {
         preload: path.join(__dirname, "preload.cjs"), sandbox: true, contextIsolation: true, nodeIntegration: false } });
       await w.loadURL(pathToFileURL(dist).href + query);
-      for (let i = 0; i < 40 && !(await current(w)); i += 1) await sleep(100);
+      for (let i = 0; i < 40 && !(await ready(w)); i += 1) await sleep(100);
       return w;
     };
-    const deck = await load("?deck=1");
-    expect("the deck pins the needs-you cards first", (await current(deck)) === second.id, await current(deck));
+    const deck = await load("?deck=1", firstRow);
+    expect("the deck lists the needs-you cards first", (await firstRow(deck)) === second.id, await firstRow(deck));
     deck.webContents.send("desk:event", { type: "deck:focus-card", id: PROBE_ID });
     let shown = "";
     for (let i = 0; i < 30 && shown !== PROBE_ID; i += 1) { await sleep(100); shown = await current(deck); }
     expect("after openInbox(id) the deck's current card is the probe", shown === PROBE_ID, shown);
-    const count = await deck.webContents.executeJavaScript("document.querySelector('.deck-flipper-count').textContent");
-    expect("'N of M' counts decisions only (FYI collapsed)", count.trim().endsWith(`of ${state.openCount}`), count);
+    const count = await deck.webContents.executeJavaScript(
+      "document.querySelector('[aria-label=\"Needs you\"] .deck-section-count')?.textContent || ''");
+    expect("the Needs-you count is decisions only (FYI collapsed)", count.trim() === String(state.openCount), count);
     const rowText = await deck.webContents.executeJavaScript("document.querySelector('.deck-card-credential')?.innerText || ''");
     expect("the credential row shows What/Why/Asked by/Goes to + Later + Not needed",
       ["What", "Why", "Asked by", "Goes to", "Later", "Not needed", PROBE_SECRET].every((t) => rowText.includes(t)), rowText);

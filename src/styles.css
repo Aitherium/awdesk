@@ -1287,3 +1287,125 @@ body {
   text-overflow: ellipsis;
   pointer-events: none;
 }
+
+/* ── Inbox triage (owner redesign 2026-10-28): Needs you / Broken / Agents / System.
+      One line per item, 28px rows, details on click — never a card per item. ──── */
+.deck-head-chip { margin-left: auto; text-transform: none; letter-spacing: 0; }
+.deck-section-count + .deck-head-chip { margin-left: 8px; }
+.deck-section-sub { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--deck-muted); opacity: 0.8; }
+.deck-btn-xs, .deck-wake-actions .deck-btn-xs { padding: 2px 8px; font-size: 11px; border-radius: 6px; line-height: 18px; }
+.deck-btn:disabled { opacity: 0.4; cursor: default; }
+.deck-btn-danger { border-color: var(--destructive); color: var(--destructive); }
+.deck-notice { color: var(--warning); }
+
+.deck-ny-group { margin: 0 0 6px; }
+.deck-ny-group-bar { display: flex; align-items: center; gap: 6px; }
+.deck-ny-group-bar .deck-ny-group-head { flex: 1; }
+.deck-ny-group-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; height: 24px; padding: 0 4px;
+  border: 0; background: none; color: var(--deck-muted); cursor: pointer; text-align: left;
+  font: inherit; font-size: 11px; font-weight: 650;
+}
+.deck-ny-group-head:hover { color: var(--deck-text); }
+.deck-ny-caret { width: 10px; font-size: 10px; }
+.deck-ny-group-count {
+  min-width: 18px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; line-height: 16px; text-align: center;
+  background: var(--surface-800); color: var(--deck-soft);
+}
+.deck-ny-group-stale .deck-ny-group-head { color: color-mix(in oklch, var(--deck-muted), transparent 20%); }
+.deck-ny-bulk-note { font-size: 11px; color: var(--deck-muted); }
+
+.deck-ny-item { border-radius: 8px; }
+.deck-ny-item-open { background: var(--deck-panel); border: 1px solid var(--deck-edge); margin: 2px 0 6px; }
+.deck-ny-row {
+  display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 8px;
+  cursor: pointer; font-size: 12.5px; color: var(--deck-text);
+}
+.deck-ny-row:hover { background: color-mix(in oklch, var(--deck-edge), transparent 40%); }
+.deck-ny-row-cursor { box-shadow: inset 2px 0 0 var(--deck-accent); background: color-mix(in oklch, var(--deck-accent), transparent 90%); }
+.deck-ny-row:focus-visible { outline: 1px solid var(--deck-accent); outline-offset: -1px; }
+.deck-ny-row .deck-urgency-dot { flex: none; }
+.deck-ny-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.deck-ny-source {
+  flex: none; max-width: 30%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: 11px; color: var(--deck-muted);
+}
+.deck-ny-age { flex: none; width: 34px; text-align: right; font-size: 11px; color: var(--deck-muted); font-variant-numeric: tabular-nums; }
+.deck-ny-body { padding: 0 8px 8px; }
+.deck-ny-body .deck-card { margin: 0; border: 0; padding: 4px 2px 0; background: none; }
+.deck-ny-body .deck-card-head { display: none; }
+.deck-ny-tools { display: flex; align-items: center; gap: 8px; margin: 2px 0 2px; }
+.deck-ny-id { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--deck-muted); }
+
+.deck-fold { margin: 2px 4px 6px; font-size: 12px; color: var(--deck-muted); }
+.deck-fold > summary { cursor: pointer; height: 24px; line-height: 24px; list-style-position: inside; }
+.deck-fold > summary:hover { color: var(--deck-text); }
+.deck-fold-meta { font-size: 11px; }
+.deck-fold-more {
+  border: 0; background: none; color: var(--deck-muted); cursor: pointer; font: inherit; font-size: 11.5px;
+  padding: 4px 8px;
+}
+.deck-fold-more:hover { color: var(--deck-text); }
+.deck-fyi-line { display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; }
+
+.deck-broken-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 28px; padding: 2px 8px;
+  border-radius: 8px; font-size: 12.5px; border-left: 2px solid var(--destructive);
+  background: color-mix(in oklch, var(--destructive), transparent 92%); margin-bottom: 3px;
+}
+.deck-broken-name { flex: none; max-width: 34%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+.deck-broken-count {
+  flex: none; font-size: 10.5px; font-weight: 700; padding: 0 6px; border-radius: 999px; line-height: 16px;
+  color: var(--background); background: var(--destructive);
+}
+.deck-broken-error {
+  flex: 1; min-width: 80px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: 11.5px; color: var(--deck-soft);
+}
+.deck-broken-age { flex: none; font-size: 11px; color: var(--deck-muted); }
+.deck-broken-row .deck-wake-actions, .deck-wake-table .deck-wake-actions { display: inline-flex; gap: 4px; margin: 0; }
+.deck-broken-row .deck-wake-note { flex-basis: 100%; }
+.deck-broken-clock { border-left-color: var(--warning); background: color-mix(in oklch, var(--warning), transparent 90%); }
+
+.deck-wake-table { width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 12px; color: var(--deck-text); }
+.deck-wake-table td { height: 28px; padding: 0 6px; border-bottom: 1px solid color-mix(in oklch, var(--deck-edge), transparent 50%); white-space: nowrap; }
+.deck-wake-table tr:hover td { background: color-mix(in oklch, var(--deck-edge), transparent 60%); }
+.deck-wake-table td:last-child { text-align: right; }
+.deck-wake-table .deck-wake-actions { opacity: 0; }
+.deck-wake-table tr:hover .deck-wake-actions, .deck-wake-table .deck-wake-actions:focus-within { opacity: 1; }
+.deck-wake-table-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.deck-wake-table-meta { color: var(--deck-muted); font-size: 11px; }
+.deck-wake-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--success, var(--pastel-mint)); }
+.deck-wake-dot.deck-wake-running { background: var(--deck-accent); }
+.deck-wake-dot.deck-wake-disabled { background: var(--deck-muted); }
+
+.deck-relay-timeline { margin-bottom: 6px; }
+.deck-relay-line {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 28px; padding: 0 8px;
+  border-radius: 8px; cursor: pointer; font-size: 12px;
+}
+.deck-relay-line:hover { background: color-mix(in oklch, var(--deck-edge), transparent 40%); }
+.deck-relay-line-open { background: var(--deck-panel); padding-bottom: 6px; }
+.deck-relay-nick {
+  flex: none; width: 96px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: 11px; font-weight: 700; color: var(--deck-accent);
+}
+.deck-relay-session { font-weight: 400; color: var(--deck-muted); }
+.deck-relay-line .deck-relay-kind { flex: none; margin: 0; width: 64px; text-align: center; padding: 0; line-height: 16px; }
+.deck-relay-kind-none { background: none; }
+.deck-relay-one {
+  flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--deck-soft);
+}
+.deck-relay-line .deck-relay-age { flex: none; width: 34px; text-align: right; }
+.deck-relay-line .deck-relay-text {
+  flex-basis: 100%; margin: 2px 0 0; white-space: pre-wrap; color: var(--deck-text); user-select: text;
+  display: block; -webkit-line-clamp: unset; overflow: visible;
+}
+.deck-relay-divider { height: 1px; margin: 4px 8px; background: var(--deck-edge); }
+
+.deck-sys-row { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 8px; font-size: 12.5px; border-radius: 8px; }
+.deck-sys-bad { background: color-mix(in oklch, var(--warning), transparent 92%); }
+.deck-sys-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warning); }
+.deck-sys-dot-ok { background: var(--success, var(--pastel-mint)); }
+.deck-sys-state { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.deck-sys-detail { flex: none; max-width: 40%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: var(--deck-muted); }

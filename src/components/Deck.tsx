@@ -9,13 +9,11 @@ import {
   clockLabel,
   clockTone,
   formatAge,
-  cardLabel,
   dueLabel,
   sharedCause,
   transportNote,
   otherChoices,
   primaryChoice,
-  reasonLabel,
   staleLabel,
   wakeActionMessage,
   wakeAgeLabel,
@@ -26,6 +24,22 @@ import {
   type WakeActionResult,
   type WakeRow,
 } from '../deck/deck-types';
+import {
+  STALE_DECISION_DAYS,
+  awarenessLine,
+  clockIsBroken,
+  decisionGroup,
+  decisionSource,
+  groupDecisions,
+  healthySummary,
+  moveCursor,
+  orderRelay,
+  relayNick,
+  splitWakes,
+  successorId,
+  wakeErrorLine,
+  type AwarenessLine,
+} from '../deck/inbox-view';
 import { SPACE_NEXT_LINK, spaceCardLink } from '../deck/space-links';
 
 /**
@@ -70,15 +84,6 @@ function MonitorIcon() {
     </svg>
   );
 }
-
-function TerminalIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M4 17l6-5-6-5M12 19h8" />
-    </svg>
-  );
-}
-
 
 function CloseIcon() {
   return (
@@ -188,16 +193,15 @@ function urgencyTone(urgency: string): string {
   return URGENCY_TONE[urgency] ?? URGENCY_TONE.normal;
 }
 
-/** WAKES — awrise's scheduled jobs.
+/** BROKEN — awrise's scheduled jobs, triaged (owner redesign 2026-10-28).
  *
- * Order matters here, and it is the point of the section: the CLOCK line comes
- * before any job row. A list of enabled jobs with a silent clock looks healthy
- * and is not, and that is the failure this pane exists to catch. The staleness
- * chip comes first of all, because rows from a snapshot taken an hour ago must
- * never be read as live.
+ * Sixty full-height cards with OK / Disable / Run now buried the five that were
+ * failing under the fifty-five that were fine. Now only the broken ones get a
+ * row; the healthy ones are one summary line that opens into a dense table.
  *
- * Every action goes to main -> the harness daemon. The pane spawns nothing and
- * parses no scheduler state: one reader, one semantics, every surface.
+ * The clock rule still holds: a silent clock is the failure that looks healthy,
+ * so a stale clock LEADS the broken list, and the staleness of the snapshot is
+ * said before any row. Every action goes to main -> the harness daemon.
  */
 function WakesSection({
   wakes,
@@ -212,9 +216,10 @@ function WakesSection({
   pending: Set<string>;
   onAction: (verb: 'enable' | 'disable' | 'run', name: string) => void;
 }) {
-  const stale = wakes.source === 'stale';
   const live = wakes.source === 'daemon' && wakes.installed === true;
-  const notice = stale
+  const { broken, healthy } = splitWakes(wakes.wakes);
+  const clockBroken = clockIsBroken(wakes);
+  const notice = wakes.source === 'stale'
     ? staleLabel(wakes, nowMs)
     : wakes.installed === false
       ? 'awrise not installed — no scheduled jobs on this host.'
@@ -223,114 +228,129 @@ function WakesSection({
         : wakes.source === 'none'
           ? 'Reading the scheduler…'
           : '';
+  const brokenCount = broken.length + (clockBroken ? 1 : 0);
+  const actions = (wake: WakeRow) => (
+    <span className="deck-wake-actions">
+      <button
+        className="deck-btn deck-btn-xs deck-btn-primary"
+        disabled={!live || wake.running || pending.has(wake.name)}
+        title="Fire this wake once now — the schedule and the streak are unchanged"
+        onClick={() => onAction('run', wake.name)}
+      >
+        Run now
+      </button>
+      <button
+        className="deck-btn deck-btn-xs"
+        disabled={!live || pending.has(wake.name)}
+        title={wake.enabled ? 'Stop scheduling this wake' : 'Schedule this wake again'}
+        onClick={() => onAction(wake.enabled ? 'disable' : 'enable', wake.name)}
+      >
+        {wake.enabled ? 'Disable' : 'Enable'}
+      </button>
+    </span>
+  );
   return (
-    <section className="deck-section" aria-label="Wakes">
+    <section className="deck-section" aria-label="Broken">
       <h2 className="deck-section-head">
         <span className="deck-section-icon"><ChipIcon /></span>
-        Wakes
-        {wakes.failing > 0 ? <span className="deck-section-count">{wakes.failing}</span> : null}
+        Broken
+        {brokenCount > 0 ? <span className="deck-section-count">{brokenCount}</span> : null}
       </h2>
-      {notice ? <p className="deck-empty">{notice}</p> : null}
-      {/* The clock, BEFORE any row. */}
-      {wakes.installed !== false && wakes.source !== 'none' ? (
-        <p className={`deck-wake-clock deck-wake-clock-${clockTone(wakes)}`}>
-          {clockLabel(wakes, nowMs)}
-        </p>
-      ) : null}
+      {notice ? <p className="deck-empty deck-notice">{notice}</p> : null}
       {wakes.schema === 1 ? (
         <p className="deck-empty">
           {wakes.migration || 'the awrise job file is v1 — run `awrise list` on this host to migrate it'}
         </p>
       ) : null}
-      {wakes.wakes.length === 0 ? (
-        live ? <p className="deck-empty">No wakes scheduled.</p> : null
-      ) : (
-        wakes.wakes.map((wake: WakeRow) => {
-          const badge = wakeBadge(wake);
-          return (
-            <div className="deck-wake-row" key={wake.name}>
-              <span className={`deck-wake-badge deck-wake-${badge}`}>{badge}</span>
-              <span className="deck-wake-text">
-                <strong title={wake.run || wake.name}>{wake.name}</strong>
-                <span className="deck-wake-meta">
-                  {wake.every || (wake.at ? `at ${wake.at}` : 'no schedule')}
-                  {' · '}
-                  {wakeAgeLabel(wake, nowMs)}
-                  {` · ${dueLabel(wake.nextDueAt, nowMs)}`}
-                  {wake.consecutiveFailures > 0 ? ` · ${wake.consecutiveFailures}x failed` : ''}
-                  {/* awrise raises the failing-streak card through the awask
-                      ladder; naming its id ties this row to the card already
-                      sitting in the Decisions section above. No card code here. */}
-                  {wake.cardId ? ` · ${cardLabel(wake.cardId)}` : ''}
-                </span>
-                {/* The REASON, never truncated away entirely: the full text is
-                    the title, so "failure" is always one hover from "why". */}
-                {wake.lastReason ? (
-                  <span className="deck-wake-reason" title={wake.lastReason}>
-                    {wake.lastState ? `${wake.lastState} — ` : ''}
-                    {reasonLabel(wake.lastReason).length > 60 ? `${reasonLabel(wake.lastReason).slice(0, 60)}…` : reasonLabel(wake.lastReason)}
-                  </span>
-                ) : null}
-                {notes[wake.name] ? (
-                  <span className="deck-wake-note">{notes[wake.name]}</span>
-                ) : null}
-              </span>
-              <span className="deck-wake-actions">
-                <button
-                  className="deck-btn"
-                  disabled={!live || pending.has(wake.name)}
-                  title={wake.enabled ? 'Stop scheduling this wake' : 'Schedule this wake again'}
-                  onClick={() => onAction(wake.enabled ? 'disable' : 'enable', wake.name)}
-                >
-                  {wake.enabled ? 'Disable' : 'Enable'}
-                </button>
-                <button
-                  className="deck-btn deck-btn-primary"
-                  disabled={!live || wake.running || pending.has(wake.name)}
-                  title="Fire this wake once now — the schedule and the streak are unchanged"
-                  onClick={() => onAction('run', wake.name)}
-                >
-                  Run now
-                </button>
-              </span>
-            </div>
-          );
-        })
-      )}
+      {clockBroken ? (
+        <div className="deck-broken-row deck-broken-clock">
+          <span className="deck-broken-name">scheduler clock</span>
+          <span className="deck-broken-error">{clockLabel(wakes, nowMs)} — no wake runs on schedule</span>
+        </div>
+      ) : null}
+      {broken.map((wake) => (
+        <div className="deck-broken-row" key={wake.name}>
+          <span className="deck-broken-name" title={wake.run || wake.name}>{wake.name}</span>
+          <span className="deck-broken-count">
+            {wake.consecutiveFailures > 0 ? `${wake.consecutiveFailures}x` : 'timed out'}
+          </span>
+          {/* The REASON, one hover from the whole text. */}
+          <span className="deck-broken-error" title={[wake.lastState, wake.lastReason, wake.error].filter(Boolean).join(' — ')}>
+            {wakeErrorLine(wake)}
+          </span>
+          <span className="deck-broken-age">{wakeAgeLabel(wake, nowMs)}</span>
+          {actions(wake)}
+          {notes[wake.name] ? <span className="deck-wake-note">{notes[wake.name]}</span> : null}
+        </div>
+      ))}
+      {brokenCount === 0 && live ? <p className="deck-empty">Nothing broken.</p> : null}
+      {healthy.length > 0 ? (
+        <details className="deck-fold">
+          <summary>
+            {healthySummary(healthy)}
+            {!clockBroken && wakes.installed !== false && wakes.source !== 'none' ? (
+              <span className={`deck-fold-meta deck-wake-clock-${clockTone(wakes)}`}> · {clockLabel(wakes, nowMs)}</span>
+            ) : null}
+          </summary>
+          <table className="deck-wake-table">
+            <tbody>
+              {healthy.map((wake) => {
+                const badge = wakeBadge(wake);
+                return (
+                  <tr key={wake.name}>
+                    <td><span className={`deck-wake-dot deck-wake-${badge}`} title={badge} /></td>
+                    <td className="deck-wake-table-name" title={wake.run || wake.name}>{wake.name}</td>
+                    <td className="deck-wake-table-meta">{wake.every || (wake.at ? `at ${wake.at}` : '—')}</td>
+                    <td className="deck-wake-table-meta">{wakeAgeLabel(wake, nowMs)}</td>
+                    <td className="deck-wake-table-meta">{dueLabel(wake.nextDueAt, nowMs)}</td>
+                    <td>{notes[wake.name] ? <span className="deck-wake-note">{notes[wake.name]}</span> : actions(wake)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </details>
+      ) : null}
     </section>
   );
 }
 
 /**
- * One relay message. The KIND is a chip and the addressee a quiet "to ..." -- both
- * came out of the awrelay envelope main strips from the body (relay-feed.cjs
- * splitEnvelope); they used to be a line of raw JSON after every message. The body
- * is clamped to two lines for scanning and OPENS on click: a finding cut off at
- * "Ladder that answers this in 10 min: Stopping line = systemctl; n" with no way to
- * read the rest was a message the owner could not actually receive.
+ * One relay message as a timeline line: nick chip, kind chip, the text on ONE
+ * line, age. Click opens the whole message in place (a finding cut off with no
+ * way to read the rest was a message the owner could not actually receive).
  */
 function RelayRowView({ row, nowMs }: { row: RelayRow; nowMs: number }) {
   const [open, setOpen] = useState(false);
   const kind = (row.kind || '').toLowerCase();
+  const { nick, session } = relayNick(row.author);
   return (
     <div
-      className={`deck-relay-row ${open ? 'deck-relay-row-open' : ''}`}
+      className={`deck-relay-line ${open ? 'deck-relay-line-open' : ''}`}
       role="button"
       tabIndex={0}
-      title={open ? 'Click to collapse' : 'Click to read the whole message'}
+      title={open ? 'Click to collapse' : row.text.slice(0, 400)}
       onClick={() => setOpen((value) => !value)}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setOpen((value) => !value); }
       }}
     >
-      <span className="deck-relay-author">{row.author || 'unknown'}</span>
-      {kind ? <span className={`deck-relay-kind deck-relay-kind-${kind}`}>{kind}</span> : null}
-      {row.to && row.to.length ? <span className="deck-relay-to">to {row.to.join(', ')}</span> : null}
+      <span className="deck-relay-nick" title={row.author}>
+        {nick}
+        {session ? <span className="deck-relay-session">+{session.slice(0, 4)}</span> : null}
+      </span>
+      <span className={`deck-relay-kind deck-relay-kind-${kind || 'none'}`}>{kind}</span>
+      <span className="deck-relay-one">
+        {row.to && row.to.length ? <span className="deck-relay-to">to {row.to.join(', ')}</span> : null}
+        {open ? null : row.text}
+      </span>
       <span className="deck-relay-age">{formatAge(row.at, nowMs)}</span>
-      <p className="deck-relay-text">{row.text}</p>
+      {open ? <p className="deck-relay-text">{row.text}</p> : null}
     </div>
   );
 }
+
+const RELAY_FIRST_PAGE = 12;
 
 function RelaySection({
   relay,
@@ -344,18 +364,42 @@ function RelaySection({
   onPost: (text: string) => void;
 }) {
   const [draft, setDraft] = useState('');
+  const [all, setAll] = useState(false);
   const submit = () => {
     const text = draft.trim();
     if (!text) return;
     setDraft('');
     onPost(text);
   };
+  // Requests and alerts pinned above findings/acks; the long tail one click away.
+  const { pinned, rest } = orderRelay(relay);
+  const shown = all ? rest : rest.slice(0, Math.max(0, RELAY_FIRST_PAGE - pinned.length));
   return (
-    <section className="deck-section" aria-label="Relay">
+    <section className="deck-section" aria-label="Agents">
       <h2 className="deck-section-head">
         <span className="deck-section-icon"><ChatIcon /></span>
-        Messages — {channel}
+        Agents
+        {pinned.length > 0 ? <span className="deck-section-count" title="Requests and alerts">{pinned.length}</span> : null}
+        <span className="deck-section-sub">{channel}</span>
       </h2>
+      {relay.length === 0 ? (
+        <p className="deck-empty">Relay unavailable or quiet — nothing recent in {channel}.</p>
+      ) : (
+        <div className="deck-relay-timeline">
+          {pinned.map((row, index) => (
+            <RelayRowView key={`p-${row.id ?? row.at}-${index}`} row={row} nowMs={nowMs} />
+          ))}
+          {pinned.length > 0 && shown.length > 0 ? <div className="deck-relay-divider" /> : null}
+          {shown.map((row, index) => (
+            <RelayRowView key={`r-${row.id ?? row.at}-${index}`} row={row} nowMs={nowMs} />
+          ))}
+          {shown.length < rest.length ? (
+            <button className="deck-fold-more" onClick={() => setAll(true)}>
+              Show {rest.length - shown.length} older
+            </button>
+          ) : null}
+        </div>
+      )}
       <div className="deck-relay-compose">
         <input
           className="deck-relay-input"
@@ -368,13 +412,6 @@ function RelaySection({
         />
         <button className="deck-btn deck-btn-primary" title={`Post to ${channel} — visible to every connected session`} onClick={submit}>Send</button>
       </div>
-      {relay.length === 0 ? (
-        <p className="deck-empty">Relay unavailable or quiet — nothing recent in {channel}.</p>
-      ) : (
-        relay.map((row, index) => (
-          <RelayRowView key={`${row.id ?? row.at}-${index}`} row={row} nowMs={nowMs} />
-        ))
-      )}
     </section>
   );
 }
@@ -927,107 +964,306 @@ function ModelsMarketSection({
 }
 
 
-function ChevronLeftIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M15 5l-7 7 7 7" />
-    </svg>
-  );
-}
+/**
+ * NEEDS YOU — every open decision as a compact list, grouped by what it asks
+ * (owner redesign 2026-10-28). The pager it replaces showed "1 of 122": one card
+ * owned the stage and the other 121 were invisible. Now each card is one line
+ * (title, source, age); a click or Enter opens it IN PLACE to answer, and
+ * answering opens the next one. j/k move, Enter opens, Esc closes.
+ *
+ * Cards older than 7 days fold into one group with bulk verbs — both are the
+ * per-card verbs main already has (`card-later` = 4 h off the needs-you strip,
+ * `card-not-needed` = awask cancel, the asking session is told), run one at a
+ * time. No new endpoint.
+ */
+const GROUP_PAGE = 6;
 
-function ChevronRightIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M9 5l7 7-7 7" />
-    </svg>
-  );
-}
-
-/** Flip THROUGH the cards one at a time instead of scrolling a stack — the
- *  owner's words: "you flip through them" (2026-08-25). One card owns the
- *  stage; prev/next arrows page through; the pop-out button spawns that card's
- *  own Tk answer window (awask window <id>), so the pop-up action cards stay
- *  reachable FROM the desk rather than living on a separate surface. */
-function CardFlipper({
+function NeedsYouSection({
   cards,
+  fyi,
+  openCount,
   nowMs,
   onAnswer,
   onPopout,
+  onPopupAll,
   onSpace,
   focus,
 }: {
   cards: DeckDecision[];
+  fyi: DeckDecision[];
+  openCount: number;
   nowMs: number;
   onAnswer: (id: string, choice: string) => void;
   onPopout: (id: string) => void;
+  onPopupAll: () => void;
   /** Open a BeadSpace link; absent when this desk build has no Space pane. */
   onSpace?: (link: string) => void;
-  /** A card the owner clicked somewhere else (tray row, chip, ?card=): show it.
-   *  `nonce` re-applies the same id after the owner flipped away. */
+  /** A card the owner clicked somewhere else (tray row, chip, ?card=): open it.
+   *  `nonce` re-applies the same id after the owner moved away. */
   focus?: { id: string; nonce: number } | null;
 }) {
-  const [index, setIndex] = useState(0);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [staleOpen, setStaleOpen] = useState(false);
+  const [folded, setFolded] = useState<Set<string>>(() => new Set());
+  // A group shows its first GROUP_PAGE cards; "N more" opens the rest.
+  const [more, setMore] = useState<Set<string>>(() => new Set());
+  const [bulk, setBulk] = useState<{ verb: string; done: number; total: number; refused: number } | null>(null);
+  const [confirmDismiss, setConfirmDismiss] = useState(false);
+  const { groups, stale } = groupDecisions(cards, nowMs);
+
+  // The visible order, which j/k walk and "answer opens the next" follows.
+  const shownCards = (key: string, list: DeckDecision[]) => (more.has(key) ? list : list.slice(0, GROUP_PAGE));
+  const visible: string[] = [
+    ...groups.filter((g) => !folded.has(g.key)).flatMap((g) => shownCards(g.key, g.cards).map((c) => c.id)),
+    ...(staleOpen ? stale.map((c) => c.id) : []),
+  ];
+  const allIds = cards.map((c) => c.id);
+  const previousIds = useRef<string[]>(allIds);
+
+  // An answered card leaves the list: open the card now in its slot.
+  const idsKey = allIds.join('|');
+  useEffect(() => {
+    const before = previousIds.current;
+    previousIds.current = allIds;
+    if (expanded && !allIds.includes(expanded)) {
+      const next = successorId(before, allIds, expanded);
+      setExpanded(next);
+      setCursor(next);
+    }
+    // allIds is derived from idsKey
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey]);
+
   // Applied once per nonce, and only once the card is IN the list (the first
   // deck-state can land after the focus request).
   const appliedFocus = useRef(0);
   useEffect(() => {
     if (!focus || appliedFocus.current === focus.nonce) return;
-    const at = cards.findIndex((c) => c.id === focus.id);
-    if (at < 0) return;
+    const target = cards.find((c) => c.id === focus.id);
+    if (!target) return;
     appliedFocus.current = focus.nonce;
-    setIndex(at);
-  }, [focus, cards]);
-  // An answered card shrinks the list; keep the index legal and on the SAME
-  // visual position (the next card slides into view).
-  const clamped = Math.min(index, Math.max(0, cards.length - 1));
-  const card = cards[clamped];
-  return (
-    <div className="deck-flipper">
-      <div className="deck-flipper-nav">
-        <button
-          className="deck-icon-btn"
-          title="Previous card"
-          disabled={clamped === 0}
-          onClick={() => setIndex(Math.max(0, clamped - 1))}
+    if (stale.some((c) => c.id === target.id)) setStaleOpen(true);
+    setMore((current) => new Set(current).add(decisionGroup(target)));
+    setFolded((current) => {
+      const key = decisionGroup(target);
+      if (!current.has(key)) return current;
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+    setExpanded(target.id);
+    setCursor(target.id);
+  }, [focus, cards, stale]);
+
+  useEffect(() => {
+    if (!cursor) return;
+    document.querySelector(`[data-ny-id="${cursor}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [cursor, expanded]);
+
+  // j/k/enter/esc — only when the owner is not typing in a field.
+  const visibleKey = visible.join('|');
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.closest('input, textarea, select, [contenteditable="true"]'))) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key === 'j' || event.key === 'ArrowDown') {
+        event.preventDefault();
+        setCursor((current) => moveCursor(visible, current, 1));
+      } else if (event.key === 'k' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        setCursor((current) => moveCursor(visible, current, -1));
+      } else if (event.key === 'Enter' && cursor && !(target && target.closest('button, [role="button"]'))) {
+        event.preventDefault();
+        setExpanded((current) => (current === cursor ? null : cursor));
+      } else if (event.key === 'Escape') {
+        setExpanded(null);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+    // visible is derived from visibleKey
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleKey, cursor]);
+
+  const toggle = (id: string) => {
+    setCursor(id);
+    setExpanded((current) => (current === id ? null : id));
+  };
+
+  /** One verb over every stale card, one at a time, and say how it went. */
+  const runBulk = async (verb: 'card-later' | 'card-not-needed') => {
+    const deck = bridgeDeck();
+    if (!deck || bulk) return;
+    const ids = stale.map((c) => c.id);
+    let refused = 0;
+    setBulk({ verb, done: 0, total: ids.length, refused: 0 });
+    for (let i = 0; i < ids.length; i += 1) {
+      try {
+        const ok = await deck.action(verb, ids[i]);
+        if (!ok) refused += 1;
+      } catch {
+        refused += 1;
+      }
+      setBulk({ verb, done: i + 1, total: ids.length, refused });
+    }
+    setConfirmDismiss(false);
+    window.setTimeout(() => setBulk(null), 6000);
+  };
+
+  const row = (card: DeckDecision) => {
+    const open = expanded === card.id;
+    const source = decisionSource(card);
+    return (
+      <div key={card.id} className={`deck-ny-item ${open ? 'deck-ny-item-open' : ''}`}>
+        <div
+          className={`deck-ny-row ${cursor === card.id ? 'deck-ny-row-cursor' : ''}`}
+          data-ny-id={card.id}
+          role="button"
+          tabIndex={0}
+          aria-expanded={open}
+          title={card.summary || card.title}
+          onClick={() => toggle(card.id)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(card.id); }
+          }}
         >
-          <ChevronLeftIcon />
-        </button>
-        <span className="deck-flipper-count" data-card-id={card.id}>
-          {clamped + 1} of {cards.length}
-        </span>
-        <button
-          className="deck-icon-btn"
-          title="Next card"
-          disabled={clamped >= cards.length - 1}
-          onClick={() => setIndex(Math.min(cards.length - 1, clamped + 1))}
-        >
-          <ChevronRightIcon />
-        </button>
-        <button
-          className="deck-chip deck-flipper-popout"
-          title="Open this card in its own pop-out answer window"
-          onClick={() => onPopout(card.id)}
-        >
-          Pop out
-        </button>
-        {onSpace && spaceCardLink(card.id) ? (
-          <a
-            className="deck-space-link"
-            href={spaceCardLink(card.id) ?? undefined}
-            title="Show this ask on the system it concerns, in Space"
-            onClick={(event) => {
-              event.preventDefault();
-              const link = spaceCardLink(card.id);
-              if (link) onSpace(link);
-            }}
-          >
-            in space
-          </a>
+          <span className="deck-urgency-dot" style={{ background: urgencyTone(card.urgency) }} />
+          <span className="deck-ny-title">{card.title}</span>
+          {source ? <span className="deck-ny-source">{source}</span> : null}
+          <time className="deck-ny-age">{formatAge(card.createdAt, nowMs)}</time>
+        </div>
+        {open ? (
+          <div className="deck-ny-body">
+            <div className="deck-ny-tools">
+              <button
+                className="deck-chip"
+                title="Open this card in its own pop-out answer window"
+                onClick={() => onPopout(card.id)}
+              >
+                Pop out
+              </button>
+              {onSpace && spaceCardLink(card.id) ? (
+                <a
+                  className="deck-space-link"
+                  href={spaceCardLink(card.id) ?? undefined}
+                  title="Show this ask on the system it concerns, in Space"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    const link = spaceCardLink(card.id);
+                    if (link) onSpace(link);
+                  }}
+                >
+                  in space
+                </a>
+              ) : null}
+              <span className="deck-ny-id">{card.id}</span>
+            </div>
+            {/* key: a new card is a new row -- never carry the last card's field or verdict over. */}
+            <DecisionRow key={card.id} card={card} nowMs={nowMs} onAnswer={onAnswer} />
+          </div>
         ) : null}
       </div>
-      {/* key: a new card is a new row -- never carry the last card's field or verdict over. */}
-      <DecisionRow key={card.id} card={card} nowMs={nowMs} onAnswer={onAnswer} />
-    </div>
+    );
+  };
+
+  const toggleGroup = (key: string) => setFolded((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
+
+  return (
+    <section className="deck-section" aria-label="Needs you" data-current-card={expanded ?? ''}>
+      <h2 className="deck-section-head">
+        <span className="deck-section-icon"><BellIcon /></span>
+        Needs you
+        {openCount > 0 ? <span className="deck-section-count">{openCount}</span> : null}
+        {cards.length > 0 ? (
+          <button className="deck-chip deck-head-chip" title="Every waiting card in its own answer window" onClick={onPopupAll}>
+            Answer window
+          </button>
+        ) : null}
+      </h2>
+      {cards.length === 0 ? (
+        <p className="deck-empty">Nothing waiting — every session is unblocked.</p>
+      ) : (
+        <>
+          {groups.map((group) => (
+            <div className="deck-ny-group" key={group.key}>
+              <button
+                className="deck-ny-group-head"
+                aria-expanded={!folded.has(group.key)}
+                onClick={() => toggleGroup(group.key)}
+              >
+                <span className="deck-ny-caret">{folded.has(group.key) ? '▸' : '▾'}</span>
+                {group.label}
+                <span className="deck-ny-group-count">{group.cards.length}</span>
+              </button>
+              {folded.has(group.key) ? null : shownCards(group.key, group.cards).map(row)}
+              {!folded.has(group.key) && group.cards.length > GROUP_PAGE && !more.has(group.key) ? (
+                <button className="deck-fold-more" onClick={() => setMore((current) => new Set(current).add(group.key))}>
+                  {group.cards.length - GROUP_PAGE} more
+                </button>
+              ) : null}
+            </div>
+          ))}
+          {stale.length > 0 ? (
+            <div className="deck-ny-group deck-ny-group-stale">
+              <div className="deck-ny-group-bar">
+                <button
+                  className="deck-ny-group-head"
+                  aria-expanded={staleOpen}
+                  onClick={() => setStaleOpen((v) => !v)}
+                >
+                  <span className="deck-ny-caret">{staleOpen ? '▾' : '▸'}</span>
+                  Older than {STALE_DECISION_DAYS} days
+                  <span className="deck-ny-group-count">{stale.length}</span>
+                </button>
+                {bulk ? (
+                  <span className="deck-ny-bulk-note" role="status">
+                    {bulk.verb === 'card-later' ? 'Snoozing' : 'Withdrawing'} {bulk.done}/{bulk.total}
+                    {bulk.refused ? ` · ${bulk.refused} refused` : ''}
+                  </span>
+                ) : (
+                  <>
+                    <button
+                      className="deck-btn deck-btn-xs"
+                      title="Off the needs-you strip and the tray for 4 hours (the cards stay open)"
+                      onClick={() => void runBulk('card-later')}
+                    >
+                      Later
+                    </button>
+                    <button
+                      className={`deck-btn deck-btn-xs ${confirmDismiss ? 'deck-btn-danger' : ''}`}
+                      title={`Withdraw all ${stale.length}; each asking session is told "owner: not needed"`}
+                      onClick={() => (confirmDismiss ? void runBulk('card-not-needed') : setConfirmDismiss(true))}
+                      onBlur={() => setConfirmDismiss(false)}
+                    >
+                      {confirmDismiss ? `Withdraw ${stale.length}?` : 'Dismiss all'}
+                    </button>
+                  </>
+                )}
+              </div>
+              {staleOpen ? stale.map(row) : null}
+            </div>
+          ) : null}
+        </>
+      )}
+      {fyi.length > 0 ? (
+        <details className="deck-fold">
+          <summary>{fyi.length} FYI — nothing to answer</summary>
+          {fyi.map((card) => (
+            <div className="deck-fyi-line" key={card.id} title={card.summary || card.title}>
+              <span className="deck-ny-title">{card.title}</span>
+              <time className="deck-ny-age">{formatAge(card.createdAt, nowMs)}</time>
+            </div>
+          ))}
+        </details>
+      ) : null}
+    </section>
   );
 }
 
@@ -1421,20 +1657,34 @@ function SystemSection() {
     return `${profile} · ${tt} terminal session(s)${ttNote ? ` — ${ttNote}` : ''}`;
   })();
 
-  // One sentence per source, in words -- and when every source failed for the SAME
-  // reason, that reason ONCE instead of once per row.
-  const lines = [voiceLine, visionLine, desktopLine, connectLine].map((line) =>
-    transportNote(line.replace(/^(unreachable|down|unavailable) — /, '')));
-  const cause = sharedCause(lines);
-  const [voiceText, visionText, desktopText, connectText] = lines;
+  // One state per source, in words; the raw text is the row's tooltip. When every
+  // source failed for the SAME reason, that reason ONCE instead of once per row.
+  const pending = !voice && !vision && !desktop && !connect;
+  const lines: AwarenessLine[] = [
+    awarenessLine('Voice', voiceLine),
+    awarenessLine('Vision', visionLine),
+    awarenessLine('Desktop', desktopLine, 'Desktop context'),
+    awarenessLine('Workspace', connectLine, 'Workspace'),
+  ];
+  const cause = sharedCause([voiceLine, visionLine, desktopLine, connectLine].map((line) =>
+    transportNote(line.replace(/^(unreachable|down|unavailable) — /, ''))));
+  const platformUnknown = serviceCount === '?' && agentsCount === '?';
+  if (sys) {
+    lines.unshift(platformUnknown
+      ? { name: 'System', ok: false, state: 'Platform not answering', detail: noteOf(sys.system) || sys.reason || 'no services listed' }
+      : { name: 'System', ok: true, state: `Platform: ${serviceCount} services · ${agentsCount} agent activities`, detail: '' });
+  }
+  const degraded = lines.filter((line) => !line.ok);
+  const healthy = lines.filter((line) => line.ok);
 
   return (
     <section className="deck-section" aria-label="System awareness">
       <h2 className="deck-section-head">
         <span className="deck-section-icon"><MonitorIcon /></span>
-        System awareness
+        System
+        {degraded.length > 0 ? <span className="deck-section-count">{degraded.length}</span> : null}
         <button
-          className="deck-chip"
+          className="deck-chip deck-head-chip"
           title="Refresh every awareness source"
           onClick={() => runAwareness()}
           disabled={busy}
@@ -1442,42 +1692,32 @@ function SystemSection() {
           {busy ? '…' : 'Refresh'}
         </button>
       </h2>
-      <div className="deck-row deck-row-static">
-        <span className="deck-row-label">System</span>
-        <span className="deck-row-label">
-          {serviceCount === '?' && agentsCount === '?'
-            ? 'unknown — the platform did not answer'
-            : `${serviceCount} service key(s) · ${agentsCount} agent activity key(s)`}
-        </span>
-      </div>
+      {pending ? <p className="deck-empty">Checking…</p> : null}
       {cause ? (
-        <div className="deck-row deck-row-static deck-row-cause">
-          <span className="deck-row-label">Voice · Vision · Desktop · Workspace</span>
-          <span className="deck-row-label">all read through one door, and {cause}. Nothing here is broken on its own.</span>
+        <div className="deck-sys-row deck-sys-bad" title={cause}>
+          <span className="deck-sys-dot" />
+          <span className="deck-sys-state">Voice, vision, desktop and workspace all read through one door, and it is down</span>
+          <span className="deck-sys-detail">{cause}</span>
         </div>
       ) : null}
-      {cause ? null : (
-        <div className="deck-row deck-row-static">
-          <span className="deck-row-label">Voice</span>
-          <span className="deck-row-label">{voiceText}</span>
+      {degraded.filter((line) => !cause || line.name === 'System').map((line) => (
+        <div className="deck-sys-row deck-sys-bad" key={line.name} title={line.detail}>
+          <span className="deck-sys-dot" />
+          <span className="deck-sys-state">{line.state}</span>
         </div>
-      )}
-      {cause ? null : (
-        <div className="deck-row deck-row-static">
-          <span className="deck-row-label">Vision</span>
-          <span className="deck-row-label">{visionText}</span>
-        </div>
-      )}
-      {cause ? null : (
-        <div className="deck-row deck-row-static">
-          <span className="deck-row-label">Desktop</span>
-          <span className="deck-row-label">{desktopText}</span>
-        </div>
-      )}
-      <div className="deck-row deck-row-static">
-        <span className="deck-row-label">Workspace</span>
-        <span className="deck-row-label">{cause ? 'see above' : connectText}</span>
-      </div>
+      ))}
+      {!pending && degraded.length === 0 ? <p className="deck-empty">Everything answering.</p> : null}
+      {healthy.length > 0 && !cause ? (
+        <details className="deck-fold">
+          <summary>{healthy.length} OK</summary>
+          {healthy.map((line) => (
+            <div className="deck-sys-row" key={line.name} title={line.detail}>
+              <span className="deck-sys-dot deck-sys-dot-ok" />
+              <span className="deck-sys-state">{line.state}</span>
+            </div>
+          ))}
+        </details>
+      ) : null}
     </section>
   );
 }
@@ -1582,7 +1822,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
       if (event.type !== 'deck:focus-card' || typeof event.id !== 'string') return;
       const id = event.id;
       setFocusCard((current) => ({ id, nonce: (current?.nonce ?? 0) + 1 }));
-      document.querySelector('[aria-label="Decisions"]')?.scrollIntoView({ block: 'start' });
+      document.querySelector('[aria-label="Needs you"]')?.scrollIntoView({ block: 'start' });
     });
   }, []);
 
@@ -1715,7 +1955,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
     }
   }, [chatRootId, chatTarget, runAction, state.relayChannel]);
 
-  // Needs-you pinned first, FYI collapsed below: the flipper's "N of M" is the badge.
+  // Needs-you pinned first, FYI collapsed below.
   const split = splitFlipper(state);
 
   return (
@@ -1813,41 +2053,17 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
             used to sit above it are console panes and tray items now; the
             avatar controls moved to the avatar's own right-click menu. */}
         {!isCharacters ? (<>
-        <section className="deck-section" aria-label="Decisions">
-          <h2 className="deck-section-head">
-            <span className="deck-section-icon"><BellIcon /></span>
-            Decisions
-            {state.openCount > 0 ? <span className="deck-section-count">{state.openCount}</span> : null}
-          </h2>
-          {split.flipper.length === 0 ? (
-            <p className="deck-empty">Nothing waiting — every session is unblocked.</p>
-          ) : (
-            <CardFlipper
-              cards={split.flipper}
-              nowMs={nowMs}
-              onAnswer={handleAnswer}
-              onPopout={(id) => runAction('popout-card', id)}
-              onSpace={state.spaceAvailable ? (link) => void bridgeDeck()?.action('space', link) : undefined}
-              focus={focusCard}
-            />
-          )}
-          {split.fyi.length > 0 ? (
-            <details className="deck-fyi">
-              <summary>{split.fyi.length} FYI — nothing to answer</summary>
-              {split.fyi.map((card) => (
-                <p className="deck-card-summary" key={card.id}>
-                  <strong>{card.title}</strong> · {formatAge(card.createdAt, nowMs)}
-                </p>
-              ))}
-            </details>
-          ) : null}
-          {state.decisions.length > 0 ? (
-            <button className="deck-row" title="Every waiting card in its own answer window" onClick={() => runAction('popup')}>
-              <span className="deck-row-icon"><TerminalIcon /></span>
-              <span className="deck-row-label">Answer window</span>
-            </button>
-          ) : null}
-        </section>
+        <NeedsYouSection
+          cards={split.flipper}
+          fyi={split.fyi}
+          openCount={state.openCount}
+          nowMs={nowMs}
+          onAnswer={handleAnswer}
+          onPopout={(id) => runAction('popout-card', id)}
+          onPopupAll={() => runAction('popup')}
+          onSpace={state.spaceAvailable ? (link) => void bridgeDeck()?.action('space', link) : undefined}
+          focus={focusCard}
+        />
 
         <WakesSection
           wakes={state.wakes}

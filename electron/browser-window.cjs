@@ -65,7 +65,7 @@ function knowledgeClient() {
 }
 
 const PARTITION = "persist:aither-browser";
-const CHROME_HEIGHT = 118; // tab strip (34) + toolbar (44) + banner (40); browser-chrome.html matches
+const CHROME_HEIGHT = 78; // tab strip (34) + toolbar (44, the agent indicator lives in it); browser-chrome.html matches
 // The assistant panel: one HTML file + one preload. Point these at the awkit
 // Connect panel to swap it (see createAssistantPanel).
 const ASSISTANT_PANEL = Object.freeze({

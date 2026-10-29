@@ -7,14 +7,15 @@
 <link rel="stylesheet" href="aither-tokens.css" />
 <style>
   /* The whole window's own page. LEFT: the rail (browser-rail.cjs) -- the avatar's
-     slot, every Aither page, the layer strip. TOP RIGHT: the tab strip + toolbar +
-     banner, CHROME_HEIGHT (118) in browser-window.cjs: 34 tabs + 44 toolbar + 40
-     banner. The page views and the panel are laid over the rest. */
+     slot, every Aither page, the layer strip. TOP RIGHT: the tab strip + toolbar,
+     CHROME_HEIGHT (78) in browser-window.cjs: 34 tabs + 44 toolbar. The agent state
+     is an indicator IN the toolbar (it was a 40px banner row, 2026-10-28). The page
+     views and the panel are laid over the rest. */
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
     font: 13px/1.4 var(--font-sans); }
   :root { --rail-w: 248px; }
-  #top { position: fixed; top: 0; left: var(--rail-w); right: 0; height: 118px; }
+  #top { position: fixed; top: 0; left: var(--rail-w); right: 0; height: 78px; }
   #rail { position: fixed; top: 0; left: 0; bottom: 0; width: var(--rail-w); display: flex; flex-direction: column;
     background: var(--bg-deep, var(--bg)); border-right: 1px solid var(--line); }
   .brand { height: 44px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 8px; }
@@ -122,15 +123,20 @@
   #star { font-size: 15px; }
   #star.on { color: var(--warning); }
   #err { color: var(--destructive); font-size: 12px; max-width: 30%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .banner { height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 12px; color: var(--muted); }
+  /* The agent indicator: a dot when you are browsing (the sentence is its tooltip); a
+     labelled pill with Take over / hand back when an agent drives or waits on you. */
+  .banner { flex: none; display: flex; align-items: center; gap: 6px; max-width: 42%; height: 30px; padding: 0 8px;
+    border-radius: 8px; font-size: 12px; color: var(--muted); }
   .banner.driving { background: color-mix(in srgb, var(--agent-purple) 22%, transparent); color: var(--fg); }
   .banner.paused { background: color-mix(in srgb, var(--warning) 22%, transparent); color: var(--fg); }
-  .banner .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--surface-500); }
+  .banner .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--surface-500); }
   .banner.driving .dot { background: var(--agent-purple); }
   .banner.paused .dot { background: var(--warning); }
-  .banner .msg { flex: 1; }
-  .banner button { height: 26px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line);
-    background: var(--btn); color: var(--fg); cursor: pointer; font-weight: 600; }
+  .banner .msg { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .banner.idle { cursor: pointer; }
+  .banner.idle:hover .dot { background: var(--fg); }
+  .banner.idle .msg { display: none; }
+  .bar .banner button { height: 24px; padding: 0 10px; border-radius: 7px; font-weight: 600; font-size: 12px; flex: none; }
   .banner button[hidden] { display: none; }
 </style>
 </head>
@@ -171,12 +177,12 @@
     <button id="star" title="Bookmark this page" aria-label="Bookmark this page" aria-pressed="false">&#9734;</button>
     <button id="paneltoggle" title="Show or hide the assistant panel" aria-label="Show or hide the assistant panel">&#9707;</button>
     <span id="err" role="status"></span>
-  </div>
-  <div id="banner" class="banner" role="status" aria-live="polite">
-    <span class="dot"></span>
-    <span id="msg" class="msg">You are browsing. An agent can drive this window through the desk's browser tools.</span>
-    <button id="takeover" hidden>Take over</button>
-    <button id="handback" hidden>Let the agent continue</button>
+    <div id="banner" class="banner" role="status" aria-live="polite">
+      <span class="dot"></span>
+      <span id="msg" class="msg">You are browsing. An agent can drive this window through the desk's browser tools.</span>
+      <button id="takeover" hidden>Take over</button>
+      <button id="handback" hidden>Let the agent continue</button>
+    </div>
   </div>
   </div>
 <script>
@@ -218,6 +224,8 @@
     }
   });
   $("takeover").onclick = () => api.takeOver();
+  // Idle, the indicator dot IS the take-over control (the button shows while an agent drives).
+  $("banner").onclick = (e) => { if ($("banner").classList.contains("idle") && e.target.tagName !== "BUTTON") api.takeOver(); };
 
   // The strip. A purple dot marks an agent's tab; the agent never drives yours.
   function renderTabs(list) {
@@ -459,7 +467,8 @@
     document.title = s.title ? `${s.title} — Aither Browser` : "Aither Browser";
     const a = s.agent || {};
     const banner = $("banner");
-    banner.className = "banner" + (a.paused ? " paused" : a.driving ? " driving" : "");
+    banner.className = "banner" + (a.paused ? " paused" : a.driving ? " driving" : " idle");
+    // Idle, the indicator is only a dot: the sentence lives in its tooltip.
     if (a.paused && a.handoff) {
       // The AGENT asked for this step (a captcha, a password, a final Send).
       $("msg").textContent = `Your turn: ${a.handoff.reason} Press "Let the agent continue" when you are done.`;
@@ -471,7 +480,10 @@
     } else {
       $("msg").textContent = "You are browsing. An agent can drive this window through the desk's browser tools.";
     }
-    $("takeover").hidden = Boolean(a.paused);
+    banner.title = a.paused || a.driving ? $("msg").textContent
+      : `${$("msg").textContent} Click to take over (agent browser tools pause until you hand back).`;
+    // Take over stays one click away whenever the agent holds (or may take) the window.
+    $("takeover").hidden = Boolean(a.paused) || !a.driving;
     $("handback").hidden = !a.paused;
   }
   api.onState(render);
