@@ -647,10 +647,47 @@ const startInBackground = process.argv.includes("--background");
 async function adoptWorkspaceFromOnline() {
   if (process.env.LIVING_DESKTOP_URL) return null;
   try {
-    return await deskTenantAuto.adoptFromToken(await browserWindow.onlineToken());
+    const result = await deskTenantAuto.adoptFromToken(await browserWindow.onlineToken());
+    // Who signed in decides whether the owner's "Open a workspace…" row shows.
+    if (tray) refreshTrayMenu();
+    return result;
   } catch {
     return null;
   }
+}
+
+// ── The platform owner opens a customer workspace (desk-tenant-auto.cjs) ──────────
+// Identity decides who may (every call re-asks /auth/me for `platform`); this is only
+// the plumbing: the session's bearer in, a native picker out.
+async function ownerBearer() {
+  try {
+    const online = await browserWindow.onlineToken();
+    if (online) return online;
+  } catch { /* fall back to auth.json */ }
+  try {
+    const stored = require("./desk-session.cjs").readAuthStoreToken();
+    return (stored && stored.token) || "";
+  } catch {
+    return "";
+  }
+}
+async function openOwnerWorkspace(tenantId) {
+  const result = await deskTenantAuto.openOwnerWorkspace(await ownerBearer(), tenantId);
+  if (!result.opened) console.warn(`[desk] workspace not opened: ${result.refused || result.reason}`);
+  return result;
+}
+function backToAitherium() {
+  return deskTenantAuto.backToApex();
+}
+/** "Open a workspace…": list what Identity lets the owner open, pop the picker. */
+async function pickOwnerWorkspace() {
+  const listing = await deskTenantAuto.listOwnerWorkspaces(await ownerBearer());
+  const template = deskTenantAuto.ownerWorkspaceMenu(listing, deskTenant.currentTenant(), {
+    open: (id) => void openOwnerWorkspace(id),
+    back: () => backToAitherium(),
+  });
+  Menu.buildFromTemplate(template).popup();
+  return { ok: listing.ok !== false, count: (listing.workspaces || []).length, error: listing.refused || listing.error };
 }
 /** "Open the Desk panel at startup" — the owner's quick path into the panel, and a
  *  deterministic way to verify the deck live (restart with this flag, screenshot). */
@@ -2898,6 +2935,9 @@ function trayTemplateNow() {
     // "Open workspace — <name>": only in tenant mode; opens the host in the Aither Browser.
     ...deskTenant.tenantTrayItems(deskTenant.currentTenant(),
       (url) => void browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url })),
+    // The platform owner only: "Open a workspace…" and, while one is open, "Back to Aitherium".
+    ...deskTenantAuto.ownerTrayItems(deskTenantAuto.signedInTenantId(), deskTenant.currentTenant(),
+      { pick: () => void pickOwnerWorkspace(), back: () => backToAitherium() }),
     ...awconnectSetup.awconnectTrayItems(latestAwconnectStatus),
     ...spendTrayItems(latestSpend, () => openConsole("spend")),
     ...updateTrayItems(deskUpdater?.staged, deskUpdater?.kind, () => deskUpdater?.restartNow(),
@@ -4744,6 +4784,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     ipcMain.handle("desk:connections", async () => require("./connections.cjs").connections({
       linkStatus: () => require("./link-client.cjs").linkStatus(),
       awconnect: latestAwconnectStatus,
+      workspace: { tenantId: deskTenantAuto.signedInTenantId(), tenant: deskTenant.currentTenant() },
     }));
     ipcMain.handle("desk:connections-run", async (_event, id) => {
       const name = String(id || "");
@@ -4751,6 +4792,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         return { ok: false, error: `${name} cannot run from Connections` };
       }
       if (name === "console.open") { openConsole("sessions"); return { ok: true }; }
+      if (name === "workspace.pick") return pickOwnerWorkspace();
       return (await runCommand(name, undefined, { surface: "palette" })) || { ok: true };
     });
     ipcMain.handle("desk:link-start", async () => {

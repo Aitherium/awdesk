@@ -316,3 +316,191 @@ test("main wires both sign-in doors and every surface to the one adopter", () =>
   assert.match(browser, /function followTenant\(\)/);
   assert.match(browser, /followTenant,/);
 });
+
+// ── The platform owner opens a customer workspace ("Open a workspace") ───────────
+const IDP_TENANTS = "https://idp.aitherium.com/identity/tenants?status_filter=active&limit=500";
+const TENANT_ROWS = { tenants: [
+  { tenant_id: "tnt_garg", slug: "garg", display_name: "GargBot", status: "active", db_name: "x" },
+  // Listed, but its host declares another tenant: never offered.
+  { tenant_id: "tnt_ghost", slug: "ghost", display_name: "Ghost", status: "active" },
+  { tenant_id: "platform", slug: "aitherium", display_name: "Aitherium", status: "active" },
+] };
+const ownerCheck = async () => ({ state: "valid", username: "owner",
+  identity: { tenantId: "platform", tenantSlug: "", workspaceSlug: "" } });
+const customerCheck = async () => ({ state: "valid", username: "jdoe",
+  identity: { tenantId: "tnt_acme", tenantSlug: "acme", workspaceSlug: "" } });
+
+function ownerNet(calls = []) {
+  return fakeFetch({
+    [IDP_TENANTS]: { json: TENANT_ROWS },
+    "https://garg.aitherium.com/config.js": { text: CONFIG_JS("garg", { name: "GargBot", accent: "#22aa66" }) },
+    "https://ghost.aitherium.com/config.js": { text: CONFIG_JS("someone-else") },
+    "https://acme.aitherium.com/config.js": { text: CONFIG_JS("acme") },
+  }, calls);
+}
+
+test("owner: the workspace list comes from Identity /tenants, only hosts whose config.js declares them", async () => {
+  const calls = [];
+  const listing = await auto.listOwnerWorkspaces("owner-bearer", { check: ownerCheck, fetchImpl: ownerNet(calls) });
+  assert.equal(listing.ok, true);
+  assert.deepEqual(listing.workspaces, [{ tenantId: "tnt_garg", host: "garg.aitherium.com", label: "garg",
+    name: "GargBot", accent: "#22aa66" }]);
+  const tenantsCall = calls.find((c) => c.url === IDP_TENANTS);
+  assert.equal(tenantsCall.init.headers.Authorization, "Bearer owner-bearer");
+  // The public config.js probes carry nothing of the owner's.
+  for (const c of calls.filter((x) => x.url.endsWith("/config.js"))) {
+    assert.equal(c.init.credentials, "omit");
+    assert.equal(c.init.headers, undefined);
+  }
+  // Identity down: an error, no list.
+  const down = await auto.listOwnerWorkspaces("owner-bearer", { check: ownerCheck, fetchImpl: fakeFetch({}) });
+  assert.equal(down.ok, false);
+  assert.match(down.error, /404/);
+});
+
+test("owner: Open GargBot writes an owner-switch desk-tenant.json; re-sign-in keeps it; Back to Aitherium clears it", async (t) => {
+  const homedir = tempHome();
+  auto._resetForTests();
+  t.after(() => auto._resetForTests());
+  const fetchImpl = ownerNet();
+  const current = () => deskTenant.resolveTenant({ argv: [], env: {}, homedir });
+  const notices = [];
+  auto.onWorkspaceChange((r) => notices.push(r));
+  const opened = await auto.openOwnerWorkspace("owner-bearer", "tnt_garg", { check: ownerCheck, homedir, fetchImpl });
+  assert.equal(opened.opened, true);
+  assert.equal(opened.host, "garg.aitherium.com");
+  assert.deepEqual(JSON.parse(fs.readFileSync(deskTenant.configPath(homedir), "utf8")),
+    { host: "garg.aitherium.com", source: "owner-switch", tenant_id: "tnt_garg", name: "GargBot", accent: "#22aa66" });
+  const tenant = current().tenant;
+  assert.equal(tenant.ownerSwitch, true);
+  assert.equal(tenant.auto, false);
+  assert.equal(tenant.tenantId, "tnt_garg");
+  assert.equal(deskTenant.overlayBaseUrl(tenant), "https://garg.aitherium.com/");
+  assert.equal(notices.length, 1);
+  // The owner's own session sync must not undo his choice.
+  assert.deepEqual(await auto.autoResolveTenant({ tenantId: "platform" }, { current, homedir, fetchImpl }),
+    { adopted: false, reason: "owner opened this workspace" });
+  assert.equal(current().tenant.host, "garg.aitherium.com");
+  // The tray offers the way back while a workspace is open.
+  assert.deepEqual(auto.ownerTrayItems("platform", tenant, { pick() {}, back() {} }).map((r) => r.label),
+    ["Open a workspace…", "Back to Aitherium"]);
+  assert.equal(auto.backToApex({ current, homedir }).removed, true);
+  assert.equal(current().tenant, null);
+  assert.equal(notices[1].cleared, true);
+  assert.equal(auto.backToApex({ current, homedir }).removed, false, "nothing left to go back from");
+});
+
+test("owner: sign-out removes an owner-switch workspace", async (t) => {
+  const homedir = tempHome();
+  auto._resetForTests();
+  t.after(() => auto._resetForTests());
+  await auto.openOwnerWorkspace("owner-bearer", "tnt_garg", { check: ownerCheck, homedir, fetchImpl: ownerNet() });
+  assert.equal(auto.signedOut({ homedir }).removed, true);
+  assert.equal(fs.existsSync(deskTenant.configPath(homedir)), false);
+});
+
+test("owner: a host that does not declare the tenant is refused; a hand-written config is never overwritten", async () => {
+  const homedir = tempHome();
+  const fetchImpl = ownerNet();
+  assert.deepEqual(await auto.openOwnerWorkspace("owner-bearer", "tnt_ghost", { check: ownerCheck, homedir, fetchImpl }),
+    { opened: false, reason: "no host declares this tenant" });
+  assert.equal((await auto.openOwnerWorkspace("owner-bearer", "platform", { check: ownerCheck, homedir, fetchImpl })).opened, false);
+  fs.mkdirSync(path.join(homedir, ".aither"), { recursive: true });
+  const original = JSON.stringify({ host: "acme.aitherium.com" });
+  fs.writeFileSync(deskTenant.configPath(homedir), original);
+  const r = await auto.openOwnerWorkspace("owner-bearer", "tnt_garg", { check: ownerCheck, homedir, fetchImpl });
+  assert.deepEqual(r, { opened: false, reason: "config exists" });
+  assert.equal(fs.readFileSync(deskTenant.configPath(homedir), "utf8"), original);
+});
+
+test("SECURITY: a non-platform user can neither list nor open another tenant's workspace", async () => {
+  const homedir = tempHome();
+  const calls = [];
+  const fetchImpl = ownerNet(calls);
+  const listing = await auto.listOwnerWorkspaces("customer-bearer", { check: customerCheck, fetchImpl });
+  assert.equal(listing.ok, false);
+  assert.match(listing.refused, /only the platform owner/);
+  assert.deepEqual(listing.workspaces, []);
+  const opened = await auto.openOwnerWorkspace("customer-bearer", "tnt_garg", { check: customerCheck, homedir, fetchImpl });
+  assert.equal(opened.opened, false);
+  assert.match(opened.refused, /only the platform owner/);
+  assert.equal(calls.length, 0, "no Identity /tenants and no config.js probe for a non-platform session");
+  assert.equal(fs.existsSync(deskTenant.configPath(homedir)), false);
+  // No session, a dead session, a check that throws: refused too.
+  assert.equal((await auto.openOwnerWorkspace("", "tnt_garg", { check: ownerCheck, homedir, fetchImpl })).opened, false);
+  assert.equal((await auto.openOwnerWorkspace("x", "tnt_garg",
+    { check: async () => ({ state: "invalid", username: "" }), homedir, fetchImpl })).opened, false);
+  assert.equal((await auto.openOwnerWorkspace("x", "tnt_garg",
+    { check: async () => { throw new Error("net"); }, homedir, fetchImpl })).opened, false);
+  assert.equal(fs.existsSync(deskTenant.configPath(homedir)), false);
+  // Platform is Identity's exact tenant id, never a slug that looks like it.
+  assert.equal(auto.isPlatformIdentity({ tenantId: "tnt_platform" }), false);
+  assert.equal(auto.isPlatformIdentity({ tenantId: "platform" }), true);
+  // No owner rows in a customer's tray.
+  assert.deepEqual(auto.ownerTrayItems("tnt_acme", null, { pick() {}, back() {} }), []);
+  assert.deepEqual(auto.ownerTrayItems(null, null, { pick() {}, back() {} }), []);
+});
+
+test("SECURITY: a non-platform account signing in after the owner left a workspace open never stays in it", async () => {
+  const homedir = tempHome();
+  const fetchImpl = ownerNet();
+  const current = () => deskTenant.resolveTenant({ argv: [], env: {}, homedir });
+  await auto.openOwnerWorkspace("owner-bearer", "tnt_garg", { check: ownerCheck, homedir, fetchImpl });
+  // A customer with a workspace of their own: moved to it.
+  const swapped = await auto.autoResolveTenant({ tenantId: "tnt_acme", tenantSlug: "acme" }, { current, homedir, fetchImpl });
+  assert.equal(swapped.adopted, true);
+  assert.equal(current().tenant.host, "acme.aitherium.com");
+  assert.equal(current().tenant.ownerSwitch, false);
+  // A customer with no host: back to the apex.
+  await auto.openOwnerWorkspace("owner-bearer", "tnt_garg", { check: ownerCheck, homedir, fetchImpl });
+  assert.equal(current().tenant.ownerSwitch, true);
+  const cleared = await auto.autoResolveTenant({ tenantId: "tnt_nohost" }, { current, homedir, fetchImpl });
+  assert.equal(cleared.cleared, true);
+  assert.equal(current().tenant, null);
+});
+
+test("owner picker: one row per workspace, the open one checked, Back enabled only while one is open", () => {
+  const opened = [];
+  let backs = 0;
+  const listing = { ok: true, workspaces: [{ tenantId: "tnt_garg", host: "garg.aitherium.com", name: "GargBot" }] };
+  const tenant = { host: "garg.aitherium.com", ownerSwitch: true };
+  const menu = auto.ownerWorkspaceMenu(listing, tenant, { open: (id) => opened.push(id), back: () => { backs += 1; } });
+  assert.equal(menu[0].label, "GargBot — garg.aitherium.com");
+  assert.equal(menu[0].checked, true);
+  menu[0].click();
+  assert.deepEqual(opened, ["tnt_garg"]);
+  const back = menu[menu.length - 1];
+  assert.equal(back.label, "Back to Aitherium");
+  assert.equal(back.enabled, true);
+  back.click();
+  assert.equal(backs, 1);
+  const closed = auto.ownerWorkspaceMenu(listing, null, {});
+  assert.equal(closed[closed.length - 1].enabled, false);
+  const refused = auto.ownerWorkspaceMenu({ ok: false, refused: "only the platform owner can open another workspace", workspaces: [] }, null, {});
+  assert.equal(refused.length, 1);
+  assert.equal(refused[0].enabled, false);
+});
+
+test("Connections: a Workspace row for the platform owner only", async () => {
+  const { connections, workspaceRow, RUNNABLE } = require("./connections.cjs");
+  const fetchJson = async () => { throw new Error("offline"); };
+  const ownerRows = await connections({ fetchJson, workspace: { tenantId: "platform", tenant: null } });
+  const row = ownerRows.find((r) => r.id === "workspace");
+  assert.equal(row.detail, "Aitherium (platform)");
+  assert.equal(row.action.id, "workspace.pick");
+  assert.ok(RUNNABLE.includes("workspace.pick"));
+  const inGarg = workspaceRow({ tenantId: "platform", tenant: { host: "garg.aitherium.com", name: "GargBot", ownerSwitch: true } });
+  assert.match(inGarg.detail, /GargBot \(garg\.aitherium\.com\) — opened as owner/);
+  assert.equal(inGarg.action.label, "Switch");
+  const customerRows = await connections({ fetchJson, workspace: { tenantId: "tnt_acme", tenant: null } });
+  assert.equal(customerRows.find((r) => r.id === "workspace"), undefined);
+  assert.equal(workspaceRow(undefined), null);
+});
+
+test("main wires the owner's workspace picker into the tray and Connections", () => {
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /deskTenantAuto\.ownerTrayItems\(deskTenantAuto\.signedInTenantId\(\), deskTenant\.currentTenant\(\)/);
+  assert.match(main, /if \(name === "workspace\.pick"\) return pickOwnerWorkspace\(\);/);
+  assert.match(main, /workspace: \{ tenantId: deskTenantAuto\.signedInTenantId\(\), tenant: deskTenant\.currentTenant\(\) \}/);
+  assert.match(main, /deskTenantAuto\.listOwnerWorkspaces\(await ownerBearer\(\)\)/);
+});

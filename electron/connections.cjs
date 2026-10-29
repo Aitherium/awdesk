@@ -34,7 +34,7 @@ async function probe(fetchJson, url) {
 }
 
 /** Build every row. Never throws: a probe that fails IS the answer for its row. */
-async function connections({ fetchJson = defaultFetchJson, linkStatus, awconnect } = {}) {
+async function connections({ fetchJson = defaultFetchJson, linkStatus, awconnect, workspace } = {}) {
   const [gateway, adk, awsh, link] = await Promise.all([
     probe(fetchJson, LOCAL.gateway),
     probe(fetchJson, LOCAL.adk),
@@ -97,10 +97,29 @@ async function connections({ fetchJson = defaultFetchJson, linkStatus, awconnect
     action: state === "installed" ? null : { id: "awconnect.setup", label: state ? "Fix" : "Check" },
   });
 
+  const owner = workspaceRow(workspace);
+  if (owner) rows.splice(1, 0, owner);
+
   return rows;
 }
 
-/** Action ids the Settings page may ask main to run. */
-const RUNNABLE = Object.freeze(["link", "awconnect.setup", "console.open", "local.install"]);
+/** The platform owner's workspace row (desk-tenant-auto "Open a workspace"): which host
+ *  this Desk is on, and a button that opens the picker. null for anyone else -- a
+ *  customer's Desk has no workspace switch. `workspace` = {tenantId, tenant}. */
+function workspaceRow(workspace) {
+  if (!workspace || workspace.tenantId !== "platform") return null;
+  const tenant = workspace.tenant;
+  return {
+    id: "workspace", label: "Workspace",
+    ok: true,
+    detail: tenant && tenant.host
+      ? `${tenant.name || tenant.host} (${tenant.host})${tenant.ownerSwitch ? " — opened as owner" : ""}`
+      : "Aitherium (platform)",
+    action: { id: "workspace.pick", label: tenant && tenant.ownerSwitch ? "Switch" : "Open a workspace" },
+  };
+}
 
-module.exports = { connections, LOCAL, RUNNABLE };
+/** Action ids the Settings page may ask main to run. */
+const RUNNABLE = Object.freeze(["link", "awconnect.setup", "console.open", "local.install", "workspace.pick"]);
+
+module.exports = { connections, workspaceRow, LOCAL, RUNNABLE };

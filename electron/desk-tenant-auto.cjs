@@ -18,6 +18,14 @@
  *  user's tenant_id. A same-named first-party host (docs, api, ...) declares no tenant,
  *  so it can never be picked; the platform tenant (`platform`) never maps to a host.
  *
+ *  The platform owner is the exception, by choice not by discovery (owner, 2026-10-29:
+ *  "open Garg's workspace from the Desk"): a `platform` principal may OPEN any tenant
+ *  Identity lists for him (GET /tenants, admin-only -- the same list Veil's People &
+ *  customers page reads), each host validated by the SAME public config.js check. That
+ *  writes desk-tenant.json with `source: "owner-switch"`; sign-out and "Back to
+ *  Aitherium" remove it, and any NON-platform account signing in replaces or clears it.
+ *  Every owner action re-asks Identity /auth/me; a non-platform session is refused.
+ *
  *  No customer name or host is compiled in: Desk stays a public build.
  *  Electron-free and every edge injected, so desk-tenant-auto.test.cjs runs under node.
  */
@@ -138,14 +146,23 @@ async function autoResolveTenant(identity, {
     resolution = null;
   }
   const tenant = resolution && resolution.tenant;
-  if (tenant && !tenant.auto) return { adopted: false, reason: "tenant already configured" };
-  if (!identity || !identity.tenantId) return { adopted: false, reason: "no tenant on this account" };
+  if (!identity || !identity.tenantId) {
+    return { adopted: false, reason: tenant && !tenant.auto ? "tenant already configured" : "no tenant on this account" };
+  }
+  // The owner's own "Open a workspace" choice stays while the OWNER is signed in; any
+  // other account is never left inside a workspace it was not given (replaced/cleared
+  // below exactly like a sign-in-written file).
+  if (tenant && tenant.ownerSwitch && isPlatformIdentity(identity)) {
+    return { adopted: false, reason: "owner opened this workspace" };
+  }
+  const deskWritten = Boolean(tenant && (tenant.auto || tenant.ownerSwitch));
+  if (tenant && !deskWritten) return { adopted: false, reason: "tenant already configured" };
   if (tenant && tenant.auto && tenant.tenantId === identity.tenantId) {
     return { adopted: false, reason: "already this account's workspace" };
   }
   const found = candidateLabels(identity).length ? await discoverTenantHost(identity, { fetchImpl, timeoutMs }) : null;
   if (!found) {
-    if (tenant && tenant.auto) {
+    if (deskWritten) {
       const gone = deskTenant.forgetAutoTenant({ homedir, fsImpl });
       if (gone.removed) return { adopted: false, cleared: true, reason: "another account's workspace forgotten" };
     }
@@ -239,6 +256,159 @@ function signedOut(opts = {}) {
   return gone;
 }
 
+// ── The platform owner opens a customer workspace ("Open a workspace") ───────────
+const PLATFORM_TENANT = "platform";
+const MAX_WORKSPACES = 500;
+
+/** True only for Identity's platform principal (tenant_id exactly `platform`). */
+function isPlatformIdentity(identity) {
+  return Boolean(identity && identity.tenantId === PLATFORM_TENANT);
+}
+
+/** The tenant id of the last account the adopter saw sign in (null after sign-out).
+ *  A HINT for showing owner rows only -- every owner ACTION re-asks Identity. */
+function signedInTenantId() {
+  return lastTenantId;
+}
+
+/** Ask Identity who `token` is; {identity} for a platform principal, else {refused}. */
+async function ownerSession(token, { check } = {}) {
+  if (typeof token !== "string" || !token) return { refused: "not signed in" };
+  let verdict;
+  try {
+    const checker = check || ((t) => require("./desk-session.cjs").checkToken(t));
+    verdict = await checker(token);
+  } catch {
+    return { refused: "session check failed" };
+  }
+  if (!verdict || verdict.state !== "valid") return { refused: "not signed in" };
+  if (!isPlatformIdentity(verdict.identity)) return { refused: "only the platform owner can open another workspace" };
+  return { identity: verdict.identity };
+}
+
+/** Tenant rows from Identity GET /tenants (admin-only; the list Veil's People & customers
+ *  page reads through /api/admin/tenants). Nothing but id/slug/name/status survives. */
+async function fetchTenantRows(token, { idp, fetchImpl = globalThis.fetch, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
+  const oidc = require("./desk-oidc.cjs");
+  const base = oidc.checkIdp(idp || oidc.DEFAULT_IDP);
+  const ctl = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
+  try {
+    const res = await fetchImpl(`${base}/tenants?status_filter=active&limit=${MAX_WORKSPACES}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      redirect: "manual", signal: ctl ? ctl.signal : undefined,
+    });
+    if (!res || res.status !== 200) return { error: `Identity /tenants answered ${res ? res.status : "nothing"}` };
+    const body = await res.json();
+    const rows = body && Array.isArray(body.tenants) ? body.tenants : null;
+    if (!rows) return { error: "Identity /tenants returned no tenant list" };
+    return {
+      rows: rows.slice(0, MAX_WORKSPACES).filter((r) => r && typeof r === "object").map((r) => ({
+        tenantId: typeof r.tenant_id === "string" ? r.tenant_id.trim().toLowerCase() : "",
+        slug: typeof r.slug === "string" ? r.slug.trim().toLowerCase() : "",
+        name: typeof r.display_name === "string" ? r.display_name : "",
+        status: typeof r.status === "string" ? r.status : "active",
+      })),
+    };
+  } catch (err) {
+    return { error: `Identity /tenants unreachable (${err && err.name ? err.name : "error"})` };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * The workspaces the platform owner may open: every active tenant Identity lists whose
+ * host's public config.js declares it (the same check sign-in discovery uses).
+ * Resolves { ok, workspaces: [{tenantId, host, label, name, accent?}], error? }.
+ * A non-platform session gets { ok:false, refused } and NO Identity /tenants call.
+ */
+async function listOwnerWorkspaces(token, { check, idp, fetchImpl = globalThis.fetch, timeoutMs } = {}) {
+  const who = await ownerSession(token, { check });
+  if (who.refused) return { ok: false, refused: who.refused, workspaces: [] };
+  const listed = await fetchTenantRows(token, { idp, fetchImpl, timeoutMs });
+  if (listed.error) return { ok: false, error: listed.error, workspaces: [] };
+  const found = await Promise.all(listed.rows
+    .filter((r) => r.status === "active" && r.tenantId.startsWith("tnt_"))
+    .map(async (r) => {
+      const host = await discoverTenantHost({ tenantId: r.tenantId, tenantSlug: r.slug, workspaceSlug: "" },
+        { fetchImpl, timeoutMs });
+      if (!host) return null;
+      return { tenantId: r.tenantId, host: host.host, label: host.label,
+        name: host.name || r.name || host.label, ...(host.accent ? { accent: host.accent } : {}) };
+    }));
+  const workspaces = found.filter(Boolean).sort((a, b) => a.name.localeCompare(b.name));
+  return { ok: true, workspaces };
+}
+
+/**
+ * Open one workspace for the platform owner. The tenant id is re-validated here (Identity
+ * says the caller is platform; the host's config.js declares the tenant), never trusted
+ * from a menu. Writes desk-tenant.json (`source: "owner-switch"`) and notifies every window.
+ * A hand-written / installer config is never overwritten.
+ */
+async function openOwnerWorkspace(token, tenantId, { check, homedir, fsImpl, fetchImpl = globalThis.fetch, timeoutMs } = {}) {
+  const who = await ownerSession(token, { check });
+  if (who.refused) return { opened: false, refused: who.refused };
+  const id = typeof tenantId === "string" ? tenantId.trim().toLowerCase() : "";
+  if (!id.startsWith("tnt_")) return { opened: false, reason: "not a customer tenant id" };
+  const found = await discoverTenantHost({ tenantId: id, tenantSlug: "", workspaceSlug: "" }, { fetchImpl, timeoutMs });
+  if (!found) return { opened: false, reason: "no host declares this tenant" };
+  const wrote = deskTenant.persistOwnerTenant({ ...found, tenantId: id }, { homedir, fsImpl });
+  if (!wrote.written) return { opened: false, reason: wrote.reason };
+  const result = { opened: true, adopted: true, ownerSwitch: true, host: found.host, file: wrote.file };
+  notify(result);
+  return result;
+}
+
+/** "Back to Aitherium": drop the owner's workspace choice (never a hand-written file). */
+function backToApex(opts = {}) {
+  let resolution = null;
+  try {
+    resolution = (opts.current || (() => deskTenant.currentResolution()))();
+  } catch { /* treated as no tenant */ }
+  const tenant = resolution && resolution.tenant;
+  if (!tenant || !tenant.ownerSwitch) return { removed: false, reason: "no workspace opened by the owner" };
+  let gone;
+  try {
+    gone = deskTenant.forgetAutoTenant({ homedir: opts.homedir, fsImpl: opts.fsImpl });
+  } catch {
+    gone = { removed: false, reason: "remove failed" };
+  }
+  if (gone.removed) notify({ adopted: false, cleared: true, reason: "back to Aitherium" });
+  return gone;
+}
+
+/** Tray rows for the platform owner (empty for anyone else): "Open a workspace…" and,
+ *  while one is open, "Back to Aitherium". `tenantId` is the signed-in hint. */
+function ownerTrayItems(tenantId, tenant, { pick, back } = {}) {
+  if (tenantId !== PLATFORM_TENANT) return [];
+  const rows = [{ label: "Open a workspace…", enabled: typeof pick === "function", click: () => pick && pick() }];
+  if (tenant && tenant.ownerSwitch) {
+    rows.push({ label: "Back to Aitherium", enabled: typeof back === "function", click: () => back && back() });
+  }
+  return rows;
+}
+
+/** The picker the owner sees: one row per workspace (the open one checked), then Back. */
+function ownerWorkspaceMenu(listing, tenant, { open, back } = {}) {
+  const rows = [];
+  if (!listing || listing.refused) {
+    rows.push({ label: (listing && listing.refused) || "not signed in", enabled: false });
+    return rows;
+  }
+  if (listing.error) rows.push({ label: `Could not list workspaces: ${listing.error}`, enabled: false });
+  for (const w of listing.workspaces || []) {
+    const here = Boolean(tenant && tenant.host === w.host);
+    rows.push({ label: `${w.name} — ${w.host}`, type: "checkbox", checked: here,
+      click: () => open && open(w.tenantId) });
+  }
+  if (!listing.error && !(listing.workspaces || []).length) rows.push({ label: "No customer workspaces found", enabled: false });
+  rows.push({ type: "separator" });
+  rows.push({ label: "Back to Aitherium", enabled: Boolean(tenant && tenant.ownerSwitch), click: () => back && back() });
+  return rows;
+}
+
 function _resetForTests() {
   listeners.clear();
   lastTenantId = null;
@@ -249,4 +419,6 @@ module.exports = {
   tenantIdentity, tenantIdForLabel, candidateLabels, declaredTenant, declaredBrand,
   fetchConfigJs, discoverTenantHost, autoResolveTenant,
   onWorkspaceChange, adoptIdentity, adoptFromToken, signedOut, _resetForTests,
+  PLATFORM_TENANT, isPlatformIdentity, signedInTenantId, ownerSession, listOwnerWorkspaces,
+  openOwnerWorkspace, backToApex, ownerTrayItems, ownerWorkspaceMenu,
 };

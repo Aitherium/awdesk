@@ -39,6 +39,11 @@ const MAX_NAME = 64;
 const MAX_FILE_BYTES = 64 * 1024;
 /** `source` of a desk-tenant.json written by sign-in discovery (never by a person). */
 const AUTO_SOURCE = "sign-in";
+/** `source` of a desk-tenant.json the platform owner chose with "Open a workspace"
+ *  (desk-tenant-auto.openOwnerWorkspace). Desk-written like AUTO_SOURCE: sign-out removes
+ *  it, and a non-platform account signing in replaces or clears it. */
+const OWNER_SOURCE = "owner-switch";
+const DESK_SOURCES = Object.freeze([AUTO_SOURCE, OWNER_SOURCE]);
 const TENANT_ID_RE = /^[a-z0-9_]{1,80}$/;
 
 function configPath(homedir = os.homedir()) {
@@ -181,10 +186,14 @@ function resolveTenant({ argv = process.argv, env = process.env, homedir = os.ho
     // `auto`: the file was written by sign-in discovery (desk-tenant-auto.cjs), not by an
     // installer or a person -- the next sign-in may replace or remove it.
     const auto = source === "file" && data.source === AUTO_SOURCE;
-    const tenantId = auto && typeof data.tenant_id === "string" && TENANT_ID_RE.test(data.tenant_id) ? data.tenant_id : null;
+    // `ownerSwitch`: the platform owner opened this workspace from the Desk ("Open a
+    // workspace"); sign-out or "Back to Aitherium" removes it.
+    const ownerSwitch = source === "file" && data.source === OWNER_SOURCE;
+    const tenantId = (auto || ownerSwitch) && typeof data.tenant_id === "string" && TENANT_ID_RE.test(data.tenant_id)
+      ? data.tenant_id : null;
     return {
       tenant: { host: verdict.host, name, accent, iconUrl, source, origin: `https://${verdict.host}/`,
-        firstParty: verdict.firstParty === true, auto, tenantId },
+        firstParty: verdict.firstParty === true, auto, ownerSwitch, tenantId },
       warnings,
       argHost: validatedArg,
     };
@@ -204,10 +213,11 @@ function persistFirstRunHost(host, { homedir = os.homedir(), fsImpl = fs } = {})
   return { written: true, file };
 }
 
-/** Is the config file one sign-in discovery wrote (`source: "sign-in"`)? Never throws. */
+/** Did Desk itself write the config file (`source` "sign-in" or "owner-switch")? A file
+ *  a person or an installer wrote is never Desk's. Never throws. */
 function isAutoFile(file, fsImpl) {
   const read = readConfigFile(file, (f, enc) => fsImpl.readFileSync(f, enc));
-  return Boolean(read.data && read.data.source === AUTO_SOURCE);
+  return Boolean(read.data && DESK_SOURCES.includes(read.data.source));
 }
 
 /** Sign-in discovery (desk-tenant-auto.cjs): persist the signed-in user's own tenant
@@ -216,12 +226,23 @@ function isAutoFile(file, fsImpl) {
  *  signed in before on this PC) is replaced. The process-wide tenant is re-resolved so
  *  the next window load lands on the host. */
 function persistAutoTenant({ host, name, accent, tenantId } = {}, { homedir = os.homedir(), fsImpl = fs } = {}) {
+  return persistDeskTenant({ host, name, accent, tenantId }, AUTO_SOURCE, { homedir, fsImpl });
+}
+
+/** "Open a workspace" (platform owner only -- desk-tenant-auto.openOwnerWorkspace guards
+ *  that): the same rules as persistAutoTenant, written with `source: "owner-switch"`. */
+function persistOwnerTenant({ host, name, accent, tenantId } = {}, { homedir = os.homedir(), fsImpl = fs } = {}) {
+  return persistDeskTenant({ host, name, accent, tenantId }, OWNER_SOURCE, { homedir, fsImpl });
+}
+
+function persistDeskTenant({ host, name, accent, tenantId }, source, { homedir, fsImpl }) {
+  if (!DESK_SOURCES.includes(source)) return { written: false, reason: "unknown source" };
   const verdict = validateHost(host);
   if (!verdict.ok || !verdict.firstParty) return { written: false, reason: verdict.reason || "not first-party" };
   const file = configPath(homedir);
   const exists = fsImpl.existsSync(file);
   if (exists && !isAutoFile(file, fsImpl)) return { written: false, reason: "config exists" };
-  const data = { host: verdict.host, source: AUTO_SOURCE };
+  const data = { host: verdict.host, source };
   if (typeof tenantId === "string" && TENANT_ID_RE.test(tenantId)) data.tenant_id = tenantId;
   const cleanedName = cleanName(name);
   if (cleanedName) data.name = cleanedName;
@@ -246,14 +267,15 @@ function persistAutoTenant({ host, name, accent, tenantId } = {}, { homedir = os
   return { written: true, file, replaced: exists };
 }
 
-/** Remove a desk-tenant.json that sign-in discovery wrote (another account, a sign-out),
- *  so Desk is back on the apex with no terminal. A file a person or an installer wrote
- *  is never removed. {removed, reason?}. Never throws. */
+/** Remove a desk-tenant.json Desk wrote (sign-in discovery or the owner's "Open a
+ *  workspace") -- another account, a sign-out, "Back to Aitherium" -- so Desk is back on
+ *  the apex with no terminal. A file a person or an installer wrote is never removed.
+ *  {removed, reason?}. Never throws. */
 function forgetAutoTenant({ homedir = os.homedir(), fsImpl = fs } = {}) {
   const file = configPath(homedir);
   try {
     if (!fsImpl.existsSync(file)) return { removed: false, reason: "no config" };
-    if (!isAutoFile(file, fsImpl)) return { removed: false, reason: "config was not written by sign-in" };
+    if (!isAutoFile(file, fsImpl)) return { removed: false, reason: "config was not written by Desk" };
     fsImpl.unlinkSync(file);
   } catch {
     return { removed: false, reason: "remove failed" };
@@ -323,6 +345,6 @@ function _setResolverForTests(fn) { resolveTenantImpl = fn; }
 module.exports = {
   APEX_HOST, APEX_URL, ARG_PREFIX, ENV_KEY,
   configPath, normaliseHost, validateHost, isFirstPartyHost, readConfigFile, resolveTenant,
-  AUTO_SOURCE, persistFirstRunHost, persistAutoTenant, forgetAutoTenant, baseUrl, overlayBaseUrl, decorateTitle, tenantTrayItems, currentTenant,
+  AUTO_SOURCE, OWNER_SOURCE, persistFirstRunHost, persistAutoTenant, persistOwnerTenant, forgetAutoTenant, baseUrl, overlayBaseUrl, decorateTitle, tenantTrayItems, currentTenant,
   currentResolution, _resetForTests, _setResolverForTests,
 };
