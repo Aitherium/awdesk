@@ -18,7 +18,7 @@ process.env.DESK_BROWSER_CONTEXT_PUSH = "0";
 // The BROWSER-5 checks turn the push on; it may only ever aim at a dead port.
 process.env.DESK_GENESIS_BRIDGE_URL = "http://127.0.0.1:1";
 
-const { app } = require("electron");
+const { app, session } = require("electron");
 const bw = require("./browser-window.cjs");
 
 app.setPath("userData", path.join(os.tmpdir(), `awdesk-browser-tabs-smoke-${process.pid}`));
@@ -152,6 +152,58 @@ app.whenReady().then(async () => {
   await settle();
   expect("the agent's own page is still pushed", agentPush.ok && pushedUrl().endsWith("/AgentPushed"), bw.getState().contextPush);
   process.env.DESK_BROWSER_CONTEXT_PUSH = "0";
+
+  // BROWSER-M3: an agent tab rides the agent's OWN session by default; the toolbar's
+  // "Let the agent use my sign-in" moves that site's agent tabs onto the owner's
+  // session (driven through the REAL chrome IPC), and revoking moves them back.
+  const ownerSession = session.fromPartition(bw.PARTITION);
+  const agentSession = session.fromPartition(bw.AGENT_PARTITION);
+  const control = (host, on) => win.webContents.executeJavaScript(
+    `window.aitherBrowser.agentSignIn(${JSON.stringify(host)}, ${on ? "true" : "false"})`);
+  const first = await agent("open", { url: `${base}/SignInProbe`, new_tab: true });
+  await settle(700);
+  const agentTabId = first.tab;
+  expect("an agent tab is created on the AGENT session (persist:agent) by default",
+    bw.__tabSessionForTest(agentTabId) === agentSession && bw.__tabSessionForTest(agentTabId) !== ownerSession, first);
+  const host = "127.0.0.1";
+  expect("the toolbar control sees the page's site, off by default",
+    bw.getState().agentSignIn.host === host && bw.getState().agentSignIn.allowed === false
+    && bw.getState().agentSignIn.sites.length === 0, bw.getState().agentSignIn);
+
+  const granted = await control(host, true);
+  await settle(900);
+  expect("allowing the site moves the OPEN agent tab onto the owner's session, same address",
+    granted.ok && bw.__tabSessionForTest(agentTabId) === ownerSession
+    && /SignInProbe/.test(bw.getState().tabs.find((t) => t.id === agentTabId).url || ""), { granted, tabs: bw.getState().tabs });
+  expect("the agent tab is marked as riding the owner's sign-in",
+    bw.getState().tabs.find((t) => t.id === agentTabId).agentSignIn === true, bw.getState().tabs);
+  const allowedTab = await agent("open", { url: `${base}/SignInSecond`, new_tab: true });
+  await settle(700);
+  expect("with the site allowed, a NEW agent tab is created on the owner's session",
+    bw.__tabSessionForTest(allowedTab.tab) === ownerSession && bw.getState().agentSignIn.allowed === true, allowedTab);
+  const ownerTab = bw.__openTabForTest(`${base}/OwnerSignIn`);
+  await settle(600);
+  expect("the owner's own tab is never moved (no privacy rule changed by this)",
+    bw.__tabSessionForTest(ownerTab.id) === ownerSession, ownerTab);
+
+  // The prefs file is written (debounced 400 ms): the allow survives a restart of the window.
+  await settle(700);
+  const layoutFile = path.join(app.getPath("userData"), "browser-layout.json");
+  const onDisk = JSON.parse(require("node:fs").readFileSync(layoutFile, "utf8"));
+  expect("the allow-list round-trips through browser-layout.json", Array.isArray(onDisk.agentCookieSites)
+    && onDisk.agentCookieSites.includes(host), onDisk.agentCookieSites);
+
+  const revoked = await control(host, false);
+  await settle(900);
+  expect("revoking sends the open agent tabs back to their own session",
+    revoked.ok && bw.__tabSessionForTest(agentTabId) === agentSession
+    && bw.__tabSessionForTest(allowedTab.tab) === agentSession, { revoked });
+  expect("the site is gone from the toolbar's list",
+    bw.getState().agentSignIn.allowed === false && bw.getState().agentSignIn.sites.length === 0, bw.getState().agentSignIn);
+  const later = await agent("open", { url: `${base}/SignInLater`, new_tab: true });
+  await settle(700);
+  expect("after a revoke a new agent tab is on the agent session again",
+    bw.__tabSessionForTest(later.tab) === agentSession, later);
 
   server.close();
   console.log(fails.length ? `FAILED ${fails.length}` : "ALL PASS");

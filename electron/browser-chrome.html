@@ -94,6 +94,25 @@
     background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; }
   #customize .note { color: var(--muted); font-size: 11px; margin-top: 4px; }
   body.collapsed #customize, body.collapsed #custom { display: none; }
+  /* BROWSER-M3: "Let the agent use my sign-in". The switch is in the toolbar; the site
+     list (see and revoke) is a rail card, because the chrome page owns the rail's
+     height and the page views own everything below the toolbar. */
+  #agentlogin { font-size: 14px; }
+  #agentlogin.on { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 55%, var(--line)); }
+  #agentlogin:disabled { opacity: .35; }
+  #agentlogin-panel { margin: 0 8px 6px; padding: 8px; border: 1px solid var(--line); border-radius: 10px;
+    font-size: 12px; display: grid; gap: 6px; }
+  #agentlogin-panel[hidden] { display: none; }
+  #agentlogin-panel .al-host { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #agentlogin-panel button { height: 26px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; }
+  #agentlogin-panel button:disabled { opacity: .4; cursor: default; }
+  #agentlogin-panel .al-list { display: grid; gap: 3px; }
+  #agentlogin-panel .al-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  #agentlogin-panel .al-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #agentlogin-panel .al-row button { width: 22px; padding: 0; flex: none; }
+  #agentlogin-panel .note { color: var(--muted); font-size: 11px; }
+  body.collapsed #agentlogin-panel { display: none; }
   .tabs { height: 34px; display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0; background: var(--bg-deep, var(--bg));
     overflow-x: auto; scrollbar-width: none; }
   .tab { display: flex; align-items: center; gap: 6px; height: 30px; min-width: 60px; max-width: 220px; flex: 0 1 200px;
@@ -108,6 +127,7 @@
     line-height: 18px; padding: 0; flex: none; }
   .tab .x:hover { background: var(--surface-800, var(--line)); }
   .tab .x.share.on { color: var(--accent, #a78bfa); }
+  .tab .signin { width: 14px; font-size: 11px; color: var(--warning); flex: none; }
   .tab.pinned { flex: 0 0 auto; min-width: 0; padding-right: 10px; }
   .tab.aither .who { background: var(--primary, var(--fg)); opacity: .7; }
   .tab .badge { min-width: 18px; height: 16px; padding: 0 5px; border-radius: 8px; font-size: 10px; line-height: 16px;
@@ -157,6 +177,12 @@
       <div class="note">Drag the edges of the rail and the panel to resize. Click a section name to fold it.</div>
       <button id="opt-reset">Reset layout</button>
     </div>
+    <div id="agentlogin-panel" hidden aria-label="Sites where the agent may use your sign-in">
+      <div class="al-host" id="agentlogin-host">No site on this page</div>
+      <button id="agentlogin-toggle">Let the agent use my sign-in here</button>
+      <div class="al-list" id="agentlogin-sites"></div>
+      <div class="note">Off by default. An allowed site lets the AGENT's tabs there ride your sign-in; your own tabs are never affected. Revoke one to send the agent's tabs back to their own session.</div>
+    </div>
     <div id="slot" hidden aria-label="The avatar, docked"></div>
     <div id="dockrow"><button id="dock" title="Put the avatar here; the browser forms around it">Dock the avatar here</button></div>
     <div id="nav"></div>
@@ -176,6 +202,7 @@
     <input id="url" list="sugg" spellcheck="false" autocomplete="off" aria-label="Address" placeholder="Type an address, or an Aither page (aither://settings)" />
     <datalist id="sugg"></datalist>
     <button id="star" title="Bookmark this page" aria-label="Bookmark this page" aria-pressed="false">&#9734;</button>
+    <button id="agentlogin" title="Let the agent use my sign-in on this site" aria-label="Let the agent use my sign-in on this site" aria-pressed="false" aria-expanded="false">&#9919;</button>
     <button id="paneltoggle" title="Show or hide the assistant panel" aria-label="Show or hide the assistant panel">&#9707;</button>
     <span id="err" role="status"></span>
     <div id="banner" class="banner" role="status" aria-live="polite">
@@ -209,6 +236,61 @@
   $("reload").onclick = () => api.reload();
   $("newtab").onclick = () => api.newTab();
   $("star").onclick = () => api.toggleBookmark();
+
+  // BROWSER-M3 -- "Let the agent use my sign-in" for the site on screen. Off by
+  // default; the rail card lists every allowed site so the owner can revoke one.
+  let signIn = { host: "", allowed: false, sites: [] };
+  $("agentlogin").onclick = () => {
+    const panel = $("agentlogin-panel");
+    panel.hidden = !panel.hidden;
+    $("agentlogin").setAttribute("aria-expanded", String(!panel.hidden));
+    // The card lives in the rail, which is the chrome page's own pixels.
+    if (!panel.hidden && collapsed) api.rail("collapse", false);
+  };
+  $("agentlogin-toggle").onclick = async () => {
+    const r = await api.agentSignIn(signIn.host, !signIn.allowed);
+    if (r && !r.ok) $("err").textContent = r.error || "refused";
+  };
+  function renderSignIn(next) {
+    signIn = next || { host: "", allowed: false, sites: [] };
+    const b = $("agentlogin");
+    const host = signIn.host || "";
+    b.disabled = !host;
+    b.classList.toggle("on", Boolean(signIn.allowed));
+    b.setAttribute("aria-pressed", String(Boolean(signIn.allowed)));
+    b.title = !host ? "This page has no site to share"
+      : signIn.allowed ? `The agent may use your ${host} sign-in (click to see or revoke)`
+        : `Let the agent use my sign-in on ${host}`;
+    b.setAttribute("aria-label", b.title);
+    $("agentlogin-host").textContent = host || "No site on this page";
+    const toggle = $("agentlogin-toggle");
+    toggle.disabled = !host;
+    toggle.textContent = signIn.allowed ? "Stop the agent using my sign-in here" : "Let the agent use my sign-in here";
+    const list = $("agentlogin-sites");
+    list.textContent = "";
+    for (const site of signIn.sites || []) {
+      const row = document.createElement("div");
+      row.className = "al-row";
+      const name = document.createElement("span");
+      name.textContent = site; // never innerHTML
+      const off = document.createElement("button");
+      off.textContent = "×";
+      off.title = `Stop the agent using your ${site} sign-in`;
+      off.setAttribute("aria-label", off.title);
+      off.onclick = async () => {
+        const r = await api.agentSignIn(site, false);
+        if (r && !r.ok) $("err").textContent = r.error || "refused";
+      };
+      row.append(name, off);
+      list.append(row);
+    }
+    if (!(signIn.sites || []).length) {
+      const none = document.createElement("div");
+      none.className = "note";
+      none.textContent = "No site allowed: the agent browses in its own session.";
+      list.append(none);
+    }
+  }
   // Suggestions: your bookmarks, then your history, then pages an agent visited.
   let suggestSeq = 0;
   $("url").addEventListener("input", async () => {
@@ -272,6 +354,15 @@
         share.setAttribute("aria-pressed", String(Boolean(t.shared)));
         share.onclick = (e) => { e.stopPropagation(); void api.shareTab(t.id, !t.shared); };
         tab.append(share);
+      }
+      // BROWSER-M3: this AGENT tab is riding the owner's sign-in (its site is allowed).
+      if (t.agentSignIn) {
+        const key = document.createElement("span");
+        key.className = "signin";
+        key.textContent = "⚿";
+        key.title = "This agent tab uses your sign-in for this site";
+        key.setAttribute("aria-label", key.title);
+        tab.append(key);
       }
       if (t.popped) tab.style.opacity = "0.7";
       // Pinned tabs are the console's front door: they do not close from the strip.
@@ -471,6 +562,7 @@
     $("star").innerHTML = s.bookmarked ? "&#9733;" : "&#9734;";
     $("star").classList.toggle("on", Boolean(s.bookmarked));
     $("star").setAttribute("aria-pressed", String(Boolean(s.bookmarked)));
+    renderSignIn(s.agentSignIn);
     if (!editing && typeof s.url === "string") $("url").value = s.url;
     $("back").disabled = !s.canGoBack;
     $("forward").disabled = !s.canGoForward;

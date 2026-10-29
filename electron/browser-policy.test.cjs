@@ -227,8 +227,12 @@ test("browser-window: page view has no preload, is sandboxed, isolated, and popu
   assert.doesNotMatch(page[0], /preload:/, "page content must get NO preload");
   // Since aither:// (plan slice 8) the preferences come from ONE pure function, per
   // tab kind; a WEB tab's are asserted here, the internal/hosted ones in
-  // browser-internal.test.cjs.
-  assert.match(page[0], /webPreferences: internal\.withDeskHost\(kind, target\.paneId, extensions\.withCompat\(kind, internal\.tabPreferences\(kind === "extension" \? "web" : kind, \{\s*webPartition: PARTITION,/);
+  // browser-internal.test.cjs. BROWSER-M3: the web session is the CALLER's pick
+  // (owner partition or the agent's own, browser-agent-cookies.partitionFor), never
+  // the constant hardcoded here -- otherwise one view builder silently shares cookies.
+  assert.match(page[0], /webPreferences: internal\.withDeskHost\(kind, target\.paneId, extensions\.withCompat\(kind, internal\.tabPreferences\(kind === "extension" \? "web" : kind, \{\s*webPartition, hostedPartition: target\.partition \|\| hostedPartition,/);
+  assert.doesNotMatch(page[0], /webPartition: PARTITION/,
+    "the page-view builder must not hardcode the owner's session (BROWSER-M3)");
   // withDeskHost: the desk-host preload for the pinned Online tab ONLY.
   const { withDeskHost } = require("./browser-internal.cjs");
   assert.match(withDeskHost("hosted", "desktop", {}).preload, /living-desktop-preload\.cjs$/);

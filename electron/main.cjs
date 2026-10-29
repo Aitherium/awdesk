@@ -4353,7 +4353,11 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         posture: deskPostureState,
         reclaim: ({ pressure }) => {
           try { browserWindow.discardHiddenTabs({ pressure }); } catch { /* no browser */ }
-          for (const ses of [electronSession.defaultSession, electronSession.fromPartition(browserWindow.PARTITION)]) {
+          // Under pressure every page session gives up its cache, the agent's own too
+          // (BROWSER-M3: it is a second session with its own cache).
+          for (const ses of [electronSession.defaultSession,
+            electronSession.fromPartition(browserWindow.PARTITION),
+            electronSession.fromPartition(browserWindow.AGENT_PARTITION)]) {
             try { void ses.clearCache(); } catch { /* best effort */ }
           }
         },

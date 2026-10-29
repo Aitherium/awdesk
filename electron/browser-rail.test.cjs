@@ -84,7 +84,7 @@ test("a hand-edited layout file cannot wedge the window", () => {
   assert.deepEqual(rail.normalizeLayout({ railWidth: "abc", panelWidth: -4, collapsedSections: [1, "Apps", "Apps"] }),
     { railWidth: rail.RAIL_WIDTH, panelWidth: rail.PANEL_MIN, railCollapsed: false, panelCollapsed: false,
       taskbar: true, dock: true, dockOpen: false, dockHeight: rail.DOCK_HEIGHT, overlay: false,
-      collapsedSections: ["Apps"], launchModes: {} });
+      collapsedSections: ["Apps"], launchModes: {}, agentCookieSites: [] });
   assert.equal(rail.normalizeLayout({ railWidth: null }).railWidth, rail.RAIL_WIDTH, "reset means default, not minimum");
   assert.equal(rail.normalizeLayout({ taskbar: false }).taskbar, false);
   assert.equal(rail.normalizeLayout({ overlay: "yes" }).overlay, false, "on only when exactly true");

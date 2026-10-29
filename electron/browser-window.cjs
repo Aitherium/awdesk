@@ -58,6 +58,7 @@ const overlayMod = require("./browser-overlay.cjs");
 const deskTenant = require("./desk-tenant.cjs");
 const tabDiscard = require("./tab-discard.cjs");
 const terminalWindow = require("./terminal-window.cjs");
+const agentSessions = require("./browser-agent-cookies.cjs");
 let knowledgeImpl = null;
 function knowledgeClient() {
   if (!knowledgeImpl) knowledgeImpl = require("./knowledge-client.cjs").createKnowledgeClient();
@@ -65,6 +66,8 @@ function knowledgeClient() {
 }
 
 const PARTITION = "persist:aither-browser";
+/** The agent's OWN session (BROWSER-M3, browser-agent-cookies.cjs): its tabs ride this. */
+const AGENT_PARTITION = agentSessions.AGENT_PARTITION;
 const CHROME_HEIGHT = 78; // tab strip (34) + toolbar (44, the agent indicator lives in it); browser-chrome.html matches
 // The assistant panel: one HTML file + one preload. Point these at the awkit
 // Connect panel to swap it (see createAssistantPanel).
@@ -104,7 +107,6 @@ const views = new Map();
 let tabs = new TabSet();
 let panelView = null;
 let ipcWired = false;
-let sessionHardened = false;
 let internalReady = false;
 /** What main injects so aither:// pages resolve (configureInternal). */
 let internalConfig = { rendererUrl: "", hostedUrl: null, hostedPrepare: null, beforeInternal: null,
@@ -328,6 +330,7 @@ function activeView() {
  */
 function tabList() {
   const snap = tabs.snapshot();
+  const ownerSession = electron().session.fromPartition(PARTITION);
   return snap.tabs.map((t) => {
     const view = viewOf(t.id);
     const tab = tabs.get(t.id) || {};
@@ -346,6 +349,10 @@ function tabList() {
       loading: view ? view.webContents.isLoading() : false,
       popped: popped.has(t.id),
       shared: t.by === "you" && tabs.isShared(t.id, url),
+      // An AGENT tab riding the OWNER's cookies because its site is allowed
+      // (BROWSER-M3): read from the live session, not from the prefs, so a tab
+      // opened before the allow shows where it really is.
+      agentSignIn: t.by === "agent" && Boolean(view) && view.webContents.session === ownerSession,
     };
   });
 }
@@ -368,6 +375,9 @@ function state() {
     bookmarked: getLibrary().isBookmarked(wc.getURL()),
     downloads: downloads.list(),
     rail: railState(),
+    // "Let the agent use my sign-in" for the page on screen (BROWSER-M3): its site,
+    // whether the agent may ride the owner's session there, and every allowed site.
+    agentSignIn: agentSessions.stateFor(getPrefs().agentCookieSites, wc.getURL()),
   };
 }
 
@@ -397,10 +407,15 @@ function pushStateNow() {
   if (alive(panelView)) panelView.webContents.send("desk:browser-state", payload);
 }
 
-/** Deny-by-default permissions and agent-time downloads on the page partition. */
+/**
+ * Deny-by-default permissions and agent-time downloads on EVERY page partition:
+ * the owner's (PARTITION) and the agent's own (AGENT_PARTITION, BROWSER-M3). The
+ * guard is per session -- one hardened session must not leave the next one open.
+ */
+const hardenedSessions = new WeakSet();
 function hardenSession(ses) {
-  if (sessionHardened) return;
-  sessionHardened = true;
+  if (!ses || hardenedSessions.has(ses)) return;
+  hardenedSessions.add(ses);
   ses.setPermissionRequestHandler((_wc, permission, callback) => callback(policy.allowPermission(permission)));
   ses.setPermissionCheckHandler((_wc, permission) => policy.allowPermission(permission));
   if (typeof ses.setDevicePermissionHandler === "function") ses.setDevicePermissionHandler(() => false);
@@ -536,7 +551,9 @@ function restoreDiscarded(id) {
   discarded.delete(id);
   if (!tab || !tab.viewSpec) return;
   const spec = tab.viewSpec;
-  const view = createPageView(spec.kind, { paneId: spec.paneId, partition: spec.partition }, null);
+  // The same session the tab was opened in (an agent tab comes back on its own
+  // AGENT_PARTITION, not on the owner's because it was restored).
+  const view = createPageView(spec.kind, { paneId: spec.paneId, partition: spec.partition }, null, spec.webPartition || PARTITION);
   views.set(id, view);
   wirePage(view.webContents, id);
   win.contentView.addChildView(view);
@@ -552,12 +569,16 @@ function restoreDiscarded(id) {
  * internal preload, which hands the page only its own pane's bridge. awconnect's own page
  * gets the compat shim its worker has (withCompat adds a preload for kind "extension"
  * ONLY). The pinned AitherOS Online tab is a DESK HOST (internal.withDeskHost).
+ *
+ * `webPartition` is which WEB session the tab rides: the owner's PARTITION, or the
+ * agent's own AGENT_PARTITION (BROWSER-M3) -- the caller picks it with
+ * agentSessions.partitionFor, so no view is ever created without that decision.
  */
-function createPageView(kind, target, hostedPartition) {
+function createPageView(kind, target, hostedPartition, webPartition = PARTITION) {
   const { WebContentsView } = electron();
   const view = new WebContentsView({
     webPreferences: internal.withDeskHost(kind, target.paneId, extensions.withCompat(kind, internal.tabPreferences(kind === "extension" ? "web" : kind, {
-      webPartition: PARTITION, hostedPartition: target.partition || hostedPartition,
+      webPartition, hostedPartition: target.partition || hostedPartition,
     }))),
   });
   return view;
@@ -1129,6 +1150,12 @@ function openTab(by, url, { activate = true, after = null, pinned = false, key =
     : null;
   if (signedInPartition) hostedPartition = signedInPartition;
   const kind = extensionTab ? "extension" : signedInPartition ? "hosted" : target.kind;
+  // WHICH session the tab rides (BROWSER-M3): the owner's PARTITION for every owner
+  // tab; an agent tab gets its OWN session unless the owner allowed this site ("Let
+  // the agent use my sign-in"). One picker, so no view is ever built without it.
+  const webPartition = kind === "extension" ? PARTITION : agentSessions.partitionFor({
+    by, url: target.url, sites: getPrefs().agentCookieSites, ownerPartition: PARTITION, agentPartition: AGENT_PARTITION,
+  });
   const added = tabs.add(by, { activate, after, kind, pinned, key });
   if (!added.ok) return added;
   const tab = tabs.get(added.id);
@@ -1136,9 +1163,10 @@ function openTab(by, url, { activate = true, after = null, pinned = false, key =
   tab.label = label;
   if (kind === "internal") ensureInternalSession();
   // The view comes from the ONE page-view builder (createPageView: no preload for web
-  // content). viewSpec lets a discarded tab be rebuilt the same way (tab-discard.cjs).
-  tab.viewSpec = { kind, paneId: target.paneId, partition: target.partition || hostedPartition, url: target.url };
-  const view = createPageView(kind, target, hostedPartition);
+  // content). viewSpec lets a discarded tab be rebuilt the same way (tab-discard.cjs),
+  // and carries the session so a restored tab rides the one it was opened in.
+  tab.viewSpec = { kind, paneId: target.paneId, partition: target.partition || hostedPartition, webPartition, url: target.url };
+  const view = createPageView(kind, target, hostedPartition, webPartition);
   views.set(added.id, view);
   wirePage(view.webContents, added.id);
   win.contentView.addChildView(view);
@@ -1545,6 +1573,67 @@ function shareTab(id, on) {
 }
 
 /**
+ * Rebuild one agent tab's view in the session it should ride now (the toolbar's
+ * "Let the agent use my sign-in" granted or revoked for its site). The tab keeps its
+ * id, its place in the strip and its address; the page reloads in the other session.
+ * A POPPED-OUT tab is left alone (its view lives in another window) -- it moves the
+ * next time it is opened.
+ */
+function rebuildAgentView(id) {
+  const tab = tabs.get(id);
+  const view = viewOf(id);
+  if (!tab || !view || popped.has(id)) return false;
+  const url = view.webContents.getURL();
+  const spec = tab.viewSpec || {};
+  const webPartition = agentSessions.partitionFor({
+    by: "agent", url, sites: getPrefs().agentCookieSites, ownerPartition: PARTITION, agentPartition: AGENT_PARTITION,
+  });
+  try { win.contentView.removeChildView(view); } catch { /* already detached */ }
+  views.delete(id);
+  try { view.webContents.close(); } catch { /* already closing */ }
+  tab.viewSpec = { ...spec, kind: tab.kind, paneId: tab.paneId, url, webPartition };
+  const next = createPageView(tab.kind, { paneId: tab.paneId, partition: spec.partition }, spec.partition, webPartition);
+  views.set(id, next);
+  wirePage(next.webContents, id);
+  win.contentView.addChildView(next);
+  if (alive(panelView)) win.contentView.addChildView(panelView);
+  if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
+  layout();
+  void loadInView(next, url).catch(() => {});
+  return true;
+}
+
+/** Move every agent tab on `host` into the session the prefs now pick for it. */
+function rehomeAgentTabs(host) {
+  let moved = 0;
+  for (const tab of tabs.tabs) {
+    if (tab.by !== "agent" || tab.kind !== "web") continue;
+    const view = viewOf(tab.id);
+    if (!view || agentSessions.hostOf(view.webContents.getURL()) !== host) continue;
+    if (rebuildAgentView(tab.id)) moved += 1;
+  }
+  return moved;
+}
+
+/**
+ * The owner's "Let the agent use my sign-in" switch for the site on screen
+ * (BROWSER-M3). Granting lets the agent's tabs for that site ride the OWNER's
+ * session (his logins work); granting or revoking moves the agent tabs already open
+ * on that site, so the switch takes effect at once -- a revoke is not a promise.
+ * Default is off for every site.
+ */
+function agentSignIn(url, on) {
+  const result = on
+    ? agentSessions.allow(getPrefs().agentCookieSites, url)
+    : agentSessions.revoke(getPrefs().agentCookieSites, url);
+  if (!result.ok) return result;
+  setPrefs({ agentCookieSites: result.sites });
+  if (win && !win.isDestroyed()) rehomeAgentTabs(result.host);
+  pushState();
+  return { ok: true, host: result.host, on: Boolean(on), sites: result.sites };
+}
+
+/**
  * Tell AitherDesktop what this window has open (browser-context-push.cjs): the
  * page's machine layer, never its text or a field value. Debounced, so a page
  * that redirects twice is pushed once.
@@ -1596,6 +1685,10 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   }
   const { BrowserWindow, WebContentsView, session } = electron();
   hardenSession(session.fromPartition(PARTITION));
+  // The agent's own session is hardened the same way (deny-by-default permissions,
+  // an agent's download cancelled), and gets NO owner extension: awconnect is loaded
+  // into PARTITION only, so an agent tab cannot reach the desk's signed-in bridges.
+  hardenSession(session.fromPartition(AGENT_PARTITION));
   void ensureAwconnect();
   // Extensions you added on aither://extensions load with the browser.
   void require("./extensions-window.cjs").loadSaved(session.fromPartition(PARTITION)).catch(() => {});
@@ -2248,6 +2341,10 @@ function wireIpc() {
     if (row && row.state === "completed" && row.path) electron().shell.showItemInFolder(row.path);
   });
   ipcMain.handle("desk:browser-tab-share", (event, id, on) => (fromChrome(event) ? shareTab(Number(id), Boolean(on)) : { ok: false }));
+  // BROWSER-M3: "Let the agent use my sign-in" on the site on screen, and the
+  // revoke list's rows (a bare host, no page). Only the browser's own chrome asks.
+  ipcMain.handle("desk:browser-agent-signin", (event, url, on) => (fromChrome(event)
+    ? agentSignIn(String(url ?? ""), Boolean(on)) : { ok: false, error: "not the browser's own chrome" }));
   ipcMain.on("desk:browser-tab-activate", (event, id) => {
     if (fromChrome(event)) showTab(Number(id));
   });
@@ -2416,6 +2513,8 @@ module.exports = {
   ISOLATED_WORLD_ID,
   KEY_CODES,
   PARTITION,
+  /** The agent's own session (BROWSER-M3); its tabs ride this unless a site is allowed. */
+  AGENT_PARTITION,
   browserAgent,
   closeBrowserWindow,
   createAssistantPanel,
@@ -2428,6 +2527,12 @@ module.exports = {
   screenPage,
   /** The owner clicking a tab, for browser-tabs-smoke.cjs (the strip's IPC needs a real sender). */
   __showTabForTest: (id) => showTab(id),
+  /**
+   * BROWSER-M3, for browser-tabs-smoke.cjs: the live Session a tab's view rides, and
+   * the toolbar's "Let the agent use my sign-in" switch (the IPC needs a real sender).
+   */
+  __tabSessionForTest: (id) => { const v = viewOf(id); return v ? v.webContents.session : null; },
+  __agentSignInForTest: (url, on) => agentSignIn(String(url ?? ""), Boolean(on)),
   /** AitherOS Online over web pages (browser-overlay.cjs): the Online layer / Alt+O. */
   setOverlay,
   /** One identity: the Online session's bearer, its sign-in/out, and awconnect's view of it. */

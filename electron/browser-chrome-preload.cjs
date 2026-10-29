@@ -21,6 +21,12 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   dock: (id) => ipcRenderer.invoke("desk:browser-tab-dock", Number(id)),
   /** "Share with agent": an owner tab's URL and title reach the agent only while shared. */
   shareTab: (id, on) => ipcRenderer.invoke("desk:browser-tab-share", Number(id), Boolean(on)),
+  /**
+   * BROWSER-M3: "Let the agent use my sign-in" for ONE site (a host, or the page's
+   * address). On: the agent's tabs for that site ride the owner's session. Off: they
+   * go back to the agent's own session. Answers {ok, host, on, sites} or {ok:false, error}.
+   */
+  agentSignIn: (url, on) => ipcRenderer.invoke("desk:browser-agent-signin", String(url ?? ""), Boolean(on)),
   takeOver: () => ipcRenderer.send("desk:browser-takeover"),
   handBack: () => ipcRenderer.send("desk:browser-handback"),
   /** The rail: "page" <pane id> | "command" <allowlisted id> | "menu" | "collapse" <bool>. */

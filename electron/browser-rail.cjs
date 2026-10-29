@@ -22,6 +22,7 @@
  */
 
 const launchModes = require("./launch-modes.cjs");
+const agentCookies = require("./browser-agent-cookies.cjs");
 
 /** Section order, top to bottom. A section not named here follows in PANES order. */
 const SECTION_ORDER = Object.freeze(["Now", "Voice", "Agents", "Agent apps", "Workspace", "Spaces & sprites", "Stage", "Apps", "Data",
@@ -368,6 +369,9 @@ function normalizeLayout(raw = {}) {
       ? [...new Set(r.collapsedSections.filter((n) => typeof n === "string" && n.length <= 40))].slice(0, 20) : [],
     // Where each Online app opens: tab (default) | window | desktop (launch-modes.cjs).
     launchModes: launchModes.normalizeLaunchModes(r.launchModes),
+    // The sites whose sign-in the agent may ride (BROWSER-M3, browser-agent-cookies.cjs):
+    // empty -- the agent keeps its own session -- until the owner allows a site.
+    agentCookieSites: agentCookies.normalizeSites(r.agentCookieSites),
   };
 }
 
