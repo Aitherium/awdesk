@@ -17,7 +17,7 @@ const protocol = JSON.parse(fs.readFileSync(path.join(__dirname, "aither-host-pr
 const PRELOAD = fs.readFileSync(path.join(__dirname, "living-desktop-preload.cjs"), "utf8");
 
 /** Run the preload; returns its message listener and what it posted. */
-function loadPreload({ argv = [], invoke = async () => null } = {}) {
+function loadPreload({ argv = [], invoke = async () => null, src = PRELOAD, activation = null } = {}) {
   const listeners = { message: [] };
   const ipcOn = {};
   const posted = [];
@@ -31,7 +31,7 @@ function loadPreload({ argv = [], invoke = async () => null } = {}) {
   const ctx = vm.createContext({
     window: win,
     document: { documentElement: { setAttribute: (k, v) => { attrs[k] = v; } } },
-    navigator: {},
+    navigator: activation ? { userActivation: activation } : {},
     sessionStorage: { getItem: () => null, setItem() {} },
     process: { argv },
     require: (name) => {
@@ -39,7 +39,7 @@ function loadPreload({ argv = [], invoke = async () => null } = {}) {
       return { ipcRenderer: { on: (ch, fn) => { ipcOn[ch] = fn; }, send: (...a) => ipcSent.push(a), invoke } };
     },
   });
-  vm.runInContext(PRELOAD, ctx);
+  vm.runInContext(src, ctx);
   const send = async (data, { source = win, origin = "https://aitherium.com" } = {}) => {
     for (const fn of listeners.message) await fn({ source, origin, data });
   };
@@ -188,4 +188,61 @@ test("awsh: Ctrl+K (or Cmd+K) alone is the browser's awsh key", () => {
   assert.equal(fn({ type: "keyUp", control: true, key: "k" }), false);
   assert.equal(fn({ type: "keyDown", key: "k" }), false);
   assert.match(src, /if \(isAwshKey\(input\) && kindOf\(\) !== "internal"\)/, "console pages keep their own Ctrl+K palette");
+});
+
+// ── The taskbar strip's desk plane (browser-taskbar-preload.cjs, 2026-10-28) ─────────
+const TASKBAR_PRELOAD = fs.readFileSync(path.join(__dirname, "browser-taskbar-preload.cjs"), "utf8");
+
+test("deskCommands: the protocol lists every desk command, and the desk allowlists exactly those", () => {
+  const { DESK_COMMANDS } = require("./overlay-browser-host.cjs");
+  assert.deepEqual([...DESK_COMMANDS], protocol.deskCommands);
+  assert.ok(protocol.deskCommands.includes("terminal-dock.toggle"));
+  const strip = TASKBAR_PRELOAD.match(/const TASKBAR_COMMANDS = Object\.freeze\(\[([^\]]*)\]\)/);
+  const ids = (strip[1].match(/"([^"]+)"/g) || []).map((x) => x.slice(1, -1));
+  assert.deepEqual(ids, ["terminal-dock.toggle"]);
+  for (const id of ids) assert.ok(protocol.deskCommands.includes(id), id);
+});
+
+test("taskbar strip: marks the desk host but never data-host (that flag hides the dock it IS)", async () => {
+  const p = loadPreload({ src: TASKBAR_PRELOAD });
+  assert.equal(p.attrs["data-aither-host"], "desk");
+  assert.equal("data-host" in p.attrs, false);
+  await p.send({ __aither: "os-hello" });
+  const [hello, target] = p.posted.find(([m]) => m.__aither === "host-hello");
+  assert.equal(target, "https://aitherium.com");
+  assert.deepEqual(hello.planes, ["desk"], "the desk plane and nothing else");
+  assert.equal(hello.chrome.taskbar, "os", "the strip page draws the taskbar itself");
+  for (const field of protocol.messages["host-hello"].fields) assert.ok(field in hello, field);
+});
+
+test("taskbar strip: advertises only its own commands; sends terminal-dock.toggle only on a real click", async () => {
+  const clicked = { isActive: true };
+  const p = loadPreload({ src: TASKBAR_PRELOAD, activation: clicked });
+  p.ipcOn["desk:taskbar-state"]({}, { commands: ["desk.quit", "terminal-dock.toggle"], terminalDock: { open: true } });
+  assert.deepEqual(p.posted.at(-1), [{ __aither: "desk-state", commands: ["terminal-dock.toggle"], terminalDock: { open: true } },
+    "https://aitherium.com"]);
+  await p.send({ __aither: "desk-command", id: "desk.quit" });
+  await p.send({ __aither: "desk-command", id: "terminal-dock.toggle" }, { origin: "https://evil.test" });
+  await p.send({ __aither: "desk-command", id: "terminal-dock.toggle" }, { source: {} });
+  assert.deepEqual(p.ipcSent, [], "another command, origin or frame never crosses");
+  clicked.isActive = false;
+  await p.send({ __aither: "desk-command", id: "terminal-dock.toggle" });
+  assert.deepEqual(p.ipcSent, [], "no click, no command");
+  clicked.isActive = true;
+  await p.send({ __aither: "desk-command", id: "terminal-dock.toggle" });
+  assert.deepEqual(p.ipcSent, [["desk:taskbar-command", "terminal-dock.toggle"]]);
+});
+
+test("taskbar strip: every kind it handles or posts is a message of the contract", () => {
+  const kinds = new Set();
+  for (const m of TASKBAR_PRELOAD.matchAll(/(?:(?<!typeof )data\.__aither\s*(?:===|!==)|\{\s*__aither:)\s*"([^"]+)"/g)) kinds.add(m[1]);
+  assert.deepEqual([...kinds].sort(), ["desk-command", "desk-state", "host-hello", "os-hello"]);
+  for (const k of kinds) assert.ok(protocol.messages[k], k);
+});
+
+test("the desk's main dispatches terminal-dock.toggle to the browser's dock; the strip's IPC is fenced", () => {
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /if \(id === "terminal-dock\.toggle"\) \{[\s\S]{0,300}browserWindow\.dockAction\("toggle"\)/);
+  const bw = fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
+  assert.match(bw, /ipcMain\.on\("desk:taskbar-command", \(event, id\) => \{\s*if \(!alive\(taskbarView\) \|\| event\.sender !== taskbarView\.webContents\) return;/);
 });

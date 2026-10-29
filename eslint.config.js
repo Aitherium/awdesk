@@ -85,7 +85,7 @@ export default tseslint.config(
   {
     // The preload bridges run in the renderer with contextIsolation, so they
     // legitimately reach DOM globals the electron/node scope omits.
-    files: ['electron/preload.cjs', 'electron/living-desktop-preload.cjs'],
+    files: ['electron/preload.cjs', 'electron/living-desktop-preload.cjs', 'electron/browser-taskbar-preload.cjs'],
     languageOptions: {
       globals: {
         ...globals.node,

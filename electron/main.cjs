@@ -3394,7 +3394,11 @@ setOverlayHost({
       isQuitting = true;
       return void app.quit();
     }
-    if (id === "browser.open") browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
+    if (id === "terminal-dock.toggle") {
+      // The dock lives in the browser window: raise it first, then flip the dock.
+      if (!browserWindow.isBrowserWindowOpen()) browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
+      browserWindow.dockAction("toggle");
+    } else if (id === "browser.open") browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
     else if (id === "browser.takeover") browserWindow.getGate().takeOver();
     else if (id === "browser.handback") browserWindow.getGate().handBack();
     pushDeskState();

@@ -23,7 +23,11 @@
 /** What the overlay card may ask the desk to do. Nothing else crosses. */
 // desk.hide / desk.quit (2026-10-16): the overlay's own Hide and Quit buttons. A customer
 // had to kill the desk from Task Scheduler because quit existed only in the tray menu.
-const DESK_COMMANDS = Object.freeze(["browser.open", "browser.takeover", "browser.handback", "desk.hide", "desk.quit"]);
+// terminal-dock.toggle (2026-10-28): the taskbar's terminal button opens or closes the Aither
+// Browser's bottom terminal dock (browser-window.cjs dockAction). aither-host-protocol.json
+// deskCommands lists every id; host-protocol.test.cjs pins this list to it.
+const DESK_COMMANDS = Object.freeze(["browser.open", "browser.takeover", "browser.handback", "desk.hide", "desk.quit",
+  "terminal-dock.toggle"]);
 const PAGE_ACTIONS = Object.freeze(["click", "type", "read", "scroll", "info", "key"]);
 const CONTEXT_TEXT_CHARS = 12_000;
 

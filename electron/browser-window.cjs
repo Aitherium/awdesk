@@ -758,10 +758,26 @@ function isDockKey(input) {
 
 /** Tell the dock page whether it is open, so its strip draws the right chevron. */
 function sendDockState() {
+  sendTaskbarState();
   if (!alive(dockView)) return;
   const p = getPrefs();
   try {
     dockView.webContents.send("desk:terminal-dock-state", { open: Boolean(p.dockOpen), height: p.dockHeight });
+  } catch { /* the page is going away */ }
+}
+
+/**
+ * The taskbar strip's desk-state (browser-taskbar-preload.cjs): the commands it may offer
+ * (Veil draws the terminal button only when "terminal-dock.toggle" is listed) and the
+ * dock's open state. The strip is a different document from the dock, so it is told too.
+ */
+const TASKBAR_COMMANDS = Object.freeze(["terminal-dock.toggle"]);
+function sendTaskbarState() {
+  if (!alive(taskbarView)) return;
+  const p = getPrefs();
+  const commands = p.dock && dockStatus !== "unavailable" ? TASKBAR_COMMANDS.slice() : [];
+  try {
+    taskbarView.webContents.send("desk:taskbar-state", { commands, terminalDock: { open: Boolean(p.dockOpen) } });
   } catch { /* the page is going away */ }
 }
 
@@ -1005,9 +1021,17 @@ function ensureTaskbar() {
   if (!url) return;
   const { WebContentsView } = electron();
   taskbarView = new WebContentsView({
-    webPreferences: internal.tabPreferences("hosted", { webPartition: PARTITION, hostedPartition: onlinePartition() }),
+    webPreferences: { ...internal.tabPreferences("hosted", { webPartition: PARTITION, hostedPartition: onlinePartition() }),
+      preload: path.join(__dirname, "browser-taskbar-preload.cjs") },
   });
   if (typeof taskbarView.setBackgroundColor === "function") taskbarView.setBackgroundColor("#00000000");
+  // Its ONE bridge: the desk plane, for the terminal button (browser-taskbar-preload.cjs).
+  // Re-told every few seconds: Veil mounts its listener after hydration, whenever that is.
+  const stateTimer = setInterval(() => sendTaskbarState(), 5000);
+  taskbarView.webContents.once("destroyed", () => clearInterval(stateTimer));
+  taskbarView.webContents.on("did-finish-load", () => {
+    for (const ms of [0, 1500, 4000]) setTimeout(() => sendTaskbarState(), ms);
+  });
   taskbarStatus = "loading";
   taskbarOpen = false;
   const wc = taskbarView.webContents;
@@ -1980,6 +2004,14 @@ function wireIpc() {
   ipcMain.handle("desk:browser-state", (event) => (fromChrome(event) || fromPanel(event) ? state() : null));
   // The rail: open an Aither page, run an allowlisted command, pop THE menu, collapse.
   ipcMain.handle("desk:browser-tab-popout", (event, id) => (fromChrome(event) ? popOutTab(Number(id)) : { ok: false }));
+  // The taskbar strip's terminal button: its own webContents only, its one command only.
+  ipcMain.on("desk:taskbar-command", (event, id) => {
+    if (!alive(taskbarView) || event.sender !== taskbarView.webContents) return;
+    if (id === "terminal-dock.toggle") setDockOpen(undefined);
+  });
+  ipcMain.on("desk:taskbar-hello", (event) => {
+    if (alive(taskbarView) && event.sender === taskbarView.webContents) sendTaskbarState();
+  });
   ipcMain.handle("desk:browser-tab-dock", (event, id) => (fromChrome(event) ? dockTab(Number(id)) : { ok: false }));
   ipcMain.handle("desk:browser-rail", (event, action, arg) => {
     if (!fromChrome(event)) return { ok: false, error: "not the browser's own chrome" };

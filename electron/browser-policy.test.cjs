@@ -216,10 +216,13 @@ test("browser-window: page view has no preload, is sandboxed, isolated, and popu
   assert.ok(page, "page view construction found");
   assert.equal((src.match(/new WebContentsView\(/g) || []).length, 3,
     "one page-view builder (openTab) + the panel + the taskbar");
-  // The taskbar is web content too (app.aitherium.com/embed/taskbar): hosted prefs, no preload.
+  // The taskbar is web content too (app.aitherium.com/embed/taskbar): hosted prefs, and ONLY
+  // its own desk-plane preload (browser-taskbar-preload.cjs, 2026-10-28) -- never the
+  // desk-host or an internal one.
   const bar = src.match(/taskbarView = new WebContentsView\(\{[\s\S]*?\n {2}\}\);/);
   assert.ok(bar, "taskbar view construction found");
-  assert.doesNotMatch(bar[0], /preload:/, "the taskbar page must get NO preload");
+  assert.deepEqual(bar[0].match(/preload:[^\n]*/g), ['preload: path.join(__dirname, "browser-taskbar-preload.cjs") },'],
+    "the taskbar page gets its own preload and no other");
   assert.match(bar[0], /internal\.tabPreferences\("hosted"/);
   assert.doesNotMatch(page[0], /preload:/, "page content must get NO preload");
   // Since aither:// (plan slice 8) the preferences come from ONE pure function, per

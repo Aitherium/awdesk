@@ -26,6 +26,7 @@
   "chrome": {
     "taskbar": ["os", "host"]
   },
+  "deskCommands": ["browser.open", "browser.takeover", "browser.handback", "desk.hide", "desk.quit", "terminal-dock.toggle"],
   "messages": {
     "host-hello": { "dir": "host→os", "plane": "handshake", "fields": [ "protocol", "host", "planes", "chrome" ] },
     "os-hello": { "dir": "os→host", "plane": "handshake", "fields": [ "protocol", "planes" ] },
