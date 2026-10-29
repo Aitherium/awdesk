@@ -207,6 +207,15 @@ test("workspace: BusinessPilot, managed agents, fleet, nodes, devices -- fixed p
   assert.ok(sec && sec.rows.every((r) => r.kind === "workspace"));
 });
 
+test("today: the first rail row opens the Online Today window (U2)", () => {
+  const sections = rail.railSections(PANES);
+  assert.equal(sections[0].name, "Today");
+  assert.deepEqual(sections[0].rows.map((r) => [r.kind, r.id, r.label]), [["online", "briefing", "Today"]]);
+  assert.equal(rail.isAgentApp("briefing"), true);
+  const locked = rail.railSections(PANES, { signedIn: false })[0].rows[0];
+  assert.equal(locked.locked, true, "signed out, the row says sign in first");
+});
+
 test("mail: a Workspace row opens the mail view's route-map door (MAIL-3)", () => {
   assert.equal(rail.isWorkspacePage("/workspace/mail"), true);
   const sec = rail.railSections(PANES).find((s) => s.name === "Workspace");

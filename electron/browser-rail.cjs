@@ -25,7 +25,7 @@ const launchModes = require("./launch-modes.cjs");
 const agentCookies = require("./browser-agent-cookies.cjs");
 
 /** Section order, top to bottom. A section not named here follows in PANES order. */
-const SECTION_ORDER = Object.freeze(["Now", "Voice", "Agents", "Agent apps", "Workspace", "Spaces & sprites", "Stage", "Apps", "Data",
+const SECTION_ORDER = Object.freeze(["Today", "Now", "Voice", "Agents", "Agent apps", "Workspace", "Spaces & sprites", "Stage", "Apps", "Data",
   "System", "Network & platform", "Security", "Command & control", "Observability", "Planes", "Online"]);
 const RAIL_WIDTH = 248;
 const RAIL_COLLAPSED_WIDTH = 56;
@@ -84,6 +84,15 @@ const APP_ROWS = Object.freeze([
   Object.freeze({ command: "osapp.sprite", label: "Sprite", hint: "Make and animate sprites", icon: "image" }),
   Object.freeze({ command: "osapp.academy", label: "Academy", hint: "Courses and classes", icon: "book" }),
   Object.freeze({ command: "osapp.spaces", label: "Spaces", hint: "Shared spaces and boards", icon: "grid" }),
+]);
+
+/**
+ * Today (U2, 2026-10-29): the first row of the rail. The Online `briefing` window IS
+ * Today: what needs you (decision cards), to-dos, today's agenda and unread mail, the
+ * same page a signed-in member lands on in AitherOS Online.
+ */
+const TODAY_APPS = Object.freeze([
+  Object.freeze({ app: "briefing", label: "Today", hint: "What needs you now: decisions, to-dos, agenda, mail" }),
 ]);
 
 /**
@@ -235,7 +244,7 @@ function isWorkspacePage(p) {
 
 function isAgentApp(id) {
   const want = String(id || "");
-  return [AGENT_APPS, SPACE_APPS, PLATFORM_APPS, SECURITY_APPS].some((list) => list.some((a) => a.app === want));
+  return [TODAY_APPS, AGENT_APPS, SPACE_APPS, PLATFORM_APPS, SECURITY_APPS].some((list) => list.some((a) => a.app === want));
 }
 
 /**
@@ -286,6 +295,7 @@ function railSections(panes, { activePane = null, signedIn = true, owner = false
         locked: !signedIn, launch: launchModes.launchModeFor(modes, a.app) });
     }
   };
+  online("Today", TODAY_APPS);
   online("Agent apps", AGENT_APPS);
   online("Spaces & sprites", SPACE_APPS);
   online("Platform", PLATFORM_APPS);
@@ -467,6 +477,7 @@ function avatarSlotRect(contentBounds, opts) {
 }
 
 module.exports = {
+  TODAY_APPS,
   AGENT_APPS,
   SPACE_APPS,
   PLATFORM_APPS,
