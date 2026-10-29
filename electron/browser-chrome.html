@@ -343,9 +343,9 @@
     const p = r.panel;
     pg.hidden = !p || p.collapsed || !p.width;
     const d = r.dock && r.dock.rect && r.dock.rect.height ? r.dock.rect : null;
-    // The panel's grip ends where the dock's gutter starts.
+    // The panel's grip starts under the chrome (#top, CHROME_HEIGHT) and ends where the dock's gutter starts.
     const above = d ? window.innerHeight - d.y + g : bottom;
-    if (p && p.width) Object.assign(pg.style, { left: `${p.x - g}px`, width: `${g}px`, top: "118px", bottom: `${above}px` });
+    if (p && p.width) Object.assign(pg.style, { left: `${p.x - g}px`, width: `${g}px`, top: `${$("top").offsetHeight}px`, bottom: `${above}px` });
     const dg = $("grip-dock");
     dg.hidden = !d;
     if (d) Object.assign(dg.style, { left: `${d.x}px`, width: `${d.width}px`, top: `${d.y - g}px`, height: `${g}px` });
