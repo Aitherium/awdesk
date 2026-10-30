@@ -219,6 +219,9 @@ const ADMIN_PAGES = Object.freeze([
   Object.freeze({ path: "/mission-control?tab=moderation&view=marketplace", label: "Marketplace review", hint: "Packs and apps waiting for review", destination: "platform" }),
   Object.freeze({ path: "/mission-control?tab=tenants&view=registrations", label: "Registrations", hint: "New sign-ups", destination: "platform" }),
   Object.freeze({ path: "/mission-control?tab=platform&view=security", label: "Security", hint: "Platform security posture", destination: "platform" }),
+  // GPU (owner 2026-10-29: "MAKE SURE IT'S ALL TRANSPARENT"): who holds the card, why a
+  // lease waited or was refused, the last 20 decisions. Read-only.
+  Object.freeze({ path: "/mission-control?tab=platform&view=gpu", label: "GPU", hint: "Who holds the card, and every grant, refusal and eviction", destination: "platform" }),
   Object.freeze({ path: "/mission-control", label: "Platform", hint: "Mission Control: the platform admin home", destination: "platform" }),
 ]);
 

@@ -331,6 +331,13 @@ test("command & control rows open the page that renders, never a retired /admin/
   assert.equal(new Set(rail.ADMIN_PAGES.map((a) => a.path)).size, rail.ADMIN_PAGES.length, "no duplicate targets");
 });
 
+test("the GPU panel has a rail row: who holds the card is one click away (owner 2026-10-29)", () => {
+  const gpu = rail.ADMIN_PAGES.find((a) => a.label === "GPU");
+  assert.ok(gpu, "a GPU row in command & control");
+  assert.equal(gpu.path, "/mission-control?tab=platform&view=gpu");
+  assert.equal(rail.isAdminPage(gpu.path), true);
+});
+
 test("the Online layer: over pages, or detached onto the desktop; either reads on", () => {
   const row = (o) => rail.layerRows(o).find((l) => l.key === "online");
   assert.equal(row({}).on, false);
