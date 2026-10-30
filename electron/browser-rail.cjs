@@ -25,7 +25,7 @@ const launchModes = require("./launch-modes.cjs");
 const agentCookies = require("./browser-agent-cookies.cjs");
 
 /** Section order, top to bottom. A section not named here follows in PANES order. */
-const SECTION_ORDER = Object.freeze(["Today", "Now", "Voice", "Agents", "Agent apps", "Workspace", "Spaces & sprites", "Stage", "Apps", "Data",
+const SECTION_ORDER = Object.freeze(["Now", "Voice", "Agents", "Agent apps", "Workspace", "Spaces & sprites", "Stage", "Apps", "Data",
   "System", "Network & platform", "Security", "Command & control", "Observability", "Planes", "Online"]);
 const RAIL_WIDTH = 248;
 const RAIL_COLLAPSED_WIDTH = 56;
@@ -77,135 +77,127 @@ const VOICE_ROWS = Object.freeze([
   Object.freeze({ kind: "command", id: "voice.mute-all", label: "Voices on / off", hint: "Every agent voice (Ctrl+Alt+M)" }),
 ]);
 
-/** The OS apps (they open inside AitherOS Online, never as new installables). */
-const APP_ROWS = Object.freeze([
-  Object.freeze({ command: "osapp.family", label: "Family", hint: "The household, devices and kids", icon: "home" }),
-  Object.freeze({ command: "osapp.learn", label: "Learn", hint: "Lessons and the tutor", icon: "book" }),
-  Object.freeze({ command: "osapp.sprite", label: "Sprite", hint: "Make and animate sprites", icon: "image" }),
-  Object.freeze({ command: "osapp.academy", label: "Academy", hint: "Courses and classes", icon: "book" }),
-  Object.freeze({ command: "osapp.spaces", label: "Spaces", hint: "Shared spaces and boards", icon: "grid" }),
-]);
+/* ══════════════════════════════════════════════════════════════════════════════
+   THE CATALOGUE — one grouping, generated from Veil, never hand-listed here.
+
+   Owner, 2026-10-29: "THIS SHIT IS SO DAMN INCONSISTENT! NAVIGATION FUNCTIONALITY,
+   DUPLICATE PAGES/APPS." Measured on this tree the same morning: 97 rows in 16
+   sections, Tunnel under Observability AND Platform, Pulse under Observability AND
+   Planes, and lyra/atlas/vera/hera/demi as five rows that all open the Agents window.
+
+   Two things fixed it, and neither is a list in this file:
+
+     1. desk-apps.generated.json, written by AitherOS/dev/tools/gen_desk_apps.py
+        from Veil's app-registry.tsx + nav-destinations.ts. Every app's label, hint
+        and ONE destination come from there; `--check` fails if this file is stale.
+     2. railSections() groups by DESTINATION and dedupes by what a click OPENS, so
+        two rows for one window collapse no matter which section either came from.
+
+   The nine destinations are the unified surface plan's (S1): Today, Talk, Work,
+   Know, Agents, Create, Worlds, Build, Platform.
+   ══════════════════════════════════════════════════════════════════════════════ */
+const catalogue = require("./desk-apps.generated.json");
+
+const DESTINATIONS = Object.freeze(catalogue.destinations.map((d) => Object.freeze({ ...d })));
+const DESTINATION_ORDER = Object.freeze(DESTINATIONS.map((d) => d.id));
+const DESTINATION_LABEL = new Map(DESTINATIONS.map((d) => [d.id, d.label]));
+const ALIAS_TO = Object.freeze(catalogue.aliasTo || {});
+const APPS_BY_ID = new Map(catalogue.apps.map((a) => [a.id, a]));
+/** The pane's destination, from nav-destinations.ts (the generator emits it). */
+const PANE_DESTINATION = new Map(catalogue.panes.map((p) => [p.id, p.destination]));
+
+/** The generated catalogue's rail set for one destination (curation lives in Veil). */
+function railAppsFor(destination) {
+  return catalogue.apps
+    .filter((a) => a.rail && a.destination === destination)
+    .map((a) => Object.freeze({ app: a.id, label: a.label, hint: a.hint }));
+}
+
+/** The window an id opens: an alias lands on its canonical app, everything else itself. */
+function canonicalId(id) {
+  return ALIAS_TO[String(id || "")] || String(id || "");
+}
+
+/** The destination filed for an app id (alias-resolved), or null when nobody filed it. */
+function destinationOf(appId) {
+  const app = APPS_BY_ID.get(canonicalId(appId));
+  return app ? app.destination : null;
+}
 
 /**
- * Today (U2, 2026-10-29): the first row of the rail. The Online `briefing` window IS
- * Today: what needs you (decision cards), to-dos, today's agenda and unread mail, the
- * same page a signed-in member lands on in AitherOS Online.
+ * The OS apps (they open inside AitherOS Online, never as new installables).
+ * `destination` is the catalogue's own filing for that app id -- the desk command
+ * lands where the app lands, so there is one answer.
  */
-const TODAY_APPS = Object.freeze([
-  Object.freeze({ app: "briefing", label: "Today", hint: "What needs you now: decisions, to-dos, agenda, mail" }),
+const OS_APP_ROWS = Object.freeze([
+  Object.freeze({ command: "osapp.family", app: "family", label: "Family", hint: "The household, devices and kids", icon: "home" }),
+  Object.freeze({ command: "osapp.learn", app: "learn", label: "Learn", hint: "Lessons and the tutor", icon: "book" }),
+  Object.freeze({ command: "osapp.sprite", app: "sprite", label: "Sprite", hint: "Make and animate sprites", icon: "image" }),
+  Object.freeze({ command: "osapp.academy", app: "classroom", label: "Academy", hint: "Courses and classes", icon: "book" }),
+  Object.freeze({ command: "osapp.spaces", app: "spaces", label: "Spaces", hint: "Shared spaces and boards", icon: "grid" }),
 ]);
 
-/**
- * The agent apps (owner, 2026-10-04: "integrating all of the agent apps like aither,
- * aeon, demi, atlas, lyra, saga, iris, vera/hera and the demi forge ide ... entitlement
- * gated and permissioned to me as platform owner"). Each is an AitherOS Online app, so a
- * row opens it in the pinned Online tab (app.aitherium.com/?spawn=<id>), signed in as
- * the desk's account. The PLATFORM gates each one (ACTA / sign-in / owner, Veil
- * app-permissions); the desk only refuses an id not on this list.
- */
-const AGENT_APPS = Object.freeze([
-  Object.freeze({ app: "aitherchat", label: "Aither", hint: "Talk to Aither" }),
-  Object.freeze({ app: "aeon", label: "Aeon", hint: "Agent group chat: the council" }),
-  Object.freeze({ app: "demi", label: "Demi", hint: "Code that builds itself" }),
-  Object.freeze({ app: "forge", label: "Forge", hint: "Demi's IDE: describe it, watch it build" }),
-  Object.freeze({ app: "builder", label: "Iris", hint: "Tell her what should exist" }),
-  Object.freeze({ app: "atlas", label: "Atlas", hint: "Plan anything" }),
-  Object.freeze({ app: "atlas-pm", label: "Atlas PM", hint: "Expeditions, board, agents" }),
-  Object.freeze({ app: "lyra", label: "Lyra", hint: "Research with receipts" }),
-  Object.freeze({ app: "saga", label: "Saga", hint: "Stories and video" }),
-  Object.freeze({ app: "vera", label: "Vera", hint: "The librarian writes" }),
-  Object.freeze({ app: "hera", label: "Hera", hint: "The wire: live news" }),
-]);
-
-/**
- * Spaces and sprites (owner, 2026-10-04: "integrating with aither spaces / retro spaces
- * / myspace + sprites so people can grow their personal agent sprites visibly ... create
- * and customize their own sprite avatars or choose premade ones from the VRoid store").
- * Online apps, opened the same way as the agent apps. The desk's own Characters page
- * (VRoid Hub and the market) and Stage sit beside them in the Stage section.
- */
-const SPACE_APPS = Object.freeze([
-  Object.freeze({ app: "spaces", label: "AitherSpaces", hint: "Friends, agents, rooms: the neighborhood" }),
-  Object.freeze({ app: "myspace", label: "My Space", hint: "Your Space and every public one" }),
-  Object.freeze({ app: "homestead", label: "Homestead", hint: "Your own site" }),
-  Object.freeze({ app: "sprite", label: "Sprite", hint: "Hatch it, teach it, watch it grow" }),
-  Object.freeze({ app: "persona", label: "Avatar", hint: "Make and dress your avatar" }),
-]);
-
-/**
- * Network and platform (owner, 2026-10-04: "aithermesh / aithernet home LAN and
- * distributed fleet management + lockbox and aithertunnel / secure tunnels + licenses,
- * apps / agent packs"). Online apps, platform-gated (Control and Admin are owner/RBAC).
- */
-const PLATFORM_APPS = Object.freeze([
-  Object.freeze({ app: "control", label: "Aither Control", hint: "Your devices, lending and models (owner only)" }),
-  Object.freeze({ app: "fleet", label: "Mission Control", hint: "Agents, endpoints, labs: the command deck" }),
-  Object.freeze({ app: "netmon", label: "Network", hint: "Live health: is it reachable" }),
-  Object.freeze({ app: "tunnel", label: "Tunnel", hint: "Your machines: shell, VPN, containers" }),
-  Object.freeze({ app: "devplane", label: "Dev", hint: "Tunnels, sandboxes, worktrees — each line a probe" }),
-  Object.freeze({ app: "lockbox", label: "Lockbox", hint: "Secrets, keys, tokens: your vault" }),
-  Object.freeze({ app: "connections", label: "Connections", hint: "GitHub, chat channels, keys, sign-in" }),
-  Object.freeze({ app: "services", label: "Services", hint: "Where your services run" }),
-  Object.freeze({ app: "marketplace", label: "Packs & licenses", hint: "Agent packs, powers and apps" }),
-  Object.freeze({ app: "shop", label: "Shop", hint: "Buy agents, studios, packs" }),
-  Object.freeze({ app: "admin", label: "Platform Admin", hint: "The admin suite (RBAC-gated)" }),
-]);
+/** The agent apps the rail carries (catalogue: destination "agents"). */
+const AGENT_APPS = Object.freeze(railAppsFor("agents"));
+const SPACE_APPS = Object.freeze(railAppsFor("worlds"));
+const PLATFORM_APPS = Object.freeze(railAppsFor("platform"));
+/** Kept as an exported name: Sentry is filed under Platform now, so this is empty. */
+const SECURITY_APPS = Object.freeze([]);
 
 /**
  * The workspace (owner, 2026-10-04: "the old /workspace surface / UI / apps =
  * BusinessPilot + Aitherium managed agents + ... + local fleet config + MDM for
  * phones / tablets / laptops ... anything that runs awdk"). Pages of the signed-in
  * Workspace (app.aitherium.com), opened in the pinned Workspace tab. Paths are a fixed
- * list; the workspace's own auth decides what each shows.
+ * list; the workspace's own auth decides what each shows. Each row names its
+ * destination, because these are ROUTES, not Veil windows.
  */
 const WORKSPACE_PAGES = Object.freeze([
   // Mail (MAIL-3, 2026-10-29): the desk had no mail surface at all. /workspace/mail is the
   // route-map door onto the mail view (/workspace/one?tab=mail), which reads the owner's
   // real mailbox (aitheros-mail); the site's RBAC decides who may open it.
-  Object.freeze({ path: "/workspace/mail", label: "Mail", hint: "Your inbox: the real mail, unread first" }),
-  Object.freeze({ path: "/workspace/business", label: "BusinessPilot", hint: "Your business, run by agents" }),
-  Object.freeze({ path: "/workspace/agents", label: "Managed agents", hint: "Your Aitherium-managed agents" }),
-  Object.freeze({ path: "/workspace/fleet", label: "Fleet instances", hint: "Your agent fleet: instances and telemetry" }),
-  Object.freeze({ path: "/workspace/fleet/provision", label: "Provision", hint: "Stand up a new instance" }),
-  Object.freeze({ path: "/workspace/nodes", label: "Nodes", hint: "Every machine running awdk" }),
-  Object.freeze({ path: "/workspace/infrastructure", label: "Infrastructure", hint: "Nodes, tunnels, the stack" }),
-  Object.freeze({ path: "/settings/connected-devices", label: "Devices", hint: "Phones, tablets and laptops you connected" }),
-  Object.freeze({ path: "/settings/wallet", label: "Wallet", hint: "Link your Solana wallet (you sign; no key leaves it)" }),
-  Object.freeze({ path: "/workspace/self-host", label: "Self-host", hint: "Run it on your own machines" }),
-  Object.freeze({ path: "/workspace/packs/licenses", label: "Licenses", hint: "Your packs and licenses" }),
-  Object.freeze({ path: "/workspace/skills", label: "Skills", hint: "Installed, learned and community skills" }),
-  Object.freeze({ path: "/workspace/routines", label: "Routines", hint: "What runs on a schedule" }),
-  Object.freeze({ path: "/workspace/runs", label: "Runs", hint: "Every agent run" }),
-  Object.freeze({ path: "/workspace/members", label: "Members", hint: "People in your workspace" }),
+  Object.freeze({ path: "/workspace/mail", label: "Mail", hint: "Your inbox: the real mail, unread first", destination: "talk" }),
+  Object.freeze({ path: "/workspace/members", label: "Members", hint: "People in your workspace", destination: "work" }),
+  Object.freeze({ path: "/workspace/business", label: "BusinessPilot", hint: "Your business, run by agents", destination: "work" }),
+  Object.freeze({ path: "/workspace/agents", label: "Managed agents", hint: "Your Aitherium-managed agents", destination: "agents" }),
+  Object.freeze({ path: "/workspace/routines", label: "Routines", hint: "What runs on a schedule", destination: "build" }),
+  Object.freeze({ path: "/workspace/runs", label: "Runs", hint: "Every agent run", destination: "build" }),
+  Object.freeze({ path: "/workspace/skills", label: "Skills", hint: "Installed, learned and community skills", destination: "build" }),
+  Object.freeze({ path: "/workspace/fleet", label: "Fleet instances", hint: "Your agent fleet: instances and telemetry", destination: "platform" }),
+  Object.freeze({ path: "/workspace/fleet/provision", label: "Provision", hint: "Stand up a new instance", destination: "platform" }),
+  Object.freeze({ path: "/workspace/nodes", label: "Nodes", hint: "Every machine running awdk", destination: "platform" }),
+  Object.freeze({ path: "/workspace/infrastructure", label: "Infrastructure", hint: "Nodes, tunnels, the stack", destination: "platform" }),
+  Object.freeze({ path: "/settings/connected-devices", label: "Devices", hint: "Phones, tablets and laptops you connected", destination: "platform" }),
+  Object.freeze({ path: "/settings/wallet", label: "Wallet", hint: "Link your Solana wallet (you sign; no key leaves it)", destination: "platform" }),
+  Object.freeze({ path: "/workspace/self-host", label: "Self-host", hint: "Run it on your own machines", destination: "platform" }),
+  Object.freeze({ path: "/workspace/packs/licenses", label: "Licenses", hint: "Your packs and licenses", destination: "platform" }),
 ]);
 
 /**
  * Security (owner, 2026-10-04: "aitherfirewall / sentinel / sentry / chaos + awfirewall /
- * awtunnel"). Sentry is an Online app; Chaos is a page of the signed-in site. The firewall
- * and tunnel BRICKS (awwall, awtunnel) are on the Bricks page with the rest of the stack.
+ * awtunnel"). Sentry is an Online app (filed under Platform); Chaos is a page of the
+ * signed-in site. The firewall and tunnel BRICKS (awwall, awtunnel) are on the Bricks
+ * page with the rest of the stack.
  */
-const SECURITY_APPS = Object.freeze([
-  Object.freeze({ app: "sentry", label: "Sentry", hint: "The watchtower: threats, live" }),
-]);
 const SECURITY_PAGES = Object.freeze([
-  Object.freeze({ path: "/chaos", label: "Chaos", hint: "Chaos drills: break it on purpose, watch it heal" }),
+  Object.freeze({ path: "/chaos", label: "Chaos", hint: "Chaos drills: break it on purpose, watch it heal", destination: "platform" }),
 ]);
 
 /**
  * Observability, the owner's (owner, 2026-10-04: "tunnel / pulse / grafana integrated for
  * my entitlements"). Grafana and Prometheus run on THIS machine's fleet, on loopback, and
- * open as web tabs; Pulse is the desk's plane page; Tunnel is the Online app. The whole
- * section is shown only when the desk is linked as the platform owner (adk link role).
+ * open as web tabs. They are PLATFORM rows: the separate "Observability" heading was
+ * where Tunnel and Pulse were listed a second time (2026-10-29). Shown only when the
+ * desk is linked as the platform owner (adk link role).
  */
 const OWNER_LOCAL = Object.freeze([
-  Object.freeze({ url: "http://127.0.0.1:3002/", label: "Grafana", hint: "Live dashboards: models, tools, GPU, end to end" }),
-  Object.freeze({ url: "http://127.0.0.1:9090/prometheus/", label: "Prometheus", hint: "Every scrape target and series" }),
+  Object.freeze({ url: "http://127.0.0.1:3002/", label: "Grafana", hint: "Live dashboards: models, tools, GPU, end to end", destination: "platform" }),
+  Object.freeze({ url: "http://127.0.0.1:9090/prometheus/", label: "Prometheus", hint: "Every scrape target and series", destination: "platform" }),
 ]);
 
 /**
  * Command & control, the platform owner's (owner, 2026-10-04: "command / control all of
- * my platform tenants / customer workspaces / users -- moderate my community and support /
- * feedback in one place, integrated with forums + AitherRelay"). Pages of the signed-in
+ * my platform tenants / customer workspaces / users ..."). Pages of the signed-in
  * site; shown, and opened, only when the desk is linked as owner -- and the site's own
  * RBAC still decides each page.
  */
@@ -214,20 +206,20 @@ const ADMIN_PAGES = Object.freeze([
   // spellings are retired redirects (route-map.yaml), and the desktop boot turned every
   // /admin/* into the generic admin hub, so Users, Security and the rest landed on an
   // empty desktop. The canonical Mission Control views open straight in place.
-  Object.freeze({ path: "/mission-control?tab=tenants", label: "Tenants", hint: "Every customer workspace" }),
-  Object.freeze({ path: "/mission-control?tab=tenants&view=users", label: "People & customers", hint: "Users, tenants and paying customers, joined" }),
-  Object.freeze({ path: "/mission-control?tab=tenants&view=entitlements", label: "Entitlements", hint: "Who may use what" }),
-  Object.freeze({ path: "/mission-control?tab=tenants&view=licensing", label: "Licensing", hint: "Licenses and packs" }),
-  Object.freeze({ path: "/mission-control?tab=moderation&view=spaces", label: "Moderation", hint: "Reported spaces and Relay messages" }),
+  Object.freeze({ path: "/mission-control?tab=tenants", label: "Tenants", hint: "Every customer workspace", destination: "platform" }),
+  Object.freeze({ path: "/mission-control?tab=tenants&view=users", label: "People & customers", hint: "Users, tenants and paying customers, joined", destination: "platform" }),
+  Object.freeze({ path: "/mission-control?tab=tenants&view=entitlements", label: "Entitlements", hint: "Who may use what", destination: "platform" }),
+  Object.freeze({ path: "/mission-control?tab=tenants&view=licensing", label: "Licensing", hint: "Licenses and packs", destination: "platform" }),
+  Object.freeze({ path: "/mission-control?tab=moderation&view=spaces", label: "Moderation", hint: "Reported spaces and Relay messages", destination: "platform" }),
   // Support and feedback are forum boards (Relay categories `support`, `ideas`): one
   // surface with the community boards, not two rows (owner, 2026-10-10).
-  Object.freeze({ path: "/?channel=people&board=support", label: "Support & forums", hint: "Support, feedback and the community boards" }),
-  Object.freeze({ path: "/mission-control?tab=support", label: "Support desk", hint: "Tickets, requests and the outbox" }),
-  Object.freeze({ path: "/relay", label: "Relay", hint: "AitherRelay: channels, DMs, rooms" }),
-  Object.freeze({ path: "/mission-control?tab=moderation&view=marketplace", label: "Marketplace review", hint: "Packs and apps waiting for review" }),
-  Object.freeze({ path: "/mission-control?tab=tenants&view=registrations", label: "Registrations", hint: "New sign-ups" }),
-  Object.freeze({ path: "/mission-control?tab=platform&view=security", label: "Security", hint: "Platform security posture" }),
-  Object.freeze({ path: "/mission-control", label: "Platform", hint: "Mission Control: the platform admin home" }),
+  Object.freeze({ path: "/?channel=people&board=support", label: "Support & forums", hint: "Support, feedback and the community boards", destination: "talk" }),
+  Object.freeze({ path: "/mission-control?tab=support", label: "Support desk", hint: "Tickets, requests and the outbox", destination: "platform" }),
+  Object.freeze({ path: "/relay", label: "Relay", hint: "AitherRelay: channels, DMs, rooms", destination: "talk" }),
+  Object.freeze({ path: "/mission-control?tab=moderation&view=marketplace", label: "Marketplace review", hint: "Packs and apps waiting for review", destination: "platform" }),
+  Object.freeze({ path: "/mission-control?tab=tenants&view=registrations", label: "Registrations", hint: "New sign-ups", destination: "platform" }),
+  Object.freeze({ path: "/mission-control?tab=platform&view=security", label: "Security", hint: "Platform security posture", destination: "platform" }),
+  Object.freeze({ path: "/mission-control", label: "Platform", hint: "Mission Control: the platform admin home", destination: "platform" }),
 ]);
 
 function isAdminPage(p) {
@@ -243,9 +235,10 @@ function isWorkspacePage(p) {
   return WORKSPACE_PAGES.some((w) => w.path === want) || SECURITY_PAGES.some((w) => w.path === want);
 }
 
+/** May the desk open `id` as an Online app? The rail's catalogue is the fence. */
 function isAgentApp(id) {
-  const want = String(id || "");
-  return [TODAY_APPS, AGENT_APPS, SPACE_APPS, PLATFORM_APPS, SECURITY_APPS].some((list) => list.some((a) => a.app === want));
+  const want = canonicalId(id);
+  return catalogue.apps.some((a) => a.rail && a.id === want);
 }
 
 /**
@@ -264,61 +257,102 @@ const LAYERS = Object.freeze([
 ]);
 
 /**
- * Every rail row, grouped. A row is either a PAGE (opens aither://<id>) or a
- * COMMAND (an id from RAIL_COMMANDS). Panes that live as a tab of another pane
- * (`tabOf`) stay rows: the console hid them behind a tab, and that is exactly
- * the "where is it" the owner hit.
+ * Every rail row, grouped BY DESTINATION. A row is a PAGE (opens aither://<id>), a
+ * COMMAND (an id from RAIL_COMMANDS), an ONLINE app (opens in the pinned Online tab)
+ * or a WEB page (workspace/admin/local).
+ *
+ * DEDUPE: the key is what a click OPENS -- `kind:canonical` for an app, the id for a
+ * pane, the path for a page, the url for a loopback page. Two rows with one key are
+ * one row. When the duplicates disagree on which id to show, the canonical id wins
+ * (so the Agents window is "Agents", never "Lyra").
  *
  * @param {Array<object>} panes console-window.cjs PANES
  * @param {{activePane?: string|null}} [opts]
  */
+/**
+ * The identity of a row: what a click OPENS. Two rows with one key are one row.
+ * Exported so a test can assert it CAN collide (a duplicated row is detected) and
+ * that today's rail has no collision -- a dedupe nobody can show failing is a comment.
+ */
+function railRowKeys(row) {
+  const idKey = `${row.kind}:${row.canonical}`;
+  // The owner reads LABELS: "Files" as a pane and "Files" as an Online app in the same
+  // destination is the same complaint as Tunnel twice under two headings.
+  const labelKey = `${row.destination}|${String(row.label || "").trim().toLowerCase()}`;
+  return [idKey, labelKey];
+}
+
 function railSections(panes, { activePane = null, signedIn = true, owner = false, modes = {} } = {}) {
-  const groups = new Map();
-  const add = (name, row) => {
-    if (!groups.has(name)) groups.set(name, []);
-    groups.get(name).push(row);
+  const rows = [];
+  const seen = new Map();
+
+  const push = (row) => {
+    const keys = railRowKeys(row);
+    const at = keys.map((k) => seen.get(k)).find((i) => i != null);
+    if (at != null) {
+      // Prefer the canonical id's own row; otherwise keep the first (generation order).
+      const existing = rows[at];
+      if (existing.id !== existing.canonical && row.id === row.canonical) rows[at] = row;
+      for (const k of keys) if (!seen.has(k)) seen.set(k, at);
+      return;
+    }
+    const at2 = rows.length;
+    for (const k of keys) seen.set(k, at2);
+    rows.push(row);
   };
+
   for (const pane of panes || []) {
     if (!pane || typeof pane.id !== "string") continue;
-    add(pane.section || "More", {
-      kind: "page", id: pane.id, label: pane.label || pane.id, hint: pane.hint || "",
-      icon: pane.icon || null, active: pane.id === activePane,
+    push({
+      kind: "page", id: pane.id, canonical: pane.id, label: pane.label || pane.id,
+      hint: pane.hint || "", icon: pane.icon || null, active: pane.id === activePane,
+      destination: PANE_DESTINATION.get(pane.id) || "platform",
+      tabOf: pane.tabOf || null,
     });
   }
-  for (const v of VOICE_ROWS) add("Voice", { ...v, icon: null, active: false });
-  for (const app of APP_ROWS) {
-    add("Apps", { kind: "command", id: app.command, label: app.label, hint: app.hint, icon: app.icon, active: false });
-  }
-  const online = (section, apps) => {
+  for (const v of VOICE_ROWS) push({ ...v, canonical: v.id, icon: null, active: false, destination: "talk" });
+  // Online apps BEFORE the osapp.* commands: where both exist for one window (Sprite,
+  // Spaces), the app row carries the launch-mode chip and the richer door, so it wins
+  // the dedupe and the command collapses into it.
+  const online = (apps) => {
     for (const a of apps) {
-      add(section, { kind: "online", id: a.app, label: a.label,
+      push({ kind: "online", id: a.app, canonical: canonicalId(a.app), label: a.label,
         hint: signedIn ? a.hint : `${a.hint} (sign in to AitherOS Online first)`, icon: null, active: false,
-        locked: !signedIn, launch: launchModes.launchModeFor(modes, a.app) });
+        locked: !signedIn, launch: launchModes.launchModeFor(modes, a.app),
+        destination: destinationOf(a.app) || "platform" });
     }
   };
-  online("Today", TODAY_APPS);
-  online("Agent apps", AGENT_APPS);
-  online("Spaces & sprites", SPACE_APPS);
-  online("Platform", PLATFORM_APPS);
-  const pages = (section, list) => {
-    for (const w of list) {
-      add(section, { kind: "workspace", id: w.path, label: w.label,
-        hint: signedIn ? w.hint : `${w.hint} (sign in to AitherOS Online first)`, icon: null, active: false, locked: !signedIn });
-    }
-  };
-  pages("Workspace", WORKSPACE_PAGES);
-  online("Security", SECURITY_APPS);
-  pages("Security", SECURITY_PAGES);
-  if (owner) {
-    for (const a of ADMIN_PAGES) add("Command & control", { kind: "workspace", id: a.path, label: a.label, hint: a.hint, icon: null, active: false });
-    for (const o of OWNER_LOCAL) add("Observability", { kind: "local", id: o.url, label: o.label, hint: o.hint, icon: null, active: false });
-    add("Observability", { kind: "page", id: "pulse", label: "Pulse", hint: "Heartbeat and disk headroom", icon: "activity", active: activePane === "pulse" });
-    add("Observability", { kind: "online", id: "tunnel", label: "Tunnel", hint: "Your machines: shell, VPN, containers", icon: null, active: false,
-      launch: launchModes.launchModeFor(modes, "tunnel") });
+  for (const destination of DESTINATION_ORDER) online(railAppsFor(destination));
+  for (const app of OS_APP_ROWS) {
+    push({ kind: "command", id: app.command, canonical: app.command, label: app.label, hint: app.hint,
+      icon: app.icon, active: false, destination: destinationOf(app.app) || "platform" });
   }
-  const names = [...groups.keys()];
-  const ordered = [...SECTION_ORDER.filter((n) => groups.has(n)), ...names.filter((n) => !SECTION_ORDER.includes(n))];
-  return ordered.map((name) => ({ name, rows: groups.get(name) }));
+  const pages = (list) => {
+    for (const w of list) {
+      push({ kind: "workspace", id: w.path, canonical: w.path, label: w.label,
+        hint: signedIn ? w.hint : `${w.hint} (sign in to AitherOS Online first)`, icon: null,
+        active: false, locked: !signedIn, destination: w.destination || "work" });
+    }
+  };
+  pages(WORKSPACE_PAGES);
+  pages(SECURITY_PAGES);
+  if (owner) {
+    pages(ADMIN_PAGES);
+    for (const o of OWNER_LOCAL) {
+      push({ kind: "local", id: o.url, canonical: o.url, label: o.label, hint: o.hint, icon: null,
+        active: false, destination: o.destination || "platform" });
+    }
+  }
+
+  const groups = new Map(DESTINATION_ORDER.map((id) => [id, []]));
+  for (const row of rows) {
+    const dest = groups.has(row.destination) ? row.destination : "platform";
+    row.destination = dest;
+    groups.get(dest).push(row);
+  }
+  return DESTINATION_ORDER
+    .filter((id) => groups.get(id).length > 0)
+    .map((id) => ({ id, name: DESTINATION_LABEL.get(id) || id, rows: groups.get(id) }));
 }
 
 /** May the rail run this command id? */
@@ -478,7 +512,6 @@ function avatarSlotRect(contentBounds, opts) {
 }
 
 module.exports = {
-  TODAY_APPS,
   AGENT_APPS,
   SPACE_APPS,
   PLATFORM_APPS,
@@ -505,7 +538,7 @@ module.exports = {
   dockHeightFor,
   dockHeightFromDrag,
   normalizeLayout,
-  APP_ROWS,
+  OS_APP_ROWS,
   AVATAR_SLOT_HEIGHT,
   BRAND_HEIGHT,
   LAYERS,
@@ -513,7 +546,8 @@ module.exports = {
   RAIL_COLLAPSED_WIDTH,
   RAIL_COMMANDS,
   RAIL_WIDTH,
-  SECTION_ORDER,
+  canonicalId,
+  destinationOf,
   avatarSlot,
   avatarSlotRect,
   layerRows,
@@ -521,5 +555,9 @@ module.exports = {
   railMayRun,
   isSearchText,
   railSections,
+  railRowKeys,
+  railAppsFor,
+  DESTINATIONS,
+  DESTINATION_ORDER,
   railWidth,
 };

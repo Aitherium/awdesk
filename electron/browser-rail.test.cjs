@@ -14,14 +14,6 @@ test("every console pane is a rail row: nothing collapsed into the browser is un
   }
 });
 
-test("sections read in the declared order; Apps carries the OS apps as commands", () => {
-  const names = rail.railSections(PANES).map((sec) => sec.name);
-  const declared = rail.SECTION_ORDER.filter((name) => names.includes(name));
-  assert.deepEqual(names.slice(0, declared.length), declared);
-  const apps = rail.railSections(PANES).find((sec) => sec.name === "Apps");
-  assert.deepEqual(apps.rows.map((row) => row.id), rail.APP_ROWS.map((row) => row.command));
-  assert.ok(apps.rows.every((row) => row.kind === "command"));
-});
 
 test("the active pane is marked, and only it", () => {
   const rows = rail.railSections(PANES, { activePane: "settings" }).flatMap((sec) => sec.rows);
@@ -165,32 +157,100 @@ test("the chrome page's rail matches the module's sizes", () => {
   assert.doesNotMatch(chromeHtml, /l\.innerHTML|name\.innerHTML|st\.innerHTML/);
 });
 
-test("agent apps: every one the owner named, as Online rows, locked when signed out", () => {
-  const ids = rail.AGENT_APPS.map((a) => a.app);
-  for (const want of ["aitherchat", "aeon", "demi", "forge", "builder", "atlas", "atlas-pm", "lyra", "saga", "vera", "hera"]) {
-    assert.ok(ids.includes(want), `${want} missing`);
+test("the rail has NINE sections, one per destination, in the plan's order", () => {
+  const names = rail.railSections(PANES).map((sec) => sec.name);
+  assert.deepEqual(names, rail.DESTINATION_ORDER
+    .filter((id) => names.includes(rail.DESTINATIONS.find((d) => d.id === id).label))
+    .map((id) => rail.DESTINATIONS.find((d) => d.id === id).label));
+  // ...and never a heading the plan does not name. The 16 ad-hoc heads of 2026-10-29
+  // ("Observability" AND "Planes", "Agent apps" AND "Spaces & sprites") are gone.
+  const allowed = new Set(rail.DESTINATIONS.map((d) => d.label));
+  for (const name of names) assert.ok(allowed.has(name), `${name} is not one of the nine destinations`);
+  assert.equal(names.length, 9, "every destination carries at least one row");
+});
+
+test("no destination is listed twice: no row opens what another row opens", () => {
+  const seen = new Map();
+  for (const sec of rail.railSections(PANES, { owner: true })) {
+    for (const row of sec.rows) {
+      for (const key of rail.railRowKeys(row)) {
+        const prev = seen.get(key);
+        assert.equal(prev, undefined, `${row.label} (${row.id}) duplicates ${prev} -- key ${key}`);
+        seen.set(key, `${sec.name}/${row.label}`);
+      }
+    }
   }
-  const sec = rail.railSections(PANES, { signedIn: false }).find((s) => s.name === "Agent apps");
-  assert.ok(sec.rows.every((r) => r.kind === "online" && r.locked));
-  assert.ok(rail.railSections(PANES).find((s) => s.name === "Agent apps").rows.every((r) => !r.locked));
+});
+
+test("the dedupe CAN fail: two rows opening the same window collide", () => {
+  // The check above is only worth a gate if it can be shown to fail, so the key
+  // function is exercised on the pair the owner actually saw: "Tunnel" twice.
+  const a = { kind: "online", id: "tunnel", canonical: "tunnel", label: "Tunnel", destination: "platform" };
+  const b = { kind: "online", id: "tunnel", canonical: "tunnel", label: "Tunnel", destination: "network" };
+  assert.deepEqual(rail.railRowKeys(a).filter((k) => rail.railRowKeys(b).includes(k)), [
+    "online:tunnel",
+  ]);
+  // ...and the alias form: five rows, one Agents window.
+  const alias = { kind: "online", id: "lyra", canonical: "agents", label: "Lyra", destination: "agents" };
+  const canon = { kind: "online", id: "agents", canonical: "agents", label: "Agents", destination: "agents" };
+  assert.ok(rail.railRowKeys(alias).includes("online:agents"));
+  assert.ok(rail.railRowKeys(alias).some((k) => rail.railRowKeys(canon).includes(k)));
+});
+
+test("every pane is reachable and filed under a destination", () => {
+  for (const sec of rail.railSections(PANES)) {
+    for (const row of sec.rows) assert.ok(row.destination, `${row.id} has no destination`);
+  }
+  const rows = rail.railSections(PANES).flatMap((sec) => sec.rows);
+  const ids = new Set(rows.filter((r) => r.kind === "page").map((r) => r.id));
+  for (const pane of PANES) assert.ok(ids.has(pane.id), `${pane.id} has no rail row`);
+});
+
+test("the OS apps are commands, filed where their app is filed", () => {
+  const all = rail.railSections(PANES).flatMap((sec) => sec.rows);
+  const commands = all.filter((r) => r.kind === "command" && r.id.startsWith("osapp."));
+  // An OS app command that targets a window the rail already carries is COLLAPSED
+  // (same destination, same label): Sprite the command and Sprite the Online app are
+  // one row. Every command is therefore either present, or covered by that row.
+  for (const row of rail.OS_APP_ROWS) {
+    const present = commands.some((r) => r.id === row.command);
+    const covered = all.some((r) => r.id !== row.command && r.destination === rail.destinationOf(row.app)
+      && String(r.label).toLowerCase() === row.label.toLowerCase());
+    assert.ok(present || covered, `${row.command} is neither on the rail nor collapsed into an equal row`);
+  }
+  for (const row of commands) {
+    assert.ok(["platform", "know", "create", "worlds"].includes(row.destination), `${row.id}: ${row.destination}`);
+  }
+});
+
+test("agent apps: the Agents window and its doors, as Online rows, locked when signed out", () => {
+  const ids = rail.AGENT_APPS.map((a) => a.app);
+  for (const want of ["agents", "builder", "saga"]) assert.ok(ids.includes(want), `${want} missing`);
+  // lyra/atlas/vera/hera/demi are ALIASES of agents: they must route, never render.
+  for (const alias of ["lyra", "atlas", "vera", "hera", "demi"]) {
+    assert.equal(ids.includes(alias), false, `${alias} is an alias and must not be a second row`);
+    assert.equal(rail.canonicalId(alias), "agents");
+  }
+  const sec = rail.railSections(PANES, { signedIn: false }).find((s) => s.name === "Agents");
+  assert.ok(sec.rows.filter((r) => r.kind === "online").every((r) => r.locked));
+  assert.ok(rail.railSections(PANES).find((s) => s.name === "Agents").rows.filter((r) => r.kind === "online").every((r) => !r.locked));
   assert.equal(rail.isAgentApp("aeon"), true);
-  assert.equal(rail.isAgentApp("darkmatters"), false, "only the listed apps; the platform gates the rest anyway");
+  assert.equal(rail.isAgentApp("lyra"), true, "an old id still launches (it resolves to agents)");
+  assert.equal(rail.isAgentApp("calculator"), false, "only the rail's catalogue; the launcher has the rest");
   assert.equal(rail.isAgentApp("../x"), false);
 });
 
-test("spaces & sprites: the owner's list, opened through Online like the agent apps", () => {
+test("worlds: spaces, the mesh and the games, opened through Online", () => {
   const ids = rail.SPACE_APPS.map((a) => a.app);
-  for (const want of ["spaces", "myspace", "homestead", "sprite", "persona"]) assert.ok(ids.includes(want), want);
-  const sec = rail.railSections(PANES).find((s) => s.name === "Spaces & sprites");
-  assert.deepEqual(sec.rows.map((r) => r.id), ids);
+  for (const want of ["spaces", "homestead", "beadspace", "darkmatters", "gobbonet"]) assert.ok(ids.includes(want), want);
   assert.ok(ids.every((id) => rail.isAgentApp(id)), "the rail may open each of them");
-  const names = rail.railSections(PANES).map((s) => s.name);
-  assert.ok(names.indexOf("Spaces & sprites") < names.indexOf("Stage"), "beside Stage (Characters: VRoid + market)");
+  const sec = rail.railSections(PANES).find((s) => s.name === "Worlds");
+  assert.ok(sec.rows.some((r) => r.kind === "page" && r.id === "space"), "the BeadSpace pane sits with them");
 });
 
-test("network & platform: mesh, fleet, lockbox, tunnels, packs -- Online apps, platform-gated", () => {
+test("platform: fleet, tunnels, vault, packs, admin -- one section, not four", () => {
   const ids = rail.PLATFORM_APPS.map((a) => a.app);
-  for (const want of ["control", "fleet", "netmon", "tunnel", "lockbox", "marketplace", "admin"]) assert.ok(ids.includes(want), want);
+  for (const want of ["control", "fleet", "netmon", "tunnel", "lockbox", "shop", "admin", "sentry"]) assert.ok(ids.includes(want), want);
   assert.ok(ids.every((id) => rail.isAgentApp(id)));
   assert.ok(rail.railSections(PANES).some((s) => s.name === "Platform"));
 });
@@ -200,54 +260,63 @@ test("workspace: BusinessPilot, managed agents, fleet, nodes, devices -- fixed p
   for (const want of ["/workspace/business", "/workspace/agents", "/workspace/fleet", "/workspace/nodes", "/settings/connected-devices", "/settings/wallet"]) {
     assert.ok(paths.includes(want), want);
   }
-  assert.ok(paths.every((p) => /^\/[a-z/-]+$/.test(p)), "plain same-site paths only");
+  assert.ok(paths.every((p) => /^\/[a-z/?.=&-]+$/.test(p)), "plain same-site paths only");
   assert.equal(rail.isWorkspacePage("https://evil.test/"), false);
   assert.equal(rail.isWorkspacePage("/workspace/secrets"), false, "only the listed pages");
-  const sec = rail.railSections(PANES).find((s) => s.name === "Workspace");
-  assert.ok(sec && sec.rows.every((r) => r.kind === "workspace"));
+  const rows = rail.railSections(PANES).flatMap((s) => s.rows).filter((r) => r.kind === "workspace");
+  assert.ok(rows.every((r) => r.kind === "workspace" && r.destination));
 });
 
-test("today: the first rail row opens the Online Today window (U2)", () => {
+test("today: the Online Today window is the first section's door (U2)", () => {
   const sections = rail.railSections(PANES);
   assert.equal(sections[0].name, "Today");
-  assert.deepEqual(sections[0].rows.map((r) => [r.kind, r.id, r.label]), [["online", "briefing", "Today"]]);
+  const row = sections[0].rows.find((r) => r.kind === "online" && r.id === "briefing");
+  assert.ok(row, "the briefing window is a Today row");
+  assert.equal(row.label, "Today");
   assert.equal(rail.isAgentApp("briefing"), true);
-  const locked = rail.railSections(PANES, { signedIn: false })[0].rows[0];
+  const locked = rail.railSections(PANES, { signedIn: false })[0].rows.find((r) => r.id === "briefing");
   assert.equal(locked.locked, true, "signed out, the row says sign in first");
 });
 
 test("mail: a Workspace row opens the mail view's route-map door (MAIL-3)", () => {
   assert.equal(rail.isWorkspacePage("/workspace/mail"), true);
-  const sec = rail.railSections(PANES).find((s) => s.name === "Workspace");
-  const row = sec.rows.find((r) => r.label === "Mail");
-  assert.ok(row, "a Mail row in the Workspace section");
-  assert.deepEqual([row.kind, row.id], ["workspace", "/workspace/mail"]);
-  const locked = rail.railSections(PANES, { signedIn: false }).find((s) => s.name === "Workspace").rows.find((r) => r.label === "Mail");
+  const row = rail.railSections(PANES).flatMap((s) => s.rows).find((r) => r.label === "Mail");
+  assert.ok(row, "a Mail row");
+  assert.deepEqual([row.kind, row.id, row.destination], ["workspace", "/workspace/mail", "talk"]);
+  const locked = rail.railSections(PANES, { signedIn: false }).flatMap((s) => s.rows).find((r) => r.label === "Mail");
   assert.equal(locked.locked, true, "signed out, the row says sign in first");
 });
 
-test("security: Sentry (Online app) and Chaos (site page) in one section", () => {
-  const sec = rail.railSections(PANES).find((s) => s.name === "Security");
-  assert.deepEqual(sec.rows.map((r) => [r.kind, r.id]), [["online", "sentry"], ["workspace", "/chaos"]]);
+test("security: Sentry and Chaos sit in Platform with the rest of the admin", () => {
+  const rows = rail.railSections(PANES).find((s) => s.name === "Platform").rows;
+  assert.ok(rows.some((r) => r.kind === "online" && r.id === "sentry"));
+  assert.ok(rows.some((r) => r.kind === "workspace" && r.id === "/chaos"));
   assert.equal(rail.isAgentApp("sentry"), true);
   assert.equal(rail.isWorkspacePage("/chaos"), true);
 });
 
-test("observability is the owner's only: Grafana, Prometheus, Pulse, Tunnel", () => {
-  assert.equal(rail.railSections(PANES).some((s) => s.name === "Observability"), false, "hidden unless owner");
-  const sec = rail.railSections(PANES, { owner: true }).find((s) => s.name === "Observability");
-  assert.deepEqual(sec.rows.map((r) => r.label), ["Grafana", "Prometheus", "Pulse", "Tunnel"]);
+test("the owner's loopback pages are Platform rows, and only for the owner", () => {
   assert.ok(rail.OWNER_LOCAL.every((o) => /^http:\/\/127\.0\.0\.1:\d+\//.test(o.url)), "loopback only");
+  const open = rail.railSections(PANES).flatMap((s) => s.rows);
+  assert.equal(open.some((r) => r.kind === "local"), false, "hidden unless owner");
+  const labels = rail.railSections(PANES, { owner: true }).find((s) => s.name === "Platform").rows
+    .filter((r) => r.kind === "local").map((r) => r.label);
+  assert.deepEqual(labels, ["Grafana", "Prometheus"]);
   assert.equal(rail.isOwnerLocal("http://127.0.0.1:3002/"), true);
   assert.equal(rail.isOwnerLocal("http://evil.test/"), false);
 });
 
-test("command & control: tenants, people, moderation, support+forums, relay -- owner only", () => {
-  assert.equal(rail.railSections(PANES).some((s) => s.name === "Command & control"), false);
-  const sec = rail.railSections(PANES, { owner: true }).find((s) => s.name === "Command & control");
-  const paths = sec.rows.map((r) => r.id);
+test("command & control: tenants, people, moderation, support+forums, relay -- owner only, one section", () => {
+  const adminRows = () => rail.railSections(PANES, { owner: true }).flatMap((s) => s.rows)
+    .filter((r) => rail.isAdminPage(r.id)).map((r) => r.id);
+  const paths = adminRows();
   for (const want of ["/mission-control?tab=tenants", "/mission-control?tab=tenants&view=users",
-    "/mission-control?tab=moderation&view=spaces", "/?channel=people&board=support", "/relay"]) assert.ok(paths.includes(want), want);
+    "/mission-control?tab=moderation&view=spaces", "/?channel=people&board=support"]) assert.ok(paths.includes(want), want);
+  // /relay is an ADMIN row AND the Online Relay app: one destination, so one row. The
+  // Online app wins (it is the richer surface); the page still routes.
+  assert.equal(paths.includes("/relay"), false, "collapsed into the Relay app row");
+  assert.ok(rail.isAdminPage("/relay"), "still routable");
+  assert.equal(rail.railSections(PANES).flatMap((s) => s.rows).some((r) => rail.isAdminPage(r.id)), false, "not for a member");
   assert.equal(rail.isAdminPage("/mission-control?tab=tenants"), true);
   assert.equal(rail.isWorkspacePage("/mission-control?tab=tenants"), false, "never through the member path");
 });
@@ -278,4 +347,55 @@ test("the panel grip starts where the chrome ends, never at a hard-coded height"
   assert.doesNotMatch(line, /top:\s*"\d+px"/);
   const r = rail.railLayout({ width: 1600, height: 900 }, { chromeHeight: 78, panelWidth: 360 });
   assert.equal(r.panel.y, 78);
+});
+
+/* ── the generated catalogue ───────────────────────────────────────────────
+   AitherOS/dev/tools/gen_desk_apps.py writes desk-apps.generated.json from Veil.
+   These are the two invariants it exists for; the Python tool's --check covers
+   drift (a Veil edit not regenerated) and its --self-test proves its own checker
+   can fail. */
+
+const catalogue = require("./desk-apps.generated.json");
+
+test("the catalogue files EVERY registry app exactly once (filed or aliased)", () => {
+  const filed = new Set(catalogue.apps.map((a) => a.id));
+  const duplicates = catalogue.apps.map((a) => a.id).filter((id, i, all) => all.indexOf(id) !== i);
+  assert.deepEqual(duplicates, [], "an app is filed twice");
+  for (const id of catalogue.registryIds) {
+    assert.ok(filed.has(id) || catalogue.aliasTo[id], `${id} is neither filed nor an alias`);
+  }
+  // ...and an alias is never also a row: five agent ids, ONE Agents window.
+  for (const alias of Object.keys(catalogue.aliasTo)) {
+    assert.equal(filed.has(alias), false, `${alias} is an alias and must not be filed`);
+  }
+});
+
+test("every destination is one of the nine, and the nine are the plan's", () => {
+  const ids = catalogue.destinations.map((d) => d.id);
+  assert.deepEqual(ids, ["today", "talk", "work", "know", "agents", "create", "worlds", "build", "platform"]);
+  for (const app of catalogue.apps) assert.ok(ids.includes(app.destination), `${app.id}: ${app.destination}`);
+  for (const pane of catalogue.panes) assert.ok(ids.includes(pane.destination), `${pane.id}: ${pane.destination}`);
+});
+
+test("no two apps in one destination share a label (what the rail renders)", () => {
+  const seen = new Map();
+  for (const app of catalogue.apps.filter((a) => a.rail)) {
+    const key = `${app.destination}|${app.label.toLowerCase()}`;
+    assert.equal(seen.get(key), undefined, `${app.id} and ${seen.get(key)} both render "${app.label}" in ${app.destination}`);
+    seen.set(key, app.id);
+  }
+});
+
+test("the catalogue check CAN fail: a duplicate row is detected", () => {
+  const seen = new Map();
+  const collide = (rows) => {
+    for (const row of rows) {
+      const key = `${row.destination}|${String(row.label).toLowerCase()}`;
+      if (seen.has(key)) return `${row.id} duplicates ${seen.get(key)}`;
+      seen.set(key, row.id);
+    }
+    return null;
+  };
+  assert.equal(collide([{ id: "l", label: "Lyra", destination: "agents" }, { id: "a", label: "Agents", destination: "agents" }]), null);
+  assert.match(collide([{ id: "p", label: "Pulse", destination: "platform" }, { id: "p2", label: "Pulse", destination: "platform" }]), /duplicates/);
 });

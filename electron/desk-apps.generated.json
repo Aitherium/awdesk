@@ -1,0 +1,1348 @@
+{
+  "version": 1,
+  "generatedBy": "AitherOS/dev/tools/gen_desk_apps.py",
+  "sources": [
+    "AitherOS/apps/AitherVeil/src/components/os/nav-destinations.ts",
+    "AitherOS/apps/AitherVeil/src/components/os/app-registry.tsx",
+    "AitherOS/apps/AitherVeil/src/components/os/app-aliases.ts",
+    "AitherOS/apps/AitherVeil/src/components/os/merged-apps.ts",
+    ".DEPLOYMENT/awdesk/electron/console-window.cjs"
+  ],
+  "destinations": [
+    {
+      "id": "today",
+      "label": "Today",
+      "blurb": "what needs you now",
+      "phone": true
+    },
+    {
+      "id": "talk",
+      "label": "Talk",
+      "blurb": "one room: channels, DMs, agents",
+      "phone": true
+    },
+    {
+      "id": "work",
+      "label": "Work",
+      "blurb": "projects, tasks, calendar, mail",
+      "phone": true
+    },
+    {
+      "id": "know",
+      "label": "Know",
+      "blurb": "notes, docs, memory, files",
+      "phone": false
+    },
+    {
+      "id": "agents",
+      "label": "Agents",
+      "blurb": "every agent, and what it is doing",
+      "phone": false
+    },
+    {
+      "id": "create",
+      "label": "Create",
+      "blurb": "image, film, sprite, avatar",
+      "phone": true
+    },
+    {
+      "id": "worlds",
+      "label": "Worlds",
+      "blurb": "spaces, games, the mesh",
+      "phone": false
+    },
+    {
+      "id": "build",
+      "label": "Build",
+      "blurb": "terminal, IDE, runs",
+      "phone": false
+    },
+    {
+      "id": "platform",
+      "label": "Platform",
+      "blurb": "fleet, vault, admin, settings",
+      "phone": false
+    }
+  ],
+  "registryIds": [
+    "account",
+    "admin",
+    "aeon",
+    "agent-life",
+    "agents",
+    "aither-play",
+    "aitherbrowser",
+    "aitherchat",
+    "aitherconnect",
+    "aitherone",
+    "arc",
+    "arc-live",
+    "archives",
+    "atlas",
+    "atlas-pm",
+    "auth",
+    "backups",
+    "beadspace",
+    "brain",
+    "briefing",
+    "bring-home",
+    "builder",
+    "calculator",
+    "calendar",
+    "chat-history",
+    "civic",
+    "classroom",
+    "clipboard",
+    "commons",
+    "comms",
+    "company-room",
+    "connections",
+    "control",
+    "create-family",
+    "darkmatters",
+    "decisions",
+    "deep-research",
+    "demi",
+    "deskbrowser",
+    "desktop",
+    "devplane",
+    "dm",
+    "docs",
+    "elysium",
+    "explore",
+    "family",
+    "files",
+    "fleet",
+    "flow",
+    "forge",
+    "forums",
+    "gobbonet",
+    "greeter",
+    "hangout",
+    "hearth",
+    "hera",
+    "home",
+    "homestead",
+    "ide",
+    "image-studio",
+    "invites",
+    "kodokevo",
+    "learn",
+    "lockbox",
+    "lyra",
+    "marketplace",
+    "media",
+    "mediaforge",
+    "moe",
+    "my-files",
+    "my-lockbox",
+    "my-settings",
+    "my-workspace",
+    "myspace",
+    "netmon",
+    "notes",
+    "office",
+    "online",
+    "persona",
+    "playground",
+    "portal",
+    "relay",
+    "research",
+    "saga",
+    "search",
+    "sentry",
+    "services",
+    "setup",
+    "shadowbroker",
+    "shop",
+    "sovereign-stats",
+    "spaces",
+    "sprite",
+    "stack",
+    "storage",
+    "strata-files",
+    "studio",
+    "system-settings",
+    "take-it-home",
+    "task-manager",
+    "terminal",
+    "this-device",
+    "tunnel",
+    "vera",
+    "workspace-admin"
+  ],
+  "railApps": [
+    "admin",
+    "aeon",
+    "agents",
+    "aitherchat",
+    "aitherconnect",
+    "aitherone",
+    "atlas-pm",
+    "beadspace",
+    "briefing",
+    "builder",
+    "company-room",
+    "connections",
+    "control",
+    "darkmatters",
+    "decisions",
+    "devplane",
+    "files",
+    "fleet",
+    "gobbonet",
+    "homestead",
+    "ide",
+    "image-studio",
+    "lockbox",
+    "mediaforge",
+    "netmon",
+    "persona",
+    "relay",
+    "research",
+    "saga",
+    "sentry",
+    "services",
+    "shop",
+    "spaces",
+    "sprite",
+    "stack",
+    "studio",
+    "tunnel"
+  ],
+  "apps": [
+    {
+      "id": "briefing",
+      "label": "Today",
+      "hint": "What needs you now: decisions, to-dos, agenda, mail",
+      "destination": "today",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "calendar",
+      "label": "Calendar",
+      "hint": "Your schedule, on this device",
+      "destination": "today",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "decisions",
+      "label": "Decisions",
+      "hint": "Waiting on you — answer what your agents asked",
+      "destination": "today",
+      "category": "work",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "home",
+      "label": "Home",
+      "hint": "AitherUI — launcher · status · rooms",
+      "destination": "today",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "aeon",
+      "label": "Aeon",
+      "hint": "Agent group chat — the council in your dock",
+      "destination": "talk",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "aitherchat",
+      "label": "AitherChat",
+      "hint": "Chat with Aither — sidebar, workspace, effort dial",
+      "destination": "talk",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "chat-history",
+      "label": "Chat history",
+      "hint": "Past Aeon conversations — reopen, export, delete",
+      "destination": "talk",
+      "category": "agents",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "commons",
+      "label": "Commons",
+      "hint": "Live chat rooms — pick a screen name and walk in",
+      "destination": "talk",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "comms",
+      "label": "Comms",
+      "hint": "Briefing, DM, spaces, mail, contacts",
+      "destination": "talk",
+      "category": "work",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "company-room",
+      "label": "Company Room",
+      "hint": "The working room — people, agents, sheet",
+      "destination": "talk",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "dm",
+      "label": "DM",
+      "hint": "Direct messages — one thread",
+      "destination": "talk",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "forums",
+      "label": "Boards",
+      "hint": "The message boards — threads that last",
+      "destination": "talk",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "greeter",
+      "label": "Aither",
+      "hint": "Your guide",
+      "destination": "talk",
+      "category": "agents",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "hangout",
+      "label": "Hangout",
+      "hint": "Friends and agents online, rooms and DMs — the animated buddy list",
+      "destination": "talk",
+      "category": "community",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "hearth",
+      "label": "Hearth",
+      "hint": "Talk to your home agent — it asks before it acts and signs every receipt",
+      "destination": "talk",
+      "category": "work",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "playground",
+      "label": "The Community Canvas",
+      "hint": "Live community canvas",
+      "destination": "talk",
+      "category": "community",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "relay",
+      "label": "Relay",
+      "hint": "AitherRelay — channels, DMs, agents",
+      "destination": "talk",
+      "category": "community",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "atlas-pm",
+      "label": "Atlas PM",
+      "hint": "Expeditions, board, agents — the real project manager",
+      "destination": "work",
+      "category": "work",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "calculator",
+      "label": "Calculator",
+      "hint": "A real one — parser, tape, keyboard",
+      "destination": "work",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "flow",
+      "label": "Workflows",
+      "hint": "Agent workflow orchestration",
+      "destination": "work",
+      "category": "work",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "invites",
+      "label": "Invites",
+      "hint": "Email invites & generate share codes",
+      "destination": "work",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "office",
+      "label": "Office",
+      "hint": "Calendar, notes, calculator, docs — on this device",
+      "destination": "work",
+      "category": "work",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "portal",
+      "label": "Portal / Workspace",
+      "hint": "Your workspace — tenant-scoped, in a window",
+      "destination": "work",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "aitherone",
+      "label": "AitherOne",
+      "hint": "The office suite",
+      "destination": "know",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "archives",
+      "label": "Archives",
+      "hint": "Docs & the deep lore",
+      "destination": "know",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "brain",
+      "label": "Brain",
+      "hint": "Where your words go — node, own backend, this browser, or ours",
+      "destination": "know",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "civic",
+      "label": "Civic",
+      "hint": "Who represents you, and how to vote where you live",
+      "destination": "know",
+      "category": "work",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "classroom",
+      "label": "Aither Classroom",
+      "hint": "Teach a class, or link your child to their teacher with a class code",
+      "destination": "know",
+      "category": "work",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "clipboard",
+      "label": "Clipboard",
+      "hint": "Copy history — on this device",
+      "destination": "know",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "deep-research",
+      "label": "Deep Research",
+      "hint": "Ask a real question — it reads sources and cites them",
+      "destination": "know",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "docs",
+      "label": "Docs",
+      "hint": "Write, autosaved — on this device",
+      "destination": "know",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "files",
+      "label": "Files",
+      "hint": "AitherStrata — file management",
+      "destination": "know",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "learn",
+      "label": "Aither Learn",
+      "hint": "Your children's tutor and their week",
+      "destination": "know",
+      "category": "work",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "my-files",
+      "label": "Files",
+      "hint": "On this device — synced when you sign in",
+      "destination": "know",
+      "category": "work",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "notes",
+      "label": "Notes",
+      "hint": "Notes, on this device",
+      "destination": "know",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "research",
+      "label": "Research",
+      "hint": "Search, graph, stats, RAG — one window",
+      "destination": "know",
+      "category": "knowledge",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "search",
+      "label": "Search",
+      "hint": "Find anything",
+      "destination": "know",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "storage",
+      "label": "Storage",
+      "hint": "Where the bytes are — nodes, trees, proposals",
+      "destination": "know",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "strata-files",
+      "label": "Strata Files",
+      "hint": "Files across the mesh",
+      "destination": "know",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "agents",
+      "label": "Agents",
+      "hint": "Every agent — what it does, what it is doing, talk to it",
+      "destination": "agents",
+      "category": "agents",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "builder",
+      "label": "Iris",
+      "hint": "Tell her what should exist",
+      "destination": "agents",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "saga",
+      "label": "Saga",
+      "hint": "Build a world",
+      "destination": "agents",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "create-family",
+      "label": "Create",
+      "hint": "Builder, forge, saga, studio — make things exist",
+      "destination": "create",
+      "category": "create",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "image-studio",
+      "label": "Image Studio",
+      "hint": "Paint a mask, inpaint, edit, cut out — your images, paid with credits",
+      "destination": "create",
+      "category": "create",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "media",
+      "label": "Media",
+      "hint": "Watch, listen, play — on this device",
+      "destination": "create",
+      "category": "work",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "mediaforge",
+      "label": "Media Forge",
+      "hint": "Your private studio — image, video, 3D",
+      "destination": "create",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "persona",
+      "label": "Avatar",
+      "hint": "Your avatars, and the one your Sprite wears",
+      "destination": "create",
+      "category": "agents",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "sprite",
+      "label": "Sprite",
+      "hint": "Hatch it. Teach it.",
+      "destination": "create",
+      "category": "agents",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "studio",
+      "label": "Studio",
+      "hint": "Browse, open and manage Spaces",
+      "destination": "create",
+      "category": "community",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "aither-play",
+      "label": "Aither Play",
+      "hint": "Your companions, in your games",
+      "destination": "worlds",
+      "category": "community",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "arc",
+      "label": "ARC",
+      "hint": "AitherNet, live — the mesh's own front page",
+      "destination": "worlds",
+      "category": "community",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "arc-live",
+      "label": "ARC — watch Aither learn",
+      "hint": "Live learning — watch a mind emerge",
+      "destination": "worlds",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "beadspace",
+      "label": "BeadSpace",
+      "hint": "See the whole system as one living graph",
+      "destination": "worlds",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "bring-home",
+      "label": "Bring them home",
+      "hint": "Your companion, kept on your own device",
+      "destination": "worlds",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "darkmatters",
+      "label": "Dark Matters",
+      "hint": "The Lattice Realm — your private world on the fleet",
+      "destination": "worlds",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "elysium",
+      "label": "Elysium",
+      "hint": "The world channel — Bonsai on your GPU",
+      "destination": "worlds",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "explore",
+      "label": "Explore",
+      "hint": "The Aitherium world",
+      "destination": "worlds",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "gobbonet",
+      "label": "GobboNet",
+      "hint": "Chat with your companions",
+      "destination": "worlds",
+      "category": "agents",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "homestead",
+      "label": "Homestead",
+      "hint": "Your own site at yourname.aitherium.org",
+      "destination": "worlds",
+      "category": "community",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "kodokevo",
+      "label": "KodokEvo Arena",
+      "hint": "Agent duels — judged, with a live audience",
+      "destination": "worlds",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "shadowbroker",
+      "label": "ShadowBroker",
+      "hint": "Aircraft, ships, satellites, conflict — one live map",
+      "destination": "worlds",
+      "category": "work",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "spaces",
+      "label": "Spaces",
+      "hint": "Your Space and every public one — browse, visit, make yours",
+      "destination": "worlds",
+      "category": "community",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "aitherbrowser",
+      "label": "AitherBrowser",
+      "hint": "Drive the web — an agentic browser",
+      "destination": "build",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "aitherconnect",
+      "label": "AitherConnect",
+      "hint": "The browser — your sessions, the OS overlay",
+      "destination": "build",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "deskbrowser",
+      "label": "Aither Browser",
+      "hint": "The desk browser, inside AitherOS Online",
+      "destination": "build",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "ide",
+      "label": "IDE",
+      "hint": "Your code, on your device — editor, terminal, git, and Demi",
+      "destination": "build",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "stack",
+      "label": "Stack",
+      "hint": "The aw* bricks — what each one does",
+      "destination": "build",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "task-manager",
+      "label": "Task Manager",
+      "hint": "Windows, brain, fleet — what is running",
+      "destination": "build",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "terminal",
+      "label": "awsh",
+      "hint": "Shell, agents and your guide — one window",
+      "destination": "build",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "account",
+      "label": "Account",
+      "hint": "Manage your identity and security",
+      "destination": "platform",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "admin",
+      "label": "Platform Admin",
+      "hint": "The platform admin suite — RBAC-gated",
+      "destination": "platform",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "auth",
+      "label": "Sign in",
+      "hint": "One sign-in, every app",
+      "destination": "platform",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "backups",
+      "label": "Backups",
+      "hint": "Snapshot & restore this device",
+      "destination": "platform",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "connections",
+      "label": "Connections",
+      "hint": "Your GitHub, chat channels, keys and sign-in methods",
+      "destination": "platform",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "control",
+      "label": "Aither Control",
+      "hint": "Your devices, lending and models -- owner only",
+      "destination": "platform",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "desktop",
+      "label": "AitherDesktop",
+      "hint": "The full desktop — windows, files, terminal",
+      "destination": "platform",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "devplane",
+      "label": "Dev",
+      "hint": "Tunnels, sandboxes, worktrees — each line a probe",
+      "destination": "platform",
+      "category": "system",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "family",
+      "label": "Family",
+      "hint": "Your people, devices, invites and privacy",
+      "destination": "platform",
+      "category": "work",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "fleet",
+      "label": "Fleet",
+      "hint": "Agents + endpoints — mission control",
+      "destination": "platform",
+      "category": "work",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "lockbox",
+      "label": "Lockbox",
+      "hint": "Secrets, keys, tokens — your vault",
+      "destination": "platform",
+      "category": "",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "moe",
+      "label": "MoE",
+      "hint": "Which experts answer, where they live, who is asking",
+      "destination": "platform",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "my-lockbox",
+      "label": "My Lockbox",
+      "hint": "Your own keys, tokens and passwords",
+      "destination": "platform",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "my-settings",
+      "label": "Settings",
+      "hint": "Account, alerts, connections, devices, AI, security, billing",
+      "destination": "platform",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "netmon",
+      "label": "Network",
+      "hint": "Live health — is it reachable",
+      "destination": "platform",
+      "category": "system",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "online",
+      "label": "AitherOS Online",
+      "hint": "Channels, rooms, boards and keywords — one place",
+      "destination": "platform",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "sentry",
+      "label": "Sentry",
+      "hint": "The watchtower — threats, live",
+      "destination": "platform",
+      "category": "system",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "services",
+      "label": "Services",
+      "hint": "Where your services run — hosted, your node, or off",
+      "destination": "platform",
+      "category": "system",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "setup",
+      "label": "Set up this computer",
+      "hint": "One button: install, sign in, join your mesh",
+      "destination": "platform",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "shop",
+      "label": "Shop",
+      "hint": "Walk the street, haggle at the counter",
+      "destination": "platform",
+      "category": "work",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "sovereign-stats",
+      "label": "Sovereign Stats",
+      "hint": "This machine — live numbers",
+      "destination": "platform",
+      "category": "",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "system-settings",
+      "label": "System Settings",
+      "hint": "This device — universe, desktops",
+      "destination": "platform",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "this-device",
+      "label": "This device",
+      "hint": "Sign in, see what runs here, register it to your account",
+      "destination": "platform",
+      "category": "system",
+      "rail": false,
+      "kind": "online"
+    },
+    {
+      "id": "tunnel",
+      "label": "Tunnel",
+      "hint": "Your machines — containers, devices, V4.1 links, workspaces",
+      "destination": "platform",
+      "category": "system",
+      "rail": true,
+      "kind": "online"
+    },
+    {
+      "id": "workspace-admin",
+      "label": "Workspace Admin",
+      "hint": "People, computers, AI, secrets, security",
+      "destination": "platform",
+      "category": "admin",
+      "rail": false,
+      "kind": "online"
+    }
+  ],
+  "panes": [
+    {
+      "id": "space",
+      "label": "Space",
+      "hint": "Everything, explorable; asks glow where they belong",
+      "section": "Now",
+      "tabOf": null,
+      "destination": "worlds",
+      "kind": "page"
+    },
+    {
+      "id": "search",
+      "label": "Search",
+      "hint": "Web + platform search, deep research, Media Forge",
+      "section": "Now",
+      "tabOf": null,
+      "destination": "know",
+      "kind": "page"
+    },
+    {
+      "id": "cards",
+      "label": "Inbox",
+      "hint": "Decisions and messages",
+      "section": "Now",
+      "tabOf": null,
+      "destination": "today",
+      "kind": "page"
+    },
+    {
+      "id": "terminal",
+      "label": "Terminal",
+      "hint": "awsh: shells and coding agents in tabs",
+      "section": "Agents",
+      "tabOf": null,
+      "destination": "build",
+      "kind": "page"
+    },
+    {
+      "id": "projects",
+      "label": "Projects",
+      "hint": "Your repositories: branch, changes, PR and CI",
+      "section": "Agents",
+      "tabOf": null,
+      "destination": "work",
+      "kind": "page"
+    },
+    {
+      "id": "notebooks",
+      "label": "Notebooks",
+      "hint": "Every notebook your agent sessions produced",
+      "section": "Agents",
+      "tabOf": null,
+      "destination": "know",
+      "kind": "page"
+    },
+    {
+      "id": "command",
+      "label": "Command",
+      "hint": "Say it in a sentence",
+      "section": "Agents",
+      "tabOf": null,
+      "destination": "build",
+      "kind": "page"
+    },
+    {
+      "id": "chat",
+      "label": "Chat",
+      "hint": "The company room",
+      "section": "Agents",
+      "tabOf": null,
+      "destination": "talk",
+      "kind": "page"
+    },
+    {
+      "id": "sessions",
+      "label": "Sessions",
+      "hint": "Every Claude session, live",
+      "section": "Agents",
+      "tabOf": null,
+      "destination": "agents",
+      "kind": "page"
+    },
+    {
+      "id": "stage",
+      "label": "Stage",
+      "hint": "Who is on stage, how they look and sound",
+      "section": "Stage",
+      "tabOf": null,
+      "destination": "create",
+      "kind": "page"
+    },
+    {
+      "id": "characters",
+      "label": "Characters",
+      "hint": "Bodies, spawns and the market",
+      "section": "Stage",
+      "tabOf": "stage",
+      "destination": "create",
+      "kind": "page"
+    },
+    {
+      "id": "cast",
+      "label": "Voices",
+      "hint": "How each body sounds and moves",
+      "section": "Stage",
+      "tabOf": "stage",
+      "destination": "create",
+      "kind": "page"
+    },
+    {
+      "id": "files",
+      "label": "Files",
+      "hint": "Your folders; share one with agents",
+      "section": "Data",
+      "tabOf": null,
+      "destination": "know",
+      "kind": "page"
+    },
+    {
+      "id": "secrets",
+      "label": "Secrets",
+      "hint": "Names and masked hints, never values",
+      "section": "Data",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "fleet",
+      "label": "Fleet",
+      "hint": "Containers, VRAM, doors",
+      "section": "System",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "ops",
+      "label": "Ops",
+      "hint": "Backups; live training runs",
+      "section": "System",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "spend",
+      "label": "Spend",
+      "hint": "Cloud LLM spend, tokens, balance",
+      "section": "System",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "settings",
+      "label": "Settings",
+      "hint": "Voice, hotkeys, devices",
+      "section": "System",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "extensions",
+      "label": "Extensions",
+      "hint": "Browser extensions: awconnect and any you add",
+      "section": "System",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "windows",
+      "label": "Windows",
+      "hint": "Monitors, arrangements, summon and hide",
+      "section": "System",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "bricks",
+      "label": "Bricks",
+      "hint": "The aw* stack: installed, updates, each brick's page",
+      "section": "System",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "local-ai",
+      "label": "Local AI",
+      "hint": "An AI model on this computer; chat when offline",
+      "section": "System",
+      "tabOf": null,
+      "destination": "agents",
+      "kind": "page"
+    },
+    {
+      "id": "strata",
+      "label": "Strata",
+      "hint": "Storage tiers, artifacts, health",
+      "section": "Planes",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "pulse",
+      "label": "Pulse",
+      "hint": "Heartbeat and disk headroom",
+      "section": "Planes",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "watch",
+      "label": "Watch",
+      "hint": "Startup state, plugins, alerts",
+      "section": "Planes",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "flux",
+      "label": "Flux",
+      "hint": "Event bus: stats and connected services",
+      "section": "Planes",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "nexus",
+      "label": "Nexus",
+      "hint": "Knowledge collections",
+      "section": "Planes",
+      "tabOf": null,
+      "destination": "know",
+      "kind": "page"
+    },
+    {
+      "id": "mesh",
+      "label": "Mesh",
+      "hint": "Your machines: nodes, storage, network policy",
+      "section": "Planes",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    },
+    {
+      "id": "desktop",
+      "label": "AitherOS Online",
+      "hint": "The living desktop, signed in",
+      "section": "Online",
+      "tabOf": null,
+      "destination": "platform",
+      "kind": "page"
+    }
+  ],
+  "aliasTo": {
+    "academy": "classroom",
+    "agent-life": "agents",
+    "appearance": "system-settings",
+    "atlas": "agents",
+    "avatar": "persona",
+    "avatars": "persona",
+    "contacts": "people",
+    "data-source-setup": "database",
+    "demi": "agents",
+    "device": "this-device",
+    "document": "document-lifecycle",
+    "forge": "ide",
+    "hera": "agents",
+    "local-ai": "brain",
+    "lyra": "agents",
+    "marketplace": "shop",
+    "model-planner": "brain",
+    "models": "brain",
+    "my-workspace": "portal",
+    "myspace": "spaces",
+    "take-it-home": "setup",
+    "vera": "agents"
+  }
+}
