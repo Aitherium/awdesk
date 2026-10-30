@@ -83,6 +83,7 @@
     "auth",
     "backups",
     "beadspace",
+    "bot-observatory",
     "brain",
     "briefing",
     "bring-home",
@@ -1179,6 +1180,19 @@
       "order": 3
     },
     {
+      "id": "bot-observatory",
+      "label": "Bot Observatory",
+      "hint": "Who actually visits the sites — humans, bots, AI crawlers",
+      "destination": "platform",
+      "category": "system",
+      "rail": false,
+      "mobile": true,
+      "icon": "BotIcon",
+      "route": "/?app=bot-observatory",
+      "kind": "online",
+      "order": 4
+    },
+    {
       "id": "connections",
       "label": "Connections",
       "hint": "Your GitHub, chat channels, keys and sign-in methods",
@@ -1189,7 +1203,7 @@
       "icon": "Network",
       "route": "/?app=connections",
       "kind": "online",
-      "order": 4
+      "order": 5
     },
     {
       "id": "control",
@@ -1202,7 +1216,7 @@
       "icon": "SlidersHorizontal",
       "route": "/?app=control",
       "kind": "online",
-      "order": 5
+      "order": 6
     },
     {
       "id": "desktop",
@@ -1215,7 +1229,7 @@
       "icon": "MonitorSmartphone",
       "route": "/?app=desktop",
       "kind": "online",
-      "order": 6
+      "order": 7
     },
     {
       "id": "devplane",
@@ -1228,7 +1242,7 @@
       "icon": "TerminalSquare",
       "route": "/?app=devplane",
       "kind": "online",
-      "order": 7
+      "order": 8
     },
     {
       "id": "family",
@@ -1241,7 +1255,7 @@
       "icon": "Users",
       "route": "/?app=family",
       "kind": "online",
-      "order": 8
+      "order": 9
     },
     {
       "id": "fleet",
@@ -1254,7 +1268,7 @@
       "icon": "Rocket",
       "route": "/?app=fleet",
       "kind": "online",
-      "order": 9
+      "order": 10
     },
     {
       "id": "lockbox",
@@ -1267,7 +1281,7 @@
       "icon": "Lock",
       "route": "/?app=lockbox",
       "kind": "online",
-      "order": 10
+      "order": 11
     },
     {
       "id": "moe",
@@ -1280,7 +1294,7 @@
       "icon": "Boxes",
       "route": "/?app=moe",
       "kind": "online",
-      "order": 11
+      "order": 12
     },
     {
       "id": "my-lockbox",
@@ -1293,7 +1307,7 @@
       "icon": "Lock",
       "route": "/?app=my-lockbox",
       "kind": "online",
-      "order": 12
+      "order": 13
     },
     {
       "id": "my-settings",
@@ -1306,7 +1320,7 @@
       "icon": "SlidersHorizontal",
       "route": "/?app=my-settings",
       "kind": "online",
-      "order": 13
+      "order": 14
     },
     {
       "id": "netmon",
@@ -1319,7 +1333,7 @@
       "icon": "Network",
       "route": "/?app=netmon",
       "kind": "online",
-      "order": 14
+      "order": 15
     },
     {
       "id": "online",
@@ -1332,7 +1346,7 @@
       "icon": "Satellite",
       "route": "/?app=online",
       "kind": "online",
-      "order": 15
+      "order": 16
     },
     {
       "id": "sentry",
@@ -1345,7 +1359,7 @@
       "icon": "Shield",
       "route": "/?app=sentry",
       "kind": "online",
-      "order": 16
+      "order": 17
     },
     {
       "id": "services",
@@ -1358,7 +1372,7 @@
       "icon": "ServerCog",
       "route": "/?app=services",
       "kind": "online",
-      "order": 17
+      "order": 18
     },
     {
       "id": "setup",
@@ -1371,7 +1385,7 @@
       "icon": "Rocket",
       "route": "/?app=setup",
       "kind": "online",
-      "order": 18
+      "order": 19
     },
     {
       "id": "shop",
@@ -1384,7 +1398,7 @@
       "icon": "ShoppingBag",
       "route": "/?app=shop",
       "kind": "online",
-      "order": 19
+      "order": 20
     },
     {
       "id": "sovereign-stats",
@@ -1397,7 +1411,7 @@
       "icon": "Activity",
       "route": "/?app=sovereign-stats",
       "kind": "online",
-      "order": 20
+      "order": 21
     },
     {
       "id": "system-settings",
@@ -1410,7 +1424,7 @@
       "icon": "SlidersHorizontal",
       "route": "/?app=system-settings",
       "kind": "online",
-      "order": 21
+      "order": 22
     },
     {
       "id": "this-device",
@@ -1423,7 +1437,7 @@
       "icon": "MonitorSmartphone",
       "route": "/?app=this-device",
       "kind": "online",
-      "order": 22
+      "order": 23
     },
     {
       "id": "tunnel",
@@ -1436,7 +1450,7 @@
       "icon": "Network",
       "route": "/?app=tunnel",
       "kind": "online",
-      "order": 23
+      "order": 24
     },
     {
       "id": "workspace-admin",
@@ -1449,7 +1463,7 @@
       "icon": "ShieldCheck",
       "route": "/?app=workspace-admin",
       "kind": "online",
-      "order": 24
+      "order": 25
     }
   ],
   "panes": [
