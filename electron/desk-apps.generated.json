@@ -210,6 +210,24 @@
     "studio",
     "tunnel"
   ],
+  "desktopOnly": [
+    "aitherconnect",
+    "backups",
+    "calculator",
+    "darkmatters",
+    "deskbrowser",
+    "desktop",
+    "devplane",
+    "ide",
+    "kodokevo",
+    "moe",
+    "playground",
+    "sovereign-stats",
+    "stack",
+    "storage",
+    "task-manager",
+    "terminal"
+  ],
   "apps": [
     {
       "id": "briefing",
@@ -218,7 +236,11 @@
       "destination": "today",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Newspaper",
+      "route": "/?app=briefing",
+      "kind": "online",
+      "order": 0
     },
     {
       "id": "calendar",
@@ -227,7 +249,11 @@
       "destination": "today",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "CalendarDays",
+      "route": "/?app=calendar",
+      "kind": "online",
+      "order": 1
     },
     {
       "id": "decisions",
@@ -236,7 +262,11 @@
       "destination": "today",
       "category": "work",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Vote",
+      "route": "/?app=decisions",
+      "kind": "online",
+      "order": 2
     },
     {
       "id": "home",
@@ -245,7 +275,11 @@
       "destination": "today",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Home",
+      "route": "/?app=home",
+      "kind": "online",
+      "order": 3
     },
     {
       "id": "aeon",
@@ -254,7 +288,11 @@
       "destination": "talk",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "MessageSquare",
+      "route": "/?app=aeon",
+      "kind": "online",
+      "order": 0
     },
     {
       "id": "aitherchat",
@@ -263,7 +301,11 @@
       "destination": "talk",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "MessageSquare",
+      "route": "/?app=aitherchat",
+      "kind": "online",
+      "order": 1
     },
     {
       "id": "chat-history",
@@ -272,7 +314,11 @@
       "destination": "talk",
       "category": "agents",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "HistoryIcon",
+      "route": "/?app=chat-history",
+      "kind": "online",
+      "order": 2
     },
     {
       "id": "commons",
@@ -281,7 +327,11 @@
       "destination": "talk",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Radio",
+      "route": "/?app=commons",
+      "kind": "online",
+      "order": 3
     },
     {
       "id": "comms",
@@ -290,7 +340,11 @@
       "destination": "talk",
       "category": "work",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Inbox",
+      "route": "/?app=comms",
+      "kind": "online",
+      "order": 4
     },
     {
       "id": "company-room",
@@ -299,7 +353,11 @@
       "destination": "talk",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Layout",
+      "route": "/?app=company-room",
+      "kind": "online",
+      "order": 5
     },
     {
       "id": "dm",
@@ -308,7 +366,11 @@
       "destination": "talk",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "MessageSquare",
+      "route": "/?app=dm",
+      "kind": "online",
+      "order": 6
     },
     {
       "id": "forums",
@@ -317,7 +379,11 @@
       "destination": "talk",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "MessagesSquare",
+      "route": "/?app=forums",
+      "kind": "online",
+      "order": 7
     },
     {
       "id": "greeter",
@@ -326,7 +392,11 @@
       "destination": "talk",
       "category": "agents",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Sparkles",
+      "route": "/?app=greeter",
+      "kind": "online",
+      "order": 8
     },
     {
       "id": "hangout",
@@ -335,7 +405,11 @@
       "destination": "talk",
       "category": "community",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Users",
+      "route": "/?app=hangout",
+      "kind": "online",
+      "order": 9
     },
     {
       "id": "hearth",
@@ -344,7 +418,11 @@
       "destination": "talk",
       "category": "work",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Home",
+      "route": "/?app=hearth",
+      "kind": "online",
+      "order": 10
     },
     {
       "id": "playground",
@@ -353,7 +431,11 @@
       "destination": "talk",
       "category": "community",
       "rail": false,
-      "kind": "online"
+      "mobile": false,
+      "icon": "FlaskConical",
+      "route": "/?app=playground",
+      "kind": "online",
+      "order": 11
     },
     {
       "id": "relay",
@@ -362,7 +444,11 @@
       "destination": "talk",
       "category": "community",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Radio",
+      "route": "/?app=relay",
+      "kind": "online",
+      "order": 12
     },
     {
       "id": "atlas-pm",
@@ -371,7 +457,11 @@
       "destination": "work",
       "category": "work",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Telescope",
+      "route": "/?app=atlas-pm",
+      "kind": "online",
+      "order": 0
     },
     {
       "id": "calculator",
@@ -380,7 +470,11 @@
       "destination": "work",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": false,
+      "icon": "CalculatorIcon",
+      "route": "/?app=calculator",
+      "kind": "online",
+      "order": 1
     },
     {
       "id": "flow",
@@ -389,7 +483,11 @@
       "destination": "work",
       "category": "work",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Workflow",
+      "route": "/?app=flow",
+      "kind": "online",
+      "order": 2
     },
     {
       "id": "invites",
@@ -398,7 +496,11 @@
       "destination": "work",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Mail",
+      "route": "/?app=invites",
+      "kind": "online",
+      "order": 3
     },
     {
       "id": "office",
@@ -407,7 +509,11 @@
       "destination": "work",
       "category": "work",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Layout",
+      "route": "/?app=office",
+      "kind": "online",
+      "order": 4
     },
     {
       "id": "portal",
@@ -416,7 +522,11 @@
       "destination": "work",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "LayoutGrid",
+      "route": "/?app=portal",
+      "kind": "online",
+      "order": 5
     },
     {
       "id": "aitherone",
@@ -425,7 +535,11 @@
       "destination": "know",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "FileStack",
+      "route": "/?app=aitherone",
+      "kind": "online",
+      "order": 0
     },
     {
       "id": "archives",
@@ -434,7 +548,11 @@
       "destination": "know",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "BookOpen",
+      "route": "/?app=archives",
+      "kind": "online",
+      "order": 1
     },
     {
       "id": "brain",
@@ -443,7 +561,11 @@
       "destination": "know",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "BrainIcon",
+      "route": "/?app=brain",
+      "kind": "online",
+      "order": 2
     },
     {
       "id": "civic",
@@ -452,7 +574,11 @@
       "destination": "know",
       "category": "work",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Landmark",
+      "route": "/?app=civic",
+      "kind": "online",
+      "order": 3
     },
     {
       "id": "classroom",
@@ -461,7 +587,11 @@
       "destination": "know",
       "category": "work",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "School",
+      "route": "/?app=classroom",
+      "kind": "online",
+      "order": 4
     },
     {
       "id": "clipboard",
@@ -470,7 +600,11 @@
       "destination": "know",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Clipboard",
+      "route": "/?app=clipboard",
+      "kind": "online",
+      "order": 5
     },
     {
       "id": "deep-research",
@@ -479,7 +613,11 @@
       "destination": "know",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Microscope",
+      "route": "/?app=deep-research",
+      "kind": "online",
+      "order": 6
     },
     {
       "id": "docs",
@@ -488,7 +626,11 @@
       "destination": "know",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "NotebookPen",
+      "route": "/?app=docs",
+      "kind": "online",
+      "order": 7
     },
     {
       "id": "files",
@@ -497,7 +639,11 @@
       "destination": "know",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Folder",
+      "route": "/?app=files",
+      "kind": "online",
+      "order": 8
     },
     {
       "id": "learn",
@@ -506,7 +652,11 @@
       "destination": "know",
       "category": "work",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "GraduationCap",
+      "route": "/?app=learn",
+      "kind": "online",
+      "order": 9
     },
     {
       "id": "my-files",
@@ -515,7 +665,11 @@
       "destination": "know",
       "category": "work",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Folder",
+      "route": "/?app=my-files",
+      "kind": "online",
+      "order": 10
     },
     {
       "id": "notes",
@@ -524,7 +678,11 @@
       "destination": "know",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "NotebookPen",
+      "route": "/?app=notes",
+      "kind": "online",
+      "order": 11
     },
     {
       "id": "research",
@@ -533,7 +691,11 @@
       "destination": "know",
       "category": "knowledge",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Search",
+      "route": "/?app=research",
+      "kind": "online",
+      "order": 12
     },
     {
       "id": "search",
@@ -542,7 +704,11 @@
       "destination": "know",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Search",
+      "route": "/?app=search",
+      "kind": "online",
+      "order": 13
     },
     {
       "id": "storage",
@@ -551,7 +717,11 @@
       "destination": "know",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": false,
+      "icon": "HardDrive",
+      "route": "/?app=storage",
+      "kind": "online",
+      "order": 14
     },
     {
       "id": "strata-files",
@@ -560,7 +730,11 @@
       "destination": "know",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Cloud",
+      "route": "/?app=strata-files",
+      "kind": "online",
+      "order": 15
     },
     {
       "id": "agents",
@@ -569,7 +743,11 @@
       "destination": "agents",
       "category": "agents",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Sparkles",
+      "route": "/?app=agents",
+      "kind": "online",
+      "order": 0
     },
     {
       "id": "builder",
@@ -578,7 +756,11 @@
       "destination": "agents",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Hammer",
+      "route": "/?app=builder",
+      "kind": "online",
+      "order": 1
     },
     {
       "id": "saga",
@@ -587,7 +769,11 @@
       "destination": "agents",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Castle",
+      "route": "/?app=saga",
+      "kind": "online",
+      "order": 2
     },
     {
       "id": "create-family",
@@ -596,7 +782,11 @@
       "destination": "create",
       "category": "create",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Sparkles",
+      "route": "/?app=create-family",
+      "kind": "online",
+      "order": 0
     },
     {
       "id": "image-studio",
@@ -605,7 +795,11 @@
       "destination": "create",
       "category": "create",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Sparkles",
+      "route": "/?app=image-studio",
+      "kind": "online",
+      "order": 1
     },
     {
       "id": "media",
@@ -614,7 +808,11 @@
       "destination": "create",
       "category": "work",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Film",
+      "route": "/?app=media",
+      "kind": "online",
+      "order": 2
     },
     {
       "id": "mediaforge",
@@ -623,7 +821,11 @@
       "destination": "create",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Clapperboard",
+      "route": "/?app=mediaforge",
+      "kind": "online",
+      "order": 3
     },
     {
       "id": "persona",
@@ -632,7 +834,11 @@
       "destination": "create",
       "category": "agents",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "User",
+      "route": "/?app=persona",
+      "kind": "online",
+      "order": 4
     },
     {
       "id": "sprite",
@@ -641,7 +847,11 @@
       "destination": "create",
       "category": "agents",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Egg",
+      "route": "/?app=sprite",
+      "kind": "online",
+      "order": 5
     },
     {
       "id": "studio",
@@ -650,7 +860,11 @@
       "destination": "create",
       "category": "community",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "LayoutGrid",
+      "route": "/?app=studio",
+      "kind": "online",
+      "order": 6
     },
     {
       "id": "aither-play",
@@ -659,7 +873,11 @@
       "destination": "worlds",
       "category": "community",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Gamepad2",
+      "route": "/?app=aither-play",
+      "kind": "online",
+      "order": 0
     },
     {
       "id": "arc",
@@ -668,7 +886,11 @@
       "destination": "worlds",
       "category": "community",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Activity",
+      "route": "/?app=arc",
+      "kind": "online",
+      "order": 1
     },
     {
       "id": "arc-live",
@@ -677,7 +899,11 @@
       "destination": "worlds",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Sparkles",
+      "route": "/?app=arc-live",
+      "kind": "online",
+      "order": 2
     },
     {
       "id": "beadspace",
@@ -686,7 +912,11 @@
       "destination": "worlds",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Workflow",
+      "route": "/?app=beadspace",
+      "kind": "online",
+      "order": 3
     },
     {
       "id": "bring-home",
@@ -695,7 +925,11 @@
       "destination": "worlds",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "HeartHandshake",
+      "route": "/?app=bring-home",
+      "kind": "online",
+      "order": 4
     },
     {
       "id": "darkmatters",
@@ -704,7 +938,11 @@
       "destination": "worlds",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": false,
+      "icon": "Gamepad2",
+      "route": "/?app=darkmatters",
+      "kind": "online",
+      "order": 5
     },
     {
       "id": "elysium",
@@ -713,7 +951,11 @@
       "destination": "worlds",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "MessagesSquare",
+      "route": "/?app=elysium",
+      "kind": "online",
+      "order": 6
     },
     {
       "id": "explore",
@@ -722,7 +964,11 @@
       "destination": "worlds",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Compass",
+      "route": "/?app=explore",
+      "kind": "online",
+      "order": 7
     },
     {
       "id": "gobbonet",
@@ -731,7 +977,11 @@
       "destination": "worlds",
       "category": "agents",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "MessagesSquare",
+      "route": "/?app=gobbonet",
+      "kind": "online",
+      "order": 8
     },
     {
       "id": "homestead",
@@ -740,7 +990,11 @@
       "destination": "worlds",
       "category": "community",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Home",
+      "route": "/?app=homestead",
+      "kind": "online",
+      "order": 9
     },
     {
       "id": "kodokevo",
@@ -749,7 +1003,11 @@
       "destination": "worlds",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": false,
+      "icon": "Swords",
+      "route": "/?app=kodokevo",
+      "kind": "online",
+      "order": 10
     },
     {
       "id": "shadowbroker",
@@ -758,7 +1016,11 @@
       "destination": "worlds",
       "category": "work",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Telescope",
+      "route": "/?app=shadowbroker",
+      "kind": "online",
+      "order": 11
     },
     {
       "id": "spaces",
@@ -767,7 +1029,11 @@
       "destination": "worlds",
       "category": "community",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Globe2",
+      "route": "/?app=spaces",
+      "kind": "online",
+      "order": 12
     },
     {
       "id": "aitherbrowser",
@@ -776,7 +1042,11 @@
       "destination": "build",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Globe",
+      "route": "/?app=aitherbrowser",
+      "kind": "online",
+      "order": 0
     },
     {
       "id": "aitherconnect",
@@ -785,7 +1055,11 @@
       "destination": "build",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": false,
+      "icon": "Zap",
+      "route": "/?app=aitherconnect",
+      "kind": "online",
+      "order": 1
     },
     {
       "id": "deskbrowser",
@@ -794,7 +1068,11 @@
       "destination": "build",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": false,
+      "icon": "Compass",
+      "route": "/?app=deskbrowser",
+      "kind": "online",
+      "order": 2
     },
     {
       "id": "ide",
@@ -803,7 +1081,11 @@
       "destination": "build",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": false,
+      "icon": "Code2",
+      "route": "/?app=ide",
+      "kind": "online",
+      "order": 3
     },
     {
       "id": "stack",
@@ -812,7 +1094,11 @@
       "destination": "build",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": false,
+      "icon": "Orbit",
+      "route": "/?app=stack",
+      "kind": "online",
+      "order": 4
     },
     {
       "id": "task-manager",
@@ -821,7 +1107,11 @@
       "destination": "build",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": false,
+      "icon": "LayoutGrid",
+      "route": "/?app=task-manager",
+      "kind": "online",
+      "order": 5
     },
     {
       "id": "terminal",
@@ -830,7 +1120,11 @@
       "destination": "build",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": false,
+      "icon": "TerminalSquare",
+      "route": "/?app=terminal",
+      "kind": "online",
+      "order": 6
     },
     {
       "id": "account",
@@ -839,7 +1133,11 @@
       "destination": "platform",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Lock",
+      "route": "/?app=account",
+      "kind": "online",
+      "order": 0
     },
     {
       "id": "admin",
@@ -848,7 +1146,11 @@
       "destination": "platform",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Shield",
+      "route": "/?app=admin",
+      "kind": "online",
+      "order": 1
     },
     {
       "id": "auth",
@@ -857,7 +1159,11 @@
       "destination": "platform",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "ShieldCheck",
+      "route": "/?app=auth",
+      "kind": "online",
+      "order": 2
     },
     {
       "id": "backups",
@@ -866,7 +1172,11 @@
       "destination": "platform",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": false,
+      "icon": "Archive",
+      "route": "/?app=backups",
+      "kind": "online",
+      "order": 3
     },
     {
       "id": "connections",
@@ -875,7 +1185,11 @@
       "destination": "platform",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Network",
+      "route": "/?app=connections",
+      "kind": "online",
+      "order": 4
     },
     {
       "id": "control",
@@ -884,7 +1198,11 @@
       "destination": "platform",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "SlidersHorizontal",
+      "route": "/?app=control",
+      "kind": "online",
+      "order": 5
     },
     {
       "id": "desktop",
@@ -893,7 +1211,11 @@
       "destination": "platform",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": false,
+      "icon": "MonitorSmartphone",
+      "route": "/?app=desktop",
+      "kind": "online",
+      "order": 6
     },
     {
       "id": "devplane",
@@ -902,7 +1224,11 @@
       "destination": "platform",
       "category": "system",
       "rail": true,
-      "kind": "online"
+      "mobile": false,
+      "icon": "TerminalSquare",
+      "route": "/?app=devplane",
+      "kind": "online",
+      "order": 7
     },
     {
       "id": "family",
@@ -911,7 +1237,11 @@
       "destination": "platform",
       "category": "work",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Users",
+      "route": "/?app=family",
+      "kind": "online",
+      "order": 8
     },
     {
       "id": "fleet",
@@ -920,7 +1250,11 @@
       "destination": "platform",
       "category": "work",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Rocket",
+      "route": "/?app=fleet",
+      "kind": "online",
+      "order": 9
     },
     {
       "id": "lockbox",
@@ -929,7 +1263,11 @@
       "destination": "platform",
       "category": "",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Lock",
+      "route": "/?app=lockbox",
+      "kind": "online",
+      "order": 10
     },
     {
       "id": "moe",
@@ -938,7 +1276,11 @@
       "destination": "platform",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": false,
+      "icon": "Boxes",
+      "route": "/?app=moe",
+      "kind": "online",
+      "order": 11
     },
     {
       "id": "my-lockbox",
@@ -947,7 +1289,11 @@
       "destination": "platform",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Lock",
+      "route": "/?app=my-lockbox",
+      "kind": "online",
+      "order": 12
     },
     {
       "id": "my-settings",
@@ -956,7 +1302,11 @@
       "destination": "platform",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "SlidersHorizontal",
+      "route": "/?app=my-settings",
+      "kind": "online",
+      "order": 13
     },
     {
       "id": "netmon",
@@ -965,7 +1315,11 @@
       "destination": "platform",
       "category": "system",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Network",
+      "route": "/?app=netmon",
+      "kind": "online",
+      "order": 14
     },
     {
       "id": "online",
@@ -974,7 +1328,11 @@
       "destination": "platform",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Satellite",
+      "route": "/?app=online",
+      "kind": "online",
+      "order": 15
     },
     {
       "id": "sentry",
@@ -983,7 +1341,11 @@
       "destination": "platform",
       "category": "system",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Shield",
+      "route": "/?app=sentry",
+      "kind": "online",
+      "order": 16
     },
     {
       "id": "services",
@@ -992,7 +1354,11 @@
       "destination": "platform",
       "category": "system",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "ServerCog",
+      "route": "/?app=services",
+      "kind": "online",
+      "order": 17
     },
     {
       "id": "setup",
@@ -1001,7 +1367,11 @@
       "destination": "platform",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Rocket",
+      "route": "/?app=setup",
+      "kind": "online",
+      "order": 18
     },
     {
       "id": "shop",
@@ -1010,7 +1380,11 @@
       "destination": "platform",
       "category": "work",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "ShoppingBag",
+      "route": "/?app=shop",
+      "kind": "online",
+      "order": 19
     },
     {
       "id": "sovereign-stats",
@@ -1019,7 +1393,11 @@
       "destination": "platform",
       "category": "",
       "rail": false,
-      "kind": "online"
+      "mobile": false,
+      "icon": "Activity",
+      "route": "/?app=sovereign-stats",
+      "kind": "online",
+      "order": 20
     },
     {
       "id": "system-settings",
@@ -1028,7 +1406,11 @@
       "destination": "platform",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "SlidersHorizontal",
+      "route": "/?app=system-settings",
+      "kind": "online",
+      "order": 21
     },
     {
       "id": "this-device",
@@ -1037,7 +1419,11 @@
       "destination": "platform",
       "category": "system",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "MonitorSmartphone",
+      "route": "/?app=this-device",
+      "kind": "online",
+      "order": 22
     },
     {
       "id": "tunnel",
@@ -1046,7 +1432,11 @@
       "destination": "platform",
       "category": "system",
       "rail": true,
-      "kind": "online"
+      "mobile": true,
+      "icon": "Network",
+      "route": "/?app=tunnel",
+      "kind": "online",
+      "order": 23
     },
     {
       "id": "workspace-admin",
@@ -1055,7 +1445,11 @@
       "destination": "platform",
       "category": "admin",
       "rail": false,
-      "kind": "online"
+      "mobile": true,
+      "icon": "ShieldCheck",
+      "route": "/?app=workspace-admin",
+      "kind": "online",
+      "order": 24
     }
   ],
   "panes": [
