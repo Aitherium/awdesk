@@ -603,6 +603,14 @@ const COMMANDS = Object.freeze([
     id: "osapp.cinema", label: "Cinema Studio…", group: "go", osApp: "cinema",
     surfaces: ["palette", "jumplist"],
   }),
+  // Passkeys (2026-10-31, owner: "why can't I do it from awdesk"): granting admin and approving
+  // an agent need a passkey or authenticator code, and a passkey is bound to the aitherium.com
+  // site, so it is created in a browser engine -- this desk's own, where Windows Hello works.
+  // awsh/awdk sign in with a device code and never count as "you, in person", on purpose.
+  Object.freeze({
+    id: "osapp.passkeys", label: "Passkeys & sign-in…", group: "go", osApp: "passkeys",
+    surfaces: ["palette", "jumplist"],
+  }),
   // My agent sessions on every machine (2026-10-18, owner: awdk/awsh in the Aither app): the
   // OS Agents window, which lands on its Running tab -- the same awkit AgentSessionsPanel
   // the phone's "Running agents" row opens. The browser side panel's Agents tab stays the
@@ -951,6 +959,7 @@ function conformance(commands = COMMANDS) {
 const OSAPP_BROWSER_TAB = Object.freeze({
   family: "https://app.aitherium.com/family",
   cinema: "http://127.0.0.1:8765/",
+  passkeys: "https://app.aitherium.com/settings/passkeys",
 });
 
 /** The browser-tab URL for an osApp, or null when it opens the desktop shell. */

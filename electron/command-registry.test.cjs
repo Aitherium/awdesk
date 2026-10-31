@@ -461,6 +461,8 @@ test("the family osApp opens as a browser TAB, other apps stay on the desktop sh
   assert.equal(osAppTabUrl("family"), "https://app.aitherium.com/family");
   // Cinema is a LOCAL page (127.0.0.1:8765, no sign-in): never a hosted URL.
   assert.equal(osAppTabUrl("cinema"), "http://127.0.0.1:8765/");
+  // Passkeys must open on the real aitherium.com origin: a passkey is bound to it.
+  assert.equal(osAppTabUrl("passkeys"), "https://app.aitherium.com/settings/passkeys");
   assert.equal(osAppTabUrl("learn"), null);
   assert.equal(osAppTabUrl(""), null);
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
