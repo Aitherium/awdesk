@@ -459,6 +459,8 @@ test("the family osApp opens as a browser TAB, other apps stay on the desktop sh
   // Owner, 2026-10-05: the Family app must not force the full Aitheros Online overlay.
   const { osAppTabUrl } = require("./command-registry.cjs");
   assert.equal(osAppTabUrl("family"), "https://app.aitherium.com/family");
+  // Cinema is a LOCAL page (127.0.0.1:8765, no sign-in): never a hosted URL.
+  assert.equal(osAppTabUrl("cinema"), "http://127.0.0.1:8765/");
   assert.equal(osAppTabUrl("learn"), null);
   assert.equal(osAppTabUrl(""), null);
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");

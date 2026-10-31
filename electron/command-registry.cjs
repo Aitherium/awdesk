@@ -595,6 +595,14 @@ const COMMANDS = Object.freeze([
     id: "osapp.image-studio", label: "Image Studio…", group: "go", osApp: "image-studio",
     surfaces: ["palette", "jumplist"],
   }),
+  // Aither Cinema Studio (2026-10-31): the camera-rig shot desk -- moves, lenses, grades,
+  // keyframe/t2v/i2v, WebMCP tools. It runs on this machine (the awnix unit aither-cinema,
+  // or a self-hosted install from its one-line start command) at 127.0.0.1:8765 and has no
+  // sign-in, so it is a local page, never a hosted one.
+  Object.freeze({
+    id: "osapp.cinema", label: "Cinema Studio…", group: "go", osApp: "cinema",
+    surfaces: ["palette", "jumplist"],
+  }),
   // My agent sessions on every machine (2026-10-18, owner: awdk/awsh in the Aither app): the
   // OS Agents window, which lands on its Running tab -- the same awkit AgentSessionsPanel
   // the phone's "Running agents" row opens. The browser side panel's Agents tab stays the
@@ -942,6 +950,7 @@ function conformance(commands = COMMANDS) {
 // to move another app. Consumed by main.cjs's osApp dispatch.
 const OSAPP_BROWSER_TAB = Object.freeze({
   family: "https://app.aitherium.com/family",
+  cinema: "http://127.0.0.1:8765/",
 });
 
 /** The browser-tab URL for an osApp, or null when it opens the desktop shell. */
