@@ -8,6 +8,8 @@
  *   apps         Start-menu shortcuts (.lnk / .url / .appref-ms) under %AppData% and
  *                %ProgramData% Microsoft\Windows\Start Menu\Programs. Launched by
  *                main with shell.openPath -- the shortcut, never its target string.
+ *                Plus Store/packaged apps (Get-StartApps), which have no shortcut;
+ *                those launch as explorer.exe shell:AppsFolder\<AppID>.
  *   actions      the desk's own commands (command-registry.cjs paletteRows, read only).
  *   files        the Windows Search index over OLE DB (Search.CollatorDSO, SYSTEMINDEX)
  *                through Windows PowerShell; when the index does not answer, a BOUNDED
@@ -336,15 +338,93 @@ function scanShortcuts(dirs, { fsImpl = fs, maxDepth = 6, maxEntries = 5_000 } =
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** The apps provider, with its scan cached two minutes (a Start menu changes on install). */
-function appsProvider({ dirs = () => startMenuDirs(), fsImpl = fs, now = () => Date.now() } = {}) {
+// ── apps: Store / packaged apps (Get-StartApps) ─────────────────────────────
+//
+// Measured 2026-11-01 on the owner's box: "notepad" found NOTHING. Windows 11's
+// Notepad, Calculator, Settings, Terminal and every Store app have no .lnk under the
+// Start-menu folders -- they live only in shell:AppsFolder. Get-StartApps lists every
+// Start entry with its AppID (2.4 s cold), so the list is loaded in the BACKGROUND,
+// cached ten minutes, and merged under the shortcuts; the first keystroke never waits.
+
+/** The launch target for an AppsFolder entry; search-window opens it via explorer.exe. */
+const APPS_FOLDER_PREFIX = "shell:AppsFolder\\";
+const START_APPS_CACHE_MS = 10 * 60_000;
+// An AppID is a path-ish or PackageFamilyName!App token. Anything with a quote, a
+// control character or a shell metacharacter is dropped: it reaches explorer.exe as ONE
+// argv entry (no shell), and a strange id is not worth reasoning about.
+const SAFE_APP_ID = /^[A-Za-z0-9{}()[\]._\-!\\: ~+,@']{1,300}$/;
+const START_APPS_SCRIPT = "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress";
+
+/** Get-StartApps JSON (an array, or ONE object when only one app) -> [{name, appId}]. */
+function parseStartApps(text) {
+  let data;
+  try { data = JSON.parse(String(text || "").trim() || "[]"); } catch { return []; }
+  const rows = Array.isArray(data) ? data : (data && typeof data === "object" ? [data] : []);
+  const out = [];
+  const seen = new Set();
+  for (const r of rows) {
+    const name = typeof r?.Name === "string" ? r.Name.trim() : "";
+    const appId = typeof r?.AppID === "string" ? r.AppID.trim() : "";
+    if (!name || !appId || !SAFE_APP_ID.test(appId) || SHORTCUT_NOISE.test(name)) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name, appId });
+  }
+  return out;
+}
+
+/** Load the Start apps once; resolves [] (never rejects) off Windows or on any failure. */
+function loadStartApps({ execFile = require("node:child_process").execFile, platform = process.platform,
+  timeoutMs = 15_000 } = {}) {
+  if (platform !== "win32") return Promise.resolve([]);
+  return new Promise((resolve) => {
+    try {
+      execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-EncodedCommand", encodedCommand(START_APPS_SCRIPT)],
+      { timeout: timeoutMs, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
+      (error, stdout) => resolve(error ? [] : parseStartApps(stdout)));
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+/**
+ * The apps provider: Start-menu shortcuts (scan cached two minutes; a Start menu
+ * changes on install) plus, when `startApps` is given, the AppsFolder entries no
+ * shortcut already names. `startApps` is a () => Promise<[{name, appId}]> loader; it
+ * is started at creation and refreshed in the background, never awaited by a search.
+ */
+function appsProvider({ dirs = () => startMenuDirs(), fsImpl = fs, now = () => Date.now(), startApps = null } = {}) {
   let cache = null;
   let at = 0;
+  let packaged = [];
+  let packagedAt = -Infinity;
+  let loading = null;
+  const refreshPackaged = () => {
+    if (!startApps || loading || now() - packagedAt < START_APPS_CACHE_MS) return loading;
+    loading = Promise.resolve()
+      .then(() => startApps())
+      .then((list) => { if (Array.isArray(list) && list.length) packaged = list; packagedAt = now(); })
+      .catch(() => { packagedAt = now(); })
+      .finally(() => { loading = null; });
+    return loading;
+  };
+  refreshPackaged();
   return {
     id: "apps", fast: true,
+    ready: () => loading || Promise.resolve(),
     search: () => {
       if (!cache || now() - at > APP_CACHE_MS) { cache = scanShortcuts(dirs(), { fsImpl }); at = now(); }
-      return cache.map((a) => ({ title: a.name, subtitle: a.folder || "Start menu", kind: "app", target: a.path }));
+      refreshPackaged();
+      const rows = cache.map((a) => ({ title: a.name, subtitle: a.folder || "Start menu", kind: "app", target: a.path }));
+      const named = new Set(cache.map((a) => a.name.toLowerCase()));
+      for (const p of packaged) {
+        if (named.has(p.name.toLowerCase())) continue;
+        rows.push({ title: p.name, subtitle: "App", kind: "app", target: `${APPS_FOLDER_PREFIX}${p.appId}` });
+      }
+      return rows;
     },
   };
 }
@@ -656,7 +736,8 @@ function createUniversalSearch({
 } = {}) {
   const registry = createProviderRegistry();
   const client = searchClient || require("./search-client.cjs").createSearchClient({ execFile });
-  registry.register(appsProvider({ dirs: () => startMenuDirs(env), fsImpl }));
+  registry.register(appsProvider({ dirs: () => startMenuDirs(env), fsImpl,
+    startApps: () => loadStartApps({ execFile, platform }) }));
   registry.register(actionsProvider(actionRows ? { rows: actionRows } : {}));
   registry.register(filesProvider({ platform, roots, wsearch: (q, o) => queryWindowsSearch(q, { execFile, env, signal: (o && o.signal) || null }),
     walk: (r, q) => walkFiles(r, q, { fsImpl }) }));
@@ -672,8 +753,8 @@ function createUniversalSearch({
 }
 
 module.exports = {
-  GROUPS, SHOW, SUPERSEDED, WSEARCH_ENV, WSEARCH_SCRIPT, PROVIDER_TIMEOUT_MS,
-  appsProvider, actionsProvider, agentsProvider, capList, chatPrompt, clipLabel, cleanTerm, clipboardProvider, createClipHistory,
+  GROUPS, SHOW, SUPERSEDED, WSEARCH_ENV, WSEARCH_SCRIPT, PROVIDER_TIMEOUT_MS, APPS_FOLDER_PREFIX,
+  appsProvider, loadStartApps, parseStartApps, actionsProvider, agentsProvider, capList, chatPrompt, clipLabel, cleanTerm, clipboardProvider, createClipHistory,
   createProviderRegistry, createUniversalSearch, encodedCommand, errorLine, isAbort, filesProvider, filesRoots, itemKey,
   likeEscape, matchScore, mergeGroups, readableStderr, queryWindowsSearch, rankItems, runProviders, scanShortcuts, screenshotsProvider,
   sqlString, startMenuDirs, walkFiles, windowsSearchSql,

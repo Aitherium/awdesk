@@ -449,6 +449,10 @@ test("the universal search wires the signal through files and agents to their ch
   const empty = tmp("us-sig-");
   const s = us.createUniversalSearch({ execFile, platform: "win32", env: { APPDATA: empty, ProgramData: empty },
     roots: () => [], actionRows: () => [], screenshotDir: () => empty });
+  // Creation starts ONE background Get-StartApps load (no signal: it belongs to no query).
+  await new Promise((r) => setImmediate(r));
+  const atCreation = signals.splice(0);
+  assert.deepEqual(atCreation.map(([c, sig]) => [c, sig]), [["powershell.exe", null]]);
   const ctl = new AbortController();
   await s.run("notepad", { phase: "all", signal: ctl.signal });
   assert.deepEqual(signals.map(([c]) => c).sort(), ["adk", "powershell.exe"]);
@@ -595,4 +599,87 @@ test("the slow phase waits for a 500 ms pause; a key inside it starts nothing sl
   await page.advance(600);
   assert.deepEqual(calls, [["note", "fast"], ["notepad", "fast"], ["notepad", "all"]]);
   assert.match(page.$("status").textContent, /^Enter opens “Notepad” · 1 results in 1 group$/);
+});
+
+// ── Store / packaged apps (Get-StartApps), 2026-11-01: "notepad" found nothing ──
+
+test("parseStartApps: an array, a single object, and unsafe ids are handled", () => {
+  const many = JSON.stringify([
+    { Name: "Notepad", AppID: "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App" },
+    { Name: "Calculator", AppID: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" },
+    { Name: "Evil", AppID: "x\" & calc.exe & \"" },
+    { Name: "Uninstall Foo", AppID: "{6D809377}\\Foo\\uninst.exe" },
+    { Name: "notepad", AppID: "Dup!App" },
+  ]);
+  assert.deepEqual(us.parseStartApps(many), [
+    { name: "Notepad", appId: "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App" },
+    { name: "Calculator", appId: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" },
+  ]);
+  assert.deepEqual(us.parseStartApps(JSON.stringify({ Name: "Settings", AppID: "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel" })),
+    [{ name: "Settings", appId: "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel" }]);
+  assert.deepEqual(us.parseStartApps("not json"), []);
+  assert.deepEqual(us.parseStartApps(""), []);
+});
+
+test("appsProvider merges packaged apps under the shortcuts, never awaiting the load", async () => {
+  const dir = tmp("us-apps-");
+  fs.writeFileSync(path.join(dir, "Calculator.lnk"), "");
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const p = us.appsProvider({
+    dirs: () => [dir],
+    startApps: () => gate.then(() => [{ name: "Notepad", appId: "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App" },
+      { name: "Calculator", appId: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" }]),
+  });
+  // Before the background load lands, a search answers with the shortcuts at once.
+  assert.deepEqual(p.search().map((r) => r.title), ["Calculator"]);
+  release();
+  await p.ready();
+  const rows = p.search();
+  assert.deepEqual(rows.map((r) => r.title), ["Calculator", "Notepad"], "the shortcut's name wins; Notepad is added");
+  const notepad = rows.find((r) => r.title === "Notepad");
+  assert.equal(notepad.kind, "app");
+  assert.equal(notepad.target, `${us.APPS_FOLDER_PREFIX}Microsoft.WindowsNotepad_8wekyb3d8bbwe!App`);
+  assert.ok(rows.find((r) => r.title === "Calculator").target.endsWith("Calculator.lnk"));
+});
+
+test("a run finds a packaged app by name (the 'notepad' miss)", async () => {
+  const dir = tmp("us-apps2-");
+  const p = us.appsProvider({ dirs: () => [dir], startApps: async () => [{ name: "Notepad", appId: "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App" }] });
+  await p.ready();
+  const reg = us.createProviderRegistry();
+  reg.register(p);
+  const r = await us.runProviders(reg, "notepad", { phase: "fast" });
+  assert.equal(r.ok, true);
+  assert.equal(r.groups[0].id, "apps");
+  assert.equal(r.groups[0].items[0].title, "Notepad");
+});
+
+test("loadStartApps resolves [] off Windows and on a failed spawn, never rejects", async () => {
+  assert.deepEqual(await us.loadStartApps({ platform: "linux" }), []);
+  const failing = (_c, _a, _o, cb) => cb(new Error("boom"), "", "");
+  assert.deepEqual(await us.loadStartApps({ platform: "win32", execFile: failing }), []);
+  let argv = null;
+  const ok = (cmd, args, opts, cb) => { argv = { cmd, args, opts }; cb(null, JSON.stringify([{ Name: "Paint", AppID: "Microsoft.Paint_8wekyb3d8bbwe!App" }]), ""); };
+  assert.deepEqual(await us.loadStartApps({ platform: "win32", execFile: ok }), [{ name: "Paint", appId: "Microsoft.Paint_8wekyb3d8bbwe!App" }]);
+  assert.equal(argv.cmd, "powershell.exe");
+  assert.equal(argv.opts.windowsHide, true);
+});
+
+test("openAppsFolderEntry refuses a non-AppsFolder target; the id travels by ENV, never the command line", async () => {
+  let calls = 0;
+  const never = () => { calls++; };
+  assert.equal(await searchWindow.openAppsFolderEntry("C:\\Windows\\System32\\calc.exe", { execFile: never }), "not an app id");
+  assert.equal(await searchWindow.openAppsFolderEntry(`${us.APPS_FOLDER_PREFIX}a"b`, { execFile: never }), "not an app id");
+  assert.equal(calls, 0, "a refused target spawns nothing");
+  let seen = null;
+  const ok = (cmd, args, opts, cb) => { seen = { cmd, args, opts }; setImmediate(() => cb(null, "", "")); };
+  const t = `${us.APPS_FOLDER_PREFIX}Microsoft.WindowsNotepad_8wekyb3d8bbwe!App`;
+  assert.equal(await searchWindow.openAppsFolderEntry(t, { execFile: ok, env: {} }), "");
+  assert.equal(seen.cmd, "powershell.exe");
+  assert.equal(seen.opts.windowsHide, true);
+  assert.equal(seen.opts.env.AWDESK_APPS_FOLDER_TARGET, t);
+  assert.ok(!seen.args.some((a) => a.includes("WindowsNotepad")), "the id is not on the command line");
+  const bad = (_c, _a, _o, cb) => setImmediate(() => cb(Object.assign(new Error("exit 1"), { code: 1 }), "", "Start-Process : This command cannot be run\r\nmore"));
+  assert.equal(await searchWindow.openAppsFolderEntry(t, { execFile: bad, env: {} }), "Start-Process : This command cannot be run");
 });

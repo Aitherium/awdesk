@@ -19,6 +19,39 @@
 
 const path = require("node:path");
 const { createSearchClient } = require("./search-client.cjs");
+const { APPS_FOLDER_PREFIX, encodedCommand } = require("./universal-search.cjs");
+
+/** Env var the constant launch script reads the AppsFolder target from. */
+const APPS_FOLDER_ENV = "AWDESK_APPS_FOLDER_TARGET";
+// Measured 2026-11-01 on the owner's box, launching Calculator by its AppID:
+//   explorer.exe <target>            spawned, exit 1, NO app started
+//   shell.openExternal(target)       "The system cannot find the path specified"
+//   shell.openPath(target)           hung past 10 s
+//   cmd /c start "" <target>         hung 15 s (argv quoting)
+//   PowerShell Start-Process target  CalculatorApp started -- the one that works.
+// So the launch is ShellExecute through PowerShell: a CONSTANT script reading the
+// target from the environment, never the command line (the WSEARCH pattern).
+const APPS_FOLDER_SCRIPT = `Start-Process -FilePath $env:${APPS_FOLDER_ENV} -ErrorAction Stop`;
+
+/** Open one AppsFolder entry. Resolves "" when it launched, a reason otherwise; never rejects. */
+function openAppsFolderEntry(target, { execFile = require("node:child_process").execFile, env = process.env } = {}) {
+  const t = String(target || "");
+  if (!t.startsWith(APPS_FOLDER_PREFIX) || t.includes('"') || [...t].some((c) => c.charCodeAt(0) < 0x20)) {
+    return Promise.resolve("not an app id");
+  }
+  return new Promise((resolve) => {
+    try {
+      execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-EncodedCommand", encodedCommand(APPS_FOLDER_SCRIPT)],
+      { windowsHide: true, timeout: 15_000, env: { ...env, [APPS_FOLDER_ENV]: t } },
+      (error, _stdout, stderr) => resolve(error
+        ? String(stderr || (error && error.message) || error).trim().split(/\r?\n/)[0].slice(0, 200) || "launch failed"
+        : ""));
+    } catch (e) {
+      resolve(String((e && e.message) || e));
+    }
+  });
+}
 
 const LAUNCHER_SIZE = Object.freeze({ width: 720, height: 520 });
 const REMEMBERED_MAX = 4_000;
@@ -172,9 +205,16 @@ async function sendChat(send, text, { acceptMs = CHAT_ACCEPT_MS } = {}) {
  *   An action or chat row reports the RUNNER's verdict: a failed command or a
  *   cancelled confirm is {ok:false}, never "ran X".
  */
-async function launchItem(key, query, { shell, clipboard, action = runAction, chat = sendToChat, acceptMs } = {}) {
+async function launchItem(key, query, { shell, clipboard, action = runAction, chat = sendToChat, acceptMs,
+  openAppsFolder = openAppsFolderEntry } = {}) {
   const item = remembered.get(String(key || ""));
   if (!item) return { ok: false, error: "1 result is gone — search again" };
+  // A Store/packaged app (universal-search.cjs loadStartApps) has no file to open:
+  // explorer.exe launches shell:AppsFolder\<AppID>, the id as ONE argv entry.
+  if (item.kind === "app" && String(item.target).startsWith(APPS_FOLDER_PREFIX)) {
+    const err = await openAppsFolder(item.target);
+    return err ? { ok: false, error: `1 app did not open — ${err}` } : { ok: true, did: `opened ${item.title}` };
+  }
   if (item.kind === "app" || item.kind === "file" || item.kind === "screenshot") {
     const err = await shell.openPath(item.target);
     return err ? { ok: false, error: `1 ${item.kind} did not open — ${err}` } : { ok: true, did: `opened ${item.title}` };
@@ -356,7 +396,7 @@ function registerLauncherShortcut(globalShortcut, { onPress = () => toggleLaunch
 
 module.exports = {
   CHAT_ACCEPT_MS, LAUNCHER_ACCELS, UNWIRED,
-  client, ensureSearchIpc, failureOf, fromSearchPage, hideLauncher, launchItem, publicRun, registerLauncherShortcut,
+  client, ensureSearchIpc, failureOf, openAppsFolderEntry, fromSearchPage, hideLauncher, launchItem, publicRun, registerLauncherShortcut,
   searchHandlers, sendChat, setActionRunner, setChatSender, setForgeOpener, toggleLauncher, universal,
   /** For tests: forget every remembered item. */
   __forget: () => remembered.clear(),
