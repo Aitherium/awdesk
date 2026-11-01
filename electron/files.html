@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:; frame-src file:;" />
 <title>Files</title>
 <link rel="stylesheet" href="aither-tokens.css" />
 <style>
@@ -11,30 +11,62 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
     font: 13px/1.45 var(--font-sans); }
-  body { display: grid; grid-template-rows: 44px 1fr; height: 100vh; }
+  body { display: grid; grid-template-rows: 44px auto auto auto 1fr; height: 100vh; }
   .bar { display: flex; align-items: center; gap: 10px; padding: 0 14px;
-    border-bottom: 1px solid var(--line); }
+    border-bottom: 1px solid var(--line); min-width: 0; }
   .embedded .bar .title { display: none; }
   .bar .title { font-weight: 600; }
   .bar .state { color: var(--muted); font-size: 12px; flex: 1; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bar .state.err { color: var(--red); }
+  .bar .say { font-size: 12px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .say.err { color: var(--red); } .say.ok { color: var(--green); }
   .chip { appearance: none; border: 1px solid var(--line); background: var(--btn);
-    color: var(--muted); border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; }
+    color: var(--muted); border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; white-space: nowrap; }
   .chip:hover { background: var(--btn-hi); color: var(--fg); }
   .chip:disabled { opacity: .5; cursor: default; }
   .chip.primary { color: var(--fg); border-color: color-mix(in oklch, var(--brand), var(--background) 50%); }
   .chip.small { padding: 2px 8px; font-size: 11px; }
-  main { display: grid; grid-template-columns: minmax(240px, 30%) 1fr; min-height: 0; }
+  .chip.on { color: var(--fg); background: var(--panel); }
+  .chip.danger:hover { color: var(--red); }
+  /* tabs */
+  .tabs { display: flex; gap: 2px; padding: 4px 8px 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .tab { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; border: 1px solid var(--line);
+    border-bottom: 0; border-radius: 6px 6px 0 0; color: var(--muted); cursor: pointer; max-width: 200px; font-size: 12px; }
+  .tab.active { background: var(--panel); color: var(--fg); }
+  .tab .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tab button { appearance: none; border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 4px; font: inherit; }
+  .tab button:hover { color: var(--fg); }
+  /* nav: back/forward/up + breadcrumb/address + filter */
+  .nav { display: flex; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  .crumbs { flex: 1; min-width: 0; display: flex; flex-wrap: nowrap; overflow: hidden; gap: 2px; align-items: center;
+    border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; cursor: text; min-height: 28px; font-size: 12px; }
+  .crumbs button { appearance: none; background: none; border: 0; color: var(--muted); cursor: pointer;
+    font: inherit; padding: 2px 4px; border-radius: 4px; white-space: nowrap; }
+  .crumbs button:hover { color: var(--fg); background: var(--btn); }
+  .crumbs .sep { color: var(--surface-400); }
+  .crumbs .grow { flex: 1; min-width: 12px; align-self: stretch; }
+  input.field { background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 8px; font: inherit; font-size: 12px; min-width: 0; }
+  input.field:focus, textarea.field:focus { outline: 1px solid var(--brand); }
+  #address { flex: 1; display: none; }
+  #filter { width: 180px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 10px;
+    border-bottom: 1px solid var(--line); }
+  .actions .sp { flex: 1; }
+  .actions select { background: var(--btn); color: var(--muted); border: 1px solid var(--line); border-radius: 6px; font: inherit; padding: 4px; }
+  main { display: grid; grid-template-columns: minmax(220px, 22%) 1fr; min-height: 0; }
+  main.with-preview { grid-template-columns: minmax(220px, 22%) 1fr minmax(260px, 30%); }
   .col { overflow-y: auto; min-height: 0; }
-  .col + .col { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto auto 1fr; overflow: hidden; }
+  .col + .col { border-left: 1px solid var(--line); }
+  #previewCol { display: none; padding: 12px; }
+  main.with-preview #previewCol { display: block; }
   section { padding: 12px 14px; border-bottom: 1px solid var(--line); }
   h3 { margin: 0 0 8px; font-size: 10px; font-weight: 650; letter-spacing: .09em;
     text-transform: uppercase; color: var(--surface-400); display: flex; gap: 8px; align-items: center; }
   h3 .grow { flex: 1; }
   .root { padding: 7px 8px; border-radius: 8px; cursor: pointer; display: grid; gap: 3px; margin-bottom: 4px;
     border: 1px solid transparent; }
-  .root:hover { background: var(--btn); }
+  .root:hover, .root.drop { background: var(--btn); }
   .root.active { background: var(--panel); border-color: var(--line); }
   .root .top { display: flex; align-items: center; gap: 8px; }
   .root .label { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -43,82 +75,151 @@
   .grant { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); cursor: pointer; }
   .grant input { margin: 0; accent-color: var(--brand); }
   .grant.on { color: var(--amber); }
-  .crumbs { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding: 10px 14px;
-    border-bottom: 1px solid var(--line); font-size: 12px; }
-  .crumbs button { appearance: none; background: none; border: 0; color: var(--muted); cursor: pointer;
-    font: inherit; padding: 2px 4px; border-radius: 4px; }
-  .crumbs button:hover { color: var(--fg); background: var(--btn); }
-  .crumbs .sep { color: var(--surface-400); }
-  .crumbs .grow { flex: 1; }
-  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 14px;
-    border-bottom: 1px solid var(--line); min-height: 44px; }
-  .actions .picked { color: var(--muted); font-size: 12px; flex: 1; min-width: 0; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; }
-  .list { overflow-y: auto; min-height: 0; }
+  .more { appearance: none; background: none; border: 0; color: var(--brand); cursor: pointer; font: inherit; font-size: 12px; padding: 4px 0; }
+  .list { position: relative; }
+  .list.drop { outline: 2px dashed var(--brand); outline-offset: -4px; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
   th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; position: sticky; top: 0;
-    background: var(--bg); border-bottom: 1px solid var(--line); }
+    background: var(--bg); border-bottom: 1px solid var(--line); cursor: pointer; user-select: none; white-space: nowrap; }
+  th:hover { color: var(--fg); }
   td { padding: 5px 8px; border-bottom: 1px solid var(--btn); white-space: nowrap; }
   td.name { width: 100%; white-space: normal; word-break: break-all; }
-  tr.entry { cursor: pointer; }
-  tr.entry:hover { background: var(--btn); }
-  tr.entry.sel { background: var(--panel); }
-  tr.entry.hidden-file td.name { color: var(--muted); }
+  tr.entry { cursor: default; }
+  tr.entry:hover, .tile:hover { background: var(--btn); }
+  tr.entry.sel, .tile.sel { background: var(--panel); outline: 1px solid var(--line); }
+  tr.entry.cut, .tile.cut { opacity: .5; }
+  tr.entry.drop, .tile.drop { outline: 2px solid var(--brand); }
+  .hidden-file .nm { color: var(--muted); }
   .glyph { display: inline-block; width: 18px; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; padding: 10px; }
+  .tile { display: grid; justify-items: center; gap: 4px; padding: 8px 4px; border-radius: 8px; text-align: center; }
+  .tile .th { width: 96px; height: 80px; display: grid; place-items: center; font-size: 34px; color: var(--muted); }
+  .tile .th img { max-width: 96px; max-height: 80px; border-radius: 4px; }
+  .tile .nm { font-size: 11px; word-break: break-all; max-height: 3em; overflow: hidden; }
   .muted { color: var(--muted); }
   .summary.bad { color: var(--red); word-break: break-word; padding: 12px 14px; }
   .note { color: var(--amber); font-size: 12px; }
   .ok-note { color: var(--green); font-size: 12px; }
   .placeholder { color: var(--muted); padding: 12px 14px; }
+  #report { display: none; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+  #report.show { display: block; }
+  #report .bad { color: var(--red); }
+  #report li { color: var(--muted); }
+  .pv-title { font-weight: 600; word-break: break-all; margin-bottom: 8px; }
+  .pv img { max-width: 100%; border-radius: 6px; }
+  .pv pre { white-space: pre-wrap; word-break: break-word; font: 11px/1.4 var(--font-mono, monospace);
+    background: var(--panel); padding: 8px; border-radius: 6px; max-height: 70vh; overflow: auto; margin: 0; }
+  .pv iframe { width: 100%; height: 72vh; border: 0; border-radius: 6px; background: #fff; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 12px; }
+  .kv .k { color: var(--muted); } .kv .v { word-break: break-all; }
+  /* menu + modal */
+  #menu { position: fixed; display: none; z-index: 20; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 4px; min-width: 200px; box-shadow: 0 8px 30px rgba(0,0,0,.4); }
+  #menu button { display: flex; width: 100%; justify-content: space-between; gap: 16px; appearance: none; border: 0;
+    background: none; color: var(--fg); font: inherit; font-size: 12px; padding: 6px 10px; border-radius: 5px; cursor: pointer; text-align: left; }
+  #menu button:hover { background: var(--btn-hi); }
+  #menu button:disabled { color: var(--muted); cursor: default; background: none; }
+  #menu .kb { color: var(--muted); }
+  #menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  #modal { position: fixed; inset: 0; display: none; place-items: center; background: rgba(0,0,0,.45); z-index: 30; }
+  #modal.show { display: grid; }
+  .dlg { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 16px; width: min(560px, 92vw);
+    max-height: 86vh; overflow: auto; display: grid; gap: 10px; }
+  .dlg h2 { margin: 0; font-size: 14px; }
+  .dlg .btns { display: flex; justify-content: flex-end; gap: 8px; }
+  textarea.field { background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 8px; font: inherit; min-height: 70px; resize: vertical; }
+  .answer { white-space: pre-wrap; background: var(--panel); border-radius: 6px; padding: 8px; }
+  .ev { font-size: 11px; color: var(--muted); border-left: 2px solid var(--line); padding-left: 8px; margin: 4px 0; white-space: pre-wrap; }
 </style>
 </head>
 <body>
   <div class="bar">
     <span class="title">Files</span>
     <span class="state" id="state">loading…</span>
-    <button class="chip" id="refresh">Refresh</button>
+    <span class="say" id="say"></span>
+    <button class="chip" id="refresh" title="Refresh (F5)">Refresh</button>
   </div>
-  <main>
+  <div class="tabs" id="tabs"></div>
+  <div class="nav">
+    <button class="chip small" id="back" title="Back (Alt+Left)">←</button>
+    <button class="chip small" id="fwd" title="Forward (Alt+Right)">→</button>
+    <button class="chip small" id="up" title="Up (Alt+Up)">↑</button>
+    <div class="crumbs" id="crumbs" title="Click to type a path (Ctrl+L)"></div>
+    <input class="field" id="address" spellcheck="false" placeholder="C:\Users\you\Documents — Enter to go, Esc to cancel" />
+    <input class="field" id="filter" spellcheck="false" placeholder="Filter (Ctrl+F)" />
+  </div>
+  <div class="actions">
+    <button class="chip" id="newFolder" title="New folder (Ctrl+Shift+N)">New folder</button>
+    <button class="chip" id="open" disabled>Open</button>
+    <button class="chip" id="rename" disabled title="Rename (F2)">Rename</button>
+    <button class="chip" id="cut" disabled title="Cut (Ctrl+X)">Cut</button>
+    <button class="chip" id="copy" disabled title="Copy (Ctrl+C)">Copy</button>
+    <button class="chip" id="paste" disabled title="Paste (Ctrl+V)">Paste</button>
+    <button class="chip danger" id="trash" disabled title="Move to the Recycle Bin (Del)">Delete</button>
+    <button class="chip" id="props" title="Properties (Alt+Enter)">Properties</button>
+    <button class="chip" id="send" disabled title="Upload to your Aitherium files">Send to Aitherium</button>
+    <button class="chip primary" id="ask" disabled title="Ask Aither about this file">Ask Aither</button>
+    <span class="sp"></span>
+    <button class="chip" id="reveal" title="Show in Windows Explorer">Explorer</button>
+    <button class="chip" id="hand" title="Post the path into the chat">Hand to agent</button>
+    <label class="grant"><input type="checkbox" id="showHidden" /> hidden</label>
+    <select id="sort" title="Sort">
+      <option value="name">Name</option><option value="modified">Modified</option>
+      <option value="size">Size</option><option value="type">Type</option>
+    </select>
+    <button class="chip small" id="sortDir" title="Reverse the sort">↑</button>
+    <button class="chip small" id="viewList" title="List view">List</button>
+    <button class="chip small" id="viewGrid" title="Grid view with thumbnails">Grid</button>
+    <button class="chip small" id="previewToggle" title="Preview pane (Alt+P)">Preview</button>
+  </div>
+  <div id="report"></div>
+  <main id="main">
     <div class="col">
       <section>
         <h3>Places <span class="grow"></span><button class="chip small" id="addRoot">Add folder</button></h3>
         <div id="roots"><div class="placeholder">loading places…</div></div>
       </section>
       <section>
+        <h3>Aitherium <span class="grow"></span><button class="chip small" id="cloudRefresh">Refresh</button></h3>
+        <div id="cloud" class="muted" style="font-size:12px">Send to Aitherium puts a file in your online files.</div>
+      </section>
+      <section>
+        <h3>Win+E</h3>
+        <div id="wine" class="muted" style="font-size:12px">checking…</div>
+      </section>
+      <section>
         <h3>Agent access</h3>
         <div class="muted" style="font-size:12px">Agents can read a place only when its switch is on —
-          read-only, text files, never keys or .env files. Everything stays off until you turn it on.</div>
+          read-only, text files, never keys or .env files. Agents can never rename, move or delete anything:
+          those buttons are yours alone.</div>
       </section>
     </div>
-    <div class="col">
-      <div class="crumbs" id="crumbs"></div>
-      <div class="actions">
-        <span class="picked" id="picked">Pick a file or folder.</span>
-        <label class="grant" style="margin-right:6px"><input type="checkbox" id="showHidden" /> hidden</label>
-        <button class="chip" id="open" disabled>Open</button>
-        <button class="chip" id="reveal" disabled>Show in Explorer</button>
-        <button class="chip primary" id="hand" disabled>Hand to agent</button>
-      </div>
-      <div class="list" id="list"><div class="placeholder">Pick a place.</div></div>
-    </div>
+    <div class="col list" id="list"><div class="placeholder">Pick a place.</div></div>
+    <div class="col" id="previewCol"><div class="placeholder">Pick a file to preview it.</div></div>
   </main>
+  <div id="menu"></div>
+  <div id="modal"><div class="dlg" id="dlg"></div></div>
 <script>
 "use strict";
-// The Files page: the owner's local explorer. Everything is rendered with
-// textContent; file names are DATA, never markup. Open/Reveal act on the owner's
-// own machine; "Hand to agent" posts the path into the chat; the switch on each
-// place is the only way an agent ever reads a file (desk MCP files_read).
+// The Files page: the owner's file explorer. Everything is rendered with
+// textContent; file names are DATA, never markup. Write verbs act through
+// files-ops.cjs (owner only, delete = Recycle Bin); the switch on each place is
+// the only way an agent ever READS a file (desk MCP files_read).
 const files = window.aitherFiles;
 const $ = (id) => document.getElementById(id);
-const stateEl = $("state");
-let roots = [];
-let current = { rootId: null, rel: "" };
-let listing = null;
-let picked = null; // {rel, kind, name}
-
-function say(text, isError) {
-  stateEl.textContent = text || "";
-  stateEl.classList.toggle("err", Boolean(isError));
+const CAP = 5;          // ux-shape law 4: sidebar/report lists show five, then "+N more"
+const PAGE = 200;       // the folder grid pages 200 at a time, "+N more" reveals the rest
+const prefs = (() => { try { return JSON.parse(localStorage.getItem("aither-files") || "{}"); } catch { return {}; } })();
+const state = {
+  roots: [], tabs: [], active: 0, listing: null, sel: new Set(), anchor: null,
+  clip: null, view: prefs.view === "grid" ? "grid" : "list", sort: prefs.sort || "name", dir: prefs.dir === -1 ? -1 : 1,
+  preview: prefs.preview === true, filter: "", shown: PAGE, placesOpen: false, cloud: null, cloudOpen: false,
+  dragging: null, wine: null,
+};
+const thumbs = new Map();
+function savePrefs() {
+  try { localStorage.setItem("aither-files", JSON.stringify({ view: state.view, sort: state.sort, dir: state.dir, preview: state.preview })); } catch { /* private mode */ }
 }
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -134,14 +235,109 @@ function size(n) {
   return (i ? x.toFixed(x >= 100 ? 0 : 1) : String(x)) + " " + u[i];
 }
 function when(ms) { return ms ? new Date(ms).toLocaleString() : ""; }
-function rootById(id) { return roots.find((r) => r.id === id) || null; }
+function ext(name) { const i = name.lastIndexOf("."); return i <= 0 ? "" : name.slice(i + 1).toLowerCase(); }
+function tab() { return state.tabs[state.active]; }
+function rootById(id) { return state.roots.find((r) => r.id === id) || null; }
+function plural(n, one, many) { return n + " " + (n === 1 ? one : (many || one + "s")); }
+function why(res) { return (res && (res.reason || res.error)) || "no answer from the desk — restart the Files window"; }
 
+// ── status line (law 3) + result line (law 5) ─────────────────────────────────
+function renderState() {
+  const t = tab();
+  const root = t && rootById(t.rootId);
+  const parts = [];
+  if (root) parts.push(root.label + (t.rel ? "/" + t.rel : ""));
+  if (state.listing) parts.push(plural(state.listing.total, "item"));
+  if (state.sel.size) parts.push(state.sel.size + " selected");
+  if (state.filter) parts.push("filter “" + state.filter + "”");
+  parts.push("sorted by " + state.sort + (state.dir === 1 ? " ↑" : " ↓"));
+  if (state.clip) parts.push(plural(state.clip.rels.length, "item") + " to " + state.clip.mode + " — Ctrl+V");
+  if (root) parts.push(root.agentRead ? "shared with agents" : "private");
+  $("state").textContent = parts.join(" · ");
+}
+function say(text, kind) {
+  const e = $("say");
+  e.textContent = text || "";
+  e.className = "say" + (kind ? " " + kind : "");
+}
+/** A batch verdict: success names what now exists; failure is "<count> <thing> — <remedy>". */
+function report(verb, res) {
+  const box = $("report");
+  box.replaceChildren();
+  box.classList.remove("show");
+  if (!res) { say("1 " + verb + " got no answer — restart the Files window", "err"); return; }
+  const done = (res.done || []).length;
+  const failed = res.failed || [];
+  if (!failed.length && res.ok === false) { say("1 " + verb + " refused — " + why(res), "err"); return; }
+  if (done) say(plural(done, "item") + " " + verb + (failed.length ? "" : " — done"), "ok");
+  if (!failed.length) return;
+  say(plural(failed.length, "item") + " not " + verb + " — " + failed[0].reason, "err");
+  if (failed.length < 2) return;
+  box.classList.add("show");
+  const ul = el("ul");
+  ul.style.margin = "0";
+  const draw = (all) => {
+    ul.replaceChildren();
+    for (const f of (all ? failed : failed.slice(0, CAP))) ul.appendChild(el("li", "", f.name + " — " + f.reason));
+    if (!all && failed.length > CAP) {
+      const more = el("button", "more", "+" + (failed.length - CAP) + " more");
+      more.addEventListener("click", () => draw(true));
+      ul.appendChild(more);
+    }
+  };
+  draw(false);
+  box.appendChild(ul);
+}
+
+// ── tabs ──────────────────────────────────────────────────────────────────────
+function newTab(rootId, rel) {
+  state.tabs.push({ rootId, rel: rel || "", back: [], fwd: [] });
+  state.active = state.tabs.length - 1;
+  renderTabs();
+  return go(rootId, rel || "", { push: false });
+}
+function closeTab(i) {
+  if (state.tabs.length < 2) return;
+  state.tabs.splice(i, 1);
+  if (state.active >= state.tabs.length) state.active = state.tabs.length - 1;
+  renderTabs();
+  void go(tab().rootId, tab().rel, { push: false });
+}
+function renderTabs() {
+  const box = $("tabs");
+  box.replaceChildren();
+  state.tabs.forEach((t, i) => {
+    const root = rootById(t.rootId);
+    const label = t.rel ? t.rel.split("/").pop() : (root ? root.label : "—");
+    const e = el("div", "tab" + (i === state.active ? " active" : ""));
+    e.title = root ? root.path + (t.rel ? "/" + t.rel : "") : "";
+    e.appendChild(el("span", "t", label));
+    if (state.tabs.length > 1) {
+      const x = el("button", "", "×");
+      x.title = "Close tab (Ctrl+W)";
+      x.addEventListener("click", (ev) => { ev.stopPropagation(); closeTab(i); });
+      e.appendChild(x);
+    }
+    e.addEventListener("click", () => { state.active = i; renderTabs(); void go(t.rootId, t.rel, { push: false }); });
+    e.addEventListener("auxclick", (ev) => { if (ev.button === 1) closeTab(i); });
+    box.appendChild(e);
+  });
+  const add = el("button", "chip small", "+");
+  add.title = "New tab (Ctrl+T)";
+  add.addEventListener("click", () => { const t = tab(); void newTab(t ? t.rootId : (state.roots.find((r) => r.exists) || {}).id, t ? t.rel : ""); });
+  box.appendChild(add);
+}
+
+// ── places (capped at five) ───────────────────────────────────────────────────
 function renderRoots() {
   const box = $("roots");
   box.replaceChildren();
-  if (!roots.length) { box.appendChild(el("div", "placeholder", "No places. Add a folder.")); return; }
-  for (const r of roots) {
-    const row = el("div", "root" + (r.id === current.rootId ? " active" : "") + (r.exists ? "" : " missing"));
+  if (!state.roots.length) { box.appendChild(el("div", "placeholder", "0 places — add a folder")); return; }
+  const t = tab();
+  const ordered = [...state.roots].sort((a, b) => (b.id === (t && t.rootId)) - (a.id === (t && t.rootId)));
+  const visible = state.placesOpen ? ordered : ordered.slice(0, CAP);
+  for (const r of visible) {
+    const row = el("div", "root" + (t && r.id === t.rootId ? " active" : "") + (r.exists ? "" : " missing"));
     const top = el("div", "top");
     top.appendChild(el("span", "label", r.label));
     const rm = el("button", "chip small", "Remove");
@@ -149,8 +345,7 @@ function renderRoots() {
     rm.addEventListener("click", async (ev) => {
       ev.stopPropagation();
       const res = await files.removeRoot(r.id);
-      if (!res || !res.ok) say("remove failed: " + ((res && res.error) || "no answer"), true);
-      if (current.rootId === r.id) current = { rootId: null, rel: "" };
+      if (!res || !res.ok) say("1 place not removed — " + why(res), "err");
       await loadRoots();
     });
     top.appendChild(rm);
@@ -164,153 +359,752 @@ function renderRoots() {
     box2.addEventListener("change", async () => {
       box2.disabled = true;
       const res = await files.grant(r.id, box2.checked);
-      if (!res || !res.ok) say("could not change agent access: " + ((res && res.error) || "no answer"), true);
-      else say(box2.checked ? "agents may now read " + r.label : "agents can no longer read " + r.label);
+      if (!res || !res.ok) say("1 grant not changed — " + why(res), "err");
+      else say(box2.checked ? "agents may now read " + r.label + " (read-only)" : "agents can no longer read " + r.label, "ok");
       await loadRoots();
     });
     grant.appendChild(box2);
     grant.appendChild(document.createTextNode(r.agentRead ? "Agents can read (read-only)" : "Agents cannot read"));
     grant.addEventListener("click", (ev) => ev.stopPropagation());
     row.appendChild(grant);
-    if (r.exists) row.addEventListener("click", () => go(r.id, ""));
+    if (r.exists) {
+      row.addEventListener("click", (ev) => (ev.ctrlKey ? void newTab(r.id, "") : void go(r.id, "")));
+      dropTarget(row, () => ({ rootId: r.id, rel: "" }));
+    }
     box.appendChild(row);
+  }
+  if (ordered.length > CAP) {
+    const more = el("button", "more", state.placesOpen ? "show fewer" : "+" + (ordered.length - CAP) + " more");
+    more.addEventListener("click", () => { state.placesOpen = !state.placesOpen; renderRoots(); });
+    box.appendChild(more);
   }
 }
 
+// ── breadcrumb + address bar ──────────────────────────────────────────────────
 function renderCrumbs() {
   const box = $("crumbs");
   box.replaceChildren();
-  const root = rootById(current.rootId);
+  const t = tab();
+  const root = t && rootById(t.rootId);
   if (!root) { box.appendChild(el("span", "muted", "No place picked")); return; }
   const top = el("button", "", root.label);
-  top.addEventListener("click", () => go(root.id, ""));
+  top.addEventListener("click", (ev) => { ev.stopPropagation(); void go(root.id, ""); });
+  dropTarget(top, () => ({ rootId: root.id, rel: "" }));
   box.appendChild(top);
-  const parts = current.rel ? current.rel.split("/") : [];
+  const parts = t.rel ? t.rel.split("/") : [];
   parts.forEach((part, i) => {
-    box.appendChild(el("span", "sep", "/"));
+    box.appendChild(el("span", "sep", "›"));
     const b = el("button", "", part);
     const rel = parts.slice(0, i + 1).join("/");
-    b.addEventListener("click", () => go(root.id, rel));
+    b.addEventListener("click", (ev) => { ev.stopPropagation(); void go(root.id, rel); });
+    dropTarget(b, () => ({ rootId: root.id, rel }));
     box.appendChild(b);
   });
   box.appendChild(el("span", "grow"));
-  box.appendChild(el("span", root.agentRead ? "note" : "muted", root.agentRead ? "shared with agents" : "private"));
+  $("back").disabled = !t.back.length;
+  $("fwd").disabled = !t.fwd.length;
+  $("up").disabled = !t.rel;
+}
+function editAddress() {
+  const t = tab();
+  const root = t && rootById(t.rootId);
+  const input = $("address");
+  input.value = root ? root.path + (t.rel ? "\\" + t.rel.replace(/\//g, "\\") : "") : "";
+  $("crumbs").style.display = "none";
+  input.style.display = "block";
+  input.focus();
+  input.select();
+}
+function closeAddress() {
+  $("address").style.display = "none";
+  $("crumbs").style.display = "";
+}
+async function submitAddress() {
+  const res = await files.address($("address").value);
+  if (!res || !res.ok) { say("1 path not opened — " + why(res), "err"); return; }
+  closeAddress();
+  await go(res.rootId, res.rel, { select: res.select });
 }
 
-function pick(entry) {
-  picked = entry;
-  const root = rootById(current.rootId);
-  const where = entry ? entry.rel : current.rel;
-  $("picked").textContent = root ? (root.path + (where ? "/" + where : "")) : "Pick a file or folder.";
-  const have = Boolean(root);
-  $("open").disabled = !have;
-  $("reveal").disabled = !have;
-  $("hand").disabled = !have;
-  for (const tr of document.querySelectorAll("tr.entry")) tr.classList.toggle("sel", Boolean(entry) && tr.dataset.rel === entry.rel);
+// ── the folder: sort, filter, page ───────────────────────────────────────────
+function visibleEntries() {
+  if (!state.listing) return [];
+  const showHidden = $("showHidden").checked;
+  const needle = state.filter.toLowerCase();
+  const rows = state.listing.entries.filter((e) => (showHidden || !e.hidden) && (!needle || e.name.toLowerCase().includes(needle)));
+  const key = state.sort;
+  const cmp = (a, b) => {
+    if ((a.kind === "dir") !== (b.kind === "dir")) return a.kind === "dir" ? -1 : 1;
+    let d = 0;
+    if (key === "size") d = (a.size || 0) - (b.size || 0);
+    else if (key === "modified") d = (a.mtimeMs || 0) - (b.mtimeMs || 0);
+    else if (key === "type") d = ext(a.name).localeCompare(ext(b.name));
+    if (!d) d = a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
+    return d * state.dir;
+  };
+  return rows.sort(cmp);
 }
+function entryByRel(rel) { return state.listing ? state.listing.entries.find((e) => e.rel === rel) : null; }
+function selected() { return [...state.sel].map(entryByRel).filter(Boolean); }
 
+function onEntryClick(ev, e, rows) {
+  if (ev.shiftKey && state.anchor) {
+    const a = rows.findIndex((r) => r.rel === state.anchor);
+    const b = rows.findIndex((r) => r.rel === e.rel);
+    if (!ev.ctrlKey) state.sel.clear();
+    for (let i = Math.min(a, b); i <= Math.max(a, b); i += 1) if (i >= 0) state.sel.add(rows[i].rel);
+  } else if (ev.ctrlKey) {
+    if (state.sel.has(e.rel)) state.sel.delete(e.rel); else state.sel.add(e.rel);
+    state.anchor = e.rel;
+  } else {
+    state.sel = new Set([e.rel]);
+    state.anchor = e.rel;
+  }
+  paintSelection();
+}
+function activate(e) {
+  if (e.kind === "dir") void go(tab().rootId, e.rel);
+  else void act("open");
+}
+function wireEntry(node, e, rows) {
+  node.dataset.rel = e.rel;
+  node.draggable = true;
+  node.addEventListener("click", (ev) => onEntryClick(ev, e, rows));
+  node.addEventListener("dblclick", () => activate(e));
+  node.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    if (!state.sel.has(e.rel)) { state.sel = new Set([e.rel]); state.anchor = e.rel; paintSelection(); }
+    openMenu(ev.clientX, ev.clientY);
+  });
+  node.addEventListener("dragstart", (ev) => {
+    ev.preventDefault(); // the desk starts a NATIVE drag, so Explorer and other apps accept it
+    if (!state.sel.has(e.rel)) { state.sel = new Set([e.rel]); paintSelection(); }
+    const drag = { rootId: tab().rootId, rels: [...state.sel], at: Date.now(), paths: null };
+    state.dragging = drag;
+    // dragOut answers the confined paths it handed the OS; a later drop is checked against them.
+    void files.dragOut(drag.rootId, drag.rels).then((r) => {
+      if (r && r.ok && r.data && Array.isArray(r.data.paths)) drag.paths = r.data.paths;
+    }, () => {});
+  });
+  node.addEventListener("dragend", () => { state.dragging = null; });
+  if (e.kind === "dir") dropTarget(node, () => ({ rootId: tab().rootId, rel: e.rel }));
+}
 function renderList() {
   const box = $("list");
-  if (!listing) return;
-  const showHidden = $("showHidden").checked;
-  const rows = listing.entries.filter((e) => showHidden || !e.hidden);
   box.replaceChildren();
-  const table = el("table");
-  const head = el("tr");
-  for (const c of ["Name", "Size", "Modified"]) head.appendChild(el("th", "", c));
-  table.appendChild(head);
-  if (listing.parent !== null) {
-    const up = el("tr", "entry");
-    up.appendChild(el("td", "name", "‥ up"));
-    up.appendChild(el("td", "", ""));
-    up.appendChild(el("td", "", ""));
-    up.addEventListener("click", () => go(current.rootId, listing.parent));
-    table.appendChild(up);
+  if (!state.listing) return;
+  const rows = visibleEntries();
+  const page = rows.slice(0, state.shown);
+  if (state.view === "grid") {
+    const grid = el("div", "grid");
+    for (const e of page) {
+      const tile = el("div", "tile" + (e.hidden ? " hidden-file" : ""));
+      const th = el("div", "th", e.kind === "dir" ? "📁" : "📄");
+      tile.appendChild(th);
+      tile.appendChild(el("div", "nm", e.name));
+      tile.title = e.name + (e.kind === "file" ? " · " + size(e.size) : "") + " · " + when(e.mtimeMs);
+      wireEntry(tile, e, rows);
+      if (e.kind === "file") watchThumb(th, e);
+      grid.appendChild(tile);
+    }
+    box.appendChild(grid);
+  } else {
+    const table = el("table");
+    const head = el("tr");
+    for (const [label, key] of [["Name", "name"], ["Size", "size"], ["Type", "type"], ["Modified", "modified"]]) {
+      const th = el("th", "", label + (state.sort === key ? (state.dir === 1 ? " ↑" : " ↓") : ""));
+      th.addEventListener("click", () => setSort(key, state.sort === key ? -state.dir : 1));
+      head.appendChild(th);
+    }
+    table.appendChild(head);
+    for (const e of page) {
+      const tr = el("tr", "entry" + (e.hidden ? " hidden-file" : ""));
+      const name = el("td", "name");
+      name.appendChild(el("span", "glyph", e.kind === "dir" ? "▸" : "·"));
+      name.appendChild(el("span", "nm", e.name));
+      tr.appendChild(name);
+      tr.appendChild(el("td", "muted", e.kind === "file" ? size(e.size) : ""));
+      tr.appendChild(el("td", "muted", e.kind === "dir" ? "folder" : (ext(e.name) || "file")));
+      tr.appendChild(el("td", "muted", when(e.mtimeMs)));
+      wireEntry(tr, e, rows);
+      table.appendChild(tr);
+    }
+    box.appendChild(table);
   }
-  for (const e of rows) {
-    const tr = el("tr", "entry" + (e.hidden ? " hidden-file" : ""));
-    tr.dataset.rel = e.rel;
-    const name = el("td", "name");
-    name.appendChild(el("span", "glyph", e.kind === "dir" ? "▸" : "·"));
-    name.appendChild(document.createTextNode(e.name));
-    tr.appendChild(name);
-    tr.appendChild(el("td", "muted", e.kind === "file" ? size(e.size) : ""));
-    tr.appendChild(el("td", "muted", when(e.mtimeMs)));
-    tr.addEventListener("click", () => pick(e));
-    tr.addEventListener("dblclick", () => (e.kind === "dir" ? go(current.rootId, e.rel) : act("open")));
-    table.appendChild(tr);
+  if (rows.length > page.length) {
+    const more = el("button", "more", "+" + (rows.length - page.length) + " more");
+    more.style.margin = "8px 14px";
+    more.addEventListener("click", () => { state.shown += PAGE; renderList(); });
+    box.appendChild(more);
   }
-  box.appendChild(table);
-  if (!rows.length) box.appendChild(el("div", "placeholder", listing.entries.length ? "Only hidden files here." : "This folder is empty."));
-  if (listing.truncated) box.appendChild(el("div", "placeholder", "Showing the first " + listing.entries.length + " of " + listing.total + "."));
+  if (!rows.length) {
+    const hiddenOnly = state.listing.entries.length && !state.filter;
+    box.appendChild(el("div", "placeholder", state.filter ? "0 matches for “" + state.filter + "” — clear the filter (Esc)"
+      : hiddenOnly ? "Only hidden files here — tick “hidden” to see them." : "This folder is empty — drop files here or make a New folder."));
+  }
+  if (state.listing.truncated) box.appendChild(el("div", "placeholder", "The desk read the first " + state.listing.entries.length + " of " + state.listing.total + " — open it in Explorer for the rest."));
+  paintSelection();
+}
+function paintSelection() {
+  const cut = state.clip && state.clip.mode === "move" && state.clip.rootId === (tab() || {}).rootId ? new Set(state.clip.rels) : null;
+  for (const n of document.querySelectorAll("#list [data-rel]")) {
+    n.classList.toggle("sel", state.sel.has(n.dataset.rel));
+    n.classList.toggle("cut", Boolean(cut && cut.has(n.dataset.rel)));
+  }
+  const picks = selected();
+  const one = picks.length === 1 ? picks[0] : null;
+  const anyFile = picks.some((e) => e.kind === "file");
+  $("open").disabled = !picks.length;
+  $("rename").disabled = !one;
+  $("cut").disabled = !picks.length;
+  $("copy").disabled = !picks.length;
+  $("paste").disabled = !state.clip;
+  $("trash").disabled = !picks.length;
+  $("send").disabled = !anyFile;
+  $("ask").disabled = !(one && one.kind === "file");
+  renderState();
+  void renderPreview(one);
 }
 
-async function go(rootId, rel) {
-  current = { rootId, rel: rel || "" };
+// ── thumbnails (grid), lazily, four at a time ────────────────────────────────
+let thumbBusy = 0;
+const thumbQueue = [];
+const observer = new IntersectionObserver((items) => {
+  for (const it of items) {
+    if (!it.isIntersecting) continue;
+    observer.unobserve(it.target);
+    thumbQueue.push(it.target);
+  }
+  pumpThumbs();
+}, { root: $("list"), rootMargin: "200px" });
+function watchThumb(node, e) {
+  const key = tab().rootId + "|" + e.rel + "|" + e.mtimeMs;
+  node.dataset.key = key;
+  node.dataset.thumbRel = e.rel;
+  if (thumbs.has(key)) { if (thumbs.get(key)) setThumb(node, thumbs.get(key)); return; }
+  observer.observe(node);
+}
+function setThumb(node, url) {
+  const img = document.createElement("img");
+  img.src = url;
+  img.alt = "";
+  node.replaceChildren(img);
+}
+function pumpThumbs() {
+  while (thumbBusy < 4 && thumbQueue.length) {
+    const node = thumbQueue.shift();
+    if (!node.isConnected) continue;
+    thumbBusy += 1;
+    const key = node.dataset.key;
+    files.thumb(tab().rootId, node.dataset.thumbRel, 96).then((res) => {
+      const url = res && res.ok && res.dataUrl ? res.dataUrl : null;
+      thumbs.set(key, url);
+      if (url && node.isConnected) setThumb(node, url);
+    }).finally(() => { thumbBusy -= 1; pumpThumbs(); });
+  }
+}
+
+// ── preview pane ──────────────────────────────────────────────────────────────
+let previewSeq = 0;
+async function renderPreview(entry) {
+  if (!state.preview) return;
+  const box = $("previewCol");
+  const seq = ++previewSeq;
+  if (!entry) { box.replaceChildren(el("div", "placeholder", "Pick one file to preview it.")); return; }
+  const wrap = el("div", "pv");
+  wrap.appendChild(el("div", "pv-title", entry.name));
+  if (entry.kind === "dir") {
+    wrap.appendChild(el("div", "muted", "Folder — Enter opens it."));
+    box.replaceChildren(wrap);
+    return;
+  }
+  wrap.appendChild(el("div", "muted", size(entry.size) + " · " + when(entry.mtimeMs)));
+  box.replaceChildren(wrap);
+  const res = await files.preview(tab().rootId, entry.rel);
+  if (seq !== previewSeq) return;
+  const body = el("div");
+  body.style.marginTop = "10px";
+  if (!res || !res.ok) body.appendChild(el("div", "summary bad", "1 preview unavailable — " + why(res)));
+  else if (res.kind === "image") { const img = document.createElement("img"); img.src = res.dataUrl; img.alt = entry.name; body.appendChild(img); }
+  else if (res.kind === "text") {
+    body.appendChild(el("pre", "", res.text));
+    if (res.truncated) body.appendChild(el("div", "muted", "Showing the first 256 KB — Open for the rest."));
+  } else if (res.kind === "pdf") {
+    const f = document.createElement("iframe");
+    f.src = res.url;
+    f.title = entry.name;
+    body.appendChild(f);
+  } else body.appendChild(el("div", "muted", "No preview: " + (res.why || "unsupported type") + "."));
+  wrap.appendChild(body);
+}
+
+// ── navigation ────────────────────────────────────────────────────────────────
+async function go(rootId, rel, { push = true, select = null } = {}) {
+  const t = tab();
+  if (!t || !rootId) return;
+  if (push && (t.rootId !== rootId || t.rel !== (rel || ""))) { t.back.push({ rootId: t.rootId, rel: t.rel }); t.fwd = []; }
+  t.rootId = rootId;
+  t.rel = rel || "";
+  state.sel = new Set(select ? [select] : []);
+  state.anchor = select;
+  state.shown = PAGE;
+  renderTabs();
   renderRoots();
   renderCrumbs();
   $("list").replaceChildren(el("div", "placeholder", "reading…"));
-  const res = await files.list(rootId, current.rel);
+  const res = await files.list(rootId, t.rel);
+  if (tab() !== t) return;
   if (!res || !res.ok) {
-    listing = null;
-    $("list").replaceChildren(el("div", "summary bad", "Could not list this folder: " + ((res && res.error) || "no answer")));
-    say("list failed", true);
+    state.listing = null;
+    $("list").replaceChildren(el("div", "summary bad", "1 folder unreadable — " + why(res) + ". Pick another place or Refresh."));
+    renderState();
     return;
   }
-  listing = res.data;
+  state.listing = res.data;
   renderList();
-  pick(null);
-  say(listing.total + " items");
 }
+function goBack() { const t = tab(); const p = t && t.back.pop(); if (!p) return; t.fwd.push({ rootId: t.rootId, rel: t.rel }); void go(p.rootId, p.rel, { push: false }); }
+function goFwd() { const t = tab(); const p = t && t.fwd.pop(); if (!p) return; t.back.push({ rootId: t.rootId, rel: t.rel }); void go(p.rootId, p.rel, { push: false }); }
+function goUp() { const t = tab(); if (!t || !t.rel) return; const parent = t.rel.split("/").slice(0, -1).join("/"); void go(t.rootId, parent, { select: t.rel }); }
+async function reload() { const t = tab(); if (t) await go(t.rootId, t.rel, { push: false }); }
 
+// ── verbs ─────────────────────────────────────────────────────────────────────
 async function act(verb) {
-  const root = rootById(current.rootId);
+  const t = tab();
+  const root = t && rootById(t.rootId);
   if (!root) return;
-  const rel = picked ? picked.rel : current.rel;
-  const res = await files[verb](root.id, rel);
-  if (!res || !res.ok) { say(verb + " failed: " + ((res && res.error) || "no answer"), true); return; }
-  if (verb === "hand") say(res.data.agentRead ? "posted to the chat — agents can read it" : "posted to the chat — its place is NOT shared with agents");
-  else if (verb === "open") say("opened " + (picked ? picked.name : root.label));
-  else say("shown in Explorer");
+  const picks = selected();
+  const rels = picks.length ? picks.map((e) => e.rel) : [t.rel];
+  if (verb === "open") {
+    for (const rel of rels.slice(0, 10)) {
+      const res = await files.open(root.id, rel);
+      if (!res || !res.ok) { say("1 item not opened — " + why(res), "err"); return; }
+    }
+    say("opened " + (picks.length === 1 ? picks[0].name : plural(Math.min(rels.length, 10), "item")), "ok");
+    return;
+  }
+  const res = await files[verb](root.id, rels[0]);
+  if (!res || !res.ok) { say("1 " + verb + " failed — " + why(res), "err"); return; }
+  if (verb === "hand") say(res.data.agentRead ? "posted to the chat — agents can read it" : "posted to the chat — its place is NOT shared with agents", "ok");
+  else say("shown in Explorer", "ok");
+}
+async function newFolder() {
+  const t = tab();
+  if (!t) return;
+  const name = await promptBox("New folder", { value: "New folder", ok: "Create" });
+  if (name == null) return;
+  const res = await files.mkdir(t.rootId, t.rel, name);
+  if (!res || !res.ok) { say("1 folder not created — " + why(res), "err"); return; }
+  await go(t.rootId, t.rel, { push: false, select: res.created });
+  say("created " + res.name, "ok");
+}
+async function renameSel() {
+  const [e] = selected();
+  if (!e) return;
+  const name = await promptBox("Rename", { value: e.name, ok: "Rename", selectStem: true });
+  if (name == null || name === e.name) return;
+  const res = await files.rename(tab().rootId, e.rel, name);
+  if (!res || !res.ok) { say("1 item not renamed — " + why(res), "err"); return; }
+  await go(tab().rootId, tab().rel, { push: false, select: res.rel });
+  say("renamed to " + res.name, "ok");
+}
+function clipSel(mode) {
+  const picks = selected();
+  if (!picks.length) return;
+  state.clip = { mode, rootId: tab().rootId, rels: picks.map((e) => e.rel) };
+  paintSelection();
+  say(plural(picks.length, "item") + (mode === "move" ? " cut" : " copied") + " — Ctrl+V pastes", "ok");
+}
+async function paste(into) {
+  const t = tab();
+  if (!state.clip || !t) return;
+  const dst = into || { rootId: t.rootId, rel: t.rel };
+  const c = state.clip;
+  const res = await files[c.mode === "move" ? "move" : "copy"](c.rootId, c.rels, dst.rootId, dst.rel);
+  report(c.mode === "move" ? "moved" : "copied", res);
+  if (c.mode === "move" && res && res.ok) state.clip = null;
+  await reload();
+}
+async function trashSel() {
+  const picks = selected();
+  if (!picks.length) return;
+  const label = picks.length === 1 ? "“" + picks[0].name + "”" : plural(picks.length, "item");
+  const yes = await confirmBox("Move " + label + " to the Recycle Bin?", "You can restore it from the Recycle Bin.", "Move to Recycle Bin");
+  if (!yes) return;
+  const res = await files.trash(tab().rootId, picks.map((e) => e.rel));
+  report("moved to the Recycle Bin", res);
+  await reload();
+}
+async function sendSel() {
+  const picks = selected().filter((e) => e.kind === "file");
+  if (!picks.length) { say("0 files picked — pick a file to send (folders are not sent)", "err"); return; }
+  say("sending " + plural(picks.length, "file") + " to Aitherium…");
+  const res = await files.send(tab().rootId, picks.map((e) => e.rel));
+  report("sent to Aitherium", res);
+  if (res && (res.done || []).length) await loadCloud();
+}
+async function propsSel() {
+  const t = tab();
+  if (!t) return;
+  const picks = selected();
+  const rel = picks.length ? picks[0].rel : t.rel;
+  const res = await files.props(t.rootId, rel);
+  if (!res || !res.ok) { say("1 item unreadable — " + why(res), "err"); return; }
+  const kv = el("div", "kv");
+  const row = (k, v) => { if (v == null || v === "") return; kv.appendChild(el("span", "k", k)); kv.appendChild(el("span", "v", v)); };
+  row("Name", res.name);
+  row("Type", res.kind === "dir" ? "Folder" : (res.ext ? res.ext.toUpperCase() + " file" : "File"));
+  row("Location", res.path);
+  row("Place", res.root + (res.agentRead ? " (shared with agents, read-only)" : " (private)"));
+  if (res.kind === "file") row("Size", size(res.size) + " (" + Number(res.size).toLocaleString() + " bytes)");
+  if (res.contents) row("Contains", plural(res.contents.files, "file") + ", " + plural(res.contents.folders, "folder") + " · " + size(res.contents.bytes) + (res.contents.partial ? " (counted part — too large to finish)" : ""));
+  row("Created", when(res.createdMs));
+  row("Modified", when(res.modifiedMs));
+  row("Accessed", when(res.accessedMs));
+  row("Attributes", [res.readOnly ? "read-only" : null, res.hidden ? "hidden" : null].filter(Boolean).join(", ") || "normal");
+  if (picks.length > 1) row("Selection", "showing 1 of " + picks.length + " selected");
+  row("Link to", res.link);
+  await modal("Properties", kv, [{ label: "Close", value: true, primary: true }]);
+}
+async function askSel() {
+  const [e] = selected();
+  if (!e || e.kind !== "file") return;
+  const q = el("textarea", "field");
+  q.placeholder = "What do you want to know about " + e.name + "?";
+  const out = el("div");
+  const dlg = modal("Ask Aither about " + e.name, [q, out], [
+    { label: "Close", value: null },
+    { label: "Ask", primary: true, keep: true, onClick: async (btn) => {
+      const question = q.value.trim();
+      if (!question) { out.replaceChildren(el("div", "note", "Type a question first.")); return; }
+      btn.disabled = true;
+      out.replaceChildren(el("div", "muted", "reading " + e.name + "…"));
+      const res = await files.ask(tab().rootId, e.rel, question);
+      btn.disabled = false;
+      if (!res || !res.ok) { out.replaceChildren(el("div", "summary bad", "1 answer unavailable — " + why(res))); return; }
+      const nodes = [el("div", "answer", res.answer), el("div", "muted", res.reader_label + (res.note ? " · " + res.note : ""))];
+      const ev = res.evidence || [];
+      const evBox = el("div");
+      const draw = (all) => {
+        evBox.replaceChildren();
+        for (const x of (all ? ev : ev.slice(0, CAP))) evBox.appendChild(el("div", "ev", x.text));
+        if (!all && ev.length > CAP) { const m = el("button", "more", "+" + (ev.length - CAP) + " more"); m.addEventListener("click", () => draw(true)); evBox.appendChild(m); }
+      };
+      draw(false);
+      if (ev.length) nodes.push(el("h3", "", "Evidence (" + ev.length + ")"), evBox);
+      out.replaceChildren(...nodes);
+    } },
+  ]);
+  q.focus();
+  await dlg;
 }
 
+// ── drag and drop ─────────────────────────────────────────────────────────────
+function dropTarget(node, where) {
+  node.addEventListener("dragover", (ev) => { ev.preventDefault(); ev.stopPropagation(); node.classList.add("drop"); ev.dataTransfer.dropEffect = ev.ctrlKey ? "copy" : "move"; });
+  node.addEventListener("dragleave", () => node.classList.remove("drop"));
+  node.addEventListener("drop", (ev) => { ev.preventDefault(); ev.stopPropagation(); node.classList.remove("drop"); void dropInto(ev, where()); });
+}
+// DROP-PLAN:BEGIN -- pure; files-ops.test.cjs evaluates this block.
+const DRAG_FRESH_MS = 30000;
+/**
+ * Was this drop the drag THIS page started, or something from outside?
+ * A remembered drag goes stale when its rows were dropped in Explorer (no
+ * mousedown/dragend here clears it), so it counts only when the dropped files
+ * ARE its located paths -- or, for a drop that carries no files, while fresh.
+ * @returns {"mine"|"import"|"empty"}
+ */
+function dropPlan(mine, dropped, nowMs) {
+  const list = Array.isArray(dropped) ? dropped.filter(Boolean) : [];
+  if (!mine) return list.length ? "import" : "empty";
+  if (list.length) {
+    if (!Array.isArray(mine.paths) || !mine.paths.length) return "import"; // cannot prove it -- copy, never move
+    const key = (p) => String(p).replace(/[\\/]+$/, "").toLowerCase();
+    const want = new Set(mine.paths.map(key));
+    return list.length === want.size && list.every((p) => want.has(key(p))) ? "mine" : "import";
+  }
+  return Number(nowMs) - Number(mine.at || 0) <= DRAG_FRESH_MS ? "mine" : "empty";
+}
+// DROP-PLAN:END
+async function dropInto(ev, dst) {
+  if (!dst || !dst.rootId) return;
+  const mine = state.dragging;
+  state.dragging = null;
+  const dropped = files.pathsOf(ev.dataTransfer.files);
+  const plan = dropPlan(mine, dropped, Date.now());
+  if (plan === "mine") {
+    // From this window: move by default (Ctrl = copy), through the confined verbs.
+    const verb = ev.ctrlKey ? "copy" : "move";
+    if (verb === "move" && mine.rootId === dst.rootId && mine.rels.includes(dst.rel)) return;
+    const res = await files[verb](mine.rootId, mine.rels, dst.rootId, dst.rel);
+    report(verb === "move" ? "moved" : "copied", res);
+    await reload();
+    return;
+  }
+  if (plan === "empty") { say("0 files in that drop — drag files or folders from Explorer", "err"); return; }
+  // From outside: copy by default like Explorer across apps (Shift = move). The preload
+  // resolves the dropped File objects itself; page script never names a source path.
+  const res = await files.importFiles(ev.dataTransfer.files, dst.rootId, dst.rel, ev.shiftKey);
+  report(ev.shiftKey ? "moved here" : "copied here", res);
+  await reload();
+}
+dropTarget($("list"), () => tab() && { rootId: tab().rootId, rel: tab().rel });
+document.addEventListener("mousedown", () => { state.dragging = null; });
+
+// ── context menu ──────────────────────────────────────────────────────────────
+function openMenu(x, y) {
+  const m = $("menu");
+  m.replaceChildren();
+  const picks = selected();
+  const one = picks.length === 1 ? picks[0] : null;
+  const item = (label, kb, fn, enabled = true) => {
+    const b = el("button");
+    b.appendChild(el("span", "", label));
+    b.appendChild(el("span", "kb", kb || ""));
+    b.disabled = !enabled;
+    b.addEventListener("click", () => { closeMenu(); fn(); });
+    m.appendChild(b);
+  };
+  if (picks.length) {
+    item("Open", "Enter", () => void act("open"));
+    if (one && one.kind === "dir") item("Open in new tab", "Ctrl+click", () => void newTab(tab().rootId, one.rel));
+    item("Ask Aither about this", "", () => void askSel(), Boolean(one && one.kind === "file"));
+    item("Send to Aitherium", "", () => void sendSel(), picks.some((e) => e.kind === "file"));
+    m.appendChild(el("hr"));
+    item("Cut", "Ctrl+X", () => clipSel("move"));
+    item("Copy", "Ctrl+C", () => clipSel("copy"));
+    if (one && one.kind === "dir") item("Paste into folder", "", () => void paste({ rootId: tab().rootId, rel: one.rel }), Boolean(state.clip));
+    item("Rename", "F2", () => void renameSel(), Boolean(one));
+    item("Delete (Recycle Bin)", "Del", () => void trashSel());
+    m.appendChild(el("hr"));
+    item("Show in Explorer", "", () => void act("reveal"));
+    item("Hand to agent", "", () => void act("hand"));
+    item("Properties", "Alt+Enter", () => void propsSel());
+  } else {
+    item("New folder", "Ctrl+Shift+N", () => void newFolder());
+    item("Paste", "Ctrl+V", () => void paste(), Boolean(state.clip));
+    item("Refresh", "F5", () => void reload());
+    item("Properties", "Alt+Enter", () => void propsSel());
+  }
+  m.style.display = "block";
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(x, innerWidth - r.width - 6) + "px";
+  m.style.top = Math.min(y, innerHeight - r.height - 6) + "px";
+}
+function closeMenu() { $("menu").style.display = "none"; }
+document.addEventListener("click", (ev) => { if (!$("menu").contains(ev.target)) closeMenu(); });
+$("list").addEventListener("contextmenu", (ev) => {
+  if (ev.target.closest("[data-rel]")) return;
+  ev.preventDefault();
+  state.sel.clear();
+  paintSelection();
+  openMenu(ev.clientX, ev.clientY);
+});
+$("list").addEventListener("click", (ev) => { if (!ev.target.closest("[data-rel]") && !ev.target.closest("button")) { state.sel.clear(); paintSelection(); } });
+
+// ── modal (window.prompt does not exist in Electron) ─────────────────────────
+let modalDone = null;
+function modal(title, content, buttons) {
+  const dlg = $("dlg");
+  dlg.replaceChildren(el("h2", "", title));
+  for (const c of [].concat(content)) if (c) dlg.appendChild(c);
+  const row = el("div", "btns");
+  return new Promise((resolve) => {
+    modalDone = (v) => { $("modal").classList.remove("show"); modalDone = null; resolve(v); };
+    for (const b of buttons) {
+      const btn = el("button", "chip" + (b.primary ? " primary" : ""), b.label);
+      btn.addEventListener("click", () => (b.onClick ? b.onClick(btn) : modalDone(b.value)));
+      row.appendChild(btn);
+    }
+    dlg.appendChild(row);
+    $("modal").classList.add("show");
+  });
+}
+function promptBox(title, { value = "", ok = "OK", selectStem = false } = {}) {
+  const input = el("input", "field");
+  input.value = value;
+  input.spellcheck = false;
+  const p = modal(title, input, [{ label: "Cancel", value: null }, { label: ok, primary: true, onClick: () => modalDone(input.value.trim() || null) }]);
+  input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") modalDone(input.value.trim() || null); });
+  input.focus();
+  const dot = value.lastIndexOf(".");
+  if (selectStem && dot > 0) input.setSelectionRange(0, dot); else input.select();
+  return p;
+}
+function confirmBox(title, body, ok) {
+  return modal(title, el("div", "muted", body), [{ label: "Cancel", value: false }, { label: ok, primary: true, value: true }]);
+}
+
+// ── Aitherium (cloud) list, capped at five ───────────────────────────────────
+async function loadCloud() {
+  const box = $("cloud");
+  const res = await files.cloud();
+  box.replaceChildren();
+  if (!res || !res.ok) { box.appendChild(el("div", "note", "1 Aitherium list unavailable — " + why(res))); return; }
+  const list = res.files || [];
+  const name = (f) => String(f.name || f.filename || f.path || f.key || "file").split("/").pop();
+  box.appendChild(el("div", "muted", plural(list.length, "file") + " in Aitherium files"));
+  const draw = () => {
+    for (const n of box.querySelectorAll(".cf, .more")) n.remove();
+    for (const f of (state.cloudOpen ? list : list.slice(0, CAP))) box.appendChild(el("div", "cf", "· " + name(f)));
+    if (list.length > CAP) {
+      const more = el("button", "more", state.cloudOpen ? "show fewer" : "+" + (list.length - CAP) + " more");
+      more.addEventListener("click", () => { state.cloudOpen = !state.cloudOpen; draw(); });
+      box.appendChild(more);
+    }
+  };
+  draw();
+}
+
+// ── Win+E takeover (owner-consented, reversible) ─────────────────────────────
+async function loadWine() {
+  const box = $("wine");
+  const res = await files.wineStatus();
+  box.replaceChildren();
+  if (!res || !res.ok) { box.appendChild(el("div", "muted", res && res.supported === false ? "Windows only." : "1 check failed — " + why(res))); return; }
+  state.wine = res;
+  if (res.enabled && res.ours) {
+    box.appendChild(el("div", "ok-note", "Win+E opens Aither Files."));
+    const b = el("button", "chip small", "Restore Windows Explorer");
+    b.addEventListener("click", async () => {
+      const r = await files.wineRestore();
+      if (!r || !r.ok) say("1 restore failed — " + why(r), "err"); else say("Win+E opens Windows Explorer again", "ok");
+      await loadWine();
+    });
+    box.appendChild(b);
+  } else if (res.enabled) {
+    box.appendChild(el("div", "note", "Another tool already overrides Win+E — left as it is."));
+  } else if (res.routed !== true) {
+    // The desk does not yet open Files from a `--files` launch: offering the switch would break Win+E.
+    box.appendChild(el("div", "muted", "Win+E opens Windows Explorer. Taking it over needs a desk update — this build cannot open Files from Win+E yet."));
+  } else {
+    box.appendChild(el("div", "muted", "Win+E opens Windows Explorer."));
+    const b = el("button", "chip small", "Make Win+E open Aither Files");
+    b.addEventListener("click", async () => {
+      const yes = await confirmBox("Make Win+E open Aither Files?",
+        "This writes one per-user registry key (no admin, nothing else changes). “Restore Windows Explorer” here deletes it again.",
+        "Yes, take over Win+E");
+      if (!yes) return;
+      const r = await files.wineEnable(true);
+      if (!r || !r.ok) say("1 Win+E change refused — " + why(r), "err"); else say("Win+E now opens Aither Files — press it to see", "ok");
+      await loadWine();
+    });
+    box.appendChild(b);
+  }
+}
+
+// ── roots + boot ─────────────────────────────────────────────────────────────
 async function loadRoots() {
   const res = await files.roots();
   if (!res || !res.ok) {
-    $("roots").replaceChildren(el("div", "summary bad", "Could not read places: " + ((res && res.error) || "no answer")));
-    say("read failed", true);
+    $("roots").replaceChildren(el("div", "summary bad", "1 place list unreadable — " + why(res) + ". Check cast.json, then Refresh."));
     return false;
   }
-  roots = res.data.roots || [];
+  state.roots = res.data.roots || [];
   renderRoots();
   renderCrumbs();
-  if (res.data.error) say(res.data.error, true);
-  else if ((res.data.problems || []).length) say("cast.json files: " + res.data.problems[0].reason, true);
+  if (res.data.error) say(res.data.error, "err");
+  else if ((res.data.problems || []).length) say("1 cast.json files problem — " + res.data.problems[0].reason, "err");
   return true;
 }
-
 async function refresh() {
   say("refreshing…");
   if (!(await loadRoots())) return;
-  const root = rootById(current.rootId) || roots.find((r) => r.exists);
-  if (root) await go(root.id, root.id === current.rootId ? current.rel : "");
-  else say("no places on this machine — add a folder");
+  if (!state.tabs.length) {
+    const first = state.roots.find((r) => r.exists);
+    if (!first) { say("0 places on this machine — Add folder", "err"); return; }
+    await newTab(first.id, "");
+  } else {
+    for (const t of state.tabs) if (!rootById(t.rootId)) { const f = state.roots.find((r) => r.exists); if (f) { t.rootId = f.id; t.rel = ""; } }
+    await reload();
+  }
+  say("");
+  void loadCloud();
+  void loadWine();
 }
+function setSort(key, dir) { state.sort = key; state.dir = dir; $("sort").value = key; $("sortDir").textContent = dir === 1 ? "↑" : "↓"; savePrefs(); renderList(); }
+function setView(v) { state.view = v; $("viewList").classList.toggle("on", v === "list"); $("viewGrid").classList.toggle("on", v === "grid"); savePrefs(); renderList(); }
+function setPreview(on) { state.preview = on; $("main").classList.toggle("with-preview", on); $("previewToggle").classList.toggle("on", on); savePrefs(); if (on) { const p = selected(); void renderPreview(p.length === 1 ? p[0] : null); } }
 
 $("open").addEventListener("click", () => void act("open"));
 $("reveal").addEventListener("click", () => void act("reveal"));
 $("hand").addEventListener("click", () => void act("hand"));
+$("newFolder").addEventListener("click", () => void newFolder());
+$("rename").addEventListener("click", () => void renameSel());
+$("cut").addEventListener("click", () => clipSel("move"));
+$("copy").addEventListener("click", () => clipSel("copy"));
+$("paste").addEventListener("click", () => void paste());
+$("trash").addEventListener("click", () => void trashSel());
+$("props").addEventListener("click", () => void propsSel());
+$("send").addEventListener("click", () => void sendSel());
+$("ask").addEventListener("click", () => void askSel());
+$("back").addEventListener("click", goBack);
+$("fwd").addEventListener("click", goFwd);
+$("up").addEventListener("click", goUp);
+$("crumbs").addEventListener("click", (ev) => { if (!ev.target.closest("button")) editAddress(); });
+$("address").addEventListener("keydown", (ev) => { if (ev.key === "Enter") void submitAddress(); if (ev.key === "Escape") closeAddress(); });
+$("address").addEventListener("blur", () => setTimeout(closeAddress, 150));
+$("filter").addEventListener("input", () => { state.filter = $("filter").value.trim(); state.shown = PAGE; renderList(); });
+$("filter").addEventListener("keydown", (ev) => { if (ev.key === "Escape") { $("filter").value = ""; state.filter = ""; renderList(); $("list").focus(); } });
 $("showHidden").addEventListener("change", renderList);
+$("sort").value = state.sort;
+$("sort").addEventListener("change", () => setSort($("sort").value, state.dir));
+$("sortDir").textContent = state.dir === 1 ? "↑" : "↓";
+$("sortDir").addEventListener("click", () => setSort(state.sort, -state.dir));
+$("viewList").addEventListener("click", () => setView("list"));
+$("viewGrid").addEventListener("click", () => setView("grid"));
+$("previewToggle").addEventListener("click", () => setPreview(!state.preview));
 $("refresh").addEventListener("click", () => void refresh());
+$("cloudRefresh").addEventListener("click", () => void loadCloud());
 $("addRoot").addEventListener("click", async () => {
   const res = await files.addRoot();
-  if (!res || !res.ok) { say("add failed: " + ((res && res.error) || "no answer"), true); return; }
+  if (!res || !res.ok) { say("1 folder not added — " + why(res), "err"); return; }
   if (res.data && res.data.cancelled) return;
   await loadRoots();
   if (res.data && res.data.id) await go(res.data.id, "");
 });
 
-if (!files) say("no files bridge in this frame", true);
+document.addEventListener("keydown", (ev) => {
+  if ($("modal").classList.contains("show")) { if (ev.key === "Escape" && modalDone) modalDone(null); return; }
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
+  const k = ev.key;
+  if (ev.ctrlKey && k.toLowerCase() === "l") { ev.preventDefault(); editAddress(); return; }
+  if (ev.ctrlKey && k.toLowerCase() === "f") { ev.preventDefault(); $("filter").focus(); $("filter").select(); return; }
+  if (ev.ctrlKey && k.toLowerCase() === "t") { ev.preventDefault(); const t = tab(); if (t) void newTab(t.rootId, t.rel); return; }
+  if (ev.ctrlKey && k.toLowerCase() === "w") { ev.preventDefault(); closeTab(state.active); return; }
+  if (ev.ctrlKey && k === "Tab") { ev.preventDefault(); if (state.tabs.length > 1) { state.active = (state.active + (ev.shiftKey ? state.tabs.length - 1 : 1)) % state.tabs.length; renderTabs(); void go(tab().rootId, tab().rel, { push: false }); } return; }
+  if (k === "F5") { ev.preventDefault(); void reload(); return; }
+  if (ev.altKey && k === "ArrowLeft") { ev.preventDefault(); goBack(); return; }
+  if (ev.altKey && k === "ArrowRight") { ev.preventDefault(); goFwd(); return; }
+  if (ev.altKey && k === "ArrowUp") { ev.preventDefault(); goUp(); return; }
+  if (ev.altKey && k.toLowerCase() === "p") { ev.preventDefault(); setPreview(!state.preview); return; }
+  if (typing) return;
+  if (ev.ctrlKey && ev.shiftKey && k.toLowerCase() === "n") { ev.preventDefault(); void newFolder(); return; }
+  if (ev.ctrlKey && k.toLowerCase() === "a") { ev.preventDefault(); state.sel = new Set(visibleEntries().map((e) => e.rel)); paintSelection(); return; }
+  if (ev.ctrlKey && k.toLowerCase() === "c") { clipSel("copy"); return; }
+  if (ev.ctrlKey && k.toLowerCase() === "x") { clipSel("move"); return; }
+  if (ev.ctrlKey && k.toLowerCase() === "v") { void paste(); return; }
+  if (k === "F2") { ev.preventDefault(); void renameSel(); return; }
+  if (k === "Delete") { void trashSel(); return; }
+  if (k === "Enter" && ev.altKey) { ev.preventDefault(); void propsSel(); return; }
+  if (k === "Enter") { const p = selected(); if (p.length === 1) activate(p[0]); else if (p.length) void act("open"); return; }
+  if (k === "Backspace") { goUp(); return; }
+  if (k === "ArrowDown" || k === "ArrowUp") {
+    ev.preventDefault();
+    const rows = visibleEntries().slice(0, state.shown);
+    if (!rows.length) return;
+    const i = rows.findIndex((r) => r.rel === state.anchor);
+    const next = rows[Math.max(0, Math.min(rows.length - 1, i < 0 ? 0 : i + (k === "ArrowDown" ? 1 : -1)))];
+    state.sel = new Set([next.rel]); state.anchor = next.rel; paintSelection();
+    const node = document.querySelector('#list [data-rel="' + CSS.escape(next.rel) + '"]');
+    if (node) node.scrollIntoView({ block: "nearest" });
+  }
+});
+document.addEventListener("mouseup", (ev) => { if (ev.button === 3) goBack(); if (ev.button === 4) goFwd(); });
+
+setView(state.view);
+setPreview(state.preview);
+if (!files) say("1 files bridge missing in this frame — reopen Files from the console", "err");
 else void refresh();
 </script>
 </body>

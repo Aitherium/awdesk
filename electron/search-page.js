@@ -1,4 +1,4 @@
-/* global window, document, URLSearchParams, setInterval, clearInterval, location, history */
+/* global window, document, URLSearchParams, setInterval, clearInterval, setTimeout, clearTimeout, location, history */
 /* aither://search -- renders search-client.cjs results through window.aitherSearch
    (search-preload.cjs). Every value goes in as textContent; links are http(s) only
    (checked in main) and open as web tabs (the internal tab's navigation fence). */
@@ -9,6 +9,11 @@
   let mode = "q";
   let seq = 0;
   let poll = null;
+  // "This PC" state: the last run's groups, which groups the owner expanded past five,
+  // the selected row (arrow keys), and the debounce timer for as-you-type.
+  const pc = { groups: [], expanded: new Set(), selected: 0, timer: null, query: "" };
+  const SHOW = 5;
+  const launcher = new URLSearchParams(location.search).get("launcher") === "1";
 
   const el = (tag, cls, text) => {
     const n = document.createElement(tag);
@@ -29,15 +34,22 @@
   function setMode(next) {
     mode = next;
     for (const b of document.querySelectorAll(".modes button")) b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
-    $("go").textContent = mode === "research" ? "Research" : mode === "forge" ? "Open Media Forge" : "Search";
+    $("go").textContent = mode === "research" ? "Research" : mode === "forge" ? "Open Media Forge" : mode === "pc" ? "Open" : "Search";
     $("q").placeholder = mode === "research" ? "Ask a research question; you get a report where every claim cites its sources"
-      : mode === "forge" ? "Media Forge opens in its own tab" : "Search the web and the platform";
+      : mode === "forge" ? "Media Forge opens in its own tab"
+        : mode === "pc" ? "Apps, files, screenshots, clipboard, desk actions, agents and tools" : "Search the web and the platform";
+    pc.groups = [];
+    pc.expanded = new Set();
     clearInterval(poll);
     poll = null;
     $("out").textContent = "";
     status("");
     if (mode === "research") void showJobs();
     if (mode === "forge") showForge();
+    if (mode === "pc") {
+      status("Type to search this PC — Enter opens the top result, Tab asks Aither");
+      if ($("q").value.trim()) schedulePc();
+    }
   }
   for (const b of document.querySelectorAll(".modes button")) b.onclick = () => setMode(b.dataset.mode);
 
@@ -167,10 +179,140 @@
     status(r && r.ok ? `Opened ${r.url}` : (r && r.error) || "Media Forge did not answer", !(r && r.ok));
   }
 
+  // ── This PC (universal-search.cjs via search-window.cjs) ──
+  // Two phases per query: "fast" (apps, actions, screenshots, clipboard) paints
+  // FAST_MS after the last key; "all" adds files (Windows Search) and agents (adk
+  // discover) only once typing has paused for ALL_MS in total -- each "all" run starts
+  // a powershell.exe and a Python, and main aborts the one it supersedes.
+  const FAST_MS = 140;
+  const ALL_MS = 500;
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  function schedulePc() {
+    clearTimeout(pc.timer);
+    pc.timer = setTimeout(() => void runPc($("q").value.trim()), FAST_MS);
+  }
+  /**
+   * One query. `launchTop` (Enter before the results painted) opens the top row as
+   * soon as the FAST phase has one and skips the slow phase; only when the fast phase
+   * has no row does it wait for files and agents.
+   */
+  async function runPc(q, { launchTop = false } = {}) {
+    const mine = ++seq;
+    if (!q) {
+      pc.groups = [];
+      $("out").textContent = "";
+      return status("Type to search this PC — Enter opens the top result, Tab asks Aither");
+    }
+    if (q !== pc.query) { pc.expanded = new Set(); pc.selected = 0; pc.query = q; }
+    const fast = await api.everything(q, "fast");
+    if (mine !== seq || mode !== "pc") return;
+    if (fast && fast.ok) renderPc(fast, true);
+    if (launchTop) {
+      const first = rows()[pc.selected];
+      if (first) return void launch(first.dataset.key);
+    } else {
+      await sleep(Math.max(0, ALL_MS - FAST_MS));
+      if (mine !== seq || mode !== "pc") return;
+    }
+    const all = await api.everything(q, "all");
+    if (mine !== seq || mode !== "pc") return;
+    if (!all || !all.ok) return status((all && all.error) || (all && all.reason) || "1 search failed — try again", true);
+    renderPc(all, false);
+    if (launchTop) {
+      const first = rows()[pc.selected];
+      if (first) void launch(first.dataset.key);
+    }
+  }
+  function rows() {
+    return [...document.querySelectorAll("#out .hit")];
+  }
+  function select(i) {
+    const list = rows();
+    if (!list.length) return;
+    pc.selected = Math.max(0, Math.min(list.length - 1, i));
+    list.forEach((n, k) => n.setAttribute("aria-selected", String(k === pc.selected)));
+    list[pc.selected].scrollIntoView({ block: "nearest" });
+  }
+  function renderPc(r, partial) {
+    pc.groups = r.groups || [];
+    const out = $("out");
+    out.textContent = "";
+    const problems = (r.errors || []).length;
+    if (problems) {
+      // "<count> <thing> — <remedy>" (ux-shape law 5): each remedy is the provider's own reason.
+      out.append(el("div", "notes", `${problems} source${problems === 1 ? "" : "s"} down — `
+        + r.errors.map((x) => `${x.label}: ${x.reason}`).join("; ")));
+    }
+    for (const n of r.notes || []) out.append(el("div", "notes", `${n.label}: ${n.note}`));
+    for (const g of pc.groups) {
+      const box = el("div", "grp");
+      const h = el("h3", "", g.label + " ");
+      h.append(el("span", "count", `· ${g.total}`));
+      box.append(h);
+      const open = pc.expanded.has(g.id);
+      const shown = open ? g.items : g.items.slice(0, SHOW);
+      for (const it of shown) {
+        const row = el("div", "hit");
+        row.setAttribute("role", "option");
+        row.dataset.key = it.key;
+        row.append(el("span", "t", it.title), el("span", "s", it.subtitle || ""));
+        row.onclick = () => void launch(it.key);
+        box.append(row);
+      }
+      const more = g.items.length - shown.length;
+      if (more > 0) {
+        const b = el("button", "more", `+${more} more`);
+        b.type = "button";
+        b.onclick = () => { pc.expanded.add(g.id); renderPc(r, partial); };
+        box.append(b);
+      }
+      out.append(box);
+    }
+    if (!pc.groups.length) {
+      out.append(el("div", "", partial ? "Looking in files and agents…" : `Nothing on this PC matches “${r.query}”. Tab asks Aither instead.`));
+    }
+    out.append(el("div", "keys", "Enter opens · ↑↓ moves · Tab asks Aither · Esc closes"));
+    select(pc.selected);
+    const top = rows()[pc.selected];
+    const lead = top ? `Enter opens “${top.querySelector(".t").textContent}”` : "Tab asks Aither";
+    status(`${lead} · ${r.total} results in ${pc.groups.length} group${pc.groups.length === 1 ? "" : "s"}`
+      + `${partial ? " · still searching files and agents…" : ""}`, false);
+  }
+  async function launch(key) {
+    const r = await api.launch(key, $("q").value.trim());
+    status(r && r.ok ? `Done — ${r.did}` : (r && r.error) || "1 result did not open — search again", !(r && r.ok));
+  }
+  async function askAither() {
+    const q = $("q").value.trim();
+    if (!q) return;
+    const r = await api.askAither(q);
+    status(r && r.ok ? `Done — ${r.did}` : (r && r.error) || "Aither chat did not answer — open Chat from the tray", !(r && r.ok));
+  }
+  $("q").addEventListener("input", () => { if (mode === "pc") schedulePc(); });
+  $("q").addEventListener("keydown", (e) => {
+    if (mode !== "pc") return;
+    if (e.key === "ArrowDown") { e.preventDefault(); select(pc.selected + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); select(pc.selected - 1); }
+    else if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); void askAither(); }
+    else if (e.key === "Escape") {
+      e.preventDefault();
+      if (launcher) void api.hide();
+      else { $("q").value = ""; void runPc(""); }
+    }
+  });
+
   $("form").onsubmit = async (e) => {
     e.preventDefault();
     const q = $("q").value.trim();
     if (mode === "forge") return void openForge();
+    if (mode === "pc") {
+      clearTimeout(pc.timer);
+      const row = rows()[pc.selected];
+      if (row && pc.query === q) return void launch(row.dataset.key);
+      // Enter before the results painted: open the top row of the FAST phase (~80 ms),
+      // not after Windows Search and adk discover (10-16 s measured).
+      return void runPc(q, { launchTop: true });
+    }
     if (!q) return;
     const mine = ++seq;
     try { history.replaceState(null, "", `?q=${encodeURIComponent(q)}`); } catch { /* fine */ }
@@ -190,8 +332,18 @@
   };
 
   // aither://search/?q=... (the address bar sends plain words here) runs at once.
-  const start = new URLSearchParams(location.search).get("q");
-  if (start) {
+  const params = new URLSearchParams(location.search);
+  const start = params.get("q");
+  if (launcher) {
+    document.body.classList.add("launcher");
+    if (api.onFocus) api.onFocus(() => { $("q").focus(); $("q").select(); });
+  }
+  if (params.get("mode") === "pc" || launcher) {
+    setMode("pc");
+    if (start) $("q").value = start;
+    $("q").focus();
+    if (start) schedulePc();
+  } else if (start) {
     $("q").value = start;
     void $("form").requestSubmit();
   } else {

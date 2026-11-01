@@ -15,6 +15,10 @@
  *   research    `awresearch --output json` -- a cited report: claims, each pinned to
  *               numbered sources. Minutes long, so a JOB: started, listed, read back.
  *   Media Forge its own UI (mediaforge_status -> base) opens as a browser tab.
+ *   discover    `adk discover query --json` -- the agents, tools, skills, packs and
+ *               lanes this machine already indexed (adk/discovery). The universal
+ *               search box (universal-search.cjs, Alt+Space) reads its fourth group
+ *               here, so the desk keeps ONE caller of each tool.
  *
  * Runners are injected (execFile, spawn, callTool), so every verb is asserted under
  * node --test without Python or a gateway.
@@ -29,6 +33,8 @@ const MAX_QUERY = 500;
 const SEARCH_TIMEOUT_MS = Object.freeze({ q: 45_000, deep: 120_000, answer: 120_000 });
 const RESEARCH_TIMEOUT_MS = 30 * 60_000;
 const DEPTHS = Object.freeze(["standard", "deep"]);
+const DISCOVER_TIMEOUT_MS = 10_000;
+const DISCOVER_DOMAINS = Object.freeze(["agents", "tools", "skills", "packs", "lanes"]);
 
 function cleanQuery(text) {
   // eslint-disable-next-line no-control-regex
@@ -46,6 +52,21 @@ function resultRow(r) {
     snippet: String((r && (r.snippet || r.text)) || "").slice(0, 600),
     source: String((r && r.source) || ""),
     score: Number.isFinite(Number(r && r.score)) ? Number(r.score) : null,
+  };
+}
+
+/** One `adk discover` card, as the universal search renders it. Unknown domains are dropped. */
+function discoverCard(c) {
+  const domain = String((c && c.domain) || "");
+  const name = String((c && c.name) || "").slice(0, 200);
+  if (!DISCOVER_DOMAINS.includes(domain) || !name) return null;
+  const score = Number(c && c.score);
+  return {
+    domain, name,
+    oneLine: String((c && (c.one_line || c.summary)) || "").slice(0, 300),
+    hosting: String((c && c.hosting) || ""),
+    howToInvoke: String((c && c.how_to_invoke) || "").slice(0, 200),
+    score: Number.isFinite(score) ? Math.max(0, Math.min(1, score)) : 0,
   };
 }
 
@@ -82,8 +103,11 @@ function createSearchClient({
   dataDir = null,
   now = () => Date.now(),
 } = {}) {
-  const run = (cmd, args, timeout) => new Promise((resolve) => {
-    execFile(cmd, args, { timeout, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+  // `signal` (optional) goes to execFile: an abort kills the child (a superseded `adk discover`).
+  const run = (cmd, args, timeout, signal = null) => new Promise((resolve) => {
+    const opts = { timeout, windowsHide: true, maxBuffer: 8 * 1024 * 1024 };
+    if (signal) opts.signal = signal;
+    execFile(cmd, args, opts, (error, stdout, stderr) => {
       resolve({ error, stdout: String(stdout || ""), stderr: String(stderr || "") });
     });
   });
@@ -124,6 +148,36 @@ function createSearchClient({
     } catch (error) {
       return { ok: false, error: String((error && error.message) || error) };
     }
+  }
+
+  /**
+   * Agents, tools, skills, packs and lanes for a task, from the local discovery
+   * index (`adk discover query <task> --json --no-live`). `--no-live` keeps it
+   * fast enough to run as the owner types; the index already holds the gateway's
+   * tool list from its last build.
+   *
+   * @param {string} text   the task, as typed
+   * @param {{k?: number, signal?: AbortSignal}} [opts]  an aborted `signal` kills the child
+   * @returns {Promise<{ok: true, query: string, cards: object[]} | {ok: false, error: string}>}
+   */
+  async function discover(text, { k = 10, signal = null } = {}) {
+    const q = cleanQuery(text);
+    if (!q) return { ok: false, error: "type something to search for" };
+    if (signal && signal.aborted) return { ok: false, error: "superseded by a newer search" };
+    const n = String(Math.max(1, Math.min(30, Number(k) || 10)));
+    const out = await run("adk", ["discover", "query", "--json", "--no-live", "--k", n, "--", q], DISCOVER_TIMEOUT_MS, signal);
+    if (out.error && (out.error.name === "AbortError" || out.error.code === "ABORT_ERR")) {
+      return { ok: false, error: "superseded by a newer search" };
+    }
+    if (out.error && !out.stdout) {
+      const why = out.error.code === "ENOENT" ? "adk is not installed (pip install -e awdk)"
+        : out.error.killed ? "adk discover took too long (run `adk discover build`)"
+          : (out.stderr.trim().split("\n").pop() || String(out.error.message));
+      return { ok: false, error: why };
+    }
+    let data;
+    try { data = parseJsonOut(out.stdout); } catch (e) { return { ok: false, error: `adk discover answered something unreadable: ${e.message}` }; }
+    return { ok: true, query: q, cards: (Array.isArray(data && data.cards) ? data.cards : []).map(discoverCard).filter(Boolean) };
   }
 
   // ── research jobs ────────────────────────────────────────────────────────
@@ -206,7 +260,9 @@ function createSearchClient({
     }
   }
 
-  return { search, images, startResearch, listResearch, readResearch, forgeUrl };
+  return { search, images, discover, startResearch, listResearch, readResearch, forgeUrl };
 }
 
-module.exports = { DEPTHS, MODES, cleanQuery, createSearchClient, parseJsonOut, reportView, resultRow };
+module.exports = {
+  DEPTHS, DISCOVER_DOMAINS, MODES, cleanQuery, createSearchClient, discoverCard, parseJsonOut, reportView, resultRow,
+};

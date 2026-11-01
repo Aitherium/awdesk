@@ -51,6 +51,9 @@ Desk exposes these tools:
 | `files_ask` | `root`, `path`, `question`; optional `max_kept_tokens` | Asks a question about one text file under a shared root; TokenGate answers with the kept evidence and a `reader_label` (experimental, not an authoritative citation) |
 | `system_processes` | optional `sort` (`cpu`, `memory`, `gpu`, `name`), `limit`, `filter` | Read-only: running processes on this Windows machine with machine-share CPU %, private memory, GPU memory where known and a redacted command line. No tool ends a process; that is the owner's, in the System window |
 | `system_ports` | optional `port`, `protocol` (`tcp`, `udp`) | Read-only: listening TCP ports and UDP endpoints with the owning pid and process name |
+| `desk_search` | `query` | Read-only: the desk's universal search (Alt+Space) -- ranked Start-menu apps, indexed files (or a bounded walk of the Files roots), screenshots, desk commands and agents/tools/skills |
+| `list_tunnels` | none | Read-only: local ports the desk has given a public awtunnel URL, live and stale |
+| `stop_tunnel` | `port` | Takes one local port's public awtunnel URL away. There is no start tool: publishing a port is the owner's, in the Public URL panel |
 | `system_connections` | optional `pid`, `name`, `limit` | Read-only: established TCP connections grouped by process |
 | `desktop_open` | `surface`: `overlay`, `app`, or `status` | Opens an AitherOS desktop surface |
 | `browser_open` | `url`: http(s) or a bare host; optional `new_tab` | Opens a page in the agent's own Aither Browser tab (other schemes refused; refused while the owner has taken over) |

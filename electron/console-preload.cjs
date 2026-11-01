@@ -21,6 +21,22 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 const href = String(globalThis.location?.href || "");
 
+// The Files pane gets the owner's WRITE bridge (files-preload: rename / move / trash /
+// import), so it is matched EXACTLY -- this desk's own file:// files.html -- never by a
+// substring any frame's URL could carry (review 2026-11-01). main's senderAllowed is the
+// boundary; this keeps the bridge out of frames that should never hold it.
+function isOwnFilesPage(raw) {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "file:") return false;
+    const path = require("node:path");
+    const own = path.join(__dirname, "files.html").toLowerCase();
+    return path.resolve(require("node:url").fileURLToPath(`file://${u.pathname}`)).toLowerCase() === own;
+  } catch {
+    return false;
+  }
+}
+
 if (href.includes("settings.html")) {
   require("./settings-preload.cjs");
 } else if (href.includes("command.html")) {
@@ -35,7 +51,7 @@ if (href.includes("settings.html")) {
   require("./cast-preload.cjs");
 } else if (href.includes("/ops.html")) {
   require("./ops-preload.cjs");
-} else if (href.includes("/files.html")) {
+} else if (isOwnFilesPage(href)) {
   require("./files-preload.cjs");
 } else if (href.includes("/secrets.html")) {
   require("./secrets-preload.cjs");

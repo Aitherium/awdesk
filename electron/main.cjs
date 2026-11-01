@@ -181,6 +181,8 @@ const { visionSnapshot } = require("./vision-client.cjs");
 const { routeDrop, routeShare, synthesizeVerdict, stagePath, cleanupStage } = require("./drop-router.cjs");
 // Snipping tool + clipboard mirror into AitherOS Online (snip-window.cjs owns its IPC).
 const capture = require("./snip-window.cjs");
+// Screen recorder (recorder-window.cjs owns its IPC; region overlay = snip.html).
+const recorder = require("./recorder-window.cjs");
 const { desktopSnapshot } = require("./browser-client.cjs");
 const { connectSnapshot } = require("./connect-client.cjs");
 const { createBridgeServer, DEFAULT_PORT } = require("./bridge-server.cjs");
@@ -234,6 +236,8 @@ const {
   createDarkmatterLinkWindow,
   stopDarkmatterSupervisor,
 } = require("./darkmatter-link-window.cjs");
+// Public URL panel: one local port -> a public awtunnel URL. Owns desk:tunnel-* IPC.
+const { createTunnelWindow, registerTunnelIpc } = require("./tunnel-window.cjs");
 // The System window (task manager + networking) and its read-only MCP half.
 const { createSystemWindow, setSystemHandOff, sharedSystemMonitor } = require("./system-monitor-window.cjs");
 // The Aither Browser: a browser window inside the desk an agent drives (MCP
@@ -308,6 +312,7 @@ const {
   closeFilesWindow,
   isFilesWindowOpen,
   setFilesHandOff,
+  setFilesLaunchRouted,
 } = require("./files-window.cjs");
 const {
   ensureSecretsIpc,
@@ -2762,6 +2767,7 @@ function commandContext() {
     platform: process.platform,
     clipboardSync: capture.clipboardSyncOn(),
     printScreenOwner: capture.printScreenOwner(),
+    recording: recorder.isRecording(),
     awconnect: latestAwconnectStatus,
     // Who the AitherDesktop window + overlay are signed in as (never a token).
     account: desktopAccount(),
@@ -2875,6 +2881,10 @@ require("./windows-window.cjs").setRegistered(() => ({
 }));
 require("./windows-window.cjs").ensureWindowsIpc();
 require("./search-window.cjs").setForgeOpener((url) => browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url }));
+// Alt+Space universal search: a desk-action row runs through the palette's door, and
+// Tab (or an agent/tool row) hands the query to the ONE CommandAgent.
+require("./search-window.cjs").setActionRunner((id) => runCommand(id, undefined, { surface: "palette" }));
+require("./search-window.cjs").setChatSender((text) => commandAction(text, { source: "search" }));
 
 /** "Set up Awconnect" -- adk stages it, opens the extensions page, copies the path. */
 async function runAwconnectSetupCommand({ surface = "menu" } = {}) {
@@ -3051,6 +3061,9 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "darkmatter.open": return void createDarkmatterLinkWindow();
     case "localai.open": return void browserWindow.openInternal("local-ai", null, { askAgent: browserAskAgent });
     case "notebooks.open": return void browserWindow.openInternal("notebooks", null, { askAgent: browserAskAgent });
+    case "files.open": return void createFilesWindow();
+    case "tunnel.open": return void createTunnelWindow();
+    case "search.universal": return void require("./search-window.cjs").toggleLauncher();
     case "browser.open": return void browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
     case "inference.open": {
       // Sign-in must land the cookie in the living-desktop PARTITION, which
@@ -3122,6 +3135,13 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       return void capture.setPrintScreenOwner("aither").then(() => tray && refreshTrayMenu());
     case "snip.printscreen.restore":
       return void capture.setPrintScreenOwner("snipping").then(() => tray && refreshTrayMenu());
+    case "record.region":
+      return void (recorder.isRecording() ? recorder.stopRecording() : recorder.startRecording({ mode: "region", format: "mp4" }));
+    case "record.screen": return void recorder.startRecording({ mode: "screen", format: "mp4" });
+    case "record.region.audio":
+      return void recorder.startRecording({ mode: "region", format: "mp4", systemAudio: true, mic: true });
+    case "record.region.gif": return void recorder.startRecording({ mode: "region", format: "gif" });
+    case "record.pause": return void recorder.togglePause();
     case "missioncontrol.open":
       // The page host, plain: mission control is a page, not an OS window.
       return void browserWindow.createBrowserWindow({
@@ -4488,6 +4508,12 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       openConsole();
       return;
     }
+    // Win+E (files-wine.cjs registers `"<exe>" [<app dir>] --files`) and the
+    // jump list land here when the desk is already running.
+    if (argv.includes("--files")) {
+      createFilesWindow();
+      return;
+    }
     // A Windows jump-list task (right-click the taskbar icon): `--run=<command id>`.
     const asked = argv.find((part) => part.startsWith("--run="));
     if (asked) {
@@ -5198,6 +5224,16 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       askImage: (filePath) => routeDrop({ filePath, mime: "image/png" }),
       onAnswer: announceDrop,
     });
+    // Recordings: [Ask Aither] is drop-router's VIDEO lane (first frame -> vision),
+    // run through the recorder's resolved ffmpeg with a hidden console.
+    recorder.configureRecorder({
+      askVideo: (filePath) => routeDrop(
+        { filePath, mime: filePath.endsWith(".gif") ? "image/gif" : "video/mp4" },
+        { ffmpeg: recorder.firstFrameRunner() }),
+      onAnswer: announceDrop,
+    });
+    recorder.ensureRecorderIpc();
+    registerTunnelIpc();
     // "Share this" (disk index contract): the other thing a drop can mean. It
     // PROPOSES a share of the original path from this node -- nothing is staged
     // or published here; Genesis answers with a proposal (card-gated on a
@@ -5648,6 +5684,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       onRemoveAvatar: (slotId) => removeAvatarSlot(slotId),
       onFleet: (action, opts) => fleetAction(action, opts),
       onCommand: (text, opts) => commandAction(text, opts),
+      onUniversalSearch: (q) => require("./search-window.cjs").universal().run(q, { phase: "all" }),
+      tunnels: require("./tunnel-window.cjs").getTunnelClient(),
       // U28: the MCP `speak` tool door -- origin STAMPED here, same reason as
       // the bridge's speakHandler above.
       onSpeak: ({ text, voice, speed }) => speakAloud(text, voice, speed, undefined, "mcp:speak"),
@@ -5789,6 +5827,9 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     syncEdgeReveal();
     setInterval(syncEdgeReveal, 30_000).unref?.();
     if (process.argv.includes("--desktop")) showDesktopApp();
+    if (process.argv.includes("--files")) createFilesWindow();
+    // --files is routed here (cold start) AND in second-instance: the Win+E switch may open.
+    setFilesLaunchRouted(true);
     // Keep the tray's Fleet line honest: re-render the menu after every verdict.
     getFleetControl().on("progress", (p) => {
       if (p?.phase === "end") refreshTrayMenu();

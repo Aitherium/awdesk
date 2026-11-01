@@ -534,6 +534,30 @@ const COMMANDS = Object.freeze([
     surfaces: ["palette"],
     whySingle: "A Console pane (Agents section) already; the palette (Ctrl+K) is its keyboard path.",
   }),
+  // Aither Files (files-window.cjs): the owner's File Explorer replacement --
+  // tabs, breadcrumb + address bar, list/grid with thumbnails, preview, new
+  // folder / rename / copy / move / delete-to-Recycle-Bin, Send to Aitherium, Ask
+  // Aither. Win+E can open it (files-wine.cjs, owner-consented, reversible).
+  Object.freeze({
+    id: "files.open", label: "Files…", group: "go", icon: "folder",
+    surfaces: ["palette", "jumplist"],
+  }),
+  // Universal search (owner, 2026-11-01: replace Windows' Start search). One box over
+  // apps, files, screenshots, clipboard, desk actions and agents/tools/skills
+  // (universal-search.cjs); the window is search-window.cjs toggleLauncher. Alt+Space,
+  // because Electron cannot register Win-key combos (the shell reserves Win+S).
+  Object.freeze({
+    id: "search.universal", label: "Search this PC…", group: "go", accel: "Alt+Space",
+    surfaces: ["tray", "palette"],
+  }),
+  // Public URL (tunnel-window.cjs): give one local port a public URL via the
+  // awtunnel CLI; fleet internals (8182/8150/8151/8111/8001/5432) are refused
+  // unless the owner ticks the explicit override.
+  Object.freeze({
+    id: "tunnel.open", label: "Public URL for a port…", group: "go",
+    surfaces: ["palette"],
+    whySingle: "A utility, not a destination (owner, 2026-10-03: too many menus); the palette (Ctrl+K) and the System window's port rows are its paths.",
+  }),
   // The System window (owner, 2026-11-01: "stop using Task Manager, Resource Monitor and
   // netstat"): processes, ports, connections, adapters, startup apps. system-monitor*.cjs.
   // Windows itself owns Ctrl+Shift+Esc; when register() is refused the key lands in
@@ -600,6 +624,36 @@ const COMMANDS = Object.freeze([
     id: "snip.printscreen.restore", label: "Restore Windows Snipping Tool", group: "capture",
     surfaces: ["tray", "palette"],
     when: (ctx = {}) => ctx.platform === "win32" && ctx.printScreenOwner === "aither",
+  }),
+  // The desk's screen recorder (owner 2026-11-01: replace the Windows utilities).
+  // recorder-window.cjs; the region overlay IS the snipping tool's snip.html; the
+  // saved MP4/GIF uploads to the owner's Strata `screenshots` folder (strata-sync.cjs).
+  Object.freeze({
+    id: "record.region", group: "capture", accel: "Shift+PrintScreen",
+    label: (ctx = {}) => (ctx.recording ? "Stop recording" : "Record a region"),
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "record.screen", label: "Record the whole screen", group: "capture",
+    surfaces: ["tray", "palette"],
+    when: (ctx = {}) => !ctx.recording,
+  }),
+  Object.freeze({
+    id: "record.region.audio", label: "Record a region with sound (system + mic)", group: "capture",
+    surfaces: ["palette"],
+    when: (ctx = {}) => !ctx.recording,
+    whySingle: "A variant of Record a region; the tray carries the plain verb, the palette (Ctrl+K) carries the options.",
+  }),
+  Object.freeze({
+    id: "record.region.gif", label: "Record a region as GIF", group: "capture",
+    surfaces: ["palette"],
+    when: (ctx = {}) => !ctx.recording,
+    whySingle: "A variant of Record a region; the tray carries the plain verb, the palette (Ctrl+K) carries the options.",
+  }),
+  Object.freeze({
+    id: "record.pause", label: "Pause / resume recording", group: "capture",
+    surfaces: ["tray", "palette"],
+    when: (ctx = {}) => Boolean(ctx.recording),
   }),
   Object.freeze({
     id: "osapp.learn", label: "Learn…", group: "go", osApp: "learn",

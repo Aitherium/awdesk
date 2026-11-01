@@ -182,6 +182,11 @@ function createDeskMcpServer({
   onRemoveAvatar = null,
   onFleet = null,
   onCommand = null,
+  // search-window.cjs universal().run: the Alt+Space search, READ-ONLY. Null = no desk_search.
+  onUniversalSearch = null,
+  // tunnel-window.cjs getTunnelClient(): list + stop only. No start tool on purpose
+  // (publishing a port externally is the owner's call). Null = no tunnel tools.
+  tunnels = null,
   onDesktop = null,
   onSpeak = null,
   onAsk = null,
@@ -633,6 +638,64 @@ function createDeskMcpServer({
           content: [{ type: "text", text: result.reply }],
           isError: result.ok === false,
         };
+      },
+    );
+  }
+
+  if (onUniversalSearch != null) {
+    server.registerTool(
+      "desk_search",
+      {
+        title: "Search this PC (apps, files, screenshots, desk actions, agents)",
+        description: "Read-only: the desk's universal search (Alt+Space). Ranked groups of Start-menu apps, Windows Search index files (or a bounded walk of the Files roots), screenshots, desk commands and adk-discover agents/tools/skills. Clipboard rows are never returned over MCP. Nothing is opened.",
+        inputSchema: { query: z.string().min(1).max(200).describe("What to look for.") },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async ({ query }) => {
+        const r = await onUniversalSearch(query);
+        const out = r && r.ok
+          ? {
+            ...r,
+            groups: (r.groups || []).filter((g) => g.id !== "clipboard").map((g) => ({
+              id: g.id, label: g.label, total: g.total,
+              items: (g.items || []).filter((i) => i.kind !== "clip").slice(0, 10).map((i) => ({
+                kind: i.kind, title: i.title, subtitle: i.subtitle, target: i.target,
+              })),
+            })),
+          }
+          : r;
+        return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }], isError: !(r && r.ok) };
+      },
+    );
+  }
+
+  if (tunnels != null) {
+    server.registerTool(
+      "list_tunnels",
+      {
+        title: "List Desk public URLs",
+        description: "List local ports Desk has given a public awtunnel URL (live and stale).",
+        inputSchema: {},
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async () => {
+        const r = await tunnels.list();
+        return textResult(r.ok
+          ? JSON.stringify(r.data.tunnels.map((t) => ({ port: t.port, url: t.url, alive: t.alive, source: t.source })))
+          : r.reason);
+      },
+    );
+    server.registerTool(
+      "stop_tunnel",
+      {
+        title: "Stop a Desk public URL",
+        description: "Take one local port's public awtunnel URL away.",
+        inputSchema: { port: z.number().int().min(1).max(65535) },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async ({ port }) => {
+        const r = await tunnels.stop(port);
+        return textResult(r.ok ? `port ${port} is private again` : r.reason);
       },
     );
   }

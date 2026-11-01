@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:; media-src blob: mediastream:;" />
+<title>Recorder</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<!--
+  recorder.html -- two views, owned by recorder-window.cjs:
+    ?view=bar    the floating control bar. It IS the recorder: getUserMedia with the
+                 source id main picked, a canvas crop when a region was chosen,
+                 optional system audio + mic mixed into one track, MediaRecorder
+                 webm/vp9 in 1 s chunks streamed to main. Excluded from capture.
+                 The first refused chunk stops the recording (no hole mid-file).
+    ?view=toast  the saved-recording toast: [Ask Aither] [Copy path] [Open folder]
+                 [Sync] (cloud upload is opt-in) or [Cancel sync] when queued.
+  The first line of each view is its status line (ux-shape law 3).
+-->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none;
+    font: 13px/1.4 var(--font-sans, system-ui); color: var(--fg, #e8e8ef); }
+  [hidden] { display: none !important; }
+  /* ── bar ── */
+  .bar { height: 100%; display: flex; align-items: center; gap: 6px; padding: 0 6px 0 12px;
+    border-radius: 22px; border: 1px solid var(--line, #333); background: var(--bg, #15151c);
+    -webkit-app-region: drag; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--destructive, #ff4d4d); flex: none; }
+  .bar.paused .dot { background: var(--muted, #9a9aa8); }
+  .bar.starting .dot { opacity: .4; }
+  .line { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .time { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .bar button { -webkit-app-region: no-drag; }
+  button { font: inherit; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line, #333); background: transparent; color: inherit; }
+  button.primary { background: var(--primary, #7aa2ff); border-color: transparent; color: var(--primary-fg, #0b0b10); }
+  button.stop { background: var(--destructive, #ff4d4d); border-color: transparent; color: #fff; border-radius: 16px; }
+  /* ── toast ── */
+  .card { height: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line, #333);
+    background: var(--bg, #15151c); display: grid; grid-template-rows: auto auto auto 1fr; gap: 2px; }
+  .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .state { color: var(--muted, #9a9aa8); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .actions { display: flex; gap: 6px; align-items: end; }
+  button.x { margin-left: auto; }
+  .err .title { color: var(--destructive, #ff6b6b); }
+</style>
+</head>
+<body>
+<div class="bar starting" id="bar" hidden>
+  <span class="dot"></span>
+  <span class="line"><span class="time" id="time">0:00</span> · <span id="what">Starting…</span></span>
+  <button id="pause" title="Pause / resume">Pause</button>
+  <button class="stop" id="stop" title="Stop and save">Stop</button>
+</div>
+
+<div class="card" id="card" hidden>
+  <div class="title" id="title">Recording saved</div>
+  <div class="state" id="note"></div>
+  <div class="state" id="sync"></div>
+  <div class="actions" id="actions">
+    <button class="primary" data-action="ask">Ask Aither</button>
+    <button data-action="copy-path">Copy path</button>
+    <button data-action="open-folder">Open folder</button>
+    <button data-action="sync" title="Upload this recording to AitherOS Online · Screenshots" hidden>Sync</button>
+    <button data-action="cancel-sync" title="Cancel this recording's upload" hidden>Cancel sync</button>
+    <button class="x" data-action="dismiss" title="Dismiss">×</button>
+  </div>
+</div>
+
+<script>
+  const rec = window.aitherRecorder;
+  const view = new URLSearchParams(location.search).get("view");
+
+  function fmt(ms) {
+    const t = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+    const p = (n) => String(n).padStart(2, "0");
+    return h ? `${h}:${p(m)}:${p(s)}` : `${m}:${p(s)}`;
+  }
+
+  // ── the bar: records ──────────────────────────────────────────────────────
+  async function runBar() {
+    const bar = document.getElementById("bar");
+    const time = document.getElementById("time");
+    const what = document.getElementById("what");
+    const pauseBtn = document.getElementById("pause");
+    bar.hidden = false;
+    const owned = [];          // every track we opened, stopped at the end
+    let recorder = null;
+    let segments = [];         // [start, end|null] pairs, pauses excluded
+    let tick = null;
+    let writes = Promise.resolve();
+    let stopping = false;
+
+    const fail = (why) => { for (const t of owned) t.stop(); rec.failed(why); };
+
+    const plan = await rec.plan();
+    if (!plan || !plan.ok) return fail((plan && plan.reason) || "no plan");
+
+    let screen;
+    try {
+      screen = await navigator.mediaDevices.getUserMedia(plan.constraints);
+    } catch (e) {
+      return fail(`screen capture refused: ${(e && e.message) || e}`);
+    }
+    owned.push(...screen.getTracks());
+    const raw = screen.getVideoTracks()[0];
+    const settings = raw.getSettings();
+    let videoTrack = raw;
+    let label = "Screen";
+
+    const size = await rec.streamSize({ width: settings.width, height: settings.height });
+    if (plan.cropped && size && size.ok && size.crop) {
+      // Crop on a canvas: the region is honoured even when ffmpeg is missing.
+      const c = size.crop;
+      const video = document.createElement("video");
+      video.muted = true;
+      video.srcObject = screen;
+      await video.play();
+      const canvas = document.createElement("canvas");
+      canvas.width = c.width;
+      canvas.height = c.height;
+      const ctx = canvas.getContext("2d", { alpha: false });
+      const draw = () => ctx.drawImage(video, c.x, c.y, c.width, c.height, 0, 0, c.width, c.height);
+      if (typeof video.requestVideoFrameCallback === "function") {
+        const loop = () => { draw(); video.requestVideoFrameCallback(loop); };
+        video.requestVideoFrameCallback(loop);
+      } else {
+        setInterval(draw, Math.round(1000 / plan.fps));
+      }
+      draw();
+      videoTrack = canvas.captureStream(plan.fps).getVideoTracks()[0];
+      owned.push(videoTrack);
+      label = `Region ${c.width}×${c.height}`;
+    } else {
+      label = `Screen ${settings.width}×${settings.height}`;
+    }
+
+    // Audio: soft. A refused source is named on the status line, never fatal.
+    const audioIn = [];
+    const missing = [];
+    if (plan.systemAudio) {
+      try {
+        const sys = await navigator.mediaDevices.getUserMedia(plan.systemAudio);
+        for (const t of sys.getVideoTracks()) t.stop();
+        owned.push(...sys.getAudioTracks());
+        if (sys.getAudioTracks().length) audioIn.push(new MediaStream(sys.getAudioTracks()));
+        else missing.push("system audio");
+      } catch { missing.push("system audio"); }
+    }
+    if (plan.mic) {
+      try {
+        const mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        owned.push(...mic.getAudioTracks());
+        audioIn.push(mic);
+      } catch { missing.push("mic"); }
+    }
+    let audioTracks = [];
+    if (audioIn.length === 1) audioTracks = audioIn[0].getAudioTracks();
+    else if (audioIn.length > 1) {
+      const ac = new AudioContext();
+      const dest = ac.createMediaStreamDestination();
+      for (const s of audioIn) ac.createMediaStreamSource(s).connect(dest);
+      audioTracks = dest.stream.getAudioTracks();
+    }
+
+    const tags = [label, plan.format.toUpperCase()];
+    if (plan.systemAudio && !missing.includes("system audio")) tags.push("system audio");
+    if (plan.mic && !missing.includes("mic")) tags.push("mic");
+    if (missing.length) tags.push(`${missing.length} audio source${missing.length > 1 ? "s" : ""} refused — recording without`);
+    if (plan.format !== "webm" && !plan.ffmpeg) tags.push("no ffmpeg — saves WebM");
+
+    const stream = new MediaStream([videoTrack, ...audioTracks]);
+    const wanted = audioTracks.length
+      ? ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+      : ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+    const mimeType = wanted.find((m) => MediaRecorder.isTypeSupported(m)) || "";
+    try {
+      recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 8_000_000 } : undefined);
+    } catch (e) {
+      return fail(`MediaRecorder refused: ${(e && e.message) || e}`);
+    }
+    // A refused chunk (disk full, EPERM) ends the recording: appending past it
+    // would leave a hole mid-file. Main refuses later appends too and the toast
+    // reads "1 recording truncated — <reason>".
+    let writeFailed = null;
+    const writeFailedOnce = (why) => {
+      if (writeFailed) return;
+      writeFailed = String(why || "write failed");
+      what.textContent = `1 write failed — saving what was recorded (${writeFailed})`;
+      what.title = what.textContent;
+      stop();
+    };
+    recorder.ondataavailable = (e) => {
+      if (!e.data || !e.data.size || writeFailed) return;
+      const blob = e.data;
+      writes = writes.then(async () => {
+        if (writeFailed) return;
+        const r = await rec.chunk(await blob.arrayBuffer());
+        if (!r || !r.ok) writeFailedOnce((r && r.reason) || "the recording could not be written");
+      }).catch((err) => writeFailedOnce((err && err.message) || err));
+    };
+    recorder.onstop = async () => {
+      clearInterval(tick);
+      await writes;
+      for (const t of owned) t.stop();
+      await rec.done();
+    };
+
+    const render = () => {
+      let ms = 0;
+      for (const [a, b] of segments) ms += (b == null ? Date.now() : b) - a;
+      time.textContent = fmt(ms);
+    };
+    function stop() {
+      if (stopping || !recorder) return;
+      stopping = true;
+      if (!writeFailed) what.textContent = "Saving…";
+      if (segments.length && segments[segments.length - 1][1] == null) segments[segments.length - 1][1] = Date.now();
+      recorder.stop();
+    }
+    function pause() {
+      if (!recorder || stopping || recorder.state !== "recording") return;
+      recorder.pause();
+      segments[segments.length - 1][1] = Date.now();
+      bar.classList.add("paused");
+      pauseBtn.textContent = "Resume";
+      rec.state("paused");
+    }
+    function resume() {
+      if (!recorder || stopping || recorder.state !== "paused") return;
+      recorder.resume();
+      segments.push([Date.now(), null]);
+      bar.classList.remove("paused");
+      pauseBtn.textContent = "Pause";
+      rec.state("recording");
+    }
+
+    document.getElementById("stop").addEventListener("click", stop);
+    pauseBtn.addEventListener("click", () => (recorder && recorder.state === "paused" ? resume() : pause()));
+    rec.onCommand((cmd) => (cmd === "stop" ? stop() : cmd === "pause" ? pause() : cmd === "resume" ? resume() : null));
+
+    recorder.start(1000);
+    segments = [[Date.now(), null]];
+    rec.state("recording");
+    bar.classList.remove("starting");
+    what.textContent = tags.join(" · ");
+    what.title = tags.join(" · ");
+    tick = setInterval(render, 250);
+    // A source that ends on its own (display unplugged, permission revoked) saves what we have.
+    raw.addEventListener("ended", stop);
+  }
+
+  // ── the toast ─────────────────────────────────────────────────────────────
+  function runToast() {
+    const card = document.getElementById("card");
+    card.hidden = false;
+    const set = (id, text) => { const el = document.getElementById(id); el.textContent = text || ""; el.title = text || ""; };
+    function render(info) {
+      if (!info) return;
+      if (!info.ok) {
+        card.classList.add("err");
+        set("title", "Recording failed");
+        set("note", info.reason);
+        set("sync", "");
+        for (const b of document.querySelectorAll("[data-action]")) b.hidden = b.dataset.action !== "dismiss";
+        return;
+      }
+      card.classList.remove("err");
+      for (const b of document.querySelectorAll("[data-action]")) {
+        const a = b.dataset.action;
+        b.hidden = a === "sync" ? !info.canSync : a === "cancel-sync" ? !info.canCancelSync : false;
+      }
+      set("title", `Saved ${info.name}`);
+      set("note", info.status || info.note || (info.interrupted ? `Stopped early (${info.interrupted}) — what was recorded is saved` : `${String(info.format || "").toUpperCase()} in Videos · Aither Recordings`));
+      set("sync", info.sync || "");
+    }
+    rec.toastInfo().then(render);
+    rec.onToastUpdate(render);
+    document.getElementById("actions").addEventListener("click", (e) => {
+      const action = e.target && e.target.dataset ? e.target.dataset.action : null;
+      if (action) rec.toastAction(action);
+    });
+  }
+
+  if (view === "toast") runToast();
+  else runBar().catch((e) => rec.failed(String((e && e.message) || e)));
+</script>
+</body>
+</html>
