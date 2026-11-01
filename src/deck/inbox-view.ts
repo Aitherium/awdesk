@@ -10,7 +10,66 @@
  *
  * No React here: every rule the view applies has a vitest arm.
  */
-import { reasonLabel, transportNote, type DeckDecision, type RelayRow, type WakeRow, type WakesFeed } from './deck-types';
+import {
+  primaryChoice,
+  reasonLabel,
+  transportNote,
+  type DeckDecision,
+  type RelayRow,
+  type WakeRow,
+  type WakesFeed,
+} from './deck-types';
+
+/** How many rows a group shows before "N more" takes over. PRESENTATION only:
+ *  the rest stay behind the fold, reachable, never dropped. */
+export const VISIBLE_CAP = 5;
+
+/**
+ * The first `cap` items plus how many were withheld. One rule for every list on
+ * the desk, so "5 visible, N more" is the same shape in Needs you, FYI and the
+ * terminal strip — and a caller can never silently lose a row by slicing.
+ */
+export function capList<T>(items: T[], cap = VISIBLE_CAP): { shown: T[]; more: number } {
+  const list = items || [];
+  const limit = Number.isFinite(cap) && cap >= 0 ? cap : VISIBLE_CAP;
+  return list.length <= limit
+    ? { shown: list.slice(), more: 0 }
+    : { shown: list.slice(0, limit), more: list.length - limit };
+}
+
+function escapeRe(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * THE next action — the top card as one imperative line plus how much sits
+ * behind it. Every surface that shows a list leads with this, so the owner never
+ * has to scan to find where to start.
+ *
+ * "Approve the Solana receive address" stays as written when the title already
+ * begins with the action; otherwise the recommended choice prefixes it
+ * ("Approve: Solana receive address") — never "Approve: Approve the ...".
+ */
+export function nextActionLine(
+  cards: DeckDecision[],
+  openCount: number,
+): { id: string; line: string; after: string } | null {
+  const first = cards && cards[0];
+  if (!first) return null;
+  const title = String(first.title || '').trim() || 'Answer this card';
+  const primary = primaryChoice(first);
+  const label = primary ? String(primary.label || '').trim() : '';
+  const line = label && !new RegExp(`^\\W*${escapeRe(label)}\\b`, 'i').test(title)
+    ? `${label}: ${title}`
+    : title;
+  const open = Number.isFinite(openCount) ? openCount : cards.length;
+  const remaining = Math.max(0, open - 1);
+  return {
+    id: first.id,
+    line: line.length > 120 ? `${line.slice(0, 119)}…` : line,
+    after: remaining > 0 ? `${remaining} after this one` : 'nothing after this one',
+  };
+}
 
 export type DecisionGroupKey = 'credential' | 'blocked' | 'approve' | 'choose';
 
@@ -137,12 +196,42 @@ export function healthySummary(healthy: WakeRow[]): string {
   return parts.join(' · ');
 }
 
-/** The last error of a broken wake as a short phrase (the full text goes in a title). */
+const TRACEBACK = /Traceback \(most recent call last\)[\s\S]*?(?:\n[ \t]*\n|$)/i;
+const URL_TEXT = /https?:\/\/\S+/gi;
+const WIN_PATH = /\b[A-Za-z]:\\[^\s"'<>|]+/g;
+const POSIX_PATH = /(?:\/[\w.@+-]+){2,}/g;
+const TRAILING = /[\s.,;:—–-]+$/;
+
+/**
+ * ONE readable clause out of machine noise. The row is 28 px wide and the owner
+ * reads it at a glance: a URL, a stack path or a traceback block is something to
+ * open, not something to parse. Never silently empty — an empty result falls
+ * back to a phrase the caller can show.
+ */
+function oneClause(text: string): string {
+  let out = String(text || '');
+  out = out.replace(TRACEBACK, ' ');
+  out = out.replace(URL_TEXT, ' ');
+  out = out.replace(WIN_PATH, ' ');
+  out = out.replace(POSIX_PATH, ' ');
+  out = out.replace(/\s+/g, ' ').trim();
+  // The first sentence or dash boundary ends the clause.
+  const cut = out.search(/\.\s| — /);
+  if (cut >= 0) out = out.slice(0, cut);
+  out = out.replace(TRAILING, '').trim();
+  return out.length > 80 ? `${out.slice(0, 79)}…` : out;
+}
+
+/**
+ * The last error of a broken wake as one actionable clause (the full text stays
+ * in the row's title). The REASON leads: "exited 1" tells the owner what broke,
+ * while "failure" only restates that something did.
+ */
 export function wakeErrorLine(wake: WakeRow): string {
   const reason = wake.lastReason ? reasonLabel(wake.lastReason) : '';
   const state = wake.lastState && !reason.toLowerCase().includes(wake.lastState.toLowerCase()) ? wake.lastState : '';
-  const text = [state, reason].filter(Boolean).join(' — ') || wake.error || 'no reason recorded';
-  return text.length > 80 ? `${text.slice(0, 79)}…` : text;
+  const line = oneClause([reason, state].filter(Boolean).join(' — ') || wake.error || '');
+  return line || 'no reason recorded';
 }
 
 /** Is the scheduler's own clock the broken thing? Then it leads the Broken list. */

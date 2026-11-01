@@ -26,13 +26,16 @@ import {
 } from '../deck/deck-types';
 import {
   STALE_DECISION_DAYS,
+  VISIBLE_CAP,
   awarenessLine,
+  capList,
   clockIsBroken,
   decisionGroup,
   decisionSource,
   groupDecisions,
   healthySummary,
   moveCursor,
+  nextActionLine,
   orderRelay,
   relayNick,
   splitWakes,
@@ -193,6 +196,29 @@ function urgencyTone(urgency: string): string {
   return URGENCY_TONE[urgency] ?? URGENCY_TONE.normal;
 }
 
+/** "Oct 29" — a date the owner reads without doing arithmetic. Empty when the
+ *  timestamp is absent or unparseable, so a caller can simply omit the clause. */
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return '';
+  return new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/** What a broken wake's count badge says: the streak AND since when, so the
+ *  number is not the only thing on the row. A timeout with no counted streak
+ *  still says what it was. */
+function brokenCountLabel(wake: WakeRow): string {
+  if (wake.consecutiveFailures > 0) {
+    const since = fmtDate(wake.lastStartedAt ?? wake.lastFinishedAt);
+    return since ? `${wake.consecutiveFailures}× since ${since}` : `${wake.consecutiveFailures}×`;
+  }
+  return 'timed out';
+}
+
+/** How many failing wakes get a full row; the rest fold into one line below. */
+const BROKEN_PAGE = 3;
+
 /** BROKEN — awrise's scheduled jobs, triaged (owner redesign 2026-10-28).
  *
  * Sixty full-height cards with OK / Disable / Run now buried the five that were
@@ -229,10 +255,19 @@ function WakesSection({
           ? 'Reading the scheduler…'
           : '';
   const brokenCount = broken.length + (clockBroken ? 1 : 0);
-  const actions = (wake: WakeRow) => (
+  // ONE line says how bad it is and since when; the rows below are the top 3.
+  const firstBroken = broken[0];
+  const since = firstBroken ? fmtDate(firstBroken.lastStartedAt ?? firstBroken.lastFinishedAt) : '';
+  const brokenHeader = brokenCount > 0
+    ? `${brokenCount} wake${brokenCount === 1 ? '' : 's'} broken — `
+      + `${firstBroken?.name || 'scheduler clock'}`
+      + (broken.length > 1 ? ` +${broken.length - 1}` : '')
+      + (since ? `, failing since ${since}` : '')
+    : '';
+  const actions = (wake: WakeRow, primary = false) => (
     <span className="deck-wake-actions">
       <button
-        className="deck-btn deck-btn-xs deck-btn-primary"
+        className={`deck-btn deck-btn-xs${primary ? ' deck-btn-primary' : ''}`}
         disabled={!live || wake.running || pending.has(wake.name)}
         title="Fire this wake once now — the schedule and the streak are unchanged"
         onClick={() => onAction('run', wake.name)}
@@ -249,12 +284,27 @@ function WakesSection({
       </button>
     </span>
   );
+  // The same row at two weights: the first is the one the owner acts on, the
+  // next two are real but quieter, and the rest fold into one line.
+  const brokenRow = (wake: WakeRow, primary = false) => (
+    <div className="deck-broken-row" key={wake.name}>
+      <span className="deck-broken-name" title={wake.run || wake.name}>{wake.name}</span>
+      <span className="deck-broken-count">{brokenCountLabel(wake)}</span>
+      {/* The REASON, one hover from the whole text. */}
+      <span className="deck-broken-error" title={[wake.lastState, wake.lastReason, wake.error].filter(Boolean).join(' — ')}>
+        {wakeErrorLine(wake)}
+      </span>
+      <span className="deck-broken-age">{wakeAgeLabel(wake, nowMs)}</span>
+      {actions(wake, primary)}
+      {notes[wake.name] ? <span className="deck-wake-note">{notes[wake.name]}</span> : null}
+    </div>
+  );
   return (
     <section className="deck-section" aria-label="Broken">
       <h2 className="deck-section-head">
         <span className="deck-section-icon"><ChipIcon /></span>
         Broken
-        {brokenCount > 0 ? <span className="deck-section-count">{brokenCount}</span> : null}
+        {brokenCount > 0 ? <span className="deck-section-sub">{brokenHeader}</span> : null}
       </h2>
       {notice ? <p className="deck-empty deck-notice">{notice}</p> : null}
       {wakes.schema === 1 ? (
@@ -268,21 +318,13 @@ function WakesSection({
           <span className="deck-broken-error">{clockLabel(wakes, nowMs)} — no wake runs on schedule</span>
         </div>
       ) : null}
-      {broken.map((wake) => (
-        <div className="deck-broken-row" key={wake.name}>
-          <span className="deck-broken-name" title={wake.run || wake.name}>{wake.name}</span>
-          <span className="deck-broken-count">
-            {wake.consecutiveFailures > 0 ? `${wake.consecutiveFailures}x` : 'timed out'}
-          </span>
-          {/* The REASON, one hover from the whole text. */}
-          <span className="deck-broken-error" title={[wake.lastState, wake.lastReason, wake.error].filter(Boolean).join(' — ')}>
-            {wakeErrorLine(wake)}
-          </span>
-          <span className="deck-broken-age">{wakeAgeLabel(wake, nowMs)}</span>
-          {actions(wake)}
-          {notes[wake.name] ? <span className="deck-wake-note">{notes[wake.name]}</span> : null}
-        </div>
-      ))}
+      {broken.slice(0, BROKEN_PAGE).map((wake, i) => brokenRow(wake, i === 0))}
+      {broken.length > BROKEN_PAGE ? (
+        <details className="deck-fold">
+          <summary>{broken.length - BROKEN_PAGE} more broken — run one to see it fail</summary>
+          {broken.slice(BROKEN_PAGE).map((wake) => brokenRow(wake))}
+        </details>
+      ) : null}
       {brokenCount === 0 && live ? <p className="deck-empty">Nothing broken.</p> : null}
       {healthy.length > 0 ? (
         <details className="deck-fold">
@@ -976,7 +1018,7 @@ function ModelsMarketSection({
  * `card-not-needed` = awask cancel, the asking session is told), run one at a
  * time. No new endpoint.
  */
-const GROUP_PAGE = 6;
+const GROUP_PAGE = VISIBLE_CAP;
 
 function NeedsYouSection({
   cards,
@@ -1010,10 +1052,18 @@ function NeedsYouSection({
   const [more, setMore] = useState<Set<string>>(() => new Set());
   const [bulk, setBulk] = useState<{ verb: string; done: number; total: number; refused: number } | null>(null);
   const [confirmDismiss, setConfirmDismiss] = useState(false);
+  const [confirmLater, setConfirmLater] = useState(false);
+  // A bulk run is a loop of clicks; the owner must be able to stop it.
+  const cancelBulk = useRef(false);
   const { groups, stale } = groupDecisions(cards, nowMs);
+  // THE next action — one line, before any group, so nothing has to be scanned.
+  const next = nextActionLine(cards, openCount);
+  const nextChoice = cards[0] ? primaryChoice(cards[0]) : null;
+  // FYI keeps the same five-and-a-fold shape as every other list here.
+  const fyiCap = capList(fyi, VISIBLE_CAP);
 
   // The visible order, which j/k walk and "answer opens the next" follows.
-  const shownCards = (key: string, list: DeckDecision[]) => (more.has(key) ? list : list.slice(0, GROUP_PAGE));
+  const shownCards = (key: string, list: DeckDecision[]) => (more.has(key) ? list : capList(list, GROUP_PAGE).shown);
   const visible: string[] = [
     ...groups.filter((g) => !folded.has(g.key)).flatMap((g) => shownCards(g.key, g.cards).map((c) => c.id)),
     ...(staleOpen ? stale.map((c) => c.id) : []),
@@ -1097,9 +1147,11 @@ function NeedsYouSection({
     const deck = bridgeDeck();
     if (!deck || bulk) return;
     const ids = stale.map((c) => c.id);
+    cancelBulk.current = false;
     let refused = 0;
     setBulk({ verb, done: 0, total: ids.length, refused: 0 });
     for (let i = 0; i < ids.length; i += 1) {
+      if (cancelBulk.current) break;
       try {
         const ok = await deck.action(verb, ids[i]);
         if (!ok) refused += 1;
@@ -1109,6 +1161,7 @@ function NeedsYouSection({
       setBulk({ verb, done: i + 1, total: ids.length, refused });
     }
     setConfirmDismiss(false);
+    setConfirmLater(false);
     window.setTimeout(() => setBulk(null), 6000);
   };
 
@@ -1180,6 +1233,9 @@ function NeedsYouSection({
       <h2 className="deck-section-head">
         <span className="deck-section-icon"><BellIcon /></span>
         Needs you
+        {/* The deck header already states "1 of N waiting". Here the count is a
+            number, and nothing at all when there is nothing to answer — a red
+            pill reading "all clear" is an alarm for a good state. */}
         {openCount > 0 ? <span className="deck-section-count">{openCount}</span> : null}
         {cards.length > 0 ? (
           <button className="deck-chip deck-head-chip" title="Every waiting card in its own answer window" onClick={onPopupAll}>
@@ -1191,6 +1247,28 @@ function NeedsYouSection({
         <p className="deck-empty">Nothing waiting — every session is unblocked.</p>
       ) : (
         <>
+          {/* ONE line the owner acts on, before any group: the top card, how much
+              sits behind it, and a button that answers it through the same path. */}
+          {next ? (
+            <div className="deck-next">
+              <div className="deck-next-main">
+                <span className="deck-next-kicker">Next</span>
+                <span className="deck-next-line" title={next.line}>{next.line}</span>
+                <span className="deck-next-after">{next.after}</span>
+              </div>
+              <button
+                className="deck-btn deck-btn-xs deck-btn-primary"
+                disabled={!nextChoice}
+                title={nextChoice ? `Answer now: ${nextChoice.label}` : 'Open the card to answer it'}
+                onClick={() => { if (nextChoice) onAnswer(next.id, nextChoice.key); }}
+              >
+                {nextChoice ? nextChoice.label : 'Open'}
+              </button>
+              <button className="deck-btn deck-btn-xs" onClick={onPopupAll}>
+                All {openCount} — open Inbox
+              </button>
+            </div>
+          ) : null}
           {groups.map((group) => (
             <div className="deck-ny-group" key={group.key}>
               <button
@@ -1205,7 +1283,7 @@ function NeedsYouSection({
               {folded.has(group.key) ? null : shownCards(group.key, group.cards).map(row)}
               {!folded.has(group.key) && group.cards.length > GROUP_PAGE && !more.has(group.key) ? (
                 <button className="deck-fold-more" onClick={() => setMore((current) => new Set(current).add(group.key))}>
-                  {group.cards.length - GROUP_PAGE} more
+                  {capList(group.cards, GROUP_PAGE).more} more
                 </button>
               ) : null}
             </div>
@@ -1219,22 +1297,34 @@ function NeedsYouSection({
                   onClick={() => setStaleOpen((v) => !v)}
                 >
                   <span className="deck-ny-caret">{staleOpen ? '▾' : '▸'}</span>
-                  Older than {STALE_DECISION_DAYS} days
-                  <span className="deck-ny-group-count">{stale.length}</span>
+                  {staleOpen
+                    ? `Older than ${STALE_DECISION_DAYS} days`
+                    : `${stale.length} more — none older than ${STALE_DECISION_DAYS}d shown`}
+                  {staleOpen ? <span className="deck-ny-group-count">{stale.length}</span> : null}
                 </button>
                 {bulk ? (
-                  <span className="deck-ny-bulk-note" role="status">
-                    {bulk.verb === 'card-later' ? 'Snoozing' : 'Withdrawing'} {bulk.done}/{bulk.total}
-                    {bulk.refused ? ` · ${bulk.refused} refused` : ''}
-                  </span>
+                  <>
+                    <span className="deck-ny-bulk-note" role="status">
+                      {bulk.verb === 'card-later' ? 'Snoozing' : 'Withdrawing'} {bulk.done}/{bulk.total}
+                      {bulk.refused ? ` · ${bulk.refused} refused` : ''}
+                    </span>
+                    <button
+                      className="deck-btn deck-btn-xs"
+                      title="Stop after the card in flight"
+                      onClick={() => { cancelBulk.current = true; }}
+                    >
+                      Cancel
+                    </button>
+                  </>
                 ) : (
                   <>
                     <button
-                      className="deck-btn deck-btn-xs"
+                      className={`deck-btn deck-btn-xs ${confirmLater ? 'deck-btn-primary' : ''}`}
                       title="Off the needs-you strip and the tray for 4 hours (the cards stay open)"
-                      onClick={() => void runBulk('card-later')}
+                      onClick={() => (confirmLater ? void runBulk('card-later') : setConfirmLater(true))}
+                      onBlur={() => setConfirmLater(false)}
                     >
-                      Later
+                      {confirmLater ? `Later ${stale.length}?` : 'Later'}
                     </button>
                     <button
                       className={`deck-btn deck-btn-xs ${confirmDismiss ? 'deck-btn-danger' : ''}`}
@@ -1255,12 +1345,23 @@ function NeedsYouSection({
       {fyi.length > 0 ? (
         <details className="deck-fold">
           <summary>{fyi.length} FYI — nothing to answer</summary>
-          {fyi.map((card) => (
+          {fyiCap.shown.map((card) => (
             <div className="deck-fyi-line" key={card.id} title={card.summary || card.title}>
               <span className="deck-ny-title">{card.title}</span>
               <time className="deck-ny-age">{formatAge(card.createdAt, nowMs)}</time>
             </div>
           ))}
+          {fyiCap.more > 0 ? (
+            <details className="deck-fold">
+              <summary>+{fyiCap.more} more FYI</summary>
+              {fyi.slice(VISIBLE_CAP).map((card) => (
+                <div className="deck-fyi-line" key={card.id} title={card.summary || card.title}>
+                  <span className="deck-ny-title">{card.title}</span>
+                  <time className="deck-ny-age">{formatAge(card.createdAt, nowMs)}</time>
+                </div>
+              ))}
+            </details>
+          ) : null}
         </details>
       ) : null}
     </section>
@@ -1984,7 +2085,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
         <span className="deck-header-icon"><DeskIcon /></span>
         <h1 className="deck-title">Inbox</h1>
         <span className={`deck-count ${state.openCount > 0 ? 'deck-count-live' : ''}`}>
-          {state.openCount > 0 ? `${state.openCount} waiting` : 'all clear'}
+          {state.openCount > 0 ? `1 of ${state.openCount} waiting` : 'all clear'}
           {(state.totalCount ?? 0) > state.openCount ? ` · ${(state.totalCount ?? 0) - state.openCount} FYI` : ''}
         </span>
         {!isCharacters && state.spaceAvailable ? (

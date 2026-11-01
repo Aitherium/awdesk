@@ -297,6 +297,8 @@ body {
 .deck-section-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap; /* the Broken header is a sentence; a narrow pane wraps it */
+  min-width: 0;
   gap: 8px;
   font-size: 11px;
   font-weight: 700;
@@ -1292,11 +1294,29 @@ body {
       One line per item, 28px rows, details on click — never a card per item. ──── */
 .deck-head-chip { margin-left: auto; text-transform: none; letter-spacing: 0; }
 .deck-section-count + .deck-head-chip { margin-left: 8px; }
-.deck-section-sub { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--deck-muted); opacity: 0.8; }
+.deck-section-sub { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--deck-muted); opacity: 0.8; min-width: 0; overflow-wrap: anywhere; }
 .deck-btn-xs, .deck-wake-actions .deck-btn-xs { padding: 2px 8px; font-size: 11px; border-radius: 6px; line-height: 18px; }
 .deck-btn:disabled { opacity: 0.4; cursor: default; }
 .deck-btn-danger { border-color: var(--destructive); color: var(--destructive); }
 .deck-notice { color: var(--warning); }
+/* One line, before any group: THE next action and how much follows it. */
+.deck-next {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 2px 0 8px; padding: 8px 10px; border-radius: 9px;
+  border: 1px solid color-mix(in oklch, var(--deck-accent), transparent 55%);
+  background: color-mix(in oklch, var(--deck-accent), transparent 90%);
+}
+.deck-next-main { display: flex; align-items: baseline; gap: 8px; flex: 1 1 240px; min-width: 0; }
+.deck-next-kicker {
+  flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--deck-accent);
+}
+.deck-next-line {
+  flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: 13px; font-weight: 600; color: var(--deck-text);
+}
+.deck-next-after { flex: none; font-size: 11px; color: var(--deck-muted); white-space: nowrap; }
+.deck-next .deck-btn { flex: none; }
 
 .deck-ny-group { margin: 0 0 6px; }
 .deck-ny-group-bar { display: flex; align-items: center; gap: 6px; }
@@ -1359,8 +1379,12 @@ body {
   color: var(--background); background: var(--destructive);
 }
 .deck-broken-error {
-  flex: 1; min-width: 80px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
-  font-size: 11.5px; color: var(--deck-soft);
+  /* Two lines of real reason: a clipped single line on a 28px row read as a
+     fragment the owner had to hover to understand. */
+  flex: 1; min-width: 80px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  white-space: normal; overflow: hidden;
+  font-size: 11.5px; line-height: 1.35; color: var(--deck-soft);
 }
 .deck-broken-age { flex: none; font-size: 11px; color: var(--deck-muted); }
 .deck-broken-row .deck-wake-actions, .deck-wake-table .deck-wake-actions { display: inline-flex; gap: 4px; margin: 0; }

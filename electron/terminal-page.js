@@ -21,6 +21,12 @@
   let known = [];
   let daemonUp = true;
   let dockOpen = false;
+  /** Slots the strip shows before it folds the rest into one "+N" chip. */
+  const DEFAULT_STRIP_CAP = 5;
+  /** The owner opened the "+N" chip: show every session, not just five slots. */
+  let stripExpanded = false;
+  /** label -> next index, so a chip standing for several sessions cycles them. */
+  const groupCursor = new Map();
 
   if (DOCK) document.body.classList.add("dock");
 
@@ -52,27 +58,64 @@
   function renderStrip() {
     const strip = $("strip");
     for (const el of Array.from(strip.querySelectorAll(".tab"))) el.remove();
-    for (const info of stripRows()) {
-      const id = info.id;
+    const rows = stripRows();
+    const byId = new Map(rows.map((info) => [info.id, info]));
+    // Twelve identical "resumed: credential stored" tabs are ONE chip with a
+    // +11, and the strip never grows past five slots. Presentation only:
+    // groupTabs keeps every id, so a folded tab is still one click away -- the
+    // "+N" chip expands the strip, and a chip standing for several sessions
+    // cycles through them, so no session is unreachable from here.
+    const groups = window.TerminalStrip
+      ? window.TerminalStrip.groupTabs(rows.map((info) => ({ info })), undefined,
+          stripExpanded ? Math.max(DEFAULT_STRIP_CAP, rows.length) : DEFAULT_STRIP_CAP)
+      : rows.map((info) => ({ label: info.label, ids: [info.id], count: 1, hidden: 0, overflow: false }));
+    for (const group of groups) {
+      // The chip stands for the active session when it holds it, else the first
+      // one this page has attached, else the first folded one.
+      const id = (active && group.ids.includes(active))
+        ? active
+        : (group.ids.find((x) => tabs.has(x)) || group.ids[0]);
+      const info = byId.get(id);
+      if (!info) continue;
       const attached = tabs.has(id);
       const el = document.createElement("div");
       el.className = "tab" + (id === active && (dockOpen || !DOCK) ? " active" : "")
-        + (info.state === "exited" ? " exited" : "") + (attached ? "" : " mirror");
+        + (info.state === "exited" ? " exited" : "") + (attached ? "" : " mirror")
+        + (group.overflow ? " overflow" : "");
       el.setAttribute("role", "tab");
-      el.title = `${info.label} (${info.harness})${info.cwd ? " in " + info.cwd : ""}`
-        + (attached ? "" : " -- click to attach");
+      el.title = group.overflow
+        ? `Show the ${group.ids.length} folded session${group.ids.length === 1 ? "" : "s"}`
+        : (group.count > 1 ? `${group.label} (${group.count} sessions -- click to cycle)` : `${info.label} (${info.harness})`)
+          + (info.cwd ? " in " + info.cwd : "")
+          + (attached ? "" : " -- click to attach");
       const dot = document.createElement("span");
       dot.className = "dot";
       const label = document.createElement("span");
       label.className = "t";
-      label.textContent = info.label; // never innerHTML
+      // never innerHTML; the count is the GROUP's, so it is never wrong
+      label.textContent = group.overflow
+        ? group.label
+        : (group.hidden > 0 ? `${group.label} +${group.hidden}` : info.label);
       const x = document.createElement("button");
       x.className = "x";
       x.textContent = "×";
       x.title = info.state === "exited" ? "Close the tab" : "End the session and close the tab";
       x.onclick = (e) => { e.stopPropagation(); void closeTab(id); };
-      el.append(dot, label, x);
-      el.onclick = () => (DOCK ? openInDock(info) : show(id));
+      // The "+N" chip is an action, not a session: no dot, no close button.
+      if (group.overflow) el.append(label);
+      else el.append(dot, label, x);
+      el.onclick = () => {
+        if (group.overflow) { stripExpanded = true; renderStrip(); return; }
+        // A chip standing for N sessions walks them: every id is reachable.
+        let pick = id;
+        if (group.ids.length > 1) {
+          const at = (groupCursor.get(group.label) || 0) % group.ids.length;
+          pick = group.ids[at];
+          groupCursor.set(group.label, at + 1);
+        }
+        const target = byId.get(pick) || info;
+        return DOCK ? openInDock(target) : show(pick);
+      };
       el.onauxclick = (e) => { if (e.button === 1) void closeTab(id); };
       strip.insertBefore(el, $("add"));
     }
@@ -266,6 +309,54 @@
     menu.hidden = false;
     cwd.focus();
   }
+  /** The empty pane is a START screen, not prose: one next action, three doors.
+   *  Each door starts a real session through the same api.create the + New menu
+   *  uses — nothing here is a placeholder. */
+  function doorHarness(pattern) {
+    const h = api.harnesses();
+    return h.then((r) => {
+      const list = (r && r.ok && r.harnesses) || [];
+      return list.find((x) => pattern.test(`${x.id} ${x.label}`)) || list[0] || null;
+    });
+  }
+
+  async function openDoor(kind) {
+    if (kind === "resume") {
+      const l = await api.list();
+      const running = ((l && l.ok && l.sessions) || [])
+        .filter((s) => s.state !== "exited" && !tabs.has(s.id));
+      if (!running.length) return status("Nothing to resume — Open a shell starts one.");
+      if (typeof api.resume === "function") {
+        const r = await api.resume(running[0].id, running[0].cwd || "");
+        if (r && r.ok) { addTab(r.session); if (DOCK) void refresh(); return; }
+      }
+      addTab(running[0]);
+      return;
+    }
+    const pattern = kind === "routine" ? /routine|awrise|agent|awsh/i : /shell|bash|pwsh|powershell|sh\b/i;
+    const harness = await doorHarness(pattern);
+    if (!harness) return status("The awsh daemon did not answer — + New has the full list.");
+    status(`Starting ${harness.label}…`);
+    const r = await api.create({
+      harness: harness.id,
+      cwd: "",
+      title: kind === "routine" ? "Run a routine" : "Shell",
+      rows: 30,
+      cols: 100,
+    });
+    if (!r || !r.ok) return status((r && r.error) || "could not start");
+    status("");
+    addTab(r.session);
+    if (DOCK) void refresh();
+  }
+
+  $("empty").addEventListener("click", (event) => {
+    const target = event.target;
+    const button = target && target.closest ? target.closest("[data-home]") : null;
+    if (!button) return;
+    void openDoor(button.getAttribute("data-home"));
+  });
+
   $("add").onclick = () => void openMenu();
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("menu").hidden = true; });
   document.addEventListener("mousedown", (e) => {

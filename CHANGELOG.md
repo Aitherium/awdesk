@@ -6,6 +6,7 @@
 - "You are browsing" is a dot in the toolbar instead of a full row; Take over appears while an agent drives.
 - A terminal dock under every browser window (Ctrl+`): every awsh session shows up on its own, click to attach with scrollback, start a shell or Claude Code, pop it out to a tab.
 - The side panel's resize handle lines up with the panel again.
+- The Inbox leads with one "Next" line: the top card, how many follow it, and a button that answers it. Every group shows 5 cards and "N more"; broken routines are one summary line plus the top 3. The terminal strip folds identical tabs into one chip with "+N" and never shows more than 5; an empty terminal offers Run a routine, Open a shell and Resume a session.
 
 ## 0.1.27 - 2026-10-24
 

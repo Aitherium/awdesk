@@ -15,16 +15,21 @@
   body { display: flex; flex-direction: column; }
   .strip { flex: none; height: 38px; display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0;
     background: var(--bg-deep, var(--bg)); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
-  .tab { display: flex; align-items: center; gap: 7px; height: 32px; max-width: 240px; padding: 0 6px 0 10px;
+  /* Shrinkable: five chips of 240 px do not fit a narrow window, and a chip
+     scrolled out of sight is a session the owner cannot see. The label ellipsizes. */
+  .tab { display: flex; align-items: center; gap: 7px; height: 32px; max-width: 240px; min-width: 72px;
+    padding: 0 6px 0 10px;
     border-radius: 8px 8px 0 0; border: 1px solid transparent; border-bottom: 0; background: none; color: var(--muted);
-    cursor: pointer; font: inherit; font-size: 12px; flex: none; }
+    cursor: pointer; font: inherit; font-size: 12px; flex: 0 1 auto; }
   .tab:hover { color: var(--fg); background: var(--surface-900, var(--panel)); }
   .tab.active { background: var(--bg); border-color: var(--line); color: var(--fg); }
   .tab .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success, #3c9); flex: none; }
   .tab.exited .dot { background: var(--surface-500, #666); }
   .tab .t { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .tab .x { width: 18px; height: 18px; border: 0; border-radius: 4px; background: none; color: inherit; cursor: pointer; padding: 0; }
+  .tab .x { flex: none; width: 18px; height: 18px; border: 0; border-radius: 4px; background: none; color: inherit; cursor: pointer; padding: 0; }
   .tab .x:hover { background: var(--surface-800, var(--line)); }
+  /* The "+N" chip is a door, not a session: it reveals the folded tabs. */
+  .tab.overflow { color: var(--primary); font-weight: 600; }
   #add { height: 28px; padding: 0 10px; margin-bottom: 2px; border-radius: 6px; border: 1px solid var(--line);
     background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; flex: none; }
   #menu { position: fixed; top: 40px; left: 8px; z-index: 10; min-width: 260px; padding: 6px; border-radius: 10px;
@@ -43,6 +48,19 @@
   #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; }
   #empty[hidden] { display: none; }
   #empty b { color: var(--fg); }
+  /* The empty pane is the START screen, not prose: one next action, three
+     doors. Nothing here is a dead end -- every button starts a real session. */
+  .home { display: flex; flex-direction: column; align-items: center; gap: 14px; max-width: 520px; padding: 0 16px; }
+  .home-next { display: flex; align-items: baseline; justify-content: center; gap: 8px; flex-wrap: wrap;
+    font-size: 13px; color: var(--muted); }
+  .home-kicker { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--primary); }
+  .home-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  .home-actions button { height: 32px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; font-size: 12.5px; }
+  .home-actions button:first-child { border-color: var(--primary); color: var(--primary); }
+  .home-actions button:hover { background: var(--surface-900, var(--panel)); }
+  .home-hint { margin: 0; font-size: 11.5px; color: var(--muted); }
   #status { position: absolute; right: 10px; bottom: 6px; font-size: 11px; color: var(--destructive); }
   /* ?dock=1: the browser's bottom dock. Closed it is only this strip (32 px, browser-rail
      DOCK_STRIP_HEIGHT): every daemon session as a tab, the running count, the toggle. */
@@ -76,12 +94,21 @@
   </div>
   <div id="menu" hidden role="menu"></div>
   <div id="panes">
-    <div id="empty"><div><b>awsh</b><br />Shells and coding agents, run by the awsh daemon on this machine.<br />Press <b>+ New</b> to open one.</div></div>
+    <div id="empty"><div class="home">
+      <div class="home-next"><span class="home-kicker">Next</span><span><b>Open a shell</b> — pick a harness, or resume a session.</span></div>
+      <div class="home-actions">
+        <button type="button" data-home="routine">Run a routine</button>
+        <button type="button" data-home="shell">Open a shell</button>
+        <button type="button" data-home="resume">Resume a session</button>
+      </div>
+      <p class="home-hint">Shells and coding agents, run by the awsh daemon on this machine. <b>+ New</b> has the full list.</p>
+    </div></div>
     <span id="status" role="status"></span>
   </div>
   <script src="vendor/xterm/xterm.js"></script>
   <script src="vendor/xterm/addon-fit.js"></script>
   <script src="terminal-dock-model.js"></script>
+  <script src="terminal-strip.js"></script>
   <script src="terminal-page.js"></script>
 </body>
 </html>

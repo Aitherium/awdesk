@@ -2,17 +2,20 @@ import { describe, expect, it } from 'vitest';
 import type { DeckDecision, RelayRow, WakeRow } from './deck-types';
 import {
   awarenessLine,
+  capList,
   decisionGroup,
   decisionSource,
   groupDecisions,
   healthySummary,
   isBrokenWake,
   moveCursor,
+  nextActionLine,
   orderRelay,
   relayNick,
   splitWakes,
   successorId,
   wakeErrorLine,
+  VISIBLE_CAP,
 } from './inbox-view';
 
 const NOW = Date.parse('2026-10-28T12:00:00Z');
@@ -119,9 +122,60 @@ describe('wakes', () => {
     expect(broken.map((w) => w.name)).toEqual(['a', 'b']);
     expect(healthySummary(healthy)).toBe('1 routine OK · 1 running · 1 disabled');
   });
-  it('the error line is a phrase, capped', () => {
-    expect(wakeErrorLine(wake({ lastState: 'failure', lastReason: 'exit_1' }))).toBe('failure — exited 1');
+  it('the error line is one actionable clause, capped', () => {
+    expect(wakeErrorLine(wake({ lastState: 'failure', lastReason: 'exit_1' }))).toBe('exited 1');
     expect(wakeErrorLine(wake({ lastState: '', lastReason: 'x'.repeat(200) })).length).toBe(80);
+  });
+  it('strips a traceback, a url and a path — one clause, no machine noise', () => {
+    const raw = 'Traceback (most recent call last):\n  File "/app/x.py", line 3, in <module>\n    raise SystemExit(1)\n\nERROR: could not reach https://aitherium.com/health then /usr/lib/python3.12/x.py died';
+    const line = wakeErrorLine(wake({ lastState: '', lastReason: '', error: raw }));
+    expect(line).not.toContain('http');
+    expect(line).not.toContain('Traceback');
+    expect(line.length).toBeLessThanOrEqual(80);
+  });
+});
+
+describe('capList', () => {
+  it('shows five and counts the rest', () => {
+    const { shown, more } = capList([1, 2, 3, 4, 5, 6, 7]);
+    expect(shown.length).toBe(VISIBLE_CAP);
+    expect(shown).toEqual([1, 2, 3, 4, 5]);
+    expect(more).toBe(2);
+  });
+  it('returns everything under the cap, as a copy', () => {
+    const items = [1, 2, 3];
+    const { shown, more } = capList(items);
+    expect(shown).toEqual([1, 2, 3]);
+    expect(more).toBe(0);
+    expect(shown).not.toBe(items);
+  });
+  it('honours an explicit cap', () => {
+    expect(capList([1, 2, 3, 4], 2)).toEqual({ shown: [1, 2], more: 2 });
+  });
+});
+
+describe('nextActionLine', () => {
+  it('leads with the top card and counts what is behind it', () => {
+    const cards = Array.from({ length: 30 }, (_, i) => card({ id: `d-${i}`, title: `Task ${i}` }));
+    const next = nextActionLine(cards, 30);
+    expect(next?.id).toBe('d-0');
+    expect(next?.after).toBe('29 after this one');
+  });
+  it('keeps a title that already starts with the action', () => {
+    const next = nextActionLine([
+      card({ title: 'Approve the Solana receive address', options: [{ key: 'y', label: 'Approve', recommended: true }] }),
+    ], 1);
+    expect(next?.line).toBe('Approve the Solana receive address');
+  });
+  it('prefixes the action when the title does not carry it', () => {
+    const next = nextActionLine([
+      card({ title: 'Solana receive address', options: [{ key: 'y', label: 'Approve', recommended: true }] }),
+    ], 1);
+    expect(next?.line).toBe('Approve: Solana receive address');
+  });
+  it('says nothing follows the last card, and is null with no cards', () => {
+    expect(nextActionLine([card()], 1)?.after).toBe('nothing after this one');
+    expect(nextActionLine([], 0)).toBeNull();
   });
 });
 
