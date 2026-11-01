@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<title>Screenshot saved</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+    font: 13px/1.4 var(--font-sans, system-ui); color: var(--fg, #e8e8ef); }
+  .card { height: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line, #333);
+    background: var(--bg, #15151c); display: grid; grid-template-rows: auto auto 1fr; gap: 4px; }
+  .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .state { color: var(--muted, #9a9aa8); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .actions { display: flex; gap: 6px; align-items: end; }
+  button { font: inherit; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line, #333); background: transparent; color: inherit; }
+  button.primary { background: var(--primary, #7aa2ff); border-color: transparent; color: var(--primary-fg, #0b0b10); }
+  button.x { margin-left: auto; }
+  .err .title { color: var(--destructive, #ff6b6b); }
+</style>
+</head>
+<body>
+<div class="card" id="card">
+  <div class="title" id="title">Screenshot saved</div>
+  <div class="state" id="state"></div>
+  <div class="actions" id="actions">
+    <button class="primary" data-action="ask">Ask Aither</button>
+    <button data-action="copy-path">Copy path</button>
+    <button data-action="open-folder">Open folder</button>
+    <button class="x" data-action="dismiss" title="Dismiss">×</button>
+  </div>
+</div>
+<script>
+  const snip = window.aitherSnip;
+  const card = document.getElementById("card");
+  function render(info) {
+    if (!info) return;
+    if (!info.ok) {
+      card.classList.add("err");
+      document.getElementById("title").textContent = "Snip failed";
+      document.getElementById("state").textContent = `${info.reason} — press PrintScreen to try again`;
+      for (const b of document.querySelectorAll("[data-action]")) b.hidden = b.dataset.action !== "dismiss";
+      return;
+    }
+    card.classList.remove("err");
+    for (const b of document.querySelectorAll("[data-action]")) b.hidden = false;
+    document.getElementById("title").textContent = `Saved ${info.name} · copied`;
+    document.getElementById("state").textContent = info.status
+      || (info.queued ? "Syncing to AitherOS Online · Screenshots" : "Saved locally — sync queue unavailable");
+  }
+  snip.toastInfo().then(render);
+  snip.onToastUpdate(render);
+  document.getElementById("actions").addEventListener("click", (e) => {
+    const action = e.target && e.target.dataset ? e.target.dataset.action : null;
+    if (action) snip.toastAction(action);
+  });
+</script>
+</body>
+</html>

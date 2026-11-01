@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<title>System</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  /* Colours come from aither-tokens.css, same as disk-explorer.html. */
+  :root { --amber: var(--warning); --red: var(--destructive); --green: var(--success); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px/1.45 var(--font-sans); }
+  body { display: grid; grid-template-rows: 44px 36px 1fr; height: 100vh; }
+  .bar { display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+  .bar .title { font-weight: 600; }
+  .bar .state { color: var(--muted); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar .state.err { color: var(--red); }
+  .bar .state b { color: var(--fg); font-weight: 600; }
+  .tabs { display: flex; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--line); align-items: end; }
+  .tab { appearance: none; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); padding: 8px 10px; cursor: pointer; font: inherit; }
+  .tab.active { color: var(--fg); border-bottom-color: var(--brand); }
+  .chip { appearance: none; border: 1px solid var(--line); background: var(--btn); color: var(--muted); border-radius: 6px; padding: 4px 9px; cursor: pointer; font: inherit; }
+  .chip:hover { background: var(--btn-hi); color: var(--fg); }
+  .chip:disabled { opacity: .5; cursor: default; }
+  .chip.danger { color: var(--red); }
+  .chip.primary { color: var(--fg); border-color: color-mix(in oklch, var(--brand), var(--background) 50%); }
+  input, select { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font: inherit; }
+  main { overflow: auto; min-height: 0; padding: 12px 14px; }
+  .pane[hidden] { display: none; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .controls .grow { flex: 1; min-width: 200px; }
+  h3 { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--surface-400); margin: 16px 0 6px; }
+  table { width: 100%; border-collapse: collapse; table-layout: auto; }
+  th { text-align: left; font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--surface-400); font-weight: 650; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th.sort { cursor: pointer; }
+  th.sort.on { color: var(--fg); }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--btn); vertical-align: top; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.mono, .mono { font: 12px/1.4 var(--font-mono); }
+  td.cmd { font: 11px/1.4 var(--font-mono); color: var(--muted); max-width: 0; width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  tr.row { cursor: pointer; }
+  tr.row:hover td { background: var(--btn); }
+  tr.row.sel td { background: color-mix(in oklch, var(--brand), var(--background) 85%); }
+  .more { margin-top: 6px; }
+  .muted { color: var(--muted); }
+  .placeholder { color: var(--muted); padding: 12px 0; }
+  .err { color: var(--red); }
+  .ok { color: var(--green); }
+  .note { color: var(--amber); font-size: 12px; margin: 6px 0; }
+  .detail { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; background: var(--panel); }
+  .detail[hidden] { display: none; }
+  .detail .head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .detail .head .name { font-weight: 600; font-size: 14px; }
+  .detail .cmdline { font: 11px/1.4 var(--font-mono); color: var(--muted); word-break: break-all; margin: 6px 0; max-height: 6.5em; overflow: auto; }
+  .detail .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  .detail .verdict { font-size: 12px; margin-top: 6px; }
+  .probes { display: flex; gap: 10px; flex-wrap: wrap; }
+  .probe { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; min-width: 190px; }
+  .probe .lbl { font-weight: 600; }
+  .adapter { display: grid; grid-template-columns: 1fr 220px; gap: 10px; border-bottom: 1px solid var(--btn); padding: 6px 0; }
+  canvas.spark { width: 220px; height: 40px; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <span class="title">System</span>
+    <span class="state" id="state">reading processes…</span>
+    <button class="chip" id="pause">Pause</button>
+    <button class="chip" id="refresh">Refresh</button>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="procs">Processes</button>
+    <button class="tab" data-tab="net">Networking</button>
+    <button class="tab" data-tab="startup">Startup apps</button>
+  </nav>
+  <main>
+    <section class="pane" id="pane-procs">
+      <div class="detail" id="detail" hidden></div>
+      <div class="controls">
+        <input class="grow" id="filter" placeholder="filter by name, pid or command line" />
+        <span class="muted" id="procCount"></span>
+      </div>
+      <div id="procBody" class="placeholder">reading processes…</div>
+    </section>
+    <section class="pane" id="pane-net" hidden>
+      <h3>Fleet reachability</h3>
+      <div class="probes" id="probes"><span class="placeholder">probing…</span></div>
+      <h3>Listening ports</h3>
+      <div class="controls"><input class="grow" id="portFilter" placeholder="filter by port or process (e.g. 8182, pythonw)" /></div>
+      <div id="listenBody" class="placeholder">reading ports…</div>
+      <h3>Established connections, by process</h3>
+      <div id="connBody" class="placeholder"></div>
+      <h3>Adapters</h3>
+      <div id="nicBody" class="placeholder"></div>
+    </section>
+    <section class="pane" id="pane-startup" hidden>
+      <p class="note">Read-only: what Windows starts at sign-in (Run keys + Startup folders). Disable entries in Windows Settings &gt; Apps &gt; Startup.</p>
+      <div id="startupBody" class="placeholder">reading startup entries…</div>
+    </section>
+  </main>
+<script>
+(() => {
+  const api = window.aitherSystem;
+  const $ = (id) => document.getElementById(id);
+  const stateEl = $("state");
+  const REFRESH_MS = 2000;
+  const CAP = 5;
+  const STEP = 50;
+  let tab = "procs";
+  let paused = false;
+  let inflight = false;
+  let snap = null;
+  let net = null;
+  let sortKey = "cpu";
+  let selected = null; // pid
+  let confirming = null; // "end" | "tree"
+  let verdict = null; // {ok, text}
+  const shown = { procs: CAP, listen: CAP, conn: CAP, startup: CAP };
+
+  function el(tag, attrs, ...kids) {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (k === "class") e.className = v;
+      else if (k === "onclick") e.addEventListener("click", v);
+      else if (k === "disabled") { if (v) e.disabled = true; }
+      else e.setAttribute(k, v);
+    }
+    for (const kid of kids) if (kid !== null && kid !== undefined && kid !== false) e.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+    return e;
+  }
+  function bytes(n) {
+    if (n === null || n === undefined || !Number.isFinite(Number(n))) return "-";
+    const u = ["B", "KB", "MB", "GB", "TB"]; let v = Math.abs(Number(n)); let i = 0;
+    while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+    return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${u[i]}`;
+  }
+  const rate = (bps) => (bps === null || bps === undefined ? "-" : `${bytes(bps)}/s`);
+  const pct = (v) => (v === null || v === undefined ? "…" : `${Number(v).toFixed(1)}%`);
+  function setState(nodes, bad) {
+    stateEl.replaceChildren(...(Array.isArray(nodes) ? nodes : [nodes]));
+    stateEl.classList.toggle("err", Boolean(bad));
+  }
+  function table(headers, rows) {
+    const t = el("table", {}, el("thead", {}, el("tr", {}, ...headers)));
+    const body = el("tbody"); rows.forEach((r) => body.append(r)); t.append(body); return t;
+  }
+  /** The +N more affordance: the count is the real remainder, and the rows stay retained. */
+  function moreButton(key, total, rerender) {
+    const rest = total - shown[key];
+    if (rest <= 0) return shown[key] > CAP ? el("button", { class: "chip more", onclick: () => { shown[key] = CAP; rerender(); } }, "show top 5") : null;
+    return el("button", { class: "chip more", onclick: () => { shown[key] += STEP; rerender(); } }, `+${rest} more`);
+  }
+
+  // ---------------------------------------------------------------- processes
+  const SORTS = {
+    cpu: (a, b) => (b.cpu ?? -1) - (a.cpu ?? -1),
+    memory: (a, b) => b.privateBytes - a.privateBytes,
+    gpu: (a, b) => (b.gpuGib ?? -1) - (a.gpuGib ?? -1),
+    name: (a, b) => a.name.localeCompare(b.name),
+    pid: (a, b) => a.pid - b.pid,
+  };
+  function filtered() {
+    const q = $("filter").value.trim().toLowerCase();
+    const list = (snap && snap.processes) || [];
+    const out = q ? list.filter((p) => p.name.toLowerCase().includes(q) || String(p.pid) === q || p.cmd.toLowerCase().includes(q)) : [...list];
+    return out.sort(SORTS[sortKey]);
+  }
+  function statusLine() {
+    const s = snap.summary;
+    const top = filtered().slice().sort(SORTS.cpu)[0];
+    const parts = [];
+    if (top && top.cpu !== null) parts.push(el("b", {}, `Top: ${top.name} ${pct(top.cpu)}`), " — click it to act · ");
+    parts.push(`${s.count} processes · CPU ${pct(s.cpuPct)} · mem ${pct(s.memPct)} (${bytes(s.memUsedBytes)} of ${bytes(s.memTotalBytes)}) · net ↓${rate(s.netRxBps)} ↑${rate(s.netTxBps)}`);
+    if (paused) parts.push(" · paused");
+    return parts;
+  }
+  function renderProcs() {
+    const body = $("procBody");
+    if (!snap) return;
+    if (!snap.ok) { body.className = "err"; body.textContent = `0 processes — ${snap.reason}. Press Refresh to retry (it restarts the reader).`; return; }
+    const list = filtered();
+    $("procCount").textContent = `${list.length} of ${snap.processes.length}`;
+    const head = [["name", "Name"], ["pid", "PID"], ["cpu", "CPU"], ["memory", "Private"], ["gpu", "GPU"]].map(([k, label]) =>
+      el("th", { class: `sort${sortKey === k ? " on" : ""}`, onclick: () => { sortKey = k; renderProcs(); } }, label + (sortKey === k ? " ▾" : "")));
+    head.push(el("th", {}, "Command line"));
+    const rows = list.slice(0, shown.procs).map((p) => el("tr", { class: `row${p.pid === selected ? " sel" : ""}`, onclick: () => select(p.pid) },
+      el("td", {}, p.name, p.children ? el("span", { class: "muted" }, ` (${p.children})`) : null),
+      el("td", { class: "num" }, p.pid),
+      el("td", { class: "num" }, pct(p.cpu)),
+      el("td", { class: "num" }, bytes(p.privateBytes)),
+      el("td", { class: "num" }, p.gpuGib === null ? "" : `${p.gpuGib} GiB`),
+      el("td", { class: "cmd", title: p.cmd }, p.cmd)));
+    body.className = "";
+    body.replaceChildren(list.length ? table(head, rows) : el("div", { class: "placeholder" }, "no process matches the filter"),
+      ...[moreButton("procs", list.length, renderProcs)].filter(Boolean),
+      snap.gpuError ? el("div", { class: "note" }, `GPU column empty — ${snap.gpuError}`) : "");
+    renderDetail();
+  }
+  function select(pid) {
+    if (selected !== pid) { confirming = null; verdict = null; }
+    selected = pid; renderProcs();
+  }
+  function ancestryOf(p) {
+    const byPid = new Map(snap.processes.map((x) => [x.pid, x]));
+    const chain = []; const seen = new Set(); let cur = byPid.get(p.ppid);
+    while (cur && chain.length < 8 && !seen.has(cur.pid)) { seen.add(cur.pid); chain.push(`${cur.name} (${cur.pid})`); cur = byPid.get(cur.ppid); }
+    return chain;
+  }
+  function renderDetail() {
+    const box = $("detail");
+    const p = snap && snap.ok && selected !== null ? snap.processes.find((x) => x.pid === selected) : null;
+    if (!p) { box.hidden = selected === null; if (selected !== null) box.replaceChildren(el("div", { class: "muted" }, `pid ${selected} has exited.`), el("button", { class: "chip", onclick: () => { selected = null; box.hidden = true; } }, "Close")); return; }
+    box.hidden = false;
+    const chain = ancestryOf(p);
+    const kids = snap.processes.filter((x) => x.ppid === p.pid && x.pid !== p.pid);
+    const refused = p.refusal;
+    const actions = el("div", { class: "actions" });
+    if (confirming) {
+      actions.append(el("span", { class: "err" }, confirming === "tree" ? `End ${p.name} (${p.pid}) and its ${kids.length ? "whole tree" : "tree"}? Unsaved work is lost.` : `End ${p.name} (${p.pid})? Unsaved work is lost.`),
+        el("button", { class: "chip danger", onclick: () => act(() => api.end(p.pid, p.name, confirming === "tree")) }, "Yes, end it"),
+        el("button", { class: "chip", onclick: () => { confirming = null; renderDetail(); } }, "Cancel"));
+    } else {
+      actions.append(
+        el("button", { class: "chip danger", disabled: Boolean(refused), title: refused || "", onclick: () => { confirming = "end"; renderDetail(); } }, "End process"),
+        el("button", { class: "chip danger", disabled: Boolean(refused), title: refused || "", onclick: () => { confirming = "tree"; renderDetail(); } }, "End tree"));
+      const sel = el("select", { title: "Set priority" }, ...["idle", "below", "normal", "above", "high"].map((l) => {
+        const o = el("option", { value: l }, l); if (l === p.priority) o.selected = true; return o; }));
+      if (refused) sel.disabled = true;
+      sel.addEventListener("change", () => act(() => api.priority(p.pid, p.name, sel.value)));
+      actions.append(el("span", { class: "muted" }, "priority"), sel,
+        el("button", { class: "chip", disabled: !p.exe, onclick: () => act(() => api.reveal(p.pid)) }, "Open file location"),
+        el("button", { class: "chip primary", onclick: () => act(() => api.ask(p.pid)) }, "Ask Aither about this"));
+    }
+    box.replaceChildren(
+      el("div", { class: "head" }, el("span", { class: "name" }, p.name), el("span", { class: "muted mono" }, `pid ${p.pid}`),
+        el("span", {}, `CPU ${pct(p.cpu)} · ${bytes(p.privateBytes)} private${p.gpuGib !== null ? ` · ${p.gpuGib} GiB GPU` : ""} · ${p.priority || "?"} priority`),
+        el("button", { class: "chip", onclick: () => { selected = null; confirming = null; box.hidden = true; renderProcs(); } }, "Close")),
+      el("div", { class: "muted" }, chain.length ? `parents: ${chain.join(" ← ")}` : "no running parent"),
+      kids.length ? el("div", { class: "muted" }, `children (${kids.length}): ${kids.slice(0, CAP).map((k) => `${k.name} (${k.pid})`).join(", ")}${kids.length > CAP ? ` +${kids.length - CAP} more` : ""}`) : null,
+      p.exe ? el("div", { class: "mono muted" }, p.exe) : null,
+      p.cmd ? el("div", { class: "cmdline" }, p.cmd) : null,
+      refused ? el("div", { class: "note" }, `Protected — ${refused}.`) : null,
+      actions,
+      verdict ? el("div", { class: `verdict ${verdict.ok ? "ok" : "err"}` }, verdict.text) : null);
+  }
+  async function act(fn) {
+    confirming = null;
+    const r = await fn();
+    if (r && r.ok) {
+      verdict = { ok: true, text: r.ended ? `Ended ${r.name}: ${r.ended.length} process(es) — gone from the list on the next refresh.`
+        : r.level ? `Priority set to ${r.level} — the column shows it on the next refresh.`
+        : r.revealed ? `Opened ${r.revealed} in Explorer.`
+        : r.posted ? "Posted to the chat — Aither answers there." : "Done." };
+    } else {
+      verdict = { ok: false, text: `Not done — ${(r && r.reason) || "no answer"}` };
+    }
+    renderDetail();
+    void tick(true);
+  }
+
+  // ---------------------------------------------------------------- networking
+  function renderNet() {
+    if (!net) return;
+    const lb = $("listenBody"); const cb = $("connBody"); const nb = $("nicBody");
+    if (!net.ok) { for (const b of [lb, cb, nb]) { b.className = "err"; b.textContent = ""; } lb.textContent = `0 ports — ${net.reason}. Press Refresh to retry.`; return; }
+    const q = $("portFilter").value.trim().toLowerCase();
+    const listen = net.listening.filter((l) => !q || String(l.port) === q || l.name.toLowerCase().includes(q));
+    lb.className = "";
+    lb.replaceChildren(listen.length ? table(["Port", "Proto", "Address", "Process", "PID"].map((h) => el("th", {}, h)),
+      listen.slice(0, shown.listen).map((l) => el("tr", {},
+        el("td", { class: "num mono" }, `:${l.port}`), el("td", {}, l.protocol),
+        el("td", { class: "mono" }, l.address, l.exposed ? el("span", { class: "note" }, " all interfaces") : null),
+        el("td", {}, l.name), el("td", { class: "num" }, l.pid)))) : el("div", { class: "placeholder" }, q ? `nothing is listening on ${q}` : "no listening ports"),
+      ...[moreButton("listen", listen.length, renderNet)].filter(Boolean));
+    const conns = net.connections.filter((c) => !q || c.name.toLowerCase().includes(q) || c.remotes.some((r) => r.endsWith(`:${q}`)));
+    cb.className = "";
+    cb.replaceChildren(conns.length ? table(["Process", "PID", "Open", "Remote endpoints"].map((h) => el("th", {}, h)),
+      conns.slice(0, shown.conn).map((c) => el("tr", {}, el("td", {}, c.name), el("td", { class: "num" }, c.pid), el("td", { class: "num" }, c.count),
+        el("td", { class: "cmd", title: c.remotes.join("\n") }, `${c.remotes.slice(0, 3).join(", ")}${c.remotes.length > 3 ? ` +${c.remotes.length - 3} more` : ""}`)))) : el("div", { class: "placeholder" }, "no established connections"),
+      ...[moreButton("conn", conns.length, renderNet)].filter(Boolean));
+    nb.className = "";
+    nb.replaceChildren(...net.adapters.map((a) => {
+      const last = a.history[a.history.length - 1];
+      const canvas = el("canvas", { class: "spark", width: "220", height: "40" });
+      drawSpark(canvas, a.history);
+      return el("div", { class: "adapter" },
+        el("div", {}, el("div", {}, el("b", {}, a.name), " ", el("span", { class: a.status === "Up" ? "ok" : "muted" }, a.status), el("span", { class: "muted" }, ` · ${a.description}`)),
+          el("div", { class: "mono muted" }, `${a.ips.join(", ") || "no IP"} · ${a.mac || "no MAC"} · ${a.speedBps > 0 ? `${a.speedBps >= 1e9 ? `${a.speedBps / 1e9} Gb/s` : `${Math.round(a.speedBps / 1e6)} Mb/s`}` : "speed unknown"}`),
+          el("div", {}, last ? `↓${rate(last.rxBps)} ↑${rate(last.txBps)}` : el("span", { class: "muted" }, "throughput after two samples (~4 s)"))),
+        canvas);
+    }));
+  }
+  function drawSpark(canvas, hist) {
+    const ctx = canvas.getContext("2d"); const w = canvas.width; const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (!hist.length) return;
+    const max = Math.max(1, ...hist.map((x) => Math.max(x.rxBps, x.txBps)));
+    const css = getComputedStyle(document.documentElement);
+    for (const [key, color] of [["rxBps", css.getPropertyValue("--brand") || "#6aa"], ["txBps", css.getPropertyValue("--warning") || "#a86"]]) {
+      ctx.strokeStyle = color.trim() || "#888"; ctx.lineWidth = 1.5; ctx.beginPath();
+      hist.forEach((x, i) => { const px = (i / Math.max(1, 29)) * w; const py = h - 2 - (x[key] / max) * (h - 4); if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py); });
+      ctx.stroke();
+    }
+  }
+  let lastProbe = 0;
+  async function loadProbes(force) {
+    if (!force && Date.now() - lastProbe < 10_000) return;
+    lastProbe = Date.now();
+    const r = await api.probes();
+    $("probes").replaceChildren(...((r && r.probes) || []).map((p) => el("div", { class: "probe" },
+      el("div", { class: "lbl" }, p.label, el("span", { class: "muted mono" }, ` ${p.host}:${p.port}`)),
+      p.ok ? el("div", { class: "ok" }, `ok · ${p.ms} ms${p.note ? ` · ${p.note}` : ""}`)
+        : el("div", { class: "err" }, `down — ${p.error}${p.port === 8182 ? "; start the gateway (awnode mcp)" : p.port === 8150 ? "; is the fleet up? (Fleet window)" : "; check this machine's internet"}`))));
+  }
+
+  // ---------------------------------------------------------------- startup
+  let startupData = null;
+  function renderStartup() {
+    const b = $("startupBody");
+    if (!startupData) return;
+    if (!startupData.ok) { b.className = "err"; b.textContent = `0 startup entries — ${startupData.reason}. Press Refresh to retry.`; return; }
+    const items = startupData.items;
+    b.className = "";
+    b.replaceChildren(items.length ? table(["Name", "Command", "Source"].map((h) => el("th", {}, h)),
+      items.slice(0, shown.startup).map((i) => el("tr", {}, el("td", {}, i.name), el("td", { class: "cmd", title: i.command }, i.command), el("td", { class: "mono muted" }, i.source))))
+      : el("div", { class: "placeholder" }, "nothing starts at sign-in"),
+      ...[moreButton("startup", items.length, renderStartup)].filter(Boolean));
+    setState(`${items.length} startup entries`);
+  }
+
+  // ---------------------------------------------------------------- loop
+  async function tick(force) {
+    if (!api || inflight || (paused && !force) || document.hidden) return;
+    inflight = true;
+    try {
+      if (tab === "procs" || !snap) {
+        snap = await api.snapshot();
+        if (snap.ok) setState(statusLine());
+        else setState(`0 processes — ${snap.reason}`, true);
+        renderProcs();
+      }
+      if (tab === "net") {
+        // The status line's net numbers come from the process sample; keep it current here too.
+        const [s, n] = await Promise.all([api.snapshot(), api.network()]);
+        snap = s; net = n;
+        if (s.ok) setState(statusLine()); else setState(`0 processes — ${s.reason}`, true);
+        renderNet();
+        void loadProbes(force);
+      }
+    } finally { inflight = false; }
+  }
+  async function loadStartup() { startupData = await api.startup(); renderStartup(); }
+
+  function show(name) {
+    tab = name;
+    for (const b of document.querySelectorAll(".tab")) b.classList.toggle("active", b.dataset.tab === name);
+    for (const p of document.querySelectorAll(".pane")) p.hidden = p.id !== `pane-${name}`;
+    if (name === "startup") void loadStartup(); else void tick(true);
+  }
+
+  if (!api) { setState("0 sources — the System bridge is missing; reinstall the desk", true); return; }
+  $("tabs").addEventListener("click", (e) => { const t = e.target.closest(".tab"); if (t) show(t.dataset.tab); });
+  $("refresh").addEventListener("click", () => { if (tab === "startup") void loadStartup(); else void tick(true); });
+  $("pause").addEventListener("click", () => { paused = !paused; $("pause").textContent = paused ? "Resume" : "Pause"; if (snap && snap.ok) setState(statusLine()); });
+  $("filter").addEventListener("input", () => { shown.procs = CAP; renderProcs(); });
+  $("portFilter").addEventListener("input", () => { shown.listen = CAP; shown.conn = CAP; renderNet(); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) void tick(true); });
+  setInterval(() => void tick(false), REFRESH_MS);
+  void tick(true);
+})();
+</script>
+</body>
+</html>

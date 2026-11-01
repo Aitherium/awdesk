@@ -686,6 +686,13 @@ const OVERLAY_FIELDS = Object.freeze({
   spaceHome: vBool,
 });
 
+/** clipboard.* -> clipboard-sync.cjs. `sync: true` pushes local copies to the
+ *  owner's Strata `clipboard` folder (AitherOS Online's clipboard app). OFF until
+ *  the owner flips it from the tray or palette (clipboard.sync.toggle). */
+const CLIPBOARD_FIELDS = Object.freeze({
+  sync: vBool,
+});
+
 const BUILTIN_DESK = Object.freeze({
   models: Object.freeze({ commandProfile: "deepseek" }),
   prompts: Object.freeze({ commandPersona: null, commandAppend: null }),
@@ -696,6 +703,7 @@ const BUILTIN_DESK = Object.freeze({
   files: Object.freeze({ roots: null }),
   updates: Object.freeze({ enabled: true }),
   overlay: overlayPolicy.DEFAULTS,
+  clipboard: Object.freeze({ sync: false }),
 });
 
 const DESK_SECTIONS = Object.freeze({
@@ -706,6 +714,7 @@ const DESK_SECTIONS = Object.freeze({
   files: FILES_FIELDS,
   updates: UPDATES_FIELDS,
   overlay: OVERLAY_FIELDS,
+  clipboard: CLIPBOARD_FIELDS,
 });
 
 function pushProblem(problems, prefix, field, raw, verdict) {
@@ -772,6 +781,7 @@ function emptyConfig() {
     files: {},
     updates: {},
     overlay: {},
+    clipboard: {},
     content: {},
     input: {},
     hotkeys: {},
@@ -782,7 +792,7 @@ function emptyConfig() {
 
 const TOP_LEVEL_KEYS = [
   "version", "stage", "voice", "input", "hotkeys", "defaults", "authors", "actors",
-  "channels", "models", "prompts", "vision", "sync", "files", "updates", "overlay", "content", "appearance",
+  "channels", "models", "prompts", "vision", "sync", "files", "updates", "overlay", "clipboard", "content", "appearance",
   "migratedLegacyAt",
 ];
 
@@ -1475,6 +1485,7 @@ function normaliseSnapshot(snapshot) {
     files: plainObject(snapshot.files),
     updates: plainObject(snapshot.updates),
     overlay: plainObject(snapshot.overlay),
+    clipboard: plainObject(snapshot.clipboard),
     content: plainObject(snapshot.content),
     input: plainObject(snapshot.input),
     hotkeys: plainObject(snapshot.hotkeys),

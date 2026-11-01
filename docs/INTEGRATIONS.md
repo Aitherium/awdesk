@@ -48,6 +48,10 @@ Desk exposes these tools:
 | `files_roots` | None | Lists the folders the owner shared with agents in the Files page on this machine (empty until they switch one on; the grant is stored in `~/.aither/desk-file-grants.json` and does not sync) |
 | `files_list` | `root`; optional `path` | Lists one folder under a shared root, read-only; keys, tokens, credential stores and `.env` files are withheld, judged on the real path (short names and links do not get round it) |
 | `files_read` | `root`, `path`; optional `offset`, `max_bytes` | Reads a text file under a shared root (256 KiB per call); binary files answer metadata only |
+| `files_ask` | `root`, `path`, `question`; optional `max_kept_tokens` | Asks a question about one text file under a shared root; TokenGate answers with the kept evidence and a `reader_label` (experimental, not an authoritative citation) |
+| `system_processes` | optional `sort` (`cpu`, `memory`, `gpu`, `name`), `limit`, `filter` | Read-only: running processes on this Windows machine with machine-share CPU %, private memory, GPU memory where known and a redacted command line. No tool ends a process; that is the owner's, in the System window |
+| `system_ports` | optional `port`, `protocol` (`tcp`, `udp`) | Read-only: listening TCP ports and UDP endpoints with the owning pid and process name |
+| `system_connections` | optional `pid`, `name`, `limit` | Read-only: established TCP connections grouped by process |
 | `desktop_open` | `surface`: `overlay`, `app`, or `status` | Opens an AitherOS desktop surface |
 | `browser_open` | `url`: http(s) or a bare host; optional `new_tab` | Opens a page in the agent's own Aither Browser tab (other schemes refused; refused while the owner has taken over) |
 | `browser_read` | None | Reads the agent's tab: url, title, visible text, links (untrusted content) |

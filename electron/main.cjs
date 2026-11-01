@@ -179,6 +179,8 @@ const { systemSnapshot } = require("./system-client.cjs");
 const { voiceSnapshot } = require("./voice-client.cjs");
 const { visionSnapshot } = require("./vision-client.cjs");
 const { routeDrop, routeShare, synthesizeVerdict, stagePath, cleanupStage } = require("./drop-router.cjs");
+// Snipping tool + clipboard mirror into AitherOS Online (snip-window.cjs owns its IPC).
+const capture = require("./snip-window.cjs");
 const { desktopSnapshot } = require("./browser-client.cjs");
 const { connectSnapshot } = require("./connect-client.cjs");
 const { createBridgeServer, DEFAULT_PORT } = require("./bridge-server.cjs");
@@ -232,6 +234,8 @@ const {
   createDarkmatterLinkWindow,
   stopDarkmatterSupervisor,
 } = require("./darkmatter-link-window.cjs");
+// The System window (task manager + networking) and its read-only MCP half.
+const { createSystemWindow, setSystemHandOff, sharedSystemMonitor } = require("./system-monitor-window.cjs");
 // The Aither Browser: a browser window inside the desk an agent drives (MCP
 // browser_* tools) while the owner watches and can take over.
 const browserWindow = require("./browser-window.cjs");
@@ -2755,6 +2759,9 @@ function commandContext() {
     avatarDocked: Boolean(avatarDock && avatarDock.isDocked()),
     kvLend: Boolean(kvLendRuntime && kvLendRuntime.lend.settings().enabled),
     deadAccels: [...deadAccels],
+    platform: process.platform,
+    clipboardSync: capture.clipboardSyncOn(),
+    printScreenOwner: capture.printScreenOwner(),
     awconnect: latestAwconnectStatus,
     // Who the AitherDesktop window + overlay are signed in as (never a token).
     account: desktopAccount(),
@@ -3033,6 +3040,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "window.size.smaller": return void shrinkWindow();
     // U27's cast.open record -- the one door onto cast.json from tray/avatar-
     // menu/palette (see console-window.cjs's `cast` pane).
+    case "system.open": return void createSystemWindow();
     case "disk.open": {
       // Same sign-in story as the inference widget: the cookie must land in the
       // living-desktop partition, which opening the overlay does.
@@ -3107,6 +3115,13 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       isQuitting = true;
       return void app.quit();
     case "desk.restart": return void restartDesk();
+    case "snip.region": return void capture.startSnip({ mode: "region" });
+    case "snip.screen": return void capture.startSnip({ mode: "screen" });
+    case "clipboard.sync.toggle": return void capture.toggleClipboardSync();
+    case "snip.printscreen.claim":
+      return void capture.setPrintScreenOwner("aither").then(() => tray && refreshTrayMenu());
+    case "snip.printscreen.restore":
+      return void capture.setPrintScreenOwner("snipping").then(() => tray && refreshTrayMenu());
     case "missioncontrol.open":
       // The page host, plain: mission control is a page, not an OS window.
       return void browserWindow.createBrowserWindow({
@@ -5155,9 +5170,8 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // the verdict the deck renders. Success ALSO speaks it through the
     // avatar (TTS -> speak event) and posts a one-line notice to #agents so
     // aitherone/writer and every agent see the new knowledge.
-    ipcMain.handle("desk:file-dropped", async (_event, filePath, mime) => {
-      const verdict = await routeDrop({ filePath, mime: typeof mime === "string" ? mime : "" });
-      if (!verdict.ok) return verdict;
+    // A drop's verdict, spoken and posted -- also how a snip's [Ask Aither] answers.
+    const announceDrop = (verdict) => {
       const line = verdict.kind === "doc"
         ? `📥 ${verdict.kind}: ${verdict.name} — ${verdict.summary}`
         : `📥 ${verdict.kind}: ${verdict.name} — ${String(verdict.summary).slice(0, 160)}`;
@@ -5173,7 +5187,16 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       void postToRelay(RELAY_CHANNEL, line).then((sent) => {
         if (sent && sent.ok) void refreshRelayFeed();
       });
+    };
+    ipcMain.handle("desk:file-dropped", async (_event, filePath, mime) => {
+      const verdict = await routeDrop({ filePath, mime: typeof mime === "string" ? mime : "" });
+      if (verdict.ok) announceDrop(verdict);
       return verdict;
+    });
+    // PrintScreen snips: the image lane is drop-router's, the answer is a drop's.
+    capture.startCapture({
+      askImage: (filePath) => routeDrop({ filePath, mime: "image/png" }),
+      onAnswer: announceDrop,
     });
     // "Share this" (disk index contract): the other thing a drop can mean. It
     // PROPOSES a share of the original path from this node -- nothing is staged
@@ -5184,6 +5207,12 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     // whether the place is shared with agents (files-window.cjs handOffLine);
     // posting grants nothing. No focus change: the owner stays where he clicked.
     setFilesHandOff(async (text) => {
+      const sent = await postToRelay(RELAY_CHANNEL, text);
+      if (sent && sent.ok) void refreshRelayFeed();
+      return sent;
+    });
+    // System window "Ask Aither about this": the same #agents line, redacted by the monitor.
+    setSystemHandOff(async (text) => {
       const sent = await postToRelay(RELAY_CHANNEL, text);
       if (sent && sent.ok) void refreshRelayFeed();
       return sent;
@@ -5572,6 +5601,7 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     const filesAgent = require("./files-access.cjs").createFilesAccess().agent;
     const mcpHandler = createDeskMcpHandler({
       filesAccess: filesAgent,
+      systemInfo: sharedSystemMonitor().agent, // off Windows every system_* answers {ok:false, reason}
       fileAsk: require("./file-ask.cjs").createFileAsk({ files: filesAgent }),
       onAnimation: (animation) => {
         let animationEvent;

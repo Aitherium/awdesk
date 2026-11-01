@@ -70,7 +70,7 @@ const GROUPS = Object.freeze({
  * ITEMS are one list; only the reading order differs.
  */
 const LAYOUT = Object.freeze({
-  tray: Object.freeze(["go", "desktop", "avatar", "window-size", "talk", "stage", "fleet", "arc", "blog", "app"]),
+  tray: Object.freeze(["go", "desktop", "avatar", "window-size", "talk", "stage", "fleet", "arc", "blog", "capture", "app"]),
   // ONE menu (owner, 2026-10-04: "the 3 different menu surfaces are still confusing").
   // A body's menu is the tray's menu with what is about THAT body on top: the rows
   // after "body"/"slot" read in exactly the tray's order, and the browser's Aither
@@ -534,6 +534,14 @@ const COMMANDS = Object.freeze([
     surfaces: ["palette"],
     whySingle: "A Console pane (Agents section) already; the palette (Ctrl+K) is its keyboard path.",
   }),
+  // The System window (owner, 2026-11-01: "stop using Task Manager, Resource Monitor and
+  // netstat"): processes, ports, connections, adapters, startup apps. system-monitor*.cjs.
+  // Windows itself owns Ctrl+Shift+Esc; when register() is refused the key lands in
+  // deadAccels and the label stops promising it.
+  Object.freeze({
+    id: "system.open", label: "System (processes & network)…", menuLabel: "System…", group: "go",
+    accel: "Ctrl+Shift+Escape", surfaces: ["tray", "palette"],
+  }),
   // The Aither Browser (browser-window.cjs): a browser INSIDE the desk where an
   // agent drives (MCP browser_* tools) while the owner watches and can take over,
   // and where the owner browses with an "Ask about this page" panel.
@@ -564,6 +572,34 @@ const COMMANDS = Object.freeze([
   Object.freeze({
     id: "missioncontrol.open", label: "Mission Control", group: "go",
     surfaces: ["palette", "tray"],
+  }),
+  // The desk's own snipping tool + clipboard mirror (owner, 2026-11-01: "stop using
+  // the Windows Snipping Tool"). snip-window.cjs / clipboard-sync.cjs; both upload to
+  // the owner's AitherOS Online folders through strata-sync.cjs.
+  Object.freeze({
+    id: "snip.region", label: "Snip a region", group: "capture", accel: "PrintScreen",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "snip.screen", label: "Snip the whole screen", group: "capture",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "clipboard.sync.toggle", label: "Sync clipboard to AitherOS Online", group: "capture",
+    surfaces: ["tray", "palette"],
+    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.clipboardSync),
+  }),
+  // Windows 11 hands PrtSc to Snipping Tool until HKCU PrintScreenKeyForSnippingEnabled
+  // is 0. Flipping it is the owner's one-time consent; the twin row undoes it.
+  Object.freeze({
+    id: "snip.printscreen.claim", label: "Use Aither for Print Screen", group: "capture",
+    surfaces: ["tray", "palette"],
+    when: (ctx = {}) => ctx.platform === "win32" && ctx.printScreenOwner !== "aither",
+  }),
+  Object.freeze({
+    id: "snip.printscreen.restore", label: "Restore Windows Snipping Tool", group: "capture",
+    surfaces: ["tray", "palette"],
+    when: (ctx = {}) => ctx.platform === "win32" && ctx.printScreenOwner === "aither",
   }),
   Object.freeze({
     id: "osapp.learn", label: "Learn…", group: "go", osApp: "learn",

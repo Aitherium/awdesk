@@ -192,6 +192,9 @@ function createDeskMcpServer({
   // files_ask is absent, so a desk with no TokenGate wiring advertises no tool
   // that could only refuse.
   fileAsk = null,
+  // system-monitor.cjs createSystemMonitor().agent: READ-ONLY processes / ports /
+  // connections on this machine. Null = the system_* tools are absent. No kill tool.
+  systemInfo = null,
   // The Aither Browser's dispatcher (browser-policy.createBrowserAgent): (action, args) => verdict.
   onBrowser = null,
   // The owner's OWN Chrome through awconnect (chrome-bridge.cjs call): (action, args) => verdict.
@@ -1048,6 +1051,61 @@ function createDeskMcpServer({
           { root, path: rel, question, max_kept_tokens }),
       );
     }
+  }
+
+  // system_* -- what is running on the owner's machine, read-only (system-monitor.cjs).
+  // Command lines are redacted; ending or reprioritising a process is the owner's,
+  // in the desk's System window, and no tool here can do it.
+  if (systemInfo != null) {
+    const { systemToolCall } = require("./system-monitor.cjs");
+    const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+    server.registerTool(
+      "system_processes",
+      {
+        title: "List the processes on the owner's machine",
+        description:
+          "Running processes on the desk's machine (Windows) with machine-share CPU %, private memory, GPU memory " +
+          "where known, priority and a redacted command line. Answers \"what is eating my CPU/RAM/VRAM\". Read-only: " +
+          "to end a process, tell the owner to use the desk's System window (Ctrl+Shift+Esc / palette). " +
+          "A cold call takes ~2 s (two samples for CPU).",
+        inputSchema: {
+          sort: z.enum(["cpu", "memory", "gpu", "name"]).optional().describe("Sort key (default cpu)."),
+          limit: z.number().int().min(1).max(200).optional().describe("Rows to return (default 15)."),
+          filter: z.string().max(200).optional().describe("Name substring or exact pid."),
+        },
+        annotations: readOnly,
+      },
+      async ({ sort, limit, filter }) => systemToolCall(systemInfo, "system_processes", { sort, limit, filter }),
+    );
+    server.registerTool(
+      "system_ports",
+      {
+        title: "List listening ports and their owning process",
+        description:
+          "TCP listeners and UDP endpoints on the desk's machine, each with the owning pid and process name. " +
+          "Answers \"what is on :8182\". `exposed` = bound to every interface, not only loopback.",
+        inputSchema: {
+          port: z.number().int().min(0).max(65535).optional().describe("Only this local port."),
+          protocol: z.enum(["tcp", "udp"]).optional(),
+        },
+        annotations: readOnly,
+      },
+      async ({ port, protocol }) => systemToolCall(systemInfo, "system_ports", { port, protocol }),
+    );
+    server.registerTool(
+      "system_connections",
+      {
+        title: "List established TCP connections per process",
+        description: "Established TCP connections on the desk's machine grouped by process (count + remote endpoints).",
+        inputSchema: {
+          pid: z.number().int().min(0).optional().describe("Only this pid."),
+          name: z.string().max(200).optional().describe("Process name substring."),
+          limit: z.number().int().min(1).max(200).optional().describe("Processes to return (default 20)."),
+        },
+        annotations: readOnly,
+      },
+      async ({ pid, name, limit }) => systemToolCall(systemInfo, "system_connections", { pid, name, limit }),
+    );
   }
 
   if (onAsk != null) {

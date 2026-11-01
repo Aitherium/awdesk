@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<title>Snip</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  /* The frozen frame fills the overlay; a dim veil covers it except the selection. */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; cursor: crosshair;
+    background: transparent; user-select: none; font: 13px/1.4 var(--font-sans, system-ui); }
+  #frame { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #veil { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); }
+  #sel { position: fixed; display: none; outline: 2px solid var(--primary, #7aa2ff);
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35); }
+  #size { position: fixed; display: none; padding: 2px 6px; border-radius: 4px;
+    background: rgba(0, 0, 0, 0.75); color: #fff; font-size: 12px; pointer-events: none; }
+  #hint { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); padding: 6px 12px;
+    border-radius: 6px; background: rgba(0, 0, 0, 0.75); color: #fff; pointer-events: none; }
+  body.dragging #veil { display: none; }
+</style>
+</head>
+<body>
+<img id="frame" alt="" />
+<div id="veil"></div>
+<div id="sel"></div>
+<div id="size"></div>
+<div id="hint">Drag to snip · Enter or double-click for the whole screen · Esc to cancel</div>
+<script>
+  const snip = window.aitherSnip;
+  const frame = document.getElementById("frame");
+  const sel = document.getElementById("sel");
+  const size = document.getElementById("size");
+  let start = null;
+  let rect = null;
+  let done = false;
+
+  snip.frame().then((r) => {
+    if (r && r.ok) frame.src = r.dataUrl;
+    else snip.cancel();
+  });
+
+  function draw(r) {
+    sel.style.display = "block";
+    sel.style.left = `${r.x}px`;
+    sel.style.top = `${r.y}px`;
+    sel.style.width = `${r.width}px`;
+    sel.style.height = `${r.height}px`;
+    size.style.display = "block";
+    size.textContent = `${Math.round(r.width)} × ${Math.round(r.height)}`;
+    size.style.left = `${r.x}px`;
+    size.style.top = `${Math.max(0, r.y - 24)}px`;
+  }
+
+  function finish(call) {
+    if (done) return;
+    done = true;
+    call().then((v) => { if (!v || !v.ok) done = false; });
+  }
+
+  window.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    start = { x: e.clientX, y: e.clientY };
+    rect = null;
+    document.body.classList.add("dragging");
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!start) return;
+    rect = {
+      x: Math.min(start.x, e.clientX), y: Math.min(start.y, e.clientY),
+      width: Math.abs(e.clientX - start.x), height: Math.abs(e.clientY - start.y),
+    };
+    draw(rect);
+  });
+  window.addEventListener("mouseup", () => {
+    const r = rect;
+    start = null;
+    if (r && r.width >= 4 && r.height >= 4) finish(() => snip.select(r));
+    else {
+      rect = null;
+      sel.style.display = "none";
+      size.style.display = "none";
+      document.body.classList.remove("dragging");
+    }
+  });
+  window.addEventListener("dblclick", () => finish(() => snip.full()));
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") finish(() => snip.cancel());
+    else if (e.key === "Enter") finish(() => snip.full());
+  });
+  window.addEventListener("contextmenu", (e) => { e.preventDefault(); finish(() => snip.cancel()); });
+</script>
+</body>
+</html>
