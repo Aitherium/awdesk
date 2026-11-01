@@ -288,7 +288,8 @@ function createBridgeServer({
   desktopHandler = null,
   // POST /speak {text, voice?}: the avatar says it through AitherVoice.
   speakHandler = null,
-  // POST /console/open {pane?}: raise the Aither Console on a pane (default inbox).
+  // POST /console/open {pane?, card?}: raise the Aither Console on a pane (default inbox);
+  // card focuses that decision card in the Inbox (a remote "Open secure prompt" tap).
   consoleHandler = null,
   // POST /browser/open {url}: open an http(s) page in a NEW OWNER tab of the Aither
   // Browser (awconnect's "Open in Aither Browser"). Same class as /console/open: it
@@ -661,7 +662,8 @@ function createBridgeServer({
       }
       readJsonBody(request)
         .catch(() => ({}))
-        .then((body) => consoleHandler(typeof body?.pane === "string" ? body.pane : "inbox"))
+        .then((body) => consoleHandler(typeof body?.pane === "string" ? body.pane : "inbox",
+          typeof body?.card === "string" ? body.card : null))
         .then((result) => {
           if (response.headersSent) return;
           response.writeHead(200, { "content-type": "application/json" });

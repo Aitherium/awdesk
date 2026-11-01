@@ -5681,8 +5681,12 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
         return { ok: true, url: verdict.url };
       },
-      consoleHandler: (pane) => {
-        if (pane === "inbox" || pane === "cards") return { ok: openInbox() !== false, pane: "inbox" };
+      // card: the credential card a remote "Open secure prompt" tap named (phone, /decide,
+      // awconnect via the harness daemon). Without it the Inbox opened on whatever card it
+      // showed last and the masked field the owner asked for was not in front (2026-11-01).
+      consoleHandler: (pane, card = null) => {
+        const id = typeof card === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(card) ? card : null;
+        if (pane === "inbox" || pane === "cards") return { ok: openInbox(id) !== false, pane: "inbox", card: id };
         return { ok: openConsole(pane) !== false, pane };
       },
       stageStatusProvider: () => ({ ...(roomStageHost.status() || { room: false }), mainLag, present: { mode: presentState.present, gpu: presentState.gpu } }),
