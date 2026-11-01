@@ -9,11 +9,15 @@ const path = require("node:path");
 const {
   DeviceIdentity, HELLO_DOMAIN, parseEnrollUrl, defaultDeviceId,
   machineKey, tenantMachineId, machineId, claimLease, releaseLease,
+  enrollSelfPayload, loadMember, ENROLL_SELF, HEARTBEAT,
 } = require("./device-identity.cjs");
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "desk-dev-"));
 // Enrollment writes the shared ~/.aither/device.json; never the developer's real one.
 process.env.AITHER_DEVICE_FILE = path.join(tmp(), "device.json");
+// Never the developer's real sign-in or member file either.
+process.env.AITHER_SESSION_BEARER_FILE = path.join(tmp(), "no-session-bearer");
+process.env.AITHER_MEMBER_FILE = path.join(tmp(), "member.json");
 const RAW = "4C4C4544-0042-3510-8051-B4C04F4E4B32";
 
 test("an enroll link from the owner's identity parses; anything else is refused", () => {
@@ -125,4 +129,82 @@ test("the lease: one holder, higher facets take over, takeover after 3 missed in
   assert.ok(claimLease("desk", 60, { pid: 3, now: 241, file }));       // past 3 missed
   releaseLease("desk", { pid: 3, file });
   assert.ok(claimLease("desk", 60, { pid: 4, now: 242, file }));
+});
+
+
+// --- workspace join: enroll-self + heartbeat after desk://enroll or sign-in ---------
+
+function joinFetch({ enrollStatus = 201, beatStatus = 200 } = {}) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body), auth: init.headers.Authorization });
+    if (url.endsWith(ENROLL_SELF)) {
+      return { status: enrollStatus, text: async () => JSON.stringify({
+        device_id: "wdev1", device_token: "wtok1", workspace_id: "ws_aitherium",
+        user_id: "u-alice", heartbeat_s: 300 }) };
+    }
+    if (url.endsWith(HEARTBEAT)) return { status: beatStatus, text: async () => "{}" };
+    return { status: 200, text: async () => JSON.stringify({ node_id: "fdev_9" }) };
+  };
+  return { calls, fetchImpl };
+}
+
+function joinedIdentity() {
+  const dir = tmp();
+  const bearerFile = path.join(dir, "session-bearer");
+  fs.writeFileSync(bearerFile, "member-session");
+  const memberPath = path.join(dir, "member.json");
+  return new DeviceIdentity(path.join(dir, "desk"), {
+    sharedFile: path.join(dir, "device.json"), osId: () => RAW, bearerFile, memberPath,
+    joinBase: "https://genesis.example", version: "0.1.26",
+  });
+}
+
+test("enroll-self payload reports platform + version, never a user or tenant", () => {
+  const p = enrollSelfPayload({ version: "0.1.26" });
+  assert.equal(p.agent_version, "0.1.26");
+  assert.ok(["windows", "macos", "linux"].includes(p.platform));
+  assert.equal(p.app, "awdesk");
+  for (const k of ["user_id", "tenant_id", "workspace_id"]) assert.equal(p[k], undefined);
+});
+
+test("join: enroll-self once with the bearer, then heartbeat; member file written", async () => {
+  const id = joinedIdentity();
+  const { calls, fetchImpl } = joinFetch();
+  const r = await id.joinWorkspace({ fetchImpl });
+  assert.deepEqual(r, { ok: true, deviceId: "wdev1", userId: "u-alice", enrolled: true });
+  assert.equal(calls[0].url, `https://genesis.example${ENROLL_SELF}`);
+  assert.equal(calls[0].auth, "Bearer member-session");
+  assert.equal(calls[0].body.agent_version, "0.1.26");
+  assert.equal(calls[1].url, `https://genesis.example${HEARTBEAT}`);
+  assert.equal(calls[1].body.token, "wtok1");
+  assert.equal(loadMember(id.memberPath).user_id, "u-alice");
+});
+
+test("join: a rerun with a live device heartbeats and does not enroll again", async () => {
+  const id = joinedIdentity();
+  await id.joinWorkspace(joinFetch());
+  const { calls, fetchImpl } = joinFetch();
+  const r = await id.joinWorkspace({ fetchImpl });
+  assert.equal(r.enrolled, false);
+  assert.equal(calls.filter((c) => c.url.endsWith(ENROLL_SELF)).length, 0);
+});
+
+test("join: a revoked device (410) re-enrolls; not signed in skips", async () => {
+  const id = joinedIdentity();
+  await id.joinWorkspace(joinFetch());
+  const { calls, fetchImpl } = joinFetch({ beatStatus: 410 });
+  await id.joinWorkspace({ fetchImpl });
+  assert.equal(calls.filter((c) => c.url.endsWith(ENROLL_SELF)).length, 1);
+  const r = await id.joinWorkspace({ fetchImpl, bearer: "" });
+  assert.equal(r.skipped, true);
+});
+
+test("desk://enroll pairing chains into the workspace join when signed in", async () => {
+  const id = joinedIdentity();
+  const { calls, fetchImpl } = joinFetch();
+  const r = await id.enroll({ code: "AB3K9Q2Z", deviceId: "desk-pc-1", identity: "https://idp.aitherium.com" }, { fetchImpl });
+  assert.equal(r.ok, true);
+  assert.equal(r.workspace.enrolled, true);
+  assert.ok(calls.some((c) => c.url.endsWith(ENROLL_SELF)));
 });

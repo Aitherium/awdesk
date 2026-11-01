@@ -181,11 +181,64 @@ function defaultDeviceId({ file = sharedDeviceFile(), osId = osMachineId } = {})
   return `desk-${host}-${machineId({ file, osId }).slice(0, 8)}`;
 }
 
+/** The member's session bearer file (the one mint_session_bearer / adk join write). */
+function sessionBearerFile(env = process.env) {
+  const v = String(env.AITHER_SESSION_BEARER_FILE || "").trim();
+  return v || path.join(os.homedir(), ".aither", "session-bearer");
+}
+
+/** Who this desk belongs to in the workspace, once joined: {user_id, workspace_id, ...}.
+ *  settings-sync.cjs reads it to turn member sync on (per-member awsettings namespace). */
+function memberFile(env = process.env) {
+  const v = String(env.AITHER_MEMBER_FILE || "").trim();
+  return v || path.join(os.homedir(), ".aither", "member.json");
+}
+
+function loadMember(file = memberFile()) {
+  try {
+    const d = JSON.parse(fs.readFileSync(file, "utf8"));
+    return d && typeof d === "object" && !Array.isArray(d) && d.user_id ? d : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Genesis through Veil's authenticated pass-through (the door adk join and awnode use). */
+const JOIN_BASE = "https://api.aitherium.com/api/bridge/genesis";
+const ENROLL_SELF = "/api/v1/me/device/enroll-self";
+const HEARTBEAT = "/api/v1/me/device/heartbeat";
+
+function deskPlatform() {
+  return process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
+}
+
+/** The enroll-self body: what this desk reports about itself (never an identity claim --
+ *  the member is whoever the bearer belongs to, decided server-side). */
+function enrollSelfPayload({ version = "", label = "" } = {}) {
+  const host = os.hostname().slice(0, 60) || "desk";
+  return {
+    label: String(label || host).slice(0, 60),
+    model: host,
+    platform: deskPlatform(),
+    os_version: os.release().slice(0, 64),
+    agent_version: String(version || "").slice(0, 64),
+    app: "awdesk",
+  };
+}
+
 class DeviceIdentity {
-  constructor(dir, { sharedFile = sharedDeviceFile(), osId = osMachineId } = {}) {
+  constructor(dir, {
+    sharedFile = sharedDeviceFile(), osId = osMachineId,
+    bearerFile = sessionBearerFile(), memberPath = memberFile(),
+    joinBase = process.env.AITHER_JOIN_URL || JOIN_BASE, version = "",
+  } = {}) {
     this.dir = dir;
     this.sharedFile = sharedFile;
     this.osId = osId;
+    this.bearerFile = bearerFile;
+    this.memberPath = memberPath;
+    this.joinBase = String(joinBase).replace(/\/+$/, "");
+    this.version = version;
     this.keyFile = path.join(dir, "ed25519.pem");
     this.stateFile = path.join(dir, "device.json");
   }
@@ -281,7 +334,79 @@ class DeviceIdentity {
       publicKey: this.publicHex(),
       register: reg,
     }));
-    return { ok: true, deviceId };
+    // Signed in already? Then this computer also joins the member's workspace device
+    // plane (enroll-self + a first heartbeat). Fail-soft: pairing already succeeded.
+    const joined = await this.joinWorkspace({ fetchImpl });
+    return joined.skipped ? { ok: true, deviceId } : { ok: true, deviceId, workspace: joined };
+  }
+
+  _bearer() {
+    try {
+      return fs.readFileSync(this.bearerFile, "utf8").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  /** After desk://enroll or sign-in: POST enroll-self (once per member) + heartbeat.
+   *  Idempotent: a live saved device token is heartbeated, never re-enrolled.
+   *  Returns {ok, deviceId, userId, enrolled} or {ok:false, skipped|status}. */
+  async joinWorkspace({ fetchImpl = globalThis.fetch, bearer = this._bearer(), label = "" } = {}) {
+    if (!bearer) return { ok: false, skipped: true, reason: "not signed in" };
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${bearer}`,
+      "User-Agent": "Mozilla/5.0 (Aither Desktop)",
+    };
+    const st = this.state() || {};
+    const saved = st.workspaceDevice || null;
+    const body = enrollSelfPayload({ version: this.version, label });
+    if (saved && saved.device_token) {
+      const beat = await this.heartbeat({ fetchImpl, bearer, token: saved.device_token });
+      if (beat.ok) return { ok: true, deviceId: saved.device_id, userId: saved.user_id, enrolled: false };
+    }
+    let res;
+    try {
+      res = await fetchImpl(`${this.joinBase}${ENROLL_SELF}`, { method: "POST", headers, body: JSON.stringify(body) });
+    } catch (e) {
+      return { ok: false, status: 0, error: `workspace unreachable: ${e && e.message ? e.message : e}` };
+    }
+    if (res.status !== 201) return { ok: false, status: res.status };
+    let reply = {};
+    try {
+      reply = JSON.parse(await res.text());
+    } catch { /* an unreadable reply leaves nothing to save */ }
+    const dev = {
+      device_id: reply.device_id, device_token: reply.device_token,
+      workspace_id: reply.workspace_id, user_id: reply.user_id || "", heartbeat_s: reply.heartbeat_s,
+    };
+    this._write(this.stateFile, JSON.stringify({ ...st, workspaceDevice: dev }));
+    if (dev.user_id) {
+      try {
+        fs.mkdirSync(path.dirname(this.memberPath), { recursive: true });
+        fs.writeFileSync(this.memberPath, JSON.stringify({
+          user_id: dev.user_id, workspace_id: dev.workspace_id || "",
+          token_file: this.bearerFile, joined_at: Date.now(), via: "awdesk",
+        }, null, 2), { mode: 0o600 });
+      } catch { /* sync stays off until the next join */ }
+    }
+    if (dev.device_token) await this.heartbeat({ fetchImpl, bearer, token: dev.device_token });
+    return { ok: true, deviceId: dev.device_id, userId: dev.user_id, enrolled: true };
+  }
+
+  /** POST heartbeat with platform + version. ok only on 200; 401/410 = revoked/unknown. */
+  async heartbeat({ fetchImpl = globalThis.fetch, bearer = this._bearer(), token } = {}) {
+    const p = enrollSelfPayload({ version: this.version });
+    try {
+      const res = await fetchImpl(`${this.joinBase}${HEARTBEAT}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
+        body: JSON.stringify({ token, platform: p.platform, os_version: p.os_version, agent_version: p.agent_version }),
+      });
+      return { ok: res.status === 200, status: res.status };
+    } catch {
+      return { ok: false, status: 0 };
+    }
   }
 
   /** The signed fields a holder adds to its hello (adk.kvholder_workspace.sign_hello). */
@@ -299,4 +424,5 @@ module.exports = {
   DeviceIdentity, HELLO_DOMAIN, MACHINE_ID_DOMAIN, FACET_PRIORITY, LEASE_MISSED,
   defaultDeviceId, identityAllowed, parseEnrollUrl,
   machineKey, tenantMachineId, machineId, osMachineId, sharedDeviceFile, claimLease, releaseLease,
+  sessionBearerFile, memberFile, loadMember, enrollSelfPayload, JOIN_BASE, ENROLL_SELF, HEARTBEAT,
 };

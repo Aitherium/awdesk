@@ -15,7 +15,10 @@
  * JavaScript would be a second place for the next bug, and the first time these
  * rules were implemented twice, one copy had a hole the other had already fixed.
  *
- * OFF BY DEFAULT, configured in cast.json's own `sync` section -- which the sync
+ * DEFAULT ON ONCE THE DESK HAS A MEMBER IDENTITY (~/.aither/member.json, written by
+ * device-identity.cjs after enroll-self): the member's hub + bearer file + a per-member
+ * namespace. Without one it is OFF, and either way cast.json's own `sync` section
+ * decides (`"enabled": false` stays off) -- the section the sync
  * tool never sends and refuses on arrival, because `profile` and `tokenFile` are
  * paths on THIS machine:
  *
@@ -39,6 +42,17 @@ const DEFAULT_DEBOUNCE_MS = 4000;
 const DEFAULT_TIMEOUT_MS = 45000;
 const WATCH_INTERVAL_MS = 2000;
 const OUTPUT_LIMIT = 600;
+/** The member settings hub a joined desk syncs with when cast.json names none. */
+const MEMBER_SYNC_URL = "https://api.aitherium.com/api/v1/settings";
+
+/** The joined member, or null -- device-identity.cjs writes it after enroll-self. */
+function defaultMember() {
+  try {
+    return require("./device-identity.cjs").loadMember();
+  } catch {
+    return null;
+  }
+}
 
 /** awsettings' own exit contract, in words the pane can show. */
 const VERDICTS = Object.freeze({
@@ -52,8 +66,16 @@ const VERDICTS = Object.freeze({
  * decides whether the owner's settings leave this machine is testable without a
  * child process.
  */
-function plan(settings, castFile) {
-  const sync = (settings && settings.sync) || {};
+function plan(settings, castFile, member = null) {
+  const own = (settings && settings.sync) || {};
+  // DEFAULT ON once this desk has a workspace member identity (joined through
+  // device-identity.cjs): the member's own hub, the member's own bearer FILE, and a
+  // per-member namespace (AWSETTINGS_MEMBER). cast.json's sync section still wins:
+  // `"enabled": false` turns it off, an explicit profile/url replaces the default.
+  const memberOn = Boolean(member && member.user_id) && own.enabled !== false;
+  const sync = memberOn && !own.profile && !own.url
+    ? { ...own, enabled: true, url: MEMBER_SYNC_URL, tokenFile: member.token_file || own.tokenFile }
+    : (memberOn ? { ...own, enabled: true } : own);
   if (sync.enabled !== true) return { enabled: false, reason: "sync.enabled is off" };
   if (!sync.profile && !sync.url) {
     return { enabled: false, reason: "sync is on but names neither sync.profile nor sync.url" };
@@ -69,6 +91,7 @@ function plan(settings, castFile) {
   } else {
     env.AWSETTINGS_PROFILE = String(sync.profile);
   }
+  if (member && member.user_id) env.AWSETTINGS_MEMBER = String(member.user_id);
   return {
     enabled: true,
     env,
@@ -96,7 +119,9 @@ function createSettingsSync({
   watchFile = fs.watchFile,
   unwatchFile = fs.unwatchFile,
   now = () => new Date().toISOString(),
+  member = defaultMember,
 } = {}) {
+  const getMember = typeof member === "function" ? member : () => member;
   const getFile = typeof castFile === "function" ? castFile : () => castFile;
   const getSettings = typeof settings === "function" ? settings : () => settings;
   const state = { pull: null, push: null, watching: false, reason: null, target: null };
@@ -142,7 +167,7 @@ function createSettingsSync({
   }
 
   async function run(verb) {
-    const planned = plan(getSettings(), getFile());
+    const planned = plan(getSettings(), getFile(), getMember());
     state.target = planned.target || null;
     if (!planned.enabled) {
       state.reason = planned.reason;
@@ -174,7 +199,7 @@ function createSettingsSync({
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
-      const planned = plan(getSettings(), getFile());
+      const planned = plan(getSettings(), getFile(), getMember());
       if (planned.enabled && planned.pushOnChange) void enqueue("push");
     }, debounceMs);
     if (timer && typeof timer.unref === "function") timer.unref();
@@ -182,7 +207,7 @@ function createSettingsSync({
 
   function start() {
     const file = getFile();
-    const planned = plan(getSettings(), file);
+    const planned = plan(getSettings(), file, getMember());
     state.target = planned.target || null;
     state.reason = planned.enabled ? null : planned.reason;
     // Watch even while sync is OFF: turning it on in the pane is itself a change
@@ -208,7 +233,7 @@ function createSettingsSync({
   }
 
   function status() {
-    const planned = plan(getSettings(), getFile());
+    const planned = plan(getSettings(), getFile(), getMember());
     return {
       enabled: planned.enabled,
       reason: planned.enabled ? null : planned.reason,
@@ -221,4 +246,4 @@ function createSettingsSync({
   return { start, stop, status, pullNow: () => enqueue("pull"), pushNow: () => enqueue("push"), schedulePush };
 }
 
-module.exports = { createSettingsSync, plan, VERDICTS };
+module.exports = { createSettingsSync, plan, VERDICTS, MEMBER_SYNC_URL };

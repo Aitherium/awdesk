@@ -17,9 +17,11 @@ const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 
-const { createSettingsSync, plan } = require("./settings-sync.cjs");
+const { createSettingsSync, plan, MEMBER_SYNC_URL } = require("./settings-sync.cjs");
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "desk-sync-"));
+// The default member lookup must never read the developer's real ~/.aither/member.json.
+process.env.AITHER_MEMBER_FILE = path.join(tmp(), "member.json");
 
 function fakeSpawn({ code = 0, missing = [] } = {}) {
   const spawned = [];
@@ -169,4 +171,47 @@ test("REAL round trip: desk A's fader reaches desk B through the actual awsettin
   const shared = JSON.parse(fs.readFileSync(profile, "utf8"));
   assert.equal(shared.awdesk.sync, undefined, "the sync section (local paths) left machine A");
   assert.equal(shared.awdesk.voice.endpoint, undefined, "the voice endpoint left machine A");
+});
+
+
+// --- member identity: default ON once the desk has joined a workspace -------------
+
+const MEMBER = { user_id: "u-alice", workspace_id: "ws_aitherium", token_file: "/home/a/.aither/session-bearer" };
+
+test("member: no cast.json sync section + a member identity = ON, scoped to that member", () => {
+  const p = plan({}, "/x/cast.json", MEMBER);
+  assert.equal(p.enabled, true);
+  assert.equal(p.env.AWSETTINGS_URL, MEMBER_SYNC_URL);
+  assert.equal(p.env.AWSETTINGS_TOKEN_FILE, MEMBER.token_file);
+  assert.equal(p.env.AWSETTINGS_MEMBER, "u-alice");
+});
+
+test("member: cast.json `enabled: false` still turns it off", () => {
+  const p = plan({ sync: { enabled: false } }, "/x/cast.json", MEMBER);
+  assert.equal(p.enabled, false);
+});
+
+test("member: an explicit cast.json profile wins over the default hub", () => {
+  const p = plan({ sync: { profile: "D:/Dropbox/aw.json" } }, "/x/cast.json", MEMBER);
+  assert.equal(p.enabled, true);
+  assert.equal(p.env.AWSETTINGS_PROFILE, "D:/Dropbox/aw.json");
+  assert.equal(p.env.AWSETTINGS_URL, undefined);
+  assert.equal(p.env.AWSETTINGS_MEMBER, "u-alice");
+});
+
+test("member: no identity and no section = OFF, exactly as before", () => {
+  assert.equal(plan({}, "/x/cast.json", null).enabled, false);
+  assert.equal(plan({}, "/x/cast.json").enabled, false);
+});
+
+test("member: the scheduler pulls on start with the member identity", async () => {
+  const { spawnImpl, spawned } = fakeSpawn();
+  const sync = createSettingsSync({
+    castFile: path.join(tmp(), "cast.json"), settings: {}, spawnImpl,
+    member: () => MEMBER, watchFile: () => {}, unwatchFile: () => {},
+  });
+  const r = await sync.start();
+  assert.equal(r.ok, true);
+  assert.equal(spawned.length, 1);
+  sync.stop();
 });
