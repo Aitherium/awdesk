@@ -76,7 +76,8 @@ test("a hand-edited layout file cannot wedge the window", () => {
   assert.deepEqual(rail.normalizeLayout({ railWidth: "abc", panelWidth: -4, collapsedSections: [1, "Apps", "Apps"] }),
     { railWidth: rail.RAIL_WIDTH, panelWidth: rail.PANEL_MIN, railCollapsed: false, panelCollapsed: false,
       taskbar: true, dock: true, dockOpen: false, dockHeight: rail.DOCK_HEIGHT, overlay: false,
-      collapsedSections: ["Apps"], launchModes: {}, agentCookieSites: [] });
+      collapsedSections: ["Apps"], expandedSections: [], railAllSections: false,
+      launchModes: {}, agentCookieSites: [] });
   assert.equal(rail.normalizeLayout({ railWidth: null }).railWidth, rail.RAIL_WIDTH, "reset means default, not minimum");
   assert.equal(rail.normalizeLayout({ taskbar: false }).taskbar, false);
   assert.equal(rail.normalizeLayout({ overlay: "yes" }).overlay, false, "on only when exactly true");
@@ -150,7 +151,8 @@ test("the chrome page's rail matches the module's sizes", () => {
   assert.match(chromeHtml, new RegExp(`--rail-w: ${rail.RAIL_WIDTH}px`));
   assert.match(chromeHtml, new RegExp(`\\.brand \\{ height: ${rail.BRAND_HEIGHT}px`));
   assert.match(chromeHtml, new RegExp(`#layers \\{[^}]*height: ${rail.LAYERS_HEIGHT}px`));
-  for (const action of ["drag", "rail-width", "panel-width", "panel", "taskbar", "section", "reset-layout"]) {
+  for (const action of ["drag", "rail-width", "panel-width", "panel", "taskbar", "section", "section-all",
+    "sections-all", "reset-layout"]) {
     assert.ok(chromeHtml.includes(`"${action}"`), `the chrome never sends ${action}`);
   }
   // Labels are text, never markup: a pane label cannot inject into the chrome.
@@ -405,4 +407,78 @@ test("the catalogue check CAN fail: a duplicate row is detected", () => {
   };
   assert.equal(collide([{ id: "l", label: "Lyra", destination: "agents" }, { id: "a", label: "Agents", destination: "agents" }]), null);
   assert.match(collide([{ id: "p", label: "Pulse", destination: "platform" }, { id: "p2", label: "Pulse", destination: "platform" }]), /duplicates/);
+});
+
+// ── railView: the five law applied to the rail (cap presentation, keep the data) ──
+test("primary destinations are the flagged sections; an unknown primary name is absent, not a crash", () => {
+  const view = rail.railView(rail.railSections(PANES), {});
+  const present = rail.railSections(PANES).map((sec) => sec.name);
+  const flagged = view.filter((sec) => sec.primary).map((sec) => sec.name).sort();
+  assert.deepEqual(flagged, rail.PRIMARY_SECTIONS.filter((name) => present.includes(name)).sort());
+  const odd = rail.railView(rail.railSections(PANES), { primary: [...rail.PRIMARY_SECTIONS, "Nope"] });
+  assert.equal(odd.filter((sec) => sec.primary).length, view.filter((sec) => sec.primary).length);
+});
+
+test("the sections keep every row: total sums to the uncapped count, nothing dropped", () => {
+  const raw = rail.railSections(PANES);
+  const view = rail.railView(raw, {});
+  const uncapped = raw.reduce((n, sec) => n + sec.rows.length, 0);
+  assert.equal(view.reduce((n, sec) => n + sec.total, 0), uncapped);
+  assert.equal(view.reduce((n, sec) => n + sec.rows.length + sec.hidden, 0), uncapped);
+});
+
+test("a section pages at five and says how many are behind +N more", () => {
+  const rows = Array.from({ length: 12 }, (_, i) => ({ id: `r${i}`, label: `R${i}` }));
+  const [sec] = rail.railView([{ name: "Talk", rows }], {});
+  assert.equal(sec.rows.length, rail.SECTION_PAGE);
+  assert.equal(sec.hidden, 7);
+  assert.equal(sec.total, 12);
+});
+
+test("an expanded section renders all of it; hidden returns to zero", () => {
+  const rows = Array.from({ length: 12 }, (_, i) => ({ id: `r${i}`, label: `R${i}` }));
+  const [sec] = rail.railView([{ name: "Talk", rows }], { expanded: ["Talk"] });
+  assert.equal(sec.rows.length, 12);
+  assert.equal(sec.hidden, 0);
+  assert.equal(sec.total, 12);
+});
+
+test("Today leads with Inbox: the row that carries the badge is first", () => {
+  const today = rail.railView(rail.railSections(PANES), {}).find((sec) => sec.name === "Today");
+  assert.equal(today.rows[0].id, "cards");
+});
+
+test("an expandedSections list is sanitized like any other pref (strings, 20 entries)", () => {
+  const saved = rail.normalizeLayout({ expandedSections: Array(30).fill("x") });
+  assert.equal(saved.expandedSections.length, 20);
+  assert.deepEqual(rail.normalizeLayout({ expandedSections: [1, "Talk"] }).expandedSections, ["Talk"]);
+  assert.deepEqual(rail.normalizeLayout({}).expandedSections, []);
+});
+
+test("the More destinations reveal is a REAL pref, not dropped by normalizeLayout", () => {
+  // getPrefs() runs every read through normalizeLayout: a key it forgets is lost the
+  // instant it is written, and "More destinations" becomes a dead button that hides
+  // Worlds, Build and awconnect forever.
+  assert.equal(rail.normalizeLayout({}).railAllSections, false);
+  assert.equal(rail.normalizeLayout({ railAllSections: true }).railAllSections, true);
+  assert.equal(rail.normalizeLayout({ railAllSections: "yes" }).railAllSections, false, "on only when exactly true");
+  assert.equal(rail.normalizeLayout({ railAllSections: true, expandedSections: ["Talk"] }).railAllSections, true,
+    "toggle survives alongside an expanded section");
+});
+
+test("every primary destination name exists in today's catalogue (no silent label drift)", () => {
+  const present = new Set(rail.railSections(PANES).map((sec) => sec.name));
+  for (const name of rail.PRIMARY_SECTIONS) {
+    assert.ok(present.has(name), `PRIMARY_SECTIONS names "${name}", but no rail section has that name`);
+  }
+  assert.equal(rail.PRIMARY_SECTIONS.length, 7);
+});
+
+test("the chrome caps lists AND offers the way back", () => {
+  assert.ok(chromeHtml.includes("More destinations ("), "the chrome never renders the non-primary count");
+  assert.ok(chromeHtml.includes("Fewer destinations"), "revealing the rest is a one-way door");
+  assert.ok(chromeHtml.includes('"Show fewer"') || chromeHtml.includes("Show fewer"),
+    "an expanded section can never fold back to its page");
+  assert.ok(chromeHtml.includes('moreRow("sec-more"'), "the cap row has no collapsed-safe glyph shape");
+  assert.ok(chromeHtml.includes('moreRow("more-sections"'), "the reveal row has no collapsed-safe glyph shape");
 });

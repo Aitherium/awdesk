@@ -890,8 +890,15 @@ function withAwconnectRow(sections, active) {
       : `awconnect is not loaded: ${awconnect.error}`,
   };
   const online = sections.find((sec) => sec.name === "Online");
-  if (online) online.rows = [...online.rows, row];
-  else sections.push({ name: "Online", rows: [row] });
+  if (online) {
+    online.rows = [...online.rows, row];
+    online.total = (online.total || 0) + 1;
+    online.hidden = Math.max(0, online.total - online.rows.length);
+  } else {
+    // A destination the catalogue did not file (awconnect is the browser's own): it
+    // rides behind "More destinations", like every non-primary section.
+    sections.push({ name: "Online", primary: false, rows: [row], hidden: 0, total: 1 });
+  }
   // Media Forge: its own UI, in a tab (images, clips, 3D, avatars on the fleet GPU).
   const apps = sections.find((sec) => sec.name === "Apps");
   const forge = { kind: "browser", id: "forge", label: "Media Forge", icon: "image", active: false,
@@ -916,11 +923,16 @@ function railState() {
     taskbar: { on: p.taskbar, status: taskbarStatus, height: rects ? rects.taskbar.height : 0, owner: currentStripOwner() },
     dock: { on: p.dock, open: p.dockOpen, status: dockStatus, rect: rects ? rects.dock : null },
     collapsedSections: p.collapsedSections,
+    expandedSections: p.expandedSections || [],
+    // The page size the rail caps at, so the chrome never hard-codes the five law.
+    sectionPage: rail.SECTION_PAGE,
+    // Reveal the non-primary destinations (the rail's "More destinations").
+    allSections: Boolean(p.railAllSections),
     docked,
     slot: rects ? rects.avatar : null,
-    sections: withAwconnectRow(rail.railSections(require("./console-window.cjs").PANES,
+    sections: withAwconnectRow(rail.railView(rail.railSections(require("./console-window.cjs").PANES,
       { activePane: active && active.by === "you" ? active.paneId || null : null, signedIn: hostSignedIn(),
-        owner: hostOwner(), modes: p.launchModes }), active),
+        owner: hostOwner(), modes: p.launchModes }), { expanded: p.expandedSections || [] }), active),
     awconnect: awconnect.ok ? { ok: true, version: awconnect.version } : { ok: false, error: awconnect.error },
     layers: rail.layerRows({ docked, overlayVisible, browserOpen: true, overPages: getPrefs().overlay }),
   };
@@ -2166,8 +2178,21 @@ function wireIpc() {
       if (folded.has(name)) folded.delete(name); else folded.add(name);
       return setPrefs({ collapsedSections: [...folded] }) && relayout();
     }
+    // The five law's own controls: un-fold ONE section's "+N more", or reveal the
+    // non-primary destinations behind "More destinations".
+    if (action === "section-all") {
+      const name = String(arg || "");
+      const open = new Set(getPrefs().expandedSections);
+      if (open.has(name)) open.delete(name); else open.add(name);
+      return setPrefs({ expandedSections: [...open] }) && relayout();
+    }
+    if (action === "sections-all") {
+      const on = arg == null ? !getPrefs().railAllSections : Boolean(arg);
+      return setPrefs({ railAllSections: on }) && relayout();
+    }
     if (action === "reset-layout") return setPrefs({ railWidth: null, panelWidth: null, railCollapsed: false,
-      panelCollapsed: false, taskbar: true, collapsedSections: [], dock: true, dockOpen: false, dockHeight: null })
+      panelCollapsed: false, taskbar: true, collapsedSections: [], expandedSections: [], railAllSections: false,
+      dock: true, dockOpen: false, dockHeight: null })
       && (ensureDock(), relayout());
     // The terminal dock: on/off for good, open/closed, and a drag of its top edge.
     if (action === "dock-on") {

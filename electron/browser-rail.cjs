@@ -27,6 +27,19 @@ const agentCookies = require("./browser-agent-cookies.cjs");
 /** Section order, top to bottom. A section not named here follows in PANES order. */
 const SECTION_ORDER = Object.freeze(["Now", "Voice", "Agents", "Agent apps", "Workspace", "Spaces & sprites", "Stage", "Apps", "Data",
   "System", "Network & platform", "Security", "Command & control", "Observability", "Planes", "Online"]);
+
+/**
+ * The rail shows at most this many rows per section (the five law: cap every visible
+ * list at five, then "+N more" that RETAINS the rest). SECTION_PAGE is a presentation
+ * page, never a data cut -- railView keeps `total` so nothing is dropped.
+ */
+const SECTION_PAGE = 5;
+/**
+ * The destinations that are ALWAYS on the rail. The rest (Worlds, Build, and any
+ * destination added later) live behind ONE "More destinations" control, so the left
+ * column leads with what the owner reaches for and never becomes a 50-row wall.
+ */
+const PRIMARY_SECTIONS = Object.freeze(["Today", "Agents", "Talk", "Work", "Create", "Know", "Platform"]);
 const RAIL_WIDTH = 248;
 const RAIL_COLLAPSED_WIDTH = 56;
 /** Drag limits (owner, 2026-10-04: "side bars need to be draggable/customizable"). */
@@ -358,6 +371,34 @@ function railSections(panes, { activePane = null, signedIn = true, owner = false
     .map((id) => ({ id, name: DESTINATION_LABEL.get(id) || id, rows: groups.get(id) }));
 }
 
+/**
+ * What the rail RENDERS from railSections(): each section gains `primary`, a capped
+ * `rows` page, `hidden` (how many are behind "+N more") and `total` (the real count).
+ *
+ * The cap is presentation only -- `total` is the uncapped length, so a section with 12
+ * rows renders 5 and still says 12. `expanded` is the set of section names the owner
+ * unfolded; `page` is the page size. Inside Today the Inbox row (`id === "cards"`) is
+ * hoisted to index 0: it is the owner's primary destination and carries the badge.
+ *
+ * @param {Array<object>} sections railSections() output (or any {name, rows} list)
+ * @param {{expanded?: string[], page?: number, primary?: string[]}} [opts]
+ */
+function railView(sections, { expanded = [], page = SECTION_PAGE, primary = PRIMARY_SECTIONS } = {}) {
+  const show = new Set(Array.isArray(primary) ? primary : []);
+  const open = new Set(Array.isArray(expanded) ? expanded : []);
+  const size = Number.isFinite(Number(page)) && Number(page) > 0 ? Math.floor(Number(page)) : SECTION_PAGE;
+  return (Array.isArray(sections) ? sections : []).map((sec) => {
+    let rows = Array.isArray(sec.rows) ? sec.rows : [];
+    if (sec.name === "Today") {
+      const at = rows.findIndex((row) => row && row.id === "cards");
+      if (at > 0) rows = [rows[at], ...rows.slice(0, at), ...rows.slice(at + 1)];
+    }
+    const total = rows.length;
+    const visible = open.has(sec.name) ? rows : rows.slice(0, size);
+    return { ...sec, rows: visible, primary: show.has(sec.name), hidden: Math.max(0, total - visible.length), total };
+  });
+}
+
 /** May the rail run this command id? */
 /**
  * Is what the owner typed into the address bar a SEARCH rather than an address? Words
@@ -415,6 +456,15 @@ function normalizeLayout(raw = {}) {
     overlay: r.overlay === true,
     collapsedSections: Array.isArray(r.collapsedSections)
       ? [...new Set(r.collapsedSections.filter((n) => typeof n === "string" && n.length <= 40))].slice(0, 20) : [],
+    // Sections the owner unfolded past the five-row page (railView): same shape, same
+    // clamp, so a hand-edited file cannot ask for an unbounded render. Read as a set by
+    // railView, so a repeat is harmless and the cap is the only bound that matters.
+    expandedSections: Array.isArray(r.expandedSections)
+      ? r.expandedSections.filter((n) => typeof n === "string" && n.length <= 40).slice(0, 20) : [],
+    // The rail's "More destinations" reveal. It MUST be here: getPrefs() runs the file
+    // through this function on every read, so a pref omitted from this object is
+    // dropped the moment it is written and the control becomes a dead button.
+    railAllSections: r.railAllSections === true,
     // Where each Online app opens: tab (default) | window | desktop (launch-modes.cjs).
     launchModes: launchModes.normalizeLaunchModes(r.launchModes),
     // The sites whose sign-in the agent may ride (BROWSER-M3, browser-agent-cookies.cjs):
@@ -558,8 +608,11 @@ module.exports = {
   railMayRun,
   isSearchText,
   railSections,
+  railView,
   railRowKeys,
   railAppsFor,
+  SECTION_PAGE,
+  PRIMARY_SECTIONS,
   DESTINATIONS,
   DESTINATION_ORDER,
   railWidth,

@@ -7,6 +7,7 @@
 - A terminal dock under every browser window (Ctrl+`): every awsh session shows up on its own, click to attach with scrollback, start a shell or Claude Code, pop it out to a tab.
 - The side panel's resize handle lines up with the panel again.
 - The Inbox leads with one "Next" line: the top card, how many follow it, and a button that answers it. Every group shows 5 cards and "N more"; broken routines are one summary line plus the top 3. The terminal strip folds identical tabs into one chip with "+N" and never shows more than 5; an empty terminal offers Run a routine, Open a shell and Resume a session.
+- The left rail leads with 7 destinations (Today, Agents, Talk, Work, Create, Know, Platform); the rest sit behind one "More destinations" control. Each section shows 5 rows and "+N more", with "Show fewer" to fold it back. Inbox is first in Today.
 
 ## 0.1.27 - 2026-10-24
 

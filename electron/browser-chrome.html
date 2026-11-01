@@ -41,7 +41,16 @@
   .row.active { background: color-mix(in srgb, var(--primary, #7cd) 18%, transparent); }
   .row .ic { width: 22px; height: 22px; border-radius: 6px; flex: none; display: grid; place-items: center; font-size: 11px;
     font-weight: 700; background: var(--surface-800, var(--line)); color: var(--fg); }
+  .row .ic svg { width: 16px; height: 16px; display: block; }
   .row.cmd .ic { background: none; border: 1px solid var(--line); }
+  /* The five law's affordances: "+N more" inside one section, and the ONE control that
+     reveals the destinations that are not primary. Both retain the rest; neither drops. */
+  .sec-more, .more-sections { color: var(--muted); font-size: 12px; height: 26px; }
+  .more-sections { margin-top: 4px; }
+  /* The chevron rides the icon column, so the collapsed rail (which hides .l) still
+     shows a reachable control instead of overflowing text in a 56px column. */
+  .sec-more .ic, .more-sections .ic { background: none; color: var(--muted); }
+  .sec-more:hover, .more-sections:hover, .sec-more:hover .ic, .more-sections:hover .ic { color: var(--fg); }
   .row .l { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .row .n { min-width: 18px; height: 16px; padding: 0 5px; border-radius: 8px; font-size: 10px; line-height: 16px;
     text-align: center; background: var(--destructive); color: var(--fg); }
@@ -387,6 +396,27 @@
   let collapsed = false;
   $("collapse").onclick = () => api.rail("collapse", !collapsed);
   const tile = (label) => String(label || "?").replace(/^AitherOS\s+/, "").slice(0, 2);
+  // 16px inline SVG for the rail's own controls; only these constants reach innerHTML.
+  const ico = (body) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+  // The two cap affordances share a shape: a glyph in the icon column plus a label.
+  // The label lives in .l, so body.collapsed hides it and leaves the glyph reachable.
+  const CHEVRON_DOWN = ico('<path d="M3.5 6.2l4.5 4.3 4.5-4.3"/>');
+  const CHEVRON_UP = ico('<path d="M3.5 9.8l4.5-4.3 4.5 4.3"/>');
+  function moreRow(cls, svg, label, title, onclick) {
+    const b = document.createElement("button");
+    b.className = `row ${cls}`;
+    b.title = title;
+    b.setAttribute("aria-label", title);
+    const ic = document.createElement("span");
+    ic.className = "ic";
+    ic.innerHTML = svg; // the constant map only, never a label
+    const l = document.createElement("span");
+    l.className = "l";
+    l.textContent = label;
+    b.append(ic, l);
+    b.onclick = onclick;
+    return b;
+  }
   let railKey = "";
   let lastRail = null;
   $("custom").onclick = () => {
@@ -475,12 +505,16 @@
     if (r.slot) $("slot").style.height = `${r.slot.height}px`;
     $("dock").textContent = r.docked ? "Float the avatar on the desktop" : "Dock the avatar here";
     const inbox = (tabsNow || []).find((t) => t.badge > 0);
-    const key = JSON.stringify([r.sections, r.layers, inbox && inbox.badge, r.collapsedSections]);
+    const key = JSON.stringify([r.sections, r.layers, inbox && inbox.badge, r.collapsedSections,
+      r.expandedSections, r.allSections]);
     if (key === railKey) return; // a state push per page load; rebuild only on change
     railKey = key;
     const nav = $("nav");
     nav.textContent = "";
-    for (const sec of r.sections || []) {
+    // Seven primary destinations by default; the rest wait behind ONE "More destinations".
+    const all = Boolean(r.allSections);
+    const shown = all ? r.sections || [] : (r.sections || []).filter((sec) => sec.primary);
+    for (const sec of shown) {
       const folded = (r.collapsedSections || []).includes(sec.name);
       const head = document.createElement("div");
       head.className = "sec" + (folded ? " folded" : "");
@@ -522,6 +556,26 @@
           : row.kind === "online" ? "online" : row.kind === "workspace" ? "workspace" : row.kind === "local" ? "local" : "command", row.id);
         nav.append(b);
       }
+      // "+N more": cap presentation, keep the data. Clicking unfolds this one section;
+      // "Show fewer" folds it back, so a section is never stuck at full length.
+      const expanded = (r.expandedSections || []).includes(sec.name);
+      if (!folded && sec.hidden > 0) {
+        nav.append(moreRow("sec-more", CHEVRON_DOWN, `+${sec.hidden} more`,
+          `Show all ${sec.total} in ${sec.name}`, () => api.rail("section-all", sec.name)));
+      } else if (!folded && expanded) {
+        const page = Number(r.sectionPage) > 0 ? Number(r.sectionPage) : 5;
+        nav.append(moreRow("sec-more", CHEVRON_UP, "Show fewer",
+          `Show only ${Math.min(sec.total, page)} in ${sec.name}`, () => api.rail("section-all", sec.name)));
+      }
+    }
+    // The ONE control that reveals the destinations that are not primary -- and the way
+    // back, so opening it is never a one-way door to the old wall.
+    const rest = (r.sections || []).filter((sec) => !sec.primary).length;
+    if (all || rest > 0) {
+      nav.append(moreRow("more-sections", all ? CHEVRON_UP : CHEVRON_DOWN,
+        all ? "Fewer destinations" : `More destinations (${rest})`,
+        all ? "Show only the main destinations" : "Show every destination",
+        () => api.rail("sections-all", !all)));
     }
     const layers = $("layers");
     layers.textContent = "";
