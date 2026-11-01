@@ -272,8 +272,20 @@ function toEvent(row, { room = "main", channel = "", voiceable } = {}) {
       // The relay's own class flag, kept apart from the voice decision: it is
       // true for the owner on #agents (see rule 6) and so cannot mean "bot".
       relay_agent: row.agent === true,
+      // Subscription pass-through key (awdk thread_subs): a reply in a relay thread
+      // reaches every session subscribed to it with no router turn. GitHub PRs and
+      // Discord threads mirror INTO relay threads, so this one stamp covers them all.
+      // Keyed on the POLLED channel, never row.channel (see the docstring above).
+      ...threadKey(stampedChannel, row.thread_id),
     },
   };
+}
+
+/** `{thread: {surface: "relay", id: "<channel>/<thread>"}}`, or `{}` when unthreaded. */
+function threadKey(channel, threadId) {
+  const tid = threadId == null ? "" : String(threadId).trim();
+  if (!tid || !channel) return {};
+  return { thread: { surface: "relay", id: `${channel}/${tid}`.slice(0, 512) } };
 }
 
 /**

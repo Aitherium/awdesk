@@ -260,3 +260,12 @@ test("the status file is an operator trace, and a test never writes the live one
   assert.ok(written.at, "status carries a timestamp");
   assert.notStrictEqual(bridge.statusFile, require("./relay-room-bridge.cjs").statusPath());
 });
+
+test("toEvent stamps payload.thread from a threaded relay row, keyed on the POLLED channel", () => {
+  const threaded = toEvent(row({ thread_id: "t42", channel: "#elsewhere" }), { channel: "#agents" });
+  assert.deepStrictEqual(threaded.payload.thread, { surface: "relay", id: "#agents/t42" });
+  const flat = toEvent(row(), { channel: "#agents" });
+  assert.strictEqual(flat.payload.thread, undefined, "an unthreaded row carries no thread key");
+  const blank = toEvent(row({ thread_id: "  " }), { channel: "#agents" });
+  assert.strictEqual(blank.payload.thread, undefined);
+});
