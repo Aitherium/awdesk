@@ -5,6 +5,23 @@ const {
   StreamableHTTPServerTransport,
 } = require("@modelcontextprotocol/sdk/server/streamableHttp.js");
 const z = require("zod/v4");
+
+/* desktop_open's `app`: the same id grammar Veil's desk-host.ts accepts for
+   desk-open-app, and the same windows an agent may never open for someone
+   (AitherVeil components/os/openable-apps.ts AGENT_DENIED_APPS): a sign-in
+   window opened unprompted reads as phishing, and "This device" IS the
+   loopback-probe consent. Owner 2026-10-31: agents bring the window to you. */
+const DESKTOP_APP_ID = /^[a-z0-9][a-z0-9:_-]{0,63}$/;
+const DESKTOP_APP_DENIED = new Set(["auth", "portal", "greeter", "fleet-task-manager", "this-device"]);
+
+/** Why desktop_open must refuse this (surface, app), or null when it may proceed. */
+function desktopAppRefusal(surface, app) {
+  if (app == null || app === "") return null;
+  if (surface !== "app") return "`app` only opens inside the full desktop: use surface=app";
+  if (!DESKTOP_APP_ID.test(app)) return `not an OS app id: ${JSON.stringify(app)}`;
+  if (DESKTOP_APP_DENIED.has(app)) return `${app} is an account/consent window an agent may not open for the owner`;
+  return null;
+}
 const { version } = require("../package.json");
 // Plan 40 slice F. A refusal must name its real cause: a character hidden by the
 // safety gate IS installed, and answering "not installed" sends the owner hunting
@@ -642,14 +659,18 @@ function createDeskMcpServer({
       {
         title: "Open an AitherOS desktop surface",
         description:
-          "overlay = the aitherium.com Living Desktop taskbar drawn over the Windows desktop (click-through where it draws nothing; the same overlay AitherConnect puts over any web page); app = the full aitherium.com AitherDesktop (Desktop Anywhere shell) in its own maximised window; status = which of the two are open. Both share one signed-in session.",
+          "overlay = the aitherium.com Living Desktop taskbar drawn over the Windows desktop (click-through where it draws nothing; the same overlay AitherConnect puts over any web page); app = the full aitherium.com AitherDesktop (Desktop Anywhere shell) in its own maximised window; status = which of the two are open. Both share one signed-in session. With surface=app, `app` opens that one window in the desktop (an OS app id such as files, relay, mediaforge, agents) -- how an agent puts a window in front of the owner instead of describing where to click. Account and consent windows (auth, portal, this-device) are refused.",
         inputSchema: {
           surface: z.enum(["overlay", "app", "status"]).describe("Which surface to open, or status."),
+          app: z.string().regex(DESKTOP_APP_ID).optional()
+            .describe("surface=app only: the OS app id to open as a window, e.g. files, relay, agents."),
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
-      async ({ surface }) => {
-        const result = await onDesktop(surface);
+      async ({ surface, app }) => {
+        const refused = desktopAppRefusal(surface, app);
+        if (refused) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: refused }) }], isError: true };
+        const result = await onDesktop(surface, app ? { app } : undefined);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], isError: result?.ok === false };
       },
     );
@@ -1092,5 +1113,6 @@ module.exports = {
   createDeskMcpHandler,
   createDeskMcpServer,
   describeCast,
+  desktopAppRefusal,
   getAnimationEventName,
 };

@@ -5626,12 +5626,14 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
       onBrowser: (action, args) => browserWindow.browserAgent({ askAgent: browserAskAgent })(action, args),
       onChrome: (action, args) => chromeBridge.call(action, args),
       // An agent asked (MCP desktop_open): a REQUEST trigger -- Do not disturb refuses it.
-      onDesktop: (surface) => {
+      // `app` (mcp-server.cjs validated it and refused the consent windows): the
+      // desktop opens on that one window -- an agent brings the window to the owner.
+      onDesktop: (surface, opts) => {
         if (surface === "overlay") {
           const verdict = requestLivingDesktop();
           if (!verdict.ok) return { ...verdict, opened: null, ...desktopStatus() };
-        } else if (surface === "app") showDesktopApp();
-        return { ok: true, opened: surface === "status" ? null : surface, ...desktopStatus() };
+        } else if (surface === "app") showDesktopApp({ app: opts?.app || "" });
+        return { ok: true, opened: surface === "status" ? null : surface, app: opts?.app || null, ...desktopStatus() };
       },
     });
     bridge = createBridgeServer({
