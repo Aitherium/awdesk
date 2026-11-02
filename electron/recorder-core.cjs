@@ -649,6 +649,31 @@ async function finalizeRecording({
   }
 }
 
+/**
+ * ffmpeg gdigrab argv for one segment of a NATIVE recording: a display that
+ * desktopCapturer cannot see. Measured 2026-11-02: the desk is pinned to the iGPU
+ * (present-policy.cjs) and Windows then hides the RTX 5090's 4K output from
+ * Chromium's capturer, so getUserMedia has no source for it; GDI sees every screen.
+ * `rect` is in PHYSICAL pixels (virtual-desktop coordinates, may be negative).
+ */
+function nativeGrabArgs({ rect, fps = DEFAULT_FPS, output }) {
+  const width = Math.floor(rect.width) - (Math.floor(rect.width) % 2);
+  const height = Math.floor(rect.height) - (Math.floor(rect.height) % 2);
+  if (!output || width < 2 || height < 2) return null;
+  return [
+    "-hide_banner", "-loglevel", "error", "-f", "gdigrab",
+    "-framerate", String(Math.max(1, Math.min(60, Math.round(Number(fps) || DEFAULT_FPS)))),
+    "-offset_x", String(Math.round(rect.x)), "-offset_y", String(Math.round(rect.y)),
+    "-video_size", `${width}x${height}`, "-draw_mouse", "1", "-i", "desktop",
+    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-pix_fmt", "yuv420p", "-y", output,
+  ];
+}
+
+/** ffmpeg concat-demuxer list for native segments (single quotes escaped per its syntax). */
+function nativeConcatList(paths) {
+  return (paths || []).map((p) => `file '${String(p).replace(/\\/g, "/").replace(/'/g, "'\\''")}'`).join("\n") + "\n";
+}
+
 module.exports = {
   FOLDER_NAME, FORMATS, UPLOAD_FOLDER, MAX_UPLOAD_BYTES, DEFAULT_FPS, GIF_FPS, GIF_MAX_WIDTH,
   FFMPEG_TIMEOUT_MS, FFMPEG_REMEDY, CONTENT_TYPES, VISIBLE_CAP,
@@ -657,5 +682,5 @@ module.exports = {
   captureConstraints, systemAudioConstraints, findFfmpeg, mp4Args, gifArgs, convertPlan,
   uploadItem, formatElapsed, elapsedMs, capList, syncLine, createChunkWriter, finalizeRecording,
   moveFile, verifyOutput, uploadTimeoutMs, createRecordingUploader, cancelSpooledJob,
-  queueRecordingUpload, recoverStaleRecordings, recoveredLine,
+  queueRecordingUpload, recoverStaleRecordings, recoveredLine, nativeGrabArgs, nativeConcatList,
 };

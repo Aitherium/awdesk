@@ -195,9 +195,77 @@ async function captureFrames() {
   const sources = await desktopCapturer.getSources({
     types: ["screen"], thumbnailSize: snip.thumbnailSizeFor(displays),
   });
-  return snip.matchSources(displays, sources)
+  const frames = snip.matchSources(displays, sources)
     .map(({ display, source }) => ({ display, source, image: source.thumbnail }))
     .filter((f) => f.source && f.source.id);
+  // A display desktopCapturer cannot see (the 5090's 4K screen while the desk is
+  // pinned to the iGPU, measured 2026-11-02) records NATIVELY through ffmpeg gdigrab.
+  if (!ffmpegPath()) return frames;
+  for (const display of displays) {
+    if (frames.some((f) => f.display.id === display.id)) continue;
+    const image = await require("./snip-window.cjs").nativeFrame(display);
+    if (image && !image.isEmpty()) frames.push({ display, source: null, image, native: true });
+  }
+  return frames;
+}
+
+// ── native (ffmpeg gdigrab) recording ───────────────────────────────────────
+
+/** The session's capture rect in PHYSICAL virtual-desktop pixels. */
+function nativeRect(display, cropDip) {
+  const b = display.bounds;
+  const dip = cropDip
+    ? { x: b.x + cropDip.x, y: b.y + cropDip.y, width: cropDip.width, height: cropDip.height }
+    : { ...b };
+  try { return electron().screen.dipToScreenRect(null, dip); } catch { return dip; }
+}
+
+/** Start one gdigrab segment (on "recording"); ffmpeg writes until it reads "q". */
+function nativeSegmentStart(s) {
+  const n = s.native.parts.length;
+  const output = path.join(os.tmpdir(), "aither-recorder-native", `nat-${s.native.stamp}-${n}.mkv`);
+  try { require("node:fs").mkdirSync(path.dirname(output), { recursive: true }); } catch { /* temp exists */ }
+  const args = core.nativeGrabArgs({ rect: s.native.rect, fps: s.options.fps, output });
+  if (!args) return false;
+  const child = require("node:child_process").spawn(ffmpegPath(), args, { windowsHide: true, stdio: ["pipe", "ignore", "pipe"] });
+  let err = "";
+  child.stderr.on("data", (d) => { err = (err + d).slice(-400); });
+  const done = new Promise((resolve) => {
+    child.on("error", (e) => resolve({ ok: false, reason: e.message }));
+    child.on("close", (code) => resolve(code === 0 ? { ok: true } : { ok: false, reason: err.trim().split(/\r?\n/).pop() || `ffmpeg exit ${code}` }));
+  });
+  s.native.parts.push(output);
+  s.native.live = { child, done };
+  return true;
+}
+
+/** Stop the live segment (pause or stop); resolves when ffmpeg has closed the file. */
+async function nativeSegmentStop(s) {
+  const live = s.native && s.native.live;
+  if (!live) return null;
+  s.native.live = null;
+  try { live.child.stdin.write("q"); live.child.stdin.end(); } catch { /* already exiting */ }
+  const timer = setTimeout(() => { try { live.child.kill(); } catch { /* gone */ } }, 8000);
+  const r = await live.done;
+  clearTimeout(timer);
+  return r;
+}
+
+/** Stop the last segment and join every segment into one file; returns its path or null. */
+async function nativeAssemble(s) {
+  await nativeSegmentStop(s);
+  const fs = require("node:fs");
+  const parts = s.native.parts.filter((p) => { try { return fs.statSync(p).size > 0; } catch { return false; } });
+  if (parts.length <= 1) return parts[0] || null;
+  const dir = path.dirname(parts[0]);
+  const list = path.join(dir, `nat-${s.native.stamp}.txt`);
+  const joined = path.join(dir, `nat-${s.native.stamp}-joined.mkv`);
+  fs.writeFileSync(list, core.nativeConcatList(parts));
+  const r = await runFfmpeg(ffmpegPath(), ["-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-y", joined]);
+  try { fs.unlinkSync(list); } catch { /* temp */ }
+  if (!r.ok) return parts[0];
+  for (const p of parts) { try { fs.unlinkSync(p); } catch { /* temp */ } }
+  return joined;
 }
 
 /**
@@ -325,7 +393,8 @@ function beginBar(frame, cropDip) {
     ...session,
     state: "starting",
     display: frame.display,
-    sourceId: frame.source.id,
+    sourceId: frame.source ? frame.source.id : null,
+    native: frame.source ? null : { rect: nativeRect(frame.display, cropDip), stamp, parts: [], live: null },
     cropDip,
     bar,
     writer: core.createChunkWriter(path.join(os.tmpdir(), "aither-recorder", `rec-${stamp}.webm`)),
@@ -376,13 +445,24 @@ async function finish({ reason } = {}) {
   s.state = "finishing";
   s.writer.close();
   try { if (s.bar && !s.bar.isDestroyed()) s.bar.destroy(); } catch { /* already gone */ }
+  let tempPath = s.writer.path;
+  if (s.native) {
+    try { require("node:fs").unlinkSync(s.writer.path); } catch { /* the chunk writer never wrote */ }
+    tempPath = await nativeAssemble(s);
+    if (!tempPath) {
+      session = null;
+      showToast({ ok: false, reason: "1 recording came back empty — ffmpeg could not grab this screen" });
+      return { ok: false, reason: "native recording empty" };
+    }
+  }
   const verdict = await core.finalizeRecording({
-    tempPath: s.writer.path,
+    tempPath,
     dir: core.recordingDir({ videosDir: videosDirOrUndefined() }),
     startedAt: s.startedAt,
-    format: s.options.format,
+    // A native segment is H.264 in MKV, never WebM: "webm" would only rename it.
+    format: s.native && core.parseFormat(s.options.format) === "webm" ? "mp4" : s.options.format,
     ffmpeg: ffmpegPath(),
-    audio: s.options.systemAudio || s.options.mic,
+    audio: !s.native && (s.options.systemAudio || s.options.mic),
     run: runFfmpeg,
     enqueue: (item) => uploadQueue().enqueue(item),
     sync: autoSyncEnabled(),
@@ -572,6 +652,12 @@ function handlers() {
     // The bar.
     "recorder:plan": (event) => {
       if (!fromBar(event)) return { ok: false, reason: "not the recorder bar" };
+      if (session.native) {
+        return {
+          ok: true, native: true, fps: session.options.fps, format: session.options.format,
+          cropped: Boolean(session.cropDip), soundDropped: Boolean(session.options.systemAudio || session.options.mic),
+        };
+      }
       return {
         ok: true,
         constraints: core.captureConstraints({ sourceId: session.sourceId, display: session.display, fps: session.options.fps }),
@@ -602,6 +688,11 @@ function handlers() {
       const open = session.segments.length && session.segments[session.segments.length - 1][1] == null;
       if (next === "recording" && !open) session.segments.push([now, null]);
       if (next === "paused" && open) session.segments[session.segments.length - 1][1] = now;
+      // Native: each recording stretch is its own ffmpeg segment, joined at finish.
+      if (session.native && next === "recording" && !session.native.live && !nativeSegmentStart(session)) {
+        return { ok: false, reason: "the region is too small to record" };
+      }
+      if (session.native && next === "paused") void nativeSegmentStop(session);
       if (next === "recording" || next === "paused") session.state = next;
       // A stop/pause asked for while the bar was starting: the bar registered
       // onCommand before it reported "recording", so it hears this one.
@@ -621,6 +712,7 @@ function handlers() {
       const why = String(raw || "capture failed").slice(0, 160);
       const s = session;
       session = null;
+      if (s.native) void nativeSegmentStop(s);
       try { s.writer.close(); } catch { /* nothing opened */ }
       // An empty temp file is litter; one with bytes is recovered on the next start.
       if (!s.writer.bytes) { try { require("node:fs").unlinkSync(s.writer.path); } catch { /* never created */ } }

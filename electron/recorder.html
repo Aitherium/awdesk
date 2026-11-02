@@ -97,6 +97,21 @@
     const plan = await rec.plan();
     if (!plan || !plan.ok) return fail((plan && plan.reason) || "no plan");
 
+    let tags;
+    let raw = null;
+    if (plan.native) {
+      // Main records this screen with ffmpeg gdigrab (Chromium cannot see it, measured
+      // 2026-11-02 on the RTX 5090's 4K output); the bar only drives start/pause/stop.
+      tags = [plan.cropped ? "Region" : "Screen", plan.format.toUpperCase()];
+      if (plan.soundDropped) tags.push("no sound on this screen");
+      recorder = {
+        state: "inactive",
+        start() { this.state = "recording"; },
+        pause() { this.state = "paused"; },
+        resume() { this.state = "recording"; },
+        stop() { this.state = "inactive"; Promise.resolve().then(() => this.onstop && this.onstop()); },
+      };
+    } else {
     let screen;
     try {
       screen = await navigator.mediaDevices.getUserMedia(plan.constraints);
@@ -104,7 +119,7 @@
       return fail(`screen capture refused: ${(e && e.message) || e}`);
     }
     owned.push(...screen.getTracks());
-    const raw = screen.getVideoTracks()[0];
+    raw = screen.getVideoTracks()[0];
     const settings = raw.getSettings();
     let videoTrack = raw;
     let label = "Screen";
@@ -164,7 +179,7 @@
       audioTracks = dest.stream.getAudioTracks();
     }
 
-    const tags = [label, plan.format.toUpperCase()];
+    tags = [label, plan.format.toUpperCase()];
     if (plan.systemAudio && !missing.includes("system audio")) tags.push("system audio");
     if (plan.mic && !missing.includes("mic")) tags.push("mic");
     if (missing.length) tags.push(`${missing.length} audio source${missing.length > 1 ? "s" : ""} refused — recording without`);
@@ -183,6 +198,7 @@
       recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 8_000_000 } : undefined);
     } catch (e) {
       return fail(`MediaRecorder refused: ${(e && e.message) || e}`);
+    }
     }
     // A refused chunk (disk full, EPERM) ends the recording: appending past it
     // would leave a hole mid-file. Main refuses later appends too and the toast
@@ -252,7 +268,7 @@
     what.title = tags.join(" · ");
     tick = setInterval(render, 250);
     // A source that ends on its own (display unplugged, permission revoked) saves what we have.
-    raw.addEventListener("ended", stop);
+    if (raw) raw.addEventListener("ended", stop);
   }
 
   // ── the toast ─────────────────────────────────────────────────────────────

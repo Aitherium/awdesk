@@ -587,3 +587,22 @@ test("F7 a cancelled recording upload: its spool goes and the queue never sends 
   assert.deepEqual(fs.readdirSync(spoolDir), []);
   assert.deepEqual(core.cancelSpooledJob({ spoolDir, id }), { ok: false, reason: "1 sync already finished — nothing to cancel" });
 });
+
+// 2026-11-02: the 4K screen on the RTX 5090 is invisible to desktopCapturer while the
+// desk is pinned to the iGPU; those displays record through ffmpeg gdigrab.
+test("nativeGrabArgs grabs the physical rect with even sizes", () => {
+  const args = core.nativeGrabArgs({ rect: { x: -10, y: 0, width: 3841, height: 2161 }, fps: 20, output: "o.mkv" });
+  const at = (flag) => args[args.indexOf(flag) + 1];
+  assert.equal(at("-f"), "gdigrab");
+  assert.equal(at("-offset_x"), "-10");
+  assert.equal(at("-video_size"), "3840x2160");
+  assert.equal(at("-framerate"), "20");
+  assert.equal(args[args.length - 1], "o.mkv");
+  assert.equal(core.nativeGrabArgs({ rect: { x: 0, y: 0, width: 1, height: 9 }, output: "o.mkv" }), null);
+});
+
+test("nativeConcatList quotes paths for the concat demuxer", () => {
+  const bs = String.fromCharCode(92);
+  const list = core.nativeConcatList([`C:${bs}t${bs}a.mkv`, `C:${bs}x'y${bs}b.mkv`]);
+  assert.equal(list, `file 'C:/t/a.mkv'\nfile 'C:/x'${bs}''y/b.mkv'\n`);
+});

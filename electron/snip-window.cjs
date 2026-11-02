@@ -116,8 +116,116 @@ const NATIVE_GRAB_PS = [
   "$b.Save($env:SNIP_OUT,[System.Drawing.Imaging.ImageFormat]::Png)",
 ].join("; ");
 
-/** One display's pixels via GDI (Windows only), as a nativeImage, or null. Never rejects. */
-function nativeFrame(display) {
+// A resident GDI grabber: one PowerShell kept warm so Print Screen does not pay a
+// process start + Add-Type compile per press. Measured 2026-11-02 with the host CPU
+// at 100 %: one-shot grab 2.5 s, warm grab 140-250 ms for a 4K screen. It writes raw
+// BGRA (no PNG encode) that nativeImage.createFromBitmap takes as-is.
+const GRAB_LOOP_PS = String.raw`$ErrorActionPreference='Stop'
+Add-Type -AssemblyName System.Drawing
+Add-Type -Namespace D -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);'
+[void][D.U]::SetProcessDpiAwarenessContext([IntPtr](-4))
+[Console]::Out.WriteLine('ready')
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+  try {
+    $p = $line.Split('|'); $x=[int]$p[0]; $y=[int]$p[1]; $w=[int]$p[2]; $h=[int]$p[3]; $out=$p[4]
+    $b = New-Object System.Drawing.Bitmap $w,$h,([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $g = [System.Drawing.Graphics]::FromImage($b)
+    $g.CopyFromScreen($x,$y,0,0,(New-Object System.Drawing.Size $w,$h))
+    $d = $b.LockBits((New-Object System.Drawing.Rectangle 0,0,$w,$h),[System.Drawing.Imaging.ImageLockMode]::ReadOnly,$b.PixelFormat)
+    $buf = New-Object byte[] ($d.Stride*$h)
+    [System.Runtime.InteropServices.Marshal]::Copy($d.Scan0,$buf,0,$buf.Length)
+    $b.UnlockBits($d); $g.Dispose(); $b.Dispose()
+    [System.IO.File]::WriteAllBytes($out,$buf)
+    [Console]::Out.WriteLine('ok')
+  } catch { [Console]::Out.WriteLine('err ' + $_.Exception.Message) }
+}
+`;
+const GRAB_TIMEOUT_MS = 5000;
+let grabber = null; // { child, ready: Promise<boolean>, waiters: [], chain: Promise }
+
+function startGrabber() {
+  if (grabber) return grabber;
+  const os = require("node:os");
+  const fs = require("node:fs");
+  const script = path.join(os.tmpdir(), `aither-snip-grab-${process.pid}.ps1`);
+  try { fs.writeFileSync(script, GRAB_LOOP_PS); } catch { return null; }
+  const child = require("node:child_process").spawn("powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script],
+    { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
+  const g = { child, waiters: [], chain: Promise.resolve(), ready: null };
+  let buf = "";
+  let onReady;
+  g.ready = new Promise((resolve) => { onReady = resolve; });
+  child.stdout.on("data", (d) => {
+    buf += d;
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (line === "ready") onReady(true);
+      else if (g.waiters.length) g.waiters.shift()(line);
+    }
+  });
+  const dead = () => {
+    onReady(false);
+    for (const w of g.waiters.splice(0)) w("err grabber exited");
+    if (grabber === g) grabber = null;
+    try { fs.unlinkSync(script); } catch { /* temp */ }
+  };
+  child.on("error", dead);
+  child.on("exit", dead);
+  grabber = g;
+  return g;
+}
+
+/** Start the warm grabber ahead of the first Print Screen (Windows, several displays). */
+function warmNativeGrabber() {
+  if (process.platform !== "win32") return false;
+  try { if (electron().screen.getAllDisplays().length < 2) return false; } catch { return false; }
+  return Boolean(startGrabber());
+}
+
+/** One display via the warm grabber, as a nativeImage, or null (caller falls back). */
+function grabWarm(rect) {
+  const g = startGrabber();
+  if (!g) return Promise.resolve(null);
+  const run = async () => {
+    if (!(await g.ready)) return null;
+    const os = require("node:os");
+    const fs = require("node:fs");
+    const out = path.join(os.tmpdir(), `aither-snip-${process.pid}-${rect.x}_${rect.y}.raw`);
+    const width = Math.round(rect.width);
+    const height = Math.round(rect.height);
+    const answer = await new Promise((resolve) => {
+      const timer = setTimeout(() => { resolve("err timeout"); try { g.child.kill(); } catch { /* gone */ } }, GRAB_TIMEOUT_MS);
+      g.waiters.push((line) => { clearTimeout(timer); resolve(line); });
+      try { g.child.stdin.write(`${Math.round(rect.x)}|${Math.round(rect.y)}|${width}|${height}|${out}\n`); } catch { resolve("err stdin"); }
+    });
+    let image = null;
+    try {
+      if (answer === "ok") image = electron().nativeImage.createFromBitmap(fs.readFileSync(out), { width, height });
+    } catch { image = null; }
+    try { fs.unlinkSync(out); } catch { /* nothing written */ }
+    if (answer !== "ok") console.warn(`[snip] warm grab failed: ${answer}`);
+    return image;
+  };
+  const result = g.chain.then(run, run);
+  g.chain = result.catch(() => null);
+  return result;
+}
+
+/** One display's pixels via GDI (Windows only): the warm grabber, else a one-shot PowerShell. */
+async function nativeFrame(display) {
+  if (process.platform !== "win32") return null;
+  let rect;
+  try { rect = electron().screen.dipToScreenRect(null, display.bounds); } catch { rect = display.bounds; }
+  const warm = await grabWarm(rect).catch(() => null);
+  if (warm && !warm.isEmpty()) return warm;
+  return nativeFrameOnce(display);
+}
+
+/** One display's pixels via a one-shot GDI PowerShell, as a nativeImage, or null. Never rejects. */
+function nativeFrameOnce(display) {
   if (process.platform !== "win32") return Promise.resolve(null);
   const { screen, nativeImage } = electron();
   const os = require("node:os");
@@ -412,5 +520,5 @@ function startCapture({ askImage, onAnswer } = {}) {
 module.exports = {
   configureSnip, startSnip, ensureSnipIpc, lastScreenshot, closeOverlays,
   startCapture, toggleClipboardSync, clipboardSyncOn, printScreenOwner, setPrintScreenOwner,
-  refreshPrintScreenOwner,
+  refreshPrintScreenOwner, nativeFrame, warmNativeGrabber,
 };

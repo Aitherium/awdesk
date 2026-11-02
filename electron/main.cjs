@@ -5266,6 +5266,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       askImage: (filePath) => routeDrop({ filePath, mime: "image/png" }),
       onAnswer: announceDrop,
     });
+    // Warm the GDI grabber so Print Screen on a screen Chromium cannot see (the 4K on
+    // the RTX 5090) opens in ~0.2 s instead of ~2.5 s. Late, so boot is not slowed.
+    setTimeout(() => { try { capture.warmNativeGrabber(); } catch { /* the snip falls back to one-shot */ } }, 15_000);
     // Recordings: [Ask Aither] is drop-router's VIDEO lane (first frame -> vision),
     // run through the recorder's resolved ffmpeg with a hidden console.
     recorder.configureRecorder({
