@@ -479,7 +479,8 @@ test("Restart Aither is a tray row wired to app.relaunch", () => {
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.match(main, /case "desk\.restart": return void restartDesk\(\)/);
   assert.match(main, /function restartDesk\(\)/);
-  assert.match(main, /app\.relaunch\(\)/);
+  // With --relaunched, so the new process waits out the old one's lock (relaunch-lock.cjs).
+  assert.match(main, /app\.relaunch\(\{ args: \[.*RELAUNCH_FLAG\] \}\)/);
 });
 
 test("Mission Control has a palette/tray door that opens the page in a browser tab", () => {

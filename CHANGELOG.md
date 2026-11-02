@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.1.28 - 2026-11-01
+
+- Restart Aither no longer leaves you with no desk: the relaunched Desk waits for the old one to let go instead of quitting.
 - Snipping tool: PrintScreen drags a region (Enter or double-click takes the whole screen, Esc cancels). The PNG is saved and copied, and a toast offers Ask Aither, Copy path and Open folder. Each snip also uploads to your AitherOS Online Screenshots. "Use Aither for Print Screen" in the tray takes the key from Windows' Snipping Tool, and "Restore Windows Snipping Tool" gives it back.
 - Clipboard sync (off until you turn it on in the tray): copies show up in the AitherOS Online Clipboard app on any device. Anything that looks like a password or API key is never synced.
 - Screen recorder: Shift+PrintScreen records a region, or use the tray for the whole screen, with sound, or as a GIF. Saves MP4 at about 20-30 fps; Sync uploads one recording.

@@ -708,6 +708,8 @@ const consoleIsRequested = process.argv.includes("--console");
  *  release, not the user's first launch. */
 // Never in kid mode: --smoke skips the single-instance lock, so it would be a second desk.
 const smokeIsRequested = process.argv.includes("--smoke") && !kidDeskMode().enabled;
+// Restart = relaunch with --relaunched, which waits for the old process's lock (relaunch-lock.cjs).
+const { RELAUNCH_FLAG, singleInstanceLock } = require("./relaunch-lock.cjs");
 const protocolScheme = "desk";
 const debugEnabled = process.env.DESK_DEBUG === "1";
 
@@ -3229,7 +3231,10 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
  *  isQuitting suppresses the close interceptors, exactly like Quit. */
 function restartDesk() {
   isQuitting = true;
-  app.relaunch();
+  // --relaunched: the new process starts while THIS one still holds the single-
+  // instance lock; without the marker it saw the lock, took itself for a second
+  // copy and quit, leaving no desk at all (measured twice 2026-11-01).
+  app.relaunch({ args: [...process.argv.slice(1).filter((a) => a !== RELAUNCH_FLAG), RELAUNCH_FLAG] });
   app.exit(0);
 }
 
@@ -4488,7 +4493,7 @@ function runSmokeTest() {
 }
 
 // (`Desk.exe --quit` is decided at the top of this file, before any of this loads.)
-if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
+if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
   app.quit();
 } else {
   // Tenant installs only (desk-tenant.json carries `api`); a failure here never stops Desk.
