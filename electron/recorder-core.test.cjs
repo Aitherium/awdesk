@@ -606,3 +606,8 @@ test("nativeConcatList quotes paths for the concat demuxer", () => {
   const list = core.nativeConcatList([`C:${bs}t${bs}a.mkv`, `C:${bs}x'y${bs}b.mkv`]);
   assert.equal(list, `file 'C:/t/a.mkv'\nfile 'C:/x'${bs}''y/b.mkv'\n`);
 });
+
+test("nativeMuxArgs joins the bar's sound onto the native video without re-encoding", () => {
+  const args = core.nativeMuxArgs({ video: "v.mkv", audio: "a.webm", output: "av.mkv" });
+  assert.deepEqual(args.slice(args.indexOf("-map")), ["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", "-y", "av.mkv"]);
+});

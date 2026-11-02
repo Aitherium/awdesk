@@ -97,20 +97,60 @@
     const plan = await rec.plan();
     if (!plan || !plan.ok) return fail((plan && plan.reason) || "no plan");
 
+    // Audio: soft. A refused source is named on the status line, never fatal.
+    const audioIn = [];
+    const missing = [];
+    if (plan.systemAudio) {
+      try {
+        const sys = await navigator.mediaDevices.getUserMedia(plan.systemAudio);
+        for (const t of sys.getVideoTracks()) t.stop();
+        owned.push(...sys.getAudioTracks());
+        if (sys.getAudioTracks().length) audioIn.push(new MediaStream(sys.getAudioTracks()));
+        else missing.push("system audio");
+      } catch { missing.push("system audio"); }
+    }
+    if (plan.mic) {
+      try {
+        const mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        owned.push(...mic.getAudioTracks());
+        audioIn.push(mic);
+      } catch { missing.push("mic"); }
+    }
+    let audioTracks = [];
+    if (audioIn.length === 1) audioTracks = audioIn[0].getAudioTracks();
+    else if (audioIn.length > 1) {
+      const ac = new AudioContext();
+      const dest = ac.createMediaStreamDestination();
+      for (const s of audioIn) ac.createMediaStreamSource(s).connect(dest);
+      audioTracks = dest.stream.getAudioTracks();
+    }
+
     let tags;
     let raw = null;
     if (plan.native) {
       // Main records this screen with ffmpeg gdigrab (Chromium cannot see it, measured
-      // 2026-11-02 on the RTX 5090's 4K output); the bar only drives start/pause/stop.
+      // 2026-11-02 on the RTX 5090's 4K output). The bar records only the SOUND here
+      // (system audio + mic work on any GPU); main muxes it onto the video at finish.
       tags = [plan.cropped ? "Region" : "Screen", plan.format.toUpperCase()];
-      if (plan.soundDropped) tags.push("no sound on this screen");
-      recorder = {
-        state: "inactive",
-        start() { this.state = "recording"; },
-        pause() { this.state = "paused"; },
-        resume() { this.state = "recording"; },
-        stop() { this.state = "inactive"; Promise.resolve().then(() => this.onstop && this.onstop()); },
-      };
+      if (plan.systemAudio && !missing.includes("system audio")) tags.push("system audio");
+      if (plan.mic && !missing.includes("mic")) tags.push("mic");
+      if (missing.length) tags.push(`${missing.length} audio source${missing.length > 1 ? "s" : ""} refused — recording without`);
+      if (audioTracks.length) {
+        const audioMime = ["audio/webm;codecs=opus", "audio/webm"].find((m) => MediaRecorder.isTypeSupported(m)) || "";
+        try {
+          recorder = new MediaRecorder(new MediaStream(audioTracks), audioMime ? { mimeType: audioMime } : undefined);
+        } catch (e) {
+          return fail(`MediaRecorder refused: ${(e && e.message) || e}`);
+        }
+      } else {
+        recorder = {
+          state: "inactive",
+          start() { this.state = "recording"; },
+          pause() { this.state = "paused"; },
+          resume() { this.state = "recording"; },
+          stop() { this.state = "inactive"; Promise.resolve().then(() => this.onstop && this.onstop()); },
+        };
+      }
     } else {
     let screen;
     try {
@@ -149,34 +189,6 @@
       label = `Region ${c.width}×${c.height}`;
     } else {
       label = `Screen ${settings.width}×${settings.height}`;
-    }
-
-    // Audio: soft. A refused source is named on the status line, never fatal.
-    const audioIn = [];
-    const missing = [];
-    if (plan.systemAudio) {
-      try {
-        const sys = await navigator.mediaDevices.getUserMedia(plan.systemAudio);
-        for (const t of sys.getVideoTracks()) t.stop();
-        owned.push(...sys.getAudioTracks());
-        if (sys.getAudioTracks().length) audioIn.push(new MediaStream(sys.getAudioTracks()));
-        else missing.push("system audio");
-      } catch { missing.push("system audio"); }
-    }
-    if (plan.mic) {
-      try {
-        const mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        owned.push(...mic.getAudioTracks());
-        audioIn.push(mic);
-      } catch { missing.push("mic"); }
-    }
-    let audioTracks = [];
-    if (audioIn.length === 1) audioTracks = audioIn[0].getAudioTracks();
-    else if (audioIn.length > 1) {
-      const ac = new AudioContext();
-      const dest = ac.createMediaStreamDestination();
-      for (const s of audioIn) ac.createMediaStreamSource(s).connect(dest);
-      audioTracks = dest.stream.getAudioTracks();
     }
 
     tags = [label, plan.format.toUpperCase()];

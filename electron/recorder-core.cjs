@@ -669,6 +669,12 @@ function nativeGrabArgs({ rect, fps = DEFAULT_FPS, output }) {
   ];
 }
 
+/** ffmpeg argv that joins the bar's sound (WebM/Opus) onto the native video (MKV), no re-encode. */
+function nativeMuxArgs({ video, audio, output }) {
+  return ["-hide_banner", "-loglevel", "error", "-i", video, "-i", audio,
+    "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", "-y", output];
+}
+
 /** ffmpeg concat-demuxer list for native segments (single quotes escaped per its syntax). */
 function nativeConcatList(paths) {
   return (paths || []).map((p) => `file '${String(p).replace(/\\/g, "/").replace(/'/g, "'\\''")}'`).join("\n") + "\n";
@@ -682,5 +688,5 @@ module.exports = {
   captureConstraints, systemAudioConstraints, findFfmpeg, mp4Args, gifArgs, convertPlan,
   uploadItem, formatElapsed, elapsedMs, capList, syncLine, createChunkWriter, finalizeRecording,
   moveFile, verifyOutput, uploadTimeoutMs, createRecordingUploader, cancelSpooledJob,
-  queueRecordingUpload, recoverStaleRecordings, recoveredLine, nativeGrabArgs, nativeConcatList,
+  queueRecordingUpload, recoverStaleRecordings, recoveredLine, nativeGrabArgs, nativeConcatList, nativeMuxArgs,
 };

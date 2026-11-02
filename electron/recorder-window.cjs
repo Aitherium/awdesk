@@ -446,9 +446,24 @@ async function finish({ reason } = {}) {
   s.writer.close();
   try { if (s.bar && !s.bar.isDestroyed()) s.bar.destroy(); } catch { /* already gone */ }
   let tempPath = s.writer.path;
+  let nativeSound = false;
   if (s.native) {
-    try { require("node:fs").unlinkSync(s.writer.path); } catch { /* the chunk writer never wrote */ }
     tempPath = await nativeAssemble(s);
+    const fs = require("node:fs");
+    let soundBytes = 0;
+    try { soundBytes = fs.statSync(s.writer.path).size; } catch { /* no sound recorded */ }
+    if (tempPath && soundBytes > 0) {
+      const muxed = tempPath.replace(/\.mkv$/i, "-av.mkv");
+      const r = await runFfmpeg(ffmpegPath(), core.nativeMuxArgs({ video: tempPath, audio: s.writer.path, output: muxed }));
+      if (r.ok) {
+        try { fs.unlinkSync(tempPath); } catch { /* temp */ }
+        tempPath = muxed;
+        nativeSound = true;
+      } else {
+        console.warn(`[recorder] sound could not be joined to the video: ${r.reason}`);
+      }
+    }
+    try { fs.unlinkSync(s.writer.path); } catch { /* the sound file never existed */ }
     if (!tempPath) {
       session = null;
       showToast({ ok: false, reason: "1 recording came back empty — ffmpeg could not grab this screen" });
@@ -462,7 +477,7 @@ async function finish({ reason } = {}) {
     // A native segment is H.264 in MKV, never WebM: "webm" would only rename it.
     format: s.native && core.parseFormat(s.options.format) === "webm" ? "mp4" : s.options.format,
     ffmpeg: ffmpegPath(),
-    audio: !s.native && (s.options.systemAudio || s.options.mic),
+    audio: s.native ? nativeSound : (s.options.systemAudio || s.options.mic),
     run: runFfmpeg,
     enqueue: (item) => uploadQueue().enqueue(item),
     sync: autoSyncEnabled(),
@@ -655,7 +670,10 @@ function handlers() {
       if (session.native) {
         return {
           ok: true, native: true, fps: session.options.fps, format: session.options.format,
-          cropped: Boolean(session.cropDip), soundDropped: Boolean(session.options.systemAudio || session.options.mic),
+          cropped: Boolean(session.cropDip),
+          // The bar records the sound (any GPU can); main muxes it onto the video at finish.
+          systemAudio: session.options.systemAudio ? core.systemAudioConstraints() : null,
+          mic: session.options.mic,
         };
       }
       return {
