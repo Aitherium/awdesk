@@ -91,9 +91,54 @@ async function captureFrames() {
   const sources = await desktopCapturer.getSources({
     types: ["screen"], thumbnailSize: core.thumbnailSizeFor(displays),
   });
-  return core.matchSources(displays, sources)
+  const frames = core.matchSources(displays, sources)
     .map(({ display, source }) => ({ display, image: source.thumbnail }))
     .filter((f) => f.image && !f.image.isEmpty());
+  // A display desktopCapturer did not return (measured 2026-11-02: a 4K + 1080p
+  // Windows desk got ONE source) is grabbed by GDI instead of borrowing a neighbour's.
+  for (const display of displays) {
+    if (frames.some((f) => f.display.id === display.id)) continue;
+    const image = await nativeFrame(display);
+    if (image && !image.isEmpty()) frames.push({ display, image });
+  }
+  return frames;
+}
+
+const NATIVE_GRAB_PS = [
+  "$ErrorActionPreference='Stop'",
+  "Add-Type -AssemblyName System.Drawing",
+  "Add-Type -Namespace D -Name U -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetProcessDpiAwarenessContext(IntPtr c);'",
+  "[void][D.U]::SetProcessDpiAwarenessContext([IntPtr](-4))",
+  "$x=[int]$env:SNIP_X; $y=[int]$env:SNIP_Y; $w=[int]$env:SNIP_W; $h=[int]$env:SNIP_H",
+  "$b=New-Object System.Drawing.Bitmap $w,$h",
+  "$g=[System.Drawing.Graphics]::FromImage($b)",
+  "$g.CopyFromScreen($x,$y,0,0,(New-Object System.Drawing.Size $w,$h))",
+  "$b.Save($env:SNIP_OUT,[System.Drawing.Imaging.ImageFormat]::Png)",
+].join("; ");
+
+/** One display's pixels via GDI (Windows only), as a nativeImage, or null. Never rejects. */
+function nativeFrame(display) {
+  if (process.platform !== "win32") return Promise.resolve(null);
+  const { screen, nativeImage } = electron();
+  const os = require("node:os");
+  const fs = require("node:fs");
+  let rect;
+  try { rect = screen.dipToScreenRect(null, display.bounds); } catch { rect = display.bounds; }
+  const out = path.join(os.tmpdir(), `aither-snip-${process.pid}-${display.id}.png`);
+  const env = { ...process.env, SNIP_X: String(rect.x), SNIP_Y: String(rect.y),
+    SNIP_W: String(rect.width), SNIP_H: String(rect.height), SNIP_OUT: out };
+  return new Promise((resolve) => {
+    require("node:child_process").execFile("powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", NATIVE_GRAB_PS],
+      { env, windowsHide: true, timeout: 8000 },
+      (error) => {
+        let image = null;
+        try { if (!error) image = nativeImage.createFromBuffer(fs.readFileSync(out)); } catch { image = null; }
+        try { fs.unlinkSync(out); } catch { /* nothing written */ }
+        if (error) console.warn(`[snip] native grab of display ${display.id} failed: ${error.message}`);
+        resolve(image);
+      });
+  });
 }
 
 /**

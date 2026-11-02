@@ -199,7 +199,13 @@ function matchSources(displays, sources) {
   const out = [];
   (displays || []).forEach((display, index) => {
     const byId = (sources || []).find((s) => String(s.display_id || "") === String(display.id));
-    const source = byId || (sources || [])[index] || null;
+    // The order fallback only takes a source that names NO display. Measured 2026-11-02:
+    // Windows (4K + 1080p) returned ONE source, display_id = the 1080p screen; the old
+    // `sources[index]` gave it to the 4K display too, so Print Screen showed the second
+    // monitor blown up over the main one. A display with no source of its own is left
+    // out here and captured natively (snip-window nativeFrame).
+    const byOrder = (sources || [])[index];
+    const source = byId || (byOrder && !String(byOrder.display_id || "") ? byOrder : null);
     if (source) out.push({ display, source });
   });
   return out;

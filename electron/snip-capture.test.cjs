@@ -69,6 +69,13 @@ test("sources pair to displays by display_id, then by order", () => {
   assert.deepEqual(byOrder.map((p) => p.source.n), ["x", "y"]);
 });
 
+test("a source naming ANOTHER display is never reused for a display without one", () => {
+  // 2026-11-02: one source (the 1080p screen) came back for a 4K + 1080p desk.
+  const displays = [{ id: 3319162582 }, { id: 3531739756 }];
+  const pairs = snip.matchSources(displays, [{ display_id: "3531739756", n: "second" }]);
+  assert.deepEqual(pairs.map((p) => [p.display.id, p.source.n]), [[3531739756, "second"]]);
+});
+
 test("saveCapture writes the PNG, copies it, and queues it for `screenshots`", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snip-"));
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
