@@ -759,6 +759,49 @@ test("awconnect: fleet verbs and /command still refuse the extension without a b
   assert.equal(status.status, 403);
 });
 
+// The context menu's Desk section: the extension lists the palette and runs one row.
+// Pinned/Store extension origins yes; any other extension and any website no.
+test("awconnect: the pinned extension may list and run the desk's palette commands", async (context) => {
+  const runs = [];
+  const bridge = createBridgeServer({
+    host: "127.0.0.1",
+    port: 0,
+    onEvent: () => {},
+    commandsHandler: {
+      list: () => [{ id: "snip.region", label: "Snip a region", group: "capture" }],
+      run: async (id, arg) => {
+        runs.push([id, arg]);
+        return { ok: true, id };
+      },
+    },
+  });
+  context.after(() => bridge.close());
+  const address = await bridge.listen();
+
+  const list = await requestServer(address, { path: "/commands", headers: { origin: PINNED_EXT } });
+  assert.equal(list.status, 200);
+  assert.deepEqual(JSON.parse(list.body).commands.map((command) => command.id), ["snip.region"]);
+  assert.equal(
+    (await requestServer(address, { path: "/commands", headers: { origin: STORE_EXT } })).status,
+    200,
+  );
+
+  const run = await postJson(address, "/commands/run", PINNED_EXT, { id: "note.new", arg: "hello" });
+  assert.equal(run.status, 200);
+  assert.deepEqual(JSON.parse(run.body), { ok: true, id: "note.new" });
+  assert.deepEqual(runs, [["note.new", "hello"]]);
+
+  // A random extension is not "an extension": neither route opens for it.
+  for (const origin of [OTHER_EXT, "https://evil.example"]) {
+    assert.equal((await requestServer(address, { path: "/commands", headers: { origin } })).status, 403);
+    assert.equal((await postJson(address, "/commands/run", origin, { id: "snip.region" })).status, 403);
+  }
+  // Loopback callers that send no Origin (awsh / `adk desk`) keep working, and a
+  // refused origin never reaches the handler.
+  assert.equal((await requestServer(address, { path: "/commands" })).status, 200);
+  assert.deepEqual(runs, [["note.new", "hello"]]);
+});
+
 test("awconnect: a wildcard in AWDESK_TRUSTED_EXTENSION_IDS cannot widen the set", () => {
   const { extensionOriginAllowed, trustedExtensionOrigins } = require("./bridge-server.cjs");
   assert.equal(extensionOriginAllowed(PINNED_EXT, {}), true);

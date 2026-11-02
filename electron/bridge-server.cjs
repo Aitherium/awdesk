@@ -30,8 +30,9 @@ const FILE_ANIMATION_PATTERN = /^FILE:[\w.-]+\.vrma$/;
 // The awconnect browser extension. An unpacked install carries the manifest's
 // public key, so it has PINNED_EXTENSION_ID; the Chrome Web Store refuses a key
 // and assigns its own id, STORE_EXTENSION_ID (item created 2026-10-03). Only these EXACT origins get the desk
-// surfaces (health, decisions read, desktop, speak, events, console open);
-// fleet verbs, /command, /commands, /roster and /mcp stay local-only.
+// surfaces (health, decisions read, desktop, speak, events, console open) and the
+// desk's own command palette (GET /commands, POST /commands/run -- the context menu's
+// Desk section); fleet verbs, /command, /roster and /mcp stay local-only.
 // AWDESK_TRUSTED_EXTENSION_IDS (comma-separated ids) replaces the default;
 // anything that is not a 32-char a-p id is dropped, so "*" cannot widen it.
 const PINNED_EXTENSION_ID = "hlmfknhcfhjjngckfpacgleffckpmphe";
@@ -525,12 +526,14 @@ function createBridgeServer({
     // click offer the same verbs under the same names, instead of each client
     // keeping a hand-written list that drifts from the menus.
     //
-    // Trust: the same class as /fleet and /desktop -- loopback, no foreign Origin.
-    // It adds no power: every id here is already a palette row, and the destructive
-    // ones still stop at main's on-screen confirm dialog. An id that is not a
-    // palette row (quit, a body-scoped verb) is refused, not run.
+    // Trust: the same class as /fleet and /desktop -- loopback, no foreign Origin --
+    // plus the pinned awconnect extension, whose right-click Desk section runs these
+    // same rows (owner, 2026-11-02: "right click anywhere and start capturing /
+    // recording / drawing / writing"). It adds no power: every id here is already a
+    // palette row, and the destructive ones still stop at main's on-screen confirm
+    // dialog. An id that is not a palette row (quit, a body-scoped verb) is refused.
     if (request.url === "/commands" || request.url === "/commands/run") {
-      if (!originAllowed(origin)) {
+      if (!deskOriginAllowed(origin)) {
         response.writeHead(403);
         response.end();
         return;
