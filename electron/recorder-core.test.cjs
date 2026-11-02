@@ -120,7 +120,17 @@ test("captureConstraints pins the display's device pixels and the source id", ()
   assert.equal(c.video.mandatory.maxWidth, 1920);
   assert.equal(c.video.mandatory.minHeight, 1200);
   assert.equal(c.video.mandatory.maxFrameRate, 24);
+  // minFrameRate too: without it the legacy desktop capturer gave ~1.6 fps (2026-11-01).
+  assert.equal(c.video.mandatory.minFrameRate, 24);
   assert.equal(core.systemAudioConstraints().audio.mandatory.chromeMediaSource, "desktop");
+});
+
+test("the recorder asks for H.264 first (GPU encode), VP9/VP8 as fallbacks", () => {
+  const html = require("node:fs").readFileSync(require("node:path").join(__dirname, "recorder.html"), "utf8");
+  const video = /\["video\/webm;codecs=h264", "video\/webm;codecs=vp9", "video\/webm;codecs=vp8", "video\/webm"\]/;
+  const withAudio = /\["video\/webm;codecs=h264,opus", "video\/webm;codecs=vp9,opus", "video\/webm;codecs=vp8,opus", "video\/webm"\]/;
+  assert.match(html, video);
+  assert.match(html, withAudio);
 });
 
 // ── timer + status lines ────────────────────────────────────────────────────

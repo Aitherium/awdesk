@@ -171,9 +171,13 @@
     if (plan.format !== "webm" && !plan.ffmpeg) tags.push("no ffmpeg — saves WebM");
 
     const stream = new MediaStream([videoTrack, ...audioTracks]);
+    // H.264 first: Chromium encodes it on the GPU (Media Foundation) on Windows.
+    // Measured 2026-11-01 on the owner's 4K screen with the host at 100 % CPU: the
+    // software VP9 encoder kept ~1.9 fps (11 frames in 5.8 s while the cursor moved).
+    // ffmpeg converts the WebM to MP4/GIF as before; VP9/VP8 stay as the fallbacks.
     const wanted = audioTracks.length
-      ? ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
-      : ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+      ? ["video/webm;codecs=h264,opus", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+      : ["video/webm;codecs=h264", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
     const mimeType = wanted.find((m) => MediaRecorder.isTypeSupported(m)) || "";
     try {
       recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 8_000_000 } : undefined);

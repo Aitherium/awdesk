@@ -163,6 +163,10 @@ function captureConstraints({ sourceId, display, fps = DEFAULT_FPS }) {
         chromeMediaSource: "desktop",
         chromeMediaSourceId: String(sourceId || ""),
         minWidth: width, maxWidth: width, minHeight: height, maxHeight: height,
+        // BOTH bounds. Measured 2026-11-01: with maxFrameRate alone the legacy
+        // desktop capturer delivered ~1.6 fps (9-10 frames in 6 s of a 60 fps
+        // animation, VP9 and H.264 alike) -- the encoder was never the limit.
+        minFrameRate: fps,
         maxFrameRate: fps,
       },
     },
