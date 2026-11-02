@@ -694,3 +694,11 @@ test("openAppsFolderEntry refuses a non-AppsFolder target; the id travels by ENV
   const bad = (_c, _a, _o, cb) => setImmediate(() => cb(Object.assign(new Error("exit 1"), { code: 1 }), "", "Start-Process : This command cannot be run\r\nmore"));
   assert.equal(await searchWindow.openAppsFolderEntry(t, { execFile: bad, env: {} }), "Start-Process : This command cannot be run");
 });
+
+test("ensureSearchIpc warms the universal search after boot (the first-Alt+Space miss)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "search-window.cjs"), "utf8");
+  const body = src.slice(src.indexOf("function ensureSearchIpc("), src.indexOf("// ── the launcher"));
+  assert.match(body, /setTimeout\(\(\) => \{ try \{ universal\(\); \}/, "ensureSearchIpc schedules universal()");
+  assert.match(src, /const UNIVERSAL_WARM_MS = 10_000;/);
+  assert.match(body, /t\.unref\(\)/, "the warm timer never holds the process open");
+});

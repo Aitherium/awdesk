@@ -314,11 +314,24 @@ function searchHandlers(c = client(), {
   };
 }
 
-function ensureSearchIpc() {
+/**
+ * How long after the desk starts the universal search is built. Building it starts
+ * the background Get-StartApps load (~2.4 s idle, 3.4 s+ on a loaded host just for
+ * powershell.exe). Measured 2026-11-01: built lazily by the FIRST query, that query
+ * missed Notepad / Calculator even with a 2 s first wait. Warmed here, the first
+ * Alt+Space finds them; delayed so it does not compete with the desk's own boot.
+ */
+const UNIVERSAL_WARM_MS = 10_000;
+
+function ensureSearchIpc({ warmMs = UNIVERSAL_WARM_MS } = {}) {
   if (wired) return;
   wired = true;
   const { ipcMain } = require("electron");
   for (const [channel, handler] of Object.entries(searchHandlers())) ipcMain.handle(channel, handler);
+  if (warmMs >= 0) {
+    const t = setTimeout(() => { try { universal(); } catch { /* the first query builds it instead */ } }, warmMs);
+    if (t.unref) t.unref();
+  }
 }
 
 // ── the launcher (Alt+Space) ────────────────────────────────────────────────
