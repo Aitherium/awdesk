@@ -84,27 +84,48 @@ test("clipLabel ends a clipped label at a word boundary with an ellipsis", () =>
 
 // ── SQL escaping ────────────────────────────────────────────────────────────
 
-/** The LIKE literal's contents and whatever follows it, parsed the way SQL would. */
-function splitLike(sql) {
-  const m = /LIKE '((?:[^']|'')*)'(.*)$/s.exec(sql);
-  assert.ok(m, `no LIKE literal in ${sql}`);
-  return { literal: m[1].replace(/''/g, "'"), rest: m[2] };
+/** Every SQL string literal, unescaped, in order -- parsed the way SQL would. */
+function literals(sql) {
+  return [...sql.matchAll(/'((?:[^']|'')*)'/g)].map((m) => m[1].replace(/''/g, "'"));
 }
 
-test("an injection attempt stays one literal inside the LIKE pattern", () => {
+/** The statement with every string literal replaced by `?`: what the caller CANNOT change. */
+function skeleton(sql) {
+  return sql.replace(/'(?:[^']|'')*'/g, "?");
+}
+
+const SKELETON = "SELECT TOP 50 System.ItemPathDisplay, System.ItemNameDisplay, System.DateModified, System.Size "
+  + "FROM SYSTEMINDEX WHERE SCOPE=? AND (System.FileName LIKE ? OR CONTAINS(System.FileName, ?)) "
+  + "ORDER BY System.DateModified DESC";
+
+test("an injection attempt stays inside the two literals (prefix LIKE and CONTAINS phrase)", () => {
   const attack = "x' OR 1=1; DROP TABLE SYSTEMINDEX --";
   const sql = us.windowsSearchSql(attack);
-  const { literal, rest } = splitLike(sql);
-  assert.equal(literal, `%${attack}%`, "the whole attack is the pattern, quotes and all");
-  assert.equal(rest, " ORDER BY System.DateModified DESC", "nothing the user typed escaped the literal");
-  assert.equal(sql.split("SCOPE='file:'").length, 2);
-  assert.ok(sql.startsWith("SELECT TOP 50 System.ItemPathDisplay"));
+  assert.equal(skeleton(sql), SKELETON, "nothing the user typed escaped a literal");
+  assert.deepEqual(literals(sql), ["file:", `${attack}%`, `"${attack}*"`]);
+});
+
+test("a double quote cannot end the CONTAINS phrase early", () => {
+  const sql = us.windowsSearchSql('a" OR "b');
+  assert.equal(skeleton(sql), SKELETON);
+  assert.equal(literals(sql)[2], '"a OR b*"', "the inner quotes are dropped, the phrase is one");
+});
+
+test("a punctuation-only term searches the prefix alone (CONTAINS would be a syntax error)", () => {
+  const sql = us.windowsSearchSql("%%");
+  assert.ok(!sql.includes("CONTAINS"));
+  assert.deepEqual(literals(sql), ["file:", "[%][%]%"]);
+});
+
+test("the name search is a PREFIX match, never the full-scan %term% (measured 8-16 s)", () => {
+  const sql = us.windowsSearchSql("notepad");
+  assert.ok(!literals(sql).some((l) => l.startsWith("%")), "no leading wildcard");
+  assert.deepEqual(literals(sql), ["file:", "notepad%", '"notepad*"']);
 });
 
 test("LIKE wildcards and control characters typed by the owner are literals", () => {
   assert.equal(us.likeEscape("50%_off[1]"), "50[%][_]off[[]1]");
-  const { literal } = splitLike(us.windowsSearchSql("a%b\u0000c"));
-  assert.equal(literal, "%a[%]b c%");
+  assert.equal(literals(us.windowsSearchSql("a%b\u0000c"))[1], "a[%]b c%");
   assert.equal(us.windowsSearchSql("   "), null);
   assert.ok(us.windowsSearchSql("x", { limit: "1; DROP" }).startsWith("SELECT TOP 50 "), "a non-numeric limit falls back");
   assert.ok(us.windowsSearchSql("x", { limit: 9999 }).startsWith("SELECT TOP 200 "));

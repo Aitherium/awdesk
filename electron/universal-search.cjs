@@ -463,8 +463,20 @@ function windowsSearchSql(term, { limit = 50 } = {}) {
   const q = cleanTerm(term);
   if (!q) return null;
   const n = Math.max(1, Math.min(200, Math.trunc(Number(limit)) || 50));
+  // Measured 2026-11-01 on the owner's index: `LIKE '%term%'` is a full scan,
+  // 8-16 s per query (and the 10 s bound then fell back to the walk). The name's
+  // PREFIX (`LIKE 'term%'`, 1.1-2.0 s) OR a word inside it (`CONTAINS(...,
+  // '"term*"')`, 0.7-0.9 s, the full-text index) answers what a person types.
+  // CONTAINS takes a quoted phrase: double quotes are dropped from the term so it
+  // stays ONE phrase, and the clause is only added when the term has a word char
+  // (a punctuation-only phrase is a CONTAINS syntax error).
+  const prefix = `System.FileName LIKE ${sqlString(`${likeEscape(q)}%`)}`;
+  const phrase = q.replace(/"/g, " ").replace(/\s+/g, " ").trim();
+  const where = /[\p{L}\p{N}]/u.test(phrase)
+    ? `(${prefix} OR CONTAINS(System.FileName, ${sqlString(`"${phrase}*"`)}))`
+    : prefix;
   return `SELECT TOP ${n} System.ItemPathDisplay, System.ItemNameDisplay, System.DateModified, System.Size `
-    + `FROM SYSTEMINDEX WHERE SCOPE='file:' AND System.FileName LIKE ${sqlString(`%${likeEscape(q)}%`)} `
+    + `FROM SYSTEMINDEX WHERE SCOPE='file:' AND ${where} `
     + "ORDER BY System.DateModified DESC";
 }
 
