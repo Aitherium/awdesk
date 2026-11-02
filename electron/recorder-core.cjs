@@ -519,8 +519,12 @@ function recoverStaleRecordings({ tempDirPath = tempDir(), dir, fsImpl = fs, now
       continue;
     }
     try {
-      fsImpl.mkdirSync(dir, { recursive: true });
-      const target = snip.uniquePath(dir, recordingName(new Date(st.mtimeMs), "webm", " (recovered)"), (p) => fsImpl.existsSync(p));
+      // Never the recursive mkdir into Videos: under Controlled Folder Access it loops
+      // forever on the main thread (snip-capture.cjs writableDir, measured 2026-11-01).
+      const where = snip.writableDir([dir, snip.fallbackCaptureDir("Recordings")], { fsImpl });
+      if (!where.ok) { out.failed.push(entry); continue; }
+      out.dir = where.dir;
+      const target = snip.uniquePath(where.dir, recordingName(new Date(st.mtimeMs), "webm", " (recovered)"), (p) => fsImpl.existsSync(p));
       const moved = moveFile(full, target, fsImpl, { retries: 0 });
       if (moved.ok) out.recovered.push(path.basename(target));
       else out.failed.push(entry);
@@ -580,12 +584,21 @@ async function finalizeRecording({
           : "1 recording came back empty — check screen-recording permission and try again",
       };
     }
-    fsImpl.mkdirSync(dir, { recursive: true });
+    // Never the recursive mkdir into Videos: under Controlled Folder Access it loops
+    // forever on the main thread (snip-capture.cjs writableDir, measured 2026-11-01).
+    const where = snip.writableDir([dir, snip.fallbackCaptureDir("Recordings")], { fsImpl });
+    if (!where.ok) return leftInTemp(tempPath, where.reason);
+    const preferredDir = dir;
+    dir = where.dir;
     const wanted = parseFormat(format);
     const target = snip.uniquePath(dir, recordingName(startedAt, wanted), (p) => fsImpl.existsSync(p));
     const plan = convertPlan({ format: wanted, ffmpeg, input: tempPath, output: target, audio });
     let finalPath = target;
     let note = plan.note;
+    if (where.fallback) {
+      const moved = snip.fallbackNote(preferredDir, dir);
+      note = note ? `${moved} · ${note}` : moved;
+    }
     const keepWebm = () => {
       const webm = snip.uniquePath(dir, recordingName(startedAt, "webm"), (p) => fsImpl.existsSync(p));
       const moved = moveFile(tempPath, webm, fsImpl, moveOpts);

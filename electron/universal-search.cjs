@@ -621,20 +621,31 @@ function filesRoots(access = null) {
  * The snipping tool's folder, newest first. A query naming the kind ("screenshot",
  * "snip") lists the latest; anything else matches the file name (its date).
  */
-function screenshotsProvider({ dir = () => require("./snip-capture.cjs").screenshotDir(), fsImpl = fs, limit = 50 } = {}) {
+function screenshotsProvider({ dir = () => require("./snip-capture.cjs").screenshotDir(), fsImpl = fs, limit = 50,
+  fallbackDir = () => require("./snip-capture.cjs").fallbackCaptureDir("Screenshots") } = {}) {
   return {
     id: "screenshots", fast: true,
     search: (q) => {
-      let names;
-      try { names = fsImpl.readdirSync(dir()).filter((n) => /\.(png|jpe?g)$/i.test(n)); } catch { return []; }
-      names.sort().reverse(); // "Screenshot YYYY-MM-DD HHMMSS" sorts by time
+      // Both the Pictures folder and the fallback a Controlled-Folder-Access refusal
+      // sends captures to (snip-capture.cjs writableDir).
+      const files = [];
+      const seen = new Set();
+      for (const d of [dir(), fallbackDir && fallbackDir()].filter(Boolean)) {
+        const key = path.resolve(d).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        let names;
+        try { names = fsImpl.readdirSync(d).filter((n) => /\.(png|jpe?g)$/i.test(n)); } catch { continue; }
+        for (const n of names) files.push({ n, d });
+      }
+      files.sort((a, b) => (a.n < b.n ? 1 : a.n > b.n ? -1 : 0)); // "Screenshot YYYY-MM-DD HHMMSS": newest first
       const wantsAll = matchScore("screenshot", q) >= 60 || matchScore("snip", q) >= 60;
       // Asking for the kind lists the newest `limit`; any other term is matched on
       // the name, which rankItems scores (0 drops it).
-      return names.slice(0, wantsAll ? limit : 2_000)
+      return files.slice(0, wantsAll ? limit : 2_000)
         // Newest first survives ranking: each older shot scores a hair lower.
-        .map((n, i) => ({ title: n.replace(/\.(png|jpe?g)$/i, ""), subtitle: "Aither Screenshots", kind: "screenshot",
-          target: path.join(dir(), n), score: wantsAll ? 50 - i / 1000 : 0 }));
+        .map(({ n, d }, i) => ({ title: n.replace(/\.(png|jpe?g)$/i, ""), subtitle: path.basename(d), kind: "screenshot",
+          target: path.join(d, n), score: wantsAll ? 50 - i / 1000 : 0 }));
     },
   };
 }

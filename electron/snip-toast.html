@@ -47,7 +47,8 @@
     card.classList.remove("err");
     for (const b of document.querySelectorAll("[data-action]")) b.hidden = false;
     document.getElementById("title").textContent = `Saved ${info.name} · copied`;
-    document.getElementById("state").textContent = info.status
+    document.getElementById("state").textContent = info.note
+      || info.status
       || (info.queued ? "Syncing to AitherOS Online · Screenshots" : "Saved locally — sync queue unavailable");
   }
   snip.toastInfo().then(render);

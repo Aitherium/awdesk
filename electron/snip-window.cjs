@@ -195,6 +195,7 @@ function publicToast() {
     name: toastInfo.name || path.basename(toastInfo.path || ""),
     queued: Boolean(toastInfo.queued),
     status: toastInfo.status || null,
+    note: toastInfo.note ? String(toastInfo.note).slice(0, 300) : null,
   };
 }
 

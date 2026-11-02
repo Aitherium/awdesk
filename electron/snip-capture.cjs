@@ -49,6 +49,88 @@ function screenshotDir({ picturesDir, homeDir = os.homedir() } = {}) {
   return path.join(picturesDir || path.join(homeDir, "Pictures"), FOLDER_NAME);
 }
 
+// ── a folder the desk may actually write into ───────────────────────────────
+//
+// Measured 2026-11-01 on the owner's box: Windows Defender Controlled Folder Access
+// is ON and protects Pictures and Videos. It refuses the desk's electron.exe there
+// (Defender event 1123), and Node's fs.mkdirSync(dir, {recursive: true}) does not
+// throw on that refusal on Windows -- it LOOPS FOREVER on the main thread. A screen
+// recording froze the whole desk (bridge dead, then the process gone), and the
+// first PrtSc into Pictures would have done the same.
+//
+// So: never the recursive call. ensureDirSafe creates one missing level at a time
+// (each non-recursive mkdir throws at once on a refusal), writableDir probes the
+// folder with a zero-byte file ONCE per folder per 5 min, and the capture falls back
+// to ~/Aither Captures/<kind> -- the home root is not a protected folder.
+
+const CAPTURES_FALLBACK = "Aither Captures";
+const VERDICT_TTL_MS = 5 * 60_000;
+const dirVerdicts = new Map();
+
+/** mkdir -p, one level at a time; throws the first refusal instead of looping. */
+function ensureDirSafe(dir, fsImpl = fs) {
+  const missing = [];
+  let cur = path.resolve(String(dir || ""));
+  while (!fsImpl.existsSync(cur)) {
+    missing.unshift(cur);
+    const up = path.dirname(cur);
+    if (up === cur) break;
+    cur = up;
+  }
+  for (const p of missing) fsImpl.mkdirSync(p);
+}
+
+/** ~/Aither Captures/<kind>: where a capture lands when the preferred folder refuses. */
+function fallbackCaptureDir(kind, homeDir = os.homedir()) {
+  return path.join(homeDir, CAPTURES_FALLBACK, String(kind || "Captures"));
+}
+
+/**
+ * The first of `candidates` this process can write into. Each folder is probed with
+ * a zero-byte file (created and removed); the verdict is cached VERDICT_TTL_MS so a
+ * refusal does not raise a Defender notification on every capture, and an owner who
+ * allows the desk afterwards is picked up within minutes.
+ *
+ * @returns {{ok: true, dir: string, fallback: boolean, refused: string[]} | {ok: false, reason: string}}
+ */
+function writableDir(candidates, { fsImpl = fs, now = () => Date.now() } = {}) {
+  const refused = [];
+  const list = (Array.isArray(candidates) ? candidates : [candidates]).filter(Boolean);
+  for (let i = 0; i < list.length; i += 1) {
+    const dir = path.resolve(list[i]);
+    const cached = dirVerdicts.get(dir);
+    if (cached && now() - cached.at < VERDICT_TTL_MS) {
+      if (cached.ok) return { ok: true, dir, fallback: i > 0, refused };
+      refused.push(`${dir} (${cached.why})`);
+      continue;
+    }
+    try {
+      ensureDirSafe(dir, fsImpl);
+      const probe = path.join(dir, `.aither-write-probe-${process.pid}`);
+      fsImpl.writeFileSync(probe, "");
+      try { fsImpl.unlinkSync(probe); } catch { /* a stray zero-byte probe is harmless */ }
+      dirVerdicts.set(dir, { ok: true, at: now() });
+      return { ok: true, dir, fallback: i > 0, refused };
+    } catch (error) {
+      const why = (error && error.code) || String((error && error.message) || error).slice(0, 80);
+      dirVerdicts.set(dir, { ok: false, why, at: now() });
+      refused.push(`${dir} (${why})`);
+    }
+  }
+  return { ok: false, reason: `${refused.length} folders refused the write — ${refused.join("; ")}` };
+}
+
+/** The toast note when a capture had to fall back. */
+function fallbackNote(preferred, used) {
+  return `Windows blocked ${path.basename(path.dirname(preferred)) || preferred} (Controlled Folder Access) — `
+    + `saved to ${used}. Allow Aither under Windows Security › Ransomware protection to save there.`;
+}
+
+/** Forget cached folder verdicts (tests; an owner who just allowed the desk). */
+function resetDirVerdicts() {
+  dirVerdicts.clear();
+}
+
 /** Two captures in one second must not overwrite each other: "... (2).png". */
 function uniquePath(dir, name, exists = fs.existsSync) {
   const first = path.join(dir, name);
@@ -132,10 +214,13 @@ function matchSources(displays, sources) {
  *          enqueue?: (item:object) => {ok:boolean}}} args
  * @returns {{ok:true, path:string, name:string, queued:boolean} | {ok:false, reason:string}}
  */
-function saveCapture({ png, dir, now = new Date(), fsImpl = fs, toClipboard, enqueue }) {
+function saveCapture({ png, dir, now = new Date(), fsImpl = fs, toClipboard, enqueue, fallbackDir = fallbackCaptureDir("Screenshots") }) {
   try {
     if (!png || !png.length) return { ok: false, reason: "the capture came back empty" };
-    fsImpl.mkdirSync(dir, { recursive: true });
+    const where = writableDir([dir, fallbackDir], { fsImpl });
+    if (!where.ok) return { ok: false, reason: `could not save the screenshot: ${where.reason}` };
+    const note = where.fallback ? fallbackNote(dir, where.dir) : null;
+    dir = where.dir;
     const filePath = uniquePath(dir, screenshotName(now), (p) => fsImpl.existsSync(p));
     fsImpl.writeFileSync(filePath, png);
     try {
@@ -147,7 +232,7 @@ function saveCapture({ png, dir, now = new Date(), fsImpl = fs, toClipboard, enq
         folder: "screenshots", name: path.basename(filePath), bytes: png, contentType: "image/png",
       }).ok);
     } catch { queued = false; }
-    return { ok: true, path: filePath, name: path.basename(filePath), queued };
+    return { ok: true, path: filePath, name: path.basename(filePath), queued, note, dir };
   } catch (error) {
     return { ok: false, reason: `could not save the screenshot: ${String((error && error.message) || error).slice(0, 200)}` };
   }
@@ -181,7 +266,8 @@ function parsePrintScreenQuery(stdout) {
 }
 
 module.exports = {
-  FOLDER_NAME, MIN_REGION_DIP, PRTSC_KEY, PRTSC_VALUE,
+  FOLDER_NAME, MIN_REGION_DIP, PRTSC_KEY, PRTSC_VALUE, CAPTURES_FALLBACK,
+  ensureDirSafe, fallbackCaptureDir, fallbackNote, resetDirVerdicts, writableDir,
   screenshotName, screenshotDir, uniquePath, normalizeDrag, isRegion, regionToDevice,
   thumbnailSizeFor, matchSources, saveCapture,
   printScreenRegArgs, printScreenQueryArgs, parsePrintScreenQuery,

@@ -283,7 +283,7 @@ function recoverLeftovers() {
     if (!line) return swept;
     const first = swept.recovered[0];
     showToast(first
-      ? { ok: true, path: path.join(dir, first), name: first, format: "webm", note: line, syncable: false }
+      ? { ok: true, path: path.join(swept.dir || dir, first), name: first, format: "webm", note: line, syncable: false }
       : { ok: false, reason: line });
     return swept;
   } catch {
