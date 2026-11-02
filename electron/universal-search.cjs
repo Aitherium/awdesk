@@ -394,9 +394,13 @@ function loadStartApps({ execFile = require("node:child_process").execFile, plat
  * The apps provider: Start-menu shortcuts (scan cached two minutes; a Start menu
  * changes on install) plus, when `startApps` is given, the AppsFolder entries no
  * shortcut already names. `startApps` is a () => Promise<[{name, appId}]> loader; it
- * is started at creation and refreshed in the background, never awaited by a search.
+ * is started at creation and refreshed in the background. A search awaits it ONLY
+ * while it has never landed, and then for at most `firstWaitMs`: measured live
+ * 2026-11-01, the first query after a desk restart missed Notepad because the
+ * universal search is created by that query and the 2.4 s load had not landed.
  */
-function appsProvider({ dirs = () => startMenuDirs(), fsImpl = fs, now = () => Date.now(), startApps = null } = {}) {
+function appsProvider({ dirs = () => startMenuDirs(), fsImpl = fs, now = () => Date.now(), startApps = null,
+  firstWaitMs = 2_000 } = {}) {
   let cache = null;
   let at = 0;
   let packaged = [];
@@ -415,9 +419,14 @@ function appsProvider({ dirs = () => startMenuDirs(), fsImpl = fs, now = () => D
   return {
     id: "apps", fast: true,
     ready: () => loading || Promise.resolve(),
-    search: () => {
+    search: async () => {
       if (!cache || now() - at > APP_CACHE_MS) { cache = scanShortcuts(dirs(), { fsImpl }); at = now(); }
-      refreshPackaged();
+      const pending = refreshPackaged();
+      if (pending && packagedAt === -Infinity && firstWaitMs > 0) {
+        let timer;
+        await Promise.race([pending, new Promise((r) => { timer = setTimeout(r, firstWaitMs); if (timer.unref) timer.unref(); })]);
+        clearTimeout(timer);
+      }
       const rows = cache.map((a) => ({ title: a.name, subtitle: a.folder || "Start menu", kind: "app", target: a.path }));
       const named = new Set(cache.map((a) => a.name.toLowerCase()));
       for (const p of packaged) {

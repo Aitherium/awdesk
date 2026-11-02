@@ -621,26 +621,37 @@ test("parseStartApps: an array, a single object, and unsafe ids are handled", ()
   assert.deepEqual(us.parseStartApps(""), []);
 });
 
-test("appsProvider merges packaged apps under the shortcuts, never awaiting the load", async () => {
+test("appsProvider merges packaged apps under the shortcuts; a never-landing load costs at most firstWaitMs", async () => {
   const dir = tmp("us-apps-");
   fs.writeFileSync(path.join(dir, "Calculator.lnk"), "");
   let release;
   const gate = new Promise((r) => { release = r; });
   const p = us.appsProvider({
     dirs: () => [dir],
+    firstWaitMs: 30,
     startApps: () => gate.then(() => [{ name: "Notepad", appId: "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App" },
       { name: "Calculator", appId: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" }]),
   });
-  // Before the background load lands, a search answers with the shortcuts at once.
-  assert.deepEqual(p.search().map((r) => r.title), ["Calculator"]);
+  // A load that has not landed holds the first search only for firstWaitMs, then the
+  // shortcuts answer alone.
+  const t0 = Date.now();
+  assert.deepEqual((await p.search()).map((r) => r.title), ["Calculator"]);
+  assert.ok(Date.now() - t0 < 1000, "bounded wait");
   release();
   await p.ready();
-  const rows = p.search();
+  const rows = await p.search();
   assert.deepEqual(rows.map((r) => r.title), ["Calculator", "Notepad"], "the shortcut's name wins; Notepad is added");
   const notepad = rows.find((r) => r.title === "Notepad");
   assert.equal(notepad.kind, "app");
   assert.equal(notepad.target, `${us.APPS_FOLDER_PREFIX}Microsoft.WindowsNotepad_8wekyb3d8bbwe!App`);
   assert.ok(rows.find((r) => r.title === "Calculator").target.endsWith("Calculator.lnk"));
+});
+
+test("the FIRST search after creation waits for a load that lands in time (the post-restart miss)", async () => {
+  const dir = tmp("us-apps-first-");
+  const p = us.appsProvider({ dirs: () => [dir], firstWaitMs: 2_000,
+    startApps: () => new Promise((r) => setTimeout(() => r([{ name: "Notepad", appId: "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App" }]), 40)) });
+  assert.deepEqual((await p.search()).map((r) => r.title), ["Notepad"]);
 });
 
 test("a run finds a packaged app by name (the 'notepad' miss)", async () => {
