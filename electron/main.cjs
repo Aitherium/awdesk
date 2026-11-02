@@ -2742,6 +2742,8 @@ function refreshSafetyPosture() {
  */
 /** Shortcuts another app holds: a menu must not advertise them. */
 const deadAccels = new Set();
+/** id -> the FALLBACK key main holds when the default was taken (command-registry accelFallback). */
+const liveAccels = {};
 
 function commandContext() {
   const desktop = desktopStatus().overlay;
@@ -2764,6 +2766,7 @@ function commandContext() {
     avatarDocked: Boolean(avatarDock && avatarDock.isDocked()),
     kvLend: Boolean(kvLendRuntime && kvLendRuntime.lend.settings().enabled),
     deadAccels: [...deadAccels],
+    liveAccels: { ...liveAccels },
     platform: process.platform,
     clipboardSync: capture.clipboardSyncOn(),
     printScreenOwner: capture.printScreenOwner(),
@@ -2919,7 +2922,7 @@ function refreshJumpList() {
   // In a dev run the executable is electron.exe and the app is its first argument.
   const prefix = app.isPackaged ? "" : `"${app.getAppPath()}" `;
   try {
-    app.setUserTasks(commandRegistry.rowsFor("jumplist", { deadAccels: [...deadAccels] }).map((row) => ({
+    app.setUserTasks(commandRegistry.rowsFor("jumplist", { deadAccels: [...deadAccels], liveAccels: { ...liveAccels } }).map((row) => ({
       program: process.execPath,
       // Quit launches `--quit`, which also ends a Desk whose main thread is not answering
       // (quit-others.cjs); every other row is a command the running Desk performs.
@@ -4571,10 +4574,18 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
     if (listenState === "listening") return { ok: false, reason: "listening" };
     globalShortcut.unregisterAll();
     deadAccels.clear();
-    for (const { id, accel, electron: key } of commandRegistry.shortcuts(loadHotkeyOverrides())) {
-      if (!globalShortcut.register(key, () => runCommand(id, undefined, { surface: "shortcut" }))) {
+    for (const k of Object.keys(liveAccels)) delete liveAccels[k];
+    for (const { id, accel, electron: key, fallback } of commandRegistry.shortcuts(loadHotkeyOverrides())) {
+      const onPress = () => runCommand(id, undefined, { surface: "shortcut" });
+      if (!globalShortcut.register(key, onPress)) {
         deadAccels.add(accel);
-        console.warn(`[desk] shortcut ${key} is held by another app -- use the tray menu`);
+        // The default key is taken (PowerToys Run holds Alt+Space): try the fallback.
+        if (fallback && globalShortcut.register(fallback.electron, onPress)) {
+          liveAccels[id] = fallback.accel;
+          console.warn(`[desk] shortcut ${key} is held by another app -- using ${fallback.electron}`);
+        } else {
+          console.warn(`[desk] shortcut ${key} is held by another app -- use the tray menu`);
+        }
       }
     }
     if (deadAccels.size) refreshTrayMenu();

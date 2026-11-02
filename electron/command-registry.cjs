@@ -546,8 +546,12 @@ const COMMANDS = Object.freeze([
   // apps, files, screenshots, clipboard, desk actions and agents/tools/skills
   // (universal-search.cjs); the window is search-window.cjs toggleLauncher. Alt+Space,
   // because Electron cannot register Win-key combos (the shell reserves Win+S).
+  // `accelFallback`: measured 2026-11-01, PowerToys Run holds Alt+Space on the owner's
+  // box, so the key was dead and the launcher had no shortcut at all. main tries the
+  // fallback when the first key is refused, and the label names the live one.
   Object.freeze({
     id: "search.universal", label: "Search this PC…", group: "go", accel: "Alt+Space",
+    accelFallback: "Ctrl+Alt+Space",
     surfaces: ["tray", "palette"],
   }),
   // Public URL (tunnel-window.cjs): give one local port a public URL via the
@@ -886,6 +890,9 @@ function labelOf(command, ctx, { nested = false } = {}) {
   const pick = nested && command.menuLabel ? command.menuLabel : command.label;
   const text = typeof pick === "function" ? pick(ctx || {}) : pick;
   const dead = (ctx && ctx.deadAccels) || [];
+  // The key main actually holds: a fallback that went live when the first was taken.
+  const live = ctx && ctx.liveAccels && typeof ctx.liveAccels[command.id] === "string" ? ctx.liveAccels[command.id] : null;
+  if (live) return `${text}  (${live})`;
   return command.accel && !dead.includes(command.accel) ? `${text}  (${command.accel})` : text;
 }
 
@@ -901,9 +908,12 @@ function shortcuts(overrides = {}) {
   // with no overrides behaves exactly as before this landed.
   return COMMANDS.filter((command) => command.accel)
     .map((command) => {
-      const accel = (overrides && typeof overrides[command.id] === "string" && overrides[command.id].trim())
-        || command.accel;
-      return { id: command.id, accel, electron: electronAccel(accel), defaultAccel: command.accel };
+      const override = overrides && typeof overrides[command.id] === "string" && overrides[command.id].trim();
+      const accel = override || command.accel;
+      // An owner's own key is never second-guessed: the fallback only backs the default.
+      const fallback = !override && command.accelFallback
+        ? { accel: command.accelFallback, electron: electronAccel(command.accelFallback) } : null;
+      return { id: command.id, accel, electron: electronAccel(accel), defaultAccel: command.accel, fallback };
     });
 }
 

@@ -492,3 +492,33 @@ test("Mission Control has a palette/tray door that opens the page in a browser t
   assert.match(main, /case "missioncontrol\.open"/);
   assert.match(main, /app\.aitherium\.com\/mission-control/);
 });
+
+// ── accelFallback (2026-11-01: PowerToys Run holds Alt+Space on the owner's box) ──
+
+test("search.universal carries a fallback key, and an owner override never gets one", () => {
+  const reg = require("./command-registry.cjs");
+  const s = reg.shortcuts({}).find((x) => x.id === "search.universal");
+  assert.deepEqual(s.fallback, { accel: "Ctrl+Alt+Space", electron: "CommandOrControl+Alt+Space" });
+  const o = reg.shortcuts({ "search.universal": "Ctrl+Shift+F" }).find((x) => x.id === "search.universal");
+  assert.equal(o.accel, "Ctrl+Shift+F");
+  assert.equal(o.fallback, null);
+  const other = reg.shortcuts({}).find((x) => x.id === "desktop.overlay.toggle");
+  assert.equal(other.fallback, null);
+});
+
+test("a label advertises the LIVE fallback key, not the dead default", () => {
+  const reg = require("./command-registry.cjs");
+  const rows = reg.rowsFor("palette", { deadAccels: ["Alt+Space"], liveAccels: { "search.universal": "Ctrl+Alt+Space" } });
+  const flat = [];
+  const walk = (list) => { for (const r of list || []) { if (r.label) flat.push(r.label); walk(r.submenu); } };
+  walk(rows);
+  assert.ok(flat.some((l) => /^Search this PC… {2}\(Ctrl\+Alt\+Space\)$/.test(l)), flat.filter((l) => /Search/.test(l)).join(" | "));
+  assert.ok(!flat.some((l) => /Search this PC….*Alt\+Space\)$/.test(l) && !/Ctrl\+Alt/.test(l)));
+});
+
+test("main tries the fallback when register() refuses the default", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "main.cjs"), "utf8");
+  const body = src.slice(src.indexOf("function applyHotkeys()"), src.indexOf("app.whenReady().then(async () => {"));
+  assert.match(body, /fallback && globalShortcut\.register\(fallback\.electron, onPress\)/);
+  assert.match(body, /liveAccels\[id\] = fallback\.accel/);
+});
