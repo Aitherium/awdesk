@@ -36,6 +36,145 @@ const DEPTHS = Object.freeze(["standard", "deep"]);
 const DISCOVER_TIMEOUT_MS = 10_000;
 const DISCOVER_DOMAINS = Object.freeze(["agents", "tools", "skills", "packs", "lanes"]);
 
+// ── the resident discovery worker ───────────────────────────────────────────
+//
+// Measured 2026-11-01 on the owner's box: `adk discover query` costs 5.9 s per call
+// (Python start + adk import + index load), so the Alt+Space agents group always
+// arrived last. Warm, the SAME ranking (adk.discovery.rank.query, live=False) answers
+// in ~47 ms after a one-time 0.56 s import. So one hidden `python -u` stays resident,
+// reads one JSON request per line and answers one JSON line; it is adk's own code,
+// nothing is re-implemented here. Any failure (no python, adk not importable, a
+// wedged or dead worker, a reply past DISCOVER_WORKER_MS) falls back to the CLI.
+const DISCOVER_WORKER_MS = 4_000;
+const DISCOVER_WORKER_IDLE_MS = 10 * 60_000;
+const DISCOVER_WORKER_SCRIPT = [
+  "import json, sys",
+  "try:",
+  "    from adk.discovery import rank",
+  "    print(json.dumps({'ready': True}), flush=True)",
+  "except Exception as e:",
+  "    print(json.dumps({'ready': False, 'error': str(e)[:300]}), flush=True)",
+  "    sys.exit(3)",
+  "for line in sys.stdin:",
+  "    rid = None",
+  "    try:",
+  "        req = json.loads(line)",
+  "        rid = req.get('id')",
+  "        res = rank.query(str(req.get('q', '')), k=int(req.get('k', 10)), live=False)",
+  "        print(json.dumps({'id': rid, 'ok': True, 'cards': res.get('cards', [])}, default=str), flush=True)",
+  "    except Exception as e:",
+  "        print(json.dumps({'id': rid, 'ok': False, 'error': str(e)[:300]}), flush=True)",
+].join("\n");
+
+/**
+ * One resident discovery process. query(q, k) resolves {ok, cards} | {ok:false, error};
+ * never rejects. A worker that dies, refuses to import adk or misses the deadline is
+ * dropped, and `broken` stays true for a minute so the caller uses the CLI meanwhile.
+ */
+function createDiscoveryWorker({
+  spawn = require("node:child_process").spawn,
+  python = process.env.AWDESK_DISCOVER_PYTHON || (process.platform === "win32" ? "python" : "python3"),
+  timeoutMs = DISCOVER_WORKER_MS,
+  idleMs = DISCOVER_WORKER_IDLE_MS,
+  now = () => Date.now(),
+} = {}) {
+  let child = null;
+  let ready = null;
+  let buffer = "";
+  let seq = 0;
+  let brokenUntil = 0;
+  let idleTimer = null;
+  const pending = new Map();
+
+  function drop(why) {
+    const c = child;
+    child = null;
+    ready = null;
+    buffer = "";
+    for (const [, w] of pending) w({ ok: false, error: why });
+    pending.clear();
+    if (c) { try { c.kill(); } catch { /* already gone */ } }
+  }
+
+  function start() {
+    if (child) return ready;
+    let c;
+    try {
+      c = spawn(python, ["-u", "-c", DISCOVER_WORKER_SCRIPT], {
+        windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+      });
+    } catch (error) {
+      brokenUntil = now() + 60_000;
+      return Promise.resolve({ ok: false, error: String((error && error.message) || error) });
+    }
+    child = c;
+    let resolveReady;
+    ready = new Promise((r) => { resolveReady = r; });
+    c.stdout.setEncoding("utf8");
+    c.stdout.on("data", (chunk) => {
+      buffer += chunk;
+      let nl;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
+        if (msg && "ready" in msg) {
+          if (!msg.ready) brokenUntil = now() + 60_000;
+          resolveReady(msg.ready ? { ok: true } : { ok: false, error: `adk not importable: ${msg.error || "?"}` });
+          continue;
+        }
+        const w = msg && pending.get(String(msg.id));
+        if (!w) continue;
+        pending.delete(String(msg.id));
+        w(msg.ok ? { ok: true, cards: Array.isArray(msg.cards) ? msg.cards : [] } : { ok: false, error: String(msg.error || "worker error") });
+      }
+    });
+    if (c.stderr) c.stderr.on("data", () => { /* warnings; verdicts come on stdout */ });
+    const gone = (why) => {
+      if (child !== c) return;
+      brokenUntil = now() + 60_000;
+      resolveReady({ ok: false, error: why });
+      drop(why);
+    };
+    c.on("exit", (code) => gone(`discovery worker exited (code ${code})`));
+    c.on("error", (error) => gone(`discovery worker failed to start: ${error.message}`));
+    if (c.stdin && typeof c.stdin.on === "function") c.stdin.on("error", () => gone("discovery worker closed its input"));
+    return ready;
+  }
+
+  function touch() {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => drop("idle"), idleMs);
+    if (idleTimer.unref) idleTimer.unref();
+  }
+
+  async function query(q, k = 10) {
+    if (now() < brokenUntil) return { ok: false, error: "discovery worker unavailable" };
+    let timer;
+    const deadline = new Promise((r) => { timer = setTimeout(() => r({ ok: false, error: "deadline", late: true }), timeoutMs); if (timer.unref) timer.unref(); });
+    const answer = (async () => {
+      const r = await start();
+      if (!r || !r.ok) return { ok: false, error: (r && r.error) || "discovery worker unavailable" };
+      const id = `d${++seq}`;
+      const got = new Promise((resolve) => pending.set(id, resolve));
+      touch();
+      try { child.stdin.write(`${JSON.stringify({ id, q, k })}\n`); } catch (error) {
+        pending.delete(id);
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+      return got;
+    })();
+    const out = await Promise.race([answer, deadline]);
+    clearTimeout(timer);
+    if (out && out.late) { brokenUntil = now() + 60_000; drop("missed its deadline"); }
+    return out;
+  }
+
+  return { query, start, stop: () => drop("stopped"), get running() { return Boolean(child); } };
+}
+
 function cleanQuery(text) {
   // eslint-disable-next-line no-control-regex
   const q = String(text == null ? "" : text).replace(/[\u0000-\u001f\u007f]/g, " ").trim();
@@ -102,7 +241,10 @@ function createSearchClient({
   callTool = (...args) => require("./gateway-mcp.cjs").callTool(...args),
   dataDir = null,
   now = () => Date.now(),
+  discoveryWorker = null,
 } = {}) {
+  // The resident worker only where a real spawn exists; tests inject one or get none.
+  const worker = discoveryWorker || null;
   // `signal` (optional) goes to execFile: an abort kills the child (a superseded `adk discover`).
   const run = (cmd, args, timeout, signal = null) => new Promise((resolve) => {
     const opts = { timeout, windowsHide: true, maxBuffer: 8 * 1024 * 1024 };
@@ -165,6 +307,12 @@ function createSearchClient({
     if (!q) return { ok: false, error: "type something to search for" };
     if (signal && signal.aborted) return { ok: false, error: "superseded by a newer search" };
     const n = String(Math.max(1, Math.min(30, Number(k) || 10)));
+    if (worker) {
+      const fast = await worker.query(q, Number(n));
+      if (signal && signal.aborted) return { ok: false, error: "superseded by a newer search" };
+      if (fast && fast.ok) return { ok: true, query: q, cards: fast.cards.map(discoverCard).filter(Boolean), via: "worker" };
+      // fall through to the CLI: same index, same ranking, only slower
+    }
     const out = await run("adk", ["discover", "query", "--json", "--no-live", "--k", n, "--", q], DISCOVER_TIMEOUT_MS, signal);
     if (out.error && (out.error.name === "AbortError" || out.error.code === "ABORT_ERR")) {
       return { ok: false, error: "superseded by a newer search" };
@@ -264,5 +412,6 @@ function createSearchClient({
 }
 
 module.exports = {
-  DEPTHS, DISCOVER_DOMAINS, MODES, cleanQuery, createSearchClient, discoverCard, parseJsonOut, reportView, resultRow,
+  DEPTHS, DISCOVER_DOMAINS, MODES, cleanQuery, createDiscoveryWorker, createSearchClient, discoverCard, parseJsonOut,
+  reportView, resultRow, DISCOVER_WORKER_SCRIPT,
 };

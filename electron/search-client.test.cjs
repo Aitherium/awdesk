@@ -118,3 +118,77 @@ test("the address bar knows a search from an address", () => {
     assert.equal(isSearchText(t), false, t);
   }
 });
+
+// ── the resident discovery worker (2026-11-01: `adk discover` cost 5.9 s per call) ──
+
+const sc = require("./search-client.cjs");
+
+/** A fake python: answers the ready line, then one JSON line per request via `reply`. */
+function fakePython(reply, { ready = true } = {}) {
+  const spawned = [];
+  const spawn = (cmd, args, opts) => {
+    const c = new EventEmitter();
+    c.stdout = new EventEmitter(); c.stdout.setEncoding = () => {};
+    c.stderr = new EventEmitter();
+    c.stdin = new EventEmitter();
+    c.stdin.write = (line) => {
+      const req = JSON.parse(line);
+      setImmediate(() => { const out = reply(req); if (out) c.stdout.emit("data", `${JSON.stringify(out)}\n`); });
+      return true;
+    };
+    c.kill = () => { setImmediate(() => c.emit("exit", null)); };
+    spawned.push({ cmd, args, opts, c });
+    setImmediate(() => c.stdout.emit("data", `${JSON.stringify(ready ? { ready: true } : { ready: false, error: "No module named adk" })}\n`));
+    return c;
+  };
+  return { spawn, spawned };
+}
+
+const CARD = { domain: "tools", name: "rf_doctor", description: "Preflight diagnostics", source: "gateway" };
+
+test("discover answers from the resident worker, and reuses ONE process", async () => {
+  const py = fakePython((req) => ({ id: req.id, ok: true, cards: [CARD] }));
+  const worker = sc.createDiscoveryWorker({ spawn: py.spawn });
+  let cli = 0;
+  const client = sc.createSearchClient({ discoveryWorker: worker, execFile: () => { cli += 1; } });
+  const a = await client.discover("docker");
+  const b = await client.discover("deploy veil");
+  assert.equal(a.ok, true);
+  assert.equal(a.via, "worker");
+  assert.equal(a.cards.length, 1);
+  assert.equal(b.via, "worker");
+  assert.equal(py.spawned.length, 1, "one resident process for both queries");
+  assert.equal(cli, 0, "the CLI never ran");
+  assert.equal(py.spawned[0].opts.windowsHide, true);
+  assert.ok(py.spawned[0].args.includes("-u"));
+  worker.stop();
+});
+
+test("a worker that cannot import adk falls back to the CLI", async () => {
+  const py = fakePython(() => null, { ready: false });
+  const worker = sc.createDiscoveryWorker({ spawn: py.spawn });
+  let cliArgs = null;
+  const execFile = (cmd, args, opts, cb) => { cliArgs = [cmd, ...args]; cb(null, JSON.stringify({ cards: [CARD] }), ""); };
+  const client = sc.createSearchClient({ discoveryWorker: worker, execFile });
+  const r = await client.discover("docker");
+  assert.equal(r.ok, true);
+  assert.equal(r.via, undefined, "answered by the CLI");
+  assert.deepEqual(cliArgs.slice(0, 3), ["adk", "discover", "query"]);
+});
+
+test("a worker that misses its deadline is dropped and the CLI answers", async () => {
+  const py = fakePython(() => null); // never replies
+  const worker = sc.createDiscoveryWorker({ spawn: py.spawn, timeoutMs: 30 });
+  const execFile = (cmd, args, opts, cb) => cb(null, JSON.stringify({ cards: [CARD] }), "");
+  const client = sc.createSearchClient({ discoveryWorker: worker, execFile });
+  const t0 = Date.now();
+  const r = await client.discover("docker");
+  assert.equal(r.ok, true);
+  assert.ok(Date.now() - t0 < 2000, "bounded by the deadline, not the CLI's 10 s");
+  assert.equal(worker.running, false, "the wedged worker was dropped");
+});
+
+test("the worker script calls adk's own ranking, offline (live=False)", () => {
+  assert.match(sc.DISCOVER_WORKER_SCRIPT, /from adk\.discovery import rank/);
+  assert.match(sc.DISCOVER_WORKER_SCRIPT, /rank\.query\(.*live=False\)/);
+});

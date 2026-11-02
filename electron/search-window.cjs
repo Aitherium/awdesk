@@ -82,7 +82,9 @@ function client() {
   if (!clientImpl) {
     let dataDir = null;
     try { dataDir = require("node:path").join(require("electron").app.getPath("userData"), "research"); } catch { /* tests */ }
-    clientImpl = createSearchClient({ dataDir });
+    // The resident discovery worker (search-client.cjs): ~47 ms per agents/tools
+    // lookup instead of a 5.9 s `adk discover` cold start; the CLI stays the fallback.
+    clientImpl = createSearchClient({ dataDir, discoveryWorker: require("./search-client.cjs").createDiscoveryWorker() });
   }
   return clientImpl;
 }
