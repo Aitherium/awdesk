@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Snipping tool: PrintScreen drags a region (Enter or double-click takes the whole screen, Esc cancels). The PNG is saved and copied, and a toast offers Ask Aither, Copy path and Open folder. Each snip also uploads to your AitherOS Online Screenshots. "Use Aither for Print Screen" in the tray takes the key from Windows' Snipping Tool, and "Restore Windows Snipping Tool" gives it back.
+- Clipboard sync (off until you turn it on in the tray): copies show up in the AitherOS Online Clipboard app on any device. Anything that looks like a password or API key is never synced.
+- Screen recorder: Shift+PrintScreen records a region, or use the tray for the whole screen, with sound, or as a GIF. Saves MP4 at about 20-30 fps; Sync uploads one recording.
+- System window (tray → System…): processes, listening ports, connections per process, network adapters and startup apps. End process and priority are yours only; agents can read through the `system_processes`, `system_ports` and `system_connections` MCP tools.
+- Files is a full File Explorer: tabs, address bar, preview, new folder, rename, copy, move, delete to the Recycle Bin, drag and drop, Send to Aitherium. "Make Win+E open Aither Files" is a switch on the Files page and undoes cleanly.
+- Search this PC (Alt+Space; Ctrl+Alt+Space when PowerToys Run holds Alt+Space): apps, including Store apps like Notepad and Settings, files from the Windows index in about 2 s, screenshots, desk actions, and agents/tools/skills in about 50 ms. Agents can search through `desk_search`.
+- Public URL (palette → Public URL for a port…): one click gives a local port a public awtunnel URL. Fleet ports (8182, 8150, 8111, 8001, 5432) are refused unless you tick the override.
+- Where Windows Controlled Folder Access blocks Pictures or Videos, snips and recordings save to `~/Aither Captures` instead, and the toast says why. Before, the desk froze.
+
 - The Inbox is one line per item: Needs you (grouped Credentials, Blocked, Approve, Choose; answer in place, j/k/Enter), Broken (only failing routines; the healthy ones fold into one line), Agents (requests and alerts first) and System (only what is down, in plain words).
 - "You are browsing" is a dot in the toolbar instead of a full row; Take over appears while an agent drives.
 - A terminal dock under every browser window (Ctrl+`): every awsh session shows up on its own, click to attach with scrollback, start a shell or Claude Code, pop it out to a tab.
