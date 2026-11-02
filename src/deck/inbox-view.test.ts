@@ -8,8 +8,11 @@ import {
   groupDecisions,
   healthySummary,
   isBrokenWake,
+  isSessionStatus,
   moveCursor,
   nextActionLine,
+  nextOrder,
+  plainAsk,
   orderRelay,
   relayNick,
   splitWakes,
@@ -161,17 +164,46 @@ describe('nextActionLine', () => {
     expect(next?.id).toBe('d-0');
     expect(next?.after).toBe('29 after this one');
   });
-  it('keeps a title that already starts with the action', () => {
-    const next = nextActionLine([
-      card({ title: 'Approve the Solana receive address', options: [{ key: 'y', label: 'Approve', recommended: true }] }),
-    ], 1);
-    expect(next?.line).toBe('Approve the Solana receive address');
-  });
-  it('prefixes the action when the title does not carry it', () => {
+  it('the line is the plain ask; the verb rides on the button only', () => {
     const next = nextActionLine([
       card({ title: 'Solana receive address', options: [{ key: 'y', label: 'Approve', recommended: true }] }),
     ], 1);
-    expect(next?.line).toBe('Approve: Solana receive address');
+    expect(next?.line).toBe('Solana receive address');
+    expect(next?.choice).toEqual({ key: 'y', label: 'Approve' });
+  });
+  it('a session-status card reads as the ask, not "I am looking now: Claude Code needs you: ..."', () => {
+    const status = card({
+      id: 'd-cc', kind: 'blocked', dedupeKey: 'cc-waiting:abc:1',
+      title: 'Claude Code needs you: AitherOS-Fresh -- Good faith extension terms',
+      options: [{ key: 'ack', label: 'I am looking now', recommended: true }, { key: 'later', label: 'Not now', recommended: false }],
+      defaultKey: 'ack',
+    });
+    const next = nextActionLine([status], 1);
+    expect(next?.line).toBe('Good faith extension terms — a session needs your answer');
+    expect(next?.line).not.toMatch(/I am looking now|Claude Code needs you/);
+    expect(next?.choice?.label).toBe('I am looking now');
+    expect(plainAsk(card({ title: 'Claude Code needs you: X --  ' }))).toBe('A session is waiting — a session needs your answer');
+  });
+  it('credentials first, then decisions that unblock work, session-status pings last (stable inside a tier)', () => {
+    const status = (id: string) => card({ id, kind: 'blocked', title: `Claude Code needs you: P -- ask ${id}` });
+    const cards = [
+      status('d-s1'),
+      card({ id: 'd-dec1', title: 'Pick a region' }),
+      status('d-s2'),
+      card({ id: 'd-cred', kind: 'credential', title: 'Secret needed: STRIPE_KEY' }),
+      card({ id: 'd-dec2', title: 'Approve the merge' }),
+    ];
+    expect(nextOrder(cards).map((c) => c.id)).toEqual(['d-cred', 'd-dec1', 'd-dec2', 'd-s1', 'd-s2']);
+    const next = nextActionLine(cards, 5);
+    expect(next?.id).toBe('d-cred');
+    expect(next?.choice).toBeNull();
+    expect(nextActionLine(cards.filter((c) => c.id !== 'd-cred'), 4)?.id).toBe('d-dec1');
+    expect(nextActionLine([status('d-s1'), status('d-s2')], 2)?.id).toBe('d-s1');
+  });
+  it('a session-status card is recognised by its dedupe key or its title, nothing else', () => {
+    expect(isSessionStatus(card({ dedupeKey: 'cc-waiting:x:y', title: 'anything' }))).toBe(true);
+    expect(isSessionStatus(card({ title: 'Claude Code needs you: P -- x' }))).toBe(true);
+    expect(isSessionStatus(card({ kind: 'blocked', title: 'Blocked: deploy needs the Cloudflare token' }))).toBe(false);
   });
   it('says nothing follows the last card, and is null with no cards', () => {
     expect(nextActionLine([card()], 1)?.after).toBe('nothing after this one');

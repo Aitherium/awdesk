@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState, type CSSProperties } from 'react';
 
 import { renderVrmThumbnail } from '../thumbnails';
 import { useDeckState } from '../deck/use-deck-state';
@@ -37,6 +37,7 @@ import {
   moveCursor,
   nextActionLine,
   orderRelay,
+  plainAsk,
   relayNick,
   splitWakes,
   successorId,
@@ -44,6 +45,17 @@ import {
   type AwarenessLine,
 } from '../deck/inbox-view';
 import { SPACE_NEXT_LINK, spaceCardLink } from '../deck/space-links';
+import {
+  NOW_IDLE,
+  nowCounter,
+  nowCurrent,
+  nowKeyIntent,
+  nowModeParam,
+  nowOptions,
+  nowReducer,
+  nowWhy,
+  type NowState,
+} from '../deck/now-mode';
 
 /**
  * The Desk panel — the "full UI/UX" that opens on right-click (owner redesign
@@ -1058,7 +1070,7 @@ function NeedsYouSection({
   const { groups, stale } = groupDecisions(cards, nowMs);
   // THE next action — one line, before any group, so nothing has to be scanned.
   const next = nextActionLine(cards, openCount);
-  const nextChoice = cards[0] ? primaryChoice(cards[0]) : null;
+  const nextChoice = next ? next.choice : null;
   // FYI keeps the same five-and-a-fold shape as every other list here.
   const fyiCap = capList(fyi, VISIBLE_CAP);
 
@@ -1258,9 +1270,8 @@ function NeedsYouSection({
               </div>
               <button
                 className="deck-btn deck-btn-xs deck-btn-primary"
-                disabled={!nextChoice}
                 title={nextChoice ? `Answer now: ${nextChoice.label}` : 'Open the card to answer it'}
-                onClick={() => { if (nextChoice) onAnswer(next.id, nextChoice.key); }}
+                onClick={() => { if (nextChoice) onAnswer(next.id, nextChoice.key); else toggle(next.id); }}
               >
                 {nextChoice ? nextChoice.label : 'Open'}
               </button>
@@ -1824,6 +1835,144 @@ function SystemSection() {
 }
 
 /**
+ * NOW mode (ADHD gap 3, owner 2026-11-01): ONE card on the whole window. The
+ * Inbox's header, groups, wakes, relay and drops are not rendered at all while
+ * it is up -- not dimmed, gone -- and main hides the needs-you chip and the tray
+ * balloons for the run (deck verb `now-mode`). The card is nextActionLine's
+ * pick of what is left (deck/now-mode.ts), so the order is the Inbox's own.
+ *
+ * Enter = the recommended answer, 1-4 = the other options, L = later (the same
+ * 4 h snooze as the card's own Later), Esc = back to the full Inbox.
+ */
+function NowStage({
+  cards,
+  state,
+  nowMs,
+  onAnswer,
+  onLater,
+  onExit,
+}: {
+  cards: DeckDecision[];
+  state: NowState;
+  nowMs: number;
+  onAnswer: (id: string, choice: string) => void;
+  onLater: (id: string) => void;
+  onExit: () => void;
+}) {
+  const card = nowCurrent(cards, state);
+  const counter = nowCounter(cards, state);
+  const primary = card ? primaryChoice(card) : null;
+  const options = card ? nowOptions(card) : [];
+  const why = card ? nowWhy(card) : '';
+  const source = card ? decisionSource(card) : '';
+  const isCredential = card?.kind === 'credential';
+
+  // The latest handlers in a ref, so the key listener is installed ONCE and a
+  // re-render between keydowns can never answer the previous card.
+  const live = useRef({ card, onAnswer, onLater, onExit });
+  useEffect(() => {
+    live.current = { card, onAnswer, onLater, onExit };
+  });
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      // Typing in the credential field is typing, not a verb (Esc still leaves).
+      if (event.key !== 'Escape' && target && target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      // Enter on a focused small button is that button's click, not the big one.
+      if (event.key === 'Enter' && target && target.closest('button, a, [role="button"]')) return;
+      if (event.repeat) return;
+      const intent = nowKeyIntent(event.key, live.current.card, {
+        ctrl: event.ctrlKey, meta: event.metaKey, alt: event.altKey,
+      });
+      if (!intent) return;
+      event.preventDefault();
+      if (intent.type === 'exit') live.current.onExit();
+      else if (intent.type === 'later') live.current.onLater(intent.id);
+      else live.current.onAnswer(intent.id, intent.choice);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
+  return (
+    <main className="deck deck-now" aria-label="Now: one card at a time">
+      <header className="deck-now-bar">
+        <span className="deck-now-kicker">Now</span>
+        <span className="deck-now-count" aria-live="polite">{counter.label}</span>
+        <button className="deck-btn deck-btn-xs deck-now-exit" title="Back to the full Inbox (Esc)" onClick={onExit}>
+          Exit Now <kbd>Esc</kbd>
+        </button>
+      </header>
+      {card ? (
+        // key: a new card is a new node, so it slides in and never inherits the
+        // last card's field or focus.
+        <article className="deck-now-card" key={card.id} data-now-id={card.id}>
+          <div className="deck-now-meta">
+            <span className="deck-urgency-dot" style={{ background: urgencyTone(card.urgency) }} />
+            {source ? <span>{source}</span> : null}
+            <time>{formatAge(card.createdAt, nowMs)}</time>
+          </div>
+          <h1 className="deck-now-title" title={card.title}>{plainAsk(card)}</h1>
+          {why ? <p className="deck-now-why" title={card.summary}>{why}</p> : null}
+          {isCredential ? (
+            <div className="deck-now-credential"><CredentialRow card={card} /></div>
+          ) : (
+            <>
+              {primary ? (
+                <button
+                  className="deck-btn deck-btn-primary deck-now-primary"
+                  title={`Answer "${primary.label}" (Enter)`}
+                  onClick={() => onAnswer(card.id, primary.key)}
+                >
+                  {primary.label} <kbd>Enter</kbd>
+                </button>
+              ) : (
+                <button
+                  className="deck-btn deck-btn-primary deck-now-primary"
+                  title="This card has no answer button; open it in its own answer window"
+                  onClick={() => void bridgeDeck()?.action('popout-card', card.id)}
+                >
+                  Open answer window
+                </button>
+              )}
+              {options.length > 0 ? (
+                <div className="deck-now-options">
+                  {options.map((o) => (
+                    <button
+                      key={o.key}
+                      className="deck-btn deck-btn-xs"
+                      title={o.hotkey ? `Answer "${o.label}" (${o.hotkey})` : `Answer "${o.label}"`}
+                      onClick={() => onAnswer(card.id, o.key)}
+                    >
+                      {o.hotkey ? <kbd>{o.hotkey}</kbd> : null} {o.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          )}
+          <button
+            className="deck-btn deck-btn-xs deck-now-later"
+            title="Off the needs-you strip for 4 hours; still open in the Inbox (L)"
+            onClick={() => onLater(card.id)}
+          >
+            <kbd>L</kbd> Later
+          </button>
+        </article>
+      ) : (
+        <article className="deck-now-card deck-now-done">
+          <h1 className="deck-now-title">{counter.total > 0 ? 'That was the last one.' : 'Nothing waiting.'}</h1>
+          <p className="deck-now-why">{counter.label}</p>
+          <button className="deck-btn deck-btn-primary deck-now-primary" onClick={onExit}>
+            Back to the Inbox <kbd>Esc</kbd>
+          </button>
+        </article>
+      )}
+    </main>
+  );
+}
+
+/**
  * The Console's two content panes, sharing ONE deck-state subscription.
  *
  * `inbox` is decisions, wakes and the agents' messages — what the bell, the tray badge and
@@ -1847,6 +1996,12 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
     return id ? { id, nonce: 1 } : null;
   });
   const answering = useRef<Set<string>>(new Set());
+  // NOW mode: one card full-window. `?mode=now` (tray / palette door) opens
+  // straight into it; the cards arrive with the first deck-state push.
+  const [now, dispatchNow] = useReducer(nowReducer, undefined, (): NowState =>
+    (view === 'inbox' && typeof window !== 'undefined' && nowModeParam(window.location.search)
+      ? nowReducer(NOW_IDLE, { type: 'enter', cards: [] })
+      : NOW_IDLE));
   // The per-agent DIRECT chat (owner ask 2026-08-25): one open conversation at
   // a time, anchored on the agent's most recent #agents message — the relay
   // thread under it IS the conversation (no per-agent channels exist).
@@ -2059,6 +2214,57 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
   // Needs-you pinned first, FYI collapsed below.
   const split = splitFlipper(state);
 
+  // Now mode reads the SAME list the Needs-you section ranks (split.flipper).
+  const nowCards = useRef<DeckDecision[]>(split.flipper);
+  useEffect(() => {
+    nowCards.current = split.flipper;
+  });
+  const flipperKey = split.flipper.map((c) => c.id).join('|');
+  useEffect(() => {
+    dispatchNow({ type: 'sync', cards: split.flipper });
+    // split.flipper is derived from flipperKey
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flipperKey]);
+  useEffect(() => {
+    if (isCharacters) return undefined;
+    return bridgeSubscribe((event) => {
+      if (event.type !== 'deck:now-mode') return;
+      dispatchNow({ type: 'enter', cards: nowCards.current });
+    });
+  }, [isCharacters]);
+  // Main hides the needs-you chip and the tray balloons while a run is up; the
+  // flag expires on its own there, so a crashed renderer cannot leave it set.
+  useEffect(() => {
+    if (now.active) void bridgeDeck()?.action('now-mode', 'on');
+  }, [now.active, now.handled.length]);
+  useEffect(() => {
+    if (!now.active) return undefined;
+    return () => { void bridgeDeck()?.action('now-mode', 'off'); };
+  }, [now.active]);
+  const enterNow = useCallback(() => dispatchNow({ type: 'enter', cards: nowCards.current }), []);
+  const exitNow = useCallback(() => dispatchNow({ type: 'exit' }), []);
+  const nowAnswer = useCallback((id: string, choice: string) => {
+    dispatchNow({ type: 'handled', id });
+    handleAnswer(id, choice);
+  }, [handleAnswer]);
+  const nowLater = useCallback((id: string) => {
+    dispatchNow({ type: 'handled', id });
+    void bridgeDeck()?.action('card-later', id);
+  }, []);
+
+  if (!isCharacters && now.active) {
+    return (
+      <NowStage
+        cards={split.flipper}
+        state={now}
+        nowMs={nowMs}
+        onAnswer={nowAnswer}
+        onLater={nowLater}
+        onExit={exitNow}
+      />
+    );
+  }
+
   return (
     <main
       className="deck"
@@ -2088,6 +2294,16 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
           {state.openCount > 0 ? `1 of ${state.openCount} waiting` : 'all clear'}
           {(state.totalCount ?? 0) > state.openCount ? ` · ${(state.totalCount ?? 0) - state.openCount} FYI` : ''}
         </span>
+        {!isCharacters ? (
+          <button
+            className="deck-btn deck-btn-xs deck-now-enter"
+            title="Now: one card at a time, full window (Enter answers, Esc returns here)"
+            disabled={split.flipper.length === 0}
+            onClick={enterNow}
+          >
+            Now
+          </button>
+        ) : null}
         {!isCharacters && state.spaceAvailable ? (
           <a
             className="deck-space-link"

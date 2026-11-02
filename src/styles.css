@@ -1433,3 +1433,29 @@ body {
 .deck-sys-dot-ok { background: var(--success, var(--pastel-mint)); }
 .deck-sys-state { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .deck-sys-detail { flex: none; max-width: 40%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: var(--deck-muted); }
+
+/* NOW mode (ADHD gap 3): one card on the whole window, the next slides in. */
+.deck-now { position: fixed; inset: 0; z-index: 1000; border-radius: 0; }
+.deck-now-bar { display: flex; align-items: center; gap: 12px; padding: 12px 18px; flex: none; }
+.deck-now-kicker { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--deck-accent); }
+.deck-now-count { font-size: 13px; font-weight: 600; color: var(--deck-soft); font-variant-numeric: tabular-nums; }
+.deck-now-exit { margin-left: auto; }
+.deck-now-card {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 18px; padding: 24px 32px 48px; text-align: center; min-height: 0; overflow: auto;
+  animation: deck-now-slide 220ms ease-out;
+}
+.deck-now-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--deck-muted); }
+.deck-now-title { margin: 0; max-width: 760px; font-size: 28px; line-height: 1.25; font-weight: 700; color: var(--deck-text); user-select: text; }
+.deck-now-why { margin: 0; max-width: 640px; font-size: 15px; line-height: 1.45; color: var(--deck-soft); user-select: text; }
+.deck-now-primary { font-size: 18px; padding: 14px 36px; border-radius: 12px; min-width: 240px; }
+.deck-now-options { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.deck-now-later { opacity: 0.75; }
+.deck-now-credential { width: min(560px, 100%); text-align: left; }
+.deck-now kbd {
+  font-family: var(--font-mono, monospace); font-size: 0.75em; padding: 1px 5px; margin: 0 2px;
+  border: 1px solid currentColor; border-radius: 4px; opacity: 0.7;
+}
+.deck-now-enter { margin-left: 8px; }
+@keyframes deck-now-slide { from { opacity: 0; transform: translateX(48px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .deck-now-card { animation: none; } }

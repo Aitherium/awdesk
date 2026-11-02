@@ -740,6 +740,12 @@ let openDecisions = [];
 // voice lead (needs-you.cjs). Recomputed with every watcher change.
 let needsYou = [];
 let needsYouChip = null; // needs-you.cjs createChip(), made on first use
+// NOW mode (ADHD gap 3): while the Inbox shows one card at a time, the needs-you
+// chip, the tray balloon and the auto-raise stay down. The renderer re-arms it on
+// every card and it lapses on its own, so a crashed Inbox cannot leave it set.
+let nowModeUntil = 0;
+const NOW_MODE_TTL_MS = 30 * 60 * 1000;
+function nowModeActive() { return Date.now() < nowModeUntil; }
 let needsYouSpokenAt = 0;
 let relayFeed = [];
 let relayFeedTimer = null;
@@ -1750,6 +1756,25 @@ function openInbox(cardId = null) {
   return opened;
 }
 
+/**
+ * The Inbox in NOW mode (one card at a time, ADHD gap 3). Never the Space home:
+ * the owner asked for the one-card stage by name. An open deck or Inbox tab hears
+ * `deck:now-mode`; a new Inbox tab loads with `?mode=now`.
+ */
+function openInboxNow() {
+  const event = { type: "deck:now-mode" };
+  if (deckWindow && !deckWindow.isDestroyed()) {
+    deckWindow.show();
+    deckWindow.focus();
+    deckWindow.webContents.send("desk:event", event);
+    return true;
+  }
+  const legacy = browserInternal.legacyConsole();
+  const opened = openConsole("cards", legacy ? null : { mode: "now" }) !== false;
+  try { browserWindow.sendToInternalTabs("desk:event", event); } catch { /* no browser yet */ }
+  return opened;
+}
+
 /** Where "Later" snoozes live: the desk's own userData, never the decision store. */
 function needsYouSnoozeDir() {
   try { return app.getPath("userData"); } catch { return null; }
@@ -1780,7 +1805,7 @@ function syncNeedsYouChip() {
     });
   }
   // Do not disturb hides it; .popup-off does NOT (it never takes focus).
-  void needsYouChip.sync(needsYou, { hidden: overlaySettings().doNotDisturb });
+  void needsYouChip.sync(needsYou, { hidden: overlaySettings().doNotDisturb || nowModeActive() });
 }
 
 /** "Later" on a needs-you card: off the strip for 4 h, still open everywhere. */
@@ -3040,6 +3065,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       return;
     }
     case "inbox.open": return void openInbox();
+    case "inbox.now": return void openInboxNow();
     case "avatar.toggle": return void toggleOverlay();
     case "avatar.dock": {
       // Docking opens the browser it docks into; floating leaves the browser alone.
@@ -5443,6 +5469,11 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         // The credential row's "Later": off the needs-you strip for 4 h.
         case "card-later":
           return snoozeNeedsYou(arg);
+        // Now mode on/off: the chip and the balloons stay down while it runs.
+        case "now-mode":
+          nowModeUntil = arg === "on" ? Date.now() + NOW_MODE_TTL_MS : 0;
+          syncNeedsYouChip();
+          return true;
         // The credential row's "Not needed": withdraw the card through awask
         // (which tells the raising session). Only a card main itself sees open.
         case "card-not-needed": {
@@ -5975,13 +6006,13 @@ if (!smokeIsRequested && !app.requestSingleInstanceLock()) {
         // NOTIFICATION trigger -- off by default (overlay.raiseOnNotifications) and
         // silenced by Do not disturb; the card then lands as a tray balloon instead.
         try {
-          const mayRaise = !cardPopupsOff() && overlayMayRaise(overlayPolicy.TRIGGERS.NOTIFICATION, "inbox");
+          const mayRaise = !nowModeActive() && !cardPopupsOff() && overlayMayRaise(overlayPolicy.TRIGGERS.NOTIFICATION, "inbox");
           if (urgent) {
             if (mayRaise) {
               openInbox(newest && newest.id ? newest.id : null);
               raiseLivingDesktop();               // an already-open overlay comes forward too
               lastInboxOpenAt = nowMs;
-            } else if (!overlaySettings().doNotDisturb) {
+            } else if (!overlaySettings().doNotDisturb && !nowModeActive()) {
               notifyQuietly("Aither — a decision needs you", String((newest && newest.title) || title).slice(0, 200));
             }
           } else if (mayRaise && cardWindowsMayOpen() && nowMs - lastInboxOpenAt >= INBOX_OPEN_MIN_MS) {

@@ -131,6 +131,17 @@ const COMMANDS = Object.freeze([
     },
   }),
   Object.freeze({
+    // ADHD gap 3 (owner, 2026-11-01): the Inbox as ONE card on the whole window,
+    // the next sliding in after each answer. Not a bead: the bell already opens
+    // the Inbox, whose header carries the same Now button.
+    id: "inbox.now", group: "go", icon: "bell",
+    surfaces: ["tray", "palette"],
+    label: (ctx = {}) => {
+      const waiting = Number(ctx.decisionsWaiting || 0);
+      return waiting > 0 ? `Now — one card at a time (${waiting})` : "Now — one card at a time";
+    },
+  }),
+  Object.freeze({
     // "Open Aither" since the browser became the console (plan slice 9): it raises the
     // Aither Browser on the Inbox, with AitherOS Online and Workspace pinned beside it.
     id: "console.open", label: "Open Aither", group: "go", icon: "grid",

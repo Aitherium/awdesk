@@ -522,3 +522,40 @@ test("main tries the fallback when register() refuses the default", () => {
   assert.match(body, /fallback && globalShortcut\.register\(fallback\.electron, onPress\)/);
   assert.match(body, /liveAccels\[id\] = fallback\.accel/);
 });
+
+// ── Now mode (ADHD gap 3, 2026-11-01): one card at a time ──
+
+test("inbox.now reaches the tray and the palette, and main opens the one-card stage", () => {
+  const reg = require("./command-registry.cjs");
+  const now = reg.byId("inbox.now");
+  assert.ok(now, "inbox.now is declared");
+  assert.deepEqual(now.surfaces, ["tray", "palette"]);
+  assert.equal(now.group, "go");
+  assert.equal(now.label({ decisionsWaiting: 12 }), "Now — one card at a time (12)");
+  assert.equal(now.label({}), "Now — one card at a time");
+  for (const surface of ["tray", "palette"]) {
+    const flat = [];
+    const walk = (list) => { for (const r of list || []) { if (r.id) flat.push(r.id); walk(r.submenu); } };
+    walk(reg.rowsFor(surface, {}));
+    assert.ok(flat.includes("inbox.now"), `${surface} lists inbox.now`);
+  }
+  assert.ok(!reg.rowsFor("beads", {}).some((r) => r.id === "inbox.now"), "not a bead: the bell opens the Inbox");
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /case "inbox\.now": return void openInboxNow\(\);/);
+  const opener = /function openInboxNow\(\) \{([\s\S]*?)\n\}/.exec(main);
+  assert.ok(opener, "openInboxNow found");
+  assert.match(opener[1], /type: "deck:now-mode"/, "an open deck / Inbox tab hears deck:now-mode");
+  assert.match(opener[1], /\{ mode: "now" \}/, "a new Inbox tab loads with ?mode=now");
+  assert.doesNotMatch(opener[1], /spaceHomeTarget/, "Now is never redirected to the Space home");
+});
+
+test("now-mode hides the needs-you chip and the balloon, and lapses on its own", () => {
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /case "now-mode":\s*nowModeUntil = arg === "on" \? Date\.now\(\) \+ NOW_MODE_TTL_MS : 0;/);
+  assert.match(main, /hidden: overlaySettings\(\)\.doNotDisturb \|\| nowModeActive\(\)/);
+  assert.match(main, /!overlaySettings\(\)\.doNotDisturb && !nowModeActive\(\)\) \{\s*notifyQuietly\(/);
+  const internal = require("./browser-internal.cjs");
+  const link = internal.deepLinkOf(internal.parseInternalUrl("aither://cards/?mode=now"));
+  assert.deepEqual(link, { mode: "now" });
+  assert.equal(internal.deepLinkOf(internal.parseInternalUrl("aither://cards/?mode=evil")), null);
+});

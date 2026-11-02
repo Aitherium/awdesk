@@ -37,37 +37,71 @@ export function capList<T>(items: T[], cap = VISIBLE_CAP): { shown: T[]; more: n
     : { shown: list.slice(0, limit), more: list.length - limit };
 }
 
-function escapeRe(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** "Claude Code needs you: AitherOS-Fresh -- " -- the session-status wrapper. */
+const SESSION_STATUS_TITLE = /^\s*[\w .+()-]{1,40}? needs you:\s*/i;
+const SESSION_PROJECT = /^\S{1,80}\s+(?:--|—|–)(?:\s+|$)/;
+
+/**
+ * A session-status card: a terminal session saying "I am waiting on you" (the
+ * cc-waiting hook; title "Claude Code needs you: <project> -- <ask>", answer
+ * "I am looking now"). Answering it unblocks nothing by itself -- the owner
+ * still has to go to that terminal -- so it never outranks a card whose answer
+ * IS the unblock.
+ */
+export function isSessionStatus(card: DeckDecision): boolean {
+  if (String(card.dedupeKey || '').startsWith('cc-waiting:')) return true;
+  return SESSION_STATUS_TITLE.test(String(card.title || ''));
 }
 
 /**
- * THE next action — the top card as one imperative line plus how much sits
- * behind it. Every surface that shows a list leads with this, so the owner never
- * has to scan to find where to start.
- *
- * "Approve the Solana receive address" stays as written when the title already
- * begins with the action; otherwise the recommended choice prefixes it
- * ("Approve: Solana receive address") — never "Approve: Approve the ...".
+ * The ask in plain words, the session wrapper and the verb taken off:
+ * "Claude Code needs you: AitherOS-Fresh -- Good faith extension terms" reads
+ * "Good faith extension terms — a session needs your answer". The action is
+ * the BUTTON's job (owner screenshot 2026-11-01: "I am looking now: Claude Code
+ * needs you: …" on the Next line was unreadable).
+ */
+export function plainAsk(card: DeckDecision): string {
+  const title = String(card.title || '').replace(/\s+/g, ' ').trim();
+  if (!isSessionStatus(card)) return title || 'Answer this card';
+  const ask = title.replace(SESSION_STATUS_TITLE, '').replace(SESSION_PROJECT, '').trim();
+  return `${ask || 'A session is waiting'} — a session needs your answer`;
+}
+
+/**
+ * What goes FIRST: credentials (a typed value unblocks a stopped session), then
+ * the decisions whose answer is the unblock, then session-status pings. Stable:
+ * inside a tier main's rank order is kept. Every surface that leads with "the
+ * next one" (the Next line, Now mode) reads this ONE order.
+ */
+export function nextOrder(cards: DeckDecision[]): DeckDecision[] {
+  const tier = (c: DeckDecision) => (c.kind === 'credential' ? 0 : isSessionStatus(c) ? 2 : 1);
+  return (cards || [])
+    .map((card, at) => ({ card, at, tier: tier(card) }))
+    .sort((a, b) => a.tier - b.tier || a.at - b.at)
+    .map((x) => x.card);
+}
+
+/**
+ * THE next action -- the plain ask of the top card (nextOrder), how much sits
+ * behind it, and the choice its button answers. Every surface that shows a list
+ * leads with this, so the owner never has to scan to find where to start. The
+ * line never carries the verb: the button says it. A credential has no button
+ * answer (its value is typed), so `choice` is null there.
  */
 export function nextActionLine(
   cards: DeckDecision[],
   openCount: number,
-): { id: string; line: string; after: string } | null {
-  const first = cards && cards[0];
+): { id: string; line: string; after: string; choice: { key: string; label: string } | null } | null {
+  const first = nextOrder(cards)[0];
   if (!first) return null;
-  const title = String(first.title || '').trim() || 'Answer this card';
-  const primary = primaryChoice(first);
-  const label = primary ? String(primary.label || '').trim() : '';
-  const line = label && !new RegExp(`^\\W*${escapeRe(label)}\\b`, 'i').test(title)
-    ? `${label}: ${title}`
-    : title;
+  const line = plainAsk(first);
   const open = Number.isFinite(openCount) ? openCount : cards.length;
   const remaining = Math.max(0, open - 1);
   return {
     id: first.id,
     line: line.length > 120 ? `${line.slice(0, 119)}…` : line,
     after: remaining > 0 ? `${remaining} after this one` : 'nothing after this one',
+    choice: first.kind === 'credential' ? null : primaryChoice(first),
   };
 }
 

@@ -164,6 +164,8 @@ const DEEP_LINK_KEYS = Object.freeze({
   at: /^(platform|[a-z]+:[A-Za-z0-9._/@:-]{1,160})$/,
   focus: /^next$/,
   card: /^[A-Za-z0-9_-]{1,80}$/,
+  // The Inbox's one-card stage (src/deck/now-mode.ts nowModeParam).
+  mode: /^now$/,
 });
 
 /** {at?, focus?, card?} from a parsed address's search, or null when it has none. */
