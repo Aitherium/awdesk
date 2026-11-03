@@ -727,10 +727,11 @@ const COMMANDS = Object.freeze([
   // ── the fairy IS the owner's AitherSprite (owner 2026-11-02). sprite-core.cjs
   // reads/teaches through the portal's /api/sprite/* as the signed-in owner; the
   // orb verbs live in orb-window.run(). No `prompt`: Alt+Space and the menus run
-  // these too, and a teach with nothing typed takes the clipboard (or the last
-  // snip's caption) -- the bubble field is the typed path.
+  // these too, and a teach with nothing typed takes the highlighted selection
+  // (UI Automation, no faked keys), else the clipboard, else the last snip's
+  // caption -- the bubble field is the typed path.
   Object.freeze({
-    id: "sprite.teach", label: "Teach my sprite the clipboard / selection", menuLabel: "Teach it the clipboard",
+    id: "sprite.teach", label: "Teach my sprite the selection / clipboard", menuLabel: "Teach it the selection",
     group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-teach",
   }),
   Object.freeze({
@@ -759,6 +760,11 @@ const COMMANDS = Object.freeze([
   Object.freeze({
     id: "aw.recover", label: "aw: list snapshots (awrecover)…", menuLabel: "List snapshots…",
     group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-recover",
+  }),
+  Object.freeze({
+    // Undoable by construction: awrecover moves the current dest aside, never deletes it.
+    id: "aw.recover.restore", label: "aw: restore a snapshot (awrecover)…", menuLabel: "Restore a snapshot…",
+    group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-recover-restore",
   }),
   Object.freeze({
     id: "aw.settings.sync", label: "aw: pull synced settings (awsettings)", menuLabel: "Pull synced settings",

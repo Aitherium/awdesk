@@ -125,7 +125,7 @@ function looksLikePath(text) {
  *
  * @returns {{kind:"fact"|"link", title:string, content:string, source:string}|null}
  */
-function teachPayload({ arg = null, clipboard = "", lastCaption = "" } = {}) {
+function teachPayload({ arg = null, selection = "", clipboard = "", lastCaption = "" } = {}) {
   let given = arg == null ? "" : String(arg).trim();
   let explicitTitle = "";
   let source = "arg";
@@ -139,6 +139,7 @@ function teachPayload({ arg = null, clipboard = "", lastCaption = "" } = {}) {
     } catch { /* not JSON: teach the text as written */ }
   }
   let text = given.trim();
+  if (!text) { text = String(selection || "").trim(); source = "selection"; }
   if (!text) { text = String(clipboard || "").trim(); source = "clipboard"; }
   if (!text) { text = String(lastCaption || "").trim(); source = "snip"; }
   if (!text) return null;

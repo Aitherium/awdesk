@@ -74,3 +74,15 @@ test("runAw reports a missing binary, a timeout and a failure without throwing",
 test("output is clipped for the bubble", () => {
   assert.equal(aw.clip("y".repeat(5000)).length, aw.OUTPUT_MAX);
 });
+
+test("aw-recover-restore: exact argv, never --discard-replaced, refuses a root or a flag", () => {
+  const p = aw.plan("aw-recover-restore", 'E:/snaps pre-fix "C:/My Notes"', { home: "/h" });
+  assert.deepEqual(p.args, ["restore", "--store", "E:/snaps", "--label", "pre-fix", "--dest", "C:/My Notes"]);
+  assert.equal(p.timeoutMs, 10 * 60 * 1000, "a restore gets a long cap, not 30 s");
+  assert.ok(!p.args.includes("--discard-replaced"), "the replaced tree is always kept");
+  assert.equal(aw.plan("aw-recover-restore", "E:/snaps pre-fix C:\\", { home: "/h" }).error.startsWith("Refusing"), true);
+  assert.equal(aw.plan("aw-recover-restore", "E:/snaps pre-fix D:", { home: "/h" }).error.startsWith("Refusing"), true);
+  assert.match(aw.plan("aw-recover-restore", "E:/snaps --discard-replaced C:/x", { home: "/h" }).error, /cannot start with '-'/);
+  assert.match(aw.plan("aw-recover-restore", "E:/snaps only-two", { home: "/h" }).error, /exactly/);
+  assert.equal(aw.plan("aw-recover-restore", "", { home: "/h" }).error, "needs-arg");
+});

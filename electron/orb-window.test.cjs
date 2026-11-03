@@ -206,6 +206,8 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test.beforeEach(() => {
   orbWindow.__reset();
+  // Never read the REAL desktop's selection from a test; tests that want one set it.
+  orbWindow.__setSelection(async () => "");
   FakeWindow.all.length = 0;
   fs.rmSync(STATE, { force: true });
   cursor = { x: 100, y: 100 };
@@ -497,6 +499,29 @@ test("sprite.teach teaches the clipboard, refuses a credential, and opens the fi
   const typed = await invoke("desk:orb-ask", bubbleWin(), "sprite-teach", "D:\\notes\\plan.md");
   assert.equal(typed.ok, true);
   assert.equal(client.calls.teach[1].kind, "link");
+});
+
+test("sprite.teach prefers the highlighted selection over the clipboard", async () => {
+  const client = spriteFake();
+  orbWindow.__setSpriteClient(client);
+  start();
+  orbWindow.__setSelection(async () => "Highlighted: the pool runs on the Spark.");
+  orbWindow.__setClipboard(() => { throw new Error("the clipboard is not read when a selection exists"); });
+  const r = await orbWindow.run("sprite-teach");
+  assert.equal(r.ok, true);
+  assert.equal(client.calls.teach[0].source, "selection");
+  assert.match(r.line, /from your selection/);
+
+  orbWindow.__setSelection(async () => `key ${"ghp"}_${"Q".repeat(32)}`);
+  const refused = await orbWindow.run("sprite-teach");
+  assert.equal(refused.ok, false, "a highlighted credential is refused like a copied one");
+  assert.equal(client.calls.teach.length, 1);
+
+  orbWindow.__setSelection(async () => "");
+  orbWindow.__setClipboard(() => "copied fallback");
+  const fb = await orbWindow.run("sprite-teach");
+  assert.equal(client.calls.teach[1].source, "clipboard", "no selection falls back to the clipboard");
+  assert.equal(fb.ok, true);
 });
 
 test("sprite.teach falls back to the last snip's caption", async () => {

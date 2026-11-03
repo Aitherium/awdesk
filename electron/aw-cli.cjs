@@ -11,8 +11,11 @@
  * query can never become a command line. Every run is capped at 30 s and its
  * output is clipped for the orb's bubble.
  *
- * Read-only on purpose: recall, graph query, git state, recover listing and a
- * settings PULL. Nothing here commits, pushes, restores or deletes.
+ * Recall, graph query, git state, recover list/restore and a settings PULL.
+ * Nothing here commits, pushes or deletes. The one writer, `aw-recover-restore`,
+ * can never pass `--discard-replaced`: awrecover moves the current tree aside to
+ * `.awrecover-replaced-<label>-<pid>` next to it, so every desk restore is
+ * undoable by moving that folder back.
  */
 
 const os = require("node:os");
@@ -55,11 +58,40 @@ const AW_VERBS = Object.freeze({
     // Listing only: restore/drop stay a typed CLI decision.
     argv: (arg) => ["list", "--store", arg],
   }),
+  "aw-recover-restore": Object.freeze({
+    bin: "awrecover", needsArg: true, title: "Restore snapshot", timeoutMs: 10 * 60 * 1000,
+    placeholder: "<store> <label> <dest> -- quote paths with spaces; the current dest is kept aside",
+    argv: (arg) => {
+      const r = parseRestoreArg(arg);
+      return r.error ? null : ["restore", "--store", r.store, "--label", r.label, "--dest", r.dest];
+    },
+    check: (arg) => parseRestoreArg(arg).error || null,
+  }),
   "aw-settings": Object.freeze({
     bin: "awsettings", needsArg: false, title: "Settings sync",
     argv: () => ["--quiet", "pull"],
   }),
 });
+
+/** Split typed text into tokens; "double quotes" keep spaces. Pure. */
+function splitArgs(text) {
+  const out = [];
+  const re = /"([^"]*)"|(\S+)/g;
+  let m;
+  while ((m = re.exec(String(text || "")))) out.push(m[1] != null ? m[1] : m[2]);
+  return out;
+}
+
+/** `<store> <label> <dest>` -> {store,label,dest} or {error}. Refuses a drive/filesystem root or a flag. */
+function parseRestoreArg(arg) {
+  const t = splitArgs(arg);
+  if (t.length !== 3) return { error: "Restore needs exactly: <store> <label> <dest> (quote paths with spaces)." };
+  if (t.some((x) => x.startsWith("-"))) return { error: "Restore arguments cannot start with '-'." };
+  const [store, label, dest] = t;
+  const bare = dest.replace(/[\\/]+$/, "");
+  if (!bare || /^[A-Za-z]:$/.test(bare) || bare === "~") return { error: `Refusing to restore over a whole drive or home (${dest}).` };
+  return { store, label, dest };
+}
 
 /** One line of typed text, no control characters, capped. */
 function cleanArg(arg) {
@@ -73,8 +105,12 @@ function plan(verb, arg, { home = process.env.DESK_AW_CWD || os.homedir() } = {}
   if (!spec) return { error: `unknown aw verb ${verb}` };
   const a = cleanArg(arg);
   if (spec.needsArg && !a) return { error: "needs-arg", spec };
+  const bad = spec.check ? spec.check(a) : null;
+  if (bad) return { error: bad };
   const cwd = spec.cwdFromArg && a ? a : home;
-  return { bin: spec.bin, args: spec.needsArg ? spec.argv(a) : spec.argv(), cwd, title: spec.title };
+  const out = { bin: spec.bin, args: spec.needsArg ? spec.argv(a) : spec.argv(), cwd, title: spec.title };
+  if (spec.timeoutMs) out.timeoutMs = spec.timeoutMs;
+  return out;
 }
 
 /** The first PATH hit for `bin`, or null. Shims (.cmd/.bat/.ps1) are skipped. */
@@ -111,6 +147,7 @@ async function runAw(verb, arg, {
   const p = plan(verb, arg, { home });
   if (p.error === "needs-arg") return { ok: false, needsArg: true, text: p.spec.placeholder };
   if (p.error) return { ok: false, text: p.error };
+  if (p.timeoutMs) timeoutMs = p.timeoutMs;
   const exe = await (resolve || ((b) => resolveBin(b, { execFile, platform })))(p.bin);
   if (!exe) return { ok: false, missing: true, text: `${p.bin} is not installed on this computer (not on PATH).` };
   return new Promise((done) => {
@@ -133,4 +170,4 @@ async function runAw(verb, arg, {
   });
 }
 
-module.exports = { AW_VERBS, TIMEOUT_MS, OUTPUT_MAX, plan, cleanArg, resolveBin, runAw, clip };
+module.exports = { AW_VERBS, TIMEOUT_MS, OUTPUT_MAX, plan, cleanArg, splitArgs, parseRestoreArg, resolveBin, runAw, clip };

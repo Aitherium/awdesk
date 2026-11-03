@@ -46,6 +46,7 @@ const spiritOps = require("./spirit-ops.cjs");
 const spiritProbe = require("./spirit-probe.cjs");
 const spriteCore = require("./sprite-core.cjs");
 const awCli = require("./aw-cli.cjs");
+const selectionReader = require("./selection-reader.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -132,6 +133,7 @@ let spriteClientImpl = null;
 let spriteTokenImpl = null;
 let awRunImpl = null;
 let clipboardImpl = null;
+let selectionImpl = null;
 const SPRITE_POLL_MS = 5 * 60 * 1000;
 
 function electron() {
@@ -1259,6 +1261,17 @@ function startSpritePoll() {
   spriteTimer.unref?.();
 }
 
+/** The desk's own pids: their windows are never read as "the selection". */
+function deskPids() {
+  try { return electron().app.getAppMetrics().map((m) => m.pid); } catch { return [process.pid]; }
+}
+
+/** Highlighted text in the app under the desk, via UI Automation (no keys, no clipboard). */
+async function readSelection() {
+  if (selectionImpl) return String((await selectionImpl()) || "");
+  try { return await selectionReader.readSelection({ excludePids: deskPids() }); } catch { return ""; }
+}
+
 function readClipboard() {
   if (clipboardImpl) return String(clipboardImpl() || "");
   try { return String(electron().clipboard.readText() || ""); } catch { return ""; }
@@ -1272,10 +1285,11 @@ async function spriteStatus() {
   return { ok: Boolean(verdict && verdict.ok), line, sprite: publicSprite() };
 }
 
-/** Teach the typed arg, else the clipboard, else the last snip's caption. */
+/** Teach the typed arg, else the highlighted selection, else the clipboard, else the last snip's caption. */
 async function spriteTeach(arg) {
   const typed = arg == null ? "" : String(arg).trim();
-  const payload = spriteCore.teachPayload({ arg: typed, clipboard: typed ? "" : readClipboard(), lastCaption });
+  const selection = typed ? "" : await readSelection();
+  const payload = spriteCore.teachPayload({ arg: typed, selection, clipboard: typed || selection.trim() ? "" : readClipboard(), lastCaption });
   // Nothing given, nothing copied, no snip read: the bubble field is the typed door.
   if (!payload) return openMode("sprite-teach");
   const refused = spriteCore.looksSecret(payload.content)
@@ -1301,7 +1315,7 @@ async function spriteTeach(arg) {
     return { ok: false, error: line };
   }
   const who = sprite ? sprite.name : "Your sprite";
-  const from = payload.source === "clipboard" ? " (from the clipboard)" : payload.source === "snip" ? " (from the last snip)" : "";
+  const from = payload.source === "selection" ? " (from your selection)" : payload.source === "clipboard" ? " (from the clipboard)" : payload.source === "snip" ? " (from the last snip)" : "";
   const line = `${who} learned “${payload.title}”${from}.`;
   answer(line, { via: "sprite" });
   void refreshSprite();
@@ -1314,7 +1328,7 @@ async function runAwVerb(verb, arg) {
   const typed = awCli.cleanArg(arg);
   if (spec.needsArg && !typed) return openMode(verb);
   showOrb();
-  pushStatus(`Running ${spec.bin}`, awCli.TIMEOUT_MS + 5000);
+  pushStatus(`Running ${spec.bin}`, (spec.timeoutMs || awCli.TIMEOUT_MS) + 5000);
   let r;
   try {
     r = await (awRunImpl || awCli.runAw)(verb, typed);
@@ -1885,7 +1899,7 @@ function spiritMenu() {
     { type: "separator" },
     // The fairy IS the owner's sprite: its own rows sit on its own menu.
     { label: sprite ? `${sprite.name}: how are you?` : "How is my sprite?", click: () => { void spriteStatus(); } },
-    { label: "Teach it the clipboard", click: () => { void spriteTeach(null); } },
+    { label: "Teach it the selection", click: () => { void spriteTeach(null); } },
     { label: "Open Sprite…", click: () => { openUrl(spriteCore.SPRITE_PAGE); } },
     { type: "separator" },
     // The desk's doors live on the fairy now (owner 2026-11-02: "consolidate the
@@ -2273,10 +2287,12 @@ module.exports = {
     spriteTokenImpl = null;
     awRunImpl = null;
     clipboardImpl = null;
+    selectionImpl = null;
   },
   __setSpriteClient: (c) => { spriteClientImpl = c; },
   __setAwRun: (f) => { awRunImpl = f; },
   __setClipboard: (f) => { clipboardImpl = f; },
+  __setSelection: (f) => { selectionImpl = f; },
   __setLastCaption: (t) => { lastCaption = String(t || ""); },
   sprite: () => publicSprite(),
   refreshSprite, restTint,

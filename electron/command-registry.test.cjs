@@ -590,7 +590,7 @@ test("sprite.* and aw.* rows reach the tray, the palette (Alt+Space) and the rig
   const want = {
     "sprite.teach": "sprite-teach", "sprite.status": "sprite-status", "sprite.open": "sprite-open",
     "aw.memory.recall": "aw-recall", "aw.graph.query": "aw-graph", "aw.git.status": "aw-git",
-    "aw.recover": "aw-recover", "aw.settings.sync": "aw-settings",
+    "aw.recover": "aw-recover", "aw.recover.restore": "aw-recover-restore", "aw.settings.sync": "aw-settings",
   };
   const palette = reg.paletteRows({}).map((r) => r.id);
   for (const [id, verb] of Object.entries(want)) {
