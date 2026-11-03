@@ -110,3 +110,17 @@ test("PrintScreen registry: argv and query parsing", () => {
   assert.equal(snip.parsePrintScreenQuery("    PrintScreenKeyForSnippingEnabled    REG_DWORD    0x1\r\n"), "snipping");
   assert.equal(snip.parsePrintScreenQuery("ERROR: The system was unable to find the specified registry key or value."), "unset");
 });
+
+test("the Controlled Folder Access note is shown once per folder, then remembered", () => {
+  const files = new Map();
+  const fakeFs = {
+    readFileSync: (p) => { if (!files.has(p)) throw Object.assign(new Error("nope"), { code: "ENOENT" }); return files.get(p); },
+    writeFileSync: (p, data) => files.set(p, String(data)),
+  };
+  const dir = path.join("C:", "Users", "x", "Pictures", `Screenshots-${Date.now()}`);
+  const used = path.join("C:", "Users", "x", "Aither Captures");
+  const first = snip.fallbackNote(dir, used, { fsImpl: fakeFs });
+  assert.match(first, /Controlled Folder Access/);
+  assert.equal(snip.fallbackNote(dir, used, { fsImpl: fakeFs }), null);
+  assert.match(snip.fallbackNote(dir, "x", { once: false }), /Controlled Folder Access/, "callers can still ask for it");
+});

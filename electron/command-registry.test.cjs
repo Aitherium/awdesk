@@ -258,7 +258,7 @@ test("an exported overlay opener has a caller", () => {
 test("shortcuts are registered FROM the registry, and a dead key is not advertised", () => {
   const keys = shortcuts();
   assert.deepEqual(keys.map((k) => k.accel).sort(),
-    ["Alt+Space", "Ctrl+Alt+M", "Ctrl+Shift+,", "Ctrl+Shift+-", "Ctrl+Shift+=", "Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+Shift+Escape", "Ctrl+Shift+M", "Ctrl+Shift+Space", "PrintScreen", "Shift+PrintScreen"]);
+    ["Alt+Space", "Ctrl+Alt+0", "Ctrl+Alt+9", "Ctrl+Alt+B", "Ctrl+Alt+C", "Ctrl+Alt+D", "Ctrl+Alt+Down", "Ctrl+Alt+G", "Ctrl+Alt+L", "Ctrl+Alt+M", "Ctrl+Alt+N", "Ctrl+Alt+O", "Ctrl+Alt+P", "Ctrl+Alt+Q", "Ctrl+Alt+S", "Ctrl+Alt+Up", "Ctrl+Alt+W", "Ctrl+Shift+,", "Ctrl+Shift+-", "Ctrl+Shift+=", "Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+Shift+Escape", "Ctrl+Shift+M", "Ctrl+Shift+Space", "PrintScreen", "Shift+PrintScreen"]);
   // Every Ctrl chord maps to CommandOrControl; a bare key (PrintScreen, the snip) passes through.
   assert.ok(keys.every((k) => (k.accel.startsWith("Ctrl+") ? k.electron.startsWith("CommandOrControl+") : k.electron === k.accel)));
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
@@ -354,6 +354,13 @@ test("every command either has a handler or a dynamic submenu", () => {
         `${command.id} names blog verb "${command.blog}" that blog-commands.cjs does not know`);
       continue;
     }
+    if (command.orb) {
+      // The floating ask orb: the default branch hands the verb to orb-window.run,
+      // so a new orb row is one record and no case.
+      assert.match(body, /command\.orb/, "the orb branch is gone");
+      assert.match(body, /orbWindow\.run\(command\.orb/, "nothing routes an orb verb");
+      continue;
+    }
     if (command.osApp) {
       // The Aither apps are data too: the default branch opens the record's OS app in
       // its per-app launch mode (launch-modes.cjs; aither-apps.test.cjs pins the set).
@@ -404,7 +411,9 @@ test("blog: drafts everywhere, publishing nowhere (owner ruling 2026-09-19)", ()
   // The palette rows carry the prompt so the shell can ask before it runs.
   const rows = require("./command-registry.cjs").paletteRows({});
   const asking = rows.filter((row) => row.prompt).map((row) => row.id);
-  assert.deepEqual(asking, ["blog.draft", "blog.show", "blog.publish"]);
+  // spirit.go is the second prompt row (the spirit lane, 2026-11-02): a trip
+  // argument is typed as JSON or a sentence, exactly the palette's job.
+  assert.deepEqual(asking, ["spirit.go", "blog.draft", "blog.show", "blog.publish"]);
   assert.equal(rows.find((row) => row.id === "blog.list").prompt, undefined);
   // And a prompt row on a surface with no text field is a conformance problem.
   const stray = [{
@@ -515,6 +524,19 @@ test("a label advertises the LIVE fallback key, not the dead default", () => {
   walk(rows);
   assert.ok(flat.some((l) => /^Search this PC… {2}\(Ctrl\+Alt\+Space\)$/.test(l)), flat.filter((l) => /Search/.test(l)).join(" | "));
   assert.ok(!flat.some((l) => /Search this PC….*Alt\+Space\)$/.test(l) && !/Ctrl\+Alt/.test(l)));
+});
+
+test("accelFor names only a key that is really held (the bar's pause hint)", () => {
+  const reg = require("./command-registry.cjs");
+  // Not dead: the default is advertised.
+  assert.equal(reg.accelFor("record.pause", {}), "Ctrl+Alt+P");
+  // The default is held by another app and the fallback went live: the fallback.
+  assert.equal(reg.accelFor("record.pause", { deadAccels: ["Ctrl+Alt+P"], liveAccels: { "record.pause": "Ctrl+Alt+Shift+P" } }), "Ctrl+Alt+Shift+P");
+  // Dead with no live fallback: nothing is promised (the bar hides its hint).
+  assert.equal(reg.accelFor("record.pause", { deadAccels: ["Ctrl+Alt+P"] }), null);
+  // A command with no accel, or an unknown id: null.
+  assert.equal(reg.accelFor("search.universal", { deadAccels: ["Alt+Space"] }), null);
+  assert.equal(reg.accelFor("no.such.command", {}), null);
 });
 
 test("main tries the fallback when register() refuses the default", () => {

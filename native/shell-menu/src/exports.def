@@ -1,0 +1,4 @@
+LIBRARY AitherShellMenu
+EXPORTS
+    DllGetClassObject
+    DllCanUnloadNow

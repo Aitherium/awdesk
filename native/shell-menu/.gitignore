@@ -1,0 +1,9 @@
+# Build outputs for the native shell menu (CI writes these under out/ and stage/)
+out/
+stage/
+*.pfx
+*.res
+*.exp
+*.lib
+*.obj
+AitherShellMenu.dll

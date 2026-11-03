@@ -30,14 +30,21 @@ test("recordingDir is <Videos>/Aither Recordings, ~/Videos when Electron gives n
   assert.equal(core.recordingDir({ homeDir: path.join("H") }), path.join("H", "Videos", "Aither Recordings"));
 });
 
-test("normalizeOptions defaults to region MP4 and strips audio from GIF", () => {
-  assert.deepEqual(core.normalizeOptions({}), { mode: "region", format: "mp4", systemAudio: false, mic: false, fps: 30 });
+test("normalizeOptions defaults sound ON for video and strips audio from GIF", () => {
+  // Owner 2026-11-02: a plain `record.region` should already carry system audio, so
+  // the bar offers System/Mic toggles instead of recording silent video. MIC stays
+  // OFF: acquiring the microphone (and its OS indicator) is the owner's choice.
+  assert.deepEqual(core.normalizeOptions({}), {
+    mode: "region", format: "mp4", systemAudio: true, mic: false, micDeviceId: null, fps: 30,
+  });
+  assert.equal(core.normalizeOptions({ systemAudio: false }).systemAudio, false);
   const gif = core.normalizeOptions({ mode: "screen", format: "GIF", systemAudio: true, mic: true });
   assert.equal(gif.mode, "screen");
   assert.equal(gif.format, "gif");
   assert.equal(gif.systemAudio, false);
   assert.equal(gif.mic, false);
   assert.equal(core.normalizeOptions({ format: "mp4", mic: true }).mic, true);
+  assert.equal(core.normalizeOptions({ mic: true, micDeviceId: 7 }).micDeviceId, "7");
 });
 
 // ── ffmpeg ──────────────────────────────────────────────────────────────────
@@ -105,6 +112,28 @@ test("cropForStream uses the stream's REAL size, not scaleFactor, and clamps to 
   const edge = core.cropForStream({ x: 1200, y: 700, width: 500, height: 500 }, display, { width: 1920, height: 1200 });
   assert.deepEqual(edge, { x: 1800, y: 1050, width: 120, height: 150 });
   assert.equal(core.cropForStream(null, display, { width: 1920, height: 1200 }), null);
+});
+
+test("a dragged region really changes the crop's OUTPUT size", () => {
+  // The live frame resize is only honest if the pixels the encoder gets change.
+  const display = { bounds: { width: 1920, height: 1080 }, scaleFactor: 1 };
+  const stream = { width: 1920, height: 1080 };
+  const before = core.cropForStream({ x: 100, y: 100, width: 640, height: 360 }, display, stream);
+  const after = core.cropForStream({ x: 100, y: 100, width: 1280, height: 720 }, display, stream);
+  assert.deepEqual(before, { x: 100, y: 100, width: 640, height: 360 });
+  assert.deepEqual(after, { x: 100, y: 100, width: 1280, height: 720 });
+  // Both axes move: not a scale of the old frame.
+  assert.notEqual(after.width, before.width);
+  assert.notEqual(after.height, before.height);
+  // A move with the same size keeps the output size (only the source point moves).
+  const moved = core.cropForStream({ x: 300, y: 200, width: 640, height: 360 }, display, stream);
+  assert.equal(moved.width, before.width);
+  assert.equal(moved.height, before.height);
+  assert.notDeepEqual(moved, before);
+  // At 150% the output is in DEVICE pixels: the same DIP region is 1.5x bigger.
+  const hidpi = { bounds: { width: 1280, height: 720 }, scaleFactor: 1.5 };
+  const dip = core.cropForStream({ x: 100, y: 100, width: 400, height: 200 }, hidpi, { width: 1920, height: 1080 });
+  assert.deepEqual(dip, { x: 150, y: 150, width: 600, height: 300 });
 });
 
 test("evenRect trims odd edges and refuses a sliver", () => {
@@ -610,4 +639,66 @@ test("nativeConcatList quotes paths for the concat demuxer", () => {
 test("nativeMuxArgs joins the bar's sound onto the native video without re-encoding", () => {
   const args = core.nativeMuxArgs({ video: "v.mkv", audio: "a.webm", output: "av.mkv" });
   assert.deepEqual(args.slice(args.indexOf("-map")), ["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", "-y", "av.mkv"]);
+});
+
+// ── the visible frame around a live region (owner 2026-11-02: "I dragged a box but
+// can't see the box"; the region must also be resizable while recording) ─────────
+
+test("frameWindowBounds places the frame OUTSIDE the region by the band", () => {
+  const display = { x: 100, y: 50, width: 1920, height: 1080 };
+  assert.deepEqual(
+    core.frameWindowBounds({ region: { x: 10, y: 20, width: 800, height: 600 }, displayBounds: display, band: 12 }),
+    { x: 98, y: 58, width: 824, height: 624 },
+  );
+  // The band is never degenerate, and no input is never a window.
+  assert.equal(core.frameWindowBounds({ region: { x: 0, y: 0, width: 64, height: 64 }, displayBounds: display, band: 2 }).width, 68);
+  assert.equal(core.frameWindowBounds({ region: null, displayBounds: display }), null);
+});
+
+test("frameHandles covers the band only, corners first, and hit-tests by zone", () => {
+  const hs = core.frameHandles({ width: 824, height: 624, band: 12 });
+  assert.deepEqual(hs.slice(0, 4).map((z) => z.edge), ["nw", "ne", "sw", "se"]);
+  assert.deepEqual(hs[0], { edge: "nw", x: 0, y: 0, width: 12, height: 12 });
+  const move = hs.find((z) => z.edge === "move");
+  assert.equal(move.y, 0);
+  assert.equal(move.height, 12);
+  assert.equal(core.hitFrameHandle(2, 2, hs), "nw");
+  assert.equal(core.hitFrameHandle(820, 620, hs), "se");
+  assert.equal(core.hitFrameHandle(400, 6, hs), "move");
+  // The recorded middle is transparent to clicks -- that is the click-through desktop.
+  assert.equal(core.hitFrameHandle(400, 300, hs), null);
+  assert.equal(core.hitFrameHandle(NaN, 3, hs), null);
+});
+
+test("dragRegion moves, resizes and clamps inside the display", () => {
+  const bounds = { x: 0, y: 0, width: 1920, height: 1080 };
+  const start = { x: 100, y: 100, width: 400, height: 300 };
+  assert.deepEqual(core.dragRegion({ start, edge: "move", dx: 50, dy: -50, bounds }), { x: 150, y: 50, width: 400, height: 300 });
+  // A move is clamped to the display, never resized.
+  assert.deepEqual(core.dragRegion({ start, edge: "move", dx: -500, dy: 2000, bounds }), { x: 0, y: 780, width: 400, height: 300 });
+  assert.deepEqual(core.dragRegion({ start, edge: "e", dx: 100, dy: 0, bounds }), { x: 100, y: 100, width: 500, height: 300 });
+  assert.deepEqual(core.dragRegion({ start, edge: "se", dx: 50, dy: 50, bounds }), { x: 100, y: 100, width: 450, height: 350 });
+  assert.deepEqual(core.dragRegion({ start, edge: "nw", dx: -50, dy: -50, bounds }), { x: 50, y: 50, width: 450, height: 350 });
+  // Never below MIN_REGION_DIP, never outside the display.
+  assert.deepEqual(core.dragRegion({ start, edge: "e", dx: -1000, dy: 0, bounds }), { x: 100, y: 100, width: core.MIN_REGION_DIP, height: 300 });
+  assert.equal(core.dragRegion({ start: { x: 100, y: 100, width: 1700, height: 300 }, edge: "e", dx: 500, dy: 0, bounds }).width, 1820);
+  assert.equal(core.dragRegion({ start, edge: "s", dx: 0, dy: -1000, bounds }).height, core.MIN_REGION_DIP);
+  assert.equal(core.regionLabel({ width: 1280, height: 720.4 }), "1280×720");
+});
+
+test("a region dragged mid-recording normalizes its segments before the concat", () => {
+  assert.equal(core.needsNormalize([{ width: 1280, height: 720 }]), false);
+  assert.equal(core.needsNormalize([{ width: 1280, height: 720 }, { width: 1280, height: 720 }]), false);
+  assert.equal(core.needsNormalize([{ width: 1280, height: 720 }, { width: 900, height: 500 }]), true);
+  assert.equal(core.needsNormalize([null, { width: 900, height: 500 }]), false);
+  assert.equal(core.evenSize(1279), 1278);
+  assert.equal(core.evenSize("x"), 0);
+
+  const args = core.scalePadArgs({ input: "a.mkv", output: "n.mkv", size: { width: 1281, height: 719 }, fps: 24 });
+  const filter = args[args.indexOf("-vf") + 1];
+  assert.match(filter, /^scale=1280:718:force_original_aspect_ratio=decrease,pad=1280:718:\(ow-iw\)\/2:\(oh-ih\)\/2:color=black,setsar=1$/);
+  assert.equal(args[args.indexOf("-r") + 1], "24");
+  assert.ok(args.includes("-an"));
+  const join = core.concatArgs({ listPath: "l.txt", output: "o.mkv" });
+  assert.deepEqual(join.slice(join.indexOf("-f")), ["-f", "concat", "-safe", "0", "-i", "l.txt", "-c", "copy", "-y", "o.mkv"]);
 });

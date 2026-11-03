@@ -108,9 +108,29 @@ function listDetached() {
   return [...detachedWindows.keys()];
 }
 
+/**
+ * The live detached windows as {slotId, title, window}, for the spirit's attach
+ * targets (orb-window.cjs asks main for avatar rects at ~4 Hz while attached).
+ * Dead entries are skipped and pruned on the way out.
+ */
+function listDetachedWindows() {
+  const out = [];
+  for (const [slotId, win] of detachedWindows) {
+    if (!win || win.isDestroyed()) {
+      detachedWindows.delete(slotId);
+      continue;
+    }
+    let title = "Aither";
+    try { title = win.getTitle() || title; } catch { title = "Aither"; }
+    out.push({ slotId, title, window: win });
+  }
+  return out;
+}
+
 module.exports = {
   openDetachedAvatar,
   closeDetachedAvatar,
   isOpen,
   listDetached,
+  listDetachedWindows,
 };

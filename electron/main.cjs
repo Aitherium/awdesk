@@ -183,12 +183,49 @@ const { routeDrop, routeShare, synthesizeVerdict, stagePath, cleanupStage } = re
 const capture = require("./snip-window.cjs");
 // Screen recorder (recorder-window.cjs owns its IPC; region overlay = snip.html).
 const recorder = require("./recorder-window.cjs");
+// The floating ask orb (owner, 2026-11-02): orb-window.cjs owns both windows
+// and every desk:orb-* channel; main only starts it and routes its registry rows.
+const orbWindow = require("./orb-window.cjs");
+// [audio] System speakers + microphone (Core Audio through one warm PowerShell);
+// audio-control.cjs owns the OSD + the Audio flyout. Registry rows: group "audio".
+const audio = require("./audio-control.cjs");
 const { desktopSnapshot } = require("./browser-client.cjs");
 const { connectSnapshot } = require("./connect-client.cjs");
 const { createBridgeServer, DEFAULT_PORT } = require("./bridge-server.cjs");
 // ONE inventory of what Desk can do and which menus carry it. Menus are rendered
 // from it; nothing lists a capability by hand (docs/UX-REIMPLEMENTATION.md).
 const commandRegistry = require("./command-registry.cjs");
+// ── Quick menu, notes, whiteboards, right-click menu (owner 2026-11-02) ───────
+// "just right click anywhere and start capturing/recording/drawing/writing/
+// taking notes" + "spawn a virtual clipboard/whiteboard anywhere and put it away
+// ... just like the rest of the taskbar". Each module owns its own IPC and
+// windows; main only wires the command ids, the tray and the hotkeys.
+const quickMenu = require("./quick-menu.cjs").createQuickMenu({
+  electron: require("electron"),
+  registry: commandRegistry,
+  run: (id) => runCommand(id, undefined, { surface: "shortcut" }),
+});
+// ONE Alt+Space key (owner 2026-11-02): tap = the Alfred launcher, hold = the radial
+// above. The key stays the "search.universal" row; only the SHORTCUT surface routes
+// here, so the tray/palette keep opening the search page's launcher.
+const launcher = require("./launcher-window.cjs").createLauncher({
+  electron: require("electron"),
+  registry: commandRegistry,
+  run: (id, arg) => runCommand(id, arg, { surface: "launcher" }),
+  ask: (text) => commandAction(text, { source: "launcher" }),
+  spirit: null, // @ sends through the spirit.go registry row (a plain sentence = a search trip)
+  quickMenu,
+});
+// OWNER-CONSENTED, reversible (files-wine.cjs pattern): never enabled here; the
+// registry rows call enable({consent:true}) / restore(). `shellMenuOn` is the ONE
+// synced bit the tray ctx uses to show exactly one of the two rows.
+const shellMenu = require("./shell-menu.cjs").createShellMenu({
+  exe: process.execPath,
+  appArgs: app.isPackaged ? [] : [app.getAppPath()],
+  available: (id) => Boolean(commandRegistry.byId(id)),
+});
+let shellMenuOn = false;
+const boardsWindow = require("./boards-window.cjs");
 // The registry's `blog` records: gateway blog_* MCP tools via gateway-mcp.cjs.
 // Machine paths create DRAFTS; `blog.publish` opens the Veil editor for a human
 // (owner ruling 2026-09-19, .claude/rules/blog-voice.md).
@@ -509,7 +546,7 @@ const {
   ensureDesktopSession,
   portalLoginUrl,
 } = require("./living-desktop-window.cjs");
-const { openDetachedAvatar } = require("./detached-avatar-window.cjs");
+const { openDetachedAvatar, listDetachedWindows } = require("./detached-avatar-window.cjs");
 const {
   ensureStageIpc,
   createStageWindow,
@@ -1797,7 +1834,42 @@ function computeNeedsYou(cards = openDecisions) {
  * INACTIVE, so it is visible under .popup-off without ever taking focus. A click
  * is a navigation main intercepts (needs-you.cjs chipTarget) -> openInbox(id).
  */
+// ── companion: the fairy by default (owner 2026-11-02: "I thought we were replacing
+// the full avatars with little fairy sprites ... get rid of the red banner").
+// ~/.aither/desk-companion.json {"companion":"fairy"|"avatar"}; missing = fairy.
+// Fairy: the avatar window is not opened at boot, the red Needs-you chip stays
+// down and its count rides on the fairy's badge + its Notifications row instead.
+const COMPANION_FILE = path.join(require("node:os").homedir(), ".aither", "desk-companion.json");
+function companionMode() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(COMPANION_FILE, "utf8"));
+    return raw && raw.companion === "avatar" ? "avatar" : "fairy";
+  } catch {
+    return "fairy";
+  }
+}
+function setCompanionMode(mode) {
+  const next = mode === "avatar" ? "avatar" : "fairy";
+  try {
+    fs.mkdirSync(path.dirname(COMPANION_FILE), { recursive: true });
+    fs.writeFileSync(COMPANION_FILE, JSON.stringify({ companion: next }));
+  } catch { /* the choice holds for this run */ }
+  if (next === "avatar") showOverlay({ focus: false });
+  else if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.hide();
+  syncNeedsYouChip();
+  if (tray) refreshTrayMenu();
+  return { ok: true, companion: next };
+}
+
 function syncNeedsYouChip() {
+  if (companionMode() === "fairy") {
+    try {
+      const first = needsYou[0];
+      orbWindow.setAttention(needsYou.length, first && (first.title || first.why || null));
+    } catch { /* the fairy is not up yet */ }
+    if (needsYouChip) void needsYouChip.sync(needsYou, { hidden: true });
+    return;
+  }
   if (!needsYouChip) {
     needsYouChip = needsYouLib.createChip({
       BrowserWindow,
@@ -2795,9 +2867,15 @@ function commandContext() {
     deadAccels: [...deadAccels],
     liveAccels: { ...liveAccels },
     platform: process.platform,
+    shellMenu: shellMenuOn,
+    companion: companionMode(),
     clipboardSync: capture.clipboardSyncOn(),
     printScreenOwner: capture.printScreenOwner(),
     recording: recorder.isRecording(),
+    // [audio] Windows endpoint mute flags, cached by audio-control (30 s poll +
+    // every read/write), so the two Audio rows say Mute/Unmute truthfully.
+    speakerMuted: audio.speakerMuted(),
+    systemMicMuted: audio.micMuted(),
     awconnect: latestAwconnectStatus,
     // Who the AitherDesktop window + overlay are signed in as (never a token).
     account: desktopAccount(),
@@ -2911,6 +2989,9 @@ require("./windows-window.cjs").setRegistered(() => ({
 }));
 require("./windows-window.cjs").ensureWindowsIpc();
 require("./search-window.cjs").setForgeOpener((url) => browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url }));
+// A web result from the Alt+Space launcher opens as an Aither browser tab (the same
+// door Media Forge uses); a URL never opens anything else.
+require("./search-window.cjs").setWebOpener((url) => browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url }));
 // Alt+Space universal search: a desk-action row runs through the palette's door, and
 // Tab (or an agent/tool row) hands the query to the ONE CommandAgent.
 require("./search-window.cjs").setActionRunner((id) => runCommand(id, undefined, { surface: "palette" }));
@@ -2970,6 +3051,13 @@ function trayTemplateNow() {
     ctx: commandContext(),
     submenus: { "characters.pick": buildCharacterMenu() },
   });
+  // Two capture rows are doors to a LIVE list, not one-shot verbs: the quick grid
+  // (the same cells the Ctrl+Alt+Q pop-up shows) and the open Boards list, where
+  // a put-away note/whiteboard comes back with one click (owner 2026-11-02).
+  const quickRow = trayTemplate.find((row) => typeof row.label === "string" && row.label.startsWith("Quick menu"));
+  if (quickRow) { quickRow.submenu = quickMenu.submenuItems(); delete quickRow.click; }
+  const boardsRow = trayTemplate.find((row) => typeof row.label === "string" && row.label.startsWith("Boards…"));
+  if (boardsRow) { boardsRow.submenu = boardsWindow.traySubmenu(); delete boardsRow.click; }
   // A dead voice listener is otherwise INVISIBLE (see voice-tray-line.cjs). It is
   // a STATUS line rather than a command, so it is spliced in after the avatar
   // group rather than declared in the registry.
@@ -3069,6 +3157,8 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "inbox.open": return void openInbox();
     case "inbox.now": return void openInboxNow();
     case "avatar.toggle": return void toggleOverlay();
+    case "companion.fairy": return void setCompanionMode("fairy");
+    case "companion.avatar": return void setCompanionMode("avatar");
     case "avatar.dock": {
       // Docking opens the browser it docks into; floating leaves the browser alone.
       if (avatarDock.isDocked()) return void avatarDock.undock();
@@ -3094,7 +3184,10 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "notebooks.open": return void browserWindow.openInternal("notebooks", null, { askAgent: browserAskAgent });
     case "files.open": return void createFilesWindow();
     case "tunnel.open": return void createTunnelWindow();
-    case "search.universal": return void require("./search-window.cjs").toggleLauncher();
+    // Alt+Space is ONE key (owner 2026-11-02): the global SHORTCUT gets the tap/hold
+    // launcher; a tray/palette click keeps the search page's launcher.
+    case "search.universal":
+      return void (surface === "shortcut" ? launcher.press() : require("./search-window.cjs").toggleLauncher());
     case "browser.open": return void browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
     case "inference.open": {
       // Sign-in must land the cookie in the living-desktop PARTITION, which
@@ -3173,6 +3266,53 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       return void recorder.startRecording({ mode: "region", format: "mp4", systemAudio: true, mic: true });
     case "record.region.gif": return void recorder.startRecording({ mode: "region", format: "gif" });
     case "record.pause": return void recorder.togglePause();
+    // Radial menu at the cursor: Ctrl+Alt+Q and the HOLD half of Alt+Space (the
+    // launcher opens this same ring). Notes/whiteboards and the reversible right-
+    // click menu live in their own modules; nothing here invents a second list.
+    case "quick.open": return void quickMenu.openRadial();
+    case "terminal.open": return void browserWindow.openInternal("terminal", null, { askAgent: browserAskAgent });
+    case "note.new": return void boardsWindow.createNote();
+    case "board.new": return void boardsWindow.createBoard();
+    case "boards.open": return void boardsWindow.openList();
+    case "shellmenu.add": {
+      void shellMenu.enable({ consent: true }).then((verdict) => {
+        shellMenuOn = Boolean(verdict && verdict.ok);
+        if (!shellMenuOn) {
+          void dialog.showMessageBox({
+            type: "warning", message: "Could not add Aither to the right-click menu",
+            detail: String((verdict && verdict.reason) || "the registry refused the write"),
+          });
+        }
+        if (tray) refreshTrayMenu();
+      });
+      return;
+    }
+    case "shellmenu.remove": {
+      void shellMenu.restore().then((verdict) => {
+        shellMenuOn = !(verdict && verdict.ok);
+        if (!verdict || !verdict.ok) {
+          void dialog.showMessageBox({
+            type: "warning", message: "Could not remove Aither from the right-click menu",
+            detail: String((verdict && verdict.reason) || "the registry refused the change"),
+          });
+        }
+        if (tray) refreshTrayMenu();
+      });
+      return;
+    }
+    // [audio] System speakers + microphone (group "audio"). Every handler lives in
+    // audio-control.cjs; a hotkey press also raises the 1.2 s OSD there.
+    case "audio.volume.up": return void audio.volumeUp();
+    case "audio.volume.down": return void audio.volumeDown();
+    case "audio.mute": return void audio.toggleSpeakerMute();
+    case "audio.mic.mute": return void audio.toggleMicMute();
+    case "audio.settings": return void audio.openSettings();
+    // Screen ink (ink-window.cjs): per-display overlays a recorder can see.
+    // One lazy require per press; the module wires its own IPC on first use.
+    case "ink.toggle": return void require("./ink-window.cjs").toggleDraw();
+    case "ink.laser": return void require("./ink-window.cjs").toggleTool("laser");
+    case "ink.spotlight": return void require("./ink-window.cjs").toggleTool("spotlight");
+    case "ink.clear": return void require("./ink-window.cjs").clearDrawings();
     case "missioncontrol.open":
       // The page host, plain: mission control is a page, not an OS window.
       return void browserWindow.createBrowserWindow({
@@ -3220,6 +3360,13 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
         // Blog verbs: gateway blog_* tools through the desk's ONE MCP transport.
         // Returned (not void) so the palette can await and show the verdict.
         return runBlogMenuCommand(command, arg, { surface });
+      }
+      if (command && command.orb) {
+        // The floating ask orb / spirit: orb-window.cjs owns the windows, the
+        // queue, the trips and the vision ladder; a row is data (`orb: "toggle" |
+        // "ask-screen" | "find" | "web" | "attach" | "go"`). The verdict is
+        // RETURNED so the bridge's POST /commands/run can report the trip.
+        return orbWindow.run(command.orb, { surface, arg, slotId });
       }
       console.warn(`[desk] command ${id} has no handler`);
     }
@@ -4492,6 +4639,67 @@ function runSmokeTest() {
   });
 }
 
+/** The Win11 shell-menu flyout launches the desk with `--run=<id>` and appends
+ *  one `--arg=<path>` per selected item (desktop/folder/file). Null for an
+ *  ordinary launch. One path stays a string; a multi-selection becomes an array. */
+function parseRunRequest(argv) {
+  const list = Array.isArray(argv) ? argv : [];
+  const asked = list.find((part) => part.startsWith("--run="));
+  if (!asked) return null;
+  const args = list
+    .filter((part) => part.startsWith("--arg="))
+    .map((part) => part.slice("--arg=".length))
+    .filter(Boolean);
+  return {
+    id: asked.slice("--run=".length),
+    arg: args.length === 0 ? undefined : args.length === 1 ? args[0] : args,
+  };
+}
+
+/**
+ * The Win11 shell-menu DLL resolves the desk at CLICK time (a packaged
+ * Desk.exe, or an unpackaged `"<electron.exe>" "<app dir>"`), so record the
+ * exact command line under HKCU on every start. It is the same string
+ * files-wine.cjs builds for Win+E, without its --files flag. reg.exe runs
+ * hidden and only writes when the value differs (no console flash, no churn).
+ */
+function rememberLaunchCommand() {
+  if (process.platform !== "win32" || smokeIsRequested) return;
+  let command;
+  try {
+    command = require("./files-wine.cjs").baseCommand({
+      exe: process.execPath,
+      appArgs: app.isPackaged ? [] : [app.getAppPath()],
+    });
+  } catch (error) {
+    console.warn("[desk] shell-menu launch command not recorded:", error?.message || error);
+    return;
+  }
+  const key = "HKCU\\Software\\Aither\\Desk";
+  const reg = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "reg.exe");
+  const { execFile } = require("node:child_process");
+  execFile(reg, ["query", key, "/v", "LaunchCommand"], { windowsHide: true }, (queryError, stdout) => {
+    const current = /^\s+LaunchCommand\s+REG_(?:EXPAND_)?SZ\s+(.*)$/m.exec(String(stdout || ""));
+    if (!queryError && current && current[1].trim() === command) return;
+    execFile(reg, ["add", key, "/v", "LaunchCommand", "/t", "REG_SZ", "/d", command, "/f"],
+      { windowsHide: true }, (addError) => {
+        if (addError) console.warn("[desk] shell-menu launch command not recorded:", addError.message);
+      });
+  });
+}
+
+// Cold start is routed once. If another lane also routes --run= here, merge the
+// two into this one parser/one call so a click can never run its command twice.
+let coldRunRequestRouted = false;
+function routeColdRunRequest() {
+  if (coldRunRequestRouted) return;
+  coldRunRequestRouted = true;
+  const requested = parseRunRequest(process.argv);
+  if (requested && commandRegistry.byId(requested.id)) {
+    runCommand(requested.id, requested.arg, { surface: "shell-menu" });
+  }
+}
+
 // (`Desk.exe --quit` is decided at the top of this file, before any of this loads.)
 if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
   app.quit();
@@ -4548,11 +4756,13 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       createFilesWindow();
       return;
     }
-    // A Windows jump-list task (right-click the taskbar icon): `--run=<command id>`.
-    const asked = argv.find((part) => part.startsWith("--run="));
-    if (asked) {
-      const id = asked.slice("--run=".length);
-      if (commandRegistry.byId(id)) runCommand(id, undefined, { surface: "jumplist" });
+    // A Windows jump-list task or the Win11 shell-menu flyout:
+    // `--run=<command id>` plus optional repeated `--arg=<selected path>`.
+    const requested = parseRunRequest(argv);
+    if (requested) {
+      if (commandRegistry.byId(requested.id)) {
+        runCommand(requested.id, requested.arg, { surface: "shell-menu" });
+      }
       return;
     }
     if (argv.includes("--command")) {
@@ -4624,6 +4834,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
   }
 
   app.whenReady().then(async () => {
+    // Build the ONE Alt+Space launcher's window (and its IPC) now: a global shortcut
+    // reports only key-down, so the box must already be loaded when the key lands.
+    launcher.warm();
     // Microphone permission: Electron DENIES getUserMedia by default, so the
     // push-to-talk renderer captured nothing and Ctrl+Shift+Space "had no effect"
     // (owner 2026-09-22). Grant audio/media to the desk's own windows.
@@ -5276,8 +5489,53 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         { filePath, mime: filePath.endsWith(".gif") ? "image/gif" : "video/mp4" },
         { ffmpeg: recorder.firstFrameRunner() }),
       onAnswer: announceDrop,
+      // The bar's pause hint names the key main really holds (null when another
+      // app owns it) -- the registry's "a dead key is not advertised" rule.
+      pauseHotkey: () => commandRegistry.accelFor("record.pause", commandContext()),
     });
     recorder.ensureRecorderIpc();
+    // The floating ask orb, grown into the SPIRIT (orb-window.cjs): loads its
+    // remembered spot and comes back only if it was left visible. Hotkeys arrive
+    // from the registry rows (orb.* / spirit.*), so there is no second key list
+    // here. The spirit gets the desk's own voice, command runner, browser and
+    // avatar rects -- it never invents a second TTS, runner or body list.
+    orbWindow.startOrb({
+      speak: (text, { slotId = null, origin = "desk:spirit" } = {}) =>
+        speakAloud(text, undefined, undefined, slotId || "slot0", origin),
+      runCommand: (id, arg) => runCommand(id, arg, { surface: "spirit" }),
+      openUrl: (url) => {
+        const verdict = browserPolicy.sanitizeUrl(url);
+        if (!verdict.ok) return { ok: false, error: verdict.reason };
+        browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
+        return { ok: true, url: verdict.url };
+      },
+      avatarTargets: () => {
+        const out = [];
+        try {
+          if (avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) {
+            out.push({ kind: "avatar", slotId: "slot0", title: "Aither", bounds: avatarWindow.getBounds() });
+          }
+        } catch { /* the body is mid-teardown */ }
+        for (const entry of listDetachedWindows()) {
+          try {
+            if (!entry.window.isVisible()) continue;
+            out.push({
+              kind: "avatar",
+              slotId: entry.slotId,
+              title: entry.title || entry.slotId,
+              bounds: entry.window.getBounds(),
+            });
+          } catch { /* it vanished between the listing and the read */ }
+        }
+        return out;
+      },
+    });
+    // [audio] System speakers + microphone. onChange re-renders the tray so its
+    // Mute/Unmute rows match Windows; the warm helper is late so boot is not
+    // slowed (the first hotkey pays the one Add-Type compile otherwise).
+    audio.configureAudio({ onChange: () => { if (tray) refreshTrayMenu(); } });
+    audio.ensureAudioIpc();
+    setTimeout(() => { void audio.warm(); }, 12_000);
     registerTunnelIpc();
     // "Share this" (disk index contract): the other thing a drop can mean. It
     // PROPOSES a share of the original path from this node -- nothing is staged
@@ -5846,6 +6104,17 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     }
 
     createTray();
+    // ── notes + whiteboards + right-click menu (owner 2026-11-02) ─────────────
+    // Boards reopen where they were left; every change re-renders the tray so its
+    // Boards submenu and put-away rows stay true. The right-click state is only
+    // READ here (no write), so the tray shows the correct one of its two rows.
+    boardsWindow.ensureIpc();
+    boardsWindow.setChangeHook(() => { if (tray) refreshTrayMenu(); });
+    void boardsWindow.restoreOpenBoards();
+    void shellMenu.status().then((state) => {
+      shellMenuOn = Boolean(state && state.enabled);
+      if (tray) refreshTrayMenu();
+    }).catch(() => { /* status is a read; a failure just leaves the add row up */ });
     // Workspace offline + a local model answering: one toast that opens Local AI.
     require("./local-ai-window.cjs").startOfflineWatch(
       () => browserWindow.openInternal("local-ai", null, { askAgent: browserAskAgent }));
@@ -5880,6 +6149,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     if (process.argv.includes("--files")) createFilesWindow();
     // --files is routed here (cold start) AND in second-instance: the Win+E switch may open.
     setFilesLaunchRouted(true);
+    // The DLL reads this at click time; it must exist before the first click.
+    rememberLaunchCommand();
+    // The shell-menu flyout cold-starts Desk on first use after login; route
+    // its --run/--arg pair exactly like a second launch does.
+    routeColdRunRequest();
     // Keep the tray's Fleet line honest: re-render the menu after every verdict.
     getFleetControl().on("progress", (p) => {
       if (p?.phase === "end") refreshTrayMenu();
@@ -6220,7 +6494,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       });
     }
 
-    if (!startInBackground) {
+    if (!startInBackground && companionMode() === "avatar") {
       createWindow();
       // INACTIVE at launch. Nobody is waiting to type into the avatar when it
       // comes up: it is started by the logon shim, by restart_persona.py, or by
@@ -6243,6 +6517,8 @@ app.on("activate", () => (kidDeskMode().enabled ? openKidClassroom() : showOverl
 
 app.on("before-quit", () => {
   isQuitting = true;
+  // The orb is always-on-top glass; it leaves with the desk (its timers stop too).
+  try { orbWindow.stopOrb(); } catch { /* not started */ }
   // Windows: a verified installer waiting for this quit runs now, silently, no relaunch.
   deskUpdater?.installOnQuit({ sessionEnding });
   clearTimeout(hyprlandConfigurationTimer);
@@ -6263,6 +6539,7 @@ app.on("before-quit", () => {
   localNode.stopOwned();
   settingsSync?.stop();
   audioListener?.stop();
+  audio.teardown();
   globalShortcut.unregisterAll();
   void bridge?.close().catch((error) => debugLog("integration server close failed", error));
 });

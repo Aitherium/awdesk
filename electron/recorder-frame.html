@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<title>Recording frame</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<!--
+  recorder-frame.html -- the visible frame around a LIVE region recording
+  (recorder-frame.cjs). Its window is exactly the recorded region inflated by the
+  border band, so the frame is drawn OUTSIDE the recorded pixels and never lands
+  in the video. The window is click-through at rest; the page watches the
+  forwarded mouse moves and asks main to make it interactive while the pointer is
+  over a grab handle (the zones main computes with core.frameHandles, so the hit
+  areas and the drawn handles are one list).
+  First line on screen is the size line (ux-shape law 3): "1280×720 · drag".
+-->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+    user-select: none; font: 10px/1.2 var(--font-sans, system-ui); color: #dbe6ff; }
+  :root { --band: 12px; --accent: #7aa2ff; }
+  body.paused { --accent: #9a9aa8; }
+  .rail { position: absolute; pointer-events: none; background: rgba(16, 20, 32, .55); }
+  .rail.t { left: 0; right: 0; top: 0; height: var(--band); border-bottom: 2px solid var(--accent); }
+  .rail.b { left: 0; right: 0; bottom: 0; height: var(--band); border-top: 2px solid var(--accent); }
+  .rail.l { top: 0; bottom: 0; left: 0; width: var(--band); border-right: 2px solid var(--accent); }
+  .rail.r { top: 0; bottom: 0; right: 0; width: var(--band); border-left: 2px solid var(--accent); }
+  .zone { position: absolute; background: transparent; }
+  .zone.hot { background: rgba(122, 162, 255, .28); }
+  .zone[data-edge="nw"], .zone[data-edge="ne"], .zone[data-edge="sw"], .zone[data-edge="se"] { background: var(--accent); opacity: .85; border-radius: 2px; }
+  .zone[data-edge="nw"].hot, .zone[data-edge="ne"].hot, .zone[data-edge="sw"].hot, .zone[data-edge="se"].hot { background: #b9ccff; }
+  #grip { position: absolute; pointer-events: none; white-space: nowrap; height: var(--band);
+    line-height: calc(var(--band) - 2px); padding: 0 8px; border-radius: 6px;
+    background: rgba(14, 18, 30, .9); border: 1px solid rgba(122, 162, 255, .5); color: #dbe6ff; }
+  body.paused #grip { border-color: rgba(154, 154, 168, .55); color: #c9c9d4; }
+</style>
+</head>
+<body>
+<div id="frame"></div>
+<div id="grip">starting…</div>
+<script>
+  const frame = window.aitherRecorderFrame;
+  const host = document.getElementById("frame");
+  const grip = document.getElementById("grip");
+  let zones = [];
+  let railsBuilt = false;
+  let hot = null;
+
+  // The DOM is built ONCE and only PATCHED afterwards: replacing the zone that
+  // holds setPointerCapture detaches it and releases the capture mid-drag, which
+  // is how a drag used to end at the first 16 ms update.
+  function render(info) {
+    if (!info || !info.ok) return;
+    document.documentElement.style.setProperty("--band", `${info.band}px`);
+    document.body.classList.toggle("paused", info.state === "paused");
+    // Rails: the visible outline sits on the INNER edge of the band, exactly on
+    // the recorded region's boundary.
+    if (!railsBuilt) {
+      for (const cls of ["t", "b", "l", "r"]) {
+        const rail = document.createElement("div");
+        rail.className = `rail ${cls}`;
+        host.appendChild(rail);
+      }
+      railsBuilt = true;
+    }
+    const handles = info.handles || [];
+    while (zones.length > handles.length) zones.pop().remove();
+    while (zones.length < handles.length) {
+      const el = document.createElement("div");
+      el.className = "zone";
+      host.appendChild(el);
+      zones.push(el);
+    }
+    handles.forEach((z, i) => {
+      const el = zones[i];
+      el.dataset.edge = z.edge;
+      el.style.left = `${z.x}px`;
+      el.style.top = `${z.y}px`;
+      el.style.width = `${z.width}px`;
+      el.style.height = `${z.height}px`;
+      el.classList.toggle("hot", z.edge === hot);
+    });
+    // The size line rides the move grip (top band, centre).
+    const move = handles.find((z) => z.edge === "move");
+    const size = info.label || `${info.region.width}×${info.region.height}`;
+    grip.textContent = `${size}${info.state === "paused" ? " · paused" : " · drag to move"}`;
+    grip.title = grip.textContent;
+    if (move) {
+      grip.style.left = `${move.x + move.width / 2}px`;
+      grip.style.top = "0px";
+      grip.style.transform = "translateX(-50%)";
+      grip.hidden = false;
+    } else {
+      grip.hidden = true;
+    }
+  }
+
+  function paintHot(edge) {
+    if (edge === hot) return;
+    hot = edge;
+    for (const z of zones) z.classList.toggle("hot", z.dataset.edge === hot);
+    document.body.style.cursor = hot ? (hot === "move" ? "grab" : "crosshair") : "default";
+  }
+
+  // Hover: forwarded mouse MOVES reach the page while the window is click-through.
+  // MAIN does the hit test (core.hitFrameHandle over the same handle list it sends
+  // here), so there is ONE hit-test path and the window is made interactive
+  // exactly while a handle is under the pointer. Out-of-order replies are dropped.
+  let hoverSeq = 0;
+  let lastPt = { x: NaN, y: NaN };
+  let dragActive = false;
+  document.addEventListener("mousemove", (e) => {
+    const x = Math.round(e.clientX);
+    const y = Math.round(e.clientY);
+    if (x === lastPt.x && y === lastPt.y) return;
+    lastPt = { x, y };
+    if (!frame || !frame.hoverAt) return;
+    const seq = ++hoverSeq;
+    frame.hoverAt(x, y).then((r) => {
+      if (seq !== hoverSeq || dragActive) return; // the drag owns the cursor
+      paintHot(r && r.ok ? (r.edge || null) : null);
+    }).catch(() => { /* window gone */ });
+  });
+
+  function endDrag() {
+    dragActive = false;
+    try { if (frame && frame.dragEnd) frame.dragEnd(); } catch { /* window gone */ }
+  }
+  document.addEventListener("pointerdown", (e) => {
+    const el = e.target && e.target.dataset ? e.target.dataset.edge : null;
+    if (!el) return;
+    e.preventDefault();
+    dragActive = true;
+    try { e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId); } catch { /* no capture */ }
+    document.body.style.cursor = el === "move" ? "grabbing" : "crosshair";
+    if (frame && frame.dragStart) frame.dragStart(el);
+  });
+  document.addEventListener("pointerup", () => {
+    document.body.style.cursor = hot ? (hot === "move" ? "grab" : "crosshair") : "default";
+    endDrag();
+  });
+  document.addEventListener("pointercancel", endDrag);
+  // The pointer leaving the window (or the OS losing it) is a drag end too: without
+  // this a missed pointerup kept the region following the cursor.
+  document.addEventListener("pointerleave", endDrag);
+  document.addEventListener("mouseleave", endDrag);
+  window.addEventListener("blur", endDrag);
+
+  if (frame) {
+    frame.onUpdate(render);
+    frame.info().then(render).catch(() => {});
+  }
+</script>
+</body>
+</html>

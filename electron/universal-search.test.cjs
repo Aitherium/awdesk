@@ -271,7 +271,7 @@ test("screenshots: asking for the kind lists the newest; a date matches by name"
   const dir = tmp("usearch-shots-");
   touch(path.join(dir, "Screenshot 2026-10-30 101010.png"));
   touch(path.join(dir, "Screenshot 2026-11-01 090000.png"));
-  const p = us.screenshotsProvider({ dir: () => dir });
+  const p = us.screenshotsProvider({ dir: () => dir, fallbackDir: () => tmp("usearch-shots-fb-") });
   const all = us.rankItems(p.search("screenshot"), "screenshot", "screenshots");
   assert.equal(all[0].title, "Screenshot 2026-11-01 090000");
   const day = us.rankItems(p.search("2026-10-30"), "2026-10-30", "screenshots");

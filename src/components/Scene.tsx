@@ -756,6 +756,9 @@ export function Scene(props: SceneProps) {
         // (3.8 -> 2.65, measured 2026-09-18) and visibly staircases every outline.
         antialias: true,
         alpha: true,
+        // The click-through pixel test (hooks/clickThrough.ts paintedAt) reads ONE
+        // pixel of the last frame; with frameloop "demand" the buffer must survive.
+        preserveDrawingBuffer: true,
         powerPreference: 'high-performance',
         toneMapping: THREE.NoToneMapping,
         outputColorSpace: THREE.SRGBColorSpace,

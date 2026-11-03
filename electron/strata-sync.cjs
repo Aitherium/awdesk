@@ -36,7 +36,9 @@ const os = require("node:os");
 const path = require("node:path");
 const nodeCrypto = require("node:crypto");
 
-const FOLDERS = Object.freeze(["screenshots", "clipboard"]);
+// `files` already exists: files-ops.cjs uploads desk files to it. Boards (notes
+// and whiteboards) sync their PNG/MD there too, so no new Strata folder is born.
+const FOLDERS = Object.freeze(["screenshots", "clipboard", "files"]);
 const UPLOAD_PATH = "/api/strata/upload";
 const LIST_PATH = "/api/strata/files";
 const UPLOAD_TIMEOUT_MS = 30_000;

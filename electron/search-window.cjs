@@ -73,6 +73,7 @@ let wired = false;
 let clientImpl = null;
 let universalImpl = null;
 let openForge = null;
+let openWeb = null;
 let runAction = null;
 let sendToChat = null;
 let launcherWindow = null;
@@ -120,6 +121,11 @@ function fromSearchPage(sender) {
 /** main says how a Media Forge URL opens (a web tab in the browser). */
 function setForgeOpener(fn) {
   openForge = typeof fn === "function" ? fn : null;
+}
+
+/** main says how a WEB result opens (a tab in the Aither browser). */
+function setWebOpener(fn) {
+  openWeb = typeof fn === "function" ? fn : null;
 }
 
 /**
@@ -239,6 +245,17 @@ async function launchItem(key, query, { shell, clipboard, action = runAction, ch
   if (item.kind === "agent") {
     if (!chat) return { ok: false, error: UNWIRED.chat };
     return sendChat(chat, require("./universal-search.cjs").chatPrompt(query, item), acceptMs ? { acceptMs } : {});
+  }
+  // The Alt+Space launcher adds a WEB group through search-client.cjs's awfind path;
+  // a web tab is the one thing a URL may open (never an app row, never a path).
+  if (item.kind === "web") {
+    const url = String(item.target || "");
+    if (!/^https?:\/\//i.test(url)) return { ok: false, error: "1 web result has no address — search again" };
+    if (!openWeb) return { ok: false, error: "1 web result not wired in main.cjs — use the search page's Web tab until setWebOpener lands" };
+    try { await openWeb(url); } catch (error) {
+      return { ok: false, error: `1 web result did not open — ${String((error && error.message) || error).slice(0, 200)}` };
+    }
+    return { ok: true, did: `opened ${item.title}` };
   }
   return { ok: false, error: `1 ${item.kind} row cannot launch — search again` };
 }
@@ -412,7 +429,7 @@ function registerLauncherShortcut(globalShortcut, { onPress = () => toggleLaunch
 module.exports = {
   CHAT_ACCEPT_MS, LAUNCHER_ACCELS, UNWIRED,
   client, ensureSearchIpc, failureOf, openAppsFolderEntry, fromSearchPage, hideLauncher, launchItem, publicRun, registerLauncherShortcut,
-  searchHandlers, sendChat, setActionRunner, setChatSender, setForgeOpener, toggleLauncher, universal,
+  searchHandlers, sendChat, setActionRunner, setChatSender, setForgeOpener, setWebOpener, toggleLauncher, universal,
   /** For tests: forget every remembered item. */
   __forget: () => remembered.clear(),
 };

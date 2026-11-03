@@ -12,9 +12,18 @@
                  optional system audio + mic mixed into one track, MediaRecorder
                  webm/vp9 in 1 s chunks streamed to main. Excluded from capture.
                  The first refused chunk stops the recording (no hole mid-file).
+
+                 SOUND IS LIVE-CONTROLLED (owner 2026-11-02: "control mic input vs
+                 system input"): one GainNode per source feeds ONE mixed track, so
+                 System / Mic mute and unmute while recording (GainNode 1 -> 0, never
+                 track.stop), each with a level meter and a microphone picker. The
+                 MIC is acquired on first use, so a plain recording never turns the
+                 microphone indicator on until the owner asks for it.
+
+                 The region size is in the first line (ux-shape law 3), and a drag of
+                 the visible frame re-crops this canvas live (recorder:region).
     ?view=toast  the saved-recording toast: [Ask Aither] [Copy path] [Open folder]
                  [Sync] (cloud upload is opt-in) or [Cancel sync] when queued.
-  The first line of each view is its status line (ux-shape law 3).
 -->
 <style>
   * { box-sizing: border-box; }
@@ -22,19 +31,32 @@
     font: 13px/1.4 var(--font-sans, system-ui); color: var(--fg, #e8e8ef); }
   [hidden] { display: none !important; }
   /* ── bar ── */
-  .bar { height: 100%; display: flex; align-items: center; gap: 6px; padding: 0 6px 0 12px;
-    border-radius: 22px; border: 1px solid var(--line, #333); background: var(--bg, #15151c);
-    -webkit-app-region: drag; }
+  .bar { height: 100%; display: flex; flex-direction: column; justify-content: center; gap: 3px;
+    padding: 5px 8px 5px 12px; border-radius: 14px; border: 1px solid var(--line, #333);
+    background: rgba(20, 21, 28, .96); -webkit-app-region: drag; }
+  .row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .row.top { font-size: 12px; color: var(--muted, #9a9aa8); }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--destructive, #ff4d4d); flex: none; }
   .bar.paused .dot { background: var(--muted, #9a9aa8); }
   .bar.starting .dot { opacity: .4; }
-  .line { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .time { font-variant-numeric: tabular-nums; font-weight: 600; }
-  .bar button { -webkit-app-region: no-drag; }
-  button { font: inherit; padding: 4px 10px; border-radius: 6px; cursor: pointer;
-    border: 1px solid var(--line, #333); background: transparent; color: inherit; }
+  .time { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--fg, #e8e8ef); }
+  .size { font-variant-numeric: tabular-nums; color: var(--fg, #e8e8ef); flex: none; }
+  .what { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hint { flex: none; font-size: 11px; color: var(--muted, #9a9aa8); white-space: nowrap; }
+  button { font: inherit; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line, #333); background: transparent; color: inherit; -webkit-app-region: no-drag; }
   button.primary { background: var(--primary, #7aa2ff); border-color: transparent; color: var(--primary-fg, #0b0b10); }
-  button.stop { background: var(--destructive, #ff4d4d); border-color: transparent; color: #fff; border-radius: 16px; }
+  button.stop { background: var(--destructive, #ff4d4d); border-color: transparent; color: #fff; border-radius: 14px; }
+  .tog { padding: 3px 8px; font-size: 12px; }
+  .tog.on { border-color: var(--primary, #7aa2ff); color: var(--primary, #7aa2ff); }
+  .tog.off { color: #7e7e8c; border-style: dashed; }
+  .src { display: inline-flex; align-items: center; gap: 4px; }
+  .meter { width: 28px; height: 7px; border-radius: 4px; background: rgba(255, 255, 255, .08);
+    overflow: hidden; display: inline-block; flex: none; }
+  .meter i { display: block; height: 100%; width: 0; background: #6fd08c; transition: width .08s linear; }
+  select { -webkit-app-region: no-drag; background: #1b1c25; color: inherit; font: inherit; font-size: 12px;
+    border: 1px solid var(--line, #333); border-radius: 6px; padding: 2px 4px; max-width: 160px; }
+  .spacer { flex: 1; }
   /* ── toast ── */
   .card { height: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line, #333);
     background: var(--bg, #15151c); display: grid; grid-template-rows: auto auto auto 1fr; gap: 2px; }
@@ -47,10 +69,27 @@
 </head>
 <body>
 <div class="bar starting" id="bar" hidden>
-  <span class="dot"></span>
-  <span class="line"><span class="time" id="time">0:00</span> · <span id="what">Starting…</span></span>
-  <button id="pause" title="Pause / resume">Pause</button>
-  <button class="stop" id="stop" title="Stop and save">Stop</button>
+  <div class="row top">
+    <span class="dot"></span>
+    <span class="time" id="time">0:00</span>
+    <span class="size" id="size" title="Recording region">…</span>
+    <span class="what" id="what">Starting…</span>
+    <span class="hint" id="hint" title="Pause or resume from anywhere">Ctrl+Alt+P pause</span>
+  </div>
+  <div class="row ctl">
+    <span class="src" id="syswrap" hidden>
+      <button class="tog" id="sys" title="System audio: click to mute or unmute while recording">System</button>
+      <span class="meter" title="System audio level"><i id="sysmeter"></i></span>
+    </span>
+    <span class="src" id="micwrap" hidden>
+      <button class="tog" id="mic" title="Microphone: click to mute or unmute while recording">Mic</button>
+      <span class="meter" title="Microphone level"><i id="micmeter"></i></span>
+    </span>
+    <select id="micdev" title="Microphone to use" hidden></select>
+    <span class="spacer"></span>
+    <button id="pause" title="Pause / resume (Ctrl+Alt+P)">Pause</button>
+    <button class="stop" id="stop" title="Stop and save">Stop</button>
+  </div>
 </div>
 
 <div class="card" id="card" hidden>
@@ -82,51 +121,289 @@
   async function runBar() {
     const bar = document.getElementById("bar");
     const time = document.getElementById("time");
+    const sizeEl = document.getElementById("size");
     const what = document.getElementById("what");
     const pauseBtn = document.getElementById("pause");
+    const sysWrap = document.getElementById("syswrap");
+    const micWrap = document.getElementById("micwrap");
+    const sysBtn = document.getElementById("sys");
+    const micBtn = document.getElementById("mic");
+    const micDev = document.getElementById("micdev");
+    const sysMeter = document.getElementById("sysmeter");
+    const micMeter = document.getElementById("micmeter");
     bar.hidden = false;
+
     const owned = [];          // every track we opened, stopped at the end
     let recorder = null;
     let segments = [];         // [start, end|null] pairs, pauses excluded
     let tick = null;
+    let raf = null;
     let writes = Promise.resolve();
     let stopping = false;
+    let ac = null;
+    let mixDest = null;
+    const sources = { system: null, mic: null };
+    const muted = { system: false, mic: false };
+    const missing = [];
+    const SYS = {
+      audio: { mandatory: { chromeMediaSource: "desktop" } },
+      video: { mandatory: { chromeMediaSource: "desktop", maxWidth: 320, maxHeight: 180, maxFrameRate: 1 } },
+    };
 
-    const fail = (why) => { for (const t of owned) t.stop(); rec.failed(why); };
+    const cleanup = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = null;
+      for (const name of ["system", "mic"]) detachSource(name);
+      for (const t of owned) { try { t.stop(); } catch { /* ended */ } }
+      try { if (ac) ac.close(); } catch { /* already closed */ }
+    };
+    const fail = (why) => { cleanup(); rec.failed(why); };
 
     const plan = await rec.plan();
     if (!plan || !plan.ok) return fail((plan && plan.reason) || "no plan");
 
-    // Audio: soft. A refused source is named on the status line, never fatal.
-    const audioIn = [];
-    const missing = [];
-    if (plan.systemAudio) {
+    const setSize = (w, h) => {
+      if (!w || !h) return;
+      sizeEl.hidden = false;
+      sizeEl.textContent = `${Math.round(w)}×${Math.round(h)}`;
+      sizeEl.title = "Recording region";
+    };
+    // The size chip never shows a placeholder: seed it from the region, else from
+    // the display; a whole-display recording that still knows no size hides it.
+    const seed = plan.region || plan.displaySize;
+    if (seed) { sizeEl.hidden = false; setSize(seed.width, seed.height); } else { sizeEl.hidden = true; }
+
+    // The pause hint names the key main REALLY holds (plan.pauseHotkey is null when
+    // another app owns it): a dead key is not advertised.
+    const hintEl = document.getElementById("hint");
+    if (plan.pauseHotkey) {
+      hintEl.textContent = `${plan.pauseHotkey} pause`;
+      hintEl.title = `Pause or resume (${plan.pauseHotkey})`;
+      pauseBtn.title = `Pause / resume (${plan.pauseHotkey})`;
+    } else {
+      hintEl.hidden = true;
+      pauseBtn.title = "Pause / resume";
+    }
+
+    // ── audio: ONE GainNode per source into ONE mixed track ────────────────
+    // Muting is gain 1 -> 0, never track.stop: a muted source keeps its clock,
+    // so unmuting mid-recording does not jolt the mix or the video.
+    if (plan.sound) {
       try {
-        const sys = await navigator.mediaDevices.getUserMedia(plan.systemAudio);
-        for (const t of sys.getVideoTracks()) t.stop();
-        owned.push(...sys.getAudioTracks());
-        if (sys.getAudioTracks().length) audioIn.push(new MediaStream(sys.getAudioTracks()));
-        else missing.push("system audio");
-      } catch { missing.push("system audio"); }
+        ac = new AudioContext();
+        mixDest = ac.createMediaStreamDestination();
+        if (ac.resume) ac.resume().catch(() => {});
+      } catch {
+        ac = null;
+        mixDest = null;
+        missing.push("audio");
+      }
     }
-    if (plan.mic) {
+    const audioTracks = mixDest ? mixDest.stream.getAudioTracks() : [];
+
+    function attachSource(name, stream) {
+      if (!ac || !mixDest) return false;
+      // One live source per name: replacing an entry WITHOUT stopping the old
+      // stream leaked a capture and doubled its level in the mix.
+      detachSource(name);
+      let src = null;
+      let gain = null;
+      let analyser = null;
       try {
-        const mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        owned.push(...mic.getAudioTracks());
-        audioIn.push(mic);
-      } catch { missing.push("mic"); }
+        src = ac.createMediaStreamSource(stream);
+        gain = ac.createGain();
+        analyser = ac.createAnalyser();
+        analyser.fftSize = 256;
+        gain.gain.value = muted[name] ? 0 : 1;
+        src.connect(gain);
+        gain.connect(analyser);   // analyser is pass-through: level = what is heard
+        analyser.connect(mixDest);
+        sources[name] = { stream, src, gain, analyser, data: new Uint8Array(analyser.fftSize) };
+        return true;
+      } catch {
+        try { if (src) src.disconnect(); } catch { /* gone */ }
+        try { if (gain) gain.disconnect(); } catch { /* gone */ }
+        try { if (analyser) analyser.disconnect(); } catch { /* gone */ }
+        return false;
+      }
     }
-    let audioTracks = [];
-    if (audioIn.length === 1) audioTracks = audioIn[0].getAudioTracks();
-    else if (audioIn.length > 1) {
-      const ac = new AudioContext();
-      const dest = ac.createMediaStreamDestination();
-      for (const s of audioIn) ac.createMediaStreamSource(s).connect(dest);
-      audioTracks = dest.stream.getAudioTracks();
+    const stopStream = (stream) => {
+      try { for (const t of stream.getTracks()) t.stop(); } catch { /* ended */ }
+    };
+    function detachSource(name) {
+      const s = sources[name];
+      if (!s) return;
+      sources[name] = null;
+      try { s.src.disconnect(); } catch { /* gone */ }
+      try { s.gain.disconnect(); } catch { /* gone */ }
+      try { s.analyser.disconnect(); } catch { /* gone */ }
+      for (const t of s.stream.getTracks()) { try { t.stop(); } catch { /* ended */ } }
     }
+    const paintToggles = () => {
+      const set = (btn, name) => {
+        btn.classList.toggle("off", muted[name]);
+        btn.classList.toggle("on", !muted[name] && Boolean(sources[name]));
+        btn.title = `${name === "system" ? "System audio" : "Microphone"}: `
+          + (sources[name] ? (muted[name] ? "muted — click to unmute" : "live — click to mute")
+            : `not captured yet — click to ${name === "system" ? "capture system audio" : "capture the microphone"}`);
+      };
+      set(sysBtn, "system");
+      set(micBtn, "mic");
+    };
+
+    // One acquire per source at a time: a double-click (or a device change while a
+    // getUserMedia is pending) used to run it twice, leak the first stream and
+    // double its level. The promise is shared, then cleared for the next one.
+    const acquiring = { system: null, mic: null };
+    function oneAcquire(name, run) {
+      if (acquiring[name]) return acquiring[name];
+      const p = run();
+      acquiring[name] = p;
+      void p.finally(() => { if (acquiring[name] === p) acquiring[name] = null; });
+      return p;
+    }
+
+    function ensureSystem() {
+      if (!ac) return Promise.resolve(false);
+      if (sources.system) return Promise.resolve(true);
+      return oneAcquire("system", async () => {
+        let sys = null;
+        try {
+          sys = await navigator.mediaDevices.getUserMedia(plan.systemAudio || SYS);
+          for (const t of sys.getVideoTracks()) t.stop();
+          const audio = sys.getAudioTracks();
+          if (!audio.length) { stopStream(sys); return false; }
+          const stream = new MediaStream(audio);
+          if (!attachSource("system", stream)) { stopStream(stream); return false; }
+          muted.system = false;
+          return true;
+        } catch {
+          if (sys) stopStream(sys);
+          return false;
+        }
+      });
+    }
+
+    function ensureMic(deviceId) {
+      if (!ac) return Promise.resolve(false);
+      const audio = deviceId ? { deviceId: { exact: String(deviceId) } } : true;
+      return oneAcquire("mic", async () => {
+        let mic = null;
+        try {
+          mic = await navigator.mediaDevices.getUserMedia({ audio, video: false });
+          if (!attachSource("mic", mic)) { stopStream(mic); return false; }
+          muted.mic = false;
+          return true;
+        } catch {
+          if (mic) stopStream(mic);
+          return false;
+        }
+      });
+    }
+
+    async function fillDevices() {
+      try {
+        const all = await navigator.mediaDevices.enumerateDevices();
+        const ins = all.filter((d) => d.kind === "audioinput");
+        micDev.innerHTML = "";
+        const def = document.createElement("option");
+        def.value = "";
+        def.textContent = "Default mic";
+        micDev.appendChild(def);
+        ins.forEach((d, i) => {
+          const o = document.createElement("option");
+          o.value = d.deviceId;
+          o.textContent = d.label || `Mic ${i + 1}`;
+          micDev.appendChild(o);
+        });
+        micDev.hidden = !plan.sound;
+        micDev.value = plan.micDeviceId || "";
+      } catch {
+        micDev.hidden = true;
+      }
+    }
+
+    if (plan.sound) {
+      sysWrap.hidden = false;
+      micWrap.hidden = false;
+      if (plan.systemAudio) {
+        if (!(await ensureSystem())) missing.push("system audio");
+      }
+      if (plan.mic) {
+        if (!(await ensureMic(plan.micDeviceId))) missing.push("mic");
+      }
+      paintToggles();
+      void fillDevices();
+      if (navigator.mediaDevices.addEventListener) {
+        navigator.mediaDevices.addEventListener("devicechange", () => { void fillDevices(); });
+      }
+    }
+
+    // Click = acquire on first use, then mute/unmute live. The button is disabled
+    // while its own acquire is in flight, and a click is ignored if one already is
+    // (a double-click must not open the same device twice).
+    sysBtn.addEventListener("click", async () => {
+      if (stopping || acquiring.system) return;
+      if (!sources.system) {
+        sysBtn.disabled = true;
+        try {
+          if (!(await ensureSystem())) { what.textContent = "1 audio source unavailable — system audio is not offered on this PC"; return; }
+        } finally { sysBtn.disabled = false; }
+      } else {
+        muted.system = !muted.system;
+        sources.system.gain.gain.setTargetAtTime(muted.system ? 0 : 1, ac.currentTime, 0.01);
+      }
+      paintToggles();
+      void fillDevices();
+    });
+    micBtn.addEventListener("click", async () => {
+      if (stopping || acquiring.mic) return;
+      if (!sources.mic) {
+        micBtn.disabled = true;
+        try {
+          if (!(await ensureMic(micDev.value || plan.micDeviceId))) { what.textContent = "1 audio source unavailable — allow microphone access for Aither"; return; }
+        } finally { micBtn.disabled = false; }
+      } else {
+        muted.mic = !muted.mic;
+        sources.mic.gain.gain.setTargetAtTime(muted.mic ? 0 : 1, ac.currentTime, 0.01);
+      }
+      paintToggles();
+      void fillDevices();
+    });
+    micDev.addEventListener("change", async () => {
+      if (stopping) return;
+      // A change made while an acquire is pending waits for it, then opens the
+      // device the owner just picked (rather than being dropped or doubled).
+      if (acquiring.mic) { try { await acquiring.mic; } catch { /* its own failure is shown below */ } }
+      micDev.disabled = true;
+      try {
+        const ok = await ensureMic(micDev.value || null);
+        what.textContent = ok ? "Microphone changed" : "1 microphone could not be opened — using the previous one";
+        paintToggles();
+      } finally { micDev.disabled = false; }
+    });
+
+    const meters = () => {
+      raf = requestAnimationFrame(meters);
+      for (const name of ["system", "mic"]) {
+        const s = sources[name];
+        const el = name === "system" ? sysMeter : micMeter;
+        if (!s) { el.style.width = "0%"; continue; }
+        s.analyser.getByteTimeDomainData(s.data);
+        let peak = 0;
+        for (let i = 0; i < s.data.length; i += 1) peak = Math.max(peak, Math.abs(s.data[i] - 128));
+        el.style.width = `${Math.min(100, Math.round((peak / 80) * 100))}%`;
+      }
+    };
 
     let tags;
     let raw = null;
+    let canvas = null;
+    let canvasCtx = null;
+    let crop = null;
+    let drawFrame = null;
+    let streamPx = null;   // the RAW screen stream's size; the crop is always computed from it
+    let outTrack = null;   // the track the recorder encodes (the cropped canvas, when cropped)
     if (plan.native) {
       // Main records this screen with ffmpeg gdigrab (Chromium cannot see it, measured
       // 2026-11-02 on the RTX 5090's 4K output). The bar records only the SOUND here
@@ -161,22 +438,28 @@
     owned.push(...screen.getTracks());
     raw = screen.getVideoTracks()[0];
     const settings = raw.getSettings();
+    streamPx = { width: settings.width, height: settings.height };
     let videoTrack = raw;
     let label = "Screen";
 
     const size = await rec.streamSize({ width: settings.width, height: settings.height });
     if (plan.cropped && size && size.ok && size.crop) {
       // Crop on a canvas: the region is honoured even when ffmpeg is missing.
-      const c = size.crop;
+      crop = size.crop;
       const video = document.createElement("video");
       video.muted = true;
       video.srcObject = screen;
       await video.play();
-      const canvas = document.createElement("canvas");
-      canvas.width = c.width;
-      canvas.height = c.height;
-      const ctx = canvas.getContext("2d", { alpha: false });
-      const draw = () => ctx.drawImage(video, c.x, c.y, c.width, c.height, 0, 0, c.width, c.height);
+      canvas = document.createElement("canvas");
+      canvasCtx = canvas.getContext("2d", { alpha: false });
+      const sizeCanvas = () => { canvas.width = crop.width; canvas.height = crop.height; };
+      sizeCanvas();
+      const draw = () => {
+        if (crop && crop.width && crop.height) {
+          canvasCtx.drawImage(video, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height);
+        }
+      };
+      drawFrame = draw;
       if (typeof video.requestVideoFrameCallback === "function") {
         const loop = () => { draw(); video.requestVideoFrameCallback(loop); };
         video.requestVideoFrameCallback(loop);
@@ -185,10 +468,14 @@
       }
       draw();
       videoTrack = canvas.captureStream(plan.fps).getVideoTracks()[0];
+      outTrack = videoTrack;
       owned.push(videoTrack);
-      label = `Region ${c.width}×${c.height}`;
+      // The owner selected DIP; the crop is in stream pixels. Show what was selected.
+      label = plan.region ? `Region ${plan.region.width}×${plan.region.height}` : `Region ${crop.width}×${crop.height}`;
     } else {
       label = `Screen ${settings.width}×${settings.height}`;
+      // A whole-display recording still gets a real size, not the "…" placeholder.
+      setSize(settings.width, settings.height);
     }
 
     tags = [label, plan.format.toUpperCase()];
@@ -212,6 +499,7 @@
       return fail(`MediaRecorder refused: ${(e && e.message) || e}`);
     }
     }
+
     // A refused chunk (disk full, EPERM) ends the recording: appending past it
     // would leave a hole mid-file. Main refuses later appends too and the toast
     // reads "1 recording truncated — <reason>".
@@ -234,8 +522,9 @@
     };
     recorder.onstop = async () => {
       clearInterval(tick);
+      if (raf) { cancelAnimationFrame(raf); raf = null; }
       await writes;
-      for (const t of owned) t.stop();
+      cleanup();
       await rec.done();
     };
 
@@ -268,6 +557,54 @@
       rec.state("recording");
     }
 
+    // The output size the encoder really uses, read from the video track (its
+    // getSettings is the authoritative resolution, not what we asked the canvas for).
+    const outputSize = () => {
+      try {
+        const s = outTrack && outTrack.getSettings ? outTrack.getSettings() : null;
+        return s && s.width && s.height ? { width: s.width, height: s.height } : null;
+      } catch { return null; }
+    };
+    // Prove the crop changed the OUTPUT, not just the canvas: if Chromium pinned
+    // the track's resolution, say so in the chip instead of reporting a size the
+    // file does not have.
+    const noteOutputSize = (wanted) => {
+      const got = outputSize();
+      if (!got) return;
+      if (got.width === wanted.width && got.height === wanted.height) {
+        sizeEl.title = `Recording region — output ${got.width}×${got.height}`;
+        return;
+      }
+      sizeEl.title = `Recording region ${wanted.width}×${wanted.height} — this capture keeps ${got.width}×${got.height}`;
+      if (!sizeEl.dataset.pinned) {
+        sizeEl.dataset.pinned = "1";
+        what.textContent += ` · output stays ${got.width}×${got.height}`;
+        what.title = what.textContent;
+      }
+    };
+
+    // The visible frame was dragged: the region changed under a live recording.
+    // Main debounces the drag to the SETTLED region, so this runs once per drag.
+    // Re-crop the canvas (WebRTC path) and show the new size; the native path
+    // restarts its gdigrab segment in main and needs nothing here.
+    let cropSeq = 0;
+    rec.onRegion(async (r) => {
+      if (!r || !r.width || !r.height) return;
+      const seq = ++cropSeq;
+      setSize(r.width, r.height);
+      if (!canvas || !streamPx) return;
+      let next = null;
+      try { next = await rec.streamSize(streamPx); } catch { return; }
+      if (seq !== cropSeq || !next || !next.ok || !next.crop) return; // a newer region won
+      crop = next.crop;
+      canvas.width = crop.width;
+      canvas.height = crop.height;
+      if (drawFrame) drawFrame();
+      // Not the very next frame: give Chromium a moment to propagate the canvas
+      // size to the capture track before judging whether the output really moved.
+      setTimeout(() => noteOutputSize(crop), 250);
+    });
+
     document.getElementById("stop").addEventListener("click", stop);
     pauseBtn.addEventListener("click", () => (recorder && recorder.state === "paused" ? resume() : pause()));
     rec.onCommand((cmd) => (cmd === "stop" ? stop() : cmd === "pause" ? pause() : cmd === "resume" ? resume() : null));
@@ -278,6 +615,8 @@
     bar.classList.remove("starting");
     what.textContent = tags.join(" · ");
     what.title = tags.join(" · ");
+    paintToggles();
+    raf = requestAnimationFrame(meters);
     tick = setInterval(render, 250);
     // A source that ends on its own (display unplugged, permission revoked) saves what we have.
     if (raw) raw.addEventListener("ended", stop);

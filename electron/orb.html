@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<title>Aither orb</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent;
+    font: 13px/1.45 var(--font-sans, system-ui); color: var(--fg, #e6edf3); user-select: none; }
+
+  /* ── the orb (72 px window) ─────────────────────────────────────────── */
+  body.orb { position: relative; cursor: default; }
+  /* The fairy (owner 2026-11-02: "a soft white, like a fairy"): a small white-hot
+     core in a wide soft bloom, two pairs of glassy wings that flutter, a slow bob
+     and a twinkle. White by default; an agent's tint only colours the outer halo. */
+  #orb { position: absolute; left: 50%; top: 50%; width: 56px; height: 56px;
+    margin: -28px 0 0 -28px; border-radius: 50%; cursor: grab; background: transparent;
+    animation: bob 3.2s ease-in-out infinite; -webkit-app-region: no-drag; }
+  #orb .halo { position: absolute; inset: -8px; border-radius: 50%; pointer-events: none;
+    background: radial-gradient(circle, rgba(255,255,255,0.62) 0%, rgba(236,246,255,0.32) 20%,
+      var(--tint-glow, rgba(214,236,255,0.16)) 42%, rgba(255,255,255,0) 70%);
+    animation: pulse 2.6s ease-in-out infinite; }
+  #orb .core { position: absolute; left: 50%; top: 50%; width: 15px; height: 15px; margin: -7.5px 0 0 -7.5px;
+    border-radius: 50%; pointer-events: none;
+    background: radial-gradient(circle at 45% 40%, #fff 0%, #fff 42%, rgba(244,250,255,0.85) 70%, rgba(255,255,255,0) 100%);
+    box-shadow: 0 0 8px 3px rgba(255,255,255,0.95), 0 0 20px 8px rgba(225,240,255,0.6), 0 0 36px 14px rgba(200,228,255,0.25); }
+  #orb .wing { position: absolute; left: 50%; top: 50%; border-radius: 50%; pointer-events: none;
+    background: radial-gradient(ellipse at 30% 50%, rgba(255,255,255,0.55), rgba(225,240,255,0.18) 70%, rgba(255,255,255,0.05));
+    border: 1px solid rgba(255,255,255,0.45); transform-origin: 0 50%;
+    animation: flap 0.16s ease-in-out infinite alternate; }
+  #orb .wing.up { width: 15px; height: 8px; margin-top: -9px; }
+  #orb .wing.lo { width: 11px; height: 6px; margin-top: 1px; animation-delay: 0.04s; }
+  #orb .wing.r.up { transform: rotate(-24deg); } #orb .wing.r.lo { transform: rotate(22deg); }
+  #orb .wing.l { transform-origin: 100% 50%; }
+  #orb .wing.l.up { margin-left: -15px; transform: rotate(24deg); }
+  #orb .wing.l.lo { margin-left: -11px; transform: rotate(-22deg); }
+  #orb .spark { position: absolute; width: 3px; height: 3px; border-radius: 50%; background: #fff; pointer-events: none;
+    box-shadow: 0 0 4px 1px rgba(255,255,255,0.9); opacity: 0; animation: twinkle 2.8s ease-in-out infinite; }
+  #orb .spark.a { left: 8px; top: 12px; } #orb .spark.b { right: 6px; top: 30px; animation-delay: 1.1s; }
+  #orb .spark.c { left: 22px; bottom: 4px; animation-delay: 1.9s; }
+  #orb:active { cursor: grabbing; }
+  #orb.busy .halo { animation: pulse 0.9s ease-in-out infinite; }
+  #orb.busy .wing { animation-duration: 0.09s; }
+  #orb.attached { outline: 0; }
+  #orb .halo, #orb .core { transition: transform 0.6s ease, opacity 0.6s ease; }
+  #orb.behind .core { transform: scale(0.72); opacity: 0.6; }
+  #orb.behind .halo { opacity: 0.45; }
+  @keyframes bob { 0%, 100% { transform: translateY(-2px); } 50% { transform: translateY(3px); } }
+  @keyframes pulse { 0%, 100% { opacity: 0.82; transform: scale(0.96); } 50% { opacity: 1; transform: scale(1.05); } }
+  @keyframes flap { from { scale: 1 1; } to { scale: 0.9 0.35; } }
+  @keyframes twinkle { 0%, 70%, 100% { opacity: 0; transform: scale(0.4); } 80% { opacity: 1; transform: scale(1); } }
+  @keyframes breathe {
+    0%, 100% { transform: scale(1); filter: brightness(1); }
+    50% { transform: scale(1.06); filter: brightness(1.18); }
+  }
+  #badge { position: absolute; top: 4px; right: 4px; min-width: 18px; height: 18px; padding: 0 5px;
+    border-radius: 9px; background: var(--accent-primary, #7aa2ff); color: #06101f;
+    font: 700 11px/18px var(--font-sans, system-ui); text-align: center; display: none;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.45); pointer-events: none; }
+  #badge.on { display: block; }
+  #queued { position: absolute; bottom: -2px; right: 0; min-width: 15px; height: 15px; padding: 0 4px;
+    border-radius: 8px; background: #3a2a10; color: var(--tint, #f4faff);
+    border: 1px solid var(--tint, #f4faff); font: 700 10px/14px var(--font-sans, system-ui);
+    text-align: center; display: none; pointer-events: none; }
+  #queued.on { display: block; }
+  .drop-hover #orb { box-shadow: 0 0 0 2px var(--tint, #f4faff) inset, 0 0 22px 8px var(--tint-glow, rgba(225,240,255,0.7)); }
+  .drop-hover #card { border-color: var(--tint, #f4faff); }
+
+  /* ── the bubble (392 x 480 window) ──────────────────────────────────── */
+  body.bubble { padding: 8px; }
+  #card { width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden;
+    border-radius: 14px; background: var(--bg-elevated, #12161f); border: 1px solid var(--border, #2a3346);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.55); }
+  #head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px; }
+  #dot { width: 10px; height: 10px; border-radius: 50%; flex: none;
+    background: radial-gradient(circle at 35% 30%, #fff, var(--tint, #f4faff) 70%);
+    box-shadow: 0 0 8px var(--tint-glow, rgba(225,240,255,0.7)); }
+  #title { font-weight: 600; letter-spacing: 0.01em; }
+  #where { flex: 1; font-size: 11px; color: var(--fg-muted, #8b96ab); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  #close { border: 0; background: transparent; color: var(--fg-muted, #8b96ab); cursor: pointer;
+    font-size: 16px; line-height: 1; padding: 4px 6px; border-radius: 6px; flex: none; }
+  #close:hover { background: var(--bg-sunk, #0b0f16); color: var(--fg, #e6edf3); }
+
+  #actions { display: flex; gap: 6px; padding: 0 12px 8px; flex-wrap: wrap; }
+  #actions button { flex: 1 1 auto; border: 1px solid var(--border, #2a3346); border-radius: 8px;
+    background: var(--bg-sunk, #0b0f16); color: var(--fg, #e6edf3); padding: 6px 8px; cursor: pointer;
+    font: 12px var(--font-sans, system-ui); white-space: nowrap; }
+  #actions button:hover { border-color: var(--tint, #f4faff); }
+
+  #stage { flex: 1; overflow: auto; padding: 2px 12px 8px; }
+  #line { display: none; border-radius: 10px; padding: 10px 12px; background: var(--bg-sunk, #0b0f16);
+    border: 1px solid var(--border, #2a3346); white-space: pre-wrap; word-break: break-word;
+    user-select: text; line-height: 1.5; }
+  #line.on { display: block; }
+  #line.error { border-color: var(--accent-danger, #ff6b6b); }
+  #line.error #line-title { display: block; color: var(--accent-danger, #ff6b6b); font-weight: 600; margin-bottom: 4px; }
+  #line-title { display: none; }
+  #line.status { color: var(--fg-muted, #8b96ab); font-style: italic; }
+  #meta { display: none; margin-top: 8px; font-size: 11px; color: var(--fg-muted, #8b96ab); }
+  #meta.on { display: block; }
+  #foot { display: none; gap: 6px; margin-top: 8px; }
+  #foot.on { display: flex; }
+  #foot button { border: 1px solid var(--border, #2a3346); border-radius: 7px; background: transparent;
+    color: var(--fg-muted, #8b96ab); padding: 3px 8px; cursor: pointer; font: 11px var(--font-sans, system-ui); }
+  #foot button:hover { color: var(--fg, #e6edf3); border-color: var(--accent-primary, #7aa2ff); }
+  #foot button.active { color: #06101f; background: var(--accent-primary, #7aa2ff); border-color: transparent; }
+  #empty { color: var(--fg-muted, #8b96ab); padding: 6px 2px; font-size: 12px; }
+  #empty.off { display: none; }
+
+  /* held thing: a chip under the orb, draggable out as a real OS file */
+  #hold { display: none; margin-top: 8px; border-radius: 10px; border: 1px solid var(--tint, #f4faff);
+    background: var(--bg-sunk, #0b0f16); padding: 8px 10px; }
+  #hold.on { display: block; }
+  #hold-top { display: flex; align-items: center; gap: 8px; }
+  #hold-grip { cursor: grab; color: var(--tint, #f4faff); font-size: 15px; line-height: 1; padding: 2px 2px;
+    -webkit-user-drag: element; user-select: none; }
+  #hold-grip:active { cursor: grabbing; }
+  #hold-label { flex: 1; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #hold-sub { font-size: 10.5px; color: var(--fg-muted, #8b96ab); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; margin: 2px 0 6px 25px; }
+  #hold-actions { display: flex; gap: 5px; flex-wrap: wrap; margin-left: 25px; }
+  #hold-actions button { border: 1px solid var(--border, #2a3346); border-radius: 7px; background: transparent;
+    color: var(--fg, #e6edf3); padding: 3px 8px; cursor: pointer; font: 11px var(--font-sans, system-ui); }
+  #hold-actions button:hover { border-color: var(--tint, #f4faff); }
+
+  /* pick list: top five + N more */
+  #results { display: none; margin-top: 8px; }
+  #results.on { display: block; }
+  #results-head { display: flex; gap: 8px; align-items: baseline; font-size: 11px;
+    color: var(--fg-muted, #8b96ab); margin-bottom: 5px; }
+  #results-title { flex: 1; color: var(--fg, #e6edf3); font-weight: 600; font-size: 12px; }
+  #rows { display: flex; flex-direction: column; gap: 4px; }
+  .row { display: flex; gap: 6px; align-items: center; border: 1px solid var(--border, #2a3346);
+    border-radius: 8px; padding: 5px 7px; text-align: left; background: transparent; color: var(--fg, #e6edf3);
+    cursor: pointer; font: 12px var(--font-sans, system-ui); }
+  .row:hover { border-color: var(--tint, #f4faff); background: var(--bg-sunk, #0b0f16); }
+  .row-main { flex: 1; min-width: 0; }
+  .row-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-sub { display: block; font-size: 10.5px; color: var(--fg-muted, #8b96ab);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-open { border: 1px solid var(--border, #2a3346); border-radius: 6px; background: transparent;
+    color: var(--fg-muted, #8b96ab); cursor: pointer; font: 10.5px var(--font-sans, system-ui); padding: 2px 6px; }
+  .row-open:hover { color: var(--fg, #e6edf3); border-color: var(--accent-primary, #7aa2ff); }
+  #results-more { margin-top: 5px; font-size: 11px; color: var(--fg-muted, #8b96ab); }
+
+  /* the visible trip log */
+  #trips { display: none; margin-top: 10px; border-top: 1px solid var(--border, #2a3346); padding-top: 7px; }
+  #trips.on { display: block; }
+  #trips-head { font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--fg-muted, #8b96ab); margin-bottom: 4px; }
+  #trip-list { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--fg-muted, #8b96ab); }
+  .trip { display: flex; gap: 6px; align-items: baseline; }
+  .trip-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--tint, #f4faff); flex: none; }
+  .trip.bad .trip-dot { background: var(--accent-danger, #ff6b6b); }
+  .trip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #trip-more { font-size: 10.5px; color: var(--fg-muted, #8b96ab); margin-top: 2px; }
+  #trip-queue { font-size: 11px; color: var(--tint, #f4faff); margin-top: 4px; }
+
+  #ask { display: flex; gap: 6px; padding: 8px 12px 12px; border-top: 1px solid var(--border, #2a3346); }
+  #q { flex: 1; resize: none; max-height: 84px; min-height: 30px; padding: 6px 8px; border-radius: 8px;
+    border: 1px solid var(--border, #2a3346); background: var(--bg, #0d1117); color: var(--fg, #e6edf3);
+    font: 12.5px/1.4 var(--font-sans, system-ui); outline: none; }
+  #q:focus { border-color: var(--tint, #f4faff); }
+  #send { border: 0; border-radius: 8px; padding: 0 12px; background: var(--tint, #f4faff);
+    color: #06101f; font-weight: 600; cursor: pointer; font: 600 12px var(--font-sans, system-ui); }
+  #send:disabled { opacity: 0.5; cursor: default; }
+  #hint { display: none; padding: 0 12px 6px; font-size: 11px; color: var(--accent-danger, #ff6b6b); }
+  #hint.on { display: block; }
+
+  /* ── the veil (transparent overlay: trail + tether) ─────────────────── */
+  body.veil { background: transparent; }
+  #veil { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+</style>
+</head>
+<body>
+<script>
+  const api = window.aitherOrb;
+  const params = new URLSearchParams(location.search);
+  const view = ["bubble", "veil"].includes(params.get("view")) ? params.get("view") : "orb";
+  document.body.className = view;
+  // All three windows load this page; each shape names itself.
+  document.title = view === "bubble" ? "Ask Aither" : view === "veil" ? "Aither spirit trail" : "Aither spirit";
+
+  function rgba(hex, alpha) {
+    const h = String(hex || "#ffc861").replace("#", "");
+    const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+    const n = parseInt(full.slice(0, 6), 16);
+    if (!Number.isFinite(n)) return `rgba(255,200,97,${alpha})`;
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+  }
+  function applyTint(css) {
+    const el = document.documentElement;
+    el.style.setProperty("--tint", css || "#f4faff");
+    el.style.setProperty("--tint-soft", rgba(css, 0.85));
+    el.style.setProperty("--tint-deep", rgba(css, 0.7));
+    el.style.setProperty("--tint-glow", css ? rgba(css, 0.18) : "rgba(214,236,255,0.16)");
+  }
+
+  // ── veil: the flight trail and the tether ─────────────────────────────
+  if (view === "veil") {
+    document.body.innerHTML = '<canvas id="veil"></canvas>';
+    const canvas = document.getElementById("veil");
+    const ctx = canvas.getContext("2d");
+    let state = { width: 0, height: 0, tint: "#ffc861", trail: [], tether: null };
+    function sizeTo(s) {
+      const dpr = window.devicePixelRatio || 1;
+      state.width = Number(s.width) || window.innerWidth;
+      state.height = Number(s.height) || window.innerHeight;
+      canvas.width = Math.max(1, Math.round(state.width * dpr));
+      canvas.height = Math.max(1, Math.round(state.height * dpr));
+      canvas.style.width = `${state.width}px`;
+      canvas.style.height = `${state.height}px`;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    function draw() {
+      ctx.clearRect(0, 0, state.width, state.height);
+      const pts = state.trail || [];
+      if (pts.length > 1) {
+        for (let i = 1; i < pts.length; i += 1) {
+          const t = i / pts.length;
+          ctx.beginPath();
+          ctx.strokeStyle = rgba(state.tint, 0.06 + 0.4 * t);
+          ctx.lineWidth = 1.5 + 3.5 * t;
+          ctx.lineCap = "round";
+          ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+          ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.stroke();
+        }
+        const last = pts[pts.length - 1];
+        ctx.beginPath();
+        ctx.fillStyle = rgba(state.tint, 0.55);
+        ctx.arc(last.x, last.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (state.tether && state.tether.length === 2) {
+        const [a, b] = state.tether;
+        ctx.save();
+        ctx.beginPath();
+        ctx.setLineDash([3, 5]);
+        ctx.strokeStyle = rgba(state.tint, 0.34);
+        ctx.lineWidth = 1.2;
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+    api.onVeil((s) => {
+      if (!s) { state.trail = []; state.tether = null; draw(); return; }
+      sizeTo(s);
+      state.tint = s.tint || state.tint;
+      state.trail = Array.isArray(s.trail) ? s.trail : [];
+      state.tether = Array.isArray(s.tether) ? s.tether : null;
+      draw();
+    });
+    api.init().then((s) => { if (s && s.tint) { state.tint = s.tint.css || state.tint; applyTint(state.tint); } });
+  }
+
+  // ── the orb disc ──────────────────────────────────────────────────────
+  if (view === "orb") {
+    document.body.innerHTML = '<div id="orb" title="Aither — click to open, drag onto a window or avatar to attach, right-click for the menu">'
+      + '<i class="halo"></i><i class="wing l up"></i><i class="wing r up"></i><i class="wing l lo"></i><i class="wing r lo"></i>'
+      + '<i class="core"></i><i class="spark a"></i><i class="spark b"></i><i class="spark c"></i></div>'
+      + '<div id="badge"></div><div id="queued"></div>';
+    const orb = document.getElementById("orb");
+    const badge = document.getElementById("badge");
+    const queued = document.getElementById("queued");
+    const RADIUS = 30; // a little past the 28 px disc: forgiving, never the corners
+    let inside = null;
+    let downAt = null;
+
+    function toggleHit(isInside) {
+      if (isInside === inside) return;
+      inside = isInside;
+      api.hit(isInside);
+    }
+    window.addEventListener("mousemove", (e) => {
+      const dx = e.clientX - window.innerWidth / 2;
+      const dy = e.clientY - window.innerHeight / 2;
+      toggleHit(Math.hypot(dx, dy) <= RADIUS);
+    });
+    window.addEventListener("mouseleave", () => toggleHit(false));
+
+    orb.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      downAt = { x: e.screenX, y: e.screenY };
+      try { orb.setPointerCapture(e.pointerId); } catch { /* capture is a nicety */ }
+      api.dragStart();
+    });
+    function up(e) {
+      if (!downAt) return;
+      const dx = (e.screenX || 0) - downAt.x;
+      const dy = (e.screenY || 0) - downAt.y;
+      const moved = Math.hypot(dx, dy) > 4;
+      downAt = null;
+      api.dragEnd().then((r) => {
+        // A press that did not move is a CLICK: open/close, or cancel a trip.
+        if (!moved || (r && r.click)) api.click();
+      });
+    }
+    orb.addEventListener("pointerup", up);
+    orb.addEventListener("pointercancel", () => { if (downAt) { downAt = null; api.dragEnd(); } });
+    orb.addEventListener("contextmenu", (e) => { e.preventDefault(); api.menu(); });
+    // Esc mid-trip cancels and brings the spirit home; otherwise it hides.
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      api.cancelTrip().then((r) => { if (!r || !r.ok) api.hide(); });
+    });
+
+    api.onBadge((n) => {
+      badge.textContent = String(n);
+      badge.classList.toggle("on", Number(n) > 0);
+    });
+    api.onBusy((busy) => orb.classList.toggle("busy", Boolean(busy)));
+    if (api.onDepth) api.onDepth((d) => orb.classList.toggle("behind", Boolean(d && d.front < 0)));
+    api.onTint((t) => { if (t) applyTint(t.css); });
+    api.onAttach((a) => { orb.classList.toggle("attached", Boolean(a && a.attached)); });
+    api.onTrips((t) => {
+      const n = t && Number(t.count) > 1 ? Number(t.count) - 1 : 0; // the running one is the orb itself
+      queued.textContent = String(n);
+      queued.classList.toggle("on", n > 0);
+    });
+    api.init().then((s) => {
+      if (!s) return;
+      if (s.badge) { badge.textContent = String(s.badge); badge.classList.toggle("on", s.badge > 0); }
+      if (s.tint) applyTint(s.tint.css);
+      if (s.attach) orb.classList.add("attached");
+      const n = s.trips && s.trips.count > 1 ? s.trips.count - 1 : 0;
+      queued.textContent = String(n);
+      queued.classList.toggle("on", n > 0);
+    });
+  }
+
+  // ── the bubble card ───────────────────────────────────────────────────
+  if (view === "bubble") {
+    document.body.innerHTML = `
+      <div id="card">
+        <div id="head"><span id="dot"></span><span id="title">Aither</span>
+          <span id="where"></span>
+          <button id="close" title="Close (Esc)">&#10005;</button></div>
+        <div id="actions">
+          <button data-ask="screen">What's on my screen?</button>
+          <button data-ask="region">Explain a region</button>
+          <button data-mode="find">Find a file…</button>
+          <button data-mode="web">Search the web…</button>
+        </div>
+        <div id="stage">
+          <div id="empty">Click the orb and ask, drop a file on it, or right-click for the menu.</div>
+          <div id="line"><div id="line-title"></div><span id="line-text"></span>
+            <div id="meta"></div>
+            <div id="foot">
+              <button id="copy">Copy</button>
+              <button id="pin">Pin</button>
+            </div>
+          </div>
+          <div id="hold">
+            <div id="hold-top"><span id="hold-grip" title="Drag this out to a folder or an app">&#8942;&#8942;</span>
+              <span id="hold-label"></span></div>
+            <div id="hold-sub"></div>
+            <div id="hold-actions"></div>
+          </div>
+          <div id="results">
+            <div id="results-head"><span id="results-title"></span><span id="results-count"></span></div>
+            <div id="rows"></div>
+            <div id="results-more"></div>
+          </div>
+          <div id="trips"><div id="trips-head">Trips</div><div id="trip-list"></div>
+            <div id="trip-more"></div><div id="trip-queue"></div></div>
+        </div>
+        <div id="hint"></div>
+        <div id="ask"><textarea id="q" rows="1" placeholder="Ask about what you see…"></textarea>
+          <button id="send" disabled>Send</button></div>
+      </div>`;
+    const q = document.getElementById("q");
+    const send = document.getElementById("send");
+    const close = document.getElementById("close");
+    const lineEl = document.getElementById("line");
+    const lineTitle = document.getElementById("line-title");
+    const lineText = document.getElementById("line-text");
+    const meta = document.getElementById("meta");
+    const foot = document.getElementById("foot");
+    const copy = document.getElementById("copy");
+    const pin = document.getElementById("pin");
+    const empty = document.getElementById("empty");
+    const hint = document.getElementById("hint");
+    const where = document.getElementById("where");
+    const holdEl = document.getElementById("hold");
+    const holdLabel = document.getElementById("hold-label");
+    const holdSub = document.getElementById("hold-sub");
+    const holdActions = document.getElementById("hold-actions");
+    const holdGrip = document.getElementById("hold-grip");
+    const resultsEl = document.getElementById("results");
+    const resultsTitle = document.getElementById("results-title");
+    const resultsCount = document.getElementById("results-count");
+    const rowsEl = document.getElementById("rows");
+    const resultsMore = document.getElementById("results-more");
+    const tripsEl = document.getElementById("trips");
+    const tripList = document.getElementById("trip-list");
+    const tripMore = document.getElementById("trip-more");
+    const tripQueue = document.getElementById("trip-queue");
+    const PLACEHOLDERS = {
+      find: "What file are you looking for?",
+      web: "Search the web for…",
+      null: "Ask about what you see…",
+    };
+    let current = null;
+    let mode = null;
+
+    function setHint(text) {
+      hint.textContent = text || "";
+      hint.classList.toggle("on", Boolean(text));
+    }
+    function render(line) {
+      current = line || null;
+      if (!line) {
+        lineEl.classList.remove("on", "error", "status");
+        meta.classList.remove("on");
+        foot.classList.remove("on");
+        empty.classList.remove("off");
+        return;
+      }
+      empty.classList.add("off");
+      lineEl.classList.add("on");
+      lineEl.classList.toggle("error", line.kind === "error");
+      lineEl.classList.toggle("status", line.kind === "status");
+      lineTitle.textContent = (line.meta && line.meta.title) || "";
+      lineTitle.style.display = line.kind === "error" && line.meta && line.meta.title ? "block" : "none";
+      lineText.textContent = line.text || "";
+      const bits = [];
+      if (line.meta && line.meta.model) bits.push(line.meta.model);
+      if (line.meta && line.meta.via) bits.push(`via ${line.meta.via}`);
+      if (line.meta && line.meta.held) bits.push("holding it");
+      meta.textContent = bits.join(" · ");
+      meta.classList.toggle("on", bits.length > 0);
+      foot.classList.toggle("on", line.kind !== "status");
+      pin.textContent = line.pinned ? "Pinned" : "Pin";
+      pin.classList.toggle("active", Boolean(line.pinned));
+      copy.textContent = "Copy";
+    }
+    function renderHold(payload) {
+      const h = payload && payload.hold;
+      if (!h) { holdEl.classList.remove("on"); return; }
+      holdEl.classList.add("on");
+      holdLabel.textContent = (payload && payload.label) || "held";
+      holdSub.textContent = h.kind === "file" ? h.path || "" : h.kind === "web" ? (h.url || "") : "dropped text";
+      holdActions.innerHTML = "";
+      for (const action of (payload.actions || [])) {
+        const b = document.createElement("button");
+        b.textContent = action.label;
+        b.addEventListener("click", () => {
+          api.holdAction(action.id).then((r) => {
+            if (r && r.ok === false) setHint((r && (r.error || r.reason || r.line)) || "that did not work");
+          });
+        });
+        holdActions.appendChild(b);
+      }
+    }
+    function renderResults(payload) {
+      if (!payload || !Array.isArray(payload.rows)) { resultsEl.classList.remove("on"); return; }
+      resultsEl.classList.add("on");
+      resultsTitle.textContent = payload.mode === "web"
+        ? `Web — ${payload.query || ""}`
+        : payload.mode === "folder" ? `Folder — ${payload.query || ""}` : `Files — ${payload.query || ""}`;
+      resultsCount.textContent = payload.total != null ? `${payload.rows.length} of ${payload.total}` : `${payload.rows.length}`;
+      rowsEl.innerHTML = "";
+      payload.rows.forEach((row, index) => {
+        const rowEl = document.createElement("div");
+        rowEl.className = "row";
+        rowEl.title = row.url || row.target || "";
+        const main = document.createElement("span");
+        main.className = "row-main";
+        const t = document.createElement("span");
+        t.className = "row-title";
+        t.textContent = row.title || row.target || row.url || "result";
+        const sub = document.createElement("span");
+        sub.className = "row-sub";
+        sub.textContent = row.subtitle || row.domain || row.target || "";
+        main.appendChild(t);
+        main.appendChild(sub);
+        main.addEventListener("click", () => {
+          api.pick(index, "hold").then((r) => {
+            if (r && r.ok === false) setHint((r && r.error) || "that result is gone");
+          });
+        });
+        const open = document.createElement("button");
+        open.className = "row-open";
+        open.textContent = "Open";
+        open.addEventListener("click", (e) => { e.stopPropagation(); api.pick(index, "open"); });
+        rowEl.appendChild(main);
+        rowEl.appendChild(open);
+        rowsEl.appendChild(rowEl);
+      });
+      resultsMore.textContent = payload.more ? `+${payload.more} more` : "";
+    }
+    function renderTrips(payload) {
+      const view = (payload && payload.view) || { items: [], more: 0, moreLine: "" };
+      const hasAny = view.items.length > 0 || (payload && payload.line);
+      tripsEl.classList.toggle("on", Boolean(hasAny));
+      tripList.innerHTML = "";
+      for (const item of view.items) {
+        const row = document.createElement("div");
+        row.className = `trip${item.ok === false ? " bad" : ""}`;
+        const dot = document.createElement("span");
+        dot.className = "trip-dot";
+        const label = document.createElement("span");
+        label.className = "trip-label";
+        label.textContent = item.label;
+        row.appendChild(dot);
+        row.appendChild(label);
+        tripList.appendChild(row);
+      }
+      tripMore.textContent = view.moreLine || "";
+      tripQueue.textContent = (payload && payload.line) || "";
+    }
+    function setMode(next) {
+      mode = next || null;
+      q.placeholder = PLACEHOLDERS[mode] || PLACEHOLDERS.null;
+    }
+    function reportDraft() {
+      api.state({ drafting: q.value.trim().length > 0 });
+    }
+    function ask(verb, text) {
+      setHint("");
+      send.disabled = true;
+      api.ask(verb, text).then((r) => {
+        if (r && r.ok === false && r.error) setHint(r.error);
+      }).finally(() => { send.disabled = q.value.trim().length === 0; });
+    }
+    function submit() {
+      const text = q.value.trim();
+      if (!text) return;
+      q.value = "";
+      q.style.height = "auto";
+      reportDraft();
+      send.disabled = true;
+      ask(mode === "find" ? "find" : mode === "web" ? "web" : "text", text);
+    }
+
+    q.addEventListener("input", () => {
+      q.style.height = "auto";
+      q.style.height = `${Math.min(84, q.scrollHeight)}px`;
+      send.disabled = q.value.trim().length === 0;
+      reportDraft();
+    });
+    q.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+    });
+    send.addEventListener("click", submit);
+    close.addEventListener("click", () => api.close());
+    for (const b of document.querySelectorAll("#actions button")) {
+      b.addEventListener("click", () => {
+        if (b.dataset.mode) { api.mode(b.dataset.mode).then(() => { q.focus(); }); setMode(b.dataset.mode); return; }
+        ask(b.dataset.ask, "");
+      });
+    }
+    copy.addEventListener("click", () => {
+      if (!current) return;
+      api.copy(current.id).then((r) => { copy.textContent = r && r.ok ? "Copied" : "Copy failed"; });
+    });
+    pin.addEventListener("click", () => {
+      if (!current) return;
+      api.pin(current.id, !current.pinned).then((r) => {
+        if (r && r.ok) render(r.item);
+        else setHint((r && r.reason) || "that answer is gone");
+      });
+    });
+    holdGrip.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      api.dragHold().then((r) => {
+        if (r && r.ok === false) setHint((r && r.error) || "nothing to drag");
+      });
+    });
+    document.addEventListener("contextmenu", (e) => { e.preventDefault(); api.menu(); });
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      // Esc mid-trip cancels and sends the spirit home; otherwise it closes.
+      api.cancelTrip().then((r) => { if (!r || !r.ok) api.close(); });
+    });
+
+    api.onLine(render);
+    api.onHold(renderHold);
+    api.onResults(renderResults);
+    api.onTrips(renderTrips);
+    api.onMode((payload) => setMode(payload && payload.mode));
+    api.onTint((t) => { if (t) applyTint(t.css); });
+    api.onAttach((a) => { where.textContent = a && a.attached ? (a.label || "attached") : "free"; });
+    api.onFocus(() => { q.focus(); });
+    api.init().then((s) => {
+      if (!s) return;
+      if (s.tint) applyTint(s.tint.css);
+      if (s.line) render(s.line);
+      if (s.hold) renderHold({ hold: s.hold, label: s.hold.label, actions: s.holdActions });
+      if (s.results) renderResults(s.results);
+      if (s.trips) renderTrips(s.trips);
+      if (s.attach) where.textContent = s.attach.label || "attached";
+      setMode(s.mode);
+      if (s.view === "bubble") setTimeout(() => q.focus(), 30);
+    });
+  }
+</script>
+</body>
+</html>

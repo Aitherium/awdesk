@@ -7,8 +7,8 @@ const path = require("node:path");
 const test = require("node:test");
 
 const {
-  FILES_FLAG, createWinE, launchCommand, enableCommands, restoreCommands, queryCommand, parseDefault,
-  BASE_KEY, COMMAND_KEY, KEY_CHAIN,
+  FILES_FLAG, createWinE, baseCommand, launchCommand, enableCommands, restoreCommands, queryCommand,
+  parseDefault, BASE_KEY, COMMAND_KEY, KEY_CHAIN,
 } = require("./files-wine.cjs");
 
 const EXE = "C:\\Program Files\\Aither Desk\\Aither Desk.exe";
@@ -18,6 +18,12 @@ test("the command key is exactly the Win+E CLSID verb under HKCU", () => {
   assert.equal(COMMAND_KEY, CMD_KEY);
   assert.deepEqual(KEY_CHAIN.map((k) => k.slice(BASE_KEY.length)), ["", "\\shell", "\\shell\\opennewwindow",
     "\\shell\\opennewwindow\\command"]);
+});
+
+test("baseCommand is launchCommand without the Win+E flag", () => {
+  assert.equal(baseCommand({ exe: EXE }), `"${EXE}"`);
+  assert.equal(baseCommand({ exe: "C:\\e\\electron.exe", appArgs: ["C:\\app dir"] }),
+    "\"C:\\e\\electron.exe\" \"C:\\app dir\"");
 });
 
 test("launchCommand quotes every path and appends --files", () => {

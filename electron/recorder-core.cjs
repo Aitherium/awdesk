@@ -103,8 +103,15 @@ function parseFormat(format) {
 }
 
 /**
- * Every start request normalised once: {mode, format, systemAudio, mic, fps}.
- * GIF never carries audio, so its audio flags are forced off (no wasted capture).
+ * Every start request normalised once:
+ * {mode, format, systemAudio, mic, micDeviceId, fps}.
+ *
+ * SOUND IS ON BY DEFAULT (owner 2026-11-02: "record presentations on the fly", and
+ * "control mic input vs system input"). An unspecified `systemAudio` is TRUE, so a
+ * plain record.region carries the presentation; the bar's System/Mic toggles mute
+ * each source live. The MIC stays off until asked for (it is the one source that
+ * puts the microphone indicator on screen). An explicit `systemAudio: false` is
+ * honoured, and GIF never carries audio, so its flags are forced off.
  */
 function normalizeOptions(raw = {}) {
   const format = parseFormat(raw.format);
@@ -113,8 +120,9 @@ function normalizeOptions(raw = {}) {
   return {
     mode: raw.mode === "screen" ? "screen" : "region",
     format,
-    systemAudio: !gif && raw.systemAudio === true,
+    systemAudio: !gif && (raw.systemAudio === undefined ? true : raw.systemAudio === true),
     mic: !gif && raw.mic === true,
+    micDeviceId: raw.micDeviceId ? String(raw.micDeviceId) : null,
     fps,
   };
 }
@@ -601,7 +609,7 @@ async function finalizeRecording({
     let note = plan.note;
     if (where.fallback) {
       const moved = snip.fallbackNote(preferredDir, dir);
-      note = note ? `${moved} · ${note}` : moved;
+      if (moved) note = note ? `${moved} · ${note}` : moved;
     }
     const keepWebm = () => {
       const webm = snip.uniquePath(dir, recordingName(startedAt, "webm"), (p) => fsImpl.existsSync(p));
@@ -650,6 +658,19 @@ async function finalizeRecording({
 }
 
 /**
+ * The EVEN pixel size gdigrab delivers for a physical rect, or null when the
+ * rect is too small to grab. One function, so the size recorded for a segment and
+ * the size ffmpeg is told to grab can never disagree (H.264 needs even edges).
+ */
+function nativeGrabSize(rect) {
+  if (!rect) return null;
+  const width = Math.floor(rect.width) - (Math.floor(rect.width) % 2);
+  const height = Math.floor(rect.height) - (Math.floor(rect.height) % 2);
+  if (width < 2 || height < 2) return null;
+  return { width, height };
+}
+
+/**
  * ffmpeg gdigrab argv for one segment of a NATIVE recording: a display that
  * desktopCapturer cannot see. Measured 2026-11-02: the desk is pinned to the iGPU
  * (present-policy.cjs) and Windows then hides the RTX 5090's 4K output from
@@ -657,14 +678,13 @@ async function finalizeRecording({
  * `rect` is in PHYSICAL pixels (virtual-desktop coordinates, may be negative).
  */
 function nativeGrabArgs({ rect, fps = DEFAULT_FPS, output }) {
-  const width = Math.floor(rect.width) - (Math.floor(rect.width) % 2);
-  const height = Math.floor(rect.height) - (Math.floor(rect.height) % 2);
-  if (!output || width < 2 || height < 2) return null;
+  const size = nativeGrabSize(rect);
+  if (!output || !size) return null;
   return [
     "-hide_banner", "-loglevel", "error", "-f", "gdigrab",
     "-framerate", String(Math.max(1, Math.min(60, Math.round(Number(fps) || DEFAULT_FPS)))),
     "-offset_x", String(Math.round(rect.x)), "-offset_y", String(Math.round(rect.y)),
-    "-video_size", `${width}x${height}`, "-draw_mouse", "1", "-i", "desktop",
+    "-video_size", `${size.width}x${size.height}`, "-draw_mouse", "1", "-i", "desktop",
     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-pix_fmt", "yuv420p", "-y", output,
   ];
 }
@@ -680,6 +700,166 @@ function nativeConcatList(paths) {
   return (paths || []).map((p) => `file '${String(p).replace(/\\/g, "/").replace(/'/g, "'\\''")}'`).join("\n") + "\n";
 }
 
+// ── segment normalisation (a region resized mid-recording) ──────────────────
+
+/**
+ * Do native segments differ in pixel size? A region drag mid-recording ends the
+ * gdigrab segment and starts a new one at the new rect, so the parts can be
+ * 1280x720 followed by 900x500. The concat DEMUXER refuses mismatched streams, so
+ * every part is re-encoded to the FIRST part's size before the join.
+ */
+function needsNormalize(sizes) {
+  const list = (sizes || []).filter(Boolean);
+  if (list.length < 2) return false;
+  return list.some((s) => s.width !== list[0].width || s.height !== list[0].height);
+}
+
+/** Floor to an even number (H.264 4:2:0 needs even edges). */
+function evenSize(n) {
+  const v = Math.floor(Number(n) || 0);
+  return v - (v % 2);
+}
+
+/**
+ * Re-encode ONE native segment to the first segment's size: scale to fit, pad the
+ * difference in black (centred), one sample aspect ratio. `fps` keeps the joined
+ * file's rate steady when a resized segment grabbed at a different rate.
+ */
+function scalePadArgs({ input, output, size, fps = DEFAULT_FPS }) {
+  const w = Math.max(2, evenSize(size && size.width));
+  const h = Math.max(2, evenSize(size && size.height));
+  const rate = Math.max(1, Math.min(60, Math.round(Number(fps) || DEFAULT_FPS)));
+  return [
+    ...QUIET, "-i", input, "-vf",
+    `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`,
+    "-r", String(rate), "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+    "-pix_fmt", "yuv420p", "-an", "-y", output,
+  ];
+}
+
+/** ffmpeg concat demuxer argv for the (normalized) native segments. */
+function concatArgs({ listPath, output }) {
+  return [...QUIET, "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", "-y", output];
+}
+
+// ── the visible frame around a live region ──────────────────────────────────
+
+/**
+ * The frame's border thickness in DIP. It is drawn OUTSIDE the recorded region,
+ * so nothing the owner sees on the frame can land in the video -- no reliance on
+ * content protection alone (which also silently fails on older Windows builds).
+ */
+const FRAME_BAND = 12;
+/** The smallest region a frame drag may produce, in DIP. */
+const MIN_REGION_DIP = 64;
+
+function clampNum(v, lo, hi) {
+  return Math.min(hi, Math.max(lo, v));
+}
+
+/**
+ * The frame window's bounds (screen DIP): the region inflated by `band` on every
+ * side. The window hangs off-screen when the region touches a display edge
+ * (enableLargerThanScreen); that side's band is clipped by the screen, and the
+ * RECORDED pixels are never covered either way.
+ */
+function frameWindowBounds({ region, displayBounds, band = FRAME_BAND }) {
+  if (!region || !displayBounds) return null;
+  const b = Math.max(2, Math.round(Number(band) || FRAME_BAND));
+  return {
+    x: Math.round(displayBounds.x + region.x - b),
+    y: Math.round(displayBounds.y + region.y - b),
+    width: Math.round(region.width) + b * 2,
+    height: Math.round(region.height) + b * 2,
+  };
+}
+
+/**
+ * Where the frame page draws its grab zones, in WINDOW-LOCAL DIP: the four
+ * corners, left/right/bottom edges, two top-edge segments that resize the top,
+ * and the MIDDLE of the top band as the move grip. Ordered corners first, so a
+ * hit test can never mistake a corner for an edge. Every zone lives inside the
+ * band (never over the recorded pixels).
+ *
+ * @returns {{edge:string,x:number,y:number,width:number,height:number}[]}
+ */
+function frameHandles({ width, height, band = FRAME_BAND }) {
+  const b = Math.max(2, Math.round(Number(band) || FRAME_BAND));
+  const w = Math.max(2 * b + 2, Math.round(Number(width) || 0));
+  const h = Math.max(2 * b + 2, Math.round(Number(height) || 0));
+  const inner = Math.max(2, w - 2 * b);
+  const grip = Math.max(24, Math.round(inner * 0.34));
+  const side = Math.max(1, Math.round((inner - grip) / 2));
+  return [
+    { edge: "nw", x: 0, y: 0, width: b, height: b },
+    { edge: "ne", x: w - b, y: 0, width: b, height: b },
+    { edge: "sw", x: 0, y: h - b, width: b, height: b },
+    { edge: "se", x: w - b, y: h - b, width: b, height: b },
+    { edge: "w", x: 0, y: b, width: b, height: h - 2 * b },
+    { edge: "e", x: w - b, y: b, width: b, height: h - 2 * b },
+    { edge: "s", x: b, y: h - b, width: w - 2 * b, height: b },
+    { edge: "n", x: b, y: 0, width: side, height: b },
+    { edge: "n", x: w - b - side, y: 0, width: side, height: b },
+    { edge: "move", x: b + side, y: 0, width: grip, height: b },
+  ];
+}
+
+/** The grab zone under a window-local point, or null (the transparent middle). */
+function hitFrameHandle(x, y, handles) {
+  const px = Number(x);
+  const py = Number(y);
+  if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+  for (const z of handles || []) {
+    if (px >= z.x && px < z.x + z.width && py >= z.y && py < z.y + z.height) return z.edge;
+  }
+  return null;
+}
+
+/**
+ * The region after a drag from `start` by (dx,dy) on `edge`, clamped INSIDE the
+ * display and never below `minSize`. "move" keeps the size and slides the whole
+ * region; a corner/edge drag moves only the edges it names. Pure, so the frame
+ * window can poll the cursor and call it every tick.
+ */
+function dragRegion({ start, edge, dx, dy, bounds, minSize = MIN_REGION_DIP }) {
+  if (!start || !bounds) return start || null;
+  const min = Math.max(16, Number(minSize) || MIN_REGION_DIP);
+  const L = bounds.x;
+  const T = bounds.y;
+  const R = bounds.x + bounds.width;
+  const Bm = bounds.y + bounds.height;
+  let left = start.x;
+  let top = start.y;
+  const right0 = start.x + start.width;
+  const bottom0 = start.y + start.height;
+  let right = right0;
+  let bottom = bottom0;
+  const e = String(edge || "");
+  const mx = Number(dx) || 0;
+  const my = Number(dy) || 0;
+  if (e === "move") {
+    const nx = clampNum(left + mx, L, Math.max(L, R - start.width));
+    const ny = clampNum(top + my, T, Math.max(T, Bm - start.height));
+    return { x: Math.round(nx), y: Math.round(ny), width: Math.round(start.width), height: Math.round(start.height) };
+  }
+  if (e.includes("w")) left = clampNum(left + mx, L, Math.max(L, right0 - min));
+  if (e.includes("e")) right = clampNum(right + mx, Math.min(R, left + min), R);
+  if (e.includes("n")) top = clampNum(top + my, T, Math.max(T, bottom0 - min));
+  if (e.includes("s")) bottom = clampNum(bottom + my, Math.min(Bm, top + min), Bm);
+  return {
+    x: Math.round(left),
+    y: Math.round(top),
+    width: Math.max(2, Math.round(right - left)),
+    height: Math.max(2, Math.round(bottom - top)),
+  };
+}
+
+/** "1280×720" -- the bar's and the frame's size line. */
+function regionLabel(region) {
+  if (!region) return "";
+  return `${Math.max(0, Math.round(region.width))}×${Math.max(0, Math.round(region.height))}`;
+}
+
 module.exports = {
   FOLDER_NAME, FORMATS, UPLOAD_FOLDER, MAX_UPLOAD_BYTES, DEFAULT_FPS, GIF_FPS, GIF_MAX_WIDTH,
   FFMPEG_TIMEOUT_MS, FFMPEG_REMEDY, CONTENT_TYPES, VISIBLE_CAP,
@@ -689,4 +869,6 @@ module.exports = {
   uploadItem, formatElapsed, elapsedMs, capList, syncLine, createChunkWriter, finalizeRecording,
   moveFile, verifyOutput, uploadTimeoutMs, createRecordingUploader, cancelSpooledJob,
   queueRecordingUpload, recoverStaleRecordings, recoveredLine, nativeGrabArgs, nativeConcatList, nativeMuxArgs,
+  nativeGrabSize, needsNormalize, evenSize, scalePadArgs, concatArgs,
+  FRAME_BAND, MIN_REGION_DIP, frameWindowBounds, frameHandles, hitFrameHandle, dragRegion, regionLabel,
 };
