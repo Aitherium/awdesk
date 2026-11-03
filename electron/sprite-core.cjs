@@ -202,6 +202,9 @@ function createSpriteClient({ fetchImpl = globalThis.fetch, token = null, fallba
     // DormantError): the sprite is asleep and must be revived first. Calling it
     // "offline" told the owner the network was down when the sprite was asleep.
     if (res.status === 409) return { ok: false, reason: "dormant", status: 409 };
+    // The service throttles teach to one per 2 s per owner (_throttle in
+    // sprite_router). A retry straight after the revive lands inside it.
+    if (res.status === 429) return { ok: false, reason: "throttled", status: 429 };
     if (!res.ok) return { ok: false, reason: "offline", status: res.status };
     return { ok: true, data };
   }

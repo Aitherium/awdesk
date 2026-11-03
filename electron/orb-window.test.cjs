@@ -526,6 +526,7 @@ test("sprite.teach prefers the highlighted selection over the clipboard", async 
 });
 
 test("sprite.teach wakes a dormant sprite once, then teaches (409 is dormancy, not the network)", async () => {
+  orbWindow.__setTeachRetryDelay(0);
   const client = spriteFake({ teach: (p) => (client.calls.teach.length === 1 ? { ok: false, reason: "dormant" } : { ok: true, data: {} }) });
   orbWindow.__setSpriteClient(client);
   start();
@@ -542,6 +543,17 @@ test("sprite.teach wakes a dormant sprite once, then teaches (409 is dormancy, n
   assert.equal(bad.ok, false);
   assert.match(bad.error, /asleep and would not wake/);
   assert.doesNotMatch(bad.error, /Could not reach/);
+});
+
+test("sprite.teach waits out the 2 s teach throttle and retries instead of giving up", async () => {
+  orbWindow.__setTeachRetryDelay(0);
+  const client = spriteFake({ teach: () => (client.calls.teach.length === 1 ? { ok: false, reason: "throttled" } : { ok: true, data: {} }) });
+  orbWindow.__setSpriteClient(client);
+  start();
+  const r = await orbWindow.run("sprite-teach", { arg: "A throttled fact" });
+  assert.equal(r.ok, true);
+  assert.equal(client.calls.teach.length, 2);
+  assert.equal(client.calls.revive, 0, "a throttle is not dormancy: no revive");
 });
 
 test("sprite.teach falls back to the last snip's caption", async () => {

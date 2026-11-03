@@ -134,6 +134,8 @@ let spriteTokenImpl = null;
 let awRunImpl = null;
 let clipboardImpl = null;
 let selectionImpl = null;
+/** The sprite service throttles teach to one per 2 s; a retry waits this long. */
+let teachRetryDelayMs = 2500;
 const SPRITE_POLL_MS = 5 * 60 * 1000;
 
 function electron() {
@@ -1306,13 +1308,19 @@ async function spriteTeach(arg) {
     r = await spriteClient().teach(payload);
     // A dormant sprite refuses every care action (409). Teaching is the food:
     // wake it once and teach what was asked for, rather than reporting the
-    // network as down while the creature is merely asleep.
+    // network as down while the creature is merely asleep. The wake costs a
+    // round trip and the service throttles teach to one per 2 s, so wait for
+    // that window before the retry -- otherwise the retry earns a 429.
     if (r && !r.ok && r.reason === "dormant") {
       const revived = await spriteClient().revive();
       if (revived && revived.ok) {
         woke = true;
+        await new Promise((ok) => setTimeout(ok, teachRetryDelayMs));
         r = await spriteClient().teach(payload);
       }
+    } else if (r && !r.ok && r.reason === "throttled") {
+      await new Promise((ok) => setTimeout(ok, teachRetryDelayMs));
+      r = await spriteClient().teach(payload);
     }
   } catch {
     r = { ok: false, reason: "offline" };
@@ -2306,6 +2314,7 @@ module.exports = {
   __setAwRun: (f) => { awRunImpl = f; },
   __setClipboard: (f) => { clipboardImpl = f; },
   __setSelection: (f) => { selectionImpl = f; },
+  __setTeachRetryDelay: (ms) => { teachRetryDelayMs = Number(ms) || 0; },
   __setLastCaption: (t) => { lastCaption = String(t || ""); },
   sprite: () => publicSprite(),
   refreshSprite, restTint,
