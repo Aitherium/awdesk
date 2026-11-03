@@ -58,6 +58,8 @@ const GROUPS = Object.freeze({
   fleet: Object.freeze({ menu: "Fleet" }),
   arc: Object.freeze({ menu: "ARC" }),
   blog: Object.freeze({ menu: "Blog" }),
+  sprite: Object.freeze({ menu: "Sprite" }),
+  aw: Object.freeze({ menu: "aw tools" }),
 });
 
 /**
@@ -70,12 +72,12 @@ const GROUPS = Object.freeze({
  * ITEMS are one list; only the reading order differs.
  */
 const LAYOUT = Object.freeze({
-  tray: Object.freeze(["go", "desktop", "avatar", "window-size", "talk", "audio", "stage", "fleet", "arc", "blog", "capture", "app"]),
+  tray: Object.freeze(["go", "desktop", "avatar", "window-size", "talk", "audio", "stage", "fleet", "arc", "blog", "sprite", "aw", "capture", "app"]),
   // ONE menu (owner, 2026-10-04: "the 3 different menu surfaces are still confusing").
   // A body's menu is the tray's menu with what is about THAT body on top: the rows
   // after "body"/"slot" read in exactly the tray's order, and the browser's Aither
   // button pops the tray's menu itself.
-  "avatar-menu": Object.freeze(["talk", "body", "slot", "go", "desktop", "avatar", "window-size", "stage"]),
+  "avatar-menu": Object.freeze(["talk", "body", "slot", "go", "sprite", "aw", "desktop", "avatar", "window-size", "stage"]),
   // The rail reads top to bottom: what is waiting, where to go, who to talk to,
   // the desktop. The bell stays on top -- it is the one bead read without a click.
   beads: Object.freeze(["go", "talk", "desktop"]),
@@ -721,6 +723,46 @@ const COMMANDS = Object.freeze([
     prompt: Object.freeze({ placeholder: 'JSON {kind,target,question?}, or "find notes.md"' }),
     whySingle: "Agents reach it over the bridge (POST /commands/run only runs a palette "
       + "row); a person reaches it in the palette. The tray carries the named verbs instead.",
+  }),
+  // ── the fairy IS the owner's AitherSprite (owner 2026-11-02). sprite-core.cjs
+  // reads/teaches through the portal's /api/sprite/* as the signed-in owner; the
+  // orb verbs live in orb-window.run(). No `prompt`: Alt+Space and the menus run
+  // these too, and a teach with nothing typed takes the clipboard (or the last
+  // snip's caption) -- the bubble field is the typed path.
+  Object.freeze({
+    id: "sprite.teach", label: "Teach my sprite the clipboard / selection", menuLabel: "Teach it the clipboard",
+    group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-teach",
+  }),
+  Object.freeze({
+    id: "sprite.status", label: "How is my sprite?", menuLabel: "How is it?",
+    group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-status",
+  }),
+  Object.freeze({
+    id: "sprite.open", label: "Open my sprite (aitherium.com)", menuLabel: "Open Sprite…",
+    group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-open",
+  }),
+  // ── the aw* CLIs (aw-cli.cjs): system binaries via execFile, 30 s cap, output in
+  // the orb's bubble. A verb that needs a query opens the bubble's field when run
+  // with nothing typed (the avatar-menu has no text field; see spirit.find-file).
+  Object.freeze({
+    id: "aw.memory.recall", label: "aw: recall from memory (awm)…", menuLabel: "Recall from memory…",
+    group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-recall",
+  }),
+  Object.freeze({
+    id: "aw.graph.query", label: "aw: query the code graph (awgraph)…", menuLabel: "Query the code graph…",
+    group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-graph",
+  }),
+  Object.freeze({
+    id: "aw.git.status", label: "aw: git state (awgit)", menuLabel: "Git state",
+    group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-git",
+  }),
+  Object.freeze({
+    id: "aw.recover", label: "aw: list snapshots (awrecover)…", menuLabel: "List snapshots…",
+    group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-recover",
+  }),
+  Object.freeze({
+    id: "aw.settings.sync", label: "aw: pull synced settings (awsettings)", menuLabel: "Pull synced settings",
+    group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-settings",
   }),
   Object.freeze({
     id: "clipboard.sync.toggle", label: "Sync clipboard to AitherOS Online", group: "capture",

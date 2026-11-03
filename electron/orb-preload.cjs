@@ -94,4 +94,6 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   onAttach: (fn) => on("orb:attach", fn),
   onMode: (fn) => on("orb:mode", fn),
   onVeil: (fn) => on("orb:veil", fn),
+  // the owner's AitherSprite the fairy wears ({name, stage, mood, line, tooltip, tint} | null)
+  onSprite: (fn) => on("orb:sprite", fn),
 });

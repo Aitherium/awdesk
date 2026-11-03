@@ -318,6 +318,11 @@
     api.onBusy((busy) => orb.classList.toggle("busy", Boolean(busy)));
     if (api.onDepth) api.onDepth((d) => orb.classList.toggle("behind", Boolean(d && d.front < 0)));
     api.onTint((t) => { if (t) applyTint(t.css); });
+    // The fairy IS the owner's sprite: its name, stage and mood on hover. null =
+    // the plain fairy (signed out / offline), which keeps the plain tooltip.
+    const PLAIN_TIP = orb.title;
+    function wearSprite(sp) { orb.title = sp && sp.tooltip ? sp.tooltip : PLAIN_TIP; }
+    if (api.onSprite) api.onSprite(wearSprite);
     api.onAttach((a) => { orb.classList.toggle("attached", Boolean(a && a.attached)); });
     api.onTrips((t) => {
       const n = t && Number(t.count) > 1 ? Number(t.count) - 1 : 0; // the running one is the orb itself
@@ -328,6 +333,7 @@
       if (!s) return;
       if (s.badge) { badge.textContent = String(s.badge); badge.classList.toggle("on", s.badge > 0); }
       if (s.tint) applyTint(s.tint.css);
+      wearSprite(s.sprite);
       if (s.attach) orb.classList.add("attached");
       const n = s.trips && s.trips.count > 1 ? s.trips.count - 1 : 0;
       queued.textContent = String(n);
@@ -405,8 +411,14 @@
     const PLACEHOLDERS = {
       find: "What file are you looking for?",
       web: "Search the web for…",
+      "sprite-teach": "Teach your sprite… (text or a file path)",
+      "aw-recall": "Recall from memory (awm)…",
+      "aw-graph": "Query the code graph (awgraph)…",
+      "aw-recover": "Snapshot store directory (awrecover list)…",
       null: "Ask about what you see…",
     };
+    // A mode whose typed text goes back to main under the mode's own verb.
+    const VERB_MODES = ["find", "web", "sprite-teach", "aw-recall", "aw-graph", "aw-recover"];
     let current = null;
     let mode = null;
 
@@ -537,7 +549,7 @@
       q.style.height = "auto";
       reportDraft();
       send.disabled = true;
-      ask(mode === "find" ? "find" : mode === "web" ? "web" : "text", text);
+      ask(VERB_MODES.includes(mode) ? mode : "text", text);
     }
 
     q.addEventListener("input", () => {
@@ -590,9 +602,16 @@
     api.onTint((t) => { if (t) applyTint(t.css); });
     api.onAttach((a) => { where.textContent = a && a.attached ? (a.label || "attached") : "free"; });
     api.onFocus(() => { q.focus(); });
+    const titleEl = document.getElementById("title");
+    function wearSprite(sp) {
+      titleEl.textContent = sp && sp.line ? sp.line : "Aither";
+      titleEl.title = sp && sp.tooltip ? sp.tooltip.split(" — ")[0] : "";
+    }
+    if (api.onSprite) api.onSprite(wearSprite);
     api.init().then((s) => {
       if (!s) return;
       if (s.tint) applyTint(s.tint.css);
+      wearSprite(s.sprite);
       if (s.line) render(s.line);
       if (s.hold) renderHold({ hold: s.hold, label: s.hold.label, actions: s.holdActions });
       if (s.results) renderResults(s.results);

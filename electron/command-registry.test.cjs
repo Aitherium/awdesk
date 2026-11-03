@@ -582,3 +582,38 @@ test("now-mode hides the needs-you chip and the balloon, and lapses on its own",
   assert.deepEqual(link, { mode: "now" });
   assert.equal(internal.deepLinkOf(internal.parseInternalUrl("aither://cards/?mode=evil")), null);
 });
+
+// ── the sprite + the aw* CLIs (2026-11-02) ─────────────────────────────────
+
+test("sprite.* and aw.* rows reach the tray, the palette (Alt+Space) and the right-click menu", () => {
+  const reg = require("./command-registry.cjs");
+  const want = {
+    "sprite.teach": "sprite-teach", "sprite.status": "sprite-status", "sprite.open": "sprite-open",
+    "aw.memory.recall": "aw-recall", "aw.graph.query": "aw-graph", "aw.git.status": "aw-git",
+    "aw.recover": "aw-recover", "aw.settings.sync": "aw-settings",
+  };
+  const palette = reg.paletteRows({}).map((r) => r.id);
+  for (const [id, verb] of Object.entries(want)) {
+    const c = reg.byId(id);
+    assert.ok(c, `${id} exists`);
+    assert.equal(c.orb, verb, `${id} routes to orb-window.run("${verb}")`);
+    assert.deepEqual(c.surfaces, ["tray", "palette", "avatar-menu"]);
+    assert.equal(c.prompt, undefined, `${id} has no prompt, so Alt+Space lists it`);
+    assert.equal(c.accel, undefined, `${id} claims no global key`);
+    assert.ok(palette.includes(id), `${id} is a palette row`);
+  }
+  assert.deepEqual(reg.conformance(), []);
+  // Every orb verb a row names is one orb-window.run() and aw-cli know.
+  const awVerbs = Object.keys(require("./aw-cli.cjs").AW_VERBS).sort();
+  assert.deepEqual(Object.values(want).filter((v) => v.startsWith("aw-")).sort(), awVerbs);
+  const orbSrc = require("node:fs").readFileSync(require("node:path").join(__dirname, "orb-window.cjs"), "utf8");
+  for (const v of ["sprite-status", "sprite-teach", "sprite-open"]) assert.match(orbSrc, new RegExp(`what === "${v}"`));
+});
+
+test("the sprite and aw groups nest under one parent label on the tray", () => {
+  const reg = require("./command-registry.cjs");
+  assert.equal(reg.GROUPS.sprite.menu, "Sprite");
+  assert.equal(reg.GROUPS.aw.menu, "aw tools");
+  assert.ok(reg.LAYOUT.tray.includes("sprite") && reg.LAYOUT.tray.includes("aw"));
+  assert.ok(reg.LAYOUT["avatar-menu"].includes("sprite") && reg.LAYOUT["avatar-menu"].includes("aw"));
+});

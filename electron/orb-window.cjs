@@ -44,6 +44,8 @@ const orbVision = require("./orb-vision.cjs");
 const spiritCore = require("./spirit-core.cjs");
 const spiritOps = require("./spirit-ops.cjs");
 const spiritProbe = require("./spirit-probe.cjs");
+const spriteCore = require("./sprite-core.cjs");
+const awCli = require("./aw-cli.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -118,6 +120,19 @@ let runCommandImpl = null;
 let openUrlImpl = null;
 let universalImpl = null;
 let searchClientImpl = null;
+
+// ── the owner's AitherSprite (sprite-core.cjs) ──────────────────────────────
+/** The sprite view the fairy wears, or null = the plain fairy (offline / signed out). */
+let sprite = null;
+/** The last thing the vision ladder said about a snip/screen: `sprite.teach`'s third source. */
+let lastCaption = "";
+let spriteTimer = null;
+let spriteKick = null;
+let spriteClientImpl = null;
+let spriteTokenImpl = null;
+let awRunImpl = null;
+let clipboardImpl = null;
+const SPRITE_POLL_MS = 5 * 60 * 1000;
 
 function electron() {
   return require("electron");
@@ -695,6 +710,7 @@ async function runAsk(imagePath, prompt, question, { label = null } = {}) {
     if (result && result.ok) {
       lastImage = { path: imagePath, question: question || "", at: Date.now() };
       scheduleCaptureCleanup(imagePath);
+      lastCaption = String(result.text || "").slice(0, spriteCore.CONTENT_MAX);
       answer(result.text, { via: result.via, model: result.model || null, provider: result.provider || null });
       return { ok: true, via: result.via, text: result.text };
     }
@@ -1135,7 +1151,7 @@ async function attachTo(target, { quiet = false } = {}) {
   const next = { ...target, bounds: spiritCore.normBounds(target.bounds) };
   next.tint = next.kind === "avatar"
     ? spiritCore.tintFor(next.slotId, next.tint || next.color || next.colour)
-    : spiritCore.tintFor("slot0");
+    : restTint();
   attach = next;
   tint = next.tint;
   stopFollow();
@@ -1168,7 +1184,7 @@ function detach({ silent = false, reason = null } = {}) {
   stopOrbit();
   const was = attach;
   attach = null;
-  tint = spiritCore.tintFor("slot0");
+  tint = restTint();
   sendTint();
   if (reason) pushStatus(reason, 6000, 6000);
   if (!silent) {
@@ -1195,6 +1211,121 @@ async function toggleAttach() {
   if (local) return attachTo(local);
   fail("Nothing to attach to here — drop the spirit on a window, a board or an avatar.");
   return { ok: false, error: "nothing to attach to" };
+}
+
+// ── the sprite: the fairy wears the owner's AitherSprite ────────────────────
+
+/** Where the fairy rests when nothing tints it: the sprite's mood, else the plain white. */
+function restTint() {
+  return sprite && sprite.tint ? sprite.tint : spiritCore.tintFor("slot0");
+}
+
+function publicSprite() {
+  return sprite
+    ? { name: sprite.name, stage: sprite.stage, mood: sprite.mood, line: sprite.line, tooltip: sprite.tooltip, tint: sprite.tint }
+    : null;
+}
+
+function spriteClient() {
+  if (spriteClientImpl) return spriteClientImpl;
+  spriteClientImpl = spriteCore.createSpriteClient({ token: spriteTokenImpl });
+  return spriteClientImpl;
+}
+
+/**
+ * Re-read the sprite and re-dress the fairy. Silent: any failure (signed out,
+ * refused, no sprite, offline) is the plain fairy, never a bubble. Returns the
+ * client's verdict for `sprite.status`.
+ */
+async function refreshSprite() {
+  let verdict;
+  try {
+    verdict = await spriteClient().status();
+  } catch {
+    verdict = { ok: false, reason: "offline", view: null };
+  }
+  sprite = verdict && verdict.ok ? verdict.view : null;
+  if (!attach) {
+    tint = restTint();
+    sendTint();
+  }
+  send("orb:sprite", publicSprite());
+  return verdict;
+}
+
+function startSpritePoll() {
+  if (spriteTimer) return;
+  spriteTimer = setInterval(() => { void refreshSprite(); }, SPRITE_POLL_MS);
+  spriteTimer.unref?.();
+}
+
+function readClipboard() {
+  if (clipboardImpl) return String(clipboardImpl() || "");
+  try { return String(electron().clipboard.readText() || ""); } catch { return ""; }
+}
+
+async function spriteStatus() {
+  const verdict = await refreshSprite();
+  const line = spriteCore.statusLine(verdict && verdict.ok ? verdict.view : null, verdict);
+  if (verdict && verdict.ok) answer(line, { via: "sprite" });
+  else fail(line, { code: `sprite-${(verdict && verdict.reason) || "offline"}` });
+  return { ok: Boolean(verdict && verdict.ok), line, sprite: publicSprite() };
+}
+
+/** Teach the typed arg, else the clipboard, else the last snip's caption. */
+async function spriteTeach(arg) {
+  const typed = arg == null ? "" : String(arg).trim();
+  const payload = spriteCore.teachPayload({ arg: typed, clipboard: typed ? "" : readClipboard(), lastCaption });
+  // Nothing given, nothing copied, no snip read: the bubble field is the typed door.
+  if (!payload) return openMode("sprite-teach");
+  const refused = spriteCore.looksSecret(payload.content)
+    || (payload.kind === "link" && spiritCore.secretPathReason(payload.content));
+  if (refused) {
+    const line = "That looks like a credential; it was not taught.";
+    fail(line, { code: "sprite-secret" });
+    return { ok: false, error: line };
+  }
+  pushStatus(`Teaching ${sprite ? sprite.name : "your sprite"}`, 20000);
+  let r;
+  try {
+    r = await spriteClient().teach(payload);
+  } catch {
+    r = { ok: false, reason: "offline" };
+  }
+  dropStatuses();
+  if (!r.ok) {
+    const line = ["signed-out", "refused", "no-sprite"].includes(r.reason)
+      ? spriteCore.statusLine(null, r)
+      : "Could not reach your sprite to teach it — try again.";
+    fail(line, { code: `sprite-${r.reason}` });
+    return { ok: false, error: line };
+  }
+  const who = sprite ? sprite.name : "Your sprite";
+  const from = payload.source === "clipboard" ? " (from the clipboard)" : payload.source === "snip" ? " (from the last snip)" : "";
+  const line = `${who} learned “${payload.title}”${from}.`;
+  answer(line, { via: "sprite" });
+  void refreshSprite();
+  return { ok: true, line, kind: payload.kind, title: payload.title };
+}
+
+/** One aw* CLI verb: needs-a-query opens the field; otherwise run and speak the output. */
+async function runAwVerb(verb, arg) {
+  const spec = awCli.AW_VERBS[verb];
+  const typed = awCli.cleanArg(arg);
+  if (spec.needsArg && !typed) return openMode(verb);
+  showOrb();
+  pushStatus(`Running ${spec.bin}`, awCli.TIMEOUT_MS + 5000);
+  let r;
+  try {
+    r = await (awRunImpl || awCli.runAw)(verb, typed);
+  } catch (error) {
+    r = { ok: false, text: String((error && error.message) || error) };
+  }
+  dropStatuses();
+  const text = r && r.text ? String(r.text) : `${spec.bin}: no output`;
+  if (r && r.ok) answer(text, { via: spec.bin, title: spec.title });
+  else fail(text, { code: r && r.missing ? "aw-missing" : "aw-failed", title: spec.title });
+  return { ok: Boolean(r && r.ok), text, missing: Boolean(r && r.missing) };
 }
 
 // ── trips: one at a time, the rest wait ─────────────────────────────────────
@@ -1752,6 +1883,11 @@ function spiritMenu() {
     { label: "Send home", click: () => { void sendHome(); } },
     ...(reg.byId("quick.open") ? [{ label: "Quick menu", click: () => { void runCommandImpl?.("quick.open"); } }] : []),
     { type: "separator" },
+    // The fairy IS the owner's sprite: its own rows sit on its own menu.
+    { label: sprite ? `${sprite.name}: how are you?` : "How is my sprite?", click: () => { void spriteStatus(); } },
+    { label: "Teach it the clipboard", click: () => { void spriteTeach(null); } },
+    { label: "Open Sprite…", click: () => { openUrl(spriteCore.SPRITE_PAGE); } },
+    { type: "separator" },
     // The desk's doors live on the fairy now (owner 2026-11-02: "consolidate the
     // awdesk icons around the fairy"): the bead rail's rows, plus Show avatar.
     ...deskDoors(reg),
@@ -1882,6 +2018,7 @@ function handlers() {
         tint: { name: tint.name, css: tint.css },
         attach: publicAttach(),
         mode: bubbleMode,
+        sprite: publicSprite(),
       };
     }),
     "desk:orb-hit": guard((_sender, inside) => {
@@ -1904,6 +2041,8 @@ function handlers() {
       // delegation must not lose the slot between the handler and run().
       if (what === "find") return run("find", { surface: "bubble", arg: text, slotId: slot });
       if (what === "web") return run("web", { surface: "bubble", arg: text, slotId: slot });
+      // The bubble field typed for a sprite teach or an aw* verb (openMode set it).
+      if (what === "sprite-teach" || awCli.AW_VERBS[what]) return run(what, { surface: "bubble", arg: text });
       return { ok: false, error: `unknown orb ask ${what}` };
     }),
     "desk:orb-copy": guard((_sender, id) => {
@@ -1965,6 +2104,8 @@ function startOrb(opts = {}) {
   if (opts.openUrl) openUrlImpl = opts.openUrl;
   if (opts.universal) universalImpl = opts.universal;
   if (opts.searchClient) searchClientImpl = opts.searchClient;
+  if (opts.spriteToken) spriteTokenImpl = opts.spriteToken;
+  if (opts.spriteClient) spriteClientImpl = opts.spriteClient;
   ensureIpc();
   loadState();
   ensureOrb();
@@ -1976,6 +2117,11 @@ function startOrb(opts = {}) {
   startSeek();
   startHover();
   setTimeout(() => { void seekAvatar(); }, 3000).unref?.();
+  // The fairy dresses as the sprite once the desk's sign-in has had a moment.
+  if (spriteKick) clearTimeout(spriteKick);
+  spriteKick = setTimeout(() => { spriteKick = null; void refreshSprite(); }, 4000);
+  spriteKick.unref?.();
+  startSpritePoll();
   return { ok: true, visible: state.visible };
 }
 
@@ -1988,6 +2134,8 @@ function stopOrb() {
   stopOrbit();
   if (seekTimer) { clearInterval(seekTimer); seekTimer = null; }
   if (hoverTimer) { clearInterval(hoverTimer); hoverTimer = null; }
+  if (spriteTimer) { clearInterval(spriteTimer); spriteTimer = null; }
+  if (spriteKick) { clearTimeout(spriteKick); spriteKick = null; }
   for (const pending of pendingRuns.values()) {
     clearTimeout(pending.timer);
     pending.resolve({ ok: false, error: "the desk is quitting" });
@@ -2044,6 +2192,11 @@ function run(verb, { arg = null, slotId = null } = {}) {
     return toggleAttach();
   }
   if (what === "cancel") return cancelTrip();
+  // The sprite (command-registry sprite.*) and the aw* CLIs (aw.*).
+  if (what === "sprite-status") return spriteStatus();
+  if (what === "sprite-teach") return spriteTeach(arg);
+  if (what === "sprite-open") return openUrl(spriteCore.SPRITE_PAGE);
+  if (awCli.AW_VERBS[what]) return runAwVerb(what, arg);
   if (what === "go") {
     const parsed = spiritCore.parseArg(arg);
     if (!parsed.ok) {
@@ -2112,7 +2265,21 @@ module.exports = {
     tripBusy = false;
     bubbleMode = null;
     pendingSlot = null;
+    sprite = null;
+    lastCaption = "";
+    if (spriteTimer) { clearInterval(spriteTimer); spriteTimer = null; }
+    if (spriteKick) { clearTimeout(spriteKick); spriteKick = null; }
+    spriteClientImpl = null;
+    spriteTokenImpl = null;
+    awRunImpl = null;
+    clipboardImpl = null;
   },
+  __setSpriteClient: (c) => { spriteClientImpl = c; },
+  __setAwRun: (f) => { awRunImpl = f; },
+  __setClipboard: (f) => { clipboardImpl = f; },
+  __setLastCaption: (t) => { lastCaption = String(t || ""); },
+  sprite: () => publicSprite(),
+  refreshSprite, restTint,
   __setCapture: (c) => { captureImpl = c; },
   __setAskVision: (f) => { askVisionImpl = f; },
   __setSpeak: (f) => { speakImpl = f; },

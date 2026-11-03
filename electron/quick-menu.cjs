@@ -34,6 +34,8 @@ const ITEM_IDS = Object.freeze([
   "snip.region", "snip.screen", "record.region", "record.region.audio",
   "record.screen", "ink.toggle", "ink.laser", "ink.spotlight",
   "note.new", "board.new", "orb.ask-screen", "audio.settings",
+  // Teach the fairy (the owner's AitherSprite) whatever was just copied.
+  "sprite.teach",
 ]);
 
 /**

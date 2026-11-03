@@ -424,3 +424,116 @@ test("a body that opened Find a file… speaks the result the owner typed for it
     "the body that asked is the body that speaks");
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ── the fairy IS the owner's AitherSprite (sprite-core.cjs) ─────────────────
+
+function spriteFake({ status, teach } = {}) {
+  const calls = { status: 0, teach: [] };
+  return {
+    calls,
+    async status() { calls.status += 1; return status ? status() : { ok: false, reason: "offline", view: null }; },
+    async teach(p) { calls.teach.push(p); return teach ? teach(p) : { ok: true, data: {} }; },
+  };
+}
+
+const PIP = { name: "Pip", stage: "teen", form: "wisp", mood_label: "curious", knowledge_count: 1 };
+
+test("the fairy wears the sprite: name/stage/mood to both views, tinted by mood", async () => {
+  const client = spriteFake({ status: () => ({ ok: true, view: require("./sprite-core.cjs").spriteView(PIP) }) });
+  orbWindow.__setSpriteClient(client);
+  start();
+  await orbWindow.refreshSprite();
+  const sent = orbWin().webContents.sent;
+  const dressed = sent.filter(([c]) => c === "orb:sprite").pop()[1];
+  assert.equal(dressed.line, "Pip · teen · curious");
+  const tint = sent.filter(([c]) => c === "orb:tint").pop()[1];
+  assert.equal(tint.css, require("./sprite-core.cjs").MOOD_TINTS.curious);
+  const init = await invoke("desk:orb-init", orbWin());
+  assert.equal(init.sprite.name, "Pip");
+  assert.equal(init.tint.css, tint.css);
+});
+
+test("unreachable or signed out: the plain fairy, silently (no bubble line)", async () => {
+  const client = spriteFake({ status: () => ({ ok: false, reason: "signed-out", view: null }) });
+  orbWindow.__setSpriteClient(client);
+  start();
+  await orbWindow.refreshSprite();
+  assert.equal(orbWindow.sprite(), null);
+  assert.deepEqual(orbWindow.restTint(), spiritCore.tintFor("slot0"));
+  assert.equal(orbWindow.queue().cur, null, "a background refresh never speaks");
+  assert.equal(orbWindow.queue().items.length, 0);
+});
+
+test("sprite.status speaks the sprite, or why it is out of reach", async () => {
+  orbWindow.__setSpriteClient(spriteFake({ status: () => ({ ok: true, view: require("./sprite-core.cjs").spriteView(PIP) }) }));
+  start();
+  const ok = await orbWindow.run("sprite-status");
+  assert.equal(ok.ok, true);
+  assert.match(ok.line, /^Pip is a teen, feeling curious/);
+  orbWindow.__setSpriteClient(spriteFake({ status: () => ({ ok: false, reason: "offline", view: null }) }));
+  const down = await orbWindow.run("sprite-status");
+  assert.equal(down.ok, false);
+  assert.match(down.line, /out of reach/);
+});
+
+test("sprite.teach teaches the clipboard, refuses a credential, and opens the field when empty", async () => {
+  const client = spriteFake();
+  orbWindow.__setSpriteClient(client);
+  start();
+  orbWindow.__setClipboard(() => "The 5090 renders; the Spark serves DeepSeek.");
+  const taught = await orbWindow.run("sprite-teach");
+  assert.equal(taught.ok, true);
+  assert.equal(client.calls.teach[0].kind, "fact");
+  assert.equal(client.calls.teach[0].source, "clipboard");
+
+  orbWindow.__setClipboard(() => `token ${"ghp"}_${"Z".repeat(32)}`);
+  const refused = await orbWindow.run("sprite-teach");
+  assert.equal(refused.ok, false);
+  assert.equal(client.calls.teach.length, 1, "a credential never leaves the desk");
+
+  orbWindow.__setClipboard(() => "");
+  const opened = await orbWindow.run("sprite-teach");
+  assert.equal(opened.mode, "sprite-teach");
+  const typed = await invoke("desk:orb-ask", bubbleWin(), "sprite-teach", "D:\\notes\\plan.md");
+  assert.equal(typed.ok, true);
+  assert.equal(client.calls.teach[1].kind, "link");
+});
+
+test("sprite.teach falls back to the last snip's caption", async () => {
+  const client = spriteFake();
+  orbWindow.__setSpriteClient(client);
+  start();
+  orbWindow.__setClipboard(() => "");
+  orbWindow.__setLastCaption("A chart of GPU memory.");
+  const r = await orbWindow.run("sprite-teach");
+  assert.equal(r.ok, true);
+  assert.equal(client.calls.teach[0].source, "snip");
+});
+
+test("aw verbs: a query verb opens the field, the typed query runs, output lands in the bubble", async () => {
+  orbWindow.__setSpriteClient(spriteFake());
+  const runs = [];
+  orbWindow.__setAwRun(async (verb, arg) => { runs.push([verb, arg]); return { ok: true, text: "2 facts about disks" }; });
+  start();
+  const opened = await orbWindow.run("aw-recall");
+  assert.equal(opened.mode, "aw-recall");
+  assert.equal(runs.length, 0);
+  const r = await invoke("desk:orb-ask", bubbleWin(), "aw-recall", "disk");
+  assert.equal(r.ok, true);
+  assert.deepEqual(runs[0], ["aw-recall", "disk"]);
+  const lines = [orbWindow.queue().cur, ...orbWindow.queue().items].filter(Boolean);
+  assert.ok(lines.some((l) => l.text === "2 facts about disks"));
+
+  const git = await orbWindow.run("aw-git");
+  assert.equal(git.ok, true, "a no-arg verb runs at once");
+  assert.deepEqual(runs[1], ["aw-git", ""]);
+});
+
+test("aw verbs: a missing binary is a bubble error, not a throw", async () => {
+  orbWindow.__setSpriteClient(spriteFake());
+  orbWindow.__setAwRun(async () => ({ ok: false, missing: true, text: "awrecover is not installed on this computer (not on PATH)." }));
+  start();
+  const r = await orbWindow.run("aw-recover", { arg: "E:/snaps" });
+  assert.equal(r.ok, false);
+  assert.equal(r.missing, true);
+});

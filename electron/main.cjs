@@ -5503,6 +5503,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       speak: (text, { slotId = null, origin = "desk:spirit" } = {}) =>
         speakAloud(text, undefined, undefined, slotId || "slot0", origin),
       runCommand: (id, arg) => runCommand(id, arg, { surface: "spirit" }),
+      // The fairy wears the owner's AitherSprite: the ONE desk sign-in (the bearer
+      // awconnect and notebooks also get); signed out -> the `adk login` profile ->
+      // the plain fairy. sprite-core.cjs.
+      spriteToken: () => browserWindow.onlineToken(),
       openUrl: (url) => {
         const verdict = browserPolicy.sanitizeUrl(url);
         if (!verdict.ok) return { ok: false, error: verdict.reason };
