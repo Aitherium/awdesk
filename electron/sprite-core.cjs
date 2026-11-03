@@ -198,6 +198,10 @@ function createSpriteClient({ fetchImpl = globalThis.fetch, token = null, fallba
     try { data = await res.json(); } catch { data = null; }
     if (res.status === 401 || res.status === 403) return { ok: false, reason: "refused", status: res.status };
     if (res.status === 404) return { ok: false, reason: "no-sprite", status: 404 };
+    // 409 on a care route is DORMANCY (lib/companion/AitherSprite.py raises
+    // DormantError): the sprite is asleep and must be revived first. Calling it
+    // "offline" told the owner the network was down when the sprite was asleep.
+    if (res.status === 409) return { ok: false, reason: "dormant", status: 409 };
     if (!res.ok) return { ok: false, reason: "offline", status: res.status };
     return { ok: true, data };
   }
@@ -208,6 +212,11 @@ function createSpriteClient({ fetchImpl = globalThis.fetch, token = null, fallba
       if (!r.ok) return { ok: false, reason: r.reason, view: null };
       const view = spriteView(r.data);
       return view ? { ok: true, view } : { ok: false, reason: "no-sprite", view: null };
+    },
+    /** Wake a dormant sprite (POST /me/revive). Idempotent server-side. */
+    async revive() {
+      const r = await call("POST", "/me/revive");
+      return r.ok ? { ok: true, data: r.data } : { ok: false, reason: r.reason };
     },
     /** Teach one entry (knowledge IS nourishment server-side). */
     async teach(payload) {

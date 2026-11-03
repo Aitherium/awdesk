@@ -429,12 +429,13 @@ test("a body that opened Find a file… speaks the result the owner typed for it
 
 // ── the fairy IS the owner's AitherSprite (sprite-core.cjs) ─────────────────
 
-function spriteFake({ status, teach } = {}) {
-  const calls = { status: 0, teach: [] };
+function spriteFake({ status, teach, revive } = {}) {
+  const calls = { status: 0, teach: [], revive: 0 };
   return {
     calls,
     async status() { calls.status += 1; return status ? status() : { ok: false, reason: "offline", view: null }; },
     async teach(p) { calls.teach.push(p); return teach ? teach(p) : { ok: true, data: {} }; },
+    async revive() { calls.revive += 1; return revive ? revive() : { ok: true, data: {} }; },
   };
 }
 
@@ -522,6 +523,25 @@ test("sprite.teach prefers the highlighted selection over the clipboard", async 
   const fb = await orbWindow.run("sprite-teach");
   assert.equal(client.calls.teach[1].source, "clipboard", "no selection falls back to the clipboard");
   assert.equal(fb.ok, true);
+});
+
+test("sprite.teach wakes a dormant sprite once, then teaches (409 is dormancy, not the network)", async () => {
+  const client = spriteFake({ teach: (p) => (client.calls.teach.length === 1 ? { ok: false, reason: "dormant" } : { ok: true, data: {} }) });
+  orbWindow.__setSpriteClient(client);
+  start();
+  const r = await orbWindow.run("sprite-teach", { arg: "A fact the dormant one needs" });
+  assert.equal(r.ok, true);
+  assert.equal(client.calls.revive, 1, "revived exactly once");
+  assert.equal(client.calls.teach.length, 2, "the teach is retried after waking");
+  assert.match(r.line, /woke it up/);
+
+  const asleep = spriteFake({ teach: () => ({ ok: false, reason: "dormant" }), revive: () => ({ ok: false, reason: "offline" }) });
+  orbWindow.__setSpriteClient(asleep);
+  start();
+  const bad = await orbWindow.run("sprite-teach", { arg: "Another fact" });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /asleep and would not wake/);
+  assert.doesNotMatch(bad.error, /Could not reach/);
 });
 
 test("sprite.teach falls back to the last snip's caption", async () => {

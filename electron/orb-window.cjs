@@ -1301,22 +1301,35 @@ async function spriteTeach(arg) {
   }
   pushStatus(`Teaching ${sprite ? sprite.name : "your sprite"}`, 20000);
   let r;
+  let woke = false;
   try {
     r = await spriteClient().teach(payload);
+    // A dormant sprite refuses every care action (409). Teaching is the food:
+    // wake it once and teach what was asked for, rather than reporting the
+    // network as down while the creature is merely asleep.
+    if (r && !r.ok && r.reason === "dormant") {
+      const revived = await spriteClient().revive();
+      if (revived && revived.ok) {
+        woke = true;
+        r = await spriteClient().teach(payload);
+      }
+    }
   } catch {
     r = { ok: false, reason: "offline" };
   }
   dropStatuses();
   if (!r.ok) {
-    const line = ["signed-out", "refused", "no-sprite"].includes(r.reason)
-      ? spriteCore.statusLine(null, r)
-      : "Could not reach your sprite to teach it — try again.";
+    const line = r.reason === "dormant"
+      ? `${sprite ? sprite.name : "Your sprite"} is asleep and would not wake — open the sprite page to revive it.`
+      : ["signed-out", "refused", "no-sprite"].includes(r.reason)
+        ? spriteCore.statusLine(null, r)
+        : "Could not reach your sprite to teach it — try again.";
     fail(line, { code: `sprite-${r.reason}` });
     return { ok: false, error: line };
   }
   const who = sprite ? sprite.name : "Your sprite";
   const from = payload.source === "selection" ? " (from your selection)" : payload.source === "clipboard" ? " (from the clipboard)" : payload.source === "snip" ? " (from the last snip)" : "";
-  const line = `${who} learned “${payload.title}”${from}.`;
+  const line = `${who} learned “${payload.title}”${from}${woke ? " (woke it up to do it)" : ""}.`;
   answer(line, { via: "sprite" });
   void refreshSprite();
   return { ok: true, line, kind: payload.kind, title: payload.title };
