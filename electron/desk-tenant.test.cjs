@@ -132,7 +132,7 @@ test("JSON that is not an object -> warning, apex", () => {
 });
 
 test("BOM-prefixed file (PowerShell Set-Content) still parses", () => {
-  const r = resolve({ homedir: home(`﻿${JSON.stringify({ host: "acme.aitherium.com" })}`) });
+  const r = resolve({ homedir: home(`\uFEFF${JSON.stringify({ host: "acme.aitherium.com" })}`) });
   assert.equal(r.tenant.host, "acme.aitherium.com");
 });
 

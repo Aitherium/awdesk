@@ -58,7 +58,7 @@ function openDoors(state, { argv = [], vars = {}, inspectorUrl = "" } = {}) {
 function refuseOpenDoors(state, launch, deps = {}) {
   const doors = openDoors(state, launch);
   if (!doors.length) return doors;
-  try { deps.inspector && deps.inspector.close(); } catch { /* not open */ }
+  try { if (deps.inspector) deps.inspector.close(); } catch { /* not open */ }
   (deps.log || console.error)(`[desk] kid desk: refusing to start with ${doors.join(", ")} (a debug door)`);
   (deps.exit || ((code) => process.exit(code)))(1);
   return doors;

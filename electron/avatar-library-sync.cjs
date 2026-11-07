@@ -125,7 +125,7 @@ function findInstalled(rosterDir, record) {
   const sha = String((record && record.sha256) || "");
   const own = libraryRosterName(record);
   if (own && hasModel(rosterDir, own) && (!sha || readRecord(rosterDir, own).library_sha256 === sha)) return own;
-  let names = [];
+  let names;
   try {
     names = fs.readdirSync(rosterDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
   } catch {

@@ -276,7 +276,7 @@ function partitionCards(cards, { patterns, snoozed = null, nowSec } = {}) {
   const decisions = [];
   const fyi = [];
   for (const card of ranked) {
-    let verdict = "decision";
+    let verdict;
     try { verdict = triageCard(card, patterns); } catch { verdict = "decision"; }
     if (verdict === "decision" || isNeedsYou(card)) decisions.push(card);
     else fyi.push(card);
@@ -744,7 +744,7 @@ async function bridgeQueue({ fetchOpen = fetchDaemonOpen, localOpen = () => last
     const decisions = await fetchOpen();
     return { decisions, count: decisions.length, source: "daemon", stale: false };
   } catch (error) {
-    let decisions = [];
+    let decisions;
     try { decisions = rankCards(localOpen()); } catch { decisions = []; }
     return {
       decisions,
@@ -821,7 +821,7 @@ function watch({
     if (remoteTimer && typeof remoteTimer.unref === "function") remoteTimer.unref();
   };
   const read = async () => {
-    let remote = false;
+    let remote;
     try { remote = await useRemoteFn(); } catch { remote = false; }
     if (remote) {
       try {

@@ -23,7 +23,7 @@
  *  itself never leaves the PC).
  */
 
-const crypto = require("node:crypto");
+const nodeCrypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -46,7 +46,7 @@ const outboxDir = (homedir) => path.join(aitherDir(homedir), "support-outbox");
 
 function readJson(file, readFile = fs.readFileSync) {
   try {
-    const data = JSON.parse(String(readFile(file, "utf8")).replace(/^﻿/, ""));
+    const data = JSON.parse(String(readFile(file, "utf8")).replace(/^\uFEFF/, ""));
     return data && typeof data === "object" && !Array.isArray(data) ? data : null;
   } catch {
     return null;
@@ -140,7 +140,7 @@ function buildReport({ kind, title, message = "", stack = "", logs = [], screens
   { appVersion = "", versions = process.versions, platform = process.platform, release = os.release() } = {}) {
   if (!["crash", "error", "feedback", "setup"].includes(kind)) throw new Error(`bad kind ${kind}`);
   const report = {
-    id: crypto.randomUUID().replace(/-/g, ""),
+    id: nodeCrypto.randomUUID().replace(/-/g, ""),
     created_at: Date.now() / 1000,
     kind,
     source: "desk",
@@ -207,7 +207,7 @@ async function flush({ homedir = os.homedir(), fetchImpl = globalThis.fetch, rea
       out.rejected += 1;
       continue;
     }
-    let status = 0;
+    let status;
     try {
       const res = await fetchImpl(`${base}/api/devices/${encodeURIComponent(dev.deviceId)}/reports`, {
         method: "POST",
@@ -353,7 +353,7 @@ function reportNewDumps({ dumpDir, report, homedir = os.homedir() }) {
   const seen = new Set((readJson(seenFile) || {}).seen || []);
   const found = [];
   const walk = (dir, depth) => {
-    let entries = [];
+    let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const p = path.join(dir, e.name);
@@ -367,7 +367,7 @@ function reportNewDumps({ dumpDir, report, homedir = os.homedir() }) {
     const key = path.basename(p);
     if (seen.has(key)) continue;
     seen.add(key);
-    let st = null;
+    let st;
     try { st = fs.statSync(p); } catch { continue; }
     report("crash", "Desk crashed (native crash dump)", {
       extra: { dump: key, size: String(st.size), at: st.mtime.toISOString() },

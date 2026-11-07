@@ -22,5 +22,5 @@ test("main runs them: hide the overlay, quit the app like the tray's Quit", () =
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8").replace(/\r\n/g, "\n");
   assert.match(main, /if \(id === "desk\.hide"\) return void hideLivingDesktop\(\);/);
   assert.match(main, /if \(id === "desk\.quit"\) \{\n\s*isQuitting = true;\n\s*return void app\.quit\(\);/);
-  assert.match(main, /\n  hideLivingDesktop,\n[^]*?\} = require\("\.\/living-desktop-window\.cjs"\);/);
+  assert.match(main, /\n {2}hideLivingDesktop,\n[^]*?\} = require\("\.\/living-desktop-window\.cjs"\);/);
 });

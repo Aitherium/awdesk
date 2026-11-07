@@ -114,8 +114,7 @@ test("client: signed out (no desk bearer, no adk profile) never calls the networ
 test("client: a 409 is DORMANCY (the sprite is asleep), never 'offline'", async () => {
   const asleep = sc.createSpriteClient({ fetchImpl: fakeFetch(409, { detail: "sprite is dormant — revive it first" }), token: "t" });
   assert.equal((await asleep.teach({ kind: "fact", title: "x", content: "y" })).reason, "dormant");
-  let hit = "";
-  const woke = sc.createSpriteClient({ fetchImpl: async (url) => { hit = `${url.method || ""}`; return { ok: true, status: 200, json: async () => ({}) }; }, token: "t" });
+  const woke = sc.createSpriteClient({ fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }), token: "t" });
   assert.equal((await woke.revive()).ok, true);
 });
 

@@ -24,10 +24,6 @@
 const launchModes = require("./launch-modes.cjs");
 const agentCookies = require("./browser-agent-cookies.cjs");
 
-/** Section order, top to bottom. A section not named here follows in PANES order. */
-const SECTION_ORDER = Object.freeze(["Now", "Voice", "Agents", "Agent apps", "Workspace", "Spaces & sprites", "Stage", "Apps", "Data",
-  "System", "Network & platform", "Security", "Command & control", "Observability", "Planes", "Online"]);
-
 /**
  * The rail shows at most this many rows per section (the five law: cap every visible
  * list at five, then "+N more" that RETAINS the rest). SECTION_PAGE is a presentation

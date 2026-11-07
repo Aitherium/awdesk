@@ -164,7 +164,6 @@ function splitArgs(line) {
 function commandPlan(text) {
   const line = String(text == null ? "" : text).trim();
   if (!line) return { ok: false, needsConfirm: false, reason: "type a command" };
-  // eslint-disable-next-line no-useless-escape
   if (/[;&|<>`$()\r\n]/.test(line)) {
     return { ok: false, needsConfirm: false, reason: "shell syntax is refused — run a plain adk desk or awsh command" };
   }

@@ -539,7 +539,7 @@ test("sprite.teach prefers the highlighted selection over the clipboard", async 
 
 test("sprite.teach wakes a dormant sprite once, then teaches (409 is dormancy, not the network)", async () => {
   orbWindow.__setTeachRetryDelay(0);
-  const client = spriteFake({ teach: (p) => (client.calls.teach.length === 1 ? { ok: false, reason: "dormant" } : { ok: true, data: {} }) });
+  const client = spriteFake({ teach: () => (client.calls.teach.length === 1 ? { ok: false, reason: "dormant" } : { ok: true, data: {} }) });
   orbWindow.__setSpriteClient(client);
   start();
   const r = await orbWindow.run("sprite-teach", { arg: "A fact the dormant one needs" });

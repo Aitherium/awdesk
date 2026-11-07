@@ -228,7 +228,9 @@ function body(startMarker, length = 900) {
 }
 
 test("main: the startup open is the START trigger (unless the user passed --overlay)", () => {
-  const b = body('if (process.argv.includes("--overlay")) showLivingDesktop();', 300);
+  // 300 was too short once the customer-taskbar branch + its comment landed between
+  // the --overlay line and the START-trigger line; the window must still reach it.
+  const b = body('if (process.argv.includes("--overlay")) showLivingDesktop();', 600);
   assert.match(b, /else if \(overlayMayRaise\(overlayPolicy\.TRIGGERS\.START\)\) showLivingDesktop\(\);/);
   assert.match(MAIN, /syncEdgeReveal\(\);/);
 });
@@ -242,7 +244,7 @@ test("main: a card raises the Inbox only through the NOTIFICATION trigger, else 
 });
 
 test("main: MCP desktop_open and POST /desktop/overlay are REQUEST triggers", () => {
-  for (const marker of ["onDesktop: (surface) => {", "desktopHandler: (mode) => {"]) {
+  for (const marker of ["onDesktop: (surface", "desktopHandler: (mode) => {"]) {
     const b = body(marker, 400);
     assert.match(b, /requestLivingDesktop\(\)/, marker);
     assert.doesNotMatch(b, /showLivingDesktop\(\)/, `${marker} must not open the overlay directly`);

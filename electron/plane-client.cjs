@@ -164,7 +164,7 @@ function errorText(error) {
  */
 function veilPlaneFetcher({ token, fetchImpl = globalThis.fetch, apiBase = API_BASE, timeoutMs = FETCH_TIMEOUT_MS } = {}) {
   return async function fetchPlane(planeId) {
-    let bearer = null;
+    let bearer;
     try { bearer = token ? await token() : null; } catch { bearer = null; }
     if (!bearer) throw new Error("signed out: sign in on the desk to read the platform planes");
     let res;
@@ -174,7 +174,7 @@ function veilPlaneFetcher({ token, fetchImpl = globalThis.fetch, apiBase = API_B
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
-      throw new Error(`plane route unreachable: ${errorText(error)}`);
+      throw new Error(`plane route unreachable: ${errorText(error)}`, { cause: error });
     }
     const text = await res.text().catch(() => "");
     if (res.status === 401) throw new Error("HTTP 401: the desk session is not signed in (or expired) -- sign in again");
