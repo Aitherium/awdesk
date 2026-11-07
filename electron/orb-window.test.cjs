@@ -68,6 +68,7 @@ function fakeWebContents() {
     url: "",
     send(channel, payload) { this.sent.push([channel, payload]); },
     on(name, fn) { events.on(name, fn); },
+    once(name, fn) { events.once(name, fn); },
     emit(name, ...args) { events.emit(name, ...args); },
     setWindowOpenHandler() {},
     getURL() { return this.url; },
@@ -104,7 +105,18 @@ class FakeWindow extends EventEmitter {
   setVisibleOnAllWorkspaces() {}
   setIgnoreMouseEvents(ignore) { this.ignoreMouse = ignore; }
   getPosition() { return [this.bounds.x, this.bounds.y]; }
-  setPosition(x, y) { this.bounds.x = Math.round(x); this.bounds.y = Math.round(y); }
+  /**
+   * Measured 2026-11-07 on Windows at a fractional display scale: a setPosition()
+   * on a transparent window re-rounds its width/height and the size creeps up a
+   * pixel or two per call. Emulated here so a move that forgets to pin the size
+   * fails this suite instead of waiting for the GPU process to eat the machine.
+   */
+  setPosition(x, y) {
+    this.bounds.x = Math.round(x);
+    this.bounds.y = Math.round(y);
+    this.drift = (this.drift || 0) + 1;
+    if (this.drift % 1 === 0) { this.bounds.width += 1; this.bounds.height += 1; }
+  }
   getBounds() { return { ...this.bounds }; }
   setBounds(next) { Object.assign(this.bounds, next); }
   isVisible() { return this.visible && !this.destroyed; }
@@ -648,4 +660,30 @@ test("orb.html only reassigns the veil canvas when the pixel size changed", () =
   const assign = body.indexOf("canvas.width = w");
   assert.ok(guard >= 0 && assign > guard, "the reallocation must sit INSIDE the size guard");
   assert.match(html, /requestAnimationFrame/, "draws are coalesced to one per display frame");
+});
+
+// ── the GPU leak: an orb move must not change the orb's size ──────────────
+
+test("moving the orb never grows it: 300 moves leave a 72 px window", () => {
+  writeState({ visible: true, x: 200, y: 200 });
+  start();
+  for (let i = 0; i < 300; i += 1) orbWindow.__test.moveOrb(200 + (i % 10), 200 + (i % 7));
+  assert.deepEqual(orbWin().getBounds(), { x: 209, y: 205, width: 72, height: 72 });
+  orbWindow.pump();
+});
+
+test("the hover loop cannot inflate the orb (the timer that leaked at 33 ms)", () => {
+  writeState({ visible: true, x: 200, y: 200 });
+  start();
+  const orb = orbWin();
+  for (let i = 0; i < 200; i += 1) orbWindow.__test.moveOrb(200, 200);
+  assert.equal(orb.getBounds().width, 72);
+  assert.equal(orb.getBounds().height, 72);
+  orbWindow.pump();
+});
+
+test("no orb-window code path moves the window with setPosition alone", () => {
+  const src = fs.readFileSync(path.join(__dirname, "orb-window.cjs"), "utf8");
+  assert.doesNotMatch(src, /\.setPosition\(/, "use moveOrb: setPosition drifts the size on Windows");
+  assert.match(src, /function moveOrb\(/, "moveOrb pins width and height on every move");
 });

@@ -243,11 +243,32 @@ function placeBubble() {
   bubbleWindow.setBounds({ ...pos, ...BUBBLE_SIZE });
 }
 
-function setOrbCenter(point) {
+/**
+ * Move the orb, PINNING its size on every call.
+ *
+ * `setPosition()` alone is not a move on Windows: at this display's fractional
+ * scale factor Electron re-rounds the window's width/height on each call, so the
+ * size creeps up by 1-2 px per move. The hover timer calls this at ORBIT_MS
+ * (33 ms), the drift compounds (area, then the layered GPU surface, grows with
+ * it) and the transparent always-on-top orb reaches desktop size: measured
+ * 2026-11-07 a 72 px orb at 28466x27338 with the GPU process at 9.2 GB private /
+ * 16.9 GB working set, twice driving the host's commit charge past 92%.
+ * setBounds() that repeats width/height cannot drift.
+ */
+function moveOrb(x, y) {
   if (!alive(orbWindow)) return;
-  orbWindow.setPosition(
-    Math.round(Number(point && point.x) - ORB_SIZE.width / 2),
-    Math.round(Number(point && point.y) - ORB_SIZE.height / 2),
+  orbWindow.setBounds({
+    x: Math.round(Number(x)),
+    y: Math.round(Number(y)),
+    width: ORB_SIZE.width,
+    height: ORB_SIZE.height,
+  });
+}
+
+function setOrbCenter(point) {
+  moveOrb(
+    Number(point && point.x) - ORB_SIZE.width / 2,
+    Number(point && point.y) - ORB_SIZE.height / 2,
   );
 }
 
@@ -2022,7 +2043,7 @@ function beginDrag() {
     const dx = cur.x - dragging.cx;
     const dy = cur.y - dragging.cy;
     dragging.moved = Math.max(dragging.moved, Math.abs(dx) + Math.abs(dy));
-    orbWindow.setPosition(Math.round(dragging.x + dx), Math.round(dragging.y + dy));
+    moveOrb(dragging.x + dx, dragging.y + dy);
   }, DRAG_STEP_MS);
   if (dragTimer.unref) dragTimer.unref();
   return { ok: true };
@@ -2045,7 +2066,7 @@ async function endDrag() {
     const [x, y] = orbWindow.getPosition();
     const area = displayForOrb().workArea;
     const pos = orbCore.clampToWorkArea({ x, y }, ORB_SIZE, area);
-    if (pos.x !== x || pos.y !== y) orbWindow.setPosition(pos.x, pos.y);
+    if (pos.x !== x || pos.y !== y) moveOrb(pos.x, pos.y);
     state.x = pos.x;
     state.y = pos.y;
     saveState();
@@ -2387,6 +2408,6 @@ module.exports = {
   __setAvatarTargets: (f) => { avatarTargetsImpl = f; },
   __setOps: (o) => { ops = o; },
   __setWired: () => { wired = true; },
-  // The veil's layout is what leaked (2026-11-07); assert it directly.
-  __test: { clampRect, coverVeil, drawVeil, veilPlacement, veilRect },
+  // The veil's layout AND the orb's move both leaked (2026-11-07); assert them directly.
+  __test: { clampRect, coverVeil, drawVeil, moveOrb, veilPlacement, veilRect },
 };

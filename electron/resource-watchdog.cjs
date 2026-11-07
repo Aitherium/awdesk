@@ -40,8 +40,11 @@ const HANG_TIMEOUT_MS = 45_000;
 // Electron respawn a clean one in under a second, with no visible re-layout.
 const GPU_LIMIT_MB = 3000;
 const GPU_SAMPLE_MS = 15_000;
-const GPU_COOLDOWN_MS = 5 * 60_000;
-const GPU_MAX_KILLS_PER_HOUR = 3;
+// The leak this guards measured ~5 GB/min, so a five-minute cooldown would let the
+// next regression reach the 12 GB total budget and force a full app relaunch -- the
+// outcome the guard exists to avoid. One kill a minute, six an hour, is enough.
+const GPU_COOLDOWN_MS = 60_000;
+const GPU_MAX_KILLS_PER_HOUR = 6;
 
 /** KB (Electron's unit) -> MB, private bytes when the platform has them. */
 function procMb(m) {
