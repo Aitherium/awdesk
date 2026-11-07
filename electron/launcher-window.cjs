@@ -167,7 +167,13 @@ function execPlan(plan) {
  * @param {object} opts.quickMenu createQuickMenu() -- the radial
  * @param {Function} [opts.now]
  */
-function createLauncher({ electron, registry, run, ask = null, spirit = null, quickMenu, now = Date.now } = {}) {
+function createLauncher({
+  electron, registry, run, ask = null, spirit = null, quickMenu, now = Date.now,
+  // () => cards list (decision-cards.listSnapshot()). The empty box leads with
+  // "Needs you (N)" -- the owner's cards ARE the reason to press the key.
+  // Null = no card group.
+  cards = null,
+} = {}) {
   if (!electron) throw new Error("launcher needs electron");
   if (!quickMenu) throw new Error("launcher needs the quick menu's radial");
 
@@ -427,6 +433,20 @@ function createLauncher({ electron, registry, run, ask = null, spirit = null, qu
           : "No Spirit command in this build — press ? to Ask Aither" };
     }
     if (!parsed.term) {
+      // The empty box leads with "Needs you (N)": the open decision cards, in
+      // the store's one rank order (launcher-context.cjs). Card rows only answer
+      // through awask, so nothing new becomes executable here.
+      if (typeof cards === "function") {
+        let snapshot;
+        try { snapshot = await cards(); } catch { snapshot = []; }
+        if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
+        const built = require("./launcher-context.cjs").needsYouGroup(snapshot);
+        if (built.group) {
+          const sw = require("./search-window.cjs");
+          const shown = sw.publicRun({ ok: true, query: "", phase: "idle", groups: [built.group], total: built.items.length });
+          return { ok: true, token, mode: "all", term: "", phase: "idle", groups: shown.groups, status: built.status };
+        }
+      }
       return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: core.IDLE_STATUS };
     }
     const sw = require("./search-window.cjs");
@@ -471,6 +491,23 @@ function createLauncher({ electron, registry, run, ask = null, spirit = null, qu
 
   // ── actions ───────────────────────────────────────────────────────────────
   async function runRow(key, query) {
+    if (String(key || "").startsWith("card:")) {
+      // A card row: `query` is a NUMBER (the 1-9 keys) or the option the owner
+      // typed. Both resolve to the card's own key and are written by awask, so a
+      // number key, a click and a typed answer are one implementation (DCS001).
+      const sw = require("./search-window.cjs");
+      const remembered = sw.rememberedItem ? sw.rememberedItem(key) : null;
+      const id = (remembered && remembered.cardId) || String(key).slice("card:".length);
+      const text = String(query || "").trim();
+      if (!text) return { ok: false, error: "Press Enter to open the card, or 1-9 / type an option to answer" };
+      const spec = /^\d+$/.test(text) ? { id, index: Number(text) } : { id, text };
+      const verdict = await run("card-answer", spec);
+      const bad = sw.failureOf(verdict, "answer");
+      if (bad) return { ok: false, error: bad };
+      if (verdict && verdict.ok === false) return verdict;
+      hide();
+      return { ok: true, did: (verdict && verdict.did) || `answered ${id}` };
+    }
     const sw = require("./search-window.cjs");
     const result = await sw.launchItem(String(key || ""), String(query || ""), {
       shell, clipboard,

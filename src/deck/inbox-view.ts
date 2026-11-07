@@ -152,6 +152,20 @@ export interface DecisionGroup {
 }
 
 /**
+ * The "Older than 7 days" fold: approve/choose cards old enough to stop leading,
+ * in the order they arrived. Credential and blocked cards NEVER age out -- a
+ * session stopped on the owner is still stopped on day 30, and folding it away
+ * is the exact "the card was there and I could not find it" report this view
+ * exists to kill. One rule, used by groupDecisions and by the launcher.
+ */
+export function staleGroup(cards: DeckDecision[], nowMs: number, days = STALE_DECISION_DAYS): DeckDecision[] {
+  return (cards || []).filter((card) => {
+    const key = decisionGroup(card);
+    return key !== 'credential' && key !== 'blocked' && isStaleDecision(card, nowMs, days);
+  });
+}
+
+/**
  * Fresh cards in their groups (fixed order, main's rank order kept inside a
  * group), and the stale approve/choose ones apart. Empty groups are dropped.
  */
@@ -160,17 +174,67 @@ export function groupDecisions(cards: DeckDecision[], nowMs: number, days = STAL
   stale: DeckDecision[];
 } {
   const buckets = new Map<DecisionGroupKey, DeckDecision[]>(GROUP_ORDER.map((k) => [k, []]));
+  const staleIds = new Set(staleGroup(cards, nowMs, days).map((card) => card.id));
   const stale: DeckDecision[] = [];
   for (const card of cards) {
-    const key = decisionGroup(card);
-    // A session stopped on the owner (credential / blocked) never ages out of view.
-    if (key !== 'credential' && key !== 'blocked' && isStaleDecision(card, nowMs, days)) stale.push(card);
-    else buckets.get(key)!.push(card);
+    if (staleIds.has(card.id)) stale.push(card);
+    else buckets.get(decisionGroup(card))!.push(card);
   }
   const groups = GROUP_ORDER
     .map((key) => ({ key, label: DECISION_GROUP_LABELS[key], cards: buckets.get(key)! }))
     .filter((g) => g.cards.length > 0);
   return { groups, stale };
+}
+
+/**
+ * The option a number key selects: 1-based, clamped to the card's own list.
+ * Out of range is null, never "the last one" -- pressing 9 on a two-option card
+ * must do nothing, not answer.
+ */
+export function optionByIndex<T extends { key: string }>(options: T[], index: number): T | null {
+  const list = Array.isArray(options) ? options : [];
+  const n = Math.trunc(Number(index));
+  if (!Number.isFinite(n) || n < 1 || n > list.length) return null;
+  return list[n - 1] || null;
+}
+
+/**
+ * A typed answer for the focused card: the option whose KEY or LABEL the owner
+ * typed ("ack", "Not now"), or the single option whose label starts with it.
+ * Ambiguous text answers nothing -- typing "n" on Ack/Not-now must not guess
+ * which one the owner meant.
+ */
+export function answerByQuery<T extends { key: string; label?: string }>(options: T[], query: string): T | null {
+  const text = String(query || '').trim().toLowerCase();
+  if (!text) return null;
+  const list = Array.isArray(options) ? options : [];
+  const key = list.find((o) => String(o.key || '').toLowerCase() === text);
+  if (key) return key;
+  const label = list.find((o) => String(o.label || '').toLowerCase() === text);
+  if (label) return label;
+  // A one-letter prefix is how you FIND a card, not how you answer it: "n" in
+  // an option search box must never silently pick "Not now".
+  if (text.length < 2) return null;
+  const prefixed = list.filter((o) => String(o.label || '').toLowerCase().startsWith(text));
+  return prefixed.length === 1 ? prefixed[0] : null;
+}
+
+/**
+ * Rows matching what the owner typed, in the order they arrived (the store's
+ * rank order -- filtering never re-ranks). Every token must match somewhere, so
+ * "cred gmail" narrows instead of widening. An empty query is every row.
+ */
+export function filterRows(cards: DeckDecision[], query: string): DeckDecision[] {
+  const list = cards || [];
+  const tokens = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return list.slice();
+  return list.filter((card) => {
+    const hay = [card.title, card.summary, card.kind, decisionSource(card)]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return tokens.every((token) => hay.includes(token));
+  });
 }
 
 /** Where a card came from, for its one-line row: the agent or tab, else the host. */

@@ -36,6 +36,9 @@ import {
   healthySummary,
   moveCursor,
   nextActionLine,
+  optionByIndex,
+  answerByQuery,
+  filterRows,
   orderRelay,
   plainAsk,
   relayNick,
@@ -1060,6 +1063,10 @@ function NeedsYouSection({
   const [cursor, setCursor] = useState<string | null>(null);
   const [staleOpen, setStaleOpen] = useState(false);
   const [folded, setFolded] = useState<Set<string>>(() => new Set());
+  // Typed text narrows the list (title/summary/source); typing an option's key
+  // answers the focused card. It NEVER re-ranks -- filterRows keeps the store's
+  // order, so the cursor does not jump while the owner types.
+  const [query, setQuery] = useState('');
   // A group shows its first GROUP_PAGE cards; "N more" opens the rest.
   const [more, setMore] = useState<Set<string>>(() => new Set());
   const [bulk, setBulk] = useState<{ verb: string; done: number; total: number; refused: number } | null>(null);
@@ -1067,9 +1074,10 @@ function NeedsYouSection({
   const [confirmLater, setConfirmLater] = useState(false);
   // A bulk run is a loop of clicks; the owner must be able to stop it.
   const cancelBulk = useRef(false);
-  const { groups, stale } = groupDecisions(cards, nowMs);
+  const rows = query ? filterRows(cards, query) : cards;
+  const { groups, stale } = groupDecisions(rows, nowMs);
   // THE next action — one line, before any group, so nothing has to be scanned.
-  const next = nextActionLine(cards, openCount);
+  const next = nextActionLine(rows, openCount);
   const nextChoice = next ? next.choice : null;
   // FYI keeps the same five-and-a-fold shape as every other list here.
   const fyiCap = capList(fyi, VISIBLE_CAP);
@@ -1080,7 +1088,7 @@ function NeedsYouSection({
     ...groups.filter((g) => !folded.has(g.key)).flatMap((g) => shownCards(g.key, g.cards).map((c) => c.id)),
     ...(staleOpen ? stale.map((c) => c.id) : []),
   ];
-  const allIds = cards.map((c) => c.id);
+  const allIds = rows.map((c) => c.id);
   const previousIds = useRef<string[]>(allIds);
 
   // An answered card leaves the list: open the card now in its slot.
@@ -1136,11 +1144,29 @@ function NeedsYouSection({
       } else if (event.key === 'k' || event.key === 'ArrowUp') {
         event.preventDefault();
         setCursor((current) => moveCursor(visible, current, -1));
+      } else if (/^[1-9]$/.test(event.key) && cursor) {
+        // 1-9 answer the FOCUSED row's option, collapsed or not: the owner asked
+        // to answer without clicking a row open first.
+        const card = rows.find((c) => c.id === cursor);
+        const option = card ? optionByIndex(card.options, Number(event.key)) : null;
+        if (option) {
+          event.preventDefault();
+          onAnswer(card!.id, option.key);
+        }
       } else if (event.key === 'Enter' && cursor && !(target && target.closest('button, [role="button"]'))) {
         event.preventDefault();
+        const card = rows.find((c) => c.id === cursor);
+        // An OPEN card takes its recommendation on Enter; a closed one opens.
+        if (card && expanded === cursor) {
+          const choice = primaryChoice(card);
+          if (choice) { onAnswer(card.id, choice.key); return; }
+        }
         setExpanded((current) => (current === cursor ? null : cursor));
       } else if (event.key === 'Escape') {
-        setExpanded(null);
+        // Esc COLLAPSES first; only the second Esc leaves the inbox. It never
+        // answers, snoozes or hides a card.
+        if (expanded) setExpanded(null);
+        else bridgeDeck()?.close();
       }
     };
     document.addEventListener('keydown', onKey);
@@ -1255,6 +1281,23 @@ function NeedsYouSection({
           </button>
         ) : null}
       </h2>
+      {cards.length > 0 ? (
+        <input
+          className="deck-ny-filter"
+          type="search"
+          value={query}
+          placeholder="Filter cards — or type an option key and press Enter"
+          aria-label="Filter decision cards"
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            const card = cursor ? rows.find((c) => c.id === cursor) : null;
+            const option = card && query.trim() ? answerByQuery(card.options, query) : null;
+            if (card && option) onAnswer(card.id, option.key);
+          }}
+        />
+      ) : null}
       {cards.length === 0 ? (
         <p className="deck-empty">Nothing waiting — every session is unblocked.</p>
       ) : (
@@ -1279,6 +1322,9 @@ function NeedsYouSection({
                 All {openCount} — open Inbox
               </button>
             </div>
+          ) : null}
+          {rows.length === 0 ? (
+            <p className="deck-empty">No card matches “{query}”.</p>
           ) : null}
           {groups.map((group) => (
             <div className="deck-ny-group" key={group.key}>
@@ -1411,7 +1457,7 @@ function DecisionRow({
               title={`Answer "${primary.label}" — recorded, and the asking session is told right away`}
               onClick={() => onAnswer(card.id, primary.key)}
             >
-              {primary.label}
+              {`${card.options.findIndex((o) => o.key === primary.key) + 1}. ${primary.label}`}
             </button>
           ) : (
             <button
@@ -1429,7 +1475,7 @@ function DecisionRow({
               title={`Answer "${option.label}" instead`}
               onClick={() => onAnswer(card.id, option.key)}
             >
-              {option.label}
+              {`${card.options.findIndex((o) => o.key === option.key) + 1}. ${option.label}`}
             </button>
           ))}
         </footer>

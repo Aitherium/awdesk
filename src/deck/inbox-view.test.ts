@@ -243,3 +243,80 @@ describe('awarenessLine', () => {
     expect(awarenessLine('Workspace', 'default · 2 terminal session(s)', 'Workspace').ok).toBe(true);
   });
 });
+
+import { staleGroup, optionByIndex, answerByQuery, filterRows } from './inbox-view';
+
+describe('staleGroup — the fold, and what never falls into it', () => {
+  it('folds approve/choose cards older than the window', () => {
+    const old = card({ id: 'd-old', createdAt: NOW / 1000 - 8 * DAY });
+    expect(staleGroup([old], NOW).map((c) => c.id)).toEqual(['d-old']);
+  });
+
+  it('never folds a credential or blocked card, however old', () => {
+    const cred = card({ id: 'd-cred', kind: 'credential', createdAt: NOW / 1000 - 90 * DAY });
+    const blocked = card({ id: 'd-blk', kind: 'blocked', createdAt: NOW / 1000 - 90 * DAY });
+    expect(staleGroup([cred, blocked], NOW)).toEqual([]);
+  });
+
+  it('groupDecisions agrees with staleGroup term for term', () => {
+    const rows = [
+      card({ id: 'd-fresh' }),
+      card({ id: 'd-old', createdAt: NOW / 1000 - 8 * DAY }),
+      card({ id: 'd-cred', kind: 'credential', createdAt: NOW / 1000 - 8 * DAY }),
+    ];
+    const { stale } = groupDecisions(rows, NOW);
+    expect(stale.map((c) => c.id)).toEqual(staleGroup(rows, NOW).map((c) => c.id));
+  });
+});
+
+describe('optionByIndex — the number keys', () => {
+  const options = [{ key: 'a', label: 'A' }, { key: 'b', label: 'B' }];
+  it('is 1-based', () => {
+    expect(optionByIndex(options, 1)?.key).toBe('a');
+    expect(optionByIndex(options, 2)?.key).toBe('b');
+  });
+  it('does nothing out of range instead of answering the last option', () => {
+    expect(optionByIndex(options, 3)).toBeNull();
+    expect(optionByIndex(options, 0)).toBeNull();
+    expect(optionByIndex(options, -1)).toBeNull();
+    expect(optionByIndex([], 1)).toBeNull();
+  });
+});
+
+describe('answerByQuery — typed answers', () => {
+  const options = [
+    { key: 'ack', label: 'I am looking now' },
+    { key: 'not_now', label: 'Not now' },
+  ];
+  it('matches an exact key or label, case-insensitively', () => {
+    expect(answerByQuery(options, 'ack')?.key).toBe('ack');
+    expect(answerByQuery(options, 'not now')?.key).toBe('not_now');
+  });
+  it('matches a unique prefix but refuses an ambiguous one', () => {
+    expect(answerByQuery(options, 'i am')?.key).toBe('ack');
+    expect(answerByQuery(options, 'n')).toBeNull();
+  });
+  it('empty text is not an answer', () => {
+    expect(answerByQuery(options, '   ')).toBeNull();
+  });
+});
+
+describe('filterRows — typing narrows the list, never re-ranks it', () => {
+  const rows = [
+    card({ id: 'd-cred', title: 'Gmail credential', kind: 'credential', summary: 'type the app password' }),
+    card({ id: 'd-pr', title: 'Merge PR 42', agent: 'claude-code' }),
+    card({ id: 'd-fyi', title: 'Nightly digest' }),
+  ];
+  it('returns every row in order for an empty query', () => {
+    expect(filterRows(rows, '').map((c) => c.id)).toEqual(['d-cred', 'd-pr', 'd-fyi']);
+  });
+  it('matches title, summary, kind and source', () => {
+    expect(filterRows(rows, 'gmail').map((c) => c.id)).toEqual(['d-cred']);
+    expect(filterRows(rows, 'password').map((c) => c.id)).toEqual(['d-cred']);
+    expect(filterRows(rows, 'claude').map((c) => c.id)).toEqual(['d-pr']);
+  });
+  it('requires every token to match', () => {
+    expect(filterRows(rows, 'merge 42').map((c) => c.id)).toEqual(['d-pr']);
+    expect(filterRows(rows, 'merge gmail')).toEqual([]);
+  });
+});
