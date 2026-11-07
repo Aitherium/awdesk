@@ -34,6 +34,14 @@ const RUNAWAY_WINDOW_MS = 60_000;
 const MAX_RESTARTS_PER_HOUR = 2;
 const HANG_BEAT_MS = 5_000;
 const HANG_TIMEOUT_MS = 45_000;
+// The GPU process is the one child that can balloon on its own (software present +
+// a giant transparent window, 2026-11-07: 9.2 GB private). Restarting Desk for it is
+// a sledgehammer -- it interrupted the owner twice -- but killing the GPU child makes
+// Electron respawn a clean one in under a second, with no visible re-layout.
+const GPU_LIMIT_MB = 3000;
+const GPU_SAMPLE_MS = 15_000;
+const GPU_COOLDOWN_MS = 5 * 60_000;
+const GPU_MAX_KILLS_PER_HOUR = 3;
 
 /** KB (Electron's unit) -> MB, private bytes when the platform has them. */
 function procMb(m) {
@@ -115,6 +123,70 @@ function hangVerdict({ lastBeatAt, now, timeoutMs = HANG_TIMEOUT_MS }) {
   return now - lastBeatAt > timeoutMs ? "kill" : "ok";
 }
 
+/** The GPU child's pid and private bytes, from an app.getAppMetrics()-shaped list. */
+function gpuProcess(metrics) {
+  const list = Array.isArray(metrics) ? metrics : [];
+  const gpu = list.find((m) => m && (m.type === "GPU" || m.type === "GPU Process"));
+  if (!gpu) return null;
+  return { pid: Number(gpu.pid) || 0, mb: procMb(gpu) };
+}
+
+/**
+ * Pure verdict for one sample. `kill` is true only for a real GPU child above the line;
+ * a missing metric or a zero pid is "ok" (we cannot identify it, so we do not act).
+ */
+function gpuVerdict(metrics, { limitMb = GPU_LIMIT_MB } = {}) {
+  const gpu = gpuProcess(metrics);
+  if (!gpu || !gpu.pid) return { pid: 0, mb: 0, kill: false };
+  return { pid: gpu.pid, mb: gpu.mb, kill: gpu.mb > limitMb };
+}
+
+/**
+ * Kills ONLY the verified GPU child when it passes `limitMb`; Electron respawns it.
+ * Idempotent by pid (a stale metric cannot kill the same process twice), rate-limited
+ * (cooldown + a per-hour cap) and logged on every decision.
+ *
+ * @param deps.sample () => app.getAppMetrics()-shaped list
+ * @param deps.kill (pid) => void
+ */
+function createGpuGuard({ sample, kill, limitMb = GPU_LIMIT_MB, cooldownMs = GPU_COOLDOWN_MS,
+  maxPerHour = GPU_MAX_KILLS_PER_HOUR, now = Date.now, log = () => {} }) {
+  let lastKillAt = -Infinity;
+  let killedPid = 0;
+  let kills = [];
+
+  function tick() {
+    const verdict = gpuVerdict(sample(), { limitMb });
+    if (!verdict.kill) {
+      if (killedPid && verdict.pid && verdict.pid !== killedPid) killedPid = 0;
+      return verdict;
+    }
+    if (verdict.pid === killedPid) return { ...verdict, action: "already" };
+    const t = now();
+    if (t - lastKillAt < cooldownMs) {
+      log(`gpu-guard: pid ${verdict.pid} at ${verdict.mb} MB -- cooling down, not killing`);
+      return { ...verdict, action: "cooldown" };
+    }
+    kills = kills.filter((at) => at > t - 3600_000);
+    if (kills.length >= maxPerHour) {
+      log(`gpu-guard: pid ${verdict.pid} at ${verdict.mb} MB -- ${maxPerHour} kills this hour, not killing`);
+      return { ...verdict, action: "capped" };
+    }
+    kills.push(t);
+    lastKillAt = t;
+    killedPid = verdict.pid;
+    log(`gpu-guard: pid ${verdict.pid} at ${verdict.mb} MB (limit ${limitMb}) -- restarting the GPU process`);
+    try {
+      kill(verdict.pid);
+    } catch (error) {
+      log(`gpu-guard: kill ${verdict.pid} failed: ${error?.message || error}`);
+    }
+    return { ...verdict, action: "killed" };
+  }
+
+  return { tick, kills: () => kills.slice() };
+}
+
 /** Restart bookkeeping in userData: the times of recent self-restarts. */
 function restartLog(file) {
   const read = () => {
@@ -159,7 +231,25 @@ function startResourceWatchdog({ app, posture, reclaim, notify = () => {}, log =
     try { dog.tick(); } catch (error) { log(`tick failed: ${error?.message || error}`); }
   }, intervalMs);
   if (typeof timer.unref === "function") timer.unref();
-  return { budget, tick: dog.tick, stop: () => clearInterval(timer) };
+  // The GPU child has its own guard: killing it is cheap, restarting Desk is not.
+  const gpu = createGpuGuard({
+    sample: () => app.getAppMetrics(),
+    kill: (pid) => {
+      if (!pid || pid === process.pid) return; // never the main process
+      process.kill(pid);
+    },
+    log,
+  });
+  const gpuTimer = setInterval(() => {
+    try { gpu.tick(); } catch (error) { log(`gpu-guard failed: ${error?.message || error}`); }
+  }, GPU_SAMPLE_MS);
+  if (typeof gpuTimer.unref === "function") gpuTimer.unref();
+  return {
+    budget,
+    tick: dog.tick,
+    gpuTick: gpu.tick,
+    stop: () => { clearInterval(timer); clearInterval(gpuTimer); },
+  };
 }
 
 /** Electron wiring for the hang guard: a utility process that outlives a stuck main thread. */
@@ -180,6 +270,8 @@ function startHangWatchdog({ utilityProcess, log = (l) => console.log(`[desk] ha
 }
 
 module.exports = {
-  BUDGETS, HANG_TIMEOUT_MS, MAX_RESTARTS_PER_HOUR, RUNAWAY_MB, SAMPLE_MS,
-  assess, createWatchdog, hangVerdict, restartLog, startHangWatchdog, startResourceWatchdog,
+  BUDGETS, GPU_LIMIT_MB, GPU_MAX_KILLS_PER_HOUR, HANG_TIMEOUT_MS, MAX_RESTARTS_PER_HOUR,
+  RUNAWAY_MB, SAMPLE_MS,
+  assess, createGpuGuard, createWatchdog, gpuProcess, gpuVerdict, hangVerdict, restartLog,
+  startHangWatchdog, startResourceWatchdog,
 };

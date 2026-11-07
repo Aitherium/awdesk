@@ -205,15 +205,31 @@
     const canvas = document.getElementById("veil");
     const ctx = canvas.getContext("2d");
     let state = { width: 0, height: 0, tint: "#ffc861", trail: [], tether: null };
+    let lastKey = "";
+    let frame = 0;
     function sizeTo(s) {
       const dpr = window.devicePixelRatio || 1;
       state.width = Number(s.width) || window.innerWidth;
       state.height = Number(s.height) || window.innerHeight;
-      canvas.width = Math.max(1, Math.round(state.width * dpr));
-      canvas.height = Math.max(1, Math.round(state.height * dpr));
-      canvas.style.width = `${state.width}px`;
-      canvas.style.height = `${state.height}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const w = Math.max(1, Math.round(state.width * dpr));
+      const h = Math.max(1, Math.round(state.height * dpr));
+      // Reassigning width/height REALLOCATES the whole backing store. At the old
+      // 60 Hz payload rate on a desktop-sized veil that was ~100 MB per frame, and
+      // the GPU process grew until it died (2026-11-07). Only resize when the
+      // pixel size actually changed.
+      if (w !== canvas.width || h !== canvas.height) {
+        canvas.width = w;
+        canvas.height = h;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+      const cssW = `${state.width}px`;
+      const cssH = `${state.height}px`;
+      if (canvas.style.width !== cssW) canvas.style.width = cssW;
+      if (canvas.style.height !== cssH) canvas.style.height = cssH;
+    }
+    function scheduleDraw() {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => { frame = 0; draw(); });
     }
     function draw() {
       ctx.clearRect(0, 0, state.width, state.height);
@@ -249,12 +265,23 @@
       }
     }
     api.onVeil((s) => {
-      if (!s) { state.trail = []; state.tether = null; draw(); return; }
+      if (!s) {
+        state.trail = [];
+        state.tether = null;
+        lastKey = "";
+        draw();
+        return;
+      }
       sizeTo(s);
       state.tint = s.tint || state.tint;
       state.trail = Array.isArray(s.trail) ? s.trail : [];
       state.tether = Array.isArray(s.tether) ? s.tether : null;
-      draw();
+      const key = `${state.width}x${state.height}|${state.tint}|${state.trail.length}`
+        + `|${state.trail.length ? `${state.trail[0].x},${state.trail[0].y},${state.trail[state.trail.length - 1].x},${state.trail[state.trail.length - 1].y}` : ""}`
+        + `|${state.tether ? state.tether.map((p) => `${p.x},${p.y}`).join(";") : ""}`;
+      if (key === lastKey) return; // nothing moved: do not repaint, do not allocate
+      lastKey = key;
+      scheduleDraw(); // one paint per display frame, however many payloads arrive
     });
     api.init().then((s) => { if (s && s.tint) { state.tint = s.tint.css || state.tint; applyTint(state.tint); } });
   }

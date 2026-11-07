@@ -594,3 +594,58 @@ test("aw verbs: a missing binary is a bubble error, not a throw", async () => {
   assert.equal(r.ok, false);
   assert.equal(r.missing, true);
 });
+
+// ── the veil must not grow without bound (2026-11-07) ─────────────────────
+// Measured: a transparent always-on-top veil grown to the UNION of every trail
+// position reached 25568x24656, and its 60 Hz canvas reallocation took the GPU
+// process to 9.2 GB private / 16.9 GB working set. Both are asserted here.
+
+test("the veil shrinks to the current trail instead of keeping where it has been", () => {
+  start();
+  orbWindow.showOrb();
+  const a = { x: 100, y: 100 };
+  const far = { x: 3000, y: 2000 };
+  const big = orbWindow.__test.coverVeil([a, far]);
+  const veil = FakeWindow.all.find((w) => w.opts.title === "Aither spirit trail");
+  assert.ok(veil, "the veil window exists");
+  assert.deepEqual(veil.getBounds(), big);
+  assert.ok(big.width > 2000, JSON.stringify(big));
+
+  const small = orbWindow.__test.coverVeil([a]);
+  assert.ok(small.width <= 200 && small.height <= 200, JSON.stringify(small));
+  assert.deepEqual(veil.getBounds(), small, "the veil followed the trail instead of unioning with the past");
+});
+
+test("the veil stays inside the virtual desktop even if a point is off-screen", () => {
+  start();
+  const placed = orbWindow.__test.veilPlacement([{ x: 9000, y: 9000 }], { x: 0, y: 0, width: 3840, height: 3240 });
+  assert.ok(placed.x + placed.width <= 3840, JSON.stringify(placed));
+  assert.ok(placed.y + placed.height <= 3240, JSON.stringify(placed));
+});
+
+test("an unchanged veil frame is not re-sent -- a static spirit sends nothing", () => {
+  start();
+  orbWindow.showOrb();
+  orbWindow.__test.coverVeil([{ x: 100, y: 100 }]); // creates the veil, as flyTo does
+  orbWindow.__test.drawVeil();
+  const veil = FakeWindow.all.find((w) => w.opts.title === "Aither spirit trail");
+  assert.ok(veil, "the veil window exists");
+  const sent = veil.webContents.sent.filter(([channel]) => channel === "orb:veil").length;
+  assert.equal(sent, 1);
+  orbWindow.__test.drawVeil();
+  orbWindow.__test.drawVeil();
+  assert.equal(veil.webContents.sent.filter(([channel]) => channel === "orb:veil").length, sent);
+  orbWindow.pump();
+});
+
+test("orb.html only reassigns the veil canvas when the pixel size changed", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  const at = html.indexOf("function sizeTo(s)");
+  assert.ok(at > 0, "sizeTo exists");
+  const body = html.slice(at, at + 1200);
+  assert.match(body, /if \(w !== canvas\.width \|\| h !== canvas\.height\)/);
+  const guard = body.indexOf("if (w !== canvas.width");
+  const assign = body.indexOf("canvas.width = w");
+  assert.ok(guard >= 0 && assign > guard, "the reallocation must sit INSIDE the size guard");
+  assert.match(html, /requestAnimationFrame/, "draws are coalesced to one per display frame");
+});

@@ -93,6 +93,9 @@ let flight = null; // {path, from, to, startedAt, duration, resolve, cancelled}
 let flightTimer = null;
 let trail = [];
 let lastTrailAt = 0;
+// The last veil payload actually sent. A 60 Hz flight used to re-send identical
+// frames and the renderer reallocated its canvas for every one of them.
+let lastVeilKey = "";
 let home = null; // {x,y} free resting point (orb CENTRE) captured when attaching
 let tint = spiritCore.tintFor("slot0");
 let hold = null;
@@ -336,6 +339,7 @@ function ensureVeil() {
   });
   veilWindow.setAlwaysOnTop(true, "screen-saver");
   veilWindow.setIgnoreMouseEvents(true);
+  lastVeilKey = "";
   veilWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   veilWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   veilWindow.on("closed", () => { veilWindow = null; });
@@ -360,27 +364,69 @@ function veilRect(points) {
   };
 }
 
-function unionRect(a, b) {
-  const left = Math.min(a.x, b.x);
-  const top = Math.min(a.y, b.y);
-  const right = Math.max(a.x + a.width, b.x + b.width);
-  const bottom = Math.max(a.y + a.height, b.y + b.height);
-  return { x: left, y: top, width: right - left, height: bottom - top };
+/** The union of every display's bounds: the largest rect the veil may cover. */
+function displayUnion() {
+  try {
+    const displays = electron().screen.getAllDisplays();
+    if (!Array.isArray(displays) || !displays.length) return null;
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    for (const display of displays) {
+      const b = display && display.bounds;
+      if (!b) continue;
+      left = Math.min(left, b.x);
+      top = Math.min(top, b.y);
+      right = Math.max(right, b.x + b.width);
+      bottom = Math.max(bottom, b.y + b.height);
+    }
+    if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  } catch {
+    return null;
+  }
 }
 
-/** Grow (never shrink) the veil so every point it must draw is inside it. */
+/** Keep a rect on the virtual desktop: a window larger than the screens buys nothing. */
+function clampRect(rect, area) {
+  if (!area) return rect;
+  const x = Math.round(Math.max(area.x, Math.min(rect.x, area.x + area.width - 1)));
+  const y = Math.round(Math.max(area.y, Math.min(rect.y, area.y + area.height - 1)));
+  const right = Math.min(rect.x + rect.width, area.x + area.width);
+  const bottom = Math.min(rect.y + rect.height, area.y + area.height);
+  return {
+    x,
+    y,
+    width: Math.max(1, Math.round(right - x)),
+    height: Math.max(1, Math.round(bottom - y)),
+  };
+}
+
+/**
+ * Where the veil belongs for these points: its CURRENT extent, clamped to the screens.
+ *
+ * It must SHRINK as the trail moves on. The old code grew the window to the union of
+ * where it had ever been and never shrank it; a flying spirit therefore left behind a
+ * transparent always-on-top window spanning the whole desktop, re-laid-out at 60 Hz.
+ * Measured 2026-11-07: the window reached 25568x24656 and the GPU process climbed to
+ * 9.2 GB private / 16.9 GB working set under software present, twice hard-rebooting the
+ * host's commit charge. So: current points only, never bounded by the past.
+ */
+function veilPlacement(points, area) {
+  return clampRect(veilRect(points), area);
+}
+
 function coverVeil(points) {
   const win = ensureVeil();
-  const want = veilRect(points);
-  let bounds = win.getBounds();
-  const union = unionRect(bounds, want);
-  if (union.x !== bounds.x || union.y !== bounds.y
-    || union.width !== bounds.width || union.height !== bounds.height) {
-    win.setBounds(union);
-    bounds = union;
+  const want = veilPlacement(points, displayUnion());
+  const bounds = win.getBounds();
+  if (want.x !== bounds.x || want.y !== bounds.y
+    || want.width !== bounds.width || want.height !== bounds.height) {
+    win.setBounds(want);
   }
   if (!win.isVisible()) win.showInactive();
-  return bounds;
+  return want;
 }
 
 function veilPayload() {
@@ -402,6 +448,13 @@ function veilPayload() {
   };
 }
 
+/** A cheap content key: identical frames are never re-sent to the renderer. */
+function veilKey(payload) {
+  if (!payload) return "";
+  const points = (list) => (Array.isArray(list) ? list.map((p) => `${p.x},${p.y}`).join(";") : "");
+  return `${payload.width}x${payload.height}|${payload.tint}|${points(payload.trail)}|${points(payload.tether)}`;
+}
+
 function drawVeil() {
   if (!alive(veilWindow)) return;
   const points = trail.slice();
@@ -412,7 +465,15 @@ function drawVeil() {
   }
   if (!points.length) return;
   coverVeil(points);
-  try { veilWindow.webContents.send("orb:veil", veilPayload()); } catch { /* page loading */ }
+  const payload = veilPayload();
+  const key = veilKey(payload);
+  if (key === lastVeilKey) return;
+  lastVeilKey = key;
+  try {
+    veilWindow.webContents.send("orb:veil", payload);
+  } catch {
+    lastVeilKey = ""; // page mid-load: the next tick sends again
+  }
 }
 
 function showVeil() {
@@ -422,6 +483,7 @@ function showVeil() {
 
 function hideVeil() {
   trail = [];
+  lastVeilKey = "";
   if (alive(veilWindow)) veilWindow.hide();
 }
 
@@ -2268,6 +2330,7 @@ module.exports = {
     if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
     if (dragTimer) { clearInterval(dragTimer); dragTimer = null; }
     if (flightTimer) { clearInterval(flightTimer); flightTimer = null; }
+    lastVeilKey = "";
     stopFollow();
     for (const pending of pendingRuns.values()) {
       clearTimeout(pending.timer);
@@ -2324,4 +2387,6 @@ module.exports = {
   __setAvatarTargets: (f) => { avatarTargetsImpl = f; },
   __setOps: (o) => { ops = o; },
   __setWired: () => { wired = true; },
+  // The veil's layout is what leaked (2026-11-07); assert it directly.
+  __test: { clampRect, coverVeil, drawVeil, veilPlacement, veilRect },
 };
