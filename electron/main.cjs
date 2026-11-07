@@ -215,6 +215,9 @@ const launcher = require("./launcher-window.cjs").createLauncher({
   ask: (text) => commandAction(text, { source: "launcher" }),
   spirit: null, // @ sends through the spirit.go registry row (a plain sentence = a search trip)
   quickMenu,
+  // The empty Alt+Space box leads with the DECISION CARDS ("Needs you (N)") so the
+  // owner can answer without leaving the keyboard (owner, 2026-11-06).
+  cards: () => decisionCards.listSnapshot(),
 });
 // OWNER-CONSENTED, reversible (files-wine.cjs pattern): never enabled here; the
 // registry rows call enable({consent:true}) / restore(). `shellMenuOn` is the ONE
@@ -3156,6 +3159,30 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     }
     case "inbox.open": return void openInbox();
     case "inbox.now": return void openInboxNow();
+    // Answer ONE card by name: the launcher's 1-9 keys and typed answers, and
+    // the palette's "<card id> <option key|number>". The write is awask's
+    // (decision-cards resolves the number/text to the card's own option key).
+    case "card-answer": {
+      let spec = arg;
+      if (typeof spec === "string") {
+        const [id, ...rest] = spec.trim().split(/\s+/);
+        spec = { id, text: rest.join(" ") };
+      }
+      if (!spec || typeof spec.id !== "string" || spec.id.length === 0) {
+        return { ok: false, error: "1 answer needs a card id — nothing was answered" };
+      }
+      const index = Number(spec.index);
+      if (Number.isInteger(index) && index > 0) {
+        return decisionCards.answerCardIndex(spec.id, index)
+          ? { ok: true, did: `answered ${spec.id} (option ${index})` }
+          : { ok: false, error: `1 card ${spec.id} has no option ${index} — nothing was answered` };
+      }
+      const text = String(spec.text || spec.key || "").trim();
+      if (!text) return { ok: false, error: "1 answer needs an option key or number" };
+      return decisionCards.answerCardText(spec.id, text)
+        ? { ok: true, did: `answered ${spec.id}: ${text}` }
+        : { ok: false, error: `1 option "${text}" is not on ${spec.id} — nothing was answered` };
+    }
     case "avatar.toggle": return void toggleOverlay();
     case "companion.fairy": return void setCompanionMode("fairy");
     case "companion.avatar": return void setCompanionMode("avatar");

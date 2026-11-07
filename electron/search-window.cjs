@@ -153,7 +153,18 @@ function publicRun(r) {
     id: g.id, label: g.label, total: g.total,
     items: g.items.map((it) => {
       remembered.set(it.key, it);
-      return { key: it.key, kind: it.kind, title: it.title, subtitle: it.subtitle, score: it.score };
+      const row = { key: it.key, kind: it.kind, title: it.title, subtitle: it.subtitle, score: it.score };
+      // A CARD row carries its own options so the launcher can number them and
+      // send the number back. Keys and labels only -- the card's summary is the
+      // raiser's text, and the value of a credential card never travels at all.
+      if (it.kind === "card") {
+        row.cardId = it.cardId;
+        row.defaultKey = it.defaultKey;
+        row.options = (Array.isArray(it.options) ? it.options : []).map((o) => ({
+          index: o.index, key: o.key, label: o.label, recommended: o.recommended === true,
+        }));
+      }
+      return row;
     }),
   }));
   return { ok: true, query: r.query, phase: r.phase, groups, total: r.total, errors: r.errors, notes: r.notes, tookMs: r.tookMs };

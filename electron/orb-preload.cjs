@@ -65,6 +65,10 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   dragStart: () => ipcRenderer.invoke("desk:orb-drag-start"),
   dragEnd: () => ipcRenderer.invoke("desk:orb-drag-end"),
   click: () => ipcRenderer.invoke("desk:orb-click"),
+  // The BADGE is the needs-you door: one click opens the Inbox list (never
+  // answers anything). Kept separate from `click` so the orb body keeps its
+  // open/close meaning.
+  needsYou: () => ipcRenderer.invoke("desk:orb-needs-you"),
   ask: (verb, text) => ipcRenderer.invoke("desk:orb-ask", String(verb || ""), String(text || "")),
   copy: (id) => ipcRenderer.invoke("desk:orb-copy", String(id || "")),
   pin: (id, pinned) => ipcRenderer.invoke("desk:orb-pin", String(id || ""), Boolean(pinned)),

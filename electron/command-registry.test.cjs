@@ -413,7 +413,7 @@ test("blog: drafts everywhere, publishing nowhere (owner ruling 2026-09-19)", ()
   const asking = rows.filter((row) => row.prompt).map((row) => row.id);
   // spirit.go is the second prompt row (the spirit lane, 2026-11-02): a trip
   // argument is typed as JSON or a sentence, exactly the palette's job.
-  assert.deepEqual(asking, ["spirit.go", "blog.draft", "blog.show", "blog.publish"]);
+  assert.deepEqual(asking, ["card-answer", "spirit.go", "blog.draft", "blog.show", "blog.publish"]);
   assert.equal(rows.find((row) => row.id === "blog.list").prompt, undefined);
   // And a prompt row on a surface with no text field is a conformance problem.
   const stray = [{

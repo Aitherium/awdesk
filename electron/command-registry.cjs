@@ -144,6 +144,17 @@ const COMMANDS = Object.freeze([
     },
   }),
   Object.freeze({
+    // The launcher's answer path (1-9 / typed option) declares itself here too, so
+    // "where does answering appear?" has ONE answer. A menu row cannot carry the
+    // card id, so the palette's text field is its manual path; the launcher calls
+    // the same id directly.
+    id: "card-answer", group: "go", icon: "bell",
+    surfaces: ["palette"],
+    prompt: Object.freeze({ placeholder: "<card id> <option key|number> — e.g. d-3f2a ack" }),
+    whySingle: "Answers ONE named card, so it needs a card id the menus do not have in hand; the launcher's number keys/typed answers and the palette are the only places with that argument.",
+    label: "Answer a decision card…",
+  }),
+  Object.freeze({
     // "Open Aither" since the browser became the console (plan slice 9): it raises the
     // Aither Browser on the Inbox, with AitherOS Online and Workspace pinned beside it.
     id: "console.open", label: "Open Aither", group: "go", icon: "grid",

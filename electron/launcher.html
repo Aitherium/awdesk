@@ -61,6 +61,21 @@
   .row .kind { flex: none; color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; }
   .row.sel { background: var(--accent-soft); border-color: rgba(124, 196, 255, 0.4); }
   .row.more { color: var(--accent); font-size: 12.5px; justify-content: center; }
+  /* A card row expands IN PLACE: the list never reflows, and the options the
+     raiser defined are one key or one click away. */
+  .row.card { flex-wrap: wrap; align-items: flex-start; }
+  .row.card.open { background: rgba(255, 255, 255, 0.035); border-color: rgba(255, 255, 255, 0.09); }
+  .row.card .sub { white-space: normal; }
+  .card-body { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; padding: 6px 2px 2px 32px; }
+  .card-opt {
+    all: unset; display: flex; gap: 8px; align-items: baseline; padding: 3px 6px;
+    border-radius: 6px; cursor: pointer; color: var(--ink); font-size: 12.5px;
+  }
+  .card-opt:hover, .card-opt:focus-visible { background: var(--accent-soft); }
+  .card-opt .n { flex: none; width: 16px; text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .card-opt .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-opt .rec { flex: none; color: var(--muted); font-size: 10.5px; }
+  .card-hint { color: var(--muted); font-size: 10.5px; padding-left: 24px; }
   #empty { color: var(--muted); padding: 28px 12px; text-align: center; }
   #output {
     margin: 0 10px 8px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px;
@@ -90,7 +105,7 @@
     <span id="chip">Everything</span>
     <input id="input" type="text" spellcheck="false" autocomplete="off"
       placeholder="Search apps, files, desk actions, agents and the web" aria-label="Aither launcher" />
-    <span id="hint">↑↓ · Tab groups · Enter run · Esc close</span>
+    <span id="hint">↑↓ · Tab groups · Enter open/run · 1-9 answer · Esc close</span>
   </div>
   <div id="results" role="listbox" aria-label="Results"></div>
   <div id="output">
@@ -111,7 +126,7 @@
   const CHIPS = { all: "Everything", command: "> awsh / adk desk", ask: "? Ask Aither", spirit: "@ Spirit" };
   const IDLE = "Indexed: apps, files, desk actions, screenshots, clipboard, agents and the web — type to search";
 
-  let state = { token: 0, mode: "all", term: "", groups: [], rows: [], selected: 0, expanded: new Set() };
+  let state = { token: 0, mode: "all", term: "", groups: [], rows: [], selected: 0, expanded: new Set(), openCard: null };
   let searchTimer = null;
   let lastQuery = "";
   let commandArmed = "";
@@ -134,7 +149,9 @@
     const rows = [];
     for (const group of state.groups) {
       const expanded = state.expanded.has(group.id);
-      const items = expanded ? group.items : group.shown;
+      // A group may send only `items` (the empty overlay's cards, a search group);
+      // `shown` is the collapsed slice when a group is too long to draw in full.
+      const items = expanded ? group.items : (group.shown || group.items || []);
       for (const item of items) rows.push({ kind: "item", group: group.id, item });
       if (group.more > 0 && !expanded) rows.push({ kind: "more", group: group.id, more: group.more });
     }
@@ -167,7 +184,9 @@
       head.append(name, count);
       results.append(head);
       const expanded = state.expanded.has(group.id);
-      const items = expanded ? group.items : group.shown;
+      // A group may send only `items` (the empty overlay's cards, a search group);
+      // `shown` is the collapsed slice when a group is too long to draw in full.
+      const items = expanded ? group.items : (group.shown || group.items || []);
       for (const item of items) {
         results.append(rowFor(group.id, item, cursor));
         cursor += 1;
@@ -186,13 +205,15 @@
   }
 
   function rowFor(groupId, item, index) {
+    const isCard = item.kind === "card";
     const row = document.createElement("div");
-    row.className = "row";
+    row.className = isCard ? "row card" : "row";
     row.dataset.group = groupId;
     row.dataset.index = String(index);
+    if (isCard) row.dataset.key = item.key;
     const glyph = document.createElement("span");
     glyph.className = "glyph";
-    glyph.textContent = glyphFor(item.kind);
+    glyph.textContent = isCard ? "◉" : glyphFor(item.kind);
     const text = document.createElement("span");
     text.className = "text";
     const title = document.createElement("div");
@@ -207,14 +228,104 @@
     }
     const kind = document.createElement("span");
     kind.className = "kind";
-    kind.textContent = String(item.kind || "");
+    kind.textContent = isCard ? "card" : String(item.kind || "");
     row.append(glyph, text, kind);
-    row.addEventListener("click", () => {
-      state.selected = Number(row.dataset.index) || 0;
-      paintSelection();
-      void runSelected();
-    });
+    if (isCard) {
+      if (state.openCard === item.key) {
+        row.classList.add("open");
+        row.append(cardBody(item));
+      }
+      // Enter/click on the row EXPANDS it. Answering is the options' job (or a
+      // number key), so opening a card can never answer it by accident.
+      row.addEventListener("click", (event) => {
+        if (event.target.closest(".card-opt")) return;
+        state.selected = Number(row.dataset.index) || 0;
+        paintSelection();
+        toggleCard(item.key);
+      });
+    } else {
+      row.addEventListener("click", () => {
+        state.selected = Number(row.dataset.index) || 0;
+        paintSelection();
+        void runSelected();
+      });
+    }
     return row;
+  }
+
+  /** The expanded card, rendered inside its own row: summary + numbered options. */
+  function cardBody(item) {
+    const body = document.createElement("div");
+    body.className = "card-body";
+    const options = Array.isArray(item.options) ? item.options : [];
+    for (const option of options) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "card-opt";
+      const number = document.createElement("span");
+      number.className = "n";
+      number.textContent = String(option.index);
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = option.label || option.key;
+      button.append(number, label);
+      if (option.recommended) {
+        const rec = document.createElement("span");
+        rec.className = "rec";
+        rec.textContent = "recommended";
+        button.append(rec);
+      }
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void answerOption(item, option.index);
+      });
+      body.append(button);
+    }
+    const hint = document.createElement("div");
+    hint.className = "card-hint";
+    hint.textContent = options.length
+      ? "1-9 answer · Enter the recommended one · Esc collapses"
+      : "No options on this card — open the deck to steer it · Esc collapses";
+    body.append(hint);
+    return body;
+  }
+
+  function toggleCard(key) {
+    state.openCard = state.openCard === key ? null : key;
+    render();
+  }
+
+  /** The rule optionFromText/answerByQuery use: exact key, exact label, then a
+   *  UNIQUE 2+ character label prefix. Ambiguous text is not an answer. */
+  function matchOption(options, text) {
+    const want = String(text || "").trim().toLowerCase();
+    if (!want) return null;
+    const list = Array.isArray(options) ? options : [];
+    const key = list.find((o) => String(o.key || "").toLowerCase() === want);
+    if (key) return key;
+    const label = list.find((o) => String(o.label || "").toLowerCase() === want);
+    if (label) return label;
+    if (want.length < 2) return null;
+    const prefixed = list.filter((o) => String(o.label || "").toLowerCase().startsWith(want));
+    return prefixed.length === 1 ? prefixed[0] : null;
+  }
+
+  function recommendedIndex(item) {
+    const options = Array.isArray(item.options) ? item.options : [];
+    const rec = options.find((o) => o.recommended);
+    if (rec) return rec.index;
+    const declared = item.defaultKey ? options.find((o) => o.key === item.defaultKey) : null;
+    if (declared) return declared.index;
+    return options.length ? options[0].index : null;
+  }
+
+  async function answerOption(item, index) {
+    const reply = await window.aitherLauncher.run(item.key, String(index));
+    if (reply && reply.ok === false) {
+      setStatus(reply.error || "1 answer failed — try it from the deck", true);
+      return;
+    }
+    if (reply && reply.did) setStatus(reply.did, false);
   }
 
   function glyphFor(kind) {
@@ -240,6 +351,10 @@
     state.mode = payload.mode || state.mode;
     state.term = payload.term || "";
     state.groups = payload.groups || [];
+    if (state.openCard) {
+      const still = state.groups.some((g) => (g.items || []).some((i) => i.key === state.openCard));
+      if (!still) state.openCard = null;
+    }
     if (payload.status) setStatus(payload.status, /down|refused|missing|failed|unavailable/i.test(payload.status));
     chip.textContent = CHIPS[state.mode] || CHIPS.all;
     state.selected = 0;
@@ -250,14 +365,9 @@
     const parsed = prefixOf(text);
     chip.textContent = CHIPS[parsed.mode];
     if (parsed.mode !== "all") { commandArmed = ""; }
-    if (!parsed.term && parsed.mode === "all") {
-      state.groups = [];
-      state.term = "";
-      state.mode = "all";
-      setStatus(IDLE, false);
-      render();
-      return;
-    }
+    // An EMPTY box is a question too: main answers it with "Needs you (N)" and
+    // the foreground-window group. Clearing the list locally here was why the
+    // launcher looked blank while eight cards were open.
     void window.aitherLauncher.search(text).then(apply).catch((error) => {
       setStatus(`1 search failed — ${String((error && error.message) || error)}`, true);
     });
@@ -283,7 +393,21 @@
     if (parsed.mode === "ask") { await submitAsk(); return; }
     if (parsed.mode === "spirit") { await submitSpirit(); return; }
     if (!row || row.kind !== "item") return;
-    const reply = await window.aitherLauncher.run(row.item.key, term);
+    const item = row.item;
+    if (item.kind === "card") {
+      // Typed text that NAMES an option is the answer ("not now"); otherwise
+      // Enter opens the card and a second Enter takes the recommendation.
+      if (term) {
+        const named = matchOption(item.options, term);
+        if (named) { await answerOption(item, named.index); return; }
+      }
+      if (state.openCard !== item.key) { toggleCard(item.key); return; }
+      const index = recommendedIndex(item);
+      if (index) { await answerOption(item, index); return; }
+      setStatus("This card has no options to take — open the deck to steer it", true);
+      return;
+    }
+    const reply = await window.aitherLauncher.run(item.key, term);
     if (reply && reply.ok === false) {
       setStatus(reply.error || "1 result failed — try it from the palette (Ctrl+K)", true);
       return;
@@ -336,7 +460,23 @@
   });
 
   input.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") { event.preventDefault(); void window.aitherLauncher.hide(); return; }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      // Esc COLLAPSES an open card first; only the second Esc closes the
+      // window. It never answers, snoozes or hides a card.
+      if (state.openCard) { state.openCard = null; render(); return; }
+      void window.aitherLauncher.hide();
+      return;
+    }
+    // 1-9 answer the focused card while the box is EMPTY (with text in the box a
+    // digit is search text, as typed).
+    if (!input.value && /^[1-9]$/.test(event.key) && state.mode === "all") {
+      const row = selectedRow();
+      if (row && row.kind === "item" && row.item.kind === "card") {
+        const option = (row.item.options || []).find((o) => o.index === Number(event.key));
+        if (option) { event.preventDefault(); void answerOption(row.item, option.index); return; }
+      }
+    }
     if (event.key === "ArrowDown") {
       event.preventDefault();
       if (state.rows.length) { state.selected = (state.selected + 1) % state.rows.length; paintSelection(); }

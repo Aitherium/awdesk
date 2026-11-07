@@ -783,3 +783,67 @@ test("cardFromRaw drops an invalid subject and a missing host to empty strings",
   }
   assert.equal(cards.subjectFromRaw(" repo:Aitherium/AitherOS "), "repo:Aitherium/AitherOS");
 });
+
+test("listSnapshot keeps the ONE ranking and numbers options from 1", () => {
+  const dir = tmpStore();
+  writeCard(dir, "d-old", { created_at: 100, options: [{ key: "ack", label: "Ack", recommended: true }, { key: "later", label: "Later" }] });
+  writeCard(dir, "d-cred", { kind: "credential", created_at: 900 });
+  const rows = cards.listSnapshot({ dir, nowSec: 1000 });
+  assert.deepEqual(rows.map((r) => r.id), ["d-cred", "d-old"], "credential first, like rank_key");
+  assert.deepEqual(rows.map((r) => r.position), [0, 1]);
+  const old = rows.find((r) => r.id === "d-old");
+  assert.deepEqual(old.options.map((o) => [o.index, o.key, o.recommended]), [[1, "ack", true], [2, "later", false]]);
+  assert.equal(old.defaultKey, "");
+  assert.equal(rows.find((r) => r.id === "d-cred").needsYou, true);
+});
+
+test("listSnapshot marks stragglers stale but never a credential card's group membership", () => {
+  const dir = tmpStore();
+  const week = 7 * 86400;
+  writeCard(dir, "d-stale", { created_at: 100 });
+  writeCard(dir, "d-cred", { kind: "credential", created_at: 100 });
+  const rows = cards.listSnapshot({ dir, nowSec: 100 + week + 1 });
+  assert.equal(rows.find((r) => r.id === "d-stale").stale, true);
+  assert.equal(rows.find((r) => r.id === "d-cred").stale, true);
+});
+
+test("listSnapshot reads an injected card list without touching the store", () => {
+  const rows = cards.listSnapshot({
+    dir: "/nonexistent-dir-should-not-be-read",
+    nowSec: 10,
+    cards: [{ id: "d-x", title: "X", status: "open", createdAt: 5, options: [] }],
+  });
+  assert.deepEqual(rows.map((r) => r.id), ["d-x"]);
+});
+
+test("answerCardIndex resolves the nth option to the card's own KEY and runs awask", () => {
+  const dir = tmpStore();
+  writeCard(dir, "d-idx", { options: [{ key: "ack", label: "Ack" }, { key: "tunnel", label: "Tunnel" }] });
+  const seen = [];
+  const spawnFn = (bin, args) => { seen.push([bin, args]); return { unref() {} }; };
+  assert.equal(cards.answerCardIndex("d-idx", 2, { dir, spawnFn }), true);
+  assert.equal(seen.length, 1);
+  assert.match(seen[0][0], /awask/i);
+  assert.deepEqual(seen[0][1], ["answer", "d-idx", "tunnel", "--via", "desk"]);
+  assert.equal(cards.answerCardIndex("d-idx", 9, { dir, spawnFn }), false, "out of range is refused");
+  assert.equal(cards.answerCardIndex("d-idx", 0, { dir, spawnFn }), false);
+});
+
+test("optionFromText answers an exact key/label, a unique prefix, and never a guess", () => {
+  const options = [{ key: "ack", label: "I am looking now" }, { key: "not_now", label: "Not now" }];
+  assert.equal(cards.optionFromText(options, "ACK").key, "ack");
+  assert.equal(cards.optionFromText(options, "not now").key, "not_now");
+  assert.equal(cards.optionFromText(options, "i am").key, "ack");
+  assert.equal(cards.optionFromText(options, "n"), null, "one letter is not an answer");
+  assert.equal(cards.optionFromText(options, "zzz"), null);
+});
+
+test("answerCardText resolves the typed option and answers through awask", () => {
+  const dir = tmpStore();
+  writeCard(dir, "d-txt", { options: [{ key: "ack", label: "I am looking now" }, { key: "later", label: "Not now" }] });
+  const seen = [];
+  const spawnFn = (bin, args) => { seen.push(args); return { unref() {} }; };
+  assert.equal(cards.answerCardText("d-txt", "not now", { dir, spawnFn }), true);
+  assert.deepEqual(seen[0], ["answer", "d-txt", "later", "--via", "desk"]);
+  assert.equal(cards.answerCardText("d-txt", "nonsense", { dir, spawnFn }), false);
+});
