@@ -521,6 +521,94 @@ function steerCard(id, text, spawnFn = spawn) {
   return runAwask(["steer", id, body.slice(0, 2000), "--via", "desk"], spawnFn);
 }
 
+/**
+ * A launcher-sized snapshot of the open queue: the same order every other
+ * surface uses (rankCards == the store's rank_key), flattened for a list that is
+ * read on a keypress. Read-only; nothing here can answer or write.
+ *
+ * It prefers the watcher's cache (lastOpen) because walking a store that has
+ * held thousands of answered cards, synchronously, on every Alt+Space keystroke
+ * is what makes a launcher feel dead. `cards` is injectable for a caller that
+ * already has the list.
+ */
+function listSnapshot({ dir = storeDir(), nowSec = Date.now() / 1000, cards } = {}) {
+  const source = Array.isArray(cards) ? cards : lastOpen(dir);
+  const staleAfter = staleAfterSeconds();
+  return rankCards(source, nowSec).map((card, position) => ({
+    id: card.id,
+    title: card.title,
+    summary: card.summary,
+    kind: card.kind,
+    urgency: card.urgency,
+    createdAt: card.createdAt,
+    deadline: card.deadline,
+    defaultKey: card.defaultKey,
+    needsYou: isNeedsYou(card),
+    stale: nowSec - card.createdAt > staleAfter,
+    // 0-based position in the ONE ranking, so a surface can say "N of M" without
+    // ranking a second way.
+    position,
+    // `index` is 1-based: the number key the owner presses (1-9). The card's
+    // own key travels beside it so an answer can always be sent as a key too.
+    options: (Array.isArray(card.options) ? card.options : []).map((o, i) => ({
+      index: i + 1,
+      key: o.key,
+      label: o.label,
+      consequence: o.consequence,
+      recommended: o.recommended === true,
+    })),
+  }));
+}
+
+/**
+ * Answer card `id` with the Nth option (1-based), for the launcher's 1-9 keys.
+ *
+ * `awask answer` takes the option KEY, not an index, so the index is resolved
+ * here against the card's own options and then answered through the exact same
+ * path as answerCard(). That keeps awask the only writer (DCS001) and means a
+ * number key and a click are one implementation.
+ */
+function answerCardIndex(id, index, { note = "", spawnFn = spawn, dir = storeDir(), cards } = {}) {
+  if (typeof id !== "string" || id.length === 0) return false;
+  const n = Number(index);
+  if (!Number.isInteger(n) || n < 1) return false;
+  const source = Array.isArray(cards) ? cards : lastOpen(dir);
+  const card = source.find((c) => c.id === id);
+  const option = card && Array.isArray(card.options) ? card.options[n - 1] : null;
+  if (!option || typeof option.key !== "string") return false;
+  return answerCard(id, option.key, note, spawnFn);
+}
+
+/**
+ * The option the owner TYPED, as the card's own option. Exact key first, then
+ * exact label, then the single label that starts with the text (2+ characters --
+ * "n" is how you find a card, not how you answer it). Ambiguous text is null;
+ * guessing which of Ack / Not-now "n" meant is how a card gets answered wrong.
+ * The deck's answerByQuery (src/deck/inbox-view.ts) is the same rule.
+ */
+function optionFromText(options, text) {
+  const want = String(text || "").trim().toLowerCase();
+  if (!want) return null;
+  const list = Array.isArray(options) ? options : [];
+  const byKey = list.find((o) => String(o.key || "").toLowerCase() === want);
+  if (byKey) return byKey;
+  const byLabel = list.find((o) => String(o.label || "").toLowerCase() === want);
+  if (byLabel) return byLabel;
+  if (want.length < 2) return null;
+  const prefixed = list.filter((o) => String(o.label || "").toLowerCase().startsWith(want));
+  return prefixed.length === 1 ? prefixed[0] : null;
+}
+
+/** Answer a card with the option the owner typed (the launcher's free-text path). */
+function answerCardText(id, text, { note = "", spawnFn = spawn, dir = storeDir(), cards } = {}) {
+  if (typeof id !== "string" || id.length === 0) return false;
+  const source = Array.isArray(cards) ? cards : lastOpen(dir);
+  const card = source.find((c) => c.id === id);
+  const option = card ? optionFromText(card.options, text) : null;
+  if (!option || typeof option.key !== "string") return false;
+  return answerCard(id, option.key, note, spawnFn);
+}
+
 // ── off-PC: the same store through the gateway (see the module header) ─────
 
 /** How often a gateway-backed watcher re-reads: no fs.watch event exists for a
@@ -767,7 +855,9 @@ async function bridgeNeedsYou({ snoozed = null, ...queueOpts } = {}) {
 // /decisions, the deck state) that must not walk the store themselves.
 let lastOpenCards = null;
 function lastOpen(dir = storeDir()) {
-  return lastOpenCards ?? listOpen(dir);
+  // The cache is the OWNER store's (local or via the gateway); a caller reading
+  // any other directory (tests, a scratch store) must not be handed it.
+  return dir === storeDir() && lastOpenCards ? lastOpenCards : listOpen(dir);
 }
 
 /** fs.watch fires a burst of events per write (tmp create, rename, ...); one scan
@@ -947,6 +1037,7 @@ module.exports = {
   storeDir,
   signature,
   listOpen,
+  listSnapshot,
   lastOpen,
   scanAsync,
   RANK_RULES,
@@ -965,6 +1056,9 @@ module.exports = {
   openQueueWindow,
   openCardWindow,
   answerCard,
+  answerCardIndex,
+  answerCardText,
+  optionFromText,
   cancelCard,
   steerCard,
   watch,

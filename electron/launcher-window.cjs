@@ -173,6 +173,10 @@ function createLauncher({
   // before showAtCursor() takes focus -- sampled any later, the foreground window
   // is the launcher itself. Null = the empty box stays "Type to search".
   hostContext = null,
+  // () => cards list (decision-cards.listSnapshot()). The empty box leads with
+  // "Needs you (N)" -- the owner's cards ARE the reason to press the key -- and
+  // the foreground-window group follows. Null = no card group.
+  cards = null,
 } = {}) {
   // The "Right now" sample for THIS press. A promise, so the empty search can wait
   // the few hundred ms the probe takes instead of racing it.
@@ -456,21 +460,35 @@ function createLauncher({
         status: "Enter to confirm" };
     }
     if (!parsed.term) {
-      // The empty box answers with what the owner is LOOKING AT (launcher-context.cjs)
-      // instead of a blank "Type to search".
+      // The empty box is the LISTS: "Needs you (N)" first (the open decision
+      // cards, in the store's one rank order), then what the owner is LOOKING AT
+      // (launcher-context.cjs). Both groups are rows launchItem can run, so
+      // nothing new becomes executable here.
+      const sw = require("./search-window.cjs");
+      const context = require("./launcher-context.cjs");
+      const groups = [];
+      let status = "";
+      let total = 0;
+      if (typeof cards === "function") {
+        let snapshot;
+        try { snapshot = await cards(); } catch { snapshot = []; }
+        if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
+        const builtCards = context.needsYouGroup(snapshot);
+        if (builtCards.group) { groups.push(builtCards.group); total += builtCards.items.length; }
+      }
       if (pressContext) {
-        const context = await pressContext;
+        const sample = await pressContext;
         if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
         const hasAction = (id) => Boolean(registry && registry.byId && registry.byId(id));
-        const built = require("./launcher-context.cjs").rightNowGroup(context, hasAction);
-        if (built.group) {
-          const sw = require("./search-window.cjs");
-          const shown = sw.publicRun({ ok: true, query: "", phase: "idle", groups: [built.group], total: built.items.length });
-          return { ok: true, token, mode: "all", term: "", phase: "idle", groups: shown.groups, status: built.status };
-        }
-        if (built.status) return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: built.status };
+        const built = context.rightNowGroup(sample, hasAction);
+        if (built.group) { groups.push(built.group); total += built.items.length; }
+        if (built.status) status = built.status;
       }
-      return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: core.IDLE_STATUS };
+      if (groups.length === 0) {
+        return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: status || core.IDLE_STATUS };
+      }
+      const shown = sw.publicRun({ ok: true, query: "", phase: "idle", groups, total });
+      return { ok: true, token, mode: "all", term: "", phase: "idle", groups: shown.groups, status };
     }
     const sw = require("./search-window.cjs");
     const universal = sw.universal();
@@ -514,6 +532,23 @@ function createLauncher({
 
   // ── actions ───────────────────────────────────────────────────────────────
   async function runRow(key, query) {
+    if (String(key || "").startsWith("card:")) {
+      // A card row: `query` is a NUMBER (the 1-9 keys) or the option the owner
+      // typed. Both resolve to the card's own key and are written by awask, so a
+      // number key, a click and a typed answer are one implementation (DCS001).
+      const sw = require("./search-window.cjs");
+      const remembered = sw.rememberedItem ? sw.rememberedItem(key) : null;
+      const id = (remembered && remembered.cardId) || String(key).slice("card:".length);
+      const text = String(query || "").trim();
+      if (!text) return { ok: false, error: "Press Enter to open the card, or 1-9 / type an option to answer" };
+      const spec = /^\d+$/.test(text) ? { id, index: Number(text) } : { id, text };
+      const verdict = await run("card-answer", spec);
+      const bad = sw.failureOf(verdict, "answer");
+      if (bad) return { ok: false, error: bad };
+      if (verdict && verdict.ok === false) return verdict;
+      hide();
+      return { ok: true, did: (verdict && verdict.did) || `answered ${id}` };
+    }
     if (key === "reveal:unlock" || key === "reveal:lock") {
       const reveal = require("./private-reveal.cjs").sharedReveal();
       if (key === "reveal:lock") return { ...reveal.lock(), did: "hidden results hidden again" };

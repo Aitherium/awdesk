@@ -210,6 +210,7 @@ function start(opts = {}) {
     askVision: opts.askVision || (async () => ({ ok: true, text: "The screen shows a notes file.", via: "test" })),
     ...(opts.speak ? { speak: opts.speak } : {}),
     ...(opts.avatarTargets ? { avatarTargets: opts.avatarTargets } : {}),
+    ...(opts.runCommand ? { runCommand: opts.runCommand } : {}),
   });
   return { ...r, capture };
 }
@@ -539,7 +540,7 @@ test("sprite.teach prefers the highlighted selection over the clipboard", async 
 
 test("sprite.teach wakes a dormant sprite once, then teaches (409 is dormancy, not the network)", async () => {
   orbWindow.__setTeachRetryDelay(0);
-  const client = spriteFake({ teach: (p) => (client.calls.teach.length === 1 ? { ok: false, reason: "dormant" } : { ok: true, data: {} }) });
+  const client = spriteFake({ teach: () => (client.calls.teach.length === 1 ? { ok: false, reason: "dormant" } : { ok: true, data: {} }) });
   orbWindow.__setSpriteClient(client);
   start();
   const r = await orbWindow.run("sprite-teach", { arg: "A fact the dormant one needs" });
@@ -686,4 +687,22 @@ test("no orb-window code path moves the window with setPosition alone", () => {
   const src = fs.readFileSync(path.join(__dirname, "orb-window.cjs"), "utf8");
   assert.doesNotMatch(src, /\.setPosition\(/, "use moveOrb: setPosition drifts the size on Windows");
   assert.match(src, /function moveOrb\(/, "moveOrb pins width and height on every move");
+});
+
+test("the fairy's badge opens the Inbox list (inbox.open), never answers a card", async () => {
+  const calls = [];
+  start({ runCommand: (id) => { calls.push(id); return { ok: true }; } });
+  orbWindow.showOrb();
+  const reply = await handler("desk:orb-needs-you")({ sender: orbWin().webContents });
+  assert.deepEqual(reply, { ok: true });
+  assert.deepEqual(calls, ["inbox.open"]);
+  orbWindow.pump();
+});
+
+test("the fairy door is labelled Needs you (N) when cards are waiting", () => {
+  const src = fs.readFileSync(path.join(__dirname, "orb-window.cjs"), "utf8");
+  assert.match(src, /`Needs you \(\$\{attention\.count\}\)`/);
+  assert.match(src, /"desk:orb-needs-you"/, "the badge handler is registered");
+  const preload = fs.readFileSync(path.join(__dirname, "orb-preload.cjs"), "utf8");
+  assert.match(preload, /needsYou: \(\) => ipcRenderer\.invoke\("desk:orb-needs-you"\)/);
 });

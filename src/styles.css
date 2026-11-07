@@ -275,6 +275,10 @@ body {
 .deck-body {
   flex: 1;
   overflow-y: auto;
+  /* A card that expands must not shift anything else: reserve the scrollbar
+     gutter so the body's width (and therefore every row's wrap) is constant
+     whether or not the list is long enough to scroll. */
+  scrollbar-gutter: stable;
   padding: 6px 12px 12px;
 }
 
@@ -1335,8 +1339,22 @@ body {
 .deck-ny-group-stale .deck-ny-group-head { color: color-mix(in oklch, var(--deck-muted), transparent 20%); }
 .deck-ny-bulk-note { font-size: 11px; color: var(--deck-muted); }
 
-.deck-ny-item { border-radius: 8px; }
-.deck-ny-item-open { background: var(--deck-panel); border: 1px solid var(--deck-edge); margin: 2px 0 6px; }
+.deck-ny-item {
+  /* The border box and margins are IDENTICAL open and closed, so expanding a
+     card cannot move the rows below it -- the old -open rule added a border and
+     8px of margin and every click nudged the list (the arrow "kept moving"). */
+  border: 1px solid transparent;
+  border-radius: 8px;
+  margin: 0;
+}
+.deck-ny-item-open { background: var(--deck-panel); border-color: var(--deck-edge); }
+.deck-ny-filter {
+  width: 100%; height: 26px; margin: 2px 0 4px; padding: 0 8px;
+  border: 1px solid var(--deck-edge); border-radius: 8px;
+  background: var(--deck-panel); color: var(--deck-text); font: inherit; font-size: 12px;
+}
+.deck-ny-filter::placeholder { color: var(--deck-muted); }
+.deck-ny-filter:focus { outline: 1px solid var(--deck-accent); outline-offset: -1px; }
 .deck-ny-row {
   display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 8px;
   cursor: pointer; font-size: 12.5px; color: var(--deck-text);

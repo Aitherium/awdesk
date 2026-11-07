@@ -1973,7 +1973,9 @@ const DESK_DOORS = Object.freeze([
 ]);
 function deskDoors(reg) {
   return DESK_DOORS.filter(([id]) => reg && reg.byId && reg.byId(id)).map(([id, label]) => ({
-    label: id === "inbox.open" && attention.count ? `${label} (${attention.count} need you)` : label,
+    // The fairy's door names the actual ask, not a generic "Notifications":
+    // "Needs you (3)" is the same group label the launcher and the deck use.
+    label: id === "inbox.open" ? (attention.count ? `Needs you (${attention.count})` : "Inbox") : label,
     click: () => { void runCommandImpl?.(id); },
   }));
 }
@@ -2147,6 +2149,12 @@ function handlers() {
     "desk:orb-drag-start": guard(() => beginDrag()),
     "desk:orb-drag-end": guard(() => endDrag()),
     "desk:orb-click": guard(() => toggleBubbleFromOrb()),
+    // The badge click (fairy, 2026-11-06) lands on the SAME Inbox list every
+    // other entry point uses. It opens; it never answers.
+    "desk:orb-needs-you": guard(() => {
+      void runCommandImpl?.("inbox.open");
+      return { ok: true };
+    }),
     "desk:orb-ask": guard(async (_sender, verb, text, slotId) => {
       const what = String(verb || "");
       const asked = String(slotId || "") || null;
