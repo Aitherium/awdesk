@@ -135,7 +135,7 @@ function readConfigFile(file, readFile = fs.readFileSync) {
   }
   if (typeof text !== "string" || text.length > MAX_FILE_BYTES) return { error: "too large or not text" };
   try {
-    const data = JSON.parse(text.replace(/^﻿/, ""));
+    const data = JSON.parse(text.replace(/^\uFEFF/, ""));
     if (!data || typeof data !== "object" || Array.isArray(data)) return { error: "not a JSON object" };
     return { data };
   } catch {

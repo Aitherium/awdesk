@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:; media-src mediastream:;" />
+<title>Audio</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<!--
+  audio.html -- the Desk's Audio flyout, owned by audio-control.cjs.
+
+  Every control writes Windows Core Audio through the main process:
+    the device pickers call IPolicyConfig SetDefaultEndpoint (all three roles),
+    the sliders set the default endpoint's master volume, the buttons its mute.
+  The level meter is the ONE thing read in the page: getUserMedia on the default
+  microphone + an AnalyserNode, so it follows whatever device is selected as the
+  Windows default. It never records; the track stops when this window closes.
+-->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; user-select: none;
+    background: var(--fk-bg, #050507); color: var(--fk-ink, #EDEFF5);
+    font: 13px/1.45 var(--font-sans, system-ui); }
+  .shell { height: 100%; display: flex; flex-direction: column; }
+  header { padding: 12px 14px 10px; border-bottom: 1px solid var(--fk-hairline, rgba(255,255,255,.08));
+    display: flex; align-items: center; gap: 10px; -webkit-app-region: drag; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fk-accent, #5EC9CC); flex: none; }
+  header h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .01em; }
+  header .sub { color: var(--fk-dim, rgba(237,239,245,.55)); font-size: 11px; }
+  header button { -webkit-app-region: no-drag; margin-left: auto; }
+  main { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+  .status { font-size: 11px; color: var(--fk-dim, rgba(237,239,245,.55)); }
+  .status.err { color: var(--destructive, #ff6b6b); }
+  section { border: 1px solid var(--fk-hairline, rgba(255,255,255,.08)); border-radius: var(--radius, .5rem);
+    background: var(--fk-raise, rgba(255,255,255,.025)); padding: 10px 12px; display: grid; gap: 9px; }
+  .head { display: flex; align-items: center; gap: 8px; }
+  .head .ic { width: 18px; height: 18px; color: var(--fk-accent, #5EC9CC); flex: none; }
+  .head .name { font-weight: 600; font-size: 12px; }
+  .head .pct { margin-left: auto; font-variant-numeric: tabular-nums; font-size: 12px; color: var(--fk-dim, rgba(237,239,245,.55)); }
+  select { width: 100%; font: inherit; font-size: 12px; padding: 6px 8px; border-radius: 6px;
+    border: 1px solid var(--fk-hairline, rgba(255,255,255,.12)); background: var(--card, #12121a); color: inherit; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  input[type="range"] { flex: 1; min-width: 0; accent-color: var(--fk-accent, #5EC9CC); height: 18px; }
+  button { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--fk-hairline, rgba(255,255,255,.14)); background: transparent; color: inherit; }
+  button:hover { background: var(--fk-accent-wash, rgba(94,201,204,.08)); }
+  button.on { background: var(--destructive, #ff6b6b); border-color: transparent; color: #fff; }
+  .meter { height: 5px; border-radius: 3px; background: rgba(255,255,255,.09); overflow: hidden; }
+  .meter .lvl { height: 100%; width: 0; background: var(--fk-accent, #5EC9CC); }
+  .meter.clip .lvl { background: var(--destructive, #ff6b6b); }
+  .hint { font-size: 11px; color: var(--fk-dim, rgba(237,239,245,.5)); }
+  footer { padding: 9px 14px 11px; border-top: 1px solid var(--fk-hairline, rgba(255,255,255,.08));
+    display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--fk-dim, rgba(237,239,245,.5)); }
+  footer .grow { flex: 1; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <span class="dot"></span>
+    <div>
+      <h1>Audio</h1>
+      <div class="sub">System speakers and microphone</div>
+    </div>
+    <button id="close" title="Close (Esc)">×</button>
+  </header>
+  <main>
+    <div class="status" id="status">Reading Windows audio…</div>
+
+    <section id="out-section">
+      <div class="head">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/></svg>
+        <span class="name">Speakers</span>
+        <span class="pct" id="out-pct">—</span>
+      </div>
+      <select id="out-devices" aria-label="Output device"></select>
+      <div class="row">
+        <input type="range" id="out-volume" min="0" max="100" step="1" value="50" aria-label="Speaker volume" />
+        <button id="out-mute" title="Mute or unmute the speakers">Mute</button>
+      </div>
+    </section>
+
+    <section id="in-section">
+      <div class="head">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" y1="18" x2="12" y2="22"/></svg>
+        <span class="name">Microphone</span>
+        <span class="pct" id="in-pct">—</span>
+      </div>
+      <select id="in-devices" aria-label="Input device"></select>
+      <div class="row">
+        <input type="range" id="in-volume" min="0" max="100" step="1" value="50" aria-label="Microphone volume" />
+        <button id="in-mute" title="Mute or unmute the microphone">Mute</button>
+      </div>
+      <div class="meter" id="meter"><div class="lvl" id="lvl"></div></div>
+      <div class="hint" id="meter-hint">The meter follows the Windows default microphone.</div>
+    </section>
+  </main>
+  <footer>
+    <span id="footer-note">Changes apply to Windows immediately.</span>
+    <span class="grow"></span>
+    <button id="refresh" title="Read the current Windows state again">Refresh</button>
+  </footer>
+</div>
+<script>
+  const api = window.aitherAudio;
+  const $ = (id) => document.getElementById(id);
+  let state = null;
+  let list = null;
+  let lastCaptureId = null;
+  // One lane of work: a slider move during the slow first read is QUEUED, not
+  // dropped. The old `if (busy) return` threw the action away after the page had
+  // already painted the new percentage.
+  let pending = Promise.resolve();
+
+  function enqueue(work) {
+    const run = pending.then(work);
+    pending = run.then(() => {}, () => {});
+    return run;
+  }
+
+  function setStatus(text, bad) {
+    $("status").textContent = text;
+    $("status").classList.toggle("err", Boolean(bad));
+  }
+
+  function fillSelect(select, rows, current) {
+    select.replaceChildren();
+    if (!rows.length) {
+      const option = document.createElement("option");
+      option.textContent = "No device";
+      option.value = "";
+      select.append(option);
+      select.disabled = true;
+      return;
+    }
+    select.disabled = false;
+    for (const row of rows) {
+      const option = document.createElement("option");
+      option.value = row.id;
+      option.textContent = row.name;
+      option.selected = current ? row.id === current.id : row.default;
+      select.append(option);
+    }
+  }
+
+  function renderState(next) {
+    state = next || state;
+    if (!state || !state.ok) {
+      setStatus((state && state.error) || "Windows audio is unavailable.", true);
+      return;
+    }
+    // getUserMedia({audio:true}) follows the Windows default at acquisition:
+    // a new default needs a NEW stream or the meter keeps reading the old mic.
+    const captureId = state.capture ? state.capture.id : null;
+    if (lastCaptureId !== null && captureId !== lastCaptureId) rebindMeter();
+    lastCaptureId = captureId;
+    for (const [flow, prefix] of [["render", "out"], ["capture", "in"]]) {
+      const endpoint = state[flow];
+      const label = prefix === "out" ? "Speakers" : "Microphone";
+      const pct = $(`${prefix}-pct`);
+      const volume = $(`${prefix}-volume`);
+      const mute = $(`${prefix}-mute`);
+      if (!endpoint) {
+        pct.textContent = "none";
+        volume.disabled = true;
+        mute.disabled = true;
+        mute.textContent = "No device";
+        continue;
+      }
+      volume.disabled = false;
+      mute.disabled = false;
+      volume.value = String(endpoint.volume);
+      pct.textContent = endpoint.muted ? `muted · ${endpoint.volume}%` : `${endpoint.volume}%`;
+      mute.textContent = endpoint.muted ? "Unmute" : "Mute";
+      mute.classList.toggle("on", endpoint.muted);
+      mute.setAttribute("aria-label", `${mute.textContent} ${label.toLowerCase()}`);
+    }
+  }
+
+  function renderList(next) {
+    list = next || list;
+    if (!list) return;
+    fillSelect($("out-devices"), list.render || [], state && state.render);
+    fillSelect($("in-devices"), list.capture || [], state && state.capture);
+    const outputs = (list.render || []).length;
+    const inputs = (list.capture || []).length;
+    if (!outputs) setStatus(`0 output devices · ${inputs} input — no speaker is enabled. Plug one in, then press Refresh.`, true);
+    else if (!inputs) setStatus(`${outputs} output device${outputs === 1 ? "" : "s"} · 0 input — no microphone is enabled. Plug one in, then press Refresh.`, true);
+    else setStatus(`${outputs} output device${outputs === 1 ? "" : "s"} · ${inputs} input device${inputs === 1 ? "" : "s"}`, false);
+  }
+
+  async function load() {
+    return enqueue(async () => {
+      const [nextList, nextState] = await Promise.all([api.list(), api.state()]);
+      renderState(nextState);
+      renderList(nextList);
+    });
+  }
+
+  async function apply(promise) {
+    return enqueue(async () => { renderState(await promise); });
+  }
+
+  $("out-volume").addEventListener("input", (event) => { $("out-pct").textContent = `${event.target.value}%`; });
+  $("out-volume").addEventListener("change", (event) => {
+    const percent = Number(event.target.value);
+    void apply(api.setVolume("render", percent)).then(loadDevicesOnly);
+  });
+  $("in-volume").addEventListener("input", (event) => { $("in-pct").textContent = `${event.target.value}%`; });
+  $("in-volume").addEventListener("change", (event) => {
+    const percent = Number(event.target.value);
+    void apply(api.setVolume("capture", percent)).then(loadDevicesOnly);
+  });
+  $("out-mute").addEventListener("click", () => {
+    if (!state || !state.render) return;
+    void apply(api.setMuted("render", !state.render.muted));
+  });
+  $("in-mute").addEventListener("click", () => {
+    if (!state || !state.capture) return;
+    void apply(api.setMuted("capture", !state.capture.muted));
+  });
+  $("out-devices").addEventListener("change", async (event) => {
+    setStatus(`Switching output to ${event.target.selectedOptions[0] ? event.target.selectedOptions[0].textContent : "that device"}…`, false);
+    await apply(api.setDefault("render", event.target.value));
+    await load();
+  });
+  $("in-devices").addEventListener("change", async (event) => {
+    setStatus(`Switching input to ${event.target.selectedOptions[0] ? event.target.selectedOptions[0].textContent : "that device"}…`, false);
+    await apply(api.setDefault("capture", event.target.value));
+    await load();
+  });
+  $("refresh").addEventListener("click", () => void load());
+  $("close").addEventListener("click", () => void api.close());
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") void api.close(); });
+
+  async function loadDevicesOnly() {
+    const nextList = await api.list();
+    renderList(nextList);
+  }
+
+  api.onState((next) => renderState(next));
+  void load();
+
+  // ---- live microphone level (the ONLY thing read in this page) ----
+  let stream = null;
+  let audioContext = null;
+  let raf = 0;
+  let meterGen = 0;
+  async function startMeter() {
+    const gen = ++meterGen;
+    let next = null;
+    try {
+      next = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    } catch (error) {
+      if (gen === meterGen) $("meter-hint").textContent = `Microphone access is off — ${String((error && error.name) || "denied")}. Windows Settings ▸ Privacy ▸ Microphone must allow desktop apps.`;
+      return;
+    }
+    // A rebind while getUserMedia was pending: throw this stream away, it is for
+    // the device that is no longer the default.
+    if (gen !== meterGen) {
+      try { for (const track of next.getTracks()) track.stop(); } catch { /* already stopped */ }
+      return;
+    }
+    stream = next;
+    try {
+      audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      const buffer = new Float32Array(analyser.fftSize);
+      const meter = $("meter");
+      const level = $("lvl");
+      const tick = () => {
+        analyser.getFloatTimeDomainData(buffer);
+        let sum = 0;
+        for (const sample of buffer) sum += sample * sample;
+        const rms = Math.sqrt(sum / buffer.length);
+        const percent = Math.min(100, Math.round(rms * 420));
+        level.style.width = `${percent}%`;
+        meter.classList.toggle("clip", percent >= 97);
+        raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+      $("meter-hint").textContent = "Live level · follows the Windows default microphone.";
+    } catch {
+      $("meter-hint").textContent = "The level meter is unavailable — audio analysis could not start.";
+    }
+  }
+  function stopMeter() {
+    meterGen += 1;
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+    if (stream) { try { for (const track of stream.getTracks()) track.stop(); } catch { /* already stopped */ } }
+    stream = null;
+    if (audioContext) { try { void audioContext.close(); } catch { /* already closed */ } }
+    audioContext = null;
+  }
+  function rebindMeter() {
+    stopMeter();
+    void startMeter();
+  }
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener("devicechange", rebindMeter);
+  }
+  window.addEventListener("pagehide", stopMeter);
+  void startMeter();
+</script>
+</body>
+</html>

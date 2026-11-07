@@ -85,6 +85,17 @@ function safePictures(app) {
   try { return app.getPath("pictures"); } catch { return undefined; }
 }
 
+/**
+ * Save an image that is ALREADY in hand (the screen-ink overlay's "Save shot",
+ * ink-window.cjs). It goes through the same commit as a Print Screen: the
+ * Aither Screenshots folder, the clipboard, the toast and the Strata queue.
+ */
+function saveImage(image) {
+  if (!image || image.isEmpty()) return { ok: false, reason: "the image is empty" };
+  const { app, clipboard } = electron();
+  return commit(image, app, clipboard);
+}
+
 async function captureFrames() {
   const { screen, desktopCapturer } = electron();
   const displays = screen.getAllDisplays();
@@ -517,8 +528,23 @@ function startCapture({ askImage, onAnswer } = {}) {
   return { ok: true };
 }
 
+/**
+ * Queue one upload through the SAME strata-sync queue the snipping tool uses.
+ * Added for the boards (notes/whiteboards) so they never invent a second queue
+ * or a second Strata folder. Returns {ok, id} | {ok:false, reason}; before
+ * startCapture it says so instead of throwing.
+ */
+function enqueueUpload(item) {
+  if (!deps.enqueue) return { ok: false, reason: "the sync queue is not running" };
+  try {
+    return deps.enqueue(item);
+  } catch (error) {
+    return { ok: false, reason: String((error && error.message) || error).slice(0, 200) };
+  }
+}
+
 module.exports = {
   configureSnip, startSnip, ensureSnipIpc, lastScreenshot, closeOverlays,
   startCapture, toggleClipboardSync, clipboardSyncOn, printScreenOwner, setPrintScreenOwner,
-  refreshPrintScreenOwner, nativeFrame, warmNativeGrabber,
+  refreshPrintScreenOwner, nativeFrame, warmNativeGrabber, enqueueUpload, saveImage,
 };

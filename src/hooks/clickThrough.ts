@@ -32,6 +32,42 @@ export function isBackdrop(el: Element | null): boolean {
   return !!el.querySelector?.(':scope > canvas') || !!el.querySelector?.(':scope > div > canvas');
 }
 
+/**
+ * Owner 2026-11-02: "their hit boxes extend way beyond their bodies instead of just
+ * being their bodies". The grab proxy (Scene.tsx) is a 1.8 x 2.1 box -- cheap to
+ * raycast, much wider than a body. So "over an avatar" now also needs the pixel
+ * under the pointer to be PAINTED: a 5x5 alpha probe of the last frame. null means
+ * the probe could not run (no GL) and the box alone decides, as before.
+ */
+export function paintedAt(clientX: number, clientY: number): boolean | null {
+  const canvas = document.querySelector('canvas');
+  if (!canvas) return null;
+  const gl = (canvas.getContext('webgl2') || canvas.getContext('webgl')) as WebGLRenderingContext | null;
+  if (!gl) return null;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const sx = canvas.width / rect.width;
+  const sy = canvas.height / rect.height;
+  const r = 2;
+  const x = Math.round((clientX - rect.left) * sx) - r;
+  const y = Math.round(canvas.height - (clientY - rect.top) * sy) - r;
+  if (x + r < 0 || y + r < 0 || x - r >= canvas.width || y - r >= canvas.height) return false;
+  const size = r * 2 + 1;
+  const px = new Uint8Array(size * size * 4);
+  try {
+    gl.readPixels(Math.max(0, x), Math.max(0, y), size, size, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  } catch {
+    return null;
+  }
+  return alphaHit(px);
+}
+
+/** Pure, unit-tested: any probed pixel opaque enough to be the body. */
+export function alphaHit(rgba: ArrayLike<number>, threshold = 24): boolean {
+  for (let i = 3; i < rgba.length; i += 4) if (rgba[i] > threshold) return true;
+  return false;
+}
+
 /** Pure decision, unit-tested: interactive while a button is held (a drag in flight
  *  must never lose its window), over an avatar, or over a non-backdrop element. */
 export function decideInteractive(opts: { buttons: number; overAvatar: boolean; backdrop: boolean }): boolean {
@@ -53,7 +89,13 @@ export function installClickThrough(): () => void {
   if (!bridge()?.setInteractive) return () => {};
   const onMove = (e: PointerEvent | MouseEvent) => {
     const backdrop = isBackdrop(document.elementFromPoint(e.clientX, e.clientY));
-    report(decideInteractive({ buttons: e.buttons, overAvatar: overAvatar > 0, backdrop }));
+    let onBody = overAvatar > 0;
+    // Inside the proxy box: only a painted pixel counts as the body.
+    if (onBody && e.buttons === 0) {
+      const painted = paintedAt(e.clientX, e.clientY);
+      if (painted === false) onBody = false;
+    }
+    report(decideInteractive({ buttons: e.buttons, overAvatar: onBody, backdrop }));
   };
   // Leaving the window entirely: nothing of ours is under the cursor.
   const onLeave = () => { overAvatar = 0; report(false); };

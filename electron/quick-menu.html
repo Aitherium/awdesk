@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Aither quick menu</title>
+<style>
+  :root {
+    --bg: rgba(17, 20, 24, 0.97);
+    --edge: rgba(255, 255, 255, 0.10);
+    --ink: #e6e8eb;
+    --muted: #8b93a1;
+    --accent: #7cc4ff;
+    --cell: 132px;
+    --tall: 78px;
+    --gap: 6px;
+    --pad: 10px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent;
+    font: 13px/1.25 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    color: var(--ink); user-select: none;
+  }
+  body.radial { cursor: crosshair; }
+  #menu {
+    width: 100%; height: 100%; padding: var(--pad);
+    display: grid; grid-template-columns: repeat(3, var(--cell)); grid-auto-rows: var(--tall);
+    gap: var(--gap); align-content: start; justify-content: start;
+    background: var(--bg); border: 1px solid var(--edge); border-radius: 14px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  }
+  #menu.wide { grid-template-columns: repeat(4, var(--cell)); }
+  #menu[hidden] { display: none; }
+  button {
+    all: unset; box-sizing: border-box; cursor: pointer;
+    display: flex; flex-direction: column; justify-content: center; gap: 4px;
+    padding: 10px 12px; border-radius: 10px; background: rgba(255, 255, 255, 0.045);
+    border: 1px solid transparent; transition: background 90ms ease, border-color 90ms ease;
+  }
+  button:hover, button:focus-visible { background: rgba(124, 196, 255, 0.14); border-color: rgba(124, 196, 255, 0.45); outline: none; }
+  button .name { font-weight: 600; font-size: 13px; line-height: 1.2; }
+  button .group { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+  #empty { grid-column: 1 / -1; color: var(--muted); padding: 18px 10px; }
+
+  /* ---- radial (hold Alt+Space, Ctrl+Alt+Q) ---- */
+  #radial { position: absolute; inset: 0; display: none; }
+  body.radial #radial { display: block; }
+  body.radial #menu { display: none; }
+  #ring {
+    position: absolute; left: 50%; top: 50%; width: 384px; height: 384px;
+    margin: -192px 0 0 -192px; border-radius: 50%;
+    background:
+      radial-gradient(circle, rgba(124, 196, 255, 0.10) 0%, rgba(17, 20, 24, 0.90) 58%, rgba(17, 20, 24, 0.97) 100%);
+    border: 1px solid var(--edge);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35) inset, 0 24px 70px rgba(0, 0, 0, 0.6);
+    animation: ringin 120ms cubic-bezier(0.2, 0.9, 0.3, 1.15) both;
+  }
+  @keyframes ringin {
+    from { opacity: 0; transform: scale(0.86); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  #hub {
+    position: absolute; left: 50%; top: 50%; width: 96px; height: 96px; margin: -48px 0 0 -48px;
+    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 10.5px; line-height: 1.25; text-align: center; letter-spacing: 0.02em; padding: 6px;
+    background: rgba(255, 255, 255, 0.035); border: 1px dashed rgba(255, 255, 255, 0.14);
+  }
+  .slice {
+    position: absolute; width: 74px; height: 74px; margin: -37px 0 0 -37px;
+    border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1px; padding: 4px; text-align: center; cursor: pointer;
+    background: rgba(28, 33, 40, 0.94); border: 1px solid var(--edge);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+    animation: slicein 120ms ease both;
+  }
+  .slice:nth-child(odd) { animation-delay: 12ms; }
+  @keyframes slicein { from { opacity: 0; transform: scale(0.7); } to { opacity: 1; transform: scale(1); } }
+  .slice:hover, .slice:focus-visible, .slice.hot {
+    background: rgba(124, 196, 255, 0.20); border-color: rgba(124, 196, 255, 0.65); outline: none;
+  }
+  .slice .glyph { font-size: 21px; line-height: 1; }
+  .slice .label { font-size: 11px; font-weight: 600; line-height: 1.1; white-space: nowrap; }
+  #hub.named { color: var(--ink); border-style: solid; border-color: rgba(124, 196, 255, 0.45); }
+</style>
+</head>
+<body>
+<div id="menu" role="menu" aria-label="Aither quick menu"></div>
+<div id="radial" role="menu" aria-label="Aither radial menu">
+  <div id="ring"></div>
+  <div id="hub">release<br>here to<br>cancel</div>
+</div>
+<script>
+  const menu = document.getElementById("menu");
+  const radial = document.getElementById("radial");
+  const ring = document.getElementById("ring");
+  const hub = document.getElementById("hub");
+  let items = [];
+  let slices = [];
+  let mode = "grid";
+  let hold = false;
+  let focusAt = 0;
+
+  function renderGrid() {
+    menu.replaceChildren();
+    menu.classList.toggle("wide", items.length > 6);
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.id = "empty";
+      empty.textContent = "No quick actions available";
+      menu.append(empty);
+      return;
+    }
+    items.forEach((item, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.index = String(index);
+      button.dataset.id = item.id;
+      button.setAttribute("role", "menuitem");
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = item.label;
+      const group = document.createElement("span");
+      group.className = "group";
+      group.textContent = item.group || "";
+      button.append(name, group);
+      button.addEventListener("click", () => choose(item.id));
+      menu.append(button);
+    });
+    focusAt = Math.min(focusAt, items.length - 1);
+    const first = menu.querySelector("button");
+    if (first) first.focus();
+  }
+
+  function renderRadial() {
+    document.body.classList.add("radial");
+    for (const node of radial.querySelectorAll(".slice")) node.remove();
+    if (!slices.length) {
+      hub.textContent = "No radial\nactions";
+      return;
+    }
+    const radius = 142;
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    slices.forEach((slice, index) => {
+      const rad = (slice.angle * Math.PI) / 180;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "slice";
+      button.dataset.index = String(index);
+      button.dataset.id = slice.id;
+      button.setAttribute("role", "menuitem");
+      button.style.left = `${cx + radius * Math.cos(rad)}px`;
+      button.style.top = `${cy + radius * Math.sin(rad)}px`;
+      const glyph = document.createElement("span");
+      glyph.className = "glyph";
+      glyph.textContent = glyphFor(slice);
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = slice.short || String(slice.label).split(/[\s(…]/)[0];
+      button.title = slice.label;
+      button.append(glyph, label);
+      button.addEventListener("click", () => choose(slice.id));
+      radial.append(button);
+    });
+    const active = radial.querySelector(`.slice[data-index="${focusAt}"]`);
+    if (active) active.focus();
+    highlightByPointer(lastPointer);
+  }
+
+  let lastPointer = null;
+  const ID_GLYPHS = {
+    "snip.region": "✂", "snip.screen": "✂", "record.region": "●", "record.screen": "●",
+    "record.region.audio": "●", "note.new": "▤", "board.new": "▦", "chat.open": "◌",
+    "orb.ask": "◌", "desktop.overlay.toggle": "▭", "terminal.open": "▸", "files.open": "⊞",
+    "ink.toggle": "✎", "ink.laser": "✎", "ink.spotlight": "✎", "audio.settings": "♪",
+  };
+  const ICON_GLYPHS = {
+    folder: "⊞", terminal: "▸", desktop: "▭", chat: "◌", bell: "◔", grid: "▦",
+    layers: "≡", mic: "♪", note: "▤", board: "▦", capture: "◎", files: "⊞",
+  };
+  function glyphFor(slice) {
+    return ID_GLYPHS[slice.id] || ICON_GLYPHS[String(slice.icon || "")] || "•";
+  }
+
+  function highlightByPointer(point) {
+    lastPointer = point;
+    if (!point || mode !== "radial" || !slices.length) return;
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    const dx = point.x - cx;
+    const dy = point.y - cy;
+    let index = -1;
+    if (Math.hypot(dx, dy) >= 36) {
+      const fromTop = (((Math.atan2(dy, dx) * 180) / Math.PI + 90) % 360 + 360) % 360;
+      index = Math.round((fromTop * slices.length) / 360) % slices.length;
+    }
+    for (const node of radial.querySelectorAll(".slice")) {
+      node.classList.toggle("hot", Number(node.dataset.index) === index);
+    }
+    const hot = index >= 0 ? slices[index] : null;
+    hub.textContent = hot ? String(hot.label).replace(/\s+\(.*\)$/, "") : "release here to cancel";
+    hub.classList.toggle("named", Boolean(hot));
+  }
+
+  async function load() {
+    const reply = await window.aitherQuick.items();
+    mode = reply && reply.mode === "radial" ? "radial" : "grid";
+    hold = Boolean(reply && reply.hold);
+    slices = reply && reply.ok && Array.isArray(reply.slices) ? reply.slices : [];
+    items = reply && reply.ok && Array.isArray(reply.items) ? reply.items : [];
+    document.body.classList.toggle("radial", mode === "radial");
+    if (mode === "radial") { focusAt = 0; renderRadial(); }
+    else { menu.hidden = false; renderGrid(); }
+  }
+
+  async function choose(id) {
+    await window.aitherQuick.run(id);
+  }
+
+  function move(delta) {
+    const list = mode === "radial" ? slices : items;
+    if (!list.length) return;
+    focusAt = (focusAt + delta + list.length) % list.length;
+    const button = mode === "radial"
+      ? radial.querySelector(`.slice[data-index="${focusAt}"]`)
+      : menu.querySelector(`button[data-index="${focusAt}"]`);
+    if (button) button.focus();
+  }
+
+  document.addEventListener("mousemove", (event) => highlightByPointer({ x: event.clientX, y: event.clientY }));
+
+  /* The HOLD half: main never sees a key RELEASE from a global shortcut, so the
+     focused page reports it. A release while the ring is up selects by pointer
+     direction (main measures the real cursor); a release before the ring is a
+     tap and main has already settled that. */
+  document.addEventListener("keyup", (event) => {
+    if (mode !== "radial" || !hold) return;
+    if (event.key === " " || event.key === "Spacebar" || event.key === "Alt" || event.key === "AltGraph") {
+      event.preventDefault();
+      hold = false;
+      void window.aitherQuick.release();
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { event.preventDefault(); void window.aitherQuick.hide(); return; }
+    if (event.key === "ArrowRight") { event.preventDefault(); move(1); return; }
+    if (event.key === "ArrowLeft") { event.preventDefault(); move(-1); return; }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = menu.classList.contains("wide") ? 4 : 3;
+      move(event.key === "ArrowDown" ? (mode === "radial" ? 1 : step) : (mode === "radial" ? -1 : -step));
+      return;
+    }
+    if (event.key === "Enter") {
+      const active = document.activeElement;
+      if (active && active.dataset && active.dataset.id) {
+        event.preventDefault();
+        void choose(active.dataset.id);
+      }
+      return;
+    }
+    if (event.key === " " && mode === "grid") {
+      const active = document.activeElement;
+      if (active && active.dataset && active.dataset.id) {
+        event.preventDefault();
+        void choose(active.dataset.id);
+      }
+    }
+  });
+
+  window.aitherQuick.onRefresh(load);
+  load();
+</script>
+</body>
+</html>

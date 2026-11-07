@@ -58,6 +58,8 @@ const GROUPS = Object.freeze({
   fleet: Object.freeze({ menu: "Fleet" }),
   arc: Object.freeze({ menu: "ARC" }),
   blog: Object.freeze({ menu: "Blog" }),
+  sprite: Object.freeze({ menu: "Sprite" }),
+  aw: Object.freeze({ menu: "aw tools" }),
 });
 
 /**
@@ -70,12 +72,12 @@ const GROUPS = Object.freeze({
  * ITEMS are one list; only the reading order differs.
  */
 const LAYOUT = Object.freeze({
-  tray: Object.freeze(["go", "desktop", "avatar", "window-size", "talk", "stage", "fleet", "arc", "blog", "capture", "app"]),
+  tray: Object.freeze(["go", "desktop", "avatar", "window-size", "talk", "audio", "stage", "fleet", "arc", "blog", "sprite", "aw", "capture", "app"]),
   // ONE menu (owner, 2026-10-04: "the 3 different menu surfaces are still confusing").
   // A body's menu is the tray's menu with what is about THAT body on top: the rows
   // after "body"/"slot" read in exactly the tray's order, and the browser's Aither
   // button pops the tray's menu itself.
-  "avatar-menu": Object.freeze(["talk", "body", "slot", "go", "desktop", "avatar", "window-size", "stage"]),
+  "avatar-menu": Object.freeze(["talk", "body", "slot", "go", "sprite", "aw", "desktop", "avatar", "window-size", "stage"]),
   // The rail reads top to bottom: what is waiting, where to go, who to talk to,
   // the desktop. The bell stays on top -- it is the one bead read without a click.
   beads: Object.freeze(["go", "talk", "desktop"]),
@@ -264,6 +266,16 @@ const COMMANDS = Object.freeze([
     whySingle: "A settings switch, not a door: its row is in Settings (Desktop overlay); the palette and POST /commands/run are its keyboard and agent paths (owner, 2026-10-15: no more menus).",
     type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.spaceHome),
   }),
+  // Companion (owner 2026-11-02): the fairy is the default; the full avatar is opt-in.
+  // main.cjs companionMode()/setCompanionMode(); exactly one row shows.
+  Object.freeze({
+    id: "companion.fairy", label: "Companion: fairy only", group: "avatar",
+    surfaces: ["tray", "palette"], when: (ctx = {}) => ctx.companion === "avatar",
+  }),
+  Object.freeze({
+    id: "companion.avatar", label: "Companion: full avatar", group: "avatar",
+    surfaces: ["tray", "palette"], when: (ctx = {}) => ctx.companion !== "avatar",
+  }),
   Object.freeze({
     id: "avatar.toggle", group: "avatar", accel: "Ctrl+Shift+A",
     surfaces: ["tray", "palette"],
@@ -373,6 +385,37 @@ const COMMANDS = Object.freeze([
       return ctx.agentMuted ? `Unmute ${who}'s voice` : `Mute ${who}'s voice`;
     },
     whySingle: "Mutes the agent behind the body that was right-clicked; voice.mute-all is the everywhere twin.",
+  }),
+  // ── SYSTEM AUDIO (owner, 2026-11-02: "hot keys and better way to control audio
+  // / system speaker and mic settings"). These act on the WINDOWS endpoints --
+  // voice.mute above mutes the desk's own call microphone, a different thing.
+  // system-audio.cjs reads/writes Core Audio; audio-control.cjs owns the OSD and
+  // the Audio flyout. accelFallback exists because graphics drivers also bind
+  // Ctrl+Alt+Arrow on some machines: if Windows refuses the default, the Desk
+  // still gets a key instead of a dead row (main reports it in liveAccels).
+  Object.freeze({
+    id: "audio.volume.up", label: "Speaker volume up 5%", group: "audio",
+    accel: "Ctrl+Alt+Up", accelFallback: "Ctrl+Alt+Shift+Up", icon: "volume",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "audio.volume.down", label: "Speaker volume down 5%", group: "audio",
+    accel: "Ctrl+Alt+Down", accelFallback: "Ctrl+Alt+Shift+Down", icon: "volume",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "audio.mute", group: "audio", accel: "Ctrl+Alt+0", icon: "volume-off",
+    surfaces: ["tray", "palette"],
+    label: (ctx = {}) => (ctx.speakerMuted ? "Unmute speakers" : "Mute speakers"),
+  }),
+  Object.freeze({
+    id: "audio.mic.mute", group: "audio", accel: "Ctrl+Alt+9", icon: "mic-off",
+    surfaces: ["tray", "palette"],
+    label: (ctx = {}) => (ctx.systemMicMuted ? "Unmute microphone (system)" : "Mute microphone (system)"),
+  }),
+  Object.freeze({
+    id: "audio.settings", label: "Audio settings…", group: "audio", icon: "volume",
+    surfaces: ["tray", "palette"],
   }),
   // The settings page the owner asked for by name ("there still isnt just a
   // shared settings page"). Opens as a console pane (kind:"file", no vite
@@ -553,6 +596,12 @@ const COMMANDS = Object.freeze([
     id: "files.open", label: "Files…", group: "go", icon: "folder",
     surfaces: ["palette", "jumplist"],
   }),
+  // The awsh surface (aither://terminal): the radial's "awsh" slice and one tray row.
+  // Same page the browser's console opens; no second terminal exists.
+  Object.freeze({
+    id: "terminal.open", label: "awsh terminal", group: "go", icon: "terminal",
+    surfaces: ["palette", "tray"],
+  }),
   // Universal search (owner, 2026-11-01: replace Windows' Start search). One box over
   // apps, files, screenshots, clipboard, desk actions and agents/tools/skills
   // (universal-search.cjs); the window is search-window.cjs toggleLauncher. Alt+Space,
@@ -623,6 +672,104 @@ const COMMANDS = Object.freeze([
     id: "snip.screen", label: "Snip the whole screen", group: "capture",
     surfaces: ["tray", "palette"],
   }),
+  // ── the floating ask orb (orb-window.cjs, owner 2026-11-02: "click and ask it
+  // what it sees ... a floating orb with a chat bubble on your desktop"). The
+  // `orb` field is the verb main hands orb-window.run(); the accel is the summon
+  // key. Ctrl+Alt+O / Ctrl+Alt+W were measured free of every other row here.
+  Object.freeze({
+    id: "orb.toggle", label: "Show or hide the ask orb", group: "go",
+    accel: "Ctrl+Alt+O", accelFallback: "Ctrl+Alt+Shift+O",
+    surfaces: ["tray", "palette"], orb: "toggle",
+  }),
+  Object.freeze({
+    id: "orb.ask-screen", label: "Ask Aither about my screen", group: "capture",
+    accel: "Ctrl+Alt+W", accelFallback: "Ctrl+Alt+Shift+W",
+    surfaces: ["tray", "palette"], orb: "ask-screen",
+  }),
+  // ── the spirit (orb-window.cjs, owner 2026-11-02: "integrate with the awdesk
+  // avatar/persona too" · "make the spirit attachable/detachable" · "awdesk avatars
+  // ... can send the spirit orb to do stuff around the desktop, go look at files,
+  // for context" · "go find this file and give me the path" · "and things like web
+  // searches too!"). One commented block: other lanes merge this file 3-way.
+  // `orb` is the verb run() hands orb-window.run(). A slot-scoped row CANNOT carry
+  // a prompt (conformance: a prompt only lives on the palette), so a body's row
+  // opens the bubble's field with that body's slot remembered for the answer.
+  Object.freeze({
+    id: "spirit.ask-screen", label: "Ask what's on my screen", group: "body", scope: "slot",
+    surfaces: ["avatar-menu"], orb: "ask-screen",
+    whySingle: "The body that was right-clicked is the one that answers, in its voice; "
+      + "no other surface has a body in hand. orb.ask-screen is the unscoped twin.",
+  }),
+  Object.freeze({
+    id: "spirit.find-file", label: "Find a file…", group: "body", scope: "slot",
+    surfaces: ["avatar-menu"], orb: "find",
+    whySingle: "A trip dispatched by THIS body, which speaks the result; the bubble's "
+      + "field takes the query because an avatar menu has no text field.",
+  }),
+  Object.freeze({
+    id: "spirit.web-search", label: "Search the web…", group: "body", scope: "slot",
+    surfaces: ["avatar-menu"], orb: "web",
+    whySingle: "A web trip dispatched by THIS body, which speaks the answer; the "
+      + "bubble's field takes the query. spirit.go is the palette's general door.",
+  }),
+  Object.freeze({
+    id: "spirit.attach-toggle", label: "Attach or detach the spirit", group: "go",
+    accel: "Ctrl+Alt+G", accelFallback: "Ctrl+Alt+Shift+G",
+    surfaces: ["tray", "palette"], orb: "attach",
+  }),
+  Object.freeze({
+    id: "spirit.go", label: "Send the spirit…", group: "go",
+    surfaces: ["palette"], orb: "go",
+    prompt: Object.freeze({ placeholder: 'JSON {kind,target,question?}, or "find notes.md"' }),
+    whySingle: "Agents reach it over the bridge (POST /commands/run only runs a palette "
+      + "row); a person reaches it in the palette. The tray carries the named verbs instead.",
+  }),
+  // ── the fairy IS the owner's AitherSprite (owner 2026-11-02). sprite-core.cjs
+  // reads/teaches through the portal's /api/sprite/* as the signed-in owner; the
+  // orb verbs live in orb-window.run(). No `prompt`: Alt+Space and the menus run
+  // these too, and a teach with nothing typed takes the highlighted selection
+  // (UI Automation, no faked keys), else the clipboard, else the last snip's
+  // caption -- the bubble field is the typed path.
+  Object.freeze({
+    id: "sprite.teach", label: "Teach my sprite the selection / clipboard", menuLabel: "Teach it the selection",
+    group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-teach",
+  }),
+  Object.freeze({
+    id: "sprite.status", label: "How is my sprite?", menuLabel: "How is it?",
+    group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-status",
+  }),
+  Object.freeze({
+    id: "sprite.open", label: "Open my sprite (aitherium.com)", menuLabel: "Open Sprite…",
+    group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-open",
+  }),
+  // ── the aw* CLIs (aw-cli.cjs): system binaries via execFile, 30 s cap, output in
+  // the orb's bubble. A verb that needs a query opens the bubble's field when run
+  // with nothing typed (the avatar-menu has no text field; see spirit.find-file).
+  Object.freeze({
+    id: "aw.memory.recall", label: "aw: recall from memory (awm)…", menuLabel: "Recall from memory…",
+    group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-recall",
+  }),
+  Object.freeze({
+    id: "aw.graph.query", label: "aw: query the code graph (awgraph)…", menuLabel: "Query the code graph…",
+    group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-graph",
+  }),
+  Object.freeze({
+    id: "aw.git.status", label: "aw: git state (awgit)", menuLabel: "Git state",
+    group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-git",
+  }),
+  Object.freeze({
+    id: "aw.recover", label: "aw: list snapshots (awrecover)…", menuLabel: "List snapshots…",
+    group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-recover",
+  }),
+  Object.freeze({
+    // Undoable by construction: awrecover moves the current dest aside, never deletes it.
+    id: "aw.recover.restore", label: "aw: restore a snapshot (awrecover)…", menuLabel: "Restore a snapshot…",
+    group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-recover-restore",
+  }),
+  Object.freeze({
+    id: "aw.settings.sync", label: "aw: pull synced settings (awsettings)", menuLabel: "Pull synced settings",
+    group: "aw", surfaces: ["tray", "palette", "avatar-menu"], orb: "aw-settings",
+  }),
   Object.freeze({
     id: "clipboard.sync.toggle", label: "Sync clipboard to AitherOS Online", group: "capture",
     surfaces: ["tray", "palette"],
@@ -669,6 +816,71 @@ const COMMANDS = Object.freeze([
     id: "record.pause", label: "Pause / resume recording", group: "capture",
     surfaces: ["tray", "palette"],
     when: (ctx = {}) => Boolean(ctx.recording),
+    // ACCEL (owner 2026-11-02: the bar must name a Pause hotkey). Ctrl+Alt+P is free
+    // against every other accel in this registry; Ctrl+Alt+Shift+P is the fallback
+    // when another app already owns the plain chord. Recording-only.
+    accel: "Ctrl+Alt+P", accelFallback: "Ctrl+Alt+Shift+P",
+  }),
+  // ── Quick menu, notes and whiteboards (owner 2026-11-02) ─────────────────────
+  // "just right click anywhere and start capturing/recording/drawing/writing/
+  // taking notes" and "spawn a virtual clipboard/whiteboard anywhere and put it
+  // away ... just like the rest of the taskbar". quick-menu.cjs pops the compact
+  // grid AT the cursor; boards-window.cjs owns notes/whiteboards, persisted under
+  // ~/Aither Boards and listed in the tray's Boards submenu. The hotkeys were
+  // probed free on this desk (2026-11-02); each has a Shift fallback for machines
+  // where another tool holds the primary.
+  Object.freeze({
+    id: "quick.open", label: "Quick menu at the cursor", group: "capture",
+    accel: "Ctrl+Alt+Q", accelFallback: "Ctrl+Alt+Shift+Q",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "note.new", label: "New note", group: "capture",
+    accel: "Ctrl+Alt+N", accelFallback: "Ctrl+Alt+Shift+N",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "board.new", label: "New whiteboard", group: "capture",
+    accel: "Ctrl+Alt+B", accelFallback: "Ctrl+Alt+Shift+B",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "boards.open", label: "Boards…", group: "capture",
+    surfaces: ["tray", "palette"],
+  }),
+  // OWNER-CONSENTED and reversible: shell-menu.cjs writes per-user HKCU verbs
+  // (the files-wine.cjs pattern). Both rows are Windows-only; main keeps
+  // ctx.shellMenu in step so exactly ONE of them is visible.
+  Object.freeze({
+    id: "shellmenu.add", label: "Add Aither to right-click menu", group: "capture",
+    surfaces: ["tray", "palette"],
+    when: (ctx = {}) => ctx.platform === "win32" && ctx.shellMenu !== true,
+  }),
+  Object.freeze({
+    id: "shellmenu.remove", label: "Remove Aither from right-click menu", group: "capture",
+    surfaces: ["tray", "palette"],
+    when: (ctx = {}) => ctx.platform === "win32" && ctx.shellMenu === true,
+  }),
+  // Screen ink (owner, 2026-11-02: "give us screen drawing tools and pens and
+  // stuff"; "record presentations on the fly"). ink-window.cjs draws a per-display
+  // overlay that recorders and screenshots CAN see, so a pen mark survives into
+  // the video. The four keys are the only door: while drawing, the overlay holds
+  // the mouse, so the tray is one glance away rather than in the way.
+  Object.freeze({
+    id: "ink.toggle", label: "Draw on screen", group: "capture", accel: "Ctrl+Alt+D",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "ink.laser", label: "Laser pointer", group: "capture", accel: "Ctrl+Alt+L",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "ink.spotlight", label: "Spotlight", group: "capture", accel: "Ctrl+Alt+S",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "ink.clear", label: "Clear drawings", group: "capture", accel: "Ctrl+Alt+C",
+    surfaces: ["tray", "palette"],
   }),
   Object.freeze({
     id: "osapp.learn", label: "Learn…", group: "go", osApp: "learn",
@@ -907,6 +1119,20 @@ function labelOf(command, ctx, { nested = false } = {}) {
   return command.accel && !dead.includes(command.accel) ? `${text}  (${command.accel})` : text;
 }
 
+/**
+ * The key a UI may advertise for one command, or null when none is really bound:
+ * a live fallback when the default was taken, the default when it was not, and
+ * null when another app owns the chord (a dead key is never promised).
+ */
+function accelFor(id, ctx = {}) {
+  const command = COMMANDS.find((c) => c.id === id);
+  if (!command || !command.accel) return null;
+  const live = ctx && ctx.liveAccels && typeof ctx.liveAccels[id] === "string" ? ctx.liveAccels[id] : null;
+  if (live) return live;
+  const dead = (ctx && ctx.deadAccels) || [];
+  return dead.includes(command.accel) ? null : command.accel;
+}
+
 /** "Ctrl+Shift+D" -> Electron's "CommandOrControl+Shift+D". */
 function electronAccel(accel) {
   return String(accel || "").replace(/^Ctrl\+/, "CommandOrControl+");
@@ -1080,5 +1306,5 @@ function osAppTabUrl(osApp) {
 
 module.exports = {
   SURFACES, GROUPS, LAYOUT, COMMANDS, commandsFor, groupFor, paletteRows, rowsFor, byId, labelOf,
-  buildMenu, conformance, shortcuts, electronAccel, appliesTo, osAppTabUrl,
+  buildMenu, conformance, shortcuts, electronAccel, accelFor, appliesTo, osAppTabUrl,
 };

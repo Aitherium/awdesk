@@ -13,3 +13,16 @@ describe('avatar window click-through', () => {
     expect(decideInteractive({ buttons: 1, overAvatar: false, backdrop: true })).toBe(true);
   });
 });
+
+describe('the body, not its box', () => {
+  it('a fully transparent probe is not the body; one opaque pixel is', async () => {
+    const { alphaHit } = await import('./clickThrough');
+    expect(alphaHit(new Uint8Array(25 * 4))).toBe(false);
+    const px = new Uint8Array(25 * 4);
+    px[12 * 4 + 3] = 200;
+    expect(alphaHit(px)).toBe(true);
+    const faint = new Uint8Array(25 * 4);
+    faint[3] = 10; // anti-aliased halo fringe
+    expect(alphaHit(faint)).toBe(false);
+  });
+});

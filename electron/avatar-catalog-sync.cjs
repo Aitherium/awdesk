@@ -192,7 +192,7 @@ function adultGateOpen(d) {
 
 /** Every desk character with a mesh of its own (forks and VRoid references excluded). */
 function ownMeshCharacters(d) {
-  let names = [];
+  let names;
   try {
     names = d.roster.listAllCharacters ? d.roster.listAllCharacters()
       : fs.readdirSync(d.rosterDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);

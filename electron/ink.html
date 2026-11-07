@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline' file:;" />
+<title>Ink</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<!--
+  ink.html -- the screen-ink overlay, one per display, owned by ink-window.cjs.
+
+  Two canvases: #ink holds committed marks (redrawn when main pushes state), #fx
+  holds the things that move every frame -- laser trail, cursor ring, click
+  ripples. Spotlight is a CSS radial gradient over both (cheap at 4K). The
+  toolbar floats on the display the hotkey was pressed on; other displays draw.
+
+  It is deliberately NOT content-protected: a recorder or screenshot must see the
+  ink, which is the whole point (owner: "record presentations on the fly").
+
+  The mark model and its geometry come from ink-core.cjs, loaded here as a plain
+  script so the overlay draws with the SAME arrow head and fade rules the main
+  process enforces.
+-->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent;
+    font: 13px/1.4 var(--font-sans, system-ui); color: var(--fg, #e8e8ef);
+    user-select: none; -webkit-user-select: none; touch-action: none; }
+  body { cursor: default; }
+  body.active { cursor: crosshair; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
+  #ink { z-index: 1; }
+  #fx { z-index: 2; pointer-events: none; }
+  #spot { position: fixed; inset: 0; z-index: 3; pointer-events: none; display: none;
+    background: rgba(0, 0, 0, 0.62); }
+  #spot.on { display: block; }
+
+  /* ── the floating toolbar ───────────────────────────────────────────────── */
+  #toolbar { position: fixed; z-index: 20; left: 50%; bottom: 28px; transform: translateX(-50%);
+    display: grid; gap: 6px; padding: 8px 10px 6px; border-radius: 12px;
+    border: 1px solid var(--line, #34343f); background: rgba(20, 20, 26, 0.93);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); backdrop-filter: blur(8px);
+    font-size: 12px; }
+  #toolbar[hidden] { display: none !important; }
+  .row { display: flex; align-items: center; gap: 4px; }
+  .grip { cursor: grab; padding: 0 4px; color: var(--muted, #9a9aa8); letter-spacing: 1px; }
+  .grip:active { cursor: grabbing; }
+  button { font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 6px;
+    border: 1px solid transparent; background: transparent; color: inherit; cursor: pointer;
+    white-space: nowrap; }
+  button:hover { background: var(--btn-hi, #2a2a35); }
+  button.on { background: var(--primary, #7aa2ff); border-color: transparent;
+    color: var(--primary-fg, #0b0b10); }
+  .sep { width: 1px; height: 20px; background: var(--line, #34343f); margin: 0 3px; }
+  .swatch { width: 18px; height: 18px; border-radius: 50%; padding: 0; flex: none;
+    border: 2px solid transparent; }
+  .swatch.on { border-color: #fff; box-shadow: 0 0 0 1px #000; }
+  .width { min-width: 30px; display: inline-flex; align-items: center; justify-content: center; }
+  .width i { display: block; border-radius: 50%; background: currentColor; }
+  #status { color: var(--muted, #9a9aa8); font-size: 11px; padding: 0 2px;
+    display: flex; justify-content: space-between; gap: 12px; }
+  #status b { color: inherit; font-weight: 500; }
+
+  /* ── the text box ───────────────────────────────────────────────────────── */
+  #textwrap { position: fixed; z-index: 21; display: none; }
+  #textwrap.on { display: block; }
+  #textinput { font: 20px/1.3 var(--font-sans, system-ui); padding: 4px 8px; min-width: 220px;
+    border-radius: 6px; border: 1px solid var(--primary, #7aa2ff);
+    background: rgba(15, 15, 20, 0.94); color: inherit; outline: none; }
+  #hint { position: fixed; z-index: 19; left: 50%; top: 18px; transform: translateX(-50%);
+    padding: 6px 14px; border-radius: 8px; background: rgba(15, 15, 20, 0.85);
+    border: 1px solid var(--line, #34343f); font-size: 12px; color: var(--muted, #c8c8d4);
+    pointer-events: none; display: none; }
+  #hint.on { display: block; }
+</style>
+</head>
+<body>
+<canvas id="ink"></canvas>
+<canvas id="fx"></canvas>
+<div id="spot"></div>
+<div id="hint"></div>
+
+<div id="toolbar" hidden>
+  <div class="row">
+    <span class="grip" id="grip" title="Drag the toolbar">⠿</span>
+    <button data-tool="pen" title="Pen (pressure-aware)">Pen</button>
+    <button data-tool="highlighter" title="Highlighter">Highlight</button>
+    <button data-tool="arrow" title="Arrow">Arrow</button>
+    <button data-tool="rect" title="Rectangle">Rect</button>
+    <button data-tool="ellipse" title="Ellipse">Ellipse</button>
+    <button data-tool="line" title="Straight line">Line</button>
+    <button data-tool="text" title="Text box">Text</button>
+    <button data-tool="eraser" title="Eraser">Eraser</button>
+    <button data-tool="laser" title="Laser pointer (fading trail)">Laser</button>
+    <button data-tool="spotlight" title="Spotlight the cursor">Spot</button>
+    <span class="sep"></span>
+    <button data-action="undo" title="Undo (Ctrl+Z)">Undo</button>
+    <button data-action="redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+    <button data-action="clear" title="Clear every mark on every display">Clear</button>
+  </div>
+  <div class="row">
+    <span class="sep"></span>
+    <button class="swatch" data-color="#ff4d4d" style="background:#ff4d4d" title="Red"></button>
+    <button class="swatch" data-color="#ffd166" style="background:#ffd166" title="Amber"></button>
+    <button class="swatch" data-color="#4ade80" style="background:#4ade80" title="Green"></button>
+    <button class="swatch" data-color="#7aa2ff" style="background:#7aa2ff" title="Blue"></button>
+    <button class="swatch" data-color="#c084fc" style="background:#c084fc" title="Violet"></button>
+    <button class="swatch" data-color="#ffffff" style="background:#ffffff" title="White"></button>
+    <span class="sep"></span>
+    <button class="width" data-width="2" title="Thin"><i style="width:4px;height:4px"></i></button>
+    <button class="width" data-width="5" title="Medium"><i style="width:8px;height:8px"></i></button>
+    <button class="width" data-width="10" title="Thick"><i style="width:13px;height:13px"></i></button>
+    <span class="sep"></span>
+    <button data-action="fade" id="fadeBtn" title="Marks fade out after a while">Fade: off</button>
+    <button data-action="save" class="on" title="Save the display with the drawings (syncs to Strata)">Save shot</button>
+    <button data-action="exit" title="Leave drawing mode (Esc) — drawings stay">Exit</button>
+  </div>
+  <div id="status"><b id="count">0 marks</b><span id="keyline">Esc exits · Ctrl+Alt+D toggles</span></div>
+</div>
+
+<div id="textwrap"><input id="textinput" type="text" maxlength="200" placeholder="Type, then Enter" /></div>
+
+<script src="ink-core.cjs"></script>
+<script>
+  const core = window.AitherInkCore;
+  const api = window.aitherInk;
+  const inkCanvas = document.getElementById("ink");
+  const fxCanvas = document.getElementById("fx");
+  const spot = document.getElementById("spot");
+  const toolbar = document.getElementById("toolbar");
+  const status = document.getElementById("count");
+  const fadeBtn = document.getElementById("fadeBtn");
+  const hint = document.getElementById("hint");
+  const textwrap = document.getElementById("textwrap");
+  const textinput = document.getElementById("textinput");
+
+  const FADE_STEPS = [0, 5000, 15000];
+  const SPOT_RADIUS = 170;
+  const ERASER_RADIUS = 14;
+  const LASER_TTL = 900;
+
+  let doc = { items: [], undo: [], redo: [] };
+  let st = { active: false, tool: "pen", color: "#7aa2ff", width: 5, fadeMs: 0, toolbar: false };
+  let current = null;          // the stroke / shape being dragged
+  let erasing = false;
+  let lastErase = 0;
+  let laser = [];              // {x,y,t}
+  let ripples = [];            // {x,y,t0}
+  let cursor = { x: 0, y: 0, on: false };
+  let chromeVisible = true;
+  let fadeTimer = null;
+  let raf = 0;
+
+  // ── canvases ───────────────────────────────────────────────────────────────
+  function fitCanvas(canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(window.innerWidth * dpr));
+    canvas.height = Math.max(1, Math.round(window.innerHeight * dpr));
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return ctx;
+  }
+  let inkCtx = fitCanvas(inkCanvas);
+  let fxCtx = fitCanvas(fxCanvas);
+  window.addEventListener("resize", () => {
+    inkCtx = fitCanvas(inkCanvas);
+    fxCtx = fitCanvas(fxCanvas);
+    drawMarks();
+  });
+
+  // ── mark drawing (shared by committed + live) ──────────────────────────────
+  function drawOne(ctx, item, alpha = 1) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = item.color;
+    ctx.fillStyle = item.color;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+
+    if (item.type === "stroke") {
+      const highlighter = item.tool === "highlighter";
+      if (highlighter) ctx.globalAlpha = alpha * 0.32;
+      const pts = item.points;
+      if (pts.length === 1) {
+        const r = highlighter ? item.width * 1.5 : Math.max(1, item.width * 0.5);
+        ctx.beginPath();
+        ctx.arc(pts[0].x, pts[0].y, r, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        for (let i = 1; i < pts.length; i += 1) {
+          const a = pts[i - 1];
+          const b = pts[i];
+          ctx.lineWidth = highlighter
+            ? item.width * 3
+            : Math.max(0.6, item.width * (0.45 + 0.9 * ((a.p + b.p) / 2 || 0.5)));
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+      }
+    } else if (item.type === "shape") {
+      ctx.lineWidth = item.width;
+      if (item.tool === "line" || item.tool === "arrow") {
+        ctx.beginPath();
+        ctx.moveTo(item.a.x, item.a.y);
+        ctx.lineTo(item.b.x, item.b.y);
+        ctx.stroke();
+        if (item.tool === "arrow") {
+          const [l, r] = core.arrowHead(item.a, item.b, 12 + item.width * 1.6);
+          ctx.beginPath();
+          ctx.moveTo(item.b.x, item.b.y);
+          ctx.lineTo(l.x, l.y);
+          ctx.moveTo(item.b.x, item.b.y);
+          ctx.lineTo(r.x, r.y);
+          ctx.stroke();
+        }
+      } else if (item.tool === "rect") {
+        const r = core.rectFrom(item.a, item.b);
+        ctx.strokeRect(r.x, r.y, r.width, r.height);
+      } else if (item.tool === "ellipse") {
+        const r = core.rectFrom(item.a, item.b);
+        ctx.beginPath();
+        ctx.ellipse(r.x + r.width / 2, r.y + r.height / 2,
+          Math.max(0.5, r.width / 2), Math.max(0.5, r.height / 2), 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    } else if (item.type === "text") {
+      ctx.font = `600 ${item.size}px ${getComputedStyle(document.body).fontFamily}`;
+      ctx.textBaseline = "alphabetic";
+      ctx.shadowColor = "rgba(0,0,0,0.75)";
+      ctx.shadowBlur = 4;
+      ctx.fillText(item.text, item.at.x, item.at.y);
+    }
+    ctx.restore();
+  }
+
+  // Fade ages are measured against item.createdAt (Date.now()), so marks are
+  // faded on the epoch clock -- never performance.now() (which starts at ~0).
+  function drawMarks(now = core.now()) {
+    inkCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    for (const item of doc.items) drawOne(inkCtx, item, core.fadeAlpha(item, now, st.fadeMs));
+    if (current) drawOne(inkCtx, current, 1);
+  }
+
+  // ── effects: laser, cursor, ripples, spotlight ─────────────────────────────
+  function frame() {
+    const now = performance.now();
+    fxCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    if (st.active) {
+      // laser trail: brightness by age
+      laser = core.laserTrail(laser, now, LASER_TTL, 160);
+      if (laser.length > 1) {
+        for (let i = 1; i < laser.length; i += 1) {
+          const a = laser[i - 1];
+          const b = laser[i];
+          const age = now - b.t;
+          const alpha = Math.max(0, 1 - age / LASER_TTL);
+          fxCtx.strokeStyle = `rgba(255,77,77,${(alpha * 0.9).toFixed(3)})`;
+          fxCtx.lineWidth = 2 + 4 * alpha;
+          fxCtx.lineCap = "round";
+          fxCtx.beginPath();
+          fxCtx.moveTo(a.x, a.y);
+          fxCtx.lineTo(b.x, b.y);
+          fxCtx.stroke();
+        }
+      }
+      // click ripples
+      ripples = ripples.filter((r) => now - r.t0 < 480);
+      for (const r of ripples) {
+        const k = (now - r.t0) / 480;
+        fxCtx.strokeStyle = `rgba(255,255,255,${(0.65 * (1 - k)).toFixed(3)})`;
+        fxCtx.lineWidth = 2;
+        fxCtx.beginPath();
+        fxCtx.arc(r.x, r.y, 6 + 26 * k, 0, Math.PI * 2);
+        fxCtx.stroke();
+      }
+      // cursor ring (a pen needs to see its tip on a 4K desktop)
+      if (cursor.on && st.tool !== "spotlight") {
+        const radius = st.tool === "eraser" ? ERASER_RADIUS : 5;
+        fxCtx.lineWidth = 1.5;
+        fxCtx.strokeStyle = "rgba(0,0,0,0.7)";
+        fxCtx.beginPath(); fxCtx.arc(cursor.x, cursor.y, radius + 1.5, 0, Math.PI * 2); fxCtx.stroke();
+        fxCtx.strokeStyle = "rgba(255,255,255,0.9)";
+        fxCtx.beginPath(); fxCtx.arc(cursor.x, cursor.y, radius, 0, Math.PI * 2); fxCtx.stroke();
+      }
+      // spotlight: dim everything but a circle at the cursor (hidden while the
+      // chrome is hidden for a save, so the dim is never baked into the PNG)
+      if (chromeVisible && st.tool === "spotlight" && cursor.on) {
+        spot.classList.add("on");
+        spot.style.background = `radial-gradient(circle ${SPOT_RADIUS}px at ${cursor.x}px ${cursor.y}px,`
+          + " rgba(0,0,0,0) 0px, rgba(0,0,0,0) " + (SPOT_RADIUS - 18) + "px,"
+          + " rgba(0,0,0,0.62) " + SPOT_RADIUS + "px)";
+      } else {
+        spot.classList.remove("on");
+      }
+    } else {
+      spot.classList.remove("on");
+    }
+    raf = st.active ? requestAnimationFrame(frame) : setTimeout(frame, 300);
+  }
+
+  // ── state from main ────────────────────────────────────────────────────────
+  let hintTimer = null;
+  function showHint(text, ms = 2600) {
+    hint.textContent = text;
+    hint.classList.add("on");
+    if (hintTimer) clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => hint.classList.remove("on"), ms);
+  }
+
+  function applyState(next) {
+    if (!next || typeof next !== "object") return;
+    const wasTool = st.tool;
+    const wasActive = st.active;
+    st = { ...st, ...next };
+    doc = { items: Array.isArray(next.items) ? next.items : [], undo: doc.undo, redo: doc.redo };
+    document.body.classList.toggle("active", Boolean(st.active));
+    toolbar.hidden = !(st.active && st.toolbar && chromeVisible);
+    drawMarks();
+    renderToolbar();
+    if (st.tool !== wasTool && st.tool !== "laser") laser = [];
+    if (!st.active) { laser = []; ripples = []; hint.classList.remove("on"); }
+    else if (!wasActive) {
+      showHint(`${st.tool === "laser" ? "Laser" : st.tool === "spotlight" ? "Spotlight" : "Drawing"} on · `
+        + "Esc exits · Ctrl+Alt+D toggles · Ctrl+Alt+C clears");
+    }
+  }
+
+  function renderToolbar() {
+    if (toolbar.hidden) return;
+    for (const b of toolbar.querySelectorAll("[data-tool]")) b.classList.toggle("on", b.dataset.tool === st.tool);
+    for (const b of toolbar.querySelectorAll("[data-color]")) b.classList.toggle("on", b.dataset.color === st.color);
+    for (const b of toolbar.querySelectorAll("[data-width]")) b.classList.toggle("on", Number(b.dataset.width) === Number(st.width));
+    fadeBtn.textContent = st.fadeMs ? `Fade: ${Math.round(st.fadeMs / 1000)}s` : "Fade: off";
+    status.textContent = core.marksLine(doc.items.length, st.tool);
+    hint.textContent = `${st.tool === "laser" ? "Laser" : st.tool === "spotlight" ? "Spotlight" : "Drawing"} · Esc exits · drawings stay`;
+  }
+
+  function startFadeClock() {
+    if (fadeTimer) clearInterval(fadeTimer);
+    fadeTimer = setInterval(() => {
+      if (!st.fadeMs) return;
+      const now = core.now();
+      drawMarks(now);
+      const expired = doc.items.filter((item) => core.fadeAlpha(item, now, st.fadeMs) <= 0).map((item) => item.id);
+      if (expired.length) api.prune(expired);
+    }, 500);
+  }
+
+  // ── pointer ────────────────────────────────────────────────────────────────
+  function local(e) { return { x: e.clientX, y: e.clientY }; }
+  function pressureOf(e) {
+    const p = typeof e.pressure === "number" && e.pressure > 0 ? e.pressure : 0.5;
+    return Math.min(1, Math.max(0.08, p));
+  }
+  function baseItem(tool) {
+    return { tool, color: st.color, width: Number(st.width) || 5 };
+  }
+
+  // Pointer capture keeps a stroke (or an erase) with the window it started in,
+  // even when the cursor crosses onto another display, so pointerup always
+  // arrives and a phantom stroke/erasing state cannot be left behind.
+  function capturePointer(e) {
+    try {
+      if (e.target && typeof e.target.setPointerCapture === "function" && e.pointerId != null) {
+        e.target.setPointerCapture(e.pointerId);
+      }
+    } catch { /* the element went away */ }
+  }
+  function releasePointer(e) {
+    try {
+      if (e.target && typeof e.target.releasePointerCapture === "function" && e.pointerId != null
+        && e.target.hasPointerCapture && e.target.hasPointerCapture(e.pointerId)) {
+        e.target.releasePointerCapture(e.pointerId);
+      }
+    } catch { /* already released */ }
+  }
+
+  function onDown(e) {
+    if (!st.active) return;
+    if (e.target.closest("#toolbar, #textwrap")) return;
+    if (e.button !== undefined && e.button !== 0) return;
+    capturePointer(e);
+    const p = local(e);
+    ripples.push({ x: p.x, y: p.y, t0: performance.now() });
+    if (st.tool === "eraser") {
+      erasing = true;
+      lastErase = 0;
+      void api.erase(p, ERASER_RADIUS);
+      return;
+    }
+    if (st.tool === "laser") {
+      laser.push({ x: p.x, y: p.y, t: performance.now() });
+      return;
+    }
+    if (st.tool === "spotlight") return;
+    if (st.tool === "text") { openText(p); return; }
+    if (st.tool === "pen" || st.tool === "highlighter") {
+      current = { ...baseItem(st.tool), type: "stroke", points: [{ x: p.x, y: p.y, p: pressureOf(e) }] };
+    } else {
+      current = { ...baseItem(st.tool), type: "shape", a: { x: p.x, y: p.y }, b: { x: p.x, y: p.y } };
+    }
+    e.preventDefault();
+  }
+
+  function onMove(e) {
+    const p = local(e);
+    cursor = { x: p.x, y: p.y, on: true };
+    if (!st.active) return;
+    if (erasing) {
+      const now = performance.now();
+      if (now - lastErase > 45) { lastErase = now; void api.erase(p, ERASER_RADIUS); }
+      return;
+    }
+    if (st.tool === "laser") {
+      laser.push({ x: p.x, y: p.y, t: performance.now() });
+      if (laser.length > 300) laser = laser.slice(-160);
+      return;
+    }
+    if (!current) return;
+    if (current.type === "stroke") {
+      const last = current.points[current.points.length - 1];
+      if (Math.hypot(p.x - last.x, p.y - last.y) < 1.2) return;
+      current.points.push({ x: p.x, y: p.y, p: pressureOf(e) });
+      if (current.points.length > core.MAX_POINTS) current.points.shift();
+    } else {
+      current.b = { x: p.x, y: p.y };
+    }
+    drawMarks();
+  }
+
+  async function onUp(e) {
+    releasePointer(e);
+    if (erasing) { erasing = false; return; }
+    const done = current;
+    current = null;
+    if (!done) return;
+    if (done.type === "shape"
+      && Math.hypot(done.b.x - done.a.x, done.b.y - done.a.y) < 3
+      && done.tool !== "rect" && done.tool !== "ellipse") { drawMarks(); return; }
+    const state = await api.add(done);
+    if (state) applyState(state);
+  }
+
+  /** pointercancel (touch/pen lost, window moved): abandon the in-flight stroke. */
+  function onCancel(e) {
+    releasePointer(e);
+    erasing = false;
+    if (current) { current = null; drawMarks(); }
+  }
+
+  // ── text boxes ─────────────────────────────────────────────────────────────
+  let textAt = null;
+  function openText(p) {
+    textAt = p;
+    textwrap.classList.add("on");
+    textwrap.style.left = `${clamp(p.x, 4, window.innerWidth - 240)}px`;
+    textwrap.style.top = `${clamp(p.y - 14, 4, window.innerHeight - 40)}px`;
+    textinput.value = "";
+    textinput.focus();
+  }
+  function closeText() { textwrap.classList.remove("on"); textAt = null; }
+  async function commitText() {
+    const text = textinput.value.trim();
+    const at = textAt;
+    closeText();
+    if (!text || !at) return;
+    const state = await api.add({ type: "text", tool: "text", text, color: st.color, width: st.width, size: 20, at });
+    if (state) applyState(state);
+  }
+  textinput.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); void commitText(); }
+    if (e.key === "Escape") { e.preventDefault(); closeText(); }
+  });
+
+  function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+
+  // ── toolbar ────────────────────────────────────────────────────────────────
+  toolbar.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.tool) { void api.setTool(b.dataset.tool); return; }
+    if (b.dataset.color) { void api.setColor(b.dataset.color); return; }
+    if (b.dataset.width) { void api.setWidth(Number(b.dataset.width)); return; }
+    const action = b.dataset.action;
+    if (action === "undo") void api.undo();
+    else if (action === "redo") void api.redo();
+    else if (action === "clear") void api.clear();
+    else if (action === "save") void saveNow();
+    else if (action === "exit") void api.exit();
+    else if (action === "fade") {
+      const i = FADE_STEPS.indexOf(Number(st.fadeMs) || 0);
+      void api.setFade(FADE_STEPS[(i + 1) % FADE_STEPS.length]);
+    }
+  });
+
+  /**
+   * Save shot reports its own failures (a display that cannot be captured, a
+   * saver that refuses): the success path speaks through commit/onSaved, so a
+   * silent no-op was the one outcome the user could not distinguish from a bug.
+   */
+  async function saveNow() {
+    try {
+      const verdict = await api.save();
+      if (!verdict || !verdict.ok) {
+        showHint(`Save failed: ${(verdict && verdict.reason) || "unknown error"}`, 4200);
+      }
+    } catch (error) {
+      showHint(`Save failed: ${String((error && error.message) || error).slice(0, 120)}`, 4200);
+    }
+  }
+
+  // Drag the toolbar by its grip (the window covers the display, so this is
+  // plain element movement, not a window drag).
+  let drag = null;
+  document.getElementById("grip").addEventListener("pointerdown", (e) => {
+    const rect = toolbar.getBoundingClientRect();
+    drag = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    e.target.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  window.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const rect = toolbar.getBoundingClientRect();
+    toolbar.style.transform = "none";
+    toolbar.style.left = `${clamp(e.clientX - drag.dx, 4, window.innerWidth - rect.width - 4)}px`;
+    toolbar.style.top = `${clamp(e.clientY - drag.dy, 4, window.innerHeight - rect.height - 4)}px`;
+    toolbar.style.bottom = "auto";
+  });
+  window.addEventListener("pointerup", () => { drag = null; });
+
+  // ── keyboard ───────────────────────────────────────────────────────────────
+  window.addEventListener("keydown", (e) => {
+    if (!st.active) return;
+    if (e.key === "Escape") { e.preventDefault(); void api.exit(); }
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      if (e.shiftKey) void api.redo(); else void api.undo();
+    }
+  });
+
+  // ── wiring ────────────────────────────────────────────────────────────────
+  window.addEventListener("pointerdown", onDown);
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onCancel);
+  window.addEventListener("pointerleave", () => { cursor.on = false; });
+
+  api.onState(applyState);
+  api.onChrome((visible) => {
+    chromeVisible = visible;
+    toolbar.hidden = !(st.active && st.toolbar && visible);
+    if (!visible) {
+      // A save grab hides the WHOLE chrome layer: the hint banner and the
+      // spotlight dim would otherwise be baked into the PNG.
+      hint.classList.remove("on");
+      spot.classList.remove("on");
+    }
+    if (visible) renderToolbar();
+    // Confirm the repaint so a save grab never bakes the toolbar into the PNG.
+    if (typeof api.chromeDone === "function") {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        try { api.chromeDone(); } catch { /* main is gone */ }
+      }));
+    }
+  });
+
+  (async () => {
+    const next = await api.init();
+    applyState(next);
+    startFadeClock();
+    if (!raf) frame();
+  })().catch(() => { /* the overlay stays blank; main owns the failure */ });
+</script>
+</body>
+</html>

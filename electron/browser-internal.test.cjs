@@ -335,6 +335,10 @@ function consolePreloadPicks(href) {
   };
   const fakeRequire = (name) => {
     if (name === "electron") return electron;
+    // console-preload.cjs decides the Files frame with real node:path/node:url
+    // (isOwnFilesPage). Stubbing them as {} makes that check throw and the frame
+    // silently read as "not files", so the run would disagree with preloadFor.
+    if (name === "node:path" || name === "node:url") return require(name);
     required.push(String(name).replace(/^\.\//, ""));
     return {};
   };
@@ -343,6 +347,9 @@ function consolePreloadPicks(href) {
     location: { href },
     document: { readyState: "complete", documentElement: root, addEventListener: noop },
     Promise,
+    // The VM has no Node globals; isOwnFilesPage uses URL and __dirname.
+    URL,
+    __dirname,
   };
   sandbox.self = sandbox;
   sandbox.top = sandbox;

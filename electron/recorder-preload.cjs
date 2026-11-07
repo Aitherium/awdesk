@@ -46,7 +46,21 @@ contextBridge.exposeInMainWorld("aitherRecorder", {
   done: () => ipcRenderer.invoke("recorder:done"),
   failed: (reason) => ipcRenderer.invoke("recorder:failed", String(reason || "")),
   onCommand: (fn) => subscribe("recorder:command", fn),
+  // The recording region changed under a live recording (its frame was dragged):
+  // the bar re-crops its canvas to the new region on this signal.
+  onRegion: (fn) => subscribe("recorder:region", fn),
   toastInfo: () => ipcRenderer.invoke("recorder:toast-info"),
   toastAction: (action) => ipcRenderer.invoke("recorder:toast-action", String(action || "")),
   onToastUpdate: (fn) => subscribe("recorder:toast-update", fn),
+});
+
+// The visible frame around a live region (recorder-frame.cjs / recorder-frame.html).
+contextBridge.exposeInMainWorld("aitherRecorderFrame", {
+  info: () => ipcRenderer.invoke("recorder:frame-info"),
+  // The pointer position, not a boolean: main hit-tests with core.hitFrameHandle
+  // so the page never grows a second (drift-prone) copy of the handle geometry.
+  hoverAt: (x, y) => ipcRenderer.invoke("recorder:frame-hover", { x: Number(x), y: Number(y) }),
+  dragStart: (edge) => ipcRenderer.invoke("recorder:frame-drag", { phase: "start", edge: String(edge || "move") }),
+  dragEnd: () => ipcRenderer.invoke("recorder:frame-drag", { phase: "end" }),
+  onUpdate: (fn) => subscribe("recorder:frame-update", fn),
 });

@@ -1,0 +1,3 @@
+// Icon resource for GetIcon(). GetIcon returns "<dll path>,-101".
+// aither-menu.ico is committed next to this file.
+101 ICON "aither-menu.ico"

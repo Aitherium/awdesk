@@ -56,12 +56,19 @@ function regExe(env = process.env) {
   return path.join(root, "System32", "reg.exe");
 }
 
+/** `"C:\x\awdesk.exe" "C:\app"` -- every path quoted, no verb flag. */
+function baseCommand({ exe, appArgs = [] }) {
+  const exePath = String(exe || "").trim();
+  // This module builds reg.exe commands, so the path is judged as a WINDOWS path:
+  // path.isAbsolute says false for "C:\..." when the test suite runs on POSIX.
+  if (!exePath || !path.win32.isAbsolute(exePath)) throw new Error("the desk executable path must be absolute");
+  if (/"/.test(exePath) || appArgs.some((a) => /"/.test(String(a)))) throw new Error("a quote inside a path is refused");
+  return [exePath, ...appArgs.map(String)].map((p) => `"${p}"`).join(" ");
+}
+
 /** `"C:\x\awdesk.exe" "C:\app" --files` -- every path quoted, the flag bare. */
 function launchCommand({ exe, appArgs = [] }) {
-  const exePath = String(exe || "").trim();
-  if (!exePath || !path.isAbsolute(exePath)) throw new Error("the desk executable path must be absolute");
-  if (/"/.test(exePath) || appArgs.some((a) => /"/.test(String(a)))) throw new Error("a quote inside a path is refused");
-  return [exePath, ...appArgs.map(String)].map((p) => `"${p}"`).concat(FILES_FLAG).join(" ");
+  return `${baseCommand({ exe, appArgs })} ${FILES_FLAG}`;
 }
 
 /** The two reg.exe argv lists Enable runs, in order. */
@@ -232,6 +239,6 @@ function createWinE({
 }
 
 module.exports = {
-  createWinE, launchCommand, enableCommands, restoreCommands, queryCommand, parseDefault, regExe,
+  createWinE, baseCommand, launchCommand, enableCommands, restoreCommands, queryCommand, parseDefault, regExe,
   CLSID, BASE_KEY, COMMAND_KEY, KEY_CHAIN, FILES_FLAG,
 };

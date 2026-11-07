@@ -207,7 +207,7 @@ async function request(fetchImpl, url, token, { method = "GET", body, timeoutMs 
   } catch (error) {
     return { ok: false, status: 0, error: String((error && error.message) || error) };
   }
-  let data = null;
+  let data;
   try {
     data = raw ? await res.text() : await res.json();
   } catch {
@@ -227,7 +227,7 @@ function createNotebooksClient({ fetchImpl = globalThis.fetch, env = process.env
   // The desk's own sign-in wins (one identity with awconnect); a signed-out desk (null) or a
   // provider that throws falls back to the `adk login` profile, never to an internal key.
   const bearer = async () => {
-    let desk = null;
+    let desk;
     try {
       desk = typeof token === "function" ? await token() : token;
     } catch {

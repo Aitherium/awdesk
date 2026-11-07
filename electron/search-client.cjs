@@ -254,7 +254,9 @@ function createSearchClient({
     });
   });
 
-  async function search(mode, text, { limit = 12 } = {}) {
+  // `signal` (optional) kills the awfind child: the Alt+Space launcher supersedes a
+  // web query the moment a newer one is typed, and its own 15 s deadline aborts too.
+  async function search(mode, text, { limit = 12, signal = null } = {}) {
     if (!MODES.includes(mode)) return { ok: false, error: `unknown search mode ${mode}` };
     const q = cleanQuery(text);
     if (!q) return { ok: false, error: "type something to search for" };
@@ -262,8 +264,11 @@ function createSearchClient({
     if (mode === "answer") args.push("--sources", "4");
     else args.push("--limit", String(Math.max(1, Math.min(30, Number(limit) || 12))));
     args.push("--", q);
-    const out = await run("awfind", args, SEARCH_TIMEOUT_MS[mode]);
+    const out = await run("awfind", args, SEARCH_TIMEOUT_MS[mode], signal);
     if (out.error && !out.stdout) {
+      if (out.error.name === "AbortError" || out.error.code === "ABORT_ERR") {
+        return { ok: false, error: "superseded by a newer search" };
+      }
       const why = out.error.code === "ENOENT" ? "awfind is not installed (pip install -e the awfind package)"
         : out.error.killed ? "the search took too long" : (out.stderr.trim().split("\n").pop() || String(out.error.message));
       return { ok: false, error: why };

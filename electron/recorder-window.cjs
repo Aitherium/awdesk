@@ -39,18 +39,35 @@ const os = require("node:os");
 const path = require("node:path");
 const core = require("./recorder-core.cjs");
 const snip = require("./snip-capture.cjs");
+// The visible frame around a live region (recorder-frame.cjs): its own window,
+// geometry from recorder-core, IPC channels added to handlers() below.
+const frameCtl = require("./recorder-frame.cjs");
 
 function electron() {
   return require("electron");
 }
 
-const BAR_WIDTH = 340;
-const BAR_HEIGHT = 44;
+// Wide enough for the owner's live audio controls (owner 2026-11-02: "control mic
+// input vs system input") plus the region size and the pause hint; two rows,
+// because a 680 px one-row bar clips the source names on a 4K screen's DIP scale.
+const BAR_WIDTH = 680;
+const BAR_HEIGHT = 68;
 const TOAST_WIDTH = 400;
 const TOAST_HEIGHT = 112;
+/**
+ * A frame drag reports a region on every poll tick (~60/s). The native grabber
+ * and the bar's canvas must react to the SETTLED region only: a 1 s drag used to
+ * restart ffmpeg ~60 times (60 tiny segments, all re-encoded at save).
+ */
+const REGION_SETTLE_MS = 400;
+let regionSettleMs = REGION_SETTLE_MS;
 
 let wired = false;
-let deps = { askVideo: null, onAnswer: null, enqueue: null, ffmpeg: undefined, syncEnabled: null };
+let deps = {
+  askVideo: null, onAnswer: null, enqueue: null, ffmpeg: undefined, syncEnabled: null,
+  /** () -> the pause chord main really holds, or null (the bar's hint). */
+  pauseHotkey: null,
+};
 const SPOOL_DIR = path.join(os.homedir(), ".aither", "desk-sync-spool-recordings");
 /** Queue ids the owner cancelled this run (belt to cancelSpooledJob's braces). */
 const cancelledJobs = new Set();
@@ -220,21 +237,83 @@ function nativeRect(display, cropDip) {
   try { return electron().screen.dipToScreenRect(null, dip); } catch { return dip; }
 }
 
-/** Start one gdigrab segment (on "recording"); ffmpeg writes until it reads "q". */
+function sameRect(a, b) {
+  return Boolean(a && b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height);
+}
+
+/**
+ * The region under a live recording changed (the frame was dragged, owner
+ * 2026-11-02: "resize the recording area on the fly"). The frame moves on every
+ * tick (it is the owner's feedback); the BAR re-crop and the native grabber
+ * restart only once the drag SETTLES (scheduleRegionSettle), so a drag produces
+ * one new segment rather than one per poll tick.
+ */
+function applyRegion(region) {
+  if (!session || !region) return { ok: false, reason: "no recording" };
+  session.cropDip = region;
+  if (session.frame && !session.frame.isDestroyed()) session.frame.setRegion(region);
+  scheduleRegionSettle(session);
+  return { ok: true, region };
+}
+
+/** Coalesce drag ticks: one action per settled region. */
+function scheduleRegionSettle(s) {
+  if (!s) return;
+  if (s.regionTimer) clearTimeout(s.regionTimer);
+  s.regionTimer = setTimeout(() => {
+    s.regionTimer = null;
+    settleRegion(s);
+  }, regionSettleMs);
+  if (s.regionTimer.unref) s.regionTimer.unref();
+}
+
+/** The drag has settled: tell the bar, retarget the native grabber (if unchanged, no-op). */
+function settleRegion(s) {
+  if (!s || s.state === "finishing" || !s.cropDip) return;
+  const region = s.cropDip;
+  if (s.bar && !s.bar.isDestroyed()) {
+    try {
+      s.bar.webContents.send("recorder:region", {
+        width: Math.round(region.width), height: Math.round(region.height),
+      });
+    } catch { /* bar gone: its closed handler saves */ }
+  }
+  if (s.native) void nativeRetarget(s, region);
+}
+
+/**
+ * Start one gdigrab segment (on "recording"); ffmpeg writes until it reads "q".
+ * Each part remembers the EVEN pixel size it was grabbed at, because a region
+ * dragged mid-recording produces parts of different sizes that must be
+ * normalized before the concat (core.needsNormalize / scalePadArgs).
+ */
 function nativeSegmentStart(s) {
+  // One grabber at a time: overwriting `live` orphans the old child, which keeps
+  // grabbing the screen until the app exits (its stdin is never sent "q").
+  if (!s.native || s.native.live) return false;
   const n = s.native.parts.length;
   const output = path.join(os.tmpdir(), "aither-recorder-native", `nat-${s.native.stamp}-${n}.mkv`);
   try { require("node:fs").mkdirSync(path.dirname(output), { recursive: true }); } catch { /* temp exists */ }
   const args = core.nativeGrabArgs({ rect: s.native.rect, fps: s.options.fps, output });
-  if (!args) return false;
-  const child = require("node:child_process").spawn(ffmpegPath(), args, { windowsHide: true, stdio: ["pipe", "ignore", "pipe"] });
+  const size = core.nativeGrabSize(s.native.rect);
+  if (!args || !size) return false;
+  if (!s.native.children) s.native.children = new Set();
+  const kids = s.native.children;
+  let child;
+  try {
+    child = require("node:child_process").spawn(ffmpegPath(), args, { windowsHide: true, stdio: ["pipe", "ignore", "pipe"] });
+  } catch {
+    return false; // no ffmpeg: the native path has nothing to grab with
+  }
   let err = "";
   child.stderr.on("data", (d) => { err = (err + d).slice(-400); });
   const done = new Promise((resolve) => {
-    child.on("error", (e) => resolve({ ok: false, reason: e.message }));
-    child.on("close", (code) => resolve(code === 0 ? { ok: true } : { ok: false, reason: err.trim().split(/\r?\n/).pop() || `ffmpeg exit ${code}` }));
+    const settle = (r) => { kids.delete(child); resolve(r); };
+    child.on("error", (e) => settle({ ok: false, reason: e.message }));
+    child.on("close", (code) => settle(code === 0 ? { ok: true } : { ok: false, reason: err.trim().split(/\r?\n/).pop() || `ffmpeg exit ${code}` }));
   });
-  s.native.parts.push(output);
+  kids.add(child);
+  s.native.parts.push({ path: output, size });
   s.native.live = { child, done };
   return true;
 }
@@ -251,20 +330,105 @@ async function nativeSegmentStop(s) {
   return r;
 }
 
-/** Stop the last segment and join every segment into one file; returns its path or null. */
+/** The safety net: a child that some path lost track of is still killed here. */
+function nativeKillAll(s) {
+  const kids = s && s.native && s.native.children;
+  if (!kids) return 0;
+  let killed = 0;
+  for (const child of kids) {
+    try { child.kill(); killed += 1; } catch { /* gone */ }
+  }
+  kids.clear();
+  if (s.native) s.native.live = null;
+  return killed;
+}
+
+/** Run `run` after every operation already queued for this session's grabber. */
+function nativeChain(s, run) {
+  if (!s.native) return Promise.resolve();
+  s.native.chain = (s.native.chain || Promise.resolve()).then(run, run);
+  return s.native.chain;
+}
+
+/**
+ * The region was dragged during a NATIVE recording: end this gdigrab segment and
+ * open the next one at the new rect. Serialized on a chain so a fast drag cannot
+ * interleave two starts; while paused only the rect changes (the next segment
+ * picks it up). The sound keeps recording in the bar across the switch, and is
+ * muxed onto the joined video at finish.
+ *
+ * An unchanged physical rect is a no-op: a pixel-identical drag is not a new
+ * region (and would otherwise restart ffmpeg for nothing).
+ */
+function nativeRetarget(s, region) {
+  if (!s.native) return Promise.resolve();
+  const next = nativeRect(s.display, region);
+  if (sameRect(next, s.native.rect)) return Promise.resolve();
+  s.native.rect = next;
+  if (s.state !== "recording") return Promise.resolve();
+  return nativeChain(s, async () => {
+    if (!s.native || s.state !== "recording") return;
+    await nativeSegmentStop(s);
+    if (s.state === "recording") nativeSegmentStart(s);
+  });
+}
+
+/**
+ * A resume arrives on the SAME chain as a retarget: if the retarget is mid-way
+ * through stopping its segment, the resume waits and then sees `live` already
+ * restarted, instead of spawning a second grabber into the gap.
+ */
+function nativeResume(s) {
+  return nativeChain(s, async () => {
+    if (!s.native || s.state !== "recording" || s.native.live) return;
+    nativeSegmentStart(s);
+  });
+}
+
+/**
+ * Stop the last segment and join every segment into one file; returns its path or
+ * null. Segments of DIFFERENT sizes (a region resized mid-recording) are first
+ * re-encoded to the first segment's size with scale+pad (core.scalePadArgs) --
+ * the concat demuxer cannot copy-join mismatched streams.
+ */
 async function nativeAssemble(s) {
+  if (s.native.chain) await s.native.chain;
   await nativeSegmentStop(s);
   const fs = require("node:fs");
-  const parts = s.native.parts.filter((p) => { try { return fs.statSync(p).size > 0; } catch { return false; } });
-  if (parts.length <= 1) return parts[0] || null;
-  const dir = path.dirname(parts[0]);
+  let parts = s.native.parts
+    .filter((p) => p && p.size && (() => { try { return fs.statSync(p.path).size > 0; } catch { return false; } })())
+    .map((p) => ({ ...p }));
+  if (!parts.length) return null;
+  if (core.needsNormalize(parts.map((p) => p.size))) {
+    const first = parts[0].size;
+    const normalized = [];
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i];
+      if (part.size.width === first.width && part.size.height === first.height) { normalized.push(part); continue; }
+      const out = part.path.replace(/\.mkv$/i, "-norm.mkv");
+      const r = await runFfmpeg(ffmpegPath(), core.scalePadArgs({
+        input: part.path, output: out, size: first, fps: s.options.fps,
+      }));
+      if (r.ok) {
+        try { fs.unlinkSync(part.path); } catch { /* temp */ }
+        normalized.push({ path: out, size: { ...first } });
+      } else {
+        // Keep the raw part: the concat below will say so if it cannot join it.
+        console.warn(`[recorder] could not normalize a resized segment: ${r.reason}`);
+        normalized.push(part);
+      }
+    }
+    parts = normalized;
+  }
+  if (parts.length === 1) return parts[0].path;
+  const dir = path.dirname(parts[0].path);
   const list = path.join(dir, `nat-${s.native.stamp}.txt`);
   const joined = path.join(dir, `nat-${s.native.stamp}-joined.mkv`);
-  fs.writeFileSync(list, core.nativeConcatList(parts));
-  const r = await runFfmpeg(ffmpegPath(), ["-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-y", joined]);
+  fs.writeFileSync(list, core.nativeConcatList(parts.map((p) => p.path)));
+  const r = await runFfmpeg(ffmpegPath(), core.concatArgs({ listPath: list, output: joined }));
   try { fs.unlinkSync(list); } catch { /* temp */ }
-  if (!r.ok) return parts[0];
-  for (const p of parts) { try { fs.unlinkSync(p); } catch { /* temp */ } }
+  if (!r.ok) return parts[0].path;
+  for (const p of parts) { try { fs.unlinkSync(p.path); } catch { /* temp */ } }
   return joined;
 }
 
@@ -389,14 +553,30 @@ function beginBar(frame, cropDip) {
   bar.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   bar.webContents.on("will-navigate", (event) => event.preventDefault());
   const stamp = `${Date.now()}-${process.pid}`;
+  // The visible frame around the region (owner 2026-11-02: "I dragged a box but
+  // can't see the box"). Only a REGION gets one: a whole-display recording has no
+  // band outside the display to draw in. Its drags call applyRegion above.
+  let frameWin = null;
+  if (cropDip) {
+    frameWin = frameCtl.showFrame({
+      region: cropDip,
+      display: frame.display,
+      onRegion: (region) => { applyRegion(region); },
+    });
+    if (frameWin) frameWin.setState("starting");
+  }
   session = {
     ...session,
     state: "starting",
     display: frame.display,
     sourceId: frame.source ? frame.source.id : null,
-    native: frame.source ? null : { rect: nativeRect(frame.display, cropDip), stamp, parts: [], live: null },
+    native: frame.source ? null : {
+      rect: nativeRect(frame.display, cropDip), stamp, parts: [], live: null, chain: null, children: new Set(),
+    },
     cropDip,
+    regionTimer: null,
     bar,
+    frame: frameWin,
     writer: core.createChunkWriter(path.join(os.tmpdir(), "aither-recorder", `rec-${stamp}.webm`)),
     startedAt: new Date(),
   };
@@ -443,12 +623,24 @@ async function finish({ reason } = {}) {
   if (!session || session.state === "finishing") return { ok: false, reason: "nothing to finish" };
   const s = session;
   s.state = "finishing";
+  // A settle still waiting would retarget a recording that is already closing.
+  if (s.regionTimer) { clearTimeout(s.regionTimer); s.regionTimer = null; }
+  // The frame goes first: a visible box over a stopped recording is a lie.
+  try { if (s.frame) s.frame.destroy(); } catch { /* already gone */ }
   s.writer.close();
   try { if (s.bar && !s.bar.isDestroyed()) s.bar.destroy(); } catch { /* already gone */ }
   let tempPath = s.writer.path;
   let nativeSound = false;
   if (s.native) {
-    tempPath = await nativeAssemble(s);
+    try {
+      tempPath = await nativeAssemble(s);
+    } catch (error) {
+      console.warn(`[recorder] could not join the native segments: ${(error && error.message) || error}`);
+      tempPath = null;
+    } finally {
+      // Every child is accounted for even when the assemble threw (no leak past save).
+      nativeKillAll(s);
+    }
     const fs = require("node:fs");
     let soundBytes = 0;
     try { soundBytes = fs.statSync(s.writer.path).size; } catch { /* no sound recorded */ }
@@ -629,6 +821,12 @@ function fromBar(event) {
   return Boolean(session && session.bar && !session.bar.isDestroyed() && event.sender.id === session.bar.webContents.id);
 }
 
+/** Only the frame's own webContents may drive hover/drag on it. */
+function fromFrame(event) {
+  return Boolean(session && session.frame && !session.frame.isDestroyed()
+    && event.sender && event.sender.id === session.frame.webContentsId);
+}
+
 /**
  * The IPC contract as a pure-ish table (channel -> handler(event, arg)), so the
  * wiring is inspectable; ensureRecorderIpc registers it once.
@@ -667,6 +865,20 @@ function handlers() {
     // The bar.
     "recorder:plan": (event) => {
       if (!fromBar(event)) return { ok: false, reason: "not the recorder bar" };
+      // `sound` is true whenever ANY source was asked for, so the bar builds its
+      // per-source GainNode mix even for a plain record.region (system on by
+      // default; owner 2026-11-02) and can mute/unmute each source live.
+      const sound = Boolean(session.options.systemAudio || session.options.mic);
+      const region = session.cropDip
+        ? { width: Math.round(session.cropDip.width), height: Math.round(session.cropDip.height) } : null;
+      const bounds = session.display && session.display.bounds ? session.display.bounds : null;
+      // The key main REALLY holds (registry accelFor): the bar must not promise a
+      // chord another app owns, and hides the hint entirely when none is live.
+      let pauseHotkey = null;
+      try {
+        pauseHotkey = typeof deps.pauseHotkey === "function" ? deps.pauseHotkey() || null : null;
+      } catch { /* an unreadable hotkey state promises nothing */ }
+      const displaySize = bounds ? { width: Math.round(bounds.width), height: Math.round(bounds.height) } : null;
       if (session.native) {
         return {
           ok: true, native: true, fps: session.options.fps, format: session.options.format,
@@ -674,6 +886,11 @@ function handlers() {
           // The bar records the sound (any GPU can); main muxes it onto the video at finish.
           systemAudio: session.options.systemAudio ? core.systemAudioConstraints() : null,
           mic: session.options.mic,
+          micDeviceId: session.options.micDeviceId,
+          sound,
+          region,
+          displaySize,
+          pauseHotkey,
         };
       }
       return {
@@ -681,9 +898,14 @@ function handlers() {
         constraints: core.captureConstraints({ sourceId: session.sourceId, display: session.display, fps: session.options.fps }),
         systemAudio: session.options.systemAudio ? core.systemAudioConstraints() : null,
         mic: session.options.mic,
+        micDeviceId: session.options.micDeviceId,
         fps: session.options.fps,
         cropped: Boolean(session.cropDip),
         format: session.options.format,
+        region,
+        displaySize,
+        pauseHotkey,
+        sound,
         ffmpeg: Boolean(ffmpegPath()),
       };
     },
@@ -707,11 +929,18 @@ function handlers() {
       if (next === "recording" && !open) session.segments.push([now, null]);
       if (next === "paused" && open) session.segments[session.segments.length - 1][1] = now;
       // Native: each recording stretch is its own ffmpeg segment, joined at finish.
-      if (session.native && next === "recording" && !session.native.live && !nativeSegmentStart(session)) {
+      // The size is validated BEFORE the state moves, so a refused start never
+      // leaves the bar believing it is recording.
+      if (session.native && next === "recording" && !session.native.live
+        && !core.nativeGrabSize(session.native.rect)) {
         return { ok: false, reason: "the region is too small to record" };
       }
-      if (session.native && next === "paused") void nativeSegmentStop(session);
       if (next === "recording" || next === "paused") session.state = next;
+      // Through the chain: a resume that lands while a retarget is stopping its
+      // segment must not start a second grabber (the orphaned one would never stop).
+      if (session.native && next === "recording" && !session.native.live) void nativeResume(session);
+      if (session.native && next === "paused") void nativeSegmentStop(session);
+      if (session.frame) session.frame.setState(next);
       // A stop/pause asked for while the bar was starting: the bar registered
       // onCommand before it reported "recording", so it hears this one.
       if (next === "recording" && session.pendingCommand) {
@@ -730,7 +959,12 @@ function handlers() {
       const why = String(raw || "capture failed").slice(0, 160);
       const s = session;
       session = null;
-      if (s.native) void nativeSegmentStop(s);
+      // Not "recording" any more: a retarget/resume already queued on the native chain
+      // checks this and bails instead of spawning a grabber after the teardown below.
+      s.state = "failed";
+      if (s.regionTimer) { clearTimeout(s.regionTimer); s.regionTimer = null; }
+      try { if (s.frame) s.frame.destroy(); } catch { /* already gone */ }
+      if (s.native) { void nativeSegmentStop(s); nativeKillAll(s); }
       try { s.writer.close(); } catch { /* nothing opened */ }
       // An empty temp file is litter; one with bytes is recovered on the next start.
       if (!s.writer.bytes) { try { require("node:fs").unlinkSync(s.writer.path); } catch { /* never created */ } }
@@ -738,6 +972,20 @@ function handlers() {
       return fail(`1 recording could not start (${why}) — allow screen and mic access, then try again`);
     },
     "recorder:status": () => status(),
+    // The visible frame around a live region (owner 2026-11-02). Only its own
+    // webContents may speak these channels; a drag re-runs applyRegion above.
+    "recorder:frame-info": (event) => (session && session.frame && fromFrame(event)
+      ? session.frame.info() : { ok: false, reason: "no recording frame" }),
+    // ONE hit-test path: the page sends the pointer, recorder-frame.cjs asks
+    // core.hitFrameHandle which handle (if any) is under it and sets the mouse mode.
+    "recorder:frame-hover": (event, raw) => (fromFrame(event)
+      ? session.frame.hoverAt(raw && raw.x, raw && raw.y) : { ok: false, reason: "no recording frame" }),
+    "recorder:frame-drag": (event, raw) => {
+      if (!fromFrame(event)) return { ok: false, reason: "no recording frame" };
+      const phase = String((raw && raw.phase) || "");
+      if (phase === "start") return session.frame.beginDrag(String((raw && raw.edge) || "move"));
+      return session.frame.endDrag();
+    },
     // The toast.
     "recorder:toast-info": () => publicToast(),
     "recorder:toast-action": (_event, action) => toastAction(String(action || "")),
@@ -771,5 +1019,13 @@ function __setStateForTest(next = {}) {
 module.exports = {
   configureRecorder, startRecording, stopRecording, togglePause, isRecording, status,
   ensureRecorderIpc, lastRecordingPath, firstFrameRunner, closeOverlays, handlers,
-  cancelQueued, autoSyncEnabled, publicToast, __setStateForTest,
+  cancelQueued, autoSyncEnabled, publicToast, applyRegion, __setStateForTest,
+  /** Test seams: the settle delay and the native grabber's internals. */
+  __setRegionSettleMsForTest: (ms) => {
+    regionSettleMs = ms === null || ms === undefined
+      ? REGION_SETTLE_MS
+      : (Number.isFinite(Number(ms)) && Number(ms) >= 0 ? Number(ms) : REGION_SETTLE_MS);
+    return regionSettleMs;
+  },
+  __nativeForTest: { start: nativeSegmentStart, stop: nativeSegmentStop, killAll: nativeKillAll },
 };

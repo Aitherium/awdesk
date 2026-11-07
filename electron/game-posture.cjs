@@ -99,7 +99,7 @@ function createGamePosture({ app, BrowserWindow, read, overlayVisible, hideOverl
       const wc = w.webContents;
       if (!wc) continue;
       if (!previous.has(wc.id)) {
-        let was = false;
+        let was;
         try {
           was = typeof wc.getBackgroundThrottling === "function" ? wc.getBackgroundThrottling() : false;
         } catch {
@@ -137,7 +137,7 @@ function createGamePosture({ app, BrowserWindow, read, overlayVisible, hideOverl
   }
 
   function tick() {
-    let gaming = false;
+    let gaming;
     try {
       gaming = Boolean(read());
     } catch {

@@ -121,7 +121,26 @@ function writableDir(candidates, { fsImpl = fs, now = () => Date.now() } = {}) {
 }
 
 /** The toast note when a capture had to fall back. */
-function fallbackNote(preferred, used) {
+// Owner 2026-11-02 (a toast on every snip): the Controlled Folder Access note is
+// shown ONCE per preferred folder, then remembered in ~/.aither/cfa-noted.json.
+// Saving keeps working through the fallback either way; only the nag stops.
+const NOTED_FILE = path.join(os.homedir(), ".aither", "cfa-noted.json");
+let notedCache = null;
+function notedDirs(fsImpl = fs) {
+  if (notedCache) return notedCache;
+  try { notedCache = new Set(JSON.parse(fsImpl.readFileSync(NOTED_FILE, "utf8"))); } catch { notedCache = new Set(); }
+  return notedCache;
+}
+
+/** The note for the FIRST fallback from `preferred`; null after that (already told). */
+function fallbackNote(preferred, used, { fsImpl = fs, once = true } = {}) {
+  const key = path.resolve(String(preferred || ""));
+  if (once) {
+    const seen = notedDirs(fsImpl);
+    if (seen.has(key)) return null;
+    seen.add(key);
+    try { fsImpl.writeFileSync(NOTED_FILE, JSON.stringify([...seen])); } catch { /* the note shows again next launch */ }
+  }
   return `Windows blocked ${path.basename(path.dirname(preferred)) || preferred} (Controlled Folder Access) — `
     + `saved to ${used}. Allow Aither under Windows Security › Ransomware protection to save there.`;
 }
