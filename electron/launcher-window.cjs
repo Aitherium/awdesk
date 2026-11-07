@@ -167,7 +167,16 @@ function execPlan(plan) {
  * @param {object} opts.quickMenu createQuickMenu() -- the radial
  * @param {Function} [opts.now]
  */
-function createLauncher({ electron, registry, run, ask = null, spirit = null, quickMenu, now = Date.now } = {}) {
+function createLauncher({
+  electron, registry, run, ask = null, spirit = null, quickMenu, now = Date.now,
+  // () => Promise<host-context sample>. Started the instant Alt+Space goes DOWN,
+  // before showAtCursor() takes focus -- sampled any later, the foreground window
+  // is the launcher itself. Null = the empty box stays "Type to search".
+  hostContext = null,
+} = {}) {
+  // The "Right now" sample for THIS press. A promise, so the empty search can wait
+  // the few hundred ms the probe takes instead of racing it.
+  let pressContext = null;
   if (!electron) throw new Error("launcher needs electron");
   if (!quickMenu) throw new Error("launcher needs the quick menu's radial");
 
@@ -309,6 +318,9 @@ function createLauncher({ electron, registry, run, ask = null, spirit = null, qu
     lastPressAt = at;
     releasedAt = 0;
     heldSeen = false;
+    pressContext = hostContext
+      ? Promise.resolve().then(() => hostContext()).catch((error) => ({ ok: false, reason: String((error && error.message) || error) }))
+      : null;
     showAtCursor();
     // The key is down; the renderer can only report it coming UP if it has focus.
     focusTimer = setTimeout(() => {
@@ -426,7 +438,38 @@ function createLauncher({ electron, registry, run, ask = null, spirit = null, qu
           ? (parsed.term ? "Enter sends this to Spirit" : "Type a message after @")
           : "No Spirit command in this build — press ? to Ask Aither" };
     }
+    // `!private` / `!hide`: a deliberate, short reveal of the hidden-by-default rows.
+    // While TYPING this only shows a hint -- the device check runs on Enter
+    // (runRow "reveal:..."), never on a keystroke, so typing "!pri" cannot pop a
+    // Windows Hello prompt.
+    const raw = String(text || "").trim().toLowerCase();
+    if (raw === "!private" || raw === "!hidden" || raw === "!hide") {
+      const reveal = require("./private-reveal.cjs").sharedReveal();
+      const showing = reveal.active();
+      const item = raw === "!hide" || showing
+        ? { key: "reveal:lock", kind: "reveal", title: "Hide private results again",
+          subtitle: showing ? `Showing them for ${Math.ceil(reveal.remainingMs() / 60000)} more min` : "They are already hidden" }
+        : { key: "reveal:unlock", kind: "reveal", title: "Show hidden results for 5 minutes",
+          subtitle: "Games and private titles. Asks Windows Hello / Touch ID first." };
+      return { ok: true, token, mode: "all", term: "", phase: "idle",
+        groups: [{ id: "private", label: "Private", total: 1, shown: [item], items: [item], more: 0 }],
+        status: "Enter to confirm" };
+    }
     if (!parsed.term) {
+      // The empty box answers with what the owner is LOOKING AT (launcher-context.cjs)
+      // instead of a blank "Type to search".
+      if (pressContext) {
+        const context = await pressContext;
+        if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
+        const hasAction = (id) => Boolean(registry && registry.byId && registry.byId(id));
+        const built = require("./launcher-context.cjs").rightNowGroup(context, hasAction);
+        if (built.group) {
+          const sw = require("./search-window.cjs");
+          const shown = sw.publicRun({ ok: true, query: "", phase: "idle", groups: [built.group], total: built.items.length });
+          return { ok: true, token, mode: "all", term: "", phase: "idle", groups: shown.groups, status: built.status };
+        }
+        if (built.status) return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: built.status };
+      }
       return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: core.IDLE_STATUS };
     }
     const sw = require("./search-window.cjs");
@@ -471,8 +514,18 @@ function createLauncher({ electron, registry, run, ask = null, spirit = null, qu
 
   // ── actions ───────────────────────────────────────────────────────────────
   async function runRow(key, query) {
+    if (key === "reveal:unlock" || key === "reveal:lock") {
+      const reveal = require("./private-reveal.cjs").sharedReveal();
+      if (key === "reveal:lock") return { ...reveal.lock(), did: "hidden results hidden again" };
+      const verdict = await reveal.unlock();
+      return verdict.ok
+        ? { ok: true, did: "showing hidden results for 5 minutes" }
+        : { ok: false, error: `Hidden results stay hidden — ${verdict.reason}` };
+    }
     const sw = require("./search-window.cjs");
-    const result = await sw.launchItem(String(key || ""), String(query || ""), {
+    const remembered = String(key || "").startsWith("ctx:") && sw.rememberedItem ? sw.rememberedItem(key) : null;
+    const effective = String(query || "") || (remembered && remembered.prompt) || "";
+    const result = await sw.launchItem(String(key || ""), effective, {
       shell, clipboard,
       action: (id) => run(id),
       chat: ask || null,

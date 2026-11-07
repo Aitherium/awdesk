@@ -146,6 +146,12 @@ function setChatSender(fn) {
  * The view a page gets of a universal run: every item WITHOUT its target (a path or
  * clipboard text stays in main), remembered by key for launchItem.
  */
+/** The full remembered row for a key (target and all) -- main-side only; the page
+ *  never sees it. Used by the launcher to read a context row's own prompt. */
+function rememberedItem(key) {
+  return remembered.get(String(key || "")) || null;
+}
+
 function publicRun(r) {
   if (!r || !r.ok) return r;
   if (remembered.size > REMEMBERED_MAX) remembered.clear();
@@ -427,6 +433,7 @@ function registerLauncherShortcut(globalShortcut, { onPress = () => toggleLaunch
 }
 
 module.exports = {
+  rememberedItem,
   CHAT_ACCEPT_MS, LAUNCHER_ACCELS, UNWIRED,
   client, ensureSearchIpc, failureOf, openAppsFolderEntry, fromSearchPage, hideLauncher, launchItem, publicRun, registerLauncherShortcut,
   searchHandlers, sendChat, setActionRunner, setChatSender, setForgeOpener, setWebOpener, toggleLauncher, universal,

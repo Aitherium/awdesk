@@ -215,6 +215,21 @@ const launcher = require("./launcher-window.cjs").createLauncher({
   ask: (text) => commandAction(text, { source: "launcher" }),
   spirit: null, // @ sends through the spirit.go registry row (a plain sentence = a search trip)
   quickMenu,
+  // Alt+Space opens on what the owner is LOOKING AT (launcher-context.cjs), sampled
+  // on key-down, before the overlay takes focus.
+  hostContext: () => require("./host-context.cjs").sampleHostContext(),
+});
+// `!private` reveal (private-reveal.cjs): Windows Hello / Touch ID first; on a PC with
+// neither, a fresh Aitherium sign-in as THIS desk's owner. Created here, once, with
+// those deps -- search and the launcher then share the same 5-minute window.
+require("./private-reveal.cjs").sharedReveal({
+  systemPreferences: require("electron").systemPreferences,
+  signIn: ({ prompt }) => require("./desk-oidc.cjs").signInLoopback({
+    prompt, openExternal: (url) => require("electron").shell.openExternal(url),
+  }),
+  expectUser: (() => {
+    try { return (require("./desk-session.cjs").readAuthStoreToken() || {}).username || ""; } catch { return ""; }
+  })(),
 });
 // OWNER-CONSENTED, reversible (files-wine.cjs pattern): never enabled here; the
 // registry rows call enable({consent:true}) / restore(). `shellMenuOn` is the ONE
@@ -917,6 +932,13 @@ function scheduleHyprlandWindowConfiguration({
 
 function showOverlay({ focus = false } = {}) {
   const window = createWindow();
+  // Fairy mode (owner 2026-11-06: "awdesk keeps spawning these avatars when I am
+  // intending to switch to FAIRIES"). ~20 AUTOMATIC callers -- the room stage, the
+  // voice session, open mic, a slot spawn, a reload -- each called showOverlay(),
+  // so the full bodies came back whenever an agent spoke. In fairy mode an
+  // automatic call still CREATES the window (mic capture and the room stage live
+  // in it) but never SHOWS it; only an explicit owner action (focus:true) does.
+  if (!focus && companionMode() === "fairy") return;
   if (window.isMinimized()) window.restore();
   if (focus) {
     if (!window.isVisible()) window.show();
