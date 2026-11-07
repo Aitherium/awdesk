@@ -140,8 +140,13 @@ test("move refuses to overwrite and names the remedy", async (t) => {
 test("a cross-volume move copies, then sends the SOURCE to the Recycle Bin", async (t) => {
   const s = sandbox(t);
   const real = fs.renameSync;
+  // files-access canonicalizes every granted root, so the destination carrying the
+  // move is B's REAL path -- /var/... becomes /private/var/... on macOS and the 8.3
+  // short form becomes the long name on Windows. Compare against the same value.
+  const bReal = (fs.realpathSync.native || fs.realpathSync)(s.b);
   t.mock.method(fs, "renameSync", (from, to) => {
-    if (String(to).startsWith(s.b)) { const e = new Error("EXDEV"); e.code = "EXDEV"; throw e; }
+    const dest = String(to);
+    if (dest === bReal || dest.startsWith(bReal + path.sep)) { const e = new Error("EXDEV"); e.code = "EXDEV"; throw e; }
     return real(from, to);
   });
   const res = await s.ops.move(s.ids.A, ["note.txt"], s.ids.B, "");

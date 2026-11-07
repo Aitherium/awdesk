@@ -70,7 +70,9 @@ function regExe(env = process.env) {
 /** `"C:\x\awdesk.exe" "C:\app" --run=snip.region` -- paths quoted, the flag bare. */
 function launchCommand({ exe, appArgs = [], id }) {
   const exePath = String(exe || "").trim();
-  if (!exePath || !path.isAbsolute(exePath)) throw new Error("the desk executable path must be absolute");
+  // This module builds reg.exe commands, so the path is judged as a WINDOWS path:
+  // path.isAbsolute says false for "C:\..." when the test suite runs on POSIX.
+  if (!exePath || !path.win32.isAbsolute(exePath)) throw new Error("the desk executable path must be absolute");
   const commandId = String(id || "").trim();
   if (!/^[a-z0-9][a-z0-9._-]*$/i.test(commandId)) throw new Error(`not a command id: ${commandId}`);
   if (/"/.test(exePath) || appArgs.some((a) => /"/.test(String(a)))) throw new Error("a quote inside a path is refused");
