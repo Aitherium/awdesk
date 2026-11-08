@@ -174,6 +174,8 @@ const avatarLibrarySync = require("./avatar-library-sync.cjs");
 const avatarCatalogSync = require("./avatar-catalog-sync.cjs");
 /** VRoid models the broker last returned, by id -- the install handler's source of truth. */
 const vroidSeen = new Map();
+/** Market listing ids the Deck was last shown -- the only ids desk:market-install accepts. */
+const marketSeen = new Set();
 // Full system awareness (#9): the five snapshot clients the deck's System
 // section renders. Each fails soft (ok:true + per-source ERROR notes) — a
 // down gateway is a rendered state, never a broken panel.
@@ -5425,8 +5427,44 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     });
     // One-stop-shop data: the Aitherium marketplace via market-client.cjs
     // (MCP to the local gateway, session bearer — same story as relay).
-    ipcMain.handle("desk:market-browse", (_event, query) =>
-      marketClient.browse(typeof query === "string" ? query : "", "", 24));
+    ipcMain.handle("desk:market-browse", async (_event, query) => {
+      const result = await marketClient.browse(typeof query === "string" ? query : "", "", 24);
+      // Only a listing THIS process was shown can be installed (same rule as vroidSeen):
+      // the renderer names an id, never a path or a flag.
+      for (const listing of result.listings || []) {
+        if (listing && typeof listing.id === "string") marketSeen.add(listing.id);
+      }
+      return result;
+    });
+    // Install = `adk pack install <id>` (awdk's one resolver: awpack, Library, awnode
+    // ext; one lock record with source + sha256). Main asks first, in a native dialog
+    // the page cannot answer for it, and asks AGAIN before any third-party add-on.
+    ipcMain.handle("desk:market-install", async (_event, listingId) => {
+      const id = typeof listingId === "string" ? listingId : "";
+      if (!marketSeen.has(id)) return { ok: false, id, detail: "not a listing the market showed this desk" };
+      const parent = deckWindow && !deckWindow.isDestroyed() ? deckWindow : undefined;
+      const confirm = async (step, info) => {
+        const third = step === "community";
+        const options = {
+          type: third ? "warning" : "question",
+          buttons: [third ? "Install anyway" : "Install", "Cancel"],
+          defaultId: third ? 1 : 0,
+          cancelId: 1,
+          title: third ? "Third-party add-on" : "Install add-on",
+          message: third
+            ? `${info.id} is a third-party add-on nobody at Aitherium reviewed.`
+            : `Install ${info.id}?`,
+          detail: third
+            ? "It runs with your permissions. Read it first. Install it anyway?"
+            : `Runs: adk pack install ${info.id} (verified, recorded with its source and hash).`,
+        };
+        const { response } = parent
+          ? await dialog.showMessageBox(parent, options)
+          : await dialog.showMessageBox(options);
+        return response === 0;
+      };
+      return marketClient.installWithConsent(id, { confirm });
+    });
     // The avatar store (W4-04): the person's own library and VRoid Hub search,
     // both through the broker (market-client.cjs -> portal /api/avatars). The
     // renderer names a library id or a VRoid model id, never a path, a rating or

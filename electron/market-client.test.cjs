@@ -225,3 +225,151 @@ test("uploadAvatar refuses a local-only imported body before any request", async
   assert.equal(r.refused, "local-only");
   assert.equal(called, 0, "no request leaves the machine");
 });
+
+// ─── the working catalog first; install through adk with consent ───────────────
+//
+// 2026-11-08: the Deck called agent_marketplace_browse, whose backend does not
+// resolve on the fleet, so "Models & market" read as unavailable while
+// marketplace_browse (Genesis /v1/marketplace/catalog) answered. And a listing
+// could only be opened as a URL: there was no way to install one.
+
+function routedCallTool(routes, seen = []) {
+  return async (name, args) => {
+    seen.push([name, args]);
+    const route = routes[name];
+    if (route instanceof Error) throw route;
+    return typeof route === "function" ? route(args) : route;
+  };
+}
+
+test("browse: asks marketplace_browse FIRST and maps kind onto listing_type", async () => {
+  const seen = [];
+  await withCallTool(
+    routedCallTool({
+      marketplace_browse: JSON.stringify({ listings: [
+        { id: "persona", name: "Persona", kind: "agent", description: "avatar bridge" },
+        { id: "pdf-tools", name: "PDF tools", kind: "tool_pack", tags: ["pdf"] },
+      ] }),
+      agent_marketplace_browse: new Error("must not be called when the catalog answers"),
+    }, seen),
+    async (client) => {
+      const r = await client.browse("pdf");
+      assert.equal(r.ok, true);
+      assert.equal(r.source, "marketplace_browse");
+      assert.deepEqual(r.listings.map((l) => l.id), ["pdf-tools"]);
+      assert.equal(r.listings[0].listing_type, "tool_pack");
+      assert.deepEqual(seen.map(([n]) => n), ["marketplace_browse"]);
+    },
+  );
+});
+
+test("browse: falls back to agent_marketplace_browse when the catalog fails", async () => {
+  await withCallTool(
+    routedCallTool({
+      marketplace_browse: new Error("genesis down"),
+      agent_marketplace_browse: JSON.stringify({ listings: [{ id: "old", name: "legacy" }] }),
+    }),
+    async (client) => {
+      const r = await client.browse();
+      assert.equal(r.ok, true);
+      assert.equal(r.source, "agent_marketplace_browse");
+      assert.deepEqual(r.listings.map((l) => l.id), ["old"]);
+    },
+  );
+});
+
+test("browse: both down names both reasons and keeps the shape", async () => {
+  await withCallTool(
+    routedCallTool({
+      marketplace_browse: new Error("genesis down"),
+      agent_marketplace_browse: new Error("aitheros-marketplace does not resolve"),
+    }),
+    async (client) => {
+      const r = await client.browse();
+      assert.equal(r.ok, false);
+      assert.deepEqual(r.listings, []);
+      assert.match(r.reason, /genesis down/);
+      assert.match(r.reason, /does not resolve/);
+    },
+  );
+});
+
+const mc = require("./market-client.cjs");
+
+test("installArgv: one argv element per word, never a flag smuggled in an id", () => {
+  assert.deepEqual(mc.installArgv("persona"),
+    ["-m", "adk.cli", "pack", "install", "persona", "--json"]);
+  assert.deepEqual(mc.installArgv("community:abc", { allowCommunity: true }),
+    ["-m", "adk.cli", "pack", "install", "community:abc", "--json", "--allow-community"]);
+  for (const bad of ["--allow-community", "a b", "../x", "", "x;rm -rf /"]) {
+    assert.equal(mc.installArgv(bad), null, bad);
+  }
+});
+
+function fakePython(replies, seen) {
+  return async (argv) => {
+    seen.push(argv);
+    return replies.shift();
+  };
+}
+
+test("installWithConsent: nothing runs until the person says yes", async () => {
+  const seen = [];
+  const r = await mc.installWithConsent("persona", {
+    confirm: async () => false, runPython: fakePython([], seen),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.cancelled, true);
+  assert.deepEqual(seen, []);
+});
+
+test("installWithConsent: a first-party install runs adk once and reports the record", async () => {
+  const seen = [];
+  const steps = [];
+  const out = JSON.stringify({ ok: true, kind: "awpack", id: "persona", detail: "installed",
+    record: { sha256: "ab".repeat(32) }, next: "pip install awdk" });
+  const r = await mc.installWithConsent("persona", {
+    confirm: async (step) => { steps.push(step); return true; },
+    runPython: fakePython([{ status: 0, stdout: `some log\n${out}\n`, stderr: "" }], seen),
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.kind, "awpack");
+  assert.equal(r.record.sha256.length, 64);
+  assert.deepEqual(steps, ["install"]);
+  assert.equal(seen.length, 1);
+});
+
+test("installWithConsent: third-party asks a SECOND time before --allow-community", async () => {
+  const seen = [];
+  const steps = [];
+  const refused = JSON.stringify({ ok: false, kind: "awpack", id: "cpack",
+    detail: "'cpack' is a COMMUNITY pack ... re-run with --allow-community to install it." });
+  const done = JSON.stringify({ ok: true, kind: "awpack", id: "cpack", detail: "installed" });
+  const r = await mc.installWithConsent("cpack", {
+    confirm: async (step) => { steps.push(step); return true; },
+    runPython: fakePython([{ status: 1, stdout: refused, stderr: "" },
+      { status: 0, stdout: done, stderr: "" }], seen),
+  });
+  assert.equal(r.ok, true);
+  assert.deepEqual(steps, ["install", "community"]);
+  assert.equal(seen[1].includes("--allow-community"), true);
+  assert.equal(seen[0].includes("--allow-community"), false);
+});
+
+test("installWithConsent: declining the third-party warning installs nothing more", async () => {
+  const seen = [];
+  const refused = JSON.stringify({ ok: false, id: "cpack", detail: "re-run with --allow-community" });
+  const r = await mc.installWithConsent("cpack", {
+    confirm: async (step) => step === "install",
+    runPython: fakePython([{ status: 1, stdout: refused, stderr: "" }], seen),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.cancelled, true);
+  assert.equal(seen.length, 1);
+});
+
+test("install: no python / no awdk is a reason, never a throw", async () => {
+  const r = await mc.install("persona", { runPython: async () => ({ status: null, error: new Error("ENOENT") }) });
+  assert.equal(r.ok, false);
+  assert.match(r.detail, /pip install -U awdk/);
+});
