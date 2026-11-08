@@ -221,8 +221,11 @@
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   #n-why { margin-top: 3px; font-size: 11.5px; line-height: 1.35; color: #c4cfe2;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  #n-acts { display: flex; gap: 6px; margin-top: 8px; overflow: hidden; }
-  #n-acts button { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* Owner 2026-11-08: "I need to see what the whole buttons say". Full labels, wrapped;
+     the whisper window grows to fit (nudgeAct "size"). Never an ellipsis on a choice. */
+  #n-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  #n-acts button { flex: 1 1 auto; min-width: 0; max-width: 100%; white-space: normal; text-align: left;
+    line-height: 1.3; overflow-wrap: anywhere;
     border: 1px solid var(--border, #2a3346); border-radius: 8px; background: var(--bg-sunk, #0b0f16);
     color: var(--fg, #e6edf3); padding: 5px 9px; cursor: pointer; font: 12px var(--font-sans, system-ui); }
   #n-acts button:hover { border-color: rgba(244,250,255,0.7); }
@@ -548,7 +551,11 @@
       flashEl.textContent = "";
       flashEl.className = "";
       box.classList.remove("talking");
-      requestAnimationFrame(() => box.classList.add("on"));
+      requestAnimationFrame(() => {
+        box.classList.add("on");
+        // Tell main how tall the card really is, so long labels are never clipped.
+        api.nudgeAct("size", String(Math.ceil(box.getBoundingClientRect().height + 20)));
+      });
     }
     moreEl.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("more"); });
     document.getElementById("n-x").addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("later"); });
