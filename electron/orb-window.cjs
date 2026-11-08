@@ -47,9 +47,14 @@ const spiritProbe = require("./spirit-probe.cjs");
 const spriteCore = require("./sprite-core.cjs");
 const awCli = require("./aw-cli.cjs");
 const selectionReader = require("./selection-reader.cjs");
+const fairyAttention = require("./fairy-attention.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
+/** The whisper: the card the fairy carries, beside it. Small on purpose. */
+const NUDGE_SIZE = Object.freeze({ width: 376, height: 188 });
+const ATTENTION_TICK_MS = 15_000;
+const NUDGE_STEP_MS = 250;
 const TICK_MS = 250;
 const DRAG_STEP_MS = 16;
 const CLICK_SLOP_PX = 4;
@@ -75,6 +80,7 @@ let wired = false;
 let orbWindow = null;
 let bubbleWindow = null;
 let veilWindow = null;
+let nudgeWindow = null;
 let state = orbCore.sanitizeState(null);
 let queue = orbCore.createQueue();
 let tickTimer = null;
@@ -534,6 +540,7 @@ function showOrb() {
 function hideOrb() {
   suppressed = true;
   pendingSlot = null;
+  if (nudging) endNudge("hidden");
   if (alive(bubbleWindow)) bubbleWindow.hide();
   if (alive(orbWindow)) orbWindow.hide();
   hideVeil();
@@ -1148,7 +1155,7 @@ function startFollow() {
 async function refreshAttach() {
   // Never yank the orb back to a shoulder while it is flying or working: the
   // tether catches up when the trip is done.
-  if (!attach || flight || tripBusy) return;
+  if (!attach || flight || tripBusy || nudging) return;
   let bounds = attach.bounds;
   if (attach.kind === "window" && attach.hwnd) {
     if (!probe) probe = spiritProbe.createWindowProbe();
@@ -1196,7 +1203,7 @@ function startOrbit() {
   stopOrbit();
   let lastFront = 0;
   orbitTimer = setInterval(() => {
-    if (!attach || attach.kind !== "avatar" || flight || tripBusy || dragging) return;
+    if (!attach || attach.kind !== "avatar" || flight || tripBusy || dragging || nudging) return;
     const p = spiritCore.orbitPoint(attach.bounds, Date.now());
     if (!p) return;
     setOrbCenter(p);
@@ -1207,7 +1214,7 @@ function startOrbit() {
 
 /** A free spirit (not set free by the owner) finds an avatar and starts orbiting it. */
 async function seekAvatar() {
-  if (attach || flight || tripBusy || dragging || state.freeRoam || !orbVisible()) return;
+  if (attach || flight || tripBusy || dragging || nudging || state.freeRoam || !orbVisible()) return;
   const body = (await attachableTargets()).find((t) => t && t.kind === "avatar");
   if (body) await attachTo(body, { quiet: true });
 }
@@ -1217,7 +1224,7 @@ let hoverTimer = null;
 function startHover() {
   if (hoverTimer) return;
   hoverTimer = setInterval(() => {
-    if (attach || flight || tripBusy || dragging || !orbVisible()) return;
+    if (attach || flight || tripBusy || dragging || nudging || !orbVisible()) return;
     if (state.x == null || state.y == null) return;
     const d = spiritCore.hoverOffset(Date.now());
     setOrbCenter({ x: state.x + ORB_SIZE.width / 2 + d.x, y: state.y + ORB_SIZE.height / 2 + d.y });
@@ -1999,6 +2006,385 @@ function setAttention(count, line = null) {
   return attention;
 }
 
+// ── attention: the fairy carries the cards (fairy-attention.cjs) ────────────
+//
+// Owner, 2026-11-08: the cards "need to live in the fairy ... it can come flutter
+// in front of my eyes to get my attention without blocking anything". So a card is
+// no longer a window: the fairy picks the ONE that matters now (fairy-attention
+// plan), and either glows where it rests with a whisper beside it (L1) or flies to
+// where the owner is looking -- the pointer, never ON it -- flutters there with the
+// whisper (L2/L3), then goes home. The whisper never takes focus and is
+// click-through except while the pointer is on it; an ignored nudge climbs the
+// ladder, an answered/opened one starts it over. While this loop runs and the fairy
+// is on screen, the desk's heartbeat tells awask so its Tk card window stays down.
+
+let attentionCards = [];
+let attentionMems = {};
+let attentionTimer = null;
+let attentionSoon = null;
+let attentionTicking = false;
+let attentionLastAt = 0;
+let attentionVoiceAt = 0;
+let attentionAway = false;
+let attentionReturnUntil = 0;
+/** {decision, view, startedAt, until, anchor, whisperAt, hovered, shown, timer, flutter} */
+let nudging = null;
+/** Injected by main: answer(id,key), open(id|null), quiet() -> "", idleMs(), speak(line,{force});
+ *  tests also pass fullScreen() so no real window probe is spawned. */
+let attentionHooks = {};
+
+function attentionFile() {
+  if (process.env.DESK_FAIRY_ATTENTION_FILE) return String(process.env.DESK_FAIRY_ATTENTION_FILE);
+  const { app } = electron();
+  return path.join(app.getPath("userData"), "fairy-attention.json");
+}
+
+function loadAttention() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(attentionFile(), "utf8"));
+    attentionMems = fairyAttention.sanitizeMems(raw && raw.cards);
+    attentionLastAt = Number(raw && raw.lastNudgeAt) || 0;
+    attentionVoiceAt = Number(raw && raw.lastVoiceAt) || 0;
+  } catch {
+    attentionMems = {}; // unreadable memory = every card starts at the bottom of the ladder
+  }
+}
+
+function saveAttention() {
+  try {
+    const file = attentionFile();
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ cards: attentionMems, lastNudgeAt: attentionLastAt, lastVoiceAt: attentionVoiceAt }));
+    fs.renameSync(tmp, file);
+  } catch { /* per-viewer convenience: losing it restarts the ladder, nothing more */ }
+}
+
+/** main hands over the ranked decision queue (decisions only, no reports) on every change. */
+function setAttentionCards(cards) {
+  attentionCards = Array.isArray(cards) ? cards.filter((c) => c && typeof c.id === "string") : [];
+  const ids = new Set(attentionCards.map((c) => c.id));
+  const before = Object.keys(attentionMems).length;
+  attentionMems = fairyAttention.pruneMems(attentionMems, ids);
+  if (Object.keys(attentionMems).length !== before) saveAttention();
+  // Answered somewhere else (the Inbox, Discord, the phone): the whisper goes.
+  if (nudging && !ids.has(nudging.decision.card.id)) endNudge("answered");
+  ensureAttention();
+  scheduleAttentionTick(1500); // a NEW card is judged now, not on the next 15 s tick
+  return { ok: true, count: attentionCards.length };
+}
+
+function ensureAttention() {
+  if (attentionTimer || quitting) return;
+  attentionTimer = setInterval(() => { void attentionTick(); }, ATTENTION_TICK_MS);
+  if (attentionTimer.unref) attentionTimer.unref();
+}
+
+function scheduleAttentionTick(ms) {
+  if (attentionSoon || quitting) return;
+  attentionSoon = setTimeout(() => { attentionSoon = null; void attentionTick(); }, ms);
+  if (attentionSoon.unref) attentionSoon.unref();
+}
+
+function stopAttention() {
+  if (attentionTimer) { clearInterval(attentionTimer); attentionTimer = null; }
+  if (attentionSoon) { clearTimeout(attentionSoon); attentionSoon = null; }
+  if (nudging) {
+    if (nudging.timer) clearInterval(nudging.timer);
+    if (nudging.flutter) clearInterval(nudging.flutter);
+    nudging = null;
+  }
+}
+
+/** Does the fairy carry the cards right now? Only while it is meant to be on screen
+ *  and its loop runs -- hidden, the awask window comes back (fail toward visible). */
+function ownsAttention() {
+  return Boolean(attentionTimer && !quitting && state.visible && alive(orbWindow));
+}
+
+function hookValue(name, ...args) {
+  const fn = attentionHooks && attentionHooks[name];
+  if (typeof fn !== "function") return undefined;
+  try { return fn(...args); } catch { return undefined; }
+}
+
+/** A full-screen app or game in front (the probe's quiet op). "" = not quiet / unknown. */
+async function fullScreenNow() {
+  if (typeof (attentionHooks && attentionHooks.fullScreen) === "function") {
+    try { return String((await attentionHooks.fullScreen()) || ""); } catch { return ""; }
+  }
+  if (process.platform !== "win32") return "";
+  try {
+    if (!probe) probe = spiritProbe.createWindowProbe();
+    if (typeof probe.quietState !== "function") return "";
+    const verdict = await probe.quietState({ excludePid: process.pid });
+    return verdict && verdict.quiet ? String(verdict.reason || "a full-screen app") : "";
+  } catch {
+    return ""; // a probe that cannot answer must not silence the fairy forever
+  }
+}
+
+/** One judgement: maybe start a nudge. Returns the plan (for tests and the bridge). */
+async function attentionTick() {
+  if (attentionTicking || quitting || !alive(orbWindow)) return { act: "none", reason: "not ready" };
+  attentionTicking = true;
+  try {
+    const nowMs = Date.now();
+    const idleMs = Math.max(0, Number(hookValue("idleMs")) || 0);
+    if (idleMs >= fairyAttention.DEFAULTS.awayMs) {
+      attentionAway = true;
+    } else if (attentionAway && idleMs < 30_000) {
+      attentionAway = false;
+      attentionReturnUntil = nowMs + 5 * 60_000; // the next nudge is "while you were away"
+    }
+    const busy = Boolean(nudging || flight || tripBusy || dragging || inflight || drafting || regionWait
+      || (alive(bubbleWindow) && bubbleWindow.isVisible()));
+    const quiet = !state.visible ? "the fairy is hidden" : String(hookValue("quiet") || "");
+    const ctx = {
+      nowMs,
+      lastNudgeAt: attentionLastAt,
+      lastVoiceAt: attentionVoiceAt,
+      quiet,
+      idleMs,
+      busy,
+      returned: nowMs < attentionReturnUntil,
+    };
+    let decision = fairyAttention.plan(attentionCards, attentionMems, ctx);
+    if (decision.act === "nudge") {
+      const full = await fullScreenNow();
+      if (full) decision = { act: "none", reason: `held while quiet: ${full}` };
+    }
+    if (decision.act === "nudge" && !nudging && !quitting) startNudge(decision);
+    return decision;
+  } finally {
+    attentionTicking = false;
+  }
+}
+
+function ensureNudge() {
+  if (alive(nudgeWindow)) return nudgeWindow;
+  const { BrowserWindow } = electron();
+  nudgeWindow = new BrowserWindow({
+    ...NUDGE_SIZE,
+    show: false, frame: false, transparent: true, resizable: false, movable: false,
+    minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true,
+    // focusable:false -- the whisper NEVER takes the keyboard from what the owner is doing.
+    alwaysOnTop: true, hasShadow: false, focusable: false, title: "Aither nudge",
+    backgroundColor: "#00000000",
+    webPreferences: {
+      preload: path.join(__dirname, "orb-preload.cjs"),
+      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
+    },
+  });
+  nudgeWindow.setAlwaysOnTop(true, "screen-saver");
+  try { nudgeWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch { /* no-op */ }
+  nudgeWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  nudgeWindow.webContents.on("will-navigate", (event) => event.preventDefault());
+  // Click-through until the pointer is ON the card (the page reports it): the
+  // transparent margin and a whisper you are not touching never block a click.
+  nudgeWindow.setIgnoreMouseEvents(true, { forward: true });
+  nudgeWindow.on("closed", () => { nudgeWindow = null; });
+  void nudgeWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "nudge" } });
+  return nudgeWindow;
+}
+
+function sendNudge(channel, payload) {
+  try {
+    if (alive(nudgeWindow)) nudgeWindow.webContents.send(channel, payload);
+  } catch { /* page mid-load: init() carries the view */ }
+}
+
+function showWhisper() {
+  if (!nudging) return;
+  const win = ensureNudge();
+  const at = nudging.whisperAt || { x: 0, y: 0 };
+  win.setBounds({ x: Math.round(at.x), y: Math.round(at.y), ...NUDGE_SIZE });
+  nudging.shown = true;
+  sendNudge("orb:nudge-view", { ...nudging.view, side: nudging.side || "right" });
+  if (!win.isVisible()) win.showInactive();
+}
+
+function startFlutter() {
+  if (!nudging || !nudging.anchor) return;
+  if (nudging.flutter) clearInterval(nudging.flutter);
+  const level = nudging.decision.level;
+  nudging.flutter = setInterval(() => {
+    if (!nudging || !nudging.anchor || flight || dragging) return;
+    const d = fairyAttention.flutterOffset(Date.now(), level);
+    setOrbCenter({ x: nudging.anchor.x + d.x, y: nudging.anchor.y + d.y });
+  }, ORBIT_MS);
+  if (nudging.flutter.unref) nudging.flutter.unref();
+}
+
+function speakNudge(decision, { force = false } = {}) {
+  const line = fairyAttention.voiceLine(decision.card, Date.now(), { more: decision.more });
+  attentionVoiceAt = Date.now();
+  return hookValue("speak", line, { force }) !== false;
+}
+
+function startNudge(decision) {
+  if (!alive(orbWindow) || !decision || !decision.card) return { ok: false };
+  const view = fairyAttention.whisperView(decision, Date.now());
+  if (!view) return { ok: false };
+  const nowMs = Date.now();
+  const id = decision.card.id;
+  attentionMems[id] = fairyAttention.recordShown(attentionMems[id] || {}, nowMs);
+  attentionLastAt = nowMs;
+  if (decision.returned) attentionReturnUntil = 0;
+  nudging = {
+    decision, view, startedAt: nowMs, until: nowMs + (decision.showMs || 9000),
+    anchor: null, whisperAt: null, side: "right", hovered: false, shown: false, timer: null, flutter: null,
+  };
+  const n = nudging;
+  ensureNudge();
+  send("orb:nudge", { level: decision.level });
+  if (decision.level >= fairyAttention.LEVEL.FLUTTER) {
+    const { screen } = electron();
+    let cursor = null;
+    let area;
+    try {
+      cursor = screen.getCursorScreenPoint();
+      area = screen.getDisplayNearestPoint(cursor).workArea;
+    } catch { area = displayForOrb().workArea; }
+    const place = fairyAttention.nudgePlacement(cursor, area, ORB_SIZE, NUDGE_SIZE);
+    n.anchor = place.orb;
+    n.whisperAt = place.whisper;
+    n.side = place.side;
+    // The clock starts when it ARRIVES: the flight is not reading time.
+    const durationMs = decision.level >= fairyAttention.LEVEL.INSIST ? 620 : 860;
+    n.until += durationMs;
+    void flyTo(place.orb, { durationMs }).then((r) => {
+      if (nudging !== n) return;
+      if (r && r.cancelled) return; // grabbed or re-routed mid-air: beginDrag ended it
+      showWhisper();
+      startFlutter();
+    });
+  } else {
+    // A glow: the whisper beside the fairy where it rests.
+    const [x, y] = orbWindow.getPosition();
+    n.whisperAt = orbCore.bubblePosition(
+      { x, y, width: ORB_SIZE.width, height: ORB_SIZE.height }, NUDGE_SIZE, displayForOrb().workArea, 6,
+    );
+    showWhisper();
+  }
+  saveAttention();
+  if (decision.voice) speakNudge(decision);
+  n.timer = setInterval(() => {
+    if (nudging !== n) return;
+    const now = Date.now();
+    // A whisper the owner is reading (pointer on it) stays while they read.
+    if (n.hovered) n.until = Math.max(n.until, now + 2500);
+    if (now >= n.until) endNudge("timeout");
+  }, NUDGE_STEP_MS);
+  if (n.timer.unref) n.timer.unref();
+  return { ok: true, id, level: decision.level };
+}
+
+async function returnFromNudge() {
+  if (!alive(orbWindow) || dragging) return;
+  if (attach && attach.kind === "avatar") {
+    const p = spiritCore.orbitPoint(attach.bounds, Date.now() + 700);
+    if (p) await flyTo(p, { durationMs: 700 });
+  } else if (attach) {
+    const dock = spiritCore.dockPosition(attach, ORB_SIZE);
+    await flyTo({ x: dock.x + ORB_SIZE.width / 2, y: dock.y + ORB_SIZE.height / 2 }, { durationMs: 700 });
+  } else {
+    await flyHome(760);
+  }
+}
+
+/** End the running nudge. `outcome` feeds the ladder: timeout = ignored. */
+function endNudge(outcome = "timeout", { stay = false } = {}) {
+  const n = nudging;
+  if (!n) return { ok: true, ended: false };
+  nudging = null;
+  if (n.timer) clearInterval(n.timer);
+  if (n.flutter) clearInterval(n.flutter);
+  const id = n.decision.card.id;
+  const nowMs = Date.now();
+  const mem = attentionMems[id] || {};
+  if (outcome === "timeout") {
+    attentionMems[id] = fairyAttention.recordIgnored(mem, { importance: n.decision.importance, nowMs });
+  } else if (outcome === "acted" || outcome === "seen") {
+    attentionMems[id] = fairyAttention.recordActed(mem);
+  } else if (outcome === "later") {
+    attentionMems[id] = fairyAttention.recordLater(mem, nowMs);
+  } else if (outcome === "mute") {
+    attentionMems[id] = fairyAttention.recordMute(mem);
+  } else if (outcome === "keep") {
+    attentionMems[id] = fairyAttention.recordKeep(fairyAttention.recordActed(mem));
+  }
+  saveAttention();
+  if (alive(nudgeWindow)) {
+    try {
+      nudgeWindow.setIgnoreMouseEvents(true, { forward: true });
+      nudgeWindow.hide();
+    } catch { /* gone */ }
+  }
+  sendNudge("orb:nudge-view", null);
+  send("orb:nudge", { level: 0 });
+  if (n.anchor && !stay && !quitting) void returnFromNudge();
+  return { ok: true, ended: true, outcome };
+}
+
+/** Close the whisper after a short confirmation line the owner can read. */
+function confirmThenEnd(n, line, outcome) {
+  sendNudge("orb:nudge-flash", { text: line });
+  n.until = Date.now() + 60_000; // the confirmation, not the timer, ends it
+  const t = setTimeout(() => { if (nudging === n) endNudge(outcome); }, 1300);
+  if (t.unref) t.unref();
+}
+
+/** The whisper's buttons (and a click on the fairy itself mid-nudge = open). */
+async function nudgeAct(action, key) {
+  const n = nudging;
+  if (!n) return { ok: false, error: "nothing is up" };
+  const card = n.decision.card;
+  const what = String(action || "");
+  if (what === "hover") {
+    n.hovered = key === true || key === "true";
+    if (alive(nudgeWindow)) nudgeWindow.setIgnoreMouseEvents(!n.hovered, { forward: true });
+    return { ok: true };
+  }
+  if (what === "answer") {
+    const opt = (Array.isArray(card.options) ? card.options : []).find((o) => o && o.key === String(key));
+    if (!opt || String(card.kind).toLowerCase() === "credential") {
+      return { ok: false, error: "not one of this card's options" };
+    }
+    let verdict;
+    try { verdict = await hookValue("answer", card.id, opt.key); } catch { verdict = false; }
+    if (nudging !== n) return { ok: Boolean(verdict) };
+    if (!verdict) {
+      sendNudge("orb:nudge-flash", { text: "That did not go through. Open it?", error: true });
+      return { ok: false, error: "the answer did not go through" };
+    }
+    const pending = Boolean(verdict && typeof verdict === "object" && verdict.pending);
+    confirmThenEnd(n, pending ? "Finish it in the approval window" : `Done: ${opt.label || opt.key}`, "acted");
+    return { ok: true, pending };
+  }
+  if (what === "open" || what === "more") {
+    hookValue("open", what === "more" ? null : card.id);
+    endNudge("acted");
+    return { ok: true };
+  }
+  if (what === "later" || what === "dismiss") {
+    endNudge("later");
+    return { ok: true };
+  }
+  if (what === "mute") {
+    confirmThenEnd(n, "Okay, it stays on the badge.", "mute");
+    return { ok: true };
+  }
+  if (what === "keep") {
+    confirmThenEnd(n, "I'll keep at you about this one.", "keep");
+    return { ok: true };
+  }
+  if (what === "read") {
+    n.until = Math.max(n.until, Date.now() + 9000);
+    return { ok: speakNudge(n.decision, { force: true }) };
+  }
+  return { ok: false, error: `unknown nudge action ${what}` };
+}
+
 function spiritMenu() {
   const { Menu } = electron();
   const reg = commandRegistry();
@@ -2036,6 +2422,8 @@ function spiritMenu() {
 
 function beginDrag() {
   if (dragging || !alive(orbWindow)) return { ok: true };
+  // Grabbing the fairy mid-nudge: the owner saw it. It stays where they put it.
+  if (nudging) endNudge("seen", { stay: true });
   // Pulling the orb off a body/window detaches it; dropping it again re-attaches.
   if (attach) detach({ silent: true });
   if (flight) {
@@ -2100,6 +2488,8 @@ async function endDrag() {
 }
 
 function toggleBubbleFromOrb() {
+  // A click on the fairy while it carries a card opens THAT card.
+  if (nudging) return nudgeAct("open");
   // A click mid-trip cancels the trip and brings the spirit home.
   if (tripBusy || flight) {
     const r = cancelTrip();
@@ -2115,7 +2505,7 @@ function toggleBubbleFromOrb() {
 // ── IPC ─────────────────────────────────────────────────────────────────────
 
 function fromOrb(sender) {
-  const ids = [orbWindow, bubbleWindow]
+  const ids = [orbWindow, bubbleWindow, nudgeWindow]
     .filter(alive)
     .map((w) => w.webContents);
   return ids.some((wc) => wc === sender);
@@ -2149,6 +2539,8 @@ function handlers() {
         attach: publicAttach(),
         mode: bubbleMode,
         sprite: publicSprite(),
+        nudge: nudging && nudging.shown ? nudging.view : null,
+        nudgeLevel: nudging ? nudging.decision.level : 0,
       };
     }),
     "desk:orb-hit": guard((_sender, inside) => {
@@ -2200,6 +2592,9 @@ function handlers() {
       return { ok: true };
     }),
     "desk:orb-toggle": guard(() => toggleOrb()),
+    // The whisper's buttons. The KEY is checked against the card's own options in
+    // main; the page cannot answer with a choice the card does not have.
+    "desk:nudge-act": guard((_sender, action, key) => nudgeAct(action, key)),
     "desk:spirit-menu": guard(() => spiritMenu()),
     "desk:spirit-pick": guard((_sender, index, action) => pickResult(index, action)),
     "desk:spirit-hold": guard((_sender, action) => runHoldAction(action)),
@@ -2242,8 +2637,10 @@ function startOrb(opts = {}) {
   if (opts.searchClient) searchClientImpl = opts.searchClient;
   if (opts.spriteToken) spriteTokenImpl = opts.spriteToken;
   if (opts.spriteClient) spriteClientImpl = opts.spriteClient;
+  if (opts.attention && typeof opts.attention === "object") attentionHooks = { ...opts.attention };
   ensureIpc();
   loadState();
+  loadAttention();
   ensureOrb();
   placeOrb();
   ensureOps();
@@ -2258,6 +2655,7 @@ function startOrb(opts = {}) {
   spriteKick = setTimeout(() => { spriteKick = null; void refreshSprite(); }, 4000);
   spriteKick.unref?.();
   startSpritePoll();
+  ensureAttention();
   return { ok: true, visible: state.visible };
 }
 
@@ -2272,6 +2670,7 @@ function stopOrb() {
   if (hoverTimer) { clearInterval(hoverTimer); hoverTimer = null; }
   if (spriteTimer) { clearInterval(spriteTimer); spriteTimer = null; }
   if (spriteKick) { clearTimeout(spriteKick); spriteKick = null; }
+  stopAttention();
   for (const pending of pendingRuns.values()) {
     clearTimeout(pending.timer);
     pending.resolve({ ok: false, error: "the desk is quitting" });
@@ -2281,9 +2680,10 @@ function stopOrb() {
     try { probe.stop(); } catch { /* already gone */ }
     probe = null;
   }
-  for (const win of [veilWindow, bubbleWindow, orbWindow]) {
+  for (const win of [nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
     try { if (alive(win)) win.destroy(); } catch { /* already gone */ }
   }
+  nudgeWindow = null;
   veilWindow = null;
   bubbleWindow = null;
   orbWindow = null;
@@ -2360,6 +2760,10 @@ async function askImage(imagePath, prompt, question) {
 module.exports = {
   ORB_SIZE, BUBBLE_SIZE, TICK_MS, REGION_WAIT_MS,
   startOrb, stopOrb, run, ensureIpc, showOrb, hideOrb, toggleOrb, openBubble, setAttention,
+  // attention: the fairy carries the cards (fairy-attention.cjs)
+  NUDGE_SIZE, setAttentionCards, attentionTick, ownsAttention, nudgeAct, endNudge,
+  nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
+  attentionMems: () => attentionMems,
   askScreen, askRegion, askText, askImage, toggleBubbleFromOrb, beginDrag, endDrag,
   stateFile, loadState, saveState, pump, queue: () => queue, state: () => state,
   // spirit
@@ -2376,9 +2780,18 @@ module.exports = {
       pending.resolve({ ok: false, error: "reset" });
     }
     pendingRuns = new Map();
-    for (const win of [veilWindow, bubbleWindow, orbWindow]) {
+    stopAttention();
+    attentionCards = [];
+    attentionMems = {};
+    attentionLastAt = 0;
+    attentionVoiceAt = 0;
+    attentionReturnUntil = 0;
+    attentionAway = false;
+    attentionHooks = {};
+    for (const win of [nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
       try { if (alive(win)) win.destroy(); } catch { /* gone */ }
     }
+    nudgeWindow = null;
     veilWindow = null;
     bubbleWindow = null;
     orbWindow = null;
@@ -2428,4 +2841,5 @@ module.exports = {
   __setWired: () => { wired = true; },
   // The veil's layout AND the orb's move both leaked (2026-11-07); assert them directly.
   __test: { clampRect, coverVeil, drawVeil, moveOrb, veilPlacement, veilRect },
+  __setAttentionHooks: (h) => { attentionHooks = { ...(h || {}) }; },
 };

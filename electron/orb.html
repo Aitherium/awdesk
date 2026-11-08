@@ -170,6 +170,73 @@
   #hint { display: none; padding: 0 12px 6px; font-size: 11px; color: var(--accent-danger, #ff6b6b); }
   #hint.on { display: block; }
 
+  /* ── the fairy asking for attention (fairy-attention.cjs ladder) ─────
+     L1 glow: a slow sonar ping and a brighter halo where it rests.
+     L2 flutter: faster wings and ping (it has flown to the owner's eye line).
+     L3 insist: warm amber, fastest -- the "you said you need this" level. */
+  #orb .ping { position: absolute; inset: 6px; border-radius: 50%; pointer-events: none;
+    border: 2px solid rgba(255,255,255,0.85); opacity: 0; }
+  #orb.nudge1 .halo { animation: pulse 1.2s ease-in-out infinite; }
+  #orb.nudge1 .ping { animation: ping 2.4s ease-out infinite; }
+  #orb.nudge2 .halo { animation: pulse 0.8s ease-in-out infinite; }
+  #orb.nudge2 .wing { animation-duration: 0.07s; }
+  #orb.nudge2 .ping { animation: ping 1.4s ease-out infinite; }
+  #orb.nudge3 .halo { animation: pulse 0.55s ease-in-out infinite;
+    background: radial-gradient(circle, rgba(255,255,255,0.7) 0%, rgba(255,226,170,0.45) 22%,
+      rgba(255,190,100,0.28) 44%, rgba(255,255,255,0) 70%); }
+  #orb.nudge3 .wing { animation-duration: 0.05s; }
+  #orb.nudge3 .ping { border-color: rgba(255,204,128,0.95); animation: ping 0.9s ease-out infinite; }
+  #orb.nudge3 .core { box-shadow: 0 0 8px 3px rgba(255,255,255,0.95), 0 0 20px 8px rgba(255,214,150,0.7),
+    0 0 36px 14px rgba(255,190,100,0.35); }
+  @keyframes ping { 0% { transform: scale(0.5); opacity: 0.9; } 100% { transform: scale(1.22); opacity: 0; } }
+
+  /* ── the whisper (376 x 188 window): the card the fairy carries ─────── */
+  body.nudge { padding: 10px; }
+  #nudge { position: relative; width: 100%; overflow: hidden; border-radius: 14px;
+    background: rgba(14,18,27,0.95); border: 1px solid rgba(244,250,255,0.28);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 16px rgba(225,240,255,0.16);
+    padding: 9px 12px 9px; opacity: 0; transform: translateX(-12px) scale(0.98);
+    transition: opacity 0.22s ease, transform 0.22s ease; }
+  #nudge.left { transform: translateX(12px) scale(0.98); }
+  #nudge.on { opacity: 1; transform: none; }
+  #nudge.lv2 { border-color: rgba(244,250,255,0.5); animation: nglow 1.8s ease-in-out infinite; }
+  #nudge.lv3 { border-color: rgba(255,200,120,0.8); animation: nglow3 1.1s ease-in-out infinite; }
+  @keyframes nglow { 0%, 100% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 12px rgba(225,240,255,0.16); }
+    50% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 26px rgba(225,240,255,0.42); } }
+  @keyframes nglow3 { 0%, 100% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 12px rgba(255,190,100,0.25); }
+    50% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 28px rgba(255,190,100,0.6); } }
+  #n-head { display: flex; align-items: center; gap: 7px; font-size: 10.5px; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--fg-muted, #8b96ab); }
+  #n-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #fff;
+    box-shadow: 0 0 8px rgba(225,240,255,0.9); }
+  #nudge.lv3 #n-dot { background: #ffd28a; box-shadow: 0 0 9px rgba(255,190,100,0.95); }
+  #n-lead { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #n-more { cursor: pointer; text-transform: none; letter-spacing: 0; border-radius: 6px; padding: 1px 6px;
+    white-space: nowrap; }
+  #n-more:hover { color: var(--fg, #e6edf3); background: rgba(255,255,255,0.07); }
+  #n-x { border: 0; background: transparent; color: var(--fg-muted, #8b96ab); cursor: pointer; font-size: 12px;
+    line-height: 1; padding: 3px 5px; border-radius: 6px; flex: none; }
+  #n-x:hover { background: rgba(255,255,255,0.07); color: var(--fg, #e6edf3); }
+  #n-title { margin-top: 4px; font-weight: 600; font-size: 13.5px; line-height: 1.3; color: var(--fg, #e6edf3);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  #n-why { margin-top: 3px; font-size: 11.5px; line-height: 1.35; color: #c4cfe2;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  #n-acts { display: flex; gap: 6px; margin-top: 8px; overflow: hidden; }
+  #n-acts button { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border: 1px solid var(--border, #2a3346); border-radius: 8px; background: var(--bg-sunk, #0b0f16);
+    color: var(--fg, #e6edf3); padding: 5px 9px; cursor: pointer; font: 12px var(--font-sans, system-ui); }
+  #n-acts button:hover { border-color: rgba(244,250,255,0.7); }
+  #n-acts button.rec { border-color: rgba(244,250,255,0.55); }
+  #n-acts button.primary { background: #f4faff; color: #06101f; border-color: transparent; font-weight: 600; }
+  #n-foot { display: flex; gap: 12px; margin-top: 7px; }
+  #n-foot button { border: 0; background: transparent; color: var(--fg-muted, #8b96ab); padding: 0; cursor: pointer;
+    font: 10.5px var(--font-sans, system-ui); }
+  #n-foot button:hover { color: var(--fg, #e6edf3); text-decoration: underline; }
+  #n-flash { display: none; margin-top: 8px; font-size: 12px; color: #bfe8c8; }
+  #n-flash.on { display: block; }
+  #n-flash.error { color: var(--accent-danger, #ff6b6b); }
+  #nudge.done #n-acts, #nudge.done #n-foot { display: none; }
+
   /* ── the veil (transparent overlay: trail + tether) ─────────────────── */
   body.veil { background: transparent; }
   #veil { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
@@ -179,10 +246,11 @@
 <script>
   const api = window.aitherOrb;
   const params = new URLSearchParams(location.search);
-  const view = ["bubble", "veil"].includes(params.get("view")) ? params.get("view") : "orb";
+  const view = ["bubble", "veil", "nudge"].includes(params.get("view")) ? params.get("view") : "orb";
   document.body.className = view;
   // All three windows load this page; each shape names itself.
-  document.title = view === "bubble" ? "Ask Aither" : view === "veil" ? "Aither spirit trail" : "Aither spirit";
+  document.title = view === "bubble" ? "Ask Aither" : view === "veil" ? "Aither spirit trail"
+    : view === "nudge" ? "Aither nudge" : "Aither spirit";
 
   function rgba(hex, alpha) {
     const h = String(hex || "#ffc861").replace("#", "");
@@ -290,7 +358,7 @@
   if (view === "orb") {
     document.body.innerHTML = '<div id="orb" title="Aither — click to open, drag onto a window or avatar to attach, right-click for the menu">'
       + '<i class="halo"></i><i class="wing l up"></i><i class="wing r up"></i><i class="wing l lo"></i><i class="wing r lo"></i>'
-      + '<i class="core"></i><i class="spark a"></i><i class="spark b"></i><i class="spark c"></i></div>'
+      + '<i class="core"></i><i class="spark a"></i><i class="spark b"></i><i class="spark c"></i><i class="ping"></i></div>'
       + '<div id="badge"></div><div id="queued"></div>';
     const orb = document.getElementById("orb");
     const badge = document.getElementById("badge");
@@ -350,6 +418,11 @@
       if (Number(badge.textContent) > 0) api.needsYou();
     });
     api.onBusy((busy) => orb.classList.toggle("busy", Boolean(busy)));
+    // The attention ladder: 0 = resting, 1 glow, 2 flutter, 3 insist.
+    function setNudge(level) {
+      for (const n of [1, 2, 3]) orb.classList.toggle(`nudge${n}`, Number(level) === n);
+    }
+    if (api.onNudge) api.onNudge((x) => setNudge(x && x.level));
     if (api.onDepth) api.onDepth((d) => orb.classList.toggle("behind", Boolean(d && d.front < 0)));
     api.onTint((t) => { if (t) applyTint(t.css); });
     // The fairy IS the owner's sprite: its name, stage and mood on hover. null =
@@ -369,10 +442,95 @@
       if (s.tint) applyTint(s.tint.css);
       wearSprite(s.sprite);
       if (s.attach) orb.classList.add("attached");
+      if (s.nudgeLevel) setNudge(s.nudgeLevel);
       const n = s.trips && s.trips.count > 1 ? s.trips.count - 1 : 0;
       queued.textContent = String(n);
       queued.classList.toggle("on", n > 0);
     });
+  }
+
+  // ── the whisper: the card the fairy carries (fairy-attention.cjs) ──────
+  // Never focused (the window is focusable:false) and click-through until the
+  // pointer is ON the card: main flips hit testing when this page says so.
+  if (view === "nudge") {
+    document.body.innerHTML = '<div id="nudge">'
+      + '<div id="n-head"><span id="n-dot"></span><span id="n-lead"></span>'
+      + '<span id="n-more" title="See everything that is waiting"></span>'
+      + '<button id="n-x" title="Later: I will bring it back in an hour">&#10005;</button></div>'
+      + '<div id="n-title"></div><div id="n-why"></div><div id="n-acts"></div>'
+      + '<div id="n-foot"><button data-act="read">Read it to me</button>'
+      + '<button data-act="keep" title="It matters: nudge harder until it is done">Keep nudging me</button>'
+      + '<button data-act="mute" title="Leave it on the badge">Stop nudging this</button></div>'
+      + '<div id="n-flash"></div></div>';
+    const box = document.getElementById("nudge");
+    const leadEl = document.getElementById("n-lead");
+    const moreEl = document.getElementById("n-more");
+    const titleEl = document.getElementById("n-title");
+    const whyEl = document.getElementById("n-why");
+    const actsEl = document.getElementById("n-acts");
+    const flashEl = document.getElementById("n-flash");
+    let inside = false;
+    function setInside(next) {
+      if (next === inside) return;
+      inside = next;
+      api.nudgeAct("hover", next);
+    }
+    window.addEventListener("mousemove", (e) => {
+      const r = box.getBoundingClientRect();
+      setInside(box.classList.contains("on")
+        && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
+    });
+    window.addEventListener("mouseleave", () => setInside(false));
+    function button(label, cls, onClick, tip) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      if (cls) b.className = cls;
+      if (tip) b.title = tip;
+      b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); });
+      return b;
+    }
+    function render(v) {
+      if (!v) {
+        box.classList.remove("on", "done");
+        setInside(false);
+        return;
+      }
+      box.className = `lv${Number(v.level) || 1}${v.side === "left" ? " left" : ""}`;
+      leadEl.textContent = v.lead || "Waiting on you";
+      moreEl.textContent = v.more > 0 ? `+${v.more} more` : "";
+      moreEl.style.display = v.more > 0 ? "" : "none";
+      titleEl.textContent = v.title || "";
+      titleEl.title = v.title || "";
+      whyEl.textContent = v.why || "";
+      whyEl.style.display = v.why ? "" : "none";
+      actsEl.textContent = "";
+      if (v.credential) {
+        actsEl.append(button("Enter it", "primary", () => api.nudgeAct("open"), "Opens the masked field in your Inbox"));
+      } else {
+        for (const o of v.options || []) {
+          actsEl.append(button(o.label, o.recommended ? "rec" : "", () => api.nudgeAct("answer", o.key),
+            o.consequence || (o.recommended ? "Suggested" : "")));
+        }
+        actsEl.append(button("Open", (v.options || []).length ? "" : "primary", () => api.nudgeAct("open"), "Open the whole card"));
+      }
+      flashEl.textContent = "";
+      flashEl.className = "";
+      requestAnimationFrame(() => box.classList.add("on"));
+    }
+    moreEl.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("more"); });
+    document.getElementById("n-x").addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("later"); });
+    for (const b of document.querySelectorAll("#n-foot button")) {
+      b.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct(b.dataset.act); });
+    }
+    api.onNudgeView(render);
+    api.onNudgeFlash((f) => {
+      if (!f) return;
+      flashEl.textContent = String(f.text || "");
+      flashEl.className = f.error ? "on error" : "on";
+      // A confirmation replaces the buttons; an error keeps them (Open still works).
+      box.classList.toggle("done", !f.error);
+    });
+    api.init().then((s) => { if (s && s.nudge) render(s.nudge); });
   }
 
   // ── the bubble card ───────────────────────────────────────────────────

@@ -718,3 +718,147 @@ test("the fairy door is labelled Needs you (N) when cards are waiting", () => {
   const preload = fs.readFileSync(path.join(__dirname, "orb-preload.cjs"), "utf8");
   assert.match(preload, /needsYou: \(\) => ipcRenderer\.invoke\("desk:orb-needs-you"\)/);
 });
+
+// ── attention: the cards live in the fairy (2026-11-08) ─────────────────────
+
+const ATTENTION_FILE = path.join(os.tmpdir(), `fairy-attention-${process.pid}.json`);
+process.env.DESK_FAIRY_ATTENTION_FILE = ATTENTION_FILE;
+
+function nudgeWin() { return FakeWindow.all.find((w) => !w.destroyed && w.opts.title === "Aither nudge") || null; }
+
+function blockedCard(over = {}) {
+  return {
+    id: "d-fair",
+    title: "Claude Code needs you: AitherOS-Fresh -- Desktop canvas layout",
+    kind: "blocked",
+    urgency: "high",
+    blocking: true,
+    createdAt: Math.floor(Date.now() / 1000) - 600,
+    deadline: 0,
+    options: [{ key: "ack", label: "I am looking now" }, { key: "later", label: "Not now" }],
+    defaultKey: "ack",
+    agent: "",
+    tab: "Desktop canvas layout",
+    ...over,
+  };
+}
+
+function startAttention(hooks = {}) {
+  fs.rmSync(ATTENTION_FILE, { force: true });
+  start();
+  orbWindow.showOrb();
+  const calls = { answer: [], open: [], speak: [] };
+  orbWindow.__setAttentionHooks({
+    quiet: () => "",
+    idleMs: () => 0,
+    fullScreen: async () => "",
+    answer: async (id, key) => { calls.answer.push([id, key]); return true; },
+    open: (id) => { calls.open.push(id); return true; },
+    speak: (line, opts) => { calls.speak.push([line, opts]); return true; },
+    ...hooks,
+  });
+  return calls;
+}
+
+test("a card that matters flies the fairy to the pointer and shows the whisper beside it, never on it", async () => {
+  startAttention();
+  cursor = { x: 1500, y: 900 };
+  orbWindow.setAttentionCards([blockedCard()]);
+  const plan = await orbWindow.attentionTick();
+  assert.equal(plan.act, "nudge");
+  assert.equal(plan.level, 2, "blocked = flutter");
+  assert.deepEqual(orbWindow.nudging(), { id: "d-fair", level: 2, shown: false }, "the whisper waits for the flight");
+  await wait(1000);
+  const whisper = nudgeWin();
+  assert.ok(whisper && whisper.isVisible(), "the whisper is up once the fairy arrived");
+  assert.equal(whisper.opts.focusable, false, "the whisper never takes the keyboard");
+  assert.equal(whisper.ignoreMouse, true, "click-through until the pointer is on it");
+  const w = whisper.getBounds();
+  const covers = cursor.x >= w.x && cursor.x <= w.x + w.width && cursor.y >= w.y && cursor.y <= w.y + w.height;
+  assert.equal(covers, false, "the whisper does not cover the pointer");
+  const o = orbWin().getBounds();
+  const dist = Math.hypot(o.x + 36 - cursor.x, o.y + 36 - cursor.y);
+  assert.ok(dist < 260 && dist > 50, `the fairy flutters near the pointer (${Math.round(dist)} px)`);
+  const view = whisper.webContents.sent.filter(([c]) => c === "orb:nudge-view").pop()[1];
+  assert.equal(view.title, "AitherOS-Fresh -- Desktop canvas layout");
+  assert.match(view.why, /Desktop canvas layout is stopped until you answer/);
+  assert.deepEqual(view.options.map((x) => x.key), ["ack", "later"]);
+  orbWindow.endNudge("seen", { stay: true });
+});
+
+test("the whisper answers with the card's OWN option through main, and refuses one it does not have", async () => {
+  const calls = startAttention();
+  orbWindow.setAttentionCards([blockedCard()]);
+  await orbWindow.attentionTick();
+  await wait(1000);
+  const whisper = nudgeWin();
+  const hover = await invoke("desk:nudge-act", whisper, "hover", true);
+  assert.equal(hover.ok, true);
+  assert.equal(whisper.ignoreMouse, false, "the pointer on the card makes it clickable");
+  const bad = await invoke("desk:nudge-act", whisper, "answer", "rm -rf");
+  assert.equal(bad.ok, false);
+  assert.deepEqual(calls.answer, [], "an invented choice never reaches the answer path");
+  const good = await invoke("desk:nudge-act", whisper, "answer", "ack");
+  assert.equal(good.ok, true);
+  assert.deepEqual(calls.answer, [["d-fair", "ack"]]);
+  await wait(1500);
+  assert.equal(orbWindow.nudging(), null, "the confirmation closes the whisper");
+  assert.equal(whisper.isVisible(), false);
+  assert.equal(orbWindow.attentionMems()["d-fair"].ignored || 0, 0, "answered is not ignored");
+});
+
+test("an ignored nudge counts toward the next level; Later snoozes; answered elsewhere closes it", async () => {
+  startAttention();
+  orbWindow.setAttentionCards([blockedCard()]);
+  await orbWindow.attentionTick();
+  orbWindow.endNudge("timeout");
+  assert.equal(orbWindow.attentionMems()["d-fair"].ignored, 1);
+  // pacing: the same card is not re-nudged right away
+  const again = await orbWindow.attentionTick();
+  assert.equal(again.act, "none");
+  orbWindow.__setAttentionHooks({ quiet: () => "", idleMs: () => 0, fullScreen: async () => "" });
+  orbWindow.setAttentionCards([blockedCard({ id: "d-next", createdAt: Math.floor(Date.now() / 1000) })]);
+  // the old card left the queue: its memory is pruned
+  assert.equal(orbWindow.attentionMems()["d-fair"], undefined);
+});
+
+test("quiet, a hidden fairy, or the owner away: no nudge, and the claim follows visibility", async () => {
+  startAttention({ quiet: () => "Do not disturb" });
+  orbWindow.setAttentionCards([blockedCard()]);
+  assert.match((await orbWindow.attentionTick()).reason, /Do not disturb/);
+  orbWindow.__setAttentionHooks({ quiet: () => "", idleMs: () => 10 * 60_000, fullScreen: async () => "" });
+  assert.match((await orbWindow.attentionTick()).reason, /away/);
+  orbWindow.__setAttentionHooks({ quiet: () => "", idleMs: () => 0, fullScreen: async () => "game.exe is full-screen" });
+  assert.match((await orbWindow.attentionTick()).reason, /full-screen/);
+  assert.equal(orbWindow.ownsAttention(), true, "on screen with its loop running: the fairy carries the cards");
+  orbWindow.hideOrb();
+  assert.equal(orbWindow.ownsAttention(), false, "hidden: awask's window comes back");
+});
+
+test("clicking the fairy mid-nudge opens THAT card", async () => {
+  const calls = startAttention();
+  orbWindow.setAttentionCards([blockedCard()]);
+  await orbWindow.attentionTick();
+  await wait(1000);
+  const r = await invoke("desk:orb-click", orbWin());
+  assert.equal(r.ok, true);
+  assert.deepEqual(calls.open, ["d-fair"]);
+  assert.equal(orbWindow.nudging(), null);
+});
+
+test("an ordinary card only glows beside the fairy where it rests", async () => {
+  startAttention();
+  const homeBefore = orbWin().getBounds();
+  orbWindow.setAttentionCards([blockedCard({
+    id: "d-glow", kind: "decision", urgency: "normal", blocking: false, tab: "",
+    options: [{ key: "cut", label: "Cut 0.4.4 now" }, { key: "wait", label: "Wait" }], defaultKey: "wait",
+  })]);
+  const plan = await orbWindow.attentionTick();
+  assert.equal(plan.level, 1);
+  await wait(50);
+  const whisper = nudgeWin();
+  assert.ok(whisper.isVisible(), "a glow shows the whisper at once (no flight)");
+  const after = orbWin().getBounds();
+  assert.ok(Math.abs(after.x - homeBefore.x) < 40 && Math.abs(after.y - homeBefore.y) < 40, "the fairy stayed home");
+  orbWindow.endNudge("seen", { stay: true });
+});

@@ -1886,7 +1886,29 @@ function setCompanionMode(mode) {
   return { ok: true, companion: next };
 }
 
+/** Why the fairy must not interrupt right now, or "" (fairy-attention quiet). The
+ *  full-screen check is the fairy's own (spirit-probe quiet op), run only when a
+ *  nudge is actually due. */
+function fairyQuietReason() {
+  try {
+    if (kidDeskMode().enabled) return "kid mode";
+    if (overlaySettings().doNotDisturb) return "Do not disturb";
+    if (nowModeActive()) return "NOW mode";
+    if (companionMode() !== "fairy") return "the avatar carries the cards";
+    if (require("./game-posture.cjs").hostIsGaming()) return "game on";
+  } catch { /* an unreadable setting is not a reason to go silent */ }
+  return "";
+}
+
+/** The fairy carries the decision queue (decisions only -- reports stay on the badge). */
+function feedFairyCards() {
+  try {
+    orbWindow.setAttentionCards(decisionCards.partitionCards(openDecisions).decisions);
+  } catch { /* the fairy is not up yet; the next change feeds it */ }
+}
+
 function syncNeedsYouChip() {
+  feedFairyCards();
   if (companionMode() === "fairy") {
     try {
       const first = needsYou[0];
@@ -5687,6 +5709,23 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     orbWindow.startOrb({
       speak: (text, { slotId = null, origin = "desk:spirit" } = {}) =>
         speakAloud(text, undefined, undefined, slotId || "slot0", origin),
+      // The cards live in the fairy (owner 2026-11-08, fairy-attention.cjs): it answers
+      // through the ONE desk answer path (signed approvals still go to their window),
+      // opens the Inbox on the card, and holds while quiet. A repeat is spoken unless
+      // the mic is muted; "Read it to me" (force) is the owner asking, so it speaks.
+      attention: {
+        answer: (id, key) => answerDeckCard(id, key, null),
+        open: (id) => openInbox(id || null),
+        quiet: () => fairyQuietReason(),
+        idleMs: () => {
+          try { return powerMonitor.getSystemIdleTime() * 1000; } catch { return 0; }
+        },
+        speak: (line, { force = false } = {}) => {
+          if (!force && micMuted()) return false;
+          try { void speakAloud(line, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { return false; }
+          return true;
+        },
+      },
       runCommand: (id, arg) => runCommand(id, arg, { surface: "spirit" }),
       // The fairy wears the owner's AitherSprite: the ONE desk sign-in (the bearer
       // awconnect and notebooks also get); signed out -> the `adk login` profile ->
@@ -6508,7 +6547,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
               openInbox(newest && newest.id ? newest.id : null);
               raiseLivingDesktop();               // an already-open overlay comes forward too
               lastInboxOpenAt = nowMs;
-            } else if (!overlaySettings().doNotDisturb && !nowModeActive()) {
+            } else if (!overlaySettings().doNotDisturb && !nowModeActive()
+              && !(companionMode() === "fairy" && orbWindow.ownsAttention())) {
+              // (a fairy on screen carries it instead: the balloon was one more popup)
               notifyQuietly("Aither — a decision needs you", String((newest && newest.title) || title).slice(0, 200));
             }
           } else if (mayRaise && cardWindowsMayOpen() && nowMs - lastInboxOpenAt >= INBOX_OPEN_MIN_MS) {
@@ -6552,7 +6593,13 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // (adk.decisions.notify.desk_alive): while the desk is up, the card is the
     // DESK's to surface — this watch just proved it is watching. Beat every
     // 20 s; stopped (and removed) on quit in before-quit.
-    deskHeartbeatStop = decisionCards.startHeartbeat();
+    // The fairy's claim rides the beat (2026-11-08): while it is on screen and its
+    // nudge loop runs, awask leaves its frameless Tk card window down -- the card is
+    // the fairy's to carry. Hidden fairy / avatar companion / dead desk = no claim.
+    deskHeartbeatStop = decisionCards.startHeartbeat({
+      claim: () => (companionMode() === "fairy" && orbWindow.ownsAttention() ? { attention: "fairy" } : null),
+    });
+    feedFairyCards();
     // Unanswered needs-you cards are re-spoken hourly (micMuted wins; a snooze
     // drops the card from the list). Also notices snoozes running out.
     const needsYouTimer = setInterval(() => {
