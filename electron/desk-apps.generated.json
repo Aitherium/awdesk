@@ -1646,6 +1646,15 @@
       "kind": "page"
     },
     {
+      "id": "canvas",
+      "label": "Canvas",
+      "hint": "Pin apps and widgets on a board",
+      "section": "Now",
+      "tabOf": null,
+      "destination": "today",
+      "kind": "page"
+    },
+    {
       "id": "cards",
       "label": "Inbox",
       "hint": "Decisions and messages",

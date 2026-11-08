@@ -59,6 +59,10 @@ const deskTenant = require("./desk-tenant.cjs");
 const tabDiscard = require("./tab-discard.cjs");
 const terminalWindow = require("./terminal-window.cjs");
 const agentSessions = require("./browser-agent-cookies.cjs");
+// The layout document (pane sides, presets, the rail's arrangement, detached bounds,
+// canvas boards) -- one more key of browser-layout.json, never a second store.
+const deskLayout = require("./desk-layout.cjs");
+const { createSurfaceState } = require("./surface-state.cjs");
 let knowledgeImpl = null;
 function knowledgeClient() {
   if (!knowledgeImpl) knowledgeImpl = require("./knowledge-client.cjs").createKnowledgeClient();
@@ -159,6 +163,35 @@ function setPrefs(patch) {
 }
 /** A gutter is being dragged: page views are hidden so the chrome page keeps the mouse. */
 let dragging = false;
+/**
+ * Edit-layout mode (the Customize panel's "Edit layout", the palette's layout.edit):
+ * every page view steps aside, exactly as during a gutter drag, so the chrome page can
+ * draw the panes as labelled boxes with drop zones and handles over the whole window.
+ * Not persisted: a restart never comes back in edit mode.
+ */
+let editingLayout = false;
+/** Page views give the chrome page the whole window (a drag, or edit-layout mode). */
+function viewsAside() {
+  return dragging || editingLayout;
+}
+
+/**
+ * Panes in their own windows (desk-layout DETACHABLE: the assistant panel, the terminal
+ * dock, the taskbar). surface-state.cjs owns WHERE each one is -- the same single owner
+ * the console's panes have -- and the pane windows are the oracle it is reconciled
+ * against, so a window closed from its own title bar reattaches instead of leaving a
+ * hole the layout still reserves.
+ */
+const paneSurfaces = createSurfaceState(deskLayout.DETACHABLE);
+/** pane -> its own BrowserWindow, while detached. */
+const paneWindows = new Map();
+/** The browser window is closing: pane windows go with it and stay "open" for next time. */
+let closingBrowser = false;
+function paneDetached(pane) {
+  return paneSurfaces.presentationOf(pane) === "detached";
+}
+/** The canvas host (browser-canvas.cjs), made on first use. */
+let canvasHost = null;
 /** The living desktop's taskbar (browser-taskbar.cjs): its view, and whether its menu is open. */
 let taskbarView = null;
 let taskbarOpen = false;
@@ -491,18 +524,21 @@ function layout() {
   const now = Date.now();
   for (const [id, view] of views) {
     if (!alive(view) || popped.has(id)) continue;
-    const shown = id === tabs.active && !dragging;
+    const shown = id === tabs.active && !viewsAside();
     if (shown) shownAt.set(id, now);
     placeView(view, shown, rects.page);
   }
-  if (alive(panelView)) placeView(panelView, !dragging && rects.panel.width > 0, rects.panel);
-  if (alive(taskbarView)) {
-    const shown = !dragging && rects.taskbar.height > 0;
+  // A detached pane lives in its own window (detachPane): this layout leaves it alone.
+  if (alive(panelView) && !paneDetached("panel")) placeView(panelView, !viewsAside() && rects.panel.width > 0, rects.panel);
+  if (alive(taskbarView) && !paneDetached("taskbar")) {
+    const shown = !viewsAside() && rects.taskbar.height > 0;
     // Its Start menu and tray popovers open UPWARD: while one is open the view grows
     // over the page (the page is still there underneath; closing it shrinks back).
     placeView(taskbarView, shown, taskbarOpen ? taskbar.expandedRect(rects) : rects.taskbar);
   }
-  if (alive(dockView)) placeView(dockView, !dragging && rects.dock.height > 0, rects.dock);
+  if (alive(dockView) && !paneDetached("dock")) placeView(dockView, !viewsAside() && rects.dock.height > 0, rects.dock);
+  // The canvas's live app cards follow its tab (shown, hidden, moved, popped out).
+  if (canvasHost) canvasHost.relayout();
   // The docked avatar follows the rail only when the rail really moved.
   const key = JSON.stringify([rects.avatar || null, rects.page, win.getContentBounds()]);
   const layoutChanged = key !== lastLayoutKey;
@@ -762,11 +798,16 @@ function syncPageTaskbars() {
 
 function currentRectsFor(bounds, docked) {
   const p = getPrefs();
+  const panes = p.desk.panes;
+  // A detached pane takes no room here: its window holds it.
   return rail.railLayout(bounds, {
     collapsed: p.railCollapsed, docked, chromeHeight: CHROME_HEIGHT, railWidth: p.railWidth,
-    panelWidth: p.panelWidth, panelCollapsed: p.panelCollapsed,
-    taskbarHeight: stripShown() ? rail.TASKBAR_HEIGHT : 0,
-    dockHeight: dockShown() ? rail.dockHeightFor(p) : 0,
+    panelWidth: p.panelWidth, panelCollapsed: p.panelCollapsed || paneDetached("panel"),
+    taskbarHeight: stripShown() && !paneDetached("taskbar") ? rail.TASKBAR_HEIGHT : 0,
+    dockHeight: dockShown() && !paneDetached("dock") ? rail.dockHeightFor(p) : 0,
+    railSide: panes.rail.side, panelSide: panes.panel.side, dockSide: panes.dock.side,
+    avatarSide: panes.avatar.side, layersSide: panes.layers.side, layersVisible: panes.layers.visible,
+    avatarOrder: panes.avatar.order, layersOrder: panes.layers.order,
   });
 }
 
@@ -930,11 +971,45 @@ function railState() {
     allSections: Boolean(p.railAllSections),
     docked,
     slot: rects ? rects.avatar : null,
-    sections: withAwconnectRow(rail.railView(rail.railSections(require("./console-window.cjs").PANES,
-      { activePane: active && active.by === "you" ? active.paneId || null : null, signedIn: hostSignedIn(),
-        owner: hostOwner(), modes: p.launchModes }), { expanded: p.expandedSections || [] }), active),
+    // The owner's arrangement (desk-layout arrangeRail) BEFORE the five-row cap, so
+    // "+N more" applies to the rail they arranged. Pinned is always a primary section.
+    sections: withAwconnectRow(rail.railView(arrangedSections(active),
+      { expanded: p.expandedSections || [], primary: [deskLayout.PINNED_SECTION, ...rail.PRIMARY_SECTIONS] }), active),
     awconnect: awconnect.ok ? { ok: true, version: awconnect.version } : { ok: false, error: awconnect.error },
-    layers: rail.layerRows({ docked, overlayVisible, browserOpen: true, overPages: getPrefs().overlay }),
+    layers: deskLayout.orderLayers(rail.layerRows({ docked, overlayVisible, browserOpen: true, overPages: getPrefs().overlay }),
+      p.desk.layerOrder),
+    // Every pane's rectangle: the grips, the edit-layout schematic and the chrome's own
+    // columns are placed from these, never from a second copy of the geometry.
+    rects: rects ? { rail: rects.rail, page: rects.page, panel: rects.panel, dock: rects.dock, taskbar: rects.taskbar } : null,
+    layout: layoutState(),
+  };
+}
+
+/** railSections() in the owner's arrangement (pins, moved and removed rows, section order). */
+function arrangedSections(active = tabs.get(tabs.active)) {
+  const p = getPrefs();
+  return deskLayout.arrangeRail(rail.railSections(require("./console-window.cjs").PANES,
+    { activePane: active && active.by === "you" ? active.paneId || null : null, signedIn: hostSignedIn(),
+      owner: hostOwner(), modes: p.launchModes }), p.desk.rail);
+}
+
+/** What the Customize panel and edit-layout mode render: sides, presets, what is detached. */
+function layoutState() {
+  const desk = getPrefs().desk;
+  return {
+    editing: editingLayout,
+    sides: Object.fromEntries(Object.entries(desk.panes).map(([id, pane]) => [id, pane.side])),
+    layersVisible: desk.panes.layers.visible,
+    avatarOrder: desk.panes.avatar.order,
+    layersOrder: desk.panes.layers.order,
+    allowed: deskLayout.SIDES,
+    labels: deskLayout.PANE_LABELS,
+    detachable: deskLayout.DETACHABLE,
+    detached: paneSurfaces.snapshot(),
+    presets: deskLayout.presetList(desk),
+    activePreset: desk.activePreset,
+    hiddenRows: desk.rail.hidden.length,
+    pinnedRows: desk.rail.pinned.length,
   };
 }
 
@@ -1739,6 +1814,11 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   win.once("ready-to-show", () => {
     ensureDock();
     ensureTaskbar();
+    // Panes the owner left in their own windows come back there, where they were.
+    for (const pane of deskLayout.DETACHABLE) {
+      const was = getPrefs().desk.detached[pane];
+      if (was && was.open) detachPane(pane);
+    }
     layout();
     win.show();
     win.focus();
@@ -1748,6 +1828,13 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   discardTimer = setInterval(() => discardHiddenTabs(), 60 * 1000);
   if (typeof discardTimer.unref === "function") discardTimer.unref();
   win.on("closed", () => {
+    // Pane windows close with the browser, but stay "open" in the layout for next time.
+    closingBrowser = true;
+    for (const [, w] of paneWindows) if (w && !w.isDestroyed()) w.destroy();
+    paneWindows.clear();
+    paneSurfaces.reconcile(Object.fromEntries(deskLayout.DETACHABLE.map((pane) => [pane, false])));
+    closingBrowser = false;
+    editingLayout = false;
     if (discardTimer) clearInterval(discardTimer);
     discardTimer = null;
     if (openSignal) openSignal.dispose();
@@ -2150,7 +2237,11 @@ function wireIpc() {
     if (!fromChrome(event)) return { ok: false, error: "not the browser's own chrome" };
     const relayout = () => { layout(); pushState(); return { ok: true }; };
     if (action === "collapse") return setPrefs({ railCollapsed: Boolean(arg) }) && relayout();
-    if (action === "panel") return setPrefs({ panelCollapsed: Boolean(arg) }) && relayout();
+    if (action === "panel") {
+      // Hiding a panel that floats in its own window brings it home first.
+      if (arg && paneDetached("panel")) attachPane("panel");
+      return setPrefs({ panelCollapsed: Boolean(arg) }) && relayout();
+    }
     if (action === "overlay") {
       // Back from the desktop (or off): the desk's overlay window steps down first.
       if (overlayOnDesktop()) shellHost.run("desktop.overlay.toggle");
@@ -2190,12 +2281,10 @@ function wireIpc() {
       const on = arg == null ? !getPrefs().railAllSections : Boolean(arg);
       return setPrefs({ railAllSections: on }) && relayout();
     }
-    if (action === "reset-layout") return setPrefs({ railWidth: null, panelWidth: null, railCollapsed: false,
-      panelCollapsed: false, taskbar: true, collapsedSections: [], expandedSections: [], railAllSections: false,
-      dock: true, dockOpen: false, dockHeight: null })
-      && (ensureDock(), relayout());
+    if (action === "reset-layout") return resetLayout();
     // The terminal dock: on/off for good, open/closed, and a drag of its top edge.
     if (action === "dock-on") {
+      if (!arg && paneDetached("dock")) attachPane("dock");
       setPrefs({ dock: Boolean(arg) });
       if (arg) ensureDock();
       else if (alive(dockView)) placeView(dockView, false, null);
@@ -2205,7 +2294,7 @@ function wireIpc() {
     if (action === "dock-drag") {
       const bounds = win.getContentBounds();
       setPrefs(rail.dockHeightFromDrag(Number(arg), { height: bounds.height,
-        taskbarHeight: stripShown() ? rail.TASKBAR_HEIGHT : 0 }));
+        taskbarHeight: stripShown() ? rail.TASKBAR_HEIGHT : 0, side: getPrefs().desk.panes.dock.side, top: CHROME_HEIGHT }));
       sendDockState();
       return relayout();
     }
@@ -2258,8 +2347,17 @@ function wireIpc() {
       shellHost.popupMenu(win);
       return { ok: true };
     }
+    // The layout document (desk-layout.cjs): edit mode, sides, detach, presets, the
+    // rail's arrangement, layer order, export/import. Every one is also a palette
+    // command (layoutCommand) -- no capability is gesture-only.
+    const layoutVerdict = layoutAction(action, arg);
+    if (layoutVerdict) return layoutVerdict;
     return { ok: false, error: "unknown rail action" };
   });
+  // A tab's right-click: Pin to canvas, pop out / dock back, close.
+  ipcMain.handle("desk:browser-tab-menu", (event, id) => (fromChrome(event) ? tabMenu(Number(id)) : { ok: false }));
+  // aither://canvas: its boards, widgets and live app cards (browser-canvas.cjs).
+  getCanvas().wire(ipcMain);
   ipcMain.handle("desk:browser-navigate", async (event, input) => {
     if (!fromChrome(event)) return { ok: false, reason: "not the browser toolbar" };
     // The OWNER typing aither://<pane> into the address bar opens that console page.
@@ -2490,6 +2588,513 @@ async function screenPage() {
 }
 
 /** main installs the Agents tab's sources + answer path (see agentsHost). */
+// ── the layout document: detach, presets, the rail's arrangement, the canvas ──────
+// Owner, 2026-11-07: "resize and detach/reattach, reorganize and rearrange, and have
+// access to a canvas for pinning apps and widgets." The pure rules live in
+// desk-layout.cjs and canvas-model.cjs; this block is the electron half.
+
+/** The view a detachable pane is. */
+function paneView(pane) {
+  return pane === "panel" ? panelView : pane === "dock" ? dockView : pane === "taskbar" ? taskbarView : null;
+}
+
+/** Ask the pane windows (the oracle) and fold the answer into paneSurfaces. */
+function observePanes() {
+  const observed = {};
+  for (const pane of deskLayout.DETACHABLE) {
+    const w = paneWindows.get(pane);
+    observed[pane] = Boolean(w && !w.isDestroyed());
+  }
+  return paneSurfaces.reconcile(observed);
+}
+
+/** Default size of a pane's own window, before the owner moves it. */
+const PANE_WINDOW_SIZE = Object.freeze({
+  panel: { width: 420, height: 760 }, dock: { width: 960, height: 380 }, taskbar: { width: 960, height: 120 },
+});
+
+/**
+ * Pop a pane into its own window (put it on any monitor). Same move as a popped-out
+ * tab: the VIEW changes window, so the page keeps its state and its IPC sender is
+ * still the one main checks. Its bounds are remembered per pane and reused next time
+ * -- unless that monitor is gone (desk-layout.fitBounds).
+ */
+function detachPane(pane) {
+  if (!deskLayout.DETACHABLE.includes(pane)) {
+    return { ok: false, error: `${deskLayout.PANE_LABELS[pane] || pane} cannot leave the window (it is the window's own chrome)` };
+  }
+  if (!win || win.isDestroyed()) return { ok: false, error: "The Aither Browser is not open." };
+  if (pane === "dock") { if (!getPrefs().dock) setPrefs({ dock: true }); ensureDock(); }
+  if (pane === "taskbar") { if (!getPrefs().taskbar) setPrefs({ taskbar: true }); ensureTaskbar(); }
+  if (pane === "panel" && getPrefs().panelCollapsed) setPrefs({ panelCollapsed: false });
+  const view = paneView(pane);
+  if (!alive(view)) return { ok: false, error: `${deskLayout.PANE_LABELS[pane]} is not running` };
+  const existing = paneWindows.get(pane);
+  if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return { ok: true }; }
+  const { BrowserWindow, screen } = electron();
+  const main = win.getBounds();
+  const size = PANE_WINDOW_SIZE[pane];
+  const fallback = { x: main.x + 80, y: main.y + 80, ...size };
+  let areas = [];
+  try { areas = screen.getAllDisplays().map((d) => d.workArea); } catch { /* no screen yet */ }
+  const saved = getPrefs().desk.detached[pane];
+  const bounds = deskLayout.fitBounds(saved && saved.bounds, areas, fallback);
+  const w = new BrowserWindow({
+    ...bounds, minWidth: 240, minHeight: 100, title: `${deskLayout.PANE_LABELS[pane]} — Aither`,
+    autoHideMenuBar: true, backgroundColor: "#0f1218",
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  w.loadURL("about:blank").catch(() => {});
+  try { win.contentView.removeChildView(view); } catch { /* not a child */ }
+  w.contentView.addChildView(view);
+  const fit = () => {
+    if (w.isDestroyed() || !alive(view)) return;
+    const { width, height } = w.getContentBounds();
+    forgetPlacement(view);
+    view.setVisible(true);
+    view.setBounds({ x: 0, y: 0, width, height });
+  };
+  fit();
+  let saveTimer = null;
+  const remember = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (!w.isDestroyed()) setPrefs({ desk: deskLayout.withDetached(getPrefs().desk, pane, { bounds: w.getBounds() }) });
+    }, 300);
+  };
+  w.on("resize", () => { fit(); remember(); });
+  w.on("move", remember);
+  // Closed from its own title bar: the pane comes home (the window is the oracle).
+  w.on("closed", () => { clearTimeout(saveTimer); attachPane(pane, { closing: true }); });
+  paneWindows.set(pane, w);
+  setPrefs({ desk: deskLayout.withDetached(getPrefs().desk, pane, { bounds: w.getBounds(), open: true }) });
+  observePanes();
+  layout();
+  pushState();
+  return { ok: true };
+}
+
+/** Bring a detached pane back into the browser and close its window. */
+function attachPane(pane, { closing = false } = {}) {
+  if (!deskLayout.DETACHABLE.includes(pane)) return { ok: false, error: `${pane} is not a detachable pane` };
+  const w = paneWindows.get(pane);
+  paneWindows.delete(pane);
+  const view = paneView(pane);
+  if (w && !w.isDestroyed() && alive(view)) {
+    try { w.contentView.removeChildView(view); } catch { /* already gone */ }
+  }
+  if (alive(view) && win && !win.isDestroyed() && !closingBrowser) {
+    forgetPlacement(view);
+    win.contentView.addChildView(view);
+    // The taskbar stays on top (its menus open upward over the page).
+    if (pane !== "taskbar" && alive(taskbarView) && !paneDetached("taskbar")) win.contentView.addChildView(taskbarView);
+  }
+  // A browser that is closing keeps "open": the pane comes back detached next time.
+  if (!closingBrowser) setPrefs({ desk: deskLayout.withDetached(getPrefs().desk, pane, { open: false }) });
+  if (w && !closing && !w.isDestroyed()) w.close();
+  observePanes();
+  layout();
+  pushState();
+  return { ok: true };
+}
+
+/** Reset layout: geometry, sides, layer order and the rail's section/row order. Pins, presets and boards stay. */
+function resetLayout() {
+  for (const pane of deskLayout.DETACHABLE) if (paneDetached(pane)) attachPane(pane);
+  const desk = getPrefs().desk;
+  const fresh = deskLayout.normalizeDesk({});
+  setPrefs({ railWidth: null, panelWidth: null, railCollapsed: false,
+    panelCollapsed: false, taskbar: true, collapsedSections: [], expandedSections: [], railAllSections: false,
+    dock: true, dockOpen: false, dockHeight: null,
+    desk: { ...desk, panes: fresh.panes, layerOrder: fresh.layerOrder, activePreset: null,
+      rail: { ...fresh.rail, pinned: desk.rail.pinned } } });
+  ensureDock();
+  ensureTaskbar();
+  layout();
+  pushState();
+  return { ok: true };
+}
+
+/** A structured argument from the chrome page (the preload stringifies everything). */
+function parseArg(arg) {
+  if (arg && typeof arg === "object") return arg;
+  try { return JSON.parse(String(arg || "")); } catch { return null; }
+}
+
+/** Apply a prefs patch from desk-layout and re-lay the window. */
+function applyPatch(result) {
+  if (!result || !result.ok) return result || { ok: false, error: "refused" };
+  setPrefs(result.patch);
+  if (getPrefs().dock) ensureDock();
+  if (getPrefs().taskbar) ensureTaskbar();
+  if (canvasHost && result.patch.desk && result.patch.desk.boards) canvasHost.broadcast();
+  layout();
+  pushState();
+  sendDockState();
+  return { ok: true };
+}
+
+/** One edit of the rail's arrangement (desk-layout.editRail), judged against what is on screen. */
+function railEdit(op) {
+  const result = deskLayout.editRail(getPrefs().desk.rail, op, arrangedSections());
+  if (!result.ok) return result;
+  setPrefs({ desk: { ...getPrefs().desk, rail: result.custom } });
+  layout();
+  pushState();
+  return { ok: true };
+}
+
+/** Every rail row as the owner sees it now, flat, with the section it shows in. */
+function railRows() {
+  const out = [];
+  for (const sec of arrangedSections()) for (const row of sec.rows) out.push({ row, section: sec.name });
+  return out;
+}
+
+/** A row's address, for "Pin to canvas" (null: a command row opens nothing to pin). */
+function rowUrl(row) {
+  if (!row) return null;
+  try {
+    if (row.kind === "page") return internal.internalUrl(internal.paneById(row.id), null);
+    if (row.kind === "workspace") return new URL(row.id, internal.onlineUrl()).href;
+    if (row.kind === "local") return String(row.id);
+    if (row.kind === "online") return launchModes.appUrl(internal.onlineUrl(), row.id, "tab");
+  } catch { /* not addressable */ }
+  return null;
+}
+
+/** A rail row's right-click: pin / remove / move, and Pin to canvas. Keyboard: the context-menu key. */
+function rowMenu(key) {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const { Menu } = electron();
+  const all = railRows();
+  const hit = all.find((x) => deskLayout.railRowKey(x.row) === key);
+  if (!hit) return { ok: false, error: "that row is not on the rail" };
+  const custom = getPrefs().desk.rail;
+  const pinned = custom.pinned.includes(key);
+  const sections = arrangedSections().map((s) => s.name).filter((n) => n !== deskLayout.PINNED_SECTION);
+  const url = rowUrl(hit.row);
+  const template = [
+    pinned ? { label: "Unpin from rail", click: () => railEdit({ op: "unpin", key }) }
+      : { label: "Pin to rail", click: () => railEdit({ op: "pin", key }) },
+    { label: "Remove from rail", click: () => railEdit({ op: "hide", key }) },
+    { type: "separator" },
+    { label: "Move up", accelerator: "Alt+Up", click: () => railEdit({ op: "nudge-row", key, by: -1 }) },
+    { label: "Move down", accelerator: "Alt+Down", click: () => railEdit({ op: "nudge-row", key, by: 1 }) },
+    { label: "Move to section", submenu: sections.filter((n) => n !== hit.section)
+      .map((name) => ({ label: name, click: () => railEdit({ op: "move-row", key, section: name, index: 0 }) })) },
+    { type: "separator" },
+    { label: "Pin to canvas", enabled: Boolean(url), click: () => pinToCanvas(url, hit.row.label) },
+  ];
+  if (custom.hidden.length) {
+    template.push({ type: "separator" },
+      { label: `Restore removed rows (${custom.hidden.length})`, click: () => railEdit({ op: "restore" }) });
+  }
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+/** A tab's right-click (also the context-menu key on a focused tab). */
+function tabMenu(id) {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const tab = tabs.get(id);
+  const view = viewOf(id);
+  if (!tab) return { ok: false, error: "no such tab" };
+  const { Menu } = electron();
+  const url = view ? view.webContents.getURL() : (discarded.get(id) || {}).url || "";
+  const title = view ? view.webContents.getTitle() : "";
+  const pinnable = Boolean(canvasModelUrl(url)) && tab.by === "you";
+  // "Pin this tab to desktop" is desk-pins-ink's `pins.tab` command (a card on the real
+  // desktop); the row is live only once the registry carries it.
+  const desktopPin = Boolean(require("./command-registry.cjs").byId("pins.tab")) && Boolean(shellHost);
+  const template = [
+    { label: "Pin to canvas", enabled: pinnable, click: () => void pinToCanvas(url, title) },
+    { label: "Pin this tab to desktop", enabled: desktopPin && pinnable,
+      click: () => shellHost.run("pins.tab", id) },
+    { type: "separator" },
+    popped.has(id) ? { label: "Dock back into the browser", click: () => dockTab(id) }
+      : { label: "Pop out into its own window", click: () => popOutTab(id) },
+  ];
+  if (!tab.pinned) template.push({ label: "Close tab", click: () => closeTab(id) });
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+function canvasModelUrl(url) {
+  return require("./canvas-model.cjs").appUrl(url);
+}
+
+/** "Export layout": the layout model, the owner's presets and boards, as one JSON file. */
+async function exportLayout() {
+  const { dialog } = electron();
+  const doc = deskLayout.exportDoc(getPrefs());
+  const pick = await dialog.showSaveDialog(win && !win.isDestroyed() ? win : undefined, {
+    title: "Export the browser layout", defaultPath: "aither-layout.json",
+    filters: [{ name: "Aither layout", extensions: ["json"] }],
+  });
+  if (pick.canceled || !pick.filePath) return { ok: false, canceled: true };
+  require("node:fs").writeFileSync(pick.filePath, JSON.stringify(doc, null, 2));
+  return { ok: true, path: pick.filePath };
+}
+
+/** "Import layout": strict (desk-layout.importDoc) -- a bad file says why and changes nothing. */
+async function importLayout() {
+  const { dialog } = electron();
+  const pick = await dialog.showOpenDialog(win && !win.isDestroyed() ? win : undefined, {
+    title: "Import a browser layout", properties: ["openFile"],
+    filters: [{ name: "Aither layout", extensions: ["json"] }],
+  });
+  if (pick.canceled || !pick.filePaths || !pick.filePaths[0]) return { ok: false, canceled: true };
+  const fs = require("node:fs");
+  const file = pick.filePaths[0];
+  if (fs.statSync(file).size > 2 * 1024 * 1024) return { ok: false, error: "that file is over 2 MB; a layout is a few KB" };
+  const result = deskLayout.importDoc(getPrefs(), fs.readFileSync(file, "utf8"));
+  if (!result.ok) return { ok: false, error: result.errors.slice(0, 5).join("; ") };
+  return applyPatch(result);
+}
+
+/**
+ * The rail/customize actions of the layout document. Returns null for an action that
+ * is not one of these (the caller keeps looking).
+ */
+function layoutAction(action, arg) {
+  const relayout = () => { layout(); pushState(); return { ok: true }; };
+  switch (action) {
+    case "edit-layout":
+      editingLayout = typeof arg === "boolean" ? arg : !editingLayout;
+      return relayout();
+    case "pane-side": {
+      const want = deskLayout.parsePaneSide(arg);
+      if (!want) return { ok: false, error: "say a pane and a side: panel:left" };
+      return applyPatch(deskLayout.setPaneSide(getPrefs(), want.pane, want.side));
+    }
+    case "pane-detach":
+      return detachPane(String(arg || ""));
+    case "pane-attach":
+      return attachPane(String(arg || ""));
+    case "layers-visible": {
+      const desk = JSON.parse(JSON.stringify(getPrefs().desk));
+      desk.panes.layers.visible = typeof arg === "boolean" ? arg : !desk.panes.layers.visible;
+      desk.activePreset = null;
+      setPrefs({ desk });
+      return relayout();
+    }
+    case "preset":
+      return applyPatch(deskLayout.applyPreset(getPrefs(), String(arg || "")));
+    case "preset-save":
+      return applyPatch(deskLayout.savePreset(getPrefs(), String(arg || "")));
+    case "preset-rename": {
+      const o = parseArg(arg) || {};
+      return applyPatch(deskLayout.renamePreset(getPrefs(), o.from, o.to));
+    }
+    case "preset-delete":
+      return applyPatch(deskLayout.deletePreset(getPrefs(), String(arg || "")));
+    case "layout-export":
+      return exportLayout();
+    case "layout-import":
+      return importLayout();
+    case "rail-edit":
+      return railEdit(parseArg(arg));
+    case "row-menu":
+      return rowMenu(String(arg || ""));
+    case "layer-move": {
+      const o = parseArg(arg) || {};
+      const moved = deskLayout.moveLayer(getPrefs().desk.layerOrder, String(o.key || ""),
+        { index: o.index == null ? null : Number(o.index), by: Number(o.by) || 0 });
+      if (!moved.ok) return moved;
+      setPrefs({ desk: { ...getPrefs().desk, layerOrder: moved.order } });
+      return relayout();
+    }
+    default:
+      return null;
+  }
+}
+
+/* ── the canvas (aither://canvas) ─────────────────────────────────────────────── */
+
+/**
+ * The live view behind an app card: the browser's ONE page-view builder, the session a
+ * tab of that address would ride (the owner's; an aitherium.com page signed in), and
+ * the same navigation rules a tab of that kind has.
+ */
+function makeCardView(url) {
+  const target = classify(url);
+  if (target.kind === "refused") return { ok: false, error: target.error };
+  let kind = target.kind;
+  let address = target.url;
+  let hostedPartition = target.partition || null;
+  if (kind === "web") {
+    const verdict = policy.sanitizeUrl(url);
+    if (!verdict.ok) return { ok: false, error: verdict.reason };
+    address = verdict.url;
+    const signedIn = internal.ownerHostedPartition("you", address, { explicit: null, online: onlinePartition() });
+    if (signedIn) { kind = "hosted"; hostedPartition = signedIn; }
+  }
+  if (kind === "internal") {
+    if (target.paneId === "canvas") return { ok: false, error: "the canvas does not hold itself" };
+    if (typeof internalConfig.beforeInternal === "function") {
+      try { internalConfig.beforeInternal(); } catch { /* the page shows its own error */ }
+    }
+    ensureInternalSession();
+  }
+  const view = createPageView(kind, { ...target, partition: hostedPartition }, hostedPartition, PARTITION);
+  guardCardView(view.webContents, kind);
+  if (kind === "hosted") void loadHostedTab(view, address).catch(() => {});
+  else void loadInView(view, address).catch(() => {});
+  return { ok: true, view, kind };
+}
+
+/** A card's page obeys its kind's navigation rules; a popup or a foreign link becomes an owner tab. */
+function guardCardView(wc, kind) {
+  wc.setWindowOpenHandler(({ url }) => {
+    if (policy.isNavigable(url)) openTab("you", url, { activate: true });
+    else if (kind === "internal" && internal.isInternalUrl(url)) openTab("you", url, { activate: true });
+    return { action: "deny" };
+  });
+  const verdict = (url, opts) => internal.navigationVerdict(kind, url, opts);
+  wc.on("will-navigate", (event, url) => {
+    const v = verdict(url);
+    if (v === "allow") return;
+    event.preventDefault();
+    if (v === "web-tab") openTab("you", url, { activate: true });
+  });
+  wc.on("will-redirect", (event, url) => { if (verdict(url) !== "allow") event.preventDefault(); });
+  wc.on("will-frame-navigate", (details) => {
+    if (!details || details.isMainFrame) return;
+    if (verdict(details.url, { frame: true }) !== "allow") details.preventDefault();
+  });
+  wc.on("will-attach-webview", (event) => event.preventDefault());
+}
+
+/** Which window holds the canvas page `wc`, where its page area starts, and is it on screen. */
+function canvasHostOf(wc) {
+  let id = null;
+  for (const [tabId, view] of views) if (alive(view) && view.webContents === wc) { id = tabId; break; }
+  if (id == null || !win || win.isDestroyed()) return null;
+  const pop = popped.get(id);
+  if (pop && !pop.isDestroyed()) return { window: pop, origin: { x: 0, y: 0 }, shown: pop.isVisible() };
+  const rects = currentRects();
+  return { window: win, origin: { x: rects.page.x, y: rects.page.y }, shown: id === tabs.active && !viewsAside() };
+}
+
+let termClient = null;
+let aitheroneClient = null;
+function getCanvas() {
+  if (canvasHost) return canvasHost;
+  canvasHost = require("./browser-canvas.cjs").createCanvasHost({
+    // ONE store: the canvas is a desk whiteboard (boards-core / boards-window).
+    store: require("./boards-window.cjs"),
+    // The layout document only says WHICH board the canvas shows.
+    getActive: () => getPrefs().desk.canvasBoard,
+    setActive: (id) => setPrefs({ desk: { ...getPrefs().desk, canvasBoard: id || null } }),
+    // AitherOne: the Online site's /api/docs/* (the routes Veil's canvas uses), with
+    // the desk's existing Online session bearer. No new credential path.
+    aitherone: () => {
+      let base;
+      try { base = internal.onlineUrl(); } catch { base = null; }
+      if (!base) return null;
+      if (!aitheroneClient || aitheroneClient.base !== base) {
+        aitheroneClient = { base, client: require("./aitherone-link.cjs").createClient({
+          base, token: async () => onlineToken(), fetchImpl: (url, init) => electron().net.fetch(url, init) }) };
+      }
+      return aitheroneClient;
+    },
+    makeView: (url) => makeCardView(url),
+    hostOf: (wc) => canvasHostOf(wc),
+    openTab: (url) => {
+      if (internal.isInternalUrl(url)) return openInternalUrl(url) ? { ok: true } : { ok: false, error: "no such Aither page" };
+      const opened = openTab("you", url, { activate: true });
+      return opened.ok ? { ok: true } : { ok: false, error: opened.error };
+    },
+    // Read-only sources for the widgets (canvas-widgets/*.cjs): the same numbers the
+    // tray badge, the terminal page and the Inference Ops window show.
+    widgetCtx: {
+      inbox: () => inbox.count,
+      sessions: () => {
+        if (!termClient) termClient = require("./terminal-client.cjs").createTerminalClient();
+        return termClient.list();
+      },
+      inference: () => require("./inference-window.cjs").getInferenceOpsWidget().poll(),
+    },
+  });
+  return canvasHost;
+}
+
+/** Pin an address onto the active board (as the kind it is: pin-item.pinItemFromUrl). */
+async function pinToCanvas(url, title = "") {
+  const result = await getCanvas().pin(String(url || ""), String(title || ""));
+  if (result.ok) pushState();
+  return result.ok ? { ok: true, card: result.pin } : result;
+}
+
+/** A rail row by what the owner typed: its label (case-insensitive) or its key. */
+function rowByName(text) {
+  const want = String(text || "").trim().toLowerCase();
+  if (!want) return null;
+  const rows = railRows();
+  return rows.find((x) => deskLayout.railRowKey(x.row).toLowerCase() === want)
+    || rows.find((x) => String(x.row.label || "").toLowerCase() === want) || null;
+}
+
+/**
+ * The registry's layout commands (command-registry records carrying `layout`), so every
+ * gesture has a palette path. `arg` is the palette's typed text for a `prompt` record.
+ */
+function layoutCommand(verb, arg = "") {
+  const v = String(verb || "");
+  const text = String(arg == null ? "" : arg).trim();
+  if (!win || win.isDestroyed()) createBrowserWindow({ url: null, home: true });
+  if (v.startsWith("preset:")) return layoutAction("preset", v.slice("preset:".length));
+  switch (v) {
+    case "edit": return layoutAction("edit-layout", undefined);
+    case "save": return layoutAction("preset-save", text);
+    case "load": return layoutAction("preset", text);
+    case "export": return exportLayout();
+    case "import": return importLayout();
+    case "reset": return resetLayout();
+    case "side": {
+      // "panel left", "dock top", "rail right"
+      const [pane, side] = text.toLowerCase().split(/[\s:]+/);
+      return layoutAction("pane-side", `${pane || ""}:${side || ""}`);
+    }
+    case "detach": return detachPane(text.toLowerCase());
+    case "attach": return attachPane(text.toLowerCase());
+    case "layers": return layoutAction("layers-visible", undefined);
+    case "rail.pin":
+    case "rail.remove": {
+      const hit = rowByName(text);
+      if (!hit) return { ok: false, error: `no rail row called ${text}` };
+      return railEdit({ op: v === "rail.pin" ? "pin" : "hide", key: deskLayout.railRowKey(hit.row) });
+    }
+    case "rail.restore": return railEdit({ op: "restore" });
+    case "rail.move": {
+      // "Files up" | "Files down" | "Files to Work"
+      const m = /^(.+?)\s+(up|down|to\s+(.+))$/i.exec(text);
+      const hit = m && rowByName(m[1]);
+      if (!hit) return { ok: false, error: "say a row and up, down, or 'to <section>'" };
+      const key = deskLayout.railRowKey(hit.row);
+      if (m[3]) {
+        const section = arrangedSections().map((s) => s.name).find((n) => n.toLowerCase() === m[3].trim().toLowerCase());
+        if (!section) return { ok: false, error: `no section called ${m[3]}` };
+        return railEdit({ op: "move-row", key, section, index: 0 });
+      }
+      return railEdit({ op: "nudge-row", key, by: m[2].toLowerCase() === "up" ? -1 : 1 });
+    }
+    case "canvas.open":
+      return openInternal("canvas", null) ? { ok: true } : { ok: false, error: "the canvas page is missing" };
+    case "canvas.pin-tab": {
+      const view = activeView();
+      if (!view) return { ok: false, error: "no tab to pin" };
+      return pinToCanvas(view.webContents.getURL(), view.webContents.getTitle());
+    }
+    case "canvas.pin-url":
+      return pinToCanvas(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`, "");
+    default:
+      return { ok: false, error: `no layout command ${v}` };
+  }
+}
+
+
 function setAgentsHost(host) {
   const ok = host && typeof host.view === "function" && typeof host.check === "function"
     && typeof host.answer === "function";
@@ -2586,6 +3191,12 @@ module.exports = {
   /** A tab the owner opened, for overlay-smoke.cjs. */
   __openTabForTest: (url) => openTab("you", url),
   isBrowserWindowOpen,
+  /** The registry's layout.* / rail.* / canvas.* commands (command-registry `layout` field). */
+  layoutCommand,
+  /** "Pin to canvas" from outside the browser (main, a phone): an address onto the active board. */
+  pinToCanvas,
+  /** The floating board window's pin door (boards-window.cjs): same cards, same live views. */
+  pinHost: () => getCanvas().boardWindow,
   scriptFor,
   setAgentsHost,
   setShellHost,

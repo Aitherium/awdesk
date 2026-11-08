@@ -79,6 +79,12 @@ const PANES = Object.freeze([
     id: "search", label: "Search", hint: "Web + platform search, deep research, Media Forge", section: "Now", icon: "search",
     kind: "file", file: "search.html",
   }),
+  // The pin canvas (owner, 2026-11-07: "have access to a canvas for pinning apps and
+  // widgets"): boards of live pages and widgets. canvas-model.cjs / browser-canvas.cjs.
+  Object.freeze({
+    id: "canvas", label: "Canvas", hint: "Pin apps and widgets on a board", section: "Now", icon: "grid",
+    kind: "file", file: "canvas.html",
+  }),
   Object.freeze({
     id: "cards", label: "Inbox", hint: "Decisions and messages", section: "Now", icon: "bell",
     kind: "view", query: "deck=1",

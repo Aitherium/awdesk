@@ -73,6 +73,8 @@ if (href.includes("settings.html")) {
   require("./terminal-preload.cjs");
 } else if (href.includes("/spend.html")) {
   require("./spend-preload.cjs");
+} else if (href.includes("/canvas.html")) {
+  require("./canvas-preload.cjs");
 } else if (/\/plane-[a-z]+\.html/.test(href)) {
   require("./plane-preload.cjs");
 } else if (!href.includes("console.html")) {

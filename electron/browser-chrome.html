@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline' file:; img-src data:;" />
 <title>Aither Browser</title>
 <link rel="stylesheet" href="aither-tokens.css" />
 <style>
@@ -103,6 +103,62 @@
     background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; }
   #customize .note { color: var(--muted); font-size: 11px; margin-top: 4px; }
   body.collapsed #customize, body.collapsed #custom { display: none; }
+  #customize .crow { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  #customize .crow > * { flex: 1; min-width: 0; margin-top: 0; }
+  #customize select, #customize input[type="text"] { height: 26px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--fg); font: inherit; font-size: 12px; padding: 0 6px; }
+  #customize .lbl { flex: none; color: var(--muted); font-size: 11px; }
+  #customize button.on { border-color: var(--primary, #7cd); color: var(--primary, #7cd); }
+  #customize [hidden] { display: none; }
+  /* ── the owner's arrangement (desk-layout.cjs) ───────────────────────────────────
+     Sides: the rail on the right edge; avatar slot / layer strip at the top or bottom
+     of the rail (CSS order, set from the layout state). */
+  body.rail-right #rail { left: auto; right: 0; border-right: 0; border-left: 1px solid var(--line); }
+  body.rail-right #top { left: 0; right: var(--rail-w); }
+  .brand { order: 0; } #customize, #agentlogin-panel, #railedit { order: 1; } #nav { order: 5; }
+  .row.pinned .l::after { content: " \2022"; color: var(--primary, #7cd); }
+  /* Edit-layout mode: rows, sections and tiles grow handles; drop targets light up. */
+  body.editing .row, body.editing .sec, body.editing .layer { cursor: grab; }
+  body.editing .row::before, body.editing .sec::after { content: "\2807"; color: var(--muted); font-size: 12px; flex: none; }
+  .drop-target { outline: 2px dashed var(--primary, #7cd); outline-offset: -2px; }
+  #railedit { margin: 0 8px 6px; padding: 6px; border: 1px dashed var(--primary, #7cd); border-radius: 10px; font-size: 11px;
+    display: grid; gap: 4px; }
+  #railedit[hidden] { display: none; }
+  #railedit .h { display: flex; align-items: center; gap: 6px; font-weight: 600; cursor: grab; }
+  #railedit .crow { display: flex; gap: 4px; align-items: center; }
+  #railedit .crow span { flex: none; width: 48px; color: var(--muted); }
+  #railedit button { flex: 1; height: 22px; border-radius: 6px; border: 1px solid var(--line); background: var(--btn);
+    color: var(--fg); cursor: pointer; font: inherit; font-size: 11px; }
+  #railedit button.on { border-color: var(--primary, #7cd); color: var(--primary, #7cd); }
+  body.collapsed #railedit { display: none; }
+  /* The schematic: while editing, the page views step aside and each pane is a box. */
+  #editor { position: fixed; inset: 0; z-index: 4; pointer-events: none; }
+  #editor[hidden] { display: none; }
+  #editor .box { position: fixed; pointer-events: auto; border: 1px dashed color-mix(in srgb, var(--primary, #7cd) 55%, var(--line));
+    border-radius: 10px; background: color-mix(in srgb, var(--primary, #7cd) 6%, var(--bg)); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 8px; padding: 8px; overflow: hidden; }
+  /* A strip-sized pane (the closed dock, the taskbar) lays its handle and buttons in a row. */
+  #editor .box.short { flex-direction: row; padding: 2px 8px; gap: 6px; }
+  #editor .box.short .h { padding: 1px 8px; font-size: 12px; }
+  #editor .box.short button { height: 22px; }
+  #editor .box.page { background: color-mix(in srgb, var(--fg) 3%, var(--bg)); border-style: solid; border-color: var(--line); }
+  #editor .box .h { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; cursor: grab; user-select: none;
+    padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--btn); }
+  #editor .box.page .h { cursor: default; }
+  #editor .box .acts { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+  #editor .box button, #editor .bar button { height: 26px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; }
+  #editor .box button:hover, #editor .bar button:hover { border-color: var(--primary, #7cd); }
+  #editor .box .sz { color: var(--muted); font-size: 11px; }
+  #editor .zone { position: fixed; pointer-events: auto; border-radius: 10px; display: none; place-items: center;
+    background: color-mix(in srgb, var(--primary, #7cd) 18%, transparent); border: 2px dashed var(--primary, #7cd);
+    color: var(--fg); font-weight: 600; font-size: 12px; }
+  #editor.dragging .zone.for { display: grid; }
+  #editor .zone.over { background: color-mix(in srgb, var(--primary, #7cd) 38%, transparent); }
+  #editor .bar { position: fixed; pointer-events: auto; display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+    border-radius: 10px; border: 1px solid var(--primary, #7cd); background: var(--bg-deep, var(--bg)); font-size: 12px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, .4); }
+  #editor .bar .away { color: var(--muted); }
   /* BROWSER-M3: "Let the agent use my sign-in". The switch is in the toolbar; the site
      list (see and revoke) is a rail card, because the chrome page owns the rail's
      height and the page views own everything below the toolbar. */
@@ -180,11 +236,27 @@
       <button id="collapse" title="Collapse the rail" aria-label="Collapse the rail">&#171;</button>
     </div>
     <div id="customize" hidden>
+      <div class="crow"><span class="lbl">Layout</span><select id="opt-preset" aria-label="Layout preset"></select></div>
+      <div class="crow"><input type="text" id="opt-preset-name" maxlength="40" placeholder="Name this layout" aria-label="Layout name" />
+        <button id="opt-preset-save" title="Save the layout on screen under this name">Save as</button></div>
+      <div class="crow"><button id="opt-preset-rename" title="Rename the selected layout to the name above">Rename</button>
+        <button id="opt-preset-delete" title="Delete the selected layout">Delete</button></div>
+      <button id="opt-edit" aria-pressed="false" title="Show every pane as a box you can drag to another side, detach or hide (Esc to finish)">Edit layout</button>
       <label><input type="checkbox" id="opt-panel" /> Assistant panel</label>
       <label><input type="checkbox" id="opt-taskbar" /> AitherOS taskbar</label>
       <label><input type="checkbox" id="opt-dock" /> Terminal dock (Ctrl+`)</label>
-      <div class="note">Drag the edges of the rail and the panel to resize. Click a section name to fold it.</div>
+      <label><input type="checkbox" id="opt-layers" /> Layer tiles</label>
+      <div class="crow"><button id="opt-export" title="Save this layout, your layouts and your canvas boards as a file">Export…</button>
+        <button id="opt-import" title="Load a layout file">Import…</button></div>
+      <button id="opt-restore" hidden>Restore removed rail rows</button>
+      <div class="note">Drag the edges of the rail, panel and dock to resize. Edit layout moves panes to another side or into their own window. Right-click a rail row or a tab to pin it to the rail or the canvas; Alt+arrows reorder the focused row, section or tile. Every action is also in the palette.</div>
       <button id="opt-reset">Reset layout</button>
+    </div>
+    <div id="railedit" hidden aria-label="Rail layout">
+      <div class="h" id="railedit-handle" draggable="true" title="Drag to the other edge of the window">&#10247; Rail</div>
+      <div class="crow"><span>Edge</span><button id="re-left">Left</button><button id="re-right">Right</button></div>
+      <div class="crow"><span>Avatar</span><button id="re-av-top">Top</button><button id="re-av-bottom">Bottom</button></div>
+      <div class="crow"><span>Tiles</span><button id="re-ly-top">Top</button><button id="re-ly-bottom">Bottom</button><button id="re-ly-hide">Hide</button></div>
     </div>
     <div id="agentlogin-panel" hidden aria-label="Sites where the agent may use your sign-in">
       <div class="al-host" id="agentlogin-host">No site on this page</div>
@@ -200,6 +272,7 @@
   <div id="grip-rail" class="grip" title="Drag to resize the rail"></div>
   <div id="grip-panel" class="grip" title="Drag to resize the panel"></div>
   <div id="grip-dock" class="grip row" title="Drag to resize the terminal dock; double-click to open or close it"></div>
+  <div id="editor" hidden aria-label="Edit layout"></div>
   <div id="top">
   <div id="tabs" class="tabs" role="tablist" aria-label="Tabs">
     <button id="newtab" title="New tab" aria-label="New tab">+</button>
@@ -222,6 +295,7 @@
     </div>
   </div>
   </div>
+<script src="middle-drag.js"></script>
 <script>
   const api = window.aitherBrowser;
   const $ = (id) => document.getElementById(id);
@@ -385,6 +459,10 @@
       }
       tab.onclick = () => api.activateTab(t.id);
       tab.onauxclick = (e) => { if (e.button === 1) api.closeTab(t.id); };
+      // Right-click (or the context-menu key on a focused tab): Pin to canvas, pop out, close.
+      tab.tabIndex = 0;
+      tab.oncontextmenu = (e) => { e.preventDefault(); void api.tabMenu(t.id); };
+      tab.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); api.activateTab(t.id); } };
       strip.insertBefore(tab, $("newtab"));
     }
   }
@@ -462,7 +540,283 @@
   $("opt-panel").onchange = (e) => api.rail("panel", !e.target.checked);
   $("opt-taskbar").onchange = (e) => api.rail("taskbar", e.target.checked);
   $("opt-dock").onchange = (e) => api.rail("dock-on", e.target.checked);
+  $("opt-layers").onchange = (e) => api.rail("layers-visible", e.target.checked);
   $("opt-reset").onclick = () => api.rail("reset-layout");
+
+  // ── the layout document (desk-layout.cjs): presets, edit mode, export / import ──
+  /** Say what a layout verb did (or why not) in the toolbar's status line. */
+  async function verb(action, arg, done) {
+    const r = await api.rail(action, arg);
+    if (r && r.ok) { $("err").textContent = done || ""; return r; }
+    if (r && !r.canceled) $("err").textContent = (r && r.error) || "refused";
+    return r;
+  }
+  const layoutNow = () => (lastRail && lastRail.layout) || {};
+  $("opt-preset").onchange = (e) => { if (e.target.value) void verb("preset", e.target.value, `Layout: ${e.target.value}`); };
+  $("opt-preset-save").onclick = async () => {
+    const name = $("opt-preset-name").value.trim();
+    if (!name) { $("opt-preset-name").focus(); return; }
+    const r = await verb("preset-save", name, `Saved layout ${name}`);
+    if (r && r.ok) $("opt-preset-name").value = "";
+  };
+  $("opt-preset-name").onkeydown = (e) => { if (e.key === "Enter") $("opt-preset-save").click(); };
+  $("opt-preset-rename").onclick = async () => {
+    const from = $("opt-preset").value;
+    const to = $("opt-preset-name").value.trim();
+    if (!to) { $("opt-preset-name").focus(); return; }
+    const r = await verb("preset-rename", JSON.stringify({ from, to }), `Renamed ${from} to ${to}`);
+    if (r && r.ok) $("opt-preset-name").value = "";
+  };
+  $("opt-preset-delete").onclick = () => verb("preset-delete", $("opt-preset").value, `Deleted layout ${$("opt-preset").value}`);
+  $("opt-edit").onclick = () => api.rail("edit-layout", !layoutNow().editing);
+  $("opt-export").onclick = () => verb("layout-export", "", "Layout exported");
+  $("opt-import").onclick = () => verb("layout-import", "", "Layout imported");
+  $("opt-restore").onclick = () => verb("rail-edit", JSON.stringify({ op: "restore" }), "Removed rows restored");
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && layoutNow().editing) { e.preventDefault(); api.rail("edit-layout", false); }
+  });
+
+  function renderCustomize(L) {
+    const sel = $("opt-preset");
+    const key = JSON.stringify([L.presets, L.activePreset]);
+    if (sel.dataset.key !== key) {
+      sel.dataset.key = key;
+      sel.textContent = "";
+      if (!L.activePreset) {
+        const o = document.createElement("option");
+        o.value = "";
+        o.textContent = "Custom (unsaved)";
+        sel.append(o);
+      }
+      for (const p of L.presets || []) {
+        const o = document.createElement("option");
+        o.value = p.name;
+        o.textContent = p.builtin ? `${p.name} (built in)` : p.name; // never innerHTML
+        sel.append(o);
+      }
+      sel.value = L.activePreset || "";
+    }
+    const builtin = (L.presets || []).some((p) => p.name === sel.value && p.builtin) || !sel.value;
+    $("opt-preset-rename").disabled = builtin;
+    $("opt-preset-delete").disabled = builtin;
+    $("opt-edit").classList.toggle("on", Boolean(L.editing));
+    $("opt-edit").setAttribute("aria-pressed", String(Boolean(L.editing)));
+    $("opt-edit").textContent = L.editing ? "Done editing (Esc)" : "Edit layout";
+    $("opt-layers").checked = L.layersVisible !== false;
+    $("opt-restore").hidden = !(L.hiddenRows > 0);
+    $("opt-restore").textContent = `Restore removed rail rows (${L.hiddenRows || 0})`;
+  }
+
+  // The rail's own edit strip (edit mode): its edge, and where the avatar and tiles sit.
+  const side = (pane, s) => verb("pane-side", `${pane}:${s}`);
+  $("re-left").onclick = () => side("rail", "left");
+  $("re-right").onclick = () => side("rail", "right");
+  $("re-av-top").onclick = () => side("avatar", "top");
+  $("re-av-bottom").onclick = () => side("avatar", "bottom");
+  $("re-ly-top").onclick = () => { if (layoutNow().layersVisible === false) api.rail("layers-visible", true); void side("layers", "top"); };
+  $("re-ly-bottom").onclick = () => { if (layoutNow().layersVisible === false) api.rail("layers-visible", true); void side("layers", "bottom"); };
+  $("re-ly-hide").onclick = () => api.rail("layers-visible", false);
+  $("railedit-handle").ondragstart = (e) => { e.dataTransfer.setData("text/x-aither-pane", "rail"); startPaneDrag("rail"); };
+  $("railedit-handle").ondragend = () => endPaneDrag();
+
+  function renderRailEdit(L) {
+    const box = $("railedit");
+    box.hidden = !L.editing;
+    if (!L.editing) return;
+    const s = L.sides || {};
+    const on = (id, v) => $(id).classList.toggle("on", Boolean(v));
+    on("re-left", s.rail === "left"); on("re-right", s.rail === "right");
+    on("re-av-top", s.avatar === "top"); on("re-av-bottom", s.avatar === "bottom");
+    on("re-ly-top", L.layersVisible !== false && s.layers === "top");
+    on("re-ly-bottom", L.layersVisible !== false && s.layers === "bottom");
+    on("re-ly-hide", L.layersVisible === false);
+  }
+
+  // ── edit-layout mode: every pane as a box; drag its handle to a lit edge ──────
+  let paneDrag = null;
+  function startPaneDrag(pane) {
+    paneDrag = pane;
+    const ed = $("editor");
+    ed.classList.add("dragging");
+    for (const z of ed.querySelectorAll(".zone")) z.classList.toggle("for", z.dataset.pane === pane);
+  }
+  function endPaneDrag() {
+    paneDrag = null;
+    $("editor").classList.remove("dragging");
+    for (const z of $("editor").querySelectorAll(".zone")) z.classList.remove("over", "for");
+  }
+  const place = (node, r) => Object.assign(node.style, { left: `${r.x}px`, top: `${r.y}px`, width: `${r.width}px`, height: `${r.height}px` });
+  function button(text, title, onclick) {
+    const b = document.createElement("button");
+    b.textContent = text;
+    b.title = title;
+    b.onclick = onclick;
+    return b;
+  }
+
+  /**
+   * The schematic, drawn from the rects main laid out (one geometry, never a copy).
+   * Every drag has buttons beside it: the same move, by keyboard.
+   */
+  function renderEditor(r) {
+    const L = r.layout || {};
+    const ed = $("editor");
+    ed.hidden = !L.editing;
+    document.body.classList.toggle("editing", Boolean(L.editing));
+    if (!L.editing || !r.rects) { ed.textContent = ""; return; }
+    const key = JSON.stringify([r.rects, L, r.panel && r.panel.collapsed, r.dock && r.dock.on, r.taskbar && r.taskbar.on]);
+    if (ed.dataset.key === key) return;
+    // Never rebuild under a pane drag in flight: the dragged box and its zones would be
+    // replaced and the drop lost (a focus change pushes state mid-gesture).
+    if (paneDrag) return;
+    ed.dataset.key = key;
+    ed.textContent = "";
+    const R = r.rects;
+    const labels = L.labels || {};
+    const sides = L.sides || {};
+    const detached = L.detached || {};
+    const g = r.gutter || 6;
+    const paneBox = (pane, rect, extra) => {
+      const box = document.createElement("div");
+      box.className = `box ${pane}${rect.height < 80 ? " short" : ""}`;
+      place(box, rect);
+      const h = document.createElement("div");
+      h.className = "h";
+      h.textContent = pane === "page" ? "Pages" : `⠇ ${labels[pane] || pane}`;
+      if (pane !== "page") {
+        h.draggable = true;
+        h.title = "Drag to a highlighted edge (or middle-drag anywhere on the box)";
+        h.ondragstart = (e) => { e.dataTransfer.setData("text/x-aither-pane", pane); startPaneDrag(pane); };
+        h.ondragend = () => endPaneDrag();
+        // The owner's middle-button rule (middle-drag.js): middle-drag the pane = move it.
+        // HTML drag-and-drop is left-button only, so this follows the pointer itself
+        // and drops on whichever lit zone is under it at release.
+        window.AitherMiddleDrag.suppressAutoscroll(box);
+        box.addEventListener("pointerdown", (e) => {
+          if (window.AitherMiddleDrag.classify(e, true) !== "move") return;
+          startPaneDrag(pane);
+          let over = null;
+          window.AitherMiddleDrag.track(e, box, {
+            onMove: () => {},
+            onEnd: () => {
+              const zone = over;
+              endPaneDrag();
+              if (zone) void side(pane, zone.dataset.side);
+            },
+          });
+          const watch = (ev) => {
+            // Geometry, not elementsFromPoint: a zone is drawn by its style rect, and a
+            // re-render mid-drag must not lose the drop.
+            const hit = [...$("editor").querySelectorAll(".zone")].find((n) => {
+              if (n.dataset.pane !== pane) return false;
+              const x = parseFloat(n.style.left); const y = parseFloat(n.style.top);
+              return ev.clientX >= x && ev.clientX <= x + parseFloat(n.style.width)
+                && ev.clientY >= y && ev.clientY <= y + parseFloat(n.style.height);
+            });
+            for (const z of $("editor").querySelectorAll(".zone.over")) if (z !== hit) z.classList.remove("over");
+            if (hit) hit.classList.add("over");
+            over = hit || null;
+          };
+          box.addEventListener("pointermove", watch);
+          box.addEventListener("pointerup", () => box.removeEventListener("pointermove", watch), { once: true });
+        });
+      }
+      box.append(h);
+      if (rect.width > 120 && rect.height > 60) {
+        const sz = document.createElement("div");
+        sz.className = "sz";
+        sz.textContent = `${Math.round(rect.width)} × ${Math.round(rect.height)}`;
+        box.append(sz);
+      }
+      const acts = document.createElement("div");
+      acts.className = "acts";
+      for (const b of extra || []) acts.append(b);
+      box.append(acts);
+      ed.append(box);
+    };
+    paneBox("page", R.page, []);
+    if (R.panel && R.panel.width > 0) {
+      const other = sides.panel === "left" ? "right" : "left";
+      paneBox("panel", R.panel, [
+        button(other === "left" ? "← Left of the page" : "Right of the page →", `Move the panel ${other}`, () => side("panel", other)),
+        button("Detach ⧉", "Pop the panel into its own window", () => verb("pane-detach", "panel")),
+        button("Hide", "Hide the panel (the toolbar's ◫ brings it back)", () => api.rail("panel", true)),
+      ]);
+    }
+    if (R.dock && R.dock.height > 0) {
+      const other = sides.dock === "top" ? "bottom" : "top";
+      paneBox("dock", R.dock, [
+        button(other === "top" ? "↑ Above the page" : "Below the page ↓", `Move the dock to the ${other}`, () => side("dock", other)),
+        button("Detach ⧉", "Pop the terminal dock into its own window", () => verb("pane-detach", "dock")),
+        button("Hide", "Turn the terminal dock off", () => api.rail("dock-on", false)),
+      ]);
+    }
+    if (R.taskbar && R.taskbar.height > 0) {
+      paneBox("taskbar", R.taskbar, [
+        button("Detach ⧉", "Pop the taskbar into its own window", () => verb("pane-detach", "taskbar")),
+        button("Hide", "Hide the AitherOS taskbar", () => api.rail("taskbar", false)),
+      ]);
+    }
+    // Drop zones: where each draggable pane may land (desk-layout SIDES).
+    const W = window.innerWidth;
+    const inner = { x: Math.min(R.page.x, R.panel.width ? R.panel.x : R.page.x), y: R.page.y,
+      right: Math.max(R.page.x + R.page.width, R.panel.width ? R.panel.x + R.panel.width : 0) };
+    const zone = (pane, s, rect, label) => {
+      const z = document.createElement("div");
+      z.className = "zone";
+      z.dataset.pane = pane;
+      z.dataset.side = s;
+      z.textContent = label;
+      place(z, rect);
+      z.ondragover = (e) => { if (paneDrag === pane) { e.preventDefault(); z.classList.add("over"); } };
+      z.ondragleave = () => z.classList.remove("over");
+      z.ondrop = (e) => { e.preventDefault(); endPaneDrag(); void side(pane, s); };
+      ed.append(z);
+    };
+    const bodyH = Math.max(80, R.page.height);
+    zone("panel", "left", { x: inner.x, y: R.page.y, width: 120, height: bodyH }, "Panel here");
+    zone("panel", "right", { x: inner.right - 120, y: R.page.y, width: 120, height: bodyH }, "Panel here");
+    const dockSpan = { x: R.dock.width ? R.dock.x : inner.x, width: R.dock.width || inner.right - inner.x };
+    zone("dock", "top", { x: dockSpan.x, y: 78, width: dockSpan.width, height: 72 }, "Dock above the pages");
+    zone("dock", "bottom", { x: dockSpan.x, y: (R.taskbar.y || window.innerHeight) - 72 - g, width: dockSpan.width, height: 72 }, "Dock below the pages");
+    zone("rail", "left", { x: 0, y: 0, width: 110, height: R.rail.height }, "Rail here");
+    zone("rail", "right", { x: W - 110, y: 0, width: 110, height: R.rail.height }, "Rail here");
+    // The bar: what this mode is, what is away (detached / hidden), and Done.
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    const msg = document.createElement("span");
+    msg.textContent = "Editing layout: drag a pane's handle to a lit edge, or use its buttons.";
+    bar.append(msg);
+    for (const pane of L.detachable || []) {
+      if (detached[pane] === "detached") {
+        const away = document.createElement("span");
+        away.className = "away";
+        away.textContent = `${labels[pane]} is in its own window`;
+        bar.append(away, button("Reattach", `Bring ${labels[pane]} back`, () => verb("pane-attach", pane)));
+      }
+    }
+    if (r.panel && r.panel.collapsed && detached.panel !== "detached") bar.append(button("Show panel", "Show the assistant panel", () => api.rail("panel", false)));
+    if (r.dock && !r.dock.on) bar.append(button("Show dock", "Turn the terminal dock on", () => api.rail("dock-on", true)));
+    if (r.taskbar && !r.taskbar.on) bar.append(button("Show taskbar", "Show the AitherOS taskbar", () => api.rail("taskbar", true)));
+    bar.append(button("Done (Esc)", "Leave edit-layout mode", () => api.rail("edit-layout", false)));
+    Object.assign(bar.style, { left: `${R.page.x + 12}px`, top: `${R.page.y + 12}px`, maxWidth: `${Math.max(240, R.page.width - 24)}px` });
+    ed.append(bar);
+  }
+
+  // ── rail arrangement: drag rows/sections/tiles in edit mode; Alt+arrows always ──
+  let railDrag = null; // {type: "row"|"section"|"layer", key}
+  function dropTarget(node, accept, onDrop) {
+    node.addEventListener("dragover", (e) => { if (railDrag && accept(railDrag)) { e.preventDefault(); node.classList.add("drop-target"); } });
+    node.addEventListener("dragleave", () => node.classList.remove("drop-target"));
+    node.addEventListener("drop", (e) => { node.classList.remove("drop-target"); if (!railDrag || !accept(railDrag)) return; e.preventDefault(); const d = railDrag; railDrag = null; onDrop(d); });
+  }
+  function dragSource(node, data) {
+    node.draggable = Boolean(layoutNow().editing);
+    node.addEventListener("dragstart", (e) => { railDrag = data; e.dataTransfer.setData("text/plain", data.key); e.dataTransfer.effectAllowed = "move"; });
+    node.addEventListener("dragend", () => { railDrag = null; });
+  }
+  const rowKey = (row) => `${row.kind}:${row.id}`;
+  const railEdit = (op) => verb("rail-edit", JSON.stringify(op));
   $("paneltoggle").onclick = () => api.rail("panel", !(lastRail && lastRail.panel && lastRail.panel.collapsed));
 
   // Gutter drags. While one runs, main hides the page views so this page keeps the
@@ -477,11 +831,15 @@
     let frame = 0;
     let x = e.clientX;
     let y = e.clientY;
+    // Sizes are measured from the pane's OWN edge, wherever the owner put it.
+    const R = (lastRail && lastRail.rects) || null;
+    const sides = (lastRail && lastRail.layout && lastRail.layout.sides) || {};
     const send = () => {
       frame = 0;
-      if (which === "rail") api.rail("rail-width", Math.round(x));
+      if (which === "rail") api.rail("rail-width", Math.round(sides.rail === "right" ? window.innerWidth - x : x));
       else if (which === "dock") api.rail("dock-drag", Math.round(y));
-      else api.rail("panel-width", Math.round(window.innerWidth - x));
+      else if (sides.panel === "left" && R) api.rail("panel-width", Math.round(x - R.panel.x));
+      else api.rail("panel-width", Math.round((R ? R.panel.x + R.panel.width : window.innerWidth) - x));
     };
     const move = (ev) => { x = ev.clientX; y = ev.clientY; if (!frame) frame = requestAnimationFrame(send); };
     const up = () => {
@@ -504,19 +862,29 @@
   function placeGrips(r) {
     const g = r.gutter || 6;
     const bottom = (r.taskbar && r.taskbar.height) || 0;
+    const R = r.rects || null;
+    const sides = (r.layout && r.layout.sides) || {};
     const rg = $("grip-rail");
     rg.hidden = Boolean(r.collapsed);
-    Object.assign(rg.style, { left: `${r.width}px`, width: `${g}px`, top: "0px", bottom: `${bottom}px` });
+    // The rail's grip is in the gutter on its INNER edge (right of a left rail, left of a right one).
+    const railGripX = sides.rail === "right" && R ? R.rail.x - g : r.width;
+    Object.assign(rg.style, { left: `${railGripX}px`, width: `${g}px`, top: "0px", bottom: `${bottom}px` });
     const pg = $("grip-panel");
     const p = r.panel;
     pg.hidden = !p || p.collapsed || !p.width;
     const d = r.dock && r.dock.rect && r.dock.rect.height ? r.dock.rect : null;
-    // The panel's grip ends where the dock's gutter starts.
-    const above = d ? window.innerHeight - d.y + g : bottom;
-    if (p && p.width) Object.assign(pg.style, { left: `${p.x - g}px`, width: `${g}px`, top: `${p.y || 0}px`, bottom: `${above}px` });
+    const dockTop = sides.dock === "top";
+    // The panel's grip spans the panel's height: between the chrome/dock and the dock/taskbar.
+    const pr = R && R.panel;
+    if (p && p.width) {
+      const gx = sides.panel === "left" && pr ? pr.x + pr.width : p.x - g;
+      Object.assign(pg.style, { left: `${gx}px`, width: `${g}px`, top: `${pr ? pr.y : p.y || 0}px`,
+        bottom: "auto", height: `${pr ? pr.height : window.innerHeight - (p.y || 0) - bottom}px` });
+    }
     const dg = $("grip-dock");
     dg.hidden = !d;
-    if (d) Object.assign(dg.style, { left: `${d.x}px`, width: `${d.width}px`, top: `${d.y - g}px`, height: `${g}px` });
+    // A bottom dock's grip is its top edge; a top dock's grip is its bottom edge.
+    if (d) Object.assign(dg.style, { left: `${d.x}px`, width: `${d.width}px`, top: `${dockTop ? d.y + d.height : d.y - g}px`, height: `${g}px` });
     $("opt-dock").checked = Boolean(r.dock && r.dock.on);
     $("opt-panel").checked = !(p && p.collapsed);
     $("opt-taskbar").checked = Boolean(r.taskbar && r.taskbar.on);
@@ -529,19 +897,38 @@
     if (!r) return;
     lastRail = r;
     placeGrips(r);
+    const L = r.layout || {};
+    const sides = L.sides || {};
+    renderCustomize(L);
+    renderRailEdit(L);
+    renderEditor(r);
     // The rail ends above the taskbar.
     $("rail").style.bottom = `${(r.taskbar && r.taskbar.height) || 0}px`;
     collapsed = Boolean(r.collapsed);
     document.body.classList.toggle("collapsed", collapsed);
+    document.body.classList.toggle("rail-right", sides.rail === "right");
     document.documentElement.style.setProperty("--rail-w", `${r.width}px`);
-    $("collapse").innerHTML = collapsed ? "&#187;" : "&#171;";
+    // Collapse points toward the rail's own edge.
+    const toward = sides.rail === "right";
+    $("collapse").innerHTML = collapsed !== toward ? "&#187;" : "&#171;";
     $("collapse").title = collapsed ? "Expand the rail" : "Collapse the rail";
     $("slot").hidden = !r.slot;
     if (r.slot) $("slot").style.height = `${r.slot.height}px`;
     $("dock").textContent = r.docked ? "Float the avatar on the desktop" : "Dock the avatar here";
+    // The avatar slot and the layer strip sit at the top or bottom of the rail; when they
+    // share a side, the lower `order` is nearer the edge (desk-layout / browser-rail avatarSlot).
+    const blocks = [{ ids: ["slot", "dockrow"], side: sides.avatar || "top", order: (L.avatarOrder ?? 0) },
+      { ids: ["layers"], side: sides.layers || "bottom", order: (L.layersOrder ?? 1) }];
+    for (const b of blocks) {
+      const outer = b.order === Math.min(...blocks.filter((x) => x.side === b.side).map((x) => x.order));
+      const css = b.side === "top" ? (outer ? 2 : 3) : (outer ? 8 : 7);
+      for (const id of b.ids) $(id).style.order = String(css);
+    }
+    $("layers").hidden = L.layersVisible === false;
+    $("layers").style.display = L.layersVisible === false ? "none" : "";
     const inbox = (tabsNow || []).find((t) => t.badge > 0);
     const key = JSON.stringify([r.sections, r.layers, inbox && inbox.badge, r.collapsedSections,
-      r.expandedSections, r.allSections]);
+      r.expandedSections, r.allSections, Boolean(L.editing)]);
     if (key === railKey) return; // a state push per page load; rebuild only on change
     railKey = key;
     const nav = $("nav");
@@ -555,12 +942,42 @@
       head.className = "sec" + (folded ? " folded" : "");
       head.textContent = sec.name;
       head.title = folded ? `Show ${sec.name}` : `Fold ${sec.name}`;
+      head.tabIndex = 0;
+      head.setAttribute("role", "button");
       head.onclick = () => api.rail("section", sec.name);
+      // Alt+Up/Down moves the section; Enter folds it (the keyboard twin of the drag).
+      head.onkeydown = (e) => {
+        if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+          e.preventDefault();
+          if (sec.name !== "Pinned") void railEdit({ op: "nudge-section", name: sec.name, by: e.key === "ArrowUp" ? -1 : 1 });
+        } else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); api.rail("section", sec.name); }
+      };
+      if (sec.name !== "Pinned") dragSource(head, { type: "section", key: sec.name });
+      // Drop a section on a section: it takes that place. Drop a row on a heading: it moves there, first.
+      dropTarget(head, (d) => d.type === "row" || (d.type === "section" && d.key !== sec.name), (d) => {
+        if (d.type === "section") {
+          const names = (r.sections || []).map((s) => s.name).filter((n) => n !== "Pinned" && n !== d.key);
+          void railEdit({ op: "move-section", name: d.key, index: Math.max(0, names.indexOf(sec.name)) });
+        } else void railEdit({ op: "move-row", key: d.key, section: sec.name, index: 0 });
+      });
       nav.append(head);
-      for (const row of folded ? [] : sec.rows || []) {
+      for (const [rowIndex, row] of (folded ? [] : sec.rows || []).entries()) {
         const b = document.createElement("button");
-        b.className = "row" + (row.active ? " active" : "") + (row.kind === "command" ? " cmd" : "");
+        b.className = "row" + (row.active ? " active" : "") + (row.kind === "command" ? " cmd" : "")
+          + (row.pinned && sec.name !== "Pinned" ? " pinned" : "");
         b.title = row.hint ? `${row.label}: ${row.hint}` : row.label;
+        // Right-click (or the context-menu key): pin / remove / move, Pin to canvas.
+        const key = rowKey(row);
+        b.oncontextmenu = (e) => { e.preventDefault(); void api.rail("row-menu", key); };
+        b.onkeydown = (e) => {
+          if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+            e.preventDefault();
+            void railEdit({ op: "nudge-row", key, by: e.key === "ArrowUp" ? -1 : 1 });
+          }
+        };
+        dragSource(b, { type: "row", key });
+        dropTarget(b, (d) => d.type === "row" && d.key !== key,
+          (d) => railEdit({ op: "move-row", key: d.key, section: sec.name, index: rowIndex }));
         const ic = document.createElement("span");
         ic.className = "ic";
         const svg = rowIcon(row);
@@ -616,10 +1033,20 @@
     }
     const layers = $("layers");
     layers.textContent = "";
-    for (const layer of r.layers || []) {
+    for (const [layerIndex, layer] of (r.layers || []).entries()) {
       const b = document.createElement("button");
       b.className = "layer" + (layer.on ? " on" : "") + (layer.key === "browser" ? " here" : "");
-      b.title = layer.hint;
+      b.title = `${layer.hint} (Alt+Left/Right moves this tile)`;
+      // Reorder the tiles: drag in edit mode, Alt+Left/Right always.
+      b.onkeydown = (e) => {
+        if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+          e.preventDefault();
+          void verb("layer-move", JSON.stringify({ key: layer.key, by: e.key === "ArrowLeft" ? -1 : 1 }));
+        }
+      };
+      dragSource(b, { type: "layer", key: layer.key });
+      dropTarget(b, (d) => d.type === "layer" && d.key !== layer.key,
+        (d) => verb("layer-move", JSON.stringify({ key: d.key, index: layerIndex })));
       const name = document.createElement("b");
       name.textContent = layer.label;
       const st = document.createElement("span");

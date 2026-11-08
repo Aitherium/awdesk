@@ -9,8 +9,16 @@
  *
  * A board is ONE JSON document, the source of truth:
  *
- *   {version:1, id, kind:"note"|"board", title, createdAt, updatedAt,
- *    open, visible, bounds:{x,y,width,height}, items:[...], text:"..."}
+ *   {version:2, id, kind:"note"|"board", title, createdAt, updatedAt,
+ *    open, visible, bounds:{x,y,width,height}, items:[...], text:"...",
+ *    pins:[pin-item], view:{scale,x,y}, grid, snap, link}
+ *
+ * Version 2 (2026-11-07, aither://canvas): a board also holds PINNED CARDS (`pins`,
+ * pin-item.cjs: live pages, YouTube, GIFs, images, widgets, notes) beside its drawing
+ * `items`, the canvas view (`view`, AitherOne's SceneView shape), its snap grid, and
+ * `link` -- the AitherOne canvas doc it syncs with, if any. A version-1 file migrates
+ * on read (migrateBoard): no pins, the default view, unlinked. The floating board
+ * window and the canvas page edit the SAME document.
  *
  * `open`      the board exists in the Boards list (a closed board is not restored).
  * `visible`   its window is on screen. "Put away" clears visible and keeps open, so
@@ -29,6 +37,9 @@
 
 const os = require("node:os");
 const path = require("node:path");
+// The pinned cards on a board (aither://canvas): one card model, shared with the
+// desktop pins and AitherOne scenes.
+const pinItem = require("./pin-item.cjs");
 
 const BOARDS_DIR_NAME = "Aither Boards";
 const KINDS = Object.freeze(["note", "board"]);
@@ -37,6 +48,13 @@ const NOTE_SIZE = Object.freeze({ width: 360, height: 300 });
 const BOARD_SIZE = Object.freeze({ width: 760, height: 560 });
 const MIN_WIDTH = 240;
 const MIN_HEIGHT = 180;
+const BOARD_VERSION = 2;
+const MAX_PINS = 100;
+const GRID_MIN = 4;
+const GRID_MAX = 64;
+const DEFAULT_GRID = 16;
+const SCALE_MIN = 0.25;
+const SCALE_MAX = 2;
 
 function pad(n, width = 2) {
   return String(n).padStart(width, "0");
@@ -142,7 +160,7 @@ function newBoard({ kind = "board", date = new Date(), id, title, bounds } = {})
   const at = date instanceof Date ? date : new Date(date);
   const iso = at.toISOString();
   return {
-    version: 1,
+    version: BOARD_VERSION,
     id: id || newId(k, at),
     kind: k,
     title: String(title || titleFor(k, at)),
@@ -156,6 +174,11 @@ function newBoard({ kind = "board", date = new Date(), id, title, bounds } = {})
     } : { x: 0, y: 0, ...defaultSize(k) },
     items: [],
     text: "",
+    pins: [],
+    view: { scale: 1, x: 0, y: 0 },
+    grid: DEFAULT_GRID,
+    snap: true,
+    link: null,
   };
 }
 
@@ -208,8 +231,9 @@ function normalizeBoard(raw) {
   if (!raw || typeof raw !== "object") return null;
   if (!raw.id || !KINDS.includes(raw.kind)) return null;
   const items = Array.isArray(raw.items) ? raw.items.map(normalizeItem).filter(Boolean) : [];
+  const v2 = migrateBoard(raw);
   return {
-    version: 1,
+    version: BOARD_VERSION,
     id: String(raw.id).slice(0, 120),
     kind: raw.kind,
     title: String(raw.title || titleFor(raw.kind)).slice(0, 160),
@@ -226,6 +250,48 @@ function normalizeBoard(raw) {
       : { x: 0, y: 0, ...defaultSize(raw.kind) },
     items,
     text: String(raw.text || "").slice(0, 200_000),
+    ...v2,
+  };
+}
+
+/**
+ * The version-2 fields of a board, from any version. A v1 file has none of them and
+ * gets the defaults; a v2 file has each read back through its own sanitizer.
+ */
+function migrateBoard(raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const seen = new Set();
+  const pins = [];
+  for (const p of Array.isArray(r.pins) ? r.pins : []) {
+    const pin = pinItem.normalizePinItem(p);
+    if (!pin || seen.has(pin.id)) continue;
+    seen.add(pin.id);
+    pins.push(pin);
+    if (pins.length >= MAX_PINS) break;
+  }
+  const v = r.view && typeof r.view === "object" ? r.view : {};
+  const clamp = (n, lo, hi, d) => (Number.isFinite(Number(n)) ? Math.min(hi, Math.max(lo, Number(n))) : d);
+  const l = r.link && typeof r.link === "object" && r.link.aitherone && typeof r.link.aitherone === "object" ? r.link.aitherone : null;
+  const docId = l && typeof l.docId === "string" && /^[A-Za-z0-9_.:-]{1,120}$/.test(l.docId) ? l.docId : null;
+  return {
+    pins,
+    view: { scale: clamp(v.scale, SCALE_MIN, SCALE_MAX, 1), x: Math.round(clamp(v.x, -1e5, 1e5, 0)), y: Math.round(clamp(v.y, -1e5, 1e5, 0)) },
+    grid: Math.round(clamp(r.grid, GRID_MIN, GRID_MAX, DEFAULT_GRID)),
+    snap: r.snap !== false,
+    link: docId ? { aitherone: {
+      docId,
+      // The doc's updated_at when we last agreed with it, and our own updatedAt then:
+      // the two halves of last-writer-wins (aitherone-link.cjs).
+      remoteUpdatedAt: typeof l.remoteUpdatedAt === "string" ? l.remoteUpdatedAt.slice(0, 40) : null,
+      localUpdatedAt: typeof l.localUpdatedAt === "string" ? l.localUpdatedAt.slice(0, 40) : null,
+      // AitherOne's content_hash at the last agreement (the base_hash of the next save)
+      // and the scene `rev` counter (aitherone-canvas SYNC.md).
+      remoteHash: typeof l.remoteHash === "string" ? l.remoteHash.slice(0, 128) : null,
+      rev: Number.isInteger(l.rev) && l.rev >= 0 ? l.rev : 0,
+      // AitherOne scene nodes the desk cannot show (files, arrows ...): kept verbatim
+      // and written back on the next push, never dropped.
+      keep: Array.isArray(l.keep) ? l.keep.filter((k) => k && typeof k === "object").slice(0, 200) : [],
+    } } : null,
   };
 }
 
@@ -238,6 +304,13 @@ function applySave(board, patch, now = Date.now()) {
     text: p.text != null ? p.text : board.text,
     items: Array.isArray(p.items) ? p.items : board.items,
     bounds: p.bounds && typeof p.bounds === "object" ? p.bounds : board.bounds,
+    // The canvas's half of the document; the board window never sends these, so a
+    // window save keeps the pins the canvas placed (and the other way round).
+    pins: Array.isArray(p.pins) ? p.pins : board.pins,
+    view: p.view && typeof p.view === "object" ? p.view : board.view,
+    grid: p.grid != null ? p.grid : board.grid,
+    snap: typeof p.snap === "boolean" ? p.snap : board.snap,
+    link: p.link !== undefined ? p.link : board.link,
     // A save never resurrects a closed board and never un-hides a put-away one.
     open: board.open,
     visible: board.visible,
@@ -327,6 +400,7 @@ function syncItems(board, { png = null } = {}) {
 }
 
 module.exports = {
+  BOARD_VERSION, MAX_PINS, DEFAULT_GRID, migrateBoard,
   BOARDS_DIR_NAME, KINDS, MAX_LIST, NOTE_SIZE, BOARD_SIZE, MIN_WIDTH, MIN_HEIGHT,
   pad, stamp, titleFor, uniqueTitle, newId, dirCandidates, boardFile, thumbnailFile, exportFile,
   defaultSize, placeAt, usableBounds,

@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   closeTab: (id) => ipcRenderer.send("desk:browser-tab-close", Number(id)),
   popOut: (id) => ipcRenderer.invoke("desk:browser-tab-popout", Number(id)),
   dock: (id) => ipcRenderer.invoke("desk:browser-tab-dock", Number(id)),
+  /** A tab's right-click menu (Pin to canvas, pop out / dock back, close), drawn by main. */
+  tabMenu: (id) => ipcRenderer.invoke("desk:browser-tab-menu", Number(id)),
   /** "Share with agent": an owner tab's URL and title reach the agent only while shared. */
   shareTab: (id, on) => ipcRenderer.invoke("desk:browser-tab-share", Number(id), Boolean(on)),
   /**
@@ -29,7 +31,12 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   agentSignIn: (url, on) => ipcRenderer.invoke("desk:browser-agent-signin", String(url ?? ""), Boolean(on)),
   takeOver: () => ipcRenderer.send("desk:browser-takeover"),
   handBack: () => ipcRenderer.send("desk:browser-handback"),
-  /** The rail: "page" <pane id> | "command" <allowlisted id> | "menu" | "collapse" <bool>. */
+  /**
+   * The rail: "page" <pane id> | "command" <allowlisted id> | "menu" | "collapse" <bool>,
+   * and the layout document's verbs (browser-window layoutAction): "edit-layout",
+   * "pane-side" "panel:left", "pane-detach"/"pane-attach" <pane>, "preset*", "rail-edit"
+   * <JSON op>, "row-menu" <row key>, "layer-move" <JSON>, "layout-export"/"layout-import".
+   */
   rail: (action, arg) => ipcRenderer.invoke("desk:browser-rail", String(action ?? ""),
     typeof arg === "boolean" ? arg : String(arg ?? "")),
   onState: (listener) => {
