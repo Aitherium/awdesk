@@ -29,10 +29,14 @@
   body.active { cursor: crosshair; }
   body.grab { cursor: grab; }
   body.grabbing { cursor: grabbing; }
-  /* Draw mode is visible WITHOUT a floating bar (owner rule): a thin edge glow. */
-  body.drawing::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 4;
+  /* Draw mode is visible WITHOUT a floating bar (owner rule): a thin edge glow. It is
+     its OWN composited layer, painted once; a switch only flips its opacity, so the
+     compositor shows it without re-rastering a full-screen blur (measured 2026-11-07:
+     a toggled 4K inset box-shadow cost a raster on every switch). */
+  #glow { position: fixed; inset: 0; pointer-events: none; z-index: 4; opacity: 0; will-change: opacity;
     box-shadow: inset 0 0 0 2px var(--primary, #7aa2ff), inset 0 0 22px rgba(122, 162, 255, 0.35); }
-  body.drawing.nochrome::after { display: none; }
+  body.drawing #glow { opacity: 1; }
+  body.drawing.nochrome #glow { opacity: 0; }
   canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
   #ink { z-index: 1; }
   #fx { z-index: 2; pointer-events: none; }
@@ -85,6 +89,7 @@
 <canvas id="ink"></canvas>
 <canvas id="fx"></canvas>
 <div id="spot"></div>
+<div id="glow"></div>
 <div id="hint"></div>
 
 <div id="toolbar" hidden>
@@ -378,8 +383,12 @@
     if (!next || typeof next !== "object") return;
     const wasTool = st.tool;
     const wasActive = st.active;
+    const t0 = performance.now();
     st = { ...st, ...next };
-    doc = { items: Array.isArray(next.items) ? next.items : [], undo: doc.undo, redo: doc.redo };
+    // Marks are redrawn only when main sends a NEW revision (items present). A mode
+    // switch arrives without items: the canvases are left alone.
+    const marksChanged = Array.isArray(next.items);
+    if (marksChanged) doc = { items: next.items, undo: doc.undo, redo: doc.redo };
     const view = st.view || {};
     document.body.classList.toggle("active", Boolean(st.active));
     document.body.classList.toggle("drawing", Boolean(view.glow));
@@ -393,10 +402,30 @@
     // records how long the switch took to reach the screen.
     if (next.sentAt) {
       const sentAt = next.sentAt;
-      document.body.dataset.switchRecvMs = String(Date.now() - sentAt);
-      requestAnimationFrame(() => { document.body.dataset.switchMs = String(Date.now() - sentAt); });
+      const ipc = Date.now() - sentAt;
+      document.body.dataset.switchRecvMs = String(ipc);
+      performance.mark("ink:switch-recv");
+      requestAnimationFrame(() => {
+        // rAF = the frame that will carry the switch; a task posted from it runs after
+        // that frame's commit, so recv -> paint is measured to a frame on its way out.
+        performance.mark("ink:switch-frame");
+        setTimeout(() => {
+          performance.mark("ink:switch-paint");
+          const toFrame = performance.measure("ink:recv->frame", "ink:switch-recv", "ink:switch-frame").duration;
+          const toPaint = performance.measure("ink:recv->paint", "ink:switch-recv", "ink:switch-paint").duration;
+          document.body.dataset.switchMs = String(Math.round(ipc + toFrame));
+          document.body.dataset.switchPaintMs = String(Math.round(ipc + toPaint));
+          const log = (window.__inkSwitches = window.__inkSwitches || []);
+          log.push({ mode: st.mode, ipc, toFrame: Math.round(toFrame), toPaint: Math.round(toPaint),
+            redraw: marksChanged, applyMs: Math.round(applyMs) });
+          if (log.length > 200) log.splice(0, log.length - 200);
+          performance.clearMarks();
+          performance.clearMeasures();
+        }, 0);
+      });
     }
-    drawMarks();
+    if (marksChanged) drawMarks();
+    const applyMs = performance.now() - t0;
     renderToolbar();
     if (st.tool !== wasTool && st.tool !== "laser") laser = [];
     if (!st.active) { laser = []; ripples = []; hint.classList.remove("on"); }

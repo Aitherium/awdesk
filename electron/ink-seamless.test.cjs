@@ -134,3 +134,20 @@ test("the renderer cannot dispatch the keys' own events (toggle / hold / set)", 
     assert.equal(ink.handlers()["ink:mode"](sender, { type, mode: "pen" }), null, type);
   }
 });
+
+test("a mode switch sends the overlay no marks (no canvas redraw); a changed mark does", () => {
+  const { fake } = setup();
+  ink.toggleDraw();
+  ink.__setDoc(DISPLAY.id, core.pushItem(core.normalizeState(), stroke("s", 400)));
+  ink.dispatch({ type: "escape" }); // first state after the change: carries the marks
+  const before = fake.log.sent.length;
+  for (let i = 0; i < 6; i += 1) ink.toggleDraw();
+  const switches = fake.log.sent.slice(before).filter(([ch]) => ch === "ink:state").map(([, p]) => p);
+  assert.equal(switches.length, 6);
+  assert.ok(switches.every((p) => !("items" in p)), "mode-only states carry no items");
+  assert.ok(switches.every((p) => typeof p.rev === "number"));
+  ink.__setDoc(DISPLAY.id, core.pushItem(ink.__doc(DISPLAY.id), stroke("t", 500)));
+  ink.toggleDraw();
+  const last = fake.log.sent.filter(([ch]) => ch === "ink:state").at(-1)[1];
+  assert.equal(last.items.length, 2, "a new revision carries the marks");
+});
