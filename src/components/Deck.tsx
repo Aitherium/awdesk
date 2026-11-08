@@ -25,6 +25,7 @@ import {
   type DeckState,
   type RelayRow,
   type WakeActionResult,
+  type WakeInvestigateResult,
   type WakeRow,
 } from '../deck/deck-types';
 import {
@@ -47,7 +48,10 @@ import {
   relayNick,
   splitWakes,
   successorId,
-  wakeErrorLine,
+  wakeCausePill,
+  wakeHeldPill,
+  wakeInvestigateMessage,
+  wakeWhyLine,
   type AwarenessLine,
 } from '../deck/inbox-view';
 import { SPACE_NEXT_LINK, spaceCardLink } from '../deck/space-links';
@@ -150,7 +154,7 @@ interface BridgeDeck {
   answer(id: string, choice: string): Promise<boolean | { pending: true; via?: string }>;
   /** Most verbs answer a boolean; the wake verbs answer the daemon's
    *  {ok, detail, exitCode, started, pid} so the row can say what happened. */
-  action(name: string, arg?: string): Promise<boolean | WakeActionResult>;
+  action(name: string, arg?: string): Promise<boolean | WakeActionResult | WakeInvestigateResult>;
   /** The thread under a relay message — the per-agent direct chat read path. */
   relayThread(messageId: string): Promise<RelayRow[]>;
 }
@@ -258,7 +262,7 @@ function WakesSection({
   nowMs: number;
   notes: Record<string, string>;
   pending: Set<string>;
-  onAction: (verb: 'enable' | 'disable' | 'run', name: string) => void;
+  onAction: (verb: 'enable' | 'disable' | 'run' | 'investigate', name: string) => void;
 }) {
   const live = wakes.source === 'daemon' && wakes.installed === true;
   const { broken, healthy } = splitWakes(wakes.wakes);
@@ -292,6 +296,16 @@ function WakesSection({
       >
         Run now
       </button>
+      {wake.consecutiveFailures > 0 ? (
+        <button
+          className="deck-btn deck-btn-xs"
+          disabled={!live || pending.has(wake.name)}
+          title="Dispatch an agent with this wake's why and output tail to find and fix the cause"
+          onClick={() => onAction('investigate', wake.name)}
+        >
+          Investigate
+        </button>
+      ) : null}
       <button
         className="deck-btn deck-btn-xs"
         disabled={!live || pending.has(wake.name)}
@@ -304,19 +318,25 @@ function WakesSection({
   );
   // The same row at two weights: the first is the one the owner acts on, the
   // next two are real but quieter, and the rest fold into one line.
-  const brokenRow = (wake: WakeRow, primary = false) => (
+  const brokenRow = (wake: WakeRow, primary = false) => {
+    const cause = wakeCausePill(wake);
+    const held = wakeHeldPill(wake, nowMs);
+    return (
     <div className="deck-broken-row" key={wake.name}>
       <span className="deck-broken-name" title={wake.run || wake.name}>{wake.name}</span>
       <span className="deck-broken-count">{brokenCountLabel(wake)}</span>
-      {/* The REASON, one hover from the whole text. */}
-      <span className="deck-broken-error" title={[wake.lastState, wake.lastReason, wake.error].filter(Boolean).join(' — ')}>
-        {wakeErrorLine(wake)}
+      {cause ? <span className={`deck-wake-cause deck-wake-cause-${(wake.lastCause || '').replace(/[^a-z-]/g, '')}`}>{cause}</span> : null}
+      {held ? <span className="deck-wake-held">{held}</span> : null}
+      {/* The WHY (awrise read it off the run's output), one hover from the whole text. */}
+      <span className="deck-broken-error" title={[wake.lastWhy, wake.lastState, wake.lastReason, wake.error].filter(Boolean).join(' — ')}>
+        {wakeWhyLine(wake)}
       </span>
       <span className="deck-broken-age">{wakeAgeLabel(wake, nowMs)}</span>
       {actions(wake, primary)}
       {notes[wake.name] ? <span className="deck-wake-note">{notes[wake.name]}</span> : null}
     </div>
-  );
+    );
+  };
   return (
     <section className="deck-section" aria-label="Broken">
       <h2 className="deck-section-head">
@@ -2332,7 +2352,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
   /** Fire one wake verb and SAY what came back. `run` answers 202 with a pid
    *  long before the wake finishes — reporting that as plain success would be
    *  the lie this line exists to prevent. */
-  const handleWakeAction = useCallback((verb: 'enable' | 'disable' | 'run', name: string) => {
+  const handleWakeAction = useCallback((verb: 'enable' | 'disable' | 'run' | 'investigate', name: string) => {
     setWakePending((current) => {
       if (current.has(name)) return current;
       const next = new Set(current);
@@ -2342,7 +2362,10 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
     void bridgeDeck()
       ?.action(`wake-${verb}`, name)
       .then((result) => {
-        setWakeNotes((current) => ({ ...current, [name]: wakeActionMessage(verb, result) }));
+        const note = verb === 'investigate'
+          ? wakeInvestigateMessage(result as WakeInvestigateResult | boolean | null)
+          : wakeActionMessage(verb, result as WakeActionResult | boolean | null);
+        setWakeNotes((current) => ({ ...current, [name]: note }));
       })
       .catch(() => {
         setWakeNotes((current) => ({ ...current, [name]: `${verb} failed: the desk did not answer` }));

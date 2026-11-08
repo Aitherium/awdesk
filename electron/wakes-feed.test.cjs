@@ -11,7 +11,10 @@ const {
   emptyFeed,
   fetchWakes,
   feedSignature,
+  investigatePrompt,
+  investigateWake,
   mutate,
+  shapeWake,
   watch,
 } = require("./wakes-feed.cjs");
 
@@ -447,4 +450,138 @@ test("the name gate accepts real job names and nothing option-shaped", () => {
   assert.equal(WAKE_NAME_RE.test("-force"), false);
   assert.equal(WAKE_NAME_RE.test("../etc"), false);
   assert.equal(WAKE_NAME_RE.test(""), false);
+});
+
+// ── why / cause / held (awrise's own reading of a failure) ─────────────────
+
+test("shapeWake carries awrise's why, cause, streak and hold", () => {
+  const w = shapeWake({
+    name: "moe-tiers-publish",
+    last_why: "publish_moe_tiers: no llama-server on spark.local:8118 (or ssh failed)",
+    last_cause: "dependency-down",
+    why_streak: 7,
+    held_until: "2026-11-08T20:00:00+00:00",
+    held_on: "no llama-server on spark.local:8118",
+  });
+  assert.equal(w.lastWhy, "publish_moe_tiers: no llama-server on spark.local:8118 (or ssh failed)");
+  assert.equal(w.lastCause, "dependency-down");
+  assert.equal(w.whyStreak, 7);
+  assert.equal(w.heldUntil, "2026-11-08T20:00:00+00:00");
+  assert.equal(w.heldOn, "no llama-server on spark.local:8118");
+});
+
+test("shapeWake defaults the why fields on an older daemon and on garbage", () => {
+  const old = shapeWake({ name: "a" });
+  assert.equal(old.lastWhy, "");
+  assert.equal(old.lastCause, "");
+  assert.equal(old.whyStreak, 0);
+  assert.equal(old.heldUntil, null);
+  assert.equal(old.heldOn, "");
+  const bad = shapeWake({ name: "a", last_why: 5, last_cause: {}, why_streak: "lots", held_until: 3, held_on: [] });
+  assert.equal(bad.lastWhy, "");
+  assert.equal(bad.lastCause, "");
+  assert.equal(bad.whyStreak, 0);
+  assert.equal(bad.heldUntil, null);
+  assert.equal(bad.heldOn, "");
+});
+
+/** A scripted daemon: answers per "METHOD path", records every call. */
+function scriptedDaemon(routes) {
+  const calls = [];
+  const fetchFn = async (url, init = {}) => {
+    const pathPart = url.slice(BASE.length);
+    const key = `${init.method || "GET"} ${pathPart}`;
+    calls.push({ key, init, body: init.body ? JSON.parse(init.body) : null });
+    const route = routes[key];
+    if (route instanceof Error) throw route;
+    return route || reply(404, { detail: "no route" });
+  };
+  return { calls, fetchFn };
+}
+
+const WAKE_DETAIL = {
+  name: "storage-relocate-cards",
+  run: "python -m lib.storage.relocate_cards",
+  every: "1h",
+  consecutive_failures: 881,
+  last_why: "RAISE FAILED POST /decisions: HTTP 400",
+  last_cause: "code-bug",
+  recent: [
+    { event: "finished", state: "skipped_missed", reason: "missed_policy_skip:1_windows" },
+    {
+      event: "finished",
+      state: "failure",
+      why: "RAISE FAILED ... POST /decisions: HTTP 400 ... a card offering options must declare default_key",
+      cause: "code-bug",
+      output_tail: "line one\nRAISE FAILED ... a card offering options must declare default_key\n",
+    },
+  ],
+};
+
+test("investigateWake refuses a bad name without touching the network", async () => {
+  let called = 0;
+  const r = await investigateWake("../etc", { fetchFn: async () => { called += 1; }, daemonBase: BASE, token: TOKEN });
+  assert.deepEqual(r, { ok: false, session: null, error: "invalid wake name" });
+  assert.equal(called, 0);
+});
+
+test("investigateWake names a missing token instead of calling the daemon", async () => {
+  let called = 0;
+  const r = await investigateWake("a", { fetchFn: async () => { called += 1; }, daemonBase: BASE, token: null });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /no harness token/);
+  assert.equal(called, 0);
+});
+
+test("investigateWake reads the wake, creates a session, then submits the brief with the tail", async () => {
+  const name = "storage-relocate-cards";
+  const { calls, fetchFn } = scriptedDaemon({
+    [`GET /wakes/${name}`]: reply(200, WAKE_DETAIL),
+    "POST /sessions": reply(200, { id: "s-abc123" }),
+    "POST /sessions/s-abc123/submit": reply(200, { ok: true }),
+  });
+  const r = await investigateWake(name, { fetchFn, daemonBase: BASE, token: TOKEN, cwd: "C:\\repo", harness: "claude" });
+  assert.deepEqual(r, { ok: true, session: "s-abc123", error: null });
+  assert.deepEqual(calls.map((c) => c.key), [`GET /wakes/${name}`, "POST /sessions", "POST /sessions/s-abc123/submit"]);
+  assert.equal(calls[1].body.harness, "claude");
+  assert.equal(calls[1].body.cwd, "C:\\repo");
+  assert.equal(calls[1].body.title, `investigate wake: ${name}`);
+  assert.equal(calls[1].body.owner, "desk");
+  assert.equal(calls[1].init.headers.Authorization, `Bearer ${TOKEN}`);
+  const text = calls[2].body.text;
+  assert.equal(calls[2].body.submit, true);
+  // The newest row WITH a why/tail is used, not the newest row.
+  assert.match(text, /why: RAISE FAILED .* must declare default_key/);
+  assert.match(text, /cause: code-bug/);
+  assert.match(text, /command: python -m lib\.storage\.relocate_cards/);
+  assert.ok(text.includes("line one\nRAISE FAILED ... a card offering options must declare default_key"));
+  assert.match(text, /awrise run --name storage-relocate-cards/);
+});
+
+test("investigateWake resolves (never throws) on 401 and on an unreachable daemon", async () => {
+  const denied = scriptedDaemon({ "GET /wakes/a": reply(401, { detail: "bad token" }) });
+  const r1 = await investigateWake("a", { fetchFn: denied.fetchFn, daemonBase: BASE, token: TOKEN });
+  assert.equal(r1.ok, false);
+  assert.match(r1.error, /401/);
+  assert.equal(denied.calls.length, 1);
+
+  const down = scriptedDaemon({ "GET /wakes/a": new TypeError("fetch failed") });
+  const r2 = await investigateWake("a", { fetchFn: down.fetchFn, daemonBase: BASE, token: TOKEN });
+  assert.deepEqual(r2, { ok: false, session: null, error: "daemon unreachable" });
+
+  const noSubmit = scriptedDaemon({
+    "GET /wakes/a": reply(200, { name: "a", recent: [] }),
+    "POST /sessions": reply(200, { id: "s-1" }),
+    "POST /sessions/s-1/submit": reply(500, { detail: "boom" }),
+  });
+  const r3 = await investigateWake("a", { fetchFn: noSubmit.fetchFn, daemonBase: BASE, token: TOKEN });
+  assert.equal(r3.ok, false);
+  assert.equal(r3.session, "s-1");
+  assert.match(r3.error, /submit brief: daemon HTTP 500 — boom/);
+});
+
+test("investigatePrompt falls back to the job's last_why and says when no tail was captured", () => {
+  const text = investigatePrompt("x", { last_why: "boom", run: "py x" }, null);
+  assert.match(text, /why: boom/);
+  assert.match(text, /no output captured -- run `awrise explain x`/);
 });
