@@ -169,11 +169,18 @@ function execPlan(plan) {
  */
 function createLauncher({
   electron, registry, run, ask = null, spirit = null, quickMenu, now = Date.now,
+  // () => Promise<host-context sample>. Started the instant Alt+Space goes DOWN,
+  // before showAtCursor() takes focus -- sampled any later, the foreground window
+  // is the launcher itself. Null = the empty box stays "Type to search".
+  hostContext = null,
   // () => cards list (decision-cards.listSnapshot()). The empty box leads with
-  // "Needs you (N)" -- the owner's cards ARE the reason to press the key.
-  // Null = no card group.
+  // "Needs you (N)" -- the owner's cards ARE the reason to press the key -- and
+  // the foreground-window group follows. Null = no card group.
   cards = null,
 } = {}) {
+  // The "Right now" sample for THIS press. A promise, so the empty search can wait
+  // the few hundred ms the probe takes instead of racing it.
+  let pressContext = null;
   if (!electron) throw new Error("launcher needs electron");
   if (!quickMenu) throw new Error("launcher needs the quick menu's radial");
 
@@ -315,6 +322,9 @@ function createLauncher({
     lastPressAt = at;
     releasedAt = 0;
     heldSeen = false;
+    pressContext = hostContext
+      ? Promise.resolve().then(() => hostContext()).catch((error) => ({ ok: false, reason: String((error && error.message) || error) }))
+      : null;
     showAtCursor();
     // The key is down; the renderer can only report it coming UP if it has focus.
     focusTimer = setTimeout(() => {
@@ -432,22 +442,53 @@ function createLauncher({
           ? (parsed.term ? "Enter sends this to Spirit" : "Type a message after @")
           : "No Spirit command in this build — press ? to Ask Aither" };
     }
+    // `!private` / `!hide`: a deliberate, short reveal of the hidden-by-default rows.
+    // While TYPING this only shows a hint -- the device check runs on Enter
+    // (runRow "reveal:..."), never on a keystroke, so typing "!pri" cannot pop a
+    // Windows Hello prompt.
+    const raw = String(text || "").trim().toLowerCase();
+    if (raw === "!private" || raw === "!hidden" || raw === "!hide") {
+      const reveal = require("./private-reveal.cjs").sharedReveal();
+      const showing = reveal.active();
+      const item = raw === "!hide" || showing
+        ? { key: "reveal:lock", kind: "reveal", title: "Hide private results again",
+          subtitle: showing ? `Showing them for ${Math.ceil(reveal.remainingMs() / 60000)} more min` : "They are already hidden" }
+        : { key: "reveal:unlock", kind: "reveal", title: "Show hidden results for 5 minutes",
+          subtitle: "Games and private titles. Asks Windows Hello / Touch ID first." };
+      return { ok: true, token, mode: "all", term: "", phase: "idle",
+        groups: [{ id: "private", label: "Private", total: 1, shown: [item], items: [item], more: 0 }],
+        status: "Enter to confirm" };
+    }
     if (!parsed.term) {
-      // The empty box leads with "Needs you (N)": the open decision cards, in
-      // the store's one rank order (launcher-context.cjs). Card rows only answer
-      // through awask, so nothing new becomes executable here.
+      // The empty box is the LISTS: "Needs you (N)" first (the open decision
+      // cards, in the store's one rank order), then what the owner is LOOKING AT
+      // (launcher-context.cjs). Both groups are rows launchItem can run, so
+      // nothing new becomes executable here.
+      const sw = require("./search-window.cjs");
+      const context = require("./launcher-context.cjs");
+      const groups = [];
+      let status = "";
+      let total = 0;
       if (typeof cards === "function") {
         let snapshot;
         try { snapshot = await cards(); } catch { snapshot = []; }
         if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
-        const built = require("./launcher-context.cjs").needsYouGroup(snapshot);
-        if (built.group) {
-          const sw = require("./search-window.cjs");
-          const shown = sw.publicRun({ ok: true, query: "", phase: "idle", groups: [built.group], total: built.items.length });
-          return { ok: true, token, mode: "all", term: "", phase: "idle", groups: shown.groups, status: built.status };
-        }
+        const builtCards = context.needsYouGroup(snapshot);
+        if (builtCards.group) { groups.push(builtCards.group); total += builtCards.items.length; }
       }
-      return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: core.IDLE_STATUS };
+      if (pressContext) {
+        const sample = await pressContext;
+        if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
+        const hasAction = (id) => Boolean(registry && registry.byId && registry.byId(id));
+        const built = context.rightNowGroup(sample, hasAction);
+        if (built.group) { groups.push(built.group); total += built.items.length; }
+        if (built.status) status = built.status;
+      }
+      if (groups.length === 0) {
+        return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: status || core.IDLE_STATUS };
+      }
+      const shown = sw.publicRun({ ok: true, query: "", phase: "idle", groups, total });
+      return { ok: true, token, mode: "all", term: "", phase: "idle", groups: shown.groups, status };
     }
     const sw = require("./search-window.cjs");
     const universal = sw.universal();
@@ -508,8 +549,18 @@ function createLauncher({
       hide();
       return { ok: true, did: (verdict && verdict.did) || `answered ${id}` };
     }
+    if (key === "reveal:unlock" || key === "reveal:lock") {
+      const reveal = require("./private-reveal.cjs").sharedReveal();
+      if (key === "reveal:lock") return { ...reveal.lock(), did: "hidden results hidden again" };
+      const verdict = await reveal.unlock();
+      return verdict.ok
+        ? { ok: true, did: "showing hidden results for 5 minutes" }
+        : { ok: false, error: `Hidden results stay hidden — ${verdict.reason}` };
+    }
     const sw = require("./search-window.cjs");
-    const result = await sw.launchItem(String(key || ""), String(query || ""), {
+    const remembered = String(key || "").startsWith("ctx:") && sw.rememberedItem ? sw.rememberedItem(key) : null;
+    const effective = String(query || "") || (remembered && remembered.prompt) || "";
+    const result = await sw.launchItem(String(key || ""), effective, {
       shell, clipboard,
       action: (id) => run(id),
       chat: ask || null,

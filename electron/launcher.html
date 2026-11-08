@@ -149,7 +149,7 @@
     const rows = [];
     for (const group of state.groups) {
       const expanded = state.expanded.has(group.id);
-      // A group may send only `items` (the empty overlay's cards, a search group);
+      // A group may send only `items` (the empty overlay's cards and "Right now");
       // `shown` is the collapsed slice when a group is too long to draw in full.
       const items = expanded ? group.items : (group.shown || group.items || []);
       for (const item of items) rows.push({ kind: "item", group: group.id, item });
@@ -184,7 +184,7 @@
       head.append(name, count);
       results.append(head);
       const expanded = state.expanded.has(group.id);
-      // A group may send only `items` (the empty overlay's cards, a search group);
+      // A group may send only `items` (the empty overlay's cards and "Right now");
       // `shown` is the collapsed slice when a group is too long to draw in full.
       const items = expanded ? group.items : (group.shown || group.items || []);
       for (const item of items) {
