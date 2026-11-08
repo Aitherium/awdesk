@@ -174,11 +174,16 @@ function windowFor(board) {
   win.on("moved", () => queueBoundsSave(board, win));
   win.on("resized", () => queueBoundsSave(board, win));
   win.on("closed", () => {
+    // The CURRENT document, not `board`: every save replaces entry.board (applySave
+    // returns a new object), so the creation-time object here is stale -- persisting
+    // it wrote the board back as it was when the window opened (its later drawing,
+    // pins and pan lost on close; caught by the windowView smoke, 2026-11-07).
+    const current = (entries.get(board.id) || {}).board || board;
     entries.delete(board.id);
     if (quitting) return; // a restart must find the board open
-    board.open = false;
-    board.visible = false;
-    persist(board);
+    current.open = false;
+    current.visible = false;
+    persist(current);
     notifyChange();
   });
   void win.loadFile(path.join(__dirname, "board.html"), { query: { kind: board.kind, id: board.id } });
@@ -192,8 +197,10 @@ function queueBoundsSave(board, win) {
   entry.moveTimer = setTimeout(() => {
     if (!win.isDestroyed()) {
       const b = win.getBounds();
-      board.bounds = { x: b.x, y: b.y, width: b.width, height: b.height };
-      persist(board);
+      // The current document (see the closed handler): never a stale copy.
+      const current = entry.board;
+      current.bounds = { x: b.x, y: b.y, width: b.width, height: b.height };
+      persist(current);
     }
   }, 300);
   if (entry.moveTimer.unref) entry.moveTimer.unref();

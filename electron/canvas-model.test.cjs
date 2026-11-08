@@ -124,3 +124,15 @@ test("pin.duplicate (Ctrl+middle-drag): an unlocked copy on top at the drop poin
   assert.equal(copy.z, 2);
   assert.equal(M.applyPinOp(b, { op: "pin.duplicate", id: "nope" }).ok, false);
 });
+
+test("the floating window's pan is saved as windowView, apart from the canvas view, and survives either side's saves", () => {
+  let b = freshBoard();
+  assert.deepEqual(b.windowView, { x: 0, y: 0 }, "a new or v1 board opens at the origin");
+  b = core.applySave(b, { windowView: { x: 120, y: -48.6 } });
+  assert.deepEqual(b.windowView, { x: 120, y: -49 });
+  b = run(b, { op: "view", zoom: 1.5, pan: { x: 10, y: 10 } }).board;
+  assert.deepEqual(b.windowView, { x: 120, y: -49 }, "a canvas view change keeps the window's pan");
+  b = core.applySave(b, { items: [] });
+  assert.deepEqual(b.windowView, { x: 120, y: -49 }, "a save without it keeps it");
+  assert.deepEqual(core.normalizeBoard({ ...b, windowView: { x: "junk", y: 1e9 } }).windowView, { x: 0, y: 1e5 });
+});

@@ -321,8 +321,24 @@ app.whenReady().then(async () => {
       await until(async () => (await cardX()) > x0 + 100, 3000), { x0, x1: await cardX() });
     const unchanged = JSON.parse(fs.readFileSync(boardFile, "utf8")).pins.find((x) => x.id === clockId).bounds;
     expect("...and a pan changes no card's board position", unchanged.x === b1().x && unchanged.y === b1().y, unchanged);
+    // The pan is saved in the board doc (windowView) and the window reopens there.
+    const savedView = () => JSON.parse(fs.readFileSync(boardFile, "utf8")).windowView || { x: 0, y: 0 };
+    expect("board window: the pan is saved in the board doc (windowView)", await until(() => savedView().x > 100, 4000), savedView());
     await shoot(boardWin, "board-window-pins.png");
+    const before = savedView();
     boardWin.destroy();
+    await until(() => !require("./boards-window.cjs").__entries.has(boardId), 4000);
+    // As after a restart: the board comes back from its FILE (restoreOpenBoards does this).
+    require("./boards-window.cjs").create("board", { restored: { ...JSON.parse(fs.readFileSync(boardFile, "utf8")), open: true, visible: true } });
+    const again = await until(() => BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()
+      && decodeURIComponent(w.webContents.getURL()).includes(`id=${boardId}`)));
+    if (again) {
+      await until(() => !again.webContents.isLoading());
+      await wait(800);
+      const plane = await again.webContents.executeJavaScript("document.getElementById('pinsPlane').style.transform");
+      expect("board window: it reopens where it was left", plane === `translate(${before.x}px, ${before.y}px)`, { plane, before });
+      again.destroy();
+    } else expect("board window: it reopens where it was left", false, "no window");
   }
 
   server.close();
