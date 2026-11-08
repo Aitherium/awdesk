@@ -150,8 +150,8 @@
   function canvasSize() { return { width: Math.max(1, canvas.clientWidth), height: Math.max(1, canvas.clientHeight) }; }
   /**
    * The board's pan (middle-drag on empty space, the owner's rule): content point =
-   * screen point - pan. Not persisted -- the window opens at the board's origin; the
-   * canvas page keeps its own view.
+   * screen point - pan. Saved as the board's `windowView` (boards-core), so the window
+   * reopens where it was left; the canvas page keeps its own `view`.
    */
   let pan = { x: 0, y: 0 };
   function pos(event) {
@@ -164,7 +164,7 @@
 
   // ── persistence ───────────────────────────────────────────────────────────
   function payload() {
-    const p = { title: $("title").value.trim() || board.title };
+    const p = { title: $("title").value.trim() || board.title, windowView: { x: pan.x, y: pan.y } };
     if (board.kind === "note") p.text = $("noteText").value;
     else p.items = board.items;
     return p;
@@ -417,7 +417,7 @@
       canvas.style.cursor = "grabbing";
       window.AitherMiddleDrag.track(event, canvas, {
         onMove: ({ dx, dy }) => { pan = { x: Math.round(from.x + dx), y: Math.round(from.y + dy) }; redraw(); reportPinViews(); },
-        onEnd: () => { canvas.style.cursor = ""; },
+        onEnd: ({ moved }) => { canvas.style.cursor = ""; if (moved) markDirty(); },
       });
       return;
     }
@@ -648,6 +648,7 @@
     const reply = await api.init();
     if (!reply || !reply.ok) { toast((reply && reply.reason) || "could not open this board"); return; }
     board = reply.board;
+    if (board.windowView) pan = { x: Number(board.windowView.x) || 0, y: Number(board.windowView.y) || 0 };
     document.body.classList.toggle("note", board.kind === "note");
     $("kind").textContent = board.kind === "note" ? "Note" : "Whiteboard";
     $("title").value = board.title;

@@ -11,7 +11,7 @@
  *
  *   {version:2, id, kind:"note"|"board", title, createdAt, updatedAt,
  *    open, visible, bounds:{x,y,width,height}, items:[...], text:"...",
- *    pins:[pin-item], view:{scale,x,y}, grid, snap, link}
+ *    pins:[pin-item], view:{scale,x,y}, windowView:{x,y}, grid, snap, link}
  *
  * Version 2 (2026-11-07, aither://canvas): a board also holds PINNED CARDS (`pins`,
  * pin-item.cjs: live pages, YouTube, GIFs, images, widgets, notes) beside its drawing
@@ -176,6 +176,7 @@ function newBoard({ kind = "board", date = new Date(), id, title, bounds } = {})
     text: "",
     pins: [],
     view: { scale: 1, x: 0, y: 0 },
+    windowView: { x: 0, y: 0 },
     grid: DEFAULT_GRID,
     snap: true,
     link: null,
@@ -270,12 +271,16 @@ function migrateBoard(raw) {
     if (pins.length >= MAX_PINS) break;
   }
   const v = r.view && typeof r.view === "object" ? r.view : {};
+  const wv = r.windowView && typeof r.windowView === "object" ? r.windowView : {};
   const clamp = (n, lo, hi, d) => (Number.isFinite(Number(n)) ? Math.min(hi, Math.max(lo, Number(n))) : d);
   const l = r.link && typeof r.link === "object" && r.link.aitherone && typeof r.link.aitherone === "object" ? r.link.aitherone : null;
   const docId = l && typeof l.docId === "string" && /^[A-Za-z0-9_.:-]{1,120}$/.test(l.docId) ? l.docId : null;
   return {
     pins,
     view: { scale: clamp(v.scale, SCALE_MIN, SCALE_MAX, 1), x: Math.round(clamp(v.x, -1e5, 1e5, 0)), y: Math.round(clamp(v.y, -1e5, 1e5, 0)) },
+    // The FLOATING WINDOW's pan (board.html, middle-drag on empty space), apart from the
+    // canvas page's `view`: the two views of one board keep their own place.
+    windowView: { x: Math.round(clamp(wv.x, -1e5, 1e5, 0)), y: Math.round(clamp(wv.y, -1e5, 1e5, 0)) },
     grid: Math.round(clamp(r.grid, GRID_MIN, GRID_MAX, DEFAULT_GRID)),
     snap: r.snap !== false,
     link: docId ? { aitherone: {
@@ -311,6 +316,7 @@ function applySave(board, patch, now = Date.now()) {
     grid: p.grid != null ? p.grid : board.grid,
     snap: typeof p.snap === "boolean" ? p.snap : board.snap,
     link: p.link !== undefined ? p.link : board.link,
+    windowView: p.windowView && typeof p.windowView === "object" ? p.windowView : board.windowView,
     // A save never resurrects a closed board and never un-hides a put-away one.
     open: board.open,
     visible: board.visible,

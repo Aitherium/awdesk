@@ -128,3 +128,21 @@ test("scene items that are not pins are left to the caller", () => {
   assert.equal(P.fromSceneItem({ id: "f", kind: "file", node: "/a.pdf", x: 0, y: 0, w: 1, h: 1, z: 0 }), null);
   assert.equal(P.fromSceneItem(null), null);
 });
+
+test("ForgeIDE pins as an app: exact origin, /ide /graph /login only, never '..' (SYNC.md, shared with desk-pins-ink)", () => {
+  for (const url of ["https://forge.aitherium.com/ide", "https://forge.aitherium.com/ide/proj?file=a.py",
+    "https://forge.aitherium.com/graph", "https://forge.aitherium.com/login"]) {
+    assert.equal(P.kindOfUrl(url), "app", url);
+    assert.equal(P.normalizePinItem({ id: "f", kind: "app", src: url }).src, url);
+  }
+  for (const url of ["https://forge.aitherium.com/admin", "https://forge.aitherium.com/ide/../admin",
+    "http://forge.aitherium.com/ide", "https://forge.aitherium.com.evil.test/ide", "https://evil.test/ide"]) {
+    assert.equal(P.isForgeIde(url), false, url);
+    assert.equal(P.normalizePinItem({ id: "f", kind: "app", src: url }), null, `${url} is not an app pin`);
+  }
+  // A dev ForgeIDE: an https or localhost override, never a plain-http remote host.
+  assert.equal(P.isForgeIde("http://localhost:3100/ide", { AWDESK_FORGEIDE_URL: "http://localhost:3100" }), true);
+  assert.equal(P.isForgeIde("https://forge.aitherium.com/ide", { AWDESK_FORGEIDE_URL: "http://localhost:3100" }), false);
+  assert.equal(P.isForgeIde("http://dev.test/ide", { AWDESK_FORGEIDE_URL: "http://dev.test" }), false,
+    "a plain-http remote override is ignored (falls back to the real ForgeIDE)");
+});
