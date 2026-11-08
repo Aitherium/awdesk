@@ -132,6 +132,7 @@
 
 <script src="ink-core.cjs"></script>
 <script src="middle-gesture.cjs"></script>
+<script src="middle-drag.js"></script>
 <script>
   const core = window.AitherInkCore;
   const api = window.aitherInk;
@@ -464,8 +465,10 @@
     const p = local(e);
     const hit = core.topmostHit(doc.items, p, gesture.HIT_PX);
     if (!hit) return false; // empty space: nothing (while interacting it never got here)
-    const g = gesture.middleGesture({ hit, shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey, surface: "desktop" });
-    if (g === "blocked" || g === "pass") return false;
+    // The page-side rule is the shared middle-drag.js (board, canvas, pins); main
+    // re-decides with middle-gesture.cjs, which middle-gesture parity tests pin to it.
+    const g = window.AitherMiddleDrag.classify(e, true);
+    if (!g || g === "pan") return false;
     capturePointer(e);
     drag = { id: hit.id, gesture: g, start: p, now: p };
     void api.mode({ type: "middle-down", id: hit.id, shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey });
@@ -701,7 +704,7 @@
   window.addEventListener("wheel", () => { if (st.active) void api.mode({ type: "wheel" }); }, { passive: true });
   window.addEventListener("contextmenu", (e) => e.preventDefault());
   // Middle-click autoscroll must never start on the overlay.
-  window.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
+  window.AitherMiddleDrag.suppressAutoscroll(document.body);
 
   api.onState(applyState);
   api.onChrome((visible) => {

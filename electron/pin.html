@@ -13,9 +13,10 @@
   The strip (move by dragging it; resize from any edge) shows on hover: opacity,
   on-top / desktop, mute, lock (click-through), open in the browser, close.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src https: data:;" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline' file:; img-src https: data:;" />
 <title>Pin</title>
 <link rel="stylesheet" href="aither-tokens.css" />
+<script src="middle-drag.js"></script>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent;
@@ -139,7 +140,7 @@
   // main moves the window; Shift resizes, Ctrl duplicates (middle-gesture.cjs).
   let grabbing = false;
   window.addEventListener("pointerdown", (e) => {
-    if (e.button !== 1) return;
+    if (!window.AitherMiddleDrag.classify(e, true)) return;
     e.preventDefault();
     grabbing = true;
     try { e.target.setPointerCapture(e.pointerId); } catch { /* gone */ }

@@ -127,12 +127,13 @@ function verbRows(v, { gifs = null, apps = [], pins = [], hasCanvas = false } = 
       { type: "gif-picker", query: v.arg });
     if (!gifs) return { rows: [picker], status: "Searching GIFs…" };
     if (!gifs.ok) {
-      return { rows: [picker], status: gifs.needsKey ? "0 GIF sources — add a GIF key (TENOR_API_KEY) in the vault"
+      return { rows: [picker], status: gifs.needsKey ? "0 GIF sources answered — the web search is offline; a GIF key (TENOR_API_KEY) also works"
         : `1 GIF source down — ${gifs.reason || "no answer"}` };
     }
     const rows = gifs.results.map((g) => row(`gif:${g.id}`, g.title || "GIF",
       `${g.width}×${g.height} · ${g.provider} · Enter pins it to the desktop`, { type: "gif-pin", id: g.id }, "gif"));
-    return { rows: [...rows, picker], status: rows.length ? `${rows.length} GIFs · Enter pins the top one` : `0 GIFs for “${v.arg}”` };
+    const via = gifs.provider === "web" ? " · from the web (a GIF key gives better results)" : "";
+    return { rows: [...rows, picker], status: rows.length ? `${rows.length} GIFs · Enter pins the top one${via}` : `0 GIFs for “${v.arg}”` };
   }
   if (v.verb === "pin") {
     if (v.target === "help") {

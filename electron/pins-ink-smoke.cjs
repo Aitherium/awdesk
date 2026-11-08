@@ -35,7 +35,7 @@ fs.mkdirSync(path.join(tmp, "userData"));
 const SHOTS = process.env.AWDESK_SMOKE_SHOTS || path.join(os.tmpdir(), "awdesk-pins-ink-smoke");
 try { fs.mkdirSync(SHOTS); } catch { /* exists */ }
 process.on("unhandledRejection", (e) => { console.log(`REJECT ${(e && e.stack) || e}`); app.exit(2); });
-setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 90_000);
+setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 180_000);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const failures = [];
@@ -108,6 +108,16 @@ app.whenReady().then(async () => {
   // ── GIF picker ────────────────────────────────────────────────────────────
   const picker = require("./gif-picker-window.cjs");
   picker.openGifPicker("thumbs up");
+  // Live, keyless: search "cat" through the desk's web path and pin the first GIF.
+  if (!inkOnly) {
+    const live = await picker.gifSearch().search("cat", { limit: 8 });
+    if (!live.ok || !live.results.length) {
+      console.log(`SKIP live GIF search: ${(live && live.reason) || "0 results"} (offline?)`);
+    } else {
+      const pinned = picker.pinGif(live.results[0].id);
+      check(pinned.ok, `live GIF search (${live.provider}, ${live.results.length} results) pinned "${live.results[0].title}"`);
+    }
+  }
 
   // Pins + picker alone first: the full-screen ink overlay changes what the
   // compositor hands desktopCapturer, so each gets its own shot.

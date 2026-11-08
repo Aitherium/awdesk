@@ -27,7 +27,7 @@ test("gif <words>: inline results, Enter pins the top one; no key says so", () =
   assert.deepEqual(actionOf(ok.rows), { type: "gif-pin", id: "tenor:1" });
   assert.equal(ok.rows[ok.rows.length - 1].action.type, "gif-picker", "the picker is the last row");
   const noKey = verbRows(v, { gifs: { ok: false, needsKey: true, reason: "x" } });
-  assert.match(noKey.status, /add a GIF key/);
+  assert.match(noKey.status, /web search is offline; a GIF key/);
   assert.deepEqual(actionOf(noKey.rows), { type: "gif-picker", query: "happy cat" });
   assert.equal(parseDeskVerb("gifs").target, "picker");
 });

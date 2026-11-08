@@ -640,7 +640,6 @@ function addImageToCurrentBoard(img) {
   return { ok: true, boardId: entry.board.id, created };
 }
 
-  exportPng, syncBoard, list, addImageToCurrentBoard,
 module.exports = {
   ensureIpc, setEnqueue, setChangeHook, setBoardsDir, resolveDir, loadBoards, persist,
   createNote, createBoard, create, show, putAway, restoreOpenBoards, openList, traySubmenu,
