@@ -3170,6 +3170,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
   }
   switch (id) {
     case "console.open": return void openConsole();
+    case "strata.open": return void openConsole("strata");
     case "device.connect": return void (deviceConnect && deviceConnect.open());
     case "device.nearby": return void (nearbyDevices && nearbyDevices.open());
     case "local.install": return void (localStack && localStack.open());

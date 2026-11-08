@@ -53,6 +53,10 @@ const REG_TIMEOUT_MS = 10_000;
  * `id` is the registry command it launches.
  */
 const ENTRIES = Object.freeze([
+  // Your files and the Strata storage view, first (owner 2026-11-07: "right click and
+  // basically access my strata file client immediately").
+  Object.freeze({ key: "files-open", id: "files.open", label: "Aither Files" }),
+  Object.freeze({ key: "strata-open", id: "strata.open", label: "Strata storage" }),
   Object.freeze({ key: "snip-region", id: "snip.region", label: "Snip region" }),
   Object.freeze({ key: "record-region", id: "record.region", label: "Record region" }),
   Object.freeze({ key: "record-region-sound", id: "record.region.audio", label: "Record with sound" }),

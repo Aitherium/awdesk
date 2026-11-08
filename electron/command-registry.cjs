@@ -607,6 +607,12 @@ const COMMANDS = Object.freeze([
     id: "files.open", label: "Files…", group: "go", icon: "folder",
     surfaces: ["palette", "jumplist"],
   }),
+  // Strata (the console's storage page: tiers, artifacts, the mesh file index). The
+  // desktop right-click menu opens it directly (owner, 2026-11-07).
+  Object.freeze({
+    id: "strata.open", label: "Strata storage", group: "go", icon: "database",
+    surfaces: ["palette", "jumplist"],
+  }),
   // The awsh surface (aither://terminal): the radial's "awsh" slice and one tray row.
   // Same page the browser's console opens; no second terminal exists.
   Object.freeze({
