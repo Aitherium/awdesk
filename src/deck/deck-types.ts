@@ -12,13 +12,22 @@ export interface DeckDecision {
   kind?: string;
   urgency: string;
   createdAt: number;
-  options: Array<{ key: string; label: string; recommended: boolean }>;
+  /** `consequence` = what the button DOES (a recipe card's action sentence,
+   *  <=200 chars). Older mains omit it. */
+  options: Array<{ key: string; label: string; recommended: boolean; consequence?: string }>;
   defaultKey: string;
   tab: string;
   cwd: string;
   agent: string;
   /** WHICH session is waiting (an id, never a path). Optional on older mains. */
   sessionId?: string;
+  /** The asking session's state, sent only when the card has a sessionId.
+   *  `status` "idle" = waiting at its prompt, "busy" = working. Older mains omit it. */
+  session?: { live: boolean; status: string; name: string };
+  /** The raiser's longer explanation (<=2000 chars) and short facts (<=6).
+   *  Older mains omit both. */
+  detail?: string;
+  facts?: string[];
   /** The universe object this card concerns (`svc:Secrets`, `secret:NAME`); "" = none. */
   subject?: string;
   /** WHICH machine raised it, as the raiser labelled it. */

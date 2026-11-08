@@ -35,6 +35,13 @@ contextBridge.exposeInMainWorld("deskBridge", {
     // "None of these — do this instead": the card plane's steer verb, so a card
     // whose right answer is not one of its options no longer needs a terminal.
     steer: (id, text) => ipcRenderer.invoke("desk:deck-steer", { id, text }),
+    // The session behind a card (session-context.cjs): what it is doing, whether it
+    // is still open, and the three ways to reach it. Main resolves the session from
+    // ITS copy of the card; the page names only the card.
+    session: (id) => ipcRenderer.invoke("desk:deck-session", String(id || "")),
+    sessionAct: (id, action, text) => ipcRenderer.invoke("desk:deck-session-act",
+      { id: String(id || ""), action: String(action || ""), text: text == null ? "" : String(text) }),
+    openUrl: (url) => ipcRenderer.invoke("desk:deck-open-url", String(url || "")),
     action: (name, arg) => ipcRenderer.invoke("desk:deck-action", name, arg),
     // The rows of a non-menu surface ("beads"), from command-registry.cjs: id,
     // resolved label, icon name. A bead sends its id back through `action`.

@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useReducer, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type CSSProperties } from 'react';
 
 import { renderVrmThumbnail } from '../thumbnails';
+import { LinkedText, Markdown, SessionPanel } from './SessionPanel';
+import { DeckLinks, canOpenUrl, hasSessionBridge, openDeskUrl, type DeckLinkHandlers } from '../deck/session-context';
+import { endedSessionIds, sessionPill, sessionRowTitle } from '../deck/session-text';
 import { useDeckState } from '../deck/use-deck-state';
 import {
   cardFocusParam,
@@ -1035,7 +1038,8 @@ function ModelsMarketSection({
  */
 const GROUP_PAGE = VISIBLE_CAP;
 
-function NeedsYouSection({
+/** Exported for the render tests (Deck.inbox.test.tsx). */
+export function NeedsYouSection({
   cards,
   fyi,
   openCount,
@@ -1045,6 +1049,7 @@ function NeedsYouSection({
   onPopupAll,
   onSpace,
   focus,
+  onFocusCard,
 }: {
   cards: DeckDecision[];
   fyi: DeckDecision[];
@@ -1058,6 +1063,8 @@ function NeedsYouSection({
   /** A card the owner clicked somewhere else (tray row, chip, ?card=): open it.
    *  `nonce` re-applies the same id after the owner moved away. */
   focus?: { id: string; nonce: number } | null;
+  /** A `d-xxxx` link inside card text was clicked: open that card here. */
+  onFocusCard?: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -1069,9 +1076,12 @@ function NeedsYouSection({
   const [query, setQuery] = useState('');
   // A group shows its first GROUP_PAGE cards; "N more" opens the rest.
   const [more, setMore] = useState<Set<string>>(() => new Set());
-  const [bulk, setBulk] = useState<{ verb: string; done: number; total: number; refused: number } | null>(null);
+  // `scope` says WHICH bulk control owns the progress line: the stale fold's
+  // Later / Dismiss all, or the "from ended sessions" chip on Blocked on you.
+  const [bulk, setBulk] = useState<{ verb: string; done: number; total: number; refused: number; scope: 'stale' | 'ended' } | null>(null);
   const [confirmDismiss, setConfirmDismiss] = useState(false);
   const [confirmLater, setConfirmLater] = useState(false);
+  const [confirmEnded, setConfirmEnded] = useState(false);
   // A bulk run is a loop of clicks; the owner must be able to stop it.
   const cancelBulk = useRef(false);
   const rows = query ? filterRows(cards, query) : cards;
@@ -1090,6 +1100,20 @@ function NeedsYouSection({
   ];
   const allIds = rows.map((c) => c.id);
   const previousIds = useRef<string[]>(allIds);
+
+  // What a link inside card text can do: a d-xxxx id that is waiting HERE opens
+  // that card (an answered one stays plain text); URLs and PRs open in Aither
+  // Browser when this main can (deck.openUrl), else stay plain text.
+  const cardIdsKey = cards.map((c) => c.id).join('|');
+  const links = useMemo<DeckLinkHandlers>(() => {
+    const ids = new Set(cardIdsKey ? cardIdsKey.split('|') : []);
+    return {
+      repo: '',
+      focusCard: onFocusCard,
+      hasCard: (id: string) => ids.has(id),
+      openUrl: canOpenUrl() ? (url: string) => { void openDeskUrl(url); } : undefined,
+    };
+  }, [cardIdsKey, onFocusCard]);
 
   // An answered card leaves the list: open the card now in its slot.
   const idsKey = allIds.join('|');
@@ -1180,14 +1204,18 @@ function NeedsYouSection({
     setExpanded((current) => (current === id ? null : id));
   };
 
-  /** One verb over every stale card, one at a time, and say how it went. */
-  const runBulk = async (verb: 'card-later' | 'card-not-needed') => {
+  /** One verb over a set of cards (every stale card, or the Blocked cards whose
+   *  session has ended), one at a time, and say how it went. */
+  const runBulk = async (
+    verb: 'card-later' | 'card-not-needed',
+    ids: string[] = stale.map((c) => c.id),
+    scope: 'stale' | 'ended' = 'stale',
+  ) => {
     const deck = bridgeDeck();
-    if (!deck || bulk) return;
-    const ids = stale.map((c) => c.id);
+    if (!deck || bulk || ids.length === 0) return;
     cancelBulk.current = false;
     let refused = 0;
-    setBulk({ verb, done: 0, total: ids.length, refused: 0 });
+    setBulk({ verb, done: 0, total: ids.length, refused: 0, scope });
     for (let i = 0; i < ids.length; i += 1) {
       if (cancelBulk.current) break;
       try {
@@ -1196,16 +1224,39 @@ function NeedsYouSection({
       } catch {
         refused += 1;
       }
-      setBulk({ verb, done: i + 1, total: ids.length, refused });
+      setBulk({ verb, done: i + 1, total: ids.length, refused, scope });
     }
     setConfirmDismiss(false);
     setConfirmLater(false);
+    setConfirmEnded(false);
     window.setTimeout(() => setBulk(null), 6000);
   };
+
+  /** The progress line + Cancel a running bulk shows in place of its buttons. */
+  const bulkProgress = (active: NonNullable<typeof bulk>) => (
+    <>
+      <span className="deck-ny-bulk-note" role="status">
+        {active.verb === 'card-later' ? 'Snoozing' : 'Withdrawing'} {active.done}/{active.total}
+        {active.refused ? ` · ${active.refused} refused` : ''}
+      </span>
+      <button
+        className="deck-btn deck-btn-xs"
+        title="Stop after the card in flight"
+        onClick={() => { cancelBulk.current = true; }}
+      >
+        Cancel
+      </button>
+    </>
+  );
 
   const row = (card: DeckDecision) => {
     const open = expanded === card.id;
     const source = decisionSource(card);
+    // A session card is titled by its session ("Desktop canvas layout"), not by
+    // the raiser's "Claude Code needs you: <project> — " boilerplate, and wears
+    // the session's state where the bare "claude-code" source label used to be.
+    const title = card.sessionId ? sessionRowTitle(card) : card.title;
+    const pill = sessionPill(card.session);
     return (
       <div key={card.id} className={`deck-ny-item ${open ? 'deck-ny-item-open' : ''}`}>
         <div
@@ -1221,8 +1272,19 @@ function NeedsYouSection({
           }}
         >
           <span className="deck-urgency-dot" style={{ background: urgencyTone(card.urgency) }} />
-          <span className="deck-ny-title">{card.title}</span>
-          {source ? <span className="deck-ny-source">{source}</span> : null}
+          <span className="deck-ny-title">{title}</span>
+          {pill ? (
+            <span
+              className={`deck-session-pill deck-session-pill-${pill}`}
+              title={pill === 'ended'
+                ? 'The session that asked has ended'
+                : pill === 'working'
+                  ? 'The session that asked is live and working'
+                  : 'The session that asked is live, waiting at its prompt'}
+            >
+              {pill}
+            </span>
+          ) : source ? <span className="deck-ny-source">{source}</span> : null}
           <time className="deck-ny-age">{formatAge(card.createdAt, nowMs)}</time>
         </div>
         {open ? (
@@ -1267,6 +1329,7 @@ function NeedsYouSection({
   });
 
   return (
+    <DeckLinks.Provider value={links}>
     <section className="deck-section" aria-label="Needs you" data-current-card={expanded ?? ''}>
       <h2 className="deck-section-head">
         <span className="deck-section-icon"><BellIcon /></span>
@@ -1326,17 +1389,39 @@ function NeedsYouSection({
           {rows.length === 0 ? (
             <p className="deck-empty">No card matches “{query}”.</p>
           ) : null}
-          {groups.map((group) => (
+          {groups.map((group) => {
+            // Blocked cards whose asking session has ENDED: nobody is waiting on
+            // them any more. One chip withdraws exactly those (same mechanics and
+            // two-click confirm as the stale fold's "Dismiss all").
+            const ended = group.key === 'blocked' ? endedSessionIds(group.cards) : [];
+            return (
             <div className="deck-ny-group" key={group.key}>
-              <button
-                className="deck-ny-group-head"
-                aria-expanded={!folded.has(group.key)}
-                onClick={() => toggleGroup(group.key)}
-              >
-                <span className="deck-ny-caret">{folded.has(group.key) ? '▸' : '▾'}</span>
-                {group.label}
-                <span className="deck-ny-group-count">{group.cards.length}</span>
-              </button>
+              <div className="deck-ny-group-bar">
+                <button
+                  className="deck-ny-group-head"
+                  aria-expanded={!folded.has(group.key)}
+                  onClick={() => toggleGroup(group.key)}
+                >
+                  <span className="deck-ny-caret">{folded.has(group.key) ? '▸' : '▾'}</span>
+                  {group.label}
+                  <span className="deck-ny-group-count">{group.cards.length}</span>
+                </button>
+                {ended.length > 0 ? (
+                  bulk && bulk.scope === 'ended' ? bulkProgress(bulk) : (
+                    <button
+                      className={`deck-chip deck-ny-ended-chip${confirmEnded ? ' deck-ny-ended-chip-confirm' : ''}`}
+                      disabled={bulk !== null}
+                      title={`Withdraw the ${ended.length} card${ended.length === 1 ? '' : 's'} whose session has ended; each is marked "owner: not needed"`}
+                      onClick={() => (confirmEnded ? void runBulk('card-not-needed', ended, 'ended') : setConfirmEnded(true))}
+                      onBlur={() => setConfirmEnded(false)}
+                    >
+                      {confirmEnded
+                        ? `Withdraw ${ended.length}?`
+                        : `${ended.length} from ended session${ended.length === 1 ? '' : 's'} — close ${ended.length === 1 ? 'it' : 'them'}`}
+                    </button>
+                  )
+                ) : null}
+              </div>
               {folded.has(group.key) ? null : shownCards(group.key, group.cards).map(row)}
               {!folded.has(group.key) && group.cards.length > GROUP_PAGE && !more.has(group.key) ? (
                 <button className="deck-fold-more" onClick={() => setMore((current) => new Set(current).add(group.key))}>
@@ -1344,7 +1429,8 @@ function NeedsYouSection({
                 </button>
               ) : null}
             </div>
-          ))}
+            );
+          })}
           {stale.length > 0 ? (
             <div className="deck-ny-group deck-ny-group-stale">
               <div className="deck-ny-group-bar">
@@ -1359,24 +1445,11 @@ function NeedsYouSection({
                     : `${stale.length} more — none older than ${STALE_DECISION_DAYS}d shown`}
                   {staleOpen ? <span className="deck-ny-group-count">{stale.length}</span> : null}
                 </button>
-                {bulk ? (
-                  <>
-                    <span className="deck-ny-bulk-note" role="status">
-                      {bulk.verb === 'card-later' ? 'Snoozing' : 'Withdrawing'} {bulk.done}/{bulk.total}
-                      {bulk.refused ? ` · ${bulk.refused} refused` : ''}
-                    </span>
-                    <button
-                      className="deck-btn deck-btn-xs"
-                      title="Stop after the card in flight"
-                      onClick={() => { cancelBulk.current = true; }}
-                    >
-                      Cancel
-                    </button>
-                  </>
-                ) : (
+                {bulk && bulk.scope === 'stale' ? bulkProgress(bulk) : (
                   <>
                     <button
                       className={`deck-btn deck-btn-xs ${confirmLater ? 'deck-btn-primary' : ''}`}
+                      disabled={bulk !== null}
                       title="Off the needs-you strip and the tray for 4 hours (the cards stay open)"
                       onClick={() => (confirmLater ? void runBulk('card-later') : setConfirmLater(true))}
                       onBlur={() => setConfirmLater(false)}
@@ -1385,6 +1458,7 @@ function NeedsYouSection({
                     </button>
                     <button
                       className={`deck-btn deck-btn-xs ${confirmDismiss ? 'deck-btn-danger' : ''}`}
+                      disabled={bulk !== null}
                       title={`Withdraw all ${stale.length}; each asking session is told "owner: not needed"`}
                       onClick={() => (confirmDismiss ? void runBulk('card-not-needed') : setConfirmDismiss(true))}
                       onBlur={() => setConfirmDismiss(false)}
@@ -1422,10 +1496,12 @@ function NeedsYouSection({
         </details>
       ) : null}
     </section>
+    </DeckLinks.Provider>
   );
 }
 
-function DecisionRow({
+/** Exported for the render tests (Deck.inbox.test.tsx). */
+export function DecisionRow({
   card,
   nowMs,
   onAnswer,
@@ -1434,53 +1510,128 @@ function DecisionRow({
   nowMs: number;
   onAnswer: (id: string, choice: string) => void;
 }) {
+  const [summaryOpen, setSummaryOpen] = useState(false);
   const primary = primaryChoice(card);
   const others = otherChoices(card);
   const where = cardWhere(card);
   const isCredential = card.kind === 'credential';
+  // A card raised by a coding session gets the SESSION PANEL (is it still open,
+  // what was it asked, what did it last say, Go to it / Resume, a Reply box that
+  // is always there) -- only when this main serves deck.session (older mains keep
+  // the plain card), and never on a credential card: a free-text reply beside a
+  // secret field invites pasting the secret into a message.
+  const sessionMode = Boolean(card.sessionId) && !isCredential && hasSessionBridge();
+  const numberOf = (key: string) => card.options.findIndex((o) => o.key === key) + 1;
+  const consequenceOf = (key: string) => (card.options.find((o) => o.key === key)?.consequence ?? '').trim();
+  const facts = Array.isArray(card.facts)
+    ? card.facts.filter((fact): fact is string => typeof fact === 'string' && fact.trim().length > 0).slice(0, 6)
+    : [];
+  const detail = typeof card.detail === 'string' ? card.detail.trim() : '';
+  // WHAT EACH BUTTON DOES, on the card and not only in a tooltip: a recipe card's
+  // answer runs an action, and the owner must read that before pressing.
+  const consequences = (primary ? [primary, ...others] : others)
+    .map((option) => ({ key: option.key, n: numberOf(option.key), label: option.label, text: consequenceOf(option.key) }))
+    .filter((entry) => entry.text);
+  const optionTitle = (key: string, lead: string) => {
+    const effect = consequenceOf(key);
+    return effect ? `${lead} — ${effect}` : lead;
+  };
+
+  const answers = isCredential ? (
+    <CredentialRow card={card} />
+  ) : (
+    <>
+      <footer className="deck-card-actions">
+        {primary ? (
+          <button
+            className="deck-btn deck-btn-primary"
+            title={optionTitle(primary.key, `Answer "${primary.label}" — recorded, and the asking session is told right away`)}
+            onClick={() => onAnswer(card.id, primary.key)}
+          >
+            {`${numberOf(primary.key)}. ${primary.label}`}
+          </button>
+        ) : (
+          <button
+            className="deck-btn deck-btn-primary"
+            title="Open this card in the full answer window"
+            onClick={() => void bridgeDeck()?.action('popup')}
+          >
+            Open answer window
+          </button>
+        )}
+        {others.map((option) => (
+          <button
+            key={option.key}
+            className="deck-btn"
+            title={optionTitle(option.key, `Answer "${option.label}" instead`)}
+            onClick={() => onAnswer(card.id, option.key)}
+          >
+            {`${numberOf(option.key)}. ${option.label}`}
+          </button>
+        ))}
+      </footer>
+      {consequences.length > 0 ? (
+        <ul className="deck-card-consequences">
+          {consequences.map((entry) => (
+            <li key={entry.key}>
+              <span className="deck-card-consequence-key">{`${entry.n}. ${entry.label}`}</span>
+              <span className="deck-card-consequence-text"><LinkedText text={entry.text} /></span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </>
+  );
+
   return (
-    <article className="deck-card">
+    <article className={`deck-card${sessionMode ? ' deck-card-session' : ''}`}>
       <header className="deck-card-head">
         <span className="deck-urgency-dot" style={{ background: urgencyTone(card.urgency) }} />
         <h3 className="deck-card-title">{card.title}</h3>
         <time className="deck-card-age">{formatAge(card.createdAt, nowMs)}</time>
       </header>
-      {card.summary ? <p className="deck-card-summary">{card.summary}</p> : null}
-      {where ? <p className="deck-card-where">{where}</p> : null}
-      {isCredential ? (
-        <CredentialRow card={card} />
+      {sessionMode ? (
+        <>
+          <SessionPanel card={card} nowMs={nowMs} />
+          {where ? <p className="deck-card-where" title={where}>{where}</p> : null}
+          {answers}
+          {/* The raiser's own blob, kept one click away: the panel above replaces
+              it, but nothing the card said is ever dropped. */}
+          {card.summary || detail ? (
+            <details className="deck-fold deck-card-raw">
+              <summary>Raw card text</summary>
+              {card.summary ? <p className="deck-card-raw-text"><LinkedText text={card.summary} /></p> : null}
+              {detail ? <Markdown text={detail} className="deck-card-detail" /> : null}
+            </details>
+          ) : null}
+        </>
       ) : (
-        <footer className="deck-card-actions">
-          {primary ? (
-            <button
-              className="deck-btn deck-btn-primary"
-              title={`Answer "${primary.label}" — recorded, and the asking session is told right away`}
-              onClick={() => onAnswer(card.id, primary.key)}
+        <>
+          {card.summary ? (
+            <p
+              className={`deck-card-summary${summaryOpen ? ' deck-card-summary-open' : ''}`}
+              title={summaryOpen ? undefined : 'Click to read all of it'}
+              onClick={() => setSummaryOpen(true)}
             >
-              {`${card.options.findIndex((o) => o.key === primary.key) + 1}. ${primary.label}`}
-            </button>
-          ) : (
-            <button
-              className="deck-btn deck-btn-primary"
-              title="Open this card in the full answer window"
-              onClick={() => void bridgeDeck()?.action('popup')}
-            >
-              Open answer window
-            </button>
-          )}
-          {others.map((option) => (
-            <button
-              key={option.key}
-              className="deck-btn"
-              title={`Answer "${option.label}" instead`}
-              onClick={() => onAnswer(card.id, option.key)}
-            >
-              {`${card.options.findIndex((o) => o.key === option.key) + 1}. ${option.label}`}
-            </button>
-          ))}
-        </footer>
+              <LinkedText text={card.summary} />
+            </p>
+          ) : null}
+          {facts.length > 0 ? (
+            <ul className="deck-card-facts">
+              {facts.map((fact, i) => <li key={i}><LinkedText text={fact} /></li>)}
+            </ul>
+          ) : null}
+          {where ? <p className="deck-card-where" title={where}>{where}</p> : null}
+          {detail ? (
+            <details className="deck-fold deck-card-more">
+              <summary>More</summary>
+              <Markdown text={detail} className="deck-card-detail" />
+            </details>
+          ) : null}
+          {answers}
+          <SteerBox card={card} />
+        </>
       )}
-      <SteerBox card={card} />
     </article>
   );
 }
@@ -2119,6 +2270,12 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
   // notifications and system awareness, so the button read as dead
   // (owner, 2026-08-27). Main sends scroll-to-section on that action;
   // scroll the section into view here.
+  // A d-xxxx link inside card text: the same focus path main's 'deck:focus-card'
+  // takes, so the linked card opens (and scrolls into view) in its slot.
+  const focusCardById = useCallback((id: string) => {
+    setFocusCard((current) => ({ id, nonce: (current?.nonce ?? 0) + 1 }));
+  }, []);
+
   useEffect(() => {
     return bridgeSubscribe((event) => {
       if (event.type !== 'deck:focus-card' || typeof event.id !== 'string') return;
@@ -2426,6 +2583,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
           onPopupAll={() => runAction('popup')}
           onSpace={state.spaceAvailable ? (link) => void bridgeDeck()?.action('space', link) : undefined}
           focus={focusCard}
+          onFocusCard={focusCardById}
         />
 
         <WakesSection
