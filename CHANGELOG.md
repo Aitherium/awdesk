@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Drawing and using your desktop are one motion now. Ink never disappears when you stop drawing: Esc, a right-click or Ctrl+Alt+D hands the desktop back and the marks stay. Hold Ctrl+Alt to draw for a moment, and release to click again (AWDESK_INK_HOLD=ctrl+shift or off changes it). The mouse wheel always scrolls the app underneath. Drawing mode shows a thin glow at the screen edge, the tool palette docks to the bottom edge, and the tray says "Drawing".
+- Middle-drag moves things: a mark on the screen (even while you are not drawing), a desktop pin, an item on a whiteboard. Shift+middle-drag resizes, Ctrl+middle-drag duplicates. Locked items stay put. The same gesture works in the AitherOne canvas.
+- New keys: Ctrl+Alt+E saves the drawing to a board, Ctrl+Alt+X snips with ink, Ctrl+Alt+F GIF (picker), Ctrl+Alt+U pins the link on your clipboard, Ctrl+Alt+T pins the browser tab, Ctrl+Alt+H shows or hides all pins, and Ctrl+Alt+/ lists every shortcut and says which ones another app holds.
+- AitherOS Online pages can pin a page, start ink or open the GIF picker through the desk (window.aitherDeskVerbs). Ink saved to a board keeps pen pressure, so it syncs to the AitherOne canvas.
 - Browser layout you can rearrange: Customize (⚙) → Edit layout shows every pane as a box. Move the assistant panel left or right, the terminal dock above or below the page, the rail to either edge, and the avatar slot and layer tiles to the top or bottom of the rail. Drag a pane's handle to a highlighted edge or use its buttons. Esc finishes.
 - Detach any pane: the assistant panel, terminal dock and taskbar each pop into their own window and come back. Each window reopens where you left it; closing it from its title bar puts the pane back.
 - Layout presets: Default, Focus (rail collapsed, no panel), Ops (tall dock, wide panel), plus your own (save, rename, delete). Export and import a layout file that also carries your presets.
@@ -9,6 +13,12 @@
 - Canvas (aither://canvas, under Today on the rail): your whiteboards as a pannable, zoomable board with a snap grid. It is the same board the floating whiteboard window draws on (Float opens it there). Pin live pages and Aither pages, YouTube (privacy embed), GIFs, images, sticky notes and widgets: clock, Inbox count, awsh sessions, inference, system. Cards move, resize, lock and remove, by mouse or keyboard. Right-click a tab → Pin to canvas.
 - Link a board to an AitherOne canvas: "Link to AitherOne" creates the doc, and "Sync" sends or fetches whichever side changed. If both sides changed, it asks which to keep and writes nothing until you choose. AitherOne items the desk cannot show are kept, not dropped. Unlinked boards stay local and work offline.
 - Every new gesture is also a palette command (layout.*, rail.*, canvas.*).
+- Drawing over the screen is smoother: strokes are one tapered, curve-traced shape (pen pressure where the pen reports it, speed for a mouse) built from every pointer sample, not one straight segment per frame.
+- Ink toolbar: Click-through (Ctrl+Alt+K) keeps your marks on screen while clicks reach the apps underneath; To board turns the marks into an editable whiteboard; Snip cuts a region with the ink in it.
+- Desktop pins: pin a GIF, an image, a YouTube video, a web page, the browser tab you are on, an app tile or a note to the desktop. Each pin moves, resizes, fades (opacity), locks (click-through), stays on top or sits at desktop level, mutes and closes, and comes back after a restart. The tray's Pins menu lists them.
+- GIF picker (Ctrl+Alt+I): search Tenor or Giphy, click to pin to the desktop, Shift+click to put it on your whiteboard, or drag it into any app. Results are always rated (G, or PG-13 when adult content is allowed). It works with no key: it searches the web through the desk's own search and reads Giphy and Tenor pages for the GIFs (word-filtered while adult content is off). A TENOR_API_KEY or GIPHY_API_KEY in the vault gives better results.
+- Alt+Space verbs: `draw` (and `draw through|board|snip|clear`), `gif <words>` (Enter pins the top GIF), `pin <address | this tab | app name>`, `youtube <link or words>`, `board`, `canvas`, `pins`.
+- From your phone or the awconnect extension: send a link or a GIF to the desk as a pin, or toggle ink (`pins.add`, `gif.pin`, `ink.toggle`; awconnect's right-click menu has Pin to desktop).
 
 ## 0.1.28 - 2026-11-01
 

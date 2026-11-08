@@ -369,3 +369,33 @@ test("the desk_id field name is the one the Android bridge reads (in the monorep
   assert.match(fs.readFileSync(java, "utf8"), /DESK_ID_FIELD = "desk_id";/);
   assert.match(fs.readFileSync(path.join(__dirname, "phone-link.cjs"), "utf8"), /\{ v: 1, desk_id: deskId\(\)/);
 });
+
+test("pins + ink verbs: an approved phone can push a pin; the pairing gate still holds", async () => {
+  const k = phoneKey();
+  const stranger = phoneKey();
+  const pushed = [];
+  const { link } = setup({
+    enrolled: { "phone-1": k.pub },
+    actions: {
+      state: async () => ({ ok: true }),
+      "pin.add": async (args) => { pushed.push(args.url); return { ok: true }; },
+      "ink.toggle": async () => ({ ok: true, active: true }),
+    },
+  });
+  const port = await link.openFor("R5CT", "Pixel 8");
+  // Not yet approved: refused, nothing pinned.
+  const early = await call(port, "/link/do", { header: hello(k, "phone-1"), body: { action: "pin.add", args: { url: "https://example.com" } } });
+  assert.equal(early.status, 403);
+  await call(port, "/link/hello", { header: hello(k, "phone-1") });
+  await settle();
+  await call(port, "/link/hello", { header: hello(k, "phone-1") });
+  const ok = await call(port, "/link/do", { header: hello(k, "phone-1"), body: { action: "pin.add", args: { url: "https://youtu.be/dQw4w9WgXcQ" } } });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(pushed, ["https://youtu.be/dQw4w9WgXcQ"]);
+  assert.equal((await call(port, "/link/do", { header: hello(k, "phone-1"), body: { action: "ink.toggle" } })).status, 200);
+  // A key the desk never enrolled cannot use the new verbs either.
+  const bad = await call(port, "/link/do", { header: hello(stranger, "phone-1"), body: { action: "pin.add", args: { url: "https://x.example" } } });
+  assert.notEqual(bad.status, 200);
+  assert.deepEqual(pushed, ["https://youtu.be/dQw4w9WgXcQ"]);
+  link.closeAll();
+});

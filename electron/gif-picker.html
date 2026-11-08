@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!--
+  gif-picker.html -- search GIFs, then: click = pin to the desktop, Shift+click =
+  the current whiteboard, drag = a real file onto a board or any app. Owned by
+  gif-picker-window.cjs. Thumbnails load only from the Tenor / Giphy media CDNs.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src https://media.tenor.com https://*.tenor.com https://*.giphy.com;" />
+<title>GIFs</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg, #14141a); color: var(--fg, #e8e8ef);
+    font: 13px/1.4 var(--font-sans, system-ui); overflow: hidden; }
+  body { display: grid; grid-template-rows: auto auto 1fr auto; border: 1px solid var(--line, #34343f); border-radius: 10px; }
+  header { display: flex; gap: 6px; align-items: center; padding: 8px; -webkit-app-region: drag; }
+  header input, header button { -webkit-app-region: no-drag; }
+  #q { flex: 1; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line, #34343f);
+    background: var(--panel, #1c1c24); color: inherit; font: inherit; outline: none; }
+  #q:focus { border-color: var(--primary, #7aa2ff); }
+  button { font: inherit; padding: 5px 9px; border-radius: 6px; border: 1px solid transparent; background: transparent;
+    color: inherit; cursor: pointer; }
+  button:hover { background: var(--btn-hi, #2a2a35); }
+  #hint { padding: 0 10px 6px; color: var(--muted, #9a9aa8); font-size: 11px; }
+  #grid { overflow-y: auto; padding: 4px 8px 8px; columns: 3 150px; column-gap: 6px; }
+  .tile { break-inside: avoid; margin-bottom: 6px; border-radius: 8px; overflow: hidden; cursor: pointer;
+    border: 2px solid transparent; background: #0f0f14; display: block; width: 100%; padding: 0; }
+  .tile:hover, .tile:focus { border-color: var(--primary, #7aa2ff); outline: none; }
+  .tile img { display: block; width: 100%; height: auto; pointer-events: none; }
+  #empty { padding: 28px 18px; color: var(--muted, #a8a8b8); text-align: center; line-height: 1.6; }
+  #empty b { color: var(--fg, #e8e8ef); }
+  footer { padding: 6px 10px; color: var(--muted, #9a9aa8); font-size: 11px; border-top: 1px solid var(--line, #34343f);
+    display: flex; justify-content: space-between; gap: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <input id="q" type="search" placeholder="Search GIFs" maxlength="100" autofocus />
+  <button id="close" title="Close (Esc)">✕</button>
+</header>
+<div id="hint">Click pins it to the desktop · Shift+click puts it on your board · drag it anywhere</div>
+<div id="grid"></div>
+<footer><span id="status">Type a word</span><span id="credit"></span></footer>
+<script>
+  const api = window.aitherGif;
+  const $ = (id) => document.getElementById(id);
+  const grid = $("grid");
+  let seq = 0;
+  let timer = null;
+
+  function status(text) { $("status").textContent = text; }
+
+  function empty(html) {
+    grid.innerHTML = "";
+    const d = document.createElement("div");
+    d.id = "empty";
+    d.innerHTML = html;
+    grid.appendChild(d);
+  }
+
+  function noKey() {
+    empty("<b>The web search did not answer.</b><br>Check the connection (or that awfind is installed), or store "
+      + "<code>TENOR_API_KEY</code> / <code>GIPHY_API_KEY</code> in the vault for direct results.<br>"
+      + "Pinning a GIF address always works: Alt+Space, <code>pin https://…gif</code>.");
+    status("0 GIF sources answered");
+  }
+
+  async function run(q) {
+    const term = String(q || "").trim();
+    const mine = ++seq;
+    if (!term) { grid.innerHTML = ""; status("Type a word"); return; }
+    status(`Searching “${term}”…`);
+    const r = await api.search(term);
+    if (mine !== seq) return;
+    if (!r || !r.ok) {
+      if (r && r.needsKey) return noKey();
+      empty(String((r && r.reason) || "the search failed").replace(/[<>&]/g, ""));
+      status("1 GIF source down");
+      return;
+    }
+    grid.innerHTML = "";
+    for (const g of r.results) {
+      const b = document.createElement("button");
+      b.className = "tile";
+      b.title = `${g.title} — click: desktop · Shift+click: board · drag: anywhere`;
+      b.draggable = true;
+      const img = document.createElement("img");
+      img.src = g.preview;
+      img.alt = g.title;
+      img.loading = "lazy";
+      img.referrerPolicy = "no-referrer";
+      if (g.width && g.height) img.style.aspectRatio = `${g.width} / ${g.height}`;
+      b.appendChild(img);
+      b.addEventListener("pointerdown", () => { void api.prefetch(g.id); });
+      b.addEventListener("dragstart", (e) => { e.preventDefault(); api.drag(g.id); });
+      b.addEventListener("click", async (e) => {
+        const verdict = e.shiftKey ? await api.toBoard(g.id) : await api.pin(g.id);
+        status(verdict && verdict.ok
+          ? (e.shiftKey ? "On your board" : "Pinned to the desktop")
+          : `1 GIF not placed — ${(verdict && verdict.reason) || "unknown error"}`);
+      });
+      grid.appendChild(b);
+    }
+    status(r.results.length ? `${r.results.length} GIFs · rated ${r.rating}` : `0 GIFs for “${term}” — try another word`);
+    $("credit").textContent = r.provider === "tenor" ? "Via Tenor" : r.provider === "giphy" ? "Powered by GIPHY"
+      : r.provider === "web" ? "From the web via GIPHY / Tenor pages · better results with a key" : "";
+  }
+
+  $("q").addEventListener("input", (e) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { void run(e.target.value); }, 280);
+  });
+  $("q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { if (timer) clearTimeout(timer); void run(e.target.value); }
+  });
+  window.addEventListener("keydown", (e) => { if (e.key === "Escape") void api.close(); });
+  $("close").addEventListener("click", () => { void api.close(); });
+  api.onQuery((q) => { $("q").value = q; void run(q); $("q").focus(); });
+
+  api.init().then((r) => {
+    if (!r || !r.ok) return;
+    if (r.keyStatus === "needs-key") { noKey(); return; }
+    // No key: the web adapter answers; a key is an optional upgrade, said once, quietly.
+    if (r.keyStatus === "web") status("Searching the web for GIFs · TENOR_API_KEY or GIPHY_API_KEY gives better results");
+    if (r.query) { $("q").value = r.query; void run(r.query); }
+  }).catch(() => {});
+</script>
+</body>
+</html>

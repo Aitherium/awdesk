@@ -54,6 +54,8 @@ const ACTIONS = Object.freeze(new Set([
   "command.list", "command.run",
   "clipboard.get", "clipboard.set",
   "file.send", "file.list", "file.get",
+  // Desktop pins + screen ink (2026-11-07): push a URL or a GIF to the desk, toggle ink.
+  "pin.add", "pin.list", "pin.close", "gif.pin", "ink.toggle",
 ]));
 
 function audienceOf(deskId) {

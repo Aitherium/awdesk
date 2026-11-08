@@ -2031,8 +2031,10 @@ function refreshNotificationBadges(cards = openDecisions) {
   // A red KEY instead of the numeral while a secret / blocked session waits.
   const key = needsYou.length > 0;
   const houseLine = deskPostureState.customer ? "" : housePosture.houseTooltipLine(latestHouse);
+  const inkNow = require("./ink-window.cjs").status();
   const tooltip = deskTenant.decorateTitle(badgeTooltip(waiting, cards.length, needsYou), deskTenant.currentTenant())
-    + (houseLine ? ` · ${houseLine}` : "");
+    + (houseLine ? ` · ${houseLine}` : "")
+    + (inkNow.active ? " · Drawing on screen (Esc to stop)" : "");
   if (tray) {
     tray.setToolTip(tooltip);
     // The macOS menu bar has room for the word itself.
@@ -2895,6 +2897,8 @@ function commandContext() {
     shellMenu: shellMenuOn,
     companion: companionMode(),
     clipboardSync: capture.clipboardSyncOn(),
+    // Screen ink's mode (ink-mode.cjs): the tray row says "Drawing" while it draws.
+    inkMode: require("./ink-window.cjs").status().mode,
     printScreenOwner: capture.printScreenOwner(),
     recording: recorder.isRecording(),
     // [audio] Windows endpoint mute flags, cached by audio-control (30 s poll +
@@ -3083,6 +3087,8 @@ function trayTemplateNow() {
   if (quickRow) { quickRow.submenu = quickMenu.submenuItems(); delete quickRow.click; }
   const boardsRow = trayTemplate.find((row) => typeof row.label === "string" && row.label.startsWith("Boards…"));
   if (boardsRow) { boardsRow.submenu = boardsWindow.traySubmenu(); delete boardsRow.click; }
+  const pinsRow = trayTemplate.find((row) => typeof row.label === "string" && row.label.startsWith("Pins…"));
+  if (pinsRow) { pinsRow.submenu = require("./pins-window.cjs").traySubmenu(); delete pinsRow.click; }
   // A dead voice listener is otherwise INVISIBLE (see voice-tray-line.cjs). It is
   // a STATUS line rather than a command, so it is spliced in after the avatar
   // group rather than declared in the registry.
@@ -3156,6 +3162,62 @@ function refreshTrayMenu() {
  * be RETURNED to a palette (which shows it) rather than dialogued at a tray
  * click, which has nowhere else to put it.
  */
+// ── desktop pins + GIFs (2026-11-07) ─────────────────────────────────────────
+// pins-window.cjs owns the windows; these three turn a command's typed argument
+// (palette, phone link, POST /commands/run from awconnect) into a pin.
+
+/** pins.add: an address, or a pin-item JSON card {kind, src, title?}. */
+function pinFromArg(arg) {
+  const text = String(arg == null ? "" : arg).trim();
+  if (!text) return { ok: false, error: "pins.add needs an address — a web page, a YouTube or GIF link, or aither://page" };
+  let input = text;
+  if (text.startsWith("{")) {
+    try { input = JSON.parse(text); } catch { return { ok: false, error: "pins.add: that JSON did not parse" }; }
+  }
+  const verdict = require("./pins-window.cjs").addPin(input);
+  return verdict.ok ? verdict : { ok: false, error: verdict.reason };
+}
+
+/** pins.tab: the Aither browser's active tab, or the tab whose id is `arg`. */
+function pinBrowserTab(arg) {
+  const tabs = (browserWindow.getState && browserWindow.getState().tabs) || [];
+  const want = String(arg == null ? "" : arg).trim();
+  const tab = (want && tabs.find((t) => String(t.id) === want)) || tabs.find((t) => t.active) || null;
+  if (!tab || !/^https?:/i.test(String(tab.url || ""))) {
+    return { ok: false, error: "0 web tabs to pin — open a page in the Aither browser first" };
+  }
+  const verdict = require("./pins-window.cjs").pinTab(tab);
+  return verdict.ok ? verdict : { ok: false, error: verdict.reason };
+}
+
+/** gif.pin: search the words, pin the top GIF (the phone's "send a GIF to my desk"). */
+async function pinTopGif(arg) {
+  const words = String(arg == null ? "" : arg).trim();
+  if (!words) return { ok: false, error: "gif.pin needs words to search" };
+  const picker = require("./gif-picker-window.cjs");
+  const found = await picker.gifSearch().search(words, { limit: 1 });
+  if (!found.ok) return { ok: false, error: found.reason, needsKey: Boolean(found.needsKey) };
+  if (!found.results.length) return { ok: false, error: `0 GIFs for "${words}"` };
+  const verdict = picker.pinGif(found.results[0].id);
+  return verdict.ok ? verdict : { ok: false, error: verdict.reason };
+}
+
+/** An app pin's click: an aither:// page in the browser, a Store app, a shortcut. */
+async function launchPinnedApp(src) {
+  const target = String(src || "");
+  if (/^aither:\/\//i.test(target)) {
+    return browserWindow.openInternalUrl(target, { askAgent: browserAskAgent }) === false
+      ? { ok: false, reason: `no page called ${target}` } : { ok: true };
+  }
+  const sw = require("./search-window.cjs");
+  if (target.startsWith("shell:AppsFolder\\")) {
+    const err = await sw.openAppsFolderEntry(target);
+    return err ? { ok: false, reason: String(err) } : { ok: true };
+  }
+  const err = await shell.openPath(target);
+  return err ? { ok: false, reason: String(err) } : { ok: true };
+}
+
 function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
   // A command can flip a fact a label reads (overlay open, ghost mode, mic on).
   // Re-render AFTER it ran rather than let the tray show the state from before
@@ -3363,6 +3425,33 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "ink.laser": return void require("./ink-window.cjs").toggleTool("laser");
     case "ink.spotlight": return void require("./ink-window.cjs").toggleTool("spotlight");
     case "ink.clear": return void require("./ink-window.cjs").clearDrawings();
+    // Ink, pins, GIFs (2026-11-07): ink-window / pins-window / gif-picker-window own
+    // the work; these return verdicts so the phone link and POST /commands/run see them.
+    case "ink.passthrough": return require("./ink-window.cjs").setPassThrough(null);
+    case "ink.board": return require("./ink-window.cjs").saveToBoard();
+    case "ink.snip": return require("./ink-window.cjs").snipWithInk();
+    case "gif.open": return require("./gif-picker-window.cjs").openGifPicker(typeof arg === "string" ? arg : "");
+    // With no words (the Ctrl+Alt+F key) gif.pin opens the picker; with no address
+    // (Ctrl+Alt+U) pins.add pins what is on the clipboard.
+    case "gif.pin": return String(arg || "").trim() ? pinTopGif(arg) : require("./gif-picker-window.cjs").openGifPicker("");
+    case "pins.add": return pinFromArg(String(arg || "").trim() ? arg : require("electron").clipboard.readText().trim().slice(0, 4096));
+    case "shortcuts.open": {
+      const text = commandRegistry.shortcutSheetText(commandContext());
+      void dialog.showMessageBox({ type: "info", title: "Keyboard shortcuts", message: "Keyboard shortcuts",
+        detail: `${text}\n\nHold Ctrl+Alt to draw on the screen; release to use your desktop.\n`
+          + "Middle-drag moves a mark or a pin (Shift resizes, Ctrl duplicates).", buttons: ["OK"] });
+      return { ok: true };
+    }
+    case "pins.tab": return pinBrowserTab(arg);
+    case "pins.open": {
+      // The tray carries the Pins submenu; from the palette this brings every pin
+      // forward, or opens the GIF picker when the desk has none yet.
+      const pinsWindow = require("./pins-window.cjs");
+      const all = pinsWindow.listPins();
+      if (!all.length) return require("./gif-picker-window.cjs").openGifPicker("");
+      // Every pin showing -> hide them all; otherwise bring every one back.
+      return pinsWindow.setAllHidden(all.every((p) => !p.hidden));
+    }
     case "missioncontrol.open":
       // The page host, plain: mission control is a page, not an OS window.
       return void browserWindow.createBrowserWindow({
@@ -3699,6 +3788,26 @@ setOverlayHost({
     browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
     pushDeskState();
     return { ok: true, url: verdict.url };
+  },
+  // window.aitherDeskVerbs from a desk-hosted Veil page (living-desktop-preload.cjs).
+  deskVerb: (verb, msg) => {
+    if (verb === "pin") {
+      const item = msg && msg.item && typeof msg.item === "object" ? msg.item : null;
+      if (!item) return { ok: false, error: "pin needs a card {kind, src, title}" };
+      // A url/youtube/gif/image card is re-derived from its address (a Veil page sends
+      // the watch URL for YouTube); app/note/widget cards go through normalizePinItem.
+      const fromUrl = ["url", "youtube", "gif", "image"].includes(item.kind)
+        ? require("./pin-item.cjs").pinItemFromUrl(String(item.src || ""), { title: item.title || "" }) : null;
+      const verdict = require("./pins-window.cjs").addPin(fromUrl || item);
+      return verdict.ok ? { ok: true, id: verdict.pin.id } : { ok: false, error: verdict.reason };
+    }
+    if (verb === "ink") { require("./ink-window.cjs").toggleDraw(); return { ok: true }; }
+    if (verb === "gif") return require("./gif-picker-window.cjs").openGifPicker(String((msg && msg.query) || ""));
+    if (verb === "canvas") {
+      if (commandRegistry.byId("canvas.open")) return runCommand("canvas.open", undefined, { surface: "online" }) || { ok: true };
+      return boardsWindow.createBoard();
+    }
+    return { ok: false, error: "unknown desk verb" };
   },
   command: (id) => {
     if (!overlayBrowserHost.allowedCommand(id)) return;
@@ -4571,6 +4680,15 @@ function phoneLinkActions() {
       const verdict = await runCommand(command.id, arg, { surface: "phone" });
       return { ok: true, id: command.id, ...(verdict && typeof verdict === "object" ? { verdict } : {}) };
     },
+    // Desktop pins + ink from a paired phone (2026-11-07): "push a URL or a GIF to
+    // the desktop". The same pairing auth as every verb here; nothing new is opened.
+    "pin.add": async ({ url, card }) => pinFromArg(card && typeof card === "object" ? JSON.stringify(card) : url),
+    "pin.list": async () => ({ ok: true, pins: require("./pins-window.cjs").listPins() }),
+    "pin.close": async ({ id }) => require("./pins-window.cjs").closePin(String(id || "")),
+    "gif.pin": async ({ query }) => pinTopGif(query),
+    "ink.toggle": async ({ through = false }) => (through
+      ? require("./ink-window.cjs").setPassThrough(null)
+      : require("./ink-window.cjs").toggleDraw()),
     "clipboard.get": async () => ({ ok: true, text: clipboard.readText().slice(0, 64 * 1024) }),
     "clipboard.set": async ({ text }) => { clipboard.writeText(String(text ?? "").slice(0, 64 * 1024)); return { ok: true }; },
     "file.send": async (a) => {
@@ -4880,7 +4998,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     deadAccels.clear();
     for (const k of Object.keys(liveAccels)) delete liveAccels[k];
     for (const { id, accel, electron: key, fallback } of commandRegistry.shortcuts(loadHotkeyOverrides())) {
-      const onPress = () => runCommand(id, undefined, { surface: "shortcut" });
+      // A desk hotkey while Ctrl+Alt is held is a CHORD, not hold-to-draw (ink-hold.cjs).
+      const onPress = () => {
+        try { require("./ink-window.cjs").noteHotkey(); } catch { /* ink not loaded */ }
+        return runCommand(id, undefined, { surface: "shortcut" });
+      };
       if (!globalShortcut.register(key, onPress)) {
         deadAccels.add(accel);
         // The default key is taken (PowerToys Run holds Alt+Space): try the fallback.
@@ -6178,6 +6300,31 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     boardsWindow.ensureIpc();
     boardsWindow.setChangeHook(() => { if (tray) refreshTrayMenu(); });
     void boardsWindow.restoreOpenBoards();
+    // ── desktop pins + GIF picker (2026-11-07) ────────────────────────────────
+    // Pins come back where they were; embedded pages open as Aither browser tabs
+    // when they try to leave their origin. The GIF filter is the strict one on a
+    // kid desk whatever the adult gate says.
+    try {
+      require("./pins-window.cjs").configurePins({
+        openInBrowser: (url) => { browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url }); return { ok: true, url }; },
+        launchApp: (src) => launchPinnedApp(src),
+        onChange: () => { if (tray) refreshTrayMenu(); },
+      });
+      const gifSearch = require("./gif-search.cjs");
+      require("./gif-picker-window.cjs").configureGifPicker({
+        gifs: gifSearch.createGifSearch({ strict: () => kidDeskMode().enabled || gifSearch.defaultStrict() }),
+      });
+      if (!kidDeskMode().enabled) require("./pins-window.cjs").restorePins();
+      // Screen ink: a mode change repaints the tray row + tooltip; hold-to-draw
+      // (Ctrl+Alt held, AWDESK_INK_HOLD to change or turn off) starts its key-state
+      // poller here and stops on quit.
+      const inkWindow = require("./ink-window.cjs");
+      inkWindow.configureInk({ onChange: () => { if (tray) { refreshTrayMenu(); refreshNotificationBadges(); } } });
+      if (!kidDeskMode().enabled) inkWindow.startHoldToDraw();
+      app.once("before-quit", () => { try { inkWindow.stopHoldToDraw(); } catch { /* gone */ } });
+    } catch (error) {
+      console.warn(`[desk] pins restore failed: ${error && error.message}`);
+    }
     void shellMenu.status().then((state) => {
       shellMenuOn = Boolean(state && state.enabled);
       if (tray) refreshTrayMenu();
