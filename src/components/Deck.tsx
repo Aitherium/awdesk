@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type CSS
 
 import { renderVrmThumbnail } from '../thumbnails';
 import { LinkedText, Markdown, SessionPanel } from './SessionPanel';
+import { CardUi } from './CardUi';
+import { drawableCardUi } from '../deck/card-ui-tree';
 import { DeckLinks, canOpenUrl, hasSessionBridge, openDeskUrl, type DeckLinkHandlers } from '../deck/session-context';
 import { endedSessionIds, sessionPill, sessionRowTitle } from '../deck/session-text';
 import { useDeckState } from '../deck/use-deck-state';
@@ -1557,8 +1559,30 @@ export function DecisionRow({
     return effect ? `${lead} — ${effect}` : lead;
   };
 
+  // The card's generated UI (A2UI v0.9 subset), only when main found it current
+  // and valid and it re-checks here; otherwise the buttons below, as always.
+  const uiTree = isCredential ? null : drawableCardUi(card);
   const answers = isCredential ? (
     <CredentialRow card={card} />
+  ) : uiTree ? (
+    <>
+      <CardUi
+        tree={uiTree}
+        shown={[card.title, card.summary, ...facts]}
+        optionKeys={card.options.map((o) => o.key)}
+        onAnswer={(key) => onAnswer(card.id, key)}
+      />
+      {consequences.length > 0 ? (
+        <ul className="deck-card-consequences">
+          {consequences.map((entry) => (
+            <li key={entry.key}>
+              <span className="deck-card-consequence-key">{`${entry.n}. ${entry.label}`}</span>
+              <span className="deck-card-consequence-text"><LinkedText text={entry.text} /></span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </>
   ) : (
     <>
       <footer className="deck-card-actions">

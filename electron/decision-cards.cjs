@@ -32,6 +32,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn, execFileSync } = require("node:child_process");
+const cardUi = require("./card-ui.cjs");
 
 /**
  * The ABSOLUTE path to the awask binary, resolved once. Spawning a bare
@@ -146,6 +147,10 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
           recommended: Boolean(o.recommended),
         }))
     : [];
+  // The card's generated UI (A2UI v0.9, awdk card_ui): drawn ONLY when its
+  // card_hash matches this card's text and it validates against the options
+  // above (card-ui.cjs). Never on a credential card; bounded to 32 KB.
+  const { ui, uiCurrent, uiTree } = cardUi.cardUi(raw, options.map((o) => o.key));
   return {
     id: raw.id,
     title: typeof raw.title === "string" ? raw.title : "Decision needed",
@@ -206,6 +211,11 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
     // rather than re-ask.
     credentialReceipt: credential && raw.credential_receipt
       && typeof raw.credential_receipt === "object" ? raw.credential_receipt : null,
+    // null/false/null on a card with no (current, valid) ui: every surface then
+    // draws the card exactly as it did before generated UI existed.
+    ui,
+    uiCurrent,
+    uiTree,
   };
 }
 
