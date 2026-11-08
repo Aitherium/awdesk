@@ -257,9 +257,19 @@ function placeBubble() {
  */
 function moveOrb(x, y) {
   if (!alive(orbWindow)) return;
+  // Every move lands on a real screen (owner 2026-11-07: the fairy flew off-screen
+  // following a window parked off the desktop, and clicking it sent it back there).
+  // This is the one choke point flights, orbits and follows all go through.
+  let pos = { x: Number(x), y: Number(y) };
+  try {
+    const { screen } = electron();
+    const centre = { x: Math.round(pos.x + ORB_SIZE.width / 2), y: Math.round(pos.y + ORB_SIZE.height / 2) };
+    const area = screen.getDisplayNearestPoint(centre).workArea;
+    pos = orbCore.clampToWorkArea(pos, ORB_SIZE, area);
+  } catch { /* no screen module (tests): keep the requested spot */ }
   orbWindow.setBounds({
-    x: Math.round(Number(x)),
-    y: Math.round(Number(y)),
+    x: Math.round(Number(pos.x)),
+    y: Math.round(Number(pos.y)),
     width: ORB_SIZE.width,
     height: ORB_SIZE.height,
   });
