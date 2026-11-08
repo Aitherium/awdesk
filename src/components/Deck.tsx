@@ -674,6 +674,27 @@ interface MarketListing {
   tags?: string[];
 }
 
+/** What desk:market-install resolves (market-client.cjs installWithConsent). */
+interface MarketInstallResult {
+  ok: boolean;
+  id: string;
+  kind?: string;
+  detail?: string;
+  cancelled?: boolean;
+  next?: string;
+}
+
+/** One matter-of-fact line for a listing's install outcome. */
+function marketInstallLabel(res: MarketInstallResult | null | undefined): string {
+  if (!res) return 'install failed — no answer from the desk';
+  if (res.ok) {
+    const next = (res.next ?? '').split('\n').find((line) => line.trim() && !line.trim().startsWith('#'));
+    return `installed${res.kind ? ` (${res.kind})` : ''}${next ? ` — next: ${next.trim().slice(0, 80)}` : ''}`;
+  }
+  if (res.cancelled) return 'not installed — cancelled';
+  return `not installed — ${reasonText(res.detail ?? 'unknown reason')}`;
+}
+
 /** Stable per-character hue so the roster reads as tiles instead of a text
  *  dump: the same name always gets the same colour, across restarts and
  *  machines (owner, 2026-09-10: "just a long list of avatars… not pleasant"). */
@@ -905,6 +926,25 @@ function ModelsMarketSection({
     runMarket('');
   }, [runMarket]);
 
+  // Install: main confirms (twice for third-party code), then runs `adk pack install`.
+  // Per-listing state so a row says what happened: installing, installed, or the reason.
+  const [installs, setInstalls] = useState<Record<string, string>>({});
+  const installListing = useCallback((id: string) => {
+    const deck = window.deskBridge as unknown as {
+      deck?: { marketInstall?: (id: string) => Promise<MarketInstallResult> };
+    } | undefined;
+    if (!deck?.deck?.marketInstall) {
+      setInstalls((s) => ({ ...s, [id]: 'install needs a newer desk' }));
+      return;
+    }
+    setInstalls((s) => ({ ...s, [id]: 'installing…' }));
+    void deck.deck.marketInstall(id).catch((err: unknown) => (
+      { ok: false, id, detail: reasonText(err) } as MarketInstallResult
+    )).then((res) => {
+      setInstalls((s) => ({ ...s, [id]: marketInstallLabel(res) }));
+    });
+  }, []);
+
   // Real previews (owner, 2026-09-10): cached thumbnail if one exists, else
   // render the character's own model offscreen ONCE and store it beside the
   // model. Serialized by thumbnails.ts; failed names stay on the monogram
@@ -1031,13 +1071,24 @@ function ModelsMarketSection({
           <span className="deck-row-label">
             {l.name ?? l.id}
             <span className="deck-card-age"> · {l.listing_type ?? 'pack'} · {price(l)}</span>
+            {installs[l.id] && <span className="deck-card-age"> · {installs[l.id]}</span>}
           </span>
+          {l.url && (
+            <button
+              className="deck-chip"
+              title={l.short_description ?? l.description ?? ''}
+              onClick={() => onAction('market-open', l.url as string)}
+            >
+              Open
+            </button>
+          )}
           <button
             className="deck-chip"
-            title={l.short_description ?? l.description ?? ''}
-            onClick={() => l.url && onAction('market-open', l.url)}
+            title={`adk pack install ${l.id}`}
+            disabled={installs[l.id] === 'installing…'}
+            onClick={() => installListing(l.id)}
           >
-            Open
+            Install
           </button>
         </div>
       ))}

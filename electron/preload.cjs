@@ -53,6 +53,9 @@ contextBridge.exposeInMainWorld("deskBridge", {
     // (market-client.cjs speaks MCP to the local gateway with the session
     // bearer; same credential story as the relay feed).
     marketBrowse: (query) => ipcRenderer.invoke("desk:market-browse", query ?? ""),
+    // Install one listing: main confirms in a native dialog, then runs
+    // `adk pack install <id>` (the same resolver every surface uses).
+    marketInstall: (id) => ipcRenderer.invoke("desk:market-install", String(id ?? "")),
     // The avatar store (W4-04): your own library and VRoid Hub search through the
     // broker; install names an id only (main looks up everything else).
     avatarLibrary: () => ipcRenderer.invoke("desk:avatar-library"),
