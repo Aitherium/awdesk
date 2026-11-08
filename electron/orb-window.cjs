@@ -52,7 +52,10 @@ const fairyAttention = require("./fairy-attention.cjs");
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
 /** The whisper: the card the fairy carries, beside it. Small on purpose. */
-const NUDGE_SIZE = Object.freeze({ width: 376, height: 188 });
+const NUDGE_SIZE = Object.freeze({ width: 420, height: 188 });
+/** The whisper grows to its content (full button labels), within these bounds. */
+const NUDGE_MIN_H = 140;
+const NUDGE_MAX_H = 560;
 const ATTENTION_TICK_MS = 15_000;
 const NUDGE_STEP_MS = 250;
 const TICK_MS = 250;
@@ -2360,6 +2363,20 @@ async function nudgeAct(action, key) {
   if (!n) return { ok: false, error: "nothing is up" };
   const card = n.decision.card;
   const what = String(action || "");
+  if (what === "size") {
+    // The page measured its card; fit the window to it and keep it on screen.
+    const h = Math.max(NUDGE_MIN_H, Math.min(NUDGE_MAX_H, Math.round(Number(key) || 0)));
+    if (!alive(nudgeWindow) || !h) return { ok: false };
+    const b = nudgeWindow.getBounds();
+    let y = b.y;
+    try {
+      const { screen } = electron();
+      const area = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y }).workArea;
+      if (y + h > area.y + area.height) y = Math.max(area.y, area.y + area.height - h);
+    } catch { /* no screen module (tests) */ }
+    nudgeWindow.setBounds({ x: b.x, y, width: NUDGE_SIZE.width, height: h });
+    return { ok: true, height: h };
+  }
   if (what === "hover") {
     n.hovered = key === true || key === "true";
     if (alive(nudgeWindow)) nudgeWindow.setIgnoreMouseEvents(!n.hovered, { forward: true });

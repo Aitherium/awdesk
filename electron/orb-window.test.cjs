@@ -979,3 +979,23 @@ test("the whisper page has Talk and Chat buttons wired to nudgeAct, and the orb 
   assert.match(html, /createOscillator\(\)/);
   assert.doesNotMatch(html, /new Audio\(|\.mp3|\.wav/, "no audio files");
 });
+
+test("the whisper grows to fit its full button labels, clamped and kept on screen", async () => {
+  startAttention();
+  orbWindow.setAttentionCards([blockedCard({
+    options: [{ key: "a", label: "I will run it under my own tenant, please relaunch it there" }, { key: "b", label: "Keep refusing" }],
+  })]);
+  await orbWindow.attentionTick();
+  await wait(1000);
+  const whisper = nudgeWin();
+  const r = await invoke("desk:nudge-act", whisper, "size", "300");
+  assert.equal(r.ok, true);
+  assert.equal(whisper.getBounds().height, 300);
+  await invoke("desk:nudge-act", whisper, "size", "5000");
+  assert.equal(whisper.getBounds().height, 560, "clamped");
+  const b = whisper.getBounds();
+  assert.ok(b.y + b.height <= 2120, "kept inside the work area");
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  assert.doesNotMatch(html, /#n-acts button \{[^}]*text-overflow: ellipsis/, "no ellipsis on a choice");
+  orbWindow.endNudge("seen", { stay: true });
+});
