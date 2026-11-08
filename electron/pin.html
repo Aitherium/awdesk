@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!--
+  pin.html -- the controls page of ONE desktop pin (pins-window.cjs).
+
+  Images (a GIF, a picture) render here as <img>; the CSP allows https images and
+  nothing else remote. A web page or a YouTube embed is NOT in this page: it is a
+  sandboxed WebContentsView under the grab strip, with no preload. An app pin is a
+  tile that launches. A note is editable text.
+
+  The strip (move by dragging it; resize from any edge) shows on hover: opacity,
+  on-top / desktop, mute, lock (click-through), open in the browser, close.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src https: data:;" />
+<title>Pin</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent;
+    font: 12px/1.3 var(--font-sans, system-ui); color: var(--fg, #e8e8ef); user-select: none; }
+  #strip { position: fixed; left: 0; right: 0; top: 0; height: 26px; z-index: 5; display: flex;
+    align-items: center; gap: 2px; padding: 0 4px; -webkit-app-region: drag;
+    background: rgba(18, 18, 24, 0.86); border-radius: 8px 8px 0 0; opacity: 0;
+    transition: opacity 120ms ease; }
+  body:hover #strip, body.web #strip, body.note #strip { opacity: 1; }
+  body.web #strip { background: rgba(18, 18, 24, 0.94); }
+  #title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    color: var(--muted, #a8a8b8); padding: 0 4px; }
+  #strip button, #strip input { -webkit-app-region: no-drag; }
+  button { font: inherit; padding: 2px 6px; border-radius: 5px; border: 1px solid transparent;
+    background: transparent; color: inherit; cursor: pointer; }
+  button:hover { background: var(--btn-hi, #2a2a35); }
+  button.on { background: var(--primary, #7aa2ff); color: var(--primary-fg, #0b0b10); }
+  input[type=range] { width: 64px; accent-color: var(--primary, #7aa2ff); }
+  #body { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  body.web #body, body.note #body, body.app #body { top: 26px; }
+  #img { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain;
+    border-radius: 8px; -webkit-user-drag: none; }
+  #tile { display: grid; place-items: center; gap: 6px; width: 100%; height: 100%; cursor: pointer;
+    border-radius: 0 0 10px 10px; background: rgba(24, 24, 32, 0.9); border: 1px solid var(--line, #34343f); }
+  #tile .glyph { font-size: 28px; }
+  #note { width: 100%; height: 100%; resize: none; border: 1px solid var(--line, #34343f);
+    border-radius: 0 0 10px 10px; background: rgba(40, 38, 22, 0.94); color: #f4f0d8; padding: 8px;
+    font: 13px/1.4 var(--font-sans, system-ui); outline: none; user-select: text; }
+  #lock { position: fixed; top: 4px; right: 4px; z-index: 6; display: none; padding: 2px 6px;
+    border-radius: 6px; background: rgba(18, 18, 24, 0.8); border: 1px solid var(--line, #34343f); }
+  body.locked #lock { display: block; }
+  body.locked #strip { display: none; }
+  #err { color: var(--muted, #a8a8b8); padding: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="strip">
+  <span id="title"></span>
+  <input id="opacity" type="range" min="15" max="100" step="5" title="Opacity" />
+  <button id="top" title="Always on top (off = desktop level)">Top</button>
+  <button id="mute" title="Mute" hidden>Mute</button>
+  <button id="lockBtn" title="Lock: clicks go through to what is under the pin">Lock</button>
+  <button id="open" title="Open in the Aither browser" hidden>Open</button>
+  <button id="hide" title="Hide (bring it back from the tray's Pins list)">Hide</button>
+  <button id="close" title="Close this pin">✕</button>
+</div>
+<button id="lock" title="Unlock this pin">Unlock</button>
+<div id="body"></div>
+<script>
+  const api = window.aitherPin;
+  const $ = (id) => document.getElementById(id);
+  let state = null;
+  let overChrome = false;
+  let noteTimer = null;
+
+  function render(next) {
+    if (!next || !next.pin) return;
+    const first = !state;
+    state = next;
+    const pin = next.pin;
+    const content = next.content || {};
+    document.body.className = "";
+    document.body.classList.add(content.mode || "none");
+    document.body.classList.toggle("locked", Boolean(pin.locked));
+    $("title").textContent = pin.title;
+    $("opacity").value = String(Math.round(pin.opacity * 100));
+    $("top").classList.toggle("on", Boolean(pin.onTop));
+    $("lockBtn").classList.toggle("on", Boolean(pin.locked));
+    $("mute").hidden = content.mode !== "web";
+    $("mute").classList.toggle("on", Boolean(pin.muted));
+    $("mute").textContent = pin.muted ? "Muted" : "Mute";
+    $("open").hidden = !["url", "youtube", "gif", "image"].includes(pin.kind);
+    if (first || content.mode !== "note") paintBody(pin, content);
+  }
+
+  function paintBody(pin, content) {
+    const body = $("body");
+    body.textContent = "";
+    if (content.mode === "image") {
+      const img = document.createElement("img");
+      img.id = "img";
+      img.alt = pin.title;
+      img.referrerPolicy = "no-referrer";
+      img.src = content.url;
+      img.onerror = () => { body.innerHTML = ""; const e = document.createElement("div"); e.id = "err";
+        e.textContent = "1 image did not load — the address may be gone"; body.appendChild(e); };
+      body.appendChild(img);
+    } else if (content.mode === "app" || content.mode === "widget") {
+      const tile = document.createElement("div");
+      tile.id = "tile";
+      const g = document.createElement("div"); g.className = "glyph"; g.textContent = content.mode === "app" ? "▣" : "◰";
+      const t = document.createElement("div"); t.textContent = pin.title;
+      tile.append(g, t);
+      if (content.mode === "app") tile.addEventListener("click", () => { void api.launch(); });
+      body.appendChild(tile);
+    } else if (content.mode === "note") {
+      const ta = document.createElement("textarea");
+      ta.id = "note";
+      ta.value = content.text || "";
+      ta.addEventListener("input", () => {
+        if (noteTimer) clearTimeout(noteTimer);
+        noteTimer = setTimeout(() => { if (ta.value.trim()) void api.set({ src: ta.value }); }, 500);
+      });
+      body.appendChild(ta);
+    } else if (content.mode !== "web") {
+      const e = document.createElement("div"); e.id = "err"; e.textContent = "This pin has nothing it can show";
+      body.appendChild(e);
+    }
+  }
+
+  $("opacity").addEventListener("input", (e) => { void api.set({ opacity: Number(e.target.value) / 100 }); });
+  $("top").addEventListener("click", () => { void api.set({ onTop: !state.pin.onTop }); });
+  $("mute").addEventListener("click", () => { void api.set({ muted: !state.pin.muted }); });
+  $("lockBtn").addEventListener("click", () => { void api.set({ locked: true }); });
+  $("lock").addEventListener("click", () => { void api.set({ locked: false }); });
+  $("open").addEventListener("click", () => { void api.openInBrowser(); });
+  $("hide").addEventListener("click", () => { void api.hide(); });
+  $("close").addEventListener("click", () => { void api.close(); });
+
+  // A locked pin is click-through; the Unlock badge still has to be clickable, so
+  // crossing onto it (forwarded mouse moves) asks main for the mouse.
+  window.addEventListener("mousemove", (e) => {
+    if (!state || !state.pin.locked) return;
+    const over = Boolean(e.target && e.target.closest && e.target.closest("#lock"));
+    if (over !== overChrome) { overChrome = over; void api.hoverChrome(over); }
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state && state.content && state.content.mode !== "note") void api.hide();
+  });
+
+  api.onState(render);
+  api.init().then(render).catch(() => {});
+</script>
+</body>
+</html>

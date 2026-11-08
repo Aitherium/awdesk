@@ -61,3 +61,66 @@ test("the mutating ink: handlers refuse a sender that is not one of our overlays
     assert.equal(after.fadeMs, before.fadeMs, `${channel} changed no fade`);
   }
 });
+
+// ── click-through, Save to board, Snip with ink (2026-11-07) ─────────────────
+
+test("the new ink: channels refuse a foreign sender too", async () => {
+  const handlers = ink.handlers();
+  const foreign = { sender: { id: "not-an-overlay" } };
+  for (const channel of ["ink:pass-through", "ink:hover-chrome", "ink:to-board", "ink:snip"]) {
+    assert.equal(handlers[channel](foreign, true), null, `${channel} answers null to a foreign sender`);
+  }
+  assert.equal(ink.__state().passThrough, false, "nothing switched click-through on");
+});
+
+test("click-through OFF while drawing is off is a no-op (no overlay is created)", () => {
+  const before = ink.__state();
+  const result = ink.setPassThrough(false);
+  assert.equal(result.active, false);
+  assert.equal(result.passThrough, false);
+  assert.deepEqual(ink.__state().windows, before.windows);
+});
+
+test("saveToBoard turns the busiest display's marks into ONE new board of editable items", () => {
+  let created = null;
+  ink.configureInk({
+    cursor: () => ({ x: 100, y: 100 }),
+    boards: { create: (kind, opts) => { created = { kind, board: opts.restored }; return { ok: true, board: opts.restored }; } },
+  });
+  ink.__setDoc(31, core.normalizeState());
+  ink.__setDoc(41, core.normalizeState());
+  ink.__setDoc(42, core.normalizeState());
+  let doc = core.pushItem(core.normalizeState(), strokeItem("p"));
+  doc = core.pushItem(doc, core.normalizeItem({ id: "r", type: "shape", tool: "rect", color: "#4ade80", width: 2,
+    a: { x: 40, y: 40 }, b: { x: 90, y: 80 } }));
+  ink.__setDoc(77, doc);
+
+  const verdict = ink.saveToBoard();
+  assert.equal(verdict.ok, true, JSON.stringify(verdict));
+  assert.equal(verdict.items, 2);
+  assert.equal(created.kind, "board");
+  assert.equal(created.board.items.length, 2);
+  assert.match(created.board.title, /^Ink /);
+  const bcore = require("./boards-core.cjs");
+  assert.equal(bcore.normalizeBoard(created.board).items.length, 2, "boards-core reads it back whole");
+  assert.equal(ink.__doc(77).items.length, 2, "the screen marks stay until Clear");
+});
+
+test("saveToBoard with no marks says so instead of opening an empty board", () => {
+  for (const id of [31, 41, 42, 77]) ink.__setDoc(id, core.normalizeState());
+  let called = false;
+  ink.configureInk({ boards: { create: () => { called = true; return { ok: true }; } } });
+  const verdict = ink.saveToBoard();
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /0 marks/);
+  assert.equal(called, false);
+});
+
+test("snipWithInk leaves draw mode and opens the region snip", async () => {
+  let asked = null;
+  ink.configureInk({ snip: { startSnip: async (opts) => { asked = opts; return { ok: true, path: "x.png" }; } } });
+  const verdict = await ink.snipWithInk();
+  assert.deepEqual(asked, { mode: "region" });
+  assert.equal(verdict.ok, true);
+  assert.equal(ink.__state().active, false);
+});

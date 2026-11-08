@@ -607,10 +607,44 @@ function list() {
   return [...entries.values()].map((entry) => ({ ...entry.board }));
 }
 
+/**
+ * Put one image on "the current board": the most recently touched whiteboard that
+ * is on screen (else any open one), shown at the cursor; a desk with no whiteboard
+ * gets a new one. The renderer adds it (it owns the item model) and saves as for a
+ * paste. Used by the GIF picker's Shift+click (2026-11-07).
+ *
+ * @param {{dataUrl: string, name?: string, width?: number, height?: number}} img
+ * @returns {{ok: true, boardId: string, created: boolean} | {ok: false, reason: string}}
+ */
+function addImageToCurrentBoard(img) {
+  if (!img || !/^data:image\//.test(String(img.dataUrl || ""))) return { ok: false, reason: "not an image" };
+  const boards = core.sortBoards([...entries.values()].map((e) => e.board))
+    .filter((b) => b.kind === "board" && b.open !== false);
+  const target = boards.find((b) => b.visible !== false) || boards[0] || null;
+  let created = false;
+  let entry = target ? entries.get(target.id) : null;
+  if (!entry) {
+    const made = createBoard();
+    if (!made || !made.ok) return { ok: false, reason: (made && made.reason) || "no board could be opened" };
+    entry = entries.get(made.board.id);
+    created = true;
+  } else if (entry.board.visible === false) {
+    show(entry.board.id);
+  }
+  if (!entry || !entry.win || entry.win.isDestroyed()) return { ok: false, reason: "the board window closed" };
+  const payload = { dataUrl: img.dataUrl, name: img.name, width: img.width, height: img.height };
+  const deliver = () => { try { entry.win.webContents.send("board:add-image", payload); } catch { /* closing */ } };
+  // A brand-new board has not booted its page yet: deliver after it loads.
+  if (created || entry.win.webContents.isLoading()) entry.win.webContents.once("did-finish-load", () => setTimeout(deliver, 150));
+  else deliver();
+  return { ok: true, boardId: entry.board.id, created };
+}
+
+  exportPng, syncBoard, list, addImageToCurrentBoard,
 module.exports = {
   ensureIpc, setEnqueue, setChangeHook, setBoardsDir, resolveDir, loadBoards, persist,
   createNote, createBoard, create, show, putAway, restoreOpenBoards, openList, traySubmenu,
-  exportPng, syncBoard, list,
+  exportPng, syncBoard, list, addImageToCurrentBoard,
   allBoards, getBoard, updateBoard, stampLink, createCanvasBoard, closeBoard, float, onBoardsChanged,
   // exposed for the probe
   __entries: entries,

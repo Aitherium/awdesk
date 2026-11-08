@@ -9,6 +9,14 @@
  *   Ctrl+Alt+L            laser pointer         (fading trail, no marks)
  *   Ctrl+Alt+S            spotlight             (dim everything but a circle at the cursor)
  *   Ctrl+Alt+C            clear every mark on every display
+ *   Ctrl+Alt+K            ink stays, clicks go THROUGH to the apps underneath
+ *                         (2026-11-07: "keep using apps under the ink"); the
+ *                         toolbar still answers -- hovering it catches the mouse
+ *
+ * Save to board turns the marks into whiteboard items (ink-core inkToBoardItems ->
+ * boards-window), so a sketch over a screen becomes an editable board. Snip with
+ * ink leaves draw mode (the marks stay on screen) and opens the snipping tool, so
+ * the region you cut carries the annotations.
  *
  * ONE transparent overlay per display, always-on-top at screen-saver level and
  * NOT content-protected -- so a recorder or a screenshot sees the ink. While
@@ -36,12 +44,14 @@ function electron() {
 }
 
 let wired = false;
-let configured = { saveImage: null, onSaved: null };
+let configured = { saveImage: null, onSaved: null, boards: null, snip: null, cursor: null };
 let active = false;
 let tool = "pen";
 let color = core.COLORS[3];
 let width = core.WIDTHS[1];
 let fadeMs = 0;
+/** Draw mode with the mouse given back to the apps underneath (Ctrl+Alt+K). */
+let passThrough = false;
 let toolbarDisplayId = null;
 /** display.id -> {win, display, boundsKey} */
 let windows = new Map();
@@ -191,6 +201,7 @@ function publicState(displayId) {
     width,
     fadeMs,
     toolbar: active && displayId === toolbarDisplayId,
+    passThrough,
     displayId,
     items: docFor(displayId).items,
   };
@@ -214,7 +225,7 @@ function applyInteraction() {
     const win = entry.win;
     if (!win || win.isDestroyed()) continue;
     try {
-      if (active) {
+      if (active && !passThrough) {
         win.setIgnoreMouseEvents(false);
         win.setFocusable(true);
       } else {
@@ -224,7 +235,7 @@ function applyInteraction() {
       }
     } catch { /* the window was closing */ }
   }
-  if (active) {
+  if (active && !passThrough) {
     const entry = entryFor(toolbarDisplayId);
     if (entry) {
       try { entry.win.showInactive(); entry.win.focus(); } catch { /* gone */ }
@@ -256,6 +267,7 @@ function enterDraw(options = {}) {
 function exitDraw() {
   if (!active && windows.size === 0) return status();
   active = false;
+  passThrough = false;
   applyInteraction();
   broadcast();
   return status();
@@ -263,6 +275,39 @@ function exitDraw() {
 
 function toggleDraw() {
   return active ? exitDraw() : enterDraw();
+}
+
+/**
+ * Ink with the mouse given back (Ctrl+Alt+K / the toolbar's "Click-through"):
+ * marks and toolbar stay, every click lands on the app underneath. Pressing it
+ * while drawing is off turns drawing on in that mode, so one key covers "annotate
+ * while I keep working". `on` forces a state; omitted, it toggles.
+ */
+function setPassThrough(on) {
+  const next = on == null ? !passThrough : Boolean(on);
+  if (!active) {
+    if (!next) return status();
+    enterDraw();
+  }
+  passThrough = next;
+  applyInteraction();
+  broadcast();
+  return status();
+}
+
+/**
+ * While click-through, the toolbar still has to be clickable: the overlay
+ * forwards mouse moves, the page reports "over my chrome", and only THAT overlay
+ * takes the mouse until the pointer leaves the toolbar again.
+ */
+function hoverChrome(displayId, over) {
+  const entry = entryFor(displayId);
+  if (!entry || !active || !passThrough) return false;
+  try {
+    if (over) entry.win.setIgnoreMouseEvents(false);
+    else entry.win.setIgnoreMouseEvents(true, { forward: true });
+  } catch { return false; }
+  return true;
 }
 
 /** Ctrl+Alt+L / Ctrl+Alt+S: the tool toggles, the overlay stays click-through when off. */
@@ -320,7 +365,7 @@ function marksOn(displayId) {
 function status() {
   let marks = 0;
   for (const id of docs.keys()) marks += marksOn(id);
-  return { active, tool, color, width, fadeMs, displays: windows.size, marks };
+  return { active, passThrough, tool, color, width, fadeMs, displays: windows.size, marks };
 }
 
 /** The last saved drawing's path (main-process callers only). */
@@ -397,6 +442,82 @@ async function saveDrawing() {
       try { if (configured.onSaved) configured.onSaved(verdict); } catch { /* speak is optional */ }
     }
     return verdict || { ok: false, reason: "the screenshot saver returned nothing" };
+  } catch (error) {
+    return { ok: false, reason: String((error && error.message) || error).slice(0, 160) };
+  }
+}
+
+/** The display whose marks a board/snip acts on: the toolbar's, else the busiest. */
+function targetDisplayId() {
+  if (toolbarDisplayId != null && marksOn(toolbarDisplayId) > 0) return toolbarDisplayId;
+  let best = null;
+  let most = 0;
+  for (const id of docs.keys()) {
+    const n = marksOn(id);
+    if (n > most) { most = n; best = id; }
+  }
+  return best;
+}
+
+function boardsApi() {
+  if (configured.boards) return configured.boards;
+  return require("./boards-window.cjs");
+}
+
+/**
+ * Save to board: the marks become a NEW whiteboard of editable items (strokes,
+ * shapes, text), opened at the cursor. The screen marks stay where they are --
+ * "Clear" is a separate, undoable choice.
+ */
+function saveToBoard() {
+  const id = targetDisplayId();
+  if (id == null) return { ok: false, reason: "0 marks to save — draw something first" };
+  const items = docFor(id).items;
+  const converted = core.inkToBoardItems(items, { pad: 24, idPrefix: `ink${Date.now().toString(36)}` });
+  if (!converted.items.length) return { ok: false, reason: "0 marks to save — draw something first" };
+  const bcore = require("./boards-core.cjs");
+  let point = { x: 0, y: 0 };
+  let workArea = { x: 0, y: 0, width: 1920, height: 1080 };
+  try {
+    if (configured.cursor) {
+      point = configured.cursor();
+    } else {
+      const { screen } = electron();
+      point = screen.getCursorScreenPoint();
+      workArea = screen.getDisplayNearestPoint(point).workArea;
+    }
+  } catch { /* a probe without a screen keeps the defaults */ }
+  const size = {
+    width: Math.min(Math.max(bcore.BOARD_SIZE.width, converted.size.width), workArea.width),
+    height: Math.min(Math.max(bcore.BOARD_SIZE.height, converted.size.height + 48), workArea.height),
+  };
+  const now = new Date();
+  const board = bcore.newBoard({
+    kind: "board", date: now, title: `Ink ${bcore.stamp(now)}`, bounds: bcore.placeAt(point, size, workArea),
+  });
+  board.items = converted.items;
+  try {
+    const verdict = boardsApi().create("board", { restored: board });
+    if (!verdict || !verdict.ok) return { ok: false, reason: (verdict && verdict.reason) || "the board did not open" };
+    return { ok: true, boardId: board.id, items: converted.items.length };
+  } catch (error) {
+    return { ok: false, reason: String((error && error.message) || error).slice(0, 160) };
+  }
+}
+
+/**
+ * Snip with ink: leave draw mode (marks stay visible, overlays go click-through so
+ * the snip overlay gets the mouse) and open the region snip. The snip grabs the
+ * composited screen, so the cut carries the annotations.
+ */
+async function snipWithInk() {
+  exitDraw();
+  const snip = configured.snip || require("./snip-window.cjs");
+  // Let the toolbar repaint away before the snip freezes the frame.
+  await new Promise((resolve) => { const t = setTimeout(resolve, 120); if (t.unref) t.unref(); });
+  try {
+    const verdict = await snip.startSnip({ mode: "region" });
+    return verdict || { ok: true };
   } catch (error) {
     return { ok: false, reason: String((error && error.message) || error).slice(0, 160) };
   }
@@ -488,6 +609,23 @@ function handlers() {
       if (!senderEntry(event)) return null;
       return setFade(nextFade);
     },
+    "ink:pass-through": (event, on) => {
+      if (!senderEntry(event)) return null;
+      return setPassThrough(on == null ? null : Boolean(on));
+    },
+    "ink:hover-chrome": (event, over) => {
+      const found = senderEntry(event);
+      if (!found) return null;
+      return hoverChrome(found.id, Boolean(over));
+    },
+    "ink:to-board": (event) => {
+      if (!senderEntry(event)) return null;
+      return saveToBoard();
+    },
+    "ink:snip": (event) => {
+      if (!senderEntry(event)) return null;
+      return snipWithInk();
+    },
   };
 }
 
@@ -501,6 +639,7 @@ function ensureInkIpc() {
 
 function closeInk() {
   active = false;
+  passThrough = false;
   for (const [, entry] of windows) {
     try { if (!entry.win.isDestroyed()) entry.win.destroy(); } catch { /* gone */ }
   }
@@ -510,7 +649,7 @@ function closeInk() {
 /** Test/probe seam: read the live state without touching Electron windows. */
 function __state() {
   return {
-    active, tool, color, width, fadeMs, toolbarDisplayId,
+    active, passThrough, tool, color, width, fadeMs, toolbarDisplayId,
     windows: [...windows.keys()],
     docs: [...docs.entries()].map(([id, doc]) => ({
       id, items: doc.items.length, undo: doc.undo.length, redo: doc.redo.length,
@@ -521,6 +660,7 @@ function __state() {
 module.exports = {
   configureInk, ensureInkIpc, enterDraw, exitDraw, toggleDraw, toggleTool,
   setTool, setColor, setWidth, setFade, clearDrawings, saveDrawing, status,
+  setPassThrough, saveToBoard, snipWithInk,
   closeInk, handlers, lastDrawingPath: () => lastDrawingPath, __state,
   __setDoc: setDoc, __doc: (displayId) => docs.get(displayId) || null,
 };

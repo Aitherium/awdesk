@@ -9,6 +9,12 @@
 - Canvas (aither://canvas, under Today on the rail): your whiteboards as a pannable, zoomable board with a snap grid. It is the same board the floating whiteboard window draws on (Float opens it there). Pin live pages and Aither pages, YouTube (privacy embed), GIFs, images, sticky notes and widgets: clock, Inbox count, awsh sessions, inference, system. Cards move, resize, lock and remove, by mouse or keyboard. Right-click a tab → Pin to canvas.
 - Link a board to an AitherOne canvas: "Link to AitherOne" creates the doc, and "Sync" sends or fetches whichever side changed. If both sides changed, it asks which to keep and writes nothing until you choose. AitherOne items the desk cannot show are kept, not dropped. Unlinked boards stay local and work offline.
 - Every new gesture is also a palette command (layout.*, rail.*, canvas.*).
+- Drawing over the screen is smoother: strokes are one tapered, curve-traced shape (pen pressure where the pen reports it, speed for a mouse) built from every pointer sample, not one straight segment per frame.
+- Ink toolbar: Click-through (Ctrl+Alt+K) keeps your marks on screen while clicks reach the apps underneath; To board turns the marks into an editable whiteboard; Snip cuts a region with the ink in it.
+- Desktop pins: pin a GIF, an image, a YouTube video, a web page, the browser tab you are on, an app tile or a note to the desktop. Each pin moves, resizes, fades (opacity), locks (click-through), stays on top or sits at desktop level, mutes and closes, and comes back after a restart. The tray's Pins menu lists them.
+- GIF picker (Ctrl+Alt+I): search Tenor or Giphy, click to pin to the desktop, Shift+click to put it on your whiteboard, or drag it into any app. Results are always rated (G, or PG-13 when adult content is allowed). It needs a TENOR_API_KEY or GIPHY_API_KEY in the vault and says so when there is none.
+- Alt+Space verbs: `draw` (and `draw through|board|snip|clear`), `gif <words>` (Enter pins the top GIF), `pin <address | this tab | app name>`, `youtube <link or words>`, `board`, `canvas`, `pins`.
+- From your phone or the awconnect extension: send a link or a GIF to the desk as a pin, or toggle ink (`pins.add`, `gif.pin`, `ink.toggle`; awconnect's right-click menu has Pin to desktop).
 
 ## 0.1.28 - 2026-11-01
 
