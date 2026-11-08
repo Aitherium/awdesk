@@ -5322,6 +5322,20 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // sessions see the order and not just its effect.
     ipcMain.handle("desk:deck-session", (_event, cardId) => deckSession(cardId));
     ipcMain.handle("desk:deck-session-act", (_event, payload) => deckSessionAct(payload));
+    ipcMain.handle("desk:deck-open-file", (_event, cardId, file) => {
+      const ctx = deckSession(cardId);
+      const wanted = String(file || "");
+      if (!ctx || !ctx.ok || !Array.isArray(ctx.files) || !ctx.files.includes(wanted)) {
+        return { ok: false, error: "not a file this session edited" };
+      }
+      try {
+        if (!fs.existsSync(wanted)) return { ok: false, error: "that file is gone" };
+        shell.showItemInFolder(wanted);
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+    });
     // A link in a card (a PR, a URL in a session's answer): http(s) only, through
     // the browser policy, into an Aither Browser window -- never shell.openExternal.
     ipcMain.handle("desk:deck-open-url", (_event, url) => {

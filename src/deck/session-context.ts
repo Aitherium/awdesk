@@ -62,6 +62,7 @@ interface SessionBridge {
   session?: (cardId: string) => Promise<unknown>;
   sessionAct?: (cardId: string, action: SessionAction, text?: string) => Promise<unknown>;
   openUrl?: (url: string) => Promise<unknown>;
+  openFile?: (cardId: string, file: string) => Promise<unknown>;
 }
 
 function bridge(): SessionBridge | null {
@@ -202,6 +203,23 @@ export async function runSessionAct(cardId: string, action: SessionAction, body?
     };
   } catch {
     return { ok: false, note: 'The desk did not answer.' };
+  }
+}
+
+/** This main can reveal a session's edited file in Explorer. */
+export function canOpenFile(): boolean {
+  return typeof bridge()?.openFile === 'function';
+}
+
+/** Reveal one of the card's session files. Main re-checks it is in the session's list. */
+export async function openSessionFile(cardId: string, file: string): Promise<boolean> {
+  const deck = bridge();
+  if (typeof deck?.openFile !== 'function') return false;
+  try {
+    const result = (await deck.openFile(cardId, file)) as { ok?: boolean } | null;
+    return Boolean(result && result.ok);
+  } catch {
+    return false;
   }
 }
 
