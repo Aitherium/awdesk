@@ -70,15 +70,9 @@ let hides = 0;
 
 app.whenReady().then(async () => {
   const needs = context.needsYouGroup(EIGHT);
-  // A search-style group carries only `items` (no `shown`) -- the shape that
-  // used to blank the whole list. It must render too.
-  const now = {
-    status: "",
-    group: {
-      id: "apps", label: "Apps", total: 1,
-      items: [{ key: "app:notepad", kind: "app", title: "Notepad", subtitle: "notes.txt", score: 0.5 }],
-    },
-  };
+  // The "Right now" group has no `shown` -- it is the shape that used to blank
+  // the whole list. It must render too.
+  const now = context.rightNowGroup({ ok: true, app: "Notepad", title: "notes.txt" }, () => true);
   const payload = {
     token: 1,
     ignored: false,
@@ -125,7 +119,7 @@ app.whenReady().then(async () => {
   expect("both groups are labelled", shape && shape.labels.length === 2, shape && shape.labels);
   expect("the label carries the real count", Boolean(shape && /Needs you/i.test(shape.labels[0]) && /8/.test(shape.labels[0])), shape && shape.labels[0]);
   expect("a real '+3 more' row is offered", Boolean(shape && shape.more && /^\+3 more/.test(shape.more)), shape && shape.more);
-  expect("a group with no `shown` still renders (the crash)", Boolean(shape && shape.labels.some((l) => /Apps/.test(l))), shape && shape.labels);
+  expect("a group with no `shown` still renders (the crash)", Boolean(shape && shape.labels.some((l) => /Right now/.test(l))), shape && shape.labels);
 
   // 2 -- expanding a card never moves the row you clicked or anything above it.
   // (Rows BELOW move down: that is the document, not a jump.)  Collapsing must

@@ -31,6 +31,13 @@ const PROBE_TIMEOUT_MS = 2500;
 const PROBE_STARTUP_MS = 12000;
 const PROBE_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
+  // Node reads this child's stdout as UTF-8 (setEncoding below) and PowerShell writes
+  // a pipe in the OEM code page unless told otherwise -- so a window title holding
+  // an emoji or an accented name arrived as "?" (owner 2026-11-06: the spirit read
+  // "attached to ? 0.tar.gz" for a Windows Terminal tab titled "◐ ..."). Set
+  // BEFORE the first byte is written.
+  "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+  "$OutputEncoding = [System.Text.Encoding]::UTF8",
   "Add-Type -TypeDefinition @'",
   "using System;",
   "using System.Runtime.InteropServices;",

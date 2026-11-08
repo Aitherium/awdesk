@@ -433,7 +433,12 @@ function appsProvider({ dirs = () => startMenuDirs(), fsImpl = fs, now = () => D
         if (named.has(p.name.toLowerCase())) continue;
         rows.push({ title: p.name, subtitle: "App", kind: "app", target: `${APPS_FOLDER_PREFIX}${p.appId}` });
       }
-      return rows;
+      // Default exclusions (owner 2026-11-06: games and adult titles showed in the
+      // launcher). Read per search so an edit to ~/.aither/search-exclusions.json
+      // applies on the next keystroke, no restart. Safe defaults if the file is bad.
+      // `!private` + Windows Hello / Touch ID opens a 5-minute reveal (private-reveal.cjs).
+      if (require("./private-reveal.cjs").sharedReveal().active()) return rows;
+      return require("./search-exclusions.cjs").applyExclusions(rows, require("./search-exclusions.cjs").loadRules()).rows;
     },
   };
 }

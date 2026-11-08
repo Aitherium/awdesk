@@ -150,3 +150,12 @@ test("the FIRST request may spend seconds on Add-Type; later ones keep the short
   assert.equal(await p.ping(), false, "a wedged warmed probe still times out");
   p.stop();
 });
+
+test("the probe asks PowerShell for UTF-8 before writing anything", () => {
+  // Owner 2026-11-06: the spirit read "attached to ? 0.tar.gz" for a tab titled
+  // "◐ ...": PowerShell wrote the OEM code page and Node decoded UTF-8.
+  const { PROBE_SCRIPT } = require("./spirit-probe.cjs");
+  const encoding = PROBE_SCRIPT.indexOf("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8");
+  assert.ok(encoding >= 0, "the probe must set UTF-8 output");
+  assert.ok(encoding < PROBE_SCRIPT.indexOf("Add-Type"), "and set it before any output can happen");
+});
