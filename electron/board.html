@@ -55,6 +55,7 @@
   /* Pinned cards (pin-cards.js, the renderer aither://canvas uses): over the drawing,
      in the same board coordinates. A page card's body is a live view main lays on top. */
   #pins { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 3; }
+  #pinsPlane { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
   #pins .card { position: absolute; pointer-events: auto; display: flex; flex-direction: column; border: 1px solid var(--edge);
     border-radius: 10px; background: #1b2028; color: var(--ink); box-shadow: 0 6px 20px rgba(0,0,0,.35); outline: none; }
   #pins .card.sel, #pins .card:focus-visible { border-color: var(--accent); }
@@ -103,7 +104,7 @@
   </div>
   <div id="stage">
     <canvas id="canvas"></canvas>
-    <div id="pins" aria-label="Pinned cards"></div>
+    <div id="pins" aria-label="Pinned cards"><div id="pinsPlane"></div></div>
     <textarea id="editor" spellcheck="false"></textarea>
     <div id="toast" role="status"></div>
   </div>
@@ -147,9 +148,15 @@
   const newId = () => `i-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
   const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
   function canvasSize() { return { width: Math.max(1, canvas.clientWidth), height: Math.max(1, canvas.clientHeight) }; }
+  /**
+   * The board's pan (middle-drag on empty space, the owner's rule): content point =
+   * screen point - pan. Not persisted -- the window opens at the board's origin; the
+   * canvas page keeps its own view.
+   */
+  let pan = { x: 0, y: 0 };
   function pos(event) {
     const r = canvas.getBoundingClientRect();
-    return { x: clamp(event.clientX - r.left, 0, r.width), y: clamp(event.clientY - r.top, 0, r.height) };
+    return { x: clamp(event.clientX - r.left, 0, r.width) - pan.x, y: clamp(event.clientY - r.top, 0, r.height) - pan.y };
   }
   function normRect(a, b) {
     return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
@@ -254,8 +261,12 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = "#fdfdfb";
     ctx.fillRect(0, 0, size.width, size.height);
+    ctx.setTransform(dpr, 0, 0, dpr, pan.x * dpr, pan.y * dpr);
     for (const item of board.items) drawItem(item);
     if (drawing && drawing.kind === "shape") drawItem(drawing.item);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const plane = document.getElementById("pinsPlane");
+    if (plane) plane.style.transform = `translate(${pan.x}px, ${pan.y}px)`;
   }
   function renderExport() {
     return canvas.toDataURL("image/png"); // the on-screen canvas already paints white
@@ -290,8 +301,8 @@
     editing = { item, original: isNew ? null : JSON.parse(JSON.stringify(item)) };
     const r = canvas.getBoundingClientRect();
     editor.style.display = "block";
-    editor.style.left = `${item.x}px`;
-    editor.style.top = `${item.y}px`;
+    editor.style.left = `${item.x + pan.x}px`;
+    editor.style.top = `${item.y + pan.y}px`;
     editor.style.width = `${Math.max(140, item.w)}px`;
     editor.style.height = `${Math.max(item.type === "note" ? 90 : 38, item.h)}px`;
     editor.value = item.text || "";
@@ -392,15 +403,24 @@
   canvas.addEventListener("pointercancel", endPointer);
 
   // ── the owner's middle-button rule on ink (middle-drag.js) ────────────────────
-  // middle-drag moves an item, Shift resizes it, Ctrl duplicates it. This window has
-  // no pan (its canvas IS the board's extent), so middle on empty space does nothing.
+  // middle-drag moves an item, Shift resizes it, Ctrl duplicates it; middle-drag on
+  // empty space pans the board (drawing and cards together).
   window.AitherMiddleDrag.suppressAutoscroll(canvas);
   canvas.addEventListener("pointerdown", (event) => {
     if (board.kind !== "board" || event.button !== 1) return;
     const p = pos(event);
     const found = topItem(p);
     const gesture = window.AitherMiddleDrag.classify(event, Boolean(found));
-    if (!gesture || gesture === "pan") return;
+    if (!gesture) return;
+    if (gesture === "pan") {
+      const from = { ...pan };
+      canvas.style.cursor = "grabbing";
+      window.AitherMiddleDrag.track(event, canvas, {
+        onMove: ({ dx, dy }) => { pan = { x: Math.round(from.x + dx), y: Math.round(from.y + dy) }; redraw(); reportPinViews(); },
+        onEnd: () => { canvas.style.cursor = ""; },
+      });
+      return;
+    }
     if (editing) commitEditor();
     let item = found;
     if (gesture === "duplicate") {
@@ -451,7 +471,7 @@
   function renderPins() {
     for (const t of pinTimers.values()) clearInterval(t);
     pinTimers.clear();
-    const layer = $("pins");
+    const layer = $("pinsPlane");
     layer.textContent = "";
     for (const pin of pinState.pins) layer.append(pinCards.renderCard(pin));
     reportPinViews();
