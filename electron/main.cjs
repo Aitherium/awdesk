@@ -155,6 +155,7 @@ if (kidDesk.allowCdpPort(kidDeskMode()) && /^\d{2,5}$/.test(String(process.env.D
 }
 const decisionCards = require("./decision-cards.cjs");
 const sessionContext = require("./session-context.cjs");
+const tuiAnswer = require("./tui-answer.cjs");
 const signedApproval = require("./signed-approval.cjs");
 const {
   fetchChannels: fetchRelayChannels,
@@ -2366,7 +2367,8 @@ async function answerCardByVoice(card) {
   const reply = matchReply(card, res.answer);
   if (reply.kind === "answer") {
     // The ONE desk answer path: a destructive card still goes to the signed window.
-    const verdict = answerDeckCard(card.id, reply.key, null, "answered by voice");
+    let verdict = await answerDeckCard(card.id, reply.key, null, "answered by voice");
+    if (verdict && typeof verdict === "object" && verdict.ok === false) verdict = false;
     const pending = Boolean(verdict && typeof verdict === "object" && verdict.pending);
     const line = pending ? "Finish it in the approval window." : verdict ? `Answered: ${reply.label}.` : "I could not record that answer.";
     void speakAloud(line, undefined, undefined, "slot0", "service:awdesk-voice");
@@ -3776,6 +3778,15 @@ function deckState() {
   };
 }
 
+/** The terminal tab name of a card's session (deckSessionAct's lookup), "" when unknown. */
+function cardSessionName(card) {
+  if (!card || !card.sessionId) return "";
+  const live = liveSessionMap({ fresh: true }).get(card.sessionId) || null;
+  if (live && live.name) return live.name;
+  const ctx = sessionContext.readContext(card.sessionId, card.cwd, { live, repo: "" });
+  return (ctx && ctx.ok && ctx.name) || "";
+}
+
 /**
  * Answer an open card from a desk surface -- the ONE answer path. The deck, the
  * console Inbox (desk:deck-answer) and the browser side panel's Agents tab
@@ -3784,6 +3795,26 @@ function deckState() {
  * `parent` is the window the approval dialog belongs to.
  */
 function answerDeckCard(id, choice, parent, note = "") {
+  // A Claude Code terminal ask (awask keys its options `tui:<n>`): recording the
+  // answer alone leaves the terminal blocked, so type the number into the
+  // session's tab -- only once that tab is confirmed in front (tui-answer.cjs).
+  // Resolves true, or {ok:false, flash} when it could not (nothing recorded).
+  const tuiCard = openCardById(id);
+  if (tuiCard && tuiAnswer.tuiAction(tuiCard, choice)) {
+    return tuiAnswer.answerInTerminal(tuiCard, choice, {
+      sessionName: cardSessionName,
+      type: (name, keys) => tuiAnswer.typeIntoSession(name, keys),
+      record: (cardId, key, why) => decisionCards.answerCard(cardId, key, note || why),
+    }).then((r) => {
+      if (!r.ok) {
+        debugLog(`[tui-answer] ${id} ${choice}: ${r.error}`);
+        return { ok: false, flash: r.flash, error: r.error };
+      }
+      void postToRelay(RELAY_CHANNEL, `answered ${id}: ${choice} (typed into the terminal via desk)`)
+        .then(() => void refreshRelayFeed());
+      return true;
+    });
+  }
   // A destructive card (awstorage proposal/plan) is approved only by a SIGNED
   // answer, which needs a fresh passkey session: open Veil's /approve page
   // (Windows Hello) instead of the unsigned `awask answer`. The route is
@@ -3978,9 +4009,10 @@ browserWindow.setAgentsHost(agentsPanel.createAgentsSource({
   getRoomStatus: () => (roomPublisher ? (roomPublisher.lastError || "ok") : "not started"),
   // Wrapped by createAgentsSource: an answered id stays unanswerable until the
   // decision watcher drops the card (awask's success is "spawned", not "took it").
-  answer: (id, choice, parent) => {
-    const result = answerDeckCard(id, choice, parent);
+  answer: async (id, choice, parent) => {
+    const result = await answerDeckCard(id, choice, parent);
     if (result && typeof result === "object" && result.pending) return { ok: true, pending: true, via: result.via };
+    if (result && typeof result === "object" && result.ok === false) return { ok: false, error: result.flash || result.error };
     return result ? { ok: true } : { ok: false, error: "awask did not take the answer" };
   },
 }));
