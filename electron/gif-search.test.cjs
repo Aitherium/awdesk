@@ -69,9 +69,9 @@ test("giphy answers when only it has a key; PG-13 when the gate is open -- never
   }
 });
 
-test("no key anywhere = the needsKey state, and no request is made", async () => {
+test("no key and no web adapter = the needsKey state, and no request is made", async () => {
   const seen = [];
-  const s = gif.createGifSearch({ getSecret: async () => null, fetchImpl: fetchStub(TENOR, { seen }) });
+  const s = gif.createGifSearch({ getSecret: async () => null, fetchImpl: fetchStub(TENOR, { seen }), web: null });
   const r = await s.search("cat");
   assert.equal(r.ok, false);
   assert.equal(r.needsKey, true);
@@ -103,7 +103,8 @@ test("a refused key, a timeout and a network error never put the key (or the URL
 test("the key is read once and cached; a missing key is retried after its short TTL", async () => {
   let reads = 0;
   let t = 0;
-  const s = gif.createGifSearch({ getSecret: async () => { reads += 1; return null; }, now: () => t, fetchImpl: fetchStub(TENOR) });
+  const s = gif.createGifSearch({ getSecret: async () => { reads += 1; return null; }, now: () => t, fetchImpl: fetchStub(TENOR),
+    web: { search: async () => ({ ok: true, results: [] }) } });
   await s.search("a");
   const first = reads;
   await s.search("b");

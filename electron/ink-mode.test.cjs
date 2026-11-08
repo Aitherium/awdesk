@@ -106,19 +106,18 @@ test("middle-gesture: dragBounds and clampToAreas", () => {
   assert.deepEqual(g.clampToAreas({ x: 100, y: 100, width: 300, height: 200 }, area), { x: 100, y: 100, width: 300, height: 200 });
 });
 
-test("board.html carries the SAME middle-gesture rules (inlined: its CSP loads no script files)", () => {
-  const html = require("node:fs").readFileSync(require("node:path").join(__dirname, "board.html"), "utf8");
-  const fn = /function middleGestureFor\(item, event\) \{([\s\S]*?)\n {2}\}/.exec(html);
-  assert.ok(fn, "board.html has middleGestureFor");
-  const body = fn[1];
-  // Ctrl/Cmd is tested before locked and before Shift: Ctrl beats Shift, locked can duplicate.
-  assert.ok(body.indexOf("ctrlKey || event.metaKey") < body.indexOf("item.locked"));
-  assert.ok(body.indexOf("item.locked") < body.indexOf("shiftKey"));
-  // And it agrees with middle-gesture.cjs on every combination.
-  const pageRule = new Function("item", "event", body);
-  const toPage = (r) => (r === "blocked" ? "blocked" : r);
-  for (const locked of [false, true]) for (const shift of [false, true]) for (const ctrl of [false, true]) {
-    const want = g.middleGesture({ hit: { id: "x", locked }, shift, ctrl, surface: "board" });
-    assert.equal(pageRule({ locked }, { shiftKey: shift, ctrlKey: ctrl, metaKey: false }), toPage(want), JSON.stringify({ locked, shift, ctrl }));
+test("middle-gesture.cjs (main) agrees with the shared page rule middle-drag.js on every combination", () => {
+  const sandbox = { window: {} };
+  require("node:vm").runInNewContext(require("node:fs").readFileSync(require("node:path").join(__dirname, "middle-drag.js"), "utf8"), sandbox);
+  const page = sandbox.window.AitherMiddleDrag;
+  for (const onItem of [false, true]) for (const shift of [false, true]) for (const ctrl of [false, true]) for (const meta of [false, true]) {
+    const ev = { button: 1, shiftKey: shift, ctrlKey: ctrl, metaKey: meta };
+    const want = g.middleGesture({ hit: onItem ? { id: "x" } : null, shift, ctrl, meta, surface: "board" });
+    assert.equal(page.classify(ev, onItem), want, JSON.stringify({ onItem, shift, ctrl, meta }));
+  }
+  assert.equal(page.classify({ button: 0 }, true), null, "only the middle button");
+  // ink.html and pin.html load the shared page rule.
+  for (const html of ["ink.html", "pin.html"]) {
+    assert.match(require("node:fs").readFileSync(require("node:path").join(__dirname, html), "utf8"), /<script src="middle-drag\.js"><\/script>/, html);
   }
 });

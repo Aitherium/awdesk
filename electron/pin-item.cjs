@@ -95,29 +95,6 @@ function isGifUrl(u) {
   return /\.gif$/i.test(u.pathname) || GIF_HOSTS.test(u.hostname) || /^media\d*\.(tenor|giphy)\.com$/i.test(u.hostname);
 }
 
-/**
- * ForgeIDE (aitherone-canvas SYNC.md "ForgeIDE", 2026-11-07): an `app` pin may also
- * be the ForgeIDE, by EXACT origin -- https://forge.aitherium.com, or the origin in
- * AWDESK_FORGEIDE_URL (https, or http://localhost for dev) -- on its framable paths
- * /ide, /graph, /login and their sub-paths. "Open in ForgeIDE" links add
- * ?path=<node>&kind=file|folder&from=aitherone; any ".." is refused.
- */
-const FORGEIDE_DEFAULT = "https://forge.aitherium.com";
-function forgeOrigin(env = (typeof process !== "undefined" && process.env) || {}) {
-  const raw = String(env.AWDESK_FORGEIDE_URL || FORGEIDE_DEFAULT);
-  const u = parse(raw);
-  if (!u) return FORGEIDE_DEFAULT;
-  const ok = u.protocol === "https:" || (u.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/.test(u.hostname));
-  return ok ? u.origin : FORGEIDE_DEFAULT;
-}
-function isForgeIde(u, env) {
-  if (!u || u.origin !== forgeOrigin(env)) return false;
-  if (!/^\/(ide|graph|login)(\/|$)/.test(u.pathname)) return false;
-  let decoded;
-  try { decoded = decodeURIComponent(u.pathname + u.search); } catch { return false; }
-  return !decoded.includes("..");
-}
-
 /** Is `src` acceptable for `kind`? Returns the cleaned src or null. */
 function srcFor(kind, src) {
   if (kind === "widget") return "";
@@ -127,10 +104,7 @@ function srcFor(kind, src) {
   if (s.length > LIMITS.url) return null;
   const u = parse(s);
   if (!u) return null;
-  if (kind === "app") {
-    if (u.protocol === "aither:") return !/^aither:\/\/canvas(\/|$)/i.test(s) ? s : null;
-    return isForgeIde(u) ? u.toString() : null;
-  }
+  if (kind === "app") return u.protocol === "aither:" && !/^aither:\/\/canvas(\/|$)/i.test(s) ? s : null;
   if (!/^https?:$/.test(u.protocol) || !u.hostname) return null;
   if (kind === "youtube") return s.startsWith(YT_EMBED) && youtubeId(s) ? s : null;
   return s;
@@ -178,7 +152,6 @@ function kindOfUrl(url) {
   const u = parse(s);
   if (!u) return null;
   if (u.protocol === "aither:") return srcFor("app", s) ? "app" : null;
-  if (isForgeIde(u)) return "app";
   if (!/^https?:$/.test(u.protocol) || !u.hostname) return null;
   if (youtubeId(s)) return "youtube";
   if (isGifUrl(u)) return "gif";
@@ -312,7 +285,6 @@ module.exports = {
   youtubeId,
   youtubeEmbed,
   kindOfUrl,
-  isForgeIde: (url, env) => isForgeIde(parse(url), env),
   normalizePinItem,
   pinItemFromUrl,
   newPinId,

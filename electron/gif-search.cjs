@@ -38,6 +38,7 @@ const NO_KEY_TTL_MS = 60_000;
 const TIMEOUT_MS = 8_000;
 const MEDIA_HOST = /^(media\d*\.tenor\.com|c\.tenor\.com|media\d*\.giphy\.com|i\.giphy\.com)$/i;
 const ADD_KEY = "add a GIF key — store TENOR_API_KEY (or GIPHY_API_KEY) in the vault, then search again";
+const KEY_NOTE = "Searching the web for GIFs. Better results with a key: TENOR_API_KEY or GIPHY_API_KEY in the vault.";
 
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/g;
@@ -156,6 +157,165 @@ function defaultStrict() {
   }
 }
 
+// ── keyless: the web adapter (2026-11-07) ────────────────────────────────────
+//
+// No Tenor or Giphy key exists in the vault, so with no key the picker searches
+// through the desk's OWN web search (search-client.cjs `awfind q`, the same path the
+// launcher's Web group and the spirit's web trip use -- DuckDuckGo behind awfind) and
+// maps result pages to media with no key:
+//
+//   giphy.com/gifs/<slug>-<ID>     -> media.giphy.com/media/<ID>/giphy.gif (+ 200w.gif preview)
+//   giphy.com/explore|search/...   -> the page's own gif links and media ids, read once
+//   tenor.com/view/...             -> the page's og:image, only when it is a .gif on
+//                                     Tenor's media host (no keyless direct mapping)
+//
+// awfind's provider ignores `site:`, so the query is "giphy <words> gifs"; when the
+// web answers with no Giphy page, giphy.com/search/<words> is read directly. Only
+// giphy.com / tenor.com pages are ever fetched (https, 8 s, 2 MB). Results carry no
+// rating, so with the adult gate CLOSED only GIFs whose slug names them are kept and
+// a word filter drops anything suggestive. Deduped, at most 24.
+
+const WEB_LIMIT = 24;
+const GIPHY_PAGE = /^https:\/\/(?:www\.)?giphy\.com\/(?:gifs|stickers)\/(?:([A-Za-z0-9-]*?)-)?([A-Za-z0-9]{6,40})\/?(?:[?#].*)?$/;
+const GIPHY_LIST = /^https:\/\/(?:www\.)?giphy\.com\/(?:explore|search)\/[^?#]+/;
+const TENOR_VIEW = /^https:\/\/(?:www\.)?tenor\.com\/(?:[a-z]{2}(?:-[A-Z]{2})?\/)?view\/[A-Za-z0-9-]+/;
+const FETCH_HOSTS = /^(?:www\.)?(?:giphy\.com|tenor\.com)$/i;
+// Strict mode's word filter (on the slug/title a GIF page gives it).
+const UNSAFE = /\b(nsfw|sexy|sex|sexual|nude|nudes|naked|porn|xxx|boobs?|butt|booty|twerk(ing)?|thong|lingerie|hentai|horny|thirsty|stripper|drunk|weed|stoned|gore|bloody|blood|kill(ing)?|gun|shoot(ing)?|fuck|shit|bitch|damn|wtf)\b/i;
+
+function slugTitle(slug) {
+  const t = String(slug || "").replace(/-/g, " ").trim();
+  return t ? t.charAt(0).toUpperCase() + t.slice(1) : "GIF";
+}
+
+/** {id, slug} for a giphy.com/gifs|stickers page, else null. */
+function giphyFromPage(url) {
+  const m = GIPHY_PAGE.exec(String(url || ""));
+  return m ? { id: m[2], slug: m[1] || "" } : null;
+}
+
+function giphyResult(id, slug) {
+  return {
+    id: `web:giphy:${id}`, provider: "web", title: slugTitle(slug).slice(0, 120),
+    url: `https://media.giphy.com/media/${id}/giphy.gif`,
+    preview: `https://media.giphy.com/media/${id}/200w.gif`,
+    width: 0, height: 0, slug: String(slug || ""),
+  };
+}
+
+/** Every GIF a Giphy list page (explore/search) names: its gif links first, then bare media ids. */
+function parseGiphyHtml(html) {
+  const text = String(html || "");
+  const out = [];
+  const seen = new Set();
+  for (const m of text.matchAll(/giphy\.com\/(?:gifs|stickers)\/([A-Za-z0-9-]*?)-([A-Za-z0-9]{6,40})(?=["'\\/?\s<])/g)) {
+    if (seen.has(m[2])) continue;
+    seen.add(m[2]);
+    out.push(giphyResult(m[2], m[1]));
+  }
+  for (const m of text.matchAll(/media\d*\.giphy\.com\/media\/(?:v1\.[A-Za-z0-9_.=-]+\/)?([A-Za-z0-9]{6,40})\//g)) {
+    if (seen.has(m[1])) continue;
+    seen.add(m[1]);
+    out.push(giphyResult(m[1], ""));
+  }
+  return out;
+}
+
+/** A Tenor page's og:image, when it is a .gif on Tenor's media host; else null. */
+function tenorOgGif(html, pageUrl = "") {
+  const m = /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i.exec(String(html || ""))
+    || /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i.exec(String(html || ""));
+  const url = m ? mediaUrl(m[1]) : null;
+  if (!url || !/\.gif(?:$|\?)/i.test(new URL(url).pathname + new URL(url).search)) return null;
+  const slug = (/\/view\/([A-Za-z0-9-]+)/.exec(String(pageUrl)) || [])[1] || "";
+  const id = slug ? slug.replace(/-gif-/, "-").slice(-40) : new URL(url).pathname.split("/").filter(Boolean)[0];
+  return { id: `web:tenor:${id}`, provider: "web", title: slugTitle(slug.replace(/-gif-\d+$/, "")).slice(0, 120),
+    url, preview: url, width: 0, height: 0, slug };
+}
+
+/** Strict (gate closed): only GIFs with a slug, and nothing the word filter flags. */
+function safeForStrict(item) {
+  if (!item.slug) return false;
+  return !UNSAFE.test(String(item.slug).replace(/-/g, " ")) && !UNSAFE.test(item.title || "");
+}
+
+/** The desk's own web search (search-client.cjs, awfind) -> [{url, title}]. */
+async function deskWebSearch(query, { limit = 10, signal = null } = {}) {
+  const client = require("./search-window.cjs").client();
+  const r = await client.search("q", query, { limit, signal });
+  if (!r || !r.ok) throw new Error((r && r.error) || "the web search did not answer");
+  return (r.results || []).map((row) => ({ url: String(row.url || ""), title: String(row.title || "") }));
+}
+
+/** Fetch one giphy.com / tenor.com page (https only, 8 s, 2 MB). Resolves "" on any failure. */
+async function fetchGifPage(url, { fetchImpl = (...a) => fetch(...a), timeoutMs = 8000 } = {}) {
+  let u;
+  try { u = new URL(url); } catch { return ""; }
+  if (u.protocol !== "https:" || !FETCH_HOSTS.test(u.hostname)) return "";
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  if (timer.unref) timer.unref();
+  try {
+    const res = await fetchImpl(u.toString(), { signal: ctl.signal, redirect: "follow",
+      headers: { "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) awdesk", accept: "text/html" } });
+    if (!res || !res.ok) return "";
+    const text = await res.text();
+    return String(text).slice(0, 2 * 1024 * 1024);
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The keyless source. search(query) -> {ok, results, pages} | {ok:false, reason, offline?}.
+ * `webSearch(q, {limit})` and `fetchPage(url)` are injected (tests replay fixtures).
+ */
+function createWebGifSource({ webSearch = deskWebSearch, fetchPage = (u) => fetchGifPage(u), strict = () => true } = {}) {
+  async function search(query, { limit = WEB_LIMIT } = {}) {
+    const q = cleanQuery(query);
+    if (!q) return { ok: false, reason: "type a word to search GIFs" };
+    const cap = Math.max(1, Math.min(WEB_LIMIT, Math.trunc(Number(limit)) || WEB_LIMIT));
+    let rows;
+    try {
+      const [giphy, tenor] = await Promise.all([
+        webSearch(`giphy ${q} gifs`, { limit: 10 }),
+        webSearch(`tenor ${q} gif`, { limit: 6 }).catch(() => []),
+      ]);
+      rows = [...(giphy || []), ...(tenor || [])];
+    } catch (error) {
+      return { ok: false, offline: true, reason: `the web search did not answer (${String((error && error.message) || error).slice(0, 120)})` };
+    }
+    const results = [];
+    const seen = new Set();
+    const add = (item) => {
+      if (!item || seen.has(item.id) || !mediaUrl(item.url)) return;
+      seen.add(item.id);
+      results.push(item);
+    };
+    const lists = [];
+    const tenors = [];
+    for (const row of rows) {
+      const page = giphyFromPage(row.url);
+      if (page) add(giphyResult(page.id, page.slug));
+      else if (GIPHY_LIST.test(row.url)) lists.push(row.url);
+      else if (TENOR_VIEW.test(row.url)) tenors.push(row.url);
+    }
+    // No Giphy list page from the web: read Giphy's own search page for the words.
+    if (!lists.length && results.length < cap) lists.push(`https://giphy.com/search/${encodeURIComponent(q.replace(/\s+/g, "-"))}`);
+    for (const url of lists.slice(0, 2)) {
+      if (results.length >= cap * 2) break;
+      for (const item of parseGiphyHtml(await fetchPage(url))) add(item);
+    }
+    for (const url of tenors.slice(0, 3)) add(tenorOgGif(await fetchPage(url), url));
+    const isStrict = (() => { try { return strict() !== false; } catch { return true; } })();
+    const kept = (isStrict ? results.filter(safeForStrict) : results).slice(0, cap);
+    return { ok: true, results: kept, pages: lists.length + tenors.length };
+  }
+  return { search };
+}
+
 /**
  * @param {{getSecret?: (name: string) => Promise<string|null>, fetchImpl?: typeof fetch,
  *   strict?: () => boolean, now?: () => number, providers?: string[], timeoutMs?: number}} [opts]
@@ -167,7 +327,10 @@ function createGifSearch({
   now = () => Date.now(),
   providers = PROVIDERS,
   timeoutMs = TIMEOUT_MS,
+  // The keyless web adapter (above); null turns it off (tests of the key path).
+  web = undefined,
 } = {}) {
+  const webSource = web === null ? null : (web || createWebGifSource({ strict }));
   const keys = new Map(); // provider -> {value|null, at}
   const known = new Map(); // result id -> GifResult (the last 400 seen)
 
@@ -200,7 +363,16 @@ function createGifSearch({
     const query = cleanQuery(text);
     if (!query) return { ok: false, reason: "type a word to search GIFs" };
     const chosen = await pick();
-    if (!chosen) return { ok: false, needsKey: true, reason: ADD_KEY };
+    if (!chosen) {
+      if (!webSource) return { ok: false, needsKey: true, reason: ADD_KEY };
+      // No key: the web adapter. A key is an upgrade (better ranking, sizes), not a wall.
+      const r = await webSource.search(query, { limit: Math.min(Number(limit) || WEB_LIMIT, WEB_LIMIT) });
+      if (!r.ok) return { ok: false, needsKey: true, offline: Boolean(r.offline), reason: `${r.reason} — or ${ADD_KEY}` };
+      const results = r.results.map((item) => { const rest = { ...item }; delete rest.slug; return rest; });
+      remember(results);
+      const isStrict = (() => { try { return strict() !== false; } catch { return true; } })();
+      return { ok: true, provider: "web", rating: isStrict ? "word-filtered" : "web", query, results, note: KEY_NOTE };
+    }
     const isStrict = (() => { try { return strict() !== false; } catch { return true; } })();
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
@@ -231,8 +403,10 @@ function createGifSearch({
   }
 
   /** "ready" | "needs-key" -- for the picker's empty state. */
+  /** "ready" (a key) | "web" (keyless search) | "needs-key" (neither). */
   async function keyStatus() {
-    return (await pick()) ? "ready" : "needs-key";
+    if (await pick()) return "ready";
+    return webSource ? "web" : "needs-key";
   }
 
   return {
@@ -244,6 +418,7 @@ function createGifSearch({
 }
 
 module.exports = {
-  PROVIDERS, KEY_NAMES, ADD_KEY, MEDIA_HOST,
+  PROVIDERS, KEY_NAMES, ADD_KEY, KEY_NOTE, MEDIA_HOST, WEB_LIMIT,
+  giphyFromPage, giphyResult, parseGiphyHtml, tenorOgGif, safeForStrict, createWebGifSource, fetchGifPage, deskWebSearch,
   cleanQuery, mediaUrl, ratingFor, requestUrl, parseTenor, parseGiphy, secretValue, createGifSearch, defaultStrict,
 };

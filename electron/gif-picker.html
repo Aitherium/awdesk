@@ -61,9 +61,10 @@
   }
 
   function noKey() {
-    empty("<b>Add a GIF key to search.</b><br>Store <code>TENOR_API_KEY</code> (or <code>GIPHY_API_KEY</code>) in the vault — "
-      + "Mission Control → Secrets — then search again.<br>Pinning a GIF address works without one: Alt+Space, <code>pin https://…gif</code>.");
-    status("0 GIF sources — add a key");
+    empty("<b>The web search did not answer.</b><br>Check the connection (or that awfind is installed), or store "
+      + "<code>TENOR_API_KEY</code> / <code>GIPHY_API_KEY</code> in the vault for direct results.<br>"
+      + "Pinning a GIF address always works: Alt+Space, <code>pin https://…gif</code>.");
+    status("0 GIF sources answered");
   }
 
   async function run(q) {
@@ -103,7 +104,8 @@
       grid.appendChild(b);
     }
     status(r.results.length ? `${r.results.length} GIFs · rated ${r.rating}` : `0 GIFs for “${term}” — try another word`);
-    $("credit").textContent = r.provider === "tenor" ? "Via Tenor" : r.provider === "giphy" ? "Powered by GIPHY" : "";
+    $("credit").textContent = r.provider === "tenor" ? "Via Tenor" : r.provider === "giphy" ? "Powered by GIPHY"
+      : r.provider === "web" ? "From the web via GIPHY / Tenor pages · better results with a key" : "";
   }
 
   $("q").addEventListener("input", (e) => {
@@ -120,6 +122,8 @@
   api.init().then((r) => {
     if (!r || !r.ok) return;
     if (r.keyStatus === "needs-key") { noKey(); return; }
+    // No key: the web adapter answers; a key is an optional upgrade, said once, quietly.
+    if (r.keyStatus === "web") status("Searching the web for GIFs · TENOR_API_KEY or GIPHY_API_KEY gives better results");
     if (r.query) { $("q").value = r.query; void run(r.query); }
   }).catch(() => {});
 </script>
