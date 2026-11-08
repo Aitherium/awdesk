@@ -2031,8 +2031,10 @@ function refreshNotificationBadges(cards = openDecisions) {
   // A red KEY instead of the numeral while a secret / blocked session waits.
   const key = needsYou.length > 0;
   const houseLine = deskPostureState.customer ? "" : housePosture.houseTooltipLine(latestHouse);
+  const inkNow = require("./ink-window.cjs").status();
   const tooltip = deskTenant.decorateTitle(badgeTooltip(waiting, cards.length, needsYou), deskTenant.currentTenant())
-    + (houseLine ? ` · ${houseLine}` : "");
+    + (houseLine ? ` · ${houseLine}` : "")
+    + (inkNow.active ? " · Drawing on screen (Esc to stop)" : "");
   if (tray) {
     tray.setToolTip(tooltip);
     // The macOS menu bar has room for the word itself.
@@ -2895,6 +2897,8 @@ function commandContext() {
     shellMenu: shellMenuOn,
     companion: companionMode(),
     clipboardSync: capture.clipboardSyncOn(),
+    // Screen ink's mode (ink-mode.cjs): the tray row says "Drawing" while it draws.
+    inkMode: require("./ink-window.cjs").status().mode,
     printScreenOwner: capture.printScreenOwner(),
     recording: recorder.isRecording(),
     // [audio] Windows endpoint mute flags, cached by audio-control (30 s poll +
@@ -3427,15 +3431,26 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "ink.board": return require("./ink-window.cjs").saveToBoard();
     case "ink.snip": return require("./ink-window.cjs").snipWithInk();
     case "gif.open": return require("./gif-picker-window.cjs").openGifPicker(typeof arg === "string" ? arg : "");
-    case "gif.pin": return pinTopGif(arg);
-    case "pins.add": return pinFromArg(arg);
+    // With no words (the Ctrl+Alt+F key) gif.pin opens the picker; with no address
+    // (Ctrl+Alt+U) pins.add pins what is on the clipboard.
+    case "gif.pin": return String(arg || "").trim() ? pinTopGif(arg) : require("./gif-picker-window.cjs").openGifPicker("");
+    case "pins.add": return pinFromArg(String(arg || "").trim() ? arg : require("electron").clipboard.readText().trim().slice(0, 4096));
+    case "shortcuts.open": {
+      const text = commandRegistry.shortcutSheetText(commandContext());
+      void dialog.showMessageBox({ type: "info", title: "Keyboard shortcuts", message: "Keyboard shortcuts",
+        detail: `${text}\n\nHold Ctrl+Alt to draw on the screen; release to use your desktop.\n`
+          + "Middle-drag moves a mark or a pin (Shift resizes, Ctrl duplicates).", buttons: ["OK"] });
+      return { ok: true };
+    }
     case "pins.tab": return pinBrowserTab(arg);
     case "pins.open": {
       // The tray carries the Pins submenu; from the palette this brings every pin
       // forward, or opens the GIF picker when the desk has none yet.
       const pinsWindow = require("./pins-window.cjs");
-      if (!pinsWindow.listPins().length) return require("./gif-picker-window.cjs").openGifPicker("");
-      return pinsWindow.setAllHidden(false);
+      const all = pinsWindow.listPins();
+      if (!all.length) return require("./gif-picker-window.cjs").openGifPicker("");
+      // Every pin showing -> hide them all; otherwise bring every one back.
+      return pinsWindow.setAllHidden(all.every((p) => !p.hidden));
     }
     case "missioncontrol.open":
       // The page host, plain: mission control is a page, not an OS window.
@@ -3773,6 +3788,26 @@ setOverlayHost({
     browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
     pushDeskState();
     return { ok: true, url: verdict.url };
+  },
+  // window.aitherDeskVerbs from a desk-hosted Veil page (living-desktop-preload.cjs).
+  deskVerb: (verb, msg) => {
+    if (verb === "pin") {
+      const item = msg && msg.item && typeof msg.item === "object" ? msg.item : null;
+      if (!item) return { ok: false, error: "pin needs a card {kind, src, title}" };
+      // A url/youtube/gif/image card is re-derived from its address (a Veil page sends
+      // the watch URL for YouTube); app/note/widget cards go through normalizePinItem.
+      const fromUrl = ["url", "youtube", "gif", "image"].includes(item.kind)
+        ? require("./pin-item.cjs").pinItemFromUrl(String(item.src || ""), { title: item.title || "" }) : null;
+      const verdict = require("./pins-window.cjs").addPin(fromUrl || item);
+      return verdict.ok ? { ok: true, id: verdict.pin.id } : { ok: false, error: verdict.reason };
+    }
+    if (verb === "ink") { require("./ink-window.cjs").toggleDraw(); return { ok: true }; }
+    if (verb === "gif") return require("./gif-picker-window.cjs").openGifPicker(String((msg && msg.query) || ""));
+    if (verb === "canvas") {
+      if (commandRegistry.byId("canvas.open")) return runCommand("canvas.open", undefined, { surface: "online" }) || { ok: true };
+      return boardsWindow.createBoard();
+    }
+    return { ok: false, error: "unknown desk verb" };
   },
   command: (id) => {
     if (!overlayBrowserHost.allowedCommand(id)) return;
@@ -4963,7 +4998,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     deadAccels.clear();
     for (const k of Object.keys(liveAccels)) delete liveAccels[k];
     for (const { id, accel, electron: key, fallback } of commandRegistry.shortcuts(loadHotkeyOverrides())) {
-      const onPress = () => runCommand(id, undefined, { surface: "shortcut" });
+      // A desk hotkey while Ctrl+Alt is held is a CHORD, not hold-to-draw (ink-hold.cjs).
+      const onPress = () => {
+        try { require("./ink-window.cjs").noteHotkey(); } catch { /* ink not loaded */ }
+        return runCommand(id, undefined, { surface: "shortcut" });
+      };
       if (!globalShortcut.register(key, onPress)) {
         deadAccels.add(accel);
         // The default key is taken (PowerToys Run holds Alt+Space): try the fallback.
@@ -6276,6 +6315,13 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         gifs: gifSearch.createGifSearch({ strict: () => kidDeskMode().enabled || gifSearch.defaultStrict() }),
       });
       if (!kidDeskMode().enabled) require("./pins-window.cjs").restorePins();
+      // Screen ink: a mode change repaints the tray row + tooltip; hold-to-draw
+      // (Ctrl+Alt held, AWDESK_INK_HOLD to change or turn off) starts its key-state
+      // poller here and stops on quit.
+      const inkWindow = require("./ink-window.cjs");
+      inkWindow.configureInk({ onChange: () => { if (tray) { refreshTrayMenu(); refreshNotificationBadges(); } } });
+      if (!kidDeskMode().enabled) inkWindow.startHoldToDraw();
+      app.once("before-quit", () => { try { inkWindow.stopHoldToDraw(); } catch { /* gone */ } });
     } catch (error) {
       console.warn(`[desk] pins restore failed: ${error && error.message}`);
     }

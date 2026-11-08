@@ -92,6 +92,7 @@ chrome IS the edge.
 | 4 | visual pass: one layout grammar, one type scale, dark-first tokens, stage chrome | every surface uses the shared tokens; no per-window CSS colours |
 | 5 | gates | palette reachability, keyboard-only pass, and the smoke run wired into `npm run check` |
 | 6 | **ink, pins, GIFs (2026-11-07)** — smooth ink (`ink-core` streamline/outline), click-through ink, ink to board, snip with ink; desktop pins (`pin-item.cjs` card, `pins-core.cjs` store + rules, `pins-window.cjs`, `pin.html`); GIF search (`gif-search.cjs` Tenor v2 + Giphy) and picker; Alt+Space verbs (`desk-verbs.cjs`) | every capability is a registry row (`ink.passthrough`, `ink.board`, `ink.snip`, `gif.open`, `gif.pin`, `pins.add`, `pins.tab`, `pins.open`); embedded pages run with no preload in their own partition under `navigation-policy.cjs`; `node --test` covers each module (`pins-core`, `pins-window`, `gif-search`, `gif-picker-window`, `desk-verbs`, `launcher-verbs`) |
+| 7 | **seamless ink + middle-drag (2026-11-07)**: `ink-mode.cjs` (interact, draw, draw-held, pen) drives the only mouse-capture switch; `ink-hold.cjs` (Ctrl+Alt key-state poller, no hook); `middle-gesture.cjs` is the one middle-button map (ink, pins, board, AitherOne); Shortcuts sheet | no window recreate on a switch; a stroke is captured only under the cursor while interacting; `shortcuts.test.cjs` fails on a duplicate binding; `pins-ink-smoke.cjs` makes 20 switches and checks marks and latency |
 
 ## Rules this plan is holding itself to
 

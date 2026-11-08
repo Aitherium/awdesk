@@ -38,20 +38,21 @@
 
 const path = require("node:path");
 const core = require("./ink-core.cjs");
+const inkMode = require("./ink-mode.cjs");
 
 function electron() {
-  return require("electron");
+  return configured.electron || require("electron");
 }
 
 let wired = false;
-let configured = { saveImage: null, onSaved: null, boards: null, snip: null, cursor: null };
-let active = false;
+let configured = { saveImage: null, onSaved: null, boards: null, snip: null, cursor: null, electron: null, onChange: null };
+/** The ONE mode machine's state (ink-mode.cjs): interact | draw | draw-held | pen. */
+let modeState = inkMode.initial();
+let lastSwitchAt = 0;
 let tool = "pen";
 let color = core.COLORS[3];
 let width = core.WIDTHS[1];
 let fadeMs = 0;
-/** Draw mode with the mouse given back to the apps underneath (Ctrl+Alt+K). */
-let passThrough = false;
 let toolbarDisplayId = null;
 /** display.id -> {win, display, boundsKey} */
 let windows = new Map();
@@ -120,14 +121,8 @@ function createOverlay(display) {
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event) => event.preventDefault());
   win.once("ready-to-show", () => {
-    if (active) {
-      win.setIgnoreMouseEvents(false);
-      win.setFocusable(true);
-      win.showInactive();
-      if (display.id === toolbarDisplayId) win.focus();
-    } else {
-      win.showInactive();
-    }
+    win.showInactive();
+    applyInteraction();
   });
   win.on("closed", () => {
     const entry = windows.get(display.id);
@@ -169,7 +164,7 @@ function wireScreenEvents() {
   try {
     const { screen } = electron();
     for (const name of ["display-added", "display-removed", "display-metrics-changed"]) {
-      screen.on(name, () => { try { if (active || windows.size) syncWindows(); } catch { /* next tick */ } });
+      screen.on(name, () => { try { if (windows.size) syncWindows(); } catch { /* next tick */ } });
     }
   } catch { /* no screen in a probe before ready */ }
 }
@@ -194,15 +189,19 @@ function send(entry, channel, payload) {
 }
 
 function publicState(displayId) {
+  const v = inkMode.view(modeState);
   return {
-    active,
+    active: v.drawing,
+    mode: v.mode,
+    view: v,
     tool,
     color,
     width,
     fadeMs,
-    toolbar: active && displayId === toolbarDisplayId,
-    passThrough,
+    // The palette is docked on the display the mode began on, and only while drawing.
+    toolbar: v.palette && displayId === toolbarDisplayId,
     displayId,
+    sentAt: Date.now(),
     items: docFor(displayId).items,
   };
 }
@@ -218,16 +217,28 @@ function broadcast(displayId) {
     const entry = entryFor(id);
     if (entry) send(entry, "ink:state", publicState(id));
   }
+  try { if (configured.onChange) configured.onChange(status()); } catch { /* a tray refresh must not fail ink */ }
 }
 
+/**
+ * Who gets the mouse, per overlay, from the ONE mode machine (ink-mode.cjs):
+ *   all     every overlay takes the pointer (a drawing mode)
+ *   object  only the overlay under the cursor, and only while it is on an ink
+ *           object (interact + middle-drag)
+ *   none    every overlay is click-through, forwarding moves
+ * Only setIgnoreMouseEvents flips -- the windows are never recreated, so a switch
+ * has no flicker and the next pointer event already lands.
+ */
 function applyInteraction() {
-  for (const entry of windows.values()) {
+  const cap = inkMode.capture(modeState, Date.now());
+  for (const [id, entry] of windows.entries()) {
     const win = entry.win;
     if (!win || win.isDestroyed()) continue;
+    const take = cap === "all" || (cap === "object" && id === hoverDisplayId);
     try {
-      if (active && !passThrough) {
+      if (take) {
         win.setIgnoreMouseEvents(false);
-        win.setFocusable(true);
+        if (cap === "all") win.setFocusable(true);
       } else {
         win.setIgnoreMouseEvents(true, { forward: true });
         win.setFocusable(false);
@@ -235,12 +246,127 @@ function applyInteraction() {
       }
     } catch { /* the window was closing */ }
   }
-  if (active && !passThrough) {
+  if (cap === "all" && inkMode.view(modeState).mode === "draw") {
+    // Latched draw takes the keyboard too (Esc, Ctrl+Z). A HELD draw never steals
+    // focus: the app under it keeps its caret, and releasing the chord is instant.
     const entry = entryFor(toolbarDisplayId);
     if (entry) {
       try { entry.win.showInactive(); entry.win.focus(); } catch { /* gone */ }
     }
   }
+  syncHoverPoll();
+}
+
+/**
+ * Feed one event to the mode machine and apply the result. Returns the status.
+ * The marks are never touched here: clear and fade are separate actions.
+ */
+function dispatch(event) {
+  const before = modeState.mode;
+  modeState = inkMode.reduce(modeState, event);
+  if (modeState.mode !== before) {
+    lastSwitchAt = Date.now();
+    if (inkMode.isDrawing(modeState) && before === "interact") {
+      const here = displayUnderCursor();
+      if (here) toolbarDisplayId = here.id;
+    }
+  }
+  applyInteraction();
+  broadcast();
+  if (event && event.type === "wheel" && inkMode.isDrawing(modeState)) {
+    // Let the wheel ticks reach the app for 350 ms, then take the pointer back.
+    setTimeout(() => { applyInteraction(); }, 380).unref?.();
+  }
+  return status();
+}
+
+// ── interact: the overlay takes the mouse only over an ink object ───────────
+//
+// While interacting, the overlays are click-through. To let a middle-drag grab a
+// stroke WITHOUT entering draw mode, main polls the cursor (~30 Hz, only while
+// marks exist), asks overlay-hit.cjs whether it is near any ink object's box (the
+// same region test the desktop overlay uses), then ink-core.topmostHit for the
+// exact 6 px stroke distance. Only that overlay, only on the object, captures.
+
+let hoverTimer = null;
+let hoverDisplayId = null;
+
+function anyMarks() {
+  for (const id of docs.keys()) if (marksOn(id) > 0) return true;
+  return false;
+}
+
+function syncHoverPoll() {
+  const want = !inkMode.isDrawing(modeState) && windows.size > 0 && anyMarks();
+  if (want && !hoverTimer) {
+    hoverTimer = setInterval(pollHover, 33);
+    if (hoverTimer.unref) hoverTimer.unref();
+  } else if (!want && hoverTimer) {
+    clearInterval(hoverTimer);
+    hoverTimer = null;
+    if (modeState.hover) { modeState = inkMode.reduce(modeState, { type: "hover", id: null }); hoverDisplayId = null; }
+  }
+}
+
+/** The ink object at a screen point: {displayId, item} or null. Pure over `docs`. */
+function objectAt(cursor) {
+  const overlayHit = require("./overlay-hit.cjs");
+  for (const [id, entry] of windows.entries()) {
+    const b = entry.display.bounds;
+    const items = docFor(id).items;
+    if (!items.length) continue;
+    const regions = items.map((item) => {
+      const r = core.itemBounds(item) || { x: 0, y: 0, width: 0, height: 0 };
+      return { x: r.x, y: r.y, w: r.width, h: r.height };
+    });
+    const verdict = overlayHit.hitVerdict({ now: 1, bounds: b, cursor, hit: { regions, dock: null, reportedAt: 1 } });
+    if (!verdict.interactive) continue;
+    const local = { x: cursor.x - b.x, y: cursor.y - b.y };
+    const item = core.topmostHit(items, local, 6);
+    if (item) return { displayId: id, item };
+  }
+  return null;
+}
+
+function pollHover() {
+  if (modeState.grab) return; // a drag in progress owns the mouse until middle-up
+  let cursor;
+  try { cursor = configured.cursor ? configured.cursor() : electron().screen.getCursorScreenPoint(); } catch { return; }
+  const found = objectAt(cursor);
+  const id = found ? found.item.id : null;
+  const was = modeState.hover ? modeState.hover.id : null;
+  if (id === was && (found ? found.displayId : null) === hoverDisplayId) return;
+  hoverDisplayId = found ? found.displayId : null;
+  modeState = inkMode.reduce(modeState, { type: "hover", id, locked: false });
+  applyInteraction();
+  broadcast();
+}
+
+// ── hold-to-draw (Ctrl+Alt held) ─────────────────────────────────────────────
+
+let holdWatch = null;
+
+/** Start the chord watcher (ink-hold.cjs). Main calls this once; a probe never does. */
+function startHoldToDraw(options = {}) {
+  if (holdWatch) return holdWatch;
+  holdWatch = require("./ink-hold.cjs").createHoldWatch({
+    ...options,
+    onHold: () => { ensureReady(); dispatch({ type: "hold-down" }); },
+    onRelease: () => { dispatch({ type: "hold-up" }); },
+  });
+  return holdWatch;
+}
+
+/**
+ * Any desk hotkey fired: a held Ctrl+Alt was the start of a chord (Ctrl+Alt+Q,
+ * ...), not a request to draw. Ctrl+Alt+D itself latches (toggle from draw-held).
+ */
+function noteHotkey() {
+  if (holdWatch) holdWatch.cancel();
+}
+
+function stopHoldToDraw() {
+  if (holdWatch) { holdWatch.stop(); holdWatch = null; }
 }
 
 // ── modes ────────────────────────────────────────────────────────────────────
@@ -251,69 +377,42 @@ function ensureReady() {
   syncWindows();
 }
 
-/** Draw mode on (optionally with a tool). Idempotent. */
+/** Draw mode on (optionally with a tool). Idempotent; the marks stay. */
 function enterDraw(options = {}) {
   ensureReady();
   if (typeof options.tool === "string" && core.TOOLS.includes(options.tool)) tool = options.tool;
-  const here = displayUnderCursor();
-  toolbarDisplayId = options.displayId != null ? options.displayId : here ? here.id : toolbarDisplayId;
-  active = true;
-  applyInteraction();
-  broadcast();
-  return status();
+  if (options.displayId != null) toolbarDisplayId = options.displayId;
+  return dispatch({ type: "set", mode: "draw" });
 }
 
-/** Draw mode off: fully click-through, marks stay where they are. */
+/** Back to interacting: click-through, marks stay where they are. */
 function exitDraw() {
-  if (!active && windows.size === 0) return status();
-  active = false;
-  passThrough = false;
-  applyInteraction();
-  broadcast();
-  return status();
+  if (!inkMode.isDrawing(modeState) && windows.size === 0) return status();
+  return dispatch({ type: "set", mode: "interact" });
 }
 
+/** Ctrl+Alt+D: draw <-> interact. Never clears anything. */
 function toggleDraw() {
-  return active ? exitDraw() : enterDraw();
+  ensureReady();
+  return dispatch({ type: "toggle" });
 }
 
 /**
- * Ink with the mouse given back (Ctrl+Alt+K / the toolbar's "Click-through"):
- * marks and toolbar stay, every click lands on the app underneath. Pressing it
- * while drawing is off turns drawing on in that mode, so one key covers "annotate
- * while I keep working". `on` forces a state; omitted, it toggles.
+ * ink.passthrough (Ctrl+Alt+K): back to interacting with the ink left on screen
+ * (or, when already interacting, into draw). Same machine as the toggle; kept as
+ * its own key because "give me my desktop back" is the one owners reach for.
  */
 function setPassThrough(on) {
-  const next = on == null ? !passThrough : Boolean(on);
-  if (!active) {
-    if (!next) return status();
-    enterDraw();
-  }
-  passThrough = next;
-  applyInteraction();
-  broadcast();
-  return status();
-}
-
-/**
- * While click-through, the toolbar still has to be clickable: the overlay
- * forwards mouse moves, the page reports "over my chrome", and only THAT overlay
- * takes the mouse until the pointer leaves the toolbar again.
- */
-function hoverChrome(displayId, over) {
-  const entry = entryFor(displayId);
-  if (!entry || !active || !passThrough) return false;
-  try {
-    if (over) entry.win.setIgnoreMouseEvents(false);
-    else entry.win.setIgnoreMouseEvents(true, { forward: true });
-  } catch { return false; }
-  return true;
+  ensureReady();
+  if (on === true) return dispatch({ type: "set", mode: "interact" });
+  if (on === false) return dispatch({ type: "set", mode: "draw" });
+  return dispatch({ type: "toggle" });
 }
 
 /** Ctrl+Alt+L / Ctrl+Alt+S: the tool toggles, the overlay stays click-through when off. */
 function toggleTool(nextTool) {
   if (!core.TOOLS.includes(nextTool)) return status();
-  if (active && tool === nextTool) return exitDraw();
+  if (inkMode.isDrawing(modeState) && tool === nextTool) return exitDraw();
   return enterDraw({ tool: nextTool });
 }
 
@@ -355,6 +454,7 @@ function setFade(nextFade) {
 function clearDrawings() {
   for (const [id, doc] of [...docs.entries()]) docs.set(id, core.clearAll(doc));
   broadcast();
+  syncHoverPoll();
   return status();
 }
 
@@ -365,7 +465,9 @@ function marksOn(displayId) {
 function status() {
   let marks = 0;
   for (const id of docs.keys()) marks += marksOn(id);
-  return { active, passThrough, tool, color, width, fadeMs, displays: windows.size, marks };
+  const v = inkMode.view(modeState);
+  return { active: v.drawing, mode: v.mode, label: inkMode.label(modeState), tool, color, width, fadeMs,
+    displays: windows.size, marks, lastSwitchAt };
 }
 
 /** The last saved drawing's path (main-process callers only). */
@@ -613,10 +715,32 @@ function handlers() {
       if (!senderEntry(event)) return null;
       return setPassThrough(on == null ? null : Boolean(on));
     },
-    "ink:hover-chrome": (event, over) => {
+    // The overlay's own mode events: Esc, right-click, a pen arriving, the mouse
+    // moving under a pen, the wheel, and a middle press / release. Only these
+    // types; everything else (toggle, hold) comes from main's own keys.
+    "ink:mode": (event, raw) => {
+      const found = senderEntry(event);
+      if (!found || !raw || typeof raw !== "object") return null;
+      const type = String(raw.type || "");
+      if (!RENDERER_EVENTS.has(type)) return null;
+      if (type === "middle-down") {
+        const item = raw.id ? docFor(found.id).items.find((i) => i.id === String(raw.id)) : null;
+        dispatch({ type, hit: item ? { id: item.id, locked: false } : null,
+          shift: raw.shift === true, ctrl: raw.ctrl === true, meta: raw.meta === true });
+        if (modeState.grab) hoverDisplayId = found.id;
+        return publicState(found.id);
+      }
+      dispatch({ type, now: Date.now() });
+      return publicState(found.id);
+    },
+    // A finished middle-drag: main applies it (ink-core translate / resize /
+    // duplicate) as ONE undoable edit, then the grab ends.
+    "ink:grab-end": (event, raw) => {
       const found = senderEntry(event);
       if (!found) return null;
-      return hoverChrome(found.id, Boolean(over));
+      const result = commitGrab(found.id, raw);
+      dispatch({ type: "middle-up" });
+      return { ...publicState(found.id), result };
     },
     "ink:to-board": (event) => {
       if (!senderEntry(event)) return null;
@@ -629,6 +753,35 @@ function handlers() {
   };
 }
 
+const RENDERER_EVENTS = new Set(["escape", "right-click", "pen-enter", "pen-leave", "mouse", "wheel", "middle-down", "middle-up"]);
+
+/**
+ * Apply a finished middle-drag to the doc of one display.
+ * raw = {dx, dy} in overlay pixels; the gesture and the item come from the grab
+ * main recorded on middle-down (a renderer cannot name a different item here).
+ */
+function commitGrab(displayId, raw) {
+  const grab = modeState.grab;
+  if (!grab) return { ok: false, reason: "no grab in progress" };
+  const doc = docFor(displayId);
+  const item = doc.items.find((i) => i.id === grab.id);
+  if (!item) return { ok: false, reason: "that mark is gone" };
+  const dx = Number(raw && raw.dx) || 0;
+  const dy = Number(raw && raw.dy) || 0;
+  const from = core.itemBounds(item);
+  const to = require("./middle-gesture.cjs").dragBounds(grab.gesture, from, dx, dy);
+  if (grab.gesture === "duplicate") {
+    const copy = core.translateItem(core.duplicateItem(item, newItemId()), dx, dy);
+    setDoc(displayId, core.pushItem(doc, copy));
+    syncHoverPoll();
+    return { ok: true, gesture: "duplicate", id: copy.id };
+  }
+  if (!dx && !dy) return { ok: true, gesture: grab.gesture, id: item.id, unchanged: true };
+  const next = grab.gesture === "resize" ? core.resizeItem(item, from, to) : core.translateItem(item, dx, dy);
+  setDoc(displayId, core.updateItems(doc, [next]));
+  return { ok: true, gesture: grab.gesture, id: item.id };
+}
+
 function ensureInkIpc() {
   if (wired) return;
   wired = true;
@@ -638,8 +791,9 @@ function ensureInkIpc() {
 }
 
 function closeInk() {
-  active = false;
-  passThrough = false;
+  modeState = inkMode.initial();
+  if (hoverTimer) { clearInterval(hoverTimer); hoverTimer = null; }
+  hoverDisplayId = null;
   for (const [, entry] of windows) {
     try { if (!entry.win.isDestroyed()) entry.win.destroy(); } catch { /* gone */ }
   }
@@ -649,7 +803,8 @@ function closeInk() {
 /** Test/probe seam: read the live state without touching Electron windows. */
 function __state() {
   return {
-    active, passThrough, tool, color, width, fadeMs, toolbarDisplayId,
+    active: inkMode.isDrawing(modeState), mode: modeState.mode, grab: modeState.grab, hover: modeState.hover,
+    capture: inkMode.capture(modeState, Date.now()), tool, color, width, fadeMs, toolbarDisplayId,
     windows: [...windows.keys()],
     docs: [...docs.entries()].map(([id, doc]) => ({
       id, items: doc.items.length, undo: doc.undo.length, redo: doc.redo.length,
@@ -660,7 +815,9 @@ function __state() {
 module.exports = {
   configureInk, ensureInkIpc, enterDraw, exitDraw, toggleDraw, toggleTool,
   setTool, setColor, setWidth, setFade, clearDrawings, saveDrawing, status,
-  setPassThrough, saveToBoard, snipWithInk,
+  setPassThrough, saveToBoard, snipWithInk, dispatch, startHoldToDraw, stopHoldToDraw, noteHotkey, objectAt, commitGrab,
   closeInk, handlers, lastDrawingPath: () => lastDrawingPath, __state,
   __setDoc: setDoc, __doc: (displayId) => docs.get(displayId) || null,
+  __pollHover: () => pollHover(),
+  __senderOf: (displayId) => { const e = entryFor(displayId); return e ? e.win.webContents : null; },
 };

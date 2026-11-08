@@ -979,7 +979,9 @@ const COMMANDS = Object.freeze([
   // the video. The four keys are the only door: while drawing, the overlay holds
   // the mouse, so the tray is one glance away rather than in the way.
   Object.freeze({
-    id: "ink.toggle", label: "Draw on screen", group: "capture", accel: "Ctrl+Alt+D",
+    id: "ink.toggle", group: "capture", accel: "Ctrl+Alt+D",
+    // The tray's visible ink state (no floating bar): the row says it is drawing.
+    label: (ctx = {}) => (ctx.inkMode && ctx.inkMode !== "interact" ? "Drawing on screen — stop (Esc)" : "Draw on screen"),
     surfaces: ["tray", "palette"],
   }),
   Object.freeze({
@@ -1006,11 +1008,13 @@ const COMMANDS = Object.freeze([
   }),
   Object.freeze({
     id: "ink.board", label: "Save drawing to a board", group: "capture",
+    accel: "Ctrl+Alt+E", accelFallback: "Ctrl+Alt+Shift+E",
     surfaces: ["palette"],
     whySingle: "Its button is on the ink toolbar (To board); the palette (Ctrl+K) and Alt+Space `draw board` are its keyboard paths.",
   }),
   Object.freeze({
     id: "ink.snip", label: "Snip with ink", group: "capture",
+    accel: "Ctrl+Alt+X", accelFallback: "Ctrl+Alt+Shift+X",
     surfaces: ["palette"],
     whySingle: "Its button is on the ink toolbar (Snip); the palette (Ctrl+K) and Alt+Space `draw snip` are its keyboard paths.",
   }),
@@ -1021,23 +1025,37 @@ const COMMANDS = Object.freeze([
   }),
   Object.freeze({
     id: "gif.pin", label: "Pin a GIF to the desktop", group: "capture",
+    // The key has no text to carry: with no words it opens the GIF picker.
+    accel: "Ctrl+Alt+F", accelFallback: "Ctrl+Alt+Shift+F",
     surfaces: ["palette"],
     whySingle: "Needs words to search; the palette (and POST /commands/run, the phone link, awconnect) carry the text. The GIF picker is its menu door.",
     prompt: Object.freeze({ placeholder: "Words to search; the top GIF is pinned" }),
   }),
   Object.freeze({
     id: "pins.add", label: "Pin to desktop…", group: "capture",
+    // The key pins the address on the clipboard (a copied link becomes a pin).
+    accel: "Ctrl+Alt+U", accelFallback: "Ctrl+Alt+Shift+U",
     surfaces: ["palette"],
     whySingle: "Needs an address; the palette (and POST /commands/run, the phone link, awconnect) carry it. Alt+Space `pin <address>` is its other door.",
     prompt: Object.freeze({ placeholder: "A web address, a YouTube or GIF link, or aither://page" }),
   }),
   Object.freeze({
     id: "pins.tab", label: "Pin this tab to desktop", group: "capture",
+    accel: "Ctrl+Alt+T", accelFallback: "Ctrl+Alt+Shift+T",
     surfaces: ["palette"],
     whySingle: "Acts on the Aither browser's tab: its menu row is the tab's own right-click menu (browser chrome); the palette and Alt+Space `pin this tab` are its keyboard paths.",
   }),
   Object.freeze({
     id: "pins.open", label: "Pins…", group: "capture",
+    // The key shows every pin, or hides them all when they are all showing.
+    accel: "Ctrl+Alt+H", accelFallback: "Ctrl+Alt+Shift+H",
+    surfaces: ["tray", "palette"],
+  }),
+  // ONE sheet of every live key (owner 2026-11-07: "every ink, pin and gif action
+  // ... with a default key"): what is bound, what fell back, what another app holds.
+  Object.freeze({
+    id: "shortcuts.open", label: "Keyboard shortcuts…", group: "capture",
+    accel: "Ctrl+Alt+/", accelFallback: "Ctrl+Alt+Shift+/",
     surfaces: ["tray", "palette"],
   }),
   Object.freeze({
@@ -1296,6 +1314,57 @@ function electronAccel(accel) {
   return String(accel || "").replace(/^Ctrl\+/, "CommandOrControl+");
 }
 
+/**
+ * Every key the desk binds, from the registry (accel + accelFallback) plus the keys
+ * registered OUTSIDE it (`extra`: [{accel, id}], e.g. the launcher's LAUNCHER_ACCELS),
+ * and the conflicts: the same chord bound to two DIFFERENT commands. Chords compare
+ * case-insensitively. shortcuts.test.cjs fails on any conflict.
+ */
+function bindingConflicts(extra = [], commands = COMMANDS) {
+  const owners = new Map();
+  const add = (accel, id, role) => {
+    if (!accel) return;
+    const key = String(accel).toLowerCase().replace(/\s+/g, "");
+    if (!owners.has(key)) owners.set(key, []);
+    owners.get(key).push({ id, accel, role });
+  };
+  for (const c of commands) {
+    add(c.accel, c.id, "default");
+    add(c.accelFallback, c.id, "fallback");
+  }
+  for (const e of Array.isArray(extra) ? extra : []) add(e.accel, e.id, "extra");
+  const conflicts = [];
+  for (const [, list] of owners) {
+    const ids = [...new Set(list.map((o) => o.id))];
+    if (ids.length > 1) conflicts.push({ accel: list[0].accel, ids });
+  }
+  return conflicts;
+}
+
+/**
+ * The Shortcuts sheet: one row per bound command, in registry order, with what is
+ * LIVE right now (ctx.liveAccels / ctx.deadAccels from main's applyHotkeys).
+ */
+function shortcutSheet(ctx = {}) {
+  const dead = new Set(Array.isArray(ctx.deadAccels) ? ctx.deadAccels : []);
+  const live = ctx.liveAccels && typeof ctx.liveAccels === "object" ? ctx.liveAccels : {};
+  return COMMANDS.filter((c) => c.accel).map((c) => {
+    const now = live[c.id] || (dead.has(c.accel) ? null : c.accel);
+    return {
+      id: c.id, label: labelOf(c, ctx), accel: c.accel, fallback: c.accelFallback || null, live: now,
+      state: now === c.accel ? "bound" : now ? "fallback" : "held by another app",
+    };
+  });
+}
+
+/** The sheet as plain text lines ("Ctrl+Alt+D   Draw on screen"). */
+function shortcutSheetText(ctx = {}) {
+  return shortcutSheet(ctx).map((r) => {
+    const key = r.live || `${r.accel} (taken)`;
+    return `${key.padEnd(20)} ${r.label}${r.state === "fallback" ? `  [fallback; ${r.accel} is taken]` : ""}`;
+  }).join("\n");
+}
+
 /** Every command that owns a global shortcut, for main to register from. */
 function shortcuts(overrides = {}) {
   // overrides: id -> accel string from cast.json's hotkeys{} (Plan: configurable
@@ -1465,4 +1534,5 @@ function osAppTabUrl(osApp) {
 module.exports = {
   SURFACES, GROUPS, LAYOUT, COMMANDS, commandsFor, groupFor, paletteRows, rowsFor, byId, labelOf,
   buildMenu, conformance, shortcuts, electronAccel, accelFor, appliesTo, osAppTabUrl,
+  bindingConflicts, shortcutSheet, shortcutSheetText,
 };

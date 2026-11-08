@@ -255,3 +255,51 @@ test("inkToBoardItems: every mark becomes a board item boards-core keeps, origin
   assert.equal(out.find((i) => i.type === "text").color, "#1f2430", "white ink turns dark on a white board");
   assert.deepEqual(core.inkToBoardItems([]).items, []);
 });
+
+// ── objects + the AitherOne stroke contract (2026-11-07) ─────────────────────
+
+test("topmostHit: the last-drawn item under the point wins, within 6 px of a stroke", () => {
+  const a = core.normalizeItem({ id: "a", type: "stroke", color: "#ff4d4d", width: 2, points: [{ x: 0, y: 0 }, { x: 100, y: 0 }] });
+  const b = core.normalizeItem({ id: "b", type: "stroke", color: "#ff4d4d", width: 2, points: [{ x: 0, y: 2 }, { x: 100, y: 2 }] });
+  assert.equal(core.topmostHit([a, b], { x: 50, y: 1 }).id, "b");
+  assert.equal(core.topmostHit([a, b], { x: 50, y: 40 }), null);
+});
+
+test("a middle-drag move / resize / duplicate is ONE undoable step and never loses marks", () => {
+  const a = core.normalizeItem({ id: "a", type: "shape", tool: "rect", color: "#4ade80", width: 2, a: { x: 0, y: 0 }, b: { x: 10, y: 10 } });
+  let s = core.pushItem(core.normalizeState(), a);
+  const moved = core.translateItem(a, 5, 7);
+  s = core.updateItems(s, [moved]);
+  assert.deepEqual(s.items[0].a, { x: 5, y: 7 });
+  s = core.undo(s);
+  assert.deepEqual(s.items[0].a, { x: 0, y: 0 }, "undo puts it back");
+  s = core.redo(s);
+  assert.deepEqual(s.items[0].a, { x: 5, y: 7 });
+  const from = { x: 0, y: 0, width: 10, height: 10 };
+  const big = core.resizeItem(a, from, { x: 0, y: 0, width: 20, height: 40 });
+  assert.deepEqual(big.b, { x: 20, y: 40 });
+  const copy = core.duplicateItem(a, "a2", 5);
+  s = core.pushItem(s, copy);
+  assert.equal(s.items.length, 2);
+  assert.notEqual(copy.id, a.id);
+});
+
+test("sceneStroke emits exactly the AitherOne stroke contract", () => {
+  const board = core.inkToBoardItems([core.normalizeItem({ id: "p", type: "stroke", tool: "highlighter", color: "#ffd166", width: 4,
+    points: [{ x: 10, y: 10, p: 0.2 }, { x: 20, y: 12, p: 0.9 }, { x: 30, y: 15, p: 0.4 }] })]).items[0];
+  assert.equal(board.kind, "stroke");
+  assert.equal(board.tool, "highlighter");
+  assert.ok(board.points.every((p) => typeof p.p === "number"), "pressure survives into the board");
+  const stroke = core.sceneStroke({ ...board, opacity: 0.45 });
+  assert.deepEqual(Object.keys(stroke).sort(), ["color", "id", "kind", "opacity", "points", "tool", "width", "z"]);
+  assert.equal(stroke.kind, "stroke");
+  assert.equal(stroke.color, "#ffd166");
+  assert.ok(stroke.points.every((p) => Array.isArray(p) && p.length === 3));
+  assert.ok(stroke.width >= 1 && stroke.width <= 64);
+  assert.equal(core.sceneStroke({ type: "text" }), null);
+  const boardsCore = require("./boards-core.cjs");
+  const kept = boardsCore.normalizeBoard({ id: "b", kind: "board", items: [board] }).items[0];
+  assert.equal(kept.kind, "stroke");
+  assert.equal(kept.tool, "highlighter");
+  assert.deepEqual(kept.points.map((p) => p.p), board.points.map((p) => p.p), "boards-core keeps pressure");
+});
