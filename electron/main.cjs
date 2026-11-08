@@ -3795,26 +3795,6 @@ function cardSessionName(card) {
  * `parent` is the window the approval dialog belongs to.
  */
 function answerDeckCard(id, choice, parent, note = "") {
-  // A Claude Code terminal ask (awask keys its options `tui:<n>`): recording the
-  // answer alone leaves the terminal blocked, so type the number into the
-  // session's tab -- only once that tab is confirmed in front (tui-answer.cjs).
-  // Resolves true, or {ok:false, flash} when it could not (nothing recorded).
-  const tuiCard = openCardById(id);
-  if (tuiCard && tuiAnswer.tuiAction(tuiCard, choice)) {
-    return tuiAnswer.answerInTerminal(tuiCard, choice, {
-      sessionName: cardSessionName,
-      type: (name, keys) => tuiAnswer.typeIntoSession(name, keys),
-      record: (cardId, key, why) => decisionCards.answerCard(cardId, key, note || why),
-    }).then((r) => {
-      if (!r.ok) {
-        debugLog(`[tui-answer] ${id} ${choice}: ${r.error}`);
-        return { ok: false, flash: r.flash, error: r.error };
-      }
-      void postToRelay(RELAY_CHANNEL, `answered ${id}: ${choice} (typed into the terminal via desk)`)
-        .then(() => void refreshRelayFeed());
-      return true;
-    });
-  }
   // A destructive card (awstorage proposal/plan) is approved only by a SIGNED
   // answer, which needs a fresh passkey session: open Veil's /approve page
   // (Windows Hello) instead of the unsigned `awask answer`. The route is
@@ -3840,6 +3820,26 @@ function answerDeckCard(id, choice, parent, note = "") {
         return false;
       }
     }
+  }
+  // After the signed route: a Claude Code terminal ask (awask keys its options `tui:<n>`): recording the
+  // answer alone leaves the terminal blocked, so type the number into the
+  // session's tab -- only once that tab is confirmed in front (tui-answer.cjs).
+  // Resolves true, or {ok:false, flash} when it could not (nothing recorded).
+  const tuiCard = openCardById(id);
+  if (tuiCard && tuiAnswer.tuiAction(tuiCard, choice)) {
+    return tuiAnswer.answerInTerminal(tuiCard, choice, {
+      sessionName: cardSessionName,
+      type: (name, keys) => tuiAnswer.typeIntoSession(name, keys),
+      record: (cardId, key, why) => decisionCards.answerCard(cardId, key, note || why),
+    }).then((r) => {
+      if (!r.ok) {
+        debugLog(`[tui-answer] ${id} ${choice}: ${r.error}`);
+        return { ok: false, flash: r.flash, error: r.error };
+      }
+      void postToRelay(RELAY_CHANNEL, `answered ${id}: ${choice} (typed into the terminal via desk)`)
+        .then(() => void refreshRelayFeed());
+      return true;
+    });
   }
   const ok = note ? decisionCards.answerCard(id, choice, note) : decisionCards.answerCard(id, choice);
   if (ok) {
@@ -4009,12 +4009,11 @@ browserWindow.setAgentsHost(agentsPanel.createAgentsSource({
   getRoomStatus: () => (roomPublisher ? (roomPublisher.lastError || "ok") : "not started"),
   // Wrapped by createAgentsSource: an answered id stays unanswerable until the
   // decision watcher drops the card (awask's success is "spawned", not "took it").
-  answer: async (id, choice, parent) => {
-    const result = await answerDeckCard(id, choice, parent);
+  answer: (id, choice, parent) => Promise.resolve(answerDeckCard(id, choice, parent)).then((result) => {
     if (result && typeof result === "object" && result.pending) return { ok: true, pending: true, via: result.via };
     if (result && typeof result === "object" && result.ok === false) return { ok: false, error: result.flash || result.error };
     return result ? { ok: true } : { ok: false, error: "awask did not take the answer" };
-  },
+  }),
 }));
 
 // The layers (owner, 2026-10-04: "awsh -> awdesk/avatar -> browser -> AitherOS Online
