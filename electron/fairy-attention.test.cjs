@@ -226,3 +226,69 @@ test("the flutter offset stays small", () => {
     assert.ok(Math.abs(o.x) <= 16 && Math.abs(o.y) <= 16);
   }
 });
+
+// ── the chime and the chat (2026-11-08) ─────────────────────────────────────
+
+test("the chime grows with the level: silent badge, one soft note, a two-note rise, three louder notes", () => {
+  assert.deepEqual(fa.chimePattern(0), []);
+  assert.deepEqual(fa.chimePattern(undefined), []);
+  const l1 = fa.chimePattern(1);
+  const l2 = fa.chimePattern(2);
+  const l3 = fa.chimePattern(3);
+  assert.equal(l1.length, 1);
+  assert.equal(l2.length, 2);
+  assert.equal(l3.length, 3);
+  assert.ok(l2[1].freq > l2[0].freq && l2[1].at > l2[0].at, "L2 rises, one note after the other");
+  assert.ok(l3[2].freq > l3[1].freq && l3[1].freq > l3[0].freq, "L3 rises through three notes");
+  const peak = (p) => Math.max(...p.map((n) => n.gain));
+  assert.ok(peak(l1) < peak(l2) && peak(l2) < peak(l3), "louder by level");
+  assert.ok(peak(l3) <= 0.2, "never loud");
+  assert.deepEqual(fa.chimePattern(9), l3, "clamped to the top level");
+  l1[0].gain = 1; // a caller mutating its copy cannot change the next chime
+  assert.equal(fa.chimePattern(1)[0].gain, 0.05);
+});
+
+test("the chat context carries the title, why now, the card's own options with consequences, and the session", () => {
+  const card = {
+    id: "d-chat1",
+    title: "Claude Code needs you: Cut awsh 0.4.4?",
+    kind: "decision",
+    urgency: "high",
+    blocking: true,
+    createdAt: NOW / 1000 - 1200,
+    tab: "awsh release",
+    summary: "The registry push failed twice.",
+    defaultKey: "cut",
+    options: [
+      { key: "cut", label: "Cut it now", consequence: "Publishes 0.4.4 to PyPI" },
+      { key: "wait", label: "Wait a day", consequence: "" },
+    ],
+  };
+  const text = fa.chatContext(card, NOW, { session: { ok: true, name: "awsh release", lastAsk: "ship it", lastSaid: "PyPI 403" } });
+  assert.match(text, /"Cut awsh 0\.4\.4\?"/);
+  assert.doesNotMatch(text, /Claude Code needs you/);
+  assert.match(text, /Why it wants an answer now: Awsh release is stopped until you answer/);
+  assert.match(text, /1\. Cut it now \(suggested\) -- Publishes 0\.4\.4 to PyPI/);
+  assert.match(text, /2\. Wait a day$/m);
+  assert.match(text, /registry push failed twice/);
+  assert.match(text, /Its last instruction: ship it/);
+  assert.match(text, /What it last said: PyPI 403/);
+  // a session read that failed adds nothing
+  assert.doesNotMatch(fa.chatContext(card, NOW, { session: { ok: false, error: "gone" } }), /last instruction/);
+  assert.equal(fa.chatContext(null, NOW), "");
+});
+
+test("a credential card's chat context names the secret, lists no options, and says it is never typed in chat", () => {
+  const text = fa.chatContext({ id: "d-cred1", title: "Needs a key", kind: "credential", secretName: "PYPI_TOKEN",
+    options: [{ key: "x", label: "should not show" }], createdAt: NOW / 1000 }, NOW);
+  assert.match(text, /PYPI_TOKEN/);
+  assert.match(text, /never in chat/);
+  assert.doesNotMatch(text, /should not show/);
+});
+
+test("the chat question puts the card first and the owner's words last", () => {
+  const q = fa.chatQuestion("CARD CONTEXT", "  what breaks if I wait? ");
+  assert.ok(q.startsWith("CARD CONTEXT"));
+  assert.ok(q.endsWith("The owner asks: what breaks if I wait?"));
+  assert.equal(fa.chatQuestion("", "hi"), "hi", "no card: the question is the owner's own");
+});

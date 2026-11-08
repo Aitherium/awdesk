@@ -222,6 +222,11 @@ const launcher = require("./launcher-window.cjs").createLauncher({
   // ...and on the DECISION CARDS. The empty box leads with "Needs you (N)" so the
   // owner can answer without leaving the keyboard (owner, 2026-11-06).
   cards: () => decisionCards.listSnapshot(),
+  // ...and while the fairy carries a card (a nudge is up), the empty box leads with
+  // "Ask the fairy about: <card>" -- Enter opens the fairy bubble with that card as
+  // context (owner, 2026-11-08). No nudge up: the box is exactly as before.
+  fairy: () => orbWindow.nudgeCard(),
+  askFairy: (id) => orbWindow.chatAboutCard(id),
 });
 // `!private` reveal (private-reveal.cjs): Windows Hello / Touch ID first; on a PC with
 // neither, a fresh Aitherium sign-in as THIS desk's owner. Created here, once, with
@@ -2350,21 +2355,41 @@ async function answerCardByVoice(card) {
     res = await voiceAsk.ask(cardPrompt(card), { timeoutMs: 90000 });
   } catch (error) {
     debugLog("voice card ask failed", error && error.message);
-    return;
+    return { ok: false, error: String((error && error.message) || error) };
   }
-  if (!res || !res.ok) return; // unanswered: the popup and the inbox still have it
+  // unanswered: the popup and the inbox still have it
+  if (!res || !res.ok) return { ok: false, kind: "none", error: (res && res.error) || "no answer" };
   if (!openDecisions.some((c) => c && c.id === card.id)) {
     void speakAloud("That one was already answered.", undefined, undefined, "slot0", "service:awdesk-voice");
-    return;
+    return { ok: false, kind: "none", error: "already answered" };
   }
   const reply = matchReply(card, res.answer);
   if (reply.kind === "answer") {
-    const ok = decisionCards.answerCard(card.id, reply.key, "answered by voice");
-    void speakAloud(ok ? `Answered: ${reply.label}.` : "I could not record that answer.", undefined, undefined, "slot0", "service:awdesk-voice");
-  } else if (reply.kind === "steer") {
+    // The ONE desk answer path: a destructive card still goes to the signed window.
+    const verdict = answerDeckCard(card.id, reply.key, null, "answered by voice");
+    const pending = Boolean(verdict && typeof verdict === "object" && verdict.pending);
+    const line = pending ? "Finish it in the approval window." : verdict ? `Answered: ${reply.label}.` : "I could not record that answer.";
+    void speakAloud(line, undefined, undefined, "slot0", "service:awdesk-voice");
+    return verdict ? { ok: true, kind: "answer", key: reply.key, label: reply.label, pending } : { ok: false, kind: "answer", error: "the answer did not go through" };
+  }
+  if (reply.kind === "steer") {
     const ok = decisionCards.steerCard(card.id, reply.text);
     void speakAloud(ok ? "Sent that to the session." : "I could not send that.", undefined, undefined, "slot0", "service:awdesk-voice");
+    return ok ? { ok: true, kind: "steer" } : { ok: false, kind: "steer", error: "the steer did not go through" };
   }
+  return { ok: false, kind: "none", error: "nothing heard" };
+}
+
+/**
+ * The fairy whisper's "Talk" (owner 2026-11-08): the same voice card flow, started
+ * by the owner. A muted mic or an ask already waiting is said in the whisper, never
+ * a silent no-op.
+ */
+async function talkAboutCard(card) {
+  if (!card || !card.id) return { ok: false, error: "no card" };
+  if (micMuted()) return { ok: false, muted: true, error: "microphone is muted" };
+  if (voiceAsk.waiting) return { ok: false, error: "already listening for another answer" };
+  return answerCardByVoice(card);
 }
 
 function toggleMicMute() {
@@ -3758,7 +3783,7 @@ function deckState() {
  * to the signed approval window from every surface, never to awask unsigned.
  * `parent` is the window the approval dialog belongs to.
  */
-function answerDeckCard(id, choice, parent) {
+function answerDeckCard(id, choice, parent, note = "") {
   // A destructive card (awstorage proposal/plan) is approved only by a SIGNED
   // answer, which needs a fresh passkey session: open Veil's /approve page
   // (Windows Hello) instead of the unsigned `awask answer`. The route is
@@ -3785,7 +3810,7 @@ function answerDeckCard(id, choice, parent) {
       }
     }
   }
-  const ok = decisionCards.answerCard(id, choice);
+  const ok = note ? decisionCards.answerCard(id, choice, note) : decisionCards.answerCard(id, choice);
   if (ok) {
     // The loop closes only if the SESSIONS see the answer: post it to the
     // coordination channel the fleet already reads. Best-effort — a quiet
@@ -5834,6 +5859,14 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         quiet: () => fairyQuietReason(),
         idleMs: () => {
           try { return powerMonitor.getSystemIdleTime() * 1000; } catch { return 0; }
+        },
+        // The nudge chime is silent while every voice is muted (the tray's Voices off).
+        soundMuted: () => voiceAllMuted(),
+        // "Talk": the voice card flow about THIS card, answered through answerDeckCard.
+        talk: (card) => talkAboutCard(card),
+        // "Chat": a session card brings what the session last asked and said.
+        session: (card) => {
+          try { return card && card.sessionId ? deckSession(card.id) : null; } catch { return null; }
         },
         speak: (line, { force = false } = {}) => {
           if (!force && micMuted()) return false;

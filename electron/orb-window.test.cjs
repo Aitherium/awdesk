@@ -743,9 +743,9 @@ function blockedCard(over = {}) {
   };
 }
 
-function startAttention(hooks = {}) {
+function startAttention(hooks = {}, startOpts = {}) {
   fs.rmSync(ATTENTION_FILE, { force: true });
-  start();
+  start(startOpts);
   orbWindow.showOrb();
   const calls = { answer: [], open: [], speak: [] };
   orbWindow.__setAttentionHooks({
@@ -861,4 +861,121 @@ test("an ordinary card only glows beside the fairy where it rests", async () => 
   const after = orbWin().getBounds();
   assert.ok(Math.abs(after.x - homeBefore.x) < 40 && Math.abs(after.y - homeBefore.y) < 40, "the fairy stayed home");
   orbWindow.endNudge("seen", { stay: true });
+});
+
+// ── the fairy's voice: chime, Talk, Chat (2026-11-08) ───────────────────────
+
+function lastNudgeSignal() {
+  const sent = orbWin().webContents.sent.filter(([c, p]) => c === "orb:nudge" && p && p.level > 0);
+  return sent.length ? sent[sent.length - 1][1] : null;
+}
+
+test("a nudge chimes by level (a flutter = a two-note rise)", async () => {
+  startAttention();
+  orbWindow.setAttentionCards([blockedCard()]);
+  await orbWindow.attentionTick();
+  const sig = lastNudgeSignal();
+  assert.equal(sig.level, 2);
+  assert.equal(sig.chime.length, 2, "a flutter is a two-note rise");
+  assert.equal(orbWin().opts.webPreferences.autoplayPolicy, "no-user-gesture-required", "the chime plays without a click");
+  orbWindow.endNudge("seen", { stay: true });
+});
+
+test("Fairy sounds off is remembered and silences the chime", async () => {
+  startAttention();
+  assert.equal(orbWindow.setSounds(false).sounds, false);
+  assert.equal(JSON.parse(fs.readFileSync(STATE, "utf8")).sounds, false, "the switch is remembered in orb.json");
+  orbWindow.setAttentionCards([blockedCard({ id: "d-quiet1" })]);
+  await orbWindow.attentionTick();
+  assert.equal(lastNudgeSignal().chime, null, "sounds off: no chime");
+  orbWindow.endNudge("seen", { stay: true });
+});
+
+test("every desk voice muted: the nudge is silent", async () => {
+  startAttention({ soundMuted: () => true });
+  orbWindow.setAttentionCards([blockedCard({ id: "d-mute1" })]);
+  await orbWindow.attentionTick();
+  assert.equal(lastNudgeSignal().chime, null, "every voice muted: no chime");
+  orbWindow.endNudge("seen", { stay: true });
+});
+
+test("Talk runs the voice card flow for THIS card and shows the outcome in the whisper", async () => {
+  const talked = [];
+  startAttention({
+    talk: async (card) => { talked.push(card.id); return { ok: true, kind: "answer", key: "ack", label: "I am looking now" }; },
+  });
+  orbWindow.setAttentionCards([blockedCard()]);
+  await orbWindow.attentionTick();
+  await wait(1000);
+  const whisper = nudgeWin();
+  const r = await invoke("desk:nudge-act", whisper, "talk");
+  assert.equal(r.ok, true);
+  assert.deepEqual(talked, ["d-fair"], "the talk hook got the nudged card");
+  const flashes = whisper.webContents.sent.filter(([c]) => c === "orb:nudge-flash").map(([, p]) => p);
+  assert.ok(flashes.some((f) => /Listening/.test(f.text) && f.keep), "it says it is listening, options still clickable");
+  assert.ok(flashes.some((f) => /Done: I am looking now/.test(f.text)));
+  await wait(1500);
+  assert.equal(orbWindow.nudging(), null, "answered by voice closes the whisper");
+});
+
+test("Talk with the mic muted says so in the whisper and keeps the card up", async () => {
+  startAttention({ talk: async () => ({ ok: false, muted: true, error: "microphone is muted" }) });
+  orbWindow.setAttentionCards([blockedCard()]);
+  await orbWindow.attentionTick();
+  await wait(1000);
+  const whisper = nudgeWin();
+  const r = await invoke("desk:nudge-act", whisper, "talk");
+  assert.equal(r.ok, false);
+  assert.equal(r.muted, true);
+  const flash = whisper.webContents.sent.filter(([c]) => c === "orb:nudge-flash").pop()[1];
+  assert.match(flash.text, /mic is muted/i);
+  assert.equal(flash.error, true);
+  assert.ok(orbWindow.nudging(), "the whisper stays: the owner can still click an option");
+  orbWindow.endNudge("seen", { stay: true });
+});
+
+test("Chat opens the fairy bubble focused with the card as context; the next question is about the card", async () => {
+  const prompts = [];
+  const askVision = async (_img, prompt) => { prompts.push(prompt); return { ok: true, text: "Waiting costs a day.", via: "test" }; };
+  startAttention({}, { askVision });
+  orbWindow.setAttentionCards([blockedCard()]);
+  await orbWindow.attentionTick();
+  await wait(1000);
+  assert.deepEqual(orbWindow.nudgeCard(), { id: "d-fair", title: blockedCard().title }, "the launcher's fairy row reads this");
+  const whisper = nudgeWin();
+  const r = await invoke("desk:nudge-act", whisper, "chat");
+  assert.equal(r.ok, true);
+  assert.equal(orbWindow.nudging(), null, "the whisper hands over to the bubble");
+  assert.equal(orbWindow.nudgeCard(), null);
+  const bubble = bubbleWin();
+  assert.ok(bubble && bubble.isVisible() && bubble.focused, "the bubble is up and focused");
+  const mode = bubble.webContents.sent.filter(([c]) => c === "orb:mode").pop()[1];
+  assert.equal(mode.mode, "card");
+  assert.equal(mode.title, "AitherOS-Fresh -- Desktop canvas layout");
+  const asked = await invoke("desk:orb-ask", bubble, "text", "what happens if I wait?");
+  assert.equal(asked.ok, true);
+  const p = prompts.pop();
+  assert.match(p, /AitherOS-Fresh -- Desktop canvas layout/);
+  assert.match(p, /1\. I am looking now \(suggested\)/);
+  assert.match(p, /The owner asks: what happens if I wait\?/);
+  // closing the bubble drops the card: the next question is about the screen again
+  await invoke("desk:orb-close", bubble);
+  await invoke("desk:orb-ask", bubble, "text", "and this?");
+  assert.doesNotMatch(prompts.pop(), /Desktop canvas layout/);
+});
+
+test("Chat on a card that is no longer open is refused, and the bubble stays shut", async () => {
+  startAttention();
+  const r = orbWindow.chatAboutCard("d-gone");
+  assert.equal(r.ok, false);
+  assert.equal(bubbleWin(), null);
+});
+
+test("the whisper page has Talk and Chat buttons wired to nudgeAct, and the orb page synthesizes the chime", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  assert.match(html, /data-act="talk"/);
+  assert.match(html, /data-act="chat"/);
+  assert.match(html, /api\.nudgeAct\(b\.dataset\.act\)/);
+  assert.match(html, /createOscillator\(\)/);
+  assert.doesNotMatch(html, /new Audio\(|\.mp3|\.wav/, "no audio files");
 });

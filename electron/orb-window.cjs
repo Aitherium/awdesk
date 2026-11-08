@@ -109,7 +109,9 @@ let results = null; // {mode:"find"|"web"|"folder", rows, more, total, query}
 let tripQueue = spiritCore.createTripQueue();
 let tripLog = spiritCore.createTripLog();
 let tripBusy = false;
-let bubbleMode = null; // "find" | "web" | null
+let bubbleMode = null; // "find" | "web" | "card" | null
+/** The card the bubble is chatting about (bubbleMode "card"): {id, title, context}. */
+let cardChat = null;
 /** The body whose avatar-menu row opened the bubble: it speaks the answer the
  *  owner types there (an avatar-menu row cannot carry a text prompt). */
 let pendingSlot = null;
@@ -319,6 +321,8 @@ function ensureOrb() {
     webPreferences: {
       preload: path.join(__dirname, "orb-preload.cjs"),
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
+      // The nudge chime (WebAudio) plays without a click: the fairy is never clicked first.
+      autoplayPolicy: "no-user-gesture-required",
     },
   });
   orbWindow.setAlwaysOnTop(true, "screen-saver");
@@ -593,6 +597,7 @@ function openBubble({ focus = false } = {}) {
 function closeBubble() {
   suppressed = true;
   bubbleMode = null;
+  cardChat = null;
   pendingSlot = null;
   drafting = false;
   if (alive(bubbleWindow)) bubbleWindow.hide();
@@ -913,6 +918,19 @@ async function askText(text, { slotId = null } = {}) {
   openBubble({ focus: false });
   if (!claimAsk()) return busyLine();
   try {
+    // Chatting about a card (the whisper's Chat, or Alt+Space -> "Ask the fairy
+    // about"): the card is the context, ahead of a held file or a past screen.
+    if (bubbleMode === "card" && cardChat) {
+      const question = fairyAttention.chatQuestion(cardChat.context, said);
+      const shot = await captureScreen();
+      if (!shot) {
+        fail("I could not capture the screen to answer that.\n\nCheck Settings > Privacy > Screen recording, then ask again.", { code: "capture" });
+        return { ok: false, error: "screen capture failed" };
+      }
+      const r = await runAsk(shot, orbCore.buildPrompt("text", question), said, { label: "Thinking about the card" });
+      if (r.ok) speakAnswer(r.text, slotId, { onlyIfAttached: true });
+      return r;
+    }
     // A held file or link is the context for the next question: the owner asked
     // for "follow-up questions keep the file as context".
     if (hold && hold.kind === "file") {
@@ -2236,7 +2254,9 @@ function startNudge(decision) {
   };
   const n = nudging;
   ensureNudge();
-  send("orb:nudge", { level: decision.level });
+  // The chime rides the level change (the orb page synthesizes it). The plan already
+  // held this nudge while quiet; a muted desk or "Fairy sounds: off" is silent too.
+  send("orb:nudge", { level: decision.level, chime: chimeFor(decision.level) });
   if (decision.level >= fairyAttention.LEVEL.FLUTTER) {
     const { screen } = electron();
     let cursor = null;
@@ -2382,7 +2402,102 @@ async function nudgeAct(action, key) {
     n.until = Math.max(n.until, Date.now() + 9000);
     return { ok: speakNudge(n.decision, { force: true }) };
   }
+  if (what === "talk") return talkNudge(n);
+  if (what === "chat") {
+    const r = chatAboutCard(card.id);
+    if (r.ok && nudging === n) endNudge("seen", { stay: true });
+    return r;
+  }
   return { ok: false, error: `unknown nudge action ${what}` };
+}
+
+/** The chime for a nudge at `level`, or null when the fairy should stay silent. */
+function chimeFor(level) {
+  if (state.sounds === false) return null;
+  if (hookValue("soundMuted")) return null;
+  const pattern = fairyAttention.chimePattern(level);
+  return pattern.length ? pattern : null;
+}
+
+/** "Fairy sounds: on/off" -- persisted in orb.json. */
+function setSounds(on) {
+  state.sounds = Boolean(on);
+  saveState();
+  return { ok: true, sounds: state.sounds };
+}
+
+/**
+ * "Talk": a spoken back-and-forth about THIS card through the desk's own voice card
+ * flow (main's `talk` hook = answerCardByVoice), which answers through the ONE desk
+ * answer path. The whisper stays up while the owner talks and shows the outcome.
+ */
+async function talkNudge(n) {
+  const card = n.decision.card;
+  if (String(card.kind).toLowerCase() === "credential") {
+    sendNudge("orb:nudge-flash", { text: "A secret is never said out loud. Open it to enter it.", error: true });
+    return { ok: false, error: "a credential card is not answered by voice" };
+  }
+  if (typeof (attentionHooks && attentionHooks.talk) !== "function") {
+    sendNudge("orb:nudge-flash", { text: "Talking is not wired in this build. Open it?", error: true });
+    return { ok: false, error: "no talk hook" };
+  }
+  if (n.talking) return { ok: false, error: "already talking about it" };
+  n.talking = true;
+  n.until = Math.max(n.until, Date.now() + 100_000); // the question, then up to 90 s to answer
+  sendNudge("orb:nudge-flash", { text: "Listening: say an option, or what to do instead", keep: true });
+  let verdict;
+  try { verdict = await attentionHooks.talk(card); } catch (error) { verdict = { ok: false, error: String((error && error.message) || error) }; }
+  n.talking = false;
+  if (nudging !== n) return verdict || { ok: false };
+  const v = verdict && typeof verdict === "object" ? verdict : { ok: false };
+  if (v.muted) {
+    n.until = Date.now() + 9000;
+    sendNudge("orb:nudge-flash", { text: "Your mic is muted. Unmute it from the tray, or pick an option here.", error: true });
+    return { ok: false, muted: true, error: "microphone is muted" };
+  }
+  if (v.ok && v.kind === "answer") {
+    confirmThenEnd(n, v.pending ? "Finish it in the approval window" : `Done: ${v.label || "answered"}`, "acted");
+    return v;
+  }
+  if (v.ok && v.kind === "steer") {
+    confirmThenEnd(n, "Sent what you said to the session", "acted");
+    return v;
+  }
+  n.until = Date.now() + 9000;
+  sendNudge("orb:nudge-flash", { text: v.error ? `I did not get that (${String(v.error).slice(0, 60)})` : "I did not get that. Try again, or pick one here.", error: true });
+  return { ok: false, error: v.error || "no answer" };
+}
+
+/** The card the fairy is nudging about right now ({id, title}), or null. */
+function nudgeCard() {
+  if (!nudging) return null;
+  const card = nudging.decision.card;
+  return { id: card.id, title: String(card.title || "") };
+}
+
+/**
+ * Open the fairy bubble focused with an open card loaded as context: whatever the
+ * owner types next is answered about that card (askText, bubbleMode "card").
+ * For a session's card, main's `session` hook adds what the session last said.
+ */
+function chatAboutCard(id) {
+  const card = attentionCards.find((c) => c && c.id === String(id || ""));
+  if (!card) return { ok: false, error: "that card is no longer open" };
+  let session = null;
+  if (card.sessionId) {
+    const s = hookValue("session", card);
+    if (s && typeof s === "object" && s.ok) session = s;
+  }
+  cardChat = {
+    id: card.id,
+    title: String(card.title || "this card").replace(/^Claude Code needs you:\s*/i, "").slice(0, 80),
+    context: fairyAttention.chatContext(card, Date.now(), { session }),
+  };
+  suppressed = false;
+  bubbleMode = "card";
+  openBubble({ focus: true });
+  send("orb:mode", { mode: "card", title: cardChat.title });
+  return { ok: true, id: card.id, mode: "card" };
 }
 
 function spiritMenu() {
@@ -2397,6 +2512,8 @@ function spiritMenu() {
     { type: "separator" },
     { label: attach ? "Detach the spirit" : "Attach the spirit", click: () => { void toggleAttach(); } },
     { label: "Send home", click: () => { void sendHome(); } },
+    // The nudge chime (owner 2026-11-08): on by default, remembered in orb.json.
+    { label: `Fairy sounds: ${state.sounds === false ? "off" : "on"}`, click: () => { setSounds(state.sounds === false); } },
     ...(reg.byId("quick.open") ? [{ label: "Quick menu", click: () => { void runCommandImpl?.("quick.open"); } }] : []),
     { type: "separator" },
     // The fairy IS the owner's sprite: its own rows sit on its own menu.
@@ -2538,6 +2655,7 @@ function handlers() {
         tint: { name: tint.name, css: tint.css },
         attach: publicAttach(),
         mode: bubbleMode,
+        modeTitle: bubbleMode === "card" && cardChat ? cardChat.title : null,
         sprite: publicSprite(),
         nudge: nudging && nudging.shown ? nudging.view : null,
         nudgeLevel: nudging ? nudging.decision.level : 0,
@@ -2762,6 +2880,7 @@ module.exports = {
   startOrb, stopOrb, run, ensureIpc, showOrb, hideOrb, toggleOrb, openBubble, setAttention,
   // attention: the fairy carries the cards (fairy-attention.cjs)
   NUDGE_SIZE, setAttentionCards, attentionTick, ownsAttention, nudgeAct, endNudge,
+  nudgeCard, chatAboutCard, setSounds, soundsOn: () => state.sounds !== false,
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
   attentionMems: () => attentionMems,
   askScreen, askRegion, askText, askImage, toggleBubbleFromOrb, beginDrag, endDrag,
@@ -2788,6 +2907,7 @@ module.exports = {
     attentionReturnUntil = 0;
     attentionAway = false;
     attentionHooks = {};
+    cardChat = null;
     for (const win of [nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
       try { if (alive(win)) win.destroy(); } catch { /* gone */ }
     }

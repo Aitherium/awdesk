@@ -434,6 +434,8 @@ function sanitizeState(raw) {
     y: finite(src.y),
     // The owner pulled the spirit off its avatar and left it free: do not re-orbit.
     freeRoam: src.freeRoam === true,
+    // The fairy chimes when it nudges (owner 2026-11-08), on unless turned off.
+    sounds: src.sounds !== false,
   };
 }
 
