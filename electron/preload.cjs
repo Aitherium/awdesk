@@ -42,6 +42,9 @@ contextBridge.exposeInMainWorld("deskBridge", {
     sessionAct: (id, action, text) => ipcRenderer.invoke("desk:deck-session-act",
       { id: String(id || ""), action: String(action || ""), text: text == null ? "" : String(text) }),
     openUrl: (url) => ipcRenderer.invoke("desk:deck-open-url", String(url || "")),
+    // Show a file the session edited in Explorer. Main accepts ONLY a path from
+    // that card's own session context, never an arbitrary path from the page.
+    openFile: (id, file) => ipcRenderer.invoke("desk:deck-open-file", String(id || ""), String(file || "")),
     action: (name, arg) => ipcRenderer.invoke("desk:deck-action", name, arg),
     // The rows of a non-menu surface ("beads"), from command-registry.cjs: id,
     // resolved label, icon name. A bead sends its id back through `action`.

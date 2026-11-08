@@ -3,7 +3,9 @@ import { Fragment, useContext, useEffect, useRef, useState, type CSSProperties, 
 import type { DeckDecision } from '../deck/deck-types';
 import {
   DeckLinks,
+  canOpenFile,
   forgetSessionContext,
+  openSessionFile,
   loadSessionContext,
   peekSessionContext,
   runSessionAct,
@@ -398,7 +400,19 @@ export function SessionPanel({ card, nowMs }: { card: DeckDecision; nowMs: numbe
                 <span className="deck-session-label">Edited</span>
                 <div className="deck-session-files">
                   {ctx.files.map((file) => (
-                    <span key={file} className="deck-chip deck-session-file" title={file}>{baseName(file)}</span>
+                    canOpenFile() ? (
+                      <button
+                        key={file}
+                        type="button"
+                        className="deck-chip deck-session-file"
+                        title={`Show in Explorer: ${file}`}
+                        onClick={() => void openSessionFile(card.id, file)}
+                      >
+                        {baseName(file)}
+                      </button>
+                    ) : (
+                      <span key={file} className="deck-chip deck-session-file" title={file}>{baseName(file)}</span>
+                    )
                   ))}
                 </div>
               </div>
