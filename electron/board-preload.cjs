@@ -13,4 +13,10 @@ contextBridge.exposeInMainWorld("aitherBoard", {
   close: () => ipcRenderer.invoke("board:close"),
   paste: () => ipcRenderer.invoke("board:paste"),
   exportPng: (dataUrl) => ipcRenderer.invoke("board:export", dataUrl),
+  /** An image main hands this board (the GIF picker's Shift+click). */
+  onAddImage: (fn) => {
+    const listener = (_event, img) => { try { fn(img); } catch { /* page bug stays in the page */ } };
+    ipcRenderer.on("board:add-image", listener);
+    return () => ipcRenderer.removeListener("board:add-image", listener);
+  },
 });

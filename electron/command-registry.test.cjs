@@ -258,7 +258,7 @@ test("an exported overlay opener has a caller", () => {
 test("shortcuts are registered FROM the registry, and a dead key is not advertised", () => {
   const keys = shortcuts();
   assert.deepEqual(keys.map((k) => k.accel).sort(),
-    ["Alt+Space", "Ctrl+Alt+0", "Ctrl+Alt+9", "Ctrl+Alt+B", "Ctrl+Alt+C", "Ctrl+Alt+D", "Ctrl+Alt+Down", "Ctrl+Alt+G", "Ctrl+Alt+L", "Ctrl+Alt+M", "Ctrl+Alt+N", "Ctrl+Alt+O", "Ctrl+Alt+P", "Ctrl+Alt+Q", "Ctrl+Alt+S", "Ctrl+Alt+Up", "Ctrl+Alt+W", "Ctrl+Shift+,", "Ctrl+Shift+-", "Ctrl+Shift+=", "Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+Shift+Escape", "Ctrl+Shift+M", "Ctrl+Shift+Space", "PrintScreen", "Shift+PrintScreen"]);
+    ["Alt+Space", "Ctrl+Alt+0", "Ctrl+Alt+9", "Ctrl+Alt+B", "Ctrl+Alt+C", "Ctrl+Alt+D", "Ctrl+Alt+Down", "Ctrl+Alt+G", "Ctrl+Alt+I", "Ctrl+Alt+K", "Ctrl+Alt+L", "Ctrl+Alt+M", "Ctrl+Alt+N", "Ctrl+Alt+O", "Ctrl+Alt+P", "Ctrl+Alt+Q", "Ctrl+Alt+S", "Ctrl+Alt+Up", "Ctrl+Alt+W", "Ctrl+Shift+,", "Ctrl+Shift+-", "Ctrl+Shift+=", "Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+Shift+Escape", "Ctrl+Shift+M", "Ctrl+Shift+Space", "PrintScreen", "Shift+PrintScreen"]);
   // Every Ctrl chord maps to CommandOrControl; a bare key (PrintScreen, the snip) passes through.
   assert.ok(keys.every((k) => (k.accel.startsWith("Ctrl+") ? k.electron.startsWith("CommandOrControl+") : k.electron === k.accel)));
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
@@ -413,7 +413,9 @@ test("blog: drafts everywhere, publishing nowhere (owner ruling 2026-09-19)", ()
   const asking = rows.filter((row) => row.prompt).map((row) => row.id);
   // spirit.go is the second prompt row (the spirit lane, 2026-11-02): a trip
   // argument is typed as JSON or a sentence, exactly the palette's job.
-  assert.deepEqual(asking, ["card-answer", "spirit.go", "blog.draft", "blog.show", "blog.publish"]);
+  // gif.pin / pins.add (2026-11-07): the phone link and awconnect push a GIF query
+  // or an address to the desk through the same palette row.
+  assert.deepEqual(asking, ["card-answer", "spirit.go", "gif.pin", "pins.add", "blog.draft", "blog.show", "blog.publish"]);
   assert.equal(rows.find((row) => row.id === "blog.list").prompt, undefined);
   // And a prompt row on a surface with no text field is a conformance problem.
   const stray = [{

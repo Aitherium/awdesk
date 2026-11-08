@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld("aitherInk", {
   setColor: (color) => ipcRenderer.invoke("ink:set-color", String(color || "")),
   setWidth: (width) => ipcRenderer.invoke("ink:set-width", Number(width)),
   setFade: (fadeMs) => ipcRenderer.invoke("ink:set-fade", Number(fadeMs)),
+  /** Click-through drawing: true / false, or null to toggle. */
+  passThrough: (on) => ipcRenderer.invoke("ink:pass-through", on == null ? null : Boolean(on)),
+  /** While click-through: "the pointer is over my toolbar" so it can be clicked. */
+  hoverChrome: (over) => ipcRenderer.invoke("ink:hover-chrome", Boolean(over)),
+  toBoard: () => ipcRenderer.invoke("ink:to-board"),
+  snip: () => ipcRenderer.invoke("ink:snip"),
   onState: (fn) => {
     const listener = (_event, state) => { try { fn(state); } catch { /* a page bug stays in the page */ } };
     ipcRenderer.on("ink:state", listener);

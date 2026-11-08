@@ -893,6 +893,52 @@ const COMMANDS = Object.freeze([
     id: "ink.clear", label: "Clear drawings", group: "capture", accel: "Ctrl+Alt+C",
     surfaces: ["tray", "palette"],
   }),
+  // Ink, pins and GIFs (owner 2026-11-07: "drawing over the screen, searching for
+  // GIFs and pinning them on the desktop, or a YouTube video, or a web page tab, or
+  // an app"). Ctrl+Alt+K / Ctrl+Alt+I were free against every accel in this file
+  // that day; each has the usual Shift fallback. Alt+Space verbs (desk-verbs.cjs)
+  // reach all of them by typing: draw, gif <word>, pin <url|this tab|app>, pins.
+  Object.freeze({
+    id: "ink.passthrough", label: "Draw with clicks going through", group: "capture",
+    accel: "Ctrl+Alt+K", accelFallback: "Ctrl+Alt+Shift+K",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "ink.board", label: "Save drawing to a board", group: "capture",
+    surfaces: ["palette"],
+    whySingle: "Its button is on the ink toolbar (To board); the palette (Ctrl+K) and Alt+Space `draw board` are its keyboard paths.",
+  }),
+  Object.freeze({
+    id: "ink.snip", label: "Snip with ink", group: "capture",
+    surfaces: ["palette"],
+    whySingle: "Its button is on the ink toolbar (Snip); the palette (Ctrl+K) and Alt+Space `draw snip` are its keyboard paths.",
+  }),
+  Object.freeze({
+    id: "gif.open", label: "GIF picker…", group: "capture",
+    accel: "Ctrl+Alt+I", accelFallback: "Ctrl+Alt+Shift+I",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "gif.pin", label: "Pin a GIF to the desktop", group: "capture",
+    surfaces: ["palette"],
+    whySingle: "Needs words to search; the palette (and POST /commands/run, the phone link, awconnect) carry the text. The GIF picker is its menu door.",
+    prompt: Object.freeze({ placeholder: "Words to search; the top GIF is pinned" }),
+  }),
+  Object.freeze({
+    id: "pins.add", label: "Pin to desktop…", group: "capture",
+    surfaces: ["palette"],
+    whySingle: "Needs an address; the palette (and POST /commands/run, the phone link, awconnect) carry it. Alt+Space `pin <address>` is its other door.",
+    prompt: Object.freeze({ placeholder: "A web address, a YouTube or GIF link, or aither://page" }),
+  }),
+  Object.freeze({
+    id: "pins.tab", label: "Pin this tab to desktop", group: "capture",
+    surfaces: ["palette"],
+    whySingle: "Acts on the Aither browser's tab: its menu row is the tab's own right-click menu (browser chrome); the palette and Alt+Space `pin this tab` are its keyboard paths.",
+  }),
+  Object.freeze({
+    id: "pins.open", label: "Pins…", group: "capture",
+    surfaces: ["tray", "palette"],
+  }),
   Object.freeze({
     id: "osapp.learn", label: "Learn…", group: "go", osApp: "learn",
     surfaces: ["palette", "jumplist"],

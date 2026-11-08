@@ -527,7 +527,20 @@
       // Best effort: main persists on its own timers; never block a close.
       if (dirty) void api.save(payload());
     });
+    for (const img of pendingImages.splice(0)) addOutsideImage(img);
   }
+  // Images handed in from outside (the GIF picker's Shift+click, 2026-11-07):
+  // main sends {dataUrl, name, width, height}; it lands centred like a paste. One
+  // that arrives before boot() has the board is queued, not dropped.
+  const pendingImages = [];
+  function addOutsideImage(img) {
+    if (!img || !/^data:image\//.test(String(img.dataUrl || ""))) return;
+    if (!board) { pendingImages.push(img); return; }
+    if (board.kind !== "board") return;
+    const box = fitBox({ width: Number(img.width) || 240, height: Number(img.height) || 180 }, canvasSize(), null, 0.5);
+    addItem({ id: newId(), type: "image", dataUrl: img.dataUrl, name: String(img.name || "image").slice(0, 120), ...box });
+  }
+  if (typeof api.onAddImage === "function") api.onAddImage(addOutsideImage);
   boot();
 })();
 </script>

@@ -170,3 +170,88 @@ test("the overlay fades on core.now(); performance.now() stays in laser/ripples"
   assert.ok(!/fadeAlpha\([^)]*performance\.now/.test(html),
     "no fade call is given performance.now()");
 });
+
+// ── smooth ink (2026-11-07) ──────────────────────────────────────────────────
+
+const boardsCore = require("./boards-core.cjs");
+
+function zigzag(n = 40, amp = 6) {
+  const pts = [];
+  for (let i = 0; i < n; i += 1) pts.push({ x: i * 4, y: (i % 2 ? amp : -amp), p: 0.5 });
+  return pts;
+}
+
+test("streamline absorbs jitter and keeps both ends where the pen was", () => {
+  const raw = zigzag();
+  const smooth = core.streamline(raw, 0.5);
+  assert.equal(smooth.length, raw.length);
+  assert.deepEqual([smooth[0].x, smooth[0].y], [raw[0].x, raw[0].y], "start is the pen-down point");
+  const last = smooth[smooth.length - 1];
+  assert.deepEqual([last.x, last.y], [raw[raw.length - 1].x, raw[raw.length - 1].y], "end is the pen-up point");
+  const spread = (pts) => Math.max(...pts.slice(5, -5).map((p) => Math.abs(p.y)));
+  assert.ok(spread(smooth) < spread(raw) * 0.6, `jitter shrank (${spread(smooth)} vs ${spread(raw)})`);
+  assert.deepEqual(core.streamline(raw, 0).map((p) => p.y), raw.map((p) => p.y), "amount 0 is the raw line");
+});
+
+test("strokeOutline: a closed polygon, wider where a real pen pressed harder", () => {
+  const light = [0, 1, 2, 3, 4, 5].map((i) => ({ x: i * 20, y: 0, p: 0.1 + i * 0.001 }));
+  const heavy = light.map((p) => ({ ...p, p: 0.95 + p.x * 1e-5 }));
+  const width = (outline) => Math.max(...outline.map((p) => p.y)) - Math.min(...outline.map((p) => p.y));
+  const a = core.strokeOutline(light, { size: 10, thinning: 0.7, smoothing: 0 });
+  const b = core.strokeOutline(heavy, { size: 10, thinning: 0.7, smoothing: 0 });
+  assert.ok(a.length > 2 * light.length, "both sides plus two caps");
+  assert.ok(width(b) > width(a) * 1.5, `pressure widens the line (${width(b)} vs ${width(a)})`);
+  for (const p of [...a, ...b]) assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
+});
+
+test("a mouse stroke (flat pressure) tapers by speed: a fast flick is thinner than a slow drag", () => {
+  const slow = Array.from({ length: 30 }, (_, i) => ({ x: i * 2, y: 0, p: 0.5 }));
+  const fast = Array.from({ length: 30 }, (_, i) => ({ x: i * 40, y: 0, p: 0.5 }));
+  const mean = (r) => r.reduce((s, n) => s + n, 0) / r.length;
+  const rs = core.strokeRadii(slow, { size: 10 });
+  const rf = core.strokeRadii(fast, { size: 10 });
+  assert.ok(mean(rf) < mean(rs), `fast ${mean(rf)} < slow ${mean(rs)}`);
+});
+
+test("strokeOutline survives degenerate input: none, one point, a stack of duplicates", () => {
+  assert.deepEqual(core.strokeOutline([]), []);
+  const dot = core.strokeOutline([{ x: 5, y: 5, p: 0.5 }], { size: 8 });
+  assert.equal(dot.length, 12, "one point is a dot");
+  const dupes = core.strokeOutline([{ x: 1, y: 1 }, { x: 1, y: 1 }, { x: 1, y: 1 }], { size: 8 });
+  assert.equal(dupes.length, 12, "duplicates collapse to the dot, no NaN");
+  for (const p of dupes) assert.ok(Number.isFinite(p.x));
+});
+
+test("outlinePath traces the polygon with quadratics and closes it", () => {
+  const cmds = core.outlinePath(core.strokeOutline(zigzag(10), { size: 6 }));
+  assert.equal(cmds[0].op, "M");
+  assert.equal(cmds[cmds.length - 1].op, "Z");
+  assert.ok(cmds.slice(1, -1).every((c) => c.op === "Q"));
+  assert.deepEqual(core.outlinePath([{ x: 0, y: 0 }]), [], "fewer than 3 vertices is no path");
+});
+
+test("inkToBoardItems: every mark becomes a board item boards-core keeps, origin moved to the pad", () => {
+  const items = [
+    core.normalizeItem({ id: "s", type: "stroke", color: "#ff4d4d", width: 5,
+      points: [{ x: 500, y: 300 }, { x: 520, y: 310 }, { x: 560, y: 330 }] }),
+    core.normalizeItem({ id: "a", type: "shape", tool: "arrow", color: "#ffd166", width: 2,
+      a: { x: 700, y: 500 }, b: { x: 600, y: 400 } }),
+    core.normalizeItem({ id: "r", type: "shape", tool: "rect", color: "#4ade80", width: 2,
+      a: { x: 650, y: 450 }, b: { x: 550, y: 350 } }),
+    core.normalizeItem({ id: "t", type: "text", text: "look here", color: "#ffffff", at: { x: 560, y: 520 } }),
+  ];
+  const { items: out, size } = core.inkToBoardItems(items, { pad: 24 });
+  // stroke + arrow shaft + 2 barbs + rect + text
+  assert.equal(out.length, 6);
+  const board = boardsCore.normalizeBoard({ id: "b1", kind: "board", items: out });
+  assert.equal(board.items.length, 6, "boards-core keeps every converted item");
+  const box = core.boundsOf(items);
+  assert.equal(size.width, Math.ceil(box.width + 48));
+  const minX = Math.min(...out.flatMap((i) => (i.points ? i.points.map((p) => p.x) : [i.x])));
+  assert.ok(minX >= 24 && minX <= 24 + 5, `top-left sits at the pad plus half a stroke width (${minX})`);
+  // The arrow points up-left; a 2-point stroke keeps that direction.
+  const shaft = out.find((i) => i.type === "stroke" && i.points.length === 2);
+  assert.ok(shaft.points[1].x < shaft.points[0].x && shaft.points[1].y < shaft.points[0].y);
+  assert.equal(out.find((i) => i.type === "text").color, "#1f2430", "white ink turns dark on a white board");
+  assert.deepEqual(core.inkToBoardItems([]).items, []);
+});

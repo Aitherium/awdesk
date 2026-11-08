@@ -194,6 +194,9 @@ function createLauncher({
   let searchSeq = 0;
   let inflight = null;
   let webRegistered = false;
+  // The rows the last VERB answer offered (desk-verbs.cjs): key -> action. The page
+  // runs a row BY KEY; the action never crosses the bridge.
+  const verbActions = new Map();
 
   function alive() {
     return Boolean(win && !win.isDestroyed());
@@ -409,9 +412,70 @@ function createLauncher({
     return "0 results — try a shorter word, or > for a command and ? to ask Aither";
   }
 
+  /**
+   * A desk verb (draw, gif, pin, youtube, board, canvas, pins -- desk-verbs.cjs).
+   * Returns the launcher answer, or {extraGroup, status} for a bare verb that keeps
+   * the ordinary search underneath its rows.
+   */
+  async function verbSearch(v, token) {
+    const verbs = require("./desk-verbs.cjs");
+    const ctx = { hasCanvas: Boolean(registry && registry.byId && registry.byId("canvas.open")) };
+    if (v.verb === "gif" && v.arg) {
+      try { ctx.gifs = await require("./gif-picker-window.cjs").gifSearch().search(v.arg, { limit: 8 }); }
+      catch (error) { ctx.gifs = { ok: false, reason: message(error) }; }
+    }
+    if (v.verb === "pin" && v.target === "app") {
+      try {
+        const r = await require("./search-window.cjs").universal().run(v.value, { phase: "fast" });
+        const apps = r && r.ok ? r.groups.find((g) => g.id === "apps") : null;
+        ctx.apps = apps ? apps.items : [];
+      } catch { ctx.apps = []; }
+    }
+    if (v.verb === "pins") {
+      try { ctx.pins = require("./pins-window.cjs").listPins(); } catch { ctx.pins = []; }
+    }
+    if (token !== searchSeq) return { ok: true, token, ignored: true };
+    const { rows, status } = verbs.verbRows(v, ctx);
+    verbActions.clear();
+    for (const r of rows) verbActions.set(r.key, r.action);
+    const group = verbs.verbGroup(v, rows);
+    if (v.bare && ["draw", "board", "canvas", "pins"].includes(v.verb)) return { extraGroup: group, status };
+    return { ok: true, token, mode: "all", term: v.arg, phase: "idle", groups: group ? core.capGroups([group]) : [], status };
+  }
+
+  async function runVerb(key) {
+    const action = verbActions.get(String(key || ""));
+    if (!action) return { ok: false, error: "1 row expired — type it again" };
+    const sw = require("./search-window.cjs");
+    let verdict;
+    if (action.type === "command") verdict = await run(action.id, action.arg);
+    else if (action.type === "pin") verdict = require("./pins-window.cjs").addPin(action.card);
+    else if (action.type === "pin-tab") verdict = await run("pins.tab");
+    else if (action.type === "gif-pin") verdict = require("./gif-picker-window.cjs").pinGif(action.id);
+    else if (action.type === "gif-picker") verdict = require("./gif-picker-window.cjs").openGifPicker(action.query || "");
+    else if (action.type === "browse") verdict = require("./pins-window.cjs").openInBrowser(action.url);
+    else if (action.type === "pin-show") verdict = require("./pins-window.cjs").showPin(action.id);
+    else if (action.type === "pin-close") verdict = require("./pins-window.cjs").closePin(action.id);
+    else return { ok: false, error: `1 verb row has an unknown action ${action.type}` };
+    const bad = sw.failureOf(verdict, "desk action");
+    if (bad) return { ok: false, error: bad };
+    lastPressAt = pressAt;
+    hide();
+    return { ok: true, did: action.type };
+  }
+
   async function search(text) {
     const token = ++searchSeq;
     if (inflight) { try { inflight.ctl.abort(); } catch { /* already done */ } inflight = null; }
+    const verb = require("./desk-verbs.cjs").parseDeskVerb(text);
+    let verbExtra = null;
+    if (verb) {
+      const answered = await verbSearch(verb, token);
+      if (!("extraGroup" in answered)) return answered;
+      verbExtra = answered;
+    }
+    if (token !== searchSeq) return { ok: true, token, ignored: true };
+    const withVerb = (groups) => (verbExtra && verbExtra.extraGroup ? [verbExtra.extraGroup, ...groups] : groups);
     const parsed = core.parseQuery(text);
     if (parsed.mode === "command") {
       const plan = core.commandPlan(parsed.term);
@@ -469,7 +533,7 @@ function createLauncher({
     const fastView = view(fast) || { groups: [], errors: [] };
     const payload = {
       ok: true, token, mode: "all", term: parsed.term, phase: "fast",
-      groups: core.capGroups(fastView.groups),
+      groups: core.capGroups(withVerb(fastView.groups)),
       status: statusFor(fastView.groups, fastView.errors, true),
     };
     // The slow half (files, agents, the web) lands when it lands; the box is usable
@@ -482,7 +546,7 @@ function createLauncher({
       const allView = view(all) || { groups: [], errors: [] };
       send("launcher:results", {
         ok: true, token, mode: "all", term: parsed.term, phase: "all",
-        groups: core.capGroups(allView.groups),
+        groups: core.capGroups(withVerb(allView.groups)),
         status: statusFor(allView.groups, allView.errors, false),
       });
     })();
@@ -491,6 +555,7 @@ function createLauncher({
 
   // ── actions ───────────────────────────────────────────────────────────────
   async function runRow(key, query) {
+    if (String(key || "").startsWith("verb:")) return runVerb(key);
     if (String(key || "").startsWith("card:")) {
       // A card row: `query` is a NUMBER (the 1-9 keys) or the option the owner
       // typed. Both resolve to the card's own key and are written by awask, so a
