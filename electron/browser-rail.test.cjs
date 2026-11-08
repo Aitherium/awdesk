@@ -77,7 +77,7 @@ test("a hand-edited layout file cannot wedge the window", () => {
     { railWidth: rail.RAIL_WIDTH, panelWidth: rail.PANEL_MIN, railCollapsed: false, panelCollapsed: false,
       taskbar: true, dock: true, dockOpen: false, dockHeight: rail.DOCK_HEIGHT, overlay: false,
       collapsedSections: ["Apps"], expandedSections: [], railAllSections: false,
-      launchModes: {}, agentCookieSites: [] });
+      launchModes: {}, agentCookieSites: [], desk: require("./desk-layout.cjs").normalizeDesk({}) });
   assert.equal(rail.normalizeLayout({ railWidth: null }).railWidth, rail.RAIL_WIDTH, "reset means default, not minimum");
   assert.equal(rail.normalizeLayout({ taskbar: false }).taskbar, false);
   assert.equal(rail.normalizeLayout({ overlay: "yes" }).overlay, false, "on only when exactly true");
@@ -481,4 +481,60 @@ test("the chrome caps lists AND offers the way back", () => {
     "an expanded section can never fold back to its page");
   assert.ok(chromeHtml.includes('moreRow("sec-more"'), "the cap row has no collapsed-safe glyph shape");
   assert.ok(chromeHtml.includes('moreRow("more-sections"'), "the reveal row has no collapsed-safe glyph shape");
+});
+
+/* ── pane sides (desk-layout.cjs, 2026-11-07) ────────────────────────────────── */
+
+test("sides: a right rail, a left panel and a top dock still tile the window with no overlap", () => {
+  const G = rail.GUTTER;
+  const W = 1320;
+  const H = 880;
+  const r = rail.railLayout({ width: W, height: H }, { chromeHeight: 78, panelWidth: 340, dockHeight: 300,
+    taskbarHeight: rail.TASKBAR_HEIGHT, railSide: "right", panelSide: "left", dockSide: "top", docked: true });
+  assert.deepEqual(r.rail, { x: W - 248, y: 0, width: 248, height: H - rail.TASKBAR_HEIGHT });
+  assert.equal(r.panel.x, 0, "the panel is the left column now");
+  assert.equal(r.panel.x + r.panel.width + G, r.page.x);
+  assert.equal(r.page.x + r.page.width + G, r.rail.x, "the page ends at the rail's gutter");
+  assert.equal(r.dock.y, 78, "a top dock sits right under the chrome");
+  assert.equal(r.dock.y + r.dock.height + G, r.page.y, "the page starts under the dock's gutter");
+  assert.equal(r.page.y + r.page.height, r.taskbar.y);
+  assert.equal(r.panel.y, r.page.y);
+  assert.equal(r.avatar.x, r.rail.x, "the avatar follows the rail to the right edge");
+  assert.deepEqual(r.sides, { rail: "right", panel: "left", dock: "top" });
+  // Default sides are exactly the old layout (no regression for an untouched file).
+  const d = rail.railLayout({ width: W, height: H }, { chromeHeight: 78, panelWidth: 340 });
+  const old = rail.railLayout({ width: W, height: H }, { chromeHeight: 78, panelWidth: 340, railSide: "left", panelSide: "right", dockSide: "bottom" });
+  assert.deepEqual(d, old);
+});
+
+test("the avatar slot at the bottom of the rail sits above its dock row (and above the tiles when they are outer)", () => {
+  const slot = rail.avatarSlot({ height: 1000 }, { docked: true, avatarSide: "bottom", layersSide: "bottom", avatarOrder: 1, layersOrder: 0 });
+  assert.equal(slot.y + slot.height, 1000 - rail.LAYERS_HEIGHT - rail.DOCKROW_HEIGHT);
+  const noTiles = rail.avatarSlot({ height: 1000 }, { docked: true, avatarSide: "bottom", layersVisible: false });
+  assert.equal(noTiles.y + noTiles.height, 1000 - rail.DOCKROW_HEIGHT);
+  const top = rail.avatarSlot({ height: 1000 }, { docked: true, avatarSide: "top", layersSide: "top", avatarOrder: 1, layersOrder: 0 });
+  assert.equal(top.y, rail.BRAND_HEIGHT + rail.LAYERS_HEIGHT, "tiles above the avatar push it down");
+});
+
+test("dragging a TOP dock's bottom edge: down opens it at that height, up past the strip closes it", () => {
+  assert.deepEqual(rail.dockHeightFromDrag(478, { height: 880, side: "top", top: 78 }), { dockOpen: true, dockHeight: 400 });
+  assert.deepEqual(rail.dockHeightFromDrag(100, { height: 880, side: "top", top: 78 }), { dockOpen: false });
+});
+
+test("every layout verb the chrome page sends is one main answers", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const html = fs.readFileSync(path.join(__dirname, "browser-chrome.html"), "utf8");
+  const bw = fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
+  const sent = new Set([...html.matchAll(/(?:api\.rail|verb)\("([a-z-]+)"/g)].map((m) => m[1]));
+  for (const v of ["edit-layout", "pane-side", "pane-detach", "pane-attach", "preset", "preset-save", "preset-rename",
+    "preset-delete", "layout-export", "layout-import", "rail-edit", "row-menu", "layer-move", "layers-visible"]) {
+    assert.ok(sent.has(v), `the chrome page never sends ${v}`);
+  }
+  for (const v of sent) {
+    assert.ok(bw.includes(`action === "${v}"`) || bw.includes(`case "${v}":`), `main has no answer for rail action "${v}"`);
+  }
+  // The tab strip's right-click reaches main through its own channel.
+  assert.match(html, /api\.tabMenu\(t\.id\)/);
+  assert.match(bw, /"desk:browser-tab-menu"/);
 });

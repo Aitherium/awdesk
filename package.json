@@ -62,6 +62,7 @@
     "test:space": "electron electron/space-smoke.cjs",
     "test:launcher": "electron electron/launcher-render-smoke.cjs",
     "test:browser-tabs": "electron electron/browser-tabs-smoke.cjs",
+    "test:layout-canvas": "electron electron/layout-canvas-smoke.cjs",
     "test:terminal": "electron electron/terminal-smoke.cjs",
     "test:search": "electron electron/search-smoke.cjs",
     "test:taskbar": "electron electron/taskbar-smoke.cjs",

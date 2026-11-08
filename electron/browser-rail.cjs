@@ -466,6 +466,11 @@ function normalizeLayout(raw = {}) {
     // The sites whose sign-in the agent may ride (BROWSER-M3, browser-agent-cookies.cjs):
     // empty -- the agent keeps its own session -- until the owner allows a site.
     agentCookieSites: agentCookies.normalizeSites(r.agentCookieSites),
+    // The rest of the layout document (desk-layout.cjs): pane sides, the rail's own
+    // arrangement, layer order, presets, detached-window bounds and the canvas boards.
+    // Same file, one more key -- never a second store. Required here, not at the top:
+    // desk-layout requires this module.
+    desk: require("./desk-layout.cjs").normalizeDesk(r.desk),
   };
 }
 
@@ -476,11 +481,14 @@ function dockHeightFor({ dock = true, dockOpen = false, dockHeight = DOCK_HEIGHT
 }
 
 /**
- * A drag of the dock's top edge to `pointerY` (content coordinates): the height it asks
- * for, before railLayout fits it. Dragged below the strip = closed.
+ * A drag of the dock's edge to `pointerY` (content coordinates): the height it asks
+ * for, before railLayout fits it. Dragged past the strip = closed. A dock at the BOTTOM
+ * grows upward from above the taskbar; a dock at the TOP grows downward from under the
+ * chrome (`top` is where the dock starts: the chrome height).
  */
-function dockHeightFromDrag(pointerY, { height, taskbarHeight = 0 }) {
-  const want = Math.round(height - taskbarHeight - Number(pointerY || 0));
+function dockHeightFromDrag(pointerY, { height, taskbarHeight = 0, side = "bottom", top = 0 }) {
+  const y = Number(pointerY || 0);
+  const want = Math.round(side === "top" ? y - Number(top || 0) : height - taskbarHeight - y);
   if (!Number.isFinite(want) || want < DOCK_MIN / 2) return { dockOpen: false };
   return { dockOpen: true, dockHeight: clamp(want, DOCK_MIN, DOCK_MAX, DOCK_HEIGHT) };
 }
@@ -490,26 +498,35 @@ function railWidth(collapsed, width = RAIL_WIDTH) {
 }
 
 /**
- * Where every view goes inside the window's content area.
+ * Where every view goes inside the window's content area. Defaults (the owner can move
+ * each pane, desk-layout.cjs SIDES):
  *
  *   rail | gutter | page | gutter | panel     (top: chrome, bottom: taskbar)
  *        |        ------ gutter ------
  *        |        dock (page + panel width)
  *
- * The dock sits under the page AND the panel (VS Code's bottom panel), above the
- * taskbar; the rail keeps its full height. A tall dock gives way before the page
- * drops under PAGE_MIN_HEIGHT.
+ * `railSide` puts the rail on the left or right edge; `panelSide` puts the panel on
+ * either side of the page (always inside the rail: the rail is the window's edge
+ * chrome); `dockSide` puts the dock under the page (VS Code's bottom panel) or above
+ * it, under the chrome. The dock spans page AND panel; the rail keeps its full height.
+ * A tall dock gives way before the page drops under PAGE_MIN_HEIGHT.
  * The gutters are the chrome page's own pixels: the drag handles live there.
  *
  * @param {{width: number, height: number}} content the window's content size
  */
 function railLayout(content, { collapsed = false, docked = false, chromeHeight, panelWidth = 340,
-  railWidth: wantRail = RAIL_WIDTH, panelCollapsed = false, taskbarHeight = 0, dockHeight = 0 }) {
+  railWidth: wantRail = RAIL_WIDTH, panelCollapsed = false, taskbarHeight = 0, dockHeight = 0,
+  railSide = "left", panelSide = "right", dockSide = "bottom", avatarSide = "top", layersSide = "bottom",
+  layersVisible = true, avatarOrder = 0, layersOrder = 1 }) {
   const width = Math.max(0, Math.floor(content.width || 0));
   const height = Math.max(0, Math.floor(content.height || 0));
+  const railRight = railSide === "right";
   const railW = Math.min(railWidth(collapsed, wantRail), width);
-  const rest = Math.max(0, width - railW - GUTTER);
-  const panelW = panelCollapsed ? 0 : Math.min(clamp(panelWidth, PANEL_MIN, PANEL_MAX, 340), Math.floor(rest / 2));
+  const railX = railRight ? width - railW : 0;
+  // The inner area: everything that is not the rail, minus the rail's gutter.
+  const innerX = railRight ? 0 : railW + GUTTER;
+  const innerW = Math.max(0, width - railW - GUTTER);
+  const panelW = panelCollapsed ? 0 : Math.min(clamp(panelWidth, PANEL_MIN, PANEL_MAX, 340), Math.floor(innerW / 2));
   const taskH = Math.min(Math.max(0, taskbarHeight), Math.max(0, height - chromeHeight));
   const room = Math.max(0, height - chromeHeight - taskH);
   const wantDock = Math.max(0, Math.floor(Number(dockHeight) || 0));
@@ -517,31 +534,53 @@ function railLayout(content, { collapsed = false, docked = false, chromeHeight, 
   const dockH = wantDock ? Math.max(Math.min(wantDock, room - GUTTER - PAGE_MIN_HEIGHT),
     Math.min(DOCK_STRIP_HEIGHT, Math.max(0, room - GUTTER)), 0) : 0;
   const bodyH = Math.max(0, room - (dockH ? dockH + GUTTER : 0));
-  const pageX = railW + GUTTER;
-  const pageW = Math.max(0, width - pageX - (panelW ? panelW + GUTTER : 0));
+  const dockTop = dockSide === "top";
+  const bodyY = dockTop && dockH ? chromeHeight + dockH + GUTTER : chromeHeight;
+  const panelLeft = panelSide === "left";
+  const pageW = Math.max(0, innerW - (panelW ? panelW + GUTTER : 0));
+  const pageX = panelLeft && panelW ? innerX + panelW + GUTTER : innerX;
+  const panelX = panelLeft ? innerX : innerX + innerW - panelW;
+  const railRect = { x: railX, y: 0, width: railW, height: height - taskH };
   return {
-    rail: { x: 0, y: 0, width: railW, height: height - taskH },
-    page: { x: pageX, y: chromeHeight, width: pageW, height: bodyH },
-    panel: { x: width - panelW, y: chromeHeight, width: panelW, height: bodyH },
+    rail: railRect,
+    page: { x: pageX, y: bodyY, width: pageW, height: bodyH },
+    panel: { x: panelX, y: bodyY, width: panelW, height: bodyH },
     taskbar: { x: 0, y: height - taskH, width, height: taskH },
-    dock: { x: pageX, y: height - taskH - dockH, width: Math.max(0, width - pageX), height: dockH },
-    avatar: avatarSlot({ width, height: height - taskH }, { collapsed, docked, railWidth: railW }),
+    dock: { x: innerX, y: dockTop ? chromeHeight : height - taskH - dockH, width: innerW, height: dockH },
+    avatar: avatarSlot({ width, height: height - taskH }, { collapsed, docked, railWidth: railW, railX,
+      avatarSide, layersSide, layersVisible, avatarOrder, layersOrder }),
+    sides: { rail: railRight ? "right" : "left", panel: panelLeft ? "left" : "right", dock: dockTop ? "top" : "bottom" },
   };
 }
+
+/** The "Dock the avatar here" row under (or over) the slot: 30 px button + its margins. */
+const DOCKROW_HEIGHT = 40;
 
 /**
  * The avatar slot inside the content area, or null when there is none: the rail is
  * collapsed (56 px cannot hold a body) or the avatar is floating. Portrait, as wide
  * as the rail. The slot never eats the layer strip: on a short window it shrinks,
  * and below 160 px it is gone.
+ *
+ * The slot sits at the TOP of the rail (under the brand row) or at its BOTTOM; the
+ * layer strip likewise. When both share a side, `order` says which is nearer the
+ * edge (0 = outermost). A hidden layer strip takes no height.
  */
-function avatarSlot(content, { collapsed = false, docked = false, railWidth: w = RAIL_WIDTH } = {}) {
+function avatarSlot(content, { collapsed = false, docked = false, railWidth: w = RAIL_WIDTH, railX = 0,
+  avatarSide = "top", layersSide = "bottom", layersVisible = true, avatarOrder = 0, layersOrder = 1 } = {}) {
   if (collapsed || !docked) return null;
-  const room = Math.floor((content.height || 0) - BRAND_HEIGHT - LAYERS_HEIGHT - 120);
+  const layersH = layersVisible ? LAYERS_HEIGHT : 0;
+  const room = Math.floor((content.height || 0) - BRAND_HEIGHT - layersH - 120);
   const width = railWidth(false, w);
   const height = Math.min(Math.round(width * (AVATAR_SLOT_HEIGHT / RAIL_WIDTH)), room);
   if (height < 160) return null;
-  return { x: 0, y: BRAND_HEIGHT, width, height };
+  const sameSide = layersVisible && layersSide === avatarSide;
+  const layersOuter = sameSide && layersOrder < avatarOrder;
+  if (avatarSide === "bottom") {
+    const below = (layersOuter ? layersH : 0) + DOCKROW_HEIGHT;
+    return { x: railX, y: Math.floor((content.height || 0) - below - height), width, height };
+  }
+  return { x: railX, y: BRAND_HEIGHT + (layersOuter ? layersH : 0), width, height };
 }
 
 /**
@@ -592,6 +631,7 @@ module.exports = {
   BRAND_HEIGHT,
   LAYERS,
   LAYERS_HEIGHT,
+  DOCKROW_HEIGHT,
   RAIL_COLLAPSED_WIDTH,
   RAIL_COMMANDS,
   RAIL_WIDTH,

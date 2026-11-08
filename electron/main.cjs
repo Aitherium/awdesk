@@ -3388,6 +3388,12 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
         // Returned (not void) so the palette can await and show the verdict.
         return runBlogMenuCommand(command, arg, { surface });
       }
+      if (command && command.layout) {
+        // The browser's layout and the pin canvas (desk-layout.cjs, browser-canvas.cjs):
+        // the verb is data on the record, browser-window.layoutCommand runs it, and the
+        // verdict is RETURNED so the palette can show why a typed name was refused.
+        return browserWindow.layoutCommand(command.layout, arg);
+      }
       if (command && command.orb) {
         // The floating ask orb / spirit: orb-window.cjs owns the windows, the
         // queue, the trips and the vision ladder; a row is data (`orb: "toggle" |
@@ -3794,7 +3800,8 @@ browserWindow.setShellHost({
   docked: () => avatarDock.isDocked(),
   overlayVisible: () => Boolean(desktopStatus().overlay.visible),
   popupMenu: (win) => Menu.buildFromTemplate(trayTemplateNow()).popup({ window: win }),
-  run: (id) => runCommand(id, undefined, { surface: "browser-rail" }),
+  // The tab menu hands an argument too (pins.tab: the tab id); rail rows send none.
+  run: (id, arg) => runCommand(id, arg, { surface: "browser-rail" }),
   // Read aloud from the browser: AitherVoice through the desk's one speech path (the
   // master/actor faders, mutes and pronunciation apply), in the docked body's voice.
   speak: (text) => speakAloud(String(text || "").slice(0, 2000)),
@@ -4249,6 +4256,12 @@ function wireConsoleHost(legacy) {
       },
       notebooks: {
         open: () => browserWindow.openInternal("notebooks", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
+      // The pin canvas lives in the browser (its app cards are live page views there).
+      canvas: {
+        open: () => browserWindow.openInternal("canvas", null, { askAgent: browserAskAgent }),
         close: () => {},
         isOpen: () => false,
       },

@@ -60,6 +60,7 @@ const GROUPS = Object.freeze({
   blog: Object.freeze({ menu: "Blog" }),
   sprite: Object.freeze({ menu: "Sprite" }),
   aw: Object.freeze({ menu: "aw tools" }),
+  layout: Object.freeze({ menu: "Browser layout" }),
 });
 
 /**
@@ -650,6 +651,100 @@ const COMMANDS = Object.freeze([
   Object.freeze({
     id: "browser.open", label: "Aither Browser…", group: "go", icon: "globe",
     surfaces: ["palette", "beads", "jumplist"],
+  }),
+  // ── the browser's layout and the pin canvas (owner, 2026-11-07: "resize and
+  // detach/reattach, reorganize and rearrange, and have access to a canvas for pinning
+  // apps and widgets"). DATA rows: `layout` is the verb browser-window.layoutCommand
+  // runs, so every drag, right-click and Customize-panel button has a palette path
+  // (docs/UX-REIMPLEMENTATION.md: no capability is gesture-only). One commented block.
+  Object.freeze({
+    id: "layout.edit", label: "Browser: edit layout (move, detach, hide panes)", menuLabel: "Edit layout",
+    group: "layout", layout: "edit", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "layout.preset.default", label: "Browser layout: Default", menuLabel: "Default", group: "layout",
+    layout: "preset:Default", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "layout.preset.focus", label: "Browser layout: Focus (rail collapsed, no panel)", menuLabel: "Focus", group: "layout",
+    layout: "preset:Focus", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "layout.preset.ops", label: "Browser layout: Ops (tall dock, wide panel)", menuLabel: "Ops", group: "layout",
+    layout: "preset:Ops", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "layout.save", label: "Browser layout: save as…", group: "layout", layout: "save",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Name for this layout" }),
+    whySingle: "Needs a typed name (only the palette has a text field); the browser's Customize panel has Save as.",
+  }),
+  Object.freeze({
+    id: "layout.load", label: "Browser layout: load a saved layout…", group: "layout", layout: "load",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Name of a saved layout" }),
+    whySingle: "Needs a typed name; the Customize panel's layout picker is the mouse path.",
+  }),
+  Object.freeze({
+    id: "layout.export", label: "Browser layout: export to a file…", menuLabel: "Export…", group: "layout",
+    layout: "export", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "layout.import", label: "Browser layout: import from a file…", menuLabel: "Import…", group: "layout",
+    layout: "import", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "layout.reset", label: "Browser layout: reset", menuLabel: "Reset", group: "layout",
+    layout: "reset", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "layout.move-pane", label: "Browser layout: move a pane…", group: "layout", layout: "side",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "panel left | dock top | rail right | avatar bottom | layers top" }),
+    whySingle: "Needs a pane and a side typed; edit-layout mode's drop zones and buttons are the mouse path.",
+  }),
+  Object.freeze({
+    id: "layout.detach-pane", label: "Browser layout: detach a pane into its own window…", group: "layout", layout: "detach",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "panel | dock | taskbar" }),
+    whySingle: "Needs a pane typed; edit-layout mode's Detach buttons are the mouse path.",
+  }),
+  Object.freeze({
+    id: "layout.attach-pane", label: "Browser layout: reattach a pane…", group: "layout", layout: "attach",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "panel | dock | taskbar" }),
+    whySingle: "Needs a pane typed; edit-layout mode's Reattach button and closing the pane's window are the mouse paths.",
+  }),
+  Object.freeze({
+    id: "layout.layers", label: "Browser layout: show or hide the layer tiles", menuLabel: "Layer tiles", group: "layout",
+    layout: "layers", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "rail.pin", label: "Rail: pin a row…", group: "layout", layout: "rail.pin",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Row name (e.g. Files)" }),
+    whySingle: "Needs a row named; right-click a rail row for the mouse path.",
+  }),
+  Object.freeze({
+    id: "rail.remove", label: "Rail: remove a row…", group: "layout", layout: "rail.remove",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Row name (e.g. Chaos)" }),
+    whySingle: "Needs a row named; right-click a rail row for the mouse path.",
+  }),
+  Object.freeze({
+    id: "rail.move", label: "Rail: move a row…", group: "layout", layout: "rail.move",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Files up | Files down | Files to Work" }),
+    whySingle: "Needs a row and a direction typed; dragging in edit-layout mode and Alt+Up/Down on a row are the other paths.",
+  }),
+  Object.freeze({
+    id: "rail.restore", label: "Rail: restore removed rows", menuLabel: "Restore removed rail rows", group: "layout",
+    layout: "rail.restore", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "canvas.open", label: "Canvas: pinned apps and widgets", menuLabel: "Canvas", group: "go", icon: "grid",
+    layout: "canvas.open", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "canvas.pin-tab", label: "Canvas: pin the current tab", group: "layout", layout: "canvas.pin-tab",
+    surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "canvas.pin-url", label: "Canvas: pin an address…", group: "layout", layout: "canvas.pin-url",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "https://… or aither://fleet" }),
+    whySingle: "Needs an address typed; the canvas page's own Pin field and a tab's right-click are the mouse paths.",
   }),
   // Aither Hearth (2026-09-30): the owner's PLATFORM Hearth -- reminders, approval
   // cards, signed receipts -- as the `hearth` window on the AitherDesktop app. The

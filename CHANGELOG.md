@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Browser layout you can rearrange: Customize (⚙) → Edit layout shows every pane as a box. Move the assistant panel left or right, the terminal dock above or below the page, the rail to either edge, and the avatar slot and layer tiles to the top or bottom of the rail. Drag a pane's handle to a highlighted edge or use its buttons. Esc finishes.
+- Detach any pane: the assistant panel, terminal dock and taskbar each pop into their own window and come back. Each window reopens where you left it; closing it from its title bar puts the pane back.
+- Layout presets: Default, Focus (rail collapsed, no panel), Ops (tall dock, wide panel), plus your own (save, rename, delete). Export and import a layout file that also carries your presets.
+- Rearrange the rail: drag rows and sections in edit mode, or press Alt+Up/Down on a focused row or section. Right-click a row to pin it to a Pinned section, remove it, move it to another section, or pin it to the canvas. Alt+Left/Right reorders the layer tiles.
+- Canvas (aither://canvas, under Today on the rail): your whiteboards as a pannable, zoomable board with a snap grid. It is the same board the floating whiteboard window draws on (Float opens it there). Pin live pages and Aither pages, YouTube (privacy embed), GIFs, images, sticky notes and widgets: clock, Inbox count, awsh sessions, inference, system. Cards move, resize, lock and remove, by mouse or keyboard. Right-click a tab → Pin to canvas.
+- Link a board to an AitherOne canvas: "Link to AitherOne" creates the doc, and "Sync" sends or fetches whichever side changed. If both sides changed, it asks which to keep and writes nothing until you choose. AitherOne items the desk cannot show are kept, not dropped. Unlinked boards stay local and work offline.
+- Every new gesture is also a palette command (layout.*, rail.*, canvas.*).
+
 ## 0.1.28 - 2026-11-01
 
 - Restart Aither no longer leaves you with no desk: the relaunched Desk waits for the old one to let go instead of quitting.

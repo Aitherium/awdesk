@@ -354,6 +354,17 @@ test("every command either has a handler or a dynamic submenu", () => {
         `${command.id} names blog verb "${command.blog}" that blog-commands.cjs does not know`);
       continue;
     }
+    if (command.layout) {
+      // The browser's layout + canvas verbs: the default branch hands the verb (and the
+      // palette's typed argument) to browser-window.layoutCommand, which must run it.
+      assert.match(body, /command\.layout/, "the layout branch is gone");
+      assert.match(body, /browserWindow\.layoutCommand\(command\.layout, arg\)/, "nothing routes a layout verb");
+      const bw = fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
+      const runs = command.layout.startsWith("preset:") ? bw.includes('v.startsWith("preset:")')
+        : bw.includes(`case "${command.layout}":`);
+      assert.ok(runs, `${command.id} names layout verb "${command.layout}" that layoutCommand does not run`);
+      continue;
+    }
     if (command.orb) {
       // The floating ask orb: the default branch hands the verb to orb-window.run,
       // so a new orb row is one record and no case.
@@ -413,7 +424,11 @@ test("blog: drafts everywhere, publishing nowhere (owner ruling 2026-09-19)", ()
   const asking = rows.filter((row) => row.prompt).map((row) => row.id);
   // spirit.go is the second prompt row (the spirit lane, 2026-11-02): a trip
   // argument is typed as JSON or a sentence, exactly the palette's job.
-  assert.deepEqual(asking, ["card-answer", "spirit.go", "blog.draft", "blog.show", "blog.publish"]);
+  // The browser-layout rows (2026-11-07) prompt for a layout name, a pane, a rail row or
+  // an address -- the typed twins of the Customize panel, edit-layout mode and right-clicks.
+  const layoutPrompts = ["layout.save", "layout.load", "layout.move-pane", "layout.detach-pane", "layout.attach-pane",
+    "rail.pin", "rail.remove", "rail.move", "canvas.pin-url"];
+  assert.deepEqual(asking, ["card-answer", ...layoutPrompts, "spirit.go", "blog.draft", "blog.show", "blog.publish"]);
   assert.equal(rows.find((row) => row.id === "blog.list").prompt, undefined);
   // And a prompt row on a surface with no text field is a conformance problem.
   const stray = [{

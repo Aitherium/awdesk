@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' file:; img-src data: blob:">
 <title>Aither board</title>
 <style>
   :root {
@@ -52,6 +52,28 @@
     border: 1px solid var(--edge); box-shadow: 0 8px 22px rgba(0,0,0,.45); opacity: 0; transition: opacity 140ms ease;
     pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #toast.show { opacity: 1; }
+  /* Pinned cards (pin-cards.js, the renderer aither://canvas uses): over the drawing,
+     in the same board coordinates. A page card's body is a live view main lays on top. */
+  #pins { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 3; }
+  #pins .card { position: absolute; pointer-events: auto; display: flex; flex-direction: column; border: 1px solid var(--edge);
+    border-radius: 10px; background: #1b2028; color: var(--ink); box-shadow: 0 6px 20px rgba(0,0,0,.35); outline: none; }
+  #pins .card.sel, #pins .card:focus-visible { border-color: var(--accent); }
+  #pins .head { height: 26px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 4px 0 8px;
+    border-bottom: 1px solid var(--edge); cursor: grab; }
+  #pins .card.locked .head { cursor: default; }
+  #pins .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; font-size: 11.5px; }
+  #pins .head button { all: unset; cursor: pointer; width: 20px; height: 20px; text-align: center; border-radius: 5px; color: var(--muted); font-size: 11px; }
+  #pins .head button:hover { color: var(--ink); background: rgba(255,255,255,.08); }
+  #pins .body { flex: 1; min-height: 0; position: relative; overflow: hidden; padding: 8px; font-size: 12px; }
+  #pins .card.app .body { padding: 0; display: grid; place-items: center; color: var(--muted); }
+  #pins .grip { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; cursor: nwse-resize;
+    background: linear-gradient(135deg, transparent 55%, var(--muted) 55%); }
+  #pins .card.locked .grip { display: none; }
+  #pins .note textarea { width: 100%; height: 100%; resize: none; border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; user-select: text; }
+  #pins .stat .v { font-size: 28px; font-weight: 700; } #pins .sub { color: var(--muted); font-size: 11px; }
+  #pins .list .row { display: flex; justify-content: space-between; gap: 6px; padding: 2px 0; }
+  #pins .clock .time { font-size: 26px; font-weight: 700; } #pins .err { color: var(--muted); }
+  #pins .tone-ok { color: #6c9; } #pins .tone-warn { color: #e5b04a; } #pins .tone-bad { color: #e5656b; }
 </style>
 </head>
 <body>
@@ -81,11 +103,14 @@
   </div>
   <div id="stage">
     <canvas id="canvas"></canvas>
+    <div id="pins" aria-label="Pinned cards"></div>
     <textarea id="editor" spellcheck="false"></textarea>
     <div id="toast" role="status"></div>
   </div>
 </div>
 <div id="noteView"><textarea id="noteText" spellcheck="false" aria-label="Note text (markdown)"></textarea></div>
+<script src="middle-drag.js"></script>
+<script src="pin-cards.js"></script>
 <script>
 (() => {
   const api = window.aitherBoard;
@@ -301,6 +326,9 @@
   // ── pointer ───────────────────────────────────────────────────────────────
   canvas.addEventListener("pointerdown", (event) => {
     if (board.kind !== "board") return;
+    // The middle button is the owner's move/resize/duplicate rule (below); the tools
+    // draw with the primary button only.
+    if (event.button !== 0) return;
     if (editing) commitEditor();
     const p = pos(event);
     canvas.setPointerCapture(event.pointerId);
@@ -362,6 +390,94 @@
   }
   canvas.addEventListener("pointerup", endPointer);
   canvas.addEventListener("pointercancel", endPointer);
+
+  // ── the owner's middle-button rule on ink (middle-drag.js) ────────────────────
+  // middle-drag moves an item, Shift resizes it, Ctrl duplicates it. This window has
+  // no pan (its canvas IS the board's extent), so middle on empty space does nothing.
+  window.AitherMiddleDrag.suppressAutoscroll(canvas);
+  canvas.addEventListener("pointerdown", (event) => {
+    if (board.kind !== "board" || event.button !== 1) return;
+    const p = pos(event);
+    const found = topItem(p);
+    const gesture = window.AitherMiddleDrag.classify(event, Boolean(found));
+    if (!gesture || gesture === "pan") return;
+    if (editing) commitEditor();
+    let item = found;
+    if (gesture === "duplicate") {
+      item = { ...JSON.parse(JSON.stringify(found)), id: newId() };
+      board.items.push(item);
+    }
+    const start = JSON.parse(JSON.stringify(item));
+    window.AitherMiddleDrag.track(event, canvas, {
+      onMove: ({ dx, dy }) => {
+        if (gesture === "resize") resizeItem(item, start, dx, dy);
+        else moveItem(item, start, dx, dy);
+        redraw();
+      },
+      onEnd: ({ moved }) => { if (moved || gesture === "duplicate") markDirty(); redraw(); },
+    });
+  });
+  function moveItem(item, start, dx, dy) {
+    item.x = start.x + dx;
+    item.y = start.y + dy;
+    if (item.points) item.points = start.points.map((q) => ({ x: q.x + dx, y: q.y + dy }));
+  }
+  function resizeItem(item, start, dx, dy) {
+    const w = Math.max(8, start.w + dx);
+    const h = Math.max(8, start.h + dy);
+    if (item.points) {
+      const sx = w / Math.max(1, start.w);
+      const sy = h / Math.max(1, start.h);
+      item.points = start.points.map((q) => ({ x: start.x + (q.x - start.x) * sx, y: start.y + (q.y - start.y) * sy }));
+      updateStrokeBounds(item);
+    } else {
+      item.w = w;
+      item.h = h;
+    }
+  }
+
+  // ── pinned cards: the SAME renderer as aither://canvas (pin-cards.js) ──────────
+  let pinState = { pins: [], widgets: [] };
+  let pinSelected = null;
+  const pinTimers = new Map();
+  const pinCards = window.AitherPinCards.create({
+    api: { op: (o) => api.pinOp(o), widget: (id) => api.pinWidget(id), open: (id) => api.pinOpen(id) },
+    widgets: () => pinState.widgets, zoom: () => 1,
+    select: (id) => { pinSelected = id; for (const n of document.querySelectorAll("#pins .card")) n.classList.toggle("sel", n.dataset.id === id); },
+    selected: () => pinSelected, timers: pinTimers, onDrag: () => reportPinViews(), say: toast,
+    onSettle: () => { if (pinsStale) { pinsStale = false; void loadPins(); } },
+  });
+  let pinsStale = false;
+  function renderPins() {
+    for (const t of pinTimers.values()) clearInterval(t);
+    pinTimers.clear();
+    const layer = $("pins");
+    layer.textContent = "";
+    for (const pin of pinState.pins) layer.append(pinCards.renderCard(pin));
+    reportPinViews();
+  }
+  let pinFrame = 0;
+  function reportPinViews() {
+    if (pinFrame) return;
+    pinFrame = requestAnimationFrame(() => {
+      pinFrame = 0;
+      const v = $("stage").getBoundingClientRect();
+      const cards = [];
+      for (const node of document.querySelectorAll("#pins .card.app")) {
+        const r = node.querySelector(".body").getBoundingClientRect();
+        cards.push({ id: node.dataset.id, rect: { x: r.left, y: r.top, width: r.width, height: r.height } });
+      }
+      void api.pinViews({ viewport: { x: v.left, y: v.top, width: v.width, height: v.height }, cards });
+    });
+  }
+  async function loadPins() {
+    // Never re-render under a card drag (the dragged node would lose its pointerup).
+    if (pinCards.busy()) { pinsStale = true; return; }
+    const reply = await api.pins();
+    if (!reply || !reply.ok) return;
+    pinState = reply;
+    renderPins();
+  }
 
   function updateStrokeBounds(item) {
     const xs = item.points.map((p) => p.x);
@@ -521,7 +637,10 @@
       setTimeout(() => $("noteText").focus(), 60);
     } else {
       resizeCanvas();
-      new ResizeObserver(() => resizeCanvas()).observe($("stage"));
+      new ResizeObserver(() => { resizeCanvas(); reportPinViews(); }).observe($("stage"));
+      void loadPins();
+      // A pin added or moved from aither://canvas (or a tab's "Pin to canvas") lands here too.
+      api.onChanged(() => void loadPins());
     }
     window.addEventListener("beforeunload", () => {
       // Best effort: main persists on its own timers; never block a close.
