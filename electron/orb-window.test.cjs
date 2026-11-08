@@ -683,6 +683,18 @@ test("the hover loop cannot inflate the orb (the timer that leaked at 33 ms)", (
   orbWindow.pump();
 });
 
+test("a move to a point off every display lands on the nearest screen (fairy flew off-screen, 2026-11-07)", () => {
+  writeState({ visible: true, x: 200, y: 200 });
+  start();
+  // Right of the 3840-wide primary: the spot a window parked off-desktop handed the orbit.
+  orbWindow.__test.moveOrb(5408, 758);
+  const b = orbWin().getBounds();
+  assert.deepEqual({ w: b.width, h: b.height }, { w: 72, h: 72 });
+  assert.ok(b.x + b.width <= 3840 && b.x >= 0, `x ${b.x} is off the primary`);
+  assert.ok(b.y >= 0 && b.y + b.height <= 2120, `y ${b.y} is off the work area`);
+  orbWindow.pump();
+});
+
 test("no orb-window code path moves the window with setPosition alone", () => {
   const src = fs.readFileSync(path.join(__dirname, "orb-window.cjs"), "utf8");
   assert.doesNotMatch(src, /\.setPosition\(/, "use moveOrb: setPosition drifts the size on Windows");
