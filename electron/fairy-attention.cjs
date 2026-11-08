@@ -37,6 +37,8 @@
  * per-card memory is kept. node --test.
  */
 
+const cardUiCore = require("./card-ui.cjs");
+
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 
@@ -425,10 +427,39 @@ function whisperView(decision, nowMs = Date.now()) {
     lead: decision.lead || leadFor(card, {}, { nowMs }),
     title: title.length > 110 ? `${title.slice(0, 109)}…` : title,
     why: decision.why || whyNow(card, nowMs),
+    // Owner 2026-11-08: "I need this to give me more info". The whisper carries
+    // what the card actually says -- its summary, its facts -- not just a title.
+    summary: kind === "credential" ? "" : clip(String(card.summary || card.detail || ""), 420),
+    facts: kind === "credential" ? [] : (Array.isArray(card.facts) ? card.facts : [])
+      .filter((f) => typeof f === "string" && f.trim())
+      .slice(0, 4)
+      .map((f) => clip(f.trim(), 220)),
     options,
     credential: kind === "credential",
     more: Math.max(0, Number(decision.more) || 0),
+    // The card's generated UI (card-ui.cjs render tree), when it is current and
+    // valid; the page draws it with createElement/textContent and falls back to
+    // the options above on null. Re-checked here against the card's OWN keys.
+    ui: whisperUi(card, kind),
+    uiKeys: whisperUi(card, kind) ? cardKeys(card) : [],
   };
+}
+
+function clip(s, n) {
+  const t = s.replace(/[ \t]+\n/g, "\n").trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+}
+
+/** The render tree the whisper may draw, or null (credential, stale, invalid). */
+function whisperUi(card, kind) {
+  if (kind === "credential" || !card.uiTree) return null;
+  return cardUiCore.checkTree(card.uiTree, cardKeys(card)) > 0 ? card.uiTree : null;
+}
+
+function cardKeys(card) {
+  return (Array.isArray(card.options) ? card.options : [])
+    .filter((o) => o && typeof o.key === "string")
+    .map((o) => o.key);
 }
 
 // ── the fairy's voice: a chime, and a chat about the card ──────────────────

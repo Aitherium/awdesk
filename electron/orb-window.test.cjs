@@ -999,3 +999,90 @@ test("the whisper grows to fit its full button labels, clamped and kept on scree
   assert.doesNotMatch(html, /#n-acts button \{[^}]*text-overflow: ellipsis/, "no ellipsis on a choice");
   orbWindow.endNudge("seen", { stay: true });
 });
+
+// ── generated card UI (A2UI v0.9, card-ui.cjs) in the whisper (2026-11-08) ──
+
+/** A raw stored card with a current, valid ui -> the desk shape main hands the fairy. */
+function uiCard(mutateUi = () => {}, id = "d-fair-ui") {
+  const cardUi = require("./card-ui.cjs");
+  const raw = {
+    id, status: "open", kind: "blocked", blocking: true, urgency: "high",
+    created_at: Math.floor(Date.now() / 1000) - 600,
+    title: "Relaunch the AWS runners?", summary: "16 runners are ghosts.", facts: ["last seen 11-07"],
+    options: [
+      { key: "relaunch", label: "Relaunch all sixteen under the org runner group, using the owner-tenant env" },
+      { key: "hold", label: "Hold" },
+    ],
+    default_key: "hold",
+  };
+  const sid = "card-d-fair-ui";
+  const ui = {
+    a2ui: "v0.9",
+    card_hash: cardUi.cardHash(raw),
+    messages: [
+      { version: "v0.9", createSurface: { surfaceId: sid, catalogId: cardUi.BASIC_CATALOG_ID } },
+      { version: "v0.9", updateComponents: { surfaceId: sid, components: [
+        { id: "root", component: "Column", align: "stretch", children: ["title", "f0", "b0", "b1"] },
+        { id: "title", component: "Text", variant: "h3", text: raw.title },
+        { id: "f0", component: "Text", variant: "caption", text: raw.facts[0] },
+        { id: "b0", component: "Button", variant: "primary", text: raw.options[0].label,
+          action: { event: { name: "answer:relaunch" } } },
+        { id: "b1", component: "Button", variant: "borderless", text: "Hold",
+          action: { event: { name: "answer:hold" } } },
+      ] } },
+    ],
+  };
+  mutateUi(ui);
+  return require("./decision-cards.cjs").cardFromRaw({ ...raw, ui });
+}
+
+test("a card with a current ui: the whisper gets the tree, and its button answers through nudgeAct", async () => {
+  const calls = startAttention();
+  orbWindow.setAttentionCards([uiCard()]);
+  await orbWindow.attentionTick();
+  await wait(1000);
+  const whisper = nudgeWin();
+  const view = whisper.webContents.sent.filter(([c]) => c === "orb:nudge-view").pop()[1];
+  assert.ok(view.ui && view.ui.type === "column", "the render tree rides the whisper view");
+  assert.deepEqual(view.uiKeys, ["relaunch", "hold"]);
+  const button = view.ui.children.find((n) => n.type === "button" && n.variant === "primary");
+  assert.match(button.text, /owner-tenant env$/, "the full label, not cut");
+  const bad = await invoke("desk:nudge-act", whisper, "answer", "rm -rf");
+  assert.equal(bad.ok, false, "main still re-checks the key");
+  const r = await invoke("desk:nudge-act", whisper, "answer", button.key);
+  assert.equal(r.ok, true);
+  assert.deepEqual(calls.answer, [["d-fair-ui", "relaunch"]]);
+  await wait(1500);
+  assert.equal(orbWindow.nudging(), null);
+});
+
+test("a stale or invalid ui falls back to the card's own options in the whisper", async () => {
+  const cases = [
+    (ui) => { ui.card_hash = "0".repeat(64); },
+    (ui) => { ui.messages[1].updateComponents.components[3].action.event.name = "answer:nope"; },
+  ];
+  for (const [i, mutate] of cases.entries()) {
+    orbWindow.__reset();
+    FakeWindow.all.length = 0;
+    startAttention();
+    orbWindow.setAttentionCards([uiCard(mutate, `d-fair-ui-bad${i}`)]);
+    await orbWindow.attentionTick();
+    await wait(1000);
+    const view = nudgeWin().webContents.sent.filter(([c]) => c === "orb:nudge-view").pop()[1];
+    assert.equal(view.ui, null);
+    assert.deepEqual(view.options.map((o) => o.key), ["relaunch", "hold"]);
+    orbWindow.endNudge("seen", { stay: true });
+  }
+});
+
+test("the whisper page draws the ui with DOM APIs only and answers via nudgeAct", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  const start = html.indexOf("function uiNode(");
+  const end = html.indexOf("function render(v)", start);
+  assert.ok(start > 0 && end > start);
+  const body = html.slice(start, end);
+  assert.doesNotMatch(body, /innerHTML|insertAdjacentHTML|outerHTML|document\.write/);
+  assert.match(body, /textContent = n\.text/);
+  assert.match(body, /api\.nudgeAct\("answer", n\.key\)/);
+  assert.doesNotMatch(html, /#n-ui button \{[^}]*text-overflow: ellipsis/, "no ellipsis on a choice");
+});

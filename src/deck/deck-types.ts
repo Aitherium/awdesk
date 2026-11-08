@@ -4,6 +4,8 @@
  * vitest arms exercise exactly this logic.
  */
 
+import type { CardUiNode } from './card-ui-tree';
+
 export interface DeckDecision {
   id: string;
   title: string;
@@ -49,6 +51,11 @@ export interface DeckDecision {
   /** The signed audit of a CLOSED credential card (never the value). Normally
    *  null — a listed card is open by definition. */
   credentialReceipt?: unknown;
+  /** The card's generated UI as a render tree (electron/card-ui.cjs), present only
+   *  when its card_hash is current and it validated against `options`; null/absent
+   *  = draw the card as always. Never on a credential card. */
+  uiTree?: CardUiNode | null;
+  uiCurrent?: boolean;
 }
 
 export interface DeckSlot {
