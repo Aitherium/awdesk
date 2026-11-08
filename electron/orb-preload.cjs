@@ -100,4 +100,10 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   onVeil: (fn) => on("orb:veil", fn),
   // the owner's AitherSprite the fairy wears ({name, stage, mood, line, tooltip, tint} | null)
   onSprite: (fn) => on("orb:sprite", fn),
+  // attention (fairy-attention.cjs): the whisper's buttons and the fairy's nudge level.
+  nudgeAct: (action, key) => ipcRenderer.invoke("desk:nudge-act", String(action || ""),
+    typeof key === "boolean" ? key : String(key == null ? "" : key)),
+  onNudge: (fn) => on("orb:nudge", fn),
+  onNudgeView: (fn) => on("orb:nudge-view", fn),
+  onNudgeFlash: (fn) => on("orb:nudge-flash", fn),
 });

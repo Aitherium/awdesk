@@ -7,7 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { signature, listOpen, actionableCount, watch, answerCard, cancelCard,
-  steerCard, startHeartbeat,
+  steerCard, startHeartbeat, heartbeatBody,
 } = require("./decision-cards.cjs");
 const cards = require("./decision-cards.cjs");
 
@@ -299,6 +299,28 @@ test("startHeartbeat writes a fresh .desk-alive and removes it on stop", () => {
   stop();
   assert.equal(beatFn, null, "stop clears the interval");
   assert.equal(fs.existsSync(beatPath), false, "quit removes the heartbeat — awask back on its own window");
+});
+
+test("the heartbeat carries the fairy's claim only while claim() says so, re-judged every beat", () => {
+  const dir = tmpStore();
+  let beatFn = null;
+  let owns = true;
+  const stop = startHeartbeat({
+    dir,
+    claim: () => (owns ? { attention: "fairy" } : null),
+    setIntervalFn: (fn) => { beatFn = fn; return { unref() {} }; },
+    clearIntervalFn: () => {},
+  });
+  const read = () => JSON.parse(fs.readFileSync(path.join(dir, ".desk-alive"), "utf8"));
+  assert.equal(read().attention, "fairy", "the fairy is up: awask leaves its Tk window down");
+  owns = false;
+  beatFn();
+  assert.equal(read().attention, undefined, "the fairy hid: the next beat drops the claim, the window comes back");
+  stop();
+  // A throwing or junk claim is no claim (fail toward the window).
+  assert.equal(heartbeatBody(() => { throw new Error("x"); }).attention, undefined);
+  assert.equal(heartbeatBody(() => ({ attention: "<script>" })).attention, undefined);
+  assert.equal(heartbeatBody(null).attention, undefined);
 });
 
 test("the heartbeat filename is ONE contract across the two languages", () => {

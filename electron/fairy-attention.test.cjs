@@ -1,0 +1,228 @@
+"use strict";
+
+// fairy-attention.cjs under node --test: the triage (what matters), the ladder
+// (ignored nudges earn a louder one, capped by importance), the pacing (one at a
+// time, held while quiet or away), the "why now" words and the flutter placement
+// that never covers the pointer. Every clock is passed in.
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fa = require("./fairy-attention.cjs");
+
+const NOW = 1_800_000_000_000;
+const MIN = 60_000;
+const sec = (ms) => Math.floor(ms / 1000);
+
+function card(over = {}) {
+  return {
+    id: "d-test",
+    title: "Cut Aither Android 0.4.4 release?",
+    kind: "decision",
+    urgency: "normal",
+    createdAt: sec(NOW - 30 * MIN),
+    deadline: 0,
+    options: [{ key: "cut", label: "Cut 0.4.4 now" }, { key: "wait", label: "Wait" }],
+    defaultKey: "wait",
+    blocking: false,
+    ...over,
+  };
+}
+
+// ── triage ──────────────────────────────────────────────────────────────────
+
+test("a 'Noted'-only card is a report: badge only, unless critical", () => {
+  const report = card({ options: [{ key: "ack", label: "Noted" }] });
+  assert.equal(fa.ackOnly(report), true);
+  assert.equal(fa.importance(report, NOW), 0);
+  assert.equal(fa.importance({ ...report, urgency: "critical" }, NOW), 2);
+});
+
+test("blocked and credential cards matter; a stale blocked one stops shouting", () => {
+  assert.equal(fa.importance(card({ kind: "blocked", blocking: true }), NOW), 2);
+  assert.equal(fa.importance(card({ kind: "credential", options: [] }), NOW), 1);
+  const oldBlocked = card({ kind: "blocked", blocking: true, createdAt: sec(NOW - 30 * 60 * MIN) });
+  assert.equal(fa.importance(oldBlocked, NOW), 1);
+  const ancient = card({ urgency: "high", createdAt: sec(NOW - 6 * 24 * 60 * MIN) });
+  assert.equal(fa.importance(ancient, NOW), 0, "a six-day-old ask is the badge only");
+});
+
+test("a near deadline lifts a card; inside 30 min it insists", () => {
+  assert.equal(fa.importance(card({ deadline: sec(NOW + 90 * MIN) }), NOW), 2);
+  assert.equal(fa.importance(card({ deadline: sec(NOW + 20 * MIN) }), NOW), 3);
+});
+
+test("keep pins at the top, mute drops to the badge, later comes back louder", () => {
+  const c = card();
+  assert.equal(fa.importance(c, NOW, fa.recordKeep({})), 3);
+  assert.equal(fa.importance(c, NOW, fa.recordMute({})), 0);
+  const later = fa.recordLater({}, NOW - 2 * 60 * MIN);
+  assert.equal(fa.importance(c, NOW, later), 2, "normal (1) + came back after Later (+1)");
+});
+
+// ── the ladder ──────────────────────────────────────────────────────────────
+
+test("ignored nudges escalate one level per two, capped by importance", () => {
+  assert.equal(fa.levelFor(0, {}), fa.LEVEL.BADGE);
+  assert.equal(fa.levelFor(1, {}), fa.LEVEL.GLOW);
+  assert.equal(fa.levelFor(1, { ignored: 10 }), fa.LEVEL.GLOW, "an ordinary card never climbs past the glow");
+  assert.equal(fa.levelFor(2, {}), fa.LEVEL.FLUTTER);
+  assert.equal(fa.levelFor(2, { ignored: 2 }), fa.LEVEL.INSIST);
+  assert.equal(fa.levelFor(3, {}), fa.LEVEL.INSIST);
+});
+
+test("an ordinary card RESTS after three ignored glows; an important one climbs", () => {
+  let mem = {};
+  for (let i = 0; i < 2; i += 1) mem = fa.recordIgnored(mem, { importance: 1, nowMs: NOW });
+  assert.equal(mem.ignored, 2);
+  mem = fa.recordIgnored(mem, { importance: 1, nowMs: NOW });
+  assert.equal(mem.ignored, 0);
+  assert.equal(mem.snoozeUntil, NOW + fa.DEFAULTS.restMs);
+  assert.equal(fa.importance(card(), NOW + fa.DEFAULTS.restMs + 1, mem), 1, "a rest is not a Later: it does not come back louder");
+  let hot = {};
+  for (let i = 0; i < 3; i += 1) hot = fa.recordIgnored(hot, { importance: 2, nowMs: NOW });
+  assert.equal(hot.ignored, 3);
+  assert.equal(hot.snoozeUntil, undefined);
+});
+
+test("a day-old ordinary ask decays to a glow; credentials and critical do not", () => {
+  const dayOld = sec(NOW - 30 * 60 * MIN);
+  assert.equal(fa.importance(card({ urgency: "high", createdAt: dayOld }), NOW), 1);
+  assert.equal(fa.importance(card({ kind: "credential", urgency: "high", options: [], createdAt: dayOld }), NOW), 2);
+  assert.equal(fa.importance(card({ urgency: "critical", createdAt: dayOld }), NOW), 3);
+});
+
+// ── pacing ──────────────────────────────────────────────────────────────────
+
+test("quiet, busy and away hold every nudge", () => {
+  const cards = [card({ urgency: "high" })];
+  assert.equal(fa.plan(cards, {}, { nowMs: NOW, quiet: "Do not disturb" }).act, "none");
+  assert.equal(fa.plan(cards, {}, { nowMs: NOW, busy: true }).act, "none");
+  assert.equal(fa.plan(cards, {}, { nowMs: NOW, idleMs: 3 * MIN }).act, "none");
+  assert.equal(fa.plan(cards, {}, { nowMs: NOW }).act, "nudge");
+});
+
+test("one card per nudge, the loudest first, the rest ride as +N more", () => {
+  const cards = [
+    card({ id: "d-aaaa", urgency: "normal" }),
+    card({ id: "d-bbbb", kind: "blocked", blocking: true }),
+    card({ id: "d-cccc", options: [{ key: "ack", label: "Noted" }] }),
+  ];
+  const d = fa.plan(cards, {}, { nowMs: NOW });
+  assert.equal(d.act, "nudge");
+  assert.equal(d.card.id, "d-bbbb");
+  assert.equal(d.level, fa.LEVEL.FLUTTER);
+  assert.equal(d.more, 1, "the report is not counted as waiting");
+});
+
+test("the global gap holds a second nudge; a new important card may cut it short", () => {
+  const cards = [card({ id: "d-aaaa" })];
+  assert.equal(fa.plan(cards, {}, { nowMs: NOW, lastNudgeAt: NOW - 60_000 }).act, "none");
+  assert.equal(fa.plan(cards, {}, { nowMs: NOW, lastNudgeAt: NOW - 10 * MIN }).act, "none", "a glow waits 15 min");
+  assert.equal(fa.plan(cards, {}, { nowMs: NOW, lastNudgeAt: NOW - 16 * MIN }).act, "nudge");
+  const urgent = [card({ id: "d-bbbb", urgency: "high", createdAt: sec(NOW - 2 * MIN) })];
+  assert.equal(fa.plan(urgent, {}, { nowMs: NOW, lastNudgeAt: NOW - 30_000 }).act, "nudge");
+});
+
+test("a restart is not an arrival: an old, never-nudged card waits the normal gap", () => {
+  const backlog = [card({ id: "d-old1", urgency: "high", createdAt: sec(NOW - 4 * 60 * MIN) })];
+  const d = fa.plan(backlog, {}, { nowMs: NOW, lastNudgeAt: NOW - 30_000 });
+  assert.equal(d.act, "none", "the backlog does not flutter 20 s apart");
+  assert.equal(fa.plan(backlog, {}, { nowMs: NOW, lastNudgeAt: NOW - 6 * MIN }).act, "nudge");
+});
+
+test("a card is not re-nudged before its level's interval; coming back from away is", () => {
+  const cards = [card({ id: "d-aaaa" })];
+  const mems = { "d-aaaa": fa.recordShown({}, NOW - 10 * MIN) };
+  assert.equal(fa.plan(cards, mems, { nowMs: NOW }).act, "none");
+  const back = fa.plan(cards, mems, { nowMs: NOW, returned: true });
+  assert.equal(back.act, "nudge");
+  assert.equal(back.lead, "While you were away");
+});
+
+test("snoozed cards are skipped until Later runs out", () => {
+  const cards = [card({ id: "d-aaaa" })];
+  const mems = { "d-aaaa": fa.recordLater({}, NOW - 10 * MIN) };
+  assert.equal(fa.plan(cards, mems, { nowMs: NOW }).act, "none");
+});
+
+test("voice is the REPEAT at insist level, never the arrival, and paced", () => {
+  const cards = [card({ id: "d-aaaa", deadline: sec(NOW + 10 * MIN) })];
+  assert.equal(fa.plan(cards, {}, { nowMs: NOW }).voice, false, "arrival is spoken by the desk already");
+  const mems = { "d-aaaa": fa.recordShown({}, NOW - 7 * MIN) };
+  assert.equal(fa.plan(cards, mems, { nowMs: NOW, lastNudgeAt: NOW - 7 * MIN }).voice, true);
+  assert.equal(fa.plan(cards, mems, { nowMs: NOW, lastNudgeAt: NOW - 7 * MIN, lastVoiceAt: NOW - MIN }).voice, false);
+});
+
+// ── words ───────────────────────────────────────────────────────────────────
+
+test("why-now names who is stuck, what the deadline picks, and the wait", () => {
+  const blocked = card({ kind: "blocked", blocking: true, agent: "Steam publishing", createdAt: sec(NOW - 3 * 60 * MIN) });
+  assert.match(fa.whyNow(blocked, NOW), /^Steam publishing is stopped until you answer · waiting 3 h$/);
+  const due = card({ deadline: sec(NOW + 100 * MIN), defaultKey: "wait" });
+  assert.match(fa.whyNow(due, NOW), /picks “Wait” for you in 2 h/i);
+  const cred = card({ kind: "credential", options: [], secretName: "HETZNER_API_KEY" });
+  assert.match(fa.whyNow(cred, NOW), /needs HETZNER_API_KEY to keep going/);
+});
+
+test("a critical REPORT says it is critical, not what 'Noted' the deadline picks", () => {
+  const disk = card({ urgency: "critical", options: [{ key: "ack", label: "Noted" }], defaultKey: "ack",
+    deadline: sec(NOW + 8 * 60 * MIN), createdAt: sec(NOW - 4 * 60 * MIN) });
+  assert.equal(fa.whyNow(disk, NOW), "Marked critical · waiting 4 h");
+});
+
+test("a generic agent name falls back to the tab, then to 'A session'", () => {
+  const c = card({ kind: "blocked", blocking: true, agent: "claude-code", tab: "Desktop canvas layout" });
+  assert.match(fa.whyNow(c, NOW), /^Desktop canvas layout is stopped/);
+  assert.match(fa.whyNow({ ...c, tab: "" }, NOW), /^A session is stopped/);
+});
+
+test("the voice line drops the 'Claude Code needs you' prefix", () => {
+  const line = fa.voiceLine(card({ title: "Claude Code needs you: AitherOS-Fresh -- Desktop canvas" }), NOW, { more: 2 });
+  assert.match(line, /^Hey\. AitherOS-Fresh -- Desktop canvas is still waiting for you\./);
+  assert.match(line, /And 2 more after that\.$/);
+});
+
+test("the whisper offers the card's OWN options (max 3), none for a credential", () => {
+  const d = fa.plan([card()], {}, { nowMs: NOW });
+  const view = fa.whisperView(d, NOW);
+  assert.deepEqual(view.options.map((o) => o.key), ["cut", "wait"]);
+  assert.equal(view.options.find((o) => o.key === "wait").recommended, true);
+  const cred = fa.whisperView({ card: card({ kind: "credential" }), level: 1 }, NOW);
+  assert.equal(cred.credential, true);
+  assert.equal(cred.options.length, 0);
+});
+
+// ── memory ──────────────────────────────────────────────────────────────────
+
+test("memory is pruned to open cards and sanitized on load", () => {
+  const mems = { "d-aaaa": { nudges: 2 }, "d-gone": { nudges: 9 } };
+  assert.deepEqual(Object.keys(fa.pruneMems(mems, ["d-aaaa"])), ["d-aaaa"]);
+  const clean = fa.sanitizeMems({ "d-aaaa": { nudges: "3", muted: true, evil: "x" }, "../etc": {} });
+  assert.deepEqual(clean, { "d-aaaa": { nudges: 3, muted: true } });
+});
+
+// ── placement ───────────────────────────────────────────────────────────────
+
+test("the flutter sits near the pointer and never covers it", () => {
+  const area = { x: 0, y: 0, width: 1920, height: 1040 };
+  const orb = { width: 72, height: 72 };
+  const whisper = { width: 360, height: 150 };
+  for (const cursor of [{ x: 960, y: 520 }, { x: 1900, y: 20 }, { x: 10, y: 1030 }, { x: 1900, y: 1030 }]) {
+    const p = fa.nudgePlacement(cursor, area, orb, whisper);
+    const wbox = { x: p.whisper.x, y: p.whisper.y, width: whisper.width, height: whisper.height };
+    const inside = cursor.x >= wbox.x && cursor.x <= wbox.x + wbox.width
+      && cursor.y >= wbox.y && cursor.y <= wbox.y + wbox.height;
+    assert.equal(inside, false, `whisper covers the pointer at ${JSON.stringify(cursor)}`);
+    assert.ok(wbox.x >= area.x && wbox.x + wbox.width <= area.x + area.width, "whisper fits horizontally");
+    assert.ok(wbox.y >= area.y && wbox.y + wbox.height <= area.y + area.height, "whisper fits vertically");
+    const dist = Math.hypot(p.orb.x - cursor.x, p.orb.y - cursor.y);
+    assert.ok(dist >= 60, "the fairy is not on the pointer");
+  }
+});
+
+test("the flutter offset stays small", () => {
+  for (let t = 0; t < 5000; t += 137) {
+    const o = fa.flutterOffset(NOW + t, 3);
+    assert.ok(Math.abs(o.x) <= 16 && Math.abs(o.y) <= 16);
+  }
+});

@@ -1011,13 +1011,29 @@ const HEARTBEAT_MS = 20_000;
  * is UNREF'D (it must never hold the app open) and every failure is swallowed —
  * a heartbeat that cannot be written must not take the desk down; the cost is
  * only that awask falls back to its own Tk window.
+ *
+ * `claim()` (2026-11-08): returns {attention: "fairy"} while the fairy carries the
+ * cards (it is on screen and its nudge loop runs -- orb-window ownsAttention), else
+ * null. awask (adk.decisions.notify.desk_attention_claim) skips its Tk window ONLY
+ * on a FRESH beat that carries the claim, so a dead desk or a hidden fairy brings
+ * the window back: the claim is re-judged on every beat, never cached.
  */
-function startHeartbeat({ dir = storeDir(), intervalMs = HEARTBEAT_MS, setIntervalFn = setInterval, clearIntervalFn = clearInterval } = {}) {
+function heartbeatBody(claim) {
+  const body = { pid: process.pid, at: new Date().toISOString() };
+  let extra;
+  try { extra = typeof claim === "function" ? claim() : null; } catch { extra = null; }
+  if (extra && typeof extra.attention === "string" && /^[a-z]{1,24}$/.test(extra.attention)) {
+    body.attention = extra.attention;
+  }
+  return body;
+}
+
+function startHeartbeat({ dir = storeDir(), intervalMs = HEARTBEAT_MS, setIntervalFn = setInterval, clearIntervalFn = clearInterval, claim = null } = {}) {
   const beatPath = path.join(dir, DESK_ALIVE_FILENAME);
   const beat = () => {
     try {
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(beatPath, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+      fs.writeFileSync(beatPath, JSON.stringify(heartbeatBody(claim)));
     } catch {
       /* best-effort: see above */
     }
@@ -1063,6 +1079,7 @@ module.exports = {
   steerCard,
   watch,
   startHeartbeat,
+  heartbeatBody,
   rawCard,
   scanRemote,
   sourceStatus,
