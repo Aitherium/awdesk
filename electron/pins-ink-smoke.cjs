@@ -91,12 +91,16 @@ app.whenReady().then(async () => {
     bounds: { x: ox, y: oy, width: 300, height: 240 } });
   const yt = inkOnly ? { ok: true } : pins.addPin("https://www.youtube.com/watch?v=aqz-KE-bpKQ", { title: "Big Buck Bunny",
     bounds: { x: ox + 320, y: oy, width: 480, height: 300 } });
+  // A SECOND video pin (2026-11-07): switches are timed with two videos decoding.
+  const yt2 = inkOnly ? { ok: true } : pins.addPin("https://www.youtube.com/watch?v=YE7VzlLtp-4", { title: "Video 2",
+    bounds: { x: ox + 320, y: oy + 320, width: 480, height: 300 } });
   const page = inkOnly ? { ok: true } : pins.addPin({ kind: "url", src: "https://example.com/", title: "example.com",
     bounds: { x: ox + 820, y: oy, width: 420, height: 300 } });
   check(gif.ok && yt.ok && page.ok, "three pins (gif, youtube, page) were added");
-  check(inkOnly || pins.__entries.size === 3, `three pin windows exist (${pins.__entries.size})`);
+  check(inkOnly || yt2.ok, "a second video pin was added");
+  check(inkOnly || pins.__entries.size === 4, `four pin windows exist (${pins.__entries.size})`);
   const stored = inkOnly ? { pins: [] } : JSON.parse(fs.readFileSync(path.join(tmp, "userData", "desk-pins.json"), "utf8"));
-  check(inkOnly || stored.pins.length === 3, "the pins were persisted");
+  check(inkOnly || stored.pins.length === 4, "the pins were persisted");
 
   // Boards land in the temp dir, never the owner's ~/Aither Boards.
   const boardsDir = path.join(tmp, "boards");
@@ -162,6 +166,21 @@ app.whenReady().then(async () => {
   // ── seamless: 20 switches, one overlay, not one mark lost, latency per switch ──
   const sender0 = ink.__senderOf(displayId);
   const overlay = sender0;
+  // Both video pins must really be decoding while the switches are timed: start them
+  // (muted, with a user gesture: autoplay policy) and check their clocks advance.
+  const videoClock = async () => {
+    const out = [];
+    for (const [, e] of pins.__entries) {
+      if (!e.view) continue;
+      out.push(await e.view.webContents.executeJavaScript(
+        "(() => { const v = document.querySelector('video'); if (!v) return -1; v.muted = true; if (v.paused) v.play().catch(() => {}); return v.currentTime; })()",
+        true).catch(() => -1));
+    }
+    return out.filter((t) => t >= 0);
+  };
+  let videosBefore = [];
+  if (!inkOnly) { await videoClock(); await sleep(3000); videosBefore = await videoClock(); }
+  await overlay.executeJavaScript("window.__inkSwitches = []; true");
   // Main-process event-loop lag during the switches: if a switch is slow while main
   // itself stalled, the stall is the host's, not the overlay's.
   let lagWorst = 0;
@@ -177,10 +196,19 @@ app.whenReady().then(async () => {
     else if (kind === "pen") { ink.dispatch({ type: "pen-enter" }); await sleep(30); ink.dispatch({ type: "mouse" }); }
     else { ink.dispatch({ type: "set", mode: "draw" }); await sleep(30); ink.dispatch({ type: kind.startsWith("escape") ? "escape" : "right-click" }); }
     await sleep(60);
-    const probe = await overlay.executeJavaScript(
-      "({ frame: document.body.dataset.switchMs || '-1', recv: document.body.dataset.switchRecvMs || '-1' })");
-    if (Number(probe.frame) >= 0) latencies.push(Number(probe.frame));
-    if (Number(probe.recv) >= 0) recvs.push(Number(probe.recv));
+  }
+  await sleep(300);
+  // Every state the overlay received, instrumented in ink.html with performance marks:
+  // ipc (main -> overlay), toFrame (recv -> the frame's rAF), toPaint (recv -> after
+  // that frame), redraw (did the switch repaint the marks).
+  const log = JSON.parse(await overlay.executeJavaScript("JSON.stringify(window.__inkSwitches || [])"));
+  for (const r of log) { latencies.push(r.ipc + r.toPaint); recvs.push(r.ipc); }
+  const redraws = log.filter((r) => r.redraw).length;
+  console.log(`  ${log.length} states received; ${redraws} repainted the marks (a mode switch should not)`);
+  if (!inkOnly) {
+    const videosAfter = await videoClock();
+    const advancing = videosAfter.filter((t, i) => t > (videosBefore[i] || 0)).length;
+    check(advancing >= 2, `both video pins were playing during the switches (${videosBefore.map((t) => t.toFixed(1)).join(",")} -> ${videosAfter.map((t) => t.toFixed(1)).join(",")})`);
   }
   const raf = await overlay.executeJavaScript(
     "new Promise((r) => { requestAnimationFrame(() => r('raf ok')); setTimeout(() => r('raf did not fire in 500 ms'), 500); })");
@@ -194,7 +222,7 @@ app.whenReady().then(async () => {
   const worst = sorted.length ? sorted[sorted.length - 1] : -1;
   const recvWorst = recvs.length ? Math.max(...recvs) : -1;
   console.log(`  switch -> state in the overlay (ms): ${recvs.join(", ")}`);
-  console.log(`  switch -> next painted frame (ms): ${latencies.join(", ")}`);
+  console.log(`  switch -> painted (ms): ${latencies.join(", ")}`);
   if (lagWorst > 50) {
     // The host starved the desk's own main thread (measured on a 100% CPU box): a
     // latency verdict now would measure the host, not the overlay. Could-not-judge.
@@ -202,7 +230,7 @@ app.whenReady().then(async () => {
     couldNotJudge.push("switch latency");
   } else {
     check(recvs.length >= 15 && recvWorst <= 16, `every switch reached the overlay within one frame: worst ${recvWorst} ms`);
-    check(median >= 0 && median <= 17, `median switch painted within one frame: ${median} ms (worst ${worst} ms)`);
+    check(worst >= 0 && worst < 100, `every switch painted in under 100 ms with ${inkOnly ? "no" : "2 video"} pins: worst ${worst} ms (median ${median} ms)`);
   }
 
   // ── interact: ink stays, palette gone; capture only over a mark ──

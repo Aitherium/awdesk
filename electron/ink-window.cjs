@@ -71,8 +71,14 @@ function docFor(displayId) {
   return docs.get(displayId);
 }
 
+/** display.id -> revision of its marks; bumps on every setDoc. */
+const revs = new Map();
+/** display.id -> the revision that overlay last RECEIVED (so a mode switch sends no items). */
+const sentRevs = new Map();
+
 function setDoc(displayId, state) {
   docs.set(displayId, core.normalizeState(state));
+  revs.set(displayId, (revs.get(displayId) || 0) + 1);
 }
 
 function newItemId() {
@@ -120,6 +126,8 @@ function createOverlay(display) {
   win.setIgnoreMouseEvents(true, { forward: true });
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event) => event.preventDefault());
+  sentRevs.delete(display.id);
+  win.webContents.on("did-start-loading", () => sentRevs.delete(display.id));
   win.once("ready-to-show", () => {
     win.showInactive();
     applyInteraction();
@@ -202,20 +210,34 @@ function publicState(displayId) {
     toolbar: v.palette && displayId === toolbarDisplayId,
     displayId,
     sentAt: Date.now(),
+    rev: revs.get(displayId) || 0,
     items: docFor(displayId).items,
   };
+}
+
+/**
+ * What one overlay is sent: the full state, minus `items` when that overlay already
+ * holds this revision. A draw <-> interact switch then costs the renderer a class
+ * toggle and an opacity change -- no 4K canvas redraw, no GPU raster -- which is what
+ * kept a switch at 30-85 ms (not seconds) with the GPU saturated (2026-11-07).
+ */
+function stateFor(displayId) {
+  const state = publicState(displayId);
+  if (sentRevs.get(displayId) === state.rev) delete state.items;
+  else sentRevs.set(displayId, state.rev);
+  return state;
 }
 
 /** Push the current state to one display (default: all). */
 function broadcast(displayId) {
   if (displayId != null) {
     const entry = entryFor(displayId);
-    if (entry) send(entry, "ink:state", publicState(displayId));
+    if (entry) send(entry, "ink:state", stateFor(displayId));
     return;
   }
   for (const id of windows.keys()) {
     const entry = entryFor(id);
-    if (entry) send(entry, "ink:state", publicState(id));
+    if (entry) send(entry, "ink:state", stateFor(id));
   }
   try { if (configured.onChange) configured.onChange(status()); } catch { /* a tray refresh must not fail ink */ }
 }
@@ -631,7 +653,9 @@ function handlers() {
   return {
     "ink:init": (event) => {
       const found = senderEntry(event);
-      return publicState(found ? found.id : null);
+      const state = publicState(found ? found.id : null);
+      if (found) sentRevs.set(found.id, state.rev);
+      return state;
     },
     "ink:add": (event, raw) => {
       const found = senderEntry(event);
