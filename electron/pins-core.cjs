@@ -29,7 +29,7 @@
  * Pure: pins-core.test.cjs asserts every rule under `node --test`.
  */
 
-const { normalizePinItem, newPinId, youtubeId } = require("./pin-item.cjs");
+const { normalizePinItem, newPinId, youtubeId, isForgeIde } = require("./pin-item.cjs");
 
 const VERSION = 1;
 const MAX_PINS = 40;
@@ -206,7 +206,12 @@ function contentFor(pin) {
     const url = httpUrl(pin.src);
     return url ? { mode: "web", url } : null;
   }
-  if (pin.kind === "app") return { mode: "app", target: pin.src };
+  if (pin.kind === "app") {
+    // ForgeIDE (an https app pin): a desk WebContentsView is a top-level load, which
+    // SYNC.md allows always -- it embeds, sandboxed like any page. aither:// launches.
+    if (/^https?:/i.test(String(pin.src)) && isForgeIde(pin.src)) return { mode: "web", url: pin.src, embed: "forgeide" };
+    return { mode: "app", target: pin.src };
+  }
   if (pin.kind === "note") return { mode: "note", text: pin.src };
   if (pin.kind === "widget") {
     const launch = pin.widget === "launch" && pin.extra ? launchTarget(pin.extra.launch) : null;

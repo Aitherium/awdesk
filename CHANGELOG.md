@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Drawing and using your desktop are one motion now. Ink never disappears when you stop drawing: Esc, a right-click or Ctrl+Alt+D hands the desktop back and the marks stay. Hold Ctrl+Alt to draw for a moment, and release to click again (AWDESK_INK_HOLD=ctrl+shift or off changes it). The mouse wheel always scrolls the app underneath. Drawing mode shows a thin glow at the screen edge, the tool palette docks to the bottom edge, and the tray says "Drawing".
+- Middle-drag moves things: a mark on the screen (even while you are not drawing), a desktop pin, an item on a whiteboard. Shift+middle-drag resizes, Ctrl+middle-drag duplicates. Locked items stay put. The same gesture works in the AitherOne canvas.
+- New keys: Ctrl+Alt+E saves the drawing to a board, Ctrl+Alt+X snips with ink, Ctrl+Alt+F GIF (picker), Ctrl+Alt+U pins the link on your clipboard, Ctrl+Alt+T pins the browser tab, Ctrl+Alt+H shows or hides all pins, and Ctrl+Alt+/ lists every shortcut and says which ones another app holds.
+- Pin ForgeIDE to the desktop (forge.aitherium.com/ide). AitherOS Online pages can pin a page, start ink or open the GIF picker through the desk (window.aitherDeskVerbs). Ink saved to a board keeps pen pressure, so it syncs to the AitherOne canvas.
 - Browser layout you can rearrange: Customize (⚙) → Edit layout shows every pane as a box. Move the assistant panel left or right, the terminal dock above or below the page, the rail to either edge, and the avatar slot and layer tiles to the top or bottom of the rail. Drag a pane's handle to a highlighted edge or use its buttons. Esc finishes.
 - Detach any pane: the assistant panel, terminal dock and taskbar each pop into their own window and come back. Each window reopens where you left it; closing it from its title bar puts the pane back.
 - Layout presets: Default, Focus (rail collapsed, no panel), Ops (tall dock, wide panel), plus your own (save, rename, delete). Export and import a layout file that also carries your presets.

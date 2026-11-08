@@ -135,6 +135,20 @@
   $("hide").addEventListener("click", () => { void api.hide(); });
   $("close").addEventListener("click", () => { void api.close(); });
 
+  // Middle-drag anywhere on the pin's own page (the strip, an image, a tile, a note):
+  // main moves the window; Shift resizes, Ctrl duplicates (middle-gesture.cjs).
+  let grabbing = false;
+  window.addEventListener("pointerdown", (e) => {
+    if (e.button !== 1) return;
+    e.preventDefault();
+    grabbing = true;
+    try { e.target.setPointerCapture(e.pointerId); } catch { /* gone */ }
+    void api.grabStart({ x: e.screenX, y: e.screenY, shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey });
+  });
+  window.addEventListener("pointermove", (e) => { if (grabbing) void api.grabMove({ x: e.screenX, y: e.screenY }); });
+  window.addEventListener("pointerup", (e) => { if (grabbing && e.button === 1) { grabbing = false; void api.grabEnd(); } });
+  window.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
+
   // A locked pin is click-through; the Unlock badge still has to be clickable, so
   // crossing onto it (forwarded mouse moves) asks main for the mouse.
   window.addEventListener("mousemove", (e) => {

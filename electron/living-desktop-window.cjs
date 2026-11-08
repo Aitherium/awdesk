@@ -204,6 +204,22 @@ ipcMain.on("living-desktop:desk-command", (event, id) => {
   if (!fromOverlay(event) || !overlayHost || typeof overlayHost.command !== "function") return;
   overlayHost.command(String(id || ""));
 });
+// window.aitherDeskVerbs (2026-11-07, the aitherone-canvas lane's contract): Veil asks
+// the desk to pin a card, start ink, open the GIF picker or the canvas. Fenced like
+// every plane; the preload adds the human-gesture check; main validates the card.
+const DESK_VERBS = new Set(["pin", "ink", "gif", "canvas"]);
+ipcMain.handle("living-desktop:desk-verb", async (event, msg) => {
+  if (!fromOverlay(event)) return { ok: false, error: "not the AitherOS Online overlay" };
+  const m = msg && typeof msg === "object" ? msg : {};
+  const verb = String(m.verb || "");
+  if (!DESK_VERBS.has(verb)) return { ok: false, error: `unknown desk verb ${verb.slice(0, 40)}` };
+  if (!overlayHost || typeof overlayHost.deskVerb !== "function") return { ok: false, error: "the desk has no verbs wired" };
+  try {
+    return (await overlayHost.deskVerb(verb, m)) || { ok: true };
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error).slice(0, 200) };
+  }
+});
 // aither-host/1 desk-browse: the OS's Browser app opens a URL in a NEW OWNER tab of the
 // Aither Browser (the same act as the bridge's POST /browser/open). Fenced like every
 // plane; main sanitizes the URL. Always answered so the page can fall back at once.

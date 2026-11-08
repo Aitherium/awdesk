@@ -128,3 +128,22 @@ test("scene items that are not pins are left to the caller", () => {
   assert.equal(P.fromSceneItem({ id: "f", kind: "file", node: "/a.pdf", x: 0, y: 0, w: 1, h: 1, z: 0 }), null);
   assert.equal(P.fromSceneItem(null), null);
 });
+
+test("ForgeIDE app pins: exact origin, framable paths only, no ..", () => {
+  const pin = require("./pin-item.cjs");
+  const ok = pin.pinItemFromUrl("https://forge.aitherium.com/ide", { title: "ForgeIDE" });
+  assert.equal(ok.kind, "app");
+  assert.equal(ok.src, "https://forge.aitherium.com/ide");
+  assert.equal(pin.pinItemFromUrl("https://forge.aitherium.com/ide?path=src/a.ts&kind=file&from=aitherone").kind, "app");
+  assert.equal(pin.pinItemFromUrl("https://forge.aitherium.com/graph/x").kind, "app");
+  for (const bad of ["https://forge.aitherium.com/admin", "https://forge.aitherium.com.evil.com/ide",
+    "https://evilforge.aitherium.com/ide", "http://forge.aitherium.com/ide", "https://forge.aitherium.com/ide?path=../../etc"]) {
+    const card = pin.pinItemFromUrl(bad);
+    assert.ok(!card || card.kind !== "app", bad);
+  }
+  assert.equal(pin.isForgeIde("http://localhost:3010/ide", { AWDESK_FORGEIDE_URL: "http://localhost:3010" }), true);
+  assert.equal(pin.isForgeIde("https://forge.aitherium.com/ide", { AWDESK_FORGEIDE_URL: "http://evil.example" }), true,
+    "a non-https, non-localhost override falls back to the real origin");
+  const core = require("./pins-core.cjs");
+  assert.deepEqual(core.contentFor(core.normalizeRecord(ok)), { mode: "web", url: "https://forge.aitherium.com/ide", embed: "forgeide" });
+});

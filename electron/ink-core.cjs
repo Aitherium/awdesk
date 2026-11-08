@@ -243,7 +243,13 @@
     return { items: [], undo: [...s.undo, { kind: "clear", items: s.items }], redo: [] };
   }
 
+  function swapItems(items, list) {
+    const byId = new Map(list.map((i) => [i.id, i]));
+    return items.map((item) => byId.get(item.id) || item);
+  }
+
   function applyInverse(op, items) {
+    if (op.kind === "update") return swapItems(items, op.before);
     if (op.kind === "add") return items.filter((item) => item.id !== op.item.id);
     if (op.kind === "clear") return [...op.items];
     if (op.kind === "remove") {
@@ -257,6 +263,7 @@
   }
 
   function applyForward(op, items) {
+    if (op.kind === "update") return swapItems(items, op.after);
     if (op.kind === "add") return items.some((item) => item.id === op.item.id) ? items : [...items, op.item];
     if (op.kind === "clear") return [];
     if (op.kind === "remove") {
@@ -527,10 +534,14 @@
     for (const item of Array.isArray(items) ? items : []) {
       if (!item) continue;
       if (item.type === "stroke") {
-        const pts = streamline(item.points, 0.5).map((p) => ({ x: p.x - ox, y: p.y - oy }));
-        if (pts.length === 1) pts.push({ x: pts[0].x + 0.5, y: pts[0].y + 0.5 });
+        // The AitherOne stroke contract (aitherone-canvas SYNC.md): kind "stroke",
+        // points {x,y,p} (accepted as-is), tool, z. The board renderer reads x/y and
+        // ignores the rest; a sync to AitherOne reads all of it.
+        const pts = streamline(item.points, 0.5).map((p) => ({ x: p.x - ox, y: p.y - oy, p: p.p == null ? 0.5 : p.p }));
+        if (pts.length === 1) pts.push({ x: pts[0].x + 0.5, y: pts[0].y + 0.5, p: pts[0].p });
         const width = item.tool === "highlighter" ? item.width * 3 : item.width;
-        out.push({ id: id(), type: "stroke", ...span(pts), points: pts, color: tint(item.color), width });
+        out.push({ id: id(), type: "stroke", kind: "stroke", ...span(pts), points: pts, color: tint(item.color), width,
+          tool: item.tool === "highlighter" ? "highlighter" : "pen", z: out.length });
       } else if (item.type === "shape") {
         if (item.tool === "line" || item.tool === "arrow") {
           line(item.a, item.b, tint(item.color), item.width);
@@ -551,6 +562,92 @@
     return { items: out, size: { width: Math.ceil(box.width + pad * 2), height: Math.ceil(box.height + pad * 2) } };
   }
 
+  // ── objects: grab, move, resize, duplicate (middle-drag, 2026-11-07) ───────
+
+  /** An item's box (strokes and shapes padded by half their width). */
+  function itemBounds(item) {
+    return boundsOf([item]);
+  }
+
+  /** The topmost item under `point` (items draw in order, so the LAST hit wins). */
+  function topmostHit(items, point, radius = 6) {
+    const list = Array.isArray(items) ? items : [];
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      if (hitTest(list[i], point, radius)) return list[i];
+    }
+    return null;
+  }
+
+  function mapPoints(item, fn) {
+    if (item.type === "stroke") return { ...item, points: item.points.map((p) => ({ ...p, ...fn(p) })) };
+    if (item.type === "shape") return { ...item, a: { ...item.a, ...fn(item.a) }, b: { ...item.b, ...fn(item.b) } };
+    if (item.type === "text") return { ...item, at: { ...item.at, ...fn(item.at) } };
+    return item;
+  }
+
+  /** The item moved by (dx, dy). */
+  function translateItem(item, dx, dy) {
+    return mapPoints(item, (p) => ({ x: p.x + dx, y: p.y + dy }));
+  }
+
+  /**
+   * The item scaled so its box goes from `from` to `to` (top-left anchored, the
+   * bottom-right corner follows the drag). Text scales its size with the height.
+   */
+  function resizeItem(item, from, to) {
+    const sx = from.width > 0 ? to.width / from.width : 1;
+    const sy = from.height > 0 ? to.height / from.height : 1;
+    const out = mapPoints(item, (p) => ({ x: to.x + (p.x - from.x) * sx, y: to.y + (p.y - from.y) * sy }));
+    if (out.type === "text") out.size = clamp(Math.round((item.size || 20) * sy), 10, 72);
+    return out;
+  }
+
+  /** A copy with a new id, stamped now (so a fade does not retire it early). */
+  function duplicateItem(item, newId, now = Date.now()) {
+    return { ...JSON.parse(JSON.stringify(item)), id: String(newId), createdAt: now };
+  }
+
+  /**
+   * Replace items by id as ONE undoable step (a middle-drag is one edit).
+   * `next` is the list of changed items; unknown ids are ignored.
+   */
+  function updateItems(state, next) {
+    const s = normalizeState(state);
+    const byId = new Map((Array.isArray(next) ? next : []).filter((i) => i && i.id).map((i) => [i.id, i]));
+    const before = [];
+    const after = [];
+    const items = s.items.map((item) => {
+      const n = byId.get(item.id);
+      if (!n) return item;
+      before.push(item);
+      after.push(n);
+      return n;
+    });
+    if (!after.length) return s;
+    return { items, undo: [...s.undo, { kind: "update", before, after }], redo: [] };
+  }
+
+  /**
+   * A board stroke as the AitherOne SceneDoc stroke (aitherone-canvas SYNC.md):
+   * {id, kind:"stroke", points:[[x,y,p]], color, width 1..64, tool, opacity?, z},
+   * at most MAX_POINTS points. null for anything that is not a stroke.
+   */
+  function sceneStroke(item) {
+    if (!item || item.type !== "stroke" || !Array.isArray(item.points)) return null;
+    const points = item.points.filter((p) => p && finite(p.x) && finite(p.y)).slice(0, MAX_POINTS)
+      .map((p) => [p.x, p.y, finite(p.p) ? clamp(p.p, 0.05, 1) : 0.5]);
+    if (!points.length) return null;
+    const out = {
+      id: String(item.id), kind: "stroke", points,
+      color: /^#[0-9a-f]{6}$/i.test(String(item.color)) ? String(item.color).toLowerCase() : "#ffffff",
+      width: clamp(Number(item.width) || 3, 1, 64),
+      tool: item.tool === "highlighter" ? "highlighter" : "pen",
+      z: finite(item.z) ? Math.trunc(item.z) : 0,
+    };
+    if (finite(item.opacity)) out.opacity = clamp(item.opacity, 0, 1);
+    return out;
+  }
+
   /** "1 mark" / "3 marks" -- the toolbar's count line, never "1 marks". */
   function marksLine(count, tool) {
     const n = Number(count) || 0;
@@ -564,5 +661,6 @@
     pushItem, removeIds, eraseAt, clearAll, undo, redo,
     fadeAlpha, pruneByAge, laserTrail, marksLine,
     streamline, strokeRadii, strokeOutline, outlinePath, boundsOf, inkToBoardItems,
+    itemBounds, topmostHit, translateItem, resizeItem, duplicateItem, updateItems, sceneStroke,
   };
 });

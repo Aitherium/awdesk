@@ -25,6 +25,12 @@ contextBridge.exposeInMainWorld("aitherPin", {
   launch: () => ipcRenderer.invoke("pin:launch"),
   openInBrowser: () => ipcRenderer.invoke("pin:open-in-browser"),
   reload: () => ipcRenderer.invoke("pin:reload"),
+  /** Middle-drag in SCREEN coordinates: main moves (Shift resizes, Ctrl duplicates) the window. */
+  grabStart: (p) => ipcRenderer.invoke("pin:grab-start", {
+    x: Number(p && p.x) || 0, y: Number(p && p.y) || 0,
+    shift: Boolean(p && p.shift), ctrl: Boolean(p && p.ctrl), meta: Boolean(p && p.meta) }),
+  grabMove: (p) => ipcRenderer.invoke("pin:grab-move", { x: Number(p && p.x) || 0, y: Number(p && p.y) || 0 }),
+  grabEnd: () => ipcRenderer.invoke("pin:grab-end"),
   onState: (fn) => {
     const listener = (_event, state) => { try { fn(state); } catch { /* page bug stays in the page */ } };
     ipcRenderer.on("pin:state", listener);

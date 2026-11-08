@@ -334,6 +334,55 @@
     markDirty();
   }
 
+  // ── middle-drag (2026-11-07): the SAME map as screen ink, desktop pins and the
+  // AitherOne canvas (electron/middle-gesture.cjs; inlined because this page's CSP
+  // loads no script files): middle-drag moves the topmost item, Shift+middle
+  // resizes from the bottom-right, Ctrl/Cmd+middle duplicates and drags the copy
+  // (Ctrl beats Shift), a locked item never moves or resizes but can be duplicated.
+  let resizing = null; // {item, start:{x,y}, from:{x,y,w,h}, points}
+  function middleGestureFor(item, event) {
+    if (!item) return "none";
+    if (event.ctrlKey || event.metaKey) return "duplicate";
+    if (item.locked) return "blocked";
+    return event.shiftKey ? "resize" : "move";
+  }
+  function middleDown(event) {
+    const p = pos(event);
+    let item = topItem(p);
+    const g = middleGestureFor(item, event);
+    if (g === "none" || g === "blocked") return;
+    event.preventDefault();
+    canvas.setPointerCapture(event.pointerId);
+    if (g === "duplicate") {
+      const copy = JSON.parse(JSON.stringify(item));
+      copy.id = newId();
+      delete copy.locked;
+      addItem(copy);
+      item = copy;
+    }
+    if (g === "resize") {
+      resizing = { item, start: p, from: { x: item.x, y: item.y, w: item.w, h: item.h },
+        points: item.type === "stroke" ? item.points.map((q) => ({ ...q })) : null };
+    } else {
+      moving = { item, last: p, points: item.type === "stroke" ? item.points : null };
+    }
+  }
+  function resizeTo(p) {
+    const r = resizing;
+    const w = Math.max(24, r.from.w + (p.x - r.start.x));
+    const h = Math.max(24, r.from.h + (p.y - r.start.y));
+    if (r.points) {
+      const sx = r.from.w > 0 ? w / r.from.w : 1;
+      const sy = r.from.h > 0 ? h / r.from.h : 1;
+      r.item.points = r.points.map((q) => ({ ...q, x: r.from.x + (q.x - r.from.x) * sx, y: r.from.y + (q.y - r.from.y) * sy }));
+      updateStrokeBounds(r.item);
+    } else {
+      r.item.w = w; r.item.h = h;
+    }
+    redraw();
+  }
+  canvas.addEventListener("auxclick", (event) => { if (event.button === 1) event.preventDefault(); });
+
   // ── pointer ───────────────────────────────────────────────────────────────
   canvas.addEventListener("pointerdown", (event) => {
     if (board.kind !== "board") return;
@@ -341,6 +390,7 @@
     // draw with the primary button only.
     if (event.button !== 0) return;
     if (editing) commitEditor();
+    if (event.button === 1) { middleDown(event); return; }
     const p = pos(event);
     canvas.setPointerCapture(event.pointerId);
     if (tool === "pen") {
@@ -367,6 +417,7 @@
   canvas.addEventListener("pointermove", (event) => {
     if (board.kind !== "board") return;
     const p = pos(event);
+    if (resizing) { resizeTo(p); return; }
     if (drawing && drawing.kind === "pen") {
       drawing.item.points.push(p);
       updateStrokeBounds(drawing.item);
@@ -398,6 +449,7 @@
       }
     }
     if (moving) { moving = null; markDirty(); }
+    if (resizing) { resizing = null; markDirty(); }
   }
   canvas.addEventListener("pointerup", endPointer);
   canvas.addEventListener("pointercancel", endPointer);

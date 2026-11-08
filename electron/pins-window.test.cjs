@@ -205,3 +205,48 @@ test("traySubmenu: rows, a +N more, and the bulk rows; empty says how to add one
   assert.ok(rows.some((r) => /^\+2 more/.test(r.label || "")));
   assert.ok(rows.some((r) => r.label === "Close all pins"));
 });
+
+test("middle-drag moves a pin, Shift resizes, Ctrl duplicates; a locked pin will not move; it never leaves the screen", () => {
+  const { fake } = setup();
+  const { pin } = pins.addPin({ kind: "gif", src: "https://media.tenor.com/a.gif", title: "a", bounds: { x: 100, y: 100, width: 300, height: 200 } });
+  const win = fake.log.windows[0];
+  win.setBounds = (b) => { win.bounds = { ...b }; };
+  assert.equal(pins.grabStart(pin.id, { x: 500, y: 500 }).gesture, "move");
+  pins.grabMove(pin.id, { x: 560, y: 520 });
+  assert.deepEqual([win.bounds.x, win.bounds.y], [160, 120]);
+  pins.grabEnd(pin.id);
+  assert.equal(pins.grabStart(pin.id, { x: 0, y: 0, shift: true }).gesture, "resize");
+  pins.grabMove(pin.id, { x: 50, y: 30 });
+  assert.deepEqual([win.bounds.width, win.bounds.height], [350, 230]);
+  pins.grabEnd(pin.id);
+  // Off the screen: clamped back so at least 48 px stays on the work area.
+  pins.grabStart(pin.id, { x: 0, y: 0 });
+  pins.grabMove(pin.id, { x: 9000, y: 9000 });
+  assert.ok(win.bounds.x <= 1920 - 48 && win.bounds.y <= 1040 - 48, JSON.stringify(win.bounds));
+  pins.grabEnd(pin.id);
+  const dup = pins.grabStart(pin.id, { x: 0, y: 0, ctrl: true });
+  assert.equal(dup.gesture, "duplicate");
+  assert.notEqual(dup.targetId, pin.id);
+  assert.equal(pins.listPins().length, 2, "Ctrl+middle-drag made a second pin");
+  pins.grabEnd(pin.id);
+  pins.setPin(pin.id, { locked: true });
+  assert.equal(pins.grabStart(pin.id, { x: 0, y: 0 }).ok, false, "locked: no move");
+  assert.equal(pins.grabStart(pin.id, { x: 0, y: 0, ctrl: true }).ok, true, "locked: can still be duplicated");
+  const copy = pins.listPins().find((p) => p.id !== pin.id && p.id !== dup.targetId);
+  assert.equal(copy.locked, false, "the copy is unlocked");
+});
+
+test("a web pin's page: before-mouse-event middle press is taken for the drag", () => {
+  const { fake } = setup();
+  const { pin } = pins.addPin("https://example.com/");
+  const view = fake.log.views[0];
+  const handler = view.webContents.listeners["before-mouse-event"];
+  assert.equal(typeof handler, "function", "the page's mouse events are watched");
+  let prevented = false;
+  handler({ preventDefault: () => { prevented = true; } }, { type: "mouseDown", button: "middle", globalX: 10, globalY: 10, modifiers: [] });
+  assert.equal(prevented, true, "no autoscroll: the press became a grab");
+  prevented = false;
+  handler({ preventDefault: () => { prevented = true; } }, { type: "mouseDown", button: "left", globalX: 10, globalY: 10, modifiers: [] });
+  assert.equal(prevented, false, "a left click reaches the page");
+  pins.grabEnd(pin.id);
+});

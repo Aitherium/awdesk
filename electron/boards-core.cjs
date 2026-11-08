@@ -197,12 +197,23 @@ function normalizeItem(raw) {
     h: Math.max(1, finite(raw.h, 1)),
   };
   if (raw.type === "stroke") {
+    // Pressure `p`, `tool`, `opacity` and `z` are KEPT (2026-11-07): ink saved from the
+    // screen is stored in the AitherOne stroke contract (aitherone-canvas SYNC.md:
+    // {id, kind:"stroke", points:[{x,y,p}], color, width, tool, opacity?, z}).
     const points = Array.isArray(raw.points)
       ? raw.points.filter((p) => p && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y)))
-        .map((p) => ({ x: Number(p.x), y: Number(p.y) }))
+        .slice(0, 4000)
+        .map((p) => (Number.isFinite(Number(p.p))
+          ? { x: Number(p.x), y: Number(p.y), p: Math.max(0.05, Math.min(1, Number(p.p))) }
+          : { x: Number(p.x), y: Number(p.y) }))
       : [];
     if (points.length < 2) return null;
-    return { ...base, points, color: String(raw.color || "#e6e8eb"), width: Math.max(1, finite(raw.width, 3)) };
+    const stroke = { ...base, points, color: String(raw.color || "#e6e8eb"), width: Math.max(1, Math.min(64, finite(raw.width, 3))) };
+    if (raw.kind === "stroke") stroke.kind = "stroke";
+    if (raw.tool === "pen" || raw.tool === "highlighter") stroke.tool = raw.tool;
+    if (Number.isFinite(Number(raw.opacity))) stroke.opacity = Math.max(0, Math.min(1, Number(raw.opacity)));
+    if (Number.isFinite(Number(raw.z))) stroke.z = Math.trunc(Number(raw.z));
+    return stroke;
   }
   if (raw.type === "shape") {
     return {
