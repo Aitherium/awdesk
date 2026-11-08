@@ -131,7 +131,6 @@
 <div id="textwrap"><input id="textinput" type="text" maxlength="200" placeholder="Type, then Enter" /></div>
 
 <script src="ink-core.cjs"></script>
-<script src="middle-gesture.cjs"></script>
 <script src="middle-drag.js"></script>
 <script>
   const core = window.AitherInkCore;
@@ -144,7 +143,7 @@
   const fadeBtn = document.getElementById("fadeBtn");
   const passBtn = document.getElementById("passBtn");
   const keyline = document.getElementById("keyline");
-  const gesture = window.AitherMiddleGesture;
+  const gesture = window.AitherMiddleDrag;
   // A middle-drag in progress: {id, gesture, start:{x,y}, now:{x,y}}. Main owns the
   // grab (it recorded the item on middle-down); this is only the live preview.
   let drag = null;
@@ -465,8 +464,8 @@
     const p = local(e);
     const hit = core.topmostHit(doc.items, p, gesture.HIT_PX);
     if (!hit) return false; // empty space: nothing (while interacting it never got here)
-    // The page-side rule is the shared middle-drag.js (board, canvas, pins); main
-    // re-decides with middle-gesture.cjs, which middle-gesture parity tests pin to it.
+    // The ONE rule (middle-drag.js): the page classifies, main re-decides with the
+    // same file (middle-drag-load.cjs) and the item it recorded.
     const g = window.AitherMiddleDrag.classify(e, true);
     if (!g || g === "pan") return false;
     capturePointer(e);

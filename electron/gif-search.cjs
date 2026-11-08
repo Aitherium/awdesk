@@ -169,8 +169,9 @@ function defaultStrict() {
 //   tenor.com/view/...             -> the page's og:image, only when it is a .gif on
 //                                     Tenor's media host (no keyless direct mapping)
 //
-// awfind's provider ignores `site:`, so the query is "giphy <words> gifs"; when the
-// web answers with no Giphy page, giphy.com/search/<words> is read directly. Only
+// Queries: `site:giphy.com/gifs <words>`, `site:tenor.com/view <words>` and the plain
+// "giphy <words> gifs" (awfind's provider answers site: queries with nothing today);
+// when the web names no Giphy page, giphy.com/search/<words> is read directly. Only
 // giphy.com / tenor.com pages are ever fetched (https, 8 s, 2 MB). Results carry no
 // rating, so with the adult gate CLOSED only GIFs whose slug names them are kept and
 // a word filter drops anything suggestive. Deduped, at most 24.
@@ -279,11 +280,15 @@ function createWebGifSource({ webSearch = deskWebSearch, fetchPage = (u) => fetc
     const cap = Math.max(1, Math.min(WEB_LIMIT, Math.trunc(Number(limit)) || WEB_LIMIT));
     let rows;
     try {
-      const [giphy, tenor] = await Promise.all([
+      // In parallel (awfind takes ~5 s a query): the site: forms the spec names, and
+      // the plain form, because awfind's DuckDuckGo provider answered 0 rows for
+      // `site:giphy.com/gifs cat` on 2026-11-07 while "giphy cat gifs" answered 9.
+      const [site, giphy, tenor] = await Promise.all([
+        webSearch(`site:giphy.com/gifs ${q}`, { limit: 10 }).catch(() => []),
         webSearch(`giphy ${q} gifs`, { limit: 10 }),
-        webSearch(`tenor ${q} gif`, { limit: 6 }).catch(() => []),
+        webSearch(`site:tenor.com/view ${q}`, { limit: 6 }).catch(() => []),
       ]);
-      rows = [...(giphy || []), ...(tenor || [])];
+      rows = [...(site || []), ...(giphy || []), ...(tenor || [])];
     } catch (error) {
       return { ok: false, offline: true, reason: `the web search did not answer (${String((error && error.message) || error).slice(0, 120)})` };
     }

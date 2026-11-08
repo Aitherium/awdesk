@@ -397,12 +397,12 @@ function traySubmenu() {
 
 // ── middle-drag: move / resize (Shift) / duplicate (Ctrl) ────────────────────
 //
-// The same map as screen ink, the board and AitherOne (middle-gesture.cjs). A pin
+// The same map as screen ink, the board and AitherOne (middle-drag.js). A pin
 // is a window, so main moves it: grabStart records the press, grabMove follows the
 // cursor in SCREEN coordinates, grabEnd lets go (the move/resize listeners persist).
 // A pin never leaves the screen (clampToAreas, the moveOrb rule from awdesk #9).
 
-const mg = require("./middle-gesture.cjs");
+const mg = require("./middle-drag-load.cjs").middleDrag();
 /** pin id -> {gesture, start:{x,y}, startBounds, targetId} */
 const grabs = new Map();
 
@@ -414,7 +414,7 @@ function grabStart(id, { x, y, shift = false, ctrl = false, meta = false } = {})
   const pin = record(id);
   const entry = entries.get(id);
   if (!pin || !entry || !entry.win || entry.win.isDestroyed()) return { ok: false, reason: "that pin is not open" };
-  const gesture = mg.middleGesture({ hit: { id, locked: pin.locked }, shift, ctrl, meta, surface: "desktop" });
+  const gesture = mg.decide({ onItem: true, locked: pin.locked, shift, ctrl, meta, surface: "desktop" });
   if (gesture === "blocked") return { ok: false, reason: "this pin is locked — unlock it to move it" };
   let targetId = id;
   if (gesture === "duplicate") {

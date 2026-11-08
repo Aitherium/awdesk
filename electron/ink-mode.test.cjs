@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const m = require("./ink-mode.cjs");
-const g = require("./middle-gesture.cjs");
+const g = require("./middle-drag-load.cjs").middleDrag();
 
 const run = (events, from = m.initial()) => events.reduce((s, e) => m.reduce(s, e), from);
 
@@ -94,30 +94,31 @@ test("20 switches through every mode never leave a grab or a hover behind", () =
   assert.equal(s.grab, null);
 });
 
-test("middle-gesture: dragBounds and clampToAreas", () => {
+test("middle-drag.js: dragBounds and clampToAreas", () => {
   const b = { x: 10, y: 10, width: 100, height: 80 };
   assert.deepEqual(g.dragBounds("move", b, 5, -5), { x: 15, y: 5, width: 100, height: 80 });
   assert.deepEqual(g.dragBounds("resize", b, -500, 20), { x: 10, y: 10, width: g.MIN_W, height: 100 });
   assert.deepEqual(g.dragBounds("pan", b, 5, 5), b);
-  assert.equal(g.middleGesture({ hit: null, surface: "board" }), "pan");
+  assert.equal(g.decide({ onItem: false, surface: "board" }), "pan");
+  assert.equal(g.decide({ onItem: false, surface: "desktop" }), "pass", "the bare desktop passes the press on");
+  assert.equal(g.decide({ onItem: true, locked: true }), "blocked");
+  assert.equal(g.decide({ onItem: true, locked: true, ctrl: true }), "duplicate", "locked can be duplicated");
   const area = [{ x: 0, y: 0, width: 1920, height: 1040 }];
   const off = g.clampToAreas({ x: 5000, y: -300, width: 300, height: 200 }, area);
   assert.ok(off.x <= 1920 - 48 && off.y >= 0, JSON.stringify(off));
   assert.deepEqual(g.clampToAreas({ x: 100, y: 100, width: 300, height: 200 }, area), { x: 100, y: 100, width: 300, height: 200 });
 });
 
-test("middle-gesture.cjs (main) agrees with the shared page rule middle-drag.js on every combination", () => {
-  const sandbox = { window: {} };
-  require("node:vm").runInNewContext(require("node:fs").readFileSync(require("node:path").join(__dirname, "middle-drag.js"), "utf8"), sandbox);
-  const page = sandbox.window.AitherMiddleDrag;
+test("ONE middle-button rule: classify (pages) and decide (main) are the same function of the press", () => {
   for (const onItem of [false, true]) for (const shift of [false, true]) for (const ctrl of [false, true]) for (const meta of [false, true]) {
     const ev = { button: 1, shiftKey: shift, ctrlKey: ctrl, metaKey: meta };
-    const want = g.middleGesture({ hit: onItem ? { id: "x" } : null, shift, ctrl, meta, surface: "board" });
-    assert.equal(page.classify(ev, onItem), want, JSON.stringify({ onItem, shift, ctrl, meta }));
+    assert.equal(g.classify(ev, onItem), g.decide({ onItem, shift, ctrl, meta, surface: "board" }), JSON.stringify({ onItem, shift, ctrl, meta }));
   }
-  assert.equal(page.classify({ button: 0 }, true), null, "only the middle button");
-  // ink.html and pin.html load the shared page rule.
+  assert.equal(g.classify({ button: 0 }, true), null, "only the middle button");
+  const fs = require("node:fs");
+  const path = require("node:path");
+  assert.equal(fs.existsSync(path.join(__dirname, "middle-gesture.cjs")), false, "no second copy of the rule");
   for (const html of ["ink.html", "pin.html"]) {
-    assert.match(require("node:fs").readFileSync(require("node:path").join(__dirname, html), "utf8"), /<script src="middle-drag\.js"><\/script>/, html);
+    assert.match(fs.readFileSync(path.join(__dirname, html), "utf8"), /<script src="middle-drag\.js"><\/script>/, html);
   }
 });

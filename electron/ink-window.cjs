@@ -769,7 +769,7 @@ function commitGrab(displayId, raw) {
   const dx = Number(raw && raw.dx) || 0;
   const dy = Number(raw && raw.dy) || 0;
   const from = core.itemBounds(item);
-  const to = require("./middle-gesture.cjs").dragBounds(grab.gesture, from, dx, dy);
+  const to = require("./middle-drag-load.cjs").middleDrag().dragBounds(grab.gesture, from, dx, dy);
   if (grab.gesture === "duplicate") {
     const copy = core.translateItem(core.duplicateItem(item, newItemId()), dx, dy);
     setDoc(displayId, core.pushItem(doc, copy));
