@@ -137,7 +137,7 @@
   $("close").addEventListener("click", () => { void api.close(); });
 
   // Middle-drag anywhere on the pin's own page (the strip, an image, a tile, a note):
-  // main moves the window; Shift resizes, Ctrl duplicates (middle-gesture.cjs).
+  // main moves the window; Shift resizes, Ctrl duplicates (middle-drag.js).
   let grabbing = false;
   window.addEventListener("pointerdown", (e) => {
     if (!window.AitherMiddleDrag.classify(e, true)) return;

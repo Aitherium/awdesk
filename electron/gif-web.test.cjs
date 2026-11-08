@@ -53,7 +53,11 @@ function source({ strict = false, rows = AWFIND_ROWS, pages = {} } = {}) {
   const fetched = [];
   const queries = [];
   const src = gif.createWebGifSource({
-    webSearch: async (q) => { queries.push(q); return q.startsWith("tenor") ? [{ url: "https://tenor.com/view/cat-wave-gif-123456" }] : rows; },
+    webSearch: async (q) => {
+      queries.push(q);
+      if (q.startsWith("site:tenor")) return [{ url: "https://tenor.com/view/cat-wave-gif-123456" }];
+      return q.startsWith("site:giphy") ? [] : rows; // awfind answers site: giphy with nothing (recorded)
+    },
     fetchPage: async (u) => { fetched.push(u); return pages[u] || ""; },
     strict: () => strict,
   });
@@ -67,7 +71,7 @@ test("keyless search: page links + list pages + tenor og, deduped, capped at 24"
   } });
   const r = await src.search("cat");
   assert.equal(r.ok, true);
-  assert.deepEqual(queries, ["giphy cat gifs", "tenor cat gif"]);
+  assert.deepEqual(queries, ["site:giphy.com/gifs cat", "giphy cat gifs", "site:tenor.com/view cat"]);
   assert.ok(fetched.every((u) => /^https:\/\/(giphy|tenor)\.com\//.test(u)), "only giphy/tenor pages are read");
   const ids = r.results.map((i) => i.id);
   assert.equal(new Set(ids).size, ids.length, "deduped");
