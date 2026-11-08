@@ -23,7 +23,7 @@
  * ink-mode.test.cjs drives every transition under `node --test`.
  */
 
-const { middleGesture } = require("./middle-gesture.cjs");
+const { middleDrag } = require("./middle-drag-load.cjs");
 
 const MODES = Object.freeze(["interact", "draw", "draw-held", "pen"]);
 const DRAWING = Object.freeze(new Set(["draw", "draw-held", "pen"]));
@@ -82,7 +82,9 @@ function reduce(state, event) {
       if (s.mode !== "interact" || s.grab) return s;
       return { ...s, hover: e.id ? { id: String(e.id), locked: e.locked === true } : null };
     case "middle-down": {
-      const gesture = middleGesture({ hit: e.hit || null, shift: e.shift, ctrl: e.ctrl, meta: e.meta, surface: "desktop" });
+      const hit = e.hit || null;
+      const gesture = middleDrag().decide({ onItem: Boolean(hit), locked: Boolean(hit && hit.locked),
+        shift: e.shift, ctrl: e.ctrl, meta: e.meta, surface: "desktop" });
       if (gesture === "pass" || gesture === "blocked") return { ...s, grab: null };
       return { ...s, grab: { id: e.hit.id, gesture } };
     }
