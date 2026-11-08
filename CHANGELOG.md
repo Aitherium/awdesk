@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Drawing and using your desktop are one motion now. Ink never disappears when you stop drawing: Esc, a right-click or Ctrl+Alt+D hands the desktop back and the marks stay. Hold Ctrl+Alt to draw for a moment, and release to click again (AWDESK_INK_HOLD=ctrl+shift or off changes it). The mouse wheel always scrolls the app underneath. Drawing mode shows a thin glow at the screen edge, the tool palette docks to the bottom edge, and the tray says "Drawing".
+- Middle-drag moves things: a mark on the screen (even while you are not drawing), a desktop pin, an item on a whiteboard. Shift+middle-drag resizes, Ctrl+middle-drag duplicates. Locked items stay put. The same gesture works in the AitherOne canvas.
+- New keys: Ctrl+Alt+E saves the drawing to a board, Ctrl+Alt+X snips with ink, Ctrl+Alt+F GIF (picker), Ctrl+Alt+U pins the link on your clipboard, Ctrl+Alt+T pins the browser tab, Ctrl+Alt+H shows or hides all pins, and Ctrl+Alt+/ lists every shortcut and says which ones another app holds.
+- Pin ForgeIDE to the desktop (forge.aitherium.com/ide). AitherOS Online pages can pin a page, start ink or open the GIF picker through the desk (window.aitherDeskVerbs). Ink saved to a board keeps pen pressure, so it syncs to the AitherOne canvas.
 - Drawing over the screen is smoother: strokes are one tapered, curve-traced shape (pen pressure where the pen reports it, speed for a mouse) built from every pointer sample, not one straight segment per frame.
 - Ink toolbar: Click-through (Ctrl+Alt+K) keeps your marks on screen while clicks reach the apps underneath; To board turns the marks into an editable whiteboard; Snip cuts a region with the ink in it.
 - Desktop pins: pin a GIF, an image, a YouTube video, a web page, the browser tab you are on, an app tile or a note to the desktop. Each pin moves, resizes, fades (opacity), locks (click-through), stays on top or sits at desktop level, mutes and closes, and comes back after a restart. The tray's Pins menu lists them.

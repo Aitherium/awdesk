@@ -67,19 +67,12 @@ test("the mutating ink: handlers refuse a sender that is not one of our overlays
 test("the new ink: channels refuse a foreign sender too", async () => {
   const handlers = ink.handlers();
   const foreign = { sender: { id: "not-an-overlay" } };
-  for (const channel of ["ink:pass-through", "ink:hover-chrome", "ink:to-board", "ink:snip"]) {
+  for (const channel of ["ink:pass-through", "ink:mode", "ink:grab-end", "ink:to-board", "ink:snip"]) {
     assert.equal(handlers[channel](foreign, true), null, `${channel} answers null to a foreign sender`);
   }
-  assert.equal(ink.__state().passThrough, false, "nothing switched click-through on");
+  assert.equal(ink.__state().mode, "interact", "nothing switched a mode");
 });
 
-test("click-through OFF while drawing is off is a no-op (no overlay is created)", () => {
-  const before = ink.__state();
-  const result = ink.setPassThrough(false);
-  assert.equal(result.active, false);
-  assert.equal(result.passThrough, false);
-  assert.deepEqual(ink.__state().windows, before.windows);
-});
 
 test("saveToBoard turns the busiest display's marks into ONE new board of editable items", () => {
   let created = null;

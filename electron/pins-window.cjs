@@ -163,6 +163,7 @@ function attachView(entry, pin, content) {
   });
   guardSession();
   guardContents(view.webContents);
+  wireViewMiddleDrag(entry, view.webContents);
   entry.win.contentView.addChildView(view);
   view.setBounds(core.viewBounds(entry.win.getBounds()));
   try { view.webContents.setAudioMuted(Boolean(pin.muted)); } catch { /* old electron */ }
@@ -394,6 +395,83 @@ function traySubmenu() {
   return rows;
 }
 
+// ── middle-drag: move / resize (Shift) / duplicate (Ctrl) ────────────────────
+//
+// The same map as screen ink, the board and AitherOne (middle-gesture.cjs). A pin
+// is a window, so main moves it: grabStart records the press, grabMove follows the
+// cursor in SCREEN coordinates, grabEnd lets go (the move/resize listeners persist).
+// A pin never leaves the screen (clampToAreas, the moveOrb rule from awdesk #9).
+
+const mg = require("./middle-gesture.cjs");
+/** pin id -> {gesture, start:{x,y}, startBounds, targetId} */
+const grabs = new Map();
+
+function workAreas() {
+  try { return electron().screen.getAllDisplays().map((d) => d.workArea); } catch { return []; }
+}
+
+function grabStart(id, { x, y, shift = false, ctrl = false, meta = false } = {}) {
+  const pin = record(id);
+  const entry = entries.get(id);
+  if (!pin || !entry || !entry.win || entry.win.isDestroyed()) return { ok: false, reason: "that pin is not open" };
+  const gesture = mg.middleGesture({ hit: { id, locked: pin.locked }, shift, ctrl, meta, surface: "desktop" });
+  if (gesture === "blocked") return { ok: false, reason: "this pin is locked — unlock it to move it" };
+  let targetId = id;
+  if (gesture === "duplicate") {
+    const copy = addPin({ ...pin, id: undefined, locked: false, bounds: entry.win.getBounds() });
+    if (!copy.ok) return copy;
+    targetId = copy.pin.id;
+  }
+  const target = entries.get(targetId);
+  grabs.set(id, { gesture, start: { x: Number(x) || 0, y: Number(y) || 0 }, startBounds: target.win.getBounds(), targetId });
+  return { ok: true, gesture, targetId };
+}
+
+function grabMove(id, { x, y } = {}) {
+  const g = grabs.get(id);
+  if (!g) return { ok: false, reason: "no grab" };
+  const target = entries.get(g.targetId);
+  if (!target || !target.win || target.win.isDestroyed()) return { ok: false, reason: "the pin closed" };
+  const next = mg.dragBounds(g.gesture, g.startBounds, (Number(x) || 0) - g.start.x, (Number(y) || 0) - g.start.y,
+    { minW: 80, minH: 60 });
+  const bounds = mg.clampToAreas(next, workAreas());
+  try { target.win.setBounds(bounds); } catch { /* closing */ }
+  return { ok: true, bounds };
+}
+
+function grabEnd(id) {
+  const g = grabs.get(id);
+  grabs.delete(id);
+  if (!g) return { ok: false, reason: "no grab" };
+  queueBoundsSave(g.targetId);
+  return { ok: true, gesture: g.gesture, targetId: g.targetId };
+}
+
+/**
+ * A web pin's page gets the middle button first. Electron's before-mouse-event
+ * (webContents, Electron 33+) lets main take a middle press before the page can
+ * start its autoscroll; everything else reaches the page unchanged.
+ */
+function wireViewMiddleDrag(entry, contents) {
+  try {
+    contents.on("before-mouse-event", (event, mouse) => {
+      if (!mouse) return;
+      const point = { x: Number(mouse.globalX), y: Number(mouse.globalY) };
+      const mods = Array.isArray(mouse.modifiers) ? mouse.modifiers : [];
+      if (mouse.type === "mouseDown" && mouse.button === "middle") {
+        event.preventDefault();
+        grabStart(entry.id, { ...point, shift: mods.includes("shift"), ctrl: mods.includes("control"), meta: mods.includes("meta") });
+      } else if (mouse.type === "mouseMove" && grabs.has(entry.id)) {
+        event.preventDefault();
+        grabMove(entry.id, point);
+      } else if (mouse.type === "mouseUp" && mouse.button === "middle" && grabs.has(entry.id)) {
+        event.preventDefault();
+        grabEnd(entry.id);
+      }
+    });
+  } catch { /* an Electron without before-mouse-event: the strip still middle-drags */ }
+}
+
 // ── IPC (pin.html) ───────────────────────────────────────────────────────────
 
 function entryFor(event) {
@@ -443,6 +521,10 @@ function handlers() {
       if (!pin || !["url", "youtube", "gif", "image"].includes(pin.kind)) return { ok: false, reason: "nothing to open" };
       return openInBrowser(pin.src);
     }),
+    "pin:grab-start": guarded((entry, p) => grabStart(entry.id, p && typeof p === "object" ? {
+      x: p.x, y: p.y, shift: p.shift === true, ctrl: p.ctrl === true, meta: p.meta === true } : {})),
+    "pin:grab-move": guarded((entry, p) => grabMove(entry.id, p && typeof p === "object" ? { x: p.x, y: p.y } : {})),
+    "pin:grab-end": guarded((entry) => grabEnd(entry.id)),
     "pin:reload": guarded((entry) => {
       try { if (entry.view) entry.view.webContents.reload(); } catch { /* closing */ }
       return { ok: true };
@@ -463,7 +545,8 @@ module.exports = {
   PARTITION,
   configurePins, addPin, pinTab, closePin, setPin, showPin, setAllHidden, closeAll,
   restorePins, listPins, summary, traySubmenu, handlers, ensureIpc, openInBrowser, withScheme,
+  grabStart, grabMove, grabEnd,
   // test seams
   __entries: entries,
-  __reset: () => { store = core.emptyStore(); loaded = false; entries.clear(); wired = false; sessionGuarded = false; },
+  __reset: () => { store = core.emptyStore(); loaded = false; entries.clear(); grabs.clear(); wired = false; sessionGuarded = false; },
 };

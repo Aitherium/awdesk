@@ -258,7 +258,7 @@ test("an exported overlay opener has a caller", () => {
 test("shortcuts are registered FROM the registry, and a dead key is not advertised", () => {
   const keys = shortcuts();
   assert.deepEqual(keys.map((k) => k.accel).sort(),
-    ["Alt+Space", "Ctrl+Alt+0", "Ctrl+Alt+9", "Ctrl+Alt+B", "Ctrl+Alt+C", "Ctrl+Alt+D", "Ctrl+Alt+Down", "Ctrl+Alt+G", "Ctrl+Alt+I", "Ctrl+Alt+K", "Ctrl+Alt+L", "Ctrl+Alt+M", "Ctrl+Alt+N", "Ctrl+Alt+O", "Ctrl+Alt+P", "Ctrl+Alt+Q", "Ctrl+Alt+S", "Ctrl+Alt+Up", "Ctrl+Alt+W", "Ctrl+Shift+,", "Ctrl+Shift+-", "Ctrl+Shift+=", "Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+Shift+Escape", "Ctrl+Shift+M", "Ctrl+Shift+Space", "PrintScreen", "Shift+PrintScreen"]);
+    ["Alt+Space", "Ctrl+Alt+/", "Ctrl+Alt+0", "Ctrl+Alt+9", "Ctrl+Alt+B", "Ctrl+Alt+C", "Ctrl+Alt+D", "Ctrl+Alt+Down", "Ctrl+Alt+E", "Ctrl+Alt+F", "Ctrl+Alt+G", "Ctrl+Alt+H", "Ctrl+Alt+I", "Ctrl+Alt+K", "Ctrl+Alt+L", "Ctrl+Alt+M", "Ctrl+Alt+N", "Ctrl+Alt+O", "Ctrl+Alt+P", "Ctrl+Alt+Q", "Ctrl+Alt+S", "Ctrl+Alt+T", "Ctrl+Alt+U", "Ctrl+Alt+Up", "Ctrl+Alt+W", "Ctrl+Alt+X", "Ctrl+Shift+,", "Ctrl+Shift+-", "Ctrl+Shift+=", "Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+Shift+Escape", "Ctrl+Shift+M", "Ctrl+Shift+Space", "PrintScreen", "Shift+PrintScreen"]);
   // Every Ctrl chord maps to CommandOrControl; a bare key (PrintScreen, the snip) passes through.
   assert.ok(keys.every((k) => (k.accel.startsWith("Ctrl+") ? k.electron.startsWith("CommandOrControl+") : k.electron === k.accel)));
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");

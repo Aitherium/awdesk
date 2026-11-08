@@ -27,7 +27,12 @@
     user-select: none; -webkit-user-select: none; touch-action: none; }
   body { cursor: default; }
   body.active { cursor: crosshair; }
-  body.active.pass { cursor: default; }
+  body.grab { cursor: grab; }
+  body.grabbing { cursor: grabbing; }
+  /* Draw mode is visible WITHOUT a floating bar (owner rule): a thin edge glow. */
+  body.drawing::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 4;
+    box-shadow: inset 0 0 0 2px var(--primary, #7aa2ff), inset 0 0 22px rgba(122, 162, 255, 0.35); }
+  body.drawing.nochrome::after { display: none; }
   canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
   #ink { z-index: 1; }
   #fx { z-index: 2; pointer-events: none; }
@@ -36,7 +41,9 @@
   #spot.on { display: block; }
 
   /* ── the floating toolbar ───────────────────────────────────────────────── */
-  #toolbar { position: fixed; z-index: 20; left: 50%; bottom: 28px; transform: translateX(-50%);
+  /* The palette is DOCKED to the bottom edge and exists only in a drawing mode. */
+  #toolbar { position: fixed; z-index: 20; left: 50%; bottom: 0; transform: translateX(-50%);
+    border-bottom-left-radius: 0 !important; border-bottom-right-radius: 0 !important;
     display: grid; gap: 6px; padding: 8px 10px 6px; border-radius: 12px;
     border: 1px solid var(--line, #34343f); background: rgba(20, 20, 26, 0.93);
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); backdrop-filter: blur(8px);
@@ -112,18 +119,19 @@
     <button class="width" data-width="10" title="Thick"><i style="width:13px;height:13px"></i></button>
     <span class="sep"></span>
     <button data-action="fade" id="fadeBtn" title="Marks fade out after a while">Fade: off</button>
-    <button data-action="pass" id="passBtn" title="Keep the ink, let clicks reach the apps underneath (Ctrl+Alt+K)">Click-through</button>
+    <button data-action="pass" id="passBtn" title="Back to your desktop; the ink stays (Esc, right-click, Ctrl+Alt+K)">Interact</button>
     <button data-action="board" title="Turn these marks into an editable whiteboard">To board</button>
     <button data-action="snip" title="Snip a region of the screen, ink included">Snip</button>
     <button data-action="save" class="on" title="Save the display with the drawings (syncs to Strata)">Save shot</button>
     <button data-action="exit" title="Leave drawing mode (Esc) — drawings stay">Exit</button>
   </div>
-  <div id="status"><b id="count">0 marks</b><span id="keyline">Esc exits · Ctrl+Alt+D toggles</span></div>
+  <div id="status"><b id="count">0 marks</b><span id="keyline">Esc, right-click: back to the desktop · ink stays</span></div>
 </div>
 
 <div id="textwrap"><input id="textinput" type="text" maxlength="200" placeholder="Type, then Enter" /></div>
 
 <script src="ink-core.cjs"></script>
+<script src="middle-gesture.cjs"></script>
 <script>
   const core = window.AitherInkCore;
   const api = window.aitherInk;
@@ -135,7 +143,10 @@
   const fadeBtn = document.getElementById("fadeBtn");
   const passBtn = document.getElementById("passBtn");
   const keyline = document.getElementById("keyline");
-  let overChrome = false;
+  const gesture = window.AitherMiddleGesture;
+  // A middle-drag in progress: {id, gesture, start:{x,y}, now:{x,y}}. Main owns the
+  // grab (it recorded the item on middle-down); this is only the live preview.
+  let drag = null;
   const hint = document.getElementById("hint");
   const textwrap = document.getElementById("textwrap");
   const textinput = document.getElementById("textinput");
@@ -257,10 +268,42 @@
 
   // Fade ages are measured against item.createdAt (Date.now()), so marks are
   // faded on the epoch clock -- never performance.now() (which starts at ~0).
+  function dragged(item) {
+    if (!drag || item.id !== drag.id) return item;
+    const dx = drag.now.x - drag.start.x;
+    const dy = drag.now.y - drag.start.y;
+    if (drag.gesture === "resize") {
+      const from = core.itemBounds(item);
+      return core.resizeItem(item, from, gesture.dragBounds("resize", from, dx, dy));
+    }
+    return core.translateItem(item, dx, dy);
+  }
+
   function drawMarks(now = core.now()) {
     inkCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-    for (const item of doc.items) drawOne(inkCtx, item, core.fadeAlpha(item, now, st.fadeMs));
+    for (const item of doc.items) {
+      const alpha = core.fadeAlpha(item, now, st.fadeMs);
+      // Duplicate: the original stays, the copy follows the cursor.
+      if (drag && drag.gesture === "duplicate" && item.id === drag.id) drawOne(inkCtx, item, alpha);
+      drawOne(inkCtx, dragged(item), alpha);
+    }
     if (current) drawOne(inkCtx, current, 1);
+  }
+
+  /** The hover outline main asks for while interacting (something to grab). */
+  function drawHover() {
+    const id = drag ? drag.id : (st.view && st.view.hoverId);
+    if (!id) return;
+    const item = doc.items.find((i) => i.id === id);
+    if (!item) return;
+    const b = core.itemBounds(dragged(item));
+    if (!b) return;
+    fxCtx.save();
+    fxCtx.setLineDash([5, 4]);
+    fxCtx.lineWidth = 1.5;
+    fxCtx.strokeStyle = "rgba(122,162,255,0.95)";
+    fxCtx.strokeRect(b.x - 4, b.y - 4, b.width + 8, b.height + 8);
+    fxCtx.restore();
   }
 
   // ── effects: laser, cursor, ripples, spotlight ─────────────────────────────
@@ -317,7 +360,9 @@
     } else {
       spot.classList.remove("on");
     }
-    raf = st.active ? requestAnimationFrame(frame) : setTimeout(frame, 300);
+    drawHover();
+    const live = st.active || drag || (st.view && st.view.hoverId);
+    raf = live ? requestAnimationFrame(frame) : setTimeout(frame, 120);
   }
 
   // ── state from main ────────────────────────────────────────────────────────
@@ -335,17 +380,29 @@
     const wasActive = st.active;
     st = { ...st, ...next };
     doc = { items: Array.isArray(next.items) ? next.items : [], undo: doc.undo, redo: doc.redo };
+    const view = st.view || {};
     document.body.classList.toggle("active", Boolean(st.active));
-    document.body.classList.toggle("pass", Boolean(st.active && st.passThrough));
-    if (!(st.active && st.passThrough)) overChrome = false;
+    document.body.classList.toggle("drawing", Boolean(view.glow));
+    document.body.classList.toggle("grab", view.cursor === "grab");
+    document.body.classList.toggle("grabbing", view.cursor === "grabbing" || Boolean(drag));
     toolbar.hidden = !(st.active && st.toolbar && chromeVisible);
+    // A mode switch never drops ink: a stroke in flight when the hold chord is
+    // released (or Esc lands) is committed, not abandoned.
+    if (!st.active && current) { const done = current; current = null; void commitStroke(done); }
+    // Latency probe (pins-ink-smoke.cjs): main stamps sentAt; the next painted frame
+    // records how long the switch took to reach the screen.
+    if (next.sentAt) {
+      const sentAt = next.sentAt;
+      document.body.dataset.switchRecvMs = String(Date.now() - sentAt);
+      requestAnimationFrame(() => { document.body.dataset.switchMs = String(Date.now() - sentAt); });
+    }
     drawMarks();
     renderToolbar();
     if (st.tool !== wasTool && st.tool !== "laser") laser = [];
     if (!st.active) { laser = []; ripples = []; hint.classList.remove("on"); }
-    else if (!wasActive) {
-      showHint(`${st.tool === "laser" ? "Laser" : st.tool === "spotlight" ? "Spotlight" : "Drawing"} on · `
-        + "Esc exits · Ctrl+Alt+D toggles · Ctrl+Alt+C clears");
+    else if (!wasActive && st.mode === "draw") {
+      showHint(`${st.tool === "laser" ? "Laser" : st.tool === "spotlight" ? "Spotlight" : "Drawing"} · `
+        + "Esc or right-click: back to the desktop, ink stays · hold Ctrl+Alt to draw briefly", 2200);
     }
   }
 
@@ -355,10 +412,9 @@
     for (const b of toolbar.querySelectorAll("[data-color]")) b.classList.toggle("on", b.dataset.color === st.color);
     for (const b of toolbar.querySelectorAll("[data-width]")) b.classList.toggle("on", Number(b.dataset.width) === Number(st.width));
     fadeBtn.textContent = st.fadeMs ? `Fade: ${Math.round(st.fadeMs / 1000)}s` : "Fade: off";
-    passBtn.classList.toggle("on", Boolean(st.passThrough));
-    keyline.textContent = st.passThrough
-      ? "Clicks reach your apps · Ctrl+Alt+K draws again"
-      : "Esc exits · Ctrl+Alt+D toggles · Ctrl+Alt+K click-through";
+    keyline.textContent = st.mode === "draw-held"
+      ? "Release Ctrl+Alt to use your desktop · ink stays"
+      : "Esc, right-click: back to the desktop · ink stays · middle-drag moves a mark";
     status.textContent = core.marksLine(doc.items.length, st.tool);
     hint.textContent = `${st.tool === "laser" ? "Laser" : st.tool === "spotlight" ? "Spotlight" : "Drawing"} · Esc exits · drawings stay`;
   }
@@ -403,9 +459,35 @@
     } catch { /* already released */ }
   }
 
+  // ── middle-drag: move / resize (Shift) / duplicate (Ctrl), in ANY mode ──────
+  function middleDown(e) {
+    const p = local(e);
+    const hit = core.topmostHit(doc.items, p, gesture.HIT_PX);
+    if (!hit) return false; // empty space: nothing (while interacting it never got here)
+    const g = gesture.middleGesture({ hit, shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey, surface: "desktop" });
+    if (g === "blocked" || g === "pass") return false;
+    capturePointer(e);
+    drag = { id: hit.id, gesture: g, start: p, now: p };
+    void api.mode({ type: "middle-down", id: hit.id, shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey });
+    e.preventDefault();
+    return true;
+  }
+  async function middleUp(e) {
+    releasePointer(e);
+    const d = drag;
+    drag = null;
+    if (!d) return;
+    const state = await api.grabEnd({ dx: d.now.x - d.start.x, dy: d.now.y - d.start.y });
+    if (state) applyState(state);
+    drawMarks();
+  }
+
   function onDown(e) {
-    if (!st.active || st.passThrough) return;
-    if (e.target.closest("#toolbar, #textwrap")) return;
+    if (e.target.closest && e.target.closest("#toolbar, #textwrap")) return;
+    if (e.pointerType === "pen" && !st.active) { void api.mode({ type: "pen-enter" }); return; }
+    if (e.button === 1) { middleDown(e); return; }
+    if (e.button === 2) { e.preventDefault(); void api.mode({ type: "right-click" }); return; }
+    if (!st.active) return;
     if (e.button !== undefined && e.button !== 0) return;
     capturePointer(e);
     const p = local(e);
@@ -430,24 +512,17 @@
     e.preventDefault();
   }
 
-  /**
-   * Click-through: the overlay only sees FORWARDED moves. Crossing onto the
-   * toolbar asks main for the mouse; leaving it gives the mouse back.
-   */
-  function trackChrome(e) {
-    if (!(st.active && st.passThrough)) return;
-    const over = !toolbar.hidden && Boolean(e.target && e.target.closest && e.target.closest("#toolbar"));
-    if (over !== overChrome) {
-      overChrome = over;
-      void api.hoverChrome(over);
-    }
-  }
-
   function onMove(e) {
-    trackChrome(e);
     const p = local(e);
-    cursor = { x: p.x, y: p.y, on: !(st.active && st.passThrough) };
-    if (!st.active || st.passThrough) return;
+    cursor = { x: p.x, y: p.y, on: Boolean(st.active) };
+    if (drag) { drag.now = p; drawMarks(); return; }
+    // Pen: a pen arriving while interacting draws; the mouse moving under pen mode
+    // hands the desktop back. (Click-through forwards MOUSE moves only -- Electron:
+    // "forwards mouse move messages to Chromium" -- so a pen is seen here only once
+    // the overlay already has the pointer, e.g. over an ink object.)
+    if (e.pointerType === "pen" && !st.active) { void api.mode({ type: "pen-enter" }); return; }
+    if (e.pointerType === "mouse" && st.mode === "pen" && !current) { void api.mode({ type: "mouse" }); return; }
+    if (!st.active) return;
     if (erasing) {
       const now = performance.now();
       if (now - lastErase > 45) { lastErase = now; void api.erase(p, ERASER_RADIUS); }
@@ -480,7 +555,16 @@
     drawMarks();
   }
 
+  async function commitStroke(done) {
+    if (done.type === "shape"
+      && Math.hypot(done.b.x - done.a.x, done.b.y - done.a.y) < 3
+      && done.tool !== "rect" && done.tool !== "ellipse") { drawMarks(); return; }
+    const state = await api.add(done);
+    if (state) applyState(state);
+  }
+
   async function onUp(e) {
+    if (drag && e.button === 1) { void middleUp(e); return; }
     releasePointer(e);
     if (erasing) { erasing = false; return; }
     const done = current;
@@ -539,7 +623,7 @@
     else if (action === "redo") void api.redo();
     else if (action === "clear") void api.clear();
     else if (action === "save") void saveNow();
-    else if (action === "pass") void api.passThrough(null);
+    else if (action === "pass") void api.passThrough(true);
     else if (action === "board") void toBoardNow();
     else if (action === "snip") void api.snip();
     else if (action === "exit") void api.exit();
@@ -577,27 +661,27 @@
 
   // Drag the toolbar by its grip (the window covers the display, so this is
   // plain element movement, not a window drag).
-  let drag = null;
+  let barDrag = null;
   document.getElementById("grip").addEventListener("pointerdown", (e) => {
     const rect = toolbar.getBoundingClientRect();
-    drag = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    barDrag = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
     e.target.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
   window.addEventListener("pointermove", (e) => {
-    if (!drag) return;
+    if (!barDrag) return;
     const rect = toolbar.getBoundingClientRect();
     toolbar.style.transform = "none";
-    toolbar.style.left = `${clamp(e.clientX - drag.dx, 4, window.innerWidth - rect.width - 4)}px`;
-    toolbar.style.top = `${clamp(e.clientY - drag.dy, 4, window.innerHeight - rect.height - 4)}px`;
+    toolbar.style.left = `${clamp(e.clientX - barDrag.dx, 4, window.innerWidth - rect.width - 4)}px`;
+    toolbar.style.top = `${clamp(e.clientY - barDrag.dy, 4, window.innerHeight - rect.height - 4)}px`;
     toolbar.style.bottom = "auto";
   });
-  window.addEventListener("pointerup", () => { drag = null; });
+  window.addEventListener("pointerup", () => { barDrag = null; });
 
   // ── keyboard ───────────────────────────────────────────────────────────────
   window.addEventListener("keydown", (e) => {
     if (!st.active) return;
-    if (e.key === "Escape") { e.preventDefault(); void api.exit(); }
+    if (e.key === "Escape") { e.preventDefault(); void api.mode({ type: "escape" }); }
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
       e.preventDefault();
       if (e.shiftKey) void api.redo(); else void api.undo();
@@ -609,11 +693,20 @@
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
   window.addEventListener("pointercancel", onCancel);
-  window.addEventListener("pointerleave", () => { cursor.on = false; });
+  window.addEventListener("pointerleave", (e) => {
+    cursor.on = false;
+    if (e.pointerType === "pen" && st.mode === "pen") void api.mode({ type: "pen-leave" });
+  });
+  // The wheel always passes: main lets the next ticks through to the app underneath.
+  window.addEventListener("wheel", () => { if (st.active) void api.mode({ type: "wheel" }); }, { passive: true });
+  window.addEventListener("contextmenu", (e) => e.preventDefault());
+  // Middle-click autoscroll must never start on the overlay.
+  window.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
 
   api.onState(applyState);
   api.onChrome((visible) => {
     chromeVisible = visible;
+    document.body.classList.toggle("nochrome", !visible);
     toolbar.hidden = !(st.active && st.toolbar && visible);
     if (!visible) {
       // A save grab hides the WHOLE chrome layer: the hint banner and the
