@@ -104,3 +104,17 @@ test("no open cards is no group at all, never an empty heading", () => {
   assert.equal(needsYouGroup(null).group, null);
   assert.equal(needsYouGroup([{ title: "no id" }]).group, null);
 });
+
+test("fairyGroup: one 'Ask the fairy about' row while a nudge is up, nothing when none is", () => {
+  const { fairyGroup } = require("./launcher-context.cjs");
+  const built = fairyGroup({ id: "d-abc1", title: "Claude Code needs you: Desktop canvas layout" });
+  assert.equal(built.items.length, 1);
+  const row = built.group.shown[0];
+  assert.equal(row.key, "fairy:d-abc1");
+  assert.equal(row.kind, "fairy");
+  assert.equal(row.title, "Ask the fairy about: Desktop canvas layout");
+  assert.equal(built.group.id, "fairy");
+  assert.equal(fairyGroup(null).group, null, "no nudge: the empty box is exactly as before");
+  assert.equal(fairyGroup({ title: "no id" }).group, null);
+  assert.ok(fairyGroup({ id: "d-x2", title: "x".repeat(200) }).items[0].title.length < 90, "the row stays one line");
+});

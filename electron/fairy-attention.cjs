@@ -431,6 +431,82 @@ function whisperView(decision, nowMs = Date.now()) {
   };
 }
 
+// ── the fairy's voice: a chime, and a chat about the card ──────────────────
+
+/**
+ * The chime a nudge plays (owner 2026-11-08: "optionally have the fairy actually
+ * make sounds"). Synthesized in the orb page with WebAudio -- no audio files --
+ * and louder by level: L1 one soft note, L2 a two-note rise, L3 three notes.
+ * Each note: {freq (Hz), at (s from start), dur (s), gain (0..1 peak)}.
+ * Level 0 (the badge) is silent: [].
+ */
+const CHIME = Object.freeze({
+  1: Object.freeze([{ freq: 1046.5, at: 0, dur: 0.5, gain: 0.05 }]),
+  2: Object.freeze([
+    { freq: 784, at: 0, dur: 0.32, gain: 0.07 },
+    { freq: 1174.7, at: 0.16, dur: 0.5, gain: 0.07 },
+  ]),
+  3: Object.freeze([
+    { freq: 784, at: 0, dur: 0.28, gain: 0.1 },
+    { freq: 987.8, at: 0.14, dur: 0.28, gain: 0.1 },
+    { freq: 1318.5, at: 0.28, dur: 0.6, gain: 0.11 },
+  ]),
+});
+function chimePattern(level) {
+  const lv = Math.max(0, Math.min(3, Math.floor(Number(level) || 0)));
+  return (CHIME[lv] || []).map((n) => ({ ...n }));
+}
+
+function clipText(value, max) {
+  const s = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * What the fairy knows when the owner chats about a card: the title, why it wants
+ * an answer now, the card's OWN options with their consequences, and -- for a card
+ * a session raised -- what that session last asked and said (session-context
+ * readContext). Plain text, bounded, never the value of a credential (a credential
+ * card carries a NAME only, and this reads no field that could hold a value).
+ */
+function chatContext(card, nowMs = Date.now(), { session = null } = {}) {
+  if (!card || typeof card !== "object") return "";
+  const kind = lower(card.kind);
+  const title = clipText(String(card.title || "A decision").replace(/^Claude Code needs you:\s*/i, ""), 200);
+  const lines = [`The owner is asking about this decision card: "${title}".`];
+  const who = whoWaits(card);
+  if (who) lines.push(`Raised by: ${clipText(who, 80)}.`);
+  const why = whyNow(card, nowMs);
+  if (why) lines.push(`Why it wants an answer now: ${why}.`);
+  if (card.summary) lines.push(`What the card says: ${clipText(card.summary, 800)}`);
+  if (kind === "credential") {
+    lines.push(`It needs the secret ${clipText(card.secretName || "(unnamed)", 80)}, entered in the Inbox's masked field -- never in chat.`);
+  } else {
+    const options = Array.isArray(card.options) ? card.options.slice(0, 6) : [];
+    if (options.length) {
+      lines.push("Its options:");
+      options.forEach((o, i) => {
+        const rec = o.recommended || (card.defaultKey && lower(o.key) === lower(card.defaultKey));
+        const cons = o.consequence ? ` -- ${clipText(o.consequence, 200)}` : "";
+        lines.push(`${i + 1}. ${clipText(o.label || o.key, 80)}${rec ? " (suggested)" : ""}${cons}`);
+      });
+    }
+  }
+  if (session && session.ok) {
+    if (session.name) lines.push(`The session: ${clipText(session.name, 120)}.`);
+    if (session.lastAsk) lines.push(`Its last instruction: ${clipText(session.lastAsk, 500)}`);
+    if (session.lastSaid) lines.push(`What it last said: ${clipText(session.lastSaid, 1200)}`);
+  }
+  return lines.join("\n");
+}
+
+/** The question sent through the bubble's ask path: the card first, then the owner. */
+function chatQuestion(context, said) {
+  const q = String(said || "").trim();
+  if (!context) return q;
+  return `${context}\n\nAnswer about THIS card (not about the screen unless asked). The owner asks: ${q}`;
+}
+
 module.exports = {
   LEVEL,
   DEFAULTS,
@@ -454,4 +530,7 @@ module.exports = {
   nudgePlacement,
   flutterOffset,
   whisperView,
+  chimePattern,
+  chatContext,
+  chatQuestion,
 };

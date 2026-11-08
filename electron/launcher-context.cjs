@@ -175,5 +175,26 @@ function needsYouGroup(cards, { cap = 5, expandCap = 40 } = {}) {
   };
 }
 
-module.exports = { isOwnWindow, rightNowGroup, needsYouGroup };
+/**
+ * The "Ask the fairy" row (owner 2026-11-08: "a hotkey integrated with like
+ * Alt+Space to chat"). Alt+Space belongs to this launcher, so while the fairy is
+ * carrying a card (a nudge is up) the empty box leads with ONE row that opens the
+ * fairy bubble with that card loaded as context. `nudge` is {id, title} from
+ * orb-window.nudgeCard(), or null -- and null means the box is exactly as before.
+ */
+function fairyGroup(nudge) {
+  if (!nudge || typeof nudge.id !== "string" || !nudge.id) return { group: null, items: [] };
+  const title = clip(String(nudge.title || "this card").replace(/^Claude Code needs you:\s*/i, ""), 60);
+  const item = {
+    key: `fairy:${nudge.id}`,
+    kind: "fairy",
+    title: `Ask the fairy about: ${title}`,
+    subtitle: "Enter opens the fairy with this card loaded -- type anything about it",
+    target: nudge.id,
+    score: 2,
+  };
+  return { group: { id: "fairy", label: "Fairy", total: 1, shown: [item], items: [item], more: 0 }, items: [item] };
+}
+
+module.exports = { isOwnWindow, rightNowGroup, needsYouGroup, fairyGroup };
 

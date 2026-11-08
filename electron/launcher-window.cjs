@@ -177,6 +177,12 @@ function createLauncher({
   // "Needs you (N)" -- the owner's cards ARE the reason to press the key -- and
   // the foreground-window group follows. Null = no card group.
   cards = null,
+  // () => {id, title} | null -- the card the fairy is nudging about right now
+  // (orb-window.nudgeCard). Non-null: the empty box leads with "Ask the fairy
+  // about: <title>"; null: the box is exactly as before.
+  fairy = null,
+  // (cardId) => verdict -- open the fairy bubble with that card as context.
+  askFairy = null,
 } = {}) {
   // The "Right now" sample for THIS press. A promise, so the empty search can wait
   // the few hundred ms the probe takes instead of racing it.
@@ -533,6 +539,13 @@ function createLauncher({
       const groups = [];
       let status = "";
       let total = 0;
+      if (typeof fairy === "function" && typeof askFairy === "function") {
+        let nudge;
+        try { nudge = await fairy(); } catch { nudge = null; }
+        if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
+        const builtFairy = context.fairyGroup(nudge);
+        if (builtFairy.group) { groups.push(builtFairy.group); total += builtFairy.items.length; }
+      }
       if (typeof cards === "function") {
         let snapshot;
         try { snapshot = await cards(); } catch { snapshot = []; }
@@ -597,6 +610,16 @@ function createLauncher({
   // ── actions ───────────────────────────────────────────────────────────────
   async function runRow(key, query) {
     if (String(key || "").startsWith("verb:")) return runVerb(key);
+    if (String(key || "").startsWith("fairy:")) {
+      const id = String(key).slice("fairy:".length);
+      if (typeof askFairy !== "function") return { ok: false, error: "1 fairy chat not wired in main.cjs" };
+      const sw = require("./search-window.cjs");
+      const verdict = await askFairy(id);
+      const bad = sw.failureOf(verdict, "fairy chat");
+      if (bad) return { ok: false, error: bad };
+      hide();
+      return { ok: true, did: "asked the fairy" };
+    }
     if (String(key || "").startsWith("card:")) {
       // A card row: `query` is a NUMBER (the 1-9 keys) or the option the owner
       // typed. Both resolve to the card's own key and are written by awask, so a

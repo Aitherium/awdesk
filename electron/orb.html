@@ -228,7 +228,7 @@
   #n-acts button:hover { border-color: rgba(244,250,255,0.7); }
   #n-acts button.rec { border-color: rgba(244,250,255,0.55); }
   #n-acts button.primary { background: #f4faff; color: #06101f; border-color: transparent; font-weight: 600; }
-  #n-foot { display: flex; gap: 12px; margin-top: 7px; }
+  #n-foot { display: flex; gap: 9px; margin-top: 7px; white-space: nowrap; overflow: hidden; }
   #n-foot button { border: 0; background: transparent; color: var(--fg-muted, #8b96ab); padding: 0; cursor: pointer;
     font: 10.5px var(--font-sans, system-ui); }
   #n-foot button:hover { color: var(--fg, #e6edf3); text-decoration: underline; }
@@ -236,6 +236,8 @@
   #n-flash.on { display: block; }
   #n-flash.error { color: var(--accent-danger, #ff6b6b); }
   #nudge.done #n-acts, #nudge.done #n-foot { display: none; }
+  /* talking: the options stay clickable, the foot gives its line to "Listening..." */
+  #nudge.talking #n-foot { display: none; }
 
   /* ── the veil (transparent overlay: trail + tether) ─────────────────── */
   body.veil { background: transparent; }
@@ -422,7 +424,35 @@
     function setNudge(level) {
       for (const n of [1, 2, 3]) orb.classList.toggle(`nudge${n}`, Number(level) === n);
     }
-    if (api.onNudge) api.onNudge((x) => setNudge(x && x.level));
+    // The nudge chime (fairy-attention chimePattern): synthesized, no audio files.
+    // Main sends a pattern only when sounds are on and the desk is not muted.
+    let audio = null;
+    function chime(notes) {
+      if (!Array.isArray(notes) || !notes.length) return;
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        if (!audio) audio = new Ctx();
+        if (audio.state === "suspended") audio.resume();
+        const t0 = audio.currentTime + 0.02;
+        for (const n of notes.slice(0, 4)) {
+          const osc = audio.createOscillator();
+          const amp = audio.createGain();
+          const start = t0 + Math.max(0, Number(n.at) || 0);
+          const dur = Math.min(1.5, Math.max(0.05, Number(n.dur) || 0.3));
+          const peak = Math.min(0.2, Math.max(0, Number(n.gain) || 0.05));
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(Math.min(4000, Math.max(100, Number(n.freq) || 880)), start);
+          amp.gain.setValueAtTime(0.0001, start);
+          amp.gain.exponentialRampToValueAtTime(peak, start + 0.015);
+          amp.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+          osc.connect(amp).connect(audio.destination);
+          osc.start(start);
+          osc.stop(start + dur + 0.05);
+        }
+      } catch { /* no audio device: the glow still carries the nudge */ }
+    }
+    if (api.onNudge) api.onNudge((x) => { setNudge(x && x.level); if (x && x.chime) chime(x.chime); });
     if (api.onDepth) api.onDepth((d) => orb.classList.toggle("behind", Boolean(d && d.front < 0)));
     api.onTint((t) => { if (t) applyTint(t.css); });
     // The fairy IS the owner's sprite: its name, stage and mood on hover. null =
@@ -459,6 +489,8 @@
       + '<button id="n-x" title="Later: I will bring it back in an hour">&#10005;</button></div>'
       + '<div id="n-title"></div><div id="n-why"></div><div id="n-acts"></div>'
       + '<div id="n-foot"><button data-act="read">Read it to me</button>'
+      + '<button data-act="talk" title="Talk it through out loud: say an option, or what to do instead">Talk</button>'
+      + '<button data-act="chat" title="Chat with the fairy about this card (also Alt+Space)">Chat</button>'
       + '<button data-act="keep" title="It matters: nudge harder until it is done">Keep nudging me</button>'
       + '<button data-act="mute" title="Leave it on the badge">Stop nudging this</button></div>'
       + '<div id="n-flash"></div></div>';
@@ -515,6 +547,7 @@
       }
       flashEl.textContent = "";
       flashEl.className = "";
+      box.classList.remove("talking");
       requestAnimationFrame(() => box.classList.add("on"));
     }
     moreEl.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("more"); });
@@ -527,8 +560,10 @@
       if (!f) return;
       flashEl.textContent = String(f.text || "");
       flashEl.className = f.error ? "on error" : "on";
-      // A confirmation replaces the buttons; an error keeps them (Open still works).
-      box.classList.toggle("done", !f.error);
+      // A confirmation replaces the buttons; an error keeps them (Open still works);
+      // a "keep" line (Listening...) keeps the options while the owner talks.
+      box.classList.toggle("done", !f.error && !f.keep);
+      box.classList.toggle("talking", Boolean(f.keep));
     });
     api.init().then((s) => { if (s && s.nudge) render(s.nudge); });
   }
@@ -608,6 +643,7 @@
       "aw-graph": "Query the code graph (awgraph)…",
       "aw-recover": "Snapshot store directory (awrecover list)…",
       "aw-recover-restore": "<store> <label> <dest> -- the current dest is kept aside",
+      card: "Ask anything about this card…",
       null: "Ask about what you see…",
     };
     // A mode whose typed text goes back to main under the mode's own verb.
@@ -721,9 +757,11 @@
       tripMore.textContent = view.moreLine || "";
       tripQueue.textContent = (payload && payload.line) || "";
     }
-    function setMode(next) {
+    function setMode(next, title) {
       mode = next || null;
-      q.placeholder = PLACEHOLDERS[mode] || PLACEHOLDERS.null;
+      q.placeholder = mode === "card" && title
+        ? `Ask about “${String(title).slice(0, 60)}”…`
+        : PLACEHOLDERS[mode] || PLACEHOLDERS.null;
     }
     function reportDraft() {
       api.state({ drafting: q.value.trim().length > 0 });
@@ -791,7 +829,7 @@
     api.onHold(renderHold);
     api.onResults(renderResults);
     api.onTrips(renderTrips);
-    api.onMode((payload) => setMode(payload && payload.mode));
+    api.onMode((payload) => setMode(payload && payload.mode, payload && payload.title));
     api.onTint((t) => { if (t) applyTint(t.css); });
     api.onAttach((a) => { where.textContent = a && a.attached ? (a.label || "attached") : "free"; });
     api.onFocus(() => { q.focus(); });
@@ -810,7 +848,7 @@
       if (s.results) renderResults(s.results);
       if (s.trips) renderTrips(s.trips);
       if (s.attach) where.textContent = s.attach.label || "attached";
-      setMode(s.mode);
+      setMode(s.mode, s.modeTitle);
       if (s.view === "bubble") setTimeout(() => q.focus(), 30);
     });
   }

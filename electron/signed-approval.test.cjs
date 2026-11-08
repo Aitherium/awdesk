@@ -114,7 +114,7 @@ test("main.cjs routes desk:deck-answer through signed-approval before awask", ()
   assert.ok(i > 0);
   // The handler delegates to the ONE answer path every desk surface shares.
   assert.match(src.slice(i, i + 300), /return answerDeckCard\(id, choice, deckWindow\)/);
-  const f = src.indexOf("function answerDeckCard(id, choice, parent)");
+  const f = src.indexOf("function answerDeckCard(id, choice, parent, note");
   assert.ok(f > 0, "answerDeckCard is the shared answer path");
   const body = src.slice(f, f + 2500);
   const route = body.indexOf("signedApproval.answerRoute(");
@@ -122,6 +122,20 @@ test("main.cjs routes desk:deck-answer through signed-approval before awask", ()
   assert.ok(route > 0 && awask > route, "answerRoute must be consulted before answerCard");
   assert.match(body, /readCardRaw\(id, decisionCards\.storeDir\(\)\)/);
   assert.match(body, /pending: true/);
+});
+
+test("a spoken answer (voice card, the fairy's Talk) goes through answerDeckCard, never awask directly", () => {
+  const src = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  const i = src.indexOf("async function answerCardByVoice(card)");
+  assert.ok(i > 0, "the voice card flow exists");
+  const end = src.indexOf("function toggleMicMute", i);
+  assert.ok(end > i);
+  const body = src.slice(i, end);
+  assert.ok(body.includes('answerDeckCard(card.id, reply.key, null, "answered by voice")'), "the spoken answer uses the ONE answer path");
+  assert.ok(!body.includes("decisionCards.answerCard("), "no second, unsigned answer path");
+  const talk = body.indexOf("async function talkAboutCard(card)");
+  assert.ok(talk > 0, "the fairy's Talk is wired");
+  assert.ok(body.indexOf("micMuted()", talk) > talk && body.indexOf("muted: true", talk) > talk, "a muted mic is reported, not silent");
 });
 
 test("the browser side panel's Agents tab answers through the same answerDeckCard", () => {
