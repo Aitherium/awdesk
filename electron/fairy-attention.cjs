@@ -411,10 +411,10 @@ function whisperView(decision, nowMs = Date.now()) {
   const card = decision.card;
   const kind = lower(card.kind);
   const options = kind === "credential" ? [] : (Array.isArray(card.options) ? card.options : [])
-    .slice(0, 3)
+    .slice(0, 4)
     .map((o) => ({
       key: String(o.key),
-      label: String(o.label || o.key).slice(0, 34),
+      label: String(o.label || o.key).slice(0, 120),
       consequence: String(o.consequence || "").slice(0, 160),
       recommended: Boolean(o.recommended) || (card.defaultKey && lower(o.key) === lower(card.defaultKey)),
     }));
