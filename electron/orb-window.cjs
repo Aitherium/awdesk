@@ -2390,6 +2390,12 @@ async function nudgeAct(action, key) {
     let verdict;
     try { verdict = await hookValue("answer", card.id, opt.key); } catch { verdict = false; }
     if (nudging !== n) return { ok: Boolean(verdict) };
+    if (verdict && typeof verdict === "object" && verdict.ok === false) {
+      // A terminal ask the desk could not type into (tui-answer.cjs): nothing was
+      // recorded, the session is still waiting -- say where to answer it.
+      sendNudge("orb:nudge-flash", { text: verdict.flash || "That did not go through. Open it?", error: true });
+      return { ok: false, error: verdict.error || "the answer did not go through" };
+    }
     if (!verdict) {
       sendNudge("orb:nudge-flash", { text: "That did not go through. Open it?", error: true });
       return { ok: false, error: "the answer did not go through" };
