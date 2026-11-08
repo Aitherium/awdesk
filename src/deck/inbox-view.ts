@@ -16,6 +16,7 @@ import {
   transportNote,
   type DeckDecision,
   type RelayRow,
+  type WakeInvestigateResult,
   type WakeRow,
   type WakesFeed,
 } from './deck-types';
@@ -330,6 +331,50 @@ export function wakeErrorLine(wake: WakeRow): string {
   const state = wake.lastState && !reason.toLowerCase().includes(wake.lastState.toLowerCase()) ? wake.lastState : '';
   const line = oneClause([reason, state].filter(Boolean).join(' — ') || wake.error || '');
   return line || 'no reason recorded';
+}
+
+function clipLine(text: string, max: number): string {
+  const out = text.replace(/\s+/g, ' ').trim();
+  return out.length > max ? `${out.slice(0, max - 1)}…` : out;
+}
+
+/** The line under a broken wake: awrise's own WHY (the error line it read off
+ *  the run's output) when the daemon carries one, else the old reason line. */
+export function wakeWhyLine(wake: WakeRow): string {
+  // NOT oneClause: the why IS the error line, and its host:port, URL or path
+  // ("no llama-server on spark.local:8118", "POST /decisions: HTTP 400") is the
+  // part that says what broke. Whitespace collapsed, length capped, nothing cut.
+  const why = clipLine(String(wake.lastWhy || ''), 160);
+  return why || wakeErrorLine(wake);
+}
+
+/** The cause pill: '' when awrise has not classified this streak. */
+export function wakeCausePill(wake: WakeRow): string {
+  const cause = String(wake.lastCause || '').trim();
+  if (!cause) return '';
+  const streak = Number(wake.whyStreak) || 0;
+  return streak > 1 ? `${cause} ×${streak}` : cause;
+}
+
+/** "held until 14:05 — no llama-server on spark.local:8118" while the hold is
+ *  in the future; '' once it has lapsed (the next wake retries). */
+export function wakeHeldPill(wake: WakeRow, nowMs: number): string {
+  if (!wake.heldUntil) return '';
+  const until = Date.parse(wake.heldUntil);
+  if (!Number.isFinite(until) || until <= nowMs) return '';
+  const d = new Date(until);
+  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const on = clipLine(String(wake.heldOn || ''), 80);
+  return on ? `held until ${hhmm} — ${on}` : `held until ${hhmm}`;
+}
+
+/** The note an Investigate click leaves on the row. */
+export function wakeInvestigateMessage(result: WakeInvestigateResult | boolean | null | undefined): string {
+  if (result === null || result === undefined || typeof result === 'boolean') {
+    return result === true ? 'investigating' : 'investigate: no answer from the desk';
+  }
+  if (result.ok && result.session) return `investigating — agent session ${result.session}`;
+  return `investigate failed: ${result.error || 'refused'}`;
 }
 
 /** Is the scheduler's own clock the broken thing? Then it leads the Broken list. */

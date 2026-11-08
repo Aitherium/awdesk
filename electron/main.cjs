@@ -6048,6 +6048,22 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
             wakesPending.delete(key);
           }
         }
+        // Investigate: ONE agent session on the harness daemon, briefed with
+        // the wake's why + output tail. Fire-and-forget: the session lives on
+        // in the daemon (Agents panel); the row shows its id or the error.
+        case "wake-investigate": {
+          if (typeof arg !== "string" || !wakesFeedClient.WAKE_NAME_RE.test(arg)) {
+            return { ok: false, error: "invalid wake name" };
+          }
+          const key = `investigate:${arg}`;
+          if (wakesPending.has(key)) return { ok: false, error: "already in flight" };
+          wakesPending.add(key);
+          try {
+            return await wakesFeedClient.investigateWake(arg);
+          } finally {
+            wakesPending.delete(key);
+          }
+        }
         case "chat":
           createChatWindow();
           return true;

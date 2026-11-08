@@ -17,7 +17,11 @@ import {
   relayNick,
   splitWakes,
   successorId,
+  wakeCausePill,
   wakeErrorLine,
+  wakeHeldPill,
+  wakeInvestigateMessage,
+  wakeWhyLine,
   VISIBLE_CAP,
 } from './inbox-view';
 
@@ -135,6 +139,32 @@ describe('wakes', () => {
     expect(line).not.toContain('http');
     expect(line).not.toContain('Traceback');
     expect(line.length).toBeLessThanOrEqual(80);
+  });
+});
+
+describe('wake why / cause / held', () => {
+  it('the why line keeps the host:port and path that say what broke', () => {
+    const w = wake({ lastReason: 'exit_2', lastWhy: 'publish_moe_tiers: no llama-server on spark.local:8118 (or ssh failed)' });
+    expect(wakeWhyLine(w)).toBe('publish_moe_tiers: no llama-server on spark.local:8118 (or ssh failed)');
+    expect(wakeWhyLine(wake({ lastReason: 'exit_1', lastWhy: '' }))).toBe('exited 1');
+    expect(wakeWhyLine(wake({ lastWhy: 'x'.repeat(300) })).length).toBe(160);
+  });
+  it('the cause pill names the bucket and the streak', () => {
+    expect(wakeCausePill(wake({ lastCause: 'code-bug', whyStreak: 5 }))).toBe('code-bug ×5');
+    expect(wakeCausePill(wake({ lastCause: 'timeout', whyStreak: 1 }))).toBe('timeout');
+    expect(wakeCausePill(wake({}))).toBe('');
+  });
+  it('the held pill shows only while the hold is in the future', () => {
+    const future = new Date(NOW + 30 * 60_000).toISOString();
+    const past = new Date(NOW - 60_000).toISOString();
+    expect(wakeHeldPill(wake({ heldUntil: future, heldOn: 'no llama-server' }), NOW)).toMatch(/^held until \d\d:\d\d — no llama-server$/);
+    expect(wakeHeldPill(wake({ heldUntil: past, heldOn: 'x' }), NOW)).toBe('');
+    expect(wakeHeldPill(wake({ heldUntil: 'garbage' }), NOW)).toBe('');
+  });
+  it('the investigate note says the session or the error', () => {
+    expect(wakeInvestigateMessage({ ok: true, session: 's-1' })).toBe('investigating — agent session s-1');
+    expect(wakeInvestigateMessage({ ok: false, error: 'daemon unreachable' })).toBe('investigate failed: daemon unreachable');
+    expect(wakeInvestigateMessage(null)).toBe('investigate: no answer from the desk');
   });
 });
 

@@ -94,6 +94,16 @@ export interface WakeRow {
   running: boolean;
   runningSince: string | null;
   nextDueAt: string | null;
+  /** The most informative error line of the last bad wake (awrise reads it
+   *  off the run's own output, redacted). "" on an older daemon. */
+  lastWhy?: string;
+  /** dependency-down | code-bug | timeout | config | unknown, or "". */
+  lastCause?: string;
+  /** Same why this many wakes in a row. */
+  whyStreak?: number;
+  /** awrise is skipping the job until then (a dependency is down). */
+  heldUntil?: string | null;
+  heldOn?: string;
   /** The decision card awrise raised for this failing streak, when it did. */
   cardId: string;
   error: string;
@@ -449,6 +459,13 @@ export function normalizeWakes(raw: unknown): WakesFeed {
     staleSince: typeof value.stale_since === 'number' ? value.stale_since : null,
     error: typeof value.error === 'string' ? value.error : null,
   };
+}
+
+/** What the Investigate button gets back: the daemon session it started. */
+export interface WakeInvestigateResult {
+  ok?: boolean;
+  session?: string | null;
+  error?: string | null;
 }
 
 export interface WakeActionResult {

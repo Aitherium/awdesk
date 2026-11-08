@@ -1404,6 +1404,12 @@ body {
   white-space: normal; overflow: hidden;
   font-size: 11.5px; line-height: 1.35; color: var(--deck-soft);
 }
+.deck-wake-cause, .deck-wake-held {
+  flex: none; font-size: 10.5px; font-weight: 600; padding: 0 6px; border-radius: 999px; line-height: 16px;
+  border: 1px solid var(--deck-edge); color: var(--deck-soft);
+}
+.deck-wake-cause-code-bug { border-color: var(--destructive); color: var(--destructive); }
+.deck-wake-cause-dependency-down, .deck-wake-held { border-color: var(--warning); color: var(--warning); }
 .deck-broken-age { flex: none; font-size: 11px; color: var(--deck-muted); }
 .deck-broken-row .deck-wake-actions, .deck-wake-table .deck-wake-actions { display: inline-flex; gap: 4px; margin: 0; }
 .deck-broken-row .deck-wake-note { flex-basis: 100%; }
