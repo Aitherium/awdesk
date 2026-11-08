@@ -311,6 +311,16 @@ app.whenReady().then(async () => {
     const b1 = () => JSON.parse(fs.readFileSync(boardFile, "utf8")).pins.find((x) => x.id === clockId).bounds;
     expect("board window: middle-drag a card moves it in the ONE board file",
       await until(() => b1().x > b0.x && b1().y > b0.y, 4000), { b0, b1: b1() });
+    // Middle-drag on EMPTY board space pans the board window (drawing and cards together).
+    const stage = await bdom("(() => { const r = document.getElementById('stage').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()");
+    const emptyAt = { x: Math.round(stage.x + 30), y: Math.round(stage.y + stage.height - 30) };
+    const cardX = () => bdom(`document.querySelector('#pins .card[data-id="${clockId}"]').getBoundingClientRect().x`);
+    const x0 = await cardX();
+    await middleDrag(bwc, emptyAt, { x: emptyAt.x + 150, y: emptyAt.y - 20 });
+    expect("board window: middle-drag on empty space pans (the cards move with the board)",
+      await until(async () => (await cardX()) > x0 + 100, 3000), { x0, x1: await cardX() });
+    const unchanged = JSON.parse(fs.readFileSync(boardFile, "utf8")).pins.find((x) => x.id === clockId).bounds;
+    expect("...and a pan changes no card's board position", unchanged.x === b1().x && unchanged.y === b1().y, unchanged);
     await shoot(boardWin, "board-window-pins.png");
     boardWin.destroy();
   }
