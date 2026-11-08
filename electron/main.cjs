@@ -154,6 +154,7 @@ if (kidDesk.allowCdpPort(kidDeskMode()) && /^\d{2,5}$/.test(String(process.env.D
   app.commandLine.appendSwitch("remote-debugging-port", String(process.env.DESK_CDP_PORT));
 }
 const decisionCards = require("./decision-cards.cjs");
+const sessionContext = require("./session-context.cjs");
 const signedApproval = require("./signed-approval.cjs");
 const {
   fetchChannels: fetchRelayChannels,
@@ -3603,13 +3604,99 @@ function inboxCounts(cards = openDecisions) {
   return { waiting, total: cards.length };
 }
 
+// -- the session behind a card (session-context.cjs) --------------------------
+// Owner, 2026-11-08: the Inbox had "not enough info and no easy way to interact or
+// dive deeper or engage with those sessions". Liveness comes from the running
+// processes' own state files (5 s cache: the deck re-renders often); the context
+// and every action resolve the session from MAIN's copy of the card.
+let liveSessionCache = { at: 0, map: new Map() };
+function liveSessionMap({ fresh = false } = {}) {
+  const now = Date.now();
+  if (fresh || now - liveSessionCache.at > 5000) {
+    try { liveSessionCache = { at: now, map: sessionContext.liveSessions() }; } catch { liveSessionCache = { at: now, map: new Map() }; }
+  }
+  return liveSessionCache.map;
+}
+
+/** The deck's cards, each session card carrying {live, status, name} for its row. */
+function decisionsWithSessions(cards = openDecisions) {
+  const live = liveSessionMap();
+  return cards.map((card) => {
+    if (!card || !card.sessionId) return card;
+    const row = live.get(card.sessionId);
+    return { ...card, session: { live: Boolean(row), status: row ? row.status : "", name: row ? row.name : "" } };
+  });
+}
+
+function openCardById(id) {
+  return typeof id === "string" && id ? openDecisions.find((c) => c && c.id === id) || null : null;
+}
+
+function deckSession(cardId) {
+  const card = openCardById(cardId);
+  if (!card) return { ok: false, error: "That card is no longer open." };
+  if (!card.sessionId) return { ok: false, error: "This card did not come from a session." };
+  const live = liveSessionMap().get(card.sessionId) || null;
+  return sessionContext.readContext(card.sessionId, card.cwd, { live });
+}
+
+async function deckSessionAct(payload) {
+  const { id, action, text } = payload || {};
+  const card = openCardById(id);
+  if (!card || !card.sessionId) return { ok: false, note: "That card is no longer open." };
+  const live = liveSessionMap({ fresh: true }).get(card.sessionId) || null;
+  let name = live && live.name ? live.name : "";
+  if (!name) {
+    const ctx = sessionContext.readContext(card.sessionId, card.cwd, { live, repo: "" });
+    name = (ctx && ctx.ok && ctx.name) || "";
+  }
+  const what = String(action || "");
+  if (what === "focus") {
+    if (!live) return { ok: false, note: "It has ended. Resume it instead." };
+    const r = await sessionContext.focusSessionTab(name);
+    return r.ok
+      ? { ok: true, via: "tab", note: `Brought "${r.tab || name}" to the front.` }
+      : { ok: false, note: `Could not find its terminal tab (${r.error}).` };
+  }
+  if (what === "resume") {
+    if (live) return { ok: false, note: "It is still open. Use Go to it." };
+    const r = sessionContext.resumeSession({ sessionId: card.sessionId, cwd: card.cwd, title: name });
+    return r.ok
+      ? { ok: true, via: "resumed", note: "Reopened in a new terminal tab." }
+      : { ok: false, note: `Could not reopen it (${r.error}).` };
+  }
+  if (what === "reply") {
+    const body = String(text || "").trim().slice(0, 4000);
+    if (!body) return { ok: false, note: "Nothing to send." };
+    if (live) {
+      // The mailbox is drained at the session's NEXT prompt (adk steerback) -- said
+      // as exactly that, never "delivered".
+      const ok = decisionCards.steerCard(card.id, body);
+      if (ok) {
+        void postToRelay(RELAY_CHANNEL, `steered ${card.id}: ${body.slice(0, 300)} (via desk session panel)`)
+          .then(() => void refreshRelayFeed());
+      }
+      const f = await sessionContext.focusSessionTab(name);
+      if (!ok) return { ok: false, via: f.ok ? "tab" : undefined, note: "awask did not start, so nothing was queued." };
+      return f.ok
+        ? { ok: true, via: "mailbox+tab", note: "Queued, and its tab is in front: it reads this at its next prompt." }
+        : { ok: true, via: "mailbox", note: "Queued: it reads this at its next prompt." };
+    }
+    const r = sessionContext.resumeSession({ sessionId: card.sessionId, cwd: card.cwd, title: name, prompt: body });
+    return r.ok
+      ? { ok: true, via: "resumed", note: "Resumed in a new terminal tab with your message." }
+      : { ok: false, note: `Could not reopen it (${r.error}).` };
+  }
+  return { ok: false, note: `unknown action ${what}` };
+}
+
 function deckState() {
   const counts = inboxCounts();
   return {
     // The fleet HOST (the WSL distro) as last judged by fleet_host.py -- a cache
     // read, never a wsl.exe spawn; null when nothing judged it in the last 15 min.
     fleetHost: require("./fleet-host-cache.cjs").readFleetHostSummary(),
-    decisions: openDecisions,
+    decisions: decisionsWithSessions(openDecisions),
     openCount: counts.waiting,
     totalCount: counts.total,
     // The split the flipper renders: needs-you ids pinned first, FYI ids
@@ -5233,6 +5320,20 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // whose right answer was not one of its options had to be retyped in a
     // terminal. Mirrored to the coordination channel like an answer, so the
     // sessions see the order and not just its effect.
+    ipcMain.handle("desk:deck-session", (_event, cardId) => deckSession(cardId));
+    ipcMain.handle("desk:deck-session-act", (_event, payload) => deckSessionAct(payload));
+    // A link in a card (a PR, a URL in a session's answer): http(s) only, through
+    // the browser policy, into an Aither Browser window -- never shell.openExternal.
+    ipcMain.handle("desk:deck-open-url", (_event, url) => {
+      const verdict = browserPolicy.sanitizeUrl(String(url || ""));
+      if (!verdict.ok || !/^https?:/i.test(verdict.url)) return { ok: false, error: verdict.reason || "not a web link" };
+      try {
+        browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+    });
     ipcMain.handle("desk:deck-steer", (_event, payload) => {
       const { id, text } = payload || {};
       const ok = decisionCards.steerCard(id, text);

@@ -1477,3 +1477,127 @@ body {
 .deck-now-enter { margin-left: 8px; }
 @keyframes deck-now-slide { from { opacity: 0; transform: translateX(48px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .deck-now-card { animation: none; } }
+
+/* ── Inbox SESSION PANEL (owner, 2026-11-08: "not enough info, no easy way to
+      interact or dive deeper or engage with those sessions"). A card raised by a
+      coding session says whether that session is open, what it was asked, what
+      it last said, and gives a door to it (Go to it / Resume / Reply). ──────── */
+.deck-session-pill {
+  flex: none; font-size: 10.5px; font-weight: 650; line-height: 16px; padding: 0 7px; border-radius: 999px;
+  border: 1px solid currentColor; text-transform: lowercase; letter-spacing: 0.02em;
+}
+.deck-session-pill-live { color: var(--success, var(--pastel-mint)); }
+.deck-session-pill-working { color: var(--deck-accent); }
+.deck-session-pill-ended { color: var(--deck-muted); opacity: 0.85; }
+.deck-ny-ended-chip { flex: none; padding: 2px 10px; font-size: 11px; }
+.deck-ny-ended-chip-confirm { border-color: var(--destructive); color: var(--destructive); }
+.deck-ny-ended-chip:disabled { opacity: 0.4; cursor: default; }
+
+.deck-session {
+  display: flex; flex-direction: column; gap: 6px; margin: 2px 0 6px; padding: 8px 10px;
+  border: 1px solid var(--deck-edge); border-radius: 10px;
+  background: color-mix(in oklch, var(--deck-bg), transparent 40%);
+}
+.deck-session-status { display: flex; align-items: center; gap: 8px; min-height: 24px; font-size: 12.5px; }
+.deck-session-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--deck-muted); }
+.deck-session-dot-idle { background: var(--success, var(--pastel-mint)); box-shadow: 0 0 0 3px color-mix(in oklch, var(--success, var(--pastel-mint)), transparent 80%); }
+.deck-session-dot-busy { background: var(--deck-accent); }
+.deck-session-dot-ended { background: var(--deck-muted); opacity: 0.7; }
+.deck-session-state { flex: none; font-weight: 650; color: var(--deck-text); }
+.deck-session-name {
+  flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--deck-soft);
+}
+.deck-session-go { flex: none; margin-left: auto; display: flex; gap: 6px; }
+.deck-session-quiet { margin: 0; font-size: 11.5px; color: var(--deck-muted); }
+.deck-session-note { margin: 0; font-size: 11.5px; color: var(--deck-soft); overflow-wrap: anywhere; }
+.deck-session-note-bad { color: var(--destructive); }
+
+/* Label column + content: Asked / Then / It said / Edited. */
+.deck-session-field { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 2px 10px; align-items: start; }
+.deck-session-label {
+  padding-top: 1px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--deck-muted);
+}
+.deck-session-text { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--deck-text); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+
+/* Folding by height, not -webkit-line-clamp: the folded content can be tables
+   and lists, which a line clamp does not cut. */
+.deck-clamp-wrap { min-width: 0; }
+/* One font size + line height for everything that folds, so N lines of the
+   max-height below is exactly N lines of its text. */
+.deck-clamp { font-size: 12.5px; line-height: 1.45; }
+.deck-clamp-folded {
+  max-height: calc(var(--deck-clamp-lines, 4) * 1.45em); overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.2em), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.2em), transparent);
+}
+.deck-clamp-clickable { cursor: pointer; }
+.deck-clamp-toggle {
+  border: 0; background: none; padding: 0; margin: 1px 0 0; cursor: pointer; font: inherit; font-size: 11px;
+  color: var(--deck-muted); text-decoration: underline dotted;
+}
+.deck-clamp-toggle:hover { color: var(--deck-text); }
+
+/* Light markdown: built as React nodes from parsed blocks, never as HTML. */
+.deck-md { font-size: 12.5px; line-height: 1.45; color: var(--deck-text); user-select: text; overflow-wrap: anywhere; }
+.deck-md-p, .deck-md-h { margin: 0 0 6px; white-space: pre-wrap; }
+.deck-md-h { font-weight: 700; }
+.deck-md > :last-child { margin-bottom: 0; }
+.deck-md-list { margin: 0 0 6px; padding-left: 18px; }
+.deck-md-list li { margin: 1px 0; }
+.deck-md-code, .deck-md-pre {
+  font-family: var(--font-mono); font-size: 0.92em; background: var(--surface-800); border-radius: 4px;
+}
+.deck-md-code { padding: 0 4px; }
+.deck-md-pre { margin: 0 0 6px; padding: 6px 8px; white-space: pre-wrap; overflow-x: auto; }
+.deck-md-table-wrap { margin: 0 0 6px; overflow-x: auto; }
+.deck-md-table { border-collapse: collapse; font-size: 11.5px; }
+.deck-md-table th, .deck-md-table td {
+  border: 1px solid var(--deck-edge); padding: 2px 8px; text-align: left; vertical-align: top;
+}
+.deck-md-table th { background: var(--surface-800); color: var(--deck-soft); font-weight: 650; }
+
+/* Links inside card text: buttons that read as links (d-ids, PRs, URLs). */
+.deck-inline-link {
+  border: 0; background: none; padding: 0; margin: 0; font: inherit; color: var(--deck-accent); cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px; text-align: left; overflow-wrap: anywhere;
+}
+.deck-inline-link:hover, .deck-inline-link:focus-visible { filter: brightness(1.2); }
+.deck-inline-card { font-family: var(--font-mono); font-size: 0.95em; }
+.deck-inline-id { font-family: var(--font-mono); font-size: 0.95em; color: var(--deck-muted); }
+
+.deck-session-turns { margin: 0; }
+.deck-session-turn { margin: 4px 0 6px; padding-left: 8px; border-left: 2px solid var(--deck-edge); }
+.deck-session-turn-user { border-left-color: color-mix(in oklch, var(--deck-accent), transparent 40%); }
+.deck-session-turn-head { display: flex; align-items: baseline; gap: 8px; font-size: 10.5px; color: var(--deck-muted); }
+.deck-session-turn-role { font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+
+.deck-session-files { display: flex; flex-wrap: wrap; gap: 4px; }
+.deck-session-file { cursor: default; padding: 1px 8px; font-size: 11px; font-family: var(--font-mono); }
+
+.deck-session-reply { display: flex; gap: 6px; align-items: flex-end; margin-top: 2px; }
+.deck-session-reply-input {
+  flex: 1; min-width: 0; min-height: 44px; resize: vertical;
+  border: 1px solid var(--deck-edge); background: rgba(0, 0, 0, 0.25); color: inherit;
+  border-radius: 8px; padding: 6px 8px; font: inherit; font-size: 12.5px; line-height: 1.4;
+}
+.deck-session-reply-input:focus { outline: 1px solid var(--deck-accent); outline-offset: -1px; }
+.deck-session-effect { margin: 0; font-size: 11px; color: var(--deck-muted); }
+.deck-session-meta {
+  margin: 0; font-size: 10.5px; color: var(--deck-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.deck-session-path { font-family: var(--font-mono); user-select: text; }
+
+/* The rest of an expanded card: raw text, facts, detail, what each answer does. */
+.deck-card-summary-open {
+  display: block; -webkit-line-clamp: unset; overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
+}
+.deck-card-summary:not(.deck-card-summary-open) { cursor: pointer; }
+.deck-card-raw-text { margin: 2px 0 6px; font-size: 11.5px; color: var(--deck-soft); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.deck-card-detail { margin: 2px 0 6px; }
+.deck-card-facts { margin: 6px 0 0; padding-left: 18px; font-size: 12px; color: var(--deck-soft); }
+.deck-card-facts li { margin: 1px 0; }
+.deck-card-consequences { list-style: none; margin: 6px 0 0; padding: 0; font-size: 11px; color: var(--deck-muted); }
+.deck-card-consequences li { display: flex; gap: 6px; margin: 1px 0; }
+.deck-card-consequence-key { flex: none; font-weight: 650; color: var(--deck-soft); }
+.deck-card-consequence-text { min-width: 0; overflow-wrap: anywhere; }

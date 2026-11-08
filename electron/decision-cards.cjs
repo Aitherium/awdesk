@@ -150,6 +150,12 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
     id: raw.id,
     title: typeof raw.title === "string" ? raw.title : "Decision needed",
     summary: typeof raw.summary === "string" ? raw.summary : "",
+    // The card's long form and its facts (2026-11-08: the Inbox showed only the
+    // clipped summary, "not enough info"). Bounded: a row is not a document.
+    detail: typeof raw.detail === "string" ? raw.detail.slice(0, 2000) : "",
+    facts: Array.isArray(raw.facts)
+      ? raw.facts.filter((f) => typeof f === "string" && f.trim()).slice(0, 6).map((f) => f.slice(0, 240))
+      : [],
     kind,
     urgency: typeof raw.urgency === "string" ? raw.urgency : "normal",
     createdAt: Number(raw.created_at) || 0,
