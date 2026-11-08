@@ -292,3 +292,11 @@ test("the chat question puts the card first and the owner's words last", () => {
   assert.ok(q.endsWith("The owner asks: what breaks if I wait?"));
   assert.equal(fa.chatQuestion("", "hi"), "hi", "no card: the question is the owner's own");
 });
+
+test("the whisper keeps a long option label whole and shows up to four options", () => {
+  const long = "I will run it under my own tenant and relaunch it there tonight";
+  const c = card({ options: [1, 2, 3, 4, 5].map((i) => ({ key: `k${i}`, label: i === 1 ? long : `Option ${i}` })) });
+  const view = fa.whisperView({ card: c, level: 2 }, NOW);
+  assert.equal(view.options[0].label, long);
+  assert.equal(view.options.length, 4);
+});
