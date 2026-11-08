@@ -4,6 +4,13 @@
 // suite would read the OWNER'S live file, and go red the day they change a setting.
 process.env.DESK_CAST_FILE = require("node:path").join(
   require("node:os").tmpdir(), `desk-no-cast-${process.pid}`, "cast.json");
+// Hermetic stage (2026-11-07): a drop is staged under the Library host. The default is
+// the REAL shared C:\AitherOS-Data\Library\tmp\desk-uploads, which other test files
+// (and the owner's live desk) stage into at the same moment -- the stage-cleanup test
+// counted one of THEIR files and flaked ("a staged file was left behind (1 !== 0)").
+// This file gets its own Library; the cleanup test gets a fresh one per run.
+process.env.AWDESK_LIBRARY_HOST = require("node:fs").mkdtempSync(
+  require("node:path").join(require("node:os").tmpdir(), "drop-router-library-"));
 
 /**
  * drop-router tests — the four lanes + the bridge contract, with the
@@ -245,7 +252,10 @@ async function okAsync(name, fn) {
 
   await okAsync("stage is cleaned up even when the lane fails", async () => {
     const { dir, p } = tmpfile("bad.png", IMAGE_PNG);
-    const stageDir = path.join(LIBRARY_HOST, "tmp", "desk-uploads");
+    // Its OWN stage: nothing else on the machine can drop a file into it.
+    const libraryHost = fs.mkdtempSync(path.join(os.tmpdir(), "drop-router-stage-"));
+    const stageDir = path.join(libraryHost, "tmp", "desk-uploads");
+    assert.ok(!stageDir.startsWith(path.join(LIBRARY_HOST, "tmp")), "the test stage is not the shared one");
     // The stage directory is created on first use, so a machine that has never
     // staged a drop has none -- absent is zero, not a failure. (It read as one on
     // every non-Windows CI runner: ENOENT scandir before the drop even ran.)
@@ -257,12 +267,18 @@ async function okAsync(name, fn) {
       }
     };
     const before = staged();
+    let sawStaged = 0;
     await routeDrop({ filePath: p, mime: "image/png" }, {
-      call: async () => { throw new Error("vision down"); },
+      libraryHost,
+      // The lane fails AFTER the file was staged: prove it was there, then gone.
+      call: async () => { sawStaged = staged(); throw new Error("vision down"); },
     });
     const after = staged();
-    assert.strictEqual(after, before, "a staged file was left behind");
+    assert.strictEqual(before, 0, "a fresh stage starts empty");
+    assert.strictEqual(sawStaged, 1, "the drop was staged in this test's own stage");
+    assert.strictEqual(after, 0, "a staged file was left behind");
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(libraryHost, { recursive: true, force: true });
   });
 
   // ── voiceSpeed precedence: explicit -> config -> env -> builtin ──────────

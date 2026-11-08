@@ -92,9 +92,10 @@ function uniqueStageName(filePath) {
 }
 
 /** Copy the dropped file into the shared Library stage. Returns both path
- *  spellings; the CONTAINER one is what the gateway tools read. */
-function stagePath(filePath) {
-  const dir = path.join(LIBRARY_HOST, DROP_REL);
+ *  spellings; the CONTAINER one is what the gateway tools read. `libraryHost` is
+ *  the test seam (a private stage per test); production uses LIBRARY_HOST. */
+function stagePath(filePath, libraryHost = LIBRARY_HOST) {
+  const dir = path.join(libraryHost, DROP_REL);
   fs.mkdirSync(dir, { recursive: true });
   const name = uniqueStageName(filePath);
   const host = path.join(dir, name);
@@ -325,7 +326,9 @@ async function routeDrop({ filePath, mime = "" }, deps = {}) {
         reason: `vision is switched off (${vision.enabledFrom || "cast.json vision.enabled"}) — turn it on in the Cast pane to have me look at ${kind === "video" ? "videos" : "images"}`,
       };
     }
-    const staged = stagePath(filePath);
+    // `deps.libraryHost`: a test's own stage, so parallel test files (and a live desk
+    // staging real drops) never see each other's files.
+    const staged = stagePath(filePath, deps.libraryHost || LIBRARY_HOST);
     try {
       if (kind === "image") {
         const summary = await analyzeImage(staged.container, call, vision.imagePrompt);
