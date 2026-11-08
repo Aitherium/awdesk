@@ -25,4 +25,10 @@ contextBridge.exposeInMainWorld("aitherBoard", {
     ipcRenderer.on("board:changed", handler);
     return () => ipcRenderer.off("board:changed", handler);
   },
+  /** An image main hands this board (the GIF picker's Shift+click). */
+  onAddImage: (fn) => {
+    const listener = (_event, img) => { try { fn(img); } catch { /* page bug stays in the page */ } };
+    ipcRenderer.on("board:add-image", listener);
+    return () => ipcRenderer.removeListener("board:add-image", listener);
+  },
 });

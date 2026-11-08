@@ -27,6 +27,7 @@
     user-select: none; -webkit-user-select: none; touch-action: none; }
   body { cursor: default; }
   body.active { cursor: crosshair; }
+  body.active.pass { cursor: default; }
   canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
   #ink { z-index: 1; }
   #fx { z-index: 2; pointer-events: none; }
@@ -111,6 +112,9 @@
     <button class="width" data-width="10" title="Thick"><i style="width:13px;height:13px"></i></button>
     <span class="sep"></span>
     <button data-action="fade" id="fadeBtn" title="Marks fade out after a while">Fade: off</button>
+    <button data-action="pass" id="passBtn" title="Keep the ink, let clicks reach the apps underneath (Ctrl+Alt+K)">Click-through</button>
+    <button data-action="board" title="Turn these marks into an editable whiteboard">To board</button>
+    <button data-action="snip" title="Snip a region of the screen, ink included">Snip</button>
     <button data-action="save" class="on" title="Save the display with the drawings (syncs to Strata)">Save shot</button>
     <button data-action="exit" title="Leave drawing mode (Esc) — drawings stay">Exit</button>
   </div>
@@ -129,6 +133,9 @@
   const toolbar = document.getElementById("toolbar");
   const status = document.getElementById("count");
   const fadeBtn = document.getElementById("fadeBtn");
+  const passBtn = document.getElementById("passBtn");
+  const keyline = document.getElementById("keyline");
+  let overChrome = false;
   const hint = document.getElementById("hint");
   const textwrap = document.getElementById("textwrap");
   const textinput = document.getElementById("textinput");
@@ -180,7 +187,21 @@
       const highlighter = item.tool === "highlighter";
       if (highlighter) ctx.globalAlpha = alpha * 0.32;
       const pts = item.points;
-      if (pts.length === 1) {
+      // Smooth ink (ink-core strokeOutline): ONE filled outline per stroke, traced
+      // with quadratics -- no per-segment seams. A highlighter is a flat-width
+      // outline; a pen tapers with pressure (or speed, for a mouse).
+      const path = core.outlinePath(core.strokeOutline(pts, highlighter
+        ? { size: item.width * 3, thinning: 0, smoothing: 0.55 }
+        : { size: item.width * 1.4, thinning: 0.6, smoothing: 0.5 }));
+      if (path.length) {
+        ctx.beginPath();
+        for (const c of path) {
+          if (c.op === "M") ctx.moveTo(c.x, c.y);
+          else if (c.op === "Q") ctx.quadraticCurveTo(c.cx, c.cy, c.x, c.y);
+          else ctx.closePath();
+        }
+        ctx.fill();
+      } else if (pts.length === 1) {
         const r = highlighter ? item.width * 1.5 : Math.max(1, item.width * 0.5);
         ctx.beginPath();
         ctx.arc(pts[0].x, pts[0].y, r, 0, Math.PI * 2);
@@ -315,6 +336,8 @@
     st = { ...st, ...next };
     doc = { items: Array.isArray(next.items) ? next.items : [], undo: doc.undo, redo: doc.redo };
     document.body.classList.toggle("active", Boolean(st.active));
+    document.body.classList.toggle("pass", Boolean(st.active && st.passThrough));
+    if (!(st.active && st.passThrough)) overChrome = false;
     toolbar.hidden = !(st.active && st.toolbar && chromeVisible);
     drawMarks();
     renderToolbar();
@@ -332,6 +355,10 @@
     for (const b of toolbar.querySelectorAll("[data-color]")) b.classList.toggle("on", b.dataset.color === st.color);
     for (const b of toolbar.querySelectorAll("[data-width]")) b.classList.toggle("on", Number(b.dataset.width) === Number(st.width));
     fadeBtn.textContent = st.fadeMs ? `Fade: ${Math.round(st.fadeMs / 1000)}s` : "Fade: off";
+    passBtn.classList.toggle("on", Boolean(st.passThrough));
+    keyline.textContent = st.passThrough
+      ? "Clicks reach your apps · Ctrl+Alt+K draws again"
+      : "Esc exits · Ctrl+Alt+D toggles · Ctrl+Alt+K click-through";
     status.textContent = core.marksLine(doc.items.length, st.tool);
     hint.textContent = `${st.tool === "laser" ? "Laser" : st.tool === "spotlight" ? "Spotlight" : "Drawing"} · Esc exits · drawings stay`;
   }
@@ -377,7 +404,7 @@
   }
 
   function onDown(e) {
-    if (!st.active) return;
+    if (!st.active || st.passThrough) return;
     if (e.target.closest("#toolbar, #textwrap")) return;
     if (e.button !== undefined && e.button !== 0) return;
     capturePointer(e);
@@ -403,10 +430,24 @@
     e.preventDefault();
   }
 
+  /**
+   * Click-through: the overlay only sees FORWARDED moves. Crossing onto the
+   * toolbar asks main for the mouse; leaving it gives the mouse back.
+   */
+  function trackChrome(e) {
+    if (!(st.active && st.passThrough)) return;
+    const over = !toolbar.hidden && Boolean(e.target && e.target.closest && e.target.closest("#toolbar"));
+    if (over !== overChrome) {
+      overChrome = over;
+      void api.hoverChrome(over);
+    }
+  }
+
   function onMove(e) {
+    trackChrome(e);
     const p = local(e);
-    cursor = { x: p.x, y: p.y, on: true };
-    if (!st.active) return;
+    cursor = { x: p.x, y: p.y, on: !(st.active && st.passThrough) };
+    if (!st.active || st.passThrough) return;
     if (erasing) {
       const now = performance.now();
       if (now - lastErase > 45) { lastErase = now; void api.erase(p, ERASER_RADIUS); }
@@ -419,10 +460,20 @@
     }
     if (!current) return;
     if (current.type === "stroke") {
-      const last = current.points[current.points.length - 1];
-      if (Math.hypot(p.x - last.x, p.y - last.y) < 1.2) return;
-      current.points.push({ x: p.x, y: p.y, p: pressureOf(e) });
-      if (current.points.length > core.MAX_POINTS) current.points.shift();
+      // Coalesced events: a 1000 Hz pen or a 4K mouse delivers several samples per
+      // frame; pointermove alone sees one. Every sample feeds the stroke.
+      const samples = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
+      const list = samples && samples.length ? samples : [e];
+      let grew = false;
+      for (const s of list) {
+        const q = local(s);
+        const last = current.points[current.points.length - 1];
+        if (Math.hypot(q.x - last.x, q.y - last.y) < 0.8) continue;
+        current.points.push({ x: q.x, y: q.y, p: pressureOf(s) });
+        grew = true;
+      }
+      if (current.points.length > core.MAX_POINTS) current.points.splice(0, current.points.length - core.MAX_POINTS);
+      if (!grew) return;
     } else {
       current.b = { x: p.x, y: p.y };
     }
@@ -488,6 +539,9 @@
     else if (action === "redo") void api.redo();
     else if (action === "clear") void api.clear();
     else if (action === "save") void saveNow();
+    else if (action === "pass") void api.passThrough(null);
+    else if (action === "board") void toBoardNow();
+    else if (action === "snip") void api.snip();
     else if (action === "exit") void api.exit();
     else if (action === "fade") {
       const i = FADE_STEPS.indexOf(Number(st.fadeMs) || 0);
@@ -508,6 +562,16 @@
       }
     } catch (error) {
       showHint(`Save failed: ${String((error && error.message) || error).slice(0, 120)}`, 4200);
+    }
+  }
+
+  async function toBoardNow() {
+    try {
+      const verdict = await api.toBoard();
+      if (verdict && verdict.ok) showHint(`${verdict.items} item${verdict.items === 1 ? "" : "s"} on a new board`, 2600);
+      else showHint(`To board failed: ${(verdict && verdict.reason) || "unknown error"}`, 4200);
+    } catch (error) {
+      showHint(`To board failed: ${String((error && error.message) || error).slice(0, 120)}`, 4200);
     }
   }
 

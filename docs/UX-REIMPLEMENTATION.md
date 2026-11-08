@@ -91,6 +91,7 @@ chrome IS the edge.
 | 3 | Deck decomposition into routes; standalone windows become `detached` presentations | no `new BrowserWindow` outside the presentation layer; `main.cjs` under ~1,200 lines |
 | 4 | visual pass: one layout grammar, one type scale, dark-first tokens, stage chrome | every surface uses the shared tokens; no per-window CSS colours |
 | 5 | gates | palette reachability, keyboard-only pass, and the smoke run wired into `npm run check` |
+| 6 | **ink, pins, GIFs (2026-11-07)** — smooth ink (`ink-core` streamline/outline), click-through ink, ink to board, snip with ink; desktop pins (`pin-item.cjs` card, `pins-core.cjs` store + rules, `pins-window.cjs`, `pin.html`); GIF search (`gif-search.cjs` Tenor v2 + Giphy) and picker; Alt+Space verbs (`desk-verbs.cjs`) | every capability is a registry row (`ink.passthrough`, `ink.board`, `ink.snip`, `gif.open`, `gif.pin`, `pins.add`, `pins.tab`, `pins.open`); embedded pages run with no preload in their own partition under `navigation-policy.cjs`; `node --test` covers each module (`pins-core`, `pins-window`, `gif-search`, `gif-picker-window`, `desk-verbs`, `launcher-verbs`) |
 
 ## Rules this plan is holding itself to
 
