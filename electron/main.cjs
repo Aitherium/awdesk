@@ -3823,10 +3823,10 @@ function answerDeckCard(id, choice, parent, note = "") {
       }
     }
   }
-  // After the signed route: a Claude Code terminal ask (awask keys its options `tui:<n>`): recording the
-  // answer alone leaves the terminal blocked, so type the number into the
-  // session's tab -- only once that tab is confirmed in front (tui-answer.cjs).
-  // Resolves true, or {ok:false, flash} when it could not (nothing recorded).
+  // After the signed route: a Claude Code terminal ask (`tui:<n>` / `tui:type`).
+  // Nothing can type into the terminal (measured 2026-11-08), so this brings the
+  // session's tab to the front and NEVER records a number answer as delivered
+  // (tui-answer.cjs). Resolves true for "open it", else {ok:false, flash}.
   const tuiCard = openCardById(id);
   if (tuiCard && tuiAnswer.tuiAction(tuiCard, choice)) {
     return tuiAnswer.answerInTerminal(tuiCard, choice, {
@@ -3838,7 +3838,7 @@ function answerDeckCard(id, choice, parent, note = "") {
         debugLog(`[tui-answer] ${id} ${choice}: ${r.error}`);
         return { ok: false, flash: r.flash, error: r.error };
       }
-      void postToRelay(RELAY_CHANNEL, `answered ${id}: ${choice} (typed into the terminal via desk)`)
+      void postToRelay(RELAY_CHANNEL, `opened the session for ${id} (via desk)`)
         .then(() => void refreshRelayFeed());
       return true;
     });
