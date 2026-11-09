@@ -32,6 +32,13 @@ const RECLAIM_EVERY_MS = 60_000;
 const RUNAWAY_MB = 400;
 const RUNAWAY_WINDOW_MS = 60_000;
 const MAX_RESTARTS_PER_HOUR = 2;
+// After the restart cap Desk used to quit FOR GOOD: on 2026-11-09 it restarted at
+// 13:30 and 13:51, hit the cap, quit, and stayed down -- the Startup .vbs only runs
+// at logon and the awrise keepalive was starved behind slow jobs -- so every card,
+// the fleet's awdesk_* tools and the desk browser went dark until a human noticed.
+// Now the cap means "stop looping, cool down, come back": a detached helper
+// relaunches Desk after this long.
+const COOLDOWN_RELAUNCH_MS = 10 * 60_000;
 const HANG_BEAT_MS = 5_000;
 const HANG_TIMEOUT_MS = 45_000;
 // The GPU process is the one child that can balloon on its own (software present +
@@ -107,7 +114,7 @@ function createWatchdog({ budget, sample, reclaim, restart, quit, notify = () =>
     const why = runaway ? `its memory grew ${RUNAWAY_MB} MB in under a minute` : `it was using ${a.totalMb} MB`;
     if (restartsInLastHour() >= MAX_RESTARTS_PER_HOUR) {
       log(`hard again after ${MAX_RESTARTS_PER_HOUR} restarts this hour -- quitting`);
-      notify(`Aither closed itself: ${why}, again. Start it from the Start menu when you need it.`);
+      notify(`Aither closed itself: ${why}, again. It starts again in ${Math.round(COOLDOWN_RELAUNCH_MS / 60_000)} minutes.`);
       quit();
     } else {
       log(`hard: restarting Desk (${why})`);
@@ -211,6 +218,37 @@ function restartLog(file) {
   };
 }
 
+/**
+ * Pure: the detached helper that starts Desk again after `delayMs`. It runs the
+ * same binary as plain Node (ELECTRON_RUN_AS_NODE), waits, then spawns `execPath`
+ * with `args` fully detached, so it outlives the Desk that is quitting.
+ */
+function delayedRelaunchSpec({ execPath, args = [], delayMs = COOLDOWN_RELAUNCH_MS, env = process.env,
+  cwd = process.cwd() }) {
+  // The helper copies ITS env and drops ELECTRON_RUN_AS_NODE, so Desk starts as the
+  // app, not as Node; the env is never inlined (Windows caps a command line at 32K).
+  const script = "const e = { ...process.env }; delete e.ELECTRON_RUN_AS_NODE; "
+    + `setTimeout(() => { require("node:child_process").spawn(${JSON.stringify(execPath)}, `
+    + `${JSON.stringify(args)}, { detached: true, stdio: "ignore", cwd: ${JSON.stringify(cwd)}, env: e })`
+    + `.unref(); }, ${Math.max(0, Number(delayMs) || 0)});`;
+  return { command: execPath, args: ["-e", script], env: { ...env, ELECTRON_RUN_AS_NODE: "1" } };
+}
+
+/** Start the helper; never throws (a failed helper just means a manual start). */
+function relaunchAfterCooldown({ execPath = process.execPath, args = process.argv.slice(1),
+  delayMs = COOLDOWN_RELAUNCH_MS, spawn = require("node:child_process").spawn, log = () => {} } = {}) {
+  try {
+    const spec = delayedRelaunchSpec({ execPath, args, delayMs });
+    const child = spawn(spec.command, spec.args, { detached: true, stdio: "ignore", env: spec.env, windowsHide: true });
+    if (child && typeof child.unref === "function") child.unref();
+    log(`cooldown: Desk starts again in ${Math.round(delayMs / 1000)} s`);
+    return true;
+  } catch (error) {
+    log(`cooldown relaunch helper failed: ${error?.message || error}`);
+    return false;
+  }
+}
+
 /** Electron wiring for the memory guard. */
 function startResourceWatchdog({ app, posture, reclaim, notify = () => {}, log = (l) => console.log(`[desk] watchdog: ${l}`),
   intervalMs = SAMPLE_MS }) {
@@ -228,7 +266,10 @@ function startResourceWatchdog({ app, posture, reclaim, notify = () => {}, log =
       app.relaunch();
       app.exit(0);
     },
-    quit: () => app.exit(0),
+    quit: () => {
+      relaunchAfterCooldown({ log });
+      app.exit(0);
+    },
   });
   const timer = setInterval(() => {
     try { dog.tick(); } catch (error) { log(`tick failed: ${error?.message || error}`); }
@@ -273,8 +314,8 @@ function startHangWatchdog({ utilityProcess, log = (l) => console.log(`[desk] ha
 }
 
 module.exports = {
-  BUDGETS, GPU_LIMIT_MB, GPU_MAX_KILLS_PER_HOUR, HANG_TIMEOUT_MS, MAX_RESTARTS_PER_HOUR,
+  BUDGETS, COOLDOWN_RELAUNCH_MS, GPU_LIMIT_MB, GPU_MAX_KILLS_PER_HOUR, HANG_TIMEOUT_MS, MAX_RESTARTS_PER_HOUR,
   RUNAWAY_MB, SAMPLE_MS,
-  assess, createGpuGuard, createWatchdog, gpuProcess, gpuVerdict, hangVerdict, restartLog,
+  assess, createGpuGuard, delayedRelaunchSpec, relaunchAfterCooldown, createWatchdog, gpuProcess, gpuVerdict, hangVerdict, restartLog,
   startHangWatchdog, startResourceWatchdog,
 };
