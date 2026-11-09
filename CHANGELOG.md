@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.30 - 2026-11-09
+
+- Release build: the Windows smoke test finds the per-machine install (0.1.29 was never published because of it).
+
 ## 0.1.29 - 2026-11-09
 
 - Desk stays in your workspace. If you have two accounts, the other account signing in (for example in the Online tab) no longer moves Desk out of your company's workspace. Sign out is the only thing that forgets it, so a shared PC still starts fresh for the next person.
