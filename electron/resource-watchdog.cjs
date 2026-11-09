@@ -218,6 +218,21 @@ function restartLog(file) {
   };
 }
 
+/** Pure: one argv element quoted for the Windows CRT parser (CommandLineToArgvW rules). */
+function winQuoteArg(arg) {
+  const s = String(arg);
+  if (s && !/[\s"]/.test(s)) return s;
+  let out = '"';
+  let slashes = 0;
+  for (const ch of s) {
+    if (ch === "\\") { slashes += 1; continue; }
+    if (ch === '"') { out += "\\".repeat(slashes * 2 + 1) + '"'; slashes = 0; continue; }
+    out += "\\".repeat(slashes) + ch;
+    slashes = 0;
+  }
+  return out + "\\".repeat(slashes * 2) + '"';
+}
+
 /**
  * Pure: the detached helper that starts Desk again after `delayMs`. It is the OS
  * shell, never the Desk binary run as Node: a packaged Desk has the RunAsNode fuse
@@ -230,7 +245,9 @@ function delayedRelaunchSpec({ execPath, args = [], delayMs = COOLDOWN_RELAUNCH_
   const secs = Math.max(0, Math.ceil((Number(delayMs) || 0) / 1000));
   if (platform === "win32") {
     const q = (v) => `'${String(v).split("'").join("''")}'`;
-    const argList = args.length ? ` -ArgumentList @(${args.map(q).join(",")})` : "";
+    // Windows PowerShell 5.1 joins an -ArgumentList array with bare spaces, so
+    // "C:\Program Files\x" would split in two: hand it ONE pre-quoted line instead.
+    const argList = args.length ? ` -ArgumentList ${q(args.map(winQuoteArg).join(" "))}` : "";
     const command = `Start-Sleep -Seconds ${secs}; `
       + `Start-Process -FilePath ${q(execPath)}${argList} -WorkingDirectory ${q(cwd)}`;
     return { command: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
@@ -321,6 +338,6 @@ function startHangWatchdog({ utilityProcess, log = (l) => console.log(`[desk] ha
 module.exports = {
   BUDGETS, COOLDOWN_RELAUNCH_MS, GPU_LIMIT_MB, GPU_MAX_KILLS_PER_HOUR, HANG_TIMEOUT_MS, MAX_RESTARTS_PER_HOUR,
   RUNAWAY_MB, SAMPLE_MS,
-  assess, createGpuGuard, delayedRelaunchSpec, relaunchAfterCooldown, createWatchdog, gpuProcess, gpuVerdict, hangVerdict, restartLog,
+  assess, createGpuGuard, delayedRelaunchSpec, winQuoteArg, relaunchAfterCooldown, createWatchdog, gpuProcess, gpuVerdict, hangVerdict, restartLog,
   startHangWatchdog, startResourceWatchdog,
 };

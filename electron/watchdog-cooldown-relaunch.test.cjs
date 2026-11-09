@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
-const { delayedRelaunchSpec, relaunchAfterCooldown, COOLDOWN_RELAUNCH_MS } = require("./resource-watchdog.cjs");
+const { delayedRelaunchSpec, relaunchAfterCooldown, winQuoteArg, COOLDOWN_RELAUNCH_MS } = require("./resource-watchdog.cjs");
 
 test("the cooldown is minutes, not instant (no relaunch loop)", () => {
   assert.ok(COOLDOWN_RELAUNCH_MS >= 5 * 60_000);
@@ -19,7 +19,7 @@ test("the helper is the OS shell, never the Desk binary", () => {
   assert.equal(win.command, "powershell.exe");
   const cmd = win.args[win.args.length - 1];
   assert.ok(cmd.startsWith("Start-Sleep -Seconds 600; Start-Process -FilePath 'C:/Desk/Aither''s.exe'"), cmd);
-  assert.ok(cmd.endsWith("-ArgumentList @('.') -WorkingDirectory 'C:/Desk'"), cmd);
+  assert.ok(cmd.endsWith("-ArgumentList '.' -WorkingDirectory 'C:/Desk'"), cmd);
   const nix = delayedRelaunchSpec({ execPath: "/opt/desk/aither", args: ["--x"], delayMs: 600_000,
     cwd: "/opt/desk", platform: "linux" });
   assert.equal(nix.command, "/bin/sh");
@@ -41,6 +41,34 @@ test("the helper really starts the target after the delay, in the given cwd", as
   assert.ok(Date.now() - started >= 900, "the target started before the delay");
   const seen = JSON.parse(fs.readFileSync(marker, "utf8"));
   assert.equal(fs.realpathSync(seen.cwd), fs.realpathSync(dir));
+});
+
+test("the watchdog never runs the Desk binary as Node (the packaged RunAsNode fuse is off)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "resource-watchdog.cjs"), "utf8");
+  assert.ok(!src.includes("ELECTRON_RUN_AS_NODE"), "resource-watchdog.cjs must not use ELECTRON_RUN_AS_NODE");
+});
+
+test("Windows args are quoted for the CRT parser (spaces, quotes, trailing backslashes)", () => {
+  assert.equal(winQuoteArg("--flag"), "--flag");
+  assert.equal(winQuoteArg(""), '""');
+  assert.equal(winQuoteArg("C:/Program Files/x"), '"C:/Program Files/x"');
+  assert.equal(winQuoteArg('say "hi"'), '"say \\"hi\\""');
+  assert.equal(winQuoteArg(String.raw`C:\a b\\`), String.raw`"C:\a b\\\\"`);
+});
+
+test("the helper hands the target its args intact, spaces and quotes included", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "desk cooldown args-"));
+  const marker = path.join(dir, "argv.json");
+  const target = path.join(dir, "target script.js");
+  fs.writeFileSync(target, `require("fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));`);
+  const want = ["--x", "two words", 'a "quoted" bit', "it's"];
+  const spec = delayedRelaunchSpec({ execPath: process.execPath, args: [target, ...want], delayMs: 0, cwd: dir });
+  const helper = spawn(spec.command, spec.args, { cwd: spec.cwd, stdio: "ignore", windowsHide: true });
+  const deadline = Date.now() + 30_000;
+  while (!fs.existsSync(marker) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  try { helper.kill(); } catch { /* already gone */ }
+  assert.ok(fs.existsSync(marker), "the helper never started the target");
+  assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), want);
 });
 
 test("a failing spawn never throws out of the quit path", () => {
