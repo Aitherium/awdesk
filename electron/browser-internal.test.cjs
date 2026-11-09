@@ -582,3 +582,21 @@ test("aither://space/ deep links reach the renderer as ?space=1&<key>=, validate
   const bw = read("browser-window.cjs");
   assert.match(bw, /const link = internal\.deepLinkOf\(page\);\s*return openInternal\(page\.paneId, link\)/);
 });
+
+test("no console pane takes a reserved aither:// name (Strata tiers) or an invalid host", () => {
+  assert.deepEqual(internal.paneNamespaceViolations(), []);
+  assert.deepEqual(internal.paneNamespaceViolations([{ id: "warm" }, { id: "x.aither" }, { id: "files" }]), ["warm", "x.aither"]);
+});
+
+test("an aitherium.com URL upgrades to aither:// only when a pane declares that path", () => {
+  const panes = [{ id: "notebooks", kind: "file", file: "notebooks.html", web: ["/notebooks/"] }];
+  assert.equal(internal.upgradeToInternal("https://app.aitherium.com/notebooks", panes), "aither://notebooks/");
+  assert.equal(internal.upgradeToInternal("https://aitherium.com/notebooks/abc?x=1", panes), "aither://notebooks/");
+  assert.equal(internal.upgradeToInternal("https://aitherium.com/notebooksX", panes), null);
+  assert.equal(internal.upgradeToInternal("https://aitherium.com/canvas", panes), null);
+  assert.equal(internal.upgradeToInternal("http://aitherium.com/notebooks", panes), null);
+  assert.equal(internal.upgradeToInternal("https://evil.example/notebooks", panes), null);
+  assert.equal(internal.upgradeToInternal("https://aitherium.com.evil.example/notebooks", panes), null);
+  // a name match is NOT a mapping: no pane declares `web`, so nothing upgrades today
+  assert.equal(internal.upgradeToInternal("https://app.aitherium.com/sessions"), null);
+});

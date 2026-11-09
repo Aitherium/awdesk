@@ -537,6 +537,48 @@ function registerPrivilegedScheme(protocol) {
   return true;
 }
 
+/**
+ * Names an aither:// pane may never take. Strata already addresses storage as
+ * aither://{hot,warm,cold,lockbox}/... (lib/utils/StrataRouter.py), so a pane with one
+ * of these ids would make one address mean two things. `.aither` is the AitherNet Index
+ * keyword suffix and is excluded by PANE_ID (no dots) already.
+ */
+const RESERVED_PANE_IDS = Object.freeze(["hot", "warm", "cold", "lockbox"]);
+
+/** Pane ids that break the namespace rules: reserved, or not a valid aither:// host. */
+function paneNamespaceViolations(panes = consolePanes()) {
+  return panes
+    .map((pane) => String((pane && pane.id) || ""))
+    .filter((id) => RESERVED_PANE_IDS.includes(id) || !PANE_ID.test(id));
+}
+
+/**
+ * Owner, 2026-11-08: open Aitherium's own apps as aither:// instead of loading the web
+ * page. An https aitherium.com URL becomes aither://<pane>/ ONLY when a pane declares
+ * that path in `web` (an array of path prefixes, e.g. ["/notebooks"]); anything else
+ * returns null and loads as the web page it is. No mapping is guessed from names: a Veil
+ * route and a desk pane that share a name are often different products.
+ */
+function upgradeToInternal(url, panes = consolePanes()) {
+  if (!isHostedSite(url)) return null;
+  let parsed;
+  try {
+    parsed = new URL(String(url));
+  } catch {
+    return null;
+  }
+  const path = parsed.pathname.replace(/\/+$/, "") || "/";
+  for (const pane of panes) {
+    const prefixes = pane && Array.isArray(pane.web) ? pane.web : [];
+    for (const raw of prefixes) {
+      const prefix = String(raw || "").replace(/\/+$/, "");
+      if (!prefix.startsWith("/") || prefix === "") continue;
+      if (path === prefix || path.startsWith(prefix + "/")) return internalUrl(pane, null, panes);
+    }
+  }
+  return null;
+}
+
 /** Hosts a hosted (signed-in) tab may stay on: the aitherium.com family. */
 function isHostedSite(url) {
   try {
@@ -738,6 +780,9 @@ module.exports = {
   deepLinkOf,
   DEEP_LINK_KEYS,
   isHostedSite,
+  RESERVED_PANE_IDS,
+  paneNamespaceViolations,
+  upgradeToInternal,
   isInternalUrl,
   ownerHostedPartition,
   legacyConsole,
