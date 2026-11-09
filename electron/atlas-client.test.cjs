@@ -29,7 +29,7 @@ test("atlasBoard calls atlas_board and returns the parsed snapshot", async () =>
   const result = await atlasBoard(fakeCall(calls, { atlas_board: JSON.stringify(BOARD) }));
   assert.equal(result.ok, true);
   assert.deepEqual(result.board, BOARD);
-  assert.deepEqual(calls, [{ name: "atlas_board", args: {} }]);
+  assert.deepEqual(calls, [{ name: "atlas_board", args: { view: "full" } }]);
 });
 
 test("atlasBoard: a JSON error key is an error, never a board", async () => {

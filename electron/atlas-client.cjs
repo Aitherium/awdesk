@@ -35,9 +35,9 @@ function errorText(error) {
  * `{ok:false, error}`; it never throws, so the IPC handler and the section have
  * one shape on every path.
  */
-async function readTool(call, name, key) {
+async function readTool(call, name, key, args = {}) {
   try {
-    const text = await call(name, {});
+    const text = await call(name, args);
     const data = parseMaybeJson(text);
     if (!data || typeof data !== "object" || Array.isArray(data)) {
       return { ok: false, error: `${name} did not answer a JSON object` };
@@ -53,9 +53,11 @@ async function readTool(call, name, key) {
   }
 }
 
-/** The board snapshot: {counts, rows, metrics, text, message_id, updated_at}. */
+/** The board snapshot: {counts, rows, metrics, text, message_id, updated_at}.
+ *  `view:"full"` is the row-bearing view the section renders (the tool also
+ *  answers "text" and "counts", which carry no rows). */
 async function atlasBoard(call = callTool) {
-  return readTool(call, "atlas_board", "board");
+  return readTool(call, "atlas_board", "board", { view: "full" });
 }
 
 /** Send the owner digest now. Returns whatever the tool answered. */

@@ -14,20 +14,23 @@ import { AtlasBoardView } from './AtlasSection';
 const NOW = Date.parse('2026-11-09T12:00:00Z');
 
 const BOARD = {
-  counts: { triage: 2, progress: 1 },
+  counts: { triage: 2, progress: 1, done: 0 },
   rows: [
     {
       number: 15130,
       stage: 'progress',
       title: 'Browser links keep focus',
-      updated_at: '2026-11-06T12:00:00Z',
+      detail: 'PR open, waiting on review',
+      since: NOW / 1000 - 3 * 86400,
+      age_s: 3 * 86400,
       pr: 'https://github.com/Aitherium/AitherOS/pull/15130',
-      thread: 'https://github.com/Aitherium/AitherOS/issues/15130',
+      thread: 15130,
+      thread_url: 'https://discord.com/channels/1/2/15130',
     },
   ],
   text: '3 open · 1 in progress',
   message_id: 'msg-1',
-  updated_at: '2026-11-09T11:55:00Z',
+  updated_at: NOW / 1000 - 300,
 };
 
 function render(overrides: Partial<Parameters<typeof AtlasBoardView>[0]> = {}): string {
@@ -51,6 +54,7 @@ describe('AtlasBoardView', () => {
     expect(html).toContain('aria-label="Atlas"');
     expect(html).toContain('<strong>2</strong> triage');
     expect(html).toContain('<strong>1</strong> progress');
+    expect(html).toContain('<strong>0</strong> done');
     expect(html).toContain('deck-section-count">3<');
   });
 
@@ -60,9 +64,10 @@ describe('AtlasBoardView', () => {
     expect(html).toContain('Browser links keep focus');
     expect(html).toContain('progress');
     expect(html).toContain('>3d<');
+    expect(html).toContain('title="Browser links keep focus — PR open, waiting on review"');
     expect(html).toContain('href="https://github.com/Aitherium/AitherOS/pull/15130"');
     expect(html).toContain('PR #15130');
-    expect(html).toContain('href="https://github.com/Aitherium/AitherOS/issues/15130"');
+    expect(html).toContain('href="https://discord.com/channels/1/2/15130"');
     expect(html).toContain('thread');
   });
 

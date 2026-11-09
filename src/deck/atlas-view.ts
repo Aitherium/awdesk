@@ -22,10 +22,12 @@ export interface AtlasRowView {
   /** "#15130", or "" when the row carries no number. */
   number: string;
   title: string;
+  /** The board's own one-liner for the row (shown in the hover title). */
+  detail: string;
   stage: string;
-  /** "3d" from the row's newest timestamp; "" when the row has none. */
+  /** "3d" from the row's age_s/since (or another timestamp); "" when none. */
   age: string;
-  /** The full sentence behind the age ("opened 3d ago"). */
+  /** The full sentence behind the age ("3d at this stage"). */
   ageTitle: string;
   prUrl: string;
   prLabel: string;
@@ -106,14 +108,27 @@ export function timestampSeconds(value: unknown): number | null {
   return null;
 }
 
-/** The row's own age, preferring the newest timestamp it carries. */
+/** The row's own age. The board's canonical row carries `age_s` (seconds in
+ *  stage) and `since` (epoch seconds); older/plain rows carry timestamps.
+ *  Newest first, and NaN/negative values are ignored. */
 function rowAge(row: Record<string, unknown>, nowMs: number): { age: string; title: string } {
-  for (const field of ['updated_at', 'opened_at', 'created_at', 'updatedAt', 'openedAt', 'createdAt']) {
+  const rawAge = row.age_s ?? row.ageSeconds;
+  const ageSeconds = typeof rawAge === 'number'
+    ? rawAge
+    : typeof rawAge === 'string' && rawAge.trim() ? Number(rawAge) : NaN;
+  if (Number.isFinite(ageSeconds) && ageSeconds >= 0) {
+    // formatAge reads a createdAt; synthesize one from the reported age.
+    const label = formatAge(Math.floor(nowMs / 1000) - Math.floor(ageSeconds), nowMs);
+    return { age: label, title: `${label} at this stage` };
+  }
+  for (const field of ['since', 'updated_at', 'opened_at', 'created_at', 'updatedAt', 'openedAt', 'createdAt']) {
     const at = timestampSeconds(row[field]);
     if (at == null) continue;
-    const name = field.replace(/_(at|At)$/, '').replace(/_/g, ' ');
     const label = formatAge(at, nowMs);
-    return { age: label, title: `${name} ${label === 'just now' ? label : `${label} ago`}` };
+    const when = label === 'just now' ? label : `${label} ago`;
+    if (field === 'since') return { age: label, title: `${when} in this stage` };
+    const name = field.replace(/_(at|At)$/, '').replace(/_/g, ' ');
+    return { age: label, title: `${name} ${when}` };
   }
   return { age: '', title: '' };
 }
@@ -156,12 +171,15 @@ function normalizeRow(raw: unknown, index: number, nowMs: number): AtlasRowView 
   const number = row.number ?? row.issue ?? row.id;
   const numberLabel = /^\d+$/.test(String(number ?? '')) ? `#${number}` : textOf(number, 40);
   const pr = linkOf(row.pr ?? row.pull_request ?? row.pullRequest);
-  const thread = linkOf(row.thread ?? row.thread_url ?? row.threadUrl ?? row.issue_url);
+  // The board's canonical row carries `thread_url` (the link) and `thread`
+  // (only the id), so the URL wins; a bare id is never turned into a link.
+  const thread = linkOf(row.thread_url ?? row.threadUrl ?? row.issue_url ?? row.thread);
   const { age, title } = rowAge(row, nowMs);
   return {
     key: `${String(number ?? index)}-${index}`,
     number: numberLabel,
     title: textOf(row.title ?? row.name ?? row.summary, 200),
+    detail: textOf(row.detail, 300),
     stage: textOf(row.stage ?? row.status ?? row.state, 60),
     age,
     ageTitle: title,
