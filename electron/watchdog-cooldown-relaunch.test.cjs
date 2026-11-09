@@ -14,12 +14,12 @@ test("the cooldown is minutes, not instant (no relaunch loop)", () => {
 });
 
 test("the helper is the OS shell, never the Desk binary", () => {
-  const win = delayedRelaunchSpec({ execPath: "C:\Desk\Aither's.exe", args: ["."], delayMs: 600_000,
-    cwd: "C:\Desk", platform: "win32" });
+  const win = delayedRelaunchSpec({ execPath: "C:/Desk/Aither's.exe", args: ["."], delayMs: 600_000,
+    cwd: "C:/Desk", platform: "win32" });
   assert.equal(win.command, "powershell.exe");
   const cmd = win.args[win.args.length - 1];
-  assert.match(cmd, /^Start-Sleep -Seconds 600; Start-Process -FilePath 'C:\Desk\Aither''s\.exe'/);
-  assert.match(cmd, /-ArgumentList @\('\.'\) -WorkingDirectory 'C:\Desk'$/);
+  assert.ok(cmd.startsWith("Start-Sleep -Seconds 600; Start-Process -FilePath 'C:/Desk/Aither''s.exe'"), cmd);
+  assert.ok(cmd.endsWith("-ArgumentList @('.') -WorkingDirectory 'C:/Desk'"), cmd);
   const nix = delayedRelaunchSpec({ execPath: "/opt/desk/aither", args: ["--x"], delayMs: 600_000,
     cwd: "/opt/desk", platform: "linux" });
   assert.equal(nix.command, "/bin/sh");
