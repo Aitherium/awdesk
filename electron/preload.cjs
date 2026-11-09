@@ -97,6 +97,13 @@ contextBridge.exposeInMainWorld("deskBridge", {
     desktop: () => ipcRenderer.invoke("desk:desktop-snapshot"),
     connect: () => ipcRenderer.invoke("desk:connect-snapshot"),
   },
+  // The Atlas program-manager board. board() is the snapshot the Atlas
+  // section renders; digest() sends the owner digest now. Both answer
+  // {ok:true, ...} or {ok:false, error} -- never a throw into the page.
+  atlas: {
+    board: () => ipcRenderer.invoke("desk:atlas-board"),
+    digest: () => ipcRenderer.invoke("desk:atlas-digest"),
+  },
   // Push-to-talk (2026-08-29): renderer captures the mic, main writes the wav
   // to a temp file and runs it through the gateway's transcribe_audio tool.
   // Returns the transcript text, or an error string starting with "ERROR:".

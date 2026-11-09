@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Atlas on the Inbox: the program-manager board shows its counts per stage and one row per issue, with the age, the pull request and the thread (both open in Aither Browser), the board's own updated-at, and a **Send digest now** button. It reads through the same gateway door as the rest of the Desk; before the gateway tools are deployed the section says Atlas is unavailable instead of breaking the panel.
+
 ## 0.1.30 - 2026-11-09
 
 - Release build: the Windows smoke test finds the per-machine install (0.1.29 was never published because of it).
