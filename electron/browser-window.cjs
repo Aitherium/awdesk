@@ -1967,6 +1967,19 @@ const PAGE_HELPERS = `
  * lives in the isolated world, so page JS can neither read nor forge it, and a
  * navigation clears it), or {selector}.
  */
+/** Pure: does an editor's innerText hold what was typed? innerText adds a
+ *  trailing newline in some editors and renders NBSP for runs of spaces. */
+function editorKept(now, want) {
+  const NBSP = String.fromCharCode(160);
+  const LF = String.fromCharCode(10);
+  const norm = (v) => {
+    let t = String(v ?? "").split(NBSP).join(" ");
+    while (t.endsWith(LF)) t = t.slice(0, -1);
+    return t;
+  };
+  return norm(now) === norm(want);
+}
+
 function scriptFor(action, args = {}) {
   if (action === "read") {
     return `(() => ({ ok: true, url: location.href, title: document.title,
@@ -2067,7 +2080,20 @@ function scriptFor(action, args = {}) {
       el.scrollIntoView({ block: "center" });
       el.focus();
       let now;
-      if (el.isContentEditable) { el.textContent = text; now = el.textContent; }
+      if (el.isContentEditable) {
+        // A rich editor (Discord's Slate, Lexical, ProseMirror) keeps its OWN model
+        // and redraws from it: textContent shows the words while the model stays
+        // empty, so Enter sends nothing (measured 2026-11-09, three Enters into a
+        // Discord DM). Select the editor's contents here; the main process then
+        // inserts the text as real input (webContents.insertText), which every
+        // editor handles through beforeinput, and reads it back.
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return { ok: true, editable: true, into: el.tagName.toLowerCase(), label };
+      }
       else if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
         const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value");
         if (desc && desc.set) desc.set.call(el, text); else el.value = text;
@@ -2112,6 +2138,10 @@ function scriptFor(action, args = {}) {
       el.style.outline = "3px solid #a855f7";
       el.style.outlineOffset = "3px";
       return { ok: true, label }; })()`;
+  }
+  if (action === "readback") {
+    return `(() => { ${find}
+      return { ok: true, now: el.isContentEditable ? el.innerText : el.value, label }; })()`;
   }
   if (action === "focus") {
     return `(() => { ${find}
@@ -2186,7 +2216,23 @@ const driver = {
   read: () => runInPage("read", {}),
   snapshot: () => runInPage("snapshot", {}),
   click: (target) => runInPage("click", { target }),
-  type: (target, text) => runInPage("type", { target, text }),
+  async type(target, text) {
+    const first = await runInPage("type", { target, text });
+    if (!first || !first.editable) return first;
+    // A contenteditable: the page selected its contents; insert as real input.
+    const picked = viewFor("agent");
+    if (!picked.ok) return { ok: false, error: picked.error };
+    const wc = picked.view.webContents;
+    wc.focus();
+    const want = String(text ?? "");
+    if (want) await wc.insertText(want);
+    else wc.delete();
+    const back = await runInPage("readback", { target });
+    const now = back && back.ok ? String(back.now ?? "") : "";
+    const kept = editorKept(now, want);
+    return { ok: kept, typed: want.length, into: first.into, label: first.label,
+      error: kept ? undefined : `the editor did not keep the text (it holds ${now.length} characters)` };
+  },
   select: (target, option) => runInPage("select", { target, option }),
   check: (target, checked) => runInPage("check", { target, checked }),
   highlight: (target) => runInPage("highlight", { target }),
@@ -3217,6 +3263,7 @@ module.exports = {
   /** The floating board window's pin door (boards-window.cjs): same cards, same live views. */
   pinHost: () => getCanvas().boardWindow,
   scriptFor,
+  editorKept,
   setAgentsHost,
   setShellHost,
   refreshShell,
