@@ -103,7 +103,7 @@ test("autoResolveTenant writes desk-tenant.json once and never over a configured
   assert.equal(platform.adopted, false);
 });
 
-test("another account signing in replaces a sign-in-written workspace; a platform account clears it", async () => {
+test("another account's token never clears or replaces a sign-in-written workspace; Sign out does (Garg 2026-11-09)", async () => {
   const homedir = tempHome();
   const fetchImpl = fakeFetch({
     "https://acme.aitherium.com/config.js": { text: CONFIG_JS("acme") },
@@ -111,17 +111,23 @@ test("another account signing in replaces a sign-in-written workspace; a platfor
   });
   const opts = { current: () => deskTenant.resolveTenant({ argv: [], env: {}, homedir }), homedir, fetchImpl };
   assert.equal((await auto.autoResolveTenant({ tenantId: "tnt_acme" }, opts)).adopted, true);
-  // A different account on the same PC: its own workspace, not the last one's.
+  // The person's OTHER account (platform-company tenant, no host): the pin stays.
+  const other = await auto.autoResolveTenant({ tenantId: "tnt_aitherium", tenantSlug: "aitherium" }, opts);
+  assert.equal(other.adopted, false);
+  assert.equal(other.kept, true);
+  assert.notEqual(other.cleared, true);
+  assert.equal(opts.current().tenant.host, "acme.aitherium.com");
+  // A platform account and an account of another workspace: the pin stays too.
+  assert.equal((await auto.autoResolveTenant({ tenantId: "platform" }, opts)).kept, true);
+  const beta = await auto.autoResolveTenant({ tenantId: "tnt_beta_co" }, opts);
+  assert.equal(beta.adopted, false);
+  assert.equal(opts.current().tenant.host, "acme.aitherium.com");
+  // Sign out forgets it; the next account then lands in its own workspace.
+  assert.equal(auto.signedOut({ homedir }).removed, true);
+  assert.equal(opts.current().tenant, null);
   const swapped = await auto.autoResolveTenant({ tenantId: "tnt_beta_co" }, opts);
   assert.equal(swapped.adopted, true);
-  assert.equal(swapped.replaced, true);
-  assert.equal(opts.current().tenant.host, "beta-co.aitherium.com");
   assert.equal(opts.current().tenant.name, "Beta");
-  // A platform account (no workspace host): back to the apex, no file left to delete.
-  const cleared = await auto.autoResolveTenant({ tenantId: "platform" }, opts);
-  assert.equal(cleared.cleared, true);
-  assert.equal(fs.existsSync(deskTenant.configPath(homedir)), false);
-  assert.equal(opts.current().tenant, null);
 });
 
 test("a hand-written desk-tenant.json is never replaced, cleared or forgotten", async () => {
