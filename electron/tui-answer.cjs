@@ -1,8 +1,17 @@
 "use strict";
 /**
- * Answer a Claude Code terminal ask from a card: focus the session's Windows
- * Terminal tab, CONFIRM it is the foreground window with that tab selected, then
- * type the option's number.
+ * A `tui:` card answer for a Claude Code session: bring the session's Windows
+ * Terminal tab to the front. NEVER claim the answer reached the session.
+ *
+ * Measured 2026-11-08: SendKeys after a confirmed SetForegroundWindow + tab select
+ * returned typed:true and a probe tab received NOTHING (keyboard focus sits on the
+ * XAML tab strip, not the TermControl), so cards were marked "typed 2 into the
+ * terminal" while the session kept waiting. No keystroke is sent any more. A card
+ * answer that must reach the session goes through awask's PreToolUse hold
+ * (`ans:<n>` keys, answered by hook updatedInput), which is an ordinary answer here.
+ *
+ * Historic contract kept below for the `tui:<n>` cards still open: the tab is
+ * focused, nothing is typed or recorded, and the surface says to answer there.
  *
  * awask's Notification hook raises an AskUserQuestion card whose options are keyed
  * `tui:<n>` -- the number the terminal shows beside each option -- plus `tui:type`
@@ -21,6 +30,7 @@ const path = require("node:path");
 
 const TUI_KEY_RE = /^tui:([1-9]|type)$/;
 const FLASH_OPEN_SESSION = "Open the session to answer";
+const FLASH_IN_FRONT = "It's in front now: answer it there";
 
 /** The terminal action a card answer asks for, or null when it is an ordinary answer. */
 function tuiAction(card, key) {
@@ -35,14 +45,14 @@ function tuiAction(card, key) {
 /**
  * PowerShell (UI Automation): select the WT tab whose name matches stdin line 1,
  * raise its window, re-read the foreground window and the tab's selection state,
- * and only then SendKeys stdin line 2 (empty = focus only). One script, so the
- * check and the keystroke are milliseconds apart.
+ * and report whether it is in front. Stdin line 2 (a digit) is validated and IGNORED:
+ * no keystroke is ever sent (see the header).
  */
 function typeScript() {
   return [
     "$ErrorActionPreference = 'Stop'",
     "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
-    "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms",
+    "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes",
     "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class AitherTui { [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h, int c); [DllImport(\"user32.dll\")] public static extern bool IsIconic(IntPtr h); }'",
     "$want = [Console]::In.ReadLine()",
     "$keys = [Console]::In.ReadLine()",
@@ -71,13 +81,12 @@ function typeScript() {
     "$fg = [AitherTui]::GetForegroundWindow()",
     "$selected = $found[1].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected",
     "if ($fg -ne $h -or -not $selected) { @{ ok = $false; typed = $false; error = 'could not confirm the session is in front' } | ConvertTo-Json -Compress; exit 0 }",
-    "if ($keys) { [System.Windows.Forms.SendKeys]::SendWait($keys) }",
-    "@{ ok = $true; typed = [bool]$keys; tab = $found[1].Current.Name } | ConvertTo-Json -Compress",
+    "@{ ok = $true; typed = $false; tab = $found[1].Current.Name } | ConvertTo-Json -Compress",
   ].join("\r\n");
 }
 
 /**
- * Focus the named session's tab and (when `keys` is a digit) type it.
+ * Focus the named session's tab. Never types: resolves typed:false always.
  * Resolves {ok, typed, tab?, error?}; never rejects.
  */
 function typeIntoSession(sessionName, keys, { spawn = require("node:child_process").spawn, timeoutMs = 15000, platform = process.platform } = {}) {
@@ -115,7 +124,8 @@ function typeIntoSession(sessionName, keys, { spawn = require("node:child_proces
       const line = out.trim().split(/\r?\n/).pop() || "";
       try {
         const v = JSON.parse(line);
-        finish({ ok: v.ok === true, typed: v.typed === true, tab: v.tab, error: v.error });
+        // typed is never true: no keystroke is sent (see the header).
+        finish({ ok: v.ok === true, typed: false, tab: v.tab, error: v.error });
       } catch {
         finish({ ok: false, typed: false, error: "the tab search gave no answer" });
       }
@@ -142,9 +152,13 @@ async function answerInTerminal(card, key, deps) {
   if (!r || r.ok !== true) {
     return { ok: false, handled: true, flash: FLASH_OPEN_SESSION, error: (r && r.error) || "focus failed" };
   }
-  const note = action.keys ? `typed ${action.keys} into the terminal` : "opened the session to type an answer";
-  const recorded = Boolean(deps.record(card.id, key, note));
-  return { ok: true, handled: true, typed: Boolean(r.typed), recorded, tab: r.tab || name };
+  if (action.keys) {
+    // A number button: the session is now in front, but nothing reached it. The
+    // card stays open (it closes when the owner answers in the terminal).
+    return { ok: false, handled: true, typed: false, flash: FLASH_IN_FRONT, tab: r.tab || name, error: "answer it in the session" };
+  }
+  const recorded = Boolean(deps.record(card.id, key, "opened the session to answer there"));
+  return { ok: true, handled: true, typed: false, recorded, tab: r.tab || name };
 }
 
-module.exports = { TUI_KEY_RE, FLASH_OPEN_SESSION, tuiAction, typeScript, typeIntoSession, answerInTerminal };
+module.exports = { TUI_KEY_RE, FLASH_OPEN_SESSION, FLASH_IN_FRONT, tuiAction, typeScript, typeIntoSession, answerInTerminal };

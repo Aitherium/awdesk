@@ -28,13 +28,24 @@ function deps({ typeResult, recordResult = true, name = "fix the mail plane" } =
   };
 }
 
-test("a confirmed focus types the digit, then records the answer", async () => {
+test("a number answer focuses the session but never claims it reached it", async () => {
+  // Measured 2026-11-08: SendKeys reported typed:true and the probe tab got nothing.
+  // Even a typer that SAYS it typed must not make the desk record the answer.
   const d = deps({ typeResult: { ok: true, typed: true, tab: "fix the mail plane" } });
   const r = await tui.answerInTerminal(CARD, "tui:2", d);
+  assert.equal(r.ok, false);
+  assert.equal(r.typed, false);
+  assert.equal(r.flash, tui.FLASH_IN_FRONT);
+  assert.equal(d.calls.record.length, 0, "the card stays open: nothing was answered");
+});
+
+test("Type something focuses the session and records that it was opened", async () => {
+  const d = deps({ typeResult: { ok: true, typed: false, tab: "fix the mail plane" } });
+  const r = await tui.answerInTerminal(CARD, "tui:type", d);
   assert.equal(r.ok, true);
-  assert.deepEqual(d.calls.type, [["fix the mail plane", "2"]]);
-  assert.equal(d.calls.record.length, 1);
-  assert.equal(d.calls.record[0][1], "tui:2");
+  assert.equal(r.typed, false);
+  assert.deepEqual(d.calls.type, [["fix the mail plane", ""]]);
+  assert.match(d.calls.record[0][2], /opened the session/);
 });
 
 test("fail closed: an unconfirmed focus records nothing and says open the session", async () => {
@@ -61,13 +72,12 @@ test("an ordinary answer is not handled here", async () => {
   assert.equal(d.calls.type.length, 0);
 });
 
-test("the script confirms the foreground before it types, and sends no Enter", () => {
+test("the script confirms the foreground and sends no keystroke at all", () => {
   const s = tui.typeScript();
-  const confirm = s.indexOf("$fg = [AitherTui]::GetForegroundWindow()");
-  const send = s.indexOf("SendKeys]::SendWait");
-  assert.ok(confirm > 0 && send > confirm, "the foreground check precedes the keystroke");
+  assert.ok(s.includes("$fg = [AitherTui]::GetForegroundWindow()"));
   assert.ok(s.includes("IsSelected"), "the tab's selection is re-read");
-  assert.ok(!/\{ENTER\}|~/.test(s.slice(send)), "no Enter is sent");
+  assert.ok(!/SendKeys|SendInput|keybd_event|PostMessage|WM_CHAR/.test(s), "no keystroke API");
+  assert.ok(!/typed = \$true|typed = \[bool\]/.test(s), "the script never reports typed");
   assert.ok(s.includes("'^[1-9]?$'"), "the script refuses anything but one digit");
 });
 
@@ -101,7 +111,8 @@ test("typeIntoSession feeds the name and digit on stdin and parses the verdict",
   };
   const r = await tui.typeIntoSession("fix the mail plane", "2", { spawn, platform: "win32" });
   assert.equal(stdinText, "fix the mail plane\n2\n");
-  assert.deepEqual(r, { ok: true, typed: true, tab: "fix the mail plane", error: undefined });
+  // Even if the script claimed typed:true, typeIntoSession never passes it on.
+  assert.deepEqual(r, { ok: true, typed: false, tab: "fix the mail plane", error: undefined });
 });
 
 test("off Windows nothing is typed", async () => {
