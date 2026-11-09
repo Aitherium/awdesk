@@ -4,6 +4,7 @@ import { renderVrmThumbnail } from '../thumbnails';
 import { LinkedText, Markdown, SessionPanel } from './SessionPanel';
 import { CardUi } from './CardUi';
 import { AtlasSection } from './AtlasSection';
+import { FairyMark } from './FairyMark';
 import { drawableCardUi } from '../deck/card-ui-tree';
 import { DeckLinks, canOpenUrl, hasSessionBridge, openDeskUrl, type DeckLinkHandlers } from '../deck/session-context';
 import { endedSessionIds, sessionPill, sessionRowTitle } from '../deck/session-text';
@@ -1346,6 +1347,7 @@ export function NeedsYouSection({
           }}
         >
           <span className="deck-urgency-dot" style={{ background: urgencyTone(card.urgency) }} />
+          <FairyMark agent={card.agent} />
           <span className="deck-ny-title">{title}</span>
           {pill ? (
             <span
@@ -2723,6 +2725,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
           ) : (
             state.slots.map((slot) => (
               <div className="deck-row deck-row-static" key={slot.slotId}>
+                <FairyMark agent={slot.agent} />
                 {/* The label ellipsizes in CSS; the title keeps the full name one
                     hover away instead of truncating it with no way to read it. */}
                 <span

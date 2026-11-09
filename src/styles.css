@@ -1627,3 +1627,24 @@ body {
 .deck-card-consequences li { display: flex; gap: 6px; margin: 1px 0; }
 .deck-card-consequence-key { flex: none; font-weight: 650; color: var(--deck-soft); }
 .deck-card-consequence-text { min-width: 0; overflow-wrap: anywhere; }
+
+/* ── the agent fairy mark (FairyMark.tsx; palette electron/agent-fairies.json) ──
+   The same fairy as the desk orb and the Discord avatars: a white-hot core in
+   the agent's bloom, two small wings in its colour. Swept = Hera's wings, ring =
+   a ring-shaped glow. */
+.fairy-mark {
+  position: relative; display: inline-block; flex: none; vertical-align: middle;
+  width: var(--fm-size, 14px); height: var(--fm-size, 14px); margin: 0 4px; border-radius: 50%;
+  background: radial-gradient(circle, #fff 0%, var(--fm-core, #fff) 26%, var(--fm-color) 58%, rgba(255, 255, 255, 0) 100%);
+  box-shadow: 0 0 6px 1px var(--fm-glow);
+}
+.fairy-mark::before,
+.fairy-mark::after {
+  content: ''; position: absolute; top: 12%; width: 55%; height: 38%; border-radius: 50%;
+  background: var(--fm-wing); border: 0.5px solid rgba(255, 255, 255, 0.45);
+}
+.fairy-mark::before { right: 72%; transform: rotate(18deg); }
+.fairy-mark::after { left: 72%; transform: rotate(-18deg); }
+.fairy-mark-swept::before,
+.fairy-mark-swept::after { height: 26%; border-radius: 0 80% 20% 80%; }
+.fairy-mark-ring { outline: 1px solid var(--fm-glow); outline-offset: 1px; }

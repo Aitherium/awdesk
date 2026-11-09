@@ -1086,3 +1086,96 @@ test("the whisper page draws the ui with DOM APIs only and answers via nudgeAct"
   assert.match(body, /api\.nudgeAct\("answer", n\.key\)/);
   assert.doesNotMatch(html, /#n-ui button \{[^}]*text-overflow: ellipsis/, "no ellipsis on a choice");
 });
+
+// ── the agent fairy (agent-fairy.cjs, owner 2026-11-09) ─────────────────────
+
+function lastSent(win, channel) {
+  const hits = win.webContents.sent.filter(([c]) => c === channel);
+  return hits.length ? hits[hits.length - 1][1] : undefined;
+}
+
+test("the fairy wears the colour of the agent whose card it carries, and Aither again after", async () => {
+  startAttention();
+  orbWindow.setAttentionCards([blockedCard({ agent: "Atlas" })]);
+  assert.equal(orbWindow.fairy().agent, "aither", "idle: the owner's white-gold fairy");
+  await orbWindow.attentionTick();
+  const worn = lastSent(orbWin(), "orb:fairy");
+  assert.equal(worn.agent, "atlas");
+  assert.equal(worn.color, "#a3a3a3", "an Atlas card makes it grey");
+  await wait(1000);
+  const view = lastSent(nudgeWin(), "orb:nudge-view");
+  assert.equal(view.agent.agent, "atlas", "the whisper is signed by the Atlas fairy");
+  orbWindow.endNudge("seen", { stay: true });
+  assert.equal(lastSent(orbWin(), "orb:fairy").agent, "aither", "back to Aither when the card goes");
+});
+
+test("cards from several agents: companions orbit (max 4, not the one worn), a hover peeks without touching the ladder", async () => {
+  startAttention();
+  const now = Math.floor(Date.now() / 1000) - 600;
+  orbWindow.setAttentionCards([
+    blockedCard({ id: "d-a1", agent: "atlas", createdAt: now }),
+    blockedCard({ id: "d-l1", agent: "lyra", createdAt: now }),
+    blockedCard({ id: "d-d1", agent: "demi", createdAt: now }),
+    blockedCard({ id: "d-i1", agent: "iris", createdAt: now }),
+    blockedCard({ id: "d-s1", agent: "saga", createdAt: now }),
+    blockedCard({ id: "d-v1", agent: "vera", createdAt: now }),
+  ]);
+  const mates = lastSent(orbWin(), "orb:companions");
+  assert.equal(mates.length, 4, "at most four companions");
+  assert.deepEqual(mates.map((m) => m.agent), ["atlas", "lyra", "demiurge", "iris"]);
+  const peek = await invoke("desk:orb-peek", orbWin(), "d-l1");
+  assert.equal(peek.ok, true);
+  assert.equal(orbWindow.nudging().id, "d-l1");
+  assert.equal(lastSent(orbWin(), "orb:fairy").color, "#8b5cf6", "a Lyra card is violet");
+  const view = lastSent(nudgeWin(), "orb:nudge-view");
+  assert.equal(view.lead, "From Lyra");
+  assert.equal(orbWindow.attentionMems()["d-l1"], undefined, "a peek is not a nudge: no ladder memory");
+  assert.equal(
+    orbWin().webContents.sent.some(([c, p]) => c === "orb:nudge" && p && p.level > 0), false,
+    "a peek does not chime or glow",
+  );
+  const worn = lastSent(orbWin(), "orb:companions");
+  assert.equal(worn.some((m) => m.agent === "lyra"), false, "the worn agent leaves the orbit");
+  orbWindow.endNudge("timeout", { stay: true });
+  assert.equal(orbWindow.attentionMems()["d-l1"], undefined, "an ignored peek is not an ignored nudge");
+  const missing = await invoke("desk:orb-peek", orbWin(), "d-nope");
+  assert.equal(missing.ok, false);
+});
+
+test("a peek never steals a real nudge's whisper", async () => {
+  startAttention();
+  orbWindow.setAttentionCards([
+    blockedCard({ id: "d-a1", agent: "atlas" }),
+    blockedCard({ id: "d-l1", agent: "lyra" }),
+  ]);
+  await orbWindow.attentionTick();
+  const real = orbWindow.nudging().id;
+  const peek = await invoke("desk:orb-peek", orbWin(), real === "d-a1" ? "d-l1" : "d-a1");
+  assert.equal(peek.ok, false);
+  assert.equal(orbWindow.nudging().id, real);
+  orbWindow.endNudge("seen", { stay: true });
+});
+
+test("whoever is talking: the fairy wears that agent for about the line, a character changes nothing", () => {
+  start();
+  orbWindow.showOrb();
+  assert.equal(orbWindow.setSpeaker("Some VRM character", "hello").ok, false);
+  assert.equal(orbWindow.fairy().agent, "aither");
+  const r = orbWindow.setSpeaker("demi", "PR is up");
+  assert.equal(r.ok, true);
+  assert.equal(r.ms, 3000);
+  assert.equal(lastSent(orbWin(), "orb:fairy").color, "#06b6d4", "a Demiurge line is cyan");
+});
+
+test("the orb page wears the fairy and draws companions with DOM APIs, hit-testing them click-through", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  assert.match(html, /api\.onFairy\(wearFairy\)/);
+  assert.match(html, /api\.onCompanions\(setMates\)/);
+  assert.match(html, /api\.peek\(m\.id\)/);
+  assert.match(html, /toggleHit\(Boolean\(m\) \|\| Math\.hypot\(dx, dy\) <= RADIUS\)/, "a companion is hit only under the pointer");
+  const mates = html.slice(html.indexOf("function setMates"), html.indexOf("function mateAt"));
+  assert.doesNotMatch(mates, /innerHTML|insertAdjacentHTML|outerHTML/);
+  const preload = fs.readFileSync(path.join(__dirname, "orb-preload.cjs"), "utf8");
+  assert.match(preload, /onFairy: \(fn\) => on\("orb:fairy", fn\)/);
+  assert.match(preload, /peek: \(id\) => ipcRenderer\.invoke\("desk:orb-peek"/);
+});

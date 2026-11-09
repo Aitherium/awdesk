@@ -68,6 +68,38 @@
   .drop-hover #orb { box-shadow: 0 0 0 2px var(--tint, #f4faff) inset, 0 0 22px 8px var(--tint-glow, rgba(225,240,255,0.7)); }
   .drop-hover #card { border-color: var(--tint, #f4faff); }
 
+  /* ── the agent fairy (agent-fairy.cjs, owner 2026-11-09) ─────────────────
+     One palette with Discord and aitherium.com (agent-fairies.json). The core
+     always takes the agent's core (Aither: white-gold). While the fairy carries
+     an agent's card or speaks for one (#orb.wearing), the bloom and the wings
+     take that agent's colour too; swept = Hera's pointed wings, ring = a
+     ring-shaped outer glow, sparkles = the owner's glints. */
+  #orb .core { background: radial-gradient(circle at 45% 40%, #fff 0%, var(--fairy-core, #fff) 42%,
+    rgba(244,250,255,0.85) 70%, rgba(255,255,255,0) 100%); }
+  #orb.wearing .halo { background: radial-gradient(circle, rgba(255,255,255,0.62) 0%, var(--fairy-glow-soft) 20%,
+    var(--fairy-glow-faint) 46%, rgba(255,255,255,0) 70%); }
+  #orb.wearing .core { box-shadow: 0 0 8px 3px rgba(255,255,255,0.95), 0 0 20px 8px var(--fairy-glow-soft),
+    0 0 36px 14px var(--fairy-glow-faint); }
+  #orb.wearing .wing { background: radial-gradient(ellipse at 30% 50%, rgba(255,255,255,0.55), var(--fairy-wing) 70%,
+    rgba(255,255,255,0.05)); border-color: var(--fairy-wing-edge); }
+  #orb.swept .wing.up { width: 17px; height: 6px; border-radius: 0 80% 20% 80%; }
+  #orb.swept .wing.lo { width: 12px; height: 4px; border-radius: 0 80% 20% 80%; }
+  #orb.swept .wing.r.up { transform: rotate(-34deg); } #orb.swept .wing.l.up { margin-left: -17px; transform: rotate(34deg); }
+  #orb.swept .wing.l.lo { margin-left: -12px; }
+  #orb.ring .halo::after { content: ""; position: absolute; inset: 6px; border-radius: 50%;
+    border: 1.5px solid var(--fairy-glow-soft); box-shadow: 0 0 8px var(--fairy-glow-soft); }
+  #orb.nosparkle .spark { display: none; }
+  /* Companions: one small fairy per OTHER agent with a card waiting (max 4),
+     orbiting slowly; hovering one shows that agent's card. */
+  #mates { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
+  .mate { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%;
+    background: radial-gradient(circle, #fff 0%, var(--m-core, #fff) 30%, var(--m-color) 62%, rgba(255,255,255,0) 100%);
+    box-shadow: 0 0 6px 2px var(--m-glow); transition: transform 0.12s ease; }
+  .mate::before, .mate::after { content: ""; position: absolute; top: 1px; width: 6px; height: 4px; border-radius: 50%;
+    background: var(--m-wing); border: 0.5px solid rgba(255,255,255,0.5); animation: flap 0.18s ease-in-out infinite alternate; }
+  .mate::before { right: 7px; transform-origin: 100% 50%; } .mate::after { left: 7px; transform-origin: 0 50%; }
+  .mate.hot { transform: scale(1.45); }
+
   /* ── the bubble (392 x 480 window) ──────────────────────────────────── */
   body.bubble { padding: 8px; }
   #card { width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden;
@@ -391,8 +423,9 @@
     document.body.innerHTML = '<div id="orb" title="Aither — click to open, drag onto a window or avatar to attach, right-click for the menu">'
       + '<i class="halo"></i><i class="wing l up"></i><i class="wing r up"></i><i class="wing l lo"></i><i class="wing r lo"></i>'
       + '<i class="core"></i><i class="spark a"></i><i class="spark b"></i><i class="spark c"></i><i class="ping"></i></div>'
-      + '<div id="badge"></div><div id="queued"></div>';
+      + '<div id="mates"></div><div id="badge"></div><div id="queued"></div>';
     const orb = document.getElementById("orb");
+    const matesEl = document.getElementById("mates");
     const badge = document.getElementById("badge");
     const queued = document.getElementById("queued");
     const RADIUS = 30; // a little past the 28 px disc: forgiving, never the corners
@@ -404,12 +437,87 @@
       inside = isInside;
       api.hit(isInside);
     }
+    // ── the agent fairy: its colours, and the companions orbiting it ───
+    let mates = [];
+    let hotMate = null;
+    function wearFairy(f) {
+      if (!f || !f.color) return;
+      const el = document.documentElement;
+      el.style.setProperty("--fairy-core", f.core || "#ffffff");
+      el.style.setProperty("--fairy-glow-soft", rgba(f.glow || f.color, 0.42));
+      el.style.setProperty("--fairy-glow-faint", rgba(f.glow || f.color, 0.2));
+      el.style.setProperty("--fairy-wing", rgba(f.color, 0.34));
+      el.style.setProperty("--fairy-wing-edge", rgba(f.color, 0.6));
+      const resting = !f.agent || f.agent === "aither";
+      orb.classList.toggle("wearing", !resting);
+      orb.classList.toggle("swept", f.wings === "swept");
+      orb.classList.toggle("ring", Boolean(f.ring));
+      orb.classList.toggle("nosparkle", !f.sparkles && !resting);
+      orb.dataset.agent = f.agent || "";
+    }
+    // Where companion i of n sits now: the orbit agent-fairy.companionOffset draws.
+    function mateOffset(i, n, now) {
+      const a = 2 * Math.PI * (i / Math.max(1, n)) + 2 * Math.PI * (now / 9000);
+      return { x: Math.round(Math.cos(a) * 24), y: Math.round(Math.sin(a) * 24 * 0.82) };
+    }
+    let mateFrame = 0;
+    function placeMates() {
+      mateFrame = 0;
+      if (!mates.length) return;
+      const now = Date.now();
+      mates.forEach((m, i) => {
+        const o = mateOffset(i, mates.length, now);
+        m.el.style.left = `${o.x}px`;
+        m.el.style.top = `${o.y}px`;
+        m.x = o.x;
+        m.y = o.y;
+      });
+      mateFrame = window.setTimeout(placeMates, 50); // 20 fps is plenty for a slow lap
+    }
+    function setMates(list) {
+      matesEl.textContent = "";
+      if (mateFrame) { window.clearTimeout(mateFrame); mateFrame = 0; }
+      hotMate = null;
+      mates = (Array.isArray(list) ? list : []).slice(0, 4).map((c) => {
+        const el = document.createElement("i");
+        el.className = "mate";
+        el.style.setProperty("--m-color", rgba(c.color, 0.95));
+        el.style.setProperty("--m-core", c.core || "#ffffff");
+        el.style.setProperty("--m-glow", rgba(c.glow || c.color, 0.55));
+        el.style.setProperty("--m-wing", rgba(c.color, 0.4));
+        matesEl.append(el);
+        const extra = Number(c.count) > 1 ? ` (+${Number(c.count) - 1})` : "";
+        return { el, x: 0, y: 0, id: String(c.cardId || ""), tip: `${c.label || c.agent}: ${c.title || "a card"}${extra}` };
+      });
+      placeMates();
+    }
+    function mateAt(dx, dy) {
+      for (const m of mates) if (Math.hypot(dx - m.x, dy - m.y) <= 8) return m;
+      return null;
+    }
     window.addEventListener("mousemove", (e) => {
       const dx = e.clientX - window.innerWidth / 2;
       const dy = e.clientY - window.innerHeight / 2;
-      toggleHit(Math.hypot(dx, dy) <= RADIUS);
+      const m = mateAt(dx, dy);
+      if (m !== hotMate) {
+        if (hotMate) hotMate.el.classList.remove("hot");
+        hotMate = m;
+        if (m) {
+          m.el.classList.add("hot");
+          orb.title = m.tip;
+          if (api.peek) api.peek(m.id); // that agent's card, beside the fairy
+        } else {
+          orb.title = orb.dataset.tip || orb.title;
+        }
+      }
+      toggleHit(Boolean(m) || Math.hypot(dx, dy) <= RADIUS);
     });
-    window.addEventListener("mouseleave", () => toggleHit(false));
+    window.addEventListener("mouseleave", () => {
+      if (hotMate) { hotMate.el.classList.remove("hot"); hotMate = null; }
+      toggleHit(false);
+    });
+    if (api.onFairy) api.onFairy(wearFairy);
+    if (api.onCompanions) api.onCompanions(setMates);
 
     orb.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
@@ -488,7 +596,7 @@
     // The fairy IS the owner's sprite: its name, stage and mood on hover. null =
     // the plain fairy (signed out / offline), which keeps the plain tooltip.
     const PLAIN_TIP = orb.title;
-    function wearSprite(sp) { orb.title = sp && sp.tooltip ? sp.tooltip : PLAIN_TIP; }
+    function wearSprite(sp) { orb.title = sp && sp.tooltip ? sp.tooltip : PLAIN_TIP; orb.dataset.tip = orb.title; }
     if (api.onSprite) api.onSprite(wearSprite);
     api.onAttach((a) => { orb.classList.toggle("attached", Boolean(a && a.attached)); });
     api.onTrips((t) => {
@@ -503,6 +611,8 @@
       wearSprite(s.sprite);
       if (s.attach) orb.classList.add("attached");
       if (s.nudgeLevel) setNudge(s.nudgeLevel);
+      if (s.fairy) wearFairy(s.fairy);
+      if (s.companions) setMates(s.companions);
       const n = s.trips && s.trips.count > 1 ? s.trips.count - 1 : 0;
       queued.textContent = String(n);
       queued.classList.toggle("on", n > 0);
@@ -612,6 +722,12 @@
       }
       box.className = `lv${Number(v.level) || 1}${v.side === "left" ? " left" : ""}`;
       leadEl.textContent = v.lead || "Waiting on you";
+      // The dot is the fairy of the agent whose card this is (agent-fairy.cjs).
+      const dot = document.getElementById("n-dot");
+      const who = v.agent && v.agent.known && v.agent.agent !== "aither" ? v.agent : null;
+      dot.style.background = who ? who.color : "";
+      dot.style.boxShadow = who ? `0 0 8px ${rgba(who.glow || who.color, 0.9)}` : "";
+      dot.title = who ? who.label : "";
       moreEl.textContent = v.more > 0 ? `+${v.more} more` : "";
       moreEl.style.display = v.more > 0 ? "" : "none";
       titleEl.textContent = v.title || "";

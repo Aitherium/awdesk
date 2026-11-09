@@ -48,6 +48,7 @@ const spriteCore = require("./sprite-core.cjs");
 const awCli = require("./aw-cli.cjs");
 const selectionReader = require("./selection-reader.cjs");
 const fairyAttention = require("./fairy-attention.cjs");
+const agentFairy = require("./agent-fairy.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -2089,9 +2090,92 @@ function setAttentionCards(cards) {
   if (Object.keys(attentionMems).length !== before) saveAttention();
   // Answered somewhere else (the Inbox, Discord, the phone): the whisper goes.
   if (nudging && !ids.has(nudging.decision.card.id)) endNudge("answered");
+  sendFairy();
   ensureAttention();
   scheduleAttentionTick(1500); // a NEW card is judged now, not on the next 15 s tick
   return { ok: true, count: attentionCards.length };
+}
+
+// ── the agent fairy: whose colours the fairy wears (agent-fairy.cjs) ────────
+//
+// Owner, 2026-11-09: the desk fairy takes on the colour of whoever is talking or
+// whose card it carries; when several agents have cards waiting, small companion
+// fairies (one per agent, at most four) orbit it, and hovering one shows that
+// agent's card. The owner's idle fairy stays Aither white-gold.
+
+/** {agent, until} -- the agent whose line is being spoken, for about that long. */
+let fairySpeaker = null;
+let fairySpeakerTimer = null;
+let lastFairyKey = "";
+let lastCompanionsKey = "";
+
+/** The fairy to wear now: the carried card's agent, else the speaker, else Aither. */
+function currentFairy(nowMs = Date.now()) {
+  if (nudging && nudging.decision && nudging.decision.card) {
+    const f = agentFairy.fairyFor(nudging.decision.card.agent);
+    if (f.known) return f;
+  }
+  if (fairySpeaker && nowMs < fairySpeaker.until) return agentFairy.fairyFor(fairySpeaker.agent);
+  return agentFairy.restingFairy();
+}
+
+function currentCompanions(look = currentFairy()) {
+  return agentFairy.companionsFor(attentionCards, { current: look.agent });
+}
+
+/** Push the look and the companions to the orb page, only when they changed. */
+function sendFairy({ force = false } = {}) {
+  const look = currentFairy();
+  const key = JSON.stringify(look);
+  if (force || key !== lastFairyKey) {
+    lastFairyKey = key;
+    send("orb:fairy", look);
+  }
+  const companions = currentCompanions(look);
+  const ckey = JSON.stringify(companions);
+  if (force || ckey !== lastCompanionsKey) {
+    lastCompanionsKey = ckey;
+    send("orb:companions", companions);
+  }
+  return { look, companions };
+}
+
+/**
+ * Someone is talking: the fairy wears that agent's colours for about as long as
+ * the line takes, then returns to the card it carries or to Aither. An unknown
+ * name (a character, not an agent) changes nothing.
+ */
+function setSpeaker(agent, text = "") {
+  const key = agentFairy.normalizeAgent(agent);
+  if (!key) return { ok: false, reason: "not an agent with a fairy" };
+  const ms = agentFairy.speakingMs(text);
+  fairySpeaker = { agent: key, until: Date.now() + ms };
+  if (fairySpeakerTimer) clearTimeout(fairySpeakerTimer);
+  fairySpeakerTimer = setTimeout(() => { fairySpeakerTimer = null; fairySpeaker = null; sendFairy(); }, ms + 50);
+  if (fairySpeakerTimer.unref) fairySpeakerTimer.unref();
+  sendFairy();
+  return { ok: true, agent: key, ms };
+}
+
+/**
+ * Hovering a companion shows that agent's card in the whisper, beside the fairy
+ * where it rests. A PEEK, not a nudge: it neither climbs nor resets the ladder,
+ * and a real nudge in flight keeps its card.
+ */
+function peekCard(id) {
+  const card = attentionCards.find((c) => c && c.id === String(id || ""));
+  if (!card) return { ok: false, reason: "no such card" };
+  if (nudging && nudging.decision.card.id === card.id) return { ok: true, id: card.id, already: true };
+  if (nudging && !nudging.peek) return { ok: false, reason: "a nudge is showing" };
+  if (nudging && nudging.peek) endNudge("peek", { stay: true });
+  const f = agentFairy.fairyFor(card.agent);
+  const decision = {
+    act: "nudge", card, level: fairyAttention.LEVEL.GLOW, importance: 0, arrival: false, returned: false,
+    why: fairyAttention.whyNow(card, Date.now()),
+    lead: f.known ? `From ${f.label}` : "Waiting on you",
+    more: Math.max(0, attentionCards.length - 1), voice: false, showMs: 8000,
+  };
+  return startNudge(decision, { peek: true });
 }
 
 function ensureAttention() {
@@ -2242,24 +2326,31 @@ function speakNudge(decision, { force = false } = {}) {
   return hookValue("speak", line, { force }) !== false;
 }
 
-function startNudge(decision) {
+function startNudge(decision, { peek = false } = {}) {
   if (!alive(orbWindow) || !decision || !decision.card) return { ok: false };
   const view = fairyAttention.whisperView(decision, Date.now());
   if (!view) return { ok: false };
   const nowMs = Date.now();
   const id = decision.card.id;
-  attentionMems[id] = fairyAttention.recordShown(attentionMems[id] || {}, nowMs);
-  attentionLastAt = nowMs;
-  if (decision.returned) attentionReturnUntil = 0;
+  if (!peek) {
+    attentionMems[id] = fairyAttention.recordShown(attentionMems[id] || {}, nowMs);
+    attentionLastAt = nowMs;
+    if (decision.returned) attentionReturnUntil = 0;
+  }
+  // The whisper is signed by the agent fairy whose card it is.
+  view.agent = agentFairy.fairyFor(decision.card.agent);
   nudging = {
-    decision, view, startedAt: nowMs, until: nowMs + (decision.showMs || 9000),
+    decision, view, peek, startedAt: nowMs, until: nowMs + (decision.showMs || 9000),
     anchor: null, whisperAt: null, side: "right", hovered: false, shown: false, timer: null, flutter: null,
   };
   const n = nudging;
   ensureNudge();
+  // The fairy wears the colours of the agent whose card it now carries.
+  sendFairy();
   // The chime rides the level change (the orb page synthesizes it). The plan already
   // held this nudge while quiet; a muted desk or "Fairy sounds: off" is silent too.
-  send("orb:nudge", { level: decision.level, chime: chimeFor(decision.level) });
+  // A peek is the owner's own hover: no chime, no glow.
+  if (!peek) send("orb:nudge", { level: decision.level, chime: chimeFor(decision.level) });
   if (decision.level >= fairyAttention.LEVEL.FLUTTER) {
     const { screen } = electron();
     let cursor = null;
@@ -2289,8 +2380,8 @@ function startNudge(decision) {
     );
     showWhisper();
   }
-  saveAttention();
-  if (decision.voice) speakNudge(decision);
+  if (!peek) saveAttention();
+  if (decision.voice && !peek) speakNudge(decision);
   n.timer = setInterval(() => {
     if (nudging !== n) return;
     const now = Date.now();
@@ -2325,7 +2416,9 @@ function endNudge(outcome = "timeout", { stay = false } = {}) {
   const id = n.decision.card.id;
   const nowMs = Date.now();
   const mem = attentionMems[id] || {};
-  if (outcome === "timeout") {
+  if (n.peek && (outcome === "timeout" || outcome === "peek")) {
+    // A peek was the owner's hover, not a nudge: nothing to learn from it.
+  } else if (outcome === "timeout") {
     attentionMems[id] = fairyAttention.recordIgnored(mem, { importance: n.decision.importance, nowMs });
   } else if (outcome === "acted" || outcome === "seen") {
     attentionMems[id] = fairyAttention.recordActed(mem);
@@ -2345,6 +2438,7 @@ function endNudge(outcome = "timeout", { stay = false } = {}) {
   }
   sendNudge("orb:nudge-view", null);
   send("orb:nudge", { level: 0 });
+  sendFairy();
   if (n.anchor && !stay && !quitting) void returnFromNudge();
   return { ok: true, ended: true, outcome };
 }
@@ -2681,7 +2775,9 @@ function handlers() {
         modeTitle: bubbleMode === "card" && cardChat ? cardChat.title : null,
         sprite: publicSprite(),
         nudge: nudging && nudging.shown ? nudging.view : null,
-        nudgeLevel: nudging ? nudging.decision.level : 0,
+        nudgeLevel: nudging && !nudging.peek ? nudging.decision.level : 0,
+        fairy: currentFairy(),
+        companions: currentCompanions(),
       };
     }),
     "desk:orb-hit": guard((_sender, inside) => {
@@ -2694,6 +2790,8 @@ function handlers() {
     "desk:orb-click": guard(() => toggleBubbleFromOrb()),
     // The badge click (fairy, 2026-11-06) lands on the SAME Inbox list every
     // other entry point uses. It opens; it never answers.
+    // Hovering a companion fairy shows that agent's card (a peek, not a nudge).
+    "desk:orb-peek": guard((_sender, id) => peekCard(id)),
     "desk:orb-needs-you": guard(() => {
       void runCommandImpl?.("inbox.open");
       return { ok: true };
@@ -2903,7 +3001,9 @@ module.exports = {
   startOrb, stopOrb, run, ensureIpc, showOrb, hideOrb, toggleOrb, openBubble, setAttention,
   // attention: the fairy carries the cards (fairy-attention.cjs)
   NUDGE_SIZE, setAttentionCards, attentionTick, ownsAttention, nudgeAct, endNudge,
-  nudgeCard, chatAboutCard, setSounds, soundsOn: () => state.sounds !== false,
+  nudgeCard, chatAboutCard, setSounds,
+  // the agent fairy (agent-fairy.cjs): whose colours, which companions
+  setSpeaker, peekCard, fairy: () => currentFairy(), companions: () => currentCompanions(), soundsOn: () => state.sounds !== false,
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
   attentionMems: () => attentionMems,
   askScreen, askRegion, askText, askImage, toggleBubbleFromOrb, beginDrag, endDrag,
@@ -2930,6 +3030,10 @@ module.exports = {
     attentionReturnUntil = 0;
     attentionAway = false;
     attentionHooks = {};
+    fairySpeaker = null;
+    if (fairySpeakerTimer) { clearTimeout(fairySpeakerTimer); fairySpeakerTimer = null; }
+    lastFairyKey = "";
+    lastCompanionsKey = "";
     cardChat = null;
     for (const win of [nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
       try { if (alive(win)) win.destroy(); } catch { /* gone */ }

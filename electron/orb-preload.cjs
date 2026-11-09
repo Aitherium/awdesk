@@ -106,4 +106,9 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   onNudge: (fn) => on("orb:nudge", fn),
   onNudgeView: (fn) => on("orb:nudge-view", fn),
   onNudgeFlash: (fn) => on("orb:nudge-flash", fn),
+  // The agent fairy (agent-fairy.cjs): whose colours the fairy wears, the
+  // companions orbiting it, and a hover on one of them (shows that agent's card).
+  onFairy: (fn) => on("orb:fairy", fn),
+  onCompanions: (fn) => on("orb:companions", fn),
+  peek: (id) => ipcRenderer.invoke("desk:orb-peek", String(id || "")),
 });

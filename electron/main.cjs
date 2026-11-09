@@ -1434,6 +1434,11 @@ async function speakAloud(
       if (typeof gate.volume === "number" && Number.isFinite(gate.volume)) effectiveVolume = gate.volume;
     }
   }
+  // The fairy wears the colours of whoever is talking (agent-fairy.cjs, owner
+  // 2026-11-09). A character that is not an agent with a fairy changes nothing.
+  try {
+    orbWindow.setSpeaker((speaker && speaker.agent) || agentForSlot(slotId), text);
+  } catch { /* the fairy is cosmetic: never let it stop a line being spoken */ }
   // THE SAFETY FUNNEL, speech half (`.AITHERIUM/CAPABILITY/AVATAR-FORGE-PIPELINE.md` stage
   // 6). The cast gate above decided WHETHER this origin may be heard; this decides WHAT is
   // said. AitherSafety filters rather than refusing, so a rewritten line is spoken in its
