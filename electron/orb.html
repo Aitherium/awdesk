@@ -89,6 +89,18 @@
   #orb.ring .halo::after { content: ""; position: absolute; inset: 6px; border-radius: 50%;
     border: 1.5px solid var(--fairy-glow-soft); box-shadow: 0 0 8px var(--fairy-glow-soft); }
   #orb.nosparkle .spark { display: none; }
+  /* The owner's own fairy at rest: Aither white-gold (the Discord avatar's core
+     #fff6dc in a gold #ffc857 bloom, sky #38bdf8 wings), full brightness. Live
+     2026-11-09 it read as "a faint pale-gold blur" on a white page: the old pale
+     blue-white halo has no contrast there. A thin dark rim on the core keeps it
+     legible on any background (invisible on a dark one). */
+  #orb .core { filter: drop-shadow(0 0 1px rgba(8,12,20,0.55)); }
+  #orb.aither .halo { background: radial-gradient(circle, rgba(255,255,255,0.75) 0%, rgba(255,214,120,0.55) 18%,
+    rgba(255,200,87,0.3) 36%, rgba(56,189,248,0.1) 54%, rgba(255,255,255,0) 70%); }
+  #orb.aither .core { width: 17px; height: 17px; margin: -8.5px 0 0 -8.5px;
+    box-shadow: 0 0 6px 3px rgba(255,255,255,0.95), 0 0 16px 7px rgba(255,200,87,0.75), 0 0 30px 12px rgba(255,190,80,0.32); }
+  #orb.aither .wing { background: radial-gradient(ellipse at 30% 50%, rgba(255,255,255,0.6), rgba(56,189,248,0.32) 70%,
+    rgba(255,255,255,0.05)); border-color: rgba(56,189,248,0.6); }
   /* The swarm (its own window, centred on the fairy): one companion per OTHER
      agent with a card waiting -- every one of them, on rings that grow with the
      count, drawn smaller as more appear; hovering one shows that agent's card. */
@@ -453,6 +465,7 @@
       el.style.setProperty("--fairy-wing-edge", rgba(f.color, 0.6));
       const resting = !f.agent || f.agent === "aither";
       orb.classList.toggle("wearing", !resting);
+      orb.classList.toggle("aither", resting);
       orb.classList.toggle("swept", f.wings === "swept");
       orb.classList.toggle("ring", Boolean(f.ring));
       orb.classList.toggle("nosparkle", !f.sparkles && !resting);
