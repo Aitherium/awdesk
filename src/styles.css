@@ -1456,7 +1456,8 @@ body {
 .deck-sys-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warning); }
 .deck-sys-dot-ok { background: var(--success, var(--pastel-mint)); }
 .deck-sys-state { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.deck-sys-detail { flex: none; max-width: 40%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: var(--deck-muted); }
+.deck-sys-row.deck-sys-bad { flex-wrap: wrap; padding-block: 4px; }
+.deck-sys-detail { flex: 1 1 100%; padding-left: 16px; white-space: normal; overflow-wrap: anywhere; font-size: 11px; color: var(--deck-muted); }
 
 /* NOW mode (ADHD gap 3): one card on the whole window, the next slides in. */
 .deck-now { position: fixed; inset: 0; z-index: 1000; border-radius: 0; }
