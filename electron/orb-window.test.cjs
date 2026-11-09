@@ -120,8 +120,16 @@ class FakeWindow extends EventEmitter {
   getBounds() { return { ...this.bounds }; }
   setBounds(next) { Object.assign(this.bounds, next); }
   isVisible() { return this.visible && !this.destroyed; }
-  showInactive() { if (!this.destroyed) this.visible = true; }
-  show() { if (!this.destroyed) this.visible = true; }
+  /** Z-order, top first, the way GetWindow(GW_HWNDNEXT) walks it: a show or a
+   *  moveTop puts a window on top. */
+  raise() {
+    const i = FakeWindow.z.indexOf(this);
+    if (i >= 0) FakeWindow.z.splice(i, 1);
+    FakeWindow.z.unshift(this);
+  }
+  moveTop() { if (!this.destroyed) this.raise(); }
+  showInactive() { if (!this.destroyed) { this.visible = true; this.raise(); } }
+  show() { if (!this.destroyed) { this.visible = true; this.raise(); } }
   hide() { this.visible = false; }
   isDestroyed() { return this.destroyed; }
   destroy() {
@@ -135,6 +143,7 @@ class FakeWindow extends EventEmitter {
   getTitle() { return this.opts.title || ""; }
 
   static all = [];
+  static z = [];
   static getAllWindows() { return FakeWindow.all.filter((w) => !w.destroyed); }
   static fromId(id) { return FakeWindow.all.find((w) => w.id === id) || null; }
 }
@@ -222,6 +231,7 @@ test.beforeEach(() => {
   // Never read the REAL desktop's selection from a test; tests that want one set it.
   orbWindow.__setSelection(async () => "");
   FakeWindow.all.length = 0;
+  FakeWindow.z.length = 0;
   fs.rmSync(STATE, { force: true });
   cursor = { x: 100, y: 100 };
 });
@@ -1205,4 +1215,31 @@ test("the swarm page draws companions with DOM APIs and hit-tests them click-thr
   assert.match(preload, /onFairy: \(fn\) => on\("orb:fairy", fn\)/);
   assert.match(preload, /peek: \(id\) => ipcRenderer\.invoke\("desk:orb-peek"/);
   assert.match(preload, /swarmHit: \(inside\) => ipcRenderer\.invoke\("desk:swarm-hit"/);
+});
+
+test("the fairy stays ABOVE its swarm in z-order after every companion update (live: dimmed under it)", () => {
+  startAttention();
+  const old = Math.floor(Date.now() / 1000) - 600;
+  const cards = (agents) => agents.map((a, i) => blockedCard({ id: `d-z${i}`, agent: a, createdAt: old }));
+  const above = () => {
+    const orb = FakeWindow.z.indexOf(orbWin());
+    const swarm = FakeWindow.z.indexOf(orbWindow.swarmWindow());
+    return orb >= 0 && swarm >= 0 && orb < swarm;
+  };
+  orbWindow.setAttentionCards(cards(["atlas", "lyra", "iris"]));
+  assert.ok(orbWindow.swarmWindow().isVisible());
+  assert.ok(above(), "first show: the fairy is over its swarm");
+  // something else raises the swarm (a re-show, the OS): the next update puts the fairy back on top
+  orbWindow.swarmWindow().moveTop();
+  assert.equal(above(), false);
+  orbWindow.setAttentionCards(cards(["atlas", "lyra", "iris", "saga", "vera"]));
+  assert.ok(above(), "a companion update raises the fairy again");
+});
+
+test("the resting fairy is Aither white-gold at full brightness, with a contrast rim", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  assert.match(html, /orb\.classList\.toggle\("aither", resting\)/);
+  assert.match(html, /#orb\.aither \.halo \{[^}]*rgba\(255,200,87/, "a gold bloom, not the pale blue-white one");
+  assert.match(html, /#orb \.core \{ filter: drop-shadow/, "a rim that reads on a white page");
+  assert.doesNotMatch(html, /\.mate[^{]*\{[^}]*box-shadow: 0 0 (1\d|[2-9]\d)px/, "companion glows stay small: no fog");
 });

@@ -416,8 +416,19 @@ function swarmBounds(count) {
   return { x: Math.round(cx - half), y: Math.round(cy - half), width: half * 2, height: half * 2 };
 }
 
+/**
+ * The fairy above its swarm. Measured live 2026-11-09 (ctypes GetWindow order):
+ * "Aither spirit" at z 12 above "Aither swarm" at z 21 -- right -- but nothing
+ * kept it so after a later swarm show. Raised after every companion update.
+ */
+function raiseOrbOverSwarm() {
+  try {
+    if (alive(orbWindow) && typeof orbWindow.moveTop === "function") orbWindow.moveTop();
+  } catch { /* a window mid-teardown */ }
+}
+
 /** Show, size, follow or hide the swarm for the current companions. */
-function placeSwarm(companions = swarmCompanions) {
+function placeSwarm(companions = swarmCompanions, { raise = false } = {}) {
   const list = Array.isArray(companions) ? companions : [];
   if (!list.length || !orbVisible()) {
     if (alive(swarmWindow) && swarmWindow.isVisible()) swarmWindow.hide();
@@ -431,9 +442,11 @@ function placeSwarm(companions = swarmCompanions) {
   }
   if (!win.isVisible()) {
     win.showInactive();
-    // The orb disc stays above its swarm, so a press on the fairy is the fairy's.
-    try { if (alive(orbWindow) && typeof orbWindow.moveTop === "function") orbWindow.moveTop(); } catch { /* no-op */ }
+    raise = true;
   }
+  // The orb disc stays above its swarm, so a press on the fairy is the fairy's and
+  // its glow is never drawn under the companions.
+  if (raise) raiseOrbOverSwarm();
 }
 
 /** The trail/tether overlay. Transparent, click-through, never focused. */
@@ -2208,7 +2221,7 @@ function sendFairy({ force = false } = {}) {
     lastCompanionsKey = ckey;
     swarmCompanions = companions;
     send("orb:companions", companions);
-    placeSwarm(companions);
+    placeSwarm(companions, { raise: true });
     try {
       if (alive(swarmWindow)) swarmWindow.webContents.send("orb:companions", companions);
     } catch { /* page mid-load: init() carries the list */ }
