@@ -480,12 +480,27 @@ function hardenSession(ses) {
 }
 
 async function loadInView(view, url) {
+  // `.aither` addresses resolve through the AitherNet Index (aither-address.cjs); a
+  // failure anywhere shows a dark page with the reason, never a blank white view
+  // (owner 2026-11-08: "why blank white page, I hate it").
+  const addr = require("./aither-address.cjs");
+  let target;
   try {
-    await view.webContents.loadURL(url);
+    target = await addr.resolveAitherUrl(url);
+  } catch (error) {
+    if (alive(view)) await view.webContents.loadURL(addr.errorPageUrl(url, String((error && error.message) || error))).catch(() => {});
+    throw error;
+  }
+  try {
+    await view.webContents.loadURL(target);
   } catch (error) {
     // A redirect or a client-side navigation aborts the first load (-3); the
     // page still arrives. Anything else is a real failure.
-    if (!/ERR_ABORTED|\(-3\)/.test(String(error && error.message))) throw error;
+    if (/ERR_ABORTED|\(-3\)/.test(String(error && error.message))) return;
+    if (alive(view) && /^https?:/i.test(String(target))) {
+      await view.webContents.loadURL(addr.errorPageUrl(url, String((error && error.message) || error))).catch(() => {});
+    }
+    throw error;
   }
 }
 
