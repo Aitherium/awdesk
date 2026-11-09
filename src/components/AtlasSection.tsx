@@ -211,7 +211,16 @@ export function AtlasSection() {
           ? (answer.result as Record<string, unknown>)
           : {};
         const messageId = typeof result.message_id === 'string' ? result.message_id : '';
-        setDigestNote(messageId ? `digest sent (${messageId})` : 'digest sent');
+        // The first digest call only STARTS Atlas' write-up; a second call (or
+        // the routine tick) delivers it. Say which step this was.
+        const digestState = typeof result.digest === 'string' ? result.digest : '';
+        if (digestState === 'atlas writing') {
+          setDigestNote('Atlas is writing it — send again (or wait for the routine) to deliver');
+        } else if (digestState) {
+          setDigestNote(`digest sent — ${digestState}`.slice(0, 300));
+        } else {
+          setDigestNote(messageId ? `digest sent (${messageId})` : 'digest sent');
+        }
         // The board keeps the digest it just sent; re-read so updated_at moves.
         load();
       })
