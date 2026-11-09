@@ -129,9 +129,10 @@ async function discoverTenantHost(identity, { fetchImpl = globalThis.fetch, time
  *   - A tenant from argv/env or a file a person/installer wrote is never touched.
  *   - No tenant yet: discover the host and write desk-tenant.json (source "sign-in").
  *   - A sign-in-written file for THIS tenant: nothing to do.
- *   - A sign-in-written file for ANOTHER tenant (a shared PC, an owner's test sign-in):
- *     replaced by this account's host, or removed when this account has none -- so a
- *     wrong pin is undone by signing in, never by deleting a file in a terminal.
+ *   - A sign-in-written file for ANOTHER tenant: KEPT (2026-11-09). Another account's
+ *     token (often the Online tab's shared aitherium.com cookie) is not a member of that
+ *     workspace and must not move Desk out of it; Sign out (signedOut) forgets the pin,
+ *     so a shared PC still starts fresh for the next person.
  *
  * Resolves { adopted, host?, file?, replaced?, cleared?, reason? }; `adopted` or
  * `cleared` means the tenant changed and windows should follow.
@@ -159,6 +160,16 @@ async function autoResolveTenant(identity, {
   if (tenant && !deskWritten) return { adopted: false, reason: "tenant already configured" };
   if (tenant && tenant.auto && tenant.tenantId === identity.tenantId) {
     return { adopted: false, reason: "already this account's workspace" };
+  }
+  // THE HOST DECIDES (Garg 2026-11-09): a customer with two accounts had Desk pinned to
+  // his company's workspace, and the OTHER account's token -- the Online tab's partition
+  // holds the domain-wide aitherium.com cookie of whoever signed in there last -- reached
+  // this adopter and forgot the pin, so Desk opened the platform apex. An account that is
+  // not a member of the pinned workspace never clears or replaces it; only an explicit
+  // Sign out (signedOut) does. The workspace page itself then tells that account it is
+  // not a member and offers Switch account (Veil TenantAccountGate), never a fallback.
+  if (tenant && tenant.auto && tenant.tenantId && tenant.tenantId !== identity.tenantId) {
+    return { adopted: false, kept: true, reason: "another account's workspace stays until Sign out" };
   }
   const found = candidateLabels(identity).length ? await discoverTenantHost(identity, { fetchImpl, timeoutMs }) : null;
   if (!found) {
