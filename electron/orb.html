@@ -89,16 +89,22 @@
   #orb.ring .halo::after { content: ""; position: absolute; inset: 6px; border-radius: 50%;
     border: 1.5px solid var(--fairy-glow-soft); box-shadow: 0 0 8px var(--fairy-glow-soft); }
   #orb.nosparkle .spark { display: none; }
-  /* Companions: one small fairy per OTHER agent with a card waiting (max 4),
-     orbiting slowly; hovering one shows that agent's card. */
+  /* The swarm (its own window, centred on the fairy): one companion per OTHER
+     agent with a card waiting -- every one of them, on rings that grow with the
+     count, drawn smaller as more appear; hovering one shows that agent's card. */
+  body.swarm { background: transparent; overflow: hidden; }
   #mates { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
-  .mate { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%;
+  .mate { position: absolute; width: var(--m-size, 10px); height: var(--m-size, 10px);
+    margin: calc(var(--m-size, 10px) / -2) 0 0 calc(var(--m-size, 10px) / -2); border-radius: 50%;
     background: radial-gradient(circle, #fff 0%, var(--m-core, #fff) 30%, var(--m-color) 62%, rgba(255,255,255,0) 100%);
     box-shadow: 0 0 6px 2px var(--m-glow); transition: transform 0.12s ease; }
   .mate::before, .mate::after { content: ""; position: absolute; top: 1px; width: 6px; height: 4px; border-radius: 50%;
     background: var(--m-wing); border: 0.5px solid rgba(255,255,255,0.5); animation: flap 0.18s ease-in-out infinite alternate; }
   .mate::before { right: 7px; transform-origin: 100% 50%; } .mate::after { left: 7px; transform-origin: 0 50%; }
   .mate.hot { transform: scale(1.45); }
+  .mate b { position: absolute; left: 60%; top: -70%; min-width: 9px; height: 9px; padding: 0 2px; border-radius: 5px;
+    background: #0b0f16; color: #fff; border: 1px solid var(--m-color); font: 700 7px/8px var(--font-sans, system-ui);
+    text-align: center; }
 
   /* ── the bubble (392 x 480 window) ──────────────────────────────────── */
   body.bubble { padding: 8px; }
@@ -310,11 +316,11 @@
 <script>
   const api = window.aitherOrb;
   const params = new URLSearchParams(location.search);
-  const view = ["bubble", "veil", "nudge"].includes(params.get("view")) ? params.get("view") : "orb";
+  const view = ["bubble", "veil", "nudge", "swarm"].includes(params.get("view")) ? params.get("view") : "orb";
   document.body.className = view;
   // All three windows load this page; each shape names itself.
   document.title = view === "bubble" ? "Ask Aither" : view === "veil" ? "Aither spirit trail"
-    : view === "nudge" ? "Aither nudge" : "Aither spirit";
+    : view === "nudge" ? "Aither nudge" : view === "swarm" ? "Aither swarm" : "Aither spirit";
 
   function rgba(hex, alpha) {
     const h = String(hex || "#ffc861").replace("#", "");
@@ -423,9 +429,8 @@
     document.body.innerHTML = '<div id="orb" title="Aither — click to open, drag onto a window or avatar to attach, right-click for the menu">'
       + '<i class="halo"></i><i class="wing l up"></i><i class="wing r up"></i><i class="wing l lo"></i><i class="wing r lo"></i>'
       + '<i class="core"></i><i class="spark a"></i><i class="spark b"></i><i class="spark c"></i><i class="ping"></i></div>'
-      + '<div id="mates"></div><div id="badge"></div><div id="queued"></div>';
+      + '<div id="badge"></div><div id="queued"></div>';
     const orb = document.getElementById("orb");
-    const matesEl = document.getElementById("mates");
     const badge = document.getElementById("badge");
     const queued = document.getElementById("queued");
     const RADIUS = 30; // a little past the 28 px disc: forgiving, never the corners
@@ -438,8 +443,6 @@
       api.hit(isInside);
     }
     // ── the agent fairy: its colours, and the companions orbiting it ───
-    let mates = [];
-    let hotMate = null;
     function wearFairy(f) {
       if (!f || !f.color) return;
       const el = document.documentElement;
@@ -455,69 +458,13 @@
       orb.classList.toggle("nosparkle", !f.sparkles && !resting);
       orb.dataset.agent = f.agent || "";
     }
-    // Where companion i of n sits now: the orbit agent-fairy.companionOffset draws.
-    function mateOffset(i, n, now) {
-      const a = 2 * Math.PI * (i / Math.max(1, n)) + 2 * Math.PI * (now / 9000);
-      return { x: Math.round(Math.cos(a) * 24), y: Math.round(Math.sin(a) * 24 * 0.82) };
-    }
-    let mateFrame = 0;
-    function placeMates() {
-      mateFrame = 0;
-      if (!mates.length) return;
-      const now = Date.now();
-      mates.forEach((m, i) => {
-        const o = mateOffset(i, mates.length, now);
-        m.el.style.left = `${o.x}px`;
-        m.el.style.top = `${o.y}px`;
-        m.x = o.x;
-        m.y = o.y;
-      });
-      mateFrame = window.setTimeout(placeMates, 50); // 20 fps is plenty for a slow lap
-    }
-    function setMates(list) {
-      matesEl.textContent = "";
-      if (mateFrame) { window.clearTimeout(mateFrame); mateFrame = 0; }
-      hotMate = null;
-      mates = (Array.isArray(list) ? list : []).slice(0, 4).map((c) => {
-        const el = document.createElement("i");
-        el.className = "mate";
-        el.style.setProperty("--m-color", rgba(c.color, 0.95));
-        el.style.setProperty("--m-core", c.core || "#ffffff");
-        el.style.setProperty("--m-glow", rgba(c.glow || c.color, 0.55));
-        el.style.setProperty("--m-wing", rgba(c.color, 0.4));
-        matesEl.append(el);
-        const extra = Number(c.count) > 1 ? ` (+${Number(c.count) - 1})` : "";
-        return { el, x: 0, y: 0, id: String(c.cardId || ""), tip: `${c.label || c.agent}: ${c.title || "a card"}${extra}` };
-      });
-      placeMates();
-    }
-    function mateAt(dx, dy) {
-      for (const m of mates) if (Math.hypot(dx - m.x, dy - m.y) <= 8) return m;
-      return null;
-    }
     window.addEventListener("mousemove", (e) => {
       const dx = e.clientX - window.innerWidth / 2;
       const dy = e.clientY - window.innerHeight / 2;
-      const m = mateAt(dx, dy);
-      if (m !== hotMate) {
-        if (hotMate) hotMate.el.classList.remove("hot");
-        hotMate = m;
-        if (m) {
-          m.el.classList.add("hot");
-          orb.title = m.tip;
-          if (api.peek) api.peek(m.id); // that agent's card, beside the fairy
-        } else {
-          orb.title = orb.dataset.tip || orb.title;
-        }
-      }
-      toggleHit(Boolean(m) || Math.hypot(dx, dy) <= RADIUS);
+      toggleHit(Math.hypot(dx, dy) <= RADIUS);
     });
-    window.addEventListener("mouseleave", () => {
-      if (hotMate) { hotMate.el.classList.remove("hot"); hotMate = null; }
-      toggleHit(false);
-    });
+    window.addEventListener("mouseleave", () => toggleHit(false));
     if (api.onFairy) api.onFairy(wearFairy);
-    if (api.onCompanions) api.onCompanions(setMates);
 
     orb.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
@@ -612,11 +559,119 @@
       if (s.attach) orb.classList.add("attached");
       if (s.nudgeLevel) setNudge(s.nudgeLevel);
       if (s.fairy) wearFairy(s.fairy);
-      if (s.companions) setMates(s.companions);
       const n = s.trips && s.trips.count > 1 ? s.trips.count - 1 : 0;
       queued.textContent = String(n);
       queued.classList.toggle("on", n > 0);
     });
+  }
+
+  // ── the swarm: every companion fairy, on rings (agent-fairy.cjs) ──────────
+  // Its own click-through window centred on the fairy (orb-window placeSwarm).
+  // A companion under the pointer makes the window hit-testable and peeks that
+  // agent's card; everywhere else, clicks pass to the desktop.
+  if (view === "swarm") {
+    document.body.innerHTML = '<div id="mates"></div>';
+    const matesEl = document.getElementById("mates");
+    let mates = [];
+    let hotMate = null;
+    let inside = false;
+    let frame = 0;
+    // The ring layout agent-fairy.swarmLayout computes: 6 on the first ring, 4 more
+    // on each ring out; 10 px, a quarter pixel smaller per companion past six.
+    function layout(n) {
+      const size = Math.max(6, 10 - 0.25 * Math.max(0, n - 6));
+      const hit = Math.max(12, size + 4);
+      const slots = [];
+      let ring = 0;
+      let left = n;
+      while (left > 0) {
+        const on = Math.min(6 + ring * 4, left);
+        for (let i = 0; i < on; i += 1) slots.push({ ring, radius: 24 + ring * 16, index: i, of: on, size, hit });
+        left -= on;
+        ring += 1;
+      }
+      return slots;
+    }
+    function offset(slot, now) {
+      const dir = slot.ring % 2 === 0 ? 1 : -1;
+      const turn = (now / (9000 + slot.ring * 3000)) * dir;
+      const a = 2 * Math.PI * (slot.index / Math.max(1, slot.of)) + 2 * Math.PI * turn + slot.ring * 0.4;
+      return { x: Math.round(Math.cos(a) * slot.radius), y: Math.round(Math.sin(a) * slot.radius * 0.82) };
+    }
+    function place() {
+      frame = 0;
+      if (!mates.length) return;
+      const now = Date.now();
+      for (const m of mates) {
+        const o = offset(m.slot, now);
+        m.el.style.left = `${o.x}px`;
+        m.el.style.top = `${o.y}px`;
+        m.x = o.x;
+        m.y = o.y;
+      }
+      frame = window.setTimeout(place, 50); // 20 fps is plenty for a slow lap
+    }
+    function setMates(list) {
+      matesEl.textContent = "";
+      if (frame) { window.clearTimeout(frame); frame = 0; }
+      hotMate = null;
+      const items = Array.isArray(list) ? list : [];
+      const slots = layout(items.length);
+      mates = items.map((c, i) => {
+        const el = document.createElement("i");
+        el.className = "mate";
+        el.dataset.agent = String(c.agent || "");
+        el.style.setProperty("--m-size", `${slots[i].size}px`);
+        el.style.setProperty("--m-color", rgba(c.color, 0.95));
+        el.style.setProperty("--m-core", c.core || "#ffffff");
+        el.style.setProperty("--m-glow", rgba(c.glow || c.color, 0.55));
+        el.style.setProperty("--m-wing", rgba(c.color, 0.4));
+        if (Number(c.count) > 1) {
+          const badge = document.createElement("b");
+          badge.textContent = String(Number(c.count));
+          el.append(badge);
+        }
+        matesEl.append(el);
+        const extra = Number(c.count) > 1 ? ` (${Number(c.count)} cards)` : "";
+        return { el, slot: slots[i], x: 0, y: 0, id: String(c.cardId || ""), tip: `${c.label || c.agent}: ${c.title || "a card"}${extra}` };
+      });
+      place();
+    }
+    function mateAt(dx, dy) {
+      let best = null;
+      let bestD = Infinity;
+      for (const m of mates) {
+        const d = Math.hypot(dx - m.x, dy - m.y);
+        if (d <= m.slot.hit / 2 + 2 && d < bestD) { best = m; bestD = d; }
+      }
+      return best;
+    }
+    function setInside(next) {
+      if (next === inside) return;
+      inside = next;
+      api.swarmHit(next);
+    }
+    window.addEventListener("mousemove", (e) => {
+      const m = mateAt(e.clientX - window.innerWidth / 2, e.clientY - window.innerHeight / 2);
+      if (m !== hotMate) {
+        if (hotMate) hotMate.el.classList.remove("hot");
+        hotMate = m;
+        if (m) {
+          m.el.classList.add("hot");
+          document.body.title = m.tip;
+          api.peek(m.id); // that agent's card, beside the fairy
+        } else {
+          document.body.title = "";
+        }
+      }
+      setInside(Boolean(m));
+    });
+    window.addEventListener("mouseleave", () => {
+      if (hotMate) { hotMate.el.classList.remove("hot"); hotMate = null; }
+      setInside(false);
+    });
+    api.onCompanions(setMates);
+    api.init().then((s) => { if (s && s.companions) setMates(s.companions); });
   }
 
   // ── the whisper: the card the fairy carries (fairy-attention.cjs) ──────

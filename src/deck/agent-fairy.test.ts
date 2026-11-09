@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { fairyFor, normalizeAgent, rgba } from './agent-fairy';
+import { crewFairy, fairyFor, normalizeAgent, rgba } from './agent-fairy';
 
 interface DeskFairy {
   fairyFor: (n: string) => Record<string, unknown>;
+  crewFairy: (n: string) => Record<string, unknown>;
   normalizeAgent: (n: string) => string;
 }
 // The desk fairy's own reader: the deck mark must agree with it name for name.
@@ -13,13 +14,15 @@ async function deskFairy(): Promise<DeskFairy> {
 }
 
 describe('agent-fairy (deck)', () => {
-  const names = ['aither', 'Atlas', 'demi', 'Demiurge', 'lyra review', 'iris', 'saga', 'vera', 'hera', 'claude-code', ''];
+  const names = ['aither', 'Atlas', 'demi', 'Demiurge', 'lyra review', 'iris', 'saga', 'vera', 'hera', 'claude-code', '',
+    'gargbot', 'Plutus', 'chaos', 'viviane'];
 
   it('agrees with electron/agent-fairy.cjs for every name', async () => {
     const desk = await deskFairy();
     for (const n of names) {
       expect(normalizeAgent(n)).toBe(desk.normalizeAgent(n));
       expect(fairyFor(n)).toEqual(desk.fairyFor(n));
+      expect(crewFairy(n)).toEqual(desk.crewFairy(n));
     }
   });
 

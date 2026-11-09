@@ -45,7 +45,7 @@ test("an unknown name is the resting Aither fairy, marked unknown", () => {
   assert.deepEqual(agentFairy.restingFairy(), { ...agentFairy.fairyFor("aither") });
 });
 
-test("companions: one per OTHER agent with a card, at most four, only when two or more agents wait", () => {
+test("companions: one per OTHER agent with a card, every one of them, only when two or more agents wait", () => {
   const card = (id, agent, title = `card ${id}`) => ({ id, agent, title });
   assert.deepEqual(agentFairy.companionsFor([card("d-1", "atlas"), card("d-2", "atlas")]), [], "one agent = no companions");
   assert.deepEqual(agentFairy.companionsFor([card("d-1", "atlas"), card("d-2", "")]), [], "an unnamed card is no agent");
@@ -54,8 +54,8 @@ test("companions: one per OTHER agent with a card, at most four, only when two o
     card("d-5", "iris"), card("d-6", "saga"), card("d-7", "vera"),
   ];
   const all = agentFairy.companionsFor(many);
-  assert.equal(all.length, 4, "capped at four");
-  assert.deepEqual(all.map((c) => c.agent), ["atlas", "lyra", "demiurge", "iris"], "queue order");
+  assert.equal(all.length, 6, "no cap: one per agent");
+  assert.deepEqual(all.map((c) => c.agent), ["atlas", "lyra", "demiurge", "iris", "saga", "vera"], "queue order");
   assert.equal(all[0].cardId, "d-1", "the agent's FIRST card is the one a hover shows");
   assert.equal(all[0].count, 2);
   assert.equal(all[0].color, "#a3a3a3");
@@ -63,11 +63,45 @@ test("companions: one per OTHER agent with a card, at most four, only when two o
   assert.equal(minusWorn.some((c) => c.agent === "atlas"), false, "the agent the fairy wears is not also a companion");
 });
 
-test("the companion orbit stays inside the 72 px orb window", () => {
-  for (let i = 0; i < 4; i += 1) {
-    for (let t = 0; t < 9000; t += 700) {
-      const o = agentFairy.companionOffset(i, 4, t);
-      assert.ok(Math.abs(o.x) + 5 <= 36 && Math.abs(o.y) + 5 <= 36, JSON.stringify(o));
+test("twelve agents (8 palette + 4 crew): every one is a companion, duplicates merge with a count", () => {
+  const named = ["atlas", "demi", "lyra", "iris", "saga", "vera", "hera"];
+  const crew = ["gargbot", "Plutus", "chaos", "viviane"];
+  const cards = [{ id: "d-aither", agent: "aither", title: "owner" }];
+  named.forEach((a, i) => cards.push({ id: `d-n${i}`, agent: a, title: a }));
+  crew.forEach((a, i) => cards.push({ id: `d-c${i}`, agent: a, title: a }));
+  cards.push({ id: "d-n0b", agent: "Atlas", title: "second atlas card" });
+  cards.push({ id: "d-gen", agent: "claude-code", title: "a harness, no agent" });
+  const all = agentFairy.companionsFor(cards);
+  assert.equal(all.length, 12, "all 12 agents, none hidden");
+  assert.equal(new Set(all.map((c) => c.agent)).size, 12, "one fairy per agent");
+  assert.equal(all.find((c) => c.agent === "atlas").count, 2, "a second Atlas card is a count, not a second fairy");
+  assert.equal(all.some((c) => c.agent === "claude-code"), false, "a generic harness is no agent");
+  const garg = all.find((c) => c.agent === "gargbot");
+  assert.equal(garg.crew, true);
+  assert.match(garg.color, /^#[0-9a-f]{6}$/);
+  assert.equal(garg.color, agentFairy.colorForName("gargbot"), "a crew colour is stable");
+  assert.notEqual(agentFairy.colorForName("gargbot"), agentFairy.colorForName("chaos"));
+});
+
+test("the swarm grows in rings (6, 10, 14 ...), shrinks gently, keeps a usable hit target", () => {
+  assert.deepEqual(agentFairy.swarmLayout(0), []);
+  const rings = (n) => agentFairy.swarmLayout(n).map((s) => s.ring);
+  assert.deepEqual(rings(6), [0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(rings(7), [0, 0, 0, 0, 0, 0, 1]);
+  assert.equal(agentFairy.swarmLayout(30).filter((s) => s.ring === 2).length, 14);
+  assert.equal(agentFairy.companionSize(4), 10);
+  assert.equal(agentFairy.companionSize(12), 8.5);
+  assert.equal(agentFairy.companionSize(100), 6, "never smaller than 6 px");
+  for (const s of agentFairy.swarmLayout(40)) assert.ok(s.hit >= 12);
+  assert.ok(agentFairy.swarmExtent(30) > agentFairy.swarmExtent(6), "the swarm window grows with the count");
+  // every slot stays inside its own extent, at every point of its lap
+  for (const n of [3, 12, 30]) {
+    const half = agentFairy.swarmExtent(n);
+    for (const slot of agentFairy.swarmLayout(n)) {
+      for (let t = 0; t < 12000; t += 900) {
+        const o = agentFairy.companionOffset(slot, t);
+        assert.ok(Math.abs(o.x) + slot.size / 2 <= half && Math.abs(o.y) + slot.size / 2 <= half, `${n}: ${JSON.stringify(o)}`);
+      }
     }
   }
 });

@@ -1,15 +1,15 @@
 import type { CSSProperties } from 'react';
-import { fairyFor, rgba } from '../deck/agent-fairy';
+import { crewFairy, rgba } from '../deck/agent-fairy';
 
 /**
  * A small fairy in an agent's colours: the same design as the desk fairy
- * (orb.html) and the Discord avatars, drawn in CSS. Renders nothing for a name
- * that is not an agent with its own fairy, so a character or a tab name keeps
- * its plain row.
+ * (orb.html) and the Discord avatars, drawn in CSS. A crew agent with no palette
+ * entry gets its hashed colour (never hidden); a generic harness name
+ * (claude-code, session) renders nothing.
  */
 export function FairyMark({ agent, size = 14 }: { agent: string | null | undefined; size?: number }) {
-  const f = fairyFor(agent);
-  if (!f.known) return null;
+  const f = crewFairy(agent);
+  if (!f.known && !f.crew) return null;
   const style = {
     '--fm-size': `${size}px`,
     '--fm-core': f.core,

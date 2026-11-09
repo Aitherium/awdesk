@@ -111,4 +111,5 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   onFairy: (fn) => on("orb:fairy", fn),
   onCompanions: (fn) => on("orb:companions", fn),
   peek: (id) => ipcRenderer.invoke("desk:orb-peek", String(id || "")),
+  swarmHit: (inside) => ipcRenderer.invoke("desk:swarm-hit", Boolean(inside)),
 });

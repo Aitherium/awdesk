@@ -19,7 +19,8 @@
 const PALETTE = require("./agent-fairies.json");
 
 const HEX_RE = /^#[0-9a-f]{6}$/i;
-const MAX_COMPANIONS = 4;
+/** A card from nobody in particular: a harness, not an agent. No fairy of its own. */
+const GENERIC_RE = /^(claude[- ]?code|claude|codex|agent|session|unknown|an unidentified.*)$/i;
 
 /** "Lyra", "lyra (review)", "demi", "aither-demiurge" -> a palette key, or "". */
 function normalizeAgent(name) {
@@ -63,23 +64,77 @@ function fairyFor(name) {
   };
 }
 
+/** FNV-1a 32-bit of a string (the web fairy uses the same, so a crew agent is one colour everywhere). */
+function fnv1a(text) {
+  let h = 0x811c9dc5;
+  const s = String(text || "");
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h >>> 0;
+}
+
+/** hsl(h, s%, l%) -> "#rrggbb". */
+function hslHex(h, sat, light) {
+  const s = sat / 100;
+  const l = light / 100;
+  const k = (n) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  const hex = (x) => Math.round(x * 255).toString(16).padStart(2, "0");
+  return `#${hex(f(0))}${hex(f(8))}${hex(f(4))}`;
+}
+
+/** A crew agent with no palette entry still gets ONE stable colour: its name hashed to a hue. */
+function colorForName(name) {
+  return hslHex(fnv1a(String(name || "").trim().toLowerCase()) % 360, 70, 60);
+}
+
+/** The crew key for a card's agent: the palette key, else the raw name; "" = no agent (generic). */
+function crewKey(name) {
+  const known = normalizeAgent(name);
+  if (known) return known;
+  const raw = String(name == null ? "" : name).trim();
+  if (!raw || GENERIC_RE.test(raw)) return "";
+  return raw.toLowerCase().slice(0, 40);
+}
+
+/**
+ * The fairy for ANY agent raising cards: the palette fairy when it has one, else a
+ * crew fairy in its hashed colour (known:false, crew:true). Never hides an agent.
+ */
+function crewFairy(name) {
+  const known = fairyFor(name);
+  if (known.known) return { ...known, crew: false };
+  const key = crewKey(name);
+  if (!key) return { ...known, crew: false };
+  const color = colorForName(key);
+  const raw = String(name).trim();
+  return {
+    agent: key, label: raw.slice(0, 40), color, core: "#ffffff", glow: color,
+    wings: "petal", ring: false, sparkles: false, known: false, crew: true,
+  };
+}
+
 /** The owner's own fairy (nothing to say, no card being carried). */
 function restingFairy() {
   return fairyFor(PALETTE.default || "aither");
 }
 
-/** Who a card is from: the card's agent, else nobody (the default fairy). */
+/** Who a card is from: the card's agent (palette or crew), else nobody. */
 function cardAgent(card) {
-  return normalizeAgent(card && card.agent);
+  return crewKey(card && card.agent);
 }
 
 /**
- * The small companions that orbit the fairy: one per agent with a card waiting,
- * most-urgent-first by the queue's own order, at most four, never the agent the
- * main fairy already wears. Shown only when cards from TWO or more agents wait.
- * Each: {agent, color, core, glow, wings, ring, sparkles, label, cardId, title, count}.
+ * The companions that orbit the fairy: one per agent with a card waiting, in the
+ * queue's own order, EVERY agent (owner 2026-11-09: "WHY ONLY UP TO 4????"), never
+ * the agent the main fairy already wears. Exact duplicates merge: one fairy per
+ * agent with a count. Shown only when cards from TWO or more agents wait.
+ * Each: {agent, label, color, core, glow, wings, ring, sparkles, crew, cardId, title, count}.
  */
-function companionsFor(cards, { current = "", max = MAX_COMPANIONS } = {}) {
+function companionsFor(cards, { current = "" } = {}) {
   const list = Array.isArray(cards) ? cards.filter((c) => c && typeof c.id === "string") : [];
   const byAgent = new Map();
   for (const card of list) {
@@ -90,29 +145,73 @@ function companionsFor(cards, { current = "", max = MAX_COMPANIONS } = {}) {
     byAgent.set(agent, { card, count: 1 });
   }
   if (byAgent.size < 2) return [];
-  const wearing = normalizeAgent(current);
+  const wearing = crewKey(current);
   const out = [];
   for (const [agent, { card, count }] of byAgent) {
     if (agent === wearing) continue;
-    const f = fairyFor(agent);
+    const f = crewFairy(card.agent);
     out.push({
       agent: f.agent, label: f.label, color: f.color, core: f.core, glow: f.glow,
-      wings: f.wings, ring: f.ring, sparkles: f.sparkles,
+      wings: f.wings, ring: f.ring, sparkles: f.sparkles, crew: Boolean(f.crew),
       cardId: card.id,
       title: String(card.title || "A decision").replace(/^Claude Code needs you:\s*/i, "").slice(0, 110),
       count,
     });
-    if (out.length >= Math.max(0, Number(max) || 0)) break;
   }
   return out;
 }
 
-/** Where companion i of n sits on its orbit at time t (page pixels from the centre). */
-function companionOffset(i, n, nowMs, radius = 24) {
-  const count = Math.max(1, Number(n) || 1);
-  const turn = (Number(nowMs) || 0) / 9000; // one slow lap every 9 s
-  const a = (2 * Math.PI * (i / count)) + 2 * Math.PI * turn;
-  return { x: Math.round(Math.cos(a) * radius), y: Math.round(Math.sin(a) * radius * 0.82) };
+/** Ring capacities: 6 on the first, then 4 more on each ring out (6, 10, 14, ...). */
+const RING0_RADIUS = 24;
+const RING_STEP = 16;
+const RING0_CAP = 6;
+const RING_GROW = 4;
+/** The smallest a companion is drawn, and the smallest area that answers the pointer. */
+const MIN_SIZE = 6;
+const HIT_MIN = 12;
+
+/** Companion size for n of them: 10 px, shrinking a quarter pixel per companion past six. */
+function companionSize(n) {
+  return Math.max(MIN_SIZE, 10 - 0.25 * Math.max(0, (Number(n) || 0) - 6));
+}
+
+/**
+ * Where every companion sits: rings that grow with the count. Returns one slot per
+ * companion {ring, radius, index, of, size, hit} (index/of = its place on its ring).
+ */
+function swarmLayout(n) {
+  const count = Math.max(0, Math.floor(Number(n) || 0));
+  const size = companionSize(count);
+  const hit = Math.max(HIT_MIN, size + 4);
+  const slots = [];
+  let ring = 0;
+  let left = count;
+  while (left > 0) {
+    const cap = RING0_CAP + ring * RING_GROW;
+    const on = Math.min(cap, left);
+    for (let i = 0; i < on; i += 1) {
+      slots.push({ ring, radius: RING0_RADIUS + ring * RING_STEP, index: i, of: on, size, hit });
+    }
+    left -= on;
+    ring += 1;
+  }
+  return slots;
+}
+
+/** Half the side of the square the swarm needs (outer ring + its fairy + a glow). */
+function swarmExtent(n) {
+  const slots = swarmLayout(n);
+  if (!slots.length) return 0;
+  const outer = slots[slots.length - 1];
+  return Math.ceil(outer.radius + Math.max(outer.size, outer.hit) / 2 + 8);
+}
+
+/** Where a slot sits at time t (pixels from the centre). Alternate rings turn opposite ways. */
+function companionOffset(slot, nowMs) {
+  const dir = slot.ring % 2 === 0 ? 1 : -1;
+  const turn = ((Number(nowMs) || 0) / (9000 + slot.ring * 3000)) * dir;
+  const a = 2 * Math.PI * (slot.index / Math.max(1, slot.of)) + 2 * Math.PI * turn + slot.ring * 0.4;
+  return { x: Math.round(Math.cos(a) * slot.radius), y: Math.round(Math.sin(a) * slot.radius * 0.82) };
 }
 
 /** How long the fairy wears a speaker's colour: about the length of the line. */
@@ -123,12 +222,17 @@ function speakingMs(text) {
 
 module.exports = {
   PALETTE,
-  MAX_COMPANIONS,
   normalizeAgent,
   fairyFor,
+  crewFairy,
+  crewKey,
+  colorForName,
   restingFairy,
   cardAgent,
   companionsFor,
+  companionSize,
+  swarmLayout,
+  swarmExtent,
   companionOffset,
   speakingMs,
 };
