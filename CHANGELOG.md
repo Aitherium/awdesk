@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.29 - 2026-11-09
+
 - Desk stays in your workspace. If you have two accounts, the other account signing in (for example in the Online tab) no longer moves Desk out of your company's workspace. Sign out is the only thing that forgets it, so a shared PC still starts fresh for the next person.
 - Drawing and using your desktop are one motion now. Ink never disappears when you stop drawing: Esc, a right-click or Ctrl+Alt+D hands the desktop back and the marks stay. Hold Ctrl+Alt to draw for a moment, and release to click again (AWDESK_INK_HOLD=ctrl+shift or off changes it). The mouse wheel always scrolls the app underneath. Drawing mode shows a thin glow at the screen edge, the tool palette docks to the bottom edge, and the tray says "Drawing".
 - Middle-drag moves things: a mark on the screen (even while you are not drawing), a desktop pin, an item on a whiteboard. Shift+middle-drag resizes, Ctrl+middle-drag duplicates. Locked items stay put. The same gesture works in the AitherOne canvas.
