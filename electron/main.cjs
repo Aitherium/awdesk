@@ -180,6 +180,9 @@ const marketSeen = new Set();
 // section renders. Each fails soft (ok:true + per-source ERROR notes) — a
 // down gateway is a rendered state, never a broken panel.
 const { systemSnapshot } = require("./system-client.cjs");
+// The Atlas program-manager board (Genesis /atlas/issues/board through the
+// gateway MCP door). Both verbs answer {ok:false, error} on failure.
+const { atlasBoard, atlasDigest } = require("./atlas-client.cjs");
 const { voiceSnapshot } = require("./voice-client.cjs");
 const { visionSnapshot } = require("./vision-client.cjs");
 const { routeDrop, routeShare, synthesizeVerdict, stagePath, cleanupStage } = require("./drop-router.cjs");
@@ -5579,6 +5582,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       fetchRelayThread(RELAY_CHANNEL, typeof messageId === "string" ? messageId : ""));
     // System awareness snapshots (#9) — read-only, fail-soft by contract.
     ipcMain.handle("desk:system-snapshot", () => systemSnapshot());
+    // The Atlas board + digest, through atlas-client.cjs (gateway MCP). The
+    // digest is a write, so main never accepts an argument for it: the tool
+    // targets the owner the gateway already knows.
+    ipcMain.handle("desk:atlas-board", () => atlasBoard());
+    ipcMain.handle("desk:atlas-digest", () => atlasDigest());
     ipcMain.handle("desk:run-command", (_event, id) => {
       try {
         runCommand(String(id || ""), undefined, { surface: "avatar" });

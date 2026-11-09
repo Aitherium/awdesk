@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type CSS
 import { renderVrmThumbnail } from '../thumbnails';
 import { LinkedText, Markdown, SessionPanel } from './SessionPanel';
 import { CardUi } from './CardUi';
+import { AtlasSection } from './AtlasSection';
 import { drawableCardUi } from '../deck/card-ui-tree';
 import { DeckLinks, canOpenUrl, hasSessionBridge, openDeskUrl, type DeckLinkHandlers } from '../deck/session-context';
 import { endedSessionIds, sessionPill, sessionRowTitle } from '../deck/session-text';
@@ -2702,6 +2703,11 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
         />
 
         <SystemSection />
+
+        {/* The Atlas program-manager board (Genesis /atlas/issues/board via
+            the gateway MCP door): counts per stage, the issue rows with PR and
+            thread links, and the owner digest verb. Fails soft like System. */}
+        <AtlasSection />
         </>) : null}
 
         <section className="deck-section" aria-label="Avatars" hidden={!isCharacters}>
