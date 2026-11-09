@@ -7,7 +7,7 @@
  * page, I hate it"). The AitherNet Index answers it: GET
  * https://index.aitherium.com/n/<name>.aither.json -> {type:"web", target:"https://..."}
  * (the same index services/perception/AitherBrowser.py resolves through). Only an https
- * `web` route is followed -- never a guess, never a DNS lookup.
+ * `web` or `space` (AitherSpaces) route is followed -- never a guess, never a DNS lookup.
  *
  * Any main-frame failure renders a dark page that says what failed and why, instead of
  * leaving the view white.
@@ -54,7 +54,7 @@ async function resolveAitherUrl(url, { fetchImpl = globalThis.fetch, timeoutMs =
     throw new Error(`the AitherNet Index could not be reached (${msg})`, { cause: error });
   }
   const target = String((hit && hit.target) || "");
-  if (!hit || hit.type !== "web" || !target.startsWith("https://")) {
+  if (!hit || (hit.type !== "web" && hit.type !== "space") || !target.startsWith("https://")) {
     throw new Error(`${name} is in the AitherNet Index but is not a web address`);
   }
   try {

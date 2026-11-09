@@ -38,3 +38,8 @@ test("the error page is dark, escaped, and says why", () => {
   assert.match(html, /not in the AitherNet Index/);
   assert.ok(!html.includes("<script>"));
 });
+
+test("an AitherSpaces route is followed like a web route", async () => {
+  const fetchImpl = async () => res(200, { type: "space", target: "https://app.aitherium.com/spaces/aither" });
+  assert.equal(await addr.resolveAitherUrl("aither-space.aither", { fetchImpl }), "https://app.aitherium.com/spaces/aither");
+});
