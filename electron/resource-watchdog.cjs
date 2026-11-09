@@ -219,19 +219,24 @@ function restartLog(file) {
 }
 
 /**
- * Pure: the detached helper that starts Desk again after `delayMs`. It runs the
- * same binary as plain Node (ELECTRON_RUN_AS_NODE), waits, then spawns `execPath`
- * with `args` fully detached, so it outlives the Desk that is quitting.
+ * Pure: the detached helper that starts Desk again after `delayMs`. It is the OS
+ * shell, never the Desk binary run as Node: a packaged Desk has the RunAsNode fuse
+ * OFF (electron-fuses.test.cjs), so a "-e" script through it would start a full Desk
+ * at once -- a relaunch loop. PowerShell on Windows, /bin/sh elsewhere; both sleep,
+ * then start `execPath args` in `cwd`, and outlive the Desk that is quitting.
  */
-function delayedRelaunchSpec({ execPath, args = [], delayMs = COOLDOWN_RELAUNCH_MS, env = process.env,
-  cwd = process.cwd() }) {
-  // The helper copies ITS env and drops ELECTRON_RUN_AS_NODE, so Desk starts as the
-  // app, not as Node; the env is never inlined (Windows caps a command line at 32K).
-  const script = "const e = { ...process.env }; delete e.ELECTRON_RUN_AS_NODE; "
-    + `setTimeout(() => { require("node:child_process").spawn(${JSON.stringify(execPath)}, `
-    + `${JSON.stringify(args)}, { detached: true, stdio: "ignore", cwd: ${JSON.stringify(cwd)}, env: e })`
-    + `.unref(); }, ${Math.max(0, Number(delayMs) || 0)});`;
-  return { command: execPath, args: ["-e", script], env: { ...env, ELECTRON_RUN_AS_NODE: "1" } };
+function delayedRelaunchSpec({ execPath, args = [], delayMs = COOLDOWN_RELAUNCH_MS, cwd = process.cwd(),
+  platform = process.platform }) {
+  const secs = Math.max(0, Math.ceil((Number(delayMs) || 0) / 1000));
+  if (platform === "win32") {
+    const q = (v) => `'${String(v).split("'").join("''")}'`;
+    const argList = args.length ? ` -ArgumentList @(${args.map(q).join(",")})` : "";
+    const command = `Start-Sleep -Seconds ${secs}; `
+      + `Start-Process -FilePath ${q(execPath)}${argList} -WorkingDirectory ${q(cwd)}`;
+    return { command: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+      "-Command", command], cwd };
+  }
+  return { command: "/bin/sh", args: ["-c", `sleep ${secs}; exec "$0" "$@"`, execPath, ...args], cwd };
 }
 
 /** Start the helper; never throws (a failed helper just means a manual start). */
@@ -239,7 +244,7 @@ function relaunchAfterCooldown({ execPath = process.execPath, args = process.arg
   delayMs = COOLDOWN_RELAUNCH_MS, spawn = require("node:child_process").spawn, log = () => {} } = {}) {
   try {
     const spec = delayedRelaunchSpec({ execPath, args, delayMs });
-    const child = spawn(spec.command, spec.args, { detached: true, stdio: "ignore", env: spec.env, windowsHide: true });
+    const child = spawn(spec.command, spec.args, { detached: true, stdio: "ignore", cwd: spec.cwd, windowsHide: true });
     if (child && typeof child.unref === "function") child.unref();
     log(`cooldown: Desk starts again in ${Math.round(delayMs / 1000)} s`);
     return true;
