@@ -2108,6 +2108,8 @@ function SystemSection() {
         <div className="deck-sys-row deck-sys-bad" key={line.name} title={line.detail}>
           <span className="deck-sys-dot" />
           <span className="deck-sys-state">{line.state}</span>
+          {/* Owner 2026-11-08: an error with no reason is useless. Show WHY, not a tooltip. */}
+          {line.detail ? <span className="deck-sys-detail">{line.detail}</span> : null}
         </div>
       ))}
       {!pending && degraded.length === 0 ? <p className="deck-empty">Everything answering.</p> : null}
