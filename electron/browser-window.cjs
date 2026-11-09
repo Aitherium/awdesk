@@ -1231,6 +1231,10 @@ function ensureTaskbar() {
 function openTab(by, url, { activate = true, after = null, pinned = false, key = null, label = "",
   hostedPartition = null, kind: wantKind = null } = {}) {
   if (!win || win.isDestroyed()) return { ok: false, error: "The Aither Browser is not open." };
+  // Aitherium's own apps open natively (owner 2026-11-08): an aitherium.com URL a pane
+  // declares in `web` becomes its aither:// page. Owner tabs only -- an agent never gets
+  // an internal pane (browser-internal.upgradeToInternal; null = load the web page).
+  if (by === "you" && !wantKind) url = internal.upgradeToInternal(url) || url;
   // Main wires the pane's handlers (and where the bundle and AitherOS Online are)
   // BEFORE the page is classified or loads: a pane talks to main the moment it loads.
   if (by === "you" && internal.isInternalUrl(url) && typeof internalConfig.beforeInternal === "function") {
