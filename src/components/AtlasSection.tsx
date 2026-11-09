@@ -103,7 +103,7 @@ export function AtlasBoardView({
           ) : (
             view.rows.map((row) => (
               <div className="deck-row deck-row-static deck-atlas-row" key={row.key}>
-                <span className="deck-row-label" title={row.title || undefined}>
+                <span className="deck-row-label" title={[row.title, row.detail].filter(Boolean).join(' — ') || undefined}>
                   {row.number ? <span className="deck-atlas-number">{row.number}</span> : null}
                   {row.number && row.title ? ' ' : ''}
                   {row.title}
