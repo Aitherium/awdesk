@@ -121,13 +121,30 @@ test("the palette is well formed: hex colours, wings petal|swept, the default ex
   for (const [alias, target] of Object.entries(p.aliases)) assert.ok(p.agents[target], `${alias} -> ${target}`);
 });
 
-test("the desk copy is byte-identical to the canonical AitherOS/config/agent-fairies.json when the monorepo is here", (t) => {
-  const root = process.env.AITHEROS_REPO_ROOT || "C:\\AitherOS-Fresh";
-  const canonical = path.join(root, "AitherOS", "config", "agent-fairies.json");
-  if (!fs.existsSync(canonical)) {
-    t.skip(`no monorepo at ${root} (CI): check_agent_fairy_palette.py asserts it there`);
+test("the desk copy is byte-identical to a canonical copy named by AITHER_FAIRY_CANONICAL", (t) => {
+  // Opt-in: the monorepo worktree on this machine may sit on any branch, so its
+  // config/ is not a reliable reference. check_agent_fairy_palette.py (monorepo,
+  // ci-static) is the authority; point this at origin/develop's copy to run it here.
+  const canonical = process.env.AITHER_FAIRY_CANONICAL;
+  if (!canonical || !fs.existsSync(canonical)) {
+    t.skip("AITHER_FAIRY_CANONICAL not set: check_agent_fairy_palette.py asserts it in the monorepo");
     return;
   }
   const mine = fs.readFileSync(path.join(__dirname, "agent-fairies.json"));
   assert.ok(mine.equals(fs.readFileSync(canonical)), `electron/agent-fairies.json drifted from ${canonical}`);
+});
+
+test("crew colours reproduce the shared vectors in agent-fairies.json (the web fairy asserts the same)", () => {
+  const vectors = agentFairy.PALETTE.crewColor && agentFairy.PALETTE.crewColor.vectors;
+  assert.ok(vectors && Object.keys(vectors).length >= 5, "the palette carries crew-colour vectors");
+  for (const [name, color] of Object.entries(vectors)) assert.equal(agentFairy.colorForName(name), color, name);
+  assert.equal(agentFairy.colorForName("gargbot"), "#e05254");
+  assert.equal(agentFairy.colorForName("chaos"), "#e0c152");
+});
+
+test("no cap comes back: 30 agents waiting = 30 companions, each on a ring slot", () => {
+  const cards = Array.from({ length: 30 }, (_, i) => ({ id: `d-${i}`, agent: `crew${i}`, title: `card ${i}` }));
+  const all = agentFairy.companionsFor(cards);
+  assert.equal(all.length, 30, "every agent renders, whatever the count");
+  assert.equal(agentFairy.swarmLayout(all.length).length, 30, "every companion has a slot");
 });

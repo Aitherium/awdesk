@@ -7,6 +7,18 @@
     "owner": "aither",
     "aitherium": "aither"
   },
+  "crewColor": {
+    "rule": "An agent with no entry below (a crew agent raising cards) gets ONE stable colour on every surface: h = FNV-1a 32-bit (offset 0x811c9dc5, prime 0x01000193) of the trimmed lowercased name, mod 360; colour = hsl(h, 70%, 60%) as #rrggbb (each channel rounded). Generic harness names (claude-code, claude, codex, agent, session, unknown) are not agents and get no fairy. Every implementation must reproduce these vectors.",
+    "vectors": {
+      "a": "#e05281",
+      "aeon": "#52dce0",
+      "chaos": "#e0c152",
+      "gargbot": "#e05254",
+      "plutus": "#52cde0",
+      "viviane": "#52e0d0",
+      "zeta crew": "#e06552"
+    }
+  },
   "agents": {
     "aither": { "label": "Aither", "color": "#38bdf8", "core": "#fff6dc", "glow": "#ffc857", "wings": "petal", "ring": false, "sparkles": true },
     "atlas": { "label": "Atlas", "color": "#a3a3a3", "core": "#ffffff", "glow": "#a3a3a3", "wings": "petal", "ring": false, "sparkles": false },

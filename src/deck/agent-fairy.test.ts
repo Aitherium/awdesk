@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { crewFairy, fairyFor, normalizeAgent, rgba } from './agent-fairy';
+import { colorForName, crewFairy, fairyFor, normalizeAgent, rgba } from './agent-fairy';
+import palette from '../../electron/agent-fairies.json';
 
 interface DeskFairy {
   fairyFor: (n: string) => Record<string, unknown>;
@@ -31,6 +32,12 @@ describe('agent-fairy (deck)', () => {
     expect(fairyFor('demi').color).toBe('#06b6d4');
     expect(fairyFor('hera').wings).toBe('swept');
     expect(fairyFor('Desktop canvas').known).toBe(false);
+  });
+
+  it('crew colours reproduce the shared vectors', () => {
+    const vectors = (palette as { crewColor?: { vectors?: Record<string, string> } }).crewColor?.vectors ?? {};
+    expect(Object.keys(vectors).length).toBeGreaterThanOrEqual(5);
+    for (const [name, color] of Object.entries(vectors)) expect(colorForName(name)).toBe(color);
   });
 
   it('rgba converts a hex colour', () => {
