@@ -641,6 +641,25 @@ function tintFor(slotId, preferred = null) {
   return SPIRIT_TINTS[(hashText(id) % (SPIRIT_TINTS.length - 1)) + 1];
 }
 
+/**
+ * The tint a trip flies in. An agent that SENT the spirit (`requester` names a
+ * palette agent, agent-fairies.json) lends it its fairy colour, so a Lyra trip is
+ * violet and a Demiurge trip cyan on the desk exactly as on Discord and the web.
+ * A requester outside the palette, or none, keeps the body's slot tint.
+ *
+ * @param {{requester?: string|null, slotId?: string|null}} trip
+ * @returns {{name: string, css: string, agent?: string, label?: string}}
+ */
+function tripTint(trip) {
+  const t = trip && typeof trip === "object" ? trip : {};
+  if (t.requester) {
+    // Lazy: keeps spirit-core loadable where the palette is not shipped.
+    const fairy = require("./agent-fairy.cjs").fairyFor(t.requester);
+    if (fairy.known) return { name: fairy.agent, css: fairy.color, agent: fairy.agent, label: fairy.label };
+  }
+  return tintFor(t.slotId || "slot0");
+}
+
 // ── misc for the window layer ───────────────────────────────────────────────
 
 /** Keep a point's orb box fully on a work area (for "send home"). */
@@ -664,7 +683,7 @@ function shortenPath(p, max = 46) {
 }
 
 module.exports = {
-  KINDS, ATTACH_KINDS, FILE_GROUPS, ROW_LIMIT, SPIRIT_TINTS, DROP_TEXT_MAX,
+  KINDS, ATTACH_KINDS, FILE_GROUPS, ROW_LIMIT, SPIRIT_TINTS, DROP_TEXT_MAX, tripTint,
   parseArg, normalizeTrip, createTripQueue, enqueue, dequeue, finish, cancel, queueCount, queueLine,
   createTripLog, logTrip, logView,
   easeInOut, flightPath, pointAt, flightDurationMs, returnDurationMs,

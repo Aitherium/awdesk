@@ -1741,10 +1741,14 @@ async function executeTrip(trip) {
     const flew = await flyTo(route.point);
     if (flew.cancelled || !isCurrentTrip(trip)) return { ok: false, cancelled: true };
   }
-  if (trip.slotId) {
-    tint = spiritCore.tintFor(trip.slotId);
+  // An agent that sent the spirit lends it its fairy colour and name for the trip
+  // (agent-fairies.json); otherwise the body's own slot tint, as before.
+  const lent = spiritCore.tripTint(trip);
+  if (trip.slotId || lent.agent) {
+    tint = lent;
     sendTint();
   }
+  if (lent.agent) setSpeaker(lent.agent, caption);
   const outcome = await performTrip(trip, route.target);
   if (!isCurrentTrip(trip)) return { ok: false, cancelled: true };
   await flyHome(520);

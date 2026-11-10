@@ -261,6 +261,19 @@ test("a body's tint is stable, slot0 is the white fairy, and a supplied colour w
   assert.equal(core.tintFor("slot2", "nonsense").name !== "body", true);
 });
 
+test("a trip an agent sent flies in that agent's fairy colour (agent-fairies.json)", () => {
+  const palette = require("./agent-fairies.json");
+  const lyra = core.tripTint({ requester: "Lyra", slotId: "slot3" });
+  assert.equal(lyra.css, palette.agents.lyra.color);
+  assert.equal(lyra.agent, "lyra");
+  assert.equal(lyra.label, "Lyra");
+  assert.equal(core.tripTint({ requester: "demi" }).css, palette.agents.demiurge.color, "aliases resolve");
+  // Not a palette agent: the body's slot tint, never a guessed colour.
+  assert.deepEqual(core.tripTint({ requester: "some character", slotId: "slot4" }), core.tintFor("slot4"));
+  assert.deepEqual(core.tripTint({}), core.tintFor("slot0"));
+  assert.deepEqual(core.tripTint(null), core.tintFor("slot0"));
+});
+
 test("clampOrbPoint keeps a whole orb box on its work area", () => {
   const area = { x: 1920, y: 2160, width: 1920, height: 1080 };
   assert.deepEqual(core.clampOrbPoint({ x: 100, y: 100 }, { width: 72, height: 72 }, area), { x: 1956, y: 2196 });
