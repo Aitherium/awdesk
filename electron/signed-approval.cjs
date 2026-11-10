@@ -29,8 +29,11 @@ const SIGNED_ANSWER_KINDS = Object.freeze([
 ]);
 
 /** Facts that bind a card to a proposal/plan a consumer will only apply when signed
- *  (awstorage manage.card_facts -> `proposal_id: <n>`; relocate -> `plan_id: <id>`). */
-const SIGNED_FACT_KEYS = Object.freeze(["proposal_id", "plan_id"]);
+ *  (awstorage manage.card_facts -> `proposal_id: <n>`; relocate -> `plan_id: <id>`;
+ *  claude_permission_grant.py -> `permission_rule: <rule>`, applied only on a verified
+ *  receipt). Without it a Grant went out unsigned and silently granted nothing
+ *  (owner, 2026-11-10: "ok i did it" -- the card was still open). */
+const SIGNED_FACT_KEYS = Object.freeze(["proposal_id", "plan_id", "permission_rule"]);
 
 /** Choice keys that decline: they need no proof and keep using awask. */
 const DECLINE_KEYS = Object.freeze([
