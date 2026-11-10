@@ -139,7 +139,7 @@ function parseDetonateUrl(rawUrl) {
   }
   if (url.protocol !== "desk:") return { ok: false, reason: "bad_url", error: "not a desk:// link" };
   const action = `${url.hostname || ""}${url.pathname || ""}`.toLowerCase();
-  if (action.replace(/\/+$/, "") !== "sandbox/detonate") {
+  if (action.replace(/^\/+|\/+$/g, "") !== "sandbox/detonate") {
     return { ok: false, reason: "bad_url", error: "not a sandbox detonate link" };
   }
   const target = url.searchParams.get("path");
@@ -240,6 +240,9 @@ function stagedName(name, path = nodePath) {
  * this function wrote. One subfolder per request; the file is removed by exact
  * path after the run (never a recursive delete).
  */
+/** Characters awdk's check_host_path refuses anywhere in a target path (sandbox.py _BAD_PATH_CHARS). */
+const AWDK_BAD_PATH_CHARS = ["&", "|", "<", ">", "^", '"', "%", "!"];
+
 async function stageTarget(info, {
   token = "request",
   root = stagingRoot(),
@@ -252,6 +255,13 @@ async function stageTarget(info, {
   const dir = path.join(root, `request-${unique}`);
   const name = stagedName(info.name, path);
   const dest = path.join(dir, name);
+  const unsafe = [...new Set([...dest].filter((ch) => AWDK_BAD_PATH_CHARS.includes(ch)))];
+  if (unsafe.length) {
+    return {
+      ok: false, reason: "staging_path_unsafe",
+      error: `the staging folder ${root} contains ${unsafe.map((c) => JSON.stringify(c)).join(", ")}, which the sandbox tools refuse in any path; set AITHER_SANDBOX_STAGING to a folder without them`,
+    };
+  }
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch (error) {
@@ -487,8 +497,10 @@ function reportCounts(result) {
     processes: pick("processes", list(data.tree)),
     lookups: pick("lookups", list(data.lookups)),
     connections: pick("connections", list(data.connections)),
-    services: pick("services", addedServices),
-    persistence: pick("persistence", persistenceCount(diff)),
+    // awdk's capped summary names these services_added / persistence_values
+    // (_sandbox_counts, AitherOS #15896); the short names are accepted too.
+    services: pick("services_added", pick("services", addedServices)),
+    persistence: pick("persistence_values", pick("persistence", persistenceCount(diff))),
     scheduled_tasks: pick("scheduled_tasks", addedTasks),
     findings: pick("findings", list(data.findings)),
   };
@@ -611,8 +623,9 @@ function isRunReceipt(result) {
   if (Number.isFinite(receipt.exit_code) || typeof receipt.timed_out === "boolean") return true;
   if (receipt.truncated === true) return true;
   if (receipt.counts && typeof receipt.counts === "object") return true;
-  if (receipt.data && typeof receipt.data === "object") return true;
-  if (receipt.report && typeof receipt.report === "object") return true;
+  const nonEmpty = (value) => Boolean(value) && typeof value === "object" && Object.keys(value).length > 0;
+  if (nonEmpty(receipt.data)) return true;
+  if (nonEmpty(receipt.report)) return true;
   if (typeof receipt.sha256 === "string" && receipt.sha256.trim()) return true;
   if (typeof receipt.run_dir === "string" && receipt.run_dir.trim()) return true;
   return false;

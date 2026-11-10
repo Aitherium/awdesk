@@ -404,7 +404,8 @@ function cappedReceipt(overrides = {}) {
     sha256: "c".repeat(64),
     findings_are: "heuristics, not a verdict",
     error: "",
-    counts: { processes: 14, lookups: 3, connections: 2, services: 0, persistence: 2, scheduled_tasks: 1, findings: 5 },
+    // The exact keys awdk's _sandbox_counts emits (AitherOS #15896, awdk/adk/desktop/tools.py).
+    counts: { processes: 14, lookups: 3, connections: 2, services_added: 0, persistence_values: 2, scheduled_tasks: 1, findings: 5 },
     truncated: true,
     preview: '{"ok": true, "command": "detonate", "data": {"tree": [',
     ...overrides,
@@ -419,7 +420,9 @@ test("a capped receipt in awdk's CURRENT shape keeps its exit code, counts, dige
   assert.equal(card.capped, true);
   assert.equal(card.exitCode, 0, "the capped shape keeps exit_code");
   assert.match(text, /Exit 0/);
-  assert.deepEqual(card.counts, receipt.counts, "the counts are awdk's own summary, verbatim");
+  assert.deepEqual(card.counts, {
+    processes: 14, lookups: 3, connections: 2, services: 0, persistence: 2, scheduled_tasks: 1, findings: 5,
+  }, "the counts are awdk's own summary, read under the keys awdk emits");
   assert.match(card.countLine, /Processes: 14/);
   assert.match(card.countLine, /Scheduled tasks: 1/);
   assert.match(card.countLine, /Findings: 5/);
@@ -794,4 +797,42 @@ test("a real run that exited non-zero is still a report, not a daemon failure", 
 test("sizeLabel is exact bytes first and a human scale second", () => {
   assert.match(sandbox.sizeLabel(0), /^0 bytes \(0\)$/);
   assert.match(sandbox.sizeLabel(1024), /1,024 bytes \(1\.0 KiB\)/);
+});
+
+
+// -- round 3: awdk's real capped keys, empty refusals, unsafe staging roots, desk:/// links --
+
+test("capped counts are read under awdk's own keys: services_added and persistence_values", () => {
+  const receipt = cappedReceipt({
+    counts: { processes: 7, lookups: 1, connections: 0, services_added: 2, persistence_values: 3, scheduled_tasks: 0, findings: 4 },
+  });
+  const counts = sandbox.reportCounts({ ok: true, result: receipt });
+  assert.equal(counts.services, 2, "services_added is the added-services count");
+  assert.equal(counts.persistence, 3, "persistence_values is the persistence count");
+  assert.doesNotMatch(sandbox.countLine(counts), /not reported/);
+});
+
+test("a tool refusal with an empty data block is not a run", () => {
+  // awdk's _sandbox_error shape (awdk/adk/desktop/tools.py): ok false, a reason, data {}.
+  const refusal = { ok: false, reason: "path_missing", error: "not on this host", findings_are: "heuristics, not a verdict", data: {} };
+  assert.equal(sandbox.isRunReceipt({ ok: true, result: refusal }), false);
+  assert.equal(sandbox.isRunReceipt({ ok: true, result: { ...refusal, report: {} } }), false);
+  assert.equal(sandbox.isRunReceipt({ ok: true, result: { ...refusal, exit_code: 3 } }), true, "an exit code is still run evidence");
+});
+
+test("a staging root with a character awdk refuses is refused before anything is written", async (t) => {
+  const { file } = tempFile(t, "thing.exe", Buffer.from("bytes"));
+  const unsafe = tempDir(t, "awdesk-a&b-");
+  const result = await sandbox.stageTarget({ path: file, name: "thing.exe" }, { token: "sbx-1", root: unsafe, path });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "staging_path_unsafe");
+  assert.match(result.error, /AITHER_SANDBOX_STAGING/);
+  assert.deepEqual(fs.readdirSync(unsafe), [], "no request folder was created");
+});
+
+test("desk:///sandbox/detonate (empty host) is the same link as desk://sandbox/detonate", () => {
+  const target = encodeURIComponent(path.join("C:", "Users", "t", "Downloads", "x.exe"));
+  assert.equal(sandbox.parseDetonateUrl(`desk:///sandbox/detonate?path=${target}`).ok, true);
+  assert.equal(sandbox.parseDetonateUrl(`desk://sandbox/detonate?path=${target}`).ok, true);
+  assert.equal(sandbox.parseDetonateUrl(`desk:///sandbox/other?path=${target}`).ok, false);
 });

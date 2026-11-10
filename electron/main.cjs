@@ -3301,7 +3301,7 @@ function sandboxDetonator() {
     sandboxDetonatorInstance = sandboxDetonate.createSandboxDetonator({
       // The desk's OWN app-data folder: the bytes detonated are a copy the desk
       // wrote and hashed, never the file the owner picked in place.
-      staging: path.join(app.getPath("userData"), "sandbox-staging"),
+      staging: process.env.AITHER_SANDBOX_STAGING || path.join(app.getPath("userData"), "sandbox-staging"),
       openPath: (target) => shell.openPath(target),
       log: (line) => console.log(`[desk] ${line}`),
     });
