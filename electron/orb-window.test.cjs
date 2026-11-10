@@ -1243,3 +1243,74 @@ test("the resting fairy is Aither white-gold at full brightness, with a contrast
   assert.match(html, /#orb \.core \{ filter: drop-shadow/, "a rim that reads on a white page");
   assert.doesNotMatch(html, /\.mate[^{]*\{[^}]*box-shadow: 0 0 (1\d|[2-9]\d)px/, "companion glows stay small: no fog");
 });
+
+// ── owner screenshots 2026-11-09: stale whispers, empty chat, tooltips ─────
+
+test("hovering a fairy whose card is days old shows nothing; CLICKING it opens it, marked old", async () => {
+  startAttention();
+  const old = Math.floor(Date.now() / 1000) - 22 * 24 * 3600;
+  const now = Math.floor(Date.now() / 1000) - 600;
+  orbWindow.setAttentionCards([
+    blockedCard({ id: "d-pix8", agent: "atlas", title: "Approve the Pixel 8", createdAt: old }),
+    blockedCard({ id: "d-l1", agent: "lyra", createdAt: now }),
+  ]);
+  const hover = await invoke("desk:orb-peek", orbWin(), "d-pix8");
+  assert.equal(hover.ok, false, "an old card does not pop on a hover");
+  assert.equal(orbWindow.nudging(), null);
+  const click = await invoke("desk:orb-open-card", orbWin(), "d-pix8", "atlas");
+  assert.equal(click.ok, true);
+  assert.equal(orbWindow.nudging().id, "d-pix8");
+  const view = lastSent(nudgeWin(), "orb:nudge-view");
+  assert.equal(view.old, "Old — still relevant?");
+  assert.match(view.lead, /22 d old$/);
+  assert.equal(orbWindow.attentionMems()["d-pix8"], undefined, "a click is not a nudge on the ladder");
+  orbWindow.endNudge("timeout", { stay: true });
+});
+
+test("clicking an agent's fairy opens that agent's NEWEST card, even over a running nudge", async () => {
+  startAttention();
+  const t = Math.floor(Date.now() / 1000);
+  orbWindow.setAttentionCards([
+    blockedCard({ id: "d-a1", agent: "atlas", createdAt: t - 3000 }),
+    blockedCard({ id: "d-a2", agent: "atlas", createdAt: t - 60 }),
+    blockedCard({ id: "d-l1", agent: "lyra", createdAt: t - 600 }),
+  ]);
+  const mates = lastSent(orbWin(), "orb:companions");
+  const atlas = mates.find((m) => m.agent === "atlas");
+  assert.equal(atlas.cardId, "d-a2", "the companion carries the newest card");
+  // A card id that has gone (answered elsewhere) falls back to the agent's newest.
+  const r = await invoke("desk:orb-open-card", orbWin(), "d-gone", "atlas");
+  assert.equal(r.ok, true);
+  assert.equal(orbWindow.nudging().id, "d-a2");
+  const other = await invoke("desk:orb-open-card", orbWin(), "d-l1", "lyra");
+  assert.equal(other.ok, true, "a click outranks the whisper already up");
+  assert.equal(orbWindow.nudging().id, "d-l1");
+  const none = await invoke("desk:orb-open-card", orbWin(), "", "vera");
+  assert.equal(none.ok, false);
+  orbWindow.endNudge("timeout", { stay: true });
+});
+
+test("a card or panel up: the orb and swarm pages are told to drop their hover tooltips, and told again after", async () => {
+  startAttention();
+  orbWindow.setAttentionCards([blockedCard({ id: "d-a1", agent: "atlas" })]);
+  await invoke("desk:orb-peek", orbWin(), "d-a1");
+  assert.deepEqual(lastSent(orbWin(), "orb:panel"), { open: true });
+  orbWindow.endNudge("timeout", { stay: true });
+  assert.deepEqual(lastSent(orbWin(), "orb:panel"), { open: false });
+});
+
+test("chat about a card: the header names the agent in plain words, never the sprite line", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  const bubble = html.slice(html.indexOf('if (view === "bubble")'));
+  assert.doesNotMatch(bubble, /sp\.line/, "the sprite id/stage/tier line is not a header");
+  assert.match(bubble, /about this card/);
+  const src = fs.readFileSync(path.join(__dirname, "orb-window.cjs"), "utf8");
+  assert.match(src, /send\("orb:mode", \{ mode: "card", title: cardChat\.title, who: cardChat\.who \}\)/);
+  // The swarm's native tooltip is a fallback only when no card came up.
+  const swarm = html.slice(html.indexOf('if (view === "swarm")'), html.indexOf("// ── the whisper"));
+  assert.doesNotMatch(swarm, /document\.body\.title = m\.tip;\n\s*api\.peek/);
+  assert.match(swarm, /api\.openCard\(hotMate\.id, hotMate\.agent\)/);
+  const orb = html.slice(html.indexOf('if (view === "orb")'), html.indexOf('if (view === "swarm")'));
+  assert.match(orb, /api\.openCard\(m\.cardId, m\.agent\)/, "a companion under the disc opens its card");
+  assert.doesNotMatch(html, /`\+\$\{v\.more\} more`/, "no '+99 more'");
+});

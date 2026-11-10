@@ -62,7 +62,9 @@ const DEFAULTS = Object.freeze({
   idleHoldMs: 2 * MIN,
   /** Idle this long and then back: the top card gets a "while you were away". */
   awayMs: 5 * MIN,
-  /** Older than this: the badge only, unless the owner said "keep nudging". */
+  /** Older than this: the badge only -- never a whisper, even after "keep nudging"
+   *  (owner 2026-11-09: a 22-day-old Pixel approval still popped). An explicitly
+   *  clicked old card still opens, with an "old -- still relevant?" line. */
   staleMs: 48 * HOUR,
   /** An ask older than this (not a credential, not critical) is a glow at most:
    *  a blocked session this old has very likely moved on. */
@@ -95,6 +97,26 @@ function createdMs(card) {
   return (Number(card && card.createdAt) || 0) * 1000;
 }
 
+/** Older than `staleMs`: the badge and the list only, never a whisper on its own. */
+function isStale(card, nowMs = Date.now(), cfg = DEFAULTS) {
+  const born = createdMs(card);
+  return born > 0 && nowMs - born > cfg.staleMs;
+}
+
+/** Two strings that say the same thing: case, spacing and punctuation ignored. */
+function sameText(a, b) {
+  const norm = (v) => String(v == null ? "" : v).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const x = norm(a);
+  return x.length > 0 && x === norm(b);
+}
+
+/** The whisper's link to the whole list: the true count, "99+" past that. */
+function moreLabel(more) {
+  const n = Math.max(0, Math.floor(Number(more) || 0));
+  if (!n) return "";
+  return `${n > 99 ? "99+" : n} more waiting`;
+}
+
 /** Milliseconds until the card's deadline, or null when it has none. */
 function deadlineLeftMs(card, nowMs) {
   const dl = Number(card && card.deadline) || 0;
@@ -124,6 +146,7 @@ function fmtSpan(ms) {
 function importance(card, nowMs, mem = {}, cfg = DEFAULTS) {
   if (!card || typeof card !== "object") return 0;
   if (mem && mem.muted) return 0;
+  if (isStale(card, nowMs, cfg)) return 0;
   if (mem && mem.keep) return 3;
   const kind = lower(card.kind);
   const urgency = lower(card.urgency) || "normal";
@@ -417,14 +440,19 @@ function whisperView(decision, nowMs = Date.now()) {
     .map((o) => ({
       key: String(o.key),
       label: String(o.label || o.key).slice(0, 120),
-      consequence: String(o.consequence || "").slice(0, 160),
+      // A consequence that only repeats its label ("Leave them" / "Leave them") says nothing.
+      consequence: sameText(o.consequence, o.label || o.key) ? "" : String(o.consequence || "").slice(0, 160),
       recommended: Boolean(o.recommended) || (card.defaultKey && lower(o.key) === lower(card.defaultKey)),
     }));
   const title = String(card.title || "A decision").replace(/^Claude Code needs you:\s*/i, "");
+  // Only an explicit click opens an old card; it says so, and how old, in the header.
+  const old = isStale(card, nowMs);
+  const lead = decision.lead || leadFor(card, {}, { nowMs });
   return {
     id: card.id,
     level: decision.level,
-    lead: decision.lead || leadFor(card, {}, { nowMs }),
+    lead: old ? `${lead} · ${fmtSpan(nowMs - createdMs(card))} old` : lead,
+    old: old ? "Old — still relevant?" : "",
     title: title.length > 110 ? `${title.slice(0, 109)}…` : title,
     why: decision.why || whyNow(card, nowMs),
     // Owner 2026-11-08: "I need this to give me more info". The whisper carries
@@ -437,6 +465,7 @@ function whisperView(decision, nowMs = Date.now()) {
     options,
     credential: kind === "credential",
     more: Math.max(0, Number(decision.more) || 0),
+    moreLabel: moreLabel(decision.more),
     // The card's generated UI (card-ui.cjs render tree), when it is current and
     // valid; the page draws it with createElement/textContent and falls back to
     // the options above on null. Re-checked here against the card's OWN keys.
@@ -518,7 +547,7 @@ function chatContext(card, nowMs = Date.now(), { session = null } = {}) {
       lines.push("Its options:");
       options.forEach((o, i) => {
         const rec = o.recommended || (card.defaultKey && lower(o.key) === lower(card.defaultKey));
-        const cons = o.consequence ? ` -- ${clipText(o.consequence, 200)}` : "";
+        const cons = o.consequence && !sameText(o.consequence, o.label || o.key) ? ` -- ${clipText(o.consequence, 200)}` : "";
         lines.push(`${i + 1}. ${clipText(o.label || o.key, 80)}${rec ? " (suggested)" : ""}${cons}`);
       });
     }
@@ -542,6 +571,9 @@ module.exports = {
   LEVEL,
   DEFAULTS,
   ackOnly,
+  isStale,
+  sameText,
+  moreLabel,
   deadlineLeftMs,
   fmtSpan,
   importance,

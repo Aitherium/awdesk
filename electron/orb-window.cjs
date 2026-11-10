@@ -312,6 +312,27 @@ function send(channel, payload) {
   }
 }
 
+/**
+ * Is a card or panel open over the fairy (the whisper, the bubble)? The orb and
+ * swarm pages drop their native hover tooltips while it is: measured 2026-11-09,
+ * "Aither: HOST AT 97.5% COMMIT ... (16 cards)" drew over the open card's title.
+ */
+let lastPanelOpen = null;
+function panelOpen() {
+  return Boolean(nudging) || Boolean(alive(bubbleWindow) && bubbleWindow.isVisible());
+}
+function sendPanel() {
+  const open = panelOpen();
+  if (open === lastPanelOpen) return open;
+  lastPanelOpen = open;
+  for (const win of [orbWindow, swarmWindow]) {
+    try {
+      if (alive(win)) win.webContents.send("orb:panel", { open });
+    } catch { /* a page mid-load: init() carries it */ }
+  }
+  return open;
+}
+
 function ensureOrb() {
   if (alive(orbWindow)) return orbWindow;
   const { BrowserWindow, screen } = electron();
@@ -636,6 +657,7 @@ function hideOrb() {
   if (alive(orbWindow)) orbWindow.hide();
   if (alive(swarmWindow)) swarmWindow.hide();
   hideVeil();
+  sendPanel();
   const was = state.visible;
   state.visible = false;
   if (was) saveState();
@@ -668,6 +690,7 @@ function syncBubble() {
     bubbleWindow.hide();
     drafting = false;
   }
+  sendPanel();
 }
 
 function openBubble({ focus = false } = {}) {
@@ -680,6 +703,7 @@ function openBubble({ focus = false } = {}) {
     win.focus();
     try { win.webContents.send("orb:focus"); } catch { /* page loading: focuses on load */ }
   }
+  sendPanel();
 }
 
 function closeBubble() {
@@ -689,6 +713,7 @@ function closeBubble() {
   pendingSlot = null;
   drafting = false;
   if (alive(bubbleWindow)) bubbleWindow.hide();
+  sendPanel();
   return { ok: true };
 }
 
@@ -2255,20 +2280,47 @@ function setSpeaker(agent, text = "") {
  * where it rests. A PEEK, not a nudge: it neither climbs nor resets the ladder,
  * and a real nudge in flight keeps its card.
  */
-function peekCard(id) {
+function peekCard(id, { explicit = false } = {}) {
   const card = attentionCards.find((c) => c && c.id === String(id || ""));
   if (!card) return { ok: false, reason: "no such card" };
-  if (nudging && nudging.decision.card.id === card.id) return { ok: true, id: card.id, already: true };
-  if (nudging && !nudging.peek) return { ok: false, reason: "a nudge is showing" };
-  if (nudging && nudging.peek) endNudge("peek", { stay: true });
+  // An old card never pops on a hover: the badge and the list only (owner
+  // 2026-11-09, "Waiting 22 d"). A click on its fairy is asking, so it opens.
+  if (!explicit && fairyAttention.isStale(card, Date.now())) return { ok: false, reason: "old: the badge only" };
+  if (nudging && nudging.decision.card.id === card.id) {
+    if (explicit) nudging.until = Math.max(nudging.until, Date.now() + 20_000);
+    return { ok: true, id: card.id, already: true };
+  }
+  if (nudging && !nudging.peek && !explicit) return { ok: false, reason: "a nudge is showing" };
+  // A click outranks a running nudge; "preempted" teaches the ladder nothing.
+  // A fairy that had flown out to the pointer still goes home when this one ends.
+  const away = nudging && nudging.anchor ? nudging.anchor : null;
+  if (nudging) endNudge(nudging.peek ? "peek" : "preempted", { stay: true });
   const f = agentFairy.crewFairy(card.agent);
   const decision = {
     act: "nudge", card, level: fairyAttention.LEVEL.GLOW, importance: 0, arrival: false, returned: false,
     why: fairyAttention.whyNow(card, Date.now()),
     lead: f.known || f.crew ? `From ${f.label}` : "Waiting on you",
-    more: Math.max(0, attentionCards.length - 1), voice: false, showMs: 8000,
+    more: Math.max(0, attentionCards.length - 1), voice: false, showMs: explicit ? 20_000 : 8000,
   };
-  return startNudge(decision, { peek: true });
+  const r = startNudge(decision, { peek: true });
+  if (away && nudging && !nudging.anchor) nudging.anchor = away;
+  return r;
+}
+
+/**
+ * A click on an agent's fairy: that agent's newest card opens in the whisper,
+ * never the empty chat bubble (owner 2026-11-09). `id` is the companion's card;
+ * an id that is gone falls back to the same agent's newest open card.
+ */
+function openFairyCard(id, agent = "") {
+  let card = attentionCards.find((c) => c && c.id === String(id || ""));
+  if (!card && agent) {
+    const key = agentFairy.crewKey(agent);
+    const mine = key ? attentionCards.filter((c) => c && agentFairy.cardAgent(c) === key) : [];
+    card = mine.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))[0];
+  }
+  if (!card) return { ok: false, reason: "no card for that fairy" };
+  return peekCard(card.id, { explicit: true });
 }
 
 function ensureAttention() {
@@ -2438,6 +2490,7 @@ function startNudge(decision, { peek = false } = {}) {
   };
   const n = nudging;
   ensureNudge();
+  sendPanel();
   // The fairy wears the colours of the agent whose card it now carries.
   sendFairy();
   // The chime rides the level change (the orb page synthesizes it). The plan already
@@ -2531,6 +2584,7 @@ function endNudge(outcome = "timeout", { stay = false } = {}) {
   }
   sendNudge("orb:nudge-view", null);
   send("orb:nudge", { level: 0 });
+  sendPanel();
   sendFairy();
   if (n.anchor && !stay && !quitting) void returnFromNudge();
   return { ok: true, ended: true, outcome };
@@ -2698,15 +2752,18 @@ function chatAboutCard(id) {
     const s = hookValue("session", card);
     if (s && typeof s === "object" && s.ok) session = s;
   }
+  const f = agentFairy.crewFairy(card.agent);
   cardChat = {
     id: card.id,
+    // The bubble header names the agent in plain words, never a sprite id/stage/tier.
+    who: f.known || f.crew ? f.label : "",
     title: String(card.title || "this card").replace(/^Claude Code needs you:\s*/i, "").slice(0, 80),
     context: fairyAttention.chatContext(card, Date.now(), { session }),
   };
   suppressed = false;
   bubbleMode = "card";
   openBubble({ focus: true });
-  send("orb:mode", { mode: "card", title: cardChat.title });
+  send("orb:mode", { mode: "card", title: cardChat.title, who: cardChat.who });
   return { ok: true, id: card.id, mode: "card" };
 }
 
@@ -2763,6 +2820,7 @@ function beginDrag() {
   const [x, y] = orbWindow.getPosition();
   dragging = { cx: cursor.x, cy: cursor.y, x, y, moved: 0 };
   if (alive(bubbleWindow)) bubbleWindow.hide();
+  sendPanel();
   dragTimer = setInterval(() => {
     if (!dragging || !alive(orbWindow)) return;
     let cur;
@@ -2866,6 +2924,8 @@ function handlers() {
         attach: publicAttach(),
         mode: bubbleMode,
         modeTitle: bubbleMode === "card" && cardChat ? cardChat.title : null,
+        modeWho: bubbleMode === "card" && cardChat ? cardChat.who : null,
+        panel: panelOpen(),
         sprite: publicSprite(),
         nudge: nudging && nudging.shown ? nudging.view : null,
         nudgeLevel: nudging && !nudging.peek ? nudging.decision.level : 0,
@@ -2885,6 +2945,8 @@ function handlers() {
     // other entry point uses. It opens; it never answers.
     // Hovering a companion fairy shows that agent's card (a peek, not a nudge).
     "desk:orb-peek": guard((_sender, id) => peekCard(id)),
+    // A CLICK on a companion (or on one under the fairy's own disc): its newest card.
+    "desk:orb-open-card": guard((_sender, id, agent) => openFairyCard(id, agent)),
     // The swarm is click-through except the companion under the pointer.
     "desk:swarm-hit": guard((_sender, inside) => {
       if (alive(swarmWindow)) swarmWindow.setIgnoreMouseEvents(!inside, { forward: true });
@@ -3101,7 +3163,7 @@ module.exports = {
   NUDGE_SIZE, setAttentionCards, attentionTick, ownsAttention, nudgeAct, endNudge,
   nudgeCard, chatAboutCard, setSounds,
   // the agent fairy (agent-fairy.cjs): whose colours, which companions
-  setSpeaker, peekCard, fairy: () => currentFairy(), companions: () => currentCompanions(),
+  setSpeaker, peekCard, openFairyCard, fairy: () => currentFairy(), companions: () => currentCompanions(),
   swarmWindow: () => (alive(swarmWindow) ? swarmWindow : null), soundsOn: () => state.sounds !== false,
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
   attentionMems: () => attentionMems,
@@ -3115,6 +3177,7 @@ module.exports = {
     if (dragTimer) { clearInterval(dragTimer); dragTimer = null; }
     if (flightTimer) { clearInterval(flightTimer); flightTimer = null; }
     lastVeilKey = "";
+    lastPanelOpen = null;
     stopFollow();
     for (const pending of pendingRuns.values()) {
       clearTimeout(pending.timer);

@@ -300,3 +300,49 @@ test("the whisper keeps a long option label whole and shows up to four options",
   assert.equal(view.options[0].label, long);
   assert.equal(view.options.length, 4);
 });
+
+// ── owner screenshots 2026-11-09 ────────────────────────────────────────────
+
+test("a consequence that only repeats its label is dropped (case, spacing, punctuation ignored)", () => {
+  assert.equal(fa.sameText("Stop all three now", " stop all three now. "), true);
+  assert.equal(fa.sameText("Leave them", "Leave them!"), true);
+  assert.equal(fa.sameText("Leave them", "Leave them running until morning"), false);
+  assert.equal(fa.sameText("", ""), false, "two empties are not a repeat");
+  const v = fa.whisperView({ card: card({ options: [
+    { key: "stop", label: "Stop all three now", consequence: "Stop all three now" },
+    { key: "leave", label: "Leave them", consequence: "leave them." },
+    { key: "pause", label: "Pause", consequence: "Pauses the queue for an hour" },
+  ] }), level: 1 }, NOW);
+  assert.deepEqual(v.options.map((o) => o.consequence), ["", "", "Pauses the queue for an hour"]);
+  const ctx = fa.chatContext(card({ options: [{ key: "leave", label: "Leave them", consequence: "Leave them" }] }), NOW);
+  assert.doesNotMatch(ctx, /Leave them -- Leave them/);
+});
+
+test("a card older than staleMs never whispers on its own, not even after 'keep nudging'", () => {
+  const old = card({ id: "d-pix8", urgency: "critical", blocking: true, createdAt: sec(NOW - 22 * 24 * 60 * MIN) });
+  const day = card({ id: "d-h33", urgency: "high", createdAt: sec(NOW - 49 * 60 * MIN) });
+  assert.equal(fa.isStale(old, NOW), true);
+  assert.equal(fa.isStale(card(), NOW), false);
+  assert.equal(fa.importance(old, NOW, fa.recordKeep({})), 0, "stale beats keep");
+  assert.equal(fa.importance(day, NOW), 0);
+  const p = fa.plan([old, day], { "d-pix8": fa.recordKeep({}) }, { nowMs: NOW, returned: true });
+  assert.equal(p.act, "none");
+});
+
+test("an explicitly opened old card says it is old, with its age in the header", () => {
+  const old = card({ createdAt: sec(NOW - 22 * 24 * 60 * MIN) });
+  const v = fa.whisperView({ card: old, level: 1, lead: "From Atlas" }, NOW);
+  assert.equal(v.old, "Old — still relevant?");
+  assert.equal(v.lead, "From Atlas · 22 d old");
+  const fresh = fa.whisperView({ card: card(), level: 1, lead: "From Atlas" }, NOW);
+  assert.equal(fresh.old, "");
+  assert.equal(fresh.lead, "From Atlas");
+});
+
+test("the whisper's count is the true count, '99+' past that, never '+99 more'", () => {
+  assert.equal(fa.moreLabel(0), "");
+  assert.equal(fa.moreLabel(15), "15 more waiting");
+  assert.equal(fa.moreLabel(99), "99 more waiting");
+  assert.equal(fa.moreLabel(240), "99+ more waiting");
+  assert.equal(fa.whisperView({ card: card(), level: 1, more: 15 }, NOW).moreLabel, "15 more waiting");
+});

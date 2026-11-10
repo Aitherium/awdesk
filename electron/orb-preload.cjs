@@ -112,4 +112,8 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   onCompanions: (fn) => on("orb:companions", fn),
   peek: (id) => ipcRenderer.invoke("desk:orb-peek", String(id || "")),
   swarmHit: (inside) => ipcRenderer.invoke("desk:swarm-hit", Boolean(inside)),
+  // A CLICK on an agent's fairy opens that agent's newest card (never the empty chat).
+  openCard: (id, agent) => ipcRenderer.invoke("desk:orb-open-card", String(id || ""), String(agent || "")),
+  // A card or panel is open over the fairy: hover tooltips stand down ({open}).
+  onPanel: (fn) => on("orb:panel", fn),
 });
