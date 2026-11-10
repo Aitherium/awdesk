@@ -509,12 +509,16 @@ function AgentChatPane({
   nowMs,
   onSend,
   onClose,
+  links,
 }: {
   agent: string;
   rows: RelayRow[];
   nowMs: number;
   onSend: (text: string) => void;
   onClose: () => void;
+  /** Where else this agent's conversation lives: the thread it is working (a
+   *  Discord or GitHub thread from Atlas' board) and its Discord DM. */
+  links?: { threadUrl?: string; dmUrl?: string };
 }) {
   const [draft, setDraft] = useState('');
   const submit = () => {
@@ -589,9 +593,28 @@ function AgentChatPane({
     <section className="deck-section" aria-label={`Chat with ${agent}`}>
       <h2 className="deck-section-head">
         <span className="deck-section-icon"><ChatIcon /></span>
+        <FairyMark agent={agent} />
         <span className="deck-row-label" title={`Direct conversation with ${agent}`}>
           Chat with {agent}
         </span>
+        {links?.threadUrl && canOpenUrl() ? (
+          <button
+            className="deck-chip"
+            title={`Continue the thread ${agent} is working: ${links.threadUrl}`}
+            onClick={() => void openDeskUrl(links.threadUrl as string)}
+          >
+            Continue thread
+          </button>
+        ) : null}
+        {links?.dmUrl && canOpenUrl() ? (
+          <button
+            className="deck-chip"
+            title={`${agent}'s Discord DM -- the same agent, the same memory`}
+            onClick={() => void openDeskUrl(links.dmUrl as string)}
+          >
+            Discord DM
+          </button>
+        ) : null}
         <button
           className="deck-icon-btn deck-close-inline"
           aria-label="Close chat"
@@ -2303,6 +2326,9 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
   // a time, anchored on the agent's most recent #agents message — the relay
   // thread under it IS the conversation (no per-agent channels exist).
   const [chatTarget, setChatTarget] = useState<string | null>(null);
+  const [chatLinks, setChatLinks] = useState<{ threadUrl?: string; dmUrl?: string }>({});
+  // The fairy's click lands in an effect declared before openChat exists.
+  const openChatRef = useRef<((agent: string) => void) | null>(null);
   const [chatRootId, setChatRootId] = useState<string | null>(null);
   const [chatRows, setChatRows] = useState<RelayRow[]>([]);
   // Drop-to-avatar (2026-08-29): the drag state + the verdict list. The
@@ -2374,6 +2400,23 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
   // takes, so the linked card opens (and scrolls into view) in its slot.
   const focusCardById = useCallback((id: string) => {
     setFocusCard((current) => ({ id, nonce: (current?.nonce ?? 0) + 1 }));
+  }, []);
+
+  // Click a companion fairy (orb-window chatWithAgent -> main openAgentChat): the
+  // chat with THAT agent opens here, with its thread and Discord DM one click away.
+  useEffect(() => {
+    return bridgeSubscribe((event) => {
+      if (event.type !== 'deck:open-chat' || typeof event.agent !== 'string' || !event.agent) return;
+      const agent = event.agent;
+      openChatRef.current?.(agent);
+      setChatLinks({
+        threadUrl: typeof event.threadUrl === 'string' ? event.threadUrl : '',
+        dmUrl: typeof event.dmUrl === 'string' ? event.dmUrl : '',
+      });
+      window.setTimeout(() => {
+        document.querySelector(`[aria-label="Chat with ${CSS.escape(agent)}"]`)?.scrollIntoView({ block: 'start' });
+      }, 50);
+    });
   }, []);
 
   useEffect(() => {
@@ -2465,6 +2508,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
    *  feed messages when it has no thread yet. */
   const openChat = useCallback((agent: string) => {
     setChatTarget(agent);
+    setChatLinks({});
     const agentRows = state.relay
       .filter((row) => row.agent && (row.author === agent || row.author.startsWith(`${agent}+`)))
       .sort((a, b) => b.at - a.at);
@@ -2479,6 +2523,10 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
         .catch(() => {});
     }
   }, [state.relay]);
+
+  useEffect(() => {
+    openChatRef.current = openChat;
+  }, [openChat]);
 
   /** Send one message in the open direct chat: a thread-reply when an anchor
    *  message exists, else a plain channel post mentioning the agent (the
@@ -2788,7 +2836,8 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
             rows={chatRows}
             nowMs={nowMs}
             onSend={sendChat}
-            onClose={() => setChatTarget(null)}
+            onClose={() => { setChatTarget(null); setChatLinks({}); }}
+            links={chatLinks}
           />
         ) : null}
 

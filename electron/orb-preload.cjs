@@ -116,4 +116,6 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   openCard: (id, agent) => ipcRenderer.invoke("desk:orb-open-card", String(id || ""), String(agent || "")),
   // A card or panel is open over the fairy: hover tooltips stand down ({open}).
   onPanel: (fn) => on("orb:panel", fn),
+  // Click a companion fairy: a chat with that agent.
+  chatAgent: (agent) => ipcRenderer.invoke("desk:orb-chat-agent", String(agent || "")),
 });

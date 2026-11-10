@@ -160,3 +160,56 @@ test("no cap comes back: 30 agents waiting = 30 companions, each on a ring slot"
   assert.equal(all.length, 30, "every agent renders, whatever the count");
   assert.equal(agentFairy.swarmLayout(all.length).length, 30, "every companion has a slot");
 });
+
+// ── presence: one agent = one presence everywhere (owner 2026-11-09) ─────────
+
+const PRESENCE = [
+  { agent: "atlas", state: "working", work: [{ title: "Board tick", url: "https://github.com/Aitherium/AitherOS/issues/1" }],
+    discord: { bot: true, app_id: "1", dm_url: "https://discord.com/users/1" }, thread_url: "https://github.com/Aitherium/AitherOS/issues/1" },
+  { agent: "Lyra", state: "idle", work: [], discord: { bot: true, app_id: "2", dm_url: "https://discord.com/users/2" }, thread_url: "" },
+  { agent: "demi", state: "waiting", work: [{ title: "PR review", url: "javascript:alert(1)" }], discord: null, thread_url: "" },
+  { agent: "claude-code", state: "working", work: [] },
+];
+
+test("presence: an ACTIVE agent with no card still gets its fairy; states and links come through", () => {
+  const all = agentFairy.companionsFor([], { presence: PRESENCE });
+  const by = Object.fromEntries(all.map((c) => [c.agent, c]));
+  assert.deepEqual(Object.keys(by).sort(), ["atlas", "demiurge", "lyra"], "generic claude-code is no agent");
+  assert.equal(by.atlas.state, "working");
+  assert.equal(by.atlas.title, "Board tick");
+  assert.equal(by.atlas.threadUrl, "https://github.com/Aitherium/AitherOS/issues/1");
+  assert.equal(by.atlas.dmUrl, "https://discord.com/users/1");
+  assert.equal(by.lyra.state, "idle");
+  assert.equal(by.demiurge.state, "waiting", "the board says it waits on the owner");
+  assert.equal(by.demiurge.work[0].url, "", "only https links survive");
+  assert.equal(all[0].agent, "demiurge", "waiting first, then working, then idle");
+  assert.equal(all[all.length - 1].agent, "lyra");
+});
+
+test("presence: a card makes it waiting with its count; a post makes it speaking; the worn agent leaves the orbit", () => {
+  const cards = [{ id: "d-1", agent: "lyra", title: "review" }, { id: "d-2", agent: "lyra", title: "review 2" }];
+  const all = agentFairy.companionsFor(cards, { presence: PRESENCE, speaking: ["atlas"], current: "demi" });
+  const by = Object.fromEntries(all.map((c) => [c.agent, c]));
+  assert.equal(by.lyra.state, "waiting");
+  assert.equal(by.lyra.count, 2);
+  assert.equal(by.lyra.cardId, "d-1");
+  assert.equal(by.atlas.state, "speaking");
+  assert.equal(by.demiurge, undefined);
+});
+
+test("presence: twelve active agents (8 palette + 4 crew) with no cards at all = twelve fairies", () => {
+  const names = ["aither", "atlas", "demiurge", "lyra", "iris", "saga", "vera", "hera", "gargbot", "plutus", "chaos", "viviane"];
+  const all = agentFairy.companionsFor([], { presence: names.map((a) => ({ agent: a, state: "idle" })) });
+  assert.equal(all.length, 12, "every active agent renders, none hidden, no cap");
+});
+
+test("relay posts: the first read only sets the mark; later agent posts name their agents once", () => {
+  const rows = [
+    { agent: true, author: "atlas+abc", at: 100 }, { agent: true, author: "atlas", at: 101 },
+    { agent: false, author: "david", at: 102 }, { agent: true, author: "Lyra", at: 50 },
+  ];
+  assert.deepEqual(agentFairy.newPosters(rows, 0), [], "a desk start is not a burst of posts");
+  assert.deepEqual(agentFairy.newPosters(rows, 99), ["atlas"]);
+  assert.equal(agentFairy.latestAt(rows, 0), 102);
+  assert.equal(agentFairy.latestAt([], 200), 200, "never moves backwards");
+});

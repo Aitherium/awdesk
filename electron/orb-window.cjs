@@ -2232,8 +2232,63 @@ function currentFairy(nowMs = Date.now()) {
   return agentFairy.restingFairy();
 }
 
+/** Who is active on the platform (GET /atlas/presence via MCP atlas_presence). */
+let agentPresence = [];
+/** agent -> until (ms): a line spoken or a post just now; the companion flashes. */
+let agentPosts = new Map();
+let agentPostTimer = null;
+
+function speakingNow(nowMs = Date.now()) {
+  const out = [];
+  for (const [agent, until] of agentPosts) {
+    if (until > nowMs) out.push(agent);
+    else agentPosts.delete(agent);
+  }
+  return out;
+}
+
 function currentCompanions(look = currentFairy()) {
-  return agentFairy.companionsFor(attentionCards, { current: look.agent });
+  return agentFairy.companionsFor(attentionCards, {
+    current: look.agent, presence: agentPresence, speaking: speakingNow(),
+  });
+}
+
+/**
+ * Main hands over the platform presence list: every agent that is active (its
+ * Discord bot, its work on Atlas' board, a card). A list that could not be read
+ * is NOT handed over (the last one stands), so a dead gateway never empties the swarm.
+ */
+function setPresence(list) {
+  agentPresence = Array.isArray(list) ? list.slice(0, 200) : [];
+  sendFairy();
+  return { ok: true, count: agentPresence.length };
+}
+
+/**
+ * An agent just spoke or posted (its Discord bot, the relay): its companion flashes
+ * bright for a few seconds. The main fairy is not re-coloured by a post -- only by
+ * the card it carries or a line spoken aloud.
+ */
+function noteAgentPosted(agent, { ms = 4000 } = {}) {
+  const key = agentFairy.crewKey(agent);
+  if (!key) return { ok: false, reason: "not an agent" };
+  agentPosts.set(key, Date.now() + ms);
+  if (agentPostTimer) clearTimeout(agentPostTimer);
+  agentPostTimer = setTimeout(() => { agentPostTimer = null; sendFairy(); }, ms + 50);
+  if (agentPostTimer.unref) agentPostTimer.unref();
+  sendFairy();
+  return { ok: true, agent: key };
+}
+
+/** Click a companion: talk to THAT agent (main opens its chat; the hook decides how). */
+function chatWithAgent(agent) {
+  const key = agentFairy.crewKey(agent);
+  if (!key) return { ok: false, reason: "not an agent" };
+  const row = currentCompanions().find((c) => c.agent === key) || null;
+  const opened = hookValue("chat", key, { threadUrl: row ? row.threadUrl : "", dmUrl: row ? row.dmUrl : "" });
+  return opened === false || opened === undefined
+    ? { ok: false, reason: "chat is not wired in this build" }
+    : { ok: true, agent: key };
 }
 
 /** Push the look and the companions to the orb page, only when they changed. */
@@ -2268,6 +2323,7 @@ function setSpeaker(agent, text = "") {
   if (!key) return { ok: false, reason: "not an agent with a fairy" };
   const ms = agentFairy.speakingMs(text);
   fairySpeaker = { agent: key, until: Date.now() + ms };
+  agentPosts.set(key, Date.now() + ms); // its companion flashes while it talks
   if (fairySpeakerTimer) clearTimeout(fairySpeakerTimer);
   fairySpeakerTimer = setTimeout(() => { fairySpeakerTimer = null; fairySpeaker = null; sendFairy(); }, ms + 50);
   if (fairySpeakerTimer.unref) fairySpeakerTimer.unref();
@@ -2948,6 +3004,8 @@ function handlers() {
     // A CLICK on a companion (or on one under the fairy's own disc): its newest card.
     "desk:orb-open-card": guard((_sender, id, agent) => openFairyCard(id, agent)),
     // The swarm is click-through except the companion under the pointer.
+    // Click a companion: open a chat with that agent.
+    "desk:orb-chat-agent": guard((_sender, agent) => chatWithAgent(agent)),
     "desk:swarm-hit": guard((_sender, inside) => {
       if (alive(swarmWindow)) swarmWindow.setIgnoreMouseEvents(!inside, { forward: true });
       return { ok: true };
@@ -3164,6 +3222,7 @@ module.exports = {
   nudgeCard, chatAboutCard, setSounds,
   // the agent fairy (agent-fairy.cjs): whose colours, which companions
   setSpeaker, peekCard, openFairyCard, fairy: () => currentFairy(), companions: () => currentCompanions(),
+  setPresence, noteAgentPosted, chatWithAgent,
   swarmWindow: () => (alive(swarmWindow) ? swarmWindow : null), soundsOn: () => state.sounds !== false,
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
   attentionMems: () => attentionMems,
@@ -3197,6 +3256,9 @@ module.exports = {
     lastFairyKey = "";
     lastCompanionsKey = "";
     swarmCompanions = [];
+    agentPresence = [];
+    agentPosts = new Map();
+    if (agentPostTimer) { clearTimeout(agentPostTimer); agentPostTimer = null; }
     cardChat = null;
     for (const win of [swarmWindow, nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
       try { if (alive(win)) win.destroy(); } catch { /* gone */ }
