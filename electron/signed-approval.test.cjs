@@ -158,3 +158,13 @@ test("the browser side panel's Agents tab answers through the same answerDeckCar
   // watcher drops the card -- not spread beside it, where nothing would wrap it.
   assert.match(body, /^ {2}answer: \(id, choice, parent\) =>/m);
 });
+
+test("the approve window goes through /login so a signed-out window can use its passkey", () => {
+  // Owner, 2026-11-10: "Sign in with passkey" on /approve did nothing -- its sign-in
+  // route is login-gated and the approve window is a fresh, signed-out session.
+  const url = new URL(sa.signInApproveUrl("d-n8t9", "grant", "https://api.aitherium.com"));
+  assert.equal(url.origin, "https://api.aitherium.com");
+  assert.equal(url.pathname, "/login");
+  assert.equal(url.searchParams.get("returnUrl"), "/approve?card=d-n8t9&choice=grant");
+  assert.equal(sa.isAllowedApproveNavigation(url.toString(), "https://api.aitherium.com"), true);
+});

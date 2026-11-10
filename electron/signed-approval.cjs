@@ -116,6 +116,18 @@ function approveUrl(id, choice, origin = portalOrigin()) {
   return u.toString();
 }
 
+/** The approve page reached THROUGH /login: the approve window is its own signed-out
+ *  session, and /approve's passkey sign-in called a login-gated route, so "Sign in
+ *  with passkey" did nothing (owner, 2026-11-10). /login's passkey uses the public
+ *  /api/auth routes, then returnUrl lands on /approve signed in. A session that is
+ *  already signed in passes straight through. */
+function signInApproveUrl(id, choice, origin = portalOrigin()) {
+  const target = new URL(approveUrl(id, choice, origin));
+  const u = new URL("/login", origin);
+  u.searchParams.set("returnUrl", target.pathname + target.search);
+  return u.toString();
+}
+
 /** Navigation the approve window may follow: the portal origin itself, or any
  *  https *.aitherium.com (the IdP sign-in hop). Everything else is refused. */
 function isAllowedApproveNavigation(target, origin = portalOrigin()) {
@@ -190,6 +202,7 @@ module.exports = {
   readCardRaw,
   portalOrigin,
   approveUrl,
+  signInApproveUrl,
   isAllowedApproveNavigation,
   openApproveWindow,
 };
