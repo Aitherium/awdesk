@@ -56,6 +56,32 @@ function awaskBin() {
   return _awaskBin;
 }
 
+/** Where an owner answers a card that must carry a SIGNED receipt. */
+const SIGNED_ANSWER_URL = "https://app.aitherium.com/mission-control?tab=decisions";
+const CARD_ID_RE = /^d-[A-Za-z0-9_-]{1,80}$/;
+let lastSignedHandoff = null;
+let openSignedAnswer = (url) => {
+  try { require("electron").shell.openExternal(url); } catch { /* no electron (tests) */ }
+};
+
+/** Pure: does this raw card need a signed answer? A Claude permission-grant card
+ *  (AitherOS/dev/tools/claude_permission_grant.py) carries a `permission_rule: ` fact,
+ *  and its grant is applied only after awstorage.attest verifies the receipt. */
+function needsSignedAnswer(raw) {
+  const facts = raw && Array.isArray(raw.facts) ? raw.facts : [];
+  return facts.some((f) => typeof f === "string" && f.startsWith("permission_rule: "));
+}
+
+/** The card's raw JSON from the store, or null (a bad id never becomes a path). */
+function readCardRaw(id, dir = storeDir()) {
+  if (typeof id !== "string" || !CARD_ID_RE.test(id)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, `${id}.json`), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function storeDir() {
   const env = (process.env.AITHER_DECISIONS_DIR || "").trim();
   return env || path.join(os.homedir(), ".aither", "decisions");
@@ -495,6 +521,14 @@ function openCardWindow(id) {
 function answerCard(id, choice, note = "", spawnFn = spawn) {
   if (typeof id !== "string" || id.length === 0) return false;
   if (typeof choice !== "string" || choice.length === 0) return false;
+  // A card whose answer must be SIGNED (a Claude permission grant) is approved in
+  // Online, where Genesis signs the answer for a fresh passkey session; a local
+  // `awask answer` would be recorded unsigned and grant nothing. Deny stays local.
+  if (choice !== "deny" && needsSignedAnswer(readCardRaw(id))) {
+    lastSignedHandoff = { id, url: SIGNED_ANSWER_URL, at: Date.now() };
+    openSignedAnswer(SIGNED_ANSWER_URL);
+    return true;
+  }
   if (lastSource === "gateway") return answerRemote(id, choice, note);
   const args = ["answer", id, choice, "--via", "desk"];
   if (note) args.push("--note", String(note).slice(0, 2000));
@@ -1066,6 +1100,11 @@ function startHeartbeat({ dir = storeDir(), intervalMs = HEARTBEAT_MS, setInterv
 }
 
 module.exports = {
+  SIGNED_ANSWER_URL,
+  needsSignedAnswer,
+  readCardRaw,
+  lastSignedHandoff: () => lastSignedHandoff,
+  setSignedAnswerOpener: (fn) => { openSignedAnswer = fn; },
   storeDir,
   signature,
   listOpen,
