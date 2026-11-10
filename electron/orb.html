@@ -269,6 +269,7 @@
   #n-x:hover { background: rgba(255,255,255,0.07); color: var(--fg, #e6edf3); }
   #n-title { margin-top: 4px; font-weight: 600; font-size: 13.5px; line-height: 1.3; color: var(--fg, #e6edf3);
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  #n-old { margin-top: 3px; font-size: 11.5px; font-weight: 600; color: #ffd28a; }
   #n-why { margin-top: 3px; font-size: 11.5px; line-height: 1.35; color: #c4cfe2;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   /* What the card says (owner 2026-11-08: "give me more fucking info"). */
@@ -340,6 +341,42 @@
     const n = parseInt(full.slice(0, 6), 16);
     if (!Number.isFinite(n)) return `rgba(255,200,97,${alpha})`;
     return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+  }
+  // The ring layout agent-fairy.swarmLayout computes: 6 on the first ring, 4 more
+  // on each ring out; 10 px, a quarter pixel smaller per companion past six. Shared
+  // by the swarm page AND the orb page: the first ring sits under the orb's own
+  // disc, so a press there must still reach that companion (owner 2026-11-09).
+  function swarmSlots(n) {
+    const size = Math.max(6, 10 - 0.25 * Math.max(0, n - 6));
+    const hit = Math.max(12, size + 4);
+    const slots = [];
+    let ring = 0;
+    let left = n;
+    while (left > 0) {
+      const on = Math.min(6 + ring * 4, left);
+      for (let i = 0; i < on; i += 1) slots.push({ ring, radius: 24 + ring * 16, index: i, of: on, size, hit });
+      left -= on;
+      ring += 1;
+    }
+    return slots;
+  }
+  function swarmOffset(slot, now) {
+    const dir = slot.ring % 2 === 0 ? 1 : -1;
+    const turn = (now / (9000 + slot.ring * 3000)) * dir;
+    const a = 2 * Math.PI * (slot.index / Math.max(1, slot.of)) + 2 * Math.PI * turn + slot.ring * 0.4;
+    return { x: Math.round(Math.cos(a) * slot.radius), y: Math.round(Math.sin(a) * slot.radius * 0.82) };
+  }
+  /** The companion under (dx, dy) from the fairy's centre, or null. */
+  function swarmMateAt(list, dx, dy, now = Date.now()) {
+    const slots = swarmSlots(list.length);
+    let best = null;
+    let bestD = Infinity;
+    list.forEach((c, i) => {
+      const o = swarmOffset(slots[i], now);
+      const d = Math.hypot(dx - o.x, dy - o.y);
+      if (d <= slots[i].hit / 2 + 2 && d < bestD) { best = c; bestD = d; }
+    });
+    return best;
   }
   function applyTint(css) {
     const el = document.documentElement;
@@ -446,8 +483,23 @@
     const badge = document.getElementById("badge");
     const queued = document.getElementById("queued");
     const RADIUS = 30; // a little past the 28 px disc: forgiving, never the corners
+    const CORE = 10; // the fairy's own core: a press here is always the fairy's
     let inside = null;
     let downAt = null;
+    // The companions (agent-fairy.cjs): the first ring orbits UNDER this disc.
+    let mates = [];
+    let hotMate = null;
+    let downMate = null;
+    let panelOpen = false;
+    let tip = "";
+    function mateUnder(e) {
+      const dx = e.clientX - window.innerWidth / 2;
+      const dy = e.clientY - window.innerHeight / 2;
+      if (Math.hypot(dx, dy) <= CORE || !mates.length) return null;
+      return swarmMateAt(mates, dx, dy);
+    }
+    // The native tooltip draws OVER an open card's title: none while a panel is up.
+    function showTip() { orb.title = panelOpen || hotMate ? "" : tip; }
 
     function toggleHit(isInside) {
       if (isInside === inside) return;
@@ -474,10 +526,36 @@
     window.addEventListener("mousemove", (e) => {
       const dx = e.clientX - window.innerWidth / 2;
       const dy = e.clientY - window.innerHeight / 2;
-      toggleHit(Math.hypot(dx, dy) <= RADIUS);
+      const m = downAt ? null : mateUnder(e);
+      if (m !== hotMate) {
+        hotMate = m;
+        if (m) api.peek(m.cardId); // that agent's card, exactly as the swarm page does
+        showTip();
+      }
+      toggleHit(Math.hypot(dx, dy) <= RADIUS || Boolean(m));
     });
-    window.addEventListener("mouseleave", () => toggleHit(false));
+    window.addEventListener("mouseleave", () => { hotMate = null; showTip(); toggleHit(false); });
     if (api.onFairy) api.onFairy(wearFairy);
+    if (api.onCompanions) api.onCompanions((list) => { mates = Array.isArray(list) ? list : []; hotMate = null; });
+    if (api.onPanel) api.onPanel((p) => { panelOpen = Boolean(p && p.open); showTip(); });
+
+    // A press on a companion under the disc is that companion's: its newest card
+    // opens (never the empty chat bubble the fairy's own click opens).
+    window.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      const m = mateUnder(e);
+      if (!m) return;
+      e.preventDefault();
+      e.stopPropagation();
+      downMate = m;
+    }, true);
+    window.addEventListener("pointerup", (e) => {
+      if (!downMate) return;
+      const m = downMate;
+      downMate = null;
+      e.stopPropagation();
+      api.openCard(m.cardId, m.agent);
+    }, true);
 
     orb.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
@@ -556,7 +634,11 @@
     // The fairy IS the owner's sprite: its name, stage and mood on hover. null =
     // the plain fairy (signed out / offline), which keeps the plain tooltip.
     const PLAIN_TIP = orb.title;
-    function wearSprite(sp) { orb.title = sp && sp.tooltip ? sp.tooltip : PLAIN_TIP; orb.dataset.tip = orb.title; }
+    function wearSprite(sp) {
+      tip = sp && sp.tooltip ? sp.tooltip : PLAIN_TIP;
+      orb.dataset.tip = tip;
+      showTip();
+    }
     if (api.onSprite) api.onSprite(wearSprite);
     api.onAttach((a) => { orb.classList.toggle("attached", Boolean(a && a.attached)); });
     api.onTrips((t) => {
@@ -572,6 +654,8 @@
       if (s.attach) orb.classList.add("attached");
       if (s.nudgeLevel) setNudge(s.nudgeLevel);
       if (s.fairy) wearFairy(s.fairy);
+      if (Array.isArray(s.companions)) mates = s.companions;
+      if (s.panel) { panelOpen = true; showTip(); }
       const n = s.trips && s.trips.count > 1 ? s.trips.count - 1 : 0;
       queued.textContent = String(n);
       queued.classList.toggle("on", n > 0);
@@ -589,28 +673,9 @@
     let hotMate = null;
     let inside = false;
     let frame = 0;
-    // The ring layout agent-fairy.swarmLayout computes: 6 on the first ring, 4 more
-    // on each ring out; 10 px, a quarter pixel smaller per companion past six.
-    function layout(n) {
-      const size = Math.max(6, 10 - 0.25 * Math.max(0, n - 6));
-      const hit = Math.max(12, size + 4);
-      const slots = [];
-      let ring = 0;
-      let left = n;
-      while (left > 0) {
-        const on = Math.min(6 + ring * 4, left);
-        for (let i = 0; i < on; i += 1) slots.push({ ring, radius: 24 + ring * 16, index: i, of: on, size, hit });
-        left -= on;
-        ring += 1;
-      }
-      return slots;
-    }
-    function offset(slot, now) {
-      const dir = slot.ring % 2 === 0 ? 1 : -1;
-      const turn = (now / (9000 + slot.ring * 3000)) * dir;
-      const a = 2 * Math.PI * (slot.index / Math.max(1, slot.of)) + 2 * Math.PI * turn + slot.ring * 0.4;
-      return { x: Math.round(Math.cos(a) * slot.radius), y: Math.round(Math.sin(a) * slot.radius * 0.82) };
-    }
+    let panelOpen = false;
+    const layout = swarmSlots;
+    const offset = swarmOffset;
     function place() {
       frame = 0;
       if (!mates.length) return;
@@ -646,7 +711,7 @@
         }
         matesEl.append(el);
         const extra = Number(c.count) > 1 ? ` (${Number(c.count)} cards)` : "";
-        return { el, slot: slots[i], x: 0, y: 0, id: String(c.cardId || ""), tip: `${c.label || c.agent}: ${c.title || "a card"}${extra}` };
+        return { el, slot: slots[i], x: 0, y: 0, id: String(c.cardId || ""), agent: String(c.agent || ""), tip: `${c.label || c.agent}: ${c.title || "a card"}${extra}` };
       });
       place();
     }
@@ -669,12 +734,14 @@
       if (m !== hotMate) {
         if (hotMate) hotMate.el.classList.remove("hot");
         hotMate = m;
+        // The native tooltip draws OVER the card the peek opens (owner 2026-11-09):
+        // it is only the fallback when no card came up (an old card, a nudge up).
+        document.body.title = "";
         if (m) {
           m.el.classList.add("hot");
-          document.body.title = m.tip;
-          api.peek(m.id); // that agent's card, beside the fairy
-        } else {
-          document.body.title = "";
+          Promise.resolve(api.peek(m.id)).then((r) => { // that agent's card, beside the fairy
+            if (hotMate === m && !panelOpen && !(r && r.ok)) document.body.title = m.tip;
+          }, () => {});
         }
       }
       setInside(Boolean(m));
@@ -683,8 +750,17 @@
       if (hotMate) { hotMate.el.classList.remove("hot"); hotMate = null; }
       setInside(false);
     });
+    // A CLICK on a companion opens its agent's newest card -- an old one too, marked.
+    window.addEventListener("click", () => {
+      if (hotMate) api.openCard(hotMate.id, hotMate.agent);
+    });
+    if (api.onPanel) api.onPanel((p) => { panelOpen = Boolean(p && p.open); if (panelOpen) document.body.title = ""; });
     api.onCompanions(setMates);
-    api.init().then((s) => { if (s && s.companions) setMates(s.companions); });
+    api.init().then((s) => {
+      if (!s) return;
+      if (s.panel) panelOpen = true;
+      if (s.companions) setMates(s.companions);
+    });
   }
 
   // ── the whisper: the card the fairy carries (fairy-attention.cjs) ──────
@@ -695,7 +771,7 @@
       + '<div id="n-head"><span id="n-dot"></span><span id="n-lead"></span>'
       + '<span id="n-more" title="See everything that is waiting"></span>'
       + '<button id="n-x" title="Later: I will bring it back in an hour">&#10005;</button></div>'
-      + '<div id="n-title"></div><div id="n-why"></div><div id="n-sum"></div><ul id="n-facts"></ul>'
+      + '<div id="n-title"></div><div id="n-old"></div><div id="n-why"></div><div id="n-sum"></div><ul id="n-facts"></ul>'
       + '<div id="n-ui"></div><div id="n-acts"></div>'
       + '<div id="n-foot"><button data-act="read">Read it to me</button>'
       + '<button data-act="talk" title="Talk it through out loud: say an option, or what to do instead">Talk</button>'
@@ -796,8 +872,12 @@
       dot.style.background = who ? who.color : "";
       dot.style.boxShadow = who ? `0 0 8px ${rgba(who.glow || who.color, 0.9)}` : "";
       dot.title = who ? who.label : "";
-      moreEl.textContent = v.more > 0 ? `+${v.more} more` : "";
+      // The true count ("99+" past that), and a door to the whole list.
+      moreEl.textContent = v.more > 0 ? `${v.moreLabel || `${v.more > 99 ? "99+" : v.more} more waiting`} ›` : "";
       moreEl.style.display = v.more > 0 ? "" : "none";
+      const oldEl = document.getElementById("n-old");
+      oldEl.textContent = v.old || "";
+      oldEl.style.display = v.old ? "" : "none";
       titleEl.textContent = v.title || "";
       titleEl.title = v.title || "";
       whyEl.textContent = v.why || "";
@@ -1051,8 +1131,12 @@
       tripMore.textContent = view.moreLine || "";
       tripQueue.textContent = (payload && payload.line) || "";
     }
-    function setMode(next, title) {
+    function setMode(next, title, who) {
       mode = next || null;
+      // Owner 2026-11-09: the header read "BB-00 · baby · dormant" -- an internal
+      // sprite id. It names the agent whose card this is, in plain words, or Aither.
+      const head = document.getElementById("title");
+      head.textContent = mode === "card" && who ? `${String(who).slice(0, 40)} · about this card` : "Aither";
       q.placeholder = mode === "card" && title
         ? `Ask about “${String(title).slice(0, 60)}”…`
         : PLACEHOLDERS[mode] || PLACEHOLDERS.null;
@@ -1123,26 +1207,19 @@
     api.onHold(renderHold);
     api.onResults(renderResults);
     api.onTrips(renderTrips);
-    api.onMode((payload) => setMode(payload && payload.mode, payload && payload.title));
+    api.onMode((payload) => setMode(payload && payload.mode, payload && payload.title, payload && payload.who));
     api.onTint((t) => { if (t) applyTint(t.css); });
     api.onAttach((a) => { where.textContent = a && a.attached ? (a.label || "attached") : "free"; });
     api.onFocus(() => { q.focus(); });
-    const titleEl = document.getElementById("title");
-    function wearSprite(sp) {
-      titleEl.textContent = sp && sp.line ? sp.line : "Aither";
-      titleEl.title = sp && sp.tooltip ? sp.tooltip.split(" — ")[0] : "";
-    }
-    if (api.onSprite) api.onSprite(wearSprite);
     api.init().then((s) => {
       if (!s) return;
       if (s.tint) applyTint(s.tint.css);
-      wearSprite(s.sprite);
       if (s.line) render(s.line);
       if (s.hold) renderHold({ hold: s.hold, label: s.hold.label, actions: s.holdActions });
       if (s.results) renderResults(s.results);
       if (s.trips) renderTrips(s.trips);
       if (s.attach) where.textContent = s.attach.label || "attached";
-      setMode(s.mode, s.modeTitle);
+      setMode(s.mode, s.modeTitle, s.modeWho);
       if (s.view === "bubble") setTimeout(() => q.focus(), 30);
     });
   }

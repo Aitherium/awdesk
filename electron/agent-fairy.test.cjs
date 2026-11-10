@@ -63,6 +63,18 @@ test("companions: one per OTHER agent with a card, every one of them, only when 
   assert.equal(minusWorn.some((c) => c.agent === "atlas"), false, "the agent the fairy wears is not also a companion");
 });
 
+test("a companion carries its agent's NEWEST card, not the first-ranked old one", () => {
+  const cards = [
+    { id: "d-old1", agent: "atlas", title: "Pixel 8 approval", createdAt: 1_000 },
+    { id: "d-lyr1", agent: "lyra", title: "lyra", createdAt: 5_000 },
+    { id: "d-new1", agent: "atlas", title: "Host at 97%", createdAt: 9_000 },
+  ];
+  const atlas = agentFairy.companionsFor(cards).find((c) => c.agent === "atlas");
+  assert.equal(atlas.cardId, "d-new1");
+  assert.equal(atlas.title, "Host at 97%");
+  assert.equal(atlas.count, 2);
+});
+
 test("twelve agents (8 palette + 4 crew): every one is a companion, duplicates merge with a count", () => {
   const named = ["atlas", "demi", "lyra", "iris", "saga", "vera", "hera"];
   const crew = ["gargbot", "Plutus", "chaos", "viviane"];

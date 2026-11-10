@@ -141,7 +141,13 @@ function companionsFor(cards, { current = "" } = {}) {
     const agent = cardAgent(card);
     if (!agent) continue;
     const seen = byAgent.get(agent);
-    if (seen) { seen.count += 1; continue; }
+    // The companion carries that agent's NEWEST card: a click opens what it just
+    // raised, not a weeks-old ask that happens to rank first (owner 2026-11-09).
+    if (seen) {
+      seen.count += 1;
+      if ((Number(card.createdAt) || 0) > (Number(seen.card.createdAt) || 0)) seen.card = card;
+      continue;
+    }
     byAgent.set(agent, { card, count: 1 });
   }
   if (byAgent.size < 2) return [];
