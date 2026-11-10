@@ -102,6 +102,7 @@ function stagingRoot({ env = process.env, os = nodeOs, path = nodePath } = {}) {
 function localAbsolute(value) {
   const raw = String(value == null ? "" : value).trim();
   if (!raw) return { ok: false, reason: "path_missing", error: "a file path is required" };
+  // eslint-disable-next-line no-control-regex -- refusing control bytes IS the check
   if (/[\u0000-\u001f]/.test(raw)) {
     return { ok: false, reason: "bad_path", error: "the path contains a control character" };
   }
@@ -309,6 +310,7 @@ function plainText(value, max = MAX_GUEST_CHARS) {
   if (typeof value !== "string" && typeof value !== "number") return "";
   const text = String(value)
     .replace(/\r\n?/g, "\n")
+    // eslint-disable-next-line no-control-regex -- stripping control bytes IS the job
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

@@ -26,7 +26,7 @@
  */
 
 const assert = require("node:assert/strict");
-const crypto = require("node:crypto");
+const nodeCrypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -34,7 +34,7 @@ const test = require("node:test");
 
 const sandbox = require("./sandbox-detonate.cjs");
 
-const sha = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
+const sha = (bytes) => nodeCrypto.createHash("sha256").update(bytes).digest("hex");
 
 function tempDir(t, prefix = "awdesk-sbx-") {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -284,7 +284,7 @@ test("doctor not ready shows its exact fix text and calls no detonate", async (t
 
 // ── 6. guest text is plain and capped ───────────────────────────────────────
 
-test("guest text is the upstream findings list, flattened to plain text and capped", (t) => {
+test("guest text is the upstream findings list, flattened to plain text and capped", () => {
   const receipt = {
     ok: true,
     command: "detonate",
@@ -308,6 +308,7 @@ test("guest text is the upstream findings list, flattened to plain text and capp
   assert.ok(card.guestText.includes("<img"), "the bytes of guest output survive as TEXT");
   assert.ok(card.guestText.startsWith("high: "), "the finding level is kept");
   assert.ok(card.guestText.length <= sandbox.MAX_GUEST_CHARS, "guest output is capped");
+  // eslint-disable-next-line no-control-regex -- asserting a control byte was dropped
   assert.doesNotMatch(card.guestText, /\u0000/, "control bytes are dropped");
 
   const element = { textContent: "", innerHTML: "untouched" };
