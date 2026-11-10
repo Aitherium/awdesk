@@ -259,7 +259,7 @@ async function stageTarget(info, {
   if (unsafe.length) {
     return {
       ok: false, reason: "staging_path_unsafe",
-      error: `the staging folder ${root} contains ${unsafe.map((c) => JSON.stringify(c)).join(", ")}, which the sandbox tools refuse in any path; set AITHER_SANDBOX_STAGING to a folder without them`,
+      error: `the staging folder ${root} contains ${unsafe.map((c) => JSON.stringify(c)).join(", ")}, which the sandbox tools refuse in any path; the sandbox cannot run from this Windows profile`,
     };
   }
   try {
@@ -422,6 +422,10 @@ function problemCard(message, reason = "problem") {
 const AUTORUN_NAME = /\\(?:Run|RunOnce)\\|\\Winlogon\\|\\Image File Execution Options/i;
 /** A scheduled-task file the file planted (detonate.js line 66, ``.../Tasks/``). */
 const TASK_FILE = /^C:\\Windows\\System32\\Tasks[\\/]/i;
+/** awdk's _sandbox_counts turns "/" into "\\" before matching; so does the desk. */
+function isTaskFile(value) {
+  return TASK_FILE.test(String(value).split("/").join(String.fromCharCode(92)));
+}
 
 /** The sbx JSON the CLI printed, nested in awdk's receipt as ``data``. */
 function receiptData(receipt) {
@@ -458,7 +462,7 @@ function persistenceCount(diff) {
   for (const service of arrayOf(diff.services)) if (service && service.change === "added") total += 1;
   const files = diff.files && typeof diff.files === "object" ? diff.files : {};
   for (const file of arrayOf(files.added)) {
-    if (file && typeof file.path === "string" && TASK_FILE.test(file.path)) total += 1;
+    if (file && typeof file.path === "string" && isTaskFile(file.path)) total += 1;
   }
   for (const value of arrayOf(diff.values)) {
     if (value && value.change !== "removed" && typeof value.name === "string" && AUTORUN_NAME.test(value.name)) {
@@ -495,7 +499,7 @@ function reportCounts(result) {
     ? arrayOf(diff.services).filter((service) => service && service.change === "added").length
     : null;
   const addedTasks = diff
-    ? arrayOf(files.added).filter((file) => file && typeof file.path === "string" && TASK_FILE.test(file.path)).length
+    ? arrayOf(files.added).filter((file) => file && typeof file.path === "string" && isTaskFile(file.path)).length
     : null;
   const pick = (key, fallback) => (Number.isFinite(summary[key]) ? summary[key] : fallback);
   return {

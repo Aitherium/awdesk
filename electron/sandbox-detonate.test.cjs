@@ -826,7 +826,7 @@ test("a staging root with a character awdk refuses is refused before anything is
   const result = await sandbox.stageTarget({ path: file, name: "thing.exe" }, { token: "sbx-1", root: unsafe, path });
   assert.equal(result.ok, false);
   assert.equal(result.reason, "staging_path_unsafe");
-  assert.match(result.error, /AITHER_SANDBOX_STAGING/);
+  assert.match(result.error, /cannot run from this Windows profile/);
   assert.deepEqual(fs.readdirSync(unsafe), [], "no request folder was created");
 });
 
@@ -838,16 +838,25 @@ test("desk:///sandbox/detonate (empty host) is the same link as desk://sandbox/d
 });
 
 test("a capped and an uncapped receipt for the same run report the same persistence number", () => {
-  const uncapped = realReceipt();
-  const fromData = sandbox.reportCounts({ ok: true, result: uncapped }).persistence;
-  const data = uncapped.data;
-  const services = data.diff.services.filter((s) => s.change === "added").length;
-  const sep = String.fromCharCode(92);
-  const taskDir = [sep, "windows", "system32", "tasks", sep].join(sep).replace(sep + sep, sep).replace(sep + sep, sep);
-  const tasks = data.diff.files.added.filter((f) => String(f.path).toLowerCase().includes(taskDir)).length;
-  const autoruns = fromData - services - tasks;
+  // realReceipt(): one service added (one removed), one file under the Tasks folder,
+  // one Run value -- persistence 3 on the uncapped card, from fixed fixture facts.
+  assert.equal(sandbox.reportCounts({ ok: true, result: realReceipt() }).persistence, 3);
   const capped = cappedReceipt({ counts: {
-    processes: 0, lookups: 0, connections: 0, services_added: services,
-    persistence_values: autoruns, scheduled_tasks: tasks, findings: 0 } });
-  assert.equal(sandbox.reportCounts({ ok: true, result: capped }).persistence, fromData);
+    processes: 0, lookups: 0, connections: 0, services_added: 1,
+    persistence_values: 1, scheduled_tasks: 1, findings: 0 } });
+  assert.equal(sandbox.reportCounts({ ok: true, result: capped }).persistence, 3);
 });
+
+test("a task file reported with forward slashes counts the same as with backslashes", () => {
+  const forward = realReceipt();
+  forward.data.diff.files.added = forward.data.diff.files.added.map((f) => ({ ...f, path: f.path.split(String.fromCharCode(92)).join("/") }));
+  assert.equal(sandbox.reportCounts({ ok: true, result: forward }).scheduled_tasks, 1);
+  assert.equal(sandbox.reportCounts({ ok: true, result: forward }).persistence, 3);
+});
+
+test("main.cjs stages only under the desk's own app-data folder, with no environment override", () => {
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /staging: path\.join\(app\.getPath\("userData"\), "sandbox-staging"\)/);
+  assert.doesNotMatch(main, /AITHER_SANDBOX_STAGING/);
+});
+
