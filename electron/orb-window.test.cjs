@@ -817,6 +817,27 @@ test("the whisper answers with the card's OWN option through main, and refuses o
   assert.equal(orbWindow.attentionMems()["d-fair"].ignored || 0, 0, "answered is not ignored");
 });
 
+test("\"more\" opens the waiting LIST, never the Inbox on whatever card it last showed", async () => {
+  // Owner, 2026-11-10: 99+ waiting and the card a session was stopped on could
+  // not be found -- the link opened the Inbox on an arbitrary card instead.
+  let opened = 0;
+  const calls = startAttention({ openList: () => { opened += 1; return true; } });
+  orbWindow.setAttentionCards([blockedCard()]);
+  await orbWindow.attentionTick();
+  await wait(1000);
+  const r = await invoke("desk:nudge-act", nudgeWin(), "more");
+  assert.equal(r.ok, true);
+  assert.equal(opened, 1, "the list is what the link opens");
+  assert.deepEqual(calls.open, [], "the Inbox is not opened on a card");
+  orbWindow.endNudge("seen", { stay: true });
+
+  // A build with no list wired still has a door: the Inbox, with no card named.
+  // (Checked in source: a second nudge in this process is held by pacing.)
+  const src = fs.readFileSync(path.join(__dirname, "orb-window.cjs"), "utf8");
+  assert.match(src, /hookValue\("open", what === "more" \? null : card\.id\)/,
+    "the fallback names no card, so the Inbox shows the queue");
+});
+
 test("an ignored nudge counts toward the next level; Later snoozes; answered elsewhere closes it", async () => {
   startAttention();
   orbWindow.setAttentionCards([blockedCard()]);
