@@ -38,6 +38,19 @@ test("an expired game override and an after-hours posture are not gaming", () =>
   assert.equal(hostIsGaming({ home, env: {}, now: NOW }), false);
 });
 
+test("a posture's GPU sleep lock (kind=sleep) is not a game; the same lock as kind=game is", () => {
+  // 2026-11-10: the After posture's sleep lock read as "game on" and the fairy held
+  // every nudge for 15 h. The exact lock that was on disk:
+  const home = tmpHome();
+  const lock = path.join(home, ".aither", "gaming.lock");
+  const doc = { since: "2026-10-16T20:00:00-07:00", expires: "2026-10-17T08:00:00-07:00",
+    reason: "gpu sleep (after posture)", kind: "sleep", posture: "after" };
+  fs.writeFileSync(lock, JSON.stringify(doc));
+  assert.equal(hostIsGaming({ home, env: {}, now: NOW }), false);
+  fs.writeFileSync(lock, JSON.stringify({ ...doc, kind: "game", reason: "gaming" }));
+  assert.equal(hostIsGaming({ home, env: {}, now: NOW }), true);
+});
+
 test("an active gaming.lock is gaming (fleet_verbs' rule: future expires, or fresh mtime)", () => {
   const home = tmpHome();
   const lock = path.join(home, ".aither", "gaming.lock");

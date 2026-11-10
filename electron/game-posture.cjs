@@ -58,6 +58,11 @@ function hostIsGaming({ home = os.homedir(), env = process.env, now = Date.now()
     return false;
   }
   const lock = readJson(lockFile);
+  // A Dark/After posture's GPU sleep writes this same lock with kind "sleep". That is
+  // not a game (fleet_verbs.py, test_gpu_sleep_is_not_gaming.py, 2026-10-30). Read as a
+  // game it held every fairy nudge all night: none for 15 h on 2026-11-10 while a
+  // session sat blocked on a permission card.
+  if (lock && String(lock.kind || "").toLowerCase() === "sleep") return false;
   const expires = lock && lock.expires ? Date.parse(lock.expires) : NaN;
   if (Number.isFinite(expires)) return expires > now;
   return now - stat.mtimeMs < GAMING_LOCK_DEFAULT_MS;
