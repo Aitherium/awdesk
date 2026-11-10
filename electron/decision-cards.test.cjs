@@ -684,6 +684,12 @@ test("rankCards: the JS constants ARE the fixture's rules", (t) => {
   assert.deepEqual(cards.RANK_RULES.rank_first_kinds, fixture.rank_first_kinds);
   assert.deepEqual({ ...cards.RANK_RULES.urgency_rank }, fixture.urgency_rank);
   assert.equal(cards.RANK_RULES.stale_after_seconds, fixture.stale_after_seconds);
+  // Optional in an older fixture (a tree that predates the self-answering term);
+  // when the fixture carries it, the JS constants and the Python rank must agree.
+  if (fixture.noop_labels) assert.deepEqual([...cards.RANK_RULES.noop_labels], fixture.noop_labels);
+  if (fixture.auto_default_rank !== undefined) {
+    assert.equal(cards.RANK_RULES.auto_default_rank, fixture.auto_default_rank);
+  }
 });
 
 test("rankCards: every case the Python rank runs (the d-nwh4 credential leads)", (t) => {
@@ -715,6 +721,50 @@ test("rankCards: a normal credential outranks a high PR review; info goes to FYI
   assert.deepEqual(split.fyi.map((c) => c.id), ["d-digest"]);
   assert.equal(split.decisions.length, actionableCount(shaped), "badge parity");
 });
+
+// ── cards that answer themselves yield (owner, 2026-11-10) ───────────────────
+// A 43 h revenue-governor card that picks "Keep refusing" at its deadline, and
+// awrise "wake X failed 5x" cards that pick "Keep it scheduled" in 19 h, floated
+// over 99+ and hid the permission grant a live session was stopped on.
+
+test("rankCards: a card with an auto-default ranks below every card needing a human", () => {
+  const shaped = [
+    // The noise: CRITICAL, oldest, and the store will answer it itself.
+    {
+      id: "d-revenue", kind: "decision", urgency: "critical", created_at: 1,
+      deadline: 9_999_999_999, default_key: "refuse",
+      options: [{ key: "refuse", label: "Keep refusing" }, { key: "launch", label: "Launch" }],
+    },
+    // The ask nobody else can answer, normal urgency and brand new.
+    {
+      id: "d-grant", kind: "decision", urgency: "normal", created_at: 500,
+      options: [{ key: "allow", label: "Allow" }, { key: "deny", label: "Deny" }],
+    },
+  ].map((raw) => cards.cardFromRaw({ status: "open", ...raw }));
+  assert.deepEqual(cards.rankCards(shaped, 600).map((c) => c.id), ["d-grant", "d-revenue"]);
+  assert.equal(cards.hasAutoDefault(shaped[0]), true);
+  assert.equal(cards.isSelfAnswering(shaped[0]), true, "auto-default OR no-op suggestion");
+  assert.equal(cards.isSelfAnswering(shaped[1]), false);
+});
+
+test("rankCards: a no-op suggestion ('Skip', 'Keep it scheduled') yields; kind still leads", () => {
+  const shaped = [
+    { id: "d-share", kind: "decision", urgency: "high", created_at: 1, default_key: "skip",
+      options: [{ key: "share", label: "Share" }, { key: "skip", label: "Skip" }] },
+    { id: "d-wake", kind: "decision", urgency: "high", created_at: 2, deadline: 9_999_999_999, default_key: "keep",
+      options: [{ key: "keep", label: "Keep it scheduled (recommended)" }, { key: "fix", label: "Fix it" }] },
+    { id: "d-ask", kind: "decision", urgency: "low", created_at: 3,
+      options: [{ key: "a", label: "Approve" }, { key: "b", label: "Deny" }] },
+    // A BLOCKED card with a default still leads: a session is stopped on it.
+    { id: "d-stopped", kind: "blocked", urgency: "low", created_at: 4, default_key: "skip",
+      options: [{ key: "go", label: "Go" }, { key: "skip", label: "Skip" }] },
+  ].map((raw) => cards.cardFromRaw({ status: "open", ...raw }));
+  assert.deepEqual(cards.rankCards(shaped, 10).map((c) => c.id).slice(0, 2), ["d-stopped", "d-ask"]);
+  assert.equal(cards.isNoopSuggestion(shaped[0]), true);
+  assert.equal(cards.isNoopSuggestion(shaped[1]), true, "a suffix does not defeat the match");
+  assert.equal(cards.isNoopSuggestion(shaped[2]), false);
+});
+
 
 test("listOpen and scanAsync both return rank order: the d-nwh4 shape leads a 41-card queue", async () => {
   const dir = tmpStore();

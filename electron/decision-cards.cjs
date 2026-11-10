@@ -249,14 +249,29 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
 //
 // Oldest-first put the Proton Bridge credential card at #28 of 41: the one ask
 // only the owner can answer sat under 27 PR reviews and CI notices. This is the
-// SAME key as the awdk store's rank_key; both are pinned by the shared fixture
-// awdk/tests/fixtures/card_rank_cases.json (decision-cards.test.cjs asserts these
-// constants equal its fields, then runs every case):
-//   1. credential / blocked first;  2. urgency (unknown = normal);
-//   3. fresh before straggler (open and older than stale_after_seconds);
-//   4. created_at, oldest first;    5. id (code-point order, like Python's str <).
+// SAME key as the awask/adk store's rank_key; both are pinned by the shared
+// fixture awdk/tests/fixtures/card_rank_cases.json (decision-cards.test.cjs
+// asserts these constants equal its fields, then runs every case):
+//   1. credential / blocked first;
+//   2. cards that ANSWER THEMSELVES (a deadline that applies its own default) or
+//      whose suggestion is a no-op ("Skip") yield to every card needing a human;
+//   3. urgency (unknown = normal);
+//   4. fresh before straggler (open and older than stale_after_seconds);
+//   5. created_at, oldest first;  6. id (code-point order, like Python's str <).
+//
+// Term 2 exists because of the 2026-11-10 owner report: a 43 h revenue-governor
+// card that picks "Keep refusing" for him at its deadline, and awrise cards that
+// pick "Keep it scheduled" in 19 h, floated on top of 99+ and hid a permission
+// grant a live session was STOPPED on. A card that needs no answer is not a
+// needs-you card, however old or urgent it is (kind still wins: a credential or
+// blocked card leads even when it carries a default).
 const RANK_RULES = Object.freeze({
   rank_first_kinds: Object.freeze(["credential", "blocked"]),
+  // A suggested answer that changes nothing: the owner's own words for the
+  // repeat offenders ("Skip", "Keep refusing", "Keep it scheduled").
+  noop_labels: Object.freeze(["skip", "keep refusing", "keep it scheduled"]),
+  // 1 = yields to every card with no default; 0 = needs the owner.
+  auto_default_rank: 1,
   urgency_rank: Object.freeze({ critical: 0, high: 1, normal: 2, low: 3 }),
   stale_after_seconds: 604800,
 });
@@ -276,6 +291,46 @@ function isNeedsYou(card) {
   return RANK_RULES.rank_first_kinds.includes(kind) || card.blocking === true;
 }
 
+/** The label of the option this card suggests (`defaultKey`), "" when it has none. */
+function suggestedLabel(card) {
+  const key = String((card && card.defaultKey) || "").trim();
+  if (!key) return "";
+  const options = Array.isArray(card && card.options) ? card.options : [];
+  const hit = options.find((o) => o && String(o.key) === key)
+    || options.find((o) => o && String(o.key).toLowerCase() === key.toLowerCase());
+  return hit ? String(hit.label || hit.key || "") : "";
+}
+
+/** Matches `noop` at the START of a label on a word boundary ("Skip", "Skip this", "Keep it scheduled (19 h)"). */
+function startsWithWord(label, noop) {
+  if (!label.startsWith(noop)) return false;
+  const next = label.charAt(noop.length);
+  return next === "" || !/[a-z0-9]/i.test(next);
+}
+
+/** The suggested answer changes nothing: "Skip", "Keep refusing", "Keep it scheduled". */
+function isNoopSuggestion(card) {
+  const label = suggestedLabel(card).trim().toLowerCase();
+  if (!label) return false;
+  return RANK_RULES.noop_labels.some((noop) => startsWithWord(label, noop));
+}
+
+/**
+ * The card answers itself: a deadline that applies its declared default when it
+ * passes. Not answering is then a choice the STORE makes, so the card never
+ * needs the queue's top slot. Clock-independent on purpose -- the key must not
+ * change as the deadline crosses.
+ */
+function hasAutoDefault(card) {
+  if (!card || typeof card !== "object") return false;
+  return Number(card.deadline) > 0 && String(card.defaultKey || "").trim() !== "";
+}
+
+/** A card the owner does not have to touch: it will answer itself, or its answer is a no-op. */
+function isSelfAnswering(card) {
+  return hasAutoDefault(card) || isNoopSuggestion(card);
+}
+
 /** The rank key as a tuple -- the store's rank_key, term for term. */
 function rankKey(card, nowSec) {
   const kind = String(card.kind || "").trim().toLowerCase();
@@ -283,6 +338,7 @@ function rankKey(card, nowSec) {
   const created = Number(card.createdAt) || 0;
   return [
     RANK_RULES.rank_first_kinds.includes(kind) ? 0 : 1,
+    isSelfAnswering(card) ? RANK_RULES.auto_default_rank : 0,
     urgency === undefined ? 2 : urgency,
     nowSec - created > staleAfterSeconds() ? 1 : 0,
     created,
@@ -1113,6 +1169,11 @@ module.exports = {
   scanAsync,
   RANK_RULES,
   isNeedsYou,
+  hasAutoDefault,
+  isNoopSuggestion,
+  isSelfAnswering,
+  suggestedLabel,
+  rankKey,
   rankCards,
   partitionCards,
   fetchDaemonOpen,

@@ -2702,7 +2702,15 @@ async function nudgeAct(action, key) {
     return { ok: true, pending };
   }
   if (what === "open" || what === "more") {
-    hookValue("open", what === "more" ? null : card.id);
+    // "more" is the QUEUE, not "open some card": the Inbox opened on whatever it
+    // last showed, which is how a card a session was blocked on stayed unfound
+    // (owner, 2026-11-10, 99+ waiting). Falls back to the Inbox when the desk did
+    // not wire a list (a stripped build).
+    if (what === "more" && typeof (attentionHooks && attentionHooks.openList) === "function") {
+      hookValue("openList");
+    } else {
+      hookValue("open", what === "more" ? null : card.id);
+    }
     endNudge("acted");
     return { ok: true };
   }
