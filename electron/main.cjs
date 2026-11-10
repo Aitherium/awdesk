@@ -195,6 +195,10 @@ const recorder = require("./recorder-window.cjs");
 // The floating ask orb (owner, 2026-11-02): orb-window.cjs owns both windows
 // and every desk:orb-* channel; main only starts it and routes its registry rows.
 const orbWindow = require("./orb-window.cjs");
+// The list behind the fairy's "N more waiting ›" (owner, 2026-11-10: 99+ cards,
+// and the one a session was stopped on could not be found). fairy-queue.cjs is
+// the pure view; this module owns the window and opens a card on openInbox.
+const fairyQueueWindow = require("./fairy-queue-window.cjs");
 // [audio] System speakers + microphone (Core Audio through one warm PowerShell);
 // audio-control.cjs owns the OSD + the Audio flyout. Registry rows: group "audio".
 const audio = require("./audio-control.cjs");
@@ -5982,6 +5986,13 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // from the registry rows (orb.* / spirit.*), so there is no second key list
     // here. The spirit gets the desk's own voice, command runner, browser and
     // avatar rects -- it never invents a second TTS, runner or body list.
+    // The waiting list (fairy-queue-window.cjs) reads main's ONE ranked queue and
+    // opens a card on the same Inbox door every other surface uses. Nothing there
+    // answers a card; the Inbox stays the only answer surface.
+    fairyQueueWindow.configure({
+      cards: () => openDecisions,
+      openCard: (id) => openInbox(id),
+    });
     orbWindow.startOrb({
       speak: (text, { slotId = null, origin = "desk:spirit" } = {}) =>
         speakAloud(text, undefined, undefined, slotId || "slot0", origin),
@@ -5992,6 +6003,13 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       attention: {
         answer: (id, key) => answerDeckCard(id, key, null),
         open: (id) => openInbox(id || null),
+        // "N more waiting ›" (owner, 2026-11-10): the whole queue as ONE searchable
+        // list, not the Inbox on whatever card it last showed. Read-only; a row
+        // opens that card on `open` above.
+        openList: () => {
+          fairyQueueWindow.openQueue();
+          return true;
+        },
         quiet: () => fairyQuietReason(),
         idleMs: () => {
           try { return powerMonitor.getSystemIdleTime() * 1000; } catch { return 0; }

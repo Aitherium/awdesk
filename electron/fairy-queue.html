@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline'; img-src data:;" />
+<title>Waiting on you</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<!--
+  fairy-queue.html -- the list the fairy's "N more waiting ›" link opens.
+
+  Owner, 2026-11-10: 99+ cards waited and the one a live session was stopped on
+  could not be found. This page renders fairy-queue.cjs's queueView() (computed in
+  main, node --test'd): one entry per source+title with a repeat count, needs-you
+  first, a text search over title/source/body, source chips, and a toggle that
+  folds the cards which answer themselves out of the way.
+
+  READ-ONLY: clicking a row opens that card on the desk's normal answer path. The
+  page answers nothing, dismisses nothing, and cannot write to the store.
+-->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--fk-bg, #050507); color: var(--fk-ink, #EDEFF5);
+    font: 13px/1.45 var(--font-sans, system-ui); }
+  body { display: flex; flex-direction: column; }
+  header { padding: 14px 16px 10px; border-bottom: 1px solid var(--fk-hairline, rgba(255,255,255,.08)); display: grid; gap: 10px; }
+  .titlebar { display: flex; align-items: baseline; gap: 10px; }
+  .titlebar h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .01em; }
+  .titlebar .counts { margin-left: auto; font-size: 11px; color: var(--fk-dim, rgba(237,239,245,.55)); font-variant-numeric: tabular-nums; }
+  .titlebar button { font: inherit; font-size: 11px; padding: 3px 9px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--fk-hairline, rgba(255,255,255,.14)); background: transparent; color: inherit; }
+  .titlebar button:hover { background: rgba(255,255,255,.06); }
+  .search { width: 100%; font: inherit; padding: 8px 10px; border-radius: 7px;
+    border: 1px solid var(--fk-hairline, rgba(255,255,255,.12)); background: var(--card, #12121a); color: inherit; }
+  .search:focus { outline: none; border-color: var(--fk-accent, #5EC9CC); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font: inherit; font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--fk-hairline, rgba(255,255,255,.14)); background: transparent; color: var(--fk-dim, rgba(237,239,245,.7)); }
+  .chip .n { margin-left: 5px; font-variant-numeric: tabular-nums; opacity: .75; }
+  .chip[aria-pressed="true"] { border-color: var(--fk-accent, #5EC9CC); color: var(--fk-ink, #EDEFF5); background: rgba(94,201,204,.12); }
+  .opts { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--fk-dim, rgba(237,239,245,.6)); }
+  .opts label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  main { flex: 1; overflow-y: auto; padding: 10px 12px 18px; }
+  .row { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: start;
+    padding: 10px 10px; border: 1px solid var(--fk-hairline, rgba(255,255,255,.08)); border-radius: 8px;
+    background: var(--fk-raise, rgba(255,255,255,.025)); margin-bottom: 8px; cursor: pointer; }
+  .row:hover { background: rgba(255,255,255,.06); }
+  .row.needs { border-left: 3px solid var(--destructive, #ff6b6b); }
+  .row .main { min-width: 0; display: grid; gap: 3px; }
+  .row .t { font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .meta { font-size: 11px; color: var(--fk-dim, rgba(237,239,245,.55)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .side { display: grid; justify-items: end; gap: 4px; font-size: 10.5px; color: var(--fk-dim, rgba(237,239,245,.55)); white-space: nowrap; }
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--fk-hairline, rgba(255,255,255,.14));
+    background: transparent; color: inherit; font-family: inherit; cursor: pointer; }
+  .badge.repeat { border-color: rgba(94,201,204,.5); color: var(--fk-accent, #5EC9CC); }
+  .badge.self { border-color: rgba(255,255,255,.1); opacity: .8; }
+  .badge.needs { border-color: rgba(255,107,107,.55); color: #ff8b8b; }
+  .repeats { margin: -4px 0 8px 14px; display: grid; gap: 3px; }
+  .repeats button { text-align: left; font: inherit; font-size: 11px; padding: 4px 8px; border-radius: 6px; cursor: pointer;
+    border: 1px dashed var(--fk-hairline, rgba(255,255,255,.12)); background: transparent; color: var(--fk-dim, rgba(237,239,245,.65)); }
+  .repeats button:hover { color: var(--fk-ink, #EDEFF5); border-color: var(--fk-accent, #5EC9CC); }
+  .empty { padding: 28px 10px; text-align: center; color: var(--fk-dim, rgba(237,239,245,.55)); }
+  footer { padding: 8px 16px; border-top: 1px solid var(--fk-hairline, rgba(255,255,255,.08));
+    font-size: 10.5px; color: var(--fk-dim, rgba(237,239,245,.45)); display: flex; gap: 10px; }
+  footer .hint { margin-left: auto; }
+  mark { background: rgba(94,201,204,.22); color: inherit; border-radius: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="titlebar">
+    <h1>Waiting on you</h1>
+    <span class="counts" id="counts"></span>
+    <button id="close" title="Close the list (Esc)">Close</button>
+  </div>
+  <input class="search" id="q" type="search" autofocus
+    placeholder="Search every waiting card — title, source or body" aria-label="Search waiting cards" />
+  <div class="chips" id="chips" role="group" aria-label="Sources"></div>
+  <div class="opts">
+    <label><input type="checkbox" id="hide-self" /> Hide cards that answer themselves</label>
+    <span class="hint" id="hint">Needs-you cards stay on top.</span>
+  </div>
+</header>
+<main id="list" aria-live="polite"></main>
+<footer>
+  <span>Click a card to open it in the Inbox and answer it there — this list never answers for you.</span>
+  <span class="hint">Esc closes</span>
+</footer>
+<script>
+"use strict";
+(() => {
+  const api = window.aitherQueue;
+  const q = document.getElementById("q");
+  const chips = document.getElementById("chips");
+  const hideSelf = document.getElementById("hide-self");
+  const list = document.getElementById("list");
+  const counts = document.getElementById("counts");
+  const state = { source: "", query: "", hideSelfAnswering: false };
+  const expanded = new Set();
+
+  /** "3 h", "2 d" -- the same shape the whisper uses. */
+  function age(createdAt) {
+    const sec = Math.max(0, Date.now() / 1000 - (Number(createdAt) || 0));
+    if (sec < 60) return "just now";
+    const m = Math.round(sec / 60);
+    if (m < 60) return m + " min";
+    const h = Math.round(m / 60);
+    if (h < 48) return h + " h";
+    return Math.round(h / 24) + " d";
+  }
+
+  /** Append `text` with every search token highlighted (plain DOM, never innerHTML). */
+  function highlight(el, text, tokens) {
+    const source = String(text || "");
+    if (!tokens.length) { el.textContent = source; return; }
+    const lower = source.toLowerCase();
+    let at = 0;
+    while (at < source.length) {
+      let best = -1; let bestToken = "";
+      for (const token of tokens) {
+        const found = lower.indexOf(token, at);
+        if (found >= 0 && (best < 0 || found < best)) { best = found; bestToken = token; }
+      }
+      if (best < 0) { el.appendChild(document.createTextNode(source.slice(at))); break; }
+      if (best > at) el.appendChild(document.createTextNode(source.slice(at, best)));
+      const mark = document.createElement("mark");
+      mark.textContent = source.slice(best, best + bestToken.length);
+      el.appendChild(mark);
+      at = best + bestToken.length;
+    }
+  }
+
+  function row(entry, tokens) {
+    const node = document.createElement("div");
+    node.className = "row" + (entry.needsYou ? " needs" : "");
+    node.setAttribute("role", "button");
+    node.tabIndex = 0;
+    const main = document.createElement("div");
+    main.className = "main";
+    const title = document.createElement("div");
+    title.className = "t";
+    highlight(title, entry.title || "(untitled card)", tokens);
+    title.title = entry.title || "";
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const bits = [entry.source, entry.suggested, entry.summary].filter(Boolean);
+    highlight(meta, bits.join(" · "), tokens);
+    main.append(title, meta);
+    const side = document.createElement("div");
+    side.className = "side";
+    if (entry.needsYou) {
+      const b = document.createElement("span"); b.className = "badge needs"; b.textContent = "needs you";
+      side.appendChild(b);
+    }
+    if (entry.selfAnswering) {
+      const b = document.createElement("span"); b.className = "badge self"; b.textContent = "answers itself";
+      side.appendChild(b);
+    }
+    if (entry.count > 1) {
+      const b = document.createElement("button");
+      b.className = "badge repeat";
+      b.textContent = "×" + entry.count;
+      b.title = entry.count + " cards from " + entry.source + " with this title — show them";
+      b.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (expanded.has(entry.id)) expanded.delete(entry.id);
+        else expanded.add(entry.id);
+        refresh();
+      });
+      side.appendChild(b);
+    }
+    const when = document.createElement("span");
+    when.textContent = age(entry.createdAt);
+    side.appendChild(when);
+    node.append(main, side);
+    const openRow = () => { void api.open(entry.id); };
+    node.addEventListener("click", openRow);
+    node.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openRow(); }
+    });
+    return node;
+  }
+
+  /** A collapsed entry with repeats can be unfolded: one line per underlying card. */
+  function repeats(entry) {
+    const box = document.createElement("div");
+    box.className = "repeats";
+    for (const id of entry.ids) {
+      const b = document.createElement("button");
+      b.textContent = "Open " + id;
+      b.addEventListener("click", () => { void api.open(id); });
+      box.appendChild(b);
+    }
+    return box;
+  }
+
+  function render(view) {
+    const tokens = state.query.toLowerCase().split(/\s+/).filter(Boolean);
+    counts.textContent = view.shownEntries === view.totalEntries
+      ? view.totalCards + " waiting"
+      : view.shownCards + " of " + view.totalCards + " waiting";
+    chips.replaceChildren();
+    const all = document.createElement("button");
+    all.className = "chip";
+    all.setAttribute("aria-pressed", state.source === "" ? "true" : "false");
+    all.textContent = "All";
+    const allN = document.createElement("span"); allN.className = "n"; allN.textContent = String(view.filteredEntries);
+    all.appendChild(allN);
+    all.addEventListener("click", () => { state.source = ""; refresh(); });
+    chips.appendChild(all);
+    for (const chip of view.sources) {
+      const b = document.createElement("button");
+      b.className = "chip";
+      b.setAttribute("aria-pressed", state.source.toLowerCase() === chip.label.toLowerCase() ? "true" : "false");
+      b.textContent = chip.label;
+      const n = document.createElement("span"); n.className = "n"; n.textContent = String(chip.count);
+      b.appendChild(n);
+      b.addEventListener("click", () => { state.source = chip.label; refresh(); });
+      chips.appendChild(b);
+    }
+    list.replaceChildren();
+    if (!view.entries.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = view.totalEntries
+        ? "No card matches that."
+        : "Nothing waiting — every session is unblocked.";
+      list.appendChild(empty);
+      return;
+    }
+    for (const entry of view.entries) {
+      list.appendChild(row(entry, tokens));
+      if (entry.count > 1 && expanded.has(entry.id)) list.appendChild(repeats(entry));
+    }
+  }
+
+  let timer = null;
+  function refresh() {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(async () => {
+      try {
+        render(await api.list({ ...state }));
+      } catch {
+        counts.textContent = "could not read the queue";
+      }
+    }, 90);
+  }
+
+  q.addEventListener("input", () => { state.query = q.value; refresh(); });
+  hideSelf.addEventListener("change", () => { state.hideSelfAnswering = hideSelf.checked; refresh(); });
+  document.getElementById("close").addEventListener("click", () => { void api.close(); });
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (q.value) { q.value = ""; state.query = ""; refresh(); return; }
+    void api.close();
+  });
+  if (typeof api.onRefresh === "function") api.onRefresh(refresh);
+  window.addEventListener("focus", refresh);
+  setInterval(refresh, 5000);
+  refresh();
+})();
+</script>
+</body>
+</html>

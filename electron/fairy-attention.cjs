@@ -97,6 +97,36 @@ function createdMs(card) {
   return (Number(card && card.createdAt) || 0) * 1000;
 }
 
+/**
+ * The suggested answers that change nothing. MUST equal
+ * decision-cards.cjs RANK_RULES.noop_labels: the queue ranks these cards below
+ * ones needing the owner, and the fairy must not shout about them either.
+ */
+const NOOP_SUGGESTION_LABELS = Object.freeze(["skip", "keep refusing", "keep it scheduled"]);
+
+/** The label of the option the card suggests (`defaultKey`), lowercased. */
+function suggestedText(card) {
+  const key = lower(card && card.defaultKey);
+  if (!key) return "";
+  const options = Array.isArray(card && card.options) ? card.options : [];
+  const hit = options.find((o) => o && lower(o.key) === key);
+  return hit ? lower(hit.label || hit.key) : "";
+}
+
+/**
+ * The card's suggested answer is a NO-OP ("Skip", "Keep it scheduled"): picking
+ * it changes nothing, and the store will pick it by itself at the deadline.
+ * Owner, 2026-11-10: a 43 h "paid launch refused" card that repeats and an awrise
+ * streak card ("picks 'Keep it scheduled' for you in 19 h") kept fluttering over
+ * the one ask that mattered. Such a card glows at most. A deadline with a REAL
+ * recommendation still escalates: deciding before it passes is the point.
+ */
+function noopSuggestion(card) {
+  const label = suggestedText(card);
+  return NOOP_SUGGESTION_LABELS.some((noop) => label === noop
+    || (label.startsWith(noop) && !/[a-z0-9]/i.test(label.charAt(noop.length))));
+}
+
 /** Older than `staleMs`: the badge and the list only, never a whisper on its own. */
 function isStale(card, nowMs = Date.now(), cfg = DEFAULTS) {
   const born = createdMs(card);
@@ -168,6 +198,11 @@ function importance(card, nowMs, mem = {}, cfg = DEFAULTS) {
       else if (left <= 2 * HOUR) score = Math.min(3, score + 1);
     }
   }
+  // A no-op suggestion ("Skip", "Keep it scheduled") is not a person waiting: the
+  // card glows at most and its deadline never escalates it. ("Keep nudging me"
+  // returned above: the owner's own ask outranks this.) Needs-you kinds are never
+  // demoted. A deadline with a REAL recommendation still escalates.
+  if (!blocked && kind !== "credential" && noopSuggestion(card)) score = Math.min(score, 1);
   if (age > cfg.freshMs && kind !== "credential" && urgency !== "critical") score = Math.min(score, 1);
   if (age > cfg.staleMs) score = Math.min(score, 0);
   // "Later" means it matters, just not then. When later comes, it comes back louder.
@@ -571,6 +606,8 @@ module.exports = {
   LEVEL,
   DEFAULTS,
   ackOnly,
+  noopSuggestion,
+  NOOP_SUGGESTION_LABELS,
   isStale,
   sameText,
   moreLabel,

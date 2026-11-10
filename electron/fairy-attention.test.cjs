@@ -51,6 +51,25 @@ test("a near deadline lifts a card; inside 30 min it insists", () => {
   assert.equal(fa.importance(card({ deadline: sec(NOW + 20 * MIN) }), NOW), 3);
 });
 
+test("a no-op suggestion ('Skip', 'Keep it scheduled') glows at most, deadline or not", () => {
+  const skip = card({
+    deadline: sec(NOW + 10 * MIN),
+    options: [{ key: "share", label: "Share" }, { key: "skip", label: "Skip" }],
+    defaultKey: "skip",
+  });
+  assert.equal(fa.noopSuggestion(skip), true);
+  assert.equal(fa.importance(skip, NOW), 1, "a 10-min deadline would be 3 -- it is a no-op answer");
+  const scheduled = card({
+    urgency: "critical",
+    deadline: sec(NOW + 40 * MIN),
+    options: [{ key: "keep", label: "Keep it scheduled (19 h)" }, { key: "stop", label: "Stop it" }],
+    defaultKey: "keep",
+  });
+  assert.equal(fa.importance(scheduled, NOW), 1);
+  const real = card({ deadline: sec(NOW + 10 * MIN), defaultKey: "wait" });
+  assert.equal(fa.noopSuggestion(real), false, "a real recommendation is not a no-op");
+});
+
 test("keep pins at the top, mute drops to the badge, later comes back louder", () => {
   const c = card();
   assert.equal(fa.importance(c, NOW, fa.recordKeep({})), 3);
