@@ -22,10 +22,12 @@
  *      shown and nothing else is called (the fix needs an administrator and a
  *      reboot; the desk never elevates).
  *   5. The receipt becomes a verdict-free report card: counts read from the real
- *      sandbox-mcp fields, the digest the sandbox itself executed (compared with
- *      the card's), the run folder (only when it resolves inside
- *      ``%LOCALAPPDATA%\sandbox-mcp\runs``), and the words "heuristics, not a
- *      safety verdict".
+ *      sandbox-mcp fields (or from awdk's capped ``counts`` summary), the digest
+ *      the sandbox itself executed (compared with the card's), the run folder
+ *      (only when it resolves inside ``%LOCALAPPDATA%\sandbox-mcp\runs``), and
+ *      the words "heuristics, not a safety verdict". A run that never happened
+ *      (daemon down, timeout, HTTP error, tool refusal) is a PROBLEM card --
+ *      "The sandbox did not run" -- never a report with "Exit ?".
  *   6. One detonation at a time: a second request while one holds the slot gets a
  *      busy card, never a second call.
  *
@@ -211,6 +213,25 @@ async function inspectTarget(target, { fs = nodeFs, path = nodePath } = {}) {
 }
 
 /**
+ * The name a staged copy is written under.
+ *
+ * awdk refuses a host path carrying ``& | < > ^ " % !`` (its own metacharacter
+ * check on the tool argument), and that refusal lands AFTER the owner clicked
+ * Detonate -- a real installer called ``Q&A Tools!.exe`` staged, hashed and
+ * confirmed, then died at the call with ``bad_args``. The copy is therefore
+ * written under a name that keeps the extension (the sandbox dispatches on it)
+ * and replaces every character outside ``[A-Za-z0-9._ -]`` with ``_``. The
+ * ORIGINAL name stays on the confirm card, as text.
+ */
+function stagedName(name, path = nodePath) {
+  const original = String(name == null ? "" : name);
+  const ext = path.extname(original);
+  const base = ext ? original.slice(0, original.length - ext.length) : original;
+  const scrub = (value) => value.replace(/[^A-Za-z0-9._ -]/g, "_");
+  return `${scrub(base) || "sample"}${scrub(ext)}`;
+}
+
+/**
  * Copy one inspected file into a private per-request folder inside the desk's
  * own app-data directory, then hash THE COPY. The copy is a new file the desk
  * creates (``wx``) inside a new directory it creates, so it does not inherit the
@@ -228,7 +249,8 @@ async function stageTarget(info, {
   const safe = String(token).replace(/[^A-Za-z0-9._-]/g, "_");
   const unique = `${safe}-${nodeCrypto.randomBytes(4).toString("hex")}`;
   const dir = path.join(root, `request-${unique}`);
-  const dest = path.join(dir, info.name);
+  const name = stagedName(info.name, path);
+  const dest = path.join(dir, name);
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch (error) {
@@ -237,7 +259,7 @@ async function stageTarget(info, {
   try {
     const size = await copyStagedFile(info.path, dest, { fs, limit: maxBytes });
     const sha256 = await sha256File(dest, { fs });
-    return { ok: true, path: dest, dir, size, sha256 };
+    return { ok: true, path: dest, dir, name, size, sha256 };
   } catch (error) {
     // Only the one file this request created, by its exact path; then its folder
     // (non-recursive, so it is only removed when it is empty).
@@ -307,13 +329,17 @@ function setText(element, value, max = MAX_GUEST_CHARS) {
 
 /** The ONE confirm card. Its `token` is what `confirm()` accepts. */
 function confirmCard(info, token) {
+  const shownName = info.stagedName || "";
+  const renamed = shownName && shownName !== info.name;
   return {
     kind: "confirm",
     title: "Detonate a file in Windows Sandbox?",
     file: info.path,
     staged: info.staged,
     stagingPath: info.staged,
+    // The owner's ORIGINAL name, as text. `stagedName` is the sanitised copy name.
     name: info.name,
+    stagedName: shownName,
     size: info.size,
     sizeLabel: sizeLabel(info.size),
     sha256: info.sha256,
@@ -326,13 +352,16 @@ function confirmCard(info, token) {
     lines: [
       `File: ${info.path}`,
       `Staged copy: ${info.staged}`,
+      renamed
+        ? `Staged as "${shownName}": the sandbox tool refuses some characters in a filename; the file you picked is still ${info.name}.`
+        : "",
       `Size: ${sizeLabel(info.size)}`,
       `SHA-256 of the copy: ${info.sha256}`,
       "Only the staged copy runs, and the copy is re-hashed when you click; if it changed, nothing runs.",
       "A fresh, disposable Windows Sandbox runs this file with networking off.",
       `Files up to ${MAX_STAGED_BYTES.toLocaleString("en-US")} bytes (2.0 GiB) are accepted.`,
       "The sandbox is deleted after the run. Its findings are heuristics, not a safety verdict.",
-    ],
+    ].filter(Boolean),
   };
 }
 
@@ -388,6 +417,19 @@ function receiptData(receipt) {
   return data;
 }
 
+/**
+ * The receipt itself: ``callDeskTool`` answers ``{ok, status, result}``, and the
+ * receipt is ``result``. Older/POST failure answers have no ``result`` and ARE
+ * the receipt. Never throws.
+ */
+function receiptOf(result) {
+  if (result && typeof result === "object" && result.result
+    && typeof result.result === "object" && !Array.isArray(result.result)) {
+    return result.result;
+  }
+  return result && typeof result === "object" ? result : {};
+}
+
 function arrayOf(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -418,16 +460,35 @@ function persistenceCount(diff) {
  * Verdict-free counts from the REAL receipt. ``null`` = not reported, never a
  * fabricated zero. ``tree`` is the audited process tree INCLUDING the process the
  * sandbox agent launched (detonate.js line 189: ``r.tree = t.tree``).
+ *
+ * A CAPPED receipt (past awdk's ``_MAX_SANDBOX_CHARS``) carries no ``data``, so
+ * awdk hands the desk a summarised ``counts`` object instead:
+ * ``{processes, lookups, connections, services, persistence, scheduled_tasks,
+ * findings}``. Those numbers are authoritative when present; otherwise every
+ * count is derived from the same fields upstream's findings list uses.
  */
 function reportCounts(result) {
-  const receipt = (result && result.result) || result || {};
+  const receipt = receiptOf(result);
   const data = receiptData(receipt);
+  const summary = receipt.counts && typeof receipt.counts === "object" ? receipt.counts : {};
   const list = (value) => (Array.isArray(value) ? value.length : null);
+  const diff = data.diff && typeof data.diff === "object" ? data.diff : null;
+  const files = diff && diff.files && typeof diff.files === "object" ? diff.files : {};
+  const addedServices = diff
+    ? arrayOf(diff.services).filter((service) => service && service.change === "added").length
+    : null;
+  const addedTasks = diff
+    ? arrayOf(files.added).filter((file) => file && typeof file.path === "string" && TASK_FILE.test(file.path)).length
+    : null;
+  const pick = (key, fallback) => (Number.isFinite(summary[key]) ? summary[key] : fallback);
   return {
-    processes: list(data.tree),
-    lookups: list(data.lookups),
-    connections: list(data.connections),
-    persistence: persistenceCount(data.diff),
+    processes: pick("processes", list(data.tree)),
+    lookups: pick("lookups", list(data.lookups)),
+    connections: pick("connections", list(data.connections)),
+    services: pick("services", addedServices),
+    persistence: pick("persistence", persistenceCount(diff)),
+    scheduled_tasks: pick("scheduled_tasks", addedTasks),
+    findings: pick("findings", list(data.findings)),
   };
 }
 
@@ -437,7 +498,10 @@ function countLine(counts) {
     label("Processes", counts.processes),
     label("Name lookups", counts.lookups),
     label("Connection attempts", counts.connections),
+    label("Services added", counts.services),
     label("Persistence entries", counts.persistence),
+    label("Scheduled tasks", counts.scheduled_tasks),
+    label("Findings", counts.findings),
   ].join(" · ");
 }
 
@@ -451,10 +515,14 @@ function findingsText(data) {
 
 /** The report card. The run folder is offered ONLY when it is lexically under the runs root. */
 function reportCard(result, { root = runsRoot(), path = nodePath, expectedSha256 = null } = {}) {
-  const receipt = (result && result.result) || result || {};
+  const receipt = receiptOf(result);
   const data = receiptData(receipt);
-  // awdk returns {ok, command, truncated: true, preview} once the receipt passes
-  // _MAX_SANDBOX_CHARS (awdk/adk/desktop/tools.py:_sandbox_receipt).
+  // awdk caps the receipt once it passes _MAX_SANDBOX_CHARS
+  // (awdk/adk/desktop/tools.py:_sandbox_receipt). The CURRENT capped shape keeps
+  // {ok, command, exit_code, timed_out, run_dir, sha256, findings_are, error,
+  //  counts, truncated:true, preview}; the OLD one was
+  // {ok, command, truncated:true, preview, findings_are} -- no run_dir, no
+  // exit_code, no counts, no sha256 -- which is why it gets its own line.
   const capped = receipt.truncated === true;
   const runDirRaw = [receipt.run_dir, receipt.runDir, data.runDir, data.outDir]
     .find((value) => typeof value === "string" && value.trim());
@@ -464,9 +532,15 @@ function reportCard(result, { root = runsRoot(), path = nodePath, expectedSha256
   const counts = reportCounts(receipt);
   const report = receipt.report && typeof receipt.report === "object" ? receipt.report : {};
   const reportTruncated = report.truncated === true;
-  // data.sha256 is upstream's own digest of the host bytes it copied into the
-  // guest (detonate.js line 134) -- the digest the run actually executed.
-  const executedSha256 = typeof data.sha256 === "string" ? data.sha256.trim().toLowerCase() : "";
+  // The digest the run actually executed: data.sha256 is upstream's own digest
+  // of the host bytes it copied into the guest (detonate.js line 134); a capped
+  // receipt keeps the same digest at the top level as receipt.sha256.
+  const executedRaw = typeof data.sha256 === "string" && data.sha256.trim()
+    ? data.sha256
+    : typeof receipt.sha256 === "string" && receipt.sha256.trim()
+      ? receipt.sha256
+      : "";
+  const executedSha256 = executedRaw.trim().toLowerCase();
   const expected = typeof expectedSha256 === "string" ? expectedSha256.trim().toLowerCase() : "";
   const digestMatch = expected && executedSha256 ? expected === executedSha256 : null;
   const guestSource = findingsText(data)
@@ -479,6 +553,17 @@ function reportCard(result, { root = runsRoot(), path = nodePath, expectedSha256
       : expected
         ? `SHA-256: the receipt did not report the digest it ran; the staged copy was ${expected}.`
         : "";
+  // One line about the cap, and never a second one that contradicts it.
+  const cappedLine = capped
+    ? runDir
+      ? "Report too large to show here; open the run folder."
+      : "Report too large; this awdk is older -- update it to see the run folder."
+    : "";
+  const folderLine = runDir
+    ? `Run folder: ${runDir}`
+    : capped
+      ? ""
+      : "The receipt did not report a run folder the desk may open.";
   return {
     kind: "report",
     title: "Sandbox report",
@@ -497,14 +582,76 @@ function reportCard(result, { root = runsRoot(), path = nodePath, expectedSha256
     findingsNote: FINDINGS_NOTE,
     error: plainText(receipt.error || "", 800),
     lines: [
-      `Exit ${exit === null ? "?" : exit}${receipt.timed_out ? " (timed out)" : ""}`,
+      exit === null
+        ? capped
+          ? "Exit: not reported (this awdk capped the receipt)"
+          : "Exit ?"
+        : `Exit ${exit}${receipt.timed_out ? " (timed out)" : ""}`,
       countLine(counts),
       digestLine,
-      capped ? "Report too large to show here; open the run folder." : "",
+      cappedLine,
       reportTruncated ? "The sandbox's report.json was larger than the desk reads whole; the run folder has all of it." : "",
-      runDir ? `Run folder: ${runDir}` : "The receipt did not report a run folder the desk may open.",
+      folderLine,
       "These findings are " + FINDINGS_NOTE + ".",
     ].filter(Boolean),
+  };
+}
+
+/**
+ * Daemon answers that mean NO run happened: the tool was never called, or it
+ * refused the argument. A receipt that merely says ``ok: false`` while carrying
+ * run evidence (an exit code, a data block, a capped summary) is a REAL run and
+ * belongs on a report card.
+ */
+function isRunReceipt(result) {
+  const receipt = receiptOf(result);
+  if (!receipt || typeof receipt !== "object") return false;
+  if (Number.isFinite(receipt.exit_code) || typeof receipt.timed_out === "boolean") return true;
+  if (receipt.truncated === true) return true;
+  if (receipt.counts && typeof receipt.counts === "object") return true;
+  if (receipt.data && typeof receipt.data === "object") return true;
+  if (receipt.report && typeof receipt.report === "object") return true;
+  if (typeof receipt.sha256 === "string" && receipt.sha256.trim()) return true;
+  if (typeof receipt.run_dir === "string" && receipt.run_dir.trim()) return true;
+  return false;
+}
+
+/** A transport-level failure of one daemon call: nothing about the file ran. */
+const TRANSPORT_REASONS = new Set(["unreachable", "timeout", "no_token"]);
+
+function isTransportFailure(result) {
+  if (!result || typeof result !== "object") return true;
+  if (TRANSPORT_REASONS.has(String(result.reason || ""))) return true;
+  return Number.isFinite(result.status) && result.status >= 400;
+}
+
+const FAILURE_TEXT = Object.freeze({
+  unreachable: "The harness daemon is not reachable, so nothing ran.",
+  timeout: "The harness daemon did not answer in time, so nothing ran.",
+  no_token: "No harness token is available, so the desk could not reach the daemon and nothing ran.",
+  bad_args: "The sandbox tool refused the request, so nothing ran.",
+  not_installed: "The sandbox tool is not installed in this harness, so nothing ran.",
+});
+
+/**
+ * A failure that is NOT a run: never a "Sandbox report" with "Exit ?", which
+ * reads as a detonation that produced an unknown exit code.
+ */
+function runFailureCard(result) {
+  const receipt = receiptOf(result);
+  const reason = String(
+    (result && result.reason) || receipt.reason || "",
+  );
+  const status = Number.isFinite(result && result.status) ? result.status : null;
+  const detail = plainText((result && result.error) || receipt.error || "", 800);
+  const what = FAILURE_TEXT[reason]
+    || (status ? `The harness daemon answered HTTP ${status}, so nothing ran.` : "The harness daemon did not run the file.");
+  return {
+    kind: "problem",
+    title: "The sandbox did not run",
+    reason: reason || "daemon_failed",
+    text: [what, detail].filter(Boolean).join(" "),
+    action: null,
   };
 }
 
@@ -687,7 +834,7 @@ function createSandboxDetonator({
       size: staged.size,
     };
     return {
-      card: confirmCard({ ...info, staged: staged.path, size: staged.size, sha256: staged.sha256 }, token),
+      card: confirmCard({ ...info, staged: staged.path, stagedName: staged.name, size: staged.size, sha256: staged.sha256 }, token),
       accepted: true,
       token,
     };
@@ -721,6 +868,12 @@ function createSandboxDetonator({
       }
       const doctor = await callTool(TOOL_DOCTOR, {}, { confirm: false });
       if (!doctorReady(doctor)) {
+        // A daemon that never answered is not a Windows Sandbox that needs a
+        // reboot: say the run did not happen instead of showing the fix card.
+        if (isTransportFailure(doctor)) {
+          log("sandbox doctor: the daemon did not answer");
+          return { card: runFailureCard(doctor), ran: false };
+        }
         log("sandbox doctor: not ready");
         return { card: doctorCard(doctor), ran: false };
       }
@@ -731,6 +884,12 @@ function createSandboxDetonator({
       );
       if (result && result.reason === "confirm_required") {
         return { card: problemCard(result.error || "the daemon demanded confirmation", result.reason), ran: false };
+      }
+      if (!isRunReceipt(result)) {
+        // Unreachable, timed out, an HTTP error, or the tool refused the
+        // argument: nothing ran, so the card must not read as a report.
+        log("sandbox detonate: the run never started");
+        return { card: runFailureCard(result), ran: false, result };
       }
       return { card: reportCard(result, { root, path, expectedSha256: held.sha256 }), ran: true, result };
     } finally {
@@ -787,19 +946,24 @@ module.exports = {
   findingsText,
   inspectTarget,
   isInside,
+  isRunReceipt,
+  isTransportFailure,
   localAbsolute,
   openRunFolder,
   parseDetonateUrl,
   persistenceCount,
   plainText,
   problemCard,
+  receiptOf,
   removeStaged,
   reportCard,
   reportCounts,
+  runFailureCard,
   runsRoot,
   setText,
   sha256File,
   sizeLabel,
   stageTarget,
+  stagedName,
   stagingRoot,
 };

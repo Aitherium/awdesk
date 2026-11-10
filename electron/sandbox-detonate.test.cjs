@@ -8,10 +8,17 @@
  * The receipt fixtures are the REAL shapes, not invented ones:
  *   - awdk/adk/desktop/tools.py `_sandbox_receipt`:
  *       {ok, command, exit_code, timed_out, data, run_dir, report,
- *        findings_are, error}  -- and, past 20k chars,
- *       {ok, command, truncated: true, preview, findings_are}
+ *        findings_are, error}
+ *   - and, past _MAX_SANDBOX_CHARS, the CURRENT capped shape:
+ *       {ok, command, exit_code, timed_out, run_dir, sha256, findings_are,
+ *        error, truncated: true, preview,
+ *        counts: {processes, lookups, connections, services, persistence,
+ *                 scheduled_tasks, findings}}
+ *     (the OLD capped shape kept no run_dir/exit_code/counts/sha256:
+ *       {ok, command, truncated: true, preview, findings_are})
  *   - awdk/adk/desktop/sandbox.py `read_report`:
- *       {found, path, truncated, json, text, data_note}
+ *       {found, path, truncated, json, text} -- only the fields the desk reads
+ *       are modelled here; the desk ignores awdk's data_note
  *   - shanselman/sandbox-mcp v1.2.0 src/detonate.js `detonate()` / `findings()`:
  *       data = {file, hostPath, sha256, tree, lookups, connections, diff,
  *               findings, windows, crashes, runDir, outDir, exitCode, ...}, with
@@ -47,7 +54,7 @@ const RUNS = path.join("C:", "Users", "t", "AppData", "Local", "sandbox-mcp", "r
 
 /** awdk's read_report() wrapper (adk/desktop/sandbox.py `read_report`). */
 function readReport() {
-  return { found: false, path: null, truncated: false, json: null, text: null, data_note: "untrusted data" };
+  return { found: false, path: null, truncated: false, json: null, text: null };
 }
 
 /**
@@ -340,6 +347,7 @@ function realReceipt(overrides = {}) {
       connections: [{ address: "1.2.3.4", port: 443 }, { address: "5.6.7.8", port: 80 }],
       windows: [],
       crashes: [],
+      findings: [{ level: "info", text: "the file dropped a marker on the desktop" }],
       diff: {
         files: { added: [{ path: "C:\\Windows\\System32\\Tasks\\Updater" }, { path: "C:\\Users\\WDAGUtilityAccount\\Desktop\\x.txt" }] },
         services: [{ name: "evil", change: "added" }, { name: "theirs", change: "removed" }],
@@ -353,12 +361,21 @@ function realReceipt(overrides = {}) {
 test("report counts are read from the real receipt fields and never invented", () => {
   const card = sandbox.reportCard({ ok: true, result: realReceipt() }, { root: RUNS, path });
 
-  assert.deepEqual(card.counts, { processes: 3, lookups: 1, connections: 2, persistence: 3 });
+  assert.deepEqual(card.counts, {
+    processes: 3, lookups: 1, connections: 2, services: 1, persistence: 3, scheduled_tasks: 1, findings: 1,
+  });
   assert.match(card.countLine, /Processes: 3/);
+  assert.match(card.countLine, /Services added: 1/);
+  assert.match(card.countLine, /Scheduled tasks: 1/);
   assert.match(card.countLine, /Persistence entries: 3/);
 
-  const empty = sandbox.reportCard({ ok: true, result: realReceipt({ tree: undefined, lookups: undefined, connections: undefined, diff: undefined }) }, { root: RUNS, path });
-  assert.deepEqual(empty.counts, { processes: null, lookups: null, connections: null, persistence: null });
+  const empty = sandbox.reportCard({
+    ok: true,
+    result: realReceipt({ tree: undefined, lookups: undefined, connections: undefined, findings: undefined, diff: undefined }),
+  }, { root: RUNS, path });
+  assert.deepEqual(empty.counts, {
+    processes: null, lookups: null, connections: null, services: null, persistence: null, scheduled_tasks: null, findings: null,
+  });
   assert.equal(empty.counts.processes, null, "an unreported count is null, not a fabricated zero");
   assert.match(empty.countLine, /Processes: not reported/);
   assert.equal(empty.openFolder, true, "the run folder the receipt names is offered");
@@ -375,8 +392,59 @@ test("an empty diff is a reported zero, while a missing diff is 'not reported'",
   assert.equal(emptyDiff.counts.persistence, 0, "an observed diff with nothing in it is a real 0");
 });
 
-test("a capped receipt says so and keeps Open folder when a run folder is known", () => {
-  const capped = sandbox.reportCard({
+/** awdk's CURRENT capped receipt: the summary it reports when the JSON is too big. */
+function cappedReceipt(overrides = {}) {
+  return {
+    ok: true,
+    command: "detonate",
+    exit_code: 0,
+    timed_out: false,
+    run_dir: path.join(RUNS, "run-9"),
+    sha256: "c".repeat(64),
+    findings_are: "heuristics, not a verdict",
+    error: "",
+    counts: { processes: 14, lookups: 3, connections: 2, services: 0, persistence: 2, scheduled_tasks: 1, findings: 5 },
+    truncated: true,
+    preview: '{"ok": true, "command": "detonate", "data": {"tree": [',
+    ...overrides,
+  };
+}
+
+test("a capped receipt in awdk's CURRENT shape keeps its exit code, counts, digest and run folder", () => {
+  const receipt = cappedReceipt();
+  const card = sandbox.reportCard({ ok: true, result: receipt }, { root: RUNS, path, expectedSha256: receipt.sha256 });
+  const text = card.lines.join("\n");
+
+  assert.equal(card.capped, true);
+  assert.equal(card.exitCode, 0, "the capped shape keeps exit_code");
+  assert.match(text, /Exit 0/);
+  assert.deepEqual(card.counts, receipt.counts, "the counts are awdk's own summary, verbatim");
+  assert.match(card.countLine, /Processes: 14/);
+  assert.match(card.countLine, /Scheduled tasks: 1/);
+  assert.match(card.countLine, /Findings: 5/);
+  assert.equal(card.digest.executed, receipt.sha256, "the digest comes from the capped receipt's own sha256");
+  assert.equal(card.digest.match, true, "the digest comparison still fires on a capped receipt");
+  assert.match(text, /matching the staged copy/);
+  assert.equal(card.runDir, path.resolve(receipt.run_dir));
+  assert.equal(card.openFolder, true, "Open folder is offered from run_dir");
+  assert.match(text, /Report too large to show here; open the run folder\./);
+  assert.match(text, /Run folder: .*run-9/);
+  assert.doesNotMatch(text, /did not report a run folder/);
+  assert.equal(card.guestText, "", "the JSON preview is never passed off as sandbox output");
+});
+
+test("a capped receipt whose digest differs from the card's still shouts", () => {
+  const card = sandbox.reportCard({ ok: true, result: cappedReceipt() }, { root: RUNS, path, expectedSha256: "d".repeat(64) });
+
+  assert.equal(card.digest.executed, "c".repeat(64));
+  assert.equal(card.digestMismatch, true, "a capped receipt cannot hide a divergent digest");
+  assert.match(card.lines.join("\n"), /DIGEST MISMATCH/);
+});
+
+test("an OLD capped receipt names the older awdk, and claims nothing else", () => {
+  // The pre-fix shape: no run_dir, no exit_code, no counts, no sha256. The card
+  // must not tell the owner to open a folder it simultaneously says does not exist.
+  const card = sandbox.reportCard({
     ok: true,
     result: {
       ok: true,
@@ -386,25 +454,25 @@ test("a capped receipt says so and keeps Open folder when a run folder is known"
       findings_are: "heuristics, not a verdict",
     },
   }, { root: RUNS, path });
+  const text = card.lines.join("\n");
 
-  assert.equal(capped.capped, true);
-  assert.match(capped.lines.join("\n"), /Report too large to show here; open the run folder\./);
-  assert.deepEqual(capped.counts, { processes: null, lookups: null, connections: null, persistence: null });
-  assert.equal(capped.openFolder, false, "the capped form names no run folder, so no button");
+  assert.equal(card.capped, true);
+  assert.equal(card.runDir, null);
+  assert.equal(card.openFolder, false);
+  assert.match(text, /Report too large; this awdk is older -- update it to see the run folder\./);
+  assert.doesNotMatch(text, /Report too large to show here/, "never says 'open the run folder' when there is none");
+  assert.doesNotMatch(text, /did not report a run folder/, "no second, contradictory line");
+  assert.doesNotMatch(text, /Exit \?/, "an unknown exit code is named, not '?'");
+  assert.match(text, /Exit: not reported/);
+});
 
-  const cappedWithFolder = sandbox.reportCard({
-    ok: true,
-    result: { ok: true, command: "detonate", truncated: true, preview: "{", run_dir: path.join(RUNS, "run-9") },
-  }, { root: RUNS, path });
-  assert.equal(cappedWithFolder.capped, true);
-  assert.equal(cappedWithFolder.openFolder, true, "a known run folder is still offered");
-
-  const reportCapped = sandbox.reportCard({
+test("a truncated report.json says where the rest of it is", () => {
+  const card = sandbox.reportCard({
     ok: true,
     result: { ...realReceipt(), report: { ...readReport(), found: true, path: "report.json", truncated: true } },
   }, { root: RUNS, path });
-  assert.equal(reportCapped.reportTruncated, true);
-  assert.match(reportCapped.lines.join("\n"), /report\.json was larger/);
+  assert.equal(card.reportTruncated, true);
+  assert.match(card.lines.join("\n"), /report\.json was larger/);
 });
 
 // ── 8. Open folder: real paths, real containment ────────────────────────────
@@ -557,6 +625,39 @@ test("stageTarget writes a new file in its own per-request folder and hashes it"
   assert.deepEqual(fs.readdirSync(staging), []);
 });
 
+test("stagedName keeps a plain name and the extension, and scrubs every character awdk refuses", () => {
+  assert.equal(sandbox.stagedName("setup.exe"), "setup.exe", "a plain name is not renamed");
+  assert.equal(sandbox.stagedName("Q&A Tools!.exe"), "Q_A Tools_.exe");
+  assert.equal(sandbox.stagedName('a|b<c>d^e"f%g!.hta'), "a_b_c_d_e_f_g_.hta", "keeps the dispatch extension");
+  assert.equal(sandbox.stagedName("run.cmd"), "run.cmd");
+  for (const refused of ["&", "|", "<", ">", "^", '"', "%", "!"]) {
+    assert.doesNotMatch(sandbox.stagedName(`x${refused}y.exe`), new RegExp(`\\${refused}`));
+  }
+});
+
+test("a filename the sandbox refuses is staged under a safe name, with the ORIGINAL name on the card", async (t) => {
+  const { dir } = tempFile(t);
+  const original = path.join(dir, "Q&A Tools!.exe");
+  fs.writeFileSync(original, Buffer.from("installer bytes"));
+  const { det, daemon } = makeDetonator(t);
+
+  const { card, accepted } = await det.request(original);
+
+  assert.equal(accepted, true);
+  assert.equal(card.name, "Q&A Tools!.exe", "the card still shows the file the owner picked, as text");
+  assert.equal(card.stagedName, "Q_A Tools_.exe");
+  assert.equal(path.basename(card.stagingPath), "Q_A Tools_.exe", "the copy awdk is handed carries no metacharacter");
+  assert.match(path.basename(card.stagingPath), /^[A-Za-z0-9._ -]+$/, "nothing outside the safe charset");
+  assert.equal(path.extname(card.stagingPath), ".exe", "the extension the sandbox dispatches on survives");
+  assert.deepEqual(fs.readFileSync(card.stagingPath), fs.readFileSync(original), "the bytes are untouched");
+  assert.match(card.lines.join("\n"), /Q&A Tools!\.exe/, "the original name is on the card");
+  assert.deepEqual(daemon.calls, []);
+
+  const out = await det.confirm(card.token);
+  assert.equal(out.ran, true, "the click reaches a run instead of awdk's bad_args refusal");
+  assert.equal(path.basename(daemon.detonate().args.target), "Q_A Tools_.exe");
+});
+
 // ── 10. one at a time ───────────────────────────────────────────────────────
 
 test("a second request while one holds the slot gets a busy card, not a second call", async (t) => {
@@ -602,6 +703,89 @@ test("cancel frees the slot, removes the staged copy, and calls nothing", async 
   assert.equal(det.isBusy(), false);
   assert.deepEqual(daemon.calls, []);
   assert.equal(fs.existsSync(card.stagingPath), false, "the copy is removed on cancel");
+});
+
+// ── 11. a run that never happened is never a report ────────────────────────
+
+/** A detonator whose doctor is ready and whose detonate call answers `detonateResult`. */
+function failureDetonator(t, detonateResult) {
+  const staging = tempDir(t, "awdesk-stage-");
+  const runs = tempDir(t, "awdesk-runs-");
+  const calls = [];
+  const callTool = async (name) => {
+    calls.push(name);
+    if (name === sandbox.TOOL_DOCTOR) {
+      return { ok: true, result: { ok: true, command: "doctor", exit_code: 0, timed_out: false, data: {}, report: readReport() } };
+    }
+    return detonateResult;
+  };
+  const det = sandbox.createSandboxDetonator({ callTool, staging, root: runs, path });
+  return { det, calls };
+}
+
+test("daemon failures are problem cards titled 'The sandbox did not run', never a report with 'Exit ?'", async (t) => {
+  const cases = [
+    { name: "unreachable", result: { ok: false, reason: "unreachable", error: "daemon unreachable -- start it: adk harness serve" } },
+    { name: "timeout", result: { ok: false, reason: "timeout", error: "desktop_sandbox_detonate did not answer in time" } },
+    { name: "http 502", result: { ok: false, status: 502, reason: "http_502", error: "the daemon answered 502" } },
+    { name: "bad_args", result: { ok: false, result: { ok: false, reason: "bad_args", error: "target must be a plain file path" } } },
+    { name: "not_installed", result: { ok: false, reason: "not_installed", error: "desktop_sandbox_detonate is not installed" } },
+  ];
+  for (const one of cases) {
+    const { file } = tempFile(t);
+    const { det } = failureDetonator(t, one.result);
+    const { token } = await det.request(file);
+    const out = await det.confirm(token);
+    const text = `${out.card.text || ""}\n${(out.card.lines || []).join("\n")}`;
+
+    assert.equal(out.ran, false, one.name);
+    assert.equal(out.card.kind, "problem", one.name);
+    assert.equal(out.card.title, "The sandbox did not run", one.name);
+    assert.doesNotMatch(text, /Exit \?/, `${one.name} must not look like a run with an unknown exit`);
+    assert.doesNotMatch(text, /Sandbox report/, one.name);
+    assert.match(text, /nothing ran/, `${one.name} says nothing ran`);
+    assert.equal(out.card.action, null, one.name);
+  }
+});
+
+test("a daemon that is down at the doctor step is a failure card, not a Windows Sandbox fix card", async (t) => {
+  const { file } = tempFile(t);
+  const staging = tempDir(t, "awdesk-stage-");
+  const runs = tempDir(t, "awdesk-runs-");
+  const det = sandbox.createSandboxDetonator({
+    callTool: async () => ({ ok: false, reason: "unreachable", error: "daemon unreachable -- start it: adk harness serve" }),
+    staging, root: runs, path,
+  });
+
+  const { token } = await det.request(file);
+  const out = await det.confirm(token);
+
+  assert.equal(out.ran, false);
+  assert.equal(out.card.kind, "problem");
+  assert.equal(out.card.title, "The sandbox did not run", "a dead daemon is not a disabled Windows feature");
+});
+
+test("a real run that exited non-zero is still a report, not a daemon failure", async (t) => {
+  const { file } = tempFile(t);
+  const receipt = {
+    ok: false,
+    command: "detonate",
+    exit_code: 3,
+    timed_out: false,
+    data: { file: "thing.exe", tree: [], lookups: [], connections: [] },
+    run_dir: path.join(RUNS, "run-4"),
+    report: readReport(),
+    findings_are: "heuristics, not a verdict",
+    error: "the payload exited 3",
+  };
+  const { det } = failureDetonator(t, { ok: false, status: 200, result: receipt });
+
+  const { token } = await det.request(file);
+  const out = await det.confirm(token);
+
+  assert.equal(out.ran, true, "ok:false with an exit code is a run, not a transport failure");
+  assert.equal(out.card.kind, "report");
+  assert.match(out.card.lines.join("\n"), /Exit 3/);
 });
 
 // ── path / size helpers ─────────────────────────────────────────────────────
