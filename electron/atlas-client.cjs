@@ -65,7 +65,17 @@ async function atlasDigest(call = callTool) {
   return readTool(call, "atlas_digest", "result");
 }
 
-module.exports = { atlasBoard, atlasDigest };
+/**
+ * Who is active on the platform: GET /atlas/presence through the gateway's
+ * `atlas_presence` tool -- one row per agent ({agent, state, work, discord,
+ * thread_url}), built from Atlas' company board in Pulse + the Discord bot
+ * roster. Not deployed yet = `{ok:false, error}`; the swarm keeps its cards.
+ */
+async function atlasPresence(call = callTool) {
+  return readTool(call, "atlas_presence", "presence");
+}
+
+module.exports = { atlasBoard, atlasDigest, atlasPresence };
 
 if (require.main === module) {
   // Self-test: one live board read. Exit 0 = answerable; 1 = unavailable

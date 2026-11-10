@@ -74,3 +74,16 @@ test("atlasDigest: a transport failure never throws", async () => {
   assert.equal(result.ok, false);
   assert.match(result.error, /gateway timeout/);
 });
+
+test("atlasPresence calls atlas_presence and returns the agents; undeployed = a clean error", async () => {
+  const { atlasPresence } = require("./atlas-client.cjs");
+  const calls = [];
+  const body = { agents: [{ agent: "atlas", state: "working", work: [], discord: null, thread_url: "" }], updated_at: 1 };
+  const ok = await atlasPresence(fakeCall(calls, { atlas_presence: JSON.stringify(body) }));
+  assert.deepEqual(calls.map((c) => c.name), ["atlas_presence"]);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.presence.agents[0].agent, "atlas");
+  const missing = await atlasPresence(fakeCall([], { atlas_presence: new Error("unknown tool: atlas_presence") }));
+  assert.equal(missing.ok, false);
+  assert.match(missing.error, /unknown tool/);
+});

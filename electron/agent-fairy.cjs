@@ -127,44 +127,133 @@ function cardAgent(card) {
   return crewKey(card && card.agent);
 }
 
+/** Presence states, strongest first: what a companion shows. */
+const STATES = Object.freeze(["waiting", "speaking", "working", "idle"]);
+
+/** Only an http(s) URL survives (a link the chat can offer); anything else is "". */
+function webUrl(value) {
+  const raw = String(value || "").trim();
+  return /^https:\/\/[^\s]+$/i.test(raw) ? raw.slice(0, 300) : "";
+}
+
 /**
- * The companions that orbit the fairy: one per agent with a card waiting, in the
- * queue's own order, EVERY agent (owner 2026-11-09: "WHY ONLY UP TO 4????"), never
- * the agent the main fairy already wears. Exact duplicates merge: one fairy per
- * agent with a count. Shown only when cards from TWO or more agents wait.
- * Each: {agent, label, color, core, glow, wings, ring, sparkles, crew, cardId, title, count}.
+ * One presence row from GET /atlas/presence (MCP atlas_presence), normalised:
+ * {agent, state, work:[{title,url}], threadUrl, dmUrl, discord}. null = unusable.
  */
-function companionsFor(cards, { current = "" } = {}) {
+function normalizePresence(row) {
+  if (!row || typeof row !== "object") return null;
+  const agent = crewKey(row.agent);
+  if (!agent) return null;
+  const raw = String(row.state || "").toLowerCase();
+  const state = raw === "waiting" || raw === "working" ? raw : "idle";
+  const work = (Array.isArray(row.work) ? row.work : []).slice(0, 5)
+    .filter((w) => w && typeof w === "object")
+    .map((w) => ({ title: String(w.title || "").slice(0, 120), url: webUrl(w.url), state: String(w.state || "") }));
+  const discord = row.discord && typeof row.discord === "object" ? row.discord : null;
+  return {
+    agent,
+    label: String(row.label || "").slice(0, 40),
+    state,
+    needsOwner: Math.max(0, Number(row.needs_owner) || 0),
+    work,
+    threadUrl: webUrl(row.thread_url),
+    dmUrl: discord ? webUrl(discord.dm_url) : "",
+    bot: Boolean(discord && discord.bot),
+  };
+}
+
+/**
+ * The companions that orbit the fairy: one per agent that is ACTIVE -- a card
+ * waiting on the owner, live work on Atlas' company board, or a Discord bot of its
+ * own (owner 2026-11-09: "active awdesk fairies for each active Discord agent ...
+ * one and the same at the platform level") -- every one of them, uncapped, never
+ * the agent the main fairy already wears. Exact duplicates merge: one fairy per
+ * agent, with the card count.
+ *
+ * Each: {agent, label, color, core, glow, wings, ring, sparkles, crew, state,
+ * cardId, title, count, work, threadUrl, dmUrl, bot}. `state`: waiting (cards or
+ * the board says it waits on the owner) > speaking (a line or a post just now) >
+ * working > idle. With no presence at all, the old rule holds: companions show
+ * only when cards from two or more agents wait.
+ */
+function companionsFor(cards, { current = "", presence = [], speaking = [] } = {}) {
   const list = Array.isArray(cards) ? cards.filter((c) => c && typeof c.id === "string") : [];
   const byAgent = new Map();
+  const slot = (agent) => {
+    if (!byAgent.has(agent)) byAgent.set(agent, { card: null, count: 0, name: agent, presence: null });
+    return byAgent.get(agent);
+  };
   for (const card of list) {
     const agent = cardAgent(card);
     if (!agent) continue;
-    const seen = byAgent.get(agent);
+    const s = slot(agent);
+    s.count += 1;
     // The companion carries that agent's NEWEST card: a click opens what it just
     // raised, not a weeks-old ask that happens to rank first (owner 2026-11-09).
-    if (seen) {
-      seen.count += 1;
-      if ((Number(card.createdAt) || 0) > (Number(seen.card.createdAt) || 0)) seen.card = card;
-      continue;
+    if (!s.card || (Number(card.createdAt) || 0) > (Number(s.card.createdAt) || 0)) {
+      s.card = card;
+      s.name = card.agent;
     }
-    byAgent.set(agent, { card, count: 1 });
   }
-  if (byAgent.size < 2) return [];
+  const rows = (Array.isArray(presence) ? presence : []).map(normalizePresence).filter(Boolean);
+  if (!rows.length && byAgent.size < 2) return [];
+  for (const row of rows) {
+    const s = slot(row.agent);
+    if (!s.presence) s.presence = row;
+    if (!s.card) s.name = row.label || row.agent;
+  }
+  const talking = new Set((Array.isArray(speaking) ? speaking : []).map((a) => crewKey(a)).filter(Boolean));
   const wearing = crewKey(current);
   const out = [];
-  for (const [agent, { card, count }] of byAgent) {
+  for (const [agent, s] of byAgent) {
     if (agent === wearing) continue;
-    const f = crewFairy(card.agent);
+    const f = crewFairy(s.name);
+    const pr = s.presence;
+    const state = s.count > 0 || (pr && pr.state === "waiting") ? "waiting"
+      : talking.has(agent) ? "speaking"
+        : pr && pr.state === "working" ? "working" : "idle";
+    const firstWork = pr && pr.work.length ? pr.work[0].title : "";
     out.push({
       agent: f.agent, label: f.label, color: f.color, core: f.core, glow: f.glow,
       wings: f.wings, ring: f.ring, sparkles: f.sparkles, crew: Boolean(f.crew),
-      cardId: card.id,
-      title: String(card.title || "A decision").replace(/^Claude Code needs you:\s*/i, "").slice(0, 110),
-      count,
+      state,
+      cardId: s.card ? s.card.id : "",
+      title: s.card
+        ? String(s.card.title || "A decision").replace(/^Claude Code needs you:\s*/i, "").slice(0, 110)
+        : firstWork ? firstWork.slice(0, 110) : (state === "idle" ? "idle" : state),
+      count: s.count,
+      work: pr ? pr.work : [],
+      threadUrl: pr ? pr.threadUrl : "",
+      dmUrl: pr ? pr.dmUrl : "",
+      bot: Boolean(pr && pr.bot),
     });
   }
-  return out;
+  // The ones that need the owner first, then who is talking, working, idle.
+  const rank = (c) => STATES.indexOf(c.state);
+  return out.map((c, i) => ({ c, i })).sort((a, b) => (rank(a.c) - rank(b.c)) || (a.i - b.i)).map((x) => x.c);
+}
+
+/**
+ * Agents that posted in the relay since `seenAt` (epoch s): their companions flash.
+ * The first read (seenAt 0) only sets the mark -- a desk start is not a burst of posts.
+ * `rows` are relay-feed shapeRows rows ({agent:true, author:"atlas+sid", at}).
+ */
+function newPosters(rows, seenAt) {
+  if (!(Number(seenAt) > 0)) return [];
+  const out = new Set();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row || row.agent !== true || !(Number(row.at) > seenAt)) continue;
+    const key = crewKey(String(row.author || "").split("+")[0]);
+    if (key) out.add(key);
+  }
+  return [...out];
+}
+
+/** The newest message time among `rows`, never moving backwards. */
+function latestAt(rows, seenAt = 0) {
+  let best = Number(seenAt) || 0;
+  for (const row of Array.isArray(rows) ? rows : []) best = Math.max(best, Number(row && row.at) || 0);
+  return best;
 }
 
 /** Ring capacities: 6 on the first, then 4 more on each ring out (6, 10, 14, ...). */
@@ -236,6 +325,10 @@ module.exports = {
   restingFairy,
   cardAgent,
   companionsFor,
+  normalizePresence,
+  newPosters,
+  latestAt,
+  STATES,
   companionSize,
   swarmLayout,
   swarmExtent,

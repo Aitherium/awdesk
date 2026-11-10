@@ -182,7 +182,9 @@ const marketSeen = new Set();
 const { systemSnapshot } = require("./system-client.cjs");
 // The Atlas program-manager board (Genesis /atlas/issues/board through the
 // gateway MCP door). Both verbs answer {ok:false, error} on failure.
-const { atlasBoard, atlasDigest } = require("./atlas-client.cjs");
+const { atlasBoard, atlasDigest, atlasPresence } = require("./atlas-client.cjs");
+// The fairy's swarm: who posted (relay) and who is active (presence). Pure helpers.
+const agentPresence = require("./agent-fairy.cjs");
 const { voiceSnapshot } = require("./voice-client.cjs");
 const { visionSnapshot } = require("./vision-client.cjs");
 const { routeDrop, routeShare, synthesizeVerdict, stagePath, cleanupStage } = require("./drop-router.cjs");
@@ -4118,8 +4120,60 @@ browserWindow.setShellHost({
  *  renders "relay unavailable" rather than pretending the channel is empty. */
 async function refreshRelayFeed() {
   const rows = await fetchRelayHistory();
+  // An agent that posted since the last read: its companion fairy flashes
+  // (agent-fairy.cjs presence, owner 2026-11-09). The first read only sets the mark.
+  for (const agent of agentPresence.newPosters(rows, relaySeenAt)) {
+    try { orbWindow.noteAgentPosted(agent); } catch { /* cosmetic */ }
+  }
+  relaySeenAt = agentPresence.latestAt(rows, relaySeenAt);
   relayFeed = rows;
   sendDeckState();
+}
+
+/** The newest relay message time already seen (0 = never read). */
+let relaySeenAt = 0;
+
+/**
+ * Who is active on the platform, for the fairy's swarm: ONE read of Atlas'
+ * presence (GET /atlas/presence through the gateway's atlas_presence tool), which is
+ * itself built from the company board in Pulse + the Discord bot roster -- no
+ * per-source poller here. A failed read keeps the last list.
+ */
+async function refreshAgentPresence() {
+  const snap = await atlasPresence();
+  if (snap && snap.ok && snap.presence && Array.isArray(snap.presence.agents)) {
+    try { orbWindow.setPresence(snap.presence.agents); } catch { /* the fairy is cosmetic */ }
+  }
+  return snap;
+}
+
+/**
+ * The chat with one agent: the deck's per-agent chat (the relay thread under its
+ * newest #agents message, the same persona its Discord bot speaks as). The deck
+ * also offers the thread the board names (a Discord or GitHub thread) and its
+ * Discord DM. Returns true when a surface took it.
+ */
+function openAgentChat(agent, links = {}) {
+  const event = {
+    type: "deck:open-chat",
+    agent: String(agent || ""),
+    threadUrl: String((links && links.threadUrl) || ""),
+    dmUrl: String((links && links.dmUrl) || ""),
+  };
+  if (!event.agent) return false;
+  if (deckWindow && !deckWindow.isDestroyed()) {
+    deckWindow.show();
+    deckWindow.focus();
+    deckWindow.webContents.send("desk:event", event);
+    return true;
+  }
+  const opened = openConsole("cards", null) !== false;
+  try { browserWindow.sendToInternalTabs("desk:event", event); } catch { /* no browser yet */ }
+  // A tab that is still loading misses the first send: say it again once it is up.
+  setTimeout(() => {
+    try { browserWindow.sendToInternalTabs("desk:event", event); } catch { /* no browser */ }
+  }, 1500).unref?.();
+  return opened;
 }
 
 /** Pull the wake list from the harness daemon. Keeps the previous snapshot so
@@ -5946,6 +6000,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         soundMuted: () => voiceAllMuted(),
         // "Talk": the voice card flow about THIS card, answered through answerDeckCard.
         talk: (card) => talkAboutCard(card),
+        // Click a companion fairy: the chat with THAT agent (same persona as its
+        // Discord bot), continuing its thread when the board names one.
+        chat: (agent, links) => openAgentChat(agent, links),
         // "Chat": a session card brings what the session last asked and said.
         session: (card) => {
           try { return card && card.sessionId ? deckSession(card.id) : null; } catch { return null; }
@@ -6666,7 +6723,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // immediately, then every 60s. A cockpit feed lags the channel by design
     // — it is a summary, not a client.
     void refreshRelayFeed();
-    relayFeedTimer = setInterval(() => void refreshRelayFeed(), 60_000);
+    void refreshAgentPresence();
+    // One tick for both: the relay feed and the platform presence (no extra poller).
+    relayFeedTimer = setInterval(() => { void refreshRelayFeed(); void refreshAgentPresence(); }, 60_000);
     relayFeedTimer.unref?.();
 
     // awrise wakes: poll the daemon every 30 s and push only when something

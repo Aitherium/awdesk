@@ -114,6 +114,16 @@
     background: var(--m-wing); border: 0.5px solid rgba(255,255,255,0.5); animation: flap 0.18s ease-in-out infinite alternate; }
   .mate::before { right: 7px; transform-origin: 100% 50%; } .mate::after { left: 7px; transform-origin: 0 50%; }
   .mate.hot { transform: scale(1.45); }
+  /* Presence (owner 2026-11-09: one agent = one presence everywhere): idle = a dim
+     glow, working = a pulse, speaking/posting = a bright flash, waiting on the
+     owner = full colour + its count badge. */
+  .mate.st-idle { opacity: 0.42; box-shadow: 0 0 3px 1px var(--m-glow); }
+  .mate.st-working { animation: matepulse 1.6s ease-in-out infinite; }
+  .mate.st-speaking { animation: mateflash 0.5s ease-in-out infinite alternate;
+    box-shadow: 0 0 9px 4px var(--m-glow), 0 0 2px 1px #fff; }
+  .mate.st-waiting { box-shadow: 0 0 7px 3px var(--m-glow); }
+  @keyframes matepulse { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
+  @keyframes mateflash { from { filter: brightness(1); } to { filter: brightness(1.9); } }
   .mate b { position: absolute; left: 60%; top: -70%; min-width: 9px; height: 9px; padding: 0 2px; border-radius: 5px;
     background: #0b0f16; color: #fff; border: 1px solid var(--m-color); font: 700 7px/8px var(--font-sans, system-ui);
     text-align: center; }
@@ -697,7 +707,9 @@
       const slots = layout(items.length);
       mates = items.map((c, i) => {
         const el = document.createElement("i");
-        el.className = "mate";
+        const st = ["waiting", "speaking", "working", "idle"].includes(c.state) ? c.state
+          : (Number(c.count) > 0 ? "waiting" : "idle");
+        el.className = `mate st-${st}`;
         el.dataset.agent = String(c.agent || "");
         el.style.setProperty("--m-size", `${slots[i].size}px`);
         el.style.setProperty("--m-color", rgba(c.color, 0.95));
@@ -711,7 +723,12 @@
         }
         matesEl.append(el);
         const extra = Number(c.count) > 1 ? ` (${Number(c.count)} cards)` : "";
-        return { el, slot: slots[i], x: 0, y: 0, id: String(c.cardId || ""), agent: String(c.agent || ""), tip: `${c.label || c.agent}: ${c.title || "a card"}${extra}` };
+        const stateWord = st === "waiting" ? "" : ` [${st}]`;
+        const doWhat = c.cardId ? "click to open its card" : "click to talk";
+        return {
+          el, slot: slots[i], x: 0, y: 0, id: String(c.cardId || ""), agent: String(c.agent || ""),
+          tip: `${c.label || c.agent}${stateWord}: ${c.title || "a card"}${extra} -- ${doWhat}`,
+        };
       });
       place();
     }
@@ -739,9 +756,13 @@
         document.body.title = "";
         if (m) {
           m.el.classList.add("hot");
-          Promise.resolve(api.peek(m.id)).then((r) => { // that agent's card, beside the fairy
-            if (hotMate === m && !panelOpen && !(r && r.ok)) document.body.title = m.tip;
-          }, () => {});
+          if (m.id) {
+            Promise.resolve(api.peek(m.id)).then((r) => { // that agent's card, beside the fairy
+              if (hotMate === m && !panelOpen && !(r && r.ok)) document.body.title = m.tip;
+            }, () => {});
+          } else if (!panelOpen) {
+            document.body.title = m.tip; // presence only: no card to peek, the tooltip says who and what
+          }
         }
       }
       setInside(Boolean(m));
@@ -751,8 +772,12 @@
       setInside(false);
     });
     // A CLICK on a companion opens its agent's newest card -- an old one too, marked.
+    // A companion with no card (presence: idle, working, speaking) opens a chat
+    // with THAT agent instead (owner 2026-11-09: one agent = one presence).
     window.addEventListener("click", () => {
-      if (hotMate) api.openCard(hotMate.id, hotMate.agent);
+      if (!hotMate) return;
+      if (hotMate.id) api.openCard(hotMate.id, hotMate.agent);
+      else if (hotMate.agent && api.chatAgent) api.chatAgent(hotMate.agent);
     });
     if (api.onPanel) api.onPanel((p) => { panelOpen = Boolean(p && p.open); if (panelOpen) document.body.title = ""; });
     api.onCompanions(setMates);

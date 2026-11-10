@@ -1314,3 +1314,55 @@ test("chat about a card: the header names the agent in plain words, never the sp
   assert.match(orb, /api\.openCard\(m\.cardId, m\.agent\)/, "a companion under the disc opens its card");
   assert.doesNotMatch(html, /`\+\$\{v\.more\} more`/, "no '+99 more'");
 });
+
+// ── presence + click to talk (owner 2026-11-09: one agent = one presence) ────
+
+test("presence: active agents with NO cards fly in the swarm; a post flashes one; a click opens THAT agent's chat", async () => {
+  const chats = [];
+  startAttention({ chat: (agent, links) => { chats.push([agent, links]); return true; } });
+  orbWindow.setPresence([
+    { agent: "atlas", state: "working", work: [{ title: "tick", url: "" }], discord: { bot: true, dm_url: "https://discord.com/users/1" },
+      thread_url: "https://discord.com/channels/1/2/3" },
+    { agent: "lyra", state: "idle" },
+  ]);
+  const swarm = orbWindow.swarmWindow();
+  assert.ok(swarm && swarm.isVisible(), "presence alone raises the swarm");
+  let list = lastSent(swarm, "orb:companions");
+  assert.deepEqual(list.map((c) => [c.agent, c.state]), [["atlas", "working"], ["lyra", "idle"]]);
+  orbWindow.noteAgentPosted("Lyra");
+  list = lastSent(swarm, "orb:companions");
+  assert.equal(list.find((c) => c.agent === "lyra").state, "speaking", "its Discord/relay post flashes it");
+  assert.equal(orbWindow.fairy().agent, "aither", "a post does not re-colour the main fairy");
+  const r = await invoke("desk:orb-chat-agent", swarm, "atlas");
+  assert.equal(r.ok, true);
+  assert.deepEqual(chats, [["atlas", { threadUrl: "https://discord.com/channels/1/2/3", dmUrl: "https://discord.com/users/1" }]]);
+  const generic = await invoke("desk:orb-chat-agent", swarm, "claude-code");
+  assert.equal(generic.ok, false);
+});
+
+test("click to talk with no chat wired says so, never pretends", async () => {
+  startAttention();
+  orbWindow.setPresence([{ agent: "atlas", state: "idle" }]);
+  const r = orbWindow.chatWithAgent("atlas");
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /not wired/);
+});
+
+test("the swarm page draws presence states and a click asks for that agent's chat; main + deck carry it through", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  for (const st of ["idle", "working", "speaking", "waiting"]) assert.ok(html.includes(`.mate.st-${st} {`), st);
+  // #50: a companion WITH a card opens its newest card; one with no card (presence) opens the chat.
+  assert.match(html, /if \(hotMate\.id\) api\.openCard\(hotMate\.id, hotMate\.agent\);/);
+  assert.match(html, /else if \(hotMate\.agent && api\.chatAgent\) api\.chatAgent\(hotMate\.agent\);/);
+  const preload = fs.readFileSync(path.join(__dirname, "orb-preload.cjs"), "utf8");
+  assert.match(preload, /chatAgent: \(agent\) => ipcRenderer\.invoke\("desk:orb-chat-agent"/);
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /chat: \(agent, links\) => openAgentChat\(agent, links\)/);
+  assert.match(main, /type: "deck:open-chat"/);
+  assert.match(main, /orbWindow\.setPresence\(snap\.presence\.agents\)/);
+  assert.match(main, /orbWindow\.noteAgentPosted\(agent\)/);
+  const deck = fs.readFileSync(path.join(__dirname, "..", "src", "components", "Deck.tsx"), "utf8");
+  assert.match(deck, /event\.type !== 'deck:open-chat'/);
+  assert.match(deck, /Continue thread/);
+  assert.match(deck, /Discord DM/);
+});
