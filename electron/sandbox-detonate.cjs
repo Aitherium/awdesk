@@ -11,17 +11,22 @@
  *
  *   1. The owner picks ONE file (or a ``desk://sandbox/detonate?path=`` link
  *      arrives). NOTHING is called on the daemon yet.
- *   2. A confirm card names the file, its size and SHA-256 and says the sandbox
- *      runs it with networking off. Only the owner's click on that card calls
- *      ``desktop_sandbox_detonate`` -- with ``network: "off"`` and
- *      ``confirm: true``, never anything else.
- *   3. The doctor runs first, on that click. Not ready -> its EXACT fix text is
+ *   2. The file is COPIED into a private, per-request staging folder the desk
+ *      owns and THE COPY is hashed. The confirm card names the file, that copy's
+ *      size and SHA-256, and says the sandbox runs it with networking off.
+ *   3. Only the owner's click on that card calls ``desktop_sandbox_detonate`` --
+ *      with ``network: "off"`` and ``confirm: true``, never anything else. The
+ *      staged copy is re-hashed first; if it changed, nothing runs. The staged
+ *      copy, not the original path, is what the sandbox is asked to run.
+ *   4. The doctor runs first, on that click. Not ready -> its EXACT fix text is
  *      shown and nothing else is called (the fix needs an administrator and a
  *      reboot; the desk never elevates).
- *   4. The receipt becomes a verdict-free report card: counts, the run folder
- *      (only when it is under ``%LOCALAPPDATA%\sandbox-mcp\runs``), and the words
- *      "heuristics, not a safety verdict".
- *   5. One detonation at a time: a second request while one holds the slot gets a
+ *   5. The receipt becomes a verdict-free report card: counts read from the real
+ *      sandbox-mcp fields, the digest the sandbox itself executed (compared with
+ *      the card's), the run folder (only when it resolves inside
+ *      ``%LOCALAPPDATA%\sandbox-mcp\runs``), and the words "heuristics, not a
+ *      safety verdict".
+ *   6. One detonation at a time: a second request while one holds the slot gets a
  *      busy card, never a second call.
  *
  * Guest output is DATA. It is flattened to plain text and capped before it ever
@@ -35,6 +40,8 @@ const nodeCrypto = require("node:crypto");
 const nodeFs = require("node:fs");
 const nodeOs = require("node:os");
 const nodePath = require("node:path");
+const { Transform } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 
 const { DAEMON, harnessToken } = require("./sessions-client.cjs");
 
@@ -45,10 +52,27 @@ const TOOL_DETONATE = "desktop_sandbox_detonate";
 /** The one network mode the desk ever sends. Never "on", never "firewall". */
 const NETWORK = "off";
 
-/** A receipt larger than this, or a file bigger than this, is refused, not buffered. */
+/** Guest text shown on a card is capped at this many characters. */
 const MAX_GUEST_CHARS = 2000;
-const MAX_HASH_BYTES = 8 * 1024 * 1024 * 1024; // 8 GiB: a fingerprint, not a scan of a disk
-const HASH_CHUNK = 1024 * 1024;
+
+/**
+ * The largest file the desk will stage and hash: 2 GiB. A fingerprint is work the
+ * main process does for the owner, and the sandbox boots a whole Windows guest to
+ * run the file -- a file this big is not a double-click detonation. Stated on the
+ * confirm card and refused before anything is copied.
+ */
+const MAX_STAGED_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
+ * The extensions upstream sandbox-mcp v1.2.0 knows how to run, read from
+ * ``src/detonate.js`` lines 25-31 (``detonateCommand``): scripts go to
+ * wscript/mshta, installers and executables to ``installCommand``, and anything
+ * else throws "Don't know how to run ...". Refused here BEFORE a byte is copied.
+ */
+const ACCEPTED_EXTENSIONS = Object.freeze([
+  ".exe", ".msi", ".ps1", ".cmd", ".bat", ".js", ".jse", ".vbs", ".vbe", ".wsf", ".hta",
+]);
+
 const DOCTOR_TIMEOUT_MS = 3 * 60 * 1000;
 const DETONATE_TIMEOUT_MS = 15 * 60 * 1000;
 const FINDINGS_NOTE = "heuristics, not a safety verdict";
@@ -60,6 +84,16 @@ function runsRoot({ env = process.env, os = nodeOs, path = nodePath } = {}) {
   const local = String(env.LOCALAPPDATA || "").trim();
   const base = local || path.join(os.homedir(), "AppData", "Local");
   return path.resolve(path.join(base, "sandbox-mcp", "runs"));
+}
+
+/**
+ * The desk's OWN app-data folder for staged copies. main.cjs passes
+ * ``<userData>/sandbox-staging``; this default is for tests and headless use.
+ */
+function stagingRoot({ env = process.env, os = nodeOs, path = nodePath } = {}) {
+  const roaming = String(env.APPDATA || "").trim();
+  const base = roaming || path.join(os.homedir(), "AppData", "Roaming");
+  return path.resolve(path.join(base, "awdesk", "sandbox-staging"));
 }
 
 /** A path that may be handed to the sandbox: local, absolute, not a device/UNC, not a flag. */
@@ -110,27 +144,44 @@ function parseDetonateUrl(rawUrl) {
   return localAbsolute(target);
 }
 
-// ── target inspection ───────────────────────────────────────────────────────
+// ── hashing and staging: async, streamed, capped ────────────────────────────
 
-/** SHA-256 of a file, read in chunks so a large file is never buffered whole. */
-function sha256File(file, { fs = nodeFs, crypto = nodeCrypto } = {}) {
+/** SHA-256 of a file, streamed so a large file never blocks the main thread or is buffered. */
+async function sha256File(file, { fs = nodeFs, crypto = nodeCrypto } = {}) {
   const hash = crypto.createHash("sha256");
-  const fd = fs.openSync(file, "r");
-  try {
-    const buf = Buffer.allocUnsafe(HASH_CHUNK);
-    for (;;) {
-      const n = fs.readSync(fd, buf, 0, buf.length, null);
-      if (!n) break;
-      hash.update(buf.subarray(0, n));
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
+  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
   return hash.digest("hex");
 }
 
-/** Size + SHA-256 of ONE existing file, or a refusal. */
-function inspectTarget(target, { fs = nodeFs, path = nodePath, hash = sha256File } = {}) {
+/**
+ * Stream `source` to `dest`, counting bytes, and abort past `limit` instead of
+ * filling the disk. Returns the number of bytes copied. `wx` means the write can
+ * never reuse or overwrite an existing file.
+ */
+async function copyStagedFile(source, dest, { fs = nodeFs, limit = MAX_STAGED_BYTES } = {}) {
+  let bytes = 0;
+  const meter = new Transform({
+    transform(chunk, _encoding, done) {
+      bytes += chunk.length;
+      if (bytes > limit) {
+        const error = new Error("too_large");
+        error.code = "too_large";
+        done(error);
+        return;
+      }
+      done(null, chunk);
+    },
+  });
+  await pipeline(fs.createReadStream(source), meter, fs.createWriteStream(dest, { flags: "wx" }));
+  return bytes;
+}
+
+/**
+ * Inspect ONE existing file WITHOUT reading it: local, a regular file, an
+ * extension sandbox-mcp will run, and no bigger than the staging cap. Every
+ * refusal happens before a byte is copied or hashed.
+ */
+async function inspectTarget(target, { fs = nodeFs, path = nodePath } = {}) {
   const check = localAbsolute(target);
   if (!check.ok) return check;
   const file = path.resolve(check.path);
@@ -141,16 +192,77 @@ function inspectTarget(target, { fs = nodeFs, path = nodePath, hash = sha256File
     return { ok: false, reason: "path_missing", error: `${file} does not exist` };
   }
   if (!stat.isFile()) return { ok: false, reason: "not_a_file", error: `${file} is not a file` };
-  if (stat.size > MAX_HASH_BYTES) {
-    return { ok: false, reason: "too_large", error: `${file} is too large to fingerprint safely` };
+  const ext = path.extname(file).toLowerCase();
+  if (!ACCEPTED_EXTENSIONS.includes(ext)) {
+    return {
+      ok: false,
+      reason: "unsupported_type",
+      error: `the sandbox cannot run ${ext || "a file with no extension"}; it runs ${ACCEPTED_EXTENSIONS.join(", ")}`,
+    };
   }
-  let digest;
+  if (stat.size > MAX_STAGED_BYTES) {
+    return {
+      ok: false,
+      reason: "too_large",
+      error: `${file} is larger than the ${sizeLabel(MAX_STAGED_BYTES)} the desk will stage`,
+    };
+  }
+  return { ok: true, path: file, name: path.basename(file), size: stat.size };
+}
+
+/**
+ * Copy one inspected file into a private per-request folder inside the desk's
+ * own app-data directory, then hash THE COPY. The copy is a new file the desk
+ * creates (``wx``) inside a new directory it creates, so it does not inherit the
+ * source file's ACLs, alternate data streams or attributes -- what runs is what
+ * this function wrote. One subfolder per request; the file is removed by exact
+ * path after the run (never a recursive delete).
+ */
+async function stageTarget(info, {
+  token = "request",
+  root = stagingRoot(),
+  fs = nodeFs,
+  path = nodePath,
+  maxBytes = MAX_STAGED_BYTES,
+} = {}) {
+  const safe = String(token).replace(/[^A-Za-z0-9._-]/g, "_");
+  const unique = `${safe}-${nodeCrypto.randomBytes(4).toString("hex")}`;
+  const dir = path.join(root, `request-${unique}`);
+  const dest = path.join(dir, info.name);
   try {
-    digest = hash(file);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch (error) {
-    return { ok: false, reason: "unreadable", error: `could not read ${file}: ${error && error.message}` };
+    return { ok: false, reason: "staging_failed", error: `could not create ${dir}: ${(error && error.message) || error}` };
   }
-  return { ok: true, path: file, name: path.basename(file), size: stat.size, sha256: String(digest).toLowerCase() };
+  try {
+    const size = await copyStagedFile(info.path, dest, { fs, limit: maxBytes });
+    const sha256 = await sha256File(dest, { fs });
+    return { ok: true, path: dest, dir, size, sha256 };
+  } catch (error) {
+    // Only the one file this request created, by its exact path; then its folder
+    // (non-recursive, so it is only removed when it is empty).
+    try { fs.unlinkSync(dest); } catch { /* nothing was created */ }
+    try { fs.rmdirSync(dir); } catch { /* left alone */ }
+    if (error && error.code === "too_large") {
+      return {
+        ok: false,
+        reason: "too_large",
+        error: `the file grew past the ${sizeLabel(maxBytes)} the desk will stage`,
+      };
+    }
+    return { ok: false, reason: "staging_failed", error: `could not copy ${info.path}: ${(error && error.message) || error}` };
+  }
+}
+
+/** Remove ONLY the single staged file this request created, then its now-empty folder. Never recursive. */
+function removeStaged(held, { fs = nodeFs } = {}) {
+  if (!held) return;
+  if (held.staged) {
+    try { fs.unlinkSync(held.staged); } catch { /* already gone */ }
+  }
+  if (held.stagingDir) {
+    try { fs.rmdirSync(held.stagingDir); } catch { /* not empty: left alone */ }
+  }
 }
 
 /** "12,345,678 bytes (11.8 MiB)" -- exact bytes first, then a human scale. */
@@ -199,19 +311,26 @@ function confirmCard(info, token) {
     kind: "confirm",
     title: "Detonate a file in Windows Sandbox?",
     file: info.path,
+    staged: info.staged,
+    stagingPath: info.staged,
     name: info.name,
     size: info.size,
     sizeLabel: sizeLabel(info.size),
     sha256: info.sha256,
+    maxBytes: MAX_STAGED_BYTES,
+    maxBytesLabel: sizeLabel(MAX_STAGED_BYTES),
     network: NETWORK,
     token,
     confirmLabel: "Detonate",
     cancelLabel: "Cancel",
     lines: [
       `File: ${info.path}`,
+      `Staged copy: ${info.staged}`,
       `Size: ${sizeLabel(info.size)}`,
-      `SHA-256: ${info.sha256}`,
+      `SHA-256 of the copy: ${info.sha256}`,
+      "Only the staged copy runs, and the copy is re-hashed when you click; if it changed, nothing runs.",
       "A fresh, disposable Windows Sandbox runs this file with networking off.",
+      `Files up to ${MAX_STAGED_BYTES.toLocaleString("en-US")} bytes (2.0 GiB) are accepted.`,
       "The sandbox is deleted after the run. Its findings are heuristics, not a safety verdict.",
     ],
   };
@@ -253,49 +372,63 @@ function problemCard(message, reason = "problem") {
   return { kind: "problem", title: "Could not prepare the detonation", reason, text: plainText(message, 800), action: null };
 }
 
-const COUNT_KEYS = Object.freeze({
-  processes: ["processes", "process_list", "processList", "processes_started", "processesStarted"],
-  lookups: ["lookups", "dns_lookups", "dnsLookups", "name_lookups", "nameLookups", "dns"],
-  connections: ["connections", "connection_attempts", "connectionAttempts", "network_connections", "networkConnections", "network"],
-  persistence: ["autoruns", "scheduled_tasks", "scheduledTasks", "services", "files_created", "filesCreated", "files"],
-});
+// ── the receipt: the REAL shapes (awdk + upstream sandbox-mcp v1.2.0) ───────
 
-function sourcesOf(result) {
-  const out = [];
-  for (const value of [result && result.report, result && result.data]) {
-    if (value && typeof value === "object") out.push(value);
-  }
-  return out;
+/**
+ * Upstream's autorun / persistence value names (``src/detonate.js`` line 63):
+ * ``/\\(Run|RunOnce)\|\\Winlogon\|\\Image File Execution Options/i``.
+ */
+const AUTORUN_NAME = /\\(?:Run|RunOnce)\\|\\Winlogon\\|\\Image File Execution Options/i;
+/** A scheduled-task file the file planted (detonate.js line 66, ``.../Tasks/``). */
+const TASK_FILE = /^C:\\Windows\\System32\\Tasks[\\/]/i;
+
+/** The sbx JSON the CLI printed, nested in awdk's receipt as ``data``. */
+function receiptData(receipt) {
+  const data = receipt && typeof receipt.data === "object" && receipt.data !== null ? receipt.data : {};
+  return data;
 }
 
-function countValue(sources, keys) {
-  for (const source of sources) {
-    for (const key of keys) {
-      const value = source[key];
-      if (Array.isArray(value)) return value.length;
-      if (typeof value === "number" && Number.isFinite(value)) return value;
+function arrayOf(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+/**
+ * Persistence entries from the snapshot diff: added services, scheduled-task
+ * files, and autorun values -- the three the upstream findings list treats as
+ * persistence (detonate.js lines 63-67). ``null`` = no diff was reported, never
+ * a fabricated zero.
+ */
+function persistenceCount(diff) {
+  if (!diff || typeof diff !== "object") return null;
+  let total = 0;
+  for (const service of arrayOf(diff.services)) if (service && service.change === "added") total += 1;
+  const files = diff.files && typeof diff.files === "object" ? diff.files : {};
+  for (const file of arrayOf(files.added)) {
+    if (file && typeof file.path === "string" && TASK_FILE.test(file.path)) total += 1;
+  }
+  for (const value of arrayOf(diff.values)) {
+    if (value && value.change !== "removed" && typeof value.name === "string" && AUTORUN_NAME.test(value.name)) {
+      total += 1;
     }
   }
-  return null;
+  return total;
 }
 
-/** Verdict-free counts from the receipt. `null` = not reported, never a fabricated zero. */
+/**
+ * Verdict-free counts from the REAL receipt. ``null`` = not reported, never a
+ * fabricated zero. ``tree`` is the audited process tree INCLUDING the process the
+ * sandbox agent launched (detonate.js line 189: ``r.tree = t.tree``).
+ */
 function reportCounts(result) {
-  const sources = sourcesOf(result);
-  const counts = {};
-  for (const [label, keys] of Object.entries(COUNT_KEYS)) {
-    if (label !== "persistence") {
-      counts[label] = countValue(sources, keys);
-      continue;
-    }
-    let total = null;
-    for (const key of keys) {
-      const n = countValue(sources, [key]);
-      if (n !== null) total = (total || 0) + n;
-    }
-    counts.persistence = total;
-  }
-  return counts;
+  const receipt = (result && result.result) || result || {};
+  const data = receiptData(receipt);
+  const list = (value) => (Array.isArray(value) ? value.length : null);
+  return {
+    processes: list(data.tree),
+    lookups: list(data.lookups),
+    connections: list(data.connections),
+    persistence: persistenceCount(data.diff),
+  };
 }
 
 function countLine(counts) {
@@ -308,53 +441,131 @@ function countLine(counts) {
   ].join(" · ");
 }
 
-/** The report card. The run folder is offered ONLY when it is under the runs root. */
-function reportCard(result, { root = runsRoot(), path = nodePath } = {}) {
-  const data = (result && result.result) || result || {};
-  const runDirRaw = typeof data.run_dir === "string" ? data.run_dir : "";
+/** The upstream findings list, as plain lines (detonate.js line 58: [{level, text}]). */
+function findingsText(data) {
+  return arrayOf(data.findings)
+    .map((finding) => (finding && typeof finding.text === "string" ? `${finding.level || "info"}: ${finding.text}` : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** The report card. The run folder is offered ONLY when it is lexically under the runs root. */
+function reportCard(result, { root = runsRoot(), path = nodePath, expectedSha256 = null } = {}) {
+  const receipt = (result && result.result) || result || {};
+  const data = receiptData(receipt);
+  // awdk returns {ok, command, truncated: true, preview} once the receipt passes
+  // _MAX_SANDBOX_CHARS (awdk/adk/desktop/tools.py:_sandbox_receipt).
+  const capped = receipt.truncated === true;
+  const runDirRaw = [receipt.run_dir, receipt.runDir, data.runDir, data.outDir]
+    .find((value) => typeof value === "string" && value.trim());
   const runDir = runDirRaw && localAbsolute(runDirRaw).ok && isInside(runDirRaw, root, path)
     ? path.resolve(runDirRaw)
     : null;
-  const counts = reportCounts(data);
-  const guestSource = data.report && typeof data.report === "object"
-    ? data.report.summary || data.report.headline || data.report.detail || ""
-    : "";
+  const counts = reportCounts(receipt);
+  const report = receipt.report && typeof receipt.report === "object" ? receipt.report : {};
+  const reportTruncated = report.truncated === true;
+  // data.sha256 is upstream's own digest of the host bytes it copied into the
+  // guest (detonate.js line 134) -- the digest the run actually executed.
+  const executedSha256 = typeof data.sha256 === "string" ? data.sha256.trim().toLowerCase() : "";
+  const expected = typeof expectedSha256 === "string" ? expectedSha256.trim().toLowerCase() : "";
+  const digestMatch = expected && executedSha256 ? expected === executedSha256 : null;
+  const guestSource = findingsText(data)
+    || (typeof report.text === "string" && !reportTruncated ? report.text : "");
+  const exit = Number.isFinite(receipt.exit_code) ? receipt.exit_code : null;
+  const digestLine = digestMatch === true
+    ? `SHA-256: the sandbox ran ${executedSha256}, matching the staged copy.`
+    : digestMatch === false
+      ? `DIGEST MISMATCH: the sandbox ran ${executedSha256}; the staged copy was ${expected}. Treat this run as invalid.`
+      : expected
+        ? `SHA-256: the receipt did not report the digest it ran; the staged copy was ${expected}.`
+        : "";
   return {
     kind: "report",
     title: "Sandbox report",
-    ok: Boolean(data.ok),
-    exitCode: Number.isFinite(data.exit_code) ? data.exit_code : null,
-    timedOut: Boolean(data.timed_out),
+    ok: Boolean(receipt.ok),
+    exitCode: exit,
+    timedOut: Boolean(receipt.timed_out),
+    capped,
+    reportTruncated,
     counts,
     countLine: countLine(counts),
     runDir,
     openFolder: Boolean(runDir),
+    digest: { expected: expected || null, executed: executedSha256 || null, match: digestMatch },
+    digestMismatch: digestMatch === false,
     guestText: plainText(guestSource, MAX_GUEST_CHARS),
     findingsNote: FINDINGS_NOTE,
-    error: plainText(data.error || "", 800),
+    error: plainText(receipt.error || "", 800),
     lines: [
-      `Exit ${Number.isFinite(data.exit_code) ? data.exit_code : "?"}${data.timed_out ? " (timed out)" : ""}`,
+      `Exit ${exit === null ? "?" : exit}${receipt.timed_out ? " (timed out)" : ""}`,
       countLine(counts),
+      digestLine,
+      capped ? "Report too large to show here; open the run folder." : "",
+      reportTruncated ? "The sandbox's report.json was larger than the desk reads whole; the run folder has all of it." : "",
       runDir ? `Run folder: ${runDir}` : "The receipt did not report a run folder the desk may open.",
       "These findings are " + FINDINGS_NOTE + ".",
-    ],
+    ].filter(Boolean),
   };
 }
 
-/** Open a run folder, refusing anything outside the runs root BEFORE calling openPath. */
-async function openRunFolder(cardOrPath, { root = runsRoot(), openPath, path = nodePath } = {}) {
+/**
+ * Open a run folder. Authority is the REAL paths, not the strings: the runs root
+ * and the target must both exist (``fs.realpathSync`` fails otherwise), the real
+ * target must resolve strictly inside the real root, and no path component below
+ * the root may be a reparse point -- a junction under the runs root would
+ * otherwise carry ``shell.openPath`` out of it.
+ */
+async function openRunFolder(cardOrPath, { root = runsRoot(), openPath, path = nodePath, fs = nodeFs } = {}) {
   const raw = typeof cardOrPath === "string" ? cardOrPath : cardOrPath && cardOrPath.runDir;
   if (!raw) return { ok: false, reason: "no_run_folder", error: "this run reported no folder to open" };
   const check = localAbsolute(raw);
   if (!check.ok) return { ok: false, reason: check.reason, error: check.error };
-  if (!isInside(raw, root, path)) {
+  const lexicalRoot = path.resolve(root);
+  const lexicalTarget = path.resolve(raw);
+  let realRoot;
+  try {
+    realRoot = fs.realpathSync(lexicalRoot);
+  } catch {
+    return { ok: false, reason: "runs_root_missing", error: `${lexicalRoot} does not exist; refusing to open anything` };
+  }
+  let realTarget;
+  try {
+    realTarget = fs.realpathSync(lexicalTarget);
+  } catch {
+    return { ok: false, reason: "no_such_folder", error: `${lexicalTarget} does not exist` };
+  }
+  if (!isInside(realTarget, realRoot, path)) {
     return { ok: false, reason: "outside_runs_root", error: `${raw} is not under ${root}; refusing to open it` };
   }
+  // A junction/symlink BELOW the root is refused even when it points back inside:
+  // the run folder must be a real folder the sandbox wrote.
+  const rel = path.relative(lexicalRoot, lexicalTarget);
+  if (rel) {
+    let current = lexicalRoot;
+    for (const segment of rel.split(path.sep)) {
+      current = path.join(current, segment);
+      let stat;
+      try {
+        stat = fs.lstatSync(current);
+      } catch {
+        return { ok: false, reason: "no_such_folder", error: `${current} does not exist` };
+      }
+      if (stat.isSymbolicLink()) {
+        return { ok: false, reason: "reparse_point", error: `${current} is a link or junction; refusing to open it` };
+      }
+    }
+  }
+  try {
+    if (!fs.statSync(realTarget).isDirectory()) {
+      return { ok: false, reason: "not_a_folder", error: `${realTarget} is not a folder` };
+    }
+  } catch {
+    return { ok: false, reason: "no_such_folder", error: `${realTarget} does not exist` };
+  }
   if (typeof openPath !== "function") return { ok: false, reason: "no_opener", error: "no file opener is wired" };
-  const opened = path.resolve(raw);
-  const why = await openPath(opened);
+  const why = await openPath(realTarget);
   if (why) return { ok: false, reason: "open_failed", error: String(why) };
-  return { ok: true, opened };
+  return { ok: true, opened: realTarget };
 }
 
 // ── the daemon ──────────────────────────────────────────────────────────────
@@ -423,20 +634,23 @@ let nextToken = 0;
 function createSandboxDetonator({
   callTool = callDeskTool,
   inspect = inspectTarget,
+  stage = stageTarget,
+  staging = stagingRoot(),
   root = runsRoot(),
   openPath = null,
   path = nodePath,
+  fs = nodeFs,
   log = () => {},
 } = {}) {
   let busy = false;
-  let pending = null; // { token, target }
+  let pending = null; // { token, target, staged, stagingDir, sha256, size }
 
   const release = () => {
     busy = false;
     pending = null;
   };
 
-  /** Step 1-2: inspect the file and hand back the confirm card. Calls nothing. */
+  /** Step 1-2: inspect the file, stage a copy, hash the copy, hand back the confirm card. */
   async function request(target) {
     if (busy) return { card: busyCard(), accepted: false };
     busy = true; // the slot is claimed at the card, so two cards cannot stack either
@@ -453,18 +667,58 @@ function createSandboxDetonator({
     }
     nextToken += 1;
     const token = `sbx-${nextToken}`;
-    pending = { token, target: info.path };
-    return { card: confirmCard(info, token), accepted: true, token };
+    let staged;
+    try {
+      staged = await stage(info, { token, root: staging, fs, path });
+    } catch (error) {
+      release();
+      return { card: problemCard((error && error.message) || String(error), "staging_failed"), accepted: false };
+    }
+    if (!staged || !staged.ok) {
+      release();
+      return { card: problemCard((staged && staged.error) || "that file could not be staged", (staged && staged.reason) || "staging_failed"), accepted: false };
+    }
+    pending = {
+      token,
+      target: info.path,
+      staged: staged.path,
+      stagingDir: staged.dir,
+      sha256: staged.sha256,
+      size: staged.size,
+    };
+    return {
+      card: confirmCard({ ...info, staged: staged.path, size: staged.size, sha256: staged.sha256 }, token),
+      accepted: true,
+      token,
+    };
   }
 
-  /** Step 3-4: the owner CLICKED. Doctor first, then one detonate call with confirm=true. */
+  /** Step 3-5: the owner CLICKED. Re-hash the copy, doctor, then one detonate call with confirm=true. */
   async function confirm(token) {
     if (!pending || pending.token !== token) {
       return { card: problemCard("nothing is waiting for confirmation", "no_pending"), ran: false };
     }
-    const { target } = pending;
+    const held = pending;
     pending = null; // a second click cannot run it twice
     try {
+      // The card's evidence must describe the bytes that run. The copy is ours,
+      // but anything with the owner's rights can still rewrite it while the
+      // dialog is open, so it is re-hashed here and a change refuses the run.
+      let digest;
+      try {
+        digest = await sha256File(held.staged, { fs });
+      } catch {
+        return { card: problemCard(`the staged copy is gone: ${held.staged}`, "staged_missing"), ran: false };
+      }
+      if (String(digest).toLowerCase() !== held.sha256) {
+        return {
+          card: problemCard(
+            `the staged copy changed after the card was shown (was ${held.sha256}, now ${digest}); nothing was run`,
+            "staged_changed",
+          ),
+          ran: false,
+        };
+      }
       const doctor = await callTool(TOOL_DOCTOR, {}, { confirm: false });
       if (!doctorReady(doctor)) {
         log("sandbox doctor: not ready");
@@ -472,21 +726,26 @@ function createSandboxDetonator({
       }
       const result = await callTool(
         TOOL_DETONATE,
-        { target, network: NETWORK },
+        { target: held.staged, network: NETWORK },
         { confirm: true, timeoutMs: DETONATE_TIMEOUT_MS },
       );
       if (result && result.reason === "confirm_required") {
         return { card: problemCard(result.error || "the daemon demanded confirmation", result.reason), ran: false };
       }
-      return { card: reportCard(result, { root, path }), ran: true, result };
+      return { card: reportCard(result, { root, path, expectedSha256: held.sha256 }), ran: true, result };
     } finally {
+      removeStaged(held, { fs });
       release();
     }
   }
 
-  /** The owner dismissed the confirm card: free the slot, call nothing. */
+  /** The owner dismissed the confirm card: free the slot, remove the copy, call nothing. */
   function cancel(token) {
-    if (pending && pending.token === token) release();
+    if (pending && pending.token === token) {
+      const held = pending;
+      release();
+      removeStaged(held, { fs });
+    }
     return { ok: true };
   }
 
@@ -502,16 +761,17 @@ function createSandboxDetonator({
     requestFromLink,
     confirm,
     cancel,
-    openFolder: (card) => openRunFolder(card, { root, openPath, path }),
+    openFolder: (card) => openRunFolder(card, { root, openPath, path, fs }),
     isBusy: () => busy,
   };
 }
 
 module.exports = {
+  ACCEPTED_EXTENSIONS,
   DAEMON,
   FINDINGS_NOTE,
   MAX_GUEST_CHARS,
-  MAX_HASH_BYTES,
+  MAX_STAGED_BYTES,
   NETWORK,
   ROUTE,
   TOOL_DETONATE,
@@ -519,21 +779,27 @@ module.exports = {
   busyCard,
   callDeskTool,
   confirmCard,
+  copyStagedFile,
   countLine,
   createSandboxDetonator,
   doctorCard,
   doctorReady,
+  findingsText,
   inspectTarget,
   isInside,
   localAbsolute,
   openRunFolder,
   parseDetonateUrl,
+  persistenceCount,
   plainText,
   problemCard,
+  removeStaged,
   reportCard,
   reportCounts,
   runsRoot,
   setText,
   sha256File,
   sizeLabel,
+  stageTarget,
+  stagingRoot,
 };
