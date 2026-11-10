@@ -19,6 +19,13 @@ test("destructive kinds and proposal/plan facts route Approve to the passkey win
   // awstorage manage/suggest cards are kind "decision" -- the FACT marks them.
   assert.equal(sa.answerRoute({ kind: "decision", facts: ["proposal_id: 12", "node: x"] }, "approve"), "window");
   assert.equal(sa.answerRoute({ kind: "decision", facts: ["plan_id: rp-3", "plan_sha256: ab"] }, "Approve"), "window");
+  // A permission-grant card (claude_permission_grant.py) applies only on a signed
+  // receipt: Grant goes to the passkey page, Deny stays unsigned. The real card's facts:
+  const grant = { kind: "blocked", facts: [
+    "permission_rule: Bash(gh api -X PATCH repos/Aitherium/AitherOS/hooks/599601645:*)",
+    "settings_file: C:\\AitherOS-Fresh\\.claude\\settings.local.json"] };
+  assert.equal(sa.answerRoute(grant, "grant"), "window");
+  assert.equal(sa.answerRoute(grant, "deny"), "awask");
 });
 
 test("reject and ordinary cards keep using awask", () => {
