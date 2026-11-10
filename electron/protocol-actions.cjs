@@ -62,6 +62,19 @@ function parseProtocolUrl(rawUrl, protocolScheme = "desk") {
       if (!/^https?:\/\//i.test(target)) return null;
       return [{ type: "browse", url: target.slice(0, 4096) }];
     }
+    // desk://sandbox/detonate?path=<file> -> hand ONE local file to Windows Sandbox.
+    // A LINK IS NEVER A CONFIRMATION: main routes this through the very same confirm
+    // card the menu uses (file name, size, SHA-256, networking off), and the daemon
+    // is not called until the owner clicks Detonate on that card. The path is carried
+    // verbatim -- sandbox-detonate.cjs refuses anything that is not a plain local
+    // absolute file path, so an Explorer "Send to" entry can use this too.
+    if (action === "sandbox" || action === "sandbox/detonate") {
+      const verb = action === "sandbox" ? url.pathname.replace(/^\/+/, "").toLowerCase() : "detonate";
+      if (verb && verb !== "detonate") return null;
+      const target = String(url.searchParams.get("path") || "").trim();
+      if (!target) return null;
+      return [{ type: "sandbox", url: rawUrl, target }];
+    }
     if (action === "listening") {
       return [{ type: "event", event: voiceState("listening") }];
     }

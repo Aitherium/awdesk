@@ -59,6 +59,7 @@ const GROUPS = Object.freeze({
   arc: Object.freeze({ menu: "ARC" }),
   blog: Object.freeze({ menu: "Blog" }),
   sprite: Object.freeze({ menu: "Sprite" }),
+  sandbox: Object.freeze({ menu: "Windows Sandbox" }),
   aw: Object.freeze({ menu: "aw tools" }),
   layout: Object.freeze({ menu: "Browser layout" }),
 });
@@ -73,7 +74,7 @@ const GROUPS = Object.freeze({
  * ITEMS are one list; only the reading order differs.
  */
 const LAYOUT = Object.freeze({
-  tray: Object.freeze(["go", "desktop", "avatar", "window-size", "talk", "audio", "stage", "fleet", "arc", "blog", "sprite", "aw", "capture", "app"]),
+  tray: Object.freeze(["go", "desktop", "avatar", "window-size", "talk", "audio", "stage", "fleet", "arc", "blog", "sprite", "sandbox", "aw", "capture", "app"]),
   // ONE menu (owner, 2026-10-04: "the 3 different menu surfaces are still confusing").
   // A body's menu is the tray's menu with what is about THAT body on top: the rows
   // after "body"/"slot" read in exactly the tray's order, and the browser's Aither
@@ -853,6 +854,15 @@ const COMMANDS = Object.freeze([
   Object.freeze({
     id: "sprite.open", label: "Open my sprite (aitherium.com)", menuLabel: "Open Sprite…",
     group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-open",
+  }),
+  // ── Windows Sandbox (sandbox-detonate.cjs): a file you do not trust runs in a
+  // fresh throwaway guest with networking OFF. The picker only PREPARES a confirm
+  // card naming the file, its size and its SHA-256; the owner's click on that card
+  // is the confirmation, and nothing reaches the daemon before it. doctor's "not
+  // ready" text is shown verbatim -- the desk never elevates on its own.
+  Object.freeze({
+    id: "sandbox.detonate", label: "Detonate a file in Windows Sandbox…", menuLabel: "Detonate a file in a sandbox…",
+    group: "sandbox", surfaces: ["tray", "palette"],
   }),
   // ── the aw* CLIs (aw-cli.cjs): system binaries via execFile, 30 s cap, output in
   // the orb's bubble. A verb that needs a query opens the bubble's field when run
