@@ -2347,6 +2347,13 @@ function peekCard(id, { explicit = false } = {}) {
     return { ok: true, id: card.id, already: true };
   }
   if (nudging && !nudging.peek && !explicit) return { ok: false, reason: "a nudge is showing" };
+  // A hover never replaces a card the owner CLICKED open, or one the pointer is on:
+  // on the way from the orb to the card's buttons the pointer crosses the companion
+  // fairies, and each hover swapped the card out (owner 2026-11-10: "I click but I
+  // can't get to the card because it changes when I hover over a different fairy").
+  if (nudging && !explicit && (nudging.explicit || nudging.hovered)) {
+    return { ok: false, reason: "the owner opened this one" };
+  }
   // A click outranks a running nudge; "preempted" teaches the ladder nothing.
   // A fairy that had flown out to the pointer still goes home when this one ends.
   const away = nudging && nudging.anchor ? nudging.anchor : null;
@@ -2360,6 +2367,7 @@ function peekCard(id, { explicit = false } = {}) {
   };
   const r = startNudge(decision, { peek: true });
   if (away && nudging && !nudging.anchor) nudging.anchor = away;
+  if (explicit && nudging) nudging.explicit = true;
   return r;
 }
 

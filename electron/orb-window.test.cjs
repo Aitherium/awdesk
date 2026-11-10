@@ -1211,6 +1211,33 @@ test("a peek never steals a real nudge's whisper", async () => {
   orbWindow.endNudge("seen", { stay: true });
 });
 
+test("a hover on another fairy never swaps out a card the owner clicked open, or one the pointer is on", async () => {
+  // Owner, 2026-11-10: "I click but I can't get to the card because it changes when
+  // I hover over a different fairy" -- the pointer crosses companions on its way.
+  startAttention();
+  const now = Math.floor(Date.now() / 1000);
+  orbWindow.setAttentionCards([
+    blockedCard({ id: "d-a1", agent: "atlas", createdAt: now }),
+    blockedCard({ id: "d-l1", agent: "lyra", createdAt: now }),
+    blockedCard({ id: "d-d1", agent: "demi", createdAt: now }),
+  ]);
+  assert.equal(orbWindow.openFairyCard("d-a1").ok, true, "a click opens it");
+  const hover = await invoke("desk:orb-peek", orbWin(), "d-l1");
+  assert.equal(hover.ok, false, "the hover is refused");
+  assert.equal(orbWindow.nudging().id, "d-a1", "the clicked card stays");
+  orbWindow.endNudge("seen", { stay: true });
+  // A hover-opened card the pointer is ON is also held.
+  assert.equal((await invoke("desk:orb-peek", orbWin(), "d-l1")).ok, true);
+  await invoke("desk:nudge-act", nudgeWin(), "hover", true);
+  assert.equal((await invoke("desk:orb-peek", orbWin(), "d-d1")).ok, false);
+  assert.equal(orbWindow.nudging().id, "d-l1");
+  await invoke("desk:nudge-act", nudgeWin(), "hover", false);
+  // A hover-opened card the pointer has left: the next hover may still replace it.
+  assert.equal((await invoke("desk:orb-peek", orbWin(), "d-d1")).ok, true);
+  assert.equal(orbWindow.nudging().id, "d-d1");
+  orbWindow.endNudge("seen", { stay: true });
+});
+
 test("whoever is talking: the fairy wears that agent for about the line, a character changes nothing", () => {
   start();
   orbWindow.showOrb();
