@@ -877,6 +877,30 @@ test("clicking the fairy mid-nudge opens THAT card", async () => {
   assert.equal(orbWindow.nudging(), null);
 });
 
+test("clicking the fairy with cards waiting opens the top card, even one put off with Later", async () => {
+  // Owner, 2026-11-10: the badge said 1, the click opened an empty chat.
+  startAttention();
+  orbWindow.setAttentionCards([blockedCard({ id: "d-top" }), blockedCard({ id: "d-second" })]);
+  await orbWindow.attentionTick();
+  await wait(1000);
+  orbWindow.endNudge("later", { stay: true });
+  await wait(2500); // the fairy flies home; a click mid-flight cancels the flight (by design)
+  // An earlier test may have left the chat bubble up; a click on that closes it.
+  const b = bubbleWin();
+  if (b && b.isVisible()) b.hide();
+  assert.equal(orbWindow.nudging(), null);
+  const r = await invoke("desk:orb-click", orbWin());
+  assert.equal(r.ok, true);
+  assert.equal(r.card, "d-top", `the top-ranked card opens, not the chat: ${JSON.stringify(r)}`);
+  assert.equal(orbWindow.nudging().id, "d-top");
+  orbWindow.endNudge("seen", { stay: true });
+  // Nothing waiting: the click still opens the chat.
+  orbWindow.setAttentionCards([]);
+  const chat = await invoke("desk:orb-click", orbWin());
+  assert.equal(chat.visible, true);
+  assert.equal(chat.card, undefined);
+});
+
 test("an ordinary card only glows beside the fairy where it rests", async () => {
   startAttention();
   const homeBefore = orbWin().getBounds();

@@ -2947,6 +2947,14 @@ function toggleBubbleFromOrb() {
   if (alive(bubbleWindow) && bubbleWindow.isVisible()) {
     return closeBubble();
   }
+  // Cards waiting: the click opens the top one (owner 2026-11-10: the badge said 1 and
+  // the click opened an empty chat). attentionCards arrive ranked, needs-you first, and
+  // a snoozed card ("Later") still opens -- the owner is asking. Chat stays on the menu.
+  const top = attentionCards[0];
+  if (top) {
+    const r = peekCard(top.id, { explicit: true });
+    if (r && r.ok) return { ...r, visible: false, card: top.id };
+  }
   openBubble({ focus: true });
   return { ok: true, visible: true };
 }
