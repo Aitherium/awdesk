@@ -151,7 +151,9 @@ function queueView(cards, {
   const wanted = String(source || "").trim().toLowerCase();
   const searched = entries.filter((entry) => {
     if (!tokens.length) return true;
-    const hay = haystack(entry.cards[0], entry.source);
+    // EVERY card in a collapsed entry can match -- a repeat's body counts, or the
+    // search would hide a group because its first card happened to be terse.
+    const hay = entry.cards.map((card) => haystack(card, entry.source)).join(" ");
     return tokens.every((token) => hay.includes(token));
   });
   const visible = searched.filter((entry) => !(hideSelfAnswering && entry.selfAnswering));

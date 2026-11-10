@@ -79,6 +79,16 @@ test("queueView: the search reads title, source AND body; every token must match
   assert.deepEqual(ids("unrelated policy"), [], "tokens AND, never OR");
 });
 
+test("the search reads a repeat's body too, not only the first card's", () => {
+  const cards = [
+    card({ id: "d-r1", title: "Wake pruning failed", summary: "" }),
+    card({ id: "d-r2", title: "Wake pruning failed", summary: "cannot reach the sink" }),
+  ];
+  const view = queue.queueView(cards, { query: "sink" });
+  assert.deepEqual(view.entries.map((e) => e.id), ["d-r1"]);
+  assert.equal(view.entries[0].count, 2);
+});
+
 test("queueView: source chips carry counts and the chip filters the list", () => {
   const cards = [
     card({ id: "d-1", title: "One", agent: "awrise" }),
