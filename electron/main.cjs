@@ -427,6 +427,7 @@ const {
 const { createAudioListener } = require("./audio-listener.cjs");
 const { isAllowedRendererNavigation } = require("./navigation-policy.cjs");
 const { parseProtocolUrl, voiceState } = require("./protocol-actions.cjs");
+const sandboxDetonate = require("./sandbox-detonate.cjs");
 const { lendProcessSpawner, startKvLend } = require("./kv-lend-electron.cjs");
 const { createDeviceConnect } = require("./device-connect.cjs");
 const { createNearbyDevices } = require("./nearby-devices.cjs");
@@ -1607,6 +1608,10 @@ function handleProtocolUrl(rawUrl) {
       if (kvLendRuntime) void kvLendRuntime.enrollFromUrl(command.url);
       else pendingEnroll.push(command.url);
     }
+    // A desk:// link is a HAND-OFF, not a confirmation: it raises the same confirm
+    // card the menu does (name, size, SHA-256, networking off) and calls nothing
+    // until the owner clicks Detonate on it.
+    else if (command.type === "sandbox") { void runSandboxDetonateFromLink(command.url); }
   }
   return true;
 }
@@ -3284,6 +3289,117 @@ async function launchPinnedApp(src) {
   return err ? { ok: false, reason: String(err) } : { ok: true };
 }
 
+// ── Windows Sandbox detonation (sandbox-detonate.cjs) ───────────────────────
+// Two doors, ONE flow: the registry row "sandbox.detonate" (a native single-file
+// picker) and a desk://sandbox/detonate?path= link (Explorer "Send to", another
+// app). Both only PREPARE a confirm card; the daemon is untouched until the owner
+// clicks Detonate on that card. Windows allows one sandbox at a time, so a second
+// request while one runs gets a busy card rather than a second call.
+let sandboxDetonatorInstance = null;
+function sandboxDetonator() {
+  if (!sandboxDetonatorInstance) {
+    sandboxDetonatorInstance = sandboxDetonate.createSandboxDetonator({
+      // The desk's OWN app-data folder: the bytes detonated are a copy the desk
+      // wrote and hashed, never the file the owner picked in place.
+      staging: path.join(app.getPath("userData"), "sandbox-staging"),
+      openPath: (target) => shell.openPath(target),
+      log: (line) => console.log(`[desk] ${line}`),
+    });
+  }
+  return sandboxDetonatorInstance;
+}
+
+/**
+ * Render one card from sandbox-detonate.cjs with the desk's native dialog.
+ * Guest text is already plain (the module's `plainText`), and `detail` is TEXT:
+ * no markup is parsed, so nothing the guest produced can become a control.
+ */
+async function presentSandboxCard(card) {
+  if (!card || typeof card !== "object") return;
+  const lines = Array.isArray(card.lines) ? card.lines.filter(Boolean).join("\n") : "";
+  if (card.kind === "confirm") {
+    const { response } = await dialog.showMessageBox({
+      type: "warning",
+      title: card.title,
+      message: card.title,
+      detail: lines,
+      buttons: [card.confirmLabel || "Detonate", card.cancelLabel || "Cancel"],
+      // Cancel is the default: a stray Enter must never run a file.
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (response === 0) {
+      const outcome = await sandboxDetonator().confirm(card.token);
+      await presentSandboxCard(outcome.card);
+    } else {
+      sandboxDetonator().cancel(card.token);
+    }
+    return;
+  }
+  if (card.kind === "report") {
+    const detail = [
+      lines,
+      card.guestText ? `\nSandbox output (untrusted, shown as text):\n${card.guestText}` : "",
+      card.error ? `\nError: ${card.error}` : "",
+    ].filter(Boolean).join("\n");
+    const buttons = card.openFolder ? ["Open folder", "Close"] : ["Close"];
+    const { response } = await dialog.showMessageBox({
+      type: "info",
+      title: card.title,
+      message: card.title,
+      detail,
+      buttons,
+      defaultId: buttons.length - 1,
+      cancelId: buttons.length - 1,
+      noLink: true,
+    });
+    if (card.openFolder && response === 0) {
+      const opened = await sandboxDetonator().openFolder(card);
+      if (!opened.ok) {
+        await dialog.showMessageBox({
+          type: "warning",
+          title: "Could not open the run folder",
+          message: "Could not open the run folder",
+          detail: opened.error || opened.reason,
+          buttons: ["OK"],
+          noLink: true,
+        });
+      }
+    }
+    return;
+  }
+  // doctor (not ready: its EXACT fix text, nothing runs), busy, and problem cards.
+  await dialog.showMessageBox({
+    type: card.kind === "busy" ? "info" : "warning",
+    title: card.title,
+    message: card.title,
+    detail: card.text || lines,
+    buttons: ["OK"],
+    noLink: true,
+  });
+}
+
+async function runSandboxDetonate(target) {
+  const outcome = await sandboxDetonator().request(target);
+  await presentSandboxCard(outcome.card);
+}
+
+async function runSandboxDetonateFromLink(rawUrl) {
+  const outcome = await sandboxDetonator().requestFromLink(rawUrl);
+  await presentSandboxCard(outcome.card);
+}
+
+async function sandboxDetonateCommand() {
+  const picked = await dialog.showOpenDialog({
+    title: "Detonate a file in Windows Sandbox",
+    buttonLabel: "Inspect",
+    properties: ["openFile"],
+  });
+  if (picked.canceled || !Array.isArray(picked.filePaths) || picked.filePaths.length === 0) return;
+  await runSandboxDetonate(picked.filePaths[0]);
+}
+
 function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
   // A command can flip a fact a label reads (overlay open, ghost mode, mic on).
   // Re-render AFTER it ran rather than let the tray show the state from before
@@ -3522,6 +3638,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       // The page host, plain: mission control is a page, not an OS window.
       return void browserWindow.createBrowserWindow({
         askAgent: browserAskAgent, url: "https://app.aitherium.com/mission-control" });
+    case "sandbox.detonate": return void sandboxDetonateCommand();
     default: {
       // The size presets and the stage arrangements are DATA on their registry
       // records, so a new one is a line there and needs no case here.

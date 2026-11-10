@@ -64,3 +64,17 @@ test("desk://browse carries one http(s) page to the desk's Aither Browser, nothi
   assert.equal(parseProtocolUrl(`desk://browse?url=${encodeURIComponent("file:///C:/Windows")}`), null);
   assert.equal(parseProtocolUrl("other://browse?url=https%3A%2F%2Fx.test"), null);
 });
+
+test("desk://sandbox/detonate carries a file to the SAME confirm flow, and needs one", () => {
+  const file = "C:\\Users\\owner\\Downloads\\invoice.pdf";
+  const url = `desk://sandbox/detonate?path=${encodeURIComponent(file)}`;
+  // The whole link travels with it so sandbox-detonate.cjs re-parses the target.
+  assert.deepEqual(parseProtocolUrl(url), [{ type: "sandbox", url, target: file }]);
+  assert.deepEqual(parseProtocolUrl(`desk:///sandbox/detonate?path=${encodeURIComponent(file)}`), [
+    { type: "sandbox", url: `desk:///sandbox/detonate?path=${encodeURIComponent(file)}`, target: file },
+  ]);
+  assert.equal(parseProtocolUrl("desk://sandbox"), null);
+  assert.equal(parseProtocolUrl("desk://sandbox/detonate"), null);
+  assert.equal(parseProtocolUrl("desk://sandbox/run?path=C%3A%5Ct.txt"), null);
+  assert.equal(parseProtocolUrl(`other://sandbox/detonate?path=${encodeURIComponent(file)}`), null);
+});
