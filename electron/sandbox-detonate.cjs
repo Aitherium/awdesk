@@ -479,6 +479,11 @@ function persistenceCount(diff) {
  * findings}``. Those numbers are authoritative when present; otherwise every
  * count is derived from the same fields upstream's findings list uses.
  */
+function cappedPersistence(summary, fallback) {
+  const parts = [summary.services_added, summary.scheduled_tasks, summary.persistence_values];
+  return parts.every((n) => Number.isFinite(n)) ? parts.reduce((a, b) => a + b, 0) : fallback;
+}
+
 function reportCounts(result) {
   const receipt = receiptOf(result);
   const data = receiptData(receipt);
@@ -500,7 +505,11 @@ function reportCounts(result) {
     // awdk's capped summary names these services_added / persistence_values
     // (_sandbox_counts, AitherOS #15896); the short names are accepted too.
     services: pick("services_added", pick("services", addedServices)),
-    persistence: pick("persistence_values", pick("persistence", persistenceCount(diff))),
+    // Persistence on the uncapped card is added services + planted task files +
+    // autorun values (persistenceCount). awdk's capped summary gives those three
+    // parts separately (persistence_values = autorun values only, AitherOS #15898),
+    // so the capped card sums the same three, or falls back when one is missing.
+    persistence: cappedPersistence(summary, pick("persistence", persistenceCount(diff))),
     scheduled_tasks: pick("scheduled_tasks", addedTasks),
     findings: pick("findings", list(data.findings)),
   };

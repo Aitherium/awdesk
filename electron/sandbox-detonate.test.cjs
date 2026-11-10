@@ -421,7 +421,7 @@ test("a capped receipt in awdk's CURRENT shape keeps its exit code, counts, dige
   assert.equal(card.exitCode, 0, "the capped shape keeps exit_code");
   assert.match(text, /Exit 0/);
   assert.deepEqual(card.counts, {
-    processes: 14, lookups: 3, connections: 2, services: 0, persistence: 2, scheduled_tasks: 1, findings: 5,
+    processes: 14, lookups: 3, connections: 2, services: 0, persistence: 3, scheduled_tasks: 1, findings: 5,
   }, "the counts are awdk's own summary, read under the keys awdk emits");
   assert.match(card.countLine, /Processes: 14/);
   assert.match(card.countLine, /Scheduled tasks: 1/);
@@ -808,7 +808,7 @@ test("capped counts are read under awdk's own keys: services_added and persisten
   });
   const counts = sandbox.reportCounts({ ok: true, result: receipt });
   assert.equal(counts.services, 2, "services_added is the added-services count");
-  assert.equal(counts.persistence, 3, "persistence_values is the persistence count");
+  assert.equal(counts.persistence, 5, "persistence = services_added + scheduled_tasks + autorun persistence_values, as uncapped");
   assert.doesNotMatch(sandbox.countLine(counts), /not reported/);
 });
 
@@ -835,4 +835,19 @@ test("desk:///sandbox/detonate (empty host) is the same link as desk://sandbox/d
   assert.equal(sandbox.parseDetonateUrl(`desk:///sandbox/detonate?path=${target}`).ok, true);
   assert.equal(sandbox.parseDetonateUrl(`desk://sandbox/detonate?path=${target}`).ok, true);
   assert.equal(sandbox.parseDetonateUrl(`desk:///sandbox/other?path=${target}`).ok, false);
+});
+
+test("a capped and an uncapped receipt for the same run report the same persistence number", () => {
+  const uncapped = realReceipt();
+  const fromData = sandbox.reportCounts({ ok: true, result: uncapped }).persistence;
+  const data = uncapped.data;
+  const services = data.diff.services.filter((s) => s.change === "added").length;
+  const sep = String.fromCharCode(92);
+  const taskDir = [sep, "windows", "system32", "tasks", sep].join(sep).replace(sep + sep, sep).replace(sep + sep, sep);
+  const tasks = data.diff.files.added.filter((f) => String(f.path).toLowerCase().includes(taskDir)).length;
+  const autoruns = fromData - services - tasks;
+  const capped = cappedReceipt({ counts: {
+    processes: 0, lookups: 0, connections: 0, services_added: services,
+    persistence_values: autoruns, scheduled_tasks: tasks, findings: 0 } });
+  assert.equal(sandbox.reportCounts({ ok: true, result: capped }).persistence, fromData);
 });
