@@ -4258,13 +4258,21 @@ let relaySeenAt = 0;
  * Who is active on the platform, for the fairy's swarm: ONE read of Atlas'
  * presence (GET /atlas/presence through the gateway's atlas_presence tool), which is
  * itself built from the company board in Pulse + the Discord bot roster -- no
- * per-source poller here. A failed read keeps the last list.
+ * per-source poller here. A failed read keeps the last list. The live Claude Code
+ * sessions on THIS machine join it, one companion each (owner 2026-11-10: "what about
+ * discord fairies vs local fairy vs claude/terminal fairies") -- read from the same
+ * ~/.claude/sessions list the Inbox session panel uses, so they show even when the
+ * platform read fails.
  */
+let platformPresence = [];
 async function refreshAgentPresence() {
   const snap = await atlasPresence();
   if (snap && snap.ok && snap.presence && Array.isArray(snap.presence.agents)) {
-    try { orbWindow.setPresence(snap.presence.agents); } catch { /* the fairy is cosmetic */ }
+    platformPresence = snap.presence.agents;
   }
+  let sessions = [];
+  try { sessions = agentPresence.sessionPresence(sessionContext.liveSessions()); } catch { /* none */ }
+  try { orbWindow.setPresence([...platformPresence, ...sessions]); } catch { /* the fairy is cosmetic */ }
   return snap;
 }
 
