@@ -122,9 +122,44 @@ function restingFairy() {
   return fairyFor(PALETTE.default || "aither");
 }
 
-/** Who a card is from: the card's agent (palette or crew), else nobody. */
+/**
+ * A Claude Code session's own fairy key: "session-" + the first 8 of its id.
+ * Owner 2026-11-10: "what about discord fairies vs local fairy vs claude/terminal
+ * fairies" -- every Claude session's cards said agent "claude-code", which reads as
+ * generic, so they had NO fairy, and the sessions themselves never showed.
+ */
+function sessionKey(sessionId) {
+  const s = String(sessionId == null ? "" : sessionId).replace(/[^a-z0-9]/gi, "").slice(0, 8).toLowerCase();
+  return s ? `session-${s}` : "";
+}
+
+const CLAUDE_AGENT_RE = /^(claude(-code)?|claude code)$/i;
+
+/** Who a card is from: a Claude session's own fairy, else the card's agent (palette or crew), else nobody. */
 function cardAgent(card) {
-  return crewKey(card && card.agent);
+  const key = crewKey(card && card.agent);
+  const raw = String((card && card.agent) || "").trim();
+  if (card && card.sessionId && (!key || CLAUDE_AGENT_RE.test(raw))) return sessionKey(card.sessionId) || key;
+  return key;
+}
+
+/**
+ * Live Claude Code sessions (session-context.liveSessions) as presence rows: one
+ * companion per session, labelled with its name. Busy = working; anything else idle.
+ */
+function sessionPresence(sessions) {
+  const rows = [];
+  const entries = sessions instanceof Map ? [...sessions.entries()]
+    : Object.entries(sessions && typeof sessions === "object" ? sessions : {});
+  for (const [id, s] of entries) {
+    const agent = sessionKey(id);
+    if (!agent || !s) continue;
+    const cwd = String(s.cwd || "").replace(/[\\/]+$/, "");
+    const label = String(s.name || cwd.split(/[\\/]/).pop() || "Claude session").trim().slice(0, 40);
+    const busy = /^(busy|running|working|thinking)$/i.test(String(s.status || ""));
+    rows.push({ agent, label, state: busy ? "working" : "idle", work: [] });
+  }
+  return rows;
 }
 
 /** Presence states, strongest first: what a companion shows. */
@@ -207,8 +242,12 @@ function companionsFor(cards, { current = "", presence = [], speaking = [] } = {
   const out = [];
   for (const [agent, s] of byAgent) {
     if (agent === wearing) continue;
-    const f = crewFairy(s.name);
     const pr = s.presence;
+    // A Claude session's fairy: its colour hashed from its own key, its name from the
+    // session list (its cards all say "claude-code", which would make every session one).
+    const f = agent.startsWith("session-")
+      ? { ...crewFairy(agent), label: (pr && pr.label) || "Claude session" }
+      : crewFairy(s.name);
     const state = s.count > 0 || (pr && pr.state === "waiting") ? "waiting"
       : talking.has(agent) ? "speaking"
         : pr && pr.state === "working" ? "working" : "idle";
@@ -330,6 +369,8 @@ module.exports = {
   colorForName,
   restingFairy,
   cardAgent,
+  sessionKey,
+  sessionPresence,
   companionsFor,
   normalizePresence,
   newPosters,

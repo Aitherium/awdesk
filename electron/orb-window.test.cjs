@@ -1461,7 +1461,9 @@ test("the swarm page draws presence states and a click asks for that agent's cha
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.match(main, /chat: \(agent, links\) => openAgentChat\(agent, links\)/);
   assert.match(main, /type: "deck:open-chat"/);
-  assert.match(main, /orbWindow\.setPresence\(snap\.presence\.agents\)/);
+  assert.match(main, /platformPresence = snap\.presence\.agents/);
+  // The live Claude sessions ride beside the platform agents, one companion each.
+  assert.match(main, /orbWindow\.setPresence\(\[\.\.\.platformPresence, \.\.\.sessions\]\)/);
   assert.match(main, /orbWindow\.noteAgentPosted\(agent\)/);
   const deck = fs.readFileSync(path.join(__dirname, "..", "src", "components", "Deck.tsx"), "utf8");
   assert.match(deck, /event\.type !== 'deck:open-chat'/);

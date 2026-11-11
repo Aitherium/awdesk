@@ -226,3 +226,30 @@ test("relay posts: the first read only sets the mark; later agent posts name the
   assert.equal(agentFairy.latestAt(rows, 0), 102);
   assert.equal(agentFairy.latestAt([], 200), 200, "never moves backwards");
 });
+
+test("every Claude session gets its own fairy: its cards, its name, beside the platform agents", () => {
+  // Owner, 2026-11-10: "what about discord fairies vs local fairy vs claude/terminal fairies".
+  const sessions = new Map([
+    ["1143e745-6ceb-4221", { name: "OpenMAIC intake", status: "busy", cwd: "C:/AitherOS-Fresh" }],
+    ["be49a0d9-0000-0000", { name: "", status: "idle", cwd: "D:/desk/" }],
+  ]);
+  const rows = agentFairy.sessionPresence(sessions);
+  assert.deepEqual(rows.map((r) => [r.agent, r.label, r.state]), [
+    ["session-1143e745", "OpenMAIC intake", "working"],
+    ["session-be49a0d9", "desk", "idle"],
+  ]);
+  const cards = [
+    { id: "d-1", agent: "claude-code", sessionId: "1143e745-6ceb-4221", createdAt: 2 },
+    { id: "d-2", agent: "claude-code", sessionId: "be49a0d9-0000-0000", createdAt: 1 },
+    { id: "d-3", agent: "atlas", createdAt: 3 },
+  ];
+  assert.equal(agentFairy.cardAgent(cards[0]), "session-1143e745");
+  assert.equal(agentFairy.cardAgent(cards[2]), "atlas", "a named agent keeps its own fairy");
+  const mates = agentFairy.companionsFor(cards, { presence: [{ agent: "lyra", state: "working" }, ...rows] });
+  const byAgent = Object.fromEntries(mates.map((m) => [m.agent, m]));
+  assert.equal(byAgent["session-1143e745"].cardId, "d-1");
+  assert.equal(byAgent["session-1143e745"].label, "OpenMAIC intake");
+  assert.equal(byAgent["session-be49a0d9"].cardId, "d-2");
+  assert.ok(byAgent.atlas && byAgent.lyra, "platform and Discord agents stay beside the sessions");
+  assert.notEqual(byAgent["session-1143e745"].color, byAgent["session-be49a0d9"].color);
+});
