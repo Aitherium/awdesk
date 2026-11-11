@@ -113,7 +113,7 @@ function createWatchdog({ budget, sample, reclaim, restart, quit, notify = () =>
     // The owner is mid-approval (the passkey window): a restart destroys it under
     // their hand (owner, 2026-11-10: "I was about to, then it was killed" -- the
     // approve page loading read as +400 MB). Reclaim instead; judge again next tick.
-    let held = false;
+    let held;
     try { held = Boolean(hold()); } catch { held = false; }
     if (held) {
       lastReclaimAt = t;
