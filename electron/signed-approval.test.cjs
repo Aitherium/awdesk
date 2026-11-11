@@ -28,6 +28,14 @@ test("destructive kinds and proposal/plan facts route Approve to the passkey win
   assert.equal(sa.answerRoute(grant, "deny"), "awask");
 });
 
+test("the card's own require_signed flag sends Approve to the passkey window, any kind", () => {
+  assert.equal(sa.answerRoute({ kind: "decision", require_signed: true }, "ship"), "window");
+  assert.equal(sa.answerRoute({ kind: "blocked", requireSigned: true }, "go"), "window");
+  assert.equal(sa.answerRoute({ kind: "decision", require_signed: true }, "deny"), "awask");
+  assert.equal(sa.answerRoute({ kind: "decision", require_signed: "yes" }, "ship"), "awask",
+    "only a real boolean true counts");
+});
+
 test("reject and ordinary cards keep using awask", () => {
   assert.equal(sa.answerRoute({ kind: "awstorage-manage" }, "reject"), "awask");
   assert.equal(sa.answerRoute({ kind: "decision", facts: ["proposal_id: 1"] }, "REJECT"), "awask");

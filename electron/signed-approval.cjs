@@ -52,6 +52,9 @@ const CARD_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 /** true when `raw` (the card JSON) needs a SIGNED approval. */
 function requiresSignedAnswer(raw) {
   if (!raw || typeof raw !== "object") return false;
+  // The card's own flag (adk.decisions `require_signed`, 2026-11-10) is the contract;
+  // the kind/fact lists below stay for cards raised before the flag existed.
+  if (raw.require_signed === true || raw.requireSigned === true) return true;
   const kind = typeof raw.kind === "string" ? raw.kind.trim().toLowerCase() : "";
   if (SIGNED_ANSWER_KINDS.includes(kind)) return true;
   const facts = Array.isArray(raw.facts) ? raw.facts : [];
