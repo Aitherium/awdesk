@@ -353,18 +353,20 @@
     return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
   }
   // The ring layout agent-fairy.swarmLayout computes: 6 on the first ring, 4 more
-  // on each ring out; 10 px, a quarter pixel smaller per companion past six. Shared
-  // by the swarm page AND the orb page: the first ring sits under the orb's own
-  // disc, so a press there must still reach that companion (owner 2026-11-09).
+  // on each ring out; 14 px, a quarter pixel smaller per companion past six. Shared
+  // by the swarm page AND the orb page. Every ring orbits OUTSIDE the disc (owner
+  // 2026-11-10, "there is only one"): under it, six companions were invisible and a
+  // hover or press on the fairy went to one of them, so a click only recoloured it.
+  // agent-fairy.test.cjs pins this copy to swarmLayout.
   function swarmSlots(n) {
-    const size = Math.max(6, 10 - 0.25 * Math.max(0, n - 6));
-    const hit = Math.max(12, size + 4);
+    const size = Math.max(9, 14 - 0.25 * Math.max(0, n - 6));
+    const hit = Math.max(16, size + 4);
     const slots = [];
     let ring = 0;
     let left = n;
     while (left > 0) {
       const on = Math.min(6 + ring * 4, left);
-      for (let i = 0; i < on; i += 1) slots.push({ ring, radius: 24 + ring * 16, index: i, of: on, size, hit });
+      for (let i = 0; i < on; i += 1) slots.push({ ring, radius: 44 + ring * 18, index: i, of: on, size, hit });
       left -= on;
       ring += 1;
     }
@@ -496,7 +498,7 @@
     const CORE = 10; // the fairy's own core: a press here is always the fairy's
     let inside = null;
     let downAt = null;
-    // The companions (agent-fairy.cjs): the first ring orbits UNDER this disc.
+    // The companions (agent-fairy.cjs): every ring orbits outside this disc.
     let mates = [];
     let hotMate = null;
     let downMate = null;

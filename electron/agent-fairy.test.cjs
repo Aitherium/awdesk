@@ -101,10 +101,15 @@ test("the swarm grows in rings (6, 10, 14 ...), shrinks gently, keeps a usable h
   assert.deepEqual(rings(6), [0, 0, 0, 0, 0, 0]);
   assert.deepEqual(rings(7), [0, 0, 0, 0, 0, 0, 1]);
   assert.equal(agentFairy.swarmLayout(30).filter((s) => s.ring === 2).length, 14);
-  assert.equal(agentFairy.companionSize(4), 10);
-  assert.equal(agentFairy.companionSize(12), 8.5);
-  assert.equal(agentFairy.companionSize(100), 6, "never smaller than 6 px");
-  for (const s of agentFairy.swarmLayout(40)) assert.ok(s.hit >= 12);
+  assert.equal(agentFairy.companionSize(4), 14);
+  assert.equal(agentFairy.companionSize(12), 12.5);
+  assert.equal(agentFairy.companionSize(100), 9, "never smaller than 9 px");
+  for (const s of agentFairy.swarmLayout(40)) assert.ok(s.hit >= 16);
+  // Owner 2026-11-10, "there is only one": no companion may sit under the 28 px disc
+  // (plus glow), where it is invisible and catches the presses meant for the fairy.
+  for (const s of agentFairy.swarmLayout(40)) {
+    assert.ok(s.radius * 0.82 - s.size / 2 > agentFairy.DISC_RADIUS, `ring ${s.ring} reaches under the disc`);
+  }
   assert.ok(agentFairy.swarmExtent(30) > agentFairy.swarmExtent(6), "the swarm window grows with the count");
   // every slot stays inside its own extent, at every point of its lap
   for (const n of [3, 12, 30]) {
@@ -116,6 +121,14 @@ test("the swarm grows in rings (6, 10, 14 ...), shrinks gently, keeps a usable h
       }
     }
   }
+});
+
+test("orb.html's swarmSlots copy is the same layout as swarmLayout", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "orb.html"), "utf8");
+  const m = src.match(/function swarmSlots\(n\) \{[\s\S]*?\n  \}\n/);
+  assert.ok(m, "swarmSlots not found in orb.html");
+  const swarmSlots = new Function(`${m[0]}; return swarmSlots;`)();
+  for (const n of [1, 6, 7, 12, 30]) assert.deepEqual(swarmSlots(n), agentFairy.swarmLayout(n), `n=${n}`);
 });
 
 test("speakingMs is bounded: a word is 3 s, an essay 20 s", () => {

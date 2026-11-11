@@ -256,18 +256,24 @@ function latestAt(rows, seenAt = 0) {
   return best;
 }
 
-/** Ring capacities: 6 on the first, then 4 more on each ring out (6, 10, 14, ...). */
-const RING0_RADIUS = 24;
-const RING_STEP = 16;
+/**
+ * Ring capacities: 6 on the first, then 4 more on each ring out (6, 10, 14, ...).
+ * The first ring orbits OUTSIDE the 28 px disc (owner 2026-11-10: "there is only
+ * one"): at 24 px, six 10 px companions sat under the disc, and the next ring's
+ * 6-8 px dots were lost on a 4K screen. DISC_RADIUS is the disc plus its glow.
+ */
+const DISC_RADIUS = 30;
+const RING0_RADIUS = 44;
+const RING_STEP = 18;
 const RING0_CAP = 6;
 const RING_GROW = 4;
 /** The smallest a companion is drawn, and the smallest area that answers the pointer. */
-const MIN_SIZE = 6;
-const HIT_MIN = 12;
+const MIN_SIZE = 9;
+const HIT_MIN = 16;
 
-/** Companion size for n of them: 10 px, shrinking a quarter pixel per companion past six. */
+/** Companion size for n of them: 14 px, shrinking a quarter pixel per companion past six. */
 function companionSize(n) {
-  return Math.max(MIN_SIZE, 10 - 0.25 * Math.max(0, (Number(n) || 0) - 6));
+  return Math.max(MIN_SIZE, 14 - 0.25 * Math.max(0, (Number(n) || 0) - 6));
 }
 
 /**
@@ -329,6 +335,7 @@ module.exports = {
   newPosters,
   latestAt,
   STATES,
+  DISC_RADIUS,
   companionSize,
   swarmLayout,
   swarmExtent,
