@@ -80,7 +80,7 @@ function assess(metrics, budget) {
  * @param deps.restartsInLastHour () => number
  */
 function createWatchdog({ budget, sample, reclaim, restart, quit, notify = () => {}, now = Date.now,
-  restartsInLastHour = () => 0, log = () => {} }) {
+  restartsInLastHour = () => 0, log = () => {}, hold = () => false }) {
   let lastReclaimAt = -Infinity;
   let hardRun = 0;
   const history = []; // [at, mainMb]
@@ -109,6 +109,17 @@ function createWatchdog({ budget, sample, reclaim, restart, quit, notify = () =>
       log(`hard: main ${a.mainMb} MB, total ${a.totalMb} MB -- reclaiming under pressure`);
       reclaim({ pressure: true });
       return a;
+    }
+    // The owner is mid-approval (the passkey window): a restart destroys it under
+    // their hand (owner, 2026-11-10: "I was about to, then it was killed" -- the
+    // approve page loading read as +400 MB). Reclaim instead; judge again next tick.
+    let held = false;
+    try { held = Boolean(hold()); } catch { held = false; }
+    if (held) {
+      lastReclaimAt = t;
+      log(`held: the owner is mid-approval -- reclaiming instead of restarting`);
+      reclaim({ pressure: true });
+      return { ...a, level: "held" };
     }
     acted = true;
     const why = runaway ? `its memory grew ${RUNAWAY_MB} MB in under a minute` : `it was using ${a.totalMb} MB`;
@@ -272,7 +283,7 @@ function relaunchAfterCooldown({ execPath = process.execPath, args = process.arg
 }
 
 /** Electron wiring for the memory guard. */
-function startResourceWatchdog({ app, posture, reclaim, notify = () => {}, log = (l) => console.log(`[desk] watchdog: ${l}`),
+function startResourceWatchdog({ app, posture, reclaim, notify = () => {}, hold = () => false, log = (l) => console.log(`[desk] watchdog: ${l}`),
   intervalMs = SAMPLE_MS }) {
   const budget = posture && posture.customer ? BUDGETS.customer : BUDGETS.owner;
   const restarts = restartLog(path.join(app.getPath("userData"), "self-restarts.json"));
@@ -281,6 +292,7 @@ function startResourceWatchdog({ app, posture, reclaim, notify = () => {}, log =
     sample: () => app.getAppMetrics(),
     reclaim,
     notify,
+    hold,
     log,
     restartsInLastHour: () => restarts.inLastHour(),
     restart: () => {

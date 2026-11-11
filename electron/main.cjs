@@ -5409,6 +5409,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       require("./resource-watchdog.cjs").startResourceWatchdog({
         app,
         posture: deskPostureState,
+        // Never restart under the owner's hand while the passkey approval is open.
+        hold: () => signedApproval.approveWindowOpen(),
         reclaim: ({ pressure }) => {
           try { browserWindow.discardHiddenTabs({ pressure }); } catch { /* no browser */ }
           // Under pressure every page session gives up its cache, the agent's own too

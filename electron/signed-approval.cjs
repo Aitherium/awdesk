@@ -190,7 +190,13 @@ function openApproveWindow({ BrowserWindow, parent = null, url, origin = portalO
   return win;
 }
 
+/** true while the approve window is open: the owner is mid-approval. */
+function approveWindowOpen() {
+  return Boolean(_approveWindow && !_approveWindow.isDestroyed());
+}
+
 module.exports = {
+  approveWindowOpen,
   SIGNED_ANSWER_KINDS,
   SIGNED_FACT_KEYS,
   DECLINE_KEYS,
