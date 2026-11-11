@@ -116,6 +116,8 @@ let results = null; // {mode:"find"|"web"|"folder", rows, more, total, query}
 let tripQueue = spiritCore.createTripQueue();
 let tripLog = spiritCore.createTripLog();
 let tripBusy = false;
+/** The longest one spirit trip may run before it is called failed (a vision read is ~30 s). */
+let TRIP_LIMIT_MS = 120_000;
 let bubbleMode = null; // "find" | "web" | "card" | null
 /** The card the bubble is chatting about (bubbleMode "card"): {id, title, context}. */
 let cardChat = null;
@@ -1676,12 +1678,28 @@ async function pumpTrips() {
     let trip = spiritCore.dequeue(tripQueue);
     while (trip) {
       let outcome;
+      let limit = null;
       try {
-        outcome = await executeTrip(trip);
+        // A trip that never settles (a vision or file call that hangs) held tripBusy
+        // for good, and every later trip and click queued behind it (2026-11-10).
+        outcome = await Promise.race([
+          executeTrip(trip),
+          new Promise((resolve) => {
+            limit = setTimeout(() => resolve({ ok: false, timedOut: true, reason: "the trip took too long" }), TRIP_LIMIT_MS);
+            if (limit.unref) limit.unref();
+          }),
+        ]);
       } catch (error) {
         outcome = { ok: false, reason: String((error && error.message) || error) };
       }
+      if (limit) clearTimeout(limit);
       spiritCore.finish(tripQueue, trip.id);
+      if (outcome && outcome.timedOut) {
+        // The hung step may still settle later: isCurrentTrip() is false by then, so it
+        // returns quietly. The spirit stops wherever it is and goes home now.
+        if (flight) { flight.cancelled = true; finishFlight(); }
+        void flyHome(520);
+      }
       const summary = spiritCore.tripSummary(trip, outcome);
       spiritCore.logTrip(tripLog, { label: summary, ok: outcome.ok !== false });
       sendTrips();
@@ -2947,18 +2965,20 @@ async function endDrag() {
 function toggleBubbleFromOrb() {
   // A click on the fairy while it carries a card opens THAT card.
   if (nudging) return nudgeAct("open");
-  // A click mid-trip cancels the trip and brings the spirit home.
+  const top = attentionCards[0];
+  // A click mid-trip cancels the trip and brings the spirit home. With cards waiting it
+  // ALSO opens the top card (owner 2026-11-10: "nothing is happening when I click on
+  // fairies... they just change colors"): a trip that never finished held tripBusy, so
+  // every click only cancelled a trip and the card never opened.
   if (tripBusy || flight) {
     const r = cancelTrip();
-    return { ...r, visible: Boolean(alive(bubbleWindow) && bubbleWindow.isVisible()) };
-  }
-  if (alive(bubbleWindow) && bubbleWindow.isVisible()) {
+    if (!top) return { ...r, visible: Boolean(alive(bubbleWindow) && bubbleWindow.isVisible()) };
+  } else if (alive(bubbleWindow) && bubbleWindow.isVisible()) {
     return closeBubble();
   }
   // Cards waiting: the click opens the top one (owner 2026-11-10: the badge said 1 and
   // the click opened an empty chat). attentionCards arrive ranked, needs-you first, and
   // a snoozed card ("Later") still opens -- the owner is asking. Chat stays on the menu.
-  const top = attentionCards[0];
   if (top) {
     const r = peekCard(top.id, { explicit: true });
     if (r && r.ok) return { ...r, visible: false, card: top.id };
@@ -3336,6 +3356,7 @@ module.exports = {
   __setAvatarTargets: (f) => { avatarTargetsImpl = f; },
   __setOps: (o) => { ops = o; },
   __setWired: () => { wired = true; },
+  __setTripLimitMs: (ms) => { TRIP_LIMIT_MS = Number(ms) || 120_000; },
   // The veil's layout AND the orb's move both leaked (2026-11-07); assert them directly.
   __test: { clampRect, coverVeil, drawVeil, moveOrb, veilPlacement, veilRect },
   __setAttentionHooks: (h) => { attentionHooks = { ...(h || {}) }; },

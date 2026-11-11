@@ -901,6 +901,36 @@ test("clicking the fairy with cards waiting opens the top card, even one put off
   assert.equal(chat.card, undefined);
 });
 
+test("a trip that hangs never swallows the click: the top card still opens, and the trip times out", async () => {
+  // Owner, 2026-11-10: "nothing is happening when I click on fairies... they just change
+  // colors". A trip whose step never settled held tripBusy, and every click only
+  // cancelled that trip.
+  startAttention();
+  orbWindow.setAttentionCards([]);
+  orbWindow.__setTripLimitMs(1500);
+  const never = () => new Promise(() => {});
+  orbWindow.__setOps({ findFiles: never, readFile: never, listFolder: never, webSearch: never });
+  const trip = orbWindow.go({ kind: "search", target: "hangs" });
+  await wait(400);
+  const b = bubbleWin();
+  if (b && b.isVisible()) b.hide();
+  orbWindow.setAttentionCards([blockedCard({ id: "d-trip" })]);
+  if (orbWindow.nudging()) orbWindow.endNudge("seen", { stay: true });
+  const r = await invoke("desk:orb-click", orbWin());
+  assert.equal(r.ok, true);
+  assert.equal(r.card, "d-trip", `a click with a card waiting opens it, trip or not: ${JSON.stringify(r)}`);
+  assert.equal(orbWindow.nudging().id, "d-trip");
+  orbWindow.endNudge("seen", { stay: true });
+  // The hung trip itself ends on its limit instead of holding the spirit for good.
+  const hung = orbWindow.go({ kind: "search", target: "hangs again" });
+  const verdict = await Promise.race([hung, wait(6000).then(() => ({ stuck: true }))]);
+  assert.notEqual(verdict.stuck, true, "a hung trip must end on its limit");
+  assert.equal(verdict.ok, false);
+  await Promise.race([trip, wait(100)]);
+  orbWindow.__setTripLimitMs(120_000);
+  orbWindow.setAttentionCards([]);
+});
+
 test("an ordinary card only glows beside the fairy where it rests", async () => {
   startAttention();
   const homeBefore = orbWin().getBounds();
