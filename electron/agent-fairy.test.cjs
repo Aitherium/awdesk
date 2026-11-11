@@ -125,7 +125,7 @@ test("the swarm grows in rings (6, 10, 14 ...), shrinks gently, keeps a usable h
 
 test("orb.html's swarmSlots copy is the same layout as swarmLayout", () => {
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "orb.html"), "utf8");
-  const m = src.match(/function swarmSlots\(n\) \{[\s\S]*?\n  \}\n/);
+  const m = src.match(/function swarmSlots\(n\) \{[\s\S]*?\n {2}\}\n/);
   assert.ok(m, "swarmSlots not found in orb.html");
   const swarmSlots = new Function(`${m[0]}; return swarmSlots;`)();
   for (const n of [1, 6, 7, 12, 30]) assert.deepEqual(swarmSlots(n), agentFairy.swarmLayout(n), `n=${n}`);
