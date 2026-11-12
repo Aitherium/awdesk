@@ -844,6 +844,13 @@ const COMMANDS = Object.freeze([
       + "and the bridge's (POST /commands/run). The tray has its own menu already.",
   }),
   Object.freeze({
+    id: "fairy.counts", label: "Fairy: what the counts are", group: "go",
+    surfaces: ["palette"], orb: "counts",
+    whySingle: "A check, not a destination: it answers with the badge, the whisper's "
+      + "'N more' and each companion's share so a script (POST /commands/run) can "
+      + "assert they agree. The numbers themselves are already on the fairy.",
+  }),
+  Object.freeze({
     id: "spirit.attach-toggle", label: "Attach or detach the spirit", group: "go",
     accel: "Ctrl+Alt+G", accelFallback: "Ctrl+Alt+Shift+G",
     surfaces: ["tray", "palette"], orb: "attach",

@@ -196,8 +196,8 @@
   function render(view) {
     const tokens = state.query.toLowerCase().split(/\s+/).filter(Boolean);
     counts.textContent = view.shownEntries === view.totalEntries
-      ? view.totalCards + " waiting"
-      : view.shownCards + " of " + view.totalCards + " waiting";
+      ? view.totalCards + " need you · all workspaces"
+      : view.shownCards + " of " + view.totalCards + " need you · all workspaces";
     chips.replaceChildren();
     const all = document.createElement("button");
     all.className = "chip";
