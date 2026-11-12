@@ -420,6 +420,81 @@ function ownerWorkspaceMenu(listing, tenant, { open, back } = {}) {
   return rows;
 }
 
+// ── One verb for every door: "workspace.switch" (palette, awsh /desk, an agent) ───
+// Owner, 2026-11-12: "load and switch between the Aitherium workspace and Garg, so I
+// can stop guessing". The picker above lived only on the tray, so nothing but a mouse
+// could switch, and nothing ever SAID where the Desk was. This is the same list and
+// the same open/back, reachable by name, and every answer starts with where you are.
+
+const APEX_WORDS = new Set(["aitherium", "back", "home", "apex", "platform"]);
+const STATUS_WORDS = new Set(["", "status", "where", "list"]);
+
+/** "You are in <workspace> (<host>) as <who>." -- the first line of every answer.
+ *  `tenantId` is the signed-in hint (signedInTenantId); never a role the Desk made up:
+ *  the platform principal is named as such, anyone else by the tenant Identity gave. */
+function whereLine(tenant, tenantId) {
+  const place = tenant && tenant.host
+    ? `${tenant.name || tenant.host} (${tenant.host})`
+    : "Aitherium (aitherium.com)";
+  const who = tenantId === PLATFORM_TENANT
+    ? "the platform owner"
+    : tenantId ? `an account of ${tenantId}` : "nobody (not signed in)";
+  return `You are in ${place} as ${who}.`;
+}
+
+/** Which workspace a typed word means: a tenant id, host label, host, or name
+ *  (case-insensitive, exact). Resolves {back} | {workspace} | {unknown, choices}. */
+function resolveWorkspaceArg(arg, workspaces) {
+  const want = String(arg == null ? "" : arg).trim().toLowerCase();
+  if (APEX_WORDS.has(want)) return { back: true };
+  const rows = Array.isArray(workspaces) ? workspaces : [];
+  const hit = rows.find((w) => [w.tenantId, w.label, w.host, w.name]
+    .some((v) => typeof v === "string" && v.toLowerCase() === want));
+  if (hit) return { workspace: hit };
+  return { unknown: want, choices: ["Aitherium", ...rows.map((w) => w.name)] };
+}
+
+/**
+ * Switch (or report) the Desk's workspace by word. Never throws.
+ *   no word / "status"  -> where you are + what you may open (`pick: true` when no word,
+ *                          so a click surface can still pop the picker)
+ *   "aitherium" / "back" -> backToApex
+ *   anything else        -> the workspace Identity lists under that id/label/host/name
+ * Every result carries `line` (whereLine AFTER the action) and `ok`.
+ */
+async function switchWorkspace(token, arg, {
+  check, idp, homedir, fsImpl, fetchImpl, timeoutMs,
+  current = () => deskTenant.currentTenant(), hint = () => lastTenantId, resolution,
+} = {}) {
+  const here = () => {
+    let tenant = null;
+    try { tenant = current(); } catch { /* treated as the apex */ }
+    return whereLine(tenant, hint());
+  };
+  const word = String(arg == null ? "" : arg).trim().toLowerCase();
+  const listing = await listOwnerWorkspaces(token, { check, idp, fetchImpl, timeoutMs });
+  const names = (listing.workspaces || []).map((w) => `${w.name} (${w.host})`);
+  if (STATUS_WORDS.has(word)) {
+    return { ok: true, pick: word === "", line: here(), workspaces: ["Aitherium (aitherium.com)", ...names],
+      ...(listing.refused || listing.error ? { note: listing.refused || listing.error } : {}) };
+  }
+  if (listing.refused) return { ok: false, line: here(), error: listing.refused };
+  const target = resolveWorkspaceArg(word, listing.workspaces);
+  if (target.back) {
+    const gone = backToApex({ ...(resolution ? { current: resolution } : {}), homedir, fsImpl });
+    return { ok: true, changed: Boolean(gone.removed), line: here() };
+  }
+  if (listing.error) return { ok: false, line: here(), error: `Could not list workspaces: ${listing.error}` };
+  if (!target.workspace) {
+    return { ok: false, line: here(),
+      error: `No workspace named "${target.unknown}" -- choose one of: ${target.choices.join(", ")}` };
+  }
+  const opened = await openOwnerWorkspace(token, target.workspace.tenantId,
+    { check, homedir, fsImpl, fetchImpl, timeoutMs });
+  if (!opened.opened) return { ok: false, line: here(), error: opened.refused || opened.reason };
+  return { ok: true, changed: true, host: opened.host, line: here() };
+}
+
 function _resetForTests() {
   listeners.clear();
   lastTenantId = null;
@@ -432,4 +507,5 @@ module.exports = {
   onWorkspaceChange, adoptIdentity, adoptFromToken, signedOut, _resetForTests,
   PLATFORM_TENANT, isPlatformIdentity, signedInTenantId, ownerSession, listOwnerWorkspaces,
   openOwnerWorkspace, backToApex, ownerTrayItems, ownerWorkspaceMenu,
+  whereLine, resolveWorkspaceArg, switchWorkspace,
 };
