@@ -3083,7 +3083,9 @@ function showMenu(kind, built, ctx = {}) {
   const win = ensureMenu();
   menuState = { kind, cardId: String(ctx.cardId || ""), agent: String(ctx.agent || ""), ...built };
   const size = { width: fairyMenu.MENU.width, height: fairyMenu.menuHeight(built.items) };
-  const at = cursorPoint();
+  // A right click puts the menu at the pointer; the palette / bridge row
+  // ("fairy.menu", keyboard reach) puts it beside the fairy.
+  const at = ctx.atFairy && alive(orbWindow) ? orbCentre() : cursorPoint();
   const pos = fairyMenu.menuPlacement(at, workAreaAt(at), size);
   win.setBounds({ ...pos, ...size });
   deliverTo(win, "orb:menu", publicMenu());
@@ -3100,8 +3102,13 @@ function hideMenu() {
   return { ok: true };
 }
 
+function orbCentre() {
+  const b = orbWindow.getBounds();
+  return { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) };
+}
+
 /** Right click on a companion fairy: its card's menu (or "Talk to" for presence). */
-function fairyMenuFor(cardId, agent = "") {
+function fairyMenuFor(cardId, agent = "", { atFairy = false } = {}) {
   let card = attentionCards.find((c) => c && c.id === String(cardId || "")) || null;
   if (!card && agent) {
     const key = agentFairy.crewKey(agent);
@@ -3110,14 +3117,14 @@ function fairyMenuFor(cardId, agent = "") {
   }
   const f = agentFairy.crewFairy(card ? card.agent : agent);
   const label = f.known || f.crew ? f.label : String(agent || "");
-  return showMenu("fairy", fairyMenu.fairyItems(card, { label, agent }), { cardId: card ? card.id : "", agent });
+  return showMenu("fairy", fairyMenu.fairyItems(card, { label, agent }), { cardId: card ? card.id : "", agent, atFairy });
 }
 
 /** Right click on the orb. */
-function orbMenu() {
+function orbMenu({ atFairy = false } = {}) {
   return showMenu("orb", fairyMenu.orbItems({
     waiting: attentionCards.length, mutedUntil: state.muteUntil, nowMs: Date.now(),
-  }));
+  }), { atFairy });
 }
 
 /** The card a fairy menu is about, still open, or null. */
@@ -3473,6 +3480,13 @@ function run(verb, { arg = null, slotId = null } = {}) {
   const body = String(slotId || "") || null;
   if (body) pendingSlot = body;
   if (what === "toggle") return toggleOrb();
+  // The fairy's menu from the keyboard (palette) or the bridge: the orb's menu, or a
+  // card's menu when `arg` names an open card. Opens beside the fairy.
+  if (what === "menu") {
+    if (!orbVisible()) showOrb();
+    const id = arg == null ? "" : String(arg).trim();
+    return id ? fairyMenuFor(id, "", { atFairy: true }) : orbMenu({ atFairy: true });
+  }
   if (what === "ask-screen") {
     const use = body || pendingSlot;
     pendingSlot = null;

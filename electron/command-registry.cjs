@@ -835,6 +835,14 @@ const COMMANDS = Object.freeze([
     whySingle: "A web trip dispatched by THIS body, which speaks the answer; the "
       + "bubble's field takes the query. spirit.go is the palette's general door.",
   }),
+  // The fairy's right-click menu, reachable from the keyboard (owner 2026-11-12:
+  // "menus are navigable"). It opens beside the fairy; arrows, Enter and Esc work.
+  Object.freeze({
+    id: "fairy.menu", label: "Open the fairy menu", group: "go",
+    surfaces: ["palette"], orb: "menu",
+    whySingle: "A right click on the fairy is the pointer's door; this row is the keyboard's "
+      + "and the bridge's (POST /commands/run). The tray has its own menu already.",
+  }),
   Object.freeze({
     id: "spirit.attach-toggle", label: "Attach or detach the spirit", group: "go",
     accel: "Ctrl+Alt+G", accelFallback: "Ctrl+Alt+Shift+G",

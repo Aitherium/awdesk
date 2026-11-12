@@ -1666,3 +1666,24 @@ test("the orb and swarm pages: right click opens the pill menu, hover only dwell
   assert.match(preload, /fairyMenu: \(id, agent\) => ipcRenderer\.invoke\("desk:fairy-menu"/);
   assert.match(preload, /menuPick: \(id\) => ipcRenderer\.invoke\("desk:menu-pick"/);
 });
+
+test("fairy.menu (palette / bridge): the orb's menu opens beside the fairy, focused, from the keyboard", async () => {
+  startAttention();
+  orbWindow.setAttentionCards([]);
+  cursor = { x: 5, y: 5 };
+  const r = orbWindow.run("menu");
+  assert.equal(r.ok, true);
+  assert.equal(r.kind, "orb");
+  const mw = menuWin();
+  assert.ok(mw.isVisible() && mw.focused);
+  const o = orbWin().getBounds();
+  const b = mw.getBounds();
+  const cx = o.x + o.width / 2;
+  const cy = o.y + o.height / 2;
+  const near = (b.x === cx + 8 || b.x === cx - b.width - 8) && (b.y === cy + 4 || b.y === cy - b.height - 4);
+  assert.ok(near, `beside the fairy (flipped at the screen edge), not at the pointer: ${JSON.stringify({ b, cx, cy })}`);
+  const reg = require("./command-registry.cjs");
+  const row = reg.byId("fairy.menu");
+  assert.equal(row.orb, "menu");
+  assert.ok(row.surfaces.includes("palette"));
+});
