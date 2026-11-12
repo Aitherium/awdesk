@@ -3019,8 +3019,9 @@ let menuState = null;
 let tipWindow = null;
 const TIP_SIZE = Object.freeze({ width: 300, height: 30 });
 /** Windows may refuse the menu the keyboard (no recent input to the desk, so no
- *  foreground right): then blur never fires. Such a menu closes itself once the
- *  pointer has been off it this long, so it can never be stuck on screen. */
+ *  foreground right) while Electron still reports it focused: then blur never
+ *  fires (measured live 2026-11-12). So a menu closes itself once neither the
+ *  pointer nor a key has touched it for this long; it can never be stuck. */
 const MENU_IDLE_MS = 6000;
 let menuHover = false;
 let menuTouchedAt = 0;
@@ -3107,9 +3108,7 @@ function showMenu(kind, built, ctx = {}) {
   if (!menuIdleTimer) {
     menuIdleTimer = setInterval(() => {
       if (!menuState || !alive(menuWindow)) return stopMenuIdle();
-      let focused = false;
-      try { focused = menuWindow.isFocused(); } catch { /* gone */ }
-      if (!focused && !menuHover && Date.now() - menuTouchedAt >= (menuIdleMsOverride || MENU_IDLE_MS)) hideMenu();
+      if (!menuHover && Date.now() - menuTouchedAt >= (menuIdleMsOverride || MENU_IDLE_MS)) hideMenu();
     }, 500);
     if (menuIdleTimer.unref) menuIdleTimer.unref();
   }
@@ -3120,9 +3119,9 @@ function stopMenuIdle() {
   if (menuIdleTimer) { clearInterval(menuIdleTimer); menuIdleTimer = null; }
 }
 
-/** The menu page: the pointer entered (true) or left (false) the menu. */
+/** The menu page: the pointer entered (true) or left (false) it, or a key ("key"). */
 function menuPointer(inside) {
-  menuHover = Boolean(inside);
+  if (inside !== "key") menuHover = inside === true;
   menuTouchedAt = Date.now();
   return { ok: true };
 }

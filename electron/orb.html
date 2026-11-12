@@ -917,6 +917,7 @@
       on[next].focus();
     }
     document.addEventListener("keydown", (e) => {
+      if (api.menuHover) api.menuHover("key"); // a key keeps the menu up, like the pointer on it
       if (e.key === "Escape") { e.preventDefault(); api.menuPick(""); return; }
       if (e.key === "ArrowDown" || (e.key === "Tab" && !e.shiftKey)) { e.preventDefault(); move(1); return; }
       if (e.key === "ArrowUp" || (e.key === "Tab" && e.shiftKey)) { e.preventDefault(); move(-1); return; }
@@ -934,9 +935,9 @@
     document.addEventListener("contextmenu", (e) => e.preventDefault());
     // Main closes an unfocused menu once the pointer has been off it a while.
     if (api.menuHover) {
-      document.addEventListener("mouseenter", () => api.menuHover(true));
-      document.addEventListener("mouseleave", () => api.menuHover(false));
-      document.addEventListener("mousemove", () => api.menuHover(true), { once: true });
+      const root = document.documentElement;
+      root.addEventListener("mouseenter", () => api.menuHover(true));
+      root.addEventListener("mouseleave", () => api.menuHover(false));
     }
     api.onMenu(render);
     api.init().then((s) => { if (s && s.menu) render(s.menu); });

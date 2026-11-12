@@ -1688,17 +1688,23 @@ test("fairy.menu (palette / bridge): the orb's menu opens beside the fairy, focu
   assert.ok(row.surfaces.includes("palette"));
 });
 
-test("a menu Windows refused the keyboard (no blur will come) closes itself once the pointer is off it", async () => {
+test("a menu Windows refused the keyboard (no blur will come) closes itself once nothing touches it", async () => {
   startAttention();
   orbWindow.setAttentionCards([]);
   orbWindow.__setMenuIdleMs(300);
   orbWindow.run("menu");
   const mw = menuWin();
-  mw.focused = false; // what Windows does to a background process's focus() (measured live 2026-11-12)
+  // Live 2026-11-12: Electron still called it focused while Windows kept the keyboard
+  // elsewhere, so focus cannot be the test -- the pointer and the keys are.
+  assert.equal(mw.focused, true);
   await invoke("desk:menu-hover", mw, true);
   await wait(900);
   assert.ok(mw.isVisible(), "the pointer is on it: it stays");
   await invoke("desk:menu-hover", mw, false);
+  await wait(150);
+  await invoke("desk:menu-hover", mw, "key");
+  await wait(200);
+  assert.ok(mw.isVisible(), "a key a moment ago: it stays");
   await wait(1200);
   assert.equal(mw.isVisible(), false, "off it and unfocused: it closes, never stuck on screen");
   assert.equal(orbWindow.menuState(), null);

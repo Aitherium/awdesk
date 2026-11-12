@@ -127,6 +127,6 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   fairyMenu: (id, agent) => ipcRenderer.invoke("desk:fairy-menu", String(id || ""), String(agent || "")),
   orbMenu: () => ipcRenderer.invoke("desk:orb-menu"),
   menuPick: (id) => ipcRenderer.invoke("desk:menu-pick", String(id || "")),
-  menuHover: (inside) => ipcRenderer.invoke("desk:menu-hover", Boolean(inside)),
+  menuHover: (inside) => ipcRenderer.invoke("desk:menu-hover", inside === "key" ? "key" : Boolean(inside)),
   onMenu: (fn) => on("orb:menu", fn),
 });
