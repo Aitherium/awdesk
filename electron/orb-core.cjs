@@ -436,6 +436,8 @@ function sanitizeState(raw) {
     freeRoam: src.freeRoam === true,
     // The fairy chimes when it nudges (owner 2026-11-08), on unless turned off.
     sounds: src.sounds !== false,
+    // "Mute nudges 1 hour" from the orb's right-click menu (owner 2026-11-12): ms epoch.
+    muteUntil: Math.max(0, finite(src.muteUntil) || 0),
   };
 }
 

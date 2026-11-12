@@ -49,6 +49,7 @@ const awCli = require("./aw-cli.cjs");
 const selectionReader = require("./selection-reader.cjs");
 const fairyAttention = require("./fairy-attention.cjs");
 const agentFairy = require("./agent-fairy.cjs");
+const fairyMenu = require("./fairy-menu.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -658,6 +659,8 @@ function hideOrb() {
   if (alive(bubbleWindow)) bubbleWindow.hide();
   if (alive(orbWindow)) orbWindow.hide();
   if (alive(swarmWindow)) swarmWindow.hide();
+  hideMenu();
+  hideTip();
   hideVeil();
   sendPanel();
   const was = state.visible;
@@ -2361,7 +2364,10 @@ function peekCard(id, { explicit = false } = {}) {
   // 2026-11-09, "Waiting 22 d"). A click on its fairy is asking, so it opens.
   if (!explicit && fairyAttention.isStale(card, Date.now())) return { ok: false, reason: "old: the badge only" };
   if (nudging && nudging.decision.card.id === card.id) {
-    if (explicit) nudging.until = Math.max(nudging.until, Date.now() + 20_000);
+    if (explicit) {
+      nudging.until = Math.max(nudging.until, Date.now() + fairyMenu.PINNED_MS);
+      nudging.explicit = true;
+    }
     return { ok: true, id: card.id, already: true };
   }
   if (nudging && !nudging.peek && !explicit) return { ok: false, reason: "a nudge is showing" };
@@ -2381,7 +2387,9 @@ function peekCard(id, { explicit = false } = {}) {
     act: "nudge", card, level: fairyAttention.LEVEL.GLOW, importance: 0, arrival: false, returned: false,
     why: fairyAttention.whyNow(card, Date.now()),
     lead: f.known || f.crew ? `From ${f.label}` : "Waiting on you",
-    more: Math.max(0, attentionCards.length - 1), voice: false, showMs: explicit ? 20_000 : 8000,
+    // A CLICKED card is pinned: it stays until closed or another click (owner
+    // 2026-11-12), never timed out from under the pointer.
+    more: Math.max(0, attentionCards.length - 1), voice: false, showMs: explicit ? fairyMenu.PINNED_MS : 8000,
   };
   const r = startNudge(decision, { peek: true });
   if (away && nudging && !nudging.anchor) nudging.anchor = away;
@@ -2470,7 +2478,8 @@ async function attentionTick() {
     }
     const busy = Boolean(nudging || flight || tripBusy || dragging || inflight || drafting || regionWait
       || (alive(bubbleWindow) && bubbleWindow.isVisible()));
-    const quiet = !state.visible ? "the fairy is hidden" : String(hookValue("quiet") || "");
+    const muted = Number(state.muteUntil) > nowMs ? "nudges muted from the fairy's menu" : "";
+    const quiet = !state.visible ? "the fairy is hidden" : muted || String(hookValue("quiet") || "");
     const ctx = {
       nowMs,
       lastNudgeAt: attentionLastAt,
@@ -2963,34 +2972,284 @@ async function endDrag() {
 }
 
 function toggleBubbleFromOrb() {
-  // A click on the fairy while it carries a card opens THAT card.
-  if (nudging) return nudgeAct("open");
-  const top = attentionCards[0];
+  hideMenu();
+  hideTip();
+  const waiting = attentionCards.length > 0;
   // A click mid-trip cancels the trip and brings the spirit home. With cards waiting it
-  // ALSO opens the top card (owner 2026-11-10: "nothing is happening when I click on
+  // ALSO opens the queue (owner 2026-11-10: "nothing is happening when I click on
   // fairies... they just change colors"): a trip that never finished held tripBusy, so
-  // every click only cancelled a trip and the card never opened.
+  // every click only cancelled a trip.
   if (tripBusy || flight) {
     const r = cancelTrip();
-    if (!top) return { ...r, visible: Boolean(alive(bubbleWindow) && bubbleWindow.isVisible()) };
-  } else if (alive(bubbleWindow) && bubbleWindow.isVisible()) {
+    if (!waiting) return { ...r, visible: Boolean(alive(bubbleWindow) && bubbleWindow.isVisible()) };
+  } else if (!waiting && alive(bubbleWindow) && bubbleWindow.isVisible()) {
     return closeBubble();
   }
-  // Cards waiting: the click opens the top one (owner 2026-11-10: the badge said 1 and
-  // the click opened an empty chat). attentionCards arrive ranked, needs-you first, and
-  // a snoozed card ("Later") still opens -- the owner is asking. Chat stays on the menu.
-  if (top) {
-    const r = peekCard(top.id, { explicit: true });
-    if (r && r.ok) return { ...r, visible: false, card: top.id };
+  // Cards waiting: a LEFT click on the orb opens the waiting queue -- every card, one
+  // list (owner 2026-11-12: "make the left-click and right-click interactions
+  // better"). A companion fairy's click opens ITS card; the orb is the whole queue.
+  // The card the fairy carries counts as seen. Chat stays on the right-click menu.
+  if (waiting) {
+    if (nudging) endNudge("seen", { stay: true });
+    if (alive(bubbleWindow) && bubbleWindow.isVisible()) bubbleWindow.hide();
+    openQueue();
+    return { ok: true, visible: false, queue: true, waiting: attentionCards.length };
   }
   openBubble({ focus: true });
   return { ok: true, visible: true };
 }
 
+/** The waiting LIST (fairy-queue-window); the Inbox when this build wired no list. */
+function openQueue() {
+  if (typeof (attentionHooks && attentionHooks.openList) === "function") return hookValue("openList");
+  return hookValue("open", null);
+}
+
+// ── the right-click menu and the hover tooltip (owner 2026-11-12) ──────────
+//
+// Both are their own windows: the 72 px orb and the ring-sized swarm are too small
+// to draw a menu in, and the orb window never grows (the 2026-11-07 GPU leak).
+// The MENU takes focus (the owner asked for it with a right click), so arrows,
+// Enter and Esc work, and it closes when it loses focus. The TIP never takes
+// focus and never takes a click: one line, after a dwell, beside the pointer.
+
+let menuWindow = null;
+/** {kind: "fairy"|"orb", cardId, agent, header, items} while a menu is up. */
+let menuState = null;
+let tipWindow = null;
+const TIP_SIZE = Object.freeze({ width: 300, height: 30 });
+
+function overlayWindow(title, { focusable }) {
+  const { BrowserWindow } = electron();
+  const win = new BrowserWindow({
+    x: 0, y: 0, width: 200, height: 100,
+    show: false, frame: false, transparent: true, resizable: false, movable: false,
+    minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true,
+    alwaysOnTop: true, hasShadow: false, focusable, title,
+    backgroundColor: "#00000000",
+    webPreferences: {
+      preload: path.join(__dirname, "orb-preload.cjs"),
+      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
+    },
+  });
+  win.setAlwaysOnTop(true, "screen-saver");
+  try { win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch { /* no-op */ }
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  win.webContents.on("will-navigate", (event) => event.preventDefault());
+  return win;
+}
+
+function ensureMenu() {
+  if (alive(menuWindow)) return menuWindow;
+  menuWindow = overlayWindow("Aither menu", { focusable: true });
+  // Clicking anywhere else closes it, exactly like a native context menu.
+  menuWindow.on("blur", () => { hideMenu(); });
+  menuWindow.on("closed", () => { menuWindow = null; menuState = null; });
+  void menuWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "menu" } });
+  return menuWindow;
+}
+
+function ensureTip() {
+  if (alive(tipWindow)) return tipWindow;
+  tipWindow = overlayWindow("Aither tip", { focusable: false });
+  tipWindow.setIgnoreMouseEvents(true);
+  tipWindow.on("closed", () => { tipWindow = null; });
+  void tipWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "tip" } });
+  return tipWindow;
+}
+
+function publicMenu() {
+  return menuState ? { kind: menuState.kind, header: menuState.header, items: menuState.items } : null;
+}
+
+function cursorPoint() {
+  try { return electron().screen.getCursorScreenPoint(); } catch { return { x: 0, y: 0 }; }
+}
+
+function workAreaAt(point) {
+  try { return electron().screen.getDisplayNearestPoint(point).workArea; } catch { return null; }
+}
+
+/** Send to a page now, or once it has loaded (a window made a moment ago). */
+function deliverTo(win, channel, payload) {
+  const go = () => { try { if (alive(win)) win.webContents.send(channel, payload); } catch { /* gone */ } };
+  const wc = win.webContents;
+  if (typeof wc.isLoading === "function" && wc.isLoading() && typeof wc.once === "function") wc.once("did-finish-load", go);
+  else go();
+}
+
+function showMenu(kind, built, ctx = {}) {
+  hideTip();
+  const win = ensureMenu();
+  menuState = { kind, cardId: String(ctx.cardId || ""), agent: String(ctx.agent || ""), ...built };
+  const size = { width: fairyMenu.MENU.width, height: fairyMenu.menuHeight(built.items) };
+  const at = cursorPoint();
+  const pos = fairyMenu.menuPlacement(at, workAreaAt(at), size);
+  win.setBounds({ ...pos, ...size });
+  deliverTo(win, "orb:menu", publicMenu());
+  win.show();
+  try { win.focus(); } catch { /* focus is a nicety */ }
+  return { ok: true, kind, items: built.items.filter((i) => !i.sep).map((i) => i.id) };
+}
+
+function hideMenu() {
+  menuState = null;
+  if (alive(menuWindow) && menuWindow.isVisible()) {
+    try { menuWindow.hide(); } catch { /* gone */ }
+  }
+  return { ok: true };
+}
+
+/** Right click on a companion fairy: its card's menu (or "Talk to" for presence). */
+function fairyMenuFor(cardId, agent = "") {
+  let card = attentionCards.find((c) => c && c.id === String(cardId || "")) || null;
+  if (!card && agent) {
+    const key = agentFairy.crewKey(agent);
+    const mine = key ? attentionCards.filter((c) => c && agentFairy.cardAgent(c) === key) : [];
+    card = mine.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))[0] || null;
+  }
+  const f = agentFairy.crewFairy(card ? card.agent : agent);
+  const label = f.known || f.crew ? f.label : String(agent || "");
+  return showMenu("fairy", fairyMenu.fairyItems(card, { label, agent }), { cardId: card ? card.id : "", agent });
+}
+
+/** Right click on the orb. */
+function orbMenu() {
+  return showMenu("orb", fairyMenu.orbItems({
+    waiting: attentionCards.length, mutedUntil: state.muteUntil, nowMs: Date.now(),
+  }));
+}
+
+/** The card a fairy menu is about, still open, or null. */
+function menuCard(ms) {
+  return ms && ms.cardId ? attentionCards.find((c) => c && c.id === ms.cardId) || null : null;
+}
+
+function setCardMem(id, mem) {
+  attentionMems[id] = mem;
+  saveAttention();
+}
+
+function endNudgeFor(cardId, outcome) {
+  if (nudging && nudging.decision.card.id === cardId) endNudge(outcome, { stay: true });
+}
+
+/** A pick from the menu. Every id is checked against the items the menu SHOWED. */
+async function menuPick(id) {
+  const ms = menuState;
+  const what = String(id || "");
+  hideMenu();
+  if (!ms || !what) return { ok: true, closed: true };
+  const item = ms.items.find((i) => i && !i.sep && i.id === what);
+  if (!item) return { ok: false, error: "not on that menu" };
+  if (item.disabled) return { ok: false, error: item.hint || "not available" };
+  if (ms.kind === "orb") return orbPick(what);
+  if (what === "talk") return chatWithAgent(ms.agent);
+  const card = menuCard(ms);
+  if (!card) return { ok: false, error: "that card is no longer open" };
+  if (what === "open") return openFairyCard(card.id, ms.agent);
+  if (what.startsWith("answer:")) return answerRecommended(card, what);
+  const until = fairyMenu.snoozeUntil(what, Date.now());
+  if (until) {
+    endNudgeFor(card.id, "snoozed");
+    setCardMem(card.id, fairyMenu.recordSnooze(attentionMems[card.id] || {}, until));
+    return { ok: true, snoozeUntil: until };
+  }
+  if (what === "mute") {
+    endNudgeFor(card.id, "snoozed");
+    setCardMem(card.id, fairyAttention.recordMute(attentionMems[card.id] || {}));
+    return { ok: true, muted: card.id };
+  }
+  if (what === "dismiss") {
+    let ok;
+    try { ok = await hookValue("cancel", card.id, "owner dismissed it from the desk fairy"); } catch { ok = false; }
+    if (!ok) return { ok: false, error: "the card could not be cancelled" };
+    endNudgeFor(card.id, "acted");
+    return { ok: true, dismissed: card.id };
+  }
+  if (what === "session") {
+    let r;
+    try { r = await hookValue("focusSession", card.id); } catch (error) { r = { ok: false, note: String(error) }; }
+    return r && typeof r === "object" ? r : { ok: false, error: "no session hook in this build" };
+  }
+  if (what === "copy") {
+    const link = String(hookValue("cardLink", card.id) || fairyMenu.cardLink(card.id));
+    try { electron().clipboard.writeText(link); } catch { return { ok: false, error: "no clipboard" }; }
+    return { ok: true, link };
+  }
+  return { ok: false, error: `unknown menu item ${what}` };
+}
+
+/** "Answer: <recommended>" -- through the ONE desk answer path (main's answerDeckCard). */
+async function answerRecommended(card, what) {
+  const opt = fairyMenu.recommendedOption(card);
+  if (!opt || `answer:${opt.key}` !== what) return { ok: false, error: "not this card's recommended option" };
+  let verdict;
+  try { verdict = await hookValue("answer", card.id, opt.key); } catch { verdict = false; }
+  if (verdict && typeof verdict === "object" && verdict.ok === false) {
+    return { ok: false, error: verdict.error || "the answer did not go through" };
+  }
+  if (!verdict) return { ok: false, error: "the answer did not go through" };
+  endNudgeFor(card.id, "acted");
+  return { ok: true, answered: opt.key, pending: Boolean(verdict && verdict.pending) };
+}
+
+function orbPick(what) {
+  if (what === "inbox" || what === "queue") {
+    if (nudging) endNudge("seen", { stay: true });
+    if (what === "queue") openQueue();
+    else hookValue("open", null);
+    return { ok: true };
+  }
+  if (what === "mute-1h") {
+    state.muteUntil = Date.now() + 60 * 60_000;
+    saveState();
+    if (nudging && !nudging.explicit) endNudge("seen", { stay: true });
+    return { ok: true, muteUntil: state.muteUntil };
+  }
+  if (what === "unmute") {
+    state.muteUntil = 0;
+    saveState();
+    return { ok: true, muteUntil: 0 };
+  }
+  if (what === "hide") return hideOrb();
+  if (what === "settings") {
+    void runCommandImpl?.("settings.open");
+    return { ok: true };
+  }
+  if (what === "more") return spiritMenu();
+  return { ok: false, error: `unknown menu item ${what}` };
+}
+
+/** The one-line hover tooltip. null/"" hides it. Never focused, never clicked. */
+function showTip(text, point) {
+  const line = String(text || "").slice(0, fairyMenu.TIP_MAX + 1);
+  // No tooltip over a menu, or over a card the owner clicked open.
+  if (!line || menuState || (nudging && nudging.explicit)) return hideTip();
+  const win = ensureTip();
+  const p = point && Number.isFinite(Number(point.x)) ? { x: Number(point.x), y: Number(point.y) } : cursorPoint();
+  const area = workAreaAt(p) || { x: 0, y: 0, width: 1920, height: 1080 };
+  let x = Math.round(p.x + 14);
+  let y = Math.round(p.y - TIP_SIZE.height - 10);
+  if (x + TIP_SIZE.width > area.x + area.width) x = Math.round(p.x - TIP_SIZE.width - 14);
+  if (y < area.y) y = Math.round(p.y + 18);
+  win.setBounds({ x, y, ...TIP_SIZE });
+  deliverTo(win, "orb:tip", { text: line, side: x < p.x ? "left" : "right" });
+  if (!win.isVisible()) win.showInactive();
+  return { ok: true, text: line };
+}
+
+function hideTip() {
+  if (alive(tipWindow) && tipWindow.isVisible()) {
+    try { tipWindow.hide(); } catch { /* gone */ }
+  }
+  return { ok: true, hidden: true };
+}
+
 // ── IPC ─────────────────────────────────────────────────────────────────────
 
 function fromOrb(sender) {
-  const ids = [orbWindow, bubbleWindow, nudgeWindow, swarmWindow]
+  const ids = [orbWindow, bubbleWindow, nudgeWindow, swarmWindow, menuWindow, tipWindow]
     .filter(alive)
     .map((w) => w.webContents);
   return ids.some((wc) => wc === sender);
@@ -3031,6 +3290,8 @@ function handlers() {
         nudgeLevel: nudging && !nudging.peek ? nudging.decision.level : 0,
         fairy: currentFairy(),
         companions: currentCompanions(),
+        menu: view === "menu" ? publicMenu() : null,
+        tipDwellMs: fairyMenu.TIP_DWELL_MS,
       };
     }),
     "desk:orb-hit": guard((_sender, inside) => {
@@ -3043,8 +3304,15 @@ function handlers() {
     "desk:orb-click": guard(() => toggleBubbleFromOrb()),
     // The badge click (fairy, 2026-11-06) lands on the SAME Inbox list every
     // other entry point uses. It opens; it never answers.
-    // Hovering a companion fairy shows that agent's card (a peek, not a nudge).
-    "desk:orb-peek": guard((_sender, id) => peekCard(id)),
+    // A HOVER never opens a card (owner 2026-11-12: "hovering over fairies causes
+    // cards to keep popping and they change so fast"). A page that still asks is
+    // refused; a hover shows a one-line tooltip (desk:fairy-tip), a click opens the card.
+    "desk:orb-peek": guard(() => ({ ok: false, reason: "a hover never opens a card: click the fairy" })),
+    "desk:fairy-tip": guard((_sender, text, point) => (text ? showTip(text, point) : hideTip())),
+    // Right click: a companion's menu, or the orb's. A pick is checked against the menu shown.
+    "desk:fairy-menu": guard((_sender, id, agent) => fairyMenuFor(id, agent)),
+    "desk:orb-menu": guard(() => orbMenu()),
+    "desk:menu-pick": guard((_sender, id) => menuPick(id)),
     // A CLICK on a companion (or on one under the fairy's own disc): its newest card.
     "desk:orb-open-card": guard((_sender, id, agent) => openFairyCard(id, agent)),
     // The swarm is click-through except the companion under the pointer.
@@ -3181,9 +3449,12 @@ function stopOrb() {
     try { probe.stop(); } catch { /* already gone */ }
     probe = null;
   }
-  for (const win of [nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
+  for (const win of [menuWindow, tipWindow, nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
     try { if (alive(win)) win.destroy(); } catch { /* already gone */ }
   }
+  menuWindow = null;
+  menuState = null;
+  tipWindow = null;
   nudgeWindow = null;
   veilWindow = null;
   bubbleWindow = null;
@@ -3265,7 +3536,8 @@ module.exports = {
   NUDGE_SIZE, setAttentionCards, attentionTick, ownsAttention, nudgeAct, endNudge,
   nudgeCard, chatAboutCard, setSounds,
   // the agent fairy (agent-fairy.cjs): whose colours, which companions
-  setSpeaker, peekCard, openFairyCard, fairy: () => currentFairy(), companions: () => currentCompanions(),
+  setSpeaker, peekCard, openFairyCard, fairyMenuFor, orbMenu, menuPick, showTip, hideTip,
+  menuState: () => publicMenu(), fairy: () => currentFairy(), companions: () => currentCompanions(),
   setPresence, noteAgentPosted, chatWithAgent,
   swarmWindow: () => (alive(swarmWindow) ? swarmWindow : null), soundsOn: () => state.sounds !== false,
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
@@ -3304,9 +3576,12 @@ module.exports = {
     agentPosts = new Map();
     if (agentPostTimer) { clearTimeout(agentPostTimer); agentPostTimer = null; }
     cardChat = null;
-    for (const win of [swarmWindow, nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
+    for (const win of [menuWindow, tipWindow, swarmWindow, nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
       try { if (alive(win)) win.destroy(); } catch { /* gone */ }
     }
+    menuWindow = null;
+    menuState = null;
+    tipWindow = null;
     nudgeWindow = null;
     swarmWindow = null;
     veilWindow = null;

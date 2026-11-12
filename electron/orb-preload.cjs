@@ -107,7 +107,7 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   onNudgeView: (fn) => on("orb:nudge-view", fn),
   onNudgeFlash: (fn) => on("orb:nudge-flash", fn),
   // The agent fairy (agent-fairy.cjs): whose colours the fairy wears, the
-  // companions orbiting it, and a hover on one of them (shows that agent's card).
+  // companions orbiting it. `peek` is refused since 2026-11-12: a hover never opens a card.
   onFairy: (fn) => on("orb:fairy", fn),
   onCompanions: (fn) => on("orb:companions", fn),
   peek: (id) => ipcRenderer.invoke("desk:orb-peek", String(id || "")),
@@ -118,4 +118,14 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   onPanel: (fn) => on("orb:panel", fn),
   // Click a companion fairy: a chat with that agent.
   chatAgent: (agent) => ipcRenderer.invoke("desk:orb-chat-agent", String(agent || "")),
+  // Hover = a one-line tooltip after a dwell, never a card (owner 2026-11-12).
+  // text "" hides it; point is the pointer in screen DIPs.
+  tip: (text, point) => ipcRenderer.invoke("desk:fairy-tip", String(text || ""),
+    point && Number.isFinite(Number(point.x)) ? { x: Number(point.x), y: Number(point.y) } : null),
+  onTip: (fn) => on("orb:tip", fn),
+  // Right click: a companion's menu (its card) or the orb's; a pick names an item id.
+  fairyMenu: (id, agent) => ipcRenderer.invoke("desk:fairy-menu", String(id || ""), String(agent || "")),
+  orbMenu: () => ipcRenderer.invoke("desk:orb-menu"),
+  menuPick: (id) => ipcRenderer.invoke("desk:menu-pick", String(id || "")),
+  onMenu: (fn) => on("orb:menu", fn),
 });
