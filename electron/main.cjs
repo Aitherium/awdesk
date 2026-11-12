@@ -6160,6 +6160,15 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         soundMuted: () => voiceAllMuted(),
         // "Talk": the voice card flow about THIS card, answered through answerDeckCard.
         talk: (card) => talkAboutCard(card),
+        // The fairy's right-click menu (owner 2026-11-12): "Dismiss" withdraws the
+        // card through awask (the raising session is told), "Go to session" brings
+        // its terminal tab forward, or reopens a session that has ended.
+        cancel: (id, note) => decisionCards.cancelCard(id, note),
+        focusSession: async (id) => {
+          const r = await deckSessionAct({ id, action: "focus" });
+          if (r && !r.ok && /ended/i.test(String(r.note || ""))) return deckSessionAct({ id, action: "resume" });
+          return r;
+        },
         // Click a companion fairy: the chat with THAT agent (same persona as its
         // Discord bot), continuing its thread when the board names one.
         chat: (agent, links) => openAgentChat(agent, links),

@@ -300,9 +300,9 @@ test("a bubble is never placed off-screen when the orb is in a negative-origin d
 // ── state file ──────────────────────────────────────────────────────────────
 
 test("a saved state is small and sanitized; junk costs settings, not a launch", () => {
-  assert.deepEqual(core.sanitizeState(null), { visible: true, pinned: false, x: null, y: null, freeRoam: false, sounds: true });
-  assert.deepEqual(core.sanitizeState({ visible: false, x: "12.7", y: 400 }), { visible: false, pinned: false, x: 13, y: 400, freeRoam: false, sounds: true });
-  assert.deepEqual(core.sanitizeState({ x: "nope", y: 1e9 }), { visible: true, pinned: false, x: null, y: 1000000000, freeRoam: false, sounds: true });
+  assert.deepEqual(core.sanitizeState(null), { visible: true, pinned: false, x: null, y: null, freeRoam: false, sounds: true, muteUntil: 0 });
+  assert.deepEqual(core.sanitizeState({ visible: false, x: "12.7", y: 400 }), { visible: false, pinned: false, x: 13, y: 400, freeRoam: false, sounds: true, muteUntil: 0 });
+  assert.deepEqual(core.sanitizeState({ x: "nope", y: 1e9 }), { visible: true, pinned: false, x: null, y: 1000000000, freeRoam: false, sounds: true, muteUntil: 0 });
   assert.equal(core.sanitizeState({ pinned: true }).pinned, true);
 });
 
@@ -310,6 +310,12 @@ test("fairy sounds default on and turn off only when explicitly false", () => {
   assert.equal(core.sanitizeState(null).sounds, true);
   assert.equal(core.sanitizeState({ sounds: "no" }).sounds, true);
   assert.equal(core.sanitizeState({ sounds: false }).sounds, false);
+});
+
+test("a nudge mute from the fairy's menu is remembered as a time, junk = not muted", () => {
+  assert.equal(core.sanitizeState({ muteUntil: 1_800_000_000_000 }).muteUntil, 1_800_000_000_000);
+  assert.equal(core.sanitizeState({ muteUntil: "soon" }).muteUntil, 0);
+  assert.equal(core.sanitizeState({ muteUntil: -5 }).muteUntil, 0);
 });
 
 test("freeRoam is remembered only when explicitly true", () => {
