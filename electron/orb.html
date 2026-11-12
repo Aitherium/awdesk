@@ -671,10 +671,15 @@
       api.cancelTrip().then((r) => { if (!r || !r.ok) api.hide(); });
     });
 
-    api.onBadge((n) => {
+    // {n, title}: the cards that need the owner and what the number counts (a bare
+    // number is still accepted). The title is the label: "31 need you · all workspaces".
+    function drawBadge(b) {
+      const n = b && typeof b === "object" ? Number(b.n) || 0 : Number(b) || 0;
       badge.textContent = String(n);
-      badge.classList.toggle("on", Number(n) > 0);
-    });
+      badge.title = b && typeof b === "object" && b.title ? String(b.title) : "";
+      badge.classList.toggle("on", n > 0);
+    }
+    api.onBadge(drawBadge);
     // Click the count -> the Inbox list. The orb's own press/drag must not see
     // this click (it would toggle the bubble underneath).
     badge.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
@@ -735,7 +740,7 @@
     });
     api.init().then((s) => {
       if (!s) return;
-      if (s.badge) { badge.textContent = String(s.badge); badge.classList.toggle("on", s.badge > 0); }
+      if (s.badge) drawBadge(s.badge);
       if (s.tint) applyTint(s.tint.css);
       wearSprite(s.sprite);
       if (s.attach) orb.classList.add("attached");

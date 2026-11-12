@@ -1940,7 +1940,7 @@ function fairyQuietReason() {
 /** The fairy carries the decision queue (decisions only -- reports stay on the badge). */
 function feedFairyCards() {
   try {
-    orbWindow.setAttentionCards(decisionCards.partitionCards(openDecisions).decisions);
+    orbWindow.setAttentionCards(decisionCards.partitionCards(openDecisions).decisions, openDecisions);
   } catch { /* the fairy is not up yet; the next change feeds it */ }
 }
 

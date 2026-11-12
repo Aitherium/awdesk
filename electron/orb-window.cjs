@@ -50,6 +50,7 @@ const selectionReader = require("./selection-reader.cjs");
 const fairyAttention = require("./fairy-attention.cjs");
 const agentFairy = require("./agent-fairy.cjs");
 const fairyMenu = require("./fairy-menu.cjs");
+const fairyCounts = require("./fairy-counts.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -740,7 +741,7 @@ function pump() {
   } else if (!queue.cur && before) {
     send("orb:line", null);
   }
-  send("orb:badge", orbCore.unreadCount(queue) + attention.count);
+  sendBadge();
   syncBubble();
   send("orb:queue", orbCore.queueSummary(queue));
   send("orb:busy", inflight || tripBusy);
@@ -2148,7 +2149,7 @@ function deskDoors(reg) {
   return DESK_DOORS.filter(([id]) => reg && reg.byId && reg.byId(id)).map(([id, label]) => ({
     // The fairy's door names the actual ask, not a generic "Notifications":
     // "Needs you (3)" is the same group label the launcher and the deck use.
-    label: id === "inbox.open" ? (attention.count ? `Needs you (${attention.count})` : "Inbox") : label,
+    label: id === "inbox.open" ? (attentionCards.length ? `Needs you (${attentionCards.length})` : "Inbox") : label,
     click: () => { void runCommandImpl?.(id); },
   }));
 }
@@ -2157,7 +2158,7 @@ function deskDoors(reg) {
 let attention = { count: 0, line: null };
 function setAttention(count, line = null) {
   attention = { count: Math.max(0, Number(count) || 0), line: line ? String(line).slice(0, 160) : null };
-  send("orb:badge", orbCore.unreadCount(queue) + attention.count);
+  sendBadge();
   send("orb:attention", attention);
   return attention;
 }
@@ -2215,9 +2216,43 @@ function saveAttention() {
   } catch { /* per-viewer convenience: losing it restarts the ladder, nothing more */ }
 }
 
-/** main hands over the ranked decision queue (decisions only, no reports) on every change. */
-function setAttentionCards(cards) {
+/**
+ * Every number the fairy shows, from one function (fairy-counts.cjs): the badge is the
+ * queue's count, "N more waiting" is that minus the card shown, a companion's badge is
+ * its agent's share. Owner 2026-11-12: four different numbers were on screen at once.
+ */
+let attentionOpen = null;
+function currentCounts() {
+  let worn = "";
+  try { worn = agentFairy.crewKey(currentFairy().agent) || ""; } catch { /* no look yet */ }
+  return fairyCounts.fairyCounts({
+    decisions: attentionCards,
+    open: attentionOpen,
+    agentOf: agentFairy.cardAgent,
+    worn,
+    blockers: attention.count,
+    unread: orbCore.unreadCount(queue),
+  });
+}
+
+/** The orb badge: the cards that need the owner. With none, the answers left to read. */
+function badgeView(counts = currentCounts()) {
+  if (counts.needYou > 0) return { n: counts.badge, title: fairyCounts.badgeTitle(counts) };
+  return {
+    n: counts.unread,
+    title: counts.unread ? `${counts.unread} answer${counts.unread === 1 ? "" : "s"} to read` : "",
+  };
+}
+
+function sendBadge() {
+  send("orb:badge", badgeView());
+}
+
+/** main hands over the ranked decision queue (decisions only, no reports) on every
+ *  change, and every open card beside it so reports can be named, never guessed. */
+function setAttentionCards(cards, allOpen = null) {
   attentionCards = Array.isArray(cards) ? cards.filter((c) => c && typeof c.id === "string") : [];
+  attentionOpen = Array.isArray(allOpen) ? allOpen : null;
   const ids = new Set(attentionCards.map((c) => c.id));
   const before = Object.keys(attentionMems).length;
   attentionMems = fairyAttention.pruneMems(attentionMems, ids);
@@ -2225,6 +2260,7 @@ function setAttentionCards(cards) {
   // Answered somewhere else (the Inbox, Discord, the phone): the whisper goes.
   if (nudging && !ids.has(nudging.decision.card.id)) endNudge("answered");
   sendFairy();
+  sendBadge();
   ensureAttention();
   scheduleAttentionTick(1500); // a NEW card is judged now, not on the next 15 s tick
   return { ok: true, count: attentionCards.length };
@@ -2389,7 +2425,7 @@ function peekCard(id, { explicit = false } = {}) {
     lead: f.known || f.crew ? `From ${f.label}` : "Waiting on you",
     // A CLICKED card is pinned: it stays until closed or another click (owner
     // 2026-11-12), never timed out from under the pointer.
-    more: Math.max(0, attentionCards.length - 1), voice: false, showMs: explicit ? fairyMenu.PINNED_MS : 8000,
+    more: fairyCounts.moreAfter(attentionCards, card.id), voice: false, showMs: explicit ? fairyMenu.PINNED_MS : 8000,
   };
   const r = startNudge(decision, { peek: true });
   if (away && nudging && !nudging.anchor) nudging.anchor = away;
@@ -2490,6 +2526,11 @@ async function attentionTick() {
       returned: nowMs < attentionReturnUntil,
     };
     let decision = fairyAttention.plan(attentionCards, attentionMems, ctx);
+    // "N more waiting" is everything else that needs the owner, the same number a
+    // click shows and the badge minus one -- not only the cards due a nudge.
+    if (decision.act === "nudge" && decision.card) {
+      decision = { ...decision, more: fairyCounts.moreAfter(attentionCards, decision.card.id) };
+    }
     if (decision.act === "nudge") {
       const full = await fullScreenNow();
       if (full) decision = { act: "none", reason: `held while quiet: ${full}` };
@@ -3313,7 +3354,7 @@ function handlers() {
         ok: true,
         view,
         line: queue.cur,
-        badge: orbCore.unreadCount(queue),
+        badge: badgeView(),
         summary: orbCore.queueSummary(queue),
         visible: orbVisible(),
         hold,
@@ -3523,6 +3564,21 @@ function run(verb, { arg = null, slotId = null } = {}) {
     if (!orbVisible()) showOrb();
     const id = arg == null ? "" : String(arg).trim();
     return id ? fairyMenuFor(id, "", { atFairy: true }) : orbMenu({ atFairy: true });
+  }
+  // What the fairy is showing, as numbers: the bridge's way to check the screen
+  // (POST /commands/run {"id":"fairy.counts"}). Opens nothing.
+  if (what === "counts") {
+    const counts = currentCounts();
+    const companions = currentCompanions().map((m) => ({ agent: m.agent, label: m.label, count: m.count }));
+    const problems = fairyCounts.problems(counts, companions);
+    return {
+      ok: problems.length === 0,
+      line: `${fairyCounts.badgeTitle(counts)}. The whisper says "${fairyAttention.moreLabel(counts.more) || "nothing more"}".`,
+      counts,
+      badge: badgeView(counts),
+      companions,
+      problems,
+    };
   }
   if (what === "ask-screen") {
     const use = body || pendingSlot;

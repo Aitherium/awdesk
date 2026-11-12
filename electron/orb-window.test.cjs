@@ -723,7 +723,8 @@ test("the fairy's badge opens the Inbox list (inbox.open), never answers a card"
 
 test("the fairy door is labelled Needs you (N) when cards are waiting", () => {
   const src = fs.readFileSync(path.join(__dirname, "orb-window.cjs"), "utf8");
-  assert.match(src, /`Needs you \(\$\{attention\.count\}\)`/);
+  // The door carries the fairy's own number (fairy-counts.cjs), not the blocker strip's.
+  assert.match(src, /`Needs you \(\$\{attentionCards\.length\}\)`/);
   assert.match(src, /"desk:orb-needs-you"/, "the badge handler is registered");
   const preload = fs.readFileSync(path.join(__dirname, "orb-preload.cjs"), "utf8");
   assert.match(preload, /needsYou: \(\) => ipcRenderer\.invoke\("desk:orb-needs-you"\)/);
