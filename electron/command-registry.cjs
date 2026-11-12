@@ -240,6 +240,16 @@ const COMMANDS = Object.freeze([
       ? `Signed in as ${ctx.account.username || "you"}`
       : "Sign in…"),
   }),
+  // Owner, 2026-11-12: switching workspace was a tray-only picker, so awsh, an agent and
+  // the palette could not do it and nothing said where the Desk was. One verb:
+  // no arg = where you are + the list, `garg` / `aitherium` = go there. The label IS
+  // the status line (law 3: restate state), so the palette row answers "where am I".
+  Object.freeze({
+    id: "workspace.switch", group: "desktop", surfaces: ["palette"],
+    whySingle: "the tray already carries the owner's picker rows (desk-tenant-auto ownerTrayItems); this is the same switch by name for the palette, awsh /desk and agents",
+    label: (ctx = {}) => `Workspace: ${(ctx.workspace && ctx.workspace.name) || "Aitherium"} — switch…`,
+    when: (ctx = {}) => Boolean(ctx.workspace && ctx.workspace.owner),
+  }),
   Object.freeze({
     id: "desktop.signout", label: "AitherOS Online: sign out", menuLabel: "Sign out",
     group: "desktop", surfaces: ["tray", "palette"],

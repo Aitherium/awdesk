@@ -510,3 +510,80 @@ test("main wires the owner's workspace picker into the tray and Connections", ()
   assert.match(main, /workspace: \{ tenantId: deskTenantAuto\.signedInTenantId\(\), tenant: deskTenant\.currentTenant\(\) \}/);
   assert.match(main, /deskTenantAuto\.listOwnerWorkspaces\(await ownerBearer\(\)\)/);
 });
+
+// ── workspace.switch: the same switch by name, and it says where you are ──────────
+test("whereLine names the workspace, its host and who you are; never an invented role", () => {
+  assert.equal(auto.whereLine(null, "platform"), "You are in Aitherium (aitherium.com) as the platform owner.");
+  assert.equal(auto.whereLine({ host: "garg.aitherium.com", name: "GARG" }, "platform"),
+    "You are in GARG (garg.aitherium.com) as the platform owner.");
+  assert.equal(auto.whereLine({ host: "acme.aitherium.com" }, "tnt_acme"),
+    "You are in acme.aitherium.com (acme.aitherium.com) as an account of tnt_acme.");
+  assert.equal(auto.whereLine(null, null), "You are in Aitherium (aitherium.com) as nobody (not signed in).");
+});
+
+test("resolveWorkspaceArg matches id, label, host or name; aitherium/back mean the apex", () => {
+  const rows = [{ tenantId: "tnt_garg", host: "garg.aitherium.com", label: "garg", name: "GargBot" }];
+  for (const word of ["tnt_garg", "garg", "GARG.aitherium.com", "gargbot"]) {
+    assert.equal(auto.resolveWorkspaceArg(word, rows).workspace.tenantId, "tnt_garg", word);
+  }
+  for (const word of ["aitherium", "Back", "home"]) assert.deepEqual(auto.resolveWorkspaceArg(word, rows), { back: true });
+  assert.deepEqual(auto.resolveWorkspaceArg("nope", rows), { unknown: "nope", choices: ["Aitherium", "GargBot"] });
+});
+
+test("workspace.switch: status, switch to Garg by word, and back -- each answer starts with where you are", async (t) => {
+  const homedir = tempHome();
+  auto._resetForTests();
+  t.after(() => auto._resetForTests());
+  const fetchImpl = ownerNet();
+  const resolution = () => deskTenant.resolveTenant({ argv: [], env: {}, homedir });
+  const opts = { check: ownerCheck, homedir, fetchImpl, resolution, current: () => resolution().tenant, hint: () => "platform" };
+
+  const status = await auto.switchWorkspace("owner-bearer", undefined, opts);
+  assert.equal(status.ok, true);
+  assert.equal(status.pick, true, "no word: a click surface may pop the picker");
+  assert.equal(status.line, "You are in Aitherium (aitherium.com) as the platform owner.");
+  assert.deepEqual(status.workspaces, ["Aitherium (aitherium.com)", "GargBot (garg.aitherium.com)"]);
+  assert.equal((await auto.switchWorkspace("owner-bearer", "status", opts)).pick, false);
+
+  const there = await auto.switchWorkspace("owner-bearer", "garg", opts);
+  assert.equal(there.ok, true);
+  assert.equal(there.changed, true);
+  assert.equal(there.line, "You are in GargBot (garg.aitherium.com) as the platform owner.");
+  assert.equal(resolution().tenant.ownerSwitch, true);
+
+  const unknown = await auto.switchWorkspace("owner-bearer", "nope", opts);
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.error, /No workspace named "nope" -- choose one of: Aitherium, GargBot/);
+  assert.equal(resolution().tenant.host, "garg.aitherium.com", "a wrong word changes nothing");
+
+  const back = await auto.switchWorkspace("owner-bearer", "aitherium", opts);
+  assert.equal(back.ok, true);
+  assert.equal(back.changed, true);
+  assert.equal(back.line, "You are in Aitherium (aitherium.com) as the platform owner.");
+  assert.equal(resolution().tenant, null);
+});
+
+test("SECURITY: workspace.switch refuses a non-platform session and writes nothing", async () => {
+  const homedir = tempHome();
+  const calls = [];
+  const resolution = () => deskTenant.resolveTenant({ argv: [], env: {}, homedir });
+  const r = await auto.switchWorkspace("customer-bearer", "garg",
+    { check: customerCheck, homedir, fetchImpl: ownerNet(calls), resolution, current: () => resolution().tenant, hint: () => "tnt_acme" });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /only the platform owner/);
+  assert.equal(calls.length, 0);
+  assert.equal(fs.existsSync(deskTenant.configPath(homedir)), false);
+});
+
+test("workspace.switch is a palette row for the owner only, wired in main, and its label says where you are", () => {
+  const registry = require("./command-registry.cjs");
+  const row = registry.byId("workspace.switch");
+  assert.ok(row && row.surfaces.includes("palette") && row.whySingle);
+  assert.deepEqual(registry.conformance(), []);
+  assert.equal(row.label({ workspace: { owner: true, name: "GARG" } }), "Workspace: GARG — switch…");
+  assert.equal(row.label({ workspace: { owner: true, name: "" } }), "Workspace: Aitherium — switch…");
+  assert.equal(row.when({ workspace: { owner: false } }), false);
+  assert.equal(row.when({}), false);
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /case "workspace\.switch": return switchWorkspaceCommand\(arg, surface\);/);
+});

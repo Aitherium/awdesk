@@ -772,6 +772,15 @@ async function pickOwnerWorkspace() {
   Menu.buildFromTemplate(template).popup();
   return { ok: listing.ok !== false, count: (listing.workspaces || []).length, error: listing.refused || listing.error };
 }
+/** `workspace.switch [word]`: the same switch by name (palette, awsh /desk, an agent).
+ *  Resolves { ok, line, ... } where `line` says where the Desk is AFTER the action. */
+async function switchWorkspaceCommand(arg, surface) {
+  const result = await deskTenantAuto.switchWorkspace(await ownerBearer(), arg);
+  // A click with no word gets the picker; another program gets the list in the answer.
+  if (result.pick && surface !== "bridge") void pickOwnerWorkspace();
+  console.log(`[desk] workspace.switch ${arg || "(status)"}: ${result.ok ? result.line : result.error}`);
+  return result;
+}
 /** "Open the Desk panel at startup" — the owner's quick path into the panel, and a
  *  deterministic way to verify the deck live (restart with this flag, screenshot). */
 const deckIsRequested = process.argv.includes("--open-deck");
@@ -2979,6 +2988,13 @@ function commandContext() {
     awconnect: latestAwconnectStatus,
     // Who the AitherDesktop window + overlay are signed in as (never a token).
     account: desktopAccount(),
+    // Which workspace the Desk is in, and whether this account may switch (a hint:
+    // every switch re-asks Identity). The workspace.switch row's label is this.
+    workspace: (() => {
+      const tenant = deskTenant.currentTenant();
+      return { owner: deskTenantAuto.signedInTenantId() === deskTenantAuto.PLATFORM_TENANT,
+        name: (tenant && (tenant.name || tenant.host)) || "", host: (tenant && tenant.host) || "" };
+    })(),
   };
 }
 
@@ -3525,6 +3541,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "desktop.overlay.reload": return void reloadLivingDesktop();
     case "desktop.signin": return void beginDesktopSignIn();
     case "desktop.signout": return void signOutDesktop();
+    case "workspace.switch": return switchWorkspaceCommand(arg, surface);
     // When the desk may raise the overlay by itself (overlay-policy.cjs, cast.json overlay).
     case "desktop.overlay.auto-start": return void toggleOverlaySetting("autoOpenOnStart");
     case "desktop.overlay.edge-reveal": return void toggleOverlaySetting("edgeReveal");
