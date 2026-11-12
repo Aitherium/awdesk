@@ -3018,6 +3018,14 @@ let menuWindow = null;
 let menuState = null;
 let tipWindow = null;
 const TIP_SIZE = Object.freeze({ width: 300, height: 30 });
+/** Windows may refuse the menu the keyboard (no recent input to the desk, so no
+ *  foreground right): then blur never fires. Such a menu closes itself once the
+ *  pointer has been off it this long, so it can never be stuck on screen. */
+const MENU_IDLE_MS = 6000;
+let menuHover = false;
+let menuTouchedAt = 0;
+let menuIdleTimer = null;
+let menuIdleMsOverride = 0;
 
 function overlayWindow(title, { focusable }) {
   const { BrowserWindow } = electron();
@@ -3090,11 +3098,38 @@ function showMenu(kind, built, ctx = {}) {
   win.setBounds({ ...pos, ...size });
   deliverTo(win, "orb:menu", publicMenu());
   win.show();
-  try { win.focus(); } catch { /* focus is a nicety */ }
+  try {
+    win.focus();
+    win.webContents.focus();
+  } catch { /* focus is a nicety */ }
+  menuHover = false;
+  menuTouchedAt = Date.now();
+  if (!menuIdleTimer) {
+    menuIdleTimer = setInterval(() => {
+      if (!menuState || !alive(menuWindow)) return stopMenuIdle();
+      let focused = false;
+      try { focused = menuWindow.isFocused(); } catch { /* gone */ }
+      if (!focused && !menuHover && Date.now() - menuTouchedAt >= (menuIdleMsOverride || MENU_IDLE_MS)) hideMenu();
+    }, 500);
+    if (menuIdleTimer.unref) menuIdleTimer.unref();
+  }
   return { ok: true, kind, items: built.items.filter((i) => !i.sep).map((i) => i.id) };
 }
 
+function stopMenuIdle() {
+  if (menuIdleTimer) { clearInterval(menuIdleTimer); menuIdleTimer = null; }
+}
+
+/** The menu page: the pointer entered (true) or left (false) the menu. */
+function menuPointer(inside) {
+  menuHover = Boolean(inside);
+  menuTouchedAt = Date.now();
+  return { ok: true };
+}
+
 function hideMenu() {
+  stopMenuIdle();
+  menuHover = false;
   menuState = null;
   if (alive(menuWindow) && menuWindow.isVisible()) {
     try { menuWindow.hide(); } catch { /* gone */ }
@@ -3320,6 +3355,7 @@ function handlers() {
     "desk:fairy-menu": guard((_sender, id, agent) => fairyMenuFor(id, agent)),
     "desk:orb-menu": guard(() => orbMenu()),
     "desk:menu-pick": guard((_sender, id) => menuPick(id)),
+    "desk:menu-hover": guard((_sender, inside) => menuPointer(inside)),
     // A CLICK on a companion (or on one under the fairy's own disc): its newest card.
     "desk:orb-open-card": guard((_sender, id, agent) => openFairyCard(id, agent)),
     // The swarm is click-through except the companion under the pointer.
@@ -3456,6 +3492,8 @@ function stopOrb() {
     try { probe.stop(); } catch { /* already gone */ }
     probe = null;
   }
+  stopMenuIdle();
+  menuIdleMsOverride = 0;
   for (const win of [menuWindow, tipWindow, nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
     try { if (alive(win)) win.destroy(); } catch { /* already gone */ }
   }
@@ -3551,7 +3589,7 @@ module.exports = {
   nudgeCard, chatAboutCard, setSounds,
   // the agent fairy (agent-fairy.cjs): whose colours, which companions
   setSpeaker, peekCard, openFairyCard, fairyMenuFor, orbMenu, menuPick, showTip, hideTip,
-  menuState: () => publicMenu(), fairy: () => currentFairy(), companions: () => currentCompanions(),
+  menuState: () => publicMenu(), __setMenuIdleMs: (ms) => { menuIdleMsOverride = Number(ms) || 0; }, fairy: () => currentFairy(), companions: () => currentCompanions(),
   setPresence, noteAgentPosted, chatWithAgent,
   swarmWindow: () => (alive(swarmWindow) ? swarmWindow : null), soundsOn: () => state.sounds !== false,
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
@@ -3590,6 +3628,8 @@ module.exports = {
     agentPosts = new Map();
     if (agentPostTimer) { clearTimeout(agentPostTimer); agentPostTimer = null; }
     cardChat = null;
+    stopMenuIdle();
+    menuIdleMsOverride = 0;
     for (const win of [menuWindow, tipWindow, swarmWindow, nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
       try { if (alive(win)) win.destroy(); } catch { /* gone */ }
     }

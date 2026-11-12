@@ -932,6 +932,12 @@
       }
     });
     document.addEventListener("contextmenu", (e) => e.preventDefault());
+    // Main closes an unfocused menu once the pointer has been off it a while.
+    if (api.menuHover) {
+      document.addEventListener("mouseenter", () => api.menuHover(true));
+      document.addEventListener("mouseleave", () => api.menuHover(false));
+      document.addEventListener("mousemove", () => api.menuHover(true), { once: true });
+    }
     api.onMenu(render);
     api.init().then((s) => { if (s && s.menu) render(s.menu); });
   }
