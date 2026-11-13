@@ -35,19 +35,26 @@ const ROUTES = Object.freeze([
   ["GET", /^\/git\/status\?path=[^&#]*(&untracked=[01])?$/],
   ["GET", /^\/git\/diff\?path=[^&#]*(&staged=[01])?$/],
   ["GET", new RegExp(`^/sessions/${ID}/transcript(\\?[A-Za-z0-9_=&.%:-]*)?$`)],
-  // Read-only: the Alt+Space command center's view of a pty session's output (command-center.cjs).
-  ["GET", new RegExp(`^/sessions/${ID}/events\\?since=[0-9]{1,15}$`)],
   ["POST", /^\/sessions$/],
   ["POST", new RegExp(`^/sessions/${ID}/(input|message|resize|interrupt|focus)$`)],
   ["DELETE", new RegExp(`^/sessions/${ID}$`)],
 ]);
 
+/**
+ * Routes only MAIN-process callers may add (relayHarness extraRoutes). Never in ROUTES:
+ * the desk-hosted Online OS reaches ROUTES through os-daemon-call.
+ */
+const MAIN_ONLY_ROUTES = Object.freeze([
+  // Read-only: the Alt+Space command center's view of a pty session's output (command-center.cjs).
+  ["GET", new RegExp(`^/sessions/${ID}/events\\?since=[0-9]{1,15}$`)],
+]);
+
 /** Is `method path` one AitherShell sends? Pure; rejects traversal and encoded slashes. */
-function allowedRoute(method, p) {
+function allowedRoute(method, p, extra = []) {
   const m = String(method || "").toUpperCase();
   const route = String(p || "");
   if (!route.startsWith("/") || route.includes("..") || /%2f|%5c/i.test(route.split("?")[0])) return false;
-  return ROUTES.some(([rm, rx]) => rm === m && rx.test(route));
+  return [...ROUTES, ...extra].some(([rm, rx]) => rm === m && rx.test(route));
 }
 
 function readHarnessToken(env = process.env, fsImpl = fs) {
@@ -63,10 +70,10 @@ function readHarnessToken(env = process.env, fsImpl = fs) {
  * Relay one call. Never throws: {ok, status, data} like the overlay's daemon-call, or
  * {ok:false, error} when refused or unreachable.
  */
-async function relayHarness(msg, { fetchImpl = globalThis.fetch, token = readHarnessToken, base = DAEMON } = {}) {
+async function relayHarness(msg, { fetchImpl = globalThis.fetch, token = readHarnessToken, base = DAEMON, extraRoutes = [] } = {}) {
   const method = String((msg && msg.method) || "GET").toUpperCase();
   const p = String((msg && msg.path) || "");
-  if (!allowedRoute(method, p)) return { ok: false, status: 403, error: `the desk does not relay ${method} ${p.split("?")[0]} to awsh` };
+  if (!allowedRoute(method, p, extraRoutes)) return { ok: false, status: 403, error: `the desk does not relay ${method} ${p.split("?")[0]} to awsh` };
   const headers = { "Content-Type": "application/json" };
   const t = typeof token === "function" ? token() : "";
   if (t) headers.Authorization = `Bearer ${t}`;
@@ -86,4 +93,4 @@ async function relayHarness(msg, { fetchImpl = globalThis.fetch, token = readHar
   }
 }
 
-module.exports = { DAEMON, ROUTES, allowedRoute, readHarnessToken, relayHarness };
+module.exports = { DAEMON, ROUTES, MAIN_ONLY_ROUTES, allowedRoute, readHarnessToken, relayHarness };

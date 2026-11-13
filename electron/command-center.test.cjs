@@ -165,14 +165,14 @@ test("the graph joins the desk's own sources and the platform graph, each edge n
   await center.warmAll();
   const g = await center.graph("task:task_1");
   assert.equal(g.ok, true);
-  const byRef = Object.fromEntries(g.edges.map((e) => [e.to, e]));
+  const byRef = Object.fromEntries(g.edges.map((e) => [e.ref, e]));
   assert.equal(byRef["project:proj_1"].label, "in project");
   assert.equal(byRef["project:proj_1"].source, "desk sources");
   assert.ok(g.edges.some((e) => e.source === "graph_find · CodeGraph:svc"));
   const person = await center.graph("person:david@aitherium.com");
-  assert.ok(person.edges.some((e) => e.to === "event:ev_1"), "a person links to the meeting naming them");
+  assert.ok(person.edges.some((e) => e.ref === "event:ev_1"), "a person links to the meeting naming them");
   const run = await center.graph("run:expedition:exp-1");
-  assert.ok(run.edges.some((e) => e.to === "fleet-agent:atlas" && e.label === "run by"));
+  assert.ok(run.edges.some((e) => e.ref === "fleet-agent:atlas" && e.label === "run by"));
 });
 
 test("fleet agents fall back to active_agents when the fleet status times out", async () => {
@@ -192,4 +192,32 @@ test("the roadmap and routine parsers read the yaml shapes without a YAML depend
   assert.match(rows[0].subtitle, /2027-Q1/);
   const routines = cc.shapeRoutineFile("x.yaml", "routines:\n- id: a\n  name: A routine\n  enabled: false\n  schedule:\n    type: interval\n    interval_minutes: 60\n");
   assert.match(routines[0].subtitle, /every 60 min · disabled/);
+});
+
+test("steer never falls back to typing after a /message that failed for another reason", async () => {
+  const { deps, harnessCalls } = fakeDeps();
+  const inner = deps.harness;
+  deps.harness = async (msg) => (msg.path === "/sessions/s-daemon/message" ? { ok: false, error: "awsh did not answer in time" } : inner(msg));
+  const center = cc.createCommandCenter(deps);
+  await center.warmAll();
+  const r = await center.act("session:s-daemon", "steer", "wrap up");
+  assert.equal(r.ok, false);
+  assert.ok(!harnessCalls.some((m) => m.path === "/sessions/s-daemon/input"), "a timed-out message may have landed: no second delivery");
+});
+
+test("open never sends the search term as a message, and the graph hands out opaque node ids", async () => {
+  const { deps } = fakeDeps();
+  const center = cc.createCommandCenter(deps);
+  await center.warmAll();
+  const open = await center.act("project:proj_1", "open", "");
+  assert.match(open.chat, /Show me the project/);
+  const g = await center.graph("task:task_1");
+  assert.ok(g.nodes.every((n) => /^n\d+$/.test(n.id) && !("ref" in n)));
+});
+
+test("the pty events route is main-only, never in the shared ROUTES", () => {
+  const relay = require("./harness-relay.cjs");
+  assert.equal(relay.allowedRoute("GET", "/sessions/abc/events?since=0"), false);
+  assert.equal(relay.allowedRoute("GET", "/sessions/abc/events?since=0", relay.MAIN_ONLY_ROUTES), true);
+  assert.equal(relay.allowedRoute("GET", "/sessions/abc/events?since=0&x=1", relay.MAIN_ONLY_ROUTES), false);
 });

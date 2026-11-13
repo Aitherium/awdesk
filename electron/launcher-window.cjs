@@ -477,7 +477,9 @@ function createLauncher({
     }
     if (verdict.text != null) return { ok: true, did: verdict.did, pane: { kind: "text", title: verdict.title || "", text: String(verdict.text) } };
     if (verdict.center) {
-      return { ok: true, did: verdict.did || "graph", pane: { kind: "graph", center: verdict.center, nodes: verdict.nodes, edges: verdict.edges, notes: verdict.notes } };
+      // Edge refs stay in main: the pane needs only opaque node ids.
+      const edges = (verdict.edges || []).map((e) => ({ to: e.to, label: e.label, source: e.source }));
+      return { ok: true, did: verdict.did || "graph", pane: { kind: "graph", center: verdict.center, nodes: verdict.nodes, edges, notes: verdict.notes } };
     }
     return { ok: true, did: verdict.did };
   }
@@ -751,7 +753,7 @@ function createLauncher({
     {
       const sw = require("./search-window.cjs");
       const item = sw.rememberedItem ? sw.rememberedItem(key) : null;
-      if (item && require("./command-center.cjs").CC_KINDS.has(item.kind)) return actRow(key, "open", query);
+      if (item && require("./command-center.cjs").CC_KINDS.has(item.kind)) return actRow(key, "open", "");
     }
     const sw = require("./search-window.cjs");
     const remembered = String(key || "").startsWith("ctx:") && sw.rememberedItem ? sw.rememberedItem(key) : null;

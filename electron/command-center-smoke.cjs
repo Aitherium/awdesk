@@ -50,7 +50,8 @@ async function cardsFromGateway() {
 app.whenReady().then(async () => {
   let launcherWin = null;
   let sessionId = "";
-  const harness = require("./harness-relay.cjs").relayHarness;
+  const relay = require("./harness-relay.cjs");
+  const harness = (msg) => relay.relayHarness(msg, { extraRoutes: relay.MAIN_ONLY_ROUTES });
   try {
     fs.mkdirSync(SHOTS, { recursive: false });
   } catch (error) {

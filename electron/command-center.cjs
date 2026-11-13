@@ -410,7 +410,10 @@ function shapePeople(members, contacts) {
  */
 function createCommandCenter({
   callTool = (name, args) => require("./gateway-mcp.cjs").callTool(name, args),
-  harness = (msg) => require("./harness-relay.cjs").relayHarness(msg),
+  harness = (msg) => {
+    const relay = require("./harness-relay.cjs");
+    return relay.relayHarness(msg, { extraRoutes: relay.MAIN_ONLY_ROUTES });
+  },
   execFile = require("node:child_process").execFile,
   fsImpl = fs,
   env = process.env,
@@ -536,7 +539,12 @@ function createCommandCenter({
     if (s.loading) return s.loading;
     if (now() - s.at < def.ttl) return null;
     s.loading = Promise.resolve().then(() => def.load())
-      .then((rows) => { s.records = Array.isArray(rows) ? rows : []; s.error = null; })
+      .then((rows) => {
+        // A session that ended or a run that finished is no longer actionable.
+        for (const old of s.records) records.delete(old.ref);
+        s.records = Array.isArray(rows) ? rows : [];
+        s.error = null;
+      })
       .catch((error) => { s.error = clip((error && error.message) || error, 200); })
       .finally(() => {
         s.at = now();
@@ -681,7 +689,10 @@ function createCommandCenter({
         }
         // A pty harness (the shell) "does not drain the steering mailbox -- use its input
         // instead" (measured 2026-11-13): type the line into its keyboard and submit it.
-        if (r.actions.input) {
+        // Never after a /message that failed any other way: a timeout may already have
+        // delivered it, and a waiting-permission prompt must not get typed text submitted.
+        const pointsToInput = res && /use its input/i.test(String((res.data && res.data.detail) || res.error || ""));
+        if (r.actions.input && (!r.actions.message || pointsToInput) && r.status !== "waiting-permission") {
           res = await harness({ method: "POST", path: sessionPath(r, "/input"), body: { text: body, submit: true } });
           if (res && res.ok) return ok(`steered ${r.title} (typed into its input)`);
         }
@@ -822,11 +833,14 @@ function createCommandCenter({
     const local = joins(r);
     const platform = await platformGraph(r);
     const all = [...local, ...platform.edges];
-    const node = (x) => ({ ref: x.ref, kind: x.kind, title: x.title, subtitle: x.subtitle || "" });
+    // The renderer gets opaque node ids, never a ref (an email, a session id, a file name).
+    const ids = new Map();
+    const idOf = (ref) => { if (!ids.has(ref)) ids.set(ref, `n${ids.size}`); return ids.get(ref); };
+    const node = (x) => ({ id: idOf(x.ref), kind: x.kind, title: x.title, subtitle: x.subtitle || "" });
     return ok(`graph: ${all.length} neighbours of ${r.title}`, {
       center: node(r),
       nodes: all.map((e) => node(e.to)),
-      edges: all.map((e) => ({ to: e.to.ref, label: e.label, source: e.source })),
+      edges: all.map((e) => ({ to: idOf(e.to.ref), ref: e.to.ref, label: e.label, source: e.source })),
       notes: [`${local.length} from the desk's own sources`, ...platform.notes],
     });
   }
