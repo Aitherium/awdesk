@@ -261,6 +261,7 @@ function applyGhostTick() {
 }
 
 function startGhostLoop() {
+  startCompanionWatch(); // idempotent: it returns when its own timer exists
   if (ghostTimer) return;
   ghostTimer = setInterval(applyGhostTick, 60);
 }
@@ -274,6 +275,35 @@ function stopGhostLoop() {
     ignoringMouse = false;
     desktopWin.setIgnoreMouseEvents(false);
   }
+}
+
+// ── The tenant's own companion and the fairy never share a spot ─────────────────
+// A tenant site may draw its own companion on every page (`[data-companion]`; GARG's
+// goblin, bottom-right). The fairy is a native window above this one and rested on the
+// same corner. Every few seconds the overlay is asked where that element is; the fairy
+// keeps out of the box (orb-window setReservedBox). No element, a hidden one, or a
+// closed overlay: no box, and the fairy is where the owner left it.
+const COMPANION_PROBE = "(function(){try{var e=document.querySelector('[data-companion]');if(!e)return null;"
+  + "var r=e.getBoundingClientRect();if(!(r.width>0&&r.height>0))return null;"
+  + "return{x:r.left,y:r.top,width:r.width,height:r.height}}catch(_){return null}})()";
+let companionTimer = null;
+let companionBox = null; // the last answer, for /desktop/status
+async function probeCompanion() {
+  let box = null;
+  if (isOpen() && desktopWin.isVisible()) {
+    try {
+      const rect = await desktopWin.webContents.executeJavaScript(COMPANION_PROBE, false);
+      if (isOpen()) box = require("./orb-core.cjs").pageRectOnScreen(rect, desktopWin.getContentBounds());
+    } catch { /* the page is loading or gone: no box this round */ }
+  }
+  companionBox = box;
+  try { require("./orb-window.cjs").setReservedBox(box); } catch { /* no fairy in this process */ }
+  return box;
+}
+function startCompanionWatch() {
+  if (companionTimer) return;
+  companionTimer = setInterval(() => { void probeCompanion(); }, 2500);
+  if (typeof companionTimer.unref === "function") companionTimer.unref();
 }
 
 // ── Session (why the shell shows "sign in" instead of david@) ─────────────────────
@@ -897,12 +927,20 @@ function pushHostThread(threadId) {
 const DESKTOP_APP_SHELL = "aither-desktop";
 let appWin = null;
 
+/** "" in a tenant workspace (the tenant's stamped shell), else Desktop Anywhere. */
+function desktopAppShell() {
+  return deskTenant.appWindowShell(TENANT, BASE_URL, DESKTOP_APP_SHELL);
+}
+
 // `app` opens one window on arrival: both desktop shells read `?app=<id>` once.
 function desktopAppUrl(app = "") {
   try {
     const url = new URL(BASE_URL);
     url.searchParams.delete("mode");
-    url.searchParams.set("shell", DESKTOP_APP_SHELL);
+    // A tenant workspace keeps its own shell (desk-tenant appWindowShell says why).
+    const shellForApp = desktopAppShell();
+    if (shellForApp) url.searchParams.set("shell", shellForApp);
+    else url.searchParams.delete("shell");
     if (app) url.searchParams.set("app", app);
     return url.href;
   } catch {
@@ -1000,8 +1038,9 @@ function showDesktopApp({ app = "" } = {}) {
 function desktopStatus() {
   return {
     overlay: { open: isOpen(), visible: isOpen() && desktopWin.isVisible(), shell: shellId, ghost: ghostMode, transparent: transparentMode },
-    app: { open: isAppOpen(), visible: isAppOpen() && appWin.isVisible(), shell: DESKTOP_APP_SHELL },
+    app: { open: isAppOpen(), visible: isAppOpen() && appWin.isVisible(), shell: desktopAppShell() || "workspace" },
     url: BASE_URL,
+    companion: companionBox, // where the tenant site draws its own companion, screen DIP
     shells: SHELL_CHOICES.map((c) => ({ id: c.id, label: c.label })),
   };
 }

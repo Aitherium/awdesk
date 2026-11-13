@@ -393,6 +393,45 @@ function clampToWorkArea(pos, size, workArea) {
   };
 }
 
+/**
+ * The work area minus a box somebody else owns: the largest of the four rectangles
+ * (left of, right of, above, below) that does not touch the box grown by `pad`.
+ * 2026-11-12 (Garg): the tenant site draws its own companion (a goblin) in the
+ * bottom-right corner, which is also the fairy's first-run spot, so the two sat on
+ * top of each other. The fairy yields. No box, a box off this area, or a box that
+ * leaves no usable rectangle: the area unchanged.
+ */
+function areaAvoiding(workArea, box, pad = 0) {
+  const a = workArea || { x: 0, y: 0, width: 1920, height: 1080 };
+  if (!box || typeof box !== "object") return a;
+  if (!(num(box.width) > 0 && num(box.height) > 0)) return a;
+  const p = Math.max(0, num(pad));
+  const left = Math.max(a.x, num(box.x) - p);
+  const top = Math.max(a.y, num(box.y) - p);
+  const right = Math.min(a.x + a.width, num(box.x) + num(box.width) + p);
+  const bottom = Math.min(a.y + a.height, num(box.y) + num(box.height) + p);
+  if (right <= left || bottom <= top) return a;
+  const usable = [
+    { x: a.x, y: a.y, width: left - a.x, height: a.height },
+    { x: right, y: a.y, width: a.x + a.width - right, height: a.height },
+    { x: a.x, y: a.y, width: a.width, height: top - a.y },
+    { x: a.x, y: bottom, width: a.width, height: a.y + a.height - bottom },
+  ].filter((c) => c.width >= 240 && c.height >= 240);
+  if (!usable.length) return a;
+  return usable.sort((m, n) => n.width * n.height - m.width * m.height)[0];
+}
+
+/** A page rect (CSS px of a window at zoom 1) as a screen rect, or null when it is
+ *  not a sane on-screen box. `bounds` is the window's content bounds. */
+function pageRectOnScreen(rect, bounds) {
+  if (!rect || typeof rect !== "object" || !bounds) return null;
+  const vals = [rect.x, rect.y, rect.width, rect.height].map(Number);
+  if (!vals.every(Number.isFinite)) return null;
+  const [x, y, width, height] = vals;
+  if (!(width > 0 && height > 0) || width > 640 || height > 640) return null;
+  return { x: Math.round(num(bounds.x) + x), y: Math.round(num(bounds.y) + y), width: Math.round(width), height: Math.round(height) };
+}
+
 /** First-run spot: bottom-right of the work area, clear of the taskbar. */
 function defaultOrbPosition(workArea, size, margin = 28) {
   const area = workArea || { x: 0, y: 0, width: 1920, height: 1080 };
@@ -446,5 +485,5 @@ module.exports = {
   SCREEN_PROMPT, REGION_PROMPT,
   readingTimeMs, createQueue, push, tick, setPinned, clear, queueSummary, unreadCount,
   buildPrompt, interpretGatewayAnswer, classifyVisionFailure, failureCard,
-  clampToWorkArea, defaultOrbPosition, bubblePosition, sanitizeState,
+  clampToWorkArea, areaAvoiding, pageRectOnScreen, defaultOrbPosition, bubblePosition, sanitizeState,
 };
