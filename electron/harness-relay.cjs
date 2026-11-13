@@ -35,6 +35,8 @@ const ROUTES = Object.freeze([
   ["GET", /^\/git\/status\?path=[^&#]*(&untracked=[01])?$/],
   ["GET", /^\/git\/diff\?path=[^&#]*(&staged=[01])?$/],
   ["GET", new RegExp(`^/sessions/${ID}/transcript(\\?[A-Za-z0-9_=&.%:-]*)?$`)],
+  // Read-only: the Alt+Space command center's view of a pty session's output (command-center.cjs).
+  ["GET", new RegExp(`^/sessions/${ID}/events\\?since=[0-9]{1,15}$`)],
   ["POST", /^\/sessions$/],
   ["POST", new RegExp(`^/sessions/${ID}/(input|message|resize|interrupt|focus)$`)],
   ["DELETE", new RegExp(`^/sessions/${ID}$`)],

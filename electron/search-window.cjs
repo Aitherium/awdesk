@@ -128,6 +128,17 @@ function setWebOpener(fn) {
   openWeb = typeof fn === "function" ? fn : null;
 }
 
+/** Open an http(s) URL through the wired web opener (an Aither browser tab). */
+async function openWebUrl(url) {
+  const u = String(url || "");
+  if (!/^https?:\/\//i.test(u)) return { ok: false, error: "1 address is not http(s) — nothing opened" };
+  if (!openWeb) return { ok: false, error: "1 web opener not wired in main.cjs" };
+  try { await openWeb(u); } catch (error) {
+    return { ok: false, error: `1 page did not open — ${String((error && error.message) || error).slice(0, 200)}` };
+  }
+  return { ok: true, did: "opened in the Aither browser" };
+}
+
 /**
  * main says how a desk command runs: (id) => verdict. The verdict is reported, not
  * assumed: {ok:false, ...} or {cancelled:true} (a confirm the owner cancelled) is a
@@ -444,7 +455,7 @@ function registerLauncherShortcut(globalShortcut, { onPress = () => toggleLaunch
 }
 
 module.exports = {
-  rememberedItem,
+  rememberedItem, openWebUrl,
   CHAT_ACCEPT_MS, LAUNCHER_ACCELS, UNWIRED,
   client, ensureSearchIpc, failureOf, openAppsFolderEntry, fromSearchPage, hideLauncher, launchItem, publicRun, registerLauncherShortcut,
   searchHandlers, sendChat, setActionRunner, setChatSender, setForgeOpener, setWebOpener, toggleLauncher, universal,

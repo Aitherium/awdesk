@@ -207,6 +207,7 @@ function createLauncher({
   let searchSeq = 0;
   let inflight = null;
   let webRegistered = false;
+  let ccRegistered = false;
   // The rows the last VERB answer offered (desk-verbs.cjs): key -> action. The page
   // runs a row BY KEY; the action never crosses the bridge.
   const verbActions = new Map();
@@ -421,6 +422,91 @@ function createLauncher({
     webRegistered = true;
   }
 
+  // The COMMAND CENTER (command-center.cjs): agents & runs, work, knowledge, time and
+  // people as five more providers on the same registry -- the box stays ONE box.
+  function commandCenter() {
+    return require("./command-center.cjs").sharedCommandCenter();
+  }
+
+  function ensureCommandCenter(universal) {
+    if (ccRegistered || !universal || !universal.registry) return;
+    for (const p of commandCenter().providers()) {
+      if (!universal.registry.has(p.id)) universal.register(p);
+    }
+    ccRegistered = true;
+  }
+
+  /** Open decision cards whose words match the term, as the answerable "Needs you" group. */
+  async function matchingCards(term) {
+    if (typeof cards !== "function") return null;
+    let snapshot;
+    try { snapshot = await cards(); } catch { return null; }
+    const words = String(term || "").toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return null;
+    const t = String(term).toLowerCase().trim();
+    const wantsAll = ["cards", "decisions", "needs you", "approve"].includes(t);
+    // A category word ("runs", "agents") asks for that category, not for every card containing it.
+    if (!wantsAll && Object.values(require("./command-center.cjs").CATEGORY_WORDS).some((w) => w.includes(t))) return null;
+    const hits = (Array.isArray(snapshot) ? snapshot : []).filter((c) => {
+      const hay = `${c.title || ""} ${c.summary || ""} ${c.raisedBy || c.raised_by || ""}`.toLowerCase();
+      return wantsAll || words.every((w) => hay.includes(w));
+    });
+    const built = require("./launcher-context.cjs").needsYouGroup(hits);
+    if (!built.group) return null;
+    const shown = require("./search-window.cjs").publicRun({ ok: true, query: term, phase: "idle", groups: [built.group], total: built.items.length });
+    return shown.groups[0] || null;
+  }
+
+  /** Carry out a command-center verdict: a URL, a file, a chat line, or text for the pane. */
+  async function carryOut(verdict) {
+    const sw = require("./search-window.cjs");
+    if (!verdict || verdict.ok === false) return verdict || { ok: false, error: "1 action answered nothing" };
+    if (verdict.url) {
+      const r = await sw.openWebUrl(verdict.url);
+      if (!r.ok) return r;
+      return { ok: true, did: verdict.did, hide: true };
+    }
+    if (verdict.file) {
+      const err = await shell.openPath(verdict.file);
+      return err ? { ok: false, error: `1 file did not open — ${err}` } : { ok: true, did: verdict.did, hide: true };
+    }
+    if (verdict.chat) {
+      if (!ask) return { ok: false, error: "1 Ask path not wired in main.cjs" };
+      const sent = await sw.sendChat(ask, verdict.chat);
+      return sent.ok ? { ok: true, did: sent.did, hide: true } : sent;
+    }
+    if (verdict.text != null) return { ok: true, did: verdict.did, pane: { kind: "text", title: verdict.title || "", text: String(verdict.text) } };
+    if (verdict.center) {
+      return { ok: true, did: verdict.did || "graph", pane: { kind: "graph", center: verdict.center, nodes: verdict.nodes, edges: verdict.edges, notes: verdict.notes } };
+    }
+    return { ok: true, did: verdict.did };
+  }
+
+  /** A verb on one result (Ctrl+Enter steer, Ctrl+. stop, Ctrl+T transcript, Ctrl+G graph, Ctrl+P phone link). */
+  async function actRow(key, verb, text) {
+    const sw = require("./search-window.cjs");
+    const k = String(key || "");
+    const v = String(verb || "open");
+    const remembered = sw.rememberedItem ? sw.rememberedItem(k) : null;
+    if (k.startsWith("card:")) {
+      const id = (remembered && remembered.cardId) || k.slice("card:".length);
+      if (v === "phone") {
+        const url = `https://aitherium.com/approve?card=${encodeURIComponent(id)}`;
+        clipboard.writeText(url);
+        return { ok: true, did: `copied the phone approve link (${url})` };
+      }
+      return { ok: false, error: "1 card takes 1-9 to answer, or Ctrl+P for its phone approve link" };
+    }
+    const { CC_KINDS } = require("./command-center.cjs");
+    if (!remembered || !CC_KINDS.has(remembered.kind)) {
+      return { ok: false, error: "1 result has no agent verbs — steer, stop, transcript and graph work on agents, runs, work, knowledge, time and people" };
+    }
+    const verdict = await commandCenter().act(remembered.target, v, text);
+    const done = await carryOut(verdict);
+    if (done && done.hide) { lastPressAt = pressAt; hide(); }
+    return done;
+  }
+
   function statusFor(groups, errors, indexing) {
     if (errors && errors.length) return core.statusText({ errors });
     if (groups && groups.length) return core.statusText({ groups, indexing });
@@ -491,7 +577,11 @@ function createLauncher({
       verbExtra = answered;
     }
     if (token !== searchSeq) return { ok: true, token, ignored: true };
-    const withVerb = (groups) => (verbExtra && verbExtra.extraGroup ? [verbExtra.extraGroup, ...groups] : groups);
+    let cardGroup = null;
+    const withVerb = (groups) => {
+      const lead = [verbExtra && verbExtra.extraGroup, cardGroup].filter(Boolean);
+      return lead.length ? [...lead, ...groups] : groups;
+    };
     const parsed = core.parseQuery(text);
     if (parsed.mode === "command") {
       const plan = core.commandPlan(parsed.term);
@@ -553,6 +643,16 @@ function createLauncher({
         const builtCards = context.needsYouGroup(snapshot);
         if (builtCards.group) { groups.push(builtCards.group); total += builtCards.items.length; }
       }
+      try {
+        const hot = await commandCenter().workingNow();
+        if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
+        if (hot.length) {
+          const items = hot.map((r, i) => ({ key: require("./universal-search.cjs").itemKey(r.kind, r.ref), group: "cc-live", kind: r.kind,
+            title: r.title, subtitle: r.subtitle, target: r.ref, score: 1 - i / 1000 }));
+          groups.push({ id: "cc-live", label: "Working now", total: items.length, items });
+          total += items.length;
+        }
+      } catch { /* the command center is optional on an empty box */ }
       if (pressContext) {
         const sample = await pressContext;
         if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
@@ -565,11 +665,14 @@ function createLauncher({
         return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: status || core.IDLE_STATUS };
       }
       const shown = sw.publicRun({ ok: true, query: "", phase: "idle", groups, total });
-      return { ok: true, token, mode: "all", term: "", phase: "idle", groups: shown.groups, status };
+      return { ok: true, token, mode: "all", term: "", phase: "idle", groups: core.capGroups(shown.groups), status };
     }
     const sw = require("./search-window.cjs");
     const universal = sw.universal();
     ensureWeb(universal);
+    ensureCommandCenter(universal);
+    cardGroup = await matchingCards(parsed.term);
+    if (token !== searchSeq) return { ok: true, token, ignored: true };
     const ctl = new AbortController();
     inflight = { token, ctl };
     const view = (result) => {
@@ -644,6 +747,11 @@ function createLauncher({
       return verdict.ok
         ? { ok: true, did: "showing hidden results for 5 minutes" }
         : { ok: false, error: `Hidden results stay hidden — ${verdict.reason}` };
+    }
+    {
+      const sw = require("./search-window.cjs");
+      const item = sw.rememberedItem ? sw.rememberedItem(key) : null;
+      if (item && require("./command-center.cjs").CC_KINDS.has(item.kind)) return actRow(key, "open", query);
     }
     const sw = require("./search-window.cjs");
     const remembered = String(key || "").startsWith("ctx:") && sw.rememberedItem ? sw.rememberedItem(key) : null;
@@ -720,6 +828,7 @@ function createLauncher({
     ipcMain.handle("launcher:command", guard((text, confirm) => runLine(text, confirm === true)));
     ipcMain.handle("launcher:ask", guard((text) => runAsk(text)));
     ipcMain.handle("launcher:spirit", guard((text) => runSpirit(text)));
+    ipcMain.handle("launcher:act", guard((key, verb, text) => actRow(key, verb, text)));
     ipcMain.handle("launcher:hide", guard(() => { hide(); return { ok: true }; }));
     ipcMain.handle("launcher:release", guard(() => release()));
   }
@@ -735,7 +844,7 @@ function createLauncher({
   }
 
   return {
-    press, release, hide, search, runRow, runAsk, runSpirit, runLine, warm,
+    press, release, hide, search, runRow, runAsk, runSpirit, runLine, warm, actRow,
     isVisible: () => Boolean(alive() && win.isVisible()),
     phase: () => phase,
     __state: () => ({ phase, pressAt, lastPressAt, releasedAt, ignoreUntil }),

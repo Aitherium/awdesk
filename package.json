@@ -1,6 +1,6 @@
 {
   "name": "awdesk",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "description": "Aither: your Aitherium agent, browser and workspace on the desktop.",
   "author": {
     "name": "Aitherium",
@@ -61,6 +61,7 @@
     "test:needs-you": "electron electron/needs-you-smoke.cjs",
     "test:space": "electron electron/space-smoke.cjs",
     "test:launcher": "electron electron/launcher-render-smoke.cjs",
+    "test:command-center": "electron electron/command-center-smoke.cjs",
     "test:browser-tabs": "electron electron/browser-tabs-smoke.cjs",
     "test:layout-canvas": "electron electron/layout-canvas-smoke.cjs",
     "test:terminal": "electron electron/terminal-smoke.cjs",

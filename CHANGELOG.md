@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.31 - 2026-11-13
+
+- Alt+Space is the command center. The one box now finds and acts on your agents and work, not just apps and files: Claude Code and awsh sessions, live agent runs (Atlas presence), fleet agents, the awdk agents on this PC and managed twins (Agents & runs); projects, tasks, the 2027 roadmap, your open PRs and the decision cards (Work); plans, agent notebooks and memory (Knowledge); awrise schedules with their last verdict, routines and the calendar (Time); the team and contacts (People). Type a category word (agents, runs, prs, calendar, people) to list it. The empty box shows Needs you and Working now.
+- Act without leaving the keyboard: Enter opens; Ctrl+Enter steers a session, run, agent or twin (the box becomes the message, Enter sends; a shell gets it typed into its input); Ctrl+. twice stops; Ctrl+T shows the transcript; Ctrl+P copies a card's phone approve link.
+- Ctrl+G graphs the selected item: its neighbours from the desk's own sources (a person's meetings and tasks, a run's agent, a task's project) plus the platform's graph_find and graph_traverse, each edge labelled with where it came from.
+- A source that cannot answer says so in the status line (for example managed twins while Genesis refuses the desk's token) instead of showing an empty list.
+
 - Atlas on the Inbox: the program-manager board shows its counts per stage and one row per issue, with the age, the pull request and the thread (both open in Aither Browser), the board's own updated-at, and a **Send digest now** button. It reads through the same gateway door as the rest of the Desk; before the gateway tools are deployed the section says Atlas is unavailable instead of breaking the panel.
 
 ## 0.1.30 - 2026-11-09
