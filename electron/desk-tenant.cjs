@@ -297,6 +297,16 @@ function overlayBaseUrl(tenant, fallback = APEX_URL) {
   return fallback;
 }
 
+/** The framed app window's `?shell=`. On the apex it is `apexShell` (Desktop Anywhere).
+ *  In a tenant workspace (`base` is the tenant origin) it is "", so no `?shell=` is sent
+ *  and the tenant's OWN stamped shell renders. 2026-11-12 (Garg): the window forced
+ *  `?shell=aither-desktop` on garg.aitherium.com; that shell builds its launcher from the
+ *  platform manifest and never reads the tenant's `/api/config/embed`, so the GARG window
+ *  showed Terminal, Files, Web Browser and Settings instead of CertTrack and chat. */
+function appWindowShell(tenant, base, apexShell) {
+  return tenant && tenant.origin && base === tenant.origin ? "" : apexShell;
+}
+
 /** "Aither" -> "Aither · <tenant name>"; unchanged with no tenant. */
 function decorateTitle(title, tenant) {
   if (!tenant || !tenant.name) return title;
@@ -345,6 +355,6 @@ function _setResolverForTests(fn) { resolveTenantImpl = fn; }
 module.exports = {
   APEX_HOST, APEX_URL, ARG_PREFIX, ENV_KEY,
   configPath, normaliseHost, validateHost, isFirstPartyHost, readConfigFile, resolveTenant,
-  AUTO_SOURCE, OWNER_SOURCE, persistFirstRunHost, persistAutoTenant, persistOwnerTenant, forgetAutoTenant, baseUrl, overlayBaseUrl, decorateTitle, tenantTrayItems, currentTenant,
+  AUTO_SOURCE, OWNER_SOURCE, persistFirstRunHost, persistAutoTenant, persistOwnerTenant, forgetAutoTenant, baseUrl, overlayBaseUrl, appWindowShell, decorateTitle, tenantTrayItems, currentTenant,
   currentResolution, _resetForTests, _setResolverForTests,
 };

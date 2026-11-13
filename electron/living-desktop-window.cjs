@@ -897,12 +897,20 @@ function pushHostThread(threadId) {
 const DESKTOP_APP_SHELL = "aither-desktop";
 let appWin = null;
 
+/** "" in a tenant workspace (the tenant's stamped shell), else Desktop Anywhere. */
+function desktopAppShell() {
+  return deskTenant.appWindowShell(TENANT, BASE_URL, DESKTOP_APP_SHELL);
+}
+
 // `app` opens one window on arrival: both desktop shells read `?app=<id>` once.
 function desktopAppUrl(app = "") {
   try {
     const url = new URL(BASE_URL);
     url.searchParams.delete("mode");
-    url.searchParams.set("shell", DESKTOP_APP_SHELL);
+    // A tenant workspace keeps its own shell (desk-tenant appWindowShell says why).
+    const shellForApp = desktopAppShell();
+    if (shellForApp) url.searchParams.set("shell", shellForApp);
+    else url.searchParams.delete("shell");
     if (app) url.searchParams.set("app", app);
     return url.href;
   } catch {
@@ -1000,7 +1008,7 @@ function showDesktopApp({ app = "" } = {}) {
 function desktopStatus() {
   return {
     overlay: { open: isOpen(), visible: isOpen() && desktopWin.isVisible(), shell: shellId, ghost: ghostMode, transparent: transparentMode },
-    app: { open: isAppOpen(), visible: isAppOpen() && appWin.isVisible(), shell: DESKTOP_APP_SHELL },
+    app: { open: isAppOpen(), visible: isAppOpen() && appWin.isVisible(), shell: desktopAppShell() || "workspace" },
     url: BASE_URL,
     shells: SHELL_CHOICES.map((c) => ({ id: c.id, label: c.label })),
   };
