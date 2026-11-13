@@ -83,6 +83,7 @@ const CATEGORY_WORDS = Object.freeze({
 
 const SNAPSHOT_TTL_MS = Object.freeze({ fast: 20_000, slow: 10 * 60_000 });
 const FIRST_WAIT_MS = 2_500;
+const FAILED_RETRY_MS = 30_000;
 const TEXT_MAX = 300;
 const ID_SAFE = /^[A-Za-z0-9_.:-]{1,128}$/;
 
@@ -537,7 +538,8 @@ function createCommandCenter({
     const s = sources.get(name) || { at: -Infinity, loading: null, records: [], error: null };
     sources.set(name, s);
     if (s.loading) return s.loading;
-    if (now() - s.at < def.ttl) return null;
+    // A failed load retries after FAILED_RETRY_MS, not the source's full TTL.
+    if (now() - s.at < (s.error ? Math.min(def.ttl, FAILED_RETRY_MS) : def.ttl)) return null;
     s.loading = Promise.resolve().then(() => def.load())
       .then((rows) => {
         // A session that ended or a run that finished is no longer actionable.
@@ -832,7 +834,9 @@ function createCommandCenter({
     if (!r) return no("1 result is gone — search again");
     const local = joins(r);
     const platform = await platformGraph(r);
-    const all = [...local, ...platform.edges];
+    // One node per neighbour: a platform hit that is also a desk join is drawn once.
+    const seenRefs = new Set([r.ref]);
+    const all = [...local, ...platform.edges].filter((e) => (seenRefs.has(e.to.ref) ? false : (seenRefs.add(e.to.ref), true)));
     // The renderer gets opaque node ids, never a ref (an email, a session id, a file name).
     const ids = new Map();
     const idOf = (ref) => { if (!ids.has(ref)) ids.set(ref, `n${ids.size}`); return ids.get(ref); };
