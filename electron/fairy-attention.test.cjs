@@ -38,7 +38,10 @@ test("a 'Noted'-only card is a report: badge only, unless critical", () => {
 });
 
 test("blocked and credential cards matter; a stale blocked one stops shouting", () => {
-  assert.equal(fa.importance(card({ kind: "blocked", blocking: true }), NOW), 2);
+  // A session stopped on a card whose own fallback is to stay stopped ("Wait"): top.
+  assert.equal(fa.importance(card({ kind: "blocked", blocking: true }), NOW), 3);
+  // Stopped, but the card suggests the answer that lets it go on: it matters, no more.
+  assert.equal(fa.importance(card({ kind: "blocked", blocking: true, defaultKey: "cut" }), NOW), 2);
   assert.equal(fa.importance(card({ kind: "credential", options: [] }), NOW), 1);
   const oldBlocked = card({ kind: "blocked", blocking: true, createdAt: sec(NOW - 30 * 60 * MIN) });
   assert.equal(fa.importance(oldBlocked, NOW), 1);
@@ -129,7 +132,7 @@ test("one card per nudge, the loudest first, the rest ride as +N more", () => {
   const d = fa.plan(cards, {}, { nowMs: NOW });
   assert.equal(d.act, "nudge");
   assert.equal(d.card.id, "d-bbbb");
-  assert.equal(d.level, fa.LEVEL.FLUTTER);
+  assert.equal(d.level, fa.LEVEL.INSIST, "stopped work that defaults to waiting insists");
   assert.equal(d.more, 1, "the report is not counted as waiting");
 });
 
@@ -364,4 +367,101 @@ test("the whisper's count is the true count, '99+' past that, never '+99 more'",
   assert.equal(fa.moreLabel(99), "99 more waiting");
   assert.equal(fa.moreLabel(240), "99+ more waiting");
   assert.equal(fa.whisperView({ card: card(), level: 1, more: 15 }, NOW).moreLabel, "15 more waiting");
+});
+
+// ── an ignored card gets louder, never silent (owner, 2026-11-12, d-qabc) ────
+
+/** The card he missed: a session stopped on a permission ask whose default is Deny. */
+function qabc(over = {}) {
+  return card({
+    id: "d-qabc", kind: "blocked", urgency: "high", blocking: false,
+    title: "Allow Claude to use: Bash(sync_worktree_clean_to_develop.py)",
+    options: [{ key: "grant", label: "Grant this one rule" }, { key: "deny", label: "Deny" }],
+    defaultKey: "deny", createdAt: sec(NOW - 2 * MIN), ...over,
+  });
+}
+
+test("stopped work whose default is to hold ranks first, over a louder-looking backlog", () => {
+  assert.equal(fa.holdsWork(qabc()), true);
+  assert.equal(fa.holdsWork(qabc({ defaultKey: "grant" })), false, "its suggestion lets the work go on");
+  assert.equal(fa.holdsWork(card({ defaultKey: "wait" })), false, "nobody is stopped on an ordinary ask");
+  assert.equal(fa.holdsWork(qabc({ options: [{ key: "ack", label: "Noted" }] })), false, "a report holds nothing");
+  const backlog = [];
+  for (let i = 0; i < 30; i += 1) backlog.push(card({ id: `d-b${String(i).padStart(3, "0")}`, urgency: "critical", defaultKey: "cut" }));
+  const d = fa.plan([...backlog, qabc()], {}, { nowMs: NOW });
+  assert.equal(d.card.id, "d-qabc");
+  assert.equal(d.level, fa.LEVEL.INSIST);
+  assert.equal(d.hold, true);
+});
+
+test("d-qabc replay: ignored once, it comes back in 5 minutes, at the pointer, spoken, before any card never nudged", () => {
+  // 36 cards wait, as on 2026-11-12. The old order nudged each of them once before any repeat.
+  const others = [];
+  for (let i = 0; i < 35; i += 1) others.push(card({ id: `d-o${String(i).padStart(3, "0")}`, urgency: "high", createdAt: sec(NOW - 3 * 60 * MIN) }));
+  const cards = [...others, qabc()];
+  let mems = {};
+  let lastNudgeAt = 0;
+  let lastVoiceAt = NOW - 3 * 60 * MIN;
+  const first = fa.plan(cards, mems, { nowMs: NOW, lastNudgeAt, lastVoiceAt });
+  assert.equal(first.card.id, "d-qabc");
+  mems["d-qabc"] = fa.recordIgnored(fa.recordShown({}, NOW), { importance: first.importance, nowMs: NOW, climbs: first.climbs });
+  lastNudgeAt = NOW;
+  assert.equal(mems["d-qabc"].ignored, 1);
+  assert.equal(mems["d-qabc"].snoozeUntil, undefined, "an ignored card is never put off by the fairy");
+  // In between, the rest of the queue takes its turns; d-qabc is not due yet.
+  const between = fa.plan(cards, mems, { nowMs: NOW + 2 * MIN, lastNudgeAt, lastVoiceAt });
+  assert.notEqual(between.card && between.card.id, "d-qabc");
+  if (between.act === "nudge") {
+    mems[between.card.id] = fa.recordIgnored(fa.recordShown({}, NOW + 2 * MIN), { importance: between.importance, nowMs: NOW + 2 * MIN, climbs: between.climbs });
+    lastNudgeAt = NOW + 2 * MIN;
+  }
+  const again = fa.plan(cards, mems, { nowMs: NOW + 5 * MIN + 1000, lastNudgeAt, lastVoiceAt });
+  assert.equal(again.act, "nudge");
+  assert.equal(again.card.id, "d-qabc", "the repeat outranks 34 cards that were never nudged");
+  assert.equal(again.level, fa.LEVEL.INSIST, "the fairy flies to the pointer and insists");
+  assert.equal(again.voice, true, "and reads it aloud");
+  assert.equal(again.lead, "Still waiting on you");
+});
+
+test("an ordinary ask ignored once comes back as a flutter at the pointer, and keeps coming", () => {
+  const ask = card({ id: "d-ask1", defaultKey: "cut", createdAt: sec(NOW - 5 * MIN) });
+  assert.equal(fa.importance(ask, NOW), 1);
+  assert.equal(fa.climbs(ask, NOW), true);
+  const first = fa.plan([ask], {}, { nowMs: NOW });
+  assert.equal(first.level, fa.LEVEL.GLOW);
+  let mem = fa.recordIgnored(fa.recordShown({}, NOW), { importance: 1, nowMs: NOW, climbs: first.climbs });
+  assert.equal(fa.plan([ask], { "d-ask1": mem }, { nowMs: NOW + 9 * MIN, lastNudgeAt: NOW }).act, "none");
+  const second = fa.plan([ask], { "d-ask1": mem }, { nowMs: NOW + 10 * MIN + 1000, lastNudgeAt: NOW });
+  assert.equal(second.act, "nudge");
+  assert.equal(second.level, fa.LEVEL.FLUTTER, "the second nudge leaves the corner");
+  // Ignored again and again: it never rests on its own, and never passes the flutter.
+  let at = NOW + 10 * MIN + 1000;
+  for (let i = 0; i < 6; i += 1) {
+    mem = fa.recordIgnored(fa.recordShown(mem, at), { importance: 1, nowMs: at, climbs: true });
+    at += 10 * MIN + 1000;
+    const d = fa.plan([ask], { "d-ask1": mem }, { nowMs: at, lastNudgeAt: at - 10 * MIN - 1000 });
+    assert.equal(d.act, "nudge", `repeat ${i + 3} still comes`);
+    assert.equal(d.level, fa.LEVEL.FLUTTER);
+  }
+  assert.equal(mem.snoozeUntil, undefined);
+});
+
+test("only the owner puts a card off: Later snoozes it, Stop nudging silences it", () => {
+  const cards = [qabc()];
+  const later = fa.recordLater(fa.recordShown({}, NOW), NOW);
+  assert.equal(fa.plan(cards, { "d-qabc": later }, { nowMs: NOW + 30 * MIN }).act, "none", "Later is respected");
+  assert.equal(fa.plan(cards, { "d-qabc": later }, { nowMs: NOW + 61 * MIN }).act, "nudge", "and it comes back");
+  assert.equal(fa.plan(cards, { "d-qabc": fa.recordMute({}) }, { nowMs: NOW + 61 * MIN }).act, "none");
+});
+
+test("the noise of 2026-11-10 stays quiet: a no-op suggestion and a day-old ask do not climb, and rest", () => {
+  const skip = card({ id: "d-skip", options: [{ key: "run", label: "Run it" }, { key: "skip", label: "Skip" }], defaultKey: "skip" });
+  const old = card({ id: "d-old1", defaultKey: "cut", createdAt: sec(NOW - 30 * 60 * MIN) });
+  for (const c of [skip, old]) {
+    assert.equal(fa.climbs(c, NOW), false, c.id);
+    assert.equal(fa.plan([c], { [c.id]: { ignored: 2, lastNudgeAt: NOW - 60 * MIN } }, { nowMs: NOW }).level, fa.LEVEL.GLOW, c.id);
+    let mem = {};
+    for (let i = 0; i < 3; i += 1) mem = fa.recordIgnored(mem, { importance: 1, nowMs: NOW, climbs: false });
+    assert.ok(mem.snoozeUntil > NOW, `${c.id} rests`);
+  }
 });

@@ -21,11 +21,22 @@
  *   L3 insist   the flutter, brighter and longer, re-asked every few minutes, and the
  *               line is READ ALOUD on a repeat (the arrival line is already spoken).
  *
- * The step up is earned: every ignored nudge counts, and every `escalateEvery`
- * ignored nudges lift the card one level, capped by how much it matters
- * (importance). "Keep nudging me" pins a card at the top; "Stop nudging" drops it
- * to the badge; "Later" puts it off an hour and it comes back one level LOUDER
- * (the owner said it matters, just not now).
+ * The step up is earned: every ignored nudge lifts the card one level
+ * (`escalateEvery`), capped by how much it matters (importance). "Keep nudging me"
+ * pins a card at the top; "Stop nudging" drops it to the badge; "Later" puts it off
+ * an hour and it comes back one level LOUDER (the owner said it matters, just not now).
+ *
+ * AN IGNORED CARD GETS LOUDER, NEVER SILENT (owner, 2026-11-12). He never noticed
+ * d-qabc, a `blocked` card a running session was stopped on: it fluttered once at
+ * 18:05 and was not nudged again before he was told in chat. Three causes, all here:
+ * a never-nudged card outranked a repeat, so with 36 cards waiting each got one nudge
+ * and a repeat was hours away; a step up needed TWO ignored nudges; and an ordinary
+ * ask rested for four hours after three. Now a repeat that climbed outranks a first
+ * nudge, one ignored nudge is one step, a card that stops running work whose own
+ * fallback is to hold ranks first and insists, an ordinary ask climbs to the flutter
+ * (the fairy flies to the pointer), and only "Later" or "Stop nudging" puts a card
+ * off. Cards that change nothing (a no-op suggestion) or are a day old still glow at
+ * most and rest: they were the noise of 2026-11-10.
  *
  * Pacing is the other half of not being noise: one card per nudge (the rest ride
  * as "+N more"), a global gap between nudges, a per-card interval by level, held
@@ -55,7 +66,7 @@ const DEFAULTS = Object.freeze({
    *  fluttered through the whole backlog 20 s apart. */
   arrivalWindowMs: 10 * MIN,
   /** Re-nudge the same card no sooner than this, by level. */
-  intervalMs: Object.freeze({ 1: 45 * MIN, 2: 15 * MIN, 3: 5 * MIN }),
+  intervalMs: Object.freeze({ 1: 20 * MIN, 2: 10 * MIN, 3: 5 * MIN }),
   /** How long a nudge stays up (a hovered whisper stays while hovered). */
   showMs: Object.freeze({ 1: 9000, 2: 14000, 3: 20000 }),
   /** The owner idle this long: nobody is looking, hold everything. */
@@ -69,16 +80,16 @@ const DEFAULTS = Object.freeze({
   /** An ask older than this (not a credential, not critical) is a glow at most:
    *  a blocked session this old has very likely moved on. */
   freshMs: 24 * HOUR,
-  /** An ordinary card (importance 1) rests this long after `restAfter` ignored glows,
-   *  so the normal backlog drips, it never nags. */
+  /** A card that does NOT climb (a no-op suggestion, a day-old ask) rests this long
+   *  after `restAfter` ignored glows. A card that climbs never rests on its own. */
   restAfter: 3,
   restMs: 4 * HOUR,
   /** "Later" puts a card off this long. */
   laterMs: HOUR,
-  /** Ignored nudges per level step. */
-  escalateEvery: 2,
+  /** Ignored nudges per level step: one. The second nudge is already a step up. */
+  escalateEvery: 1,
   /** A spoken repeat no more often than this, across all cards. */
-  voiceGapMs: 15 * MIN,
+  voiceGapMs: 5 * MIN,
 });
 
 function lower(value) {
@@ -169,6 +180,39 @@ function fmtSpan(ms) {
   return `${Math.round(h / 24)} d`;
 }
 
+/** The suggested answers that leave the waiting session stopped. */
+const HOLD_SUGGESTION_RE = /^(hold|deny|wait|stop|pause|refuse|keep refusing|not now|do nothing|leave)\b/;
+
+/**
+ * A session is STOPPED on this card and the card's own fallback keeps it stopped
+ * (its suggestion is to hold / deny, or it suggests nothing). Not answering it is
+ * the one choice that costs running work, so it ranks first and insists.
+ */
+function holdsWork(card) {
+  if (!card || typeof card !== "object") return false;
+  if (!(card.blocking === true || lower(card.kind) === "blocked")) return false;
+  if (ackOnly(card)) return false;
+  const label = suggestedText(card);
+  const key = lower(card.defaultKey);
+  return !label && !key ? true : HOLD_SUGGESTION_RE.test(label) || HOLD_SUGGESTION_RE.test(key);
+}
+
+/**
+ * Does an ignored nudge about this card get louder? Yes for anything that needs the
+ * owner now. No for a report, a no-op suggestion nobody is stopped on, and an ask
+ * more than a day old (not a credential, not critical): those glow at most and rest.
+ */
+function climbs(card, nowMs = Date.now(), mem = {}, cfg = DEFAULTS) {
+  if (!card || typeof card !== "object") return false;
+  if (mem && mem.keep) return true;
+  if (ackOnly(card) || isStale(card, nowMs, cfg)) return false;
+  const kind = lower(card.kind);
+  const blocked = card.blocking === true || kind === "blocked";
+  if (!blocked && kind !== "credential" && noopSuggestion(card)) return false;
+  if (nowMs - createdMs(card) > cfg.freshMs && kind !== "credential" && lower(card.urgency) !== "critical") return false;
+  return true;
+}
+
 /**
  * How much a card matters, 0..3. 0 = the badge only.
  * `mem` is this card's nudge memory (see `recordShown` & co).
@@ -191,6 +235,8 @@ function importance(card, nowMs, mem = {}, cfg = DEFAULTS) {
     if (score === undefined) score = 1;
     if (kind === "credential") score = Math.max(score, 1);
     if (blocked) score = Math.max(score, 2);
+    // Stopped work whose fallback is to stay stopped: nothing else outranks it.
+    if (holdsWork(card)) score = 3;
     const left = deadlineLeftMs(card, nowMs);
     if (left != null && left > 0) {
       // Not answering is also a choice once the deadline passes: say so while it can still be made.
@@ -213,11 +259,13 @@ function importance(card, nowMs, mem = {}, cfg = DEFAULTS) {
 }
 
 /** The level a card is nudged at: earned by ignored nudges, capped by importance. */
-function levelFor(imp, mem = {}, cfg = DEFAULTS) {
+function levelFor(imp, mem = {}, cfg = DEFAULTS, { climbs: louder = imp >= 2 } = {}) {
   if (!(imp > 0)) return LEVEL.BADGE;
   const base = imp >= 3 ? LEVEL.INSIST : imp === 2 ? LEVEL.FLUTTER : LEVEL.GLOW;
-  // An ordinary card never climbs past the glow: it RESTS instead (recordIgnored).
-  const cap = imp >= 2 ? LEVEL.INSIST : LEVEL.GLOW;
+  // A card that matters climbs to the insist. An ordinary ask climbs to the flutter:
+  // ignored once, the fairy comes to the pointer. A card that does not climb stays a
+  // glow and RESTS instead (recordIgnored).
+  const cap = imp >= 2 ? LEVEL.INSIST : louder ? LEVEL.FLUTTER : LEVEL.GLOW;
   const steps = Math.floor((Number(mem && mem.ignored) || 0) / Math.max(1, cfg.escalateEvery));
   return Math.min(cap, base + steps);
 }
@@ -301,7 +349,9 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
     if (mem.snoozeUntil && nowMs < mem.snoozeUntil) continue;
     const imp = importance(card, nowMs, mem, cfg);
     if (imp <= 0) continue;
-    live.push({ card, mem, imp, level: levelFor(imp, mem, cfg), order: i });
+    const louder = climbs(card, nowMs, mem, cfg);
+    live.push({ card, mem, imp, louder, hold: holdsWork(card) && louder,
+      level: levelFor(imp, mem, cfg, { climbs: louder }), order: i });
   }
   if (!live.length) return { act: "none", reason: "nothing waiting that needs a nudge" };
   const due = live.filter((x) => {
@@ -310,7 +360,11 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
     return !last || nowMs - last >= (cfg.intervalMs[x.level] || cfg.intervalMs[1]);
   });
   if (!due.length) return { act: "none", reason: "nothing is due yet" };
-  due.sort((a, b) => (b.level - a.level) || (b.imp - a.imp)
+  // Stopped work first; then the loudest; then what matters most. Between equals an
+  // IGNORED card goes before one never nudged (it has waited longer and was missed
+  // once already) -- the other way round starved every repeat behind the backlog.
+  due.sort((a, b) => ((b.hold ? 1 : 0) - (a.hold ? 1 : 0)) || (b.level - a.level) || (b.imp - a.imp)
+    || ((Number(b.mem.ignored) || 0) - (Number(a.mem.ignored) || 0))
     || ((a.mem.lastNudgeAt ? 1 : 0) - (b.mem.lastNudgeAt ? 1 : 0)) || (a.order - b.order));
   const top = due[0];
   const arrival = !top.mem.lastNudgeAt && nowMs - createdMs(top.card) < cfg.arrivalWindowMs;
@@ -326,6 +380,8 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
     card: top.card,
     level: top.level,
     importance: top.imp,
+    climbs: top.louder,
+    hold: top.hold,
     arrival,
     returned: Boolean(ctx.returned),
     why: whyNow(top.card, nowMs),
@@ -343,12 +399,13 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
 function recordShown(mem = {}, nowMs = Date.now()) {
   return { ...mem, lastNudgeAt: nowMs, nudges: (Number(mem.nudges) || 0) + 1 };
 }
-/** Ignored. An important card climbs the ladder; an ordinary one (importance <= 1)
- *  RESTS after `restAfter` ignored glows -- off the rotation for `restMs`, and it
- *  does not come back louder (that is what Later is for). */
-function recordIgnored(mem = {}, { importance: imp = 2, nowMs = Date.now() } = {}, cfg = DEFAULTS) {
+/** Ignored. A card that climbs gets louder and is NEVER put off here: only the
+ *  owner's "Later" or "Stop nudging" does that. A card that does not climb (a no-op
+ *  suggestion, a day-old ask) RESTS after `restAfter` ignored glows -- off the
+ *  rotation for `restMs`, and it does not come back louder. */
+function recordIgnored(mem = {}, { importance: imp = 2, nowMs = Date.now(), climbs: louder = imp >= 2 } = {}, cfg = DEFAULTS) {
   const ignored = (Number(mem.ignored) || 0) + 1;
-  if (imp <= 1 && !mem.keep && ignored >= cfg.restAfter) {
+  if (!louder && imp <= 1 && !mem.keep && ignored >= cfg.restAfter) {
     return { ...mem, ignored: 0, snoozeUntil: nowMs + cfg.restMs };
   }
   return { ...mem, ignored };
@@ -608,6 +665,8 @@ module.exports = {
   ackOnly,
   noopSuggestion,
   NOOP_SUGGESTION_LABELS,
+  holdsWork,
+  climbs,
   isStale,
   sameText,
   moreLabel,
