@@ -432,6 +432,19 @@ function pageRectOnScreen(rect, bounds) {
   return { x: Math.round(num(bounds.x) + x), y: Math.round(num(bounds.y) + y), width: Math.round(width), height: Math.round(height) };
 }
 
+/**
+ * The fairy's spot while it is DOCKED on the AitherOS window (owner, 2026-11-12: "the
+ * fairy cluster from awdesk should attach to the AitherOS desktop and not be stuck
+ * behind the goblin"). Bottom-right INSIDE the window, above its bottom bar, and out
+ * of the box the tenant's companion stands in. Top-left of the orb window.
+ */
+function windowDockSpot(bounds, size, box, pad = 0, { bar = 64 } = {}) {
+  const b = bounds || { x: 0, y: 0, width: 1280, height: 800 };
+  const inside = { x: num(b.x), y: num(b.y), width: num(b.width), height: Math.max(num(size && size.height) + 56, num(b.height) - bar) };
+  const free = areaAvoiding(inside, box, pad);
+  return clampToWorkArea(defaultOrbPosition(free, size), size, free);
+}
+
 /** First-run spot: bottom-right of the work area, clear of the taskbar. */
 function defaultOrbPosition(workArea, size, margin = 28) {
   const area = workArea || { x: 0, y: 0, width: 1920, height: 1080 };
@@ -485,5 +498,5 @@ module.exports = {
   SCREEN_PROMPT, REGION_PROMPT,
   readingTimeMs, createQueue, push, tick, setPinned, clear, queueSummary, unreadCount,
   buildPrompt, interpretGatewayAnswer, classifyVisionFailure, failureCard,
-  clampToWorkArea, areaAvoiding, pageRectOnScreen, defaultOrbPosition, bubblePosition, sanitizeState,
+  clampToWorkArea, areaAvoiding, pageRectOnScreen, windowDockSpot, defaultOrbPosition, bubblePosition, sanitizeState,
 };

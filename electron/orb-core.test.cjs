@@ -362,3 +362,30 @@ test("every resting path of the fairy asks restSpot, the hover included", () => 
   assert.doesNotMatch(src, /setOrbCenter\(\{ x: state\.x \+/);
   assert.ok(src.includes("  if (!alive(orbWindow)) return;\n  const pos = restSpot();"), "placeOrb asks restSpot");
 });
+
+test("windowDockSpot: docked, the fairy is inside the window, above its bar, off the companion", () => {
+  const size = { width: 72, height: 72 };
+  const winBounds = { x: 100, y: 50, width: 1400, height: 900 };
+  const goblin = { x: 100 + 1400 - 8 - 132, y: 50 + 900 - 112 - 132, width: 132, height: 132 };
+  const bare = core.windowDockSpot(winBounds, size, null, 124);
+  assert.ok(bare.x + 72 <= 1500 && bare.x >= 100 && bare.y >= 50, "inside the window");
+  assert.ok(bare.y + 72 <= 50 + 900 - 64, "above the bottom bar");
+  const withGoblin = core.windowDockSpot(winBounds, size, goblin, 124);
+  assert.ok(withGoblin.x + 72 <= goblin.x - 124, "left of the companion and the swarm's reach");
+  // The window moved to another monitor: the spot moves with it.
+  const moved = core.windowDockSpot({ ...winBounds, x: -1800 }, size, null, 124);
+  assert.equal(moved.x - bare.x, -1900);
+});
+
+test("one cluster: the desk hides the page's own fairy and docks on the AitherOS window by itself", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const ld = fs.readFileSync(path.join(__dirname, "living-desktop-window.cjs"), "utf8");
+  const ow = fs.readFileSync(path.join(__dirname, "orb-window.cjs"), "utf8");
+  assert.ok(ld.includes('"[data-os-fairy-root]{display:none !important}"'), "the page fairy is not drawn in desk windows");
+  for (const event of ["show", "hide", "minimize", "restore"]) assert.ok(ld.includes(`"${event}"`), event);
+  assert.ok(ld.includes("appWin = null;\n    syncFairyDock();"), "a closed window lets the fairy go");
+  assert.ok(ow.includes('if (attach && !attach.auto) return { ok: true, docked: false, why: "attached by hand" };'),
+    "an attachment the owner made is never replaced");
+  assert.ok(ow.includes("if (attach.auto && (!win.isVisible() || win.isMinimized()))"), "a minimised window is let go");
+});

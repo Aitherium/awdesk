@@ -273,6 +273,43 @@ function restSpot() {
     : orbCore.defaultOrbPosition(area, ORB_SIZE);
 }
 
+// ── One cluster: the fairy docks on the AitherOS window (owner, 2026-11-12) ─────
+// "I have two clusters of fairies. When the AitherOS desktop/app/workspace is open, the
+// fairy cluster from awdesk should become this one: attach to the AitherOS desktop and
+// not be stuck behind the goblin, and automatically detach."
+// The second cluster is the served page's own fairy (Veil os-fairy.tsx); the desk hides
+// it in its own windows (living-desktop-window HIDE_PAGE_FAIRY_CSS), so the one cluster
+// is this one, with the counts of fairy-counts.cjs. While the AitherOS window is open
+// and not minimised the fairy is attached to it with the EXISTING attach/follow (kind
+// "desk"), marked `auto`; it rides the window's bottom-right, left of the tenant's
+// companion. Closed, hidden or minimised: it lets go and flies back to its resting
+// spot. An attachment the owner made by hand is never replaced or dropped by this.
+let dockWindowId = 0;
+function dockSpot(target) {
+  if (target && target.auto) return orbCore.windowDockSpot(target.bounds, ORB_SIZE, reservedBox, RESERVE_PAD);
+  return spiritCore.dockPosition(target, ORB_SIZE);
+}
+/** `win` = the AitherOS window to ride, or null when there is none to ride. */
+async function setDockWindow(win) {
+  const ride = alive(win) && win.isVisible() && !win.isMinimized() ? win : null;
+  dockWindowId = ride ? ride.id : 0;
+  if (!alive(orbWindow) || dragging) return { ok: false };
+  if (ride) {
+    if (attach && !attach.auto) return { ok: true, docked: false, why: "attached by hand" };
+    if (attach && attach.auto && attach.windowId === ride.id) return { ok: true, docked: true };
+    const r = await attachTo({ kind: "desk", windowId: ride.id, title: ride.getTitle() || "AitherOS", bounds: ride.getBounds(), auto: true },
+      { quiet: true });
+    return { ok: Boolean(r && r.ok), docked: Boolean(r && r.ok) };
+  }
+  if (attach && attach.auto) {
+    home = null; // back to the RESTING spot, not to wherever it was when it docked
+    detach({ silent: true });
+    await flyHome(480);
+    return { ok: true, docked: false };
+  }
+  return { ok: true, docked: false };
+}
+
 function placeOrb() {
   if (!alive(orbWindow)) return;
   const pos = restSpot();
@@ -1339,7 +1376,11 @@ async function refreshAttach() {
     const { BrowserWindow } = electron();
     const win = BrowserWindow.fromId(attach.windowId);
     if (!alive(win)) {
-      detach({ reason: "that window closed" });
+      detach({ reason: attach.auto ? null : "that window closed" });
+      return;
+    }
+    if (attach.auto && (!win.isVisible() || win.isMinimized())) {
+      void setDockWindow(null);
       return;
     }
     bounds = win.getBounds();
@@ -1357,7 +1398,7 @@ async function refreshAttach() {
   }
   attach.bounds = spiritCore.normBounds(bounds) || attach.bounds;
   if (attach.kind === "avatar") return; // the orbit timer moves it around the body
-  const dock = spiritCore.dockPosition(attach, ORB_SIZE);
+  const dock = dockSpot(attach);
   setOrbCenter({ x: dock.x + ORB_SIZE.width / 2, y: dock.y + ORB_SIZE.height / 2 });
   drawVeil();
 }
@@ -1434,7 +1475,7 @@ async function attachTo(target, { quiet = false } = {}) {
   if (attach.kind === "avatar") {
     targetPoint = spiritCore.orbitPoint(attach.bounds, Date.now() + 560);
   } else {
-    const dock = spiritCore.dockPosition(attach, ORB_SIZE);
+    const dock = dockSpot(attach);
     targetPoint = { x: dock.x + ORB_SIZE.width / 2, y: dock.y + ORB_SIZE.height / 2 };
   }
   showVeil();
@@ -2710,7 +2751,7 @@ async function returnFromNudge() {
     const p = spiritCore.orbitPoint(attach.bounds, Date.now() + 700);
     if (p) await flyTo(p, { durationMs: 700 });
   } else if (attach) {
-    const dock = spiritCore.dockPosition(attach, ORB_SIZE);
+    const dock = dockSpot(attach);
     await flyTo({ x: dock.x + ORB_SIZE.width / 2, y: dock.y + ORB_SIZE.height / 2 }, { durationMs: 700 });
   } else {
     await flyHome(760);
@@ -3768,6 +3809,8 @@ module.exports = {
   sprite: () => publicSprite(),
   refreshSprite, restTint,
   setReservedBox,
+  setDockWindow,
+  __dock: () => ({ windowId: dockWindowId, attached: Boolean(attach && attach.auto) }),
   __reservedBox: () => reservedBox,
   __setCapture: (c) => { captureImpl = c; },
   __setAskVision: (f) => { askVisionImpl = f; },
