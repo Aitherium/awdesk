@@ -261,7 +261,7 @@ function applyGhostTick() {
 }
 
 function startGhostLoop() {
-  startCompanionWatch();
+  startCompanionWatch(); // idempotent: it returns when its own timer exists
   if (ghostTimer) return;
   ghostTimer = setInterval(applyGhostTick, 60);
 }

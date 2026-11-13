@@ -358,7 +358,7 @@ test("every resting path of the fairy asks restSpot, the hover included", () => 
   // 2026-11-12: placeOrb kept out of the goblin's box and the 33 ms hover loop put the
   // fairy straight back on the saved spot, because it read state.x/y itself.
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "orb-window.cjs"), "utf8");
-  assert.match(src, /const rest = reservedBox \? restSpot\(\) : state;/);
+  assert.ok(src.includes("const rest = restSpot();"), "the hover asks restSpot");
   assert.doesNotMatch(src, /setOrbCenter\(\{ x: state\.x \+/);
   assert.ok(src.includes("  if (!alive(orbWindow)) return;\n  const pos = restSpot();"), "placeOrb asks restSpot");
 });

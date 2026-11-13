@@ -1394,8 +1394,9 @@ function startHover() {
     if (attach || flight || tripBusy || dragging || nudging || !orbVisible()) return;
     if (state.x == null || state.y == null) return;
     const d = spiritCore.hoverOffset(Date.now());
-    // The hover circles the RESTING spot, which is the saved one unless a box is reserved.
-    const rest = reservedBox ? restSpot() : state;
+    // The hover circles the RESTING spot: the saved one, kept inside the area the
+    // fairy may use right now (restSpot), so it never drifts back onto a reserved box.
+    const rest = restSpot();
     setOrbCenter({ x: rest.x + ORB_SIZE.width / 2 + d.x, y: rest.y + ORB_SIZE.height / 2 + d.y });
   }, ORBIT_MS);
   if (hoverTimer.unref) hoverTimer.unref();
