@@ -234,25 +234,55 @@ function restoreWorkArea() {
   if (state.x != null && state.y != null) {
     try {
       const display = screen.getDisplayNearestPoint({ x: state.x, y: state.y });
-      if (display && display.workArea) return display.workArea;
+      if (display && display.workArea) return fairyArea(display.workArea);
     } catch { /* fall through to the primary */ }
   }
-  try { return screen.getPrimaryDisplay().workArea; } catch { return { x: 0, y: 0, width: 1920, height: 1080 }; }
+  try { return fairyArea(screen.getPrimaryDisplay().workArea); } catch { return { x: 0, y: 0, width: 1920, height: 1080 }; }
+}
+
+// ── A box the fairy never rests in (the tenant site's own companion) ────────
+// living-desktop-window.cjs reports where the overlay page draws `[data-companion]`
+// (GARG's goblin). The fairy's resting spot, its whisper, its answer bubble and its
+// menu are placed in the work area MINUS that box (orb-core areaAvoiding). The saved
+// spot in orb.json is not rewritten: back in a workspace with no companion the fairy
+// returns to it. RESERVE_PAD keeps the swarm that circles the fairy off the box too.
+const RESERVE_PAD = 124;
+let reservedBox = null;
+function fairyArea(area) {
+  return area ? orbCore.areaAvoiding(area, reservedBox, RESERVE_PAD) : area;
+}
+function setReservedBox(box) {
+  const next = box && Number(box.width) > 0 && Number(box.height) > 0
+    ? { x: Number(box.x), y: Number(box.y), width: Number(box.width), height: Number(box.height) } : null;
+  if (JSON.stringify(next) === JSON.stringify(reservedBox)) return false;
+  reservedBox = next;
+  // At rest only: a flight, a drag, an attachment or a nudge finishes on its own terms.
+  if (alive(orbWindow) && !dragging && !attach && !tripBusy && !nudging) {
+    placeOrb();
+    try { placeSwarm(); } catch { /* no swarm yet */ }
+  }
+  return true;
+}
+
+/** Where the fairy rests (window top-left): the saved spot, or the first-run corner,
+ *  inside the area it may use right now (fairyArea). Every resting path asks this. */
+function restSpot() {
+  const area = restoreWorkArea();
+  return state.x != null && state.y != null
+    ? orbCore.clampToWorkArea({ x: state.x, y: state.y }, ORB_SIZE, area)
+    : orbCore.defaultOrbPosition(area, ORB_SIZE);
 }
 
 function placeOrb() {
   if (!alive(orbWindow)) return;
-  const area = restoreWorkArea();
-  const pos = state.x != null && state.y != null
-    ? orbCore.clampToWorkArea({ x: state.x, y: state.y }, ORB_SIZE, area)
-    : orbCore.defaultOrbPosition(area, ORB_SIZE);
+  const pos = restSpot();
   orbWindow.setBounds({ ...pos, ...ORB_SIZE });
 }
 
 function placeBubble() {
   if (!alive(bubbleWindow) || !alive(orbWindow)) return;
   const [x, y] = orbWindow.getPosition();
-  const area = displayForOrb().workArea;
+  const area = fairyArea(displayForOrb().workArea);
   const pos = orbCore.bubblePosition(
     { x, y, width: ORB_SIZE.width, height: ORB_SIZE.height },
     BUBBLE_SIZE,
@@ -1219,7 +1249,7 @@ function lookoutPoint() {
 
 async function sendHome() {
   detach({ silent: true });
-  const area = displayForOrb().workArea;
+  const area = fairyArea(displayForOrb().workArea);
   const pos = orbCore.defaultOrbPosition(area, ORB_SIZE);
   await flyTo({ x: pos.x + ORB_SIZE.width / 2, y: pos.y + ORB_SIZE.height / 2 });
   state.x = pos.x;
@@ -1364,7 +1394,9 @@ function startHover() {
     if (attach || flight || tripBusy || dragging || nudging || !orbVisible()) return;
     if (state.x == null || state.y == null) return;
     const d = spiritCore.hoverOffset(Date.now());
-    setOrbCenter({ x: state.x + ORB_SIZE.width / 2 + d.x, y: state.y + ORB_SIZE.height / 2 + d.y });
+    // The hover circles the RESTING spot, which is the saved one unless a box is reserved.
+    const rest = reservedBox ? restSpot() : state;
+    setOrbCenter({ x: rest.x + ORB_SIZE.width / 2 + d.x, y: rest.y + ORB_SIZE.height / 2 + d.y });
   }, ORBIT_MS);
   if (hoverTimer.unref) hoverTimer.unref();
 }
@@ -2654,7 +2686,7 @@ function startNudge(decision, { peek = false } = {}) {
     // A glow: the whisper beside the fairy where it rests.
     const [x, y] = orbWindow.getPosition();
     n.whisperAt = orbCore.bubblePosition(
-      { x, y, width: ORB_SIZE.width, height: ORB_SIZE.height }, NUDGE_SIZE, displayForOrb().workArea, 6,
+      { x, y, width: ORB_SIZE.width, height: ORB_SIZE.height }, NUDGE_SIZE, fairyArea(displayForOrb().workArea), 6,
     );
     showWhisper();
   }
@@ -2989,7 +3021,7 @@ async function endDrag() {
   }
   if (alive(orbWindow)) {
     const [x, y] = orbWindow.getPosition();
-    const area = displayForOrb().workArea;
+    const area = fairyArea(displayForOrb().workArea);
     const pos = orbCore.clampToWorkArea({ x, y }, ORB_SIZE, area);
     if (pos.x !== x || pos.y !== y) moveOrb(pos.x, pos.y);
     state.x = pos.x;
@@ -3117,7 +3149,7 @@ function cursorPoint() {
 }
 
 function workAreaAt(point) {
-  try { return electron().screen.getDisplayNearestPoint(point).workArea; } catch { return null; }
+  try { return fairyArea(electron().screen.getDisplayNearestPoint(point).workArea); } catch { return null; }
 }
 
 /** Send to a page now, or once it has loaded (a window made a moment ago). */
@@ -3734,6 +3766,8 @@ module.exports = {
   __setLastCaption: (t) => { lastCaption = String(t || ""); },
   sprite: () => publicSprite(),
   refreshSprite, restTint,
+  setReservedBox,
+  __reservedBox: () => reservedBox,
   __setCapture: (c) => { captureImpl = c; },
   __setAskVision: (f) => { askVisionImpl = f; },
   __setSpeak: (f) => { speakImpl = f; },

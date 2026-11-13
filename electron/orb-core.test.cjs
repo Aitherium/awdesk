@@ -323,3 +323,42 @@ test("freeRoam is remembered only when explicitly true", () => {
   assert.equal(core.sanitizeState({ freeRoam: "yes" }).freeRoam, false);
   assert.equal(core.sanitizeState(null).freeRoam, false);
 });
+
+test("areaAvoiding: the fairy's area leaves out a box the tenant site owns (GARG's goblin)", () => {
+  const area = { x: 0, y: 0, width: 2194, height: 1206 };
+  const goblin = { x: 2054, y: 962, width: 132, height: 132 }; // right:8, bottom:112
+  const free = core.areaAvoiding(area, goblin, 124);
+  // The largest rectangle that misses the padded box is everything left of it.
+  assert.deepEqual(free, { x: 0, y: 0, width: 1930, height: 1206 });
+  // The first-run spot and a saved spot inside the corner both land outside the box.
+  for (const pos of [core.defaultOrbPosition(free, { width: 72, height: 72 }),
+    core.clampToWorkArea({ x: 2100, y: 1000 }, { width: 72, height: 72 }, free)]) {
+    assert.ok(pos.x + 72 <= goblin.x - 124, `fairy at ${pos.x} still reaches the goblin`);
+  }
+  // No box, an empty box, a box on another display: the area is untouched.
+  assert.equal(core.areaAvoiding(area, null, 124), area);
+  assert.equal(core.areaAvoiding(area, { x: 10, y: 10, width: 0, height: 0 }, 124), area);
+  assert.equal(core.areaAvoiding(area, { x: 5000, y: 10, width: 132, height: 132 }, 124), area);
+  // A box that would leave nothing usable does not shrink the area to a sliver.
+  const small = { x: 0, y: 0, width: 400, height: 400 };
+  assert.equal(core.areaAvoiding(small, { x: 100, y: 100, width: 200, height: 200 }, 0), small);
+});
+
+test("pageRectOnScreen: a page rect becomes a screen rect; junk is no box", () => {
+  assert.deepEqual(core.pageRectOnScreen({ x: 2054, y: 962, width: 132, height: 132 }, { x: 0, y: 0, width: 2194, height: 1206 }),
+    { x: 2054, y: 962, width: 132, height: 132 });
+  assert.deepEqual(core.pageRectOnScreen({ x: 10, y: 20, width: 132, height: 132 }, { x: -1920, y: 40, width: 1920, height: 1040 }),
+    { x: -1910, y: 60, width: 132, height: 132 });
+  for (const bad of [null, {}, { x: 0, y: 0, width: 0, height: 10 }, { x: "a", y: 0, width: 5, height: 5 }, { x: 0, y: 0, width: 4000, height: 50 }]) {
+    assert.equal(core.pageRectOnScreen(bad, { x: 0, y: 0, width: 100, height: 100 }), null);
+  }
+});
+
+test("every resting path of the fairy asks restSpot, the hover included", () => {
+  // 2026-11-12: placeOrb kept out of the goblin's box and the 33 ms hover loop put the
+  // fairy straight back on the saved spot, because it read state.x/y itself.
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "orb-window.cjs"), "utf8");
+  assert.match(src, /const rest = reservedBox \? restSpot\(\) : state;/);
+  assert.doesNotMatch(src, /setOrbCenter\(\{ x: state\.x \+/);
+  assert.ok(src.includes("  if (!alive(orbWindow)) return;\n  const pos = restSpot();"), "placeOrb asks restSpot");
+});
