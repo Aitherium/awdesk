@@ -288,12 +288,27 @@ const COMPANION_PROBE = "(function(){try{var e=document.querySelector('[data-com
   + "return{x:r.left,y:r.top,width:r.width,height:r.height}}catch(_){return null}})()";
 let companionTimer = null;
 let companionBox = null; // the last answer, for /desktop/status
+/** The page's own fairy (Veil os-fairy.tsx) is the SECOND cluster the owner saw. Inside
+ *  the desk's windows the desk fairy is the one cluster, so the page's is not drawn. */
+const HIDE_PAGE_FAIRY_CSS = "[data-os-fairy-root]{display:none !important}";
+function hidePageFairy(win) {
+  try { void win.webContents.insertCSS(HIDE_PAGE_FAIRY_CSS).catch(() => {}); } catch { /* window gone */ }
+}
+/** The AitherOS window the fairy rides: the app window while it is up, else none. */
+function rideWindow() {
+  return isAppOpen() && appWin.isVisible() && !appWin.isMinimized() ? appWin : null;
+}
+function syncFairyDock() {
+  try { void require("./orb-window.cjs").setDockWindow(rideWindow()); } catch { /* no fairy in this process */ }
+}
 async function probeCompanion() {
   let box = null;
-  if (isOpen() && desktopWin.isVisible()) {
+  // The companion is asked of the window the fairy rides, else of the overlay.
+  const host = rideWindow() || (isOpen() && desktopWin.isVisible() ? desktopWin : null);
+  if (host) {
     try {
-      const rect = await desktopWin.webContents.executeJavaScript(COMPANION_PROBE, false);
-      if (isOpen()) box = require("./orb-core.cjs").pageRectOnScreen(rect, desktopWin.getContentBounds());
+      const rect = await host.webContents.executeJavaScript(COMPANION_PROBE, false);
+      if (!host.isDestroyed()) box = require("./orb-core.cjs").pageRectOnScreen(rect, host.getContentBounds());
     } catch { /* the page is loading or gone: no box this round */ }
   }
   companionBox = box;
@@ -302,7 +317,10 @@ async function probeCompanion() {
 }
 function startCompanionWatch() {
   if (companionTimer) return;
-  companionTimer = setInterval(() => { void probeCompanion(); }, 2500);
+  companionTimer = setInterval(() => {
+    if (isOpen()) hidePageFairy(desktopWin); // idempotent: the same rule again changes nothing
+    void probeCompanion();
+  }, 2500);
   if (typeof companionTimer.unref === "function") companionTimer.unref();
 }
 
@@ -1022,8 +1040,11 @@ function showDesktopApp({ app = "" } = {}) {
     appWin.show();
     appWin.focus();
   });
+  appWin.webContents.on("did-finish-load", () => hidePageFairy(appWin));
+  for (const event of ["show", "hide", "minimize", "restore"]) appWin.on(event, () => syncFairyDock());
   appWin.on("closed", () => {
     appWin = null;
+    syncFairyDock();
   });
   log(`[app] opening ${desktopAppUrl(app)}`);
   void (async () => {
@@ -1041,6 +1062,7 @@ function desktopStatus() {
     app: { open: isAppOpen(), visible: isAppOpen() && appWin.isVisible(), shell: desktopAppShell() || "workspace" },
     url: BASE_URL,
     companion: companionBox, // where the tenant site draws its own companion, screen DIP
+    fairyDock: (() => { try { return require("./orb-window.cjs").__dock(); } catch { return null; } })(),
     shells: SHELL_CHOICES.map((c) => ({ id: c.id, label: c.label })),
   };
 }
