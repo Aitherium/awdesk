@@ -208,6 +208,19 @@
     color: var(--fg); padding: 0 10px; font: inherit; }
   #star { font-size: 15px; }
   #star.on { color: var(--warning); }
+  /* Edge parity: find bar, notice, key, zoom, ad counter, the more-menu, InPrivate tabs. */
+  #findbar { display: flex; align-items: center; gap: 4px; flex: none; }
+  #findbar[hidden], #notice[hidden], #zoombadge[hidden], #pwkey[hidden], #shield[hidden] { display: none; }
+  #find { width: 180px; height: 28px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; padding: 0 8px; font: inherit; font-size: 13px; }
+  #findcount { font-size: 12px; opacity: .75; min-width: 48px; text-align: center; }
+  #notice { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 46%; flex: 0 1 auto;
+    padding: 0 6px; height: 30px; border-radius: 8px; border: 1px solid var(--line); font-size: 12px; }
+  #notice .ntext { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #notice button { height: 24px; padding: 0 10px; font-size: 12px; font-weight: 600; flex: none; }
+  #zoombadge { font-size: 12px; opacity: .8; cursor: pointer; flex: none; }
+  #shield { font-size: 12px; flex: none; }
+  .tab.private { font-style: italic; }
+  .tab.private .who::before { content: "InPrivate "; font-style: normal; font-size: 10px; font-weight: 700; opacity: .8; }
   #err { color: var(--destructive); font-size: 12px; max-width: 30%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* The agent indicator: a dot when you are browsing (the sentence is its tooltip); a
      labelled pill with Take over / hand back when an agent drives or waits on you. */
@@ -283,9 +296,21 @@
     <button id="reload" title="Reload" aria-label="Reload">&#8635;</button>
     <input id="url" list="sugg" spellcheck="false" autocomplete="off" aria-label="Address" placeholder="Type an address, or an Aither page (aither://settings)" />
     <datalist id="sugg"></datalist>
+    <div id="findbar" hidden role="search" aria-label="Find on page">
+      <input id="find" type="search" spellcheck="false" autocomplete="off" aria-label="Find on page" placeholder="Find on page" />
+      <span id="findcount" aria-live="polite"></span>
+      <button id="findprev" title="Previous (Shift+Enter)" aria-label="Previous match">&#8593;</button>
+      <button id="findnext" title="Next (Enter)" aria-label="Next match">&#8595;</button>
+      <button id="findclose" title="Close (Esc)" aria-label="Close find">&#10005;</button>
+    </div>
+    <div id="notice" hidden role="status" aria-live="polite"><span class="ntext" id="ntext"></span><span id="nactions"></span></div>
     <button id="star" title="Bookmark this page" aria-label="Bookmark this page" aria-pressed="false">&#9734;</button>
     <button id="agentlogin" title="Let the agent use my sign-in on this site" aria-label="Let the agent use my sign-in on this site" aria-pressed="false" aria-expanded="false">&#9919;</button>
+    <button id="pwkey" hidden title="Fill a saved password on this site" aria-label="Fill a saved password">&#128273;</button>
     <button id="paneltoggle" title="Show or hide the assistant panel" aria-label="Show or hide the assistant panel">&#9707;</button>
+    <span id="zoombadge" hidden title="Zoom. Click to reset to 100% (Ctrl+0)" role="button" tabindex="0"></span>
+    <span id="shield" hidden title="Ads and trackers blocked on this page"></span>
+    <button id="more" title="Settings and more: InPrivate, zoom, print, translate, passwords, import from Edge, extensions, ad blocking, default browser" aria-label="Settings and more" aria-haspopup="menu">&#8943;</button>
     <span id="err" role="status"></span>
     <div id="banner" class="banner" role="status" aria-live="polite">
       <span class="dot"></span>
@@ -319,6 +344,54 @@
   $("reload").onclick = () => api.reload();
   $("newtab").onclick = () => api.newTab();
   $("star").onclick = () => api.toggleBookmark();
+  // Edge parity: the more-menu, the key, the zoom badge, find on page, notices.
+  $("more").onclick = () => api.menu();
+  $("pwkey").onclick = () => api.passwords();
+  $("zoombadge").onclick = () => api.action("zoom-reset");
+  const openFind = (text) => {
+    $("findbar").hidden = false;
+    if (text && !$("find").value) $("find").value = text;
+    $("find").focus();
+    $("find").select();
+  };
+  const closeFind = () => { $("findbar").hidden = true; $("findcount").textContent = ""; api.findStop(); };
+  api.onFindOpen(openFind);
+  api.onFocusAddress(() => { $("url").focus(); $("url").select(); });
+  $("find").addEventListener("input", () => api.find($("find").value, true));
+  $("find").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); api.find($("find").value, !e.shiftKey); }
+    else if (e.key === "Escape") { e.preventDefault(); closeFind(); }
+  });
+  $("findnext").onclick = () => api.find($("find").value, true);
+  $("findprev").onclick = () => api.find($("find").value, false);
+  $("findclose").onclick = closeFind;
+  function renderEveryday(s) {
+    const f = s.find;
+    $("findcount").textContent = !$("findbar").hidden && f && f.text ? (f.matches ? `${f.active}/${f.matches}` : "No results") : "";
+    const n = s.notice;
+    $("notice").hidden = !n;
+    if (n) {
+      $("ntext").textContent = n.text; // never innerHTML
+      $("notice").title = n.text;
+      const box = $("nactions");
+      box.textContent = "";
+      for (const a of n.actions || []) {
+        const b = document.createElement("button");
+        b.textContent = a.label;
+        b.onclick = () => api.notice(a.id);
+        box.append(b);
+      }
+    }
+    $("pwkey").hidden = !(s.passwords > 0);
+    $("pwkey").title = s.passwords > 0 ? `Fill a saved password on this site (${s.passwords} saved)` : "";
+    $("zoombadge").hidden = !s.zoom || s.zoom === 100;
+    $("zoombadge").textContent = `${s.zoom}%`;
+    const ab = s.adblock;
+    $("shield").hidden = !(ab && ab.enabled && !ab.siteOff && ab.blocked > 0);
+    $("shield").textContent = ab && ab.blocked ? `🛡 ${ab.blocked}` : "";
+    $("url").placeholder = s.private ? "InPrivate: nothing you do in this tab is kept"
+      : "Type an address, or an Aither page (aither://settings)";
+  }
 
   // BROWSER-M3 -- "Let the agent use my sign-in" for the site on screen. Off by
   // default; the rail card lists every allowed site so the owner can revoke one.
@@ -400,7 +473,8 @@
     for (const t of list || []) {
       const tab = document.createElement("div");
       tab.className = "tab" + (t.active ? " active" : "") + (t.by === "agent" ? " agent" : "")
-        + (t.pinned ? " pinned" : "") + (t.kind === "internal" || t.kind === "hosted" ? " aither" : "");
+        + (t.pinned ? " pinned" : "") + (t.kind === "internal" || t.kind === "hosted" ? " aither" : "")
+        + (t.private ? " private" : "");
       tab.setAttribute("role", "tab");
       tab.setAttribute("aria-selected", String(Boolean(t.active)));
       tab.title = (t.by === "agent" ? "Agent's tab: " : "") + (t.label || t.title || t.url || "New tab");
@@ -1081,6 +1155,7 @@
     $("star").classList.toggle("on", Boolean(s.bookmarked));
     $("star").setAttribute("aria-pressed", String(Boolean(s.bookmarked)));
     renderSignIn(s.agentSignIn);
+    renderEveryday(s);
     if (!editing && typeof s.url === "string") $("url").value = s.url;
     $("back").disabled = !s.canGoBack;
     $("forward").disabled = !s.canGoForward;

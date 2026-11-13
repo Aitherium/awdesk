@@ -29,6 +29,25 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
    * go back to the agent's own session. Answers {ok, host, on, sites} or {ok:false, error}.
    */
   agentSignIn: (url, on) => ipcRenderer.invoke("desk:browser-agent-signin", String(url ?? ""), Boolean(on)),
+  /** Edge parity: the more-menu, the key icon's account menu, a notice's button. */
+  menu: () => ipcRenderer.invoke("desk:browser-menu"),
+  passwords: () => ipcRenderer.invoke("desk:browser-passwords"),
+  notice: (action) => ipcRenderer.invoke("desk:browser-notice", String(action ?? "")),
+  /** Find on page: the text (empty clears), forward or back; stop closes it. */
+  find: (text, forward = true) => ipcRenderer.send("desk:browser-find", String(text ?? ""), Boolean(forward)),
+  findStop: () => ipcRenderer.send("desk:browser-find-stop"),
+  /** A browser action by name (zoom-reset, print, translate...): browser-everyday keyAction's names. */
+  action: (name) => ipcRenderer.send("desk:browser-action", String(name ?? "")),
+  onFindOpen: (listener) => {
+    const handler = (_event, text) => listener(String(text ?? ""));
+    ipcRenderer.on("desk:browser-find-open", handler);
+    return () => ipcRenderer.off("desk:browser-find-open", handler);
+  },
+  onFocusAddress: (listener) => {
+    const handler = () => listener();
+    ipcRenderer.on("desk:browser-focus-address", handler);
+    return () => ipcRenderer.off("desk:browser-focus-address", handler);
+  },
   takeOver: () => ipcRenderer.send("desk:browser-takeover"),
   handBack: () => ipcRenderer.send("desk:browser-handback"),
   /**

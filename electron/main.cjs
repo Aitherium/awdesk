@@ -5279,6 +5279,13 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     }
     const handled = argv.some((value) => value.startsWith(`${protocolScheme}://`));
     handleProtocolArgv(argv);
+    // A link from another app once Aither is the default browser (browser-default.cjs
+    // registers `--browser-url "%1"`), or the Start menu's Aither Browser (`--browser`).
+    const browserUrl = require("./browser-default.cjs").urlFromArgv(argv);
+    if (browserUrl || argv.includes("--browser")) {
+      browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: browserUrl });
+      return;
+    }
     // `Desk.exe --quit` (the jump list's "Quit Aither"): quit now. The launcher ends this
     // process itself if this line never runs (quit-others.cjs).
     if (argv.includes("--quit")) {
@@ -6879,6 +6886,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // The shell-menu flyout cold-starts Desk on first use after login; route
     // its --run/--arg pair exactly like a second launch does.
     routeColdRunRequest();
+    // A web link opened while the desk was not running (Aither as the default browser).
+    {
+      const coldUrl = require("./browser-default.cjs").urlFromArgv(process.argv);
+      if (coldUrl || process.argv.includes("--browser")) browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: coldUrl });
+    }
     // Keep the tray's Fleet line honest: re-render the menu after every verdict.
     getFleetControl().on("progress", (p) => {
       if (p?.phase === "end") refreshTrayMenu();
