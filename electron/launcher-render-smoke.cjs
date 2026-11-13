@@ -166,6 +166,12 @@ app.whenReady().then(async () => {
   })()`);
   expect("'+N more' expands the group in place", expanded === 8, expanded);
 
+  // 4b -- a SUPERSEDED answer (a newer keystroke won) must not blank the list.
+  win.webContents.send("launcher:results", { ok: true, token: 1, superseded: true, groups: [] });
+  await until(`true`, 200);
+  const afterSuperseded = await js(`document.querySelectorAll(".row.card").length`);
+  expect("a superseded answer does not blank the list", afterSuperseded === 8, afterSuperseded);
+
   // 5 -- Esc collapses first, closes second.
   const escape = await js(`(() => {
     const rows = [...document.querySelectorAll(".row.card")];

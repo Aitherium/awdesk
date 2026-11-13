@@ -407,7 +407,9 @@
   }
 
   function apply(payload) {
-    if (!payload || payload.ignored) return;
+    // A superseded run (a newer keystroke won) carries an EMPTY group list: painting it
+    // blanked the box while the newer answer was still on its way (measured live 2026-11-13).
+    if (!payload || payload.ignored || payload.superseded) return;
     if (payload.token && payload.token < state.token) return;
     state.token = payload.token || state.token;
     state.mode = payload.mode || state.mode;
