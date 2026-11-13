@@ -2730,7 +2730,7 @@ function endNudge(outcome = "timeout", { stay = false } = {}) {
   if (n.peek && (outcome === "timeout" || outcome === "peek")) {
     // A peek was the owner's hover, not a nudge: nothing to learn from it.
   } else if (outcome === "timeout") {
-    attentionMems[id] = fairyAttention.recordIgnored(mem, { importance: n.decision.importance, nowMs });
+    attentionMems[id] = fairyAttention.recordIgnored(mem, { importance: n.decision.importance, nowMs, climbs: n.decision.climbs });
   } else if (outcome === "acted" || outcome === "seen") {
     attentionMems[id] = fairyAttention.recordActed(mem);
   } else if (outcome === "later") {
