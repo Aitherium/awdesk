@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("aitherLauncher", {
   command: (line, confirm) => ipcRenderer.invoke("launcher:command", String(line || ""), confirm === true),
   ask: (text) => ipcRenderer.invoke("launcher:ask", String(text || "")),
   spirit: (text) => ipcRenderer.invoke("launcher:spirit", String(text || "")),
+  act: (key, verb, text) => ipcRenderer.invoke("launcher:act", String(key || ""), String(verb || "open"), String(text || "")),
   hide: () => ipcRenderer.invoke("launcher:hide"),
   release: () => ipcRenderer.invoke("launcher:release"),
   onResults: (fn) => {

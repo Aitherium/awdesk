@@ -97,6 +97,27 @@
     white-space: nowrap;
   }
   #status.warn { color: var(--warn); }
+  /* The command center's pane: a transcript / detail text or the item's graph,
+     drawn OVER the results (the box stays the one input; Esc closes the pane). */
+  #pane {
+    position: absolute; left: 0; right: 0; top: 52px; bottom: 34px; display: none; flex-direction: column;
+    background: var(--bg-solid); border-top: 1px solid rgba(255, 255, 255, 0.08); z-index: 5;
+  }
+  #pane.open { display: flex; }
+  #pane-head { display: flex; justify-content: space-between; gap: 10px; padding: 7px 14px; color: var(--muted); font-size: 11.5px; }
+  #pane-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+  #pane-body { flex: 1; overflow: auto; padding: 4px 14px 10px; user-select: text; }
+  #pane-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.45 "Cascadia Mono", Consolas, monospace; color: #d6dae1; }
+  #pane-body svg { width: 100%; height: 100%; min-height: 300px; display: block; }
+  #pane-notes { padding: 4px 14px 8px; color: var(--muted); font-size: 10.5px; }
+  .verbs { flex: none; display: none; gap: 4px; }
+  .row.sel .verbs { display: flex; }
+  .verb {
+    all: unset; cursor: pointer; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
+    color: var(--accent); border: 1px solid rgba(124, 196, 255, 0.3);
+  }
+  .verb:hover { background: var(--accent-soft); }
+  #chip.steer { color: var(--warn); border-color: rgba(255, 184, 107, 0.45); background: rgba(255, 184, 107, 0.12); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
@@ -104,15 +125,20 @@
   <div id="top">
     <span id="chip">Everything</span>
     <input id="input" type="text" spellcheck="false" autocomplete="off"
-      placeholder="Search apps, files, desk actions, agents and the web" aria-label="Aither launcher" />
-    <span id="hint">↑↓ · Tab groups · Enter open/run · 1-9 answer · Esc close</span>
+      placeholder="Search agents, runs, work, knowledge, people, apps, files and the web" aria-label="Aither launcher" />
+    <span id="hint">↑↓ · Tab groups · Enter open · Ctrl+Enter steer · Ctrl+G graph · Esc close</span>
   </div>
   <div id="results" role="listbox" aria-label="Results"></div>
   <div id="output">
     <div id="output-head"><span id="output-title">Output</span><button id="output-close" type="button">clear</button></div>
     <pre id="output-body"></pre>
   </div>
-  <div id="status" role="status">Indexed: apps, files, desk actions, screenshots, clipboard, agents and the web — type to search</div>
+  <div id="pane" aria-live="polite">
+    <div id="pane-head"><span id="pane-title"></span><span>Esc closes</span></div>
+    <div id="pane-body"></div>
+    <div id="pane-notes"></div>
+  </div>
+  <div id="status" role="status">Agents &amp; runs, work, knowledge, time, people, apps, files and the web — type to search</div>
 </div>
 <script>
   const input = document.getElementById("input");
@@ -124,7 +150,22 @@
   const outputBody = document.getElementById("output-body");
 
   const CHIPS = { all: "Everything", command: "> awsh / adk desk", ask: "? Ask Aither", spirit: "@ Spirit" };
-  const IDLE = "Indexed: apps, files, desk actions, screenshots, clipboard, agents and the web — type to search";
+  const IDLE = "Agents & runs, work, knowledge, time, people, apps, files and the web — type to search (try: agents, runs, prs, calendar, people)";
+  const pane = document.getElementById("pane");
+  const paneTitle = document.getElementById("pane-title");
+  const paneBody = document.getElementById("pane-body");
+  const paneNotes = document.getElementById("pane-notes");
+  // Every kind the command center (command-center.cjs) answers with: these rows take verbs.
+  const CC = new Set(["session", "run", "fleet-agent", "local-agent", "twin", "project", "task", "roadmap", "pr",
+    "plan", "notebook", "memory", "schedule", "routine", "event", "person"]);
+  const VERBS = {
+    session: ["open", "steer", "stop", "transcript", "graph"], run: ["open", "steer", "stop", "graph"],
+    "fleet-agent": ["open", "steer", "graph"], "local-agent": ["open", "steer", "graph"], twin: ["open", "steer", "graph"],
+  };
+  const VERB_KEYS = { steer: "Ctrl+Enter", stop: "Ctrl+.", transcript: "Ctrl+T", graph: "Ctrl+G", open: "Enter", detail: "Ctrl+I" };
+  // Steer mode: the ONE box becomes the message for the chosen row; Esc returns to the search.
+  let steer = null; // {key, title, query}
+  let stopArmed = "";
 
   let state = { token: 0, mode: "all", term: "", groups: [], rows: [], selected: 0, expanded: new Set(), openCard: null };
   let searchTimer = null;
@@ -140,6 +181,10 @@
     return { mode: "all", term: raw };
   }
 
+  // A verb's answer (steer sent, stop armed, an error) must not be painted over by a
+  // slow search phase landing a moment later.
+  let holdStatusUntil = 0;
+  function holdStatus(text, warn) { setStatus(text, warn); holdStatusUntil = Date.now() + 6000; }
   function setStatus(text, warn) {
     status.textContent = text || IDLE;
     status.classList.toggle("warn", Boolean(warn));
@@ -229,7 +274,22 @@
     const kind = document.createElement("span");
     kind.className = "kind";
     kind.textContent = isCard ? "card" : String(item.kind || "");
-    row.append(glyph, text, kind);
+    row.append(glyph, text);
+    if (CC.has(item.kind)) {
+      const verbs = document.createElement("span");
+      verbs.className = "verbs";
+      for (const v of (VERBS[item.kind] || ["open", "graph"])) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "verb";
+        b.textContent = v;
+        b.title = VERB_KEYS[v] || "";
+        b.addEventListener("click", (event) => { event.stopPropagation(); state.selected = index; paintSelection(); void verb(v); });
+        verbs.append(b);
+      }
+      row.append(verbs);
+    }
+    row.append(kind);
     if (isCard) {
       if (state.openCard === item.key) {
         row.classList.add("open");
@@ -329,7 +389,9 @@
   }
 
   function glyphFor(kind) {
-    return ({ app: "▣", file: "▤", screenshot: "▦", clip: "▥", action: "◆", agent: "◈", web: "◐" })[kind] || "•";
+    return ({ app: "▣", file: "▤", screenshot: "▦", clip: "▥", action: "◆", agent: "◈", web: "◐",
+      session: "❯", run: "▶", "fleet-agent": "◈", "local-agent": "◇", twin: "◎", project: "▧", task: "☐", roadmap: "⚑", pr: "⇄",
+      plan: "✎", notebook: "▤", memory: "✦", schedule: "⏱", routine: "↻", event: "◷", person: "☺" })[kind] || "•";
   }
 
   function paintSelection() {
@@ -355,7 +417,7 @@
       const still = state.groups.some((g) => (g.items || []).some((i) => i.key === state.openCard));
       if (!still) state.openCard = null;
     }
-    if (payload.status) setStatus(payload.status, /down|refused|missing|failed|unavailable/i.test(payload.status));
+    if (payload.status && Date.now() >= holdStatusUntil) setStatus(payload.status, /down|refused|missing|failed|unavailable/i.test(payload.status));
     chip.textContent = CHIPS[state.mode] || CHIPS.all;
     state.selected = 0;
     render();
@@ -374,6 +436,9 @@
   }
 
   input.addEventListener("input", () => {
+    if (steer) return;
+    stopArmed = "";
+    if (pane.classList.contains("open")) closePane();
     const text = input.value;
     chip.textContent = CHIPS[prefixOf(text).mode];
     clearTimeout(searchTimer);
@@ -413,6 +478,117 @@
       return;
     }
     if (reply && reply.did) setStatus(reply.did, false);
+  }
+
+  function closePane() {
+    pane.classList.remove("open");
+    paneBody.replaceChildren();
+    paneNotes.textContent = "";
+  }
+
+  function showText(title, text) {
+    paneTitle.textContent = title || "";
+    const pre = document.createElement("pre");
+    pre.textContent = text || "";
+    paneBody.replaceChildren(pre);
+    paneNotes.textContent = "";
+    pane.classList.add("open");
+  }
+
+  const KIND_COLOR = { session: "#7cc4ff", run: "#9be38f", "fleet-agent": "#c7a2ff", "local-agent": "#c7a2ff", twin: "#c7a2ff",
+    project: "#ffd36b", task: "#ffd36b", roadmap: "#ffd36b", pr: "#ffd36b", plan: "#7fe0d0", notebook: "#7fe0d0", memory: "#7fe0d0",
+    schedule: "#ff9f7c", routine: "#ff9f7c", event: "#ff9f7c", person: "#ff8fc8", graph: "#8b93a1" };
+
+  /** The neighbourhood as a radial SVG: the item in the middle, every neighbour on a ring. */
+  function showGraph(g) {
+    const NS = "http://www.w3.org/2000/svg";
+    const el = (name, attrs, text) => {
+      const n = document.createElementNS(NS, name);
+      for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, String(v));
+      if (text != null) n.textContent = text;
+      return n;
+    };
+    const W = 720; const H = 330; const cx = W / 2; const cy = H / 2;
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Graph of ${g.center.title}` });
+    const nodes = Array.isArray(g.nodes) ? g.nodes : [];
+    const edges = Array.isArray(g.edges) ? g.edges : [];
+    const label = (t, n) => (String(t || "").length > n ? `${String(t).slice(0, n - 1)}…` : String(t || ""));
+    const pos = nodes.map((n, i) => {
+      const a = (2 * Math.PI * i) / Math.max(1, nodes.length) - Math.PI / 2;
+      // Alternate two rings so neighbouring labels do not sit on each other.
+      const ring = nodes.length > 10 && i % 2 ? 0.72 : 1;
+      const rx = (nodes.length > 8 ? 300 : 240) * ring; const ry = 132 * ring;
+      return { x: cx + rx * Math.cos(a), y: cy + ry * Math.sin(a) };
+    });
+    nodes.forEach((n, i) => {
+      const p = pos[i];
+      svg.append(el("line", { x1: cx, y1: cy, x2: p.x, y2: p.y, stroke: "rgba(255,255,255,0.18)", "stroke-width": 1.2 }));
+      const e = edges[i] || {};
+      svg.append(el("text", { x: (cx + p.x) / 2, y: (cy + p.y) / 2 - 3, fill: "#8b93a1", "font-size": 9.5, "text-anchor": "middle" }, label(e.label, 18)));
+    });
+    nodes.forEach((n, i) => {
+      const p = pos[i];
+      const color = KIND_COLOR[n.kind] || "#8b93a1";
+      svg.append(el("circle", { cx: p.x, cy: p.y, r: 6, fill: color }));
+      svg.append(el("text", { x: p.x, y: p.y + 17, fill: "#e8ebef", "font-size": 10.5, "text-anchor": "middle" }, label(n.title, 26)));
+      svg.append(el("text", { x: p.x, y: p.y + 29, fill: "#8b93a1", "font-size": 9, "text-anchor": "middle" }, label(`${n.kind}${(edges[i] && edges[i].source) ? ` · ${edges[i].source}` : ""}`, 34)));
+    });
+    svg.append(el("circle", { cx, cy, r: 11, fill: KIND_COLOR[g.center.kind] || "#7cc4ff", stroke: "#fff", "stroke-width": 1.5 }));
+    svg.append(el("text", { x: cx, y: cy + 26, fill: "#fff", "font-size": 12.5, "font-weight": 600, "text-anchor": "middle" }, label(g.center.title, 44)));
+    if (!nodes.length) svg.append(el("text", { x: cx, y: cy + 48, fill: "#ffb86b", "font-size": 11, "text-anchor": "middle" }, "0 neighbours found in the desk sources or the platform graphs"));
+    paneTitle.textContent = `Graph — ${g.center.title} (${nodes.length} neighbours)`;
+    paneBody.replaceChildren(svg);
+    paneNotes.textContent = (g.notes || []).join(" · ");
+    pane.classList.add("open");
+  }
+
+  /** Run one verb on the selected row. */
+  async function verb(v, text) {
+    const row = selectedRow();
+    if (!row || row.kind !== "item") return;
+    const item = row.item;
+    if (v === "steer" && text == null) { enterSteer(item); return; }
+    if (v === "stop" && stopArmed !== item.key) {
+      stopArmed = item.key;
+      holdStatus(`Press Ctrl+. again to stop “${item.title}”`, true);
+      return;
+    }
+    stopArmed = "";
+    if (v === "graph" && pane.classList.contains("open") && paneTitle.textContent.startsWith("Graph")) { closePane(); return; }
+    holdStatus(v === "graph" ? "Reading the neighbourhood (desk sources + graph_find + graph_traverse)…" : `${v}…`, false);
+    const reply = await window.aitherLauncher.act(item.key, v, text || "");
+    if (!reply || reply.ok === false) { holdStatus((reply && reply.error) || `1 ${v} failed`, true); return; }
+    if (reply.pane && reply.pane.kind === "graph") showGraph(reply.pane);
+    else if (reply.pane && reply.pane.kind === "text") showText(reply.pane.title, reply.pane.text);
+    holdStatus(reply.did || `${v} done`, false);
+  }
+
+  function enterSteer(item) {
+    steer = { key: item.key, title: item.title, query: input.value };
+    chip.textContent = `Steer → ${item.title}`;
+    chip.classList.add("steer");
+    input.value = "";
+    input.placeholder = "Type the message for this agent, Enter sends, Esc returns to the search";
+    holdStatus(`Steering “${item.title}” — Enter sends, Esc cancels`, false);
+  }
+
+  function leaveSteer() {
+    const back = steer ? steer.query : "";
+    steer = null;
+    chip.classList.remove("steer");
+    chip.textContent = CHIPS[prefixOf(back).mode];
+    input.placeholder = "Search agents, runs, work, knowledge, people, apps, files and the web";
+    input.value = back;
+  }
+
+  async function sendSteer() {
+    const text = input.value.trim();
+    if (!text) { holdStatus("0 words to send — type the message first", true); return; }
+    const target = steer;
+    const reply = await window.aitherLauncher.act(target.key, "steer", text);
+    if (!reply || reply.ok === false) { holdStatus((reply && reply.error) || "1 steer failed", true); return; }
+    leaveSteer();
+    holdStatus(reply.did || `steered ${target.title}`, false);
   }
 
   async function submitAsk() {
@@ -460,6 +636,23 @@
   });
 
   input.addEventListener("keydown", (event) => {
+    if (steer) {
+      if (event.key === "Escape") { event.preventDefault(); leaveSteer(); setStatus("", false); return; }
+      if (event.key === "Enter") { event.preventDefault(); void sendSteer(); return; }
+      return;
+    }
+    if (event.ctrlKey && !event.altKey) {
+      const row = selectedRow();
+      const isItem = row && row.kind === "item";
+      const map = { Enter: "steer", ".": "stop", t: "transcript", T: "transcript", g: "graph", G: "graph", i: "detail", I: "detail", p: "phone", P: "phone" };
+      const v = map[event.key];
+      if (v && isItem && (CC.has(row.item.kind) || (row.item.kind === "card" && v === "phone"))) {
+        event.preventDefault();
+        void verb(v);
+        return;
+      }
+    }
+    if (event.key === "Escape" && pane.classList.contains("open")) { event.preventDefault(); closePane(); return; }
     if (event.key === "Escape") {
       event.preventDefault();
       // Esc COLLAPSES an open card first; only the second Esc closes the
