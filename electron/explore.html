@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src file:; img-src file: data:;" />
+<title>Explore</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<link rel="stylesheet" href="vendor/bead-space/bead-space.css" />
+<style>
+  /* aither://explore -- the knowledge graph(s), the wiki and agent / LLM context in one
+     place. explore-window.cjs answers; explore-page.js draws. The force view is the
+     bead-space engine (vendor/bead-space, the same build the Space pane loads). */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px/1.45 var(--font-sans); }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 16px 0; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 16px; margin: 0 6px 8px 0; }
+  .tabs { display: flex; gap: 2px; }
+  .tabs button { height: 34px; padding: 0 14px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted);
+    font: inherit; font-weight: 600; cursor: pointer; }
+  .tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent-primary, var(--primary)); }
+  .sub { color: var(--muted); font-size: 12px; margin: 0 0 8px auto; }
+  main { flex: 1; min-height: 0; }
+  section { display: none; height: 100%; padding: 12px 16px; gap: 12px; }
+  section.on { display: grid; }
+  #tab-graph { grid-template-columns: minmax(280px, 360px) 1fr; grid-template-rows: auto 1fr; }
+  #tab-wiki { grid-template-columns: minmax(240px, 300px) minmax(320px, 1fr) minmax(260px, 380px); grid-template-rows: auto 1fr; }
+  #tab-context { grid-template-columns: minmax(280px, 360px) 1fr; grid-template-rows: auto 1fr; }
+  .bar { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .bar input[type="search"] { flex: 1; min-width: 180px; height: 32px; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--fg); padding: 0 10px; font: inherit; }
+  select, button.b { height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--btn);
+    color: var(--fg); font: inherit; font-size: 12px; cursor: pointer; }
+  button.b:disabled { opacity: .5; cursor: default; }
+  .status { flex-basis: 100%; color: var(--muted); min-height: 18px; font-size: 12px; }
+  .col { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  .panel { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 10px 12px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 6px; }
+  .row { display: block; width: 100%; text-align: left; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--fg);
+    padding: 6px 8px; font: inherit; cursor: pointer; }
+  .row:hover, .row.on { background: var(--btn); border-color: var(--line); }
+  .row .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .s { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); background: none; font-family: inherit; }
+  button.chip { cursor: pointer; }
+  .chip.on { color: var(--fg); border-color: var(--accent-primary, var(--primary)); }
+  .chip.ok { color: var(--success, #3c9); }
+  .chip.bad { color: var(--destructive); }
+  .state { border: 1px dashed var(--warning, #d9a441); border-radius: 12px; padding: 12px 14px; color: var(--fg); }
+  .state b { color: var(--warning, #d9a441); }
+  .state .fix { color: var(--muted); margin-top: 4px; }
+  .empty { color: var(--muted); padding: 8px; }
+  .canvas { position: relative; min-height: 260px; flex: 1; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--bg-deep, #05070d); }
+  .canvas .bead-space { position: absolute; inset: 0; }
+  .canvas .state, .canvas .empty { position: absolute; inset: 12px; height: fit-content; background: var(--panel); }
+  .stack { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0; font-size: 12px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  .mono { font-family: var(--font-mono, monospace); font-size: 12px; }
+  article { overflow-wrap: anywhere; }
+  article h1 { font-size: 20px; margin: 0 0 8px; }
+  article h2 { font-size: 16px; margin: 16px 0 6px; }
+  article h3, article h4, article h5, article h6 { font-size: 14px; margin: 12px 0 4px; }
+  article p { margin: 6px 0; }
+  article pre { background: var(--bg-sunk, rgba(0,0,0,.3)); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; overflow-x: auto; }
+  article code { font-family: var(--font-mono, monospace); font-size: 12px; }
+  article blockquote { margin: 6px 0; padding: 2px 10px; border-left: 3px solid var(--line); color: var(--muted); }
+  article table { border-collapse: collapse; }
+  article th, article td { border: 1px solid var(--line); padding: 3px 8px; }
+  article li.md-sub { margin-left: 18px; }
+  article a { color: var(--accent-primary, var(--primary)); cursor: pointer; text-decoration: underline; }
+  article a.md-ext::after { content: " ↗"; font-size: 10px; }
+  article .md-img { color: var(--muted); font-style: italic; }
+  .bars { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--btn); }
+  .bars span { display: block; height: 100%; }
+  .k-text { background: var(--pastel-sky, #7cc7ff); } .k-thinking { background: var(--pastel-lavender, #b79cff); }
+  .k-tool_use { background: var(--pastel-peach, #ffb86b); } .k-tool_result { background: var(--pastel-coral, #ff8f7c); } .k-other { background: var(--muted); }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+  .card .v { font-size: 18px; font-weight: 650; }
+  .card .l { color: var(--muted); font-size: 11px; }
+  table.t { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.t th { text-align: left; color: var(--muted); font-weight: 500; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  table.t td { padding: 3px 6px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); vertical-align: top; }
+  table.t tr.click { cursor: pointer; }
+  table.t tr.click:hover { background: var(--btn); }
+  pre.raw { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; font-family: var(--font-mono, monospace); font-size: 11px;
+    background: var(--bg-sunk, rgba(0,0,0,.3)); border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin: 6px 0 0; }
+  ul.plain { margin: 0; padding-left: 18px; color: var(--muted); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Explore</h1>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="graph" aria-selected="true">Graph</button>
+      <button type="button" role="tab" data-tab="wiki" aria-selected="false">Wiki</button>
+      <button type="button" role="tab" data-tab="context" aria-selected="false">Context</button>
+    </div>
+    <div class="sub">Knowledge graphs, the wiki and what an agent actually had. Alt+Space: graph, wiki, context.</div>
+  </header>
+  <main>
+    <section id="tab-graph" class="on" role="tabpanel">
+      <div class="bar">
+        <input type="search" id="g-q" spellcheck="false" placeholder="Search every graph: a service, a function, a person, a memory" aria-label="Search the graphs" />
+        <select id="g-domain" aria-label="Domain"><option value="">All domains</option></select>
+        <button type="button" class="b" id="g-go">Search</button>
+        <div class="status" id="g-status" role="status" aria-live="polite"></div>
+      </div>
+      <div class="col">
+        <div class="panel"><h2>Types</h2><div class="chips" id="g-types"><span class="empty">Search to see node types.</span></div></div>
+        <div class="panel"><h2>Results</h2><div id="g-list"><div class="empty">Type a few words and press Enter.</div></div></div>
+        <div class="panel"><h2>Node</h2><div id="g-detail"><div class="empty">Click a result or a node.</div></div></div>
+        <div class="panel"><h2>Graph service</h2><div id="g-stats"><div class="empty">Checking…</div></div></div>
+      </div>
+      <div class="stack"><div class="canvas" id="g-canvas"><div class="empty">The neighbourhood draws here.</div></div></div>
+    </section>
+
+    <section id="tab-wiki" role="tabpanel">
+      <div class="bar">
+        <select id="w-source" aria-label="Wiki source"></select>
+        <button type="button" class="b" id="w-add">Add folder…</button>
+        <button type="button" class="b" id="w-remove" hidden>Remove folder</button>
+        <input type="search" id="w-q" spellcheck="false" placeholder="Search pages" aria-label="Search the wiki" />
+        <button type="button" class="b" id="w-all">All pages</button>
+        <div class="status" id="w-status" role="status" aria-live="polite"></div>
+      </div>
+      <div class="col"><div class="panel"><h2 id="w-list-title">Pages</h2><div id="w-list"><div class="empty">Loading…</div></div></div></div>
+      <div class="col">
+        <div class="panel">
+          <div class="chips" style="margin-bottom:6px"><button type="button" class="b" id="w-back" disabled>Back</button><span id="w-meta" class="chips"></span></div>
+          <article id="w-page"><div class="empty">Choose a page.</div></article>
+        </div>
+        <div class="panel"><h2>Links from this page</h2><div id="w-links"><div class="empty">—</div></div></div>
+        <div class="panel"><h2>Backlinks</h2><div id="w-backlinks"><div class="empty">—</div></div></div>
+      </div>
+      <div class="stack">
+        <div class="chips"><button type="button" class="chip on" id="w-graph-page">This page's links</button><button type="button" class="chip" id="w-graph-all">Whole wiki</button><span class="chip" id="w-graph-note"></span></div>
+        <div class="canvas" id="w-canvas"><div class="empty">The link graph draws here.</div></div>
+      </div>
+    </section>
+
+    <section id="tab-context" role="tabpanel">
+      <div class="bar">
+        <input type="search" id="c-q" spellcheck="false" placeholder="Filter sessions and recall memory: a title, a project, a session id, or a question" aria-label="Filter sessions and recall memory" />
+        <button type="button" class="b" id="c-go">Find</button>
+        <div class="status" id="c-status" role="status" aria-live="polite"></div>
+      </div>
+      <div class="col">
+        <div class="panel"><h2>Sessions</h2><div class="chips" id="c-sources" style="margin-bottom:6px"></div><div id="c-sessions"><div class="empty">Loading…</div></div></div>
+        <div class="panel"><h2>Memory recall</h2><div id="c-recall"><div class="empty">Type a question above to see what memory returns for it.</div></div></div>
+        <div class="panel"><h2>Platform LLM traces</h2><div id="c-traces"><div class="empty">Checking…</div></div></div>
+        <div class="panel"><h2>Not available here</h2><ul class="plain" id="c-limits"></ul></div>
+      </div>
+      <div class="col" id="c-facts"><div class="panel"><div class="empty">Choose a session to see what it had: messages by kind, the tool-call share, the API's own token counts and the requests it recorded.</div></div></div>
+    </section>
+  </main>
+  <script src="vendor/bead-space/bead-space.iife.js"></script>
+  <script src="explore-page.js"></script>
+</body>
+</html>

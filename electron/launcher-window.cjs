@@ -499,7 +499,10 @@ function createLauncher({
     if (verdict.center) {
       // Edge refs stay in main: the pane needs only opaque node ids.
       const edges = (verdict.edges || []).map((e) => ({ to: e.to, label: e.label, source: e.source }));
-      return { ok: true, did: verdict.did || "graph", pane: { kind: "graph", center: verdict.center, nodes: verdict.nodes, edges, notes: verdict.notes } };
+      // The peek's way into the full view: a row action the pane's button runs (runVerb).
+      if (verdict.explore) verbActions.set("verb:explore-from-graph", { type: "command", id: "explore.open", arg: verdict.explore });
+      return { ok: true, did: verdict.did || "graph", pane: { kind: "graph", center: verdict.center, nodes: verdict.nodes, edges, notes: verdict.notes,
+        explore: verdict.explore ? "verb:explore-from-graph" : null } };
     }
     return { ok: true, did: verdict.did };
   }
@@ -608,6 +611,35 @@ function createLauncher({
     return { ok: true, token, mode: "all", term: v.arg, phase: "idle", groups: group ? core.capGroups([group]) : [], status };
   }
 
+  /**
+   * An Explore verb (graph, wiki, context -- explore-verbs.cjs). The "open Explore" row
+   * paints at once; the inline results land when the source answers (a graph search is
+   * seconds), on the same token, so a newer keystroke still wins.
+   */
+  async function exploreVerbSearch(v, token) {
+    const verbs = require("./explore-verbs.cjs");
+    const paint = (ctx) => {
+      const { rows, status } = verbs.verbRows(v, ctx);
+      verbActions.clear();
+      for (const r of rows) verbActions.set(r.key, r.action);
+      return { group: verbs.verbGroup(v, rows), status };
+    };
+    const first = paint({});
+    if (v.keepSearch) return { extraGroup: first.group, status: first.status };
+    const answer = (p, phase) => ({ ok: true, token, mode: "all", term: v.arg, phase,
+      groups: p.group ? core.capGroups([p.group]) : [], status: p.status });
+    if (!v.session) {
+      void (async () => {
+        let ctx;
+        try { ctx = await require("./explore-window.cjs").verbLookup(v); }
+        catch (error) { ctx = { [v.verb === "context" ? "sessions" : v.verb]: { ok: false, reason: message(error) } }; }
+        if (token !== searchSeq) return;
+        send("launcher:results", answer(paint(ctx), "all"));
+      })();
+    }
+    return answer(first, v.session ? "idle" : "fast");
+  }
+
   async function runVerb(key) {
     const action = verbActions.get(String(key || ""));
     if (!action) return { ok: false, error: "1 row expired — type it again" };
@@ -633,9 +665,15 @@ function createLauncher({
     const token = ++searchSeq;
     if (inflight) { try { inflight.ctl.abort(); } catch { /* already done */ } inflight = null; }
     const verb = require("./desk-verbs.cjs").parseDeskVerb(text);
+    const exploreVerb = verb ? null : require("./explore-verbs.cjs").parseExploreVerb(text);
     let verbExtra = null;
     if (verb) {
       const answered = await verbSearch(verb, token);
+      if (!("extraGroup" in answered)) return answered;
+      verbExtra = answered;
+    } else if (exploreVerb) {
+      // graph / wiki / context <words>: rows that open aither://explore at that query.
+      const answered = await exploreVerbSearch(exploreVerb, token);
       if (!("extraGroup" in answered)) return answered;
       verbExtra = answered;
     } else {

@@ -3097,6 +3097,11 @@ require("./notebooks-window.cjs").ensureNotebooksIpc({
   // awconnect also gets), falling back to the `adk login` profile when signed out.
   token: () => browserWindow.onlineToken(),
 });
+// Explore: aither://explore's IPC (knowledge graphs, the wiki, agent / LLM context). A
+// wiki page's external link opens as an ordinary tab of the owner's.
+require("./explore-window.cjs").ensureExploreIpc({
+  openUrl: (url) => void browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url }),
+});
 // The browser's extensions page (aither://extensions).
 require("./extensions-window.cjs").ensureExtensionsIpc();
 // The aw* stack page (aither://bricks): the awkno catalog and man pages.
@@ -3501,6 +3506,9 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "darkmatter.open": return void createDarkmatterLinkWindow();
     case "localai.open": return void browserWindow.openInternal("local-ai", null, { askAgent: browserAskAgent });
     case "notebooks.open": return void browserWindow.openInternal("notebooks", null, { askAgent: browserAskAgent });
+    // arg: {tab, q, node, page, source, session} from Alt+Space; exploreUrl keeps only those.
+    case "explore.open": return void browserWindow.openInternalUrl(
+      require("./explore-verbs.cjs").exploreUrl(arg && typeof arg === "object" ? arg : {}), { askAgent: browserAskAgent });
     case "files.open": return void createFilesWindow();
     case "tunnel.open": return void createTunnelWindow();
     // Alt+Space is ONE key (owner 2026-11-02): the global SHORTCUT gets the tap/hold
@@ -4806,6 +4814,11 @@ function wireConsoleHost(legacy) {
       },
       notebooks: {
         open: () => browserWindow.openInternal("notebooks", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
+      explore: {
+        open: () => browserWindow.openInternal("explore", null, { askAgent: browserAskAgent }),
         close: () => {},
         isOpen: () => false,
       },

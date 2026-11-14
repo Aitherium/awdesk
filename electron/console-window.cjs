@@ -163,6 +163,14 @@ const PANES = Object.freeze([
     id: "secrets", label: "Secrets", hint: "Names and masked hints, never values", section: "Data", icon: "key",
     kind: "file", file: "secrets.html",
   }),
+  // Knowledge in one place (owner, 2026-11-13: "an easy way to query view knowledge graph
+  // and graphs and lyrawiki/llm.wiki + agent/llm context"): the platform graphs, the wiki
+  // (LyraWiki, or a wiki folder read offline) and what a session actually had.
+  // explore-window.cjs; Alt+Space graph / wiki / context land here (explore-verbs.cjs).
+  Object.freeze({
+    id: "explore", label: "Explore", hint: "Knowledge graphs, the wiki, and what an agent had in context", section: "Data", icon: "network",
+    kind: "file", file: "explore.html",
+  }),
   Object.freeze({
     id: "fleet", label: "Fleet", hint: "Containers, VRAM, doors", section: "System", icon: "server",
     kind: "file", file: "fleet-control.html",
