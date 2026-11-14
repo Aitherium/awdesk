@@ -12,7 +12,8 @@
  *                        only. javascript:, file:, data:, and every custom scheme
  *                        are refused -- a page view with no preload is still a
  *                        renderer an agent can point at the local disk.
- *   - allowPermission    every permission a page asks for is DENIED by default
+ *   - allowPermission    every permission a page asks for is DENIED by default (one
+ *                        grant: protected media, in the owner's own session)
  *                        (camera, mic, geolocation, notifications, ...).
  *   - AgentGate          "Agent is driving" / "Take over": while the owner holds
  *                        the wheel every agent tool call is refused, loudly.
@@ -101,11 +102,17 @@ function isNavigable(url) {
 /**
  * Permission requests from page content. Deny by default: an agent-driven page
  * must never get the camera, the microphone, the location or a notification
- * channel because a site asked. There is no allowlist today on purpose; add one
- * here, with a reason, if the owner asks for a specific grant.
+ * channel because a site asked.
+ *
+ * One grant, for the OWNER's own session only: `mediaKeySystem`, the protected-media
+ * identifier a Widevine player may ask for (Netflix, Spotify, Disney+). Owner,
+ * 2026-11-13: "fix electron" -- protected video plays in the Aither Browser. The agent's
+ * session and InPrivate tabs pass no `owner` and stay deny-all: an identifier is not
+ * handed to a page an agent drives, nor kept for a private tab.
  */
-function allowPermission(/* permission */) {
-  return false;
+const OWNER_PERMISSIONS = new Set(["mediaKeySystem"]);
+function allowPermission(permission, { owner = false } = {}) {
+  return owner === true && OWNER_PERMISSIONS.has(String(permission));
 }
 
 /**

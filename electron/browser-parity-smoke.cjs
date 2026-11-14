@@ -18,6 +18,9 @@ const { app } = require("electron");
 
 const userData = path.join(os.tmpdir(), `awdesk-parity-smoke-${process.pid}`);
 app.setPath("userData", userData);
+// A known DRM host served by this run's own server (the protected-playback check).
+const DRM_HOST = "open.spotify.com";
+app.commandLine.appendSwitch("host-resolver-rules", `MAP ${DRM_HOST} 127.0.0.1`);
 // Closing the browser (the session-restore check) must not quit the run.
 app.on("window-all-closed", () => {});
 process.on("unhandledRejection", (e) => { console.log("REJECT " + ((e && e.stack) || e)); app.exit(2); });
@@ -134,6 +137,24 @@ app.whenReady().then(async () => {
   const filled = await until(() => wc.executeJavaScript("document.querySelector('[name=p]').value"), 5000);
   expect("Fill puts the saved password in", filled === "s3cret!\"x", filled);
   expect("the key icon knows the site has one", bw.getState().passwords === 1, bw.getState().passwords);
+
+  // Protected video and music: the Edge hand-off shows ONLY when Widevine is unavailable
+  // (stock Electron: missing; the castLabs build: ready). browser-widevine-smoke.cjs
+  // plays a real encrypted stream.
+  const widevine = await require("./browser-widevine.cjs").getWidevine().ensure();
+  expect("state carries the Widevine status", bw.getState().widevine && bw.getState().widevine.state === widevine.state
+    && ["missing", "ready", "failed"].includes(widevine.state), bw.getState().widevine);
+  await wc.loadURL(`http://${DRM_HOST}:${server.address().port}/find`).catch(() => {});
+  await loaded(wc, DRM_HOST);
+  const hasEdge = Boolean(require("./browser-everyday.cjs").edgeExecutable());
+  const drm = await until(() => { const n = bw.__noticeForTest(active()); return n && n.kind === "drm" ? n : null; }, 1500);
+  expect("a DRM site is offered Edge only when Widevine is unavailable",
+    Boolean(drm) === (widevine.state !== "ready" && hasEdge), { state: widevine.state, hasEdge, drm });
+  bw.runBrowserAction("widevine-check");
+  const told = await until(() => { const n = bw.__noticeForTest(active()); return n && n.kind === "info" ? n : null; }, 3000);
+  expect("the more-menu line reports protected playback", Boolean(told) && /Protected (video|playback)/.test(told.text), told);
+  await wc.loadURL(`${base}/login`).catch(() => {});
+  await loaded(wc, "/login");
 
   // InPrivate: its own in-memory session, and nothing in history.
   bw.runBrowserAction("inprivate", `${base}/done?private=1`);

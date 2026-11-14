@@ -210,3 +210,9 @@ away without the others moving:
     (`occluders`), the desk clips the browser to the rest (`setShape`) or hides it when fully
     covered, and raising its window (taskbar, stage strip) makes it whole again.
     Still next: hide the avatar's own bead rail and speech bubble while it is docked.
+24. **Protected video and music (Widevine): SHIPPED in dev, production signing pending.** The desk
+    builds on castLabs' Electron for Content Security; `browser-widevine.cjs` installs the CDM at
+    app ready and an encrypted stream decodes in a tab (`npm run test:browser-widevine`). The
+    "Open in Edge" notice shows only when Widevine is missing or failed. Services that verify the
+    platform (Netflix) need a VMP-signed build: `scripts/vmp-sign.cjs` signs behind
+    `AITHER_VMP_SIGN=1` once the owner has a castLabs EVS account. `docs/WIDEVINE.md`.

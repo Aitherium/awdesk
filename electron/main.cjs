@@ -5401,6 +5401,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
   }
 
   app.whenReady().then(async () => {
+    // Protected video and music: start the Widevine CDM install (castLabs build) before
+    // any browser window exists, so a DRM page finds it. Not awaited: it settles in about
+    // a second, never rejects, and on stock Electron (no `components`) it does nothing.
+    try { void require("./browser-widevine.cjs").getWidevine().ensure(); } catch { /* the browser falls back to Edge */ }
     // Build the ONE Alt+Space launcher's window (and its IPC) now: a global shortcut
     // reports only key-down, so the box must already be loaded when the key lands.
     launcher.warm();

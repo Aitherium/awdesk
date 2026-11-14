@@ -65,6 +65,9 @@ const deskLayout = require("./desk-layout.cjs");
 // Edge parity (owner 2026-11-13, "close the gaps"): keys, right-click, find, zoom, print,
 // InPrivate, session restore, translate, DRM hand-off. The pure parts live there.
 const everyday = require("./browser-everyday.cjs");
+// Protected video and music (Widevine): the castLabs build installs the CDM; this module
+// is the only one that touches Electron's `components`, and it is inert on stock Electron.
+const widevineMod = require("./browser-widevine.cjs");
 const { createSurfaceState } = require("./surface-state.cjs");
 let knowledgeImpl = null;
 function knowledgeClient() {
@@ -452,11 +455,13 @@ function pushStateNow() {
  * guard is per session -- one hardened session must not leave the next one open.
  */
 const hardenedSessions = new WeakSet();
-function hardenSession(ses) {
+function hardenSession(ses, { owner = false } = {}) {
   if (!ses || hardenedSessions.has(ses)) return;
   hardenedSessions.add(ses);
-  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(policy.allowPermission(permission)));
-  ses.setPermissionCheckHandler((_wc, permission) => policy.allowPermission(permission));
+  // `owner` is true for the owner's persistent session only (protected media, browser-policy).
+  const grant = { owner: owner === true };
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(policy.allowPermission(permission, grant)));
+  ses.setPermissionCheckHandler((_wc, permission) => policy.allowPermission(permission, grant));
   if (typeof ses.setDevicePermissionHandler === "function") ses.setDevicePermissionHandler(() => false);
   // Ads and trackers are cancelled at the network layer (browser-adblock.cjs).
   try { getAdblock().attach(ses, { onBlocked: () => pushState() }); } catch { /* browsing still works */ }
@@ -931,6 +936,7 @@ function everydayState(wc) {
     notice: notice ? { kind: notice.kind, text: notice.text, actions: notice.actions || [] } : null,
     passwords: saved,
     adblock: ab ? { enabled: ab.enabled(), siteOff: ab.siteOff(url), blocked: ab.blockedOn(wc.id) } : null,
+    widevine: widevineMod.getWidevine().snapshot(),
   };
 }
 
@@ -1049,17 +1055,7 @@ function wireEveryday(wc, id) {
     if (n && n.keep) n.keep = false;
     else if (n) tabNotices.delete(id);
     const tab = tabs.get(id);
-    if (tab && tab.by === "you" && everyday.needsDrm(url)) {
-      let host = "";
-      try { host = new URL(url).hostname; } catch { /* not a URL */ }
-      if (!drmStay.has(host) && everyday.edgeExecutable()) {
-        setNotice(id, {
-          kind: "drm", data: { url, host },
-          text: "This site plays protected video or music (DRM), which this browser cannot play yet. Watch it in Edge?",
-          actions: [{ id: "open-edge", label: "Open in Edge" }, { id: "drm-stay", label: "Stay here" }],
-        });
-      }
-    }
+    offerDrm(id, wc, url);
     const store = require("./browser-webstore.cjs").parseExtensionId(url);
     if (tab && tab.by === "you" && !tab.private && store.ok && /\/detail\//.test(url)) {
       setNotice(id, {
@@ -1072,6 +1068,45 @@ function wireEveryday(wc, id) {
   wc.on("did-stop-loading", () => {
     void collectLogin(id, wc).then(() => autofill(id, wc));
   });
+}
+
+/** What a DRM page is told, from the Widevine state (browser-widevine.cjs decides). */
+function drmNoticeFor(id, url) {
+  const tab = tabs.get(id);
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* not a URL */ }
+  return widevineMod.drmNotice({
+    needsDrm: everyday.needsDrm(url), tabBy: tab ? tab.by : "", snap: widevineMod.getWidevine().snapshot(),
+    hasEdge: Boolean(everyday.edgeExecutable()), stayed: drmStay.has(host), url, host,
+  });
+}
+
+/**
+ * A DRM site just loaded in an owner tab. Widevine ready: nothing, the page plays.
+ * Still installing (the first seconds of a first run): a wait line, then one reload so
+ * the player sees the CDM. Missing or failed: the Open in Edge fallback.
+ */
+function offerDrm(id, wc, url) {
+  const notice = drmNoticeFor(id, url);
+  if (!notice) return;
+  setNotice(id, notice);
+  if (notice.kind !== "drm-wait") return;
+  void widevineMod.getWidevine().ensure().then((snap) => {
+    const now = tabNotices.get(id);
+    if (!now || now.kind !== "drm-wait" || wc.isDestroyed() || wc.getURL() !== url) return;
+    setNotice(id, snap.state === "ready" ? null : drmNoticeFor(id, url));
+    if (snap.state === "ready") wc.reload();
+  });
+}
+
+/** The more-menu's Widevine line was clicked: retry a failed install, then say what happened. */
+function widevineCheck() {
+  const id = tabs.active;
+  const wv = widevineMod.getWidevine();
+  void wv.ensure({ retry: true }).then((snap) => {
+    setNotice(id, { kind: "info", text: snap.state === "failed" ? `Protected playback did not install: ${snap.error}` : widevineMod.widevineMenuLabel(snap) });
+  });
+  return true;
 }
 
 /** Open Edge on `url` (only Edge: shell.openExternal would come back here once Aither is the default). */
@@ -1198,6 +1233,7 @@ function runBrowserAction(action, arg, id = tabs.active) {
     case "translate": void translatePage(id); return true;
     case "read-aloud": void readAloud(); return true;
     case "open-edge": return openInEdge(wc ? wc.getURL() : "").ok;
+    case "widevine-check": return widevineCheck();
     default: return false;
   }
 }
@@ -1418,6 +1454,7 @@ function browserMenu() {
     { label: "Translate page", click: () => runBrowserAction("translate") },
     { label: "Read aloud", click: () => runBrowserAction("read-aloud") },
     { label: "Open in Edge", enabled: /^https?:/i.test(url) && Boolean(everyday.edgeExecutable()), click: () => runBrowserAction("open-edge") },
+    { label: widevineMod.widevineMenuLabel(widevineMod.getWidevine().snapshot()), click: () => runBrowserAction("widevine-check") },
     { type: "separator" },
     { label: "Block ads and trackers", type: "checkbox", checked: ab.enabled(), click: (item) => { ab.setEnabled(item.checked); pushState(); } },
     { label: "Allow ads on this site", type: "checkbox", enabled: ab.enabled() && /^https?:/i.test(url), checked: ab.siteOff(url),
@@ -2479,7 +2516,9 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     return win;
   }
   const { BrowserWindow, WebContentsView, session } = electron();
-  hardenSession(session.fromPartition(PARTITION));
+  // Widevine: main started this at app ready; a caller that did not still gets it here.
+  void widevineMod.getWidevine().ensure();
+  hardenSession(session.fromPartition(PARTITION), { owner: true });
   // The agent's own session is hardened the same way (deny-by-default permissions,
   // an agent's download cancelled), and gets NO owner extension: awconnect is loaded
   // into PARTITION only, so an agent tab cannot reach the desk's signed-in bridges.

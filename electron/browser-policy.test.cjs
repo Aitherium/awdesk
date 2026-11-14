@@ -69,7 +69,15 @@ test("allowPermission: every page permission is denied by default", () => {
   for (const p of ["media", "geolocation", "notifications", "midi", "clipboard-read", "display-capture",
     "hid", "serial", "usb", "fullscreen", "unknown-future-permission"]) {
     assert.equal(allowPermission(p), false, p);
+    assert.equal(allowPermission(p, { owner: true }), false, p);
   }
+});
+
+test("allowPermission: protected media is granted to the owner's session only", () => {
+  assert.equal(allowPermission("mediaKeySystem", { owner: true }), true);
+  assert.equal(allowPermission("mediaKeySystem"), false, "the agent's session and InPrivate pass no owner");
+  assert.equal(allowPermission("mediaKeySystem", { owner: false }), false);
+  assert.equal(allowPermission("mediaKeySystem", { owner: "yes" }), false, "only a real true");
 });
 
 function fakeDriver() {
@@ -254,7 +262,11 @@ test("browser-window: page view has no preload, is sandboxed, isolated, and popu
   assert.equal(web.sandbox, true);
   assert.equal(web.partition, require("./browser-window.cjs").PARTITION);
   assert.match(src, /setWindowOpenHandler\(\(\{ url \}\) => \{[\s\S]*?return \{ action: "deny" \};/);
-  assert.match(src, /setPermissionRequestHandler\(\(_wc, permission, callback\) => callback\(policy\.allowPermission\(permission\)\)\)/);
+  assert.match(src, /setPermissionRequestHandler\(\(_wc, permission, callback\) => callback\(policy\.allowPermission\(permission, grant\)\)\)/);
+  // Only the owner's persistent session is hardened as the owner's.
+  assert.match(src, /hardenSession\(session\.fromPartition\(PARTITION\), \{ owner: true \}\)/);
+  assert.match(src, /hardenSession\(session\.fromPartition\(AGENT_PARTITION\)\);/);
+  assert.match(src, /hardenSession\(session\.fromPartition\(everyday\.INPRIVATE_PARTITION\)\);/);
   assert.match(src, /wc\.on\("will-navigate", guard\)/);
   assert.match(src, /executeJavaScriptInIsolatedWorld/);
 });

@@ -23,7 +23,7 @@
   },
   "allowScripts": {
     "@swc/core@1.15.46": true,
-    "electron@39.8.10": true,
+    "electron@39.8.10+wvcus": true,
     "electron-winstaller@5.4.0": true,
     "esbuild@0.28.1": true,
     "fsevents@2.3.3": true
@@ -56,6 +56,7 @@
     "test:console": "electron electron/console-smoke.cjs",
     "test:browser": "electron electron/browser-smoke.cjs",
     "test:browser-parity": "electron electron/browser-parity-smoke.cjs",
+    "test:browser-widevine": "electron electron/browser-widevine-smoke.cjs",
     "test:browser-internal": "electron electron/browser-internal-smoke.cjs",
     "test:connect-panel": "electron electron/connect-panel-smoke.cjs",
     "test:overlay-host": "electron electron/overlay-host-smoke.cjs",
@@ -90,7 +91,7 @@
     "@vitejs/plugin-react-swc": "^4.2.2",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
-    "electron": "^39.2.7",
+    "electron": "git+https://github.com/castlabs/electron-releases.git#v39.8.10+wvcus",
     "electron-builder": "^26.15.7",
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.0.1",
@@ -110,6 +111,11 @@
     "productName": "Aither",
     "copyright": "Copyright © Aitherium",
     "asar": true,
+    "electronDownload": {
+      "mirror": "https://github.com/castlabs/electron-releases/releases/download/"
+    },
+    "afterPack": "scripts/vmp-sign.cjs",
+    "afterSign": "scripts/vmp-sign.cjs",
     "electronFuses": {
       "runAsNode": false,
       "enableNodeOptionsEnvironmentVariable": false,
