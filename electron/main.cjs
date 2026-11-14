@@ -4756,6 +4756,32 @@ function wireConsoleHost(legacy) {
         close: () => {},
         isOpen: () => false,
       },
+      // The browser's library pages live in the browser (browser-library-pages.cjs).
+      history: {
+        open: () => browserWindow.openInternal("history", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
+      bookmarks: {
+        open: () => browserWindow.openInternal("bookmarks", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
+      downloads: {
+        open: () => browserWindow.openInternal("downloads", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
+      permissions: {
+        open: () => browserWindow.openInternal("permissions", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
+      "clear-data": {
+        open: () => browserWindow.openInternal("clear-data", null, { askAgent: browserAskAgent }),
+        close: () => {},
+        isOpen: () => false,
+      },
       projects: {
         open: () => browserWindow.openInternal("projects", null, { askAgent: browserAskAgent }),
         close: () => {},

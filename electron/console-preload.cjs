@@ -77,6 +77,9 @@ if (href.includes("settings.html")) {
   require("./canvas-preload.cjs");
 } else if (/\/plane-[a-z]+\.html/.test(href)) {
   require("./plane-preload.cjs");
+} else if (/\/library-[a-z]+\.html/.test(href)) {
+  // The Aither Browser's library pages (history, bookmarks, downloads, permissions, clear data).
+  require("./library-preload.cjs");
 } else if (!href.includes("console.html")) {
   // The renderer bundle: ?deck=1 and ?chat=1 both live here. Loaded ONLY for
   // those frames, because preload.cjs also installs middle-drag window-move

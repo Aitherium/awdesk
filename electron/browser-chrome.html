@@ -8,14 +8,26 @@
 <style>
   /* The whole window's own page. LEFT: the rail (browser-rail.cjs) -- the avatar's
      slot, every Aither page, the layer strip. TOP RIGHT: the tab strip + toolbar,
-     CHROME_HEIGHT (78) in browser-window.cjs: 34 tabs + 44 toolbar. The agent state
+     CHROME_HEIGHT (78) in browser-window.cjs: 34 tabs + 44 toolbar, plus the bookmarks
+     bar's 30 (BOOKMARKS_BAR_HEIGHT) while it is shown: main sends the height. The agent state
      is an indicator IN the toolbar (it was a 40px banner row, 2026-10-28). The page
      views and the panel are laid over the rest. */
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
     font: 13px/1.4 var(--font-sans); }
   :root { --rail-w: 248px; }
-  #top { position: fixed; top: 0; left: var(--rail-w); right: 0; height: 78px; }
+  #top { position: fixed; top: 0; left: var(--rail-w); right: 0; height: var(--chrome-h, 78px); }
+  /* The bookmarks bar (Ctrl+Shift+B): one 30px row under the toolbar, off by default. */
+  #bmbar { height: 30px; display: flex; align-items: center; gap: 2px; padding: 0 8px; overflow: hidden;
+    border-top: 1px solid var(--line); }
+  #bmbar[hidden] { display: none; }
+  #bmbar button { height: 24px; max-width: 180px; padding: 0 8px; border: 0; border-radius: 6px; background: none;
+    color: var(--fg); font: inherit; font-size: 12px; cursor: pointer; flex: none; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  #bmbar button:hover { background: var(--btn); }
+  #bmbar button.folder { color: var(--muted); }
+  #bmbar .bmempty { color: var(--muted); font-size: 12px; }
+  #bmbar .bmgrow { flex: 1; }
   #rail { position: fixed; top: 0; left: 0; bottom: 0; width: var(--rail-w); display: flex; flex-direction: column;
     background: var(--bg-deep, var(--bg)); border-right: 1px solid var(--line); }
   .brand { height: 44px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 8px; }
@@ -217,6 +229,10 @@
     padding: 0 6px; height: 30px; border-radius: 8px; border: 1px solid var(--line); font-size: 12px; }
   #notice .ntext { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #notice button { height: 24px; padding: 0 10px; font-size: 12px; font-weight: 600; flex: none; }
+  #nactions { display: flex; gap: 6px; flex: none; }
+  /* A site asking for the camera is never cut short: the words wrap onto a second line. */
+  #notice.ask { max-width: 72%; }
+  #notice.ask .ntext { white-space: normal; text-overflow: clip; overflow-wrap: anywhere; line-height: 14px; max-height: 28px; }
   #zoombadge { font-size: 12px; opacity: .8; cursor: pointer; flex: none; }
   #shield { font-size: 12px; flex: none; }
   .tab.private { font-style: italic; }
@@ -319,6 +335,7 @@
       <button id="handback" hidden>Let the agent continue</button>
     </div>
   </div>
+  <div id="bmbar" hidden role="toolbar" aria-label="Bookmarks bar"></div>
   </div>
 <script src="middle-drag.js"></script>
 <script>
@@ -365,6 +382,50 @@
   $("findnext").onclick = () => api.find($("find").value, true);
   $("findprev").onclick = () => api.find($("find").value, false);
   $("findclose").onclick = closeFind;
+  // The bookmarks bar: top-level bookmarks, then one menu per folder (drawn by main).
+  let bmKey = "";
+  function renderBookmarksBar(s) {
+    const model = s.bookmarksBar;
+    document.documentElement.style.setProperty("--chrome-h", `${Number(s.chromeHeight) || 78}px`);
+    const bar = $("bmbar");
+    bar.hidden = !model;
+    const key = JSON.stringify(model || null);
+    if (key === bmKey) return;
+    bmKey = key;
+    bar.textContent = "";
+    if (!model) return;
+    for (const item of model.items) {
+      const b = document.createElement("button");
+      b.className = "bm";
+      b.textContent = item.title || item.url; // never innerHTML
+      b.title = item.url;
+      b.onclick = () => api.openBookmark(item.url);
+      bar.append(b);
+    }
+    for (const folder of model.folders) {
+      const b = document.createElement("button");
+      b.className = "folder";
+      b.textContent = `${folder.name} ▾`;
+      b.title = `${folder.count} bookmark${folder.count === 1 ? "" : "s"}`;
+      b.setAttribute("aria-haspopup", "menu");
+      b.onclick = () => api.bookmarkFolder(folder.name);
+      bar.append(b);
+    }
+    if (!model.items.length && !model.folders.length) {
+      const hint = document.createElement("span");
+      hint.className = "bmempty";
+      hint.textContent = "Bookmarks you star (Ctrl+D) show here.";
+      bar.append(hint);
+    }
+    const grow = document.createElement("span");
+    grow.className = "bmgrow";
+    const all = document.createElement("button");
+    all.className = "folder";
+    all.textContent = "All bookmarks";
+    all.title = "Open the bookmarks page (Ctrl+Shift+O)";
+    all.onclick = () => api.action("bookmarks");
+    bar.append(grow, all);
+  }
   function renderEveryday(s) {
     const f = s.find;
     $("findcount").textContent = !$("findbar").hidden && f && f.text ? (f.matches ? `${f.active}/${f.matches}` : "No results") : "";
@@ -372,7 +433,8 @@
     $("notice").hidden = !n;
     if (n) {
       $("ntext").textContent = n.text; // never innerHTML
-      $("notice").title = n.text;
+      $("notice").title = n.title || n.text;
+      $("notice").classList.toggle("ask", n.kind === "permission");
       const box = $("nactions");
       box.textContent = "";
       for (const a of n.actions || []) {
@@ -1156,6 +1218,7 @@
     $("star").setAttribute("aria-pressed", String(Boolean(s.bookmarked)));
     renderSignIn(s.agentSignIn);
     renderEveryday(s);
+    renderBookmarksBar(s);
     if (!editing && typeof s.url === "string") $("url").value = s.url;
     $("back").disabled = !s.canGoBack;
     $("forward").disabled = !s.canGoForward;

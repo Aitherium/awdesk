@@ -210,3 +210,47 @@ away without the others moving:
     (`occluders`), the desk clips the browser to the rest (`setShape`) or hides it when fully
     covered, and raising its window (taskbar, stage strip) makes it whole again.
     Still next: hide the avatar's own bead rail and speech bubble while it is docked.
+
+## Part four: the everyday browser's own pages (owner, 2026-11-13, "close the gaps")
+
+The browser kept history, bookmarks and downloads but had no page for any of them: Ctrl+H
+opened nothing, Ctrl+J did nothing, a bookmark could be starred and never listed again.
+
+24. **The library pages: SHIPPED.** Five panes, one page script (`library-page.js`), one
+    bridge (`library-preload.cjs`), channels in `browser-library-pages.cjs`:
+
+    | page | key | what it does |
+    |---|---|---|
+    | `aither://history` | Ctrl+H | search, grouped by day, who visited (you / agent), delete one, a day, a range, all |
+    | `aither://bookmarks` | Ctrl+Shift+O | list, search, add, rename, move, delete, folders, import / export the Netscape bookmarks HTML |
+    | `aither://downloads` | Ctrl+J | the shelf as a page: open, show in folder, try again, remove, clear finished |
+    | `aither://permissions` | more-menu | every remembered Allow / Block, per site; remove one, a site, all |
+    | `aither://clear-data` | Ctrl+Shift+Delete | history, cookies + site data, cache, saved passwords; a time range; a confirm |
+
+    The fence: every channel answers ONE page (the sender must be showing that `aither://`
+    pane; another Aither page is refused too). Anything that destroys more than a row asks
+    in a dialog main draws, so page script cannot answer for the owner. A page never names
+    a file: export, import and "open" go through main's dialogs and the shelf's own rows.
+    No agent tool reads any of it: an agent's tab is a web tab with no preload and can
+    never open an `aither://` address.
+25. **Bookmark folders: SHIPPED.** A bookmark may carry `folder` (a path joined with "/").
+    `browser-library.json` stays version 1 and a file written before folders reads
+    unchanged. Import from Edge keeps each favorite's folder.
+26. **The bookmarks bar: SHIPPED, off by default.** Ctrl+Shift+B or the more-menu. One 30px
+    row under the toolbar (`BOOKMARKS_BAR_HEIGHT`); main sends the chrome height and every
+    layout reads `chromeHeight()`, so `#top` and the page view move together.
+27. **Site permissions: SHIPPED.** Camera, microphone, location, notifications and
+    clipboard-read ASK the owner in the toolbar notice (Allow / Block / Not now), remembered
+    per origin in `browser-permissions.json` (`browser-permissions.cjs`). Never for an agent
+    tab, a tab an agent is driving, a console page, a subframe or an insecure page.
+    InPrivate asks every time and writes nothing; a remembered Block still holds there.
+    Everything else stays denied (`browser-policy.cjs` allowPermission).
+28. **Clear browsing data: SHIPPED.** The owner's profile only (`persist:aither-browser`);
+    the agent's session and the Online sign-in are kept. History and passwords honour the
+    time range. Cookies, site data and the cache are cleared whole: Electron's
+    `session.clearData` takes no time range, and the confirm says so.
+
+    Still next: downloads persist across restarts (the shelf is in memory); drag to reorder
+    bookmarks and the bar; a prompt that reaches a popped-out tab's own window; location
+    needs a geolocation provider key before an allowed site gets coordinates.
+    `npm run test:browser-parity` drives all of it in a real window.

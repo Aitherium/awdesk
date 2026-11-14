@@ -211,6 +211,30 @@ const PANES = Object.freeze([
     id: "local-ai", label: "Local AI", hint: "An AI model on this computer; chat when offline", section: "System", icon: "server",
     kind: "file", file: "local-ai.html",
   }),
+  // The Aither Browser's own library, like edge://history and friends (owner, 2026-11-13,
+  // "close the gaps"): what you visited, your bookmarks, your downloads, what each site
+  // may use, and clearing it all. One page script (library-page.js) and one bridge
+  // (library-preload.cjs); browser-library-pages.cjs answers each page only its own data.
+  Object.freeze({
+    id: "history", label: "History", hint: "Pages you and your agents visited; search and delete", section: "Browser", icon: "book",
+    kind: "file", file: "library-history.html",
+  }),
+  Object.freeze({
+    id: "bookmarks", label: "Bookmarks", hint: "Your bookmarks and folders; import and export", section: "Browser", icon: "folder",
+    kind: "file", file: "library-bookmarks.html",
+  }),
+  Object.freeze({
+    id: "downloads", label: "Downloads", hint: "Files this browser downloaded", section: "Browser", icon: "archive",
+    kind: "file", file: "library-downloads.html",
+  }),
+  Object.freeze({
+    id: "permissions", label: "Site permissions", hint: "Camera, microphone, location, notifications and clipboard, per site", section: "Browser", icon: "key",
+    kind: "file", file: "library-permissions.html",
+  }),
+  Object.freeze({
+    id: "clear-data", label: "Clear browsing data", hint: "History, cookies, cache and saved passwords", section: "Browser", icon: "archive",
+    kind: "file", file: "library-clear.html",
+  }),
   // One read-only status page per platform plane, all rendered by plane-page.js
   // over plane-client.cjs's fixed reads (Veil /api/admin/planes). Detach opens the
   // same page in plane-window.cjs, one window per plane.

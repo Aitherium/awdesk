@@ -254,7 +254,15 @@ test("browser-window: page view has no preload, is sandboxed, isolated, and popu
   assert.equal(web.sandbox, true);
   assert.equal(web.partition, require("./browser-window.cjs").PARTITION);
   assert.match(src, /setWindowOpenHandler\(\(\{ url \}\) => \{[\s\S]*?return \{ action: "deny" \};/);
-  assert.match(src, /setPermissionRequestHandler\(\(_wc, permission, callback\) => callback\(policy\.allowPermission\(permission\)\)\)/);
+  // Permissions: still deny-by-default (policy.allowPermission); the five the owner may
+  // grant go through browser-permissions.cjs decide(), which refuses every agent tab.
+  assert.match(src, /setPermissionRequestHandler\(\(wc, permission, callback, details\) => requestPermission\(wc, permission, callback, details\)\)/);
+  assert.match(src, /setPermissionCheckHandler\(\(wc, permission, origin, details\) => checkPermission\(wc, permission, origin, details\)\)/);
+  const request = src.slice(src.indexOf("function requestPermission("), src.indexOf("function checkPermission("));
+  assert.match(request, /sitePermissions\.decide|judgePermission\(/);
+  assert.match(request, /verdict\.verdict === "deny" \|\| agentDrives\(verdict\.id\)\) return callback\(false\)/);
+  assert.ok(request.indexOf("agentDrives(verdict.id)) return callback(false)") < request.indexOf("permPrompts.ask("), "denied before anything is asked");
+  assert.match(src, /sitePermissions\.decide\(\{ permission, details: details \|\| \{\}, url, tab, store \}\)/);
   assert.match(src, /wc\.on\("will-navigate", guard\)/);
   assert.match(src, /executeJavaScriptInIsolatedWorld/);
 });

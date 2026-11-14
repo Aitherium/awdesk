@@ -69,6 +69,9 @@ const PRELOAD_BY_FILE = Object.freeze({
  */
 const PRELOAD_BY_PATTERN = Object.freeze([
   Object.freeze({ pattern: /^plane-[a-z]+\.html$/, preload: "plane-preload.cjs" }),
+  // The browser's own library pages (history, bookmarks, downloads, site permissions,
+  // clear browsing data): one bridge; main answers each channel only to its own page.
+  Object.freeze({ pattern: /^library-[a-z]+\.html$/, preload: "library-preload.cjs" }),
 ]);
 /** The renderer bundle's preload (?deck=1, ?chat=1, ?characters=1). */
 const VIEW_PRELOAD = "preload.cjs";
