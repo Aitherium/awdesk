@@ -32,6 +32,8 @@ test("workspace isolation: keys are stable and cross-workspace delivery is refus
   assert.equal(core.workspaceKey({ host: "Acme.Aitherium.com" }), "acme.aitherium.com");
   assert.equal(core.workspaceKey({ id: "t_42/../x" }), "t-42-..-x".replace("..", ".."));
   assert.ok(!core.workspaceKey({ id: "a/b\\c" }).includes("/"));
+  assert.equal(core.workspaceKey({ id: ".." }), "personal");
+  assert.equal(core.workspaceKey({ id: "../x" }), "x");
   assert.equal(core.mayDeliver("acme", "acme").ok, true);
   assert.equal(core.mayDeliver("acme", "personal").ok, false);
   assert.equal(core.mayDeliver("", "acme").ok, false);
@@ -49,9 +51,12 @@ test("voice commands: short verbs map, conversation does not", () => {
   assert.deepEqual(core.parseVoiceCommand("Record this."), { id: "record.region", arg: null });
   assert.deepEqual(core.parseVoiceCommand("hey aither, draw"), { id: "ink.toggle", arg: null });
   assert.deepEqual(core.parseVoiceCommand("open whiteboard"), { id: "board.new", arg: null });
-  assert.deepEqual(core.parseVoiceCommand("send to Jason"), { id: "send.last", arg: "person:jason" });
-  assert.deepEqual(core.parseVoiceCommand("send it to notes"), { id: "send.last", arg: "notes" });
-  assert.deepEqual(core.parseVoiceCommand("mute"), { id: "voice.mute", arg: null });
+  assert.deepEqual(core.parseVoiceCommand("aither, send to Jason"), { id: "send.last", arg: "person:jason" });
+  assert.deepEqual(core.parseVoiceCommand("hey aither send it to notes"), { id: "send.last", arg: "notes" });
+  assert.equal(core.parseVoiceCommand("send it to the team"), null, "send needs the desk addressed by name");
+  assert.deepEqual(core.parseVoiceCommand("stop recording"), { id: "record.stop", arg: null });
+  assert.notEqual((core.parseVoiceCommand("notes") || {}).id, "piano.open");
+  assert.deepEqual(core.parseVoiceCommand("mute"), { id: "audio.mic.mute", arg: null });
   assert.equal(core.parseVoiceCommand("can you draw me a picture of the quarterly revenue trend"), null);
   assert.equal(core.parseVoiceCommand("what do you think about the board meeting"), null);
   assert.equal(core.parseVoiceCommand(""), null);

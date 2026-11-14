@@ -50,6 +50,7 @@ const deps = {
   lastCapture: null, // () => path | null
   nativeFrame: null, // async (display) => nativeImage | null
   setForceInteractive: null, // (bool) => void  (the avatar + overlay windows)
+  isRecording: null, // () => bool
   controlPlane: () => "https://api.aitherium.com",
   mediaForge: () => "http://127.0.0.1:8200",
   fetchImpl: (...a) => globalThis.fetch(...a),
@@ -281,9 +282,9 @@ async function sendTo(targetId, payload, workspace) {
     try { await electron().shell.openExternal("discord://"); } catch { /* Discord not installed: still copied */ }
     return { ok: true, line: "copied -- paste it into Discord (Ctrl+V)" };
   }
-  if (target.via === "ask") return askAither(payload);
   const gate = core.mayDeliver(workspace && workspace.key, activeWorkspace().key);
   if (!gate.ok) return { ok: false, error: gate.reason };
+  if (target.via === "ask") return askAither(payload);
   if (target.via === "capture") return fileCapture(target, payload);
   if (target.via === "strata") return uploadDrive(payload);
   if (target.via === "relay") {
@@ -297,7 +298,8 @@ async function sendTo(targetId, payload, workspace) {
 
 /** A sticky-note pin -> Notes, only inside the workspace it was written in. */
 async function sendNotePin(pin) {
-  const workspace = { key: (pin.extra && pin.extra.workspace) || activeWorkspace().key };
+  // An untagged (older) note has no workspace: mayDeliver refuses it rather than guess.
+  const workspace = { key: (pin.extra && pin.extra.workspace) || "" };
   const v = await sendTo("notes", { kind: "text", text: String(pin.src || ""), title: pin.title || "Sticky note" }, workspace);
   return v.ok ? v : { ok: false, reason: v.error };
 }
@@ -460,7 +462,13 @@ function stopPresenting() {
   if (!presenter) return { ok: true, line: "not presenting" };
   if (presenter.win && !presenter.win.isDestroyed()) presenter.win.close();
   if (presenter.pill && !presenter.pill.isDestroyed()) presenter.pill.close();
-  if (presenter.laser) run2("ink.laser");
+  if (presenter.laser) {
+    try {
+      const ink = require("./ink-window.cjs");
+      const st = ink.status();
+      if (st && st.active && st.tool === "laser") ink.exitDraw();
+    } catch { /* ink not in this build */ }
+  }
   presenter = null;
   return { ok: true, line: "presentation ended" };
 }
@@ -531,8 +539,8 @@ function setInteract(on) {
 
 // ── sticky notes + Song Studio + graphics ───────────────────────────────────────
 
-function newSticky(text = "") {
-  const ws = activeWorkspace();
+function newSticky(text = "", workspace = null) {
+  const ws = workspace && workspace.key ? workspace : activeWorkspace();
   const pins = require("./pins-window.cjs");
   const pinsCore = require("./pins-core.cjs");
   const card = pinsCore.normalizeRecord({ kind: "note", src: String(text || " ").slice(0, 20000), title: "Note",
@@ -629,8 +637,10 @@ async function graphicsApply(arg) {
       const url = (result.images && result.images[0]) || (result.urls && result.urls[0]) || null;
       const href = typeof url === "string" ? url : (url && (url.url || url.src));
       if (!href) return { ok: false, error: "Media Forge finished with no image" };
-      const key = mfKey();
-      const res = await deps.fetchImpl(href.startsWith("http") ? href : `${deps.mediaForge()}${href}`, { headers: { "X-MF-Owner-Key": key } });
+      // The owner key goes to Media Forge's own origin only, never to a CDN/provider URL.
+      const target = new URL(href, deps.mediaForge());
+      const sameOrigin = target.origin === new URL(deps.mediaForge()).origin;
+      const res = await deps.fetchImpl(target.href, { headers: sameOrigin ? { "X-MF-Owner-Key": mfKey() } : {} });
       if (!res.ok) return { ok: false, error: `result fetch HTTP ${res.status}` };
       const bytes = Buffer.from(await res.arrayBuffer());
       return { ok: true, dataB64: bytes.toString("base64"), mime: "image/png", line: `${action.label} done (local GPU)` };
@@ -681,7 +691,7 @@ async function callVerb(entry, verb, arg) {
       const v = require("./pins-window.cjs").addPin({ kind: "image", src: `data:image/png;base64,${arg.dataB64}`, title: String(arg.title || "Region") });
       return v.ok ? { ok: true, line: "pinned to the desktop" } : { ok: false, error: v.reason };
     }
-    case "sticky": return newSticky(arg && arg.text);
+    case "sticky": return newSticky(arg && arg.text, entry.workspace);
     default: return { ok: false, error: `unknown call ${String(verb).slice(0, 40)}` };
   }
 }
@@ -707,18 +717,25 @@ function ensureIpc() {
     if (!core.MENU_IDS.includes(id) && !["ink.laser", "ink.clear", "record.region"].includes(id)) {
       return { ok: false, error: `${id} is not a toolkit command` };
     }
-    return run(id, arg);
+    // A page never hands a command an argument (graphics.open with a path would read any file).
+    void arg;
+    return run(id, null);
   }));
-  ipcMain.handle("toolkit:ask", guard((_entry, question, imageB64) => (imageB64
-    ? askAither({ kind: "image", mime: "image/png", dataB64: imageB64 }, question)
-    : askAither({ kind: "text", text: "" }, question))));
+  ipcMain.handle("toolkit:ask", guard((entry, question, imageB64) => {
+    // The agents of the workspace the desk is in now: only for content made in it.
+    const gate = core.mayDeliver(entry.workspace.key, activeWorkspace().key);
+    if (!gate.ok) return { ok: false, error: gate.reason };
+    return imageB64
+      ? askAither({ kind: "image", mime: "image/png", dataB64: imageB64 }, question)
+      : askAither({ kind: "text", text: "" }, question);
+  }));
   ipcMain.handle("toolkit:call", guard((entry, verb, arg) => callVerb(entry, verb, arg)));
   ipcMain.handle("toolkit:close", guard((entry) => { if (!entry.win.isDestroyed()) entry.win.close(); return { ok: true }; }));
 }
 
 /** The commands this module owns; main's runCommand hands them here. */
 const OWNED = Object.freeze(["sketch.new", "piano.open", "scratch.new", "sticky.new", "graphics.open", "region.box",
-  "present.start", "present.stop", "send.last", "interact.toggle", "voice.mute"]);
+  "present.start", "present.stop", "send.last", "interact.toggle", "record.stop"]);
 
 function handles(id) {
   return OWNED.includes(String(id || ""));
@@ -736,7 +753,11 @@ function run(id, arg) {
     case "present.stop": return stopPresenting();
     case "send.last": return sendLast(arg);
     case "interact.toggle": return setInteract(!interact.on);
-    case "voice.mute": return run2("audio.mic.mute");
+    case "record.stop": {
+      // "stop recording" must never START one: only when a recording runs.
+      const recording = typeof deps.isRecording === "function" && deps.isRecording();
+      return recording ? run2("record.region") : { ok: true, line: "nothing is recording" };
+    }
     default: return run2(id, arg);
   }
 }

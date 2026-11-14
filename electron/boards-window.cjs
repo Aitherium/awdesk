@@ -314,6 +314,12 @@ async function syncBoard(entry, png, { force = false } = {}) {
   if (!bytes) bytes = await captureThumbnail(entry);
   entry.lastSyncAt = now;
   const board = entry.board;
+  // A board syncs only into the workspace it was made in (owner-hard-workspace-isolation).
+  if (board.workspace && typeof workspaceOf === "function") {
+    let here;
+    try { here = String(workspaceOf() || ""); } catch { here = ""; }
+    if (here && here !== board.workspace) return { ok: false, reason: `made in workspace "${board.workspace}", the desk is in "${here}"` };
+  }
   if (board.kind === "note" && !bytes) {
     // A note's markdown is still worth syncing without a picture.
     const md = core.syncItems(board, { png: null });

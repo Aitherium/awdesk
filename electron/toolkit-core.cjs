@@ -119,7 +119,7 @@ function workspaceKey(tenant) {
   const raw = tenant && typeof tenant === "object"
     ? (tenant.id || tenant.tenantId || tenant.host || tenant.name || "")
     : String(tenant || "");
-  const key = String(raw).toLowerCase().replace(/[^a-z0-9.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+  const key = String(raw).toLowerCase().replace(/[^a-z0-9.-]+/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 64);
   return key || "personal";
 }
 
@@ -161,7 +161,7 @@ function safeSaveName(name, mime, tool, now = new Date()) {
  * a command; anything else is conversation and goes to the agents.
  */
 const VOICE_RULES = Object.freeze([
-  [/^(stop|end) (the )?(recording|record)$/, "record.region"],
+  [/^(stop|end) (the )?(recording|record)$/, "record.stop"],
   [/^(start )?(record|recording)( (this|the screen|a region|it))?$/, "record.region"],
   [/^(make|record) (a )?gif$/, "record.region.gif"],
   [/^(draw|start drawing|ink|annotate)( on (the )?screen)?$/, "ink.toggle"],
@@ -172,12 +172,12 @@ const VOICE_RULES = Object.freeze([
   [/^(open |new )?(a )?(whiteboard|board)$/, "board.new"],
   [/^(new |add |pin )?(a )?(sticky( note)?|note)$/, "note.new"],
   [/^(open |new )?(a )?(sketch( pad)?|paint|painting)$/, "sketch.new"],
-  [/^(open |play )?(the )?(piano|notes|keyboard)$/, "piano.open"],
+  [/^(open |play )?(the )?(piano|keyboard)$/, "piano.open"],
   [/^(quick type|scratch ?pad|type)$/, "scratch.new"],
   [/^(box|box (a|this) region|watch (this|a) region)$/, "region.box"],
   [/^(start )?(present|presentation|start (the )?presentation)$/, "present.start"],
   [/^(interact|interact mode)$/, "interact.toggle"],
-  [/^(mute|mute (the )?mic|stop listening)$/, "voice.mute"],
+  [/^(mute|mute (the )?mic|stop listening)$/, "audio.mic.mute"],
 ]);
 
 /**
@@ -196,11 +196,15 @@ function wakeGate(said, { wakeWord = "", openMic = false } = {}) {
 }
 
 function parseVoiceCommand(text) {
-  const raw = String(text || "").toLowerCase().replace(/[.!?,]+/g, " ").replace(/\s+/g, " ").trim()
-    .replace(/^(hey |ok |okay )?(aither|desk)\s+/, "").replace(/^(please |can you |could you )/, "")
+  const spoken = String(text || "").toLowerCase().replace(/[.!?,]+/g, " ").replace(/\s+/g, " ").trim();
+  const addressed = /^(hey |ok |okay )?(aither|desk)\s+/.test(spoken);
+  const raw = spoken.replace(/^(hey |ok |okay )?(aither|desk)\s+/, "").replace(/^(please |can you |could you )/, "")
     .replace(/ please$/, "").trim();
   if (!raw || raw.split(" ").length > 6) return null;
   const send = raw.match(/^send (it |this |that )?to (.+)$/);
+  // Sending moves the owner's content off the desk: only when the desk was addressed by
+  // name ("aither, send it to jason"), never on a stray phrase.
+  if (send && !addressed) return null;
   if (send) {
     const who = send[2].trim();
     const target = SEND_TARGETS.find((t) => t.id === who || t.label.toLowerCase() === who);

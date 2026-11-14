@@ -357,9 +357,11 @@ function AvatarSceneApp() {
         if (event.listening) {
           audioCtxRef.current?.close().catch(() => {});
           audioCtxRef.current = null;
-          for (const ref of slotAudioRefs.current.values()) {
+          setLevel('slot0', 0);
+          for (const [slotId, ref] of slotAudioRefs.current.entries()) {
             ref.current?.close().catch(() => {});
             ref.current = null;
+            setLevel(slotId, 0);
           }
           setVoice((current) => ({ ...current, activity: 'idle' }));
         }

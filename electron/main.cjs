@@ -6062,7 +6062,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // whiteboard"): a short command runs the desk command; everything else is speech.
       const spokenCommand = require("./toolkit.cjs").voiceCommand(said);
       if (spokenCommand) {
-        const ran = await Promise.resolve(runCommand(spokenCommand.id, spokenCommand.arg, { surface: "voice" }));
+        const toolkit = require("./toolkit.cjs");
+        const ran = await Promise.resolve(toolkit.handles(spokenCommand.id)
+          ? toolkit.run(spokenCommand.id, spokenCommand.arg)
+          : runCommand(spokenCommand.id, spokenCommand.arg, { surface: "voice" }));
         const failed = ran && ran.ok === false;
         void speakAloud(failed ? String(ran.error || ran.reason || "That did not work.").slice(0, 160) : "Done.",
           undefined, undefined, "slot0", "service:awdesk-voice");
@@ -6230,6 +6233,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         return mtime(rec) > mtime(snip) ? rec : snip;
       },
       nativeFrame: (display) => capture.nativeFrame(display),
+      isRecording: () => recorder.isRecording(),
       setForceInteractive: (on) => {
         try { require("./living-desktop-window.cjs").setForceInteractive(on); } catch { /* no overlay */ }
         if (avatarWindow && !avatarWindow.isDestroyed()) {
