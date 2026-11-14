@@ -234,7 +234,9 @@
   #notice.ask { max-width: 72%; }
   #notice.ask .ntext { white-space: normal; text-overflow: clip; overflow-wrap: anywhere; line-height: 14px; max-height: 28px; }
   #zoombadge { font-size: 12px; opacity: .8; cursor: pointer; flex: none; }
-  #shield { font-size: 12px; flex: none; }
+  #shield { display: flex; align-items: center; gap: 3px; font-size: 12px; flex: none; padding: 0 7px; }
+  #shield svg { width: 15px; height: 15px; }
+  #shield.off { opacity: .45; }
   .tab.private { font-style: italic; }
   .tab.private .who::before { content: "InPrivate "; font-style: normal; font-size: 10px; font-weight: 700; opacity: .8; }
   #err { color: var(--destructive); font-size: 12px; max-width: 30%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -325,7 +327,7 @@
     <button id="pwkey" hidden title="Fill a saved password on this site" aria-label="Fill a saved password">&#128273;</button>
     <button id="paneltoggle" title="Show or hide the assistant panel" aria-label="Show or hide the assistant panel">&#9707;</button>
     <span id="zoombadge" hidden title="Zoom. Click to reset to 100% (Ctrl+0)" role="button" tabindex="0"></span>
-    <span id="shield" hidden title="Ads and trackers blocked on this page"></span>
+    <button id="shield" hidden title="Ads and trackers blocked on this page" aria-label="Ad and tracker blocking" aria-haspopup="menu"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5l5 2v4c0 3.2-2.2 5.6-5 7-2.8-1.4-5-3.8-5-7v-4z"/></svg><span id="shieldn"></span></button>
     <button id="more" title="Settings and more: InPrivate, zoom, print, translate, passwords, import from Edge, extensions, ad blocking, default browser" aria-label="Settings and more" aria-haspopup="menu">&#8943;</button>
     <span id="err" role="status"></span>
     <div id="banner" class="banner" role="status" aria-live="polite">
@@ -364,6 +366,7 @@
   // Edge parity: the more-menu, the key, the zoom badge, find on page, notices.
   $("more").onclick = () => api.menu();
   $("pwkey").onclick = () => api.passwords();
+  $("shield").onclick = () => api.shield();
   $("zoombadge").onclick = () => api.action("zoom-reset");
   const openFind = (text) => {
     $("findbar").hidden = false;
@@ -449,8 +452,14 @@
     $("zoombadge").hidden = !s.zoom || s.zoom === 100;
     $("zoombadge").textContent = `${s.zoom}%`;
     const ab = s.adblock;
-    $("shield").hidden = !(ab && ab.enabled && !ab.siteOff && ab.blocked > 0);
-    $("shield").textContent = ab && ab.blocked ? `🛡 ${ab.blocked}` : "";
+    // The shield stays on every web page: it is where blocking is paused when a site breaks.
+    const paused = Boolean(ab && (!ab.enabled || ab.siteOff));
+    $("shield").hidden = !(ab && ab.web);
+    $("shield").classList.toggle("off", paused);
+    $("shieldn").textContent = ab && !paused && ab.blocked > 0 ? String(ab.blocked) : "";
+    $("shield").title = !ab ? "" : !ab.enabled ? "Ad and tracker blocking is paused everywhere. Click to turn it back on."
+      : ab.siteOff ? "Ad and tracker blocking is paused on this site. Click to turn it back on."
+        : `${ab.blocked || 0} ad and tracker requests blocked on this page. Click to pause blocking.`;
     $("url").placeholder = s.private ? "InPrivate: nothing you do in this tab is kept"
       : "Type an address, or an Aither page (aither://settings)";
   }

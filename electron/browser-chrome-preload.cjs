@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   /** Edge parity: the more-menu, the key icon's account menu, a notice's button. */
   menu: () => ipcRenderer.invoke("desk:browser-menu"),
   passwords: () => ipcRenderer.invoke("desk:browser-passwords"),
+  /** The shield: what was blocked on this page, pause on this site, pause everywhere. */
+  shield: () => ipcRenderer.invoke("desk:browser-shield"),
   notice: (action) => ipcRenderer.invoke("desk:browser-notice", String(action ?? "")),
   /** Find on page: the text (empty clears), forward or back; stop closes it. */
   find: (text, forward = true) => ipcRenderer.send("desk:browser-find", String(text ?? ""), Boolean(forward)),

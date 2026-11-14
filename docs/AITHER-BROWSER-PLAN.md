@@ -210,6 +210,40 @@ away without the others moving:
     (`occluders`), the desk clips the browser to the rest (`setShape`) or hides it when fully
     covered, and raising its window (taskbar, stage strip) makes it whole again.
     Still next: hide the avatar's own bead rail and speech bubble while it is docked.
+24. **Content blocking depth and translate: SHIPPED** (2026-11-13, after the Edge parity
+    slice). Four parts, each a pure module with tests; `browser-window.cjs` only wires them.
+    - **Path and option rules** (`browser-adblock-rules.cjs`). `||host/path^`, `$third-party`,
+      `$script`/`$image`/..., `$domain=`. An ad on the page's own host is now cancelled. No list
+      rule becomes a regular expression: a pattern is literal pieces found with `indexOf`, and
+      rules are indexed by hostname or by one word of the pattern. Measured with the real
+      lists (167,552 hosts, 11,743 rules): about 4 microseconds a request; the test fails at 50.
+      `@@` exceptions win over every block.
+    - **Element hiding** (`browser-adblock-cosmetic.cjs`). `##sel`, `site##sel`, `#@#`, `~site`.
+      One user style sheet per page (`insertCSS`, `cssOrigin: "user"`), about 24,000 selectors
+      in groups of 20, so a selector Chromium rejects voids only its group. The lists'
+      page-level exceptions are honoured: `$generichide` (YouTube), `$elemhide`, `@@...$document`.
+      A list is someone else's text in every page, so a selector is refused when it holds a
+      brace or `url(` anywhere (quoted and escaped too), or when its brackets cross. Review
+      found two lines that got live CSS past the first check (`url(a"b)` ends at the `)` for
+      Chromium and looked like an open string to the check; `[b(]c)` balanced by count); both
+      are tests and a live smoke check now. Cost on the real lists: 1 rule of 24,119.
+    - **The shield** in the toolbar: what was blocked on this page, pause on this site, pause
+      everywhere. It is on every web page, because it is where a broken site gets fixed.
+      From an InPrivate tab "pause on this site" (shield and more-menu) is held in memory,
+      applies to InPrivate tabs only and is dropped with the last one: `adblock.json` never
+      names a site that was only visited InPrivate.
+    - **Tracking** (`browser-tracking.cjs`): `utm_*`, `fbclid`, `gclid`... leave a page's address
+      before the request does; every request says `Sec-GPC: 1` and `DNT: 1`. Both are toggles
+      in the more-menu, on by default.
+    - **Translate** (`browser-translate.cjs`). A page in another language is offered
+      ("This page is in German. Translate?"); the text decides the language, the `lang`
+      attribute is only a fallback. Never offered InPrivate or on an agent's tab. The text
+      goes to the first backend that answers, in this order: MicroScheduler (a local lane,
+      never a hosted API lane), the local node, bonsai-local, the desk agent. The notice
+      names the one that answered. `npm run test:browser-parity` proves all of it on real
+      pages; `AWDESK_TRANSLATE_LIVE=1` adds a real model.
+    Not done: procedural hiding (`#?#`, `:has-text`), scriptlets, `$redirect`/`$csp`/`$removeparam`,
+    hiding inside sub-frames, `navigator.globalPrivacyControl`, and regular-expression rules.
 
 ## Part four: the everyday browser's own pages (owner, 2026-11-13, "close the gaps")
 
