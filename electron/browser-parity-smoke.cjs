@@ -129,7 +129,25 @@ app.whenReady().then(async () => {
   await wc.executeJavaScript("document.querySelector('[name=u]').value='david';document.querySelector('[name=p]').value='s3cret!\"x';document.getElementById('go').click();");
   const offer = await until(() => { const n = bw.__noticeForTest(active()); return n && n.kind === "password-save" ? n : null; });
   expect("a submitted login is offered for saving", Boolean(offer), bw.__noticeForTest(active()));
-  if (offer) await bw.noticeAction("password-save");
+  // The landing page asks for notifications on top of the offer: the prompt takes the
+  // toolbar, Allow is dead while it is new, and the offer comes back when it is answered.
+  if (offer) {
+    await loaded(wc, "/done");
+    await sleep(300);
+    await wc.executeJavaScript("window.__answer = null; Notification.requestPermission().then((v) => { window.__answer = v; }); 0", true);
+    const over = await until(() => { const n = bw.__noticeForTest(active()); return n && n.kind === "permission" ? n : null; });
+    expect("a permission prompt takes the place of the save offer", Boolean(over), bw.__noticeForTest(active()));
+    const early = await bw.noticeAction("permission-allow");
+    const still = bw.__noticeForTest(active());
+    expect("Allow does nothing in the prompt's first half second", early && early.ok === false && early.early === true
+      && still && still.kind === "permission" && (await wc.executeJavaScript("window.__answer", true)) === null
+      && bw.getPermissionStore().list().length === 0, { early, still, list: bw.getPermissionStore().list() });
+    await bw.noticeAction("dismiss");
+    const back = await until(() => { const n = bw.__noticeForTest(active()); return n && n.kind === "password-save" ? n : null; });
+    expect("the save offer comes back after the prompt is answered", Boolean(back) && back.data.username === "david"
+      && bw.getPermissionStore().list().length === 0, bw.__noticeForTest(active()));
+  }
+  if (bw.__noticeForTest(active())) await bw.noticeAction("password-save");
   const saved = bw.getVault().list();
   expect("the password is saved for the origin", saved.length === 1 && saved[0].username === "david", saved);
   const onDisk = fs.readFileSync(path.join(userData, "browser-passwords.json"), "utf8");
@@ -315,10 +333,57 @@ app.whenReady().then(async () => {
   expect("Not now denies once and remembers nothing", (await until(() => js(permWc, "window.__answer"))) === "denied" && store.list().length === 0, store.list());
   await js(permWc, ask);
   const third = await until(() => { const n = bw.__noticeForTest(permTab.id); return n && n.kind === "permission" ? n : null; });
+  await sleep(600); // Allow is dead for the prompt's first half second
   if (third) await bw.noticeAction("permission-allow");
   expect("Allow answers granted and is remembered", (await until(() => js(permWc, "window.__answer"))) === "granted"
     && store.get(base, "notifications") === "allow", { answer: await js(permWc, "window.__answer"), list: store.list() });
   expect("an allowed site reads as granted afterwards", (await js(permWc, "Notification.permission")) === "granted", await js(permWc, "Notification.permission"));
+
+  // Taking the Allow back on the review page reaches the page that is still open: it
+  // reads as not granted and asks again, with no reload in between.
+  const perms2 = await libraryPage("permissions", "permissions");
+  if (perms2.lwc) {
+    const row2 = "document.querySelector('#list .row[data-kind=notifications]')";
+    await until(() => js(perms2.lwc, `Boolean(${row2})`));
+    await js(perms2.lwc, `[...${row2}.querySelectorAll('button')].find((b) => b.textContent === 'Remove').click(); 0`);
+    await until(() => store.get(base, "notifications") === null);
+  }
+  expect("Remove takes the Allow out of the store", store.get(base, "notifications") === null, store.list());
+  bw.__showTabForTest(permTab.id);
+  expect("the open page no longer reads as granted", (await js(permWc, "Notification.permission")) !== "granted", await js(permWc, "Notification.permission"));
+  await js(permWc, ask);
+  const fourth = await until(() => { const n = bw.__noticeForTest(permTab.id); return n && n.kind === "permission" ? n : null; });
+  expect("after an Allow is taken back the open page is asked again", Boolean(fourth) && (await js(permWc, "window.__answer")) === null,
+    { notice: bw.__noticeForTest(permTab.id), answer: await js(permWc, "window.__answer") });
+  await sleep(600);
+  if (fourth) await bw.noticeAction("permission-allow");
+  expect("Allow is remembered again", (await until(() => js(permWc, "window.__answer"))) === "granted" && store.get(base, "notifications") === "allow", store.list());
+
+  // A 60-character host: the toolbar shows the END of the name and the whole sentence.
+  const longHost = `${"a".repeat(40)}.accounts-sign-in.localhost`;
+  const longBase = `http://${longHost}:${server.address().port}`;
+  const longTab = bw.__openTabForTest(`${longBase}/perm?long=1`);
+  const longWc = await until(() => { const p = bw.__pageForTest(longTab.id); return p && p.getURL().includes("long=1") && !p.isLoading() ? p : null; });
+  expect("a 60-character host opens", Boolean(longWc) && longHost.length >= 60, { longHost, url: longWc && longWc.getURL() });
+  if (longWc) {
+    await js(longWc, ask);
+    const longPrompt = await until(() => { const n = bw.__noticeForTest(longTab.id); return n && n.kind === "permission" ? n : null; });
+    expect("the long host's prompt ends with the real site and what it wants", Boolean(longPrompt)
+      && longPrompt.text.startsWith("\u2026") && longPrompt.text.endsWith(`.localhost:${server.address().port} wants to show notifications.`), longPrompt);
+    const fit = await until(() => bw.getWindow().webContents.executeJavaScript(`(() => {
+      const n = document.getElementById('notice'); const t = document.getElementById('ntext');
+      if (n.hidden || !/wants to show notifications\\.$/.test(t.textContent)) return null;
+      const box = n.getBoundingClientRect(); const bar = n.parentElement.getBoundingClientRect();
+      const buttons = [...n.querySelectorAll('button')].map((b) => b.getBoundingClientRect());
+      return { text: t.textContent, title: n.title, sw: t.scrollWidth, cw: t.clientWidth, sh: t.scrollHeight, ch: t.clientHeight,
+        inBar: box.left >= bar.left && box.right <= bar.right + 0.5,
+        buttonsIn: buttons.length === 3 && buttons.every((b) => b.width > 0 && b.right <= bar.right + 0.5) };
+    })()`));
+    expect("the toolbar shows the whole prompt, nothing cut off", Boolean(fit) && fit.sw <= fit.cw && fit.sh < fit.ch + 8
+      && fit.inBar && fit.buttonsIn && fit.title.startsWith(longBase), fit);
+    if (longPrompt) await bw.noticeAction("dismiss");
+    bw.runBrowserAction("close-tab");
+  }
 
   // An AGENT's tab is never asked and never allowed, even on a site the owner allowed.
   const agent = bw.browserAgent();

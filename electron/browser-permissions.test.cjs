@@ -107,7 +107,7 @@ test("InPrivate is asked every time: Allow does not carry over, Block does", () 
 
 test("the prompt says who wants what", () => {
   assert.equal(perms.promptText("https://meet.test:8443", ["camera", "microphone"]),
-    "meet.test:8443 wants to use your camera and use your microphone.");
+    "meet.test:8443 wants to use your camera and microphone.");
   assert.equal(perms.promptText(SITE, ["geolocation"]), "meet.test wants to know your location.");
 });
 
@@ -130,4 +130,51 @@ test("prompts queue per tab; one answer settles every caller; leaving denies the
   assert.equal(prompts.answer(1, true), null, "nothing left to answer");
   assert.deepEqual(prompts.answer(2, true), { origin: SITE, kinds: ["camera"] });
   assert.deepEqual(got, ["a:false", "b:false", "c:false", "d:true"]);
+});
+
+test("a long host shows its END, never its start: the real site cannot be cut off", () => {
+  const evil = "https://accounts.google.com.sign-in.aaaaaaaaaaaaaaaaaaaaaaaa.evil.example";
+  const shown = perms.promptHost(evil);
+  assert.equal(shown.length, perms.MAX_PROMPT_HOST);
+  assert.ok(shown.startsWith("\u2026") && shown.endsWith(".evil.example"), shown);
+  assert.ok(!shown.includes("google"), shown);
+  assert.equal(perms.promptHost("https://meet.example.com"), "meet.example.com", "a short host is shown whole");
+  // The longest prompt there is stays short enough for the toolbar to show whole.
+  const longest = perms.promptText(evil, ["camera", "microphone"]);
+  assert.ok(longest.endsWith(".evil.example wants to use your camera and microphone."), longest);
+  assert.ok(longest.length <= 75, String(longest.length));
+});
+
+test("a *.localhost page is this computer too", () => {
+  assert.equal(perms.promptableOrigin("http://app.localhost:3000/x"), "http://app.localhost:3000");
+  assert.equal(perms.promptableOrigin("http://localhost.evil.test/"), null);
+  assert.equal(perms.promptableOrigin("http://notlocalhost/"), null);
+});
+
+test("Allow is dead for the first half second a prompt is up", () => {
+  assert.equal(perms.armed(1000, 1000), false);
+  assert.equal(perms.armed(1000, 1000 + perms.ALLOW_ARM_MS - 1), false);
+  assert.equal(perms.armed(1000, 1000 + perms.ALLOW_ARM_MS), true);
+  assert.equal(perms.armed(undefined, 5000), false, "a prompt with no clock is never armed");
+});
+
+test("taking an answer back takes it from the open pages too", () => {
+  const granted = () => new Map([
+    [1, new Set([`${SITE} camera`, `${SITE} microphone`, "https://other.test notifications"])],
+    [2, new Set([`${SITE} camera`])],
+    [3, new Set(["https://other.test geolocation"])],
+  ]);
+  let g = granted();
+  assert.equal(perms.revokeGranted(g, SITE, "camera"), 2);
+  assert.deepEqual([...g.get(1)], [`${SITE} microphone`, "https://other.test notifications"]);
+  assert.equal(g.has(2), false, "a tab left with nothing is dropped");
+  assert.equal(g.get(3).size, 1);
+  g = granted();
+  assert.equal(perms.revokeGranted(g, SITE), 3, "no kind: every kind of the site");
+  assert.deepEqual([...g.get(1)], ["https://other.test notifications"]);
+  g = granted();
+  assert.equal(perms.revokeGranted(g, null), 5, "no site: everything");
+  assert.equal(g.size, 0);
+  g = granted();
+  assert.equal(perms.revokeGranted(g, "https://meet.tes", "camera"), 0, "the origin is matched whole");
 });

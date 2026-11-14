@@ -218,6 +218,10 @@ function libraryHandlers({ getHost, pane = paneOf, now = () => Date.now(), fsImp
     "desk:library-bookmarks-import": on(["bookmarks"], async (h) => {
       const file = await h.pickOpen({ title: "Import a bookmarks HTML file" });
       if (!file) return { ok: false, cancelled: true };
+      // Read no more than the parser takes: a huge file is refused, not loaded.
+      let size;
+      try { size = fsImpl.statSync(file).size; } catch (error) { return { ok: false, error: `that file could not be read: ${error.message}` }; }
+      if (size > libraryMod.MAX_IMPORT_CHARS) return { ok: false, error: "that file is too large to be a bookmarks file (over 20 MB)" };
       const rows = libraryMod.parseNetscape(fsImpl.readFileSync(file, "utf8"));
       if (!rows.length) return { ok: false, error: "that file holds no bookmarks" };
       const added = h.library().importEntries({ bookmarks: rows }).bookmarks;
@@ -265,7 +269,11 @@ function libraryHandlers({ getHost, pane = paneOf, now = () => Date.now(), fsImp
     // ---------------------------------------------------------------- aither://permissions
     "desk:library-permissions-list": on(["permissions"], (h) => ({ ok: true, permissions: h.permissions().list() })),
     "desk:library-permissions-remove": on(["permissions"], (h, origin, kind) => {
-      const ok = h.permissions().remove(text(origin, MAX_URL), typeof kind === "string" && kind ? text(kind, 40) : null);
+      const site = text(origin, MAX_URL);
+      const one = typeof kind === "string" && kind ? text(kind, 40) : null;
+      const ok = h.permissions().remove(site, one);
+      // The pages that are open lose it too: the site asks again without a reload.
+      if (ok) h.revokePermission(site, one);
       return ok ? done(h, { ok: true }) : { ok: false, error: "nothing was remembered for that site" };
     }),
     "desk:library-permissions-clear": on(["permissions"], async (h) => {
@@ -273,7 +281,9 @@ function libraryHandlers({ getHost, pane = paneOf, now = () => Date.now(), fsImp
         detail: "Every site asks again the next time it wants your camera, microphone, location, notifications or clipboard.",
         button: "Forget all" });
       if (!yes) return { ok: false, cancelled: true };
-      return done(h, { ok: true, removed: h.permissions().clear() });
+      const removed = h.permissions().clear();
+      h.revokePermission(null, null);
+      return done(h, { ok: true, removed });
     }),
 
     // ---------------------------------------------------------------- aither://clear-data

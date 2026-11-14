@@ -434,37 +434,95 @@ function exportNetscape(bookmarks) {
   return lines.join("\n");
 }
 
+/** The most of a bookmarks file that is read. Edge writes every favicon into the file. */
+const MAX_IMPORT_CHARS = 20 * 1024 * 1024;
+const MAX_ATTRS = 64 * 1024; // HREF and ADD_DATE come before the ICON data in every exporter
+
+/** Drop <tags> in one pass. A "<" with no ">" after it stays as text. */
+function stripTags(text) {
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const lt = text.indexOf("<", i);
+    if (lt < 0) return out + text.slice(i);
+    out += text.slice(i, lt);
+    const gt = text.indexOf(">", lt);
+    if (gt < 0) return out + text.slice(lt);
+    i = gt + 1;
+  }
+}
+
+/**
+ * "Where is the next `needle` at or after `from`?", asked with a `from` that only
+ * grows. The last answer is kept, so all the asks together read the text once.
+ */
+function finder(text, needle) {
+  let at = -2; // -2 not searched yet, -1 no more
+  return (from) => {
+    if (at === -1) return -1;
+    if (at < from) at = text.indexOf(needle, from);
+    return at;
+  };
+}
+
+const isSpace = (ch) => ch === " " || ch === "\n" || ch === "\r" || ch === "\t" || ch === "\f";
+const isWord = (ch) => (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9") || ch === "_";
+
 /**
  * Read a Netscape bookmarks HTML file. Web pages only; the folder is the path of the
  * <H3> headings above the link.
+ *
+ * One pass with indexOf, never a backtracking pattern: this runs in the main process on
+ * a file the owner picked, and a file of unclosed tags must not freeze the desk. A link
+ * with no </A> ends at the next <DT>, <DL> or </DL>.
  * @returns {{url: string, title: string, folder: string, at: number}[]}
  */
 function parseNetscape(html, { max = MAX_BOOKMARKS } = {}) {
   const out = [];
   const stack = [];
   let pending = null;
-  const token = /<DT>\s*<H3\b[^>]*>([\s\S]*?)<\/H3>|<DL\b[^>]*>|<\/DL>|<A\b([^>]*)>([\s\S]*?)<\/A>/gi;
-  const text = String(html || "").slice(0, 20 * 1024 * 1024);
-  let m;
-  while ((m = token.exec(text)) && out.length < max) {
-    const tag = m[0].slice(0, 4).toUpperCase();
-    if (tag === "<DT>") {
-      pending = unescapeHtml(m[1].replace(/<[^>]*>/g, "")).trim();
-    } else if (tag.startsWith("<DL")) {
-      stack.push(pending);
-      pending = null;
-    } else if (tag.startsWith("</DL")) {
+  const text = String(html || "").slice(0, MAX_IMPORT_CHARS);
+  // Tag names in any case. ASCII only, so every index is the same in both strings.
+  const lower = text.replace(/[A-Z]+/g, (run) => run.toLowerCase());
+  const nextLt = finder(lower, "<");
+  const nextGt = finder(lower, ">");
+  const nextH3End = finder(lower, "</h3");
+  const nextAEnd = finder(lower, "</a");
+  const nextDt = finder(lower, "<dt");
+  const nextDl = finder(lower, "<dl");
+  const nextDlEnd = finder(lower, "</dl");
+  let i = 0;
+  while (out.length < max) {
+    const lt = nextLt(i);
+    if (lt < 0) break;
+    const gt = nextGt(lt);
+    if (gt < 0) break; // no tag closes after this point
+    i = lt + 1;
+    if (lower.startsWith("</dl", lt)) {
       stack.pop();
       pending = null;
-    } else {
-      const attrs = m[2] || "";
+      i = gt + 1;
+    } else if (lower.startsWith("<dl", lt) && !isWord(lower[lt + 3])) {
+      stack.push(pending);
+      pending = null;
+      i = gt + 1;
+    } else if (lower.startsWith("<h3", lt) && !isWord(lower[lt + 3])) {
+      const end = nextH3End(gt);
+      if (end < 0) { i = gt + 1; continue; }
+      pending = unescapeHtml(stripTags(text.slice(gt + 1, Math.min(end, gt + 1 + 4 * MAX_TITLE)))).trim();
+      i = end + 4;
+    } else if (lower.startsWith("<a", lt) && (lt + 2 === gt || isSpace(lower[lt + 2]))) {
+      let end = text.length;
+      for (const at of [nextAEnd(gt), nextDt(gt), nextDl(gt), nextDlEnd(gt)]) if (at >= 0 && at < end) end = at;
+      i = end; // a closing </a> is skipped as an unknown tag on the next turn
+      const attrs = text.slice(lt + 2, Math.min(gt, lt + 2 + MAX_ATTRS));
       const href = /\bHREF\s*=\s*"([^"]*)"/i.exec(attrs) || /\bHREF\s*=\s*'([^']*)'/i.exec(attrs);
       const url = href ? unescapeHtml(href[1]).trim() : "";
       if (!storable(url)) continue;
       const added = /\bADD_DATE\s*=\s*"?([0-9]+)/i.exec(attrs);
       out.push({
         url,
-        title: unescapeHtml(String(m[3] || "").replace(/<[^>]*>/g, "")).trim().slice(0, MAX_TITLE),
+        title: unescapeHtml(stripTags(text.slice(gt + 1, Math.min(end, gt + 1 + 4 * MAX_TITLE)))).trim().slice(0, MAX_TITLE),
         folder: normFolder(stack.filter(Boolean).join("/")),
         at: added ? Number(added[1]) * 1000 : 0,
       });
@@ -474,6 +532,6 @@ function parseNetscape(html, { max = MAX_BOOKMARKS } = {}) {
 }
 
 module.exports = {
-  BAR_FOLDERS, MAX_BOOKMARKS, MAX_HISTORY,
+  BAR_FOLDERS, MAX_BOOKMARKS, MAX_HISTORY, MAX_IMPORT_CHARS,
   barModel, createLibrary, exportNetscape, normFolder, parseNetscape, storable,
 };

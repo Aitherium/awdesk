@@ -952,7 +952,7 @@ function everydayState(wc) {
     private: Boolean(tab.private),
     zoom: Math.round((wc.getZoomFactor() || 1) * 100),
     find: findResults.get(id) || null,
-    notice: notice ? { kind: notice.kind, text: notice.text, actions: notice.actions || [] } : null,
+    notice: notice ? { kind: notice.kind, text: notice.text, title: notice.title || notice.text, actions: notice.actions || [] } : null,
     passwords: saved,
     adblock: ab ? { enabled: ab.enabled(), siteOff: ab.siteOff(url), blocked: ab.blockedOn(wc.id) } : null,
   };
@@ -1072,6 +1072,9 @@ function wireEveryday(wc, id) {
   wc.on("did-navigate", (_event, url) => {
     const k = pwKeys.get(id);
     if (k) pwKeys.set(id, { key: null, prev: k.key || k.prev });
+    // A prompt the old document raised while it was leaving goes with it.
+    dropPermissionPrompts(id);
+    permGranted.delete(id);
     const n = tabNotices.get(id);
     if (n && n.keep) n.keep = false;
     else if (n) tabNotices.delete(id);
@@ -1307,7 +1310,10 @@ async function noticeAction(actionId) {
     case "drm-stay": drmStay.add((notice.data && notice.data.host) || ""); setNotice(id, null); return { ok: true };
     case "extension-install": return installExtensionFrom(id, (notice.data && notice.data.url) || (wc ? wc.getURL() : ""));
     case "show-original": setNotice(id, null); if (wc) wc.reload(); return { ok: true };
-    case "permission-allow": return answerPermission(id, true, true);
+    case "permission-allow":
+      // A prompt that only just appeared may sit under a click meant for something else.
+      if (!sitePermissions.armed(notice.at, Date.now())) return { ok: false, early: true };
+      return answerPermission(id, true, true);
     case "permission-block": return answerPermission(id, false, true);
     case "delete-file": {
       const file = notice.data && notice.data.file;
@@ -1574,8 +1580,15 @@ function checkPermission(wc, permission, origin, details) {
 function showPermissionPrompt(id) {
   const head = permPrompts.head(id);
   if (!head) return;
+  const shown = tabNotices.get(id);
+  // The notice the prompt covers (a save-password offer...) waits behind it and comes back.
+  if (shown && shown.kind !== "permission") noticeBehind.set(id, shown);
+  // The same question asked again keeps its clock; a new one starts the Allow delay over.
+  const same = shown && shown.kind === "permission" && shown.data && shown.data.origin === head.origin
+    && shown.data.kinds.join() === head.kinds.join();
   setNotice(id, {
-    kind: "permission", keep: true, data: head, text: head.text,
+    kind: "permission", keep: true, data: head, text: head.text, at: same ? shown.at : Date.now(),
+    title: `${head.origin} — ${head.text}`,
     actions: [{ id: "permission-allow", label: "Allow" }, { id: "permission-block", label: "Block" }, { id: "dismiss", label: "Not now" }],
   });
 }
@@ -1610,12 +1623,26 @@ function afterPermissionPrompt(id) {
   pushState();
 }
 
+/**
+ * An answer was taken back on aither://permissions: the open pages lose it now, not at
+ * their next navigation. A prompt that is waiting stays; it was never answered.
+ */
+function revokePermission(origin, kind) {
+  const n = sitePermissions.revokeGranted(permGranted, origin, kind);
+  if (n) pushState();
+  return n;
+}
+
 /** The page left or its tab closed: whatever it asked for is denied and nothing is kept. */
 function dropPermissionPrompts(id) {
+  const behind = noticeBehind.get(id);
   noticeBehind.delete(id);
-  if (!permPrompts.cancel(id)) return;
+  permPrompts.cancel(id);
   const shown = tabNotices.get(id);
-  if (shown && shown.kind === "permission") tabNotices.delete(id);
+  if (!shown || shown.kind !== "permission") return;
+  // The notice the prompt covered is on screen again, as if the prompt had never been.
+  if (behind) tabNotices.set(id, behind);
+  else tabNotices.delete(id);
 }
 
 // ---------------------------------------------------------------- the library pages
@@ -1744,6 +1771,7 @@ const libraryHost = Object.freeze({
   library: () => getLibrary(),
   downloads: () => downloads,
   permissions: () => getPermissionStore(),
+  revokePermission,
   open: (url) => openTab("you", url).ok,
   goto: (pane) => openInternal(pane, null) !== false,
   openFile: (file) => electron().shell.openPath(file),

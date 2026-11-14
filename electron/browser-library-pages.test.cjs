@@ -28,10 +28,11 @@ function rig({ confirm = true } = {}) {
   const library = lib.createLibrary({ file: path.join(dir, "browser-library.json"), now: () => (t += 1000) });
   const downloads = createDownloads();
   const permissions = createPermissionStore({ file: path.join(dir, "browser-permissions.json") });
-  const calls = { confirm: [], open: [], goto: [], download: [], changed: 0, cleared: [], shown: [], opened: [] };
+  const calls = { confirm: [], open: [], goto: [], download: [], changed: 0, cleared: [], shown: [], opened: [], revoked: [] };
   let bar = false;
   const host = {
     library: () => library, downloads: () => downloads, permissions: () => permissions,
+    revokePermission: (origin, kind) => { calls.revoked.push([origin, kind]); },
     open: (url) => { calls.open.push(url); return true; },
     goto: (pane) => { calls.goto.push(pane); return true; },
     openFile: async (file) => { calls.opened.push(file); return ""; },
@@ -256,6 +257,41 @@ test("Netscape HTML from other browsers: nested folders, entities, and only web 
   assert.equal(lib.parseNetscape(html, { max: 1 }).length, 1);
 });
 
+test("a broken bookmarks file is read in one pass: unclosed tags cannot freeze the desk", () => {
+  const fill = (unit, chars) => unit.repeat(Math.ceil(chars / unit.length));
+  const MB = 1024 * 1024;
+  // Each of these took the old pattern-based reader minutes (it grew 4x per doubling).
+  for (const [name, text] of [
+    ["an <A that never closes its tag", fill("<A x ", MB)],
+    ["links with no </A>", fill('<A HREF="https://a.test/">x', MB)],
+    ["folders with no </H3>", fill("<DT><H3>x", MB)],
+    ["only <", fill("<", MB)],
+    ["a quote that never closes", fill('<A HREF="x ', MB)],
+  ]) {
+    const t = process.hrtime.bigint();
+    lib.parseNetscape(text);
+    const ms = Number(process.hrtime.bigint() - t) / 1e6;
+    assert.ok(ms < 1500, `${name}: 1 MB took ${Math.round(ms)} ms`);
+  }
+  // A link with no </A> ends at the next <DT>; the links after it are still read.
+  assert.deepEqual(lib.parseNetscape('<DL><DT><A HREF="https://a.test/">A <b>one</b>\n<DT><a href="https://b.test/">B</a>\n</DL><DT><A HREF="https://c.test/">C')
+    .map((b) => [b.url, b.title]), [["https://a.test/", "A one"], ["https://b.test/", "B"], ["https://c.test/", "C"]]);
+  // <ABBR>, <ADDRESS>, <DLX> are not links or folders.
+  assert.deepEqual(lib.parseNetscape('<ABBR HREF="https://x.test/">x</ABBR><ADDRESS>y</ADDRESS><A HREF="https://ok.test/">ok</A>')
+    .map((b) => b.url), ["https://ok.test/"]);
+});
+
+test("a file too large to be a bookmarks file is refused before it is read", async () => {
+  const r = rig();
+  let read = 0;
+  const fsImpl = { statSync: () => ({ size: lib.MAX_IMPORT_CHARS + 1 }), readFileSync: () => { read += 1; return ""; } };
+  const handlers = pages.libraryHandlers({ getHost: () => r.host, fsImpl });
+  const got = await handlers["desk:library-bookmarks-import"](sender("aither://bookmarks/"));
+  assert.equal(got.ok, false);
+  assert.match(got.error, /too large/);
+  assert.equal(read, 0, "the file was not read");
+});
+
 test("folders are optional: a file written before folders existed reads unchanged, and Edge's folders import", () => {
   const dir = tmpDir();
   const file = path.join(dir, "browser-library.json");
@@ -357,11 +393,15 @@ test("site permissions: listed, taken back one by one, per site, or all (after a
   assert.equal(r.permissions.get("https://meet.test", "microphone"), "allow");
   assert.deepEqual(await r.call("permissions", "permissions-remove", "https://meet.test", ""), { ok: true });
   assert.equal((await r.call("permissions", "permissions-remove", "https://meet.test", "")).ok, false);
+  // Each answer taken back is taken from the open pages too; a miss revokes nothing.
+  assert.deepEqual(r.calls.revoked, [["https://meet.test", "camera"], ["https://meet.test", null]]);
   assert.deepEqual(await r.call("permissions", "permissions-clear"), { ok: true, removed: 1 });
+  assert.deepEqual(r.calls.revoked[2], [null, null], "Forget all revokes every open page");
   assert.equal(r.permissions.list().length, 0);
   const no = rig({ confirm: false });
   no.permissions.set("https://a.test", ["geolocation"], "allow");
   assert.deepEqual(await no.call("permissions", "permissions-clear"), { ok: false, cancelled: true });
+  assert.deepEqual(no.calls.revoked, [], "a cancelled Forget all revokes nothing");
   assert.equal(no.permissions.list().length, 1);
 });
 

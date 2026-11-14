@@ -17,6 +17,11 @@
  *     the review page (aither://permissions) lists them and takes them back.
  *   - an InPrivate tab is asked every time and its answer is never written. A site
  *     the owner blocked stays blocked there.
+ *   - the prompt always shows the END of the site's name. The start of a long host is
+ *     what an attacker picks ("accounts.google.com.sign-in.x.evil.example"); the end is
+ *     who really asks. Allow does nothing for the first half second a prompt is up, so
+ *     a page cannot slide it under a click meant for something else.
+ *   - taking an Allow back takes it from the pages that are open too (revokeGranted).
  *
  * Pure: no electron at module load. browser-window.cjs does the wiring.
  */
@@ -26,6 +31,8 @@ const path = require("node:path");
 
 const VERSION = 1;
 const MAX_SITES = 2000;
+const MAX_PROMPT_HOST = 32; // characters of the host a prompt shows, counted from its end
+const ALLOW_ARM_MS = 500; // a prompt's Allow is dead for this long after it appears
 
 /** The permissions the owner is asked about, with the words the prompt uses. */
 const KINDS = Object.freeze({
@@ -71,7 +78,8 @@ function promptableOrigin(url) {
     return null;
   }
   if (u.username || u.password) return null;
-  const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  // Chromium serves every *.localhost name from this computer, like localhost itself.
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname) || u.hostname.endsWith(".localhost");
   if (u.protocol === "https:" || (u.protocol === "http:" && local)) return u.origin;
   return null;
 }
@@ -197,12 +205,51 @@ function decide({ permission, details = {}, url, tab, store } = {}) {
   return { verdict: "prompt", origin, kinds };
 }
 
-/** "meet.example.com wants to use your camera and use your microphone." */
-function promptText(origin, kinds) {
+/**
+ * The site's name as a prompt shows it: whole when short, else its END after an
+ * ellipsis. The registrable domain is at the end, so that is the part never cut.
+ */
+function promptHost(origin, max = MAX_PROMPT_HOST) {
   let host = String(origin || "");
   try { host = new URL(host).host; } catch { /* shown as given */ }
-  const wants = [].concat(kinds || []).map((k) => KINDS[k]).filter(Boolean);
-  return `${host} wants to ${wants.join(" and ") || "use a device"}.`;
+  return host.length > max ? `…${host.slice(1 - max)}` : host;
+}
+
+/** "meet.example.com wants to use your camera and microphone." Short enough to show whole. */
+function promptText(origin, kinds) {
+  const list = [].concat(kinds || []);
+  const wants = list.includes("camera") && list.includes("microphone")
+    ? ["use your camera and microphone", ...list.filter((k) => k !== "camera" && k !== "microphone").map((k) => KINDS[k])]
+    : list.map((k) => KINDS[k]);
+  return `${promptHost(origin)} wants to ${wants.filter(Boolean).join(" and ") || "use a device"}.`;
+}
+
+/** May Allow be pressed yet? Not in the first half second the prompt is on screen. */
+function armed(shownAt, now) {
+  return Number.isFinite(shownAt) && now - shownAt >= ALLOW_ARM_MS;
+}
+
+/**
+ * The owner took an answer back on the review page: the pages that are open lose it
+ * too, so the site asks again without a reload.
+ * @param {Map<any, Set<string>>} granted tab id -> Set("origin kind") allowed for the page on screen
+ * @param {string|null} origin null = every site
+ * @param {string|null} [kind] null = every kind of that site
+ * @returns {number} how many grants were taken back
+ */
+function revokeGranted(granted, origin = null, kind = null) {
+  let n = 0;
+  for (const [id, set] of granted) {
+    for (const key of [...set]) {
+      const cut = key.lastIndexOf(" ");
+      if (origin != null && key.slice(0, cut) !== origin) continue;
+      if (origin != null && kind != null && key.slice(cut + 1) !== kind) continue;
+      set.delete(key);
+      n += 1;
+    }
+    if (!set.size) granted.delete(id);
+  }
+  return n;
 }
 
 /**
@@ -254,6 +301,6 @@ function createPrompts() {
 }
 
 module.exports = {
-  KINDS, LABELS,
-  createPermissionStore, createPrompts, decide, kindsOf, promptText, promptableOrigin,
+  ALLOW_ARM_MS, KINDS, LABELS, MAX_PROMPT_HOST,
+  armed, createPermissionStore, createPrompts, decide, kindsOf, promptHost, promptText, promptableOrigin, revokeGranted,
 };
