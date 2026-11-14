@@ -43,6 +43,11 @@
   #orb:active { cursor: grabbing; }
   #orb.busy .halo { animation: pulse 0.9s ease-in-out infinite; }
   #orb.busy .wing { animation-duration: 0.09s; }
+  /* Rest (owner 2026-11-13: "the overlay feels laggy ... throttle the fairies"): after 20 s
+     with no pointer, no work and no nudge the flutter, bob, pulse and twinkle PAUSE, so an
+     idle orb asks the compositor for no frames at all. Any pointer or busy wakes it. */
+  body.rest #orb, body.rest #orb .halo, body.rest #orb .wing, body.rest #orb .spark,
+  body.rest .mate, body.rest .mate::before, body.rest .mate::after { animation-play-state: paused; }
   #orb.attached { outline: 0; }
   #orb .halo, #orb .core { transition: transform 0.6s ease, opacity 0.6s ease; }
   #orb.behind .core { transform: scale(0.72); opacity: 0.6; }
@@ -106,7 +111,7 @@
      count, drawn smaller as more appear; hovering one shows that agent's card. */
   body.swarm { background: transparent; overflow: hidden; }
   #mates { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
-  .mate { position: absolute; width: var(--m-size, 10px); height: var(--m-size, 10px);
+  .mate { position: absolute; left: 0; top: 0; width: var(--m-size, 10px); height: var(--m-size, 10px);
     margin: calc(var(--m-size, 10px) / -2) 0 0 calc(var(--m-size, 10px) / -2); border-radius: 50%;
     background: radial-gradient(circle, #fff 0%, var(--m-core, #fff) 30%, var(--m-color) 62%, rgba(255,255,255,0) 100%);
     box-shadow: 0 0 6px 2px var(--m-glow); transition: transform 0.12s ease; }
@@ -768,17 +773,29 @@
     let panelOpen = false;
     const layout = swarmSlots;
     const offset = swarmOffset;
+    // 2026-11-13 (owner: "the overlay feels laggy"): measured 19 style+layout passes a
+    // second in THIS page while nothing happened (left/top at 20 fps, forever). Now the
+    // lap moves `translate` (compositor only, no layout) and it RESTS after 20 s with no
+    // pointer and no companion speaking (a waiting one keeps its colour and badge, still); a pointer or a new list wakes it.
+    const REST_AFTER_MS = 20_000;
+    let lastStir = Date.now();
+    const lively = () => mates.some((m) => /st-speaking/.test(m.el.className));
+    function stir() {
+      lastStir = Date.now();
+      if (!frame && mates.length) place();
+    }
     function place() {
       frame = 0;
       if (!mates.length) return;
       const now = Date.now();
       for (const m of mates) {
         const o = offset(m.slot, now);
-        m.el.style.left = `${o.x}px`;
-        m.el.style.top = `${o.y}px`;
+        m.el.style.translate = `${o.x}px ${o.y}px`;
         m.x = o.x;
         m.y = o.y;
       }
+      if (!lively() && now - lastStir > REST_AFTER_MS) { document.body.classList.add("rest"); return; }
+      document.body.classList.remove("rest");
       frame = window.setTimeout(place, 50); // 20 fps is plenty for a slow lap
     }
     function setMates(list) {
@@ -812,7 +829,7 @@
           tip: mateTip(c), aria: `${c.label || c.agent}${stateWord}: ${c.title || "a card"}${extra} -- ${doWhat}`,
         };
       });
-      place();
+      stir();
     }
     function mateAt(dx, dy) {
       let best = null;
@@ -834,6 +851,7 @@
     const dwell = createDwell();
     let lastPoint = { x: 0, y: 0 };
     window.addEventListener("mousemove", (e) => {
+      stir();
       const m = mateAt(e.clientX - window.innerWidth / 2, e.clientY - window.innerHeight / 2);
       lastPoint = { x: e.screenX, y: e.screenY };
       if (m !== hotMate) {
@@ -1418,6 +1436,23 @@
       if (s.view === "bubble") setTimeout(() => q.focus(), 30);
     });
   }
+</script>
+<script>
+  // The orb's rest timer (see body.rest above). Not while busy or nudging.
+  (() => {
+    const REST_AFTER_MS = 20_000;
+    let timer = 0;
+    const orbEl = document.getElementById("orb");
+    const awake = () => Boolean(orbEl && /(busy|nudge[123])/.test(orbEl.className));
+    const arm = () => {
+      document.body.classList.remove("rest");
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (awake()) arm(); else document.body.classList.add("rest"); }, REST_AFTER_MS);
+    };
+    for (const ev of ["pointermove", "pointerdown", "wheel", "keydown"]) document.addEventListener(ev, arm, { passive: true });
+    if (orbEl) new MutationObserver(() => { if (awake()) arm(); }).observe(orbEl, { attributes: true, attributeFilter: ["class"] });
+    arm();
+  })();
 </script>
 </body>
 </html>
