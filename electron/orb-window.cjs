@@ -53,6 +53,7 @@ const fairyMenu = require("./fairy-menu.cjs");
 const companionMenu = require("./companion-menu.cjs");
 const fairyOwner = require("./fairy-owner.cjs");
 const fairyCounts = require("./fairy-counts.cjs");
+const fairyHoverGuard = require("./fairy-hover-guard.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -400,6 +401,7 @@ function sendPanel() {
   const open = panelOpen();
   if (open === lastPanelOpen) return open;
   lastPanelOpen = open;
+  if (open) releaseHover();
   for (const win of [orbWindow, swarmWindow]) {
     try {
       if (alive(win)) win.webContents.send("orb:panel", { open });
@@ -741,6 +743,7 @@ function showOrb() {
 }
 
 function hideOrb() {
+  releaseHover();
   suppressed = true;
   pendingSlot = null;
   if (nudging) endNudge("hidden");
@@ -2459,6 +2462,7 @@ function sendFairy({ force = false } = {}) {
   if (force || ckey !== lastCompanionsKey) {
     lastCompanionsKey = ckey;
     swarmCompanions = companions;
+    releaseHover();
     send("orb:companions", companions);
     placeSwarm(companions, { raise: true });
     try {
@@ -3044,6 +3048,7 @@ function spiritMenu() {
 
 function beginDrag() {
   if (dragging || !alive(orbWindow)) return { ok: true };
+  hideTip();
   // Grabbing the fairy mid-nudge: the owner saw it. It stays where they put it.
   if (nudging) endNudge("seen", { stay: true });
   // Pulling the orb off a body/window detaches it; dropping it again re-attaches.
@@ -3197,6 +3202,31 @@ function ensureMenu() {
   menuWindow.on("closed", () => { menuWindow = null; menuState = null; });
   void menuWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "menu" } });
   return menuWindow;
+}
+
+/** The safety net under every hover (fairy-hover-guard.cjs): the tip hides itself,
+ *  and a window the page made clickable goes back to click-through once the pointer
+ *  is off it, whatever the page managed to report (owner 2026-11-14, stuck pills). */
+let hoverGuardImpl = null;
+function hoverWin(key) {
+  return key === "swarm" ? swarmWindow : key === "orb" ? orbWindow : null;
+}
+function hoverGuard() {
+  if (hoverGuardImpl) return hoverGuardImpl;
+  hoverGuardImpl = fairyHoverGuard.createHoverGuard({
+    cursor: () => cursorPoint(),
+    hideTip: () => hideTipWindow(),
+    setClickThrough: (key, through) => {
+      const win = hoverWin(key);
+      if (alive(win)) win.setIgnoreMouseEvents(Boolean(through), { forward: true });
+    },
+    // The page still thinks the pointer is on it: tell it to drop its hover.
+    released: (key) => {
+      const win = hoverWin(key);
+      try { if (alive(win)) win.webContents.send("orb:hit-reset", true); } catch { /* gone */ }
+    },
+  });
+  return hoverGuardImpl;
 }
 
 function ensureTip() {
@@ -3543,14 +3573,26 @@ function showTip(text, point) {
   win.setBounds({ x, y, ...TIP_SIZE });
   deliverTo(win, "orb:tip", { text: line, side: x < p.x ? "left" : "right" });
   if (!win.isVisible()) win.showInactive();
+  hoverGuard().tipShown(p);
   return { ok: true, text: line };
 }
 
-function hideTip() {
+function hideTipWindow() {
   if (alive(tipWindow) && tipWindow.isVisible()) {
     try { tipWindow.hide(); } catch { /* gone */ }
   }
+}
+
+function hideTip() {
+  hideTipWindow();
+  if (hoverGuardImpl) hoverGuardImpl.tipHidden();
   return { ok: true, hidden: true };
+}
+
+/** Drop every hover at once: the tip, and click-through back on the orb and swarm. */
+function releaseHover() {
+  if (hoverGuardImpl) hoverGuardImpl.release();
+  else hideTipWindow();
 }
 
 // ── IPC ─────────────────────────────────────────────────────────────────────
@@ -3603,7 +3645,7 @@ function handlers() {
     }),
     "desk:orb-hit": guard((_sender, inside) => {
       if (dragging) return { ok: true };
-      if (alive(orbWindow)) orbWindow.setIgnoreMouseEvents(!inside, { forward: true });
+      hoverGuard().hit("orb", Boolean(inside), () => orbWindow.getBounds());
       return { ok: true };
     }),
     "desk:orb-drag-start": guard(() => beginDrag()),
@@ -3627,7 +3669,7 @@ function handlers() {
     // Click a companion: open a chat with that agent.
     "desk:orb-chat-agent": guard((_sender, agent) => chatWithAgent(agent)),
     "desk:swarm-hit": guard((_sender, inside) => {
-      if (alive(swarmWindow)) swarmWindow.setIgnoreMouseEvents(!inside, { forward: true });
+      hoverGuard().hit("swarm", Boolean(inside), () => swarmWindow.getBounds());
       return { ok: true };
     }),
     "desk:orb-needs-you": guard(() => {
@@ -3775,6 +3817,8 @@ function stopOrb() {
   menuWindow = null;
   menuState = null;
   tipWindow = null;
+  if (hoverGuardImpl) hoverGuardImpl.release();
+  hoverGuardImpl = null;
   nudgeWindow = null;
   veilWindow = null;
   bubbleWindow = null;
@@ -3875,7 +3919,7 @@ async function askImage(imagePath, prompt, question) {
 
 module.exports = {
   ORB_SIZE, BUBBLE_SIZE, TICK_MS, REGION_WAIT_MS,
-  startOrb, stopOrb, run, ensureIpc, showOrb, hideOrb, toggleOrb, openBubble, setAttention,
+  startOrb, stopOrb, run, hoverGuard: () => hoverGuardImpl, ensureIpc, showOrb, hideOrb, toggleOrb, openBubble, setAttention,
   // attention: the fairy carries the cards (fairy-attention.cjs)
   NUDGE_SIZE, setAttentionCards, attentionTick, ownsAttention, nudgeAct, endNudge,
   nudgeCard, chatAboutCard, setSounds,
@@ -3933,6 +3977,8 @@ module.exports = {
     menuWindow = null;
     menuState = null;
     tipWindow = null;
+    if (hoverGuardImpl) hoverGuardImpl.release();
+    hoverGuardImpl = null;
     nudgeWindow = null;
     swarmWindow = null;
     veilWindow = null;
