@@ -32,7 +32,7 @@ the Edge notice is the fallback, exactly as before.
 | castLabs 39.8.10+wvcus, before the CDM is installed | rejected, same error |
 | castLabs, after `components.whenReady()` | granted, in the already-open tab, without a reload |
 
-- `components.whenReady()` resolved in 0.7 to 1.6 s on a fresh profile (network needed once;
+- `components.whenReady()` resolved in 0.7 to 3.9 s on a fresh profile (network needed once;
   later runs use the installed CDM and check for updates in the background).
 - `components.status()` afterwards: Widevine Content Decryption Module `4.10.3112.0`
   `updated`; Google Widevine Windows CDM `1.0.2738.0` `updated`.
@@ -107,7 +107,23 @@ certificate). EVS asks for `streaming` signatures; that is the default the hook 
 ## Upgrading Electron
 
 Pick the castLabs tag for the new version (`vX.Y.Z+wvcus`,
-https://github.com/castlabs/electron-releases/releases), change the tag in `package.json`
-and the `allowScripts` key, run `npm install --package-lock-only`, then
+https://github.com/castlabs/electron-releases/releases), change the tag in `package.json`,
+run `npm install --package-lock-only`, update the `allowScripts` key (below), then
 `npm run test:browser-widevine`. castLabs follows upstream releases, usually within days;
 a security update waits on their tag.
+
+Two npm 12 rules make a git dependency different from a registry one. CI and the release
+jobs run npm 12; an older local npm knows neither rule and installs without complaint, so
+a mistake here is green on your machine and red on every CI job.
+
+- **`allowScripts` key.** It is NOT `electron@<version>`. Under `strict-allow-scripts`
+  (`.npmrc`) npm matches a git dependency only by repository plus commit sha:
+  `github:castlabs/electron-releases#<sha>`, where `<sha>` is the commit in the new
+  lockfile's `resolved` line for `node_modules/electron`. A tag after `#` does not match,
+  and a `name@version` key never matches a git dependency. A wrong key fails `npm ci` with
+  `ESTRICTALLOWSCRIPTS`.
+- **`allow-git=root` in `.npmrc`.** npm 12 refuses every git dependency by default
+  (`EALLOWGIT`). `root` allows only the ones named in this `package.json`.
+
+`scripts/allow-scripts.test.cjs` (part of `npm test`) fails on a wrong or stale key and on
+a missing `allow-git`.

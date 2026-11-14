@@ -23,7 +23,7 @@
   },
   "allowScripts": {
     "@swc/core@1.15.46": true,
-    "electron@39.8.10+wvcus": true,
+    "github:castlabs/electron-releases#62e98b31d8bbfbc70bdc971c6e24b0339e6826d3": true,
     "electron-winstaller@5.4.0": true,
     "esbuild@0.28.1": true,
     "fsevents@2.3.3": true
