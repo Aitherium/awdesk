@@ -94,6 +94,7 @@ const FAKE_DE = {
 function serve() {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
+      if (gaps.serve(req, res)) return; // the high-impact gaps' own pages (browser-parity-gaps.cjs)
       const u = new URL(req.url, "http://x");
       seen.push({ url: req.url, gpc: req.headers["sec-gpc"], dnt: req.headers.dnt });
       if (u.pathname === "/ads/banners/top.gif") { res.writeHead(200, { "content-type": "image/gif" }); res.end(GIF); return; }
@@ -106,6 +107,7 @@ function serve() {
   });
 }
 
+const gaps = require("./browser-parity-gaps.cjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 45 s, not 8. On a busy machine every tab's navigation can stop committing for half a
 // minute and then carry on (measured 2026-11-13 with the CPU at 100%, on main's own code:
@@ -671,6 +673,10 @@ app.whenReady().then(async () => {
     expect("an agent tab opens for the protected-media check", false, keyTab);
   }
   bw.getGate().release();
+
+  // The high-impact gaps: user agent, full screen, Copy buttons, popups, the discard's
+  // exemptions and app links (browser-parity-gaps.cjs).
+  await gaps.run({ bw, base, expect, until, sleep });
 
   // Clear browsing data (Ctrl+Shift+Delete): nothing goes without the confirm; with it,
   // history is emptied. Cookies are ticked too, so the owner profile's cookie really goes.
