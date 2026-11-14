@@ -1726,6 +1726,13 @@ function overlayMayRaise(trigger, what = "overlay") {
 
 /** A notice that does not take the screen: a tray balloon (Windows), else an OS notification. */
 function notifyQuietly(title, body) {
+  // Quiet mode from a companion menu or the tray (companion-menu.cjs): no popups.
+  try {
+    if (orbWindow.quietUntil() > Date.now()) {
+      debugLog(`[quiet] notice held: ${String(title).slice(0, 63)}`);
+      return;
+    }
+  } catch { /* the fairy module is not up: notices are not held */ }
   try {
     if (process.platform === "win32" && tray && !tray.isDestroyed?.()) {
       tray.displayBalloon({ title: String(title).slice(0, 63), content: String(body).slice(0, 255), iconType: "info" });
@@ -3202,7 +3209,16 @@ function trayTemplateNow() {
   // Row 0: what only the owner can unblock ("Secret needed: <name> (from ...)").
   // A click opens the Inbox ON that card; nothing here opens by itself.
   // Then the house: "● House: Dark", the Posture switcher and a Wake/Sleep row per group.
-  trayTemplate.unshift(...needsYouLib.trayRows(needsYou, (id) => openInbox(id)), ...houseTrayRows());
+  // Then the companions (owner 2026-11-13: hidden by default, one click back): Show/Hide
+  // all, the AitherOS desktop, Spaces and quiet mode. Chat, Settings and Quit are the
+  // tray's own rows further down (companion-menu items doors:"tray").
+  let companionRows = [];
+  try {
+    companionRows = require("./companion-menu.cjs").menuRows(orbWindow.companionTrayItems(),
+      (id) => orbWindow.companionAction(id, { target: null }));
+  } catch { /* the fairy module is not up yet: the next repaint has them */ }
+  if (companionRows.length) companionRows.push({ type: "separator" });
+  trayTemplate.unshift(...needsYouLib.trayRows(needsYou, (id) => openInbox(id)), ...companionRows, ...houseTrayRows());
   return trayTemplate;
 }
 
@@ -6135,7 +6151,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       cards: () => openDecisions,
       openCard: (id) => openInbox(id),
     });
+    // Hidden by default (owner 2026-11-13): an installed build moves an older orb.json
+    // to hidden once; a fresh one is hidden anyway. The tray repaints on every change.
+    orbWindow.onCompanionsChange(() => { if (tray) refreshTrayMenu(); });
     orbWindow.startOrb({
+      hideByDefault: app.isPackaged,
       speak: (text, { slotId = null, origin = "desk:spirit" } = {}) =>
         speakAloud(text, undefined, undefined, slotId || "slot0", origin),
       // The cards live in the fairy (owner 2026-11-08, fairy-attention.cjs): it answers
@@ -6164,6 +6184,15 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         // card through awask (the raising session is told), "Go to session" brings
         // its terminal tab forward, or reopens a session that has ended.
         cancel: (id, note) => decisionCards.cancelCard(id, note),
+        // The doors on every companion menu and the tray's companion rows
+        // (companion-menu.cjs, owner 2026-11-13). Each opens; none toggles shut.
+        door: (name) => {
+          if (name === "desktop") { showLivingDesktop(); return true; }
+          const id = { spaces: "osapp.spaces", chat: "chat.open", settings: "settings.open", quit: "quit" }[name];
+          if (!id) return false;
+          runCommand(id, undefined, { surface: "fairy" });
+          return true;
+        },
         focusSession: async (id) => {
           const r = await deckSessionAct({ id, action: "focus" });
           if (r && !r.ok && /ended/i.test(String(r.note || ""))) return deckSessionAct({ id, action: "resume" });

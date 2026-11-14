@@ -300,9 +300,14 @@ test("a bubble is never placed off-screen when the orb is in a negative-origin d
 // ── state file ──────────────────────────────────────────────────────────────
 
 test("a saved state is small and sanitized; junk costs settings, not a launch", () => {
-  assert.deepEqual(core.sanitizeState(null), { visible: true, pinned: false, x: null, y: null, freeRoam: false, sounds: true, muteUntil: 0 });
-  assert.deepEqual(core.sanitizeState({ visible: false, x: "12.7", y: 400 }), { visible: false, pinned: false, x: 13, y: 400, freeRoam: false, sounds: true, muteUntil: 0 });
-  assert.deepEqual(core.sanitizeState({ x: "nope", y: 1e9 }), { visible: true, pinned: false, x: null, y: 1000000000, freeRoam: false, sounds: true, muteUntil: 0 });
+  const off = { tenantCompanion: false, companionsV: 0, swarm: false };
+  // Hidden by default (owner 2026-11-13): no file, or a file that never said "visible".
+  assert.deepEqual(core.sanitizeState(null), { visible: false, pinned: false, x: null, y: null, freeRoam: false, sounds: true, muteUntil: 0, ...off });
+  assert.deepEqual(core.sanitizeState({ visible: false, x: "12.7", y: 400 }), { visible: false, pinned: false, x: 13, y: 400, freeRoam: false, sounds: true, muteUntil: 0, ...off });
+  assert.deepEqual(core.sanitizeState({ x: "nope", y: 1e9 }), { visible: false, pinned: false, x: null, y: 1000000000, freeRoam: false, sounds: true, muteUntil: 0, ...off });
+  assert.equal(core.sanitizeState({ visible: true }).visible, true, "a person who showed it keeps it");
+  assert.equal(core.sanitizeState({ tenantCompanion: true, companionsV: 1 }).tenantCompanion, true);
+  assert.equal(core.sanitizeState({ companionsV: "1" }).companionsV, 1);
   assert.equal(core.sanitizeState({ pinned: true }).pinned, true);
 });
 

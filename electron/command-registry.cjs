@@ -62,6 +62,9 @@ const GROUPS = Object.freeze({
   sandbox: Object.freeze({ menu: "Windows Sandbox" }),
   aw: Object.freeze({ menu: "aw tools" }),
   layout: Object.freeze({ menu: "Browser layout" }),
+  // Nested 2026-11-13: the tray ran past the top and bottom of the screen (61 rows).
+  audio: Object.freeze({ menu: "Sound" }),
+  capture: Object.freeze({ menu: "Capture and draw" }),
 });
 
 /**
@@ -834,6 +837,17 @@ const COMMANDS = Object.freeze([
     surfaces: ["avatar-menu"], orb: "web",
     whySingle: "A web trip dispatched by THIS body, which speaks the answer; the "
       + "bubble's field takes the query. spirit.go is the palette's general door.",
+  }),
+  // The companions are HIDDEN by default (owner 2026-11-13, companion-menu.cjs). The
+  // tray carries the same two rows at its top; these are the palette's, the jump
+  // list's (right-click Aither on the taskbar) and the bridge's way back.
+  Object.freeze({
+    id: "companions.show", label: "Show the fairies and companions", group: "go",
+    surfaces: ["palette", "jumplist"], orb: "show-all",
+  }),
+  Object.freeze({
+    id: "companions.hide", label: "Hide the fairies and companions", group: "go",
+    surfaces: ["palette", "jumplist"], orb: "hide-all",
   }),
   // The fairy's right-click menu, reachable from the keyboard (owner 2026-11-12:
   // "menus are navigable"). It opens beside the fairy; arrows, Enter and Esc work.

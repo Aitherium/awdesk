@@ -174,6 +174,7 @@ Module._load = function patchedElectron(request, parent, isMain) {
 
 const STATE = path.join(os.tmpdir(), `spirit-orb-state-${process.pid}.json`);
 process.env.DESK_ORB_FILE = STATE;
+process.env.DESK_FAIRY_OWNER_FILE = path.join(os.tmpdir(), `spirit-fairy-owner-${process.pid}.json`);
 
 const orbWindow = require("./orb-window.cjs");
 const spiritCore = require("./spirit-core.cjs");
@@ -220,6 +221,7 @@ function start(opts = {}) {
     ...(opts.speak ? { speak: opts.speak } : {}),
     ...(opts.avatarTargets ? { avatarTargets: opts.avatarTargets } : {}),
     ...(opts.runCommand ? { runCommand: opts.runCommand } : {}),
+    ...(opts.hideByDefault !== undefined ? { hideByDefault: opts.hideByDefault } : {}),
   });
   return { ...r, capture };
 }
@@ -876,8 +878,8 @@ test("clicking the orb mid-nudge opens the waiting queue; the card it carried co
   await wait(1000);
   const r = await invoke("desk:orb-click", orbWin());
   assert.equal(r.ok, true);
-  assert.equal(r.queue, true);
-  assert.equal(listed, 1);
+  assert.equal(r.inbox, true, "the badge links to the Inbox (owner 2026-11-13)");
+  assert.equal(listed, 0, "no on-screen list");
   assert.equal(orbWindow.nudging(), null);
   assert.equal(orbWindow.attentionMems()["d-fair"].ignored || 0, 0, "seen, not ignored");
 });
@@ -898,9 +900,9 @@ test("clicking the orb with cards waiting opens the queue, even when the card wa
   assert.equal(orbWindow.nudging(), null);
   const r = await invoke("desk:orb-click", orbWin());
   assert.equal(r.ok, true);
-  assert.equal(r.queue, true, `the queue opens, not the chat: ${JSON.stringify(r)}`);
-  assert.equal(listed, 1);
-  assert.deepEqual(calls.open, [], "never the Inbox on an arbitrary card");
+  assert.equal(r.inbox, true, "the badge links to the Inbox (owner 2026-11-13)");
+  assert.equal(listed, 0, "no on-screen list");
+  assert.deepEqual(calls.open, [null], "the Inbox itself, never on an arbitrary card");
   assert.equal(orbWindow.nudging(), null, "no card pops from the orb's click");
   // Nothing waiting: the click still opens the chat.
   orbWindow.setAttentionCards([]);
@@ -927,8 +929,8 @@ test("a trip that hangs never swallows the click: the queue still opens, and the
   if (orbWindow.nudging()) orbWindow.endNudge("seen", { stay: true });
   const r = await invoke("desk:orb-click", orbWin());
   assert.equal(r.ok, true);
-  assert.equal(r.queue, true, `a click with a card waiting opens the queue, trip or not: ${JSON.stringify(r)}`);
-  assert.equal(listed, 1);
+  assert.equal(r.inbox, true, "the badge links to the Inbox (owner 2026-11-13)");
+  assert.equal(listed, 0, "no on-screen list");
   // The hung trip itself ends on its limit instead of holding the spirit for good.
   const hung = orbWindow.go({ kind: "search", target: "hangs again" });
   const verdict = await Promise.race([hung, wait(6000).then(() => ({ stuck: true }))]);
@@ -1289,6 +1291,7 @@ test("whoever is talking: the fairy wears that agent for about the line, a chara
 
 test("twelve agents waiting: the swarm window shows all twelve, centred on the fairy, click-through, the orb unchanged", async () => {
   startAttention();
+  orbWindow.state().swarm = true; // the swarm is opt-in since 2026-11-13
   const agents = ["atlas", "demi", "lyra", "iris", "saga", "vera", "hera", "gargbot", "plutus", "chaos", "viviane", "aeon-crew"];
   const old = Math.floor(Date.now() / 1000) - 600;
   orbWindow.setAttentionCards(agents.map((a, i) => blockedCard({ id: `d-x${i}`, agent: a, createdAt: old })));
@@ -1329,6 +1332,7 @@ test("the swarm page draws companions with DOM APIs and hit-tests them click-thr
 
 test("the fairy stays ABOVE its swarm in z-order after every companion update (live: dimmed under it)", () => {
   startAttention();
+  orbWindow.state().swarm = true; // the swarm is opt-in since 2026-11-13
   const old = Math.floor(Date.now() / 1000) - 600;
   const cards = (agents) => agents.map((a, i) => blockedCard({ id: `d-z${i}`, agent: a, createdAt: old }));
   const above = () => {
@@ -1430,6 +1434,7 @@ test("chat about a card: the header names the agent in plain words, never the sp
 test("presence: active agents with NO cards fly in the swarm; a post flashes one; a click opens THAT agent's chat", async () => {
   const chats = [];
   startAttention({ chat: (agent, links) => { chats.push([agent, links]); return true; } });
+  orbWindow.state().swarm = true; // the swarm is opt-in since 2026-11-13
   orbWindow.setPresence([
     { agent: "atlas", state: "working", work: [{ title: "tick", url: "" }], discord: { bot: true, dm_url: "https://discord.com/users/1" },
       thread_url: "https://discord.com/channels/1/2/3" },
@@ -1537,7 +1542,8 @@ test("right click on a companion: the pill menu with every action, focused, besi
   const r = await invoke("desk:fairy-menu", orbWin(), "d-s1", "lyra");
   assert.equal(r.ok, true);
   assert.deepEqual(r.items, ["open", "answer:yes", "snooze:1h", "snooze:4h", "snooze:tomorrow",
-    "mute", "dismiss", "session", "copy"]);
+    "mute", "dismiss", "session", "copy",
+    "hide-this", "hide-all", "show-all", "open-desktop", "open-spaces", "open-chat", "settings", "quiet-1h", "quiet-4h", "quit"]);
   const mw = menuWin();
   assert.ok(mw.isVisible());
   assert.equal(mw.focused, true, "focused, so arrows / Enter / Esc work");
@@ -1620,13 +1626,15 @@ test("a credential card shows Answer disabled; no session = Go to session disabl
   assert.deepEqual(calls.answer, [], "a credential is never answered from a menu");
 });
 
-test("right click on the orb: inbox, answer window, mute 1 h (nudges held), settings, more, hide fairies", async () => {
+test("right click on the orb: inbox, answer window, quiet 1 h (nudges held), settings, more, hide fairies", async () => {
   let listed = 0;
-  const calls = startAttention({ openList: () => { listed += 1; return true; } });
+  const doors = [];
+  const calls = startAttention({ openList: () => { listed += 1; return true; }, door: (name) => { doors.push(name); return true; } });
   orbWindow.setAttentionCards([blockedCard({ id: "d-o1", createdAt: Math.floor(Date.now() / 1000) })]);
   if (orbWindow.nudging()) orbWindow.endNudge("seen", { stay: true });
   const r = await invoke("desk:orb-menu", orbWin());
-  assert.deepEqual(r.items, ["inbox", "queue", "mute-1h", "hide", "settings", "more"]);
+  assert.deepEqual(r.items, ["inbox", "queue", "hide-this", "hide-all", "show-all", "open-desktop", "open-spaces",
+    "open-chat", "settings", "quiet-1h", "quiet-4h", "quit", "more"]);
   assert.match(lastSent(menuWin(), "orb:menu").header, /1 waiting on you/);
   assert.equal((await invoke("desk:menu-pick", menuWin(), "inbox")).ok, true);
   assert.deepEqual(calls.open, [null], "the Inbox, on no card in particular");
@@ -1634,19 +1642,154 @@ test("right click on the orb: inbox, answer window, mute 1 h (nudges held), sett
   await invoke("desk:menu-pick", menuWin(), "queue");
   assert.equal(listed, 1);
   await invoke("desk:orb-menu", orbWin());
-  const m = await invoke("desk:menu-pick", menuWin(), "mute-1h");
-  assert.ok(m.muteUntil > Date.now() + 59 * 60_000);
+  const m = await invoke("desk:menu-pick", menuWin(), "quiet-1h");
+  assert.ok(m.quietUntil > Date.now() + 59 * 60_000);
   assert.match((await orbWindow.attentionTick()).reason, /muted/);
   const again = await invoke("desk:orb-menu", orbWin());
-  assert.ok(again.items.includes("unmute"), "muted: the row offers Unmute");
-  await invoke("desk:menu-pick", menuWin(), "unmute");
+  assert.ok(again.items.includes("quiet-off"), "quiet: the row offers to end it");
+  await invoke("desk:menu-pick", menuWin(), "quiet-off");
+  assert.equal(orbWindow.quietUntil(), 0);
   await invoke("desk:orb-menu", orbWin());
   assert.equal((await invoke("desk:menu-pick", menuWin(), "settings")).ok, true);
+  assert.deepEqual(doors, ["settings"]);
   await invoke("desk:orb-menu", orbWin());
   assert.equal((await invoke("desk:menu-pick", menuWin(), "more")).ok, true, "the old full menu is one row away");
   await invoke("desk:orb-menu", orbWin());
-  await invoke("desk:menu-pick", menuWin(), "hide");
-  assert.equal(orbWin().isVisible(), false, "Hide fairies hides the fairy and its swarm");
+  await invoke("desk:menu-pick", menuWin(), "hide-this");
+  assert.equal(orbWin().isVisible(), false, "Hide the fairies hides the fairy and its swarm");
+});
+
+// -- companions hidden by default (owner 2026-11-13, companion-menu.cjs) ----------
+
+test("a fresh install shows no fairy; the choice to show it persists per user", () => {
+  // beforeEach removed orb.json: this is a fresh profile.
+  const r = start();
+  assert.equal(r.visible, false, "fresh: hidden");
+  assert.ok(!orbWin() || !orbWin().isVisible(), "no fairy window on screen");
+  assert.equal(orbWindow.tenantCompanionVisible(), false, "the workspace companion is hidden too");
+  orbWindow.companionAction("show-all");
+  assert.equal(orbWin().isVisible(), true);
+  const saved = JSON.parse(fs.readFileSync(STATE, "utf8"));
+  assert.equal(saved.visible, true);
+  assert.equal(saved.tenantCompanion, true);
+  orbWindow.__reset();
+  FakeWindow.all.length = 0;
+  assert.equal(start().visible, true, "the next launch keeps what the person chose");
+});
+
+test("an installed build hides an older install's fairy ONCE; a dev checkout keeps it", () => {
+  writeState({ visible: true, x: 200, y: 200 });
+  assert.equal(start({ hideByDefault: true }).visible, false, "packaged: moved to hidden");
+  orbWindow.companionAction("show-all");
+  orbWindow.__reset();
+  FakeWindow.all.length = 0;
+  assert.equal(start({ hideByDefault: true }).visible, true, "the migration never runs twice");
+  orbWindow.__reset();
+  FakeWindow.all.length = 0;
+  writeState({ visible: true, x: 200, y: 200 });
+  assert.equal(start({ hideByDefault: false }).visible, true, "dev checkout: unchanged");
+});
+
+test("the hidden-by-default move keeps a fresh install's first-run spot (bottom-right, never 0,0)", () => {
+  start({ hideByDefault: true });
+  orbWindow.companionAction("show-all");
+  const b = orbWin().getBounds();
+  assert.ok(b.x > 1000 && b.y > 1000, `first-run spot is bottom-right, got ${b.x},${b.y}`);
+  const saved = JSON.parse(fs.readFileSync(STATE, "utf8"));
+  assert.equal(saved.x, null, "no remembered spot was invented");
+});
+
+test("every companion row does what it says: hide this, hide all, show all, doors, quiet, quit", async () => {
+  const doors = [];
+  startAttention({ door: (name) => { doors.push(name); return true; } });
+  const changes = [];
+  orbWindow.onCompanionsChange((snap) => changes.push(snap));
+  assert.equal(orbWin().isVisible(), true);
+  assert.deepEqual(orbWindow.companionAction("hide-this", { target: "fairy" }), { ok: true, visible: false });
+  assert.equal(orbWin().isVisible(), false);
+  orbWindow.companionAction("show-all");
+  assert.equal(orbWin().isVisible(), true);
+  assert.equal(orbWindow.tenantCompanionVisible(), true);
+  assert.deepEqual(orbWindow.companionAction("hide-this", { target: "tenant" }), { ok: true, tenant: false });
+  assert.equal(orbWin().isVisible(), true, "hiding the workspace companion leaves the fairies");
+  const all = orbWindow.companionAction("hide-all");
+  assert.equal(all.fairy, false);
+  assert.equal(all.tenant, false);
+  assert.equal(orbWin().isVisible(), false);
+  for (const id of ["open-desktop", "open-spaces", "open-chat", "settings", "quit"]) {
+    assert.equal(orbWindow.companionAction(id).ok, true, id);
+  }
+  assert.deepEqual(doors, ["desktop", "spaces", "chat", "settings", "quit"]);
+  const q4 = orbWindow.companionAction("quiet-4h");
+  assert.ok(q4.quietUntil >= Date.now() + 4 * 3600_000 - 1000);
+  assert.ok(orbWindow.quietUntil() > Date.now());
+  orbWindow.companionAction("quiet-off");
+  assert.equal(orbWindow.quietUntil(), 0);
+  assert.equal(orbWindow.companionAction("nope").ok, false);
+  assert.ok(changes.length >= 5, "the tray and the overlay hear every change");
+  // Without main's door hook a door runs its registry id.
+  const ran = [];
+  orbWindow.__setAttentionHooks({});
+  orbWindow.__reset();
+  FakeWindow.all.length = 0;
+  start({ runCommand: (id) => { ran.push(id); } });
+  orbWindow.companionAction("open-spaces");
+  orbWindow.companionAction("quit");
+  assert.deepEqual(ran, ["osapp.spaces", "quit"]);
+});
+
+test("the workspace companion's own right-click menu: its rows, picks through the same path", async () => {
+  startAttention({ door: () => true });
+  orbWindow.companionAction("show-all");
+  const r = orbWindow.openCompanionMenu("tenant");
+  assert.equal(r.ok, true);
+  assert.equal(r.kind, "tenant");
+  assert.deepEqual(r.items, ["hide-this", "hide-all", "open-desktop", "open-spaces", "open-chat", "settings",
+    "quiet-1h", "quiet-4h", "quit"]);
+  assert.equal(menuWin().focused, true, "focused: arrows, Enter and Esc work");
+  const pick = await invoke("desk:menu-pick", menuWin(), "hide-this");
+  assert.deepEqual(pick, { ok: true, tenant: false });
+  assert.equal(orbWin().isVisible(), true, "Hide this hid the companion, not the fairies");
+  // The tray: Show/Hide all, desktop, Spaces, quiet. Chat, Settings and Quit are its own rows.
+  const tray = orbWindow.companionTrayItems().filter((i) => !i.sep).map((i) => i.id);
+  assert.deepEqual(tray, ["hide-all", "show-all", "open-desktop", "open-spaces", "quiet-1h", "quiet-4h"]);
+});
+
+test("the companion's menu opens AT the companion, even beside the box the fairy avoids", async () => {
+  startAttention({ door: () => true });
+  orbWindow.companionAction("show-all");
+  // The goblin's box, bottom-right of the primary work area (3840x2120).
+  orbWindow.setReservedBox({ x: 3500, y: 1760, width: 300, height: 320 });
+  const r = orbWindow.openCompanionMenu("tenant", { at: { x: 3600, y: 1900 } });
+  assert.equal(r.ok, true);
+  const b = menuWin().getBounds();
+  assert.ok(Math.abs(b.x + b.width - 3600) <= 16 || Math.abs(b.x - 3608) <= 16, `beside the click, got x=${b.x}`);
+  assert.ok(b.y + b.height <= 2120 && b.y >= 0, "on the screen");
+  assert.ok(Math.abs((b.y + b.height) - 1896) <= 16, `flipped up from the click, got y=${b.y}+${b.height}`);
+  orbWindow.setReservedBox(null);
+});
+
+test("a menu taller than the screen fits it: the window is clamped, the page scrolls", () => {
+  const fm = require("./fairy-menu.cjs");
+  const many = Array.from({ length: 80 }, (_, i) => ({ id: `r${i}`, label: `Row ${i}` }));
+  const area = { x: 0, y: 0, width: 1920, height: 1040 };
+  const size = fm.menuSize(many, area);
+  assert.ok(size.height <= 1040 - 16);
+  const pos = fm.menuPlacement({ x: 900, y: 500 }, area, size);
+  assert.ok(pos.y >= 0 && pos.y + size.height <= 1040);
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  assert.match(html, /#m-items \{[^}]*overflow-y: auto/);
+});
+
+test("a hidden fairy never docks itself onto the AitherOS window", async () => {
+  start();
+  const host = new FakeWindow({ title: "AitherDesktop", x: 100, y: 100, width: 1200, height: 800 });
+  host.visible = true;
+  host.isMinimized = () => false;
+  const r = await orbWindow.setDockWindow(host);
+  assert.equal(r.docked, false);
+  assert.equal(orbWindow.attach(), null);
+  assert.ok(!orbWin().isVisible());
 });
 
 test("the orb and swarm pages: right click opens the pill menu, hover only dwells a tip, the menu page handles keys", () => {
