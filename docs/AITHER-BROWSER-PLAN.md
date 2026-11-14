@@ -342,3 +342,30 @@ opened nothing, Ctrl+J did nothing, a bookmark could be starred and never listed
     a deleted day or a time range is local only (history has no per-entry tombstone, so a
     synced copy can return from the store); a rename or a move to
     another folder stays on this computer (the store keeps a bookmark's first title and no folder).
+
+## Part five: the managed browser (zero trust, 2026-11-13)
+
+A workspace names its apps; the browser enforces a policy the workspace signed on those
+origins and nowhere else. Design, schema and the list of what is not closed:
+[WORKSPACE-POLICY.md](WORKSPACE-POLICY.md).
+
+32. **Slice 1, desk side: BUILT, inert until a signing key is pinned.**
+    - **Signed policy** (`browser-workspace-policy.cjs`): Ed25519 over a canonical form,
+      pinned keys, a serial that only goes up, `not_after` checked on every decision, the
+      tenant bound by the first good policy. Tampered, rolled back, expired or missing:
+      the apps the last good policy named are refused with a page that says why.
+    - **Enforcement** on governed origins: copy, paste, downloads, print, save / capture
+      and developer tools, per app, each with a toolbar notice and one audit row.
+    - **Work partition** `persist:aither-work-<tenant>` for governed apps; never shared
+      with an agent, never popped out.
+    - **Mesh door** (`browser-mesh-door.cjs`): a loopback proxy with a per-launch
+      credential that reaches a private app's mesh address with no VPN. Only the work
+      session has the proxy script and the credential; agent and InPrivate tabs are refused.
+    - **Watermark** (a click-through window main owns) and screen-capture exclusion.
+    - **Audit spool** (`browser-audit.jsonl`): origins and verdicts only.
+    - Proof: the `workspace:` checks in `npm run test:browser-parity` (a local server
+      stands in for a mesh peer under a made-up host name).
+
+    Next slices: key custody and the pinned key; the platform route
+    `GET /v1/workspace/browser-policy` and its signer; device posture and step-up before a
+    private app opens; audit upload; an embedded mesh dialler.

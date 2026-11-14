@@ -49,7 +49,8 @@ app.commandLine.appendSwitch("host-resolver-rules", `MAP ${DRM_HOST} 127.0.0.1`)
 // Closing the browser (the session-restore check) must not quit the run.
 app.on("window-all-closed", () => {});
 process.on("unhandledRejection", (e) => { console.log("REJECT " + ((e && e.stack) || e)); app.exit(2); });
-setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 180000);
+// 240 s since the managed-browser block (browser-parity-workspace.cjs) joined the run.
+setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 240000);
 
 const PDF = Buffer.from(
   "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
@@ -104,6 +105,7 @@ function serve() {
 }
 
 const gaps = require("./browser-parity-gaps.cjs");
+const workspace = require("./browser-parity-workspace.cjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 45 s, not 8. On a busy machine every tab's navigation can stop committing for half a
 // minute and then carry on (measured 2026-11-13 with the CPU at 100%, on main's own code:
@@ -606,6 +608,10 @@ app.whenReady().then(async () => {
   // The high-impact gaps: user agent, full screen, Copy buttons, popups, the discard's
   // exemptions and app links (browser-parity-gaps.cjs).
   await gaps.run({ bw, base, expect, until, sleep });
+
+  // The managed browser: a signed workspace policy, a private app through the mesh door,
+  // the watermark, the audit rows, and what closes it (browser-parity-workspace.cjs).
+  await workspace.run({ bw, base, expect, until, sleep, userData });
 
   // Clear browsing data (Ctrl+Shift+Delete): nothing goes without the confirm; with it,
   // history is emptied. Cookies are ticked too, so the owner profile's cookie really goes.
