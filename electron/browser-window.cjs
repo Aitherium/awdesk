@@ -81,6 +81,7 @@ const everyday = require("./browser-everyday.cjs");
 // Protected video and music (Widevine): the castLabs build installs the CDM; this module
 // is the only one that touches Electron's `components`, and it is inert on stock Electron.
 const widevineMod = require("./browser-widevine.cjs");
+const workspaceMod = require("./browser-workspace.cjs");
 const { createSurfaceState } = require("./surface-state.cjs");
 let knowledgeImpl = null;
 function knowledgeClient() {
@@ -491,13 +492,22 @@ function hardenSession(ses, { owner = false } = {}) {
   // The InPrivate session is told apart: a pause chosen there lives in memory only.
   try {
     const inPrivate = ses === electron().session.fromPartition(everyday.INPRIVATE_PARTITION);
-    getAdblock().attach(ses, { onBlocked: () => pushState(), private: inPrivate });
-  } catch { /* browsing still works */ }
+    // The workspace policy's request guard rides the same (one per session) listener.
+    getAdblock().attach(ses, { onBlocked: () => pushState(), private: inPrivate, guard: (details) => getWorkspace().cancelsRequest(details) });
+  } catch {
+    // No ad blocking: browsing still works, and the policy's guard still stands.
+    try {
+      ses.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"] },
+        (details, callback) => callback({ cancel: getWorkspace().cancelsRequest(details) }));
+    } catch { /* a session with no webRequest */ }
+  }
   // A download an AGENT triggers lands on the owner's disk unseen; while the agent
   // drives (and the owner has not taken over) downloads are cancelled. The owner
   // takes over to download. Either way it is a ROW on the shelf (browser-downloads):
   // a silent cancel read as "the download button is broken".
-  ses.on("will-download", (_event, item) => {
+  ses.on("will-download", (_event, item, wc) => {
+    // A workspace app whose policy turns downloads off: cancelled, said and audited there.
+    if (getWorkspace().blocksDownload(item, wc)) return;
     const g = gate.snapshot();
     const meta = { filename: item.getFilename(), url: item.getURL(), total: item.getTotalBytes() };
     if (g.driving && !g.paused) {
@@ -529,6 +539,8 @@ async function loadInView(view, url) {
   // failure anywhere shows a dark page with the reason, never a blank white view
   // (owner 2026-11-08: "why blank white page, I hate it").
   const addr = require("./aither-address.cjs");
+  // A workspace app opens in its work tab or not at all (browser-workspace.cjs beforeLoad).
+  if (await getWorkspace().beforeLoad(view, url)) return;
   let target;
   try {
     target = await addr.resolveAitherUrl(url);
@@ -608,6 +620,8 @@ function layout() {
   if (alive(dockView) && !paneDetached("dock")) placeView(dockView, !viewsAside() && rects.dock.height > 0, rects.dock);
   // The canvas's live app cards follow its tab (shown, hidden, moved, popped out).
   if (canvasHost) canvasHost.relayout();
+  // The watermark over a workspace app, and the capture guard, follow the tab on screen.
+  getWorkspace().sync();
   // The docked avatar follows the rail only when the rail really moved.
   const key = JSON.stringify([rects.avatar || null, rects.page, win.getContentBounds()]);
   const layoutChanged = key !== lastLayoutKey;
@@ -861,6 +875,8 @@ async function readAloud() {
   if (!shellHost || typeof shellHost.speak !== "function") return { ok: false, error: "the desk has no voice wired" };
   const view = activeView();
   if (!alive(view)) return { ok: false, error: "no page" };
+  // It reads the selection first: that is a copy as much as a capture.
+  if (getWorkspace().blocksRead(tabs.active, "selection")) return { ok: false, error: "the workspace policy does not let this page be read" };
   let text;
   try { text = await view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: READ_ALOUD_SCRIPT }]); } catch { text = ""; }
   text = String(text || "").slice(0, 2000);
@@ -890,6 +906,44 @@ let sessionRestored = false;
 
 function userDataPath(...parts) {
   return path.join(electron().app.getPath("userData"), ...parts);
+}
+
+// The managed browser (browser-workspace.cjs, docs/WORKSPACE-POLICY.md): the signed
+// workspace policy, its work partition, the mesh door, the watermark and the audit spool.
+// `workspaceSeam` is the smoke's (a test key, a local policy source); never set in the app.
+let workspaceImpl = null;
+let workspaceSeam = null;
+function getWorkspace() {
+  if (workspaceImpl) return workspaceImpl;
+  const seam = workspaceSeam || {};
+  workspaceImpl = workspaceMod.createWorkspace({
+    electron, userData: () => userDataPath(), window: () => (win && !win.isDestroyed() ? win : null),
+    tab: (id) => tabs.get(id) || null, tabIds: () => tabs.tabs.map((t) => t.id), activeId: () => tabs.active,
+    tabIdOf: tabIdOfContents, pageOf: pageWc,
+    activeBounds: () => { const v = activeView(); return v && !viewsAside() && !popped.has(tabs.active) ? v.getBounds() : null; },
+    setNotice, isolated, hardenSession: (ses) => hardenSession(ses), openTab: (by, url, opts) => openTab(by, url, opts),
+    blockedPage: (url, reason) => require("./aither-address.cjs").errorPageUrl(url, reason),
+    keys: seam.keys || null,
+    allowLoopbackTargets: seam.allowLoopbackTargets === true,
+    // Remote debugging (CDP) on this launch: workspace apps stay closed while it is.
+    debugDoor: () => (typeof seam.debugDoor === "function" ? seam.debugDoor()
+      : workspaceMod.debugDoor({ commandLine: electron().app.commandLine, env: process.env, inspectorUrl: require("node:inspector").url() || "" })),
+    accountTenant: async () => {
+      if (seam.accountTenant) return seam.accountTenant();
+      const bearer = await onlineToken();
+      if (!bearer) return "";
+      const who = await require("./desk-session.cjs").checkToken(bearer);
+      return who && who.state === "valid" && who.identity ? who.identity.tenantId : "";
+    },
+    remote: { origin: () => seam.origin || internal.platformOrigin(), token: async () => (seam.token ? seam.token() : onlineToken()),
+      fetchImpl: (url, init) => electron().net.fetch(url, init) },
+    account: async () => {
+      if (seam.account) return seam.account();
+      const bearer = await onlineToken();
+      return bearer ? syncAccount(bearer) : "";
+    },
+  });
+  return workspaceImpl;
 }
 
 let adblockImpl = null;
@@ -1314,6 +1368,8 @@ function openInEdge(url) {
   if (!exe) return { ok: false, error: "Microsoft Edge is not installed" };
   const target = String(url || "");
   if (!/^(https?|edge):/i.test(target)) return { ok: false, error: "only web pages open in Edge" };
+  // A workspace app stays in the managed browser: Edge has no policy, watermark or audit.
+  if (getWorkspace().policy.governs(target)) return { ok: false, error: "1 workspace app stays in this browser — your workspace policy does not let it open in Edge" };
   try {
     require("node:child_process").spawn(exe, [target], { detached: true, stdio: "ignore", windowsHide: false }).unref();
     return { ok: true };
@@ -1364,6 +1420,7 @@ function translateBackends() {
 async function translatePage(id) {
   const wc = pageWc(id);
   if (!wc) return { ok: false };
+  if (getWorkspace().blocks(id, "capture")) return { ok: false };
   const T = translateMod();
   const target = translateTarget().name;
   const url = wc.getURL();
@@ -1490,6 +1547,8 @@ function runBrowserAction(action, arg, id = tabs.active) {
   const history = wc && wc.navigationHistory;
   const order = tabs.snapshot().tabs.map((t) => t.id);
   const at = order.indexOf(tabs.active);
+  // Print, translate and read aloud on a workspace app whose policy turns them off.
+  if (getWorkspace().blocksAction(id, action)) return true;
   switch (action) {
     case "new-tab": return openTab("you", homeUrl()).ok || true;
     case "close-tab": closeTab(tabs.active, "you"); return true;
@@ -1557,6 +1616,8 @@ function showContextMenu(id, wc, params) {
     private: Boolean(tab.private),
   });
   const run = (item) => {
+    // Copy, paste, save, print, inspect: each row a workspace policy can turn off.
+    if (getWorkspace().blocksMenu(id, item.id)) return;
     switch (item.id) {
       case "spell-replace": wc.replaceMisspelling(item.arg); break;
       case "spell-add": wc.session.addWordToSpellCheckerDictionary(item.arg); break;
@@ -1912,6 +1973,8 @@ function standingGrant(wc, permission, grant) {
 
 /** Electron's permission REQUEST (getUserMedia, Notification.requestPermission, geolocation...). */
 function requestPermission(wc, permission, callback, details, grant) {
+  // A Copy button / a clipboard read on a workspace app whose policy turns it off.
+  if (getWorkspace().blocksPermission(wc, permission)) return callback(false);
   if (standingGrant(wc, permission, grant)) return callback(true);
   // Full screen, a Copy button and app links are not owner prompts (answerQuietly).
   if (answerQuietly(wc, permission, callback, details)) return undefined;
@@ -1928,6 +1991,7 @@ function requestPermission(wc, permission, callback, details, grant) {
 
 /** Electron's permission CHECK (Notification.permission, device labels): never prompts. */
 function checkPermission(wc, permission, origin, details, grant) {
+  if (getWorkspace().blocksPermission(wc, permission, { quiet: true })) return false;
   if (standingGrant(wc, permission, grant)) return true;
   const quiet = checkQuietly(wc, permission, details);
   if (quiet != null) return quiet;
@@ -2936,9 +3000,13 @@ function openTab(by, url, { activate = true, after = null, pinned = false, key =
   // WHICH session the tab rides (BROWSER-M3): the owner's PARTITION for every owner
   // tab; an agent tab gets its OWN session unless the owner allowed this site ("Let
   // the agent use my sign-in"). One picker, so no view is ever built without it.
-  const webPartition = kind === "extension" ? PARTITION : agentSessions.partitionFor({
+  // A workspace app (browser-workspace.cjs): the owner's tab rides the tenant's work
+  // partition; an agent asking for a private app is refused before a tab exists.
+  const work = kind === "web" ? getWorkspace().gateOpen({ by, url: target.url }) : {};
+  if (work.error) return { ok: false, error: work.error };
+  const webPartition = work.partition || (kind === "extension" ? PARTITION : agentSessions.partitionFor({
     by, url: target.url, sites: getPrefs().agentCookieSites, ownerPartition: PARTITION, agentPartition: AGENT_PARTITION,
-  });
+  }));
   const added = tabs.add(by, { activate, after, kind, pinned, key });
   if (!added.ok) return added;
   const tab = tabs.get(added.id);
@@ -3181,6 +3249,8 @@ function popOutTab(id) {
   const view = viewOf(id);
   const tab = tabs.get(id);
   if (!view || !tab || !win || win.isDestroyed()) return { ok: false, error: "no such tab" };
+  // A workspace app stays under the browser window's watermark and capture guard.
+  if (getWorkspace().policy.governs(view.webContents.getURL())) return { ok: false, error: "a workspace app stays in the browser window" };
   const existing = popped.get(id);
   if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return { ok: true }; }
   const { BrowserWindow } = electron();
@@ -3259,6 +3329,7 @@ function wirePage(wc, id) {
   // A WEB tab's popup keeps its opener (sign-in and payment popups): openFromPage.
   wc.setWindowOpenHandler((details) => openFromPage(id, details));
   wirePageGaps(wc, id);
+  getWorkspace().wire(wc, id);
   // Navigation is judged per tab KIND (browser-internal navigationVerdict): a web
   // tab never reaches aither://; an internal tab sends a web link to a web tab.
   // An extension tab stays on ITS extension's pages (never hops to another extension's).
@@ -3276,6 +3347,7 @@ function wirePage(wc, id) {
       : internal.navigationVerdict("web", url) === "allow" ? "web-tab" : "deny")
     : internal.navigationVerdict(kindOf(), url, opts));
   const guard = (event, url) => {
+    if (getWorkspace().onNavigate(id, url, event)) return;
     const verdict = verdictFor(url);
     if (verdict === "allow") return;
     event.preventDefault();
@@ -3287,6 +3359,7 @@ function wirePage(wc, id) {
   wc.on("will-navigate", guard);
   // A redirect cannot be split into another tab: anything but "allow" stops it.
   wc.on("will-redirect", (event, url) => {
+    if (event.isMainFrame !== false && getWorkspace().onNavigate(id, url, event)) return;
     if (verdictFor(url) === "allow") {
       if (event.isMainFrame !== false) navFrom.set(wc, String(url || ""));
       return;
@@ -3298,6 +3371,7 @@ function wirePage(wc, id) {
   // Frames: a web page cannot frame aither:// (its session has no handler either).
   wc.on("will-frame-navigate", (details) => {
     if (!details || details.isMainFrame) return;
+    if (getWorkspace().onNavigate(id, details.url, details, { frame: true })) return;
     const verdict = kindOf() === "extension" ? verdictFor(details.url, { frame: true })
       : internal.navigationVerdict(kindOf(), details.url, { frame: true });
     if (verdict !== "allow") details.preventDefault();
@@ -3367,6 +3441,8 @@ function agentMaySee(id) {
 /** The owner's "Share with agent" toggle on one of their tabs (the strip's button). */
 function shareTab(id, on) {
   const view = viewOf(id);
+  // A workspace app is never handed to an agent.
+  if (on && view && getWorkspace().policy.governs(view.webContents.getURL())) return { ok: false, error: "a workspace app is not shared with an agent" };
   const result = tabs.share(id, on ? (view ? view.webContents.getURL() : "") : null);
   if (result.ok && result.shared) scheduleContextPush(id);
   pushState();
@@ -3551,6 +3627,7 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   if (typeof discardTimer.unref === "function") discardTimer.unref();
   win.on("closed", () => {
     if (syncImpl) syncImpl.stop();
+    if (workspaceImpl) workspaceImpl.windowClosed();
     // Pane windows close with the browser, but stay "open" in the layout for next time.
     closingBrowser = true;
     for (const [, w] of paneWindows) if (w && !w.isDestroyed()) w.destroy();
@@ -3596,6 +3673,8 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   else if (home && !restored) openTab("you", homeUrl());
   // Sync runs while the browser is open, and only if the owner turned it on.
   try { getSync().start(); } catch { /* sync never blocks the browser */ }
+  // The workspace policy: read from userData now, then asked of the platform.
+  try { getWorkspace().start(); } catch { /* no policy: ordinary browsing */ }
   return win;
 }
 
@@ -3884,6 +3963,9 @@ async function runInPage(action, args, who = "agent") {
   const picked = viewFor(who);
   if (!picked.ok) return { ok: false, error: picked.error };
   const wc = picked.view.webContents;
+  // A workspace app whose policy forbids capturing it is not read -- by "Ask about this
+  // page", by an agent's tool, by anyone; its selection also not when copying is forbidden.
+  if (getWorkspace().blocksRead(who === "owner" ? tabs.active : picked.id, action)) return { ok: false, error: "the workspace policy does not let this page be read" };
   await waitForIdle(wc);
   const result = await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: scriptFor(action, args) }], false);
   return result && typeof result === "object" ? result : { ok: false, error: "page returned nothing" };
@@ -3968,6 +4050,7 @@ const driver = {
     const picked = viewFor("agent");
     if (!picked.ok) return { ok: false, error: picked.error };
     const wc = picked.view.webContents;
+    if (getWorkspace().blocks(picked.id, "capture")) return { ok: false, error: "the workspace policy does not let this page be captured" };
     await waitForIdle(wc);
     let image = await wc.capturePage();
     const size = image.getSize();
@@ -5118,6 +5201,8 @@ function browserCommand(verb, arg = "", { askAgent: ask = null, surface = "menu"
       const p = ownerPage();
       if (p.error) return { ok: false, error: p.error };
       if (!p.web) return { ok: false, error: "0 web pages on screen — only a web page is translated" };
+      // A workspace app whose policy forbids capturing it: said, audited, and the caller is told.
+      if (getWorkspace().blocks(p.id, "capture")) return { ok: false, error: "1 page not translated — your workspace policy turns that off on this site" };
       void translatePage(p.id);
       return { ok: true };
     }
@@ -5135,6 +5220,7 @@ function browserCommand(verb, arg = "", { askAgent: ask = null, surface = "menu"
     case "print": {
       const p = ownerPage();
       if (p.error) return { ok: false, error: p.error };
+      if (getWorkspace().blocks(p.id, "print")) return { ok: false, error: "1 page not printed — your workspace policy turns printing off on this site" };
       runBrowserAction("print", null, p.id);
       return { ok: true };
     }
@@ -5273,6 +5359,16 @@ module.exports = {
   __syncMenuForTest: () => syncMenuItems(),
   __syncOriginForTest: () => syncOrigin(),
   __syncTabsForTest: () => syncTabs(),
+  /** The managed browser (browser-workspace.cjs); the seam is the smoke's test key and policy source. */
+  getWorkspace,
+  __workspaceSeamForTest: async (seam) => {
+    if (workspaceImpl) await workspaceImpl.dispose();
+    workspaceImpl = null;
+    workspaceSeam = seam || null;
+    const ws = getWorkspace();
+    if (win && !win.isDestroyed()) ws.start();
+    return ws;
+  },
   __syncSeamForTest: (seam) => { if (syncImpl) syncImpl.stop(); syncImpl = null; syncSeam = seam || null; return getSync(); },
   __pageForTest: (id) => pageWc(id),
   __noticeForTest: (id) => tabNotices.get(id) || null,
