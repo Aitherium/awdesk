@@ -108,6 +108,7 @@ test("shouldOffer: only the owner's tab on https or localhost", () => {
 });
 
 test("the isolated-world scripts parse", () => {
+  assert.match(fillScript("u", "p", "https://a.test"), /location\.origin !== ORIGIN/);
   for (const code of [CAPTURE_SCRIPT, PENDING_SCRIPT, detectLoginScript, fillScript("u", "p")]) {
     assert.doesNotThrow(() => new Function(`return ${code}`), code.slice(0, 40));
   }

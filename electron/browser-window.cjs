@@ -974,7 +974,12 @@ function offerLogin(id, wc, got) {
   } catch { /* no vault: nothing offered */ }
 }
 
-/** A login form with exactly one saved account fills itself (Edge does the same). */
+/**
+ * A login form with saved accounts: OFFER the fill, never fill unasked. A password put
+ * into the DOM on load is readable by every script on the page (Chromium hides an
+ * autofilled value from scripts until the user interacts; a page here cannot), so the
+ * owner's click is the gesture: the notice's Fill, or the key icon.
+ */
 async function autofill(id, wc) {
   if (!passwordsAllowed(id, wc)) return;
   const url = wc.getURL();
@@ -988,10 +993,16 @@ async function autofill(id, wc) {
   let entries;
   try { entries = getVault().forOrigin(url); } catch { return; }
   pushState();
-  if (entries.length !== 1 || pwFilled.get(id) === url) return;
+  if (!entries.length || pwFilled.get(id) === url || tabNotices.has(id)) return;
   const hasLogin = await isolated(wc, passwordsMod().DETECT_LOGIN_SCRIPT);
-  if (!hasLogin) return;
-  await fillAccount(id, wc, entries[0].id);
+  if (!hasLogin || pageWc(id) !== wc || wc.getURL() !== url) return;
+  const one = entries.length === 1 ? entries[0] : null;
+  setNotice(id, {
+    kind: "password-fill", data: { url, entryId: one ? one.id : null },
+    text: one ? `Sign in as ${one.username || "your saved account"}?` : `${entries.length} saved accounts for this site.`,
+    actions: one ? [{ id: "password-fill", label: "Fill" }, { id: "dismiss", label: "Not now" }]
+      : [{ id: "password-pick", label: "Choose…" }, { id: "dismiss", label: "Not now" }],
+  });
 }
 
 async function fillAccount(id, wc, entryId) {
@@ -1000,7 +1011,8 @@ async function fillAccount(id, wc, entryId) {
   const entry = vault.forOrigin(wc.getURL()).find((e) => e.id === entryId);
   if (!entry) return { ok: false };
   pwFilled.set(id, wc.getURL());
-  const r = await isolated(wc, passwordsMod().fillScript(entry.username, vault.reveal(entry.id)));
+  const r = await isolated(wc, passwordsMod().fillScript(entry.username, vault.reveal(entry.id),
+    passwordsMod().normalizeOrigin(wc.getURL())));
   return { ok: Boolean(r && r.filled) };
 }
 
@@ -1253,6 +1265,13 @@ async function noticeAction(actionId) {
       setNotice(id, r.ok ? null : { kind: "info", text: r.error });
       return r;
     }
+    case "password-fill": {
+      const d = notice.data || {};
+      setNotice(id, null);
+      if (!wc || wc.getURL() !== d.url || !d.entryId) return { ok: false };
+      return fillAccount(id, wc, d.entryId);
+    }
+    case "password-pick": setNotice(id, null); return passwordMenu();
     case "drm-stay": drmStay.add((notice.data && notice.data.host) || ""); setNotice(id, null); return { ok: true };
     case "extension-install": return installExtensionFrom(id, (notice.data && notice.data.url) || (wc ? wc.getURL() : ""));
     case "show-original": setNotice(id, null); if (wc) wc.reload(); return { ok: true };
@@ -1273,6 +1292,20 @@ async function installExtensionFrom(id, url) {
   const store = require("./browser-webstore.cjs");
   const r = await store.installFromStore(url, { dir: userDataPath("extensions-store") }).catch((error) => ({ ok: false, error: String(error.message || error) }));
   if (!r || !r.ok) { setNotice(id, { kind: "info", text: `The extension was not installed: ${(r && r.error) || "unknown error"}` }); return r; }
+  // Show what it may touch BEFORE it loads into the owner's session (review 2026-11-13).
+  // Unpacked to disk is inert; it runs only after this confirm.
+  const reach = extensionReach(r.path);
+  const { dialog } = electron();
+  const ask = await dialog.showMessageBox(win, {
+    type: "warning", buttons: ["Add extension", "Cancel"], defaultId: 1, cancelId: 1, noLink: true,
+    message: `Add "${r.name}" ${r.version}?`,
+    detail: `It will be able to:\n${reach.join("\n") || "- (asks for no special permissions)"}`,
+  });
+  if (ask.response !== 0) {
+    try { require("node:fs").rmSync(r.path, { recursive: true, force: true }); } catch { /* inert files */ }
+    setNotice(id, { kind: "info", text: `${r.name} was not added.` });
+    return { ok: false, error: "cancelled" };
+  }
   const ew = require("./extensions-window.cjs");
   ew.saveDirs([...ew.savedDirs(), r.path]);
   try {
@@ -1287,6 +1320,22 @@ async function installExtensionFrom(id, url) {
   const warn = Array.isArray(r.warnings) && r.warnings.length ? ` Some parts may not work here (${r.warnings.join(", ")}).` : "";
   setNotice(id, { kind: "info", text: `${r.name} ${r.version} is added.${warn}` });
   return r;
+}
+
+/** What an unpacked extension asks to reach, in plain lines, from its manifest. */
+function extensionReach(dir) {
+  let m;
+  try { m = JSON.parse(require("node:fs").readFileSync(path.join(dir, "manifest.json"), "utf8")); } catch { return ["- (manifest unreadable)"]; }
+  const hosts = new Set([...(Array.isArray(m.host_permissions) ? m.host_permissions : []),
+    ...(Array.isArray(m.permissions) ? m.permissions.filter((p) => /[:/*]/.test(String(p))) : []),
+    ...(Array.isArray(m.content_scripts) ? m.content_scripts.flatMap((c) => (Array.isArray(c.matches) ? c.matches : [])) : [])]);
+  const perms = (Array.isArray(m.permissions) ? m.permissions : []).filter((p) => !/[:/*]/.test(String(p)));
+  const out = [];
+  const all = [...hosts].some((h) => /<all_urls>|^\*:\/\/\*\/|^https?:\/\/\*\//.test(String(h)));
+  if (all) out.push("- Read and change everything on every website you visit");
+  else if (hosts.size) out.push(`- Read and change: ${[...hosts].slice(0, 8).join(", ")}${hosts.size > 8 ? ` (+${hosts.size - 8} more)` : ""}`);
+  if (perms.length) out.push(`- Use: ${perms.slice(0, 12).join(", ")}${perms.length > 12 ? " ..." : ""}`);
+  return out;
 }
 
 async function importPasswordsCsv() {

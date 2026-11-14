@@ -127,8 +127,12 @@ app.whenReady().then(async () => {
   expect("the vault file never holds the plaintext", !onDisk.includes("s3cret"), "plaintext found");
   await wc.loadURL(`${base}/login`).catch(() => {});
   await loaded(wc, "/login");
+  const offerFill = await until(() => { const n = bw.__noticeForTest(active()); return n && n.kind === "password-fill" ? n : null; });
+  expect("the next visit OFFERS the fill (nothing in the page yet)", Boolean(offerFill)
+    && (await wc.executeJavaScript("document.querySelector('[name=p]').value")) === "", bw.__noticeForTest(active()));
+  if (offerFill) await bw.noticeAction("password-fill");
   const filled = await until(() => wc.executeJavaScript("document.querySelector('[name=p]').value"), 5000);
-  expect("the next visit autofills the password", filled === "s3cret!\"x", filled);
+  expect("Fill puts the saved password in", filled === "s3cret!\"x", filled);
   expect("the key icon knows the site has one", bw.getState().passwords === 1, bw.getState().passwords);
 
   // InPrivate: its own in-memory session, and nothing in history.

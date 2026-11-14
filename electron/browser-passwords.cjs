@@ -190,7 +190,12 @@ const HELPERS = `
     const r = el.getClientRects();
     if (!r || !r.length) return false;
     const s = getComputedStyle(el);
-    return s.visibility !== "hidden" && s.display !== "none";
+    if (s.visibility === "hidden" || s.display === "none") return false;
+    // A field the owner cannot see never qualifies (review 2026-11-13: an opacity:0 or
+    // 1px decoy password field would otherwise receive the fill).
+    if (Number(s.opacity) < 0.1 || r[0].width < 4 || r[0].height < 4) return false;
+    for (let p = el.parentElement; p; p = p.parentElement) if (Number(getComputedStyle(p).opacity) < 0.1) return false;
+    return true;
   };
   const TEXTISH = new Set(["", "text", "email", "tel"]);
   const scopeOf = (pw) => pw.form || document;
@@ -279,7 +284,7 @@ const DETECT_LOGIN_SCRIPT = `(() => {
  * @param {string} password
  * @returns {string}
  */
-function fillScript(username, password) {
+function fillScript(username, password, expectedOrigin = null) {
   // JSON.stringify escapes quotes and backslashes; the extra replaces keep "<", U+2028
   // and U+2029 from ending or breaking the literal in any embedding.
   const lit = (v) => JSON.stringify(String(v == null ? "" : v))
@@ -288,6 +293,10 @@ function fillScript(username, password) {
   ${HELPERS}
   const USERNAME = ${lit(username)};
   const PASSWORD = ${lit(password)};
+  const ORIGIN = ${lit(expectedOrigin || "")};
+  // The page may have moved (a redirect) between main's check and this run: fill only
+  // the origin the login was saved for.
+  if (ORIGIN && location.origin !== ORIGIN) return { filled: false, reason: "origin" };
   const pw = passwordsIn(document)[0];
   if (!pw) return { filled: false };
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
