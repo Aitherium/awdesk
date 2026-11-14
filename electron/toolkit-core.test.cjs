@@ -57,6 +57,14 @@ test("voice commands: short verbs map, conversation does not", () => {
   assert.equal(core.parseVoiceCommand(""), null);
 });
 
+test("wake word: open mic acts only on the word; push-to-talk never needs it", () => {
+  assert.deepEqual(core.wakeGate("record this", { wakeWord: "aither", openMic: true }), { pass: false, text: "" });
+  assert.deepEqual(core.wakeGate("Hey Aither, record this", { wakeWord: "aither", openMic: true }), { pass: true, text: "record this" });
+  assert.deepEqual(core.wakeGate("record this", { wakeWord: "aither", openMic: false }), { pass: true, text: "record this" });
+  assert.deepEqual(core.wakeGate("record this", { openMic: true }), { pass: true, text: "record this" });
+  assert.deepEqual(core.wakeGate("aither draw", { wakeWord: "aither", openMic: true }), { pass: true, text: "draw" });
+});
+
 test("frame budget: idle work falls off and hidden draws nothing", () => {
   assert.equal(core.frameBudget({ hidden: true, audible: true }), 0);
   assert.equal(core.frameBudget({ audible: true }), 60);

@@ -180,6 +180,21 @@ const VOICE_RULES = Object.freeze([
   [/^(mute|mute (the )?mic|stop listening)$/, "voice.mute"],
 ]);
 
+/**
+ * The optional wake word (cast.json voice.wakeWord, e.g. "aither"): with the open mic on,
+ * only an utterance that STARTS with it is acted on, and the word is stripped. Push-to-talk
+ * is an explicit press, so it never needs one. Returns {pass, text}.
+ */
+function wakeGate(said, { wakeWord = "", openMic = false } = {}) {
+  const text = String(said || "").trim();
+  const word = String(wakeWord || "").trim().toLowerCase();
+  if (!openMic || !word) return { pass: Boolean(text), text };
+  const re = new RegExp(`^(hey |ok |okay )?${word.replace(/[^a-z0-9 ]/g, "")}[\\s,.!?:]+`, "i");
+  const m = text.match(re);
+  if (!m) return { pass: false, text: "" };
+  return { pass: true, text: text.slice(m[0].length).trim() };
+}
+
 function parseVoiceCommand(text) {
   const raw = String(text || "").toLowerCase().replace(/[.!?,]+/g, " ").replace(/\s+/g, " ").trim()
     .replace(/^(hey |ok |okay )?(aither|desk)\s+/, "").replace(/^(please |can you |could you )/, "")
@@ -264,6 +279,6 @@ function resizeDims(size, { width, height, scale } = {}) {
 
 module.exports = {
   MENU, MENU_IDS, menuGroups, SEND_TARGETS, targetById, publicTargets, captureBody,
-  workspaceKey, mayDeliver, fileName, safeSaveName, SAVE_EXT, parseVoiceCommand, VOICE_RULES,
+  workspaceKey, mayDeliver, fileName, safeSaveName, SAVE_EXT, parseVoiceCommand, VOICE_RULES, wakeGate,
   FRAME, frameBudget, cropRect, GRAPHICS, graphicsAction, resizeDims, MAX_CAPTURE_B64,
 };

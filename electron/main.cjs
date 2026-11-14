@@ -6043,7 +6043,13 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // publisher is attached to, so the owner's words appear in the room and the
     // answer comes back through the avatar's voice.
     ipcMain.handle("desk:voice-heard", async (_event, text) => {
-      const said = String(text || "").trim();
+      // Optional wake word (cast.json voice.wakeWord): with the open mic on, only words
+      // that start with it are acted on (toolkit-core wakeGate). Push-to-talk passes.
+      let wakeWord = "";
+      try { wakeWord = String(((require("./desk-settings.cjs").current() || {}).voice || {}).wakeWord || ""); } catch { /* none */ }
+      const woke = require("./toolkit-core.cjs").wakeGate(String(text || ""), { wakeWord, openMic: openMicOn });
+      if (!woke.pass && String(text || "").trim()) return { ok: true, ignored: "no wake word" };
+      const said = woke.text;
       listenState = "idle";
       refreshTrayMenu();
       if (!said) return { ok: false, error: "nothing was heard" };
