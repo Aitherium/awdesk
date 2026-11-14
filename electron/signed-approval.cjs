@@ -52,6 +52,9 @@ const CARD_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 /** true when `raw` (the card JSON) needs a SIGNED approval. */
 function requiresSignedAnswer(raw) {
   if (!raw || typeof raw !== "object") return false;
+  // The card's own flag (adk.decisions `require_signed`, 2026-11-10) is the contract;
+  // the kind/fact lists below stay for cards raised before the flag existed.
+  if (raw.require_signed === true || raw.requireSigned === true) return true;
   const kind = typeof raw.kind === "string" ? raw.kind.trim().toLowerCase() : "";
   if (SIGNED_ANSWER_KINDS.includes(kind)) return true;
   const facts = Array.isArray(raw.facts) ? raw.facts : [];
@@ -113,6 +116,18 @@ function approveUrl(id, choice, origin = portalOrigin()) {
   const u = new URL("/approve", origin);
   u.searchParams.set("card", String(id));
   u.searchParams.set("choice", String(choice));
+  return u.toString();
+}
+
+/** The approve page reached THROUGH /login: the approve window is its own signed-out
+ *  session, and /approve's passkey sign-in called a login-gated route, so "Sign in
+ *  with passkey" did nothing (owner, 2026-11-10). /login's passkey uses the public
+ *  /api/auth routes, then returnUrl lands on /approve signed in. A session that is
+ *  already signed in passes straight through. */
+function signInApproveUrl(id, choice, origin = portalOrigin()) {
+  const target = new URL(approveUrl(id, choice, origin));
+  const u = new URL("/login", origin);
+  u.searchParams.set("returnUrl", target.pathname + target.search);
   return u.toString();
 }
 
@@ -178,7 +193,13 @@ function openApproveWindow({ BrowserWindow, parent = null, url, origin = portalO
   return win;
 }
 
+/** true while the approve window is open: the owner is mid-approval. */
+function approveWindowOpen() {
+  return Boolean(_approveWindow && !_approveWindow.isDestroyed());
+}
+
 module.exports = {
+  approveWindowOpen,
   SIGNED_ANSWER_KINDS,
   SIGNED_FACT_KEYS,
   DECLINE_KEYS,
@@ -190,6 +211,7 @@ module.exports = {
   readCardRaw,
   portalOrigin,
   approveUrl,
+  signInApproveUrl,
   isAllowedApproveNavigation,
   openApproveWindow,
 };

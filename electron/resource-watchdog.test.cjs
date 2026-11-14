@@ -79,6 +79,24 @@ test("a runaway (main +400 MB inside a minute) restarts without waiting for the 
   assert.ok(calls.some((c) => c[0] === "restart"), JSON.stringify(calls));
 });
 
+test("mid-approval (the passkey window open): a runaway reclaims and never restarts", () => {
+  // Owner, 2026-11-10: "I was about to, then it was killed" -- the approve page
+  // loading read as a +400 MB runaway and the restart destroyed the window.
+  let open = true;
+  const { calls, step } = harness([[200], [500], [800], [800]], { hold: () => open });
+  step(15_000);
+  step(15_000);
+  step(15_000);
+  assert.ok(!calls.some((c) => c[0] === "restart" || c[0] === "quit"), JSON.stringify(calls));
+  assert.ok(calls.some((c) => c[0] === "reclaim" && c[1] === true));
+  // Window closed and still past the line: the normal rule applies again.
+  open = false;
+  const hard = harness([[wd.BUDGETS.customer.mainHardMb + 500]], { hold: () => false });
+  hard.step();
+  hard.step();
+  assert.ok(hard.calls.some((c) => c[0] === "restart"));
+});
+
 test("restarted twice in the last hour already: quit instead of looping", () => {
   const hard = wd.BUDGETS.customer.mainHardMb + 500;
   const { calls, step } = harness([[hard]], { restartsInLastHour: () => 2 });
