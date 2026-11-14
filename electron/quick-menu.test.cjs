@@ -12,10 +12,10 @@ function registryWith(ids) {
 }
 
 test("Q1 only ids in the registry render -- a missing parallel-lane command is hidden", () => {
-  const registry = registryWith(["snip.region", "note.new", "board.new"]);
+  const registry = registryWith(["snip.region", "sticky.new", "board.new"]);
   const items = availableItems(registry);
   // Toolkit order (Create before Capture): board, note, then snip.
-  assert.deepEqual(items.map((i) => i.id), ["board.new", "note.new", "snip.region"]);
+  assert.deepEqual(items.map((i) => i.id), ["board.new", "sticky.new", "snip.region"]);
   assert.ok(!items.some((i) => i.id === "ink.toggle"), "an absent ink.* must not be a dead cell");
 });
 
@@ -72,7 +72,7 @@ test("Q5 the pop-up anchors at the cursor, flips at the edge, clamps in", () => 
 test("Q6 the item list is the one the owner asked for", () => {
   // Owner 2026-11-13: the local toolkit, ONE short grouped menu (Create / Capture / Send).
   // The whole-screen snip/record and the audio rows moved to the tray and the radial.
-  for (const id of ["ink.toggle", "sketch.new", "board.new", "note.new", "scratch.new", "piano.open",
+  for (const id of ["ink.toggle", "sketch.new", "board.new", "sticky.new", "scratch.new", "piano.open",
     "snip.region", "record.region", "record.region.gif", "region.box", "present.start", "graphics.open",
     "send.last", "interact.toggle"]) {
     assert.ok(ITEM_IDS.includes(id), `${id} missing from the quick menu`);

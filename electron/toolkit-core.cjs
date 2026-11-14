@@ -28,7 +28,7 @@ const MENU = Object.freeze([
     Object.freeze({ id: "ink.toggle", short: "Draw on screen" }),
     Object.freeze({ id: "sketch.new", short: "Sketch pad" }),
     Object.freeze({ id: "board.new", short: "Whiteboard" }),
-    Object.freeze({ id: "note.new", short: "Sticky note" }),
+    Object.freeze({ id: "sticky.new", short: "Sticky note" }),
     Object.freeze({ id: "scratch.new", short: "Quick type" }),
     Object.freeze({ id: "piano.open", short: "Play notes" }),
     Object.freeze({ id: "gif.open", short: "GIFs" }),
