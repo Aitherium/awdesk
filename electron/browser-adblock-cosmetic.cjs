@@ -13,8 +13,9 @@
  * page on this host". browser-window.cjs injects it as a user style sheet.
  *
  * A list is someone else's text going into every page, so:
- *   - a selector is checked before it is kept (balanced brackets and quotes, nothing
- *     that could close the rule and start another, no at-rules);
+ *   - a selector is checked before it is kept: no brace anywhere, no `url(`, brackets
+ *     and quotes properly nested, no at-rule, no comment. The check must not be fooled
+ *     where it and Chromium read the same text differently (see safeSelector);
  *   - selectors go into the sheet in small groups, one CSS rule each. A selector this
  *     Chromium does not understand voids only its own group, never the sheet;
  *   - the number of selectors is capped.
@@ -29,17 +30,36 @@ const HIDE = "{display:none!important}";
 /** Pseudo-classes that are not CSS: uBlock/AdGuard/ABP procedural operators. */
 const PROCEDURAL = /:(?:has-text|contains|-abp-[a-z-]+|xpath|matches-css(?:-before|-after)?|matches-attr|matches-path|matches-media|matches-property|matches-prop|min-text-length|nth-ancestor|upward|watch-attr|remove|remove-attr|remove-class|style|others|if|if-not|shadow|spath)\(/i;
 
+/** A selector with its CSS escapes resolved (\75 -> u, \l -> l), as the tokenizer names things. */
+function unescaped(s) {
+  return s.replace(/\\(?:([0-9a-f]{1,6})[ \t]?|([^]))/gi, (_m, hex, ch) => {
+    if (!hex) return ch;
+    const code = parseInt(hex, 16);
+    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "\ufffd";
+  });
+}
+
 /**
  * Is `sel` safe to put into a style sheet as a selector? Not "valid CSS" (only a
  * browser knows that); it cannot escape its rule.
+ *
+ * The danger is reading the text differently from Chromium: what this function takes
+ * for a quoted string, Chromium may take for live braces. So nothing here depends on
+ * the two agreeing:
+ *   - `{` and `}` are refused everywhere, inside quotes and escaped too;
+ *   - `url(` is refused everywhere, in any spelling. It starts a token that runs to
+ *     the first `)` and ignores quotes, so `url(a"b)` closes where a string seems open;
+ *   - brackets are matched with a stack. `[b(]c)` balances by count, but the `(` holds
+ *     the `]`, the `[` never closes, and the rest of the sheet goes into it.
  */
 function safeSelector(sel) {
   const s = String(sel || "");
   if (!s || s.length > MAX_SELECTOR) return false;
+  if (s.includes("{") || s.includes("}")) return false;
   if (PROCEDURAL.test(s)) return false;
+  if (/url\s*\(/i.test(s.includes("\\") ? unescaped(s) : s)) return false;
   let quote = 0;
-  let square = 0;
-  let round = 0;
+  const open = []; // the closing bracket each open one waits for
   for (let i = 0; i < s.length; i += 1) {
     const c = s.charCodeAt(i);
     if (c < 32 || c === 127) return false; // control characters, new lines
@@ -50,15 +70,14 @@ function safeSelector(sel) {
     }
     if (quote) { if (c === quote) quote = 0; continue; }
     if (c === 34 || c === 39) { quote = c; continue; }
-    if (c === 91) square += 1;
-    else if (c === 93) { square -= 1; if (square < 0) return false; }
-    else if (c === 40) round += 1;
-    else if (c === 41) { round -= 1; if (round < 0) return false; }
-    else if (c === 123 || c === 125 || c === 59 || c === 64 || c === 60) return false; // { } ; @ <
+    if (c === 91) open.push(93);
+    else if (c === 40) open.push(41);
+    else if (c === 93 || c === 41) { if (open.pop() !== c) return false; }
+    else if (c === 59 || c === 64 || c === 60) return false; // ; @ <
     else if (c === 47 && s.charCodeAt(i + 1) === 42) return false; // a comment opening
-    else if (c === 44 && !square && !round) return false; // a top-level comma is two selectors
+    else if (c === 44 && !open.length) return false; // a top-level comma is two selectors
   }
-  return !quote && !square && !round;
+  return !quote && !open.length;
 }
 
 /** A rule's domain: lower case, dotted or a single label (localhost), plain. */

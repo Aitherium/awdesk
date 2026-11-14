@@ -222,8 +222,16 @@ away without the others moving:
       One user style sheet per page (`insertCSS`, `cssOrigin: "user"`), about 24,000 selectors
       in groups of 20, so a selector Chromium rejects voids only its group. The lists'
       page-level exceptions are honoured: `$generichide` (YouTube), `$elemhide`, `@@...$document`.
+      A list is someone else's text in every page, so a selector is refused when it holds a
+      brace or `url(` anywhere (quoted and escaped too), or when its brackets cross. Review
+      found two lines that got live CSS past the first check (`url(a"b)` ends at the `)` for
+      Chromium and looked like an open string to the check; `[b(]c)` balanced by count); both
+      are tests and a live smoke check now. Cost on the real lists: 1 rule of 24,119.
     - **The shield** in the toolbar: what was blocked on this page, pause on this site, pause
       everywhere. It is on every web page, because it is where a broken site gets fixed.
+      From an InPrivate tab "pause on this site" (shield and more-menu) is held in memory,
+      applies to InPrivate tabs only and is dropped with the last one: `adblock.json` never
+      names a site that was only visited InPrivate.
     - **Tracking** (`browser-tracking.cjs`): `utm_*`, `fbclid`, `gclid`... leave a page's address
       before the request does; every request says `Sec-GPC: 1` and `DNT: 1`. Both are toggles
       in the more-menu, on by default.

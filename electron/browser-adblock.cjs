@@ -190,7 +190,10 @@ function createAdblock({ dir, fetchImpl = globalThis.fetch, now = () => Date.now
   const counts = new Map(); // webContents id -> blocked requests on its current page
   const sessions = new Set(); // every session attach() wired, for the header hook
   let stripped = 0; // addresses cleaned of tracking parameters this run
-  let lastPage = { url: null, host: null, site: "", off: false }; // the page most requests come from
+  let lastPage = { url: null, host: null, site: "", off: false, private: false }; // the page most requests come from
+  // What an InPrivate tab chose for a site: site -> paused (true) or blocking (false).
+  // Memory only. It wins over offSites in InPrivate tabs and is unknown to the others.
+  const privateSites = new Map();
 
   try {
     const s = JSON.parse(fsImpl.readFileSync(settingsFile, "utf8"));
@@ -252,7 +255,7 @@ function createAdblock({ dir, fetchImpl = globalThis.fetch, now = () => Date.now
     blockRules = blockSet;
     allowRules = allowSet;
     cosmetic = hide;
-    lastPage = { url: null, host: null, site: "", off: false };
+    lastPage = { url: null, host: null, site: "", off: false, private: false };
     listStats = { hosts: next.size, rules: b.rules, exceptions: a.rules + ok.size + pageCount,
       cosmetic: c.generic + c.specific, skipped: skipped + b.dropped + a.dropped + c.capped, parseMs: Date.now() - t0 };
   }
@@ -299,9 +302,15 @@ function createAdblock({ dir, fetchImpl = globalThis.fetch, now = () => Date.now
     return refreshing;
   }
 
-  function siteOff(pageUrl) {
+  /** Is blocking paused on this site, as an ordinary tab or (`inPrivate`) an InPrivate tab sees it? */
+  function sitePaused(site, inPrivate) {
+    if (inPrivate && privateSites.has(site)) return privateSites.get(site);
+    return settings.offSites.includes(site);
+  }
+
+  function siteOff(pageUrl, { private: inPrivate = false } = {}) {
     const host = hostOf(pageUrl);
-    return Boolean(host) && settings.offSites.includes(siteOf(host));
+    return Boolean(host) && sitePaused(siteOf(host), inPrivate);
   }
 
   /**
@@ -316,14 +325,14 @@ function createAdblock({ dir, fetchImpl = globalThis.fetch, now = () => Date.now
   }
 
   /** The page a request comes from, worked out once (a page makes hundreds of requests). */
-  function pageOf(pageUrl) {
+  function pageOf(pageUrl, inPrivate = false) {
     const url = String(pageUrl || "");
-    if (lastPage.url === url) return lastPage;
+    if (lastPage.url === url && lastPage.private === inPrivate) return lastPage;
     const host = hostOf(url);
     const site = host ? siteOf(host) : "";
     // Off: the owner paused the site, or the lists say to block nothing on this page.
-    const off = Boolean(host) && (settings.offSites.includes(site) || pageExceptions(url, host).document);
-    lastPage = { url, host, site, off };
+    const off = Boolean(host) && (sitePaused(site, inPrivate) || pageExceptions(url, host).document);
+    lastPage = { url, host, site, off, private: inPrivate };
     return lastPage;
   }
 
@@ -336,11 +345,11 @@ function createAdblock({ dir, fetchImpl = globalThis.fetch, now = () => Date.now
    * Every request passes through here. The cost is a few Map lookups (the host and its
    * parents, each word of the address) and no regular expression from a list.
    */
-  function shouldBlock({ url, resourceType, pageUrl }) {
+  function shouldBlock({ url, resourceType, pageUrl, private: inPrivate = false }) {
     if (!settings.enabled || resourceType === "mainFrame") return false;
     const u = String(url || "");
     if (!/^(?:https?|wss?):\/\//i.test(u)) return false;
-    const page = pageOf(pageUrl);
+    const page = pageOf(pageUrl, Boolean(inPrivate));
     if (page.off) return false;
     const req = rulesMod.describeRequest(u, resourceType, page.host || "", true);
     if (!req || !req.host) return false;
@@ -355,10 +364,10 @@ function createAdblock({ dir, fetchImpl = globalThis.fetch, now = () => Date.now
    * The style sheet that hides ad boxes on the page at `pageUrl`: "" when blocking is
    * off, paused on that site, or the address is not a web page.
    */
-  function cssFor(pageUrl) {
+  function cssFor(pageUrl, { private: inPrivate = false } = {}) {
     if (!settings.enabled) return "";
     const host = hostOf(pageUrl);
-    if (!host || !/^https?:/i.test(String(pageUrl)) || siteOff(pageUrl)) return "";
+    if (!host || !/^https?:/i.test(String(pageUrl)) || siteOff(pageUrl, { private: inPrivate })) return "";
     const except = pageExceptions(String(pageUrl), host);
     if (except.document || except.elemhide) return "";
     return cosmetic.cssFor(host, { generic: !except.generichide });
@@ -368,9 +377,9 @@ function createAdblock({ dir, fetchImpl = globalThis.fetch, now = () => Date.now
    * The address a page navigation should load instead (tracking parameters removed),
    * or null to load it as asked. Off with the setting, and on a paused site.
    */
-  function cleanNavigation(url, method = "GET") {
+  function cleanNavigation(url, method = "GET", { private: inPrivate = false } = {}) {
     if (!settings.stripParams || String(method || "GET").toUpperCase() !== "GET") return null;
-    if (siteOff(url)) return null;
+    if (siteOff(url, { private: inPrivate })) return null;
     return tracking.stripTrackingParams(url);
   }
 
@@ -406,16 +415,29 @@ function createAdblock({ dir, fetchImpl = globalThis.fetch, now = () => Date.now
       return settings.gpc;
     },
     siteOff,
-    /** Turn blocking off (true) or back on (false) for the site of `pageUrl`. */
-    setSiteOff(pageUrl, off) {
+    /**
+     * Turn blocking off (true) or back on (false) for the site of `pageUrl`.
+     * `private: true` is an InPrivate tab asking: the choice holds for InPrivate tabs
+     * until clearPrivate(), and the site's name is never written to disk.
+     */
+    setSiteOff(pageUrl, off, { private: inPrivate = false } = {}) {
       const host = hostOf(pageUrl);
       if (!host) return false;
       const site = siteOf(host);
+      lastPage = { url: null, host: null, site: "", off: false, private: false };
+      if (inPrivate) {
+        privateSites.set(site, Boolean(off));
+        return Boolean(off);
+      }
       settings.offSites = settings.offSites.filter((s) => s !== site);
       if (off) settings.offSites.unshift(site);
-      lastPage = { url: null, host: null, site: "", off: false };
       saveSettings();
       return Boolean(off);
+    },
+    /** The last InPrivate tab closed: what InPrivate tabs chose is forgotten. */
+    clearPrivate() {
+      privateSites.clear();
+      lastPage = { url: null, host: null, site: "", off: false, private: false };
     },
     blockedOn: (wcId) => counts.get(wcId) || 0,
     resetCount: (wcId) => counts.delete(wcId),
@@ -423,15 +445,16 @@ function createAdblock({ dir, fetchImpl = globalThis.fetch, now = () => Date.now
      * Wire into one Electron session. Only one onBeforeRequest and one
      * onBeforeSendHeaders listener exist per session; nothing else in the desk sets
      * either on the browser's partitions (checked 2026-11-13: no other caller).
+     * `private: true` marks the InPrivate session: its pages follow the in-memory pauses.
      */
-    attach(ses, { onBlocked = null } = {}) {
+    attach(ses, { onBlocked = null, private: inPrivate = false } = {}) {
       if (!ses || !ses.webRequest) return false;
       sessions.add(ses);
       wireHeaders(ses);
       ses.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"] }, (details, callback) => {
         if (details.resourceType === "mainFrame") {
           // The page itself is never cancelled; its address may lose its click identifiers.
-          const clean = cleanNavigation(details.url, details.method);
+          const clean = cleanNavigation(details.url, details.method, { private: inPrivate });
           if (clean) { stripped += 1; callback({ redirectURL: clean }); return; }
           callback({ cancel: false });
           return;
@@ -439,7 +462,7 @@ function createAdblock({ dir, fetchImpl = globalThis.fetch, now = () => Date.now
         let pageUrl = "";
         try { pageUrl = details.webContents ? details.webContents.getURL() : ""; } catch { /* gone */ }
         if (!pageUrl) pageUrl = details.referrer || "";
-        const cancel = shouldBlock({ url: details.url, resourceType: details.resourceType, pageUrl });
+        const cancel = shouldBlock({ url: details.url, resourceType: details.resourceType, pageUrl, private: inPrivate });
         if (cancel && details.webContentsId != null) {
           counts.set(details.webContentsId, (counts.get(details.webContentsId) || 0) + 1);
           if (typeof onBlocked === "function") { try { onBlocked(details.webContentsId); } catch { /* ui only */ } }

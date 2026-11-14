@@ -28,9 +28,14 @@ app.commandLine.appendSwitch("lang", "en-US"); // the owner's language here: Ger
 const LIVE_TRANSLATE = process.env.AWDESK_TRANSLATE_LIVE === "1";
 // The block lists, as a download leaves them, so the run needs no network. Every line
 // is a real EasyList rule (checked against easylist.txt, 2026-11-13).
+// A hostile list line: a url( token and crossed brackets, each of which once got a
+// whole rule (a red page, a request per attribute value) past the selector check.
+const INJECT = ":not(url(a\"b)){}body{background:rgb(255,0,0)!important}input[value^=\"s3\"]"
+  + "{background:url(http://127.0.0.1:9/leak?v=s3)}:not(url(c\"d))";
 fs.mkdirSync(path.join(userData, "adblock"), { recursive: true });
 fs.writeFileSync(path.join(userData, "adblock", "adblock-easylist.txt"),
-  ["[Adblock Plus 2.0]", "! smoke seed", "##.ad_banner", "##.sponsored-ad", "/ads/banners/*$image", ""].join("\n"));
+  ["[Adblock Plus 2.0]", "! smoke seed", "##.ad_banner", `##${INJECT}`, "##a[b(]c)", "##.sponsored-ad", "##.ad_two",
+    "/ads/banners/*$image", ""].join("\n"));
 // Closing the browser (the session-restore check) must not quit the run.
 app.on("window-all-closed", () => {});
 process.on("unhandledRejection", (e) => { console.log("REJECT " + ((e && e.stack) || e)); app.exit(2); });
@@ -51,6 +56,7 @@ const PAGES = {
   // The image is an ad on the page's OWN host, which only a path rule can catch.
   "/cosmetic": "<!doctype html><title>Cosmetic</title><p id=\"keep\">news</p>"
     + "<div id=\"box\" class=\"ad_banner\" style=\"display:block !important\">BUY NOW</div>"
+    + "<div id=\"two\" class=\"ad_two\">AD TWO</div>"
     + "<img id=\"b\" src=\"/ads/banners/top.gif\">",
   // Says lang=en and is German: the text decides, as it must on real sites.
   "/de": "<!doctype html><html lang=\"en\"><title>Nachrichten</title><h1 id=\"h\">Die Stadt hat ein neues Museum eröffnet</h1>"
@@ -149,6 +155,10 @@ app.whenReady().then(async () => {
   await loaded(wc, "/cosmetic");
   expect("an ad box named by an EasyList selector is hidden", await until(async () => (await shown("#box")) === "none", 5000), await shown("#box"));
   expect("the rest of the page still shows", (await shown("#keep")) === "block", await shown("#keep"));
+  // The hostile line sits between the two selectors in the same group of the sheet.
+  const bodyBg = await wc.executeJavaScript("getComputedStyle(document.body).backgroundColor");
+  expect("a hostile list line injects no CSS and voids no neighbour", bodyBg !== "rgb(255, 0, 0)" && (await shown("#two")) === "none",
+    { bodyBg, two: await shown("#two") });
   // A path rule: the ad image lives on the page's own host and is still cancelled.
   expect("an ad path on the page's own host is cancelled", adHits() === 0 && bw.getAdblock().blockedOn(wc.id) >= 1,
     { hits: adHits(), blocked: bw.getAdblock().blockedOn(wc.id) });
@@ -258,11 +268,25 @@ app.whenReady().then(async () => {
   await pwc.loadURL(`${base}/cosmetic`).catch(() => {});
   expect("InPrivate pages get the hiding sheet too", await until(async () => !pwc.isLoading()
     && (await pwc.executeJavaScript("getComputedStyle(document.querySelector('#box')).display")) === "none", 5000), null);
+  // InPrivate, "Pause on this site": it works in the tab and leaves nothing behind.
+  const abFile = path.join(userData, "adblock", "adblock.json");
+  const readAb = () => { try { return fs.readFileSync(abFile, "utf8"); } catch { return null; } };
+  const abBefore = readAb();
+  const pshown = () => pwc.executeJavaScript("getComputedStyle(document.querySelector('#box')).display");
+  const hitsBefore = adHits();
+  bw.shieldAction("pause-site", true);
+  expect("InPrivate pause: the box is back in that tab", await until(async () => !pwc.isLoading() && (await pshown()) === "block", 6000), await pshown());
+  expect("InPrivate pause: the ad request goes through there", Boolean(await until(() => adHits() > hitsBefore, 4000)), { hitsBefore, now: adHits() });
+  expect("InPrivate pause: the shield says paused", bw.getState().adblock.siteOff === true, bw.getState().adblock);
+  expect("InPrivate pause: adblock.json is unchanged", abBefore !== null && readAb() === abBefore, { abBefore, now: readAb() });
+  expect("InPrivate pause: ordinary tabs are not paused", bw.getAdblock().siteOff(`${base}/cosmetic`) === false, null);
   await pwc.loadURL(`${base}/de`).catch(() => {});
   await until(() => !pwc.isLoading() && pwc.getURL().includes("/de"));
   await sleep(1500);
   expect("InPrivate: no translation is offered unasked", !bw.__noticeForTest(active()), bw.__noticeForTest(active()));
   bw.runBrowserAction("close-tab");
+  expect("InPrivate pause: forgotten when the last InPrivate tab closes",
+    bw.getAdblock().siteOff(`${base}/cosmetic`, { private: true }) === false && readAb() === abBefore, readAb());
 
   // Session restore: the open tabs are written for next time; InPrivate is not.
   bw.closeBrowserWindow();

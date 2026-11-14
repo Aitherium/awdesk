@@ -177,6 +177,44 @@ test("pausing a site lets everything through there, path rules included", () => 
   assert.equal(b.shouldBlock(r), true);
 });
 
+test("a pause from an InPrivate tab is kept in memory: never on disk, never in ordinary tabs, gone with the last InPrivate tab", () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, "adblock-easylist.txt"), "[Adblock Plus 2.0]\n/ads/banners/*$image\n##.ad_banner\n");
+  const b = ab.createAdblock({ dir, fetchImpl: null });
+  b.loadCached();
+  b.setEnabled(true); // the settings file exists, as it does on a used profile
+  const file = path.join(dir, "adblock.json");
+  const before = fs.readFileSync(file, "utf8");
+  const page = "https://secret.test/";
+  const r = { url: "https://secret.test/ads/banners/a.gif", resourceType: "image", pageUrl: page };
+
+  assert.equal(b.setSiteOff(page, true, { private: true }), true);
+  assert.equal(fs.readFileSync(file, "utf8"), before, "nothing is written");
+  assert.equal(fs.readdirSync(dir).some((n) => fs.readFileSync(path.join(dir, n), "utf8").includes("secret.test")), false);
+  assert.equal(b.siteOff(page, { private: true }), true);
+  assert.equal(b.shouldBlock({ ...r, private: true }), false, "paused in InPrivate");
+  assert.equal(b.cssFor(page, { private: true }), "");
+  assert.equal(b.siteOff(page), false, "ordinary tabs do not learn of it");
+  assert.equal(b.shouldBlock(r), true);
+  assert.match(b.cssFor(page), /\.ad_banner/);
+  assert.equal(ab.createAdblock({ dir, fetchImpl: null }).siteOff(page), false, "a restart knows nothing");
+
+  b.clearPrivate();
+  assert.equal(b.siteOff(page, { private: true }), false, "gone with the last InPrivate tab");
+  assert.equal(b.shouldBlock({ ...r, private: true }), true);
+
+  // A site the owner paused for good: InPrivate follows it, and can switch blocking
+  // back on for itself without changing the saved choice.
+  b.setSiteOff(page, true);
+  const saved = fs.readFileSync(file, "utf8");
+  assert.equal(b.siteOff(page, { private: true }), true);
+  b.setSiteOff(page, false, { private: true });
+  assert.equal(b.siteOff(page, { private: true }), false);
+  assert.equal(b.shouldBlock({ ...r, private: true }), true);
+  assert.equal(b.siteOff(page), true);
+  assert.equal(fs.readFileSync(file, "utf8"), saved);
+});
+
 test("the hiding sheet: generic plus the site's own, none when blocking is off or the page is not web", () => {
   const b = withLists({ easylist: "##.ad_banner\nshop.test##.promo\nshop.test#@#.ad_banner\n" });
   assert.equal(b.cssFor("https://news.test/a"), ".ad_banner{display:none!important}\n");
