@@ -70,6 +70,9 @@ const deskLayout = require("./desk-layout.cjs");
 // Edge parity (owner 2026-11-13, "close the gaps"): keys, right-click, find, zoom, print,
 // InPrivate, session restore, translate, DRM hand-off. The pure parts live there.
 const everyday = require("./browser-everyday.cjs");
+// Protected video and music (Widevine): the castLabs build installs the CDM; this module
+// is the only one that touches Electron's `components`, and it is inert on stock Electron.
+const widevineMod = require("./browser-widevine.cjs");
 const { createSurfaceState } = require("./surface-state.cjs");
 let knowledgeImpl = null;
 function knowledgeClient() {
@@ -462,13 +465,16 @@ function pushStateNow() {
  * guard is per session -- one hardened session must not leave the next one open.
  */
 const hardenedSessions = new WeakSet();
-function hardenSession(ses) {
+function hardenSession(ses, { owner = false } = {}) {
   if (!ses || hardenedSessions.has(ses)) return;
   hardenedSessions.add(ses);
   // Deny by default (policy.allowPermission). Five permissions ASK the owner instead, on
   // the owner's own web tab only, and remember the answer per site (browser-permissions.cjs).
-  ses.setPermissionRequestHandler((wc, permission, callback, details) => requestPermission(wc, permission, callback, details));
-  ses.setPermissionCheckHandler((wc, permission, origin, details) => checkPermission(wc, permission, origin, details));
+  // `owner` is true for the owner's persistent session only: there, protected media
+  // (mediaKeySystem) is granted unasked to the owner's own web tab (standingGrant).
+  const grant = { owner: owner === true };
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => requestPermission(wc, permission, callback, details, grant));
+  ses.setPermissionCheckHandler((wc, permission, origin, details) => checkPermission(wc, permission, origin, details, grant));
   if (typeof ses.setDevicePermissionHandler === "function") ses.setDevicePermissionHandler(() => false);
   // Ads and trackers are cancelled at the network layer (browser-adblock.cjs).
   // The InPrivate session is told apart: a pause chosen there lives in memory only.
@@ -1072,6 +1078,7 @@ function everydayState(wc) {
     passwords: saved,
     adblock: ab ? { enabled: ab.enabled(), siteOff: ab.siteOff(url, { private: Boolean(tab.private) }), blocked: ab.blockedOn(wc.id),
       web: tab.kind === "web" && !tab.pinned && /^https?:/i.test(url) } : null,
+    widevine: widevineMod.getWidevine().snapshot(),
   };
 }
 
@@ -1200,17 +1207,7 @@ function wireEveryday(wc, id) {
     if (n && n.keep) n.keep = false;
     else if (n) tabNotices.delete(id);
     const tab = tabs.get(id);
-    if (tab && tab.by === "you" && everyday.needsDrm(url)) {
-      let host = "";
-      try { host = new URL(url).hostname; } catch { /* not a URL */ }
-      if (!drmStay.has(host) && everyday.edgeExecutable()) {
-        setNotice(id, {
-          kind: "drm", data: { url, host },
-          text: "This site plays protected video or music (DRM), which this browser cannot play yet. Watch it in Edge?",
-          actions: [{ id: "open-edge", label: "Open in Edge" }, { id: "drm-stay", label: "Stay here" }],
-        });
-      }
-    }
+    offerDrm(id, wc, url);
     const store = require("./browser-webstore.cjs").parseExtensionId(url);
     if (tab && tab.by === "you" && !tab.private && store.ok && /\/detail\//.test(url)) {
       setNotice(id, {
@@ -1223,6 +1220,45 @@ function wireEveryday(wc, id) {
   wc.on("did-stop-loading", () => {
     void collectLogin(id, wc).then(() => autofill(id, wc)).then(() => offerTranslation(id, wc)).catch(() => {});
   });
+}
+
+/** What a DRM page is told, from the Widevine state (browser-widevine.cjs decides). */
+function drmNoticeFor(id, url) {
+  const tab = tabs.get(id);
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* not a URL */ }
+  return widevineMod.drmNotice({
+    needsDrm: everyday.needsDrm(url), tabBy: tab ? tab.by : "", snap: widevineMod.getWidevine().snapshot(),
+    hasEdge: Boolean(everyday.edgeExecutable()), stayed: drmStay.has(host), url, host,
+  });
+}
+
+/**
+ * A DRM site just loaded in an owner tab. Widevine ready: nothing, the page plays.
+ * Still installing (the first seconds of a first run): a wait line, then one reload so
+ * the player sees the CDM. Missing or failed: the Open in Edge fallback.
+ */
+function offerDrm(id, wc, url) {
+  const notice = drmNoticeFor(id, url);
+  if (!notice) return;
+  setNotice(id, notice);
+  if (notice.kind !== "drm-wait") return;
+  void widevineMod.getWidevine().ensure().then((snap) => {
+    const now = tabNotices.get(id);
+    if (!now || now.kind !== "drm-wait" || wc.isDestroyed() || wc.getURL() !== url) return;
+    setNotice(id, snap.state === "ready" ? null : drmNoticeFor(id, url));
+    if (snap.state === "ready") wc.reload();
+  });
+}
+
+/** The more-menu's Widevine line was clicked: retry a failed install, then say what happened. */
+function widevineCheck() {
+  const id = tabs.active;
+  const wv = widevineMod.getWidevine();
+  void wv.ensure({ retry: true }).then((snap) => {
+    setNotice(id, { kind: "info", text: snap.state === "failed" ? `Protected playback did not install: ${snap.error}` : widevineMod.widevineMenuLabel(snap) });
+  });
+  return true;
 }
 
 /** Open Edge on `url` (only Edge: shell.openExternal would come back here once Aither is the default). */
@@ -1458,6 +1494,7 @@ function runBrowserAction(action, arg, id = tabs.active) {
     case "translate": void translatePage(id); return true;
     case "read-aloud": void readAloud(); return true;
     case "open-edge": return openInEdge(wc ? wc.getURL() : "").ok;
+    case "widevine-check": return widevineCheck();
     default: return false;
   }
 }
@@ -1700,6 +1737,7 @@ function browserMenu() {
       click: (item) => setPrefs({ translateOffer: item.checked }) },
     { label: "Read aloud", click: () => runBrowserAction("read-aloud") },
     { label: "Open in Edge", enabled: /^https?:/i.test(url) && Boolean(everyday.edgeExecutable()), click: () => runBrowserAction("open-edge") },
+    { label: widevineMod.widevineMenuLabel(widevineMod.getWidevine().snapshot()), click: () => runBrowserAction("widevine-check") },
     { type: "separator" },
     { label: "Block ads and trackers", type: "checkbox", checked: ab.enabled(), click: (item) => { ab.setEnabled(item.checked); syncAllCosmetics(); pushState(); } },
     { label: "Allow ads on this site", type: "checkbox", enabled: ab.enabled() && /^https?:/i.test(url), checked: shieldFacts(id).facts.siteOff,
@@ -1792,9 +1830,31 @@ function judgePermission(wc, permission, details, url) {
   return { id, ...sitePermissions.decide({ permission, details: details || {}, url, tab, store }) };
 }
 
+/** An agent's tab is on the owner's session right now (a site the owner let agents sign in to). */
+function agentRidesOwnerSession() {
+  const ownerSession = electron().session.fromPartition(PARTITION);
+  for (const [id, view] of views) {
+    const tab = tabs.get(id);
+    if (tab && tab.by === "agent" && alive(view) && view.webContents.session === ownerSession) return true;
+  }
+  return false;
+}
+
+/**
+ * The grant nobody is asked about (protected media on the owner's session), for THIS
+ * sender: the owner's own web tab gets it, an agent's tab never does even when it rides
+ * the owner's session (browser-policy allowPermissionFor). `grant` is the session's.
+ */
+function standingGrant(wc, permission, grant) {
+  if (!grant || !policy.allowPermission(permission, grant)) return false;
+  const id = tabIdOfContents(wc);
+  const tab = id == null ? null : tabs.get(id) || null;
+  return policy.allowPermissionFor(permission, { owner: grant.owner === true, tab, agentOnSession: agentRidesOwnerSession() });
+}
+
 /** Electron's permission REQUEST (getUserMedia, Notification.requestPermission, geolocation...). */
-function requestPermission(wc, permission, callback, details) {
-  if (policy.allowPermission(permission)) return callback(true);
+function requestPermission(wc, permission, callback, details, grant) {
+  if (standingGrant(wc, permission, grant)) return callback(true);
   let url = details && details.requestingUrl;
   try { if (!url && wc) url = wc.getURL(); } catch { url = ""; }
   const verdict = judgePermission(wc, permission, details, url);
@@ -1807,8 +1867,8 @@ function requestPermission(wc, permission, callback, details) {
 }
 
 /** Electron's permission CHECK (Notification.permission, device labels): never prompts. */
-function checkPermission(wc, permission, origin, details) {
-  if (policy.allowPermission(permission)) return true;
+function checkPermission(wc, permission, origin, details, grant) {
+  if (standingGrant(wc, permission, grant)) return true;
   let url = origin || (details && (details.requestingUrl || details.securityOrigin));
   try { if (!url && wc) url = wc.getURL(); } catch { url = ""; }
   const verdict = judgePermission(wc, permission, details, url);
@@ -3069,7 +3129,9 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     return win;
   }
   const { BrowserWindow, WebContentsView, session } = electron();
-  hardenSession(session.fromPartition(PARTITION));
+  // Widevine: main started this at app ready; a caller that did not still gets it here.
+  void widevineMod.getWidevine().ensure();
+  hardenSession(session.fromPartition(PARTITION), { owner: true });
   // The agent's own session is hardened the same way (deny-by-default permissions,
   // an agent's download cancelled), and gets NO owner extension: awconnect is loaded
   // into PARTITION only, so an agent tab cannot reach the desk's signed-in bridges.
@@ -4560,6 +4622,15 @@ module.exports = {
   getDownloads: () => downloads,
   BOOKMARKS_BAR_HEIGHT,
   __setConfirmForTest: (fn) => { confirmImpl = typeof fn === "function" ? fn : null; },
+  /** What a tab's page is answered for a permission, through the handlers its session has (smoke). */
+  __permissionForTest: (id, permission) => {
+    const wc = pageWc(id);
+    if (!wc) return null;
+    const grant = { owner: wc.session === electron().session.fromPartition(PARTITION) };
+    let request = null;
+    requestPermission(wc, permission, (ok) => { request = ok; }, { requestingUrl: wc.getURL(), isMainFrame: true }, grant);
+    return { owner: grant.owner, request, check: checkPermission(wc, permission, wc.getURL(), { requestingUrl: wc.getURL(), isMainFrame: true }, grant) };
+  },
   /** Sync (browser-sync.cjs): the engine, and for the smoke its menu rows and a local store. */
   getSync,
   __syncMenuForTest: () => syncMenuItems(),

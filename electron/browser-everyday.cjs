@@ -11,8 +11,9 @@
  *   - the InPrivate partition: in memory only, never written to disk, no history kept.
  *   - session restore: the owner's open tabs, saved on every change, reopened next time.
  *   - recently closed tabs, for Ctrl+Shift+T.
- *   - DRM sites: Electron has no Widevine, so these pages are offered to Edge instead of
- *     failing with a black player.
+ *   - DRM sites: the list of hosts whose players need Widevine. browser-widevine.cjs
+ *     decides what they get: nothing when Widevine is ready (the castLabs build), the
+ *     Edge hand-off when it is not (stock Electron), instead of a black player.
  *   - page translation: text nodes read in the isolated world, translated in batches by
  *     the desk's own agent, written back. Nothing goes to Microsoft or Google.
  * browser-window.cjs does the wiring.
@@ -149,9 +150,10 @@ function createClosedTabs(max = 25) {
 // ---------------------------------------------------------------- DRM
 
 /**
- * Sites whose players need Widevine. Stock Electron ships without it, so the page
- * would show a black player or "your browser is not supported". These are offered to
- * Edge with one click instead (and the page still opens here for everything else).
+ * Sites whose players need Widevine. With Widevine ready they just play. Without it
+ * (stock Electron, or a failed install) the page would show a black player or "your
+ * browser is not supported", so these are offered to Edge with one click instead (and
+ * the page still opens here for everything else).
  */
 const DRM_HOSTS = [
   "netflix.com", "disneyplus.com", "hulu.com", "max.com", "hbomax.com", "primevideo.com",

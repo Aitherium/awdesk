@@ -43,6 +43,9 @@ fs.mkdirSync(path.join(userData, "adblock"), { recursive: true });
 fs.writeFileSync(path.join(userData, "adblock", "adblock-easylist.txt"),
   ["[Adblock Plus 2.0]", "! smoke seed", "##.ad_banner", `##${INJECT}`, "##a[b(]c)", "##.sponsored-ad", "##.ad_two",
     "/ads/banners/*$image", ""].join("\n"));
+// A known DRM host served by this run's own server (the protected-playback check).
+const DRM_HOST = "open.spotify.com";
+app.commandLine.appendSwitch("host-resolver-rules", `MAP ${DRM_HOST} 127.0.0.1`);
 // Closing the browser (the session-restore check) must not quit the run.
 app.on("window-all-closed", () => {});
 process.on("unhandledRejection", (e) => { console.log("REJECT " + ((e && e.stack) || e)); app.exit(2); });
@@ -283,6 +286,24 @@ app.whenReady().then(async () => {
   expect("Fill puts the saved password in", filled === "s3cret!\"x", filled);
   expect("the key icon knows the site has one", bw.getState().passwords === 1, bw.getState().passwords);
 
+  // Protected video and music: the Edge hand-off shows ONLY when Widevine is unavailable
+  // (stock Electron: missing; the castLabs build: ready). browser-widevine-smoke.cjs
+  // plays a real encrypted stream.
+  const widevine = await require("./browser-widevine.cjs").getWidevine().ensure();
+  expect("state carries the Widevine status", bw.getState().widevine && bw.getState().widevine.state === widevine.state
+    && ["missing", "ready", "failed"].includes(widevine.state), bw.getState().widevine);
+  await wc.loadURL(`http://${DRM_HOST}:${server.address().port}/find`).catch(() => {});
+  await loaded(wc, DRM_HOST);
+  const hasEdge = Boolean(require("./browser-everyday.cjs").edgeExecutable());
+  const drm = await until(() => { const n = bw.__noticeForTest(active()); return n && n.kind === "drm" ? n : null; }, 1500);
+  expect("a DRM site is offered Edge only when Widevine is unavailable",
+    Boolean(drm) === (widevine.state !== "ready" && hasEdge), { state: widevine.state, hasEdge, drm });
+  bw.runBrowserAction("widevine-check");
+  const told = await until(() => { const n = bw.__noticeForTest(active()); return n && n.kind === "info" ? n : null; }, 3000);
+  expect("the more-menu line reports protected playback", Boolean(told) && /Protected (video|playback)/.test(told.text), told);
+  await wc.loadURL(`${base}/login`).catch(() => {});
+  await loaded(wc, "/login");
+
   // InPrivate: its own in-memory session, and nothing in history.
   bw.runBrowserAction("inprivate", `${base}/done?private=1`);
   const pwc = await until(() => { const p = page(); return p && p.getURL().includes("private=1") && !p.isLoading() ? p : null; });
@@ -426,7 +447,7 @@ app.whenReady().then(async () => {
 
   // Site permissions: a page asking for notifications raises the prompt; Block is
   // remembered for the site; the next ask is refused with no prompt.
-  const store = bw.getPermissionStore();
+  const permStore = bw.getPermissionStore();
   const permTab = bw.__openTabForTest(`${base}/perm`);
   const permWc = await until(() => { const p = bw.__pageForTest(permTab.id); return p && p.getURL().includes("/perm") && !p.isLoading() ? p : null; });
   const ask = "window.__answer = null; Notification.requestPermission().then((v) => { window.__answer = v; }); 0";
@@ -434,14 +455,14 @@ app.whenReady().then(async () => {
   const prompt = await until(() => { const n = bw.__noticeForTest(permTab.id); return n && n.kind === "permission" ? n : null; });
   expect("a site asking for notifications raises the owner's prompt", Boolean(prompt) && /wants to show notifications/.test(prompt.text)
     && prompt.actions.map((a) => a.label).join() === "Allow,Block,Not now", prompt);
-  expect("nothing is granted while the prompt is up", (await js(permWc, "window.__answer")) === null && store.list().length === 0, store.list());
+  expect("nothing is granted while the prompt is up", (await js(permWc, "window.__answer")) === null && permStore.list().length === 0, permStore.list());
   const shownInToolbar = await until(() => bw.getWindow().webContents.executeJavaScript(
     "(() => { const n = document.getElementById('notice'); return !n.hidden && /notifications/.test(n.textContent) ? n.textContent : ''; })()"));
   expect("the toolbar shows it with Allow and Block", /Allow/.test(shownInToolbar || "") && /Block/.test(shownInToolbar || ""), shownInToolbar);
   if (prompt) await bw.noticeAction("permission-block");
   const refused = await until(() => js(permWc, "window.__answer"));
   expect("Block answers the page with denied", refused === "denied", refused);
-  expect("Block is remembered for the site", store.get(base, "notifications") === "block", store.list());
+  expect("Block is remembered for the site", permStore.get(base, "notifications") === "block", permStore.list());
   const permFile = JSON.parse(fs.readFileSync(path.join(userData, "browser-permissions.json"), "utf8"));
   expect("it is written to userData", permFile.sites[base] && permFile.sites[base].notifications.value === "block", permFile);
   await permWc.loadURL(`${base}/perm`).catch(() => {});
@@ -465,21 +486,21 @@ app.whenReady().then(async () => {
     const permText = await until(() => js(perms.lwc, `(() => { const r = ${permRow}; return r ? r.dataset.origin + ' ' + r.textContent : ""; })()`));
     expect("the permissions page lists the blocked site", (permText || "").startsWith(base) && /Notifications/.test(permText) && /Blocked/.test(permText), permText);
     await js(perms.lwc, `[...${permRow}.querySelectorAll('button')].find((b) => b.textContent === 'Remove').click(); 0`);
-    const forgotten = await until(() => store.get(base, "notifications") === null);
-    expect("Remove on the permissions page forgets the answer", Boolean(forgotten), store.list());
+    const forgotten = await until(() => permStore.get(base, "notifications") === null);
+    expect("Remove on the permissions page forgets the answer", Boolean(forgotten), permStore.list());
   }
   bw.__showTabForTest(permTab.id);
   await js(permWc, ask);
   const reasked = await until(() => { const n = bw.__noticeForTest(permTab.id); return n && n.kind === "permission" ? n : null; });
   expect("after Remove the site asks again", Boolean(reasked), bw.__noticeForTest(permTab.id));
   if (reasked) await bw.noticeAction("dismiss");
-  expect("Not now denies once and remembers nothing", (await until(() => js(permWc, "window.__answer"))) === "denied" && store.list().length === 0, store.list());
+  expect("Not now denies once and remembers nothing", (await until(() => js(permWc, "window.__answer"))) === "denied" && permStore.list().length === 0, permStore.list());
   await js(permWc, ask);
   const third = await until(() => { const n = bw.__noticeForTest(permTab.id); return n && n.kind === "permission" ? n : null; });
   await sleep(600); // Allow is dead for the prompt's first half second
   if (third) await bw.noticeAction("permission-allow");
   expect("Allow answers granted and is remembered", (await until(() => js(permWc, "window.__answer"))) === "granted"
-    && store.get(base, "notifications") === "allow", { answer: await js(permWc, "window.__answer"), list: store.list() });
+    && permStore.get(base, "notifications") === "allow", { answer: await js(permWc, "window.__answer"), list: permStore.list() });
   expect("an allowed site reads as granted afterwards", (await js(permWc, "Notification.permission")) === "granted", await js(permWc, "Notification.permission"));
 
   // Taking the Allow back on the review page reaches the page that is still open: it
@@ -489,9 +510,9 @@ app.whenReady().then(async () => {
     const row2 = "document.querySelector('#list .row[data-kind=notifications]')";
     await until(() => js(perms2.lwc, `Boolean(${row2})`));
     await js(perms2.lwc, `[...${row2}.querySelectorAll('button')].find((b) => b.textContent === 'Remove').click(); 0`);
-    await until(() => store.get(base, "notifications") === null);
+    await until(() => permStore.get(base, "notifications") === null);
   }
-  expect("Remove takes the Allow out of the store", store.get(base, "notifications") === null, store.list());
+  expect("Remove takes the Allow out of the store", permStore.get(base, "notifications") === null, permStore.list());
   bw.__showTabForTest(permTab.id);
   expect("the open page no longer reads as granted", (await js(permWc, "Notification.permission")) !== "granted", await js(permWc, "Notification.permission"));
   await js(permWc, ask);
@@ -500,7 +521,7 @@ app.whenReady().then(async () => {
     { notice: bw.__noticeForTest(permTab.id), answer: await js(permWc, "window.__answer") });
   await sleep(600);
   if (fourth) await bw.noticeAction("permission-allow");
-  expect("Allow is remembered again", (await until(() => js(permWc, "window.__answer"))) === "granted" && store.get(base, "notifications") === "allow", store.list());
+  expect("Allow is remembered again", (await until(() => js(permWc, "window.__answer"))) === "granted" && permStore.get(base, "notifications") === "allow", permStore.list());
 
   // A 60-character host: the toolbar shows the END of the name and the whole sentence.
   const longHost = `${"a".repeat(40)}.accounts-sign-in.localhost`;
@@ -542,6 +563,36 @@ app.whenReady().then(async () => {
     bw.runBrowserAction("close-tab");
   } else {
     expect("an agent tab opens for the permission check", false, agentTab);
+  }
+
+  // Protected media (Widevine's mediaKeySystem) is the one grant nobody is asked about.
+  // Through the same request and check handlers the sessions carry: the owner's web tab
+  // has it; an agent's tab does not, on its own session or riding the owner's (a site
+  // the owner let agents sign in to).
+  const mediaKey = (id) => bw.__permissionForTest(id, "mediaKeySystem");
+  const ownerKey = mediaKey(permTab.id);
+  expect("protected media is granted to the owner's web tab, on request and on check",
+    Boolean(ownerKey) && ownerKey.owner === true && ownerKey.request === true && ownerKey.check === true, ownerKey);
+  const keyTab = await agent("open", { url: `${base}/perm?agent=2`, new_tab: true });
+  const keyWc = keyTab.ok ? bw.__pageForTest(keyTab.tab) : null;
+  if (keyWc) {
+    await loaded(keyWc, "agent=2");
+    const apart = mediaKey(keyTab.tab);
+    expect("an agent tab on the agent's session is refused protected media",
+      Boolean(apart) && apart.owner === false && apart.request === false && apart.check === false, apart);
+    const signIn = bw.__agentSignInForTest(`${base}/perm`, true);
+    const riding = await until(() => { const m = mediaKey(keyTab.tab); return m && m.owner === true ? m : null; });
+    expect("with the site allowed, the agent tab rides the owner's session", signIn.ok === true && Boolean(riding), { signIn, now: mediaKey(keyTab.tab) });
+    expect("an agent tab riding the owner's session is still refused protected media, on request and on check",
+      Boolean(riding) && riding.request === false && riding.check === false, riding);
+    const meanwhile = mediaKey(permTab.id);
+    expect("the owner's tab keeps protected media while an agent rides the session",
+      Boolean(meanwhile) && meanwhile.request === true && meanwhile.check === true, meanwhile);
+    bw.__agentSignInForTest(`${base}/perm`, false);
+    bw.__showTabForTest(keyTab.tab);
+    bw.runBrowserAction("close-tab");
+  } else {
+    expect("an agent tab opens for the protected-media check", false, keyTab);
   }
   bw.getGate().release();
 

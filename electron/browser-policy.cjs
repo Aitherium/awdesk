@@ -12,7 +12,8 @@
  *                        only. javascript:, file:, data:, and every custom scheme
  *                        are refused -- a page view with no preload is still a
  *                        renderer an agent can point at the local disk.
- *   - allowPermission    every permission a page asks for is DENIED by default
+ *   - allowPermission    every permission a page asks for is DENIED by default (one
+ *                        grant: protected media, in the owner's own session)
  *                        (camera, mic, geolocation, notifications, ...).
  *   - AgentGate          "Agent is driving" / "Take over": while the owner holds
  *                        the wheel every agent tool call is refused, loudly.
@@ -101,16 +102,47 @@ function isNavigable(url) {
 /**
  * Permission requests from page content. Deny by default: an agent-driven page
  * must never get the camera, the microphone, the location or a notification
- * channel because a site asked. There is no allowlist today on purpose; add one
- * here, with a reason, if the owner asks for a specific grant.
+ * channel because a site asked.
  *
  * This is the grant NOBODY is asked about. The five permissions the OWNER may give a
  * site (camera, microphone, location, notifications, clipboard) are a prompt on the
  * owner's own tab, remembered per site: browser-permissions.cjs. An agent's tab never
  * reaches that prompt, so for an agent the answer is still this function's: no.
+ *
+ * One grant, for the OWNER's own session only: `mediaKeySystem`, the protected-media
+ * identifier a Widevine player may ask for (Netflix, Spotify, Disney+). Owner,
+ * 2026-11-13: "fix electron" -- protected video plays in the Aither Browser. The agent's
+ * session and InPrivate tabs pass no `owner` and stay deny-all: an identifier is not
+ * handed to a page an agent drives, nor kept for a private tab. The session alone does
+ * not say whose tab it is (an agent's tab rides the owner's session on a site the owner
+ * allowed it to sign in to): allowPermissionFor below asks about the tab too.
  */
-function allowPermission(/* permission */) {
-  return false;
+const OWNER_PERMISSIONS = new Set(["mediaKeySystem"]);
+function allowPermission(permission, { owner = false } = {}) {
+  return owner === true && OWNER_PERMISSIONS.has(String(permission));
+}
+
+/**
+ * allowPermission, for the tab that asked. The owner's session also carries agent tabs
+ * (a site on the owner's "agents may sign in here" list), so the session is not enough:
+ *
+ *   - the sender is a known tab: granted only to the OWNER's own web tab. Never an
+ *     agent's tab (`by: "agent"`), whatever session it rides, never a console page.
+ *   - the sender is unknown (Electron passes no webContents for a cross-origin frame's
+ *     check; a popped-out player): granted only while NO agent tab rides this session,
+ *     so an embedded player works for the owner and an agent's frame cannot borrow it.
+ *
+ * @param {string} permission Electron's permission name
+ * @param {object} [ctx]
+ * @param {boolean} [ctx.owner] the session is the owner's persistent one
+ * @param {{by?: string, kind?: string}|null} [ctx.tab] the tab that asked, null when unknown
+ * @param {boolean} [ctx.agentOnSession] an agent's tab is on this session right now
+ * @returns {boolean}
+ */
+function allowPermissionFor(permission, { owner = false, tab = null, agentOnSession = false } = {}) {
+  if (!allowPermission(permission, { owner })) return false;
+  if (tab) return tab.by === "you" && (tab.kind || "web") === "web";
+  return agentOnSession !== true;
 }
 
 /**
@@ -411,6 +443,7 @@ module.exports = {
   MAX_TYPE_LENGTH,
   AgentGate,
   allowPermission,
+  allowPermissionFor,
   buildAskPrompt,
   buildConnectPrompt,
   buildTaskPrompt,
