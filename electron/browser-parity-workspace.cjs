@@ -10,11 +10,16 @@
  * and no private key is ever written anywhere.
  *
  *   - no policy: nothing is governed; the platform's policy route answering 404 is "no policy".
+ *   - from the local file alone the private app stays closed; it opens once the (stand-in)
+ *     platform has confirmed the policy in this launch.
  *   - with the policy: the app loads in the owner's work tab (the tenant's own session),
  *     the watermark overlay covers it and the window is kept out of screen captures.
  *   - copy, print and download are each blocked, each with exactly one audit row.
  *   - an agent's tab and an InPrivate tab do not get the app, and neither does a local
  *     process that knocks on the door without this launch's credential.
+ *   - the security review's findings, live: an ungoverned page in the work session gets
+ *     nothing from the private app; the page is not read when capture is off; remote
+ *     debugging closes the app; knocks without the credential write no audit row.
  *   - a tampered policy closes the app: the open tab, a new one, and the door.
  *
  * Each check fails without the feature (without it the made-up name does not resolve at all).
@@ -56,6 +61,28 @@ function startPrivateApp() {
   });
 }
 
+/**
+ * The stand-in PLATFORM: GET /v1/workspace/browser-policy answers with `platform.doc`
+ * (a signed policy) or 404 while there is none -- which is what the real platform
+ * answers today.
+ */
+function startPlatform() {
+  return new Promise((resolve) => {
+    const platform = { doc: null, asked: 0 };
+    platform.server = http.createServer((req, res) => {
+      if (new URL(req.url, "http://x").pathname !== P.REMOTE_PATH || req.headers.authorization !== "Bearer test-token" || !platform.doc) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      platform.asked += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(platform.doc));
+    });
+    platform.server.listen(0, "127.0.0.1", () => { platform.origin = `http://127.0.0.1:${platform.server.address().port}`; resolve(platform); });
+  });
+}
+
 /** A request to the door from "another local process": the status line it answers with. */
 function knock(doorPort, { auth = null, target = `${ORIGIN}/` } = {}) {
   return new Promise((resolve) => {
@@ -77,6 +104,8 @@ async function run({ bw, base, expect, until, sleep, userData }) {
   const tabsNow = () => bw.getTabs().snapshot().tabs;
   const win = bw.getWindow();
   const app = await startPrivateApp();
+  const platform = await startPlatform();
+  let cdp = ""; // what the "launch" says about remote debugging (the seam; a real switch cannot be flipped in a running app)
   const { publicKey, privateKey } = nodeCrypto.generateKeyPairSync("ed25519");
   const sign = (over = {}) => P.signPolicy({ v: 1, tenant_id: TENANT, serial: 3, not_after: "2099-01-01T00:00:00Z",
     apps: [{ origin: ORIGIN, private: { host: "127.0.0.1", port: app.port }, deny: ["copy", "print", "download", "capture", "devtools"], watermark: true, audit: true }],
@@ -89,18 +118,30 @@ async function run({ bw, base, expect, until, sleep, userData }) {
   const blockedPage = (wc) => wc && wc.getURL().startsWith("data:text/html") && !wc.isLoading();
 
   // ------------------------------------------------------------------ no policy
-  // The seam: this run's public key, and this run's web server as "the platform" (it has
-  // no policy route, so it answers 404 -- as the real platform does today).
-  const ws = await bw.__workspaceSeamForTest({ keys: [P.publicKeyRaw(publicKey)], origin: base, token: () => "test-token", account: () => "smoke-user" });
+  // The seam: this run's public key, this run's stand-in platform, and leave to point a
+  // private app at 127.0.0.1 (the stand-in mesh peer; the app refuses loopback targets).
+  const ws = await bw.__workspaceSeamForTest({ keys: [P.publicKeyRaw(publicKey)], origin: platform.origin, token: () => "test-token",
+    account: () => "smoke-user", accountTenant: () => TENANT, allowLoopbackTargets: true, debugDoor: () => cdp });
   const none = await ws.refresh();
   expect("workspace: with no policy nothing is governed, and the policy route's 404 means 'no policy'", none.state === "none" && none.remote === "none"
     && ws.policy.decide(ORIGIN, "copy").allow === true && ws.state().doorPort === 0, { none, door: ws.state().doorPort });
 
   // ------------------------------------------------------------------ the signed policy, the work tab
+  // From the local file alone (the platform has not answered in this launch): the policy
+  // is in force, and the PRIVATE app stays closed -- the serial state on disk is the user's to edit.
   fs.writeFileSync(policyFile, JSON.stringify(sign()));
-  const loaded = await ws.reload();
-  expect("workspace: a policy signed with the pinned key comes into force", loaded.state === "ok" && loaded.tenant_id === TENANT && loaded.serial === 3
-    && ws.state().doorPort > 0, { loaded, door: ws.state().doorPort });
+  const local = await ws.reload();
+  const early = bw.__openTabForTest(`${ORIGIN}/`);
+  const earlyWc = early.ok ? await until(() => { const p = bw.__pageForTest(early.id); return blockedPage(p) ? p : null; }) : null;
+  const earlyText = earlyWc ? await js(earlyWc, "document.body.innerText") : "";
+  expect("workspace: before the platform confirms the policy in this launch, the private app does not open", local.state === "ok" && local.confirmed === false
+    && ws.policy.privateTarget(HOST, 80) === null && Boolean(earlyWc) && /after the platform has confirmed/.test(earlyText) && appHits() === 0,
+  { local, earlyText: earlyText.slice(0, 200), hits: appHits() });
+  if (early.ok) { bw.__showTabForTest(early.id); bw.runBrowserAction("close-tab"); }
+  platform.doc = sign();
+  const loaded = await ws.refresh();
+  expect("workspace: a policy signed with the pinned key, confirmed by the platform, comes into force", loaded.state === "ok" && loaded.confirmed === true
+    && loaded.remote === "doc" && loaded.tenant_id === TENANT && loaded.serial === 3 && ws.state().doorPort > 0, { loaded, door: ws.state().doorPort });
   const doorPort = ws.state().doorPort;
 
   const tab = bw.__openTabForTest(`${ORIGIN}/`);
@@ -110,6 +151,7 @@ async function run({ bw, base, expect, until, sleep, userData }) {
     && app.hits[0].host === HOST, { tab, url: tab.ok && bw.__pageForTest(tab.id) ? bw.__pageForTest(tab.id).getURL() : null, hits: app.hits });
   if (!wc) {
     app.server.close();
+    platform.server.close();
     await bw.__workspaceSeamForTest(null);
     return;
   }
@@ -199,12 +241,45 @@ async function run({ bw, base, expect, until, sleep, userData }) {
       && raw.split("\n").filter(Boolean).every((l) => Object.keys(JSON.parse(l)).join() === "ts,tenant,origin,action,verdict,tab");
   })(), fs.readFileSync(ws.audit.file, "utf8").slice(0, 400));
 
+  // ------------------------------------------------------------------ what the security review found
+  // "Ask about this page" (the owner's own read) on an app that forbids capture: not read.
+  await sleep(800);
+  const asked = await bw.screenPage();
+  expect("workspace: the page is not read for 'Ask about this page' when capture is off", Boolean(asked) && asked.page && asked.page.ok === false
+    && /workspace policy/.test(String(asked.page.error)) && !JSON.stringify(asked).includes(SECRET), asked);
+  // An ungoverned page that got into the work session (a link out of the app) gets nothing from the private app.
+  const hitsStray = app.hits.length;
+  await wc.loadURL(`${base}/find?ws=stray`).catch(() => {});
+  await until(() => wc.getURL().includes("ws=stray") && !wc.isLoading());
+  const strayFetch = await js(wc, `fetch(${JSON.stringify(`${ORIGIN}/`)}, { mode: "no-cors" }).then((r) => r.type + " " + r.status, (e) => "ERR " + e.message)`);
+  const strayImg = await js(wc, `new Promise((res) => { const i = new Image(); i.onload = () => res("loaded"); i.onerror = () => res("refused"); i.src = ${JSON.stringify(`${ORIGIN}/export.csv`)}; setTimeout(() => res("pending"), 2500); })`);
+  expect("workspace: an ungoverned page in the work session cannot request the private app", wc.session === workSession && /^ERR /.test(String(strayFetch))
+    && strayImg === "refused" && app.hits.length === hitsStray && rows(ws, "request").length >= 1, { strayFetch, strayImg, hits: app.hits.length, hitsStray, rows: rows(ws, "request").length });
+  await wc.loadURL(`${ORIGIN}/`).catch(() => {});
+  await until(() => wc.getURL() === `${ORIGIN}/` && !wc.isLoading());
+  expect("workspace: the app itself still loads in that tab afterwards", (await js(wc, "document.getElementById('secret') ? document.getElementById('secret').textContent : ''")) === SECRET, wc.getURL());
+  // Remote debugging on this launch (the seam says so): the app closes, with the reason; off again, it opens.
+  cdp = "--remote-debugging-port";
+  ws.policy.tick();
+  const cdpClosed = await until(() => blockedPage(wc));
+  const cdpText = cdpClosed ? await js(wc, "document.body.innerText") : "";
+  const cdpKnock = await knock(doorPort, { auth: `Basic ${Buffer.from(`${ws.door.credential().username}:${ws.door.credential().password}`).toString("base64")}` });
+  expect("workspace: with remote debugging on, the app is closed with the reason and the door maps nothing", ws.policy.status().state === "unsafe"
+    && Boolean(cdpClosed) && /remote debugging is on \(--remote-debugging-port\)/.test(cdpText) && !cdpText.includes(SECRET) && cdpKnock.status === 403
+    && ws.state().watermark === null, { status: ws.policy.status(), cdpText: cdpText.slice(0, 200), cdpKnock });
+  cdp = "";
+  ws.policy.tick();
+  await wc.loadURL(`${ORIGIN}/`).catch(() => {});
+  await until(() => wc.getURL() === `${ORIGIN}/` && !wc.isLoading());
+  expect("workspace: without remote debugging the app opens again", ws.policy.status().state === "ok"
+    && (await js(wc, "document.getElementById('secret') ? document.getElementById('secret').textContent : ''")) === SECRET, { status: ws.policy.status(), url: wc.getURL() });
+
   // ------------------------------------------------------------------ an agent's tab
   const hitsBefore = appHits();
   const agent = bw.browserAgent();
   const tabsBefore = tabsNow().length;
   const fresh = await agent("open", { url: `${ORIGIN}/`, new_tab: true }).catch((e) => ({ ok: false, error: String(e && e.message) }));
-  expect("workspace: an agent asking for the private app gets an error and no tab", fresh.ok === false && /private workspace app/.test(String(fresh.error))
+  expect("workspace: an agent asking for the private app gets an error and no tab", fresh.ok === false && /is a workspace app/.test(String(fresh.error))
     && tabsNow().length === tabsBefore, { fresh, tabs: tabsNow().length, tabsBefore });
   const agentTab = await agent("open", { url: `${base}/find?agent=ws`, new_tab: true });
   const agentWc = agentTab.ok ? await until(() => { const p = bw.__pageForTest(agentTab.tab); return p && p.getURL().includes("agent=ws") && !p.isLoading() ? p : null; }) : null;
@@ -244,10 +319,14 @@ async function run({ bw, base, expect, until, sleep, userData }) {
 
   // ------------------------------------------------------------------ another local process at the door
   const basic = (user, pass) => `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`;
+  const auditBefore = ws.audit.read().length;
+  const knocksBefore = ws.door.stats().unauthenticated;
   const noCred = await knock(doorPort);
   const wrongCred = await knock(doorPort, { auth: basic("aither-door", "0".repeat(64)) });
   expect("workspace: a local process without this launch's credential is refused by the door (407)", noCred.status === 407 && wrongCred.status === 407
     && !noCred.body.includes(SECRET) && appHits() === hitsBefore, { noCred, wrongCred });
+  expect("workspace: those knocks are counted, and write nothing to the audit spool", ws.door.stats().unauthenticated === knocksBefore + 2
+    && ws.audit.read().length === auditBefore, { stats: ws.door.stats(), before: auditBefore, now: ws.audit.read().length });
   const cred = ws.door.credential();
   const elsewhere = await knock(doorPort, { auth: basic(cred.username, cred.password), target: `${base}/find` });
   expect("workspace: even with the credential the door goes nowhere but the policy's private hosts (403)", elsewhere.status === 403, elsewhere);
@@ -282,6 +361,7 @@ async function run({ bw, base, expect, until, sleep, userData }) {
   if (clipboard.readText() === SENTINEL) clipboard.write(clipboardBefore);
   await bw.__workspaceSeamForTest(null);
   await new Promise((done) => { app.server.closeAllConnections(); app.server.close(() => done()); });
+  await new Promise((done) => { platform.server.closeAllConnections(); platform.server.close(() => done()); });
 }
 
 module.exports = { run };

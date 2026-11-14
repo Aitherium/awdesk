@@ -447,11 +447,18 @@ function createAdblock({ dir, fetchImpl = globalThis.fetch, now = () => Date.now
      * either on the browser's partitions (checked 2026-11-13: no other caller).
      * `private: true` marks the InPrivate session: its pages follow the in-memory pauses.
      */
-    attach(ses, { onBlocked = null, private: inPrivate = false } = {}) {
+    attach(ses, { onBlocked = null, private: inPrivate = false, guard = null } = {}) {
       if (!ses || !ses.webRequest) return false;
       sessions.add(ses);
       wireHeaders(ses);
       ses.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"] }, (details, callback) => {
+        // One listener per session: the workspace policy's request guard (browser-workspace.cjs
+        // cancelsRequest) is asked first, and cancels whether or not blocking is on.
+        if (typeof guard === "function") {
+          let stop;
+          try { stop = guard(details) === true; } catch { stop = true; }
+          if (stop) { callback({ cancel: true }); return; }
+        }
         if (details.resourceType === "mainFrame") {
           // The page itself is never cancelled; its address may lose its click identifiers.
           const clean = cleanNavigation(details.url, details.method, { private: inPrivate });

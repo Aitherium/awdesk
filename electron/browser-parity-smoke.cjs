@@ -53,8 +53,9 @@ app.commandLine.appendSwitch("host-resolver-rules", `MAP ${DRM_HOST} 127.0.0.1`)
 // Closing the browser (the session-restore check) must not quit the run.
 app.on("window-all-closed", () => {});
 process.on("unhandledRejection", (e) => { console.log("REJECT " + ((e && e.stack) || e)); app.exit(2); });
-// 240 s since the managed-browser block (browser-parity-workspace.cjs) joined the run.
-setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 240000);
+// The limit is there to end a run that HUNG. 400 s: with the CPU at 100% a whole run was
+// measured at 234 to 260 s (2026-11-14), and a 240 s limit ended runs that were about to pass.
+setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 400000);
 
 const PDF = Buffer.from(
   "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"

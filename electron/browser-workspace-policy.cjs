@@ -29,6 +29,7 @@
 
 const nodeCrypto = require("node:crypto");
 const fs = require("node:fs");
+const net = require("node:net");
 const path = require("node:path");
 
 const VERSION = 1;
@@ -40,6 +41,9 @@ const REMOTE_PATH = "/v1/workspace/browser-policy";
 const MAX_APPS = 200;
 const MAX_BYTES = 256 * 1024;
 const WORK_PARTITION_PREFIX = "persist:aither-work-";
+/** How far the clock may sit behind the latest time seen before it counts as "went back". */
+const CLOCK_SLACK_MS = 5 * 60 * 1000;
+const UNCONFIRMED = "a private workspace app opens only after the platform has confirmed the policy in this session";
 
 /**
  * The public keys a policy must be signed with: raw 32-byte Ed25519 keys, base64.
@@ -128,6 +132,60 @@ function originOf(value) {
   return u.origin;
 }
 
+/** A host name as it is compared: lower case, no brackets, no trailing dot. */
+function bareHost(value) {
+  return String(value == null ? "" : value).trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
+}
+
+/**
+ * Why a private app may NOT be dialled at this address ("" = it may): this computer
+ * itself, a link-local address (cloud metadata lives there), the unspecified address,
+ * multicast, or something that looks like an address and is not one. A signed policy
+ * does not get to point the door at the desk's own ports.
+ */
+function forbiddenAddress(value) {
+  const host = bareHost(value);
+  if (!host) return "empty";
+  if (host === "localhost" || host.endsWith(".localhost")) return "loopback";
+  if (/^[0-9.]+$/.test(host)) {
+    if (!net.isIPv4(host)) return "not an address";
+    const [a, b] = host.split(".").map(Number);
+    if (a === 127) return "loopback";
+    if (a === 0) return "unspecified";
+    if (a === 169 && b === 254) return "link-local";
+    if (a >= 224) return "multicast or reserved";
+    return "";
+  }
+  if (host.includes(":")) {
+    if (!net.isIPv6(host)) return "not an address";
+    const mapped = /^(?:0*:)*:?(?:ffff:)?(\d+\.\d+\.\d+\.\d+)$/.exec(host);
+    if (mapped) return forbiddenAddress(mapped[1]);
+    const groups = expandV6(host);
+    if (!groups) return "not an address";
+    if (groups.every((g) => g === 0)) return "unspecified";
+    if (groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1) return "loopback";
+    if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+      return forbiddenAddress(`${groups[6] >> 8}.${groups[6] & 255}.${groups[7] >> 8}.${groups[7] & 255}`);
+    }
+    if ((groups[0] & 0xffc0) === 0xfe80) return "link-local";
+    if ((groups[0] & 0xff00) === 0xff00) return "multicast or reserved";
+    return "";
+  }
+  return "";
+}
+
+/** An IPv6 address as eight numbers, or null. */
+function expandV6(host) {
+  const [head, tail] = host.split("::");
+  const parse = (part) => (part ? part.split(":").map((g) => parseInt(g, 16)) : []);
+  const a = parse(head);
+  const b = tail === undefined ? [] : parse(tail);
+  if ([...a, ...b].some((g) => !Number.isInteger(g) || g < 0 || g > 0xffff)) return null;
+  if (tail === undefined) return a.length === 8 ? a : null;
+  if (a.length + b.length > 7) return null;
+  return [...a, ...new Array(8 - a.length - b.length).fill(0), ...b];
+}
+
 function portOf(u) {
   return Number(u.port) || (u.protocol === "https:" ? 443 : 80);
 }
@@ -135,7 +193,7 @@ function portOf(u) {
 const hasOnly = (obj, allowed) => Object.keys(obj).every((k) => allowed.includes(k));
 
 /** The policy in its checked shape, or the reason it is not one. Strict: an unknown field is an error. */
-function normalize(doc) {
+function normalize(doc, { allowLoopback = false } = {}) {
   const bad = (error) => ({ ok: false, error });
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) return bad("the policy is not an object");
   if (!hasOnly(doc, ["v", "tenant_id", "serial", "not_after", "apps", "sig"])) return bad("the policy has a field this browser does not know");
@@ -160,18 +218,21 @@ function normalize(doc) {
     if (app.private !== undefined) {
       const p = app.private;
       if (!p || typeof p !== "object" || !hasOnly(p, ["host", "port"])) return bad("private must be {host, port}");
-      const host = String(p.host || "").toLowerCase();
-      const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || /^\[[0-9a-f:]+\]$/.test(host);
-      if (!isIp && !HOSTNAME.test(host)) return bad("private.host is not a host name or address");
+      const host = bareHost(p.host);
+      const isIp = net.isIP(host) !== 0;
+      if (!isIp && (/^[0-9.]+$/.test(host) || host.includes(":") || !HOSTNAME.test(host))) return bad("private.host is not a host name or address");
+      // An address is preferred (nothing to resolve). Either way: never this computer, never link-local.
+      const why = forbiddenAddress(host);
+      if (why && !(allowLoopback && why === "loopback")) return bad(`private.host ${host} is not allowed (${why})`);
       if (!Number.isSafeInteger(p.port) || p.port < 1 || p.port > 65535) return bad("private.port is not a port");
-      priv = { host: host.replace(/^\[|\]$/g, ""), port: p.port };
+      priv = { host, port: p.port };
     }
     const deny = app.deny === undefined ? [] : app.deny;
     if (!Array.isArray(deny) || deny.some((a) => !ACTIONS.includes(a))) return bad("deny names an action this browser does not know");
     for (const flag of ["watermark", "audit"]) {
       if (app[flag] !== undefined && typeof app[flag] !== "boolean") return bad(`${flag} must be true or false`);
     }
-    apps.push(Object.freeze({ origin: u.origin, hostname: u.hostname.toLowerCase(), port: portOf(u), private: priv,
+    apps.push(Object.freeze({ origin: u.origin, hostname: bareHost(u.hostname), port: portOf(u), private: priv,
       deny: Object.freeze([...new Set(deny)]), watermark: app.watermark === true, audit: app.audit === true }));
   }
   return { ok: true, policy: Object.freeze({ v: VERSION, tenant_id: doc.tenant_id, serial: doc.serial,
@@ -216,18 +277,31 @@ async function fetchRemote({ origin, token, fetchImpl } = {}) {
  * @param {string[]} [opts.keys] pinned public keys (raw, base64); the app passes none (PINNED_KEYS)
  * @param {() => number} [opts.now]
  * @param {{origin: () => string, token: () => Promise<string>|string, fetchImpl: Function}|null} [opts.remote]
+ * @param {() => string} [opts.unsafe] why this desk can be driven from outside right now ("" = it cannot)
+ * @param {() => (string|null)} [opts.accountTenant] the signed-in account's workspace id (null = not known)
+ * @param {boolean} [opts.allowLoopbackTargets] the live proof's seam: a private app on 127.0.0.1. Never set in the app.
  */
-function createWorkspacePolicy({ dir, keys = PINNED_KEYS, now = Date.now, remote = null } = {}) {
+function createWorkspacePolicy({ dir, keys = PINNED_KEYS, now = Date.now, remote = null, unsafe = () => "", accountTenant = () => null,
+  allowLoopbackTargets = false } = {}) {
   const policyFile = path.join(String(dir), POLICY_FILE);
   const stateFile = path.join(String(dir), STATE_FILE);
   const listeners = new Set();
-  /** What survives a restart: the tenant, the highest serial and its digest, the governed origins. */
-  let state = { tenant_id: null, serial: 0, digest: null, governed: [] };
+  /**
+   * What survives a restart: the tenant, the highest serial and its digest, the governed
+   * origins, the private apps' host names and the latest time this browser has seen.
+   */
+  let state = { tenant_id: null, serial: 0, digest: null, governed: [], privateHosts: [], seen: 0 };
   let policy = null; // the last candidate that passed signature, schema, tenant and serial
   let problem = null; // why the newest candidate is not in force
   let present = false; // a candidate existed at the last load
   let byOrigin = new Map();
   let stateBroken = false;
+  /**
+   * The highest serial the PLATFORM has sent, verified, in THIS launch. Never persisted:
+   * the state file is the user's to edit, so a rollback it cannot see is only ruled out
+   * by the platform answering now. Private apps stay closed until it has.
+   */
+  let confirmedSerial = null;
 
   function readState() {
     let raw;
@@ -235,8 +309,10 @@ function createWorkspacePolicy({ dir, keys = PINNED_KEYS, now = Date.now, remote
     try {
       const s = JSON.parse(raw);
       if (!s || typeof s !== "object" || !Number.isSafeInteger(s.serial) || !Array.isArray(s.governed)) throw new Error("shape");
+      const strings = (list) => (Array.isArray(list) ? list.filter((o) => typeof o === "string") : []);
       state = { tenant_id: typeof s.tenant_id === "string" ? s.tenant_id : null, serial: s.serial,
-        digest: typeof s.digest === "string" ? s.digest : null, governed: s.governed.filter((o) => typeof o === "string") };
+        digest: typeof s.digest === "string" ? s.digest : null, governed: strings(s.governed), privateHosts: strings(s.privateHosts),
+        seen: Number.isFinite(s.seen) && s.seen > 0 ? s.seen : 0 };
     } catch {
       // A state file that is there but unreadable: what it governed is unknown, so no policy is trusted.
       stateBroken = true;
@@ -257,11 +333,16 @@ function createWorkspacePolicy({ dir, keys = PINNED_KEYS, now = Date.now, remote
     try { return { present: true, doc: JSON.parse(raw) }; } catch { return { present: true, error: "the policy file is not JSON" }; }
   }
 
+  /** The clock, or NaN when it cannot be read. */
+  function clock() {
+    try { const at = Number(now()); return Number.isFinite(at) ? at : NaN; } catch { return NaN; }
+  }
+
   /** Signature, schema, tenant, serial -- everything but expiry (which is checked at decision time). */
   function check(doc) {
     const sig = verifySignature(doc, keys);
     if (!sig.ok) return sig;
-    const norm = normalize(doc);
+    const norm = normalize(doc, { allowLoopback: allowLoopbackTargets === true });
     if (!norm.ok) return norm;
     const p = norm.policy;
     if (state.tenant_id && p.tenant_id !== state.tenant_id) return { ok: false, error: `the policy is for another workspace (${p.tenant_id})` };
@@ -272,7 +353,8 @@ function createWorkspacePolicy({ dir, keys = PINNED_KEYS, now = Date.now, remote
   }
 
   function snapshot() {
-    return JSON.stringify([policy ? [policy.serial, policy.tenant_id] : null, problem, status().state, state.governed]);
+    const st = status();
+    return JSON.stringify([policy ? [policy.serial, policy.tenant_id] : null, problem, st.state, st.reason, confirmed(), state.governed]);
   }
 
   /**
@@ -291,18 +373,30 @@ function createWorkspacePolicy({ dir, keys = PINNED_KEYS, now = Date.now, remote
     if (remoteDoc) candidates.push({ from: "remote", doc: remoteDoc });
     present = local.present || Boolean(remoteDoc);
     let best = null;
+    let confirmedNow = false;
     if (!stateBroken) {
       for (const c of candidates) {
         const r = check(c.doc);
         if (!r.ok) { errors.push(r.error); continue; }
+        if (c.from === "remote") {
+          confirmedSerial = Math.max(confirmedSerial == null ? 0 : confirmedSerial, r.policy.serial);
+          confirmedNow = true;
+        }
         if (!best || r.policy.serial > best.policy.serial) best = { ...r, from: c.from };
       }
     }
+    // The latest time seen only goes forward -- except when the platform has just
+    // answered with a good policy: then the clock as it is now is taken as right.
+    const at = clock();
+    let seen = state.seen;
+    if (Number.isFinite(at) && (at > seen || confirmedNow)) seen = at;
+    const seenMoved = Math.abs(seen - state.seen) > 60 * 1000;
     if (best) {
       policy = best.policy;
       problem = null;
       byOrigin = new Map(policy.apps.map((a) => [a.origin, a]));
-      state = { tenant_id: policy.tenant_id, serial: policy.serial, digest: best.digest, governed: policy.apps.map((a) => a.origin) };
+      state = { tenant_id: policy.tenant_id, serial: policy.serial, digest: best.digest, governed: policy.apps.map((a) => a.origin),
+        privateHosts: [...new Set(policy.apps.filter((a) => a.private).map((a) => a.hostname))], seen };
       try {
         writeFile(stateFile, JSON.stringify(state));
         // A policy the platform sent is kept for the next start (it is verified again then).
@@ -317,6 +411,10 @@ function createWorkspacePolicy({ dir, keys = PINNED_KEYS, now = Date.now, remote
       policy = null;
       byOrigin = new Map();
       problem = errors[0] || (state.governed.length ? "the workspace policy is missing" : null);
+      if (seenMoved && !stateBroken && state.governed.length) {
+        state = { ...state, seen };
+        try { writeFile(stateFile, JSON.stringify(state)); } catch { /* the next load tries again */ }
+      }
     }
     if (snapshot() !== before) emit();
     return status();
@@ -326,19 +424,40 @@ function createWorkspacePolicy({ dir, keys = PINNED_KEYS, now = Date.now, remote
     for (const fn of listeners) { try { fn(status()); } catch { /* a listener never breaks the policy */ } }
   }
 
-  /** {state: "none" | "ok" | "expired" | "invalid" | "missing", reason, tenant_id, serial, not_after} */
+  /**
+   * {state, reason, tenant_id, serial, not_after, confirmed}. state is
+   *   none     nothing was ever governed
+   *   ok       a policy is in force
+   *   expired  not_after has passed, the clock cannot be read, or it went back
+   *   invalid  the newest candidate is not a good policy, or it is another workspace's
+   *   missing  origins are governed and the policy is gone
+   *   unsafe   this desk can be driven from outside (remote debugging): governed apps stay closed
+   */
   function status() {
     const base = { tenant_id: policy ? policy.tenant_id : state.tenant_id, serial: policy ? policy.serial : state.serial,
-      not_after: policy ? policy.not_after : null };
+      not_after: policy ? policy.not_after : null, confirmed: confirmed() };
     if (policy) {
-      // A clock that cannot be read is not "not expired yet".
-      let at;
-      try { at = Number(now()); } catch { at = NaN; }
+      let door;
+      try { door = String(unsafe() || ""); } catch { door = "the launch could not be checked"; }
+      if (door) return { ...base, state: "unsafe", reason: `remote debugging is on (${door}), so workspace apps stay closed` };
+      let signedIn;
+      try { signedIn = accountTenant(); } catch { signedIn = null; }
+      if (signedIn && String(signedIn).toLowerCase() !== policy.tenant_id.toLowerCase()) {
+        return { ...base, state: "invalid", reason: `the policy is for workspace ${policy.tenant_id}, and you are signed in to another one` };
+      }
+      // A clock that cannot be read is not "not expired yet"; one that went back is not trusted.
+      const at = clock();
       if (!(at < policy.notAfterMs)) return { ...base, state: "expired", reason: `the workspace policy expired on ${policy.not_after}` };
+      if (at < state.seen - CLOCK_SLACK_MS) return { ...base, state: "expired", reason: "this computer's clock went back, so the workspace policy's expiry cannot be checked" };
       return { ...base, state: "ok", reason: "" };
     }
     if (problem) return { ...base, state: present || stateBroken ? "invalid" : "missing", reason: problem };
     return { ...base, state: "none", reason: "" };
+  }
+
+  /** The platform has sent, in this launch, a good policy with a serial at or above the one in force. */
+  function confirmed() {
+    return Boolean(policy) && confirmedSerial != null && confirmedSerial >= policy.serial;
   }
 
   function governs(value) {
@@ -372,7 +491,10 @@ function createWorkspacePolicy({ dir, keys = PINNED_KEYS, now = Date.now, remote
       if (st.state !== "ok") return { allow: false, governed: true, reason: st.reason || "the workspace policy is not in force" };
       const app = byOrigin.get(o);
       if (!app) return { allow: false, governed: true, reason: "the workspace policy no longer lists this app" };
-      if (action === "open") return { allow: true, governed: true, reason: "" };
+      if (action === "open") {
+        if (app.private && !confirmed()) return { allow: false, governed: true, reason: UNCONFIRMED };
+        return { allow: true, governed: true, reason: "" };
+      }
       if (!ACTIONS.includes(action)) return { allow: false, governed: true, reason: "not an action the workspace policy knows" };
       if (app.deny.includes(action)) return { allow: false, governed: true, reason: "turned off by the workspace policy" };
       return { allow: true, governed: true, reason: "" };
@@ -391,19 +513,21 @@ function createWorkspacePolicy({ dir, keys = PINNED_KEYS, now = Date.now, remote
    * Where a page may open. `partition` is the session the tab rides (or would ride).
    *   allow   nothing to do
    *   work    a governed app in an ordinary owner tab: it opens in the work partition
-   *   refuse  a private app in an agent's or an InPrivate tab
-   *   closed  a governed app while the policy is not in force
+   *   refuse  a governed app in an agent's tab; a private app in an InPrivate tab
+   *   closed  a governed app while the policy is not in force (or not yet confirmed, for a private app)
    */
   function gate({ url, by = "you", private: inPrivate = false, partition: current = null } = {}) {
     try {
       const o = originOf(url);
       if (!o || !(byOrigin.has(o) || state.governed.includes(o))) return { verdict: "allow" };
+      // An agent never gets a workspace app, public or private, in force or not.
+      if (by !== "you") return { verdict: "refuse", reason: "a workspace app does not open in an agent's tab" };
       const open = decide(o, "open");
       if (!open.allow) return { verdict: "closed", reason: open.reason };
       const app = byOrigin.get(o);
       const work = partition();
-      if (by !== "you" || inPrivate) {
-        if (app.private) return { verdict: "refuse", reason: by !== "you" ? "a private workspace app does not open in an agent's tab" : "a private workspace app does not open InPrivate" };
+      if (inPrivate) {
+        if (app.private) return { verdict: "refuse", reason: "a private workspace app does not open InPrivate" };
         return { verdict: "allow" };
       }
       if (current && current === work) return { verdict: "allow" };
@@ -418,21 +542,51 @@ function createWorkspacePolicy({ dir, keys = PINNED_KEYS, now = Date.now, remote
     try { return status().state === "ok" ? policy.apps : []; } catch { return []; }
   }
 
-  /** The private apps' host names (for the proxy script); empty unless the policy is in force. */
+  /** The private apps that may be reached right now: in force AND confirmed by the platform in this launch. */
   function privateHosts() {
-    if (status().state !== "ok") return [];
-    return [...new Set(policy.apps.filter((a) => a.private).map((a) => a.hostname))];
+    try {
+      if (status().state !== "ok" || !confirmed()) return [];
+      return [...new Set(policy.apps.filter((a) => a.private).map((a) => a.hostname))];
+    } catch {
+      return [];
+    }
   }
 
-  /** The mesh address a private app's host:port maps to, only while the policy is in force. */
+  /**
+   * Every host name that is, or last was, a private app -- whether or not it may be
+   * reached now. The proxy script keeps sending these to the door (which refuses them)
+   * so that a policy going out of force never turns into a direct connection.
+   */
+  function routedHosts() {
+    const now_ = policy ? policy.apps.filter((a) => a.private).map((a) => a.hostname) : [];
+    return [...new Set([...now_, ...state.privateHosts])].map(bareHost).filter(Boolean);
+  }
+
+  /** The mesh address a private app's host:port maps to, only while it may be reached (privateHosts). */
   function privateTarget(hostname, port) {
     try {
-      if (status().state !== "ok") return null;
-      const host = String(hostname || "").toLowerCase();
+      if (status().state !== "ok" || !confirmed()) return null;
+      const host = bareHost(hostname);
       const app = policy.apps.find((a) => a.private && a.hostname === host && a.port === Number(port));
       return app ? { host: app.private.host, port: app.private.port, origin: app.origin } : null;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * May this request leave? A request for a private app's host is let through only when
+   * it IS the page (a top-level navigation, judged by gate) or the page it belongs to is
+   * a governed app in force. An ungoverned page in the work session gets nothing from it.
+   */
+  function requestAllowed({ url, resourceType = "", topOrigin = "" } = {}) {
+    try {
+      const u = new URL(String(url));
+      if (!routedHosts().includes(bareHost(u.hostname))) return true;
+      if (resourceType === "mainFrame") return true;
+      return Boolean(appFor(topOrigin));
+    } catch {
+      return false;
     }
   }
 
@@ -446,16 +600,16 @@ function createWorkspacePolicy({ dir, keys = PINNED_KEYS, now = Date.now, remote
 
   readState();
   return {
-    appFor, apps, decide, gate, governs, load, partition, privateHosts, privateTarget, refresh, status,
+    appFor, apps, confirmed, decide, gate, governs, load, partition, privateHosts, privateTarget, refresh, requestAllowed, routedHosts, status,
     tenantId: () => (policy ? policy.tenant_id : state.tenant_id),
     onChange: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
-    /** The clock moved past not_after (or back): tell the listeners. */
+    /** Something status() reads changed (the clock, the sign-in, the launch): tell the listeners. */
     tick: () => emit(),
     files: Object.freeze({ policy: policyFile, state: stateFile }),
   };
 }
 
 module.exports = {
-  ACTIONS, PINNED_KEYS, POLICY_FILE, REMOTE_PATH, SIGN_DOMAIN, STATE_FILE, WORK_PARTITION_PREFIX,
-  canonical, createWorkspacePolicy, fetchRemote, normalize, originOf, publicKeyRaw, signPolicy, signedBytes, verifySignature,
+  ACTIONS, CLOCK_SLACK_MS, PINNED_KEYS, POLICY_FILE, REMOTE_PATH, SIGN_DOMAIN, STATE_FILE, UNCONFIRMED, WORK_PARTITION_PREFIX,
+  bareHost, canonical, createWorkspacePolicy, fetchRemote, forbiddenAddress, normalize, originOf, publicKeyRaw, signPolicy, signedBytes, verifySignature,
 };

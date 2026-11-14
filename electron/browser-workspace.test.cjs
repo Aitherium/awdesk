@@ -106,7 +106,7 @@ test("the guard is installed once per document; a second run only updates the de
 
 // ---------------------------------------------------------------- with electron faked
 
-function fakeWorld({ doc = policyDoc() } = {}) {
+async function fakeWorld({ doc = policyDoc(), platform = doc, debugDoor = () => "", accountTenant = async () => "" } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "awdesk-ws-"));
   if (doc) fs.writeFileSync(path.join(dir, P.POLICY_FILE), JSON.stringify(doc));
   const sessions = new Map();
@@ -129,13 +129,18 @@ function fakeWorld({ doc = policyDoc() } = {}) {
     setNotice: (id, n) => notices.push({ id, ...n }), isolated: async () => true,
     hardenSession: (ses) => hardened.push(ses.name), openTab: (by, url, opts) => { opened.push({ by, url, opts }); return { ok: true, id: 99 }; },
     blockedPage: (url, reason) => `data:text/plain,${encodeURIComponent(reason)}`,
-    keys: [P.publicKeyRaw(publicKey)], remote: null, account: async () => "david",
+    keys: [P.publicKeyRaw(publicKey)], account: async () => "david", accountTenant, debugDoor,
+    allowLoopbackTargets: true, // this file's private app points at 127.0.0.1:9; the app never sets it
+    // The stand-in platform: it confirms `platform` (null = the route answers 404).
+    remote: { origin: () => "https://app.aitherium.com", token: async () => "tok",
+      fetchImpl: async () => (platform ? { status: 200, text: async () => JSON.stringify(platform) } : { status: 404, text: async () => "" }) },
   };
   const ws = W.createWorkspace(host);
-  ws.policy.load();
+  await ws.refresh();
   const page = (id, tab, url, ses) => {
     const wc = { url, loaded: [], session: ses || null, isDestroyed: () => false, getURL() { return this.url; },
-      loadURL(u) { this.loaded.push(u); this.url = u; return Promise.resolve(); }, mainFrame: null };
+      loadURL(u) { this.loaded.push(u); this.url = u; return Promise.resolve(); }, mainFrame: null,
+      insertCSS: async () => "k", removeInsertedCSS: async () => {}, isDevToolsOpened: () => false };
     tabsById.set(id, tab);
     pages.set(id, wc);
     return wc;
@@ -144,7 +149,7 @@ function fakeWorld({ doc = policyDoc() } = {}) {
 }
 
 test("the owner's tab for a workspace app is built in the tenant's work partition, hardened", async () => {
-  const w = fakeWorld();
+  const w = await fakeWorld();
   assert.deepEqual(w.ws.gateOpen({ by: "you", url: `${WIKI}/home` }), { partition: "persist:aither-work-acme" });
   assert.deepEqual(w.hardened, ["persist:aither-work-acme"]);
   assert.deepEqual(w.ws.gateOpen({ by: "you", url: "https://example.com/" }), {}, "ordinary browsing is untouched");
@@ -152,23 +157,23 @@ test("the owner's tab for a workspace app is built in the tenant's work partitio
   const proxy = w.sessions.get("persist:aither-work-acme").proxy;
   assert.equal(proxy.mode, "pac_script");
   const script = Buffer.from(proxy.pacScript.split(",")[1], "base64").toString();
-  assert.match(script, /"wiki\.corp\.test":1/);
+  assert.match(script, /\["wiki\.corp\.test"\]/);
   assert.match(script, new RegExp(`PROXY 127\\.0\\.0\\.1:${w.ws.door.port()}"`));
   assert.ok(!w.sessions.has("persist:aither-browser-agent") && !w.sessions.has("aither-inprivate"), "no other session was given a proxy script");
   await w.ws.dispose();
 });
 
 test("an agent asking for a private app gets an error and no tab; the refusal is audited", async () => {
-  const w = fakeWorld();
+  const w = await fakeWorld();
   const r = w.ws.gateOpen({ by: "agent", url: `${WIKI}/home` });
-  assert.match(r.error, /private workspace app/);
+  assert.match(r.error, /is a workspace app: a workspace app does not open in an agent's tab/);
   assert.equal(r.partition, undefined);
   assert.deepEqual(w.ws.audit.read().map((x) => [x.action, x.verdict, x.tab, x.origin]), [["open", "deny", "agent", WIKI]]);
   await w.ws.dispose();
 });
 
 test("an agent's and an InPrivate tab already open are refused the private app, with the dark page", async () => {
-  const w = fakeWorld();
+  const w = await fakeWorld();
   const agent = w.page(1, { by: "agent", kind: "web", viewSpec: { webPartition: "persist:aither-browser-agent" } }, "https://example.com/");
   const priv = w.page(2, { by: "you", kind: "web", private: true, viewSpec: { webPartition: "aither-inprivate" } }, "https://example.com/");
   for (const [id, wc] of [[1, agent], [2, priv]]) {
@@ -185,7 +190,7 @@ test("an agent's and an InPrivate tab already open are refused the private app, 
 });
 
 test("an ordinary owner tab that heads for a workspace app is stopped and a work tab opens instead", async () => {
-  const w = fakeWorld();
+  const w = await fakeWorld();
   const wc = w.page(1, { by: "you", kind: "web", viewSpec: { webPartition: "persist:aither-browser" } }, "https://example.com/");
   assert.equal(await w.ws.beforeLoad({ webContents: wc }, `${WIKI}/a`), true);
   let prevented = false;
@@ -205,7 +210,7 @@ test("an ordinary owner tab that heads for a workspace app is stopped and a work
 });
 
 test("the door's credential is given to the work session only, for the door only", async () => {
-  const w = fakeWorld();
+  const w = await fakeWorld();
   w.ws.gateOpen({ by: "you", url: `${WIKI}/` });
   await w.ws.ready();
   const login = w.appHandlers.login;
@@ -235,7 +240,7 @@ test("the door's credential is given to the work session only, for the door only
 });
 
 test("a tampered policy takes the credential and the private hosts away from the work session", async () => {
-  const w = fakeWorld();
+  const w = await fakeWorld();
   w.ws.gateOpen({ by: "you", url: `${WIKI}/` });
   await w.ws.ready();
   const open = w.page(1, { by: "you", kind: "web", viewSpec: { webPartition: "persist:aither-work-acme" } }, `${WIKI}/home`);
@@ -243,7 +248,13 @@ test("a tampered policy takes the credential and the private hosts away from the
   forged.apps[0].deny = [];
   fs.writeFileSync(path.join(w.dir, P.POLICY_FILE), JSON.stringify(forged));
   assert.equal((await w.ws.reload()).state, "invalid");
-  assert.equal(w.sessions.get("persist:aither-work-acme").proxy.mode, "direct", "no private host is routed to the door");
+  // Review finding 9: the private host is NOT set free to go direct. It stays pointed at the door, which refuses it.
+  const proxy = w.sessions.get("persist:aither-work-acme").proxy;
+  assert.equal(proxy.mode, "pac_script");
+  const script = Buffer.from(proxy.pacScript.split(",")[1], "base64").toString();
+  assert.match(script, /"wiki\.corp\.test"/);
+  assert.match(script, new RegExp(`PROXY 127\\.0\\.0\\.1:${w.ws.door.port()}"`));
+  assert.equal(w.ws.policy.privateTarget("wiki.corp.test", 80), null, "and the door maps it nowhere");
   const out = { answer: "untouched" };
   w.appHandlers.login({ preventDefault() {} }, { isDestroyed: () => false, session: w.session.fromPartition("persist:aither-work-acme") }, {},
     { isProxy: true, host: "127.0.0.1", port: w.ws.door.port(), realm: REALM }, (...a) => { out.answer = a; });
@@ -256,7 +267,7 @@ test("a tampered policy takes the credential and the private hosts away from the
 });
 
 test("a block is said once and audited once, with the origin only", async () => {
-  const w = fakeWorld();
+  const w = await fakeWorld();
   const wc = w.page(1, { by: "you", kind: "web", viewSpec: { webPartition: "persist:aither-work-acme" } }, `${WIKI}/secret/page?id=7`);
   assert.equal(w.ws.blocks(1, "copy"), true);
   assert.equal(w.ws.blocks(1, "copy"), true, "still blocked the second time");
@@ -283,7 +294,7 @@ test("a block is said once and audited once, with the origin only", async () => 
 });
 
 test("with no policy nothing is blocked, moved or proxied", async () => {
-  const w = fakeWorld({ doc: null });
+  const w = await fakeWorld({ doc: null });
   const wc = w.page(1, { by: "you", kind: "web", viewSpec: {} }, `${WIKI}/home`);
   assert.deepEqual(w.ws.gateOpen({ by: "you", url: `${WIKI}/` }), {});
   assert.deepEqual(w.ws.gateOpen({ by: "agent", url: `${WIKI}/` }), {});
@@ -293,5 +304,143 @@ test("with no policy nothing is blocked, moved or proxied", async () => {
   assert.equal(w.sessions.size, 0);
   assert.equal(w.ws.door.port(), 0, "the door is not even listening");
   assert.deepEqual(w.ws.audit.read(), []);
+  await w.ws.dispose();
+});
+
+// ---------------------------------------------------------------- security review of PR #81
+
+const PUBLIC = "https://crm.example.com";
+const twoApps = (over = {}) => policyDoc({ apps: [
+  { origin: WIKI, private: { host: "127.0.0.1", port: 9 }, deny: ["copy", "capture"], watermark: true },
+  { origin: PUBLIC, deny: ["copy"] },
+], ...over });
+
+// Finding 1.
+test("debugDoor names every way this desk can be driven from outside, and nothing when there is none", () => {
+  const cl = (...names) => ({ hasSwitch: (n) => names.includes(n) });
+  assert.equal(W.debugDoor({ commandLine: cl(), env: {} }), "");
+  assert.equal(W.debugDoor({}), "");
+  assert.equal(W.debugDoor({ commandLine: cl("remote-debugging-port"), env: {} }), "--remote-debugging-port");
+  assert.equal(W.debugDoor({ commandLine: cl("remote-debugging-pipe"), env: {} }), "--remote-debugging-pipe");
+  assert.equal(W.debugDoor({ commandLine: cl("remote-debugging-address", "remote-debugging-port"), env: {} }), "--remote-debugging-port, --remote-debugging-address");
+  assert.equal(W.debugDoor({ commandLine: cl(), env: { DESK_CDP_PORT: "9223" } }), "DESK_CDP_PORT", "main.cjs turns this into the switch");
+  assert.equal(W.debugDoor({ commandLine: cl("remote-debugging-port"), env: { DESK_CDP_PORT: "9223" } }), "--remote-debugging-port", "named once");
+  assert.equal(W.debugDoor({ commandLine: cl(), env: { DESK_CDP_PORT: "off" } }), "", "main.cjs ignores a value that is not a port, and so does this");
+  assert.equal(W.debugDoor({ commandLine: cl(), env: {}, inspectorUrl: "ws://127.0.0.1:9229/x" }), "the Node inspector");
+  assert.equal(W.debugDoor({ commandLine: { hasSwitch() { throw new Error("x"); } }, env: {} }), "");
+  assert.deepEqual([...W.DEBUG_SWITCHES], ["remote-debugging-port", "remote-debugging-pipe", "remote-debugging-address"]);
+});
+
+test("with remote debugging on, governed apps are refused with the reason and the door is never started", async () => {
+  const w = await fakeWorld({ debugDoor: () => "DESK_CDP_PORT" });
+  assert.equal(w.ws.policy.status().state, "unsafe");
+  assert.deepEqual(w.ws.gateOpen({ by: "you", url: `${WIKI}/` }), {}, "no work tab is built");
+  const wc = w.page(1, { by: "you", kind: "web", viewSpec: { webPartition: "persist:aither-browser" } }, "https://example.com/");
+  await assert.rejects(() => w.ws.beforeLoad({ webContents: wc }, `${WIKI}/home`), /remote debugging is on \(DESK_CDP_PORT\)/);
+  assert.ok(wc.loaded[0].startsWith("data:"), "the dark page");
+  assert.ok(w.notices.some((n) => n.id === 1 && /remote debugging is on \(DESK_CDP_PORT\)/.test(n.text)), "said in the toolbar");
+  await w.ws.ready();
+  assert.equal(w.ws.door.port(), 0, "the door is not listening");
+  assert.equal(w.appHandlers.login, undefined, "and no proxy login is answered");
+  const proxy = w.sessions.get("persist:aither-work-acme").proxy;
+  assert.match(Buffer.from(proxy.pacScript.split(",")[1], "base64").toString(), /PROXY 127\.0\.0\.1:1"/, "the private host points at a closed port, not DIRECT");
+  assert.equal(w.ws.blocks(1, "copy"), false, "an ordinary page is as before");
+  await w.ws.dispose();
+  // A desk with no workspace policy: remote debugging changes nothing.
+  const plain = await fakeWorld({ doc: null, debugDoor: () => "DESK_CDP_PORT" });
+  const page = plain.page(1, { by: "you", kind: "web", viewSpec: {} }, `${WIKI}/home`);
+  assert.equal(await plain.ws.beforeLoad({ webContents: page }, `${WIKI}/home`), false);
+  assert.deepEqual(plain.notices, []);
+  await plain.ws.dispose();
+});
+
+// Finding 2.
+test("until the platform confirms the policy in this launch, a private app does not open and gets no credential", async () => {
+  const w = await fakeWorld({ platform: null });
+  assert.equal(w.ws.policy.status().state, "ok", "the local policy is good");
+  assert.deepEqual(w.ws.gateOpen({ by: "you", url: `${WIKI}/` }), {}, "no work tab for the private app");
+  const wc = w.page(1, { by: "you", kind: "web", viewSpec: { webPartition: "persist:aither-work-acme" } }, "https://example.com/");
+  await assert.rejects(() => w.ws.beforeLoad({ webContents: wc }, `${WIKI}/home`), /after the platform has confirmed/);
+  await w.ws.ready();
+  const out = { answer: "untouched" };
+  if (w.appHandlers.login) {
+    w.appHandlers.login({ preventDefault() {} }, { isDestroyed: () => false, session: w.session.fromPartition("persist:aither-work-acme") }, {},
+      { isProxy: true, host: "127.0.0.1", port: w.ws.door.port(), realm: REALM }, (...a) => { out.answer = a; });
+    assert.deepEqual(out.answer, [], "the work session gets no door credential");
+  }
+  assert.equal(w.ws.policy.privateTarget("wiki.corp.test", 80), null);
+  await w.ws.dispose();
+});
+
+// Finding 4.
+test("an agent gets no governed app at all, and no read or capture of one it is somehow on", async () => {
+  const w = await fakeWorld({ doc: twoApps() });
+  const r = w.ws.gateOpen({ by: "agent", url: `${PUBLIC}/deals` });
+  assert.match(r.error, /crm\.example\.com is a workspace app/);
+  const agent = w.page(1, { by: "agent", kind: "web", viewSpec: { webPartition: "persist:aither-browser" } }, "https://example.com/");
+  await assert.rejects(() => w.ws.beforeLoad({ webContents: agent }, `${PUBLIC}/deals`), /agent's tab/);
+  let prevented = false;
+  assert.equal(w.ws.onNavigate(1, `${PUBLIC}/x`, { preventDefault() { prevented = true; } }), true);
+  assert.equal(prevented, true);
+  // Somehow on the page anyway (a redirect that slipped, a popup): the read and the screenshot are still refused.
+  const onIt = w.page(2, { by: "agent", kind: "web", viewSpec: {} }, `${WIKI}/home`);
+  assert.equal(w.ws.blocksRead(2, "read"), true);
+  assert.equal(w.ws.blocksRead(2, "snapshot"), true);
+  assert.equal(w.ws.blocks(2, "capture"), true, "what screenshot() asks");
+  assert.equal(onIt.loaded.length, 0);
+  assert.deepEqual(w.ws.audit.read().filter((x) => x.action === "capture").map((x) => [x.verdict, x.tab]), [["deny", "agent"]]);
+  await w.ws.dispose();
+});
+
+// Finding 7.
+test("the selection is a copy: it is not read for anyone when the app forbids copying", async () => {
+  assert.deepEqual(W.readActions("selection"), ["capture", "copy"]);
+  assert.deepEqual(W.readActions("read"), ["capture"]);
+  assert.deepEqual(W.readActions("overview"), ["capture"]);
+  const w = await fakeWorld({ doc: twoApps() });
+  w.page(1, { by: "you", kind: "web", viewSpec: { webPartition: "persist:aither-work-acme" } }, `${PUBLIC}/deal/7`); // deny: copy only
+  assert.equal(w.ws.blocksRead(1, "selection"), true, "the side panel's notes and 'selection' get nothing");
+  assert.equal(w.ws.blocksRead(1, "read"), false, "capture is not denied on this app");
+  assert.deepEqual(w.ws.audit.read().map((x) => [x.action, x.verdict, x.origin]), [["copy", "deny", PUBLIC]]);
+  assert.match(w.notices[0].text, /^Copying is turned off on crm\.example\.com/);
+  w.page(2, { by: "you", kind: "web", viewSpec: {} }, "https://example.com/");
+  assert.equal(w.ws.blocksRead(2, "selection"), false, "an ordinary page is as before");
+  await w.ws.dispose();
+});
+
+// Finding 3.
+test("a request for a private app from a page that is not a governed app is cancelled and audited", async () => {
+  const w = await fakeWorld({ doc: twoApps() });
+  const app = w.page(1, { by: "you", kind: "web", viewSpec: { webPartition: "persist:aither-work-acme" } }, `${WIKI}/home`);
+  const stray = w.page(2, { by: "you", kind: "web", viewSpec: { webPartition: "persist:aither-work-acme" } }, "https://evil.example/landing");
+  const req = (webContents, over = {}) => w.ws.cancelsRequest({ url: `${WIKI}/api/secrets`, resourceType: "xhr", webContents, ...over });
+  assert.equal(req(app), false, "the app's own request goes through");
+  assert.equal(req(stray), true, "an ungoverned page in the work session gets nothing from the private app");
+  assert.equal(req(stray, { resourceType: "subFrame" }), true, "nor a frame of it");
+  assert.equal(req(null), true, "nor a request with no page behind it");
+  assert.equal(req(stray, { resourceType: "mainFrame" }), false, "a navigation is the gate's to judge");
+  assert.equal(w.ws.cancelsRequest({ url: "https://cdn.example.com/a.js", resourceType: "script", webContents: stray }), false, "other hosts are untouched");
+  assert.equal(w.ws.cancelsRequest({ url: "http://[", resourceType: "xhr", webContents: stray }), true, "an address that cannot be read is not waved through");
+  const rows = w.ws.audit.read().filter((x) => x.action === "request");
+  assert.ok(rows.length >= 3 && rows.every((x) => x.verdict === "deny" && x.origin === WIKI && !JSON.stringify(x).includes("secrets")), JSON.stringify(rows));
+  await w.ws.dispose();
+});
+
+test("a policy for another workspace than the signed-in account's closes the apps", async () => {
+  let tenant = "acme";
+  const w = await fakeWorld({ accountTenant: async () => tenant });
+  const open = w.page(1, { by: "you", kind: "web", viewSpec: { webPartition: "persist:aither-work-acme" } }, `${WIKI}/home`);
+  await w.ws.refreshUser();
+  assert.equal(w.ws.policy.status().state, "ok");
+  assert.equal(open.loaded.length, 0);
+  tenant = "globex";
+  await w.ws.refreshUser();
+  assert.equal(w.ws.policy.status().state, "invalid");
+  assert.equal(open.loaded.length, 1, "the open app was replaced by the dark page");
+  assert.ok(w.notices.some((n) => n.id === 1 && /signed in to another one/.test(n.text)));
+  assert.equal(w.ws.policy.privateTarget("wiki.corp.test", 80), null);
+  tenant = ""; // signed out: not known, the binding is not applied
+  await w.ws.refreshUser();
+  assert.equal(w.ws.policy.status().state, "ok");
   await w.ws.dispose();
 });

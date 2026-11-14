@@ -42,6 +42,32 @@ const SAID = Object.freeze({
   capture: "Saving or capturing the page is", devtools: "Developer tools are",
 });
 const REFRESH_MS = 15 * 60 * 1000;
+/** Where the proxy script sends private hosts while there is no door: a port nothing listens on. */
+const CLOSED_PORT = 1;
+const DEBUG_SWITCHES = Object.freeze(["remote-debugging-port", "remote-debugging-pipe", "remote-debugging-address"]);
+
+/**
+ * Can this desk be driven from outside? A Chromium remote-debugging switch (or the
+ * DESK_CDP_PORT that main.cjs turns into one) gives any local process the DevTools
+ * protocol: it can read every page, take screenshots and run script in a governed tab,
+ * which is every rule of the policy undone. A live Node inspector is the same for main.
+ * Returns what is open ("" = nothing). Desks with no workspace policy are not affected:
+ * the policy only reads this when it has something to protect.
+ */
+function debugDoor({ commandLine = null, env = {}, inspectorUrl = "" } = {}) {
+  const open = [];
+  for (const name of DEBUG_SWITCHES) {
+    try { if (commandLine && commandLine.hasSwitch(name)) open.push(`--${name}`); } catch { /* not this electron */ }
+  }
+  if (/^\d{2,5}$/.test(String((env && env.DESK_CDP_PORT) || "")) && !open.includes("--remote-debugging-port")) open.push("DESK_CDP_PORT");
+  if (inspectorUrl) open.push("the Node inspector");
+  return open.join(", ");
+}
+
+/** The policy actions a page read needs: the selection is a copy too. */
+function readActions(action) {
+  return action === "selection" ? ["capture", "copy"] : ["capture"];
+}
 const REPEAT_MS = 700;
 const PRINT_CSS = "@media print { html { display: none !important; } }";
 
@@ -112,15 +138,24 @@ function blockedText(action, host) {
  *   blockedPage(url, reason)   the dark "did not open" document
  *   remote                     {origin(), token(), fetchImpl} for the policy route
  *   account()                  who is signed in (the watermark's name)
+ *   accountTenant()            the signed-in account's workspace id, or "" when not known
+ *   debugDoor()                why this desk can be driven from outside ("" = it cannot); see debugDoor below
  *   keys                       pinned keys (the smoke's seam; the app passes none)
+ *   allowLoopbackTargets       the smoke's seam: its stand-in mesh peer is on 127.0.0.1. Never set in the app.
  */
 function createWorkspace(host) {
   const dir = host.userData();
-  const policy = policyMod.createWorkspacePolicy({ dir, ...(host.keys ? { keys: host.keys } : {}), remote: host.remote || null });
+  /** The signed-in account's workspace, as last asked (refreshUser). null = not known: the binding is not applied. */
+  let signedInTenant = null;
+  const loopbackOk = host.allowLoopbackTargets === true;
+  const policy = policyMod.createWorkspacePolicy({ dir, ...(host.keys ? { keys: host.keys } : {}), remote: host.remote || null,
+    unsafe: () => (typeof host.debugDoor === "function" ? host.debugDoor() : ""),
+    accountTenant: () => signedInTenant, allowLoopbackTargets: loopbackOk });
   const audit = auditMod.createAudit({ dir });
   const nonce = `⁣aither-ws:${require("node:crypto").randomBytes(12).toString("hex")}:`;
   const door = meshDoor.createMeshDoor({
     resolve: (h, p) => policy.privateTarget(h, p),
+    allowLoopback: loopbackOk,
     audit: (row) => audit.record({ tenant: policy.tenantId(), origin: row.origin || (row.host ? `http://${row.host}:${row.port}` : ""),
       action: "mesh-connect", verdict: row.verdict, tab: "door" }),
   });
@@ -198,6 +233,32 @@ function createWorkspace(host) {
     return true;
   }
 
+  /**
+   * A read of the page for somebody (an agent's tool, "Ask about this page", the side
+   * panel's notes): refused when the app forbids capture, and the SELECTION also when it
+   * forbids copy -- it is the same text leaving by another door. Whoever asks.
+   */
+  function blocksRead(id, action) {
+    return readActions(action).some((need) => blocks(id, need));
+  }
+
+  /**
+   * adblock's request hook asks first (browser-window hardenSession): is this request
+   * cancelled? A request for a private app's host from a page that is not a governed app
+   * in force (an ungoverned page that got into the work session, a worker with no page).
+   */
+  function cancelsRequest(details) {
+    try {
+      const url = String((details && details.url) || "");
+      const wc = details && details.webContents;
+      const allowed = policy.requestAllowed({ url, resourceType: details && details.resourceType, topOrigin: alive(wc) ? originOfContents(wc) : "" });
+      if (!allowed) record(alive(wc) ? host.tabIdOf(wc) : null, policyMod.originOf(url), "request", "deny");
+      return !allowed;
+    } catch {
+      return true;
+    }
+  }
+
   const blocksMenu = (id, itemId) => (MENU_ACTIONS[itemId] ? blocks(id, MENU_ACTIONS[itemId]) : false);
   const blocksAction = (id, action) => (BROWSER_ACTIONS[action] ? blocks(id, BROWSER_ACTIONS[action]) : false);
 
@@ -263,7 +324,7 @@ function createWorkspace(host) {
       let origin;
       try { origin = policyMod.originOf(url); } catch { origin = ""; }
       audit.record({ tenant: policy.tenantId(), origin, action: "open", verdict: "deny", tab: "agent" });
-      return { error: `${hostOf(origin)} is a private workspace app: ${g.reason}.` };
+      return { error: `${hostOf(origin)} is a workspace app: ${g.reason}.` };
     }
     return {};
   }
@@ -365,7 +426,7 @@ function createWorkspace(host) {
       if (authInfo.host !== "127.0.0.1" || !door.port() || Number(authInfo.port) !== door.port()) return;
       event.preventDefault();
       const ses = alive(wc) ? wc.session : null;
-      if (ses && ses === workSession() && policy.status().state === "ok") {
+      if (ses && ses === workSession() && policy.privateHosts().length > 0) {
         const c = door.credential();
         callback(c.username, c.password);
       } else {
@@ -374,14 +435,20 @@ function createWorkspace(host) {
     });
   }
 
-  /** The door listens and the work session's proxy script names the private hosts as of now. */
+  /**
+   * The door listens and the work session's proxy script names the private hosts. The
+   * script names every host that is OR LAST WAS a private app (policy.routedHosts): when
+   * the policy goes out of force they still go to the door, which refuses them -- never
+   * direct. The door is not started at all on a desk that can be driven from outside
+   * (status "unsafe"); the script then points at a closed port.
+   */
   function syncDoor() {
     const run = async () => {
       const ses = workSession();
-      const hosts = policy.privateHosts();
+      const hosts = policy.routedHosts();
       if (!ses) return;
-      if (hosts.length) { wireLogin(); await door.start(); }
-      const pac = hosts.length ? meshDoor.pacUrl(hosts, door.port()) : "";
+      if (hosts.length && policy.status().state !== "unsafe") { wireLogin(); await door.start(); }
+      const pac = hosts.length ? meshDoor.pacUrl(hosts, door.port() || CLOSED_PORT) : "";
       const key = `${policy.partition()} ${pac}`;
       if (key === lastPac) return;
       await ses.setProxy(pac ? { mode: "pac_script", pacScript: pac } : { mode: "direct" });
@@ -468,6 +535,10 @@ function createWorkspace(host) {
     try { name = String((await host.account()) || ""); } catch { name = ""; }
     if (!name) { try { name = require("node:os").userInfo().username; } catch { name = ""; } }
     if (name !== user) { user = name; sync(); }
+    // The workspace the account belongs to: a policy for another one is not applied.
+    let tenant;
+    try { tenant = typeof host.accountTenant === "function" ? String((await host.accountTenant()) || "") : ""; } catch { tenant = ""; }
+    if ((tenant || null) !== signedInTenant) { signedInTenant = tenant || null; policy.tick(); }
   }
 
   // ------------------------------------------------------------------ the policy changed
@@ -515,6 +586,7 @@ function createWorkspace(host) {
   function windowClosed() {
     closeOverlay();
     protectedNow = false;
+    audit.flush();
   }
 
   /** For the app's shutdown and the smoke: timers off, the overlay and the door closed. */
@@ -524,14 +596,15 @@ function createWorkspace(host) {
     closeOverlay();
     const win = host.window();
     if (win) setProtected(win, false);
-    // A door that is still starting is waited for, so that it is the one stopped.
-    await doorReady.catch(() => {});
+    // A door that is still starting is waited for (briefly), so that it is the one stopped.
+    await Promise.race([doorReady.catch(() => {}), new Promise((done) => { const t = setTimeout(done, 3000); if (typeof t.unref === "function") t.unref(); })]);
     await door.stop();
+    audit.flush();
   }
 
   return {
     audit, policy, door,
-    beforeLoad, blocks, blocksAction, blocksDownload, blocksMenu, blocksPermission, gateOpen, onNavigate, wire, sync, start, windowClosed, dispose,
+    beforeLoad, blocks, blocksAction, blocksDownload, blocksMenu, blocksPermission, blocksRead, cancelsRequest, gateOpen, onNavigate, wire, sync, start, windowClosed, dispose,
     reload: async () => { const st = policy.load(); await syncDoor(); return st; },
     refresh: async () => { const st = await policy.refresh(); await syncDoor(); return st; },
     refreshUser,
@@ -547,4 +620,4 @@ function createWorkspace(host) {
   };
 }
 
-module.exports = { BROWSER_ACTIONS, MENU_ACTIONS, PERMISSION_ACTIONS, blockedText, createWorkspace, guardScript, keyAction };
+module.exports = { BROWSER_ACTIONS, DEBUG_SWITCHES, MENU_ACTIONS, PERMISSION_ACTIONS, blockedText, createWorkspace, debugDoor, guardScript, keyAction, readActions };

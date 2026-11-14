@@ -492,8 +492,15 @@ function hardenSession(ses, { owner = false } = {}) {
   // The InPrivate session is told apart: a pause chosen there lives in memory only.
   try {
     const inPrivate = ses === electron().session.fromPartition(everyday.INPRIVATE_PARTITION);
-    getAdblock().attach(ses, { onBlocked: () => pushState(), private: inPrivate });
-  } catch { /* browsing still works */ }
+    // The workspace policy's request guard rides the same (one per session) listener.
+    getAdblock().attach(ses, { onBlocked: () => pushState(), private: inPrivate, guard: (details) => getWorkspace().cancelsRequest(details) });
+  } catch {
+    // No ad blocking: browsing still works, and the policy's guard still stands.
+    try {
+      ses.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"] },
+        (details, callback) => callback({ cancel: getWorkspace().cancelsRequest(details) }));
+    } catch { /* a session with no webRequest */ }
+  }
   // A download an AGENT triggers lands on the owner's disk unseen; while the agent
   // drives (and the owner has not taken over) downloads are cancelled. The owner
   // takes over to download. Either way it is a ROW on the shelf (browser-downloads):
@@ -868,7 +875,8 @@ async function readAloud() {
   if (!shellHost || typeof shellHost.speak !== "function") return { ok: false, error: "the desk has no voice wired" };
   const view = activeView();
   if (!alive(view)) return { ok: false, error: "no page" };
-  if (getWorkspace().blocks(tabs.active, "capture")) return { ok: false, error: "the workspace policy does not let this page be read" };
+  // It reads the selection first: that is a copy as much as a capture.
+  if (getWorkspace().blocksRead(tabs.active, "selection")) return { ok: false, error: "the workspace policy does not let this page be read" };
   let text;
   try { text = await view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: READ_ALOUD_SCRIPT }]); } catch { text = ""; }
   text = String(text || "").slice(0, 2000);
@@ -916,6 +924,17 @@ function getWorkspace() {
     setNotice, isolated, hardenSession: (ses) => hardenSession(ses), openTab: (by, url, opts) => openTab(by, url, opts),
     blockedPage: (url, reason) => require("./aither-address.cjs").errorPageUrl(url, reason),
     keys: seam.keys || null,
+    allowLoopbackTargets: seam.allowLoopbackTargets === true,
+    // Remote debugging (CDP) on this launch: workspace apps stay closed while it is.
+    debugDoor: () => (typeof seam.debugDoor === "function" ? seam.debugDoor()
+      : workspaceMod.debugDoor({ commandLine: electron().app.commandLine, env: process.env, inspectorUrl: require("node:inspector").url() || "" })),
+    accountTenant: async () => {
+      if (seam.accountTenant) return seam.accountTenant();
+      const bearer = await onlineToken();
+      if (!bearer) return "";
+      const who = await require("./desk-session.cjs").checkToken(bearer);
+      return who && who.state === "valid" && who.identity ? who.identity.tenantId : "";
+    },
     remote: { origin: () => seam.origin || internal.platformOrigin(), token: async () => (seam.token ? seam.token() : onlineToken()),
       fetchImpl: (url, init) => electron().net.fetch(url, init) },
     account: async () => {
@@ -3944,8 +3963,9 @@ async function runInPage(action, args, who = "agent") {
   const picked = viewFor(who);
   if (!picked.ok) return { ok: false, error: picked.error };
   const wc = picked.view.webContents;
-  // "Ask about this page" on a workspace app whose policy forbids capturing it: not read.
-  if (who === "owner" && getWorkspace().blocks(tabs.active, "capture")) return { ok: false, error: "the workspace policy does not let this page be read" };
+  // A workspace app whose policy forbids capturing it is not read -- by "Ask about this
+  // page", by an agent's tool, by anyone; its selection also not when copying is forbidden.
+  if (getWorkspace().blocksRead(who === "owner" ? tabs.active : picked.id, action)) return { ok: false, error: "the workspace policy does not let this page be read" };
   await waitForIdle(wc);
   const result = await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: scriptFor(action, args) }], false);
   return result && typeof result === "object" ? result : { ok: false, error: "page returned nothing" };
@@ -4030,6 +4050,7 @@ const driver = {
     const picked = viewFor("agent");
     if (!picked.ok) return { ok: false, error: picked.error };
     const wc = picked.view.webContents;
+    if (getWorkspace().blocks(picked.id, "capture")) return { ok: false, error: "the workspace policy does not let this page be captured" };
     await waitForIdle(wc);
     let image = await wc.capturePage();
     const size = image.getSize();

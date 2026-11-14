@@ -31,19 +31,23 @@ test("rows are appended as JSON lines and read back in order", () => {
   const audit = createAudit({ dir, now: () => 1000 });
   audit.record({ tenant: "acme", origin: "http://wiki.corp.test/a", action: "copy", verdict: "deny", tab: "work" });
   audit.record({ tenant: "acme", origin: "http://wiki.corp.test/b", action: "open", verdict: "allow", tab: "work" });
+  assert.equal(audit.flush(), 2);
   const raw = fs.readFileSync(path.join(dir, AUDIT_FILE), "utf8");
   assert.equal(raw.split("\n").filter(Boolean).length, 2);
   assert.ok(raw.endsWith("\n"));
   assert.deepEqual(audit.read().map((r) => [r.action, r.verdict, r.origin]), [["copy", "deny", "http://wiki.corp.test"], ["open", "allow", "http://wiki.corp.test"]]);
   // A second handle on the same file appends; it does not start over.
-  createAudit({ dir }).record({ action: "print", verdict: "deny" });
+  const second = createAudit({ dir });
+  second.record({ action: "print", verdict: "deny" });
+  second.flush();
   assert.equal(audit.read().length, 3);
 });
 
 test("the spool is size-capped: it rotates and keeps a fixed number of old files", () => {
   const dir = tmp();
-  const audit = createAudit({ dir, maxBytes: 400, keep: 2 });
+  const audit = createAudit({ dir, maxBytes: 400, keep: 2, burst: 1000 });
   for (let i = 0; i < 40; i += 1) audit.record({ tenant: "acme", origin: "https://crm.example.com", action: "copy", verdict: "deny", tab: "work" });
+  assert.equal(audit.flush(), 40);
   const files = fs.readdirSync(dir).sort();
   assert.deepEqual(files, [AUDIT_FILE, `${AUDIT_FILE}.1`, `${AUDIT_FILE}.2`]);
   for (const f of files) assert.ok(fs.statSync(path.join(dir, f)).size <= 400, f);
@@ -55,15 +59,58 @@ test("a disk that refuses the write does not throw", () => {
   const blocker = path.join(dir, "file");
   fs.writeFileSync(blocker, "x");
   const audit = createAudit({ dir: path.join(blocker, "under-a-file") });
-  assert.equal(audit.record({ action: "copy", verdict: "deny" }), null);
+  audit.record({ action: "copy", verdict: "deny" });
+  assert.equal(audit.flush(), 0);
   assert.deepEqual(audit.read(), []);
+  assert.equal(audit.stats().dropped, 1, "counted, not thrown");
 });
 
 test("upload is a seam that sends nothing yet", async () => {
   const dir = tmp();
   const audit = createAudit({ dir });
   audit.record({ action: "copy", verdict: "deny" });
+  audit.flush();
   const before = fs.readFileSync(path.join(dir, AUDIT_FILE), "utf8");
   assert.deepEqual(await audit.upload(), { ok: true, uploaded: 0, pending: 1, implemented: false });
   assert.equal(fs.readFileSync(path.join(dir, AUDIT_FILE), "utf8"), before, "the spool is untouched");
+});
+
+// Security review finding 5: any local process could make the door write a row per
+// request, synchronously, in main -- and rotate the real rows out of the spool.
+test("record does not touch the disk: rows wait and are written together a moment later", async () => {
+  const dir = tmp();
+  const audit = createAudit({ dir, flushMs: 30 });
+  for (const action of ["copy", "print", "download"]) audit.record({ tenant: "acme", origin: "https://crm.example.com", action, verdict: "deny", tab: "work" });
+  assert.equal(fs.existsSync(path.join(dir, AUDIT_FILE)), false, "nothing was written on the caller's path");
+  assert.deepEqual(audit.stats(), { dropped: 0, written: 0, waiting: 3 });
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(fs.readFileSync(path.join(dir, AUDIT_FILE), "utf8").split("\n").filter(Boolean).length, 3, "the timer wrote them");
+  assert.deepEqual(audit.stats(), { dropped: 0, written: 3, waiting: 0 });
+});
+
+test("one noisy source cannot flood the spool or push the other rows out", () => {
+  const dir = tmp();
+  let clock = 1_000_000;
+  const audit = createAudit({ dir, now: () => clock, burst: 5, windowMs: 10_000, maxBytes: 4000, keep: 1 });
+  audit.record({ tenant: "acme", origin: "https://crm.example.com", action: "copy", verdict: "deny", tab: "work" });
+  let taken = 0;
+  for (let i = 0; i < 5000; i += 1) if (audit.record({ tenant: "acme", origin: "http://wiki.corp.test", action: "mesh-connect", verdict: "deny", tab: "door" })) taken += 1;
+  assert.equal(taken, 5, "the burst, then nothing more of its like in this window");
+  assert.equal(audit.stats().dropped, 4995);
+  const rows = audit.read();
+  assert.equal(rows.length, 6);
+  assert.deepEqual([rows[0].action, rows[0].origin], ["copy", "https://crm.example.com"], "the real row is still the first one");
+  assert.deepEqual(fs.readdirSync(dir), [AUDIT_FILE], "nothing was rotated");
+  // Another kind of row is not held back by the noisy one, and the window opens again.
+  assert.ok(audit.record({ tenant: "acme", origin: "http://wiki.corp.test", action: "mesh-connect", verdict: "allow", tab: "door" }));
+  clock += 10_000;
+  assert.ok(audit.record({ tenant: "acme", origin: "http://wiki.corp.test", action: "mesh-connect", verdict: "deny", tab: "door" }));
+});
+
+test("the waiting queue has a ceiling", () => {
+  const dir = tmp();
+  const audit = createAudit({ dir, burst: 1e9, maxQueue: 10 });
+  for (let i = 0; i < 25; i += 1) audit.record({ origin: `https://site${i}.example`, action: "copy", verdict: "deny" });
+  assert.deepEqual(audit.stats(), { dropped: 15, written: 0, waiting: 10 });
+  assert.equal(audit.read().length, 10);
 });

@@ -113,6 +113,28 @@ test("attach cancels through the session hook and counts per page", () => {
   assert.equal(b.blockedOn(7), 1);
 });
 
+// Security review of the managed browser (finding 3): the one request listener a session
+// has asks the workspace policy's guard first, for every kind of request.
+test("attach asks the guard first: it cancels a page, an ordinary request and one the lists would allow", () => {
+  const b = ab.createAdblock({ dir: tmp(), fetchImpl: null });
+  b.loadCached();
+  let handler = null;
+  const ses = { webRequest: { onBeforeRequest: (_f, fn) => { handler = fn; } } };
+  const asked = [];
+  let mode = "private";
+  b.attach(ses, { guard: (details) => { asked.push(details.url); if (mode === "throw") throw new Error("x"); return mode === "private" && details.url.includes("wiki.corp.test"); } });
+  const wc = { getURL: () => "https://news.test/" };
+  const ask = (url, resourceType) => { let answer = null; handler({ url, resourceType, webContents: wc, webContentsId: 7, method: "GET" }, (a) => { answer = a; }); return answer; };
+  assert.deepEqual(ask("http://wiki.corp.test/api", "xhr"), { cancel: true });
+  assert.deepEqual(ask("http://wiki.corp.test/", "mainFrame"), { cancel: true }, "a page too, when the guard says so");
+  assert.deepEqual(ask("https://news.test/a.js", "script"), { cancel: false }, "what the guard lets through is judged as before");
+  assert.deepEqual(ask("https://ad.doubleclick.net/x", "script"), { cancel: true });
+  assert.equal(b.blockedOn(7), 1, "a guard cancel is not counted as a blocked ad");
+  assert.equal(asked.length, 4);
+  mode = "throw";
+  assert.deepEqual(ask("https://news.test/b.js", "script"), { cancel: true }, "a guard that fails cancels");
+});
+
 // ---------------------------------------------------------------- path rules, hiding, tracking
 
 /** A blocker over lists written to disk the way a download leaves them. */
