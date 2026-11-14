@@ -19,7 +19,7 @@
 
 const path = require("node:path");
 const { createSearchClient } = require("./search-client.cjs");
-const { APPS_FOLDER_PREFIX, encodedCommand } = require("./universal-search.cjs");
+const { APPS_FOLDER_PREFIX, DISCOVER_KINDS, encodedCommand } = require("./universal-search.cjs");
 
 /** Env var the constant launch script reads the AppsFolder target from. */
 const APPS_FOLDER_ENV = "AWDESK_APPS_FOLDER_TARGET";
@@ -259,7 +259,8 @@ async function launchItem(key, query, { shell, clipboard, action = runAction, ch
     clipboard.writeText(item.target);
     return { ok: true, did: "copied to the clipboard" };
   }
-  if (item.kind === "action") {
+  // An AitherOS app (kind "osapp") is a command-registry row too: the same runner, by id.
+  if (item.kind === "action" || item.kind === "osapp") {
     if (!action) return { ok: false, error: UNWIRED.action };
     let result;
     try {
@@ -268,9 +269,9 @@ async function launchItem(key, query, { shell, clipboard, action = runAction, ch
       return { ok: false, error: `1 desk action failed — ${String((error && error.message) || error).slice(0, 200)}` };
     }
     const bad = failureOf(result, "desk action");
-    return bad ? { ok: false, error: bad } : { ok: true, did: `ran ${item.title}` };
+    return bad ? { ok: false, error: bad } : { ok: true, did: item.kind === "osapp" ? `opened ${item.title}` : `ran ${item.title}` };
   }
-  if (item.kind === "agent") {
+  if (DISCOVER_KINDS.has(item.kind)) {
     if (!chat) return { ok: false, error: UNWIRED.chat };
     return sendChat(chat, require("./universal-search.cjs").chatPrompt(query, item), acceptMs ? { acceptMs } : {});
   }

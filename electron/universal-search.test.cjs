@@ -278,11 +278,15 @@ test("screenshots: asking for the kind lists the newest; a date matches by name"
   assert.deepEqual(day.map((i) => i.title), ["Screenshot 2026-10-30 101010"]);
 });
 
-test("actions come from the command registry, prompt commands excluded", () => {
-  const p = us.actionsProvider({ rows: () => [{ id: "disk.open", label: "Disk Explorer…" }, { id: "blog.new", label: "New post", prompt: { placeholder: "t" } }] });
-  assert.deepEqual(p.search("disk"), [{ title: "Disk Explorer…", subtitle: "Desk action", kind: "action", target: "disk.open" }]);
+test("actions come from the command registry, prompt commands and AitherOS apps excluded", () => {
+  const p = us.actionsProvider({ rows: () => [{ id: "orb.toggle", label: "Show or hide the ask orb" }, { id: "disk.open", label: "Disk Explorer…" },
+    { id: "blog.new", label: "New post", prompt: { placeholder: "t" } }] });
+  assert.deepEqual(p.search("orb"), [{ title: "Show or hide the ask orb", subtitle: "Desk action", kind: "action", target: "orb.toggle" }]);
   const real = us.actionsProvider().search("x");
-  assert.ok(real.some((r) => r.target === "disk.open"), "the real registry's disk.open is a desk action");
+  assert.ok(real.some((r) => r.target === "orb.toggle"), "the real registry's orb.toggle is a desk action");
+  // Disk Explorer opens an Aither app window: it is the AitherOS apps group's row now.
+  assert.ok(!real.some((r) => r.target === "disk.open"));
+  assert.ok(us.aitherAppsProvider().search("x").some((r) => r.target === "disk.open" && r.title === "Disk Explorer"));
 });
 
 // ── agents via search-client discover ───────────────────────────────────────

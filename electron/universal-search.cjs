@@ -5,7 +5,12 @@
  * Windows' own utilities are bad). ONE box (Alt+Space, or the "This PC" mode of
  * aither://search), ranked groups, five rows each with "+N more":
  *
- *   apps         Start-menu shortcuts (.lnk / .url / .appref-ms) under %AppData% and
+ *   osapps       AitherOS apps: the command-registry rows that OPEN an Aither app
+ *                (every `osApp` row -- Sprite, Academy, Spaces, Image Studio -- and the
+ *                desk's own app windows: Strata storage, Files, Notebooks, Fleet).
+ *                Their own labelled group, ranked ahead of a host app of the same
+ *                name; run through the same action runner as a desk action.
+ *   apps         the HOST OS apps ("Apps on this PC"). Start-menu shortcuts (.lnk / .url / .appref-ms) under %AppData% and
  *                %ProgramData% Microsoft\Windows\Start Menu\Programs. Launched by
  *                main with shell.openPath -- the shortcut, never its target string.
  *                Plus Store/packaged apps (Get-StartApps), which have no shortcut;
@@ -61,13 +66,28 @@ const WSEARCH_ENV = "AWDESK_WSEARCH_SQL";
 const GROUPS = Object.freeze([
   // `boost` lifts a GROUP's place (never an item's score) the way Start does: an app
   // or desk action matching a word leads a file matching a prefix.
-  Object.freeze({ id: "apps", label: "Apps", priority: 0, boost: 25 }),
+  // AitherOS apps vs host OS apps (owner 2026-11-13): two labelled groups. On a name
+  // tie the AitherOS app leads -- a higher boost, and the earlier priority.
+  Object.freeze({ id: "osapps", label: "AitherOS apps", priority: -1, boost: 30 }),
+  Object.freeze({ id: "apps", label: "Apps on this PC", priority: 0, boost: 25 }),
   Object.freeze({ id: "actions", label: "Desk actions", priority: 1, boost: 15 }),
   Object.freeze({ id: "files", label: "Files", priority: 2 }),
   Object.freeze({ id: "screenshots", label: "Screenshots", priority: 3 }),
   Object.freeze({ id: "clipboard", label: "Clipboard", priority: 4 }),
   Object.freeze({ id: "agents", label: "Agents, tools & skills", priority: 5 }),
 ]);
+
+/** What the host OS's apps are called on a row ("Windows app · Accessories"). */
+function hostAppLabel(platform = process.platform) {
+  return platform === "win32" ? "Windows app" : platform === "darwin" ? "Mac app" : "Linux app";
+}
+
+/**
+ * The kinds a discover card becomes, by its domain. Each row says which it is (the
+ * badge on the right), and every one of them goes to chat the same way (DISCOVER_KINDS).
+ */
+const DISCOVER_KIND = Object.freeze({ agents: "agent", tools: "tool", skills: "skill", packs: "pack", lanes: "lane" });
+const DISCOVER_KINDS = Object.freeze(new Set(Object.values(DISCOVER_KIND)));
 
 /** The term as a search: control characters to spaces, trimmed, capped. */
 function cleanTerm(text) {
@@ -252,7 +272,10 @@ function withTimeout(promise, ms, what, signal = null) {
  * @param {ReturnType<typeof createProviderRegistry>} registry
  * @param {string} text
  * @param {{phase?: "fast"|"all", timeouts?: {fast: number, slow: number}, now?: () => number,
- *   signal?: AbortSignal}} [opts]
+ *   signal?: AbortSignal, only?: string[], scope?: object}} [opts]
+ *   `only` narrows the run to those provider ids (the launcher's `app`, `file`, `tool`,
+ *   `skill`, `mem`, `web` words); `scope` reaches each provider as search(query,
+ *   {scope}) so one that answers several kinds (agents) can keep only the asked one.
  *   `fast` runs only the providers that answer as the owner types (apps, actions,
  *   screenshots, clipboard); the page asks `fast` first, then `all`. `signal` reaches
  *   every provider as search(query, {signal}), so the slow ones (Windows Search's
@@ -262,19 +285,20 @@ function withTimeout(promise, ms, what, signal = null) {
  *   total: number, tookMs: number} | {ok: false, reason: string, superseded?: true}>}
  */
 async function runProviders(registry, text, { phase = "all", timeouts = PROVIDER_TIMEOUT_MS, now = () => Date.now(),
-  signal = null } = {}) {
+  signal = null, only = null, scope = null } = {}) {
   const query = cleanTerm(text);
   if (!query) return { ok: false, reason: "type something to search for" };
   if (signal && signal.aborted) return { ok: false, reason: SUPERSEDED, superseded: true };
   const started = now();
-  const chosen = registry.list().filter((p) => phase !== "fast" || p.fast);
+  const wanted = Array.isArray(only) && only.length ? new Set(only.map(String)) : null;
+  const chosen = registry.list().filter((p) => (phase !== "fast" || p.fast) && (!wanted || wanted.has(p.id)));
   const byGroup = {};
   const errors = [];
   const notes = [];
   await Promise.all(chosen.map(async (p) => {
     let answer;
     try {
-      answer = await withTimeout(Promise.resolve().then(() => p.search(query, { signal })),
+      answer = await withTimeout(Promise.resolve().then(() => p.search(query, { signal, scope })),
         p.fast ? timeouts.fast : timeouts.slow, p.label, signal);
     } catch (error) {
       answer = { ok: false, reason: String((error && error.message) || error).slice(0, 200) };
@@ -400,7 +424,10 @@ function loadStartApps({ execFile = require("node:child_process").execFile, plat
  * universal search is created by that query and the 2.4 s load had not landed.
  */
 function appsProvider({ dirs = () => startMenuDirs(), fsImpl = fs, now = () => Date.now(), startApps = null,
-  firstWaitMs = 2_000 } = {}) {
+  firstWaitMs = 2_000, platform = process.platform,
+  exclusionRules = () => require("./search-exclusions.cjs").loadRules() } = {}) {
+  // Every row says it is a HOST app, so it cannot be read as an AitherOS one.
+  const host = hostAppLabel(platform);
   let cache = null;
   let at = 0;
   let packaged = [];
@@ -427,6 +454,9 @@ function appsProvider({ dirs = () => startMenuDirs(), fsImpl = fs, now = () => D
         await Promise.race([pending, new Promise((r) => { timer = setTimeout(r, firstWaitMs); if (timer.unref) timer.unref(); })]);
         clearTimeout(timer);
       }
+      // The subtitle is the Start-menu FOLDER until the exclusions have read it
+      // (search-exclusions.cjs hides a game by its folder: "Steam"); only the rows
+      // that survive are relabelled "<host> app · <folder>".
       const rows = cache.map((a) => ({ title: a.name, subtitle: a.folder || "Start menu", kind: "app", target: a.path }));
       const named = new Set(cache.map((a) => a.name.toLowerCase()));
       for (const p of packaged) {
@@ -437,8 +467,9 @@ function appsProvider({ dirs = () => startMenuDirs(), fsImpl = fs, now = () => D
       // launcher). Read per search so an edit to ~/.aither/search-exclusions.json
       // applies on the next keystroke, no restart. Safe defaults if the file is bad.
       // `!private` + Windows Hello / Touch ID opens a 5-minute reveal (private-reveal.cjs).
-      if (require("./private-reveal.cjs").sharedReveal().active()) return rows;
-      return require("./search-exclusions.cjs").applyExclusions(rows, require("./search-exclusions.cjs").loadRules()).rows;
+      const labelled = (list) => list.map((r) => ({ ...r, subtitle: r.subtitle === "App" ? host : `${host} · ${r.subtitle}` }));
+      if (require("./private-reveal.cjs").sharedReveal().active()) return labelled(rows);
+      return labelled(require("./search-exclusions.cjs").applyExclusions(rows, exclusionRules()).rows);
     },
   };
 }
@@ -718,26 +749,61 @@ function clipboardProvider({ history = null, current = () => "", looksSecret = (
 
 // ── actions + agents ─────────────────────────────────────────────────────────
 
-/** Desk commands (command-registry.cjs paletteRows). A command that prompts for text is the palette's. */
-function actionsProvider({ rows = () => require("./command-registry.cjs").paletteRows({}) } = {}) {
+/** Is this palette row an AitherOS app (command-registry.cjs isAitherApp)? */
+function registryIsApp(id) {
+  const registry = require("./command-registry.cjs");
+  return registry.isAitherApp(registry.byId(id));
+}
+
+/**
+ * Desk commands (command-registry.cjs paletteRows). A command that prompts for text is
+ * the palette's; a row that opens an AitherOS app is the osapps group's, not listed twice.
+ */
+function actionsProvider({ rows = () => require("./command-registry.cjs").paletteRows({}), isApp = registryIsApp } = {}) {
   return {
     id: "actions", fast: true,
-    search: () => (rows() || []).filter((r) => r && r.id && !r.prompt)
+    search: () => (rows() || []).filter((r) => r && r.id && !r.prompt && !isApp(r.id))
       .map((r) => ({ title: String(r.label), subtitle: "Desk action", kind: "action", target: String(r.id) })),
   };
 }
 
-/** Agents, tools, skills, packs, lanes from search-client.cjs discover (adk discover). */
+/** "Sprite…" / "Files…  (Ctrl+Alt+F)" -> the app's NAME, so "sprite" is an exact match. */
+function appTitle(label) {
+  return String(label || "").replace(/\s+\([^()]*\)\s*$/, "").replace(/\s*(…|\.\.\.)\s*$/, "").trim();
+}
+
+/**
+ * AitherOS apps: the palette rows that open an Aither app (command-registry.cjs
+ * isAitherApp -- every `osApp` row plus the desk's own app windows). The target is the
+ * command id and the row runs through the SAME action runner a desk action does
+ * (search-window.cjs launchItem), so nothing new becomes launchable here.
+ */
+function aitherAppsProvider({ rows = () => require("./command-registry.cjs").paletteRows({}), isApp = registryIsApp,
+  where = (id) => { const c = require("./command-registry.cjs").byId(id); return c && c.osApp ? "AitherOS Online" : "this desk"; } } = {}) {
+  return {
+    id: "osapps", fast: true,
+    search: () => (rows() || []).filter((r) => r && r.id && !r.prompt && isApp(r.id))
+      .map((r) => ({ title: appTitle(r.label) || String(r.label), subtitle: `AitherOS app · ${where(r.id)}`, kind: "osapp", target: String(r.id) })),
+  };
+}
+
+/**
+ * Agents, tools, skills, packs, lanes from search-client.cjs discover (adk discover).
+ * Each row's kind is its own (agent / tool / skill / pack / lane). `scope.domains`
+ * (the launcher's `tool <words>`, `skill <words>`, `agent <words>`) keeps only those
+ * domains; the index is asked for more cards then, since most are filtered away.
+ */
 function agentsProvider({ discover }) {
   const singular = { agents: "Agent", tools: "Tool", skills: "Skill", packs: "Pack", lanes: "Lane" };
   return {
     id: "agents", fast: false,
-    search: async (q, { signal = null } = {}) => {
-      const r = await discover(q, { signal });
+    search: async (q, { signal = null, scope = null } = {}) => {
+      const domains = scope && Array.isArray(scope.domains) && scope.domains.length ? scope.domains : null;
+      const r = await discover(q, domains ? { signal, k: 30 } : { signal });
       if (!r || !r.ok) return { ok: false, reason: (r && r.error) || "adk discover did not answer" };
-      return r.cards.map((c) => ({
+      return r.cards.filter((c) => !domains || domains.includes(c.domain)).map((c) => ({
         title: c.name, subtitle: `${singular[c.domain] || c.domain}${c.oneLine ? ` · ${c.oneLine}` : ""}`,
-        kind: "agent", target: `${c.domain}:${c.name}`, score: Math.round(25 + c.score * 45),
+        kind: DISCOVER_KIND[c.domain] || "agent", target: `${c.domain}:${c.name}`, score: Math.round(25 + c.score * 45),
       }));
     },
   };
@@ -746,7 +812,7 @@ function agentsProvider({ discover }) {
 /** The chat prompt for a query, optionally about one discovered card. */
 function chatPrompt(query, item = null) {
   const q = cleanTerm(query);
-  if (item && item.kind === "agent") {
+  if (item && DISCOVER_KINDS.has(item.kind)) {
     const [domain, ...rest] = String(item.target).split(":");
     const name = rest.join(":");
     return q ? `${q}\n\n(Use the ${domain.replace(/s$/, "")} "${name}".)` : `Use the ${domain.replace(/s$/, "")} "${name}".`;
@@ -755,7 +821,7 @@ function chatPrompt(query, item = null) {
 }
 
 /**
- * The desk's universal search: the registry pre-loaded with the six providers.
+ * The desk's universal search: the registry pre-loaded with the seven providers.
  * Every dependency is injectable; main passes the Electron clipboard reader and the
  * live palette context.
  */
@@ -773,14 +839,15 @@ function createUniversalSearch({
 } = {}) {
   const registry = createProviderRegistry();
   const client = searchClient || require("./search-client.cjs").createSearchClient({ execFile });
-  registry.register(appsProvider({ dirs: () => startMenuDirs(env), fsImpl,
+  registry.register(aitherAppsProvider(actionRows ? { rows: actionRows } : {}));
+  registry.register(appsProvider({ dirs: () => startMenuDirs(env), fsImpl, platform,
     startApps: () => loadStartApps({ execFile, platform }) }));
   registry.register(actionsProvider(actionRows ? { rows: actionRows } : {}));
   registry.register(filesProvider({ platform, roots, wsearch: (q, o) => queryWindowsSearch(q, { execFile, env, signal: (o && o.signal) || null }),
     walk: (r, q) => walkFiles(r, q, { fsImpl }) }));
   registry.register(screenshotsProvider({ fsImpl, ...(screenshotDir ? { dir: screenshotDir } : {}) }));
   registry.register(clipboardProvider({ history, current: readClipboard }));
-  registry.register(agentsProvider({ discover: (q, o) => client.discover(q, { signal: (o && o.signal) || null }) }));
+  registry.register(agentsProvider({ discover: (q, o) => client.discover(q, { signal: (o && o.signal) || null, ...(o && o.k ? { k: o.k } : {}) }) }));
   return {
     registry,
     history,
@@ -790,8 +857,8 @@ function createUniversalSearch({
 }
 
 module.exports = {
-  GROUPS, SHOW, SUPERSEDED, WSEARCH_ENV, WSEARCH_SCRIPT, PROVIDER_TIMEOUT_MS, APPS_FOLDER_PREFIX,
-  appsProvider, loadStartApps, parseStartApps, actionsProvider, agentsProvider, capList, chatPrompt, clipLabel, cleanTerm, clipboardProvider, createClipHistory,
+  GROUPS, SHOW, SUPERSEDED, WSEARCH_ENV, WSEARCH_SCRIPT, PROVIDER_TIMEOUT_MS, APPS_FOLDER_PREFIX, DISCOVER_KIND, DISCOVER_KINDS,
+  aitherAppsProvider, appTitle, hostAppLabel, appsProvider, loadStartApps, parseStartApps, actionsProvider, agentsProvider, capList, chatPrompt, clipLabel, cleanTerm, clipboardProvider, createClipHistory,
   createProviderRegistry, createUniversalSearch, encodedCommand, errorLine, isAbort, filesProvider, filesRoots, itemKey,
   likeEscape, matchScore, mergeGroups, readableStderr, queryWindowsSearch, rankItems, runProviders, scanShortcuts, screenshotsProvider,
   sqlString, startMenuDirs, walkFiles, windowsSearchSql,

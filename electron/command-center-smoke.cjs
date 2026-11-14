@@ -9,7 +9,8 @@
  * screenshot of each. Then it starts ONE throwaway shell session on the harness
  * daemon, finds it in the box, steers it (Ctrl+Enter, type, Enter) and stops it
  * (Ctrl+. twice), reads the daemon's transcript to prove the steer landed, opens the
- * graph pane on a person, and removes the session it started.
+ * graph pane on a person, and removes the session it started. It ends by running
+ * launcher-search-smoke.cjs, which types one query per SEARCH category.
  *
  *   electron electron/command-center-smoke.cjs [shots-dir]
  *
@@ -200,6 +201,19 @@ app.whenReady().then(async () => {
       await shot("15-transcript");
     }
     console.log(`asked chat ${asked.length}x`);
+    // Every OTHER category the box answers (host apps, AitherOS apps, files, ask, spirit,
+    // web, memory, tools, skills, desk actions, clipboard, screenshots) is its own smoke
+    // with its own temp profile and nothing really launched; it runs here so one command
+    // judges the whole box. CC_SMOKE_SKIP_SEARCH=1 skips it.
+    if (!process.env.CC_SMOKE_SKIP_SEARCH && !process.env.CC_SMOKE_ONLY_GRAPH) {
+      const child = await new Promise((resolve) => {
+        require("node:child_process").execFile(process.execPath, [path.join(__dirname, "launcher-search-smoke.cjs")],
+          { timeout: 400_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+          (error, stdout) => resolve({ code: error ? (typeof error.code === "number" ? error.code : 2) : 0, stdout: String(stdout || "") }));
+      });
+      for (const line of child.stdout.split(String.fromCharCode(10)).map((l) => l.trim()).filter((l) => /^(PASS|FAIL|SKIP|ALL PASS|FAILED|skipped)/.test(l))) console.log(`  search: ${line.slice(0, 260)}`);
+      expect("launcher-search-smoke: every search category answers (exit 0)", child.code === 0, { exit: child.code });
+    }
   } catch (error) {
     console.error(`smoke broke: ${error && error.stack}`);
     fails.push("run broke");

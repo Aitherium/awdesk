@@ -23,9 +23,14 @@
  *   (verbs)  a first word the desk owns: draw, gif, pin, youtube, board (desk-verbs.cjs)
  *            and the Aither Browser's -- a bare address, go, search, private, history,
  *            bookmark, tab, find, extension (browser-verbs.cjs).
- *   (plain)  universal search: apps, desk actions, files, screenshots, clipboard,
- *            agents/tools, and the web (search-client.cjs's awfind path, registered
- *            as one more provider -- never a parallel indexer).
+ *   (plain)  universal search: AitherOS apps, the PC's own apps, desk actions, files,
+ *            screenshots, clipboard, agents/tools/skills, and the web (search-client.cjs's
+ *            awfind path, registered as one more provider -- never a parallel indexer).
+ *            The last row is always "Ask Aither: <what you typed>".
+ *   (scope)  a first word that narrows the box: app, file, agent, tool, skill, mem
+ *            (memory / context / knowledge), web, action (launcher-core.cjs parseScope).
+ *   (down)   a source that did not answer is a ROW with its reason and remedy
+ *            ("Not answering"), never a silently empty group.
  *   >        an awsh / `adk desk ...` command line, spawned without a shell.
  *   ?        Ask Aither down the desk's existing /command path (or orb.ask when a
  *            parallel lane lands it).
@@ -191,6 +196,9 @@ function createLauncher({
   // OWNER's own -- main hands browser-window's ownerHistory/ownerBookmarks/ownerTabs.
   // Null = those verbs answer with their page row only.
   browser = null,
+  // () => the universal search (universal-search.cjs). Null = search-window.cjs's shared
+  // one; launcher-search.test.cjs hands a fake so scope / ask / down rows run under node.
+  universalSearch = null,
 } = {}) {
   // The "Right now" sample for THIS press. A promise, so the empty search can wait
   // the few hundred ms the probe takes instead of racing it.
@@ -219,6 +227,10 @@ function createLauncher({
   // The rows the last VERB answer offered (desk-verbs.cjs): key -> action. The page
   // runs a row BY KEY; the action never crosses the bridge.
   const verbActions = new Map();
+  // The "Not answering" rows of the last run: key -> the full line Enter repeats.
+  const issueLines = new Map();
+  // What the "Ask Aither: ..." row sends: the term main last searched, never page text alone.
+  let askTerm = "";
 
   function alive() {
     return Boolean(win && !win.isDestroyed());
@@ -517,11 +529,28 @@ function createLauncher({
     return done;
   }
 
-  function statusFor(groups, errors, indexing) {
+  function statusFor(groups, errors, indexing, scope = null) {
+    const narrowed = scope ? `${scope.label} only · ` : "";
     if (errors && errors.length) return core.statusText({ errors });
-    if (groups && groups.length) return core.statusText({ groups, indexing });
-    if (indexing) return "Searching — apps, desk actions and screenshots answered; files, agents and the web are still coming";
-    return "0 results — try a shorter word, or > for a command and ? to ask Aither";
+    if (groups && groups.length) return narrowed + core.statusText({ groups, indexing });
+    if (indexing && scope) return `Searching ${scope.label.toLowerCase()} — still coming`;
+    if (indexing) return "Searching — apps, desk actions and screenshots answered; files, agents, tools, skills, knowledge and the web are still coming";
+    if (scope) return `0 ${scope.label.toLowerCase()} match “${scope.term}” — drop “${scope.word}” to search everything, or Enter asks Aither`;
+    return "0 results — Enter asks Aither; or try a shorter word, or > for a command";
+  }
+
+  /** The tail every plain search carries: the Ask Aither row, then the sources that did not answer. */
+  function tailGroups(term, errors, notes) {
+    const out = [];
+    const ask = core.askGroup(term);
+    if (ask) out.push(ask);
+    const issues = core.issuesGroup(errors, notes);
+    issueLines.clear();
+    if (issues) {
+      for (const it of issues.items) issueLines.set(it.key, `${it.title} — ${it.subtitle}`);
+      out.push(issues);
+    }
+    return out;
   }
 
   /**
@@ -707,46 +736,55 @@ function createLauncher({
         return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: status || core.IDLE_STATUS };
       }
       const shown = sw.publicRun({ ok: true, query: "", phase: "idle", groups, total });
-      return { ok: true, token, mode: "all", term: "", phase: "idle", groups: core.capGroups(shown.groups), status };
+      // The empty box names every source it searches even while its lists are up.
+      return { ok: true, token, mode: "all", term: "", phase: "idle", groups: core.capGroups(shown.groups), status: status || core.IDLE_STATUS };
     }
     const sw = require("./search-window.cjs");
-    const universal = sw.universal();
+    const universal = typeof universalSearch === "function" ? universalSearch() : sw.universal();
     ensureWeb(universal);
     ensureCommandCenter(universal);
-    cardGroup = await matchingCards(parsed.term);
+    // A scope word (`tool git`, `file invoice`, `mem roadmap`) narrows the SAME run to
+    // its providers; a verb that kept the search underneath is never also a scope.
+    const scope = verbExtra ? null : core.parseScope(text);
+    const term = scope ? scope.term : parsed.term;
+    const narrowed = scope ? { only: scope.only, scope: { id: scope.id, domains: scope.domains || null } } : {};
+    const chip = scope ? core.scopeChip(scope) : "";
+    askTerm = term;
+    if (!scope) cardGroup = await matchingCards(parsed.term);
     if (token !== searchSeq) return { ok: true, token, ignored: true };
     const ctl = new AbortController();
     inflight = { token, ctl };
     const view = (result) => {
       if (result && result.ok) {
         const shown = sw.publicRun(result);
-        return { groups: shown.groups || [], errors: shown.errors || [] };
+        return { groups: shown.groups || [], errors: shown.errors || [], notes: shown.notes || [] };
       }
       if (result && result.superseded) return null;
-      return { groups: [], errors: [{ label: "Search", reason: (result && result.reason) || "no answer" }] };
+      return { groups: [], errors: [{ group: "search", label: "Search", reason: (result && result.reason) || "no answer" }], notes: [] };
     };
+    const none = { groups: [], errors: [], notes: [] };
     let fast;
-    try { fast = await universal.run(parsed.term, { phase: "fast", signal: ctl.signal }); }
+    try { fast = await universal.run(term, { phase: "fast", signal: ctl.signal, ...narrowed }); }
     catch (error) { fast = { ok: false, reason: message(error) }; }
     if (token !== searchSeq) return { ok: true, token, ignored: true };
-    const fastView = view(fast) || { groups: [], errors: [] };
+    const fastView = view(fast) || none;
     const payload = {
-      ok: true, token, mode: "all", term: parsed.term, phase: "fast",
-      groups: core.capGroups(withVerb(fastView.groups)),
-      status: statusFor(fastView.groups, fastView.errors, true),
+      ok: true, token, mode: "all", term, phase: "fast", chip,
+      groups: core.capGroups([...withVerb(fastView.groups), ...tailGroups(term, fastView.errors, fastView.notes)]),
+      status: statusFor(fastView.groups, fastView.errors, true, scope),
     };
     // The slow half (files, agents, the web) lands when it lands; the box is usable
     // the moment the fast half paints.
     void (async () => {
       let all;
-      try { all = await universal.run(parsed.term, { phase: "all", signal: ctl.signal }); }
+      try { all = await universal.run(term, { phase: "all", signal: ctl.signal, ...narrowed }); }
       catch (error) { all = { ok: false, reason: message(error) }; }
       if (token !== searchSeq) return;
-      const allView = view(all) || { groups: [], errors: [] };
+      const allView = view(all) || none;
       send("launcher:results", {
-        ok: true, token, mode: "all", term: parsed.term, phase: "all",
-        groups: core.capGroups(withVerb(allView.groups)),
-        status: statusFor(allView.groups, allView.errors, false),
+        ok: true, token, mode: "all", term, phase: "all", chip,
+        groups: core.capGroups([...withVerb(allView.groups), ...tailGroups(term, allView.errors, allView.notes)]),
+        status: statusFor(allView.groups, allView.errors, false, scope),
       });
     })();
     return payload;
@@ -781,6 +819,13 @@ function createLauncher({
       if (verdict && verdict.ok === false) return verdict;
       hide();
       return { ok: true, did: (verdict && verdict.did) || `answered ${id}` };
+    }
+    // The fall-through row: what was typed goes to Aither, down the `?` path.
+    if (key === "ask:query") return runAsk(askTerm || query);
+    // A source that did not answer: Enter repeats the reason and the remedy; nothing runs.
+    if (String(key || "").startsWith("issue:")) {
+      const line = issueLines.get(String(key));
+      return { ok: false, error: line ? `1 source down — ${line}` : "1 row expired — search again" };
     }
     if (key === "reveal:unlock" || key === "reveal:lock") {
       const reveal = require("./private-reveal.cjs").sharedReveal();
