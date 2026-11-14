@@ -5020,21 +5020,25 @@ setFleetSpaceOpener((url) => openSpaceLink(url), () => Boolean(spacePane()));
 decisionCards.setWindowRouter((_kind, id) => openInbox(id));
 
 /** Kid desk: one classroom window (the child's own Learn page and sprite) and a tray with
- *  "My classroom" only. See kid-desk.cjs. */
+ *  "My classroom" and "My Space" only. See kid-desk.cjs. */
 let kidDeskWindow = null;
-/** Open or bring forward the one classroom window (the only window kid mode ever shows). */
-function openKidClassroom() {
+/** Open or bring forward the one classroom window (the only window kid mode ever shows).
+ *  `door` is a kid-desk door NAME ("classroom" | "space"); none = only bring it forward. */
+function openKidClassroom(door = "") {
   if (!app.isReady()) return;
-  kidDeskWindow = kidDesk.openClassroomWindow({ BrowserWindow }, { state: kidDeskMode(), existing: kidDeskWindow });
+  kidDeskWindow = kidDesk.openClassroomWindow({ BrowserWindow }, { state: kidDeskMode(), existing: kidDeskWindow, door });
 }
 function startKidDesk() {
-  const open = openKidClassroom;
+  const open = () => openKidClassroom();
   open();
   try {
     const iconPath = path.join(__dirname, "..", "build", "icon.png");
     tray = new Tray(nativeImage.createFromPath(iconPath).resize({ width: 20, height: 20 }));
     tray.setToolTip("My classroom");
-    tray.setContextMenu(Menu.buildFromTemplate(kidDesk.kidTrayTemplate({ openClassroom: open })));
+    tray.setContextMenu(Menu.buildFromTemplate(kidDesk.kidTrayTemplate({
+      openClassroom: () => openKidClassroom("classroom"),
+      openSpace: () => openKidClassroom("space"),
+    })));
     tray.on("click", open);
   } catch (error) {
     debugLog("kid desk tray unavailable", error?.message || error);

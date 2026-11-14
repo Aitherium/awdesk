@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Kid desk: the tray has a second row, "My Space". It opens the child's own Space editor (the Learn Lab) in the same classroom window, on the same classroom host. "My classroom" brings them back. Nothing else is reachable: still one window, one host, no adult desk.
+
 ## 0.1.33 - 2026-11-14
 
 - Tools: one grouped menu (Create, Capture, Send) on the tray and on the companion's right-click, also on Alt+Space.

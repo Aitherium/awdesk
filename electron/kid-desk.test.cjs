@@ -4,7 +4,8 @@
  * Kid desk (kids' suite S7): a child's PC shows their classroom and nothing adult.
  * Acceptance: awdesk in kid mode lists NO roster character; only the guardian's MACHINE
  * policy turns it on or off; a second launch cannot open anything else; the classroom
- * window stays on the exact classroom host.
+ * window stays on the exact classroom host; the desk's only doors are "My classroom" and
+ * "My Space", both in that one window.
  */
 
 const test = require("node:test");
@@ -155,9 +156,122 @@ test("the classroom window opens no new windows and refuses any other host", () 
   assert.equal(kd.openClassroomWindow({ BrowserWindow: FakeWindow }, { state, existing: win }), win);
 });
 
-test("the kid tray offers the classroom and nothing else", () => {
-  const items = kd.kidTrayTemplate({ openClassroom: () => {} });
-  assert.deepEqual(items.map((i) => i.label), ["My classroom"]);
+test("the kid tray offers the classroom and my Space, and nothing else", () => {
+  const picked = [];
+  const items = kd.kidTrayTemplate({
+    openClassroom: () => picked.push("classroom"),
+    openSpace: () => picked.push("space"),
+  });
+  // The EXACT tray: two rows, each a label and a click. No submenu, role, link or checkbox.
+  assert.deepEqual(items.map((i) => i.label), ["My classroom", "My Space"]);
+  for (const item of items) assert.deepEqual(Object.keys(item).sort(), ["click", "label"]);
+  items[0].click();
+  items[1].click();
+  assert.deepEqual(picked, ["classroom", "space"]);
+});
+
+test("the desk has exactly two doors, both fixed paths on the classroom origin", () => {
+  const def = kd.resolveKidDesk({ readRegistry: () => true, policyFile: NO_FILE });
+  assert.deepEqual(Object.keys(kd.KID_DOORS), ["classroom", "space"]);
+  assert.ok(Object.isFrozen(kd.KID_DOORS) && Object.isFrozen(kd.KID_DOORS.space));
+  assert.equal(kd.kidDoorUrl(def, "classroom"), "https://app.aitherium.com/learn?desk=kid");
+  assert.equal(kd.spaceUrl(def), "https://app.aitherium.com/learn/lab?go=space&desk=kid");
+  assert.equal(kd.kidDoorUrl(def, "space"), kd.spaceUrl(def));
+  assert.equal(kd.allowNavigation(kd.spaceUrl(def), def), true);
+  // A door is a NAME. A path, a URL, an inherited key or a non-string is not a door.
+  for (const bad of ["", "Space", "lab", "/learn/lab", "/settings", "https://youtube.com/",
+    "https://app.aitherium.com/learn/lab?go=space", "//evil.example/learn", "constructor",
+    "__proto__", "toString", null, undefined, 1, {}, ["space"]]) {
+    assert.equal(kd.kidDoorUrl(def, bad), "", String(bad));
+  }
+  // My Space follows the guardian's classroom host and never a sibling or a child-set one.
+  const beta = kd.resolveKidDesk({ readRegistry: NO_REG,
+    policyFile: policyDir({ enabled: true, classroom_origin: "https://beta.aitherium.com/x" }) });
+  assert.equal(kd.spaceUrl(beta), "https://beta.aitherium.com/learn/lab?go=space&desk=kid");
+  const regOn = kd.resolveKidDesk({ env: { DESK_ONLINE_URL: "https://shop.aitherium.com/" },
+    readRegistry: () => true,
+    policyFile: policyDir({ enabled: true, classroom_origin: "https://shop.aitherium.com/" }) });
+  assert.equal(kd.spaceUrl(regOn), "https://app.aitherium.com/learn/lab?go=space&desk=kid");
+});
+
+test("My Space loads in the SAME one window, and any other path or origin is refused", () => {
+  const made = [];
+  class FakeWindow {
+    constructor() {
+      made.push(this);
+      this.loads = [];
+      this.url = "";
+      this.webContents = { setWindowOpenHandler() {}, on() {}, getURL: () => this.url };
+    }
+    loadURL(u) { this.loads.push(u); this.url = u; }
+    isDestroyed() { return false; }
+    show() {}
+    focus() {}
+  }
+  const deps = { BrowserWindow: FakeWindow };
+  const state = kd.resolveKidDesk({ readRegistry: () => true, policyFile: NO_FILE });
+  const CLASS = "https://app.aitherium.com/learn?desk=kid";
+  const SPACE = "https://app.aitherium.com/learn/lab?go=space&desk=kid";
+  const win = kd.openClassroomWindow(deps, { state });
+  assert.deepEqual(win.loads, [CLASS]);
+  const go = (door) => kd.openClassroomWindow(deps, { state, existing: win, door });
+  // My Space: the same window object goes to the Space editor. No second window.
+  assert.equal(go("space"), win);
+  assert.deepEqual(win.loads, [CLASS, SPACE]);
+  // Already in my Space: only brought forward, the page is not reloaded.
+  go("space");
+  assert.deepEqual(win.loads, [CLASS, SPACE]);
+  // My classroom from the Space: back to the classroom.
+  go("classroom");
+  assert.deepEqual(win.loads, [CLASS, SPACE, CLASS]);
+  // Deep in a lesson, "My classroom" keeps the child's place.
+  win.url = "https://app.aitherium.com/learn/sprite";
+  go("classroom");
+  assert.deepEqual(win.loads, [CLASS, SPACE, CLASS]);
+  // In the Lab on another activity: "My Space" opens Space, "My classroom" leaves the Lab.
+  win.url = "https://app.aitherium.com/learn/lab?go=page";
+  go("space");
+  assert.deepEqual(win.loads, [CLASS, SPACE, CLASS, SPACE]);
+  win.url = "https://app.aitherium.com/learn/lab?go=page";
+  go("classroom");
+  assert.deepEqual(win.loads, [CLASS, SPACE, CLASS, SPACE, CLASS]);
+  // No door (a second launch, a click on the tray icon) and anything that is not a door
+  // name: the window is brought forward and goes NOWHERE -- not a path, not another origin.
+  const before = win.loads.length;
+  for (const bad of [undefined, "", "settings", "/learn/lab", "/", "https://youtube.com/",
+    "https://shop.aitherium.com/learn/lab?go=space", "https://app.aitherium.com/admin",
+    "javascript:alert(1)", "file:///C:/", "__proto__", "constructor", null, 7, {}]) {
+    assert.equal(go(bad), win, String(bad));
+  }
+  assert.equal(win.loads.length, before, "a non-door never navigates the window");
+  assert.equal(made.length, 1, "one window, ever");
+  // A NEW window opened at a door starts there; a non-door starts in the classroom.
+  assert.deepEqual(kd.openClassroomWindow(deps, { state, door: "space" }).loads, [SPACE]);
+  assert.deepEqual(kd.openClassroomWindow(deps, { state, door: "https://youtube.com/" }).loads, [CLASS]);
+  // onKidDoor never calls another origin, or a look-alike path, "already there".
+  assert.equal(kd.onKidDoor("https://shop.aitherium.com/learn/lab?go=space", state, "space"), false);
+  assert.equal(kd.onKidDoor("https://app.aitherium.com/learn/labs?go=space", state, "space"), false);
+  assert.equal(kd.onKidDoor("https://app.aitherium.com/learning", state, "classroom"), false);
+  assert.equal(kd.onKidDoor("https://app.aitherium.com/", state, "classroom"), false);
+  assert.equal(kd.onKidDoor("", state, "classroom"), false);
+  assert.equal(kd.onKidDoor(SPACE, state, "https://youtube.com/"), false);
+});
+
+test("the Space door adds no window, preload, IPC, bridge or environment read", () => {
+  const src = fs.readFileSync(path.join(__dirname, "kid-desk.cjs"), "utf8");
+  assert.equal(src.match(/new deps\.BrowserWindow\(/g).length, 1, "one window constructor");
+  assert.doesNotMatch(src, /preload:|ipcMain|ipcRenderer|contextBridge|bridge-server|shell\.open/);
+  assert.doesNotMatch(src, /process\.env|process\.argv/);
+  // main.cjs: the tray is built from kidTrayTemplate with door NAMES and nothing else, and
+  // the only kid window is the one openClassroomWindow returns.
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  const start = main.slice(main.indexOf("function startKidDesk()"));
+  const body = start.slice(0, start.indexOf("\n}\n"));
+  assert.match(body, /kidDesk\.kidTrayTemplate\(\{\s*openClassroom: \(\) => openKidClassroom\("classroom"\),\s*openSpace: \(\) => openKidClassroom\("space"\),\s*\}\)/);
+  assert.deepEqual(body.match(/openKidClassroom\(([^)]*)\)/g),
+    ["openKidClassroom()", 'openKidClassroom("classroom")', 'openKidClassroom("space")']);
+  assert.doesNotMatch(body, /new BrowserWindow|loadURL|process\.env|ipcMain/);
+  assert.equal(main.match(/kidDesk\.openClassroomWindow\(/g).length, 1);
 });
 
 /** The body of `app.on("<event>", ...)` in main.cjs, up to its first 400 characters. */
