@@ -48,6 +48,7 @@ const PAGES = {
 function serve() {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
+      if (gaps.serve(req, res)) return; // the high-impact gaps' own pages (browser-parity-gaps.cjs)
       const u = new URL(req.url, "http://x");
       if (u.pathname === "/doc.pdf") { res.writeHead(200, { "content-type": "application/pdf" }); res.end(PDF); return; }
       const body = PAGES[u.pathname];
@@ -58,6 +59,7 @@ function serve() {
   });
 }
 
+const gaps = require("./browser-parity-gaps.cjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function until(fn, ms = 8000) {
   const end = Date.now() + ms;
@@ -401,6 +403,10 @@ app.whenReady().then(async () => {
     expect("an agent tab opens for the permission check", false, agentTab);
   }
   bw.getGate().release();
+
+  // The high-impact gaps: user agent, full screen, Copy buttons, popups, the discard's
+  // exemptions and app links (browser-parity-gaps.cjs).
+  await gaps.run({ bw, base, expect, until, sleep });
 
   // Clear browsing data (Ctrl+Shift+Delete): nothing goes without the confirm; with it,
   // history is emptied. Cookies are ticked too, so the owner profile's cookie really goes.

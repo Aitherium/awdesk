@@ -53,6 +53,14 @@ const { createLibrary } = libraryMod;
 // the per-site permission prompt. Both pure; this module installs their host.
 const libraryPages = require("./browser-library-pages.cjs");
 const sitePermissions = require("./browser-permissions.cjs");
+// The high-impact Edge gaps (2026-11-13): a plain Chrome user agent, page full screen and
+// Copy buttons, popups that keep their opener, and links that open another app.
+const browserUa = require("./browser-user-agent.cjs");
+const quietGrants = require("./browser-quiet-grants.cjs");
+const fullscreenMod = require("./browser-fullscreen.cjs");
+const popups = require("./browser-popups.cjs");
+const externalApps = require("./browser-external-apps.cjs");
+const pageErrors = require("./browser-page-errors.cjs");
 const { createDownloads } = require("./browser-downloads.cjs");
 const agentsPanel = require("./agents-panel.cjs");
 const rail = require("./browser-rail.cjs");
@@ -465,6 +473,9 @@ const hardenedSessions = new WeakSet();
 function hardenSession(ses) {
   if (!ses || hardenedSessions.has(ses)) return;
   hardenedSessions.add(ses);
+  // Sites see plain Chrome, not "Electron/39" (browser-user-agent.cjs): this session, and
+  // the app-wide fallback a popup and a service worker read.
+  browserUa.install(ses, electron().app);
   // Deny by default (policy.allowPermission). Five permissions ASK the owner instead, on
   // the owner's own web tab only, and remember the answer per site (browser-permissions.cjs).
   ses.setPermissionRequestHandler((wc, permission, callback, details) => requestPermission(wc, permission, callback, details));
@@ -515,6 +526,9 @@ async function loadInView(view, url) {
     if (alive(view)) await view.webContents.loadURL(addr.errorPageUrl(url, String((error && error.message) || error))).catch(() => {});
     throw error;
   }
+  // This load shows its own error page below; the tab's did-fail-load must not show a second.
+  const wc = view.webContents;
+  loaderBusy.add(wc);
   try {
     await view.webContents.loadURL(target);
   } catch (error) {
@@ -525,8 +539,11 @@ async function loadInView(view, url) {
       await view.webContents.loadURL(addr.errorPageUrl(url, String((error && error.message) || error))).catch(() => {});
     }
     throw error;
+  } finally {
+    loaderBusy.delete(wc);
   }
 }
+const loaderBusy = new WeakSet(); // pages loadInView is loading right now
 
 // What each view was last given, so an unchanged layout touches no native window. Measured
 // on Garg's tenant 2026-10-16: re-setting identical bounds on every pass (and re-seating
@@ -559,7 +576,9 @@ function layout() {
   restoreDiscarded(tabs.active);
   // The rail (avatar slot, every Aither page, the layer strip) is the chrome page's
   // own left column; page views and the panel sit to its right (browser-rail.cjs).
-  const rects = currentRects();
+  // A page in full screen (a video) takes the whole window instead (browser-fullscreen.cjs).
+  endStaleFullscreen();
+  const rects = htmlFullscreen.rects(currentRects(), win.getContentBounds(), tabs.active);
   const now = Date.now();
   for (const [id, view] of views) {
     if (!alive(view) || popped.has(id)) continue;
@@ -596,26 +615,45 @@ function tabFacts() {
     let audible = false;
     try { audible = alive(view) && view.webContents.isCurrentlyAudible(); } catch { /* gone */ }
     return { id: t.id, by: t.by, kind: t.kind, pinned: t.pinned, active: t.id === tabs.active, popped: popped.has(t.id),
-      audible, discarded: discarded.has(t.id), shownAt: shownAt.get(t.id) || 0 };
+      audible, discarded: discarded.has(t.id), shownAt: shownAt.get(t.id) || 0,
+      // Never discarded: a site that may notify the owner, a page with the camera or microphone.
+      notifies: alive(view) && siteNotifies(view.webContents.getURL(), t), capturing: mediaTabs.has(t.id) };
   });
 }
 
-/** Close the renderers of hidden tabs nobody is looking at; their place and address stay. */
+/** The owner allowed this page's site to show notifications (remembered, never InPrivate). */
+function siteNotifies(url, tab) {
+  if (!tab || tab.private) return false;
+  const origin = sitePermissions.promptableOrigin(url);
+  try { return Boolean(origin) && getPermissionStore().get(origin, "notifications") === "allow"; } catch { return false; }
+}
+
+/** Ask the tab's page, in its isolated world, whether it holds text the owner typed and has not sent. */
+function pageHasUnsaved(id) {
+  const view = views.get(id);
+  return alive(view) ? isolated(view.webContents, tabDiscard.UNSAVED_SCRIPT) : Promise.resolve(false);
+}
+
+/**
+ * Close the renderers of hidden tabs nobody is looking at; their place and address stay.
+ * Each one is first asked whether it holds unsaved input (tab-discard UNSAVED_SCRIPT);
+ * a page that does is kept. Returns how many tabs were picked (the checks are async).
+ */
 function discardHiddenTabs({ pressure = false } = {}) {
   if (!win || win.isDestroyed() || !tabs) return 0;
-  let n = 0;
-  for (const id of tabDiscard.pickDiscards(tabFacts(), { now: Date.now(), pressure })) {
+  const picked = tabDiscard.pickDiscards(tabFacts(), { now: Date.now(), pressure });
+  if (!picked.length) return 0;
+  void tabDiscard.discardUnlessUnsaved(picked, pageHasUnsaved, (id) => {
     const view = views.get(id);
-    if (!alive(view)) continue;
+    // Shown, closed or popped out while its page was being asked: it stays.
+    if (!alive(view) || !win || win.isDestroyed() || id === tabs.active || popped.has(id)) return;
     const wc = view.webContents;
     discarded.set(id, { url: wc.getURL(), title: wc.getTitle() });
     views.delete(id);
     try { win.contentView.removeChildView(view); } catch { /* already detached */ }
     try { wc.close(); } catch { /* already closing */ }
-    n += 1;
-  }
-  if (n) pushState();
-  return n;
+  }).then((r) => { if (r.discarded.length) pushState(); });
+  return picked.length;
 }
 
 /** A discarded tab is about to be shown: give it a renderer and reload its address. */
@@ -880,6 +918,7 @@ function restoreSession() {
 function forgetTabExtras(id) {
   dropPermissionPrompts(id);
   permGranted.delete(id);
+  forgetPageGrants(id, { closed: true });
   tabNotices.delete(id);
   findResults.delete(id);
   pwFilled.delete(id);
@@ -1075,6 +1114,7 @@ function wireEveryday(wc, id) {
     // A prompt the old document raised while it was leaving goes with it.
     dropPermissionPrompts(id);
     permGranted.delete(id);
+    forgetPageGrants(id);
     const n = tabNotices.get(id);
     if (n && n.keep) n.keep = false;
     else if (n) tabNotices.delete(id);
@@ -1286,6 +1326,7 @@ async function noticeAction(actionId) {
   const notice = tabNotices.get(id);
   const wc = pageWc(id);
   if (!notice) return { ok: false };
+  if (externalApps.isAction(actionId)) return answerExternalApp(id, notice, actionId);
   switch (actionId) {
     case "password-save": {
       const d = notice.data || {};
@@ -1310,6 +1351,7 @@ async function noticeAction(actionId) {
     case "drm-stay": drmStay.add((notice.data && notice.data.host) || ""); setNotice(id, null); return { ok: true };
     case "extension-install": return installExtensionFrom(id, (notice.data && notice.data.url) || (wc ? wc.getURL() : ""));
     case "show-original": setNotice(id, null); if (wc) wc.reload(); return { ok: true };
+    case "crash-reload": setNotice(id, null); if (wc) wc.reload(); return { ok: true };
     case "permission-allow":
       // A prompt that only just appeared may sit under a click meant for something else.
       if (!sitePermissions.armed(notice.at, Date.now())) return { ok: false, early: true };
@@ -1556,12 +1598,14 @@ function judgePermission(wc, permission, details, url) {
 /** Electron's permission REQUEST (getUserMedia, Notification.requestPermission, geolocation...). */
 function requestPermission(wc, permission, callback, details) {
   if (policy.allowPermission(permission)) return callback(true);
+  // Full screen, a Copy button and app links are not owner prompts (answerQuietly).
+  if (answerQuietly(wc, permission, callback, details)) return undefined;
   let url = details && details.requestingUrl;
   try { if (!url && wc) url = wc.getURL(); } catch { url = ""; }
   const verdict = judgePermission(wc, permission, details, url);
-  if (verdict.verdict === "allow") return callback(!agentDrives(verdict.id));
+  if (verdict.verdict === "allow") return callback(noteMedia(verdict, !agentDrives(verdict.id)));
   if (verdict.verdict === "deny" || agentDrives(verdict.id)) return callback(false);
-  if (grantedNow(verdict.id, verdict.origin, verdict.kinds)) return callback(true);
+  if (grantedNow(verdict.id, verdict.origin, verdict.kinds)) return callback(noteMedia(verdict, true));
   permPrompts.ask(verdict.id, verdict, callback);
   showPermissionPrompt(verdict.id);
   return undefined;
@@ -1570,6 +1614,8 @@ function requestPermission(wc, permission, callback, details) {
 /** Electron's permission CHECK (Notification.permission, device labels): never prompts. */
 function checkPermission(wc, permission, origin, details) {
   if (policy.allowPermission(permission)) return true;
+  const quiet = checkQuietly(wc, permission, details);
+  if (quiet != null) return quiet;
   let url = origin || (details && (details.requestingUrl || details.securityOrigin));
   try { if (!url && wc) url = wc.getURL(); } catch { url = ""; }
   const verdict = judgePermission(wc, permission, details, url);
@@ -1602,6 +1648,7 @@ function answerPermission(id, allow, remember) {
     const set = permGranted.get(id) || new Set();
     for (const kind of head.kinds) set.add(`${head.origin} ${kind}`);
     permGranted.set(id, set);
+    noteMedia({ id, kinds: head.kinds }, true);
   }
   // InPrivate never writes: the answer lives as long as the page does.
   if (remember && !tab.private) {
@@ -1643,6 +1690,212 @@ function dropPermissionPrompts(id) {
   // The notice the prompt covered is on screen again, as if the prompt had never been.
   if (behind) tabNotices.set(id, behind);
   else tabNotices.delete(id);
+}
+
+// ---------------------------------------------------------------- the high-impact Edge gaps
+// Page full screen and Copy buttons (browser-quiet-grants.cjs, browser-fullscreen.cjs),
+// popups that keep their opener (browser-popups.cjs), links that open another app
+// (browser-external-apps.cjs) and the tabs a discard must leave alone (tab-discard.cjs).
+// The modules decide; this is the wiring. None of it reaches an agent's tab.
+
+const htmlFullscreen = fullscreenMod.createFullscreen();
+const popupLedger = popups.createPopupLedger();
+const mediaTabs = new Set(); // tab ids whose page on screen was given the camera or the microphone
+let externalStoreImpl = null;
+let openExternalImpl = null; // the smoke's stand-in for shell.openExternal
+const externalAutoAt = new Map(); // tab id -> when a remembered "Always" last opened an app unasked
+
+function getExternalStore() {
+  if (!externalStoreImpl) externalStoreImpl = externalApps.createExternalStore({ file: userDataPath("browser-external-apps.json") });
+  return externalStoreImpl;
+}
+
+/** The camera or the microphone was given to this tab's page (tab-discard keeps it). Returns `allowed`. */
+function noteMedia(verdict, allowed) {
+  const media = verdict && (verdict.kinds || []).some((kind) => kind === "camera" || kind === "microphone");
+  if (allowed && media && verdict.id != null) mediaTabs.add(verdict.id);
+  return allowed;
+}
+
+/** The page left (or its tab closed): what was granted to it is gone. */
+function forgetPageGrants(id, { closed = false } = {}) {
+  mediaTabs.delete(id);
+  if (!closed) return;
+  popupLedger.forget(id);
+  externalAutoAt.delete(id);
+  // A tab closed while its page was full screen: the window comes back out of full screen.
+  if (htmlFullscreen.leave(id) && win && !win.isDestroyed() && win.isFullScreen()) win.setFullScreen(false);
+}
+
+/** Another tab was put on screen while a page was full screen: that page leaves full screen. */
+function endStaleFullscreen() {
+  const id = htmlFullscreen.stale(tabs.active);
+  if (id == null) return;
+  htmlFullscreen.leave(id);
+  const view = viewOf(id);
+  if (view) void isolated(view.webContents, fullscreenMod.EXIT_SCRIPT);
+}
+
+/**
+ * Permission REQUESTS that are not owner prompts. Returns true when it answered.
+ *   fullscreen / clipboard write: the owner's web tab only (browser-quiet-grants.cjs);
+ *     a Copy needs the owner's click, read from the page's isolated world.
+ *   openExternal: an app link Chromium could not follow by itself (a frame's, a
+ *     script's). It is never launched from here: the owner is asked (offerExternalApp).
+ */
+function answerQuietly(wc, permission, callback, details) {
+  const id = tabIdOfContents(wc);
+  const answer = (allow) => { try { callback(Boolean(allow)); } catch { /* the page is gone */ } };
+  if (permission === "openExternal") {
+    answer(false);
+    void offerExternalApp(id, details && details.externalURL, { mainFrame: false });
+    return true;
+  }
+  const verdict = quietGrants.decide({ permission, details: details || {}, tab: id == null ? null : tabs.get(id), agentDriving: agentDrives(id) });
+  if (!verdict) return false;
+  if (!verdict.allow || !verdict.gesture) { answer(verdict.allow); return true; }
+  void isolated(wc, quietGrants.GESTURE_SCRIPT).then((active) => answer(active === true));
+  return true;
+}
+
+/** The same for a permission CHECK (navigator.permissions.query). null = not one of these. */
+function checkQuietly(wc, permission, details) {
+  if (permission === "openExternal") return false;
+  const id = tabIdOfContents(wc);
+  const verdict = quietGrants.decide({ permission, details: details || {}, tab: id == null ? null : tabs.get(id), agentDriving: agentDrives(id) });
+  return verdict ? verdict.allow : null;
+}
+
+/** Full screen follows the page; a page that crashed or did not load says so (browser-page-errors.cjs). */
+function wirePageGaps(wc, id) {
+  wc.on("enter-html-full-screen", () => { if (htmlFullscreen.enter(id)) layout(); });
+  wc.on("leave-html-full-screen", () => { if (htmlFullscreen.leave(id)) layout(); });
+  wc.on("render-process-gone", (_event, details) => {
+    const notice = pageErrors.crashNotice(details);
+    if (notice && tabs.get(id)) setNotice(id, notice);
+  });
+  // A followed link that did not load: the same dark page a typed address gets.
+  wc.on("did-fail-load", (_event, code, desc, url, isMainFrame) => {
+    const failed = pageErrors.failedLoad({ code, desc, url, isMainFrame });
+    if (!failed || loaderBusy.has(wc)) return;
+    // After Chromium has committed its own (empty) error document, not during it.
+    setTimeout(() => {
+      if (wc.isDestroyed() || loaderBusy.has(wc)) return;
+      void wc.loadURL(require("./aither-address.cjs").errorPageUrl(failed.url, failed.reason)).catch(() => {});
+    }, 50);
+  });
+}
+
+/**
+ * window.open() from tab `id` (browser-popups.cjs). A web tab's popup is ADOPTED: it is
+ * a tab beside its opener that keeps window.opener, owned by the opener's owner and in
+ * the opener's session. Everything else opens the old way or is refused.
+ */
+function openFromPage(id, details) {
+  const opener = tabs.get(id);
+  const url = String((details && details.url) || "");
+  // An agent tab the owner let ride their session is never adopted from (its popup's session is picked again).
+  const from = opener ? { ...opener, ownerSession: opener.by === "agent" && (opener.viewSpec || {}).webPartition === PARTITION } : null;
+  const verdict = popups.popupVerdict({ opener: from, url, disposition: details && details.disposition, recent: popupLedger.count(id),
+    isInternalUrl: internal.isInternalUrl, isHostedSite: internal.isHostedSite });
+  if (verdict.action === "tab") openTab(verdict.by, url, { activate: true, after: id });
+  if (verdict.action !== "adopt") return { action: "deny" };
+  popupLedger.note(id);
+  return { action: "allow", outlivesOpener: true, createWindow: (options) => adoptPopup(id, verdict, options, url) };
+}
+
+/** Electron's createWindow for an adopted popup: show the popup's OWN page as a tab. */
+function adoptPopup(openerId, verdict, options, url) {
+  const guest = options.webContents;
+  const refuse = () => { setImmediate(() => { try { guest.close(); } catch { /* already gone */ } }); return guest; };
+  try {
+    const opener = tabs.get(openerId);
+    if (!opener || !win || win.isDestroyed()) return refuse();
+    const added = tabs.add(verdict.by, { activate: verdict.activate, after: openerId, kind: "web" });
+    // No room for another tab: the popup's page is closed at once.
+    if (!added.ok) return refuse();
+    const tab = tabs.get(added.id);
+    tab.label = "";
+    tab.popup = true;
+    if (verdict.private) tab.private = true;
+    // Chromium made the popup in its opener's session; a discarded popup comes back in the same one.
+    tab.viewSpec = { kind: "web", paneId: null, partition: null, webPartition: (opener.viewSpec || {}).webPartition || PARTITION,
+      url: url || "about:blank" };
+    const { WebContentsView } = electron();
+    const view = new WebContentsView({ webContents: guest });
+    views.set(added.id, view);
+    wirePage(guest, added.id);
+    wirePopupClose(guest, added.id, view);
+    win.contentView.addChildView(view);
+    if (alive(panelView)) win.contentView.addChildView(panelView);
+    if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
+    layout();
+    pushState();
+    return guest;
+  } catch {
+    return refuse();
+  }
+}
+
+/** window.close() from a popup (or its opener closing it) closes that tab. */
+function wirePopupClose(wc, id, view) {
+  wc.once("destroyed", () => {
+    // Closed by the browser itself (the tab's X, a discard, the window going): already handled.
+    if (views.get(id) !== view || !win || win.isDestroyed()) return;
+    try { win.contentView.removeChildView(view); } catch { /* already detached */ }
+    const tab = tabs.get(id);
+    if (tab) closeTab(id, tab.by);
+  });
+}
+
+function launchExternal(url) {
+  const open = openExternalImpl || ((target) => electron().shell.openExternal(target));
+  try { return Promise.resolve(open(url)).catch(() => {}); } catch { return Promise.resolve(); }
+}
+
+/**
+ * A link to another app (mailto:, tel:, Zoom...) followed in tab `id`
+ * (browser-external-apps.cjs). The owner's tab and the allow-list only: the toolbar asks
+ * "Open <App>?", or a remembered "Always for this site" opens it on a page the owner
+ * has used, at most once every few seconds. An agent's tab and every other scheme get nothing.
+ */
+async function offerExternalApp(id, url, { mainFrame = false } = {}) {
+  const tab = id == null ? null : tabs.get(id);
+  const wc = id == null ? null : pageWc(id);
+  if (!tab || !wc) return false;
+  let store = null;
+  try { store = getExternalStore(); } catch { /* no store: asked every time */ }
+  const ask = { url, tab, pageUrl: wc.getURL(), mainFrame, store, sinceAuto: Date.now() - (externalAutoAt.get(id) || 0) };
+  let verdict = externalApps.judge({ ...ask, gesture: true });
+  if (verdict.verdict === "deny") return false;
+  if (verdict.verdict === "open" && (await isolated(wc, externalApps.INTERACTED_SCRIPT)) !== true) verdict = externalApps.judge({ ...ask, gesture: false });
+  if (verdict.verdict === "open") {
+    externalAutoAt.set(id, Date.now());
+    void launchExternal(verdict.url);
+    return true;
+  }
+  // keep: the page that asked often moves on to a "launching..." page right away.
+  setNotice(id, { ...externalApps.noticeFor(verdict), keep: true });
+  return true;
+}
+
+/** Open / Always for this site on the "Open <App>?" notice. */
+function answerExternalApp(id, notice, actionId) {
+  if (notice.kind !== "external-app") return { ok: false };
+  // A question that only just appeared may sit under a click meant for something else.
+  if (!sitePermissions.armed(notice.at, Date.now())) return { ok: false, early: true };
+  const data = notice.data || {};
+  const link = externalApps.launchable(data.url);
+  const tab = tabs.get(id);
+  setNotice(id, null);
+  if (!link || !tab || tab.by !== "you") return { ok: false };
+  const always = actionId === "external-always" && Boolean(data.canAlways) && !tab.private;
+  if (always) {
+    try { getExternalStore().allow(data.origin, link.scheme); } catch { /* asked again next time */ }
+    libraryChanged();
+  }
+  void launchExternal(link.url);
+  return { ok: true, opened: link.url, always };
 }
 
 // ---------------------------------------------------------------- the library pages
@@ -1770,7 +2023,8 @@ async function clearBrowsingData(plan) {
 const libraryHost = Object.freeze({
   library: () => getLibrary(),
   downloads: () => downloads,
-  permissions: () => getPermissionStore(),
+  // The remembered "Always open <App>" answers are listed and taken back with the rest.
+  permissions: () => externalApps.withExternal(getPermissionStore(), getExternalStore()),
   revokePermission,
   open: (url) => openTab("you", url).ok,
   goto: (pane) => openInternal(pane, null) !== false,
@@ -2592,16 +2846,9 @@ function wirePage(wc, id) {
   // A popup becomes a TAB beside its opener, owned by the opener's owner (an agent
   // page's popup is still the agent's), never a second window. A web page may only
   // open web pages; an aither:// page may open another Aither page or a web tab.
-  wc.setWindowOpenHandler(({ url }) => {
-    const opener = tabs.get(id);
-    if (!opener) return { action: "deny" };
-    if (policy.isNavigable(url)) {
-      openTab(opener.by, url, { activate: true, after: id });
-    } else if (opener.kind === "internal" && internal.isInternalUrl(url)) {
-      openTab("you", url, { activate: true, after: id });
-    }
-    return { action: "deny" };
-  });
+  // A WEB tab's popup keeps its opener (sign-in and payment popups): openFromPage.
+  wc.setWindowOpenHandler((details) => openFromPage(id, details));
+  wirePageGaps(wc, id);
   // Navigation is judged per tab KIND (browser-internal navigationVerdict): a web
   // tab never reaches aither://; an internal tab sends a web link to a web tab.
   // An extension tab stays on ITS extension's pages (never hops to another extension's).
@@ -2624,11 +2871,15 @@ function wirePage(wc, id) {
     event.preventDefault();
     const opener = tabs.get(id);
     if (verdict === "web-tab" && opener) openTab(opener.by, url, { activate: true, after: id });
+    // mailto:, tel:, Zoom...: the owner is asked "Open <App>?" (never an agent's tab).
+    else void offerExternalApp(id, url, { mainFrame: true });
   };
   wc.on("will-navigate", guard);
   // A redirect cannot be split into another tab: anything but "allow" stops it.
   wc.on("will-redirect", (event, url) => {
-    if (verdictFor(url) !== "allow") event.preventDefault();
+    if (verdictFor(url) === "allow") return;
+    event.preventDefault();
+    if (event.isMainFrame !== false) void offerExternalApp(id, url, { mainFrame: true });
   });
   // Frames: a web page cannot frame aither:// (its session has no handler either).
   wc.on("will-frame-navigate", (details) => {
@@ -2895,6 +3146,8 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     openSignal = null;
     discarded.clear();
     shownAt.clear();
+    htmlFullscreen.leave(null);
+    mediaTabs.clear();
     lastLayoutKey = "";
     for (const view of [...views.values(), panelView, taskbarView, dockView]) {
       if (alive(view)) view.webContents.close();
@@ -4301,6 +4554,13 @@ module.exports = {
   getDownloads: () => downloads,
   BOOKMARKS_BAR_HEIGHT,
   __setConfirmForTest: (fn) => { confirmImpl = typeof fn === "function" ? fn : null; },
+  /** The high-impact gaps (browser-parity-smoke.cjs): app links, page full screen, the discard pass. */
+  getExternalStore,
+  __setOpenExternalForTest: (fn) => { openExternalImpl = typeof fn === "function" ? fn : null; },
+  __viewBoundsForTest: (id) => { const v = viewOf(id); return v ? v.getBounds() : null; },
+  __fullscreenTabForTest: () => htmlFullscreen.tab(),
+  __tabFactsForTest: () => tabFacts(),
+  __pageHasUnsavedForTest: (id) => pageHasUnsaved(id),
   __pageForTest: (id) => pageWc(id),
   __noticeForTest: (id) => tabNotices.get(id) || null,
   /** The owner clicking a tab, for browser-tabs-smoke.cjs (the strip's IPC needs a real sender). */

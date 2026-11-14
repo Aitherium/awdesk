@@ -214,8 +214,14 @@ test("browser-window: page view has no preload, is sandboxed, isolated, and popu
   // One page view per tab, all built in openTab().
   const page = src.match(/const view = new WebContentsView\(\{[\s\S]*?\n {2}\}\);/);
   assert.ok(page, "page view construction found");
-  assert.equal((src.match(/new WebContentsView\(/g) || []).length, 3,
-    "one page-view builder (openTab) + the panel + the taskbar");
+  assert.equal((src.match(/new WebContentsView\(/g) || []).length, 4,
+    "one page-view builder (openTab) + the panel + the taskbar + the adopted popup");
+  // The fourth shows a popup's OWN page (browser-popups.cjs): it is handed the page
+  // Chromium already made in the opener's session and sandbox, and no preferences at all.
+  assert.equal((src.match(/new WebContentsView\(\{ webContents: guest \}\)/g) || []).length, 1,
+    "the adopted popup is built from its own webContents, with no webPreferences and no preload");
+  assert.match(src, /wc\.setWindowOpenHandler\(\(details\) => openFromPage\(id, details\)\);/,
+    "a tab's window.open goes through the popup verdict");
   // The taskbar is web content too (app.aitherium.com/embed/taskbar): hosted prefs, and ONLY
   // its own desk-plane preload (browser-taskbar-preload.cjs, 2026-10-28) -- never the
   // desk-host or an internal one.
