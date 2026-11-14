@@ -78,6 +78,9 @@ const deskLayout = require("./desk-layout.cjs");
 // Edge parity (owner 2026-11-13, "close the gaps"): keys, right-click, find, zoom, print,
 // InPrivate, session restore, translate, DRM hand-off. The pure parts live there.
 const everyday = require("./browser-everyday.cjs");
+// Protected video and music (Widevine): the castLabs build installs the CDM; this module
+// is the only one that touches Electron's `components`, and it is inert on stock Electron.
+const widevineMod = require("./browser-widevine.cjs");
 const { createSurfaceState } = require("./surface-state.cjs");
 let knowledgeImpl = null;
 function knowledgeClient() {
@@ -470,7 +473,7 @@ function pushStateNow() {
  * guard is per session -- one hardened session must not leave the next one open.
  */
 const hardenedSessions = new WeakSet();
-function hardenSession(ses) {
+function hardenSession(ses, { owner = false } = {}) {
   if (!ses || hardenedSessions.has(ses)) return;
   hardenedSessions.add(ses);
   // Sites see plain Chrome, not "Electron/39" (browser-user-agent.cjs): this session, and
@@ -478,11 +481,18 @@ function hardenSession(ses) {
   browserUa.install(ses, electron().app);
   // Deny by default (policy.allowPermission). Five permissions ASK the owner instead, on
   // the owner's own web tab only, and remember the answer per site (browser-permissions.cjs).
-  ses.setPermissionRequestHandler((wc, permission, callback, details) => requestPermission(wc, permission, callback, details));
-  ses.setPermissionCheckHandler((wc, permission, origin, details) => checkPermission(wc, permission, origin, details));
+  // `owner` is true for the owner's persistent session only: there, protected media
+  // (mediaKeySystem) is granted unasked to the owner's own web tab (standingGrant).
+  const grant = { owner: owner === true };
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => requestPermission(wc, permission, callback, details, grant));
+  ses.setPermissionCheckHandler((wc, permission, origin, details) => checkPermission(wc, permission, origin, details, grant));
   if (typeof ses.setDevicePermissionHandler === "function") ses.setDevicePermissionHandler(() => false);
   // Ads and trackers are cancelled at the network layer (browser-adblock.cjs).
-  try { getAdblock().attach(ses, { onBlocked: () => pushState() }); } catch { /* browsing still works */ }
+  // The InPrivate session is told apart: a pause chosen there lives in memory only.
+  try {
+    const inPrivate = ses === electron().session.fromPartition(everyday.INPRIVATE_PARTITION);
+    getAdblock().attach(ses, { onBlocked: () => pushState(), private: inPrivate });
+  } catch { /* browsing still works */ }
   // A download an AGENT triggers lands on the owner's disk unseen; while the agent
   // drives (and the owner has not taken over) downloads are cancelled. The owner
   // takes over to download. Either way it is a ROW on the shelf (browser-downloads):
@@ -871,6 +881,10 @@ const pwFilled = new Map(); // tab id -> the URL already autofilled (once per pa
 // (its submit message can land just after the next document starts). browser-passwords.cjs.
 const pwKeys = new Map();
 const drmStay = new Set(); // hosts the owner chose to keep here this run
+const cosmeticSheets = new Map(); // webContents id -> Promise<key> of the ad-box style sheet in its document
+const translateMuted = new Set(); // hosts the owner answered "Not now" on, this run
+const translateAsked = new Map(); // tab id -> the URL its language was already read on
+let translateBackendsOverride = null; // the smoke's fake model
 let sessionRestored = false;
 
 function userDataPath(...parts) {
@@ -887,6 +901,33 @@ function getAdblock() {
   return adblockImpl;
 }
 
+/**
+ * Hide the boxes blocked ads leave behind: the lists' element hiding rules for this
+ * page's host, as a user style sheet (a page's own `!important` cannot undo it). One
+ * sheet per document; taken out again when blocking is paused. Web tabs only: never a
+ * console pane, an extension page or the pinned AitherOS Online tab.
+ */
+function syncCosmetics(wc, id) {
+  if (!wc || wc.isDestroyed()) return;
+  const tab = tabs.get(id) || {};
+  let css;
+  try { css = tab.kind === "web" && !tab.pinned && adblockImpl ? adblockImpl.cssFor(wc.getURL(), { private: Boolean(tab.private) }) : ""; } catch { css = ""; }
+  const have = cosmeticSheets.get(wc.id);
+  if (css && !have) {
+    cosmeticSheets.set(wc.id, wc.insertCSS(css, { cssOrigin: "user" }).catch(() => null));
+  } else if (!css && have) {
+    cosmeticSheets.delete(wc.id);
+    void have.then((key) => (key && !wc.isDestroyed() ? wc.removeInsertedCSS(key) : null)).catch(() => {});
+  }
+}
+
+/** Blocking was switched on or off everywhere: every open page gains or loses its sheet. */
+function syncAllCosmetics() {
+  for (const [id, view] of views) {
+    if (alive(view)) syncCosmetics(view.webContents, id);
+  }
+}
+
 let vaultImpl = null;
 function passwordsMod() { return require("./browser-passwords.cjs"); }
 function getVault() {
@@ -898,6 +939,85 @@ let sessionStoreImpl = null;
 function getSessionStore() {
   if (!sessionStoreImpl) sessionStoreImpl = everyday.createSessionStore({ file: userDataPath("browser-session.json") });
   return sessionStoreImpl;
+}
+
+// Sync (browser-sync.cjs): bookmarks, history and the owner's open tabs follow the
+// account through the platform's per-user preferences store, with the Online session's
+// bearer. OFF until the owner turns it on. InPrivate and agent tabs never leave.
+let syncImpl = null;
+let syncSeam = null; // the smoke's store and token; never set in the app
+let syncWho = null;
+function syncMod() { return require("./browser-sync.cjs"); }
+// The store is the platform's, never the page host: in tenant mode the desk's pages come
+// from the tenant's site, which has no store and must never be sent the Online bearer.
+function syncOrigin() {
+  return (syncSeam && syncSeam.origin) || internal.platformOrigin();
+}
+/**
+ * Whose bearer this is, so one account's bookmarks never reach another's store: the
+ * username Identity answers for the Online bearer (asked once per bearer). Unknown,
+ * and sync sends nothing.
+ */
+async function syncAccount(bearer) {
+  if (syncSeam && syncSeam.account) return syncSeam.account(bearer);
+  if (!syncWho) syncWho = syncMod().createAccountResolver({ check: (b) => require("./desk-session.cjs").checkToken(b) });
+  return syncWho(bearer);
+}
+/** The owner's own web tabs as sync sees them (it drops InPrivate, agent and non-web ones). */
+function syncTabs() {
+  return tabs.snapshot().tabs.map((t) => {
+    const tab = tabs.get(t.id) || {};
+    const view = views.get(t.id);
+    const parked = discarded.get(t.id) || {};
+    return { by: tab.by, kind: tab.kind, private: Boolean(tab.private),
+      url: alive(view) ? view.webContents.getURL() : parked.url || "",
+      title: alive(view) ? view.webContents.getTitle() : parked.title || "" };
+  });
+}
+function getSync() {
+  if (!syncImpl) {
+    const seam = syncSeam || {};
+    syncImpl = syncMod().createBrowserSync({
+      file: userDataPath("browser-sync.json"), library: getLibrary(), tabs: syncTabs,
+      transport: syncMod().createPrefsTransport({
+        origin: () => { try { return syncOrigin(); } catch { return ""; } },
+        token: async () => (seam.token ? seam.token() : onlineToken()),
+        account: syncAccount,
+        fetchImpl: (url, init) => electron().net.fetch(url, init),
+      }),
+      onChange: (st) => {
+        pushState();
+        // Another account signed in: sync turned itself off before sending anything. Say so once.
+        if (st && st.state === "account-changed") {
+          try { setNotice(tabs.active, { kind: "info", text: "Sync is off: a different AitherOS account signed in. Nothing was sent to it. Turn \"Sync this browser\" on again to add this computer's bookmarks to that account." }); } catch { /* no tab to say it in */ }
+        }
+      },
+    });
+  }
+  return syncImpl;
+}
+/** Something sync carries changed (a visit, a bookmark, a closed tab). A no-op while it is off. */
+function touchSync() {
+  try { getSync().touch(); } catch { /* sync never breaks browsing */ }
+}
+/** The menu's switch. Says what happened in the tab's notice bar. */
+async function setSyncEnabled(on) {
+  const id = tabs.active;
+  const st = await getSync().setEnabled(on);
+  setNotice(id, { kind: "info", text: !on
+    ? "Sync is off. Nothing was removed from this computer."
+    : st.state === "ok"
+      ? "Sync is on: bookmarks, history and open tabs follow your AitherOS account. Passwords stay on this computer."
+      : `Sync is on, but not synced yet. ${syncMod().statusLine(st)}` });
+  return st;
+}
+function syncMenuItems() {
+  const sync = getSync();
+  return syncMod().menuItems(sync.status(), sync.otherDevices(), {
+    toggle: (on) => { void setSyncEnabled(on); },
+    syncNow: () => { void sync.syncNow(); },
+    open: (url) => { openTab("you", url); },
+  });
 }
 
 /** Reopen last time's tabs. Returns how many came back. Saving starts only after this. */
@@ -919,6 +1039,7 @@ function forgetTabExtras(id) {
   dropPermissionPrompts(id);
   permGranted.delete(id);
   forgetPageGrants(id, { closed: true });
+  translateAsked.delete(id);
   tabNotices.delete(id);
   findResults.delete(id);
   pwFilled.delete(id);
@@ -951,6 +1072,7 @@ function openPrivateTab(url, { activate = true, after = null } = {}) {
 function clearPrivateIfLast() {
   const anyLeft = tabs.snapshot().tabs.some((t) => (tabs.get(t.id) || {}).private);
   if (anyLeft) return;
+  if (adblockImpl) adblockImpl.clearPrivate(); // the sites paused from InPrivate tabs
   try {
     const ses = electron().session.fromPartition(everyday.INPRIVATE_PARTITION);
     void ses.clearStorageData().catch(() => {});
@@ -993,7 +1115,9 @@ function everydayState(wc) {
     find: findResults.get(id) || null,
     notice: notice ? { kind: notice.kind, text: notice.text, title: notice.title || notice.text, actions: notice.actions || [] } : null,
     passwords: saved,
-    adblock: ab ? { enabled: ab.enabled(), siteOff: ab.siteOff(url), blocked: ab.blockedOn(wc.id) } : null,
+    adblock: ab ? { enabled: ab.enabled(), siteOff: ab.siteOff(url, { private: Boolean(tab.private) }), blocked: ab.blockedOn(wc.id),
+      web: tab.kind === "web" && !tab.pinned && /^https?:/i.test(url) } : null,
+    widevine: widevineMod.getWidevine().snapshot(),
   };
 }
 
@@ -1108,6 +1232,10 @@ function wireEveryday(wc, id) {
     const got = passwordsMod().decodeCaptured(message, keys.key) || passwordsMod().decodeCaptured(message, keys.prev);
     if (got) offerLogin(id, wc, got);
   });
+  // Ad boxes: a new document starts without the sheet; it goes in as soon as the DOM is there.
+  wc.on("did-navigate", () => cosmeticSheets.delete(wc.id));
+  wc.on("dom-ready", () => syncCosmetics(wc, id));
+  wc.once("destroyed", () => cosmeticSheets.delete(wc.id));
   wc.on("did-navigate", (_event, url) => {
     const k = pwKeys.get(id);
     if (k) pwKeys.set(id, { key: null, prev: k.key || k.prev });
@@ -1119,17 +1247,7 @@ function wireEveryday(wc, id) {
     if (n && n.keep) n.keep = false;
     else if (n) tabNotices.delete(id);
     const tab = tabs.get(id);
-    if (tab && tab.by === "you" && everyday.needsDrm(url)) {
-      let host = "";
-      try { host = new URL(url).hostname; } catch { /* not a URL */ }
-      if (!drmStay.has(host) && everyday.edgeExecutable()) {
-        setNotice(id, {
-          kind: "drm", data: { url, host },
-          text: "This site plays protected video or music (DRM), which this browser cannot play yet. Watch it in Edge?",
-          actions: [{ id: "open-edge", label: "Open in Edge" }, { id: "drm-stay", label: "Stay here" }],
-        });
-      }
-    }
+    offerDrm(id, wc, url);
     const store = require("./browser-webstore.cjs").parseExtensionId(url);
     if (tab && tab.by === "you" && !tab.private && store.ok && /\/detail\//.test(url)) {
       setNotice(id, {
@@ -1140,8 +1258,47 @@ function wireEveryday(wc, id) {
     }
   });
   wc.on("did-stop-loading", () => {
-    void collectLogin(id, wc).then(() => autofill(id, wc));
+    void collectLogin(id, wc).then(() => autofill(id, wc)).then(() => offerTranslation(id, wc)).catch(() => {});
   });
+}
+
+/** What a DRM page is told, from the Widevine state (browser-widevine.cjs decides). */
+function drmNoticeFor(id, url) {
+  const tab = tabs.get(id);
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* not a URL */ }
+  return widevineMod.drmNotice({
+    needsDrm: everyday.needsDrm(url), tabBy: tab ? tab.by : "", snap: widevineMod.getWidevine().snapshot(),
+    hasEdge: Boolean(everyday.edgeExecutable()), stayed: drmStay.has(host), url, host,
+  });
+}
+
+/**
+ * A DRM site just loaded in an owner tab. Widevine ready: nothing, the page plays.
+ * Still installing (the first seconds of a first run): a wait line, then one reload so
+ * the player sees the CDM. Missing or failed: the Open in Edge fallback.
+ */
+function offerDrm(id, wc, url) {
+  const notice = drmNoticeFor(id, url);
+  if (!notice) return;
+  setNotice(id, notice);
+  if (notice.kind !== "drm-wait") return;
+  void widevineMod.getWidevine().ensure().then((snap) => {
+    const now = tabNotices.get(id);
+    if (!now || now.kind !== "drm-wait" || wc.isDestroyed() || wc.getURL() !== url) return;
+    setNotice(id, snap.state === "ready" ? null : drmNoticeFor(id, url));
+    if (snap.state === "ready") wc.reload();
+  });
+}
+
+/** The more-menu's Widevine line was clicked: retry a failed install, then say what happened. */
+function widevineCheck() {
+  const id = tabs.active;
+  const wv = widevineMod.getWidevine();
+  void wv.ensure({ retry: true }).then((snap) => {
+    setNotice(id, { kind: "info", text: snap.state === "failed" ? `Protected playback did not install: ${snap.error}` : widevineMod.widevineMenuLabel(snap) });
+  });
+  return true;
 }
 
 /** Open Edge on `url` (only Edge: shell.openExternal would come back here once Aither is the default). */
@@ -1164,39 +1321,142 @@ function pageWc(id) {
   return alive(view) ? view.webContents : null;
 }
 
-/** Translate the page in place with this machine's own model (nothing leaves for a translation service). */
+function translateMod() { return require("./browser-translate.cjs"); }
+
+/** The language the owner reads: the app's locale, by name ("English"). */
+function translateTarget() {
+  let locale = "en";
+  try { locale = electron().app.getLocale() || "en"; } catch { /* English */ }
+  return { locale, name: translateMod().languageName(locale) || "English" };
+}
+
+/**
+ * Who can translate, in the order they are asked (browser-translate.cjs has the
+ * measurements behind it): the fleet's MicroScheduler, the local node, the bundled
+ * local model, then the desk's agent. Every one is on this machine or its own fleet
+ * except the last, which is whatever the owner's desk already talks to.
+ */
+function translateBackends() {
+  if (translateBackendsOverride) return translateBackendsOverride;
+  const T = translateMod();
+  const prefer = String(process.env.AWDESK_TRANSLATE_MODEL || "");
+  const base = String(process.env.AITHER_MICROSCHEDULER_URL || "https://127.0.0.1:8150").replace(/\/+$/, "");
+  const out = [
+    T.schedulerBackend({ base, prefer, http: T.createJsonHttp({ tls: require("./internal-ca.cjs").internalCaOptions() }) }),
+    T.nodeBackend({ answer: (msg) => overlayAnswer(msg), prefer }),
+    T.bonsaiLocalBackend({ chat: (messages) => require("./local-ai.cjs").createLocalAi().chat(messages) }),
+  ];
+  if (typeof askAgent === "function") out.push(T.agentBackend({ askAgent }));
+  return out;
+}
+
+/**
+ * Translate the page in place. The text goes to the first model that answers (see
+ * translateBackends) and the notice names it; nothing goes to a translation service.
+ */
 async function translatePage(id) {
   const wc = pageWc(id);
   if (!wc) return { ok: false };
-  let target = "English";
-  try { target = new Intl.DisplayNames(["en"], { type: "language" }).of(electron().app.getLocale().split("-")[0]) || "English"; } catch { /* English */ }
+  const T = translateMod();
+  const target = translateTarget().name;
+  const url = wc.getURL();
   const got = await isolated(wc, everyday.TRANSLATE_COLLECT_SCRIPT);
   const texts = got && Array.isArray(got.texts) ? got.texts : [];
   if (!texts.length) { setNotice(id, { kind: "info", text: "Nothing on this page to translate." }); return { ok: false }; }
-  const batches = everyday.translateBatches(texts);
-  let done = 0;
-  let changed = 0;
-  const ask = async (prompt) => {
-    const r = await Promise.resolve(overlayAnswer({ type: "os-compose", prompt, maxTokens: 2048, temperature: 0.1 })).catch(() => null);
-    if (r && r.ok && r.text) return r.text;
-    if (typeof askAgent === "function") {
-      const a = await Promise.resolve(askAgent(prompt)).catch(() => null);
-      return a && a.ok !== false ? String(a.reply || "") : "";
-    }
-    return "";
-  };
-  for (const batch of batches) {
-    setNotice(id, { kind: "info", text: `Translating into ${target} on this computer… ${done}/${batches.length}`,
-      actions: [{ id: "show-original", label: "Show original" }] });
-    const reply = await ask(everyday.translatePrompt(batch.texts, target));
-    const out = everyday.parseTranslation(reply, batch.texts.length);
-    if (out && pageWc(id) === wc) changed += Number(await isolated(wc, everyday.translateApplyScript(batch.start, out))) || 0;
-    done += 1;
+  const here = () => pageWc(id) === wc && !wc.isDestroyed() && wc.getURL() === url;
+  const original = [{ id: "show-original", label: "Show original" }];
+  const r = await T.createTranslator({ backends: translateBackends() }).translate({
+    texts, target,
+    apply: (start, out) => isolated(wc, everyday.translateApplyScript(start, out)),
+    stillWanted: here,
+    onProgress: ({ done, total, backend }) => {
+      if (!here()) return;
+      setNotice(id, { kind: "info", actions: original, text: backend
+        ? `Translating into ${target} with ${backend}… ${done}/${total}`
+        : `Translating into ${target}: asking a model this machine can reach…` });
+    },
+  }).catch((error) => ({ ok: false, changed: 0, backend: null, tried: [{ id: "error", label: "translate", ok: false, error: String((error && error.message) || error) }] }));
+  if (here()) {
+    setNotice(id, r.ok
+      ? { kind: "info", text: `Translated into ${target} by ${r.backend.label}.`, actions: original }
+      : { kind: "info", text: `Not translated: no model answered. ${T.describeTried(r.tried) || "None is set up (see aither://local-ai)."}` });
   }
-  setNotice(id, changed
-    ? { kind: "info", text: `Translated into ${target} by your local model.`, actions: [{ id: "show-original", label: "Show original" }] }
-    : { kind: "info", text: "Translation failed: no local model answered (start one on aither://local-ai)." });
-  return { ok: changed > 0, changed };
+  return r;
+}
+
+/**
+ * "This page is in German. Translate?" -- asked once per page, on the owner's own web
+ * tabs. Never InPrivate and never on an agent's tab (browser-translate shouldOffer);
+ * only the page's language is worked out here, nothing is sent to a model until asked.
+ */
+async function offerTranslation(id, wc) {
+  const tab = tabs.get(id);
+  if (!tab || tab.by !== "you" || tab.private || tab.kind !== "web" || tab.pinned) return;
+  if (getPrefs().translateOffer === false || wc.isDestroyed()) return;
+  const url = wc.getURL();
+  if (!/^https?:/i.test(url) || tabNotices.has(id) || translateAsked.get(id) === url) return;
+  translateAsked.set(id, url);
+  const T = translateMod();
+  const got = await isolated(wc, T.LANGUAGE_SAMPLE_SCRIPT);
+  if (!got || pageWc(id) !== wc || wc.isDestroyed() || wc.getURL() !== url || tabNotices.has(id)) return;
+  const lang = T.pageLanguage({ htmlLang: got.lang, text: got.text });
+  let host = "";
+  try { host = new URL(url).hostname.toLowerCase(); } catch { /* not a URL */ }
+  const target = translateTarget();
+  if (!T.shouldOffer({ pageLang: lang, appLang: target.locale, tab: { by: tab.by, private: Boolean(tab.private), kind: tab.kind },
+    host, muted: translateMuted })) return;
+  setNotice(id, {
+    kind: "translate-offer", data: { url, host, lang },
+    text: `This page is in ${T.languageName(lang)}. Translate it into ${target.name}?`,
+    actions: [{ id: "translate", label: "Translate" }, { id: "translate-mute", label: "Not now" }],
+  });
+}
+
+/** The shield in the toolbar: what was blocked here, pause on this site, pause everywhere. */
+function shieldFacts(id = tabs.active) {
+  const wc = pageWc(id);
+  const tab = tabs.get(id) || {};
+  const url = wc ? wc.getURL() : "";
+  const ab = getAdblock();
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* no page */ }
+  return { wc, url, ab, tab, facts: { enabled: ab.enabled(), siteOff: ab.siteOff(url, { private: Boolean(tab.private) }), blocked: wc ? ab.blockedOn(wc.id) : 0, host,
+    web: tab.kind === "web" && !tab.pinned && /^https?:/i.test(url) } };
+}
+
+/**
+ * One shield menu choice. The page reloads so the owner sees the difference at once.
+ * From an InPrivate tab, "pause on this site" is kept in memory and never saved: the
+ * settings file must not name a site that was only ever visited InPrivate.
+ */
+function shieldAction(actionId, checked, id = tabs.active) {
+  const { wc, url, ab, tab } = shieldFacts(id);
+  if (actionId === "pause-site") {
+    if (!/^https?:/i.test(url)) return { ok: false };
+    ab.setSiteOff(url, Boolean(checked), { private: Boolean(tab.private) });
+  } else if (actionId === "pause-all") {
+    ab.setEnabled(!checked);
+    syncAllCosmetics();
+  } else {
+    return { ok: false };
+  }
+  if (wc) wc.reload();
+  pushState();
+  return { ok: true };
+}
+
+function shieldMenu() {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const { Menu } = electron();
+  const id = tabs.active;
+  const spec = require("./browser-adblock.cjs").shieldMenuSpec(shieldFacts(id).facts);
+  const template = spec.map((item) => (item.type === "separator" ? { type: "separator" } : {
+    label: item.label, enabled: item.enabled !== false,
+    ...(item.checked === undefined ? {} : { type: "checkbox", checked: item.checked }),
+    click: (menuItem) => shieldAction(item.id, menuItem.checked, id),
+  }));
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
 }
 
 function zoomTo(wc, dir) {
@@ -1261,6 +1521,7 @@ function runBrowserAction(action, arg, id = tabs.active) {
     case "fullscreen": if (win && !win.isDestroyed()) win.setFullScreen(!win.isFullScreen()); return true;
     case "bookmark":
       if (wc && !tab.private) getLibrary().toggleBookmark(wc.getURL(), wc.getTitle());
+      touchSync();
       pushState();
       libraryChanged();
       return true;
@@ -1273,6 +1534,7 @@ function runBrowserAction(action, arg, id = tabs.active) {
     case "translate": void translatePage(id); return true;
     case "read-aloud": void readAloud(); return true;
     case "open-edge": return openInEdge(wc ? wc.getURL() : "").ok;
+    case "widevine-check": return widevineCheck();
     default: return false;
   }
 }
@@ -1357,6 +1619,11 @@ async function noticeAction(actionId) {
       if (!sitePermissions.armed(notice.at, Date.now())) return { ok: false, early: true };
       return answerPermission(id, true, true);
     case "permission-block": return answerPermission(id, false, true);
+    case "translate": return translatePage(id);
+    case "translate-mute":
+      if (notice.data && notice.data.host) translateMuted.add(notice.data.host);
+      setNotice(id, null);
+      return { ok: true };
     case "delete-file": {
       const file = notice.data && notice.data.file;
       try { if (file) require("node:fs").unlinkSync(file); setNotice(id, { kind: "info", text: "The CSV file is deleted." }); } catch (error) {
@@ -1508,13 +1775,21 @@ function browserMenu() {
     { label: "Find on page", accelerator: "CmdOrCtrl+F", registerAccelerator: false, click: () => runBrowserAction("find") },
     { label: "Print…", accelerator: "CmdOrCtrl+P", registerAccelerator: false, click: () => runBrowserAction("print") },
     { label: "Translate page", click: () => runBrowserAction("translate") },
+    { label: "Offer to translate pages in other languages", type: "checkbox", checked: getPrefs().translateOffer !== false,
+      click: (item) => setPrefs({ translateOffer: item.checked }) },
     { label: "Read aloud", click: () => runBrowserAction("read-aloud") },
     { label: "Open in Edge", enabled: /^https?:/i.test(url) && Boolean(everyday.edgeExecutable()), click: () => runBrowserAction("open-edge") },
+    { label: widevineMod.widevineMenuLabel(widevineMod.getWidevine().snapshot()), click: () => runBrowserAction("widevine-check") },
     { type: "separator" },
-    { label: "Block ads and trackers", type: "checkbox", checked: ab.enabled(), click: (item) => { ab.setEnabled(item.checked); pushState(); } },
-    { label: "Allow ads on this site", type: "checkbox", enabled: ab.enabled() && /^https?:/i.test(url), checked: ab.siteOff(url),
-      click: (item) => { ab.setSiteOff(url, item.checked); if (wc) wc.reload(); } },
-    { label: `Update the block lists (${ab.hostCount().toLocaleString()} hosts)`, click: () => { void ab.refresh({ force: true }).then(() => pushState()); } },
+    { label: "Block ads and trackers", type: "checkbox", checked: ab.enabled(), click: (item) => { ab.setEnabled(item.checked); syncAllCosmetics(); pushState(); } },
+    { label: "Allow ads on this site", type: "checkbox", enabled: ab.enabled() && /^https?:/i.test(url), checked: shieldFacts(id).facts.siteOff,
+      click: (item) => { shieldAction("pause-site", item.checked, id); } },
+    { label: "Remove tracking from links (utm_*, fbclid, gclid…)", type: "checkbox", checked: ab.stripParams(),
+      click: (item) => { ab.setStripParams(item.checked); } },
+    { label: "Tell sites not to sell or share my data (GPC)", type: "checkbox", checked: ab.gpc(),
+      click: (item) => { ab.setGpc(item.checked); } },
+    { label: `Update the block lists (${ab.hostCount().toLocaleString()} hosts, ${ab.stats().rules.toLocaleString()} rules, ${ab.stats().cosmetic.toLocaleString()} hidden boxes)`,
+      click: () => { void ab.refresh({ force: true }).then(() => pushState()); } },
     { type: "separator" },
     { label: `Passwords (${accounts.length})`, submenu: [
       ...(pwItems.length ? pwItems : [{ label: "No saved passwords yet", enabled: false }]),
@@ -1533,6 +1808,8 @@ function browserMenu() {
     ] },
     { label: "Site permissions", click: () => runBrowserAction("permissions") },
     { label: "Clear browsing data…", accelerator: "CmdOrCtrl+Shift+Delete", registerAccelerator: false, click: () => runBrowserAction("clear-data") },
+    { type: "separator" },
+    ...syncMenuItems(),
     { type: "separator" },
     { label: "Reopen my tabs when the browser starts", type: "checkbox", checked: getPrefs().restoreSession !== false,
       click: (item) => setPrefs({ restoreSession: item.checked }) },
@@ -1595,9 +1872,31 @@ function judgePermission(wc, permission, details, url) {
   return { id, ...sitePermissions.decide({ permission, details: details || {}, url, tab, store }) };
 }
 
+/** An agent's tab is on the owner's session right now (a site the owner let agents sign in to). */
+function agentRidesOwnerSession() {
+  const ownerSession = electron().session.fromPartition(PARTITION);
+  for (const [id, view] of views) {
+    const tab = tabs.get(id);
+    if (tab && tab.by === "agent" && alive(view) && view.webContents.session === ownerSession) return true;
+  }
+  return false;
+}
+
+/**
+ * The grant nobody is asked about (protected media on the owner's session), for THIS
+ * sender: the owner's own web tab gets it, an agent's tab never does even when it rides
+ * the owner's session (browser-policy allowPermissionFor). `grant` is the session's.
+ */
+function standingGrant(wc, permission, grant) {
+  if (!grant || !policy.allowPermission(permission, grant)) return false;
+  const id = tabIdOfContents(wc);
+  const tab = id == null ? null : tabs.get(id) || null;
+  return policy.allowPermissionFor(permission, { owner: grant.owner === true, tab, agentOnSession: agentRidesOwnerSession() });
+}
+
 /** Electron's permission REQUEST (getUserMedia, Notification.requestPermission, geolocation...). */
-function requestPermission(wc, permission, callback, details) {
-  if (policy.allowPermission(permission)) return callback(true);
+function requestPermission(wc, permission, callback, details, grant) {
+  if (standingGrant(wc, permission, grant)) return callback(true);
   // Full screen, a Copy button and app links are not owner prompts (answerQuietly).
   if (answerQuietly(wc, permission, callback, details)) return undefined;
   let url = details && details.requestingUrl;
@@ -1612,8 +1911,8 @@ function requestPermission(wc, permission, callback, details) {
 }
 
 /** Electron's permission CHECK (Notification.permission, device labels): never prompts. */
-function checkPermission(wc, permission, origin, details) {
-  if (policy.allowPermission(permission)) return true;
+function checkPermission(wc, permission, origin, details, grant) {
+  if (standingGrant(wc, permission, grant)) return true;
   const quiet = checkQuietly(wc, permission, details);
   if (quiet != null) return quiet;
   let url = origin || (details && (details.requestingUrl || details.securityOrigin));
@@ -1987,6 +2286,8 @@ async function clearBrowsingData(plan) {
     const lib = getLibrary();
     const before = lib.historyPage({ limit: 0 }).total;
     lib.clearHistory({ since: plan.since });
+    // All of it: sync must not hand it back from the account's store (browser-sync.cjs).
+    if (!plan.since) noteHistoryCleared();
     out.history = before - lib.historyPage({ limit: 0 }).total;
   }
   const wipe = async (label, dataTypes, fallback) => {
@@ -2018,6 +2319,11 @@ async function clearBrowsingData(plan) {
   }
   pushState();
   return out;
+}
+
+/** The owner cleared ALL history: sync drops it on every device instead of restoring it here. */
+function noteHistoryCleared() {
+  try { getSync().noteHistoryCleared(); } catch { /* sync never breaks browsing */ }
 }
 
 const libraryHost = Object.freeze({
@@ -2052,7 +2358,9 @@ const libraryHost = Object.freeze({
   passwordCount: () => { try { return getVault().count(); } catch { return 0; } },
   bar: () => Boolean(getPrefs().bookmarksBar),
   setBar: (on) => setBookmarksBar(on),
-  changed: () => { pushState(); libraryChanged(); },
+  historyCleared: noteHistoryCleared,
+  // A bookmark added, renamed or deleted on a library page is a change sync carries.
+  changed: () => { pushState(); libraryChanged(); touchSync(); },
 });
 // ============================================================== end Edge parity
 
@@ -2763,6 +3071,7 @@ function closeTab(id, by = "you") {
   if (tabs.tabs.length === 0 && win && !win.isDestroyed()) openTab("you", homeUrl());
   layout();
   pushState();
+  if (before && before.by === "you" && !before.private) touchSync();
   return { ok: true, closed: id, active: tabs.active };
 }
 
@@ -2937,6 +3246,7 @@ function wirePage(wc, id) {
     const tab = tabs.get(id);
     // Console pages are not "history": the address bar suggests them by name instead.
     if (tab && tab.kind === "web" && !tab.private && getLibrary().visit(wc.getURL(), wc.getTitle(), tab.by)) libraryChanged();
+    if (tab && tab.kind === "web" && !tab.private && tab.by === "you") touchSync();
   });
 }
 
@@ -3070,7 +3380,9 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     return win;
   }
   const { BrowserWindow, WebContentsView, session } = electron();
-  hardenSession(session.fromPartition(PARTITION));
+  // Widevine: main started this at app ready; a caller that did not still gets it here.
+  void widevineMod.getWidevine().ensure();
+  hardenSession(session.fromPartition(PARTITION), { owner: true });
   // The agent's own session is hardened the same way (deny-by-default permissions,
   // an agent's download cancelled), and gets NO owner extension: awconnect is loaded
   // into PARTITION only, so an agent tab cannot reach the desk's signed-in bridges.
@@ -3133,6 +3445,7 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   discardTimer = setInterval(() => discardHiddenTabs(), 60 * 1000);
   if (typeof discardTimer.unref === "function") discardTimer.unref();
   win.on("closed", () => {
+    if (syncImpl) syncImpl.stop();
     // Pane windows close with the browser, but stay "open" in the layout for next time.
     closingBrowser = true;
     for (const [, w] of paneWindows) if (w && !w.isDestroyed()) w.destroy();
@@ -3175,6 +3488,8 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   const restored = getPrefs().restoreSession === false ? 0 : restoreSession();
   if (target && target.ok) openTab("you", target.url);
   else if (home && !restored) openTab("you", homeUrl());
+  // Sync runs while the browser is open, and only if the owner turned it on.
+  try { getSync().start(); } catch { /* sync never blocks the browser */ }
   return win;
 }
 
@@ -3763,6 +4078,7 @@ function wireIpc() {
     const view = activeView();
     if (!fromChrome(event) || !view) return { ok: false };
     const on = getLibrary().toggleBookmark(view.webContents.getURL(), view.webContents.getTitle());
+    touchSync();
     pushState();
     libraryChanged();
     return { ok: true, bookmarked: on };
@@ -3776,6 +4092,7 @@ function wireIpc() {
   // Edge parity: the ⋯ menu, the key icon, a notice's buttons, find on page, zoom badge.
   ipcMain.handle("desk:browser-menu", (event) => (fromChrome(event) ? browserMenu() : { ok: false }));
   ipcMain.handle("desk:browser-passwords", (event) => (fromChrome(event) ? passwordMenu() : { ok: false }));
+  ipcMain.handle("desk:browser-shield", (event) => (fromChrome(event) ? shieldMenu() : { ok: false }));
   ipcMain.handle("desk:browser-notice", (event, action) => (fromChrome(event) ? noticeAction(String(action || "")) : { ok: false }));
   ipcMain.on("desk:browser-find", (event, text, forward) => {
     const wc = pageWc(tabs.active);
@@ -4547,6 +4864,10 @@ module.exports = {
   runBrowserAction,
   noticeAction,
   browserMenu,
+  /** The toolbar shield's menu choices (pause-site / pause-all), and page translation (smoke). */
+  shieldAction,
+  translatePage,
+  __setTranslateBackendsForTest: (list) => { translateBackendsOverride = Array.isArray(list) ? list : null; },
   getAdblock,
   getVault,
   /** The library pages and site permissions (browser-parity-smoke.cjs). */
@@ -4561,6 +4882,21 @@ module.exports = {
   __fullscreenTabForTest: () => htmlFullscreen.tab(),
   __tabFactsForTest: () => tabFacts(),
   __pageHasUnsavedForTest: (id) => pageHasUnsaved(id),
+  /** What a tab's page is answered for a permission, through the handlers its session has (smoke). */
+  __permissionForTest: (id, permission) => {
+    const wc = pageWc(id);
+    if (!wc) return null;
+    const grant = { owner: wc.session === electron().session.fromPartition(PARTITION) };
+    let request = null;
+    requestPermission(wc, permission, (ok) => { request = ok; }, { requestingUrl: wc.getURL(), isMainFrame: true }, grant);
+    return { owner: grant.owner, request, check: checkPermission(wc, permission, wc.getURL(), { requestingUrl: wc.getURL(), isMainFrame: true }, grant) };
+  },
+  /** Sync (browser-sync.cjs): the engine, and for the smoke its menu rows and a local store. */
+  getSync,
+  __syncMenuForTest: () => syncMenuItems(),
+  __syncOriginForTest: () => syncOrigin(),
+  __syncTabsForTest: () => syncTabs(),
+  __syncSeamForTest: (seam) => { if (syncImpl) syncImpl.stop(); syncImpl = null; syncSeam = seam || null; return getSync(); },
   __pageForTest: (id) => pageWc(id),
   __noticeForTest: (id) => tabNotices.get(id) || null,
   /** The owner clicking a tab, for browser-tabs-smoke.cjs (the strip's IPC needs a real sender). */

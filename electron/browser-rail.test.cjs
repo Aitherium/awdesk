@@ -77,9 +77,13 @@ test("a hand-edited layout file cannot wedge the window", () => {
     { railWidth: rail.RAIL_WIDTH, panelWidth: rail.PANEL_MIN, railCollapsed: false, panelCollapsed: false,
       taskbar: true, dock: true, dockOpen: false, dockHeight: rail.DOCK_HEIGHT, overlay: false,
       collapsedSections: ["Apps"], expandedSections: [], railAllSections: false,
-      launchModes: {}, agentCookieSites: [], bookmarksBar: false, restoreSession: true, desk: require("./desk-layout.cjs").normalizeDesk({}) });
+      restoreSession: true, translateOffer: true,
+      launchModes: {}, agentCookieSites: [], bookmarksBar: false, desk: require("./desk-layout.cjs").normalizeDesk({}) });
   assert.equal(rail.normalizeLayout({ railWidth: null }).railWidth, rail.RAIL_WIDTH, "reset means default, not minimum");
   assert.equal(rail.normalizeLayout({ taskbar: false }).taskbar, false);
+  // The more-menu's toggles survive a read (a key missing from normalizeLayout is dropped).
+  assert.equal(rail.normalizeLayout({ restoreSession: false }).restoreSession, false);
+  assert.equal(rail.normalizeLayout({ translateOffer: false }).translateOffer, false);
   assert.equal(rail.normalizeLayout({ overlay: "yes" }).overlay, false, "on only when exactly true");
   // The bookmarks bar is off until asked for; "reopen my tabs" is on until switched off,
   // and switching it off STICKS (it was dropped here, so the menu item did nothing).

@@ -4,7 +4,7 @@
  * Edge parity, live (`npm run test:browser-parity`): the real Aither Browser window, a
  * local web server, and every gap closed on 2026-11-13 exercised on real pages --
  * keys, find, zoom, InPrivate, ad blocking, password save + autofill, the PDF viewer,
- * right-click, session restore. Unit tests prove the parts; only a real Chromium shows
+ * right-click, session restore, sync (against a local store). Unit tests prove the parts; only a real Chromium shows
  * that a login form fills, an ad request is cancelled and a PDF renders in the tab.
  *
  * And the library pages (browser-library-pages.cjs), each driven by clicking its own
@@ -12,6 +12,11 @@
  * bookmark is added, renamed and deleted; the bookmarks bar takes its row; clear
  * browsing data empties history after the confirm; a site asking for notifications
  * raises the prompt, Block is remembered, and an agent's tab is never asked.
+ * Content blocking depth (2026-11-13): an ad box named by an EasyList selector is
+ * hidden, an ad path on the page's own host is cancelled, the shield pauses both, a
+ * page address loses its tracking parameters, requests carry Sec-GPC, and a German
+ * page is offered for translation and translated (by a fake model here, so the run
+ * needs no model; AWDESK_TRANSLATE_LIVE=1 adds a real one and prints what it wrote).
  *
  * Own entry point: a temp userData (never the owner's profile), no tray.
  * Exit 0 all pass, 1 a check failed, 2 the run itself broke, 3 it hung.
@@ -26,10 +31,25 @@ require("./browser-internal.cjs").registerPrivilegedScheme(protocol);
 
 const userData = path.join(os.tmpdir(), `awdesk-parity-smoke-${process.pid}`);
 app.setPath("userData", userData);
+app.commandLine.appendSwitch("lang", "en-US"); // the owner's language here: German pages are foreign
+const LIVE_TRANSLATE = process.env.AWDESK_TRANSLATE_LIVE === "1";
+// The block lists, as a download leaves them, so the run needs no network. Every line
+// is a real EasyList rule (checked against easylist.txt, 2026-11-13).
+// A hostile list line: a url( token and crossed brackets, each of which once got a
+// whole rule (a red page, a request per attribute value) past the selector check.
+const INJECT = ":not(url(a\"b)){}body{background:rgb(255,0,0)!important}input[value^=\"s3\"]"
+  + "{background:url(http://127.0.0.1:9/leak?v=s3)}:not(url(c\"d))";
+fs.mkdirSync(path.join(userData, "adblock"), { recursive: true });
+fs.writeFileSync(path.join(userData, "adblock", "adblock-easylist.txt"),
+  ["[Adblock Plus 2.0]", "! smoke seed", "##.ad_banner", `##${INJECT}`, "##a[b(]c)", "##.sponsored-ad", "##.ad_two",
+    "/ads/banners/*$image", ""].join("\n"));
+// A known DRM host served by this run's own server (the protected-playback check).
+const DRM_HOST = "open.spotify.com";
+app.commandLine.appendSwitch("host-resolver-rules", `MAP ${DRM_HOST} 127.0.0.1`);
 // Closing the browser (the session-restore check) must not quit the run.
 app.on("window-all-closed", () => {});
 process.on("unhandledRejection", (e) => { console.log("REJECT " + ((e && e.stack) || e)); app.exit(2); });
-setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 140000);
+setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 180000);
 
 const PDF = Buffer.from(
   "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
@@ -43,6 +63,28 @@ const PAGES = {
     + "<input name=\"u\" autocomplete=\"username\"><input name=\"p\" type=\"password\"><button id=\"go\">Sign in</button></form>",
   "/done": "<!doctype html><title>Done</title><p>signed in</p>",
   "/perm": "<!doctype html><title>Perm</title><p>asks for notifications</p>",
+  // .ad_banner is an EasyList generic selector; the page fights back with !important.
+  // The image is an ad on the page's OWN host, which only a path rule can catch.
+  "/cosmetic": "<!doctype html><title>Cosmetic</title><p id=\"keep\">news</p>"
+    + "<div id=\"box\" class=\"ad_banner\" style=\"display:block !important\">BUY NOW</div>"
+    + "<div id=\"two\" class=\"ad_two\">AD TWO</div>"
+    + "<img id=\"b\" src=\"/ads/banners/top.gif\">",
+  // Says lang=en and is German: the text decides, as it must on real sites.
+  "/de": "<!doctype html><html lang=\"en\"><title>Nachrichten</title><h1 id=\"h\">Die Stadt hat ein neues Museum eröffnet</h1>"
+    + "<p id=\"p1\">Der Eintritt ist für Kinder frei, und die Ausstellung wird bis zum Ende des Jahres zu sehen sein.</p>"
+    + "<p id=\"p2\">Viele Besucher sind aus der ganzen Region gekommen, um die Bilder zu sehen.</p></html>",
+  "/es": "<!doctype html><html lang=\"es\"><title>Noticias</title><h1 id=\"h\">El gobierno anunció hoy un nuevo plan para el transporte</h1>"
+    + "<p id=\"p1\">Los vecinos dicen que es una buena noticia, pero que todavía hay mucho por hacer en los barrios del sur.</p>"
+    + "<p id=\"p2\">El alcalde explicó que las obras empezarán en enero y que durarán dos años.</p></html>",
+};
+const GIF = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
+/** Every request the server saw: {url, gpc, dnt}. */
+const seen = [];
+/** The smoke's translator: a model that knows exactly these sentences. */
+const FAKE_DE = {
+  "Die Stadt hat ein neues Museum eröffnet": "The city has opened a new museum",
+  "Der Eintritt ist für Kinder frei, und die Ausstellung wird bis zum Ende des Jahres zu sehen sein.": "Entry is free for children, and the exhibition will be on show until the end of the year.",
+  "Viele Besucher sind aus der ganzen Region gekommen, um die Bilder zu sehen.": "Many visitors have come from across the region to see the pictures.",
 };
 
 function serve() {
@@ -50,6 +92,8 @@ function serve() {
     const server = http.createServer((req, res) => {
       if (gaps.serve(req, res)) return; // the high-impact gaps' own pages (browser-parity-gaps.cjs)
       const u = new URL(req.url, "http://x");
+      seen.push({ url: req.url, gpc: req.headers["sec-gpc"], dnt: req.headers.dnt });
+      if (u.pathname === "/ads/banners/top.gif") { res.writeHead(200, { "content-type": "image/gif" }); res.end(GIF); return; }
       if (u.pathname === "/doc.pdf") { res.writeHead(200, { "content-type": "application/pdf" }); res.end(PDF); return; }
       const body = PAGES[u.pathname];
       res.writeHead(body ? 200 : 404, { "content-type": "text/html; charset=utf-8" });
@@ -61,7 +105,11 @@ function serve() {
 
 const gaps = require("./browser-parity-gaps.cjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function until(fn, ms = 8000) {
+// 45 s, not 8. On a busy machine every tab's navigation can stop committing for half a
+// minute and then carry on (measured 2026-11-13 with the CPU at 100%, on main's own code:
+// 90 open-and-close rounds had one such pause in most runs). A wait that gives up inside
+// the pause fails a check on timing, not on behaviour; a check that passes returns at once.
+async function until(fn, ms = 45000) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     try { const v = await fn(); if (v) return v; } catch { /* not yet */ }
@@ -116,6 +164,86 @@ app.whenReady().then(async () => {
   const blocked = await until(() => bw.getAdblock().blockedOn(wc.id) > 0, 6000);
   expect("a third-party ad request is cancelled", Boolean(blocked), bw.getAdblock().blockedOn(wc.id));
 
+  // Cosmetic filtering: the box an EasyList selector names is gone, the page's own
+  // !important loses to the user sheet, and the rest of the page is untouched.
+  const shown = (sel) => wc.executeJavaScript(`getComputedStyle(document.querySelector(${JSON.stringify(sel)})).display`);
+  const adHits = () => seen.filter((r) => r.url.startsWith("/ads/banners/")).length;
+  await wc.loadURL(`${base}/cosmetic`).catch(() => {});
+  await loaded(wc, "/cosmetic");
+  expect("an ad box named by an EasyList selector is hidden", await until(async () => (await shown("#box")) === "none", 5000), await shown("#box"));
+  expect("the rest of the page still shows", (await shown("#keep")) === "block", await shown("#keep"));
+  // The hostile line sits between the two selectors in the same group of the sheet.
+  const bodyBg = await wc.executeJavaScript("getComputedStyle(document.body).backgroundColor");
+  expect("a hostile list line injects no CSS and voids no neighbour", bodyBg !== "rgb(255, 0, 0)" && (await shown("#two")) === "none",
+    { bodyBg, two: await shown("#two") });
+  // A path rule: the ad image lives on the page's own host and is still cancelled.
+  expect("an ad path on the page's own host is cancelled", adHits() === 0 && bw.getAdblock().blockedOn(wc.id) >= 1,
+    { hits: adHits(), blocked: bw.getAdblock().blockedOn(wc.id) });
+  const shield = bw.getState().adblock;
+  expect("the shield shows on a web page with the count", shield && shield.web === true && shield.blocked >= 1 && !shield.siteOff, shield);
+
+  // The shield, "Pause on this site": the page reloads with its ads, unhidden.
+  bw.shieldAction("pause-site", true);
+  expect("pause on this site: the box is back", await until(async () => !wc.isLoading() && (await shown("#box")) === "block", 6000), await shown("#box"));
+  expect("pause on this site: the ad request goes through", Boolean(await until(() => adHits() >= 1, 4000)), adHits());
+  expect("pause on this site: state says so", bw.getState().adblock.siteOff === true, bw.getState().adblock);
+  bw.shieldAction("pause-site", false);
+  expect("resume on this site: hidden again", await until(async () => !wc.isLoading() && (await shown("#box")) === "none", 6000), await shown("#box"));
+  // "Pause everywhere", and back.
+  bw.shieldAction("pause-all", true);
+  expect("pause everywhere: the box is back", await until(async () => !wc.isLoading() && (await shown("#box")) === "block", 6000), await shown("#box"));
+  expect("pause everywhere: state says blocking is off", bw.getState().adblock.enabled === false, bw.getState().adblock);
+  bw.shieldAction("pause-all", false);
+  expect("resume everywhere: hidden again", await until(async () => !wc.isLoading() && (await shown("#box")) === "none", 6000), await shown("#box"));
+
+  // Tracking: a page address loses its click identifiers before the request leaves,
+  // the other parameter and the fragment stay, and requests carry Sec-GPC and DNT.
+  seen.length = 0;
+  await wc.loadURL(`${base}/find?utm_source=newsletter&id=7&fbclid=AbC123#top`).catch(() => {});
+  await until(() => !wc.isLoading() && wc.getURL().includes("/find?"));
+  expect("tracking parameters are stripped from the address", wc.getURL() === `${base}/find?id=7#top`, wc.getURL());
+  const finds = seen.filter((r) => r.url.startsWith("/find"));
+  expect("the server never sees them", finds.length >= 1 && finds.every((r) => r.url === "/find?id=7"), finds);
+  expect("requests carry Sec-GPC: 1 and DNT: 1", finds.length >= 1 && finds.every((r) => r.gpc === "1" && r.dnt === "1"), finds);
+
+  // Translate: a German page is offered (its lang attribute lies; the text decides),
+  // and Translate rewrites the text in place and names the model that did it.
+  const fakeCalls = [];
+  bw.__setTranslateBackendsForTest([{ id: "fake", label: "the smoke's fake model", ask: async (prompt) => {
+    fakeCalls.push(prompt);
+    const list = JSON.parse(prompt.slice(prompt.lastIndexOf("\n") + 1));
+    return JSON.stringify(list.map((t) => FAKE_DE[t] || t));
+  } }]);
+  await wc.loadURL(`${base}/de`).catch(() => {});
+  await loaded(wc, "/de");
+  const offerTr = await until(() => { const n = bw.__noticeForTest(active()); return n && n.kind === "translate-offer" ? n : null; }, 6000);
+  expect("a German page is offered for translation", Boolean(offerTr) && /German/.test(offerTr.text) && /English/.test(offerTr.text),
+    bw.__noticeForTest(active()));
+  expect("nothing is sent to a model before the owner says so", fakeCalls.length === 0, fakeCalls.length);
+  const tr = offerTr ? await bw.noticeAction("translate") : { ok: false };
+  const textOf = (sel) => wc.executeJavaScript(`document.querySelector(${JSON.stringify(sel)}).textContent`);
+  expect("Translate rewrites the page in place", tr.ok && tr.changed === 3 && (await textOf("#h")) === "The city has opened a new museum"
+    && /free for children/.test(await textOf("#p1")), { tr, h: await textOf("#h") });
+  const doneNote = bw.__noticeForTest(active());
+  expect("the notice names the model that answered", Boolean(doneNote) && doneNote.text === "Translated into English by the smoke's fake model.", doneNote);
+
+  if (LIVE_TRANSLATE) {
+    // A real model: whatever this machine can reach right now, in the shipped order.
+    bw.__setTranslateBackendsForTest(null);
+    await wc.loadURL(`${base}/es`).catch(() => {});
+    await loaded(wc, "/es");
+    const before = [await textOf("#h"), await textOf("#p1"), await textOf("#p2")];
+    const t0 = Date.now();
+    const live = await bw.translatePage(active());
+    const after = [await textOf("#h"), await textOf("#p1"), await textOf("#p2")];
+    console.log("LIVE backend " + JSON.stringify(live.backend) + " tried " + JSON.stringify(live.tried) + " in " + (Date.now() - t0) + " ms");
+    before.forEach((b, i) => console.log("LIVE es: " + b + "\nLIVE en: " + after[i]));
+    console.log("LIVE notice " + JSON.stringify((bw.__noticeForTest(active()) || {}).text));
+    expect("LIVE: a real model translated the Spanish page", live.ok && live.changed === 3 && after.every((a, i) => a !== before[i])
+      && /government|plan|transport/i.test(after[0]), { live, after });
+    bw.__setTranslateBackendsForTest([{ id: "fake", label: "the smoke's fake model", ask: async () => "[]" }]);
+  }
+
   // PDF opens in the tab (no download row).
   await wc.loadURL(`${base}/doc.pdf`).catch(() => {});
   await sleep(1500);
@@ -164,6 +292,24 @@ app.whenReady().then(async () => {
   expect("Fill puts the saved password in", filled === "s3cret!\"x", filled);
   expect("the key icon knows the site has one", bw.getState().passwords === 1, bw.getState().passwords);
 
+  // Protected video and music: the Edge hand-off shows ONLY when Widevine is unavailable
+  // (stock Electron: missing; the castLabs build: ready). browser-widevine-smoke.cjs
+  // plays a real encrypted stream.
+  const widevine = await require("./browser-widevine.cjs").getWidevine().ensure();
+  expect("state carries the Widevine status", bw.getState().widevine && bw.getState().widevine.state === widevine.state
+    && ["missing", "ready", "failed"].includes(widevine.state), bw.getState().widevine);
+  await wc.loadURL(`http://${DRM_HOST}:${server.address().port}/find`).catch(() => {});
+  await loaded(wc, DRM_HOST);
+  const hasEdge = Boolean(require("./browser-everyday.cjs").edgeExecutable());
+  const drm = await until(() => { const n = bw.__noticeForTest(active()); return n && n.kind === "drm" ? n : null; }, 1500);
+  expect("a DRM site is offered Edge only when Widevine is unavailable",
+    Boolean(drm) === (widevine.state !== "ready" && hasEdge), { state: widevine.state, hasEdge, drm });
+  bw.runBrowserAction("widevine-check");
+  const told = await until(() => { const n = bw.__noticeForTest(active()); return n && n.kind === "info" ? n : null; }, 3000);
+  expect("the more-menu line reports protected playback", Boolean(told) && /Protected (video|playback)/.test(told.text), told);
+  await wc.loadURL(`${base}/login`).catch(() => {});
+  await loaded(wc, "/login");
+
   // InPrivate: its own in-memory session, and nothing in history.
   bw.runBrowserAction("inprivate", `${base}/done?private=1`);
   const pwc = await until(() => { const p = page(); return p && p.getURL().includes("private=1") && !p.isLoading() ? p : null; });
@@ -171,7 +317,29 @@ app.whenReady().then(async () => {
   expect("InPrivate rides a non-persistent session", pwc && pwc.session !== wc.session && !pwc.session.isPersistent(), null);
   expect("InPrivate visits are not in history", !bw.getLibrary().history(100).some((h) => h.url.includes("private=1")), null);
   expect("state marks the tab InPrivate", bw.getState().private === true, bw.getState().private);
+  // InPrivate: ad boxes are still hidden; a foreign page is NOT offered for translation.
+  await pwc.loadURL(`${base}/cosmetic`).catch(() => {});
+  expect("InPrivate pages get the hiding sheet too", await until(async () => !pwc.isLoading()
+    && (await pwc.executeJavaScript("getComputedStyle(document.querySelector('#box')).display")) === "none", 5000), null);
+  // InPrivate, "Pause on this site": it works in the tab and leaves nothing behind.
+  const abFile = path.join(userData, "adblock", "adblock.json");
+  const readAb = () => { try { return fs.readFileSync(abFile, "utf8"); } catch { return null; } };
+  const abBefore = readAb();
+  const pshown = () => pwc.executeJavaScript("getComputedStyle(document.querySelector('#box')).display");
+  const hitsBefore = adHits();
+  bw.shieldAction("pause-site", true);
+  expect("InPrivate pause: the box is back in that tab", await until(async () => !pwc.isLoading() && (await pshown()) === "block", 6000), await pshown());
+  expect("InPrivate pause: the ad request goes through there", Boolean(await until(() => adHits() > hitsBefore, 4000)), { hitsBefore, now: adHits() });
+  expect("InPrivate pause: the shield says paused", bw.getState().adblock.siteOff === true, bw.getState().adblock);
+  expect("InPrivate pause: adblock.json is unchanged", abBefore !== null && readAb() === abBefore, { abBefore, now: readAb() });
+  expect("InPrivate pause: ordinary tabs are not paused", bw.getAdblock().siteOff(`${base}/cosmetic`) === false, null);
+  await pwc.loadURL(`${base}/de`).catch(() => {});
+  await until(() => !pwc.isLoading() && pwc.getURL().includes("/de"));
+  await sleep(1500);
+  expect("InPrivate: no translation is offered unasked", !bw.__noticeForTest(active()), bw.__noticeForTest(active()));
   bw.runBrowserAction("close-tab");
+  expect("InPrivate pause: forgotten when the last InPrivate tab closes",
+    bw.getAdblock().siteOff(`${base}/cosmetic`, { private: true }) === false && readAb() === abBefore, readAb());
 
   // ------------------------------------------------------------------ the library pages
   const lib = bw.getLibrary();
@@ -194,7 +362,8 @@ app.whenReady().then(async () => {
   const hist = await libraryPage("history", "history");
   expect("Ctrl+H opens aither://history", hist.opened === true && Boolean(hist.lwc), page() && page().getURL());
   if (hist.lwc) {
-    const findRow = "document.querySelector('#list .row[data-url$=\"/find\"]')";
+    const findUrl = `${base}/find`; // exact: the DRM host's /find is in history too
+    const findRow = `document.querySelector('#list .row[data-url=${JSON.stringify(findUrl)}]')`;
     const listed = await until(() => js(hist.lwc, `(() => { const r = ${findRow}; return r ? r.textContent : ""; })()`));
     expect("the history page lists a visit and who made it", /Find/.test(listed || "") && /you/.test(listed || ""), listed);
     expect("the history page groups by day", (await js(hist.lwc, "document.querySelector('#list h2.day').textContent")).startsWith("Today"), null);
@@ -204,7 +373,7 @@ app.whenReady().then(async () => {
     await js(hist.lwc, "document.getElementById('q').value = ''; document.getElementById('q').dispatchEvent(new Event('input')); 0");
     await until(() => js(hist.lwc, `Boolean(${findRow})`));
     await js(hist.lwc, `${findRow}.querySelector('button.small').click(); 0`);
-    const gone = await until(() => !lib.history(500).some((h) => h.url.endsWith("/find")));
+    const gone = await until(() => !lib.history(500).some((h) => h.url === findUrl));
     const rowGone = await until(() => js(hist.lwc, `!${findRow}`));
     expect("Delete on the history page forgets that visit", Boolean(gone) && Boolean(rowGone), lib.history(500).map((h) => h.url));
     expect("the other visits stay", lib.history(500).some((h) => h.url.endsWith("/login")), lib.history(500).map((h) => h.url));
@@ -285,7 +454,7 @@ app.whenReady().then(async () => {
 
   // Site permissions: a page asking for notifications raises the prompt; Block is
   // remembered for the site; the next ask is refused with no prompt.
-  const store = bw.getPermissionStore();
+  const permStore = bw.getPermissionStore();
   const permTab = bw.__openTabForTest(`${base}/perm`);
   const permWc = await until(() => { const p = bw.__pageForTest(permTab.id); return p && p.getURL().includes("/perm") && !p.isLoading() ? p : null; });
   const ask = "window.__answer = null; Notification.requestPermission().then((v) => { window.__answer = v; }); 0";
@@ -293,14 +462,14 @@ app.whenReady().then(async () => {
   const prompt = await until(() => { const n = bw.__noticeForTest(permTab.id); return n && n.kind === "permission" ? n : null; });
   expect("a site asking for notifications raises the owner's prompt", Boolean(prompt) && /wants to show notifications/.test(prompt.text)
     && prompt.actions.map((a) => a.label).join() === "Allow,Block,Not now", prompt);
-  expect("nothing is granted while the prompt is up", (await js(permWc, "window.__answer")) === null && store.list().length === 0, store.list());
+  expect("nothing is granted while the prompt is up", (await js(permWc, "window.__answer")) === null && permStore.list().length === 0, permStore.list());
   const shownInToolbar = await until(() => bw.getWindow().webContents.executeJavaScript(
     "(() => { const n = document.getElementById('notice'); return !n.hidden && /notifications/.test(n.textContent) ? n.textContent : ''; })()"));
   expect("the toolbar shows it with Allow and Block", /Allow/.test(shownInToolbar || "") && /Block/.test(shownInToolbar || ""), shownInToolbar);
   if (prompt) await bw.noticeAction("permission-block");
   const refused = await until(() => js(permWc, "window.__answer"));
   expect("Block answers the page with denied", refused === "denied", refused);
-  expect("Block is remembered for the site", store.get(base, "notifications") === "block", store.list());
+  expect("Block is remembered for the site", permStore.get(base, "notifications") === "block", permStore.list());
   const permFile = JSON.parse(fs.readFileSync(path.join(userData, "browser-permissions.json"), "utf8"));
   expect("it is written to userData", permFile.sites[base] && permFile.sites[base].notifications.value === "block", permFile);
   await permWc.loadURL(`${base}/perm`).catch(() => {});
@@ -324,21 +493,21 @@ app.whenReady().then(async () => {
     const permText = await until(() => js(perms.lwc, `(() => { const r = ${permRow}; return r ? r.dataset.origin + ' ' + r.textContent : ""; })()`));
     expect("the permissions page lists the blocked site", (permText || "").startsWith(base) && /Notifications/.test(permText) && /Blocked/.test(permText), permText);
     await js(perms.lwc, `[...${permRow}.querySelectorAll('button')].find((b) => b.textContent === 'Remove').click(); 0`);
-    const forgotten = await until(() => store.get(base, "notifications") === null);
-    expect("Remove on the permissions page forgets the answer", Boolean(forgotten), store.list());
+    const forgotten = await until(() => permStore.get(base, "notifications") === null);
+    expect("Remove on the permissions page forgets the answer", Boolean(forgotten), permStore.list());
   }
   bw.__showTabForTest(permTab.id);
   await js(permWc, ask);
   const reasked = await until(() => { const n = bw.__noticeForTest(permTab.id); return n && n.kind === "permission" ? n : null; });
   expect("after Remove the site asks again", Boolean(reasked), bw.__noticeForTest(permTab.id));
   if (reasked) await bw.noticeAction("dismiss");
-  expect("Not now denies once and remembers nothing", (await until(() => js(permWc, "window.__answer"))) === "denied" && store.list().length === 0, store.list());
+  expect("Not now denies once and remembers nothing", (await until(() => js(permWc, "window.__answer"))) === "denied" && permStore.list().length === 0, permStore.list());
   await js(permWc, ask);
   const third = await until(() => { const n = bw.__noticeForTest(permTab.id); return n && n.kind === "permission" ? n : null; });
   await sleep(600); // Allow is dead for the prompt's first half second
   if (third) await bw.noticeAction("permission-allow");
   expect("Allow answers granted and is remembered", (await until(() => js(permWc, "window.__answer"))) === "granted"
-    && store.get(base, "notifications") === "allow", { answer: await js(permWc, "window.__answer"), list: store.list() });
+    && permStore.get(base, "notifications") === "allow", { answer: await js(permWc, "window.__answer"), list: permStore.list() });
   expect("an allowed site reads as granted afterwards", (await js(permWc, "Notification.permission")) === "granted", await js(permWc, "Notification.permission"));
 
   // Taking the Allow back on the review page reaches the page that is still open: it
@@ -348,9 +517,9 @@ app.whenReady().then(async () => {
     const row2 = "document.querySelector('#list .row[data-kind=notifications]')";
     await until(() => js(perms2.lwc, `Boolean(${row2})`));
     await js(perms2.lwc, `[...${row2}.querySelectorAll('button')].find((b) => b.textContent === 'Remove').click(); 0`);
-    await until(() => store.get(base, "notifications") === null);
+    await until(() => permStore.get(base, "notifications") === null);
   }
-  expect("Remove takes the Allow out of the store", store.get(base, "notifications") === null, store.list());
+  expect("Remove takes the Allow out of the store", permStore.get(base, "notifications") === null, permStore.list());
   bw.__showTabForTest(permTab.id);
   expect("the open page no longer reads as granted", (await js(permWc, "Notification.permission")) !== "granted", await js(permWc, "Notification.permission"));
   await js(permWc, ask);
@@ -359,7 +528,7 @@ app.whenReady().then(async () => {
     { notice: bw.__noticeForTest(permTab.id), answer: await js(permWc, "window.__answer") });
   await sleep(600);
   if (fourth) await bw.noticeAction("permission-allow");
-  expect("Allow is remembered again", (await until(() => js(permWc, "window.__answer"))) === "granted" && store.get(base, "notifications") === "allow", store.list());
+  expect("Allow is remembered again", (await until(() => js(permWc, "window.__answer"))) === "granted" && permStore.get(base, "notifications") === "allow", permStore.list());
 
   // A 60-character host: the toolbar shows the END of the name and the whole sentence.
   const longHost = `${"a".repeat(40)}.accounts-sign-in.localhost`;
@@ -402,6 +571,36 @@ app.whenReady().then(async () => {
   } else {
     expect("an agent tab opens for the permission check", false, agentTab);
   }
+
+  // Protected media (Widevine's mediaKeySystem) is the one grant nobody is asked about.
+  // Through the same request and check handlers the sessions carry: the owner's web tab
+  // has it; an agent's tab does not, on its own session or riding the owner's (a site
+  // the owner let agents sign in to).
+  const mediaKey = (id) => bw.__permissionForTest(id, "mediaKeySystem");
+  const ownerKey = mediaKey(permTab.id);
+  expect("protected media is granted to the owner's web tab, on request and on check",
+    Boolean(ownerKey) && ownerKey.owner === true && ownerKey.request === true && ownerKey.check === true, ownerKey);
+  const keyTab = await agent("open", { url: `${base}/perm?agent=2`, new_tab: true });
+  const keyWc = keyTab.ok ? bw.__pageForTest(keyTab.tab) : null;
+  if (keyWc) {
+    await loaded(keyWc, "agent=2");
+    const apart = mediaKey(keyTab.tab);
+    expect("an agent tab on the agent's session is refused protected media",
+      Boolean(apart) && apart.owner === false && apart.request === false && apart.check === false, apart);
+    const signIn = bw.__agentSignInForTest(`${base}/perm`, true);
+    const riding = await until(() => { const m = mediaKey(keyTab.tab); return m && m.owner === true ? m : null; });
+    expect("with the site allowed, the agent tab rides the owner's session", signIn.ok === true && Boolean(riding), { signIn, now: mediaKey(keyTab.tab) });
+    expect("an agent tab riding the owner's session is still refused protected media, on request and on check",
+      Boolean(riding) && riding.request === false && riding.check === false, riding);
+    const meanwhile = mediaKey(permTab.id);
+    expect("the owner's tab keeps protected media while an agent rides the session",
+      Boolean(meanwhile) && meanwhile.request === true && meanwhile.check === true, meanwhile);
+    bw.__agentSignInForTest(`${base}/perm`, false);
+    bw.__showTabForTest(keyTab.tab);
+    bw.runBrowserAction("close-tab");
+  } else {
+    expect("an agent tab opens for the protected-media check", false, keyTab);
+  }
   bw.getGate().release();
 
   // The high-impact gaps: user agent, full screen, Copy buttons, popups, the discard's
@@ -443,10 +642,94 @@ app.whenReady().then(async () => {
     expect("the history file on disk is empty", onDiskLib.history.length === 0, onDiskLib.history.length);
   }
   bw.__setConfirmForTest(null);
+  // The library pages are closed again: the checks below open tabs up to the browser's
+  // limit, and five pages left open would take five of those places.
+  for (const libTab of new Set([hist, marks, dl, perms, perms2, clear].map((l) => l.tabId))) {
+    const t = bw.getTabs().get(libTab);
+    if (!t || t.kind !== "internal") continue;
+    bw.__showTabForTest(libTab);
+    bw.runBrowserAction("close-tab");
+  }
+  expect("the library pages close like any tab", !bw.getTabs().snapshot().tabs.some((t) => {
+    const p = bw.__pageForTest(t.id);
+    return p && /^aither:\/\/(history|bookmarks|downloads|permissions|clear-data)\//.test(p.getURL());
+  }), bw.getTabs().snapshot().tabs.length);
   // Back on a web page, so the session checks below have one to save.
   bw.__showTabForTest(permTab.id);
   await permWc.loadURL(`${base}/login`).catch(() => {});
   await loaded(permWc, "/login");
+
+  // Sync: off by default and silent; turned on from the menu it sends the owner's bookmarks
+  // and open tabs to the store (a local stand-in here) and brings a phone's back; InPrivate
+  // never leaves; "Tabs from other devices" opens one; off withdraws this device's tabs.
+  const store = await require("./browser-sync-fake.cjs").startFakeStore();
+  const syncMod = require("./browser-sync.cjs");
+  // Before the seam: the origin the APP uses. It is the platform, whatever host the desk's
+  // pages come from (a tenant's site on a desk in tenant mode: that host has no store).
+  const pageHost = new URL(require("./browser-internal.cjs").onlineUrl()).host;
+  expect(`the sync store is the platform (the desk's pages come from ${pageHost})`,
+    bw.__syncOriginForTest() === "https://app.aitherium.com", bw.__syncOriginForTest());
+  const sync = bw.__syncSeamForTest({ origin: store.origin, token: () => "test-token", account: (bearer) => store.who(bearer) });
+  const storeText = () => JSON.stringify((store.users.get("owner") || { prefs: {} }).prefs);
+  expect("sync is off until the owner turns it on, and nothing was sent", sync.status().enabled === false && store.stats.gets === 0,
+    { status: sync.status(), gets: store.stats.gets });
+  const phoneDir = path.join(userData, "phone");
+  const phone = syncMod.createBrowserSync({ file: path.join(phoneDir, "browser-sync.json"), deviceName: "Pixel",
+    library: require("./browser-library.cjs").createLibrary({ file: path.join(phoneDir, "browser-library.json") }),
+    tabs: () => [{ by: "you", kind: "web", url: `${base}/done?phone=1`, title: "On the phone" }],
+    transport: syncMod.createPrefsTransport({ origin: () => store.origin, token: () => "test-token", account: (bearer) => store.who(bearer) }) });
+  await phone.setEnabled(true);
+  phone.stop();
+  bw.runBrowserAction("inprivate", `${base}/done?incognito=1`);
+  await until(() => { const p = page(); return p && p.getURL().includes("incognito=1") && !p.isLoading(); });
+  const rows = bw.__syncMenuForTest();
+  expect("the menu has the sync switch, unchecked", rows[0].label === "Sync this browser" && rows[0].checked === false, rows.map((x) => x.label));
+  rows[0].click({ checked: true });
+  const synced = await until(() => sync.status().state === "ok" && sync.status().lastSyncAt > 0);
+  expect("turning it on syncs", Boolean(synced), sync.status());
+  expect("this browser's open tab reaches the store", storeText().includes("/login"), storeText().slice(0, 400));
+  expect("the InPrivate tab never reaches the store", !storeText().includes("incognito=1"), null);
+  bw.runBrowserAction("close-tab");
+  const withPhone = bw.__syncMenuForTest().find((x) => x.label === "Tabs from other devices").submenu;
+  expect("the phone is listed under Tabs from other devices", withPhone.length === 1 && /^Pixel/.test(withPhone[0].label)
+    && withPhone[0].submenu[0].label === "On the phone", withPhone.map((x) => x.label));
+  const tabsBefore = bw.getTabs().snapshot().tabs.length;
+  withPhone[0].submenu[0].click();
+  const opened = await until(() => { const p = page(); return p && p.getURL().includes("phone=1") && !p.isLoading() ? p : null; });
+  expect("clicking the phone's tab opens it here", Boolean(opened) && bw.getTabs().snapshot().tabs.length === tabsBefore + 1,
+    { tabsBefore, active: active(), tabs: bw.getTabs().snapshot().tabs.map((t) => { const p = bw.__pageForTest(t.id); return [t.id, t.by, t.kind, p ? p.getURL().slice(0, 70) : null, p ? p.isLoading() : null]; }) });
+  bw.runBrowserAction("bookmark");
+  const pushedBookmark = await sync.syncNow();
+  expect("a new bookmark is synced", pushedBookmark.ok && Object.keys(syncMod.decode((store.users.get("owner") || {}).prefs).bookmarks).length === 1, pushedBookmark);
+  bw.runBrowserAction("close-tab");
+  // Thirty tabs with long addresses: the device's namespace stays under the store's size, so nothing is refused.
+  // The browser stops at its tab limit, so "thirty" is as many as there is room for; 25 of
+  // these addresses are already more than one device's namespace holds.
+  const room = Math.min(30, require("./browser-tabs.cjs").MAX_TABS - bw.getTabs().snapshot().tabs.length);
+  for (let i = 0; i < 30; i += 1) bw.__openTabForTest(`${base}/done?long=${i}&q=${"x".repeat(550)}`);
+  const longTabs = () => bw.__syncTabsForTest().filter((t) => t.url.includes("long=")).length;
+  await until(() => longTabs() >= room, 20000);
+  expect("enough long-address tabs are open to overfill a device's namespace", room >= 25 && longTabs() === room, { room, open: longTabs() });
+  const syncableOpen = bw.__syncTabsForTest().filter((t) => t.by === "you" && t.kind === "web" && !t.private && /^https?:/.test(t.url)).length;
+  const many = await sync.syncNow();
+  const devNs = ((store.users.get("owner") || {}).prefs || {})[`awbrowser_dev_${sync.status().deviceId}`] || { tabs: [] };
+  expect("30 long-address tabs sync without the store refusing the write", many.ok === true && store.stats.refused === 0
+    && devNs.tabs.length > 0 && devNs.tabs.length < syncableOpen && many.unsynced >= syncableOpen - devNs.tabs.length,
+  { many, refused: store.stats.refused, tabs: devNs.tabs.length, syncableOpen });
+  // Another account signs in to the Online session: nothing goes out, sync turns itself off and the menu says why.
+  const getsBefore = store.stats.gets;
+  bw.__syncSeamForTest({ origin: store.origin, token: () => "other-token", account: () => "someone-else" });
+  const swapped = await bw.getSync().syncNow();
+  const offLine = bw.__syncMenuForTest();
+  expect("a different account sends nothing and turns sync off with a reason", swapped.ok === false && store.stats.gets === getsBefore
+    && offLine[0].checked === false && /different account/.test(offLine[1].label), { swapped, labels: offLine.map((x) => x.label) });
+  bw.__syncSeamForTest({ origin: store.origin, token: () => "test-token", account: (bearer) => store.who(bearer) });
+  await bw.getSync().setEnabled(true);
+  bw.getSync().stop();
+  await bw.getSync().setEnabled(false);
+  expect("turning sync off withdraws this device's tabs from the store", !Object.keys((store.users.get("owner") || {}).prefs)
+    .includes(`awbrowser_dev_${sync.status().deviceId}`), Object.keys((store.users.get("owner") || {}).prefs));
+  await store.close();
 
   // Session restore: the open tabs are written for next time; InPrivate is not.
   bw.closeBrowserWindow();

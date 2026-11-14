@@ -7,6 +7,10 @@
  * atomically (tmp + rename) so a crash mid-write leaves yesterday's file, never
  * half of one. http(s) pages only; a URL with credentials is never stored.
  *
+ * The file carries a generation id, made once and kept. A file that is missing,
+ * unreadable or from another version starts a new one, so browser-sync.cjs can tell
+ * "the file was reset" from "the owner deleted every bookmark".
+ *
  * History remembers WHO visited (the owner's tab or an agent's), so the address
  * bar can suggest the owner's own pages first. No agent tool reads this file.
  *
@@ -18,6 +22,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const nodeCrypto = require("node:crypto");
 
 const VERSION = 1;
 const MAX_HISTORY = 2000;
@@ -50,16 +55,23 @@ function inFolder(folder, parent) {
   return folder === parent || folder.startsWith(`${parent}/`);
 }
 
+function newId() {
+  return nodeCrypto.randomBytes(8).toString("hex");
+}
+
 function emptyData() {
-  return { version: VERSION, history: [], bookmarks: [], folders: [] };
+  return { version: VERSION, id: newId(), history: [], bookmarks: [], folders: [] };
 }
 
 function readFile(file) {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     if (!parsed || parsed.version !== VERSION) return emptyData();
+    const known = /^[a-f0-9]{16}$/.test(String(parsed.id || ""));
     return {
       version: VERSION,
+      id: known ? parsed.id : newId(),
+      unstamped: !known,
       history: Array.isArray(parsed.history) ? parsed.history.filter((h) => h && storable(h.url)) : [],
       bookmarks: Array.isArray(parsed.bookmarks) ? parsed.bookmarks.filter((b) => b && storable(b.url)) : [],
       // Folders the owner made that hold nothing yet (a bookmark carries its own).
@@ -76,6 +88,8 @@ function readFile(file) {
 function createLibrary({ file, now = () => Date.now(), maxHistory = MAX_HISTORY } = {}) {
   if (!file) throw new Error("createLibrary needs a file");
   const data = readFile(file);
+  const unstamped = data.unstamped === true;
+  delete data.unstamped;
 
   function save() {
     try {
@@ -89,7 +103,16 @@ function createLibrary({ file, now = () => Date.now(), maxHistory = MAX_HISTORY 
     }
   }
 
+  // A good file from before the id existed gets one now, and keeps it: the id must not
+  // change at the next start. A missing or unreadable file is not written until used.
+  if (unstamped) save();
+
   return {
+    /** Which library file this is: changes only when the file was lost or reset. */
+    generation() {
+      return data.id;
+    },
+
     /** Record a finished page load. Returns false for anything not worth keeping. */
     visit(url, title = "", by = "you") {
       if (!storable(url)) return false;
@@ -315,6 +338,53 @@ function createLibrary({ file, now = () => Date.now(), maxHistory = MAX_HISTORY 
       if (data.history.length > maxHistory) data.history.length = maxHistory;
       if (b || h) save();
       return { bookmarks: b, history: h };
+    },
+
+    /**
+     * Bring the library in line with what the owner's other devices agreed on
+     * (browser-sync.cjs planApply). Synced history counts as the owner's own; a full
+     * bookmark list skips the rest rather than dropping one that is here.
+     * @returns {{bookmarksAdded: number, bookmarksRemoved: number, history: number}}
+     */
+    applySync({ addBookmarks = [], removeBookmarks = [], history = [], clearHistoryBefore = 0 } = {}) {
+      const out = { bookmarksAdded: 0, bookmarksRemoved: 0, history: 0 };
+      const gone = new Set(Array.isArray(removeBookmarks) ? removeBookmarks : []);
+      if (gone.size) {
+        const kept = data.bookmarks.filter((b) => !gone.has(b.url));
+        out.bookmarksRemoved = data.bookmarks.length - kept.length;
+        data.bookmarks = kept;
+      }
+      for (const e of Array.isArray(addBookmarks) ? addBookmarks : []) {
+        if (!e || !storable(e.url) || data.bookmarks.length >= MAX_BOOKMARKS) continue;
+        if (data.bookmarks.some((x) => x.url === e.url)) continue;
+        data.bookmarks.push({ url: e.url, title: String(e.title || "").slice(0, MAX_TITLE), at: Number(e.at) || now() });
+        out.bookmarksAdded += 1;
+      }
+      const cleared = Number(clearHistoryBefore) || 0;
+      let dropped = 0;
+      if (cleared) {
+        const kept = data.history.filter((h) => (h.at || 0) > cleared);
+        dropped = data.history.length - kept.length;
+        data.history = kept;
+      }
+      const byUrl = new Map(data.history.map((h) => [h.url, h]));
+      for (const e of Array.isArray(history) ? history : []) {
+        const at = e && Number(e.at);
+        if (!e || !storable(e.url) || !at || at <= cleared) continue;
+        const cur = byUrl.get(e.url);
+        if (cur && (cur.at || 0) >= at) continue;
+        const next = { url: e.url, title: String(e.title || (cur && cur.title) || "").slice(0, MAX_TITLE), at,
+          count: Math.max(Number(e.count) || 1, (cur && cur.count) || 1), by: "you" };
+        if (cur) data.history[data.history.indexOf(cur)] = next; else data.history.push(next);
+        byUrl.set(e.url, next);
+        out.history += 1;
+      }
+      if (out.history) {
+        data.history.sort((x, y) => (y.at || 0) - (x.at || 0));
+        if (data.history.length > maxHistory) data.history.length = maxHistory;
+      }
+      if (out.bookmarksAdded || out.bookmarksRemoved || out.history || dropped) save();
+      return out;
     },
 
     /**

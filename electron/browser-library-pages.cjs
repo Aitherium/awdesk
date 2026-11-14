@@ -111,6 +111,7 @@ function downloadRow(row, shelf) {
  *   pickSave({title, name}) / pickOpen({title}) -> Promise<string|null>   a file main picked
  *   clearData(plan) -> Promise<object>   passwordCount() -> number
  *   bar() -> boolean   setBar(on)   changed()
+ *   historyCleared()     optional: ALL history was cleared here (sync tells the other devices)
  */
 function libraryHandlers({ getHost, pane = paneOf, now = () => Date.now(), fsImpl = fs } = {}) {
   const on = (pages, fn) => async (event, ...args) => {
@@ -165,6 +166,7 @@ function libraryHandlers({ getHost, pane = paneOf, now = () => Date.now(), fsImp
         detail: "Every visited page is forgotten, yours and your agents'. Bookmarks stay.", button: "Clear history" });
       if (!yes) return { ok: false, cancelled: true };
       h.library().clearHistory();
+      if (typeof h.historyCleared === "function") h.historyCleared();
       return done(h, { ok: true });
     }),
 

@@ -210,13 +210,53 @@ away without the others moving:
     (`occluders`), the desk clips the browser to the rest (`setShape`) or hides it when fully
     covered, and raising its window (taskbar, stage strip) makes it whole again.
     Still next: hide the avatar's own bead rail and speech bubble while it is docked.
+24. **Protected video and music (Widevine): SHIPPED in dev, production signing pending.** The desk
+    builds on castLabs' Electron for Content Security; `browser-widevine.cjs` installs the CDM at
+    app ready and an encrypted stream decodes in a tab (`npm run test:browser-widevine`). The
+    "Open in Edge" notice shows only when Widevine is missing or failed. Services that verify the
+    platform (Netflix) need a VMP-signed build: `scripts/vmp-sign.cjs` signs behind
+    `AITHER_VMP_SIGN=1` once the owner has a castLabs EVS account. `docs/WIDEVINE.md`.
+25. **Content blocking depth and translate: SHIPPED** (2026-11-13, after the Edge parity
+    slice). Four parts, each a pure module with tests; `browser-window.cjs` only wires them.
+    - **Path and option rules** (`browser-adblock-rules.cjs`). `||host/path^`, `$third-party`,
+      `$script`/`$image`/..., `$domain=`. An ad on the page's own host is now cancelled. No list
+      rule becomes a regular expression: a pattern is literal pieces found with `indexOf`, and
+      rules are indexed by hostname or by one word of the pattern. Measured with the real
+      lists (167,552 hosts, 11,743 rules): about 4 microseconds a request; the test fails at 50.
+      `@@` exceptions win over every block.
+    - **Element hiding** (`browser-adblock-cosmetic.cjs`). `##sel`, `site##sel`, `#@#`, `~site`.
+      One user style sheet per page (`insertCSS`, `cssOrigin: "user"`), about 24,000 selectors
+      in groups of 20, so a selector Chromium rejects voids only its group. The lists'
+      page-level exceptions are honoured: `$generichide` (YouTube), `$elemhide`, `@@...$document`.
+      A list is someone else's text in every page, so a selector is refused when it holds a
+      brace or `url(` anywhere (quoted and escaped too), or when its brackets cross. Review
+      found two lines that got live CSS past the first check (`url(a"b)` ends at the `)` for
+      Chromium and looked like an open string to the check; `[b(]c)` balanced by count); both
+      are tests and a live smoke check now. Cost on the real lists: 1 rule of 24,119.
+    - **The shield** in the toolbar: what was blocked on this page, pause on this site, pause
+      everywhere. It is on every web page, because it is where a broken site gets fixed.
+      From an InPrivate tab "pause on this site" (shield and more-menu) is held in memory,
+      applies to InPrivate tabs only and is dropped with the last one: `adblock.json` never
+      names a site that was only visited InPrivate.
+    - **Tracking** (`browser-tracking.cjs`): `utm_*`, `fbclid`, `gclid`... leave a page's address
+      before the request does; every request says `Sec-GPC: 1` and `DNT: 1`. Both are toggles
+      in the more-menu, on by default.
+    - **Translate** (`browser-translate.cjs`). A page in another language is offered
+      ("This page is in German. Translate?"); the text decides the language, the `lang`
+      attribute is only a fallback. Never offered InPrivate or on an agent's tab. The text
+      goes to the first backend that answers, in this order: MicroScheduler (a local lane,
+      never a hosted API lane), the local node, bonsai-local, the desk agent. The notice
+      names the one that answered. `npm run test:browser-parity` proves all of it on real
+      pages; `AWDESK_TRANSLATE_LIVE=1` adds a real model.
+    Not done: procedural hiding (`#?#`, `:has-text`), scriptlets, `$redirect`/`$csp`/`$removeparam`,
+    hiding inside sub-frames, `navigator.globalPrivacyControl`, and regular-expression rules.
 
 ## Part four: the everyday browser's own pages (owner, 2026-11-13, "close the gaps")
 
 The browser kept history, bookmarks and downloads but had no page for any of them: Ctrl+H
 opened nothing, Ctrl+J did nothing, a bookmark could be starred and never listed again.
 
-24. **The library pages: SHIPPED.** Five panes, one page script (`library-page.js`), one
+26. **The library pages: SHIPPED.** Five panes, one page script (`library-page.js`), one
     bridge (`library-preload.cjs`), channels in `browser-library-pages.cjs`:
 
     | page | key | what it does |
@@ -233,19 +273,22 @@ opened nothing, Ctrl+J did nothing, a bookmark could be starred and never listed
     a file: export, import and "open" go through main's dialogs and the shelf's own rows.
     No agent tool reads any of it: an agent's tab is a web tab with no preload and can
     never open an `aither://` address.
-25. **Bookmark folders: SHIPPED.** A bookmark may carry `folder` (a path joined with "/").
+27. **Bookmark folders: SHIPPED.** A bookmark may carry `folder` (a path joined with "/").
     `browser-library.json` stays version 1 and a file written before folders reads
     unchanged. Import from Edge keeps each favorite's folder.
-26. **The bookmarks bar: SHIPPED, off by default.** Ctrl+Shift+B or the more-menu. One 30px
+28. **The bookmarks bar: SHIPPED, off by default.** Ctrl+Shift+B or the more-menu. One 30px
     row under the toolbar (`BOOKMARKS_BAR_HEIGHT`); main sends the chrome height and every
     layout reads `chromeHeight()`, so `#top` and the page view move together.
-27. **Site permissions: SHIPPED.** Camera, microphone, location, notifications and
+29. **Site permissions: SHIPPED.** Camera, microphone, location, notifications and
     clipboard-read ASK the owner in the toolbar notice (Allow / Block / Not now), remembered
     per origin in `browser-permissions.json` (`browser-permissions.cjs`). Never for an agent
     tab, a tab an agent is driving, a console page, a subframe or an insecure page.
     InPrivate asks every time and writes nothing; a remembered Block still holds there.
-    Everything else stays denied (`browser-policy.cjs` allowPermission).
-28. **Clear browsing data: SHIPPED.** The owner's profile only (`persist:aither-browser`);
+    Everything else stays denied (`browser-policy.cjs` allowPermission), with one grant nobody
+    is asked about: protected media (24) for the owner's own web tab on the owner's session.
+    It is judged per tab in both handlers (`allowPermissionFor`): an agent's tab is refused
+    also when it rides the owner's session.
+30. **Clear browsing data: SHIPPED.** The owner's profile only (`persist:aither-browser`);
     the agent's session and the Online sign-in are kept. History and passwords honour the
     time range. Cookies, site data and the cache are cleared whole: Electron's
     `session.clearData` takes no time range, and the confirm says so.
@@ -254,3 +297,48 @@ opened nothing, Ctrl+J did nothing, a bookmark could be starred and never listed
     bookmarks and the bar; a prompt that reaches a popped-out tab's own window; location
     needs a geolocation provider key before an allowed site gets coordinates.
     `npm run test:browser-parity` drives all of it in a real window.
+31. **Sync: bookmarks, history and open tabs follow the account. Desk side SHIPPED, default OFF.**
+    `browser-sync.cjs`. The store is the platform's existing per-user preferences object
+    (`GET/PUT /api/settings/preferences` on the PLATFORM host `app.aitherium.com`, Veil in
+    front of AitherDirectory `/directory/self/preferences`): the user comes from the verified
+    bearer, a write is an RFC 7386 merge-patch, a stale `If-Match` is 409. awsettings already
+    syncs through it; no new endpoint was built. The desk sends the Online session's bearer
+    (`onlineToken()`) to `browser-internal platformOrigin()` and nowhere else: never to
+    `onlineUrl()`, which in tenant mode is the tenant's site (no store there; GitHub Pages
+    answered 404 on garg.aitherium.com).
+
+    | rule (review of PR #72) | how |
+    |---|---|
+    | one account per state file | the bearer is opaque, so Identity `/auth/me` names it (once per bearer); `browser-sync.json` keeps a hash. Another account's bearer sends nothing, sync turns itself off and says so; ticking it again is the owner's yes to merging |
+    | a reset library is not a delete | `browser-library.json` carries a generation id; a different id than the one recorded means a fresh device, so no tombstones are made and the store restores it |
+    | a full shard keeps its deletes | over budget the oldest live bookmarks are dropped from the wire, tombstones stay |
+    | a device namespace has a budget too | the last open tabs are dropped until it is under 15 KB, and counted as not synced |
+
+    | namespace | holds | limit |
+    |---|---|---|
+    | `awbrowser_bm0..3` | bookmarks by id: `{u, t, m}`, or `{m, d:1}` for a delete | 15 KB each (store: 16 KiB) |
+    | `awbrowser_hi0..1` | the newest 150 history entries `{u, t, m, c}` | 15 KB each |
+    | `awbrowser_dev_<id>` | one device: `{n, m, tabs: [{u, t}]}`, at most 30 tabs | written only by that device |
+    | `awbrowser_meta` | `{v, hc}`, hc = history cleared at | |
+
+    Merge is per item, last writer wins by timestamp; a delete is a tombstone kept 180 days, so
+    a deleted bookmark does not come back from another device. What does not fit the store stays
+    on this computer and is counted in the status line. Never sent: InPrivate tabs, agent tabs
+    and agent visits, internal pages, an address with credentials or a secret-looking query.
+    The ⋯ menu has "Sync this browser" (status and last-sync time under it), "Sync now" and
+    "Tabs from other devices". It syncs 15 s after a visit, a bookmark or a closed tab, and
+    every 5 minutes, only while signed in.
+    Proof: `node --test electron/browser-sync.test.cjs` (two devices, a local store),
+    `npm run test:browser-parity` (the real window), and
+    `AW_SYNC_TOKEN_FILE=<bearer file> node electron/browser-sync-live.cjs` (two temp profiles
+    against the real store; it removes what it wrote).
+    Still next: **passwords** stay in the local vault until the platform vault (AitherOS
+    #16731) is merged and deployed, then they sync through it and nowhere else; the **Android
+    app** does not read or write these namespaces yet, so today this is PC to PC; a sign-in does
+    not trigger a sync by itself (the 5-minute timer picks it up).
+    With the library pages (26): a bookmark changed on `aither://bookmarks` syncs like any
+    other, and clearing ALL history (the history page, or clear browsing data with "all time")
+    calls `noteHistoryCleared`, so the store does not hand it back. Not yet: ONE deleted visit,
+    a deleted day or a time range is local only (history has no per-entry tombstone, so a
+    synced copy can return from the store); a rename or a move to
+    another folder stays on this computer (the store keeps a bookmark's first title and no folder).
