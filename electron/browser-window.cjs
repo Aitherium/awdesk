@@ -1692,6 +1692,29 @@ async function makeDefaultBrowser() {
   return r;
 }
 
+/**
+ * The saved-passwords rows: one per account (copy, delete), then import. ONE list for
+ * the ⋯ menu's Passwords submenu and the desk's "Saved passwords…" command.
+ */
+function savedPasswordItems(clipboard) {
+  let accounts = [];
+  try { accounts = getVault().list(); } catch { /* no vault */ }
+  const rows = accounts.slice(0, 40).map((a) => ({
+    label: `${a.origin.replace(/^https:\/\//, "")}  ${a.username || "(no name)"}`,
+    submenu: [
+      { label: "Copy password", click: () => { clipboard.writeText(getVault().reveal(a.id) || ""); setTimeout(() => clipboard.clear(), 30000); } },
+      { label: "Copy username", click: () => clipboard.writeText(a.username || "") },
+      { label: "Delete", click: () => { getVault().remove(a.id); pushState(); } },
+    ],
+  }));
+  return { accounts, items: [
+    ...(rows.length ? rows : [{ label: "No saved passwords yet", enabled: false }]),
+    { type: "separator" },
+    { label: "Import passwords from a CSV…", click: () => { void importPasswordsCsv(); } },
+    { label: "Export them from Edge first…", enabled: Boolean(everyday.edgeExecutable()), click: () => openInEdge("edge://settings/passwords") },
+  ] };
+}
+
 /** The ⋯ menu: everything Edge keeps in its own. */
 function browserMenu() {
   if (!win || win.isDestroyed()) return { ok: false };
@@ -1701,19 +1724,10 @@ function browserMenu() {
   const url = wc ? wc.getURL() : "";
   const ab = getAdblock();
   const zoom = wc ? Math.round(wc.getZoomFactor() * 100) : 100;
-  let accounts = [];
-  try { accounts = getVault().list(); } catch { /* no vault */ }
   let edgeProfiles = [];
   try { edgeProfiles = require("./browser-edge-import.cjs").edgeProfileDirs(); } catch { /* no Edge */ }
   const store = require("./browser-webstore.cjs").parseExtensionId(url);
-  const pwItems = accounts.slice(0, 40).map((a) => ({
-    label: `${a.origin.replace(/^https:\/\//, "")}  ${a.username || "(no name)"}`,
-    submenu: [
-      { label: "Copy password", click: () => { clipboard.writeText(getVault().reveal(a.id) || ""); setTimeout(() => clipboard.clear(), 30000); } },
-      { label: "Copy username", click: () => clipboard.writeText(a.username || "") },
-      { label: "Delete", click: () => { getVault().remove(a.id); pushState(); } },
-    ],
-  }));
+  const { accounts, items: pwSubmenu } = savedPasswordItems(clipboard);
   const template = [
     { label: "New tab", accelerator: "CmdOrCtrl+T", registerAccelerator: false, click: () => runBrowserAction("new-tab") },
     { label: "New InPrivate tab", accelerator: "CmdOrCtrl+Shift+N", registerAccelerator: false, click: () => runBrowserAction("inprivate") },
@@ -1749,12 +1763,7 @@ function browserMenu() {
     { label: `Update the block lists (${ab.hostCount().toLocaleString()} hosts, ${ab.stats().rules.toLocaleString()} rules, ${ab.stats().cosmetic.toLocaleString()} hidden boxes)`,
       click: () => { void ab.refresh({ force: true }).then(() => pushState()); } },
     { type: "separator" },
-    { label: `Passwords (${accounts.length})`, submenu: [
-      ...(pwItems.length ? pwItems : [{ label: "No saved passwords yet", enabled: false }]),
-      { type: "separator" },
-      { label: "Import passwords from a CSV…", click: () => { void importPasswordsCsv(); } },
-      { label: "Export them from Edge first…", enabled: Boolean(everyday.edgeExecutable()), click: () => openInEdge("edge://settings/passwords") },
-    ] },
+    { label: `Passwords (${accounts.length})`, submenu: pwSubmenu },
     { label: "Import from Edge", submenu: edgeProfiles.length
       ? edgeProfiles.map((p) => ({ label: `${p.name}: bookmarks and history`, click: () => { void importFromEdgeProfile(p.dir); } }))
       : [{ label: "No Edge profile found", enabled: false }] },
@@ -4546,6 +4555,270 @@ function layoutCommand(verb, arg = "") {
   }
 }
 
+// ---------------------------------------------------------------- desk commands
+// The browser from OUTSIDE the browser (owner, 2026-11-13: "and integrate with the
+// Alt+Space hot key and whatnot?"): the registry's `browser.*` rows -- the palette, the
+// tray's Browser menu and Alt+Space (browser-verbs.cjs) -- all land in browserCommand.
+// Two rules hold for every verb:
+//   1. it opens the browser when it is closed and brings it forward when it is not;
+//   2. it acts for the OWNER. A page verb (find, print, translate, bookmark, open in
+//      Edge, pause ads here) takes the tab on screen only when that tab is the owner's;
+//      while an agent's tab is showing it is refused, never run on the agent's page.
+
+/** The tab on screen when it is the OWNER's; null while an agent's tab is showing. */
+function ownerActiveTab() {
+  const tab = tabs.get(tabs.active);
+  return tab && tab.by === "you" ? tab : null;
+}
+
+/** The owner's own open tabs (agent and InPrivate tabs left out), for Alt+Space `tab <words>`. */
+function ownerTabs() {
+  if (!win || win.isDestroyed()) return [];
+  return tabList().filter((t) => t.by === "you" && !t.private)
+    .map((t) => ({ id: t.id, url: t.url, title: t.label || t.title, active: t.active }));
+}
+
+/**
+ * Pages the OWNER visited whose title or address holds every word, newest first.
+ * An agent's visits are left out; InPrivate pages were never recorded (wirePage).
+ */
+function ownerHistory(words, limit = 8) {
+  const { matchEntries } = require("./browser-verbs.cjs");
+  const first = String(words || "").trim().split(/\s+/)[0] || "";
+  const out = [];
+  for (let offset = 0; out.length < limit; offset += 1000) {
+    const got = getLibrary().historyPage({ q: first, by: "you", limit: 1000, offset });
+    out.push(...matchEntries(got.entries, words));
+    if (!got.entries.length || offset + 1000 >= got.total) break;
+  }
+  return out.slice(0, limit).map((h) => ({ url: h.url, title: h.title || "", at: h.at }));
+}
+
+/** The owner's bookmarks whose title or address holds every word. */
+function ownerBookmarks(words, limit = 8) {
+  const { matchEntries } = require("./browser-verbs.cjs");
+  return matchEntries(getLibrary().bookmarks(), words).slice(0, limit)
+    .map((b) => ({ url: b.url, title: b.title || "", folder: b.folder || "" }));
+}
+
+/**
+ * What the `browser.*` rows' labels read (command-registry ctx.browser): which way the
+ * sync and ad-blocking switches go, the site on screen, whether it is bookmarked.
+ * A switch nobody has opened this run stays null: reading it here would start the
+ * block-list download and the sync engine from a tray repaint.
+ */
+function commandFacts() {
+  const open = Boolean(win && !win.isDestroyed());
+  const facts = { open, syncOn: null, adsOn: null, siteAllowed: null, host: "", bookmarked: null, closedTabs: closedTabs.list().length };
+  try { if (syncImpl) facts.syncOn = Boolean(syncImpl.status().enabled); } catch { /* unknown */ }
+  try { if (adblockImpl) facts.adsOn = Boolean(adblockImpl.enabled()); } catch { /* unknown */ }
+  const tab = open ? ownerActiveTab() : null;
+  const wc = tab ? pageWc(tab.id) : null;
+  if (!wc) return facts;
+  try {
+    if (adblockImpl) {
+      const shield = shieldFacts(tab.id).facts;
+      if (shield.web) { facts.siteAllowed = Boolean(shield.siteOff); facts.host = shield.host; }
+    }
+    if (!tab.private && tab.kind === "web") facts.bookmarked = Boolean(getLibrary().isBookmarked(wc.getURL()));
+  } catch { /* a closing tab */ }
+  return facts;
+}
+
+/** Verbs another PROGRAM (POST /commands/run: awsh /desk, an agent) may not run for the owner. */
+const OWNER_HAND_ONLY = new Set(["sync", "ads-all", "ads-site", "import-edge"]);
+
+/**
+ * One `browser.*` registry row. `verb` is the row's `browser` field, `arg` the typed
+ * argument (an address, words, "#<tab id>"). Returns a verdict ({ok, ...} | {ok:false,
+ * error}) or a promise of one, so the palette and the launcher can say why not.
+ */
+function browserCommand(verb, arg = "", { askAgent: ask = null, surface = "menu" } = {}) {
+  const v = String(verb || "");
+  const text = String(arg == null ? "" : arg).trim().slice(0, 2048);
+  if (surface === "bridge" && OWNER_HAND_ONLY.has(v)) {
+    return { ok: false, error: `1 browser command refused — "${v}" changes what this browser keeps or sends; run it from the desk itself` };
+  }
+  const wasOpen = Boolean(win && !win.isDestroyed());
+  /** Open the browser (last time's tabs, else the home page), or bring it forward. */
+  const raise = ({ home = true } = {}) => createBrowserWindow({ askAgent: ask, url: null, home });
+  /** The owner's page on screen, or the sentence that says why there is none. */
+  const ownerPage = () => {
+    raise();
+    const tab = ownerActiveTab();
+    if (!tab) return { error: "1 tab on screen is the agent's — switch to one of your own tabs first" };
+    const wc = pageWc(tab.id);
+    if (!wc) return { error: "0 pages open in your active tab — open a page first" };
+    return { tab, id: tab.id, wc, url: wc.getURL(), web: tab.kind === "web" && /^https?:/i.test(wc.getURL()) };
+  };
+  switch (v) {
+    case "go": {
+      if (!text) return { ok: false, error: "0 addresses given — type one (example.com)" };
+      // The OWNER typing aither://<pane> opens that page, as in the address bar.
+      const page = internal.parseInternalUrl(text);
+      if (page) {
+        const link = internal.deepLinkOf(page);
+        return openInternal(page.paneId, link, { askAgent: ask }) ? { ok: true, url: internal.internalUrl(page.paneId, link) }
+          : { ok: false, error: `no Aither page called ${page.paneId}` };
+      }
+      const verdict = policy.sanitizeUrl(text);
+      if (!verdict.ok) return rail.isSearchText(text) ? browserCommand("search", text, { askAgent: ask, surface }) : { ok: false, error: verdict.reason };
+      // Closed: the window opens ON this address (after last time's tabs), no home tab beside it.
+      if (!wasOpen) { createBrowserWindow({ askAgent: ask, url: verdict.url }); return { ok: true, url: verdict.url, tab: tabs.active }; }
+      raise();
+      const opened = openTab("you", verdict.url);
+      return opened.ok ? { ok: true, url: verdict.url, tab: opened.id } : { ok: false, error: opened.error };
+    }
+    case "search":
+      if (!text) return { ok: false, error: "0 words to search for" };
+      if (!wasOpen) raise({ home: false });
+      return openSearch(text) ? { ok: true, url: "aither://search/" } : { ok: false, error: "search is not available" };
+    case "new-tab": {
+      raise({ home: false });
+      const opened = openTab("you", homeUrl());
+      return opened.ok ? { ok: true, tab: opened.id } : { ok: false, error: opened.error };
+    }
+    case "inprivate": {
+      let url = privateHomeUrl();
+      if (text) {
+        const verdict = policy.sanitizeUrl(text);
+        if (!verdict.ok) return { ok: false, error: verdict.reason };
+        url = verdict.url;
+      }
+      raise({ home: false });
+      const opened = openTab("you", url, { private: true });
+      return opened.ok ? { ok: true, tab: opened.id, private: true } : { ok: false, error: opened.error };
+    }
+    case "reopen-closed": {
+      raise();
+      const last = closedTabs.pop();
+      if (!last) return { ok: false, error: "0 closed tabs to reopen" };
+      const opened = openTab("you", last.url);
+      return opened.ok ? { ok: true, url: last.url, tab: opened.id } : { ok: false, error: opened.error };
+    }
+    case "tab": {
+      if (!wasOpen) raise();
+      const mine = ownerTabs();
+      const byId = /^#(\d+)$/.exec(text);
+      const hit = byId ? mine.find((t) => t.id === Number(byId[1]))
+        : require("./browser-verbs.cjs").matchEntries(mine, text)[0];
+      if (!text || !hit) return { ok: false, error: text ? `0 of your open tabs match “${text.slice(0, 60)}”` : "0 tabs named — type words from its title or address" };
+      raise();
+      const shown = showTab(hit.id);
+      return shown.ok ? { ok: true, tab: hit.id, url: hit.url } : { ok: false, error: shown.error || "the tab is gone" };
+    }
+    case "history":
+    case "bookmarks":
+    case "downloads":
+    case "permissions":
+    case "clear-data":
+      return openInternal(v, null, { askAgent: ask }) ? { ok: true, url: `aither://${v}/` } : { ok: false, error: `the ${v} page is missing` };
+    case "passwords": {
+      raise();
+      const { Menu, clipboard } = electron();
+      // Inside the browser's own window, under the toolbar: the pointer may be anywhere.
+      Menu.buildFromTemplate(savedPasswordItems(clipboard).items).popup({ window: win, x: 24, y: chromeHeight() + 8 });
+      return { ok: true };
+    }
+    case "import-edge": {
+      raise();
+      let profiles = [];
+      try { profiles = require("./browser-edge-import.cjs").edgeProfileDirs(); } catch { /* no Edge */ }
+      if (!profiles.length) return { ok: false, error: "0 Edge profiles found on this computer" };
+      const named = text ? profiles.find((p) => String(p.name).toLowerCase() === text.toLowerCase()) : null;
+      if (text && !named) return { ok: false, error: `no Edge profile called ${text.slice(0, 60)} — there is ${profiles.map((p) => p.name).join(", ")}` };
+      const one = named || (profiles.length === 1 ? profiles[0] : null);
+      if (one) return importFromEdgeProfile(one.dir).then((r) => ({ ...r, ok: !r || r.ok !== false }));
+      // Several profiles: the owner picks, as in the ⋯ menu.
+      const { Menu } = electron();
+      Menu.buildFromTemplate(profiles.map((p) => ({ label: `${p.name}: bookmarks and history`, click: () => { void importFromEdgeProfile(p.dir); } })))
+        .popup({ window: win, x: 24, y: chromeHeight() + 8 });
+      return { ok: true, asked: profiles.map((p) => p.name) };
+    }
+    case "import-passwords":
+      raise();
+      // No file chosen is not a failure.
+      return importPasswordsCsv().then((r) => (r && (r.ok || r.error) ? r : { ok: true, imported: 0 }));
+    case "default":
+      raise();
+      return makeDefaultBrowser();
+    case "sync": {
+      raise();
+      const on = !getSync().status().enabled;
+      // The first sync is a network round trip: the tab's notice reports it, the caller is not kept waiting.
+      void setSyncEnabled(on).catch(() => {});
+      return { ok: true, enabled: on };
+    }
+    case "ads-all": {
+      raise();
+      const pausing = getAdblock().enabled();
+      const tab = ownerActiveTab();
+      shieldAction("pause-all", pausing, tab ? tab.id : null);
+      return { ok: true, blocking: !pausing };
+    }
+    case "ads-site": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      if (!p.web) return { ok: false, error: "0 web pages on screen — ad blocking pauses per site, on a web page" };
+      const pausing = !shieldFacts(p.id).facts.siteOff;
+      const done = shieldAction("pause-site", pausing, p.id);
+      return done.ok ? { ok: true, paused: pausing, host: shieldFacts(p.id).facts.host } : { ok: false, error: "ad blocking could not be changed for this page" };
+    }
+    case "translate": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      if (!p.web) return { ok: false, error: "0 web pages on screen — only a web page is translated" };
+      void translatePage(p.id);
+      return { ok: true };
+    }
+    case "find": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      if (!text) return runBrowserAction("find", null, p.id) ? { ok: true } : { ok: false, error: "the browser's toolbar is not up yet" };
+      const q = text.slice(0, 500);
+      findResults.set(p.id, { text: q, matches: 0, active: 0 });
+      p.wc.findInPage(q);
+      // The find bar opens ON these words (true: replace what it held), so Enter / F3 carry on.
+      win.webContents.send("desk:browser-find-open", q, true);
+      return { ok: true, text: q };
+    }
+    case "print": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      runBrowserAction("print", null, p.id);
+      return { ok: true };
+    }
+    case "open-edge": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      return openInEdge(p.url);
+    }
+    case "bookmark": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      if (p.tab.private) return { ok: false, error: "1 InPrivate page is not bookmarked — open it in an ordinary tab first" };
+      if (!p.web) return { ok: false, error: "0 web pages on screen — only a web page is bookmarked" };
+      runBrowserAction("bookmark", null, p.id);
+      return { ok: true, bookmarked: Boolean(getLibrary().isBookmarked(p.url)), url: p.url };
+    }
+    case "extension": {
+      raise();
+      let url = text;
+      if (!url) {
+        const tab = ownerActiveTab();
+        const wc = tab ? pageWc(tab.id) : null;
+        url = wc ? wc.getURL() : "";
+      }
+      if (!require("./browser-webstore.cjs").parseExtensionId(url).ok) {
+        return { ok: false, error: "1 address is not a Chrome Web Store or Edge Add-ons extension page" };
+      }
+      return installExtensionFrom(tabs.active, url);
+    }
+    default:
+      return { ok: false, error: `no browser command ${v}` };
+  }
+}
+
 
 function setAgentsHost(host) {
   const ok = host && typeof host.view === "function" && typeof host.check === "function"
@@ -4677,6 +4950,12 @@ module.exports = {
   isBrowserWindowOpen,
   /** The registry's layout.* / rail.* / canvas.* commands (command-registry `layout` field). */
   layoutCommand,
+  /** The registry's browser.* commands (command-registry `browser` field), their labels' facts, and Alt+Space's lists. */
+  browserCommand,
+  commandFacts,
+  ownerTabs,
+  ownerHistory,
+  ownerBookmarks,
   /** "Pin to canvas" from outside the browser (main, a phone): an address onto the active board. */
   pinToCanvas,
   /** The floating board window's pin door (boards-window.cjs): same cards, same live views. */

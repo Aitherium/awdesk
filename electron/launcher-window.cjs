@@ -20,6 +20,9 @@
  * The launcher is one box with one input, grouped results capped at five with a
  * real "+N more", and three prefixes:
  *
+ *   (verbs)  a first word the desk owns: draw, gif, pin, youtube, board (desk-verbs.cjs)
+ *            and the Aither Browser's -- a bare address, go, search, private, history,
+ *            bookmark, tab, find, extension (browser-verbs.cjs).
  *   (plain)  universal search: apps, desk actions, files, screenshots, clipboard,
  *            agents/tools, and the web (search-client.cjs's awfind path, registered
  *            as one more provider -- never a parallel indexer).
@@ -183,6 +186,11 @@ function createLauncher({
   fairy = null,
   // (cardId) => verdict -- open the fairy bubble with that card as context.
   askFairy = null,
+  // The Aither Browser's lists for `history <words>`, `bookmark <words>` and `tab <words>`
+  // (browser-verbs.cjs): {history(words, limit), bookmarks(words, limit), tabs()}, each the
+  // OWNER's own -- main hands browser-window's ownerHistory/ownerBookmarks/ownerTabs.
+  // Null = those verbs answer with their page row only.
+  browser = null,
 } = {}) {
   // The "Right now" sample for THIS press. A promise, so the empty search can wait
   // the few hundred ms the probe takes instead of racing it.
@@ -547,6 +555,30 @@ function createLauncher({
     return { ok: true, token, mode: "all", term: v.arg, phase: "idle", groups: group ? core.capGroups([group]) : [], status };
   }
 
+  /**
+   * A browser verb (a bare address, go, search, private, history, bookmark, tab, find,
+   * extension -- browser-verbs.cjs). Same answer shape as verbSearch: its own rows, or
+   * {extraGroup, status} when the ordinary search stays underneath (`keepSearch`).
+   */
+  async function browserVerbSearch(v, token) {
+    const verbs = require("./browser-verbs.cjs");
+    const ctx = {};
+    const ask = async (name, ...args) => {
+      if (!browser || typeof browser[name] !== "function") return [];
+      try { const got = await browser[name](...args); return Array.isArray(got) ? got : []; } catch { return []; }
+    };
+    if (v.verb === "history" && v.target === "match") ctx.history = await ask("history", v.arg, verbs.MAX_ROWS);
+    if (v.verb === "bookmark" && v.target === "match") ctx.bookmarks = await ask("bookmarks", v.arg, verbs.MAX_ROWS);
+    if (v.verb === "tab") ctx.tabs = await ask("tabs");
+    if (token !== searchSeq) return { ok: true, token, ignored: true };
+    const { rows, status } = verbs.verbRows(v, ctx);
+    verbActions.clear();
+    for (const r of rows) verbActions.set(r.key, r.action);
+    const group = verbs.verbGroup(v, rows);
+    if (v.keepSearch) return { extraGroup: group, status };
+    return { ok: true, token, mode: "all", term: v.arg, phase: "idle", groups: group ? core.capGroups([group]) : [], status };
+  }
+
   async function runVerb(key) {
     const action = verbActions.get(String(key || ""));
     if (!action) return { ok: false, error: "1 row expired — type it again" };
@@ -577,6 +609,14 @@ function createLauncher({
       const answered = await verbSearch(verb, token);
       if (!("extraGroup" in answered)) return answered;
       verbExtra = answered;
+    } else {
+      // The Aither Browser's verbs: an address, go, search, private, history, bookmark, tab, find.
+      const browserVerb = require("./browser-verbs.cjs").parseBrowserVerb(text);
+      if (browserVerb) {
+        const answered = await browserVerbSearch(browserVerb, token);
+        if (!("extraGroup" in answered)) return answered;
+        verbExtra = answered;
+      }
     }
     if (token !== searchSeq) return { ok: true, token, ignored: true };
     let cardGroup = null;

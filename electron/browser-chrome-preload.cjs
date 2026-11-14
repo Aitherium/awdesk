@@ -44,7 +44,8 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   /** A browser action by name (zoom-reset, print, translate...): browser-everyday keyAction's names. */
   action: (name) => ipcRenderer.send("desk:browser-action", String(name ?? "")),
   onFindOpen: (listener) => {
-    const handler = (_event, text) => listener(String(text ?? ""));
+    // `replace`: the desk's `find <words>` opens the bar ON those words, over what it held.
+    const handler = (_event, text, replace) => listener(String(text ?? ""), replace === true);
     ipcRenderer.on("desk:browser-find-open", handler);
     return () => ipcRenderer.off("desk:browser-find-open", handler);
   },
