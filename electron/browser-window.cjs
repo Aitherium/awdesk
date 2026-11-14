@@ -62,6 +62,9 @@ const agentSessions = require("./browser-agent-cookies.cjs");
 // The layout document (pane sides, presets, the rail's arrangement, detached bounds,
 // canvas boards) -- one more key of browser-layout.json, never a second store.
 const deskLayout = require("./desk-layout.cjs");
+// Edge parity (owner 2026-11-13, "close the gaps"): keys, right-click, find, zoom, print,
+// InPrivate, session restore, translate, DRM hand-off. The pure parts live there.
+const everyday = require("./browser-everyday.cjs");
 const { createSurfaceState } = require("./surface-state.cjs");
 let knowledgeImpl = null;
 function knowledgeClient() {
@@ -386,6 +389,7 @@ function tabList() {
       // (BROWSER-M3): read from the live session, not from the prefs, so a tab
       // opened before the allow shows where it really is.
       agentSignIn: t.by === "agent" && Boolean(view) && view.webContents.session === ownerSession,
+      private: Boolean(tab.private),
     };
   });
 }
@@ -411,6 +415,7 @@ function state() {
     // "Let the agent use my sign-in" for the page on screen (BROWSER-M3): its site,
     // whether the agent may ride the owner's session there, and every allowed site.
     agentSignIn: agentSessions.stateFor(getPrefs().agentCookieSites, wc.getURL()),
+    ...everydayState(wc),
   };
 }
 
@@ -435,6 +440,7 @@ function pushState() {
   }, wait);
 }
 function pushStateNow() {
+  if (win && !win.isDestroyed() && sessionRestored && getPrefs().restoreSession !== false) getSessionStore().save(tabList());
   const payload = state();
   if (win && !win.isDestroyed()) win.webContents.send("desk:browser-state", payload);
   if (alive(panelView)) panelView.webContents.send("desk:browser-state", payload);
@@ -452,6 +458,8 @@ function hardenSession(ses) {
   ses.setPermissionRequestHandler((_wc, permission, callback) => callback(policy.allowPermission(permission)));
   ses.setPermissionCheckHandler((_wc, permission) => policy.allowPermission(permission));
   if (typeof ses.setDevicePermissionHandler === "function") ses.setDevicePermissionHandler(() => false);
+  // Ads and trackers are cancelled at the network layer (browser-adblock.cjs).
+  try { getAdblock().attach(ses, { onBlocked: () => pushState() }); } catch { /* browsing still works */ }
   // A download an AGENT triggers lands on the owner's disk unseen; while the agent
   // drives (and the owner has not taken over) downloads are cancelled. The owner
   // takes over to download. Either way it is a ROW on the shelf (browser-downloads):
@@ -795,6 +803,664 @@ async function readAloud() {
   void Promise.resolve(shellHost.speak(text)).catch(() => {});
   return { ok: true, chars: text.length };
 }
+
+// ================================================================== Edge parity
+// Owner, 2026-11-13: "close the gaps" (what switching from Edge would lose). Everything
+// here acts for the OWNER only: an agent tab never gets a password, a fill, an InPrivate
+// tab or a session entry. Page work runs in the isolated world (web tabs have no preload).
+
+const closedTabs = everyday.createClosedTabs();
+const tabNotices = new Map(); // tab id -> { kind, text, actions: [{id, label}], data, keep }
+const findResults = new Map(); // tab id -> { text, matches, active }
+const pwFilled = new Map(); // tab id -> the URL already autofilled (once per page)
+// tab id -> { key, prev }: the capture key of the document on screen and of the one before
+// (its submit message can land just after the next document starts). browser-passwords.cjs.
+const pwKeys = new Map();
+const drmStay = new Set(); // hosts the owner chose to keep here this run
+let sessionRestored = false;
+
+function userDataPath(...parts) {
+  return path.join(electron().app.getPath("userData"), ...parts);
+}
+
+let adblockImpl = null;
+function getAdblock() {
+  if (!adblockImpl) {
+    adblockImpl = require("./browser-adblock.cjs").createAdblock({ dir: userDataPath("adblock") });
+    adblockImpl.loadCached();
+    void adblockImpl.refresh().catch(() => {});
+  }
+  return adblockImpl;
+}
+
+let vaultImpl = null;
+function passwordsMod() { return require("./browser-passwords.cjs"); }
+function getVault() {
+  if (!vaultImpl) vaultImpl = passwordsMod().createVault({ file: userDataPath("browser-passwords.json"), safeStorage: electron().safeStorage });
+  return vaultImpl;
+}
+
+let sessionStoreImpl = null;
+function getSessionStore() {
+  if (!sessionStoreImpl) sessionStoreImpl = everyday.createSessionStore({ file: userDataPath("browser-session.json") });
+  return sessionStoreImpl;
+}
+
+/** Reopen last time's tabs. Returns how many came back. Saving starts only after this. */
+function restoreSession() {
+  let n = 0;
+  try {
+    const saved = getSessionStore().load();
+    const activeAt = saved.findIndex((t) => t.active);
+    saved.forEach((t, i) => {
+      const r = openTab("you", t.url, { activate: i === (activeAt >= 0 ? activeAt : saved.length - 1) });
+      if (r.ok) n += 1;
+    });
+  } catch { /* a broken file restores nothing */ }
+  sessionRestored = true;
+  return n;
+}
+
+function forgetTabExtras(id) {
+  tabNotices.delete(id);
+  findResults.delete(id);
+  pwFilled.delete(id);
+  pwKeys.delete(id);
+}
+
+/** An InPrivate tab: the in-memory partition, hardened like the others, no history. */
+function openPrivateTab(url, { activate = true, after = null } = {}) {
+  const { session } = electron();
+  hardenSession(session.fromPartition(everyday.INPRIVATE_PARTITION));
+  const added = tabs.add("you", { activate, after, kind: "web" });
+  if (!added.ok) return added;
+  const tab = tabs.get(added.id);
+  tab.private = true;
+  tab.label = "";
+  tab.viewSpec = { kind: "web", paneId: null, partition: null, webPartition: everyday.INPRIVATE_PARTITION, url };
+  const view = createPageView("web", { paneId: null }, null, everyday.INPRIVATE_PARTITION);
+  views.set(added.id, view);
+  wirePage(view.webContents, added.id);
+  win.contentView.addChildView(view);
+  if (alive(panelView)) win.contentView.addChildView(panelView);
+  if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
+  layout();
+  pushState();
+  void loadInView(view, url).catch(() => {});
+  return { ok: true, id: added.id, view };
+}
+
+/** The last InPrivate tab closed: its cookies, cache and storage go with it. */
+function clearPrivateIfLast() {
+  const anyLeft = tabs.snapshot().tabs.some((t) => (tabs.get(t.id) || {}).private);
+  if (anyLeft) return;
+  try {
+    const ses = electron().session.fromPartition(everyday.INPRIVATE_PARTITION);
+    void ses.clearStorageData().catch(() => {});
+    void ses.clearCache().catch(() => {});
+  } catch { /* nothing to clear */ }
+}
+
+function privateHomeUrl() {
+  const home = homeUrl();
+  const c = classify(home);
+  return c.kind === "web" ? c.url : "https://duckduckgo.com/";
+}
+
+function setNotice(id, notice) {
+  if (notice) tabNotices.set(id, { keep: false, ...notice });
+  else tabNotices.delete(id);
+  pushState();
+}
+
+/** The parity facts of the tab on screen, merged into state(). */
+function everydayState(wc) {
+  const id = tabs.active;
+  const tab = tabs.get(id) || {};
+  const url = wc.getURL();
+  const notice = tabNotices.get(id);
+  let saved = 0;
+  try {
+    if (!tab.private && tab.by === "you" && passwordsMod().shouldOffer({ tabBy: tab.by, url })) saved = getVault().forOrigin(url).length;
+  } catch { /* vault unavailable: no key icon */ }
+  const ab = adblockImpl;
+  return {
+    private: Boolean(tab.private),
+    zoom: Math.round((wc.getZoomFactor() || 1) * 100),
+    find: findResults.get(id) || null,
+    notice: notice ? { kind: notice.kind, text: notice.text, actions: notice.actions || [] } : null,
+    passwords: saved,
+    adblock: ab ? { enabled: ab.enabled(), siteOff: ab.siteOff(url), blocked: ab.blockedOn(wc.id) } : null,
+  };
+}
+
+function isolated(wc, code) {
+  return wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code }]).catch(() => null);
+}
+
+/** May this tab's page get password capture and fill? The owner's own, saved-able page only. */
+function passwordsAllowed(id, wc) {
+  const tab = tabs.get(id);
+  if (!tab || tab.private || tab.by !== "you") return false;
+  try { return passwordsMod().shouldOffer({ tabBy: tab.by, url: wc.getURL() }); } catch { return false; }
+}
+
+/** A login the page just submitted: offer to save it (never when it is already saved as is). */
+async function collectLogin(id, wc) {
+  if (!passwordsAllowed(id, wc)) return;
+  const got = await isolated(wc, passwordsMod().PENDING_SCRIPT);
+  offerLogin(id, wc, got);
+}
+
+/** A login the page submitted (from the console channel or the pending read): offer to save it. */
+function offerLogin(id, wc, got) {
+  if (!got || !got.password || !passwordsAllowed(id, wc)) return;
+  const P = passwordsMod();
+  const shown = tabNotices.get(id);
+  if (shown && shown.kind === "password-save" && shown.data && shown.data.origin === got.origin
+    && shown.data.username === got.username && shown.data.password === got.password) return;
+  if (got.origin !== P.normalizeOrigin(wc.getURL())) return;
+  try {
+    const vault = getVault();
+    const same = vault.forOrigin(got.origin).find((e) => e.username === (got.username || ""));
+    if (same && vault.reveal(same.id) === got.password) return;
+    const host = new URL(got.origin).host;
+    setNotice(id, {
+      kind: "password-save", keep: true, data: got,
+      text: same ? `Update the saved password for ${got.username || "this account"} on ${host}?`
+        : `Save the password for ${got.username || "this account"} on ${host}?`,
+      actions: [{ id: "password-save", label: same ? "Update" : "Save" }, { id: "dismiss", label: "Not now" }],
+    });
+  } catch { /* no vault: nothing offered */ }
+}
+
+/**
+ * A login form with saved accounts: OFFER the fill, never fill unasked. A password put
+ * into the DOM on load is readable by every script on the page (Chromium hides an
+ * autofilled value from scripts until the user interacts; a page here cannot), so the
+ * owner's click is the gesture: the notice's Fill, or the key icon.
+ */
+async function autofill(id, wc) {
+  if (!passwordsAllowed(id, wc)) return;
+  const url = wc.getURL();
+  // One capture listener per document, with that document's own key.
+  const keys = pwKeys.get(id) || { key: null, prev: null };
+  if (!keys.key) {
+    keys.key = passwordsMod().newCaptureKey();
+    pwKeys.set(id, keys);
+    void isolated(wc, passwordsMod().captureScriptFor(keys.key));
+  }
+  let entries;
+  try { entries = getVault().forOrigin(url); } catch { return; }
+  pushState();
+  if (!entries.length || pwFilled.get(id) === url || tabNotices.has(id)) return;
+  const hasLogin = await isolated(wc, passwordsMod().DETECT_LOGIN_SCRIPT);
+  if (!hasLogin || pageWc(id) !== wc || wc.getURL() !== url) return;
+  const one = entries.length === 1 ? entries[0] : null;
+  setNotice(id, {
+    kind: "password-fill", data: { url, entryId: one ? one.id : null },
+    text: one ? `Sign in as ${one.username || "your saved account"}?` : `${entries.length} saved accounts for this site.`,
+    actions: one ? [{ id: "password-fill", label: "Fill" }, { id: "dismiss", label: "Not now" }]
+      : [{ id: "password-pick", label: "Choose…" }, { id: "dismiss", label: "Not now" }],
+  });
+}
+
+async function fillAccount(id, wc, entryId) {
+  if (!passwordsAllowed(id, wc)) return { ok: false };
+  const vault = getVault();
+  const entry = vault.forOrigin(wc.getURL()).find((e) => e.id === entryId);
+  if (!entry) return { ok: false };
+  pwFilled.set(id, wc.getURL());
+  const r = await isolated(wc, passwordsMod().fillScript(entry.username, vault.reveal(entry.id),
+    passwordsMod().normalizeOrigin(wc.getURL())));
+  return { ok: Boolean(r && r.filled) };
+}
+
+/** Load-time hooks for one page: right-click, find results, logins, DRM, ad counter. */
+function wireEveryday(wc, id) {
+  wc.on("context-menu", (_event, params) => showContextMenu(id, wc, params));
+  wc.on("found-in-page", (_event, result) => {
+    const prev = findResults.get(id) || { text: "" };
+    findResults.set(id, { text: prev.text, matches: result.matches || 0, active: result.activeMatchOrdinal || 0 });
+    pushState();
+  });
+  wc.on("did-start-navigation", (details, legacyUrl, legacyInPlace, legacyMain) => {
+    const isMain = details && typeof details.isMainFrame === "boolean" ? details.isMainFrame : legacyMain;
+    const same = details && typeof details.isSameDocument === "boolean" ? details.isSameDocument : legacyInPlace;
+    if (!isMain || same) return;
+    // The old document's isolated world still holds a login it just submitted.
+    void collectLogin(id, wc);
+    if (adblockImpl) adblockImpl.resetCount(wc.id);
+    findResults.delete(id);
+  });
+  // A login submitted in the isolated world arrives here before the page unloads.
+  wc.on("console-message", (details, legacyLevel, legacyMessage) => {
+    const message = details && typeof details.message === "string" ? details.message : legacyMessage;
+    if (typeof message !== "string" || !message.startsWith(passwordsMod().CHANNEL)) return;
+    const keys = pwKeys.get(id);
+    if (!keys) return;
+    const got = passwordsMod().decodeCaptured(message, keys.key) || passwordsMod().decodeCaptured(message, keys.prev);
+    if (got) offerLogin(id, wc, got);
+  });
+  wc.on("did-navigate", (_event, url) => {
+    const k = pwKeys.get(id);
+    if (k) pwKeys.set(id, { key: null, prev: k.key || k.prev });
+    const n = tabNotices.get(id);
+    if (n && n.keep) n.keep = false;
+    else if (n) tabNotices.delete(id);
+    const tab = tabs.get(id);
+    if (tab && tab.by === "you" && everyday.needsDrm(url)) {
+      let host = "";
+      try { host = new URL(url).hostname; } catch { /* not a URL */ }
+      if (!drmStay.has(host) && everyday.edgeExecutable()) {
+        setNotice(id, {
+          kind: "drm", data: { url, host },
+          text: "This site plays protected video or music (DRM), which this browser cannot play yet. Watch it in Edge?",
+          actions: [{ id: "open-edge", label: "Open in Edge" }, { id: "drm-stay", label: "Stay here" }],
+        });
+      }
+    }
+    const store = require("./browser-webstore.cjs").parseExtensionId(url);
+    if (tab && tab.by === "you" && !tab.private && store.ok && /\/detail\//.test(url)) {
+      setNotice(id, {
+        kind: "extension", data: { url },
+        text: "Install this extension in the Aither Browser (the store's own button asks for Chrome).",
+        actions: [{ id: "extension-install", label: "Add to Aither" }, { id: "dismiss", label: "Not now" }],
+      });
+    }
+  });
+  wc.on("did-stop-loading", () => {
+    void collectLogin(id, wc).then(() => autofill(id, wc));
+  });
+}
+
+/** Open Edge on `url` (only Edge: shell.openExternal would come back here once Aither is the default). */
+function openInEdge(url) {
+  const exe = everyday.edgeExecutable();
+  if (!exe) return { ok: false, error: "Microsoft Edge is not installed" };
+  const target = String(url || "");
+  if (!/^(https?|edge):/i.test(target)) return { ok: false, error: "only web pages open in Edge" };
+  try {
+    require("node:child_process").spawn(exe, [target], { detached: true, stdio: "ignore", windowsHide: false }).unref();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error) };
+  }
+}
+
+/** The tab's page, if it is a live web page. */
+function pageWc(id) {
+  const view = viewOf(id);
+  return alive(view) ? view.webContents : null;
+}
+
+/** Translate the page in place with this machine's own model (nothing leaves for a translation service). */
+async function translatePage(id) {
+  const wc = pageWc(id);
+  if (!wc) return { ok: false };
+  let target = "English";
+  try { target = new Intl.DisplayNames(["en"], { type: "language" }).of(electron().app.getLocale().split("-")[0]) || "English"; } catch { /* English */ }
+  const got = await isolated(wc, everyday.TRANSLATE_COLLECT_SCRIPT);
+  const texts = got && Array.isArray(got.texts) ? got.texts : [];
+  if (!texts.length) { setNotice(id, { kind: "info", text: "Nothing on this page to translate." }); return { ok: false }; }
+  const batches = everyday.translateBatches(texts);
+  let done = 0;
+  let changed = 0;
+  const ask = async (prompt) => {
+    const r = await Promise.resolve(overlayAnswer({ type: "os-compose", prompt, maxTokens: 2048, temperature: 0.1 })).catch(() => null);
+    if (r && r.ok && r.text) return r.text;
+    if (typeof askAgent === "function") {
+      const a = await Promise.resolve(askAgent(prompt)).catch(() => null);
+      return a && a.ok !== false ? String(a.reply || "") : "";
+    }
+    return "";
+  };
+  for (const batch of batches) {
+    setNotice(id, { kind: "info", text: `Translating into ${target} on this computer… ${done}/${batches.length}`,
+      actions: [{ id: "show-original", label: "Show original" }] });
+    const reply = await ask(everyday.translatePrompt(batch.texts, target));
+    const out = everyday.parseTranslation(reply, batch.texts.length);
+    if (out && pageWc(id) === wc) changed += Number(await isolated(wc, everyday.translateApplyScript(batch.start, out))) || 0;
+    done += 1;
+  }
+  setNotice(id, changed
+    ? { kind: "info", text: `Translated into ${target} by your local model.`, actions: [{ id: "show-original", label: "Show original" }] }
+    : { kind: "info", text: "Translation failed: no local model answered (start one on aither://local-ai)." });
+  return { ok: changed > 0, changed };
+}
+
+function zoomTo(wc, dir) {
+  if (!wc) return false;
+  wc.setZoomFactor(everyday.nextZoom(wc.getZoomFactor(), dir));
+  pushState();
+  return true;
+}
+
+function sendToChrome(channel, payload) {
+  if (!win || win.isDestroyed()) return false;
+  win.webContents.focus();
+  win.webContents.send(channel, payload);
+  return true;
+}
+
+/**
+ * One place every standard key, menu item and right-click lands. Returns true when it
+ * was a browser action (so the key is not passed to the page).
+ */
+function runBrowserAction(action, arg, id = tabs.active) {
+  const wc = pageWc(id);
+  const tab = tabs.get(id) || {};
+  const history = wc && wc.navigationHistory;
+  const order = tabs.snapshot().tabs.map((t) => t.id);
+  const at = order.indexOf(tabs.active);
+  switch (action) {
+    case "new-tab": return openTab("you", homeUrl()).ok || true;
+    case "close-tab": closeTab(tabs.active, "you"); return true;
+    case "focus-address": return sendToChrome("desk:browser-focus-address");
+    case "find": return sendToChrome("desk:browser-find-open", (findResults.get(id) || {}).text || "");
+    case "find-next":
+    case "find-prev": {
+      const text = (findResults.get(id) || {}).text;
+      if (wc && text) wc.findInPage(text, { forward: action === "find-next", findNext: true });
+      return true;
+    }
+    case "print": if (wc) wc.print({ printBackground: true }, () => {}); return true;
+    case "zoom-in": return zoomTo(wc, 1);
+    case "zoom-out": return zoomTo(wc, -1);
+    case "zoom-reset": return zoomTo(wc, 0);
+    case "inprivate": return openTab("you", arg || privateHomeUrl(), { private: true }).ok || true;
+    case "reopen-closed": {
+      const last = closedTabs.pop();
+      if (last) openTab("you", last.url);
+      return true;
+    }
+    case "next-tab": case "prev-tab": {
+      if (order.length > 1) showTab(order[(at + (action === "next-tab" ? 1 : -1) + order.length) % order.length]);
+      return true;
+    }
+    case "tab-index": {
+      const n = Number(arg);
+      const pick = n === 9 ? order[order.length - 1] : order[n - 1];
+      if (pick != null) showTab(pick);
+      return true;
+    }
+    case "reload": if (wc) wc.reload(); return true;
+    case "back": if (history && history.canGoBack()) history.goBack(); return true;
+    case "forward": if (history && history.canGoForward()) history.goForward(); return true;
+    case "home": if (wc) void loadInView(viewOf(id), homeUrl()).catch(() => {}); return true;
+    case "fullscreen": if (win && !win.isDestroyed()) win.setFullScreen(!win.isFullScreen()); return true;
+    case "bookmark":
+      if (wc && !tab.private) getLibrary().toggleBookmark(wc.getURL(), wc.getTitle());
+      pushState();
+      return true;
+    case "history": return openInternal("history", null) !== false;
+    case "downloads": return false; // the side panel shows downloads; no page to open
+    case "translate": void translatePage(id); return true;
+    case "read-aloud": void readAloud(); return true;
+    case "open-edge": return openInEdge(wc ? wc.getURL() : "").ok;
+    default: return false;
+  }
+}
+
+/** The page's right-click menu (Electron draws none). */
+function showContextMenu(id, wc, params) {
+  const { Menu, clipboard, dialog } = electron();
+  const history = wc.navigationHistory;
+  const tab = tabs.get(id) || {};
+  const spec = everyday.contextMenuSpec(params, {
+    canGoBack: history ? history.canGoBack() : false,
+    canGoForward: history ? history.canGoForward() : false,
+    private: Boolean(tab.private),
+  });
+  const run = (item) => {
+    switch (item.id) {
+      case "spell-replace": wc.replaceMisspelling(item.arg); break;
+      case "spell-add": wc.session.addWordToSpellCheckerDictionary(item.arg); break;
+      case "link-new-tab": openTab(tab.private ? "you" : (tab.by || "you"), item.arg,
+        { activate: false, after: id, private: Boolean(tab.private) }); break;
+      case "link-inprivate": openTab("you", item.arg, { private: true }); break;
+      case "copy-text": clipboard.writeText(String(item.arg || "")); break;
+      case "image-save": wc.downloadURL(item.arg); break;
+      case "image-copy": wc.copyImageAt(params.x, params.y); break;
+      case "undo": wc.undo(); break;
+      case "redo": wc.redo(); break;
+      case "cut": wc.cut(); break;
+      case "copy": wc.copy(); break;
+      case "paste": wc.paste(); break;
+      case "paste-plain": wc.pasteAndMatchStyle(); break;
+      case "select-all": wc.selectAll(); break;
+      case "search": openSearch(item.arg); break;
+      case "save-page":
+        void dialog.showSaveDialog(win, { defaultPath: `${(wc.getTitle() || "page").replace(/[\\/:*?"<>|]+/g, " ").slice(0, 80)}.html`,
+          filters: [{ name: "Web page, complete", extensions: ["html"] }] })
+          .then((r) => { if (!r.canceled && r.filePath) return wc.savePage(r.filePath, "HTMLComplete"); return null; })
+          .catch(() => {});
+        break;
+      case "inspect": wc.inspectElement(params.x, params.y); break;
+      default: runBrowserAction(item.id, item.arg, id);
+    }
+  };
+  const template = spec.map((item) => (item.type === "separator" ? { type: "separator" }
+    : { label: item.label, enabled: item.enabled !== false, click: () => run(item) }));
+  Menu.buildFromTemplate(template).popup({ window: win });
+}
+
+/** A notice button (save password, open in Edge, add extension...). */
+async function noticeAction(actionId) {
+  const id = tabs.active;
+  const notice = tabNotices.get(id);
+  const wc = pageWc(id);
+  if (!notice) return { ok: false };
+  switch (actionId) {
+    case "password-save": {
+      const d = notice.data || {};
+      tabNotices.delete(id);
+      let r;
+      try { r = getVault().add({ origin: d.origin, username: d.username || "", password: d.password }); } catch (error) { r = { ok: false, error: String(error.message) }; }
+      setNotice(id, r && r.ok ? null : { kind: "info", text: `The password was not saved: ${(r && r.error) || "the vault refused"}` });
+      return r;
+    }
+    case "open-edge": {
+      const r = openInEdge((notice.data && notice.data.url) || (wc ? wc.getURL() : ""));
+      setNotice(id, r.ok ? null : { kind: "info", text: r.error });
+      return r;
+    }
+    case "password-fill": {
+      const d = notice.data || {};
+      setNotice(id, null);
+      if (!wc || wc.getURL() !== d.url || !d.entryId) return { ok: false };
+      return fillAccount(id, wc, d.entryId);
+    }
+    case "password-pick": setNotice(id, null); return passwordMenu();
+    case "drm-stay": drmStay.add((notice.data && notice.data.host) || ""); setNotice(id, null); return { ok: true };
+    case "extension-install": return installExtensionFrom(id, (notice.data && notice.data.url) || (wc ? wc.getURL() : ""));
+    case "show-original": setNotice(id, null); if (wc) wc.reload(); return { ok: true };
+    case "delete-file": {
+      const file = notice.data && notice.data.file;
+      try { if (file) require("node:fs").unlinkSync(file); setNotice(id, { kind: "info", text: "The CSV file is deleted." }); } catch (error) {
+        setNotice(id, { kind: "info", text: `Could not delete ${file}: ${error.message}` });
+      }
+      return { ok: true };
+    }
+    default: setNotice(id, null); return { ok: true };
+  }
+}
+
+/** Add a Chrome Web Store / Edge Add-ons extension (its page's URL) to the browser. */
+async function installExtensionFrom(id, url) {
+  setNotice(id, { kind: "info", text: "Downloading the extension…" });
+  const store = require("./browser-webstore.cjs");
+  const r = await store.installFromStore(url, { dir: userDataPath("extensions-store") }).catch((error) => ({ ok: false, error: String(error.message || error) }));
+  if (!r || !r.ok) { setNotice(id, { kind: "info", text: `The extension was not installed: ${(r && r.error) || "unknown error"}` }); return r; }
+  // Show what it may touch BEFORE it loads into the owner's session (review 2026-11-13).
+  // Unpacked to disk is inert; it runs only after this confirm.
+  const reach = extensionReach(r.path);
+  const { dialog } = electron();
+  const ask = await dialog.showMessageBox(win, {
+    type: "warning", buttons: ["Add extension", "Cancel"], defaultId: 1, cancelId: 1, noLink: true,
+    message: `Add "${r.name}" ${r.version}?`,
+    detail: `It will be able to:\n${reach.join("\n") || "- (asks for no special permissions)"}`,
+  });
+  if (ask.response !== 0) {
+    try { require("node:fs").rmSync(r.path, { recursive: true, force: true }); } catch { /* inert files */ }
+    setNotice(id, { kind: "info", text: `${r.name} was not added.` });
+    return { ok: false, error: "cancelled" };
+  }
+  const ew = require("./extensions-window.cjs");
+  ew.saveDirs([...ew.savedDirs(), r.path]);
+  try {
+    const ses = electron().session.fromPartition(PARTITION);
+    const api = ses.extensions || ses;
+    for (const e of (api.getAllExtensions ? api.getAllExtensions() : [])) if (e.id === r.id) api.removeExtension(e.id);
+    await api.loadExtension(r.path, { allowFileAccess: false });
+  } catch (error) {
+    setNotice(id, { kind: "info", text: `${r.name} is installed but did not load: ${error.message}` });
+    return { ok: false, error: error.message };
+  }
+  const warn = Array.isArray(r.warnings) && r.warnings.length ? ` Some parts may not work here (${r.warnings.join(", ")}).` : "";
+  setNotice(id, { kind: "info", text: `${r.name} ${r.version} is added.${warn}` });
+  return r;
+}
+
+/** What an unpacked extension asks to reach, in plain lines, from its manifest. */
+function extensionReach(dir) {
+  let m;
+  try { m = JSON.parse(require("node:fs").readFileSync(path.join(dir, "manifest.json"), "utf8")); } catch { return ["- (manifest unreadable)"]; }
+  const hosts = new Set([...(Array.isArray(m.host_permissions) ? m.host_permissions : []),
+    ...(Array.isArray(m.permissions) ? m.permissions.filter((p) => /[:/*]/.test(String(p))) : []),
+    ...(Array.isArray(m.content_scripts) ? m.content_scripts.flatMap((c) => (Array.isArray(c.matches) ? c.matches : [])) : [])]);
+  const perms = (Array.isArray(m.permissions) ? m.permissions : []).filter((p) => !/[:/*]/.test(String(p)));
+  const out = [];
+  const all = [...hosts].some((h) => /<all_urls>|^\*:\/\/\*\/|^https?:\/\/\*\//.test(String(h)));
+  if (all) out.push("- Read and change everything on every website you visit");
+  else if (hosts.size) out.push(`- Read and change: ${[...hosts].slice(0, 8).join(", ")}${hosts.size > 8 ? ` (+${hosts.size - 8} more)` : ""}`);
+  if (perms.length) out.push(`- Use: ${perms.slice(0, 12).join(", ")}${perms.length > 12 ? " ..." : ""}`);
+  return out;
+}
+
+async function importPasswordsCsv() {
+  const { dialog } = electron();
+  const id = tabs.active;
+  const pick = await dialog.showOpenDialog(win, { title: "Passwords CSV exported from Edge", properties: ["openFile"],
+    filters: [{ name: "CSV", extensions: ["csv"] }] });
+  if (pick.canceled || !pick.filePaths[0]) return { ok: false };
+  const file = pick.filePaths[0];
+  let r;
+  try {
+    const text = require("node:fs").readFileSync(file, "utf8");
+    r = await require("./browser-edge-import.cjs").importPasswordCsv({ text, vault: getVault() });
+  } catch (error) {
+    r = { ok: false, error: String(error.message) };
+  }
+  setNotice(id, r && r.ok
+    ? { kind: "info", text: `Imported ${r.added} passwords${r.skipped ? ` (${r.skipped} skipped)` : ""}. The CSV holds them in plain text: delete it now.`, data: { file },
+      actions: [{ id: "delete-file", label: "Delete the CSV" }, { id: "dismiss", label: "Keep it" }] }
+    : { kind: "info", text: `No passwords imported: ${(r && r.error) || "unreadable file"}` });
+  return r;
+}
+
+async function importFromEdgeProfile(dir) {
+  const id = tabs.active;
+  setNotice(id, { kind: "info", text: "Importing from Edge…" });
+  const r = await require("./browser-edge-import.cjs").importFromEdge({ profileDir: dir, library: getLibrary() })
+    .catch((error) => ({ ok: false, bookmarks: 0, history: 0, errors: [String(error.message)] }));
+  setNotice(id, { kind: "info", text: `From Edge: ${r.bookmarks} bookmarks and ${r.history} history entries added.`
+    + `${r.errors && r.errors.length ? ` Not imported: ${r.errors.join("; ")}.` : ""} Passwords: export them from Edge and import the CSV (menu > Passwords).` });
+  return r;
+}
+
+async function makeDefaultBrowser() {
+  const { app, shell } = electron();
+  const id = tabs.active;
+  const r = await require("./browser-default.cjs").createDefaultBrowser({
+    exe: process.execPath, appArgs: app.isPackaged ? [] : [app.getAppPath()], openExternal: (u) => shell.openExternal(u),
+  }).register();
+  setNotice(id, r.ok
+    ? { kind: "info", text: "Aither Browser is registered. In the Settings window that opened, click \"Set default\" next to Aither Browser." }
+    : { kind: "info", text: `Could not register: ${r.error}` });
+  return r;
+}
+
+/** The ⋯ menu: everything Edge keeps in its own. */
+function browserMenu() {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const { Menu, clipboard } = electron();
+  const id = tabs.active;
+  const wc = pageWc(id);
+  const url = wc ? wc.getURL() : "";
+  const ab = getAdblock();
+  const zoom = wc ? Math.round(wc.getZoomFactor() * 100) : 100;
+  let accounts = [];
+  try { accounts = getVault().list(); } catch { /* no vault */ }
+  let edgeProfiles = [];
+  try { edgeProfiles = require("./browser-edge-import.cjs").edgeProfileDirs(); } catch { /* no Edge */ }
+  const store = require("./browser-webstore.cjs").parseExtensionId(url);
+  const pwItems = accounts.slice(0, 40).map((a) => ({
+    label: `${a.origin.replace(/^https:\/\//, "")}  ${a.username || "(no name)"}`,
+    submenu: [
+      { label: "Copy password", click: () => { clipboard.writeText(getVault().reveal(a.id) || ""); setTimeout(() => clipboard.clear(), 30000); } },
+      { label: "Copy username", click: () => clipboard.writeText(a.username || "") },
+      { label: "Delete", click: () => { getVault().remove(a.id); pushState(); } },
+    ],
+  }));
+  const template = [
+    { label: "New tab", accelerator: "CmdOrCtrl+T", registerAccelerator: false, click: () => runBrowserAction("new-tab") },
+    { label: "New InPrivate tab", accelerator: "CmdOrCtrl+Shift+N", registerAccelerator: false, click: () => runBrowserAction("inprivate") },
+    { label: "Reopen closed tab", accelerator: "CmdOrCtrl+Shift+T", registerAccelerator: false, enabled: closedTabs.list().length > 0, click: () => runBrowserAction("reopen-closed") },
+    { type: "separator" },
+    { label: `Zoom (${zoom}%)`, submenu: [
+      { label: "Zoom in", accelerator: "CmdOrCtrl+=", registerAccelerator: false, click: () => runBrowserAction("zoom-in") },
+      { label: "Zoom out", accelerator: "CmdOrCtrl+-", registerAccelerator: false, click: () => runBrowserAction("zoom-out") },
+      { label: "Reset to 100%", accelerator: "CmdOrCtrl+0", registerAccelerator: false, click: () => runBrowserAction("zoom-reset") },
+    ] },
+    { label: "Find on page", accelerator: "CmdOrCtrl+F", registerAccelerator: false, click: () => runBrowserAction("find") },
+    { label: "Print…", accelerator: "CmdOrCtrl+P", registerAccelerator: false, click: () => runBrowserAction("print") },
+    { label: "Translate page", click: () => runBrowserAction("translate") },
+    { label: "Read aloud", click: () => runBrowserAction("read-aloud") },
+    { label: "Open in Edge", enabled: /^https?:/i.test(url) && Boolean(everyday.edgeExecutable()), click: () => runBrowserAction("open-edge") },
+    { type: "separator" },
+    { label: "Block ads and trackers", type: "checkbox", checked: ab.enabled(), click: (item) => { ab.setEnabled(item.checked); pushState(); } },
+    { label: "Allow ads on this site", type: "checkbox", enabled: ab.enabled() && /^https?:/i.test(url), checked: ab.siteOff(url),
+      click: (item) => { ab.setSiteOff(url, item.checked); if (wc) wc.reload(); } },
+    { label: `Update the block lists (${ab.hostCount().toLocaleString()} hosts)`, click: () => { void ab.refresh({ force: true }).then(() => pushState()); } },
+    { type: "separator" },
+    { label: `Passwords (${accounts.length})`, submenu: [
+      ...(pwItems.length ? pwItems : [{ label: "No saved passwords yet", enabled: false }]),
+      { type: "separator" },
+      { label: "Import passwords from a CSV…", click: () => { void importPasswordsCsv(); } },
+      { label: "Export them from Edge first…", enabled: Boolean(everyday.edgeExecutable()), click: () => openInEdge("edge://settings/passwords") },
+    ] },
+    { label: "Import from Edge", submenu: edgeProfiles.length
+      ? edgeProfiles.map((p) => ({ label: `${p.name}: bookmarks and history`, click: () => { void importFromEdgeProfile(p.dir); } }))
+      : [{ label: "No Edge profile found", enabled: false }] },
+    { label: "Extensions", submenu: [
+      { label: "Add this extension to Aither", enabled: store.ok, click: () => { void installExtensionFrom(id, url); } },
+      { label: "Open the Chrome Web Store", click: () => openTab("you", "https://chromewebstore.google.com/") },
+      { label: "Open Edge Add-ons", click: () => openTab("you", "https://microsoftedge.microsoft.com/addons") },
+      { label: "Manage extensions", click: () => openInternal("extensions", null) },
+    ] },
+    { type: "separator" },
+    { label: "Reopen my tabs when the browser starts", type: "checkbox", checked: getPrefs().restoreSession !== false,
+      click: (item) => setPrefs({ restoreSession: item.checked }) },
+    { label: "Make Aither your default browser…", visible: process.platform === "win32", click: () => { void makeDefaultBrowser(); } },
+  ];
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+/** The key icon: fill one of this site's saved accounts. */
+function passwordMenu() {
+  const id = tabs.active;
+  const wc = pageWc(id);
+  if (!wc || !passwordsAllowed(id, wc)) return { ok: false };
+  const { Menu } = electron();
+  const entries = getVault().forOrigin(wc.getURL());
+  const template = entries.map((e) => ({ label: `Fill ${e.username || "(no name)"}`, click: () => { void fillAccount(id, wc, e.id); } }));
+  if (!template.length) return { ok: false };
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+// ============================================================== end Edge parity
 
 /** AitherOS Online is hovering on the real desktop (the desk's overlay window). */
 function overlayOnDesktop() {
@@ -1229,8 +1895,16 @@ function ensureTaskbar() {
  * @returns {{ok: true, id: number, view: object} | {ok: false, error: string}}
  */
 function openTab(by, url, { activate = true, after = null, pinned = false, key = null, label = "",
-  hostedPartition = null, kind: wantKind = null } = {}) {
+  hostedPartition = null, kind: wantKind = null, private: inPrivate = false } = {}) {
   if (!win || win.isDestroyed()) return { ok: false, error: "The Aither Browser is not open." };
+  // InPrivate: the owner's, web pages only, on the in-memory partition (nothing on disk,
+  // no history, no passwords, no session restore). An agent never opens one.
+  if (inPrivate) {
+    if (by !== "you") return { ok: false, error: "only you open InPrivate tabs" };
+    const privTarget = classify(url);
+    if (privTarget.kind !== "web" && privTarget.kind !== "hosted") return { ok: false, error: "InPrivate opens web pages only" };
+    return openPrivateTab(privTarget.url, { activate, after });
+  }
   // Aitherium's own apps open natively (owner 2026-11-08): an aitherium.com URL a pane
   // declares in `web` becomes its aither:// page. Owner tabs only -- an agent never gets
   // an internal pane (browser-internal.upgradeToInternal; null = load the web page).
@@ -1466,8 +2140,16 @@ function setInboxBadge({ count = 0, image = null, tooltip = "" } = {}) {
 
 /** Close a tab (the owner, or the agent for its own). The last tab closing opens a fresh home tab. */
 function closeTab(id, by = "you") {
+  const before = tabs.get(id);
+  const beforeView = views.get(id);
+  const beforeUrl = alive(beforeView) ? beforeView.webContents.getURL() : (discarded.get(id) || {}).url || "";
   const closed = tabs.close(id, by);
   if (!closed.ok) return closed;
+  if (before) {
+    closedTabs.push({ by: before.by, private: before.private, url: beforeUrl,
+      title: alive(beforeView) ? beforeView.webContents.getTitle() : "" });
+  }
+  forgetTabExtras(id);
   const pop = popped.get(id);
   popped.delete(id);
   if (pop && !pop.isDestroyed()) {
@@ -1483,6 +2165,7 @@ function closeTab(id, by = "you") {
     if (win && !win.isDestroyed()) win.contentView.removeChildView(view);
     view.webContents.close();
   }
+  if (before && before.private) clearPrivateIfLast();
   if (tabs.tabs.length === 0 && win && !win.isDestroyed()) openTab("you", homeUrl());
   layout();
   pushState();
@@ -1631,8 +2314,14 @@ function wirePage(wc, id) {
     const css = JSON.stringify(taskbar.HOST_DOCK_CSS);
     void frame.executeJavaScript(`(() => { ${taskbar.hostFlagScript(true)}; const s = document.createElement("style"); s.textContent = ${css}; document.head.append(s); })()`).catch(() => {});
   });
+  wireEveryday(wc, id);
   // Alt+O, awconnect's own key for the overlay.
   wc.on("before-input-event", (event, input) => {
+    const act = everyday.keyAction(input);
+    if (act && runBrowserAction(act.action, act.arg, id)) {
+      event.preventDefault();
+      return;
+    }
     if (input.type === "keyDown" && input.alt && !input.control && !input.meta && String(input.key).toLowerCase() === "o") {
       event.preventDefault();
       setOverlay(!getPrefs().overlay);
@@ -1656,7 +2345,7 @@ function wirePage(wc, id) {
   wc.on("did-stop-loading", () => {
     const tab = tabs.get(id);
     // Console pages are not "history": the address bar suggests them by name instead.
-    if (tab && tab.kind === "web") getLibrary().visit(wc.getURL(), wc.getTitle(), tab.by);
+    if (tab && tab.kind === "web" && !tab.private) getLibrary().visit(wc.getURL(), wc.getTitle(), tab.by);
   });
 }
 
@@ -1818,8 +2507,14 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event) => event.preventDefault());
   win.webContents.on("before-input-event", (event, input) => {
-    if (isDockKey(input)) { event.preventDefault(); setDockOpen(undefined); }
+    if (isDockKey(input)) { event.preventDefault(); setDockOpen(undefined); return; }
+    // The standard keys work with the toolbar focused too (the address bar keeps its
+    // own editing keys: none of them is a browser action).
+    const act = everyday.keyAction(input);
+    if (act && runBrowserAction(act.action, act.arg, tabs.active)) event.preventDefault();
   });
+  // Session restore: what was open is written as the window closes (before the views go).
+  win.on("close", () => { if (getPrefs().restoreSession !== false) getSessionStore().flush(tabList()); });
 
   tabs = new TabSet();
   panelView = createAssistantPanel(WebContentsView);
@@ -1882,7 +2577,11 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   void win.loadFile(path.join(__dirname, "browser-chrome.html"));
   // `home: false` is the console door (openInternal): it opens its own pane tab,
   // so a home page underneath it would be one more tab nobody asked for.
-  if (home || (target && target.ok)) openTab("you", target && target.ok ? target.url : homeUrl());
+  // Continue where you left off (Edge's default): the owner's tabs from last time come
+  // back first, then the page this open asked for. Nothing saved: the home page.
+  const restored = getPrefs().restoreSession === false ? 0 : restoreSession();
+  if (target && target.ok) openTab("you", target.url);
+  else if (home && !restored) openTab("you", homeUrl());
   return win;
 }
 
@@ -2473,6 +3172,30 @@ function wireIpc() {
     const on = getLibrary().toggleBookmark(view.webContents.getURL(), view.webContents.getTitle());
     pushState();
     return { ok: true, bookmarked: on };
+  });
+  // Edge parity: the ⋯ menu, the key icon, a notice's buttons, find on page, zoom badge.
+  ipcMain.handle("desk:browser-menu", (event) => (fromChrome(event) ? browserMenu() : { ok: false }));
+  ipcMain.handle("desk:browser-passwords", (event) => (fromChrome(event) ? passwordMenu() : { ok: false }));
+  ipcMain.handle("desk:browser-notice", (event, action) => (fromChrome(event) ? noticeAction(String(action || "")) : { ok: false }));
+  ipcMain.on("desk:browser-find", (event, text, forward) => {
+    const wc = pageWc(tabs.active);
+    if (!fromChrome(event) || !wc) return;
+    const q = typeof text === "string" ? text.slice(0, 500) : "";
+    const prev = findResults.get(tabs.active) || {};
+    if (!q) { wc.stopFindInPage("clearSelection"); findResults.delete(tabs.active); pushState(); return; }
+    findResults.set(tabs.active, { text: q, matches: prev.text === q ? prev.matches : 0, active: prev.text === q ? prev.active : 0 });
+    wc.findInPage(q, { forward: forward !== false, findNext: prev.text === q });
+  });
+  ipcMain.on("desk:browser-find-stop", (event) => {
+    const wc = pageWc(tabs.active);
+    if (!fromChrome(event) || !wc) return;
+    wc.stopFindInPage("keepSelection");
+    findResults.delete(tabs.active);
+    pushState();
+    wc.focus();
+  });
+  ipcMain.on("desk:browser-action", (event, action) => {
+    if (fromChrome(event)) runBrowserAction(String(action || ""), null, tabs.active);
   });
   // The Connect panel: what the owner has selected, an agent task, and "Open in Chrome".
   // Notes and memory about the page on screen (knowledge-client.cjs). The PANEL asks;
@@ -3220,6 +3943,14 @@ module.exports = {
   getState: () => state(),
   getLibrary,
   screenPage,
+  /** Edge parity: a standard key / menu action by name, a notice button, and their pieces (smoke). */
+  runBrowserAction,
+  noticeAction,
+  browserMenu,
+  getAdblock,
+  getVault,
+  __pageForTest: (id) => pageWc(id),
+  __noticeForTest: (id) => tabNotices.get(id) || null,
   /** The owner clicking a tab, for browser-tabs-smoke.cjs (the strip's IPC needs a real sender). */
   __showTabForTest: (id) => showTab(id),
   /**

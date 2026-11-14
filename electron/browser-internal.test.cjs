@@ -203,6 +203,7 @@ test("tab preferences: web = no preload + sandbox; internal = its own session + 
   assert.equal(web.preload, undefined);
   assert.equal(web.sandbox, true);
   assert.equal(web.partition, "persist:aither-browser");
+  assert.equal(web.plugins, true, "PDFs open in the tab (Chromium's viewer)");
   const inside = internal.tabPreferences("internal", { webPartition: "persist:aither-browser" });
   assert.equal(inside.partition, internal.INTERNAL_PARTITION);
   assert.notEqual(inside.partition, web.partition, "the scheme's session must not be the web session");

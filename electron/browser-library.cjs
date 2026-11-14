@@ -116,6 +116,34 @@ function createLibrary({ file, now = () => Date.now(), maxHistory = MAX_HISTORY 
     },
 
     /**
+     * Bring in another browser's bookmarks and history (Import from Edge). An entry
+     * already here is kept as it is; imported history counts as the owner's own.
+     * @returns {{bookmarks: number, history: number}} how many were added.
+     */
+    importEntries({ bookmarks = [], history = [] } = {}) {
+      let b = 0;
+      let h = 0;
+      for (const e of Array.isArray(bookmarks) ? bookmarks : []) {
+        if (!e || !storable(e.url) || data.bookmarks.length >= MAX_BOOKMARKS) continue;
+        if (data.bookmarks.some((x) => x.url === e.url)) continue;
+        data.bookmarks.push({ url: e.url, title: String(e.title || "").slice(0, MAX_TITLE), at: Number(e.at) || now() });
+        b += 1;
+      }
+      const known = new Set(data.history.map((x) => x.url));
+      for (const e of Array.isArray(history) ? history : []) {
+        if (!e || !storable(e.url) || known.has(e.url)) continue;
+        known.add(e.url);
+        data.history.push({ url: e.url, title: String(e.title || "").slice(0, MAX_TITLE), at: Number(e.at) || 0,
+          count: Math.max(1, Number(e.count) || 1), by: "you" });
+        h += 1;
+      }
+      data.history.sort((x, y) => (y.at || 0) - (x.at || 0));
+      if (data.history.length > maxHistory) data.history.length = maxHistory;
+      if (b || h) save();
+      return { bookmarks: b, history: h };
+    },
+
+    /**
      * Address-bar suggestions for what the owner typed: bookmarks first, then the
      * owner's own history, then pages an agent visited; most-visited first within each.
      */

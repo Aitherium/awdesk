@@ -676,6 +676,9 @@ function tabPreferences(kind, { webPartition, hostedPartition = null } = {}) {
     sandbox: true,
     webSecurity: true,
     allowRunningInsecureContent: false,
+    // Chromium's built-in PDF viewer (Edge opens PDFs in the tab; without it they download).
+    plugins: true,
+    spellcheck: true,
   };
 }
 

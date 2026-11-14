@@ -63,3 +63,17 @@ test("bookmarks toggle, persist and lead the suggestions", () => {
   lib.clearHistory();
   assert.deepEqual(lib.history(), []);
 });
+
+test("import adds new bookmarks and history, keeps what is already here", () => {
+  const lib = createLibrary({ file: tmpFile(), now: () => 5 });
+  lib.toggleBookmark("https://keep.test/", "Mine");
+  lib.visit("https://seen.test/", "Seen");
+  const r = lib.importEntries({
+    bookmarks: [{ url: "https://keep.test/", title: "Edge name" }, { url: "https://new.test/", title: "New" }, { url: "javascript:1" }],
+    history: [{ url: "https://seen.test/", title: "x", at: 1, count: 9 }, { url: "https://old.test/", title: "Old", at: 2, count: 3 }],
+  });
+  assert.deepEqual(r, { bookmarks: 1, history: 1 });
+  assert.equal(lib.bookmarks().find((b) => b.url === "https://keep.test/").title, "Mine");
+  assert.deepEqual(lib.history().map((h) => h.url), ["https://seen.test/", "https://old.test/"]);
+  assert.equal(lib.history()[1].by, "you");
+});
