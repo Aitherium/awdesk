@@ -47,6 +47,31 @@ try {
   }));
 } catch { /* contextIsolation off (an old host): the page simply sees no desk verbs */ }
 
+// Right click on the workspace's own companion (`[data-companion]`, GARG's goblin):
+// the desk's companion menu -- Hide this, Hide all, Show all, the doors, quiet, quit
+// (owner 2026-11-13). Capture phase, so the page's own handler never eats it.
+window.addEventListener("contextmenu", (event) => {
+  const target = event && event.target;
+  const hit = target && typeof target.closest === "function" ? target.closest("[data-companion]") : null;
+  if (!hit) return;
+  event.preventDefault();
+  event.stopPropagation();
+  // Where the click was, so the menu opens AT the companion (screen DIP).
+  ipcRenderer.send("living-desktop:companion-menu", { x: Number(event.screenX) || 0, y: Number(event.screenY) || 0 });
+}, true);
+
+// Dragging the companion: the overlay keeps the mouse from press to release, so the
+// click-through loop cannot drop the drag halfway (owner 2026-11-13: "the goblin can't
+// be dragged or moved properly").
+window.addEventListener("pointerdown", (event) => {
+  const target = event && event.target;
+  const hit = target && typeof target.closest === "function" ? target.closest("[data-companion]") : null;
+  if (hit) ipcRenderer.send("living-desktop:companion-hold", true);
+}, true);
+for (const name of ["pointerup", "pointercancel", "blur"]) {
+  window.addEventListener(name, () => ipcRenderer.send("living-desktop:companion-hold", false), true);
+}
+
 window.addEventListener("message", (event) => {
   const data = event && event.data;
   if (!data || data.__aither !== "os-regions") return;

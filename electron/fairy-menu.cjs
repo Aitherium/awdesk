@@ -19,6 +19,8 @@
  * PURE: no electron, no fs. The caller owns the clock and the windows.
  */
 
+const companionMenu = require("./companion-menu.cjs");
+
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 
@@ -126,30 +128,40 @@ function fairyItems(card, { label = "", agent = "" } = {}) {
 }
 
 /**
- * The right-click menu on the orb.
+ * The right-click menu on the orb: the queue's doors, then the companion rows every
+ * companion and the tray share (companion-menu.cjs, owner 2026-11-13: hide this /
+ * hide all / show all, the desktop, Spaces, chat, settings, quiet, quit).
  *
  * Args:
  *   opts.waiting: how many cards wait.
- *   opts.mutedUntil: ms epoch the nudges are muted until (0 = not muted).
+ *   opts.quietUntil: ms epoch quiet mode ends (0 = not quiet). `mutedUntil` is the
+ *     older name, still read.
+ *   opts.tenantVisible: the workspace's own companion shows.
  *   opts.nowMs: the clock.
  */
-function orbItems({ waiting = 0, mutedUntil = 0, nowMs = Date.now() } = {}) {
-  const muted = Number(mutedUntil) > Number(nowMs);
+function orbItems({
+  waiting = 0, mutedUntil = 0, quietUntil = 0, tenantVisible = false, fairyVisible = true, nowMs = Date.now(),
+} = {}) {
   const n = Math.max(0, Number(waiting) || 0);
-  return {
-    header: n ? `Aither · ${n} waiting on you` : "Aither",
-    items: [
-      { id: "inbox", label: "Open inbox", hint: "The Inbox, where every card is answered" },
-      { id: "queue", label: "Answer window", hint: "Every waiting card in one list", disabled: n === 0 },
-      muted
-        ? { id: "unmute", label: "Unmute nudges", hint: "The fairy may nudge again" }
-        : { id: "mute-1h", label: "Mute nudges 1 hour", hint: "No nudges, chimes or flutters for an hour" },
-      { id: "hide", label: "Hide fairies", hint: "Hide the fairy and its companions (the tray brings them back)" },
-      { id: "settings", label: "Settings", hint: "Desk settings" },
-      { sep: true },
-      { id: "more", label: "More…", hint: "Search, ask, attach, sounds and the desk's doors" },
-    ],
-  };
+  const items = [{ id: "inbox", label: "Open inbox", hint: "The Inbox, where every card is answered" }];
+  // Nothing waiting: no list to open, so no row (never a dead item).
+  if (n) items.push({ id: "queue", label: "Answer window", hint: "Every waiting card in one list" });
+  items.push({ sep: true });
+  items.push(...companionMenu.items({
+    target: "fairy", fairyVisible, tenantVisible,
+    quietUntil: Math.max(Number(quietUntil) || 0, Number(mutedUntil) || 0), nowMs,
+  }));
+  items.push({ sep: true }, { id: "more", label: "More…", hint: "Search, ask, attach, sounds and the desk's doors" });
+  return { header: n ? `Aither · ${n} waiting on you` : "Aither", items };
+}
+
+/**
+ * The companion rows under a companion fairy's own card rows, or the whole menu of
+ * the workspace's own companion (target "tenant").
+ */
+function withCompanionRows(built, opts = {}) {
+  const base = built && Array.isArray(built.items) ? built.items : [];
+  return { ...built, items: [...base, ...(base.length ? [{ sep: true }] : []), ...companionMenu.items(opts)] };
 }
 
 /** The pixel height the menu window needs for `items` (plus its header). */
@@ -168,7 +180,7 @@ function menuPlacement(cursor, area, size) {
   const c = cursor && Number.isFinite(Number(cursor.x)) ? cursor : { x: 0, y: 0 };
   const a = area || { x: 0, y: 0, width: 1920, height: 1080 };
   const w = Number(size && size.width) || MENU.width;
-  const h = Number(size && size.height) || 200;
+  const h = Math.min(Number(size && size.height) || 200, menuMaxHeight(a));
   let x = c.x + 8;
   let y = c.y + 4;
   if (x + w > a.x + a.width) x = c.x - w - 8;
@@ -176,6 +188,17 @@ function menuPlacement(cursor, area, size) {
   x = Math.min(Math.max(a.x, x), a.x + a.width - w);
   y = Math.min(Math.max(a.y, y), a.y + a.height - h);
   return { x: Math.round(x), y: Math.round(y) };
+}
+
+/** The tallest a menu window may be on `area`: a longer menu scrolls inside it. */
+function menuMaxHeight(area) {
+  const a = area || { height: 1080 };
+  return Math.max(MENU.head + MENU.pad * 2 + MENU.row * 3, Math.floor(Number(a.height) || 1080) - 16);
+}
+
+/** The menu window's size on `area`: its rows, never taller than the area. */
+function menuSize(items, area) {
+  return { width: MENU.width, height: Math.min(menuHeight(items), menuMaxHeight(area)) };
 }
 
 /** The one-line hover tooltip for a companion: who, and what it waits on. */
@@ -205,8 +228,11 @@ module.exports = {
   recordSnooze,
   fairyItems,
   orbItems,
+  withCompanionRows,
   menuHeight,
   menuPlacement,
+  menuMaxHeight,
+  menuSize,
   tipText,
   cardLink,
 };

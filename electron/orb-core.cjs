@@ -480,7 +480,13 @@ function sanitizeState(raw) {
   const src = raw && typeof raw === "object" ? raw : {};
   const finite = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
   return {
-    visible: src.visible !== false,
+    // Hidden until somebody shows it (owner 2026-11-13, companion-menu.cjs): a fresh
+    // install shows no fairy; the tray icon and the menus bring it back.
+    visible: src.visible === true,
+    // The tenant site's own companion (GARG's goblin, `[data-companion]`): hidden too.
+    tenantCompanion: src.tenantCompanion === true,
+    // companion-menu.migrate has moved an older install to hidden (1) or not yet (0).
+    companionsV: Math.max(0, finite(src.companionsV) || 0),
     pinned: src.pinned === true,
     x: finite(src.x),
     y: finite(src.y),
@@ -488,6 +494,8 @@ function sanitizeState(raw) {
     freeRoam: src.freeRoam === true,
     // The fairy chimes when it nudges (owner 2026-11-08), on unless turned off.
     sounds: src.sounds !== false,
+    // The swarm of agent fairies around the orb: off unless asked for (owner 2026-11-13).
+    swarm: src.swarm === true,
     // "Mute nudges 1 hour" from the orb's right-click menu (owner 2026-11-12): ms epoch.
     muteUntil: Math.max(0, finite(src.muteUntil) || 0),
   };

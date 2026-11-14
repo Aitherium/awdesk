@@ -250,7 +250,7 @@ function cursorOnChrome(win) {
 
 function applyGhostTick() {
   if (!isOpen() || !desktopWin.isVisible()) return;
-  const shouldInteract = !ghostMode || !transparentMode || cursorOverInteractive();
+  const shouldInteract = !ghostMode || !transparentMode || cursorOverCompanion() || cursorOverInteractive();
   const shouldIgnore = !shouldInteract;
   if (shouldIgnore !== ignoringMouse) {
     ignoringMouse = shouldIgnore;
@@ -291,13 +291,109 @@ let companionBox = null; // the last answer, for /desktop/status
 /** The page's own fairy (Veil os-fairy.tsx) is the SECOND cluster the owner saw. Inside
  *  the desk's windows the desk fairy is the one cluster, so the page's is not drawn. */
 const HIDE_PAGE_FAIRY_CSS = "[data-os-fairy-root]{display:none !important}";
+const pageFairyHidden = new WeakSet(); // webContents with the rule in this page load
 function hidePageFairy(win) {
-  try { void win.webContents.insertCSS(HIDE_PAGE_FAIRY_CSS).catch(() => {}); } catch { /* window gone */ }
+  try {
+    const wc = win.webContents;
+    if (pageFairyHidden.has(wc)) return; // one rule per load (it was one per 2.5 s: ~1,400 an hour)
+    pageFairyHidden.add(wc);
+    void wc.insertCSS(HIDE_PAGE_FAIRY_CSS).catch(() => { pageFairyHidden.delete(wc); });
+  } catch { /* window gone */ }
+}
+/** A new page load drops inserted rules: the next hidePageFairy inserts again. */
+function forgetPageFairy(win) {
+  try { pageFairyHidden.delete(win.webContents); } catch { /* window gone */ }
 }
 /** The AitherOS window the fairy rides: the app window while it is up, else none. */
 function rideWindow() {
   return isAppOpen() && appWin.isVisible() && !appWin.isMinimized() ? appWin : null;
 }
+// The workspace's own companion (GARG's goblin) is HIDDEN until the person shows it
+// (owner 2026-11-13: "hide them by default"; the switch is orb.json tenantCompanion,
+// companion-menu.cjs). One inserted rule per page load, removed when it is shown.
+const HIDE_TENANT_COMPANION_CSS = "[data-companion]{display:none !important}";
+const tenantCssKeys = new WeakMap(); // webContents -> insertCSS key
+function tenantCompanionVisible() {
+  try { return require("./orb-window.cjs").tenantCompanionVisible(); } catch { return false; }
+}
+// One chain per page: an insert and a remove never interleave, and each step re-reads
+// what is WANTED after its await (a Hide then a Show inside one insert lands shown).
+const tenantCssChains = new WeakMap();
+function applyTenantCompanion(win) {
+  if (!win || win.isDestroyed()) return Promise.resolve();
+  const wc = win.webContents;
+  const next = (tenantCssChains.get(wc) || Promise.resolve()).then(async () => {
+    if (win.isDestroyed()) return;
+    const key = tenantCssKeys.get(wc);
+    try {
+      if (tenantCompanionVisible()) {
+        if (key) {
+          tenantCssKeys.delete(wc);
+          await wc.removeInsertedCSS(key);
+        }
+      } else if (!key) {
+        const inserted = await wc.insertCSS(HIDE_TENANT_COMPANION_CSS);
+        if (!win.isDestroyed()) tenantCssKeys.set(wc, inserted);
+        if (tenantCompanionVisible()) await applyTenantCompanionNow(win);
+      }
+    } catch { /* the page is loading or gone: the next load applies it */ }
+  });
+  tenantCssChains.set(wc, next);
+  return next;
+}
+/** The wanted state changed while an insert was in flight: undo it in the same step. */
+async function applyTenantCompanionNow(win) {
+  const wc = win.webContents;
+  const key = tenantCssKeys.get(wc);
+  if (key && tenantCompanionVisible()) {
+    tenantCssKeys.delete(wc);
+    try { await wc.removeInsertedCSS(key); } catch { /* gone */ }
+  }
+}
+/** A page load drops every inserted rule: forget the key, then apply again. */
+function reapplyTenantCompanion(win) {
+  if (!win || win.isDestroyed()) return;
+  ensureCompanionListener();
+  const wc = win.webContents;
+  tenantCssChains.set(wc, (tenantCssChains.get(wc) || Promise.resolve()).then(() => { tenantCssKeys.delete(wc); }));
+  void applyTenantCompanion(win);
+}
+function syncTenantCompanion() {
+  if (isOpen()) void applyTenantCompanion(desktopWin);
+  if (isAppOpen()) void applyTenantCompanion(appWin);
+}
+let companionListening = false;
+function ensureCompanionListener() {
+  if (companionListening) return;
+  companionListening = true;
+  try { require("./orb-window.cjs").onCompanionsChange(() => syncTenantCompanion()); } catch { /* no fairy in this process */ }
+}
+
+// Right click on the workspace's own companion: the desk's companion menu (the
+// preload sends this only for a `[data-companion]` element, from our own windows).
+ipcMain.on("living-desktop:companion-menu", (event, point) => {
+  const own = (isOpen() && event.sender === desktopWin.webContents) || (isAppOpen() && event.sender === appWin.webContents);
+  if (!own) return;
+  const p = point && typeof point === "object" ? point : {};
+  const at = Number.isFinite(p.x) && Number.isFinite(p.y) && (p.x || p.y) ? { x: p.x, y: p.y } : screen.getCursorScreenPoint();
+  try { require("./orb-window.cjs").openCompanionMenu("tenant", { at }); } catch { /* no fairy in this process */ }
+});
+
+// A press on the companion holds the overlay interactive until release (10 s at most),
+// and the companion's own box always takes the mouse: the goblin drags and clicks.
+let companionHoldUntil = 0;
+ipcMain.on("living-desktop:companion-hold", (event, on) => {
+  if (!isOpen() || event.sender !== desktopWin.webContents) return;
+  companionHoldUntil = on === true ? Date.now() + 10_000 : 0;
+});
+function cursorOverCompanion() {
+  if (Date.now() < companionHoldUntil) return true;
+  const box = companionBox;
+  if (!box || !tenantCompanionVisible()) return false;
+  const c = screen.getCursorScreenPoint();
+  return c.x >= box.x && c.x <= box.x + box.width && c.y >= box.y && c.y <= box.y + box.height;
+}
+
 function syncFairyDock() {
   try { void require("./orb-window.cjs").setDockWindow(rideWindow()); } catch { /* no fairy in this process */ }
 }
@@ -752,6 +848,9 @@ function createWindow() {
     if (isMainFrame) log(`did-fail-load ${failedUrl}: ${code} ${desc}`);
   });
   win.webContents.on("did-finish-load", () => {
+    forgetPageFairy(win);
+    hidePageFairy(win);
+    reapplyTenantCompanion(win);
     // Local-node probing consent (owner-approved 2026-08-25): the shell's detector
     // (Veil local-node-optin.ts) only probes loopback after an explicit opt-in, and
     // this overlay partition starts with none — so the owner's own shell "detects no
@@ -1040,7 +1139,11 @@ function showDesktopApp({ app = "" } = {}) {
     appWin.show();
     appWin.focus();
   });
-  appWin.webContents.on("did-finish-load", () => hidePageFairy(appWin));
+  appWin.webContents.on("did-finish-load", () => {
+    forgetPageFairy(appWin);
+    hidePageFairy(appWin);
+    reapplyTenantCompanion(appWin);
+  });
   for (const event of ["show", "hide", "minimize", "restore"]) appWin.on(event, () => syncFairyDock());
   appWin.on("closed", () => {
     appWin = null;
@@ -1062,6 +1165,7 @@ function desktopStatus() {
     app: { open: isAppOpen(), visible: isAppOpen() && appWin.isVisible(), shell: desktopAppShell() || "workspace" },
     url: BASE_URL,
     companion: companionBox, // where the tenant site draws its own companion, screen DIP
+    companionShown: tenantCompanionVisible(),
     fairyDock: (() => { try { return require("./orb-window.cjs").__dock(); } catch { return null; } })(),
     shells: SHELL_CHOICES.map((c) => ({ id: c.id, label: c.label })),
   };

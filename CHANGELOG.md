@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.1.32 - 2026-11-13
+
+- The fairies and the workspace's own companion (for example a goblin) are hidden until you show them. A new install starts with none on screen; an install updated to this version hides them once, and after that your choice is remembered.
+- Right-click any companion (the fairy, a fairy in its swarm, or the workspace's companion) for one menu: Hide this, Hide all companions, Show all companions, Open AitherOS desktop, Open Spaces, Chat with Aither, Settings, Quiet for 1 hour or 4 hours (no popups, nudges or chimes), and Quit Aither. Arrow keys, Enter and Esc work in it.
+- The tray icon carries the same rows at the top: Show or Hide all companions, Open AitherOS desktop, Open Spaces and quiet mode (Chat, Settings and Quit are further down). Right-clicking Aither on the taskbar offers Show or Hide the fairies too, and Ctrl+K has both.
+- One cluster: in the desk's AitherOS windows the page's own fairy is not drawn, and the desk's fairy rides the AitherOS window while it is open. A hidden fairy never docks itself.
+- One fairy cluster per computer: a second Aither desk running at the same time (another profile or a test build) never draws its own fairies.
+- No swarm: the fairy shows one badge with the count, and clicking it opens the Inbox, where old cards are cleared in one place.
+- Menus open where you clicked, including on the workspace's companion, stay on the screen, and scroll when they are long. The tray's Sound and Capture rows are grouped so the tray fits on the screen.
+- The workspace's companion can be dragged: the desktop keeps the mouse from press to release.
+
 ## 0.1.31 - 2026-11-13
 
 - Alt+Space is the command center. The one box now finds and acts on your agents and work, not just apps and files: Claude Code and awsh sessions, live agent runs (Atlas presence), fleet agents, the awdk agents on this PC and managed twins (Agents & runs); projects, tasks, the 2027 roadmap, your open PRs and the decision cards (Work); plans, agent notebooks and memory (Knowledge); awrise schedules with their last verdict, routines and the calendar (Time); the team and contacts (People). Type a category word (agents, runs, prs, calendar, people) to list it. The empty box shows Needs you and Working now.

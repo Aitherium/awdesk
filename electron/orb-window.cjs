@@ -50,6 +50,8 @@ const selectionReader = require("./selection-reader.cjs");
 const fairyAttention = require("./fairy-attention.cjs");
 const agentFairy = require("./agent-fairy.cjs");
 const fairyMenu = require("./fairy-menu.cjs");
+const companionMenu = require("./companion-menu.cjs");
+const fairyOwner = require("./fairy-owner.cjs");
 const fairyCounts = require("./fairy-counts.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
@@ -294,6 +296,8 @@ async function setDockWindow(win) {
   const ride = alive(win) && win.isVisible() && !win.isMinimized() ? win : null;
   dockWindowId = ride ? ride.id : 0;
   if (!alive(orbWindow) || dragging) return { ok: false };
+  // Hidden fairies stay hidden (owner 2026-11-13): docking never shows them.
+  if (ride && !state.visible) return { ok: true, docked: false, why: "the fairies are hidden" };
   if (ride) {
     if (attach && !attach.auto) return { ok: true, docked: false, why: "attached by hand" };
     if (attach && attach.auto && attach.windowId === ride.id) return { ok: true, docked: true };
@@ -522,7 +526,9 @@ function raiseOrbOverSwarm() {
 /** Show, size, follow or hide the swarm for the current companions. */
 function placeSwarm(companions = swarmCompanions, { raise = false } = {}) {
   const list = Array.isArray(companions) ? companions : [];
-  if (!list.length || !orbVisible()) {
+  // No swarm (owner 2026-11-13: "keep the badge ... link to the inbox, don't show a
+  // swarm"): one fairy and its badge. orb.json `swarm: true` brings the swarm back.
+  if (!list.length || !orbVisible() || state.swarm !== true) {
     if (alive(swarmWindow) && swarmWindow.isVisible()) swarmWindow.hide();
     return;
   }
@@ -709,6 +715,13 @@ function hideVeil() {
 // ── visibility ──────────────────────────────────────────────────────────────
 
 function showOrb() {
+  // One cluster on this machine, ever (owner 2026-11-13): a second desk process (another
+  // profile, a test build) never shows its own fairies while another desk owns them.
+  const owner = fairyOwner.claim();
+  if (!owner.ok) {
+    suppressed = true;
+    return { ok: false, visible: false, error: `another Aither desk (pid ${owner.pid}) shows the fairies` };
+  }
   const win = ensureOrb();
   const was = state.visible;
   state.visible = true;
@@ -717,6 +730,13 @@ function showOrb() {
   if (!win.isVisible()) win.showInactive();
   if (attach) showVeil();
   placeSwarm();
+  if (!was) {
+    notifyCompanions();
+    // Shown while an AitherOS window is up: ride it (one cluster, PR #68).
+    if (dockWindowId) {
+      try { void setDockWindow(electron().BrowserWindow.fromId(dockWindowId)); } catch { /* window gone */ }
+    }
+  }
   return { ok: true, visible: true };
 }
 
@@ -733,7 +753,11 @@ function hideOrb() {
   sendPanel();
   const was = state.visible;
   state.visible = false;
-  if (was) saveState();
+  if (was) {
+    saveState();
+    notifyCompanions();
+  }
+  fairyOwner.release(); // hidden: another desk may show the one cluster
   return { ok: true, visible: false };
 }
 
@@ -3104,11 +3128,13 @@ function toggleBubbleFromOrb() {
   // list (owner 2026-11-12: "make the left-click and right-click interactions
   // better"). A companion fairy's click opens ITS card; the orb is the whole queue.
   // The card the fairy carries counts as seen. Chat stays on the right-click menu.
+  // Owner 2026-11-13: the badge links to the INBOX, where stale cards are cleared in
+  // one place; nothing piles up on screen.
   if (waiting) {
     if (nudging) endNudge("seen", { stay: true });
     if (alive(bubbleWindow) && bubbleWindow.isVisible()) bubbleWindow.hide();
-    openQueue();
-    return { ok: true, visible: false, queue: true, waiting: attentionCards.length };
+    hookValue("open", null);
+    return { ok: true, visible: false, inbox: true, waiting: attentionCards.length };
   }
   openBubble({ focus: true });
   return { ok: true, visible: true };
@@ -3194,6 +3220,14 @@ function workAreaAt(point) {
   try { return fairyArea(electron().screen.getDisplayNearestPoint(point).workArea); } catch { return null; }
 }
 
+/** Where a MENU may go: the display's whole work area at the click. Never the fairy's
+ *  area (which avoids the workspace companion's box): measured 2026-11-13, a right
+ *  click on the goblin opened its menu far away beside the fairies, because the area
+ *  minus the goblin's box was the left of the screen. A menu anchors to the click. */
+function menuAreaAt(point) {
+  try { return electron().screen.getDisplayNearestPoint(point).workArea; } catch { return null; }
+}
+
 /** Send to a page now, or once it has loaded (a window made a moment ago). */
 function deliverTo(win, channel, payload) {
   const go = () => { try { if (alive(win)) win.webContents.send(channel, payload); } catch { /* gone */ } };
@@ -3206,11 +3240,14 @@ function showMenu(kind, built, ctx = {}) {
   hideTip();
   const win = ensureMenu();
   menuState = { kind, cardId: String(ctx.cardId || ""), agent: String(ctx.agent || ""), ...built };
-  const size = { width: fairyMenu.MENU.width, height: fairyMenu.menuHeight(built.items) };
-  // A right click puts the menu at the pointer; the palette / bridge row
-  // ("fairy.menu", keyboard reach) puts it beside the fairy.
-  const at = ctx.atFairy && alive(orbWindow) ? orbCentre() : cursorPoint();
-  const pos = fairyMenu.menuPlacement(at, workAreaAt(at), size);
+  // A right click puts the menu at the pointer (or the anchor the caller measured); the
+  // palette / bridge row ("fairy.menu", keyboard reach) puts it beside the fairy.
+  const anchor = ctx.at && Number.isFinite(Number(ctx.at.x)) && Number.isFinite(Number(ctx.at.y))
+    ? { x: Math.round(Number(ctx.at.x)), y: Math.round(Number(ctx.at.y)) } : null;
+  const at = anchor || (ctx.atFairy && alive(orbWindow) ? orbCentre() : cursorPoint());
+  const area = menuAreaAt(at);
+  const size = fairyMenu.menuSize(built.items, area);
+  const pos = fairyMenu.menuPlacement(at, area, size);
   win.setBounds({ ...pos, ...size });
   deliverTo(win, "orb:menu", publicMenu());
   win.show();
@@ -3266,13 +3303,36 @@ function fairyMenuFor(cardId, agent = "", { atFairy = false } = {}) {
   }
   const f = agentFairy.crewFairy(card ? card.agent : agent);
   const label = f.known || f.crew ? f.label : String(agent || "");
-  return showMenu("fairy", fairyMenu.fairyItems(card, { label, agent }), { cardId: card ? card.id : "", agent, atFairy });
+  return showMenu("fairy", fairyMenu.withCompanionRows(fairyMenu.fairyItems(card, { label, agent }), companionOpts("fairy")),
+    { cardId: card ? card.id : "", agent, atFairy });
+}
+
+/** The switches and the clock companion-menu.items reads. */
+function companionOpts(target) {
+  return {
+    target,
+    fairyVisible: orbVisible(),
+    tenantVisible: Boolean(state.tenantCompanion),
+    quietUntil: Number(state.muteUntil) || 0,
+    nowMs: Date.now(),
+  };
+}
+
+/** Right click on the workspace's own companion (GARG's goblin): the companion rows.
+ *  `target` "tenant" = that companion; null = all of them (palette / bridge). */
+function openCompanionMenu(target = "tenant", { at = null } = {}) {
+  const kind = target === "tenant" ? "tenant" : "companions";
+  return showMenu(kind, {
+    header: target === "tenant" ? "Workspace companion" : "Aither companions",
+    items: companionMenu.items(companionOpts(target === "tenant" ? "tenant" : null)),
+  }, { at });
 }
 
 /** Right click on the orb. */
 function orbMenu({ atFairy = false } = {}) {
   return showMenu("orb", fairyMenu.orbItems({
-    waiting: attentionCards.length, mutedUntil: state.muteUntil, nowMs: Date.now(),
+    waiting: attentionCards.length, quietUntil: state.muteUntil, tenantVisible: Boolean(state.tenantCompanion),
+    fairyVisible: orbVisible(), nowMs: Date.now(),
   }), { atFairy });
 }
 
@@ -3299,6 +3359,10 @@ async function menuPick(id) {
   const item = ms.items.find((i) => i && !i.sep && i.id === what);
   if (!item) return { ok: false, error: "not on that menu" };
   if (item.disabled) return { ok: false, error: item.hint || "not available" };
+  // The companion rows mean the same on every menu (companion-menu.cjs).
+  if (companionMenu.isCompanionId(what)) {
+    return companionAction(what, { target: ms.kind === "tenant" ? "tenant" : "fairy" });
+  }
   if (ms.kind === "orb") return orbPick(what);
   if (what === "talk") return chatWithAgent(ms.agent);
   const card = menuCard(ms);
@@ -3357,24 +3421,111 @@ function orbPick(what) {
     else hookValue("open", null);
     return { ok: true };
   }
-  if (what === "mute-1h") {
-    state.muteUntil = Date.now() + 60 * 60_000;
-    saveState();
-    if (nudging && !nudging.explicit) endNudge("seen", { stay: true });
-    return { ok: true, muteUntil: state.muteUntil };
-  }
-  if (what === "unmute") {
-    state.muteUntil = 0;
-    saveState();
-    return { ok: true, muteUntil: 0 };
-  }
-  if (what === "hide") return hideOrb();
-  if (what === "settings") {
-    void runCommandImpl?.("settings.open");
-    return { ok: true };
-  }
   if (what === "more") return spiritMenu();
   return { ok: false, error: `unknown menu item ${what}` };
+}
+
+// -- the companions: hidden by default, one set of rows everywhere ------------
+// (owner 2026-11-13, companion-menu.cjs). The fairy's switch is orb.json `visible`;
+// the workspace companion's is `tenantCompanion` (living-desktop-window hides
+// `[data-companion]` while it is off). Listeners: main repaints the tray, the
+// overlay re-applies its CSS.
+const companionListeners = new Set();
+function onCompanionsChange(fn) {
+  if (typeof fn !== "function") return () => {};
+  companionListeners.add(fn);
+  return () => companionListeners.delete(fn);
+}
+function companionsState() {
+  return {
+    fairy: orbVisible(),
+    tenant: Boolean(state.tenantCompanion),
+    quietUntil: Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0,
+  };
+}
+function notifyCompanions() {
+  const snap = companionsState();
+  for (const fn of companionListeners) {
+    try { fn(snap); } catch { /* a listener's failure is its own */ }
+  }
+}
+function setTenantCompanion(visible) {
+  const next = visible === true;
+  if (Boolean(state.tenantCompanion) === next) return { ok: true, tenant: next };
+  state.tenantCompanion = next;
+  saveState();
+  notifyCompanions();
+  return { ok: true, tenant: next };
+}
+/** Quiet mode: no nudges, chimes or popups until `until` (0 ends it). */
+let quietTimer = null;
+function setQuiet(until) {
+  state.muteUntil = Math.max(0, Number(until) || 0);
+  saveState();
+  if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; }
+  const left = state.muteUntil - Date.now();
+  if (left > 0) {
+    quietTimer = setTimeout(() => { quietTimer = null; notifyCompanions(); }, left + 1000);
+    if (quietTimer.unref) quietTimer.unref();
+  }
+  if (state.muteUntil > Date.now() && nudging && !nudging.explicit) endNudge("seen", { stay: true });
+  notifyCompanions();
+  return { ok: true, quietUntil: state.muteUntil };
+}
+/** The tray's companion rows (companion-menu items, the tray's own subset). */
+function companionTrayItems() {
+  return companionMenu.items({ ...companionOpts(null), doors: "tray" });
+}
+
+/**
+ * Run one companion row. The SAME function answers the right-click menus, the tray
+ * and the registry verbs, so a row cannot mean two things.
+ *
+ * Args:
+ *   id: a companion-menu id.
+ *   opts.target: "fairy" | "tenant" -- what "Hide this" hides.
+ */
+function companionAction(id, { target = "fairy" } = {}) {
+  const what = String(id || "");
+  // main hands the doors in (attention.door); a build without one runs the registry id.
+  const door = (name, commandId) => {
+    const hook = attentionHooks && attentionHooks.door;
+    if (typeof hook === "function") {
+      let verdict;
+      try { verdict = hook(name); } catch (error) { return { ok: false, error: String((error && error.message) || error) }; }
+      return { ok: verdict !== false, door: name };
+    }
+    if (typeof runCommandImpl !== "function") return { ok: false, error: `no ${name} door in this build` };
+    void runCommandImpl(commandId);
+    return { ok: true, door: name };
+  };
+  switch (what) {
+    case "hide-this":
+      return target === "tenant" ? setTenantCompanion(false) : hideOrb();
+    case "hide-all":
+      hideOrb();
+      setTenantCompanion(false);
+      return { ok: true, ...companionsState() };
+    case "show-all": {
+      setTenantCompanion(true);
+      const shown = showOrb();
+      // Another desk owns the fairies: the companion shows, and the answer says why
+      // the fairies did not (never a silent ok).
+      return shown.ok === false ? { ok: true, ...companionsState(), fairy: false, note: shown.error }
+        : { ok: true, ...companionsState() };
+    }
+    case "open-desktop": return door("desktop", "desktop.overlay.toggle");
+    case "open-spaces": return door("spaces", "osapp.spaces");
+    case "open-chat": return door("chat", "chat.open");
+    case "settings": return door("settings", "settings.open");
+    case "quit": return door("quit", "quit");
+    case "quiet-off": return setQuiet(0);
+    default: {
+      const until = companionMenu.quietUntilFor(what, Date.now());
+      if (until) return setQuiet(until);
+      return { ok: false, error: `unknown companion row ${what}` };
+    }
+  }
 }
 
 /** The one-line hover tooltip. null/"" hides it. Never focused, never clicked. */
@@ -3566,6 +3717,15 @@ function startOrb(opts = {}) {
   if (opts.attention && typeof opts.attention === "object") attentionHooks = { ...opts.attention };
   ensureIpc();
   loadState();
+  {
+    // Hidden by default (owner 2026-11-13): an installed build that predates the rule
+    // is moved to hidden ONCE; after that the person's own choice holds.
+    const m = companionMenu.migrate(state, { packaged: opts.hideByDefault === true });
+    if (m.changed) {
+      state = m.state; // already sanitized: re-sanitizing would turn a null spot into 0,0
+      saveState();
+    }
+  }
   loadAttention();
   ensureOrb();
   placeOrb();
@@ -3587,6 +3747,7 @@ function startOrb(opts = {}) {
 
 function stopOrb() {
   quitting = true;
+  fairyOwner.release();
   if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
   if (dragTimer) { clearInterval(dragTimer); dragTimer = null; }
   if (flightTimer) { clearInterval(flightTimer); flightTimer = null; }
@@ -3632,6 +3793,8 @@ function run(verb, { arg = null, slotId = null } = {}) {
   const body = String(slotId || "") || null;
   if (body) pendingSlot = body;
   if (what === "toggle") return toggleOrb();
+  // The registry's companions.show / companions.hide (palette, jump list, bridge).
+  if (what === "show-all" || what === "hide-all") return companionAction(what);
   // The fairy's menu from the keyboard (palette) or the bridge: the orb's menu, or a
   // card's menu when `arg` names an open card. Opens beside the fairy.
   if (what === "menu") {
@@ -3718,6 +3881,10 @@ module.exports = {
   nudgeCard, chatAboutCard, setSounds,
   // the agent fairy (agent-fairy.cjs): whose colours, which companions
   setSpeaker, peekCard, openFairyCard, fairyMenuFor, orbMenu, menuPick, showTip, hideTip,
+  // the companions (companion-menu.cjs): hidden by default, one set of rows everywhere
+  openCompanionMenu, companionAction, companionTrayItems, companionsState, onCompanionsChange,
+  setTenantCompanion, setQuiet, tenantCompanionVisible: () => Boolean(state.tenantCompanion),
+  quietUntil: () => (Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0),
   menuState: () => publicMenu(), __setMenuIdleMs: (ms) => { menuIdleMsOverride = Number(ms) || 0; }, fairy: () => currentFairy(), companions: () => currentCompanions(),
   setPresence, noteAgentPosted, chatWithAgent,
   swarmWindow: () => (alive(swarmWindow) ? swarmWindow : null), soundsOn: () => state.sounds !== false,
@@ -3748,6 +3915,7 @@ module.exports = {
     attentionReturnUntil = 0;
     attentionAway = false;
     attentionHooks = {};
+    companionListeners.clear();
     fairySpeaker = null;
     if (fairySpeakerTimer) { clearTimeout(fairySpeakerTimer); fairySpeakerTimer = null; }
     lastFairyKey = "";

@@ -47,14 +47,30 @@ test("a fairy's menu: every action the owner asked for, in order, the recommende
   assert.deepEqual(presence.items.map((i) => i.id), ["talk"]);
 });
 
-test("the orb's menu: inbox, answer window, mute 1 h (or unmute), hide, settings, more", () => {
+test("the orb's menu: inbox, answer window, then every companion row, then more -- no dead item", () => {
   const now = 1_000_000;
-  const m = menu.orbItems({ waiting: 3, mutedUntil: 0, nowMs: now });
+  const m = menu.orbItems({ waiting: 3, quietUntil: 0, nowMs: now });
   assert.equal(m.header, "Aither · 3 waiting on you");
-  assert.deepEqual(m.items.filter((i) => !i.sep).map((i) => i.id), ["inbox", "queue", "mute-1h", "hide", "settings", "more"]);
-  const muted = menu.orbItems({ waiting: 0, mutedUntil: now + 10, nowMs: now });
-  assert.ok(muted.items.some((i) => i.id === "unmute"));
-  assert.equal(muted.items.find((i) => i.id === "queue").disabled, true, "nothing waiting: no list to open");
+  assert.deepEqual(m.items.filter((i) => !i.sep).map((i) => i.id), ["inbox", "queue",
+    "hide-this", "hide-all", "show-all", "open-desktop", "open-spaces", "open-chat", "settings",
+    "quiet-1h", "quiet-4h", "quit", "more"]);
+  const quiet = menu.orbItems({ waiting: 0, quietUntil: now + 10, tenantVisible: true, nowMs: now });
+  const ids = quiet.items.filter((i) => !i.sep).map((i) => i.id);
+  assert.ok(ids.includes("quiet-off") && !ids.includes("quiet-1h"), "quiet: the row ends it");
+  assert.ok(!ids.includes("queue"), "nothing waiting: no list to open, so no row");
+  assert.ok(!ids.includes("show-all"), "everything shows: no Show all");
+  assert.equal(quiet.items.some((i) => i.disabled), false, "never a dead item");
+  assert.ok(menu.orbItems({ mutedUntil: now + 10, nowMs: now }).items.some((i) => i.id === "quiet-off"), "the old name still reads");
+});
+
+test("a companion fairy's menu ends with the companion rows; the card rows stay first", () => {
+  const m = menu.withCompanionRows(menu.fairyItems(card({ sessionId: "s-1" }), { label: "Lyra" }),
+    { target: "fairy", fairyVisible: true, nowMs: 0 });
+  const ids = m.items.filter((i) => !i.sep).map((i) => i.id);
+  assert.equal(ids[0], "open");
+  assert.ok(["hide-this", "hide-all", "show-all", "open-desktop", "open-spaces", "open-chat", "settings", "quiet-1h", "quit"]
+    .every((id) => ids.includes(id)));
+  assert.equal(m.header, "Lyra · Approve the deploy");
 });
 
 test("the menu fits its rows and stays on the work area, flipping at the edges", () => {
