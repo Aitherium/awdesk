@@ -77,3 +77,29 @@ test("import adds new bookmarks and history, keeps what is already here", () => 
   assert.deepEqual(lib.history().map((h) => h.url), ["https://seen.test/", "https://old.test/"]);
   assert.equal(lib.history()[1].by, "you");
 });
+
+test("applySync adds and removes bookmarks, merges newer history as the owner's, and honours a clear", () => {
+  let t = 100;
+  const file = tmpFile();
+  const lib = createLibrary({ file, now: () => ++t });
+  lib.toggleBookmark("https://keep.test/", "Keep");
+  lib.toggleBookmark("https://drop.test/", "Drop");
+  lib.visit("https://old.test/", "Old", "agent");
+  lib.visit("https://same.test/", "Same");
+  const sameAt = lib.history().find((h) => h.url === "https://same.test/").at;
+  const out = lib.applySync({
+    addBookmarks: [{ url: "https://new.test/", title: "New", at: 5 }, { url: "https://keep.test/", title: "dup" }, { url: "javascript:1" }],
+    removeBookmarks: ["https://drop.test/", "https://never-here.test/"],
+    history: [{ url: "https://old.test/", title: "", at: 500, count: 4 }, { url: "https://same.test/", title: "x", at: sameAt - 1 },
+      { url: "https://far.test/", title: "Far", at: 50 }, { url: "file:///x", at: 900 }],
+    clearHistoryBefore: 60,
+  });
+  assert.deepEqual(out, { bookmarksAdded: 1, bookmarksRemoved: 1, history: 1 });
+  assert.deepEqual(lib.bookmarks().map((b) => b.url).sort(), ["https://keep.test/", "https://new.test/"]);
+  const h = lib.history();
+  assert.deepEqual(h.map((e) => e.url), ["https://old.test/", "https://same.test/"]);
+  assert.deepEqual({ title: h[0].title, count: h[0].count, by: h[0].by, at: h[0].at }, { title: "Old", count: 4, by: "you", at: 500 });
+  // It is on disk.
+  assert.equal(createLibrary({ file }).bookmarks().length, 2);
+  assert.deepEqual(lib.applySync({}), { bookmarksAdded: 0, bookmarksRemoved: 0, history: 0 });
+});

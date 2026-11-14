@@ -144,6 +144,53 @@ function createLibrary({ file, now = () => Date.now(), maxHistory = MAX_HISTORY 
     },
 
     /**
+     * Bring the library in line with what the owner's other devices agreed on
+     * (browser-sync.cjs planApply). Synced history counts as the owner's own; a full
+     * bookmark list skips the rest rather than dropping one that is here.
+     * @returns {{bookmarksAdded: number, bookmarksRemoved: number, history: number}}
+     */
+    applySync({ addBookmarks = [], removeBookmarks = [], history = [], clearHistoryBefore = 0 } = {}) {
+      const out = { bookmarksAdded: 0, bookmarksRemoved: 0, history: 0 };
+      const gone = new Set(Array.isArray(removeBookmarks) ? removeBookmarks : []);
+      if (gone.size) {
+        const kept = data.bookmarks.filter((b) => !gone.has(b.url));
+        out.bookmarksRemoved = data.bookmarks.length - kept.length;
+        data.bookmarks = kept;
+      }
+      for (const e of Array.isArray(addBookmarks) ? addBookmarks : []) {
+        if (!e || !storable(e.url) || data.bookmarks.length >= MAX_BOOKMARKS) continue;
+        if (data.bookmarks.some((x) => x.url === e.url)) continue;
+        data.bookmarks.push({ url: e.url, title: String(e.title || "").slice(0, MAX_TITLE), at: Number(e.at) || now() });
+        out.bookmarksAdded += 1;
+      }
+      const cleared = Number(clearHistoryBefore) || 0;
+      let dropped = 0;
+      if (cleared) {
+        const kept = data.history.filter((h) => (h.at || 0) > cleared);
+        dropped = data.history.length - kept.length;
+        data.history = kept;
+      }
+      const byUrl = new Map(data.history.map((h) => [h.url, h]));
+      for (const e of Array.isArray(history) ? history : []) {
+        const at = e && Number(e.at);
+        if (!e || !storable(e.url) || !at || at <= cleared) continue;
+        const cur = byUrl.get(e.url);
+        if (cur && (cur.at || 0) >= at) continue;
+        const next = { url: e.url, title: String(e.title || (cur && cur.title) || "").slice(0, MAX_TITLE), at,
+          count: Math.max(Number(e.count) || 1, (cur && cur.count) || 1), by: "you" };
+        if (cur) data.history[data.history.indexOf(cur)] = next; else data.history.push(next);
+        byUrl.set(e.url, next);
+        out.history += 1;
+      }
+      if (out.history) {
+        data.history.sort((x, y) => (y.at || 0) - (x.at || 0));
+        if (data.history.length > maxHistory) data.history.length = maxHistory;
+      }
+      if (out.bookmarksAdded || out.bookmarksRemoved || out.history || dropped) save();
+      return out;
+    },
+
+    /**
      * Address-bar suggestions for what the owner typed: bookmarks first, then the
      * owner's own history, then pages an agent visited; most-visited first within each.
      */

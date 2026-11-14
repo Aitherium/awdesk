@@ -846,6 +846,62 @@ function getSessionStore() {
   return sessionStoreImpl;
 }
 
+// Sync (browser-sync.cjs): bookmarks, history and the owner's open tabs follow the
+// account through the platform's per-user preferences store, with the Online session's
+// bearer. OFF until the owner turns it on. InPrivate and agent tabs never leave.
+let syncImpl = null;
+let syncSeam = null; // the smoke's store and token; never set in the app
+function syncMod() { return require("./browser-sync.cjs"); }
+/** The owner's own web tabs as sync sees them (it drops InPrivate, agent and non-web ones). */
+function syncTabs() {
+  return tabs.snapshot().tabs.map((t) => {
+    const tab = tabs.get(t.id) || {};
+    const view = views.get(t.id);
+    const parked = discarded.get(t.id) || {};
+    return { by: tab.by, kind: tab.kind, private: Boolean(tab.private),
+      url: alive(view) ? view.webContents.getURL() : parked.url || "",
+      title: alive(view) ? view.webContents.getTitle() : parked.title || "" };
+  });
+}
+function getSync() {
+  if (!syncImpl) {
+    const seam = syncSeam || {};
+    syncImpl = syncMod().createBrowserSync({
+      file: userDataPath("browser-sync.json"), library: getLibrary(), tabs: syncTabs,
+      transport: syncMod().createPrefsTransport({
+        origin: () => { try { return seam.origin || internal.onlineUrl(); } catch { return ""; } },
+        token: async () => (seam.token ? seam.token() : onlineToken()),
+        fetchImpl: (url, init) => electron().net.fetch(url, init),
+      }),
+      onChange: () => pushState(),
+    });
+  }
+  return syncImpl;
+}
+/** Something sync carries changed (a visit, a bookmark, a closed tab). A no-op while it is off. */
+function touchSync() {
+  try { getSync().touch(); } catch { /* sync never breaks browsing */ }
+}
+/** The menu's switch. Says what happened in the tab's notice bar. */
+async function setSyncEnabled(on) {
+  const id = tabs.active;
+  const st = await getSync().setEnabled(on);
+  setNotice(id, { kind: "info", text: !on
+    ? "Sync is off. Nothing was removed from this computer."
+    : st.state === "ok"
+      ? "Sync is on: bookmarks, history and open tabs follow your AitherOS account. Passwords stay on this computer."
+      : `Sync is on, but not synced yet. ${syncMod().statusLine(st)}` });
+  return st;
+}
+function syncMenuItems() {
+  const sync = getSync();
+  return syncMod().menuItems(sync.status(), sync.otherDevices(), {
+    toggle: (on) => { void setSyncEnabled(on); },
+    syncNow: () => { void sync.syncNow(); },
+    open: (url) => { openTab("you", url); },
+  });
+}
+
 /** Reopen last time's tabs. Returns how many came back. Saving starts only after this. */
 function restoreSession() {
   let n = 0;
@@ -1191,6 +1247,7 @@ function runBrowserAction(action, arg, id = tabs.active) {
     case "fullscreen": if (win && !win.isDestroyed()) win.setFullScreen(!win.isFullScreen()); return true;
     case "bookmark":
       if (wc && !tab.private) getLibrary().toggleBookmark(wc.getURL(), wc.getTitle());
+      touchSync();
       pushState();
       return true;
     case "history": return openInternal("history", null) !== false;
@@ -1439,6 +1496,8 @@ function browserMenu() {
       { label: "Open Edge Add-ons", click: () => openTab("you", "https://microsoftedge.microsoft.com/addons") },
       { label: "Manage extensions", click: () => openInternal("extensions", null) },
     ] },
+    { type: "separator" },
+    ...syncMenuItems(),
     { type: "separator" },
     { label: "Reopen my tabs when the browser starts", type: "checkbox", checked: getPrefs().restoreSession !== false,
       click: (item) => setPrefs({ restoreSession: item.checked }) },
@@ -2169,6 +2228,7 @@ function closeTab(id, by = "you") {
   if (tabs.tabs.length === 0 && win && !win.isDestroyed()) openTab("you", homeUrl());
   layout();
   pushState();
+  if (before && before.by === "you" && !before.private) touchSync();
   return { ok: true, closed: id, active: tabs.active };
 }
 
@@ -2346,6 +2406,7 @@ function wirePage(wc, id) {
     const tab = tabs.get(id);
     // Console pages are not "history": the address bar suggests them by name instead.
     if (tab && tab.kind === "web" && !tab.private) getLibrary().visit(wc.getURL(), wc.getTitle(), tab.by);
+    if (tab && tab.kind === "web" && !tab.private && tab.by === "you") touchSync();
   });
 }
 
@@ -2542,6 +2603,7 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   discardTimer = setInterval(() => discardHiddenTabs(), 60 * 1000);
   if (typeof discardTimer.unref === "function") discardTimer.unref();
   win.on("closed", () => {
+    if (syncImpl) syncImpl.stop();
     // Pane windows close with the browser, but stay "open" in the layout for next time.
     closingBrowser = true;
     for (const [, w] of paneWindows) if (w && !w.isDestroyed()) w.destroy();
@@ -2582,6 +2644,8 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   const restored = getPrefs().restoreSession === false ? 0 : restoreSession();
   if (target && target.ok) openTab("you", target.url);
   else if (home && !restored) openTab("you", homeUrl());
+  // Sync runs while the browser is open, and only if the owner turned it on.
+  try { getSync().start(); } catch { /* sync never blocks the browser */ }
   return win;
 }
 
@@ -3170,6 +3234,7 @@ function wireIpc() {
     const view = activeView();
     if (!fromChrome(event) || !view) return { ok: false };
     const on = getLibrary().toggleBookmark(view.webContents.getURL(), view.webContents.getTitle());
+    touchSync();
     pushState();
     return { ok: true, bookmarked: on };
   });
@@ -3949,6 +4014,10 @@ module.exports = {
   browserMenu,
   getAdblock,
   getVault,
+  /** Sync (browser-sync.cjs): the engine, and for the smoke its menu rows and a local store. */
+  getSync,
+  __syncMenuForTest: () => syncMenuItems(),
+  __syncSeamForTest: (seam) => { if (syncImpl) syncImpl.stop(); syncImpl = null; syncSeam = seam || null; return getSync(); },
   __pageForTest: (id) => pageWc(id),
   __noticeForTest: (id) => tabNotices.get(id) || null,
   /** The owner clicking a tab, for browser-tabs-smoke.cjs (the strip's IPC needs a real sender). */

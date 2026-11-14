@@ -210,3 +210,33 @@ away without the others moving:
     (`occluders`), the desk clips the browser to the rest (`setShape`) or hides it when fully
     covered, and raising its window (taskbar, stage strip) makes it whole again.
     Still next: hide the avatar's own bead rail and speech bubble while it is docked.
+24. **Sync: bookmarks, history and open tabs follow the account. Desk side SHIPPED, default OFF.**
+    `browser-sync.cjs`. The store is the platform's existing per-user preferences object
+    (`GET/PUT /api/settings/preferences` on the Online host, Veil in front of AitherDirectory
+    `/directory/self/preferences`): the user comes from the verified bearer, a write is an RFC
+    7386 merge-patch, a stale `If-Match` is 409. awsettings already syncs through it; no new
+    endpoint was built. The desk sends the Online session's bearer (`onlineToken()`).
+
+    | namespace | holds | limit |
+    |---|---|---|
+    | `awbrowser_bm0..3` | bookmarks by id: `{u, t, m}`, or `{m, d:1}` for a delete | 15 KB each (store: 16 KiB) |
+    | `awbrowser_hi0..1` | the newest 150 history entries `{u, t, m, c}` | 15 KB each |
+    | `awbrowser_dev_<id>` | one device: `{n, m, tabs: [{u, t}]}`, at most 30 tabs | written only by that device |
+    | `awbrowser_meta` | `{v, hc}`, hc = history cleared at | |
+
+    Merge is per item, last writer wins by timestamp; a delete is a tombstone kept 180 days, so
+    a deleted bookmark does not come back from another device. What does not fit the store stays
+    on this computer and is counted in the status line. Never sent: InPrivate tabs, agent tabs
+    and agent visits, internal pages, an address with credentials or a secret-looking query.
+    The ⋯ menu has "Sync this browser" (status and last-sync time under it), "Sync now" and
+    "Tabs from other devices". It syncs 15 s after a visit, a bookmark or a closed tab, and
+    every 5 minutes, only while signed in.
+    Proof: `node --test electron/browser-sync.test.cjs` (two devices, a local store),
+    `npm run test:browser-parity` (the real window), and
+    `AW_SYNC_TOKEN_FILE=<bearer file> node electron/browser-sync-live.cjs` (two temp profiles
+    against the real store; it removes what it wrote).
+    Still next: **passwords** stay in the local vault until the platform vault (AitherOS
+    #16731) is merged and deployed, then they sync through it and nowhere else; the **Android
+    app** does not read or write these namespaces yet, so today this is PC to PC; nothing
+    clears history from the UI yet (`noteHistoryCleared` is ready for it); a sign-in does
+    not trigger a sync by itself (the 5-minute timer picks it up).

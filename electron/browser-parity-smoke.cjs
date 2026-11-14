@@ -4,7 +4,7 @@
  * Edge parity, live (`npm run test:browser-parity`): the real Aither Browser window, a
  * local web server, and every gap closed on 2026-11-13 exercised on real pages --
  * keys, find, zoom, InPrivate, ad blocking, password save + autofill, the PDF viewer,
- * right-click, session restore. Unit tests prove the parts; only a real Chromium shows
+ * right-click, session restore, sync (against a local store). Unit tests prove the parts; only a real Chromium shows
  * that a login form fills, an ad request is cancelled and a PDF renders in the tab.
  *
  * Own entry point: a temp userData (never the owner's profile), no tray.
@@ -143,6 +143,48 @@ app.whenReady().then(async () => {
   expect("InPrivate visits are not in history", !bw.getLibrary().history(100).some((h) => h.url.includes("private=1")), null);
   expect("state marks the tab InPrivate", bw.getState().private === true, bw.getState().private);
   bw.runBrowserAction("close-tab");
+
+  // Sync: off by default and silent; turned on from the menu it sends the owner's bookmarks
+  // and open tabs to the store (a local stand-in here) and brings a phone's back; InPrivate
+  // never leaves; "Tabs from other devices" opens one; off withdraws this device's tabs.
+  const store = await require("./browser-sync-fake.cjs").startFakeStore();
+  const syncMod = require("./browser-sync.cjs");
+  const sync = bw.__syncSeamForTest({ origin: store.origin, token: () => "test-token" });
+  const storeText = () => JSON.stringify((store.users.get("owner") || { prefs: {} }).prefs);
+  expect("sync is off until the owner turns it on, and nothing was sent", sync.status().enabled === false && store.stats.gets === 0,
+    { status: sync.status(), gets: store.stats.gets });
+  const phoneDir = path.join(userData, "phone");
+  const phone = syncMod.createBrowserSync({ file: path.join(phoneDir, "browser-sync.json"), deviceName: "Pixel",
+    library: require("./browser-library.cjs").createLibrary({ file: path.join(phoneDir, "browser-library.json") }),
+    tabs: () => [{ by: "you", kind: "web", url: `${base}/done?phone=1`, title: "On the phone" }],
+    transport: syncMod.createPrefsTransport({ origin: () => store.origin, token: () => "test-token" }) });
+  await phone.setEnabled(true);
+  phone.stop();
+  bw.runBrowserAction("inprivate", `${base}/done?incognito=1`);
+  await until(() => { const p = page(); return p && p.getURL().includes("incognito=1") && !p.isLoading(); });
+  const rows = bw.__syncMenuForTest();
+  expect("the menu has the sync switch, unchecked", rows[0].label === "Sync this browser" && rows[0].checked === false, rows.map((x) => x.label));
+  rows[0].click({ checked: true });
+  const synced = await until(() => sync.status().state === "ok" && sync.status().lastSyncAt > 0);
+  expect("turning it on syncs", Boolean(synced), sync.status());
+  expect("this browser's open tab reaches the store", storeText().includes("/login"), storeText().slice(0, 400));
+  expect("the InPrivate tab never reaches the store", !storeText().includes("incognito=1"), null);
+  bw.runBrowserAction("close-tab");
+  const withPhone = bw.__syncMenuForTest().find((x) => x.label === "Tabs from other devices").submenu;
+  expect("the phone is listed under Tabs from other devices", withPhone.length === 1 && /^Pixel/.test(withPhone[0].label)
+    && withPhone[0].submenu[0].label === "On the phone", withPhone.map((x) => x.label));
+  const tabsBefore = bw.getTabs().snapshot().tabs.length;
+  withPhone[0].submenu[0].click();
+  const opened = await until(() => { const p = page(); return p && p.getURL().includes("phone=1") && !p.isLoading() ? p : null; });
+  expect("clicking the phone's tab opens it here", Boolean(opened) && bw.getTabs().snapshot().tabs.length === tabsBefore + 1, page() && page().getURL());
+  bw.runBrowserAction("bookmark");
+  const pushedBookmark = await sync.syncNow();
+  expect("a new bookmark is synced", pushedBookmark.ok && Object.keys(syncMod.decode((store.users.get("owner") || {}).prefs).bookmarks).length === 1, pushedBookmark);
+  bw.runBrowserAction("close-tab");
+  await bw.getSync().setEnabled(false);
+  expect("turning sync off withdraws this device's tabs from the store", !Object.keys((store.users.get("owner") || {}).prefs)
+    .includes(`awbrowser_dev_${sync.status().deviceId}`), Object.keys((store.users.get("owner") || {}).prefs));
+  await store.close();
 
   // Session restore: the open tabs are written for next time; InPrivate is not.
   bw.closeBrowserWindow();
