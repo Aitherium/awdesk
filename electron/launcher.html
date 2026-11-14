@@ -94,7 +94,9 @@
   #status {
     flex: none; padding: 8px 14px 11px; color: var(--muted); font-size: 11.5px;
     border-top: 1px solid rgba(255, 255, 255, 0.05); overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap;
+    /* Two lines, then the ellipsis: the idle line names every source and a down
+       source's remedy is a sentence -- one clipped line hid both (2026-11-13). */
+    white-space: normal; line-height: 1.35; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
   }
   #status.warn { color: var(--warn); }
   /* The command center's pane: a transcript / detail text or the item's graph,
@@ -125,7 +127,7 @@
   <div id="top">
     <span id="chip">Everything</span>
     <input id="input" type="text" spellcheck="false" autocomplete="off"
-      placeholder="Search agents, runs, work, knowledge, people, apps, files and the web" aria-label="Aither launcher" />
+      placeholder="Search AitherOS apps, PC apps, files, agents, tools, skills, knowledge and the web" aria-label="Aither launcher" />
     <span id="hint">↑↓ · Tab groups · Enter open · Ctrl+Enter steer · Ctrl+G graph · Esc close</span>
   </div>
   <div id="results" role="listbox" aria-label="Results"></div>
@@ -138,7 +140,7 @@
     <div id="pane-body"></div>
     <div id="pane-notes"></div>
   </div>
-  <div id="status" role="status">Agents &amp; runs, work, knowledge, time, people, apps, files and the web — type to search</div>
+  <div id="status" role="status">Searches AitherOS apps, PC apps, files, desk actions, agents, tools, skills, runs, work, knowledge &amp; memory, calendar, people, clipboard, screenshots, the web · narrow: app, file, agent, tool, skill, mem, web · &gt; run · ? ask · @ spirit</div>
 </div>
 <script>
   const input = document.getElementById("input");
@@ -150,7 +152,8 @@
   const outputBody = document.getElementById("output-body");
 
   const CHIPS = { all: "Everything", command: "> awsh / adk desk", ask: "? Ask Aither", spirit: "@ Spirit" };
-  const IDLE = "Agents & runs, work, knowledge, time, people, apps, files and the web — type to search (try: agents, runs, prs, calendar, people)";
+  // The same line launcher-core.cjs IDLE_STATUS sends (launcher-render.test.cjs holds them equal).
+  const IDLE = "Searches AitherOS apps, PC apps, files, desk actions, agents, tools, skills, runs, work, knowledge & memory, calendar, people, clipboard, screenshots, the web · narrow: app, file, agent, tool, skill, mem, web · > run · ? ask · @ spirit";
   const pane = document.getElementById("pane");
   const paneTitle = document.getElementById("pane-title");
   const paneBody = document.getElementById("pane-body");
@@ -162,6 +165,8 @@
     session: ["open", "steer", "stop", "transcript", "graph"], run: ["open", "steer", "stop", "graph"],
     "fleet-agent": ["open", "steer", "graph"], "local-agent": ["open", "steer", "graph"], twin: ["open", "steer", "graph"],
   };
+  // The badge on the right of a row: AitherOS apps and the PC's own apps must not read alike.
+  const KIND_BADGE = { osapp: "AitherOS app", app: "PC app", down: "not answering", ask: "ask Aither" };
   const VERB_KEYS = { steer: "Ctrl+Enter", stop: "Ctrl+.", transcript: "Ctrl+T", graph: "Ctrl+G", open: "Enter", detail: "Ctrl+I" };
   // Steer mode: the ONE box becomes the message for the chosen row; Esc returns to the search.
   let steer = null; // {key, title, query}
@@ -273,7 +278,7 @@
     }
     const kind = document.createElement("span");
     kind.className = "kind";
-    kind.textContent = isCard ? "card" : String(item.kind || "");
+    kind.textContent = isCard ? "card" : (KIND_BADGE[item.kind] || String(item.kind || ""));
     row.append(glyph, text);
     if (CC.has(item.kind)) {
       const verbs = document.createElement("span");
@@ -389,7 +394,8 @@
   }
 
   function glyphFor(kind) {
-    return ({ app: "▣", file: "▤", screenshot: "▦", clip: "▥", action: "◆", agent: "◈", web: "◐",
+    return ({ app: "▣", osapp: "❖", file: "▤", screenshot: "▦", clip: "▥", action: "◆", agent: "◈", tool: "⚙", skill: "✧",
+      pack: "▨", lane: "⇢", web: "◐", ask: "?", down: "⚠",
       session: "❯", run: "▶", "fleet-agent": "◈", "local-agent": "◇", twin: "◎", project: "▧", task: "☐", roadmap: "⚑", pr: "⇄",
       plan: "✎", notebook: "▤", memory: "✦", schedule: "⏱", routine: "↻", event: "◷", person: "☺" })[kind] || "•";
   }
@@ -420,7 +426,8 @@
       if (!still) state.openCard = null;
     }
     if (payload.status && Date.now() >= holdStatusUntil) setStatus(payload.status, /down|refused|missing|failed|unavailable/i.test(payload.status));
-    chip.textContent = CHIPS[state.mode] || CHIPS.all;
+    // A scoped search ("tool git") names its scope on the chip: "Tools only".
+    chip.textContent = payload.chip || CHIPS[state.mode] || CHIPS.all;
     state.selected = 0;
     render();
   }
@@ -541,6 +548,16 @@
     paneTitle.textContent = `Graph — ${g.center.title} (${nodes.length} neighbours)`;
     paneBody.replaceChildren(svg);
     paneNotes.textContent = (g.notes || []).join(" · ");
+    if (g.explore) {
+      // The same question in aither://explore: search, expand neighbours, node detail.
+      const more = document.createElement("button");
+      more.type = "button";
+      more.id = "graph-explore";
+      more.textContent = "Open in Explore";
+      more.style.cssText = "margin-left:8px;font:inherit;color:#7cc4ff;background:none;border:0;cursor:pointer;text-decoration:underline";
+      more.addEventListener("click", () => { void window.aitherLauncher.run(g.explore, ""); });
+      paneNotes.append(more);
+    }
     pane.classList.add("open");
   }
 
@@ -579,7 +596,7 @@
     steer = null;
     chip.classList.remove("steer");
     chip.textContent = CHIPS[prefixOf(back).mode];
-    input.placeholder = "Search agents, runs, work, knowledge, people, apps, files and the web";
+    input.placeholder = "Search AitherOS apps, PC apps, files, agents, tools, skills, knowledge and the web";
     input.value = back;
   }
 

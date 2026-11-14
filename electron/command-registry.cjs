@@ -615,6 +615,14 @@ const COMMANDS = Object.freeze([
     surfaces: ["palette"],
     whySingle: "A Console pane (Agents section) already; the palette (Ctrl+K) is its keyboard path.",
   }),
+  // Explore (owner, 2026-11-13): aither://explore -- the knowledge graphs, the wiki and
+  // agent / LLM context in one pane. Its argument ({tab, q, node, page, source, session})
+  // comes from the Alt+Space verbs graph / wiki / context (explore-verbs.cjs).
+  Object.freeze({
+    id: "explore.open", label: "Explore: knowledge graphs, wiki, agent context…", group: "go", icon: "network",
+    surfaces: ["palette"],
+    whySingle: "A Console pane (Data section) already; Alt+Space graph / wiki / context and the palette (Ctrl+K) are its keyboard paths.",
+  }),
   // Aither Files (files-window.cjs): the owner's File Explorer replacement --
   // tabs, breadcrumb + address bar, list/grid with thumbnails, preview, new
   // folder / rename / copy / move / delete-to-Recycle-Bin, Send to Aitherium, Ask
@@ -1727,6 +1735,22 @@ const OSAPP_BROWSER_TAB = Object.freeze({
   passkeys: "https://app.aitherium.com/settings/passkeys",
 });
 
+// AITHEROS APPS vs HOST OS APPS (owner 2026-11-13). Alt+Space lists the rows that OPEN
+// an Aither app in their own "AitherOS apps" group, apart from the host's Start-menu
+// apps (universal-search.cjs aitherAppsProvider). Every `osApp` row is one; these are
+// the desk's OWN app windows. A toggle, a setting or a one-shot verb is a desk action
+// and does not belong here. command-registry.test.cjs asserts each id is a palette row.
+const AITHER_APP_IDS = Object.freeze(new Set([
+  "console.open", "inbox.open", "missioncontrol.open", "browser.open", "files.open", "strata.open",
+  "notebooks.open", "terminal.open", "disk.open", "system.open", "localai.open", "darkmatter.open",
+  "hearth.open", "canvas.open", "fleet.open", "boards.open",
+]));
+
+/** Does this command open an AitherOS app (an `osApp`, or one of the desk's app windows)? */
+function isAitherApp(command) {
+  return Boolean(command && (command.osApp || AITHER_APP_IDS.has(command.id)));
+}
+
 /** The browser-tab URL for an osApp, or null when it opens the desktop shell. */
 function osAppTabUrl(osApp) {
   return OSAPP_BROWSER_TAB[String(osApp || "")] || null;
@@ -1734,6 +1758,6 @@ function osAppTabUrl(osApp) {
 
 module.exports = {
   SURFACES, GROUPS, LAYOUT, COMMANDS, commandsFor, groupFor, paletteRows, rowsFor, byId, labelOf,
-  buildMenu, conformance, shortcuts, electronAccel, accelFor, appliesTo, osAppTabUrl,
+  buildMenu, conformance, shortcuts, electronAccel, accelFor, appliesTo, osAppTabUrl, AITHER_APP_IDS, isAitherApp,
   bindingConflicts, shortcutSheet, shortcutSheetText,
 };

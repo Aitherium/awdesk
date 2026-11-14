@@ -83,6 +83,9 @@ const CATEGORY_WORDS = Object.freeze({
 
 const SNAPSHOT_TTL_MS = Object.freeze({ fast: 20_000, slow: 10 * 60_000 });
 const FIRST_WAIT_MS = 2_500;
+// awm recall measured 7-10 s on the owner's loaded host (2026-11-13); 12 s killed it on
+// a busy minute. Under the 16 s a slow provider gets (universal-search PROVIDER_TIMEOUT_MS).
+const MEMORY_TIMEOUT_MS = 14_500;
 const FAILED_RETRY_MS = 30_000;
 const TEXT_MAX = 300;
 const ID_SAFE = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -429,7 +432,14 @@ function createCommandCenter({
   const run = (file, args, { cwd, timeoutMs = 20_000 } = {}) => new Promise((resolve) => {
     try {
       execFile(file, args, { cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024, env },
-        (error, stdout, stderr) => resolve(error ? { ok: false, error: clip(stderr || error.message, 200) } : { ok: true, stdout: String(stdout || "") }));
+        (error, stdout, stderr) => {
+          if (!error) return resolve({ ok: true, stdout: String(stdout || "") });
+          // A killed child (the timeout) and a missing program say so in words: the bare
+          // "Command failed: awm recall ..." told the owner nothing (measured 2026-11-13).
+          if (error.killed) return resolve({ ok: false, error: `${file} took over ${Math.round(timeoutMs / 1000)} s`, timedOut: true });
+          if (error.code === "ENOENT") return resolve({ ok: false, error: `${file} is not installed or not on this PATH`, missing: true });
+          return resolve({ ok: false, error: clip(stderr || error.message, 200) });
+        });
     } catch (error) {
       resolve({ ok: false, error: clip(error && error.message, 200) });
     }
@@ -605,8 +615,13 @@ function createCommandCenter({
     const q = String(query || "").trim();
     if (q.length < 3) return { rows: [] };
     if (signal && signal.aborted) return { rows: [] };
-    const r = await run("awm", ["recall", "--query", q, "--limit", "6", "--json"], { cwd: repoRoot, timeoutMs: 12_000 });
-    if (!r.ok) return { rows: [], error: `Memory (awm recall): ${r.error}` };
+    const r = await run("awm", ["recall", "--query", q, "--limit", "6", "--json"], { cwd: repoRoot, timeoutMs: MEMORY_TIMEOUT_MS });
+    if (!r.ok) {
+      const fix = r.missing ? "pip install -e the awm tree"
+        : r.timedOut ? "this PC is busy or the memory store is unreachable; search again, or run `awm recall --query <words>` in a terminal"
+          : "check it with `awm recall --query <words>` in a terminal";
+      return { rows: [], error: `Memory (awm recall): ${r.error} — ${fix}` };
+    }
     const rows = shapeMemory(parseJson(r.stdout));
     for (const m of rows) records.set(m.ref, m);
     return { rows };
@@ -846,6 +861,9 @@ function createCommandCenter({
       nodes: all.map((e) => node(e.to)),
       edges: all.map((e) => ({ to: idOf(e.to.ref), ref: e.to.ref, label: e.label, source: e.source })),
       notes: [`${local.length} from the desk's own sources`, ...platform.notes],
+      // The full view of the same question: aither://explore's Graph tab, searched for
+      // this item's title (the typed verb `graph <words>` lands there too).
+      explore: { tab: "graph", q: clip(r.title, 120) },
     });
   }
 

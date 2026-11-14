@@ -8,7 +8,13 @@
  * All through the gateway's existing tools, nothing stored by the desk:
  *   notes      notes_add / notes_search / notes_list / notes_view  (your notes)
  *   memory     remember / recall                                    (long-term memory)
- *   wiki       wiki_search                                          (shown only when it answers)
+ *   wiki       wiki_search                                          (searchWiki)
+ *
+ * The wiki is LyraWiki through the gateway, asked only by searchWiki() -- never on every
+ * page change, since calls share one queued session (gateway-mcp.cjs) and a slow hybrid
+ * search would hold the Notes tab. When LyraWiki is not running the tool answers
+ * {"error": ...} and searchWiki() says so. Reading pages, backlinks and the offline
+ * folder reader are aither://explore's (explore-wiki.cjs).
  *
  * The side panel's Notes tab asks related(page) on every page change: notes and
  * memories that match what is on screen. "Save page" and "Remember" write the page's
@@ -51,6 +57,23 @@ function memoryRow(m) {
   if (!m || typeof m !== "object" || !m.content) return null;
   return { id: String(m.id || ""), text: clip(m.content, 300), category: String(m.category || ""),
     score: Number.isFinite(Number(m.score)) ? Number(m.score) : null };
+}
+
+/** A wiki_search hit: {slug, title, snippet, score}. The tool's rows have no fixed schema. */
+function wikiRow(p) {
+  if (!p || typeof p !== "object") return null;
+  const slug = String(p.slug || p.id || p.page || "");
+  if (!slug) return null;
+  return { slug, title: clip(p.title || p.name || slug, 140), snippet: clip(p.snippet || p.summary || p.excerpt || p.content || "", 220),
+    score: Number.isFinite(Number(p.score)) ? Number(p.score) : null };
+}
+
+/** The rows of a wiki_search answer, or {error} when the tool said it could not look. */
+function wikiRows(data) {
+  if (data == null) return { error: "wiki_search answered nothing readable" };
+  if (!Array.isArray(data) && data.error) return { error: String(typeof data.error === "string" ? data.error : JSON.stringify(data.error)) };
+  const list = Array.isArray(data) ? data : (data.results || data.pages || data.matches || []);
+  return { rows: list.map(wikiRow).filter(Boolean) };
 }
 
 function createKnowledgeClient({ callTool = (...a) => require("./gateway-mcp.cjs").callTool(...a) } = {}) {
@@ -130,7 +153,18 @@ function createKnowledgeClient({ callTool = (...a) => require("./gateway-mcp.cjs
     return { ok: true, memories: ((r.data && r.data.memories) || []).map(memoryRow).filter(Boolean) };
   }
 
-  return { related, savePage, rememberText, listNotes, viewNote, addNote, searchMemory };
+  /** The wiki, searched (LyraWiki's hybrid search). Unreachable is said, never an empty list. */
+  async function searchWiki(query, { limit = 10 } = {}) {
+    const q = clip(query, MAX_QUERY);
+    if (!q) return { ok: false, error: "type what to look for" };
+    const r = await call("wiki_search", { query: q, limit: Math.max(1, Math.min(50, Number(limit) || 10)) });
+    if (!r.ok) return r;
+    const answer = wikiRows(r.data);
+    if (answer.error) return { ok: false, error: `the wiki did not answer: ${clip(answer.error, 160)}` };
+    return { ok: true, query: q, pages: answer.rows };
+  }
+
+  return { related, savePage, rememberText, listNotes, viewNote, addNote, searchMemory, searchWiki };
 }
 
-module.exports = { createKnowledgeClient, memoryRow, noteRow, queryFromPage };
+module.exports = { createKnowledgeClient, memoryRow, noteRow, queryFromPage, wikiRow, wikiRows };

@@ -67,6 +67,8 @@ if (href.includes("settings.html")) {
   require("./projects-preload.cjs");
 } else if (href.includes("/notebooks.html")) {
   require("./notebooks-preload.cjs");
+} else if (href.includes("/explore.html")) {
+  require("./explore-preload.cjs");
 } else if (href.includes("/search.html")) {
   require("./search-preload.cjs");
 } else if (href.includes("/terminal.html")) {
