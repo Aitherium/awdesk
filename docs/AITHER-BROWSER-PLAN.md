@@ -288,3 +288,43 @@ opened nothing, Ctrl+J did nothing, a bookmark could be starred and never listed
     bookmarks and the bar; a prompt that reaches a popped-out tab's own window; location
     needs a geolocation provider key before an allowed site gets coordinates.
     `npm run test:browser-parity` drives all of it in a real window.
+24. **Sync: bookmarks, history and open tabs follow the account. Desk side SHIPPED, default OFF.**
+    `browser-sync.cjs`. The store is the platform's existing per-user preferences object
+    (`GET/PUT /api/settings/preferences` on the PLATFORM host `app.aitherium.com`, Veil in
+    front of AitherDirectory `/directory/self/preferences`): the user comes from the verified
+    bearer, a write is an RFC 7386 merge-patch, a stale `If-Match` is 409. awsettings already
+    syncs through it; no new endpoint was built. The desk sends the Online session's bearer
+    (`onlineToken()`) to `browser-internal platformOrigin()` and nowhere else: never to
+    `onlineUrl()`, which in tenant mode is the tenant's site (no store there; GitHub Pages
+    answered 404 on garg.aitherium.com).
+
+    | rule (review of PR #72) | how |
+    |---|---|
+    | one account per state file | the bearer is opaque, so Identity `/auth/me` names it (once per bearer); `browser-sync.json` keeps a hash. Another account's bearer sends nothing, sync turns itself off and says so; ticking it again is the owner's yes to merging |
+    | a reset library is not a delete | `browser-library.json` carries a generation id; a different id than the one recorded means a fresh device, so no tombstones are made and the store restores it |
+    | a full shard keeps its deletes | over budget the oldest live bookmarks are dropped from the wire, tombstones stay |
+    | a device namespace has a budget too | the last open tabs are dropped until it is under 15 KB, and counted as not synced |
+
+    | namespace | holds | limit |
+    |---|---|---|
+    | `awbrowser_bm0..3` | bookmarks by id: `{u, t, m}`, or `{m, d:1}` for a delete | 15 KB each (store: 16 KiB) |
+    | `awbrowser_hi0..1` | the newest 150 history entries `{u, t, m, c}` | 15 KB each |
+    | `awbrowser_dev_<id>` | one device: `{n, m, tabs: [{u, t}]}`, at most 30 tabs | written only by that device |
+    | `awbrowser_meta` | `{v, hc}`, hc = history cleared at | |
+
+    Merge is per item, last writer wins by timestamp; a delete is a tombstone kept 180 days, so
+    a deleted bookmark does not come back from another device. What does not fit the store stays
+    on this computer and is counted in the status line. Never sent: InPrivate tabs, agent tabs
+    and agent visits, internal pages, an address with credentials or a secret-looking query.
+    The ⋯ menu has "Sync this browser" (status and last-sync time under it), "Sync now" and
+    "Tabs from other devices". It syncs 15 s after a visit, a bookmark or a closed tab, and
+    every 5 minutes, only while signed in.
+    Proof: `node --test electron/browser-sync.test.cjs` (two devices, a local store),
+    `npm run test:browser-parity` (the real window), and
+    `AW_SYNC_TOKEN_FILE=<bearer file> node electron/browser-sync-live.cjs` (two temp profiles
+    against the real store; it removes what it wrote).
+    Still next: **passwords** stay in the local vault until the platform vault (AitherOS
+    #16731) is merged and deployed, then they sync through it and nowhere else; the **Android
+    app** does not read or write these namespaces yet, so today this is PC to PC; nothing
+    clears history from the UI yet (`noteHistoryCleared` is ready for it); a sign-in does
+    not trigger a sync by itself (the 5-minute timer picks it up).

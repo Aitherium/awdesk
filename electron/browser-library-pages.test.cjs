@@ -28,7 +28,7 @@ function rig({ confirm = true } = {}) {
   const library = lib.createLibrary({ file: path.join(dir, "browser-library.json"), now: () => (t += 1000) });
   const downloads = createDownloads();
   const permissions = createPermissionStore({ file: path.join(dir, "browser-permissions.json") });
-  const calls = { confirm: [], open: [], goto: [], download: [], changed: 0, cleared: [], shown: [], opened: [], revoked: [] };
+  const calls = { confirm: [], open: [], goto: [], download: [], changed: 0, historyCleared: 0, cleared: [], shown: [], opened: [], revoked: [] };
   let bar = false;
   const host = {
     library: () => library, downloads: () => downloads, permissions: () => permissions,
@@ -45,6 +45,7 @@ function rig({ confirm = true } = {}) {
     passwordCount: () => 3,
     bar: () => bar, setBar: (on) => { bar = on; },
     changed: () => { calls.changed += 1; },
+    historyCleared: () => { calls.historyCleared += 1; },
   };
   const handlers = pages.libraryHandlers({ getHost: () => host, now: () => 10_000_000 });
   const call = (pane, channel, ...args) => handlers[`desk:library-${channel}`](sender(`aither://${pane}/`), ...args);
@@ -138,6 +139,7 @@ test("history: listed newest first with who visited, searched, deleted one by on
   assert.equal(no.library.history().length, 1);
   assert.deepEqual(await no.call("history", "history-clear"), { ok: false, cancelled: true });
   assert.equal(no.library.history().length, 1);
+  assert.equal(no.calls.historyCleared, 0, "a cancelled clear tells sync nothing");
 
   const at = r.library.history().map((h) => h.at); // [gamma, alpha]
   const ranged = await r.call("history", "history-remove-range", { from: at[0], to: at[0] + 1, label: "today" });
@@ -145,8 +147,12 @@ test("history: listed newest first with who visited, searched, deleted one by on
   assert.match(r.calls.confirm.at(-1).message, /today/);
   assert.deepEqual(r.library.history().map((h) => h.title), ["Alpha"]);
   assert.equal((await r.call("history", "history-remove-range", { from: 5, to: 5 })).ok, false, "an empty range");
+  // Deleting one visit or a range is not "all history": only the full clear tells sync,
+  // so the account's store does not hand the cleared history back (browser-sync.cjs).
+  assert.equal(r.calls.historyCleared, 0);
   assert.deepEqual(await r.call("history", "history-clear"), { ok: true });
   assert.equal(r.library.history().length, 0);
+  assert.equal(r.calls.historyCleared, 1);
   assert.ok(r.calls.changed >= 3);
 });
 
