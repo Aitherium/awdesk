@@ -615,6 +615,14 @@ const COMMANDS = Object.freeze([
     surfaces: ["palette"],
     whySingle: "A Console pane (Agents section) already; the palette (Ctrl+K) is its keyboard path.",
   }),
+  // Explore (owner, 2026-11-13): aither://explore -- the knowledge graphs, the wiki and
+  // agent / LLM context in one pane. Its argument ({tab, q, node, page, source, session})
+  // comes from the Alt+Space verbs graph / wiki / context (explore-verbs.cjs).
+  Object.freeze({
+    id: "explore.open", label: "Explore: knowledge graphs, wiki, agent context…", group: "go", icon: "network",
+    surfaces: ["palette"],
+    whySingle: "A Console pane (Data section) already; Alt+Space graph / wiki / context and the palette (Ctrl+K) are its keyboard paths.",
+  }),
   // Aither Files (files-window.cjs): the owner's File Explorer replacement --
   // tabs, breadcrumb + address bar, list/grid with thumbnails, preview, new
   // folder / rename / copy / move / delete-to-Recycle-Bin, Send to Aitherium, Ask

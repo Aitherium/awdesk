@@ -846,6 +846,9 @@ function createCommandCenter({
       nodes: all.map((e) => node(e.to)),
       edges: all.map((e) => ({ to: idOf(e.to.ref), ref: e.to.ref, label: e.label, source: e.source })),
       notes: [`${local.length} from the desk's own sources`, ...platform.notes],
+      // The full view of the same question: aither://explore's Graph tab, searched for
+      // this item's title (the typed verb `graph <words>` lands there too).
+      explore: { tab: "graph", q: clip(r.title, 120) },
     });
   }
 

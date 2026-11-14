@@ -541,6 +541,16 @@
     paneTitle.textContent = `Graph — ${g.center.title} (${nodes.length} neighbours)`;
     paneBody.replaceChildren(svg);
     paneNotes.textContent = (g.notes || []).join(" · ");
+    if (g.explore) {
+      // The same question in aither://explore: search, expand neighbours, node detail.
+      const more = document.createElement("button");
+      more.type = "button";
+      more.id = "graph-explore";
+      more.textContent = "Open in Explore";
+      more.style.cssText = "margin-left:8px;font:inherit;color:#7cc4ff;background:none;border:0;cursor:pointer;text-decoration:underline";
+      more.addEventListener("click", () => { void window.aitherLauncher.run(g.explore, ""); });
+      paneNotes.append(more);
+    }
     pane.classList.add("open");
   }
 
