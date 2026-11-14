@@ -289,7 +289,7 @@ async function ingestDoc(containerPath, hostPath, name, call) {
  *   {ok:false, reason}
  * Injectable deps for tests: {call, ffmpeg, stat}.
  */
-async function routeDrop({ filePath, mime = "" }, deps = {}) {
+async function routeDrop({ filePath, mime = "", prompt = "" }, deps = {}) {
   const call = deps.call || callTool;
   try {
     if (typeof filePath !== "string" || filePath.length === 0) {
@@ -331,7 +331,7 @@ async function routeDrop({ filePath, mime = "" }, deps = {}) {
     const staged = stagePath(filePath, deps.libraryHost || LIBRARY_HOST);
     try {
       if (kind === "image") {
-        const summary = await analyzeImage(staged.container, call, vision.imagePrompt);
+        const summary = await analyzeImage(staged.container, call, (typeof prompt === "string" && prompt.trim()) ? prompt.trim().slice(0, 2000) : vision.imagePrompt);
         if (!summary || /^error/i.test(summary)) {
           return { ok: false, reason: `vision could not read it: ${summary.slice(0, 200) || "no answer"}` };
         }

@@ -29,14 +29,15 @@
 const path = require("node:path");
 const launcherCore = require("./launcher-core.cjs");
 
-/** The grid's cells, in reading order. Missing commands are skipped by availableItems. */
-const ITEM_IDS = Object.freeze([
-  "snip.region", "snip.screen", "record.region", "record.region.audio",
-  "record.screen", "ink.toggle", "ink.laser", "ink.spotlight",
-  "note.new", "board.new", "orb.ask-screen", "audio.settings",
-  // Teach the fairy (the owner's AitherSprite) whatever was just copied.
-  "sprite.teach",
-]);
+/**
+ * The grid's cells, in reading order: the toolkit's three groups (Create / Capture /
+ * Send, toolkit-core.cjs MENU; owner 2026-11-13: "menus are already crowded and glitchy"
+ * -- one short list, grouped). Missing commands are skipped by availableItems.
+ */
+const toolkitCore = require("./toolkit-core.cjs");
+const ITEM_IDS = Object.freeze([...toolkitCore.MENU_IDS]);
+/** id -> {group, short}: the cell caption is the toolkit group, the name its short label. */
+const MENU_META = new Map(toolkitCore.MENU.flatMap((g) => g.items.map((i) => [i.id, { group: g.group, short: i.short }])));
 
 /**
  * The radial's slices, clockwise from the top. Same 10 capabilities the owner
@@ -64,10 +65,11 @@ const CELL = Object.freeze({ width: 132, height: 78, gap: 6, pad: 10 });
 /** Labels as the day's context reads them (a command may count things). */
 function itemFor(command, ctx = {}) {
   const text = typeof command.label === "function" ? command.label(ctx) : command.label;
+  const meta = MENU_META.get(command.id);
   return {
     id: command.id,
-    label: String(text || command.id),
-    group: command.group || null,
+    label: String((meta && meta.short) || text || command.id),
+    group: (meta && meta.group) || command.group || null,
     icon: command.icon || null,
   };
 }
@@ -334,10 +336,21 @@ function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIA
   /** Tray submenu rows: the same live cells, plus the pop-up itself. */
   function submenuItems(runId) {
     const callback = typeof runId === "function" ? runId : run;
+    // Grouped Create / Capture / Send: a disabled header, the rows, a separator.
+    const rows = [];
+    let group = null;
+    for (const item of availableItems(registry)) {
+      if (item.group !== group) {
+        if (rows.length) rows.push({ type: "separator" });
+        group = item.group;
+        rows.push({ label: String(group || ""), enabled: false });
+      }
+      rows.push({ label: item.label, click: () => callback(item.id) });
+    }
     return [
-      { label: "Open at the cursor", click: () => openRadial() },
+      ...rows,
       { type: "separator" },
-      ...availableItems(registry).map((item) => ({ label: item.label, click: () => callback(item.id) })),
+      { label: "Ring at the cursor (Ctrl+Alt+Q)", click: () => openRadial() },
     ];
   }
 

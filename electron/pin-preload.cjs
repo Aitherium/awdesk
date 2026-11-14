@@ -18,7 +18,10 @@ contextBridge.exposeInMainWorld("aitherPin", {
     ...(patch.muted !== undefined ? { muted: Boolean(patch.muted) } : {}),
     ...(patch.title !== undefined ? { title: String(patch.title) } : {}),
     ...(patch.src !== undefined ? { src: String(patch.src) } : {}),
+    ...(patch.color !== undefined ? { color: String(patch.color).slice(0, 9) } : {}),
   } : {}),
+  /** A note: file it into Notes in the workspace it was written in. */
+  send: () => ipcRenderer.invoke("pin:send"),
   close: () => ipcRenderer.invoke("pin:close"),
   hide: () => ipcRenderer.invoke("pin:hide"),
   hoverChrome: (over) => ipcRenderer.invoke("pin:hover-chrome", Boolean(over)),
