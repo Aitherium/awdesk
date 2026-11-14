@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   newTab: () => ipcRenderer.invoke("desk:browser-tab-new"),
   suggest: (text) => ipcRenderer.invoke("desk:browser-suggest", String(text ?? "")),
   toggleBookmark: () => ipcRenderer.invoke("desk:browser-bookmark"),
+  /** The bookmarks bar: open one of the owner's bookmarks; a folder's menu (drawn by main). */
+  openBookmark: (url) => ipcRenderer.invoke("desk:browser-bookmark-open", String(url ?? "")),
+  bookmarkFolder: (name) => ipcRenderer.invoke("desk:browser-bookmark-folder", String(name ?? "")),
   activateTab: (id) => ipcRenderer.send("desk:browser-tab-activate", Number(id)),
   closeTab: (id) => ipcRenderer.send("desk:browser-tab-close", Number(id)),
   popOut: (id) => ipcRenderer.invoke("desk:browser-tab-popout", Number(id)),

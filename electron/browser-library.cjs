@@ -9,6 +9,11 @@
  *
  * History remembers WHO visited (the owner's tab or an agent's), so the address
  * bar can suggest the owner's own pages first. No agent tool reads this file.
+ *
+ * A bookmark may sit in a folder: `folder` is a path joined with "/" ("Favorites
+ * bar/Work"), the shape Edge's own file flattens to. A bookmark without one is at the
+ * top level, so a file written before folders existed reads unchanged. Bookmarks leave
+ * and arrive as the Netscape bookmarks HTML every browser reads and writes.
  */
 
 const fs = require("node:fs");
@@ -16,7 +21,10 @@ const path = require("node:path");
 
 const VERSION = 1;
 const MAX_HISTORY = 2000;
-const MAX_BOOKMARKS = 500;
+const MAX_BOOKMARKS = 5000; // an Edge profile's favorites, folders and all
+const MAX_FOLDER = 200;
+/** Folders whose bookmarks sit directly on the bookmarks bar (Edge and Chrome name theirs). */
+const BAR_FOLDERS = Object.freeze(["", "favorites bar", "bookmarks bar"]);
 const MAX_TITLE = 200;
 
 function storable(url) {
@@ -28,8 +36,22 @@ function storable(url) {
   }
 }
 
+/** A folder path as stored: trimmed parts joined with "/", no control characters, "" for none. */
+function normFolder(name) {
+  return String(name == null ? "" : name)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f]/g, " ")
+    .split("/").map((part) => part.trim()).filter(Boolean).join("/")
+    .slice(0, MAX_FOLDER);
+}
+
+/** Is `folder` the folder `parent` or inside it? */
+function inFolder(folder, parent) {
+  return folder === parent || folder.startsWith(`${parent}/`);
+}
+
 function emptyData() {
-  return { version: VERSION, history: [], bookmarks: [] };
+  return { version: VERSION, history: [], bookmarks: [], folders: [] };
 }
 
 function readFile(file) {
@@ -40,6 +62,8 @@ function readFile(file) {
       version: VERSION,
       history: Array.isArray(parsed.history) ? parsed.history.filter((h) => h && storable(h.url)) : [],
       bookmarks: Array.isArray(parsed.bookmarks) ? parsed.bookmarks.filter((b) => b && storable(b.url)) : [],
+      // Folders the owner made that hold nothing yet (a bookmark carries its own).
+      folders: Array.isArray(parsed.folders) ? parsed.folders.map(normFolder).filter(Boolean) : [],
     };
   } catch {
     return emptyData();
@@ -87,13 +111,160 @@ function createLibrary({ file, now = () => Date.now(), maxHistory = MAX_HISTORY 
       return data.history.slice(0, Math.max(0, limit));
     },
 
-    clearHistory() {
-      data.history = [];
+    /**
+     * The history page: newest first, filtered by text (address or title) and by who
+     * visited. @returns {{entries: object[], total: number}} `total` counts every match.
+     */
+    historyPage({ q = "", by = "", limit = 200, offset = 0 } = {}) {
+      const text = String(q || "").trim().toLowerCase();
+      const who = by === "you" || by === "agent" ? by : "";
+      const hits = data.history.filter((h) => (!who || h.by === who)
+        && (!text || h.url.toLowerCase().includes(text) || String(h.title || "").toLowerCase().includes(text)));
+      const start = Math.max(0, Number(offset) || 0);
+      return { entries: hits.slice(start, start + Math.max(0, Math.min(1000, Number(limit) || 0))), total: hits.length };
+    },
+
+    /** Forget one page. Returns whether it was there. */
+    removeHistory(url) {
+      const at = data.history.findIndex((h) => h.url === url);
+      if (at < 0) return false;
+      data.history.splice(at, 1);
+      save();
+      return true;
+    },
+
+    /** Forget every visit with from <= at < to (ms). Returns how many went. */
+    removeHistoryRange({ from = 0, to = Infinity } = {}) {
+      const lo = Number(from) || 0;
+      const hi = to == null || to === Infinity ? Infinity : Number(to);
+      if (!(hi > lo)) return 0;
+      const before = data.history.length;
+      data.history = data.history.filter((h) => !((h.at || 0) >= lo && (h.at || 0) < hi));
+      const n = before - data.history.length;
+      if (n) save();
+      return n;
+    },
+
+    /** Forget all history, or (with `since`, ms) only what was visited at or after it. */
+    clearHistory({ since = 0 } = {}) {
+      const from = Number(since) || 0;
+      data.history = from > 0 ? data.history.filter((h) => (h.at || 0) < from) : [];
       return save();
     },
 
     bookmarks() {
-      return data.bookmarks.slice();
+      return data.bookmarks.map((b) => ({ ...b, folder: normFolder(b.folder) }));
+    },
+
+    /** Every folder, sorted: the ones bookmarks sit in, their parents, and empty ones the owner made. */
+    folders() {
+      const out = new Set(data.folders);
+      for (const b of data.bookmarks) {
+        const parts = normFolder(b.folder).split("/").filter(Boolean);
+        for (let i = 1; i <= parts.length; i += 1) out.add(parts.slice(0, i).join("/"));
+      }
+      return [...out].sort((a, b) => a.localeCompare(b));
+    },
+
+    /** Make an empty folder. Returns its stored name, or "" when the name is empty. */
+    addFolder(name) {
+      const folder = normFolder(name);
+      if (!folder) return "";
+      if (!data.folders.includes(folder)) {
+        data.folders.push(folder);
+        save();
+      }
+      return folder;
+    },
+
+    /** Rename a folder (and everything inside it). Returns how many bookmarks moved. */
+    renameFolder(from, to) {
+      const src = normFolder(from);
+      const dst = normFolder(to);
+      if (!src || !dst || src === dst || inFolder(dst, src)) return 0;
+      const move = (f) => (inFolder(f, src) ? normFolder(dst + f.slice(src.length)) : f);
+      let n = 0;
+      for (const b of data.bookmarks) {
+        const f = normFolder(b.folder);
+        if (!inFolder(f, src)) continue;
+        b.folder = move(f);
+        n += 1;
+      }
+      data.folders = [...new Set(data.folders.map(move))];
+      if (!data.folders.includes(dst)) data.folders.push(dst);
+      save();
+      return n;
+    },
+
+    /**
+     * Delete a folder. Its bookmarks go with it, or (keep) move up to the top level.
+     * Returns how many bookmarks were deleted or moved.
+     */
+    removeFolder(name, { keep = false } = {}) {
+      const src = normFolder(name);
+      if (!src) return 0;
+      let n = 0;
+      if (keep) {
+        for (const b of data.bookmarks) {
+          if (!inFolder(normFolder(b.folder), src)) continue;
+          delete b.folder;
+          n += 1;
+        }
+      } else {
+        const before = data.bookmarks.length;
+        data.bookmarks = data.bookmarks.filter((b) => !inFolder(normFolder(b.folder), src));
+        n = before - data.bookmarks.length;
+      }
+      data.folders = data.folders.filter((f) => !inFolder(f, src));
+      save();
+      return n;
+    },
+
+    /** Add a bookmark (or move / retitle the one already at that address). */
+    addBookmark({ url, title = "", folder = "" } = {}) {
+      if (!storable(url)) return { ok: false, error: "only http(s) pages can be bookmarked" };
+      const f = normFolder(folder);
+      const have = data.bookmarks.find((b) => b.url === url);
+      if (have) {
+        if (title) have.title = String(title).slice(0, MAX_TITLE);
+        if (f) have.folder = f;
+        else delete have.folder;
+        save();
+        return { ok: true, added: false };
+      }
+      if (data.bookmarks.length >= MAX_BOOKMARKS) return { ok: false, error: `the bookmark limit (${MAX_BOOKMARKS}) is reached` };
+      const row = { url, title: String(title || "").slice(0, MAX_TITLE), at: now() };
+      if (f) row.folder = f;
+      data.bookmarks.unshift(row);
+      save();
+      return { ok: true, added: true };
+    },
+
+    /** Rename a bookmark, change its address, or move it to a folder ("" = top level). */
+    updateBookmark(url, { title, folder, url: nextUrl } = {}) {
+      const row = data.bookmarks.find((b) => b.url === url);
+      if (!row) return { ok: false, error: "no such bookmark" };
+      if (nextUrl != null && nextUrl !== url) {
+        if (!storable(nextUrl)) return { ok: false, error: "only http(s) pages can be bookmarked" };
+        if (data.bookmarks.some((b) => b.url === nextUrl)) return { ok: false, error: "that address is already bookmarked" };
+        row.url = String(nextUrl);
+      }
+      if (title != null) row.title = String(title).slice(0, MAX_TITLE);
+      if (folder != null) {
+        const f = normFolder(folder);
+        if (f) row.folder = f;
+        else delete row.folder;
+      }
+      save();
+      return { ok: true };
+    },
+
+    removeBookmark(url) {
+      const at = data.bookmarks.findIndex((b) => b.url === url);
+      if (at < 0) return false;
+      data.bookmarks.splice(at, 1);
+      save();
+      return true;
     },
 
     isBookmarked(url) {
@@ -126,7 +297,10 @@ function createLibrary({ file, now = () => Date.now(), maxHistory = MAX_HISTORY 
       for (const e of Array.isArray(bookmarks) ? bookmarks : []) {
         if (!e || !storable(e.url) || data.bookmarks.length >= MAX_BOOKMARKS) continue;
         if (data.bookmarks.some((x) => x.url === e.url)) continue;
-        data.bookmarks.push({ url: e.url, title: String(e.title || "").slice(0, MAX_TITLE), at: Number(e.at) || now() });
+        const row = { url: e.url, title: String(e.title || "").slice(0, MAX_TITLE), at: Number(e.at) || now() };
+        const folder = normFolder(e.folder);
+        if (folder) row.folder = folder; // the folder it sat in there (Edge, a bookmarks file)
+        data.bookmarks.push(row);
         b += 1;
       }
       const known = new Set(data.history.map((x) => x.url));
@@ -168,4 +342,138 @@ function createLibrary({ file, now = () => Date.now(), maxHistory = MAX_HISTORY 
   };
 }
 
-module.exports = { MAX_BOOKMARKS, MAX_HISTORY, createLibrary, storable };
+// ---------------------------------------------------------------- bookmarks bar
+
+/**
+ * What the bookmarks bar shows: the bookmarks at the top level (and in a "Favorites
+ * bar" an import brought), then one drop-down per other folder.
+ * @returns {{items: {url: string, title: string}[], folders: {name: string, count: number}[]}}
+ */
+function barModel(bookmarks, { maxItems = 40, maxFolders = 20 } = {}) {
+  const items = [];
+  const counts = new Map();
+  for (const b of Array.isArray(bookmarks) ? bookmarks : []) {
+    if (!b || !storable(b.url)) continue;
+    const folder = normFolder(b.folder);
+    if (BAR_FOLDERS.includes(folder.toLowerCase())) {
+      if (items.length < maxItems) items.push({ url: b.url, title: String(b.title || "") });
+    } else {
+      counts.set(folder, (counts.get(folder) || 0) + 1);
+    }
+  }
+  const folders = [...counts].map(([name, count]) => ({ name, count }))
+    .sort((a, b) => a.name.localeCompare(b.name)).slice(0, maxFolders);
+  return { items, folders };
+}
+
+// ---------------------------------------------------------------- Netscape bookmarks HTML
+
+const ENTITIES = Object.freeze({ amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " });
+
+function escapeHtml(text) {
+  return String(text == null ? "" : text)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function unescapeHtml(text) {
+  return String(text == null ? "" : text).replace(/&(#x[a-f0-9]+|#[0-9]+|[a-z]+);/gi, (whole, name) => {
+    const key = name.toLowerCase();
+    if (key.startsWith("#")) {
+      const code = key[1] === "x" ? parseInt(key.slice(2), 16) : parseInt(key.slice(1), 10);
+      try {
+        return Number.isFinite(code) && code > 0 ? String.fromCodePoint(code) : whole;
+      } catch {
+        return whole;
+      }
+    }
+    return Object.prototype.hasOwnProperty.call(ENTITIES, key) ? ENTITIES[key] : whole;
+  });
+}
+
+/**
+ * Bookmarks as the Netscape bookmarks HTML file (the one format Edge, Chrome, Firefox
+ * and Safari all import). Folders nest by their "/" path; a "Favorites bar" folder is
+ * marked as the toolbar folder so another browser puts it on its own bar.
+ */
+function exportNetscape(bookmarks) {
+  const root = { folders: new Map(), items: [] };
+  for (const b of Array.isArray(bookmarks) ? bookmarks : []) {
+    if (!b || !storable(b.url)) continue;
+    let node = root;
+    for (const part of normFolder(b.folder).split("/").filter(Boolean)) {
+      if (!node.folders.has(part)) node.folders.set(part, { folders: new Map(), items: [] });
+      node = node.folders.get(part);
+    }
+    node.items.push(b);
+  }
+  const lines = [
+    "<!DOCTYPE NETSCAPE-Bookmark-file-1>",
+    "<!-- This is an automatically generated file.",
+    "     It will be read and overwritten.",
+    "     DO NOT EDIT! -->",
+    "<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">",
+    "<TITLE>Bookmarks</TITLE>",
+    "<H1>Bookmarks</H1>",
+    "<DL><p>",
+  ];
+  const write = (node, depth) => {
+    const pad = "    ".repeat(depth);
+    for (const [name, child] of node.folders) {
+      const bar = depth === 1 && BAR_FOLDERS.includes(name.toLowerCase()) ? " PERSONAL_TOOLBAR_FOLDER=\"true\"" : "";
+      lines.push(`${pad}<DT><H3${bar}>${escapeHtml(name)}</H3>`, `${pad}<DL><p>`);
+      write(child, depth + 1);
+      lines.push(`${pad}</DL><p>`);
+    }
+    for (const b of node.items) {
+      const added = Math.floor((Number(b.at) || 0) / 1000);
+      lines.push(`${pad}<DT><A HREF="${escapeHtml(b.url)}"${added > 0 ? ` ADD_DATE="${added}"` : ""}>${escapeHtml(b.title || b.url)}</A>`);
+    }
+  };
+  write(root, 1);
+  lines.push("</DL><p>", "");
+  return lines.join("\n");
+}
+
+/**
+ * Read a Netscape bookmarks HTML file. Web pages only; the folder is the path of the
+ * <H3> headings above the link.
+ * @returns {{url: string, title: string, folder: string, at: number}[]}
+ */
+function parseNetscape(html, { max = MAX_BOOKMARKS } = {}) {
+  const out = [];
+  const stack = [];
+  let pending = null;
+  const token = /<DT>\s*<H3\b[^>]*>([\s\S]*?)<\/H3>|<DL\b[^>]*>|<\/DL>|<A\b([^>]*)>([\s\S]*?)<\/A>/gi;
+  const text = String(html || "").slice(0, 20 * 1024 * 1024);
+  let m;
+  while ((m = token.exec(text)) && out.length < max) {
+    const tag = m[0].slice(0, 4).toUpperCase();
+    if (tag === "<DT>") {
+      pending = unescapeHtml(m[1].replace(/<[^>]*>/g, "")).trim();
+    } else if (tag.startsWith("<DL")) {
+      stack.push(pending);
+      pending = null;
+    } else if (tag.startsWith("</DL")) {
+      stack.pop();
+      pending = null;
+    } else {
+      const attrs = m[2] || "";
+      const href = /\bHREF\s*=\s*"([^"]*)"/i.exec(attrs) || /\bHREF\s*=\s*'([^']*)'/i.exec(attrs);
+      const url = href ? unescapeHtml(href[1]).trim() : "";
+      if (!storable(url)) continue;
+      const added = /\bADD_DATE\s*=\s*"?([0-9]+)/i.exec(attrs);
+      out.push({
+        url,
+        title: unescapeHtml(String(m[3] || "").replace(/<[^>]*>/g, "")).trim().slice(0, MAX_TITLE),
+        folder: normFolder(stack.filter(Boolean).join("/")),
+        at: added ? Number(added[1]) * 1000 : 0,
+      });
+    }
+  }
+  return out;
+}
+
+module.exports = {
+  BAR_FOLDERS, MAX_BOOKMARKS, MAX_HISTORY,
+  barModel, createLibrary, exportNetscape, normFolder, parseNetscape, storable,
+};

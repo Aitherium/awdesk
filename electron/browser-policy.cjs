@@ -103,6 +103,11 @@ function isNavigable(url) {
  * must never get the camera, the microphone, the location or a notification
  * channel because a site asked. There is no allowlist today on purpose; add one
  * here, with a reason, if the owner asks for a specific grant.
+ *
+ * This is the grant NOBODY is asked about. The five permissions the OWNER may give a
+ * site (camera, microphone, location, notifications, clipboard) are a prompt on the
+ * owner's own tab, remembered per site: browser-permissions.cjs. An agent's tab never
+ * reaches that prompt, so for an agent the answer is still this function's: no.
  */
 function allowPermission(/* permission */) {
   return false;

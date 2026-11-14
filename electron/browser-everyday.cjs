@@ -5,7 +5,8 @@
  *
  * Owner, 2026-11-13: "close the gaps" (what he would miss switching from Edge). This
  * module holds the pure parts, so each is tested without Electron:
- *   - keyAction: the standard keys (Ctrl+T/W/L/F/P/D, zoom, Ctrl+Tab, Ctrl+Shift+N/T, F5).
+ *   - keyAction: the standard keys (Ctrl+T/W/L/F/P/D/H/J, zoom, Ctrl+Tab, Ctrl+Shift+N/T, F5,
+ *     Ctrl+Shift+O bookmarks, Ctrl+Shift+B the bookmarks bar, Ctrl+Shift+Delete clear data).
  *   - zoom steps, the same ladder Chromium uses.
  *   - the InPrivate partition: in memory only, never written to disk, no history kept.
  *   - session restore: the owner's open tabs, saved on every change, reopened next time.
@@ -59,6 +60,9 @@ function keyAction(input) {
   if (input.shift) {
     if (lower === "n") return { action: "inprivate" };
     if (lower === "t") return { action: "reopen-closed" };
+    if (lower === "o") return { action: "bookmarks" };
+    if (lower === "b") return { action: "bookmarks-bar" };
+    if (key === "Delete") return { action: "clear-data" };
     if (key === "Tab") return { action: "prev-tab" };
     if (key === "+" || key === "=") return { action: "zoom-in" };
     return null;

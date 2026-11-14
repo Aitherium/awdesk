@@ -304,7 +304,7 @@ async function importFromEdge({ profileDir, library, passwords, sqlite, historyL
   const bmFile = path.join(profileDir, "Bookmarks");
   if (fs.existsSync(bmFile)) {
     try {
-      bookmarks = parseBookmarks(fs.readFileSync(bmFile, "utf8")).map((b) => ({ url: b.url, title: b.title }));
+      bookmarks = parseBookmarks(fs.readFileSync(bmFile, "utf8")).map((b) => ({ url: b.url, title: b.title, folder: b.folder }));
     } catch (err) {
       errors.push(`bookmarks: ${err.message}`);
     }

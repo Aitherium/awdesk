@@ -47,7 +47,12 @@ const policy = require("./browser-policy.cjs");
 const internal = require("./browser-internal.cjs");
 const contextPush = require("./browser-context-push.cjs");
 const { TabSet, agentTabView } = require("./browser-tabs.cjs");
-const { createLibrary } = require("./browser-library.cjs");
+const libraryMod = require("./browser-library.cjs");
+const { createLibrary } = libraryMod;
+// The library pages (aither://history, bookmarks, downloads, permissions, clear-data) and
+// the per-site permission prompt. Both pure; this module installs their host.
+const libraryPages = require("./browser-library-pages.cjs");
+const sitePermissions = require("./browser-permissions.cjs");
 const { createDownloads } = require("./browser-downloads.cjs");
 const agentsPanel = require("./agents-panel.cjs");
 const rail = require("./browser-rail.cjs");
@@ -76,6 +81,8 @@ const PARTITION = "persist:aither-browser";
 /** The agent's OWN session (BROWSER-M3, browser-agent-cookies.cjs): its tabs ride this. */
 const AGENT_PARTITION = agentSessions.AGENT_PARTITION;
 const CHROME_HEIGHT = 78; // tab strip (34) + toolbar (44, the agent indicator lives in it); browser-chrome.html matches
+/** The bookmarks bar under the toolbar (Ctrl+Shift+B, off by default); browser-chrome.html #bmbar matches. */
+const BOOKMARKS_BAR_HEIGHT = 30;
 // The assistant panel: one HTML file + one preload. Point these at the awkit
 // Connect panel to swap it (see createAssistantPanel).
 const ASSISTANT_PANEL = Object.freeze({
@@ -410,6 +417,9 @@ function state() {
     contextPush: lastContextPush,
     tabs: tabList(),
     bookmarked: getLibrary().isBookmarked(wc.getURL()),
+    // The chrome page's own height (the bookmarks bar adds a row) and that bar's contents.
+    chromeHeight: chromeHeight(),
+    bookmarksBar: getPrefs().bookmarksBar ? libraryMod.barModel(getLibrary().bookmarks()) : null,
     downloads: downloads.list(),
     rail: railState(),
     // "Let the agent use my sign-in" for the page on screen (BROWSER-M3): its site,
@@ -455,8 +465,10 @@ const hardenedSessions = new WeakSet();
 function hardenSession(ses) {
   if (!ses || hardenedSessions.has(ses)) return;
   hardenedSessions.add(ses);
-  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(policy.allowPermission(permission)));
-  ses.setPermissionCheckHandler((_wc, permission) => policy.allowPermission(permission));
+  // Deny by default (policy.allowPermission). Five permissions ASK the owner instead, on
+  // the owner's own web tab only, and remember the answer per site (browser-permissions.cjs).
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => requestPermission(wc, permission, callback, details));
+  ses.setPermissionCheckHandler((wc, permission, origin, details) => checkPermission(wc, permission, origin, details));
   if (typeof ses.setDevicePermissionHandler === "function") ses.setDevicePermissionHandler(() => false);
   // Ads and trackers are cancelled at the network layer (browser-adblock.cjs).
   try { getAdblock().attach(ses, { onBlocked: () => pushState() }); } catch { /* browsing still works */ }
@@ -471,6 +483,7 @@ function hardenSession(ses) {
       item.cancel();
       downloads.start({ ...meta, blocked: true });
       pushState();
+      libraryChanged();
       return;
     }
     const id = downloads.start(meta);
@@ -478,12 +491,15 @@ function hardenSession(ses) {
       downloads.update(id, { received: item.getReceivedBytes(), total: item.getTotalBytes(),
         state: st === "interrupted" ? "interrupted" : "progressing" });
       pushState();
+      libraryChanged();
     });
     item.once("done", (_e, st) => {
       downloads.update(id, { state: st, received: item.getReceivedBytes(), path: item.getSavePath() });
       pushState();
+      libraryChanged();
     });
     pushState();
+    libraryChanged();
   });
 }
 
@@ -862,6 +878,8 @@ function restoreSession() {
 }
 
 function forgetTabExtras(id) {
+  dropPermissionPrompts(id);
+  permGranted.delete(id);
   tabNotices.delete(id);
   findResults.delete(id);
   pwFilled.delete(id);
@@ -908,6 +926,12 @@ function privateHomeUrl() {
 }
 
 function setNotice(id, notice) {
+  // A site waiting on Allow / Block keeps its question up; another notice follows it.
+  const shown = tabNotices.get(id);
+  if (shown && shown.kind === "permission" && permPrompts.pending(id) && (!notice || notice.kind !== "permission")) {
+    if (notice) noticeBehind.set(id, { keep: false, ...notice });
+    return;
+  }
   if (notice) tabNotices.set(id, { keep: false, ...notice });
   else tabNotices.delete(id);
   pushState();
@@ -1028,6 +1052,9 @@ function wireEveryday(wc, id) {
     const isMain = details && typeof details.isMainFrame === "boolean" ? details.isMainFrame : legacyMain;
     const same = details && typeof details.isSameDocument === "boolean" ? details.isSameDocument : legacyInPlace;
     if (!isMain || same) return;
+    // The page that asked for a permission is leaving: it is denied, nothing remembered.
+    dropPermissionPrompts(id);
+    permGranted.delete(id);
     // The old document's isolated world still holds a login it just submitted.
     void collectLogin(id, wc);
     if (adblockImpl) adblockImpl.resetCount(wc.id);
@@ -1192,9 +1219,14 @@ function runBrowserAction(action, arg, id = tabs.active) {
     case "bookmark":
       if (wc && !tab.private) getLibrary().toggleBookmark(wc.getURL(), wc.getTitle());
       pushState();
+      libraryChanged();
       return true;
-    case "history": return openInternal("history", null) !== false;
-    case "downloads": return false; // the side panel shows downloads; no page to open
+    case "history":
+    case "downloads":
+    case "bookmarks":
+    case "permissions":
+    case "clear-data": return openInternal(action, null) !== false;
+    case "bookmarks-bar": setBookmarksBar(!getPrefs().bookmarksBar); return true;
     case "translate": void translatePage(id); return true;
     case "read-aloud": void readAloud(); return true;
     case "open-edge": return openInEdge(wc ? wc.getURL() : "").ok;
@@ -1275,6 +1307,8 @@ async function noticeAction(actionId) {
     case "drm-stay": drmStay.add((notice.data && notice.data.host) || ""); setNotice(id, null); return { ok: true };
     case "extension-install": return installExtensionFrom(id, (notice.data && notice.data.url) || (wc ? wc.getURL() : ""));
     case "show-original": setNotice(id, null); if (wc) wc.reload(); return { ok: true };
+    case "permission-allow": return answerPermission(id, true, true);
+    case "permission-block": return answerPermission(id, false, true);
     case "delete-file": {
       const file = notice.data && notice.data.file;
       try { if (file) require("node:fs").unlinkSync(file); setNotice(id, { kind: "info", text: "The CSV file is deleted." }); } catch (error) {
@@ -1282,7 +1316,11 @@ async function noticeAction(actionId) {
       }
       return { ok: true };
     }
-    default: setNotice(id, null); return { ok: true };
+    default:
+      // "Not now" on a permission prompt: the site is denied this once, nothing remembered.
+      if (notice.kind === "permission") return answerPermission(id, false, false);
+      setNotice(id, null);
+      return { ok: true };
   }
 }
 
@@ -1408,6 +1446,12 @@ function browserMenu() {
     { label: "New InPrivate tab", accelerator: "CmdOrCtrl+Shift+N", registerAccelerator: false, click: () => runBrowserAction("inprivate") },
     { label: "Reopen closed tab", accelerator: "CmdOrCtrl+Shift+T", registerAccelerator: false, enabled: closedTabs.list().length > 0, click: () => runBrowserAction("reopen-closed") },
     { type: "separator" },
+    { label: "History", accelerator: "CmdOrCtrl+H", registerAccelerator: false, click: () => runBrowserAction("history") },
+    { label: "Bookmarks", accelerator: "CmdOrCtrl+Shift+O", registerAccelerator: false, click: () => runBrowserAction("bookmarks") },
+    { label: "Show the bookmarks bar", type: "checkbox", checked: Boolean(getPrefs().bookmarksBar), accelerator: "CmdOrCtrl+Shift+B",
+      registerAccelerator: false, click: (item) => setBookmarksBar(item.checked) },
+    { label: "Downloads", accelerator: "CmdOrCtrl+J", registerAccelerator: false, click: () => runBrowserAction("downloads") },
+    { type: "separator" },
     { label: `Zoom (${zoom}%)`, submenu: [
       { label: "Zoom in", accelerator: "CmdOrCtrl+=", registerAccelerator: false, click: () => runBrowserAction("zoom-in") },
       { label: "Zoom out", accelerator: "CmdOrCtrl+-", registerAccelerator: false, click: () => runBrowserAction("zoom-out") },
@@ -1439,6 +1483,8 @@ function browserMenu() {
       { label: "Open Edge Add-ons", click: () => openTab("you", "https://microsoftedge.microsoft.com/addons") },
       { label: "Manage extensions", click: () => openInternal("extensions", null) },
     ] },
+    { label: "Site permissions", click: () => runBrowserAction("permissions") },
+    { label: "Clear browsing data…", accelerator: "CmdOrCtrl+Shift+Delete", registerAccelerator: false, click: () => runBrowserAction("clear-data") },
     { type: "separator" },
     { label: "Reopen my tabs when the browser starts", type: "checkbox", checked: getPrefs().restoreSession !== false,
       click: (item) => setPrefs({ restoreSession: item.checked }) },
@@ -1460,6 +1506,272 @@ function passwordMenu() {
   Menu.buildFromTemplate(template).popup({ window: win });
   return { ok: true };
 }
+
+// ---------------------------------------------------------------- site permissions
+// Camera, microphone, location, notifications, clipboard: the OWNER is asked once per
+// site, in the toolbar's notice, and the answer is remembered (browser-permissions.cjs).
+// An agent's tab is never asked and never allowed, and neither is a tab the agent is
+// driving right now. InPrivate asks every time and writes nothing.
+
+const permPrompts = sitePermissions.createPrompts();
+const permGranted = new Map(); // tab id -> Set("origin kind") allowed for the page on screen
+const noticeBehind = new Map(); // tab id -> the notice that waits behind a permission prompt
+let permStoreImpl = null;
+function getPermissionStore() {
+  if (!permStoreImpl) permStoreImpl = sitePermissions.createPermissionStore({ file: userDataPath("browser-permissions.json") });
+  return permStoreImpl;
+}
+
+function tabIdOfContents(wc) {
+  if (!wc) return null;
+  for (const [id, view] of views) if (alive(view) && view.webContents === wc) return id;
+  return null;
+}
+
+function grantedNow(id, origin, kinds) {
+  const set = permGranted.get(id);
+  return Boolean(set) && kinds.length > 0 && kinds.every((kind) => set.has(`${origin} ${kind}`));
+}
+
+/** The agent holds this tab right now (it is driving and the owner has not taken over). */
+function agentDrives(id) {
+  const g = gate.snapshot();
+  return Boolean(g.driving && !g.paused && tabs.snapshot().agentTarget === id);
+}
+
+function judgePermission(wc, permission, details, url) {
+  const id = tabIdOfContents(wc);
+  const tab = id == null ? null : tabs.get(id);
+  let store = null;
+  try { store = getPermissionStore(); } catch { /* no store: every site is asked */ }
+  return { id, ...sitePermissions.decide({ permission, details: details || {}, url, tab, store }) };
+}
+
+/** Electron's permission REQUEST (getUserMedia, Notification.requestPermission, geolocation...). */
+function requestPermission(wc, permission, callback, details) {
+  if (policy.allowPermission(permission)) return callback(true);
+  let url = details && details.requestingUrl;
+  try { if (!url && wc) url = wc.getURL(); } catch { url = ""; }
+  const verdict = judgePermission(wc, permission, details, url);
+  if (verdict.verdict === "allow") return callback(!agentDrives(verdict.id));
+  if (verdict.verdict === "deny" || agentDrives(verdict.id)) return callback(false);
+  if (grantedNow(verdict.id, verdict.origin, verdict.kinds)) return callback(true);
+  permPrompts.ask(verdict.id, verdict, callback);
+  showPermissionPrompt(verdict.id);
+  return undefined;
+}
+
+/** Electron's permission CHECK (Notification.permission, device labels): never prompts. */
+function checkPermission(wc, permission, origin, details) {
+  if (policy.allowPermission(permission)) return true;
+  let url = origin || (details && (details.requestingUrl || details.securityOrigin));
+  try { if (!url && wc) url = wc.getURL(); } catch { url = ""; }
+  const verdict = judgePermission(wc, permission, details, url);
+  if (verdict.verdict === "allow") return !agentDrives(verdict.id);
+  return verdict.verdict === "prompt" && grantedNow(verdict.id, verdict.origin, verdict.kinds);
+}
+
+function showPermissionPrompt(id) {
+  const head = permPrompts.head(id);
+  if (!head) return;
+  setNotice(id, {
+    kind: "permission", keep: true, data: head, text: head.text,
+    actions: [{ id: "permission-allow", label: "Allow" }, { id: "permission-block", label: "Block" }, { id: "dismiss", label: "Not now" }],
+  });
+}
+
+/** The owner answered the prompt on screen. `remember` false = "Not now": denied once. */
+function answerPermission(id, allow, remember) {
+  const head = permPrompts.head(id);
+  if (!head) { tabNotices.delete(id); pushState(); return { ok: false }; }
+  const tab = tabs.get(id) || {};
+  if (allow) {
+    const set = permGranted.get(id) || new Set();
+    for (const kind of head.kinds) set.add(`${head.origin} ${kind}`);
+    permGranted.set(id, set);
+  }
+  // InPrivate never writes: the answer lives as long as the page does.
+  if (remember && !tab.private) {
+    try { getPermissionStore().set(head.origin, head.kinds, allow ? "allow" : "block"); } catch { /* asked again next time */ }
+    libraryChanged();
+  }
+  permPrompts.answer(id, allow);
+  afterPermissionPrompt(id);
+  return { ok: true, allowed: Boolean(allow), origin: head.origin, kinds: head.kinds };
+}
+
+/** The next waiting prompt, else the notice that waited behind, else nothing. */
+function afterPermissionPrompt(id) {
+  tabNotices.delete(id);
+  if (permPrompts.pending(id)) { showPermissionPrompt(id); return; }
+  const behind = noticeBehind.get(id);
+  noticeBehind.delete(id);
+  if (behind) tabNotices.set(id, behind);
+  pushState();
+}
+
+/** The page left or its tab closed: whatever it asked for is denied and nothing is kept. */
+function dropPermissionPrompts(id) {
+  noticeBehind.delete(id);
+  if (!permPrompts.cancel(id)) return;
+  const shown = tabNotices.get(id);
+  if (shown && shown.kind === "permission") tabNotices.delete(id);
+}
+
+// ---------------------------------------------------------------- the library pages
+// aither://history, bookmarks, downloads, permissions, clear-data, the bookmarks bar
+// and "Clear browsing data". browser-library-pages.cjs owns the channels and the fence;
+// this is the host it calls.
+
+function chromeHeight() {
+  return CHROME_HEIGHT + (getPrefs().bookmarksBar ? BOOKMARKS_BAR_HEIGHT : 0);
+}
+
+function setBookmarksBar(on) {
+  setPrefs({ bookmarksBar: Boolean(on) });
+  layout();
+  pushState();
+  libraryChanged();
+  return Boolean(getPrefs().bookmarksBar);
+}
+
+/** Tell the open library pages their data moved (at most a few times a second). */
+let libraryChangedTimer = null;
+function libraryChanged() {
+  if (libraryChangedTimer) return;
+  libraryChangedTimer = setTimeout(() => {
+    libraryChangedTimer = null;
+    for (const t of tabs.tabs) {
+      if (t.kind !== "internal" || !libraryPages.PAGES.includes(t.paneId)) continue;
+      const view = viewOf(t.id);
+      if (view) {
+        try { view.webContents.send("desk:library-changed"); } catch { /* a page mid-navigation */ }
+      }
+    }
+  }, 250);
+  if (typeof libraryChangedTimer.unref === "function") libraryChangedTimer.unref();
+}
+
+/** A click on the bookmarks bar: the address must be one of the owner's bookmarks. */
+function openBookmark(url) {
+  if (!getLibrary().isBookmarked(url)) return { ok: false, error: "not a bookmark" };
+  const id = tabs.active;
+  const tab = tabs.get(id) || {};
+  const view = viewOf(id);
+  // In place on the owner's own web tab (as Edge does); a console page keeps its tab.
+  if (view && tab.by === "you" && (tab.kind || "web") === "web") {
+    void loadInView(view, url).catch(() => {});
+    return { ok: true, id };
+  }
+  const opened = openTab("you", url);
+  return opened.ok ? { ok: true, id: opened.id } : opened;
+}
+
+/** A folder on the bookmarks bar: its bookmarks (and its subfolders') as a menu. */
+function bookmarkFolderMenu(name) {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const folder = libraryMod.normFolder(name);
+  const rows = getLibrary().bookmarks().filter((b) => b.folder === folder || b.folder.startsWith(`${folder}/`));
+  if (!folder || !rows.length) return { ok: false };
+  const { Menu } = electron();
+  const template = rows.slice(0, 60).map((b) => {
+    const sub = b.folder === folder ? "" : `${b.folder.slice(folder.length + 1)} / `;
+    return { label: `${sub}${(b.title || b.url).slice(0, 70)}`.replace(/&/g, "&&"), click: () => { openBookmark(b.url); } };
+  });
+  template.push({ type: "separator" }, { label: "Manage bookmarks", click: () => { runBrowserAction("bookmarks"); } });
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+/** The smoke run answers the confirm itself; the owner gets a real dialog. */
+let confirmImpl = null;
+async function confirmWithOwner({ message, detail = "", button = "OK" } = {}) {
+  if (confirmImpl) return Boolean(await confirmImpl({ message, detail, button }));
+  if (!win || win.isDestroyed()) return false;
+  const r = await electron().dialog.showMessageBox(win, {
+    type: "warning", buttons: [String(button), "Cancel"], defaultId: 1, cancelId: 1, noLink: true,
+    message: String(message), detail: String(detail),
+  });
+  return r.response === 0;
+}
+
+/**
+ * "Clear browsing data", for the OWNER's profile only (PARTITION): never the agent's
+ * session, never the Online sign-in. `plan` is browser-library-pages clearPlan().
+ * Cookies, site data and the cache go whole: Electron exposes no time range for them.
+ */
+async function clearBrowsingData(plan) {
+  const out = { errors: [] };
+  const ses = electron().session.fromPartition(PARTITION);
+  if (plan.history) {
+    const lib = getLibrary();
+    const before = lib.historyPage({ limit: 0 }).total;
+    lib.clearHistory({ since: plan.since });
+    out.history = before - lib.historyPage({ limit: 0 }).total;
+  }
+  const wipe = async (label, dataTypes, fallback) => {
+    try {
+      // clearData leaves extensions' own storage alone (awconnect keeps working).
+      if (typeof ses.clearData === "function") await ses.clearData({ dataTypes });
+      else await fallback();
+      return true;
+    } catch (error) {
+      out.errors.push(`${label}: ${(error && error.message) || error}`);
+      return false;
+    }
+  };
+  if (plan.cookies) {
+    out.cookies = await wipe("cookies and site data",
+      ["cookies", "localStorage", "indexedDB", "fileSystems", "serviceWorkers", "webSQL", "backgroundFetch"],
+      () => ses.clearStorageData({ storages: ["cookies", "localstorage", "indexdb", "filesystem", "serviceworkers", "websql", "cachestorage"] }));
+  }
+  if (plan.cache) out.cache = await wipe("cache", ["cache"], () => ses.clearCache());
+  if (plan.passwords) {
+    try {
+      const vault = getVault();
+      const gone = vault.list().filter((e) => !plan.since || (Number(e.at) || 0) >= plan.since);
+      for (const e of gone) vault.remove(e.id);
+      out.passwords = gone.length;
+    } catch (error) {
+      out.errors.push(`passwords: ${(error && error.message) || error}`);
+    }
+  }
+  pushState();
+  return out;
+}
+
+const libraryHost = Object.freeze({
+  library: () => getLibrary(),
+  downloads: () => downloads,
+  permissions: () => getPermissionStore(),
+  open: (url) => openTab("you", url).ok,
+  goto: (pane) => openInternal(pane, null) !== false,
+  openFile: (file) => electron().shell.openPath(file),
+  showFile: (file) => electron().shell.showItemInFolder(file),
+  /** Ask for a file again, in the owner's session (will-download makes it a row). */
+  download: (url) => {
+    if (!policy.isNavigable(url)) return false;
+    electron().session.fromPartition(PARTITION).downloadURL(url);
+    return true;
+  },
+  confirm: confirmWithOwner,
+  pickSave: async ({ title, name }) => {
+    const { app, dialog } = electron();
+    const r = await dialog.showSaveDialog(win, { title, defaultPath: path.join(app.getPath("documents"), name),
+      filters: [{ name: "Bookmarks HTML", extensions: ["html"] }] });
+    return r.canceled || !r.filePath ? null : r.filePath;
+  },
+  pickOpen: async ({ title }) => {
+    const r = await electron().dialog.showOpenDialog(win, { title, properties: ["openFile"],
+      filters: [{ name: "Bookmarks HTML", extensions: ["html", "htm"] }] });
+    return r.canceled || !r.filePaths[0] ? null : r.filePaths[0];
+  },
+  clearData: clearBrowsingData,
+  passwordCount: () => { try { return getVault().count(); } catch { return 0; } },
+  bar: () => Boolean(getPrefs().bookmarksBar),
+  setBar: (on) => setBookmarksBar(on),
+  changed: () => { pushState(); libraryChanged(); },
+});
 // ============================================================== end Edge parity
 
 /** AitherOS Online is hovering on the real desktop (the desk's overlay window). */
@@ -1482,7 +1794,7 @@ function currentRectsFor(bounds, docked) {
   const panes = p.desk.panes;
   // A detached pane takes no room here: its window holds it.
   return rail.railLayout(bounds, {
-    collapsed: p.railCollapsed, docked, chromeHeight: CHROME_HEIGHT, railWidth: p.railWidth,
+    collapsed: p.railCollapsed, docked, chromeHeight: chromeHeight(), railWidth: p.railWidth,
     panelWidth: p.panelWidth, panelCollapsed: p.panelCollapsed || paneDetached("panel"),
     taskbarHeight: stripShown() && !paneDetached("taskbar") ? rail.TASKBAR_HEIGHT : 0,
     dockHeight: dockShown() && !paneDetached("dock") ? rail.dockHeightFor(p) : 0,
@@ -2345,7 +2657,7 @@ function wirePage(wc, id) {
   wc.on("did-stop-loading", () => {
     const tab = tabs.get(id);
     // Console pages are not "history": the address bar suggests them by name instead.
-    if (tab && tab.kind === "web" && !tab.private) getLibrary().visit(wc.getURL(), wc.getTitle(), tab.by);
+    if (tab && tab.kind === "web" && !tab.private && getLibrary().visit(wc.getURL(), wc.getTitle(), tab.by)) libraryChanged();
   });
 }
 
@@ -3058,7 +3370,7 @@ function wireIpc() {
     if (action === "dock-drag") {
       const bounds = win.getContentBounds();
       setPrefs(rail.dockHeightFromDrag(Number(arg), { height: bounds.height,
-        taskbarHeight: stripShown() ? rail.TASKBAR_HEIGHT : 0, side: getPrefs().desk.panes.dock.side, top: CHROME_HEIGHT }));
+        taskbarHeight: stripShown() ? rail.TASKBAR_HEIGHT : 0, side: getPrefs().desk.panes.dock.side, top: chromeHeight() }));
       sendDockState();
       return relayout();
     }
@@ -3171,8 +3483,15 @@ function wireIpc() {
     if (!fromChrome(event) || !view) return { ok: false };
     const on = getLibrary().toggleBookmark(view.webContents.getURL(), view.webContents.getTitle());
     pushState();
+    libraryChanged();
     return { ok: true, bookmarked: on };
   });
+  // The bookmarks bar: a bookmark opens only when it IS one; a folder's menu is drawn here.
+  ipcMain.handle("desk:browser-bookmark-open", (event, url) => (fromChrome(event) ? openBookmark(String(url || "")) : { ok: false }));
+  ipcMain.handle("desk:browser-bookmark-folder", (event, name) => (fromChrome(event) ? bookmarkFolderMenu(String(name || "")) : { ok: false }));
+  // The library pages (aither://history, bookmarks, downloads, permissions, clear-data).
+  libraryPages.setLibraryHost(libraryHost);
+  libraryPages.ensureLibraryIpc();
   // Edge parity: the ⋯ menu, the key icon, a notice's buttons, find on page, zoom badge.
   ipcMain.handle("desk:browser-menu", (event) => (fromChrome(event) ? browserMenu() : { ok: false }));
   ipcMain.handle("desk:browser-passwords", (event) => (fromChrome(event) ? passwordMenu() : { ok: false }));
@@ -3949,6 +4268,11 @@ module.exports = {
   browserMenu,
   getAdblock,
   getVault,
+  /** The library pages and site permissions (browser-parity-smoke.cjs). */
+  getPermissionStore,
+  getDownloads: () => downloads,
+  BOOKMARKS_BAR_HEIGHT,
+  __setConfirmForTest: (fn) => { confirmImpl = typeof fn === "function" ? fn : null; },
   __pageForTest: (id) => pageWc(id),
   __noticeForTest: (id) => tabNotices.get(id) || null,
   /** The owner clicking a tab, for browser-tabs-smoke.cjs (the strip's IPC needs a real sender). */

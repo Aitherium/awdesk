@@ -7,6 +7,12 @@
  * right-click, session restore. Unit tests prove the parts; only a real Chromium shows
  * that a login form fills, an ad request is cancelled and a PDF renders in the tab.
  *
+ * And the library pages (browser-library-pages.cjs), each driven by clicking its own
+ * buttons in a real aither:// tab: the history page lists a visit and deletes it; a
+ * bookmark is added, renamed and deleted; the bookmarks bar takes its row; clear
+ * browsing data empties history after the confirm; a site asking for notifications
+ * raises the prompt, Block is remembered, and an agent's tab is never asked.
+ *
  * Own entry point: a temp userData (never the owner's profile), no tray.
  * Exit 0 all pass, 1 a check failed, 2 the run itself broke, 3 it hung.
  */
@@ -14,14 +20,16 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const fs = require("node:fs");
-const { app } = require("electron");
+const { app, protocol } = require("electron");
+// aither:// must be a standard scheme before the app is ready (main.cjs does this).
+require("./browser-internal.cjs").registerPrivilegedScheme(protocol);
 
 const userData = path.join(os.tmpdir(), `awdesk-parity-smoke-${process.pid}`);
 app.setPath("userData", userData);
 // Closing the browser (the session-restore check) must not quit the run.
 app.on("window-all-closed", () => {});
 process.on("unhandledRejection", (e) => { console.log("REJECT " + ((e && e.stack) || e)); app.exit(2); });
-setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 120000);
+setTimeout(() => { console.log("TIMEOUT"); app.exit(3); }, 140000);
 
 const PDF = Buffer.from(
   "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
@@ -34,6 +42,7 @@ const PAGES = {
   "/login": "<!doctype html><title>Login</title><form action=\"/done\" method=\"get\">"
     + "<input name=\"u\" autocomplete=\"username\"><input name=\"p\" type=\"password\"><button id=\"go\">Sign in</button></form>",
   "/done": "<!doctype html><title>Done</title><p>signed in</p>",
+  "/perm": "<!doctype html><title>Perm</title><p>asks for notifications</p>",
 };
 
 function serve() {
@@ -143,6 +152,230 @@ app.whenReady().then(async () => {
   expect("InPrivate visits are not in history", !bw.getLibrary().history(100).some((h) => h.url.includes("private=1")), null);
   expect("state marks the tab InPrivate", bw.getState().private === true, bw.getState().private);
   bw.runBrowserAction("close-tab");
+
+  // ------------------------------------------------------------------ the library pages
+  const lib = bw.getLibrary();
+  const confirms = [];
+  let confirmAnswer = true;
+  bw.__setConfirmForTest((q) => { confirms.push(q); return confirmAnswer; });
+  /** The aither:// page a browser action opened, once its list has drawn. */
+  const libraryPage = async (action, pane) => {
+    const opened = bw.runBrowserAction(action);
+    const lwc = await until(() => {
+      const p = page();
+      return p && p.getURL().startsWith(`aither://${pane}/`) && !p.isLoading() ? p : null;
+    });
+    if (lwc) await until(() => lwc.executeJavaScript("Boolean(window.aitherLibrary) && document.getElementById('nav').children.length === 5"));
+    return { opened, lwc, tabId: active() };
+  };
+  const js = (target, code) => target.executeJavaScript(code, true);
+
+  // History (Ctrl+H): the visits above are listed with who made them; Delete forgets one.
+  const hist = await libraryPage("history", "history");
+  expect("Ctrl+H opens aither://history", hist.opened === true && Boolean(hist.lwc), page() && page().getURL());
+  if (hist.lwc) {
+    const findRow = "document.querySelector('#list .row[data-url$=\"/find\"]')";
+    const listed = await until(() => js(hist.lwc, `(() => { const r = ${findRow}; return r ? r.textContent : ""; })()`));
+    expect("the history page lists a visit and who made it", /Find/.test(listed || "") && /you/.test(listed || ""), listed);
+    expect("the history page groups by day", (await js(hist.lwc, "document.querySelector('#list h2.day').textContent")).startsWith("Today"), null);
+    await js(hist.lwc, "document.getElementById('q').value = 'login'; document.getElementById('q').dispatchEvent(new Event('input')); 0");
+    const searched = await until(() => js(hist.lwc, "(() => { const rows = [...document.querySelectorAll('#list .row')]; return rows.length > 0 && rows.every((r) => r.dataset.url.includes('/login')); })()"));
+    expect("the history page searches", Boolean(searched), await js(hist.lwc, "document.getElementById('list').textContent"));
+    await js(hist.lwc, "document.getElementById('q').value = ''; document.getElementById('q').dispatchEvent(new Event('input')); 0");
+    await until(() => js(hist.lwc, `Boolean(${findRow})`));
+    await js(hist.lwc, `${findRow}.querySelector('button.small').click(); 0`);
+    const gone = await until(() => !lib.history(500).some((h) => h.url.endsWith("/find")));
+    const rowGone = await until(() => js(hist.lwc, `!${findRow}`));
+    expect("Delete on the history page forgets that visit", Boolean(gone) && Boolean(rowGone), lib.history(500).map((h) => h.url));
+    expect("the other visits stay", lib.history(500).some((h) => h.url.endsWith("/login")), lib.history(500).map((h) => h.url));
+  }
+
+  // Bookmarks (Ctrl+Shift+O): add, rename, delete, each through the page's own buttons.
+  const marks = await libraryPage("bookmarks", "bookmarks");
+  expect("Ctrl+Shift+O opens aither://bookmarks", Boolean(marks.lwc), page() && page().getURL());
+  const markUrl = `${base}/done?bookmark=1`;
+  if (marks.lwc) {
+    await js(marks.lwc, `document.getElementById('add').click(); document.getElementById('add-url').value = ${JSON.stringify(markUrl)};`
+      + "document.getElementById('add-title').value = 'First name'; document.getElementById('add-folder').value = 'Work'; document.getElementById('add-save').click(); 0");
+    const added = await until(() => lib.bookmarks().find((b) => b.url === markUrl));
+    expect("a bookmark is added from the page, in its folder", Boolean(added) && added.title === "First name" && added.folder === "Work", lib.bookmarks());
+    const markRow = `document.querySelector('#list .row[data-url=${JSON.stringify(markUrl)}]')`;
+    await until(() => js(marks.lwc, `Boolean(${markRow})`));
+    expect("the page lists it under its folder", /Work \(1\)/.test(await js(marks.lwc, "document.querySelector('#list h2.folder').textContent")), null);
+    await js(marks.lwc, `${markRow}.querySelector('[data-act=edit]').click(); ${markRow}.querySelector('[data-field=title]').value = 'Second name';`
+      + `${markRow}.querySelector('[data-act=save]').click(); 0`);
+    const renamed = await until(() => (lib.bookmarks().find((b) => b.url === markUrl) || {}).title === "Second name");
+    expect("a bookmark is renamed from the page", Boolean(renamed), lib.bookmarks());
+    expect("the address bar's star knows it", lib.isBookmarked(markUrl), null);
+
+    // The bookmarks bar (Ctrl+Shift+B): off by default; on, the chrome grows by its row and
+    // the page view moves down with it; the bar shows the folder.
+    const chromeWc = bw.getWindow().webContents;
+    const pageY = () => bw.getState().rail.rects.page.y;
+    expect("the bookmarks bar is off by default", bw.getState().chromeHeight === bw.CHROME_HEIGHT && bw.getState().bookmarksBar === null
+      && pageY() === bw.CHROME_HEIGHT, { h: bw.getState().chromeHeight, y: pageY() });
+    bw.runBrowserAction("bookmarks-bar");
+    const tall = bw.CHROME_HEIGHT + bw.BOOKMARKS_BAR_HEIGHT;
+    expect("Ctrl+Shift+B shows the bar and the page moves down", bw.getState().chromeHeight === tall && pageY() === tall,
+      { h: bw.getState().chromeHeight, y: pageY() });
+    const barDrawn = await until(() => chromeWc.executeJavaScript("(() => { const b = document.getElementById('bmbar'); return !b.hidden"
+      + " && Math.round(b.getBoundingClientRect().height) === 30 && Math.round(document.getElementById('top').getBoundingClientRect().height) === 108"
+      + " ? [...b.querySelectorAll('button')].map((x) => x.textContent).join('|') : ''; })()"));
+    expect("the toolbar draws the bar with the folder on it", /Work/.test(barDrawn || ""), barDrawn || await chromeWc.executeJavaScript("(() => { const b = document.getElementById('bmbar'); return [b.hidden, b.getBoundingClientRect().height, document.getElementById('top').getBoundingClientRect().height, b.textContent, getComputedStyle(document.documentElement).getPropertyValue('--chrome-h')]; })()"));
+    // A click on a bar item opens that bookmark; the bar opens nothing that is not one.
+    const barUrl = `${base}/done?bar=1`;
+    lib.addBookmark({ url: barUrl, title: "Bar item" });
+    bw.runBrowserAction("bookmarks-bar");
+    bw.runBrowserAction("bookmarks-bar");
+    const barItem = await until(() => chromeWc.executeJavaScript("Boolean([...document.querySelectorAll('#bmbar button.bm')].find((b) => b.textContent === 'Bar item'))"));
+    expect("a top-level bookmark is a button on the bar", Boolean(barItem), null);
+    const tabsBefore = bw.getTabs().snapshot().tabs.length;
+    await chromeWc.executeJavaScript("[...document.querySelectorAll('#bmbar button.bm')].find((b) => b.textContent === 'Bar item').click(); 0", true);
+    const barOpened = await until(() => { const p = page(); return p && p.getURL().includes("bar=1") ? p : null; });
+    expect("clicking it opens the bookmark in a tab", Boolean(barOpened) && bw.getTabs().snapshot().tabs.length === tabsBefore + 1,
+      page() && page().getURL());
+    const notOne = await chromeWc.executeJavaScript(`window.aitherBrowser.openBookmark(${JSON.stringify(`${base}/login?not-a-bookmark`)})`);
+    expect("the bar opens nothing that is not a bookmark", notOne && notOne.ok === false, notOne);
+    if (barOpened) bw.runBrowserAction("close-tab");
+    lib.removeBookmark(barUrl);
+    bw.__showTabForTest(marks.tabId);
+    bw.runBrowserAction("bookmarks-bar");
+    expect("Ctrl+Shift+B again hides it", bw.getState().chromeHeight === bw.CHROME_HEIGHT && pageY() === bw.CHROME_HEIGHT, bw.getState().chromeHeight);
+
+    await js(marks.lwc, `${markRow}.querySelector('[data-act=delete]').click(); 0`);
+    const deleted = await until(() => !lib.isBookmarked(markUrl));
+    expect("a bookmark is deleted from the page", Boolean(deleted), lib.bookmarks());
+  }
+
+  // Downloads (Ctrl+J): the shelf as a page. A real download would raise the OS save
+  // dialog, so the row is put on the shelf directly; the page lists and removes it.
+  const failedId = bw.getDownloads().start({ filename: "report.pdf", url: `${base}/report.pdf` });
+  bw.getDownloads().update(failedId, { state: "interrupted" });
+  const dl = await libraryPage("downloads", "downloads");
+  expect("Ctrl+J opens aither://downloads", dl.opened === true && Boolean(dl.lwc), page() && page().getURL());
+  if (dl.lwc) {
+    const dlRow = `document.querySelector('#list .row[data-id="${failedId}"]')`;
+    const dlText = await until(() => js(dl.lwc, `(() => { const r = ${dlRow}; return r ? r.textContent : ""; })()`));
+    expect("the downloads page lists a failed download with Try again", /report\.pdf/.test(dlText || "") && /Failed/.test(dlText || "")
+      && /Try again/.test(dlText || ""), dlText);
+    await js(dl.lwc, `[...${dlRow}.querySelectorAll('button')].find((b) => b.textContent === 'Remove').click(); 0`);
+    const removed = await until(() => bw.getDownloads().get(failedId) === null);
+    expect("Remove takes the row off the shelf", Boolean(removed), bw.getDownloads().list());
+  }
+
+  // Site permissions: a page asking for notifications raises the prompt; Block is
+  // remembered for the site; the next ask is refused with no prompt.
+  const store = bw.getPermissionStore();
+  const permTab = bw.__openTabForTest(`${base}/perm`);
+  const permWc = await until(() => { const p = bw.__pageForTest(permTab.id); return p && p.getURL().includes("/perm") && !p.isLoading() ? p : null; });
+  const ask = "window.__answer = null; Notification.requestPermission().then((v) => { window.__answer = v; }); 0";
+  await js(permWc, ask);
+  const prompt = await until(() => { const n = bw.__noticeForTest(permTab.id); return n && n.kind === "permission" ? n : null; });
+  expect("a site asking for notifications raises the owner's prompt", Boolean(prompt) && /wants to show notifications/.test(prompt.text)
+    && prompt.actions.map((a) => a.label).join() === "Allow,Block,Not now", prompt);
+  expect("nothing is granted while the prompt is up", (await js(permWc, "window.__answer")) === null && store.list().length === 0, store.list());
+  const shownInToolbar = await until(() => bw.getWindow().webContents.executeJavaScript(
+    "(() => { const n = document.getElementById('notice'); return !n.hidden && /notifications/.test(n.textContent) ? n.textContent : ''; })()"));
+  expect("the toolbar shows it with Allow and Block", /Allow/.test(shownInToolbar || "") && /Block/.test(shownInToolbar || ""), shownInToolbar);
+  if (prompt) await bw.noticeAction("permission-block");
+  const refused = await until(() => js(permWc, "window.__answer"));
+  expect("Block answers the page with denied", refused === "denied", refused);
+  expect("Block is remembered for the site", store.get(base, "notifications") === "block", store.list());
+  const permFile = JSON.parse(fs.readFileSync(path.join(userData, "browser-permissions.json"), "utf8"));
+  expect("it is written to userData", permFile.sites[base] && permFile.sites[base].notifications.value === "block", permFile);
+  await permWc.loadURL(`${base}/perm`).catch(() => {});
+  await loaded(permWc, "/perm");
+  await js(permWc, ask);
+  const again = await until(() => js(permWc, "window.__answer"));
+  expect("the next ask is refused without a prompt", again === "denied" && !bw.__noticeForTest(permTab.id), { again, notice: bw.__noticeForTest(permTab.id) });
+
+  // An InPrivate tab of the same site: the remembered Block holds, and nothing is asked.
+  bw.runBrowserAction("inprivate", `${base}/perm?private=2`);
+  const privWc = await until(() => { const p = page(); return p && p.getURL().includes("private=2") && !p.isLoading() ? p : null; });
+  await js(privWc, ask);
+  expect("a blocked site stays blocked InPrivate", (await until(() => js(privWc, "window.__answer"))) === "denied" && !bw.__noticeForTest(active()), null);
+  bw.runBrowserAction("close-tab");
+
+  // The review page lists it; Remove takes it back, so the site asks again.
+  const perms = await libraryPage("permissions", "permissions");
+  expect("aither://permissions opens", Boolean(perms.lwc), page() && page().getURL());
+  if (perms.lwc) {
+    const permRow = "document.querySelector('#list .row[data-kind=notifications]')";
+    const permText = await until(() => js(perms.lwc, `(() => { const r = ${permRow}; return r ? r.dataset.origin + ' ' + r.textContent : ""; })()`));
+    expect("the permissions page lists the blocked site", (permText || "").startsWith(base) && /Notifications/.test(permText) && /Blocked/.test(permText), permText);
+    await js(perms.lwc, `[...${permRow}.querySelectorAll('button')].find((b) => b.textContent === 'Remove').click(); 0`);
+    const forgotten = await until(() => store.get(base, "notifications") === null);
+    expect("Remove on the permissions page forgets the answer", Boolean(forgotten), store.list());
+  }
+  bw.__showTabForTest(permTab.id);
+  await js(permWc, ask);
+  const reasked = await until(() => { const n = bw.__noticeForTest(permTab.id); return n && n.kind === "permission" ? n : null; });
+  expect("after Remove the site asks again", Boolean(reasked), bw.__noticeForTest(permTab.id));
+  if (reasked) await bw.noticeAction("dismiss");
+  expect("Not now denies once and remembers nothing", (await until(() => js(permWc, "window.__answer"))) === "denied" && store.list().length === 0, store.list());
+  await js(permWc, ask);
+  const third = await until(() => { const n = bw.__noticeForTest(permTab.id); return n && n.kind === "permission" ? n : null; });
+  if (third) await bw.noticeAction("permission-allow");
+  expect("Allow answers granted and is remembered", (await until(() => js(permWc, "window.__answer"))) === "granted"
+    && store.get(base, "notifications") === "allow", { answer: await js(permWc, "window.__answer"), list: store.list() });
+  expect("an allowed site reads as granted afterwards", (await js(permWc, "Notification.permission")) === "granted", await js(permWc, "Notification.permission"));
+
+  // An AGENT's tab is never asked and never allowed, even on a site the owner allowed.
+  const agent = bw.browserAgent();
+  const agentTab = await agent("open", { url: `${base}/perm?agent=1` });
+  const agentWc = agentTab.ok ? bw.__pageForTest(agentTab.tab) : null;
+  if (agentWc) {
+    await loaded(agentWc, "agent=1");
+    await js(agentWc, ask);
+    const agentAnswer = await until(() => js(agentWc, "window.__answer"));
+    expect("an agent tab is denied with no prompt", agentAnswer === "denied" && !bw.__noticeForTest(agentTab.tab),
+      { agentAnswer, notice: bw.__noticeForTest(agentTab.tab) });
+    expect("an agent tab reads the permission as not granted", (await js(agentWc, "Notification.permission")) !== "granted", null);
+    bw.runBrowserAction("close-tab");
+  } else {
+    expect("an agent tab opens for the permission check", false, agentTab);
+  }
+  bw.getGate().release();
+
+  // Clear browsing data (Ctrl+Shift+Delete): nothing goes without the confirm; with it,
+  // history is emptied. Cookies are ticked too, so the owner profile's cookie really goes.
+  const sessions = require("electron").session;
+  const ownerSes = sessions.fromPartition(bw.PARTITION);
+  const agentSes = sessions.fromPartition(bw.AGENT_PARTITION);
+  await ownerSes.cookies.set({ url: base, name: "owner_cookie", value: "1", expirationDate: Date.now() / 1000 + 3600 });
+  await agentSes.cookies.set({ url: base, name: "agent_cookie", value: "1", expirationDate: Date.now() / 1000 + 3600 });
+  const clear = await libraryPage("clear-data", "clear-data");
+  expect("Ctrl+Shift+Delete opens aither://clear-data", clear.opened === true && Boolean(clear.lwc), page() && page().getURL());
+  if (clear.lwc) {
+    await until(() => js(clear.lwc, "document.getElementById('range').options.length === 5"));
+    const before = lib.history(500).length;
+    expect("there is history to clear", before > 0, before);
+    await js(clear.lwc, "document.getElementById('range').value = 'all'; document.getElementById('cookies').checked = true; 0");
+    confirms.length = 0;
+    confirmAnswer = false;
+    await js(clear.lwc, "document.getElementById('go').click(); 0");
+    await until(() => confirms.length === 1);
+    await sleep(300);
+    expect("clearing asks first, and Cancel clears nothing", confirms.length === 1 && lib.history(500).length === before
+      && /Browsing history from all time/.test(confirms[0].detail) && /Cookies and site data/.test(confirms[0].detail), confirms);
+    confirmAnswer = true;
+    await js(clear.lwc, "document.getElementById('go').click(); 0");
+    const emptied = await until(() => lib.history(500).length === 0);
+    expect("clear browsing data empties history", Boolean(emptied), lib.history(500).length);
+    const said = await until(() => js(clear.lwc, "(() => { const t = document.getElementById('status').textContent; return /^Cleared/.test(t) ? t : ''; })()"), 15000);
+    expect("the page says what was cleared", /history entr/.test(said || "") && /cookies and site data/.test(said || "") && /the cache/.test(said || "")
+      && !/Not cleared/.test(said || ""), said || await js(clear.lwc, "document.getElementById('status').textContent"));
+    expect("the owner profile's cookies are gone", (await ownerSes.cookies.get({ name: "owner_cookie" })).length === 0, null);
+    expect("the agent's own session is not touched", (await agentSes.cookies.get({ name: "agent_cookie" })).length === 1, null);
+    expect("saved passwords stay unless ticked", bw.getVault().list().length === 1, bw.getVault().list().length);
+    const onDiskLib = JSON.parse(fs.readFileSync(path.join(userData, "browser-library.json"), "utf8"));
+    expect("the history file on disk is empty", onDiskLib.history.length === 0, onDiskLib.history.length);
+  }
+  bw.__setConfirmForTest(null);
+  // Back on a web page, so the session checks below have one to save.
+  bw.__showTabForTest(permTab.id);
+  await permWc.loadURL(`${base}/login`).catch(() => {});
+  await loaded(permWc, "/login");
 
   // Session restore: the open tabs are written for next time; InPrivate is not.
   bw.closeBrowserWindow();
