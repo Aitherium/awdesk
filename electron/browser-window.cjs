@@ -589,6 +589,7 @@ function layout() {
   // A page in full screen (a video) takes the whole window instead (browser-fullscreen.cjs).
   endStaleFullscreen();
   const rects = htmlFullscreen.rects(currentRects(), win.getContentBounds(), tabs.active);
+  placeFullscreenHint();
   const now = Date.now();
   for (const [id, view] of views) {
     if (!alive(view) || popped.has(id)) continue;
@@ -1087,6 +1088,12 @@ function privateHomeUrl() {
 }
 
 function setNotice(id, notice) {
+  // A question raised under a full-screen page (the toolbar is covered) cannot be
+  // answered until the page has left full screen and the question has been seen.
+  if (notice && fullscreenMod.needsEyes(notice) && htmlFullscreen.tab() === id) {
+    notice = fullscreenMod.heldNotice(notice);
+    leavePageFullscreen(id);
+  }
   // A site waiting on Allow / Block keeps its question up; another notice follows it.
   const shown = tabNotices.get(id);
   if (shown && shown.kind === "permission" && permPrompts.pending(id) && (!notice || notice.kind !== "permission")) {
@@ -2012,6 +2019,9 @@ const mediaTabs = new Set(); // tab ids whose page on screen was given the camer
 let externalStoreImpl = null;
 let openExternalImpl = null; // the smoke's stand-in for shell.openExternal
 const externalAutoAt = new Map(); // tab id -> when a remembered "Always" last opened an app unasked
+const navFrom = new WeakMap(); // a page's webContents -> the address its main-frame navigation is on (who redirects)
+let hintView = null; // the "<site> is full screen - press Esc" view, main's own, on top of the page
+let hintTimer = null;
 
 function getExternalStore() {
   if (!externalStoreImpl) externalStoreImpl = externalApps.createExternalStore({ file: userDataPath("browser-external-apps.json") });
@@ -2035,6 +2045,66 @@ function forgetPageGrants(id, { closed = false } = {}) {
   if (htmlFullscreen.leave(id) && win && !win.isDestroyed() && win.isFullScreen()) win.setFullScreen(false);
 }
 
+/**
+ * The exit hint (browser-fullscreen.cjs): every time a page enters full screen, main
+ * shows whose page it is and how to leave, for a few seconds, in a view of its own on
+ * top of the page. Page content cannot reach it: its own in-memory session, sandboxed,
+ * no preload, no script, a document main wrote.
+ */
+function showFullscreenHint(id) {
+  const page = viewOf(id);
+  if (!page || !win || win.isDestroyed()) return;
+  hideFullscreenHint();
+  const { WebContentsView } = electron();
+  const hint = new WebContentsView({ webPreferences: { partition: "aither-fullscreen-hint", sandbox: true, contextIsolation: true,
+    nodeIntegration: false, javascript: false } });
+  hint.setBackgroundColor("#00000000");
+  hint.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  hint.webContents.on("will-navigate", (event) => event.preventDefault());
+  hintView = hint;
+  void hint.webContents.loadURL(fullscreenMod.hintPage(page.webContents.getURL())).catch(() => {});
+  placeFullscreenHint();
+  hintTimer = setTimeout(hideFullscreenHint, fullscreenMod.HINT_MS);
+}
+
+/** The hint stays the TOP child view and follows the window as it grows into full screen. */
+function placeFullscreenHint() {
+  if (!hintView || !win || win.isDestroyed()) return;
+  win.contentView.addChildView(hintView);
+  hintView.setBounds(fullscreenMod.hintRect(win.getContentBounds()));
+}
+
+function hideFullscreenHint() {
+  clearTimeout(hintTimer);
+  hintTimer = null;
+  const hint = hintView;
+  hintView = null;
+  if (!hint) return;
+  try { if (win && !win.isDestroyed()) win.contentView.removeChildView(hint); } catch { /* already detached */ }
+  try { hint.webContents.close(); } catch { /* already gone */ }
+}
+
+/** End tab `id`'s page full screen from main; the window is forced out if the page does not answer. */
+function leavePageFullscreen(id) {
+  const view = viewOf(id);
+  if (view) void isolated(view.webContents, fullscreenMod.EXIT_SCRIPT);
+  setTimeout(() => {
+    if (htmlFullscreen.tab() !== id) return;
+    htmlFullscreen.leave(id);
+    if (win && !win.isDestroyed() && win.isFullScreen()) win.setFullScreen(false);
+    afterPageFullscreen(id);
+  }, 1500);
+}
+
+/** The page left full screen: a question that waited in the covered toolbar starts its half second now. */
+function afterPageFullscreen(id) {
+  hideFullscreenHint();
+  const now = Date.now();
+  fullscreenMod.restamp(tabNotices.get(id), now);
+  fullscreenMod.restamp(noticeBehind.get(id), now);
+  layout();
+}
+
 /** Another tab was put on screen while a page was full screen: that page leaves full screen. */
 function endStaleFullscreen() {
   const id = htmlFullscreen.stale(tabs.active);
@@ -2056,7 +2126,7 @@ function answerQuietly(wc, permission, callback, details) {
   const answer = (allow) => { try { callback(Boolean(allow)); } catch { /* the page is gone */ } };
   if (permission === "openExternal") {
     answer(false);
-    void offerExternalApp(id, details && details.externalURL, { mainFrame: false });
+    void offerExternalApp(id, details && details.externalURL, { via: "frame", requestingUrl: details && details.requestingUrl });
     return true;
   }
   const verdict = quietGrants.decide({ permission, details: details || {}, tab: id == null ? null : tabs.get(id), agentDriving: agentDrives(id) });
@@ -2076,8 +2146,12 @@ function checkQuietly(wc, permission, details) {
 
 /** Full screen follows the page; a page that crashed or did not load says so (browser-page-errors.cjs). */
 function wirePageGaps(wc, id) {
-  wc.on("enter-html-full-screen", () => { if (htmlFullscreen.enter(id)) layout(); });
-  wc.on("leave-html-full-screen", () => { if (htmlFullscreen.leave(id)) layout(); });
+  wc.on("enter-html-full-screen", () => { htmlFullscreen.enter(id); layout(); showFullscreenHint(id); });
+  wc.on("leave-html-full-screen", () => { htmlFullscreen.leave(id); afterPageFullscreen(id); });
+  // Where the tab's navigation is right now: the site named when it redirects to an app link.
+  wc.on("did-start-navigation", (details) => {
+    if (details && details.isMainFrame && !details.isSameDocument) navFrom.set(wc, String(details.url || ""));
+  });
   wc.on("render-process-gone", (_event, details) => {
     const notice = pageErrors.crashNotice(details);
     if (notice && tabs.get(id)) setNotice(id, notice);
@@ -2104,16 +2178,22 @@ function openFromPage(id, details) {
   const url = String((details && details.url) || "");
   // An agent tab the owner let ride their session is never adopted from (its popup's session is picked again).
   const from = opener ? { ...opener, ownerSession: opener.by === "agent" && (opener.viewSpec || {}).webPartition === PARTITION } : null;
-  const verdict = popups.popupVerdict({ opener: from, url, disposition: details && details.disposition, recent: popupLedger.count(id),
+  // The burst is counted against the ROOT of the opener chain, for both ways of opening.
+  const root = popups.rootOf(opener, id);
+  const verdict = popups.popupVerdict({ opener: from, url, disposition: details && details.disposition, recent: popupLedger.count(root),
     isInternalUrl: internal.isInternalUrl, isHostedSite: internal.isHostedSite });
-  if (verdict.action === "tab") openTab(verdict.by, url, { activate: true, after: id });
-  if (verdict.action !== "adopt") return { action: "deny" };
-  popupLedger.note(id);
-  return { action: "allow", outlivesOpener: true, createWindow: (options) => adoptPopup(id, verdict, options, url) };
+  if (verdict.action === "deny") return { action: "deny" };
+  popupLedger.note(root);
+  if (verdict.action === "tab") {
+    const opened = openTab(verdict.by, url, { activate: true, after: id });
+    if (opened.ok && tabs.get(opened.id)) tabs.get(opened.id).popupRoot = root;
+    return { action: "deny" };
+  }
+  return { action: "allow", outlivesOpener: true, createWindow: (options) => adoptPopup(id, verdict, options, url, root) };
 }
 
 /** Electron's createWindow for an adopted popup: show the popup's OWN page as a tab. */
-function adoptPopup(openerId, verdict, options, url) {
+function adoptPopup(openerId, verdict, options, url, root = openerId) {
   const guest = options.webContents;
   const refuse = () => { setImmediate(() => { try { guest.close(); } catch { /* already gone */ } }); return guest; };
   try {
@@ -2125,6 +2205,7 @@ function adoptPopup(openerId, verdict, options, url) {
     const tab = tabs.get(added.id);
     tab.label = "";
     tab.popup = true;
+    tab.popupRoot = root;
     if (verdict.private) tab.private = true;
     // Chromium made the popup in its opener's session; a discarded popup comes back in the same one.
     tab.viewSpec = { kind: "web", paneId: null, partition: null, webPartition: (opener.viewSpec || {}).webPartition || PARTITION,
@@ -2156,6 +2237,11 @@ function wirePopupClose(wc, id, view) {
   });
 }
 
+/** The origin of the frame that started a navigation (will-navigate's event.initiator), or null. */
+function initiatorOriginOf(event) {
+  try { return event && event.initiator ? String(event.initiator.origin || "") || null : null; } catch { return null; }
+}
+
 function launchExternal(url) {
   const open = openExternalImpl || ((target) => electron().shell.openExternal(target));
   try { return Promise.resolve(open(url)).catch(() => {}); } catch { return Promise.resolve(); }
@@ -2166,14 +2252,20 @@ function launchExternal(url) {
  * (browser-external-apps.cjs). The owner's tab and the allow-list only: the toolbar asks
  * "Open <App>?", or a remembered "Always for this site" opens it on a page the owner
  * has used, at most once every few seconds. An agent's tab and every other scheme get nothing.
+ *
+ * `source` says WHO asked (externalApps.whoAsks): {via: "navigate", initiatorOrigin} for a
+ * navigation in the tab, {via: "redirect", redirectFrom} for a web address that redirected
+ * to the link, {via: "frame", requestingUrl} for a frame's or a script's. Only the page
+ * itself asking can use or set "Always".
  */
-async function offerExternalApp(id, url, { mainFrame = false } = {}) {
+async function offerExternalApp(id, url, source = {}) {
   const tab = id == null ? null : tabs.get(id);
   const wc = id == null ? null : pageWc(id);
   if (!tab || !wc) return false;
   let store = null;
   try { store = getExternalStore(); } catch { /* no store: asked every time */ }
-  const ask = { url, tab, pageUrl: wc.getURL(), mainFrame, store, sinceAuto: Date.now() - (externalAutoAt.get(id) || 0) };
+  const ask = { url, tab, pageUrl: wc.getURL(), via: source.via, initiatorOrigin: source.initiatorOrigin, redirectFrom: source.redirectFrom,
+    requestingUrl: source.requestingUrl, store, sinceAuto: Date.now() - (externalAutoAt.get(id) || 0) };
   let verdict = externalApps.judge({ ...ask, gesture: true });
   if (verdict.verdict === "deny") return false;
   if (verdict.verdict === "open" && (await isolated(wc, externalApps.INTERACTED_SCRIPT)) !== true) verdict = externalApps.judge({ ...ask, gesture: false });
@@ -3190,14 +3282,18 @@ function wirePage(wc, id) {
     const opener = tabs.get(id);
     if (verdict === "web-tab" && opener) openTab(opener.by, url, { activate: true, after: id });
     // mailto:, tel:, Zoom...: the owner is asked "Open <App>?" (never an agent's tab).
-    else void offerExternalApp(id, url, { mainFrame: true });
+    else void offerExternalApp(id, url, { via: "navigate", initiatorOrigin: initiatorOriginOf(event) });
   };
   wc.on("will-navigate", guard);
   // A redirect cannot be split into another tab: anything but "allow" stops it.
   wc.on("will-redirect", (event, url) => {
-    if (verdictFor(url) === "allow") return;
+    if (verdictFor(url) === "allow") {
+      if (event.isMainFrame !== false) navFrom.set(wc, String(url || ""));
+      return;
+    }
     event.preventDefault();
-    if (event.isMainFrame !== false) void offerExternalApp(id, url, { mainFrame: true });
+    // A web address that redirected to an app link: always asked, and the redirecting site is named.
+    if (event.isMainFrame !== false) void offerExternalApp(id, url, { via: "redirect", redirectFrom: navFrom.get(wc) || null });
   });
   // Frames: a web page cannot frame aither:// (its session has no handler either).
   wc.on("will-frame-navigate", (details) => {
@@ -3469,6 +3565,7 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     discarded.clear();
     shownAt.clear();
     htmlFullscreen.leave(null);
+    hideFullscreenHint();
     mediaTabs.clear();
     lastLayoutKey = "";
     for (const view of [...views.values(), panelView, taskbarView, dockView]) {
@@ -5153,6 +5250,13 @@ module.exports = {
   __setOpenExternalForTest: (fn) => { openExternalImpl = typeof fn === "function" ? fn : null; },
   __viewBoundsForTest: (id) => { const v = viewOf(id); return v ? v.getBounds() : null; },
   __fullscreenTabForTest: () => htmlFullscreen.tab(),
+  /** The exit hint: where it is, whether it is the top child view, and the document main wrote for it. */
+  __fullscreenHintForTest: () => {
+    if (!hintView || !win || win.isDestroyed()) return null;
+    const children = win.contentView.children;
+    return { bounds: hintView.getBounds(), top: children[children.length - 1] === hintView, url: hintView.webContents.getURL(),
+      ownSession: hintView.webContents.session !== electron().session.fromPartition(PARTITION) };
+  },
   __tabFactsForTest: () => tabFacts(),
   __pageHasUnsavedForTest: (id) => pageHasUnsaved(id),
   /** What a tab's page is answered for a permission, through the handlers its session has (smoke). */

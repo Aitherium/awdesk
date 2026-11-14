@@ -250,8 +250,14 @@ test("browser-window: page view has no preload, is sandboxed, isolated, and popu
   // One page view per tab, all built in openTab().
   const page = src.match(/const view = new WebContentsView\(\{[\s\S]*?\n {2}\}\);/);
   assert.ok(page, "page view construction found");
-  assert.equal((src.match(/new WebContentsView\(/g) || []).length, 4,
-    "one page-view builder (openTab) + the panel + the taskbar + the adopted popup");
+  assert.equal((src.match(/new WebContentsView\(/g) || []).length, 5,
+    "one page-view builder (openTab) + the panel + the taskbar + the adopted popup + the full-screen exit hint");
+  // The fifth is main's own "<site> is full screen - press Esc" (browser-fullscreen.cjs):
+  // its own in-memory session, sandboxed, no script, no preload.
+  const hint = src.match(/const hint = new WebContentsView\(\{[\s\S]*?\}\);/);
+  assert.ok(hint, "exit hint view construction found");
+  assert.match(hint[0], /partition: "aither-fullscreen-hint", sandbox: true, contextIsolation: true,\s*nodeIntegration: false, javascript: false/);
+  assert.doesNotMatch(hint[0], /preload/);
   // The fourth shows a popup's OWN page (browser-popups.cjs): it is handed the page
   // Chromium already made in the opener's session and sandbox, and no preferences at all.
   assert.equal((src.match(/new WebContentsView\(\{ webContents: guest \}\)/g) || []).length, 1,

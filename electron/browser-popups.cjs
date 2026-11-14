@@ -33,7 +33,8 @@
  *     never reach a page they open.
  *   - the owner's popup to an Aitherium page (app.aitherium.com) also keeps the old
  *     behaviour: that page opens in its own signed-in tab, never in the web session.
- *   - at most POPUP_BURST popups per opener in POPUP_WINDOW_MS. A page that opens
+ *   - at most POPUP_BURST popups per ROOT opener in POPUP_WINDOW_MS, counted over the
+ *     whole chain (a popup's own popups) and over both ways of opening (rootOf). A page that opens
  *     windows in a loop is refused after that.
  *
  * Pure: no electron.
@@ -67,6 +68,8 @@ function popupUrlOk(url) {
  */
 function popupVerdict({ opener, url, disposition = "", recent = 0, isInternalUrl = () => false, isHostedSite = () => false } = {}) {
   if (!opener || (opener.by !== "you" && opener.by !== "agent")) return { action: "deny", reason: "no opener tab" };
+  // The burst limit covers every way a page opens a tab, the old no-opener way too.
+  if (recent >= POPUP_BURST) return { action: "deny", reason: "too many popups from this page" };
   const kind = opener.kind || "web";
   const activate = disposition !== "background-tab";
   if (kind !== "web") {
@@ -83,11 +86,21 @@ function popupVerdict({ opener, url, disposition = "", recent = 0, isInternalUrl
   // The owner's link to an Aitherium page opens the way it always did: its own signed-in
   // tab (or its aither:// page), which a web page's session must not be handed.
   if (opener.by === "you" && isHostedSite(url)) return { action: "tab", by: "you", activate: true };
-  if (recent >= POPUP_BURST) return { action: "deny", reason: "too many popups from this page" };
   return { action: "adopt", by: opener.by, activate, private: Boolean(opener.private) };
 }
 
-/** How many popups each opener made lately (the burst limit). */
+/**
+ * The tab a burst is counted against: the ROOT of the chain of pages that opened each
+ * other. Every tab a page opens carries its opener's root (`popupRoot`), so a popup that
+ * opens popups spends the same allowance instead of getting a fresh one each time.
+ * @param {{popupRoot?: number|null}|null} opener the tab that called window.open
+ * @param {number} openerId its id
+ */
+function rootOf(opener, openerId) {
+  return opener && opener.popupRoot != null ? opener.popupRoot : openerId;
+}
+
+/** How many popups each ROOT opener's chain made lately (the burst limit). */
 function createPopupLedger({ now = () => Date.now(), windowMs = POPUP_WINDOW_MS } = {}) {
   const byOpener = new Map(); // opener tab id -> [timestamps]
   const live = (id) => {
@@ -109,4 +122,4 @@ function createPopupLedger({ now = () => Date.now(), windowMs = POPUP_WINDOW_MS 
   };
 }
 
-module.exports = { POPUP_BURST, POPUP_WINDOW_MS, createPopupLedger, popupUrlOk, popupVerdict };
+module.exports = { POPUP_BURST, POPUP_WINDOW_MS, createPopupLedger, popupUrlOk, popupVerdict, rootOf };
