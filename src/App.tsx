@@ -352,6 +352,19 @@ function AvatarSceneApp() {
         // the mic is released on every exit path, including a throw from the
         // gateway -- a stream left open keeps the OS mic light on, which reads
         // as "it is still listening to me".
+        // Barge-in (owner 2026-11-13: "interrupting the agent's speech"): the owner
+        // starting to talk silences every voice that is speaking right now.
+        if (event.listening) {
+          audioCtxRef.current?.close().catch(() => {});
+          audioCtxRef.current = null;
+          setLevel('slot0', 0);
+          for (const [slotId, ref] of slotAudioRefs.current.entries()) {
+            ref.current?.close().catch(() => {});
+            ref.current = null;
+            setLevel(slotId, 0);
+          }
+          setVoice((current) => ({ ...current, activity: 'idle' }));
+        }
         if (event.listening && event.oneShot) void handsFreeRef.current?.oneShot();
         else if (event.listening) void talkRef.current?.start();
         else talkRef.current?.stop();

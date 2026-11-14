@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.1.33 - 2026-11-14
+
+- Tools: one grouped menu (Create, Capture, Send) on the tray and on the companion's right-click, also on Alt+Space.
+- Create: Sketch pad (layers, brushes, eraser, fill, PNG), Play notes (piano; record, save MIDI or WAV, seed a Song Studio project), Quick type (turn text into a sticky note, a task, a Relay post, a note or a question for Aither), sticky notes on the desktop with paper colours and Send to Notes.
+- Whiteboard: arrows, connectors that follow the items they join, Kanban/Retro/Mind map/Flow templates and PDF export.
+- Box a region: a small workspace beside the box that shows it live, reads its text offline and answers questions with the box's picture attached; pin, save, send, record or present it (everything else dims, laser on).
+- Edit an image: resize and convert on the desk; remove background, upscale, colour grade and sharpen on this computer's Media Forge, never a paid service.
+- Send to: Aither, your inbox, Notes, a project task, the company room, Relay, Drive, Discord (copied) or the clipboard. Anything made in one workspace is never sent into another.
+- Interact mode (Ctrl+Alt+Y): the desk takes the mouse until you press Esc; a strip at the top says so. Otherwise clicks go through to your desktop.
+- Voice: short commands ("record this", "draw", "open whiteboard", "aither, send it to notes") run on the desk; talking stops an agent that is speaking; optional wake word for the open mic.
+- Faster when idle: the avatar draws 20 frames a second when idle, 10 after a minute and none while hidden, and the fairies stop animating when nobody is using them (idle CPU 128% to 40% of one core, GPU 57% to 12%, measured).
+
 ## 0.1.32 - 2026-11-13
 
 - The fairies and the workspace's own companion (for example a goblin) are hidden until you show them. A new install starts with none on screen; an install updated to this version hides them once, and after that your choice is remembered.

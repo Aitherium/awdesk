@@ -104,6 +104,12 @@ function record(id) {
   return load().pins.find((p) => p.id === id) || null;
 }
 
+/** toolkit.cjs: files a note pin into Notes (setNoteSender). */
+let noteSender = null;
+function setNoteSender(fn) {
+  noteSender = typeof fn === "function" ? fn : null;
+}
+
 function publicPin(pin) {
   return { pin: { ...pin }, content: core.contentFor(pin), strip: core.STRIP };
 }
@@ -496,7 +502,20 @@ function handlers() {
       const p = patch && typeof patch === "object" ? patch : {};
       const allowed = {};
       for (const key of ["opacity", "locked", "onTop", "muted", "title", "src"]) if (p[key] !== undefined) allowed[key] = p[key];
+      // A note's paper colour merges into `extra` so its workspace tag survives.
+      if (typeof p.color === "string" && core.NOTE_COLORS.includes(p.color)) {
+        const cur = record(entry.id);
+        allowed.extra = { ...((cur && cur.extra) || {}), color: p.color };
+      }
       return setPin(entry.id, allowed);
+    }),
+    // "Send to Notes" from a sticky note: toolkit.cjs files it, inside the note's own
+    // workspace only (hard isolation is its rule, not this window's).
+    "pin:send": guarded(async (entry) => {
+      const pin = record(entry.id);
+      if (!pin || pin.kind !== "note") return { ok: false, reason: "only a note can be sent" };
+      if (typeof noteSender !== "function") return { ok: false, reason: "sending is not wired on this desk" };
+      try { return await noteSender(pin); } catch (error) { return { ok: false, reason: String((error && error.message) || error) }; }
     }),
     "pin:close": guarded((entry) => closePin(entry.id)),
     "pin:hide": guarded((entry) => setPin(entry.id, { hidden: true })),
@@ -545,7 +564,7 @@ module.exports = {
   PARTITION,
   configurePins, addPin, pinTab, closePin, setPin, showPin, setAllHidden, closeAll,
   restorePins, listPins, summary, traySubmenu, handlers, ensureIpc, openInBrowser, withScheme,
-  grabStart, grabMove, grabEnd,
+  grabStart, grabMove, grabEnd, setNoteSender,
   // test seams
   __entries: entries,
   __reset: () => { store = core.emptyStore(); loaded = false; entries.clear(); grabs.clear(); wired = false; sessionGuarded = false; },

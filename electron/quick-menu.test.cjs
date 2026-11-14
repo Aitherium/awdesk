@@ -12,20 +12,23 @@ function registryWith(ids) {
 }
 
 test("Q1 only ids in the registry render -- a missing parallel-lane command is hidden", () => {
-  const registry = registryWith(["snip.region", "note.new", "board.new"]);
+  const registry = registryWith(["snip.region", "sticky.new", "board.new"]);
   const items = availableItems(registry);
-  assert.deepEqual(items.map((i) => i.id), ["snip.region", "note.new", "board.new"]);
+  // Toolkit order (Create before Capture): board, note, then snip.
+  assert.deepEqual(items.map((i) => i.id), ["board.new", "sticky.new", "snip.region"]);
   assert.ok(!items.some((i) => i.id === "ink.toggle"), "an absent ink.* must not be a dead cell");
 });
 
 test("Q2 items keep ITEM_IDS order and a function label is resolved", () => {
   const registry = {
     byId: (id) => (id === "record.region" ? { id, label: (ctx) => `Record (${ctx.n || 0})`, group: "capture" }
-      : id === "snip.screen" ? { id, label: "Snip the whole screen", group: "capture" } : null),
+      : id === "snip.region" ? { id, label: "Snip a region", group: "capture" } : null),
   };
   const items = availableItems(registry, { ctx: { n: 2 } });
-  assert.deepEqual(items.map((i) => i.id), ["snip.screen", "record.region"]);
-  assert.equal(items[1].label, "Record (2)");
+  assert.deepEqual(items.map((i) => i.id), ["snip.region", "record.region"]);
+  // A toolkit row shows its SHORT name and its toolkit group as the caption.
+  assert.equal(items[1].label, "Record (MP4)");
+  assert.equal(items[1].group, "Capture");
 });
 
 test("Q3 an empty registry renders nothing (and the menu refuses to open)", () => {
@@ -67,14 +70,14 @@ test("Q5 the pop-up anchors at the cursor, flips at the edge, clamps in", () => 
 });
 
 test("Q6 the item list is the one the owner asked for", () => {
-  for (const id of ["snip.region", "snip.screen", "record.region", "record.region.audio", "record.screen",
-    "note.new", "board.new"]) {
+  // Owner 2026-11-13: the local toolkit, ONE short grouped menu (Create / Capture / Send).
+  // The whole-screen snip/record and the audio rows moved to the tray and the radial.
+  for (const id of ["ink.toggle", "sketch.new", "board.new", "sticky.new", "scratch.new", "piano.open",
+    "snip.region", "record.region", "record.region.gif", "region.box", "present.start", "graphics.open",
+    "send.last", "interact.toggle"]) {
     assert.ok(ITEM_IDS.includes(id), `${id} missing from the quick menu`);
   }
-  // The parallel lanes' ids are listed too: present in the menu the moment they exist.
-  for (const id of ["ink.toggle", "ink.laser", "ink.spotlight", "orb.ask-screen", "audio.settings"]) {
-    assert.ok(ITEM_IDS.includes(id), `${id} must be listed (hidden until it exists)`);
-  }
+  assert.ok(ITEM_IDS.length <= 16, "the menu stays short");
 });
 
 test("Q7 the radial hides missing commands, uses Ask's fallback, and re-spreads the ring", () => {

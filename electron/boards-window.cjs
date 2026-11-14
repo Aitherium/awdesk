@@ -225,6 +225,7 @@ function create(kind, { at, restored = null } = {}) {
   const display = electron().screen.getDisplayNearestPoint(point);
   const box = core.placeAt(point, core.defaultSize(k), display.workArea);
   const board = core.newBoard({ kind: k, date: now, title: uniqueTitleFor(k, now), bounds: box });
+  try { if (typeof workspaceOf === "function") board.workspace = String(workspaceOf() || "").slice(0, 64) || undefined; } catch { /* untagged */ }
   const win = windowFor(board);
   entries.set(board.id, { board, win, lastThumbAt: 0, lastSyncAt: 0, moveTimer: null });
   persist(board);
@@ -313,6 +314,12 @@ async function syncBoard(entry, png, { force = false } = {}) {
   if (!bytes) bytes = await captureThumbnail(entry);
   entry.lastSyncAt = now;
   const board = entry.board;
+  // A board syncs only into the workspace it was made in (owner-hard-workspace-isolation).
+  if (board.workspace && typeof workspaceOf === "function") {
+    let here;
+    try { here = String(workspaceOf() || ""); } catch { here = ""; }
+    if (here && here !== board.workspace) return { ok: false, reason: `made in workspace "${board.workspace}", the desk is in "${here}"` };
+  }
   if (board.kind === "note" && !bytes) {
     // A note's markdown is still worth syncing without a picture.
     const md = core.syncItems(board, { png: null });
@@ -327,6 +334,33 @@ async function syncBoard(entry, png, { force = false } = {}) {
 }
 
 // ── export ──────────────────────────────────────────────────────────────────
+
+/** toolkit.cjs: the active workspace key, stamped on every new board. */
+let workspaceOf = null;
+function setWorkspaceOf(fn) {
+  workspaceOf = typeof fn === "function" ? fn : null;
+}
+
+/** "PDF": the PNG the page rendered, laid on one landscape page by a hidden window. */
+async function exportPdf(dataUrl) {
+  const folder = resolveDir();
+  if (!decodePng(dataUrl)) return { ok: false, reason: "the export was not a PNG" };
+  if (!folder) return { ok: false, reason: "no writable boards folder" };
+  const { BrowserWindow } = electron();
+  const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, javascript: false } });
+  try {
+    const html = `<!doctype html><meta charset="utf-8"><style>@page{size:A4 landscape;margin:10mm}html,body{margin:0}img{width:100%;height:auto}</style><img src="${dataUrl}">`;
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    const pdf = await win.webContents.printToPDF({ landscape: true, printBackground: true, pageSize: "A4" });
+    const file = core.exportFile(folder, `export-${Date.now()}`, new Date()).replace(/\.png$/i, ".pdf");
+    fs.writeFileSync(file, pdf);
+    return { ok: true, path: file, name: path.basename(file) };
+  } catch (error) {
+    return { ok: false, reason: `could not make the PDF: ${String((error && error.message) || error).slice(0, 160)}` };
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
+}
 
 function exportPng(dataUrl) {
   const folder = resolveDir();
@@ -491,6 +525,11 @@ function handlers() {
       const verdict = exportPng(dataUrl);
       return verdict;
     },
+    "board:export-pdf": (event, dataUrl) => {
+      const entry = entryFor(event);
+      if (!entry) return { ok: false, reason: "not a board window" };
+      return exportPdf(String(dataUrl || ""));
+    },
   };
 }
 
@@ -643,7 +682,7 @@ function addImageToCurrentBoard(img) {
 module.exports = {
   ensureIpc, setEnqueue, setChangeHook, setBoardsDir, resolveDir, loadBoards, persist,
   createNote, createBoard, create, show, putAway, restoreOpenBoards, openList, traySubmenu,
-  exportPng, syncBoard, list, addImageToCurrentBoard,
+  exportPng, exportPdf, setWorkspaceOf, syncBoard, list, addImageToCurrentBoard,
   allBoards, getBoard, updateBoard, stampLink, createCanvasBoard, closeBoard, float, onBoardsChanged,
   // exposed for the probe
   __entries: entries,

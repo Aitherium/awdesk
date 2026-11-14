@@ -132,7 +132,11 @@ function addPin(store, raw) {
 }
 
 /** The fields a window / its controls may change. Identity, kind and src are not among them. */
-const PATCHABLE = Object.freeze(["title", "bounds", "locked", "opacity", "onTop", "muted", "hidden", "src"]);
+// `extra` carries a note's colour and the workspace it was written in (toolkit.cjs, 2026-11-13).
+/** A sticky note's paper colours (the first is the default). */
+const NOTE_COLORS = Object.freeze(["#28261a", "#3a2a1e", "#1e2f24", "#1d2a3a", "#33223a"]);
+
+const PATCHABLE = Object.freeze(["title", "bounds", "locked", "opacity", "onTop", "muted", "hidden", "src", "extra"]);
 
 function patchPin(store, id, patch) {
   const s = normalizeStore(store);
@@ -207,7 +211,10 @@ function contentFor(pin) {
     return url ? { mode: "web", url } : null;
   }
   if (pin.kind === "app") return { mode: "app", target: pin.src };
-  if (pin.kind === "note") return { mode: "note", text: pin.src };
+  if (pin.kind === "note") {
+    const color = pin.extra && NOTE_COLORS.includes(pin.extra.color) ? pin.extra.color : NOTE_COLORS[0];
+    return { mode: "note", text: pin.src, color, colors: NOTE_COLORS };
+  }
   if (pin.kind === "widget") {
     const launch = pin.widget === "launch" && pin.extra ? launchTarget(pin.extra.launch) : null;
     return launch ? { mode: "app", target: launch } : { mode: "widget", widget: pin.widget };
@@ -267,6 +274,7 @@ function listSummary(store, max = MAX_LIST) {
 }
 
 module.exports = {
+  NOTE_COLORS,
   VERSION, MAX_PINS, MAX_LIST, STRIP, STORE_FILE, PATCHABLE, KIND_LABEL,
   httpUrl, launchTarget, launchPin, normalizeRecord, normalizeStore, emptyStore, addPin, patchPin, removePin, raisePin,
   youtubeEmbedUrl, contentFor, viewBounds, placeAt, visibleBounds, listSummary,

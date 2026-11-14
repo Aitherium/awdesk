@@ -159,44 +159,72 @@ function FullBodyCamera({
  *  frames: 60 Hz while anyone is audible or the stage is being handled, 30 Hz
  *  otherwise -- idle animation and hair read the same at 30. */
 const ACTIVE_FPS = 60;
-const IDLE_FPS = 30;
+const TAIL_FPS = 30;
+/** 2026-11-13 (owner: "the overlay feels laggy"): 30 Hz forever while idle cost a GPU
+ *  frame every 33 ms behind every app. Idle now steps down to 20 Hz, then 10 Hz once
+ *  nothing has moved, spoken or been touched for a minute, and 0 while hidden. The same
+ *  policy is electron/toolkit-core.cjs frameBudget (asserted there). */
+const IDLE_FPS = 20;
+const DEEP_IDLE_FPS = 10;
+const DEEP_IDLE_AFTER_MS = 60_000;
 /** Keep full rate this long after the last pointer/wheel input (orbit damping, drags). */
 const INTERACTION_TAIL_MS = 1500;
 
-/** Pure: the frame interval the governor wants right now. */
-function frameIntervalMs(active: boolean): number {
-  return 1000 / (active ? ACTIVE_FPS : IDLE_FPS);
+/** Pure: frames per second the governor wants right now (0 = none). */
+function frameBudget(hidden: boolean, active: boolean, sinceInputMs: number): number {
+  if (hidden) return 0;
+  if (active) return ACTIVE_FPS;
+  if (sinceInputMs < INTERACTION_TAIL_MS) return TAIL_FPS;
+  return sinceInputMs < DEEP_IDLE_AFTER_MS ? IDLE_FPS : DEEP_IDLE_FPS;
 }
 
 function FrameGovernor() {
   const invalidate = useThree((state) => state.invalidate);
   const gl = useThree((state) => state.gl);
   useEffect(() => {
+    // A timer at the budget's own interval, not a display-rate rAF that mostly says "not
+    // yet": at 95 Hz the old loop woke the renderer ~95 times a second to draw 30.
+    let timer: ReturnType<typeof setTimeout> | 0 = 0;
     let raf = 0;
-    let last = 0;
-    let lastInput = -Infinity;
+    let lastInput = performance.now();
     const onInput = () => {
+      const quiet = performance.now() - lastInput >= INTERACTION_TAIL_MS;
       lastInput = performance.now();
+      // Waking from a slow idle tick: answer the pointer now, not up to 100 ms later.
+      if (quiet) schedule(0);
     };
     const el = gl.domElement;
+    const tick = () => {
+      timer = 0;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        invalidate();
+        schedule();
+      });
+    };
+    const schedule = (delayMs?: number) => {
+      if (timer) clearTimeout(timer);
+      timer = 0;
+      if (raf) return;
+      const now = performance.now();
+      const active = anyoneAudible() || orbitSuspend.depth > 0;
+      const fps = frameBudget(document.hidden, active, now - lastInput);
+      if (fps <= 0) return; // hidden: visibilitychange restarts it
+      timer = setTimeout(tick, delayMs ?? Math.max(1, 1000 / fps - 1));
+    };
+    const onVisibility = () => schedule(0);
     el.addEventListener('pointerdown', onInput);
     el.addEventListener('pointermove', onInput);
     el.addEventListener('wheel', onInput, { passive: true });
-    const loop = (t: number) => {
-      const active =
-        anyoneAudible() || orbitSuspend.depth > 0 || t - lastInput < INTERACTION_TAIL_MS;
-      if (t - last >= frameIntervalMs(active) - 1) {
-        last = t;
-        invalidate();
-      }
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
+    document.addEventListener('visibilitychange', onVisibility);
+    schedule(0);
     return () => {
-      cancelAnimationFrame(raf);
+      if (timer) clearTimeout(timer);
+      if (raf) cancelAnimationFrame(raf);
       el.removeEventListener('pointerdown', onInput);
       el.removeEventListener('pointermove', onInput);
       el.removeEventListener('wheel', onInput);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [gl, invalidate]);
   return null;

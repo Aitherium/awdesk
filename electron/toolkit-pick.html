@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Box a region</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; cursor: crosshair; background: rgba(8, 10, 14, 0.28);
+    font: 13px "Segoe UI", system-ui, sans-serif; user-select: none; }
+  #box { position: fixed; display: none; outline: 2px solid #7cc4ff; background: rgba(124, 196, 255, 0.08);
+    box-shadow: 0 0 0 99999px rgba(8, 10, 14, 0.35); }
+  #hint { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); color: #0d1117; background: #7cc4ff;
+    padding: 7px 14px; border-radius: 999px; font-weight: 600; }
+  #size { position: fixed; display: none; color: #e6e8eb; background: #171b21; padding: 2px 6px; border-radius: 5px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="hint">Drag a box · Esc cancels</div>
+<div id="box"></div>
+<div id="size"></div>
+<script>
+  const box = document.getElementById("box");
+  const size = document.getElementById("size");
+  let start = null;
+  let rect = null;
+  const done = (r) => { void window.toolkitPick.done(r); };
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") done(null); });
+  document.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) { done(null); return; }
+    start = { x: e.clientX, y: e.clientY };
+    document.body.setPointerCapture?.(e.pointerId);
+  });
+  document.addEventListener("pointermove", (e) => {
+    if (!start) return;
+    rect = { x: Math.min(start.x, e.clientX), y: Math.min(start.y, e.clientY),
+      width: Math.abs(e.clientX - start.x), height: Math.abs(e.clientY - start.y) };
+    Object.assign(box.style, { display: "block", left: rect.x + "px", top: rect.y + "px", width: rect.width + "px", height: rect.height + "px" });
+    Object.assign(size.style, { display: "block", left: rect.x + "px", top: Math.max(0, rect.y - 22) + "px" });
+    size.textContent = `${Math.round(rect.width)} × ${Math.round(rect.height)}`;
+    document.body.style.background = "transparent";
+  });
+  document.addEventListener("pointerup", () => {
+    if (!start) return;
+    start = null;
+    done(rect && rect.width >= 16 && rect.height >= 16 ? rect : null);
+  });
+</script>
+</body>
+</html>

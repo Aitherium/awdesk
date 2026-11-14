@@ -57,6 +57,8 @@
   <span id="title"></span>
   <input id="opacity" type="range" min="15" max="100" step="5" title="Opacity" />
   <button id="top" title="Always on top (off = desktop level)">Top</button>
+  <button id="color" title="Paper colour" hidden>Colour</button>
+  <button id="sendNote" title="Send to Notes (this workspace only)" hidden>Send</button>
   <button id="mute" title="Mute" hidden>Mute</button>
   <button id="lockBtn" title="Lock: clicks go through to what is under the pin">Lock</button>
   <button id="open" title="Open in the Aither browser" hidden>Open</button>
@@ -89,6 +91,9 @@
     $("mute").classList.toggle("on", Boolean(pin.muted));
     $("mute").textContent = pin.muted ? "Muted" : "Mute";
     $("open").hidden = !["url", "youtube", "gif", "image"].includes(pin.kind);
+    $("color").hidden = content.mode !== "note";
+    $("sendNote").hidden = content.mode !== "note";
+    if (content.mode === "note" && $("note")) $("note").style.background = content.color || "";
     if (first || content.mode !== "note") paintBody(pin, content);
   }
 
@@ -116,6 +121,7 @@
       const ta = document.createElement("textarea");
       ta.id = "note";
       ta.value = content.text || "";
+      if (content.color) ta.style.background = content.color;
       ta.addEventListener("input", () => {
         if (noteTimer) clearTimeout(noteTimer);
         noteTimer = setTimeout(() => { if (ta.value.trim()) void api.set({ src: ta.value }); }, 500);
@@ -129,6 +135,21 @@
 
   $("opacity").addEventListener("input", (e) => { void api.set({ opacity: Number(e.target.value) / 100 }); });
   $("top").addEventListener("click", () => { void api.set({ onTop: !state.pin.onTop }); });
+  $("color").addEventListener("click", () => {
+    const c = (state && state.content) || {};
+    const list = c.colors || [];
+    if (!list.length) return;
+    void api.set({ color: list[(Math.max(0, list.indexOf(c.color)) + 1) % list.length] });
+  });
+  $("sendNote").addEventListener("click", async () => {
+    const b = $("sendNote");
+    b.textContent = "Sending…";
+    let v;
+    try { v = await api.send(); } catch (e) { v = { ok: false, reason: String(e) }; }
+    b.textContent = v && v.ok ? "Sent" : "Send";
+    b.title = v && v.ok ? (v.line || "Sent to Notes") : ((v && (v.reason || v.error)) || "not sent");
+    setTimeout(() => { b.textContent = "Send"; }, 2500);
+  });
   $("mute").addEventListener("click", () => { void api.set({ muted: !state.pin.muted }); });
   $("lockBtn").addEventListener("click", () => { void api.set({ locked: true }); });
   $("lock").addEventListener("click", () => { void api.set({ locked: false }); });

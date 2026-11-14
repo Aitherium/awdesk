@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("aitherBoard", {
   close: () => ipcRenderer.invoke("board:close"),
   paste: () => ipcRenderer.invoke("board:paste"),
   exportPng: (dataUrl) => ipcRenderer.invoke("board:export", dataUrl),
+  exportPdf: (dataUrl) => ipcRenderer.invoke("board:export-pdf", String(dataUrl || "")),
   // The board's pinned cards: the same cards aither://canvas shows (pin-cards.js).
   pins: () => ipcRenderer.invoke("board:pins"),
   pinOp: (op) => ipcRenderer.invoke("board:pin-op", op && typeof op === "object" ? op : {}),

@@ -219,7 +219,7 @@ function normalizeItem(raw) {
   if (raw.type === "shape") {
     return {
       ...base,
-      shape: ["line", "rect", "ellipse"].includes(raw.shape) ? raw.shape : "rect",
+      shape: ["line", "arrow", "rect", "ellipse"].includes(raw.shape) ? raw.shape : "rect",
       color: String(raw.color || "#e6e8eb"),
       width: Math.max(1, finite(raw.width, 3)),
     };
@@ -229,6 +229,14 @@ function normalizeItem(raw) {
   }
   if (raw.type === "note") {
     return { ...base, text: String(raw.text || "").slice(0, 4000), color: String(raw.color || "#3a3a2a") };
+  }
+  // A connector (toolkit whiteboard, 2026-11-13) joins two items by id and follows them
+  // when they move; one whose end is gone is dropped by the page.
+  if (raw.type === "connector") {
+    const from = String(raw.from || "").slice(0, 80);
+    const to = String(raw.to || "").slice(0, 80);
+    if (!from || !to || from === to) return null;
+    return { ...base, from, to, color: String(raw.color || "#3b4250"), width: Math.max(1, Math.min(12, finite(raw.width, 2))) };
   }
   if (raw.type === "image") {
     const dataUrl = String(raw.dataUrl || "");
@@ -262,6 +270,9 @@ function normalizeBoard(raw) {
       : { x: 0, y: 0, ...defaultSize(raw.kind) },
     items,
     text: String(raw.text || "").slice(0, 200_000),
+    // The workspace the board was made in (toolkit.cjs): a later workspace sync files it
+    // into that workspace's Whiteboard only (owner-hard-workspace-isolation).
+    ...(typeof raw.workspace === "string" && raw.workspace ? { workspace: raw.workspace.slice(0, 64) } : {}),
     ...v2,
   };
 }
