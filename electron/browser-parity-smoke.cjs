@@ -356,7 +356,8 @@ app.whenReady().then(async () => {
   const hist = await libraryPage("history", "history");
   expect("Ctrl+H opens aither://history", hist.opened === true && Boolean(hist.lwc), page() && page().getURL());
   if (hist.lwc) {
-    const findRow = "document.querySelector('#list .row[data-url$=\"/find\"]')";
+    const findUrl = `${base}/find`; // exact: the DRM host's /find is in history too
+    const findRow = `document.querySelector('#list .row[data-url=${JSON.stringify(findUrl)}]')`;
     const listed = await until(() => js(hist.lwc, `(() => { const r = ${findRow}; return r ? r.textContent : ""; })()`));
     expect("the history page lists a visit and who made it", /Find/.test(listed || "") && /you/.test(listed || ""), listed);
     expect("the history page groups by day", (await js(hist.lwc, "document.querySelector('#list h2.day').textContent")).startsWith("Today"), null);
@@ -366,7 +367,7 @@ app.whenReady().then(async () => {
     await js(hist.lwc, "document.getElementById('q').value = ''; document.getElementById('q').dispatchEvent(new Event('input')); 0");
     await until(() => js(hist.lwc, `Boolean(${findRow})`));
     await js(hist.lwc, `${findRow}.querySelector('button.small').click(); 0`);
-    const gone = await until(() => !lib.history(500).some((h) => h.url.endsWith("/find")));
+    const gone = await until(() => !lib.history(500).some((h) => h.url === findUrl));
     const rowGone = await until(() => js(hist.lwc, `!${findRow}`));
     expect("Delete on the history page forgets that visit", Boolean(gone) && Boolean(rowGone), lib.history(500).map((h) => h.url));
     expect("the other visits stay", lib.history(500).some((h) => h.url.endsWith("/login")), lib.history(500).map((h) => h.url));
@@ -631,6 +632,18 @@ app.whenReady().then(async () => {
     expect("the history file on disk is empty", onDiskLib.history.length === 0, onDiskLib.history.length);
   }
   bw.__setConfirmForTest(null);
+  // The library pages are closed again: the checks below open tabs up to the browser's
+  // limit, and five pages left open would take five of those places.
+  for (const libTab of new Set([hist, marks, dl, perms, perms2, clear].map((l) => l.tabId))) {
+    const t = bw.getTabs().get(libTab);
+    if (!t || t.kind !== "internal") continue;
+    bw.__showTabForTest(libTab);
+    bw.runBrowserAction("close-tab");
+  }
+  expect("the library pages close like any tab", !bw.getTabs().snapshot().tabs.some((t) => {
+    const p = bw.__pageForTest(t.id);
+    return p && /^aither:\/\/(history|bookmarks|downloads|permissions|clear-data)\//.test(p.getURL());
+  }), bw.getTabs().snapshot().tabs.length);
   // Back on a web page, so the session checks below have one to save.
   bw.__showTabForTest(permTab.id);
   await permWc.loadURL(`${base}/login`).catch(() => {});
@@ -679,13 +692,19 @@ app.whenReady().then(async () => {
   expect("a new bookmark is synced", pushedBookmark.ok && Object.keys(syncMod.decode((store.users.get("owner") || {}).prefs).bookmarks).length === 1, pushedBookmark);
   bw.runBrowserAction("close-tab");
   // Thirty tabs with long addresses: the device's namespace stays under the store's size, so nothing is refused.
-  for (let i = 0; i < 30; i += 1) bw.__openTabForTest(`${base}/done?long=${i}&q=${"x".repeat(500)}`);
-  await until(() => bw.__syncTabsForTest().filter((t) => t.url.includes("long=")).length >= 30, 20000);
+  // The browser stops at its tab limit, so "thirty" is as many as there is room for; 25 of
+  // these addresses are already more than one device's namespace holds.
+  const room = Math.min(30, require("./browser-tabs.cjs").MAX_TABS - bw.getTabs().snapshot().tabs.length);
+  for (let i = 0; i < 30; i += 1) bw.__openTabForTest(`${base}/done?long=${i}&q=${"x".repeat(550)}`);
+  const longTabs = () => bw.__syncTabsForTest().filter((t) => t.url.includes("long=")).length;
+  await until(() => longTabs() >= room, 20000);
+  expect("enough long-address tabs are open to overfill a device's namespace", room >= 25 && longTabs() === room, { room, open: longTabs() });
+  const syncableOpen = bw.__syncTabsForTest().filter((t) => t.by === "you" && t.kind === "web" && !t.private && /^https?:/.test(t.url)).length;
   const many = await sync.syncNow();
   const devNs = ((store.users.get("owner") || {}).prefs || {})[`awbrowser_dev_${sync.status().deviceId}`] || { tabs: [] };
   expect("30 long-address tabs sync without the store refusing the write", many.ok === true && store.stats.refused === 0
-    && devNs.tabs.length > 0 && devNs.tabs.length < 30 && many.unsynced >= 30 - devNs.tabs.length,
-  { many, refused: store.stats.refused, tabs: devNs.tabs.length });
+    && devNs.tabs.length > 0 && devNs.tabs.length < syncableOpen && many.unsynced >= syncableOpen - devNs.tabs.length,
+  { many, refused: store.stats.refused, tabs: devNs.tabs.length, syncableOpen });
   // Another account signs in to the Online session: nothing goes out, sync turns itself off and the menu says why.
   const getsBefore = store.stats.gets;
   bw.__syncSeamForTest({ origin: store.origin, token: () => "other-token", account: () => "someone-else" });

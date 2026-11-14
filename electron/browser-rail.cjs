@@ -473,9 +473,6 @@ function normalizeLayout(raw = {}) {
     agentCookieSites: agentCookies.normalizeSites(r.agentCookieSites),
     // The bookmarks bar under the toolbar (Ctrl+Shift+B): off until asked for.
     bookmarksBar: r.bookmarksBar === true,
-    // "Reopen my tabs when the browser starts" (the more-menu): on unless switched off.
-    // It was read from the prefs but never listed here, so switching it off did not stick.
-    restoreSession: r.restoreSession !== false,
     // The rest of the layout document (desk-layout.cjs): pane sides, the rail's own
     // arrangement, layer order, presets, detached-window bounds and the canvas boards.
     // Same file, one more key -- never a second store. Required here, not at the top:
