@@ -3961,7 +3961,7 @@ function answerDeckCard(id, choice, parent, note = "") {
         signedApproval.openApproveWindow({
           BrowserWindow,
           parent: parent && !parent.isDestroyed() ? parent : null,
-          url: signedApproval.approveUrl(id, choice),
+          url: signedApproval.signInApproveUrl(id, choice),
           log: debugLog,
         });
         return { pending: true, via: "approve-window" };
