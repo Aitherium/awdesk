@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:">
+<title>Edit an image</title>
+<style>
+  :root { --bar: #171b21; --edge: #2b323c; --ink: #e6e8eb; --muted: #8b93a1; --accent: #7cc4ff; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14171c; color: var(--ink);
+    font: 13px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; display: flex; flex-direction: column; }
+  #bar { height: 32px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 6px 0 10px; background: var(--bar);
+    border-bottom: 1px solid var(--edge); -webkit-app-region: drag; }
+  #bar .kind { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; flex: 1; }
+  button, select, input { -webkit-app-region: no-drag; }
+  button { all: unset; cursor: pointer; padding: 5px 9px; border-radius: 7px; font-size: 12px; white-space: nowrap; }
+  button:hover { background: rgba(124,196,255,.16); }
+  button.gpu::after { content: " ·GPU"; color: var(--muted); font-size: 10px; }
+  button:disabled { opacity: .45; cursor: default; }
+  #x:hover { background: #b0424a; }
+  #stage { flex: 1; min-height: 0; display: grid; place-items: center; padding: 8px;
+    background: repeating-conic-gradient(#1b1f26 0 25%, #22272f 0 50%) 0 0 / 16px 16px; }
+  #img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .row { flex: none; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; padding: 6px 8px; border-top: 1px solid var(--edge); }
+  input[type=number] { width: 70px; background: #10141a; color: var(--ink); border: 1px solid var(--edge); border-radius: 6px; padding: 3px 5px; }
+  select { background: #10141a; color: var(--ink); border: 1px solid var(--edge); border-radius: 6px; padding: 3px 5px; }
+  #status { flex: none; height: 22px; padding: 3px 10px; color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #status.err { color: #ff9b9b; }
+</style>
+</head>
+<body>
+<div id="bar"><span class="kind">Edit an image</span><span id="dims" style="color:var(--muted);font-size:11px"></span><button id="x">✕</button></div>
+<div id="stage"><img id="img" alt=""></div>
+<div class="row" id="acts"></div>
+<div class="row">
+  <label>W <input type="number" id="w" min="1" max="8192"></label>
+  <button id="resize">Resize</button>
+  <select id="fmt"><option value="png">PNG</option><option value="jpg">JPEG</option></select>
+  <button id="convert">Convert</button>
+  <span style="flex:1"></span>
+  <button id="undo" title="Back to the previous version">Undo</button>
+  <button id="save">Save</button><button id="copy">Copy</button>
+  <select id="to"><option value="">Send to…</option></select>
+</div>
+<div id="status"></div>
+<script>
+  const tk = window.toolkit;
+  const $ = (id) => document.getElementById(id);
+  let cur = null; // {dataB64, mime}
+  const history = [];
+  const status = (t, err) => { $("status").textContent = t; $("status").className = err ? "err" : ""; };
+  function show(img) {
+    cur = img;
+    $("img").src = `data:${img.mime || "image/png"};base64,${img.dataB64}`;
+    $("img").onload = () => { $("dims").textContent = `${$("img").naturalWidth} × ${$("img").naturalHeight}`; if (!$("w").value) $("w").value = $("img").naturalWidth; };
+  }
+  async function apply(action, extra = {}) {
+    if (!cur) return;
+    for (const b of document.querySelectorAll("button")) b.disabled = true;
+    status(`${action}…`);
+    let v;
+    try { v = await tk.call("graphics.apply", { action, dataB64: cur.dataB64, ...extra }); } catch (e) { v = { ok: false, error: String(e) }; }
+    for (const b of document.querySelectorAll("button")) b.disabled = false;
+    if (v && v.ok && v.dataB64) { history.push(cur); show({ dataB64: v.dataB64, mime: v.mime }); status(v.line || "done"); }
+    else status((v && v.error) || "failed", true);
+  }
+  (async () => {
+    if (!tk) { status("Open this from the desk.", true); return; }
+    const info = await tk.info();
+    for (const g of (info.graphics || [])) {
+      if (g.local) continue;
+      const b = document.createElement("button"); b.textContent = g.label; b.className = "gpu";
+      b.title = "Runs on this machine's Media Forge (local GPU) -- never a paid provider";
+      b.onclick = () => apply(g.id); $("acts").append(b);
+    }
+    for (const t of (info.targets || [])) { const o = document.createElement("option"); o.value = t.id; o.textContent = t.label; $("to").append(o); }
+    const img = await tk.call("graphics.image");
+    if (img && img.ok) show(img); else status((img && img.error) || "no image", true);
+  })();
+  $("resize").onclick = () => apply("resize", { width: Number($("w").value) });
+  $("convert").onclick = () => apply("convert", { format: $("fmt").value });
+  $("undo").onclick = () => { const p = history.pop(); if (p) { show(p); status("undone"); } };
+  const out = () => ({ kind: "image", name: `image.${(cur.mime || "").includes("jpeg") ? "jpg" : "png"}`, mime: cur.mime || "image/png", dataB64: cur.dataB64, title: "Edited image" });
+  $("save").onclick = async () => { const v = await tk.save(out()); status(v.ok ? v.line : v.error, !v.ok); };
+  $("copy").onclick = async () => { const v = await tk.copy({ ...out(), mime: "image/png" }); status(v.ok ? v.line : v.error, !v.ok); };
+  $("to").onchange = async () => { const id = $("to").value; $("to").value = ""; if (!id) return; status("Sending…"); const v = await tk.send(id, out()); status(v.ok ? (v.answer || v.line) : v.error, !v.ok); };
+  $("x").onclick = () => tk.close();
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") tk.close(); });
+</script>
+</body>
+</html>

@@ -1160,6 +1160,8 @@ function createWindow() {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
     if (process.env.AITHER_DESK_CLICK_THROUGH === "0") return win.setIgnoreMouseEvents(false);
+    // Interact mode (toolkit.cjs): the desk holds the mouse until Esc / Ctrl+Alt+Y.
+    if (require("./toolkit.cjs").interactMode()) return win.setIgnoreMouseEvents(false);
     win.setIgnoreMouseEvents(interactive !== true, { forward: true });
   });
 
@@ -2961,6 +2963,7 @@ const liveAccels = {};
 function commandContext() {
   const desktop = desktopStatus().overlay;
   return {
+    interactMode: require("./toolkit.cjs").interactMode(),
     avatarShown: Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()),
     decisionsWaiting: inboxCounts().waiting,
     decisionsTotal: inboxCounts().total,
@@ -3591,6 +3594,18 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     // click menu live in their own modules; nothing here invents a second list.
     case "quick.open": return void quickMenu.openRadial();
     case "terminal.open": return void browserWindow.openInternal("terminal", null, { askAgent: browserAskAgent });
+    // The local toolkit (toolkit.cjs, owner 2026-11-13): windows, region flow, send,
+    // interact mode. Each case returns the module's verdict.
+    case "sketch.new":
+    case "piano.open":
+    case "scratch.new":
+    case "sticky.new":
+    case "graphics.open":
+    case "region.box":
+    case "present.start":
+    case "send.last":
+    case "interact.toggle":
+      return require("./toolkit.cjs").run(id, arg);
     case "note.new": return void boardsWindow.createNote();
     case "board.new": return void boardsWindow.createBoard();
     case "boards.open": return void boardsWindow.openList();
@@ -6017,6 +6032,16 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         void speakAloud("Got it.", undefined, undefined, "slot0", "service:awdesk-voice");
         return { ok: true, text: said, answered: true };
       }
+      // Voice control (owner 2026-11-13: "record this", "draw", "send to Jason", "open
+      // whiteboard"): a short command runs the desk command; everything else is speech.
+      const spokenCommand = require("./toolkit.cjs").voiceCommand(said);
+      if (spokenCommand) {
+        const ran = await Promise.resolve(runCommand(spokenCommand.id, spokenCommand.arg, { surface: "voice" }));
+        const failed = ran && ran.ok === false;
+        void speakAloud(failed ? String(ran.error || ran.reason || "That did not work.").slice(0, 160) : "Done.",
+          undefined, undefined, "slot0", "service:awdesk-voice");
+        return { ok: !failed, text: said, command: spokenCommand.id, result: ran };
+      }
       try {
         void speakAloud("On it, asking now.", undefined, undefined, "slot0", "service:awdesk-voice");
         // The Aither Browser has focus: the words are about the page on screen, so the
@@ -6161,6 +6186,32 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     capture.startCapture({
       askImage: (filePath) => routeDrop({ filePath, mime: "image/png" }),
       onAnswer: announceDrop,
+    });
+    // The local toolkit (toolkit.cjs): every transport injected here, none invented there.
+    require("./toolkit.cjs").configureToolkit({
+      runCommand: (cmd, cmdArg) => runCommand(cmd, cmdArg, { surface: "toolkit" }),
+      askImage: ({ filePath, prompt }) => routeDrop({ filePath, mime: "image/png", prompt }),
+      askText: (text) => commandAction(text, { source: "toolkit" }),
+      onAnswer: announceDrop,
+      postRelay: (text) => postToRelay(RELAY_CHANNEL, text),
+      token: () => browserWindow.onlineToken(),
+      currentTenant: () => deskTenant.currentTenant(),
+      lastCapture: () => {
+        const fsx = require("node:fs");
+        const mtime = (f) => { try { return f ? fsx.statSync(f).mtimeMs : 0; } catch { return 0; } };
+        const snip = capture.lastScreenshot();
+        const rec = recorder.lastRecordingPath();
+        return mtime(rec) > mtime(snip) ? rec : snip;
+      },
+      nativeFrame: (display) => capture.nativeFrame(display),
+      setForceInteractive: (on) => {
+        try { require("./living-desktop-window.cjs").setForceInteractive(on); } catch { /* no overlay */ }
+        if (avatarWindow && !avatarWindow.isDestroyed()) {
+          avatarWindow.setIgnoreMouseEvents(!on, { forward: true });
+          sendToAvatar("interact-mode", { on });
+        }
+        if (tray) refreshTrayMenu();
+      },
     });
     // Warm the GDI grabber so Print Screen on a screen Chromium cannot see (the 4K on
     // the RTX 5090) opens in ~0.2 s instead of ~2.5 s. Late, so boot is not slowed.

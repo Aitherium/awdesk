@@ -250,7 +250,8 @@ function cursorOnChrome(win) {
 
 function applyGhostTick() {
   if (!isOpen() || !desktopWin.isVisible()) return;
-  const shouldInteract = !ghostMode || !transparentMode || cursorOverInteractive();
+  // Interact mode (toolkit.cjs, Ctrl+Alt+Y): the desk holds the mouse until Esc.
+  const shouldInteract = forceInteractive || !ghostMode || !transparentMode || cursorOverInteractive();
   const shouldIgnore = !shouldInteract;
   if (shouldIgnore !== ignoringMouse) {
     ignoringMouse = shouldIgnore;
@@ -258,6 +259,13 @@ function applyGhostTick() {
     // hover states still track even in the pass-through areas.
     desktopWin.setIgnoreMouseEvents(shouldIgnore, { forward: true });
   }
+}
+
+let forceInteractive = false;
+/** toolkit.cjs interact mode: true = this overlay takes every click until it is turned off. */
+function setForceInteractive(on) {
+  forceInteractive = Boolean(on);
+  try { applyGhostTick(); } catch { /* the 60 ms loop applies it */ }
 }
 
 function startGhostLoop() {
@@ -1093,6 +1101,7 @@ function refreshAccount() {
 }
 
 module.exports = {
+  setForceInteractive,
   ensureDesktopSession,
   portalLoginUrl: () => PORTAL_LOGIN_URL,
   openLivingDesktop: showLivingDesktop, // kept for older callers
