@@ -103,7 +103,11 @@ function serve() {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function until(fn, ms = 8000) {
+// 45 s, not 8. On a busy machine every tab's navigation can stop committing for half a
+// minute and then carry on (measured 2026-11-13 with the CPU at 100%, on main's own code:
+// 90 open-and-close rounds had one such pause in most runs). A wait that gives up inside
+// the pause fails a check on timing, not on behaviour; a check that passes returns at once.
+async function until(fn, ms = 45000) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     try { const v = await fn(); if (v) return v; } catch { /* not yet */ }
@@ -686,7 +690,8 @@ app.whenReady().then(async () => {
   const tabsBefore = bw.getTabs().snapshot().tabs.length;
   withPhone[0].submenu[0].click();
   const opened = await until(() => { const p = page(); return p && p.getURL().includes("phone=1") && !p.isLoading() ? p : null; });
-  expect("clicking the phone's tab opens it here", Boolean(opened) && bw.getTabs().snapshot().tabs.length === tabsBefore + 1, page() && page().getURL());
+  expect("clicking the phone's tab opens it here", Boolean(opened) && bw.getTabs().snapshot().tabs.length === tabsBefore + 1,
+    { tabsBefore, active: active(), tabs: bw.getTabs().snapshot().tabs.map((t) => { const p = bw.__pageForTest(t.id); return [t.id, t.by, t.kind, p ? p.getURL().slice(0, 70) : null, p ? p.isLoading() : null]; }) });
   bw.runBrowserAction("bookmark");
   const pushedBookmark = await sync.syncNow();
   expect("a new bookmark is synced", pushedBookmark.ok && Object.keys(syncMod.decode((store.users.get("owner") || {}).prefs).bookmarks).length === 1, pushedBookmark);
