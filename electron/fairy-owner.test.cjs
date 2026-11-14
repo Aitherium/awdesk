@@ -22,6 +22,13 @@ test("one fairy cluster per machine: a second live desk is refused, a dead one i
   assert.equal(fs.existsSync(FILE), false);
 });
 
+test("a claim from before this boot never blocks (Windows skips before-quit at logoff; pids are reused)", () => {
+  fs.writeFileSync(FILE, JSON.stringify({ pid: 100, at: "2020-01-01T00:00:00Z" }));
+  assert.deepEqual(owner.claim({ pid: 200, isAlive: () => true }), { ok: true, pid: 200 }, "pre-boot claim is stale");
+  fs.writeFileSync(FILE, "{half");
+  assert.deepEqual(owner.claim({ pid: 300, isAlive: () => true }), { ok: true, pid: 300 }, "a torn file is no owner");
+});
+
 test("alive(): this process runs, nonsense pids do not", () => {
   assert.equal(owner.alive(process.pid), true);
   assert.equal(owner.alive(0), false);

@@ -291,8 +291,18 @@ let companionBox = null; // the last answer, for /desktop/status
 /** The page's own fairy (Veil os-fairy.tsx) is the SECOND cluster the owner saw. Inside
  *  the desk's windows the desk fairy is the one cluster, so the page's is not drawn. */
 const HIDE_PAGE_FAIRY_CSS = "[data-os-fairy-root]{display:none !important}";
+const pageFairyHidden = new WeakSet(); // webContents with the rule in this page load
 function hidePageFairy(win) {
-  try { void win.webContents.insertCSS(HIDE_PAGE_FAIRY_CSS).catch(() => {}); } catch { /* window gone */ }
+  try {
+    const wc = win.webContents;
+    if (pageFairyHidden.has(wc)) return; // one rule per load (it was one per 2.5 s: ~1,400 an hour)
+    pageFairyHidden.add(wc);
+    void wc.insertCSS(HIDE_PAGE_FAIRY_CSS).catch(() => { pageFairyHidden.delete(wc); });
+  } catch { /* window gone */ }
+}
+/** A new page load drops inserted rules: the next hidePageFairy inserts again. */
+function forgetPageFairy(win) {
+  try { pageFairyHidden.delete(win.webContents); } catch { /* window gone */ }
 }
 /** The AitherOS window the fairy rides: the app window while it is up, else none. */
 function rideWindow() {
@@ -306,27 +316,46 @@ const tenantCssKeys = new WeakMap(); // webContents -> insertCSS key
 function tenantCompanionVisible() {
   try { return require("./orb-window.cjs").tenantCompanionVisible(); } catch { return false; }
 }
-async function applyTenantCompanion(win) {
-  if (!win || win.isDestroyed()) return;
+// One chain per page: an insert and a remove never interleave, and each step re-reads
+// what is WANTED after its await (a Hide then a Show inside one insert lands shown).
+const tenantCssChains = new WeakMap();
+function applyTenantCompanion(win) {
+  if (!win || win.isDestroyed()) return Promise.resolve();
+  const wc = win.webContents;
+  const next = (tenantCssChains.get(wc) || Promise.resolve()).then(async () => {
+    if (win.isDestroyed()) return;
+    const key = tenantCssKeys.get(wc);
+    try {
+      if (tenantCompanionVisible()) {
+        if (key) {
+          tenantCssKeys.delete(wc);
+          await wc.removeInsertedCSS(key);
+        }
+      } else if (!key) {
+        const inserted = await wc.insertCSS(HIDE_TENANT_COMPANION_CSS);
+        if (!win.isDestroyed()) tenantCssKeys.set(wc, inserted);
+        if (tenantCompanionVisible()) await applyTenantCompanionNow(win);
+      }
+    } catch { /* the page is loading or gone: the next load applies it */ }
+  });
+  tenantCssChains.set(wc, next);
+  return next;
+}
+/** The wanted state changed while an insert was in flight: undo it in the same step. */
+async function applyTenantCompanionNow(win) {
   const wc = win.webContents;
   const key = tenantCssKeys.get(wc);
-  try {
-    if (tenantCompanionVisible()) {
-      if (key) {
-        tenantCssKeys.delete(wc);
-        await wc.removeInsertedCSS(key);
-      }
-    } else if (!key) {
-      const inserted = await wc.insertCSS(HIDE_TENANT_COMPANION_CSS);
-      if (!win.isDestroyed()) tenantCssKeys.set(wc, inserted);
-    }
-  } catch { /* the page is loading or gone: the next load applies it */ }
+  if (key && tenantCompanionVisible()) {
+    tenantCssKeys.delete(wc);
+    try { await wc.removeInsertedCSS(key); } catch { /* gone */ }
+  }
 }
 /** A page load drops every inserted rule: forget the key, then apply again. */
 function reapplyTenantCompanion(win) {
   if (!win || win.isDestroyed()) return;
   ensureCompanionListener();
-  tenantCssKeys.delete(win.webContents);
+  const wc = win.webContents;
+  tenantCssChains.set(wc, (tenantCssChains.get(wc) || Promise.resolve()).then(() => { tenantCssKeys.delete(wc); }));
   void applyTenantCompanion(win);
 }
 function syncTenantCompanion() {
@@ -819,6 +848,8 @@ function createWindow() {
     if (isMainFrame) log(`did-fail-load ${failedUrl}: ${code} ${desc}`);
   });
   win.webContents.on("did-finish-load", () => {
+    forgetPageFairy(win);
+    hidePageFairy(win);
     reapplyTenantCompanion(win);
     // Local-node probing consent (owner-approved 2026-08-25): the shell's detector
     // (Veil local-node-optin.ts) only probes loopback after an explicit opt-in, and
@@ -1109,6 +1140,7 @@ function showDesktopApp({ app = "" } = {}) {
     appWin.focus();
   });
   appWin.webContents.on("did-finish-load", () => {
+    forgetPageFairy(appWin);
     hidePageFairy(appWin);
     reapplyTenantCompanion(appWin);
   });

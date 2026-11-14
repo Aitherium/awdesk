@@ -757,6 +757,7 @@ function hideOrb() {
     saveState();
     notifyCompanions();
   }
+  fairyOwner.release(); // hidden: another desk may show the one cluster
   return { ok: true, visible: false };
 }
 
@@ -3310,7 +3311,7 @@ function fairyMenuFor(cardId, agent = "", { atFairy = false } = {}) {
 function companionOpts(target) {
   return {
     target,
-    fairyVisible: Boolean(state.visible),
+    fairyVisible: orbVisible(),
     tenantVisible: Boolean(state.tenantCompanion),
     quietUntil: Number(state.muteUntil) || 0,
     nowMs: Date.now(),
@@ -3330,7 +3331,8 @@ function openCompanionMenu(target = "tenant", { at = null } = {}) {
 /** Right click on the orb. */
 function orbMenu({ atFairy = false } = {}) {
   return showMenu("orb", fairyMenu.orbItems({
-    waiting: attentionCards.length, quietUntil: state.muteUntil, tenantVisible: Boolean(state.tenantCompanion), nowMs: Date.now(),
+    waiting: attentionCards.length, quietUntil: state.muteUntil, tenantVisible: Boolean(state.tenantCompanion),
+    fairyVisible: orbVisible(), nowMs: Date.now(),
   }), { atFairy });
 }
 
@@ -3436,7 +3438,7 @@ function onCompanionsChange(fn) {
 }
 function companionsState() {
   return {
-    fairy: Boolean(state.visible),
+    fairy: orbVisible(),
     tenant: Boolean(state.tenantCompanion),
     quietUntil: Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0,
   };
@@ -3456,9 +3458,16 @@ function setTenantCompanion(visible) {
   return { ok: true, tenant: next };
 }
 /** Quiet mode: no nudges, chimes or popups until `until` (0 ends it). */
+let quietTimer = null;
 function setQuiet(until) {
   state.muteUntil = Math.max(0, Number(until) || 0);
   saveState();
+  if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; }
+  const left = state.muteUntil - Date.now();
+  if (left > 0) {
+    quietTimer = setTimeout(() => { quietTimer = null; notifyCompanions(); }, left + 1000);
+    if (quietTimer.unref) quietTimer.unref();
+  }
   if (state.muteUntil > Date.now() && nudging && !nudging.explicit) endNudge("seen", { stay: true });
   notifyCompanions();
   return { ok: true, quietUntil: state.muteUntil };
@@ -3497,10 +3506,14 @@ function companionAction(id, { target = "fairy" } = {}) {
       hideOrb();
       setTenantCompanion(false);
       return { ok: true, ...companionsState() };
-    case "show-all":
+    case "show-all": {
       setTenantCompanion(true);
-      showOrb();
-      return { ok: true, ...companionsState() };
+      const shown = showOrb();
+      // Another desk owns the fairies: the companion shows, and the answer says why
+      // the fairies did not (never a silent ok).
+      return shown.ok === false ? { ok: true, ...companionsState(), fairy: false, note: shown.error }
+        : { ok: true, ...companionsState() };
+    }
     case "open-desktop": return door("desktop", "desktop.overlay.toggle");
     case "open-spaces": return door("spaces", "osapp.spaces");
     case "open-chat": return door("chat", "chat.open");

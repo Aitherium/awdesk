@@ -39,6 +39,12 @@ function alive(pid) {
   }
 }
 
+/** When this machine booted (ms epoch). A claim older than that is from before a reboot:
+ *  Windows does not run before-quit at logoff or shutdown, and a pid is reused. */
+function bootedAt() {
+  return Date.now() - os.uptime() * 1000;
+}
+
 function read() {
   try {
     const raw = JSON.parse(fs.readFileSync(ownerFile(), "utf8"));
@@ -54,14 +60,31 @@ function read() {
  * Returns {ok:true} when this process owns them (now or already), or
  * {ok:false, pid} when another live process does.
  */
-function claim({ pid = process.pid, isAlive = alive } = {}) {
+function claim({ pid = process.pid, isAlive = alive, booted = bootedAt() } = {}) {
   const cur = read();
-  if (cur && Number(cur.pid) !== pid && isAlive(cur.pid)) return { ok: false, pid: Number(cur.pid) };
+  const fromThisBoot = cur && Date.parse(String(cur.at || "")) >= booted - 60_000;
+  if (cur && Number(cur.pid) !== pid && fromThisBoot && isAlive(cur.pid)) return { ok: false, pid: Number(cur.pid) };
   if (cur && Number(cur.pid) === pid) return { ok: true, pid };
+  const body = JSON.stringify({ pid, at: new Date().toISOString() });
+  const file = ownerFile();
+  try { fs.mkdirSync(path.dirname(file)); } catch { /* exists, or not ours to make */ }
   try {
-    const file = ownerFile();
-    try { fs.mkdirSync(path.dirname(file)); } catch { /* exists, or not ours to make */ }
-    fs.writeFileSync(file, JSON.stringify({ pid, at: new Date().toISOString() }));
+    // No file: create it exclusively, so two desks starting together cannot both win.
+    if (!cur) {
+      try {
+        fs.writeFileSync(file, body, { flag: "wx" });
+      } catch (error) {
+        if (error && error.code === "EEXIST") {
+          const now = read();
+          if (now && Number(now.pid) !== pid && isAlive(now.pid)) return { ok: false, pid: Number(now.pid) };
+        }
+        fs.writeFileSync(file, body);
+      }
+    } else {
+      const tmp = `${file}.${pid}.tmp`;
+      fs.writeFileSync(tmp, body);
+      fs.renameSync(tmp, file);
+    }
   } catch { /* cannot write: the guard is off, the fairy is not */ }
   return { ok: true, pid };
 }
@@ -74,4 +97,8 @@ function release({ pid = process.pid } = {}) {
   return true;
 }
 
-module.exports = { ownerFile, alive, claim, release };
+// A normal exit lets go even when before-quit never ran (a crash or a logoff leaves the
+// file, which the boot-time check and the pid check retire).
+process.once("exit", () => { try { release(); } catch { /* exiting */ } });
+
+module.exports = { ownerFile, alive, bootedAt, claim, release };

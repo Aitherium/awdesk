@@ -139,14 +139,16 @@ function fairyItems(card, { label = "", agent = "" } = {}) {
  *   opts.tenantVisible: the workspace's own companion shows.
  *   opts.nowMs: the clock.
  */
-function orbItems({ waiting = 0, mutedUntil = 0, quietUntil = 0, tenantVisible = false, nowMs = Date.now() } = {}) {
+function orbItems({
+  waiting = 0, mutedUntil = 0, quietUntil = 0, tenantVisible = false, fairyVisible = true, nowMs = Date.now(),
+} = {}) {
   const n = Math.max(0, Number(waiting) || 0);
   const items = [{ id: "inbox", label: "Open inbox", hint: "The Inbox, where every card is answered" }];
   // Nothing waiting: no list to open, so no row (never a dead item).
   if (n) items.push({ id: "queue", label: "Answer window", hint: "Every waiting card in one list" });
   items.push({ sep: true });
   items.push(...companionMenu.items({
-    target: "fairy", fairyVisible: true, tenantVisible,
+    target: "fairy", fairyVisible, tenantVisible,
     quietUntil: Math.max(Number(quietUntil) || 0, Number(mutedUntil) || 0), nowMs,
   }));
   items.push({ sep: true }, { id: "more", label: "More…", hint: "Search, ask, attach, sounds and the desk's doors" });
