@@ -80,9 +80,24 @@ name, an organization). Nobody but the owner creates it.
    The hook runs `python -m castlabs_evs.vmp --no-ask sign-pkg --name-hint Desk release/win-unpacked`
    and the build fails if signing fails. Check a build afterwards:
    `node scripts/vmp-sign.cjs --verify release/win-unpacked Desk` (exit 0 valid, 1 invalid).
-3. CI: add the repository secrets `EVS_ACCOUNT_NAME` and `EVS_PASSWD`. `release.yaml`
-   turns signing on only when both exist. The monorepo's `build-awdesk.yml`, which publishes
-   the `v*` releases, needs the same two secrets and `AITHER_VMP_SIGN=1`.
+3. CI: add the repository secrets `EVS_ACCOUNT_NAME` and `EVS_PASSWD`, and add this to the
+   `package` job of `.github/workflows/release.yaml` (not applied yet: the token that
+   pushed this change may not edit workflow files). The monorepo's `build-awdesk.yml`, which
+   publishes the `v*` releases, needs the same.
+   ```yaml
+       env:
+         AITHER_VMP_SIGN: ${{ secrets.EVS_ACCOUNT_NAME != '' && secrets.EVS_PASSWD != '' && '1' || '0' }}
+         EVS_ACCOUNT_NAME: ${{ secrets.EVS_ACCOUNT_NAME }}
+         EVS_PASSWD: ${{ secrets.EVS_PASSWD }}
+         EVS_NO_ASK: "1"
+       steps:
+         # ... before "Build native installer":
+         - name: Install the VMP signing client
+           if: matrix.platform != 'linux' && env.AITHER_VMP_SIGN == '1'
+           shell: bash
+           run: python3 -m pip install --upgrade castlabs-evs || python -m pip install --upgrade castlabs-evs
+   ```
+   Without the secrets `AITHER_VMP_SIGN` is `0`, the step is skipped and the hook does nothing.
 
 Order matters and the hook follows it: macOS signs BEFORE code-signing (in `afterPack`,
 after flipping the fuses itself, because the fuses live in the signed binary); Windows
