@@ -1,0 +1,40 @@
+/* The Aither Browser's library pages (library-*.html): history, bookmarks, downloads,
+   site permissions, clear browsing data. One sheet, the family tokens. */
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px/1.45 var(--font-sans); }
+body { overflow-y: auto; }
+.wrap { max-width: 920px; margin: 0 auto; padding: 16px 20px 60px; }
+nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+nav button[aria-current="page"] { border-color: var(--primary, var(--fg)); font-weight: 700; }
+h1 { font-size: 18px; margin: 0 0 4px; }
+h2 { font-size: 13px; margin: 18px 0 6px; display: flex; align-items: center; gap: 8px; }
+h2 .grow { flex: 1; }
+.sub { color: var(--muted); margin-bottom: 12px; }
+.bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+button, select, input[type="text"], input[type="search"], input[type="url"] { height: 30px; padding: 0 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--btn); color: var(--fg); font: inherit; font-size: 12px; }
+button { cursor: pointer; }
+button:disabled { opacity: .45; cursor: default; }
+button.danger { color: var(--destructive); }
+button.small { height: 24px; padding: 0 8px; font-size: 11px; }
+input[type="text"], input[type="search"], input[type="url"] { background: var(--panel); min-width: 0; }
+input.grow, .grow { flex: 1; }
+label.check { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+#status { color: var(--muted); min-height: 18px; margin-bottom: 8px; }
+#status.err { color: var(--destructive); }
+.row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px;
+  margin-bottom: 4px; background: var(--panel); min-width: 0; }
+.row .main { flex: 1; min-width: 0; }
+.row .title { display: block; width: 100%; height: auto; padding: 0; border: 0; background: none; text-align: left; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .url, .row .meta { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .time { color: var(--muted); font-size: 11px; width: 54px; flex: none; }
+.tag { font-size: 11px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); flex: none; }
+.tag.agent { color: var(--agent-purple, var(--fg)); border-color: var(--agent-purple, var(--line)); }
+.tag.block { color: var(--destructive); }
+.empty { color: var(--muted); padding: 14px 0; }
+.form { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding: 8px 10px; border: 1px dashed var(--line);
+  border-radius: 10px; margin-bottom: 8px; }
+.form[hidden] { display: none; }
+progress { width: 120px; height: 6px; flex: none; }
+.note { color: var(--muted); font-size: 12px; margin: 2px 0 8px 24px; }

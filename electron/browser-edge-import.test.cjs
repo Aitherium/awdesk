@@ -193,7 +193,8 @@ test("importFromEdge hands bookmarks and history to the library and uses its cou
     passwords: { text: "name,url,username,password\nx,https://x.test/,u,p\n", vault: { add: (e) => vaulted.push(e) } },
   });
   assert.equal(got.bookmarks.length, 4);
-  assert.deepEqual(Object.keys(got.bookmarks[0]).sort(), ["title", "url"]);
+  // The folder a favorite sat in comes along (aither://bookmarks shows Edge's folders).
+  assert.deepEqual(Object.keys(got.bookmarks[0]).sort(), ["folder", "title", "url"]);
   assert.equal(res.bookmarks, 3, "the library's count, not ours");
   assert.equal(res.passwords, 1);
   assert.equal(vaulted.length, 1);

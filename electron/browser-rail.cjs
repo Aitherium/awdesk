@@ -461,11 +461,18 @@ function normalizeLayout(raw = {}) {
     // through this function on every read, so a pref omitted from this object is
     // dropped the moment it is written and the control becomes a dead button.
     railAllSections: r.railAllSections === true,
+    // Edge parity toggles in the more-menu. Both default on, and both must be listed
+    // here for the reason above: restoreSession was written by the menu and dropped on
+    // the next read, so "Reopen my tabs" could never be switched off.
+    restoreSession: r.restoreSession !== false,
+    translateOffer: r.translateOffer !== false,
     // Where each Online app opens: tab (default) | window | desktop (launch-modes.cjs).
     launchModes: launchModes.normalizeLaunchModes(r.launchModes),
     // The sites whose sign-in the agent may ride (BROWSER-M3, browser-agent-cookies.cjs):
     // empty -- the agent keeps its own session -- until the owner allows a site.
     agentCookieSites: agentCookies.normalizeSites(r.agentCookieSites),
+    // The bookmarks bar under the toolbar (Ctrl+Shift+B): off until asked for.
+    bookmarksBar: r.bookmarksBar === true,
     // The rest of the layout document (desk-layout.cjs): pane sides, the rail's own
     // arrangement, layer order, presets, detached-window bounds and the canvas boards.
     // Same file, one more key -- never a second store. Required here, not at the top:

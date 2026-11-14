@@ -69,6 +69,9 @@ const PRELOAD_BY_FILE = Object.freeze({
  */
 const PRELOAD_BY_PATTERN = Object.freeze([
   Object.freeze({ pattern: /^plane-[a-z]+\.html$/, preload: "plane-preload.cjs" }),
+  // The browser's own library pages (history, bookmarks, downloads, site permissions,
+  // clear browsing data): one bridge; main answers each channel only to its own page.
+  Object.freeze({ pattern: /^library-[a-z]+\.html$/, preload: "library-preload.cjs" }),
 ]);
 /** The renderer bundle's preload (?deck=1, ?chat=1, ?characters=1). */
 const VIEW_PRELOAD = "preload.cjs";
@@ -752,6 +755,16 @@ function onlineUrl(env = process.env, tenant = undefined) {
   return require("./desk-tenant.cjs").overlayBaseUrl(current, DEFAULT_HOSTED_URL);
 }
 
+/**
+ * Where the PLATFORM's own APIs live (the per-user preferences store browser-sync.cjs
+ * uses): app.aitherium.com, always. Never onlineUrl(): in tenant mode that is the
+ * tenant's site, which has no store, and the Online bearer must not be sent to it. No
+ * argument and no env override, so nothing can point the bearer somewhere else.
+ */
+function platformOrigin() {
+  return new URL(DEFAULT_HOSTED_URL).origin;
+}
+
 /** DESK_LEGACY_CONSOLE=1 brings back the old console window (rollback). */
 function legacyConsole(env = process.env) {
   return String((env && env.DESK_LEGACY_CONSOLE) || "") === "1";
@@ -792,6 +805,7 @@ module.exports = {
   modelNameOf,
   navigationVerdict,
   onlineUrl,
+  platformOrigin,
   paneById,
   parseInternalUrl,
   pinnedTabs,
