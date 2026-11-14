@@ -8,7 +8,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { POPUP_BURST, POPUP_WINDOW_MS, createPopupLedger, popupUrlOk, popupVerdict } = require("./browser-popups.cjs");
+const { POPUP_BURST, POPUP_WINDOW_MS, createPopupLedger, popupUrlOk, popupVerdict, rootOf } = require("./browser-popups.cjs");
 
 const owner = { by: "you", kind: "web" };
 const agent = { by: "agent", kind: "web" };
@@ -104,4 +104,59 @@ test("browser-window adopts the popup's own page and never builds it with a prel
   const open = src.slice(src.indexOf("function openFromPage("), src.indexOf("function adoptPopup("));
   assert.match(open, /ownerSession: opener\.by === "agent" && \(opener\.viewSpec \|\| \{\}\)\.webPartition === PARTITION/,
     "the verdict is told when an agent tab rides the owner's session");
+});
+
+// ---------------------------------------------------------------- review finding L3
+
+test("L3: the burst is counted against the root of the opener chain, so a popup's popups share one allowance", () => {
+  assert.equal(rootOf({ by: "you", kind: "web" }, 4), 4, "a tab nobody opened is its own root");
+  assert.equal(rootOf({ by: "you", kind: "web", popupRoot: 2 }, 9), 2, "a popup counts against the tab that started the chain");
+  assert.equal(rootOf({ by: "you", kind: "web", popupRoot: 0 }, 9), 0);
+  assert.equal(rootOf(null, 5), 5);
+  // Tab 1 opens popup 2, which opens popup 3, which opens 4...: every popup is a new opener.
+  let t = 1_000_000;
+  const ledger = createPopupLedger({ now: () => t });
+  const tabsById = { 1: { by: "you", kind: "web" } };
+  let opener = 1;
+  let adopted = 0;
+  for (let next = 2; next <= 20; next += 1) {
+    const root = rootOf(tabsById[opener], opener);
+    const verdict = popupVerdict({ opener: tabsById[opener], url: "https://a.example/", recent: ledger.count(root) });
+    if (verdict.action === "deny") break;
+    ledger.note(root);
+    tabsById[next] = { by: "you", kind: "web", popupRoot: root };
+    opener = next;
+    adopted += 1;
+  }
+  assert.equal(adopted, POPUP_BURST, "a chain is stopped at the burst, not allowed a fresh burst per popup");
+  assert.equal(ledger.count(1), POPUP_BURST);
+});
+
+test("L3: the old no-opener way of opening a tab is refused after the burst too", () => {
+  const isHostedSite = (url) => String(url).startsWith("https://app.aitherium.com/");
+  const cases = [
+    [{ by: "you", kind: "hosted" }, "https://evil.example/"],
+    [{ by: "you", kind: "extension" }, "https://docs.example/"],
+    [{ by: "you", kind: "internal" }, "aither://history/"],
+    [{ by: "agent", kind: "web", ownerSession: true }, "https://bank.example/"],
+    [{ by: "you", kind: "web" }, "https://app.aitherium.com/workspace"],
+  ];
+  for (const [opener, url] of cases) {
+    const args = { opener, url, isHostedSite, isInternalUrl: (u) => String(u).startsWith("aither://") };
+    assert.equal(popupVerdict({ ...args, recent: POPUP_BURST - 1 }).action, "tab", `${opener.kind} below the burst`);
+    assert.equal(popupVerdict({ ...args, recent: POPUP_BURST }).action, "deny", `${opener.kind} at the burst`);
+  }
+});
+
+test("L3: browser-window counts every opened tab against the root and carries the root on the new tab", () => {
+  const src = fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
+  const open = src.slice(src.indexOf("function openFromPage("), src.indexOf("function adoptPopup("));
+  assert.match(open, /const root = popups\.rootOf\(opener, id\);/);
+  assert.match(open, /recent: popupLedger\.count\(root\)/);
+  assert.ok(open.indexOf("popupLedger.note(root);") > 0 && open.indexOf("popupLedger.note(root);") < open.indexOf('verdict.action === "tab"'),
+    "the tab path is counted, not only the adopted one");
+  assert.match(open, /tabs\.get\(opened\.id\)\.popupRoot = root;/, "a tab opened the old way carries the root");
+  assert.doesNotMatch(open, /popupLedger\.(count|note)\(id\)/);
+  const adopt = src.slice(src.indexOf("function adoptPopup("), src.indexOf("function wirePopupClose("));
+  assert.match(adopt, /tab\.popupRoot = root;/, "an adopted popup carries the root");
 });

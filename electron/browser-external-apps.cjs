@@ -14,11 +14,17 @@
  *   - only the schemes in APPS. Everything else stays refused exactly as before
  *     (file:, javascript:, ms-msdt:, search-ms:, any scheme a site invents).
  *   - the address is passed on EXACTLY as the page gave it, after a shape check: at
- *     most MAX_LINK characters, no control characters, no whitespace, no quotes or
- *     backticks, and it must parse as a URL of that scheme. A link that fails is refused.
+ *     most MAX_LINK characters, no control characters, no whitespace (ASCII or not),
+ *     no quotes, backticks or backslashes, raw or percent-encoded, and it must parse as a URL of that scheme. A link that fails is refused.
+ *   - the question names WHO asks (whoAsks): the page when the page itself followed the
+ *     link, the redirecting site when a web address redirected to an app link, the
+ *     frame's or the other window's site otherwise. A link on a trusted site that
+ *     redirects through another, or a popup that sets opener.location, is never
+ *     credited to the page the tab happens to show.
  *   - "Always for this site" is remembered per site and per app, only for a secure page
- *     (https, or this computer), never InPrivate. It is honoured only for a link in the
- *     page's own top frame, on a page the owner has clicked or typed in (main reads the
+ *     (https, or this computer), never InPrivate, never for Steam or VS Code (their
+ *     links can run things: asked every time). It is honoured only when the page
+ *     itself followed the link, on a page the owner has clicked or typed in (main reads the
  *     page's user-activation flag in the isolated world; Chromium has already spent the
  *     click itself by the time a link reaches main, measured on Electron 39), and at
  *     most once every AUTO_OPEN_GAP_MS per tab. Anything else asks again, so a page
@@ -43,6 +49,16 @@ const AUTO_OPEN_GAP_MS = 5000;
 const INTERACTED_SCRIPT = "Boolean(navigator.userActivation && navigator.userActivation.hasBeenActive)";
 /** The review page's kind for a remembered "Always": "open:<scheme>". */
 const KIND_PREFIX = "open:";
+/**
+ * Apps whose links can run things on this computer (a Steam "run" link, a VS Code
+ * extension or file link): the owner is asked EVERY time, "Always" is never offered,
+ * stored or honoured for them.
+ */
+const NEVER_ALWAYS = Object.freeze(["steam:", "vscode:"]);
+/** Percent-encoded quote, backtick, backslash, line break and NUL: a handler that decodes its link sees the raw character. */
+const ENCODED_UNSAFE = /%(?:22|27|60|5c|0a|0d|00)/i;
+/** Whitespace outside ASCII (no-break space, line and paragraph separators, ideographic space, BOM...). */
+const OTHER_SPACE = /[\u0085\u00a0\u1680\u180e\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/;
 
 /** The only schemes ever handed to the system, and the app name the owner reads. */
 const APPS = Object.freeze({
@@ -72,11 +88,17 @@ function launchable(url) {
   if (typeof url !== "string" || !url || url.length > MAX_LINK) return null;
   // eslint-disable-next-line no-control-regex
   if (/[\u0000- \u007f"'`<>\\^{|}]/.test(url)) return null;
+  if (ENCODED_UNSAFE.test(url) || OTHER_SPACE.test(url)) return null;
   let parsed;
   try { parsed = new URL(url); } catch { return null; }
   const scheme = parsed.protocol.toLowerCase();
   if (!Object.prototype.hasOwnProperty.call(APPS, scheme)) return null;
   return { url, scheme, app: APPS[scheme] };
+}
+
+/** May "Always for this site" exist for this app at all? */
+function alwaysEligible(scheme) {
+  return Object.prototype.hasOwnProperty.call(APPS, scheme) && !NEVER_ALWAYS.includes(scheme);
 }
 
 function originOf(url) {
@@ -89,28 +111,63 @@ function originOf(url) {
 }
 
 /**
+ * WHO asks for an app link: the site the question names, and whether it is the page
+ * itself asking (`direct`). The tab's current page is not always the one that started
+ * the navigation, and a remembered "Always" belongs to the site that was asked about:
+ *
+ *   navigate  a link or script navigation in the tab. Direct only when the frame that
+ *             started it is known and has the page's own origin. A cross-origin frame
+ *             or another window (a popup setting opener.location) is named instead and
+ *             is not direct; so is a navigation nobody in a page started.
+ *   redirect  a web address that answered with a redirect to an app link. The site that
+ *             redirected is named; never direct (the page only linked to a web address).
+ *   frame     an app link Chromium refused in a frame or a script (the openExternal
+ *             permission). The requesting frame's site is named; never direct.
+ *
+ * @param {{via?: string, pageUrl?: string, initiatorOrigin?: string|null, redirectFrom?: string|null,
+ *   requestingUrl?: string|null}} req
+ * @returns {{origin: string|null, direct: boolean}}
+ */
+function whoAsks({ via = "", pageUrl = "", initiatorOrigin = null, redirectFrom = null, requestingUrl = null } = {}) {
+  const page = originOf(pageUrl);
+  if (via === "redirect") return { origin: originOf(redirectFrom) || page, direct: false };
+  if (via === "frame") return { origin: originOf(requestingUrl) || page, direct: false };
+  if (via === "navigate") {
+    const from = originOf(initiatorOrigin);
+    if (from && page && from === page) return { origin: page, direct: true };
+    return { origin: from || page, direct: false };
+  }
+  return { origin: page, direct: false };
+}
+
+/**
  * What to do with one app link.
  *
  * @param {object} req
  * @param {string} req.url          the link
  * @param {{by?: string, kind?: string, private?: boolean}|null} req.tab the tab it came from
  * @param {string} req.pageUrl      the address of the page on that tab
- * @param {boolean} [req.mainFrame] the link was followed in the page's own top frame
+ * @param {string} [req.via]        "navigate" | "redirect" | "frame" (whoAsks)
+ * @param {string|null} [req.initiatorOrigin] navigate: the origin of the frame that started it
+ * @param {string|null} [req.redirectFrom]    redirect: the address that redirected
+ * @param {string|null} [req.requestingUrl]   frame: the address of the frame that asked
  * @param {boolean} [req.gesture]   the owner has clicked or typed in that page
  * @param {number} [req.sinceAuto]  ms since this tab last opened an app with no question
  * @param {{get: Function}|null} [req.store] the remembered "Always" answers
  * @returns {{verdict: "deny"} | {verdict: "open"|"prompt", url: string, scheme: string, app: string,
  *   origin: string, canAlways: boolean}}
  */
-function judge({ url, tab, pageUrl, mainFrame = false, gesture = false, sinceAuto = Infinity, store = null } = {}) {
+function judge({ url, tab, pageUrl, via = "", initiatorOrigin = null, redirectFrom = null, requestingUrl = null,
+  gesture = false, sinceAuto = Infinity, store = null } = {}) {
   const deny = { verdict: "deny" };
   const link = launchable(url);
   if (!link) return deny;
   if (!tab || tab.by !== "you" || !["web", "hosted"].includes(tab.kind || "web")) return deny;
-  const origin = originOf(pageUrl);
+  const { origin, direct } = whoAsks({ via, pageUrl, initiatorOrigin, redirectFrom, requestingUrl });
   if (!origin) return deny;
-  // Remembered only for a secure page's own top frame, and never InPrivate.
-  const canAlways = Boolean(mainFrame) && !tab.private && promptableOrigin(origin) === origin;
+  // Remembered only when a secure page itself asked (not a redirect, a frame or another
+  // window), never InPrivate, and never for an app that runs things (NEVER_ALWAYS).
+  const canAlways = direct && !tab.private && promptableOrigin(origin) === origin && alwaysEligible(link.scheme);
   const remembered = canAlways && store ? store.get(origin, link.scheme) : false;
   const quiet = remembered && gesture && sinceAuto >= AUTO_OPEN_GAP_MS;
   return { verdict: quiet ? "open" : "prompt", ...link, origin, canAlways };
@@ -147,7 +204,7 @@ function readFile(file) {
       if (promptableOrigin(origin) !== origin || !row || typeof row !== "object") continue;
       const kept = {};
       for (const [scheme, at] of Object.entries(row)) {
-        if (Object.prototype.hasOwnProperty.call(APPS, scheme)) kept[scheme] = Number(at) || 0;
+        if (alwaysEligible(scheme)) kept[scheme] = Number(at) || 0;
       }
       if (Object.keys(kept).length) sites[origin] = kept;
     }
@@ -183,7 +240,7 @@ function createExternalStore({ file, now = () => Date.now() } = {}) {
     },
     allow(origin, scheme) {
       const site = promptableOrigin(origin);
-      if (!site || site !== origin || !Object.prototype.hasOwnProperty.call(APPS, scheme)) return false;
+      if (!site || site !== origin || !alwaysEligible(scheme)) return false;
       if (!sites[site] && Object.keys(sites).length >= MAX_SITES) return false;
       sites[site] = { ...(sites[site] || {}), [scheme]: now() };
       return save();
@@ -243,6 +300,7 @@ function withExternal(permissions, external) {
 }
 
 module.exports = {
-  APPS, AUTO_OPEN_GAP_MS, INTERACTED_SCRIPT, KIND_PREFIX, MAX_LINK,
+  APPS, AUTO_OPEN_GAP_MS, INTERACTED_SCRIPT, KIND_PREFIX, MAX_LINK, NEVER_ALWAYS,
+  alwaysEligible, whoAsks,
   createExternalStore, isAction, judge, labelFor, launchable, noticeFor, promptText, withExternal,
 };

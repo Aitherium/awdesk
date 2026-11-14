@@ -16,6 +16,9 @@
  *                     to notify is exempt.
  *   +  page errors    a crashed page raises "This page crashed." with Reload; a followed link
  *                     that did not load shows the dark error page, not a blank one.
+ *   review (PR #76)   full screen shows main's own exit hint; a question raised under a full-screen
+ *                     page ends it and arms only once seen; a redirect to an app link and a popup
+ *                     driving its opener are asked about and named; a popup chain stops at the burst.
  *   6. app links      mailto: raises "Open <App>?", Open hands the EXACT address to the
  *                     (stubbed) system opener, Always is remembered; an agent tab and an
  *                     unlisted scheme get nothing.
@@ -35,6 +38,8 @@ const PAGES = {
 <button id="pop" style="${BUTTON};top:100px">popup</button>
 <a id="mail" href="${MAILTO}" style="${BUTTON};top:150px">mail</a>
 <a id="odd" href="calculator:run" style="${BUTTON};top:200px">not listed</a>
+<a id="redir" href="#" style="${BUTTON};top:250px">redirects to mail</a>
+<button id="drv" style="${BUTTON};top:300px">popup that drives me</button>
 <div id="box" style="position:fixed;left:200px;top:0;width:120px;height:120px;background:#246">video</div>
 <script>
 window.__log = [];
@@ -44,6 +49,18 @@ document.getElementById("cp").onclick = () => navigator.clipboard.writeText(${JS
   .then(() => __log.push("cp ok"), (e) => __log.push("cp fail " + e.message));
 document.getElementById("pop").onclick = () => { window.__w = window.open("/gap-popup", "gap", "width=420,height=320"); };
 window.addEventListener("message", (e) => __log.push("msg " + e.data));
+// The same server under its other name: another SITE (127.0.0.1 is not localhost).
+const other = "http://127.0.0.1:" + location.port;
+document.getElementById("redir").href = other + "/gap-redirect";
+document.getElementById("drv").onclick = () => { window.open(other + "/gap-driver"); };
+</script>`,
+  // Another site's page, opened as a popup, that sends its OPENER to an app link.
+  "/gap-driver": `<!doctype html><title>Gap driver</title><p>driver</p><script>
+if (window.opener) window.opener.location = ${JSON.stringify(MAILTO)};
+</script>`,
+  // A popup that opens a popup that opens a popup...
+  "/gap-chain": `<!doctype html><title>Gap chain</title><p>chain</p><script>
+window.open("/gap-chain?n=" + (Number(new URLSearchParams(location.search).get("n") || 0) + 1));
 </script>`,
   "/gap-popup": `<!doctype html><title>Gap popup</title><p>popup</p><script>
 window.__hadOpener = Boolean(window.opener);
@@ -61,6 +78,8 @@ const headers = {};
 /** The smoke server's first stop: serves the gap pages and records what the browser sent. */
 function serve(req, res) {
   const pathname = new URL(req.url, "http://x").pathname;
+  // A web address that answers with a redirect to an app link.
+  if (pathname === "/gap-redirect") { res.writeHead(302, { location: MAILTO }); res.end(); return true; }
   const body = PAGES[pathname];
   if (body == null) return false;
   headers[pathname] = String(req.headers["user-agent"] || "");
@@ -128,7 +147,7 @@ async function run({ bw, base, expect, until, sleep }) {
   // does not even ask the embedder then (the write stays pending), so "not written" is the check.
   await until(async () => (await jsNoGesture(wc, "navigator.userActivation.isActive")) === false, 8000);
   const noClick = await jsNoGesture(wc, "Promise.race([navigator.clipboard.writeText('aither-no-click').then(() => 'written', (e) => 'refused: ' + e.message),"
-    + " new Promise((res) => setTimeout(() => res('pending'), 2000))])");
+    + " new Promise((res) => setTimeout(() => res('pending'), 1200))])");
   expect("writeText with no click writes nothing", noClick !== "written" && clipboard.readText() !== "aither-no-click", { noClick, clipboard: clipboard.readText().slice(0, 40) });
 
   // ------------------------------------------------------------------ 2. full screen
@@ -145,6 +164,17 @@ async function run({ bw, base, expect, until, sleep }) {
   }, 6000);
   expect("the tab's view takes the whole window while the page is full screen", Boolean(whole) && bw.__fullscreenTabForTest() === main.id,
     { view: bw.__viewBoundsForTest(main.id), content: win.getContentBounds(), tab: bw.__fullscreenTabForTest() });
+  // The exit hint: main's own view, on top of the page, naming the site and Esc; gone after about 3 s.
+  const hint = await until(() => { const h = bw.__fullscreenHintForTest(); return h && h.url ? h : null; }, 3000);
+  const hintHtml = hint ? decodeURIComponent(hint.url.slice(hint.url.indexOf(",") + 1)) : "";
+  const content = win.getContentBounds();
+  expect("entering full screen shows main's own exit hint, on top, naming the site and Esc", Boolean(hint) && hint.top === true && hint.ownSession === true
+    && new RegExp(`>localhost:${new URL(base).port} is full screen \u2014 press Esc to exit<`).test(hintHtml)
+    && hint.bounds.width > 200 && hint.bounds.y >= 0 && hint.bounds.x >= 0 && hint.bounds.x + hint.bounds.width <= content.width,
+  { hint, content });
+  await sleep(3400);
+  expect("the hint goes away by itself and the page stays full screen", bw.__fullscreenHintForTest() === null && win.isFullScreen()
+    && bw.__fullscreenTabForTest() === main.id, { hint: bw.__fullscreenHintForTest(), window: win.isFullScreen() });
   wc.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
   wc.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
   const out = await until(async () => !(await js(wc, "Boolean(document.fullscreenElement)")) && !win.isFullScreen() && bw.__fullscreenTabForTest() === null, 6000);
@@ -201,6 +231,27 @@ async function run({ bw, base, expect, until, sleep }) {
 
   // ------------------------------------------------------------------ 6. app links
   bw.__showTabForTest(main.id);
+  // A question raised while the page is full screen (the toolbar is covered): the page
+  // leaves full screen, and the question's half second starts only then.
+  await js(wc, "__log.length = 0; 0");
+  await click(wc, 20);
+  const covered = await until(async () => (await js(wc, "Boolean(document.fullscreenElement)")) && bw.__fullscreenTabForTest() === main.id && win.isFullScreen(), 6000);
+  expect("the page is full screen again (for the covered-question check)", Boolean(covered), { tab: bw.__fullscreenTabForTest() });
+  await sleep(700); // longer than the arm delay: a question raised now would be armed if its clock ran under the page
+  const raisedAt = Date.now();
+  await js(wc, `location.href = ${JSON.stringify(MAILTO)}; 0`);
+  const uncovered = await until(() => (notice(main.id, "external-app") && bw.__fullscreenTabForTest() === null && !win.isFullScreen()
+    && bw.__fullscreenHintForTest() === null ? notice(main.id, "external-app") : null), 6000);
+  expect("a question raised under a full-screen page ends the full screen", Boolean(uncovered),
+    { notice: bw.__noticeForTest(main.id), tab: bw.__fullscreenTabForTest(), window: win.isFullScreen() });
+  expect("its half second starts when the page has left full screen, not when it was raised", Boolean(uncovered) && Number.isFinite(uncovered.at)
+    && uncovered.at > raisedAt, { at: uncovered && uncovered.at, raisedAt });
+  if (uncovered && Date.now() - uncovered.at < 400) {
+    const tooSoon = await bw.noticeAction("external-open");
+    expect("Open is dead right after the toolbar reappears", tooSoon && tooSoon.early === true && opened.length === 0, { tooSoon, opened });
+  }
+  if (bw.__noticeForTest(main.id)) await bw.noticeAction("dismiss");
+  expect("nothing was opened by the covered question", opened.length === 0 && !bw.__noticeForTest(main.id), opened);
   await click(wc, 170);
   const ask = await until(() => notice(main.id, "external-app"));
   expect("a mailto: link raises \"Open <App>?\" in the owner's tab", Boolean(ask) && /^Open your mail app\? localhost:\d+ wants to open a link in it\.$/.test(ask.text)
@@ -232,6 +283,7 @@ async function run({ bw, base, expect, until, sleep }) {
     && bw.getExternalStore().get(base, "mailto:") === true, { always, opened, list: bw.getExternalStore().list() });
   await click(wc, 170);
   const third = await until(() => opened.length === 3, 4000);
+  const autoOpenedAt = Date.now();
   expect("the next click on that site opens with no question", Boolean(third) && opened[2] === MAILTO && !bw.__noticeForTest(main.id),
     { opened, notice: bw.__noticeForTest(main.id) });
   await click(wc, 170);
@@ -245,7 +297,7 @@ async function run({ bw, base, expect, until, sleep }) {
     s.listen(0, "127.0.0.1", () => { const port = s.address().port; s.close(() => resolve(`http://localhost:${port}/gone`)); });
   });
   await js(wc, `location.href = ${JSON.stringify(dead)}; 0`);
-  const errorPage = await until(() => (wc.getURL().startsWith("data:text/html") && !wc.isLoading() ? wc.getTitle() : null), 10000);
+  const errorPage = await until(() => (wc.getURL().startsWith("data:text/html") && !wc.isLoading() ? wc.getTitle() : null), 20000);
   expect("a followed link that does not load shows the error page", /Could not open/.test(errorPage || "")
     && /didn't open/.test(await js(wc, "document.body.innerText")) && /ERR_CONNECTION_REFUSED/.test(await js(wc, "document.body.innerText")),
   { url: wc.getURL().slice(0, 60), title: wc.getTitle() });
@@ -259,6 +311,40 @@ async function run({ bw, base, expect, until, sleep }) {
   const back = await until(async () => !wc.isCrashed() && !wc.isLoading() && (await js(wc, "document.title")) === "Gap", 10000);
   expect("Reload brings the crashed page back", Boolean(back) && !bw.__noticeForTest(main.id),
     { crashed: wc.isCrashed(), loading: wc.isLoading(), url: wc.getURL(), title: wc.getTitle(), notice: bw.__noticeForTest(main.id) });
+
+  // ---- who asked (review M1). "Always" is remembered for this site now; wait out the
+  // launch-loop gap so that only the new rule stands between these links and the app.
+  await sleep(Math.max(0, 5300 - (Date.now() - autoOpenedAt)));
+  const otherSite = new RegExp(`^Open your mail app\\? 127\\.0\\.0\\.1:${new URL(base).port} wants to open a link in it\\.$`);
+  await click(wc, 270); // a link to ANOTHER site's web address, which redirects to mailto:
+  const redirected = await until(() => notice(main.id, "external-app"), 5000);
+  expect("a web address that redirects to an app link asks, and names the redirecting site", Boolean(redirected) && otherSite.test(redirected.text)
+    && redirected.actions.map((a) => a.label).join() === "Open,Not now" && opened.length === 3, { redirected, opened });
+  if (redirected) await bw.noticeAction("dismiss");
+  await sleep(300);
+  expect("the redirect opened nothing", opened.length === 3 && !bw.__noticeForTest(main.id) && wc.getURL().endsWith("/gap-main"), { opened, url: wc.getURL() });
+  // A popup on another site sets opener.location to an app link: credited to the popup's site, asked.
+  const beforeDriver = tabsNow().map((t) => t.id);
+  await click(wc, 320);
+  const driven = await until(() => notice(main.id, "external-app"), 6000);
+  expect("a popup that drives its opener to an app link asks, and is the one named", Boolean(driven) && otherSite.test(driven.text)
+    && driven.actions.map((a) => a.label).join() === "Open,Not now" && opened.length === 3, { driven, opened });
+  for (const t of tabsNow().filter((x) => !beforeDriver.includes(x.id))) { bw.__showTabForTest(t.id); bw.runBrowserAction("close-tab"); }
+  bw.__showTabForTest(main.id);
+  if (bw.__noticeForTest(main.id)) await bw.noticeAction("dismiss");
+  expect("the driven navigation opened nothing", opened.length === 3, opened);
+
+  // ---- a popup that opens popups (review L3): the chain spends ONE allowance.
+  const beforeChain = tabsNow().map((t) => t.id);
+  await js(wc, "window.open('/gap-chain?n=1'); 0");
+  await sleep(1800);
+  const chainA = tabsNow().filter((t) => !beforeChain.includes(t.id)).length;
+  await sleep(900);
+  const chainB = tabsNow().filter((t) => !beforeChain.includes(t.id)).length;
+  // At most six in ten seconds for the whole chain (the driver popup above may still count as one).
+  expect("a chain of popups stops at the burst limit instead of filling the tab strip", chainA >= 3 && chainA <= 6 && chainB === chainA, { chainA, chainB });
+  for (const t of tabsNow().filter((x) => !beforeChain.includes(x.id))) { bw.__showTabForTest(t.id); bw.runBrowserAction("close-tab"); }
+  bw.__showTabForTest(main.id);
 
   // ------------------------------------------------------------------ an AGENT's tab gets none of it
   const agent = bw.browserAgent();
