@@ -817,6 +817,10 @@ const pwFilled = new Map(); // tab id -> the URL already autofilled (once per pa
 // (its submit message can land just after the next document starts). browser-passwords.cjs.
 const pwKeys = new Map();
 const drmStay = new Set(); // hosts the owner chose to keep here this run
+const cosmeticSheets = new Map(); // webContents id -> Promise<key> of the ad-box style sheet in its document
+const translateMuted = new Set(); // hosts the owner answered "Not now" on, this run
+const translateAsked = new Map(); // tab id -> the URL its language was already read on
+let translateBackendsOverride = null; // the smoke's fake model
 let sessionRestored = false;
 
 function userDataPath(...parts) {
@@ -831,6 +835,33 @@ function getAdblock() {
     void adblockImpl.refresh().catch(() => {});
   }
   return adblockImpl;
+}
+
+/**
+ * Hide the boxes blocked ads leave behind: the lists' element hiding rules for this
+ * page's host, as a user style sheet (a page's own `!important` cannot undo it). One
+ * sheet per document; taken out again when blocking is paused. Web tabs only: never a
+ * console pane, an extension page or the pinned AitherOS Online tab.
+ */
+function syncCosmetics(wc, id) {
+  if (!wc || wc.isDestroyed()) return;
+  const tab = tabs.get(id) || {};
+  let css;
+  try { css = tab.kind === "web" && !tab.pinned && adblockImpl ? adblockImpl.cssFor(wc.getURL()) : ""; } catch { css = ""; }
+  const have = cosmeticSheets.get(wc.id);
+  if (css && !have) {
+    cosmeticSheets.set(wc.id, wc.insertCSS(css, { cssOrigin: "user" }).catch(() => null));
+  } else if (!css && have) {
+    cosmeticSheets.delete(wc.id);
+    void have.then((key) => (key && !wc.isDestroyed() ? wc.removeInsertedCSS(key) : null)).catch(() => {});
+  }
+}
+
+/** Blocking was switched on or off everywhere: every open page gains or loses its sheet. */
+function syncAllCosmetics() {
+  for (const [id, view] of views) {
+    if (alive(view)) syncCosmetics(view.webContents, id);
+  }
 }
 
 let vaultImpl = null;
@@ -862,6 +893,7 @@ function restoreSession() {
 }
 
 function forgetTabExtras(id) {
+  translateAsked.delete(id);
   tabNotices.delete(id);
   findResults.delete(id);
   pwFilled.delete(id);
@@ -930,7 +962,8 @@ function everydayState(wc) {
     find: findResults.get(id) || null,
     notice: notice ? { kind: notice.kind, text: notice.text, actions: notice.actions || [] } : null,
     passwords: saved,
-    adblock: ab ? { enabled: ab.enabled(), siteOff: ab.siteOff(url), blocked: ab.blockedOn(wc.id) } : null,
+    adblock: ab ? { enabled: ab.enabled(), siteOff: ab.siteOff(url), blocked: ab.blockedOn(wc.id),
+      web: tab.kind === "web" && !tab.pinned && /^https?:/i.test(url) } : null,
   };
 }
 
@@ -1042,6 +1075,10 @@ function wireEveryday(wc, id) {
     const got = passwordsMod().decodeCaptured(message, keys.key) || passwordsMod().decodeCaptured(message, keys.prev);
     if (got) offerLogin(id, wc, got);
   });
+  // Ad boxes: a new document starts without the sheet; it goes in as soon as the DOM is there.
+  wc.on("did-navigate", () => cosmeticSheets.delete(wc.id));
+  wc.on("dom-ready", () => syncCosmetics(wc, id));
+  wc.once("destroyed", () => cosmeticSheets.delete(wc.id));
   wc.on("did-navigate", (_event, url) => {
     const k = pwKeys.get(id);
     if (k) pwKeys.set(id, { key: null, prev: k.key || k.prev });
@@ -1070,7 +1107,7 @@ function wireEveryday(wc, id) {
     }
   });
   wc.on("did-stop-loading", () => {
-    void collectLogin(id, wc).then(() => autofill(id, wc));
+    void collectLogin(id, wc).then(() => autofill(id, wc)).then(() => offerTranslation(id, wc)).catch(() => {});
   });
 }
 
@@ -1094,39 +1131,138 @@ function pageWc(id) {
   return alive(view) ? view.webContents : null;
 }
 
-/** Translate the page in place with this machine's own model (nothing leaves for a translation service). */
+function translateMod() { return require("./browser-translate.cjs"); }
+
+/** The language the owner reads: the app's locale, by name ("English"). */
+function translateTarget() {
+  let locale = "en";
+  try { locale = electron().app.getLocale() || "en"; } catch { /* English */ }
+  return { locale, name: translateMod().languageName(locale) || "English" };
+}
+
+/**
+ * Who can translate, in the order they are asked (browser-translate.cjs has the
+ * measurements behind it): the fleet's MicroScheduler, the local node, the bundled
+ * local model, then the desk's agent. Every one is on this machine or its own fleet
+ * except the last, which is whatever the owner's desk already talks to.
+ */
+function translateBackends() {
+  if (translateBackendsOverride) return translateBackendsOverride;
+  const T = translateMod();
+  const prefer = String(process.env.AWDESK_TRANSLATE_MODEL || "");
+  const base = String(process.env.AITHER_MICROSCHEDULER_URL || "https://127.0.0.1:8150").replace(/\/+$/, "");
+  const out = [
+    T.schedulerBackend({ base, prefer, http: T.createJsonHttp({ tls: require("./internal-ca.cjs").internalCaOptions() }) }),
+    T.nodeBackend({ answer: (msg) => overlayAnswer(msg), prefer }),
+    T.bonsaiLocalBackend({ chat: (messages) => require("./local-ai.cjs").createLocalAi().chat(messages) }),
+  ];
+  if (typeof askAgent === "function") out.push(T.agentBackend({ askAgent }));
+  return out;
+}
+
+/**
+ * Translate the page in place. The text goes to the first model that answers (see
+ * translateBackends) and the notice names it; nothing goes to a translation service.
+ */
 async function translatePage(id) {
   const wc = pageWc(id);
   if (!wc) return { ok: false };
-  let target = "English";
-  try { target = new Intl.DisplayNames(["en"], { type: "language" }).of(electron().app.getLocale().split("-")[0]) || "English"; } catch { /* English */ }
+  const T = translateMod();
+  const target = translateTarget().name;
+  const url = wc.getURL();
   const got = await isolated(wc, everyday.TRANSLATE_COLLECT_SCRIPT);
   const texts = got && Array.isArray(got.texts) ? got.texts : [];
   if (!texts.length) { setNotice(id, { kind: "info", text: "Nothing on this page to translate." }); return { ok: false }; }
-  const batches = everyday.translateBatches(texts);
-  let done = 0;
-  let changed = 0;
-  const ask = async (prompt) => {
-    const r = await Promise.resolve(overlayAnswer({ type: "os-compose", prompt, maxTokens: 2048, temperature: 0.1 })).catch(() => null);
-    if (r && r.ok && r.text) return r.text;
-    if (typeof askAgent === "function") {
-      const a = await Promise.resolve(askAgent(prompt)).catch(() => null);
-      return a && a.ok !== false ? String(a.reply || "") : "";
-    }
-    return "";
-  };
-  for (const batch of batches) {
-    setNotice(id, { kind: "info", text: `Translating into ${target} on this computer… ${done}/${batches.length}`,
-      actions: [{ id: "show-original", label: "Show original" }] });
-    const reply = await ask(everyday.translatePrompt(batch.texts, target));
-    const out = everyday.parseTranslation(reply, batch.texts.length);
-    if (out && pageWc(id) === wc) changed += Number(await isolated(wc, everyday.translateApplyScript(batch.start, out))) || 0;
-    done += 1;
+  const here = () => pageWc(id) === wc && !wc.isDestroyed() && wc.getURL() === url;
+  const original = [{ id: "show-original", label: "Show original" }];
+  const r = await T.createTranslator({ backends: translateBackends() }).translate({
+    texts, target,
+    apply: (start, out) => isolated(wc, everyday.translateApplyScript(start, out)),
+    stillWanted: here,
+    onProgress: ({ done, total, backend }) => {
+      if (!here()) return;
+      setNotice(id, { kind: "info", actions: original, text: backend
+        ? `Translating into ${target} with ${backend}… ${done}/${total}`
+        : `Translating into ${target}: asking a model this machine can reach…` });
+    },
+  }).catch((error) => ({ ok: false, changed: 0, backend: null, tried: [{ id: "error", label: "translate", ok: false, error: String((error && error.message) || error) }] }));
+  if (here()) {
+    setNotice(id, r.ok
+      ? { kind: "info", text: `Translated into ${target} by ${r.backend.label}.`, actions: original }
+      : { kind: "info", text: `Not translated: no model answered. ${T.describeTried(r.tried) || "None is set up (see aither://local-ai)."}` });
   }
-  setNotice(id, changed
-    ? { kind: "info", text: `Translated into ${target} by your local model.`, actions: [{ id: "show-original", label: "Show original" }] }
-    : { kind: "info", text: "Translation failed: no local model answered (start one on aither://local-ai)." });
-  return { ok: changed > 0, changed };
+  return r;
+}
+
+/**
+ * "This page is in German. Translate?" -- asked once per page, on the owner's own web
+ * tabs. Never InPrivate and never on an agent's tab (browser-translate shouldOffer);
+ * only the page's language is worked out here, nothing is sent to a model until asked.
+ */
+async function offerTranslation(id, wc) {
+  const tab = tabs.get(id);
+  if (!tab || tab.by !== "you" || tab.private || tab.kind !== "web" || tab.pinned) return;
+  if (getPrefs().translateOffer === false || wc.isDestroyed()) return;
+  const url = wc.getURL();
+  if (!/^https?:/i.test(url) || tabNotices.has(id) || translateAsked.get(id) === url) return;
+  translateAsked.set(id, url);
+  const T = translateMod();
+  const got = await isolated(wc, T.LANGUAGE_SAMPLE_SCRIPT);
+  if (!got || pageWc(id) !== wc || wc.isDestroyed() || wc.getURL() !== url || tabNotices.has(id)) return;
+  const lang = T.pageLanguage({ htmlLang: got.lang, text: got.text });
+  let host = "";
+  try { host = new URL(url).hostname.toLowerCase(); } catch { /* not a URL */ }
+  const target = translateTarget();
+  if (!T.shouldOffer({ pageLang: lang, appLang: target.locale, tab: { by: tab.by, private: Boolean(tab.private), kind: tab.kind },
+    host, muted: translateMuted })) return;
+  setNotice(id, {
+    kind: "translate-offer", data: { url, host, lang },
+    text: `This page is in ${T.languageName(lang)}. Translate it into ${target.name}?`,
+    actions: [{ id: "translate", label: "Translate" }, { id: "translate-mute", label: "Not now" }],
+  });
+}
+
+/** The shield in the toolbar: what was blocked here, pause on this site, pause everywhere. */
+function shieldFacts(id = tabs.active) {
+  const wc = pageWc(id);
+  const tab = tabs.get(id) || {};
+  const url = wc ? wc.getURL() : "";
+  const ab = getAdblock();
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* no page */ }
+  return { wc, url, ab, facts: { enabled: ab.enabled(), siteOff: ab.siteOff(url), blocked: wc ? ab.blockedOn(wc.id) : 0, host,
+    web: tab.kind === "web" && !tab.pinned && /^https?:/i.test(url) } };
+}
+
+/** One shield menu choice. The page reloads so the owner sees the difference at once. */
+function shieldAction(actionId, checked, id = tabs.active) {
+  const { wc, url, ab } = shieldFacts(id);
+  if (actionId === "pause-site") {
+    if (!/^https?:/i.test(url)) return { ok: false };
+    ab.setSiteOff(url, Boolean(checked));
+  } else if (actionId === "pause-all") {
+    ab.setEnabled(!checked);
+    syncAllCosmetics();
+  } else {
+    return { ok: false };
+  }
+  if (wc) wc.reload();
+  pushState();
+  return { ok: true };
+}
+
+function shieldMenu() {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const { Menu } = electron();
+  const id = tabs.active;
+  const spec = require("./browser-adblock.cjs").shieldMenuSpec(shieldFacts(id).facts);
+  const template = spec.map((item) => (item.type === "separator" ? { type: "separator" } : {
+    label: item.label, enabled: item.enabled !== false,
+    ...(item.checked === undefined ? {} : { type: "checkbox", checked: item.checked }),
+    click: (menuItem) => shieldAction(item.id, menuItem.checked, id),
+  }));
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
 }
 
 function zoomTo(wc, dir) {
@@ -1275,6 +1411,11 @@ async function noticeAction(actionId) {
     case "drm-stay": drmStay.add((notice.data && notice.data.host) || ""); setNotice(id, null); return { ok: true };
     case "extension-install": return installExtensionFrom(id, (notice.data && notice.data.url) || (wc ? wc.getURL() : ""));
     case "show-original": setNotice(id, null); if (wc) wc.reload(); return { ok: true };
+    case "translate": return translatePage(id);
+    case "translate-mute":
+      if (notice.data && notice.data.host) translateMuted.add(notice.data.host);
+      setNotice(id, null);
+      return { ok: true };
     case "delete-file": {
       const file = notice.data && notice.data.file;
       try { if (file) require("node:fs").unlinkSync(file); setNotice(id, { kind: "info", text: "The CSV file is deleted." }); } catch (error) {
@@ -1416,13 +1557,20 @@ function browserMenu() {
     { label: "Find on page", accelerator: "CmdOrCtrl+F", registerAccelerator: false, click: () => runBrowserAction("find") },
     { label: "Print…", accelerator: "CmdOrCtrl+P", registerAccelerator: false, click: () => runBrowserAction("print") },
     { label: "Translate page", click: () => runBrowserAction("translate") },
+    { label: "Offer to translate pages in other languages", type: "checkbox", checked: getPrefs().translateOffer !== false,
+      click: (item) => setPrefs({ translateOffer: item.checked }) },
     { label: "Read aloud", click: () => runBrowserAction("read-aloud") },
     { label: "Open in Edge", enabled: /^https?:/i.test(url) && Boolean(everyday.edgeExecutable()), click: () => runBrowserAction("open-edge") },
     { type: "separator" },
-    { label: "Block ads and trackers", type: "checkbox", checked: ab.enabled(), click: (item) => { ab.setEnabled(item.checked); pushState(); } },
+    { label: "Block ads and trackers", type: "checkbox", checked: ab.enabled(), click: (item) => { ab.setEnabled(item.checked); syncAllCosmetics(); pushState(); } },
     { label: "Allow ads on this site", type: "checkbox", enabled: ab.enabled() && /^https?:/i.test(url), checked: ab.siteOff(url),
       click: (item) => { ab.setSiteOff(url, item.checked); if (wc) wc.reload(); } },
-    { label: `Update the block lists (${ab.hostCount().toLocaleString()} hosts)`, click: () => { void ab.refresh({ force: true }).then(() => pushState()); } },
+    { label: "Remove tracking from links (utm_*, fbclid, gclid…)", type: "checkbox", checked: ab.stripParams(),
+      click: (item) => { ab.setStripParams(item.checked); } },
+    { label: "Tell sites not to sell or share my data (GPC)", type: "checkbox", checked: ab.gpc(),
+      click: (item) => { ab.setGpc(item.checked); } },
+    { label: `Update the block lists (${ab.hostCount().toLocaleString()} hosts, ${ab.stats().rules.toLocaleString()} rules, ${ab.stats().cosmetic.toLocaleString()} hidden boxes)`,
+      click: () => { void ab.refresh({ force: true }).then(() => pushState()); } },
     { type: "separator" },
     { label: `Passwords (${accounts.length})`, submenu: [
       ...(pwItems.length ? pwItems : [{ label: "No saved passwords yet", enabled: false }]),
@@ -3176,6 +3324,7 @@ function wireIpc() {
   // Edge parity: the ⋯ menu, the key icon, a notice's buttons, find on page, zoom badge.
   ipcMain.handle("desk:browser-menu", (event) => (fromChrome(event) ? browserMenu() : { ok: false }));
   ipcMain.handle("desk:browser-passwords", (event) => (fromChrome(event) ? passwordMenu() : { ok: false }));
+  ipcMain.handle("desk:browser-shield", (event) => (fromChrome(event) ? shieldMenu() : { ok: false }));
   ipcMain.handle("desk:browser-notice", (event, action) => (fromChrome(event) ? noticeAction(String(action || "")) : { ok: false }));
   ipcMain.on("desk:browser-find", (event, text, forward) => {
     const wc = pageWc(tabs.active);
@@ -3947,6 +4096,10 @@ module.exports = {
   runBrowserAction,
   noticeAction,
   browserMenu,
+  /** The toolbar shield's menu choices (pause-site / pause-all), and page translation (smoke). */
+  shieldAction,
+  translatePage,
+  __setTranslateBackendsForTest: (list) => { translateBackendsOverride = Array.isArray(list) ? list : null; },
   getAdblock,
   getVault,
   __pageForTest: (id) => pageWc(id),
