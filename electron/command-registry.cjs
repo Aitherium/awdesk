@@ -61,6 +61,7 @@ const GROUPS = Object.freeze({
   sprite: Object.freeze({ menu: "Sprite" }),
   sandbox: Object.freeze({ menu: "Windows Sandbox" }),
   aw: Object.freeze({ menu: "aw tools" }),
+  browser: Object.freeze({ menu: "Browser" }),
   layout: Object.freeze({ menu: "Browser layout" }),
 });
 
@@ -99,6 +100,9 @@ const LAYOUT = Object.freeze({
  * - `blog`      a blog verb (blog-commands.cjs BLOG_VERBS): main routes it to
  *               runBlogCommand, which speaks to the gateway's blog_* MCP tools.
  *               NO verb publishes: `publish` opens the Veil editor for a human.
+ * - `browser`   an Aither Browser verb (browser-window.cjs browserCommand): main hands it
+ *               the verb and the typed argument. It opens the browser when it is closed
+ *               and acts on the OWNER's active tab, never an agent's.
  * - `prompt`    `{ placeholder }` -- the command needs ONE typed argument (a title,
  *               a slug). Only the palette has a text field, so a prompt command
  *               may name no other surface (`conformance()` refuses), and it still
@@ -668,6 +672,143 @@ const COMMANDS = Object.freeze([
   Object.freeze({
     id: "browser.open", label: "Aither Browser…", group: "go", icon: "globe",
     surfaces: ["palette", "beads", "jumplist"],
+  }),
+  // ── the browser's own capabilities (owner, 2026-11-13: "and integrate with the
+  // Alt+Space hot key and whatnot?"). Tabs, the library pages, passwords, import, sync,
+  // ad blocking and the page tools lived only in the browser's toolbar, its ⋯ menu and
+  // its keys. DATA rows: `browser` is the verb browser-window.browserCommand runs, so a
+  // new one is a record here and a case there. Every one raises the browser when it is
+  // closed and acts on the OWNER's active tab -- never on a tab an agent opened.
+  // Alt+Space lists the rows without a `prompt`; the ones that take text have a typed
+  // verb there instead (browser-verbs.cjs: go, search, private, history, bookmark, tab,
+  // find, extension).
+  Object.freeze({
+    id: "browser.tab.new", label: "Browser: new tab", menuLabel: "New tab", group: "browser",
+    browser: "new-tab", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "browser.tab.private", label: "Browser: new InPrivate tab", menuLabel: "New InPrivate tab", group: "browser",
+    browser: "inprivate", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "browser.tab.reopen", label: "Browser: reopen closed tab", menuLabel: "Reopen closed tab", group: "browser",
+    browser: "reopen-closed", surfaces: ["tray", "palette"],
+    enabled: (ctx = {}) => !ctx.browser || ctx.browser.closedTabs > 0,
+  }),
+  Object.freeze({
+    id: "browser.tab.switch", label: "Browser: switch to an open tab…", group: "browser", browser: "tab",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Words from the tab's title or address" }),
+    whySingle: "Needs the tab named (only the palette has a text field); the tab strip is the mouse path and Alt+Space `tab <words>` lists the matches.",
+  }),
+  Object.freeze({
+    id: "browser.go", label: "Browser: open an address…", group: "browser", browser: "go",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "example.com, https://… or aither://page" }),
+    whySingle: "Needs an address typed; the browser's address bar is the mouse path and Alt+Space takes a bare address or `go <address>`.",
+  }),
+  Object.freeze({
+    id: "browser.search", label: "Browser: search the web…", group: "browser", browser: "search",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Words to search for" }),
+    whySingle: "Needs the words typed; the address bar searches plain words and Alt+Space `search <words>` is its other door.",
+  }),
+  Object.freeze({
+    id: "browser.history", label: "Browser: history", menuLabel: "History", group: "browser",
+    browser: "history", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "browser.bookmarks", label: "Browser: bookmarks", menuLabel: "Bookmarks", group: "browser",
+    browser: "bookmarks", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "browser.bookmark-page", group: "browser", browser: "bookmark", surfaces: ["palette"],
+    whySingle: "Acts on the page in the owner's active tab: the star in the browser's toolbar is its button; the palette and Alt+Space `bookmark` are its keyboard paths.",
+    label: (ctx = {}) => (ctx.browser && ctx.browser.bookmarked ? "Browser: remove this page's bookmark" : "Browser: bookmark this page"),
+  }),
+  Object.freeze({
+    id: "browser.downloads", label: "Browser: downloads", menuLabel: "Downloads", group: "browser",
+    browser: "downloads", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "browser.permissions", label: "Browser: site permissions", menuLabel: "Site permissions", group: "browser",
+    browser: "permissions", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "browser.clear-data", label: "Browser: clear browsing data…", menuLabel: "Clear browsing data…", group: "browser",
+    browser: "clear-data", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "browser.passwords", label: "Browser: saved passwords…", menuLabel: "Saved passwords…", group: "browser",
+    browser: "passwords", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "browser.import.edge", label: "Browser: import bookmarks and history from Edge…", menuLabel: "Import from Edge…",
+    group: "browser", browser: "import-edge", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "browser.import.passwords", label: "Browser: import passwords from a CSV…", menuLabel: "Import passwords from a CSV…",
+    group: "browser", browser: "import-passwords", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
+    id: "browser.default", label: "Make Aither your default browser…", menuLabel: "Make Aither the default browser…",
+    group: "browser", browser: "default", surfaces: ["tray", "palette"],
+    // Windows' default-apps registration (browser-default.cjs). `{}` (Alt+Space's own
+    // listing) has no platform in hand, so the row shows and the command answers.
+    when: (ctx = {}) => !ctx.platform || ctx.platform === "win32",
+  }),
+  // The two switches SAY which way a click goes once the browser has been opened this
+  // run (ctx.browser, browser-window.commandFacts); before that nobody has read the
+  // setting, so the label names both directions rather than guess one.
+  Object.freeze({
+    id: "browser.sync", group: "browser", browser: "sync", surfaces: ["tray", "palette"],
+    label: (ctx = {}) => {
+      const on = ctx.browser ? ctx.browser.syncOn : null;
+      return on === true ? "Browser sync: turn off" : on === false ? "Browser sync: turn on" : "Browser sync: turn on or off";
+    },
+    menuLabel: (ctx = {}) => {
+      const on = ctx.browser ? ctx.browser.syncOn : null;
+      return on === true ? "Turn sync off" : on === false ? "Turn sync on" : "Sync on or off";
+    },
+  }),
+  Object.freeze({
+    id: "browser.ads.all", group: "browser", browser: "ads-all", surfaces: ["tray", "palette"],
+    label: (ctx = {}) => {
+      const on = ctx.browser ? ctx.browser.adsOn : null;
+      return on === true ? "Ad blocking: pause everywhere" : on === false ? "Ad blocking: resume everywhere" : "Ad blocking: pause or resume everywhere";
+    },
+    menuLabel: (ctx = {}) => {
+      const on = ctx.browser ? ctx.browser.adsOn : null;
+      return on === true ? "Pause ad blocking everywhere" : on === false ? "Resume ad blocking everywhere" : "Ad blocking: pause or resume everywhere";
+    },
+  }),
+  Object.freeze({
+    id: "browser.ads.site", group: "browser", browser: "ads-site", surfaces: ["palette"],
+    whySingle: "Acts on the site in the owner's active tab: the shield in the browser's toolbar is its menu; the palette and Alt+Space are its keyboard paths.",
+    label: (ctx = {}) => {
+      const b = ctx.browser || {};
+      if (b.siteAllowed === true) return `Ad blocking: resume on ${b.host || "this site"}`;
+      if (b.siteAllowed === false) return `Ad blocking: pause on ${b.host || "this site"}`;
+      return "Ad blocking: pause or resume on this site";
+    },
+  }),
+  Object.freeze({
+    id: "browser.translate", label: "Browser: translate this page", group: "browser", browser: "translate", surfaces: ["palette"],
+    whySingle: "Acts on the page in the owner's active tab: the browser's ⋯ menu and the translate offer are its mouse paths; the palette and Alt+Space are its keyboard paths.",
+  }),
+  Object.freeze({
+    id: "browser.find", label: "Browser: find on this page", group: "browser", browser: "find", surfaces: ["palette"],
+    whySingle: "Acts on the page in the owner's active tab: Ctrl+F and the ⋯ menu inside the browser are its other paths; Alt+Space `find <words>` carries the words.",
+  }),
+  Object.freeze({
+    id: "browser.print", label: "Browser: print this page…", group: "browser", browser: "print", surfaces: ["palette"],
+    whySingle: "Acts on the page in the owner's active tab: Ctrl+P and the ⋯ menu inside the browser are its other paths.",
+  }),
+  Object.freeze({
+    id: "browser.open-edge", label: "Browser: open this page in Edge", group: "browser", browser: "open-edge", surfaces: ["palette"],
+    whySingle: "Acts on the page in the owner's active tab: the ⋯ menu inside the browser is its mouse path.",
+  }),
+  Object.freeze({
+    id: "browser.extension.add", label: "Browser: add an extension from a store address…", group: "browser", browser: "extension",
+    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "A Chrome Web Store or Edge Add-ons page address (empty = the page on screen)" }),
+    whySingle: "Needs a store page's address typed; on a store page the ⋯ menu's Extensions ▸ Add this extension is the mouse path, and Alt+Space `extension <address>` is its other door.",
   }),
   // ── the browser's layout and the pin canvas (owner, 2026-11-07: "resize and
   // detach/reattach, reorganize and rearrange, and have access to a canvas for pinning
@@ -1561,6 +1702,22 @@ const OSAPP_BROWSER_TAB = Object.freeze({
   passkeys: "https://app.aitherium.com/settings/passkeys",
 });
 
+// AITHEROS APPS vs HOST OS APPS (owner 2026-11-13). Alt+Space lists the rows that OPEN
+// an Aither app in their own "AitherOS apps" group, apart from the host's Start-menu
+// apps (universal-search.cjs aitherAppsProvider). Every `osApp` row is one; these are
+// the desk's OWN app windows. A toggle, a setting or a one-shot verb is a desk action
+// and does not belong here. command-registry.test.cjs asserts each id is a palette row.
+const AITHER_APP_IDS = Object.freeze(new Set([
+  "console.open", "inbox.open", "missioncontrol.open", "browser.open", "files.open", "strata.open",
+  "notebooks.open", "terminal.open", "disk.open", "system.open", "localai.open", "darkmatter.open",
+  "hearth.open", "canvas.open", "fleet.open", "boards.open",
+]));
+
+/** Does this command open an AitherOS app (an `osApp`, or one of the desk's app windows)? */
+function isAitherApp(command) {
+  return Boolean(command && (command.osApp || AITHER_APP_IDS.has(command.id)));
+}
+
 /** The browser-tab URL for an osApp, or null when it opens the desktop shell. */
 function osAppTabUrl(osApp) {
   return OSAPP_BROWSER_TAB[String(osApp || "")] || null;
@@ -1568,6 +1725,6 @@ function osAppTabUrl(osApp) {
 
 module.exports = {
   SURFACES, GROUPS, LAYOUT, COMMANDS, commandsFor, groupFor, paletteRows, rowsFor, byId, labelOf,
-  buildMenu, conformance, shortcuts, electronAccel, accelFor, appliesTo, osAppTabUrl,
+  buildMenu, conformance, shortcuts, electronAccel, accelFor, appliesTo, osAppTabUrl, AITHER_APP_IDS, isAitherApp,
   bindingConflicts, shortcutSheet, shortcutSheetText,
 };

@@ -343,7 +343,39 @@ opened nothing, Ctrl+J did nothing, a bookmark could be starred and never listed
     synced copy can return from the store); a rename or a move to
     another folder stays on this computer (the store keeps a bookmark's first title and no folder).
 
-## Part five: the managed browser (zero trust, 2026-11-13)
+## Part five: the browser from the desk's own command surfaces (owner, 2026-11-13)
+
+"And integrate with the Alt+Space hot key and whatnot?" Everything in part four lived in the
+browser's toolbar, its more-menu and its keys. It is now in the command registry too
+(`electron/command-registry.cjs`, group `browser`, 24 rows whose `browser` field is the verb
+`browser-window.browserCommand` runs), so it is on the palette, listed in Alt+Space, and the
+tray has ONE `Browser` submenu for the rows that are not about the page on screen.
+
+Typed in Alt+Space (`electron/browser-verbs.cjs`, wired in `launcher-window.cjs`):
+
+| you type | what Enter does |
+|---|---|
+| `example.com`, `https://...`, `go <address>` | opens it in a new tab of yours |
+| `search <words>` | a web search in the browser (`aither://search`) |
+| `private <address>` | opens it InPrivate; bare `private` is a new InPrivate tab |
+| `history <words>` | pages YOU visited that match (8 at most); Enter opens one |
+| `bookmark <words>` / `bookmarks <words>` | your matching bookmarks; bare `bookmark` bookmarks this page |
+| `tab <words>` | switches to your open tab that matches; bare `tabs` lists them |
+| `find <words>` | find on the page in your active tab, with the find bar open on those words |
+| `extension <store address>` | adds a Chrome Web Store / Edge Add-ons extension, after the confirm |
+
+Rules every one of them keeps (`command-registry.test.cjs`, `browser-parity-smoke.cjs`):
+
+- It opens the browser when it is closed and brings it forward when it is not.
+- It acts for the owner. A page verb (find, print, translate, bookmark, open in Edge, pause
+  ads here) is refused while an agent's tab is on screen; it never runs on the agent's page.
+- The lists are the owner's: no visit an agent made, no agent tab, no InPrivate tab (InPrivate
+  pages are never recorded in the first place).
+- Over `POST /commands/run` (another program) the sync switch, the two ad-blocking switches
+  and the Edge import are refused: they change what this browser keeps or sends.
+- `?` is still Ask Aither and `!private` is still the hidden-results reveal.
+
+## Part six: the managed browser (zero trust, 2026-11-13)
 
 A workspace names its apps; the browser enforces a policy the workspace signed on those
 origins and nowhere else. Design, schema and the list of what is not closed:

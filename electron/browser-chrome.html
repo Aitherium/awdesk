@@ -368,9 +368,9 @@
   $("pwkey").onclick = () => api.passwords();
   $("shield").onclick = () => api.shield();
   $("zoombadge").onclick = () => api.action("zoom-reset");
-  const openFind = (text) => {
+  const openFind = (text, replace) => {
     $("findbar").hidden = false;
-    if (text && !$("find").value) $("find").value = text;
+    if (text && (replace || !$("find").value)) $("find").value = text;
     $("find").focus();
     $("find").select();
   };

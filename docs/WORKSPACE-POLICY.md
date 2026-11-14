@@ -105,7 +105,10 @@ Rules are keyed on the page's **origin**, in every tab, whoever opened it.
 | `devtools` | F12 / Ctrl+Shift+I/J/C, Inspect; developer tools opened any other way are closed again |
 
 Each block shows one short notice in the toolbar naming the workspace policy, and writes
-one audit row.
+one audit row. The desk's own commands (the palette, the tray's Browser menu, Alt+Space:
+`browserCommand`) go through the same gate: `print` and `translate` answer with the reason
+instead of `ok`, and "Open in Edge" is refused for every governed origin, because the app
+would leave the managed browser.
 
 Also, for every governed origin:
 

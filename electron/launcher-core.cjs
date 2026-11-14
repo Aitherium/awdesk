@@ -40,10 +40,139 @@ const DEAD_ZONE_PX = 36;
 /** Rows shown per group before "+N more". Same number the search page uses. */
 const CAP = 5;
 
-/** The one-line status when there is no query yet (what is indexed). */
-const IDLE_STATUS = "Indexed: apps, files, desk actions, screenshots, clipboard, agents and the web — type to search";
+/**
+ * Every source the box searches, as the idle line names it. One entry per provider
+ * id (universal-search.cjs GROUPS, the launcher's "web", command-center.cjs GROUPS):
+ * launcher-core.test.cjs fails when a provider is registered that this line leaves out.
+ */
+const SOURCES = Object.freeze([
+  Object.freeze({ id: "osapps", name: "AitherOS apps" }),
+  Object.freeze({ id: "apps", name: "PC apps" }),
+  Object.freeze({ id: "files", name: "files" }),
+  Object.freeze({ id: "actions", name: "desk actions" }),
+  Object.freeze({ id: "agents", name: "agents, tools, skills" }),
+  Object.freeze({ id: "cc-agents", name: "runs" }),
+  Object.freeze({ id: "cc-work", name: "work" }),
+  Object.freeze({ id: "cc-knowledge", name: "knowledge & memory" }),
+  Object.freeze({ id: "cc-time", name: "calendar" }),
+  Object.freeze({ id: "cc-people", name: "people" }),
+  Object.freeze({ id: "clipboard", name: "clipboard" }),
+  Object.freeze({ id: "screenshots", name: "screenshots" }),
+  Object.freeze({ id: "web", name: "the web" }),
+]);
+
+/** The one-line status when there is no query yet: every source, then how to narrow. */
+const IDLE_STATUS = `Searches ${SOURCES.map((s) => s.name).join(", ")} · narrow: app, file, agent, tool, skill, mem, web · > run · ? ask · @ spirit`;
 
 const PREFIXES = Object.freeze({ ">": "command", "?": "ask", "@": "spirit" });
+
+/**
+ * SCOPE WORDS (owner 2026-11-13: "file search / app search / ... / context search /
+ * tools / skills"). A first word that narrows the ONE box to one kind of thing, the
+ * same shape as the desk's verbs (desk-verbs.cjs): `tool git`, `skill review`,
+ * `file invoice`, `app notepad`, `mem roadmap`, `web aitherium`.
+ *
+ *   only     the provider ids the run is narrowed to (universal-search.cjs runProviders)
+ *   domains  for the discover provider: which of agents/tools/skills it keeps
+ *
+ * A scope word ALONE is an ordinary search ("agents" still lists the fleet, "memory"
+ * the company brain); it only narrows with words after it. `>`, `?`, `@` and `!` are
+ * never scopes.
+ */
+const SCOPES = Object.freeze({
+  app: Object.freeze({ id: "app", label: "Apps", only: Object.freeze(["osapps", "apps"]) }),
+  file: Object.freeze({ id: "file", label: "Files", only: Object.freeze(["files"]) }),
+  agent: Object.freeze({ id: "agent", label: "Agents", only: Object.freeze(["agents", "cc-agents"]), domains: Object.freeze(["agents"]) }),
+  tool: Object.freeze({ id: "tool", label: "Tools", only: Object.freeze(["agents"]), domains: Object.freeze(["tools"]) }),
+  skill: Object.freeze({ id: "skill", label: "Skills", only: Object.freeze(["agents"]), domains: Object.freeze(["skills"]) }),
+  mem: Object.freeze({ id: "mem", label: "Knowledge & memory", only: Object.freeze(["cc-knowledge"]) }),
+  web: Object.freeze({ id: "web", label: "Web", only: Object.freeze(["web"]) }),
+  action: Object.freeze({ id: "action", label: "Desk actions", only: Object.freeze(["actions"]) }),
+});
+const SCOPE_WORDS = Object.freeze({
+  app: "app", apps: "app",
+  file: "file", files: "file",
+  agent: "agent", agents: "agent",
+  tool: "tool", tools: "tool",
+  skill: "skill", skills: "skill",
+  mem: "mem", memory: "mem", context: "mem", knowledge: "mem",
+  web: "web",
+  action: "action", actions: "action",
+});
+
+/**
+ * The scope in a launcher query, or null when the text is an ordinary search.
+ * @param {string} text
+ * @returns {null | {id: string, label: string, only: string[], domains?: string[], word: string, term: string}}
+ */
+function parseScope(text) {
+  const raw = String(text == null ? "" : text).trim();
+  if (!raw || /^[>?@!]/.test(raw)) return null;
+  const m = /^(\S+)\s+([\s\S]+)$/.exec(raw);
+  if (!m) return null;
+  const word = m[1].toLowerCase();
+  const id = SCOPE_WORDS[word];
+  const term = m[2].replace(/\s+/g, " ").trim();
+  if (!id || !term) return null;
+  return { ...SCOPES[id], word: m[1], term };
+}
+
+/** What to do about a source's failure, from its reason. "" when the reason already says. */
+function remedyFor(reason) {
+  const r = String(reason || "");
+  if (/—|run `|rebuild|install|add a folder/i.test(r)) return "";
+  if (/\b(401|403)\b|authentication required|not signed in|unauthori[sz]ed/i.test(r)) return "sign in (AitherOS Online: sign in…)";
+  if (/ECONNREFUSED|ECONNRESET|ENOTFOUND|fetch failed|socket hang up|gateway|\b50[234]\b/i.test(r)) {
+    return "the AitherOS gateway (127.0.0.1:8182) is not answering; start the fleet, then search again";
+  }
+  if (/took over|took too long|timed out|timeout/i.test(r)) return "this PC is busy; search again";
+  if (/ENOENT|not installed|not on (this )?PATH/i.test(r)) return "install it, then search again";
+  return "";
+}
+
+/**
+ * The sources that did NOT answer, as rows (never a silent empty group). `errors` are
+ * providers that returned nothing at all; `notes` are providers that answered PARTLY
+ * (memory timed out but plans listed; Windows Search fell back to the bounded walk).
+ * A row's subtitle is the reason plus its remedy; Enter repeats it in the status line.
+ *
+ * @param {{group: string, label: string, reason: string}[]} errors
+ * @param {{group: string, label: string, note: string}[]} notes
+ * @returns {null | {id: string, label: string, total: number, items: object[]}}
+ */
+function issuesGroup(errors, notes) {
+  const items = [];
+  const add = (group, label, why, partial) => {
+    const reason = String(why || "no answer").replace(/\s+/g, " ").trim();
+    if (!reason || /superseded by a newer search/.test(reason)) return;
+    const fix = remedyFor(reason);
+    items.push({
+      key: `issue:${String(group || label || items.length)}`, kind: "down",
+      title: partial ? `${label || group} answered only in part` : `${label || group} did not answer`,
+      subtitle: `${reason}${fix ? ` — ${fix}` : ""}`.slice(0, 300),
+    });
+  };
+  for (const e of Array.isArray(errors) ? errors : []) add(e && e.group, e && e.label, e && e.reason, false);
+  for (const n of Array.isArray(notes) ? notes : []) {
+    // "still loading" is a source warming up, not one that is down.
+    const live = String((n && n.note) || "").split(/;\s*/).filter((part) => part && !/still loading/.test(part)).join("; ");
+    if (live) add(n && n.group, n && n.label, live, true);
+  }
+  if (!items.length) return null;
+  return { id: "issues", label: "Not answering", total: items.length, items };
+}
+
+/**
+ * The fall-through row: whatever was typed can always go to Aither (the last group, so
+ * Enter reaches it by itself only when nothing else matched).
+ */
+function askGroup(term) {
+  const t = String(term == null ? "" : term).replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  const shown = t.length > 80 ? `${t.slice(0, 79)}…` : t;
+  return { id: "ask", label: "Ask Aither", total: 1,
+    items: [{ key: "ask:query", kind: "ask", title: `Ask Aither: ${shown}`, subtitle: "Sends this to Aither chat · the same as starting with ?" }] };
+}
 
 /**
  * awsh verbs that cannot change anything, so they run on the FIRST Enter.
@@ -132,6 +261,11 @@ function parseQuery(text) {
   const first = raw.slice(0, 1);
   const mode = PREFIXES[first] || "all";
   return { mode, term: mode === "all" ? raw : raw.slice(1).trim(), raw };
+}
+
+/** The chip for a scoped search ("Files only"). */
+function scopeChip(scope) {
+  return scope && scope.label ? `${scope.label} only` : "";
 }
 
 /** The prefix's chip text. */
@@ -240,11 +374,11 @@ function statusText({ groups = [], errors = [], indexing = false, total = null }
     : groups.reduce((n, g) => n + (Number(g.total) || 0), 0);
   if (!count && !groups.length) return IDLE_STATUS;
   return `${count} result${count === 1 ? "" : "s"} in ${groups.length} group${groups.length === 1 ? "" : "s"}`
-    + (indexing ? " · still searching files, agents and the web" : "");
+    + (indexing ? " · still searching files, agents, tools, skills, knowledge and the web" : "");
 }
 
 module.exports = {
-  CAP, DEAD_ZONE_PX, HOLD_MS, HOLD_GRACE_MS, IDLE_STATUS, PREFIXES, READONLY_AWSH, REPEAT_GAP_MS,
-  capGroups, classifyRelease, commandPlan, flattenGroups, normalizeAngle, parseQuery, prefixLabel,
+  CAP, DEAD_ZONE_PX, HOLD_MS, HOLD_GRACE_MS, IDLE_STATUS, PREFIXES, READONLY_AWSH, REPEAT_GAP_MS, SCOPES, SCOPE_WORDS, SOURCES,
+  askGroup, issuesGroup, parseScope, remedyFor, scopeChip, capGroups, classifyRelease, commandPlan, flattenGroups, normalizeAngle, parseQuery, prefixLabel,
   pressDecision, sliceAngle, sliceIndexAt, splitArgs, statusText, topRow,
 };

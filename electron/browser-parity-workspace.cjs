@@ -79,7 +79,7 @@ async function run({ bw, base, expect, until, sleep, userData }) {
   const app = await startPrivateApp();
   const { publicKey, privateKey } = nodeCrypto.generateKeyPairSync("ed25519");
   const sign = (over = {}) => P.signPolicy({ v: 1, tenant_id: TENANT, serial: 3, not_after: "2099-01-01T00:00:00Z",
-    apps: [{ origin: ORIGIN, private: { host: "127.0.0.1", port: app.port }, deny: ["copy", "print", "download", "devtools"], watermark: true, audit: true }],
+    apps: [{ origin: ORIGIN, private: { host: "127.0.0.1", port: app.port }, deny: ["copy", "print", "download", "capture", "devtools"], watermark: true, audit: true }],
     ...over }, privateKey);
   const policyFile = path.join(userData, P.POLICY_FILE);
   const image = clipboard.readImage();
@@ -161,6 +161,23 @@ async function run({ bw, base, expect, until, sleep, userData }) {
   const printed = bw.runBrowserAction("print", undefined, tab.id);
   expect("workspace: printing is blocked, with exactly one audit row", printed === true && rows(ws, "print").length === 1
     && (bw.__noticeForTest(tab.id) || {}).text === `Printing is turned off on ${HOST} by your workspace policy.`, { rows: rows(ws, "print"), notice: bw.__noticeForTest(tab.id) });
+
+  // The same from OUTSIDE the browser (the palette, the tray, Alt+Space: browserCommand):
+  // print and translate say why not instead of answering ok, and nothing is printed or sent to a model.
+  await sleep(800);
+  const sent = [];
+  bw.__setTranslateBackendsForTest([{ id: "fake", label: "the smoke's fake model", ask: async (prompt) => { sent.push(prompt); return "[]"; } }]);
+  const cmdPrint = await bw.browserCommand("print");
+  const cmdTranslate = await bw.browserCommand("translate");
+  const cmdEdge = await bw.browserCommand("open-edge");
+  await sleep(300);
+  expect("workspace: the desk's print command is refused on the app, with one more audit row", cmdPrint.ok === false && /workspace policy/.test(cmdPrint.error)
+    && rows(ws, "print").length === 2, { cmdPrint, rows: rows(ws, "print").length });
+  expect("workspace: the desk's translate command is refused on the app and nothing reaches a model", cmdTranslate.ok === false
+    && /workspace policy/.test(cmdTranslate.error) && rows(ws, "capture").length === 1 && sent.length === 0, { cmdTranslate, rows: rows(ws, "capture"), sent: sent.length });
+  expect("workspace: the desk's open-in-Edge command does not take the app out of this browser", cmdEdge.ok === false
+    && (/workspace policy/.test(cmdEdge.error) || /not installed/.test(cmdEdge.error)), cmdEdge);
+  await bw.noticeAction("dismiss");
 
   // ------------------------------------------------------------------ download
   const shelfBefore = bw.getDownloads().list().length;

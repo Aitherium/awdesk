@@ -18,6 +18,10 @@
  * page is offered for translation and translated (by a fake model here, so the run
  * needs no model; AWDESK_TRANSLATE_LIVE=1 adds a real one and prints what it wrote).
  *
+ * Alt+Space (2026-11-13): with the browser closed, an address typed into the real
+ * launcher opens it in an owner tab; `history <word>` returns that visit, `tab <word>`
+ * switches to it, `find <words>` finds on it; and with an agent's tab on screen a desk
+ * browser command is refused.
  * Own entry point: a temp userData (never the owner's profile), no tray.
  * Exit 0 all pass, 1 a check failed, 2 the run itself broke, 3 it hung.
  */
@@ -134,8 +138,66 @@ app.whenReady().then(async () => {
   const page = () => bw.__pageForTest(active());
   const loaded = (wc, suffix) => until(() => wc && !wc.isLoading() && wc.getURL().includes(suffix));
 
+  // Alt+Space (launcher-window.cjs + browser-verbs.cjs): the real launcher and the real
+  // registry, with the route main gives a `browser` row. The browser is CLOSED here: a
+  // typed address must open it, on that address, in a tab of the owner's.
+  const registry = require("./command-registry.cjs");
+  const launcher = require("./launcher-window.cjs").createLauncher({
+    electron: require("electron"), registry,
+    quickMenu: { openRadial: () => ({ ok: false }), releaseSelection: () => ({ ok: true }) },
+    run: (id, arg) => {
+      const command = registry.byId(id);
+      return command && command.browser ? bw.browserCommand(command.browser, arg, { surface: "launcher" })
+        : { ok: false, error: `not a browser row: ${id}` };
+    },
+    browser: { history: (w, n) => bw.ownerHistory(w, n), bookmarks: (w, n) => bw.ownerBookmarks(w, n), tabs: () => bw.ownerTabs() },
+  });
+  const shownRows = (answer) => ((answer && answer.groups && answer.groups[0]) || { shown: [] }).shown;
+  const typed = `${base}/done?via=altspace`;
+  expect("the browser is closed before Alt+Space is used", bw.isBrowserWindowOpen() === false, null);
+  const typedOffer = await launcher.search(typed);
+  const openRow = shownRows(typedOffer)[0];
+  expect("a typed address in Alt+Space offers to open it", Boolean(openRow) && openRow.title === `Open ${typed}`, typedOffer);
+  const ranOpen = openRow ? await launcher.runRow(openRow.key, "") : null;
+  const launched = await until(() => { const p = page(); return p && !p.isLoading() && p.getURL() === typed ? p : null; });
+  const launchedTab = active();
+  expect("Enter opens the closed browser on that address, in a tab of the owner's", Boolean(ranOpen && ranOpen.ok) && bw.isBrowserWindowOpen()
+    && Boolean(launched) && (bw.getTabs().get(launchedTab) || {}).by === "you",
+  { ranOpen, open: bw.isBrowserWindowOpen(), url: page() && page().getURL(), tab: bw.getTabs().get(launchedTab) });
+
   bw.createBrowserWindow({ url: `${base}/find`, home: false });
   await loaded(await until(page), "/find");
+
+  // `history <word>` returns the page just visited, from the owner's library; `tab <word>`
+  // switches to its tab; `find <words>` runs find-on-page there. Then the tab is closed
+  // and its visit forgotten, so the checks below start from the page they always did.
+  const histAnswer = await until(async () => {
+    const answer = await launcher.search("history altspace");
+    return shownRows(answer).some((row) => row.kind === "history") ? answer : null;
+  }, 15000);
+  expect("`history <word>` in Alt+Space returns the visited page", Boolean(histAnswer) && shownRows(histAnswer)[0].kind === "history"
+    && shownRows(histAnswer)[0].subtitle === typed && /^1 page from your history/.test(histAnswer.status),
+  histAnswer || { history: bw.getLibrary().history(20).map((h) => [h.url, h.by]) });
+  const tabAnswer = await launcher.search("tab altspace");
+  const tabRow = shownRows(tabAnswer)[0];
+  const switched = tabRow ? await launcher.runRow(tabRow.key, "") : null;
+  expect("`tab <word>` in Alt+Space switches to the matching tab", Boolean(switched && switched.ok) && active() === launchedTab,
+    { tabAnswer, switched, active: active(), launchedTab });
+  const findAnswer = await launcher.search("find signed in");
+  const findRow = shownRows(findAnswer)[0];
+  const foundRan = findRow ? await launcher.runRow(findRow.key, "") : null;
+  const foundState = await until(() => { const f = bw.getState().find; return f && f.text === "signed in" && f.matches === 1 ? f : null; }, 8000);
+  expect("`find <words>` in Alt+Space finds them on the page in the owner's tab", Boolean(foundRan && foundRan.ok) && Boolean(foundState),
+    { foundRan, find: bw.getState().find });
+  // The toolbar's find bar opened ON those words; its own close button puts it away again.
+  const chromeJs = (code) => bw.getWindow().webContents.executeJavaScript(code, true);
+  const barUp = await until(() => chromeJs("!document.getElementById('findbar').hidden && document.getElementById('find').value === 'signed in'"), 8000);
+  expect("the browser's find bar opens on the words typed in Alt+Space", Boolean(barUp), await chromeJs("document.getElementById('find').value"));
+  await chromeJs("document.getElementById('findclose').click()");
+  await until(() => !bw.getState().find, 5000);
+  bw.runBrowserAction("close-tab");
+  await until(() => { const p = page(); return p && p.getURL().includes("/find"); });
+  bw.getLibrary().removeHistory(typed);
 
   // Keys: Ctrl+T opens a tab, Ctrl+W closes it, Ctrl+Shift+T brings back a closed page.
   const before = bw.getTabs().snapshot().tabs.length;
@@ -569,6 +631,15 @@ app.whenReady().then(async () => {
     expect("an agent tab is denied with no prompt", agentAnswer === "denied" && !bw.__noticeForTest(agentTab.tab),
       { agentAnswer, notice: bw.__noticeForTest(agentTab.tab) });
     expect("an agent tab reads the permission as not granted", (await js(agentWc, "Notification.permission")) !== "granted", null);
+    // The desk's browser commands (Alt+Space, the palette, the tray) are the OWNER's: with
+    // the agent's tab on screen a page verb is refused and nothing is done to that page.
+    const onAgent = active() === agentTab.tab;
+    const refusedFind = bw.browserCommand("find", "asks");
+    const refusedMark = bw.browserCommand("bookmark");
+    expect("a desk browser command never acts on an agent's tab", onAgent && refusedFind.ok === false && /agent's/.test(refusedFind.error)
+      && refusedMark.ok === false && !bw.getLibrary().isBookmarked(agentWc.getURL()) && !bw.getState().find,
+    { onAgent, refusedFind, refusedMark, find: bw.getState().find });
+    expect("Alt+Space's tab list leaves the agent's tab out", !bw.ownerTabs().some((t) => t.id === agentTab.tab), bw.ownerTabs());
     bw.runBrowserAction("close-tab");
   } else {
     expect("an agent tab opens for the permission check", false, agentTab);
