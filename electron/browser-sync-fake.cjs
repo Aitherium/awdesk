@@ -93,6 +93,8 @@ function startFakeStore({ tokens = { "test-token": "owner" } } = {}) {
       origin: `http://127.0.0.1:${server.address().port}`,
       users,
       stats,
+      /** The user a bearer names, or null: what the platform reads from the verified token. */
+      who: (bearer) => tokens[bearer] || null,
       /** The next authenticated request answers this status (a store outage). */
       failNext: (status) => { fail = status; },
       /** Another app wrote to the same user between a pull and a push. */

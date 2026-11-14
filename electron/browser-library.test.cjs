@@ -103,3 +103,27 @@ test("applySync adds and removes bookmarks, merges newer history as the owner's,
   assert.equal(createLibrary({ file }).bookmarks().length, 2);
   assert.deepEqual(lib.applySync({}), { bookmarksAdded: 0, bookmarksRemoved: 0, history: 0 });
 });
+
+test("the file's generation id survives a restart and changes only when the file is lost or reset", () => {
+  const file = tmpFile();
+  const lib = createLibrary({ file });
+  const id = lib.generation();
+  assert.match(id, /^[a-f0-9]{16}$/);
+  assert.equal(fs.existsSync(file), false, "an unused library wrote a file");
+  lib.toggleBookmark("https://a.test/", "A");
+  assert.equal(createLibrary({ file }).generation(), id);
+  // A good file from before the id existed gets one, on disk, once.
+  fs.writeFileSync(file, JSON.stringify({ version: 1, history: [], bookmarks: [{ url: "https://old.test/", title: "Old", at: 1 }] }));
+  const stamped = createLibrary({ file }).generation();
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).id, stamped);
+  assert.equal(createLibrary({ file }).generation(), stamped);
+  assert.equal(createLibrary({ file }).bookmarks().length, 1);
+  // Truncated, or from another version: a new generation, and the file is left as it is until used.
+  for (const broken of ["{\"version\":1,\"book", JSON.stringify({ version: 99, id: stamped, bookmarks: [] })]) {
+    fs.writeFileSync(file, broken);
+    const reset = createLibrary({ file });
+    assert.notEqual(reset.generation(), stamped);
+    assert.equal(reset.bookmarks().length, 0);
+    assert.equal(fs.readFileSync(file, "utf8"), broken);
+  }
+});

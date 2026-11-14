@@ -26,10 +26,18 @@ function device(store, name, { token = "test-token" } = {}) {
   d.library = createLibrary({ file: path.join(dir, "browser-library.json"), now: () => clock.t });
   d.make = () => sync.createBrowserSync({
     file: path.join(dir, "browser-sync.json"), library: d.library, tabs: () => d.tabs, deviceName: name, now: () => clock.t,
-    transport: sync.createPrefsTransport({ origin: () => store.origin, token: () => d.token,
+    // The account is the bearer's user, as the platform's is the JWT subject; a bearer the
+    // store does not know still names someone (an expired session does).
+    transport: sync.createPrefsTransport({ origin: () => store.origin, token: () => d.token, account: (bearer) => store.who(bearer) || `stranger:${bearer}`,
       fetchImpl: (url, init) => { d.calls += 1; return fetch(url, init); } }),
   });
   d.sync = d.make();
+  /** The browser was closed and opened again: the library and the sync are read from disk. */
+  d.restart = () => {
+    d.sync.stop();
+    d.library = createLibrary({ file: path.join(dir, "browser-library.json"), now: () => clock.t });
+    d.sync = d.make();
+  };
   return d;
 }
 const urls = (list) => list.map((e) => e.url).sort();
@@ -277,7 +285,7 @@ test("a write that lost the race is retried on the newer store, and both changes
     let raced = false;
     const racing = sync.createBrowserSync({
       file: path.join(a.dir, "browser-sync.json"), library: a.library, tabs: () => [], deviceName: "A", now: () => clock.t,
-      transport: sync.createPrefsTransport({ origin: () => store.origin, token: () => "test-token",
+      transport: sync.createPrefsTransport({ origin: () => store.origin, token: () => "test-token", account: (bearer) => store.who(bearer),
         fetchImpl: async (url, init) => {
           if (init.method === "PUT" && !raced) { raced = true; await b.sync.syncNow(); }
           return realFetch(url, init);
@@ -311,9 +319,9 @@ test("a store outage is a shown error, the library is untouched, and the next sy
     assert.equal((await a.sync.syncNow()).ok, true);
     assert.ok(stored(store).includes("b.test"));
     // An unreachable store never throws.
-    const dead = sync.createPrefsTransport({ origin: () => "http://127.0.0.1:9", token: () => "x", timeoutMs: 2000 });
+    const dead = sync.createPrefsTransport({ origin: () => "http://127.0.0.1:9", token: () => "x", account: () => "owner", timeoutMs: 2000 });
     assert.equal((await dead.pull()).ok, false);
-    assert.equal((await sync.createPrefsTransport({ origin: () => "http://evil.test", token: () => "x" }).pull()).reason, "no safe sync origin");
+    assert.equal((await sync.createPrefsTransport({ origin: () => "http://evil.test", token: () => "x", account: () => "owner" }).pull()).reason, "no safe sync origin");
   } finally { await store.close(); }
 });
 
@@ -414,4 +422,251 @@ test("the menu rows: the switch, the status, and the other devices' tabs", () =>
   on[2].click();
   assert.deepEqual(calls, [["toggle", true], ["open", "https://a.test/"], ["now"]]);
   assert.ok(on.some((i) => /Passwords stay on this computer/.test(i.label)));
+});
+
+// ---------------------------------------------------------------- review findings (PR #72)
+
+test("the store is the platform, never the tenant's page host", async () => {
+  const internal = require("./browser-internal.cjs");
+  const tenant = { origin: "https://garg.aitherium.com", host: "garg.aitherium.com", firstParty: true, name: "Garg" };
+  // The desk's PAGES follow the tenant...
+  assert.equal(new URL(internal.onlineUrl({}, tenant)).host, "garg.aitherium.com");
+  // ...the store does not: it has no tenant argument at all.
+  assert.equal(internal.platformOrigin(), "https://app.aitherium.com");
+  assert.equal(internal.platformOrigin.length, 0);
+  const seen = [];
+  const transport = sync.createPrefsTransport({ origin: () => internal.platformOrigin(), token: () => "bearer", account: () => "owner",
+    fetchImpl: async (url, init) => { seen.push([url, init.headers.authorization]); return new Response(JSON.stringify({ preferences: {} }), { status: 200 }); } });
+  assert.equal((await transport.pull()).ok, true);
+  assert.deepEqual(seen, [["https://app.aitherium.com/api/settings/preferences", "Bearer bearer"]]);
+  // The window's wiring uses it, and never the page host.
+  const src = fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
+  const wiring = src.slice(src.indexOf("function syncOrigin("), src.indexOf("function touchSync("));
+  assert.match(wiring, /internal\.platformOrigin\(\)/);
+  assert.doesNotMatch(wiring, /onlineUrl/);
+});
+
+test("thirty tabs with long addresses fit the store, and the bookmarks still sync", async () => {
+  const store = await startFakeStore();
+  try {
+    const a = device(store, "A");
+    a.library.toggleBookmark("https://a.test/", "A");
+    for (let i = 0; i < 30; i += 1) {
+      a.tabs.push({ by: "you", kind: "web", url: `https://portal-${i}.test/search?q=${"x".repeat(540)}`, title: "日本語".repeat(30) });
+    }
+    const st = await a.sync.setEnabled(true);
+    a.sync.stop();
+    assert.equal(st.state, "ok", st.error);
+    assert.equal(store.stats.refused, 0, "the store refused a write as too large");
+    assert.ok(stored(store).includes("https://a.test/"), "the bookmark did not reach the store");
+    const prefs = store.users.get("owner").prefs;
+    const mine = prefs[`awbrowser_dev_${st.deviceId}`];
+    assert.ok(jsonSize(mine) <= NAMESPACE_BYTES, `the device namespace is ${jsonSize(mine)} bytes`);
+    assert.ok(mine.tabs.length > 0 && mine.tabs.length < 30);
+    assert.equal(st.unsynced, 30 - mine.tabs.length, "the tabs that did not fit are counted");
+    assert.equal(mine.tabs[0].u, a.tabs[0].url, "the first tabs are the ones kept");
+    tick();
+    assert.equal((await a.sync.syncNow()).pushed, 0, "an unchanged browser wrote again");
+    const b = device(store, "B");
+    await b.sync.setEnabled(true);
+    b.sync.stop();
+    assert.equal(b.sync.otherDevices()[0].tabs.length, mine.tabs.length);
+    tick();
+    assert.equal((await a.sync.syncNow()).pushed, 0);
+  } finally { await store.close(); }
+});
+
+test("a delete leaves a full shard: it reaches the other device and the store goes quiet", async () => {
+  const store = await startFakeStore();
+  try {
+    const a = device(store, "A");
+    const entries = [];
+    for (let i = 0; i < 480; i += 1) entries.push({ url: `https://site-${i}.test/a/long/enough/path/to/fill/the/store/quickly/${"p".repeat(60)}?n=${i}`, title: `Title ${i} ${"t".repeat(60)}`, at: clock.t + i });
+    a.library.importEntries({ bookmarks: entries });
+    tick(1000);
+    const st = await a.sync.setEnabled(true);
+    a.sync.stop();
+    assert.ok(st.unsynced > 0, "the shards are not over budget, the test proves nothing");
+    const b = device(store, "B");
+    await b.sync.setEnabled(true);
+    b.sync.stop();
+    const victim = b.library.bookmarks()[0].url;
+    tick();
+    a.library.toggleBookmark(victim);
+    for (let round = 0; round < 2; round += 1) {
+      assert.equal((await a.sync.syncNow()).ok, true);
+      assert.equal((await b.sync.syncNow()).ok, true);
+      tick();
+    }
+    assert.ok(!urls(b.library.bookmarks()).includes(victim), "the delete never reached the other device");
+    assert.ok(!urls(a.library.bookmarks()).includes(victim));
+    const ra = await a.sync.syncNow();
+    const rb = await b.sync.syncNow();
+    assert.deepEqual([ra.pushed, rb.pushed], [0, 0], "both devices keep rewriting the store");
+    assert.equal(store.stats.refused, 0);
+    // The wire form itself: a tombstone outlives live items in a shard that is over budget.
+    const doc = sync.emptyDoc();
+    for (const e of entries) doc.bookmarks[sync.itemId(e.url)] = { url: e.url, title: e.title, at: e.at };
+    doc.bookmarks[sync.itemId(entries[479].url)] = { at: 5, deleted: true }; // older than every live item
+    const wire = sync.decode(sync.encode(doc).namespaces);
+    assert.equal(wire.bookmarks[sync.itemId(entries[479].url)].deleted, true);
+  } finally { await store.close(); }
+});
+
+test("a lost or truncated library file is a fresh device, not a delete of every bookmark", async () => {
+  const store = await startFakeStore();
+  try {
+    const a = device(store, "A");
+    const b = device(store, "B");
+    for (let i = 0; i < 20; i += 1) a.library.toggleBookmark(`https://keep-${i}.test/`, `Keep ${i}`);
+    await a.sync.setEnabled(true);
+    await b.sync.setEnabled(true);
+    a.sync.stop();
+    b.sync.stop();
+    assert.equal(b.library.bookmarks().length, 20);
+    const live = () => Object.values(sync.decode(store.users.get("owner").prefs).bookmarks).filter((x) => !x.deleted).length;
+
+    for (const broken of ["{\"version\":1,\"history\":[],\"bookm", JSON.stringify({ version: 99, history: [], bookmarks: [] })]) {
+      fs.writeFileSync(path.join(a.dir, "browser-library.json"), broken);
+      a.restart();
+      assert.equal(a.library.bookmarks().length, 0);
+      assert.equal(a.sync.enabled(), true);
+      tick();
+      assert.equal((await a.sync.syncNow()).ok, true);
+      tick();
+      assert.equal((await b.sync.syncNow()).ok, true);
+      assert.equal(live(), 20, "the store lost bookmarks");
+      assert.equal(b.library.bookmarks().length, 20, "a local file fault deleted the other device's bookmarks");
+      assert.equal(a.library.bookmarks().length, 20, "the store did not restore this device");
+    }
+
+    // A real delete after that still travels, and so does deleting the last one.
+    a.restart();
+    tick();
+    a.library.toggleBookmark("https://keep-3.test/");
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    assert.equal(b.library.bookmarks().length, 19);
+    tick();
+    for (const x of a.library.bookmarks()) a.library.toggleBookmark(x.url);
+    assert.equal(a.library.bookmarks().length, 0);
+    await a.sync.syncNow();
+    await b.sync.syncNow();
+    assert.equal(b.library.bookmarks().length, 0, "deleting every bookmark by hand is still a delete");
+  } finally { await store.close(); }
+});
+
+test("another account signing in sends nothing: sync turns off and asks", async () => {
+  const store = await startFakeStore({ tokens: { ta: "alice", tb: "bob" } });
+  try {
+    const desk = device(store, "Desk", { token: "ta" });
+    const bobPc = device(store, "Bob PC", { token: "tb" });
+    bobPc.library.toggleBookmark("https://bob.test/", "Bob's");
+    await bobPc.sync.setEnabled(true);
+    bobPc.sync.stop();
+    desk.library.toggleBookmark("https://alice.test/", "Alice's");
+    desk.library.visit("https://alice-history.test/", "Alice read this");
+    desk.tabs = [{ by: "you", kind: "web", url: "https://alice-tab.test/", title: "t" }];
+    assert.equal((await desk.sync.setEnabled(true)).state, "ok");
+    desk.sync.stop();
+
+    // The Online session signs in as bob. Not one request carries bob's bearer.
+    tick();
+    desk.token = "tb";
+    const calls = desk.calls;
+    const r = await desk.sync.syncNow();
+    assert.equal(r.ok, false);
+    assert.equal(desk.calls, calls, "a request went out with the other account's bearer");
+    assert.equal(desk.sync.enabled(), false);
+    assert.equal(desk.sync.status().state, "account-changed");
+    assert.match(sync.statusLine(desk.sync.status()), /different account/);
+    assert.ok(!stored(store, "bob").includes("alice"), "alice's bookmarks or history reached bob's store");
+    assert.deepEqual(urls(desk.library.bookmarks()), ["https://alice.test/"]);
+    // It stays off, and says why, after a restart; signing back in as alice changes nothing by itself.
+    desk.restart();
+    assert.equal(desk.sync.enabled(), false);
+    assert.equal(desk.sync.status().state, "account-changed");
+    desk.token = "ta";
+    assert.deepEqual(await desk.sync.syncNow(), { ok: false, reason: "off" });
+    assert.ok(!stored(store, "alice").includes("bob.test"));
+
+    // The owner ticks the switch again as bob: that is the yes. Now, and only now, they merge.
+    desk.token = "tb";
+    assert.equal((await desk.sync.setEnabled(true)).state, "ok");
+    desk.sync.stop();
+    assert.ok(stored(store, "bob").includes("alice.test"));
+    assert.deepEqual(urls(desk.library.bookmarks()), ["https://alice.test/", "https://bob.test/"]);
+    // Back to alice without asking: again nothing is sent, and alice's store never sees bob's.
+    desk.token = "ta";
+    tick();
+    assert.equal((await desk.sync.syncNow()).ok, false);
+    assert.equal(desk.sync.enabled(), false);
+    assert.ok(!stored(store, "alice").includes("bob.test"));
+  } finally { await store.close(); }
+});
+
+test("an account that changes between the pull and the push is not written to", async () => {
+  const store = await startFakeStore({ tokens: { ta: "alice", tb: "bob" } });
+  try {
+    const desk = device(store, "Desk", { token: "ta" });
+    await desk.sync.setEnabled(true);
+    desk.sync.stop();
+    tick();
+    desk.library.toggleBookmark("https://alice-late.test/", "late");
+    let token = "ta";
+    const swapping = sync.createBrowserSync({
+      file: path.join(desk.dir, "browser-sync.json"), library: desk.library, tabs: () => [], deviceName: "Desk", now: () => clock.t,
+      transport: sync.createPrefsTransport({ origin: () => store.origin, token: () => token, account: (bearer) => store.who(bearer),
+        fetchImpl: async (url, init) => { const res = await fetch(url, init); if (init.method === "GET") token = "tb"; return res; } }),
+    });
+    const r = await swapping.syncNow();
+    assert.equal(r.ok, false);
+    assert.equal(swapping.enabled(), false);
+    assert.equal(stored(store, "bob"), "{}", "bob's store was written");
+  } finally { await store.close(); }
+});
+
+test("a bearer that names no account sends nothing", async () => {
+  let calls = 0;
+  const fetchImpl = async () => { calls += 1; return new Response("{}", { status: 200 }); };
+  const unknown = sync.createPrefsTransport({ origin: () => "https://app.aitherium.com", token: () => "opaque-token", fetchImpl });
+  assert.equal((await unknown.pull()).reason, "could not tell which account is signed in");
+  assert.equal(calls, 0);
+  // A JWT names its subject; the state keeps a hash of it, never the name.
+  const jwt = `x.${Buffer.from(JSON.stringify({ sub: "user-42" })).toString("base64url")}.y`;
+  assert.equal(sync.jwtSubject(jwt), "user-42");
+  assert.equal(sync.jwtSubject("opaque-token"), "");
+  const named = sync.createPrefsTransport({ origin: () => "https://app.aitherium.com", token: () => jwt, fetchImpl });
+  const pulled = await named.pull();
+  assert.equal(pulled.account, sync.accountKey("user-42"));
+  assert.match(pulled.account, /^[a-f0-9]{16}$/);
+  assert.equal((await named.pull(sync.accountKey("someone-else"))).reason, "account-changed");
+  assert.equal(calls, 1);
+});
+
+test("an opaque bearer is named by the identity provider, asked once per bearer", async () => {
+  const asked = [];
+  const verdicts = { "opaque-a": { state: "valid", username: "alice" }, "opaque-b": { state: "valid", username: "bob" },
+    expired: { state: "invalid", username: "" }, offline: { state: "unknown", username: "" } };
+  const who = sync.createAccountResolver({ check: async (bearer) => { asked.push(bearer); return verdicts[bearer]; } });
+  assert.equal(await who("opaque-a"), "alice");
+  assert.equal(await who("opaque-a"), "alice");
+  assert.deepEqual(asked, ["opaque-a"]);
+  assert.equal(await who("opaque-b"), "bob");
+  assert.equal(await who("offline"), "", "an unreachable provider is unknown, not a name");
+  assert.equal(await who("expired"), false);
+  assert.equal(await who(`x.${Buffer.from(JSON.stringify({ sub: "user-42" })).toString("base64url")}.y`), "user-42");
+  assert.equal(asked.length, 4, "a JWT needs no question");
+  // Through the transport: expired reads as signed out, unknown sends nothing.
+  let calls = 0;
+  const fetchImpl = async () => { calls += 1; return new Response(JSON.stringify({ preferences: {} }), { status: 200 }); };
+  let token = "expired";
+  const transport = sync.createPrefsTransport({ origin: () => "https://app.aitherium.com", token: () => token, account: who, fetchImpl });
+  assert.equal((await transport.pull()).reason, "signed-out");
+  token = "offline";
+  assert.equal((await transport.pull()).reason, "could not tell which account is signed in");
+  assert.equal(calls, 0);
+  token = "opaque-a";
+  assert.equal((await transport.pull()).account, sync.accountKey("alice"));
+  assert.equal(calls, 1);
 });

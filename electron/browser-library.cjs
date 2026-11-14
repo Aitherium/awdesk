@@ -7,12 +7,17 @@
  * atomically (tmp + rename) so a crash mid-write leaves yesterday's file, never
  * half of one. http(s) pages only; a URL with credentials is never stored.
  *
+ * The file carries a generation id, made once and kept. A file that is missing,
+ * unreadable or from another version starts a new one, so browser-sync.cjs can tell
+ * "the file was reset" from "the owner deleted every bookmark".
+ *
  * History remembers WHO visited (the owner's tab or an agent's), so the address
  * bar can suggest the owner's own pages first. No agent tool reads this file.
  */
 
 const fs = require("node:fs");
 const path = require("node:path");
+const nodeCrypto = require("node:crypto");
 
 const VERSION = 1;
 const MAX_HISTORY = 2000;
@@ -28,16 +33,23 @@ function storable(url) {
   }
 }
 
+function newId() {
+  return nodeCrypto.randomBytes(8).toString("hex");
+}
+
 function emptyData() {
-  return { version: VERSION, history: [], bookmarks: [] };
+  return { version: VERSION, id: newId(), history: [], bookmarks: [] };
 }
 
 function readFile(file) {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     if (!parsed || parsed.version !== VERSION) return emptyData();
+    const known = /^[a-f0-9]{16}$/.test(String(parsed.id || ""));
     return {
       version: VERSION,
+      id: known ? parsed.id : newId(),
+      unstamped: !known,
       history: Array.isArray(parsed.history) ? parsed.history.filter((h) => h && storable(h.url)) : [],
       bookmarks: Array.isArray(parsed.bookmarks) ? parsed.bookmarks.filter((b) => b && storable(b.url)) : [],
     };
@@ -52,6 +64,8 @@ function readFile(file) {
 function createLibrary({ file, now = () => Date.now(), maxHistory = MAX_HISTORY } = {}) {
   if (!file) throw new Error("createLibrary needs a file");
   const data = readFile(file);
+  const unstamped = data.unstamped === true;
+  delete data.unstamped;
 
   function save() {
     try {
@@ -65,7 +79,16 @@ function createLibrary({ file, now = () => Date.now(), maxHistory = MAX_HISTORY 
     }
   }
 
+  // A good file from before the id existed gets one now, and keeps it: the id must not
+  // change at the next start. A missing or unreadable file is not written until used.
+  if (unstamped) save();
+
   return {
+    /** Which library file this is: changes only when the file was lost or reset. */
+    generation() {
+      return data.id;
+    },
+
     /** Record a finished page load. Returns false for anything not worth keeping. */
     visit(url, title = "", by = "you") {
       if (!storable(url)) return false;

@@ -212,10 +212,20 @@ away without the others moving:
     Still next: hide the avatar's own bead rail and speech bubble while it is docked.
 24. **Sync: bookmarks, history and open tabs follow the account. Desk side SHIPPED, default OFF.**
     `browser-sync.cjs`. The store is the platform's existing per-user preferences object
-    (`GET/PUT /api/settings/preferences` on the Online host, Veil in front of AitherDirectory
-    `/directory/self/preferences`): the user comes from the verified bearer, a write is an RFC
-    7386 merge-patch, a stale `If-Match` is 409. awsettings already syncs through it; no new
-    endpoint was built. The desk sends the Online session's bearer (`onlineToken()`).
+    (`GET/PUT /api/settings/preferences` on the PLATFORM host `app.aitherium.com`, Veil in
+    front of AitherDirectory `/directory/self/preferences`): the user comes from the verified
+    bearer, a write is an RFC 7386 merge-patch, a stale `If-Match` is 409. awsettings already
+    syncs through it; no new endpoint was built. The desk sends the Online session's bearer
+    (`onlineToken()`) to `browser-internal platformOrigin()` and nowhere else: never to
+    `onlineUrl()`, which in tenant mode is the tenant's site (no store there; GitHub Pages
+    answered 404 on garg.aitherium.com).
+
+    | rule (review of PR #72) | how |
+    |---|---|
+    | one account per state file | the bearer is opaque, so Identity `/auth/me` names it (once per bearer); `browser-sync.json` keeps a hash. Another account's bearer sends nothing, sync turns itself off and says so; ticking it again is the owner's yes to merging |
+    | a reset library is not a delete | `browser-library.json` carries a generation id; a different id than the one recorded means a fresh device, so no tombstones are made and the store restores it |
+    | a full shard keeps its deletes | over budget the oldest live bookmarks are dropped from the wire, tombstones stay |
+    | a device namespace has a budget too | the last open tabs are dropped until it is under 15 KB, and counted as not synced |
 
     | namespace | holds | limit |
     |---|---|---|

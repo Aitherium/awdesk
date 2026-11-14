@@ -851,7 +851,23 @@ function getSessionStore() {
 // bearer. OFF until the owner turns it on. InPrivate and agent tabs never leave.
 let syncImpl = null;
 let syncSeam = null; // the smoke's store and token; never set in the app
+let syncWho = null;
 function syncMod() { return require("./browser-sync.cjs"); }
+// The store is the platform's, never the page host: in tenant mode the desk's pages come
+// from the tenant's site, which has no store and must never be sent the Online bearer.
+function syncOrigin() {
+  return (syncSeam && syncSeam.origin) || internal.platformOrigin();
+}
+/**
+ * Whose bearer this is, so one account's bookmarks never reach another's store: the
+ * username Identity answers for the Online bearer (asked once per bearer). Unknown,
+ * and sync sends nothing.
+ */
+async function syncAccount(bearer) {
+  if (syncSeam && syncSeam.account) return syncSeam.account(bearer);
+  if (!syncWho) syncWho = syncMod().createAccountResolver({ check: (b) => require("./desk-session.cjs").checkToken(b) });
+  return syncWho(bearer);
+}
 /** The owner's own web tabs as sync sees them (it drops InPrivate, agent and non-web ones). */
 function syncTabs() {
   return tabs.snapshot().tabs.map((t) => {
@@ -869,11 +885,18 @@ function getSync() {
     syncImpl = syncMod().createBrowserSync({
       file: userDataPath("browser-sync.json"), library: getLibrary(), tabs: syncTabs,
       transport: syncMod().createPrefsTransport({
-        origin: () => { try { return seam.origin || internal.onlineUrl(); } catch { return ""; } },
+        origin: () => { try { return syncOrigin(); } catch { return ""; } },
         token: async () => (seam.token ? seam.token() : onlineToken()),
+        account: syncAccount,
         fetchImpl: (url, init) => electron().net.fetch(url, init),
       }),
-      onChange: () => pushState(),
+      onChange: (st) => {
+        pushState();
+        // Another account signed in: sync turned itself off before sending anything. Say so once.
+        if (st && st.state === "account-changed") {
+          try { setNotice(tabs.active, { kind: "info", text: "Sync is off: a different AitherOS account signed in. Nothing was sent to it. Turn \"Sync this browser\" on again to add this computer's bookmarks to that account." }); } catch { /* no tab to say it in */ }
+        }
+      },
     });
   }
   return syncImpl;
@@ -4017,6 +4040,8 @@ module.exports = {
   /** Sync (browser-sync.cjs): the engine, and for the smoke its menu rows and a local store. */
   getSync,
   __syncMenuForTest: () => syncMenuItems(),
+  __syncOriginForTest: () => syncOrigin(),
+  __syncTabsForTest: () => syncTabs(),
   __syncSeamForTest: (seam) => { if (syncImpl) syncImpl.stop(); syncImpl = null; syncSeam = seam || null; return getSync(); },
   __pageForTest: (id) => pageWc(id),
   __noticeForTest: (id) => tabNotices.get(id) || null,

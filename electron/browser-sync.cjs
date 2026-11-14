@@ -25,7 +25,23 @@
  * An item is its own key, so the server's merge-patch changes one bookmark without
  * rewriting the others, and a patch carries only what changed. A device writes its own
  * awbrowser_dev_ namespace and only reads the others, so a device that turned sync off
- * is not put back by the next one.
+ * is not put back by the next one. Over budget, a bookmark shard drops its oldest live
+ * bookmarks and KEEPS its tombstones (a dropped delete would never reach the other
+ * device, and both would rewrite the store for ever); a device drops its last tabs.
+ *
+ * THE STORE IS THE PLATFORM, never the page host. In tenant mode the desk's pages come
+ * from the tenant's site, which has no store; the wiring passes the fixed platform
+ * origin, so the Online bearer goes to the platform and nowhere else.
+ *
+ * ONE ACCOUNT. The state file records which account it was agreed with (a hash of the
+ * bearer's subject). The transport works out the account BEFORE it sends anything: an
+ * unknown account sends nothing, and another account's bearer sends nothing either.
+ * Sync then turns itself off and says so; ticking it again is the owner's yes to adding
+ * this computer's bookmarks to the new account.
+ *
+ * A RESET LIBRARY IS NOT A DELETE. The library file carries a generation id. When it
+ * differs from the one recorded here (the file was lost, truncated or written by
+ * another build), this is a fresh device: nothing is tombstoned, the store restores it.
  *
  * THE MERGE is per item, last writer wins by timestamp, and a delete is a tombstone
  * that outlives the bookmark (180 days), so a bookmark deleted on one device does not
@@ -214,7 +230,12 @@ function captureLocal(doc, { bookmarks = [], history = [], tabs = [], mirrored =
     }
   }
   if (deviceId) {
-    const mine = { name: cleanTitle(deviceName) || "This computer", tabs: tabsOf(tabs) };
+    const name = cleanTitle(deviceName) || "This computer";
+    const all = tabsOf(tabs);
+    // The document holds what the store can hold, so the two agree after a sync.
+    const over = fitTabs({ n: name, m: now, tabs: all.map((t) => ({ u: t.url, t: t.title })) });
+    skipped += over;
+    const mine = { name, tabs: all.slice(0, all.length - over) };
     const cur = out.openTabs[deviceId];
     const same = cur && stable({ name: cur.name, tabs: cur.tabs }) === stable(mine);
     // Unchanged tabs are re-stamped once a day, so a device in use never looks gone.
@@ -255,10 +276,14 @@ function shardOf(id, shards) {
   return (parseInt(String(id).slice(0, 6), 16) || 0) % shards;
 }
 
-/** Keep a shard under the budget: old tombstones go first, then the oldest items. */
+/**
+ * Keep a shard under the budget: the oldest live items go first. A tombstone (about 30
+ * bytes) goes only when tombstones alone are over the budget: a delete that is dropped
+ * never reaches the other devices, and they would put the bookmark back on every sync.
+ */
 function fitShard(shard) {
   let dropped = 0;
-  const order = Object.keys(shard).sort((x, y) => (Boolean(shard[y].d) - Boolean(shard[x].d)) || (shard[x].m - shard[y].m) || (x < y ? -1 : 1));
+  const order = Object.keys(shard).sort((x, y) => (Boolean(shard[x].d) - Boolean(shard[y].d)) || (shard[x].m - shard[y].m) || (x < y ? -1 : 1));
   let size = wireBytes(shard);
   while (size > SHARD_BUDGET_BYTES && order.length) {
     const id = order.shift();
@@ -266,6 +291,13 @@ function fitShard(shard) {
     size -= wireBytes({ [id]: shard[id] }) - 1;
     delete shard[id];
   }
+  return dropped;
+}
+
+/** Keep one device's namespace under the budget: the last tabs go. Returns how many. */
+function fitTabs(ns) {
+  let dropped = 0;
+  while (ns.tabs.length && wireBytes(ns) > SHARD_BUDGET_BYTES) { ns.tabs.pop(); dropped += 1; }
   return dropped;
 }
 
@@ -291,6 +323,7 @@ function encode(doc, { prefix = PREFIX } = {}) {
   for (const [id, d] of Object.entries(doc.openTabs || {})) {
     if (!/^[a-f0-9]{6,16}$/.test(id)) continue;
     ns[`${prefix}_dev_${id}`] = { n: d.name || "", m: d.at || 0, tabs: (d.tabs || []).slice(0, MAX_TABS).map((t) => ({ u: t.url, t: t.title || "" })) };
+    fitTabs(ns[`${prefix}_dev_${id}`]); // captureLocal already counted what this device dropped
   }
   ns[`${prefix}_meta`] = { v: VERSION, ...(doc.historyClearedAt ? { hc: doc.historyClearedAt } : {}) };
   for (const name of Object.keys(ns)) if (!Object.keys(ns[name]).length) delete ns[name];
@@ -374,18 +407,73 @@ function safeOrigin(raw) {
   }
 }
 
+/** The user a JWT bearer names (its subject), unverified: here it only tells two accounts apart. */
+function jwtSubject(bearer) {
+  const part = String(bearer || "").split(".")[1];
+  if (!part) return "";
+  try {
+    const claims = JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
+    const sub = claims && (claims.sub || claims.user_id);
+    return typeof sub === "string" || typeof sub === "number" ? String(sub) : "";
+  } catch {
+    return "";
+  }
+}
+
+/** What the state file keeps of an account: a hash, never the name. */
+function accountKey(subject) {
+  const text = String(subject || "");
+  return text ? nodeCrypto.createHash("sha256").update(`awbrowser-account:${text}`).digest("hex").slice(0, 16) : "";
+}
+
+/**
+ * Who a bearer is, for a platform whose session bearer is opaque (it is; measured
+ * 2026-11-13): the JWT's subject when it has one, else the username the identity
+ * provider answers for it (`check`: desk-session checkToken, GET /auth/me), asked once
+ * per bearer. "" = could not tell; false = the provider says it is not a session.
+ * @param {{check: (bearer: string) => Promise<{state: string, username?: string}>}} opts
+ */
+function createAccountResolver({ check }) {
+  let last = { key: "", name: "" };
+  return async (bearer) => {
+    const subject = jwtSubject(bearer);
+    if (subject) return subject;
+    const key = nodeCrypto.createHash("sha256").update(String(bearer)).digest("hex");
+    if (last.key === key) return last.name;
+    const verdict = await check(bearer);
+    if (verdict && verdict.state === "invalid") return false;
+    if (!verdict || verdict.state !== "valid" || !verdict.username) return "";
+    last = { key, name: String(verdict.username) };
+    return last.name;
+  };
+}
+
 /**
  * The transport over the platform's preferences store. Never throws; the token is
  * read per call and never logged, returned or put in a reason.
- * @param {{origin: () => string, token: () => Promise<string|null>|string|null, fetchImpl?: Function}} opts
+ *
+ * The account is worked out from the bearer BEFORE anything is sent (`account`: the
+ * bearer's subject; default the JWT's; the app passes createAccountResolver). No account,
+ * or not the one the caller expects (`expect`), and no request is made to the store:
+ * one account's bookmarks never reach another's.
+ * @param {{origin: () => string, token: () => Promise<string|null>|string|null, fetchImpl?: Function,
+ *   account?: (bearer: string) => Promise<string|null>|string|null}} opts
  */
-function createPrefsTransport({ origin, token, fetchImpl = globalThis.fetch, timeoutMs = FETCH_TIMEOUT_MS }) {
-  async function call(method, body, etag) {
+function createPrefsTransport({ origin, token, fetchImpl = globalThis.fetch, timeoutMs = FETCH_TIMEOUT_MS, account = jwtSubject }) {
+  async function call(method, body, etag, expect) {
     const base = safeOrigin(typeof origin === "function" ? origin() : origin);
     if (!base) return { ok: false, status: 0, reason: "no safe sync origin" };
     let bearer;
     try { bearer = String((await token()) || "").trim(); } catch { bearer = ""; }
     if (!bearer) return { ok: false, status: 401, reason: "signed-out" };
+    let who;
+    try {
+      const subject = await account(bearer);
+      if (subject === false) return { ok: false, status: 401, reason: "signed-out" };
+      who = accountKey(subject);
+    } catch { who = ""; }
+    if (!who) return { ok: false, status: 0, reason: "could not tell which account is signed in" };
+    if (expect && expect !== who) return { ok: false, status: 0, reason: "account-changed", account: who };
     const headers = { authorization: `Bearer ${bearer}` };
     if (body) headers["content-type"] = "application/json";
     if (etag) headers["if-match"] = etag;
@@ -395,14 +483,15 @@ function createPrefsTransport({ origin, token, fetchImpl = globalThis.fetch, tim
       let data = {};
       try { data = await res.json(); } catch { data = {}; }
       const reason = res.ok ? "" : (res.status === 401 ? "signed-out" : `the store answered ${res.status}${data && data.error ? ` (${String(data.error).slice(0, 80)})` : ""}`);
-      return { ok: res.ok, status: res.status, preferences: (data && data.preferences) || {}, etag: res.headers.get("etag") || null, reason };
+      return { ok: res.ok, status: res.status, preferences: (data && data.preferences) || {}, etag: res.headers.get("etag") || null, reason, account: who };
     } catch (error) {
       return { ok: false, status: 0, reason: error && error.name === "TimeoutError" ? "the store did not answer in time" : "the store is unreachable" };
     }
   }
   return {
-    pull: () => call("GET"),
-    push: (patch, etag) => call("PUT", { preferences: patch }, etag),
+    /** `expect`: the account key the caller's state belongs to; another account is refused unsent. */
+    pull: (expect) => call("GET", null, null, expect),
+    push: (patch, etag, expect) => call("PUT", { preferences: patch }, etag, expect),
   };
 }
 
@@ -418,7 +507,8 @@ function readState(file, fsImpl) {
 
 /**
  * One browser's sync: the switch, the cycle, the timers and the status the menu shows.
- * State (browser-sync.json): the switch, this device's id, the last agreed document.
+ * State (browser-sync.json): the switch, this device's id, the last agreed document, the
+ * account it was agreed with and the library generation it mirrors.
  * @param {{file: string, library: object, tabs: () => Array, transport: object, now?: () => number,
  *   deviceName?: string, prefix?: string, onChange?: Function}} opts
  */
@@ -433,8 +523,12 @@ function createBrowserSync({ file, library, tabs = () => [], transport, now = ()
     lastSyncAt: Number(loaded.lastSyncAt) || 0,
     mirrored: Array.isArray(loaded.mirrored) ? loaded.mirrored : [],
     doc: loaded.doc && typeof loaded.doc === "object" ? loaded.doc : emptyDoc(),
+    account: /^[a-f0-9]{16}$/.test(String(loaded.account || "")) ? loaded.account : "",
+    libraryId: typeof loaded.libraryId === "string" ? loaded.libraryId : "",
+    accountChanged: loaded.accountChanged === true,
   };
   let verdict = { state: state.lastSyncAt ? "ok" : "never", error: "", unsynced: 0 };
+  const generation = () => (typeof library.generation === "function" ? String(library.generation() || "") : "");
   let running = null;
   let debounce = null;
   let interval = null;
@@ -456,16 +550,24 @@ function createBrowserSync({ file, library, tabs = () => [], transport, now = ()
     try { onChange(status()); } catch { /* a listener never breaks a sync */ }
   }
   function status() {
-    return { enabled: state.enabled, state: state.enabled ? verdict.state : "off", error: verdict.error, unsynced: verdict.unsynced,
+    return { enabled: state.enabled, state: state.enabled ? verdict.state : (state.accountChanged ? "account-changed" : "off"), error: verdict.error, unsynced: verdict.unsynced,
       lastSyncAt: state.lastSyncAt, deviceId: state.deviceId, deviceName };
   }
 
   async function cycle() {
     let last = { ok: false, reason: "the store kept changing" };
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const pulled = await transport.pull();
-      if (!pulled.ok) return { ok: false, signedOut: pulled.reason === "signed-out", reason: pulled.reason };
+      const pulled = await transport.pull(state.account);
+      if (!pulled.ok) return { ok: false, signedOut: pulled.reason === "signed-out", accountChanged: pulled.reason === "account-changed", reason: pulled.reason };
       if (!state.enabled) return { ok: false, reason: "off" }; // turned off while the store answered
+      const who = String(pulled.account || "");
+      if (!who) return { ok: false, reason: "could not tell which account is signed in" };
+      if (state.account && state.account !== who) return { ok: false, accountChanged: true, reason: "account-changed" };
+      state.account = who;
+      // A library file that was lost, truncated or rewritten by another build is a fresh
+      // device, not the owner deleting every bookmark: nothing here is a delete.
+      const gen = generation();
+      if (gen !== state.libraryId) state.mirrored = [];
       const at = now();
       const remoteNs = ownNamespaces(pulled.preferences, { prefix });
       const local = captureLocal(state.doc, { bookmarks: library.bookmarks(), history: library.history(MAX_HISTORY * 4), tabs: tabs(),
@@ -479,12 +581,14 @@ function createBrowserSync({ file, library, tabs = () => [], transport, now = ()
       const applied = library.applySync(planApply(merged, { bookmarks: library.bookmarks(), history: library.history(MAX_HISTORY * 4) }));
       state.doc = merged;
       state.mirrored = library.bookmarks().filter((b) => syncable(b.url)).map((b) => itemId(b.url));
+      state.libraryId = gen;
       save();
       const want = encode(merged, { prefix });
       const patch = diff(remoteNs, want.namespaces);
       const keys = Object.values(patch).reduce((n, p) => n + Object.keys(p).length, 0);
       if (keys) {
-        const pushed = await transport.push(patch, pulled.etag);
+        const pushed = await transport.push(patch, pulled.etag, who); // the account the pull answered for, or nothing is sent
+        if (pushed.reason === "account-changed") return { ok: false, accountChanged: true, reason: "account-changed" };
         if (pushed.status === 409) { last = { ok: false, reason: "the store kept changing" }; continue; } // another device wrote first: take its write, try again
         if (!pushed.ok) return { ok: false, signedOut: pushed.reason === "signed-out", reason: pushed.reason };
       }
@@ -493,6 +597,22 @@ function createBrowserSync({ file, library, tabs = () => [], transport, now = ()
       return { ok: true, pushed: keys, applied, unsynced: want.unsynced + local.skipped };
     }
     return last;
+  }
+
+  /**
+   * Another account is signed in. Nothing was sent to it and nothing of it was taken.
+   * Sync turns off and forgets what it agreed with the old account; the library stays.
+   * Ticking the switch again adds this computer's bookmarks to the account signed in then.
+   */
+  function pauseForAccount() {
+    state.enabled = false;
+    state.accountChanged = true;
+    state.account = "";
+    state.doc = emptyDoc(state.deviceId);
+    state.mirrored = [];
+    state.lastSyncAt = 0;
+    stop();
+    save();
   }
 
   /** One full sync now. Calls while one runs share it; a change during it runs one more. */
@@ -504,6 +624,7 @@ function createBrowserSync({ file, library, tabs = () => [], transport, now = ()
       .then((r) => {
         running = null;
         if (r.ok) settle({ state: "ok", error: "", unsynced: r.unsynced });
+        else if (r.accountChanged) { pauseForAccount(); settle({ state: "never", error: "", unsynced: 0 }); }
         else if (r.reason !== "off") settle({ state: r.signedOut ? "signed-out" : "error", error: r.signedOut ? "" : r.reason });
         if (again) { again = false; touch(); }
         return r;
@@ -532,12 +653,12 @@ function createBrowserSync({ file, library, tabs = () => [], transport, now = ()
 
   /** Take this device's open tabs out of the store (sync was turned off here). */
   async function forgetDevice() {
-    const pulled = await transport.pull();
+    const pulled = await transport.pull(state.account);
     if (!pulled.ok) return { ok: false, reason: pulled.reason };
     const name = `${prefix}_dev_${state.deviceId}`;
     const have = ownNamespaces(pulled.preferences, { prefix })[name];
     if (!have) return { ok: true, removed: false };
-    const r = await transport.push({ [name]: Object.fromEntries(Object.keys(have).map((k) => [k, null])) });
+    const r = await transport.push({ [name]: Object.fromEntries(Object.keys(have).map((k) => [k, null])) }, null, state.account);
     return { ok: r.ok, removed: r.ok, reason: r.reason };
   }
 
@@ -549,6 +670,7 @@ function createBrowserSync({ file, library, tabs = () => [], transport, now = ()
       const want = Boolean(on);
       if (want === state.enabled) return Promise.resolve(status());
       state.enabled = want;
+      if (want) state.accountChanged = false;
       save();
       if (want) {
         verdict = { state: state.lastSyncAt ? "ok" : "never", error: "", unsynced: 0 };
@@ -590,6 +712,7 @@ function ago(at, now) {
 
 /** The one line under the switch: what sync is doing, in the owner's words. */
 function statusLine(status, now = Date.now()) {
+  if (status && !status.enabled && status.state === "account-changed") return "Off: a different account signed in. Turn sync on to add this computer's bookmarks to it";
   if (!status || !status.enabled) return "Off: bookmarks, history and tabs stay on this computer";
   if (status.state === "signed-out") return "Sign in to AitherOS to sync";
   if (status.state === "error") return `Last sync failed: ${status.error || "unknown error"}`;
@@ -621,6 +744,6 @@ function menuItems(status, devices, handlers, { now = Date.now() } = {}) {
 
 module.exports = {
   BOOKMARK_SHARDS, DEVICE_FRESH_MS, HISTORY_SHARDS, MAX_HISTORY, MAX_TABS, PREFIX, PREFS_PATH, SHARD_BUDGET_BYTES, TOMBSTONE_TTL_MS,
-  captureLocal, compact, createBrowserSync, createPrefsTransport, decode, diff, emptyDoc, encode, itemId, menuItems, merge,
+  accountKey, captureLocal, compact, createAccountResolver, createBrowserSync, createPrefsTransport, decode, diff, emptyDoc, encode, itemId, jwtSubject, menuItems, merge,
   ownNamespaces, planApply, safeOrigin, statusLine, syncable, wireBytes,
 };

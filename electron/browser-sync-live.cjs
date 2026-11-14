@@ -29,7 +29,9 @@ async function main() {
   let token = "";
   try { token = fs.readFileSync(tokenFile, "utf8").trim(); } catch { /* reported below */ }
   if (!token) { console.log("CANNOT RUN: AW_SYNC_TOKEN_FILE names no readable bearer file"); return 2; }
-  const transport = sync.createPrefsTransport({ origin: () => origin, token: () => token });
+  // The account as the app works it out: the platform's session bearer is opaque, so Identity is asked.
+  const account = sync.createAccountResolver({ check: (bearer) => require("./desk-session.cjs").checkToken(bearer) });
+  const transport = sync.createPrefsTransport({ origin: () => origin, token: () => token, account });
   const first = await transport.pull();
   if (!first.ok) { console.log(`CANNOT RUN: ${origin} answered ${first.status} (${first.reason})`); return 2; }
   console.log(`store ${origin}${sync.PREFS_PATH} answered 200; test prefix ${prefix}`);

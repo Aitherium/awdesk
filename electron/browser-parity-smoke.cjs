@@ -149,7 +149,12 @@ app.whenReady().then(async () => {
   // never leaves; "Tabs from other devices" opens one; off withdraws this device's tabs.
   const store = await require("./browser-sync-fake.cjs").startFakeStore();
   const syncMod = require("./browser-sync.cjs");
-  const sync = bw.__syncSeamForTest({ origin: store.origin, token: () => "test-token" });
+  // Before the seam: the origin the APP uses. It is the platform, whatever host the desk's
+  // pages come from (a tenant's site on a desk in tenant mode: that host has no store).
+  const pageHost = new URL(require("./browser-internal.cjs").onlineUrl()).host;
+  expect(`the sync store is the platform (the desk's pages come from ${pageHost})`,
+    bw.__syncOriginForTest() === "https://app.aitherium.com", bw.__syncOriginForTest());
+  const sync = bw.__syncSeamForTest({ origin: store.origin, token: () => "test-token", account: (bearer) => store.who(bearer) });
   const storeText = () => JSON.stringify((store.users.get("owner") || { prefs: {} }).prefs);
   expect("sync is off until the owner turns it on, and nothing was sent", sync.status().enabled === false && store.stats.gets === 0,
     { status: sync.status(), gets: store.stats.gets });
@@ -157,7 +162,7 @@ app.whenReady().then(async () => {
   const phone = syncMod.createBrowserSync({ file: path.join(phoneDir, "browser-sync.json"), deviceName: "Pixel",
     library: require("./browser-library.cjs").createLibrary({ file: path.join(phoneDir, "browser-library.json") }),
     tabs: () => [{ by: "you", kind: "web", url: `${base}/done?phone=1`, title: "On the phone" }],
-    transport: syncMod.createPrefsTransport({ origin: () => store.origin, token: () => "test-token" }) });
+    transport: syncMod.createPrefsTransport({ origin: () => store.origin, token: () => "test-token", account: (bearer) => store.who(bearer) }) });
   await phone.setEnabled(true);
   phone.stop();
   bw.runBrowserAction("inprivate", `${base}/done?incognito=1`);
@@ -181,6 +186,24 @@ app.whenReady().then(async () => {
   const pushedBookmark = await sync.syncNow();
   expect("a new bookmark is synced", pushedBookmark.ok && Object.keys(syncMod.decode((store.users.get("owner") || {}).prefs).bookmarks).length === 1, pushedBookmark);
   bw.runBrowserAction("close-tab");
+  // Thirty tabs with long addresses: the device's namespace stays under the store's size, so nothing is refused.
+  for (let i = 0; i < 30; i += 1) bw.__openTabForTest(`${base}/done?long=${i}&q=${"x".repeat(500)}`);
+  await until(() => bw.__syncTabsForTest().filter((t) => t.url.includes("long=")).length >= 30, 20000);
+  const many = await sync.syncNow();
+  const devNs = ((store.users.get("owner") || {}).prefs || {})[`awbrowser_dev_${sync.status().deviceId}`] || { tabs: [] };
+  expect("30 long-address tabs sync without the store refusing the write", many.ok === true && store.stats.refused === 0
+    && devNs.tabs.length > 0 && devNs.tabs.length < 30 && many.unsynced >= 30 - devNs.tabs.length,
+  { many, refused: store.stats.refused, tabs: devNs.tabs.length });
+  // Another account signs in to the Online session: nothing goes out, sync turns itself off and the menu says why.
+  const getsBefore = store.stats.gets;
+  bw.__syncSeamForTest({ origin: store.origin, token: () => "other-token", account: () => "someone-else" });
+  const swapped = await bw.getSync().syncNow();
+  const offLine = bw.__syncMenuForTest();
+  expect("a different account sends nothing and turns sync off with a reason", swapped.ok === false && store.stats.gets === getsBefore
+    && offLine[0].checked === false && /different account/.test(offLine[1].label), { swapped, labels: offLine.map((x) => x.label) });
+  bw.__syncSeamForTest({ origin: store.origin, token: () => "test-token", account: (bearer) => store.who(bearer) });
+  await bw.getSync().setEnabled(true);
+  bw.getSync().stop();
   await bw.getSync().setEnabled(false);
   expect("turning sync off withdraws this device's tabs from the store", !Object.keys((store.users.get("owner") || {}).prefs)
     .includes(`awbrowser_dev_${sync.status().deviceId}`), Object.keys((store.users.get("owner") || {}).prefs));
