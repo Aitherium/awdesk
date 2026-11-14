@@ -239,6 +239,13 @@ const launcher = require("./launcher-window.cjs").createLauncher({
   // context (owner, 2026-11-08). No nudge up: the box is exactly as before.
   fairy: () => orbWindow.nudgeCard(),
   askFairy: (id) => orbWindow.chatAboutCard(id),
+  // The Aither Browser's verbs (browser-verbs.cjs): `history <words>`, `bookmark <words>`
+  // and `tab <words>` list the OWNER's library and tabs -- never an agent's, never InPrivate.
+  browser: {
+    history: (words, limit) => browserWindow.ownerHistory(words, limit),
+    bookmarks: (words, limit) => browserWindow.ownerBookmarks(words, limit),
+    tabs: () => browserWindow.ownerTabs(),
+  },
 });
 // `!private` reveal (private-reveal.cjs): Windows Hello / Touch ID first; on a PC with
 // neither, a fresh Aitherium sign-in as THIS desk's owner. Created here, once, with
@@ -2988,6 +2995,8 @@ function commandContext() {
     awconnect: latestAwconnectStatus,
     // Who the AitherDesktop window + overlay are signed in as (never a token).
     account: desktopAccount(),
+    // The browser.* rows' labels: which way sync and ad blocking go, the site on screen.
+    browser: browserWindow.commandFacts(),
     // Which workspace the Desk is in, and whether this account may switch (a hint:
     // every switch re-asks Identity). The workspace.switch row's label is this.
     workspace: (() => {
@@ -3705,6 +3714,14 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
         // the verb is data on the record, browser-window.layoutCommand runs it, and the
         // verdict is RETURNED so the palette can show why a typed name was refused.
         return browserWindow.layoutCommand(command.layout, arg);
+      }
+      if (command && command.browser) {
+        // The Aither Browser's own capabilities (tabs, library pages, passwords, import,
+        // sync, ad blocking, the page tools): the verb is data on the record and
+        // browser-window.browserCommand runs it for the OWNER -- it opens the browser when
+        // it is closed and never acts on an agent's tab. The verdict is RETURNED so the
+        // palette and Alt+Space can say why not.
+        return browserWindow.browserCommand(command.browser, arg, { askAgent: browserAskAgent, surface });
       }
       if (command && command.orb) {
         // The floating ask orb / spirit: orb-window.cjs owns the windows, the
