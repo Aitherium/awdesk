@@ -2602,6 +2602,13 @@ function popupAvatarMenu(slotId) {
       },
     ),
   ];
+  // The local toolkit is ONE grouped submenu here too (owner 2026-11-13: "menus are
+  // already crowded"): the registry's quick.open row carries the Create/Capture/Send list.
+  const toolsRow = template.find((row) => typeof row.label === "string" && row.label.startsWith("Tools — "));
+  if (toolsRow) {
+    toolsRow.submenu = quickMenu.submenuItems((id) => runCommand(id, undefined, { surface: "avatar-menu", slotId }));
+    delete toolsRow.click;
+  }
   if (avatarWindow && !avatarWindow.isDestroyed()) {
     Menu.buildFromTemplate(template).popup({ window: avatarWindow });
   }
@@ -3182,7 +3189,7 @@ function trayTemplateNow() {
   // Two capture rows are doors to a LIVE list, not one-shot verbs: the quick grid
   // (the same cells the Ctrl+Alt+Q pop-up shows) and the open Boards list, where
   // a put-away note/whiteboard comes back with one click (owner 2026-11-02).
-  const quickRow = trayTemplate.find((row) => typeof row.label === "string" && row.label.startsWith("Quick menu"));
+  const quickRow = trayTemplate.find((row) => typeof row.label === "string" && row.label.startsWith("Tools — "));
   if (quickRow) { quickRow.submenu = quickMenu.submenuItems(); delete quickRow.click; }
   const boardsRow = trayTemplate.find((row) => typeof row.label === "string" && row.label.startsWith("Boards…"));
   if (boardsRow) { boardsRow.submenu = boardsWindow.traySubmenu(); delete boardsRow.click; }

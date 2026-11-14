@@ -336,10 +336,21 @@ function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIA
   /** Tray submenu rows: the same live cells, plus the pop-up itself. */
   function submenuItems(runId) {
     const callback = typeof runId === "function" ? runId : run;
+    // Grouped Create / Capture / Send: a disabled header, the rows, a separator.
+    const rows = [];
+    let group = null;
+    for (const item of availableItems(registry)) {
+      if (item.group !== group) {
+        if (rows.length) rows.push({ type: "separator" });
+        group = item.group;
+        rows.push({ label: String(group || ""), enabled: false });
+      }
+      rows.push({ label: item.label, click: () => callback(item.id) });
+    }
     return [
-      { label: "Open at the cursor", click: () => openRadial() },
+      ...rows,
       { type: "separator" },
-      ...availableItems(registry).map((item) => ({ label: item.label, click: () => callback(item.id) })),
+      { label: "Ring at the cursor (Ctrl+Alt+Q)", click: () => openRadial() },
     ];
   }
 

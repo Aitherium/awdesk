@@ -54,6 +54,7 @@ const deps = {
   mediaForge: () => "http://127.0.0.1:8200",
   fetchImpl: (...a) => globalThis.fetch(...a),
   homeDir: () => os.homedir(),
+  openInactive: false,
 };
 
 function configureToolkit(next = {}) {
@@ -118,7 +119,8 @@ function openTool(tool, data = {}) {
     windows.delete(id);
     if (entry && entry.timer) clearInterval(entry.timer);
   });
-  win.once("ready-to-show", () => { win.show(); win.focus(); });
+  // `openInactive` (a probe/verification run): show without taking the keyboard.
+  win.once("ready-to-show", () => { if (deps.openInactive) win.showInactive(); else { win.show(); win.focus(); } });
   void win.loadFile(path.join(__dirname, def.html));
   return { ok: true, line: `${def.title} opened`, id };
 }

@@ -63,9 +63,6 @@ const GROUPS = Object.freeze({
   aw: Object.freeze({ menu: "aw tools" }),
   browser: Object.freeze({ menu: "Browser" }),
   layout: Object.freeze({ menu: "Browser layout" }),
-  // The local toolkit (toolkit.cjs, owner 2026-11-13): ONE "Tools" submenu on the tray,
-  // so eleven tools cost the tray one row. The quick menu shows them grouped.
-  toolkit: Object.freeze({ menu: "Tools" }),
 });
 
 /**
@@ -1121,9 +1118,9 @@ const COMMANDS = Object.freeze([
   // probed free on this desk (2026-11-02); each has a Shift fallback for machines
   // where another tool holds the primary.
   Object.freeze({
-    id: "quick.open", label: "Quick menu at the cursor", group: "capture",
+    id: "quick.open", label: "Tools — Create · Capture · Send", group: "capture",
     accel: "Ctrl+Alt+Q", accelFallback: "Ctrl+Alt+Shift+Q",
-    surfaces: ["tray", "palette"],
+    surfaces: ["tray", "palette", "avatar-menu"],
   }),
   Object.freeze({
     id: "note.new", label: "New note", group: "capture",
@@ -1179,16 +1176,24 @@ const COMMANDS = Object.freeze([
   // windows and verbs; the quick menu groups them Create / Capture / Send
   // (toolkit-core.cjs MENU). Only interact mode holds a key: it is the way BACK to
   // normal mouse control, so it must not need the menu it overrides.
-  Object.freeze({ id: "sketch.new", label: "Sketch pad", group: "toolkit", surfaces: ["tray", "palette"] }),
-  Object.freeze({ id: "piano.open", label: "Play notes (piano)", group: "toolkit", surfaces: ["tray", "palette"] }),
-  Object.freeze({ id: "scratch.new", label: "Quick type", group: "toolkit", surfaces: ["tray", "palette"] }),
-  Object.freeze({ id: "sticky.new", label: "Sticky note on the desktop", group: "toolkit", surfaces: ["tray", "palette"] }),
-  Object.freeze({ id: "graphics.open", label: "Edit an image (remove background, upscale…)", group: "toolkit", surfaces: ["tray", "palette"] }),
-  Object.freeze({ id: "region.box", label: "Box a region (ask about it)", group: "toolkit", surfaces: ["tray", "palette"] }),
-  Object.freeze({ id: "present.start", label: "Present a region (laser)", group: "toolkit", surfaces: ["tray", "palette"] }),
-  Object.freeze({ id: "send.last", label: "Send last capture to…", group: "toolkit", surfaces: ["tray", "palette"] }),
+  Object.freeze({ id: "sketch.new", label: "Sketch pad", group: "capture", surfaces: ["palette"],
+    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
+  Object.freeze({ id: "piano.open", label: "Play notes (piano)", group: "capture", surfaces: ["palette"],
+    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
+  Object.freeze({ id: "scratch.new", label: "Quick type", group: "capture", surfaces: ["palette"],
+    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
+  Object.freeze({ id: "sticky.new", label: "Sticky note on the desktop", group: "capture", surfaces: ["palette"],
+    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
+  Object.freeze({ id: "graphics.open", label: "Edit an image (remove background, upscale…)", group: "capture", surfaces: ["palette"],
+    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
+  Object.freeze({ id: "region.box", label: "Box a region (ask about it)", group: "capture", surfaces: ["palette"],
+    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
+  Object.freeze({ id: "present.start", label: "Present a region (laser)", group: "capture", surfaces: ["palette"],
+    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
+  Object.freeze({ id: "send.last", label: "Send last capture to…", group: "capture", surfaces: ["palette"],
+    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
   Object.freeze({
-    id: "interact.toggle", group: "toolkit", accel: "Ctrl+Alt+Y", accelFallback: "Ctrl+Alt+Shift+Y",
+    id: "interact.toggle", group: "capture", accel: "Ctrl+Alt+Y", accelFallback: "Ctrl+Alt+Shift+Y",
     label: (ctx = {}) => (ctx.interactMode ? "Interact mode — leave (Esc)" : "Interact mode (the desk takes the mouse)"),
     surfaces: ["tray", "palette"],
   }),
