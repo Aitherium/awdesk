@@ -2756,6 +2756,9 @@ function ensureNudge() {
     webPreferences: {
       preload: path.join(__dirname, "orb-preload.cjs"),
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
+      // An occluded transparent window is throttled: its fade stalled mid-way and the
+      // last frame (~30%) stayed over the page (owner 2026-11-14). It is small; let it paint.
+      backgroundThrottling: false,
     },
   });
   nudgeWindow.setAlwaysOnTop(true, "screen-saver");
@@ -2776,8 +2779,16 @@ function sendNudge(channel, payload) {
   } catch { /* page mid-load: init() carries the view */ }
 }
 
+/** The whisper's fade, then the window goes: never hidden mid-fade, never left up. */
+const NUDGE_FADE_MS = 280;
+let nudgeHideTimer = null;
+function cancelNudgeHide() {
+  if (nudgeHideTimer) { clearTimeout(nudgeHideTimer); nudgeHideTimer = null; }
+}
+
 function showWhisper() {
   if (!nudging) return;
+  cancelNudgeHide();
   const win = ensureNudge();
   const at = nudging.whisperAt || { x: 0, y: 0 };
   win.setBounds({ x: Math.round(at.x), y: Math.round(at.y), ...NUDGE_SIZE });
@@ -2909,13 +2920,20 @@ function endNudge(outcome = "timeout", { stay = false } = {}) {
     attentionMems[id] = fairyAttention.recordKeep(fairyAttention.recordActed(mem));
   }
   saveAttention();
+  // Click-through at once; the page fades and unmounts the card; the window hides
+  // when the fade is done (hiding first froze the fade's last frame on screen).
   if (alive(nudgeWindow)) {
-    try {
-      nudgeWindow.setIgnoreMouseEvents(true, { forward: true });
-      nudgeWindow.hide();
-    } catch { /* gone */ }
+    try { nudgeWindow.setIgnoreMouseEvents(true, { forward: true }); } catch { /* gone */ }
   }
   sendNudge("orb:nudge-view", null);
+  cancelNudgeHide();
+  nudgeHideTimer = setTimeout(() => {
+    nudgeHideTimer = null;
+    if (!nudging && alive(nudgeWindow)) {
+      try { nudgeWindow.hide(); } catch { /* gone */ }
+    }
+  }, NUDGE_FADE_MS);
+  if (nudgeHideTimer.unref) nudgeHideTimer.unref();
   send("orb:nudge", { level: 0 });
   sendPanel();
   sendFairy();
@@ -2943,12 +2961,14 @@ async function nudgeAct(action, key) {
     if (!alive(nudgeWindow) || !h) return { ok: false };
     const b = nudgeWindow.getBounds();
     let y = b.y;
+    let x = b.x;
     try {
       const { screen } = electron();
       const area = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y }).workArea;
       if (y + h > area.y + area.height) y = Math.max(area.y, area.y + area.height - h);
+      x = Math.min(Math.max(b.x, area.x), area.x + area.width - NUDGE_SIZE.width);
     } catch { /* no screen module (tests) */ }
-    nudgeWindow.setBounds({ x: b.x, y, width: NUDGE_SIZE.width, height: h });
+    nudgeWindow.setBounds({ x, y, width: NUDGE_SIZE.width, height: h });
     return { ok: true, height: h };
   }
   if (what === "hover") {

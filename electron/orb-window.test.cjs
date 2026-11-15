@@ -816,6 +816,7 @@ test("the whisper answers with the card's OWN option through main, and refuses o
   assert.deepEqual(calls.answer, [["d-fair", "ack"]]);
   await wait(1500);
   assert.equal(orbWindow.nudging(), null, "the confirmation closes the whisper");
+  await wait(350); // the fade finishes, then the window goes
   assert.equal(whisper.isVisible(), false);
   assert.equal(orbWindow.attentionMems()["d-fair"].ignored || 0, 0, "answered is not ignored");
 });
@@ -2018,4 +2019,37 @@ test("panel markup: input on top, four small chips, one session line, no empty b
   assert.doesNotMatch(markup, /What's on my screen\?<\/button>/, "chips are small labels, not sentences");
   assert.match(markup, /id="session"/);
   assert.match(bubble, /\^attached to \/i/, "a status that repeats the session line is dropped");
+});
+
+// ── owner 2026-11-14: a dismissed whisper froze at ~30% over the page ──────
+
+test("a dismissed whisper is click-through at once, fades, then its window hides; a new one cancels the hide", async () => {
+  startAttention();
+  orbWindow.setAttentionCards([blockedCard()]);
+  await orbWindow.attentionTick();
+  await wait(1000);
+  const whisper = nudgeWin();
+  assert.ok(whisper && whisper.isVisible());
+  assert.equal(whisper.opts.webPreferences.backgroundThrottling, false, "an occluded whisper still finishes its fade");
+  await invoke("desk:nudge-act", whisper, "hover", true);
+  assert.equal(whisper.ignoreMouse, false);
+  orbWindow.endNudge("later", { stay: true });
+  assert.equal(whisper.ignoreMouse, true, "click-through during the fade");
+  assert.equal(lastSent(whisper, "orb:nudge-view"), null, "the page is told to fade and unmount");
+  await wait(350);
+  assert.equal(whisper.isVisible(), false, "and the window is gone after the fade, never left up");
+});
+
+test("the whisper page always finishes its fade and unmounts the card, and is short", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  const nudge = html.slice(html.indexOf('if (view === "nudge")'), html.indexOf('if (view === "bubble")'));
+  assert.match(nudge, /transitionend/);
+  assert.match(nudge, /setTimeout\(finishFade, 320\)/, "a timer finishes it when no transition event comes");
+  assert.match(nudge, /classList\.add\("gone"\)/);
+  assert.match(html, /#nudge\.gone \{ display: none; \}/);
+  assert.match(html, /#nudge:not\(\.on\) \{ pointer-events: none; \}/);
+  assert.match(nudge, /id="n-need"/, "one line of what is needed");
+  assert.match(nudge, /Card \$\{v\.id\} needs you/);
+  assert.match(nudge, /o === main \? "primary"/, "one primary button");
+  assert.match(nudge, /id="n-extra"/, "the transcript and the rest sit behind more");
 });
