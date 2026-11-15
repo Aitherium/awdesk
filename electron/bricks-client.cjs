@@ -8,7 +8,7 @@
  * rollback".
  *
  * The desk owns none of the logic. adk/bricks.py decides what is outdated,
- * refuses an editable checkout, tests after an upgrade and rolls back on a
+ * refreshes an editable checkout (never replaces it), tests after an upgrade and rolls back on a
  * failed test; this module only runs it and hands the JSON back. A second
  * implementation here would drift from the CLI the owner also uses.
  *

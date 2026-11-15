@@ -123,6 +123,9 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   tip: (text, point) => ipcRenderer.invoke("desk:fairy-tip", String(text || ""),
     point && Number.isFinite(Number(point.x)) ? { x: Number(point.x), y: Number(point.y) } : null),
   onTip: (fn) => on("orb:tip", fn),
+  // Main gave this window back to click-through (the pointer left it without a
+  // mouseleave reaching the page): drop the hover so the next move re-arms it.
+  onHitReset: (fn) => on("orb:hit-reset", fn),
   // Right click: a companion's menu (its card) or the orb's; a pick names an item id.
   fairyMenu: (id, agent) => ipcRenderer.invoke("desk:fairy-menu", String(id || ""), String(agent || "")),
   orbMenu: () => ipcRenderer.invoke("desk:orb-menu"),

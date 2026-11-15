@@ -1853,3 +1853,59 @@ test("a menu Windows refused the keyboard (no blur will come) closes itself once
   assert.equal(mw.isVisible(), false, "off it and unfocused: it closes, never stuck on screen");
   assert.equal(orbWindow.menuState(), null);
 });
+
+// ── owner 2026-11-14: "these little tooltips get stuck and stay in the way" ──
+
+test("a tip never sticks: it hides when the pointer leaves the fairy, with no word from the page", async () => {
+  startAttention();
+  cursor = { x: 500, y: 400 };
+  await invoke("desk:fairy-tip", orbWin(), "support-loop: support repro: needs-info", { x: 500, y: 400 });
+  const tw = tipWin();
+  assert.ok(tw && tw.isVisible());
+  assert.ok(orbWindow.hoverGuard().state().polling, "watched while it is up");
+  cursor = { x: 1400, y: 900 }; // the pointer went to Explorer; no mouseleave reached the page
+  await wait(450);
+  assert.equal(tw.isVisible(), false, "the tip hid itself");
+  assert.equal(orbWindow.hoverGuard().state().polling, false, "idle again: no timer");
+});
+
+test("the orb is click-through while no fairy is hovered, even when the leave is never reported", async () => {
+  startAttention();
+  const orb = orbWin();
+  const b = orb.getBounds();
+  cursor = { x: b.x + 36, y: b.y + 36 };
+  await invoke("desk:orb-hit", orb, true);
+  assert.equal(orb.ignoreMouse, false, "the pointer on the fairy: it takes the click");
+  cursor = { x: b.x + 400, y: b.y + 400 };
+  await wait(450);
+  assert.equal(orb.ignoreMouse, true, "back to click-through on its own");
+  assert.equal(lastSent(orb, "orb:hit-reset"), true, "the page is told to re-arm its hover");
+});
+
+test("a new companion list drops the tip and hands the swarm back to click-through", async () => {
+  startAttention();
+  orbWindow.state().swarm = true;
+  const old = Math.floor(Date.now() / 1000) - 600;
+  orbWindow.setAttentionCards(["atlas", "lyra", "iris"].map((a, i) => blockedCard({ id: `d-h${i}`, agent: a, createdAt: old })));
+  const swarm = orbWindow.swarmWindow();
+  const b = swarm.getBounds();
+  cursor = { x: b.x + 5, y: b.y + 5 };
+  await invoke("desk:swarm-hit", swarm, true);
+  await invoke("desk:fairy-tip", swarm, "atlas: a card", { x: cursor.x, y: cursor.y });
+  assert.equal(swarm.ignoreMouse, false);
+  assert.ok(tipWin().isVisible());
+  orbWindow.setAttentionCards(["atlas", "lyra", "iris", "saga"].map((a, i) => blockedCard({ id: `d-h${i}`, agent: a, createdAt: old })));
+  assert.equal(tipWin().isVisible(), false, "the fairies moved: the tip is gone");
+  assert.equal(swarm.ignoreMouse, true, "and the swarm passes clicks through again");
+});
+
+test("the orb page draws no native tooltip; its own line rides the guarded tip window", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  const orb = html.slice(html.indexOf('if (view === "orb")'), html.indexOf('if (view === "swarm")'));
+  assert.doesNotMatch(orb, /<div id="orb" title=/, "no native title on the disc");
+  assert.doesNotMatch(orb, /orb\.title = (?!"")/, "the title is only ever cleared");
+  assert.match(orb, /api\.onHitReset/);
+  const swarm = html.slice(html.indexOf('if (view === "swarm")'), html.indexOf("// ── the right-click menu"));
+  assert.match(swarm, /api\.onHitReset/);
+  assert.match(swarm, /orbited out from under a still pointer/);
+});

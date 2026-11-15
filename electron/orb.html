@@ -555,7 +555,7 @@
 
   // ── the orb disc ──────────────────────────────────────────────────────
   if (view === "orb") {
-    document.body.innerHTML = '<div id="orb" title="Aither — click: what is waiting · right-click: menu · drag to move">'
+    document.body.innerHTML = '<div id="orb" data-tip="Aither — click: what is waiting · right-click: menu · drag to move">'
       + '<i class="halo"></i><i class="wing l up"></i><i class="wing r up"></i><i class="wing l lo"></i><i class="wing r lo"></i>'
       + '<i class="core"></i><i class="spark a"></i><i class="spark b"></i><i class="spark c"></i><i class="ping"></i></div>'
       + '<div id="badge"></div><div id="queued"></div>';
@@ -578,8 +578,9 @@
       if (Math.hypot(dx, dy) <= CORE || !mates.length) return null;
       return swarmMateAt(mates, dx, dy);
     }
-    // The native tooltip draws OVER an open card's title: none while a panel is up.
-    function showTip() { orb.title = panelOpen || hotMate ? "" : tip; }
+    // No NATIVE tooltip (owner 2026-11-14: stuck pills): Windows draws it in a window
+    // main cannot hide. The fairy's own line rides the guarded tip window instead.
+    function showTip() { orb.title = ""; }
 
     function toggleHit(isInside) {
       if (isInside === inside) return;
@@ -615,12 +616,16 @@
         hotMate = m;
         showTip();
       }
-      dwell.on(m ? `m:${m.agent}` : null, m ? mateTip(m) : "", () => lastPoint);
-      toggleHit(Math.hypot(dx, dy) <= RADIUS || Boolean(m));
+      const onDisc = Math.hypot(dx, dy) <= RADIUS;
+      const own = onDisc && !downAt && !panelOpen ? tip : "";
+      dwell.on(m ? `m:${m.agent}` : (own ? "orb" : null), m ? mateTip(m) : own, () => lastPoint);
+      toggleHit(onDisc || Boolean(m));
     });
     window.addEventListener("mouseleave", () => { hotMate = null; dwell.off(); showTip(); toggleHit(false); });
+    // Main took the window back (the pointer left without a mouseleave): re-arm.
+    if (api.onHitReset) api.onHitReset(() => { hotMate = null; dwell.off(); inside = null; });
     if (api.onFairy) api.onFairy(wearFairy);
-    if (api.onCompanions) api.onCompanions((list) => { mates = Array.isArray(list) ? list : []; hotMate = null; });
+    if (api.onCompanions) api.onCompanions((list) => { mates = Array.isArray(list) ? list : []; hotMate = null; dwell.off(); });
     if (api.onPanel) api.onPanel((p) => { panelOpen = Boolean(p && p.open); showTip(); });
 
     // A press on a companion under the disc is that companion's: its newest card
@@ -732,7 +737,7 @@
     api.onTint((t) => { if (t) applyTint(t.css); });
     // The fairy IS the owner's sprite: its name, stage and mood on hover. null =
     // the plain fairy (signed out / offline), which keeps the plain tooltip.
-    const PLAIN_TIP = orb.title;
+    const PLAIN_TIP = orb.dataset.tip;
     function wearSprite(sp) {
       tip = sp && sp.tooltip ? sp.tooltip : PLAIN_TIP;
       orb.dataset.tip = tip;
@@ -796,6 +801,14 @@
         m.x = o.x;
         m.y = o.y;
       }
+      // The fairy orbited out from under a still pointer: no mousemove comes, so
+      // let go here, or the tip stays up and the window keeps the clicks.
+      if (hotMate && mateAt(lastClient.x, lastClient.y) !== hotMate) {
+        hotMate.el.classList.remove("hot");
+        hotMate = null;
+        dwell.off();
+        setInside(false);
+      }
       if (!lively() && now - lastStir > REST_AFTER_MS) { document.body.classList.add("rest"); return; }
       document.body.classList.remove("rest");
       frame = window.setTimeout(place, 50); // 20 fps is plenty for a slow lap
@@ -803,7 +816,11 @@
     function setMates(list) {
       matesEl.textContent = "";
       if (frame) { window.clearTimeout(frame); frame = 0; }
+      // Every fairy moves to a new slot: whatever was hovered is gone (2026-11-14:
+      // the tip stayed up and the window kept the mouse after a list change).
       hotMate = null;
+      dwell.off(); // declared below; setMates only ever runs after the page is set up
+      setInside(false);
       const items = Array.isArray(list) ? list : [];
       const slots = layout(items.length);
       mates = items.map((c, i) => {
@@ -852,9 +869,11 @@
     // keep popping and they change so fast -- don't engage on hover").
     const dwell = createDwell();
     let lastPoint = { x: 0, y: 0 };
+    let lastClient = { x: 1e9, y: 1e9 };
     window.addEventListener("mousemove", (e) => {
       stir();
-      const m = mateAt(e.clientX - window.innerWidth / 2, e.clientY - window.innerHeight / 2);
+      lastClient = { x: e.clientX - window.innerWidth / 2, y: e.clientY - window.innerHeight / 2 };
+      const m = mateAt(lastClient.x, lastClient.y);
       lastPoint = { x: e.screenX, y: e.screenY };
       if (m !== hotMate) {
         if (hotMate) hotMate.el.classList.remove("hot");
@@ -866,8 +885,16 @@
     });
     window.addEventListener("mouseleave", () => {
       if (hotMate) { hotMate.el.classList.remove("hot"); hotMate = null; }
+      lastClient = { x: 1e9, y: 1e9 };
       dwell.off();
       setInside(false);
+    });
+    // Main took the window back (the pointer left without a mouseleave): re-arm.
+    if (api.onHitReset) api.onHitReset(() => {
+      if (hotMate) { hotMate.el.classList.remove("hot"); hotMate = null; }
+      lastClient = { x: 1e9, y: 1e9 };
+      dwell.off();
+      inside = false;
     });
     // LEFT click on a companion: its agent's newest card, pinned until closed or
     // another click -- an old one too, marked. A companion with no card (presence:
