@@ -165,9 +165,12 @@
   body.tip.left #tip { left: auto; right: 0; }
   @media (prefers-reduced-motion: reduce) { .m-item { animation: none; } }
 
-  /* ── the bubble (392 x 480 window) ──────────────────────────────────── */
-  body.bubble { padding: 8px; }
-  #card { width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden;
+  /* ── the bubble: the Aither panel (fairy-panel.cjs, owner 2026-11-14) ────
+     One box, one button: the input on top, four small chips under it, ONE session
+     line, then only real content. The card is as tall as what it holds (the page
+     reports its height and main fits the window), never a fixed 480 px of air. */
+  body.bubble { padding: 8px; height: auto; }
+  #card { width: 100%; max-height: 464px; display: flex; flex-direction: column; overflow: hidden;
     border-radius: 14px; background: var(--bg-elevated, #12161f); border: 1px solid var(--border, #2a3346);
     box-shadow: 0 12px 40px rgba(0,0,0,0.55); }
   #head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px; }
@@ -181,31 +184,67 @@
     font-size: 16px; line-height: 1; padding: 4px 6px; border-radius: 6px; flex: none; }
   #close:hover { background: var(--bg-sunk, #0b0f16); color: var(--fg, #e6edf3); }
 
-  #actions { display: flex; gap: 6px; padding: 0 12px 8px; flex-wrap: wrap; }
-  #actions button { flex: 1 1 auto; border: 1px solid var(--border, #2a3346); border-radius: 8px;
-    background: var(--bg-sunk, #0b0f16); color: var(--fg, #e6edf3); padding: 6px 8px; cursor: pointer;
-    font: 12px var(--font-sans, system-ui); white-space: nowrap; }
-  #actions button:hover { border-color: var(--tint, #f4faff); }
+  #actions { display: flex; gap: 4px; padding: 0 10px 8px; }
+  #actions button { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border, #2a3346);
+    border-radius: 999px; background: transparent; color: var(--fg-muted, #8b96ab); padding: 2px 8px;
+    cursor: pointer; font: 11px var(--font-sans, system-ui); white-space: nowrap; }
+  #actions button svg { width: 12px; height: 12px; flex: none; }
+  #actions button:hover, #actions button:focus-visible, #actions button.on { color: var(--fg, #e6edf3);
+    border-color: var(--tint, #f4faff); outline: none; }
 
-  #stage { flex: 1; overflow: auto; padding: 2px 12px 8px; }
-  #line { display: none; border-radius: 10px; padding: 10px 12px; background: var(--bg-sunk, #0b0f16);
-    border: 1px solid var(--border, #2a3346); white-space: pre-wrap; word-break: break-word;
-    user-select: text; line-height: 1.5; }
+  /* the ONE session line: who the fairy is with, and what it is doing */
+  #session { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-top: 1px solid var(--border, #2a3346);
+    font-size: 11.5px; min-width: 0; }
+  #s-state { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--fg-muted, #8b96ab); }
+  #s-state.working, #s-state.busy, #s-state.running { background: var(--accent-warning, #f0b429); }
+  #s-state.waiting-input, #s-state.waiting { background: var(--accent-primary, #7aa2ff); }
+  #s-state.idle { background: var(--accent-success, #3fb950); }
+  #s-title { font-weight: 600; flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #s-last { flex: 1; min-width: 0; color: var(--fg-muted, #8b96ab); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #s-pick { width: 64px; flex: none; border: 1px solid var(--border, #2a3346); border-radius: 6px; background: var(--bg-sunk, #0b0f16);
+    color: var(--fg-muted, #8b96ab); font: 11px var(--font-sans, system-ui); padding: 1px 2px; }
+  #s-detach { display: none; }
+  #s-detach.on { display: inline-block; }
+  #s-detach, #close { border: 0; background: transparent; color: var(--fg-muted, #8b96ab); cursor: pointer;
+    font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 6px; flex: none; }
+  #s-detach:hover, #close:hover { background: var(--bg-sunk, #0b0f16); color: var(--fg, #e6edf3); }
+
+  #stage { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 10px 8px; }
+  #stage.idle { display: none; }
+  /* what the attached session raised, answerable here */
+  #cards { display: none; flex-direction: column; gap: 6px; margin-top: 8px; }
+  #cards.on { display: flex; }
+  .pcard { border: 1px solid var(--border, #2a3346); border-radius: 9px; padding: 6px 8px; background: var(--bg-sunk, #0b0f16); }
+  .pcard.high, .pcard.critical { border-color: var(--accent-warning, #f0b429); }
+  .pcard-title { font-size: 12px; font-weight: 600; margin-bottom: 5px; }
+  .pcard-opts { display: flex; gap: 4px; flex-wrap: wrap; }
+  .pcard-opts button { border: 1px solid var(--border, #2a3346); border-radius: 7px; background: transparent;
+    color: var(--fg, #e6edf3); padding: 2px 8px; cursor: pointer; font: 11px var(--font-sans, system-ui); }
+  .pcard-opts button.rec { border-color: var(--tint, #f4faff); }
+  .pcard-opts button:hover, .pcard-opts button:focus-visible { background: var(--bg-elevated, #12161f); border-color: var(--tint, #f4faff); outline: none; }
+  /* the last few exchanges, newest last */
+  #history { display: none; flex-direction: column; gap: 5px; margin-top: 8px; }
+  #history.on { display: flex; }
+  .ex { font-size: 11.5px; line-height: 1.4; }
+  .ex-q { color: var(--fg-muted, #8b96ab); }
+  .ex-a { color: var(--fg, #e6edf3); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .ex.error .ex-a { color: var(--accent-danger, #ff6b6b); }
+  #line { display: none; border-radius: 10px; padding: 8px 10px; background: var(--bg-sunk, #0b0f16);
+    border: 1px solid var(--border, #2a3346); word-break: break-word; user-select: text; line-height: 1.5; }
+  #line-text { white-space: pre-wrap; }
   #line.on { display: block; }
   #line.error { border-color: var(--accent-danger, #ff6b6b); }
   #line.error #line-title { display: block; color: var(--accent-danger, #ff6b6b); font-weight: 600; margin-bottom: 4px; }
   #line-title { display: none; }
   #line.status { color: var(--fg-muted, #8b96ab); font-style: italic; }
-  #meta { display: none; margin-top: 8px; font-size: 11px; color: var(--fg-muted, #8b96ab); }
+  #meta { display: none; margin-top: 4px; font-size: 11px; color: var(--fg-muted, #8b96ab); }
   #meta.on { display: block; }
-  #foot { display: none; gap: 6px; margin-top: 8px; }
+  #foot { display: none; gap: 6px; margin-top: 6px; }
   #foot.on { display: flex; }
   #foot button { border: 1px solid var(--border, #2a3346); border-radius: 7px; background: transparent;
     color: var(--fg-muted, #8b96ab); padding: 3px 8px; cursor: pointer; font: 11px var(--font-sans, system-ui); }
   #foot button:hover { color: var(--fg, #e6edf3); border-color: var(--accent-primary, #7aa2ff); }
   #foot button.active { color: #06101f; background: var(--accent-primary, #7aa2ff); border-color: transparent; }
-  #empty { color: var(--fg-muted, #8b96ab); padding: 6px 2px; font-size: 12px; }
-  #empty.off { display: none; }
 
   /* held thing: a chip under the orb, draggable out as a real OS file */
   #hold { display: none; margin-top: 8px; border-radius: 10px; border: 1px solid var(--tint, #f4faff);
@@ -256,7 +295,7 @@
   #trip-more { font-size: 10.5px; color: var(--fg-muted, #8b96ab); margin-top: 2px; }
   #trip-queue { font-size: 11px; color: var(--tint, #f4faff); margin-top: 4px; }
 
-  #ask { display: flex; gap: 6px; padding: 8px 12px 12px; border-top: 1px solid var(--border, #2a3346); }
+  #ask { display: flex; gap: 6px; align-items: stretch; padding: 10px 10px 6px; }
   #q { flex: 1; resize: none; max-height: 84px; min-height: 30px; padding: 6px 8px; border-radius: 8px;
     border: 1px solid var(--border, #2a3346); background: var(--bg, #0d1117); color: var(--fg, #e6edf3);
     font: 12.5px/1.4 var(--font-sans, system-ui); outline: none; }
@@ -264,7 +303,7 @@
   #send { border: 0; border-radius: 8px; padding: 0 12px; background: var(--tint, #f4faff);
     color: #06101f; font-weight: 600; cursor: pointer; font: 600 12px var(--font-sans, system-ui); }
   #send:disabled { opacity: 0.5; cursor: default; }
-  #hint { display: none; padding: 0 12px 6px; font-size: 11px; color: var(--accent-danger, #ff6b6b); }
+  #hint { display: none; padding: 0 10px 6px; font-size: 11px; color: var(--accent-danger, #ff6b6b); }
   #hint.on { display: block; }
 
   /* ── the fairy asking for attention (fairy-attention.cjs ladder) ─────
@@ -1188,17 +1227,16 @@
   if (view === "bubble") {
     document.body.innerHTML = `
       <div id="card">
-        <div id="head"><span id="dot"></span><span id="title">Aither</span>
-          <span id="where"></span>
-          <button id="close" title="Close (Esc)">&#10005;</button></div>
-        <div id="actions">
-          <button data-ask="screen">What's on my screen?</button>
-          <button data-ask="region">Explain a region</button>
-          <button data-mode="find">Find a file…</button>
-          <button data-mode="web">Search the web…</button>
+        <div id="ask"><textarea id="q" rows="1" placeholder="Ask about what you see…" aria-label="Ask Aither"></textarea>
+          <button id="send" disabled>Send</button></div>
+        <div id="actions" role="toolbar" aria-label="Quick actions">
+          <button data-ask="screen" title="What is on my screen?"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5"/><path d="M5.5 14h5"/></svg>Screen</button>
+          <button data-ask="region" title="Explain a region you select"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 5V2h3M11 2h3v3M14 11v3h-3M5 14H2v-3"/></svg>Region</button>
+          <button data-mode="find" title="Find a file (type its name, Enter)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 1.5h6l4 4v9H3z"/><path d="M9 1.5v4h4"/></svg>File</button>
+          <button data-mode="web" title="Search the web (type the query, Enter)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13M8 1.5c2 2 2 11 0 13M8 1.5c-2 2-2 11 0 13"/></svg>Web</button>
         </div>
+        <div id="hint"></div>
         <div id="stage">
-          <div id="empty">Click the orb and ask, drop a file on it, or right-click for the menu.</div>
           <div id="line"><div id="line-title"></div><span id="line-text"></span>
             <div id="meta"></div>
             <div id="foot">
@@ -1217,12 +1255,16 @@
             <div id="rows"></div>
             <div id="results-more"></div>
           </div>
+          <div id="cards"></div>
+          <div id="history"></div>
           <div id="trips"><div id="trips-head">Trips</div><div id="trip-list"></div>
             <div id="trip-more"></div><div id="trip-queue"></div></div>
         </div>
-        <div id="hint"></div>
-        <div id="ask"><textarea id="q" rows="1" placeholder="Ask about what you see…"></textarea>
-          <button id="send" disabled>Send</button></div>
+        <div id="session"><span id="s-state"></span><span id="title">Aither</span><span id="s-title"></span>
+          <span id="s-last"></span><span id="where" hidden></span>
+          <select id="s-pick" aria-label="Switch session" title="Switch the session this panel is about"></select>
+          <button id="s-detach" title="Detach the fairy">&#8856;</button>
+          <button id="close" title="Close (Esc)">&#10005;</button></div>
       </div>`;
     const q = document.getElementById("q");
     const send = document.getElementById("send");
@@ -1234,7 +1276,14 @@
     const foot = document.getElementById("foot");
     const copy = document.getElementById("copy");
     const pin = document.getElementById("pin");
-    const empty = document.getElementById("empty");
+    const stage = document.getElementById("stage");
+    const cardsEl = document.getElementById("cards");
+    const historyEl = document.getElementById("history");
+    const sState = document.getElementById("s-state");
+    const sTitle = document.getElementById("s-title");
+    const sLast = document.getElementById("s-last");
+    const sPick = document.getElementById("s-pick");
+    const sDetach = document.getElementById("s-detach");
     const hint = document.getElementById("hint");
     const where = document.getElementById("where");
     const holdEl = document.getElementById("hold");
@@ -1271,16 +1320,92 @@
       hint.textContent = text || "";
       hint.classList.toggle("on", Boolean(text));
     }
+    // The card is as tall as its content: main fits the window to it.
+    let lastH = 0;
+    function fit() {
+      const card = document.getElementById("card");
+      stage.classList.toggle("idle", !stage.querySelector(".on"));
+      const h = Math.ceil(card.getBoundingClientRect().height) + 16;
+      if (Math.abs(h - lastH) > 1 && api.panelSize) { lastH = h; api.panelSize(h); }
+    }
+    let panel = null;
+    function renderPanel(v) {
+      panel = v || null;
+      const line = (v && v.line) || { kind: "free", title: "Aither" };
+      sState.className = line.status || "";
+      sState.style.display = line.kind === "session" ? "" : "none";
+      document.getElementById("title").style.display = line.kind === "free" ? "" : "none";
+      sTitle.textContent = line.kind === "free" ? "" : line.title;
+      sLast.textContent = line.kind === "session"
+        ? [line.statusText, line.last].filter(Boolean).join(" · ")
+        : line.kind === "window" ? "attached" : "";
+      sDetach.classList.toggle("on", Boolean(v && v.attached));
+      // the switcher: follow the attach, or any live session
+      sPick.textContent = "";
+      const opt = (value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; return o; };
+      // The line already names the session: the switcher is a small "Switch" menu.
+      sPick.append(opt("", "Switch"));
+      for (const c of (v && v.choices) || []) {
+        const here = line.kind === "session" && line.id === c.id;
+        sPick.append(opt(c.id, `${here ? "* " : ""}${c.title}${c.statusText ? ` (${c.statusText})` : ""}`));
+      }
+      sPick.value = "";
+      sPick.style.display = v && v.choices && v.choices.length ? "" : "none";
+      // what that session raised, answerable here
+      cardsEl.textContent = "";
+      for (const c of (v && v.cards) || []) {
+        const el = document.createElement("div");
+        el.className = `pcard ${c.urgency}`;
+        const t = document.createElement("div");
+        t.className = "pcard-title";
+        t.textContent = c.title;
+        const opts = document.createElement("div");
+        opts.className = "pcard-opts";
+        for (const o of c.options) {
+          const b = document.createElement("button");
+          b.textContent = o.label;
+          if (o.recommended) b.className = "rec";
+          b.addEventListener("click", () => {
+            b.disabled = true;
+            api.panelAnswer(c.id, o.key).then((r) => {
+              if (r && r.ok) { el.remove(); fit(); } else { b.disabled = false; setHint((r && r.error) || "the answer did not go through"); }
+            });
+          });
+          opts.append(b);
+        }
+        el.append(t, opts);
+        cardsEl.append(el);
+      }
+      cardsEl.classList.toggle("on", cardsEl.childElementCount > 0);
+      // the last few exchanges, newest last
+      historyEl.textContent = "";
+      for (const h of (v && v.history) || []) {
+        const el = document.createElement("div");
+        el.className = `ex ${h.kind || ""}`;
+        const qq = document.createElement("div");
+        qq.className = "ex-q";
+        qq.textContent = h.q;
+        const aa = document.createElement("div");
+        aa.className = "ex-a";
+        aa.textContent = h.a;
+        el.append(qq, aa);
+        historyEl.append(el);
+      }
+      historyEl.classList.toggle("on", historyEl.childElementCount > 0);
+      fit();
+    }
     function render(line) {
+      // A status that only repeats the session line (e.g. "attached to <window>")
+      // is not content: the session line already says it (owner 2026-11-14).
+      if (line && line.kind === "status" && /^attached to /i.test(String(line.text || ""))) line = null;
       current = line || null;
       if (!line) {
         lineEl.classList.remove("on", "error", "status");
         meta.classList.remove("on");
         foot.classList.remove("on");
-        empty.classList.remove("off");
+        fit();
         return;
       }
-      empty.classList.add("off");
       lineEl.classList.add("on");
       lineEl.classList.toggle("error", line.kind === "error");
       lineEl.classList.toggle("status", line.kind === "status");
@@ -1297,10 +1422,11 @@
       pin.textContent = line.pinned ? "Pinned" : "Pin";
       pin.classList.toggle("active", Boolean(line.pinned));
       copy.textContent = "Copy";
+      fit();
     }
     function renderHold(payload) {
       const h = payload && payload.hold;
-      if (!h) { holdEl.classList.remove("on"); return; }
+      if (!h) { holdEl.classList.remove("on"); fit(); return; }
       holdEl.classList.add("on");
       holdLabel.textContent = (payload && payload.label) || "held";
       holdSub.textContent = h.kind === "file" ? h.path || "" : h.kind === "web" ? (h.url || "") : "dropped text";
@@ -1315,9 +1441,10 @@
         });
         holdActions.appendChild(b);
       }
+      fit();
     }
     function renderResults(payload) {
-      if (!payload || !Array.isArray(payload.rows)) { resultsEl.classList.remove("on"); return; }
+      if (!payload || !Array.isArray(payload.rows)) { resultsEl.classList.remove("on"); fit(); return; }
       resultsEl.classList.add("on");
       resultsTitle.textContent = payload.mode === "web"
         ? `Web — ${payload.query || ""}`
@@ -1352,6 +1479,7 @@
         rowsEl.appendChild(rowEl);
       });
       resultsMore.textContent = payload.more ? `+${payload.more} more` : "";
+      fit();
     }
     function renderTrips(payload) {
       const view = (payload && payload.view) || { items: [], more: 0, moreLine: "" };
@@ -1372,6 +1500,7 @@
       }
       tripMore.textContent = view.moreLine || "";
       tripQueue.textContent = (payload && payload.line) || "";
+      fit();
     }
     function setMode(next, title, who) {
       mode = next || null;
@@ -1382,6 +1511,7 @@
       q.placeholder = mode === "card" && title
         ? `Ask about “${String(title).slice(0, 60)}”…`
         : PLACEHOLDERS[mode] || PLACEHOLDERS.null;
+      for (const b of document.querySelectorAll("#actions button[data-mode]")) b.classList.toggle("on", b.dataset.mode === mode);
     }
     function reportDraft() {
       api.state({ drafting: q.value.trim().length > 0 });
@@ -1414,6 +1544,8 @@
     });
     send.addEventListener("click", submit);
     close.addEventListener("click", () => api.close());
+    sPick.addEventListener("change", () => { api.panelSession(sPick.value).then((r) => { if (r && r.view) renderPanel(r.view); }); });
+    sDetach.addEventListener("click", () => { api.panelSession("detach"); });
     for (const b of document.querySelectorAll("#actions button")) {
       b.addEventListener("click", () => {
         if (b.dataset.mode) { api.mode(b.dataset.mode).then(() => { q.focus(); }); setMode(b.dataset.mode); return; }
@@ -1453,6 +1585,7 @@
     api.onTint((t) => { if (t) applyTint(t.css); });
     api.onAttach((a) => { where.textContent = a && a.attached ? (a.label || "attached") : "free"; });
     api.onFocus(() => { q.focus(); });
+    if (api.onPanelView) api.onPanelView(renderPanel);
     api.init().then((s) => {
       if (!s) return;
       if (s.tint) applyTint(s.tint.css);
@@ -1462,6 +1595,7 @@
       if (s.trips) renderTrips(s.trips);
       if (s.attach) where.textContent = s.attach.label || "attached";
       setMode(s.mode, s.modeTitle, s.modeWho);
+      renderPanel(s.panelView);
       if (s.view === "bubble") setTimeout(() => q.focus(), 30);
     });
   }
