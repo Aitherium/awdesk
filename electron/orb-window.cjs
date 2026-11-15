@@ -54,6 +54,8 @@ const companionMenu = require("./companion-menu.cjs");
 const fairyOwner = require("./fairy-owner.cjs");
 const fairyCounts = require("./fairy-counts.cjs");
 const fairyHoverGuard = require("./fairy-hover-guard.cjs");
+const fairyPanel = require("./fairy-panel.cjs");
+const agentsPanel = require("./agents-panel.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -325,13 +327,94 @@ function placeBubble() {
   if (!alive(bubbleWindow) || !alive(orbWindow)) return;
   const [x, y] = orbWindow.getPosition();
   const area = fairyArea(displayForOrb().workArea);
+  const size = { width: BUBBLE_SIZE.width, height: bubbleHeight };
   const pos = orbCore.bubblePosition(
     { x, y, width: ORB_SIZE.width, height: ORB_SIZE.height },
-    BUBBLE_SIZE,
+    size,
     area,
     10,
   );
-  bubbleWindow.setBounds({ ...pos, ...BUBBLE_SIZE });
+  bubbleWindow.setBounds({ ...pos, ...size });
+}
+
+// ── the panel: one box, one button (fairy-panel.cjs, owner 2026-11-14) ──────
+/** The bubble's height, set by the page from its content (no dead space). */
+let bubbleHeight = 180;
+/** The session the owner switched the panel to (null = follow the attach). */
+let panelSessionId = null;
+/** session id ("free" = none) -> the last few exchanges, newest last. */
+let panelHistory = new Map();
+let panelSessions = { rows: null, note: "" };
+let panelTimer = null;
+let panelSessionsInflight = false;
+const PANEL_POLL_MS = 5000;
+
+function currentPanelView() {
+  return fairyPanel.panelView({
+    sessions: panelSessions.rows,
+    sessionsNote: panelSessions.note,
+    cards: attentionCards,
+    history: panelHistory,
+    chosenId: panelSessionId,
+    attach: publicAttach(),
+    current: queue.cur,
+  });
+}
+
+function sendPanelView() {
+  if (!alive(bubbleWindow)) return null;
+  const view = currentPanelView();
+  try { bubbleWindow.webContents.send("orb:panel-view", view); } catch { /* page mid-load: init carries it */ }
+  return view;
+}
+
+/** Re-read the live sessions (the harness daemon, via main's hook). Never throws. */
+async function refreshPanelSessions() {
+  if (panelSessionsInflight) return panelSessions;
+  const fn = attentionHooks && attentionHooks.sessions;
+  if (typeof fn !== "function") return panelSessions;
+  panelSessionsInflight = true;
+  try {
+    const shaped = agentsPanel.shapeSessions(await fn());
+    panelSessions = { rows: shaped.ok ? shaped.rows : [], note: shaped.note };
+  } catch (e) {
+    panelSessions = { rows: [], note: String((e && e.message) || "sessions unavailable") };
+  } finally {
+    panelSessionsInflight = false;
+  }
+  sendPanelView();
+  return panelSessions;
+}
+
+/** Poll the sessions only while the panel is on screen (perf first). */
+function syncPanelPoll() {
+  const up = alive(bubbleWindow) && bubbleWindow.isVisible();
+  if (up && !panelTimer) {
+    void refreshPanelSessions();
+    panelTimer = setInterval(() => { void refreshPanelSessions(); }, PANEL_POLL_MS);
+    if (panelTimer.unref) panelTimer.unref();
+  } else if (!up && panelTimer) {
+    clearInterval(panelTimer);
+    panelTimer = null;
+  }
+}
+
+function panelKey() {
+  const v = currentPanelView();
+  return v.line.kind === "session" ? v.line.id : "free";
+}
+
+/** What one action returned, as one line of history. */
+function exchangeText(r) {
+  if (!r || typeof r !== "object") return "";
+  if (r.ok === false) return String(r.error || r.reason || r.line || "it did not work");
+  if (r.text || r.answer) return String(r.text || r.answer);
+  if (results && Array.isArray(results.rows)) {
+    const top = results.rows[0];
+    return `${results.rows.length} result${results.rows.length === 1 ? "" : "s"}${top ? `: ${top.title || top.target || top.url || ""}` : ""}`;
+  }
+  if (r.held && r.held.path) return `holding ${r.held.path}`;
+  return "";
 }
 
 /**
@@ -449,7 +532,7 @@ function ensureBubble() {
   if (alive(bubbleWindow)) return bubbleWindow;
   const { BrowserWindow } = electron();
   bubbleWindow = new BrowserWindow({
-    ...BUBBLE_SIZE,
+    width: BUBBLE_SIZE.width, height: bubbleHeight,
     show: false, frame: false, transparent: true, resizable: false, movable: false,
     minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true,
     alwaysOnTop: true, hasShadow: true, title: "Ask Aither",
@@ -464,7 +547,17 @@ function ensureBubble() {
   bubbleWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   bubbleWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   bubbleWindow.on("closed", () => { bubbleWindow = null; });
-  bubbleWindow.on("blur", () => { drafting = false; syncBubble(); });
+  bubbleWindow.on("blur", () => {
+    drafting = false;
+    // Owner 2026-11-14: it closes when you leave it and click elsewhere -- but never
+    // mid-answer or mid-trip, and never while the pointer is still on it.
+    if (!inflight && !tripBusy && !regionWait && alive(bubbleWindow)
+        && !fairyHoverGuard.inside(cursorPoint(), bubbleWindow.getBounds())) {
+      closeBubble();
+      return;
+    }
+    syncBubble();
+  });
   void bubbleWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "bubble" } });
   return bubbleWindow;
 }
@@ -791,6 +884,7 @@ function syncBubble() {
     drafting = false;
   }
   sendPanel();
+  syncPanelPoll();
 }
 
 function openBubble({ focus = false } = {}) {
@@ -804,6 +898,8 @@ function openBubble({ focus = false } = {}) {
     try { win.webContents.send("orb:focus"); } catch { /* page loading: focuses on load */ }
   }
   sendPanel();
+  syncPanelPoll();
+  sendPanelView();
 }
 
 function closeBubble() {
@@ -814,6 +910,7 @@ function closeBubble() {
   drafting = false;
   if (alive(bubbleWindow)) bubbleWindow.hide();
   sendPanel();
+  syncPanelPoll();
   return { ok: true };
 }
 
@@ -1721,6 +1818,7 @@ function sendAttach() {
     label: spiritCore.attachLabel(attach),
     tint: tint.css,
   });
+  sendPanelView();
 }
 
 function sendHold() {
@@ -2362,6 +2460,7 @@ function setAttentionCards(cards, allOpen = null) {
   if (nudging && !ids.has(nudging.decision.card.id)) endNudge("answered");
   sendFairy();
   sendBadge();
+  sendPanelView();
   ensureAttention();
   scheduleAttentionTick(1500); // a NEW card is judged now, not on the next 15 s tick
   return { ok: true, count: attentionCards.length };
@@ -3604,6 +3703,23 @@ function fromOrb(sender) {
   return ids.some((wc) => wc === sender);
 }
 
+/** One panel/orb action: screen, region, text, find, web, or a typed aw-verb or sprite teach. */
+async function orbAsk(what, text, slotId) {
+  const asked = String(slotId || "") || null;
+  const slot = asked || pendingSlot;
+  if (asked || pendingSlot) pendingSlot = null;
+  if (what === "screen") return askScreen({ slotId: slot });
+  if (what === "region") return askRegion({ slotId: slot });
+  if (what === "text") return askText(text, { slotId: slot });
+  // Carry the body remembered when its menu row opened the field: the
+  // delegation must not lose the slot between the handler and run().
+  if (what === "find") return run("find", { surface: "bubble", arg: text, slotId: slot });
+  if (what === "web") return run("web", { surface: "bubble", arg: text, slotId: slot });
+  // The bubble field typed for a sprite teach or an aw* verb (openMode set it).
+  if (what === "sprite-teach" || awCli.AW_VERBS[what]) return run(what, { surface: "bubble", arg: text });
+  return { ok: false, error: `unknown orb ask ${what}` };
+}
+
 function handlers() {
   const guard = (fn) => async (event, ...args) => {
     if (!event || !event.sender || !fromOrb(event.sender)) return { ok: false, error: "not the orb" };
@@ -3641,6 +3757,7 @@ function handlers() {
         companions: currentCompanions(),
         menu: view === "menu" ? publicMenu() : null,
         tipDwellMs: fairyMenu.TIP_DWELL_MS,
+        panelView: view === "bubble" ? currentPanelView() : null,
       };
     }),
     "desk:orb-hit": guard((_sender, inside) => {
@@ -3676,21 +3793,49 @@ function handlers() {
       void runCommandImpl?.("inbox.open");
       return { ok: true };
     }),
-    "desk:orb-ask": guard(async (_sender, verb, text, slotId) => {
+    "desk:orb-ask": guard(async (sender, verb, text, slotId) => {
       const what = String(verb || "");
-      const asked = String(slotId || "") || null;
-      const slot = asked || pendingSlot;
-      if (asked || pendingSlot) pendingSlot = null;
-      if (what === "screen") return askScreen({ slotId: slot });
-      if (what === "region") return askRegion({ slotId: slot });
-      if (what === "text") return askText(text, { slotId: slot });
-      // Carry the body remembered when its menu row opened the field: the
-      // delegation must not lose the slot between the handler and run().
-      if (what === "find") return run("find", { surface: "bubble", arg: text, slotId: slot });
-      if (what === "web") return run("web", { surface: "bubble", arg: text, slotId: slot });
-      // The bubble field typed for a sprite teach or an aw* verb (openMode set it).
-      if (what === "sprite-teach" || awCli.AW_VERBS[what]) return run(what, { surface: "bubble", arg: text });
-      return { ok: false, error: `unknown orb ask ${what}` };
+      const r = await orbAsk(what, text, slotId);
+      const said = { screen: "What's on my screen?", region: "Explain this region" }[what]
+        || (what === "find" ? `Find ${String(text || "").trim()}` : what === "web" ? `Search ${String(text || "").trim()}` : String(text || "").trim());
+      const a = exchangeText(r);
+      if (said && a) {
+        fairyPanel.recordExchange(panelHistory, panelKey(), { q: said, a, kind: r && r.ok === false ? "error" : "answer" });
+        sendPanelView();
+      }
+      return r;
+    }),
+    // The panel's one-line session switcher: pick a session, or "" to follow the attach.
+    "desk:panel-session": guard((_sender, id) => {
+      const want = String(id || "");
+      if (want === "detach") {
+        panelSessionId = null;
+        const r = detach({ silent: false });
+        sendPanelView();
+        return r;
+      }
+      panelSessionId = want || null;
+      return { ok: true, view: sendPanelView() };
+    }),
+    // A card the attached session raised, answered from the panel: the ONE desk answer path.
+    "desk:panel-answer": guard(async (_sender, id, key) => {
+      const card = attentionCards.find((c) => c && c.id === String(id || ""));
+      if (!card) return { ok: false, error: "that card is no longer open" };
+      const opt = (card.options || []).find((o) => o && o.key === String(key || ""));
+      if (!opt) return { ok: false, error: "that is not one of its options" };
+      let verdict;
+      try { verdict = await hookValue("answer", card.id, opt.key); } catch { verdict = false; }
+      const ok = Boolean(verdict && (verdict === true || verdict.ok !== false));
+      return ok ? { ok: true, id: card.id, key: opt.key } : { ok: false, error: (verdict && (verdict.flash || verdict.error)) || "the answer did not go through" };
+    }),
+    // The page measured its content: the window fits it (no dead space).
+    "desk:panel-size": guard((_sender, px) => {
+      const h = fairyPanel.fitHeight(px, { max: BUBBLE_SIZE.height });
+      if (h !== bubbleHeight) {
+        bubbleHeight = h;
+        placeBubble();
+      }
+      return { ok: true, height: bubbleHeight };
     }),
     "desk:orb-copy": guard((_sender, id) => {
       const line = queue.cur && (!id || queue.cur.id === id) ? queue.cur : null;
@@ -3819,6 +3964,7 @@ function stopOrb() {
   tipWindow = null;
   if (hoverGuardImpl) hoverGuardImpl.release();
   hoverGuardImpl = null;
+  if (panelTimer) { clearInterval(panelTimer); panelTimer = null; }
   nudgeWindow = null;
   veilWindow = null;
   bubbleWindow = null;
@@ -3979,6 +4125,11 @@ module.exports = {
     tipWindow = null;
     if (hoverGuardImpl) hoverGuardImpl.release();
     hoverGuardImpl = null;
+    if (panelTimer) { clearInterval(panelTimer); panelTimer = null; }
+    panelSessionId = null;
+    panelHistory = new Map();
+    panelSessions = { rows: null, note: "" };
+    bubbleHeight = 180;
     nudgeWindow = null;
     swarmWindow = null;
     veilWindow = null;

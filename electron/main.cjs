@@ -6340,6 +6340,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         // Click a companion fairy: the chat with THAT agent (same persona as its
         // Discord bot), continuing its thread when the board names one.
         chat: (agent, links) => openAgentChat(agent, links),
+        // The fairy panel's session line (fairy-panel.cjs): the same live directory the
+        // browser's Agents tab reads, polled only while the panel is on screen.
+        sessions: () => require("./sessions-client.cjs").listSessions(),
         // "Chat": a session card brings what the session last asked and said.
         session: (card) => {
           try { return card && card.sessionId ? deckSession(card.id) : null; } catch { return null; }
