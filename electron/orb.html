@@ -335,6 +335,21 @@
     transition: opacity 0.22s ease, transform 0.22s ease; }
   #nudge.left { transform: translateX(12px) scale(0.98); }
   #nudge.on { opacity: 1; transform: none; }
+  /* Owner 2026-11-14: a dismissed card froze at ~30% over the page. A card that is
+     not "on" never takes a click, and once its fade ends it is unmounted. */
+  #nudge:not(.on) { pointer-events: none; }
+  #nudge.gone { display: none; }
+  /* Short and readable: one title line, one "what is needed" line, one primary + Open;
+     the rest (other options, one line of context, the voice/chat row) behind "more". */
+  #n-need { margin-top: 2px; font-size: 11.5px; color: #c4cfe2; cursor: pointer; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  #n-need:hover { color: var(--fg, #e6edf3); text-decoration: underline; }
+  #n-acts #n-moretoggle { flex: none; border: 0; background: transparent; color: var(--fg-muted, #8b96ab);
+    cursor: pointer; font: 11px var(--font-sans, system-ui); padding: 0 2px; margin-left: auto; align-self: center; }
+  #n-acts #n-moretoggle:hover { color: var(--fg, #e6edf3); text-decoration: underline; }
+  #n-extra { display: none; }
+  #nudge.expanded #n-extra { display: block; }
+  #n-extra #n-sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #nudge.lv2 { border-color: rgba(244,250,255,0.5); animation: nglow 1.8s ease-in-out infinite; }
   #nudge.lv3 { border-color: rgba(255,200,120,0.8); animation: nglow3 1.1s ease-in-out infinite; }
   @keyframes nglow { 0%, 100% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 12px rgba(225,240,255,0.16); }
@@ -354,7 +369,7 @@
     line-height: 1; padding: 3px 5px; border-radius: 6px; flex: none; }
   #n-x:hover { background: rgba(255,255,255,0.07); color: var(--fg, #e6edf3); }
   #n-title { margin-top: 4px; font-weight: 600; font-size: 13.5px; line-height: 1.3; color: var(--fg, #e6edf3);
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #n-old { margin-top: 3px; font-size: 11.5px; font-weight: 600; color: #ffd28a; }
   #n-why { margin-top: 3px; font-size: 11.5px; line-height: 1.35; color: #c4cfe2;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -1048,17 +1063,18 @@
   // Never focused (the window is focusable:false) and click-through until the
   // pointer is ON the card: main flips hit testing when this page says so.
   if (view === "nudge") {
-    document.body.innerHTML = '<div id="nudge">'
+    document.body.innerHTML = '<div id="nudge" class="gone">'
       + '<div id="n-head"><span id="n-dot"></span><span id="n-lead"></span>'
       + '<span id="n-more" title="See everything that is waiting"></span>'
       + '<button id="n-x" title="Later: I will bring it back in an hour">&#10005;</button></div>'
-      + '<div id="n-title"></div><div id="n-old"></div><div id="n-why"></div><div id="n-sum"></div><ul id="n-facts"></ul>'
+      + '<div id="n-title"></div><div id="n-old"></div><div id="n-need" title="Open the card"></div><div id="n-why"></div>'
       + '<div id="n-ui"></div><div id="n-acts"></div>'
+      + '<div id="n-extra"><div id="n-sum"></div><ul id="n-facts"></ul><div id="n-alt"></div>'
       + '<div id="n-foot"><button data-act="read">Read it to me</button>'
       + '<button data-act="talk" title="Talk it through out loud: say an option, or what to do instead">Talk</button>'
       + '<button data-act="chat" title="Chat with the fairy about this card (also Alt+Space)">Chat</button>'
       + '<button data-act="keep" title="It matters: nudge harder until it is done">Keep nudging me</button>'
-      + '<button data-act="mute" title="Leave it on the badge">Stop nudging this</button></div>'
+      + '<button data-act="mute" title="Leave it on the badge">Stop nudging this</button></div></div>'
       + '<div id="n-flash"></div></div>';
     const box = document.getElementById("nudge");
     const leadEl = document.getElementById("n-lead");
@@ -1139,12 +1155,28 @@
       uiEl.classList.add("on");
       return true;
     }
+    // The fade ALWAYS finishes and the card is unmounted: transitionend, or a timer
+    // when no transition event comes (a hidden/throttled window never sends one).
+    let unmount = 0;
+    function finishFade() {
+      if (unmount) { window.clearTimeout(unmount); unmount = 0; }
+      if (box.classList.contains("on")) return;
+      box.classList.add("gone");
+      box.classList.remove("expanded");
+    }
+    box.addEventListener("transitionend", (e) => { if (e.target === box && e.propertyName === "opacity") finishFade(); });
+    const needEl = document.getElementById("n-need");
+    const altEl = document.getElementById("n-alt");
+    const extraEl = document.getElementById("n-extra");
     function render(v) {
       if (!v) {
         box.classList.remove("on", "done");
         setInside(false);
+        if (unmount) window.clearTimeout(unmount);
+        unmount = window.setTimeout(finishFade, 320);
         return;
       }
+      if (unmount) { window.clearTimeout(unmount); unmount = 0; }
       box.className = `lv${Number(v.level) || 1}${v.side === "left" ? " left" : ""}`;
       leadEl.textContent = v.lead || "Waiting on you";
       // The dot is the fairy of the agent whose card this is (agent-fairy.cjs).
@@ -1161,8 +1193,10 @@
       oldEl.style.display = v.old ? "" : "none";
       titleEl.textContent = v.title || "";
       titleEl.title = v.title || "";
-      whyEl.textContent = v.why || "";
-      whyEl.style.display = v.why ? "" : "none";
+      // ONE line of what is needed, linked to the card.
+      needEl.textContent = v.why || `Card ${v.id} needs you`;
+      whyEl.textContent = "";
+      whyEl.style.display = "none";
       const sumEl = document.getElementById("n-sum");
       const factsEl = document.getElementById("n-facts");
       sumEl.textContent = v.summary || "";
@@ -1182,20 +1216,27 @@
       } else if (v.credential) {
         actsEl.append(button("Enter it", "primary", () => api.nudgeAct("open"), "Opens the masked field in your Inbox"));
       } else {
-        for (const o of v.options || []) {
-          const b = button(o.label, o.recommended ? "rec" : "", () => api.nudgeAct("answer", o.key),
+        // ONE primary (the recommended option, else the first) plus Open; the other
+        // options wait behind "more" with the context.
+        const opts = v.options || [];
+        const main = opts.find((o) => o.recommended) || opts[0] || null;
+        altEl.textContent = "";
+        for (const o of opts) {
+          const b = button(o.label, o === main ? "primary" : "", () => api.nudgeAct("answer", o.key),
             o.consequence || (o.recommended ? "Suggested" : ""));
-          // What pressing it DOES, visible -- not hidden in a hover tooltip.
-          if (o.consequence) {
-            const c = document.createElement("span");
-            c.className = "cons";
-            c.textContent = o.consequence;
-            b.append(c);
-          }
-          actsEl.append(b);
+          (o === main ? actsEl : altEl).append(b);
         }
-        actsEl.append(button("Open", (v.options || []).length ? "" : "primary", () => api.nudgeAct("open"), "Open the whole card"));
+        actsEl.append(button("Open", main ? "" : "primary", () => api.nudgeAct("open"), "Open the whole card"));
       }
+      const extra = Boolean(v.summary || (v.facts || []).length || altEl.childElementCount);
+      const toggle = button("more", "", () => {
+        box.classList.toggle("expanded");
+        toggle.textContent = box.classList.contains("expanded") ? "less" : "more";
+        api.nudgeAct("size", String(Math.ceil(box.getBoundingClientRect().height + 20)));
+      }, "Context and the other options");
+      toggle.id = "n-moretoggle";
+      actsEl.append(toggle);
+      extraEl.dataset.has = extra ? "1" : "";
       flashEl.textContent = "";
       flashEl.className = "";
       box.classList.remove("talking");
@@ -1206,6 +1247,7 @@
       });
     }
     moreEl.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("more"); });
+    needEl.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("open"); });
     document.getElementById("n-x").addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("later"); });
     for (const b of document.querySelectorAll("#n-foot button")) {
       b.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct(b.dataset.act); });
