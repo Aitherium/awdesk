@@ -126,6 +126,12 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   // Main gave this window back to click-through (the pointer left it without a
   // mouseleave reaching the page): drop the hover so the next move re-arms it.
   onHitReset: (fn) => on("orb:hit-reset", fn),
+  // The panel (fairy-panel.cjs): the session switcher, a card answered in place, and
+  // the page's own content height so the window fits it.
+  panelSession: (id) => ipcRenderer.invoke("desk:panel-session", String(id || "")),
+  panelAnswer: (id, key) => ipcRenderer.invoke("desk:panel-answer", String(id || ""), String(key || "")),
+  panelSize: (px) => ipcRenderer.invoke("desk:panel-size", Number(px) || 0),
+  onPanelView: (fn) => on("orb:panel-view", fn),
   // Right click: a companion's menu (its card) or the orb's; a pick names an item id.
   fairyMenu: (id, agent) => ipcRenderer.invoke("desk:fairy-menu", String(id || ""), String(agent || "")),
   orbMenu: () => ipcRenderer.invoke("desk:orb-menu"),

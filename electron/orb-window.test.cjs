@@ -816,6 +816,7 @@ test("the whisper answers with the card's OWN option through main, and refuses o
   assert.deepEqual(calls.answer, [["d-fair", "ack"]]);
   await wait(1500);
   assert.equal(orbWindow.nudging(), null, "the confirmation closes the whisper");
+  await wait(350); // the fade finishes, then the window goes
   assert.equal(whisper.isVisible(), false);
   assert.equal(orbWindow.attentionMems()["d-fair"].ignored || 0, 0, "answered is not ignored");
 });
@@ -1908,4 +1909,147 @@ test("the orb page draws no native tooltip; its own line rides the guarded tip w
   const swarm = html.slice(html.indexOf('if (view === "swarm")'), html.indexOf("// ── the right-click menu"));
   assert.match(swarm, /api\.onHitReset/);
   assert.match(swarm, /orbited out from under a still pointer/);
+});
+
+// ── owner 2026-11-14: the Aither panel, one box, one button, every action works ──
+
+function lastPanel() { return lastSent(bubbleWin(), "orb:panel-view"); }
+
+test("panel: every quick action returns content (screen, region, file, web) and lands in the history", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "panel-"));
+  const shot = path.join(dir, "region.png");
+  fs.writeFileSync(shot, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  let snipped = false;
+  const capture = captureFake();
+  capture.lastScreenshot = () => (snipped ? shot : null);
+  capture.startSnip = async () => { snipped = true; return { ok: true }; };
+  start({
+    capture,
+    askVision: async (_img, prompt) => ({ ok: true, text: /region/i.test(prompt) ? "A chart of GPU memory." : "A terminal running tests.", via: "test" }),
+  });
+  orbWindow.__setOps({
+    async findFiles() {
+      return { ok: true, rows: [
+        { kind: "file", title: "notes.md", subtitle: dir, target: path.join(dir, "notes.md") },
+        { kind: "file", title: "notes2.md", subtitle: dir, target: path.join(dir, "notes2.md") },
+      ], more: 0, total: 2 };
+    },
+    async webSearch() { return { ok: true, rows: [{ title: "Electron docs", url: "https://www.electronjs.org/docs" }], more: 0, total: 1, answer: null }; },
+    async readFile() { return { ok: true, answer: "" }; },
+    async listFolder() { return { ok: true, rows: [], more: 0, total: 0 }; },
+  });
+  orbWindow.openBubble({ focus: true });
+  const bubble = bubbleWin();
+  const screen = await invoke("desk:orb-ask", bubble, "screen", "");
+  assert.equal(screen.ok, true);
+  assert.match(screen.text, /terminal running tests/);
+  const region = await invoke("desk:orb-ask", bubble, "region", "");
+  assert.equal(region.ok, true, JSON.stringify(region));
+  assert.match(region.text, /GPU memory/);
+  const file = await invoke("desk:orb-ask", bubble, "find", "notes");
+  assert.notEqual(file && file.ok, false, JSON.stringify(file));
+  assert.ok(orbWindow.results() && orbWindow.results().rows.length >= 1, "file results are on the panel");
+  const web = await invoke("desk:orb-ask", bubble, "web", "electron docs");
+  assert.notEqual(web && web.ok, false, JSON.stringify(web));
+  assert.equal(orbWindow.results().mode, "web");
+  const hist = lastPanel().history;
+  const qs = hist.map((h) => h.q);
+  for (const q of ["What's on my screen?", "Find notes", "Search electron docs"]) assert.ok(qs.includes(q), `${q} in ${JSON.stringify(qs)}`);
+  // The region answer is either in the history or the answer still on screen (never both).
+  assert.ok(qs.includes("Explain this region") || /GPU memory/.test(String(orbWindow.queue().cur && orbWindow.queue().cur.text)));
+  assert.ok(hist.every((h) => h.a), "every exchange has content");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("panel: the session line follows a pick, shows that session's cards, and answers one in place", async () => {
+  const calls = startAttention({
+    sessions: async () => ({ ok: true, sessions: [
+      { id: "s-1", title: "Discord workflow launch", status: "working", last_activity_summary: "running the bot tests" },
+      { id: "s-2", title: "AitherOS-Fresh", status: "idle" },
+    ] }),
+  });
+  orbWindow.setAttentionCards([blockedCard({ id: "d-s1", sessionId: "s-1" })]);
+  if (orbWindow.nudging()) orbWindow.endNudge("seen", { stay: true });
+  orbWindow.openBubble({ focus: true });
+  await wait(30);
+  const bubble = bubbleWin();
+  await invoke("desk:panel-session", bubble, "s-1");
+  let v = lastPanel();
+  assert.equal(v.line.kind, "session");
+  assert.equal(v.line.title, "Discord workflow launch");
+  assert.match(`${v.line.statusText} ${v.line.last}`, /running the bot tests/);
+  assert.deepEqual(v.cards.map((c) => c.id), ["d-s1"]);
+  const r = await invoke("desk:panel-answer", bubble, "d-s1", "ack");
+  assert.equal(r.ok, true);
+  assert.deepEqual(calls.answer.pop(), ["d-s1", "ack"], "the ONE desk answer path");
+  const bad = await invoke("desk:panel-answer", bubble, "d-s1", "nope");
+  assert.equal(bad.ok, false);
+  await invoke("desk:panel-session", bubble, "s-2");
+  v = lastPanel();
+  assert.equal(v.line.id, "s-2");
+  assert.deepEqual(v.cards, [], "another session's cards are not this one's");
+});
+
+test("panel: the window fits its content, and clicking elsewhere with the pointer off it closes it", async () => {
+  start();
+  orbWindow.openBubble({ focus: true });
+  const bubble = bubbleWin();
+  await invoke("desk:orb-ask", bubble, "screen", ""); // something on it worth keeping
+  await invoke("desk:panel-size", bubble, 150);
+  assert.equal(bubble.getBounds().height, 150, "no fixed 480 px of air");
+  await invoke("desk:panel-size", bubble, 5000);
+  assert.equal(bubble.getBounds().height, orbWindow.BUBBLE_SIZE.height);
+  const b = bubble.getBounds();
+  cursor = { x: b.x + 10, y: b.y + 10 };
+  bubble.emit("blur");
+  assert.equal(bubble.isVisible(), true, "the pointer is still on it: it stays");
+  cursor = { x: b.x + b.width + 300, y: b.y };
+  bubble.emit("blur");
+  assert.equal(bubble.isVisible(), false, "left and clicked elsewhere: it closes");
+});
+
+test("panel markup: input on top, four small chips, one session line, no empty box", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  const bubble = html.slice(html.indexOf('if (view === "bubble")'));
+  const markup = bubble.slice(0, bubble.indexOf("</div>`;"));
+  assert.ok(markup.indexOf('id="ask"') < markup.indexOf('id="actions"'), "the input comes first");
+  assert.ok(markup.indexOf('id="actions"') < markup.indexOf('id="stage"'));
+  assert.equal((markup.match(/<button data-(ask|mode)=/g) || []).length, 4);
+  assert.doesNotMatch(markup, /id="empty"/, "no empty box");
+  assert.doesNotMatch(markup, /What's on my screen\?<\/button>/, "chips are small labels, not sentences");
+  assert.match(markup, /id="session"/);
+  assert.match(bubble, /\^attached to \/i/, "a status that repeats the session line is dropped");
+});
+
+// ── owner 2026-11-14: a dismissed whisper froze at ~30% over the page ──────
+
+test("a dismissed whisper is click-through at once, fades, then its window hides; a new one cancels the hide", async () => {
+  startAttention();
+  orbWindow.setAttentionCards([blockedCard()]);
+  await orbWindow.attentionTick();
+  await wait(1000);
+  const whisper = nudgeWin();
+  assert.ok(whisper && whisper.isVisible());
+  assert.equal(whisper.opts.webPreferences.backgroundThrottling, false, "an occluded whisper still finishes its fade");
+  await invoke("desk:nudge-act", whisper, "hover", true);
+  assert.equal(whisper.ignoreMouse, false);
+  orbWindow.endNudge("later", { stay: true });
+  assert.equal(whisper.ignoreMouse, true, "click-through during the fade");
+  assert.equal(lastSent(whisper, "orb:nudge-view"), null, "the page is told to fade and unmount");
+  await wait(350);
+  assert.equal(whisper.isVisible(), false, "and the window is gone after the fade, never left up");
+});
+
+test("the whisper page always finishes its fade and unmounts the card, and is short", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  const nudge = html.slice(html.indexOf('if (view === "nudge")'), html.indexOf('if (view === "bubble")'));
+  assert.match(nudge, /transitionend/);
+  assert.match(nudge, /setTimeout\(finishFade, 320\)/, "a timer finishes it when no transition event comes");
+  assert.match(nudge, /classList\.add\("gone"\)/);
+  assert.match(html, /#nudge\.gone \{ display: none; \}/);
+  assert.match(html, /#nudge:not\(\.on\) \{ pointer-events: none; \}/);
+  assert.match(nudge, /id="n-need"/, "one line of what is needed");
+  assert.match(nudge, /Card \$\{v\.id\} needs you/);
+  assert.match(nudge, /o === main \? "primary"/, "one primary button");
+  assert.match(nudge, /id="n-extra"/, "the transcript and the rest sit behind more");
 });
