@@ -3120,7 +3120,7 @@ function popupAvatarMenu(slotId) {
       "avatar-menu",
       (id) => runCommand(id, undefined, { surface: "avatar-menu", slotId }),
       {
-        ctx: { ...commandContext(), slotId, agent: agentForSlot(slotId) || agent, agentMuted: agentVoiceMuted(agentForSlot(slotId)), removable: !isDefault, sessionAddress },
+        ctx: { ...commandContext(), slotId, agent: agentForSlot(slotId) || agent, agentMuted: agentVoiceMuted(agentForSlot(slotId)), removable: !isDefault, sessionAddress, inStage: Boolean(swarmHostInstance && swarmHostInstance.stageOfSlot(slotId)) },
         submenus: { "characters.pick": buildCharacterMenu() },
       },
     ),
@@ -3139,6 +3139,17 @@ function popupAvatarMenu(slotId) {
 
 ipcMain.on("desk:avatar-context-menu", (_event, slotId) => {
   popupAvatarMenu(String(slotId || ""));
+});
+
+// Stages by direct manipulation: a body dropped on another joins its stage; a stage moved by its
+// handle tells main where its members stand. Only the avatar window may send either.
+ipcMain.on("desk:stage-drop", (event, slotId, targetSlotId) => {
+  if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
+  void getSwarmHost().joinSlots(String(slotId || ""), String(targetSlotId || ""));
+});
+ipcMain.on("desk:stage-sync", (event, positions) => {
+  if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
+  getSwarmHost().syncPositions(positions);
 });
 
 /** First "slotN" not already in avatarSlots — spawn_avatar/remove_avatar were MCP-only
@@ -4121,6 +4132,8 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "avatar.frame-all": return void sendToAvatar("focus-avatar", { slotId: null });
     case "avatar.reset": return void sendToAvatar("reset-avatar-layout", { slotId });
     case "avatar.remove": return void (slotId && removeAvatarSlot(slotId));
+    // Right-click a body in a stage > Leave stage (stages by direct manipulation, 2026-11-16).
+    case "stage.leave": return void (slotId && getSwarmHost().leaveSlot(slotId));
     // Grown from the fairy (owner 2026-11-15): the orb is down, the way back is on the body.
     case "avatar.to-fairy": return void orbWindow.collapseToFairy();
     case "avatar.from-fairy": return void orbWindow.expandToAvatar();

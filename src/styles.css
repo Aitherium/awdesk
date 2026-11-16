@@ -109,7 +109,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 190px;
+  max-width: 250px;
   padding: 8px 10px;
   border-radius: 10px;
   border: 1px solid var(--deck-edge);
@@ -1648,3 +1648,30 @@ body {
 .fairy-mark-swept::before,
 .fairy-mark-swept::after { height: 26%; border-radius: 0 80% 20% 80%; }
 .fairy-mark-ring { outline: 1px solid var(--fm-glow); outline-offset: 1px; }
+
+/* A stage's handle (src/stage/StageHandles.tsx): a small chip over a group of bodies; drag it to
+   move the whole stage. It is drawn DOM, so the window takes the pointer there. */
+.stage-handle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--deck-edge, rgba(214, 236, 255, 0.35));
+  background: var(--bead-bg, rgba(10, 14, 24, 0.9));
+  color: var(--bead-fg, #eef6ff);
+  font: 600 11px/1.2 system-ui, sans-serif;
+  white-space: nowrap;
+  cursor: grab;
+  user-select: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.stage-handle:active {
+  cursor: grabbing;
+}
+
+.stage-handle-grip {
+  font-size: 14px;
+  opacity: 0.75;
+}

@@ -67,6 +67,8 @@ type AvatarBridgeEvent =
   | { type: 'slot-visible'; slotId: string; visible: boolean }
   // A body's name tag and outline colour (the agent's own): shown on hover and selection.
   | { type: 'slot-look'; slotId: string; look: { label: string; color: string } | null }
+  // Which bodies share a stage (electron/agent-swarm-host.cjs): the renderer draws a handle over each group.
+  | { type: 'stage-groups'; groups: Array<{ id: string; slots: string[]; members: string[]; locked: boolean }> }
   // Plan 40 slice G: main names an ARRANGEMENT and the renderer places every
   // live body (src/stage/arrangements.ts holds the geometry, beside the bounds).
   // `slotId` is the subject for `focus`; `pair` names the two for `pair`.
@@ -156,6 +158,10 @@ interface Window {
     minimize(): void;
     close(): void;
     avatarContextMenu(slotId: string): void;
+    /** A body was dropped on another: they join one stage (main -> agent-swarm-host stageOp join). */
+    stageDrop?(slotId: string, targetSlotId: string): void;
+    /** A stage was moved by its handle: where each member stands now ({slotId: x}). */
+    stageSync?(positions: Record<string, number>): void;
     /** The picked body under the pointer / the selected one (main exposes it on GET /swarm). */
     reportPick?(state: { hover: string | null; selected: string | null }): void;
     subscribe(listener: (event: AvatarBridgeEvent) => void): () => void;

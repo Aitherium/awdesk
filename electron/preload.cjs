@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld("deskBridge", {
   // below is suppressed for avatar hits via a dataset flag the renderer sets on the
   // canvas at pointerdown — the deck opening behind the avatar menu reads as a bug.
   avatarContextMenu: (slotId) => ipcRenderer.send("desk:avatar-context-menu", slotId),
+  // Stages by direct manipulation (src/stage/stage-direct.ts): drop a body on another to join it,
+  // drag a stage's handle to move the group. Main applies both through the swarm host.
+  stageDrop: (slotId, targetSlotId) => ipcRenderer.send("desk:stage-drop", String(slotId || ""), String(targetSlotId || "")),
+  stageSync: (positions) => ipcRenderer.send("desk:stage-sync", positions && typeof positions === "object" ? positions : {}),
   // Click-through (src/hooks/clickThrough.ts): false = nothing drawn under the cursor,
   // let the click reach the app below. main applies it to the SENDING window only.
   // Which body is hovered / selected (src/hooks/avatarPick.ts): main keeps it for GET /swarm and the tests.

@@ -270,7 +270,7 @@ test("stages: join makes an explicit group that arranges, moves, sizes and turns
   assert.ok(circle.every((e) => Number.isFinite(e.position[2]) && e.yaw !== undefined), "a circle uses depth and turns bodies inward");
   h.sent.length = 0;
   h.host.stageOp("move", { agent: "atlas", dx: 0.5 });
-  assert.equal(h.sent.length, 2, "the whole group moves");
+  assert.equal(h.sent.filter((e) => e.type === "place-avatar").length, 2, "the whole group moves");
   h.host.stageOp("size", { agent: "atlas", scale: 1.4 });
   h.host.stageOp("turn", { agent: "atlas", yaw: 0.3 });
   assert.ok(h.sent.some((e) => e.scale === 1.4) && h.sent.some((e) => e.yaw === 0.3));
@@ -291,4 +291,35 @@ test("stages: a locked stage refuses joins and never loses a member by itself; o
   assert.match(refused.error, /locked/);
   assert.match(h.host.stageOp("join", { agent: "remote-box", target: "atlas" }).error, /grown/);
   assert.match(h.host.stageOp("nope").error, /unknown stage op/);
+});
+
+test("stages by direct manipulation: a body dropped on another joins, the renderer is told the groups, Leave stage splits, a moved stage is remembered", async () => {
+  const h = harness();
+  await h.host.setAgentForm("atlas", "avatar");
+  await h.host.setAgentForm("hera", "avatar");
+  const slotOf = (agent) => h.host.state().bodies.find((b) => b.agent === agent).slotId;
+  assert.equal(h.host.stageOfSlot(slotOf("hera")), null, "no stage until one is made");
+  h.sent.length = 0;
+  const joined = h.host.joinSlots(slotOf("hera"), slotOf("atlas"));
+  assert.equal(joined.ok, true);
+  const groups = h.sent.filter((e) => e.type === "stage-groups");
+  assert.equal(groups.length, 1, "one stage-groups event per change");
+  assert.deepEqual(groups[0].groups[0].slots.sort(), [slotOf("atlas"), slotOf("hera")].sort());
+  assert.deepEqual(groups[0].groups[0].members.sort(), ["atlas", "hera"]);
+  assert.ok(h.host.stageOfSlot(slotOf("hera")), "the right-click menu offers Leave stage for a body in a stage");
+  assert.equal(h.host.joinSlots("slotNope", slotOf("atlas")).ok, false, "a body that is not an agent on this stage joins nothing");
+
+  // The stage moved by its handle: main keeps the renderer's positions, so a later arrange starts from them.
+  assert.equal(h.host.syncPositions({ [slotOf("atlas")]: 1.2, [slotOf("hera")]: 2, nope: 9 }).ok, true);
+  h.sent.length = 0;
+  h.host.stageOp("arrange", { agent: "atlas", mode: "row" });
+  const placed = h.sent.filter((e) => e.type === "place-avatar").map((e) => e.position[0]);
+  assert.ok(placed.every((x) => x > 0.2), "the row is seated around where the owner moved the stage");
+
+  h.sent.length = 0;
+  assert.equal(h.host.leaveSlot(slotOf("hera")).ok, true);
+  assert.equal(h.host.stageOfSlot(slotOf("hera")), null);
+  const cleared = h.sent.filter((e) => e.type === "stage-groups");
+  assert.deepEqual(cleared[cleared.length - 1].groups, [], "the handle goes with the stage");
+  assert.equal(h.host.leaveSlot("slotNope").ok, false);
 });
