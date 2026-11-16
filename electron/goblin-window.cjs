@@ -16,7 +16,7 @@ const core = require("./goblin-core.cjs");
 function createGoblin({ electron, onChange = () => {}, wait = (ms) => new Promise((r) => setTimeout(r, ms)), log = () => {} } = {}) {
   let win = null;
   let busy = false;
-  let weapon = "sword";
+  let weapon = "noodle";
   let mood = "idle";
   let moodTimer = null;
 
