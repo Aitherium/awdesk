@@ -12,6 +12,7 @@ import { arrange, isArrangement } from '../stage/arrangements';
 import { dropTarget, sanitizeGroups, type StageGroup } from '../stage/stage-direct';
 import { StageHandles } from '../stage/StageHandles';
 import { EntityMotion } from '../stage/EntityMotion';
+import { bumpStageSeq } from '../physics/body-physics';
 import { useAvatarDrag } from '../hooks/useAvatarDrag';
 import { authoredFields, freeSpot } from '../hooks/stagePlacement';
 import { anyoneAudible } from '../hooks/voiceLevels';
@@ -809,7 +810,12 @@ export function Scene(props: SceneProps) {
       if (event.type === 'focus-avatar') {
         focusSlot(event.slotId);
       } else if (event.type === 'stage-groups') {
-        setStageGroups(sanitizeGroups(event.groups, slotIdsRef.current));
+        const next = sanitizeGroups(event.groups, slotIdsRef.current);
+        // A body joining or leaving a stage is re-seated: its hair / cloth is reset once (physics/body-physics.ts).
+        setStageGroups((current) => {
+          if (JSON.stringify(current.map((g) => g.slots)) !== JSON.stringify(next.map((g) => g.slots))) bumpStageSeq();
+          return next;
+        });
       } else if (event.type === 'reset-avatar-layout') {
         clearSlot(event.slotId);
       } else if (event.type === 'stage-arrange') {
