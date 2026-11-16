@@ -138,12 +138,20 @@ function fairyItems(card, { label = "", agent = "" } = {}) {
  *     older name, still read.
  *   opts.tenantVisible: the workspace's own companion shows.
  *   opts.nowMs: the clock.
+ *   opts.avatar: null (no avatar to expand into) | "fairy" | "expanded".
  */
 function orbItems({
   waiting = 0, mutedUntil = 0, quietUntil = 0, tenantVisible = false, fairyVisible = true, nowMs = Date.now(),
+  avatar = null,
 } = {}) {
   const n = Math.max(0, Number(waiting) || 0);
-  const items = [{ id: "inbox", label: "Open inbox", hint: "The Inbox, where every card is answered" }];
+  const items = [];
+  // Owner 2026-11-15: "when I click the fairy or right-click and select an option I want
+  // it to expand into that avatar". `avatar` is null when this build has no body to
+  // expand into (no row: never a dead item), else "fairy" | "expanded".
+  if (avatar === "fairy") items.push({ id: "expand", label: "Show Aither", hint: "The fairy grows into Aither's full avatar" });
+  if (avatar === "expanded") items.push({ id: "collapse", label: "Back to the fairy", hint: "Aither shrinks back into the fairy" });
+  items.push({ id: "inbox", label: "Open inbox", hint: "The Inbox, where every card is answered" });
   // Nothing waiting: no list to open, so no row (never a dead item).
   if (n) items.push({ id: "queue", label: "Answer window", hint: "Every waiting card in one list" });
   items.push({ sep: true });

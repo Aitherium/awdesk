@@ -96,3 +96,12 @@ test("the hover tip is one short line: who and what, never the card body", () =>
 test("copy link: the card's page on Online", () => {
   assert.equal(menu.cardLink("d-abc"), "https://aitherium.com/decide?id=d-abc");
 });
+
+test("the orb's menu leads with the body: Show Aither, or Back to the fairy; none without one", () => {
+  const now = 1_000_000;
+  assert.equal(menu.orbItems({ nowMs: now, avatar: "fairy" }).items[0].id, "expand");
+  assert.equal(menu.orbItems({ nowMs: now, avatar: "fairy" }).items[0].label, "Show Aither");
+  assert.equal(menu.orbItems({ nowMs: now, avatar: "expanded" }).items[0].id, "collapse");
+  const none = menu.orbItems({ nowMs: now }).items.map((i) => i.id);
+  assert.ok(!none.includes("expand") && !none.includes("collapse"), "no body: no dead row");
+});

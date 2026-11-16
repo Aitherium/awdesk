@@ -165,7 +165,7 @@ test("a command on BOTH menus reads the same and sits under the same parent", ()
 test("every id a body's menu claims is really ON a body's menu", () => {
   // popupAvatarMenu was hand-written, so `surfaces: [... "avatar-menu"]` was a
   // claim nothing checked: cast.open was declared there and absent from it.
-  const body = leavesOf("avatar-menu", { slotId: "slot1", removable: true, sessionAddress: {} });
+  const body = leavesOf("avatar-menu", { slotId: "slot1", removable: true, sessionAddress: {}, grownFromFairy: true });
   for (const command of commandsFor("avatar-menu")) {
     if (command.dynamic) continue;
     assert.ok(body.has(command.id), `${command.id} names avatar-menu and does not render there`);
@@ -782,4 +782,9 @@ test("a browser command opens the browser and acts for the OWNER, never on an ag
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.match(main, /history: \(words, limit\) => browserWindow\.ownerHistory\(words, limit\),/);
   assert.match(main, /tabs: \(\) => browserWindow\.ownerTabs\(\),/);
+});
+
+test("Back to the fairy is on a body's menu only while Aither is grown from the fairy", () => {
+  assert.ok(leavesOf("avatar-menu", { slotId: "slot0", grownFromFairy: true }).has("avatar.to-fairy"));
+  assert.ok(!leavesOf("avatar-menu", { slotId: "slot0" }).has("avatar.to-fairy"), "never a dead row");
 });
