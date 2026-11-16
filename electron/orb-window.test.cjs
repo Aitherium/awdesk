@@ -150,6 +150,7 @@ class FakeWindow extends EventEmitter {
 
 const fakeIpc = { handlers: new Map(), handle(channel, fn) { this.handlers.set(channel, fn); } };
 
+let nativeMenuPopups = 0;
 const fakeElectron = {
   BrowserWindow: FakeWindow,
   screen: fakeScreen,
@@ -160,7 +161,7 @@ const fakeElectron = {
     createFromPath: () => ({ isEmpty: () => true, resize() { return this; } }),
   },
   shell: { openPath() {}, showItemInFolder() {}, openExternal() {} },
-  Menu: { buildFromTemplate: () => ({ popup() {} }) },
+  Menu: { buildFromTemplate: () => ({ popup() { nativeMenuPopups += 1; } }) },
 };
 
 const Module = require("node:module");
@@ -1696,7 +1697,27 @@ test("right click on the orb: inbox, answer window, quiet 1 h (nudges held), set
   assert.equal((await invoke("desk:menu-pick", menuWin(), "settings")).ok, true);
   assert.deepEqual(doors, ["settings"]);
   await invoke("desk:orb-menu", orbWin());
+  // "More..." is the SECOND PAGE of the one pill menu, not a second (native, dark) menu
+  // (owner 2026-11-16: two fairy menus, two looks).
   assert.equal((await invoke("desk:menu-pick", menuWin(), "more")).ok, true, "the old full menu is one row away");
+  const more = lastSent(menuWin(), "orb:menu");
+  const moreIds = more.items.filter((i) => !i.sep).map((i) => i.id);
+  assert.match(more.header, /more/);
+  for (const id of ["spirit:web", "spirit:ask", "spirit:find", "spirit:attach", "spirit:home", "spirit:sounds", "spirit:sprite", "spirit:teach", "less"]) {
+    assert.ok(moreIds.includes(id), `the second page lost ${id}: ${moreIds.join(", ")}`);
+  }
+  assert.equal(nativeMenuPopups, 0, "no native menu was popped: the fairy has ONE menu");
+  assert.equal((await invoke("desk:menu-pick", menuWin(), "spirit:sounds")).ok, true, "a row on the second page runs");
+  await invoke("desk:orb-menu", orbWin());
+  await invoke("desk:menu-pick", menuWin(), "more");
+  assert.equal((await invoke("desk:menu-pick", menuWin(), "spirit:nonsense")).ok, false, "a row the page did not show is refused");
+  await invoke("desk:orb-menu", orbWin());
+  await invoke("desk:menu-pick", menuWin(), "more");
+  assert.equal((await invoke("desk:menu-pick", menuWin(), "less")).ok, true);
+  assert.ok(lastSent(menuWin(), "orb:menu").items.some((i) => i.id === "more"), "Back returns to the short menu");
+  const viaPage = await invoke("desk:spirit-menu", orbWin());
+  assert.equal(viaPage.ok, true, "the page's own right click (api.menu) opens the same pill menu");
+  assert.equal(nativeMenuPopups, 0);
   await invoke("desk:orb-menu", orbWin());
   await invoke("desk:menu-pick", menuWin(), "hide-this");
   assert.equal(orbWin().isVisible(), false, "Hide the fairies hides the fairy and its swarm");
@@ -2170,4 +2191,57 @@ test("cards waiting: the click is still the Inbox, never the body", async () => 
   assert.equal(grows.length, 0);
   assert.ok(calls.open.length >= 1);
   orbWindow.setAttentionCards([]);
+});
+
+// -- the fairy stays off what a person clicks (free-space.cjs; owner 2026-11-16: it sat on
+//    CertTrack's "Review" tab) -----------------------------------------------------------
+
+function pageWindow(bounds, rects) {
+  const w = new FakeWindow({ title: "CertTrack", ...bounds });
+  w.visible = true;
+  w.isMinimized = () => false;
+  w.getContentBounds = () => ({ ...w.bounds });
+  w.webContents.getZoomFactor = () => 1;
+  w.webContents.executeJavaScript = async (src) => {
+    w.probed = (w.probed || 0) + 1;
+    assert.match(src, /querySelectorAll/, "the page is asked for its clickable elements");
+    return rects;
+  };
+  return w;
+}
+
+test("docked on a window, the fairy stands on the first spot that covers no button or tab", async () => {
+  start();
+  orbWindow.companionAction("show-all");
+  const free = require("./free-space.cjs");
+  const b = { x: 100, y: 100, width: 1200, height: 800 };
+  // Nothing is known about the page yet: the dock is the old spot. Cover exactly that
+  // spot (a bar of buttons, in PAGE coordinates: the window sits at 100,100) plus a tab.
+  const probe = pageWindow(b, []);
+  const target = { kind: "desk", windowId: probe.id, title: "CertTrack", bounds: b, auto: true };
+  const before = orbWindow.__dockSpot(target);
+  const orbSize = orbWindow.ORB_SIZE || { width: 72, height: 72 };
+  const covered = [[before.x - 100 - 30, before.y - 100 - 30, orbSize.width + 60, orbSize.height + 60], [600, 60, 160, 58]];
+  probe.webContents.executeJavaScript = async (src) => {
+    probe.probed = (probe.probed || 0) + 1;
+    assert.match(src, /querySelectorAll/, "the page is asked for its clickable elements");
+    return covered;
+  };
+  await orbWindow.__refreshObstacles();
+  assert.equal(probe.probed, 1, "the desk window was asked what is clickable");
+  const spot = orbWindow.__dockSpot(target);
+  const rects = free.toScreenRects(covered, b, 1);
+  assert.equal(free.coverage(spot, orbSize, rects, 8), 0, `the fairy docked on a control at ${JSON.stringify(spot)}`);
+  assert.notDeepEqual([spot.x, spot.y], [before.x, before.y], "it moved off the covered corner");
+  assert.ok(spot.x >= b.x && spot.x + orbSize.width <= b.x + b.width && spot.y >= b.y && spot.y + orbSize.height <= b.y + b.height, "still inside the window");
+  await orbWindow.__refreshObstacles();
+  assert.equal(probe.probed, 1, "a second look inside the cache window does not ask the page again");
+});
+
+test("a window we cannot read keeps the fairy out of its title bar (the old dock was the close button)", () => {
+  start();
+  const b = { x: 0, y: 0, width: 1000, height: 800 };
+  const spot = orbWindow.__dockSpot({ kind: "window", hwnd: 42, title: "Notepad", bounds: b });
+  assert.ok(spot.y >= 56, `docked in the title bar at y=${spot.y}`);
+  assert.ok(spot.x + 72 <= b.x + b.width && spot.y + 72 <= b.y + b.height);
 });

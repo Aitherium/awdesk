@@ -50,7 +50,7 @@ test("window size is reachable from the TRAY, not only from a gesture", () => {
 test("the avatar's own menu reaches the Stage pane (size lives there)", () => {
   const body = registry.buildMenu("avatar-menu", () => {}, { ctx: { slotId: "slot1" } });
   const labels = body.map((row) => row.label).filter(Boolean);
-  assert.ok(labels.includes("Stage & characters…"), "a body's menu lost its door to the Stage pane");
+  assert.ok(labels.includes("Stage && characters…"), "a body's menu lost its door to the Stage pane");
   assert.ok(!labels.includes(registry.GROUPS["window-size"].menu), "the size submenu crept back onto a body's menu");
 });
 

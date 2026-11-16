@@ -929,6 +929,21 @@ async function fetchDaemonOpen({
 }
 
 /**
+ * THE number: how many open cards are waiting on the owner. The tray, the fairy badge,
+ * the Inbox header and (through the bridge's `waiting`) the AitherOS taskbar bell all
+ * read this one function; `count` is every open card, reports included, and is not a
+ * "waiting" number anywhere a person reads it. Owner 2026-11-16: bell 22, fairy 40,
+ * launcher fairy 39 -- three answers to one question.
+ */
+function waitingCount(cards, patterns) {
+  try {
+    return partitionCards(cards, { patterns }).decisions.length;
+  } catch {
+    return actionableCount(cards, patterns);
+  }
+}
+
+/**
  * The queue as the bridge serves it: the daemon's list when it answers
  * (`source: "daemon"`), else the watcher's local read labelled `stale: true`
  * with the reason. Never throws.
@@ -936,13 +951,14 @@ async function fetchDaemonOpen({
 async function bridgeQueue({ fetchOpen = fetchDaemonOpen, localOpen = () => lastOpen() } = {}) {
   try {
     const decisions = await fetchOpen();
-    return { decisions, count: decisions.length, source: "daemon", stale: false };
+    return { decisions, count: decisions.length, waiting: waitingCount(decisions), source: "daemon", stale: false };
   } catch (error) {
     let decisions;
     try { decisions = rankCards(localOpen()); } catch { decisions = []; }
     return {
       decisions,
       count: decisions.length,
+      waiting: waitingCount(decisions),
       source: "local",
       stale: true,
       error: String((error && error.message) || error).slice(0, 200),
@@ -1178,6 +1194,7 @@ module.exports = {
   partitionCards,
   fetchDaemonOpen,
   bridgeQueue,
+  waitingCount,
   bridgeNeedsYou,
   cardFromRaw,
   subjectFromRaw,

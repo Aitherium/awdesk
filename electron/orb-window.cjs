@@ -50,6 +50,7 @@ const selectionReader = require("./selection-reader.cjs");
 const fairyAttention = require("./fairy-attention.cjs");
 const agentFairy = require("./agent-fairy.cjs");
 const fairyMenu = require("./fairy-menu.cjs");
+const freeSpace = require("./free-space.cjs");
 const companionMenu = require("./companion-menu.cjs");
 const fairyOwner = require("./fairy-owner.cjs");
 const fairyCounts = require("./fairy-counts.cjs");
@@ -293,8 +294,82 @@ function restSpot() {
 // spot. An attachment the owner made by hand is never replaced or dropped by this.
 let dockWindowId = 0;
 function dockSpot(target) {
-  if (target && target.auto) return orbCore.windowDockSpot(target.bounds, ORB_SIZE, reservedBox, RESERVE_PAD);
-  return spiritCore.dockPosition(target, ORB_SIZE);
+  const base = target && target.auto
+    ? orbCore.windowDockSpot(target.bounds, ORB_SIZE, reservedBox, RESERVE_PAD)
+    : spiritCore.dockPosition(target, ORB_SIZE);
+  // A body has no buttons under it; a WINDOW does. Owner 2026-11-16: the fairy sat on
+  // CertTrack's "Review" tab. Stand on the first spot of the window that covers nothing.
+  if (!target || target.kind === "avatar") return base;
+  const b = spiritCore.normBounds(target.bounds);
+  if (!b) return base;
+  const pick = freeSpace.pickFree(
+    freeSpace.dockCandidates(b, ORB_SIZE, { first: base }), ORB_SIZE, obstaclesFor(target), { pad: 10, area: b },
+  );
+  return pick ? { x: pick.x, y: pick.y } : base;
+}
+
+// -- what is clickable under the fairy (free-space.cjs) -------------------------------
+// The desk's own windows are asked, from inside the page, where their buttons, tabs and
+// fields are; a window owned by another program gets its title bar as one obstacle. The
+// answers are cached for a second and a half: the dock follows a window at 4 Hz and must
+// never wait on a page.
+const OBSTACLE_TTL_MS = 1500;
+const obstacleCache = new Map(); // windowId -> { at, rects }
+const obstacleBusy = new Set();
+
+function ownWindowIds() {
+  return new Set([orbWindow, bubbleWindow, veilWindow, nudgeWindow, swarmWindow, menuWindow, tipWindow]
+    .filter((w) => alive(w)).map((w) => w.id));
+}
+
+async function refreshObstacles(win) {
+  if (!alive(win) || obstacleBusy.has(win.id)) return;
+  const cached = obstacleCache.get(win.id);
+  if (cached && Date.now() - cached.at < OBSTACLE_TTL_MS) return;
+  obstacleBusy.add(win.id);
+  try {
+    const wc = win.webContents;
+    const rows = await Promise.race([
+      wc.executeJavaScript(freeSpace.probeSource(), true),
+      new Promise((resolve) => { const t = setTimeout(() => resolve(null), 800); if (t.unref) t.unref(); }),
+    ]);
+    if (!Array.isArray(rows)) return; // a page that would not answer is "unknown", not "empty"
+    let zoom = 1;
+    try { zoom = wc.getZoomFactor ? wc.getZoomFactor() : 1; } catch { /* default 1 */ }
+    obstacleCache.set(win.id, { at: Date.now(), rects: freeSpace.toScreenRects(rows, win.getContentBounds(), zoom) });
+  } catch { /* a page mid-navigation: try again next tick */ } finally {
+    obstacleBusy.delete(win.id);
+  }
+}
+
+/** Ask every visible desk window (the fairy's own excluded) what is clickable in it. */
+async function refreshAllObstacles() {
+  const { BrowserWindow } = electron();
+  const own = ownWindowIds();
+  let wins;
+  try { wins = BrowserWindow.getAllWindows(); } catch { wins = []; }
+  const live = wins.filter((w) => alive(w) && !own.has(w.id) && w.isVisible() && !w.isMinimized());
+  for (const id of [...obstacleCache.keys()]) if (!live.some((w) => w.id === id)) obstacleCache.delete(id);
+  await Promise.all(live.map((w) => refreshObstacles(w)));
+}
+
+/** The clickable rects for one dock target (screen coordinates). */
+function obstaclesFor(target) {
+  if (!target) return [];
+  if (target.kind === "desk" && target.windowId) {
+    const cached = obstacleCache.get(target.windowId);
+    return cached ? cached.rects : [];
+  }
+  // Another program's window: no page to ask, so its title bar and tab strip stand in.
+  const chrome = freeSpace.chromeObstacle(target.bounds);
+  return chrome ? [chrome] : [];
+}
+
+/** Every clickable rect we know of across the desk's windows, for the flutter. */
+function allObstacles() {
+  const out = [];
+  for (const entry of obstacleCache.values()) if (Date.now() - entry.at < 60_000) out.push(...entry.rects);
+  return out;
 }
 /** `win` = the AitherOS window to ride, or null when there is none to ride. */
 async function setDockWindow(win) {
@@ -1513,6 +1588,7 @@ async function refreshAttach() {
       return;
     }
     bounds = win.getBounds();
+    void refreshObstacles(win); // the next tick docks on what this finds
   } else if (attach.kind === "avatar" && attach.slotId) {
     const targets = await attachableTargets();
     const now = targets.find((t) => t.slotId === attach.slotId);
@@ -2353,6 +2429,7 @@ function deskDoors(reg) {
   return DESK_DOORS.filter(([id]) => reg && reg.byId && reg.byId(id)).map(([id, label]) => ({
     // The fairy's door names the actual ask, not a generic "Notifications":
     // "Needs you (3)" is the same group label the launcher and the deck use.
+    id: `door:${id}`,
     label: id === "inbox.open" ? (attentionCards.length ? `Needs you (${attentionCards.length})` : "Inbox") : label,
     click: () => { void runCommandImpl?.(id); },
   }));
@@ -2745,7 +2822,11 @@ async function attentionTick() {
       const full = await fullScreenNow();
       if (full) decision = { act: "none", reason: `held while quiet: ${full}` };
     }
-    if (decision.act === "nudge" && !nudging && !quitting) startNudge(decision);
+    if (decision.act === "nudge" && !nudging && !quitting) {
+      // Where the flutter lands is judged against what is clickable right now.
+      try { await refreshAllObstacles(); } catch { /* the placement then uses what it last knew */ }
+      if (!nudging && !quitting) startNudge(decision);
+    }
     return decision;
   } finally {
     attentionTicking = false;
@@ -2888,7 +2969,7 @@ function startNudge(decision, { peek = false } = {}) {
       cursor = screen.getCursorScreenPoint();
       area = screen.getDisplayNearestPoint(cursor).workArea;
     } catch { area = displayForOrb().workArea; }
-    const place = fairyAttention.nudgePlacement(cursor, area, ORB_SIZE, NUDGE_SIZE);
+    const place = fairyAttention.nudgePlacement(cursor, area, ORB_SIZE, NUDGE_SIZE, { obstacles: allObstacles() });
     n.anchor = place.orb;
     n.whisperAt = place.whisper;
     n.side = place.side;
@@ -3172,39 +3253,50 @@ function chatAboutCard(id) {
   return { ok: true, id: card.id, mode: "card" };
 }
 
-function spiritMenu() {
-  const { Menu } = electron();
+/**
+ * The spirit's own rows -- search, ask, find, attach, sounds, the sprite, the desk's
+ * doors. They used to open a SECOND menu (a dark native list) from "More...", beside the
+ * pill menu every other fairy surface draws; two fairy menus, two looks (owner screenshots
+ * 2026-11-16). Now they are a second PAGE of the one pill menu: same window, same keys,
+ * same Esc. `run` is looked up again at pick time, so a stale click runs nothing.
+ */
+function spiritRows() {
   const reg = commandRegistry();
-  const anythingHeld = Boolean(hold);
-  const template = [
-    { label: "Search the web…", click: () => openMode("web") },
-    { label: "Ask a question…", click: () => { openMode(null); try { bubbleWindow.focus(); } catch { /* gone */ } } },
-    { label: "Find a file…", click: () => openMode("find") },
-    ...(anythingHeld ? [{ label: `Read ${spiritCore.holdLabel(hold)}`, click: () => { void runHoldAction("read"); } }] : []),
-    { type: "separator" },
-    { label: attach ? "Detach the spirit" : "Attach the spirit", click: () => { void toggleAttach(); } },
-    { label: "Send home", click: () => { void sendHome(); } },
+  return [
+    { id: "spirit:web", label: "Search the web…", run: () => openMode("web") },
+    { id: "spirit:ask", label: "Ask a question…", run: () => { openMode(null); try { bubbleWindow.focus(); } catch { /* gone */ } } },
+    { id: "spirit:find", label: "Find a file…", run: () => openMode("find") },
+    ...(hold ? [{ id: "spirit:read", label: `Read ${spiritCore.holdLabel(hold)}`, run: () => { void runHoldAction("read"); } }] : []),
+    { sep: true },
+    { id: "spirit:attach", label: attach ? "Detach the spirit" : "Attach the spirit", run: () => { void toggleAttach(); } },
+    { id: "spirit:home", label: "Send home", run: () => { void sendHome(); } },
     // The nudge chime (owner 2026-11-08): on by default, remembered in orb.json.
-    { label: `Fairy sounds: ${state.sounds === false ? "off" : "on"}`, click: () => { setSounds(state.sounds === false); } },
-    ...(reg.byId("quick.open") ? [{ label: "Quick menu", click: () => { void runCommandImpl?.("quick.open"); } }] : []),
-    { type: "separator" },
+    { id: "spirit:sounds", label: `Fairy sounds: ${state.sounds === false ? "off" : "on"}`, run: () => { setSounds(state.sounds === false); } },
+    ...(reg.byId("quick.open") ? [{ id: "spirit:quick", label: "Quick menu", run: () => { void runCommandImpl?.("quick.open"); } }] : []),
+    { sep: true },
     // The fairy IS the owner's sprite: its own rows sit on its own menu.
-    { label: sprite ? `${sprite.name}: how are you?` : "How is my sprite?", click: () => { void spriteStatus(); } },
-    { label: "Teach it the selection", click: () => { void spriteTeach(null); } },
-    { label: "Open Sprite…", click: () => { openUrl(spriteCore.SPRITE_PAGE); } },
-    { type: "separator" },
+    { id: "spirit:sprite", label: sprite ? `${sprite.name}: how are you?` : "How is my sprite?", run: () => { void spriteStatus(); } },
+    { id: "spirit:teach", label: "Teach it the selection", run: () => { void spriteTeach(null); } },
+    { id: "spirit:sprite-page", label: "Open Sprite…", run: () => { openUrl(spriteCore.SPRITE_PAGE); } },
+    { sep: true },
     // The desk's doors live on the fairy now (owner 2026-11-02: "consolidate the
     // awdesk icons around the fairy"): the bead rail's rows, plus Show avatar.
-    ...deskDoors(reg),
-    { type: "separator" },
-    { label: "Hide the spirit", click: () => hideOrb() },
+    ...deskDoors(reg).map((d) => ({ id: d.id, label: d.label, run: d.click })),
   ];
-  try {
-    Menu.buildFromTemplate(template).popup({ window: orbWindow });
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error: String((error && error.message) || error) };
-  }
+}
+
+/** The second page of the one fairy menu. */
+function moreMenu({ atFairy = false } = {}) {
+  const rows = spiritRows();
+  const items = [...rows.map((r) => (r.sep ? { sep: true } : { id: r.id, label: r.label })),
+    { sep: true }, { id: "less", label: "Back", hint: "The short menu" }];
+  return showMenu("orb", { header: "Aither · more", items }, { atFairy });
+}
+
+/** The old native "spirit menu" entry points (right click on the page, the bridge) now
+ *  open THE pill menu: there is one fairy menu. */
+function spiritMenu() {
+  return orbMenu();
 }
 
 // ── drag and click ──────────────────────────────────────────────────────────
@@ -3618,7 +3710,14 @@ function orbPick(what) {
     else hookValue("open", null);
     return { ok: true };
   }
-  if (what === "more") return spiritMenu();
+  if (what === "more") return moreMenu();
+  if (what === "less") return orbMenu();
+  if (what.startsWith("spirit:") || what.startsWith("door:")) {
+    const row = spiritRows().find((r) => r && !r.sep && r.id === what);
+    if (!row) return { ok: false, error: "that row is not on the menu any more" };
+    try { row.run(); } catch (error) { return { ok: false, error: String((error && error.message) || error) }; }
+    return { ok: true, ran: what };
+  }
   if (what === "expand") return expandToAvatar();
   if (what === "collapse") return collapseToFairy();
   if (what.startsWith("body:")) return pickBody(what.slice(5));
@@ -3688,6 +3787,9 @@ async function collapseToFairy({ fromAvatar = false } = {}) {
     try { await attentionHooks.collapse({ to }); } catch { /* the fairy comes back regardless */ }
   }
   if (state.visible && alive(orbWindow) && !orbWindow.isVisible()) {
+    // Back where the fairy rests, never where the window was last parked: a fairy that was
+    // only ever hidden at the screen's top-left corner came back there (proof run 2026-11-16).
+    if (!attach) placeOrb();
     orbWindow.showInactive();
     if (attach) showVeil();
     placeSwarm();
@@ -4320,6 +4422,8 @@ module.exports = {
   setDockWindow,
   __dock: () => ({ windowId: dockWindowId, attached: Boolean(attach && attach.auto) }),
   __reservedBox: () => reservedBox,
+  __dockSpot: (target) => dockSpot(target),
+  __refreshObstacles: () => refreshAllObstacles(),
   __setCapture: (c) => { captureImpl = c; },
   __setAskVision: (f) => { askVisionImpl = f; },
   __setSpeak: (f) => { speakImpl = f; },

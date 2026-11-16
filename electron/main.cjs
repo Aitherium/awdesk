@@ -4070,14 +4070,8 @@ function showAboutDesk() {
  * Every surface reads THIS now, so "waiting" means one thing.
  */
 function inboxCounts(cards = openDecisions) {
-  // partitionCards is the flipper's own split, so the badge and "N of M" agree.
-  let waiting;
-  try {
-    waiting = decisionCards.partitionCards(cards).decisions.length;
-  } catch {
-    waiting = decisionCards.actionableCount(cards);
-  }
-  return { waiting, total: cards.length };
+  // decisionCards.waitingCount is THE number (the fairy, the bridge and the bell read it too).
+  return { waiting: decisionCards.waitingCount(cards), total: cards.length };
 }
 
 // -- the session behind a card (session-context.cjs) --------------------------
@@ -4095,6 +4089,37 @@ function liveSessionMap({ fresh = false } = {}) {
 }
 
 /** The deck's cards, each session card carrying {live, status, name} for its row. */
+// -- cards from sessions that have ENDED close themselves (ended-cards.cjs) ----
+// Owner, 2026-11-16: 40 waiting, 22 real. The rest were "Allow Claude to use ..." grants
+// and Approve cards under an "ended" badge, asked by sessions nobody can answer for.
+// A sweep runs after every card change (at most once a minute) and on the 5-minute
+// timer; the two-look rule, the grace period and the audit line are in the module.
+const endedCards = require("./ended-cards.cjs");
+const ENDED_SWEEP_MIN_MS = 60_000;
+const endedSeen = new Map();
+let endedSweepAt = 0;
+function sweepEndedSessionCards(cards = openDecisions) {
+  const now = Date.now();
+  if (now - endedSweepAt < ENDED_SWEEP_MIN_MS) return null;
+  endedSweepAt = now;
+  try {
+    const { live, judged } = sessionContext.liveSessionsChecked();
+    const result = endedCards.sweep(cards, live, {
+      cancel: (id, note) => decisionCards.cancelCard(id, note),
+      seen: endedSeen,
+      host: require("node:os").hostname(),
+      judged,
+    });
+    if (result.closed.length || result.failed.length || result.error) {
+      debugLog(`ended-sessions sweep: closed ${result.closed.length}, failed ${result.failed.length}${result.error ? `, ${result.error}` : ""}`);
+    }
+    return result;
+  } catch (error) {
+    debugLog(`ended-sessions sweep failed: ${String((error && error.message) || error)}`);
+    return null; // a sweep that cannot run leaves every card where it was
+  }
+}
+
 function decisionsWithSessions(cards = openDecisions) {
   const live = liveSessionMap();
   return cards.map((card) => {
@@ -7469,6 +7494,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     decisionWatchStop = decisionCards.watch({
       onChange: (cards) => {
         openDecisions = cards;
+        sweepEndedSessionCards(cards);
         needsYou = computeNeedsYou(cards);
         syncNeedsYouChip();
         refreshTrayMenu();
@@ -7509,6 +7535,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // Unanswered needs-you cards are re-spoken hourly (micMuted wins; a snooze
     // drops the card from the list). Also notices snoozes running out.
     const needsYouTimer = setInterval(() => {
+      sweepEndedSessionCards(openDecisions);
       const before = needsYouLib.needsYouSignature(needsYou);
       needsYou = computeNeedsYou();
       if (needsYouLib.needsYouSignature(needsYou) !== before) {
@@ -7522,6 +7549,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       }
     }, 5 * 60_000);
     needsYouTimer.unref?.();
+    // The second look of the ended-session sweep: a change event may never come, so the
+    // close would wait for the next card. Two and a half minutes clears the two-look rule.
+    const endedSweepTimer = setInterval(() => sweepEndedSessionCards(openDecisions), 150_000);
+    endedSweepTimer.unref?.();
 
     // 🚩 register() RETURNS whether it got the accelerator, and the answer was
     // thrown away. Another app holding Ctrl+Shift+= takes the only keyboard path

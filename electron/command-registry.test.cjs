@@ -13,6 +13,7 @@ const {
   byId,
   commandsFor,
   conformance,
+  menuText,
   rowsFor,
   shortcuts,
 } = require("./command-registry.cjs");
@@ -112,7 +113,7 @@ test("a dynamic command with no submenu is DROPPED, never rendered dead", () => 
   for (const surface of ["tray", "avatar-menu"]) {
     const bare = labels(buildMenu(surface, () => {}, { submenus: {}, ctx: { slotId: "slot1" } }));
     assert.ok(!bare.includes("Characters"), `${surface}: a roster row came back`);
-    assert.ok(bare.includes("Stage & characters…"), `${surface}: the one stage door is missing`);
+    assert.ok(bare.includes("Stage && characters…"), `${surface}: the one stage door is missing (an Electron menu draws "&&" as "&")`);
     assert.ok(bare.includes("Open Aither"), `${surface}: static rows must still render`);
   }
   assert.ok(byId("characters.pick").dynamic, "the picker is still dynamic in the palette");
@@ -791,4 +792,40 @@ test("a browser command opens the browser and acts for the OWNER, never on an ag
 test("Back to the fairy is on a body's menu only while Aither is grown from the fairy", () => {
   assert.ok(leavesOf("avatar-menu", { slotId: "slot0", grownFromFairy: true }).has("avatar.to-fairy"));
   assert.ok(!leavesOf("avatar-menu", { slotId: "slot0" }).has("avatar.to-fairy"), "never a dead row");
+});
+
+// ── 2026-11-16: "Reset position  size" and "Stage  characters..." lost their "&" ──
+// A single "&" in a native menu label is the keyboard-mnemonic marker and is not drawn.
+test("menuText doubles a lone ampersand and keeps an already-doubled one", () => {
+  assert.equal(menuText("Reset position & size"), "Reset position && size");
+  assert.equal(menuText("Stage && characters"), "Stage && characters");
+  assert.equal(menuText("A & B & C"), "A && B && C");
+  assert.equal(menuText("no ampersand"), "no ampersand");
+  assert.equal(menuText(null), "");
+});
+
+test("every native menu row that carries an ampersand escapes it; the palette keeps the plain text", () => {
+  const walk = (rows, out = []) => {
+    for (const row of rows) {
+      if (typeof row.label === "string") out.push(row.label);
+      if (Array.isArray(row.submenu)) walk(row.submenu, out);
+    }
+    return out;
+  };
+  let sawAmpersand = 0;
+  for (const surface of ["tray", "avatar-menu"]) {
+    const labels = walk(buildMenu(surface, () => {}, { ctx: { slotId: "slot1" }, submenus: {} }));
+    for (const label of labels) {
+      // After removing every escaped pair, no lone ampersand may remain.
+      assert.ok(!/&/.test(label.replace(/&&/g, "")), `${surface}: "${label}" has an unescaped &`);
+      if (label.includes("&&")) sawAmpersand += 1;
+    }
+  }
+  assert.ok(sawAmpersand >= 2, "the registry no longer has the labels this guards (Reset position & size, Stage & characters)");
+  const reset = buildMenu("avatar-menu", () => {}, { ctx: { slotId: "slot1" } }).flatMap((r) => (r.submenu ? r.submenu : [r]))
+    .find((r) => r.label && r.label.startsWith("Reset position"));
+  assert.equal(reset && reset.label, "Reset position && size");
+  // The registry's own text is untouched, so the palette / rail / jump list read "&".
+  assert.equal(byId("avatar.reset").label, "Reset position & size");
+  assert.ok(rowsFor("palette", { slotId: "slot1" }).every((r) => !r.label.includes("&&")));
 });

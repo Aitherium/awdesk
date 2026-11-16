@@ -108,6 +108,18 @@ function liveSessions({ home = claudeHome(), fsImpl = fs, alive = pidAlive } = {
   return out;
 }
 
+/**
+ * liveSessions plus whether the read could be TRUSTED. An unreadable sessions folder
+ * comes back from liveSessions as an empty map, which a caller asking "has this session
+ * ended?" must not read as "every session ended" (ended-cards.cjs closes cards on it).
+ * `judged` is true only when the folder was listed.
+ */
+function liveSessionsChecked({ home = claudeHome(), fsImpl = fs, alive = pidAlive } = {}) {
+  let judged = true;
+  try { fsImpl.readdirSync(path.join(home, "sessions")); } catch { judged = false; }
+  return { live: liveSessions({ home, fsImpl, alive }), judged };
+}
+
 // ── journal text ────────────────────────────────────────────────────────────
 
 /** A teammate message is JSON inside an XML wrapper; say who sent it and what it said. */
@@ -444,6 +456,7 @@ module.exports = {
   transcriptPath,
   pidAlive,
   liveSessions,
+  liveSessionsChecked,
   cleanUserText,
   teammateLine,
   readContext,
