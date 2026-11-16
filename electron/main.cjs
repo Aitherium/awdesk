@@ -3068,6 +3068,7 @@ function commandContext() {
   return {
     interactMode: require("./toolkit.cjs").interactMode(),
     avatarShown: Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()),
+    grownFromFairy: (() => { try { return orbWindow.expanded(); } catch { return false; } })(),
     decisionsWaiting: inboxCounts().waiting,
     decisionsTotal: inboxCounts().total,
     listening: listeningNow(),
@@ -3687,6 +3688,8 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "avatar.frame-all": return void sendToAvatar("focus-avatar", { slotId: null });
     case "avatar.reset": return void sendToAvatar("reset-avatar-layout", { slotId });
     case "avatar.remove": return void (slotId && removeAvatarSlot(slotId));
+    // Grown from the fairy (owner 2026-11-15): the orb is down, the way back is on the body.
+    case "avatar.to-fairy": return void orbWindow.collapseToFairy();
     case "setup.open": return void setupWindow().createSetupWindow({ openAwsh: () => openConsole() });
     case "about": return void showAboutDesk();
     case "aeon.state": return runAeonStateCommand({ surface });

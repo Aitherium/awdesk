@@ -542,6 +542,12 @@ const COMMANDS = Object.freeze([
     whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", arrangement: "reset",
   }),
   Object.freeze({
+    id: "avatar.to-fairy", label: "Back to the fairy", group: "slot", scope: "slot",
+    surfaces: ["avatar-menu"], when: (ctx = {}) => Boolean(ctx.grownFromFairy),
+    whySingle: "Shown only while Aither is grown from the fairy (owner 2026-11-15): the orb is down then, "
+      + "so the way back lives on the body; the fairy's own menu carries Show Aither.",
+  }),
+  Object.freeze({
     id: "avatar.remove", label: "Remove this avatar", group: "slot", scope: "slot",
     surfaces: ["avatar-menu"], when: (ctx = {}) => Boolean(ctx.removable),
     whySingle: "Removes ONE spawned body, so it needs the body that was right-clicked; the "
