@@ -52,7 +52,7 @@ const REGISTRY = {
 };
 const NAMES = ["aither-v2", "aither-m", "atlas", "lyra", "nova", "saga", "vera", "charlie-5e48d775", "orion"];
 
-test("planDefaults: ONLY a missing row is filled; every body the desk already shows is kept, an old default included", () => {
+test("planDefaults: the registry writes NO body onto an existing desk; every row is kept, an empty one too (the automatic pick stands)", () => {
   const records = { "saga-365cd728": { spec: "saga", library_id: "Saga-365cd728" } };
   const plan = defaults.planDefaults({
     registry: REGISTRY,
@@ -66,24 +66,26 @@ test("planDefaults: ONLY a missing row is filled; every body the desk already sh
       vera: { character: "orion" },
     },
   });
-  assert.deepEqual(plan.changes, [{ agent: "nova", from: null, to: "nova" }], "owner 2026-11-16: the registry never replaces a body he has seen");
+  assert.deepEqual(plan.changes, [], "owner 2026-11-16: a body he has seen is never replaced, and an empty row is drawn with an automatic pick he has seen too");
   assert.deepEqual(plan.keep.map((k) => [k.agent, k.why]), [
     ["atlas", "the person's own choice"],
     ["lyra", "the person's own choice"],
+    ["nova", "no row: the desk's automatic pick stands"],
     ["saga", "already the registry body"],
     ["vera", "the person's own choice"],
   ]);
   assert.deepEqual(plan.waiting, ["hera"], "no hera build on this desk: decided on a later boot");
-  assert.ok(!plan.changes.some((c) => c.agent === "aither"), "aither-body.cjs owns Aither's row");
+  assert.ok(!plan.keep.some((k) => k.agent === "aither"), "aither-body.cjs owns Aither's row");
 });
 
 test("planDefaults: an agent already decided is never decided again", () => {
   const plan = defaults.planDefaults({ registry: REGISTRY, names: NAMES, authors: {},
     state: { seen: { atlas: "atlas", lyra: "lyra", nova: "nova", saga: "saga", vera: "vera" } } });
+  assert.deepEqual(plan.keep, []);
   assert.deepEqual(plan.changes, []);
 });
 
-test("runDefaults: backup beside cast.json, empty rows filled with their voice kept, held until the catalog takes them", () => {
+test("runDefaults writes nothing to cast.json: no backup, no change, nothing held", () => {
   fs.writeFileSync(CAST, JSON.stringify({ version: 1, authors: {
     atlas: { character: "charlie-5e48d775", voice: "en-US-MichelleNeural" },
     lyra: { voice: "en-US-AriaNeural" },
@@ -92,33 +94,21 @@ test("runDefaults: backup beside cast.json, empty rows filled with their voice k
   const before = fs.readFileSync(CAST, "utf8");
   const out = defaults.runDefaults({ registry: REGISTRY, names: NAMES, castFile: CAST, now: () => new Date("2026-11-16T18:00:00Z") });
   assert.equal(out.ok, true);
-  assert.deepEqual(out.plan.changes.map((c) => c.agent), ["lyra", "nova", "saga"]);
-  assert.equal(path.basename(out.backup), "cast.json.bak-agent-avatar-defaults-20261116-180000");
-  assert.equal(fs.readFileSync(out.backup, "utf8"), before, "the backup is the cast as it was");
-  const cast = JSON.parse(fs.readFileSync(CAST, "utf8"));
-  assert.deepEqual(cast.authors.lyra, { character: "lyra", voice: "en-US-AriaNeural" });
-  assert.equal(cast.authors.atlas.character, "charlie-5e48d775", "a body the person already shows is never replaced");
-  assert.equal(cast.authors.vera.character, "orion", "the person's own choice is kept");
-  assert.equal(cast.authors.nova.character, "nova");
-  assert.deepEqual([...defaults.heldAgents(TMP)].sort(), ["lyra", "nova", "saga"]);
-  // second boot: nothing moves, no second backup
-  const again = defaults.runDefaults({ registry: REGISTRY, names: NAMES, castFile: CAST, now: () => new Date("2026-11-16T19:00:00Z") });
-  assert.deepEqual(again.plan.changes, []);
-  assert.equal(again.backup, null);
+  assert.deepEqual(out.plan.changes, []);
+  assert.equal(out.backup, null);
+  assert.equal(fs.readFileSync(CAST, "utf8"), before, "cast.json is byte for byte what it was");
+  assert.equal(defaults.heldAgents(TMP).size, 0);
 });
 
-test("a pending fill survives an older cast emptying it (settings pull); a body the person named is never replaced", () => {
-  const cast = JSON.parse(fs.readFileSync(CAST, "utf8"));
-  cast.authors.lyra = { voice: "en-US-AriaNeural" }; // another machine's older authors, merged in: no body
-  cast.authors.nova.character = "charlie-5e48d775";   // the person picked something since
-  fs.writeFileSync(CAST, JSON.stringify(cast));
+test("a pending body (one the person put back, adopted) survives an older cast emptying the row; a body named since is never replaced", () => {
+  defaults.writeState(TMP, { seen: {}, pending: { lyra: "lyra", nova: "nova" }, from: {} });
+  fs.writeFileSync(CAST, JSON.stringify({ version: 1, authors: { lyra: { voice: "x" }, nova: { character: "charlie-5e48d775" } } }));
   const fixed = defaults.reassertPending({ dir: TMP, castFile: CAST, registry: REGISTRY });
   assert.deepEqual(fixed, [{ agent: "lyra", to: "lyra" }]);
   const now = JSON.parse(fs.readFileSync(CAST, "utf8")).authors;
   assert.equal(now.lyra.character, "lyra");
-  assert.equal(now.nova.character, "charlie-5e48d775", "even an old default the registry supersedes is the person's once it is on the row");
-  now.nova.character = "nova";
-  fs.writeFileSync(CAST, JSON.stringify({ ...cast, authors: now }));
+  assert.equal(now.nova.character, "charlie-5e48d775", "a row naming any body is the person's");
+  defaults.writeState(TMP, { seen: {}, pending: {}, from: {} });
 });
 
 function pullFixtures() {
@@ -132,6 +122,8 @@ function pullFixtures() {
 
 test("a catalog pull leaves a held agent alone; the push clears the hold", async () => {
   pullFixtures();
+  fs.writeFileSync(CAST, JSON.stringify({ version: 1, authors: { lyra: { character: "lyra" } } }));
+  defaults.writeState(TMP, { seen: {}, pending: { lyra: "lyra" }, from: {} });
   const puts = [];
   const client = {
     async avatarCatalog() {
@@ -146,8 +138,33 @@ test("a catalog pull leaves a held agent alone; the push clears the hold", async
   assert.equal(JSON.parse(fs.readFileSync(CAST, "utf8")).authors.lyra.character, "lyra");
   const pushed = await sync.pushPendingDefaults({ client, defaultsDir: TMP });
   assert.equal(pushed.ok, true);
-  assert.deepEqual(puts.sort(), [["lyra", "Lyra-dff26de3"], ["nova", "nova-8d41dc57"], ["saga", "Saga-365cd728"]]);
+  assert.deepEqual(puts, [["lyra", "Lyra-dff26de3"]]);
   assert.equal(defaults.heldAgents(TMP).size, 0, "every agent the catalog took is no longer held");
+});
+
+test("a body ANOTHER desk assigned still follows the person here: a row a pull wrote is replaced by the next pull, a row the person made is not", async () => {
+  pullFixtures();
+  const dir = fs.mkdtempSync(path.join(TMP, "follow-"));
+  defaults.writeState(dir, { seen: {}, pending: {}, from: {} });
+  fs.writeFileSync(CAST, JSON.stringify({ version: 1, authors: { saga: { character: "saga" }, atlas: { character: "charlie-5e48d775" } } }));
+  defaults.markPulled(dir, "saga", "saga"); // the pull put it there: never his choice
+  const lib = (name) => ({ async ensureLibraryAvatar() { return { ok: true, name, installed: false }; }, async ensureVroidReference() { return { ok: false }; } });
+  const client = {
+    async avatarCatalog() {
+      return { ok: true, avatars: [{ id: "lyra-1", sha256: "" }, { id: "x", sha256: "" }], starters: [], agents: { saga: "lyra-1", atlas: "x" }, active: null };
+    },
+  };
+  let asked = [];
+  const library = { async ensureLibraryAvatar(rec) { asked.push(rec.id); return { ok: true, name: rec.id === "lyra-1" ? "lyra" : "nova", installed: false }; }, async ensureVroidReference() { return { ok: false }; } };
+  void lib;
+  const out = await sync.syncFromCatalog({ client, library, defaultsDir: dir });
+  const by = Object.fromEntries(out.results.map((r) => [r.agent, r]));
+  assert.equal(by.saga.changed, true, "a pulled row follows the catalog");
+  assert.equal(by.atlas.kept, true, "his own row stays");
+  const cast = JSON.parse(fs.readFileSync(CAST, "utf8")).authors;
+  assert.equal(cast.saga.character, "lyra");
+  assert.equal(cast.atlas.character, "charlie-5e48d775");
+  asked = [];
 });
 
 test("P0 2026-11-16: a catalog that names a registry body can NOT pull it over a body the desk shows; only 'replace' (the person's own sync) does", async () => {

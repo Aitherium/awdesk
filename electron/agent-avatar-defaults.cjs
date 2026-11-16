@@ -112,7 +112,10 @@ function planDefaults({ registry, authors = {}, names = [], recordOf = () => nul
     }
     const current = characterOf(authors && authors[agent]);
     if (!current) {
-      out.changes.push({ agent, from: null, to: target });
+      // An empty row is not empty on screen: the desk draws an automatic pick there
+      // (cast.stableCharacter), and a body the owner has seen is his. The registry no longer writes a
+      // body onto an existing desk at all (review of #104); a fresh desk follows it through the presence mirror.
+      out.keep.push({ agent, character: null, why: "no row: the desk's automatic pick stands" });
     } else if (current === target || isRegistryBuild(entry, current, recordOf(current))) {
       out.keep.push({ agent, character: current, why: "already the registry body" });
     } else {
@@ -215,7 +218,7 @@ function runDefaults(deps = {}, { dryRun = false } = {}) {
     next.pending[c.agent] = c.to;
     if (c.from) next.from[c.agent] = c.from;
   }
-  for (const k of plan.keep) next.seen[k.agent] = k.character;
+  for (const k of plan.keep) if (k.character) next.seen[k.agent] = k.character;
   if (backup) next.backup = path.basename(backup);
   if (plan.changes.length || plan.keep.length) writeState(d.dir, next);
   d.log("agent avatar defaults", plan.changes.map((c) => `${c.agent}: ${c.from || "(none)"} -> ${c.to}`));
@@ -289,6 +292,18 @@ function adoptRestored(deps = {}) {
   return adopted;
 }
 
+/** Rows a catalog PULL wrote: such a row was never the person's own choice, so a later pull may replace it. */
+function pulledMap(dir) {
+  const v = readState(dir).pulled;
+  return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+}
+
+function markPulled(dir, agent, character) {
+  const state = readState(dir);
+  state.pulled = { ...(state.pulled || {}), [agent]: character };
+  return writeState(dir, state);
+}
+
 /** The catalog took `agent` = `character`: it is no longer pending. */
 function markPushed(dir, agent, character) {
   const state = readState(dir);
@@ -300,6 +315,7 @@ function markPushed(dir, agent, character) {
 module.exports = {
   MIRROR_FILE, STATE_FILE,
   loadRegistry, planDefaults, runDefaults, readState, writeState, heldAgents, markPushed, reassertPending, adoptRestored,
+  pulledMap, markPulled,
   baseName, isSuperseded, isRegistryBuild,
 };
 

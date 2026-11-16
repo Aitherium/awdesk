@@ -127,6 +127,22 @@ async function pushPendingDefaults(deps = {}) {
   return { ok: results.every((r) => r.ok), results };
 }
 
+function pulledFor(deps) {
+  try {
+    const dir = defaultsDir(deps);
+    return dir ? require("./agent-avatar-defaults.cjs").pulledMap(dir) : {};
+  } catch {
+    return {};
+  }
+}
+
+function notePulled(deps, agent, name) {
+  try {
+    const dir = defaultsDir(deps);
+    if (dir) require("./agent-avatar-defaults.cjs").markPulled(dir, agent, name);
+  } catch { /* the note is a convenience */ }
+}
+
 /** Is `name` a character this desk can show right now? */
 function onDesk(d, name) {
   try {
@@ -159,8 +175,11 @@ async function syncFromCatalog(deps = {}) {
     // A body this desk already shows is the person's (owner 2026-11-16, P0: robots came back over
     // the bodies he knows). A pull only FILLS an empty row, or fetches the model a row already
     // names; replacing a shown body is the person's act (`replace`: the manual "sync now").
+    // ...except a row an earlier PULL wrote (agent-avatar-defaults pulledMap): that was never his choice, so a
+    // body assigned on another desk still follows the person here (review of #104).
     const shown = d.agents.getAgentAvatar(agent);
-    if (shown && deps.replace !== true && onDesk(d, shown)) {
+    const pulledBefore = pulledFor(deps)[agent];
+    if (shown && deps.replace !== true && onDesk(d, shown) && pulledBefore !== shown) {
       results.push({ agent, ok: true, name: shown, installed: false, changed: false, kept: true, reason: "this desk already shows a body for it" });
       continue;
     }
@@ -172,13 +191,14 @@ async function syncFromCatalog(deps = {}) {
       continue;
     }
     const current = d.agents.getAgentAvatar(agent);
-    if (current && current !== ensured.name && deps.replace !== true) {
-      // The row names a body whose model was missing: it is fetched above, the row stays.
+    if (current && current !== ensured.name && deps.replace !== true && pulledBefore !== current) {
+      // The row names a body whose model was missing: the catalog's record is fetched, the row stays.
       results.push({ agent, ok: true, name: current, installed: ensured.installed, changed: false, kept: true, reason: "this desk already names a body for it" });
       continue;
     }
     const changed = current !== ensured.name;
     if (changed) d.agents.setAgentAvatar(agent, ensured.name);
+    notePulled(deps, agent, ensured.name);
     results.push({ agent, ok: true, name: ensured.name, installed: ensured.installed, changed });
   }
   d.log("avatar catalog sync", results.filter((r) => r.changed || r.installed || !r.ok));
