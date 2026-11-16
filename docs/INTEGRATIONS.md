@@ -41,6 +41,10 @@ Desk exposes these tools:
 | `swarm_roster` | `refresh?` | Every agent the owner runs, read live (Discord persona bots, Genesis fleet agents, awsh/Claude Code sessions, subagents, remote endpoints, GargBot's goblin) with colour, body, voice and form |
 | `swarm_set_form` | `agent` (id or `all`), `form` (`fairy`/`avatar`), `include?` | setAgentForm: grow an agent into its avatar or shrink it back to a fairy, smoothly; `all` does the whole swarm (light mode keeps terminals small); `gargbot` summons the goblin |
 | `swarm_stage` | `op` (`join`/`leave`/`lock`/`arrange`/`move`/`size`/`turn`/`state`), `agent?`, `target?`, `mode?` | Combine and split stages: an explicit group of grown avatars that moves, sizes and turns together (a locked stage never detaches by itself) |
+| `swarm_perceive` | `agent?`, `view?` (`self`/`stage`/`roster`/`screen`) | What an agent standing on the desk can see: its own row, form, slot and stage, every body, the roster, the focused window |
+| `swarm_act` | `agent?`, `tool`, `args?` | An agent runs one gateway tool; credential, money and destructive tool names are refused here and the gateway still decides |
+| `swarm_walk_to` | `agent?`, `x`, `y`, `width?`, `height?` | A grown avatar walks to stand under a screen rectangle (screen DIPs), within the stage |
+| `swarm_look_at` | `agent?`, `x?`, `y?` | A grown avatar turns toward a screen point; omit x and y to turn back |
 | `swarm_speak` | `agent`, `text?` or `audio_base64?`, `volume?` | The agent speaks in its own voice from its own body; or plays pre-rendered audio on that body |
 | `swarm_visemes` | `agent`, `weights?` / `frames?`, `ttl_ms?` | Drive an agent's five VRM mouth shapes (aa ee ih oh ou); null releases |
 | `set_agent` | `agent`: an agent name such as `aither` | Shows the character assigned to that agent |

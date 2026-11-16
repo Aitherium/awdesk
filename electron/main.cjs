@@ -2096,6 +2096,9 @@ function getSwarmHost() {
     speakAloud: (text, voice, speed, slotId, origin, speaker) => speakAloud(text, voice, speed, slotId, origin, speaker),
     playAudio: (a) => playAudioOnSlot(a),
     askAgent: (agent, text) => askAgentOverRelay(agent, text),
+    // act(tool): the gateway's own tools, for an agent standing on this desk (the host refuses credential,
+    // money and destructive names; the gateway still decides who may call what).
+    runTool: (agent, tool, args) => require("./gateway-mcp.cjs").callTool(tool, { ...args, agent }),
     log: debugLog,
   });
   return swarmHostInstance;
@@ -2129,6 +2132,14 @@ async function swarmApi(req = {}) {
       return host.visemes(req.agent, req.weights === undefined ? null : req.weights, req.ttlMs);
     case "goblin":
       return host.setAgentForm("gargbot", req.on === false ? "fairy" : "avatar");
+    case "perceive":
+      return host.perceive(req.agent, req.view);
+    case "act":
+      return host.act(req.agent, req.tool, req.args);
+    case "walk":
+      return host.walkTo(req.agent, req.rect);
+    case "look":
+      return host.lookAt(req.agent, req.point === undefined ? undefined : req.point);
     case "register":
       // GargBot's web overlay (or any page in the desk) names the goblin / agents it shows: they join
       // THIS roster, deduped by agent identity (one cluster). agents: [] forgets the source.

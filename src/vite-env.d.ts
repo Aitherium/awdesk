@@ -68,6 +68,9 @@ type AvatarBridgeEvent =
   // A body's name tag and outline colour (the agent's own): shown on hover and selection.
   | { type: 'slot-look'; slotId: string; look: { label: string; color: string } | null }
   // Which bodies share a stage (electron/agent-swarm-host.cjs): the renderer draws a handle over each group.
+  // The entity verbs (electron/agent-swarm-host.cjs): a body walks to a screen rect (window client px) / turns toward a point.
+  | { type: 'walk-to'; slotId: string; rect: { x: number; y: number; width: number; height: number } }
+  | { type: 'look-at'; slotId: string; point: { x: number; y: number } | null }
   | { type: 'stage-groups'; groups: Array<{ id: string; slots: string[]; members: string[]; locked: boolean }> }
   // Plan 40 slice G: main names an ARRANGEMENT and the renderer places every
   // live body (src/stage/arrangements.ts holds the geometry, beside the bounds).

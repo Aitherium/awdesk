@@ -11,6 +11,7 @@ import { POSITION_BOUND, useAvatarLayout, type AvatarTransform } from '../hooks/
 import { arrange, isArrangement } from '../stage/arrangements';
 import { dropTarget, sanitizeGroups, type StageGroup } from '../stage/stage-direct';
 import { StageHandles } from '../stage/StageHandles';
+import { EntityMotion } from '../stage/EntityMotion';
 import { useAvatarDrag } from '../hooks/useAvatarDrag';
 import { authoredFields, freeSpot } from '../hooks/stagePlacement';
 import { anyoneAudible } from '../hooks/voiceLevels';
@@ -967,6 +968,13 @@ export function Scene(props: SceneProps) {
         positionOf={(id) => layoutRef.current[id]?.position ?? getTransform(id).position}
         setPosition={setPosition}
         onMoved={(positions) => window.deskBridge?.stageSync?.(positions)}
+      />
+      {/* The entity verbs main sends (walk-to / look-at): they run here, where the camera is. */}
+      <EntityMotion
+        positionOf={(id) => layoutRef.current[id]?.position ?? getTransform(id).position}
+        setPosition={setPosition}
+        setYaw={setYaw}
+        knownSlots={() => slotIdsRef.current}
       />
       <OrbitControls
         makeDefault
