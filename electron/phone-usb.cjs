@@ -8,8 +8,8 @@
  * `adb devices -l` lists the phone; `adb reverse tcp:47937 tcp:<pc port>` makes the
  * phone's own 127.0.0.1:47937 reach this PC's phone-link server down the cable (no
  * network: offline and on another Wi-Fi alike); `am start` opens the Aither app on the
- * link screen. That is ALL this module ever asks adb for: adbArgv() builds exactly four
- * argv shapes and throws on anything else, so no caller can reach `adb shell <anything>`.
+ * link screen. That is ALL this module ever asks adb for: adbArgv() builds exactly five
+ * argv shapes (the fifth, screencap, is the owner pressing "Capture its screen") and throws on anything else, so no caller can reach `adb shell <anything>`.
  *
  * Every spawn is execFile with windowsHide (CREATE_NO_WINDOW): no console flashes.
  * A pulled cable drops the phone from `adb devices`; the watcher reports it gone and the
@@ -51,7 +51,7 @@ function resolveAdb(env = process.env, exists = fs.existsSync, readdir = fs.read
 }
 
 /**
- * The only adb argv this desk runs. kind: devices | reverse | unreverse | launch.
+ * The only adb argv this desk runs. kind: devices | reverse | unreverse | launch | screencap.
  * Throws on any other kind, a bad serial, a bad port or a URL outside app.aitherium.com.
  */
 function adbArgv(kind, { serial = "", pcPort = 0, url = LINK_URL } = {}) {
@@ -68,6 +68,7 @@ function adbArgv(kind, { serial = "", pcPort = 0, url = LINK_URL } = {}) {
     return ["-s", serial, "shell", "am", "start", "-a", "android.intent.action.VIEW",
       "-n", APP_COMPONENT, "-d", `'${url}'`];
   }
+  if (kind === "screencap") return ["-s", serial, "exec-out", "screencap", "-p"];
   throw new Error(`adb ${kind} is not allowed`);
 }
 
@@ -97,6 +98,14 @@ function parseDevices(text, opts = {}) {
     });
   }
   return out;
+}
+
+/** Binary stdout (a PNG): same spawn rules as run(), but the bytes stay a Buffer. */
+function runBinary(execFileImpl, bin, argv, timeoutMs = 20_000) {
+  return new Promise((resolve) => {
+    execFileImpl(bin, argv, { timeout: timeoutMs, windowsHide: true, maxBuffer: 48 * 1024 * 1024, encoding: "buffer" },
+      (error, stdout, stderr) => resolve({ ok: !error, error, stdout: Buffer.from(stdout || []), stderr: String(stderr || "") }));
+  });
 }
 
 function run(execFileImpl, bin, argv, timeoutMs = 10_000) {
@@ -160,6 +169,17 @@ function createPhoneUsb({ execFileImpl = execFile, bin = resolveAdb(), env = pro
     reverse: (serial, pcPort) => adb("reverse", { serial, pcPort }),
     unreverse: (serial) => adb("unreverse", { serial }),
     launch: (serial, url = LINK_URL) => adb("launch", { serial, url }),
+    /** The phone's screen as PNG bytes: {ok, png} (the owner asked; nothing polls this). */
+    async screencap(serial) {
+      const r = await runBinary(execFileImpl, bin, adbArgv("screencap", { serial }));
+      const png = r.stdout;
+      // magic bytes AND the IEND chunk: a capture cut off by the buffer limit is not an image
+      const isPng = png.length > 16 && png.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+        && png.subarray(png.length - 8, png.length - 4).toString("latin1") === "IEND";
+      if (isPng) return { ok: true, png };
+      const why = r.stderr.trim() || (r.error && r.error.message) || "the phone returned no image";
+      return { ok: false, error: String(why).slice(0, 200) };
+    },
   };
 }
 
