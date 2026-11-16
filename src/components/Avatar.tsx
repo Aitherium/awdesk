@@ -30,6 +30,8 @@ export interface AvatarProps {
   modelUrl?: string;
   /** Which body this is; its mouth level is read from voiceLevels by this id. */
   slotId?: string;
+  /** The body cannot be animated at all (no humanoid arms): the scene hands it back to its fairy. */
+  onBroken?: (slotId: string) => void;
 }
 
 function AvatarModel({
@@ -42,9 +44,13 @@ function AvatarModel({
   onReady,
   modelUrl,
   slotId,
+  onBroken,
 }: AvatarProps) {
   const vrm = useVrmLoader(modelUrl ?? './assets/model.vrm');
-  const { play, update: updateAnimation } = useVrmAnimation(vrm);
+  const { play, update: updateAnimation } = useVrmAnimation(
+    vrm,
+    onBroken ? () => onBroken(slotId ?? 'slot0') : undefined,
+  );
   const updateLipSync = useAmplitudeLipSync(vrm);
   const updateBlink = useBlink(vrm);
   const moodWeights = useRef(NEUTRAL_WEIGHTS);

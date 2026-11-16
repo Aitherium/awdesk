@@ -876,6 +876,7 @@ function createSwarmHost({
     leaveSlot,
     syncPositions,
     stageOfSlot,
+    agentOfSlot,
     stageGroups,
     publishStages,
     goblinChanged,

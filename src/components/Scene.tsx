@@ -295,6 +295,11 @@ function resumeOrbit(orbit: { enabled?: boolean } | null) {
  *  position is committed to persisted layout state ONCE, on pointerup. All live values
  *  (y, scale) are read through refs so a re-render mid-drag can never strand the drag on
  *  a stale closure. */
+/** A body that cannot be animated at all is handed back to its fairy by main: never a T-pose on screen. */
+function reportBodyBroken(slotId: string) {
+  try { window.deskBridge?.bodyBroken?.(slotId); } catch { /* the bridge is optional */ }
+}
+
 function PlacedAvatar({ slotId, transform, onDrag, onDragMove, onDropped, onScale, onRotate, avatarProps, onReady, bubble, physics, customise, injuries }: PlacedAvatarProps) {
   const getThreeState = useThree((state) => state.get);
   const groupRef = useRef<THREE.Group>(null);
@@ -593,7 +598,7 @@ function PlacedAvatar({ slotId, transform, onDrag, onDragMove, onDropped, onScal
           <meshBasicMaterial transparent opacity={0} depthWrite={false} />
         </mesh>
       ) : null}
-      <Avatar {...avatarProps} onReady={handleReady} />
+      <Avatar {...avatarProps} onReady={handleReady} onBroken={reportBodyBroken} />
       {bubble ? (() => {
         // pointer-events are off end to end: the caption sits right where the
         // owner grabs an avatar, and one that eats the drag would make a talking

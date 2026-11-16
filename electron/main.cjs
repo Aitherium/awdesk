@@ -711,18 +711,23 @@ function loadSavedSize() {
     const raw = fs.readFileSync(SIZE_STATE_PATH(), "utf-8");
     const parsed = JSON.parse(raw);
     if (Number.isFinite(parsed?.width) && Number.isFinite(parsed?.height)) {
-      return { width: parsed.width, height: parsed.height };
+      return require("./window-size.cjs").effectiveSize(parsed, workAreaForSize());
     }
   } catch {
     /* no saved size yet, or file is corrupt — fall back to the default */
   }
-  return { width: WINDOW_WIDTH, height: WINDOW_HEIGHT };
+  return require("./window-size.cjs").effectiveSize(null, workAreaForSize());
+}
+
+/** The work area the default window size is a share of (a screen the owner is on, else the primary). */
+function workAreaForSize() {
+  try { return screen.getPrimaryDisplay().workArea; } catch { return null; }
 }
 
 function saveSize(width, height) {
   try {
     fs.mkdirSync(path.dirname(SIZE_STATE_PATH()), { recursive: true });
-    fs.writeFileSync(SIZE_STATE_PATH(), JSON.stringify({ width, height }), "utf-8");
+    fs.writeFileSync(SIZE_STATE_PATH(), JSON.stringify({ width, height, chosen: true }), "utf-8");
   } catch {
     /* best-effort — a failed save just means the next launch uses the old size */
   }
@@ -3232,6 +3237,14 @@ ipcMain.on("desk:avatar-context-menu", (_event, slotId) => {
 ipcMain.on("desk:stage-drop", (event, slotId, targetSlotId) => {
   if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
   void getSwarmHost().joinSlots(String(slotId || ""), String(targetSlotId || ""));
+});
+// A body whose model cannot be animated at all (no humanoid arms to pose) shrinks back to its fairy:
+// never a bind-posed T-pose on screen (owner P0 2026-11-16). Only the avatar window may send it.
+ipcMain.on("desk:body-broken", (event, slotId) => {
+  if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
+  const host = getSwarmHost();
+  const agent = host.agentOfSlot(String(slotId || ""));
+  if (agent) void host.setAgentForm(agent, "fairy");
 });
 ipcMain.on("desk:stage-sync", (event, positions) => {
   if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
