@@ -364,6 +364,44 @@ export function applyCustomise(vrm: VRM, recipe: DeskCustomise | null | undefine
   }
 }
 
+/**
+ * Clean silhouette edges on the TRANSPARENT overlay (owner 2026-11-15: "a white
+ * jagged fringe around the silhouette"). The window composites the canvas as
+ * PREMULTIPLIED alpha; a blended MToon material writes straight alpha, so a
+ * half-covered hair/cloth texel reads as a bright rim. Blended materials output
+ * premultiplied colour (three switches them to the premultiplied blend), and
+ * cutout cards (alphaTest) use alpha-to-coverage, so MSAA feathers their edge
+ * instead of a hard stair. Opaque materials are untouched. Returns how many
+ * materials changed.
+ */
+export function applyOverlayEdges(root: THREE.Object3D): number {
+  let changed = 0;
+  const seen = new Set<THREE.Material>();
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.material) return;
+    const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const m of list) {
+      if (!m || seen.has(m)) continue;
+      seen.add(m);
+      let touched = false;
+      if (m.transparent && !m.premultipliedAlpha) {
+        m.premultipliedAlpha = true;
+        touched = true;
+      }
+      if (m.alphaTest > 0 && !m.alphaToCoverage) {
+        m.alphaToCoverage = true;
+        touched = true;
+      }
+      if (touched) {
+        m.needsUpdate = true;
+        changed += 1;
+      }
+    }
+  });
+  return changed;
+}
+
 export function useVrmLoader(url: string): VRM | null {
   const gltf = useLoader(GLTFLoader, url, (loader) => {
     loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -377,6 +415,7 @@ export function useVrmLoader(url: string): VRM | null {
     VRMUtils.combineMorphs(loaded);
     VRMUtils.rotateVRM0(loaded);
     applyDefaultSpringGravity(loaded);
+    applyOverlayEdges(loaded.scene);
     // Record the (floored) authored spring values now, at scale 1, so the
     // placement layer (Scene.tsx, handed the VRM through Avatar's onReady)
     // can rescale them idempotently.

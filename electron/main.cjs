@@ -1075,7 +1075,12 @@ function createWindow() {
   // fairy comes back, so the desk is never left with neither.
   avatarWindow.on("hide", () => {
     if (avatarGrowing) return;
-    try { if (orbWindow.expanded()) void orbWindow.collapseToFairy({ fromAvatar: true }); } catch { /* cosmetic */ }
+    try {
+      if (orbWindow.expanded()) {
+        void orbWindow.collapseToFairy({ fromAvatar: true });
+        startRoomStage();
+      }
+    } catch { /* cosmetic */ }
   });
   avatarWindow.on("closed", () => {
     clearTimeout(hyprlandConfigurationTimer);
@@ -1971,6 +1976,19 @@ async function playFrames(win, frames) {
   }
 }
 
+/** ONE body while grown (owner 2026-11-15: "still have this other lil robot?"): the room
+ *  stage's session bodies share this window, so it stops and its bodies leave; collapse
+ *  starts it again. Returns the slots it sent away. */
+function clearStageForAither() {
+  const gone = [];
+  try { roomStageHost.stopRoomStage(); } catch { /* not running */ }
+  for (const slotId of [...avatarSlots.keys()]) {
+    if (slotId === "slot0" || slotId === "default") continue;
+    try { removeAvatarSlot(slotId); gone.push(slotId); } catch { /* already gone */ }
+  }
+  return gone;
+}
+
 async function expandAvatarFromFairy({ from = null } = {}) {
   if (avatarGrowing) return { ok: false, error: "already growing" };
   if (avatarDock && avatarDock.isDocked()) return { ok: false, error: "the avatar is docked in the browser" };
@@ -1979,6 +1997,8 @@ async function expandAvatarFromFairy({ from = null } = {}) {
   avatarGrowing = true;
   try {
     const win = createWindow();
+    const cleared = clearStageForAither();
+    if (cleared.length) debugLog("fairy grows: one body; sent away", cleared.join(","));
     if (getActiveCharacter() !== want) {
       if (!installCharacter(want)) return { ok: false, error: `could not put ${want} on stage` };
       debugLog("fairy grows into", want);
@@ -2024,6 +2044,8 @@ async function collapseAvatarToFairy({ to = null } = {}) {
   } finally {
     avatarGrowing = false;
   }
+  // The session bodies come back with the fairy (the stage re-seats whoever is talking).
+  try { startRoomStage(); } catch { /* the room is optional */ }
   if (tray) refreshTrayMenu();
   return { ok: true };
 }
