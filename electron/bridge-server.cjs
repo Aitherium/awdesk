@@ -302,6 +302,7 @@ function createBridgeServer({
   chromeBridge = null,
   commandsHandler = null,
   assistHandler = null,
+  assistAuth = null,
   // () => {x, y, width, height} of the visible avatar window, or null.
   avatarBoundsProvider = null,
   // () => the room stage's status (who is on stage, queue, spoken), or null.
@@ -575,7 +576,13 @@ function createBridgeServer({
     // ONLY accepted origin is a pinned AitherConnect extension: unlike /commands this route
     // carries page text and spends the owner's model budget, so a loopback no-Origin
     // caller (curl, a local script) is refused, not trusted.
-    if (/^\/assist\/(suggest|refine|run|route|note)$/.test(String(request.url || ""))) {
+    //
+    // The Origin header is NOT a credential (any local process can write one), so every
+    // route except the two pairing steps ALSO needs the per-install bearer
+    // (assist-pairing.cjs): without it, or with a wrong one, 401 -- fail closed, including
+    // when the desk has no verifier at all. The pairing steps need only the pinned origin:
+    // they hand the bearer out, once, after the owner clicks Allow in a native dialog.
+    if (/^\/assist\/(suggest|refine|run|route|note|pair\/start|pair\/finish)$/.test(String(request.url || ""))) {
       if (!extensionOriginAllowed(origin)) {
         response.writeHead(403);
         response.end();
@@ -592,8 +599,17 @@ function createBridgeServer({
         return;
       }
       const assistRoute = String(request.url).slice("/assist/".length);
+      if (!assistRoute.startsWith("pair/")) {
+        let authorised;
+        try { authorised = typeof assistAuth === "function" && assistAuth(request.headers.authorization) === true; } catch { authorised = false; }
+        if (!authorised) {
+          response.writeHead(401, { "content-type": "application/json", "www-authenticate": "Bearer" });
+          response.end(JSON.stringify({ ok: false, pair: true, error: "pairing required: pair AitherConnect with this desk first" }));
+          return;
+        }
+      }
       readJsonBody(request)
-        .then((body) => assistHandler({ route: assistRoute, body }))
+        .then((body) => assistHandler({ route: assistRoute, body, origin }))
         .then((result) => {
           if (response.headersSent) return;
           response.writeHead(result && result.ok === false && result.status ? result.status : 200, { "content-type": "application/json" });

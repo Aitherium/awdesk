@@ -227,7 +227,7 @@ test("file menu: per-user HKCU roots only, a Single-item cascade, each verb laun
   const cmds = sm.enableCommands({ root: sm.FILE_ROOTS.file, exe: "C:\\Desk\\Aither.exe", appArgs: [], entries: sm.FILE_ENTRIES });
   assert.ok(cmds.some((c) => c.includes("MultiSelectModel") && c.includes("Single")));
   const run = cmds.find((c) => c.includes("/ve") && /assist\.file\.rename/.test(c.join(" ")));
-  assert.equal(run[6], '"C:\\Desk\\Aither.exe" --run=assist.file.rename --arg="%1"');
+  assert.equal(run[6], '"C:\\Desk\\Aither.exe" --run=assist.file.rename --arg="%1\\."', "the sentinel keeps the closing quote real on a drive root");
   assert.ok(cmds.every((c) => c[0] === "add" && c[1].startsWith("HKCU\\")), "no machine-wide (HKLM) write, no admin");
   assert.deepEqual(sm.FILE_ENTRIES.map((e) => e.key), ["summarize", "ask", "rename", "convert", "pipeline", "pack"]);
 });
