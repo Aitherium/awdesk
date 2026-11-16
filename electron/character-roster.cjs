@@ -230,6 +230,18 @@ function listCharacters() {
   return filterCharacters(listAllCharacters());
 }
 
+/** Aither's own body, newest first. Owner 2026-11-15: the new Aither (aither-v2, VRM
+ *  1.0, ARKit 52) is "the default Aither everywhere"; the older models stay in the
+ *  roster (aither, aither-classic) and are only no longer the default. */
+const DEFAULT_AITHER = Object.freeze(["aither-v2", "aither"]);
+
+/** The roster name Aither wears by default: the first DEFAULT_AITHER entry this desk
+ *  has a visible model for, or null when it has none. */
+function defaultAitherCharacter(names = listCharacters()) {
+  const have = new Set(names);
+  return DEFAULT_AITHER.find((name) => have.has(name)) || null;
+}
+
 /** Most-recently-switched-to characters, newest first (menu shows these, not all 60+). */
 function getRecentCharacters(limit = RECENT_LIMIT) {
   let recent;
@@ -609,4 +621,6 @@ module.exports = {
   queueInstall,
   listAllCharacters,
   listCharacters,
+  DEFAULT_AITHER,
+  defaultAitherCharacter,
 };

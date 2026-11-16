@@ -545,6 +545,7 @@ const {
   planSlotInstall,
   queueInstall,
   listCharacters: rosterListCharacters,
+  defaultAitherCharacter,
 } = require("./character-roster.cjs");
 // Kid desk wrappers (kidDeskMode is resolved at the top of this file).
 function listCharacters() {
@@ -1069,6 +1070,12 @@ function createWindow() {
     if (isQuitting) return;
     event.preventDefault();
     void hideOverlay();
+  });
+  // Grown from the fairy and then hidden some other way (tray, close, hotkey): the
+  // fairy comes back, so the desk is never left with neither.
+  avatarWindow.on("hide", () => {
+    if (avatarGrowing) return;
+    try { if (orbWindow.expanded()) void orbWindow.collapseToFairy({ fromAvatar: true }); } catch { /* cosmetic */ }
   });
   avatarWindow.on("closed", () => {
     clearTimeout(hyprlandConfigurationTimer);
@@ -1937,6 +1944,88 @@ function setCompanionMode(mode) {
   syncNeedsYouChip();
   if (tray) refreshTrayMenu();
   return { ok: true, companion: next };
+}
+
+// ── the fairy grows into Aither (owner 2026-11-15) ───────────────────────────
+// "when I click the fairy or right-click and select an option I want it to expand into
+// that avatar". orb-window.cjs asks through its `expand` / `collapse` hooks; the body
+// is THIS file's one avatar window (no second renderer), wearing the default Aither
+// (character-roster DEFAULT_AITHER: aither-v2, else the older aither). The geometry is
+// avatar-grow.cjs. Transient: desk-companion.json is not touched, so the next boot is
+// the fairy again.
+const avatarGrow = require("./avatar-grow.cjs");
+let avatarGrowing = false;
+
+function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function playFrames(win, frames) {
+  for (const frame of frames) {
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.setBounds(frame.bounds);
+      win.setOpacity(frame.opacity);
+    } catch { /* mid-teardown */ }
+    await waitMs(avatarGrow.FRAME_MS);
+  }
+}
+
+async function expandAvatarFromFairy({ from = null } = {}) {
+  if (avatarGrowing) return { ok: false, error: "already growing" };
+  if (avatarDock && avatarDock.isDocked()) return { ok: false, error: "the avatar is docked in the browser" };
+  const want = defaultAitherCharacter(listCharacters());
+  if (!want) return { ok: false, error: "no Aither model in this desk's roster" };
+  avatarGrowing = true;
+  try {
+    const win = createWindow();
+    if (getActiveCharacter() !== want) {
+      if (!installCharacter(want)) return { ok: false, error: `could not put ${want} on stage` };
+      debugLog("fairy grows into", want);
+      win.webContents.reloadIgnoringCache();
+    }
+    const size = loadSavedSize();
+    const point = from ? { x: Math.round(from.x + from.width / 2), y: Math.round(from.y + from.height / 2) } : screen.getCursorScreenPoint();
+    const area = screen.getDisplayNearestPoint(point).workArea;
+    const to = avatarGrow.targetBounds(from, size, area);
+    const frames = avatarGrow.growFrames(from, to);
+    try { win.setMinimumSize(1, 1); } catch { /* older electron */ }
+    win.setOpacity(0);
+    win.setBounds(frames[0].bounds);
+    if (!win.isVisible()) win.showInactive();
+    await playFrames(win, frames);
+    try { win.setMinimumSize(320, 480); } catch { /* older electron */ }
+    if (!win.isDestroyed()) {
+      win.setBounds(to);
+      win.setOpacity(1);
+      win.webContents.send("desk:event", { type: "animation", animation: "GREETING", source: "fairy" });
+    }
+    if (tray) refreshTrayMenu();
+    return { ok: true, character: want, bounds: to };
+  } finally {
+    avatarGrowing = false;
+  }
+}
+
+async function collapseAvatarToFairy({ to = null } = {}) {
+  const win = avatarWindow;
+  if (!win || win.isDestroyed() || !win.isVisible()) return { ok: true };
+  avatarGrowing = true;
+  const body = win.getBounds();
+  try {
+    try { win.setMinimumSize(1, 1); } catch { /* older electron */ }
+    await playFrames(win, avatarGrow.shrinkFrames(body, to));
+    if (!win.isDestroyed()) {
+      win.hide();
+      win.setMinimumSize(320, 480);
+      win.setBounds(body);   // the next grow / tray Show starts from the full size
+      win.setOpacity(1);
+    }
+  } finally {
+    avatarGrowing = false;
+  }
+  if (tray) refreshTrayMenu();
+  return { ok: true };
 }
 
 /** Why the fairy must not interrupt right now, or "" (fairy-attention quiet). The
@@ -6332,6 +6421,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           runCommand(id, undefined, { surface: "fairy" });
           return true;
         },
+        // The fairy grows into Aither and back (avatar-grow.cjs, owner 2026-11-15).
+        expand: (opts) => expandAvatarFromFairy(opts),
+        collapse: (opts) => collapseAvatarToFairy(opts),
         focusSession: async (id) => {
           const r = await deckSessionAct({ id, action: "focus" });
           if (r && !r.ok && /ended/i.test(String(r.note || ""))) return deckSessionAct({ id, action: "resume" });

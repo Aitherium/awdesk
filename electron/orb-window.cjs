@@ -134,6 +134,8 @@ let pendingSlot = null;
 let regionWait = false;
 /** A bubble the owner closed stays closed until something NEW arrives. */
 let suppressed = false;
+/** The fairy has grown into Aither's full avatar (expandToAvatar); transient, never saved. */
+let expanded = false;
 let ops = null;
 let probe = null;
 let pendingRuns = new Map(); // trip id -> {resolve, timer}
@@ -822,6 +824,9 @@ function showOrb() {
   state.visible = true;
   suppressed = false;
   if (!was) saveState();
+  // Grown into the avatar: the body IS the fairy right now (one cluster), so the orb
+  // stays down until "Back to the fairy" (collapseToFairy).
+  if (expanded) return { ok: true, visible: true, expanded: true };
   if (!win.isVisible()) win.showInactive();
   if (attach) showVeil();
   placeSwarm();
@@ -3260,6 +3265,9 @@ function toggleBubbleFromOrb() {
     hookValue("open", null);
     return { ok: true, visible: false, inbox: true, waiting: attentionCards.length };
   }
+  // Nothing waiting: the click grows the fairy into Aither (owner 2026-11-15). Chat
+  // stays one row away on the right-click menu ("Chat with Aither").
+  if (avatarMode() === "fairy") return expandToAvatar();
   openBubble({ focus: true });
   return { ok: true, visible: true };
 }
@@ -3481,7 +3489,7 @@ function openCompanionMenu(target = "tenant", { at = null } = {}) {
 function orbMenu({ atFairy = false } = {}) {
   return showMenu("orb", fairyMenu.orbItems({
     waiting: attentionCards.length, quietUntil: state.muteUntil, tenantVisible: Boolean(state.tenantCompanion),
-    fairyVisible: orbVisible(), nowMs: Date.now(),
+    fairyVisible: orbVisible(), nowMs: Date.now(), avatar: avatarMode(),
   }), { atFairy });
 }
 
@@ -3571,7 +3579,66 @@ function orbPick(what) {
     return { ok: true };
   }
   if (what === "more") return spiritMenu();
+  if (what === "expand") return expandToAvatar();
+  if (what === "collapse") return collapseToFairy();
   return { ok: false, error: `unknown menu item ${what}` };
+}
+
+// -- the avatar: the fairy grows into Aither's full body (owner 2026-11-15) ---------
+// "when I click the fairy or right-click and select an option I want it to expand
+// into that avatar". The body is main's ONE avatar window (the attention hooks
+// `expand` / `collapse`); nothing here renders a VRM. While expanded the orb and its
+// swarm are down -- one cluster: the body stands where the fairy was.
+
+/** null = this build wired no avatar to grow into; else "fairy" | "expanded". */
+function avatarMode() {
+  if (typeof (attentionHooks && attentionHooks.expand) !== "function") return null;
+  return expanded ? "expanded" : "fairy";
+}
+
+function hideCluster() {
+  releaseHover();
+  hideMenu();
+  hideTip();
+  for (const win of [bubbleWindow, orbWindow, swarmWindow]) {
+    try { if (alive(win) && win.isVisible()) win.hide(); } catch { /* gone */ }
+  }
+  hideVeil();
+}
+
+/** Grow the fairy into the avatar, from where the fairy is. */
+async function expandToAvatar() {
+  if (avatarMode() === null) return { ok: false, error: "this desk has no avatar to grow into" };
+  if (expanded) return { ok: true, expanded: true };
+  if (nudging) endNudge("seen", { stay: true });
+  const from = alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null;
+  hideMenu();
+  hideTip();
+  let r;
+  try { r = await attentionHooks.expand({ from }); } catch (error) { r = { ok: false, error: String((error && error.message) || error) }; }
+  if (!r || r.ok === false) return { ok: false, error: (r && r.error) || "the avatar did not open" };
+  expanded = true;
+  hideCluster();
+  return { ok: true, expanded: true, character: r.character || null };
+}
+
+/**
+ * Shrink the avatar back into the fairy. `fromAvatar`: the body was already hidden by
+ * something else (its own close, the tray) -- only bring the fairy back.
+ */
+async function collapseToFairy({ fromAvatar = false } = {}) {
+  if (!expanded) return { ok: true, expanded: false };
+  expanded = false;
+  if (!fromAvatar && typeof (attentionHooks && attentionHooks.collapse) === "function") {
+    const to = alive(orbWindow) ? orbWindow.getBounds() : null;
+    try { await attentionHooks.collapse({ to }); } catch { /* the fairy comes back regardless */ }
+  }
+  if (state.visible && alive(orbWindow) && !orbWindow.isVisible()) {
+    orbWindow.showInactive();
+    if (attach) showVeil();
+    placeSwarm();
+  }
+  return { ok: true, expanded: false };
 }
 
 // -- the companions: hidden by default, one set of rows everywhere ------------
@@ -4101,6 +4168,7 @@ module.exports = {
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
   attentionMems: () => attentionMems,
   askScreen, askRegion, askText, askImage, toggleBubbleFromOrb, beginDrag, endDrag,
+  expandToAvatar, collapseToFairy, avatarMode, expanded: () => expanded,
   stateFile, loadState, saveState, pump, queue: () => queue, state: () => state,
   // spirit
   go, sendHome, attachTo, detach, toggleAttach, cancelTrip, receiveDrop, pickResult, runHoldAction,
@@ -4162,6 +4230,7 @@ module.exports = {
     inflight = false;
     drafting = false;
     suppressed = false;
+    expanded = false;
     regionWait = false;
     attach = null;
     flight = null;

@@ -2053,3 +2053,75 @@ test("the whisper page always finishes its fade and unmounts the card, and is sh
   assert.match(nudge, /o === main \? "primary"/, "one primary button");
   assert.match(nudge, /id="n-extra"/, "the transcript and the rest sit behind more");
 });
+
+// ── the fairy grows into Aither (owner 2026-11-15) ─────────────────────────
+
+test("no avatar hook: the menu offers no Show Aither and a click still opens the chat", async () => {
+  startAttention();
+  orbWindow.setAttentionCards([]);
+  assert.equal(orbWindow.avatarMode(), null);
+  const r = orbWindow.orbMenu();
+  assert.ok(!r.items.includes("expand") && !r.items.includes("collapse"), "never a dead item");
+  await invoke("desk:menu-pick", menuWin(), "");
+});
+
+test("click the fairy with nothing waiting: it grows into Aither, the cluster goes down, and comes back", async () => {
+  const grows = [];
+  const shrinks = [];
+  startAttention({
+    expand: async (opts) => { grows.push(opts); return { ok: true, character: "aither-v2" }; },
+    collapse: async (opts) => { shrinks.push(opts); return { ok: true }; },
+  });
+  orbWindow.setAttentionCards([]);
+  const b = bubbleWin();
+  if (b && b.isVisible()) b.hide();
+  assert.equal(orbWindow.avatarMode(), "fairy");
+  const r = await invoke("desk:orb-click", orbWin());
+  assert.deepEqual(r, { ok: true, expanded: true, character: "aither-v2" });
+  assert.equal(grows.length, 1);
+  assert.ok(grows[0].from && Number.isFinite(grows[0].from.x), "it grows FROM where the fairy is");
+  assert.equal(orbWin().isVisible(), false, "one cluster: the body stands where the fairy was");
+  assert.equal(orbWindow.state().visible, true, "transient: the saved switch still says shown");
+  // showOrb while grown keeps the orb down.
+  orbWindow.showOrb();
+  assert.equal(orbWin().isVisible(), false);
+  // The right-click menu now offers the way back, and it works.
+  assert.equal(orbWindow.avatarMode(), "expanded");
+  const menu = orbWindow.orbMenu();
+  assert.equal(menu.items[0], "collapse");
+  const back = await invoke("desk:menu-pick", menuWin(), "collapse");
+  assert.deepEqual(back, { ok: true, expanded: false });
+  assert.equal(shrinks.length, 1);
+  assert.equal(orbWin().isVisible(), true, "the fairy is back");
+  // And from the menu again: Show Aither.
+  const again = orbWindow.orbMenu();
+  assert.equal(again.items[0], "expand");
+  const pick = await invoke("desk:menu-pick", menuWin(), "expand");
+  assert.equal(pick.expanded, true);
+  // The body hidden some other way (tray): only the fairy comes back, no second shrink.
+  await orbWindow.collapseToFairy({ fromAvatar: true });
+  assert.equal(shrinks.length, 1);
+  assert.equal(orbWin().isVisible(), true);
+});
+
+test("a body that will not open leaves the fairy where it was", async () => {
+  startAttention({ expand: async () => ({ ok: false, error: "no Aither model" }) });
+  orbWindow.setAttentionCards([]);
+  const r = await orbWindow.expandToAvatar();
+  assert.deepEqual(r, { ok: false, error: "no Aither model" });
+  assert.equal(orbWindow.expanded(), false);
+  assert.equal(orbWin().isVisible(), true);
+});
+
+test("cards waiting: the click is still the Inbox, never the body", async () => {
+  const grows = [];
+  const calls = startAttention({ expand: async () => { grows.push(1); return { ok: true }; } });
+  orbWindow.setAttentionCards([blockedCard({ id: "d-g1", agent: "atlas" })]);
+  if (orbWindow.nudging()) orbWindow.endNudge("seen", { stay: true });
+  await wait(2600);
+  const r = await invoke("desk:orb-click", orbWin());
+  assert.equal(r.inbox, true);
+  assert.equal(grows.length, 0);
+  assert.ok(calls.open.length >= 1);
+  orbWindow.setAttentionCards([]);
+});
