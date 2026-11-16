@@ -226,7 +226,13 @@ export function Beads() {
           so it never nags twice. */}
       {hintDismissed ? null : (
         <div className="bead-hint" role="note">
-          <span>Left-drag a body to move it · right-drag to turn it · scroll to size it · right-click for its menu · drag empty space to look around · the grid opens the console</span>
+          <span>
+            Left-drag a body to move it · right-drag to turn it · scroll to size it · right-click for its menu · drag empty
+            space to look around · the grid opens the console · Esc cancels a drag.
+            <br />
+            <b>Stages:</b> tray ▸ Agent swarm ▸ Stage: join every grown agent / split / row / circle / lock. A locked stage
+            never detaches by itself.
+          </span>
           <button
             type="button"
             className="bead-hint-x"

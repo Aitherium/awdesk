@@ -95,6 +95,10 @@ let nudgeWindow = null;
 /** The companion swarm (agent-fairy.cjs) and what it draws: one per agent, uncapped. */
 let swarmWindow = null;
 let swarmCompanions = [];
+/** Where the ONE cluster is centred while the fairy itself is down (a full avatar stands
+ *  where it was): the agent swarm sets it so the light fairies keep orbiting the avatar
+ *  instead of vanishing with the orb. null = follow the orb, as always. */
+let swarmAnchor = null;
 let state = orbCore.sanitizeState(null);
 let queue = orbCore.createQueue();
 let tickTimer = null;
@@ -601,7 +605,10 @@ function swarmBounds(count) {
   const half = Math.max(48, agentFairy.swarmExtent(count));
   let cx = 0;
   let cy = 0;
-  if (alive(orbWindow)) {
+  if (swarmAnchor && !orbVisible()) {
+    cx = swarmAnchor.x;
+    cy = swarmAnchor.y;
+  } else if (alive(orbWindow)) {
     const b = orbWindow.getBounds();
     cx = b.x + ORB_SIZE.width / 2;
     cy = b.y + ORB_SIZE.height / 2;
@@ -625,7 +632,7 @@ function placeSwarm(companions = swarmCompanions, { raise = false } = {}) {
   const list = Array.isArray(companions) ? companions : [];
   // No swarm (owner 2026-11-13: "keep the badge ... link to the inbox, don't show a
   // swarm"): one fairy and its badge. orb.json `swarm: true` brings the swarm back.
-  if (!list.length || !orbVisible() || state.swarm !== true) {
+  if (!list.length || (!orbVisible() && !swarmAnchor) || state.swarm !== true) {
     if (alive(swarmWindow) && swarmWindow.isVisible()) swarmWindow.hide();
     return;
   }
@@ -642,6 +649,27 @@ function placeSwarm(companions = swarmCompanions, { raise = false } = {}) {
   // The orb disc stays above its swarm, so a press on the fairy is the fairy's and
   // its glow is never drawn under the companions.
   if (raise) raiseOrbOverSwarm();
+}
+
+/**
+ * Centre the ONE cluster on a point while the fairy is down (the agent swarm: light
+ * fairies keep orbiting the full avatar that stands where the orb was). null releases it.
+ */
+function setSwarmAnchor(point) {
+  swarmAnchor = point && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y))
+    ? { x: Math.round(Number(point.x)), y: Math.round(Number(point.y)) }
+    : null;
+  placeSwarm(swarmCompanions, { raise: true });
+  return { ok: true, anchor: swarmAnchor };
+}
+
+/** The swarm's own switch (orb.json `swarm`): the agent fairies orbiting the main one. */
+function setSwarmVisible(on) {
+  const next = on === true;
+  if (state.swarm !== next) { state.swarm = next; saveState(); }
+  sendFairy({ force: true });
+  placeSwarm(swarmCompanions, { raise: true });
+  return { ok: true, swarm: state.swarm === true };
 }
 
 /** The trail/tether overlay. Transparent, click-through, never focused. */
@@ -3654,7 +3682,7 @@ function hideCluster() {
   releaseHover();
   hideMenu();
   hideTip();
-  for (const win of [bubbleWindow, orbWindow, swarmWindow]) {
+  for (const win of [bubbleWindow, orbWindow, swarmAnchor ? null : swarmWindow]) {
     try { if (alive(win) && win.isVisible()) win.hide(); } catch { /* gone */ }
   }
   hideVeil();
@@ -4218,6 +4246,7 @@ module.exports = {
   quietUntil: () => (Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0),
   menuState: () => publicMenu(), __setMenuIdleMs: (ms) => { menuIdleMsOverride = Number(ms) || 0; }, fairy: () => currentFairy(), companions: () => currentCompanions(),
   setPresence, noteAgentPosted, chatWithAgent,
+  setSwarmAnchor, setSwarmVisible, swarmVisible: () => state.swarm === true, fairyBounds: () => (alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null),
   swarmWindow: () => (alive(swarmWindow) ? swarmWindow : null), soundsOn: () => state.sounds !== false,
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
   attentionMems: () => attentionMems,

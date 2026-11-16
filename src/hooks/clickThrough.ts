@@ -14,6 +14,8 @@
  * has reported once, so a renderer that never loads cannot leave a ghost window.
  */
 
+import { hasPicker, pickAt, setHover } from './avatarPick';
+
 let overAvatar = 0;
 let lastSent: boolean | null = null;
 
@@ -80,25 +82,46 @@ function report(interactive: boolean) {
   try { bridge()?.setInteractive?.(interactive); } catch { /* window closing */ }
 }
 
-/** Scene calls these from each avatar's onPointerOver / onPointerOut. */
+/** Kept for callers that still announce a body under the pointer; the pick decides now. */
 export function avatarPointerOver() { overAvatar += 1; report(true); }
 export function avatarPointerOut() { overAvatar = Math.max(0, overAvatar - 1); }
 
 /** Install once per avatar window. Returns the cleanup. */
 export function installClickThrough(): () => void {
   if (!bridge()?.setInteractive) return () => {};
-  const onMove = (e: PointerEvent | MouseEvent) => {
-    const backdrop = isBackdrop(document.elementFromPoint(e.clientX, e.clientY));
-    let onBody = overAvatar > 0;
-    // Inside the proxy box: only a painted pixel counts as the body.
-    if (onBody && e.buttons === 0) {
-      const painted = paintedAt(e.clientX, e.clientY);
-      if (painted === false) onBody = false;
+  let pending: { x: number; y: number; buttons: number } | null = null;
+  let frame = 0;
+  // One pick per animation frame at most: the id render is cheap but not free.
+  const evaluate = () => {
+    frame = 0;
+    const m = pending;
+    pending = null;
+    if (!m) return;
+    const backdrop = isBackdrop(document.elementFromPoint(m.x, m.y));
+    if (m.buttons !== 0) {
+      // A drag in flight must never lose its window.
+      report(true);
+      return;
     }
-    report(decideInteractive({ buttons: e.buttons, overAvatar: onBody, backdrop }));
+    let onBody: boolean;
+    if (hasPicker()) {
+      // The pixel under the pointer, and WHOSE it is: a gap between bodies is nobody's.
+      const slot = pickAt(m.x, m.y);
+      setHover(slot);
+      document.body.style.cursor = slot ? 'grab' : '';
+      onBody = slot !== null;
+    } else {
+      // No GL picker (a solo window, a failed context): the old proxy box + alpha probe.
+      onBody = overAvatar > 0 && paintedAt(m.x, m.y) !== false;
+    }
+    report(decideInteractive({ buttons: 0, overAvatar: onBody, backdrop }));
+  };
+  const onMove = (e: PointerEvent | MouseEvent) => {
+    pending = { x: e.clientX, y: e.clientY, buttons: e.buttons };
+    if (!frame) frame = window.requestAnimationFrame(evaluate);
   };
   // Leaving the window entirely: nothing of ours is under the cursor.
-  const onLeave = () => { overAvatar = 0; report(false); };
+  const onLeave = () => { overAvatar = 0; setHover(null); document.body.style.cursor = ''; report(false); };
   window.addEventListener('mousemove', onMove, true);
   document.documentElement.addEventListener('mouseleave', onLeave);
   return () => {

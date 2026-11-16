@@ -177,6 +177,8 @@ function createDeskMcpServer({
   listAnimations = null,
   onAgent = null,
   listAgentAvatars = null,
+  // agent-swarm-host: every agent the owner runs, as fairies or grown avatars. Null = no swarm_* tools.
+  swarm = null,
   onExportPortrait = null,
   onSpawnAvatar = null,
   onRemoveAvatar = null,
@@ -463,6 +465,88 @@ function createDeskMcpServer({
       // had no way to discover which packs existed short of listing the assets directory
       // by hand. Registering it closes that (recorded in the AitherOS ledger).
       async () => textResult(JSON.stringify(await listAnimations())),
+    );
+  }
+
+  if (swarm != null) {
+    const json = (value) => textResult(JSON.stringify(value, null, 1));
+    server.registerTool(
+      "swarm_roster",
+      {
+        title: "The agent swarm roster",
+        description:
+          "Every agent the owner runs, read live (Discord persona bots, Genesis fleet agents, awsh/Claude Code sessions, subagents, remote endpoints, GargBot's goblin), each with its colour, body, voice and current form (fairy or avatar). Read-only.",
+        inputSchema: { refresh: z.boolean().optional().describe("Re-read every source now instead of the 15 s cache.") },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async ({ refresh } = {}) => json(await swarm({ action: "state", refresh: Boolean(refresh) })),
+    );
+    server.registerTool(
+      "swarm_set_form",
+      {
+        title: "Grow an agent into its avatar, or shrink it back to a fairy",
+        description:
+          "setAgentForm: put one agent (or 'all') in the 'fairy' or 'avatar' form, with a smooth grow / shrink. 'all' + 'avatar' grows the Aitherium agents (light mode keeps terminals and remote endpoints small unless include is 'all'); GargBot's goblin is summoned with agent 'gargbot'.",
+        inputSchema: {
+          agent: z.string().min(1).max(64).describe("A roster id (aither, atlas, gargbot, session-xxxxxxxx ...) or 'all'."),
+          form: z.enum(["fairy", "avatar"]),
+          include: z.enum(["all"]).optional().describe("With agent 'all': also grow terminals, subagents and remote endpoints."),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async ({ agent, form, include }) => json(await swarm(agent === "all" ? { action: "forms", form, include } : { action: "form", agent, form })),
+    );
+    server.registerTool(
+      "swarm_speak",
+      {
+        title: "Make one agent speak in its own voice",
+        description:
+          "speak: the agent says `text` in its own voice from its own body (fairy or avatar). Use audio_base64 instead to play pre-rendered audio on that body (a lip-sync driver's own TTS).",
+        inputSchema: {
+          agent: z.string().min(1).max(64),
+          text: z.string().min(1).max(2000).optional(),
+          audio_base64: z.string().max(8_000_000).optional(),
+          volume: z.number().min(0).max(2).optional(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      },
+      async ({ agent, text, audio_base64, volume }) => json(await swarm({ action: "speak", agent, text, audioBase64: audio_base64, volume })),
+    );
+    server.registerTool(
+      "swarm_stage",
+      {
+        title: "Combine, split and arrange stages",
+        description:
+          "A stage is an explicit group of grown avatars. op: join (agent joins target's stage), leave, lock (a locked stage never loses a member by itself), arrange (mode row | circle), move (dx), size (scale), turn (yaw), state.",
+        inputSchema: {
+          op: z.enum(["state", "join", "leave", "lock", "arrange", "move", "size", "turn"]),
+          agent: z.string().max(64).optional(),
+          target: z.string().max(64).optional(),
+          mode: z.enum(["row", "circle"]).optional(),
+          locked: z.boolean().optional(),
+          dx: z.number().min(-4).max(4).optional(),
+          scale: z.number().min(0.3).max(3).optional(),
+          yaw: z.number().min(-7).max(7).optional(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      },
+      async (args) => json(await swarm({ action: "stage", ...args })),
+    );
+    server.registerTool(
+      "swarm_visemes",
+      {
+        title: "Drive an agent's mouth shapes",
+        description:
+          "visemes: the five VRM mouth shapes (aa ee ih oh ou, 0..1) for one agent's body, held for ttl_ms then back to amplitude lip sync; frames [{t, aa..}] plays a timed sequence; omit weights to release.",
+        inputSchema: {
+          agent: z.string().min(1).max(64),
+          weights: z.record(z.string(), z.number().min(0).max(1)).optional(),
+          frames: z.array(z.record(z.string(), z.number())).max(1200).optional(),
+          ttl_ms: z.number().min(16).max(5000).optional(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      },
+      async ({ agent, weights, frames, ttl_ms }) => json(await swarm({ action: "visemes", agent, weights: frames ? { frames, ttlMs: ttl_ms } : weights ?? null, ttlMs: ttl_ms })),
     );
   }
 

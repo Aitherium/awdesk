@@ -542,6 +542,22 @@ test("bearer: POST /fleet/down without a bearer is 401, never a stopped fleet", 
   assert.equal(basic.status, 401);
 });
 
+test("review of #96: POST /swarm needs the bearer (a null Origin is not a credential); GET /swarm stays a read", async (context) => {
+  const seen = [];
+  const address = await fleetBridge(context, { swarmHandler: async (req) => { seen.push(req.action); return { ok: true, action: req.action }; } });
+  const body = JSON.stringify({ action: "view" });
+  const none = await requestServer(address, { path: "/swarm", method: "POST", headers: { "content-type": "application/json" }, body });
+  assert.equal(none.status, 401);
+  const wrong = await requestServer(address, { path: "/swarm", method: "POST", headers: { "content-type": "application/json", authorization: "Bearer nope" }, body });
+  assert.equal(wrong.status, 401);
+  assert.deepEqual(seen, [], "nothing reached the swarm");
+  const ok = await requestServer(address, { path: "/swarm", method: "POST", headers: { "content-type": "application/json", authorization: "Bearer test-token" }, body });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(seen, ["view"]);
+  const read = await requestServer(address, { path: "/swarm" });
+  assert.equal(read.status, 200);
+});
+
 test("bearer: the right bearer reaches the fleet handler", async (context) => {
   const address = await fleetBridge(context);
   const ok = await requestServer(address, {

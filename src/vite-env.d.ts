@@ -59,6 +59,14 @@ type AvatarBridgeEvent =
       from?: string;
     }
   | { type: 'reset-avatar-layout'; slotId: string }
+  // The swarm API (electron/agent-swarm-host.cjs). `viseme`: a body's five VRM mouth shapes,
+  // driven by whoever owns real-time lip sync; it holds for ttlMs then lapses back to the
+  // amplitude lip sync. null weights release at once. `slot-visible`: show or hide ONE body
+  // without removing it (the resident stays mounted while the swarm is up but Aither is a fairy).
+  | { type: 'viseme'; slotId: string; weights: Partial<Record<'aa' | 'ee' | 'ih' | 'oh' | 'ou', number>> | null; ttlMs?: number }
+  | { type: 'slot-visible'; slotId: string; visible: boolean }
+  // A body's name tag and outline colour (the agent's own): shown on hover and selection.
+  | { type: 'slot-look'; slotId: string; look: { label: string; color: string } | null }
   // Plan 40 slice G: main names an ARRANGEMENT and the renderer places every
   // live body (src/stage/arrangements.ts holds the geometry, beside the bounds).
   // `slotId` is the subject for `focus`; `pair` names the two for `pair`.
@@ -148,6 +156,8 @@ interface Window {
     minimize(): void;
     close(): void;
     avatarContextMenu(slotId: string): void;
+    /** The picked body under the pointer / the selected one (main exposes it on GET /swarm). */
+    reportPick?(state: { hover: string | null; selected: string | null }): void;
     subscribe(listener: (event: AvatarBridgeEvent) => void): () => void;
     /** Mic clip -> gateway transcribe_audio -> text (or an "ERROR: …" string). */
     voiceTranscribe?(audioB64: string, format: string): Promise<string>;
