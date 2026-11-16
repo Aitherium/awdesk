@@ -353,8 +353,22 @@ function describeSend(rawCtx, settings) {
 
 // ── log records ──────────────────────────────────────────────────────────────
 
+// The per-install salt (assist-salt.cjs). Log hashes are HMAC-SHA256 under it, so a hash
+// read from the log cannot be brute-forced against guessable text off this machine.
+let logSalt = null;
+
+/** Install (or clear, with null) the per-install salt. Anything but a 16+ byte Buffer clears it. */
+function useLogSalt(salt) {
+  logSalt = Buffer.isBuffer(salt) && salt.length >= 16 ? Buffer.from(salt) : null;
+}
+
+/**
+ * 12 hex chars of HMAC-SHA256(salt, text). WITHOUT a salt this returns "" and the record
+ * omits the hash: an unsalted hash of guessable text is a leak, so there is no fallback.
+ */
 function shortHash(text) {
-  return nodeCrypto.createHash("sha256").update(String(text || "")).digest("hex").slice(0, 12);
+  if (!logSalt) return "";
+  return nodeCrypto.createHmac("sha256", logSalt).update(String(text || "")).digest("hex").slice(0, 12);
 }
 
 /**
@@ -378,10 +392,12 @@ function logRecord({ id, surface, verb, ctx, settings, outcome, error, text, ext
   };
   if (error) rec.error = clip(error, 300);
   if (text != null) {
-    rec.out = { chars: String(text).length, hash: shortHash(text) };
+    rec.out = { chars: String(text).length };
+    const outHash = shortHash(text);
+    if (outHash) rec.out.hash = outHash;
     if (s.logText) rec.out.text = clip(text, 4000);
   }
-  if (c.selection) rec.selectionHash = shortHash(c.selection);
+  if (c.selection) { const selectionHash = shortHash(c.selection); if (selectionHash) rec.selectionHash = selectionHash; }
   if (extra && typeof extra === "object") rec.extra = extra;
   return rec;
 }
@@ -446,5 +462,5 @@ module.exports = {
   verbById, normalizeContext, refusal, buildMessages,
   heuristicSuggestions, suggestionMessages, parseSuggestions,
   normalizeSettings, isByokModel, destination, mayAutoSuggest, describeSend,
-  logRecord, shortHash, cleanResult, fence, neutralise, inertLine, writingGroup, LAUNCHER_VERBS,
+  logRecord, shortHash, useLogSalt, cleanResult, fence, neutralise, inertLine, writingGroup, LAUNCHER_VERBS,
 };

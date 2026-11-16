@@ -578,11 +578,11 @@ function createBridgeServer({
     // caller (curl, a local script) is refused, not trusted.
     //
     // The Origin header is NOT a credential (any local process can write one), so every
-    // route except the two pairing steps ALSO needs the per-install bearer
+    // route except the two pairing steps and `hello` (the desk proving its identity) ALSO needs the per-install bearer
     // (assist-pairing.cjs): without it, or with a wrong one, 401 -- fail closed, including
     // when the desk has no verifier at all. The pairing steps need only the pinned origin:
     // they hand the bearer out, once, after the owner clicks Allow in a native dialog.
-    if (/^\/assist\/(suggest|refine|run|route|note|pair\/start|pair\/finish)$/.test(String(request.url || ""))) {
+    if (/^\/assist\/(suggest|refine|run|route|note|hello|pair\/start|pair\/finish)$/.test(String(request.url || ""))) {
       if (!extensionOriginAllowed(origin)) {
         response.writeHead(403);
         response.end();
@@ -599,7 +599,7 @@ function createBridgeServer({
         return;
       }
       const assistRoute = String(request.url).slice("/assist/".length);
-      if (!assistRoute.startsWith("pair/")) {
+      if (!assistRoute.startsWith("pair/") && assistRoute !== "hello") {
         let authorised;
         try { authorised = typeof assistAuth === "function" && assistAuth(request.headers.authorization) === true; } catch { authorised = false; }
         if (!authorised) {
