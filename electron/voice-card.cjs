@@ -37,6 +37,9 @@ function norm(text) {
 }
 
 /** The sentence the avatar asks. Options are numbered so "two" is an answer. */
+/** A short reply that means "not now". */
+const LATER = /^(?:(?:ok(?:ay)?|no|not now|maybe) )?(?:later|not now|ask me later|remind me later|not right now|snooze(?: it)?)(?: please| thanks)?$/;
+
 function cardPrompt(card) {
   const title = String((card && card.title) || "a decision").slice(0, 160);
   const options = (card && Array.isArray(card.options) ? card.options : []).slice(0, MAX_OPTIONS);
@@ -44,7 +47,7 @@ function cardPrompt(card) {
   const listed = options
     .map((o, i) => `${SPOKEN[i]}, ${String(o.label || o.key).slice(0, 80)}${o.recommended ? ", recommended" : ""}`)
     .join("; ");
-  return `A decision needs you: ${title}. Options: ${listed}. Say a number, or tell me what to do instead.`;
+  return `A decision needs you: ${title}. Options: ${listed}. Say a number, later, or tell me what to do instead.`;
 }
 
 /**
@@ -89,6 +92,10 @@ function matchReply(card, transcript) {
       if (rec) return pick(rec);
     }
   }
+  // "Later" / "not now" puts the card off (the fairy's Later), never a steer sent to
+  // the session. Checked AFTER the options, so a card whose own option says "Later"
+  // still gets that option.
+  if (LATER.test(said)) return { kind: "later" };
   return { kind: "steer", text: String(transcript).trim() };
 }
 

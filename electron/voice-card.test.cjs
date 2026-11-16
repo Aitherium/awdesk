@@ -19,7 +19,7 @@ test("the prompt reads the title and numbers every option, marking the recommend
   assert.equal(
     cardPrompt(card),
     "A decision needs you: Restart the scheduler?. Options: one, Restart now, recommended; "
-      + "two, Later tonight; three, Restart now and clear the queue. Say a number, or tell me what to do instead.",
+      + "two, Later tonight; three, Restart now and clear the queue. Say a number, later, or tell me what to do instead.",
   );
   assert.match(cardPrompt({ title: "Free text", options: [] }), /Tell me what to do\.$/);
 });
@@ -54,4 +54,13 @@ test("anything else is a steer to the session, never a guessed option", () => {
 test("silence is nothing, and a card without options only steers", () => {
   assert.deepEqual(matchReply(card, "   "), { kind: "none" });
   assert.equal(matchReply({ title: "t", options: [] }, "yes").kind, "steer");
+});
+
+test("'later' / 'not now' puts the card off -- unless the card's own option says it", () => {
+  const plain = { id: "c2", title: "Ship it?", options: [{ key: "yes", label: "Ship" }, { key: "no", label: "Hold" }] };
+  for (const said of ["later", "Later.", "not now", "ask me later", "remind me later please"]) {
+    assert.deepEqual(matchReply(plain, said), { kind: "later" }, said);
+  }
+  assert.equal(matchReply(card, "later").kind, "answer", "an option named later wins");
+  assert.equal(matchReply(plain, "do it later after the deploy").kind, "steer");
 });

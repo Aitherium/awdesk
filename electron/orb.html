@@ -350,8 +350,15 @@
   #n-extra { display: none; }
   #nudge.expanded #n-extra { display: block; }
   #n-extra #n-sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #nudge.lv2 { border-color: rgba(244,250,255,0.5); animation: nglow 1.8s ease-in-out infinite; }
-  #nudge.lv3 { border-color: rgba(255,200,120,0.8); animation: nglow3 1.1s ease-in-out infinite; }
+  /* Performance first (owner rule): the glow pulses a few times on arrival, never forever. */
+  #nudge.lv2 { border-color: rgba(244,250,255,0.5); animation: nglow 1.8s ease-in-out 3; }
+  #nudge.lv3 { border-color: rgba(255,200,120,0.8); animation: nglow3 1.1s ease-in-out 4; }
+  /* The answer buttons: big enough to hit while doing something else. */
+  #n-acts button.opt { flex: 1 1 100%; font-size: 13px; padding: 8px 12px; border-radius: 10px; }
+  #n-links { display: flex; gap: 14px; flex: 1 1 100%; margin-top: 2px; }
+  #n-acts #n-links button.link { flex: none; border: 0; background: transparent; padding: 2px 0;
+    color: var(--fg-muted, #8b96ab); font: 11.5px var(--font-sans, system-ui); }
+  #n-acts #n-links button.link:hover { color: var(--fg, #e6edf3); text-decoration: underline; }
   @keyframes nglow { 0%, 100% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 12px rgba(225,240,255,0.16); }
     50% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 26px rgba(225,240,255,0.42); } }
   @keyframes nglow3 { 0%, 100% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 12px rgba(255,190,100,0.25); }
@@ -1216,18 +1223,27 @@
       } else if (v.credential) {
         actsEl.append(button("Enter it", "primary", () => api.nudgeAct("open"), "Opens the masked field in your Inbox"));
       } else {
-        // ONE primary (the recommended option, else the first) plus Open; the other
-        // options wait behind "more" with the context.
+        // Owner 2026-11-15: ONE bubble the fairy delivers -- the card's own answers
+        // as 2-3 large buttons, the recommended one highlighted, then "Later" and
+        // "Show details" (the old card window lives behind that link only). A 4th
+        // option waits behind "more" with the context.
         const opts = v.options || [];
         const main = opts.find((o) => o.recommended) || opts[0] || null;
         altEl.textContent = "";
-        for (const o of opts) {
-          const b = button(o.label, o === main ? "primary" : "", () => api.nudgeAct("answer", o.key),
-            o.consequence || (o.recommended ? "Suggested" : ""));
-          (o === main ? actsEl : altEl).append(b);
-        }
-        actsEl.append(button("Open", main ? "" : "primary", () => api.nudgeAct("open"), "Open the whole card"));
+        opts.forEach((o, i) => {
+          const b = button(o.label, `opt${o === main ? " primary" : ""}`, () => api.nudgeAct("answer", o.key),
+            o.consequence || (o === main ? "Suggested" : ""));
+          (i < 3 ? actsEl : altEl).append(b);
+        });
+        if (!main) actsEl.append(button("Show details", "primary", () => api.nudgeAct("open"), "Open the whole card"));
       }
+      const links = document.createElement("div");
+      links.id = "n-links";
+      links.append(
+        button("Later", "link", () => api.nudgeAct("later"), "I will bring it back in an hour"),
+        button("Show details", "link", () => api.nudgeAct("open"), "Open the whole card"),
+      );
+      actsEl.append(links);
       const extra = Boolean(v.summary || (v.facts || []).length || altEl.childElementCount);
       const toggle = button("more", "", () => {
         box.classList.toggle("expanded");

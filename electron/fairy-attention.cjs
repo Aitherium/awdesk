@@ -90,6 +90,8 @@ const DEFAULTS = Object.freeze({
   escalateEvery: 1,
   /** A spoken repeat no more often than this, across all cards. */
   voiceGapMs: 5 * MIN,
+  /** The "M older cards" line is spoken at most this often. */
+  olderMentionMs: 24 * HOUR,
 });
 
 function lower(value) {
@@ -330,6 +332,66 @@ function voiceLine(card, nowMs, { more = 0 } = {}) {
 }
 
 /**
+ * A card that just ARRIVED: never nudged, raised inside `arrivalWindowMs`, not a
+ * report, not muted. Owner, 2026-11-15 ("fairies are still not getting my attention
+ * to answer these decision cards"): a NEW normal/low card was a soft glow or the
+ * badge only, so among 41 open cards it never won a nudge and nothing told him it
+ * existed. An arrival is always fluttered to the pointer and SPOKEN once, whatever
+ * its urgency; after that it falls back to its own ladder. The memory file
+ * (`lastNudgeAt`) is what keeps a desk restart from re-popping it.
+ */
+function isArrival(card, mem = {}, nowMs = Date.now(), cfg = DEFAULTS) {
+  if (!card || typeof card !== "object") return false;
+  if (mem && (mem.lastNudgeAt || mem.muted)) return false;
+  if (ackOnly(card)) return false;
+  const born = createdMs(card);
+  return born > 0 && nowMs - born >= -MIN && nowMs - born < cfg.arrivalWindowMs;
+}
+
+/** Backlog triage: what needs the owner NOW (raised inside `staleMs`) vs the older
+ *  cards folded into one "M older" line. Presentation only -- nothing is answered. */
+function backlogSplit(cards, nowMs = Date.now(), cfg = DEFAULTS) {
+  const list = Array.isArray(cards) ? cards.filter((c) => c && c.id) : [];
+  const now = [];
+  const older = [];
+  for (const c of list) (isStale(c, nowMs, cfg) ? older : now).push(c);
+  return { now, older };
+}
+
+/** The header line: "3 more need you · 38 older", "" when nothing else waits. */
+function backlogLabel(moreNow, older) {
+  const n = Math.max(0, Math.floor(Number(moreNow) || 0));
+  const m = Math.max(0, Math.floor(Number(older) || 0));
+  const parts = [];
+  if (n) parts.push(`${n > 99 ? "99+" : n} more need${n === 1 ? "s" : ""} you`);
+  if (m) parts.push(`${m > 99 ? "99+" : m} older`);
+  return parts.join(" · ");
+}
+
+/** What the fairy SAYS when a card arrives: the question, the suggestion, how to
+ *  answer -- and, at most once a day, how many older cards wait on the list. */
+function arrivalLine(card, { needNow = 0, older = 0, mentionOlder = false } = {}) {
+  if (!card) return "";
+  const title = String(card.title || "a decision").replace(/^Claude Code needs you:\s*/i, "").slice(0, 140);
+  const who = whoWaits(card);
+  const kind = lower(card.kind);
+  let line = `${who ? `${who} asks` : "New for you"}: ${title}`;
+  if (!/[.?!]$/.test(line)) line += "?";
+  if (kind === "credential") {
+    line += " It needs a secret, so open it to enter it.";
+  } else {
+    const rec = optionLabel(card, card.defaultKey);
+    if (rec) line += ` I suggest ${rec}.`;
+    const n = Array.isArray(card.options) ? Math.min(3, card.options.length) : 0;
+    if (n >= 2) line += ` Say option one${n >= 3 ? ", two or three" : " or two"}, or later.`;
+  }
+  const others = Math.max(0, (Number(needNow) || 0) - 1);
+  if (others) line += ` ${others} more need${others === 1 ? "s" : ""} you after this.`;
+  if (mentionOlder && older > 0) line += ` And ${older} older card${older === 1 ? " is" : "s are"} on the list when you have time.`;
+  return line;
+}
+
+/**
  * What to do now. `cards` in queue order (rank order -- the caller's), `mems` a
  * map id -> memory. ctx: {nowMs, lastNudgeAt, quiet, idleMs, busy, returned}.
  * Returns {act:"none", reason} or {act:"nudge", card, level, importance, why,
@@ -347,10 +409,13 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
     const card = list[i];
     const mem = memory[card.id] || {};
     if (mem.snoozeUntil && nowMs < mem.snoozeUntil) continue;
-    const imp = importance(card, nowMs, mem, cfg);
+    const arrived = isArrival(card, mem, nowMs, cfg);
+    // An arrival is fluttered whatever its urgency (isArrival); after its first
+    // nudge it is judged on its own importance again.
+    const imp = arrived ? Math.max(2, importance(card, nowMs, mem, cfg)) : importance(card, nowMs, mem, cfg);
     if (imp <= 0) continue;
     const louder = climbs(card, nowMs, mem, cfg);
-    live.push({ card, mem, imp, louder, hold: holdsWork(card) && louder,
+    live.push({ card, mem, imp, louder, arrived, hold: holdsWork(card) && louder,
       level: levelFor(imp, mem, cfg, { climbs: louder }), order: i });
   }
   if (!live.length) return { act: "none", reason: "nothing waiting that needs a nudge" };
@@ -363,11 +428,14 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
   // Stopped work first; then the loudest; then what matters most. Between equals an
   // IGNORED card goes before one never nudged (it has waited longer and was missed
   // once already) -- the other way round starved every repeat behind the backlog.
-  due.sort((a, b) => ((b.hold ? 1 : 0) - (a.hold ? 1 : 0)) || (b.level - a.level) || (b.imp - a.imp)
+  // A card that just arrived goes before everything but stopped work: it is the one
+  // the owner has never been told about (2026-11-15).
+  due.sort((a, b) => ((b.hold ? 1 : 0) - (a.hold ? 1 : 0)) || ((b.arrived ? 1 : 0) - (a.arrived ? 1 : 0))
+    || (b.level - a.level) || (b.imp - a.imp)
     || ((Number(b.mem.ignored) || 0) - (Number(a.mem.ignored) || 0))
     || ((a.mem.lastNudgeAt ? 1 : 0) - (b.mem.lastNudgeAt ? 1 : 0)) || (a.order - b.order));
   const top = due[0];
-  const arrival = !top.mem.lastNudgeAt && nowMs - createdMs(top.card) < cfg.arrivalWindowMs;
+  const arrival = top.arrived;
   if (!ctx.returned) {
     const gap = nowMs - (Number(ctx.lastNudgeAt) || 0);
     const need = arrival && top.imp >= 2 ? cfg.arrivalGapMs : (cfg.gapMs[top.level] || cfg.gapMs[1]);
@@ -375,6 +443,9 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
   }
   const more = live.length - 1;
   const voiceDue = nowMs - (Number(ctx.lastVoiceAt) || 0) >= cfg.voiceGapMs;
+  const split = backlogSplit(list, nowMs, cfg);
+  const mentionOlder = arrival && split.older.length > 0
+    && nowMs - (Number(ctx.olderMentionedAt) || 0) >= cfg.olderMentionMs;
   return {
     act: "nudge",
     card: top.card,
@@ -387,9 +458,12 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
     why: whyNow(top.card, nowMs),
     lead: leadFor(top.card, top.mem, { returned: ctx.returned, nowMs }),
     more,
-    // The arrival (and the startup backlog) is spoken by the desk's own announcement:
-    // the fairy speaks a REPEAT -- a card it has already nudged about.
-    voice: top.level >= LEVEL.INSIST && Boolean(top.mem.lastNudgeAt) && voiceDue,
+    // The fairy SPEAKS an arrival (the question, once -- owner 2026-11-15: "the fairy
+    // isn't talking to me") and an insisting REPEAT.
+    voice: arrival || (top.level >= LEVEL.INSIST && Boolean(top.mem.lastNudgeAt) && voiceDue),
+    needNow: split.now.length,
+    older: split.older.length,
+    mentionOlder,
     showMs: cfg.showMs[top.level] || cfg.showMs[1],
   };
 }
@@ -557,7 +631,9 @@ function whisperView(decision, nowMs = Date.now()) {
     options,
     credential: kind === "credential",
     more: Math.max(0, Number(decision.more) || 0),
-    moreLabel: moreLabel(decision.more),
+    moreLabel: decision.older > 0
+      ? backlogLabel(Math.max(0, (Number(decision.more) || 0) - (Number(decision.older) || 0)), decision.older)
+      : moreLabel(decision.more),
     // The card's generated UI (card-ui.cjs render tree), when it is current and
     // valid; the page draws it with createElement/textContent and falls back to
     // the options above on null. Re-checked here against the card's OWN keys.
@@ -677,6 +753,10 @@ module.exports = {
   whyNow,
   leadFor,
   voiceLine,
+  isArrival,
+  backlogSplit,
+  backlogLabel,
+  arrivalLine,
   plan,
   recordShown,
   recordIgnored,
