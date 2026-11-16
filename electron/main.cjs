@@ -2531,6 +2531,11 @@ async function answerCardByVoice(card) {
     void speakAloud(line, undefined, undefined, "slot0", "service:awdesk-voice");
     return verdict ? { ok: true, kind: "answer", key: reply.key, label: reply.label, pending } : { ok: false, kind: "answer", error: "the answer did not go through" };
   }
+  if (reply.kind === "later") {
+    // "Later" said to the fairy: nothing is recorded on the card; the fairy puts it off.
+    void speakAloud("Okay, later.", undefined, undefined, "slot0", "service:awdesk-voice");
+    return { ok: true, kind: "later" };
+  }
   if (reply.kind === "steer") {
     const ok = decisionCards.steerCard(card.id, reply.text);
     void speakAloud(ok ? "Sent that to the session." : "I could not send that.", undefined, undefined, "slot0", "service:awdesk-voice");
@@ -6433,6 +6438,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         soundMuted: () => voiceAllMuted(),
         // "Talk": the voice card flow about THIS card, answered through answerDeckCard.
         talk: (card) => talkAboutCard(card),
+        // An arrival ASKS when the mic is on and SAYS when it is off (deliverArrival).
+        micMuted: () => micMuted() || Boolean(voiceAsk.waiting),
         // The fairy's right-click menu (owner 2026-11-12): "Dismiss" withdraws the
         // card through awask (the raising session is told), "Go to session" brings
         // its terminal tab forward, or reopens a session that has ended.
@@ -7253,6 +7260,17 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // click or respond to"). speakAloud + openInbox exist; wire them here.
     const announceDecisions = (list, isBacklog) => {
       try {
+        // The FAIRY delivers cards (owner 2026-11-15, furious: the Inbox window this
+        // used to raise is "ugly ass clunky cards ... and the fucking fairy isn't
+        // talking to me"). While the fairy is on screen and its loop runs, a new card
+        // is ITS arrival (fairy-attention isArrival): it flies to the pointer, speaks
+        // the question and shows one whisper with the card's own answers. Nothing here
+        // may speak over it or open the Inbox window; the old window stays behind the
+        // whisper's "Show details" and the list.
+        if (companionMode() === "fairy" && orbWindow.ownsAttention()) {
+          debugLog(`[cards] ${list.length} ${isBacklog ? "backlog" : "new"} card(s) handed to the fairy`);
+          return;
+        }
         // A needs-you card LEADS the spoken line, backlog or not (needs-you.cjs):
         // a credential cannot be answered by voice, so it is said, not asked.
         // The window ladder below still runs -- speaking is not raising.

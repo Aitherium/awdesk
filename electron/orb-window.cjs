@@ -2386,6 +2386,8 @@ let attentionSoon = null;
 let attentionTicking = false;
 let attentionLastAt = 0;
 let attentionVoiceAt = 0;
+/** When the fairy last said "M older cards are on the list" (once a day at most). */
+let attentionOlderAt = 0;
 let attentionAway = false;
 let attentionReturnUntil = 0;
 /** {decision, view, startedAt, until, anchor, whisperAt, hovered, shown, timer, flutter} */
@@ -2406,6 +2408,7 @@ function loadAttention() {
     attentionMems = fairyAttention.sanitizeMems(raw && raw.cards);
     attentionLastAt = Number(raw && raw.lastNudgeAt) || 0;
     attentionVoiceAt = Number(raw && raw.lastVoiceAt) || 0;
+    attentionOlderAt = Number(raw && raw.olderMentionedAt) || 0;
   } catch {
     attentionMems = {}; // unreadable memory = every card starts at the bottom of the ladder
   }
@@ -2415,7 +2418,7 @@ function saveAttention() {
   try {
     const file = attentionFile();
     const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ cards: attentionMems, lastNudgeAt: attentionLastAt, lastVoiceAt: attentionVoiceAt }));
+    fs.writeFileSync(tmp, JSON.stringify({ cards: attentionMems, lastNudgeAt: attentionLastAt, lastVoiceAt: attentionVoiceAt, olderMentionedAt: attentionOlderAt }));
     fs.renameSync(tmp, file);
   } catch { /* per-viewer convenience: losing it restarts the ladder, nothing more */ }
 }
@@ -2726,6 +2729,7 @@ async function attentionTick() {
       nowMs,
       lastNudgeAt: attentionLastAt,
       lastVoiceAt: attentionVoiceAt,
+      olderMentionedAt: attentionOlderAt,
       quiet,
       idleMs,
       busy,
@@ -2820,6 +2824,36 @@ function speakNudge(decision, { force = false } = {}) {
   return hookValue("speak", line, { force }) !== false;
 }
 
+/**
+ * A card that just ARRIVED is delivered by the fairy out loud (owner 2026-11-15:
+ * "the fucking fairy isn't talking to me"): with the mic on it ASKS -- the voice card
+ * flow speaks the question and the next words answer it ("option two", "later"),
+ * through the one desk answer path; with the mic off it says the question, the
+ * suggestion and how many more wait. The whisper's buttons work either way.
+ */
+function deliverArrival(n) {
+  const d = n.decision;
+  attentionVoiceAt = Date.now();
+  if (d.mentionOlder) attentionOlderAt = Date.now();
+  const line = fairyAttention.arrivalLine(d.card, d);
+  const credential = String(d.card.kind).toLowerCase() === "credential";
+  const canTalk = !credential && typeof (attentionHooks && attentionHooks.talk) === "function"
+    && !hookValue("micMuted");
+  if (canTalk) {
+    // The voice card prompt says the question and its numbered options, then
+    // listens; only the backlog line goes before it, so nothing is said twice.
+    const others = Math.max(0, (Number(d.needNow) || 0) - 1);
+    const pre = [
+      others ? `${others} more need${others === 1 ? "s" : ""} you after this one.` : "",
+      d.mentionOlder && d.older > 0 ? `${d.older} older card${d.older === 1 ? " is" : "s are"} on the list.` : "",
+    ].filter(Boolean).join(" ");
+    if (pre) hookValue("speak", pre, { force: true });
+    void talkNudge(n);
+    return { ok: true, mode: "ask", line };
+  }
+  return { ok: hookValue("speak", line, { force: true }) !== false, mode: "say" };
+}
+
 function startNudge(decision, { peek = false } = {}) {
   if (!alive(orbWindow) || !decision || !decision.card) return { ok: false };
   const view = fairyAttention.whisperView(decision, Date.now());
@@ -2876,7 +2910,8 @@ function startNudge(decision, { peek = false } = {}) {
     showWhisper();
   }
   if (!peek) saveAttention();
-  if (decision.voice && !peek) speakNudge(decision);
+  if (decision.arrival && decision.voice && !peek) deliverArrival(n);
+  else if (decision.voice && !peek) speakNudge(decision);
   n.timer = setInterval(() => {
     if (nudging !== n) return;
     const now = Date.now();
@@ -3091,6 +3126,10 @@ async function talkNudge(n) {
   }
   if (v.ok && v.kind === "steer") {
     confirmThenEnd(n, "Sent what you said to the session", "acted");
+    return v;
+  }
+  if (v.ok && v.kind === "later") {
+    confirmThenEnd(n, "Later it is. I'll bring it back.", "later");
     return v;
   }
   n.until = Date.now() + 9000;
@@ -4276,4 +4315,5 @@ module.exports = {
   // The veil's layout AND the orb's move both leaked (2026-11-07); assert them directly.
   __test: { clampRect, coverVeil, drawVeil, moveOrb, veilPlacement, veilRect },
   __setAttentionHooks: (h) => { attentionHooks = { ...(h || {}) }; },
+  __resetAttentionClock: () => { attentionLastAt = 0; attentionVoiceAt = 0; attentionOlderAt = 0; },
 };

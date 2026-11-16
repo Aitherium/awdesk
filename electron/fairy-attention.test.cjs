@@ -427,8 +427,12 @@ test("an ordinary ask ignored once comes back as a flutter at the pointer, and k
   const ask = card({ id: "d-ask1", defaultKey: "cut", createdAt: sec(NOW - 5 * MIN) });
   assert.equal(fa.importance(ask, NOW), 1);
   assert.equal(fa.climbs(ask, NOW), true);
+  // Its FIRST nudge is an arrival (raised 5 min ago, never shown): fluttered and
+  // spoken whatever its urgency (2026-11-15). The ladder below starts after it.
   const first = fa.plan([ask], {}, { nowMs: NOW });
-  assert.equal(first.level, fa.LEVEL.GLOW);
+  assert.equal(first.level, fa.LEVEL.FLUTTER);
+  assert.equal(first.arrival, true);
+  assert.equal(first.voice, true);
   let mem = fa.recordIgnored(fa.recordShown({}, NOW), { importance: 1, nowMs: NOW, climbs: first.climbs });
   assert.equal(fa.plan([ask], { "d-ask1": mem }, { nowMs: NOW + 9 * MIN, lastNudgeAt: NOW }).act, "none");
   const second = fa.plan([ask], { "d-ask1": mem }, { nowMs: NOW + 10 * MIN + 1000, lastNudgeAt: NOW });
@@ -464,4 +468,77 @@ test("the noise of 2026-11-10 stays quiet: a no-op suggestion and a day-old ask 
     for (let i = 0; i < 3; i += 1) mem = fa.recordIgnored(mem, { importance: 1, nowMs: NOW, climbs: false });
     assert.ok(mem.snoozeUntil > NOW, `${c.id} rests`);
   }
+});
+
+// ── arrivals + backlog triage (owner 2026-11-15: "fairies are still not getting my
+// attention to answer these decision cards") ─────────────────────────────────
+
+test("a NEW low/normal card among a 40-card backlog is nudged first, fluttered and spoken", () => {
+  const backlog = [];
+  for (let i = 0; i < 40; i += 1) {
+    backlog.push(card({ id: `d-old${i}`, urgency: i % 3 ? "high" : "normal", createdAt: sec(NOW - (3 + i) * 24 * 60 * MIN) }));
+  }
+  for (let i = 0; i < 3; i += 1) backlog.push(card({ id: `d-day${i}`, urgency: "high", createdAt: sec(NOW - 5 * 60 * MIN) }));
+  const fresh = card({ id: "d-new", urgency: "low", createdAt: sec(NOW - 2 * MIN) });
+  const d = fa.plan([...backlog, fresh], {}, { nowMs: NOW, lastNudgeAt: NOW - 60_000 });
+  assert.equal(d.act, "nudge");
+  assert.equal(d.card.id, "d-new", "the arrival wins over 43 waiting cards");
+  assert.equal(d.arrival, true);
+  assert.equal(d.level, fa.LEVEL.FLUTTER, "flies to the pointer even at urgency low");
+  assert.equal(d.voice, true, "the fairy speaks it");
+  assert.equal(d.needNow, 4, "the 3 day-old cards + the new one need you now");
+  assert.equal(d.older, 40, "the 40 multi-day cards are folded into 'older'");
+  assert.equal(d.mentionOlder, true, "the older pile is mentioned once");
+  const line = fa.arrivalLine(d.card, d);
+  assert.match(line, /Cut Aither Android 0\.4\.4 release\?/);
+  assert.match(line, /I suggest Wait\./);
+  assert.match(line, /Say option one or two, or later\./);
+  assert.match(line, /3 more need you after this\./);
+  assert.match(line, /40 older cards are on the list/);
+  const again = fa.plan([...backlog, fresh], {}, { nowMs: NOW, lastNudgeAt: NOW - 60_000, olderMentionedAt: NOW - 60 * MIN });
+  assert.equal(again.mentionOlder, false, "and not again the same day");
+});
+
+test("the same card is not an arrival twice: shown once, persisted, no re-pop after a restart", () => {
+  const fresh = card({ id: "d-new", createdAt: sec(NOW - 2 * MIN) });
+  const first = fa.plan([fresh], {}, { nowMs: NOW });
+  assert.equal(first.arrival, true);
+  const mems = { "d-new": fa.recordShown({}, NOW) };
+  // A desk restart reloads the memory file (sanitizeMems) -- the card is no arrival.
+  const reloaded = fa.sanitizeMems(JSON.parse(JSON.stringify(mems)));
+  assert.equal(fa.isArrival(fresh, reloaded["d-new"], NOW + 30_000), false);
+  const next = fa.plan([fresh], reloaded, { nowMs: NOW + 30_000, lastNudgeAt: NOW });
+  assert.equal(next.act, "none", "no repeat seconds later");
+  // A card raised before the restart and never shown is not "new" an hour later.
+  const old = card({ id: "d-hour", createdAt: sec(NOW - 60 * MIN) });
+  assert.equal(fa.isArrival(old, {}, NOW), false);
+  // A report ("Noted") never arrives loudly; a muted card never arrives.
+  assert.equal(fa.isArrival(card({ options: [{ key: "ack", label: "Noted" }], createdAt: sec(NOW) }), {}, NOW), false);
+  assert.equal(fa.isArrival(fresh, { muted: true }, NOW), false);
+});
+
+test("a high-urgency card ignored is re-nudged within 30 min until answered", () => {
+  const hi = card({ id: "d-hi", urgency: "high", createdAt: sec(NOW - 3 * 60 * MIN) });
+  let mem = {};
+  let at = NOW;
+  for (let i = 0; i < 6; i += 1) {
+    const d = fa.plan([hi], { "d-hi": mem }, { nowMs: at, lastNudgeAt: at - 30 * MIN });
+    assert.equal(d.act, "nudge", `nudge ${i + 1} comes`);
+    mem = fa.recordIgnored(fa.recordShown(mem, at), { importance: d.importance, nowMs: at, climbs: d.climbs });
+    at += 30 * MIN;
+  }
+});
+
+test("held in a game / full screen: the arrival waits, it is never dropped", () => {
+  const fresh = card({ id: "d-new", createdAt: sec(NOW - 1 * MIN) });
+  assert.equal(fa.plan([fresh], {}, { nowMs: NOW, quiet: "game on" }).act, "none");
+  assert.equal(fa.plan([fresh], {}, { nowMs: NOW + 60_000 }).card.id, "d-new");
+});
+
+test("the whisper header folds the backlog: 'N more need you · M older'", () => {
+  assert.equal(fa.backlogLabel(3, 38), "3 more need you · 38 older");
+  assert.equal(fa.backlogLabel(1, 0), "1 more needs you");
+  assert.equal(fa.backlogLabel(0, 5), "5 older");
+  const v = fa.whisperView({ card: card(), level: 2, more: 41, older: 38 }, NOW);
+  assert.equal(v.moreLabel, "3 more need you · 38 older");
 });

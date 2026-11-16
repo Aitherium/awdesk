@@ -842,6 +842,48 @@ test("\"more\" opens the waiting LIST, never the Inbox on whatever card it last 
     "the fallback names no card, so the Inbox shows the queue");
 });
 
+test("a NEW card is delivered by the fairy out loud: it asks when the mic is on, says it when muted (2026-11-15)", async () => {
+  const fresh = (id) => blockedCard({
+    id, kind: "decision", urgency: "low", blocking: false, createdAt: Math.floor(Date.now() / 1000) - 30,
+    title: "Mirror which Discord channels to Relay?",
+    options: [{ key: "a", label: "Mirror #general" }, { key: "b", label: "Mirror nothing yet" }], defaultKey: "b",
+  });
+  const talked = [];
+  const calls = startAttention({ micMuted: () => false, talk: async (card) => { talked.push(card.id); return { ok: true, kind: "later" }; } });
+  orbWindow.__resetAttentionClock();
+  const old = blockedCard({ id: "d-old", kind: "decision", urgency: "high", blocking: false, createdAt: Math.floor(Date.now() / 1000) - 5 * 86400 });
+  orbWindow.setAttentionCards([old, fresh("d-arr1")]);
+  const plan = await orbWindow.attentionTick();
+  assert.equal(plan.act, "nudge");
+  assert.equal(plan.card.id, "d-arr1", "the arrival, not the backlog");
+  assert.equal(plan.arrival, true);
+  assert.equal(plan.level, 2, "a LOW card still flies to the pointer when it is new");
+  assert.deepEqual(talked, ["d-arr1"], "mic on: the voice card flow asks it");
+  assert.match(calls.speak.map(([l]) => l).join(" "), /1 older card is on the list/, "the backlog is mentioned");
+  await wait(1000);
+  const view = nudgeWin().webContents.sent.filter(([c]) => c === "orb:nudge-view").pop()[1];
+  assert.equal(view.moreLabel, "1 older", "the backlog folds into one line");
+  await wait(1500);
+  assert.equal(orbWindow.nudging(), null, "'later' said aloud closes the bubble");
+  assert.ok(orbWindow.attentionMems()["d-arr1"].snoozeUntil > Date.now(), "and puts the card off");
+  // Muted mic: the fairy SAYS the question with force (the owner's mic mute is input only).
+  const calls2 = startAttention({ micMuted: () => true, talk: async () => { throw new Error("must not listen"); } });
+  orbWindow.__resetAttentionClock();
+  orbWindow.setAttentionCards([fresh("d-arr2")]);
+  const p2 = await orbWindow.attentionTick();
+  assert.equal(p2.card.id, "d-arr2");
+  const said = calls2.speak.find(([l]) => /Mirror which Discord channels to Relay\?/.test(l));
+  assert.ok(said, "the question is spoken");
+  assert.match(said[0], /I suggest Mirror nothing yet\. Say option one or two, or later\./);
+  assert.equal(said[1].force, true);
+  orbWindow.endNudge("seen", { stay: true });
+  // The same card again (the next poll, or a restart that reloads the memory): no repeat.
+  orbWindow.setAttentionCards([fresh("d-arr2")]);
+  orbWindow.__resetAttentionClock();
+  const p3 = await orbWindow.attentionTick();
+  assert.notEqual(p3.arrival, true, "shown once: never an arrival again");
+});
+
 test("an ignored nudge counts toward the next level; Later snoozes; answered elsewhere closes it", async () => {
   startAttention();
   orbWindow.setAttentionCards([blockedCard()]);
@@ -2050,7 +2092,11 @@ test("the whisper page always finishes its fade and unmounts the card, and is sh
   assert.match(html, /#nudge:not\(\.on\) \{ pointer-events: none; \}/);
   assert.match(nudge, /id="n-need"/, "one line of what is needed");
   assert.match(nudge, /Card \$\{v\.id\} needs you/);
-  assert.match(nudge, /o === main \? "primary"/, "one primary button");
+  assert.match(nudge, /o === main \? " primary"/, "one primary (recommended) button");
+  assert.match(nudge, /i < 3 \? actsEl : altEl/, "2-3 answer buttons on the bubble, a 4th behind more");
+  assert.match(nudge, /button\("Later", "link"/, "a Later link");
+  assert.match(nudge, /button\("Show details", "link"/, "the old card window only behind Show details");
+  assert.doesNotMatch(html, /#nudge\.lv[23] \{[^}]*infinite/, "the whisper glow never animates forever");
   assert.match(nudge, /id="n-extra"/, "the transcript and the rest sit behind more");
 });
 
