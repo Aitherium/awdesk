@@ -176,6 +176,38 @@ function parseRemote(value) {
   return rows;
 }
 
+/**
+ * Rows a web overlay registers (GargBot's overlay in the desk's own window: its goblin and the
+ * agents it shows). One identity per agent: the id is normalised through rosterId, so "Atlas",
+ * "atlas" and a row the fleet already reported are ONE roster entry (mergeRoster keeps the
+ * strongest state and every source), and the overlay can never add a second fairy for an agent the
+ * desk already has. The goblin is GargBot's own row, whatever the overlay called it. Never a
+ * session or a remote endpoint: those come from the machine, not from a page.
+ */
+function parseOverlay(value, source = "overlay") {
+  const list = Array.isArray(value) ? value : value && Array.isArray(value.agents) ? value.agents : [];
+  const src = clip(String(source || "overlay").toLowerCase().replace(/[^a-z0-9._-]+/g, "-"), 24) || "overlay";
+  const rows = [];
+  for (const r of list.slice(0, 64)) {
+    if (!r || typeof r !== "object") continue;
+    const raw = String(r.agent || r.id || r.name || "").trim();
+    if (/^session-/i.test(raw) || /^remote-/i.test(raw)) continue;
+    const isGoblin = /^(gargbot|goblin)$/i.test(raw) || r.kind === "goblin";
+    const id = isGoblin ? GOBLIN_ID : rosterId(raw);
+    if (!id) continue;
+    const st = String(r.state || r.status || "").toLowerCase();
+    rows.push({
+      id,
+      label: clip(r.label || r.name || "", 40),
+      kind: isGoblin ? "goblin" : "persona",
+      state: /wait|need/.test(st) ? "waiting" : /work|busy|run/.test(st) ? "working" : "idle",
+      source: src,
+      ...(isGoblin ? { bodyKind: "sprite" } : {}),
+    });
+  }
+  return rows;
+}
+
 /** The desk's own resident persona: Aither runs here whether or not the fleet answers. */
 function residentRow() {
   return { id: HOME_AGENT, label: "Aither", kind: "persona", state: "idle", source: "desk" };
@@ -437,6 +469,7 @@ function publicRow(row, forms) {
 }
 
 module.exports = {
+  parseOverlay,
   KINDS,
   FULL_KINDS,
   LIGHT_KINDS,

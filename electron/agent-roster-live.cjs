@@ -82,6 +82,8 @@ function createRosterReader({
   let inflight = null;
 
   let gatewayAt = -Infinity;
+  // Rows a web overlay registered (registerOverlay): kept between reads, merged by identity.
+  const overlays = new Map(); // source -> rows
   const lastRows = new Map(); // source -> {rows, status} from its last read (kept between gateway reads)
 
   async function readAll() {
@@ -127,6 +129,7 @@ function createRosterReader({
       take("sessions", () => listSessions(), (r) => swarm.parseSessions(r)),
     ]);
     parts.push(swarm.residentRow(), swarm.goblinRow());
+    for (const rows of overlays.values()) parts.push(...rows);
     let authors = {};
     let characters = null;
     try { authors = readAuthors() || {}; } catch { /* no cast file: default identities */ }
@@ -151,7 +154,18 @@ function createRosterReader({
     return inflight;
   }
 
-  return { read, invalidate: () => { snapshot = null; cachedAt = 0; } };
+  /** GargBot's overlay (or any page in the desk) says which goblin / agents it shows; they join THIS
+   *  roster, deduped by agent identity, so there is one cluster. [] forgets the source. */
+  function registerOverlay(source, agents) {
+    const rows = swarm.parseOverlay(agents, source);
+    const key = rows.length ? rows[0].source : String(source || "overlay");
+    if (rows.length) overlays.set(key, rows); else overlays.delete(key);
+    snapshot = null;
+    cachedAt = 0;
+    return { ok: true, source: key, count: rows.length };
+  }
+
+  return { read, registerOverlay, invalidate: () => { snapshot = null; cachedAt = 0; } };
 }
 
 function withTimeout(promise, ms, message) {

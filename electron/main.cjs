@@ -2129,6 +2129,10 @@ async function swarmApi(req = {}) {
       return host.visemes(req.agent, req.weights === undefined ? null : req.weights, req.ttlMs);
     case "goblin":
       return host.setAgentForm("gargbot", req.on === false ? "fairy" : "avatar");
+    case "register":
+      // GargBot's web overlay (or any page in the desk) names the goblin / agents it shows: they join
+      // THIS roster, deduped by agent identity (one cluster). agents: [] forgets the source.
+      return host.registerOverlay(req.source, req.agents);
     case "view":
       // Fine control over the fairies (fairy-control.cjs): mode, kind, radius, select, pin, hide.
       return orbWindow.swarmViewOp(req);

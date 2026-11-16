@@ -109,3 +109,34 @@ test("gateway sources are read at most every gatewayTtlMs and a slow call is cut
   await r.read();
   assert.ok(calls.length > n, "due again after the ttl");
 });
+
+test("a web overlay registers its goblin and agents into the ONE roster, deduped by agent identity", async () => {
+  const r = createRosterReader({
+    podman: async () => `aitheros-awdiscord-atlas|Up 2 hours
+`,
+    callTool: async () => ({}),
+    listSessions: async () => ({ ok: true, rows: [] }),
+  });
+  const before = await r.read({ force: true });
+  assert.equal(before.roster.filter((x) => x.id === "atlas").length, 1);
+  const out = r.registerOverlay("gargbot-overlay", [
+    { agent: "Atlas", state: "working" },        // the same agent the fleet already reported
+    { agent: "hera", label: "Hera" },            // a new one
+    { agent: "GargBot", state: "waiting" },       // its own goblin
+    { agent: "goblin" },                          // the goblin again, another name
+    { agent: "session-abcd1234" },                // sessions come from the machine, never from a page
+  ]);
+  assert.deepEqual(out, { ok: true, source: "gargbot-overlay", count: 4 });
+  const after = await r.read();
+  const ids = after.roster.map((x) => x.id);
+  assert.equal(ids.filter((id) => id === "atlas").length, 1, "one atlas, however many sources say so");
+  assert.equal(ids.filter((id) => id === "gargbot").length, 1, "one goblin");
+  assert.ok(ids.includes("hera"));
+  assert.ok(!ids.includes("session-abcd1234"));
+  const atlas = after.roster.find((x) => x.id === "atlas");
+  assert.ok(atlas.sources.includes("discord") && atlas.sources.includes("gargbot-overlay"), "every source is kept");
+  assert.equal(atlas.state, "working", "the stronger state wins");
+  assert.equal(after.roster.find((x) => x.id === "gargbot").state, "waiting");
+  r.registerOverlay("gargbot-overlay", []);
+  assert.ok(!(await r.read()).roster.some((x) => x.id === "hera"), "an empty list forgets the source");
+});

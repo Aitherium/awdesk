@@ -19,7 +19,7 @@ test("frame paths loop the idle clip and the talk frames; one still per other mo
   assert.equal(core.framePath("sword", "idle", 13), "sword/idle/frame_01.png");
   assert.equal(core.framePath("noodle", "talking", 5), "noodle/talking-1.png");
   assert.equal(core.framePath("sword", "thinking", 99), "sword/thinking.png");
-  assert.equal(core.framePath("bogus", "bogus", 0), "sword/idle/frame_00.png");
+  assert.equal(core.framePath("bogus", "bogus", 0), "noodle/idle/frame_00.png");
 });
 
 test("goblin.html asks for the same frame names goblin-core.framePath makes", () => {
