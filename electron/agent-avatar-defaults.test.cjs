@@ -108,6 +108,20 @@ test("runDefaults: backup beside cast.json, rows moved with their voice kept, he
   assert.equal(again.backup, null);
 });
 
+test("a pending move survives an older cast arriving first (settings pull); a newer choice wins", () => {
+  const cast = JSON.parse(fs.readFileSync(CAST, "utf8"));
+  cast.authors.atlas.character = "charlie-5e48d775"; // another machine's older authors, merged in
+  cast.authors.lyra.character = "orion";             // the person picked something since
+  fs.writeFileSync(CAST, JSON.stringify(cast));
+  const fixed = defaults.reassertPending({ dir: TMP, castFile: CAST, registry: REGISTRY });
+  assert.deepEqual(fixed, [{ agent: "atlas", to: "atlas" }]);
+  const now = JSON.parse(fs.readFileSync(CAST, "utf8")).authors;
+  assert.equal(now.atlas.character, "atlas");
+  assert.equal(now.lyra.character, "orion");
+  now.lyra.character = "lyra";
+  fs.writeFileSync(CAST, JSON.stringify({ ...cast, authors: now }));
+});
+
 test("a catalog pull leaves a held agent alone; the push clears the hold", async () => {
   for (const name of ["atlas", "lyra", "nova", "saga"]) {
     fs.mkdirSync(path.join(ROSTER, name), { recursive: true });

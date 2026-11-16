@@ -222,6 +222,40 @@ function runDefaults(deps = {}, { dryRun = false } = {}) {
   return { ok: true, plan, applied: plan.changes.length > 0, backup };
 }
 
+/**
+ * While a move is pending, something else may write the inherited body back first: the
+ * catalog pull is held (avatar-catalog-sync), but a settings pull at start (awsettings,
+ * settings-sync.cjs) merges another machine's older `authors` leaf by leaf. A pending
+ * agent whose row is empty or an inherited old body again is moved again; a row naming
+ * anything else is a choice made since, and wins.
+ */
+function reassertPending(deps = {}) {
+  let d;
+  try {
+    const castConfig = deps.castConfig || require("./cast-config.cjs");
+    const castFile = deps.castFile || castConfig.CAST_FILE();
+    d = { castConfig, castFile, dir: deps.dir || path.dirname(castFile), registry: deps.registry || loadRegistry() };
+  } catch {
+    return [];
+  }
+  const pending = readState(d.dir).pending;
+  const authors = (readJson(d.castFile) || {}).authors || {};
+  const fix = Object.entries(pending).filter(([agent, to]) => {
+    const now = characterOf(authors[agent]);
+    return now !== to && (!now || isSuperseded((d.registry.agents || {})[agent], now));
+  });
+  if (!fix.length) return [];
+  const result = d.castConfig.write((draft) => {
+    if (!draft.authors || typeof draft.authors !== "object" || Array.isArray(draft.authors)) draft.authors = {};
+    for (const [agent, to] of fix) {
+      if (!draft.authors[agent] || typeof draft.authors[agent] !== "object" || Array.isArray(draft.authors[agent])) draft.authors[agent] = {};
+      draft.authors[agent].character = to;
+    }
+    return draft;
+  }, { file: d.castFile });
+  return result && result.ok ? fix.map(([agent, to]) => ({ agent, to })) : [];
+}
+
 /** The catalog took `agent` = `character`: it is no longer pending. */
 function markPushed(dir, agent, character) {
   const state = readState(dir);
@@ -232,7 +266,7 @@ function markPushed(dir, agent, character) {
 
 module.exports = {
   MIRROR_FILE, STATE_FILE,
-  loadRegistry, planDefaults, runDefaults, readState, writeState, heldAgents, markPushed,
+  loadRegistry, planDefaults, runDefaults, readState, writeState, heldAgents, markPushed, reassertPending,
   baseName, isSuperseded, isRegistryBuild,
 };
 

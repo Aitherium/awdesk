@@ -113,6 +113,8 @@ async function pushPendingDefaults(deps = {}) {
   const dir = defaultsDir(deps);
   if (!dir) return { ok: true, results: [] };
   const agentDefaults = require("./agent-avatar-defaults.cjs");
+  const again = agentDefaults.reassertPending({ dir, registry: deps.registry });
+  if (again.length) (deps.log || (() => {}))("registry avatars re-applied (an older cast arrived first)", again);
   const results = [];
   for (const [agent, character] of Object.entries(agentDefaults.readState(dir).pending)) {
     const r = await pushAssignment(agent, character, deps);
