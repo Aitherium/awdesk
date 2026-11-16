@@ -1363,8 +1363,10 @@ function seatIndexFor(state, { author, actorId } = {}) {
  * almost always.
  */
 function characterOrder(seed, roster) {
+  // Only PROPER bodies (character-pool.cjs): a hash over the whole library handed a terminal a robot
+  // or a stock sample (owner 2026-11-16). A named row in cast.json is not affected: it names its body.
   const names = [
-    ...new Set((Array.isArray(roster) ? roster : []).filter((n) => typeof n === "string" && n)),
+    ...new Set(require("./character-pool.cjs").properPool(roster).filter((n) => typeof n === "string" && n)),
   ].sort();
   const seedHash = hash33(String(seed == null ? "" : seed).toLowerCase());
   return names

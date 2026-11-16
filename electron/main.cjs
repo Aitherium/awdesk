@@ -231,6 +231,8 @@ const launcher = require("./launcher-window.cjs").createLauncher({
   // Alt+Space opens on what the owner is LOOKING AT (launcher-context.cjs), sampled
   // on key-down, before the overlay takes focus.
   hostContext: () => require("./host-context.cjs").sampleHostContext(),
+  // Alt+Space on a selection / in a text field leads with the writing actions (assist-window.cjs).
+  assist: { capture: () => assistMain().window.launcher.capture(), group: (c, t) => assistMain().window.launcher.group(c, t), choose: (c, k, t) => assistMain().window.launcher.choose(c, k, t) },
   // ...and on the DECISION CARDS. The empty box leads with "Needs you (N)" so the
   // owner can answer without leaving the keyboard (owner, 2026-11-06).
   cards: () => decisionCards.listSnapshot(),
@@ -268,6 +270,31 @@ const shellMenu = require("./shell-menu.cjs").createShellMenu({
   available: (id) => Boolean(commandRegistry.byId(id)),
 });
 let shellMenuOn = false;
+// The Explorer FILE / FOLDER right-click (assist-files.cjs): the same consent, the same
+// reversible HKCU mechanism, its own roots and marker. One tray row turns both on / off.
+const sm = require("./shell-menu.cjs");
+const fileShellMenu = sm.createShellMenu({
+  exe: process.execPath,
+  appArgs: app.isPackaged ? [] : [app.getAppPath()],
+  roots: sm.FILE_ROOTS,
+  entries: sm.FILE_ENTRIES,
+  stateFile: path.join(require("node:os").homedir(), ".aither", "desk-shell-menu-files.json"),
+  available: (id) => Boolean(commandRegistry.byId(id)),
+});
+// Aither at the caret (assist-main.cjs): created on first use so a desk that never opens the
+// pop-up pays nothing; the Windows caret worker is warmed a few seconds after startup.
+let assistMainInstance = null;
+function assistMain() {
+  if (!assistMainInstance) {
+    assistMainInstance = require("./assist-main.cjs").createAssistMain({
+      electron: require("electron"),
+      userDataDir: app.getPath("userData"),
+      gateway: require("./gateway-mcp.cjs"),
+      notes: { createNote: (opts) => boardsWindow.createNote(opts) },
+    });
+  }
+  return assistMainInstance;
+}
 const boardsWindow = require("./boards-window.cjs");
 // The registry's `blog` records: gateway blog_* MCP tools via gateway-mcp.cjs.
 // Machine paths create DRAFTS; `blog.publish` opens the Veil editor for a human
@@ -4155,6 +4182,9 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "board.new": return void boardsWindow.createBoard();
     case "boards.open": return void boardsWindow.openList();
     case "shellmenu.add": {
+      void fileShellMenu.enable({ consent: true }).then((verdict) => {
+        if (!verdict || !verdict.ok) console.warn("[desk] file right-click menu not added:", (verdict && verdict.reason) || "unknown");
+      });
       void shellMenu.enable({ consent: true }).then((verdict) => {
         shellMenuOn = Boolean(verdict && verdict.ok);
         if (!shellMenuOn) {
@@ -4168,6 +4198,9 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       return;
     }
     case "shellmenu.remove": {
+      void fileShellMenu.restore().then((verdict) => {
+        if (!verdict || !verdict.ok) console.warn("[desk] file right-click menu not removed:", (verdict && verdict.reason) || "unknown");
+      });
       void shellMenu.restore().then((verdict) => {
         shellMenuOn = !(verdict && verdict.ok);
         if (!verdict || !verdict.ok) {
@@ -4289,6 +4322,11 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
         // "ask-screen" | "find" | "web" | "attach" | "go"`). The verdict is
         // RETURNED so the bridge's POST /commands/run can report the trip.
         return orbWindow.run(command.orb, { surface, arg, slotId });
+      }
+      if (command && command.assist) {
+        // Aither at the caret (assist-main.cjs): "open" = the pop-up at the focused app's
+        // caret; a verb id = the pop-up with that verb on the selection.
+        return assistMain().run(command.assist, { surface, arg });
       }
       console.warn(`[desk] command ${id} has no handler`);
     }
@@ -7472,6 +7510,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       speakHandler: ({ text, voice, speed, slot }) => speakAloud(text, voice, speed, slot, "bridge:/speak"),
       swarmHandler: (req) => swarmApi(req),
       // The registry over loopback: what `awsh /desk` and `adk desk` list and run.
+      // The browser overlay (AitherConnect) -> the same engine as the desk pop-up.
+      assistHandler: (req) => assistMain().bridge(req),
+      assistAuth: (header) => assistMain().pairing.verify(header),
       commandsHandler: {
         list: () => commandRegistry.paletteRows(commandContext()),
         run: async (id, arg) => {
@@ -7611,6 +7652,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     setFilesLaunchRouted(true);
     // The DLL reads this at click time; it must exist before the first click.
     rememberLaunchCommand();
+    if (process.platform === "win32" && !smokeIsRequested) setTimeout(() => { try { void assistMain().caret.prewarm(); } catch { /* pop-up warms on first use */ } }, 8000).unref?.();
     // The shell-menu flyout cold-starts Desk on first use after login; route
     // its --run/--arg pair exactly like a second launch does.
     routeColdRunRequest();
@@ -8005,6 +8047,7 @@ app.on("before-quit", () => {
   isQuitting = true;
   // The orb is always-on-top glass; it leaves with the desk (its timers stop too).
   try { orbWindow.stopOrb(); } catch { /* not started */ }
+  try { if (assistMainInstance) { assistMainInstance.caret.stop(); assistMainInstance.utils.stop(); } } catch { /* no caret worker */ }
   // Windows: a verified installer waiting for this quit runs now, silently, no relaunch.
   deskUpdater?.installOnQuit({ sessionEnding });
   clearTimeout(hyprlandConfigurationTimer);
