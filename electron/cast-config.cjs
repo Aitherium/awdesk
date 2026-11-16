@@ -1804,8 +1804,16 @@ function resolveActor(snapshot, ctx = {}) {
     return verdict.ok ? inRoster(verdict.value) : verdict;
   });
   const resident = ctx.resident !== undefined ? ctx.resident : resolveStage(snapshot, { env }).resident;
-  let character = characterHit ? characterHit.value : null;
-  let characterFrom = characterHit ? characterHit.from : null;
+  // `defaults.character` is the body of EVERY actor nobody dressed (a terminal session's room actor).
+  // The owner's file carried "kato-straight-title-robot-anime" there since September, and once terminals
+  // stood up as full bodies (2026-11-16) every session wore the white/pink robot. A robot, a droid or a
+  // stock sample is never an automatic body: the default tier is skipped when it names one and the
+  // hash over the PROPER pool decides. A row the owner wrote for a specific agent is not touched.
+  const robotDefault = Boolean(characterHit)
+    && characterHit.from === "defaults.character"
+    && !require("./character-pool.cjs").isProperBody(characterHit.value);
+  let character = characterHit && !robotDefault ? characterHit.value : null;
+  let characterFrom = characterHit && !robotDefault ? characterHit.from : null;
   if (!character) {
     const hashed = stableCharacter(seed, roster || [], { taken: ctx.taken || [], resident });
     character = hashed;
