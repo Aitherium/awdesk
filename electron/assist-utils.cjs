@@ -50,15 +50,15 @@ const LOCKS_TIMEOUT_MS = 100000; // measured 2026-11-16: FileLocksmithCLI took 4
 const OCR_WAIT_MS = 90000;
 
 function programDirs(env) {
-  return [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Programs")]
+  return [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA && path.win32.join(env.LOCALAPPDATA, "Programs")]
     .filter(Boolean);
 }
 
 /** Where PowerToys lives (per-machine, per-user, or the Programs dir). */
 function powerToysDirs(env = process.env) {
-  const dirs = programDirs(env).map((d) => path.join(d, "PowerToys"));
-  if (env.LOCALAPPDATA) dirs.push(path.join(env.LOCALAPPDATA, "PowerToys"));
-  return dirs.flatMap((d) => [d, path.join(d, "WinUI3Apps")]);
+  const dirs = programDirs(env).map((d) => path.win32.join(d, "PowerToys"));
+  if (env.LOCALAPPDATA) dirs.push(path.win32.join(env.LOCALAPPDATA, "PowerToys"));
+  return dirs.flatMap((d) => [d, path.win32.join(d, "WinUI3Apps")]);
 }
 
 /** Where Sysinternals lives: a known dir, the WinGet links dir, then PATH. */
@@ -66,16 +66,16 @@ function sysinternalsDirs(env = process.env) {
   const dirs = [];
   if (env.AWDESK_SYSINTERNALS_DIR) dirs.push(env.AWDESK_SYSINTERNALS_DIR);
   dirs.push("C:\\Sysinternals");
-  for (const d of programDirs(env)) dirs.push(path.join(d, "Sysinternals"), path.join(d, "SysinternalsSuite"));
-  if (env.LOCALAPPDATA) dirs.push(path.join(env.LOCALAPPDATA, "Microsoft", "WinGet", "Links"));
-  for (const d of String(env.PATH || env.Path || "").split(path.delimiter)) if (d) dirs.push(d);
+  for (const d of programDirs(env)) dirs.push(path.win32.join(d, "Sysinternals"), path.win32.join(d, "SysinternalsSuite"));
+  if (env.LOCALAPPDATA) dirs.push(path.win32.join(env.LOCALAPPDATA, "Microsoft", "WinGet", "Links"));
+  for (const d of String(env.PATH || env.Path || "").split(";")) if (d) dirs.push(d);
   return dirs;
 }
 
 function findTool(names, dirs, existsSync = fs.existsSync) {
   for (const name of names) {
     for (const dir of dirs) {
-      const candidate = path.join(dir, name);
+      const candidate = path.win32.join(dir, name);
       try { if (existsSync(candidate)) return candidate; } catch { /* unreadable dir */ }
     }
   }
@@ -203,7 +203,7 @@ function createAssistUtils({
       let procs;
       try { procs = JSON.parse(r.stdout).processes; } catch { procs = null; }
       if (Array.isArray(procs)) {
-        if (!procs.length) return { ok: true, text: `Nothing has ${path.basename(target)} open right now.`, note: "PowerToys File Locksmith" };
+        if (!procs.length) return { ok: true, text: `Nothing has ${path.win32.basename(target)} open right now.`, note: "PowerToys File Locksmith" };
         return { ok: true, text: clipOut(procs.map((p) => `${p.name} (pid ${p.pid}, ${p.user || "?"})`).join("\n")), note: `PowerToys File Locksmith: ${procs.length} process${procs.length === 1 ? "" : "es"}` };
       }
     }
@@ -211,7 +211,7 @@ function createAssistUtils({
     if (!handle) return { ok: false, error: "Needs PowerToys File Locksmith or Sysinternals handle." };
     const r = await exec(handle, ["-accepteula", "-nobanner", target], { timeoutMs: TOOLS_TIMEOUT_MS });
     const out = clipOut(r.stdout);
-    return /No matching handles/i.test(out) ? { ok: true, text: `Nothing has ${path.basename(target)} open (as far as an unelevated handle can see).`, note: "Sysinternals handle" } : { ok: true, text: out, note: "Sysinternals handle" };
+    return /No matching handles/i.test(out) ? { ok: true, text: `Nothing has ${path.win32.basename(target)} open (as far as an unelevated handle can see).`, note: "Sysinternals handle" } : { ok: true, text: out, note: "Sysinternals handle" };
   }
 
   async function runProcInfo(opts) {
@@ -224,7 +224,7 @@ function createAssistUtils({
 
   async function runResize(opts) {
     const target = pathFromSelection(opts.selection, existsSync);
-    if (!target || !IMAGE_EXT.has(path.extname(target).toLowerCase())) return { ok: false, error: "Select an image file path first (png, jpg, gif, bmp, tiff, webp)." };
+    if (!target || !IMAGE_EXT.has(path.win32.extname(target).toLowerCase())) return { ok: false, error: "Select an image file path first (png, jpg, gif, bmp, tiff, webp)." };
     const width = Number.parseInt(String(opts.arg || "1280"), 10);
     if (!Number.isInteger(width) || width < 16 || width > 16000) return { ok: false, error: "Width must be between 16 and 16000 pixels." };
     const r = await exec(pt(["PowerToys.ImageResizerCLI.exe"]), ["--width", String(width), "--unit", "Pixel", "--fit", "Fit", "--shrink-only", target], { timeoutMs: 60000 });

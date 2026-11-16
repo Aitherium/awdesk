@@ -35,10 +35,10 @@ function loadAgents() {
 
 /** First hit of `name`(.exe) on PATH or a few usual install dirs: the converters the owner installed. */
 function findExeOnPath(name, env = process.env) {
-  const dirs = String(env.PATH || env.Path || "").split(path.delimiter).filter(Boolean);
-  for (const extra of [env.ProgramFiles && path.join(env.ProgramFiles, "ImageMagick-7"), env.ProgramFiles && path.join(env.ProgramFiles, "ffmpeg", "bin"), env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Microsoft", "WinGet", "Links"), env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Pandoc")]) if (extra) dirs.push(extra);
+  const dirs = String(env.PATH || env.Path || "").split(";").filter(Boolean);
+  for (const extra of [env.ProgramFiles && path.win32.join(env.ProgramFiles, "ImageMagick-7"), env.ProgramFiles && path.win32.join(env.ProgramFiles, "ffmpeg", "bin"), env.LOCALAPPDATA && path.win32.join(env.LOCALAPPDATA, "Microsoft", "WinGet", "Links"), env.LOCALAPPDATA && path.win32.join(env.LOCALAPPDATA, "Pandoc")]) if (extra) dirs.push(extra);
   for (const dir of dirs) {
-    const candidate = path.join(dir, `${name}.exe`);
+    const candidate = path.win32.join(dir, `${name}.exe`);
     try { if (fs.existsSync(candidate)) return candidate; } catch { /* unreadable */ }
   }
   return null;
