@@ -496,6 +496,9 @@ function sanitizeState(raw) {
     sounds: src.sounds !== false,
     // The swarm of agent fairies around the orb: off unless asked for (owner 2026-11-13).
     swarm: src.swarm === true,
+    // How the swarm is drawn and what is pinned out of it (fairy-control.cjs): mode, radius,
+    // kind filter, hidden / muted agents, pinned positions.
+    swarmView: require("./fairy-control.cjs").normalizeView(src.swarmView),
     // "Mute nudges 1 hour" from the orb's right-click menu (owner 2026-11-12): ms epoch.
     muteUntil: Math.max(0, finite(src.muteUntil) || 0),
   };

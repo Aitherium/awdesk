@@ -2091,6 +2091,9 @@ async function swarmApi(req = {}) {
       return host.visemes(req.agent, req.weights === undefined ? null : req.weights, req.ttlMs);
     case "goblin":
       return host.setAgentForm("gargbot", req.on === false ? "fairy" : "avatar");
+    case "view":
+      // Fine control over the fairies (fairy-control.cjs): mode, kind, radius, select, pin, hide.
+      return orbWindow.swarmViewOp(req);
     case "stage":
       return host.stageOp(String(req.op || "state"), req);
     case "probe": {
@@ -2136,6 +2139,24 @@ async function swarmApi(req = {}) {
 }
 
 /** One tray submenu: the swarm as a whole, then each agent's form. Never nested deeper. */
+/** Gather / scatter / one orb / dock, and the kind filter (fairy-control.cjs): the tray's copy of the fairy menu's rows. */
+function swarmLayoutTrayRows(run) {
+  let now = { mode: "gather", kind: "all" };
+  try { now = orbWindow.swarmViewPayload(); } catch { /* the fairy is not up yet */ }
+  const fc = require("./fairy-control.cjs");
+  const label = { gather: "Gather around the fairy", scatter: "Scatter", orb: "Collapse into one orb", dock: "Dock to the screen edge" };
+  const kinds = { all: "Every kind", agents: "Agents only", terminals: "Terminal sessions only", subagents: "Subagents only", remote: "Remote endpoints only" };
+  return [
+    ...fc.MODES.map((m) => ({ label: label[m], type: "radio", checked: now.mode === m, click: run({ action: "view", mode: m }) })),
+    { type: "separator" },
+    ...fc.KIND_FILTERS.map((k) => ({ label: kinds[k], type: "radio", checked: now.kind === k, click: run({ action: "view", kind: k }) })),
+    { type: "separator" },
+    { label: "Reset the size", click: run({ action: "view", radius: 1 }) },
+    { label: "Show hidden fairies", click: run({ action: "view", showHidden: true }) },
+    { label: "Unpin every fairy", click: run({ action: "view", unpinAll: true }) },
+  ];
+}
+
 function swarmTrayRows() {
   let state;
   try { state = getSwarmHost().state(); } catch { return []; }
@@ -2151,6 +2172,7 @@ function swarmTrayRows() {
       { label: "Grow every agent", click: run({ action: "forms", form: "avatar" }) },
       { label: "Shrink them all back", click: run({ action: "forms", form: "fairy" }) },
       { label: state.mode === "light" ? "Light mode (terminals stay small)" : "Full mode (everyone grows)", click: run({ action: "mode", mode: state.mode === "light" ? "full" : "light" }) },
+      { label: "Fairy layout", submenu: swarmLayoutTrayRows(run) },
       { type: "separator" },
       { label: "Stage: join every grown agent", click: () => {
         const bodies = state.bodies.map((b) => b.agent).filter((a) => a !== "gargbot");
@@ -6830,6 +6852,26 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           const r = await deckSessionAct({ id, action: "focus" });
           if (r && !r.ok && /ended/i.test(String(r.note || ""))) return deckSessionAct({ id, action: "resume" });
           return r;
+        },
+        // Fine control over the fairies (fairy-control.cjs): a click selects one (push-to-talk
+        // goes to it), the menu grows it into its avatar or brings its terminal to the front.
+        select: (agent) => { try { getSwarmHost().talkTo(agent); } catch { /* the swarm is cosmetic */ } },
+        growAgent: (agent) => getSwarmHost().setAgentForm(agent, "avatar"),
+        focusAgentSession: async (agent, card) => {
+          if (card && card.sessionId) {
+            const r = await deckSessionAct({ id: card.id, action: "focus" });
+            if (r && !r.ok && /ended/i.test(String(r.note || ""))) return deckSessionAct({ id: card.id, action: "resume" });
+            return r;
+          }
+          const agentFairyLib = require("./agent-fairy.cjs");
+          for (const [id, live] of liveSessionMap({ fresh: true })) {
+            if (agentFairyLib.sessionKey(id) !== agent) continue;
+            const name = live && live.name ? live.name : "";
+            if (!name) return { ok: false, note: "That session has no terminal tab name." };
+            const r = await sessionContext.focusSessionTab(name);
+            return r.ok ? { ok: true, note: `Brought "${r.tab || name}" to the front.` } : { ok: false, note: `Could not find its terminal tab (${r.error}).` };
+          }
+          return { ok: false, note: "That session is not open." };
         },
         // Click a companion fairy: the chat with THAT agent (same persona as its
         // Discord bot), continuing its thread when the board names one.

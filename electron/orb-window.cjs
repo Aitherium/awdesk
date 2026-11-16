@@ -56,6 +56,8 @@ const fairyCounts = require("./fairy-counts.cjs");
 const fairyHoverGuard = require("./fairy-hover-guard.cjs");
 const fairyPanel = require("./fairy-panel.cjs");
 const agentsPanel = require("./agents-panel.cjs");
+const fairyControl = require("./fairy-control.cjs");
+const foregroundProbe = require("./foreground-probe.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -99,6 +101,17 @@ let swarmCompanions = [];
  *  where it was): the agent swarm sets it so the light fairies keep orbiting the avatar
  *  instead of vanishing with the orb. null = follow the orb, as always. */
 let swarmAnchor = null;
+/** Fine control (fairy-control.cjs): the click-selected fairy, every live companion before the
+ *  view filters it, the pinned fairies' own windows, the drag in flight, the focused window. */
+let selectedAgent = "";
+let allCompanions = [];
+let pinWindows = new Map();
+let pinDrag = null;
+let fgContent = null;
+let fgProbeImpl = null;
+let lastSwarmViewKey = "";
+let lastCompanionsWho = "";
+let lastBounds = null;
 let state = orbCore.sanitizeState(null);
 let queue = orbCore.createQueue();
 let tickTimer = null;
@@ -600,20 +613,21 @@ function ensureSwarm() {
   return swarmWindow;
 }
 
-/** The swarm's square: centred on the orb, as big as the outer ring needs. */
-function swarmBounds(count) {
-  const half = Math.max(48, agentFairy.swarmExtent(count));
-  let cx = 0;
-  let cy = 0;
-  if (swarmAnchor && !orbVisible()) {
-    cx = swarmAnchor.x;
-    cy = swarmAnchor.y;
-  } else if (alive(orbWindow)) {
+/** Where the cluster is centred: the anchor while a body stands in for the fairy, else the orb. */
+function clusterCenter() {
+  if (swarmAnchor && !orbVisible()) return { x: swarmAnchor.x, y: swarmAnchor.y };
+  if (alive(orbWindow)) {
     const b = orbWindow.getBounds();
-    cx = b.x + ORB_SIZE.width / 2;
-    cy = b.y + ORB_SIZE.height / 2;
+    return { x: b.x + ORB_SIZE.width / 2, y: b.y + ORB_SIZE.height / 2 };
   }
-  return { x: Math.round(cx - half), y: Math.round(cy - half), width: half * 2, height: half * 2 };
+  return { x: 0, y: 0 };
+}
+
+/** The swarm window's rect for the view (fairy-control.boundsFor), or null = no window. */
+function swarmBounds(count) {
+  const centre = clusterCenter();
+  const area = workAreaAt(centre) || { x: 0, y: 0, width: 1920, height: 1080 };
+  return fairyControl.boundsFor(state.swarmView, count, centre, area);
 }
 
 /**
@@ -632,16 +646,21 @@ function placeSwarm(companions = swarmCompanions, { raise = false } = {}) {
   const list = Array.isArray(companions) ? companions : [];
   // No swarm (owner 2026-11-13: "keep the badge ... link to the inbox, don't show a
   // swarm"): one fairy and its badge. orb.json `swarm: true` brings the swarm back.
-  if (!list.length || (!orbVisible() && !swarmAnchor) || state.swarm !== true) {
+  const next = list.length && (orbVisible() || swarmAnchor) && state.swarm === true ? swarmBounds(list.length) : null;
+  if (!next) {
     if (alive(swarmWindow) && swarmWindow.isVisible()) swarmWindow.hide();
+    lastBounds = null;
+    syncForegroundProbe();
+    sendSwarmView();
+    syncPins();
     return;
   }
   const win = ensureSwarm();
-  const next = swarmBounds(list.length);
   const cur = win.getBounds();
   if (cur.x !== next.x || cur.y !== next.y || cur.width !== next.width || cur.height !== next.height) {
-    win.setBounds(next); // full bounds every time: a bare setPosition drifts the size
+    win.setBounds({ x: next.x, y: next.y, width: next.width, height: next.height }); // full bounds every time: a bare setPosition drifts the size
   }
+  lastBounds = next;
   if (!win.isVisible()) {
     win.showInactive();
     raise = true;
@@ -649,6 +668,9 @@ function placeSwarm(companions = swarmCompanions, { raise = false } = {}) {
   // The orb disc stays above its swarm, so a press on the fairy is the fairy's and
   // its glow is never drawn under the companions.
   if (raise) raiseOrbOverSwarm();
+  syncForegroundProbe();
+  sendSwarmView();
+  syncPins();
 }
 
 /**
@@ -670,6 +692,327 @@ function setSwarmVisible(on) {
   sendFairy({ force: true });
   placeSwarm(swarmCompanions, { raise: true });
   return { ok: true, swarm: state.swarm === true };
+}
+
+// ── fine control over the fairies (fairy-control.cjs, owner 2026-11-16) ─────────
+// Select, a full tooltip, a menu per fairy, pin out of / back into the swarm, gather /
+// scatter / one orb / dock / filter, the scroll radius, and keeping off the focused
+// window. The view lives in orb.json `swarmView`; the pure rules are fairy-control.cjs.
+
+const PIN_SIZE = Object.freeze({ width: 44, height: 44 });
+const pinKeys = new Map();
+
+function viewCompanions(all = allCompanions) {
+  const split = fairyControl.applyView(all, state.swarmView);
+  const dec = (c) => fairyControl.decorate(c, state.swarmView, { selected: selectedAgent });
+  return {
+    visible: state.swarmView.mode === "orb" ? [] : split.visible.map(dec),
+    pinned: split.pinned.map(dec),
+    split,
+  };
+}
+
+/** What the swarm and orb pages need beside the companion rows. */
+function swarmViewPayload() {
+  const v = state.swarmView;
+  const { split } = viewCompanions();
+  let avoid = null;
+  if (v.avoid && fgContent && lastBounds && v.mode !== "dock" && v.mode !== "orb") {
+    const c = clusterCenter();
+    const sitsOnIt = c.x >= fgContent.x && c.x <= fgContent.x + fgContent.width
+      && c.y >= fgContent.y && c.y <= fgContent.y + fgContent.height;
+    // The fairy put on that window on purpose: the ring keeps its place around it.
+    if (!sitsOnIt) {
+      avoid = fairyControl.relativeRect(fgContent, { x: lastBounds.x + lastBounds.width / 2, y: lastBounds.y + lastBounds.height / 2 });
+    }
+  }
+  return {
+    mode: v.mode, radius: v.radius, kind: v.kind, edge: lastBounds ? lastBounds.edge : "",
+    total: split.total, shown: split.visible.length, hidden: split.hidden, pinned: split.pinned.length, avoid,
+    selected: selectedAgent,
+  };
+}
+
+/** The pin window's own fairy (its agent comes in the page URL). */
+function pinMateFor(sender) {
+  let agent = "";
+  try { agent = String(new URL(sender.getURL()).searchParams.get("agent") || "").toLowerCase(); } catch { /* filename only */ }
+  const c = viewCompanions().pinned.find((x) => x.agent === agent) || (pinDrag && pinDrag.agent === agent
+    ? fairyControl.decorate(allCompanions.find((x) => x.agent === agent) || { agent }, state.swarmView, { selected: selectedAgent }) : null);
+  return c || null;
+}
+
+function sendSwarmView({ force = false } = {}) {
+  const payload = swarmViewPayload();
+  const key = JSON.stringify(payload);
+  if (!force && key === lastSwarmViewKey) return payload;
+  lastSwarmViewKey = key;
+  for (const win of [swarmWindow, orbWindow]) {
+    try { if (alive(win)) win.webContents.send("orb:swarm-view", payload); } catch { /* page mid-load: init() carries it */ }
+  }
+  return payload;
+}
+
+function screenToDip(p) {
+  try {
+    const { screen } = electron();
+    return typeof screen.screenToDipPoint === "function" ? screen.screenToDipPoint(p) : p;
+  } catch { return p; }
+}
+
+/** The focused-window probe runs only while a ring is on screen to be kept clear. */
+function syncForegroundProbe() {
+  const want = alive(swarmWindow) && swarmWindow.isVisible() && state.swarmView.mode !== "dock" && state.swarmView.mode !== "orb";
+  if (!want) {
+    if (fgProbeImpl) fgProbeImpl.stop();
+    return;
+  }
+  let canDip = false;
+  try { canDip = typeof electron().screen.screenToDipPoint === "function"; } catch { /* no screen module (tests) */ }
+  if (!canDip) return; // no real screen: nothing to probe, nothing to spawn
+  if (!fgProbeImpl) {
+    fgProbeImpl = foregroundProbe.createForegroundProbe({
+      toDip: screenToDip,
+      onChange: (rect) => { fgContent = fairyControl.contentRect(rect); sendSwarmView(); },
+    });
+  }
+  fgProbeImpl.start();
+}
+
+/** Change the view, keep it, redraw. */
+function setView(patch) {
+  state.swarmView = fairyControl.normalizeView({ ...state.swarmView, ...patch });
+  saveState();
+  sendFairy({ force: true });
+  return state.swarmView;
+}
+
+function selectAgent(agent) {
+  const key = String(agent || "").trim().toLowerCase();
+  if (key === selectedAgent) return { ok: true, selected: selectedAgent };
+  selectedAgent = key;
+  if (key) hookValue("select", key);
+  sendFairy({ force: true });
+  return { ok: true, selected: selectedAgent };
+}
+
+function swarmWheel(deltaY) {
+  const next = fairyControl.stepRadius(state.swarmView.radius, deltaY);
+  if (next === state.swarmView.radius) return { ok: true, radius: next };
+  setView({ radius: next });
+  return { ok: true, radius: state.swarmView.radius };
+}
+
+// -- pinned fairies: each its own small window ------------------------------------
+
+function ensurePin(agent) {
+  const have = pinWindows.get(agent);
+  if (alive(have)) return have;
+  const win = overlayWindow(`Aither pin ${agent}`, { focusable: false });
+  win.setBounds({ x: 0, y: 0, ...PIN_SIZE });
+  win.on("closed", () => { if (pinWindows.get(agent) === win) pinWindows.delete(agent); });
+  void win.loadFile(path.join(__dirname, "orb.html"), { query: { view: "pin", agent } });
+  pinWindows.set(agent, win);
+  pinKeys.delete(agent);
+  return win;
+}
+
+function destroyPin(agent) {
+  const win = pinWindows.get(agent);
+  pinWindows.delete(agent);
+  pinKeys.delete(agent);
+  try { if (alive(win)) win.destroy(); } catch { /* gone */ }
+}
+
+function clampPin(at) {
+  const centre = { x: at.x + PIN_SIZE.width / 2, y: at.y + PIN_SIZE.height / 2 };
+  const area = menuAreaAt(centre);
+  if (!area) return { x: Math.round(at.x), y: Math.round(at.y) };
+  return {
+    x: Math.round(Math.min(Math.max(area.x, at.x), area.x + area.width - PIN_SIZE.width)),
+    y: Math.round(Math.min(Math.max(area.y, at.y), area.y + area.height - PIN_SIZE.height)),
+  };
+}
+
+/** Make the pin windows match the view: one per pinned agent that is live, none for the rest. */
+function syncPins() {
+  const v = state.swarmView;
+  const show = !quitting && (orbVisible() || Boolean(swarmAnchor));
+  const live = new Map(viewCompanions().pinned.map((c) => [c.agent, c]));
+  for (const [agent, at] of Object.entries(v.pins)) {
+    if (pinDrag && pinDrag.agent === agent) continue; // under the pointer: the drag moves it
+    const c = live.get(agent);
+    const have = pinWindows.get(agent);
+    if (!c || !show) {
+      if (alive(have) && have.isVisible()) { try { have.hide(); } catch { /* gone */ } }
+      continue;
+    }
+    const win = ensurePin(agent);
+    const next = clampPin(at);
+    const cur = win.getBounds();
+    if (cur.x !== next.x || cur.y !== next.y || cur.width !== PIN_SIZE.width) win.setBounds({ ...next, ...PIN_SIZE });
+    const key = JSON.stringify(c);
+    if (pinKeys.get(agent) !== key) {
+      pinKeys.set(agent, key);
+      deliverTo(win, "orb:pin-mate", { mate: c });
+    }
+    if (!win.isVisible()) win.showInactive();
+  }
+  for (const agent of [...pinWindows.keys()]) {
+    if (!v.pins[agent] && !(pinDrag && pinDrag.agent === agent)) destroyPin(agent);
+  }
+}
+
+/**
+ * A drag of one fairy, from the ring ("swarm") or from its own pin ("pin"). main reads
+ * the real cursor on every phase (the page only says what happened), so a page that
+ * lost its mouse capture cannot strand a fairy. start: the pin window follows the
+ * pointer; end: dropped on the fairy it rejoins the ring, anywhere else it is pinned.
+ */
+function swarmDrag(phase, agentRaw, from = "swarm") {
+  const agent = String(agentRaw || "").trim().toLowerCase();
+  const p = cursorPoint();
+  if (phase === "start") {
+    const c = allCompanions.find((x) => x.agent === agent);
+    if (!c) return { ok: false, error: "no such fairy" };
+    if (pinDrag) swarmDrag("end", pinDrag.agent, pinDrag.from);
+    hideTip();
+    hideMenu();
+    const win = ensurePin(agent);
+    const b = alive(win) ? win.getBounds() : { x: p.x, y: p.y };
+    const grab = from === "pin" && state.swarmView.pins[agent]
+      ? { dx: p.x - b.x, dy: p.y - b.y }
+      : { dx: PIN_SIZE.width / 2, dy: PIN_SIZE.height / 2 };
+    pinDrag = { agent, from, grab };
+    // From the ring the press belongs to the ring's window (it holds the mouse): the pin
+    // window that follows the pointer must not steal it.
+    if (from === "swarm") { try { win.setIgnoreMouseEvents(true); } catch { /* gone */ } }
+    win.setBounds({ x: Math.round(p.x - grab.dx), y: Math.round(p.y - grab.dy), ...PIN_SIZE });
+    pinKeys.set(agent, "");
+    deliverTo(win, "orb:pin-mate", { mate: fairyControl.decorate(c, state.swarmView, { selected: selectedAgent }) });
+    if (!win.isVisible()) win.showInactive();
+    return { ok: true, dragging: agent };
+  }
+  if (!pinDrag || pinDrag.agent !== agent) return { ok: false, error: "no drag in flight" };
+  const win = pinWindows.get(agent);
+  const grab = pinDrag.grab;
+  if (phase === "move") {
+    if (alive(win)) win.setBounds({ x: Math.round(p.x - grab.dx), y: Math.round(p.y - grab.dy), ...PIN_SIZE });
+    return { ok: true };
+  }
+  if (phase === "end") {
+    pinDrag = null;
+    try { if (alive(win)) win.setIgnoreMouseEvents(false); } catch { /* gone */ }
+    const pins = { ...state.swarmView.pins };
+    const rejoin = fairyControl.joinsCluster(p, clusterCenter());
+    let result;
+    if (rejoin) {
+      delete pins[agent];
+      result = { ok: true, pinned: false, rejoined: true };
+    } else {
+      pins[agent] = clampPin({ x: p.x - grab.dx, y: p.y - grab.dy });
+      result = { ok: true, pinned: true, at: pins[agent] };
+    }
+    setView({ pins });
+    return result;
+  }
+  return { ok: false, error: `unknown drag phase ${phase}` };
+}
+
+/** Pin `agent` centred on a point (a menu pick, the bridge) -- or unpin it (at null). */
+function pinAgent(agent, at = null) {
+  const key = String(agent || "").trim().toLowerCase();
+  const pins = { ...state.swarmView.pins };
+  if (!at) delete pins[key];
+  else pins[key] = clampPin({ x: at.x - PIN_SIZE.width / 2, y: at.y - PIN_SIZE.height / 2 });
+  setView({ pins });
+  return { ok: true, pinned: Boolean(pins[key]), at: pins[key] || null };
+}
+
+// -- menu picks -------------------------------------------------------------------
+
+async function controlPick(what, ms) {
+  const agent = String((ms && ms.agent) || "");
+  const view = state.swarmView;
+  if (what === "fc:chat") return chatWithAgent(agent);
+  if (what === "fc:grow") {
+    let r;
+    try { r = await hookValue("growAgent", agent); } catch (error) { r = { ok: false, error: String((error && error.message) || error) }; }
+    return r && typeof r === "object" ? r : { ok: false, error: "growing a fairy is not wired in this build" };
+  }
+  if (what === "fc:mute") {
+    const muted = fairyControl.toggleIn(view.muted, agent);
+    if (muted.includes(agent)) {
+      // Muting is for real: every card it raised stops nudging, the badge keeps counting.
+      for (const c of attentionCards) {
+        if (c && agentFairy.cardAgent(c) === agent) {
+          endNudgeFor(c.id, "snoozed");
+          setCardMem(c.id, fairyAttention.recordMute(attentionMems[c.id] || {}));
+        }
+      }
+    }
+    setView({ muted });
+    return { ok: true, muted: muted.includes(agent) };
+  }
+  if (what === "fc:pin") {
+    if (view.pins[agent]) return pinAgent(agent, null);
+    return pinAgent(agent, (ms && ms.at) || cursorPoint());
+  }
+  if (what === "fc:hide") {
+    setView({ hidden: view.hidden.includes(agent) ? view.hidden : [...view.hidden, agent] });
+    return { ok: true, hidden: agent };
+  }
+  if (what === "fc:session") {
+    let r;
+    try { r = await hookValue("focusAgentSession", agent, menuCard(ms)); } catch (error) { r = { ok: false, error: String(error) }; }
+    return r && typeof r === "object" ? r : { ok: false, error: "no session for this agent" };
+  }
+  return { ok: false, error: `unknown menu item ${what}` };
+}
+
+function swarmViewMenu({ at = null } = {}) {
+  const { split } = viewCompanions();
+  const built = fairyControl.viewItems(state.swarmView, {
+    total: split.total, hidden: split.hidden, pinned: split.pinned.length,
+  });
+  return showMenu("swarmview", built, { at });
+}
+
+function swarmPick(what, ms) {
+  if (what === "sv:menu") return swarmViewMenu({ at: (ms && ms.at) || null });
+  const r = fairyControl.applyViewPick(state.swarmView, what);
+  if (r.error) return { ok: false, error: r.error };
+  if (r.changed) setView(r.view);
+  return { ok: true, view: state.swarmView };
+}
+
+/** The bridge / MCP door: {mode, kind, radius, showHidden, unpinAll, select, hide, pin:{agent,x,y}|{agent,off}}. */
+function swarmViewOp(req = {}) {
+  const patch = {};
+  if (req.mode != null) {
+    if (!fairyControl.MODES.includes(req.mode)) return { ok: false, error: `mode is one of ${fairyControl.MODES.join(", ")}` };
+    patch.mode = req.mode;
+  }
+  if (req.kind != null) {
+    if (!fairyControl.KIND_FILTERS.includes(req.kind)) return { ok: false, error: `kind is one of ${fairyControl.KIND_FILTERS.join(", ")}` };
+    patch.kind = req.kind;
+  }
+  if (req.radius != null) patch.radius = req.radius;
+  if (req.avoid != null) patch.avoid = req.avoid === true;
+  if (req.showHidden === true) patch.hidden = [];
+  if (req.unpinAll === true) patch.pins = {};
+  if (Object.keys(patch).length) setView(patch);
+  if (req.select != null) selectAgent(req.select);
+  if (req.pin && req.pin.agent) pinAgent(req.pin.agent, req.pin.off ? null : { x: Number(req.pin.x), y: Number(req.pin.y) });
+  if (req.hide) setView({ hidden: [...new Set([...state.swarmView.hidden, String(req.hide).toLowerCase()])] });
+  let scale = 1;
+  try { scale = electron().screen.getDisplayNearestPoint(clusterCenter()).scaleFactor || 1; } catch { /* no screen module (tests) */ }
+  const { visible } = viewCompanions();
+  return {
+    ok: true, view: state.swarmView, ...swarmViewPayload(), pins: Object.keys(state.swarmView.pins), bounds: lastBounds, scale,
+    fg: fgContent, mates: visible.map((c) => ({ agent: c.agent, label: c.label, group: c.group, state: c.state, count: c.count })),
+    pinBounds: Object.fromEntries([...pinWindows].filter(([, w]) => alive(w) && w.isVisible()).map(([a, w]) => [a, w.getBounds()])),
+  };
 }
 
 /** The trail/tether overlay. Transparent, click-through, never focused. */
@@ -2592,12 +2935,16 @@ function sendFairy({ force = false } = {}) {
     lastFairyKey = key;
     send("orb:fairy", look);
   }
-  const companions = currentCompanions(look);
-  const ckey = JSON.stringify(companions);
+  allCompanions = currentCompanions(look);
+  const { visible: companions, pinned } = viewCompanions(allCompanions);
+  const ckey = JSON.stringify({ companions, pinned: pinned.map((c) => [c.agent, c.state, c.count, c.selected]), view: state.swarmView });
   if (force || ckey !== lastCompanionsKey) {
     lastCompanionsKey = ckey;
     swarmCompanions = companions;
-    releaseHover();
+    // Who is in the ring changed: every fairy has a new slot, so let go of any hover. A change of
+    // radius, layout or selection keeps the same fairies, and the wheel must keep the window.
+    const who = JSON.stringify(companions.map((c) => [c.agent, c.state, c.count]));
+    if (who !== lastCompanionsWho) { lastCompanionsWho = who; releaseHover(); }
     send("orb:companions", companions);
     placeSwarm(companions, { raise: true });
     try {
@@ -3464,6 +3811,7 @@ function showMenu(kind, built, ctx = {}) {
   hideTip();
   const win = ensureMenu();
   menuState = { kind, cardId: String(ctx.cardId || ""), agent: String(ctx.agent || ""), ...built };
+  menuState.at = ctx.at && Number.isFinite(Number(ctx.at.x)) ? { x: Number(ctx.at.x), y: Number(ctx.at.y) } : cursorPoint();
   // A right click puts the menu at the pointer (or the anchor the caller measured); the
   // palette / bridge row ("fairy.menu", keyboard reach) puts it beside the fairy.
   const anchor = ctx.at && Number.isFinite(Number(ctx.at.x)) && Number.isFinite(Number(ctx.at.y))
@@ -3517,7 +3865,8 @@ function orbCentre() {
   return { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) };
 }
 
-/** Right click on a companion fairy: its card's menu (or "Talk to" for presence). */
+/** Right click on a companion fairy: its card's menu (or "Talk to" for presence), then the
+ *  control rows every fairy has (chat, grow, mute, pin, hide, open session, swarm layout). */
 function fairyMenuFor(cardId, agent = "", { atFairy = false } = {}) {
   let card = attentionCards.find((c) => c && c.id === String(cardId || "")) || null;
   if (!card && agent) {
@@ -3527,8 +3876,18 @@ function fairyMenuFor(cardId, agent = "", { atFairy = false } = {}) {
   }
   const f = agentFairy.crewFairy(card ? card.agent : agent);
   const label = f.known || f.crew ? f.label : String(agent || "");
-  return showMenu("fairy", fairyMenu.withCompanionRows(fairyMenu.fairyItems(card, { label, agent }), companionOpts("fairy")),
-    { cardId: card ? card.id : "", agent, atFairy });
+  const key = String((card ? agentFairy.cardAgent(card) : agentFairy.crewKey(agent)) || agent || "").toLowerCase();
+  const view = state.swarmView;
+  const base = fairyMenu.fairyItems(card, { label, agent });
+  const rows = fairyControl.controlItems({
+    label, agent: key, muted: view.muted.includes(key), pinned: Boolean(view.pins[key]),
+    hasSession: Boolean((card && card.sessionId) || key.startsWith("session-")),
+    canGrow: typeof (attentionHooks && attentionHooks.growAgent) === "function",
+  }).filter((r) => card || r.id !== "fc:chat"); // no card: the base menu's "Talk to" is the chat row
+  const items = [...base.items, { sep: true }, ...rows];
+  // No companion rows here (hide all, quiet, quit...): they live on the orb's menu and the tray, and
+  // next to "Hide this fairy" they read as the same thing twice.
+  return showMenu("fairy", { ...base, items }, { cardId: card ? card.id : "", agent: key, atFairy });
 }
 
 /** The switches and the clock companion-menu.items reads. */
@@ -3557,7 +3916,7 @@ function orbMenu({ atFairy = false } = {}) {
   return showMenu("orb", fairyMenu.orbItems({
     waiting: attentionCards.length, quietUntil: state.muteUntil, tenantVisible: Boolean(state.tenantCompanion),
     fairyVisible: orbVisible(), nowMs: Date.now(), avatar: avatarMode(),
-    bodies: hookValue("aitherBodies") || [],
+    bodies: hookValue("aitherBodies") || [], swarm: allCompanions.length,
   }), { atFairy });
 }
 
@@ -3588,6 +3947,8 @@ async function menuPick(id) {
   if (companionMenu.isCompanionId(what)) {
     return companionAction(what, { target: ms.kind === "tenant" ? "tenant" : "fairy" });
   }
+  if (what.startsWith("sv:")) return swarmPick(what, ms);
+  if (what.startsWith("fc:")) return controlPick(what, ms);
   if (ms.kind === "orb") return orbPick(what);
   if (what === "talk") return chatWithAgent(ms.agent);
   const card = menuCard(ms);
@@ -3828,18 +4189,22 @@ function companionAction(id, { target = "fairy" } = {}) {
 
 /** The one-line hover tooltip. null/"" hides it. Never focused, never clicked. */
 function showTip(text, point) {
-  const line = String(text || "").slice(0, fairyMenu.TIP_MAX + 1);
+  // A fairy's full tooltip is several lines (fairy-control.detailLines); every other tip is one.
+  const multi = String(text || "").includes("\n");
+  const line = multi ? String(text).slice(0, 420) : String(text || "").slice(0, fairyMenu.TIP_MAX + 1);
+  const wrapped = multi ? line.split("\n").reduce((n, l) => n + Math.max(1, Math.ceil(l.length / 40)), 0) : 1;
+  const size = multi ? { width: 330, height: 18 + 17 * Math.min(9, wrapped) } : TIP_SIZE;
   // No tooltip over a menu, or over a card the owner clicked open.
   if (!line || menuState || (nudging && nudging.explicit)) return hideTip();
   const win = ensureTip();
   const p = point && Number.isFinite(Number(point.x)) ? { x: Number(point.x), y: Number(point.y) } : cursorPoint();
   const area = workAreaAt(p) || { x: 0, y: 0, width: 1920, height: 1080 };
   let x = Math.round(p.x + 14);
-  let y = Math.round(p.y - TIP_SIZE.height - 10);
-  if (x + TIP_SIZE.width > area.x + area.width) x = Math.round(p.x - TIP_SIZE.width - 14);
+  let y = Math.round(p.y - size.height - 10);
+  if (x + size.width > area.x + area.width) x = Math.round(p.x - size.width - 14);
   if (y < area.y) y = Math.round(p.y + 18);
-  win.setBounds({ x, y, ...TIP_SIZE });
-  deliverTo(win, "orb:tip", { text: line, side: x < p.x ? "left" : "right" });
+  win.setBounds({ x, y, ...size });
+  deliverTo(win, "orb:tip", { text: line, side: x < p.x ? "left" : "right", ...(multi ? { multi: true } : {}) });
   if (!win.isVisible()) win.showInactive();
   hoverGuard().tipShown(p);
   return { ok: true, text: line };
@@ -3866,7 +4231,7 @@ function releaseHover() {
 // ── IPC ─────────────────────────────────────────────────────────────────────
 
 function fromOrb(sender) {
-  const ids = [orbWindow, bubbleWindow, nudgeWindow, swarmWindow, menuWindow, tipWindow]
+  const ids = [orbWindow, bubbleWindow, nudgeWindow, swarmWindow, menuWindow, tipWindow, ...pinWindows.values()]
     .filter(alive)
     .map((w) => w.webContents);
   return ids.some((wc) => wc === sender);
@@ -3923,7 +4288,9 @@ function handlers() {
         nudge: nudging && nudging.shown ? nudging.view : null,
         nudgeLevel: nudging && !nudging.peek ? nudging.decision.level : 0,
         fairy: currentFairy(),
-        companions: currentCompanions(),
+        companions: viewCompanions(currentCompanions()).visible,
+        swarmView: swarmViewPayload(),
+        mate: view === "pin" ? pinMateFor(sender) : null,
         menu: view === "menu" ? publicMenu() : null,
         tipDwellMs: fairyMenu.TIP_DWELL_MS,
         panelView: view === "bubble" ? currentPanelView() : null,
@@ -3954,6 +4321,10 @@ function handlers() {
     // The swarm is click-through except the companion under the pointer.
     // Click a companion: open a chat with that agent.
     "desk:orb-chat-agent": guard((_sender, agent) => chatWithAgent(agent)),
+    // Fine control (fairy-control.cjs): select, scroll radius, drag out / back.
+    "desk:swarm-select": guard((_sender, agent) => selectAgent(agent)),
+    "desk:swarm-wheel": guard((_sender, deltaY) => swarmWheel(deltaY)),
+    "desk:swarm-drag": guard((_sender, phase, agent, from) => swarmDrag(String(phase || ""), String(agent || ""), from === "pin" ? "pin" : "swarm")),
     "desk:swarm-hit": guard((_sender, inside) => {
       hoverGuard().hit("swarm", Boolean(inside), () => swarmWindow.getBounds());
       return { ok: true };
@@ -4125,6 +4496,8 @@ function stopOrb() {
   }
   stopMenuIdle();
   menuIdleMsOverride = 0;
+  if (fgProbeImpl) { try { fgProbeImpl.stop(); } catch { /* gone */ } fgProbeImpl = null; }
+  for (const agent of [...pinWindows.keys()]) destroyPin(agent);
   for (const win of [menuWindow, tipWindow, nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
     try { if (alive(win)) win.destroy(); } catch { /* already gone */ }
   }
@@ -4246,6 +4619,8 @@ module.exports = {
   quietUntil: () => (Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0),
   menuState: () => publicMenu(), __setMenuIdleMs: (ms) => { menuIdleMsOverride = Number(ms) || 0; }, fairy: () => currentFairy(), companions: () => currentCompanions(),
   setPresence, noteAgentPosted, chatWithAgent,
+  swarmViewOp, swarmViewPayload, selectAgent, swarmWheel, swarmDrag, pinAgent, viewCompanions, setView,
+  pinWindows: () => pinWindows, __setForeground: (rect) => { fgContent = fairyControl.contentRect(rect); sendSwarmView(); },
   setSwarmAnchor, setSwarmVisible, swarmVisible: () => state.swarm === true, fairyBounds: () => (alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null),
   swarmWindow: () => (alive(swarmWindow) ? swarmWindow : null), soundsOn: () => state.sounds !== false,
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
@@ -4282,6 +4657,15 @@ module.exports = {
     lastFairyKey = "";
     lastCompanionsKey = "";
     swarmCompanions = [];
+    allCompanions = [];
+    selectedAgent = "";
+    pinDrag = null;
+    fgContent = null;
+    lastSwarmViewKey = "";
+    lastCompanionsWho = "";
+    lastBounds = null;
+    if (fgProbeImpl) { try { fgProbeImpl.stop(); } catch { /* gone */ } fgProbeImpl = null; }
+    for (const agent of [...pinWindows.keys()]) destroyPin(agent);
     agentPresence = [];
     agentPosts = new Map();
     if (agentPostTimer) { clearTimeout(agentPostTimer); agentPostTimer = null; }

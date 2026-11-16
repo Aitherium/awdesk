@@ -1509,9 +1509,10 @@ test("click to talk with no chat wired says so, never pretends", async () => {
 test("the swarm page draws presence states and a click asks for that agent's chat; main + deck carry it through", () => {
   const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
   for (const st of ["idle", "working", "speaking", "waiting"]) assert.ok(html.includes(`.mate.st-${st} {`), st);
-  // #50: a companion WITH a card opens its newest card; one with no card (presence) opens the chat.
-  assert.match(html, /if \(hotMate\.id\) api\.openCard\(hotMate\.id, hotMate\.agent\);/);
-  assert.match(html, /else if \(hotMate\.agent && api\.chatAgent\) api\.chatAgent\(hotMate\.agent\);/);
+  // A click SELECTS a companion (2026-11-16, fairy-control.cjs) and opens its newest card when it
+  // carries one; a double click (or the menu's Chat row) opens the chat with that agent.
+  assert.match(html, /api\.select\(hotMate\.agent\);\s*if \(hotMate\.id\) api\.openCard\(hotMate\.id, hotMate\.agent\);/);
+  assert.match(html, /dblclick[\s\S]*?api\.chatAgent\(hotMate\.agent\)/);
   const preload = fs.readFileSync(path.join(__dirname, "orb-preload.cjs"), "utf8");
   assert.match(preload, /chatAgent: \(agent\) => ipcRenderer\.invoke\("desk:orb-chat-agent"/);
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
@@ -1586,7 +1587,7 @@ test("right click on a companion: the pill menu with every action, focused, besi
   assert.equal(r.ok, true);
   assert.deepEqual(r.items, ["open", "answer:yes", "snooze:1h", "snooze:4h", "snooze:tomorrow",
     "mute", "dismiss", "session", "copy",
-    "hide-this", "hide-all", "show-all", "open-desktop", "open-spaces", "open-chat", "settings", "quiet-1h", "quiet-4h", "quit"]);
+    "fc:chat", "fc:grow", "fc:mute", "fc:pin", "fc:hide", "fc:session", "sv:menu"]);
   const mw = menuWin();
   assert.ok(mw.isVisible());
   assert.equal(mw.focused, true, "focused, so arrows / Enter / Esc work");

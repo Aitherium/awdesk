@@ -1,0 +1,67 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
+const { createForegroundProbe } = require("./foreground-probe.cjs");
+
+function fakeChild() {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.writes = [];
+  child.stdin = { destroyed: false, write: (t) => { child.writes.push(t); }, end() { child.stdin.destroyed = true; } };
+  child.kill = () => { child.killed = true; };
+  return child;
+}
+
+test("one resident probe: a sample writes a line, the answer is DIP-converted and reported once", () => {
+  const child = fakeChild();
+  let spawned = 0;
+  const seen = [];
+  const probe = createForegroundProbe({
+    platform: "win32",
+    spawnImpl: () => { spawned += 1; return child; },
+    toDip: (p) => ({ x: p.x / 2, y: p.y / 2 }),
+    onChange: (r) => seen.push(r),
+    setTimer: () => ({ unref() {} }),
+    clearTimer: () => {},
+  });
+  probe.start();
+  probe.sample(); // a second sample while the first is unanswered writes nothing
+  assert.equal(spawned, 1);
+  assert.equal(child.writes.length, 1);
+  child.stdout.emit("data", '{"ok":true,"x":100,"y":200,"w":800,"h":600,"cls":"Chrome_WidgetWin_1","title":"Doc"}\n');
+  assert.deepEqual({ ...seen[0], title: undefined }, { x: 50, y: 100, width: 400, height: 300, title: undefined });
+  probe.sample();
+  child.stdout.emit("data", '{"ok":true,"x":101,"y":201,"w":800,"h":600,"cls":"Chrome_WidgetWin_1","title":"Doc"}\n');
+  assert.equal(seen.length, 1, "a move under the tolerance is not a change");
+  probe.sample();
+  child.stdout.emit("data", '{"ok":false}\n');
+  assert.equal(seen[1], null, "no window in front: the swarm keeps nothing clear");
+});
+
+test("a chunked answer is reassembled, stop kills the child, and other platforms never spawn", () => {
+  const child = fakeChild();
+  const seen = [];
+  const probe = createForegroundProbe({
+    platform: "win32", spawnImpl: () => child, onChange: (r) => seen.push(r), setTimer: () => ({ unref() {} }), clearTimer: () => {},
+  });
+  probe.start();
+  child.stdout.emit("data", '{"ok":true,"x":0,"y":0,');
+  child.stdout.emit("data", '"w":300,"h":300,"cls":"x","title":""}\n');
+  assert.equal(seen.length, 1);
+  probe.stop();
+  assert.equal(child.killed, true);
+  assert.equal(seen[seen.length - 1], null, "stopping reports no window");
+
+  let spawned = 0;
+  const mac = createForegroundProbe({ platform: "darwin", spawnImpl: () => { spawned += 1; return fakeChild(); } });
+  mac.start();
+  mac.sample();
+  assert.equal(spawned, 0);
+});
+
+test("a probe that cannot start stays quiet instead of throwing", () => {
+  const probe = createForegroundProbe({ platform: "win32", spawnImpl: () => { throw new Error("no powershell"); }, setTimer: () => ({ unref() {} }), clearTimer: () => {} });
+  assert.doesNotThrow(() => { probe.start(); probe.sample(); probe.stop(); });
+});
