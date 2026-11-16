@@ -31,7 +31,7 @@ function rig(entries, extra = {}) {
     fsImpl, existsSync: fsImpl.existsSync, engine, gateway: extra.gateway || null, vision: extra.vision || null,
     confirm: extra.confirm || null, log: { append: (r) => { records.push(r); return extra.logOk === false ? { ok: false, error: "disk full" } : { ok: true }; } },
     execFile: (exe, args, opts, cb) => { execs.push({ exe, args, opts }); cb(extra.execError || null, "", ""); },
-    findExe: extra.findExe || (() => null), now: () => 5000,
+    findExe: extra.findExe || (() => null), ...(extra.verifyExe ? { verifyExe: extra.verifyExe } : {}), now: () => 5000,
   });
   return { f, fsImpl, records, engineCalls, execs };
 }
@@ -226,4 +226,18 @@ test("a folder send never carries secret-looking files", async () => {
   }, { gateway, confirm: async () => "Send" });
   assert.ok((await r.f.sendToPipeline({ info: r.f.inspect("C:\\Users\\me\\Docs") })).ok);
   assert.deepEqual(calls.sort(), ["notes.txt", "plan.md"]);
+});
+
+test("convert runs the VERIFIED path, and a tool that fails the signature check is never executed", async () => {
+  const entries = { ...BASE, "C:\\Users\\me\\Docs\\photo.jpg": { text: "x" } };
+  const good = rig(entries, { findExe: (t) => (t === "magick" ? "C:\\Evil\\magick.exe" : null), verifyExe: async () => ({ ok: true, path: "C:\\Program Files\\ImageMagick-7\\magick.exe" }) });
+  const info = good.f.inspect("C:\\Users\\me\\Docs\\photo.jpg");
+  assert.ok((await good.f.convert({ info, to: "png" })).ok);
+  assert.equal(good.execs[0].exe, "C:\\Program Files\\ImageMagick-7\\magick.exe", "the verified path, not the located one");
+  const bad = rig(entries, { findExe: (t) => (t === "magick" ? "C:\\Tools\\magick.exe" : null), verifyExe: async () => ({ ok: false, error: "Not run: magick.exe failed the signature check (its Authenticode signature is HashMismatch)." }) });
+  const res = await bad.f.convert({ info: bad.f.inspect("C:\\Users\\me\\Docs\\photo.jpg"), to: "png" });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /signature check/);
+  assert.equal(bad.execs.length, 0, "nothing was executed");
+  assert.equal(bad.records.length, 0, "and nothing was logged as started");
 });

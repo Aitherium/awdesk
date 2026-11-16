@@ -28,6 +28,8 @@
  * and the pop-up falls back to Copy. Never rejects.
  */
 
+const { powershellExe } = require("./assist-tools.cjs");
+
 const TIMEOUT_MS = 8000;
 const FIELD_MAX = 6000;
 const SELECTION_MAX = 12000;
@@ -189,7 +191,7 @@ function createWorker({ spawn, timeoutMs = TIMEOUT_MS, startMs = 20000 }) {
     ready = new Promise((resolve) => {
       let proc;
       try {
-        proc = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-Command", "-"],
+        proc = spawn(powershellExe(process.env), ["-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-Command", "-"],
           { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
       } catch { resolve(false); return; }
       child = proc;

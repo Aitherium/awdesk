@@ -6,6 +6,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const u = require("./assist-utils.cjs");
+const { createTools } = require("./assist-tools.cjs");
 
 const PT = "C:\\Program Files\\PowerToys";
 const SI = "C:\\Sysinternals";
@@ -17,6 +18,8 @@ const FILES = new Set([
 ]);
 const env = { ProgramFiles: "C:\\Program Files", LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local", PATH: "" };
 const existsSync = (p) => FILES.has(String(p));
+const MS = { status: "Valid", subject: "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" };
+const toolsFor = (readSignature = async () => MS) => createTools({ env, platform: "win32", existsSync, statSync: () => ({ size: 1, mtimeMs: 1 }), readSignature });
 
 function rig(extra = {}) {
   const calls = [];
@@ -30,7 +33,7 @@ function rig(extra = {}) {
   };
   const spawn = (file, args, opts) => { const child = { file, args, opts, killed: false, kill() { this.killed = true; }, unref() {}, on() {} }; spawned.push(child); return child; };
   const utils = u.createAssistUtils({
-    env, platform: "win32", existsSync, execFile, spawn,
+    env, platform: "win32", existsSync, execFile, spawn, tools: extra.tools || toolsFor(),
     clipboard: extra.clipboard, caret: extra.caret, log: extra.log === false ? null : { append: (r) => { records.push(r); return { ok: true }; } },
     sleep: async () => {}, now: extra.now || (() => 1000),
   });
@@ -134,7 +137,7 @@ test("ocr signals the Text Extractor event, then returns the NEW clipboard text"
   const res = await r.utils.run("ocr", {});
   assert.ok(res.ok);
   assert.equal(res.text, "hello from the screen");
-  const sig = r.calls.find((c) => c.file === "powershell.exe");
+  const sig = r.calls.find((c) => /WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/i.test(c.file));
   assert.equal(sig.opts.env.AWDESK_PT_EVENT, u.PT_EVENTS.ocr);
 });
 
@@ -184,4 +187,40 @@ test("an unknown utility, a tool that is gone, and a non-Windows host are stated
   const gone = u.createAssistUtils({ env, platform: "win32", existsSync: () => false });
   assert.match((await gone.run("color")).error, /Needs PowerToys/);
   assert.match((await u.createAssistUtils({ platform: "linux" }).run("color")).error, /Windows only/);
+});
+
+test("a tool whose signature is not Microsoft's never runs: no exec, no spawn, a stated reason", async () => {
+  const forged = toolsFor(async () => ({ status: "Valid", subject: "CN=Totally Legit Software Ltd" }));
+  const r = rig({ tools: forged });
+  const procinfo = await r.utils.run("procinfo", { pid: 4242 });
+  assert.equal(procinfo.ok, false);
+  assert.match(procinfo.error, /signature check/);
+  assert.match(procinfo.error, /Totally Legit Software Ltd/);
+  assert.equal(r.calls.length, 0, "pslist was never executed");
+  const procexp = await r.utils.run("procexp", {});
+  assert.equal(procexp.ok, false);
+  assert.equal(r.spawned.length, 0, "Process Explorer was never spawned");
+  const tampered = rig({ tools: toolsFor(async () => ({ status: "HashMismatch", subject: MS.subject })) });
+  const awake = await tampered.utils.run("awake", { arg: "30" });
+  assert.equal(awake.ok, false);
+  assert.equal(tampered.spawned.length, 0);
+  const resize = await tampered.utils.run("resize", { selection: "C:\\Users\\me\\a.png" });
+  assert.equal(resize.ok, false);
+  assert.equal(tampered.calls.length, 0);
+});
+
+test("a PowerToys runner that fails the check is not started to answer a missing event", async () => {
+  const r = rig({ tools: toolsFor(async () => ({ status: "NotSigned", subject: "" })), exec: (file) => (/powershell/i.test(file) ? { code: 3 } : { code: 0 }) });
+  const out = await r.utils.signal("Local\\PowerOCREvent-dc864e06-e1af-4ecc-9078-f98bee745e3a");
+  assert.equal(out.ok, false);
+  assert.match(out.error, /signature check/);
+  assert.equal(r.spawned.length, 0);
+});
+
+test("a tool found only on PATH is not found: Sysinternals and PowerToys come from known dirs", () => {
+  const planted = new Set(["C:\\Evil\\pslist64.exe", "C:\\Evil\\PowerToys.PowerOCR.exe"]);
+  const e = { ...env, PATH: "C:\\Evil;C:\\Windows" };
+  const listing = u.createAssistUtils({ env: e, platform: "win32", existsSync: (p) => planted.has(String(p)) }).list();
+  assert.ok(listing.every((x) => !x.available), "PATH is never searched");
+  assert.ok(!u.sysinternalsDirs(e).some((d) => /Evil/.test(d)));
 });
