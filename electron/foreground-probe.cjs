@@ -69,6 +69,7 @@ function createForegroundProbe({
   let pendingAt = 0;
   let buf = "";
   let dead = false;
+  const exits = [];
 
   function emit(rect) {
     if (fairyControl.sameRect(rect, last)) return;
@@ -95,7 +96,10 @@ function createForegroundProbe({
       dead = true;
       return null;
     }
-    child.stdout.on("data", (d) => {
+    // Handlers act on THIS child only: a late exit of an old one must not null the new one (review of #101).
+    const c = child;
+    c.stdout.on("data", (d) => {
+      if (child !== c) return;
       buf += String(d);
       let i;
       while ((i = buf.indexOf("\n")) >= 0) {
@@ -104,8 +108,18 @@ function createForegroundProbe({
         if (line.trim().startsWith("{")) onLine(line);
       }
     });
-    child.on("error", () => { dead = true; child = null; });
-    child.on("exit", () => { child = null; pending = false; });
+    // A pipe that breaks between samples (AV, a kill) raises an async error: never an uncaught one.
+    for (const stream of [c.stdin, c.stdout]) {
+      if (stream && typeof stream.on === "function") stream.on("error", () => { if (child === c) { child = null; pending = false; } });
+    }
+    c.on("error", () => { dead = true; if (child === c) child = null; });
+    c.on("exit", () => {
+      if (child === c) { child = null; pending = false; }
+      const t = Date.now();
+      exits.push(t);
+      while (exits.length && t - exits[0] > 30_000) exits.shift();
+      if (exits.length >= 4) dead = true; // a PowerShell that cannot run here is given up on, not respawned for ever
+    });
     return child;
   }
 
@@ -128,9 +142,10 @@ function createForegroundProbe({
   function stop() {
     if (timer) { clearTimer(timer); timer = null; }
     if (child) {
-      try { child.stdin.end(); } catch { /* gone */ }
-      try { child.kill(); } catch { /* gone */ }
-      child = null;
+      const old = child;
+      child = null; // first: nothing from this child is read any more
+      try { old.stdin.end(); } catch { /* gone */ }
+      try { old.kill(); } catch { /* gone */ }
     }
     pending = false;
     buf = "";

@@ -884,6 +884,7 @@ function swarmDrag(phase, agentRaw, from = "swarm") {
       ? { dx: p.x - b.x, dy: p.y - b.y }
       : { dx: PIN_SIZE.width / 2, dy: PIN_SIZE.height / 2 };
     pinDrag = { agent, from, grab };
+    armPinWatchdog();
     // From the ring the press belongs to the ring's window (it holds the mouse): the pin
     // window that follows the pointer must not steal it.
     if (from === "swarm") { try { win.setIgnoreMouseEvents(true); } catch { /* gone */ } }
@@ -897,11 +898,13 @@ function swarmDrag(phase, agentRaw, from = "swarm") {
   const win = pinWindows.get(agent);
   const grab = pinDrag.grab;
   if (phase === "move") {
+    armPinWatchdog();
     if (alive(win)) win.setBounds({ x: Math.round(p.x - grab.dx), y: Math.round(p.y - grab.dy), ...PIN_SIZE });
     return { ok: true };
   }
   if (phase === "end") {
     pinDrag = null;
+    if (pinWatchdog) { clearTimeout(pinWatchdog); pinWatchdog = null; }
     try { if (alive(win)) win.setIgnoreMouseEvents(false); } catch { /* gone */ }
     const pins = { ...state.swarmView.pins };
     const rejoin = fairyControl.joinsCluster(p, clusterCenter());
@@ -917,6 +920,19 @@ function swarmDrag(phase, agentRaw, from = "swarm") {
     return result;
   }
   return { ok: false, error: `unknown drag phase ${phase}` };
+}
+
+/** A drag the page never finished (it lost the pointer; the swarm window is not focusable so no blur comes)
+ *  ends itself after PIN_DRAG_IDLE_MS without a move: the window gets the mouse back (review of #101). */
+const PIN_DRAG_IDLE_MS = 10_000;
+let pinWatchdog = null;
+function armPinWatchdog() {
+  if (pinWatchdog) clearTimeout(pinWatchdog);
+  pinWatchdog = setTimeout(() => {
+    pinWatchdog = null;
+    if (pinDrag) swarmDrag("end", pinDrag.agent, pinDrag.from);
+  }, PIN_DRAG_IDLE_MS);
+  if (pinWatchdog.unref) pinWatchdog.unref();
 }
 
 /** Pin `agent` centred on a point (a menu pick, the bridge) -- or unpin it (at null). */
@@ -943,12 +959,11 @@ async function controlPick(what, ms) {
   if (what === "fc:mute") {
     const muted = fairyControl.toggleIn(view.muted, agent);
     if (muted.includes(agent)) {
-      // Muting is for real: every card it raised stops nudging, the badge keeps counting.
+      // Muting is for real: attentionTick leaves a muted agent's cards out of the nudge plan (the badge
+      // keeps counting) and a nudge it already shows is put away. Unmuting needs no clean-up: nothing
+      // was written to the cards (review of #101).
       for (const c of attentionCards) {
-        if (c && agentFairy.cardAgent(c) === agent) {
-          endNudgeFor(c.id, "snoozed");
-          setCardMem(c.id, fairyAttention.recordMute(attentionMems[c.id] || {}));
-        }
+        if (c && agentFairy.cardAgent(c) === agent) endNudgeFor(c.id, "snoozed");
       }
     }
     setView({ muted });
@@ -1003,7 +1018,11 @@ function swarmViewOp(req = {}) {
   if (req.unpinAll === true) patch.pins = {};
   if (Object.keys(patch).length) setView(patch);
   if (req.select != null) selectAgent(req.select);
-  if (req.pin && req.pin.agent) pinAgent(req.pin.agent, req.pin.off ? null : { x: Number(req.pin.x), y: Number(req.pin.y) });
+  if (req.pin && req.pin.agent) {
+    if (req.pin.off) pinAgent(req.pin.agent, null);
+    else if (Number.isFinite(Number(req.pin.x)) && Number.isFinite(Number(req.pin.y))) pinAgent(req.pin.agent, { x: Number(req.pin.x), y: Number(req.pin.y) });
+    else return { ok: false, error: "pin needs x and y (or off: true)" };
+  }
   if (req.hide) setView({ hidden: [...new Set([...state.swarmView.hidden, String(req.hide).toLowerCase()])] });
   let scale = 1;
   try { scale = electron().screen.getDisplayNearestPoint(clusterCenter()).scaleFactor || 1; } catch { /* no screen module (tests) */ }
@@ -3110,7 +3129,10 @@ async function attentionTick() {
       busy,
       returned: nowMs < attentionReturnUntil,
     };
-    let decision = fairyAttention.plan(attentionCards, attentionMems, ctx);
+    // A muted agent (fairy menu > Mute) never nudges; its cards stay on the badge and in the list.
+    const mutedAgents = state.swarmView.muted;
+    const nudgeable = mutedAgents.length ? attentionCards.filter((c) => !mutedAgents.includes(agentFairy.cardAgent(c))) : attentionCards;
+    let decision = fairyAttention.plan(nudgeable, attentionMems, ctx);
     // "N more waiting" is everything else that needs the owner, the same number a
     // click shows and the badge minus one -- not only the cards due a nudge.
     if (decision.act === "nudge" && decision.card) {
@@ -4660,6 +4682,7 @@ module.exports = {
     allCompanions = [];
     selectedAgent = "";
     pinDrag = null;
+    if (pinWatchdog) { clearTimeout(pinWatchdog); pinWatchdog = null; }
     fgContent = null;
     lastSwarmViewKey = "";
     lastCompanionsWho = "";
