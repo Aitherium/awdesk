@@ -1979,7 +1979,12 @@ function getGoblin() {
     log: debugLog,
   });
   // Right-click on the goblin himself sends him back into the fairy.
-  ipcMain.on("goblin:dismiss", () => { void getSwarmHost().setAgentForm("gargbot", "fairy"); });
+  ipcMain.on("goblin:dismiss", (event) => {
+    // Only the goblin's own window may send it back (review of #96).
+    const win = getGoblin().window && getGoblin().window();
+    if (win && !win.isDestroyed() && event.sender !== win.webContents) return;
+    void getSwarmHost().setAgentForm("gargbot", "fairy");
+  });
   return goblinInstance;
 }
 
@@ -2094,6 +2099,9 @@ async function swarmApi(req = {}) {
     case "stage":
       return host.stageOp(String(req.op || "state"), req);
     case "probe": {
+      // A test/diagnostic door (synthetic input into the avatar window, every window's title and pid,
+      // executeJavaScript): off unless the desk was started with AWDESK_SWARM_PROBE=1 (review of #96).
+      if (process.env.AWDESK_SWARM_PROBE !== "1") return { ok: false, error: "probe is a diagnostic door: start the desk with AWDESK_SWARM_PROBE=1" };
       // Test/diagnostic read of the avatar window's pixel pick (hooks/avatarPick.ts installProbe).
       if (!avatarWindow || avatarWindow.isDestroyed()) return { ok: false, error: "no avatar window" };
       if (req.what === "procs") {
@@ -2154,9 +2162,9 @@ function swarmTrayRows() {
       { type: "separator" },
       { label: "Stage: join every grown agent", click: () => {
         const bodies = state.bodies.map((b) => b.agent).filter((a) => a !== "gargbot");
-        for (let i = 1; i < bodies.length; i += 1) swarmApi({ action: "stage", op: "join", agent: bodies[i], target: bodies[0] });
+        for (let i = 1; i < bodies.length; i += 1) swarmApi({ action: "stage", op: "join", agent: bodies[i], target: bodies[0] }).catch(() => {});
       } },
-      { label: "Stage: split them apart", click: () => { for (const b of state.bodies) swarmApi({ action: "stage", op: "leave", agent: b.agent }); } },
+      { label: "Stage: split them apart", click: () => { for (const b of state.bodies) swarmApi({ action: "stage", op: "leave", agent: b.agent }).catch(() => {}); } },
       { label: "Stage: arrange in a row", click: run({ action: "stage", op: "arrange", mode: "row" }) },
       { label: "Stage: arrange in a circle", click: run({ action: "stage", op: "arrange", mode: "circle" }) },
       { label: "Stage: lock / unlock", click: run({ action: "stage", op: "lock", locked: !(state.stages[0] && state.stages[0].locked) }) },
