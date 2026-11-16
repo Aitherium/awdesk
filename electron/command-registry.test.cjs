@@ -792,3 +792,9 @@ test("Back to the fairy is on a body's menu only while Aither is grown from the 
   assert.ok(leavesOf("avatar-menu", { slotId: "slot0", grownFromFairy: true }).has("avatar.to-fairy"));
   assert.ok(!leavesOf("avatar-menu", { slotId: "slot0" }).has("avatar.to-fairy"), "never a dead row");
 });
+
+test("Back to the fairy reaches POST /commands/run (palette) only while Aither is grown", () => {
+  const rows = (ctx) => new Set(require("./command-registry.cjs").paletteRows(ctx).map((r) => r.id));
+  assert.ok(rows({ grownFromFairy: true }).has("avatar.to-fairy"), "the bridge can send her back");
+  assert.ok(!rows({}).has("avatar.to-fairy"), "never a dead row");
+});

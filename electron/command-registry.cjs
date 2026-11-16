@@ -564,10 +564,12 @@ const COMMANDS = Object.freeze([
     surfaces: ["tray", "palette"], when: (ctx = {}) => ctx.fairyAvatar === "fairy",
   }),
   Object.freeze({
-    id: "avatar.to-fairy", label: "Back to the fairy", group: "slot", scope: "slot",
-    surfaces: ["avatar-menu"], when: (ctx = {}) => Boolean(ctx.grownFromFairy),
-    whySingle: "Shown only while Aither is grown from the fairy (owner 2026-11-15): the orb is down then, "
-      + "so the way back lives on the body; the fairy's own menu carries Show Aither.",
+    // On the palette too, so POST /commands/run sends her back the way avatar.from-fairy
+    // grew her. Measured 2026-11-16: an agent could grow the fairy over the bridge but had
+    // no way back short of right-clicking a moving, pixel-hit-tested body. It names no
+    // slot (main collapses the one grown body), so it needs none in hand.
+    id: "avatar.to-fairy", label: "Back to the fairy", group: "slot",
+    surfaces: ["avatar-menu", "palette"], when: (ctx = {}) => Boolean(ctx.grownFromFairy),
   }),
   Object.freeze({
     id: "avatar.remove", label: "Remove this avatar", group: "slot", scope: "slot",
