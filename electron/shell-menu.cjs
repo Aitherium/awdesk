@@ -41,6 +41,18 @@ const ROOTS = Object.freeze({
   desktop: "HKCU\\Software\\Classes\\DesktopBackground\\Shell\\AitherQuick",
   directory: "HKCU\\Software\\Classes\\Directory\\Background\\Shell\\AitherQuick",
 });
+/**
+ * The Explorer FILE and FOLDER menus (Aither at the caret, 2026-11-16): the same per-user,
+ * consented, reversible HKCU mechanism, a second pair of roots under their own marker name
+ * (`AitherFile`) so neither menu can clobber the other. Windows 11 shows classic verbs
+ * under "Show more options" (Shift+F10); the top-level flyout is the signed sparse-MSIX
+ * package (native/shell-menu), a separate lane. NO admin, NO signing is involved here:
+ * HKCU writes by reg.exe, exactly like the background menu above.
+ */
+const FILE_ROOTS = Object.freeze({
+  file: "HKCU\\Software\\Classes\\*\\shell\\AitherFile",
+  folder: "HKCU\\Software\\Classes\\Directory\\shell\\AitherFile",
+});
 const MENU_LABEL = "Aither";
 /** Identifies the key as OURS. Its absence on an existing key means "foreign". */
 const MARKER_VALUE = "AitherDesk";
@@ -66,13 +78,27 @@ const ENTRIES = Object.freeze([
   Object.freeze({ key: "ask-aither", id: "orb.ask-screen", label: "Ask Aither" }),
 ]);
 
+/**
+ * The file / folder cascade. `arg: true` appends `--arg="%1"` (the selected item) to the
+ * launch command; the desk validates that path again (assist-files.checkPath) -- the
+ * registry is not a trust boundary.
+ */
+const FILE_ENTRIES = Object.freeze([
+  Object.freeze({ key: "summarize", id: "assist.file.summarize", label: "Summarize", arg: true }),
+  Object.freeze({ key: "ask", id: "assist.file.ask", label: "Ask about this...", arg: true }),
+  Object.freeze({ key: "rename", id: "assist.file.rename", label: "Rename smartly", arg: true }),
+  Object.freeze({ key: "convert", id: "assist.file.convert", label: "Convert...", arg: true }),
+  Object.freeze({ key: "pipeline", id: "assist.file.pipeline", label: "Send to knowledge (documents / data)", arg: true }),
+  Object.freeze({ key: "pack", id: "assist.file.pack", label: "Run a tool pack...", arg: true }),
+]);
+
 function regExe(env = process.env) {
   const root = env.SystemRoot || env.SYSTEMROOT || "C:\\Windows";
   return path.join(root, "System32", "reg.exe");
 }
 
 /** `"C:\x\awdesk.exe" "C:\app" --run=snip.region` -- paths quoted, the flag bare. */
-function launchCommand({ exe, appArgs = [], id }) {
+function launchCommand({ exe, appArgs = [], id, arg = false }) {
   const exePath = String(exe || "").trim();
   // This module builds reg.exe commands, so the path is judged as a WINDOWS path:
   // path.isAbsolute says false for "C:\..." when the test suite runs on POSIX.
@@ -80,13 +106,16 @@ function launchCommand({ exe, appArgs = [], id }) {
   const commandId = String(id || "").trim();
   if (!/^[a-z0-9][a-z0-9._-]*$/i.test(commandId)) throw new Error(`not a command id: ${commandId}`);
   if (/"/.test(exePath) || appArgs.some((a) => /"/.test(String(a)))) throw new Error("a quote inside a path is refused");
-  return [...[exePath, ...appArgs.map(String)].map((p) => `"${p}"`), `--run=${commandId}`].join(" ");
+  const base = [...[exePath, ...appArgs.map(String)].map((p) => `"${p}"`), `--run=${commandId}`];
+  // %1 is the item Explorer was asked about; the quotes keep a path with spaces ONE argv entry.
+  if (arg === true) base.push('--arg="%1"');
+  return base.join(" ");
 }
 
 /** The verbs safe to install: the registry has them, or the caller did not say. */
-function entriesFor({ available } = {}) {
-  if (typeof available !== "function") return [...ENTRIES];
-  return ENTRIES.filter((entry) => {
+function entriesFor({ available, entries = ENTRIES } = {}) {
+  if (typeof available !== "function") return [...entries];
+  return entries.filter((entry) => {
     try { return available(entry.id) !== false; } catch { return false; }
   });
 }
@@ -97,8 +126,11 @@ function verbKey(entry) {
   return key;
 }
 
-function rootValueCommands(root) {
+function rootValueCommands(root, { single = false } = {}) {
   return [
+    // A file menu acts on ONE item: Explorer hides it for a multi-selection instead of
+    // launching the desk once per file.
+    ...(single ? [["add", root, "/v", "MultiSelectModel", "/t", "REG_SZ", "/d", "Single", "/f"]] : []),
     ["add", root, "/v", "MUIVerb", "/t", "REG_SZ", "/d", MENU_LABEL, "/f"],
     // An empty REG_SZ SubCommands is what makes Explorer read the verbs from
     // subkeys; a non-empty value there would name a DIFFERENT key instead.
@@ -109,10 +141,10 @@ function rootValueCommands(root) {
 
 /** Every reg.exe argv one root needs: the root values, then one verb per entry. */
 function enableCommands({ root, exe, appArgs = [], entries = ENTRIES }) {
-  const commands = [...rootValueCommands(root)];
+  const commands = [...rootValueCommands(root, { single: entries.some((e) => e.arg === true) })];
   for (const entry of entries) {
     const key = verbKey(entry);
-    const value = launchCommand({ exe, appArgs, id: entry.id });
+    const value = launchCommand({ exe, appArgs, id: entry.id, arg: entry.arg === true });
     commands.push(["add", `${root}\\shell\\${key}`, "/v", "MUIVerb", "/t", "REG_SZ", "/d", String(entry.label), "/f"]);
     commands.push(["add", `${root}\\shell\\${key}\\command`, "/ve", "/t", "REG_SZ", "/d", value, "/f"]);
     commands.push(["add", `${root}\\shell\\${key}`, "/v", "Icon", "/t", "REG_SZ", "/d", String(exe), "/f"]);
@@ -184,9 +216,10 @@ function createShellMenu({
   stateFile = path.join(os.homedir(), ".aither", STATE_NAME),
   env = process.env,
   available = null,
+  entries: entrySet = ENTRIES,
 } = {}) {
-  const keys = Object.freeze({ desktop: String(roots.desktop), directory: String(roots.directory) });
-  const entries = entriesFor({ available });
+  const keys = Object.freeze(Object.fromEntries(Object.entries(roots).map(([name, key]) => [name, String(key)])));
+  const entries = entriesFor({ available, entries: entrySet });
   const reg = (args) => Promise.resolve(execFile(regExe(env), args, { windowsHide: true, timeout: REG_TIMEOUT_MS }))
     .catch((error) => ({ code: -1, stdout: "", stderr: String((error && error.message) || error) }));
 
@@ -291,7 +324,7 @@ function createShellMenu({
       }
       done.push(name);
     }
-    return { ok: true, enabled: true, roots: Object.keys(keys), command: (built.desktop.find((args) => args.includes("/ve")) || [])[6] || null };
+    return { ok: true, enabled: true, roots: Object.keys(keys), command: (built[Object.keys(keys)[0]].find((args) => args.includes("/ve")) || [])[6] || null };
   }
 
   async function restore() {
@@ -299,7 +332,7 @@ function createShellMenu({
     if (refused) return refused;
     const now = await status();
     if (!now.enabled && !readState()) return { ok: true, enabled: false, already: true };
-    const state = readState() || { desktop: { createdKey: null }, directory: { createdKey: null } };
+    const state = readState() || Object.fromEntries(Object.keys(keys).map((name) => [name, { createdKey: null }]));
     let removed = 0;
     const refusedRoots = [];
     for (const name of Object.keys(keys)) {
@@ -327,5 +360,5 @@ function createShellMenu({
 module.exports = {
   createShellMenu, launchCommand, entriesFor, verbKey, rootValueCommands, enableCommands, restoreCommands,
   queryMarker, queryRoot, markerState, regExe,
-  ROOTS, ENTRIES, MENU_LABEL, MARKER_VALUE, MARKER_DATA, STATE_NAME,
+  ROOTS, ENTRIES, FILE_ROOTS, FILE_ENTRIES, MENU_LABEL, MARKER_VALUE, MARKER_DATA, STATE_NAME,
 };

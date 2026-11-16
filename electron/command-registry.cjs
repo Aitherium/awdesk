@@ -989,6 +989,81 @@ const COMMANDS = Object.freeze([
     accel: "Ctrl+Alt+W", accelFallback: "Ctrl+Alt+Shift+W",
     surfaces: ["tray", "palette"], orb: "ask-screen",
   }),
+  // ── Aither at the caret (assist-main.cjs; owner 2026-11-16: Edge's "help me write"
+  // pop-up, for every app, plus verbs on any selection). `assist` is what run() hands
+  // assist-main.run: "open" = the pop-up at the caret of the focused app; a verb id =
+  // the pop-up with that verb applied to the selection. The browser has the same verbs
+  // in AitherConnect's right-click; these rows are the desk / voice / awsh door.
+  Object.freeze({
+    id: "assist.open", label: "Aither at the caret: help me write…", menuLabel: "Help me write…", group: "capture",
+    accel: "Ctrl+Alt+J", accelFallback: "Ctrl+Alt+Shift+J",
+    surfaces: ["tray", "palette"], assist: "open",
+  }),
+  Object.freeze({
+    id: "assist.explain", label: "Aither: explain my selection", group: "capture",
+    surfaces: ["palette"], assist: "explain",
+    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
+  }),
+  Object.freeze({
+    id: "assist.rewrite", label: "Aither: rewrite my selection", group: "capture",
+    surfaces: ["palette"], assist: "rewrite",
+    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
+  }),
+  Object.freeze({
+    id: "assist.translate", label: "Aither: translate my selection", group: "capture",
+    surfaces: ["palette"], assist: "translate",
+    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
+  }),
+  Object.freeze({
+    id: "assist.summarize", label: "Aither: summarize my selection", group: "capture",
+    surfaces: ["palette"], assist: "summarize",
+    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
+  }),
+  Object.freeze({
+    id: "assist.reply", label: "Aither: reply to my selection", group: "capture",
+    surfaces: ["palette"], assist: "reply",
+    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
+  }),
+  Object.freeze({
+    id: "assist.ask-agent", label: "Aither: ask an agent about my selection", group: "capture",
+    surfaces: ["palette"], assist: "ask-agent",
+    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
+  }),
+  Object.freeze({
+    id: "assist.file.summarize", label: "Aither (Explorer): summarize this file or folder", group: "capture",
+    surfaces: ["palette"], assist: "file:summarize", when: () => false,
+    whySingle: "an Explorer right-click verb: the shell menu launches it with --arg=<path>; it is hidden from the palette because the palette has no file to give it",
+  }),
+  Object.freeze({
+    id: "assist.file.ask", label: "Aither (Explorer): ask about this file or folder", group: "capture",
+    surfaces: ["palette"], assist: "file:ask", when: () => false,
+    whySingle: "an Explorer right-click verb: the shell menu launches it with --arg=<path>; it is hidden from the palette because the palette has no file to give it",
+  }),
+  Object.freeze({
+    id: "assist.file.rename", label: "Aither (Explorer): rename this file smartly", group: "capture",
+    surfaces: ["palette"], assist: "file:rename", when: () => false,
+    whySingle: "an Explorer right-click verb: the shell menu launches it with --arg=<path>; it is hidden from the palette because the palette has no file to give it",
+  }),
+  Object.freeze({
+    id: "assist.file.convert", label: "Aither (Explorer): convert this file", group: "capture",
+    surfaces: ["palette"], assist: "file:convert", when: () => false,
+    whySingle: "an Explorer right-click verb: the shell menu launches it with --arg=<path>; it is hidden from the palette because the palette has no file to give it",
+  }),
+  Object.freeze({
+    id: "assist.file.pipeline", label: "Aither (Explorer): send to knowledge (documents / data)", group: "capture",
+    surfaces: ["palette"], assist: "file:pipeline", when: () => false,
+    whySingle: "an Explorer right-click verb: the shell menu launches it with --arg=<path>; it is hidden from the palette because the palette has no file to give it",
+  }),
+  Object.freeze({
+    id: "assist.file.pack", label: "Aither (Explorer): run a tool pack on this", group: "capture",
+    surfaces: ["palette"], assist: "file:pack", when: () => false,
+    whySingle: "an Explorer right-click verb: the shell menu launches it with --arg=<path>; it is hidden from the palette because the palette has no file to give it",
+  }),
+  Object.freeze({
+    id: "assist.save-memory", label: "Aither: save my selection to memory", group: "capture",
+    surfaces: ["palette"], assist: "save-memory",
+    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
+  }),
   // ── the spirit (orb-window.cjs, owner 2026-11-02: "integrate with the awdesk
   // avatar/persona too" · "make the spirit attachable/detachable" · "awdesk avatars
   // ... can send the spirit orb to do stuff around the desktop, go look at files,
