@@ -998,7 +998,9 @@ const COMMANDS = Object.freeze([
   // in AitherConnect's right-click; these rows are the desk / voice / awsh door.
   Object.freeze({
     id: "assist.open", label: "Aither at the caret: help me write…", menuLabel: "Help me write…", group: "capture",
-    accel: "Ctrl+Alt+J", accelFallback: "Ctrl+Alt+Shift+J",
+    // The writing actions live in Alt+Space (launcher-window.cjs `assist`): one box, one key.
+    // This chord stays BOUND as a hidden alias and is never printed on a menu, a hint or a doc.
+    accel: "Ctrl+Alt+J", accelFallback: "Ctrl+Alt+Shift+J", hiddenAccel: true,
     surfaces: ["tray", "palette"], assist: "open",
   }),
   Object.freeze({
@@ -1618,6 +1620,7 @@ function labelOf(command, ctx, { nested = false } = {}) {
   const text = typeof pick === "function" ? pick(ctx || {}) : pick;
   const dead = (ctx && ctx.deadAccels) || [];
   // The key main actually holds: a fallback that went live when the first was taken.
+  if (command.hiddenAccel) return text;
   const live = ctx && ctx.liveAccels && typeof ctx.liveAccels[command.id] === "string" ? ctx.liveAccels[command.id] : null;
   if (live) return `${text}  (${live})`;
   return command.accel && !dead.includes(command.accel) ? `${text}  (${command.accel})` : text;
@@ -1630,7 +1633,7 @@ function labelOf(command, ctx, { nested = false } = {}) {
  */
 function accelFor(id, ctx = {}) {
   const command = COMMANDS.find((c) => c.id === id);
-  if (!command || !command.accel) return null;
+  if (!command || !command.accel || command.hiddenAccel) return null;
   const live = ctx && ctx.liveAccels && typeof ctx.liveAccels[id] === "string" ? ctx.liveAccels[id] : null;
   if (live) return live;
   const dead = (ctx && ctx.deadAccels) || [];

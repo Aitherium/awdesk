@@ -80,6 +80,7 @@ function createAssistWindow({
       agents, agent: engine.settings().agent,
       utils: utils ? utils.list() : [],
       initialVerb: s.initialVerb || null,
+      autoRun: s.autoRun || null,
       file: s.file ? {
         name: s.file.name, kind: s.file.kind, size: s.file.size || 0, count: s.file.count || 0, ext: s.file.ext || "",
         textable: Boolean(s.file.textable), image: Boolean(s.file.image), why: s.file.why || "",
@@ -268,37 +269,81 @@ function createAssistWindow({
     return { x: top.x, y: top.y, h, via: c.via };
   }
 
-  async function open({ verb = null } = {}) {
-    ensureIpc();
-    if (alive() && win.isVisible()) { hide(); return { ok: true, closed: true }; }
+  /**
+   * Read the focused app: caret, selection, field -- WITHOUT showing anything. The Alt+Space
+   * launcher calls this on key-down (before it takes the focus); open() calls it too.
+   * Returns a session that present() can show, or null when the capture could not run.
+   */
+  async function captureSession() {
     const snap = await caret.snapshot();
-    const cursor = screen.getCursorScreenPoint();
-    const anchor = anchorCaret(snap);
-    const display = screen.getDisplayNearestPoint(anchor ? { x: anchor.x, y: anchor.y } : cursor);
-    const refused = snap && snap.sensitive ? core.refusal({ sensitive: true }) : "";
+    if (!snap || snap.ok === false) return null;
+    const refused = snap.sensitive ? core.refusal({ sensitive: true }) : "";
     const ctx = core.normalizeContext({
-      surface: "desk", app: snap && snap.app, title: snap && snap.title,
-      selection: refused ? "" : snap && snap.selection, field: refused ? "" : snap && snap.field,
-      fieldLabel: snap && snap.fieldLabel, sensitive: Boolean(refused), canInsert: Boolean(snap && snap.canInsert),
+      surface: "desk", app: snap.app, title: snap.title,
+      selection: refused ? "" : snap.selection, field: refused ? "" : snap.field,
+      fieldLabel: snap.fieldLabel, sensitive: Boolean(refused), canInsert: Boolean(snap.canInsert),
     });
     const sug = refused ? { chips: [], send: null, refine: null } : engine.suggest(ctx, { surface: "desk" });
-    session = {
-      ctx, hwnd: (snap && snap.hwnd) || 0, pid: (snap && snap.pid) || 0, refused,
-      // Never paste into the desk's own window (tray / palette launches focus the desk).
-      canInsert: Boolean(snap && snap.ok !== false && snap.canInsert && (snap.hwnd || 0) > 0 && snap.pid !== process.pid && !TERMINAL_APPS.has(String(snap.app || "").toLowerCase())),
+    return {
+      snap, ctx, hwnd: snap.hwnd || 0, pid: snap.pid || 0, refused,
+      // Never paste into the desk's own window (tray / palette launches focus the desk), nor a
+      // terminal host (it would execute pasted newlines).
+      canInsert: Boolean(snap.ok !== false && snap.canInsert && (snap.hwnd || 0) > 0 && snap.pid !== process.pid && !TERMINAL_APPS.has(String(snap.app || "").toLowerCase())),
       chips: sug.chips || [], send: sug.send || null, refine: sug.refine || null,
-      verbs: refused ? [] : verbsFor(ctx), last: null, initialVerb: verb,
+      verbs: refused ? [] : verbsFor(ctx), last: null, initialVerb: null, autoRun: null,
     };
+  }
+
+  /** Show a captured session at its caret. `autoRun` {verb, prompt, insert} starts a verb at once. */
+  function present(captured, { verb = null, autoRun = null } = {}) {
+    ensureIpc();
+    session = { ...captured, last: null, initialVerb: verb, autoRun };
+    const cursor = screen.getCursorScreenPoint();
+    const anchor = anchorCaret(captured.snap);
+    const display = screen.getDisplayNearestPoint(anchor ? { x: anchor.x, y: anchor.y } : cursor);
     if (!alive()) create();
-    const spot = caretLib.placePopup({ caret: anchorCaret(snap), fallback: cursor, size: SIZE, work: display.workArea });
+    const spot = caretLib.placePopup({ caret: anchor, fallback: cursor, size: SIZE, work: display.workArea });
     win.setBounds({ x: spot.x, y: spot.y, width: SIZE.width, height: SIZE.height });
     shownAt = now();
     win.show();
     win.focus();
     push();
     if (typeof onOpen === "function") { try { onOpen(); } catch { /* observer bug */ } }
-    return { ok: true, refused: Boolean(refused), app: ctx.app, hasSelection: Boolean(ctx.selection.trim()) };
+    return { ok: true, refused: Boolean(session.refused), app: session.ctx.app, hasSelection: Boolean(session.ctx.selection.trim()) };
   }
+
+  async function open({ verb = null } = {}) {
+    ensureIpc();
+    if (alive() && win.isVisible()) { hide(); return { ok: true, closed: true }; }
+    const captured = await captureSession();
+    if (!captured) return { ok: false, error: "Could not read the focused app." };
+    return present(captured, { verb });
+  }
+
+  /**
+   * The Alt+Space integration (launcher-window.cjs `assist`). capture() runs on KEY-DOWN,
+   * group() builds the writing rows the box leads with, choose() runs one: the launcher
+   * hides first, then the pop-up opens at the ORIGINAL caret and the verb starts at once;
+   * a transform result is inserted / replaced there with Undo one click away.
+   */
+  const launcher = {
+    capture: () => captureSession().catch(() => null),
+    group(captured, typed) {
+      if (!captured || captured.pid === process.pid) return null; // the race was lost: today's behaviour
+      const g = core.writingGroup({ snap: captured.snap, typed, insertable: captured.canInsert });
+      return g ? g.group : null;
+    },
+    choose(captured, key, typed) {
+      if (!captured) return { ok: false, error: "The window you were in is gone. Press Alt+Space again." };
+      const g = core.writingGroup({ snap: captured.snap, typed, insertable: captured.canInsert });
+      const action = g && g.plan.get(String(key || ""));
+      if (!action) return { ok: false, error: "That row is no longer available. Press Alt+Space again." };
+      if (action.run) {
+        return present(captured, { autoRun: { verb: action.verb, prompt: action.prompt, insert: action.insert === true } });
+      }
+      return present(captured, { verb: action.verb }); // translate / send to an agent ask their one question first
+    },
+  };
 
   /**
    * Open for a file or folder the Explorer right-click named. No caret to capture and no
@@ -327,7 +372,7 @@ function createAssistWindow({
     return { ok: info.ok, error: info.ok ? undefined : info.error, name: info.ok ? info.name : undefined };
   }
 
-  return { open, openFile, hide, state: publicState, isOpen: () => alive() && win.isVisible() };
+  return { open, openFile, hide, launcher, state: publicState, isOpen: () => alive() && win.isVisible() };
 }
 
 module.exports = { createAssistWindow, SIZE, VERB_ORDER };

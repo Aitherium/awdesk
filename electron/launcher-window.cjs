@@ -181,6 +181,12 @@ function createLauncher({
   // before showAtCursor() takes focus -- sampled any later, the foreground window
   // is the launcher itself. Null = the empty box stays "Type to search".
   hostContext = null,
+  // The writing rows (assist-window.cjs `launcher`): {capture(), group(captured, typed), choose(captured, key, typed)}.
+  // capture() is started on KEY-DOWN with hostContext, before the box takes the focus: when the
+  // owner pressed Alt+Space on a selection or in a text field, the box leads with the writing
+  // actions and choosing one inserts / replaces at that caret. Null or no text = Alt+Space is
+  // exactly what it was.
+  assist = null,
   // () => cards list (decision-cards.listSnapshot()). The empty box leads with
   // "Needs you (N)" -- the owner's cards ARE the reason to press the key -- and
   // the foreground-window group follows. Null = no card group.
@@ -203,6 +209,7 @@ function createLauncher({
   // The "Right now" sample for THIS press. A promise, so the empty search can wait
   // the few hundred ms the probe takes instead of racing it.
   let pressContext = null;
+  let pressAssist = null;
   if (!electron) throw new Error("launcher needs electron");
   if (!quickMenu) throw new Error("launcher needs the quick menu's radial");
 
@@ -354,6 +361,11 @@ function createLauncher({
     heldSeen = false;
     pressContext = hostContext
       ? Promise.resolve().then(() => hostContext()).catch((error) => ({ ok: false, reason: String((error && error.message) || error) }))
+      : null;
+    // Captured BEFORE showAtCursor() takes the focus, like hostContext. A capture that lost the
+    // race (the foreground is already the desk) is dropped by assist.group (pid check).
+    pressAssist = assist && typeof assist.capture === "function"
+      ? Promise.resolve().then(() => assist.capture()).catch(() => null)
       : null;
     showAtCursor();
     // The key is down; the renderer can only report it coming UP if it has focus.
@@ -687,8 +699,9 @@ function createLauncher({
     }
     if (token !== searchSeq) return { ok: true, token, ignored: true };
     let cardGroup = null;
+    let writeGroup = null;
     const withVerb = (groups) => {
-      const lead = [verbExtra && verbExtra.extraGroup, cardGroup].filter(Boolean);
+      const lead = [writeGroup, verbExtra && verbExtra.extraGroup, cardGroup].filter(Boolean);
       return lead.length ? [...lead, ...groups] : groups;
     };
     const parsed = core.parseQuery(text);
@@ -762,6 +775,12 @@ function createLauncher({
           total += items.length;
         }
       } catch { /* the command center is optional on an empty box */ }
+      if (pressAssist && assist) {
+        const captured = await pressAssist;
+        if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
+        const writing = assist.group(captured, "");
+        if (writing) { groups.unshift(writing); total += writing.items.length; }
+      }
       if (pressContext) {
         const sample = await pressContext;
         if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
@@ -789,6 +808,10 @@ function createLauncher({
     const chip = scope ? core.scopeChip(scope) : "";
     askTerm = term;
     if (!scope) cardGroup = await matchingCards(parsed.term);
+    // On a selection / in a text field, what was typed is also a WRITING request: the first row.
+    if (!scope && !verbExtra && pressAssist && assist) {
+      writeGroup = assist.group(await pressAssist, parsed.term);
+    }
     if (token !== searchSeq) return { ok: true, token, ignored: true };
     const ctl = new AbortController();
     inflight = { token, ctl };
@@ -831,6 +854,15 @@ function createLauncher({
   // ── actions ───────────────────────────────────────────────────────────────
   async function runRow(key, query) {
     if (String(key || "").startsWith("verb:")) return runVerb(key);
+    if (String(key || "").startsWith("assist:")) {
+      if (!assist || typeof assist.choose !== "function") return { ok: false, error: "1 writing action is not wired in main.cjs" };
+      const captured = pressAssist ? await pressAssist : null;
+      // The box leaves FIRST: the pop-up then opens at the original caret and the original
+      // window gets its focus back for the insert.
+      hide();
+      const result = await assist.choose(captured, String(key), String(query || ""));
+      return result && result.ok === false ? result : { ok: true, did: "writing in the window you were in" };
+    }
     if (String(key || "").startsWith("fairy:")) {
       const id = String(key).slice("fairy:".length);
       if (typeof askFairy !== "function") return { ok: false, error: "1 fairy chat not wired in main.cjs" };
@@ -972,6 +1004,7 @@ function createLauncher({
     press, release, hide, search, runRow, runAsk, runSpirit, runLine, warm, actRow,
     isVisible: () => Boolean(alive() && win.isVisible()),
     phase: () => phase,
+    __armAssist: (promise) => { pressAssist = promise; },
     __state: () => ({ phase, pressAt, lastPressAt, releasedAt, ignoreUntil }),
   };
 }
