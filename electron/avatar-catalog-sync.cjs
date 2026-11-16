@@ -113,6 +113,8 @@ async function pushPendingDefaults(deps = {}) {
   const dir = defaultsDir(deps);
   if (!dir) return { ok: true, results: [] };
   const agentDefaults = require("./agent-avatar-defaults.cjs");
+  const restored = agentDefaults.adoptRestored({ dir });
+  if (restored.length) (deps.log || (() => {}))("bodies the person put back are kept and told to the catalog", restored);
   const again = agentDefaults.reassertPending({ dir, registry: deps.registry });
   if (again.length) (deps.log || (() => {}))("registry avatars re-applied (an older cast arrived first)", again);
   const results = [];
@@ -125,7 +127,17 @@ async function pushPendingDefaults(deps = {}) {
   return { ok: results.every((r) => r.ok), results };
 }
 
-/** Pull: dress this desk's agents the way the catalog says. */
+/** Is `name` a character this desk can show right now? */
+function onDesk(d, name) {
+  try {
+    const names = d.roster.listAllCharacters ? d.roster.listAllCharacters() : d.roster.listCharacters();
+    return Array.isArray(names) && names.includes(name);
+  } catch {
+    return false;
+  }
+}
+
+/** Pull: fill this desk's EMPTY agent rows the way the catalog says (`replace: true` also replaces). */
 async function syncFromCatalog(deps = {}) {
   const d = defaults(deps);
   const cat = await d.client.avatarCatalog(deps.clientDeps);
@@ -144,6 +156,14 @@ async function syncFromCatalog(deps = {}) {
       results.push({ agent, ok: false, reason: "that avatar is not in the library" });
       continue;
     }
+    // A body this desk already shows is the person's (owner 2026-11-16, P0: robots came back over
+    // the bodies he knows). A pull only FILLS an empty row, or fetches the model a row already
+    // names; replacing a shown body is the person's act (`replace`: the manual "sync now").
+    const shown = d.agents.getAgentAvatar(agent);
+    if (shown && deps.replace !== true && onDesk(d, shown)) {
+      results.push({ agent, ok: true, name: shown, installed: false, changed: false, kept: true, reason: "this desk already shows a body for it" });
+      continue;
+    }
     const ensured = record.source === "vroid"
       ? await d.library.ensureVroidReference(record, deps)
       : await d.library.ensureLibraryAvatar(record, deps);
@@ -152,6 +172,11 @@ async function syncFromCatalog(deps = {}) {
       continue;
     }
     const current = d.agents.getAgentAvatar(agent);
+    if (current && current !== ensured.name && deps.replace !== true) {
+      // The row names a body whose model was missing: it is fetched above, the row stays.
+      results.push({ agent, ok: true, name: current, installed: ensured.installed, changed: false, kept: true, reason: "this desk already names a body for it" });
+      continue;
+    }
     const changed = current !== ensured.name;
     if (changed) d.agents.setAgentAvatar(agent, ensured.name);
     results.push({ agent, ok: true, name: ensured.name, installed: ensured.installed, changed });
@@ -492,7 +517,7 @@ if (require.main === module) {
     });
   } else {
   // The roster's own install funnel (safety consult + rater) runs exactly as in the app.
-  const run = mode === "seed" ? seedFromDesk() : syncFromCatalog();
+  const run = mode === "seed" ? seedFromDesk() : syncFromCatalog({ replace: true }); // the person ran it by hand: that is their OK
   run.then((out) => {
     for (const r of out.results || []) {
       process.stdout.write(`${r.ok ? "ok  " : "FAIL"} ${r.agent}${r.id ? ` -> ${r.id}` : ""}${r.name ? ` = ${r.name}` : ""}${r.uploaded ? " (uploaded)" : ""}${r.reason ? `: ${r.reason}` : ""}\n`);

@@ -17,12 +17,14 @@
  *
  * THE MOVE (planDefaults, pure): for each registry agent this desk has the build for,
  *   no row                             -> the registry body
- *   the registry body, or a library    -> kept (already right)
- *     copy of it (same spec / library id)
- *   a SUPERSEDED default (`supersedes`  -> the registry body: nobody chose it, it was
- *     in the mirror) or its library        inherited
- *     copy `<name>-<sha8>`
- *   anything else                      -> kept: the person's own choice
+ *   anything else                      -> kept
+ * RULE (owner, 2026-11-16, P0: "why do I still have these random robot avatars and not my
+ * proper fairies/agent avatars"): a body this desk already shows is the person's choice and
+ * is NEVER replaced without their OK. The first version also moved a SUPERSEDED default
+ * (`supersedes`) onto the registry body as "inherited, nobody chose it" -- but a body the
+ * owner has looked at for weeks is chosen by looking, and the new builds rendered as
+ * white/pink robots. So the registry only FILLS an empty row now. Replacing is the person's
+ * act (the tray's Assign current, the Cast pane, or avatar-catalog-sync with `replace`).
  * An agent is decided ONCE (agent-avatar-defaults.json `seen`, beside cast.json): a later
  * change the person makes is never undone, and an agent the registry adds later is
  * decided on the first boot that has its build. Aither is not here: aither-body.cjs owns
@@ -113,8 +115,6 @@ function planDefaults({ registry, authors = {}, names = [], recordOf = () => nul
       out.changes.push({ agent, from: null, to: target });
     } else if (current === target || isRegistryBuild(entry, current, recordOf(current))) {
       out.keep.push({ agent, character: current, why: "already the registry body" });
-    } else if (isSuperseded(entry, current)) {
-      out.changes.push({ agent, from: current, to: target });
     } else {
       out.keep.push({ agent, character: current, why: "the person's own choice" });
     }
@@ -223,11 +223,10 @@ function runDefaults(deps = {}, { dryRun = false } = {}) {
 }
 
 /**
- * While a move is pending, something else may write the inherited body back first: the
- * catalog pull is held (avatar-catalog-sync), but a settings pull at start (awsettings,
- * settings-sync.cjs) merges another machine's older `authors` leaf by leaf. A pending
- * agent whose row is empty or an inherited old body again is moved again; a row naming
- * anything else is a choice made since, and wins.
+ * While a FILL is pending, a settings pull at start (awsettings, settings-sync.cjs) merges
+ * another machine's older `authors` leaf by leaf and can empty the row again: a pending
+ * agent whose row is EMPTY is filled again. A row naming any body at all is the person's
+ * (an old default included) and is never replaced.
  */
 function reassertPending(deps = {}) {
   let d;
@@ -242,7 +241,7 @@ function reassertPending(deps = {}) {
   const authors = (readJson(d.castFile) || {}).authors || {};
   const fix = Object.entries(pending).filter(([agent, to]) => {
     const now = characterOf(authors[agent]);
-    return now !== to && (!now || isSuperseded((d.registry.agents || {})[agent], now));
+    return !now;
   });
   if (!fix.length) return [];
   const result = d.castConfig.write((draft) => {
@@ -256,6 +255,40 @@ function reassertPending(deps = {}) {
   return result && result.ok ? fix.map(([agent, to]) => ({ agent, to })) : [];
 }
 
+/**
+ * The person put a body back by hand (the P0 of 2026-11-16: the first version of this module
+ * moved agents onto registry builds, the owner restored the bodies he knows in cast.json,
+ * and the catalog -- which had been TOLD the registry bodies -- would have pulled them back).
+ * Detected by its trace: `from[agent]` is the body the move replaced, and the row names it
+ * again while `seen` still says the registry body. That row is now the person's choice:
+ * recorded in `chosen`, and queued as `pending` so the catalog is told THIS body
+ * (pushPendingDefaults pushes it; a pull leaves the agent alone until it has).
+ * Returns [{agent, character}].
+ */
+function adoptRestored(deps = {}) {
+  let d;
+  try {
+    const castConfig = deps.castConfig || require("./cast-config.cjs");
+    const castFile = deps.castFile || castConfig.CAST_FILE();
+    d = { castFile, dir: deps.dir || path.dirname(castFile) };
+  } catch {
+    return [];
+  }
+  const state = readState(d.dir);
+  const authors = (readJson(d.castFile) || {}).authors || {};
+  const adopted = [];
+  for (const [agent, was] of Object.entries(state.from)) {
+    const now = characterOf(authors[agent]);
+    if (!now || now !== was || state.seen[agent] === now) continue;
+    state.seen[agent] = now;
+    state.pending[agent] = now;
+    state.chosen = { ...(state.chosen || {}), [agent]: now };
+    adopted.push({ agent, character: now });
+  }
+  if (adopted.length) writeState(d.dir, state);
+  return adopted;
+}
+
 /** The catalog took `agent` = `character`: it is no longer pending. */
 function markPushed(dir, agent, character) {
   const state = readState(dir);
@@ -266,7 +299,7 @@ function markPushed(dir, agent, character) {
 
 module.exports = {
   MIRROR_FILE, STATE_FILE,
-  loadRegistry, planDefaults, runDefaults, readState, writeState, heldAgents, markPushed, reassertPending,
+  loadRegistry, planDefaults, runDefaults, readState, writeState, heldAgents, markPushed, reassertPending, adoptRestored,
   baseName, isSuperseded, isRegistryBuild,
 };
 
