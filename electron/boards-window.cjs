@@ -207,7 +207,7 @@ function queueBoundsSave(board, win) {
 }
 
 /** Open a NEW note/board (or focus an existing one). `at` is a screen point. */
-function create(kind, { at, restored = null } = {}) {
+function create(kind, { at, restored = null, text = "", title = "" } = {}) {
   const k = kind === "note" ? "note" : "board";
   if (restored) {
     const board = core.normalizeBoard(restored);
@@ -224,7 +224,8 @@ function create(kind, { at, restored = null } = {}) {
   const point = at || electron().screen.getCursorScreenPoint();
   const display = electron().screen.getDisplayNearestPoint(point);
   const box = core.placeAt(point, core.defaultSize(k), display.workArea);
-  const board = core.newBoard({ kind: k, date: now, title: uniqueTitleFor(k, now), bounds: box });
+  const board = core.newBoard({ kind: k, date: now, title: title ? String(title).slice(0, 80) : uniqueTitleFor(k, now), bounds: box });
+  if (k === "note" && text) board.text = String(text).slice(0, 20000); // "Save to a note" (assist-engine)
   try { if (typeof workspaceOf === "function") board.workspace = String(workspaceOf() || "").slice(0, 64) || undefined; } catch { /* untagged */ }
   const win = windowFor(board);
   entries.set(board.id, { board, win, lastThumbAt: 0, lastSyncAt: 0, moveTimer: null });
