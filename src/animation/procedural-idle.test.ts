@@ -65,15 +65,3 @@ describe('buildProceduralIdle: a body never stands in a T-pose', () => {
     expect(clip!.tracks.length).toBe(2);
   });
 });
-
-describe('wiring', () => {
-  it('useVrmAnimation starts the procedural idle with the body, retries a failed clip, and reports an unposable body', async () => {
-    const { readFileSync } = await import('node:fs');
-    const src = readFileSync(new URL('../hooks/useVrmAnimation.ts', import.meta.url), 'utf8');
-    expect(src).toContain('buildProceduralIdle(vrm)');
-    expect(src).toContain('RETRY_DELAYS_MS');
-    expect(src).toContain('brokenRef.current?.()');
-    const main = readFileSync(new URL('../../electron/main.cjs', import.meta.url), 'utf8');
-    expect(main).toContain('"desk:body-broken"');
-  });
-});

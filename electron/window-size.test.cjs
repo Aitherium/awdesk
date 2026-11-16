@@ -31,3 +31,12 @@ test("main.cjs opens with effectiveSize and only marks a size chosen when the ow
   assert.match(main, /effectiveSize\(/);
   assert.match(main, /JSON\.stringify\(\{ width, height, chosen: true \}\)/);
 });
+
+test("T-pose floor: useVrmAnimation starts the procedural idle with the body, retries a failed clip, and reports an unposable body", () => {
+  const hook = fs.readFileSync(path.join(__dirname, "..", "src", "hooks", "useVrmAnimation.ts"), "utf8");
+  assert.match(hook, /buildProceduralIdle\(vrm\)/);
+  assert.match(hook, /RETRY_DELAYS_MS/);
+  assert.match(hook, /brokenRef\.current\?\.\(\)/);
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /"desk:body-broken"/);
+});
