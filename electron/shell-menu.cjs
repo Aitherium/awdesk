@@ -108,7 +108,10 @@ function launchCommand({ exe, appArgs = [], id, arg = false }) {
   if (/"/.test(exePath) || appArgs.some((a) => /"/.test(String(a)))) throw new Error("a quote inside a path is refused");
   const base = [...[exePath, ...appArgs.map(String)].map((p) => `"${p}"`), `--run=${commandId}`];
   // %1 is the item Explorer was asked about; the quotes keep a path with spaces ONE argv entry.
-  if (arg === true) base.push('--arg="%1"');
+  // `%1\.`: a drive root is `D:\`, and a backslash directly before the closing quote
+  // escapes it (`--arg="D:\"` swallowed the rest of the command line). The sentinel `\.` keeps
+  // the quote real; the desk strips it again (assist-files.checkPath) before judging the path.
+  if (arg === true) base.push('--arg="%1\\."');
   return base.join(" ");
 }
 

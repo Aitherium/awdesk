@@ -55,7 +55,10 @@ const BLOCKED_ROOTS = ["c:\\windows", "c:\\program files", "c:\\program files (x
 
 /** One absolute Windows path or null, with the reason it was refused. Pure given existsSync. */
 function checkPath(raw, existsSync = fs.existsSync) {
-  const first = String(Array.isArray(raw) ? raw[0] : raw || "").split(/\r?\n/)[0].trim().replace(/^"(.*)"$/, "$1");
+  let first = String(Array.isArray(raw) ? raw[0] : raw || "").split(/\r?\n/)[0].trim().replace(/^"(.*)"$/, "$1");
+  // The shell menu appends a `\.` sentinel (shell-menu.cjs launchCommand) so `D:\` survives
+  // command-line parsing; take exactly one off.
+  if (first.endsWith("\\.")) first = first.slice(0, -2);
   if (!first) return { ok: false, error: "No file or folder was given." };
   // eslint-disable-next-line no-control-regex -- control characters are exactly what this strips
   if (!/^[A-Za-z]:\\[^<>"|?*\u0000-\u001f]*$/.test(first) || first.startsWith("\\\\?\\")) return { ok: false, error: "That is not a plain local path." };

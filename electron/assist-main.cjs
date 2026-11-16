@@ -23,6 +23,7 @@ const { createCaret } = require("./assist-caret.cjs");
 const { createAssistWindow } = require("./assist-window.cjs");
 const { createAssistUtils } = require("./assist-utils.cjs");
 const { createAssistFiles } = require("./assist-files.cjs");
+const { createAssistPairing } = require("./assist-pairing.cjs");
 
 const SETTINGS_FILE = "assist.json";
 
@@ -62,7 +63,7 @@ function cardConfirm(gateway) {
   };
 }
 
-function createAssistMain({ electron, userDataDir, gateway = null, notes = null, spawn, post, utilsOverride = null, filesOverride = null } = {}) {
+function createAssistMain({ electron, userDataDir, gateway = null, notes = null, spawn, post, utilsOverride = null, filesOverride = null, pairingOverride = null } = {}) {
   const settingsPath = path.join(userDataDir, SETTINGS_FILE);
   function getSettings() {
     try { return core.normalizeSettings(JSON.parse(fs.readFileSync(settingsPath, "utf8"))); } catch { return core.normalizeSettings({}); }
@@ -83,6 +84,23 @@ function createAssistMain({ electron, userDataDir, gateway = null, notes = null,
   const files = filesOverride || createAssistFiles({
     engine, gateway, log, getSettings, findExe: (n) => findExeOnPath(n), confirm: cardConfirm(gateway),
     vision: (p, q) => require("./orb-vision.cjs").askVision(p, q),
+  });
+  // The per-install bearer + the user-confirmed pairing (assist-pairing.cjs). The dialog is
+  // native and shows the code the extension shows, so the owner can tell his browser's
+  // request from a forged one.
+  const pairing = pairingOverride || createAssistPairing({
+    dir: userDataDir,
+    confirm: async ({ code }) => {
+      const { dialog } = electron;
+      if (!dialog || typeof dialog.showMessageBox !== "function") return false;
+      const r = await dialog.showMessageBox({
+        type: "question", buttons: ["Deny", "Allow"], defaultId: 0, cancelId: 0, noLink: true,
+        title: "Pair AitherConnect with Aither",
+        message: "AitherConnect wants to use Aither at the caret in your browser.",
+        detail: `Your browser should be showing the code ${code}.\n\nAllow only if it matches. Allowing lets that browser send text you select or type to YOUR agents and models through this desk. You can revoke it by pairing again.`,
+      });
+      return r.response === 1;
+    },
   });
   const win = createAssistWindow({ electron, engine, caret, agents: loadAgents(), utils, files });
 
@@ -115,7 +133,10 @@ function createAssistMain({ electron, userDataDir, gateway = null, notes = null,
     stamps.push(t);
     return false;
   }
-  async function bridge({ route, body = {} }) {
+  async function bridge({ route, body = {}, origin = "" }) {
+    // Pairing steps (the bridge already checked the pinned origin): no bearer by design.
+    if (route === "pair/start") return pairing.start(origin);
+    if (route === "pair/finish") return pairing.finish(body && body.id);
     if (limited()) return { ok: false, status: 429, error: "Too many assist requests this minute. Wait a moment." };
     const b = body && typeof body === "object" ? body : {};
     const ctx = { ...(b.ctx && typeof b.ctx === "object" ? b.ctx : {}), surface: "browser" };
@@ -133,7 +154,7 @@ function createAssistMain({ electron, userDataDir, gateway = null, notes = null,
     return { ok: false, error: "unknown assist route" };
   }
 
-  return { run, bridge, engine, window: win, caret, utils, files, log, getSettings, settingsPath };
+  return { run, bridge, pairing, engine, window: win, caret, utils, files, log, getSettings, settingsPath };
 }
 
 module.exports = { createAssistMain, findExeOnPath, cardConfirm, SETTINGS_FILE };

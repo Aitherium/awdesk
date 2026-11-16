@@ -7193,6 +7193,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // The registry over loopback: what `awsh /desk` and `adk desk` list and run.
       // The browser overlay (AitherConnect) -> the same engine as the desk pop-up.
       assistHandler: (req) => assistMain().bridge(req),
+      assistAuth: (header) => assistMain().pairing.verify(header),
       commandsHandler: {
         list: () => commandRegistry.paletteRows(commandContext()),
         run: async (id, arg) => {
