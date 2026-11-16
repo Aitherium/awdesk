@@ -72,6 +72,7 @@ function createSwarmHost({
   speakAloud,
   playAudio,
   askAgent = null,
+  runTool = null,
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = Date.now,
   log = () => {},
@@ -131,6 +132,121 @@ function createSwarmHost({
     try { orb.setPresence(composePresence(basePresence)); } catch (error) { log("swarm presence failed", error && error.message); }
     applyAnchor();
     if (stages.size || publishedStages) publishStages(); // a stage that just emptied must clear its handle too
+  }
+
+  // -- the entity verbs (owner 2026-11-16: for later tasks) -------------------------------
+  // perceive(view), act(tool), walkTo(screenRect), lookAt(screenPoint) and a screen-context subscribe
+  // hook: what an agent standing on this desk can see and do. The DarkMatter engine move (board
+  // 21db327b-c63) keeps these signatures; only what is behind them changes.
+
+  const screenListeners = new Set();
+  let screenContext = null;
+
+  /** The focused window / screen facts, from main. Subscribers hear every change. */
+  function publishScreenContext(ctx) {
+    screenContext = ctx && typeof ctx === "object" ? { ...ctx, at: now() } : null;
+    for (const fn of [...screenListeners]) {
+      try { fn(screenContext); } catch (error) { log("screen context listener failed", error && error.message); }
+    }
+    return screenContext;
+  }
+
+  /** subscribe(fn): fn(context|null) now (the last known) and on every change; returns unsubscribe. */
+  function subscribeScreenContext(fn) {
+    if (typeof fn !== "function") return () => {};
+    screenListeners.add(fn);
+    if (screenContext) { try { fn(screenContext); } catch { /* a listener bug stays there */ } }
+    return () => screenListeners.delete(fn);
+  }
+
+  /** What `agent` can see. view: self | stage | roster | screen. */
+  function perceive(agent, view = "self") {
+    const id = agent ? swarm.rosterId(agent) : swarm.HOME_AGENT;
+    const what = String(view || "self");
+    if (what === "screen") return { ok: true, view: what, screen: screenContext };
+    if (what === "roster") return { ok: true, view: what, roster: snapshot.roster.map((r) => swarm.publicRow(r, forms)) };
+    if (what === "stage") {
+      return {
+        ok: true, view: what,
+        bodies: bodyIds().map((slotId) => ({ slotId, agent: agentOfSlot(slotId), x: positions.get(slotId) ?? null })),
+        stages: [...stages.values()].map(stageResult),
+        talkingTo: currentTarget(),
+      };
+    }
+    if (what === "self") {
+      const row = rosterRow(id);
+      if (!row) return { ok: false, error: `${id || "that agent"} is not in the live roster` };
+      const st = stageOf(id);
+      return {
+        ok: true, view: what, agent: id, row: swarm.publicRow(row, forms), form: forms.get(id) === "avatar" ? "avatar" : "fairy",
+        slotId: forms.get(id) === "avatar" ? slotFor(id) : null, stage: st ? stageResult(st) : null, screen: screenContext,
+      };
+    }
+    return { ok: false, error: `unknown view "${what}" (self | stage | roster | screen)` };
+  }
+
+  /** Tools an agent may NOT start through act(): credentials, money, destruction. The gateway still decides;
+   *  this keeps a verb meant for "press a button on the desk" from becoming a secrets door. */
+  const ACT_DENY = /(secret|credential|password|token|key|delete|destroy|purge|wipe|reboot|restart|provision|payment|refund|stripe|invoice|send_email|set_|rotate)/i;
+
+  /** Run a tool for an agent through the injected runner (main wires the gateway). */
+  async function act(agent, tool, args = {}) {
+    const name = String(tool || "");
+    if (!/^[a-z][a-z0-9_]{1,63}$/.test(name)) return { ok: false, error: "a tool name is lower-case letters, digits and underscores" };
+    if (ACT_DENY.test(name)) return { ok: false, error: `${name} is not something an agent starts from the desk` };
+    if (typeof runTool !== "function") return { ok: false, error: "no tool runner is wired in this build" };
+    const id = agent ? swarm.rosterId(agent) : swarm.HOME_AGENT;
+    try {
+      const result = await runTool(id, name, args && typeof args === "object" ? args : {});
+      return { ok: true, agent: id, tool: name, result };
+    } catch (error) {
+      return { ok: false, agent: id, tool: name, error: String((error && error.message) || error) };
+    }
+  }
+
+  /** The avatar window's origin, so a screen point becomes a point in its client area. */
+  function windowOrigin() {
+    const win = avatar.window && avatar.window();
+    const b = win && win.getBounds ? win.getBounds() : null;
+    return b ? { x: b.x, y: b.y } : { x: 0, y: 0 };
+  }
+
+  /** The grown body of `agent`, or the reason there is none. */
+  function bodyOf(agent) {
+    const id = agent ? swarm.rosterId(agent) : swarm.HOME_AGENT;
+    if (!id || forms.get(id) !== "avatar") return { error: `${id || "that agent"} is not grown into an avatar` };
+    return { id, slotId: slotFor(id) };
+  }
+
+  /** The body walks to stand under a screen rect (DIPs: {x, y, width, height}). */
+  function walkTo(agent, screenRect) {
+    const body = bodyOf(agent);
+    if (body.error) return { ok: false, error: body.error };
+    const r = screenRect && typeof screenRect === "object" ? screenRect : null;
+    const x = Number(r && r.x);
+    const y = Number(r && r.y);
+    const width = Number((r && (r.width ?? r.w)) || 0);
+    const height = Number((r && (r.height ?? r.h)) || 0);
+    if (![x, y, width, height].every(Number.isFinite)) return { ok: false, error: "walkTo needs a screen rect {x, y, width, height}" };
+    const o = windowOrigin();
+    avatar.send({ type: "walk-to", slotId: body.slotId, rect: { x: x - o.x, y: y - o.y, width, height } });
+    return { ok: true, agent: body.id, slotId: body.slotId };
+  }
+
+  /** The body turns toward a screen point ({x, y}); null turns it back. */
+  function lookAt(agent, screenPoint) {
+    const body = bodyOf(agent);
+    if (body.error) return { ok: false, error: body.error };
+    if (screenPoint === null) {
+      avatar.send({ type: "look-at", slotId: body.slotId, point: null });
+      return { ok: true, agent: body.id, slotId: body.slotId };
+    }
+    const x = Number(screenPoint && screenPoint.x);
+    const y = Number(screenPoint && screenPoint.y);
+    if (![x, y].every(Number.isFinite)) return { ok: false, error: "lookAt needs a screen point {x, y} (or null)" };
+    const o = windowOrigin();
+    avatar.send({ type: "look-at", slotId: body.slotId, point: { x: x - o.x, y: y - o.y } });
+    return { ok: true, agent: body.id, slotId: body.slotId };
   }
 
   /** GargBot's web overlay registers its goblin and agents: they join the one roster (deduped by
@@ -740,6 +856,12 @@ function createSwarmHost({
     visemes,
     handleVoice,
     stageOp,
+    perceive,
+    act,
+    walkTo,
+    lookAt,
+    publishScreenContext,
+    subscribeScreenContext,
     registerOverlay,
     joinSlots,
     leaveSlot,

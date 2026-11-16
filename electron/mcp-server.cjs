@@ -513,6 +513,46 @@ function createDeskMcpServer({
       async ({ agent, text, audio_base64, volume }) => json(await swarm({ action: "speak", agent, text, audioBase64: audio_base64, volume })),
     );
     server.registerTool(
+      "swarm_perceive",
+      {
+        title: "What an agent standing on the desk can see",
+        description: "view: self (its row, form, slot, stage, the screen), stage (every body and stage), roster, screen (the focused window).",
+        inputSchema: { agent: z.string().max(64).optional(), view: z.enum(["self", "stage", "roster", "screen"]).optional() },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async ({ agent, view }) => json(await swarm({ action: "perceive", agent, view })),
+    );
+    server.registerTool(
+      "swarm_act",
+      {
+        title: "An agent runs one gateway tool",
+        description: "Runs a gateway tool for the agent. Credential, money and destructive tool names are refused here.",
+        inputSchema: { agent: z.string().max(64).optional(), tool: z.string().max(64), args: z.record(z.string(), z.unknown()).optional() },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      },
+      async ({ agent, tool, args }) => json(await swarm({ action: "act", agent, tool, args })),
+    );
+    server.registerTool(
+      "swarm_walk_to",
+      {
+        title: "An avatar walks to a screen rectangle",
+        description: "Screen DIP rect {x, y, width, height}; the grown body walks to stand under its centre, within the stage.",
+        inputSchema: { agent: z.string().max(64).optional(), x: z.number(), y: z.number(), width: z.number().min(0).optional(), height: z.number().min(0).optional() },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      },
+      async ({ agent, x, y, width, height }) => json(await swarm({ action: "walk", agent, rect: { x, y, width: width ?? 0, height: height ?? 0 } })),
+    );
+    server.registerTool(
+      "swarm_look_at",
+      {
+        title: "An avatar turns toward a screen point",
+        description: "Screen DIP point {x, y}; omit both to turn the body back to the owner.",
+        inputSchema: { agent: z.string().max(64).optional(), x: z.number().optional(), y: z.number().optional() },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async ({ agent, x, y }) => json(await swarm({ action: "look", agent, point: x === undefined || y === undefined ? null : { x, y } })),
+    );
+    server.registerTool(
       "swarm_stage",
       {
         title: "Combine, split and arrange stages",
