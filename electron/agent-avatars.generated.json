@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "_generator": "AitherOS/dev/tools/gen_agent_avatar_registry.py --desk-out",
+  "_source": "AitherOS/config/agent-avatars.json",
+  "_note": "DERIVED FILE - do not hand-edit; regenerate from the registry",
+  "agents": {
+    "aither": {
+      "character": "aither-v2",
+      "display_name": "Aither",
+      "default_body": "female",
+      "supersedes": [
+        "mermaid"
+      ],
+      "bodies": {
+        "female": {
+          "character": "aither-v2",
+          "spec": "aither-v2",
+          "label": "Aither (female)",
+          "sha256": "90044575ccb73c2fd80db06cf06c4ba6f30c2bc3e824f2021e8dbc2565595904",
+          "library_id": "Aither-90044575"
+        },
+        "male": {
+          "character": "aither-m",
+          "spec": "aither-m",
+          "label": "Aither (male)",
+          "sha256": "573ecf39bdb332155f762945337ab78311f56da8e8680781317178ac610e03ed",
+          "library_id": "Aither-573ecf39"
+        }
+      }
+    },
+    "atlas": {
+      "character": "atlas",
+      "display_name": "Atlas",
+      "default_body": "default",
+      "supersedes": [
+        "charlie"
+      ],
+      "bodies": {
+        "default": {
+          "character": "atlas",
+          "spec": "atlas",
+          "label": "Atlas",
+          "sha256": "9be08ecbdf051c5f1a8925b700ac3355e2a7a1ab60c4767ffbf50c6645a3e7db",
+          "library_id": "atlas-9be08ecb"
+        }
+      }
+    },
+    "chaos": {
+      "character": "chaos",
+      "display_name": "Chaos",
+      "default_body": "default",
+      "supersedes": [],
+      "bodies": {
+        "default": {
+          "character": "chaos",
+          "spec": "chaos",
+          "label": "Chaos",
+          "sha256": "5fb3ace3b1f8774ed3e7fb4d9458649f69157342bc6e72de9c1a3d7adf398035",
+          "library_id": "Chaos-5fb3ace3"
+        }
+      }
+    },
+    "demiurge": {
+      "character": "demiurge",
+      "display_name": "Demiurge",
+      "default_body": "default",
+      "supersedes": [
+        "celisia-arcroid"
+      ],
+      "bodies": {
+        "default": {
+          "character": "demiurge",
+          "spec": "demiurge",
+          "label": "Demiurge",
+          "sha256": "92cdf0e95cf5f2d50ed066ace2f2c053f6d62fe2eceb3cc23772d1d859d270c7",
+          "library_id": "Demiurge-92cdf0e9"
+        }
+      }
+    },
+    "hera": {
+      "character": "hera",
+      "display_name": "Hera",
+      "default_body": "default",
+      "supersedes": [],
+      "bodies": {
+        "default": {
+          "character": "hera",
+          "spec": "hera",
+          "label": "Hera",
+          "sha256": "5c06ab7496d2f4b2d5bcfe5fd6c45b2b62522a64f42302afeed4860ad8bb41da",
+          "library_id": "Hera-5c06ab74"
+        }
+      }
+    },
+    "iris": {
+      "character": "iris",
+      "display_name": "Iris",
+      "default_body": "default",
+      "supersedes": [
+        "herta-hsr-vrm-0-0"
+      ],
+      "bodies": {
+        "default": {
+          "character": "iris",
+          "spec": "iris",
+          "label": "Iris",
+          "sha256": "06fc860e7d09bddf079a7fff092c8a8d23091837a9a22d39ba661d155016650f",
+          "library_id": "Iris-06fc860e"
+        }
+      }
+    },
+    "lyra": {
+      "character": "lyra",
+      "display_name": "Lyra",
+      "default_body": "default",
+      "supersedes": [
+        "clara-hsr-vrm-0-0"
+      ],
+      "bodies": {
+        "default": {
+          "character": "lyra",
+          "spec": "lyra",
+          "label": "Lyra",
+          "sha256": "dff26de36146dfe7fda2c206c9ffdf7727924e3284f49028ef68208d5147af9a",
+          "library_id": "Lyra-dff26de3"
+        }
+      }
+    },
+    "nova": {
+      "character": "nova",
+      "display_name": "Nova",
+      "default_body": "default",
+      "supersedes": [],
+      "bodies": {
+        "default": {
+          "character": "nova",
+          "spec": "nova",
+          "label": "Nova",
+          "sha256": "8d41dc57917c1cf942546a93a2a629726902a4d5734683758bddf181793dc018",
+          "library_id": "nova-8d41dc57"
+        }
+      }
+    },
+    "saga": {
+      "character": "saga",
+      "display_name": "Saga",
+      "default_body": "default",
+      "supersedes": [],
+      "bodies": {
+        "default": {
+          "character": "saga",
+          "spec": "saga",
+          "label": "Saga",
+          "sha256": "365cd72848b8d9973bcf936d71c1cd804a7ae52237a017d74b19308101c86f97",
+          "library_id": "Saga-365cd728"
+        }
+      }
+    },
+    "themis": {
+      "character": "themis",
+      "display_name": "Themis",
+      "default_body": "default",
+      "supersedes": [],
+      "bodies": {
+        "default": {
+          "character": "themis",
+          "spec": "themis",
+          "label": "Themis",
+          "sha256": "846aebd082e00d20cac72ec3396c7ee5db6bf9daa63d567bf43672cbef115366",
+          "library_id": "Themis-846aebd0"
+        }
+      }
+    },
+    "vera": {
+      "character": "vera",
+      "display_name": "Vera",
+      "default_body": "default",
+      "supersedes": [],
+      "bodies": {
+        "default": {
+          "character": "vera",
+          "spec": "vera",
+          "label": "Vera",
+          "sha256": "6153efbb59ac75fb72395fd24b70ea76b2df0731097d24832530820db783fd95",
+          "library_id": "Vera-6153efbb"
+        }
+      }
+    }
+  },
+  "no_factory_avatar": {
+    "athena": {
+      "character": "siren-head"
+    },
+    "hydra": {
+      "character": "vrm-1-0"
+    }
+  }
+}
