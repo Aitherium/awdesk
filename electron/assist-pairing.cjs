@@ -31,6 +31,7 @@
 const nodeCrypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const acl = require("./assist-acl.cjs");
 
 const PAIR_TTL_MS = 120000;
 const START_GAP_MS = 20000;
@@ -56,18 +57,8 @@ function createAssistPairing({
   let pending = null; // { id, code, origin, state: "waiting"|"approved"|"denied", at }
   let lastStart = 0;
 
-  /** Windows: remove inherited access and grant only the current user. Never throws. */
-  function lockDown() {
-    return new Promise((resolve) => {
-      if (platform !== "win32") { try { fsImpl.chmodSync(file, 0o600); } catch { /* best effort off Windows */ } resolve({ ok: true }); return; }
-      const user = env.USERNAME ? `${env.USERDOMAIN ? `${env.USERDOMAIN}\\` : ""}${env.USERNAME}` : "";
-      if (!user) { resolve({ ok: false, error: "no current user name" }); return; }
-      const exe = path.join(env.SystemRoot || "C:\\Windows", "System32", "icacls.exe");
-      try {
-        execFile(exe, [file, "/inheritance:r", "/grant:r", `${user}:(F)`], { windowsHide: true, timeout: 10000 }, (error) => resolve(error ? { ok: false, error: String(error.message || error) } : { ok: true }));
-      } catch (error) { resolve({ ok: false, error: String((error && error.message) || error) }); }
-    });
-  }
+  /** The user-only ACL on the secret file (assist-acl.cjs). Never throws. */
+  const lockDown = () => acl.lockFile({ file, fsImpl, execFile, platform, env });
 
   function load() {
     if (secret) return secret;

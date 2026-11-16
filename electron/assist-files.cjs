@@ -112,7 +112,7 @@ function uniqueOutput(input, ext, existsSync) {
 
 function createAssistFiles({
   fsImpl = fs, existsSync = (p) => fsImpl.existsSync(p), engine, gateway = null, vision = null, confirm = null, log = null,
-  execFile = require("node:child_process").execFile, findExe = () => null, getSettings = () => ({}), now = Date.now, newId = null,
+  execFile = require("node:child_process").execFile, findExe = () => null, verifyExe = null, getSettings = () => ({}), now = Date.now, newId = null,
 } = {}) {
   let counter = 0;
   const nextId = newId || (() => `f${now().toString(36)}${(counter += 1).toString(36)}`);
@@ -244,7 +244,10 @@ function createAssistFiles({
     if (!choice.available) return { ok: false, error: `${choice.missing}. Aither runs the tool you install; it does not bundle one.` };
     const out = uniqueOutput(info.path, choice.to, existsSync);
     if (!out) return { ok: false, error: "Could not find a free file name for the result." };
-    const exe = findExe(choice.tool);
+    // Locating is not trusting: the tool's signature is checked right before it runs.
+    const trusted = verifyExe ? await verifyExe(choice.tool) : { ok: true, path: findExe(choice.tool) };
+    if (!trusted || !trusted.ok || !trusted.path) return { ok: false, error: (trusted && trusted.error) || `${choice.tool} could not be verified.` };
+    const exe = trusted.path;
     const args = conversionArgs(choice.tool, info.path, out);
     const id = nextId();
     const failed = note(id, "file-convert", "started", { title: info.name }, { to: path.win32.basename(out), tool: choice.tool });

@@ -91,7 +91,28 @@ test("the disclosure names the destination and the sizes, never the text", () =>
   assert.match(core.describeSend({}, {}).text, /only what you type/);
 });
 
+test("log hashes are HMAC under the per-install salt: salt-dependent, stable, and absent without a salt", () => {
+  const rec = { id: "a1", surface: "browser", verb: "rewrite", ctx: { selection: "1234" }, outcome: "ok", text: "1234", settings: {} };
+  core.useLogSalt(null);
+  const none = core.logRecord(rec);
+  assert.equal("hash" in none.out, false, "no salt: no hash, never an unsalted one");
+  assert.equal("selectionHash" in none, false);
+  assert.equal(core.shortHash("1234"), "");
+  core.useLogSalt(Buffer.alloc(32, 1));
+  const a = core.logRecord(rec);
+  assert.match(a.selectionHash, /^[0-9a-f]{12}$/);
+  assert.equal(core.logRecord(rec).selectionHash, a.selectionHash, "stable for the same salt");
+  const plain = require("node:crypto").createHash("sha256").update("1234").digest("hex").slice(0, 12);
+  assert.notEqual(a.selectionHash, plain, "NOT the bare sha256 prefix anyone could brute-force");
+  core.useLogSalt(Buffer.alloc(32, 2));
+  assert.notEqual(core.logRecord(rec).selectionHash, a.selectionHash, "another install, another hash");
+  core.useLogSalt(Buffer.alloc(4, 1));
+  assert.equal(core.shortHash("1234"), "", "a too-short salt is no salt");
+  core.useLogSalt(Buffer.alloc(32, 1));
+});
+
 test("log records carry counts and a hash, and the text only when logText is on", () => {
+  core.useLogSalt(Buffer.alloc(32, 1));
   const base = { id: "a1", surface: "browser", verb: "rewrite", ctx: { selection: "hello there" }, outcome: "ok", text: "Hello there." };
   const off = core.logRecord({ ...base, settings: {} });
   assert.equal(off.sent.selection, 11);

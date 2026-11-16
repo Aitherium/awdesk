@@ -35,6 +35,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const core = require("./assist-core.cjs");
+const { createTools, findTool, powerToysDirs, sysinternalsDirs, powershellExe } = require("./assist-tools.cjs");
 
 /** Fixed PowerToys event names (PowerToys.Interop.dll, 0.102). Never taken from a caller. */
 const PT_EVENTS = Object.freeze({
@@ -48,39 +49,6 @@ const OUT_MAX = 6000;
 const TOOLS_TIMEOUT_MS = 20000;
 const LOCKS_TIMEOUT_MS = 100000; // measured 2026-11-16: FileLocksmithCLI took 43 s on this PC
 const OCR_WAIT_MS = 90000;
-
-function programDirs(env) {
-  return [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA && path.win32.join(env.LOCALAPPDATA, "Programs")]
-    .filter(Boolean);
-}
-
-/** Where PowerToys lives (per-machine, per-user, or the Programs dir). */
-function powerToysDirs(env = process.env) {
-  const dirs = programDirs(env).map((d) => path.win32.join(d, "PowerToys"));
-  if (env.LOCALAPPDATA) dirs.push(path.win32.join(env.LOCALAPPDATA, "PowerToys"));
-  return dirs.flatMap((d) => [d, path.win32.join(d, "WinUI3Apps")]);
-}
-
-/** Where Sysinternals lives: a known dir, the WinGet links dir, then PATH. */
-function sysinternalsDirs(env = process.env) {
-  const dirs = [];
-  if (env.AWDESK_SYSINTERNALS_DIR) dirs.push(env.AWDESK_SYSINTERNALS_DIR);
-  dirs.push("C:\\Sysinternals");
-  for (const d of programDirs(env)) dirs.push(path.win32.join(d, "Sysinternals"), path.win32.join(d, "SysinternalsSuite"));
-  if (env.LOCALAPPDATA) dirs.push(path.win32.join(env.LOCALAPPDATA, "Microsoft", "WinGet", "Links"));
-  for (const d of String(env.PATH || env.Path || "").split(";")) if (d) dirs.push(d);
-  return dirs;
-}
-
-function findTool(names, dirs, existsSync = fs.existsSync) {
-  for (const name of names) {
-    for (const dir of dirs) {
-      const candidate = path.win32.join(dir, name);
-      try { if (existsSync(candidate)) return candidate; } catch { /* unreadable dir */ }
-    }
-  }
-  return null;
-}
 
 /** First line of a selection as an existing absolute Windows path, else null. Pure given existsSync. */
 function pathFromSelection(selection, existsSync = fs.existsSync) {
@@ -118,15 +86,19 @@ const SIGNAL_SCRIPT = [
 function createAssistUtils({
   env = process.env, platform = process.platform, existsSync = fs.existsSync,
   execFile = require("node:child_process").execFile, spawn = require("node:child_process").spawn,
-  clipboard = null, caret = null, log = null, getSettings = () => ({}),
+  clipboard = null, caret = null, log = null, getSettings = () => ({}), tools = null,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now,
 } = {}) {
   const win = platform === "win32";
   let awakeChild = null;
 
-  const pt = (names) => findTool(names, powerToysDirs(env), existsSync);
-  const si = (names) => findTool(names, sysinternalsDirs(env), existsSync);
-  const runnerExe = () => pt(["PowerToys.exe"]);
+  // Tools come from KNOWN install dirs only (never PATH) and are signature-checked before
+  // they run (assist-tools.cjs). `pt`/`si` say "installed"; `use` is the gate before an exec.
+  const toolbox = tools || createTools({ env, platform, existsSync, execFile });
+  const pt = (names) => toolbox.locate(names, "powertoys");
+  const si = (names) => toolbox.locate(names, "sysinternals");
+  /** null = not installed; { ok:false, error } = installed but untrusted; { ok:true, path } = may run. */
+  const use = (names, family) => toolbox.resolve(names, family);
 
   const CATALOG = [
     { id: "ocr", label: "Extract text from screen", hint: "PowerToys Text Extractor", needs: "none", tool: () => pt(["PowerToys.PowerOCR.exe"]), requires: "PowerToys (winget install Microsoft.PowerToys)" },
@@ -163,16 +135,17 @@ function createAssistUtils({
     const run = () => {
       try {
         return new Promise((resolve) => {
-          execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", SIGNAL_SCRIPT],
+          execFile(powershellExe(env), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", SIGNAL_SCRIPT],
             { timeout: 8000, windowsHide: true, shell: false, env: { ...process.env, AWDESK_PT_EVENT: eventName } }, (error) => resolve(error && typeof error.code === "number" ? error.code : error ? -1 : 0));
         });
       } catch { return Promise.resolve(-1); }
     };
     let code = await run();
     if (code === 0) return { ok: true };
-    const runner = runnerExe();
+    const runner = code === 3 ? await use(["PowerToys.exe"], "powertoys") : null;
+    if (runner && !runner.ok) return { ok: false, error: runner.error };
     if (code === 3 && runner) {
-      try { spawn(runner, [], { detached: true, stdio: "ignore", windowsHide: false }).unref(); } catch { return { ok: false, error: "Could not start PowerToys." }; }
+      try { spawn(runner.path, [], { detached: true, stdio: "ignore", windowsHide: false }).unref(); } catch { return { ok: false, error: "Could not start PowerToys." }; }
       for (let i = 0; i < 14 && code !== 0; i += 1) { await sleep(700); code = await run(); }
       if (code === 0) return { ok: true, startedRunner: true };
     }
@@ -196,9 +169,10 @@ function createAssistUtils({
   async function runLocks(opts) {
     const target = pathFromSelection(opts.selection, existsSync);
     if (!target) return { ok: false, error: "Select a file path first (Explorer: Copy as path, then select the pasted text)." };
-    const locksmith = pt(["FileLocksmithCLI.exe"]);
+    const locksmith = await use(["FileLocksmithCLI.exe"], "powertoys");
+    if (locksmith && !locksmith.ok) return { ok: false, error: locksmith.error };
     if (locksmith) {
-      const r = await exec(locksmith, ["--json", target], { timeoutMs: LOCKS_TIMEOUT_MS });
+      const r = await exec(locksmith.path, ["--json", target], { timeoutMs: LOCKS_TIMEOUT_MS });
       if (r.killed) return { ok: false, error: "File Locksmith took too long (it scans every open handle). Try again, or close apps you do not need." };
       let procs;
       try { procs = JSON.parse(r.stdout).processes; } catch { procs = null; }
@@ -207,9 +181,10 @@ function createAssistUtils({
         return { ok: true, text: clipOut(procs.map((p) => `${p.name} (pid ${p.pid}, ${p.user || "?"})`).join("\n")), note: `PowerToys File Locksmith: ${procs.length} process${procs.length === 1 ? "" : "es"}` };
       }
     }
-    const handle = si(["handle64.exe", "handle.exe"]);
+    const handle = await use(["handle64.exe", "handle.exe"], "sysinternals");
     if (!handle) return { ok: false, error: "Needs PowerToys File Locksmith or Sysinternals handle." };
-    const r = await exec(handle, ["-accepteula", "-nobanner", target], { timeoutMs: TOOLS_TIMEOUT_MS });
+    if (!handle.ok) return { ok: false, error: handle.error };
+    const r = await exec(handle.path, ["-accepteula", "-nobanner", target], { timeoutMs: TOOLS_TIMEOUT_MS });
     const out = clipOut(r.stdout);
     return /No matching handles/i.test(out) ? { ok: true, text: `Nothing has ${path.win32.basename(target)} open (as far as an unelevated handle can see).`, note: "Sysinternals handle" } : { ok: true, text: out, note: "Sysinternals handle" };
   }
@@ -217,7 +192,10 @@ function createAssistUtils({
   async function runProcInfo(opts) {
     const pid = Number(opts.pid);
     if (!Number.isInteger(pid) || pid <= 4) return { ok: false, error: "No app to inspect: open the pop-up from inside the app you mean." };
-    const r = await exec(si(["pslist64.exe", "pslist.exe"]), ["-accepteula", "-nobanner", "-x", String(pid)], { timeoutMs: TOOLS_TIMEOUT_MS });
+    const pslist = await use(["pslist64.exe", "pslist.exe"], "sysinternals");
+    if (!pslist) return { ok: false, error: "Needs Sysinternals pslist." };
+    if (!pslist.ok) return { ok: false, error: pslist.error };
+    const r = await exec(pslist.path, ["-accepteula", "-nobanner", "-x", String(pid)], { timeoutMs: TOOLS_TIMEOUT_MS });
     if (r.error && !r.stdout) return { ok: false, error: `pslist failed: ${clipOut(r.stderr || String(r.error.message || r.error))}` };
     return { ok: true, text: clipOut(r.stdout), note: `Sysinternals pslist, pid ${pid}` };
   }
@@ -227,7 +205,10 @@ function createAssistUtils({
     if (!target || !IMAGE_EXT.has(path.win32.extname(target).toLowerCase())) return { ok: false, error: "Select an image file path first (png, jpg, gif, bmp, tiff, webp)." };
     const width = Number.parseInt(String(opts.arg || "1280"), 10);
     if (!Number.isInteger(width) || width < 16 || width > 16000) return { ok: false, error: "Width must be between 16 and 16000 pixels." };
-    const r = await exec(pt(["PowerToys.ImageResizerCLI.exe"]), ["--width", String(width), "--unit", "Pixel", "--fit", "Fit", "--shrink-only", target], { timeoutMs: 60000 });
+    const resizer = await use(["PowerToys.ImageResizerCLI.exe"], "powertoys");
+    if (!resizer) return { ok: false, error: "Needs PowerToys Image Resizer." };
+    if (!resizer.ok) return { ok: false, error: resizer.error };
+    const r = await exec(resizer.path, ["--width", String(width), "--unit", "Pixel", "--fit", "Fit", "--shrink-only", target], { timeoutMs: 60000 });
     if (r.error) return { ok: false, error: `Image Resizer failed: ${clipOut(r.stderr || r.stdout || String(r.error.message || r.error))}` };
     return { ok: true, text: clipOut(r.stdout) || "Done.", note: "PowerToys Image Resizer wrote a resized copy next to the original; the original is untouched." };
   }
@@ -247,9 +228,11 @@ function createAssistUtils({
     awake: async (opts) => {
       const seconds = parseDuration(opts.arg) || 3600;
       if (awakeChild) { try { awakeChild.kill(); } catch { /* gone */ } awakeChild = null; }
-      const exe = pt(["PowerToys.Awake.exe"]);
+      const exe = await use(["PowerToys.Awake.exe"], "powertoys");
+      if (!exe) return { ok: false, error: "Needs PowerToys Awake." };
+      if (!exe.ok) return { ok: false, error: exe.error };
       try {
-        awakeChild = spawn(exe, ["--time-limit", String(seconds), "--display-on"], { detached: false, stdio: "ignore", windowsHide: true });
+        awakeChild = spawn(exe.path, ["--time-limit", String(seconds), "--display-on"], { detached: false, stdio: "ignore", windowsHide: true });
         awakeChild.on("exit", () => { awakeChild = null; });
       } catch (error) { return { ok: false, error: `Could not start Awake: ${String((error && error.message) || error)}` }; }
       return { ok: true, note: `PowerToys Awake keeps this PC and its screen awake for ${Math.round(seconds / 60)} min.` };
@@ -263,7 +246,10 @@ function createAssistUtils({
     locks: runLocks,
     procinfo: runProcInfo,
     procexp: async () => {
-      try { spawn(si(["procexp64.exe", "procexp.exe"]), ["/accepteula"], { detached: true, stdio: "ignore" }).unref(); } catch (error) { return { ok: false, error: String((error && error.message) || error) }; }
+      const exe = await use(["procexp64.exe", "procexp.exe"], "sysinternals");
+      if (!exe) return { ok: false, error: "Needs Sysinternals Process Explorer." };
+      if (!exe.ok) return { ok: false, error: exe.error };
+      try { spawn(exe.path, ["/accepteula"], { detached: true, stdio: "ignore" }).unref(); } catch (error) { return { ok: false, error: String((error && error.message) || error) }; }
       return { ok: true, note: "Process Explorer opened." };
     },
     resize: runResize,
