@@ -810,14 +810,15 @@ test("loadRosterPresence: fail-soft on a missing or malformed mirror; re-reads a
   assert.deepEqual(cast.loadRosterPresence({ file }), ROSTER);
 });
 
-// 2026-11-15 (owner: "a proper avatar for every one of our agents"): atlas, iris and hera wear their
+// 2026-11-15 (owner: "a proper avatar for every one of our agents"): the Order leads wear their
 // avatar-factory builds (media-forge specs/<agent>.json); the rest keep the 2026-10-04 cast.
 test("the committed roster mirror declares the owner's cast for the crew agents", () => {
   const presence = cast.loadRosterPresence({ file: path.join(__dirname, "agent-roster.generated.json") });
   assert.deepEqual(presence.aither, { voice: "en-US-AnaNeural", character: "mermaid" });
   assert.deepEqual(presence.atlas, { voice: "en-US-MichelleNeural", character: "atlas" });
-  assert.deepEqual(presence.demiurge, { voice: "en-US-EmmaNeural", character: "celisia-arcroid" });
-  assert.deepEqual(presence.lyra, { voice: "en-US-JennyNeural", character: "clara-hsr-vrm-0-0" });
+  assert.deepEqual(presence.demiurge, { voice: "en-US-EmmaNeural", character: "demiurge" });
+  assert.deepEqual(presence.lyra, { voice: "en-US-JennyNeural", character: "lyra" });
+  for (const agent of ["themis", "saga", "vera"]) assert.deepEqual(presence[agent], { character: agent });
   assert.deepEqual(presence.iris, { voice: "en-US-AriaNeural", character: "iris" });
   assert.deepEqual(presence.hera, { character: "hera" });
   assert.deepEqual(presence.hydra, { voice: "en-US-AvaNeural", character: "vrm-1-0" });

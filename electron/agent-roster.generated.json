@@ -48,7 +48,7 @@
     },
     "demiurge": {
       "voice": "en-US-EmmaNeural",
-      "character": "celisia-arcroid"
+      "character": "demiurge"
     },
     "hera": {
       "character": "hera"
@@ -63,7 +63,16 @@
     },
     "lyra": {
       "voice": "en-US-JennyNeural",
-      "character": "clara-hsr-vrm-0-0"
+      "character": "lyra"
+    },
+    "saga": {
+      "character": "saga"
+    },
+    "themis": {
+      "character": "themis"
+    },
+    "vera": {
+      "character": "vera"
     }
   }
 }
