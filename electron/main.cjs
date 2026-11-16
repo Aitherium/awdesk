@@ -3705,7 +3705,9 @@ function trayTemplateNow() {
       (id) => orbWindow.companionAction(id, { target: null }));
   } catch { /* the fairy module is not up yet: the next repaint has them */ }
   if (companionRows.length) companionRows.push({ type: "separator" });
-  trayTemplate.unshift(...needsYouLib.trayRows(needsYou, (id) => openInbox(id)), ...companionRows, ...swarmTrayRows(), ...houseTrayRows());
+  // The agent swarm's own submenu (agent-swarm-host.cjs): grow / shrink, stages, the goblin.
+  try { trayTemplate.push(...swarmTrayRows()); } catch { /* the swarm is cosmetic */ }
+  trayTemplate.unshift(...needsYouLib.trayRows(needsYou, (id) => openInbox(id)), ...companionRows, ...houseTrayRows());
   return trayTemplate;
 }
 
