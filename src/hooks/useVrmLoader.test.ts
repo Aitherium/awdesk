@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import type { VRM } from '@pixiv/three-vrm';
 
-import { applyDefaultSpringGravity } from './useVrmLoader';
+import { applyDefaultSpringGravity, applyOverlayEdges } from './useVrmLoader';
 
 /** A VRM whose spring manager carries exactly these joint settings. */
 function vrmWith(settings: Array<{ gravityPower?: number; gravityDir?: THREE.Vector3 }>): VRM {
@@ -294,5 +294,23 @@ describe('sanitizeSpringTuning', () => {
     expect(sanitizeSpringTuning(undefined)).toEqual(DEFAULT_SPRING_TUNING);
     expect(sanitizeSpringTuning({ weight: 'x', stiffness: -1, damping: NaN })).toEqual(DEFAULT_SPRING_TUNING);
     expect(sanitizeSpringTuning({ enabled: false, jiggle: 0, weight: 9 })).toEqual({ ...DEFAULT_SPRING_TUNING, enabled: false, jiggle: 0, weight: 3 });
+  });
+});
+
+describe('applyOverlayEdges', () => {
+  it('premultiplies blended materials and feathers cutout cards; opaque stays as authored', () => {
+    const blended = new THREE.MeshBasicMaterial({ transparent: true });
+    const cutout = new THREE.MeshBasicMaterial({ alphaTest: 0.5 });
+    const opaque = new THREE.MeshBasicMaterial();
+    const root = new THREE.Group();
+    root.add(new THREE.Mesh(new THREE.BufferGeometry(), blended));
+    root.add(new THREE.Mesh(new THREE.BufferGeometry(), [cutout, opaque]));
+    root.add(new THREE.Mesh(new THREE.BufferGeometry(), blended)); // shared: counted once
+    expect(applyOverlayEdges(root)).toBe(2);
+    expect(blended.premultipliedAlpha).toBe(true);
+    expect(cutout.alphaToCoverage).toBe(true);
+    expect(opaque.premultipliedAlpha).toBe(false);
+    expect(opaque.alphaToCoverage).toBe(false);
+    expect(applyOverlayEdges(root)).toBe(0); // idempotent
   });
 });

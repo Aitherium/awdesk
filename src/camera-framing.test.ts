@@ -11,7 +11,10 @@ describe('calculateFullBodyFraming', () => {
     const framing = calculateFullBodyFraming(box, 20, 430 / 680);
 
     expect(framing.target.toArray()).toEqual([0, 1, 0]);
-    expect(framing.position.y).toBe(1);
+    // Chest-to-eye height, never below the body's centre (owner 2026-11-15: no camera
+    // looking up a skirt), aimed at the centre so the whole body stays framed.
+    expect(framing.position.y).toBeCloseTo(2 * 0.82, 6);
+    expect(framing.position.y).toBeGreaterThan(framing.target.y);
 
     const nearestDepth = framing.distance - 0.2;
     const visibleHalfHeight =
