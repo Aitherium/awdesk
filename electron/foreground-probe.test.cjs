@@ -90,3 +90,15 @@ test("review of #101: a late exit of an old child does not null the new one; a b
   for (let i = 0; i < 6; i += 1) { p2.sample(); const k = dying[dying.length - 1]; if (k) k.emit("exit"); }
   assert.ok(dying.length <= 4, `gave up after ${dying.length} spawns`);
 });
+
+test("review of #101: stop/start cycles never count toward the respawn limit; a broken pipe kills its child", () => {
+  const kids = [];
+  const mk = () => { const c = fakeChild(); c.stdin.on = (ev, fn) => { c.stdin[`_${ev}`] = fn; }; kids.push(c); return c; };
+  const probe = createForegroundProbe({ platform: "win32", spawnImpl: mk, setTimer: () => ({ unref() {} }), clearTimer: () => {} });
+  for (let i = 0; i < 8; i += 1) { probe.start(); const k = kids[kids.length - 1]; probe.stop(); k.emit("exit"); }
+  probe.start();
+  assert.equal(kids.length, 9, "eight shown/hidden cycles later the probe still starts");
+  const live = kids[kids.length - 1];
+  live.stdin._error(new Error("EPIPE"));
+  assert.equal(live.killed, true, "the child behind a broken pipe is killed");
+});

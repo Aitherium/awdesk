@@ -110,11 +110,23 @@ function createForegroundProbe({
     });
     // A pipe that breaks between samples (AV, a kill) raises an async error: never an uncaught one.
     for (const stream of [c.stdin, c.stdout]) {
-      if (stream && typeof stream.on === "function") stream.on("error", () => { if (child === c) { child = null; pending = false; } });
+      if (stream && typeof stream.on === "function") {
+        stream.on("error", () => {
+          if (child !== c) return;
+          child = null;
+          pending = false;
+          buf = "";
+          try { c.kill(); } catch { /* gone */ } // no orphan PowerShell behind a broken pipe
+        });
+      }
     }
-    c.on("error", () => { dead = true; if (child === c) child = null; });
+    c.on("error", () => { if (child === c) { dead = true; child = null; } });
     c.on("exit", () => {
-      if (child === c) { child = null; pending = false; }
+      // Only an UNEXPECTED exit counts: stop() nulls `child` before it kills, so a stop/start cycle (the
+      // swarm shown and hidden) never trips the respawn limit (review of #101).
+      if (child !== c) return;
+      child = null;
+      pending = false;
       const t = Date.now();
       exits.push(t);
       while (exits.length && t - exits[0] > 30_000) exits.shift();
