@@ -44,11 +44,14 @@
     },
     "atlas": {
       "voice": "en-US-MichelleNeural",
-      "character": "charlie"
+      "character": "atlas"
     },
     "demiurge": {
       "voice": "en-US-EmmaNeural",
       "character": "celisia-arcroid"
+    },
+    "hera": {
+      "character": "hera"
     },
     "hydra": {
       "voice": "en-US-AvaNeural",
@@ -56,7 +59,7 @@
     },
     "iris": {
       "voice": "en-US-AriaNeural",
-      "character": "herta-hsr-vrm-0-0"
+      "character": "iris"
     },
     "lyra": {
       "voice": "en-US-JennyNeural",
