@@ -279,7 +279,9 @@ test("RoomStage: utterances are serialised — one at a time, in order", async (
     { seq: 7, agent: true, author: "atlas", actorKind: "adk_agent", actorId: "a1", kind: "agent_message", text: "b" },
   ];
   await h.stage.tick();
-  await new Promise((r) => setTimeout(r, 120));
+  // Wait for the work, not a fixed 120 ms: under load (a full suite beside a build) the two
+  // 10 ms utterances can take longer, and the assertion is about ORDER, not speed.
+  for (let i = 0; i < 100 && order.length < 4; i++) await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(order, ["start a", "end a", "start b", "end b"]);
 });
 
