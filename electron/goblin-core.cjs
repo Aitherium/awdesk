@@ -2,9 +2,11 @@
 
 /**
  * goblin-core.cjs -- GargBot's goblin on the desk: where it stands, which frame it
- * wears, and the pure rules the window uses. The art is the frame set GargBot already
- * ships (.PRODUCTS/.GARGBOT/frontend/public/avatars/goblin: one Media Forge base still, an
- * i2v idle loop, inpainted talking/thinking faces), copied here as electron/goblin/<weapon>/.
+ * wears, and the pure rules the window uses. The art is GargBot's .ELEMENT companion set
+ * (.PRODUCTS/.GARGBOT/.ELEMENT/assets/companion/goblin: flat 2D, a blonde mullet, the orange
+ * bat -- one base still, an idle loop, talking / thinking / happy faces), copied here as
+ * electron/goblin/<weapon>/. (This comment named .GARGBOT/frontend/public/avatars/goblin, the
+ * older generated set the desk no longer ships.) The DEFAULT is the noodle (the orange bat).
  * It is a 2D body, not a VRM: the swarm grows a fairy into it the same way (avatar-grow.cjs
  * frames) and shrinks it back.
  *
@@ -21,7 +23,7 @@ const TALK_FRAMES = 4;
 const SIZE = Object.freeze({ width: 232, height: 264 });
 
 function weaponOf(value) {
-  return value === "noodle" ? "noodle" : "sword";
+  return value === "sword" ? "sword" : "noodle";
 }
 
 function moodOf(value) {

@@ -133,6 +133,15 @@ function createSwarmHost({
     if (stages.size || publishedStages) publishStages(); // a stage that just emptied must clear its handle too
   }
 
+  /** GargBot's web overlay registers its goblin and agents: they join the one roster (deduped by
+   *  agent identity), so the overlay and the desk never draw two clusters. */
+  async function registerOverlay(source, agents) {
+    if (!reader.registerOverlay) return { ok: false, error: "this roster reader takes no overlay rows" };
+    const out = reader.registerOverlay(source, agents);
+    await refresh({ force: true });
+    return { ...out, roster: snapshot.roster.length };
+  }
+
   /** main's own presence poll hands its rows here, and gets the composed list back. */
   function withBase(base) {
     basePresence = Array.isArray(base) ? base : [];
@@ -731,6 +740,7 @@ function createSwarmHost({
     visemes,
     handleVoice,
     stageOp,
+    registerOverlay,
     joinSlots,
     leaveSlot,
     syncPositions,
