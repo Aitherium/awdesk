@@ -239,7 +239,7 @@ function reassertPending(deps = {}) {
   }
   const pending = readState(d.dir).pending;
   const authors = (readJson(d.castFile) || {}).authors || {};
-  const fix = Object.entries(pending).filter(([agent, to]) => {
+  const fix = Object.entries(pending).filter(([agent]) => {
     const now = characterOf(authors[agent]);
     return !now;
   });
