@@ -49,6 +49,15 @@ export function setVisemes(slotId: string, weights: unknown | null, ttlMs: numbe
   entries.set(slotId, { weights: sanitizeVisemes(weights), until: now() + ttl });
 }
 
+/** Is any body's mouth being driven right now? (The frame budget treats it as audible: review of #96.) */
+export function anyVisemes(): boolean {
+  const t = now();
+  for (const [slot, entry] of entries) {
+    if (t > entry.until) entries.delete(slot);
+  }
+  return entries.size > 0;
+}
+
 /** The live override for a body, or null when there is none or it has lapsed. */
 export function getVisemes(slotId: string): VisemeWeights | null {
   const entry = entries.get(slotId);
