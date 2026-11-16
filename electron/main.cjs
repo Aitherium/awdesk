@@ -1972,6 +1972,7 @@ function getGoblin() {
   if (goblinInstance) return goblinInstance;
   goblinInstance = require("./goblin-window.cjs").createGoblin({
     electron: { BrowserWindow, screen },
+    onDismissRequest: () => { void getSwarmHost().setAgentForm("gargbot", "fairy"); },
     onChange: (state) => {
       try { getSwarmHost().goblinChanged(state); } catch { /* the swarm is cosmetic */ }
       if (tray) refreshTrayMenu();
@@ -1982,7 +1983,7 @@ function getGoblin() {
   ipcMain.on("goblin:dismiss", (event) => {
     // Only the goblin's own window may send it back (review of #96).
     const win = getGoblin().window && getGoblin().window();
-    if (win && !win.isDestroyed() && event.sender !== win.webContents) return;
+    if (!win || win.isDestroyed() || event.sender !== win.webContents) return; // fails closed (review of #96)
     void getSwarmHost().setAgentForm("gargbot", "fairy");
   });
   return goblinInstance;

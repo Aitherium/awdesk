@@ -13,7 +13,7 @@ const path = require("node:path");
 const avatarGrow = require("./avatar-grow.cjs");
 const core = require("./goblin-core.cjs");
 
-function createGoblin({ electron, onChange = () => {}, wait = (ms) => new Promise((r) => setTimeout(r, ms)), log = () => {} } = {}) {
+function createGoblin({ electron, onChange = () => {}, onDismissRequest = null, wait = (ms) => new Promise((r) => setTimeout(r, ms)), log = () => {} } = {}) {
   let win = null;
   let busy = false;
   let weapon = "noodle";
@@ -74,7 +74,11 @@ function createGoblin({ electron, onChange = () => {}, wait = (ms) => new Promis
       // The whole body is a drag region (to move him), and on Windows a drag region answers a right
       // click with the native system menu: the DOM contextmenu never fires. Take it here: a right click
       // on the goblin sends him back into the fairy (review of #96).
-      win.on("system-context-menu", (event) => { event.preventDefault(); void dismiss().then(() => onChange({ summoned: false })); });
+      win.on("system-context-menu", (event) => {
+        event.preventDefault();
+        // The same path the DOM right click takes (the swarm shrinks him into the fairy), never a bare dismiss.
+        if (typeof onDismissRequest === "function") onDismissRequest(); else void dismiss();
+      });
       const loaded = win.loadFile(path.join(__dirname, "goblin.html"), { query: { weapon } });
       await Promise.race([loaded, wait(4000)]);
       win.showInactive();
