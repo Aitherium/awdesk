@@ -184,6 +184,9 @@ test("P0 2026-11-16: a catalog that names a registry body can NOT pull it over a
   const pulled = await sync.syncFromCatalog({ client, library, defaultsDir: TMP });
   assert.deepEqual(pulled.results, [{ agent: "atlas", ok: true, name: "charlie-5e48d775", installed: false, changed: false, kept: true, reason: "this desk already shows a body for it" }]);
   assert.equal(JSON.parse(fs.readFileSync(CAST, "utf8")).authors.atlas.character, "charlie-5e48d775", "the restored body survives the pull");
+  // A VOICE the owner has heard obeys the same rule: a pull, a fill and even 'replace' write bodies, never voices.
+  const voiceOf = () => JSON.parse(fs.readFileSync(CAST, "utf8")).authors.atlas.voice;
+  assert.equal(voiceOf(), "en-US-MichelleNeural", "the pull left the voice alone");
   // A pull still FILLS an empty row.
   const bare = JSON.parse(fs.readFileSync(CAST, "utf8"));
   delete bare.authors.atlas.character;
@@ -191,6 +194,7 @@ test("P0 2026-11-16: a catalog that names a registry body can NOT pull it over a
   const filled = await sync.syncFromCatalog({ client, library, defaultsDir: TMP });
   assert.equal(filled.results[0].changed, true);
   assert.equal(JSON.parse(fs.readFileSync(CAST, "utf8")).authors.atlas.character, "atlas");
+  assert.equal(voiceOf(), "en-US-MichelleNeural", "filling an empty body row left the voice alone");
   // The person's own manual sync is their OK.
   const cast2 = JSON.parse(fs.readFileSync(CAST, "utf8"));
   cast2.authors.atlas.character = "charlie-5e48d775";
@@ -198,6 +202,35 @@ test("P0 2026-11-16: a catalog that names a registry body can NOT pull it over a
   const replaced = await sync.syncFromCatalog({ client, library, defaultsDir: TMP, replace: true });
   assert.equal(replaced.results[0].changed, true);
   assert.equal(JSON.parse(fs.readFileSync(CAST, "utf8")).authors.atlas.character, "atlas");
+  assert.equal(voiceOf(), "en-US-MichelleNeural", "even the person's own replace never touches a voice");
+});
+
+test("owner P0 2026-11-16: neither the registry plan nor a catalog pull can change a voice, whatever the catalog says", async () => {
+  pullFixtures();
+  const before = JSON.parse(fs.readFileSync(CAST, "utf8"));
+  before.authors = {
+    atlas: { character: "charlie-5e48d775", voice: "en-US-MichelleNeural" },
+    lyra: { character: "lyra", voice: "en-US-JennyNeural" },
+    aither: { voice: "custom:aither" },
+  };
+  fs.writeFileSync(CAST, JSON.stringify(before));
+  const voices = () => Object.fromEntries(Object.entries(JSON.parse(fs.readFileSync(CAST, "utf8")).authors).map(([k, v]) => [k, v.voice]));
+  const want = voices();
+  const plan = defaults.planDefaults({ registry: REGISTRY, authors: before.authors, names: NAMES });
+  assert.deepEqual(plan.changes, [], "the registry plan writes nothing onto an existing desk");
+  const client = {
+    async avatarCatalog() {
+      return { ok: true, avatars: [{ id: "lyra-dff26de3", sha256: "" }], starters: [], agents: { lyra: "lyra-dff26de3", atlas: "atlas-9be08ecb" }, active: null, voices: { lyra: "nova", atlas: "echo" } };
+    },
+  };
+  const library = {
+    async ensureLibraryAvatar() { return { ok: true, name: "lyra", installed: false }; },
+    async ensureVroidReference() { return { ok: false }; },
+  };
+  await sync.syncFromCatalog({ client, library, defaultsDir: TMP });
+  assert.deepEqual(voices(), want, "a pull leaves every voice as the owner has it");
+  await sync.syncFromCatalog({ client, library, defaultsDir: TMP, replace: true });
+  assert.deepEqual(voices(), want, "a replace leaves every voice as the owner has it");
 });
 
 test("a body the owner put back by hand is adopted: kept, and told to the catalog (the four restored on 2026-11-16)", async () => {
