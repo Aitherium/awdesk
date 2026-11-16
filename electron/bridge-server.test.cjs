@@ -802,6 +802,37 @@ test("awconnect: the pinned extension may list and run the desk's palette comman
   assert.deepEqual(runs, [["note.new", "hello"]]);
 });
 
+// Aither at the caret, from the browser: carries page text and spends the owner's model
+// budget, so ONLY a pinned extension origin is accepted -- not loopback no-Origin callers.
+test("assist: only a pinned AitherConnect origin reaches /assist/*; others and no-Origin are refused", async (context) => {
+  const seen = [];
+  const bridge = createBridgeServer({
+    host: "127.0.0.1", port: 0, onEvent: () => {},
+    assistHandler: async ({ route, body }) => { seen.push([route, body]); return { ok: true, route }; },
+  });
+  context.after(() => bridge.close());
+  const address = await bridge.listen();
+  const ok = await postJson(address, "/assist/run", PINNED_EXT, { verb: "rewrite" });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(JSON.parse(ok.body), { ok: true, route: "run" });
+  assert.equal((await postJson(address, "/assist/suggest", STORE_EXT, { ctx: {} })).status, 200);
+  for (const origin of [OTHER_EXT, "https://evil.example", "http://127.0.0.1:3000"]) {
+    assert.equal((await postJson(address, "/assist/run", origin, { verb: "write" })).status, 403, origin);
+  }
+  const noOrigin = await requestServer(address, { path: "/assist/run", method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(noOrigin.status, 403, "a no-Origin loopback caller is not trusted here, unlike /commands");
+  assert.equal((await requestServer(address, { path: "/assist/run", headers: { origin: PINNED_EXT } })).status, 405);
+  assert.equal((await postJson(address, "/assist/bogus", PINNED_EXT, {})).status, 404);
+  assert.deepEqual(seen.map((x) => x[0]), ["run", "suggest"], "a refused request never reaches the handler");
+});
+
+test("assist: a desk with no assist handler answers 404", async (context) => {
+  const bridge = createBridgeServer({ host: "127.0.0.1", port: 0, onEvent: () => {} });
+  context.after(() => bridge.close());
+  const address = await bridge.listen();
+  assert.equal((await postJson(address, "/assist/run", PINNED_EXT, {})).status, 404);
+});
+
 test("awconnect: a wildcard in AWDESK_TRUSTED_EXTENSION_IDS cannot widen the set", () => {
   const { extensionOriginAllowed, trustedExtensionOrigins } = require("./bridge-server.cjs");
   assert.equal(extensionOriginAllowed(PINNED_EXT, {}), true);
