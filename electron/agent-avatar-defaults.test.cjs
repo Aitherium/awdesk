@@ -246,3 +246,30 @@ test("the committed registry mirror: twelve bodies, and Aither's are aither-body
   assert.deepEqual(got, want);
   assert.equal(mirror.agents.aither.default_body, aitherBody.DEFAULT_BODY);
 });
+
+test("review of #104: a row the PERSON made is never marked as pulled, and assigning clears a pulled mark", async () => {
+  const dir = fs.mkdtempSync(path.join(TMP, "mark-"));
+  defaults.writeState(dir, { seen: {}, pending: {}, from: {} });
+  // The same body the catalog names, already the person's, model folder missing on this desk -> no mark.
+  fs.writeFileSync(CAST, JSON.stringify({ version: 1, authors: { demiurge: { character: "no-model-here" } } }));
+  const client = {
+    async avatarCatalog() { return { ok: true, avatars: [{ id: "x", sha256: "" }], starters: [], agents: { demiurge: "x" }, active: null }; },
+    async putAgentAvatar() { return { ok: true }; },
+  };
+  const library = { async ensureLibraryAvatar() { return { ok: true, name: "no-model-here", installed: true }; }, async ensureVroidReference() { return { ok: false }; } };
+  await sync.syncFromCatalog({ client, library, defaultsDir: dir });
+  assert.deepEqual(defaults.pulledMap(dir), {}, "unchanged = nobody's pull wrote it");
+  // A pulled mark is forgotten when the person assigns.
+  defaults.markPulled(dir, "demiurge", "no-model-here");
+  assert.equal(defaults.pulledMap(dir).demiurge, "no-model-here");
+  defaults.markPulled(dir, "demiurge", null);
+  assert.deepEqual(defaults.pulledMap(dir), {});
+});
+
+test("a corrupt state file is kept beside itself, not silently overwritten", () => {
+  const dir = fs.mkdtempSync(path.join(TMP, "corrupt-"));
+  fs.writeFileSync(path.join(dir, defaults.STATE_FILE), "{ not json");
+  defaults.writeState(dir, { seen: { atlas: "atlas" }, pending: {}, from: {} });
+  assert.ok(fs.readdirSync(dir).some((f) => f.startsWith(`${defaults.STATE_FILE}.corrupt-`)));
+  assert.equal(defaults.readState(dir).seen.atlas, "atlas");
+});

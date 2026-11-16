@@ -137,6 +137,11 @@ function readState(dir) {
 
 function writeState(dir, state) {
   const file = stateFile(dir);
+  // A state file that exists but will not parse is kept beside itself, not silently overwritten
+  // (review of #104: a corrupt file read as empty and the next write dropped from / chosen / pending).
+  try {
+    if (fs.existsSync(file) && !readJson(file)) fs.copyFileSync(file, `${file}.corrupt-${Date.now()}`);
+  } catch { /* the copy is a convenience */ }
   const tmp = `${file}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -298,9 +303,12 @@ function pulledMap(dir) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : {};
 }
 
+/** character null forgets the agent (the person assigned it). */
 function markPulled(dir, agent, character) {
   const state = readState(dir);
-  state.pulled = { ...(state.pulled || {}), [agent]: character };
+  const pulled = { ...(state.pulled || {}) };
+  if (character) pulled[agent] = character; else delete pulled[agent];
+  state.pulled = pulled;
   return writeState(dir, state);
 }
 

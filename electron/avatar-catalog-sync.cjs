@@ -143,6 +143,14 @@ function notePulled(deps, agent, name) {
   } catch { /* the note is a convenience */ }
 }
 
+/** The person assigned this body themselves: it is no longer a row a pull may replace. */
+function clearPulled(deps, agent) {
+  try {
+    const dir = defaultsDir(deps);
+    if (dir) require("./agent-avatar-defaults.cjs").markPulled(dir, agent, null);
+  } catch { /* the note is a convenience */ }
+}
+
 /** Is `name` a character this desk can show right now? */
 function onDesk(d, name) {
   try {
@@ -197,8 +205,10 @@ async function syncFromCatalog(deps = {}) {
       continue;
     }
     const changed = current !== ensured.name;
-    if (changed) d.agents.setAgentAvatar(agent, ensured.name);
-    notePulled(deps, agent, ensured.name);
+    if (changed) {
+      d.agents.setAgentAvatar(agent, ensured.name);
+      notePulled(deps, agent, ensured.name); // only a row THIS pull wrote counts as pulled (review of #104)
+    }
     results.push({ agent, ok: true, name: ensured.name, installed: ensured.installed, changed });
   }
   d.log("avatar catalog sync", results.filter((r) => r.changed || r.installed || !r.ok));
@@ -414,6 +424,7 @@ async function pushAssignment(agent, character, deps = {}) {
   const put = await d.client.putAgentAvatar(agent, found.id, deps.clientDeps);
   if (!put.ok) return { ok: false, agent, reason: put.reason };
   if (found.canonical && found.canonical !== character) d.agents.setAgentAvatar(agent, found.canonical);
+  clearPulled(deps, agent);
   return { ok: true, agent, id: found.id, uploaded: found.uploaded, name: found.canonical || character };
 }
 
