@@ -478,6 +478,11 @@ let deskUpdater = null;
 /** Crash/error reports + "Send feedback" to the company app (desk-support.cjs); tenant installs only. */
 let deskSupport = null;
 let updateNotice = null; // held, or a collected Notification loses its click handler
+// Every toast with a click handler goes through this: a bare local click listener is
+// garbage-collected and the click is lost (the dead "Phone connected" toast, 2026-11-16).
+const toaster = require("./held-toast.cjs").createToaster({
+  Notification, log: (line) => console.warn(`[desk] ${line}`),
+});
 /** Windows logging off / shutting down: a silent install now could be killed mid-way. */
 let sessionEnding = false;
 app.on("browser-window-created", (_event, win) => {
@@ -5631,32 +5636,83 @@ let phoneLink = null;
 function phoneTrayRows() {
   if (!phoneUsb || !phoneLink) return [];
   return require("./phone-link.cjs").trayItems(phoneUsb.phones(), phoneLink.links(), {
-    use: (serial) => void usePhone(serial),
+    use: (serial) => void openThisPhone(serial),
     unlink: (serial) => void unlinkPhone(serial),
     forget: (deviceId, serial) => { phoneLink.forget(deviceId); void unlinkPhone(serial); },
   });
 }
 
+/** Link one cable: serve it, reverse the phone's port onto it, open Aither there. {ok, error?} */
 async function usePhone(serial) {
   const phone = phoneUsb.phones().find((p) => p.serial === serial && p.state === "device");
-  if (!phone) return;
+  if (!phone) return { ok: false, error: "That phone is no longer connected over USB." };
+  let result = { ok: true };
   try {
     const port = await phoneLink.openFor(serial, phone.model);
     const rev = await phoneUsb.reverse(serial, port);
     if (!rev.ok) throw new Error(`adb reverse failed: ${(rev.stderr || rev.error?.message || "").slice(0, 200)}`);
     const launched = await phoneUsb.launch(serial);
-    if (!launched.ok) console.warn(`[desk] phone link: could not open Aither on the phone: ${launched.stderr.slice(0, 200)}`);
+    if (!launched.ok) {
+      console.warn(`[desk] phone link: could not open Aither on the phone: ${launched.stderr.slice(0, 200)}`);
+      result = { ok: false, error: "Linked, but Aither would not open on the phone. Is the Aither app installed?" };
+    }
   } catch (e) {
     phoneLink.closeFor(serial);
-    dialog.showErrorBox("Phone link", String(e?.message || e));
+    result = { ok: false, error: String(e?.message || e) };
   }
   if (tray) refreshTrayMenu();
+  return result;
 }
 
 async function unlinkPhone(serial) {
   phoneLink.closeFor(serial);
   await phoneUsb.unreverse(serial).catch(() => {});
   if (tray) refreshTrayMenu();
+}
+
+/** The "Phone connected" toast, the tray row and the app all land here: ALWAYS a visible outcome. */
+async function openThisPhone(serial) {
+  const panel = require("./phone-panel.cjs");
+  panel.openPhonePanel(serial);
+  const phone = phoneUsb && phoneUsb.phones().find((p) => p.serial === serial);
+  const linked = phoneLink && phoneLink.links().some((l) => l.serial === serial);
+  if (phone && phone.state === "device" && !linked) await phoneAct(serial, "link");
+  void panel.refreshPhonePanel();
+}
+
+function phoneSnapshot(serial, ctx = {}) {
+  return require("./phone-panel.cjs").describePhone({
+    phone: phoneUsb ? phoneUsb.phones().find((p) => p.serial === serial) || null : null,
+    link: phoneLink ? phoneLink.links().find((l) => l.serial === serial) : undefined,
+    busy: ctx.busy, error: ctx.error, lastCapture: ctx.lastCapture,
+  });
+}
+
+async function phoneAct(serial, verb) {
+  const link = phoneLink.links().find((l) => l.serial === serial);
+  switch (verb) {
+    case "link": return usePhone(serial);
+    case "unlink": await unlinkPhone(serial); return { ok: true };
+    case "forget":
+      if (link && link.deviceId) phoneLink.forget(link.deviceId);
+      await unlinkPhone(serial);
+      return { ok: true };
+    case "open-app": {
+      const r = await phoneUsb.launch(serial);
+      return r.ok ? { ok: true } : { ok: false, error: "Aither would not open on the phone. Is the app installed?" };
+    }
+    case "capture": {
+      const r = await phoneUsb.screencap(serial);
+      if (!r.ok) return { ok: false, error: `Could not capture the screen: ${r.error}` };
+      const dir = path.join(app.getPath("downloads"), "From phone");
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `phone-screen-${new Date().toISOString().replace(/[:.]/g, "-")}.png`);
+      fs.writeFileSync(file, r.png);
+      try { shell.showItemInFolder(file); } catch { /* the path is shown in the panel */ }
+      return { ok: true, file };
+    }
+    default: return { ok: false, error: "unknown action" };
+  }
 }
 
 function phoneLinkActions() {
@@ -5772,8 +5828,9 @@ function startPhoneLink() {
       return response === 0;
     },
     actions: phoneLinkActions(),
-    onChange: () => { syncPhoneMesh(); if (tray) refreshTrayMenu(); },
+    onChange: () => { syncPhoneMesh(); if (tray) refreshTrayMenu(); void require("./phone-panel.cjs").refreshPhonePanel(); },
   });
+  require("./phone-panel.cjs").configurePhonePanel({ snapshot: phoneSnapshot, act: phoneAct });
   // The mesh/remote listener: only while a phone is approved and this PC has a tailnet
   // address (the Aither tunnel reaches it there). AWDESK_PHONE_MESH=0 keeps it cable-only.
   const { meshAddressOf } = require("./phone-link.cjs");
@@ -5798,13 +5855,16 @@ function startPhoneLink() {
       // the cable is out: that phone's server goes with it
       for (const p of removed) phoneLink.closeFor(p.serial);
       for (const p of added) {
-        if (p.state === "device" && Notification.isSupported()) {
-          const n = new Notification({ title: `Phone connected: ${p.model}`, body: "Click to use this phone with Aither" });
-          n.on("click", () => void usePhone(p.serial));
-          n.show();
+        if (p.state === "device") {
+          // The click links the cable AND opens the This phone panel, so it always shows something.
+          toaster.show({
+            title: `Phone connected: ${p.model}`, body: "Click to use this phone with Aither",
+            onClick: () => openThisPhone(p.serial),
+          });
         }
       }
       if (tray) refreshTrayMenu();
+      void require("./phone-panel.cjs").refreshPhonePanel();
     },
   });
   phoneUsb.start();
@@ -7997,12 +8057,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         actOnBrick,
         allowed: () => require("./desk-settings.cjs").current().updates?.enabled !== false
           && process.env.AWDESK_NO_UPDATE !== "1",
-        notify: ({ title, body, click }) => {
-          if (!Notification.isSupported()) return;
-          const n = new Notification({ title, body });
-          if (click) n.on("click", click);
-          n.show();
-        },
+        notify: ({ title, body, click }) => { toaster.show({ title, body, onClick: click }); },
         log: (line) => console.log(`[desk] ${line}`),
       }).start();
     } catch (e) {
