@@ -723,7 +723,10 @@ function createSwarmHost({
     if (!id) return { ok: false, error: "not an agent" };
     const slotId = slotFor(id);
     const form = forms.get(id) === "avatar" ? "avatar" : "fairy";
-    const speaker = { agent: id };
+    // A coding session, a subagent or a remote endpoint is silent unless the owner opted it into a voice
+    // (speech-arbiter.cjs, owner 2026-11-16): the flag rides to main's speakAloud.
+    const speakRow = rosterRow(id);
+    const speaker = { agent: id, ...(speakRow && (speakRow.kind === "session" || speakRow.kind === "subagent" || speakRow.kind === "remote" || String(id).startsWith("session-")) ? { session: true, author: id, seat: 0 } : {}) };
     if (id === swarm.GOBLIN_ID) goblin.setMood("talking", { forMs: 4000 });
     try {
       if (typeof input === "string" || (input && typeof input === "object" && typeof input.text === "string" && !input.audioBase64)) {

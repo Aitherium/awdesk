@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BUBBLE_MAX_CHARS, bubbleDurationMs, bubbleText, clampIntoViewport } from './speech-bubble';
+import { BUBBLE_MAX_CHARS, bubbleDurationMs, bubbleText, clampIntoViewport, stackOffset } from './speech-bubble';
 
 describe('bubbleText', () => {
   it('collapses whitespace and leaves a short line alone', () => {
@@ -68,5 +68,21 @@ describe('clampIntoViewport', () => {
 
   it('a non-finite rect is no nudge, never NaN into a style', () => {
     expect(clampIntoViewport({ left: Number.NaN, top: 100, right: 10, bottom: 150 }, viewport)).toEqual({ dx: 0, dy: 0 });
+  });
+});
+
+describe('stackOffset: a newer bubble stacks over an older one instead of covering it', () => {
+  const box = (left: number, top: number, w = 100, h = 30) => ({ left, top, right: left + w, bottom: top + h });
+  it('needs no move when nothing overlaps', () => {
+    expect(stackOffset(box(0, 100), [box(200, 100)])).toBe(0);
+    expect(stackOffset(box(0, 100), [box(0, 40)])).toBe(0);
+  });
+  it('lifts a bubble that overlaps an older one to just above it', () => {
+    expect(stackOffset(box(10, 110), [box(0, 100)])).toBe(100 - 6 - 30 - 110);
+  });
+  it('clears several stacked bubbles in one pass', () => {
+    const dy = stackOffset(box(0, 100), [box(0, 100), box(0, 64)]);
+    const top = 100 + dy;
+    expect(top + 30).toBeLessThanOrEqual(64);
   });
 });
