@@ -3529,6 +3529,7 @@ function orbMenu({ atFairy = false } = {}) {
   return showMenu("orb", fairyMenu.orbItems({
     waiting: attentionCards.length, quietUntil: state.muteUntil, tenantVisible: Boolean(state.tenantCompanion),
     fairyVisible: orbVisible(), nowMs: Date.now(), avatar: avatarMode(),
+    bodies: hookValue("aitherBodies") || [],
   }), { atFairy });
 }
 
@@ -3620,7 +3621,21 @@ function orbPick(what) {
   if (what === "more") return spiritMenu();
   if (what === "expand") return expandToAvatar();
   if (what === "collapse") return collapseToFairy();
+  if (what.startsWith("body:")) return pickBody(what.slice(5));
   return { ok: false, error: `unknown menu item ${what}` };
+}
+
+/** "Aither (female)" / "Aither (male)" on the orb's menu: main saves the choice
+ *  (aither-body.cjs), then the fairy grows into that body. Already grown: main swaps
+ *  the body where it stands. */
+async function pickBody(id) {
+  const r = hookValue("pickAitherBody", id);
+  if (!r || r.ok === false) return { ok: false, error: (r && r.error) || "that body is not on this desk" };
+  if (avatarMode() === "fairy") {
+    const grown = await expandToAvatar();
+    return { ...grown, body: r.body, character: r.character };
+  }
+  return { ok: true, body: r.body, character: r.character };
 }
 
 // -- the avatar: the fairy grows into Aither's full body (owner 2026-11-15) ---------

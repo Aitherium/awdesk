@@ -158,11 +158,29 @@ function uploadRating(d, character) {
   }
 }
 
+/**
+ * Does the folder's library stamp describe OTHER bytes than the model it holds now?
+ *
+ * Measured 2026-11-16: aither-v2 and aither-m were rebuilt by the avatar factory after
+ * their first upload. The factory re-wrote character.json with the new `model_sha256`
+ * and carried the old `library_id` / `library_sha256` forward, so the library (and every
+ * other desk) kept the model from before the rebuild, forever: a stamped folder was
+ * never looked at again. A record whose own `model_sha256` disagrees with its
+ * `library_sha256` is stale; no model bytes are read to know it.
+ */
+function staleStamp(rec) {
+  const model = String((rec && rec.model_sha256) || "").toLowerCase();
+  const lib = String((rec && rec.library_sha256) || "").toLowerCase();
+  return Boolean(model && lib && model !== lib);
+}
+
 /** The library id for a desk character, uploading it first when it lives only here. */
 async function libraryIdFor(d, character, deps) {
   const rec = readRecord(d.rosterDir, character);
   if (localOnly.isLocalOnlyRecord(rec)) return { ok: false, reason: localOnly.LOCAL_ONLY_REASON, localOnly: true };
-  if (typeof rec.library_id === "string" && rec.library_id) return { ok: true, id: rec.library_id, uploaded: false };
+  if (typeof rec.library_id === "string" && rec.library_id && !staleStamp(rec)) {
+    return { ok: true, id: rec.library_id, uploaded: false };
+  }
   if (typeof rec.vroid_model_id === "string" && rec.vroid_model_id) {
     return { ok: true, id: `vroid-${rec.vroid_model_id}`, uploaded: false };
   }
@@ -236,7 +254,7 @@ async function seedLibraryFromDesk(deps = {}) {
       out.results.push({ name, ok: true, skipped: "a VRoid Hub reference, never uploaded" });
       continue;
     }
-    if (typeof rec.library_id === "string" && ids.has(rec.library_id)) {
+    if (typeof rec.library_id === "string" && ids.has(rec.library_id) && !staleStamp(rec)) {
       out.present += 1;
       continue;
     }
@@ -387,6 +405,7 @@ function startCatalogSync(deps = {}) {
 }
 
 module.exports = {
+  staleStamp,
   PULL_INTERVAL_MS,
   SEED_MAX_TRIES,
   pushAssignment,

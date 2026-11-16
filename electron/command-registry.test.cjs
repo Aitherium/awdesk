@@ -165,7 +165,11 @@ test("a command on BOTH menus reads the same and sits under the same parent", ()
 test("every id a body's menu claims is really ON a body's menu", () => {
   // popupAvatarMenu was hand-written, so `surfaces: [... "avatar-menu"]` was a
   // claim nothing checked: cast.open was declared there and absent from it.
-  const body = leavesOf("avatar-menu", { slotId: "slot1", removable: true, sessionAddress: {}, grownFromFairy: true });
+  const body = leavesOf("avatar-menu", {
+    slotId: "slot1", removable: true, sessionAddress: {}, grownFromFairy: true,
+    // Both Aither builds on this desk (aither-body.cjs rows): the choice renders.
+    aitherBodies: [{ id: "female", checked: true }, { id: "male", checked: false }],
+  });
   for (const command of commandsFor("avatar-menu")) {
     if (command.dynamic) continue;
     assert.ok(body.has(command.id), `${command.id} names avatar-menu and does not render there`);

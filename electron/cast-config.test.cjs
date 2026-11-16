@@ -814,7 +814,9 @@ test("loadRosterPresence: fail-soft on a missing or malformed mirror; re-reads a
 // avatar-factory builds (media-forge specs/<agent>.json); the rest keep the 2026-10-04 cast.
 test("the committed roster mirror declares the owner's cast for the crew agents", () => {
   const presence = cast.loadRosterPresence({ file: path.join(__dirname, "agent-roster.generated.json") });
-  assert.deepEqual(presence.aither, { voice: "en-US-AnaNeural", character: "mermaid" });
+  // 2026-11-16: Aither's own default is the aither-v2 build (identity desk_presence), not the
+  // 2026-10-04 mermaid; the male build is a choice on the desk (aither-body.cjs), not a default.
+  assert.deepEqual(presence.aither, { voice: "en-US-AnaNeural", character: "aither-v2" });
   assert.deepEqual(presence.atlas, { voice: "en-US-MichelleNeural", character: "atlas" });
   assert.deepEqual(presence.demiurge, { voice: "en-US-EmmaNeural", character: "demiurge" });
   assert.deepEqual(presence.lyra, { voice: "en-US-JennyNeural", character: "lyra" });

@@ -541,6 +541,28 @@ const COMMANDS = Object.freeze([
     surfaces: ["palette"],
     whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", arrangement: "reset",
   }),
+  // Aither's body (owner 2026-11-16: "can select male or female Aither and have it
+  // transform from fairy to full avatar"). aither-body.cjs owns the two bodies; main
+  // reports the ones this desk has in ctx.aitherBodies ([{id, checked}]), so a desk with
+  // one build shows no choice. The fairy's own menu carries the same two rows.
+  Object.freeze({
+    id: "aither.body.female", label: "Aither (female)", group: "avatar",
+    surfaces: ["tray", "avatar-menu", "palette"], type: "radio",
+    when: (ctx = {}) => (ctx.aitherBodies || []).some((b) => b && b.id === "female"),
+    checked: (ctx = {}) => (ctx.aitherBodies || []).some((b) => b && b.id === "female" && b.checked),
+  }),
+  Object.freeze({
+    id: "aither.body.male", label: "Aither (male)", group: "avatar",
+    surfaces: ["tray", "avatar-menu", "palette"], type: "radio",
+    when: (ctx = {}) => (ctx.aitherBodies || []).some((b) => b && b.id === "male"),
+    checked: (ctx = {}) => (ctx.aitherBodies || []).some((b) => b && b.id === "male" && b.checked),
+  }),
+  // The fairy grows into Aither from the tray and the palette too (the fairy may be
+  // hidden, and POST /commands/run is how an agent or a test reaches it).
+  Object.freeze({
+    id: "avatar.from-fairy", label: "Show Aither", group: "avatar",
+    surfaces: ["tray", "palette"], when: (ctx = {}) => ctx.fairyAvatar === "fairy",
+  }),
   Object.freeze({
     id: "avatar.to-fairy", label: "Back to the fairy", group: "slot", scope: "slot",
     surfaces: ["avatar-menu"], when: (ctx = {}) => Boolean(ctx.grownFromFairy),

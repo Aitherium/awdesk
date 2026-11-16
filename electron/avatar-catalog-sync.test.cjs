@@ -379,3 +379,32 @@ test("a local-only imported body is never uploaded: not by the seed, not by an a
   }
   assert.equal(client.calls.upload.length, 1);
 });
+
+test("a build rebuilt after its upload goes up again: the stamp names other bytes", async () => {
+  // Measured 2026-11-16: the avatar factory rebuilt aither-v2, re-wrote character.json with
+  // the new model_sha256 and kept the OLD library stamp; the library held the old model.
+  const before = fakeVrm("aither-v2 before");
+  const after = fakeVrm("aither-v2 after the rebuild");
+  const old = { id: "Aither-0000aaaa", name: "Aither", rating: "general", sha256: sha(before), source: "upload" };
+  assert.equal(sync.staleStamp({ library_sha256: sha(before), model_sha256: sha(after) }), true);
+  assert.equal(sync.staleStamp({ library_sha256: sha(after), model_sha256: sha(after) }), false);
+  assert.equal(sync.staleStamp({ library_sha256: sha(before) }), false, "no model digest on record: the stamp stands");
+  writeCharacter("aither-v2", after, {
+    rating: "general", source: "avatar_factory", display_name: "Aither", spec: "aither-v2",
+    library_id: old.id, library_sha256: old.sha256, model_sha256: sha(after),
+  });
+  const client = fakeClient({ avatars: [old], map: {} });
+  const pushed = await sync.pushAssignment("aither", "aither-v2", { client });
+  assert.equal(pushed.ok, true);
+  assert.equal(pushed.uploaded, true, "the rebuilt model was uploaded, the old id was not reused");
+  assert.notEqual(pushed.id, old.id);
+  const stamped = JSON.parse(fs.readFileSync(path.join(ROSTER, "aither-v2", "character.json"), "utf8"));
+  assert.equal(stamped.library_sha256, sha(after));
+  assert.equal(sync.staleStamp(stamped), false);
+  // The canonical copy keeps the spec, so aither-body still knows which body it is.
+  const canon = JSON.parse(fs.readFileSync(path.join(ROSTER, pushed.name, "character.json"), "utf8"));
+  assert.equal(canon.spec, "aither-v2");
+  // Once current, a push is one PUT and no upload.
+  const again = await sync.pushAssignment("aither", "aither-v2", { client });
+  assert.equal(again.uploaded, false);
+});
