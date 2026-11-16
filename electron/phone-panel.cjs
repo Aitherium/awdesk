@@ -139,7 +139,7 @@ function ensureWired() {
   if (wired) return;
   wired = true;
   const { ipcMain } = electron();
-  ipcMain.handle("phone-panel:state", async (event) => (fromPanel(event) ? state() : describePhone()));
+  ipcMain.handle("phone-panel:state", async (event) => (fromPanel(event) ? state() : { ...describePhone(), error: "not the phone panel" }));
   ipcMain.handle("phone-panel:act", async (event, verb) => {
     if (!fromPanel(event)) return { ok: false, error: "not the phone panel" };
     if (!VERBS.includes(verb)) return { ok: false, error: "unknown action" };

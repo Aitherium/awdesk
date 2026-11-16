@@ -53,7 +53,13 @@ function createToaster({ Notification, ttlMs = DEFAULT_TTL_MS, max = MAX_HELD,
     });
     n.on("close", () => { release(n); if (typeof onClose === "function") { try { onClose(); } catch { /* caller bug */ } } });
     n.on("failed", () => release(n));
-    n.show();
+    try {
+      n.show();
+    } catch (e) {
+      release(n);
+      log(`toast show failed: ${e && e.message}`);
+      return null;
+    }
     return n;
   }
 

@@ -173,8 +173,12 @@ function createPhoneUsb({ execFileImpl = execFile, bin = resolveAdb(), env = pro
     async screencap(serial) {
       const r = await runBinary(execFileImpl, bin, adbArgv("screencap", { serial }));
       const png = r.stdout;
-      const isPng = png.length > 8 && png.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-      return isPng ? { ok: true, png } : { ok: false, error: r.stderr.trim().slice(0, 200) || "the phone returned no image" };
+      // magic bytes AND the IEND chunk: a capture cut off by the buffer limit is not an image
+      const isPng = png.length > 16 && png.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+        && png.subarray(png.length - 8, png.length - 4).toString("latin1") === "IEND";
+      if (isPng) return { ok: true, png };
+      const why = r.stderr.trim() || (r.error && r.error.message) || "the phone returned no image";
+      return { ok: false, error: String(why).slice(0, 200) };
     },
   };
 }

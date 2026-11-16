@@ -63,7 +63,7 @@ test("an in-flight act and an error and the last capture reach the page state", 
 });
 
 test("screencap: PNG bytes are returned, anything else is a plain failure", async () => {
-  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("data")]);
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("data"), Buffer.from("IEND"), Buffer.from([0xae, 0x42, 0x60, 0x82])]);
   const calls = [];
   const exec = (bin, argv, opts, cb) => { calls.push({ argv, opts }); cb(null, png, ""); };
   const usb = createPhoneUsb({ execFileImpl: exec, bin: "adb", env: {} });
@@ -87,4 +87,11 @@ test("main.cjs: the Phone connected toast goes through the holder and opens the 
   assert.match(near, /toaster\.show\(/, "the toast must be raised through the held toaster");
   assert.match(near, /openThisPhone\(/, "its click must open the This phone panel");
   assert.doesNotMatch(near, /new Notification\(/);
+});
+
+test("screencap: a PNG cut off before IEND is a failure, not an image", async () => {
+  const cut = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("x".repeat(40))]);
+  const usb = createPhoneUsb({ execFileImpl: (b, a, o, cb) => cb(null, cut, ""), bin: "adb", env: {} });
+  const r = await usb.screencap("58281FDCG000BB");
+  assert.equal(r.ok, false);
 });
