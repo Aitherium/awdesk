@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld("deskBridge", {
   avatarContextMenu: (slotId) => ipcRenderer.send("desk:avatar-context-menu", slotId),
   // Click-through (src/hooks/clickThrough.ts): false = nothing drawn under the cursor,
   // let the click reach the app below. main applies it to the SENDING window only.
+  // Which body is hovered / selected (src/hooks/avatarPick.ts): main keeps it for GET /swarm and the tests.
+  reportPick: (state) => ipcRenderer.send("desk:avatar-pick", { hover: state && state.hover ? String(state.hover) : null, selected: state && state.selected ? String(state.selected) : null }),
   setInteractive: (interactive) => ipcRenderer.send("desk:set-interactive", interactive === true),
   subscribe: (listener) => {
     const handler = (_event, payload) => listener(payload);

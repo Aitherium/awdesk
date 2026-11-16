@@ -1515,11 +1515,11 @@ test("the swarm page draws presence states and a click asks for that agent's cha
   const preload = fs.readFileSync(path.join(__dirname, "orb-preload.cjs"), "utf8");
   assert.match(preload, /chatAgent: \(agent\) => ipcRenderer\.invoke\("desk:orb-chat-agent"/);
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
-  assert.match(main, /chat: \(agent, links\) => openAgentChat\(agent, links\)/);
+  assert.match(main, /chat: \(agent, links\) => \{[\s\S]*?getSwarmHost\(\)\.talkTo\(agent\)[\s\S]*?return openAgentChat\(agent, links\);/);
   assert.match(main, /type: "deck:open-chat"/);
   assert.match(main, /platformPresence = snap\.presence\.agents/);
   // The live Claude sessions ride beside the platform agents, one companion each.
-  assert.match(main, /orbWindow\.setPresence\(\[\.\.\.platformPresence, \.\.\.sessions\]\)/);
+  assert.match(main, /host\.withBase\(\[\.\.\.platformPresence, \.\.\.sessions\]\)/);
   assert.match(main, /orbWindow\.noteAgentPosted\(agent\)/);
   const deck = fs.readFileSync(path.join(__dirname, "..", "src", "components", "Deck.tsx"), "utf8");
   assert.match(deck, /event\.type !== 'deck:open-chat'/);

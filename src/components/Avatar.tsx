@@ -12,6 +12,7 @@ import { useVrmLoader } from '../hooks/useVrmLoader';
 import { getLevel } from '../hooks/voiceLevels';
 import { useVrmAnimation } from '../hooks/useVrmAnimation';
 import { useAmplitudeLipSync } from '../hooks/useAmplitudeLipSync';
+import { getVisemes } from '../hooks/voiceVisemes';
 import { useBlink } from '../hooks/useBlink';
 import { easeExpressions, NEUTRAL_WEIGHTS } from '../hooks/aeonMood';
 import type { AnimationType } from '../animation-catalog';
@@ -80,7 +81,7 @@ function AvatarModel({
     updateAnimation(step);
     updateBlink(step);
     moodWeights.current = easeExpressions(vrm, moodWeights.current, step);
-    updateLipSync(step, level, speaking || level > 0.02);
+    updateLipSync(step, level, speaking || level > 0.02, getVisemes(slotId ?? 'slot0'));
     vrm.update(step);
   });
 

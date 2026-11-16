@@ -14,6 +14,9 @@ import { browserMeter, createHandsFree } from './voice/handsFree';
 import { createPushToTalk } from './voice/pushToTalk';
 import { Scene } from './components/Scene';
 import { clearLevel, setLevel } from './hooks/voiceLevels';
+import { setVisemes } from './hooks/voiceVisemes';
+import { AvatarOutline } from './components/AvatarOutline';
+import { installProbe, setSlotLook } from './hooks/avatarPick';
 import { speechGain } from './speech-gain';
 import { bubbleDurationMs, bubbleText, type SpeechBubble } from './speech-bubble';
 import { Deck } from './components/Deck';
@@ -156,6 +159,8 @@ function AvatarSceneApp() {
     useState<BodyAnimationOverride | null>(null);
   const [talkTurn, setTalkTurn] = useState(0);
   const [extraSlots, setExtraSlots] = useState<Array<{ slotId: string; modelUrl: string }>>([]);
+  // Bodies main hid without removing (the swarm: the resident stays mounted while Aither is a fairy).
+  const [hiddenSlots, setHiddenSlots] = useState<Record<string, true>>({});
   // Per-slot mouth state for spawned avatars (the room stage): level + speaking.
   const [slotVoices, setSlotVoices] = useState<Record<string, { level: number; speaking: boolean }>>({});
   const previousPhase = useRef<VoicePhase>('inactive');
@@ -177,6 +182,7 @@ function AvatarSceneApp() {
   const bubbleSeq = useRef(0);
   // Clicks pass through everything this window does not draw (hooks/clickThrough.ts).
   useEffect(() => installClickThrough(), []);
+  useEffect(() => installProbe(), []);
   useEffect(() => {
     const timers = bubbleTimers.current;
     return () => {
@@ -284,6 +290,19 @@ function AvatarSceneApp() {
       } else if (event.type === 'avatar-source') {
         setAvatarSource(avatarSourceFromEvent(event));
         setVamStreamError(null);
+      } else if (event.type === 'viseme') {
+        setVisemes(event.slotId || 'slot0', event.weights, event.ttlMs);
+      } else if (event.type === 'slot-look') {
+        setSlotLook(event.slotId, event.look);
+      } else if (event.type === 'slot-visible') {
+        const id = event.slotId || 'slot0';
+        setHiddenSlots((current) => {
+          if (event.visible === false) return current[id] ? current : { ...current, [id]: true };
+          if (!current[id]) return current;
+          const next = { ...current };
+          delete next[id];
+          return next;
+        });
       } else if (event.type === 'spawn-avatar') {
         // Idempotent by slotId: main replays every tracked slot on each
         // snapshot pull (that is how slots survive the window reload a
@@ -518,8 +537,11 @@ function AvatarSceneApp() {
         slotVoices={slotVoices}
         bubbles={bubbles}
         modelUrl={soloModelUrl ?? undefined}
-        hideResident={bodyView.showVam}
+        hideResident={bodyView.showVam || Boolean(hiddenSlots.slot0)}
+        hiddenSlots={hiddenSlots}
       />
+      {/* The hover outline + selection state: the body's real silhouette (hooks/avatarPick.ts). */}
+      {soloModelUrl ? null : <AvatarOutline />}
       {/* Floating beads — the notification badge + quick actions that live ON
           the avatar box. Not in solo mode: a detached single-character window
           is a view of one avatar, not the desk. */}

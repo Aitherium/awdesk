@@ -72,10 +72,11 @@ test("wake word: open mic acts only on the word; push-to-talk never needs it", (
 
 test("frame budget: idle work falls off and hidden draws nothing", () => {
   assert.equal(core.frameBudget({ hidden: true, audible: true }), 0);
-  assert.equal(core.frameBudget({ audible: true }), 60);
+  assert.equal(core.frameBudget({ audible: true }), 30);
   assert.equal(core.frameBudget({ sinceInputMs: 100 }), 30);
-  assert.equal(core.frameBudget({ sinceInputMs: 5000 }), 20);
-  assert.equal(core.frameBudget({}), 10);
+  assert.equal(core.frameBudget({ sinceInputMs: 5000 }), 5);
+  assert.equal(core.frameBudget({ sinceInputMs: 30000 }), 2);
+  assert.equal(core.frameBudget({}), 2);
 });
 
 test("cropRect maps DIPs to device pixels inside one display and refuses slivers", () => {

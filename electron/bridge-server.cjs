@@ -289,6 +289,11 @@ function createBridgeServer({
   desktopHandler = null,
   // POST /speak {text, voice?}: the avatar says it through AitherVoice.
   speakHandler = null,
+  // The agent swarm (agent-swarm-host.cjs). GET /swarm = the live roster + forms;
+  // POST /swarm {action, ...} = form | forms | mode | show | talk | speak | visemes | goblin;
+  // POST /swarm/speak?agent=<id> with an audio/* body = that audio, streamed, in the agent's
+  // own body. Same trust class as /speak: a desk origin, loopback only.
+  swarmHandler = null,
   // POST /console/open {pane?, card?}: raise the Aither Console on a pane (default inbox);
   // card focuses that decision card in the Inbox (a remote "Open secure prompt" tap).
   consoleHandler = null,
@@ -738,6 +743,50 @@ function createBridgeServer({
           response.writeHead(400, { "content-type": "application/json" });
           response.end(JSON.stringify({ ok: false, error: String((error && error.message) || error) }));
         });
+      return;
+    }
+
+    if (request.url === "/swarm" || request.url.startsWith("/swarm/") || request.url.startsWith("/swarm?")) {
+      if (!deskOriginAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      if (swarmHandler == null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      const reply = (status, body) => {
+        if (response.headersSent) return;
+        response.writeHead(status, { "content-type": "application/json" });
+        response.end(JSON.stringify(body));
+      };
+      const url = new URL(request.url, "http://127.0.0.1");
+      if (request.method === "GET" && url.pathname === "/swarm") {
+        Promise.resolve(swarmHandler({ action: "state", refresh: url.searchParams.get("refresh") === "1" }))
+          .then((result) => reply(200, result))
+          .catch((error) => reply(500, { ok: false, error: error?.message || String(error) }));
+        return;
+      }
+      if (request.method !== "POST") {
+        response.writeHead(405, { allow: "GET, POST" });
+        response.end();
+        return;
+      }
+      const done = (result) => reply(result && result.ok === false ? (result.refused ? 409 : 400) : 200, result);
+      const fail = (error) => reply(500, { ok: false, error: error?.message || String(error) });
+      const contentType = String(request.headers["content-type"] || "");
+      if (url.pathname === "/swarm/speak" && /^audio\//i.test(contentType)) {
+        // The audio itself, streamed in the body: handed to the host as a Readable.
+        const agent = String(url.searchParams.get("agent") || "");
+        Promise.resolve(swarmHandler({ action: "speak", agent, audioStream: request, mime: contentType }))
+          .then(done, fail);
+        return;
+      }
+      readJsonBody(request)
+        .then((body) => swarmHandler({ ...(body && typeof body === "object" ? body : {}), action: String((body && body.action) || url.pathname.split("/")[2] || "") }))
+        .then(done, fail);
       return;
     }
 

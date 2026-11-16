@@ -13,6 +13,9 @@ import { useAvatarDrag } from '../hooks/useAvatarDrag';
 import { authoredFields, freeSpot } from '../hooks/stagePlacement';
 import { anyoneAudible } from '../hooks/voiceLevels';
 import { avatarPointerOut, avatarPointerOver } from '../hooks/clickThrough';
+import { forgetSlot, hasPicker, pickAt, registerAvatarGroup, setSelected } from '../hooks/avatarPick';
+import { AvatarPicker } from './AvatarPicker';
+import { onDragAbort } from '../hooks/dragSafety';
 import type { VRM } from '@pixiv/three-vrm';
 import { applySpringScale, applyCustomise, sanitizeSpringTuning, DEFAULT_SPRING_TUNING, type DeskSpringTuning, type DeskCustomise } from '../hooks/useVrmLoader';
 import type { SpeechBubble } from '../speech-bubble';
@@ -56,6 +59,8 @@ interface SceneProps {
   /** The resident is shown as a VaM picture (VamAvatarView), so slot0's VRM
    *  is not mounted. Extra slots are unaffected. */
   hideResident?: boolean;
+  /** Bodies main hid without removing (the swarm). A hidden slot is not mounted. */
+  hiddenSlots?: Record<string, true>;
 }
 
 interface TargetControls {
@@ -158,15 +163,17 @@ function FullBodyCamera({
  *  of script per 6 s. The loop is now on DEMAND and this governor asks for
  *  frames: 60 Hz while anyone is audible or the stage is being handled, 30 Hz
  *  otherwise -- idle animation and hair read the same at 30. */
-const ACTIVE_FPS = 60;
+const ACTIVE_FPS = 30;
 const TAIL_FPS = 30;
 /** 2026-11-13 (owner: "the overlay feels laggy"): 30 Hz forever while idle cost a GPU
  *  frame every 33 ms behind every app. Idle now steps down to 20 Hz, then 10 Hz once
  *  nothing has moved, spoken or been touched for a minute, and 0 while hidden. The same
  *  policy is electron/toolkit-core.cjs frameBudget (asserted there). */
-const IDLE_FPS = 20;
-const DEEP_IDLE_FPS = 10;
-const DEEP_IDLE_AFTER_MS = 60_000;
+// Owner 2026-11-16 ("they are lagging quite a bit now", renderer ~1.4 cores): 30 fps cap, 5 fps when
+// nothing moves or is hovered, 2 fps after 20 s. Mirrors electron/toolkit-core.cjs FRAME.
+const IDLE_FPS = 5;
+const DEEP_IDLE_FPS = 2;
+const DEEP_IDLE_AFTER_MS = 20_000;
 /** Keep full rate this long after the last pointer/wheel input (orbit damping, drags). */
 const INTERACTION_TAIL_MS = 1500;
 
@@ -314,6 +321,17 @@ function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProp
   // re-render into the bone the moment the model lands.
   const [headBone, setHeadBone] = useState<THREE.Object3D | null>(null);
 
+  // The pick registry (hooks/avatarPick.ts): this body's group is what the id render draws as ITS
+  // flat colour, so a click is decided by what is painted, not by the grab proxy's box.
+  useLayoutEffect(() => {
+    registerAvatarGroup(slotId, groupRef.current);
+    return () => forgetSlot(slotId);
+  }, [slotId]);
+  /** Is the pixel under this event THIS body's? A gap is nobody's; where bodies overlap the
+   *  front-most wins (the depth buffer decided). Without a picker the proxy box stands alone. */
+  const isMine = (event: { nativeEvent: MouseEvent | PointerEvent }) =>
+    !hasPicker() || pickAt(event.nativeEvent.clientX, event.nativeEvent.clientY) === slotId;
+
   // Committed transform -> group, EXCEPT while a drag owns the group imperatively.
   useLayoutEffect(() => {
     if (draggingRef.current) return;
@@ -402,7 +420,12 @@ function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProp
       {ready ? (
         <mesh
           position={[0, 1.05, 0]}
+          userData={{ pickProxy: true }}
           onPointerDown={(event) => {
+            // Only the body actually painted under the pointer takes the press; the others let
+            // it fall through to whatever is behind them (no stopPropagation).
+            if (!isMine(event)) return;
+            if (event.button === 0) setSelected(slotId);
             // Tell the preload's window-level right-click handler this click hit an
             // AVATAR (dataset flag on the canvas) so it opens the per-avatar menu via
             // main instead of the deck. R3F delivers every button to this handler, so
@@ -453,9 +476,14 @@ function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProp
                 const group = groupRef.current;
                 if (group) group.rotation.y = startYaw + (move.clientX - startX) * 0.012;
               };
+              let turned = false;
+              let stopAbort: () => void = () => {};
               const onUp = () => {
+                if (turned) return;
+                turned = true;
                 window.removeEventListener('pointermove', onMove);
                 window.removeEventListener('pointerup', onUp);
+                stopAbort();
                 draggingRef.current = false;
                 resumeOrbit(orbit);
                 const group = groupRef.current;
@@ -463,6 +491,7 @@ function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProp
               };
               window.addEventListener('pointermove', onMove);
               window.addEventListener('pointerup', onUp);
+              stopAbort = onDragAbort(onUp);
               return;
             }
             event.stopPropagation();
@@ -480,14 +509,18 @@ function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProp
             });
           }}
           onPointerOver={() => {
+            // With the pick running, hover and the cursor come from the pixel (clickThrough.ts).
+            if (hasPicker()) return;
             document.body.style.cursor = 'grab';
             avatarPointerOver();
           }}
           onPointerOut={() => {
+            if (hasPicker()) return;
             document.body.style.cursor = '';
             avatarPointerOut();
           }}
           onWheel={(event) => {
+            if (!isMine(event)) return;
             event.stopPropagation();
             onScale(clampScale(transformRef.current.scale - event.nativeEvent.deltaY * 0.001));
           }}
@@ -532,12 +565,17 @@ function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProp
             // Electron's own menu event — so the per-avatar menu goes through the bridge,
             // same pattern the deck trigger uses. A plain right-CLICK lands here; a
             // right-DRAG turns the body (pointerdown above) and never does.
+            if (!isMine(event)) return;
             event.stopPropagation();
             if (rightTravelRef.current >= 6) return;
             window.deskBridge?.avatarContextMenu(slotId);
           }}
         >
-          <boxGeometry args={[1.8, 2.1, 1.0]} />
+          {/* Generous on purpose: this box only DELIVERS the event to the body. WHICH body takes it is
+              decided by the pixel pick (isMine), so the box must never be smaller than the body
+              (arms out, a long skirt) -- a click on a painted pixel outside a tight box never
+              arrived at all (measured 2026-11-16 with the pick proof). */}
+          <boxGeometry args={[3.6, 2.8, 2.6]} />
           <meshBasicMaterial transparent opacity={0} depthWrite={false} />
         </mesh>
       ) : null}
@@ -808,6 +846,7 @@ export function Scene(props: SceneProps) {
       />
       <Environment files={dawnEnvironment} />
       <FrameGovernor />
+      <AvatarPicker />
       <FullBodyCamera objects={allObjects} focusUuid={focusUuid} />
       {/* Slot 0: default avatar, drives voice/animation/audio — unchanged. Now individually
           draggable/scalable like every other slot; camera framing unions ALL avatars. */}
@@ -828,7 +867,7 @@ export function Scene(props: SceneProps) {
       )}
       {/* Extra slots: spawned avatars, each independently draggable/scalable — no longer
           pinned to a fixed side-by-side offset once the owner has moved one. */}
-      {extraSlots.map((slot) => {
+      {extraSlots.filter((slot) => !props.hiddenSlots?.[slot.slotId]).map((slot) => {
         const mouth = props.slotVoices?.[slot.slotId];
         const avatarProps: Omit<AvatarProps, 'onReady'> = {
           animation: mouth?.speaking ? 'TALK' : 'IDLE',

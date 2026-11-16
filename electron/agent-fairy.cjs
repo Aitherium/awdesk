@@ -194,6 +194,10 @@ function normalizePresence(row) {
     threadUrl: webUrl(row.thread_url),
     dmUrl: discord ? webUrl(discord.dm_url) : "",
     bot: Boolean(discord && discord.bot),
+    // The agent swarm's own fields (agent-swarm.cjs): what kind of agent this is, and
+    // which full avatar a light fairy (a terminal, a remote endpoint) orbits.
+    kind: String(row.kind || "").slice(0, 16),
+    belongsTo: String(row.belongsTo || "").slice(0, 40),
   };
 }
 
@@ -265,6 +269,8 @@ function companionsFor(cards, { current = "", presence = [], speaking = [] } = {
       threadUrl: pr ? pr.threadUrl : "",
       dmUrl: pr ? pr.dmUrl : "",
       bot: Boolean(pr && pr.bot),
+      kind: pr ? pr.kind : "",
+      belongsTo: pr ? pr.belongsTo : "",
     });
   }
   // The ones that need the owner first, then who is talking, working, idle.

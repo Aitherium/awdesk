@@ -3,6 +3,7 @@ import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
 import { POSITION_BOUND as DRAG_BOUND } from './useAvatarLayout';
+import { onDragAbort } from './dragSafety';
 import {
   activated as dragActivated,
   dragTarget,
@@ -84,14 +85,24 @@ export function useAvatarDrag(
         const target = dragTarget(frame, event.clientX, event.clientY);
         onMove(target.x, target.z);
       };
+      let released = false;
+      let stopAbort: () => void = () => {};
       const handleUp = () => {
+        if (released) return; // the release can arrive twice (pointerup then mouseup): end once
+        released = true;
         draggingRef.current = false;
         window.removeEventListener('pointermove', handleMove);
         window.removeEventListener('pointerup', handleUp);
+        stopAbort();
         onEnd();
       };
       window.addEventListener('pointermove', handleMove);
       window.addEventListener('pointerup', handleUp);
+      // STUCK DRAG (owner 2026-11-16: "the avatar keeps following the cursor after the mouse is
+      // released"): the release can be lost when the window flips click-through or the pointer
+      // leaves it. Every other way a drag can end ends it too: pointercancel, a mouseup on the
+      // window, blur, the window hiding, Escape -- and a move that arrives with NO button held.
+      stopAbort = onDragAbort(handleUp, handleMove);
     },
     [camera, getStart, gl, onMove],
   );
