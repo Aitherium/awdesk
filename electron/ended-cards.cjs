@@ -14,6 +14,11 @@
  *   - only a card that NAMES a session (`sessionId`) and was raised on THIS machine
  *     (`host` empty or ours): a session on another computer always looks "not running"
  *     from here, and that is not an end;
+ *   - AND the desk must hold a TRACE of that session on this machine (`known(sessionId)`:
+ *     a Claude state file or a transcript). A session in WSL/awnix, a container agent or
+ *     another harness never leaves one here, so it always looks "not running" from this
+ *     side; absence of a trace means "cannot tell", never "ended". An empty `host` is not
+ *     proof of locality on its own;
  *   - the liveness read must have WORKED (`judged`): an unreadable sessions folder is an
  *     empty map, and an empty map must never be read as "everything ended";
  *   - the card must look ended on TWO sweeps `confirmMs` apart (default 2 min): one bad
@@ -44,11 +49,15 @@ function hostMatches(cardHost, ownHost) {
 }
 
 /** Why a card is NOT ended, or "" when it is one the desk may close. */
-function keepReason(card, live, { host = "", nowSec = Date.now() / 1000, graceSec = GRACE_SEC } = {}) {
+function keepReason(card, live, { host = "", nowSec = Date.now() / 1000, graceSec = GRACE_SEC, known = () => false } = {}) {
   if (!card || typeof card !== "object" || typeof card.id !== "string") return "not a card";
   if (!card.sessionId) return "no session behind it";
   if (!hostMatches(card.host, host)) return "raised on another machine";
   if (live && typeof live.has === "function" && live.has(card.sessionId)) return "its session is running";
+  let traced;
+  try { traced = typeof known === "function" && Boolean(known(card.sessionId)); } catch { traced = false; }
+  if (!traced) return "no trace of that session on this machine";
+  if (card.kind === "credential" || card.secretName) return "a key request stays until you close it";
   const created = Number(card.createdAt) || 0;
   if (created > 0 && nowSec - created < graceSec) return "inside the grace period";
   return "";
@@ -58,13 +67,13 @@ function keepReason(card, live, { host = "", nowSec = Date.now() / 1000, graceSe
  * One look. `seen` (a Map id -> first-seen-ended ms) carries the two-look rule across
  * calls; the caller keeps it. Returns {judged, closed:[card], held:{id:reason}}.
  */
-function plan(cards, live, { seen, host = "", nowMs = Date.now(), graceSec = GRACE_SEC, confirmMs = CONFIRM_MS, judged = true } = {}) {
+function plan(cards, live, { seen, host = "", nowMs = Date.now(), graceSec = GRACE_SEC, confirmMs = CONFIRM_MS, judged = true, known = () => false } = {}) {
   const out = { judged: Boolean(judged), closed: [], held: {} };
   if (!judged || !live) return out; // could not judge: close nothing, remember nothing
   const state = seen instanceof Map ? seen : new Map();
   const present = new Set();
   for (const card of Array.isArray(cards) ? cards : []) {
-    const why = keepReason(card, live, { host, nowSec: nowMs / 1000, graceSec });
+    const why = keepReason(card, live, { host, nowSec: nowMs / 1000, graceSec, known });
     if (why) {
       if (card && card.id) { out.held[card.id] = why; state.delete(card.id); }
       continue;

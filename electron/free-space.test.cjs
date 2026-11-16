@@ -90,3 +90,23 @@ test("nudgePlacement keeps the flutter and its whisper off clickable elements, a
   };
   assert.equal(free.overlapArea(box, wall[0]), 0, "the moved flutter+whisper box still touches the toolbar");
 });
+
+test("the probe reaches into a same-origin iframe (offset by the frame) and skips a cross-origin one", () => {
+  const el = (l, t, w, h) => ({ getBoundingClientRect: () => ({ left: l, top: t, width: w, height: h }) });
+  const style = () => ({ visibility: "visible", display: "block", pointerEvents: "auto" });
+  const mkDoc = (buttons, frames) => {
+    const doc = {
+      documentElement: {},
+      querySelectorAll: (sel) => (sel === "iframe, frame" ? frames : buttons),
+    };
+    doc.defaultView = { getComputedStyle: style };
+    return doc;
+  };
+  const inner = mkDoc([el(10, 20, 80, 30)], []);
+  const sameOrigin = { getBoundingClientRect: () => ({ left: 300, top: 100, width: 600, height: 500 }), get contentDocument() { return inner; } };
+  const crossOrigin = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 50, height: 50 }), get contentDocument() { throw new Error("blocked a frame"); } };
+  const top = mkDoc([el(5, 5, 40, 20)], [sameOrigin, crossOrigin]);
+  const win = { innerWidth: 1200, innerHeight: 900, getComputedStyle: style };
+  const rects = new Function("document", "window", `return ${free.probeSource()};`)(top, win);
+  assert.deepEqual(rects, [[5, 5, 40, 20], [310, 120, 80, 30]], "frame control sits at frame offset + its own position");
+});

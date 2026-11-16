@@ -14,6 +14,10 @@
  * and tab strip across its top are treated as one obstacle -- which is where an app's
  * clickable chrome is -- and the fairy stays in the lower part of the window.
  *
+ * Coverage of the probe, stated: the main frame and same-origin iframes (to depth 3) of the
+ * desk's own windows get the real probe. A cross-origin frame (an embedded third-party
+ * site) is opaque to it, so for those the fairy relies on the free-spot ordering alone.
+ *
  * PURE: no electron. The caller measures the page and owns the clock.
  */
 
@@ -35,17 +39,34 @@ const MAX_RECTS = 500;
 function probeSource() {
   return `(() => {
     const out = [];
+    const SEL = ${JSON.stringify(INTERACTIVE_SELECTOR)};
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    for (const el of document.querySelectorAll(${JSON.stringify(INTERACTIVE_SELECTOR)})) {
-      if (out.length >= ${MAX_RECTS}) break;
-      const r = el.getBoundingClientRect();
-      if (r.width < 4 || r.height < 4) continue;
-      if (r.bottom < 0 || r.right < 0 || r.top > vh || r.left > vw) continue;
-      const cs = getComputedStyle(el);
-      if (cs.visibility === "hidden" || cs.display === "none" || cs.pointerEvents === "none") continue;
-      out.push([Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]);
-    }
+    const walk = (doc, ox, oy, depth) => {
+      const win = doc.defaultView;
+      for (const el of doc.querySelectorAll(SEL)) {
+        if (out.length >= ${MAX_RECTS}) return;
+        const r = el.getBoundingClientRect();
+        if (r.width < 4 || r.height < 4) continue;
+        const left = r.left + ox, top = r.top + oy;
+        if (left + r.width < 0 || top + r.height < 0 || top > vh || left > vw) continue;
+        const cs = win.getComputedStyle(el);
+        if (cs.visibility === "hidden" || cs.display === "none" || cs.pointerEvents === "none") continue;
+        out.push([Math.round(left), Math.round(top), Math.round(r.width), Math.round(r.height)]);
+      }
+      if (depth >= 3) return;
+      // Same-origin frames (an app panel in an iframe) are probed with their offset.
+      // A cross-origin frame has no readable document: it contributes nothing here, and
+      // the module header says which windows rely on the title-bar fallback instead.
+      for (const f of doc.querySelectorAll("iframe, frame")) {
+        let inner = null;
+        try { inner = f.contentDocument; } catch { inner = null; }
+        if (!inner || !inner.documentElement) continue;
+        const fr = f.getBoundingClientRect();
+        walk(inner, ox + fr.left, oy + fr.top, depth + 1);
+      }
+    };
+    walk(document, 0, 0, 0);
     return out;
   })()`;
 }

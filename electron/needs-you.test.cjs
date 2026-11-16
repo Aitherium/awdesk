@@ -83,3 +83,15 @@ test("badge: a red KEY replaces the numeral while a secret waits; tooltip names 
   assert.match(badgeTooltip(3, 5, [CRED]), /^Aither — Secret needed: proton_bridge_pw/);
   assert.equal(badgeTooltip(3, 5), "Aither — 3 decisions waiting · 5 cards in the inbox");
 });
+
+test("trayRows: '&' in an agent title survives as a native menu label ('&&' draws one '&')", () => {
+  const rows = ny.trayRows([
+    { ...CRED, id: "d-a", secretName: "", title: "Allow Claude to use: Bash(git add && git commit)" },
+    { ...CRED, id: "d-b", secretName: "", title: "A & B" },
+    { ...CRED, id: "d-c", secretName: "", title: "plain" },
+    { ...CRED, id: "d-d", secretName: "", title: "fourth" },
+  ], () => {});
+  assert.match(rows[0].label, /git add &&&& git commit/, "a literal && becomes &&&& so it draws &&");
+  assert.match(rows[1].label, /A && B/);
+  assert.equal(rows[0].label.includes("&&&&"), true);
+});

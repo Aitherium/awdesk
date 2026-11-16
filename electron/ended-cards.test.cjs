@@ -11,24 +11,25 @@ const ended = require("./ended-cards.cjs");
 const NOW = 1_800_000_000_000;
 const OLD = NOW / 1000 - 3600; // an hour old: past the grace period
 const card = (id, extra = {}) => ({ id, title: `card ${id}`, kind: "decision", sessionId: `s-${id}`, host: "", createdAt: OLD, ...extra });
+const known = () => true; // this machine holds a trace of every test session
 const live = (...ids) => new Map(ids.map((id) => [id, { status: "idle" }]));
 
 test("a card from a running session is kept; an ended one needs a second look", () => {
   const seen = new Map();
   const cards = [card("d-1"), card("d-2")];
-  const first = ended.plan(cards, live("s-d-1"), { seen, nowMs: NOW });
+  const first = ended.plan(cards, live("s-d-1"), { seen, known, nowMs: NOW });
   assert.deepEqual(first.closed, [], "one look is never enough");
   assert.equal(first.held["d-1"], "its session is running");
   assert.equal(first.held["d-2"], "waiting for a second look");
-  const second = ended.plan(cards, live("s-d-1"), { seen, nowMs: NOW + ended.CONFIRM_MS });
+  const second = ended.plan(cards, live("s-d-1"), { seen, known, nowMs: NOW + ended.CONFIRM_MS });
   assert.deepEqual(second.closed.map((c) => c.id), ["d-2"]);
 });
 
 test("a session that comes back between the two looks resets the clock", () => {
   const seen = new Map();
-  ended.plan([card("d-2")], live(), { seen, nowMs: NOW });
-  ended.plan([card("d-2")], live("s-d-2"), { seen, nowMs: NOW + 60_000 });
-  const again = ended.plan([card("d-2")], live(), { seen, nowMs: NOW + ended.CONFIRM_MS });
+  ended.plan([card("d-2")], live(), { seen, known, nowMs: NOW });
+  ended.plan([card("d-2")], live("s-d-2"), { seen, known, nowMs: NOW + 60_000 });
+  const again = ended.plan([card("d-2")], live(), { seen, known, nowMs: NOW + ended.CONFIRM_MS });
   assert.deepEqual(again.closed, [], "it was running in between, so the first look no longer counts");
 });
 
@@ -40,7 +41,7 @@ test("cards with no session, another machine, or inside the grace period are nev
     card("d-new", { createdAt: NOW / 1000 - 60 }),
     card("d-here", { host: "MY-PC.local" }),
   ];
-  const opts = { seen, host: "my-pc", nowMs: NOW };
+  const opts = { seen, known, host: "my-pc", nowMs: NOW };
   ended.plan(cards, live(), opts);
   const r = ended.plan(cards, live(), { ...opts, nowMs: NOW + ended.CONFIRM_MS });
   assert.deepEqual(r.closed.map((c) => c.id), ["d-here"]);
@@ -51,7 +52,7 @@ test("cards with no session, another machine, or inside the grace period are nev
 
 test("a liveness read that could not be judged closes NOTHING (an empty map is not 'all ended')", () => {
   const seen = new Map();
-  const r = ended.plan([card("d-1")], live(), { seen, nowMs: NOW, judged: false });
+  const r = ended.plan([card("d-1")], live(), { seen, known, nowMs: NOW, judged: false });
   assert.equal(r.judged, false);
   assert.deepEqual(r.closed, []);
   assert.equal(seen.size, 0, "and it remembers nothing, so the next good read starts its own two looks");
@@ -69,8 +70,8 @@ test("sweep writes the audit line FIRST, then cancels with the reason; nothing i
     const calls = [];
     const cancel = (id, note) => { calls.push([id, note, fs.existsSync(file)]); return true; };
     const cards = [card("d-9", { kind: "blocked", title: "Allow Claude to use: Bash(gh api ...)" })];
-    assert.deepEqual(ended.sweep(cards, live(), { cancel, file, seen, nowMs: NOW }).closed, []);
-    const done = ended.sweep(cards, live(), { cancel, file, seen, nowMs: NOW + ended.CONFIRM_MS });
+    assert.deepEqual(ended.sweep(cards, live(), { cancel, file, seen, known, nowMs: NOW }).closed, []);
+    const done = ended.sweep(cards, live(), { cancel, file, seen, known, nowMs: NOW + ended.CONFIRM_MS });
     assert.deepEqual(done.closed, ["d-9"]);
     assert.equal(calls.length, 1);
     assert.equal(calls[0][0], "d-9");
@@ -88,6 +89,7 @@ test("sweep writes the audit line FIRST, then cancels with the reason; nothing i
       cancel: (id) => { calls2.push(id); return true; },
       file,
       seen: new Map([["d-10", NOW - ended.CONFIRM_MS]]),
+      known,
       nowMs: NOW,
       appendFn: () => { throw new Error("disk full"); },
     });
@@ -102,7 +104,7 @@ test("a cancel that fails is reported and audited, not counted as closed", () =>
   const { dir, file } = scratch();
   try {
     const seen = new Map([["d-3", NOW - ended.CONFIRM_MS]]);
-    const r = ended.sweep([card("d-3")], live(), { cancel: () => false, file, seen, nowMs: NOW });
+    const r = ended.sweep([card("d-3")], live(), { cancel: () => false, file, seen, known, nowMs: NOW });
     assert.deepEqual(r.closed, []);
     assert.deepEqual(r.failed, ["d-3"]);
     const steps = fs.readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l).step);
@@ -110,4 +112,41 @@ test("a cancel that fails is reported and audited, not counted as closed", () =>
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a session this machine has no trace of is never closed, even with an empty host", () => {
+  const seen = new Map();
+  // d-wsl: asked from WSL/awnix or a container agent: no Claude state file or transcript here.
+  const cards = [card("d-wsl", { host: "" }), card("d-claude", { host: "" })];
+  const opts = { seen, known: (id) => id === "s-d-claude", nowMs: NOW };
+  ended.plan(cards, live(), opts);
+  const r = ended.plan(cards, live(), { ...opts, nowMs: NOW + ended.CONFIRM_MS });
+  assert.deepEqual(r.closed.map((c) => c.id), ["d-claude"]);
+  assert.equal(r.held["d-wsl"], "no trace of that session on this machine");
+  const none = ended.plan([card("d-x")], live(), { seen: new Map(), nowMs: NOW }); // no `known` at all
+  assert.equal(none.held["d-x"], "no trace of that session on this machine");
+});
+
+test("a non-Claude session id (a harness name, not a uuid) is held", () => {
+  const seen = new Map();
+  const cards = [card("d-h", { sessionId: "awsh:codex:7" })];
+  const opts = { seen, known: () => false, nowMs: NOW };
+  ended.plan(cards, live(), opts);
+  const r = ended.plan(cards, live(), { ...opts, nowMs: NOW + ended.CONFIRM_MS });
+  assert.deepEqual(r.closed, []);
+});
+
+test("credential cards from an ended session stay listed until the owner closes them", () => {
+  const seen = new Map();
+  const cards = [
+    card("d-key", { kind: "credential", title: "Stripe TEST key for the sticker service proof" }),
+    card("d-sec", { secretName: "DISCORD_TOKEN" }),
+    card("d-plain"),
+  ];
+  const opts = { seen, known, nowMs: NOW };
+  ended.plan(cards, live(), opts);
+  const r = ended.plan(cards, live(), { ...opts, nowMs: NOW + ended.CONFIRM_MS });
+  assert.deepEqual(r.closed.map((c) => c.id), ["d-plain"]);
+  assert.match(r.held["d-key"], /key request/);
+  assert.match(r.held["d-sec"], /key request/);
 });

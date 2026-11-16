@@ -4107,6 +4107,7 @@ function sweepEndedSessionCards(cards = openDecisions) {
     const result = endedCards.sweep(cards, live, {
       cancel: (id, note) => decisionCards.cancelCard(id, note),
       seen: endedSeen,
+      known: (sessionId) => sessionContext.sessionKnownHere(sessionId),
       host: require("node:os").hostname(),
       judged,
     });

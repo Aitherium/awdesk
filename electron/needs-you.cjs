@@ -98,12 +98,18 @@ function askLine(card, max = 110) {
 function trayRows(needsYou, open) {
   const list = Array.isArray(needsYou) ? needsYou : [];
   if (!list.length) return [];
+  // A native menu eats a single "&" (mnemonic marker), so an agent title such as
+  // "Allow Claude to use: Bash(git ... && ...)" must go through the same escape as every
+  // other menu row. NOT command-registry.menuText: that one is idempotent for authored
+  // labels that already say "&&"; an agent's text is raw, so every "&" doubles ("&&"
+  // in a title must draw "&&", i.e. be sent as "&&&&").
+  const menuText = (text) => String(text).replace(/&/g, "&&");
   const rows = list.slice(0, 3).map((card) => ({
-    label: askLine(card),
+    label: menuText(askLine(card)),
     click: () => open(card.id),
   }));
   if (list.length > 3) {
-    rows.push({ label: `+${list.length - 3} more waiting on you`, click: () => open(list[3].id) });
+    rows.push({ label: menuText(`+${list.length - 3} more waiting on you`), click: () => open(list[3].id) });
   }
   rows.push({ type: "separator" });
   return rows;
