@@ -386,6 +386,50 @@ function logRecord({ id, surface, verb, ctx, settings, outcome, error, text, ext
   return rec;
 }
 
+// -- Alt+Space (the launcher): the writing rows ---------------------------------------------
+
+/** What a launcher row does when chosen. Keys are `assist:<verb>` or `assist:chip:<n>` or `assist:write`. */
+const LAUNCHER_VERBS = Object.freeze(["rewrite", "explain", "summarize", "translate", "reply", "send-agent"]);
+
+/**
+ * The rows the Alt+Space box leads with when the owner pressed it ON a selection or in a
+ * text field: the prompt line (the typed words become "Write: ..."), up to 3 context chips,
+ * and the verbs that fit. Pure.
+ *
+ *   snap        the caret snapshot taken at KEY-DOWN (assist-caret.cjs)
+ *   typed       what is in the box now
+ *   insertable  whether the original window can take pasted text (not a terminal, not self)
+ *
+ * Returns null when there is nothing to write on -- the box then behaves exactly as before.
+ * A password field returns null too: nothing about it is shown anywhere.
+ */
+function writingGroup({ snap, typed = "", insertable = false } = {}) {
+  if (!snap || snap.ok === false || snap.sensitive) return null;
+  const hasSelection = Boolean(String(snap.selection || "").trim());
+  if (!hasSelection && snap.editable !== true) return null;
+  const ctx = normalizeContext({ surface: "desk", app: snap.app, title: snap.title, selection: snap.selection, field: snap.field, fieldLabel: snap.fieldLabel });
+  const where = ctx.app || "this window";
+  const into = insertable ? (hasSelection ? "replaces your selection" : "inserts at the caret") : "shown here; copy it";
+  const items = [];
+  const plan = new Map();
+  const add = (key, title, subtitle, action) => { items.push({ key, group: "assist", kind: "assist", title, subtitle, score: 1000 - items.length }); plan.set(key, action); };
+  const words = String(typed || "").trim();
+  if (words) add("assist:write", `Write: ${words.length > 80 ? `${words.slice(0, 79)}…` : words}`, `in ${where} \u00b7 ${into}`, { verb: "write", prompt: words, run: true, insert: insertable });
+  if (hasSelection) {
+    const verbs = insertable ? ["rewrite", "reply", "explain", "translate", "summarize", "send-agent"] : ["explain", "summarize", "translate", "send-agent"];
+    for (const id of verbs) {
+      const v = verbById(id);
+      if (!v) continue;
+      const run = id !== "translate" && id !== "send-agent"; // those ask for a language / an agent first
+      add(`assist:${id}`, v.label, `${id === "rewrite" || id === "reply" ? into : "the selection"} \u00b7 ${where}`, { verb: id, prompt: "", run, insert: insertable && v.kind === "transform" });
+    }
+  } else {
+    heuristicSuggestions(ctx).slice(0, 3).forEach((chip, i) => add(`assist:chip:${i}`, chip.text, `${into} \u00b7 ${where}`, { verb: chip.verb, prompt: chip.text, run: true, insert: insertable && chip.verb !== "explain" && chip.verb !== "summarize" }));
+  }
+  if (!items.length) return null;
+  return { group: { id: "assist", label: `Write in ${where}`, total: items.length, items }, plan, ctx };
+}
+
 /** Strip the chatter models add around "return only the text". */
 function cleanResult(text) {
   let t = String(text == null ? "" : text).trim();
@@ -402,5 +446,5 @@ module.exports = {
   verbById, normalizeContext, refusal, buildMessages,
   heuristicSuggestions, suggestionMessages, parseSuggestions,
   normalizeSettings, isByokModel, destination, mayAutoSuggest, describeSend,
-  logRecord, shortHash, cleanResult, fence, neutralise, inertLine,
+  logRecord, shortHash, cleanResult, fence, neutralise, inertLine, writingGroup, LAUNCHER_VERBS,
 };

@@ -231,6 +231,8 @@ const launcher = require("./launcher-window.cjs").createLauncher({
   // Alt+Space opens on what the owner is LOOKING AT (launcher-context.cjs), sampled
   // on key-down, before the overlay takes focus.
   hostContext: () => require("./host-context.cjs").sampleHostContext(),
+  // Alt+Space on a selection / in a text field leads with the writing actions (assist-window.cjs).
+  assist: { capture: () => assistMain().window.launcher.capture(), group: (c, t) => assistMain().window.launcher.group(c, t), choose: (c, k, t) => assistMain().window.launcher.choose(c, k, t) },
   // ...and on the DECISION CARDS. The empty box leads with "Needs you (N)" so the
   // owner can answer without leaving the keyboard (owner, 2026-11-06).
   cards: () => decisionCards.listSnapshot(),
