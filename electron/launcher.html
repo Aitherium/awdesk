@@ -166,7 +166,7 @@
     "fleet-agent": ["open", "steer", "graph"], "local-agent": ["open", "steer", "graph"], twin: ["open", "steer", "graph"],
   };
   // The badge on the right of a row: AitherOS apps and the PC's own apps must not read alike.
-  const KIND_BADGE = { osapp: "AitherOS app", app: "PC app", down: "not answering", ask: "ask Aither" };
+  const KIND_BADGE = { osapp: "AitherOS app", app: "PC app", down: "not answering", ask: "ask Aither", assist: "write" };
   const VERB_KEYS = { steer: "Ctrl+Enter", stop: "Ctrl+.", transcript: "Ctrl+T", graph: "Ctrl+G", open: "Enter", detail: "Ctrl+I" };
   // Steer mode: the ONE box becomes the message for the chosen row; Esc returns to the search.
   let steer = null; // {key, title, query}
@@ -395,7 +395,7 @@
 
   function glyphFor(kind) {
     return ({ app: "▣", osapp: "❖", file: "▤", screenshot: "▦", clip: "▥", action: "◆", agent: "◈", tool: "⚙", skill: "✧",
-      pack: "▨", lane: "⇢", web: "◐", ask: "?", down: "⚠",
+      pack: "▨", lane: "⇢", web: "◐", ask: "?", down: "⚠", assist: "✎",
       session: "❯", run: "▶", "fleet-agent": "◈", "local-agent": "◇", twin: "◎", project: "▧", task: "☐", roadmap: "⚑", pr: "⇄",
       plan: "✎", notebook: "▤", memory: "✦", schedule: "⏱", routine: "↻", event: "◷", person: "☺" })[kind] || "•";
   }

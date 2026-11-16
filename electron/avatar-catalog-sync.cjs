@@ -86,18 +86,109 @@ function stampLibraryId(rosterDir, name, record) {
   }
 }
 
-/** Pull: dress this desk's agents the way the catalog says. */
+/** Where agent-avatar-defaults.json lives: beside cast.json (null when unresolvable). */
+function defaultsDir(deps = {}) {
+  if (deps.defaultsDir) return deps.defaultsDir;
+  try {
+    return path.dirname(require("./cast-config.cjs").CAST_FILE());
+  } catch {
+    return null;
+  }
+}
+
+/** Agents a pull leaves alone: a desk move (agent-avatar-defaults.cjs) the catalog has not
+ *  taken yet. Measured 2026-11-16: without this the next pull re-wrote the old bodies. */
+function heldAgents(deps = {}) {
+  if (typeof deps.held === "function") return deps.held();
+  const dir = defaultsDir(deps);
+  try {
+    return dir ? require("./agent-avatar-defaults.cjs").heldAgents(dir) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+/** Push every pending registry move to the catalog; each one that lands stops being held. */
+async function pushPendingDefaults(deps = {}) {
+  const dir = defaultsDir(deps);
+  if (!dir) return { ok: true, results: [] };
+  const agentDefaults = require("./agent-avatar-defaults.cjs");
+  const restored = agentDefaults.adoptRestored({ dir });
+  if (restored.length) (deps.log || (() => {}))("bodies the person put back are kept and told to the catalog", restored);
+  const again = agentDefaults.reassertPending({ dir, registry: deps.registry });
+  if (again.length) (deps.log || (() => {}))("registry avatars re-applied (an older cast arrived first)", again);
+  const results = [];
+  for (const [agent, character] of Object.entries(agentDefaults.readState(dir).pending)) {
+    const r = await pushAssignment(agent, character, deps);
+    if (r.ok) agentDefaults.markPushed(dir, agent, character);
+    results.push(r);
+  }
+  if (results.length) (deps.log || (() => {}))("registry avatars pushed to the catalog", results.map((r) => [r.agent, r.ok ? r.id : r.reason]));
+  return { ok: results.every((r) => r.ok), results };
+}
+
+function pulledFor(deps) {
+  try {
+    const dir = defaultsDir(deps);
+    return dir ? require("./agent-avatar-defaults.cjs").pulledMap(dir) : {};
+  } catch {
+    return {};
+  }
+}
+
+function notePulled(deps, agent, name) {
+  try {
+    const dir = defaultsDir(deps);
+    if (dir) require("./agent-avatar-defaults.cjs").markPulled(dir, agent, name);
+  } catch { /* the note is a convenience */ }
+}
+
+/** The person assigned this body themselves: it is no longer a row a pull may replace. */
+function clearPulled(deps, agent) {
+  try {
+    const dir = defaultsDir(deps);
+    if (dir) require("./agent-avatar-defaults.cjs").markPulled(dir, agent, null);
+  } catch { /* the note is a convenience */ }
+}
+
+/** Is `name` a character this desk can show right now? */
+function onDesk(d, name) {
+  try {
+    const names = d.roster.listAllCharacters ? d.roster.listAllCharacters() : d.roster.listCharacters();
+    return Array.isArray(names) && names.includes(name);
+  } catch {
+    return false;
+  }
+}
+
+/** Pull: fill this desk's EMPTY agent rows the way the catalog says (`replace: true` also replaces). */
 async function syncFromCatalog(deps = {}) {
   const d = defaults(deps);
   const cat = await d.client.avatarCatalog(deps.clientDeps);
   if (!cat.ok) return { ok: false, reason: cat.reason, results: [] };
   const byId = new Map();
   for (const r of [...cat.avatars, ...cat.starters]) if (r && typeof r.id === "string") byId.set(r.id, r);
+  const held = heldAgents(deps);
   const results = [];
   for (const [agent, id] of Object.entries(cat.agents)) {
+    if (held.has(agent)) {
+      results.push({ agent, ok: true, held: true, reason: "a desk move the catalog has not taken yet" });
+      continue;
+    }
     const record = byId.get(id);
     if (!record) {
       results.push({ agent, ok: false, reason: "that avatar is not in the library" });
+      continue;
+    }
+    // A body this desk already shows is the person's (owner 2026-11-16, P0: robots came back over
+    // the bodies he knows). A pull only FILLS an empty row, or fetches the model a row already
+    // names; replacing a shown body is the person's act (`replace`: the manual "sync now").
+    // ...except a row an earlier PULL wrote (agent-avatar-defaults pulledMap): that was never his choice, so a
+    // body assigned on another desk still follows the person here (review of #104).
+    const shown = d.agents.getAgentAvatar(agent);
+    const pulledBefore = pulledFor(deps)[agent];
+    if (shown && deps.replace !== true && onDesk(d, shown) && pulledBefore !== shown) {
+      results.push({ agent, ok: true, name: shown, installed: false, changed: false, kept: true, reason: "this desk already shows a body for it" });
       continue;
     }
     const ensured = record.source === "vroid"
@@ -108,8 +199,16 @@ async function syncFromCatalog(deps = {}) {
       continue;
     }
     const current = d.agents.getAgentAvatar(agent);
+    if (current && current !== ensured.name && deps.replace !== true && pulledBefore !== current) {
+      // The row names a body whose model was missing: the catalog's record is fetched, the row stays.
+      results.push({ agent, ok: true, name: current, installed: ensured.installed, changed: false, kept: true, reason: "this desk already names a body for it" });
+      continue;
+    }
     const changed = current !== ensured.name;
-    if (changed) d.agents.setAgentAvatar(agent, ensured.name);
+    if (changed) {
+      d.agents.setAgentAvatar(agent, ensured.name);
+      notePulled(deps, agent, ensured.name); // only a row THIS pull wrote counts as pulled (review of #104)
+    }
     results.push({ agent, ok: true, name: ensured.name, installed: ensured.installed, changed });
   }
   d.log("avatar catalog sync", results.filter((r) => r.changed || r.installed || !r.ok));
@@ -325,6 +424,7 @@ async function pushAssignment(agent, character, deps = {}) {
   const put = await d.client.putAgentAvatar(agent, found.id, deps.clientDeps);
   if (!put.ok) return { ok: false, agent, reason: put.reason };
   if (found.canonical && found.canonical !== character) d.agents.setAgentAvatar(agent, found.canonical);
+  clearPulled(deps, agent);
   return { ok: true, agent, id: found.id, uploaded: found.uploaded, name: found.canonical || character };
 }
 
@@ -374,10 +474,20 @@ function startCatalogSync(deps = {}) {
   let seedPending = true;
   let seedTries = 0;
   let retryAgents = null;
+  // The registry's avatars reach this desk's cast once (agent-avatar-defaults.cjs), before
+  // the first pull can re-write an inherited old body over them.
+  if (deps.registryDefaults !== false) {
+    try {
+      require("./agent-avatar-defaults.cjs").runDefaults({ log: deps.log });
+    } catch (error) {
+      (deps.log || (() => {}))("agent avatar defaults failed", String((error && error.message) || error));
+    }
+  }
   const tick = async () => {
     if (running) return;
     running = true;
     try {
+      if (deps.registryDefaults !== false) await pushPendingDefaults(deps);
       if (seedPending && seedTries < SEED_MAX_TRIES) {
         seedTries += 1;
         const out = await seedIfCatalogEmpty(deps, retryAgents);
@@ -406,6 +516,8 @@ function startCatalogSync(deps = {}) {
 
 module.exports = {
   staleStamp,
+  heldAgents,
+  pushPendingDefaults,
   PULL_INTERVAL_MS,
   SEED_MAX_TRIES,
   pushAssignment,
@@ -436,7 +548,7 @@ if (require.main === module) {
     });
   } else {
   // The roster's own install funnel (safety consult + rater) runs exactly as in the app.
-  const run = mode === "seed" ? seedFromDesk() : syncFromCatalog();
+  const run = mode === "seed" ? seedFromDesk() : syncFromCatalog({ replace: true }); // the person ran it by hand: that is their OK
   run.then((out) => {
     for (const r of out.results || []) {
       process.stdout.write(`${r.ok ? "ok  " : "FAIL"} ${r.agent}${r.id ? ` -> ${r.id}` : ""}${r.name ? ` = ${r.name}` : ""}${r.uploaded ? " (uploaded)" : ""}${r.reason ? `: ${r.reason}` : ""}\n`);
