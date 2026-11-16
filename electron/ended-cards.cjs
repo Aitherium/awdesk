@@ -26,6 +26,12 @@
  *   - and it must be older than `graceSec` (default 15 min): a session that just
  *     finished and left a card for the owner gets a quarter of an hour before it goes;
  *   - the audit line is written FIRST; if it cannot be written nothing is closed;
+ *   - a card whose session this machine has NO trace of (it ran in WSL, a container or
+ *     another harness) is not closed because "it ended" -- that cannot be told -- but a
+ *     grant / approval / permission card nobody answered for EXPIRE_SEC (24 h) is closed
+ *     as EXPIRED, with its own audit reason: nobody sits at a terminal waiting on a
+ *     "Allow Claude to use: Bash(...)" prompt a day later. Key requests (credential)
+ *     are never closed by either rule;
  *   - closing is awask's `cancel` (it tells the raising session) with a note that says
  *     why; the card is never deleted here, and `held` says which one-line reason kept
  *     every other card.
@@ -39,6 +45,9 @@ const path = require("node:path");
 
 const GRACE_SEC = 15 * 60;
 const CONFIRM_MS = 2 * 60_000;
+const EXPIRE_SEC = 24 * 60 * 60;
+const EXPIRE_KINDS = new Set(["blocked", "approval", "permission"]);
+const EXPIRE_NOTE = "expired: nobody answered in 24 h and the session that asked cannot be found on this machine (closed by Desk)";
 const NOTE = "session ended: closed by Desk (the session that asked is no longer running)";
 
 function hostMatches(cardHost, ownHost) {
@@ -48,19 +57,67 @@ function hostMatches(cardHost, ownHost) {
   return Boolean(b) && (a === b || a.split(".")[0] === b.split(".")[0]);
 }
 
-/** Why a card is NOT ended, or "" when it is one the desk may close. */
-function keepReason(card, live, { host = "", nowSec = Date.now() / 1000, graceSec = GRACE_SEC, known = () => false } = {}) {
-  if (!card || typeof card !== "object" || typeof card.id !== "string") return "not a card";
-  if (!card.sessionId) return "no session behind it";
-  if (!hostMatches(card.host, host)) return "raised on another machine";
-  if (live && typeof live.has === "function" && live.has(card.sessionId)) return "its session is running";
+function isCredential(card) {
+  return card.kind === "credential" || Boolean(card.secretName);
+}
+
+/** A grant / approval / permission prompt: the kinds that go stale when nobody answers. */
+function expirable(card) {
+  const kind = String(card.kind || "").toLowerCase();
+  if (String(card.agent || "") === "claude-permission-grant") return true;
+  return Boolean(card.sessionId) && EXPIRE_KINDS.has(kind);
+}
+
+/**
+ * The verdict for one card: {keep: "<why it stays>"} or {close: "ended" | "expired"}.
+ * `known(sessionId)` says whether this machine holds any trace of the session.
+ */
+function classify(card, live, { host = "", nowSec = Date.now() / 1000, graceSec = GRACE_SEC, expireSec = EXPIRE_SEC, known = () => false } = {}) {
+  if (!card || typeof card !== "object" || typeof card.id !== "string") return { keep: "not a card" };
+  if (!hostMatches(card.host, host)) return { keep: "raised on another machine" };
+  const created = Number(card.createdAt) || 0;
+  const age = created > 0 ? nowSec - created : 0;
+  const running = Boolean(card.sessionId) && live && typeof live.has === "function" && live.has(card.sessionId);
+  if (running) return { keep: "its session is running" };
+  if (isCredential(card)) return { keep: "a key request stays until you close it" };
+  if (!card.sessionId) {
+    // a grant prompt with no session left behind is the same dead end, just older
+    if (expirable(card) && age >= expireSec) return { close: "expired" };
+    return { keep: "no session behind it" };
+  }
   let traced;
   try { traced = typeof known === "function" && Boolean(known(card.sessionId)); } catch { traced = false; }
-  if (!traced) return "no trace of that session on this machine";
-  if (card.kind === "credential" || card.secretName) return "a key request stays until you close it";
-  const created = Number(card.createdAt) || 0;
-  if (created > 0 && nowSec - created < graceSec) return "inside the grace period";
-  return "";
+  if (!traced) {
+    if (expirable(card) && age >= expireSec) return { close: "expired" };
+    return { keep: "no trace of that session on this machine" };
+  }
+  if (created > 0 && age < graceSec) return { keep: "inside the grace period" };
+  return { close: "ended" };
+}
+
+/** Why a card is NOT closed, or "" when it is one the desk may close. */
+function keepReason(card, live, opts) {
+  const verdict = classify(card, live, opts);
+  return verdict.keep || "";
+}
+
+/**
+ * The ids of cards whose asking session has ENDED, the number every surface leaves out of
+ * "waiting": raised on this machine, a session this machine HAS a trace of, not running.
+ * Unknown sessions (WSL, containers) and key requests are never in it. An unreadable
+ * liveness read (`judged` false) gives the empty set.
+ */
+function endedIds(cards, live, { host = "", known = () => false, judged = true } = {}) {
+  const out = new Set();
+  if (!judged || !live || typeof live.has !== "function") return out;
+  for (const card of Array.isArray(cards) ? cards : []) {
+    if (!card || typeof card.id !== "string" || !card.sessionId || isCredential(card)) continue;
+    if (!hostMatches(card.host, host) || live.has(card.sessionId)) continue;
+    let traced;
+    try { traced = typeof known === "function" && Boolean(known(card.sessionId)); } catch { traced = false; }
+    if (traced) out.add(card.id);
+  }
+  return out;
 }
 
 /**
@@ -68,19 +125,19 @@ function keepReason(card, live, { host = "", nowSec = Date.now() / 1000, graceSe
  * calls; the caller keeps it. Returns {judged, closed:[card], held:{id:reason}}.
  */
 function plan(cards, live, { seen, host = "", nowMs = Date.now(), graceSec = GRACE_SEC, confirmMs = CONFIRM_MS, judged = true, known = () => false } = {}) {
-  const out = { judged: Boolean(judged), closed: [], held: {} };
+  const out = { judged: Boolean(judged), closed: [], held: {}, why: {} };
   if (!judged || !live) return out; // could not judge: close nothing, remember nothing
   const state = seen instanceof Map ? seen : new Map();
   const present = new Set();
   for (const card of Array.isArray(cards) ? cards : []) {
-    const why = keepReason(card, live, { host, nowSec: nowMs / 1000, graceSec, known });
-    if (why) {
-      if (card && card.id) { out.held[card.id] = why; state.delete(card.id); }
+    const verdict = classify(card, live, { host, nowSec: nowMs / 1000, graceSec, known });
+    if (verdict.keep) {
+      if (card && card.id) { out.held[card.id] = verdict.keep; state.delete(card.id); }
       continue;
     }
     present.add(card.id);
     if (!state.has(card.id)) state.set(card.id, nowMs);
-    if (nowMs - state.get(card.id) >= confirmMs) out.closed.push(card);
+    if (nowMs - state.get(card.id) >= confirmMs) { out.closed.push(card); out.why[card.id] = verdict.close; }
     else out.held[card.id] = "waiting for a second look";
   }
   for (const id of [...state.keys()]) if (!present.has(id)) state.delete(id); // answered or gone
@@ -109,7 +166,16 @@ function appendAudit(file, rows, fsImpl = fs) {
   fsImpl.appendFileSync(file, rows.map((r) => `${JSON.stringify(r)}\n`).join(""), "utf8");
 }
 
-function auditFile(home = os.homedir()) {
+/**
+ * Where the closing lines go. A run that points the desk at another card store
+ * (AITHER_DECISIONS_DIR, a scratch run or a test) writes its audit INSIDE that store, so
+ * it can never add a row to the owner's real trail; AITHER_DECISIONS_AUDIT_DIR overrides both.
+ */
+function auditFile(home = os.homedir(), env = process.env) {
+  const override = String(env.AITHER_DECISIONS_AUDIT_DIR || "").trim();
+  if (override) return path.join(override, "ended-sessions.jsonl");
+  const store = String(env.AITHER_DECISIONS_DIR || "").trim();
+  if (store) return path.join(store, "_audit", "ended-sessions.jsonl");
   return path.join(home, ".aither", "decisions-audit", "ended-sessions.jsonl");
 }
 
@@ -124,14 +190,17 @@ function sweep(cards, live, {
   const result = { judged: verdict.judged, closed: [], failed: [], held: verdict.held };
   if (!verdict.closed.length || typeof cancel !== "function") return result;
   try {
-    appendFn(file, verdict.closed.map((c) => auditRow(c, nowMs, { step: "closing" })));
+    appendFn(file, verdict.closed.map((c) => {
+      const expired = verdict.why[c.id] === "expired";
+      return auditRow(c, nowMs, { step: "closing", ...(expired ? { reason: "expired: no answer in 24 h, session not found on this machine" } : {}) });
+    }));
   } catch (error) {
     result.error = `audit not written, nothing closed: ${String((error && error.message) || error).slice(0, 160)}`;
     return result;
   }
   for (const card of verdict.closed) {
     let ok;
-    try { ok = Boolean(cancel(card.id, NOTE)); } catch { ok = false; }
+    try { ok = Boolean(cancel(card.id, verdict.why[card.id] === "expired" ? EXPIRE_NOTE : NOTE)); } catch { ok = false; }
     (ok ? result.closed : result.failed).push(card.id);
   }
   if (result.failed.length) {
@@ -144,4 +213,4 @@ function sweep(cards, live, {
   return result;
 }
 
-module.exports = { GRACE_SEC, CONFIRM_MS, NOTE, hostMatches, keepReason, plan, auditRow, appendAudit, auditFile, sweep };
+module.exports = { GRACE_SEC, CONFIRM_MS, EXPIRE_SEC, NOTE, EXPIRE_NOTE, hostMatches, classify, endedIds, keepReason, plan, auditRow, appendAudit, auditFile, sweep };

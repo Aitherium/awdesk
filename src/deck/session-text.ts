@@ -284,7 +284,7 @@ export type SessionPillLabel = 'live' | 'working' | 'ended';
 /** The list row's status pill: live (waiting at its prompt), working, ended. */
 export function sessionPill(session: DeckDecision['session']): SessionPillLabel | null {
   if (!session) return null;
-  if (!session.live) return 'ended';
+  if (!session.live) return session.ended === false ? null : 'ended'; // false = this machine cannot tell
   return session.status === 'busy' ? 'working' : 'live';
 }
 
@@ -324,7 +324,7 @@ export function replyEffectLine(live: boolean | null): string {
 
 /** Ids of the cards whose asking session has ended (main said live === false). */
 export function endedSessionIds(cards: Array<Pick<DeckDecision, 'id' | 'session'>>): string[] {
-  return cards.filter((card) => card.session?.live === false).map((card) => card.id);
+  return cards.filter((card) => card.session?.live === false && card.session.ended !== false).map((card) => card.id);
 }
 
 /** "D:\\desk\\src\\a.ts" / "/x/y.ts" -> "a.ts" / "y.ts". */

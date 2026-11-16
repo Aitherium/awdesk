@@ -268,6 +268,31 @@ const shellMenu = require("./shell-menu.cjs").createShellMenu({
   available: (id) => Boolean(commandRegistry.byId(id)),
 });
 let shellMenuOn = false;
+// The Explorer FILE / FOLDER right-click (assist-files.cjs): the same consent, the same
+// reversible HKCU mechanism, its own roots and marker. One tray row turns both on / off.
+const sm = require("./shell-menu.cjs");
+const fileShellMenu = sm.createShellMenu({
+  exe: process.execPath,
+  appArgs: app.isPackaged ? [] : [app.getAppPath()],
+  roots: sm.FILE_ROOTS,
+  entries: sm.FILE_ENTRIES,
+  stateFile: path.join(require("node:os").homedir(), ".aither", "desk-shell-menu-files.json"),
+  available: (id) => Boolean(commandRegistry.byId(id)),
+});
+// Aither at the caret (assist-main.cjs): created on first use so a desk that never opens the
+// pop-up pays nothing; the Windows caret worker is warmed a few seconds after startup.
+let assistMainInstance = null;
+function assistMain() {
+  if (!assistMainInstance) {
+    assistMainInstance = require("./assist-main.cjs").createAssistMain({
+      electron: require("electron"),
+      userDataDir: app.getPath("userData"),
+      gateway: require("./gateway-mcp.cjs"),
+      notes: { createNote: (opts) => boardsWindow.createNote(opts) },
+    });
+  }
+  return assistMainInstance;
+}
 const boardsWindow = require("./boards-window.cjs");
 // The registry's `blog` records: gateway blog_* MCP tools via gateway-mcp.cjs.
 // Machine paths create DRAFTS; `blog.publish` opens the Veil editor for a human
@@ -1913,7 +1938,7 @@ function needsYouSnoozeDir() {
 function computeNeedsYou(cards = openDecisions) {
   try {
     const snoozed = needsYouLib.snoozedIds(needsYouSnoozeDir());
-    return decisionCards.partitionCards(cards, { snoozed }).needsYou;
+    return decisionCards.partitionCards(cards, { snoozed, ended: endedIdSet(cards) }).needsYou;
   } catch {
     return [];
   }
@@ -2177,7 +2202,7 @@ function fairyQuietReason() {
 /** The fairy carries the decision queue (decisions only -- reports stay on the badge). */
 function feedFairyCards() {
   try {
-    orbWindow.setAttentionCards(decisionCards.partitionCards(openDecisions).decisions, openDecisions);
+    orbWindow.setAttentionCards(decisionCards.partitionCards(openDecisions, { ended: endedIdSet(openDecisions) }).decisions, openDecisions);
   } catch { /* the fairy is not up yet; the next change feeds it */ }
 }
 
@@ -3877,6 +3902,9 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "board.new": return void boardsWindow.createBoard();
     case "boards.open": return void boardsWindow.openList();
     case "shellmenu.add": {
+      void fileShellMenu.enable({ consent: true }).then((verdict) => {
+        if (!verdict || !verdict.ok) console.warn("[desk] file right-click menu not added:", (verdict && verdict.reason) || "unknown");
+      });
       void shellMenu.enable({ consent: true }).then((verdict) => {
         shellMenuOn = Boolean(verdict && verdict.ok);
         if (!shellMenuOn) {
@@ -3890,6 +3918,9 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       return;
     }
     case "shellmenu.remove": {
+      void fileShellMenu.restore().then((verdict) => {
+        if (!verdict || !verdict.ok) console.warn("[desk] file right-click menu not removed:", (verdict && verdict.reason) || "unknown");
+      });
       void shellMenu.restore().then((verdict) => {
         shellMenuOn = !(verdict && verdict.ok);
         if (!verdict || !verdict.ok) {
@@ -4012,6 +4043,11 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
         // RETURNED so the bridge's POST /commands/run can report the trip.
         return orbWindow.run(command.orb, { surface, arg, slotId });
       }
+      if (command && command.assist) {
+        // Aither at the caret (assist-main.cjs): "open" = the pop-up at the focused app's
+        // caret; a verb id = the pop-up with that verb on the selection.
+        return assistMain().run(command.assist, { surface, arg });
+      }
       console.warn(`[desk] command ${id} has no handler`);
     }
   }
@@ -4071,7 +4107,8 @@ function showAboutDesk() {
  */
 function inboxCounts(cards = openDecisions) {
   // decisionCards.waitingCount is THE number (the fairy, the bridge and the bell read it too).
-  return { waiting: decisionCards.waitingCount(cards), total: cards.length };
+  const ended = endedIdSet(cards);
+  return { waiting: decisionCards.waitingCount(cards, undefined, ended), total: cards.length, ended: ended.size };
 }
 
 // -- the session behind a card (session-context.cjs) --------------------------
@@ -4079,13 +4116,38 @@ function inboxCounts(cards = openDecisions) {
 // dive deeper or engage with those sessions". Liveness comes from the running
 // processes' own state files (5 s cache: the deck re-renders often); the context
 // and every action resolve the session from MAIN's copy of the card.
-let liveSessionCache = { at: 0, map: new Map() };
-function liveSessionMap({ fresh = false } = {}) {
+let liveSessionCache = { at: 0, map: new Map(), judged: false };
+function liveSessionRead({ fresh = false } = {}) {
   const now = Date.now();
   if (fresh || now - liveSessionCache.at > 5000) {
-    try { liveSessionCache = { at: now, map: sessionContext.liveSessions() }; } catch { liveSessionCache = { at: now, map: new Map() }; }
+    try {
+      const { live, judged } = sessionContext.liveSessionsChecked();
+      liveSessionCache = { at: now, map: live, judged };
+    } catch { liveSessionCache = { at: now, map: new Map(), judged: false }; }
   }
-  return liveSessionCache.map;
+  return liveSessionCache;
+}
+function liveSessionMap(opts) {
+  return liveSessionRead(opts).map;
+}
+
+/**
+ * Ids of the cards whose asking session has ENDED on this machine (ended-cards.endedIds):
+ * the one set every "waiting" number, the fairy and the needs-you strip leave out, so a
+ * card nobody can answer for is never counted. Unknown sessions (WSL, containers) and
+ * key requests are never in it.
+ */
+function endedIdSet(cards = openDecisions) {
+  try {
+    const { map, judged } = liveSessionRead();
+    return endedCards.endedIds(cards, map, {
+      host: require("node:os").hostname(),
+      known: (sessionId) => sessionContext.sessionKnownHere(sessionId),
+      judged,
+    });
+  } catch {
+    return new Set(); // cannot tell: count everything
+  }
 }
 
 /** The deck's cards, each session card carrying {live, status, name} for its row. */
@@ -4123,10 +4185,13 @@ function sweepEndedSessionCards(cards = openDecisions) {
 
 function decisionsWithSessions(cards = openDecisions) {
   const live = liveSessionMap();
+  const endedIds = endedIdSet(cards);
   return cards.map((card) => {
     if (!card || !card.sessionId) return card;
     const row = live.get(card.sessionId);
-    return { ...card, session: { live: Boolean(row), status: row ? row.status : "", name: row ? row.name : "" } };
+    // `ended` is only true when this machine holds a trace of the session: a session that
+    // ran in WSL or a container is "not running HERE", which says nothing about it.
+    return { ...card, session: { live: Boolean(row), status: row ? row.status : "", name: row ? row.name : "", ended: !row && endedIds.has(card.id) } };
   });
 }
 
@@ -4201,11 +4266,17 @@ function deckState() {
     decisions: decisionsWithSessions(openDecisions),
     openCount: counts.waiting,
     totalCount: counts.total,
+    // Cards whose asking session ended: listed in the Inbox under their own line, never in `openCount`.
+    endedCount: counts.ended,
     // The split the flipper renders: needs-you ids pinned first, FYI ids
     // collapsed below it (decision-cards partitionCards).
     needsYouIds: needsYou.map((c) => c.id),
     fyiIds: (() => {
-      try { return decisionCards.partitionCards(openDecisions).fyi.map((c) => c.id); } catch { return []; }
+      // Cards from ended sessions ride in the collapsed list: never in the flipper's "N of M".
+      try {
+        const part = decisionCards.partitionCards(openDecisions, { ended: endedIdSet(openDecisions) });
+        return [...part.fyi, ...part.ended].map((c) => c.id);
+      } catch { return []; }
     })(),
     deskVisible: Boolean(
       avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible(),
@@ -7163,9 +7234,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // sees the queue at all. Read-only; answering stays in the queue window.
       // The daemon's list (it expires due cards; the file read does not), the
       // local read only when the daemon is down -- labelled stale.
-      decisionsProvider: () => decisionCards.bridgeQueue(),
+      decisionsProvider: () => decisionCards.bridgeQueue({ endedOf: endedIdSet }),
       needsYouProvider: () => decisionCards.bridgeNeedsYou({
         snoozed: needsYouLib.snoozedIds(needsYouSnoozeDir()),
+        endedOf: endedIdSet,
       }),
       // Read-only: the hosted web surfaces see the same wake snapshot the deck
       // does. Mutations are NOT offered here — they go to the daemon window.
@@ -7179,6 +7251,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // off the request body (see speakAloud's own doc).
       speakHandler: ({ text, voice, speed, slot }) => speakAloud(text, voice, speed, slot, "bridge:/speak"),
       // The registry over loopback: what `awsh /desk` and `adk desk` list and run.
+      // The browser overlay (AitherConnect) -> the same engine as the desk pop-up.
+      assistHandler: (req) => assistMain().bridge(req),
       commandsHandler: {
         list: () => commandRegistry.paletteRows(commandContext()),
         run: async (id, arg) => {
@@ -7318,6 +7392,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     setFilesLaunchRouted(true);
     // The DLL reads this at click time; it must exist before the first click.
     rememberLaunchCommand();
+    if (process.platform === "win32" && !smokeIsRequested) setTimeout(() => { try { void assistMain().caret.prewarm(); } catch { /* pop-up warms on first use */ } }, 8000).unref?.();
     // The shell-menu flyout cold-starts Desk on first use after login; route
     // its --run/--arg pair exactly like a second launch does.
     routeColdRunRequest();
@@ -7718,6 +7793,7 @@ app.on("before-quit", () => {
   isQuitting = true;
   // The orb is always-on-top glass; it leaves with the desk (its timers stop too).
   try { orbWindow.stopOrb(); } catch { /* not started */ }
+  try { if (assistMainInstance) { assistMainInstance.caret.stop(); assistMainInstance.utils.stop(); } } catch { /* no caret worker */ }
   // Windows: a verified installer waiting for this quit runs now, silently, no relaunch.
   deskUpdater?.installOnQuit({ sessionEnding });
   clearTimeout(hyprlandConfigurationTimer);

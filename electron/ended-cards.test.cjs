@@ -150,3 +150,67 @@ test("credential cards from an ended session stay listed until the owner closes 
   assert.match(r.held["d-key"], /key request/);
   assert.match(r.held["d-sec"], /key request/);
 });
+
+// The real card shapes from the owner's store (2026-11-16): host set to this machine's
+// name, a Claude session id, and NO state file or transcript left on this machine.
+const HOST = "DESKTOP-EG38V5F";
+const HOURS = (n) => NOW / 1000 - n * 3600;
+const real = (id, extra = {}) => ({
+  id, title: `real ${id}`, kind: "decision", agent: "aither", host: HOST,
+  sessionId: `11111111-2222-4333-8444-${id.replace(/\D/g, "").padStart(12, "0")}`, createdAt: HOURS(74), ...extra,
+});
+const untraced = () => false;
+
+test("an untraced grant / approval nobody answered for a day expires, with its own audit reason", () => {
+  const { dir, file } = scratch();
+  try {
+    const cards = [
+      real("d-1", { kind: "blocked", agent: "claude-permission-grant", title: "Allow Claude to use: Bash(MSYS_NO_PATHCONV=1 ...)" }),
+      real("d-2", { kind: "blocked", agent: "claude-permission-grant", sessionId: "", createdAt: HOURS(59) }),
+      real("d-3", { kind: "approval", createdAt: HOURS(30), title: "Reboot the PC to finish enabling Windows" }),
+      real("d-4", { kind: "approval", createdAt: HOURS(12), title: "Rotate leaked awdiscord GitHub token" }),
+      real("d-5", { kind: "decision", createdAt: HOURS(39) }),
+      real("d-6", { kind: "credential", createdAt: HOURS(100) }),
+      real("d-7", { kind: "blocked", agent: "claude-permission-grant", createdAt: HOURS(23) }),
+    ];
+    const seen = new Map();
+    const calls = [];
+    const opts = { cancel: (id, note) => { calls.push([id, note]); return true; }, file, seen, known: untraced, host: HOST };
+    assert.deepEqual(ended.sweep(cards, live(), { ...opts, nowMs: NOW }).closed, [], "one look closes nothing");
+    const r = ended.sweep(cards, live(), { ...opts, nowMs: NOW + ended.CONFIRM_MS });
+    assert.deepEqual(r.closed.sort(), ["d-1", "d-2", "d-3"]);
+    assert.match(r.held["d-4"], /no trace/, "12 h old: still waiting, still counted");
+    assert.match(r.held["d-5"], /no trace/, "a plain decision from an unknown session is never expired");
+    assert.match(r.held["d-6"], /key request/);
+    assert.match(r.held["d-7"], /no trace/, "23 h old is inside the day");
+    assert.ok(calls.every(([, note]) => /^expired:/.test(note)));
+    const rows = fs.readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(rows.map((x) => x.id).sort(), ["d-1", "d-2", "d-3"]);
+    assert.ok(rows.every((x) => /^expired/.test(x.reason) && x.step === "closing"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("endedIds is exactly the traced, local, not-running, non-credential cards", () => {
+  const cards = [
+    real("d-1"), real("d-2"), real("d-3", { host: "other-pc" }), real("d-4", { kind: "credential" }),
+    real("d-5", { sessionId: "" }), real("d-6"),
+  ];
+  const known6 = (id) => id !== cards[0].sessionId; // d-1 is unknown here
+  const ids = ended.endedIds(cards, live(cards[5].sessionId), { host: HOST, known: known6 });
+  assert.deepEqual([...ids], ["d-2"]);
+  assert.equal(ended.endedIds(cards, live(), { host: HOST, known: known6, judged: false }).size, 0, "unreadable = empty");
+});
+
+const fwd = (p) => p.split(String.fromCharCode(92)).join("/");
+
+test("the audit file follows AITHER_DECISIONS_DIR so a scratch run never touches the real trail", () => {
+  const real_ = ended.auditFile("C:/home", {});
+  assert.match(fwd(real_), /C:\/home\/\.aither\/decisions-audit\/ended-sessions\.jsonl$/);
+  const scratchRun = ended.auditFile("C:/home", { AITHER_DECISIONS_DIR: "D:/tmp/store" });
+  assert.match(fwd(scratchRun), /^D:\/tmp\/store\/_audit\//);
+  assert.ok(!scratchRun.includes(".aither"));
+  const forced = ended.auditFile("C:/home", { AITHER_DECISIONS_DIR: "D:/tmp/store", AITHER_DECISIONS_AUDIT_DIR: "D:/a" });
+  assert.match(fwd(forced), /^D:\/a\/ended-sessions\.jsonl$/);
+});

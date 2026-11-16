@@ -16,7 +16,10 @@
  *
  * Coverage of the probe, stated: the main frame and same-origin iframes (to depth 3) of the
  * desk's own windows get the real probe. A cross-origin frame (an embedded third-party
- * site) is opaque to it, so for those the fairy relies on the free-spot ordering alone.
+ * site, a <webview>) is opaque to it, so its TOP BAND (OPAQUE_BAND px: where an app's tabs
+ * and toolbar are) counts as one obstacle, the same rule as a foreign window's title bar;
+ * the fairy then stands in the lower part of the frame. Controls lower in an opaque frame
+ * stay invisible to it, and that is the stated limit.
  *
  * PURE: no electron. The caller measures the page and owns the clock.
  */
@@ -31,6 +34,8 @@ const INTERACTIVE_SELECTOR = [
 ].join(",");
 
 const MAX_RECTS = 500;
+/** Height of the band across the top of a frame the probe cannot read (CSS px). */
+const OPAQUE_BAND = 72;
 
 /**
  * JavaScript to run INSIDE a page; returns [[x, y, w, h], ...] in CSS pixels, visible
@@ -40,6 +45,7 @@ function probeSource() {
   return `(() => {
     const out = [];
     const SEL = ${JSON.stringify(INTERACTIVE_SELECTOR)};
+    const BAND = ${OPAQUE_BAND};
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const walk = (doc, ox, oy, depth) => {
@@ -58,11 +64,18 @@ function probeSource() {
       // Same-origin frames (an app panel in an iframe) are probed with their offset.
       // A cross-origin frame has no readable document: it contributes nothing here, and
       // the module header says which windows rely on the title-bar fallback instead.
-      for (const f of doc.querySelectorAll("iframe, frame")) {
+      for (const f of doc.querySelectorAll("iframe, frame, webview, embed, object")) {
+        const fr = f.getBoundingClientRect();
+        if (fr.width < 40 || fr.height < 40) continue;
         let inner = null;
         try { inner = f.contentDocument; } catch { inner = null; }
-        if (!inner || !inner.documentElement) continue;
-        const fr = f.getBoundingClientRect();
+        if (!inner || !inner.documentElement) {
+          // Opaque (cross-origin or not a document): its top band is one obstacle.
+          const fcs = win.getComputedStyle(f);
+          if (fcs.visibility === "hidden" || fcs.display === "none") continue;
+          out.push([Math.round(fr.left + ox), Math.round(fr.top + oy), Math.round(fr.width), Math.round(Math.min(fr.height, BAND))]);
+          continue;
+        }
         walk(inner, ox + fr.left, oy + fr.top, depth + 1);
       }
     };
@@ -169,5 +182,5 @@ function dockCandidates(bounds, size, { first = null, bar = 64, gap = 18, header
 }
 
 module.exports = {
-  INTERACTIVE_SELECTOR, MAX_RECTS, probeSource, toScreenRects, overlapArea, chromeObstacle, coverage, pickFree, dockCandidates,
+  INTERACTIVE_SELECTOR, MAX_RECTS, OPAQUE_BAND, probeSource, toScreenRects, overlapArea, chromeObstacle, coverage, pickFree, dockCandidates,
 };

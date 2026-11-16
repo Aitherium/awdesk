@@ -263,7 +263,7 @@ test("an exported overlay opener has a caller", () => {
 test("shortcuts are registered FROM the registry, and a dead key is not advertised", () => {
   const keys = shortcuts();
   assert.deepEqual(keys.map((k) => k.accel).sort(),
-    ["Alt+Space", "Ctrl+Alt+/", "Ctrl+Alt+0", "Ctrl+Alt+9", "Ctrl+Alt+B", "Ctrl+Alt+C", "Ctrl+Alt+D", "Ctrl+Alt+Down", "Ctrl+Alt+E", "Ctrl+Alt+F", "Ctrl+Alt+G", "Ctrl+Alt+H", "Ctrl+Alt+I", "Ctrl+Alt+K", "Ctrl+Alt+L", "Ctrl+Alt+M", "Ctrl+Alt+N", "Ctrl+Alt+O", "Ctrl+Alt+P", "Ctrl+Alt+Q", "Ctrl+Alt+S", "Ctrl+Alt+T", "Ctrl+Alt+U", "Ctrl+Alt+Up", "Ctrl+Alt+W", "Ctrl+Alt+X", "Ctrl+Alt+Y", "Ctrl+Shift+,", "Ctrl+Shift+-", "Ctrl+Shift+=", "Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+Shift+Escape", "Ctrl+Shift+M", "Ctrl+Shift+Space", "PrintScreen", "Shift+PrintScreen"]);
+    ["Alt+Space", "Ctrl+Alt+/", "Ctrl+Alt+0", "Ctrl+Alt+9", "Ctrl+Alt+B", "Ctrl+Alt+C", "Ctrl+Alt+D", "Ctrl+Alt+Down", "Ctrl+Alt+E", "Ctrl+Alt+F", "Ctrl+Alt+G", "Ctrl+Alt+H", "Ctrl+Alt+I", "Ctrl+Alt+J", "Ctrl+Alt+K", "Ctrl+Alt+L", "Ctrl+Alt+M", "Ctrl+Alt+N", "Ctrl+Alt+O", "Ctrl+Alt+P", "Ctrl+Alt+Q", "Ctrl+Alt+S", "Ctrl+Alt+T", "Ctrl+Alt+U", "Ctrl+Alt+Up", "Ctrl+Alt+W", "Ctrl+Alt+X", "Ctrl+Alt+Y", "Ctrl+Shift+,", "Ctrl+Shift+-", "Ctrl+Shift+=", "Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+Shift+Escape", "Ctrl+Shift+M", "Ctrl+Shift+Space", "PrintScreen", "Shift+PrintScreen"]);
   // Every Ctrl chord maps to CommandOrControl; a bare key (PrintScreen, the snip) passes through.
   assert.ok(keys.every((k) => (k.accel.startsWith("Ctrl+") ? k.electron.startsWith("CommandOrControl+") : k.electron === k.accel)));
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
@@ -386,6 +386,15 @@ test("every command either has a handler or a dynamic submenu", () => {
       // so a new orb row is one record and no case.
       assert.match(body, /command\.orb/, "the orb branch is gone");
       assert.match(body, /orbWindow\.run\(command\.orb/, "nothing routes an orb verb");
+      continue;
+    }
+    if (command.assist) {
+      // Aither at the caret: the default branch hands the verb to assist-main.run, so a
+      // new assist row is one record and no case. The verb must be one the engine knows.
+      assert.match(body, /command\.assist/, "the assist branch is gone");
+      assert.match(body, /assistMain\(\)\.run\(command\.assist/, "nothing routes an assist verb");
+      assert.ok(command.assist === "open" || /^file:(summarize|ask|rename|convert|pipeline|pack)$/.test(command.assist) || require("./assist-core.cjs").verbById(command.assist),
+        `${command.id} names assist verb "${command.assist}" that assist-core.cjs does not know`);
       continue;
     }
     if (command.osApp) {
@@ -828,4 +837,10 @@ test("every native menu row that carries an ampersand escapes it; the palette ke
   // The registry's own text is untouched, so the palette / rail / jump list read "&".
   assert.equal(byId("avatar.reset").label, "Reset position & size");
   assert.ok(rowsFor("palette", { slotId: "slot1" }).every((r) => !r.label.includes("&&")));
+});
+
+test("Back to the fairy reaches POST /commands/run (palette) only while Aither is grown", () => {
+  const rows = (ctx) => new Set(require("./command-registry.cjs").paletteRows(ctx).map((r) => r.id));
+  assert.ok(rows({ grownFromFairy: true }).has("avatar.to-fairy"), "the bridge can send her back");
+  assert.ok(!rows({}).has("avatar.to-fairy"), "never a dead row");
 });

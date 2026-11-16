@@ -301,6 +301,7 @@ function createBridgeServer({
   // local page or process answering here could feed an agent forged page content.
   chromeBridge = null,
   commandsHandler = null,
+  assistHandler = null,
   // () => {x, y, width, height} of the visible avatar window, or null.
   avatarBoundsProvider = null,
   // () => the room stage's status (who is on stage, queue, spoken), or null.
@@ -563,6 +564,44 @@ function createBridgeServer({
         .catch((error) => {
           if (response.headersSent) return;
           response.writeHead(500, { "content-type": "application/json" });
+          response.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+        });
+      return;
+    }
+
+    // AITHER AT THE CARET, from the browser (assist-main.cjs bridge): the AitherConnect
+    // overlay sends the context it captured in the page on the user's own gesture, and the
+    // desk's engine runs the verb through MicroScheduler with the owner's models/keys. The
+    // ONLY accepted origin is a pinned AitherConnect extension: unlike /commands this route
+    // carries page text and spends the owner's model budget, so a loopback no-Origin
+    // caller (curl, a local script) is refused, not trusted.
+    if (/^\/assist\/(suggest|refine|run|route|note)$/.test(String(request.url || ""))) {
+      if (!extensionOriginAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      if (assistHandler == null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      if (request.method !== "POST") {
+        response.writeHead(405, { allow: "POST" });
+        response.end();
+        return;
+      }
+      const assistRoute = String(request.url).slice("/assist/".length);
+      readJsonBody(request)
+        .then((body) => assistHandler({ route: assistRoute, body }))
+        .then((result) => {
+          if (response.headersSent) return;
+          response.writeHead(result && result.ok === false && result.status ? result.status : 200, { "content-type": "application/json" });
+          response.end(JSON.stringify(result ?? { ok: false, error: "no answer" }));
+        })
+        .catch((error) => {
+          if (response.headersSent) return;
+          response.writeHead(error && error.code === "BODY_TOO_LARGE" ? 413 : 500, { "content-type": "application/json" });
           response.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
         });
       return;

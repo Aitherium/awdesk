@@ -79,6 +79,11 @@ import {
  * second implementation.
  */
 
+/** Open cards that are neither waiting nor from an ended session: the FYI ones. */
+function fyiOnlyCount(state: { openCount: number; totalCount?: number; endedCount?: number }): number {
+  return Math.max(0, (state.totalCount ?? 0) - state.openCount - (state.endedCount ?? 0));
+}
+
 function BellIcon() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2646,7 +2651,8 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
         <h1 className="deck-title">Inbox</h1>
         <span className={`deck-count ${state.openCount > 0 ? 'deck-count-live' : ''}`}>
           {state.openCount > 0 ? `1 of ${state.openCount} waiting` : 'all clear'}
-          {(state.totalCount ?? 0) > state.openCount ? ` · ${(state.totalCount ?? 0) - state.openCount} FYI` : ''}
+          {fyiOnlyCount(state) > 0 ? ` · ${fyiOnlyCount(state)} FYI` : ''}
+          {(state.endedCount ?? 0) > 0 ? ` · ${state.endedCount} from ended sessions` : ''}
         </span>
         {!isCharacters ? (
           <button

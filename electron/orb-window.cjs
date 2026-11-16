@@ -3268,16 +3268,16 @@ function spiritRows() {
     { id: "spirit:find", label: "Find a file…", run: () => openMode("find") },
     ...(hold ? [{ id: "spirit:read", label: `Read ${spiritCore.holdLabel(hold)}`, run: () => { void runHoldAction("read"); } }] : []),
     { sep: true },
-    { id: "spirit:attach", label: attach ? "Detach the spirit" : "Attach the spirit", run: () => { void toggleAttach(); } },
-    { id: "spirit:home", label: "Send home", run: () => { void sendHome(); } },
+    { id: "spirit:attach", label: attach ? "Let go of this window" : "Stay on this window", run: () => { void toggleAttach(); } },
+    { id: "spirit:home", label: "Back to its corner", run: () => { void sendHome(); } },
     // The nudge chime (owner 2026-11-08): on by default, remembered in orb.json.
     { id: "spirit:sounds", label: `Fairy sounds: ${state.sounds === false ? "off" : "on"}`, run: () => { setSounds(state.sounds === false); } },
     ...(reg.byId("quick.open") ? [{ id: "spirit:quick", label: "Quick menu", run: () => { void runCommandImpl?.("quick.open"); } }] : []),
     { sep: true },
     // The fairy IS the owner's sprite: its own rows sit on its own menu.
     { id: "spirit:sprite", label: sprite ? `${sprite.name}: how are you?` : "How is my sprite?", run: () => { void spriteStatus(); } },
-    { id: "spirit:teach", label: "Teach it the selection", run: () => { void spriteTeach(null); } },
-    { id: "spirit:sprite-page", label: "Open Sprite…", run: () => { openUrl(spriteCore.SPRITE_PAGE); } },
+    { id: "spirit:teach", label: "Teach it what I selected", run: () => { void spriteTeach(null); } },
+    { id: "spirit:sprite-page", label: "Open my sprite page…", run: () => { openUrl(spriteCore.SPRITE_PAGE); } },
     { sep: true },
     // The desk's doors live on the fairy now (owner 2026-11-02: "consolidate the
     // awdesk icons around the fairy"): the bead rail's rows, plus Show avatar.

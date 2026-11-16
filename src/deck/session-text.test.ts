@@ -233,6 +233,13 @@ describe('session state lines', () => {
     expect(endedSessionIds(cards)).toEqual(['d-0001']);
   });
 
+  it('a session this machine cannot judge (ended === false) gets no "ended" pill and no close chip', () => {
+    const unknown = { live: false, status: '', name: '', ended: false };
+    expect(sessionPill(unknown)).toBeNull();
+    expect(sessionPill({ ...unknown, ended: true })).toBe('ended');
+    expect(endedSessionIds([{ id: 'd-0009', session: unknown }])).toEqual([]);
+  });
+
   it('baseName handles both separators', () => {
     expect(baseName('D:\\desk\\src\\components\\Deck.tsx')).toBe('Deck.tsx');
     expect(baseName('/app/lib/x.py')).toBe('x.py');

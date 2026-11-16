@@ -369,11 +369,15 @@ function rankCards(cards, nowSec = Date.now() / 1000) {
  * `snoozed` is a Set of ids the owner put off with "Later": they stay in the
  * flipper but leave the needs-you strip until the snooze runs out.
  */
-function partitionCards(cards, { patterns, snoozed = null, nowSec } = {}) {
+function partitionCards(cards, { patterns, snoozed = null, nowSec, ended = null } = {}) {
   const ranked = rankCards(cards, nowSec);
   const decisions = [];
   const fyi = [];
+  const fromEnded = [];
   for (const card of ranked) {
+    // A card whose asking session has ended is nobody's waiting ask: it leaves the
+    // number, the fairy and the strip, and is listed on its own line (`ended`).
+    if (ended && typeof ended.has === "function" && ended.has(card.id)) { fromEnded.push(card); continue; }
     let verdict;
     try { verdict = triageCard(card, patterns); } catch { verdict = "decision"; }
     if (verdict === "decision" || isNeedsYou(card)) decisions.push(card);
@@ -381,7 +385,7 @@ function partitionCards(cards, { patterns, snoozed = null, nowSec } = {}) {
   }
   // needs-you cards lead the strip whatever the rank put between them.
   const needsYou = decisions.filter((c) => isNeedsYou(c) && !(snoozed && snoozed.has(c.id)));
-  return { needsYou, decisions, fyi };
+  return { needsYou, decisions, fyi, ended: fromEnded };
 }
 
 /** Open cards in rank order (see rankCards) — credential/blocked first, then urgency, then oldest. */
@@ -935,9 +939,9 @@ async function fetchDaemonOpen({
  * "waiting" number anywhere a person reads it. Owner 2026-11-16: bell 22, fairy 40,
  * launcher fairy 39 -- three answers to one question.
  */
-function waitingCount(cards, patterns) {
+function waitingCount(cards, patterns, ended = null) {
   try {
-    return partitionCards(cards, { patterns }).decisions.length;
+    return partitionCards(cards, { patterns, ended }).decisions.length;
   } catch {
     return actionableCount(cards, patterns);
   }
@@ -948,17 +952,23 @@ function waitingCount(cards, patterns) {
  * (`source: "daemon"`), else the watcher's local read labelled `stale: true`
  * with the reason. Never throws.
  */
-async function bridgeQueue({ fetchOpen = fetchDaemonOpen, localOpen = () => lastOpen() } = {}) {
+async function bridgeQueue({ fetchOpen = fetchDaemonOpen, localOpen = () => lastOpen(), endedOf = () => null } = {}) {
+  const endedSet = (cards) => { try { return endedOf(cards) || null; } catch { return null; } };
   try {
     const decisions = await fetchOpen();
-    return { decisions, count: decisions.length, waiting: waitingCount(decisions), source: "daemon", stale: false };
+    const ended = endedSet(decisions);
+    return {
+      decisions, count: decisions.length, waiting: waitingCount(decisions, undefined, ended),
+      endedSessions: ended ? ended.size : 0, source: "daemon", stale: false,
+    };
   } catch (error) {
     let decisions;
     try { decisions = rankCards(localOpen()); } catch { decisions = []; }
     return {
       decisions,
       count: decisions.length,
-      waiting: waitingCount(decisions),
+      waiting: waitingCount(decisions, undefined, endedSet(decisions)),
+      endedSessions: (endedSet(decisions) || { size: 0 }).size,
       source: "local",
       stale: true,
       error: String((error && error.message) || error).slice(0, 200),
@@ -969,7 +979,9 @@ async function bridgeQueue({ fetchOpen = fetchDaemonOpen, localOpen = () => last
 /** GET /needs-you: bridgeQueue narrowed to the needs-you cards (snoozes removed). */
 async function bridgeNeedsYou({ snoozed = null, ...queueOpts } = {}) {
   const queue = await bridgeQueue(queueOpts);
-  const list = partitionCards(queue.decisions, { snoozed }).needsYou;
+  let ended = null;
+  try { ended = (queueOpts.endedOf && queueOpts.endedOf(queue.decisions)) || null; } catch { /* count them all */ }
+  const list = partitionCards(queue.decisions, { snoozed, ended }).needsYou;
   return { ...queue, decisions: list, count: list.length };
 }
 
