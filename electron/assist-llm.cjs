@@ -87,7 +87,7 @@ function pickModel(listBody) {
   let ids = [];
   try {
     const doc = JSON.parse(listBody || "{}");
-    ids = (doc.data || []).filter((m) => m && m.id && !(m.aither && m.aither.available === false)).map((m) => String(m.id));
+    ids = (doc.data || []).filter((m) => m && m.id && !/^byok[:/]/i.test(String(m.id)) && !(m.aither && m.aither.available === false)).map((m) => String(m.id));
   } catch { return ""; }
   const rank = (id) => (/^bonsai2/i.test(id) ? 0 : /bonsai/i.test(id) ? 1 : /embed|vision|image|whisper|tts/i.test(id) ? 9 : 2);
   const sorted = ids.slice().sort((a, b) => rank(a) - rank(b));

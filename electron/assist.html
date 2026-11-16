@@ -128,8 +128,10 @@
     add("Send to knowledge", () => fileRun("pipeline", ""), "Documents / data pipeline");
     add("Run a tool pack…", () => openRoute({ id: "pack", label: "Tool pack", route: "pack" }));
     const iv = state.initialVerb; state.initialVerb = null;
+    // Only READ-ONLY, proposal-style verbs start by themselves. A verb that sends the file somewhere
+    // (knowledge, an agent's tool pack) always waits for its own click.
     if (iv === "summarize") fileRun("summarize", ""); else if (iv === "rename") renameProposal(); else if (iv === "convert") showConversions();
-    else if (iv === "pipeline") fileRun("pipeline", ""); else if (iv === "pack") openRoute({ id: "pack", label: "Tool pack", route: "pack" });
+    else if (iv === "pipeline") status("Press \u201CSend to knowledge\u201D to confirm.", ""); else if (iv === "pack") openRoute({ id: "pack", label: "Tool pack", route: "pack" });
   }
   function showConversions() {
     const verbs = $("verbs"); verbs.textContent = "";

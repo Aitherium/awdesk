@@ -234,3 +234,14 @@ test("UI Automation's physical pixels are converted to DIPs before the pop-up is
     assert.deepEqual({ x: r.e.wins[0].bounds.x, y: r.e.wins[0].bounds.y }, { x: 600, y: 400 + 20 + 8 }, "x/2, and just under the DIP caret rect");
   } finally { delete global.__scale; }
 });
+
+test("a terminal host is never a paste target (it would execute newlines); Copy still works", async () => {
+  for (const app of ["WindowsTerminal", "powershell", "cmd"]) {
+    const r = rig({ ...GOOD, app });
+    await r.w.open();
+    assert.equal(r.w.state().canInsert, false, app);
+  }
+  const ok = rig({ ...GOOD, app: "notepad" });
+  await ok.w.open();
+  assert.equal(ok.w.state().canInsert, true);
+});

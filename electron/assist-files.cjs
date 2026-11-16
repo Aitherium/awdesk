@@ -48,6 +48,8 @@ const TEXT_EXT = new Set([
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff"]);
 /** Formats with no text extractor in the desk: refused BY NAME, never read as mojibake. */
 const NO_EXTRACTOR = new Set([".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".odt", ".ods", ".epub", ".zip", ".7z", ".rar", ".gz", ".tar", ".mp3", ".wav", ".flac", ".ogg", ".mp4", ".mov", ".mkv", ".webm", ".exe", ".dll", ".iso"]);
+/** Files a folder send must never carry to the platform, by name. */
+const SECRET_NAME = /^(\.env.*|.*\.(pem|key|pfx|p12|kdbx|ppk|asc|gpg)|id_(rsa|dsa|ecdsa|ed25519).*|.*(secret|credential|password|token).*)$/i;
 const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 const BLOCKED_ROOTS = ["c:\\windows", "c:\\program files", "c:\\program files (x86)", "c:\\programdata"];
 
@@ -88,8 +90,10 @@ const CONVERSIONS = Object.freeze([
 
 function conversionArgs(tool, input, output) {
   if (tool === "magick") return [input, output];
-  if (tool === "ffmpeg") return ["-nostdin", "-hide_banner", "-loglevel", "error", "-n", "-i", input, output];
-  if (tool === "pandoc") return [input, "-o", output];
+  // ffmpeg: only local files (a crafted playlist named .mp4 must not pull other files or URLs);
+  // pandoc: --sandbox forbids it reading or writing anything beyond the two named files.
+  if (tool === "ffmpeg") return ["-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file", "-n", "-i", input, output];
+  if (tool === "pandoc") return ["--sandbox", input, "-o", output];
   return null;
 }
 
@@ -108,6 +112,11 @@ function createAssistFiles({
   let counter = 0;
   const nextId = newId || (() => `f${now().toString(36)}${(counter += 1).toString(36)}`);
   const lastRename = { from: null, to: null };
+  function linkNoClobber(from, to) {
+    if (typeof fsImpl.linkSync === "function") { fsImpl.linkSync(from, to); fsImpl.unlinkSync(from); return; }
+    if (existsSync(to)) { const e = new Error("exists"); e.code = "EEXIST"; throw e; }
+    fsImpl.renameSync(from, to);
+  }
 
   const note = (id, verb, outcome, ctx, extra, error) => {
     if (!log) return null;
@@ -191,7 +200,9 @@ function createAssistFiles({
     const id = nextId();
     const failed = note(id, "file-rename", "started", { title: path.win32.basename(src.path) }, { to: path.win32.basename(to) });
     if (failed) return { ok: false, error: `Not run: the action log is not writable (${failed}).` };
-    try { fsImpl.renameSync(src.path, to); } catch (error) {
+    // A hard link FAILS if the target exists (renameSync would silently replace it on Windows),
+    // so the check-then-act race cannot clobber a file; then the old name is removed.
+    try { linkNoClobber(src.path, to); } catch (error) {
       note(id, "file-rename", "error", { title: path.win32.basename(src.path) }, null, String(error.message || error));
       return { ok: false, error: `Windows refused the rename: ${error.code || error.message}` };
     }
@@ -204,7 +215,7 @@ function createAssistFiles({
     if (!lastRename.to) return { ok: false, error: "No rename to undo." };
     if (!existsSync(lastRename.to)) return { ok: false, error: "The renamed file is no longer there." };
     if (existsSync(lastRename.from)) return { ok: false, error: "The old name is taken now. Nothing was changed." };
-    try { fsImpl.renameSync(lastRename.to, lastRename.from); } catch (error) { return { ok: false, error: `Windows refused: ${error.code || error.message}` }; }
+    try { linkNoClobber(lastRename.to, lastRename.from); } catch (error) { return { ok: false, error: `Windows refused: ${error.code || error.message}` }; }
     note(nextId(), "file-rename", "undone", { title: path.win32.basename(lastRename.from) });
     const back = lastRename.from;
     lastRename.from = null; lastRename.to = null;
@@ -252,6 +263,7 @@ function createAssistFiles({
     for (const e of entries) {
       if (out.length >= INGEST_MAX_FILES || e.isDirectory()) continue;
       const one = inspect(path.win32.join(info.path, e.name));
+      if (SECRET_NAME.test(e.name)) continue;
       if (one.ok && one.kind === "file" && one.textable && one.size > 0) out.push({ path: one.path, name: one.name, text: one.text });
     }
     return out;
@@ -267,7 +279,7 @@ function createAssistFiles({
       const verdict = await confirm({
         title: `Send ${files.length} file${files.length === 1 ? "" : "s"} from ${info.name} to your knowledge base?`,
         summary: "Aither will read these files and add them to your own knowledge base (the Documents / Data pipeline). Nothing is deleted or changed on disk.",
-        facts: files.slice(0, 12).map((f) => f.name),
+        facts: [`${files.length} file${files.length === 1 ? "" : "s"}, ${files.reduce((n, f) => n + f.text.length, 0)} characters`, ...files.slice(0, 25).map((f) => f.name)],
         options: ["Send", "Do not send"],
       });
       if (verdict !== "Send") return { ok: false, error: "Not sent: no approval." };
@@ -310,5 +322,5 @@ function createAssistFiles({
 
 module.exports = {
   createAssistFiles, checkPath, sanitizeName, conversionArgs, uniqueOutput,
-  CONVERSIONS, TEXT_EXT, IMAGE_EXT, NO_EXTRACTOR, INGEST_MAX_FILES,
+  CONVERSIONS, SECRET_NAME, TEXT_EXT, IMAGE_EXT, NO_EXTRACTOR, INGEST_MAX_FILES,
 };

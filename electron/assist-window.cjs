@@ -25,6 +25,8 @@ const caretLib = require("./assist-caret.cjs");
 
 const SIZE = Object.freeze({ width: 460, height: 440 });
 const MAX_INSERT = 20000;
+/** A terminal host would EXECUTE pasted newlines: never a paste target (Copy still works). */
+const TERMINAL_APPS = new Set(["windowsterminal", "cmd", "powershell", "pwsh", "conhost", "openconsole", "wsl", "wslhost", "bash", "mintty", "alacritty", "wezterm-gui", "kitty", "putty", "ttermpro", "mobaxterm"]);
 const VERB_ORDER = Object.freeze(["explain", "rewrite", "translate", "summarize", "reply", "ask-agent", "send-agent", "send-workflow", "save-memory", "save-note"]);
 
 function createAssistWindow({
@@ -283,7 +285,7 @@ function createAssistWindow({
     session = {
       ctx, hwnd: (snap && snap.hwnd) || 0, pid: (snap && snap.pid) || 0, refused,
       // Never paste into the desk's own window (tray / palette launches focus the desk).
-      canInsert: Boolean(snap && snap.ok !== false && snap.canInsert && (snap.hwnd || 0) > 0 && snap.pid !== process.pid),
+      canInsert: Boolean(snap && snap.ok !== false && snap.canInsert && (snap.hwnd || 0) > 0 && snap.pid !== process.pid && !TERMINAL_APPS.has(String(snap.app || "").toLowerCase())),
       chips: sug.chips || [], send: sug.send || null, refine: sug.refine || null,
       verbs: refused ? [] : verbsFor(ctx), last: null, initialVerb: verb,
     };

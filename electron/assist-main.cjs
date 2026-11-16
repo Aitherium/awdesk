@@ -91,7 +91,12 @@ function createAssistMain({ electron, userDataDir, gateway = null, notes = null,
     const verb = String(kind || "open");
     if (verb === "open") return win.open();
     // Explorer: `file:<verb>` plus the selected path (the shell menu's --arg).
-    if (verb.startsWith("file:")) return win.openFile({ path: meta.arg, verb: verb.slice(5) });
+    // ONLY from the shell menu: POST /commands/run (surface "bridge"), a palette row or a
+    // second program must not be able to open a file verb on a path.
+    if (verb.startsWith("file:")) {
+      if (meta.surface !== "shell-menu") return Promise.resolve({ ok: false, error: "Explorer verbs run from the Explorer right-click menu." });
+      return win.openFile({ path: meta.arg, verb: verb.slice(5) });
+    }
     if (core.verbById(verb)) return win.open({ verb });
     return Promise.resolve({ ok: false, error: `unknown assist command ${verb}` });
   }

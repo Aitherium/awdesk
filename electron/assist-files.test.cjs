@@ -138,6 +138,9 @@ test("convert writes a NEW file beside the original with an argv array and never
   assert.equal(r.execs[0].opts.shell, false);
   assert.deepEqual(files.conversionArgs("ffmpeg", "a", "b").slice(0, 4), ["-nostdin", "-hide_banner", "-loglevel", "error"]);
   assert.ok(files.conversionArgs("ffmpeg", "a", "b").includes("-n"), "ffmpeg is told never to overwrite");
+  const ff = files.conversionArgs("ffmpeg", "a", "b");
+  assert.deepEqual(ff.slice(ff.indexOf("-protocol_whitelist"), ff.indexOf("-protocol_whitelist") + 2), ["-protocol_whitelist", "file"], "a crafted playlist cannot read URLs or other files");
+  assert.equal(files.conversionArgs("pandoc", "a", "b")[0], "--sandbox");
 });
 
 test("convert says what to install when no tool is there, and refuses unknown targets", async () => {
@@ -196,5 +199,31 @@ test("there is no delete, overwrite or move verb on the surface", () => {
   const surface = Object.keys(files.createAssistFiles({ engine: {} })).sort();
   assert.deepEqual(surface, ["applyRename", "convert", "conversionsFor", "inspect", "proposeRename", "runPack", "runVerb", "sendToPipeline", "undoRename"].sort());
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "assist-files.cjs"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-  assert.doesNotMatch(src, /unlinkSync|rmSync|rmdirSync|copyFileSync|writeFileSync|"-y"|"--replace"/);
+  assert.doesNotMatch(src, /rmSync|rmdirSync|copyFileSync|writeFileSync|"-y"|"--replace"/);
+  assert.equal((src.match(/unlinkSync/g) || []).length, 1, "the ONLY unlink is the old name after a no-clobber hard link");
+});
+
+test("rename uses a no-clobber hard link: if the name appears between the check and the act, nothing is replaced", () => {
+  const r = rig({ ...BASE });
+  const links = [];
+  r.fsImpl.linkSync = (a, b) => { links.push([a, b]); if (b === "C:\\Users\\me\\Docs\\Race.txt") { const e = new Error("EEXIST"); e.code = "EEXIST"; throw e; } r.fsImpl.map.set(b, r.fsImpl.map.get(a)); };
+  r.fsImpl.unlinkSync = (a) => { r.fsImpl.map.delete(a); };
+  const lost = r.f.applyRename({ from: DOC, name: "Race" });
+  assert.equal(lost.ok, false);
+  assert.ok(r.fsImpl.map.has(DOC), "the original is untouched when the link fails");
+  const won = r.f.applyRename({ from: DOC, name: "Free name" });
+  assert.ok(won.ok);
+  assert.ok(!r.fsImpl.map.has(DOC) && r.fsImpl.map.has("C:\\Users\\me\\Docs\\Free name.txt"));
+});
+
+test("a folder send never carries secret-looking files", async () => {
+  const calls = [];
+  const gateway = { callTool: async (n, a) => { calls.push(a.title); return { content: [{ text: "ok" }] }; } };
+  const r = rig({
+    "C:\\Users\\me\\Docs": { dir: true, kids: ["notes.txt", ".env", "id_rsa", "server.pem", "password list.txt", "plan.md"] },
+    "C:\\Users\\me\\Docs\\notes.txt": { text: "n" }, "C:\\Users\\me\\Docs\\.env": { text: "KEY=1" }, "C:\\Users\\me\\Docs\\id_rsa": { text: "-----BEGIN" },
+    "C:\\Users\\me\\Docs\\server.pem": { text: "pem" }, "C:\\Users\\me\\Docs\\password list.txt": { text: "pw" }, "C:\\Users\\me\\Docs\\plan.md": { text: "p" },
+  }, { gateway, confirm: async () => "Send" });
+  assert.ok((await r.f.sendToPipeline({ info: r.f.inspect("C:\\Users\\me\\Docs") })).ok);
+  assert.deepEqual(calls.sort(), ["notes.txt", "plan.md"]);
 });
