@@ -12,6 +12,7 @@ import { arrange, isArrangement } from '../stage/arrangements';
 import { dropTarget, sanitizeGroups, type StageGroup } from '../stage/stage-direct';
 import { StageHandles } from '../stage/StageHandles';
 import { EntityMotion } from '../stage/EntityMotion';
+import { chooseDpr } from '../render/dpr';
 import { useAvatarDrag } from '../hooks/useAvatarDrag';
 import { authoredFields, freeSpot } from '../hooks/stagePlacement';
 import { anyoneAudible } from '../hooks/voiceLevels';
@@ -238,6 +239,36 @@ function FrameGovernor() {
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [gl, invalidate]);
+  return null;
+}
+
+/** Pixel ratio follows the idle state (render/dpr.ts): 1 while anything moves, the display's own (up to 2) once still. */
+function DprGovernor() {
+  const setDpr = useThree((state) => state.setDpr);
+  const gl = useThree((state) => state.gl);
+  useEffect(() => {
+    let lastInput = performance.now();
+    let current = 1;
+    const onInput = () => { lastInput = performance.now(); };
+    const el = gl.domElement;
+    el.addEventListener('pointerdown', onInput);
+    el.addEventListener('pointermove', onInput);
+    el.addEventListener('wheel', onInput, { passive: true });
+    const timer = window.setInterval(() => {
+      const active = anyoneAudible() || anyVisemes() || orbitSuspend.depth > 0;
+      const next = chooseDpr({ active, sinceInputMs: performance.now() - lastInput, devicePixelRatio: window.devicePixelRatio, hidden: document.hidden });
+      if (next !== current) {
+        current = next;
+        setDpr(next);
+      }
+    }, 500);
+    return () => {
+      window.clearInterval(timer);
+      el.removeEventListener('pointerdown', onInput);
+      el.removeEventListener('pointermove', onInput);
+      el.removeEventListener('wheel', onInput);
+    };
+  }, [gl, setDpr]);
   return null;
 }
 
@@ -866,7 +897,7 @@ export function Scene(props: SceneProps) {
     <Canvas
       camera={{ position: [0, 2, 4.8], fov: 20 }}
       frameloop="demand"
-      // dpr capped at 1: this scene previously rendered at up to 1.5x device pixels,
+      // dpr starts at 1 and DprGovernor raises it to the display's (max 2) while idle: this scene previously rendered at up to 1.5x device pixels,
       // i.e. ~2.25x the fill-rate, for an anti-aliased overlay nobody reads text in.
       // On a loaded box that supersampling is the difference between smooth and janky.
       dpr={1}
@@ -899,6 +930,7 @@ export function Scene(props: SceneProps) {
       />
       <Environment files={dawnEnvironment} />
       <FrameGovernor />
+      <DprGovernor />
       <AvatarPicker />
       <FullBodyCamera objects={allObjects} focusUuid={focusUuid} />
       {/* Slot 0: default avatar, drives voice/animation/audio — unchanged. Now individually
