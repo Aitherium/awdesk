@@ -686,7 +686,14 @@ export function Scene(props: SceneProps) {
     const target = dropTarget({ slotId, x, z }, otherSpots(slotId));
     dropCueRef.current = null;
     setDropCue(null);
-    if (target) window.deskBridge?.stageDrop?.(slotId, target);
+    // Main's copy of where bodies stand only knows swarm placements: tell it where this drop left them,
+    // so the stage is seated around where the owner is looking (review of #105), then join.
+    if (target) {
+      const here: Record<string, number> = { [slotId]: x };
+      for (const spot of otherSpots(slotId)) here[spot.slotId] = spot.x;
+      window.deskBridge?.stageSync?.(here);
+      window.deskBridge?.stageDrop?.(slotId, target);
+    }
   }, [otherSpots]);
   // An authored placement (`place-avatar`, the cast file via main) goes through the
   // SAME setters a drag does, one component at a time: an omitted or rejected field
