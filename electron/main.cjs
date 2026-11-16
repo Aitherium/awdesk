@@ -1992,7 +1992,7 @@ function clearStageForAither() {
 async function expandAvatarFromFairy({ from = null } = {}) {
   if (avatarGrowing) return { ok: false, error: "already growing" };
   if (avatarDock && avatarDock.isDocked()) return { ok: false, error: "the avatar is docked in the browser" };
-  const want = defaultAitherCharacter(listCharacters());
+  const want = aitherCharacterToShow();
   if (!want) return { ok: false, error: "no Aither model in this desk's roster" };
   avatarGrowing = true;
   try {
@@ -2048,6 +2048,116 @@ async function collapseAvatarToFairy({ to = null } = {}) {
   try { startRoomStage(); } catch { /* the room is optional */ }
   if (tray) refreshTrayMenu();
   return { ok: true };
+}
+
+// -- Aither's body: female or male (aither-body.cjs, owner 2026-11-16) -------------
+// "can select male or female Aither and have it transform from fairy to full avatar".
+// The choice is cast.json authors.aither.character (the row awsettings and the avatar
+// catalog carry), so every desk follows it; the fairy grows into the chosen body.
+const aitherBody = require("./aither-body.cjs");
+
+function aitherBodyDir() {
+  try { return app.getPath("userData"); } catch { return null; }
+}
+
+function characterRecord(name) {
+  if (!name) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(ROSTER_DIR, String(name), "character.json"), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function aitherBodyFacts() {
+  const assigned = getAgentAvatar(aitherBody.AGENT);
+  const dir = aitherBodyDir();
+  return {
+    assigned,
+    record: characterRecord(assigned),
+    names: listCharacters(),
+    pending: dir ? aitherBody.readState(dir).pending || null : null,
+  };
+}
+
+/** The roster name the fairy grows into: the chosen body, else the older default. */
+function aitherCharacterToShow() {
+  const facts = aitherBodyFacts();
+  return aitherBody.characterToShow({ ...facts, fallback: defaultAitherCharacter(facts.names) });
+}
+
+/** Tell the person's avatar catalog (every other desk, the web, the phone). `pending`
+ *  is cleared only when the catalog took it, so a pull cannot undo the choice first. */
+function pushAitherBody(id) {
+  const body = aitherBody.bodyById(id);
+  if (!body) return Promise.resolve({ ok: false, reason: "unknown body" });
+  return avatarCatalogSync.pushAssignment(aitherBody.AGENT, body.character)
+    .then((r) => {
+      debugLog("Aither body pushed to your library", id, r.ok ? r.id : r.reason);
+      if (!r.ok) return r;
+      const dir = aitherBodyDir();
+      const state = dir ? aitherBody.readState(dir) : {};
+      // A newer choice was made while this one was on its way: leave that one alone.
+      if (state.pending && state.pending !== id) return r;
+      setAgentAvatar(aitherBody.AGENT, r.name || body.character);
+      if (dir && state.pending) {
+        delete state.pending;
+        aitherBody.writeState(dir, state);
+      }
+      if (tray) refreshTrayMenu();
+      return r;
+    })
+    .catch((error) => {
+      debugLog("Aither body push failed", id, String((error && error.message) || error));
+      return { ok: false, reason: String((error && error.message) || error) };
+    });
+}
+
+/** Choose Aither's body. The body on screen changes with it when it IS Aither. */
+function setAitherBody(id) {
+  const body = aitherBody.bodyById(id);
+  if (!body) return { ok: false, error: `unknown Aither body ${id}` };
+  if (!kidDesk.allowCharacterChange(kidDeskMode())) return { ok: false, error: "this desk does not change characters" };
+  if (!listCharacters().includes(body.character)) return { ok: false, error: `${body.label} is not on this desk` };
+  if (!setAgentAvatar(aitherBody.AGENT, body.character)) return { ok: false, error: "the choice could not be saved" };
+  const dir = aitherBodyDir();
+  if (dir) aitherBody.writeState(dir, { ...aitherBody.readState(dir), pending: body.id });
+  const active = getActiveCharacter();
+  const grown = (() => { try { return orbWindow.expanded(); } catch { return false; } })();
+  if (active !== body.character && (grown || aitherBody.bodyOfCharacter(active, characterRecord(active)))) {
+    if (installCharacter(body.character) && avatarWindow && !avatarWindow.isDestroyed()) {
+      avatarWindow.webContents.reloadIgnoringCache();
+    }
+  }
+  debugLog("Aither body chosen", body.id, body.character);
+  if (tray) refreshTrayMenu();
+  void pushAitherBody(body.id);
+  return { ok: true, body: body.id, character: body.character };
+}
+
+/** Boot: move an old Aither row to the default body ONCE, and re-send a choice the
+ *  catalog never got (aither-body.cjs planMigration / pending). */
+function startAitherBody() {
+  const dir = aitherBodyDir();
+  if (!dir) return;
+  try {
+    const state = aitherBody.readState(dir);
+    const plan = aitherBody.planMigration({ ...aitherBodyFacts(), state });
+    if (plan) {
+      const next = { ...state, migratedAt: new Date().toISOString() };
+      if (plan.to && setAgentAvatar(aitherBody.AGENT, plan.to)) {
+        if (plan.from) next.from = plan.from;
+        next.pending = plan.body;
+        debugLog("Aither's avatar moved to the default body", plan.from || "(none)", "->", plan.to);
+      }
+      aitherBody.writeState(dir, next);
+    }
+    const pending = aitherBody.readState(dir).pending;
+    if (pending) void pushAitherBody(pending);
+  } catch (error) {
+    debugLog("Aither body start failed", String((error && error.message) || error));
+  }
 }
 
 /** Why the fairy must not interrupt right now, or "" (fairy-attention quiet). The
@@ -3096,6 +3206,10 @@ function commandContext() {
     interactMode: require("./toolkit.cjs").interactMode(),
     avatarShown: Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()),
     grownFromFairy: (() => { try { return orbWindow.expanded(); } catch { return false; } })(),
+    // "fairy" = the fairy can grow into Aither now; "expanded" = she is grown; null = no body.
+    fairyAvatar: (() => { try { return orbWindow.avatarMode(); } catch { return null; } })(),
+    // Aither's bodies on this desk and the one in force (aither-body.cjs rows).
+    aitherBodies: (() => { try { return aitherBody.rows(aitherBodyFacts()); } catch { return []; } })(),
     decisionsWaiting: inboxCounts().waiting,
     decisionsTotal: inboxCounts().total,
     listening: listeningNow(),
@@ -3717,6 +3831,9 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "avatar.remove": return void (slotId && removeAvatarSlot(slotId));
     // Grown from the fairy (owner 2026-11-15): the orb is down, the way back is on the body.
     case "avatar.to-fairy": return void orbWindow.collapseToFairy();
+    case "avatar.from-fairy": return void orbWindow.expandToAvatar();
+    case "aither.body.female": return void setAitherBody("female");
+    case "aither.body.male": return void setAitherBody("male");
     case "setup.open": return void setupWindow().createSetupWindow({ openAwsh: () => openConsole() });
     case "about": return void showAboutDesk();
     case "aeon.state": return runAeonStateCommand({ surface });
@@ -5694,6 +5811,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     startAvatarSourceWatch();
     // Which avatar each agent wears, from the person's catalog (after the kid-desk return
     // above: a child's desk never pulls an adult library).
+    startAitherBody();
     avatarCatalogSync.startCatalogSync({ log: debugLog });
     // Unpackaged runs (npx electron .) have no Start Menu shortcut registering
     // the AUMID, so Windows shows the RAW id as every toast's header — the
@@ -6456,6 +6574,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         // The fairy grows into Aither and back (avatar-grow.cjs, owner 2026-11-15).
         expand: (opts) => expandAvatarFromFairy(opts),
         collapse: (opts) => collapseAvatarToFairy(opts),
+        // Aither (female) / Aither (male) on the fairy's menu (aither-body.cjs).
+        aitherBodies: () => aitherBody.rows(aitherBodyFacts()),
+        pickAitherBody: (id) => setAitherBody(id),
         focusSession: async (id) => {
           const r = await deckSessionAct({ id, action: "focus" });
           if (r && !r.ok && /ended/i.test(String(r.note || ""))) return deckSessionAct({ id, action: "resume" });

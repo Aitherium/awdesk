@@ -139,10 +139,12 @@ function fairyItems(card, { label = "", agent = "" } = {}) {
  *   opts.tenantVisible: the workspace's own companion shows.
  *   opts.nowMs: the clock.
  *   opts.avatar: null (no avatar to expand into) | "fairy" | "expanded".
+ *   opts.bodies: aither-body.cjs rows [{id, label, checked}] -- Aither (female) /
+ *     Aither (male). Empty when this desk has fewer than two (no choice, no row).
  */
 function orbItems({
   waiting = 0, mutedUntil = 0, quietUntil = 0, tenantVisible = false, fairyVisible = true, nowMs = Date.now(),
-  avatar = null,
+  avatar = null, bodies = [],
 } = {}) {
   const n = Math.max(0, Number(waiting) || 0);
   const items = [];
@@ -151,6 +153,17 @@ function orbItems({
   // expand into (no row: never a dead item), else "fairy" | "expanded".
   if (avatar === "fairy") items.push({ id: "expand", label: "Show Aither", hint: "The fairy grows into Aither's full avatar" });
   if (avatar === "expanded") items.push({ id: "collapse", label: "Back to the fairy", hint: "Aither shrinks back into the fairy" });
+  // Owner 2026-11-16: "can select male or female Aither and have it transform from fairy
+  // to full avatar". Only with a body to grow into; the one in force carries the mark.
+  if (avatar) {
+    for (const b of Array.isArray(bodies) ? bodies : []) {
+      if (!b || !b.id || !b.label) continue;
+      items.push({
+        id: `body:${b.id}`, label: b.checked ? `${b.label} \u2713` : String(b.label), checked: Boolean(b.checked),
+        hint: b.checked ? "The body Aither wears now" : "The fairy grows into this body, and it stays your choice",
+      });
+    }
+  }
   items.push({ id: "inbox", label: "Open inbox", hint: "The Inbox, where every card is answered" });
   // Nothing waiting: no list to open, so no row (never a dead item).
   if (n) items.push({ id: "queue", label: "Answer window", hint: "Every waiting card in one list" });
