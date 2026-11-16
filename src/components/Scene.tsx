@@ -9,6 +9,8 @@ import type { AnimationType } from '../animation-catalog';
 import { calculateFullBodyFraming } from '../camera-framing';
 import { POSITION_BOUND, useAvatarLayout, type AvatarTransform } from '../hooks/useAvatarLayout';
 import { arrange, isArrangement } from '../stage/arrangements';
+import { dropTarget, sanitizeGroups, type StageGroup } from '../stage/stage-direct';
+import { StageHandles } from '../stage/StageHandles';
 import { useAvatarDrag } from '../hooks/useAvatarDrag';
 import { authoredFields, freeSpot } from '../hooks/stagePlacement';
 import { anyoneAudible } from '../hooks/voiceLevels';
@@ -241,6 +243,10 @@ interface PlacedAvatarProps {
   slotId: string;
   transform: AvatarTransform;
   onDrag: (position: [number, number, number]) => void;
+  /** While this body is dragged: where it is now (the drop cue). */
+  onDragMove?: (slotId: string, x: number, z: number) => void;
+  /** After this body was dropped: where it landed (stages by direct manipulation). */
+  onDropped?: (slotId: string, x: number, z: number) => void;
   onScale: (scale: number) => void;
   /** Committed yaw after a ROT-mode drag on THIS avatar (radians). */
   onRotate: (yaw: number) => void;
@@ -287,7 +293,7 @@ function resumeOrbit(orbit: { enabled?: boolean } | null) {
  *  position is committed to persisted layout state ONCE, on pointerup. All live values
  *  (y, scale) are read through refs so a re-render mid-drag can never strand the drag on
  *  a stale closure. */
-function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProps, onReady, bubble, physics, customise, injuries }: PlacedAvatarProps) {
+function PlacedAvatar({ slotId, transform, onDrag, onDragMove, onDropped, onScale, onRotate, avatarProps, onReady, bubble, physics, customise, injuries }: PlacedAvatarProps) {
   const getThreeState = useThree((state) => state.get);
   const groupRef = useRef<THREE.Group>(null);
   const transformRef = useRef(transform);
@@ -367,10 +373,15 @@ function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProp
     if (vrmRef.current) applyCustomise(vrmRef.current, customiseRef.current);
   }, [recipeKey]);
 
+  const onDragMoveRef = useRef(onDragMove);
+  onDragMoveRef.current = onDragMove;
+  const onDroppedRef = useRef(onDropped);
+  onDroppedRef.current = onDropped;
   const { beginDrag } = useAvatarDrag(
     (nx, nz) => {
       const group = groupRef.current;
       if (group) group.position.set(nx, transformRef.current.position[1], nz);
+      onDragMoveRef.current?.(slotId, nx, nz);
     },
     // Where the avatar IS when the pointer goes down: the drag's start, so the
     // screen-space delta applies on top of the real position, never a jump.
@@ -505,6 +516,7 @@ function PlacedAvatar({ slotId, transform, onDrag, onScale, onRotate, avatarProp
                 // Single commit: persists the final spot (localStorage-backed)
                 // without a re-render storm during the gesture.
                 onDrag([group.position.x, transformRef.current.position[1], group.position.z]);
+                onDroppedRef.current?.(slotId, group.position.x, group.position.z);
               }
             });
           }}
@@ -645,6 +657,36 @@ export function Scene(props: SceneProps) {
   );
   const { layout, getTransform, setPosition, setScale, setYaw, clearSlot } = useAvatarLayout(defaultTransform);
   layoutRef.current = layout;
+  // Stages by direct manipulation (stage-direct.ts): main tells the renderer which bodies share
+  // a stage (`stage-groups`); a body dropped on another joins it; a handle over the group moves it.
+  const [stageGroups, setStageGroups] = useState<StageGroup[]>([]);
+  const [dropCue, setDropCue] = useState<string | null>(null);
+  const dropCueRef = useRef<string | null>(null);
+  const slotIdsRef = useRef<string[]>([]);
+  slotIdsRef.current = ['slot0', ...extraSlots.map((slot) => slot.slotId)];
+  /** The other bodies on stage, where they stand now. */
+  const otherSpots = useCallback(
+    (slotId: string) => slotIdsRef.current
+      .filter((id) => id !== slotId && !props.hiddenSlots?.[id])
+      .map((id) => {
+        const p = layoutRef.current[id]?.position ?? getTransform(id).position;
+        return { slotId: id, x: p[0], z: p[2] };
+      }),
+    [getTransform, props.hiddenSlots],
+  );
+  const handleDragMove = useCallback((slotId: string, x: number, z: number) => {
+    const target = dropTarget({ slotId, x, z }, otherSpots(slotId));
+    if (target !== dropCueRef.current) {
+      dropCueRef.current = target;
+      setDropCue(target);
+    }
+  }, [otherSpots]);
+  const handleDropped = useCallback((slotId: string, x: number, z: number) => {
+    const target = dropTarget({ slotId, x, z }, otherSpots(slotId));
+    dropCueRef.current = null;
+    setDropCue(null);
+    if (target) window.deskBridge?.stageDrop?.(slotId, target);
+  }, [otherSpots]);
   // An authored placement (`place-avatar`, the cast file via main) goes through the
   // SAME setters a drag does, one component at a time: an omitted or rejected field
   // leaves that component alone, so a defaulted slot keeps its free-spot placement
@@ -757,6 +799,8 @@ export function Scene(props: SceneProps) {
     return bridge.subscribe((event) => {
       if (event.type === 'focus-avatar') {
         focusSlot(event.slotId);
+      } else if (event.type === 'stage-groups') {
+        setStageGroups(sanitizeGroups(event.groups, slotIdsRef.current));
       } else if (event.type === 'reset-avatar-layout') {
         clearSlot(event.slotId);
       } else if (event.type === 'stage-arrange') {
@@ -855,6 +899,8 @@ export function Scene(props: SceneProps) {
         slotId="slot0"
         transform={getTransform('slot0')}
         onDrag={(position) => setPosition('slot0', position)}
+        onDragMove={handleDragMove}
+        onDropped={handleDropped}
         onScale={(scale) => setScale('slot0', scale)}
         onRotate={(yaw) => setYaw('slot0', yaw)}
         avatarProps={props}
@@ -885,6 +931,8 @@ export function Scene(props: SceneProps) {
             slotId={slot.slotId}
             transform={getTransform(slot.slotId)}
             onDrag={(position) => setPosition(slot.slotId, position)}
+            onDragMove={handleDragMove}
+            onDropped={handleDropped}
             onScale={(scale) => setScale(slot.slotId, scale)}
             onRotate={(yaw) => setYaw(slot.slotId, yaw)}
             avatarProps={avatarProps}
@@ -896,6 +944,22 @@ export function Scene(props: SceneProps) {
           />
         );
       })}
+      {/* The drop cue: the body a dragged one would join, ringed on the floor. */}
+      {dropCue ? (() => {
+        const p = layoutRef.current[dropCue]?.position ?? getTransform(dropCue).position;
+        return (
+          <mesh position={[p[0], 0.02, p[2]]} rotation={[-Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[0.5, 0.58, 48]} />
+            <meshBasicMaterial color="#7dd3fc" transparent opacity={0.95} depthWrite={false} />
+          </mesh>
+        );
+      })() : null}
+      <StageHandles
+        groups={stageGroups}
+        positionOf={(id) => layoutRef.current[id]?.position ?? getTransform(id).position}
+        setPosition={setPosition}
+        onMoved={(positions) => window.deskBridge?.stageSync?.(positions)}
+      />
       <OrbitControls
         makeDefault
         enableDamping

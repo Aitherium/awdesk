@@ -569,6 +569,14 @@ const COMMANDS = Object.freeze([
     whySingle: "Shown only while Aither is grown from the fairy (owner 2026-11-15): the orb is down then, "
       + "so the way back lives on the body; the fairy's own menu carries Show Aither.",
   }),
+  // Stages by direct manipulation (owner 2026-11-16): drop a body on another to join a stage,
+  // right-click > Leave stage to step out, drag the stage's handle to move the group.
+  Object.freeze({
+    id: "stage.leave", label: "Leave stage", group: "slot", scope: "slot",
+    surfaces: ["avatar-menu"], when: (ctx = {}) => Boolean(ctx.inStage),
+    whySingle: "Shown only on a body that stands in a stage; it needs the body that was right-clicked "
+      + "(the tray's 'Stage: split them apart' is the same verb for every body at once).",
+  }),
   Object.freeze({
     id: "avatar.remove", label: "Remove this avatar", group: "slot", scope: "slot",
     surfaces: ["avatar-menu"], when: (ctx = {}) => Boolean(ctx.removable),

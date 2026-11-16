@@ -130,6 +130,7 @@ function createSwarmHost({
   function publish() {
     try { orb.setPresence(composePresence(basePresence)); } catch (error) { log("swarm presence failed", error && error.message); }
     applyAnchor();
+    if (stages.size || publishedStages) publishStages(); // a stage that just emptied must clear its handle too
   }
 
   /** main's own presence poll hands its rows here, and gets the composed list back. */
@@ -420,11 +421,69 @@ function createSwarmHost({
     }
   }
 
+  /** The agent standing in `slotId` (the resident body is Aither), or "". */
+  function agentOfSlot(slotId) {
+    if (slotId === "slot0") return swarm.HOME_AGENT;
+    for (const [agentId, id] of slots) if (id === slotId) return agentId;
+    return "";
+  }
+
+  /** The stage `slotId`'s body stands in, or null. */
+  function stageOfSlot(slotId) {
+    const agentId = agentOfSlot(slotId);
+    return agentId ? stageOf(agentId) : null;
+  }
+
+  /** What the renderer draws a handle over: every stage with its bodies' slots. */
+  function stageGroups() {
+    return [...stages.values()].map((st) => ({
+      id: st.id,
+      locked: st.locked,
+      members: [...st.members],
+      slots: [...st.members].map(memberSlot).filter(Boolean),
+    }));
+  }
+
+  let publishedStages = false;
+  function publishStages() {
+    publishedStages = stages.size > 0;
+    try { avatar.send({ type: "stage-groups", groups: stageGroups() }); } catch (error) { log("stage groups failed", error && error.message); }
+  }
+
+  /** A body dropped on another in the renderer: they join one stage. */
+  function joinSlots(slotId, targetSlotId) {
+    const agent = agentOfSlot(slotId);
+    const target = agentOfSlot(targetSlotId);
+    if (!agent || !target) return { ok: false, error: "that body is not an agent on this stage" };
+    return stageOp("join", { agent, target });
+  }
+
+  /** Right-click > Leave stage. */
+  function leaveSlot(slotId) {
+    const agent = agentOfSlot(slotId);
+    return agent ? stageOp("leave", { agent }) : { ok: false, error: "that body is not an agent on this stage" };
+  }
+
+  /** A stage moved by its handle: keep our copy of where its bodies stand ({slotId: x}). */
+  function syncPositions(raw) {
+    if (!raw || typeof raw !== "object") return { ok: false };
+    for (const [slotId, x] of Object.entries(raw).slice(0, 64)) {
+      if (agentOfSlot(slotId) && Number.isFinite(Number(x))) positions.set(slotId, Number(x));
+    }
+    return { ok: true };
+  }
+
   /**
    * One verb for every stage control: join (agent -> target stage), leave, lock, arrange
    * (row | circle), move (dx world units), size (scale), turn (yaw radians), state.
    */
   function stageOp(op, args = {}) {
+    const out = stageOpInner(op, args);
+    if (out && out.ok && op !== "state") publishStages();
+    return out;
+  }
+
+  function stageOpInner(op, args = {}) {
     const id = args.agent ? swarm.rosterId(args.agent) : "";
     switch (op) {
       case "state":
@@ -672,6 +731,12 @@ function createSwarmHost({
     visemes,
     handleVoice,
     stageOp,
+    joinSlots,
+    leaveSlot,
+    syncPositions,
+    stageOfSlot,
+    stageGroups,
+    publishStages,
     goblinChanged,
     residentChanged,
     ownsSlot: (slotId) => [...slots.values()].includes(slotId),

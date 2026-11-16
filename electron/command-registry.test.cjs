@@ -166,7 +166,7 @@ test("every id a body's menu claims is really ON a body's menu", () => {
   // popupAvatarMenu was hand-written, so `surfaces: [... "avatar-menu"]` was a
   // claim nothing checked: cast.open was declared there and absent from it.
   const body = leavesOf("avatar-menu", {
-    slotId: "slot1", removable: true, sessionAddress: {}, grownFromFairy: true,
+    slotId: "slot1", removable: true, sessionAddress: {}, grownFromFairy: true, inStage: true,
     // Both Aither builds on this desk (aither-body.cjs rows): the choice renders.
     aitherBodies: [{ id: "female", checked: true }, { id: "male", checked: false }],
   });
