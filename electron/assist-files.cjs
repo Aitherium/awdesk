@@ -57,12 +57,13 @@ const BLOCKED_ROOTS = ["c:\\windows", "c:\\program files", "c:\\program files (x
 function checkPath(raw, existsSync = fs.existsSync) {
   const first = String(Array.isArray(raw) ? raw[0] : raw || "").split(/\r?\n/)[0].trim().replace(/^"(.*)"$/, "$1");
   if (!first) return { ok: false, error: "No file or folder was given." };
+  // eslint-disable-next-line no-control-regex -- control characters are exactly what this strips
   if (!/^[A-Za-z]:\\[^<>"|?*\u0000-\u001f]*$/.test(first) || first.startsWith("\\\\?\\")) return { ok: false, error: "That is not a plain local path." };
   if (first.split("\\").some((p) => p === "..")) return { ok: false, error: "A path with .. is refused." };
   const norm = path.win32.normalize(first).replace(/[\\/]+$/, "");
   const lower = norm.toLowerCase();
   if (BLOCKED_ROOTS.some((b) => lower === b || lower.startsWith(`${b}\\`))) return { ok: false, error: "Aither does not touch Windows or Program Files." };
-  let present = false;
+  let present;
   try { present = existsSync(norm.length === 2 ? `${norm}\\` : norm); } catch { present = false; }
   return present ? { ok: true, path: norm.length === 2 ? `${norm}\\` : norm } : { ok: false, error: "That file or folder is not there." };
 }
@@ -71,6 +72,7 @@ function checkPath(raw, existsSync = fs.existsSync) {
 function sanitizeName(suggestion, { maxLen = 100 } = {}) {
   let name = String(suggestion || "").split(/\r?\n/)[0] || "";
   name = name.replace(/^["'`\s]+|["'`\s]+$/g, "").replace(/\.[A-Za-z0-9]{1,5}$/, "");
+  // eslint-disable-next-line no-control-regex -- control characters are exactly what this strips
   name = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/^[.\s]+|[.\s]+$/g, "").replace(/\s+/g, " ").trim();
   if (!name || RESERVED.test(name)) return "";
   return name.length > maxLen ? name.slice(0, maxLen).trim() : name;
@@ -132,7 +134,7 @@ function createAssistFiles({
     try { st = fsImpl.statSync(v.path); } catch { return { ok: false, error: "That file or folder is not readable." }; }
     const name = path.win32.basename(v.path) || v.path;
     if (st.isDirectory()) {
-      let entries = [];
+      let entries;
       try { entries = fsImpl.readdirSync(v.path, { withFileTypes: true }); } catch { return { ok: false, error: "That folder is not readable." }; }
       const lines = entries.slice(0, FOLDER_LIST_MAX).map((e) => `${e.isDirectory() ? "[dir] " : ""}${e.name}`);
       return { ok: true, kind: "dir", path: v.path, name, count: entries.length, text: lines.join("\n").slice(0, TEXT_CHARS), textable: true };
@@ -156,6 +158,7 @@ function createAssistFiles({
       const buf = Buffer.alloc(Math.min(READ_BYTES, st.size));
       fsImpl.readSync(fd, buf, 0, buf.length, 0);
       fsImpl.closeSync(fd);
+      // eslint-disable-next-line no-control-regex -- control characters are exactly what this strips
       return { ...base, textable: true, text: buf.toString("utf8").replace(/\u0000/g, "").slice(0, TEXT_CHARS), truncated: st.size > READ_BYTES };
     } catch { return { ...base, textable: false, why: "That file is not readable." }; }
   }
@@ -258,7 +261,7 @@ function createAssistFiles({
   function ingestable(info) {
     if (info.kind === "file") return info.textable ? [{ path: info.path, name: info.name, text: info.text }] : [];
     const out = [];
-    let entries = [];
+    let entries;
     try { entries = fsImpl.readdirSync(info.path, { withFileTypes: true }); } catch { return out; }
     for (const e of entries) {
       if (out.length >= INGEST_MAX_FILES || e.isDirectory()) continue;

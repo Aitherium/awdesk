@@ -29,7 +29,7 @@ function rig({ settings = {}, post, gateway, logOk = true } = {}) {
 test("run logs 'started' BEFORE the model call and the outcome after", async () => {
   let startedBeforeCall = false;
   const r = rig({
-    post: async (url) => { startedBeforeCall = r.records.length === 1 && r.records[0].outcome === "started"; return { status: 200, body: JSON.stringify({ choices: [{ message: { content: "ok text" } }] }) }; },
+    post: async () => { startedBeforeCall = r.records.length === 1 && r.records[0].outcome === "started"; return { status: 200, body: JSON.stringify({ choices: [{ message: { content: "ok text" } }] }) }; },
   });
   const res = await r.engine.run({ verb: "rewrite", ctx: { selection: "hello" }, surface: "browser" });
   assert.ok(res.ok);

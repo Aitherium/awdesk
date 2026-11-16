@@ -33,7 +33,6 @@
  */
 
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const core = require("./assist-core.cjs");
 
@@ -87,6 +86,7 @@ function findTool(names, dirs, existsSync = fs.existsSync) {
 function pathFromSelection(selection, existsSync = fs.existsSync) {
   const first = String(selection || "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) || "";
   const bare = first.replace(/^"(.*)"$/, "$1").trim();
+  // eslint-disable-next-line no-control-regex -- control characters are exactly what this strips
   if (!/^[A-Za-z]:\\[^<>"|?*\u0000-\u001f]+$/.test(bare) || bare.startsWith("\\\\?\\")) return null;
   if (bare.split("\\").some((part) => part === "..")) return null;
   try { return existsSync(bare) ? bare : null; } catch { return null; }
@@ -103,6 +103,7 @@ function parseDuration(text) {
 }
 
 function clipOut(text) {
+  // eslint-disable-next-line no-control-regex -- control characters are exactly what this strips
   const t = String(text || "").replace(/\u0000/g, "").trim();
   return t.length > OUT_MAX ? `${t.slice(0, OUT_MAX)}\n... (cut at ${OUT_MAX} characters)` : t;
 }
@@ -178,7 +179,7 @@ function createAssistUtils({
     return { ok: false, error: "PowerToys did not answer. Start PowerToys and make sure that utility is switched on in its settings." };
   }
 
-  async function runOcr(opts) {
+  async function runOcr() {
     if (!clipboard) return { ok: false, error: "The clipboard is not available." };
     const before = clipboard.readText();
     const sig = await signal(PT_EVENTS.ocr);
@@ -199,7 +200,7 @@ function createAssistUtils({
     if (locksmith) {
       const r = await exec(locksmith, ["--json", target], { timeoutMs: LOCKS_TIMEOUT_MS });
       if (r.killed) return { ok: false, error: "File Locksmith took too long (it scans every open handle). Try again, or close apps you do not need." };
-      let procs = null;
+      let procs;
       try { procs = JSON.parse(r.stdout).processes; } catch { procs = null; }
       if (Array.isArray(procs)) {
         if (!procs.length) return { ok: true, text: `Nothing has ${path.basename(target)} open right now.`, note: "PowerToys File Locksmith" };

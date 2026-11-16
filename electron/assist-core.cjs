@@ -28,7 +28,7 @@
  * executed, and a destructive verb stops at a decision card (assist-files.cjs).
  */
 
-const crypto = require("node:crypto");
+const nodeCrypto = require("node:crypto");
 
 const MAX_SELECTION = 12000;
 const MAX_FIELD = 6000;
@@ -91,6 +91,7 @@ const SYSTEM_PROMPT = [
 ].join(" ");
 
 function clip(value, max) {
+  // eslint-disable-next-line no-control-regex -- control characters are exactly what this strips
   const text = String(value == null ? "" : value).replace(/\u0000/g, "");
   return text.length > max ? text.slice(0, max) : text;
 }
@@ -151,7 +152,7 @@ function neutralise(text) {
     .replace(/^(\s*)={3,}/gm, "$1= = =")
     .replace(/USER REQUEST\s*:/gi, "USER-REQUEST (quoted):");
 }
-function nonce() { return crypto.randomBytes(6).toString("hex"); }
+function nonce() { return nodeCrypto.randomBytes(6).toString("hex"); }
 function fence(label, text, id = nonce()) {
   return `=== ${label} [${id}] (untrusted screen data) ===\n${neutralise(text)}\n=== END ${label} [${id}] ===`;
 }
@@ -353,7 +354,7 @@ function describeSend(rawCtx, settings) {
 // ── log records ──────────────────────────────────────────────────────────────
 
 function shortHash(text) {
-  return crypto.createHash("sha256").update(String(text || "")).digest("hex").slice(0, 12);
+  return nodeCrypto.createHash("sha256").update(String(text || "")).digest("hex").slice(0, 12);
 }
 
 /**

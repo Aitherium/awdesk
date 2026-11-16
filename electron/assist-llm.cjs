@@ -84,7 +84,7 @@ function defaultGet(url, timeoutMs) {
  * routing then applies; this never invents a model name.
  */
 function pickModel(listBody) {
-  let ids = [];
+  let ids;
   try {
     const doc = JSON.parse(listBody || "{}");
     ids = (doc.data || []).filter((m) => m && m.id && !/^byok[:/]/i.test(String(m.id)) && !(m.aither && m.aither.available === false)).map((m) => String(m.id));
