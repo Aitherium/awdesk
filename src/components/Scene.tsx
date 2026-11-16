@@ -14,6 +14,7 @@ import { StageHandles } from '../stage/StageHandles';
 import { useAvatarDrag } from '../hooks/useAvatarDrag';
 import { authoredFields, freeSpot } from '../hooks/stagePlacement';
 import { anyoneAudible } from '../hooks/voiceLevels';
+import { anyVisemes } from '../hooks/voiceVisemes';
 import { avatarPointerOut, avatarPointerOver } from '../hooks/clickThrough';
 import { forgetSlot, hasPicker, pickAt, registerAvatarGroup, setSelected } from '../hooks/avatarPick';
 import { AvatarPicker } from './AvatarPicker';
@@ -216,7 +217,7 @@ function FrameGovernor() {
       timer = 0;
       if (raf) return;
       const now = performance.now();
-      const active = anyoneAudible() || orbitSuspend.depth > 0;
+      const active = anyoneAudible() || anyVisemes() || orbitSuspend.depth > 0;
       const fps = frameBudget(document.hidden, active, now - lastInput);
       if (fps <= 0) return; // hidden: visibilitychange restarts it
       timer = setTimeout(tick, delayMs ?? Math.max(1, 1000 / fps - 1));

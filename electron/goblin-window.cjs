@@ -71,6 +71,10 @@ function createGoblin({ electron, onChange = () => {}, wait = (ms) => new Promis
       win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       win.webContents.on("will-navigate", (event) => event.preventDefault());
       win.on("closed", () => { win = null; onChange({ summoned: false }); });
+      // The whole body is a drag region (to move him), and on Windows a drag region answers a right
+      // click with the native system menu: the DOM contextmenu never fires. Take it here: a right click
+      // on the goblin sends him back into the fairy (review of #96).
+      win.on("system-context-menu", (event) => { event.preventDefault(); void dismiss().then(() => onChange({ summoned: false })); });
       const loaded = win.loadFile(path.join(__dirname, "goblin.html"), { query: { weapon } });
       await Promise.race([loaded, wait(4000)]);
       win.showInactive();

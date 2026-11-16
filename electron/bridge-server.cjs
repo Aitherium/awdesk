@@ -763,6 +763,10 @@ function createBridgeServer({
         response.end(JSON.stringify(body));
       };
       const url = new URL(request.url, "http://127.0.0.1");
+      // Review of #96: POST /swarm drives bodies, voices and a test probe. Host + Origin alone let ANY
+      // local process do that (a null Origin is allowed), so every POST needs the same bearer the fleet
+      // routes do. GET /swarm stays a read of the roster.
+      if (request.method === "POST" && denyUnlessBearer(request, response, token)) return;
       if (request.method === "GET" && url.pathname === "/swarm") {
         Promise.resolve(swarmHandler({ action: "state", refresh: url.searchParams.get("refresh") === "1" }))
           .then((result) => reply(200, result))

@@ -65,3 +65,28 @@ test("a probe that cannot start stays quiet instead of throwing", () => {
   const probe = createForegroundProbe({ platform: "win32", spawnImpl: () => { throw new Error("no powershell"); }, setTimer: () => ({ unref() {} }), clearTimer: () => {} });
   assert.doesNotThrow(() => { probe.start(); probe.sample(); probe.stop(); });
 });
+
+test("review of #101: a late exit of an old child does not null the new one; a broken pipe is not uncaught; a probe that keeps dying is given up", () => {
+  const kids = [];
+  let spawned = 0;
+  const mk = () => { const c = fakeChild(); c.stdin.on = (ev, fn) => { c.stdin[`_${ev}`] = fn; }; kids.push(c); spawned += 1; return c; };
+  const probe = createForegroundProbe({ platform: "win32", spawnImpl: mk, setTimer: () => ({ unref() {} }), clearTimer: () => {} });
+  probe.start();
+  const first = kids[0];
+  probe.stop();
+  probe.start();
+  const second = kids[1];
+  assert.equal(spawned, 2);
+  first.emit("exit"); // the OLD child's late exit
+  probe.sample();
+  assert.equal(spawned, 2, "the new child is still the child: no third spawn");
+  assert.equal(second.writes.length >= 1, true);
+  // A broken pipe: the error handler exists and does not throw.
+  assert.equal(typeof second.stdin._error, "function");
+  assert.doesNotThrow(() => second.stdin._error(new Error("EPIPE")));
+  // Four exits inside the window: given up.
+  const dying = [];
+  const p2 = createForegroundProbe({ platform: "win32", spawnImpl: () => { const c = fakeChild(); dying.push(c); return c; }, setTimer: () => ({ unref() {} }), clearTimer: () => {} });
+  for (let i = 0; i < 6; i += 1) { p2.sample(); const k = dying[dying.length - 1]; if (k) k.emit("exit"); }
+  assert.ok(dying.length <= 4, `gave up after ${dying.length} spawns`);
+});
