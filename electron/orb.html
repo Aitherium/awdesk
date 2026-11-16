@@ -119,6 +119,19 @@
     background: var(--m-wing); border: 0.5px solid rgba(255,255,255,0.5); animation: flap 0.18s ease-in-out infinite alternate; }
   .mate::before { right: 7px; transform-origin: 100% 50%; } .mate::after { left: 7px; transform-origin: 0 50%; }
   .mate.hot { transform: scale(1.45); }
+  /* Fine control (fairy-control.cjs): selected = a white ring; muted = washed out; drag = the
+     ring's copy dims while its pin window follows the pointer. */
+  .mate.sel { box-shadow: 0 0 0 2px #fff, 0 0 12px 5px var(--m-glow); transform: scale(1.25); }
+  .mate.muted { filter: grayscale(0.85); opacity: 0.6; }
+  .mate.drag { opacity: 0.2; }
+  body.pin { background: transparent; }
+  body.pin #mates { pointer-events: none; }
+  body.pin .mate { --m-size: 18px; cursor: grab; }
+  body.pin.grabbing .mate { cursor: grabbing; }
+  #chip { position: absolute; right: 4px; bottom: 6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; display: none;
+    background: rgba(10,14,24,0.9); color: #eef6ff; border: 1px solid rgba(214,236,255,0.45);
+    font: 700 10px/14px var(--font-sans, system-ui); text-align: center; pointer-events: none; }
+  #chip.on { display: block; }
   /* Presence (owner 2026-11-09: one agent = one presence everywhere): idle = a dim
      glow, working = a pulse, speaking/posting = a bright flash, waiting on the
      owner = full colour + its count badge. */
@@ -158,6 +171,9 @@
   .m-sep { height: 9px; }
   @keyframes m-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
   body.tip { background: transparent; }
+  body.tip.multi #tip { height: auto; max-width: 326px; padding: 7px 12px; border-radius: 12px; white-space: pre-line;
+    line-height: 17px; overflow: visible; text-overflow: clip; }
+  body.tip.multi #tip::first-line { font-weight: 700; }
   #tip { position: absolute; left: 0; top: 2px; max-width: 296px; height: 26px; padding: 0 11px;
     border-radius: 999px; background: rgba(10,14,24,0.9); border: 1px solid rgba(214,236,255,0.25);
     color: #eef6ff; font: 500 12px/24px var(--font-sans, system-ui); white-space: nowrap;
@@ -437,12 +453,12 @@
 <script>
   const api = window.aitherOrb;
   const params = new URLSearchParams(location.search);
-  const view = ["bubble", "veil", "nudge", "swarm", "menu", "tip"].includes(params.get("view")) ? params.get("view") : "orb";
+  const view = ["bubble", "veil", "nudge", "swarm", "menu", "tip", "pin"].includes(params.get("view")) ? params.get("view") : "orb";
   document.body.className = view;
   // All three windows load this page; each shape names itself.
   document.title = view === "bubble" ? "Ask Aither" : view === "veil" ? "Aither spirit trail"
     : view === "nudge" ? "Aither nudge" : view === "swarm" ? "Aither swarm"
-    : view === "menu" ? "Aither menu" : view === "tip" ? "Aither tip" : "Aither spirit";
+    : view === "menu" ? "Aither menu" : view === "tip" ? "Aither tip" : view === "pin" ? "Aither pinned fairy" : "Aither spirit";
 
   function rgba(hex, alpha) {
     const h = String(hex || "#ffc861").replace("#", "");
@@ -451,21 +467,26 @@
     if (!Number.isFinite(n)) return `rgba(255,200,97,${alpha})`;
     return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
   }
-  // The ring layout agent-fairy.swarmLayout computes: 6 on the first ring, 4 more
-  // on each ring out; 14 px, a quarter pixel smaller per companion past six. Shared
-  // by the swarm page AND the orb page. Every ring orbits OUTSIDE the disc (owner
-  // 2026-11-10, "there is only one"): under it, six companions were invisible and a
-  // hover or press on the fairy went to one of them, so a click only recoloured it.
-  // agent-fairy.test.cjs pins this copy to swarmLayout.
-  function swarmSlots(n) {
+  // The swarm's layout (fairy-control.cjs owns it; fairy-control.test.cjs pins this copy to it):
+  // gather = 6 on the first ring, 4 more on each ring out, 14 px, a quarter pixel smaller per
+  // companion past six; scatter = a wide loose spread; dock = a line along a screen edge. The
+  // radius scale is the scroll wheel's. Every ring orbits OUTSIDE the disc (owner 2026-11-10,
+  // "there is only one"): under it, six companions were invisible and a hover or press on the
+  // fairy went to one of them, so a click only recoloured it.
+  /* SWARM_LAYOUT:begin */
+  function swarmSlots(mode, n, scale) {
+    const sc = Math.min(2.5, Math.max(0.8, Number(scale) || 1));
+    const spread = mode === "scatter";
     const size = Math.max(9, 14 - 0.25 * Math.max(0, n - 6));
     const hit = Math.max(16, size + 4);
     const slots = [];
     let ring = 0;
     let left = n;
     while (left > 0) {
-      const on = Math.min(6 + ring * 4, left);
-      for (let i = 0; i < on; i += 1) slots.push({ ring, radius: 44 + ring * 18, index: i, of: on, size, hit });
+      const cap = spread ? 4 + ring * 3 : 6 + ring * 4;
+      const on = Math.min(cap, left);
+      const base = spread ? 70 + ring * 46 : 44 + ring * 18;
+      for (let i = 0; i < on; i += 1) slots.push({ ring, radius: base * sc, index: i, of: on, size, hit, squash: spread ? 0.92 : 0.82 });
       left -= on;
       ring += 1;
     }
@@ -475,11 +496,36 @@
     const dir = slot.ring % 2 === 0 ? 1 : -1;
     const turn = (now / (9000 + slot.ring * 3000)) * dir;
     const a = 2 * Math.PI * (slot.index / Math.max(1, slot.of)) + 2 * Math.PI * turn + slot.ring * 0.4;
-    return { x: Math.round(Math.cos(a) * slot.radius), y: Math.round(Math.sin(a) * slot.radius * 0.82) };
+    return { x: Math.round(Math.cos(a) * slot.radius), y: Math.round(Math.sin(a) * slot.radius * slot.squash) };
   }
-  /** The companion under (dx, dy) from the fairy's centre, or null. */
+  function dockOffset(i, n, edge) {
+    const along = (i - (n - 1) / 2) * 24;
+    return edge === "top" || edge === "bottom" ? { x: Math.round(along), y: 0 } : { x: 0, y: Math.round(along) };
+  }
+  function avoidPoint(p, rect, margin) {
+    if (!rect) return p;
+    const l = rect.l - margin;
+    const t = rect.t - margin;
+    const r = rect.r + margin;
+    const b = rect.b + margin;
+    if (p.x < l || p.x > r || p.y < t || p.y > b) return p;
+    const dl = p.x - l;
+    const dr = r - p.x;
+    const dt = p.y - t;
+    const db = b - p.y;
+    const m = Math.min(dl, dr, dt, db);
+    if (m === dl) return { x: l, y: p.y };
+    if (m === dr) return { x: r, y: p.y };
+    if (m === dt) return { x: p.x, y: t };
+    return { x: p.x, y: b };
+  }
+  /* SWARM_LAYOUT:end */
+  /** What main last said about the swarm: layout, radius, the window to keep off, the counts. */
+  let sv = { mode: "gather", radius: 1, kind: "all", edge: "", avoid: null, total: 0, shown: 0, hidden: 0, pinned: 0, selected: "" };
+  /** The companion under (dx, dy) from the fairy's centre, or null (rings only: a dock or one orb has none). */
   function swarmMateAt(list, dx, dy, now = Date.now()) {
-    const slots = swarmSlots(list.length);
+    if (sv.mode !== "gather" && sv.mode !== "scatter") return null;
+    const slots = swarmSlots(sv.mode, list.length, sv.radius);
     let best = null;
     let bestD = Infinity;
     list.forEach((c, i) => {
@@ -494,6 +540,7 @@
   // swarm shows nothing. fairy-menu.cjs TIP_DWELL_MS / tipText are the same rules.
   const TIP_DWELL_MS = 400;
   function mateTip(c) {
+    if (c && c.detail) return String(c.detail);
     const who = String((c && (c.label || c.agent)) || "Agent");
     const n = Number(c && c.count) || 0;
     const more = n > 1 ? ` (+${n - 1})` : "";
@@ -619,8 +666,18 @@
     document.body.innerHTML = '<div id="orb" data-tip="Aither — click: what is waiting · right-click: menu · drag to move">'
       + '<i class="halo"></i><i class="wing l up"></i><i class="wing r up"></i><i class="wing l lo"></i><i class="wing r lo"></i>'
       + '<i class="core"></i><i class="spark a"></i><i class="spark b"></i><i class="spark c"></i><i class="ping"></i></div>'
-      + '<div id="badge"></div><div id="queued"></div>';
+      + '<div id="badge"></div><div id="queued"></div><div id="chip" title="Every agent fairy is folded into this one orb"></div>';
     const orb = document.getElementById("orb");
+    const chip = document.getElementById("chip");
+    // Collapsed into one orb (fairy-control mode "orb"): the ring is gone, the count stays.
+    function drawView(v) {
+      if (!v) return;
+      sv = { ...sv, ...v };
+      const folded = sv.mode === "orb" && sv.total - sv.pinned > 0;
+      chip.textContent = folded ? String(sv.total - sv.pinned) : "";
+      chip.classList.toggle("on", folded);
+    }
+    if (api.onSwarmView) api.onSwarmView(drawView);
     const badge = document.getElementById("badge");
     const queued = document.getElementById("queued");
     const RADIUS = 30; // a little past the 28 px disc: forgiving, never the corners
@@ -820,6 +877,7 @@
       if (s.nudgeLevel) setNudge(s.nudgeLevel);
       if (s.fairy) wearFairy(s.fairy);
       if (Array.isArray(s.companions)) mates = s.companions;
+      drawView(s.swarmView);
       if (s.panel) { panelOpen = true; showTip(); }
       const n = s.trips && s.trips.count > 1 ? s.trips.count - 1 : 0;
       queued.textContent = String(n);
@@ -827,10 +885,13 @@
     });
   }
 
-  // ── the swarm: every companion fairy, on rings (agent-fairy.cjs) ──────────
-  // Its own click-through window centred on the fairy (orb-window placeSwarm).
-  // A companion under the pointer makes the window hit-testable and peeks that
-  // agent's card; everywhere else, clicks pass to the desktop.
+  // ── the swarm: every companion fairy, on rings (agent-fairy.cjs, fairy-control.cjs) ──
+  // Its own click-through window centred on the fairy (orb-window placeSwarm). A companion
+  // under the pointer makes the window hit-testable and shows ITS full tooltip; everywhere
+  // else, clicks pass to the desktop. Fine control (owner 2026-11-16): a click SELECTS (and a
+  // card it carries opens), a double click chats, right-click is its menu, a drag takes it out
+  // of the ring to pin it, the wheel over a fairy changes the radius, and the ring keeps off
+  // the focused window's content area.
   if (view === "swarm") {
     document.body.innerHTML = '<div id="mates"></div>';
     const matesEl = document.getElementById("mates");
@@ -839,38 +900,61 @@
     let inside = false;
     let frame = 0;
     let panelOpen = false;
-    const layout = swarmSlots;
-    const offset = swarmOffset;
+    let dragging = null; // {m, x, y, started}
+    let wheelUntil = 0; // a wheel session holds the window interactive (see the wheel listener)
     // 2026-11-13 (owner: "the overlay feels laggy"): measured 19 style+layout passes a
     // second in THIS page while nothing happened (left/top at 20 fps, forever). Now the
     // lap moves `translate` (compositor only, no layout) and it RESTS after 20 s with no
     // pointer and no companion speaking (a waiting one keeps its colour and badge, still); a pointer or a new list wakes it.
     const REST_AFTER_MS = 20_000;
+    const AVOID_MARGIN = 12;
+    const DRAG_PX = 8;
     let lastStir = Date.now();
     const lively = () => mates.some((m) => /st-speaking/.test(m.el.className));
     function stir() {
       lastStir = Date.now();
       if (!frame && mates.length) place();
     }
+    /** Where a companion is NOW: its slot (or its dock spot), pushed off the focused window. */
+    function spot(m, i, now) {
+      let o = sv.mode === "dock" ? dockOffset(i, mates.length, sv.edge) : swarmOffset(m.slot, now);
+      if (sv.avoid && sv.mode !== "dock") o = avoidPoint(o, sv.avoid, AVOID_MARGIN);
+      const lx = window.innerWidth / 2 - 8;
+      const ly = window.innerHeight / 2 - 8;
+      return { x: Math.max(-lx, Math.min(lx, o.x)), y: Math.max(-ly, Math.min(ly, o.y)) };
+    }
+    // The orbit's clock stands still while the pointer is on a fairy (or drags one): a fairy that
+    // circles out from under the pointer between the press and the release is a click that misses.
+    let clock = Date.now();
+    let lastTick = clock;
+    function advance() {
+      const t = Date.now();
+      if (!hotMate && !dragging) clock += t - lastTick;
+      lastTick = t;
+      return clock;
+    }
+    window.__swarmClockOffset = () => { advance(); return clock - Date.now(); }; // a test seam: where the orbit is vs the wall clock
     function place() {
       frame = 0;
       if (!mates.length) return;
-      const now = Date.now();
-      for (const m of mates) {
-        const o = offset(m.slot, now);
+      const now = advance();
+      mates.forEach((m, i) => {
+        const o = spot(m, i, now);
         m.el.style.translate = `${o.x}px ${o.y}px`;
         m.x = o.x;
         m.y = o.y;
-      }
+      });
       // The fairy orbited out from under a still pointer: no mousemove comes, so
       // let go here, or the tip stays up and the window keeps the clicks.
-      if (hotMate && mateAt(lastClient.x, lastClient.y) !== hotMate) {
+      if (!dragging && hotMate && mateAt(lastClient.x, lastClient.y) !== hotMate) {
         hotMate.el.classList.remove("hot");
         hotMate = null;
         dwell.off();
-        setInside(false);
+        if (Date.now() >= wheelUntil) setInside(false);
       }
-      if (!lively() && now - lastStir > REST_AFTER_MS) { document.body.classList.add("rest"); return; }
+      const wall = Date.now();
+      if (sv.mode === "dock" && !sv.avoid && !lively() && wall - lastStir > 1500) return; // a docked column holds still
+      if (!lively() && wall - lastStir > REST_AFTER_MS) { document.body.classList.add("rest"); return; }
       document.body.classList.remove("rest");
       frame = window.setTimeout(place, 50); // 20 fps is plenty for a slow lap
     }
@@ -879,16 +963,18 @@
       if (frame) { window.clearTimeout(frame); frame = 0; }
       // Every fairy moves to a new slot: whatever was hovered is gone (2026-11-14:
       // the tip stayed up and the window kept the mouse after a list change).
-      hotMate = null;
-      dwell.off(); // declared below; setMates only ever runs after the page is set up
-      setInside(false);
+      if (!dragging) {
+        hotMate = null;
+        dwell.off(); // declared below; setMates only ever runs after the page is set up
+        if (Date.now() >= wheelUntil) setInside(false);
+      }
       const items = Array.isArray(list) ? list : [];
-      const slots = layout(items.length);
+      const slots = swarmSlots(sv.mode, items.length, sv.radius);
       mates = items.map((c, i) => {
         const el = document.createElement("i");
         const st = ["waiting", "speaking", "working", "idle"].includes(c.state) ? c.state
           : (Number(c.count) > 0 ? "waiting" : "idle");
-        el.className = `mate st-${st}`;
+        el.className = `mate st-${st}${c.selected ? " sel" : ""}${c.muted ? " muted" : ""}${dragging && dragging.m.agent === String(c.agent || "") ? " drag" : ""}`;
         el.dataset.agent = String(c.agent || "");
         el.style.setProperty("--m-size", `${slots[i].size}px`);
         el.style.setProperty("--m-color", rgba(c.color, 0.95));
@@ -903,7 +989,7 @@
         matesEl.append(el);
         const extra = Number(c.count) > 1 ? ` (${Number(c.count)} cards)` : "";
         const stateWord = st === "waiting" ? "" : ` [${st}]`;
-        const doWhat = c.cardId ? "click to open its card" : "click to talk";
+        const doWhat = c.cardId ? "click to open its card" : "click to select";
         return {
           el, slot: slots[i], x: 0, y: 0, id: String(c.cardId || ""), agent: String(c.agent || ""),
           tip: mateTip(c), aria: `${c.label || c.agent}${stateWord}: ${c.title || "a card"}${extra} -- ${doWhat}`,
@@ -925,14 +1011,58 @@
       inside = next;
       api.swarmHit(next);
     }
-    // HOVER: the companion grows and, after a dwell, ONE line says who and what.
-    // It never opens a card (owner 2026-11-12: "hovering over fairies causes cards to
-    // keep popping and they change so fast -- don't engage on hover").
+    // HOVER: the companion grows and, after a dwell, its FULL tooltip says who, what kind,
+    // its status and what its badge means. It never opens a card (owner 2026-11-12: "hovering
+    // over fairies causes cards to keep popping and they change so fast -- don't engage on hover").
     const dwell = createDwell();
     let lastPoint = { x: 0, y: 0 };
     let lastClient = { x: 1e9, y: 1e9 };
+    // -- drag out (pin) ----------------------------------------------------------------
+    // A press that travels DRAG_PX with the button down takes the fairy out of the ring: main
+    // moves its pin window under the real cursor on every move and decides at the end (on the
+    // fairy = rejoin, anywhere else = pinned). The drag ends on ANY of: pointerup, mouseup,
+    // pointercancel, blur, a buttonless move -- so it can never be stranded.
+    let press = null;
+    let droppedAt = 0;
+    function endDrag(reason) {
+      const d = dragging;
+      press = null;
+      if (!d) return;
+      dragging = null;
+      droppedAt = Date.now();
+      document.body.classList.remove("dragging");
+      try { document.body.releasePointerCapture(d.pointerId); } catch { /* not captured */ }
+      api.swarmDrag("end", d.m.agent, "swarm");
+      void reason;
+    }
+    window.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || !hotMate) return;
+      press = { m: hotMate, x: e.screenX, y: e.screenY, pointerId: e.pointerId };
+    });
+    window.addEventListener("pointerup", () => endDrag("up"));
+    window.addEventListener("mouseup", () => endDrag("mouseup"));
+    window.addEventListener("pointercancel", () => endDrag("cancel"));
+    window.addEventListener("blur", () => endDrag("blur"));
+    document.addEventListener("visibilitychange", () => { if (document.hidden) endDrag("hidden"); });
+    window.addEventListener("keydown", (e) => { if (e.key === "Escape") endDrag("escape"); });
     window.addEventListener("mousemove", (e) => {
       stir();
+      if (dragging) {
+        if (e.buttons === 0) return endDrag("buttonless");
+        api.swarmDrag("move", dragging.m.agent, "swarm");
+        return;
+      }
+      if (press && e.buttons === 1 && Math.hypot(e.screenX - press.x, e.screenY - press.y) > DRAG_PX) {
+        const m = press.m;
+        press = null;
+        dragging = { m, pointerId: e.pointerId };
+        try { document.body.setPointerCapture(e.pointerId); } catch { /* capture is a nicety */ }
+        m.el.classList.add("drag");
+        dwell.off();
+        document.body.classList.add("dragging");
+        api.swarmDrag("start", m.agent, "swarm");
+        return;
+      }
       lastClient = { x: e.clientX - window.innerWidth / 2, y: e.clientY - window.innerHeight / 2 };
       const m = mateAt(lastClient.x, lastClient.y);
       lastPoint = { x: e.screenX, y: e.screenY };
@@ -945,41 +1075,162 @@
       setInside(Boolean(m));
     });
     window.addEventListener("mouseleave", () => {
+      if (dragging) return; // the pointer is captured: the drag owns it
       if (hotMate) { hotMate.el.classList.remove("hot"); hotMate = null; }
+      if (Date.now() < wheelUntil) return; // a resize under the pointer is not the pointer leaving
       lastClient = { x: 1e9, y: 1e9 };
       dwell.off();
       setInside(false);
     });
     // Main took the window back (the pointer left without a mouseleave): re-arm.
     if (api.onHitReset) api.onHitReset(() => {
+      if (dragging) return;
       if (hotMate) { hotMate.el.classList.remove("hot"); hotMate = null; }
-      lastClient = { x: 1e9, y: 1e9 };
       dwell.off();
+      if (Date.now() < wheelUntil) { inside = false; setInside(true); return; } // keep the wheel
+      lastClient = { x: 1e9, y: 1e9 };
       inside = false;
     });
-    // LEFT click on a companion: its agent's newest card, pinned until closed or
-    // another click -- an old one too, marked. A companion with no card (presence:
-    // idle, working, speaking) opens a chat with THAT agent instead.
+    // The wheel over a fairy changes the swarm's radius (up = wider, down = tighter).
+    // Each notch re-lays the ring under a pointer that has not moved, so the fairy it was on slides
+    // away: for 1.5 s after a notch the window keeps the wheel (and the pointer) wherever it is.
+    let wheelTimer = 0;
+    window.addEventListener("wheel", (e) => {
+      if ((!hotMate && Date.now() >= wheelUntil) || dragging) return;
+      e.preventDefault();
+      wheelUntil = Date.now() + 1500;
+      if (wheelTimer) window.clearTimeout(wheelTimer);
+      wheelTimer = window.setTimeout(() => { wheelTimer = 0; if (!hotMate && !dragging) setInside(false); }, 1550);
+      api.swarmWheel(e.deltaY);
+    }, { passive: false });
+    // LEFT click on a companion SELECTS it (an outline; push-to-talk goes to it) and, when it
+    // carries a card, opens its newest one -- pinned until closed or another click. A double
+    // click opens a chat with THAT agent.
     window.addEventListener("click", () => {
       dwell.off();
+      if (Date.now() - droppedAt < 400) return; // the release of a drag is not a click
       if (!hotMate) return;
+      api.select(hotMate.agent);
       if (hotMate.id) api.openCard(hotMate.id, hotMate.agent);
-      else if (hotMate.agent && api.chatAgent) api.chatAgent(hotMate.agent);
     });
-    // RIGHT click on a companion: its menu (open, answer, snooze, stop, dismiss, go to
-    // the session, copy the link).
+    window.addEventListener("dblclick", () => {
+      if (hotMate && hotMate.agent && api.chatAgent) api.chatAgent(hotMate.agent);
+    });
+    // RIGHT click on a companion: its menu (chat, grow, mute, pin, hide, open session, and its
+    // card's rows: open, answer, snooze, stop, dismiss, go to the session, copy the link).
     window.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       dwell.off();
       if (hotMate && api.fairyMenu) api.fairyMenu(hotMate.id, hotMate.agent);
     });
     if (api.onPanel) api.onPanel((p) => { panelOpen = Boolean(p && p.open); if (panelOpen) dwell.off(); });
+    // Layout, the focused window to keep off, the radius: re-lay the ring and move at once.
+    let lastLayoutKey = "";
+    function viewChanged(v) {
+      if (!v) return;
+      sv = { ...sv, ...v };
+      const key = `${sv.mode}|${sv.radius}|${sv.edge}`;
+      if (key !== lastLayoutKey && mates.length) {
+        lastLayoutKey = key;
+        const slots = swarmSlots(sv.mode, mates.length, sv.radius);
+        mates.forEach((m, i) => { m.slot = slots[i]; });
+      }
+      lastLayoutKey = key;
+      stir();
+    }
+    if (api.onSwarmView) api.onSwarmView(viewChanged);
     api.onCompanions(setMates);
     api.init().then((s) => {
       if (!s) return;
       if (s.panel) panelOpen = true;
+      if (s.swarmView) sv = { ...sv, ...s.swarmView };
+      lastLayoutKey = `${sv.mode}|${sv.radius}|${sv.edge}`;
       if (s.companions) setMates(s.companions);
     });
+  }
+
+  // ── a pinned fairy: its own small window, wherever the owner put it ─────────────
+  // Hover = the full tooltip, click = select (and its card), right-click = the same menu as in
+  // the ring (the pin row reads "Unpin"), drag = move it; dropped on the main fairy it rejoins
+  // the swarm. The window moves under the pointer, so the drag is measured in SCREEN
+  // coordinates; main reads the real cursor and decides at the end.
+  if (view === "pin") {
+    document.body.innerHTML = '<div id="mates"></div>';
+    const matesEl = document.getElementById("mates");
+    const dwell = createDwell();
+    let mate = null;
+    let el = null;
+    let press = null;
+    let dragging = false;
+    let droppedAt = 0;
+    let lastPoint = { x: 0, y: 0 };
+    function draw(c) {
+      mate = c && c.agent ? c : null;
+      matesEl.textContent = "";
+      el = null;
+      if (!mate) return;
+      el = document.createElement("i");
+      const st = ["waiting", "speaking", "working", "idle"].includes(mate.state) ? mate.state : "idle";
+      el.className = `mate st-${st}${mate.selected ? " sel" : ""}${mate.muted ? " muted" : ""}`;
+      el.style.translate = "0px 0px";
+      el.style.setProperty("--m-color", rgba(mate.color, 0.95));
+      el.style.setProperty("--m-core", mate.core || "#ffffff");
+      el.style.setProperty("--m-glow", rgba(mate.glow || mate.color, 0.55));
+      el.style.setProperty("--m-wing", rgba(mate.color, 0.4));
+      if (Number(mate.count) > 1) {
+        const badge = document.createElement("b");
+        badge.textContent = String(Number(mate.count));
+        el.append(badge);
+      }
+      matesEl.append(el);
+    }
+    function endDrag() {
+      press = null;
+      if (!dragging) return;
+      dragging = false;
+      droppedAt = Date.now();
+      document.body.classList.remove("grabbing");
+      if (mate) api.swarmDrag("end", mate.agent, "pin");
+    }
+    window.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || !mate) return;
+      press = { x: e.screenX, y: e.screenY };
+      dwell.off();
+      try { document.body.setPointerCapture(e.pointerId); } catch { /* capture is a nicety */ }
+    });
+    window.addEventListener("mousemove", (e) => {
+      lastPoint = { x: e.screenX, y: e.screenY };
+      if (dragging) {
+        if (e.buttons === 0) return endDrag();
+        api.swarmDrag("move", mate.agent, "pin");
+        return;
+      }
+      if (press && e.buttons === 1 && Math.hypot(e.screenX - press.x, e.screenY - press.y) > 8 && mate) {
+        press = null;
+        dragging = true;
+        document.body.classList.add("grabbing");
+        api.swarmDrag("start", mate.agent, "pin");
+        return;
+      }
+      if (el) el.classList.add("hot");
+      dwell.on(mate ? `p:${mate.agent}` : null, mate ? mateTip(mate) : "", () => lastPoint);
+    });
+    window.addEventListener("mouseleave", () => { if (dragging) return; if (el) el.classList.remove("hot"); dwell.off(); });
+    for (const ev of ["pointerup", "mouseup", "pointercancel", "blur"]) window.addEventListener(ev, endDrag);
+    window.addEventListener("click", () => {
+      dwell.off();
+      if (!mate || Date.now() - droppedAt < 400) return;
+      api.select(mate.agent);
+      if (mate.cardId) api.openCard(mate.cardId, mate.agent);
+    });
+    window.addEventListener("dblclick", () => { if (mate && api.chatAgent) api.chatAgent(mate.agent); });
+    window.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      dwell.off();
+      if (mate && api.fairyMenu) api.fairyMenu(mate.cardId || "", mate.agent);
+    });
+    if (api.onPinMate) api.onPinMate((p) => draw(p && p.mate));
+    api.init().then((s) => { if (s && s.mate) draw(s.mate); });
   }
 
   // ── the right-click menu (fairy-menu.cjs builds it, orb-window.cjs picks) ──
@@ -1063,6 +1314,7 @@
     api.onTip((t) => {
       tipEl.textContent = t && t.text ? String(t.text) : "";
       document.body.classList.toggle("left", Boolean(t && t.side === "left"));
+      document.body.classList.toggle("multi", Boolean(t && t.multi));
     });
   }
 

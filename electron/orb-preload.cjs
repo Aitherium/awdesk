@@ -138,4 +138,13 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   menuPick: (id) => ipcRenderer.invoke("desk:menu-pick", String(id || "")),
   menuHover: (inside) => ipcRenderer.invoke("desk:menu-hover", inside === "key" ? "key" : Boolean(inside)),
   onMenu: (fn) => on("orb:menu", fn),
+  // Fine control over the fairies (fairy-control.cjs): a click selects one, the wheel
+  // changes the swarm's radius, a drag takes one out of the ring (pin) or back in (rejoin);
+  // main reads the real cursor on every phase. `onSwarmView` carries the layout, the
+  // focused window to keep off and the counts; `onPinMate` is a pinned fairy's own row.
+  select: (agent) => ipcRenderer.invoke("desk:swarm-select", String(agent || "")),
+  swarmWheel: (deltaY) => ipcRenderer.invoke("desk:swarm-wheel", Number(deltaY) || 0),
+  swarmDrag: (phase, agent, from) => ipcRenderer.invoke("desk:swarm-drag", String(phase || ""), String(agent || ""), from === "pin" ? "pin" : "swarm"),
+  onSwarmView: (fn) => on("orb:swarm-view", fn),
+  onPinMate: (fn) => on("orb:pin-mate", fn),
 });
