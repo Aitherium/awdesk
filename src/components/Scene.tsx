@@ -14,6 +14,7 @@ import { StageHandles } from '../stage/StageHandles';
 import { useAvatarDrag } from '../hooks/useAvatarDrag';
 import { authoredFields, freeSpot } from '../hooks/stagePlacement';
 import { anyoneAudible } from '../hooks/voiceLevels';
+import { anyVisemes } from '../hooks/voiceVisemes';
 import { avatarPointerOut, avatarPointerOver } from '../hooks/clickThrough';
 import { forgetSlot, hasPicker, pickAt, registerAvatarGroup, setSelected } from '../hooks/avatarPick';
 import { AvatarPicker } from './AvatarPicker';
@@ -216,7 +217,7 @@ function FrameGovernor() {
       timer = 0;
       if (raf) return;
       const now = performance.now();
-      const active = anyoneAudible() || orbitSuspend.depth > 0;
+      const active = anyoneAudible() || anyVisemes() || orbitSuspend.depth > 0;
       const fps = frameBudget(document.hidden, active, now - lastInput);
       if (fps <= 0) return; // hidden: visibilitychange restarts it
       timer = setTimeout(tick, delayMs ?? Math.max(1, 1000 / fps - 1));
@@ -685,7 +686,14 @@ export function Scene(props: SceneProps) {
     const target = dropTarget({ slotId, x, z }, otherSpots(slotId));
     dropCueRef.current = null;
     setDropCue(null);
-    if (target) window.deskBridge?.stageDrop?.(slotId, target);
+    // Main's copy of where bodies stand only knows swarm placements: tell it where this drop left them,
+    // so the stage is seated around where the owner is looking (review of #105), then join.
+    if (target) {
+      const here: Record<string, number> = { [slotId]: x };
+      for (const spot of otherSpots(slotId)) here[spot.slotId] = spot.x;
+      window.deskBridge?.stageSync?.(here);
+      window.deskBridge?.stageDrop?.(slotId, target);
+    }
   }, [otherSpots]);
   // An authored placement (`place-avatar`, the cast file via main) goes through the
   // SAME setters a drag does, one component at a time: an omitted or rejected field

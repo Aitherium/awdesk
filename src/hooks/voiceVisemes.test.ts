@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { clearVisemes, getVisemes, resetVisemes, sanitizeVisemes, setVisemes } from './voiceVisemes';
+import { anyVisemes, clearVisemes, getVisemes, resetVisemes, sanitizeVisemes, setVisemes } from './voiceVisemes';
 
 afterEach(() => {
   resetVisemes();
@@ -29,5 +29,16 @@ describe('voiceVisemes', () => {
     expect(getVisemes('slot2')?.ee).toBe(1);
     clearVisemes('slot2');
     expect(getVisemes('slot2')).toBeNull();
+  });
+});
+
+describe('anyVisemes (the frame budget counts a driven mouth as active)', () => {
+  it('is true while an override is live and false once it lapses or is released', () => {
+    resetVisemes();
+    expect(anyVisemes()).toBe(false);
+    setVisemes('slot1', { aa: 1 }, 20);
+    expect(anyVisemes()).toBe(true);
+    setVisemes('slot1', null);
+    expect(anyVisemes()).toBe(false);
   });
 });

@@ -190,3 +190,10 @@ test("row positions match the renderer's arrangements.ts (the constants are copi
   const layout = fs.readFileSync(path.join(__dirname, "..", "src", "hooks", "useAvatarLayout.ts"), "utf8");
   assert.match(layout, new RegExp(`POSITION_BOUND = ${swarm.STAGE_BOUND}`));
 });
+
+test("review of #96: slot10 stands after slot9 (a string sort put it first once ten bodies stood)", () => {
+  const ids = ["slot0", "slot10", "slot2", "slot9", "slot1"];
+  const row = swarm.rowPositions(ids);
+  const order = Object.keys(row).sort((a, b) => row[a] - row[b]);
+  assert.deepEqual(order, ["slot0", "slot1", "slot2", "slot9", "slot10"]);
+});

@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { Html } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -32,6 +32,9 @@ const HANDLE_FORWARD = 0.45;
 export function StageHandles({ groups, positionOf, setPosition, onMoved }: Props) {
   const { camera, gl } = useThree();
   const dragging = useRef<string | null>(null);
+  /** Ends the drag in flight (listeners off): called on unmount so a drag never outlives the handle. */
+  const endNow = useRef<(() => void) | null>(null);
+  useEffect(() => () => { endNow.current?.(); }, []);
 
   const begin = useCallback(
     (group: StageGroup, startX: number, startY: number) => {
@@ -51,24 +54,30 @@ export function StageHandles({ groups, positionOf, setPosition, onMoved }: Props
       let last: Record<string, [number, number, number]> = start;
       let frame = 0;
       let pendingDx = 0;
+      let lastApply = 0;
       const apply = () => {
         frame = 0;
+        lastApply = performance.now();
         last = shiftGroup(start, pendingDx);
         for (const [slot, p] of Object.entries(last)) setPosition(slot, p);
       };
+      // Every setPosition re-renders and persists the layout: at most ~20 a second while the handle is
+      // dragged (the body drag commits once; review of #105), and the last position always lands on release.
       const move = (e: PointerEvent) => {
         pendingDx = (e.clientX - startX) * wpp;
-        if (!frame) frame = window.requestAnimationFrame(apply);
+        if (!frame && performance.now() - lastApply >= 50) frame = window.requestAnimationFrame(apply);
       };
       let disarm = () => {};
       let ended = false;
       const end = () => {
         if (ended) return;
         ended = true;
+        endNow.current = null;
         window.removeEventListener('pointermove', move);
         window.removeEventListener('pointerup', end);
         disarm();
-        if (frame) { window.cancelAnimationFrame(frame); apply(); }
+        if (frame) window.cancelAnimationFrame(frame);
+        apply(); // the position the pointer ended on, whatever the throttle skipped
         dragging.current = null;
         void startY;
         onMoved?.(Object.fromEntries(Object.entries(last).map(([slot, p]) => [slot, p[0]])));
@@ -76,6 +85,7 @@ export function StageHandles({ groups, positionOf, setPosition, onMoved }: Props
       window.addEventListener('pointermove', move);
       window.addEventListener('pointerup', end);
       disarm = onDragAbort(end);
+      endNow.current = end;
     },
     [camera, gl, positionOf, setPosition, onMoved],
   );

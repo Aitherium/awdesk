@@ -130,7 +130,7 @@ function createSwarmHost({
   function publish() {
     try { orb.setPresence(composePresence(basePresence)); } catch (error) { log("swarm presence failed", error && error.message); }
     applyAnchor();
-    if (stages.size || publishedStages) publishStages(); // a stage that just emptied must clear its handle too
+    if (stages.size || publishedStages) publishStages({ force: true }); // the roster refresh re-sends: a reloaded avatar window gets its handles back
   }
 
   /** GargBot's web overlay registers its goblin and agents: they join the one roster (deduped by
@@ -454,9 +454,15 @@ function createSwarmHost({
   }
 
   let publishedStages = false;
-  function publishStages() {
+  let lastStagesKey = "[]";
+  function publishStages({ force = false } = {}) {
     publishedStages = stages.size > 0;
-    try { avatar.send({ type: "stage-groups", groups: stageGroups() }); } catch (error) { log("stage groups failed", error && error.message); }
+    // Only when the groups changed: the renderer re-draws the handles on every new array (review of #105).
+    const groups = stageGroups();
+    const key = JSON.stringify(groups);
+    if (!force && key === lastStagesKey) return;
+    lastStagesKey = key;
+    try { avatar.send({ type: "stage-groups", groups }); } catch (error) { log("stage groups failed", error && error.message); }
   }
 
   /** A body dropped on another in the renderer: they join one stage. */

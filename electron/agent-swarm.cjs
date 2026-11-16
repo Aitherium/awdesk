@@ -416,7 +416,8 @@ const STAGE_STEP = 1.6;
  */
 function rowPositions(ids) {
   const list = (Array.isArray(ids) ? ids : []).filter(Boolean);
-  const rest = list.filter((id) => id !== "slot0").sort();
+  // slot2 before slot10 (a plain string sort put slot10 first once ten bodies stood).
+  const rest = list.filter((id) => id !== "slot0").sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
   const ordered = list.includes("slot0") ? ["slot0", ...rest] : rest;
   const n = ordered.length;
   const out = {};
