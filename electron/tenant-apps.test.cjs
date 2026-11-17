@@ -23,7 +23,12 @@ const GARG_PANELS = [
   "workspace-members", "skill-library", "pack-catalog", "approval-queue", "model-browser", "fine-tune",
   "mcp-endpoints", "forum", "creator", "settings", "workspace-admin",
 ];
-const GARG_EMBED = { panels: GARG_PANELS, desktop_apps: [] };
+const GARG_EMBED = { app_url: "garg.aitherium.com", company_name: "Garg Consulting Services, Inc.", panels: GARG_PANELS, desktop_apps: [] };
+/** The same URL asked WITHOUT the member's cookies: 200, but the generic pack, naming no host (2026-11-17). */
+const GENERIC_EMBED = {
+  app_name: "Company Brain", app_url: "", company_name: "", brand: {},
+  panels: ["chat", "document", "mail", "contacts", "comms", "settings"],
+};
 
 const OWNER_GARG = Object.freeze({
   host: "garg.aitherium.com", name: "GARG", origin: "https://garg.aitherium.com/", firstParty: true,
@@ -178,6 +183,40 @@ test("nothing is sent to an api base that is not first-party, or for a host that
   const foreign = storeWith();
   assert.equal((await foreign.store.refresh("tenant.example.com")).state, "unavailable");
   assert.equal(foreign.calls.config.length + foreign.calls.embed.length, 0);
+});
+
+test("the generic pack a cookie-less ask gets is NOT believed: Decisions and Agents must not move", async () => {
+  const { store } = storeWith({ embed: { status: 200, body: GENERIC_EMBED } });
+  const entry = await store.refresh("garg.aitherium.com");
+  assert.equal(entry.state, "unavailable");
+  assert.match(entry.reason, /not this workspace's own/);
+  // judged on that entry, nothing leaves Garg: the old behaviour stands
+  for (const id of ["aeon", "decisions", "agents", "lockbox"]) {
+    assert.equal(tenantApps.placeFor(id, { tenant: OWNER_GARG, entry }).onPlatform, false, id);
+  }
+  // and had it been believed, it WOULD have moved the apps Garg grants: this is what the guard prevents
+  const believed = { state: "ready", ids: tenantApps.entitledIdsFrom(GENERIC_EMBED), at: 1 };
+  assert.equal(tenantApps.placeFor("decisions", { tenant: OWNER_GARG, entry: believed }).onPlatform, true);
+});
+
+test("another workspace's answer is not Garg's", async () => {
+  const { store } = storeWith({ embed: { status: 200, body: { ...GARG_EMBED, app_url: "https://dgg.aitherium.com/" } } });
+  assert.equal((await store.refresh("garg.aitherium.com")).state, "unavailable");
+  const same = storeWith({ embed: { status: 200, body: { ...GARG_EMBED, app_url: "https://Garg.Aitherium.com/app" } } });
+  assert.equal((await same.store.refresh("garg.aitherium.com")).state, "ready", "scheme, case and path do not matter");
+});
+
+test("the verdict is logged when it changes, not on every ask", async () => {
+  const lines = [];
+  const { store, clock } = storeWith({ log: (l) => lines.push(l), readyTtlMs: 1000 });
+  await store.refresh("garg.aitherium.com");
+  clock.t += 5000;
+  await store.refresh("garg.aitherium.com");
+  assert.deepEqual(lines, ["tenant-apps: garg.aitherium.com entitlement ready (39 apps)"]);
+  const bad = [];
+  const down = storeWith({ embed: { status: 503, body: {} }, log: (l) => bad.push(l) });
+  await down.store.refresh("garg.aitherium.com");
+  assert.deepEqual(bad, ["tenant-apps: garg.aitherium.com entitlement unavailable (HTTP 503)"]);
 });
 
 test("an oversized or malformed answer is unavailable, never a throw", async () => {

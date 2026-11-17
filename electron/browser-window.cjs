@@ -2820,6 +2820,7 @@ function tenantEntitlementStore() {
   if (!tenantEntitlement) {
     tenantEntitlement = tenantApps.createEntitlementStore({
       fetchImpl: (url, init) => electron().session.fromPartition(onlinePartition()).fetch(url, init),
+      log: (line) => console.warn(line),
     });
   }
   return tenantEntitlement;

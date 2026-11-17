@@ -32,7 +32,9 @@
  * The entitlement is the SAME answer Veil's own page reads: `<api base>/api/config/embed`, the api
  * base being the `window.__AITHER_API_BASE__` line of the tenant's public config.js, asked with the
  * owner's cookies (their entitlement can be wider or narrower than the public one). Only a
- * first-party aitherium.com host is ever asked, and cookies go to no other.
+ * first-party aitherium.com host is ever asked, and cookies go to no other. A cookie-less ask is
+ * not refused, it gets a generic six-panel pack, so an answer is believed only when its `app_url`
+ * names the tenant's own host; any other answer is "unavailable" and the app opens as it always did.
  *
  * Electron-free; every edge (the config.js fetch, the signed-in fetch, the clock) is injected, so
  * tenant-apps.test.cjs runs under node.
@@ -111,18 +113,48 @@ function apiBaseOf(configJs) {
   return url.origin;
 }
 
+/** `https://Garg.Aitherium.com/x` -> `garg.aitherium.com`; "" for anything that is not a host. */
+function hostOfAppUrl(raw) {
+  const s = String(raw == null ? "" : raw).trim().toLowerCase();
+  if (!s) return "";
+  return s.replace(/^https?:\/\//, "").replace(/[/?#].*$/, "").replace(/:\d+$/, "");
+}
+
+/**
+ * Is `payload` THIS workspace's own embed answer? Measured 2026-11-17: asked WITHOUT the member's
+ * cookies, Garg's backend does not refuse, it answers 200 with a generic six-panel "Company Brain"
+ * pack (`app_url: ""`, `company_name: ""`, `brand: {}`); the member's own answer names the host
+ * (`app_url: "garg.aitherium.com"`) and lists the 39 panels the pack grants. Judging an app against
+ * the generic pack would send Decisions and Agents, which Garg grants, to the platform. So an
+ * answer is believed only when it names the host it was asked for.
+ */
+function isOwnAnswer(payload, host) {
+  return !!payload && typeof payload === "object" && hostOfAppUrl(payload.app_url) === host;
+}
+
 /**
  * The per-host entitlement cache. `peek` is synchronous (a rail click cannot wait); it starts a
  * refresh when the answer is missing or stale and never throws.
  *
  *   fetchImpl(url, init) -> a fetch Response, SIGNED IN as the owner (the online partition)
  *   fetchConfig(host)    -> the tenant's public config.js text, or null
+ *   log(line)            -> told once per host whenever its verdict changes (never every ask)
  */
 function createEntitlementStore({ fetchImpl, fetchConfig, now = Date.now, readyTtlMs = READY_TTL_MS,
-  retryMs = RETRY_MS, timeoutMs = FETCH_TIMEOUT_MS } = {}) {
+  retryMs = RETRY_MS, timeoutMs = FETCH_TIMEOUT_MS, log = () => {} } = {}) {
   const byHost = new Map();
   const inflight = new Map();
   const configOf = typeof fetchConfig === "function" ? fetchConfig : (host) => tenantAuto.fetchConfigJs(host);
+  const verdictOf = (e) => (e.state === "ready" ? `ready (${e.ids.size} apps)` : `unavailable (${e.reason})`);
+  function remember(host, entry) {
+    const stamped = { ...entry, at: now() };
+    const before = byHost.get(host);
+    byHost.set(host, stamped);
+    if (!before || verdictOf(before) !== verdictOf(stamped)) {
+      try { log(`tenant-apps: ${host} entitlement ${verdictOf(stamped)}`); } catch { /* logging never breaks a click */ }
+    }
+    return stamped;
+  }
 
   async function ask(host) {
     const base = apiBaseOf(await configOf(host));
@@ -138,9 +170,12 @@ function createEntitlementStore({ fetchImpl, fetchConfig, now = Date.now, readyT
       if (!res || res.status !== 200) return { state: "unavailable", reason: `HTTP ${res ? res.status : "none"}` };
       const text = await res.text();
       if (typeof text !== "string" || text.length > MAX_EMBED_BYTES) return { state: "unavailable", reason: "answer too large" };
-      const ids = entitledIdsFrom(JSON.parse(text));
+      const payload = JSON.parse(text);
+      if (!isOwnAnswer(payload, host)) {
+        return { state: "unavailable", reason: "the answer is not this workspace's own (the owner's cookies did not reach it)" };
+      }
       // Veil: an empty entitlement is a real answer ("no apps yet"), never a reason to fall back.
-      return { state: "ready", ids };
+      return { state: "ready", ids: entitledIdsFrom(payload) };
     } catch (err) {
       return { state: "unavailable", reason: err && err.name ? err.name : "error" };
     } finally {
@@ -154,15 +189,10 @@ function createEntitlementStore({ fetchImpl, fetchConfig, now = Date.now, readyT
       return Promise.resolve({ state: "unavailable", reason: "not a first-party host", at: now() });
     }
     if (inflight.has(host)) return inflight.get(host);
-    const p = ask(host).then((entry) => {
-      const stamped = { ...entry, at: now() };
-      byHost.set(host, stamped);
-      return stamped;
-    }, () => {
-      const stamped = { state: "unavailable", reason: "error", at: now() };
-      byHost.set(host, stamped);
-      return stamped;
-    }).finally(() => inflight.delete(host));
+    const p = ask(host).then(
+      (entry) => remember(host, entry),
+      () => remember(host, { state: "unavailable", reason: "error" }),
+    ).finally(() => inflight.delete(host));
     inflight.set(host, p);
     return p;
   }
