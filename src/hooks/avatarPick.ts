@@ -244,38 +244,83 @@ export function installProbe(): () => void {
 }
 
 // -- the outline -----------------------------------------------------------------------------
+//
+// Owner screenshots 2026-11-16: the outline read as a hard, stair-stepped WHITE band around
+// the body, on the desktop and in the browser rail. It was a binary ring (alpha 0 or 255) cut
+// from a binary mask read at HALF the window's resolution, then stretched 2x and again by the
+// display scale, so every step was 3-4 device pixels. Now: the mask is read at the window's
+// own resolution with MSAA (fractional coverage at the edge, components/AvatarPicker.tsx), the
+// ring is computed antialiased on both sides, only around the body, and painted at device
+// resolution with smoothing (components/AvatarOutline.tsx).
+
+export interface MaskRect { x: number; y: number; w: number; h: number }
+
+/** The scale a silhouette is read at for the outline: the window's own CSS pixels, capped so a
+ *  very large window does not read back megabytes ten times a second. */
+export function outlineScale(cssWidth: number, cssHeight: number, maxPixels = 1_000_000): number {
+  const area = Math.max(1, Number(cssWidth) || 0) * Math.max(1, Number(cssHeight) || 0);
+  return area <= maxPixels ? 1 : Math.max(0.25, Math.floor(Math.sqrt(maxPixels / area) * 100) / 100);
+}
+
+/** The part of the mask a ring `ring` px wide needs: the body's bounds grown by the ring and
+ *  its soft edge, clamped to the mask. */
+export function ringRect(bounds: MaskRect, width: number, height: number, ring: number): MaskRect {
+  const pad = Math.ceil(Math.max(0, ring)) + 2;
+  const x = Math.max(0, bounds.x - pad);
+  const y = Math.max(0, bounds.y - pad);
+  const x2 = Math.min(width, bounds.x + bounds.w + pad);
+  const y2 = Math.min(height, bounds.y + bounds.h + pad);
+  return { x, y, w: Math.max(0, x2 - x), h: Math.max(0, y2 - y) };
+}
 
 /**
- * The outline of a coverage mask: the pixels within `thickness` of the silhouette's edge,
- * OUTSIDE it (so the body itself is never painted over). Returns an RGBA buffer the size of
- * the mask in `rgb`, alpha 255 on the outline.
+ * An antialiased outline ring `ring` px wide, just OUTSIDE a body's coverage mask (alpha 0..255,
+ * fractional at the edge). The outer edge falls off with distance; the inner edge is
+ * (1 - coverage), so the ring meets the body's own antialiased edge with no seam and never
+ * paints over the body. RGBA (straight alpha) for `rect` only, row-major, rect.w x rect.h.
  */
-export function outlineOf(
+export function outlineRing(
   alpha: ArrayLike<number>,
   width: number,
   height: number,
+  rect: MaskRect,
   rgb: [number, number, number],
-  thickness = 2,
+  ring = 1.5,
 ): Uint8ClampedArray<ArrayBuffer> {
-  const out = new Uint8ClampedArray(new ArrayBuffer(width * height * 4));
-  const solid = (x: number, y: number) => x >= 0 && y >= 0 && x < width && y < height && alpha[y * width + x] > 127;
-  const t = Math.max(1, Math.round(thickness));
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      if (solid(x, y)) continue;
-      let near = false;
-      for (let dy = -t; dy <= t && !near; dy += 1) {
-        for (let dx = -t; dx <= t; dx += 1) {
-          if (dx * dx + dy * dy <= t * t && solid(x + dx, y + dy)) { near = true; break; }
+  const out = new Uint8ClampedArray(new ArrayBuffer(Math.max(0, rect.w * rect.h * 4)));
+  const r = Math.max(0.5, Number(ring) || 0);
+  const reach = Math.ceil(r + 0.5);
+  // The disk's taps, each weighted by how much of it lies inside the ring: the soft outer edge.
+  const taps: Array<[number, number, number]> = [];
+  for (let dy = -reach; dy <= reach; dy += 1) {
+    for (let dx = -reach; dx <= reach; dx += 1) {
+      const weight = Math.min(1, Math.max(0, r + 0.5 - Math.hypot(dx, dy)));
+      if (weight > 0) taps.push([dx, dy, weight]);
+    }
+  }
+  taps.sort((a, b) => b[2] - a[2]); // the nearest taps first: most pixels reach full strength early
+  for (let y = rect.y; y < rect.y + rect.h; y += 1) {
+    for (let x = rect.x; x < rect.x + rect.w; x += 1) {
+      const cover = (Number(alpha[y * width + x]) || 0) / 255;
+      if (cover >= 1) continue; // the body itself: never painted over
+      let reachHere = 0;
+      for (const [dx, dy, weight] of taps) {
+        const qx = x + dx;
+        const qy = y + dy;
+        if (qx < 0 || qy < 0 || qx >= width || qy >= height) continue;
+        const v = ((Number(alpha[qy * width + qx]) || 0) / 255) * weight;
+        if (v > reachHere) {
+          reachHere = v;
+          if (reachHere >= 1) break;
         }
       }
-      if (near) {
-        const i = (y * width + x) * 4;
-        out[i] = rgb[0];
-        out[i + 1] = rgb[1];
-        out[i + 2] = rgb[2];
-        out[i + 3] = 255;
-      }
+      const a = reachHere * (1 - cover);
+      if (a <= 0) continue;
+      const i = ((y - rect.y) * rect.w + (x - rect.x)) * 4;
+      out[i] = rgb[0];
+      out[i + 1] = rgb[1];
+      out[i + 2] = rgb[2];
+      out[i + 3] = Math.round(a * 255);
     }
   }
   return out;

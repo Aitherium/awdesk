@@ -55,6 +55,18 @@ export function AvatarPicker() {
       }
       return idTarget;
     };
+    // The silhouette has its OWN target, multisampled: the pick needs exact id bytes (no
+    // antialiasing), the outline needs the opposite -- fractional coverage at the edge, so
+    // the ring drawn from it is smooth (hooks/avatarPick.ts outlineRing). three resolves the
+    // samples at the end of render(), and readRenderTargetPixels reads the resolved texture.
+    let silTarget: THREE.WebGLRenderTarget | null = null;
+    const ensureSilhouetteTarget = (w: number, h: number) => {
+      if (!silTarget || silTarget.width !== w || silTarget.height !== h) {
+        silTarget?.dispose();
+        silTarget = new THREE.WebGLRenderTarget(w, h, { type: THREE.UnsignedByteType, depthBuffer: true, samples: 4 });
+      }
+      return silTarget;
+    };
     const ensurePatch = (size: number) => {
       if (!patchTarget || patchTarget.width !== size) {
         patchTarget?.dispose();
@@ -173,7 +185,7 @@ export function AvatarPicker() {
         const h = Math.max(8, Math.round(canvas.clientHeight * scale));
         const wear = new Map<MeshLike, THREE.Material>();
         for (const mesh of meshesOf(group)) wear.set(mesh, idMaterial(1));
-        const target = ensureTarget(w, h);
+        const target = ensureSilhouetteTarget(w, h);
         try {
           renderIds(target, wear, null);
           const px = new Uint8Array(w * h * 4);
@@ -195,6 +207,8 @@ export function AvatarPicker() {
       setPicker(null);
       idTarget?.dispose();
       idTarget = null;
+      silTarget?.dispose();
+      silTarget = null;
       patchTarget?.dispose();
       patchTarget = null;
     };

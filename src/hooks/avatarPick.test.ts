@@ -7,8 +7,10 @@ import {
   hexToRgb,
   maskBounds,
   nearestIdInPatch,
-  outlineOf,
+  outlineRing,
+  outlineScale,
   registerAvatarGroup,
+  ringRect,
   registeredSlots,
   resetPick,
   setHover,
@@ -108,18 +110,61 @@ describe('hover and selection state', () => {
 });
 
 describe('the outline', () => {
+  // Owner screenshots 2026-11-16: a hard, stair-stepped white band. The ring was binary (0 or 255
+  // alpha) from a half-resolution mask; these pin the replacement: thin, antialiased, outside.
+  const W = 24;
+  const H = 24;
+  const FULL = { x: 0, y: 0, w: W, h: H };
+  /** A 6x6 body at (8..13, 8..13); its left column only half covered (an MSAA edge). */
+  function body() {
+    const alpha = new Uint8Array(W * H);
+    for (let y = 8; y < 14; y += 1) for (let x = 8; x < 14; x += 1) alpha[y * W + x] = x === 8 ? 128 : 255;
+    return alpha;
+  }
+  const at = (px: Uint8ClampedArray, x: number, y: number, rect = FULL) => px[((y - rect.y) * rect.w + (x - rect.x)) * 4 + 3];
+
   it('is drawn just OUTSIDE the silhouette, never over the body, and is empty for an empty mask', () => {
-    const w = 12;
-    const h = 12;
-    const alpha = new Uint8Array(w * h);
-    for (let y = 4; y < 8; y += 1) for (let x = 4; x < 8; x += 1) alpha[y * w + x] = 255;
-    const px = outlineOf(alpha, w, h, [255, 0, 0], 1);
-    const at = (x: number, y: number) => px[(y * w + x) * 4 + 3];
-    expect(at(5, 5)).toBe(0); // inside the body
-    expect(at(3, 5)).toBe(255); // one pixel outside
-    expect(at(1, 5)).toBe(0); // far away
-    expect(px[(5 * w + 3) * 4]).toBe(255);
-    expect(outlineOf(new Uint8Array(w * h), w, h, [1, 2, 3], 2).every((v) => v === 0)).toBe(true);
+    const px = outlineRing(body(), W, H, FULL, [255, 0, 0], 1.5);
+    expect(at(px, 10, 10)).toBe(0); // inside the body
+    expect(at(px, 14, 10)).toBe(255); // one pixel outside, full strength
+    expect(px[(10 * W + 14) * 4]).toBe(255); // in the given colour
+    expect(at(px, 19, 10)).toBe(0); // far away
+    expect(outlineRing(new Uint8Array(W * H), W, H, FULL, [1, 2, 3], 2).every((v) => v === 0)).toBe(true);
+  });
+
+  it('is antialiased: a soft outer edge, and a half-covered edge pixel is half ring', () => {
+    const px = outlineRing(body(), W, H, FULL, [255, 255, 255], 1.5);
+    expect(at(px, 16, 10)).toBe(0); // 3 px out of a 1.5 px ring: past even the soft edge
+    const soft = at(px, 14, 7); // 1.41 px off the body's corner: inside the soft outer edge
+    expect(soft).toBeGreaterThan(0);
+    expect(soft).toBeLessThan(255);
+    expect(at(px, 8, 10)).toBe(127); // coverage 128/255: the ring fills the uncovered half
+    // Not a binary mask any more: real intermediate alpha values exist.
+    const alphas = new Set<number>();
+    for (let i = 3; i < px.length; i += 4) alphas.add(px[i]);
+    expect([...alphas].some((a) => a > 0 && a < 255)).toBe(true);
+  });
+
+  it('thin: a wider ring reaches further, and only the requested rectangle is computed', () => {
+    const thin = outlineRing(body(), W, H, FULL, [255, 255, 255], 1);
+    const wide = outlineRing(body(), W, H, FULL, [255, 255, 255], 2.5);
+    expect(at(thin, 15, 10)).toBe(0); // 2 px out: beyond a 1 px ring
+    expect(at(wide, 15, 10)).toBe(255); // and well inside a 2.5 px one
+    const rect = ringRect({ x: 8, y: 8, w: 6, h: 6 }, W, H, 2);
+    expect(rect).toEqual({ x: 4, y: 4, w: 14, h: 14 });
+    const cut = outlineRing(body(), W, H, rect, [255, 255, 255], 2);
+    expect(cut.length).toBe(rect.w * rect.h * 4);
+    expect(at(cut, 15, 7, rect)).toBe(at(outlineRing(body(), W, H, FULL, [255, 255, 255], 2), 15, 7));
+    expect(ringRect({ x: 0, y: 0, w: 3, h: 3 }, 4, 4, 2)).toEqual({ x: 0, y: 0, w: 4, h: 4 }); // clamped
+  });
+
+  it('reads the mask at the window resolution, capped for a very large window', () => {
+    expect(outlineScale(600, 950)).toBe(1);
+    expect(outlineScale(248, 470)).toBe(1);
+    const big = outlineScale(2560, 1440);
+    expect(big).toBeLessThan(1);
+    expect(2560 * big * 1440 * big).toBeLessThanOrEqual(1_000_000);
+    expect(outlineScale(0, 0)).toBe(1);
   });
   it('bounds the covered pixels for the name tag; hexToRgb falls back to white', () => {
     const alpha = new Uint8Array(100);

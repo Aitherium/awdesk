@@ -101,15 +101,32 @@ body {
   z-index: 20;
   display: flex;
   flex-direction: column;
+  /* The beads keep their edge when the open help widens the column (they used to jump
+     left by the help's width), and the column -- beads plus help -- always fits the
+     window: the help is the one part that gives way, and it scrolls. */
+  align-items: flex-end;
+  max-height: calc(100vh - 24px);
   gap: 10px;
   pointer-events: auto;
 }
 
+.beads > .bead {
+  flex: none;
+}
+
+/* The gestures help: a popover (Beads.tsx closes it on Esc, a press elsewhere, blur). It
+   fits the window or scrolls -- owner screenshot 2026-11-16 had it running off under the
+   Inbox, cut mid-word. */
 .bead-hint {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   max-width: 250px;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
   padding: 8px 10px;
   border-radius: 10px;
   border: 1px solid var(--deck-edge);
@@ -124,6 +141,9 @@ body {
 
 .bead-hint-x {
   flex: none;
+  /* Stays reachable while the help scrolls. */
+  position: sticky;
+  top: 0;
   width: 20px;
   height: 20px;
   border: none;
@@ -1168,7 +1188,12 @@ body {
 .speech-bubble {
   position: relative;
   width: max-content;
-  max-width: 260px;
+  /* Never wider than the window: in the 230 px browser-rail slot a 260 px caption ran off
+     the edge, cut mid-word (owner screenshot 2026-11-16). It wraps instead. */
+  max-width: min(260px, calc(100vw - 16px));
+  /* 1 = keep clear of the body: only the lines that fit above the head, the rest
+     ellipsized (SpeechBubbleView). The docked rail sets it (avatar-dock.cjs DOCKED_CSS). */
+  --bubble-keep-clear: 0;
   padding: 7px 11px;
   border-radius: 12px;
   background: var(--bead-bg);
@@ -1205,6 +1230,15 @@ body {
 .speech-bubble-nudge {
   pointer-events: none;
   will-change: transform;
+}
+
+/* The words. A line clamp lives HERE, not on the bubble, so ellipsizing never clips the
+   bubble's tail (::after hangs below its box). No clamp is set unless the caption must keep
+   clear of the body (SpeechBubbleView). */
+.speech-bubble__text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* Muted: same words, visibly NOT being said aloud -- a dashed edge and a

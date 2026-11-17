@@ -194,4 +194,24 @@ function agentTabView(rows) {
   return { tabs, owner: { count, shared, withheld: count - shared } };
 }
 
-module.exports = { KINDS, MAX_TABS, OWNERS, TabSet, agentTabView, originOf };
+const MENU_LABEL_MAX = 64;
+
+/**
+ * The all-tabs menu (the button beside +), from the strip's list -- the OWNER's view,
+ * the same rows the strip draws. Once tabs reach their minimum width the strip scrolls
+ * (owner screenshots 2026-11-16: 9+ tabs left most of them a dot and an x); this is the
+ * one place every tab is reachable by name. Each row: the name the strip shows (a pinned
+ * tab's own name), an agent tab marked as such, `&` doubled so Windows does not eat it
+ * as a mnemonic, cut to one readable line; the active tab checked.
+ * @returns {{id: number, label: string, checked: boolean}[]}
+ */
+function allTabsMenuRows(rows) {
+  return (rows || []).map((t) => {
+    const name = (t.pinned && t.label ? t.label : t.title || t.url || "New tab").replace(/\s+/g, " ").trim() || "New tab";
+    const marked = (t.by === "agent" ? "Agent: " : "") + (t.popped ? "(popped out) " : "") + name;
+    const cut = marked.length > MENU_LABEL_MAX ? `${marked.slice(0, MENU_LABEL_MAX - 1).trimEnd()}…` : marked;
+    return { id: t.id, label: cut.replace(/&/g, "&&"), checked: Boolean(t.active) };
+  });
+}
+
+module.exports = { KINDS, MAX_TABS, OWNERS, TabSet, agentTabView, allTabsMenuRows, originOf };

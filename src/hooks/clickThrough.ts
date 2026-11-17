@@ -76,6 +76,17 @@ export function decideInteractive(opts: { buttons: number; overAvatar: boolean; 
   return opts.buttons !== 0 || opts.overAvatar || !opts.backdrop;
 }
 
+/** Pure decision, unit-tested: which events close the open gestures help (components/Beads.tsx).
+ *  It is a popover, one at a time (owner screenshot 2026-11-16: it stayed open under the Inbox,
+ *  its text cut mid-word). Esc; a press anywhere outside it -- a bead, a body, the canvas --
+ *  except on the "?" bead, which toggles it; and the window losing focus (another popup, or any
+ *  app, took it). */
+export function hintClosesOn(e: { type: string; key?: string; insideHint?: boolean; onToggle?: boolean }): boolean {
+  if (e.type === 'keydown') return e.key === 'Escape';
+  if (e.type === 'pointerdown') return !e.insideHint && !e.onToggle;
+  return e.type === 'blur';
+}
+
 function report(interactive: boolean) {
   if (interactive === lastSent) return;
   lastSent = interactive;

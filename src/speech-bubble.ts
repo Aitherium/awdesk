@@ -98,5 +98,17 @@ export function stackOffset(rect: Box, above: Box[], gap = 6): number {
   return top - rect.top;
 }
 
+/** How many lines a caption may use when it must keep CLEAR of the body (docked in the browser
+ *  rail, where the slot is barely wider than the avatar: owner screenshot 2026-11-16 had a caption
+ *  wrap down over the whole body and run off the slot's edge). The room is what lies between the
+ *  window's top margin and the caption's anchor above the head; the rest is ellipsized. At least
+ *  one line: a caption nobody can see is worse than one that grazes the hair. Pure.
+ *  `anchorBottom` is the caption's natural bottom edge (client px), `chrome` its padding+border. */
+export function captionLines(anchorBottom: number, lineHeight: number, chrome = 0, margin = 8, max = 12): number {
+  if (!Number.isFinite(anchorBottom) || !(lineHeight > 0)) return 1;
+  const room = anchorBottom - margin - Math.max(0, Number(chrome) || 0);
+  return Math.max(1, Math.min(max, Math.floor(room / lineHeight)));
+}
+
 /** The fade-out starts this long before the bubble is removed (see styles.css .speech-bubble). */
 export const BUBBLE_FADE_MS = 450;

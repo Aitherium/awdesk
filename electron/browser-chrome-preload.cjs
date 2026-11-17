@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   dock: (id) => ipcRenderer.invoke("desk:browser-tab-dock", Number(id)),
   /** A tab's right-click menu (Pin to canvas, pop out / dock back, close), drawn by main. */
   tabMenu: (id) => ipcRenderer.invoke("desk:browser-tab-menu", Number(id)),
+  /** The all-tabs button: every tab as one row, the active one checked, drawn by main. */
+  tabsMenu: () => ipcRenderer.invoke("desk:browser-tabs-menu"),
   /** "Share with agent": an owner tab's URL and title reach the agent only while shared. */
   shareTab: (id, on) => ipcRenderer.invoke("desk:browser-tab-share", Number(id), Boolean(on)),
   /**
