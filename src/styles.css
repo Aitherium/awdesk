@@ -1184,7 +1184,7 @@ body {
   /* Anchored by its BOTTOM edge, so a longer caption grows upward, away from
      the face, instead of down over it. */
   transform: translateY(-50%);
-  animation: speech-bubble-in 160ms ease-out;
+  animation: speech-bubble-in 160ms ease-out, speech-bubble-out 450ms ease-in var(--bubble-life, 60s) forwards;
 }
 
 .speech-bubble::after {
@@ -1224,6 +1224,11 @@ body {
 @keyframes speech-bubble-in {
   from { opacity: 0; transform: translateY(-42%) scale(0.96); }
   to { opacity: 1; transform: translateY(-50%) scale(1); }
+}
+
+@keyframes speech-bubble-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

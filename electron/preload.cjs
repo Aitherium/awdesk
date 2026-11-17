@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld("deskBridge", {
   // Stages by direct manipulation (src/stage/stage-direct.ts): drop a body on another to join it,
   // drag a stage's handle to move the group. Main applies both through the swarm host.
   stageDrop: (slotId, targetSlotId) => ipcRenderer.send("desk:stage-drop", String(slotId || ""), String(targetSlotId || "")),
+  // A body that cannot be animated at all (no humanoid arms): main hands it back to its fairy.
+  bodyBroken: (slotId) => ipcRenderer.send("desk:body-broken", String(slotId || "")),
   stageSync: (positions) => ipcRenderer.send("desk:stage-sync", positions && typeof positions === "object" ? positions : {}),
   // Click-through (src/hooks/clickThrough.ts): false = nothing drawn under the cursor,
   // let the click reach the app below. main applies it to the SENDING window only.
