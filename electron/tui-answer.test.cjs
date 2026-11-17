@@ -180,3 +180,25 @@ test("d-yjmc: several names reach the script TAB-separated on stdin line 1", asy
   await tui.typeIntoSession(["Domain name server config", "Custom\tname\nserver button"], "", { spawn, platform: "win32" });
   assert.equal(stdinText, "Domain name server config\tCustom name server button\n\n");
 });
+
+test("a card's session id is read from where the store actually puts it", () => {
+  assert.equal(tui.sessionIdOf({ sessionId: "s1" }), "s1");
+  assert.equal(tui.sessionIdOf({ sessionId: null, source: { session_id: "d3d5" } }), "d3d5");
+  assert.equal(tui.sessionIdOf({ dedupe_key: "cc-waiting:sid-9:perm-1" }), "sid-9");
+  assert.equal(tui.sessionIdOf({ source: "not an object" }), "");
+  assert.equal(tui.sessionIdOf({}), "");
+  assert.equal(tui.sessionIdOf(null), "");
+});
+
+// The shape every open card had on 2026-11-17 (d-qh8f / d-jkv4): no top-level
+// sessionId, the id only in source.session_id + the cc-waiting dedupe key. Reading
+// the top-level field alone made "Open the session" answer "it has no name" every time.
+test("the measured card shape resolves a session id, so the tab can be found", () => {
+  const real = {
+    id: "d-qh8f",
+    sessionId: null,
+    source: { session_id: "d3d56e47-1036-4f1b-b8c4-d9f83ea98fff", agent: "claude-code", cwd: "C:\AitherOS-Fresh" },
+    dedupe_key: "cc-waiting:d3d56e47-1036-4f1b-b8c4-d9f83ea98fff:perm-5ddba63599a5af04",
+  };
+  assert.equal(tui.sessionIdOf(real), "d3d56e47-1036-4f1b-b8c4-d9f83ea98fff");
+});

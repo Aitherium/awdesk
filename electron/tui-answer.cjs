@@ -32,6 +32,28 @@ const TUI_KEY_RE = /^tui:([1-9]|type)$/;
 const FLASH_OPEN_SESSION = "Open the session to answer";
 const FLASH_IN_FRONT = "It's in front now: answer it there";
 
+/**
+ * The session a card belongs to: `sessionId` (older cards and the tests), the
+ * `source.session_id` every awask/awdk card actually carries today, or the
+ * `cc-waiting:<session>:<stamp>` dedupe key.
+ *
+ * Measured 2026-11-17: every open card on this host had `sessionId: null` and the id
+ * ONLY in `source.session_id`. The desk read `card.sessionId`, got nothing, and
+ * "Open the session" flashed "this session has no name to find its tab by" -- on
+ * every terminal-raised card, every click. The tab focus itself worked all along
+ * (proven: a real card id -> live map -> the Windows Terminal tab comes forward).
+ */
+function sessionIdOf(card) {
+  if (!card || typeof card !== "object") return "";
+  const direct = String(card.sessionId || "").trim();
+  if (direct) return direct;
+  const src = card.source && typeof card.source === "object" ? card.source : null;
+  const fromSource = String((src && src.session_id) || "").trim();
+  if (fromSource) return fromSource;
+  const m = /^cc-waiting:([^:]+):/.exec(String(card.dedupe_key || card.dedupeKey || ""));
+  return m ? m[1] : "";
+}
+
 /** The terminal action a card answer asks for, or null when it is an ordinary answer. */
 function tuiAction(card, key) {
   if (!card || typeof card !== "object") return null;
@@ -226,4 +248,4 @@ async function answerInTerminal(card, key, deps) {
   return { ok: true, handled: true, typed: false, recorded, tab: r.tab || name };
 }
 
-module.exports = { TUI_KEY_RE, FLASH_OPEN_SESSION, FLASH_IN_FRONT, tuiAction, raiseLines, typeScript, sessionNames, flashFor, typeIntoSession, answerInTerminal };
+module.exports = { TUI_KEY_RE, FLASH_OPEN_SESSION, FLASH_IN_FRONT, sessionIdOf, tuiAction, raiseLines, typeScript, sessionNames, flashFor, typeIntoSession, answerInTerminal };
