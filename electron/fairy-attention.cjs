@@ -539,7 +539,7 @@ function rectsOverlap(a, b) {
  * the pointer wins; else the work area's upper-middle, which is still in view.
  * Returns {orb:{x,y} (centre), whisper:{x,y} (top-left), side:"right"|"left"}.
  */
-function nudgePlacement(cursor, area, orbSize, whisperSize, { offset = 120, guard = 48 } = {}) {
+function nudgePlacement(cursor, area, orbSize, whisperSize, { offset = 120, guard = 48, obstacles = [], obstaclePad = 8 } = {}) {
   const a = area || { x: 0, y: 0, width: 1920, height: 1080 };
   const c = cursor && Number.isFinite(cursor.x) && Number.isFinite(cursor.y)
     ? cursor : { x: a.x + a.width / 2, y: a.y + a.height / 2 };
@@ -562,14 +562,26 @@ function nudgePlacement(cursor, area, orbSize, whisperSize, { offset = 120, guar
   };
   const fits = (box) => box.x >= a.x && box.y >= a.y
     && box.x + box.width <= a.x + a.width && box.y + box.height <= a.y + a.height;
-  const candidates = [
-    layout({ x: c.x + offset, y: c.y - offset }, "right"),
-    layout({ x: c.x - offset, y: c.y - offset }, "left"),
-    layout({ x: c.x + offset, y: c.y + offset }, "right"),
-    layout({ x: c.x - offset, y: c.y + offset }, "left"),
-  ];
+  // Clickable things under the flutter (free-space.cjs measures them in the desk's own
+  // windows). The fairy and its whisper must touch none: 2026-11-16 it sat on CertTrack's
+  // "Review" tab. With no obstacles this is exactly the old four-corner search.
+  const blocked = (Array.isArray(obstacles) ? obstacles : []).filter((o) => o && o.width > 0 && o.height > 0);
+  const pad = Math.max(0, Number(obstaclePad) || 0);
+  const clear = (box) => !blocked.some((o) => rectsOverlap(
+    { x: box.x - pad, y: box.y - pad, width: box.width + pad * 2, height: box.height + pad * 2 }, o));
+  const reaches = blocked.length ? [1, 1.7, 2.4] : [1];
+  const candidates = [];
+  for (const k of reaches) {
+    const d = offset * k;
+    candidates.push(
+      layout({ x: c.x + d, y: c.y - d }, "right"),
+      layout({ x: c.x - d, y: c.y - d }, "left"),
+      layout({ x: c.x + d, y: c.y + d }, "right"),
+      layout({ x: c.x - d, y: c.y + d }, "left"),
+    );
+  }
   for (const cand of candidates) {
-    if (fits(cand.box) && !rectsOverlap(cand.box, pointer)) {
+    if (fits(cand.box) && !rectsOverlap(cand.box, pointer) && clear(cand.box)) {
       return { orb: cand.orb, whisper: cand.whisper, side: cand.side };
     }
   }

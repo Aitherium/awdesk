@@ -108,6 +108,40 @@ function liveSessions({ home = claudeHome(), fsImpl = fs, alive = pidAlive } = {
   return out;
 }
 
+/**
+ * liveSessions plus whether the read could be TRUSTED. An unreadable sessions folder
+ * comes back from liveSessions as an empty map, which a caller asking "has this session
+ * ended?" must not read as "every session ended" (ended-cards.cjs closes cards on it).
+ * `judged` is true only when the folder was listed.
+ */
+function liveSessionsChecked({ home = claudeHome(), fsImpl = fs, alive = pidAlive } = {}) {
+  let judged = true;
+  try { fsImpl.readdirSync(path.join(home, "sessions")); } catch { judged = false; }
+  return { live: liveSessions({ home, fsImpl, alive }), judged };
+}
+
+/**
+ * Does THIS machine hold any trace of the session: a Claude state file (live or left
+ * behind by a dead pid) or a transcript? A session that ran in WSL/awnix, a container or
+ * another harness leaves neither here, so "not running" says nothing about it. Used by
+ * ended-cards.cjs: a card is only closed when the session is known here AND not alive.
+ */
+function sessionKnownHere(sessionId, { home = claudeHome(), fsImpl = fs } = {}) {
+  const id = String(sessionId || "");
+  if (!SESSION_ID_RE.test(id)) return false;
+  const dir = path.join(home, "sessions");
+  let names = [];
+  try { names = fsImpl.readdirSync(dir); } catch { /* fall through to the transcript */ }
+  for (const name of names) {
+    if (!/^\d+\.json$/.test(name)) continue;
+    try {
+      const raw = JSON.parse(fsImpl.readFileSync(path.join(dir, name), "utf8"));
+      if (raw && raw.sessionId === id) return true;
+    } catch { /* next */ }
+  }
+  return Boolean(transcriptPath(id, "", { home, fsImpl }));
+}
+
 // ── journal text ────────────────────────────────────────────────────────────
 
 /** A teammate message is JSON inside an XML wrapper; say who sent it and what it said. */
@@ -444,6 +478,8 @@ module.exports = {
   transcriptPath,
   pidAlive,
   liveSessions,
+  liveSessionsChecked,
+  sessionKnownHere,
   cleanUserText,
   teammateLine,
   readContext,

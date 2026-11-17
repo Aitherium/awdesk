@@ -50,9 +50,12 @@ const selectionReader = require("./selection-reader.cjs");
 const fairyAttention = require("./fairy-attention.cjs");
 const agentFairy = require("./agent-fairy.cjs");
 const fairyMenu = require("./fairy-menu.cjs");
+const freeSpace = require("./free-space.cjs");
 const companionMenu = require("./companion-menu.cjs");
 const fairyOwner = require("./fairy-owner.cjs");
 const fairyCounts = require("./fairy-counts.cjs");
+const fairyCluster = require("./fairy-cluster.cjs");
+const linkOpener = require("./link-opener.cjs");
 const fairyHoverGuard = require("./fairy-hover-guard.cjs");
 const fairyPanel = require("./fairy-panel.cjs");
 const agentsPanel = require("./agents-panel.cjs");
@@ -94,9 +97,21 @@ let orbWindow = null;
 let bubbleWindow = null;
 let veilWindow = null;
 let nudgeWindow = null;
-/** The companion swarm (agent-fairy.cjs) and what it draws: one per agent, uncapped. */
+/** The fairy cluster (fairy-cluster.cjs): one per decision and live session, capped
+ *  into a counted bead. swarmCompanions is what it draws right now. */
 let swarmWindow = null;
 let swarmCompanions = [];
+/** Live session rows (Claude Code tabs Map + awsh daemon rows) and which sources read. */
+let clusterSessions = [];
+let clusterOk = { cards: true, sessions: true, presence: true };
+const clusterReaper = fairyCluster.createReaper();
+let clusterTotal = 0;
+let clusterLabel = "";
+/** The orb was shown BY the cluster (decisions waiting while hidden), not by the owner. */
+let autoSurfaced = false;
+/** Card ids waiting when the owner hid the fairy himself (null = he has not). */
+let ownerHidIds = null;
+let clusterTimer = null;
 /** Where the ONE cluster is centred while the fairy itself is down (a full avatar stands
  *  where it was): the agent swarm sets it so the light fairies keep orbiting the avatar
  *  instead of vanishing with the orb. null = follow the orb, as always. */
@@ -221,7 +236,8 @@ function saveState() {
   try {
     const file = stateFile();
     const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(state));
+    // A cluster-surfaced orb (decisions waiting) is not the owner's choice to show it.
+    fs.writeFileSync(tmp, JSON.stringify(autoSurfaced ? { ...state, visible: false } : state));
     fs.renameSync(tmp, file);
   } catch { /* per-viewer convenience: losing it costs a remembered spot only */ }
 }
@@ -310,8 +326,82 @@ function restSpot() {
 // spot. An attachment the owner made by hand is never replaced or dropped by this.
 let dockWindowId = 0;
 function dockSpot(target) {
-  if (target && target.auto) return orbCore.windowDockSpot(target.bounds, ORB_SIZE, reservedBox, RESERVE_PAD);
-  return spiritCore.dockPosition(target, ORB_SIZE);
+  const base = target && target.auto
+    ? orbCore.windowDockSpot(target.bounds, ORB_SIZE, reservedBox, RESERVE_PAD)
+    : spiritCore.dockPosition(target, ORB_SIZE);
+  // A body has no buttons under it; a WINDOW does. Owner 2026-11-16: the fairy sat on
+  // CertTrack's "Review" tab. Stand on the first spot of the window that covers nothing.
+  if (!target || target.kind === "avatar") return base;
+  const b = spiritCore.normBounds(target.bounds);
+  if (!b) return base;
+  const pick = freeSpace.pickFree(
+    freeSpace.dockCandidates(b, ORB_SIZE, { first: base }), ORB_SIZE, obstaclesFor(target), { pad: 10, area: b },
+  );
+  return pick ? { x: pick.x, y: pick.y } : base;
+}
+
+// -- what is clickable under the fairy (free-space.cjs) -------------------------------
+// The desk's own windows are asked, from inside the page, where their buttons, tabs and
+// fields are; a window owned by another program gets its title bar as one obstacle. The
+// answers are cached for a second and a half: the dock follows a window at 4 Hz and must
+// never wait on a page.
+const OBSTACLE_TTL_MS = 1500;
+const obstacleCache = new Map(); // windowId -> { at, rects }
+const obstacleBusy = new Set();
+
+function ownWindowIds() {
+  return new Set([orbWindow, bubbleWindow, veilWindow, nudgeWindow, swarmWindow, menuWindow, tipWindow]
+    .filter((w) => alive(w)).map((w) => w.id));
+}
+
+async function refreshObstacles(win) {
+  if (!alive(win) || obstacleBusy.has(win.id)) return;
+  const cached = obstacleCache.get(win.id);
+  if (cached && Date.now() - cached.at < OBSTACLE_TTL_MS) return;
+  obstacleBusy.add(win.id);
+  try {
+    const wc = win.webContents;
+    const rows = await Promise.race([
+      wc.executeJavaScript(freeSpace.probeSource(), true),
+      new Promise((resolve) => { const t = setTimeout(() => resolve(null), 800); if (t.unref) t.unref(); }),
+    ]);
+    if (!Array.isArray(rows)) return; // a page that would not answer is "unknown", not "empty"
+    let zoom = 1;
+    try { zoom = wc.getZoomFactor ? wc.getZoomFactor() : 1; } catch { /* default 1 */ }
+    obstacleCache.set(win.id, { at: Date.now(), rects: freeSpace.toScreenRects(rows, win.getContentBounds(), zoom) });
+  } catch { /* a page mid-navigation: try again next tick */ } finally {
+    obstacleBusy.delete(win.id);
+  }
+}
+
+/** Ask every visible desk window (the fairy's own excluded) what is clickable in it. */
+async function refreshAllObstacles() {
+  const { BrowserWindow } = electron();
+  const own = ownWindowIds();
+  let wins;
+  try { wins = BrowserWindow.getAllWindows(); } catch { wins = []; }
+  const live = wins.filter((w) => alive(w) && !own.has(w.id) && w.isVisible() && !w.isMinimized());
+  for (const id of [...obstacleCache.keys()]) if (!live.some((w) => w.id === id)) obstacleCache.delete(id);
+  await Promise.all(live.map((w) => refreshObstacles(w)));
+}
+
+/** The clickable rects for one dock target (screen coordinates). */
+function obstaclesFor(target) {
+  if (!target) return [];
+  if (target.kind === "desk" && target.windowId) {
+    const cached = obstacleCache.get(target.windowId);
+    return cached ? cached.rects : [];
+  }
+  // Another program's window: no page to ask, so its title bar and tab strip stand in.
+  const chrome = freeSpace.chromeObstacle(target.bounds);
+  return chrome ? [chrome] : [];
+}
+
+/** Every clickable rect we know of across the desk's windows, for the flutter. */
+function allObstacles() {
+  const out = [];
+  for (const entry of obstacleCache.values()) if (Date.now() - entry.at < 60_000) out.push(...entry.rects);
+  return out;
 }
 /** `win` = the AitherOS window to ride, or null when there is none to ride. */
 async function setDockWindow(win) {
@@ -644,9 +734,11 @@ function raiseOrbOverSwarm() {
 /** Show, size, follow or hide the swarm for the current companions. */
 function placeSwarm(companions = swarmCompanions, { raise = false } = {}) {
   const list = Array.isArray(companions) ? companions : [];
-  // No swarm (owner 2026-11-13: "keep the badge ... link to the inbox, don't show a
-  // swarm"): one fairy and its badge. orb.json `swarm: true` brings the swarm back.
-  const next = list.length && (orbVisible() || swarmAnchor) && state.swarm === true ? swarmBounds(list.length) : null;
+  // The cluster is ON (owner 2026-11-16, overriding 2026-11-13's "don't show a swarm":
+  // "the cluster of fairies should grow with agents and decisions queued"); orb.json
+  // `cluster: false` (or the swarm switch set off) turns it off. Nothing live = no window.
+  const next = list.length && (orbVisible() || swarmAnchor) && (state.cluster !== false || state.swarm === true)
+    ? swarmBounds(list.length) : null;
   if (!next) {
     if (alive(swarmWindow) && swarmWindow.isVisible()) swarmWindow.hide();
     lastBounds = null;
@@ -688,7 +780,8 @@ function setSwarmAnchor(point) {
 /** The swarm's own switch (orb.json `swarm`): the agent fairies orbiting the main one. */
 function setSwarmVisible(on) {
   const next = on === true;
-  if (state.swarm !== next) { state.swarm = next; saveState(); }
+  // The swarm switch is the cluster's switch too (2026-11-16): off hides the cluster.
+  if (state.swarm !== next || state.cluster !== next) { state.swarm = next; state.cluster = next; saveState(); }
   sendFairy({ force: true });
   placeSwarm(swarmCompanions, { raise: true });
   return { ok: true, swarm: state.swarm === true };
@@ -1201,7 +1294,8 @@ function hideVeil() {
 
 // ── visibility ──────────────────────────────────────────────────────────────
 
-function showOrb() {
+function showOrb({ auto = false } = {}) {
+  if (!auto) { autoSurfaced = false; ownerHidIds = null; }
   // One cluster on this machine, ever (owner 2026-11-13): a second desk process (another
   // profile, a test build) never shows its own fairies while another desk owns them.
   const owner = fairyOwner.claim();
@@ -1230,7 +1324,9 @@ function showOrb() {
   return { ok: true, visible: true };
 }
 
-function hideOrb() {
+function hideOrb({ auto = false } = {}) {
+  // The owner hid it with cards waiting: those cards do not bring it back, a NEW one does.
+  if (!auto) { autoSurfaced = false; ownerHidIds = new Set(attentionCards.map((c) => c.id)); }
   releaseHover();
   suppressed = true;
   pendingSlot = null;
@@ -1903,6 +1999,7 @@ async function refreshAttach() {
       return;
     }
     bounds = win.getBounds();
+    void refreshObstacles(win); // the next tick docks on what this finds
   } else if (attach.kind === "avatar" && attach.slotId) {
     const targets = await attachableTargets();
     const now = targets.find((t) => t.slotId === attach.slotId);
@@ -2743,6 +2840,7 @@ function deskDoors(reg) {
   return DESK_DOORS.filter(([id]) => reg && reg.byId && reg.byId(id)).map(([id, label]) => ({
     // The fairy's door names the actual ask, not a generic "Notifications":
     // "Needs you (3)" is the same group label the launcher and the deck use.
+    id: `door:${id}`,
     label: id === "inbox.open" ? (attentionCards.length ? `Needs you (${attentionCards.length})` : "Inbox") : label,
     click: () => { void runCommandImpl?.(id); },
   }));
@@ -2856,10 +2954,12 @@ function setAttentionCards(cards, allOpen = null) {
   if (Object.keys(attentionMems).length !== before) saveAttention();
   // Answered somewhere else (the Inbox, Discord, the phone): the whisper goes.
   if (nudging && !ids.has(nudging.decision.card.id)) endNudge("answered");
+  surfaceForCards();
   sendFairy();
   sendBadge();
   sendPanelView();
   ensureAttention();
+  ensureClusterClock();
   scheduleAttentionTick(1500); // a NEW card is judged now, not on the next 15 s tick
   return { ok: true, count: attentionCards.length };
 }
@@ -2902,10 +3002,68 @@ function speakingNow(nowMs = Date.now()) {
   return out;
 }
 
-function currentCompanions(look = currentFairy()) {
-  return agentFairy.companionsFor(attentionCards, {
-    current: look.agent, presence: agentPresence, speaking: speakingNow(),
+/**
+ * The cluster now (fairy-cluster.cjs): one fairy per queued decision, per live agent
+ * session and per working platform agent, reconciled against what was there before
+ * (an entry its source dropped leaves; an unreadable source's entries are reaped
+ * after 30 s), then capped into a counted bead.
+ */
+function currentCompanions(nowMs = Date.now()) {
+  const entries = fairyCluster.liveEntries({
+    cards: attentionCards, sessions: clusterSessions, presence: agentPresence, nowMs,
   });
+  const { kept } = clusterReaper.reconcile(entries, { nowMs, ok: clusterOk });
+  const c = fairyCluster.collapse(kept, fairyCluster.CAP);
+  clusterTotal = c.total;
+  clusterLabel = fairyCluster.countLabel(kept);
+  const talking = new Set(speakingNow());
+  return c.shown.map((e) => (e.kind !== "decision" && talking.has(e.agent) ? { ...e, state: "speaking" } : e));
+}
+
+/** What the cluster holds: {total, label, shown}. For the bridge, tray and proofs. */
+function clusterState() {
+  const shown = currentCompanions();
+  return { total: clusterTotal, label: clusterLabel, shown: shown.length, keys: clusterReaper.keys(), autoSurfaced };
+}
+
+/**
+ * Main hands over the live agent sessions: the Claude Code tabs (session-context
+ * liveSessions, pid-checked) and the awsh daemon's rows. `ok:false` = that read
+ * failed; the cluster then holds the last fairies for 30 s, never forever.
+ */
+function setClusterSessions(sources, { ok = true } = {}) {
+  // Unreadable: nothing is "fresh" from this source; the reaper holds the last fairies
+  // for its 30 s and then lets them go (orphans never stay).
+  clusterSessions = ok === false ? [] : (Array.isArray(sources) ? sources : [sources]);
+  clusterOk = { ...clusterOk, sessions: ok !== false };
+  sendFairy();
+  return { ok: true, total: clusterTotal };
+}
+
+/**
+ * Decisions ride the fairy (owner 2026-11-16: "these bullshit decision cards instead
+ * of fairies"). A hidden orb with decisions waiting comes up by itself -- the cluster
+ * IS the decision surface now -- and goes back down when the queue empties, unless
+ * the owner showed it himself meanwhile. Grown into the avatar: the body carries it.
+ */
+function surfaceForCards() {
+  if (quitting || expanded) return;
+  const fresh = !ownerHidIds || attentionCards.some((c) => !ownerHidIds.has(c.id));
+  if (attentionCards.length > 0 && !state.visible && fresh) {
+    autoSurfaced = true; // before showOrb: its save must not record the owner's choice
+    const r = showOrb({ auto: true });
+    if (!r || !r.ok) autoSurfaced = false;
+  } else if (attentionCards.length === 0 && autoSurfaced) {
+    autoSurfaced = false;
+    if (state.visible) hideOrb({ auto: true });
+  }
+}
+
+/** Reconcile on a clock too: a fairy whose source went silent leaves within ~30 s. */
+function ensureClusterClock() {
+  if (clusterTimer || quitting) return;
+  clusterTimer = setInterval(() => { try { sendFairy(); } catch { /* cosmetic */ } }, 10_000);
+  if (clusterTimer.unref) clusterTimer.unref();
 }
 
 /**
@@ -2937,6 +3095,11 @@ function noteAgentPosted(agent, { ms = 4000 } = {}) {
 
 /** Click a companion: talk to THAT agent (main opens its chat; the hook decides how). */
 function chatWithAgent(agent) {
+  // The counted bead: the whole waiting list, never a chat with "more".
+  if (String(agent || "") === "more") {
+    const r = hookValue("openList");
+    return r === undefined ? { ok: false, reason: "no waiting list in this build" } : { ok: true, list: true };
+  }
   const key = agentFairy.crewKey(agent);
   if (!key) return { ok: false, reason: "not an agent" };
   const row = currentCompanions().find((c) => c.agent === key) || null;
@@ -2954,7 +3117,7 @@ function sendFairy({ force = false } = {}) {
     lastFairyKey = key;
     send("orb:fairy", look);
   }
-  allCompanions = currentCompanions(look);
+  allCompanions = currentCompanions();
   const { visible: companions, pinned } = viewCompanions(allCompanions);
   const ckey = JSON.stringify({ companions, pinned: pinned.map((c) => [c.agent, c.state, c.count, c.selected]), view: state.swarmView });
   if (force || ckey !== lastCompanionsKey) {
@@ -3080,6 +3243,18 @@ function ownsAttention() {
   return Boolean(attentionTimer && !quitting && state.visible && alive(orbWindow));
 }
 
+/**
+ * Will the fairy cluster carry a NEW card? True while the attention loop runs and the
+ * orb exists, hidden or not: a hidden orb comes up for a card (surfaceForCards), and a
+ * fairy grown into the avatar carries it in the body. This is the desk's claim on the
+ * card (the `.desk-alive` "attention": "fairy"), so awask leaves its Tk card window
+ * down (owner 2026-11-16: "still getting these bullshit decision cards instead of
+ * fairies"). The cluster turned off (orb.json cluster:false) gives the claim back.
+ */
+function carriesCards() {
+  return Boolean(attentionTimer && !quitting && alive(orbWindow) && state.cluster !== false);
+}
+
 function hookValue(name, ...args) {
   const fn = attentionHooks && attentionHooks[name];
   if (typeof fn !== "function") return undefined;
@@ -3142,7 +3317,11 @@ async function attentionTick() {
       const full = await fullScreenNow();
       if (full) decision = { act: "none", reason: `held while quiet: ${full}` };
     }
-    if (decision.act === "nudge" && !nudging && !quitting) startNudge(decision);
+    if (decision.act === "nudge" && !nudging && !quitting) {
+      // Where the flutter lands is judged against what is clickable right now.
+      try { await refreshAllObstacles(); } catch { /* the placement then uses what it last knew */ }
+      if (!nudging && !quitting) startNudge(decision);
+    }
     return decision;
   } finally {
     attentionTicking = false;
@@ -3285,7 +3464,7 @@ function startNudge(decision, { peek = false } = {}) {
       cursor = screen.getCursorScreenPoint();
       area = screen.getDisplayNearestPoint(cursor).workArea;
     } catch { area = displayForOrb().workArea; }
-    const place = fairyAttention.nudgePlacement(cursor, area, ORB_SIZE, NUDGE_SIZE);
+    const place = fairyAttention.nudgePlacement(cursor, area, ORB_SIZE, NUDGE_SIZE, { obstacles: allObstacles() });
     n.anchor = place.orb;
     n.whisperAt = place.whisper;
     n.side = place.side;
@@ -3452,6 +3631,8 @@ async function nudgeAct(action, key) {
     endNudge("later");
     return { ok: true };
   }
+  // "Open in AitherBrowser" under the card's answers: its page, AitherBrowser first.
+  if (what === "browser") return openCardPage(card.id, "aither");
   if (what === "mute") {
     confirmThenEnd(n, "Okay, it stays on the badge.", "mute");
     return { ok: true };
@@ -3569,39 +3750,50 @@ function chatAboutCard(id) {
   return { ok: true, id: card.id, mode: "card" };
 }
 
-function spiritMenu() {
-  const { Menu } = electron();
+/**
+ * The spirit's own rows -- search, ask, find, attach, sounds, the sprite, the desk's
+ * doors. They used to open a SECOND menu (a dark native list) from "More...", beside the
+ * pill menu every other fairy surface draws; two fairy menus, two looks (owner screenshots
+ * 2026-11-16). Now they are a second PAGE of the one pill menu: same window, same keys,
+ * same Esc. `run` is looked up again at pick time, so a stale click runs nothing.
+ */
+function spiritRows() {
   const reg = commandRegistry();
-  const anythingHeld = Boolean(hold);
-  const template = [
-    { label: "Search the web…", click: () => openMode("web") },
-    { label: "Ask a question…", click: () => { openMode(null); try { bubbleWindow.focus(); } catch { /* gone */ } } },
-    { label: "Find a file…", click: () => openMode("find") },
-    ...(anythingHeld ? [{ label: `Read ${spiritCore.holdLabel(hold)}`, click: () => { void runHoldAction("read"); } }] : []),
-    { type: "separator" },
-    { label: attach ? "Detach the spirit" : "Attach the spirit", click: () => { void toggleAttach(); } },
-    { label: "Send home", click: () => { void sendHome(); } },
+  return [
+    { id: "spirit:web", label: "Search the web…", run: () => openMode("web") },
+    { id: "spirit:ask", label: "Ask a question…", run: () => { openMode(null); try { bubbleWindow.focus(); } catch { /* gone */ } } },
+    { id: "spirit:find", label: "Find a file…", run: () => openMode("find") },
+    ...(hold ? [{ id: "spirit:read", label: `Read ${spiritCore.holdLabel(hold)}`, run: () => { void runHoldAction("read"); } }] : []),
+    { sep: true },
+    { id: "spirit:attach", label: attach ? "Let go of this window" : "Stay on this window", run: () => { void toggleAttach(); } },
+    { id: "spirit:home", label: "Back to its corner", run: () => { void sendHome(); } },
     // The nudge chime (owner 2026-11-08): on by default, remembered in orb.json.
-    { label: `Fairy sounds: ${state.sounds === false ? "off" : "on"}`, click: () => { setSounds(state.sounds === false); } },
-    ...(reg.byId("quick.open") ? [{ label: "Quick menu", click: () => { void runCommandImpl?.("quick.open"); } }] : []),
-    { type: "separator" },
+    { id: "spirit:sounds", label: `Fairy sounds: ${state.sounds === false ? "off" : "on"}`, run: () => { setSounds(state.sounds === false); } },
+    ...(reg.byId("quick.open") ? [{ id: "spirit:quick", label: "Quick menu", run: () => { void runCommandImpl?.("quick.open"); } }] : []),
+    { sep: true },
     // The fairy IS the owner's sprite: its own rows sit on its own menu.
-    { label: sprite ? `${sprite.name}: how are you?` : "How is my sprite?", click: () => { void spriteStatus(); } },
-    { label: "Teach it the selection", click: () => { void spriteTeach(null); } },
-    { label: "Open Sprite…", click: () => { openUrl(spriteCore.SPRITE_PAGE); } },
-    { type: "separator" },
+    { id: "spirit:sprite", label: sprite ? `${sprite.name}: how are you?` : "How is my sprite?", run: () => { void spriteStatus(); } },
+    { id: "spirit:teach", label: "Teach it what I selected", run: () => { void spriteTeach(null); } },
+    { id: "spirit:sprite-page", label: "Open my sprite page…", run: () => { openUrl(spriteCore.SPRITE_PAGE); } },
+    { sep: true },
     // The desk's doors live on the fairy now (owner 2026-11-02: "consolidate the
     // awdesk icons around the fairy"): the bead rail's rows, plus Show avatar.
-    ...deskDoors(reg),
-    { type: "separator" },
-    { label: "Hide the spirit", click: () => hideOrb() },
+    ...deskDoors(reg).map((d) => ({ id: d.id, label: d.label, run: d.click })),
   ];
-  try {
-    Menu.buildFromTemplate(template).popup({ window: orbWindow });
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error: String((error && error.message) || error) };
-  }
+}
+
+/** The second page of the one fairy menu. */
+function moreMenu({ atFairy = false } = {}) {
+  const rows = spiritRows();
+  const items = [...rows.map((r) => (r.sep ? { sep: true } : { id: r.id, label: r.label })),
+    { sep: true }, { id: "less", label: "Back", hint: "The short menu" }];
+  return showMenu("orb", { header: "Aither · more", items }, { atFairy });
+}
+
+/** The old native "spirit menu" entry points (right click on the page, the bridge) now
+ *  open THE pill menu: there is one fairy menu. */
+function spiritMenu() {
+  return orbMenu();
 }
 
 // ── drag and click ──────────────────────────────────────────────────────────
@@ -4000,12 +4192,29 @@ async function menuPick(id) {
     try { r = await hookValue("focusSession", card.id); } catch (error) { r = { ok: false, note: String(error) }; }
     return r && typeof r === "object" ? r : { ok: false, error: "no session hook in this build" };
   }
+  if (what === "link:open-aither" || what === "link:open-system") {
+    return openCardPage(card.id, what === "link:open-aither" ? "aither" : "system");
+  }
   if (what === "copy") {
     const link = String(hookValue("cardLink", card.id) || fairyMenu.cardLink(card.id));
     try { electron().clipboard.writeText(link); } catch { return { ok: false, error: "no clipboard" }; }
     return { ok: true, link };
   }
   return { ok: false, error: `unknown menu item ${what}` };
+}
+
+/**
+ * A card's page (aitherium.com/decide?id=...) in AitherBrowser or the system browser
+ * (link-opener.cjs). AitherBrowser is main's openUrl (the browser policy + an Aither
+ * Browser window); the system one is shell.openExternal.
+ */
+function openCardPage(id, prefer = "") {
+  const link = String(hookValue("cardLink", id) || fairyMenu.cardLink(id));
+  return linkOpener.openLink(link, {
+    prefer,
+    openAither: (u) => (openUrlImpl ? openUrlImpl(u) : { ok: false, error: "no AitherBrowser in this build" }),
+    openSystem: (u) => { void electron().shell.openExternal(u); return { ok: true }; },
+  });
 }
 
 /** "Answer: <recommended>" -- through the ONE desk answer path (main's answerDeckCard). */
@@ -4029,7 +4238,14 @@ function orbPick(what) {
     else hookValue("open", null);
     return { ok: true };
   }
-  if (what === "more") return spiritMenu();
+  if (what === "more") return moreMenu();
+  if (what === "less") return orbMenu();
+  if (what.startsWith("spirit:") || what.startsWith("door:")) {
+    const row = spiritRows().find((r) => r && !r.sep && r.id === what);
+    if (!row) return { ok: false, error: "that row is not on the menu any more" };
+    try { row.run(); } catch (error) { return { ok: false, error: String((error && error.message) || error) }; }
+    return { ok: true, ran: what };
+  }
   if (what === "expand") return expandToAvatar();
   if (what === "collapse") return collapseToFairy();
   if (what.startsWith("body:")) return pickBody(what.slice(5));
@@ -4099,6 +4315,9 @@ async function collapseToFairy({ fromAvatar = false } = {}) {
     try { await attentionHooks.collapse({ to }); } catch { /* the fairy comes back regardless */ }
   }
   if (state.visible && alive(orbWindow) && !orbWindow.isVisible()) {
+    // Back where the fairy rests, never where the window was last parked: a fairy that was
+    // only ever hidden at the screen's top-left corner came back there (proof run 2026-11-16).
+    if (!attach) placeOrb();
     orbWindow.showInactive();
     if (attach) showVeil();
     placeSwarm();
@@ -4506,6 +4725,7 @@ function stopOrb() {
   if (hoverTimer) { clearInterval(hoverTimer); hoverTimer = null; }
   if (spriteTimer) { clearInterval(spriteTimer); spriteTimer = null; }
   if (spriteKick) { clearTimeout(spriteKick); spriteKick = null; }
+  if (clusterTimer) { clearInterval(clusterTimer); clusterTimer = null; }
   stopAttention();
   for (const pending of pendingRuns.values()) {
     clearTimeout(pending.timer);
@@ -4560,8 +4780,13 @@ function run(verb, { arg = null, slotId = null } = {}) {
   // (POST /commands/run {"id":"fairy.counts"}). Opens nothing.
   if (what === "counts") {
     const counts = currentCounts();
-    const companions = currentCompanions().map((m) => ({ agent: m.agent, label: m.label, count: m.count }));
-    const problems = fairyCounts.problems(counts, companions);
+    const companions = currentCompanions().map((m) => ({ agent: m.agent, label: m.label, count: m.count, kind: m.kind }));
+    // Every decision is its own fairy now (fairy-cluster.cjs), so the per-agent badge
+    // sum no longer applies; the cluster is checked against the queue instead.
+    const problems = fairyCounts.problems(counts, []);
+    const drawn = companions.reduce((a, m) => a + (m.kind === "decision" ? 1 : 0), 0)
+      + (swarmCompanions.find((m) => m.kind === "more") || { waiting: 0 }).waiting;
+    if (state.cluster !== false && drawn > counts.needYou) problems.push(`cluster draws ${drawn} decisions, needYou ${counts.needYou}`);
     return {
       ok: problems.length === 0,
       line: `${fairyCounts.badgeTitle(counts)}. The whisper says "${fairyAttention.moreLabel(counts.more) || "nothing more"}".`,
@@ -4631,7 +4856,7 @@ module.exports = {
   ORB_SIZE, BUBBLE_SIZE, TICK_MS, REGION_WAIT_MS,
   startOrb, stopOrb, run, hoverGuard: () => hoverGuardImpl, ensureIpc, showOrb, hideOrb, toggleOrb, openBubble, setAttention,
   // attention: the fairy carries the cards (fairy-attention.cjs)
-  NUDGE_SIZE, setAttentionCards, attentionTick, ownsAttention, nudgeAct, endNudge,
+  NUDGE_SIZE, setAttentionCards, attentionTick, ownsAttention, carriesCards, nudgeAct, endNudge,
   nudgeCard, chatAboutCard, setSounds,
   // the agent fairy (agent-fairy.cjs): whose colours, which companions
   setSpeaker, peekCard, openFairyCard, fairyMenuFor, orbMenu, menuPick, showTip, hideTip,
@@ -4640,7 +4865,8 @@ module.exports = {
   setTenantCompanion, setQuiet, tenantCompanionVisible: () => Boolean(state.tenantCompanion),
   quietUntil: () => (Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0),
   menuState: () => publicMenu(), __setMenuIdleMs: (ms) => { menuIdleMsOverride = Number(ms) || 0; }, fairy: () => currentFairy(), companions: () => currentCompanions(),
-  setPresence, noteAgentPosted, chatWithAgent,
+  setPresence, noteAgentPosted, chatWithAgent, setClusterSessions, clusterState, surfaceForCards,
+  autoSurfaced: () => autoSurfaced,
   swarmViewOp, swarmViewPayload, selectAgent, swarmWheel, swarmDrag, pinAgent, viewCompanions, setView,
   pinWindows: () => pinWindows, __setForeground: (rect) => { fgContent = fairyControl.contentRect(rect); sendSwarmView(); },
   setSwarmAnchor, setSwarmVisible, swarmVisible: () => state.swarm === true, fairyBounds: () => (alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null),
@@ -4679,6 +4905,12 @@ module.exports = {
     lastFairyKey = "";
     lastCompanionsKey = "";
     swarmCompanions = [];
+    clusterSessions = [];
+    clusterOk = { cards: true, sessions: true, presence: true };
+    clusterReaper.reset();
+    autoSurfaced = false;
+    ownerHidIds = null;
+    if (clusterTimer) { clearInterval(clusterTimer); clusterTimer = null; }
     allCompanions = [];
     selectedAgent = "";
     pinDrag = null;
@@ -4756,6 +4988,8 @@ module.exports = {
   setDockWindow,
   __dock: () => ({ windowId: dockWindowId, attached: Boolean(attach && attach.auto) }),
   __reservedBox: () => reservedBox,
+  __dockSpot: (target) => dockSpot(target),
+  __refreshObstacles: () => refreshAllObstacles(),
   __setCapture: (c) => { captureImpl = c; },
   __setAskVision: (f) => { askVisionImpl = f; },
   __setSpeak: (f) => { speakImpl = f; },

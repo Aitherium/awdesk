@@ -2009,7 +2009,7 @@ function needsYouSnoozeDir() {
 function computeNeedsYou(cards = openDecisions) {
   try {
     const snoozed = needsYouLib.snoozedIds(needsYouSnoozeDir());
-    return decisionCards.partitionCards(cards, { snoozed }).needsYou;
+    return decisionCards.partitionCards(cards, { snoozed, ended: endedIdSet(cards) }).needsYou;
   } catch {
     return [];
   }
@@ -2537,7 +2537,6 @@ function fairyQuietReason() {
     if (kidDeskMode().enabled) return "kid mode";
     if (overlaySettings().doNotDisturb) return "Do not disturb";
     if (nowModeActive()) return "NOW mode";
-    if (companionMode() !== "fairy") return "the avatar carries the cards";
     if (require("./game-posture.cjs").hostIsGaming()) return "game on";
   } catch { /* an unreadable setting is not a reason to go silent */ }
   return "";
@@ -2546,13 +2545,15 @@ function fairyQuietReason() {
 /** The fairy carries the decision queue (decisions only -- reports stay on the badge). */
 function feedFairyCards() {
   try {
-    orbWindow.setAttentionCards(decisionCards.partitionCards(openDecisions).decisions, openDecisions);
+    orbWindow.setAttentionCards(decisionCards.partitionCards(openDecisions, { ended: endedIdSet(openDecisions) }).decisions, openDecisions);
   } catch { /* the fairy is not up yet; the next change feeds it */ }
 }
 
 function syncNeedsYouChip() {
   feedFairyCards();
-  if (companionMode() === "fairy") {
+  // The fairy cluster carries needs-you cards in either companion mode (2026-11-16);
+  // the separate needs-you chip is only for a desk whose cluster is off.
+  if (companionMode() === "fairy" || (() => { try { return orbWindow.carriesCards(); } catch { return false; } })()) {
     try {
       const first = needsYou[0];
       orbWindow.setAttention(needsYou.length, first && (first.title || first.why || null));
@@ -4487,14 +4488,9 @@ function showAboutDesk() {
  * Every surface reads THIS now, so "waiting" means one thing.
  */
 function inboxCounts(cards = openDecisions) {
-  // partitionCards is the flipper's own split, so the badge and "N of M" agree.
-  let waiting;
-  try {
-    waiting = decisionCards.partitionCards(cards).decisions.length;
-  } catch {
-    waiting = decisionCards.actionableCount(cards);
-  }
-  return { waiting, total: cards.length };
+  // decisionCards.waitingCount is THE number (the fairy, the bridge and the bell read it too).
+  const ended = endedIdSet(cards);
+  return { waiting: decisionCards.waitingCount(cards, undefined, ended), total: cards.length, ended: ended.size };
 }
 
 // -- the session behind a card (session-context.cjs) --------------------------
@@ -4502,22 +4498,82 @@ function inboxCounts(cards = openDecisions) {
 // dive deeper or engage with those sessions". Liveness comes from the running
 // processes' own state files (5 s cache: the deck re-renders often); the context
 // and every action resolve the session from MAIN's copy of the card.
-let liveSessionCache = { at: 0, map: new Map() };
-function liveSessionMap({ fresh = false } = {}) {
+let liveSessionCache = { at: 0, map: new Map(), judged: false };
+function liveSessionRead({ fresh = false } = {}) {
   const now = Date.now();
   if (fresh || now - liveSessionCache.at > 5000) {
-    try { liveSessionCache = { at: now, map: sessionContext.liveSessions() }; } catch { liveSessionCache = { at: now, map: new Map() }; }
+    try {
+      const { live, judged } = sessionContext.liveSessionsChecked();
+      liveSessionCache = { at: now, map: live, judged };
+    } catch { liveSessionCache = { at: now, map: new Map(), judged: false }; }
   }
-  return liveSessionCache.map;
+  return liveSessionCache;
+}
+function liveSessionMap(opts) {
+  return liveSessionRead(opts).map;
+}
+
+/**
+ * Ids of the cards whose asking session has ENDED on this machine (ended-cards.endedIds):
+ * the one set every "waiting" number, the fairy and the needs-you strip leave out, so a
+ * card nobody can answer for is never counted. Unknown sessions (WSL, containers) and
+ * key requests are never in it.
+ */
+function endedIdSet(cards = openDecisions) {
+  try {
+    const { map, judged } = liveSessionRead();
+    return endedCards.endedIds(cards, map, {
+      host: require("node:os").hostname(),
+      known: (sessionId) => sessionContext.sessionKnownHere(sessionId),
+      judged,
+    });
+  } catch {
+    return new Set(); // cannot tell: count everything
+  }
 }
 
 /** The deck's cards, each session card carrying {live, status, name} for its row. */
+// -- cards from sessions that have ENDED close themselves (ended-cards.cjs) ----
+// Owner, 2026-11-16: 40 waiting, 22 real. The rest were "Allow Claude to use ..." grants
+// and Approve cards under an "ended" badge, asked by sessions nobody can answer for.
+// A sweep runs after every card change (at most once a minute) and on the 5-minute
+// timer; the two-look rule, the grace period and the audit line are in the module.
+const endedCards = require("./ended-cards.cjs");
+const ENDED_SWEEP_MIN_MS = 60_000;
+const endedSeen = new Map();
+let endedSweepAt = 0;
+function sweepEndedSessionCards(cards = openDecisions) {
+  const now = Date.now();
+  if (now - endedSweepAt < ENDED_SWEEP_MIN_MS) return null;
+  endedSweepAt = now;
+  try {
+    const { live, judged } = sessionContext.liveSessionsChecked();
+    const result = endedCards.sweep(cards, live, {
+      cancel: (id, note) => decisionCards.cancelCard(id, note),
+      seen: endedSeen,
+      known: (sessionId) => sessionContext.sessionKnownHere(sessionId),
+      host: require("node:os").hostname(),
+      judged,
+    });
+    if (result.closed.length || result.failed.length || result.error) {
+      debugLog(`ended-sessions sweep: closed ${result.closed.length}, failed ${result.failed.length}${result.error ? `, ${result.error}` : ""}`);
+    }
+    return result;
+  } catch (error) {
+    debugLog(`ended-sessions sweep failed: ${String((error && error.message) || error)}`);
+    return null; // a sweep that cannot run leaves every card where it was
+  }
+}
+
 function decisionsWithSessions(cards = openDecisions) {
   const live = liveSessionMap();
+  const endedIds = endedIdSet(cards);
   return cards.map((card) => {
     if (!card || !card.sessionId) return card;
     const row = live.get(card.sessionId);
-    return { ...card, session: { live: Boolean(row), status: row ? row.status : "", name: row ? row.name : "" } };
+    // `ended` is only true when this machine holds a trace of the session: a session that
+    // ran in WSL or a container is "not running HERE", which says nothing about it.
+    return { ...card, session: { live: Boolean(row), status: row ? row.status : "", name: row ? row.name : "", ended: !row && endedIds.has(card.id) } };
   });
 }
 
@@ -4592,11 +4648,17 @@ function deckState() {
     decisions: decisionsWithSessions(openDecisions),
     openCount: counts.waiting,
     totalCount: counts.total,
+    // Cards whose asking session ended: listed in the Inbox under their own line, never in `openCount`.
+    endedCount: counts.ended,
     // The split the flipper renders: needs-you ids pinned first, FYI ids
     // collapsed below it (decision-cards partitionCards).
     needsYouIds: needsYou.map((c) => c.id),
     fyiIds: (() => {
-      try { return decisionCards.partitionCards(openDecisions).fyi.map((c) => c.id); } catch { return []; }
+      // Cards from ended sessions ride in the collapsed list: never in the flipper's "N of M".
+      try {
+        const part = decisionCards.partitionCards(openDecisions, { ended: endedIdSet(openDecisions) });
+        return [...part.fyi, ...part.ended].map((c) => c.id);
+      } catch { return []; }
     })(),
     deskVisible: Boolean(
       avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible(),
@@ -5014,6 +5076,77 @@ async function refreshAgentPresence() {
     try { orbWindow.setPresence([...platformPresence, ...sessions]); } catch { /* the fairy is cosmetic */ }
   }
   return snap;
+}
+
+/**
+ * A link a desk door opens (owner 2026-11-16: "no option for aitherbrowser?"):
+ * link-opener.cjs decides -- an Aitherium URL goes to AitherBrowser, anything else to
+ * the system browser; `prefer` ("aither" | "system") is an explicit pick.
+ */
+function openLinkFromDesk(url, prefer = "") {
+  return require("./link-opener.cjs").openLink(url, {
+    prefer,
+    openAither: (u) => {
+      const verdict = browserPolicy.sanitizeUrl(u);
+      if (!verdict.ok) return { ok: false, error: verdict.reason };
+      browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
+      return { ok: true };
+    },
+    openSystem: (u) => { void shell.openExternal(u); return { ok: true }; },
+  });
+}
+
+/**
+ * AitherBrowser in Windows' "open with" list. The HKCU registration was written only
+ * by "Make Aither your default browser...", so the chooser never offered it (measured
+ * 2026-11-16: no AitherBrowserURL key). Registering does NOT make it the default --
+ * only the person picks that in Settings -- so the desk registers itself quietly at
+ * start when it is not registered (or points at another build). Skipped for smoke and
+ * scratch runs (AWDESK_NO_BROWSER_REGISTER=1), which must not repoint the owner's.
+ */
+async function ensureAitherBrowserListed() {
+  if (process.platform !== "win32" || process.env.AWDESK_NO_BROWSER_REGISTER === "1") return { ok: false, skipped: true };
+  try {
+    const reg = require("./browser-default.cjs").createDefaultBrowser({
+      exe: process.execPath, appArgs: app.isPackaged ? [] : [app.getAppPath()],
+    });
+    if (await reg.registered()) return { ok: true, already: true };
+    const r = await reg.register({ openSettings: false });
+    debugLog(`[browser] AitherBrowser ${r.ok ? "listed in Windows' open-with" : `not listed: ${r.error}`}`);
+    return r;
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error) };
+  }
+}
+
+/**
+ * The fairy cluster's session fairies (fairy-cluster.cjs): one per live agent session,
+ * read every 15 s so an ended session's fairy leaves inside ~30 s. Two sources merged
+ * by session id: this machine's Claude Code tabs (pid-checked) and the awsh harness
+ * daemon's unified list (its own sessions + discovered tabs; "exited" rows drop). A
+ * daemon that does not answer keeps its last rows for 30 s, then they are reaped.
+ */
+let clusterDaemonRows = [];
+let clusterDaemonAt = 0;
+let clusterSessionsBusy = false;
+async function refreshClusterSessions() {
+  if (clusterSessionsBusy) return;
+  clusterSessionsBusy = true;
+  try {
+    const checked = sessionContext.liveSessionsChecked();
+    let daemon = null;
+    try { daemon = await require("./sessions-client.cjs").listSessions({ timeoutMs: 4000 }); } catch { daemon = null; }
+    const now = Date.now();
+    if (daemon && daemon.ok) {
+      clusterDaemonRows = daemon.sessions;
+      clusterDaemonAt = now;
+    } else if (now - clusterDaemonAt > 30_000) {
+      clusterDaemonRows = [];
+    }
+    orbWindow.setClusterSessions([checked.live, clusterDaemonRows], { ok: checked.judged || Boolean(daemon && daemon.ok) });
+  } catch { /* the cluster is cosmetic; the next tick tries again */ } finally {
+    clusterSessionsBusy = false;
+  }
 }
 
 /**
@@ -6738,7 +6871,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       const res = await require("./link-client.cjs").linkStart();
       const url = res.ok && res.data && res.data.approve_url;
       // Only an https link from Identity is opened; anything else is shown, not followed.
-      if (typeof url === "string" && /^https:\/\//.test(url)) void shell.openExternal(url);
+      if (typeof url === "string" && /^https:\/\//.test(url)) openLinkFromDesk(url);
       return res;
     });
     ipcMain.handle("desk:link-poll", async (_event, deviceCode) => {
@@ -7214,7 +7347,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           // The old `portal.` host is RETIRED: it 301s to the apex (measured
           // 2026-09-19). Open the apex directly so the app does not depend on a
           // redirect that exists only for old links.
-          void shell.openExternal("https://aitherium.com");
+          openLinkFromDesk("https://aitherium.com");
           return true;
         case "switch-character": {
           // One-stop-shop switching: same path set_character over MCP uses,
@@ -7230,7 +7363,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           // Open one marketplace listing (aither:// or https://) externally.
           if (typeof arg !== "string" || arg.length === 0) return false;
           if (!/^(aither|https?):\/\//.test(arg)) return false;
-          void shell.openExternal(arg);
+          if (/^https?:/.test(arg)) openLinkFromDesk(arg);
+          else void shell.openExternal(arg);
           return true;
         }
         case "add-character": {
@@ -7651,9 +7785,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // sees the queue at all. Read-only; answering stays in the queue window.
       // The daemon's list (it expires due cards; the file read does not), the
       // local read only when the daemon is down -- labelled stale.
-      decisionsProvider: () => decisionCards.bridgeQueue(),
+      decisionsProvider: () => decisionCards.bridgeQueue({ endedOf: endedIdSet }),
       needsYouProvider: () => decisionCards.bridgeNeedsYou({
         snoozed: needsYouLib.snoozedIds(needsYouSnoozeDir()),
+        endedOf: endedIdSet,
       }),
       // Read-only: the hosted web surfaces see the same wake snapshot the deck
       // does. Mutations are NOT offered here — they go to the daemon window.
@@ -7835,6 +7970,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     void refreshAgentPresence();
     // One tick for both: the relay feed and the platform presence (no extra poller).
     relayFeedTimer = setInterval(() => { void refreshRelayFeed(); void refreshAgentPresence(); }, 60_000);
+    void refreshClusterSessions();
+    if (!smokeIsRequested) setTimeout(() => { void ensureAitherBrowserListed(); }, 20_000).unref?.();
+    const clusterSessionsTimer = setInterval(() => { void refreshClusterSessions(); }, 15_000);
+    clusterSessionsTimer.unref?.();
     relayFeedTimer.unref?.();
 
     // awrise wakes: poll the daemon every 30 s and push only when something
@@ -7907,7 +8046,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         // the question and shows one whisper with the card's own answers. Nothing here
         // may speak over it or open the Inbox window; the old window stays behind the
         // whisper's "Show details" and the list.
-        if (companionMode() === "fairy" && orbWindow.ownsAttention()) {
+        if (orbWindow.carriesCards()) {
           debugLog(`[cards] ${list.length} ${isBacklog ? "backlog" : "new"} card(s) handed to the fairy`);
           return;
         }
@@ -7973,7 +8112,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
               raiseLivingDesktop();               // an already-open overlay comes forward too
               lastInboxOpenAt = nowMs;
             } else if (!overlaySettings().doNotDisturb && !nowModeActive()
-              && !(companionMode() === "fairy" && orbWindow.ownsAttention())) {
+              && !orbWindow.carriesCards()) {
               // (a fairy on screen carries it instead: the balloon was one more popup)
               notifyQuietly("Aither — a decision needs you", String((newest && newest.title) || title).slice(0, 200));
             }
@@ -7988,6 +8127,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     decisionWatchStop = decisionCards.watch({
       onChange: (cards) => {
         openDecisions = cards;
+        sweepEndedSessionCards(cards);
         needsYou = computeNeedsYou(cards);
         syncNeedsYouChip();
         refreshTrayMenu();
@@ -8022,12 +8162,17 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // nudge loop runs, awask leaves its frameless Tk card window down -- the card is
     // the fairy's to carry. Hidden fairy / avatar companion / dead desk = no claim.
     deskHeartbeatStop = decisionCards.startHeartbeat({
-      claim: () => (companionMode() === "fairy" && orbWindow.ownsAttention() ? { attention: "fairy" } : null),
+      // 2026-11-16 (owner: "still getting these bullshit decision cards instead of
+      // fairies"): the claim no longer needs the fairy ON SCREEN or the fairy companion
+      // mode -- the cluster surfaces a hidden orb for a card itself (orb-window
+      // surfaceForCards), so while the desk carries cards awask's Tk window stays down.
+      claim: () => (orbWindow.carriesCards() ? { attention: "fairy" } : null),
     });
     feedFairyCards();
     // Unanswered needs-you cards are re-spoken hourly (micMuted wins; a snooze
     // drops the card from the list). Also notices snoozes running out.
     const needsYouTimer = setInterval(() => {
+      sweepEndedSessionCards(openDecisions);
       const before = needsYouLib.needsYouSignature(needsYou);
       needsYou = computeNeedsYou();
       if (needsYouLib.needsYouSignature(needsYou) !== before) {
@@ -8041,6 +8186,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       }
     }, 5 * 60_000);
     needsYouTimer.unref?.();
+    // The second look of the ended-session sweep: a change event may never come, so the
+    // close would wait for the next card. Two and a half minutes clears the two-look rule.
+    const endedSweepTimer = setInterval(() => sweepEndedSessionCards(openDecisions), 150_000);
+    endedSweepTimer.unref?.();
 
     // 🚩 register() RETURNS whether it got the accelerator, and the answer was
     // thrown away. Another app holding Ctrl+Shift+= takes the only keyboard path

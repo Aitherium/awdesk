@@ -61,6 +61,8 @@
     "test:explore": "electron electron/explore-smoke.cjs",
     "test:connect-panel": "electron electron/connect-panel-smoke.cjs",
     "test:overlay-host": "electron electron/overlay-host-smoke.cjs",
+    "test:fairy-dock": "electron electron/fairy-dock-smoke.cjs",
+    "test:fairy-cluster": "electron electron/fairy-cluster-proof.cjs",
     "test:needs-you": "electron electron/needs-you-smoke.cjs",
     "test:space": "electron electron/space-smoke.cjs",
     "test:fleet": "electron electron/fleet-smoke.cjs",

@@ -25,7 +25,7 @@ export interface DeckDecision {
   sessionId?: string;
   /** The asking session's state, sent only when the card has a sessionId.
    *  `status` "idle" = waiting at its prompt, "busy" = working. Older mains omit it. */
-  session?: { live: boolean; status: string; name: string };
+  session?: { live: boolean; status: string; name: string; ended?: boolean };
   /** The raiser's longer explanation (<=2000 chars) and short facts (<=6).
    *  Older mains omit both. */
   detail?: string;
@@ -145,6 +145,8 @@ export interface DeckState {
   openCount: number;
   /** Every open card, FYI ones included. Optional: an older main does not send it. */
   totalCount?: number;
+  /** Cards whose asking session ended (never in `openCount`). Older mains omit it. */
+  endedCount?: number;
   /** Ids only the owner can unblock (credential / blocked), pinned first. */
   needsYouIds?: string[];
   /** Ids of FYI cards: collapsed below the flipper, never in its "N of M". */

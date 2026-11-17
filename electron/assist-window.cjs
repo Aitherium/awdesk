@@ -21,6 +21,7 @@
 
 const path = require("node:path");
 const core = require("./assist-core.cjs");
+const linkOpener = require("./link-opener.cjs");
 const caretLib = require("./assist-caret.cjs");
 
 const SIZE = Object.freeze({ width: 460, height: 440 });
@@ -31,6 +32,7 @@ const VERB_ORDER = Object.freeze(["explain", "rewrite", "translate", "summarize"
 
 function createAssistWindow({
   electron, engine, caret, agents = [], utils = null, files = null, now = Date.now, onOpen = null,
+  openLink = null,
 } = {}) {
   if (!electron) throw new Error("assist-window needs electron");
   const { BrowserWindow, ipcMain, screen, clipboard } = electron;
@@ -66,6 +68,21 @@ function createAssistWindow({
     }).map((v) => ({ id: v.id, label: v.label, kind: v.kind, route: v.route || null }));
   }
 
+  /** The link under the selection (one http(s) URL, nothing else), or "". */
+  function selectedLink(ctx) {
+    const t = String((ctx && ctx.selection) || "").trim();
+    return /^\S+$/.test(t) && linkOpener.isWebUrl(t) ? t : "";
+  }
+
+  /** "Open in AitherBrowser" / "Open in your browser" for a selected link (owner
+   *  2026-11-16: "no option for aitherbrowser?"). AitherBrowser first; ours by default. */
+  function linkRows(ctx) {
+    const url = selectedLink(ctx);
+    if (!url || typeof openLink !== "function") return [];
+    return linkOpener.openWithItems(url, { copy: false })
+      .map((i) => ({ id: `link:${i.id}`, label: i.label, hint: i.hint, available: true }));
+  }
+
   function publicState() {
     if (!session) return { ok: false, reason: "closed" };
     const s = session;
@@ -78,7 +95,7 @@ function createAssistWindow({
       canInsert: s.canInsert,
       chips: s.chips, verbs: s.verbs, send: s.send,
       agents, agent: engine.settings().agent,
-      utils: utils ? utils.list() : [],
+      utils: [...linkRows(s.ctx), ...(utils ? utils.list() : [])],
       initialVerb: s.initialVerb || null,
       autoRun: s.autoRun || null,
       file: s.file ? {
@@ -200,6 +217,14 @@ function createAssistWindow({
 
     ipcMain.handle("assist:util", async (event, raw = {}) => {
       const bad = guard(event); if (bad) return bad;
+      const uid = String(raw.id || "");
+      if (uid === "link:open-aither" || uid === "link:open-system") {
+        const url = selectedLink(session.ctx);
+        if (!url || typeof openLink !== "function") return { ok: false, error: "No link is selected." };
+        const r = openLink(url, uid === "link:open-aither" ? "aither" : "system");
+        if (r && r.ok) hide();
+        return r && typeof r === "object" ? r : { ok: false, error: "could not open it" };
+      }
       if (!utils) return { ok: false, error: "Utilities are not available." };
       return utils.run(String(raw.id || ""), { selection: session.ctx.selection, title: session.ctx.title, app: session.ctx.app, pid: session.pid, hwnd: session.hwnd, arg: typeof raw.arg === "string" ? raw.arg.slice(0, 40) : undefined, hide });
     });

@@ -140,6 +140,12 @@
   .mate.st-speaking { animation: mateflash 0.5s ease-in-out infinite alternate;
     box-shadow: 0 0 9px 4px var(--m-glow), 0 0 2px 1px #fff; }
   .mate.st-waiting { box-shadow: 0 0 7px 3px var(--m-glow); }
+  /* The counted bead: the cluster's tail past the cap (fairy-cluster.cjs collapse). */
+  .mate.bead { border-radius: 50%; outline: 1.5px solid rgba(255,255,255,0.85); }
+  .mate.bead::before, .mate.bead::after { display: none; }
+  #cluster-count { position: absolute; left: 50%; top: 2px; transform: translateX(-50%); min-width: 14px; height: 14px;
+    padding: 0 4px; border-radius: 7px; background: rgba(13,17,23,0.82); color: #ffe8a3; font: 600 10px/14px system-ui, sans-serif;
+    text-align: center; pointer-events: none; box-shadow: 0 0 6px rgba(255,200,87,0.55); }
   @keyframes matepulse { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
   @keyframes mateflash { from { filter: brightness(1); } to { filter: brightness(1.9); } }
   .mate b { position: absolute; left: 60%; top: -70%; min-width: 9px; height: 9px; padding: 0 2px; border-radius: 5px;
@@ -893,8 +899,9 @@
   // of the ring to pin it, the wheel over a fairy changes the radius, and the ring keeps off
   // the focused window's content area.
   if (view === "swarm") {
-    document.body.innerHTML = '<div id="mates"></div>';
+    document.body.innerHTML = '<div id="mates"></div><div id="cluster-count" aria-live="polite"></div>';
     const matesEl = document.getElementById("mates");
+    const countEl = document.getElementById("cluster-count");
     let mates = [];
     let hotMate = null;
     let inside = false;
@@ -970,26 +977,30 @@
       }
       const items = Array.isArray(list) ? list : [];
       const slots = swarmSlots(sv.mode, items.length, sv.radius);
+      // The visible count (fairy-cluster.cjs): every fairy, the bead's hidden ones too.
+      const total = items.reduce((a, c) => a + (c && c.kind === "more" ? Math.max(0, Number(c.count) || 0) : 1), 0);
+      countEl.textContent = total > 0 ? String(total) : "";
+      countEl.style.display = total > 0 ? "" : "none";
       mates = items.map((c, i) => {
         const el = document.createElement("i");
         const st = ["waiting", "speaking", "working", "idle"].includes(c.state) ? c.state
           : (Number(c.count) > 0 ? "waiting" : "idle");
-        el.className = `mate st-${st}${c.selected ? " sel" : ""}${c.muted ? " muted" : ""}${dragging && dragging.m.agent === String(c.agent || "") ? " drag" : ""}`;
+        el.className = `mate st-${st}${c.kind === "more" ? " bead" : ""}${c.kind ? ` k-${c.kind}` : ""}${c.selected ? " sel" : ""}${c.muted ? " muted" : ""}${dragging && dragging.m.agent === String(c.agent || "") ? " drag" : ""}`;
         el.dataset.agent = String(c.agent || "");
         el.style.setProperty("--m-size", `${slots[i].size}px`);
         el.style.setProperty("--m-color", rgba(c.color, 0.95));
         el.style.setProperty("--m-core", c.core || "#ffffff");
         el.style.setProperty("--m-glow", rgba(c.glow || c.color, 0.55));
         el.style.setProperty("--m-wing", rgba(c.color, 0.4));
-        if (Number(c.count) > 1) {
+        if (c.kind === "more" || Number(c.count) > 1) {
           const badge = document.createElement("b");
-          badge.textContent = String(Number(c.count));
+          badge.textContent = c.kind === "more" ? `+${Number(c.count) || 0}` : String(Number(c.count));
           el.append(badge);
         }
         matesEl.append(el);
         const extra = Number(c.count) > 1 ? ` (${Number(c.count)} cards)` : "";
         const stateWord = st === "waiting" ? "" : ` [${st}]`;
-        const doWhat = c.cardId ? "click to open its card" : "click to select";
+        const doWhat = c.kind === "more" ? "click for the whole list" : c.cardId ? "click to open its card" : "click to select";
         return {
           el, slot: slots[i], x: 0, y: 0, id: String(c.cardId || ""), agent: String(c.agent || ""),
           tip: mateTip(c), aria: `${c.label || c.agent}${stateWord}: ${c.title || "a card"}${extra} -- ${doWhat}`,
@@ -1110,6 +1121,8 @@
       dwell.off();
       if (Date.now() - droppedAt < 400) return; // the release of a drag is not a click
       if (!hotMate) return;
+      // The counted bead (fairy-cluster.cjs): the whole waiting list, never a selection.
+      if (hotMate.agent === "more") { if (api.chatAgent) api.chatAgent("more"); return; }
       api.select(hotMate.agent);
       if (hotMate.id) api.openCard(hotMate.id, hotMate.agent);
     });
@@ -1494,6 +1507,7 @@
       links.append(
         button("Later", "link", () => api.nudgeAct("later"), "I will bring it back in an hour"),
         button("Show details", "link", () => api.nudgeAct("open"), "Open the whole card"),
+        button("Open in AitherBrowser", "link", () => api.nudgeAct("browser"), "The card's page in the desk's own browser"),
       );
       actsEl.append(links);
       const extra = Boolean(v.summary || (v.facts || []).length || altEl.childElementCount);

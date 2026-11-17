@@ -1156,7 +1156,7 @@ const COMMANDS = Object.freeze([
   // (UI Automation, no faked keys), else the clipboard, else the last snip's
   // caption -- the bubble field is the typed path.
   Object.freeze({
-    id: "sprite.teach", label: "Teach my sprite the selection / clipboard", menuLabel: "Teach it the selection",
+    id: "sprite.teach", label: "Teach my sprite the selection / clipboard", menuLabel: "Teach it what I selected",
     group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-teach",
   }),
   Object.freeze({
@@ -1164,7 +1164,7 @@ const COMMANDS = Object.freeze([
     group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-status",
   }),
   Object.freeze({
-    id: "sprite.open", label: "Open my sprite (aitherium.com)", menuLabel: "Open Sprite…",
+    id: "sprite.open", label: "Open my sprite (aitherium.com)", menuLabel: "Open my sprite page…",
     group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-open",
   }),
   // ── Windows Sandbox (sandbox-detonate.cjs): a file you do not trust runs in a
@@ -1737,8 +1737,20 @@ function groupOrder(surface, commands) {
   return [...wanted, ...present.filter((group) => !wanted.includes(group))];
 }
 
+/**
+ * A label as an Electron NATIVE menu row. On Windows and Linux a single "&" marks the
+ * next letter as the keyboard mnemonic and is NOT drawn, so "Reset position & size"
+ * read "Reset position  size" and "Stage & characters..." read "Stage  characters..."
+ * (owner screenshots 2026-11-16). A literal ampersand is "&&". Idempotent: a label
+ * that already says "&&" keeps it. Only menu templates use this; the palette, the
+ * rail and the jump list draw the plain text.
+ */
+function menuText(label) {
+  return String(label == null ? "" : label).replace(/&&|&/g, "&&");
+}
+
 function rowFor(command, ctx, run, nested) {
-  const row = { label: labelOf(command, ctx, { nested }), click: () => run(command.id) };
+  const row = { label: menuText(labelOf(command, ctx, { nested })), click: () => run(command.id) };
   if (command.type) {
     row.type = command.type;
     row.checked = typeof command.checked === "function" ? Boolean(command.checked(ctx)) : false;
@@ -1771,11 +1783,11 @@ function buildMenu(surface, run, { ctx = {}, submenus = {} } = {}) {
     if (nest) {
       // A menu nests a group; the palette lists the same commands one per row.
       // Both read this list, so neither can carry an entry the other lacks.
-      template.push({ label: nest, submenu: members.map((child) => rowFor(child, ctx, run, true)) });
+      template.push({ label: menuText(nest), submenu: members.map((child) => rowFor(child, ctx, run, true)) });
       continue;
     }
     for (const command of members) {
-      if (command.dynamic) template.push({ label: labelOf(command, ctx), submenu: submenus[command.id] });
+      if (command.dynamic) template.push({ label: menuText(labelOf(command, ctx)), submenu: submenus[command.id] });
       else template.push(rowFor(command, ctx, run, false));
     }
   }
@@ -1897,6 +1909,6 @@ function osAppTabUrl(osApp) {
 
 module.exports = {
   SURFACES, GROUPS, LAYOUT, COMMANDS, commandsFor, groupFor, paletteRows, rowsFor, byId, labelOf,
-  buildMenu, conformance, shortcuts, electronAccel, accelFor, appliesTo, osAppTabUrl, AITHER_APP_IDS, isAitherApp,
+  buildMenu, menuText, conformance, shortcuts, electronAccel, accelFor, appliesTo, osAppTabUrl, AITHER_APP_IDS, isAitherApp,
   bindingConflicts, shortcutSheet, shortcutSheetText,
 };

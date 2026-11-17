@@ -496,6 +496,11 @@ function sanitizeState(raw) {
     sounds: src.sounds !== false,
     // The swarm of agent fairies around the orb: off unless asked for (owner 2026-11-13).
     swarm: src.swarm === true,
+    // The fairy CLUSTER (fairy-cluster.cjs, owner 2026-11-16: "the cluster of fairies
+    // should grow with agents and decisions queued"): one fairy per decision and per
+    // live session around the orb. On unless turned off; `swarm` above is the older
+    // opt-in, kept so an old orb.json still reads.
+    cluster: src.cluster !== false,
     // How the swarm is drawn and what is pinned out of it (fairy-control.cjs): mode, radius,
     // kind filter, hidden / muted agents, pinned positions.
     swarmView: require("./fairy-control.cjs").normalizeView(src.swarmView),

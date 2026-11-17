@@ -807,6 +807,7 @@ test("bridgeQueue: the daemon's list when it answers, the local read LABELLED st
     localOpen: () => local,
   });
   assert.deepEqual([fromDaemon.source, fromDaemon.stale, fromDaemon.count], ["daemon", false, 1]);
+  assert.equal(fromDaemon.waiting, cards.waitingCount(fromDaemon.decisions), "the bridge carries THE waiting number for the bell");
   const down = await cards.bridgeQueue({
     fetchOpen: async () => { throw new Error("daemon HTTP 0"); },
     localOpen: () => local,
@@ -918,4 +919,17 @@ test("answerCardText resolves the typed option and answers through awask", () =>
   assert.equal(cards.answerCardText("d-txt", "not now", { dir, spawnFn }), true);
   assert.deepEqual(seen[0], ["answer", "d-txt", "later", "--via", "desk"]);
   assert.equal(cards.answerCardText("d-txt", "nonsense", { dir, spawnFn }), false);
+});
+
+test("waitingCount is the ONE number: decisions only, the same as the fairy's queue and the bridge's `waiting`", async () => {
+  const open = [
+    cards.cardFromRaw({ id: "d-a", status: "open", kind: "blocked" }),
+    cards.cardFromRaw({ id: "d-b", status: "open", options: [{ key: "y", label: "Yes" }] }),
+    cards.cardFromRaw({ id: "d-c", status: "open", kind: "info" }),
+  ];
+  assert.equal(cards.waitingCount(open), cards.partitionCards(open).decisions.length);
+  assert.equal(cards.waitingCount(open), 2, "an info report is not waiting on anyone");
+  const queue = await cards.bridgeQueue({ fetchOpen: async () => open });
+  assert.equal(queue.count, 3);
+  assert.equal(queue.waiting, 2, "count (every open card) and waiting (what needs the owner) are different words");
 });

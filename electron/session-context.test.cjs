@@ -120,3 +120,22 @@ test("repoFromRemote reads owner/repo from https and ssh remotes", () => {
   assert.equal(sc.repoFromRemote("git@github.com:Aitherium/awdesk.git\n"), "Aitherium/awdesk");
   assert.equal(sc.repoFromRemote("https://gitlab.com/x/y"), "");
 });
+
+test("sessionKnownHere: a state file (even a dead pid's) or a transcript counts; a stranger does not", () => {
+  const home = tmpHome();
+  try {
+    const A = "11111111-1111-4111-8111-111111111111";
+    const B = "22222222-2222-4222-8222-222222222222";
+    const C = "33333333-3333-4333-8333-333333333333";
+    fs.mkdirSync(path.join(home, "sessions"), { recursive: true });
+    fs.writeFileSync(path.join(home, "sessions", "999999.json"), JSON.stringify({ sessionId: A, pid: 999999 }));
+    fs.mkdirSync(path.join(home, "projects", "proj"), { recursive: true });
+    fs.writeFileSync(path.join(home, "projects", "proj", `${B}.jsonl`), "{}\n");
+    assert.equal(sc.sessionKnownHere(A, { home }), true, "state file left by a dead pid");
+    assert.equal(sc.sessionKnownHere(B, { home }), true, "transcript only");
+    assert.equal(sc.sessionKnownHere(C, { home }), false, "no trace here (WSL, container, other harness)");
+    assert.equal(sc.sessionKnownHere("awsh:codex:7", { home }), false, "not a Claude session id");
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

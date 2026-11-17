@@ -518,12 +518,12 @@ test("the deck's character models reach an aither:// page through /_models/, fro
 });
 
 test("the pinned AitherOS Online tab opens app.aitherium.com (the one page host)", () => {
-  assert.equal(internal.onlineUrl({}), "https://app.aitherium.com/");
+  assert.equal(internal.onlineUrl({}, null), "https://app.aitherium.com/");
   assert.equal(internal.onlineUrl({ DESK_ONLINE_URL: "https://app.aitherium.com/?x=1" }),
     "https://app.aitherium.com/?x=1");
-  assert.equal(internal.onlineUrl({ DESK_ONLINE_URL: "https://evil.test/" }), "https://app.aitherium.com/");
+  assert.equal(internal.onlineUrl({ DESK_ONLINE_URL: "https://evil.test/" }, null), "https://app.aitherium.com/");
   const online = internal.pinnedTabs({}).find((p) => p.key === "online");
-  const route = internal.resolveRequest(online.url, { hostedUrl: () => internal.onlineUrl({}) });
+  const route = internal.resolveRequest(online.url, { hostedUrl: () => internal.onlineUrl({}, null) });
   assert.equal(route.type, "hosted");
   assert.equal(route.url, "https://app.aitherium.com/");
   const main = read("main.cjs");
