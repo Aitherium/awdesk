@@ -6,7 +6,7 @@ import { useRef,
   type ReactNode,
 } from 'react';
 import { useFrame } from '@react-three/fiber';
-import type * as THREE from 'three';
+import * as THREE from 'three';
 import type { VRM } from '@pixiv/three-vrm';
 import { useVrmLoader } from '../hooks/useVrmLoader';
 import { getLevel } from '../hooks/voiceLevels';
@@ -15,6 +15,7 @@ import { useAmplitudeLipSync } from '../hooks/useAmplitudeLipSync';
 import { getVisemes } from '../hooks/voiceVisemes';
 import { useBlink } from '../hooks/useBlink';
 import { easeExpressions, NEUTRAL_WEIGHTS } from '../hooks/aeonMood';
+import { attachBodyColliders, createResetGate, createStepper, stageSeq } from '../physics/body-physics';
 import type { AnimationType } from '../animation-catalog';
 
 export interface AvatarProps {
@@ -54,6 +55,17 @@ function AvatarModel({
   const updateLipSync = useAmplitudeLipSync(vrm);
   const updateBlink = useBlink(vrm);
   const moodWeights = useRef(NEUTRAL_WEIGHTS);
+  // Hair / cloth physics (physics/body-physics.ts): body colliders so chains stay out of the head, neck,
+  // face and legs, fixed substeps, and a reset after a jump / resize / stage join.
+  const stepper = useRef(createStepper());
+  const gate = useRef(createResetGate());
+  const scratch = useRef({ p: new THREE.Vector3(), s: new THREE.Vector3() });
+  useEffect(() => {
+    if (!vrm) return;
+    try { attachBodyColliders(vrm); } catch { /* a model with odd spring data keeps its own physics */ }
+    gate.current.forget();
+    stepper.current.reset();
+  }, [vrm]);
 
   // The completion callback rides a ref: for a stage body the parent hands a
   // fresh `() => {}` on every render, and as an effect dependency that re-fired
@@ -68,7 +80,7 @@ function AvatarModel({
     if (vrm) onReady?.(vrm.scene, vrm);
   }, [onReady, vrm]);
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     if (!vrm) return;
     // CLAMP the physics step (owner report, 2026-09-11: "hair and tools hang
     // horizontally"). This box shares one GPU with the whole fleet, so the
@@ -88,7 +100,26 @@ function AvatarModel({
     updateBlink(step);
     moodWeights.current = easeExpressions(vrm, moodWeights.current, step);
     updateLipSync(step, level, speaking || level > 0.02, getVisemes(slotId ?? 'slot0'));
-    vrm.update(step);
+    // Physics. A jump (place-avatar / arrange / a drop), a scale jump, a resize or a stage join puts the
+    // chains back at rest instead of integrating through it; otherwise a long frame runs as several
+    // fixed substeps (spring-only), the last one carrying the rest of vrm.update.
+    const { p, s } = scratch.current;
+    vrm.scene.getWorldPosition(p);
+    vrm.scene.getWorldScale(s);
+    const manager = vrm.springBoneManager;
+    if (manager && gate.current.shouldReset({
+      x: p.x, y: p.y, z: p.z, scale: s.x, width: state.size.width, height: state.size.height, stageSeq: stageSeq(),
+    })) {
+      manager.reset();
+      stepper.current.reset();
+    }
+    const steps = stepper.current.advance(delta);
+    if (manager && steps.length > 1) {
+      for (let i = 0; i < steps.length - 1; i += 1) manager.update(steps[i]);
+      vrm.update(steps[steps.length - 1]);
+    } else {
+      vrm.update(step);
+    }
   });
 
   return vrm ? <primitive object={vrm.scene} /> : null;
