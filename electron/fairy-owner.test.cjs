@@ -37,6 +37,6 @@ test("alive(): this process runs, nonsense pids do not", () => {
 
 test("the fairy asks for the claim before it shows, and lets go on quit", () => {
   const src = fs.readFileSync(path.join(__dirname, "orb-window.cjs"), "utf8");
-  assert.match(src, /function showOrb\(\) \{\n[\s\S]{0,400}fairyOwner\.claim\(\)/);
+  assert.match(src, /function showOrb\(\{ auto = false \} = \{\}\) \{\n[\s\S]{0,400}fairyOwner\.claim\(\)/);
   assert.match(src, /function stopOrb\(\) \{\n {2}quitting = true;\n {2}fairyOwner\.release\(\);/);
 });

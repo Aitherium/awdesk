@@ -122,6 +122,10 @@ function fairyItems(card, { label = "", agent = "" } = {}) {
     card.sessionId
       ? { id: "session", label: "Go to session", hint: "Bring its terminal tab to the front" }
       : { id: "session", label: "Go to session", disabled: true, hint: "No session raised this card" },
+    // "no option for aitherbrowser?" (owner 2026-11-16): the card's page opens in
+    // AitherBrowser by default (link-opener.cjs), the other browser is one row down.
+    { id: "link:open-aither", label: "Open in AitherBrowser", hint: "The card's page on aitherium.com, in the desk's own browser" },
+    { id: "link:open-system", label: "Open in your other browser", hint: "The card's page in the system default browser" },
     { id: "copy", label: "Copy link", hint: "The card's page on aitherium.com" },
   ];
   return { header: `${who} · ${clip(card.title || "a card", 40)}`, items };

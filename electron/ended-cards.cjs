@@ -192,7 +192,9 @@ function sweep(cards, live, {
   try {
     appendFn(file, verdict.closed.map((c) => {
       const expired = verdict.why[c.id] === "expired";
-      return auditRow(c, nowMs, { step: "closing", ...(expired ? { reason: "expired: no answer in 24 h, session not found on this machine" } : {}) });
+      // The reason is chosen HERE, per verdict, never left to auditRow's default.
+      const reason = expired ? "expired: no answer in 24 h, session not found on this machine" : "session ended";
+      return auditRow(c, nowMs, { step: "closing", reason });
     }));
   } catch (error) {
     result.error = `audit not written, nothing closed: ${String((error && error.message) || error).slice(0, 160)}`;

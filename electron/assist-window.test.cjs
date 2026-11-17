@@ -33,7 +33,7 @@ function fakeElectron() {
   return { electron, handlers, sent, wins, created: () => created };
 }
 
-function rig(snap) {
+function rig(snap, extra = {}) {
   const e = fakeElectron();
   const notes = [];
   const engine = {
@@ -50,7 +50,7 @@ function rig(snap) {
     undo: async (a) => { calls.push(["undo", a]); return { ok: true }; },
     setClipboard() {},
   };
-  const w = createAssistWindow({ electron: e.electron, engine, caret, agents: ["aither"] });
+  const w = createAssistWindow({ electron: e.electron, engine, caret, agents: ["aither"], ...extra });
   return { w, e, calls, notes, invoke: (ch, ...a) => e.handlers.get(ch)({ sender: e.wins[0].webContents }, ...a) };
 }
 
@@ -244,4 +244,22 @@ test("a terminal host is never a paste target (it would execute newlines); Copy 
   const ok = rig({ ...GOOD, app: "notepad" });
   await ok.w.open();
   assert.equal(ok.w.state().canInsert, true);
+});
+
+test("a selected link offers AitherBrowser first (ours by default) and opens through the injected opener", async () => {
+  const opened = [];
+  const r = rig({ ...GOOD, selection: " https://aitherium.com/decide?id=d-1 " }, {
+    openLink: (url, prefer) => { opened.push([url, prefer]); return { ok: true, via: prefer }; },
+  });
+  await r.w.open();
+  const rows = r.w.state().utils.filter((u) => u.id.startsWith("link:"));
+  assert.deepEqual(rows.map((u) => u.id), ["link:open-aither", "link:open-system"]);
+  assert.match(rows[0].label, /AitherBrowser \(default\)/);
+  const res = await r.invoke("assist:util", { id: "link:open-aither" });
+  assert.equal(res.ok, true);
+  assert.deepEqual(opened, [["https://aitherium.com/decide?id=d-1", "aither"]]);
+  // Plain text: no link rows.
+  const plain = rig(GOOD, { openLink: () => ({ ok: true }) });
+  await plain.w.open();
+  assert.equal(plain.w.state().utils.some((u) => u.id.startsWith("link:")), false);
 });

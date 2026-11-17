@@ -37,7 +37,7 @@ test("a fairy's menu: every action the owner asked for, in order, the recommende
   assert.equal(m.header, "Lyra · Approve the deploy");
   const ids = m.items.filter((i) => !i.sep).map((i) => i.id);
   assert.deepEqual(ids, ["open", "answer:yes", "snooze:1h", "snooze:4h", "snooze:tomorrow",
-    "mute", "dismiss", "session", "copy"]);
+    "mute", "dismiss", "session", "link:open-aither", "link:open-system", "copy"]);
   assert.equal(m.items.find((i) => i.id === "answer:yes").label, "Answer: Ship it");
   assert.equal(m.items.some((i) => i.disabled), false);
   const bare = menu.fairyItems(card(), { label: "Atlas" });
@@ -76,7 +76,7 @@ test("a companion fairy's menu ends with the companion rows; the card rows stay 
 test("the menu fits its rows and stays on the work area, flipping at the edges", () => {
   const items = menu.fairyItems(card({ sessionId: "s" }), { label: "Lyra" }).items;
   const h = menu.menuHeight(items);
-  assert.equal(h, 12 * 2 + 30 + 9 * 34 + 2 * 9);
+  assert.equal(h, 12 * 2 + 30 + 11 * 34 + 2 * 9);
   const area = { x: 0, y: 0, width: 1920, height: 1080 };
   assert.deepEqual(menu.menuPlacement({ x: 100, y: 100 }, area, { width: 268, height: h }), { x: 108, y: 104 });
   const corner = menu.menuPlacement({ x: 1900, y: 1070 }, area, { width: 268, height: h });

@@ -54,6 +54,8 @@ const freeSpace = require("./free-space.cjs");
 const companionMenu = require("./companion-menu.cjs");
 const fairyOwner = require("./fairy-owner.cjs");
 const fairyCounts = require("./fairy-counts.cjs");
+const fairyCluster = require("./fairy-cluster.cjs");
+const linkOpener = require("./link-opener.cjs");
 const fairyHoverGuard = require("./fairy-hover-guard.cjs");
 const fairyPanel = require("./fairy-panel.cjs");
 const agentsPanel = require("./agents-panel.cjs");
@@ -93,9 +95,21 @@ let orbWindow = null;
 let bubbleWindow = null;
 let veilWindow = null;
 let nudgeWindow = null;
-/** The companion swarm (agent-fairy.cjs) and what it draws: one per agent, uncapped. */
+/** The fairy cluster (fairy-cluster.cjs): one per decision and live session, capped
+ *  into a counted bead. swarmCompanions is what it draws right now. */
 let swarmWindow = null;
 let swarmCompanions = [];
+/** Live session rows (Claude Code tabs Map + awsh daemon rows) and which sources read. */
+let clusterSessions = [];
+let clusterOk = { cards: true, sessions: true, presence: true };
+const clusterReaper = fairyCluster.createReaper();
+let clusterTotal = 0;
+let clusterLabel = "";
+/** The orb was shown BY the cluster (decisions waiting while hidden), not by the owner. */
+let autoSurfaced = false;
+/** Card ids waiting when the owner hid the fairy himself (null = he has not). */
+let ownerHidIds = null;
+let clusterTimer = null;
 let state = orbCore.sanitizeState(null);
 let queue = orbCore.createQueue();
 let tickTimer = null;
@@ -205,7 +219,8 @@ function saveState() {
   try {
     const file = stateFile();
     const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(state));
+    // A cluster-surfaced orb (decisions waiting) is not the owner's choice to show it.
+    fs.writeFileSync(tmp, JSON.stringify(autoSurfaced ? { ...state, visible: false } : state));
     fs.renameSync(tmp, file);
   } catch { /* per-viewer convenience: losing it costs a remembered spot only */ }
 }
@@ -698,9 +713,10 @@ function raiseOrbOverSwarm() {
 /** Show, size, follow or hide the swarm for the current companions. */
 function placeSwarm(companions = swarmCompanions, { raise = false } = {}) {
   const list = Array.isArray(companions) ? companions : [];
-  // No swarm (owner 2026-11-13: "keep the badge ... link to the inbox, don't show a
-  // swarm"): one fairy and its badge. orb.json `swarm: true` brings the swarm back.
-  if (!list.length || !orbVisible() || state.swarm !== true) {
+  // The cluster is ON (owner 2026-11-16, overriding 2026-11-13's "don't show a swarm":
+  // "the cluster of fairies should grow with agents and decisions queued"); orb.json
+  // `cluster: false` turns it off. Nothing live = no swarm window at all.
+  if (!list.length || !orbVisible() || state.cluster === false) {
     if (alive(swarmWindow) && swarmWindow.isVisible()) swarmWindow.hide();
     return;
   }
@@ -886,7 +902,8 @@ function hideVeil() {
 
 // ── visibility ──────────────────────────────────────────────────────────────
 
-function showOrb() {
+function showOrb({ auto = false } = {}) {
+  if (!auto) { autoSurfaced = false; ownerHidIds = null; }
   // One cluster on this machine, ever (owner 2026-11-13): a second desk process (another
   // profile, a test build) never shows its own fairies while another desk owns them.
   const owner = fairyOwner.claim();
@@ -915,7 +932,9 @@ function showOrb() {
   return { ok: true, visible: true };
 }
 
-function hideOrb() {
+function hideOrb({ auto = false } = {}) {
+  // The owner hid it with cards waiting: those cards do not bring it back, a NEW one does.
+  if (!auto) { autoSurfaced = false; ownerHidIds = new Set(attentionCards.map((c) => c.id)); }
   releaseHover();
   suppressed = true;
   pendingSlot = null;
@@ -2543,10 +2562,12 @@ function setAttentionCards(cards, allOpen = null) {
   if (Object.keys(attentionMems).length !== before) saveAttention();
   // Answered somewhere else (the Inbox, Discord, the phone): the whisper goes.
   if (nudging && !ids.has(nudging.decision.card.id)) endNudge("answered");
+  surfaceForCards();
   sendFairy();
   sendBadge();
   sendPanelView();
   ensureAttention();
+  ensureClusterClock();
   scheduleAttentionTick(1500); // a NEW card is judged now, not on the next 15 s tick
   return { ok: true, count: attentionCards.length };
 }
@@ -2589,10 +2610,68 @@ function speakingNow(nowMs = Date.now()) {
   return out;
 }
 
-function currentCompanions(look = currentFairy()) {
-  return agentFairy.companionsFor(attentionCards, {
-    current: look.agent, presence: agentPresence, speaking: speakingNow(),
+/**
+ * The cluster now (fairy-cluster.cjs): one fairy per queued decision, per live agent
+ * session and per working platform agent, reconciled against what was there before
+ * (an entry its source dropped leaves; an unreadable source's entries are reaped
+ * after 30 s), then capped into a counted bead.
+ */
+function currentCompanions(nowMs = Date.now()) {
+  const entries = fairyCluster.liveEntries({
+    cards: attentionCards, sessions: clusterSessions, presence: agentPresence, nowMs,
   });
+  const { kept } = clusterReaper.reconcile(entries, { nowMs, ok: clusterOk });
+  const c = fairyCluster.collapse(kept, fairyCluster.CAP);
+  clusterTotal = c.total;
+  clusterLabel = fairyCluster.countLabel(kept);
+  const talking = new Set(speakingNow());
+  return c.shown.map((e) => (e.kind !== "decision" && talking.has(e.agent) ? { ...e, state: "speaking" } : e));
+}
+
+/** What the cluster holds: {total, label, shown}. For the bridge, tray and proofs. */
+function clusterState() {
+  const shown = currentCompanions();
+  return { total: clusterTotal, label: clusterLabel, shown: shown.length, keys: clusterReaper.keys(), autoSurfaced };
+}
+
+/**
+ * Main hands over the live agent sessions: the Claude Code tabs (session-context
+ * liveSessions, pid-checked) and the awsh daemon's rows. `ok:false` = that read
+ * failed; the cluster then holds the last fairies for 30 s, never forever.
+ */
+function setClusterSessions(sources, { ok = true } = {}) {
+  // Unreadable: nothing is "fresh" from this source; the reaper holds the last fairies
+  // for its 30 s and then lets them go (orphans never stay).
+  clusterSessions = ok === false ? [] : (Array.isArray(sources) ? sources : [sources]);
+  clusterOk = { ...clusterOk, sessions: ok !== false };
+  sendFairy();
+  return { ok: true, total: clusterTotal };
+}
+
+/**
+ * Decisions ride the fairy (owner 2026-11-16: "these bullshit decision cards instead
+ * of fairies"). A hidden orb with decisions waiting comes up by itself -- the cluster
+ * IS the decision surface now -- and goes back down when the queue empties, unless
+ * the owner showed it himself meanwhile. Grown into the avatar: the body carries it.
+ */
+function surfaceForCards() {
+  if (quitting || expanded) return;
+  const fresh = !ownerHidIds || attentionCards.some((c) => !ownerHidIds.has(c.id));
+  if (attentionCards.length > 0 && !state.visible && fresh) {
+    autoSurfaced = true; // before showOrb: its save must not record the owner's choice
+    const r = showOrb({ auto: true });
+    if (!r || !r.ok) autoSurfaced = false;
+  } else if (attentionCards.length === 0 && autoSurfaced) {
+    autoSurfaced = false;
+    if (state.visible) hideOrb({ auto: true });
+  }
+}
+
+/** Reconcile on a clock too: a fairy whose source went silent leaves within ~30 s. */
+function ensureClusterClock() {
+  if (clusterTimer || quitting) return;
+  clusterTimer = setInterval(() => { try { sendFairy(); } catch { /* cosmetic */ } }, 10_000);
+  if (clusterTimer.unref) clusterTimer.unref();
 }
 
 /**
@@ -2624,6 +2703,11 @@ function noteAgentPosted(agent, { ms = 4000 } = {}) {
 
 /** Click a companion: talk to THAT agent (main opens its chat; the hook decides how). */
 function chatWithAgent(agent) {
+  // The counted bead: the whole waiting list, never a chat with "more".
+  if (String(agent || "") === "more") {
+    const r = hookValue("openList");
+    return r === undefined ? { ok: false, reason: "no waiting list in this build" } : { ok: true, list: true };
+  }
   const key = agentFairy.crewKey(agent);
   if (!key) return { ok: false, reason: "not an agent" };
   const row = currentCompanions().find((c) => c.agent === key) || null;
@@ -2641,7 +2725,7 @@ function sendFairy({ force = false } = {}) {
     lastFairyKey = key;
     send("orb:fairy", look);
   }
-  const companions = currentCompanions(look);
+  const companions = currentCompanions();
   const ckey = JSON.stringify(companions);
   if (force || ckey !== lastCompanionsKey) {
     lastCompanionsKey = ckey;
@@ -2761,6 +2845,18 @@ function stopAttention() {
  *  and its loop runs -- hidden, the awask window comes back (fail toward visible). */
 function ownsAttention() {
   return Boolean(attentionTimer && !quitting && state.visible && alive(orbWindow));
+}
+
+/**
+ * Will the fairy cluster carry a NEW card? True while the attention loop runs and the
+ * orb exists, hidden or not: a hidden orb comes up for a card (surfaceForCards), and a
+ * fairy grown into the avatar carries it in the body. This is the desk's claim on the
+ * card (the `.desk-alive` "attention": "fairy"), so awask leaves its Tk card window
+ * down (owner 2026-11-16: "still getting these bullshit decision cards instead of
+ * fairies"). The cluster turned off (orb.json cluster:false) gives the claim back.
+ */
+function carriesCards() {
+  return Boolean(attentionTimer && !quitting && alive(orbWindow) && state.cluster !== false);
 }
 
 function hookValue(name, ...args) {
@@ -3136,6 +3232,8 @@ async function nudgeAct(action, key) {
     endNudge("later");
     return { ok: true };
   }
+  // "Open in AitherBrowser" under the card's answers: its page, AitherBrowser first.
+  if (what === "browser") return openCardPage(card.id, "aither");
   if (what === "mute") {
     confirmThenEnd(n, "Okay, it stays on the badge.", "mute");
     return { ok: true };
@@ -3681,12 +3779,29 @@ async function menuPick(id) {
     try { r = await hookValue("focusSession", card.id); } catch (error) { r = { ok: false, note: String(error) }; }
     return r && typeof r === "object" ? r : { ok: false, error: "no session hook in this build" };
   }
+  if (what === "link:open-aither" || what === "link:open-system") {
+    return openCardPage(card.id, what === "link:open-aither" ? "aither" : "system");
+  }
   if (what === "copy") {
     const link = String(hookValue("cardLink", card.id) || fairyMenu.cardLink(card.id));
     try { electron().clipboard.writeText(link); } catch { return { ok: false, error: "no clipboard" }; }
     return { ok: true, link };
   }
   return { ok: false, error: `unknown menu item ${what}` };
+}
+
+/**
+ * A card's page (aitherium.com/decide?id=...) in AitherBrowser or the system browser
+ * (link-opener.cjs). AitherBrowser is main's openUrl (the browser policy + an Aither
+ * Browser window); the system one is shell.openExternal.
+ */
+function openCardPage(id, prefer = "") {
+  const link = String(hookValue("cardLink", id) || fairyMenu.cardLink(id));
+  return linkOpener.openLink(link, {
+    prefer,
+    openAither: (u) => (openUrlImpl ? openUrlImpl(u) : { ok: false, error: "no AitherBrowser in this build" }),
+    openSystem: (u) => { void electron().shell.openExternal(u); return { ok: true }; },
+  });
 }
 
 /** "Answer: <recommended>" -- through the ONE desk answer path (main's answerDeckCard). */
@@ -4187,6 +4302,7 @@ function stopOrb() {
   if (hoverTimer) { clearInterval(hoverTimer); hoverTimer = null; }
   if (spriteTimer) { clearInterval(spriteTimer); spriteTimer = null; }
   if (spriteKick) { clearTimeout(spriteKick); spriteKick = null; }
+  if (clusterTimer) { clearInterval(clusterTimer); clusterTimer = null; }
   stopAttention();
   for (const pending of pendingRuns.values()) {
     clearTimeout(pending.timer);
@@ -4239,8 +4355,13 @@ function run(verb, { arg = null, slotId = null } = {}) {
   // (POST /commands/run {"id":"fairy.counts"}). Opens nothing.
   if (what === "counts") {
     const counts = currentCounts();
-    const companions = currentCompanions().map((m) => ({ agent: m.agent, label: m.label, count: m.count }));
-    const problems = fairyCounts.problems(counts, companions);
+    const companions = currentCompanions().map((m) => ({ agent: m.agent, label: m.label, count: m.count, kind: m.kind }));
+    // Every decision is its own fairy now (fairy-cluster.cjs), so the per-agent badge
+    // sum no longer applies; the cluster is checked against the queue instead.
+    const problems = fairyCounts.problems(counts, []);
+    const drawn = companions.reduce((a, m) => a + (m.kind === "decision" ? 1 : 0), 0)
+      + (swarmCompanions.find((m) => m.kind === "more") || { waiting: 0 }).waiting;
+    if (state.cluster !== false && drawn > counts.needYou) problems.push(`cluster draws ${drawn} decisions, needYou ${counts.needYou}`);
     return {
       ok: problems.length === 0,
       line: `${fairyCounts.badgeTitle(counts)}. The whisper says "${fairyAttention.moreLabel(counts.more) || "nothing more"}".`,
@@ -4310,7 +4431,7 @@ module.exports = {
   ORB_SIZE, BUBBLE_SIZE, TICK_MS, REGION_WAIT_MS,
   startOrb, stopOrb, run, hoverGuard: () => hoverGuardImpl, ensureIpc, showOrb, hideOrb, toggleOrb, openBubble, setAttention,
   // attention: the fairy carries the cards (fairy-attention.cjs)
-  NUDGE_SIZE, setAttentionCards, attentionTick, ownsAttention, nudgeAct, endNudge,
+  NUDGE_SIZE, setAttentionCards, attentionTick, ownsAttention, carriesCards, nudgeAct, endNudge,
   nudgeCard, chatAboutCard, setSounds,
   // the agent fairy (agent-fairy.cjs): whose colours, which companions
   setSpeaker, peekCard, openFairyCard, fairyMenuFor, orbMenu, menuPick, showTip, hideTip,
@@ -4319,7 +4440,8 @@ module.exports = {
   setTenantCompanion, setQuiet, tenantCompanionVisible: () => Boolean(state.tenantCompanion),
   quietUntil: () => (Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0),
   menuState: () => publicMenu(), __setMenuIdleMs: (ms) => { menuIdleMsOverride = Number(ms) || 0; }, fairy: () => currentFairy(), companions: () => currentCompanions(),
-  setPresence, noteAgentPosted, chatWithAgent,
+  setPresence, noteAgentPosted, chatWithAgent, setClusterSessions, clusterState, surfaceForCards,
+  autoSurfaced: () => autoSurfaced,
   swarmWindow: () => (alive(swarmWindow) ? swarmWindow : null), soundsOn: () => state.sounds !== false,
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
   attentionMems: () => attentionMems,
@@ -4355,6 +4477,12 @@ module.exports = {
     lastFairyKey = "";
     lastCompanionsKey = "";
     swarmCompanions = [];
+    clusterSessions = [];
+    clusterOk = { cards: true, sessions: true, presence: true };
+    clusterReaper.reset();
+    autoSurfaced = false;
+    ownerHidIds = null;
+    if (clusterTimer) { clearInterval(clusterTimer); clusterTimer = null; }
     agentPresence = [];
     agentPosts = new Map();
     if (agentPostTimer) { clearTimeout(agentPostTimer); agentPostTimer = null; }

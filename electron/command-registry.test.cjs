@@ -620,7 +620,8 @@ test("now-mode hides the needs-you chip and the balloon, and lapses on its own",
   assert.match(main, /case "now-mode":\s*nowModeUntil = arg === "on" \? Date\.now\(\) \+ NOW_MODE_TTL_MS : 0;/);
   assert.match(main, /hidden: overlaySettings\(\)\.doNotDisturb \|\| nowModeActive\(\)/);
   // The balloon also stays down while the fairy carries the card (2026-11-08).
-  assert.match(main, /!overlaySettings\(\)\.doNotDisturb && !nowModeActive\(\)\s*&& !\(companionMode\(\) === "fairy" && orbWindow\.ownsAttention\(\)\)\) \{[^]*?notifyQuietly\(/);
+  // 2026-11-16: whenever the desk's fairy cluster carries cards, in either companion mode.
+  assert.match(main, /!overlaySettings\(\)\.doNotDisturb && !nowModeActive\(\)\s*&& !orbWindow\.carriesCards\(\)\) \{[^]*?notifyQuietly\(/);
   const internal = require("./browser-internal.cjs");
   const link = internal.deepLinkOf(internal.parseInternalUrl("aither://cards/?mode=now"));
   assert.deepEqual(link, { mode: "now" });

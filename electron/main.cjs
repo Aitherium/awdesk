@@ -2193,7 +2193,6 @@ function fairyQuietReason() {
     if (kidDeskMode().enabled) return "kid mode";
     if (overlaySettings().doNotDisturb) return "Do not disturb";
     if (nowModeActive()) return "NOW mode";
-    if (companionMode() !== "fairy") return "the avatar carries the cards";
     if (require("./game-posture.cjs").hostIsGaming()) return "game on";
   } catch { /* an unreadable setting is not a reason to go silent */ }
   return "";
@@ -2208,7 +2207,9 @@ function feedFairyCards() {
 
 function syncNeedsYouChip() {
   feedFairyCards();
-  if (companionMode() === "fairy") {
+  // The fairy cluster carries needs-you cards in either companion mode (2026-11-16);
+  // the separate needs-you chip is only for a desk whose cluster is off.
+  if (companionMode() === "fairy" || (() => { try { return orbWindow.carriesCards(); } catch { return false; } })()) {
     try {
       const first = needsYou[0];
       orbWindow.setAttention(needsYou.length, first && (first.title || first.why || null));
@@ -4690,6 +4691,77 @@ async function refreshAgentPresence() {
 }
 
 /**
+ * A link a desk door opens (owner 2026-11-16: "no option for aitherbrowser?"):
+ * link-opener.cjs decides -- an Aitherium URL goes to AitherBrowser, anything else to
+ * the system browser; `prefer` ("aither" | "system") is an explicit pick.
+ */
+function openLinkFromDesk(url, prefer = "") {
+  return require("./link-opener.cjs").openLink(url, {
+    prefer,
+    openAither: (u) => {
+      const verdict = browserPolicy.sanitizeUrl(u);
+      if (!verdict.ok) return { ok: false, error: verdict.reason };
+      browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
+      return { ok: true };
+    },
+    openSystem: (u) => { void shell.openExternal(u); return { ok: true }; },
+  });
+}
+
+/**
+ * AitherBrowser in Windows' "open with" list. The HKCU registration was written only
+ * by "Make Aither your default browser...", so the chooser never offered it (measured
+ * 2026-11-16: no AitherBrowserURL key). Registering does NOT make it the default --
+ * only the person picks that in Settings -- so the desk registers itself quietly at
+ * start when it is not registered (or points at another build). Skipped for smoke and
+ * scratch runs (AWDESK_NO_BROWSER_REGISTER=1), which must not repoint the owner's.
+ */
+async function ensureAitherBrowserListed() {
+  if (process.platform !== "win32" || process.env.AWDESK_NO_BROWSER_REGISTER === "1") return { ok: false, skipped: true };
+  try {
+    const reg = require("./browser-default.cjs").createDefaultBrowser({
+      exe: process.execPath, appArgs: app.isPackaged ? [] : [app.getAppPath()],
+    });
+    if (await reg.registered()) return { ok: true, already: true };
+    const r = await reg.register({ openSettings: false });
+    debugLog(`[browser] AitherBrowser ${r.ok ? "listed in Windows' open-with" : `not listed: ${r.error}`}`);
+    return r;
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error) };
+  }
+}
+
+/**
+ * The fairy cluster's session fairies (fairy-cluster.cjs): one per live agent session,
+ * read every 15 s so an ended session's fairy leaves inside ~30 s. Two sources merged
+ * by session id: this machine's Claude Code tabs (pid-checked) and the awsh harness
+ * daemon's unified list (its own sessions + discovered tabs; "exited" rows drop). A
+ * daemon that does not answer keeps its last rows for 30 s, then they are reaped.
+ */
+let clusterDaemonRows = [];
+let clusterDaemonAt = 0;
+let clusterSessionsBusy = false;
+async function refreshClusterSessions() {
+  if (clusterSessionsBusy) return;
+  clusterSessionsBusy = true;
+  try {
+    const checked = sessionContext.liveSessionsChecked();
+    let daemon = null;
+    try { daemon = await require("./sessions-client.cjs").listSessions({ timeoutMs: 4000 }); } catch { daemon = null; }
+    const now = Date.now();
+    if (daemon && daemon.ok) {
+      clusterDaemonRows = daemon.sessions;
+      clusterDaemonAt = now;
+    } else if (now - clusterDaemonAt > 30_000) {
+      clusterDaemonRows = [];
+    }
+    orbWindow.setClusterSessions([checked.live, clusterDaemonRows], { ok: checked.judged || Boolean(daemon && daemon.ok) });
+  } catch { /* the cluster is cosmetic; the next tick tries again */ } finally {
+    clusterSessionsBusy = false;
+  }
+}
+
+/**
  * The chat with one agent: the deck's per-agent chat (the relay thread under its
  * newest #agents message, the same persona its Discord bot speaks as). The deck
  * also offers the thread the board names (a Discord or GitHub thread) and its
@@ -6354,7 +6426,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       const res = await require("./link-client.cjs").linkStart();
       const url = res.ok && res.data && res.data.approve_url;
       // Only an https link from Identity is opened; anything else is shown, not followed.
-      if (typeof url === "string" && /^https:\/\//.test(url)) void shell.openExternal(url);
+      if (typeof url === "string" && /^https:\/\//.test(url)) openLinkFromDesk(url);
       return res;
     });
     ipcMain.handle("desk:link-poll", async (_event, deviceCode) => {
@@ -6798,7 +6870,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           // The old `portal.` host is RETIRED: it 301s to the apex (measured
           // 2026-09-19). Open the apex directly so the app does not depend on a
           // redirect that exists only for old links.
-          void shell.openExternal("https://aitherium.com");
+          openLinkFromDesk("https://aitherium.com");
           return true;
         case "switch-character": {
           // One-stop-shop switching: same path set_character over MCP uses,
@@ -6814,7 +6886,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           // Open one marketplace listing (aither:// or https://) externally.
           if (typeof arg !== "string" || arg.length === 0) return false;
           if (!/^(aither|https?):\/\//.test(arg)) return false;
-          void shell.openExternal(arg);
+          if (/^https?:/.test(arg)) openLinkFromDesk(arg);
+          else void shell.openExternal(arg);
           return true;
         }
         case "add-character": {
@@ -7417,6 +7490,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     void refreshAgentPresence();
     // One tick for both: the relay feed and the platform presence (no extra poller).
     relayFeedTimer = setInterval(() => { void refreshRelayFeed(); void refreshAgentPresence(); }, 60_000);
+    void refreshClusterSessions();
+    if (!smokeIsRequested) setTimeout(() => { void ensureAitherBrowserListed(); }, 20_000).unref?.();
+    const clusterSessionsTimer = setInterval(() => { void refreshClusterSessions(); }, 15_000);
+    clusterSessionsTimer.unref?.();
     relayFeedTimer.unref?.();
 
     // awrise wakes: poll the daemon every 30 s and push only when something
@@ -7489,7 +7566,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         // the question and shows one whisper with the card's own answers. Nothing here
         // may speak over it or open the Inbox window; the old window stays behind the
         // whisper's "Show details" and the list.
-        if (companionMode() === "fairy" && orbWindow.ownsAttention()) {
+        if (orbWindow.carriesCards()) {
           debugLog(`[cards] ${list.length} ${isBacklog ? "backlog" : "new"} card(s) handed to the fairy`);
           return;
         }
@@ -7555,7 +7632,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
               raiseLivingDesktop();               // an already-open overlay comes forward too
               lastInboxOpenAt = nowMs;
             } else if (!overlaySettings().doNotDisturb && !nowModeActive()
-              && !(companionMode() === "fairy" && orbWindow.ownsAttention())) {
+              && !orbWindow.carriesCards()) {
               // (a fairy on screen carries it instead: the balloon was one more popup)
               notifyQuietly("Aither — a decision needs you", String((newest && newest.title) || title).slice(0, 200));
             }
@@ -7605,7 +7682,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // nudge loop runs, awask leaves its frameless Tk card window down -- the card is
     // the fairy's to carry. Hidden fairy / avatar companion / dead desk = no claim.
     deskHeartbeatStop = decisionCards.startHeartbeat({
-      claim: () => (companionMode() === "fairy" && orbWindow.ownsAttention() ? { attention: "fairy" } : null),
+      // 2026-11-16 (owner: "still getting these bullshit decision cards instead of
+      // fairies"): the claim no longer needs the fairy ON SCREEN or the fairy companion
+      // mode -- the cluster surfaces a hidden orb for a card itself (orb-window
+      // surfaceForCards), so while the desk carries cards awask's Tk window stays down.
+      claim: () => (orbWindow.carriesCards() ? { attention: "fairy" } : null),
     });
     feedFairyCards();
     // Unanswered needs-you cards are re-spoken hourly (micMuted wins; a snooze

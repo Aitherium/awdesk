@@ -84,7 +84,13 @@ function createAssistMain({ electron, userDataDir, gateway = null, notes = null,
     engine, gateway, log, getSettings, findExe: (n) => findExeOnPath(n), confirm: cardConfirm(gateway),
     vision: (p, q) => require("./orb-vision.cjs").askVision(p, q),
   });
-  const win = createAssistWindow({ electron, engine, caret, agents: loadAgents(), utils, files });
+  // A selected link opens in AitherBrowser (ours by default) or the system browser.
+  const openLink = (url, prefer) => require("./link-opener.cjs").openLink(url, {
+    prefer,
+    openAither: (u) => { require("./browser-window.cjs").createBrowserWindow({ url: u }); return { ok: true }; },
+    openSystem: (u) => { void electron.shell.openExternal(u); return { ok: true }; },
+  });
+  const win = createAssistWindow({ electron, engine, caret, agents: loadAgents(), utils, files, openLink });
 
   /** The registry's `assist:` field: "open" or a verb id. */
   function run(kind, meta = {}) {
