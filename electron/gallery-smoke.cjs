@@ -62,6 +62,9 @@ const deps = {
   onChanged: () => {},
   modelUrl: (n) => pathToFileURL(path.join(rosterDir, n, "model.vrm")).href,
   launchStudio: () => ({ ok: false, error: "not in a smoke" }),
+  // The REAL broker (read-only browse): the shot shows his true link state.
+  vroidBrowse: (s, k, c) => require("./market-client.cjs").vroidBrowse(s, k, c),
+  vroidRosterName: (id) => require("./avatar-library-sync.cjs").vroidRosterName(id) || "",
 };
 const handlers = galleryHandlers(() => deps);
 
@@ -114,6 +117,10 @@ app.whenReady().then(async () => {
     await js("[...document.querySelectorAll('[role=tab]')][1].click()");
     await wait(2500);
     await shot("personas.png");
+
+    await js("[...document.querySelectorAll('[role=tab]')][2].click()");
+    await wait(6000);
+    await shot("vroid.png");
 
     const before = fs.readFileSync(castSrc, "utf8");
     const pick = names.find((n) => gallery.tierOf(ratingOf(n)) === "everyone");

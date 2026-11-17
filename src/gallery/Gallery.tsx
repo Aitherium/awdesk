@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { renderVrmThumbnail, renderVrmTurntable } from '../thumbnails';
 import { Preview3D } from './Preview3D';
+import { VroidTab } from './VroidTab';
 import {
   EMPTY_FILTER, TIER_LABEL, filterAvatars, gridStep, hiddenSummary,
   type GalleryAvatar, type GalleryFilter, type GalleryPersona, type GalleryState, type Tier,
@@ -289,7 +290,7 @@ function PersonaCard({ p, state, onState }: { p: GalleryPersona; state: GalleryS
 export function Gallery() {
   const [state, setState] = useState<GalleryState | null>(null);
   const [error, setError] = useState('');
-  const [tab, setTab] = useState<'mine' | 'personas'>('mine');
+  const [tab, setTab] = useState<'mine' | 'personas' | 'vroid'>('mine');
   const [filter, setFilter] = useState<GalleryFilter>(EMPTY_FILTER);
   const [selected, setSelected] = useState<string>('');
   const [askRating, setAskRating] = useState('');
@@ -383,6 +384,7 @@ export function Gallery() {
         <button type="button" role="tab" aria-selected={tab === 'personas'} className={tab === 'personas' ? 'is-on' : ''} onClick={() => setTab('personas')}>
           Personas <small>{state.personas.length}</small>{proposals ? <b className="gal-pill">{proposals}</b> : null}
         </button>
+        <button type="button" role="tab" aria-selected={tab === 'vroid'} className={tab === 'vroid' ? 'is-on' : ''} onClick={() => setTab('vroid')}>VRoid Hub</button>
         <span className="gal-tabs-gap" />
         <button type="button" className="gal-btn" onClick={() => void studio()}
           title={state.studio.installed ? 'Opens VRoid Studio; an export lands here, unrated and unassigned' : 'VRoid Studio is not installed: opens the official download page'}>
@@ -427,6 +429,8 @@ export function Gallery() {
             <aside className="gal-panel"><Preview3D url={null} label="Pick an avatar to see it turn" /></aside>
           )}
         </div>
+      ) : tab === 'vroid' ? (
+        <VroidTab call={call as never} cap={state.cap} onInstalled={() => void load()} />
       ) : (
         <div className="gal-personas">
           {state.personas.map((p) => <PersonaCard key={p.id} p={p} state={state} onState={setState} />)}

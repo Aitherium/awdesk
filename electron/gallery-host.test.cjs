@@ -102,3 +102,27 @@ test("rotation keeps only bodies he may see -- and never DROPS members a narrowe
   w.h.standIn({ name: "kid" });
   assert.equal(w.raw().gallery.standIn, "kid");
 });
+
+test("VRoid Hub: a model above the audience is not listed; an installed one says so", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gallery-hub-"));
+  const { galleryHandlers: make } = require("./gallery-host.cjs");
+  const raw = { version: 1, gallery: { profile: "hearth" } };
+  const remembered = [];
+  const h = make(() => ({
+    rosterDir: dir, proposalsDir: dir,
+    allNames: () => ["vroid-111"], ratingOf: () => "general", isHidden: () => false, castRaw: () => raw,
+    vroidRosterName: (id) => `vroid-${id}`,
+    rememberVroid: (list) => { remembered.push(...list.map((m) => m.id)); },
+    vroidBrowse: async () => ({ ok: true, linked: true, next: "c2", models: [
+      { id: "111", name: "Kid", downloadable: true },
+      { id: "222", name: "Spicy", r18: true, downloadable: true },
+    ] }),
+  }));
+  const page = await h.vroidBrowse({ source: "hearts" });
+  assert.deepEqual(page.models.map((m) => [m.name, m.installed]), [["Kid", true]]);
+  assert.equal(page.hidden, 1);
+  assert.ok(!JSON.stringify(page).includes("Spicy"));
+  assert.deepEqual(remembered, ["111"], "only a listed model can be installed later");
+  raw.gallery.profile = "personal";
+  assert.equal((await h.vroidBrowse({ source: "hearts" })).models.length, 2);
+});

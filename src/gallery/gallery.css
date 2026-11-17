@@ -107,3 +107,12 @@
   .gal-panel { border-left: 0; border-top: 1px solid var(--g-line); }
   .gal-search { width: 180px; }
 }
+
+.gal-hub { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.gal-hub .gal-grid { flex: 1; }
+.gal-tile.is-static { cursor: default; }
+.gal-tile.is-static:hover { transform: none; }
+.gal-tile.is-static .gal-btn { padding: 3px 10px; font-size: 12px; }
+.gal-link { margin: 12px 18px; padding: 16px; border-radius: 14px; border: 1px solid var(--g-line); background: var(--g-raise); display: flex; flex-direction: column; gap: 8px; max-width: 640px; }
+.gal-link h3 { margin: 0; }
+.gal-link p { margin: 0; }
