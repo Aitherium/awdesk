@@ -21,6 +21,9 @@
 export interface PickerApi {
   /** The slot under (clientX, clientY), or null over a gap. */
   pickAt(clientX: number, clientY: number): string | null;
+  /** The slot painted within `radius` px of (clientX, clientY): the exact pixel first, else the nearest
+   *  body pixel in the patch. One render of a (2r+1)^2 patch, not one per probe. */
+  pickNear?(clientX: number, clientY: number, radius: number): string | null;
   /** A body's silhouette as a coverage mask (alpha > 0 = the body), at `scale` of the canvas size. */
   silhouette(slotId: string, scale?: number): { width: number; height: number; alpha: Uint8Array } | null;
 }
@@ -40,6 +43,39 @@ export function decodeId(rgba: ArrayLike<number>, count: number): number {
   if (!(a > 127)) return 0;
   const n = Number(rgba[0]);
   return n >= 1 && n <= count ? n : 0;
+}
+
+/**
+ * The slack the WINDOW's click-through gets around a body (owner 2026-11-16, P0: a right-click on the
+ * avatar's head and shoulders opened the Windows desktop menu). The exact one-pixel pick is right for
+ * WHICH body a press belongs to, but as the window's on/off switch it flickers: the idle sways the head
+ * and shoulders a few pixels every second, so a cursor resting on the body's edge was over a "gap" the
+ * last time it moved and the press went through the window to the desktop. A few pixels of slack is
+ * still the body, not the old box.
+ */
+export const PICK_SLOP_PX = 6;
+
+/** Pure: the id in a square read-back patch (`size` x `size`, rows in any order) the click belongs to --
+ *  the centre pixel's when it is a body, else the body pixel nearest the centre, else 0. */
+export function nearestIdInPatch(rgba: ArrayLike<number>, size: number, count: number): number {
+  const c = (size - 1) / 2;
+  const at = (x: number, y: number) => {
+    const i = (y * size + x) * 4;
+    return decodeId([rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]], count);
+  };
+  const centre = at(Math.round(c), Math.round(c));
+  if (centre) return centre;
+  let best = 0;
+  let bestD = Infinity;
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const id = at(x, y);
+      if (!id) continue;
+      const d = (x - c) * (x - c) + (y - c) * (y - c);
+      if (d < bestD) { bestD = d; best = id; }
+    }
+  }
+  return best;
 }
 
 // -- the registry: which group is which slot ------------------------------------------
@@ -70,6 +106,13 @@ export function setPicker(next: PickerApi | null): void {
 
 export function pickAt(clientX: number, clientY: number): string | null {
   return picker ? picker.pickAt(clientX, clientY) : null;
+}
+
+/** The body within `radius` px of the point (the exact pixel wins); falls back to the exact pick. */
+export function pickNear(clientX: number, clientY: number, radius = PICK_SLOP_PX): string | null {
+  if (!picker) return null;
+  if (picker.pickNear && radius > 0) return picker.pickNear(clientX, clientY, radius);
+  return picker.pickAt(clientX, clientY);
 }
 
 export function hasPicker(): boolean {
@@ -162,6 +205,7 @@ export function installProbe(): () => void {
   const w = window as unknown as { __deskPick?: unknown };
   w.__deskPick = {
     pickAt: (x: number, y: number) => pickAt(x, y),
+    pickNear: (x: number, y: number, r?: number) => pickNear(x, y, r),
     state: () => getPickState(),
     slots: () => registeredSlots(),
     bounds: () => {
