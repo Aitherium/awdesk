@@ -2808,6 +2808,21 @@ function enforceActiveCharacterRating() {
   return true;
 }
 
+/** May an agent tool (MCP set_character / spawn_avatar) put `name` on screen? Only when the owner
+ *  already chose that body for someone (cast.json rows, or his Aither female/male choice). Any
+ *  other body is refused: agents propose bodies, the owner applies them (owner P0 2026-11-17). */
+function agentMayShow(name) {
+  const wanted = String(name || "").trim();
+  if (!wanted) return false;
+  try {
+    const cast = require("./cast-config.cjs");
+    if (cast.ownerBodies(cast.load({}).snapshot).has(wanted)) return true;
+  } catch {
+    return false;
+  }
+  return wanted === aitherCharacterToShow();
+}
+
 /** Switch to a roster character and hot-reload the renderer (no app restart). */
 function applyCharacter(name) {
   if (!installCharacter(name)) return false;
@@ -7814,7 +7829,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         active: getActiveCharacter(),
         characters: listCharacters(),
       }),
-      onCharacter: (name) => applyCharacter(name),
+      // Owner P0 2026-11-17: an agent may SHOW a body the owner already chose, never pick one.
+      onCharacter: (name) => agentMayShow(name) && applyCharacter(name),
       onAgent: (agent) => applyAgentAvatar(agent),
       listAgentAvatars: () => loadAgentAvatars(),
       onExportPortrait: async () => {
@@ -7827,7 +7843,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         const custom = listAvailableAnimations().map((file) => `FILE:${file}`);
         return [...builtIn, ...custom];
       },
-      onSpawnAvatar: (slotId, name) => spawnAvatarSlot(slotId, name),
+      onSpawnAvatar: (slotId, name) => agentMayShow(name) && spawnAvatarSlot(slotId, name),
       onRemoveAvatar: (slotId) => removeAvatarSlot(slotId),
       onFleet: (action, opts) => fleetAction(action, opts),
       onCommand: (text, opts) => commandAction(text, opts),

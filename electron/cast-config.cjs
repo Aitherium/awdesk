@@ -1356,6 +1356,28 @@ function seatIndexFor(state, { author, actorId } = {}) {
  * Agents may PROPOSE a body (the gallery's proposals); only the owner applies one.
  * no-auto-body.test.cjs asserts no source file can bring the pick back.
  */
+/**
+ * ownerBodies -- every body name an owner-written row of cast.json names (authors, their seats,
+ * actors, stage.resident). An agent tool may SHOW one of these (it is already his choice); it
+ * may never put any other body on screen. `raw` is the snapshot or the raw file.
+ */
+function ownerBodies(raw) {
+  const cfg = plainObject(raw);
+  const out = new Set();
+  const take = (row) => {
+    const c = plainObject(row).character;
+    if (typeof c === "string" && c.trim()) out.add(c.trim());
+  };
+  for (const row of Object.values(plainObject(cfg.authors))) {
+    take(row);
+    for (const seat of Array.isArray(plainObject(row).seats) ? row.seats : []) take(seat);
+  }
+  for (const row of Object.values(plainObject(cfg.actors))) take(row);
+  const resident = plainObject(cfg.stage).resident;
+  if (typeof resident === "string" && resident.trim()) out.add(resident.trim());
+  return out;
+}
+
 /** Tiers whose `character` the owner wrote for THIS actor. */
 function isOwnerCharacterTier(prefix) {
   return typeof prefix === "string" && (prefix.startsWith("actors[") || prefix.startsWith("authors."));
@@ -1768,7 +1790,9 @@ function resolveActor(snapshot, ctx = {}) {
   // ── character: configured, else hashed into the safe roster ──
   const roster = Array.isArray(ctx.roster) ? ctx.roster.filter((n) => typeof n === "string" && n) : null;
   const inRoster = (value) => {
-    if (!roster || roster.length === 0) return { ok: true, value }; // nothing to judge against
+    // null = this caller does not judge (a provenance read); an EMPTY roster fails CLOSED -- a
+    // roster that could not be read, or one the rating hides entirely, shows nothing.
+    if (!roster) return { ok: true, value };
     if (roster.includes(value)) return { ok: true, value };
     return { ok: false, reason: "not in the safe roster (content rating / missing model)" };
   };
@@ -2243,6 +2267,7 @@ module.exports = {
   resolveVoice,
   seatIndexFor,
   stableVoice,
+  ownerBodies,
   validateCast,
   validateRosterPresence,
   ROSTER_FIELDS,

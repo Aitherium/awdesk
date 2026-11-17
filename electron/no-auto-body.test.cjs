@@ -50,6 +50,27 @@ test("resolveActor: no owner row = no body, for every kind of actor and every fa
   assert.equal(hidden.character, null, "an owner row whose body the rating hides renders nothing");
 });
 
+test("an EMPTY roster fails closed: an owner row renders nothing when no body is allowed", () => {
+  const snapshot = { authors: { atlas: { character: "gold-kitsune" } } };
+  assert.equal(cast.resolveActor(snapshot, { author: "atlas", roster: [] }).character, null);
+  assert.equal(cast.resolveActor(snapshot, { author: "atlas", roster: null }).character, "gold-kitsune",
+    "null = a provenance read that judges nothing (the Cast pane), never a render path");
+});
+
+test("agent tools may only SHOW a body the owner chose (MCP set_character / spawn_avatar)", () => {
+  const bodies = cast.ownerBodies({
+    authors: { atlas: { character: "charlie" }, iris: { seats: [{ character: "herta" }] } },
+    actors: { "agent:x": { character: "nova" } },
+    stage: { resident: "aither-v2" },
+    defaults: { character: "gold-kitsune" },
+  });
+  assert.deepEqual([...bodies].sort(), ["aither-v2", "charlie", "herta", "nova"]);
+  assert.equal(bodies.has("gold-kitsune"), false, "defaults.character is not an owner choice for anyone");
+  const main = read("main.cjs");
+  assert.match(main, /onCharacter: \(name\) => agentMayShow\(name\) && applyCharacter\(name\)/);
+  assert.match(main, /onSpawnAvatar: \(slotId, name\) => agentMayShow\(name\) && spawnAvatarSlot\(slotId, name\)/);
+});
+
 test("no source file carries an automatic body pick", () => {
   const forbidden = [
     [/\bstableCharacter\s*\(/, "the rendezvous-hash body pick"],
@@ -58,6 +79,20 @@ test("no source file carries an automatic body pick", () => {
     [/\bpickCharacter\s*\(/, "room-stage's pick wrapper"],
   ];
   const hits = [];
+  const srcDir = path.join(ROOT, "..", "src");
+  const srcFiles = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (/\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) srcFiles.push(full);
+    }
+  };
+  walk(srcDir);
+  for (const full of srcFiles) {
+    const text = fs.readFileSync(full, "utf8");
+    for (const [re, why] of forbidden) if (re.test(text)) hits.push(`${path.relative(ROOT, full)}: ${why}`);
+  }
   for (const f of sources) {
     const text = read(f);
     for (const [re, why] of forbidden) if (re.test(text)) hits.push(`${f}: ${why}`);

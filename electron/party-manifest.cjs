@@ -309,6 +309,8 @@ function buildParty({ castFile = undefined, rosterDir = roster.ROSTER_DIR, now =
     const character = row.resolved.character && names.includes(row.resolved.character) ? row.resolved.character : null;
     admit(memberFor({ resolved: row.resolved, character, rosterDir, originKey: row.originKey }));
   }
+  // party.json is an EXPORT of the library (decision 2: a roster folder is a persona), rated and
+  // filtered like everything else; it puts no body on this desk. Reviewed for owner P0 2026-11-17.
   for (const name of names) {
     if (claimed.has(name)) continue;
     // What the desk WOULD resolve for this body with no row of its own: the

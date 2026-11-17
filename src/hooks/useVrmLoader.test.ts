@@ -342,5 +342,9 @@ describe('height normalisation (owner P0 2026-11-17: no giant models)', () => {
     expect(scene.scale.x).toBeCloseTo(f);
     expect(scene.userData.deskHeightNorm).toBe(f);
     expect(1.862 * f).toBeCloseTo(1.45 * 1.1, 4);
+    // A remount of the cached model must not re-measure the scaled scene and lose the factor.
+    expect(applyHeightNorm(vrm)).toBe(f);
+    expect(scene.userData.deskHeightNorm).toBe(f);
+    expect(scene.scale.x).toBeCloseTo(f);
   });
 });

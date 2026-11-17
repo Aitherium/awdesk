@@ -422,6 +422,11 @@ export function measureHeadHeight(vrm: VRM): number {
 
 /** Scale vrm.scene so its head height sits in the persona band; records the factor for the springs. */
 export function applyHeightNorm(vrm: VRM): number {
+  // Idempotent: the loader caches a model by URL, so a remount sees the SAME, already-scaled
+  // scene. Re-measuring it would read 1 and drop the springs' compensation while the model
+  // stays scaled.
+  const done = Number(vrm.scene.userData.deskHeightNorm);
+  if (Number.isFinite(done) && done > 0) return done;
   const factor = heightNormFactor(measureHeadHeight(vrm));
   vrm.scene.userData.deskHeightNorm = factor;
   if (factor !== 1) vrm.scene.scale.setScalar(factor);

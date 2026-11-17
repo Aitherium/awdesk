@@ -35,7 +35,9 @@ const PLACE_PENDING_MS = 1000;
 let pointerHeld = false;
 if (typeof window !== 'undefined') {
   window.addEventListener('pointerdown', () => { pointerHeld = true; }, true);
-  window.addEventListener('pointerup', () => { pointerHeld = false; }, true);
+  for (const end of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    window.addEventListener(end, () => { pointerHeld = false; }, true);
+  }
   window.addEventListener('blur', () => { pointerHeld = false; });
 }
 /** No giant bodies (owner P0 2026-11-17): the wheel AND every stored/authored scale are clamped
@@ -126,7 +128,11 @@ function FullBodyCamera({
 
   // Frame the union of `framed`. Shared by the layout effect (the set or the window changed)
   // and the fit watch below (a body moved, grew or loaded outside the frame).
+  // The person moved the camera (orbit, pan, wheel zoom): the fit watch leaves it alone until
+  // the stage itself changes (the next frame() from the effect below).
+  const userCamera = useRef(false);
   const frame = useCallback((mustFit = false) => {
+    userCamera.current = false;
     const { camera, controls } = getThreeState();
     if (
       framed.length === 0 ||
@@ -178,9 +184,17 @@ function FullBodyCamera({
   // (a drag owns the camera's frame of reference), a body whose projected box leaves the view
   // re-frames the stage so everything fits. One body is framed at zoom 1.5 on purpose (it fills
   // the window top to bottom), so for one body only a SIDEWAYS overflow counts.
+  useEffect(() => {
+    const { controls } = getThreeState();
+    const target = controls as unknown as { addEventListener?: (t: string, f: () => void) => void; removeEventListener?: (t: string, f: () => void) => void } | null;
+    if (!target || typeof target.addEventListener !== 'function') return;
+    const mark = () => { userCamera.current = true; };
+    target.addEventListener('start', mark);
+    return () => target.removeEventListener?.('start', mark);
+  }, [controlsReady, getThreeState]);
   const lastFitCheck = useRef(0);
   useFrame(({ camera, clock }) => {
-    if (framed.length === 0 || pointerHeld) return;
+    if (framed.length === 0 || pointerHeld || userCamera.current) return;
     const t = clock.getElapsedTime();
     if (t - lastFitCheck.current < 0.5) return;
     lastFitCheck.current = t;
