@@ -569,7 +569,11 @@ function createLauncher({
     return typeof intentBar === "function" ? intentBar() : intentBar;
   }
 
-  const EFFECT_NOTE = { read: "reads", ui: "opens", write: "changes something · asks first", send: "sends · asks first", spend: "spends compute · asks first" };
+  const EFFECT_NOTE = { read: "reads", ui: "opens", write: "changes something · Enter twice", send: "sends · Enter twice", spend: "spends compute · Enter twice" };
+  // A `>` row that writes / sends / spends: the first Enter arms it (the status says
+  // what it will do), a second Enter on the SAME row within ARM_MS runs it.
+  const ARM_MS = 8_000;
+  let armedTool = { key: "", at: 0 };
 
   /** Ranked tools as launcher items. `arg` rides with a prompt tool picked by its first word. */
   function toolItems(ranked, arg = "") {
@@ -672,10 +676,15 @@ function createLauncher({
     if (!tool) return { ok: false, error: `1 command ${row.id} is not available right now` };
     const takes = Boolean(tool.schema && (tool.schema.required || []).includes("text"));
     if (takes && !arg) return { ok: false, error: `${tool.label} needs words — type them after its name (e.g. >${tool.id.split(".")[0]} …)` };
+    if (!require("./intent-bar.cjs").AUTO.has(tool.effect)) {
+      const armed = armedTool.key === String(key) && now() - armedTool.at < ARM_MS;
+      if (!armed) {
+        armedTool = { key: String(key), at: now() };
+        return { ok: false, needsConfirm: true, error: `Enter again to run: ${tool.label}${arg ? ` “${arg.slice(0, 120)}”` : ""} [${tool.effect}] — Esc cancels` };
+      }
+      armedTool = { key: "", at: 0 };
+    }
     if (row.id === "agent.ask") return runAsk(arg || query);
-    // A row that changes, sends or spends runs from `>` only because the owner picked
-    // THAT row by name and pressed Enter -- that Enter is the confirm. Plans (Do it)
-    // never take this path: they stop at their confirm line.
     const sw = require("./search-window.cjs");
     const verdict = await run(row.id, takes ? arg : undefined);
     const bad = sw.failureOf(verdict, "desk command");

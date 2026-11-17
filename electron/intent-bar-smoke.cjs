@@ -78,7 +78,7 @@ app.whenReady().then(async () => {
   }
   const rows = () => js("[...document.querySelectorAll('#results .row')].map((r) => r.innerText.replace(/\\s+/g, ' ').trim())");
 
-  await type("", 600);
+  await type("", 4000);
   const emptyRows = await rows();
   expect("the empty box lists Pinned and Recent", emptyRows.some((r) => /★ Fleet window/.test(r)) && emptyRows.some((r) => /Snip a region/.test(r)), emptyRows.slice(0, 6));
   await shot("1-empty-pinned-recent");

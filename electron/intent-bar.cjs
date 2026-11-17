@@ -59,10 +59,21 @@ const READ_IDS = Object.freeze(new Set([
   "models.status", "arc.status", "blog.list", "blog.show", "aeon.state", "fairy.counts", "sprite.status",
   "aw.git.status", "aw.memory.recall", "aw.graph.query", "aw.recover", "about",
 ]));
-/** Sends: the words leave this desk for someone else's eyes (a session, the relay, a share). */
+/** Sends: the words, the screen or a capture leave this desk (a session, the relay, a model, a share). */
 const SEND_IDS = Object.freeze(new Set([
   "room.steer", "spirit.go", "send.last", "sprite.teach", "assist.file.pipeline", "assist.ask-agent",
+  "orb.ask-screen", "spirit.ask-screen", "region.box",
 ]));
+/**
+ * The ONLY rows that run without a confirm although they look like more than a window:
+ * the typed argument just opens a page / a tab / a timer on the owner's own screen.
+ * Every OTHER prompt row is a write unless named above (a typed argument usually
+ * lands somewhere: a pin, a layout, an extension, a card answer). Review of #117.
+ */
+const UI_PROMPT_IDS = Object.freeze(new Set(["browser.go", "browser.search", "browser.tab.switch", "timer.start"]));
+/** Prefixes of ids that change or record something whatever their flags say. */
+const WRITE_PREFIXES = Object.freeze(["record.", "assist.", "awconnect.", "pins.", "gif.pin", "canvas.pin", "browser.extension",
+  "browser.bookmark", "voice.talk", "layout.export", "sandbox."]);
 /** Spends: compute that costs (GPU lanes, long solver runs, a multi-GB install). */
 const SPEND_IDS = Object.freeze(new Set(["fleet.resume", "arc.now", "arc.start", "local.install"]));
 /** Writes: a setting, a file, an account or a persisted layout changes. */
@@ -103,7 +114,7 @@ const KEYWORDS = Object.freeze({
 
 /** The one tool that is not a registry row: hand the words to an agent. */
 const AGENT_TOOL = Object.freeze({
-  id: "agent.ask", label: "Ask an agent (taskbar chat, or a named persona)", group: "talk", effect: "ui",
+  id: "agent.ask", label: "Ask an agent (taskbar chat, or a named persona)", group: "talk", effect: "send",
   schema: Object.freeze({
     type: "object", additionalProperties: false, required: ["text"],
     properties: Object.freeze({
@@ -134,6 +145,9 @@ function effectOf(command) {
   if (c.blog) return c.blog === "list" || c.blog === "show" ? "read" : c.blog === "publish" ? "ui" : "write";
   if (c.destructive) return "write";
   if (c.type === "checkbox" || c.type === "radio") return "write";
+  if (c.assist) return /explain|summarize|ask/.test(id) ? "send" : "write"; // the selection goes to a model / is replaced
+  if (WRITE_PREFIXES.some((p) => id.startsWith(p))) return "write";
+  if (c.prompt && !UI_PROMPT_IDS.has(id)) return "write";
   return "ui";
 }
 
@@ -337,7 +351,7 @@ function parsePlan(answer, tools) {
 
 /** A step as one readable line: "New whiteboard" / "Browser: open an address… “example.com”". */
 function stepLine(step) {
-  const arg = step.args && step.args.text ? ` “${String(step.args.text).slice(0, 80)}”` : "";
+  const arg = step.args && step.args.text ? ` “${String(step.args.text).slice(0, 240)}”` : "";
   const who = step.args && step.args.persona ? ` → ${step.args.persona}` : "";
   return `${step.label}${who}${arg}`;
 }
@@ -352,9 +366,10 @@ function gatePlan(plan, { withContext = false } = {}) {
   const confirm = [];
   for (const step of (plan && plan.steps) || []) {
     const hasArg = step.args && Object.keys(step.args).length > 0;
-    const effect = step.tool === AGENT_TOOL.id && step.args && step.args.persona ? "send" : step.effect;
-    const s = { ...step, effect };
-    if (AUTO.has(effect) && !(withContext && hasArg && effect !== "read")) auto.push(s);
+    const s = { ...step };
+    // Order is kept: once one step waits, every step after it waits too (a later
+    // window may depend on the change before it). Review of #117.
+    if (!confirm.length && AUTO.has(s.effect) && !(withContext && hasArg && s.effect !== "read")) auto.push(s);
     else confirm.push(s);
   }
   const confirmLine = confirm.length
@@ -548,7 +563,9 @@ function createIntentBar({ registry = require("./command-registry.cjs"), ctx = (
     if (!tool) return { ok: false, error: `“${id}” is not a desk tool — list them with desk_tools` };
     const checked = validateArgs(tool, args);
     if (!checked.ok) return { ok: false, error: checked.reason };
-    const effect = tool.id === AGENT_TOOL.id && checked.args.persona ? "send" : tool.effect;
+    const effect = tool.effect;
+    // `confirm` is the CALLER's word that the owner agreed (an agent's own claim);
+    // the owner-side proof is the Alt+Space confirm line, which no agent can press.
     if (!AUTO.has(effect) && !confirm) {
       return { ok: false, needsConfirm: true, effect, error: `${tool.label} ${effect}s — call again with confirm: true once the owner agreed` };
     }

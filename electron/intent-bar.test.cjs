@@ -62,7 +62,7 @@ test("effects: reads and windows run, changes / sends / spends do not", () => {
     "blog.list": "read", "models.status": "read", "arc.status": "read",
     "fleet.gaming": "write", "browser.clear-data": "write", "clipboard.sync.toggle": "write", "desk.restart": "write",
     "copilot-key.toggle": "write", "blog.draft": "write", "card-answer": "write",
-    "room.steer": "send", "send.last": "send", "spirit.go": "send",
+    "room.steer": "send", "send.last": "send", "spirit.go": "send", "agent.ask": "send",
     "fleet.resume": "spend", "arc.now": "spend", "models.full-mesh": "write",
   };
   for (const [id, effect] of Object.entries(expect)) assert.equal(byId(id).effect, effect, id);
@@ -133,25 +133,41 @@ test("parsePlan keeps only registered tools with valid arguments, at most MAX_ST
   assert.equal(ib.parsePlan("I cannot help with that.", TOOLS).ok, false);
 });
 
-test("gatePlan: read/ui run now; write/send/spend wait; screen context makes an argument wait; a persona hand-off is a send", () => {
+test("gatePlan: read/ui run now; write/send/spend wait, and so does every step after them; screen context makes an argument wait", () => {
   const plan = ib.parsePlan({ steps: [
-    { tool: "blog.list" }, { tool: "board.new" }, { tool: "fleet.gaming" }, { tool: "spirit.go", args: { text: "hi" } },
-    { tool: "fleet.resume" }, { tool: "browser.go", args: { text: "example.com" } },
+    { tool: "board.new" }, { tool: "browser.go", args: { text: "example.com" } },
+    { tool: "fleet.gaming" }, { tool: "spirit.go", args: { text: "hi" } }, { tool: "fleet.resume" }, { tool: "note.new" },
   ] }, TOOLS);
   const g = ib.gatePlan(plan);
-  assert.deepEqual(g.auto.map((s) => s.tool), ["blog.list", "board.new", "browser.go"]);
-  assert.deepEqual(g.confirm.map((s) => s.tool), ["fleet.gaming", "spirit.go", "fleet.resume"]);
-  assert.match(g.confirmLine, /^Enter to confirm: .*GPU sleep.*\[write\].*\[send\].*\[spend\] — Esc cancels$/);
+  assert.deepEqual(g.auto.map((s) => s.tool), ["board.new", "browser.go"]);
+  assert.deepEqual(g.confirm.map((s) => s.tool), ["fleet.gaming", "spirit.go", "fleet.resume", "note.new"], "plan order is kept");
+  assert.match(g.confirmLine, /^Enter to confirm: .*GPU sleep.*\[write\].*\[send\].*\[spend\].*New note \[ui\] — Esc cancels$/);
 
   const withCtx = ib.gatePlan(plan, { withContext: true });
   assert.ok(withCtx.confirm.some((s) => s.tool === "browser.go"), "text on screen cannot open an address by itself");
   assert.ok(withCtx.auto.some((s) => s.tool === "board.new"));
 
+  // agent.ask always waits: the Command window runs fleet verbs and spawns an agent (review of #117).
   const handoff = ib.gatePlan(ib.parsePlan({ steps: [
-    { tool: "agent.ask", args: { text: "status?" } }, { tool: "agent.ask", args: { text: "status?", persona: "atlas" } },
+    { tool: "agent.ask", args: { text: "fleet down" } }, { tool: "agent.ask", args: { text: "status?", persona: "atlas" } },
   ] }, TOOLS));
-  assert.equal(handoff.auto.length, 1);
-  assert.equal(handoff.confirm[0].effect, "send");
+  assert.equal(handoff.auto.length, 0);
+  assert.deepEqual(handoff.confirm.map((s) => s.effect), ["send", "send"]);
+});
+
+test("rows that record, send the screen, or keep a typed argument never run without the confirm (review of #117)", () => {
+  for (const id of ["orb.ask-screen", "record.region", "record.screen", "voice.talk", "browser.extension.add", "awconnect.setup",
+    "browser.bookmark-page", "canvas.pin-url", "assist.rewrite", "assist.reply", "assist.explain", "pins.add", "gif.pin", "layout.save"]) {
+    const t = byId(id);
+    if (!t) continue; // a context-dependent row absent for {}
+    assert.ok(!ib.AUTO.has(t.effect), `${id} is ${t.effect}`);
+  }
+  for (const t of TOOLS) {
+    if (t.schema.required && t.schema.required.includes("text") && t.effect === "ui") {
+      // blog.publish only opens the Veil editor for a human to publish.
+      assert.ok(["browser.go", "browser.search", "browser.tab.switch", "timer.start", "blog.publish"].includes(t.id), `${t.id} takes text and runs at once`);
+    }
+  }
 });
 
 test("the plan runner runs the auto steps, holds the rest, and confirm runs exactly what was shown", async () => {

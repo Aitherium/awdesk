@@ -59,6 +59,19 @@ test("`>timer 10m tea` offers the timer row WITH its argument; a prompt row with
   assert.match(refused.error, /needs words/);
 });
 
+test("a `>` row that changes something needs Enter twice on the same row", async () => {
+  const { l, ran } = harness();
+  const r = await l.search(">gpu sleep");
+  const row = r.groups[0].shown.find((i) => /GPU sleep/.test(i.title));
+  assert.match(row.subtitle, /Enter twice/);
+  const first = await l.runRow(row.key, "");
+  assert.equal(first.needsConfirm, true);
+  assert.match(first.error, /^Enter again to run: GPU sleep \(game on\) \[write\]/);
+  assert.deepEqual(ran, []);
+  assert.equal((await l.runRow(row.key, "")).ok, true);
+  assert.deepEqual(ran, [["fleet.gaming", undefined]]);
+});
+
 test("`>adk …` and `>awsh …` are still command lines, not command rows", async () => {
   const { l } = harness();
   const r = await l.search(">awsh status");

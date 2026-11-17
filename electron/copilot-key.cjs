@@ -173,7 +173,12 @@ function createCopilotKey({
     let err = "";
     proc.stderr.setEncoding("utf8");
     proc.stderr.on("data", (chunk) => { err = (err + chunk).slice(-600); });
-    proc.on("error", (error) => { state = { running: false, reason: String((error && error.message) || error), fallback: FALLBACK }; });
+    // A spawn that fails asynchronously (ENOENT, blocked by policy) emits `error` and may
+    // never emit `exit`: drop the child so start() / a restart can try again. Review of #117.
+    proc.on("error", (error) => {
+      if (child === proc) child = null;
+      state = { running: false, reason: String((error && error.message) || error), fallback: FALLBACK };
+    });
     proc.on("exit", (code) => {
       if (child === proc) child = null;
       if (!wanted) { state = { running: false, reason: "off" }; return; }
