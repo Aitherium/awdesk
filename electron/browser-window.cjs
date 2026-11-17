@@ -4217,6 +4217,8 @@ function wireIpc() {
   });
   // A tab's right-click: Pin to canvas, pop out / dock back, close.
   ipcMain.handle("desk:browser-tab-menu", (event, id) => (fromChrome(event) ? tabMenu(Number(id)) : { ok: false }));
+  // The all-tabs button beside +: the way to any tab once the strip scrolls.
+  ipcMain.handle("desk:browser-tabs-menu", (event) => (fromChrome(event) ? tabsMenu() : { ok: false }));
   // aither://canvas: its boards, widgets and live app cards (browser-canvas.cjs).
   getCanvas().wire(ipcMain);
   ipcMain.handle("desk:browser-navigate", async (event, input) => {
@@ -4710,6 +4712,17 @@ function tabMenu(id) {
       : { label: "Pop out into its own window", click: () => popOutTab(id) },
   ];
   if (!tab.pinned) template.push({ label: "Close tab", click: () => closeTab(id) });
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+/** The all-tabs button beside +: every tab by name, the active one checked (browser-tabs.cjs). */
+function tabsMenu() {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const { Menu } = electron();
+  const rows = require("./browser-tabs.cjs").allTabsMenuRows(tabList());
+  if (!rows.length) return { ok: false, error: "no tabs" };
+  const template = rows.map((row) => ({ label: row.label, type: "checkbox", checked: row.checked, click: () => showTab(row.id) }));
   Menu.buildFromTemplate(template).popup({ window: win });
   return { ok: true };
 }

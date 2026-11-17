@@ -546,4 +546,7 @@ test("every layout verb the chrome page sends is one main answers", () => {
   // The tab strip's right-click reaches main through its own channel.
   assert.match(html, /api\.tabMenu\(t\.id\)/);
   assert.match(bw, /"desk:browser-tab-menu"/);
+  // So does the all-tabs button beside + (the way to any tab once the strip scrolls).
+  assert.match(html, /api\.tabsMenu\(\)/);
+  assert.match(bw, /ipcMain\.handle\("desk:browser-tabs-menu"/);
 });

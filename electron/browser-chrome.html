@@ -190,11 +190,26 @@
   #agentlogin-panel .al-row button { width: 22px; padding: 0; flex: none; }
   #agentlogin-panel .note { color: var(--muted); font-size: 11px; }
   body.collapsed #agentlogin-panel { display: none; }
-  .tabs { height: 34px; display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0; background: var(--bg-deep, var(--bg));
-    overflow-x: auto; scrollbar-width: none; }
-  .tab { display: flex; align-items: center; gap: 6px; height: 30px; min-width: 60px; max-width: 220px; flex: 0 1 200px;
+  /* Titles first (owner screenshots 2026-11-16: with 9+ tabs most showed only a dot, the
+     pop-out glyph and x). A tab never shrinks below a readable title; past that the strip
+     SCROLLS (the wheel scrolls it sideways, the active tab is kept in view, a faded edge
+     says more is there) and the all-tabs button lists every tab. + and the all-tabs
+     button sit OUTSIDE the scroller, so they never scroll away. */
+  #tabbar { height: 34px; display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0; background: var(--bg-deep, var(--bg)); }
+  .tabs { flex: 0 1 auto; min-width: 0; height: 30px; display: flex; align-items: flex-end; gap: 2px;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain; }
+  .tabs.more-left { -webkit-mask-image: linear-gradient(to right, transparent, #000 28px); mask-image: linear-gradient(to right, transparent, #000 28px); }
+  .tabs.more-right { -webkit-mask-image: linear-gradient(to left, transparent, #000 28px); mask-image: linear-gradient(to left, transparent, #000 28px); }
+  .tabs.more-left.more-right { -webkit-mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
+  .tab { display: flex; align-items: center; gap: 6px; height: 30px; min-width: 112px; max-width: 220px; flex: 0 1 200px;
     padding: 0 6px 0 10px; border-radius: 8px 8px 0 0; border: 1px solid transparent; border-bottom: 0;
     background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; }
+  /* The extra controls (pop out, share) take a title's room only while the tab is hovered or
+     focused. A popped tab keeps its dock-back arrow and a shared tab its lit mark: those are state. */
+  .tab .x.pop, .tab .x.share:not(.on) { display: none; }
+  .tab:hover .x.pop, .tab:focus-within .x.pop, .tab.popped .x.pop,
+  .tab:hover .x.share, .tab:focus-within .x.share { display: block; }
   .tab:hover { background: var(--surface-900, var(--panel)); color: var(--fg); }
   .tab.active { background: var(--bg); border-color: var(--line); color: var(--fg); }
   .tab .who { width: 7px; height: 7px; border-radius: 50%; flex: none; background: transparent; }
@@ -209,9 +224,11 @@
   .tab.aither .who { background: var(--primary, var(--fg)); opacity: .7; }
   .tab .badge { min-width: 18px; height: 16px; padding: 0 5px; border-radius: 8px; font-size: 10px; line-height: 16px;
     text-align: center; background: var(--destructive); color: var(--fg); flex: none; }
-  #newtab { height: 26px; width: 28px; margin-bottom: 2px; border-radius: 6px; border: 0; background: none;
+  #newtab, #tabsall { height: 26px; width: 28px; margin-bottom: 2px; border-radius: 6px; border: 0; background: none;
     color: var(--muted); cursor: pointer; font-size: 16px; flex: none; }
-  #newtab:hover { color: var(--fg); background: var(--surface-900, var(--panel)); }
+  #tabsall { font-size: 13px; }
+  #tabsall[hidden] { display: none; }
+  #newtab:hover, #tabsall:hover { color: var(--fg); background: var(--surface-900, var(--panel)); }
   .bar { height: 44px; display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
   .bar button { height: 30px; min-width: 30px; border-radius: 8px; border: 1px solid var(--line);
     background: var(--btn); color: var(--fg); cursor: pointer; }
@@ -305,8 +322,10 @@
   <div id="grip-dock" class="grip row" title="Drag to resize the terminal dock; double-click to open or close it"></div>
   <div id="editor" hidden aria-label="Edit layout"></div>
   <div id="top">
-  <div id="tabs" class="tabs" role="tablist" aria-label="Tabs">
+  <div id="tabbar">
+    <div id="tabs" class="tabs" role="tablist" aria-label="Tabs"></div>
     <button id="newtab" title="New tab" aria-label="New tab">+</button>
+    <button id="tabsall" hidden title="All tabs" aria-label="All tabs" aria-haspopup="menu">&#8964;</button>
   </div>
   <div class="bar">
     <button id="back" title="Back" aria-label="Back">&#8592;</button>
@@ -537,6 +556,37 @@
   // Idle, the indicator dot IS the take-over control (the button shows while an agent drives).
   $("banner").onclick = (e) => { if ($("banner").classList.contains("idle") && e.target.tagName !== "BUTTON") api.takeOver(); };
 
+  // The strip scrolls once its tabs reach their minimum width. Then: the wheel scrolls it
+  // sideways, a faded edge says more is there, the all-tabs button (a menu main draws)
+  // reaches any tab, and the active tab is kept in view when it CHANGES -- never on every
+  // state push, which would yank the strip back while the owner scrolls through it.
+  function stripOverflow() {
+    const strip = $("tabs");
+    const over = strip.scrollWidth > strip.clientWidth + 1;
+    $("tabsall").hidden = !over;
+    strip.classList.toggle("more-left", over && strip.scrollLeft > 1);
+    strip.classList.toggle("more-right", over && strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1);
+  }
+  function keepInView(tab) {
+    const strip = $("tabs");
+    const r = tab.getBoundingClientRect();
+    const s = strip.getBoundingClientRect();
+    if (r.left < s.left) strip.scrollLeft -= s.left - r.left + 24;
+    else if (r.right > s.right) strip.scrollLeft += r.right - s.right + 24;
+  }
+  $("tabs").addEventListener("wheel", (e) => {
+    const strip = $("tabs");
+    if (strip.scrollWidth <= strip.clientWidth + 1) return;
+    const d = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+    if (!d) return;
+    e.preventDefault();
+    strip.scrollLeft += d;
+  }, { passive: false });
+  $("tabs").addEventListener("scroll", stripOverflow, { passive: true });
+  window.addEventListener("resize", stripOverflow);
+  $("tabsall").onclick = () => { if (typeof api.tabsMenu === "function") void api.tabsMenu(); };
+  let shownActive = null;
+
   // The strip. A purple dot marks an agent's tab; the agent never drives yours.
   function renderTabs(list) {
     const strip = $("tabs");
@@ -545,7 +595,8 @@
       const tab = document.createElement("div");
       tab.className = "tab" + (t.active ? " active" : "") + (t.by === "agent" ? " agent" : "")
         + (t.pinned ? " pinned" : "") + (t.kind === "internal" || t.kind === "hosted" ? " aither" : "")
-        + (t.private ? " private" : "");
+        + (t.private ? " private" : "") + (t.popped ? " popped" : "");
+      tab.dataset.id = String(t.id);
       tab.setAttribute("role", "tab");
       tab.setAttribute("aria-selected", String(Boolean(t.active)));
       tab.title = (t.by === "agent" ? "Agent's tab: " : "") + (t.label || t.title || t.url || "New tab");
@@ -565,8 +616,9 @@
         tab.append(badge);
       }
       // Pop out into its own window (put it on any monitor); a popped tab docks back.
+      // Shown on hover / focus only (CSS), so a narrow tab keeps its title.
       const pop = document.createElement("button");
-      pop.className = "x";
+      pop.className = "x pop";
       pop.textContent = t.popped ? "\u21a9" : "\u29c9";
       pop.title = t.popped ? "Dock back into the browser" : "Pop out into its own window";
       pop.setAttribute("aria-label", pop.title);
@@ -608,8 +660,13 @@
       tab.tabIndex = 0;
       tab.oncontextmenu = (e) => { e.preventDefault(); void api.tabMenu(t.id); };
       tab.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); api.activateTab(t.id); } };
-      strip.insertBefore(tab, $("newtab"));
+      strip.append(tab);
     }
+    const active = strip.querySelector(".tab.active");
+    const activeId = active ? active.dataset.id : null;
+    if (active && activeId !== shownActive) keepInView(active);
+    shownActive = activeId;
+    stripOverflow();
   }
   $("handback").onclick = () => api.handBack();
 
