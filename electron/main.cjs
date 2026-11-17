@@ -2961,6 +2961,32 @@ function galleryDeps() {
     setRating: (name, value) => rating.setRating(name, value, "owner"),
     onChanged: (reason) => galleryChanged(reason),
     modelUrl: (name) => characterModelUrl(name),
+    vroidBrowse: async (source, keyword, cursor) => {
+      const r = await marketClient.vroidBrowse(source, keyword, cursor);
+      // The same seen-map desk:avatar-install reads: only a listed model can be installed.
+      for (const model of r.models || []) if (model && typeof model.id === "string") vroidSeen.set(model.id, model);
+      while (vroidSeen.size > 500) vroidSeen.delete(vroidSeen.keys().next().value);
+      return r;
+    },
+    vroidRosterName: (id) => avatarLibrarySync.vroidRosterName(id) || "",
+    vroidInstall: async (id) => {
+      const model = vroidSeen.get(id);
+      if (!model) return { ok: false, error: "browse VRoid Hub again, then choose the model" };
+      const tier = require("./vroid-link.cjs").tierOfModel(model);
+      const g = require("./avatar-gallery.cjs");
+      const cap = g.audienceCap(g.readGallery(galleryCastRaw()), { autoSafe: rating.getAutoSafe() });
+      if (!g.tierAllowed(tier, cap)) return { ok: false, error: "not available on this profile" };
+      // Downloaded, never worn: `apply` is a no-op, so it lands in My avatars UNASSIGNED.
+      const r = await avatarLibrarySync.installVroidModel(model, { apply: () => false });
+      if (r.ok) galleryBroadcast();
+      return r.ok ? { ok: true, name: r.name, installed: r.installed } : { ok: false, error: r.reason || "not downloaded" };
+    },
+    vroidLink: async () => require("./vroid-link.cjs").startLink({
+      storeRequest: marketClient.storeRequest,
+      openExternal: (url) => void shell.openExternal(url),
+      onLinked: (res) => { debugLog("VRoid Hub link", res.ok ? "linked" : res.reason); galleryBroadcast(); },
+    }),
+    vroidLinkPaste: async (url) => require("./vroid-link.cjs").finishPasted(url, { storeRequest: marketClient.storeRequest }),
     launchStudio: () => {
       const r = studio.launch();
       if (!r.ok && !r.installed) void shell.openExternal(r.downloadUrl);

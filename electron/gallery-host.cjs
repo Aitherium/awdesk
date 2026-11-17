@@ -205,6 +205,32 @@ function galleryHandlers(getDeps) {
     /** The live 3D preview's model: only a body the audience may see. */
     modelUrl: ({ name } = {}) => (allowed(name) ? { ok: true, url: deps().modelUrl(name) } : { ok: false, error: "not available on this profile" }),
     studio: () => (deps().launchStudio ? deps().launchStudio() : { ok: false, error: "unavailable" }),
+
+    // -- VRoid Hub (slice 2): his hearts / models / staff picks / search through the platform's
+    // broker. A model above the audience is never listed; a download lands UNASSIGNED.
+    vroidBrowse: async ({ source, keyword, cursor } = {}) => {
+      if (!deps().vroidBrowse) return { ok: false, error: "VRoid Hub is not available on this desk" };
+      const r = await deps().vroidBrowse(String(source || "hearts"), String(keyword || ""), String(cursor || ""));
+      const cap = gallery.audienceCap(gallery.readGallery(deps().castRaw()), { autoSafe: Boolean(deps().autoSafe && deps().autoSafe()) });
+      const { models, hidden } = require("./vroid-link.cjs").visibleModels(r.models, cap, gallery.tierAllowed);
+      const installed = new Set(deps().allNames());
+      const named = deps().vroidRosterName || (() => "");
+      return {
+        ok: Boolean(r.ok),
+        linked: r.linked,
+        reason: r.reason || null,
+        next: r.next || "",
+        hidden,
+        models: models.map((m) => ({ ...m, installed: installed.has(named(m.id)) })),
+      };
+    },
+    vroidImage: async ({ url } = {}) => {
+      const data = await require("./vroid-link.cjs").imageData(url);
+      return data ? { ok: true, data } : { ok: false, error: "no picture" };
+    },
+    vroidInstall: async ({ id } = {}) => (deps().vroidInstall ? deps().vroidInstall(String(id || "")) : { ok: false, error: "unavailable" }),
+    vroidLink: async () => (deps().vroidLink ? deps().vroidLink() : { ok: false, error: "unavailable" }),
+    vroidLinkPaste: async ({ url } = {}) => (deps().vroidLinkPaste ? deps().vroidLinkPaste(String(url || "")) : { ok: false, error: "unavailable" }),
   };
 }
 
