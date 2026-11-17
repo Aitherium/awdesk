@@ -181,6 +181,7 @@ function createDeskMcpServer({
   swarm = null,
   onExportPortrait = null,
   onSpawnAvatar = null,
+  onProposeAvatar = null,
   onRemoveAvatar = null,
   onFleet = null,
   onCommand = null,
@@ -653,6 +654,32 @@ function createDeskMcpServer({
         },
       },
       async () => textResult(JSON.stringify(await onExportPortrait())),
+    );
+  }
+
+  if (onProposeAvatar != null) {
+    server.registerTool(
+      "propose_avatar",
+      {
+        title: "Propose a body for a persona",
+        description:
+          "Suggest which installed avatar a persona (aither, atlas, iris, ...) should wear. This only "
+          + "RECORDS a proposal in the owner's avatar gallery; it never changes a body. The owner "
+          + "applies it with one click, and only if its rating suits who is watching.",
+        inputSchema: {
+          persona: z.string().min(1).max(64).describe("The persona id, e.g. atlas."),
+          character: z.string().min(1).max(120).describe("The roster character name (list_characters)."),
+          why: z.string().max(240).optional().describe("One line the owner will read."),
+          by: z.string().max(64).optional().describe("Who proposes it (your agent name)."),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async ({ persona, character, why, by }) => {
+        const p = await onProposeAvatar({ persona, character, why: why || "", by: by || "agent" });
+        return textResult(p
+          ? `Proposed ${character} for ${persona}. The owner decides in the avatar gallery; nothing changed on screen.`
+          : "Not recorded: a persona and a character are both required.");
+      },
     );
   }
 

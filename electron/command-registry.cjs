@@ -515,6 +515,28 @@ const COMMANDS = Object.freeze([
     id: "stage.open", label: "Stage & characters…", group: "avatar",
     surfaces: ["tray", "avatar-menu", "palette"],
   }),
+  // The rogues gallery (owner 2026-11-17: "a proper rogues gallery / persona ... browse and
+  // rotate avatars without a headache"): every body, every persona, the audience profile and
+  // safe mode in one window (console pane "gallery"). Only the owner assigns a body there.
+  Object.freeze({
+    id: "gallery.open", label: "Avatar gallery…", group: "avatar", icon: "users",
+    surfaces: ["tray", "avatar-menu", "palette"],
+  }),
+  // SAFE MODE, the panic switch (owner 2026-11-17: "I can't let my mom, kids or strangers see
+  // this"): only everyone-rated bodies, instantly. ONE key (Scroll Lock -- the classic boss
+  // key); the chord row below holds Ctrl+Alt+Shift+S too, for keyboards without one. Both are
+  // always held (an accelFallback only binds when the first key is refused, and a keyboard
+  // with no Scroll Lock never refuses it).
+  Object.freeze({
+    id: "gallery.safe-mode", label: "Safe mode: family-safe bodies only", menuLabel: "Safe mode (family-safe bodies)",
+    group: "avatar", surfaces: ["tray", "palette"], accel: "Scrolllock",
+    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.safeMode),
+  }),
+  Object.freeze({
+    id: "gallery.safe-mode-chord", label: "Safe mode (Ctrl+Alt+Shift+S)", group: "avatar", surfaces: ["palette"],
+    accel: "Ctrl+Alt+Shift+S", when: () => false,
+    whySingle: "The second key of gallery.safe-mode, for keyboards with no Scroll Lock; no surface of its own.",
+  }),
   // cast.open is the one door onto cast.json (U01) from all three surfaces.
   Object.freeze({
     id: "cast.open", label: "Cast & voices…", group: "avatar",

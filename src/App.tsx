@@ -36,6 +36,7 @@ import {
 
 // aither://space/ (?space=1): its own chunk, so the avatar window never loads the universe.
 const SpaceView = lazy(() => import('./space/SpaceView'));
+const Gallery = lazy(() => import('./gallery/Gallery').then((m) => ({ default: m.Gallery })));
 
 const INITIAL_STATE: VoiceState = {
   activity: 'idle',
@@ -126,8 +127,10 @@ export function App() {
   // ONE hook, then the returns: a second useState after `if (isDeck) return`
   // was itself the conditional-hook shape this comment warns about (lint
   // measured it again 2026-09-18).
-  const [mode] = useState<'deck' | 'characters' | 'chat' | 'space' | 'avatar'>(() => {
+  const [mode] = useState<'deck' | 'characters' | 'chat' | 'space' | 'gallery' | 'avatar'>(() => {
     const params = new URLSearchParams(window.location.search);
+    // ?gallery=1 -- the rogues gallery (owner 2026-11-17): every body, every persona, who may see them.
+    if (params.get('gallery') === '1') return 'gallery';
     // ?space=1 -- the BeadSpace universe, the console's first Now pane.
     if (params.get('space') === '1') return 'space';
     if (params.get('deck') === '1') return 'deck';
@@ -141,6 +144,13 @@ export function App() {
     return (
       <Suspense fallback={null}>
         <SpaceView />
+      </Suspense>
+    );
+  }
+  if (mode === 'gallery') {
+    return (
+      <Suspense fallback={null}>
+        <Gallery />
       </Suspense>
     );
   }
