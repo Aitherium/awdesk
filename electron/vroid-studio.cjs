@@ -102,7 +102,9 @@ function exportFolders({ home = os.homedir() } = {}) {
 
 /** A roster folder name for a file: lowercase slug, never empty. */
 function slugFor(file) {
-  const base = path.basename(String(file || ""), path.extname(String(file || "")))
+  // Split on BOTH separators: a Windows path handed to a POSIX runner (CI) is one segment to path.basename.
+  const leaf = String(file || "").split(/[\\/]/).pop() || "";
+  const base = leaf.replace(/\.[^.]*$/, "")
     .normalize("NFKD").replace(/[^\w-]+/g, "-").replace(/_/g, "-").replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "").toLowerCase();
   return (base || "vroid-avatar").slice(0, 60);

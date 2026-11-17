@@ -54,7 +54,10 @@ test("an import is unrated, unassigned, and never overwrites a body he has", () 
 
 test("the export watch fires once per NEW settled .vrm and never backfills an old file", async () => {
   const handlers = [];
-  const sizes = { "D:\\dl\\new.vrm": [10, 20, 20], "D:\\dl\\old.vrm": [5, 5] };
+  // path.join, not a literal: on a POSIX runner the watcher joins with "/" (CI, 2026-11-17).
+  const NEW = path.join("D:\\dl", "new.vrm");
+  const OLD = path.join("D:\\dl", "old.vrm");
+  const sizes = { [NEW]: [10, 20, 20], [OLD]: [5, 5] };
   const t0 = 1_000_000;
   const got = [];
   const w = studio.watchExports({
@@ -72,5 +75,5 @@ test("the export watch fires once per NEW settled .vrm and never backfills an ol
   handlers[0]("change", "new.vrm");
   await new Promise((r) => setTimeout(r, 40));
   w.stop();
-  assert.deepEqual(got, ["D:\\dl\\new.vrm"]);
+  assert.deepEqual(got, [NEW]);
 });
