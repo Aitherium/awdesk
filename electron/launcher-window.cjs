@@ -187,6 +187,12 @@ function createLauncher({
   // actions and choosing one inserts / replaces at that caret. Null or no text = Alt+Space is
   // exactly what it was.
   assist = null,
+  // Talk mode "hold" (Settings -> Talk mode -> Hold): the HOLD gesture is push-to-talk --
+  // Alt+Space down starts listening, the keyup (the radial reports it) stops and sends.
+  // A tap still opens the launcher, because that decision was already made before the
+  // hold timer fires. Null = Alt+Space-only launcher, exactly as before.
+  onHoldStart = null,
+  onHoldEnd = null,
   // () => cards list (decision-cards.listSnapshot()). The empty box leads with
   // "Needs you (N)" -- the owner's cards ARE the reason to press the key -- and
   // the foreground-window group follows. Null = no card group.
@@ -331,13 +337,19 @@ function createLauncher({
   function enterRadial() {
     clearTimers();
     phase = "radial-hold";
+    if (typeof onHoldStart === "function") { try { onHoldStart(); } catch { /* voice optional */ } }
     if (alive()) win.hide();
     const opened = quickMenu.openRadial({
       at: screen.getCursorScreenPoint(),
       hold: true,
-      onDone: () => { phase = "idle"; lastPressAt = pressAt; releasedAt = now(); },
+      onDone: () => {
+        phase = "idle"; lastPressAt = pressAt; releasedAt = now();
+        if (typeof onHoldEnd === "function") { try { onHoldEnd(); } catch { /* voice optional */ } }
+      },
     });
     if (!opened || !opened.ok) {
+      // No radial, so no keyup will come through it: end the hold here.
+      if (typeof onHoldEnd === "function") { try { onHoldEnd(); } catch { /* voice optional */ } }
       // No radial actions in this build: a hold is still a usable launcher.
       phase = "idle";
       showAtCursor();
