@@ -161,7 +161,7 @@ function onDesk(d, name) {
   }
 }
 
-/** Pull: fill this desk's EMPTY agent rows the way the catalog says (`replace: true` also replaces). */
+/** Pull: fetch the models the catalog names; only `replace: true` (the person's own act) writes a row. */
 async function syncFromCatalog(deps = {}) {
   const d = defaults(deps);
   const cat = await d.client.avatarCatalog(deps.clientDeps);
@@ -205,6 +205,13 @@ async function syncFromCatalog(deps = {}) {
       continue;
     }
     const changed = current !== ensured.name;
+    // 🚩 An AUTOMATIC pull never puts a body on anyone (owner 2026-11-17: "I can't have Aither/bots
+    // randomly selecting avatars"). The catalog is writable by agents; what it says is a PROPOSAL
+    // the owner applies with one click. Only `replace` -- the person's own "sync now" -- writes.
+    if (changed && deps.replace !== true) {
+      results.push({ agent, ok: true, name: current || null, installed: ensured.installed, changed: false, proposed: ensured.name, reason: "the catalog proposes a body; only the owner applies it" });
+      continue;
+    }
     if (changed) {
       d.agents.setAgentAvatar(agent, ensured.name);
       notePulled(deps, agent, ensured.name); // only a row THIS pull wrote counts as pulled (review of #104)

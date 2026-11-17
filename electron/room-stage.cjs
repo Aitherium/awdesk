@@ -38,7 +38,7 @@
  * paced onto one speaker at a time (the queue/cooldown/drain loop).
  */
 
-const { originOf, stableCharacter, stableVoice } = require("./cast-config.cjs");
+const { originOf, stableVoice } = require("./cast-config.cjs");
 
 const DEFAULT_ROOM = "main";
 const DEFAULT_IDLE_MS = 10 * 60 * 1000;
@@ -120,18 +120,6 @@ function voiceFor(seed, resolution) {
     return resolution.voice.trim();
   }
   return stableVoice(seed, VOICES);
-}
-
-/**
- * pickCharacter — a body for a seed with no configured character. Thin
- * wrapper over cast-config.stableCharacter (rendezvous-hash, not a modulo
- * index — see that function's doc for why a modulo re-indexes every agent
- * the moment the roster or the taken set changes). Kept here, and exported,
- * because ensureSlot's tests exercise it directly; the resolver (io.resolve)
- * is the one that actually calls it in production, with the live roster.
- */
-function pickCharacter(seed, roster, { taken = [], resident = null } = {}) {
-  return stableCharacter(seed, roster, { taken, resident });
 }
 
 //: A terminal session's transcript line is voiced only when it reads like
@@ -630,7 +618,6 @@ module.exports = {
   RoomStage,
   VOICES,
   idleSlots,
-  pickCharacter,
   readsLikeSpeech,
   selectUtterances,
   shouldVoice,

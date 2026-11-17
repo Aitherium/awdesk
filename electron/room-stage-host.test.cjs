@@ -575,7 +575,7 @@ test("buildResolver: an agent with no cast.json record speaks with its ROSTER vo
   const atlas = resolve({ author: "atlas", actorId: "a1", actorKind: "agent" });
   assert.equal(atlas.voice, "en-US-MichelleNeural");
   assert.equal(atlas.voiceFrom, "roster.atlas.voice");
-  assert.equal(atlas.character, "Luna");
+  assert.equal(atlas.character, null, "owner 2026-11-17: a declared body is never worn without the owner");
   const hydra = resolve({ author: "hydra", actorId: "h1", actorKind: "agent" });
   assert.equal(hydra.voice, "en-US-AnaNeural");
   assert.equal(hydra.voiceFrom, "authors.hydra.voice");

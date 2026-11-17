@@ -362,6 +362,8 @@ function createSwarmHost({
       look("slot0", row);
       positions.set("slot0", after.slot0);
     } else {
+      // No owner-assigned body: stay a fairy (owner 2026-11-17). Checked BEFORE the stage moves.
+      if (!row || !row.character) return { ok: false, error: `${agentId} has no body chosen; it stays a fairy until you pick one in the gallery` };
       if (!bodyIds().includes("slot0")) setResidentVisible(false);
       prepareStage(ids);
       const ok = avatar.spawnSlot(slotId, row.character, agentId, { position: [after[slotId], 0, 0], scale: first[0].scale, yaw: first[0].yaw });

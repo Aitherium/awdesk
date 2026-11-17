@@ -78,7 +78,7 @@ const AUTHORS = {
 };
 const CHARS = new Set(["aither-v2", "aither-m", "aither-90044575", "charlie-5e48d775", "hera"]);
 
-test("identity: colour from the shared palette, body and voice from cast.json, default body otherwise", () => {
+test("identity: colour from the shared palette, body and voice from cast.json, NO body otherwise", () => {
   const roster = swarm.withIdentity(swarm.mergeRoster([
     { id: "aither", kind: "persona", source: "discord" },
     { id: "atlas", kind: "persona", source: "discord" },
@@ -92,7 +92,8 @@ test("identity: colour from the shared palette, body and voice from cast.json, d
   assert.equal(by.atlas.character, "charlie-5e48d775");
   assert.equal(by.atlas.color, "#a3a3a3");
   assert.equal(by.hera.voice, null); // no authored voice: voice-resolve gives a stable one at speak time
-  assert.equal(by.lyra.character, swarm.DEFAULT_BODY); // not installed -> the default female body
+  assert.equal(by.lyra.character, ""); // not installed and nothing else assigned -> no body, a fairy (owner 2026-11-17)
+  assert.equal(by["session-aaaa"].character, ""); // a session is never dressed by default
   assert.match(by["session-aaaa"].color, /^#[0-9a-f]{6}$/);
   assert.equal(by["session-aaaa"].belongsTo, "aither");
   assert.equal(by["session-aaaa"].light, true);

@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { VRM, VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { holdModel, releaseModel } from './vrmLifetime';
+import { heightNormFactor } from '../body-norm';
 
 /** VRoid exports routinely omit gravityPower — VRM 1.0's default is 0 — and a
  *  zero-gravity spring keeps its chain's AUTHORED rest direction forever. The
@@ -218,7 +219,10 @@ export function sanitizeSpringTuning(raw: unknown): DeskSpringTuning {
 }
 
 export function applySpringScale(vrm: VRM, worldScale: number, tuning: DeskSpringTuning = DEFAULT_SPRING_TUNING) {
-  const s = Number.isFinite(worldScale) && worldScale > 0 ? worldScale : 1;
+  // The height normalisation (body-norm.ts) scales vrm.scene itself; the springs are blind to
+  // it exactly like the layout scale, so both multiply into the one compensation.
+  const norm = Number(vrm.scene?.userData?.deskHeightNorm);
+  const s = (Number.isFinite(worldScale) && worldScale > 0 ? worldScale : 1) * (Number.isFinite(norm) && norm > 0 ? norm : 1);
   const manager = vrm.springBoneManager as unknown as {
     joints?: Set<{
       bone?: DeskNamedNode;
@@ -402,6 +406,28 @@ export function applyOverlayEdges(root: THREE.Object3D): number {
   return changed;
 }
 
+/** The head bone's height above the feet, in the model's own units at rest. NaN when the
+ *  model has no humanoid head (then nothing is normalised). */
+export function measureHeadHeight(vrm: VRM): number {
+  const humanoid = vrm.humanoid;
+  if (!humanoid || !vrm.scene) return Number.NaN;
+  vrm.scene.updateMatrixWorld(true);
+  const head = humanoid.getRawBoneNode('head');
+  if (!head) return Number.NaN;
+  const y = (node: THREE.Object3D | null | undefined) => (node ? node.getWorldPosition(new THREE.Vector3()).y : Number.NaN);
+  const feet = [y(humanoid.getRawBoneNode('leftFoot')), y(humanoid.getRawBoneNode('rightFoot'))].filter(Number.isFinite);
+  const floor = Math.min(0, ...feet);
+  return y(head) - floor;
+}
+
+/** Scale vrm.scene so its head height sits in the persona band; records the factor for the springs. */
+export function applyHeightNorm(vrm: VRM): number {
+  const factor = heightNormFactor(measureHeadHeight(vrm));
+  vrm.scene.userData.deskHeightNorm = factor;
+  if (factor !== 1) vrm.scene.scale.setScalar(factor);
+  return factor;
+}
+
 export function useVrmLoader(url: string): VRM | null {
   const gltf = useLoader(GLTFLoader, url, (loader) => {
     loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -420,6 +446,9 @@ export function useVrmLoader(url: string): VRM | null {
     // placement layer (Scene.tsx, handed the VRM through Avatar's onReady)
     // can rescale them idempotently.
     applySpringScale(loaded, 1);
+    // No giant or doll-sized bodies (owner P0 2026-11-17): the native height is pulled into
+    // the persona band AFTER the authored spring values are recorded at scale 1.
+    applyHeightNorm(loaded);
     return loaded;
   }, [gltf]);
 

@@ -14,10 +14,18 @@ function roster() {
     swarm.goblinRow(),
     { id: "session-aaaa1111", label: "Music video", kind: "session", state: "waiting", source: "sessions" },
     { id: "remote-box", label: "box", kind: "remote", source: "remote" },
-  ]), { authors: { atlas: { character: "charlie-5e48d775", voice: "en-US-MichelleNeural" } }, characters: new Set(["aither-v2", "aither-m", "charlie-5e48d775", "hera"]) });
+  ]), { authors: OWNER_AUTHORS, characters: new Set(["aither-v2", "aither-m", "charlie-5e48d775", "hera"]) });
 }
 
-function harness({ spawnOk = true } = {}) {
+/** The bodies the OWNER assigned (cast.json authors). Since 2026-11-17 nothing else grows a body. */
+const OWNER_AUTHORS = Object.freeze({
+  atlas: { character: "charlie-5e48d775", voice: "en-US-MichelleNeural" },
+  hera: { character: "hera" },
+  "session-aaaa1111": { character: "aither-m" },
+  "remote-box": { character: "aither-v2" },
+});
+
+function harness({ spawnOk = true, rows = null } = {}) {
   const sent = [];
   const spoke = [];
   const audio = [];
@@ -38,7 +46,7 @@ function harness({ spawnOk = true } = {}) {
   };
   const goblinState = { summoned: false };
   const host = createSwarmHost({
-    reader: { read: async () => ({ roster: roster(), sources: { discord: { ok: true } }, at: 1 }) },
+    reader: { read: async () => ({ roster: rows || roster(), sources: { discord: { ok: true } }, at: 1 }) },
     avatar: {
       window: () => win,
       savedSize: () => ({ width: 420, height: 640 }),
@@ -150,11 +158,11 @@ test("light mode: grow-all grows the Aitherium agents only (terminals and remote
   assert.ok(full.changed.includes("session-aaaa1111") && full.changed.includes("remote-box"));
 });
 
-test("a single named terminal can always be grown, even in light mode", async () => {
+test("a single named terminal the owner gave a body can always be grown, even in light mode", async () => {
   const h = harness();
   const r = await h.host.setAgentForm("session-aaaa1111", "avatar");
   assert.equal(r.ok, true);
-  assert.equal(h.calls.find((c) => c[0] === "spawn")[2], swarm.DEFAULT_BODY);
+  assert.equal(h.calls.find((c) => c[0] === "spawn")[2], "aither-m", "the body the owner assigned, nothing else");
 });
 
 test("the goblin is summoned and dismissed on demand", async () => {
@@ -322,4 +330,18 @@ test("stages by direct manipulation: a body dropped on another joins, the render
   const cleared = h.sent.filter((e) => e.type === "stage-groups");
   assert.deepEqual(cleared[cleared.length - 1].groups, [], "the handle goes with the stage");
   assert.equal(h.host.leaveSlot("slotNope").ok, false);
+});
+
+test("owner P0 2026-11-17: a session with no owner-assigned body never grows one; it stays a fairy", async () => {
+  const rows = swarm.withIdentity(swarm.mergeRoster([
+    { id: "aither", kind: "persona", bot: true, source: "discord" },
+    { id: "session-bf1f", label: "room-custom-name-server-butto-bf1f", kind: "session", source: "sessions" },
+  ]), { authors: {}, characters: new Set(["aither-v2", "gold-kitsune", "session-bf1f"]) });
+  const session = rows.find((r) => r.id === "session-bf1f");
+  assert.equal(session.character, "", "not even a model named like the session");
+  const h = harness({ rows });
+  const r = await h.host.setAgentForm("session-bf1f", "avatar");
+  assert.equal(r.ok, false);
+  assert.match(r.error, /no body chosen/);
+  assert.equal(h.calls.filter((c) => c[0] === "spawn").length, 0, "nothing was spawned");
 });

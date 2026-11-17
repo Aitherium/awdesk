@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Canvas, createPortal } from '@react-three/fiber';
+import { Canvas, createPortal, useFrame } from '@react-three/fiber';
 import { useThree } from '@react-three/fiber';
 import { Environment, Html, OrbitControls } from '@react-three/drei';
 import dawnEnvironment from '@pmndrs/assets/hdri/dawn.exr';
@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { Avatar, type AvatarProps } from './Avatar';
 import type { AnimationType } from '../animation-catalog';
 import { calculateFullBodyFraming } from '../camera-framing';
+import { clampBodyScale, outsideView } from '../body-norm';
 import { POSITION_BOUND, useAvatarLayout, type AvatarTransform } from '../hooks/useAvatarLayout';
 import { arrange, isArrangement } from '../stage/arrangements';
 import { dropTarget, sanitizeGroups, type StageGroup } from '../stage/stage-direct';
@@ -30,9 +31,16 @@ import { sanitizeDeskInjuries, useInjuryOverlay, type DeskInjuries } from '../in
  *  One render is all it needs; a second is generous and keeps a placement for a
  *  slot that never spawns from lingering into the next body that reuses the id. */
 const PLACE_PENDING_MS = 1000;
-const MIN_SCALE = 0.3;
-const MAX_SCALE = 3;
-const clampScale = (value: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, value));
+/** True while any pointer button is down in this window: the fit watch never re-frames under a drag. */
+let pointerHeld = false;
+if (typeof window !== 'undefined') {
+  window.addEventListener('pointerdown', () => { pointerHeld = true; }, true);
+  window.addEventListener('pointerup', () => { pointerHeld = false; }, true);
+  window.addEventListener('blur', () => { pointerHeld = false; });
+}
+/** No giant bodies (owner P0 2026-11-17): the wheel AND every stored/authored scale are clamped
+ *  to body-norm's [0.3, 1.25] -- the old 3x cap let a session body tower over the desk. */
+const clampScale = clampBodyScale;
 /** The caption's anchor, in the HEAD BONE's own space: just over the crown.
  *  It used to be a guessed height in the avatar group's units (1.78, "a VRM is
  *  about 1.6 tall"), and on the real desk that landed ~290 px above the head and
@@ -116,7 +124,9 @@ function FullBodyCamera({
   // framing until "Frame everyone" clears it, which is the least surprising hold.
   const framed = focusUuid ? objects.filter((o) => o.uuid === focusUuid) : objects;
 
-  useLayoutEffect(() => {
+  // Frame the union of `framed`. Shared by the layout effect (the set or the window changed)
+  // and the fit watch below (a body moved, grew or loaded outside the frame).
+  const frame = useCallback((mustFit = false) => {
     const { camera, controls } = getThreeState();
     if (
       framed.length === 0 ||
@@ -145,7 +155,7 @@ function FullBodyCamera({
       camera.fov,
       camera.aspect,
       1.12,
-      framed.length > 1 ? 1 : 1.5,
+      framed.length > 1 || mustFit ? 1 : 1.5,
     );
     camera.position.copy(framing.position);
     camera.near = Math.max(0.01, framing.distance / 100);
@@ -155,9 +165,36 @@ function FullBodyCamera({
     camera.updateMatrixWorld();
     controls.target.copy(framing.target);
     controls.update();
+  }, [framed, getThreeState]);
+
+  useLayoutEffect(() => {
+    frame();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- objectsKey stands in for objects' identities
   }, [controlsReady, getThreeState, objectsKey, focusUuid, size.width, size.height]);
 
+  // 🚩 NO BODY SLICED AT THE WINDOW EDGE (owner P0 2026-11-17: a stage showed a body cut in half).
+  // The frame above is computed when the SET of bodies changes; a body placed, tweened, grown or
+  // finished loading afterwards could stand outside it. Twice a second, while no button is held
+  // (a drag owns the camera's frame of reference), a body whose projected box leaves the view
+  // re-frames the stage so everything fits. One body is framed at zoom 1.5 on purpose (it fills
+  // the window top to bottom), so for one body only a SIDEWAYS overflow counts.
+  const lastFitCheck = useRef(0);
+  useFrame(({ camera, clock }) => {
+    if (framed.length === 0 || pointerHeld) return;
+    const t = clock.getElapsedTime();
+    if (t - lastFitCheck.current < 0.5) return;
+    lastFitCheck.current = t;
+    const box = new THREE.Box3();
+    for (const object of framed) box.union(new THREE.Box3().setFromObject(object));
+    if (box.isEmpty()) return;
+    const corners: Array<{ x: number; y: number; z: number }> = [];
+    for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) {
+      const p = new THREE.Vector3(x, y, z).project(camera);
+      corners.push(framed.length > 1 ? p : { x: p.x, y: 0, z: p.z });
+    }
+    // A 2% allowance: the frame's own depth padding must not read as a clip and re-frame forever.
+    if (outsideView(corners, -0.02)) frame(true);
+  });
   return null;
 }
 
@@ -364,13 +401,13 @@ function PlacedAvatar({ slotId, transform, onDrag, onDragMove, onDropped, onScal
     const group = groupRef.current;
     if (!group) return;
     group.position.set(...transform.position);
-    group.scale.setScalar(transform.scale);
+    group.scale.setScalar(clampBodyScale(transform.scale));
     group.rotation.y = transform.yaw ?? 0;
     // The layout scale is what the springs cannot see (applySpringScale): a
     // persisted 0.4 shoved every hair chain out over a 2.5x-too-big head
     // collider on every boot (owner, 2026-09-13). Re-derive the spring
     // constants from the SAME number that scaled the group, in the same effect.
-    if (vrmRef.current) applySpringScale(vrmRef.current, transform.scale, physicsRef.current);
+    if (vrmRef.current) applySpringScale(vrmRef.current, clampBodyScale(transform.scale), physicsRef.current);
     // Keyed on the VALUES: a slot with no stored layout gets a fresh default
     // object every render, and an identity dep re-ran this (and the spring
     // rescale over every joint) on each one.
@@ -382,7 +419,7 @@ function PlacedAvatar({ slotId, transform, onDrag, onDragMove, onDropped, onScal
   // without touching the layout. Keyed on the values for the same reason as above.
   const p = physics ?? DEFAULT_SPRING_TUNING;
   useEffect(() => {
-    if (vrmRef.current) applySpringScale(vrmRef.current, transformRef.current.scale, physicsRef.current);
+    if (vrmRef.current) applySpringScale(vrmRef.current, clampBodyScale(transformRef.current.scale), physicsRef.current);
   }, [p.enabled, p.weight, p.stiffness, p.damping, p.jiggle]);
 
   // The recipe changes on its own clock (a fork edited while the desk runs).
@@ -429,7 +466,7 @@ function PlacedAvatar({ slotId, transform, onDrag, onDragMove, onDropped, onScal
       // The model usually lands AFTER the layout effect restored the scale, so
       // the compensation must also run here, with the scale the group already has.
       vrmRef.current = vrm ?? null;
-      if (vrm) applySpringScale(vrm, transformRef.current.scale, physicsRef.current);
+      if (vrm) applySpringScale(vrm, clampBodyScale(transformRef.current.scale), physicsRef.current);
       // The fork's own look, on the shared mesh. Before onReady, so nothing
       // downstream measures the body at its un-customised proportions.
       if (vrm) applyCustomise(vrm, customiseRef.current);
@@ -446,7 +483,7 @@ function PlacedAvatar({ slotId, transform, onDrag, onDragMove, onDropped, onScal
     <group
       ref={groupRef}
       position={transform.position}
-      scale={transform.scale}
+      scale={clampBodyScale(transform.scale)}
     >
       {ready ? (
         <mesh

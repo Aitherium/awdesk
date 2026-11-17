@@ -1343,49 +1343,22 @@ function seatIndexFor(state, { author, actorId } = {}) {
   return arrivals.length - 1;
 }
 
-// ─── the stable hashes ───────────────────────────────────────────────────────
+// ─── no automatic body, ever ─────────────────────────────────────────────────
 
 /**
- * characterOrder — the order a seed prefers the roster in. A seed-dependent
- * permutation (rendezvous hashing), NOT a modulo index.
- *
- * This is the fix for "the same agent changes body between runs". Two bugs, one
- * cause — a pick whose INDEX depends on the size of the pool:
- *   1. today's pickCharacter filters `taken`/`resident` BEFORE the modulo, so
- *      a newcomer arriving shrinks the pool and re-indexes everyone already on
- *      stage;
- *   2. hashing the seed into `sorted[h % len]` also re-indexes every agent the
- *      moment a character is ADDED to the roster (a new VRM in the directory,
- *      a content pack installed) — the same symptom, on a slower clock.
- * Ranking each name by hash(seedHash:name) removes the length from the
- * arithmetic: taken/resident become SKIPS in a fixed order, and adding a name
- * only moves a seed's pick if the newcomer outranks it (1 in n+1), instead of
- * almost always.
+ * 🚩 A BODY IS ONLY EVER THE OWNER'S CHOICE (owner, 2026-11-17: "I can't have Aither/bots
+ * randomly selecting avatars ... I can't let my mom, kids or strangers see this"). A Claude
+ * Code session actor with no cast row was handed a mature fox-girl model by the rendezvous
+ * hash that lived here (stableCharacter over character-pool.properPool), at 3x size, over
+ * his Discord. The hash, the proper pool and the `defaults.character` fallback are gone:
+ * an actor wears a body only when an owner-written row names it (actors[...] or authors.*),
+ * otherwise it has NO body and stays a fairy. room-stage records that as "no-character".
+ * Agents may PROPOSE a body (the gallery's proposals); only the owner applies one.
+ * no-auto-body.test.cjs asserts no source file can bring the pick back.
  */
-function characterOrder(seed, roster) {
-  // Only PROPER bodies (character-pool.cjs): a hash over the whole library handed a terminal a robot
-  // or a stock sample (owner 2026-11-16). A named row in cast.json is not affected: it names its body.
-  const names = [
-    ...new Set(require("./character-pool.cjs").properPool(roster).filter((n) => typeof n === "string" && n)),
-  ].sort();
-  const seedHash = hash33(String(seed == null ? "" : seed).toLowerCase());
-  return names
-    .map((name) => ({ name, rank: hash33(`${seedHash}:${name}`) }))
-    .sort((a, b) => b.rank - a.rank || (a.name < b.name ? -1 : 1))
-    .map((entry) => entry.name);
-}
-
-/**
- * stableCharacter — a body for a seed with no configured character: the first
- * name in its own preference order that is neither the resident nor already on
- * stage. Pure. null when nothing is free to wear.
- */
-function stableCharacter(seed, roster, { taken = [], resident = null } = {}) {
-  const blocked = new Set([resident, ...(Array.isArray(taken) ? taken : [])].filter(Boolean));
-  for (const name of characterOrder(seed, roster)) {
-    if (!blocked.has(name)) return name;
-  }
-  return null;
+/** Tiers whose `character` the owner wrote for THIS actor. */
+function isOwnerCharacterTier(prefix) {
+  return typeof prefix === "string" && (prefix.startsWith("actors[") || prefix.startsWith("authors."));
 }
 
 /**
@@ -1799,26 +1772,21 @@ function resolveActor(snapshot, ctx = {}) {
     if (roster.includes(value)) return { ok: true, value };
     return { ok: false, reason: "not in the safe roster (content rating / missing model)" };
   };
-  const characterHit = pick("character", (v) => {
-    const verdict = ACTOR_FIELDS.character(v);
-    return verdict.ok ? inRoster(verdict.value) : verdict;
-  });
-  const resident = ctx.resident !== undefined ? ctx.resident : resolveStage(snapshot, { env }).resident;
-  // `defaults.character` is the body of EVERY actor nobody dressed (a terminal session's room actor).
-  // The owner's file carried "kato-straight-title-robot-anime" there since September, and once terminals
-  // stood up as full bodies (2026-11-16) every session wore the white/pink robot. A robot, a droid or a
-  // stock sample is never an automatic body: the default tier is skipped when it names one and the
-  // hash over the PROPER pool decides. A row the owner wrote for a specific agent is not touched.
-  const robotDefault = Boolean(characterHit)
-    && characterHit.from === "defaults.character"
-    && !require("./character-pool.cjs").isProperBody(characterHit.value);
-  let character = characterHit && !robotDefault ? characterHit.value : null;
-  let characterFrom = characterHit && !robotDefault ? characterHit.from : null;
-  if (!character) {
-    const hashed = stableCharacter(seed, roster || [], { taken: ctx.taken || [], resident });
-    character = hashed;
-    characterFrom = hashed ? "hash" : "none";
-  }
+  // Only an owner-written row names a body: never the platform roster tier, never
+  // `defaults.character` (it dressed every undressed actor -- the robot, then the hash).
+  const characterHit = (() => {
+    for (const tier of tiers) {
+      if (!isOwnerCharacterTier(tier.prefix)) continue;
+      const hit = readField(tier.record, "character", tier.prefix, problems, (v) => {
+        const verdict = ACTOR_FIELDS.character(v);
+        return verdict.ok ? inRoster(verdict.value) : verdict;
+      });
+      if (hit) return hit;
+    }
+    return null;
+  })();
+  const character = characterHit ? characterHit.value : null;
+  const characterFrom = characterHit ? characterHit.from : "none";
 
   // ── voice ──
   const voiceHit =
@@ -2259,7 +2227,6 @@ module.exports = {
   SPEED_MIN,
   VOICES,
   channelKey,
-  characterOrder,
   hash33,
   load,
   loadRosterPresence,
@@ -2275,7 +2242,6 @@ module.exports = {
   resolveStage,
   resolveVoice,
   seatIndexFor,
-  stableCharacter,
   stableVoice,
   validateCast,
   validateRosterPresence,

@@ -261,21 +261,13 @@ function buildParty({ castFile = undefined, rosterDir = roster.ROSTER_DIR, now =
   const names = listRoster(rosterDir);
   const problems = loaded.error ? [{ path: "", reason: loaded.error }] : [];
 
-  // Two rosters, on purpose. A CONFIGURED character is judged against the full
-  // roster so an r18 body resolves to itself and is then excluded (below) instead
-  // of being swapped for a hashed one in silence. An UNCONFIGURED row hashes the
-  // way the desk itself does -- into the SAFE roster -- so the gate never makes a
-  // whole actor vanish from the party just because its fallback hash landed on a
-  // hidden body.
-  const safeNames = names.filter((n) => !hiddenNow(ratingOf(readCharacterJson(rosterDir, n))));
-  // The platform-declared voice/character tier (below cast.json authors), so a
-  // party member sounds like the agent it is on a desk that never authored it.
+  // A CONFIGURED character is judged against the full roster so an r18 body resolves to
+  // itself and is then excluded (below) instead of vanishing in silence. There is no
+  // automatic body any more (owner 2026-11-17): an unconfigured row has none.
+  // The platform-declared voice tier (below cast.json authors), so a party member sounds
+  // like the agent it is on a desk that never authored it.
   const agentRoster = cast.loadRosterPresence();
-  const resolve = (ctx) => {
-    const full = cast.resolveActor(snapshot, { roster: names, agentRoster, ...ctx });
-    if (full.characterFrom !== "hash") return full;
-    return cast.resolveActor(snapshot, { roster: safeNames, agentRoster, ...ctx });
-  };
+  const resolve = (ctx) => cast.resolveActor(snapshot, { roster: names, agentRoster, ...ctx });
 
   const rows = [];
   for (const key of Object.keys(cfg.actors || {})) {
