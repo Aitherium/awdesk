@@ -128,7 +128,7 @@
     <span id="chip">Everything</span>
     <input id="input" type="text" spellcheck="false" autocomplete="off"
       placeholder="Search AitherOS apps, PC apps, files, agents, tools, skills, knowledge and the web" aria-label="Aither launcher" />
-    <span id="hint">↑↓ · Tab groups · Enter open · Ctrl+Enter steer · Ctrl+G graph · Esc close</span>
+    <span id="hint">↑↓ · Tab groups · Enter open · &gt; commands · ? ask · @ agent · Ctrl+P pin · Esc close</span>
   </div>
   <div id="results" role="listbox" aria-label="Results"></div>
   <div id="output">
@@ -151,7 +151,7 @@
   const outputTitle = document.getElementById("output-title");
   const outputBody = document.getElementById("output-body");
 
-  const CHIPS = { all: "Everything", command: "> awsh / adk desk", ask: "? Ask Aither", spirit: "@ Spirit" };
+  const CHIPS = { all: "Everything", command: "> Desk commands", ask: "? Ask Aither", spirit: "@ Spirit" };
   // The same line launcher-core.cjs IDLE_STATUS sends (launcher-render.test.cjs holds them equal).
   const IDLE = "Searches AitherOS apps, PC apps, files, desk actions, agents, tools, skills, runs, work, knowledge & memory, calendar, people, clipboard, screenshots, the web · narrow: app, file, agent, tool, skill, mem, web · > run · ? ask · @ spirit";
   const pane = document.getElementById("pane");
@@ -166,7 +166,9 @@
     "fleet-agent": ["open", "steer", "graph"], "local-agent": ["open", "steer", "graph"], twin: ["open", "steer", "graph"],
   };
   // The badge on the right of a row: AitherOS apps and the PC's own apps must not read alike.
-  const KIND_BADGE = { osapp: "AitherOS app", app: "PC app", down: "not answering", ask: "ask Aither", assist: "write" };
+  const KIND_BADGE = { osapp: "AitherOS app", app: "PC app", down: "not answering", ask: "ask Aither", assist: "write", intent: "plan it" };
+  // A desk command's badge says what Enter will do to the world (intent-bar.cjs effects).
+  const EFFECT_BADGE = { read: "reads", ui: "opens", write: "changes", send: "sends", spend: "spends" };
   const VERB_KEYS = { steer: "Ctrl+Enter", stop: "Ctrl+.", transcript: "Ctrl+T", graph: "Ctrl+G", open: "Enter", detail: "Ctrl+I" };
   // Steer mode: the ONE box becomes the message for the chosen row; Esc returns to the search.
   let steer = null; // {key, title, query}
@@ -176,6 +178,8 @@
   let searchTimer = null;
   let lastQuery = "";
   let commandArmed = "";
+  // The intent plan waiting for its confirm line: {id, text}. Enter confirms, Esc cancels.
+  let intentWait = null;
 
   function prefixOf(text) {
     const raw = String(text || "").trim();
@@ -278,7 +282,8 @@
     }
     const kind = document.createElement("span");
     kind.className = "kind";
-    kind.textContent = isCard ? "card" : (KIND_BADGE[item.kind] || String(item.kind || ""));
+    kind.textContent = isCard ? "card" : item.kind === "tool" ? (EFFECT_BADGE[item.effect] || "command")
+      : (KIND_BADGE[item.kind] || String(item.kind || ""));
     row.append(glyph, text);
     if (CC.has(item.kind)) {
       const verbs = document.createElement("span");
@@ -395,7 +400,7 @@
 
   function glyphFor(kind) {
     return ({ app: "▣", osapp: "❖", file: "▤", screenshot: "▦", clip: "▥", action: "◆", agent: "◈", tool: "⚙", skill: "✧",
-      pack: "▨", lane: "⇢", web: "◐", ask: "?", down: "⚠", assist: "✎",
+      pack: "▨", lane: "⇢", web: "◐", ask: "?", down: "⚠", assist: "✎", intent: "⚡",
       session: "❯", run: "▶", "fleet-agent": "◈", "local-agent": "◇", twin: "◎", project: "▧", task: "☐", roadmap: "⚑", pr: "⇄",
       plan: "✎", notebook: "▤", memory: "✦", schedule: "⏱", routine: "↻", event: "◷", person: "☺" })[kind] || "•";
   }
@@ -463,7 +468,7 @@
     const parsed = prefixOf(input.value);
     const term = parsed.term;
     if (row && row.kind === "more") { expand(row.group); return; }
-    if (parsed.mode === "command") { await submitCommand(); return; }
+    if (parsed.mode === "command" && !(row && row.kind === "item" && row.item.kind === "tool")) { await submitCommand(); return; }
     if (parsed.mode === "ask") { await submitAsk(); return; }
     if (parsed.mode === "spirit") { await submitSpirit(); return; }
     if (!row || row.kind !== "item") return;
@@ -481,6 +486,7 @@
       setStatus("This card has no options to take — open the deck to steer it", true);
       return;
     }
+    if (item.kind === "intent") { await submitIntent(term); return; }
     const reply = await window.aitherLauncher.run(item.key, term);
     if (reply && reply.ok === false) {
       setStatus(reply.error || "1 result failed — try it from the palette (Ctrl+K)", true);
@@ -641,6 +647,64 @@
     showOutput(term, reply);
   }
 
+  /** "Do it": plan the sentence, show what ran inline, hold the confirm line for what writes/sends/spends. */
+  async function submitIntent(text) {
+    const body = String(text || "").trim();
+    if (!body) { setStatus("0 words — type what you want done", true); return; }
+    holdStatus(`Planning “${body.slice(0, 60)}” with your desk's tools…`, false);
+    const reply = await window.aitherLauncher.intent(body);
+    showIntent(body, reply);
+  }
+
+  function intentLines(reply) {
+    const lines = [];
+    if (reply.say) lines.push(reply.say, "");
+    for (const r of reply.ran || []) lines.push(`${r.ok ? "✓" : "✗"} ${r.line} — ${r.text}`);
+    if (reply.pending) for (const step of reply.pending.steps || []) lines.push(`… waiting: ${step}`);
+    for (const why of reply.rejected || []) lines.push(`· dropped: ${why}`);
+    if ((reply.context || []).length) lines.push("", `context sent: ${reply.context.join(", ")}`);
+    for (const why of reply.dropped || []) lines.push(`context held back: ${why}`);
+    if (reply.via) lines.push(`planned by ${reply.via === "local-bonsai" ? "the local Bonsai (the platform is down)" : "MicroScheduler"}${reply.model ? ` · ${reply.model}` : ""}`);
+    return lines;
+  }
+
+  function showIntent(body, reply) {
+    if (!reply || reply.ok === false && !(reply.ran || []).length) {
+      intentWait = null;
+      holdStatus((reply && reply.error) || "1 plan failed", true);
+      return;
+    }
+    const lines = intentLines(reply);
+    output.classList.add("open");
+    outputTitle.textContent = `Do it · ${body.slice(0, 70)}`;
+    outputBody.textContent = lines.join("\n") || "(nothing to do)";
+    if (reply.pending) {
+      intentWait = { id: reply.pending.id, text: input.value };
+      holdStatus(reply.pending.line, true);
+      return;
+    }
+    intentWait = null;
+    const ran = (reply.ran || []).length;
+    holdStatus(ran ? `ran ${ran} step${ran === 1 ? "" : "s"}` : "nothing ran — see the plan", !reply.ok);
+  }
+
+  async function confirmIntent() {
+    const wait = intentWait;
+    intentWait = null;
+    const reply = await window.aitherLauncher.intentConfirm(wait.id);
+    if (!reply || reply.ok === false && !(reply.ran || []).length) { holdStatus((reply && reply.error) || "1 confirm failed", true); return; }
+    const lines = intentLines(reply);
+    outputBody.textContent = `${outputBody.textContent}\n\nconfirmed:\n${lines.join("\n")}`;
+    holdStatus(reply.ok ? "done" : "1 step failed — see the output", !reply.ok);
+  }
+
+  async function togglePin(item) {
+    const reply = await window.aitherLauncher.pin(item.key);
+    if (!reply || reply.ok === false) { holdStatus((reply && reply.error) || "1 pin failed", true); return; }
+    holdStatus(reply.did, false);
+    requestSearch(input.value);
+  }
+
   function showOutput(line, reply) {
     output.classList.add("open");
     const exit = reply.timedOut ? "timed out" : `exit ${reply.code}`;
@@ -659,6 +723,22 @@
       if (event.key === "Escape") { event.preventDefault(); leaveSteer(); setStatus("", false); return; }
       if (event.key === "Enter") { event.preventDefault(); void sendSteer(); return; }
       return;
+    }
+    // A plan is waiting on its confirm line: Enter runs exactly those steps, Esc drops them,
+    // and typing anything else drops them too (the line no longer matches the box).
+    if (intentWait) {
+      if (event.key === "Enter" && input.value === intentWait.text) { event.preventDefault(); void confirmIntent(); return; }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        const id = intentWait.id;
+        intentWait = null;
+        void window.aitherLauncher.intentCancel(id).then((r) => holdStatus((r && r.did) || "plan cancelled", false));
+        return;
+      }
+    }
+    if (event.ctrlKey && !event.altKey && (event.key === "p" || event.key === "P")) {
+      const row = selectedRow();
+      if (row && row.kind === "item" && row.item.kind === "tool") { event.preventDefault(); void togglePin(row.item); return; }
     }
     if (event.ctrlKey && !event.altKey) {
       const row = selectedRow();

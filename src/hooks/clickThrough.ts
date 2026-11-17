@@ -14,7 +14,7 @@
  * has reported once, so a renderer that never loads cannot leave a ghost window.
  */
 
-import { hasPicker, pickAt, setHover } from './avatarPick';
+import { hasPicker, PICK_SLOP_PX, pickNear, setHover } from './avatarPick';
 
 let overAvatar = 0;
 let lastSent: boolean | null = null;
@@ -97,9 +97,83 @@ function report(interactive: boolean) {
 export function avatarPointerOver() { overAvatar += 1; report(true); }
 export function avatarPointerOut() { overAvatar = Math.max(0, overAvatar - 1); }
 
+/**
+ * The window's click-through switch, GL-free and unit-tested (clickThrough.test.ts).
+ *
+ * Owner 2026-11-16, P0: a right-click on the avatar's head and shoulders opened the plain Windows
+ * desktop menu. The window only re-decided on a MOUSE MOVE, but the body moves on its own: the idle
+ * sways the head and shoulders under a cursor that is standing still. A cursor that last moved over
+ * a gap stayed "click-through" while the shoulder swayed under it, and the press went to the desktop.
+ * And a mouseleave dropped the window to click-through outright, though the OS sends one whenever the
+ * window flips its own hit-testing while the cursor rests on the body. So now:
+ *   - a resting cursor is re-decided on a short clock (`tick`), not only when it moves;
+ *   - the decision has a few pixels of slack round the body (pickNear, PICK_SLOP_PX);
+ *   - a leave clears the hover but never makes the window click-through by itself (a window that
+ *     stays clickable after the cursor really left covers nothing: the next move into it re-decides);
+ *   - a held button always keeps the window (a drag or a press in flight).
+ */
+export interface ClickThroughDeps {
+  /** The body under (or within the slack of) a point, or null. */
+  bodyAt(x: number, y: number): string | null;
+  /** Is the element under the point only a backdrop (canvas, body, wrappers)? */
+  backdropAt(x: number, y: number): boolean;
+  report(interactive: boolean): void;
+  hover?(slot: string | null): void;
+}
+
+export function createClickThroughController(deps: ClickThroughDeps) {
+  let last: { x: number; y: number } | null = null;
+  let held = false;
+  const decide = () => {
+    if (!last) return;
+    if (held) { deps.report(true); return; }
+    const slot = deps.bodyAt(last.x, last.y);
+    deps.hover?.(slot);
+    deps.report(decideInteractive({ buttons: 0, overAvatar: slot !== null, backdrop: deps.backdropAt(last.x, last.y) }));
+  };
+  return {
+    /** A pointer move (forwarded while the window ignores the mouse, real otherwise). */
+    move(x: number, y: number, buttons: number) {
+      last = { x, y };
+      held = buttons !== 0;
+      decide();
+    },
+    /** A button went down / every button came up. */
+    press(down: boolean) {
+      held = down;
+      if (down) deps.report(true);
+    },
+    /** The clock: the body may have moved under a cursor that did not. */
+    tick() {
+      if (!held) decide();
+    },
+    /** The pointer left the window (or the OS says so while the window flips): hover only. */
+    leave() {
+      deps.hover?.(null);
+    },
+  };
+}
+
+/** How often a resting cursor is re-decided (the idle sways a shoulder ~10 px a second). */
+export const RESTING_RECHECK_MS = 120;
+
 /** Install once per avatar window. Returns the cleanup. */
 export function installClickThrough(): () => void {
   if (!bridge()?.setInteractive) return () => {};
+  const control = createClickThroughController({
+    bodyAt: (x, y) => {
+      if (hasPicker()) return pickNear(x, y, PICK_SLOP_PX);
+      // No GL picker (a solo window, a failed context): the old proxy box + alpha probe.
+      return overAvatar > 0 && paintedAt(x, y) !== false ? 'body' : null;
+    },
+    backdropAt: (x, y) => isBackdrop(document.elementFromPoint(x, y)),
+    report,
+    hover: (slot) => {
+      if (!hasPicker()) return;
+      setHover(slot);
+      document.body.style.cursor = slot ? 'grab' : '';
+    },
+  });
   let pending: { x: number; y: number; buttons: number } | null = null;
   let frame = 0;
   // One pick per animation frame at most: the id render is cheap but not free.
@@ -107,36 +181,28 @@ export function installClickThrough(): () => void {
     frame = 0;
     const m = pending;
     pending = null;
-    if (!m) return;
-    const backdrop = isBackdrop(document.elementFromPoint(m.x, m.y));
-    if (m.buttons !== 0) {
-      // A drag in flight must never lose its window.
-      report(true);
-      return;
-    }
-    let onBody: boolean;
-    if (hasPicker()) {
-      // The pixel under the pointer, and WHOSE it is: a gap between bodies is nobody's.
-      const slot = pickAt(m.x, m.y);
-      setHover(slot);
-      document.body.style.cursor = slot ? 'grab' : '';
-      onBody = slot !== null;
-    } else {
-      // No GL picker (a solo window, a failed context): the old proxy box + alpha probe.
-      onBody = overAvatar > 0 && paintedAt(m.x, m.y) !== false;
-    }
-    report(decideInteractive({ buttons: 0, overAvatar: onBody, backdrop }));
+    if (m) control.move(m.x, m.y, m.buttons);
   };
   const onMove = (e: PointerEvent | MouseEvent) => {
     pending = { x: e.clientX, y: e.clientY, buttons: e.buttons };
     if (!frame) frame = window.requestAnimationFrame(evaluate);
   };
-  // Leaving the window entirely: nothing of ours is under the cursor.
-  const onLeave = () => { overAvatar = 0; setHover(null); document.body.style.cursor = ''; report(false); };
+  const onDown = () => control.press(true);
+  const onUp = (e: MouseEvent) => { if (e.buttons === 0) control.press(false); };
+  const onLeave = () => { overAvatar = 0; control.leave(); };
+  const clock = window.setInterval(() => {
+    if (!document.hidden && !pending) control.tick();
+  }, RESTING_RECHECK_MS);
   window.addEventListener('mousemove', onMove, true);
+  window.addEventListener('mousedown', onDown, true);
+  window.addEventListener('mouseup', onUp, true);
   document.documentElement.addEventListener('mouseleave', onLeave);
   return () => {
+    window.clearInterval(clock);
+    if (frame) window.cancelAnimationFrame(frame);
     window.removeEventListener('mousemove', onMove, true);
+    window.removeEventListener('mousedown', onDown, true);
+    window.removeEventListener('mouseup', onUp, true);
     document.documentElement.removeEventListener('mouseleave', onLeave);
     lastSent = null;
     try { bridge()?.setInteractive?.(true); } catch { /* closing */ }

@@ -1398,6 +1398,21 @@ const COMMANDS = Object.freeze([
     accel: "Ctrl+Alt+H", accelFallback: "Ctrl+Alt+Shift+H",
     surfaces: ["tray", "palette"],
   }),
+  // The intent bar's timers (desk-timers.cjs): `10m tea` ends in a desktop notification.
+  Object.freeze({
+    id: "timer.start", label: "Start a timer…", group: "capture",
+    surfaces: ["palette"],
+    whySingle: "Needs a duration typed; the palette, Alt+Space (`>timer`, or plain words like “set a 10 minute tea timer”), POST /commands/run and the desk MCP server carry it.",
+    prompt: Object.freeze({ placeholder: "10m tea · 90s · 1h30m stretch" }),
+  }),
+  // The keyboard's Copilot key (LWin+LShift+F23) opens the Alt+Space bar instead of
+  // Microsoft Copilot (copilot-key.cjs, a low-level hook in a hidden child). Default on.
+  Object.freeze({
+    id: "copilot-key.toggle", label: "Copilot key opens the Aither bar", group: "capture",
+    surfaces: ["palette"],
+    whySingle: "A one-time preference (owner 2026-11-16: too many tray rows); the palette and Alt+Space are its doors.",
+    type: "checkbox", checked: (ctx = {}) => ctx.copilotKey !== false,
+  }),
   // ONE sheet of every live key (owner 2026-11-07: "every ink, pin and gif action
   // ... with a default key"): what is bound, what fell back, what another app holds.
   Object.freeze({

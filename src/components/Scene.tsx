@@ -17,7 +17,7 @@ import { authoredFields, freeSpot } from '../hooks/stagePlacement';
 import { anyoneAudible } from '../hooks/voiceLevels';
 import { anyVisemes } from '../hooks/voiceVisemes';
 import { avatarPointerOut, avatarPointerOver } from '../hooks/clickThrough';
-import { forgetSlot, hasPicker, pickAt, registerAvatarGroup, setSelected } from '../hooks/avatarPick';
+import { forgetSlot, hasPicker, PICK_SLOP_PX, pickNear, registerAvatarGroup, setSelected } from '../hooks/avatarPick';
 import { AvatarPicker } from './AvatarPicker';
 import { onDragAbort } from '../hooks/dragSafety';
 import type { VRM } from '@pixiv/three-vrm';
@@ -300,6 +300,18 @@ function reportBodyBroken(slotId: string) {
   try { window.deskBridge?.bodyBroken?.(slotId); } catch { /* the bridge is optional */ }
 }
 
+/**
+ * The body a right PRESS landed on: ONE for the window, not one per body (review of #118). The menu
+ * opens on the RELEASE, by when the idle has swayed the body a few pixels: re-picking there missed the
+ * edge of a shoulder, the deck was already silenced, and the right-click opened nothing (2026-11-16).
+ * Every press clears it first (capture phase, before any body's handler), so it never goes stale.
+ */
+let rightPress: { slot: string; at: number } | null = null;
+const RIGHT_PRESS_TTL_MS = 3000;
+if (typeof window !== 'undefined') {
+  window.addEventListener('pointerdown', () => { rightPress = null; }, true);
+}
+
 function PlacedAvatar({ slotId, transform, onDrag, onDragMove, onDropped, onScale, onRotate, avatarProps, onReady, bubble, physics, customise, injuries }: PlacedAvatarProps) {
   const getThreeState = useThree((state) => state.get);
   const groupRef = useRef<THREE.Group>(null);
@@ -343,7 +355,8 @@ function PlacedAvatar({ slotId, transform, onDrag, onDragMove, onDropped, onScal
   /** Is the pixel under this event THIS body's? A gap is nobody's; where bodies overlap the
    *  front-most wins (the depth buffer decided). Without a picker the proxy box stands alone. */
   const isMine = (event: { nativeEvent: MouseEvent | PointerEvent }) =>
-    !hasPicker() || pickAt(event.nativeEvent.clientX, event.nativeEvent.clientY) === slotId;
+    !hasPicker() || pickNear(event.nativeEvent.clientX, event.nativeEvent.clientY, PICK_SLOP_PX) === slotId;
+
 
   // Committed transform -> group, EXCEPT while a drag owns the group imperatively.
   useLayoutEffect(() => {
@@ -442,7 +455,9 @@ function PlacedAvatar({ slotId, transform, onDrag, onDragMove, onDropped, onScal
           onPointerDown={(event) => {
             // Only the body actually painted under the pointer takes the press; the others let
             // it fall through to whatever is behind them (no stopPropagation).
-            if (!isMine(event)) return;
+            const mine = isMine(event);
+            if (mine && event.button === 2) rightPress = { slot: slotId, at: Date.now() };
+            if (!mine) return;
             if (event.button === 0) setSelected(slotId);
             // Tell the preload's window-level right-click handler this click hit an
             // AVATAR (dataset flag on the canvas) so it opens the per-avatar menu via
@@ -584,7 +599,12 @@ function PlacedAvatar({ slotId, transform, onDrag, onDragMove, onDropped, onScal
             // Electron's own menu event — so the per-avatar menu goes through the bridge,
             // same pattern the deck trigger uses. A plain right-CLICK lands here; a
             // right-DRAG turns the body (pointerdown above) and never does.
-            if (!isMine(event)) return;
+            const press = rightPress && Date.now() - rightPress.at < RIGHT_PRESS_TTL_MS ? rightPress : null;
+            if (press) {
+              // The press decided: only the body it landed on opens its menu, whoever is in front now.
+              if (press.slot !== slotId) return;
+              rightPress = null;
+            } else if (!isMine(event)) return;
             event.stopPropagation();
             if (rightTravelRef.current >= 6) return;
             window.deskBridge?.avatarContextMenu(slotId);

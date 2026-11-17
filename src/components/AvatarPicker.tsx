@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { decodeId, registeredGroup, registeredSlots, setPicker, type PickGroup } from '../hooks/avatarPick';
+import { decodeId, nearestIdInPatch, registeredGroup, registeredSlots, setPicker, type PickGroup } from '../hooks/avatarPick';
 
 /**
  * The ID-buffer pick (hooks/avatarPick.ts says why). Mounted inside the Canvas, it hands the
@@ -43,10 +43,15 @@ export function AvatarPicker() {
 
   useEffect(() => {
     let idTarget: THREE.WebGLRenderTarget | null = null;
+    // The click-through's patch pick runs every move and the exact pick every press: each keeps its own
+    // target so they never re-create one another's.
+    let patchTarget: THREE.WebGLRenderTarget | null = null;
+    const makeTarget = (w: number, h: number) =>
+      new THREE.WebGLRenderTarget(w, h, { type: THREE.UnsignedByteType, depthBuffer: true, samples: 0 });
     const ensureTarget = (w: number, h: number) => {
       if (!idTarget || idTarget.width !== w || idTarget.height !== h) {
         idTarget?.dispose();
-        idTarget = new THREE.WebGLRenderTarget(w, h, { type: THREE.UnsignedByteType, depthBuffer: true, samples: 0 });
+        idTarget = makeTarget(w, h);
       }
       return idTarget;
     };
@@ -62,12 +67,19 @@ export function AvatarPicker() {
       }
       return silTarget;
     };
+    const ensurePatch = (size: number) => {
+      if (!patchTarget || patchTarget.width !== size) {
+        patchTarget?.dispose();
+        patchTarget = makeTarget(size, size);
+      }
+      return patchTarget;
+    };
 
     /** Render with `wear` (mesh -> material) applied, everything else hidden; always restores. */
     const renderIds = (
       target: THREE.WebGLRenderTarget,
       wear: Map<MeshLike, THREE.Material>,
-      view: { fullW: number; fullH: number; x: number; y: number } | null,
+      view: { fullW: number; fullH: number; x: number; y: number; w?: number; h?: number } | null,
     ) => {
       const camera = getState().camera as THREE.PerspectiveCamera;
       const swapped: Array<[MeshLike, THREE.Material | THREE.Material[] | undefined]> = [];
@@ -90,7 +102,7 @@ export function AvatarPicker() {
       const prevColor = gl.getClearColor(new THREE.Color());
       const prevAuto = gl.autoClear;
       try {
-        if (view) camera.setViewOffset(view.fullW, view.fullH, view.x, view.y, 1, 1);
+        if (view) camera.setViewOffset(view.fullW, view.fullH, view.x, view.y, view.w ?? 1, view.h ?? 1);
         gl.setRenderTarget(target);
         gl.autoClear = true;
         gl.setClearColor(0x000000, 0);
@@ -136,6 +148,35 @@ export function AvatarPicker() {
           return null;
         }
       },
+      pickNear(clientX: number, clientY: number, radius: number): string | null {
+        const slots = registeredSlots();
+        if (!slots.length) return null;
+        const canvas = gl.domElement;
+        const rect = canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) return null;
+        const r = Math.max(0, Math.min(16, Math.round(radius)));
+        const size = r * 2 + 1;
+        const x = Math.floor(clientX - rect.left);
+        const y = Math.floor(clientY - rect.top);
+        if (x < -r || y < -r || x >= rect.width + r || y >= rect.height + r) return null;
+        const wear = new Map<MeshLike, THREE.Material>();
+        slots.forEach((slotId, i) => {
+          const group = registeredGroup(slotId);
+          if (!group) return;
+          for (const mesh of meshesOf(group)) wear.set(mesh, idMaterial(i + 1));
+        });
+        const target = ensurePatch(size);
+        try {
+          // The patch centred on the pointer: (x - r, y - r) .. (x + r, y + r) of the full view.
+          renderIds(target, wear, { fullW: Math.round(rect.width), fullH: Math.round(rect.height), x: x - r, y: y - r, w: size, h: size });
+          const px = new Uint8Array(size * size * 4);
+          gl.readRenderTargetPixels(target, 0, 0, size, size, px);
+          const index = nearestIdInPatch(px, size, slots.length);
+          return index ? slots[index - 1] : null;
+        } catch {
+          return null;
+        }
+      },
       silhouette(slotId: string, scale = 0.5) {
         const group = registeredGroup(slotId);
         if (!group) return null;
@@ -168,6 +209,8 @@ export function AvatarPicker() {
       idTarget = null;
       silTarget?.dispose();
       silTarget = null;
+      patchTarget?.dispose();
+      patchTarget = null;
     };
   }, [gl, scene, getState]);
 

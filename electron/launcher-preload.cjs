@@ -16,6 +16,11 @@ contextBridge.exposeInMainWorld("aitherLauncher", {
   act: (key, verb, text) => ipcRenderer.invoke("launcher:act", String(key || ""), String(verb || "open"), String(text || "")),
   hide: () => ipcRenderer.invoke("launcher:hide"),
   release: () => ipcRenderer.invoke("launcher:release"),
+  // The intent bar (intent-bar.cjs): plan a sentence, confirm / cancel its waiting line, pin a command row.
+  intent: (text) => ipcRenderer.invoke("launcher:intent", String(text || "")),
+  intentConfirm: (id) => ipcRenderer.invoke("launcher:intent-confirm", String(id || "")),
+  intentCancel: (id) => ipcRenderer.invoke("launcher:intent-cancel", String(id || "")),
+  pin: (key) => ipcRenderer.invoke("launcher:pin", String(key || "")),
   onResults: (fn) => {
     const listener = (_event, payload) => { try { fn(payload); } catch { /* page bug stays in the page */ } };
     ipcRenderer.on("launcher:results", listener);
