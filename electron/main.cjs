@@ -5162,11 +5162,16 @@ function deckState() {
  * can reach one before the other). [] when unknown.
  */
 function cardSessionName(card) {
-  if (!card || !card.sessionId) return [];
-  const live = liveSessionMap({ fresh: true }).get(card.sessionId) || null;
+  // The id lives in `source.session_id` on every card awask/awdk writes today (measured
+  // 2026-11-17: all open cards had `sessionId: null`), so reading the top-level field
+  // alone made "Open the session" flash "no name" for every terminal card, every click.
+  const sid = tuiAnswer.sessionIdOf(card);
+  if (!sid) return [];
+  const live = liveSessionMap({ fresh: true }).get(sid) || null;
   const names = [];
   if (live && live.name) names.push(live.name);
-  const ctx = sessionContext.readContext(card.sessionId, card.cwd, { live, repo: "" });
+  const cwd = card.cwd || (card.source && card.source.cwd) || "";
+  const ctx = sessionContext.readContext(sid, cwd, { live, repo: "" });
   if (ctx && ctx.ok && ctx.name && !names.includes(ctx.name)) names.push(ctx.name);
   return names;
 }
