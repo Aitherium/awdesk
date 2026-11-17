@@ -88,7 +88,9 @@ app.whenReady().then(async () => {
       if (key && key === last && i > 4) return b;
       last = key;
     }
-    return orbWin() && orbWin().getBounds();
+    const end = orbWin() && orbWin().getBounds();
+    if (!end) throw new Error("the fairy window is gone: nothing to measure");
+    return end;
   };
 
   // 1. CONTROL: with nothing on the page, where does the fairy dock (the old spot)?

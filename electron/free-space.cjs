@@ -38,8 +38,10 @@ const MAX_RECTS = 500;
 const OPAQUE_BAND = 72;
 
 /**
- * JavaScript to run INSIDE a page; returns [[x, y, w, h], ...] in CSS pixels, visible
- * elements only. A string (not a function) so main can hand it to executeJavaScript.
+ * JavaScript to run INSIDE a page; returns [[x, y, w, h], ...] in CSS pixels, for the
+ * elements a hand can press: shown (not hidden, not display:none) AND not pointer-events:none
+ * (a click goes through those, so the fairy over them covers nothing). Documents are
+ * read at nesting depth 0, 1, 2 and 3. A string (not a function) so main can hand it to executeJavaScript.
  */
 function probeSource() {
   return `(() => {
@@ -60,7 +62,7 @@ function probeSource() {
         if (cs.visibility === "hidden" || cs.display === "none" || cs.pointerEvents === "none") continue;
         out.push([Math.round(left), Math.round(top), Math.round(r.width), Math.round(r.height)]);
       }
-      if (depth >= 3) return;
+      if (depth >= 3) return; // this document (depth 3) is already read above; only frames INSIDE it are not
       // Same-origin frames (an app panel in an iframe) are probed with their offset.
       // A cross-origin frame has no readable document: it contributes nothing here, and
       // the module header says which windows rely on the title-bar fallback instead.
