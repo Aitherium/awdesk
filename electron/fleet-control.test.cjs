@@ -404,7 +404,8 @@ test("the Fleet window has a Fleet critical button wired to the owner's verb", (
   const html = require("node:fs").readFileSync(require("node:path").join(__dirname, "fleet-control.html"), "utf8");
   assert.match(html, /data-action="fleet-critical"/);
   assert.match(html, /Fleet critical/);
-  assert.match(html, /DESTRUCTIVE = new Set\(\[[^\]]*"fleet-critical"/);
+  const page = require("node:fs").readFileSync(require("node:path").join(__dirname, "fleet-page.js"), "utf8");
+  assert.match(page, /DESTRUCTIVE = new Set\(\[[^\]]*"fleet-critical"/);
 });
 
 test("the distro is resolved, never the retired literal", () => {

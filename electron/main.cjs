@@ -315,6 +315,7 @@ const {
   ensureFleetIpc,
   setCloseFallback: setFleetCloseFallback,
   setSpaceOpener: setFleetSpaceOpener,
+  setUniverseSource: setFleetUniverseSource,
   closeFleetWindow,
   isFleetWindowOpen,
   getControl: getFleetControl,
@@ -5668,6 +5669,8 @@ browserWindow.configureInternal({
 // The Fleet page's "Open in Space" (fleet-window.cjs hands the raw link; we re-build it).
 // The page shows the link only when this build has a Space pane (Boolean(spacePane())).
 setFleetSpaceOpener((url) => openSpaceLink(url), () => Boolean(spacePane()));
+// The Fleet window's network reads the SAME universe client as the Space pane.
+setFleetUniverseSource((opts) => spaceClient().get(opts));
 
 // The LAST independent popup source folds in (owner, 2026-09-08: "I WANT TO
 // CONSOLIDATE AND DEDUPE"). A decision card had three unrelated homes -- awask's
