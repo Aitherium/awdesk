@@ -73,7 +73,7 @@ const SEND_IDS = Object.freeze(new Set([
 const UI_PROMPT_IDS = Object.freeze(new Set(["browser.go", "browser.search", "browser.tab.switch", "timer.start"]));
 /** Prefixes of ids that change or record something whatever their flags say. */
 const WRITE_PREFIXES = Object.freeze(["record.", "assist.", "awconnect.", "pins.", "gif.pin", "canvas.pin", "browser.extension",
-  "browser.bookmark", "voice.talk", "layout.export", "sandbox."]);
+  "browser.bookmark", "voice.talk", "layout.", "sandbox."]);
 /** Spends: compute that costs (GPU lanes, long solver runs, a multi-GB install). */
 const SPEND_IDS = Object.freeze(new Set(["fleet.resume", "arc.now", "arc.start", "local.install"]));
 /** Writes: a setting, a file, an account or a persisted layout changes. */

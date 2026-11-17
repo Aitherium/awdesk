@@ -157,7 +157,9 @@ test("gatePlan: read/ui run now; write/send/spend wait, and so does every step a
 
 test("rows that record, send the screen, or keep a typed argument never run without the confirm (review of #117)", () => {
   for (const id of ["orb.ask-screen", "record.region", "record.screen", "voice.talk", "browser.extension.add", "awconnect.setup",
-    "browser.bookmark-page", "canvas.pin-url", "assist.rewrite", "assist.reply", "assist.explain", "pins.add", "gif.pin", "layout.save"]) {
+    "browser.bookmark-page", "canvas.pin-url", "assist.rewrite", "assist.reply", "assist.explain", "pins.add", "gif.pin", "layout.save",
+    // the presets and the layer tiles overwrite the saved browser layout (re-review of #117)
+    "layout.preset.default", "layout.preset.focus", "layout.preset.ops", "layout.layers", "layout.edit"]) {
     const t = byId(id);
     if (!t) continue; // a context-dependent row absent for {}
     assert.ok(!ib.AUTO.has(t.effect), `${id} is ${t.effect}`);
