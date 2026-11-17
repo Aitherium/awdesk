@@ -89,6 +89,9 @@ Desk exposes these tools:
 | `fleet_status` | optional `fresh` | Reads the AitherOS fleet status (cached unless `fresh`) |
 | `fleet_control` | `action`: `down`, `up`, `gaming`, `resume`, `adopt`, `open_panel`, `arc-status`, `arc-start`, `arc-now`, `arc-stop` | Runs a fleet action; the same implementation as the Fleet window |
 | `desk_command` | `text` | Runs a command in the Aither Command window |
+| `desk_tools` | optional `query`, `limit` | Lists the Alt+Space bar's tools (every palette command plus `agent.ask`) with `effect` and argument `schema`, fuzzy-ranked |
+| `desk_tool_run` | `id`, optional `args`, `confirm` | Runs one bar tool; a `write` / `send` / `spend` tool needs `confirm: true` (the owner agreed) |
+| `desk_intent` | `text`, optional `run` | Plans a sentence as bar tools through MicroScheduler (local Bonsai only when the platform is down); `run` runs only the read/ui steps |
 
 The roster, avatar, fleet, command and voice tools register only when the running Desk provides the matching
 capability (roster, fleet control, voice, and so on).
