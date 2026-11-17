@@ -69,6 +69,7 @@ const taskbar = require("./browser-taskbar.cjs");
 const extensions = require("./browser-extensions.cjs");
 const overlayMod = require("./browser-overlay.cjs");
 const deskTenant = require("./desk-tenant.cjs");
+const tenantApps = require("./tenant-apps.cjs");
 const tabDiscard = require("./tab-discard.cjs");
 const terminalWindow = require("./terminal-window.cjs");
 const agentSessions = require("./browser-agent-cookies.cjs");
@@ -2809,6 +2810,44 @@ function onlinePartition() {
   return (hosted && hosted.partition) || PARTITION;
 }
 
+/**
+ * What the tenant workspace this desk sits in grants (tenant-apps.cjs), read with the owner's
+ * signed-in partition so the answer is the one Veil's own page reads. Made on first use: the apex
+ * and a customer's desk never pay for it.
+ */
+let tenantEntitlement = null;
+function tenantEntitlementStore() {
+  if (!tenantEntitlement) {
+    tenantEntitlement = tenantApps.createEntitlementStore({
+      fetchImpl: (url, init) => electron().session.fromPartition(onlinePartition()).fetch(url, init),
+    });
+  }
+  return tenantEntitlement;
+}
+
+/** Ask the owner's switched workspace what it grants as the browser opens, so the first rail click knows. */
+function warmTenantEntitlement() {
+  try {
+    const tenant = deskTenant.currentTenant();
+    if (tenant && tenant.ownerSwitch === true) void tenantEntitlementStore().refresh(tenant.host);
+  } catch { /* an app still opens where it always did */ }
+}
+
+/**
+ * Where Online app `id` opens in `mode` right now: the tenant host, or the platform for an app the
+ * owner's workspace switch does not grant (garg.aitherium.com/solo/?app=aeon, owner 2026-11-17).
+ * Never waits: an answer not read yet means the tenant, as before.
+ */
+function placeOnlineApp(id, mode) {
+  const tenant = deskTenant.currentTenant();
+  return tenantApps.plan(id, mode, {
+    tenant,
+    entry: tenant && tenant.ownerSwitch === true ? tenantEntitlementStore().peek(tenant.host) : null,
+    tenantBase: internal.onlineUrl(),
+    platformBase: internal.platformOrigin(),
+  });
+}
+
 /** A page the taskbar asked for: an aitherium.com page in the pinned Online tab, else a web tab. */
 function openFromTaskbar(url) {
   const route = taskbar.routeFor(url);
@@ -3063,14 +3102,15 @@ function openAgentApp(id) {
 function openOnlineApp(id) {
   if (!launchModes.isAppId(id)) return { ok: false, error: "not an app id" };
   if (!win || win.isDestroyed()) createBrowserWindow({ url: null, home: false });
-  const mode = launchModes.launchModeFor(getPrefs().launchModes, id);
-  const url = launchModes.appUrl(internal.onlineUrl(), id, mode);
+  const placed = placeOnlineApp(id, launchModes.launchModeFor(getPrefs().launchModes, id));
+  const mode = placed.mode;
+  const url = launchModes.appUrl(placed.base, id, placed.mode);
   if (!url) return { ok: false, error: "no AitherOS Online address" };
   if (mode === "desktop") {
     openFromTaskbar(url);
     return { ok: true, mode };
   }
-  const key = `app:${id}`;
+  const key = placed.key;
   let tab = tabs.byKey(key);
   if (!tab || !viewOf(tab.id)) {
     const opened = openTab("you", url, { key, hostedPartition: onlinePartition() });
@@ -3612,6 +3652,7 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   win.once("ready-to-show", () => {
     ensureDock();
     ensureTaskbar();
+    warmTenantEntitlement();
     // Panes the owner left in their own windows come back there, where they were.
     for (const pane of deskLayout.DETACHABLE) {
       const was = getPrefs().desk.detached[pane];
@@ -4654,7 +4695,7 @@ function rowUrl(row) {
     if (row.kind === "page") return internal.internalUrl(internal.paneById(row.id), null);
     if (row.kind === "workspace") return new URL(row.id, internal.onlineUrl()).href;
     if (row.kind === "local") return String(row.id);
-    if (row.kind === "online") return launchModes.appUrl(internal.onlineUrl(), row.id, "tab");
+    if (row.kind === "online") { const placed = placeOnlineApp(row.id, "tab"); return launchModes.appUrl(placed.base, row.id, placed.mode); }
   } catch { /* not addressable */ }
   return null;
 }
