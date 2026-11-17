@@ -107,7 +107,9 @@ function contentCeiling() {
     const cast = require("./cast-config.cjs");
     const loaded = cast.load({});
     const resolved = cast.resolveContent(loaded.snapshot);
-    const audience = gallery.audienceCap(gallery.readGallery(loaded.snapshot), { autoSafe });
+    // A cast.json that could not be READ (corrupt, locked) is the family audience, never the
+    // last profile it happened to say (review of #122: load() never throws, it falls back).
+    const audience = loaded.error ? "everyone" : gallery.audienceCap(gallery.readGallery(loaded.snapshot), { autoSafe });
     return { maxRating: resolved.maxRating, hideUnrated: resolved.hideUnrated, audience };
   } catch {
     // An unreadable cast.json is the family audience, never "everything" (owner 2026-11-17).

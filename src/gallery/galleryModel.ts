@@ -49,6 +49,7 @@ export interface GalleryState {
   safeMode: boolean;
   autoSafe: boolean;
   sharing: string[];
+  shareWatch?: string;
   notDetectable: string[];
   cap: Tier;
   standIn: string;

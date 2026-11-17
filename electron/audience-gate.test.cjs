@@ -81,3 +81,12 @@ test("the platform gate still ANDs: closed gate hides teen/mature/unrated even o
   fs.writeFileSync(MIRROR, JSON.stringify({ visible: true }));
   rating.invalidateGate();
 });
+
+test("an unreadable cast.json is the family audience, never the last profile it said (review of #122)", () => {
+  setGallery({ profile: "personal" });
+  fs.writeFileSync(CAST, "{ not json");
+  rating.invalidateGate();
+  assert.deepEqual(visible(), ["kid-safe"]);
+  setGallery({ profile: "personal" });
+  assert.equal(visible().length, 4);
+});

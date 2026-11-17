@@ -57,6 +57,14 @@ test("assign is his click, and only for a body this profile shows", () => {
   assert.equal(w.state.changed, 1, "the desk re-enforces what is on screen after every change");
 });
 
+test("a hidden body cannot be rated (that would confirm its name), and a proposal of one is nameless", () => {
+  const w = world({ cap: "everyone" });
+  assert.equal(w.h.rate({ name: "spicy", tier: "everyone" }).ok, false);
+  g.propose(w.dir, { persona: "atlas", character: "spicy", by: "atlas", why: "spicy is hot" });
+  const s = JSON.stringify(w.h.state());
+  assert.ok(!s.includes("spicy"), "neither the id nor the agent's text names it");
+});
+
 test("rating a fresh import moves it between tiers; unrated counts as mature", () => {
   const w = world({ cap: "mature" });
   assert.equal(w.h.state().avatars.find((a) => a.name === "fresh").tier, "unrated");
@@ -79,10 +87,17 @@ test("a proposal is applied only by his click, and only if the profile shows it"
   assert.equal(w.raw().authors.atlas.character, "kid");
 });
 
-test("rotation keeps only bodies he may see; the stand-in must be everyone-rated", () => {
+test("rotation keeps only bodies he may see -- and never DROPS members a narrower profile hides", () => {
   const w = world({ cap: "mature" });
-  w.h.rotation({ persona: "aither", set: ["kid", "teen", "nope"], every: "weekly" });
-  assert.deepEqual(w.raw().gallery.rotation.aither, { set: ["kid", "teen"], every: "weekly" });
+  w.h.rotation({ persona: "aither", set: ["kid", "spicy", "nope"], every: "weekly" });
+  assert.deepEqual(w.raw().gallery.rotation.aither, { set: ["kid", "spicy"], every: "weekly" });
+  w.state.cap = "everyone";
+  assert.deepEqual(w.h.state().personas.find((p) => p.id === "aither").rotation, { every: "weekly", set: ["kid"], hidden: 1 });
+  w.h.rotation({ persona: "aither", set: ["kid"], every: "daily" });
+  assert.deepEqual(w.raw().gallery.rotation.aither.set, ["kid", "spicy"], "a save on Hearth kept the hidden member");
+  w.h.rotation({ persona: "aither", set: [], every: "daily" });
+  assert.equal(w.raw().gallery.rotation.aither, undefined, "an empty set is his explicit stop");
+  w.state.cap = "mature";
   assert.equal(w.h.standIn({ name: "teen" }).ok, false);
   w.h.standIn({ name: "kid" });
   assert.equal(w.raw().gallery.standIn, "kid");

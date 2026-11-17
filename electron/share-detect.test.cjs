@@ -27,3 +27,14 @@ test("the watch reports changes only, and a failed poll changes nothing", async 
   await w.tick();
   assert.deepEqual(seen, [["OBS"], []]);
 });
+
+test("three failed polls in a row say so (never silent)", async () => {
+  const statuses = [];
+  const w = share.createShareWatch({ onStatus: (s) => statuses.push(s), list: async () => null });
+  await w.tick();
+  await w.tick();
+  assert.equal(w.status(), "starting");
+  await w.tick();
+  assert.equal(w.status(), "unavailable");
+  assert.deepEqual(statuses, ["unavailable"]);
+});

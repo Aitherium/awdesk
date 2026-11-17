@@ -148,13 +148,18 @@ function AvatarPanel({ a, state, ask, onState }: { a: GalleryAvatar; state: Gall
   const [persona, setPersona] = useState('');
   const [draft, setDraft] = useState(a.config);
   const [err, setErr] = useState('');
+  // Keyed on the VALUES: every broadcast sends a new config object, and an identity dep wiped
+  // the edits he had not saved yet (review of #122).
+  const configKey = JSON.stringify(a.config);
   useEffect(() => {
-    setDraft(a.config);
+    setDraft(JSON.parse(configKey));
     setErr('');
+  }, [a.name, configKey]);
+  useEffect(() => {
     let live = true;
     void call('modelUrl', { name: a.name }).then((m) => { if (live) setUrl('url' in m && typeof m.url === 'string' ? m.url : null); });
     return () => { live = false; };
-  }, [a.name, a.config]);
+  }, [a.name]);
   const act = async (verb: string, arg: Record<string, unknown>) => {
     const r = await call(verb, arg);
     if (r.ok) { setErr(''); onState(r as GalleryState); } else setErr((r as { error: string }).error);
@@ -217,6 +222,12 @@ function PersonaCard({ p, state, onState }: { p: GalleryPersona; state: GalleryS
   const [every, setEvery] = useState(p.rotation?.every || 'daily');
   const [editing, setEditing] = useState(false);
   const [err, setErr] = useState('');
+  const rotationKey = JSON.stringify(p.rotation);
+  useEffect(() => {
+    const r = JSON.parse(rotationKey) as GalleryPersona['rotation'];
+    setSet(r?.set || []);
+    setEvery(r?.every || 'daily');
+  }, [rotationKey]);
   const thumb = useThumb(p.character || '__none__');
   const act = async (verb: string, arg: Record<string, unknown>) => {
     const r = await call(verb, arg);
@@ -379,6 +390,9 @@ export function Gallery() {
         </button>
       </nav>
       {summary ? <div className="gal-hidden-note">{summary}</div> : null}
+      {state.shareWatch === 'unavailable' ? (
+        <div className="gal-hidden-note">Screen-share detection is not working right now: use Scroll Lock before you share.</div>
+      ) : null}
       {error ? <div className="gal-err" role="alert">{error}</div> : null}
 
       {tab === 'mine' ? (

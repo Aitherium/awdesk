@@ -29,6 +29,7 @@
  * PURE apart from the proposals file helpers at the bottom.
  */
 
+const nodeCrypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -51,6 +52,14 @@ const RENAMED = Object.freeze({ chaos: "malfoid" });
 
 function plain(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+}
+
+/** A persona id: lowercase slug, never a prototype key (review of #122: `__proto__` from an
+ *  agent's proposal reached ensureAuthor and wrote Object.prototype.character). */
+const PERSONA_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
+const RESERVED = new Set(["__proto__", "constructor", "prototype"]);
+function validPersona(v) {
+  return typeof v === "string" && PERSONA_RE.test(v) && !RESERVED.has(v);
 }
 
 function str(v, max = 120) {
@@ -111,7 +120,11 @@ function readGallery(raw) {
   for (const [persona, r] of Object.entries(plain(g.rotation))) {
     const set = (Array.isArray(plain(r).set) ? r.set : []).map((n) => str(n)).filter(Boolean);
     if (!set.length) continue;
-    rotation[persona] = { set: [...new Set(set)].slice(0, 24), every: ROTATION_EVERY.includes(r.every) ? r.every : "daily" };
+    rotation[persona] = {
+      set: [...new Set(set)].slice(0, 24),
+      every: ROTATION_EVERY.includes(r.every) ? r.every : "daily",
+      applied: str(r.applied, 40),
+    };
   }
   return {
     profile,
@@ -195,6 +208,7 @@ function ensureGallery(draft) {
 }
 
 function ensureAuthor(draft, persona) {
+  if (!validPersona(persona)) throw new Error(`not a persona id: ${String(persona).slice(0, 40)}`);
   if (!draft.authors || typeof draft.authors !== "object" || Array.isArray(draft.authors)) draft.authors = {};
   if (!draft.authors[persona] || typeof draft.authors[persona] !== "object" || Array.isArray(draft.authors[persona])) {
     draft.authors[persona] = {};
@@ -241,11 +255,13 @@ function avatarConfigMutation(name, patch) {
 
 function rotationMutation(persona, set, every) {
   return (draft) => {
+    if (!validPersona(persona)) throw new Error("not a persona id");
     const g = ensureGallery(draft);
     if (!g.rotation || typeof g.rotation !== "object" || Array.isArray(g.rotation)) g.rotation = {};
     const list = (Array.isArray(set) ? set : []).map((n) => str(n)).filter(Boolean);
     if (!list.length) delete g.rotation[persona];
     else g.rotation[persona] = { set: [...new Set(list)], every: ROTATION_EVERY.includes(every) ? every : "daily" };
+    // A new set starts fresh: the next tick applies today's pick from it.
     return draft;
   };
 }
@@ -279,15 +295,35 @@ function standInMutation(name) {
  * today differs from the body on its row. Pure; main writes it (his own rotation, so his act).
  */
 function planRotation(raw, { date = new Date(), allowed = () => true } = {}) {
+  // Review of #122: a tick ran after EVERY gallery change and put today's pick straight back over
+  // a body he had just assigned by hand. A rotation now moves only ONCE per period (`applied`
+  // records the period it last moved in), or when the body on the row is no longer allowed for
+  // the audience -- and then only to another member of his set.
   const g = readGallery(raw);
   const authors = plain(plain(raw).authors);
-  const out = {};
+  const out = [];
   for (const [persona, rotation] of Object.entries(g.rotation)) {
+    if (!validPersona(persona)) continue;
+    const period = `${rotation.every}:${periodIndex(date, rotation.every)}`;
+    const current = str(plain(authors[persona]).character);
+    const fresh = rotation.applied !== period;
+    if (!fresh && current && allowed(current)) continue;
     const pick = rotationPick(rotation, { date, allowed });
     if (!pick) continue;
-    if (str(plain(authors[persona]).character) !== pick) out[persona] = pick;
+    out.push({ persona, name: pick, period, changed: current !== pick });
   }
   return out;
+}
+
+/** Write one planned rotation step: the body (if it moved) and the period it was applied in. */
+function rotationStepMutation(step) {
+  return (draft) => {
+    if (step.changed) assignMutation(step.persona, step.name)(draft);
+    const g = ensureGallery(draft);
+    const r = plain(plain(g.rotation)[step.persona]);
+    if (g.rotation && g.rotation[step.persona] === r) r.applied = step.period;
+    return draft;
+  };
 }
 
 // ── proposals: an agent says "this body for that persona"; only he applies it ───────────────
@@ -319,10 +355,11 @@ function writeProposals(dir, list) {
 function propose(dir, { persona, character, by = "agent", why = "" } = {}, { now = () => new Date() } = {}) {
   const p = str(persona, 64).toLowerCase();
   const c = str(character);
-  if (!p || !c) return null;
+  if (!validPersona(p) || !c) return null;
   const list = readProposals(dir).filter((x) => !(x.persona === p && x.character === c));
   const at = now().toISOString();
-  const entry = { id: `${p}:${c}:${at}`, persona: p, character: c, by: str(by, 64) || "agent", why: str(why, 240), at };
+  // An OPAQUE id (review of #122): an id built from the body's name named a hidden body to the page.
+  const entry = { id: nodeCrypto.randomBytes(9).toString("hex"), persona: p, character: c, by: str(by, 64) || "agent", why: str(why, 240), at };
   list.push(entry);
   writeProposals(dir, list);
   return entry;
@@ -356,6 +393,8 @@ module.exports = {
   ceilingRating,
   rotationPick,
   planRotation,
+  rotationStepMutation,
+  validPersona,
   personaIds,
   assignMutation,
   unassignMutation,

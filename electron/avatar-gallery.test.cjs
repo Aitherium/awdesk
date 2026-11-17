@@ -48,8 +48,29 @@ test("rotation never leaves his set or the audience, and is the same all day (no
   assert.notEqual(next, first, "a new day moves along his set");
   assert.equal(g.rotationPick(rotation, { date: day, allowed: (n) => n === "c" }), "c", "only what the audience allows");
   assert.equal(g.rotationPick(rotation, { date: day, allowed: () => false }), null, "nothing allowed = no change");
-  const plan = g.planRotation({ authors: { aither: { character: "z" } }, gallery: { rotation: { aither: rotation } } }, { date: day });
-  assert.deepEqual(plan, { aither: first });
+  const raw = { authors: { aither: { character: "z" } }, gallery: { rotation: { aither: rotation } } };
+  const plan = g.planRotation(raw, { date: day });
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].name, first);
+  g.rotationStepMutation(plan[0])(raw);
+  assert.equal(raw.authors.aither.character, first);
+  // His own assign later the same day is NOT undone by the next tick (review of #122)...
+  raw.authors.aither.character = "b-his-choice";
+  assert.deepEqual(g.planRotation(raw, { date: later }), []);
+  // ...unless the audience no longer allows it: then another member of HIS set, never outside.
+  const narrowed = g.planRotation(raw, { date: later, allowed: (n) => n === "c" });
+  assert.deepEqual(narrowed.map((s) => s.name), ["c"]);
+  // A new day moves it again.
+  assert.equal(g.planRotation(raw, { date: new Date("2026-11-18T09:00:00") }).length, 1);
+});
+
+test("a persona id is never a prototype key (review of #122)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gallery-proto-"));
+  assert.equal(g.propose(dir, { persona: "__proto__", character: "x" }), null);
+  assert.throws(() => g.assignMutation("__proto__", "x")({}));
+  assert.equal({}.character, undefined);
+  const p = g.propose(dir, { persona: "atlas", character: "secret-name" });
+  assert.ok(!p.id.includes("secret"), "the id never carries the body's name");
 });
 
 test("assign is an owner action; the avatar's voice fills only an empty voice (#104 no-overwrite)", () => {

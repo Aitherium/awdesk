@@ -103,11 +103,10 @@ function buildState(deps) {
       rotation: g.rotation[id] ? { every: g.rotation[id].every, set: g.rotation[id].set.filter((n) => visible.has(n)), hidden: g.rotation[id].set.filter((n) => !visible.has(n)).length } : null,
     };
   });
-  const proposals = gallery.readProposals(deps.proposalsDir).map((p) => ({
-    ...p,
-    character: visible.has(p.character) ? p.character : "",
-    hiddenBody: !visible.has(p.character),
-  }));
+  // A proposal of a hidden body says only that one exists: no name, no agent's free text.
+  const proposals = gallery.readProposals(deps.proposalsDir).map((p) => (visible.has(p.character)
+    ? { id: p.id, persona: p.persona, character: p.character, by: p.by, why: p.why, at: p.at, hiddenBody: false }
+    : { id: p.id, persona: p.persona, character: "", by: p.by, why: "", at: p.at, hiddenBody: true }));
   return {
     ok: true,
     profile: g.profile,
@@ -116,6 +115,7 @@ function buildState(deps) {
     safeMode: g.safeMode,
     autoSafe,
     sharing: deps.sharing ? deps.sharing() : [],
+    shareWatch: deps.shareStatus ? deps.shareStatus() : "off",
     notDetectable: require("./share-detect.cjs").NOT_DETECTABLE,
     cap,
     standIn: visible.has(g.standIn) ? g.standIn : "",
@@ -133,7 +133,7 @@ function okName(v) {
   return typeof v === "string" && NAME_RE.test(v) && !/[\u0000-\u001f]/.test(v) && v !== "." && v !== "..";
 }
 function okPersona(v) {
-  return typeof v === "string" && /^[a-z0-9][a-z0-9_.-]{0,63}$/.test(v);
+  return gallery.validPersona(v);
 }
 
 /**
@@ -144,10 +144,10 @@ function okPersona(v) {
 function galleryHandlers(getDeps) {
   const deps = () => getDeps();
   const allowed = (name) => okName(name) && deps().allNames().includes(name) && !deps().isHidden(name);
-  const write = (mutation) => {
+  const write = (mutation, reason = "edit") => {
     const r = deps().writeCast(mutation);
     if (!r || !r.ok) return { ok: false, error: (r && r.error) || "cast.json could not be written" };
-    if (deps().onChanged) deps().onChanged();
+    if (deps().onChanged) deps().onChanged(reason);
     return buildState(deps());
   };
   return {
@@ -160,21 +160,26 @@ function galleryHandlers(getDeps) {
     },
     unassign: ({ persona } = {}) => (okPersona(persona) ? write(gallery.unassignMutation(persona)) : { ok: false, error: "unassign: persona is required" }),
     rate: ({ name, tier } = {}) => {
-      if (!okName(name) || !deps().allNames().includes(name)) return { ok: false, error: "rate: no such body" };
+      // Only a body this profile shows: rating a hidden one would confirm its name exists.
+      if (!allowed(name)) return { ok: false, error: "rate: no such body on this profile" };
       const r = gallery.RATING_OF[tier];
       if (!r) return { ok: false, error: "rate: everyone | teen | mature" };
       if (!deps().setRating(name, r)) return { ok: false, error: "the rating could not be saved" };
-      if (deps().onChanged) deps().onChanged();
+      if (deps().onChanged) deps().onChanged("audience");
       return buildState(deps());
     },
     config: ({ name, patch } = {}) => (allowed(name) ? write(gallery.avatarConfigMutation(name, patch || {})) : { ok: false, error: "config: no such body on this profile" }),
     rotation: ({ persona, set, every } = {}) => {
       if (!okPersona(persona)) return { ok: false, error: "rotation: persona is required" };
       const list = (Array.isArray(set) ? set : []).filter(allowed);
-      return write(gallery.rotationMutation(persona, list, every));
+      // Members this profile hides are KEPT (review of #122: a save on Hearth deleted them --
+      // he could not even see them to choose). An empty set is his explicit "stop rotating".
+      const before = (gallery.readGallery(deps().castRaw()).rotation[persona] || { set: [] }).set;
+      const kept = list.length ? before.filter((n) => !allowed(n)) : [];
+      return write(gallery.rotationMutation(persona, [...list, ...kept], every), "audience");
     },
-    profile: ({ profile } = {}) => (gallery.PROFILE_IDS.includes(profile) ? write(gallery.profileMutation(profile)) : { ok: false, error: "profile: hearth | work | personal" }),
-    safeMode: ({ on } = {}) => write(gallery.safeModeMutation(on === true)),
+    profile: ({ profile } = {}) => (gallery.PROFILE_IDS.includes(profile) ? write(gallery.profileMutation(profile), "audience") : { ok: false, error: "profile: hearth | work | personal" }),
+    safeMode: ({ on } = {}) => write(gallery.safeModeMutation(on === true), "audience"),
     standIn: ({ name } = {}) => {
       if (name && (!allowed(name) || gallery.tierOf(deps().ratingOf(name)) !== "everyone")) {
         return { ok: false, error: "the stand-in must be an everyone-rated body" };
@@ -185,6 +190,10 @@ function galleryHandlers(getDeps) {
       const list = gallery.readProposals(deps().proposalsDir);
       const p = list.find((x) => x.id === id);
       if (!p) return { ok: false, error: "that proposal is gone" };
+      if (!okPersona(p.persona)) {
+        gallery.takeProposal(deps().proposalsDir, id);
+        return { ok: false, error: "that proposal names no persona" };
+      }
       if (!allowed(p.character)) return { ok: false, error: "that body is not available on this profile" };
       gallery.takeProposal(deps().proposalsDir, id);
       return write(gallery.assignMutation(p.persona, p.character));

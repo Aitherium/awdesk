@@ -60,16 +60,31 @@ function listProcesses() {
  * Poll every `intervalMs`; `onChange(labels)` fires when the set of capture apps changes
  * (including to []). A failed poll changes nothing (never flips safe mode off by accident).
  */
-function createShareWatch({ onChange, intervalMs = 4000, list = listProcesses } = {}) {
+function createShareWatch({ onChange, onStatus, intervalMs = 4000, list = listProcesses } = {}) {
   let last = null;
   let timer = null;
   let busy = false;
+  let failures = 0;
+  let status = "starting";
+  const setStatus = (next) => {
+    if (next === status) return;
+    status = next;
+    if (typeof onStatus === "function") onStatus(next);
+  };
   const tick = async () => {
     if (busy) return;
     busy = true;
     try {
       const names = await list();
-      if (!Array.isArray(names)) return;
+      // Never silent (review of #122): three failed polls in a row = "unavailable", which the
+      // gallery shows -- a share cannot be detected and the panic key is the only switch.
+      if (!Array.isArray(names)) {
+        failures += 1;
+        if (failures >= 3) setStatus("unavailable");
+        return;
+      }
+      failures = 0;
+      setStatus("watching");
       const now = sharingFrom(names);
       const key = now.join(",");
       if (key !== last) {
@@ -93,6 +108,7 @@ function createShareWatch({ onChange, intervalMs = 4000, list = listProcesses } 
     },
     tick,
     current: () => (last ? last.split(",").filter(Boolean) : []),
+    status: () => status,
   };
 }
 
