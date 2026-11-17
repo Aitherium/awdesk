@@ -77,6 +77,7 @@ export function VroidTab({ call, cap, onInstalled }: { call: Call; cap: Tier; on
   // A narrower audience clears what is on screen AT ONCE (never the old page until the new one
   // arrives), forgets the pictures, and asks again -- every source, search included.
   useEffect(() => {
+    seq.current += 1; // any reply already in flight belongs to the old audience: dropped
     setPage(null);
     imageCache.clear();
     if (source !== 'search' || keywordRef.current) void load(source, keywordRef.current);

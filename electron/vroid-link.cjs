@@ -109,7 +109,11 @@ async function startLink({ storeRequest, openExternal, onLinked = () => {}, crea
   }
   const authorizeUrl = start.body.authorize_url;
   // The state THIS link started; a return carrying any other is not ours (review of #123).
-  const expectedState = typeof start.body.state === "string" ? start.body.state : "";
+  let expectedState = typeof start.body.state === "string" ? start.body.state : "";
+  if (!expectedState) {
+    try { expectedState = new URL(authorizeUrl).searchParams.get("state") || ""; } catch { expectedState = ""; }
+  }
+  if (!expectedState) return { ok: false, reason: "the broker started a link with no state; not catching it" };
   let paste = false;
   await new Promise((resolve) => {
     let server;
@@ -118,7 +122,7 @@ async function startLink({ storeRequest, openExternal, onLinked = () => {}, crea
       server = createServer(async (req, res) => {
         const got = codeAndState(req.url);
         const pathOnly = String(req.url || "").split("?")[0];
-        if (pathOnly !== "/callback" || !got || (expectedState && got.state !== expectedState)) {
+        if (pathOnly !== "/callback" || !got || got.state !== expectedState) {
           res.writeHead(404).end();
           return;
         }
