@@ -214,6 +214,10 @@ function createDeskMcpServer({
   // the tool requires party-manifest.cjs lazily, so a broken writer costs the
   // one tool call, never the server.
   partyExport = null,
+  // The intent bar (intent-bar.cjs createIntentBar), or a () => bar thunk: desk_tools,
+  // desk_tool_run and desk_intent -- the SAME tools, schemas and confirm rule the owner
+  // gets on Alt+Space. Null = those three tools are absent.
+  intentBar = null,
 }) {
   const server = new McpServer(
     {
@@ -762,6 +766,65 @@ function createDeskMcpServer({
           content: [{ type: "text", text: result.reply }],
           isError: result.ok === false,
         };
+      },
+    );
+  }
+
+  if (intentBar != null) {
+    const bar = () => (typeof intentBar === "function" ? intentBar() : intentBar);
+    const json = (value, isError = false) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }], isError });
+    server.registerTool(
+      "desk_tools",
+      {
+        title: "List the desk's tools (the Alt+Space bar's commands)",
+        description:
+          "Every command the owner's desk can run, as {id, label, effect, schema}: the same registry rows Alt+Space, the Ctrl+K palette and the tray run. effect is read | ui | write | send | spend; read and ui run at once, the others need confirm:true in desk_tool_run. `query` fuzzy-ranks them (pinned and recent first).",
+        inputSchema: {
+          query: z.string().max(200).optional().describe("Words to rank by (e.g. whiteboard, screenshot, timer). Omit for all."),
+          limit: z.number().int().min(1).max(300).optional().describe("How many to return (default 50)."),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async ({ query, limit }) => {
+        const ranked = bar().rank(query || "", { limit: limit || 50 });
+        return json({ ok: true, tools: ranked.map((r) => ({ id: r.tool.id, label: r.tool.label, effect: r.tool.effect, schema: r.tool.schema, pinned: r.pinned })) });
+      },
+    );
+    server.registerTool(
+      "desk_tool_run",
+      {
+        title: "Run one desk tool",
+        description:
+          "Run ONE desk tool by id with its arguments (see desk_tools for the schema). A tool whose effect is write, send or spend is refused with needsConfirm unless confirm is true -- set it only after the owner agreed to that exact action.",
+        inputSchema: {
+          id: z.string().min(1).max(80).describe("The tool id from desk_tools (e.g. board.new, timer.start, browser.go)."),
+          args: z.record(z.string(), z.string()).optional().describe("The tool's arguments, e.g. {\"text\": \"10m tea\"}."),
+          confirm: z.boolean().optional().describe("true = the owner agreed to this write / send / spend."),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      },
+      async ({ id, args, confirm }) => {
+        const verdict = await bar().run(id, args || {}, { confirm: confirm === true, surface: "mcp" });
+        return json(verdict, verdict.ok === false);
+      },
+    );
+    server.registerTool(
+      "desk_intent",
+      {
+        title: "Plan a sentence as desk tools (the Alt+Space intent engine)",
+        description:
+          "Turn one sentence into a plan of desk tools through the owner's MicroScheduler (the local Bonsai only when the platform is down). With run=false (default) it only returns the plan: which steps would run at once and which need the owner's confirm. With run=true the read/ui steps run and the rest come back as `pending` (never run from here).",
+        inputSchema: {
+          text: z.string().min(1).max(1000).describe("What the owner wants done, as a sentence."),
+          run: z.boolean().optional().describe("true = run the read/ui steps now. Default false (plan only)."),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      },
+      async ({ text, run }) => {
+        const verdict = await bar().intent(text, { surface: "mcp", dryRun: run !== true });
+        // An agent never holds the owner's confirm: a waiting step is reported, its id dropped.
+        if (verdict && verdict.pending) verdict.pending = { line: verdict.pending.line, steps: verdict.pending.steps };
+        return json(verdict, verdict.ok === false);
       },
     );
   }

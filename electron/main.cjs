@@ -218,6 +218,54 @@ const quickMenu = require("./quick-menu.cjs").createQuickMenu({
   registry: commandRegistry,
   run: (id) => runCommand(id, undefined, { surface: "shortcut" }),
 });
+// The intent bar (owner 2026-11-16, intent-bar.cjs): the registry's palette rows as
+// tools with schemas and effects, `>` ranking with pinned + recent, and a sentence
+// planned through MicroScheduler (the local Bonsai only when the platform is down).
+// The SAME instance answers the launcher, the desk MCP server (desk_tools /
+// desk_tool_run / desk_intent) and scripts/desk-tools.cjs, so agents and the owner
+// use one command surface. Built on first use.
+const intentBarMemory = require("./intent-bar.cjs").createBarMemory();
+let intentBarInstance = null;
+function intentBar() {
+  if (!intentBarInstance) {
+    const llm = require("./assist-llm.cjs").createAssistLlm({ gateway: require("./gateway-mcp.cjs") });
+    intentBarInstance = require("./intent-bar.cjs").createIntentBar({
+      registry: commandRegistry,
+      ctx: () => commandContext(),
+      memory: intentBarMemory,
+      chat: (opts) => llm.chat(opts),
+      localChat: (messages) => require("./local-ai.cjs").createLocalAi().chat(messages),
+      runTool: (id, args, { surface }) => runBarTool(id, args, surface),
+    });
+  }
+  return intentBarInstance;
+}
+// `timer 10m tea` (desk-timers.cjs): a desktop notification when it ends.
+let deskTimersInstance = null;
+function deskTimers() {
+  if (!deskTimersInstance) {
+    deskTimersInstance = require("./desk-timers.cjs").createTimers({
+      notify: ({ title, body }) => {
+        if (Notification.isSupported()) new Notification({ title, body }).show();
+        Promise.resolve().then(() => speakAloud(`${title.replace(/^\W+/, "")} — time is up`, undefined, undefined, undefined, "service:awdesk"))
+          .catch(() => { /* voice is optional; the notification already showed */ });
+      },
+    });
+  }
+  return deskTimersInstance;
+}
+// The keyboard's Copilot key opens the bar (copilot-key.cjs). Started after app ready
+// when the setting is on (default); stopped in before-quit.
+let copilotKeyInstance = null;
+function copilotKey() {
+  if (!copilotKeyInstance) {
+    copilotKeyInstance = require("./copilot-key.cjs").createCopilotKey({
+      onPress: () => launcher.press(),
+      log: (line) => console.warn(`[desk] ${line}`),
+    });
+  }
+  return copilotKeyInstance;
+}
 // ONE Alt+Space key (owner 2026-11-02): tap = the Alfred launcher, hold = the radial
 // above. The key stays the "search.universal" row; only the SHORTCUT surface routes
 // here, so the tray/palette keep opening the search page's launcher.
@@ -248,6 +296,7 @@ const launcher = require("./launcher-window.cjs").createLauncher({
     bookmarks: (words, limit) => browserWindow.ownerBookmarks(words, limit),
     tabs: () => browserWindow.ownerTabs(),
   },
+  intentBar: () => intentBar(),
 });
 // `!private` reveal (private-reveal.cjs): Windows Hello / Touch ID first; on a PC with
 // neither, a fresh Aitherium sign-in as THIS desk's owner. Created here, once, with
@@ -2080,6 +2129,26 @@ function getGoblin() {
   return goblinInstance;
 }
 
+/**
+ * ONE bar tool (intent-bar.cjs). `agent.ask` hands the words to the taskbar chat, or to a
+ * named persona over the relay (its real answer comes back); every other id is a registry
+ * row through runCommand. An agent's call (mcp) runs as a `bridge` surface, so Do not
+ * disturb still refuses what would put the overlay on the owner's screen.
+ */
+async function runBarTool(id, args = {}, surface = "launcher") {
+  const text = String((args && args.text) || "");
+  if (id === "agent.ask") {
+    if (args && args.persona) {
+      const persona = String(args.persona).toLowerCase();
+      const reply = await askAgentOverRelay(persona, text);
+      return reply ? { ok: true, text: `${persona}: ${reply}` }
+        : { ok: false, error: `${persona} did not answer within 75 s — the question is in #agents` };
+    }
+    return require("./search-window.cjs").sendChat((t) => commandAction(t, { source: `intent-bar:${surface}` }), text);
+  }
+  return runCommand(id, text || undefined, { surface: surface === "launcher" ? "launcher" : "bridge" });
+}
+
 /** The owner's words to an agent over the relay, and its real answer back (the agent's own
  *  Discord bot replies in #agents). Never the gateway's ask_agent: that call holds the
  *  shared MCP session for as long as the agent thinks and stalls every other desk plane. */
@@ -3628,6 +3697,7 @@ function commandContext() {
     overlayPolicy: overlaySettings(),
     avatarDocked: Boolean(avatarDock && avatarDock.isDocked()),
     kvLend: Boolean(kvLendRuntime && kvLendRuntime.lend.settings().enabled),
+    copilotKey: intentBarMemory.copilotKey(),
     deadAccels: [...deadAccels],
     liveAccels: { ...liveAccels },
     platform: process.platform,
@@ -4280,6 +4350,15 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "send.last":
     case "interact.toggle":
       return require("./toolkit.cjs").run(id, arg);
+    case "timer.start": return deskTimers().start(String(arg || ""));
+    case "copilot-key.toggle": {
+      const on = intentBarMemory.setCopilotKey(!intentBarMemory.copilotKey());
+      const st = copilotKey().set(on);
+      if (!on) return { ok: true, did: "the Copilot key is Windows' again" };
+      return st.reason && st.reason !== "starting"
+        ? { ok: false, error: `Copilot key: ${st.reason}. ${require("./copilot-key.cjs").FALLBACK}` }
+        : { ok: true, did: "the Copilot key opens the Aither bar" };
+    }
     case "note.new": return void boardsWindow.createNote();
     case "board.new": return void boardsWindow.createBoard();
     case "boards.open": return void boardsWindow.openList();
@@ -6356,6 +6435,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // Build the ONE Alt+Space launcher's window (and its IPC) now: a global shortcut
     // reports only key-down, so the box must already be loaded when the key lands.
     launcher.warm();
+    // The Copilot key -> this bar (copilot-key.cjs), when the setting is on (default).
+    if (intentBarMemory.copilotKey()) {
+      const st = copilotKey().start();
+      if (st.reason && st.reason !== "starting") console.warn(`[desk] Copilot key: ${st.reason}`);
+    }
     // Microphone permission: Electron DENIES getUserMedia by default, so the
     // push-to-talk renderer captured nothing and Ctrl+Shift+Space "had no effect"
     // (owner 2026-09-22). Grant audio/media to the desk's own windows.
@@ -7755,6 +7839,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       onRemoveAvatar: (slotId) => removeAvatarSlot(slotId),
       onFleet: (action, opts) => fleetAction(action, opts),
       onCommand: (text, opts) => commandAction(text, opts),
+      // desk_tools / desk_tool_run / desk_intent: the intent bar's ONE command surface.
+      intentBar: () => intentBar(),
       onUniversalSearch: (q) => require("./search-window.cjs").universal().run(q, { phase: "all" }),
       tunnels: require("./tunnel-window.cjs").getTunnelClient(),
       // U28: the MCP `speak` tool door -- origin STAMPED here, same reason as
@@ -8347,6 +8433,8 @@ app.on("activate", () => (kidDeskMode().enabled ? openKidClassroom() : showOverl
 
 app.on("before-quit", () => {
   isQuitting = true;
+  // The Copilot key hook leaves with the desk (it also exits when its stdin closes).
+  try { if (copilotKeyInstance) copilotKeyInstance.stop(); } catch { /* not started */ }
   // The orb is always-on-top glass; it leaves with the desk (its timers stop too).
   try { orbWindow.stopOrb(); } catch { /* not started */ }
   try { if (assistMainInstance) { assistMainInstance.caret.stop(); assistMainInstance.utils.stop(); } } catch { /* no caret worker */ }

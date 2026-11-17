@@ -456,7 +456,9 @@ test("blog: drafts everywhere, publishing nowhere (owner ruling 2026-09-19)", ()
   // The browser's typed rows (2026-11-13): a tab to switch to, an address, search words,
   // an extension's store address -- each also an Alt+Space verb (browser-verbs.cjs).
   const browserPrompts = ["browser.tab.switch", "browser.go", "browser.search", "browser.extension.add"];
-  assert.deepEqual(asking, ["card-answer", ...browserPrompts, ...layoutPrompts, "spirit.go", "gif.pin", "pins.add", "blog.draft", "blog.show", "blog.publish"]);
+  assert.deepEqual(asking, ["card-answer", ...browserPrompts, ...layoutPrompts, "spirit.go", "gif.pin", "pins.add",
+    // The intent bar's timer (2026-11-16): a duration typed, e.g. `10m tea`.
+    "timer.start", "blog.draft", "blog.show", "blog.publish"]);
   assert.equal(rows.find((row) => row.id === "blog.list").prompt, undefined);
   // And a prompt row on a surface with no text field is a conformance problem.
   const stray = [{

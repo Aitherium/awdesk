@@ -205,6 +205,12 @@ function createLauncher({
   // () => the universal search (universal-search.cjs). Null = search-window.cjs's shared
   // one; launcher-search.test.cjs hands a fake so scope / ask / down rows run under node.
   universalSearch = null,
+  // The intent bar (intent-bar.cjs createIntentBar): the registry as tools with schemas,
+  // `>` ranks them (pinned + recent first), and a plain sentence with no exact match
+  // gets a "Do it" row that plans it through MicroScheduler. Null = Alt+Space as before.
+  intentBar = null,
+  // (text) => boolean: clipboard text that must not ride along (clipboard-sync looksSecret).
+  looksSecret = (text) => require("./clipboard-sync.cjs").looksSecret(text),
 } = {}) {
   // The "Right now" sample for THIS press. A promise, so the empty search can wait
   // the few hundred ms the probe takes instead of racing it.
@@ -238,6 +244,10 @@ function createLauncher({
   const issueLines = new Map();
   // What the "Ask Aither: ..." row sends: the term main last searched, never page text alone.
   let askTerm = "";
+  // The tool rows of the last run: key -> {id, arg}. The page runs a tool BY KEY.
+  const toolRows = new Map();
+  // The intent plan waiting for its confirm line (intent-bar createPlanRunner id).
+  let intentPending = "";
 
   function alive() {
     return Boolean(win && !win.isDestroyed());
@@ -554,9 +564,150 @@ function createLauncher({
     return "0 results — Enter asks Aither; or try a shorter word, or > for a command";
   }
 
+  // ── the intent bar ───────────────────────────────────────────────────────
+  function bar() {
+    return typeof intentBar === "function" ? intentBar() : intentBar;
+  }
+
+  const EFFECT_NOTE = { read: "reads", ui: "opens", write: "changes something · Enter twice", send: "sends · Enter twice", spend: "spends compute · Enter twice" };
+  // A `>` row that writes / sends / spends: the first Enter arms it (the status says
+  // what it will do), a second Enter on the SAME row within ARM_MS runs it.
+  const ARM_MS = 8_000;
+  let armedTool = { key: "", at: 0 };
+
+  /** Ranked tools as launcher items. `arg` rides with a prompt tool picked by its first word. */
+  function toolItems(ranked, arg = "") {
+    return ranked.map((r) => {
+      const t = r.tool;
+      const takes = Boolean(t.schema && (t.schema.required || []).includes("text"));
+      const key = `tool:${t.id}${takes && arg ? `:${require("./universal-search.cjs").itemKey("arg", arg)}` : ""}`;
+      toolRows.set(key, { id: t.id, arg: takes ? arg : "" });
+      return {
+        key, kind: "tool", group: "tools", effect: t.effect, pinned: r.pinned,
+        title: `${r.pinned ? "★ " : ""}${t.label}${takes && arg ? ` — “${arg.slice(0, 60)}”` : ""}`,
+        subtitle: `${t.id} · ${EFFECT_NOTE[t.effect] || t.effect}${takes && !arg ? " · type the argument after the name" : ""}`,
+      };
+    });
+  }
+
+  /** `>` words: the tools whose name matches, and prompt tools named by the FIRST word with the rest as the argument. */
+  function toolGroups(term) {
+    const b = bar();
+    if (!b) return [];
+    toolRows.clear();
+    const words = String(term || "").trim().split(/\s+/).filter(Boolean);
+    let items = toolItems(b.rank(term, { limit: 40 }));
+    if (words.length > 1) {
+      const head = b.rank(words[0], { limit: 10 }).filter((r) => r.tool.schema && (r.tool.schema.required || []).includes("text"));
+      const withArg = toolItems(head, words.slice(1).join(" "));
+      const seen = new Set(withArg.map((i) => i.key));
+      items = [...withArg, ...items.filter((i) => !seen.has(i.key))];
+    }
+    if (!items.length) return [];
+    return [{ id: "tools", label: words.length ? "Desk commands" : "Pinned, recent and every desk command", total: items.length, items }];
+  }
+
+  /** The empty box's Pinned and Recent groups (tools the owner keeps reaching for). */
+  function memoryGroups() {
+    const b = bar();
+    if (!b) return [];
+    toolRows.clear();
+    const all = b.rank("", { limit: 300 });
+    const pinned = toolItems(all.filter((r) => r.pinned));
+    const recent = toolItems(all.filter((r) => r.recent && !r.pinned).slice(0, 5));
+    const out = [];
+    if (pinned.length) out.push({ id: "pinned", label: "Pinned", total: pinned.length, items: pinned });
+    if (recent.length) out.push({ id: "recent", label: "Recent", total: recent.length, items: recent });
+    return out;
+  }
+
+  /** The "Do it" row: a sentence becomes a plan of desk tools. */
+  function intentGroup(term) {
+    if (!bar() || !String(term || "").trim()) return null;
+    const item = { key: "intent:query", kind: "intent", title: `Do it: ${String(term).slice(0, 120)}`,
+      subtitle: "Plan it with the desk's own tools (MicroScheduler) — reads run now, changes ask first" };
+    return { id: "intent", label: "Intent", total: 1, items: [item] };
+  }
+
+  /** The screen context that may ride with an intent (#109 rules: intent-bar contextParts). */
+  async function intentContext() {
+    const ib = require("./intent-bar.cjs");
+    let captured;
+    let host;
+    try { captured = pressAssist ? await pressAssist : null; } catch { captured = null; }
+    try { host = pressContext ? await pressContext : null; } catch { host = null; }
+    let clip;
+    try { clip = clipboard && clipboard.readText ? clipboard.readText() : ""; } catch { clip = ""; }
+    if (captured && captured.pid === process.pid) captured = null; // the box itself is never the subject
+    return ib.contextParts({ captured, host, clipboard: clip, looksSecret });
+  }
+
+  async function runIntent(text) {
+    const b = bar();
+    if (!b) return { ok: false, error: "1 intent bar not wired in main.cjs — ? asks Aither" };
+    const body = String(text || "").trim();
+    if (!body) return { ok: false, error: "0 words — type what you want done" };
+    if (intentPending) { b.cancel(intentPending); intentPending = ""; }
+    const answer = await b.intent(body, { context: await intentContext(), surface: "launcher" });
+    if (answer && answer.pending) intentPending = answer.pending.id;
+    return { ...answer, kind: "intent" };
+  }
+
+  async function confirmIntent(id) {
+    const b = bar();
+    if (!b || !id || id !== intentPending) return { ok: false, error: "1 plan expired — press Enter on “Do it” again" };
+    intentPending = "";
+    return { ...(await b.confirm(id)), kind: "intent" };
+  }
+
+  function cancelIntent(id) {
+    const b = bar();
+    if (b && id && id === intentPending) b.cancel(id);
+    intentPending = "";
+    return { ok: true, did: "plan cancelled — nothing that changes anything ran" };
+  }
+
+  async function runTool(key, query) {
+    const row = toolRows.get(String(key || ""));
+    const b = bar();
+    if (!row || !b) return { ok: false, error: "1 row expired — type it again" };
+    const arg = row.arg || "";
+    const tool = b.tools().find((t) => t.id === row.id);
+    if (!tool) return { ok: false, error: `1 command ${row.id} is not available right now` };
+    const takes = Boolean(tool.schema && (tool.schema.required || []).includes("text"));
+    if (takes && !arg) return { ok: false, error: `${tool.label} needs words — type them after its name (e.g. >${tool.id.split(".")[0]} …)` };
+    if (!require("./intent-bar.cjs").AUTO.has(tool.effect)) {
+      const armed = armedTool.key === String(key) && now() - armedTool.at < ARM_MS;
+      if (!armed) {
+        armedTool = { key: String(key), at: now() };
+        return { ok: false, needsConfirm: true, error: `Enter again to run: ${tool.label}${arg ? ` “${arg.slice(0, 120)}”` : ""} [${tool.effect}] — Esc cancels` };
+      }
+      armedTool = { key: "", at: 0 };
+    }
+    if (row.id === "agent.ask") return runAsk(arg || query);
+    const sw = require("./search-window.cjs");
+    const verdict = await run(row.id, takes ? arg : undefined);
+    const bad = sw.failureOf(verdict, "desk command");
+    if (bad) return { ok: false, error: bad };
+    b.touch(row.id);
+    lastPressAt = pressAt;
+    hide();
+    return { ok: true, did: (verdict && (verdict.did || verdict.message)) || tool.label };
+  }
+
+  function pinTool(key) {
+    const row = toolRows.get(String(key || ""));
+    const b = bar();
+    if (!row || !b) return { ok: false, error: "1 row is not a desk command — only commands pin" };
+    const on = b.togglePin(row.id);
+    return { ok: true, pinned: on, did: on ? `pinned ${row.id}` : `unpinned ${row.id}` };
+  }
+
   /** The tail every plain search carries: the Ask Aither row, then the sources that did not answer. */
   function tailGroups(term, errors, notes) {
     const out = [];
+    const doIt = intentGroup(term);
+    if (doIt) out.push(doIt);
     const ask = core.askGroup(term);
     if (ask) out.push(ask);
     const issues = core.issuesGroup(errors, notes);
@@ -705,6 +856,14 @@ function createLauncher({
       return lead.length ? [...lead, ...groups] : groups;
     };
     const parsed = core.parseQuery(text);
+    if (parsed.mode === "command" && bar() && !/^(adk|awsh)(\s|$)/i.test(parsed.term)) {
+      const groups = toolGroups(parsed.term);
+      return {
+        ok: true, token, mode: "command", term: parsed.term, phase: "idle", groups: core.capGroups(groups, 8), chip: "> Desk commands",
+        status: groups.length ? "Enter runs · Ctrl+P pins · arguments after the name (>timer 10m tea) · >adk / >awsh for a command line"
+          : `0 desk commands match “${parsed.term}” — Esc, then type it as a sentence for “Do it”`,
+      };
+    }
     if (parsed.mode === "command") {
       const plan = core.commandPlan(parsed.term);
       return {
@@ -789,6 +948,7 @@ function createLauncher({
         if (built.group) { groups.push(built.group); total += built.items.length; }
         if (built.status) status = built.status;
       }
+      groups.push(...memoryGroups());
       if (groups.length === 0) {
         return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: status || core.IDLE_STATUS };
       }
@@ -854,6 +1014,8 @@ function createLauncher({
   // ── actions ───────────────────────────────────────────────────────────────
   async function runRow(key, query) {
     if (String(key || "").startsWith("verb:")) return runVerb(key);
+    if (String(key || "").startsWith("tool:")) return runTool(key, query);
+    if (key === "intent:query") return runIntent(askTerm || query);
     if (String(key || "").startsWith("assist:")) {
       if (!assist || typeof assist.choose !== "function") return { ok: false, error: "1 writing action is not wired in main.cjs" };
       const captured = pressAssist ? await pressAssist : null;
@@ -988,6 +1150,10 @@ function createLauncher({
     ipcMain.handle("launcher:act", guard((key, verb, text) => actRow(key, verb, text)));
     ipcMain.handle("launcher:hide", guard(() => { hide(); return { ok: true }; }));
     ipcMain.handle("launcher:release", guard(() => release()));
+    ipcMain.handle("launcher:intent", guard((text) => runIntent(text)));
+    ipcMain.handle("launcher:intent-confirm", guard((id) => confirmIntent(String(id || ""))));
+    ipcMain.handle("launcher:intent-cancel", guard((id) => cancelIntent(String(id || ""))));
+    ipcMain.handle("launcher:pin", guard((key) => pinTool(key)));
   }
 
   /** Create the window after `app.whenReady()` so the first press paints at once. */
@@ -1002,6 +1168,7 @@ function createLauncher({
 
   return {
     press, release, hide, search, runRow, runAsk, runSpirit, runLine, warm, actRow,
+    runIntent, confirmIntent, cancelIntent, pinTool,
     isVisible: () => Boolean(alive() && win.isVisible()),
     phase: () => phase,
     __armAssist: (promise) => { pressAssist = promise; },
