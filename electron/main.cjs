@@ -499,11 +499,6 @@ const vamAvatar = require("./vam-avatar.cjs");
 // text-address fallback the "room-steer" deck-action uses when the renderer
 // hands over free text instead of an already-picked session id.
 const { resolveAddress } = require("./room-address.cjs");
-// cast-config (U01): the one file everything above it defers to. Required
-// directly here (not only through room-stage-host) for stableCharacter --
-// see the deleted fallbackCharacterForAgent's replacement in "spawn-agent"
-// below, "so Add-Avatar and the room agree on what an agent looks like".
-const cast = require("./cast-config.cjs");
 const {
   configureHyprlandWindow,
   getHyprlandWindowPlacement,
@@ -2811,6 +2806,21 @@ function enforceActiveCharacterRating() {
     avatarWindow.webContents.reloadIgnoringCache();
   }
   return true;
+}
+
+/** May an agent tool (MCP set_character / spawn_avatar) put `name` on screen? Only when the owner
+ *  already chose that body for someone (cast.json rows, or his Aither female/male choice). Any
+ *  other body is refused: agents propose bodies, the owner applies them (owner P0 2026-11-17). */
+function agentMayShow(name) {
+  const wanted = String(name || "").trim();
+  if (!wanted) return false;
+  try {
+    const cast = require("./cast-config.cjs");
+    if (cast.ownerBodies(cast.load({}).snapshot).has(wanted)) return true;
+  } catch {
+    return false;
+  }
+  return wanted === aitherCharacterToShow();
 }
 
 /** Switch to a roster character and hot-reload the renderer (no app restart). */
@@ -7760,16 +7770,13 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         }
         case "spawn-agent": {
           if (typeof arg !== "string" || arg.length === 0) return false;
-          // U28: DELETED fallbackCharacterForAgent's own ad hoc hash in favour
-          // of cast-config's stableCharacter -- the SAME hash room-stage-host
-          // uses to seat an agent that arrives with no assignment, "so
-          // Add-Avatar and the room agree on what an agent looks like".
+          // Owner 2026-11-17: only the body the owner assigned (cast.json authors), and only
+          // when the content rating lets it show. No assignment = no body: the agent stays a
+          // fairy until he picks one in the gallery. There is no automatic pick to fall to.
           const { filterCharacters } = require("./content-rating.cjs");
           const roster = filterCharacters(listCharacters());
           const assigned = getAgentAvatar(arg);
-          const taken = [...avatarSlots.values()].map((info) => info.name).filter(Boolean);
-          const resident = getActiveCharacter() || null;
-          const character = assigned || cast.stableCharacter(arg, roster, { taken, resident });
+          const character = assigned && roster.includes(assigned) ? assigned : null;
           if (!character) return false;
           return spawnAvatarSlot(nextFreeSlotId(), character, arg);
         }
@@ -7822,7 +7829,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         active: getActiveCharacter(),
         characters: listCharacters(),
       }),
-      onCharacter: (name) => applyCharacter(name),
+      // Owner P0 2026-11-17: an agent may SHOW a body the owner already chose, never pick one.
+      onCharacter: (name) => agentMayShow(name) && applyCharacter(name),
       onAgent: (agent) => applyAgentAvatar(agent),
       listAgentAvatars: () => loadAgentAvatars(),
       onExportPortrait: async () => {
@@ -7835,7 +7843,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         const custom = listAvailableAnimations().map((file) => `FILE:${file}`);
         return [...builtIn, ...custom];
       },
-      onSpawnAvatar: (slotId, name) => spawnAvatarSlot(slotId, name),
+      onSpawnAvatar: (slotId, name) => agentMayShow(name) && spawnAvatarSlot(slotId, name),
       onRemoveAvatar: (slotId) => removeAvatarSlot(slotId),
       onFleet: (action, opts) => fleetAction(action, opts),
       onCommand: (text, opts) => commandAction(text, opts),

@@ -275,8 +275,12 @@ function withIdentity(roster, { authors = {}, characters = null, aitherBody = ""
     // male); every other agent wears its authored character.
     else if (row.id === HOME_AGENT && aitherBody && has(aitherBody)) character = aitherBody;
     else if (authoredChar && has(authoredChar)) character = authoredChar;
-    else if (has(row.id)) character = row.id;
-    else character = has(DEFAULT_BODY) ? DEFAULT_BODY : DEFAULT_BODY;
+    // Owner 2026-11-17: no body the owner did not assign. A session, terminal or subagent row
+    // (or an agent nobody dressed) has character "" and stays a fairy; the old fallbacks (a
+    // model named like the agent, then aither-v2) dressed sessions he never chose a body for.
+    // Only Aither, the resident, keeps her own default body.
+    else if (row.id === HOME_AGENT && has(DEFAULT_BODY)) character = DEFAULT_BODY;
+    else character = "";
     const voice = authored && typeof authored === "object" && typeof authored.voice === "string" && authored.voice ? authored.voice : null;
     const light = LIGHT_KINDS.includes(row.kind);
     let belongsTo = "";

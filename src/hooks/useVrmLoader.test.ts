@@ -314,3 +314,37 @@ describe('applyOverlayEdges', () => {
     expect(applyOverlayEdges(root)).toBe(0); // idempotent
   });
 });
+
+describe('height normalisation (owner P0 2026-11-17: no giant models)', () => {
+  it('the springs see the height factor exactly like the layout scale', () => {
+    const vrm = scaledVrm() as unknown as VRM & { scene: { userData: Record<string, unknown> } };
+    (vrm as unknown as { scene: unknown }).scene = { userData: { deskHeightNorm: 0.5 } };
+    applySpringScale(vrm, 0.8);
+    const m = vrm.springBoneManager as unknown as Manager;
+    const [j0] = [...m.joints];
+    expect(j0.settings.hitRadius).toBeCloseTo(0.02 * 0.4);
+  });
+
+  it('applyHeightNorm shrinks a 1.86 m humanoid into the band and records the factor', async () => {
+    const THREE = await import('three');
+    const { applyHeightNorm } = await import('./useVrmLoader');
+    const scene = new THREE.Group();
+    const foot = new THREE.Object3D();
+    const head = new THREE.Object3D();
+    head.position.set(0, 1.862, 0);
+    scene.add(foot, head);
+    const vrm = {
+      scene,
+      humanoid: { getRawBoneNode: (n: string) => (n === 'head' ? head : n.endsWith('Foot') ? foot : null) },
+    } as unknown as VRM;
+    const f = applyHeightNorm(vrm);
+    expect(f).toBeLessThan(1);
+    expect(scene.scale.x).toBeCloseTo(f);
+    expect(scene.userData.deskHeightNorm).toBe(f);
+    expect(1.862 * f).toBeCloseTo(1.45 * 1.1, 4);
+    // A remount of the cached model must not re-measure the scaled scene and lose the factor.
+    expect(applyHeightNorm(vrm)).toBe(f);
+    expect(scene.userData.deskHeightNorm).toBe(f);
+    expect(scene.scale.x).toBeCloseTo(f);
+  });
+});

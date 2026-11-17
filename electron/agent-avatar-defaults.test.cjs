@@ -159,11 +159,18 @@ test("a body ANOTHER desk assigned still follows the person here: a row a pull w
   void lib;
   const out = await sync.syncFromCatalog({ client, library, defaultsDir: dir });
   const by = Object.fromEntries(out.results.map((r) => [r.agent, r]));
-  assert.equal(by.saga.changed, true, "a pulled row follows the catalog");
+  // Owner 2026-11-17: an automatic pull PROPOSES; nothing writes a body without him.
+  assert.equal(by.saga.changed, false, "an automatic pull never writes a body");
+  assert.equal(by.saga.proposed, "lyra", "it proposes the catalog's body instead");
   assert.equal(by.atlas.kept, true, "his own row stays");
-  const cast = JSON.parse(fs.readFileSync(CAST, "utf8")).authors;
-  assert.equal(cast.saga.character, "lyra");
+  let cast = JSON.parse(fs.readFileSync(CAST, "utf8")).authors;
+  assert.equal(cast.saga.character, "saga");
   assert.equal(cast.atlas.character, "charlie-5e48d775");
+  // His own "sync now" (replace) is the owner action: then a pulled row follows the catalog.
+  const mine = await sync.syncFromCatalog({ client, library, defaultsDir: dir, replace: true });
+  assert.equal(Object.fromEntries(mine.results.map((r) => [r.agent, r])).saga.changed, true);
+  cast = JSON.parse(fs.readFileSync(CAST, "utf8")).authors;
+  assert.equal(cast.saga.character, "lyra");
   asked = [];
 });
 
@@ -187,14 +194,15 @@ test("P0 2026-11-16: a catalog that names a registry body can NOT pull it over a
   // A VOICE the owner has heard obeys the same rule: a pull, a fill and even 'replace' write bodies, never voices.
   const voiceOf = () => JSON.parse(fs.readFileSync(CAST, "utf8")).authors.atlas.voice;
   assert.equal(voiceOf(), "en-US-MichelleNeural", "the pull left the voice alone");
-  // A pull still FILLS an empty row.
+  // Owner 2026-11-17: a pull no longer FILLS an empty row either -- it proposes.
   const bare = JSON.parse(fs.readFileSync(CAST, "utf8"));
   delete bare.authors.atlas.character;
   fs.writeFileSync(CAST, JSON.stringify(bare));
   const filled = await sync.syncFromCatalog({ client, library, defaultsDir: TMP });
-  assert.equal(filled.results[0].changed, true);
-  assert.equal(JSON.parse(fs.readFileSync(CAST, "utf8")).authors.atlas.character, "atlas");
-  assert.equal(voiceOf(), "en-US-MichelleNeural", "filling an empty body row left the voice alone");
+  assert.equal(filled.results[0].changed, false);
+  assert.equal(filled.results[0].proposed, "atlas");
+  assert.equal(JSON.parse(fs.readFileSync(CAST, "utf8")).authors.atlas.character, undefined, "an empty row stays empty (a fairy)");
+  assert.equal(voiceOf(), "en-US-MichelleNeural", "proposing a body left the voice alone");
   // The person's own manual sync is their OK.
   const cast2 = JSON.parse(fs.readFileSync(CAST, "utf8"));
   cast2.authors.atlas.character = "charlie-5e48d775";

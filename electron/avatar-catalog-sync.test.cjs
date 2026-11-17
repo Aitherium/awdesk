@@ -82,13 +82,15 @@ function writeCharacter(name, buf, record) {
   fs.writeFileSync(path.join(ROSTER, name, "character.json"), JSON.stringify(record));
 }
 
-test("a pull installs the agent's avatar once and dresses the agent", async () => {
+test("a pull installs the agent's avatar once and only PROPOSES it; the owner's sync dresses the agent", async () => {
   const bytes = fakeVrm("mira");
   const rec = { id: "Mira-aaaa1111", name: "Mira", rating: "general", sha256: sha(bytes), source: "upload" };
   const client = fakeClient({ avatars: [rec], map: { lyra: rec.id }, bytes: { [rec.id]: bytes } });
   const first = await sync.syncFromCatalog({ client, enrollOptions: ENROLL });
   assert.equal(first.ok, true);
-  assert.deepEqual(first.results.map((r) => [r.agent, r.ok, r.installed]), [["lyra", true, true]]);
+  assert.deepEqual(first.results.map((r) => [r.agent, r.ok, r.installed, r.proposed]), [["lyra", true, true, "mira-aaaa1111"]]);
+  assert.equal(agents.getAgentAvatar("lyra"), null, "owner 2026-11-17: no body without the owner");
+  await sync.syncFromCatalog({ client, enrollOptions: ENROLL, replace: true });
   assert.equal(agents.getAgentAvatar("lyra"), "mira-aaaa1111");
   assert.deepEqual(fs.readFileSync(path.join(ROSTER, "mira-aaaa1111", "model.vrm")), bytes);
 

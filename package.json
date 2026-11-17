@@ -54,6 +54,7 @@
     "dist:pg-linux": "npm run build:pg-only && electron-builder --linux AppImage --publish never",
     "dist:pg-mac": "npm run build:pg-only && electron-builder --mac dmg zip --publish never",
     "test:avatar-rightclick": "electron electron/avatar-rightclick-smoke.cjs",
+    "test:body-fit": "electron electron/body-fit-smoke.cjs",
     "test:console": "electron electron/console-smoke.cjs",
     "test:intent-bar": "electron electron/intent-bar-smoke.cjs",
     "desk-tools": "node scripts/desk-tools.cjs",

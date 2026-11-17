@@ -442,7 +442,8 @@ function createDeskMcpServer({
             ? `Desk switched to the ${name} character.`
             : refusalText(
               name,
-              `No character named ${name} is installed. Use list_characters to see the roster.`,
+              `${name} was not shown: it is not installed, or the owner has not chosen it for anyone. `
+              + "Agents may only show bodies the owner assigned; he picks bodies in the gallery.",
             ),
         );
       },
@@ -690,7 +691,7 @@ function createDeskMcpServer({
             : refusalText(
               name,
               `Failed to spawn avatar: slot_id may be reserved (use a custom id like 'slot1'), `
-              + `or character ${name} is not installed.`,
+              + `or ${name} is not installed or not a body the owner chose (agents may only show bodies he assigned).`,
             ),
         );
       },
