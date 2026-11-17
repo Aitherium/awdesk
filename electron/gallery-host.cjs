@@ -80,6 +80,7 @@ function buildState(deps) {
       display: (cfg && cfg.nickname) || String(rec.display_name || name).slice(0, 80),
       nickname: cfg ? cfg.nickname : "",
       tier,
+      ratingSource: require("./rating-resolve.cjs").sourceLabel(rec),
       origin: originOf(rec),
       licence: licenceOf(rec),
       assignedTo: wearers[name] || [],
@@ -212,7 +213,10 @@ function galleryHandlers(getDeps) {
       if (!deps().vroidBrowse) return { ok: false, error: "VRoid Hub is not available on this desk" };
       const r = await deps().vroidBrowse(String(source || "hearts"), String(keyword || ""), String(cursor || ""));
       const cap = gallery.audienceCap(gallery.readGallery(deps().castRaw()), { autoSafe: Boolean(deps().autoSafe && deps().autoSafe()) });
-      const { models, hidden } = require("./vroid-link.cjs").visibleModels(r.models, cap, gallery.tierAllowed);
+      // The audience cap AND the rule every installed body answers to (mirror gate, AitherSafety,
+      // ceiling): a model the safety plane would hide once installed is not even listed.
+      const ratingHidden = deps().ratingHidden || ((rating) => require("./content-rating.cjs").ratingHiddenReason(rating));
+      const { models, hidden } = require("./vroid-link.cjs").visibleModels(r.models, cap, gallery.tierAllowed, ratingHidden);
       // Only what the audience may see can be installed later (review of #123).
       const shown = new Set(models.map((m) => m.id));
       if (deps().rememberVroid) deps().rememberVroid((r.models || []).filter((m) => m && shown.has(m.id)));

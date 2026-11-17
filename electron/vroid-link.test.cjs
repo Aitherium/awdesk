@@ -12,12 +12,24 @@ test("models above the audience are not listed -- no name, no picture -- only co
     { id: "2", name: "Spicy", r18: true, image: "https://vroid-hub.pximg.net/x.png" },
     { id: "3", name: "Edgy", r15: true },
   ];
-  const hearth = link.visibleModels(models, "everyone", tierAllowed);
+  // This case is about the audience cap alone: the safety rule is pinned open (no gate hides).
+  const open = () => null;
+  const hearth = link.visibleModels(models, "everyone", tierAllowed, open);
   assert.deepEqual(hearth.models.map((m) => m.name), ["Kid"]);
   assert.equal(hearth.hidden, 2);
   assert.ok(!JSON.stringify(hearth).includes("Spicy"));
-  assert.equal(link.visibleModels(models, "teen", tierAllowed).models.length, 2);
-  assert.equal(link.visibleModels(models, "mature", tierAllowed).models.length, 3);
+  assert.equal(link.visibleModels(models, "teen", tierAllowed, open).models.length, 2);
+  assert.equal(link.visibleModels(models, "mature", tierAllowed, open).models.length, 3);
+});
+
+test("browse obeys the SAME rule as an installed body: the safety plane hides mature even on Personal", () => {
+  const models = [{ id: "1", name: "Kid" }, { id: "2", name: "Spicy", r18: true }, { id: "3", name: "Tagged", tags: ["Ｒ－１８"] }];
+  // ratingHidden = content-rating's ratingHiddenReason with AitherSafety saying "no explicit".
+  const planeSaysNo = (rating) => (rating === "r18" || rating === "unrated" ? "safety" : null);
+  const page = link.visibleModels(models, "mature", tierAllowed, planeSaysNo);
+  assert.deepEqual(page.models.map((m) => m.name), ["Kid"], "an R18 flag and an R18 TAG are both hidden");
+  assert.equal(page.hidden, 2);
+  assert.equal(link.tierOfModel(models[2]), "mature", "a full-width R-18 tag is mature");
 });
 
 test("only VRoid's own image hosts are fetched", () => {

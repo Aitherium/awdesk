@@ -410,6 +410,18 @@ async function enrollNewestDownloadChecked(preferredName = null, options = {}) {
   const perform = options.perform || performEnrollment;
   const name = perform(plan);
   if (!name) return { ok: false, name: null, reason: "the copy into the roster failed", verdict };
+  // What the model and VRoid Hub SAY about it (rating-resolve.cjs): its Hub flags and tags, else
+  // its own .vrm licence meta. Raises a source's verdict, never lowers one; a body it judges
+  // needs no vision guess to appear.
+  let derived;
+  try {
+    derived = require("./rating-resolve.cjs").deriveCharacter(ROSTER_DIR, name, { hub: options.hub || null });
+  } catch {
+    derived = null;
+  }
+  if (derived && derived.rating !== "unrated" && options.rateOnEnroll !== false) {
+    return { ok: true, name, reason: null, verdict, rating: { started: false, derived } };
+  }
   // A hand-enrolled model arrives with NO character.json, and since 2026-09-20 an
   // unjudged character is hidden with the adult ones -- so without this the owner
   // drops a .vrm in and it silently never appears. Judge it now. Fire-and-forget:
@@ -469,6 +481,7 @@ async function enrollFileChecked(plan, meta = {}, options = {}) {
       }
       return name;
     },
+    hub: meta.hub || null,
     // Judged at the source: no rater run.
     ...(KNOWN_RATINGS.has(rating) ? { rateOnEnroll: false } : {}),
   });
