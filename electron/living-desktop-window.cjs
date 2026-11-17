@@ -28,6 +28,7 @@ const fs = require("node:fs");
 const { BrowserWindow, ipcMain, screen, session, shell } = require("electron");
 
 const deskTenant = require("./desk-tenant.cjs");
+const chatPopout = require("./chat-popout.cjs");
 
 //: Tenant mode (desk-tenant.cjs): a validated tenant host replaces the apex; no tenant
 //: config -> the apex, unchanged. LIVING_DESKTOP_URL stays the developer override.
@@ -722,6 +723,11 @@ function log(line) {
   }
 }
 
+/** What a popped-out Chat window shares with the desktop that opened it (chat-popout.cjs). */
+function popoutBase() {
+  return { partition: PARTITION, preload: path.join(__dirname, "living-desktop-preload.cjs") };
+}
+
 function isAitheriumFamily(rawUrl) {
   try {
     const { protocol, hostname } = new URL(rawUrl);
@@ -834,7 +840,7 @@ function createWindow() {
   // Keep the overlay inside the aitherium family; anything else goes to the system
   // browser instead of hijacking the overlay surface.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isAitheriumFamily(url)) return { action: "allow" };
+    if (isAitheriumFamily(url)) return chatPopout.openHandlerAnswer(url, popoutBase());
     void shell.openExternal(url);
     return { action: "deny" };
   });
@@ -1106,7 +1112,7 @@ function showDesktopApp({ app = "" } = {}) {
     },
   });
   appWin.webContents.setWindowOpenHandler(({ url }) => {
-    if (isAitheriumFamily(url)) return { action: "allow" };
+    if (isAitheriumFamily(url)) return chatPopout.openHandlerAnswer(url, popoutBase());
     void shell.openExternal(url);
     return { action: "deny" };
   });
