@@ -23,6 +23,8 @@ export interface SpeechBubble {
   muted: boolean;
   /** Monotonic id, so a repeat of the SAME sentence still restarts its timer. */
   seq: number;
+  /** How long it stays, so the fade-out can be timed to the end of its life. */
+  lifeMs?: number;
 }
 
 /** Collapse whitespace and cut at a word boundary. A caption is one glance, not
@@ -78,3 +80,23 @@ export function clampIntoViewport(
     dy: axis(rect.top, rect.bottom, viewport.height),
   };
 }
+
+/** How far to move a bubble UP so it clears every box in `above` (bubbles that arrived earlier keep
+ *  their place; a newer one stacks over them, never on top). Pure. Boxes that do not overlap
+ *  horizontally are ignored; the result is 0 when nothing is in the way, else a negative dy. */
+export function stackOffset(rect: Box, above: Box[], gap = 6): number {
+  let top = rect.top;
+  const height = rect.bottom - rect.top;
+  // Settle against the boxes from the lowest to the highest: moving up can run into the next one.
+  const sorted = above
+    .filter((b) => b.left < rect.right && b.right > rect.left)
+    .sort((a, b) => b.top - a.top);
+  for (const b of sorted) {
+    const bottom = top + height;
+    if (bottom > b.top && top < b.bottom) top = b.top - gap - height;
+  }
+  return top - rect.top;
+}
+
+/** The fade-out starts this long before the bubble is removed (see styles.css .speech-bubble). */
+export const BUBBLE_FADE_MS = 450;

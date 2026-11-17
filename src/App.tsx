@@ -396,7 +396,8 @@ function AvatarSceneApp() {
         const slotId = event.slotId || 'slot0';
         bubbleSeq.current += 1;
         const seq = bubbleSeq.current;
-        setBubbles((current) => ({ ...current, [slotId]: { text, muted: Boolean(event.muted), seq } }));
+        const lifeMs = bubbleDurationMs(text, event.durationMs);
+        setBubbles((current) => ({ ...current, [slotId]: { text, muted: Boolean(event.muted), seq, lifeMs } }));
         const timers = bubbleTimers.current;
         const previous = timers.get(slotId);
         if (previous !== undefined) window.clearTimeout(previous);
@@ -412,7 +413,7 @@ function AvatarSceneApp() {
               delete next[slotId];
               return next;
             });
-          }, bubbleDurationMs(text, event.durationMs)),
+          }, lifeMs),
         );
       } else if (event.type === 'speak') {
         // Drop-to-avatar (2026-08-29): main TTS'd a verdict and handed the
