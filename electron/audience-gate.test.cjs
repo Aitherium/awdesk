@@ -40,6 +40,9 @@ function setGallery(gallery) {
   rating.invalidateGate();
 }
 const visible = () => ["kid-safe", "teen-one", "mature-one", "nobody-looked"].filter((n) => !rating.isHidden(n));
+// The profile cases assume AitherSafety answered "explicit allowed"; the plane's own cases below
+// set it themselves. Re-pinned per test so the trust window can never expire mid-file.
+test.beforeEach(() => rating.setSafetyExplicitAllowed(true));
 
 test("Personal (mature) with the gate open shows everything, unrated included", () => {
   setGallery({ profile: "personal" });
@@ -89,4 +92,55 @@ test("an unreadable cast.json is the family audience, never the last profile it 
   assert.deepEqual(visible(), ["kid-safe"]);
   setGallery({ profile: "personal" });
   assert.equal(visible().length, 4);
+});
+
+// ── AitherSafety (owner 2026-11-17: "respect aithersafety content settings") ─────────────────
+
+test("AitherSafety saying no-explicit hides mature AND teen on Personal, whatever the profile allows", () => {
+  setGallery({ profile: "personal" });
+  rating.setSafetyExplicitAllowed(false);
+  assert.deepEqual(visible(), ["kid-safe"]);
+  assert.equal(rating.hiddenReason("mature-one"), "gate");
+  rating.setSafetyExplicitAllowed(true);
+  assert.equal(visible().length, 4, "mutation guard: the plane saying yes changes nothing");
+});
+
+test("AitherSafety unreachable (never answered) = closed for MATURE; teen stays with the mirror", () => {
+  setGallery({ profile: "personal" });
+  rating.setSafetyExplicitAllowed(null);
+  assert.deepEqual(visible(), ["kid-safe", "teen-one"]);
+  assert.equal(rating.hiddenReason("mature-one"), "safety");
+  assert.equal(rating.hiddenReason("nobody-looked"), "safety", "unrated counts as mature");
+  assert.match(rating.refusalFor("mature-one").reason, /AitherSafety/);
+});
+
+test("an AitherSafety answer that is too old is the same as no answer", () => {
+  setGallery({ profile: "personal" });
+  const long = Date.now() - rating.SAFETY_TRUST_MS - 1000;
+  rating.setSafetyExplicitAllowed(true, long);
+  assert.equal(rating.getSafetyExplicitAllowed(), null);
+  assert.equal(rating.hiddenReason("mature-one"), "safety");
+  rating.setSafetyExplicitAllowed(true);
+  assert.equal(rating.hiddenReason("mature-one"), null, "a fresh yes opens it again");
+});
+
+test("safe mode still wins with AitherSafety saying yes", () => {
+  setGallery({ profile: "personal", safeMode: true });
+  rating.setSafetyExplicitAllowed(true);
+  assert.deepEqual(visible(), ["kid-safe"]);
+  setGallery({ profile: "personal" });
+});
+
+test("ratingHiddenReason judges a body NOT installed yet by the same rule (VRoid browse/download)", () => {
+  setGallery({ profile: "personal" });
+  rating.setSafetyExplicitAllowed(true);
+  assert.equal(rating.ratingHiddenReason("r18"), null);
+  rating.setSafetyExplicitAllowed(null);
+  assert.equal(rating.ratingHiddenReason("r18"), "safety");
+  assert.equal(rating.ratingHiddenReason("unknown"), "safety", "an unknown rating is unrated, never general");
+  assert.equal(rating.ratingHiddenReason("r15"), null);
+  assert.equal(rating.ratingHiddenReason("general"), null);
+  setGallery({ profile: "hearth" });
+  rating.setSafetyExplicitAllowed(true);
+  assert.equal(rating.ratingHiddenReason("r15"), "audience");
 });

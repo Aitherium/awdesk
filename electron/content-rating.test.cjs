@@ -48,6 +48,11 @@ after(() => {
 
 const rating = require("./content-rating.cjs");
 const roster = require("./character-roster.cjs");
+// The cases below are about the MIRROR gate, so the live safety plane is pinned to "explicit
+// allowed" (a plane that never answered closes mature on its own -- its own tests reset this).
+// Re-pinned before every test: Date.now() advancing past SAFETY_TRUST_MS must not flake a case.
+const { beforeEach } = require("node:test");
+beforeEach(() => rating.setSafetyExplicitAllowed(true));
 
 /** Run `fn` with the gate forced to `visible`, then restore the mirror. */
 function withGate(visible, fn) {
@@ -271,12 +276,12 @@ test("the desk's ceiling hides above itself even with the gate OPEN, and can onl
   });
 });
 
-test("the live safety plane can only TIGHTEN: false closes an open gate, null and true change nothing", () => {
+test("the live safety plane can only TIGHTEN: false closes an open gate, no answer closes MATURE, true changes nothing", () => {
   withCharacter("zz-safety-r18", "r18", () => {
     try {
       withGate(true, () => {
         rating.setSafetyExplicitAllowed(null);
-        assert.equal(rating.hiddenReason("zz-safety-r18"), null, "no answer must not hide the roster");
+        assert.equal(rating.hiddenReason("zz-safety-r18"), "safety", "a plane that never answered closes mature");
         rating.setSafetyExplicitAllowed(true);
         assert.equal(rating.hiddenReason("zz-safety-r18"), null);
         rating.setSafetyExplicitAllowed(false);

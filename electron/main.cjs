@@ -2888,6 +2888,19 @@ function enforceAudience() {
   }
 }
 
+/** The desk-start re-derive pass over characters/ (rating-resolve.cjs). Never throws. */
+function rederiveRatingsAtStart() {
+  try {
+    const changed = require("./rating-resolve.cjs").rederiveRoster(ROSTER_DIR);
+    for (const row of changed) {
+      debugLog("rating", `${row.name}: ${row.before} -> ${row.rating} (${row.rating_source}${row.signal ? `: ${row.signal}` : ""})`);
+    }
+    if (changed.length) require("./content-rating.cjs").invalidateGate();
+  } catch (error) {
+    debugLog("rating re-derive failed", error && error.message);
+  }
+}
+
 function galleryBroadcast(extra = {}) {
   const event = { type: "gallery-changed", ...extra };
   for (const win of BrowserWindow.getAllWindows()) {
@@ -2977,6 +2990,10 @@ function galleryDeps() {
       const g = require("./avatar-gallery.cjs");
       const cap = g.audienceCap(g.readGallery(galleryCastRaw()), { autoSafe: rating.getAutoSafe() });
       if (!g.tierAllowed(tier, cap)) return { ok: false, error: "not available on this profile" };
+      // The same rule every installed body answers to (mirror gate + AitherSafety + ceiling).
+      if (rating.ratingHiddenReason(require("./vroid-link.cjs").ratingOfModel(model))) {
+        return { ok: false, error: "not available on this profile" };
+      }
       // Downloaded, never worn: `apply` is a no-op, so it lands in My avatars UNASSIGNED.
       const r = await avatarLibrarySync.installVroidModel(model, { apply: () => false });
       if (r.ok) galleryBroadcast();
@@ -3961,16 +3978,24 @@ function fsMkdirSafe(dir) {
 
 /** Ask the LIVE safety plane whether explicit content is permitted and hand
  *  the verdict to content-rating (its limit 2 -- tightening only; see that
- *  file's three-limits note). Fire-and-forget on the tray refresh: a slow or
- *  dead fleet must never hold up a menu, and a plane that does not answer
- *  leaves the verdict untouched. */
+ *  file's three-limits note). Fire-and-forget on the tray refresh and every
+ *  SAFETY_POLL_MS: a slow or dead fleet must never hold up a menu. A plane that
+ *  does not answer is not written (the last answer ages out after
+ *  content-rating's SAFETY_TRUST_MS, and then mature is CLOSED). When the
+ *  effective verdict moves, the audience is re-enforced on screen at once. */
+const SAFETY_POLL_MS = 2 * 60 * 1000;
 function refreshSafetyPosture() {
   try {
     const { explicitAllowed } = require("./safety-gate.cjs");
-    const { setSafetyExplicitAllowed } = require("./content-rating.cjs");
+    const rating = require("./content-rating.cjs");
+    const before = rating.getSafetyExplicitAllowed();
     void explicitAllowed()
       .then((verdict) => {
-        if (verdict !== null) setSafetyExplicitAllowed(verdict);
+        if (verdict !== null) rating.setSafetyExplicitAllowed(verdict);
+        if (rating.getSafetyExplicitAllowed() !== before) {
+          debugLog("safety plane", `explicit ${String(before)} -> ${String(rating.getSafetyExplicitAllowed())}`);
+          galleryChanged("audience");
+        }
       })
       .catch(() => {});
   } catch (error) {
@@ -6858,6 +6883,13 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     }
     // Kid desk: the child's classroom and nothing else -- no avatar overlay, roster, agent
     // apps, palette, shortcuts, bridge or MCP. Everything adult below is never started.
+    // Ratings from what each model and VRoid Hub SAY about it (rating-resolve.cjs): raise, never
+    // lower, before any door reads a rating. Then keep asking AitherSafety: a plane that stops
+    // answering closes mature once its last answer is too old.
+    rederiveRatingsAtStart();
+    refreshSafetyPosture();
+    const safetyPoll = setInterval(refreshSafetyPosture, SAFETY_POLL_MS);
+    if (typeof safetyPoll.unref === "function") safetyPoll.unref();
     if (kidDeskMode().enabled) {
       startKidDesk();
       return;

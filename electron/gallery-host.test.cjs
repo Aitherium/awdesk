@@ -111,10 +111,11 @@ test("VRoid Hub: a model above the audience is not listed; an installed one says
   const h = make(() => ({
     rosterDir: dir, proposalsDir: dir,
     allNames: () => ["vroid-111"], ratingOf: () => "general", isHidden: () => false, castRaw: () => raw,
+    ratingHidden: () => null,
     vroidRosterName: (id) => `vroid-${id}`,
     rememberVroid: (list) => { remembered.push(...list.map((m) => m.id)); },
     vroidBrowse: async () => ({ ok: true, linked: true, next: "c2", models: [
-      { id: "111", name: "Kid", downloadable: true },
+      { id: "111", name: "Kid", downloadable: true, r18: false, r15: false },
       { id: "222", name: "Spicy", r18: true, downloadable: true },
     ] }),
   }));

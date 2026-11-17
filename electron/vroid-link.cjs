@@ -24,21 +24,32 @@ const CATCH_MS = 5 * 60 * 1000;
 /** Where VRoid Hub serves model pictures. Anything else is not fetched. */
 const IMAGE_HOSTS = [/\.pximg\.net$/i, /(^|\.)vroid\.com$/i];
 
-/** The model's tier from VRoid's own flags (broker shape: r15 / r18 booleans). */
-function tierOfModel(m) {
-  if (m && m.r18) return "mature";
-  if (m && m.r15) return "teen";
-  return "everyone";
+/** The model's rating from VRoid's own flags AND its tags (rating-resolve.cjs: an R18 tag on a
+ *  model the uploader forgot to flag is still R18). Broker shape: r15 / r18 booleans, tags. */
+function ratingOfModel(m) {
+  // A row with no flags and no tags is UNRATED (= mature), never "all ages" (review of slice 3).
+  return require("./rating-resolve.cjs").resolveRating({ hub: m && typeof m === "object" ? m : null }).rating;
 }
 
-/** Models the audience may see, plus how many it hides. Never names a hidden one. */
-function visibleModels(models, cap, tierAllowed) {
+/** The model's tier in his words (everyone | teen | mature). */
+function tierOfModel(m) {
+  return { general: "everyone", r15: "teen", r18: "mature" }[ratingOfModel(m)] || "mature";
+}
+
+/**
+ * Models the audience may see, plus how many it hides. Never names a hidden one.
+ * `ratingHidden(rating)` is content-rating's ratingHiddenReason -- the mirror gate, AitherSafety
+ * and the desk ceiling -- so browse hides exactly what an installed body would be hidden by.
+ * It defaults to the real one: a caller that forgets it cannot list past the safety plane.
+ */
+function visibleModels(models, cap, tierAllowed, ratingHidden = (r) => require("./content-rating.cjs").ratingHiddenReason(r)) {
   const out = [];
   let hidden = 0;
   for (const m of Array.isArray(models) ? models : []) {
     if (!m || typeof m.id !== "string") continue;
+    const rating = ratingOfModel(m);
     const tier = tierOfModel(m);
-    if (!tierAllowed(tier, cap)) { hidden += 1; continue; }
+    if (!tierAllowed(tier, cap) || ratingHidden(rating)) { hidden += 1; continue; }
     out.push({
       id: m.id,
       name: String(m.name || m.id).slice(0, 80),
@@ -157,4 +168,4 @@ async function finishPasted(raw, { storeRequest }) {
   return r.ok ? { ok: true } : { ok: false, reason: r.reason || "that address did not finish the link" };
 }
 
-module.exports = { CATCH_PORT, tierOfModel, visibleModels, imageAllowed, imageData, codeAndState, startLink, finishPasted };
+module.exports = { CATCH_PORT, ratingOfModel, tierOfModel, visibleModels, imageAllowed, imageData, codeAndState, startLink, finishPasted };

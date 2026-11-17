@@ -15,6 +15,8 @@ export interface GalleryAvatar {
   display: string;
   nickname: string;
   tier: Tier;
+  /** Who decided the rating, in his words: "VRoid Hub R18", "vision guess", "VRM licence: ...". */
+  ratingSource?: string;
   origin: string;
   licence: string;
   assignedTo: string[];

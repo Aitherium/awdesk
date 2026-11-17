@@ -109,9 +109,11 @@ function useTurntable(name: string, active: boolean): string | null {
   return frame;
 }
 
-function TierBadge({ tier }: { tier: Tier | null }) {
+function TierBadge({ tier, source }: { tier: Tier | null; source?: string }) {
   if (!tier) return null;
-  return <span className={`gal-tier gal-tier-${tier}`}>{TIER_LABEL[tier]}</span>;
+  // The rating says WHO decided it ("Mature · VRoid Hub R18", "Teen · vision guess").
+  const text = source ? `${TIER_LABEL[tier]} · ${source}` : TIER_LABEL[tier];
+  return <span className={`gal-tier gal-tier-${tier}`} title={text}>{text}</span>;
 }
 
 function Tile({ a, selected, onPick }: { a: GalleryAvatar; selected: boolean; onPick: () => void }) {
@@ -132,7 +134,7 @@ function Tile({ a, selected, onPick }: { a: GalleryAvatar; selected: boolean; on
       <div className="gal-tile-img">{src ? <img src={src} alt="" draggable={false} /> : <div className="gal-tile-ph">{a.display.slice(0, 1).toUpperCase()}</div>}</div>
       <div className="gal-tile-meta">
         <span className="gal-tile-name">{a.display}</span>
-        <TierBadge tier={a.tier} />
+        <TierBadge tier={a.tier} source={a.ratingSource} />
       </div>
       {a.assignedTo.length ? <div className="gal-tile-who">{a.assignedTo.join(', ')}</div> : <div className="gal-tile-who is-free">unassigned</div>}
     </button>
