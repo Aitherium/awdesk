@@ -38,7 +38,7 @@ test("a link opens his browser and finishes from the loopback return; a busy por
   const calls = [];
   const storeRequest = async (p, opts) => {
     calls.push([p, opts && opts.json]);
-    if (p === "/vroid/authorize-web") return { ok: true, body: { authorize_url: "https://hub.vroid.com/oauth/authorize?x=1" } };
+    if (p === "/vroid/authorize-web") return { ok: true, body: { authorize_url: "https://hub.vroid.com/oauth/authorize?x=1", state: "s1" } };
     return { ok: true, body: {} };
   };
   let handler = null;
@@ -59,7 +59,12 @@ test("a link opens his browser and finishes from the loopback return; a busy por
   });
   assert.deepEqual(r, { ok: true, opened: true, paste: false });
   assert.deepEqual(opened, ["https://hub.vroid.com/oauth/authorize?x=1"]);
-  const res = { writeHead() { return this; }, end() {} };
+  const res = { status: 0, writeHead(code) { this.status = code; return this; }, end() {} };
+  await handler({ url: "/callback?code=c0&state=forged" }, res);
+  assert.equal(res.status, 404, "a return with another state is not ours");
+  await handler({ url: "/callbackX?code=c0&state=s1" }, res);
+  assert.equal(res.status, 404, "only the exact path");
+  assert.equal(calls.length, 1, "nothing was sent for either");
   await handler({ url: "/callback?code=c1&state=s1" }, res);
   assert.deepEqual(calls[1], ["/vroid/link-web", { code: "c1", state: "s1" }]);
   assert.deepEqual(linked, { ok: true, reason: null });

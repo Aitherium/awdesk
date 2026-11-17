@@ -2856,6 +2856,7 @@ function enforceActiveCharacterRating() {
 // share/stream turns safe mode on by itself, rotation follows HIS sets, and VRoid Studio exports
 // land in the gallery unassigned and unrated.
 let galleryWindow = null;
+const galleryVroidSeen = new Map();
 let gallerySharing = [];
 let galleryShareWatch = null;
 let galleryStudioWatch = null;
@@ -2961,16 +2962,16 @@ function galleryDeps() {
     setRating: (name, value) => rating.setRating(name, value, "owner"),
     onChanged: (reason) => galleryChanged(reason),
     modelUrl: (name) => characterModelUrl(name),
-    vroidBrowse: async (source, keyword, cursor) => {
-      const r = await marketClient.vroidBrowse(source, keyword, cursor);
-      // The same seen-map desk:avatar-install reads: only a listed model can be installed.
-      for (const model of r.models || []) if (model && typeof model.id === "string") vroidSeen.set(model.id, model);
-      while (vroidSeen.size > 500) vroidSeen.delete(vroidSeen.keys().next().value);
-      return r;
+    vroidBrowse: (source, keyword, cursor) => marketClient.vroidBrowse(source, keyword, cursor),
+    // The gallery's OWN seen-map, fed only the models the audience may see (review of #123:
+    // the Deck's map installs with apply, and it must never learn a hidden model from here).
+    rememberVroid: (models) => {
+      for (const model of models) galleryVroidSeen.set(model.id, model);
+      while (galleryVroidSeen.size > 500) galleryVroidSeen.delete(galleryVroidSeen.keys().next().value);
     },
     vroidRosterName: (id) => avatarLibrarySync.vroidRosterName(id) || "",
     vroidInstall: async (id) => {
-      const model = vroidSeen.get(id);
+      const model = galleryVroidSeen.get(id);
       if (!model) return { ok: false, error: "browse VRoid Hub again, then choose the model" };
       const tier = require("./vroid-link.cjs").tierOfModel(model);
       const g = require("./avatar-gallery.cjs");
@@ -7094,7 +7095,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // While the adult-content gate is closed no R15/R18 row reaches the Deck
       // (ACG004, carried over from model-browser.py); only listed models enter
       // vroidSeen, so an unlisted one cannot be installed either.
-      const models = avatarLibrarySync.visibleVroidModels(result.models, avatarLibrarySync.gateOpen());
+      // ...and the AUDIENCE (owner 2026-11-17): Hearth/Work/safe mode list nothing above them.
+      const g = require("./avatar-gallery.cjs");
+      const cap = g.audienceCap(g.readGallery(galleryCastRaw()), { autoSafe: require("./content-rating.cjs").getAutoSafe() });
+      const models = avatarLibrarySync.visibleVroidModels(result.models, avatarLibrarySync.gateOpen())
+        .filter((m) => g.tierAllowed(require("./vroid-link.cjs").tierOfModel(m), cap));
       for (const model of models) {
         if (model && typeof model.id === "string") vroidSeen.set(model.id, model);
       }
@@ -7111,6 +7116,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       } else if (kind === "vroid") {
         const model = vroidSeen.get(id);
         if (!model) return { ok: false, reason: "search VRoid Hub again, then choose the model" };
+        {
+          const g = require("./avatar-gallery.cjs");
+          const cap = g.audienceCap(g.readGallery(galleryCastRaw()), { autoSafe: require("./content-rating.cjs").getAutoSafe() });
+          if (!g.tierAllowed(require("./vroid-link.cjs").tierOfModel(model), cap)) return { ok: false, reason: "not available for who may see this desk right now" };
+        }
         result = await avatarLibrarySync.installVroidModel(model, deps);
       } else {
         return { ok: false, reason: "unknown avatar source" };

@@ -213,6 +213,9 @@ function galleryHandlers(getDeps) {
       const r = await deps().vroidBrowse(String(source || "hearts"), String(keyword || ""), String(cursor || ""));
       const cap = gallery.audienceCap(gallery.readGallery(deps().castRaw()), { autoSafe: Boolean(deps().autoSafe && deps().autoSafe()) });
       const { models, hidden } = require("./vroid-link.cjs").visibleModels(r.models, cap, gallery.tierAllowed);
+      // Only what the audience may see can be installed later (review of #123).
+      const shown = new Set(models.map((m) => m.id));
+      if (deps().rememberVroid) deps().rememberVroid((r.models || []).filter((m) => m && shown.has(m.id)));
       const installed = new Set(deps().allNames());
       const named = deps().vroidRosterName || (() => "");
       return {

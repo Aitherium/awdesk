@@ -65,9 +65,12 @@ function imageAllowed(raw) {
 async function imageData(raw, { fetchImpl = globalThis.fetch, maxBytes = 2 * 1024 * 1024 } = {}) {
   if (!imageAllowed(raw) || typeof fetchImpl !== "function") return null;
   try {
-    const res = await fetchImpl(String(raw), { headers: { Accept: "image/*" } });
+    // No redirects: an allowed host must not bounce the fetch to any other host.
+    const res = await fetchImpl(String(raw), { headers: { Accept: "image/*" }, redirect: "error" });
     if (!res.ok) return null;
     const type = String(res.headers.get("content-type") || "").split(";")[0];
+    const declared = Number(res.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > maxBytes) return null;
     if (!/^image\/(png|jpeg|webp|gif)$/.test(type)) return null;
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length > maxBytes) return null;
@@ -89,9 +92,10 @@ function codeAndState(raw) {
   }
 }
 
+const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const DONE_PAGE = (ok, text) => `<!doctype html><meta charset="utf-8"><title>VRoid Hub</title>
 <body style="font:16px system-ui;background:#0b0c10;color:#eee;display:grid;place-items:center;height:100vh;margin:0">
-<div><h2>${ok ? "VRoid Hub is linked" : "VRoid Hub was not linked"}</h2><p>${text}</p></div></body>`;
+<div><h2>${ok ? "VRoid Hub is linked" : "VRoid Hub was not linked"}</h2><p>${esc(text)}</p></div></body>`;
 
 /**
  * Start a link: ask the broker for the authorize URL, hold the loopback catcher, open the URL.
@@ -104,6 +108,8 @@ async function startLink({ storeRequest, openExternal, onLinked = () => {}, crea
     return { ok: false, reason: (start && start.reason) || "VRoid Hub linking is not available right now" };
   }
   const authorizeUrl = start.body.authorize_url;
+  // The state THIS link started; a return carrying any other is not ours (review of #123).
+  const expectedState = typeof start.body.state === "string" ? start.body.state : "";
   let paste = false;
   await new Promise((resolve) => {
     let server;
@@ -111,11 +117,17 @@ async function startLink({ storeRequest, openExternal, onLinked = () => {}, crea
     try {
       server = createServer(async (req, res) => {
         const got = codeAndState(req.url);
-        if (!req.url || !req.url.startsWith("/callback") || !got) {
+        const pathOnly = String(req.url || "").split("?")[0];
+        if (pathOnly !== "/callback" || !got || (expectedState && got.state !== expectedState)) {
           res.writeHead(404).end();
           return;
         }
-        const r = await storeRequest("/vroid/link-web", { method: "POST", json: got });
+        let r;
+        try {
+          r = await storeRequest("/vroid/link-web", { method: "POST", json: got });
+        } catch (error) {
+          r = { ok: false, reason: (error && error.message) || "the link did not finish" };
+        }
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(DONE_PAGE(r.ok, r.ok ? "You can close this tab; the desk's gallery shows your VRoid Hub now." : String(r.reason || "Try again from the gallery.")));
         stop();

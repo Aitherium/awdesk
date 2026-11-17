@@ -4,7 +4,7 @@
  * active profile is not listed (counted only). "Download" puts it in My avatars, UNASSIGNED,
  * with VRoid's own rating -- only when VRoid's licence lets this account download it.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { TIER_LABEL, type Tier } from './galleryModel';
 
 interface HubModel {
@@ -40,6 +40,7 @@ const imageCache = new Map<string, string | null>();
 function HubImage({ url, call }: { url: string; call: Call }) {
   const [src, setSrc] = useState<string | null>(imageCache.get(url) ?? null);
   useEffect(() => {
+    setSrc(imageCache.get(url) ?? null);
     if (!url || imageCache.has(url)) return undefined;
     let live = true;
     void call('vroidImage', { url }).then((r) => {
@@ -59,16 +60,26 @@ export function VroidTab({ call, cap, onInstalled }: { call: Call; cap: Tier; on
   const [busy, setBusy] = useState('');
   const [paste, setPaste] = useState('');
   const [note, setNote] = useState('');
+  // Only the newest request may paint (review of #123: a slow reply overwrote a newer source).
+  const seq = useRef(0);
+  const keywordRef = useRef('');
+  keywordRef.current = keyword;
 
   const load = useCallback(async (src: string, kw: string, cursor = '') => {
+    const mine = ++seq.current;
     setBusy('load');
     const r = (await call('vroidBrowse', { source: src, keyword: kw, cursor })) as unknown as HubPage;
+    if (mine !== seq.current) return;
     setBusy('');
     setPage((prev) => (cursor && prev && prev.models && r.models ? { ...r, models: [...prev.models, ...r.models], hidden: (prev.hidden || 0) + (r.hidden || 0) } : r));
   }, [call]);
 
+  // A narrower audience clears what is on screen AT ONCE (never the old page until the new one
+  // arrives), forgets the pictures, and asks again -- every source, search included.
   useEffect(() => {
-    if (source !== 'search') void load(source, '');
+    setPage(null);
+    imageCache.clear();
+    if (source !== 'search' || keywordRef.current) void load(source, keywordRef.current);
   }, [source, cap, load]);
 
   const link = async () => {
