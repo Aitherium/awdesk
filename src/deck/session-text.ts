@@ -322,7 +322,11 @@ export function replyEffectLine(live: boolean | null): string {
   return 'Queued if the session is live, or it resumes in a new terminal tab if it ended.';
 }
 
-/** Ids of the cards whose asking session has ended (main said live === false). */
+/**
+ * Ids of the cards whose asking session has ended: main said live === false AND this
+ * machine can judge it (ended !== false). A card main cannot judge (ended === false, a
+ * WSL or container session) is never listed, the same rule sessionPill uses.
+ */
 export function endedSessionIds(cards: Array<Pick<DeckDecision, 'id' | 'session'>>): string[] {
   return cards.filter((card) => card.session?.live === false && card.session.ended !== false).map((card) => card.id);
 }
