@@ -53,6 +53,7 @@
     "dist:pg-windows": "npm run build:pg-only && electron-builder --win nsis --publish never",
     "dist:pg-linux": "npm run build:pg-only && electron-builder --linux AppImage --publish never",
     "dist:pg-mac": "npm run build:pg-only && electron-builder --mac dmg zip --publish never",
+    "test:avatar-rightclick": "electron electron/avatar-rightclick-smoke.cjs",
     "test:console": "electron electron/console-smoke.cjs",
     "test:browser": "electron electron/browser-smoke.cjs",
     "test:browser-parity": "electron electron/browser-parity-smoke.cjs",

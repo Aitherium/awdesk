@@ -6,6 +6,7 @@ import {
   getPickState,
   hexToRgb,
   maskBounds,
+  nearestIdInPatch,
   outlineOf,
   registerAvatarGroup,
   registeredSlots,
@@ -128,5 +129,25 @@ describe('the outline', () => {
     expect(maskBounds(new Uint8Array(100), 10, 10)).toBeNull();
     expect(hexToRgb('#38bdf8')).toEqual([0x38, 0xbd, 0xf8]);
     expect(hexToRgb('nope')).toEqual([255, 255, 255]);
+  });
+});
+
+describe('the click-through slack round a body', () => {
+  const patch = (size: number, ids: Record<string, number>) => {
+    const px = new Uint8Array(size * size * 4);
+    for (const [k, id] of Object.entries(ids)) {
+      const [x, y] = k.split(',').map(Number);
+      const i = (y * size + x) * 4;
+      px[i] = id;
+      px[i + 3] = 255;
+    }
+    return px;
+  };
+  it('the exact pixel wins; else the body pixel nearest the pointer; else nobody', () => {
+    expect(nearestIdInPatch(patch(5, { '2,2': 1, '2,1': 2 }), 5, 3)).toBe(1);
+    expect(nearestIdInPatch(patch(5, { '4,4': 1, '2,1': 2 }), 5, 3)).toBe(2);
+    expect(nearestIdInPatch(patch(5, {}), 5, 3)).toBe(0);
+    // A blend artefact above the slot count is nobody, here as in the exact pick.
+    expect(nearestIdInPatch(patch(5, { '2,2': 9 }), 5, 3)).toBe(0);
   });
 });
