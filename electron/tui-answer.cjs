@@ -43,46 +43,108 @@ function tuiAction(card, key) {
 }
 
 /**
- * PowerShell (UI Automation): select the WT tab whose name matches stdin line 1,
- * raise its window, re-read the foreground window and the tab's selection state,
- * and report whether it is in front. Stdin line 2 (a digit) is validated and IGNORED:
- * no keystroke is ever sent (see the header).
+ * The Win32 half of raising a window from a process the owner did NOT just click.
+ *
+ * Measured 2026-11-17 (card d-yjmc, "Go live: openaw.org"): "Open the session" on the
+ * fairy's whisper flashed "Open the session to answer" and nothing came forward. The
+ * whisper is `focusable:false` (it never takes the keyboard), so the desk is not the
+ * foreground process when it is clicked, and Windows refuses SetForegroundWindow from
+ * its child: the check right after read "not in front". Attaching to the foreground
+ * window's input thread is the documented way a background process may hand the
+ * foreground over; SwitchToThisWindow is the fallback. Still no keystroke of any kind.
+ */
+const FOREGROUND_TYPE = "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class AitherTui { [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h, int c); [DllImport(\"user32.dll\")] public static extern bool IsIconic(IntPtr h); [DllImport(\"user32.dll\")] public static extern bool BringWindowToTop(IntPtr h); [DllImport(\"user32.dll\")] public static extern void SwitchToThisWindow(IntPtr h, bool alt); [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid); [DllImport(\"user32.dll\")] public static extern bool AttachThreadInput(uint a, uint b, bool attach); [DllImport(\"kernel32.dll\")] public static extern uint GetCurrentThreadId(); }'";
+
+/** PowerShell lines defining `Raise $h` -> $true when $h is the foreground window after. */
+function raiseLines() {
+  return [
+    FOREGROUND_TYPE,
+    "function Raise([IntPtr]$h) {",
+    "  if ([AitherTui]::IsIconic($h)) { [void][AitherTui]::ShowWindow($h, 9) }",
+    "  for ($i = 0; $i -lt 3; $i++) {",
+    "    $fg = [AitherTui]::GetForegroundWindow()",
+    "    if ($fg -eq $h) { return $true }",
+    "    $me = [AitherTui]::GetCurrentThreadId()",
+    "    $other = [AitherTui]::GetWindowThreadProcessId($fg, [IntPtr]::Zero)",
+    "    $att = $false",
+    "    if ($other -ne 0 -and $other -ne $me) { $att = [AitherTui]::AttachThreadInput($me, $other, $true) }",
+    "    [void][AitherTui]::BringWindowToTop($h)",
+    "    [void][AitherTui]::SetForegroundWindow($h)",
+    "    if ($att) { [void][AitherTui]::AttachThreadInput($me, $other, $false) }",
+    "    if ($i -ge 1) { [AitherTui]::SwitchToThisWindow($h, $true) }",
+    "    Start-Sleep -Milliseconds 200",
+    "  }",
+    "  return ([AitherTui]::GetForegroundWindow() -eq $h)",
+    "}",
+  ];
+}
+
+/**
+ * PowerShell (UI Automation): select the WT tab whose name matches one of the names on
+ * stdin line 1 (TAB-separated, in order of trust), raise its window, re-read the
+ * foreground window and the tab's selection state, and report whether it is in front.
+ * An EXACT name match on any tab wins over a prefix match (two sessions can share a
+ * prefix). Stdin line 2 (a digit) is validated and IGNORED: no keystroke is ever sent.
  */
 function typeScript() {
   return [
     "$ErrorActionPreference = 'Stop'",
     "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
     "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes",
-    "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class AitherTui { [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h, int c); [DllImport(\"user32.dll\")] public static extern bool IsIconic(IntPtr h); }'",
+    ...raiseLines(),
     "$want = [Console]::In.ReadLine()",
     "$keys = [Console]::In.ReadLine()",
     "if ($null -eq $keys) { $keys = '' }",
     "if ($keys -notmatch '^[1-9]?$') { @{ ok = $false; typed = $false; error = 'refused: not an option number' } | ConvertTo-Json -Compress; exit 0 }",
     "function Norm([string]$s) { return ($s -replace '^[^\\p{L}\\p{N}]+', '' -replace '…$', '').Trim().ToLowerInvariant() }",
-    "$w = Norm $want",
+    "$wants = @(\"$want\" -split \"`t\" | ForEach-Object { Norm $_ } | Where-Object { $_.Length -ge 3 })",
     "$root = [System.Windows.Automation.AutomationElement]::RootElement",
     "$cls = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'CASCADIA_HOSTING_WINDOW_CLASS')",
     "$tabCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::TabItem)",
-    "$found = $null",
+    "$all = @()",
     "foreach ($win in $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cls)) {",
-    "  foreach ($tab in $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tabCond)) {",
-    "    $n = Norm $tab.Current.Name",
-    "    if ($w.Length -ge 3 -and $n.Length -ge 3 -and ($n -eq $w -or $n.StartsWith($w) -or $w.StartsWith($n))) { $found = @($win, $tab); break }",
-    "  }",
-    "  if ($found) { break }",
+    "  foreach ($tab in $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tabCond)) { $all += ,@($win, $tab, (Norm $tab.Current.Name)) }",
     "}",
-    "if (-not $found) { @{ ok = $false; typed = $false; error = 'no open terminal tab has that name' } | ConvertTo-Json -Compress; exit 0 }",
+    "$found = $null",
+    "foreach ($w in $wants) { foreach ($t in $all) { if ($t[2] -eq $w) { $found = $t; break } }; if ($found) { break } }",
+    "if (-not $found) { foreach ($w in $wants) { foreach ($t in $all) { $n = $t[2]; if ($n.Length -ge 3 -and ($n.StartsWith($w) -or $w.StartsWith($n))) { $found = $t; break } }; if ($found) { break } } }",
+    "if (-not $found) { @{ ok = $false; typed = $false; error = ('no open terminal tab has that name (' + $all.Count + ' tabs open)') } | ConvertTo-Json -Compress; exit 0 }",
     "$sel = $found[1].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)",
     "$sel.Select()",
     "$h = [IntPtr]$found[0].Current.NativeWindowHandle",
-    "if ([AitherTui]::IsIconic($h)) { [void][AitherTui]::ShowWindow($h, 9) }",
-    "[void][AitherTui]::SetForegroundWindow($h)",
-    "Start-Sleep -Milliseconds 250",
+    "$front = Raise $h",
     "$fg = [AitherTui]::GetForegroundWindow()",
     "$selected = $found[1].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected",
-    "if ($fg -ne $h -or -not $selected) { @{ ok = $false; typed = $false; error = 'could not confirm the session is in front' } | ConvertTo-Json -Compress; exit 0 }",
+    "if ($fg -ne $h -or -not $selected) { @{ ok = $false; typed = $false; tab = $found[1].Current.Name; error = 'Windows would not bring the terminal to the front' } | ConvertTo-Json -Compress; exit 0 }",
     "@{ ok = $true; typed = $false; tab = $found[1].Current.Name } | ConvertTo-Json -Compress",
   ].join("\r\n");
+}
+
+/** The names a session's tab may carry, trusted first, de-duplicated, >= 3 chars. */
+function sessionNames(value) {
+  const list = Array.isArray(value) ? value : [value];
+  const out = [];
+  for (const v of list) {
+    const n = String(v == null ? "" : v).replace(/[\t\r\n]+/g, " ").trim();
+    if (n.length >= 3 && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * What the owner reads when the tab could not be brought forward: WHY, in words, and
+ * where to go instead. Never the bare "Open the session to answer" on the very button
+ * that says "Open the session" (2026-11-17: that told him nothing).
+ */
+function flashFor(error, name) {
+  const e = String(error || "");
+  const who = name ? `“${name.length > 48 ? `${name.slice(0, 47)}…` : name}”` : "this session";
+  if (/no name/.test(e)) return "Can't find this session's tab: it has no name. Answer it in its terminal.";
+  if (/no open terminal tab/.test(e)) return `No open terminal tab is named ${who}. Answer it in its terminal.`;
+  if (/would not bring|could not confirm/.test(e)) return `Found ${who}, but Windows kept it behind. Click its tab to answer.`;
+  if (/needs Windows Terminal/.test(e)) return "Only a Windows Terminal tab can be brought forward. Answer it in its terminal.";
+  if (/timed out|gave no answer/.test(e)) return `Looking for ${who} took too long. Answer it in its terminal.`;
+  return `${FLASH_OPEN_SESSION}: ${e.slice(0, 80)}`;
 }
 
 /**
@@ -90,9 +152,10 @@ function typeScript() {
  * Resolves {ok, typed, tab?, error?}; never rejects.
  */
 function typeIntoSession(sessionName, keys, { spawn = require("node:child_process").spawn, timeoutMs = 15000, platform = process.platform } = {}) {
-  const name = String(sessionName || "").trim();
+  const names = sessionNames(sessionName);
+  const name = names.join("\t");
   const k = String(keys || "");
-  if (name.length < 3) return Promise.resolve({ ok: false, typed: false, error: "this session has no name to find its tab by" });
+  if (!names.length) return Promise.resolve({ ok: false, typed: false, error: "this session has no name to find its tab by" });
   if (!/^[1-9]?$/.test(k)) return Promise.resolve({ ok: false, typed: false, error: "refused: not an option number" });
   if (platform !== "win32") return Promise.resolve({ ok: false, typed: false, error: "typing into a session needs Windows Terminal" });
   return new Promise((resolve) => {
@@ -144,13 +207,15 @@ function typeIntoSession(sessionName, keys, { spawn = require("node:child_proces
 async function answerInTerminal(card, key, deps) {
   const action = tuiAction(card, key);
   if (!action) return { ok: false, handled: false };
-  const name = await Promise.resolve()
+  const names = await Promise.resolve()
     .then(() => deps.sessionName(card))
-    .then((n) => String(n || ""), () => "");
+    .then((n) => sessionNames(n), () => []);
+  const name = names.length > 1 ? names : (names[0] || "");
   let r;
   try { r = await deps.type(name, action.keys); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
   if (!r || r.ok !== true) {
-    return { ok: false, handled: true, flash: FLASH_OPEN_SESSION, error: (r && r.error) || "focus failed" };
+    const error = (r && r.error) || "focus failed";
+    return { ok: false, handled: true, flash: flashFor(error, names[0] || ""), error };
   }
   if (action.keys) {
     // A number button: the session is now in front, but nothing reached it. The
@@ -161,4 +226,4 @@ async function answerInTerminal(card, key, deps) {
   return { ok: true, handled: true, typed: false, recorded, tab: r.tab || name };
 }
 
-module.exports = { TUI_KEY_RE, FLASH_OPEN_SESSION, FLASH_IN_FRONT, tuiAction, typeScript, typeIntoSession, answerInTerminal };
+module.exports = { TUI_KEY_RE, FLASH_OPEN_SESSION, FLASH_IN_FRONT, tuiAction, raiseLines, typeScript, sessionNames, flashFor, typeIntoSession, answerInTerminal };

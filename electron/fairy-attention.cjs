@@ -172,6 +172,52 @@ function optionLabel(card, key) {
   return hit ? String(hit.label || hit.key) : "";
 }
 
+/**
+ * The real choices of a Claude Code question the card can only OPEN, not answer.
+ *
+ * Measured 2026-11-17 (card d-yjmc, "Go live: openaw.org"): when the question's dialog
+ * is already on the terminal, awask's card offers "Open the session" (`tui:type`) and
+ * "Not now", and lists the question's own options only as facts ("1. Go live now
+ * (Recommended) -- ..."). The whisper hid facts behind "more", so the owner saw none of
+ * "Go live now / Placeholder only / Hold". They are shown as what they are: the
+ * answers waiting in the session. [] for any other card.
+ */
+const CHOICE_FACT_RE = /^([1-9])\.\s+(.+?)(?:\s+--\s+([\s\S]*))?$/;
+function sessionChoices(card) {
+  if (!card || typeof card !== "object") return [];
+  const keys = (Array.isArray(card.options) ? card.options : []).map((o) => String((o && o.key) || ""));
+  if (!keys.includes("tui:type") || keys.some((k) => /^(tui|ans):[1-9]$/.test(k))) return [];
+  const out = [];
+  for (const f of Array.isArray(card.facts) ? card.facts : []) {
+    const m = CHOICE_FACT_RE.exec(String(f || "").trim());
+    if (!m || Number(m[1]) !== out.length + 1) continue;
+    out.push({ n: Number(m[1]), label: m[2].trim(), consequence: (m[3] || "").trim(), recommended: /\(recommended\)/i.test(m[2]) });
+  }
+  return out;
+}
+
+/**
+ * The answer the fairy may SUGGEST, {label, inSession} or null. An option the card marks
+ * recommended first (or, for a question the card can only open, the session's own
+ * recommended choice). Else the card's default -- but never a hold/no-op default on a
+ * card a session is stopped on: "suggested: Not now" on d-yjmc pointed the owner at the
+ * one answer that changes nothing, while the question recommended "Go live now". The
+ * default stays what the card does when ignored; it is just not called a suggestion.
+ */
+function suggestedOption(card) {
+  if (!card || typeof card !== "object") return null;
+  const options = Array.isArray(card.options) ? card.options : [];
+  const rec = options.find((o) => o && o.recommended);
+  if (rec) return { label: String(rec.label || rec.key), inSession: false };
+  const choice = sessionChoices(card).find((c) => c.recommended);
+  if (choice) return { label: choice.label, inSession: true };
+  const label = optionLabel(card, card.defaultKey);
+  if (!label) return null;
+  const blocked = card.blocking === true || lower(card.kind) === "blocked";
+  if (blocked && (lower(card.defaultKey) === "later" || HOLD_SUGGESTION_RE.test(lower(label)) || noopSuggestion(card))) return null;
+  return { label, inSession: false };
+}
+
 /** "3 h", "25 min", "2 d" -- short, spoken-friendly. */
 function fmtSpan(ms) {
   const m = Math.max(0, Math.round(Number(ms) / MIN));
@@ -308,8 +354,8 @@ function whyNow(card, nowMs) {
   }
   if (reasons.length < 2 && age > 10 * MIN) reasons.push(`waiting ${fmtSpan(age)}`);
   if (reasons.length < 2 && !report) {
-    const rec = optionLabel(card, card.defaultKey);
-    if (rec && !(left != null && left > 0)) reasons.push(`suggested: “${rec}”`);
+    const rec = suggestedOption(card);
+    if (rec && !(left != null && left > 0)) reasons.push(`suggested: “${rec.label}”${rec.inSession ? " in the session" : ""}`);
   }
   const line = reasons.slice(0, 2).join(" · ");
   return line ? line.charAt(0).toUpperCase() + line.slice(1) : "";
@@ -380,10 +426,11 @@ function arrivalLine(card, { needNow = 0, older = 0, mentionOlder = false } = {}
   if (kind === "credential") {
     line += " It needs a secret, so open it to enter it.";
   } else {
-    const rec = optionLabel(card, card.defaultKey);
-    if (rec) line += ` I suggest ${rec}.`;
+    const rec = suggestedOption(card);
+    if (rec) line += ` I suggest ${rec.label}${rec.inSession ? ", in the session" : ""}.`;
     const n = Array.isArray(card.options) ? Math.min(3, card.options.length) : 0;
-    if (n >= 2) line += ` Say option one${n >= 3 ? ", two or three" : " or two"}, or later.`;
+    if (sessionChoices(card).length) line += " Open the session to answer it there.";
+    else if (n >= 2) line += ` Say option one${n >= 3 ? ", two or three" : " or two"}, or later.`;
   }
   const others = Math.max(0, (Number(needNow) || 0) - 1);
   if (others) line += ` ${others} more need${others === 1 ? "s" : ""} you after this.`;
@@ -613,6 +660,7 @@ function whisperView(decision, nowMs = Date.now()) {
   if (!decision || !decision.card) return null;
   const card = decision.card;
   const kind = lower(card.kind);
+  const suggested = suggestedOption(card);
   const options = kind === "credential" ? [] : (Array.isArray(card.options) ? card.options : [])
     .slice(0, 4)
     .map((o) => ({
@@ -620,9 +668,11 @@ function whisperView(decision, nowMs = Date.now()) {
       label: String(o.label || o.key).slice(0, 120),
       // A consequence that only repeats its label ("Leave them" / "Leave them") says nothing.
       consequence: sameText(o.consequence, o.label || o.key) ? "" : String(o.consequence || "").slice(0, 160),
-      recommended: Boolean(o.recommended) || (card.defaultKey && lower(o.key) === lower(card.defaultKey)),
+      // Highlighted = what suggestedOption names: never a hold default on stopped work.
+      recommended: Boolean(o.recommended) || Boolean(suggested && !suggested.inSession && lower(suggested.label) === lower(o.label || o.key)),
     }));
   const title = String(card.title || "A decision").replace(/^Claude Code needs you:\s*/i, "");
+  const choices = kind === "credential" ? [] : sessionChoices(card);
   // Only an explicit click opens an old card; it says so, and how old, in the header.
   const old = isStale(card, nowMs);
   const lead = decision.lead || leadFor(card, {}, { nowMs });
@@ -636,8 +686,12 @@ function whisperView(decision, nowMs = Date.now()) {
     // Owner 2026-11-08: "I need this to give me more info". The whisper carries
     // what the card actually says -- its summary, its facts -- not just a title.
     summary: kind === "credential" ? "" : clip(String(card.summary || card.detail || ""), 420),
+    // The question's own answers when the card can only open the session: shown in
+    // the whisper's face (not behind "more"), and not repeated as facts.
+    sessionChoices: choices.map((c) => ({ ...c, label: c.label.slice(0, 120), consequence: clip(c.consequence, 160) })),
     facts: kind === "credential" ? [] : (Array.isArray(card.facts) ? card.facts : [])
       .filter((f) => typeof f === "string" && f.trim())
+      .filter((f) => !(choices.length && CHOICE_FACT_RE.test(f.trim())))
       .slice(0, 4)
       .map((f) => clip(f.trim(), 220)),
     options,
@@ -726,7 +780,8 @@ function chatContext(card, nowMs = Date.now(), { session = null } = {}) {
     if (options.length) {
       lines.push("Its options:");
       options.forEach((o, i) => {
-        const rec = o.recommended || (card.defaultKey && lower(o.key) === lower(card.defaultKey));
+        const sug = suggestedOption(card);
+        const rec = o.recommended || Boolean(sug && !sug.inSession && sug.label === String(o.label || o.key));
         const cons = o.consequence && !sameText(o.consequence, o.label || o.key) ? ` -- ${clipText(o.consequence, 200)}` : "";
         lines.push(`${i + 1}. ${clipText(o.label || o.key, 80)}${rec ? " (suggested)" : ""}${cons}`);
       });
@@ -752,6 +807,8 @@ module.exports = {
   DEFAULTS,
   ackOnly,
   noopSuggestion,
+  sessionChoices,
+  suggestedOption,
   NOOP_SUGGESTION_LABELS,
   holdsWork,
   climbs,
