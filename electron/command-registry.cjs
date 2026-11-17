@@ -407,6 +407,15 @@ const COMMANDS = Object.freeze([
     surfaces: ["tray", "avatar-menu", "palette"],
     label: (ctx = {}) => (ctx.voiceMuted ? "Unmute all voices" : "Mute all voices"),
   }),
+  // A coding / terminal session is SILENT by default (owner, 2026-11-16: "they all talked over each
+  // other"): its words are a bubble. This row opts ONE session into a voice and back out.
+  Object.freeze({
+    id: "voice.session", group: "talk", scope: "slot", icon: "volume",
+    surfaces: ["avatar-menu"], when: (ctx = {}) => Boolean(ctx.sessionBody),
+    label: (ctx = {}) => (ctx.sessionVoice ? "Silence this session" : "Let this session talk"),
+    whySingle: "Opts the one coding session behind the right-clicked body into a voice (they are silent by default); "
+      + "voice.mute-all is the everywhere twin.",
+  }),
   Object.freeze({
     id: "voice.mute-agent", group: "talk", scope: "slot", icon: "volume-off",
     surfaces: ["avatar-menu"],

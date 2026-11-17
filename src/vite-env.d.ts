@@ -163,6 +163,7 @@ interface Window {
     avatarContextMenu(slotId: string): void;
     /** A body was dropped on another: they join one stage (main -> agent-swarm-host stageOp join). */
     stageDrop?(slotId: string, targetSlotId: string): void;
+    bodyBroken?(slotId: string): void;
     /** A stage was moved by its handle: where each member stands now ({slotId: x}). */
     stageSync?(positions: Record<string, number>): void;
     /** The picked body under the pointer / the selected one (main exposes it on GET /swarm). */

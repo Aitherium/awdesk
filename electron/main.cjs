@@ -711,18 +711,23 @@ function loadSavedSize() {
     const raw = fs.readFileSync(SIZE_STATE_PATH(), "utf-8");
     const parsed = JSON.parse(raw);
     if (Number.isFinite(parsed?.width) && Number.isFinite(parsed?.height)) {
-      return { width: parsed.width, height: parsed.height };
+      return require("./window-size.cjs").effectiveSize(parsed, workAreaForSize());
     }
   } catch {
     /* no saved size yet, or file is corrupt — fall back to the default */
   }
-  return { width: WINDOW_WIDTH, height: WINDOW_HEIGHT };
+  return require("./window-size.cjs").effectiveSize(null, workAreaForSize());
+}
+
+/** The work area the default window size is a share of (a screen the owner is on, else the primary). */
+function workAreaForSize() {
+  try { return screen.getPrimaryDisplay().workArea; } catch { return null; }
 }
 
 function saveSize(width, height) {
   try {
     fs.mkdirSync(path.dirname(SIZE_STATE_PATH()), { recursive: true });
-    fs.writeFileSync(SIZE_STATE_PATH(), JSON.stringify({ width, height }), "utf-8");
+    fs.writeFileSync(SIZE_STATE_PATH(), JSON.stringify({ width, height, chosen: true }), "utf-8");
   } catch {
     /* best-effort — a failed save just means the next launch uses the old size */
   }
@@ -1466,7 +1471,60 @@ function agentForSlot(slotId) {
  * file-wide default. No HTTP/MCP door passes it -- a request body never names
  * its own author.
  */
+/**
+ * THE FRONT DOOR of every spoken line (owner, 2026-11-16: "they all talked over each other").
+ * Two things happen here before anything is synthesized (speech-arbiter.cjs):
+ *   1. a coding / terminal SESSION actor is silent unless the owner opted that session into voice
+ *      from its menu: its words show as a (muted) bubble and nothing is said aloud;
+ *   2. every other line takes its turn in ONE global lane by priority (the owner's own
+ *      conversation > decision cards > Aither > the rest); a line that waits past ~20 s is dropped
+ *      but still captioned. Nothing overlaps.
+ */
+let speechArbiterInstance = null;
+let sessionVoicesInstance = null;
+const sessionSlotKeys = new Map(); // slotId -> the opt-in key its session speaks under
+function sessionVoices() {
+  if (!sessionVoicesInstance) {
+    sessionVoicesInstance = require("./speech-arbiter.cjs").createSessionVoices({
+      file: path.join(app.getPath("userData"), "session-voices.json"),
+    });
+  }
+  return sessionVoicesInstance;
+}
+function speechArbiter() {
+  if (!speechArbiterInstance) {
+    speechArbiterInstance = require("./speech-arbiter.cjs").createSpeechArbiter({
+      run: (job) => speakAloudNow(job.text, job.voice, job.speed, job.slotId, job.origin, job.speaker),
+      // A dropped line keeps its words on screen: the caption is the part that is never stale.
+      onDrop: (job) => { try { sendBubble(job.slotId, job.text, { muted: true }); } catch { /* cosmetic */ } },
+    });
+  }
+  return speechArbiterInstance;
+}
 async function speakAloud(
+  text,
+  voice = "nova",
+  speed = undefined,
+  slotId = "slot0",
+  origin = "service:awdesk",
+  speaker = null,
+) {
+  const arb = require("./speech-arbiter.cjs");
+  if (arb.isSessionSpeaker({ origin, speaker })) {
+    const key = arb.sessionKey({ speaker, origin, slotId });
+    sessionSlotKeys.set(slotId || "slot0", key);
+    if (!sessionVoices().has(key)) {
+      const shown = sendBubble(slotId, text, { muted: true });
+      return { ok: false, refused: "policy", reason: "coding sessions are silent unless you turn their voice on from the body's menu", captioned: shown > 0 };
+    }
+  }
+  return speechArbiter().enqueue({
+    rank: arb.priorityOf({ origin, slotId, speaker }),
+    text, voice, speed, slotId, origin, speaker,
+  });
+}
+
+async function speakAloudNow(
   text,
   voice = "nova",
   speed = undefined,
@@ -3047,6 +3105,19 @@ function toggleAgentVoice(slotId) {
   }
 }
 
+/** A coding session's voice, opt-in from ITS menu: silent until the owner says otherwise. */
+function sessionVoiceOn(slotId) {
+  try { return sessionVoices().has(sessionSlotKeys.get(slotId) || slotId); } catch { return false; }
+}
+function toggleSessionVoice(slotId) {
+  const key = sessionSlotKeys.get(slotId) || slotId;
+  const next = !sessionVoices().has(key);
+  sessionVoices().set(key, next);
+  sendBubble(slotId || "slot0", next ? "My voice is on." : "My voice is off.", { muted: true });
+  try { refreshTrayMenu(); } catch { /* tray not up */ }
+  return next;
+}
+
 /** ONE body's voice set to a state (the Stage pane's per-row speaker). Throws when
  *  the slot names no agent, so the pane says so instead of showing a dead toggle. */
 function setAgentVoiceMuted(slotId, muted) {
@@ -3140,7 +3211,7 @@ function popupAvatarMenu(slotId) {
       "avatar-menu",
       (id) => runCommand(id, undefined, { surface: "avatar-menu", slotId }),
       {
-        ctx: { ...commandContext(), slotId, agent: agentForSlot(slotId) || agent, agentMuted: agentVoiceMuted(agentForSlot(slotId)), removable: !isDefault, sessionAddress, inStage: Boolean(swarmHostInstance && swarmHostInstance.stageOfSlot(slotId)) },
+        ctx: { ...commandContext(), slotId, agent: agentForSlot(slotId) || agent, agentMuted: agentVoiceMuted(agentForSlot(slotId)), removable: !isDefault, sessionAddress, sessionBody: Boolean(sessionAddress), sessionVoice: sessionVoiceOn(slotId), inStage: Boolean(swarmHostInstance && swarmHostInstance.stageOfSlot(slotId)) },
         submenus: { "characters.pick": buildCharacterMenu() },
       },
     ),
@@ -3166,6 +3237,14 @@ ipcMain.on("desk:avatar-context-menu", (_event, slotId) => {
 ipcMain.on("desk:stage-drop", (event, slotId, targetSlotId) => {
   if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
   void getSwarmHost().joinSlots(String(slotId || ""), String(targetSlotId || ""));
+});
+// A body whose model cannot be animated at all (no humanoid arms to pose) shrinks back to its fairy:
+// never a bind-posed T-pose on screen (owner P0 2026-11-16). Only the avatar window may send it.
+ipcMain.on("desk:body-broken", (event, slotId) => {
+  if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
+  const host = getSwarmHost();
+  const agent = host.agentOfSlot(String(slotId || ""));
+  if (agent) void host.setAgentForm(agent, "fairy");
 });
 ipcMain.on("desk:stage-sync", (event, positions) => {
   if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
@@ -4122,6 +4201,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "voice.mute": return void toggleMicMute();
     case "voice.mute-all": return void toggleAllVoices();
     case "voice.mute-agent": return void toggleAgentVoice(slotId);
+    case "voice.session": return void toggleSessionVoice(slotId);
     // U27's room.steer record (palette surface only -- no slot in hand here;
     // the avatar menu's OWN "Message this session…" item, added in
     // popupAvatarMenu below, already knows its slot and does not reach this
