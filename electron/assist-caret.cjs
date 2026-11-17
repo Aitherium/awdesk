@@ -28,6 +28,8 @@
  * and the pop-up falls back to Copy. Never rejects.
  */
 
+const { powershellExe } = require("./assist-tools.cjs");
+
 const TIMEOUT_MS = 8000;
 const FIELD_MAX = 6000;
 const SELECTION_MAX = 12000;
@@ -56,7 +58,7 @@ Add-Type -ReferencedAssemblies System.Drawing -Namespace AwAssist -Name Win -Mem
 '@
 $A = [System.Windows.Automation.AutomationElement]
 function Snap([string]$skiplist) {
-  $out = @{ ok = $true; sensitive = $false; canInsert = $false; selection = ''; field = ''; fieldLabel = ''; app = ''; title = ''; hwnd = 0; pid = 0; caret = $null }
+  $out = @{ ok = $true; sensitive = $false; canInsert = $false; editable = $false; selection = ''; field = ''; fieldLabel = ''; app = ''; title = ''; hwnd = 0; pid = 0; caret = $null }
   $skip = @{}
   foreach ($p in ($skiplist -split ',')) { if ($p) { $skip[[int]$p] = 1 } }
   try {
@@ -81,7 +83,8 @@ function Snap([string]$skiplist) {
       $ct = $f.Current.ControlType.ProgrammaticName
       $nm = ($f.Current.Name + '')
       $out.fieldLabel = $nm.Substring(0, [Math]::Min(120, $nm.Length))
-      $out.canInsert = ($ct -eq 'ControlType.Edit' -or $ct -eq 'ControlType.Document' -or $f.Current.IsKeyboardFocusable)
+      $out.editable = ($ct -eq 'ControlType.Edit' -or $ct -eq 'ControlType.Document')
+      $out.canInsert = ($out.editable -or $f.Current.IsKeyboardFocusable)
       if (-not $out.sensitive) {
         $pat = $null
         if ($f.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$pat)) {
@@ -151,6 +154,7 @@ function parseSnapshot(stdout) {
     field: String(o.field || "").slice(0, FIELD_MAX),
     fieldLabel: String(o.fieldLabel || ""),
     canInsert: o.canInsert === true,
+    editable: o.editable === true,
     error: o.ok === false ? String(o.error || "") : undefined,
   };
 }
@@ -187,7 +191,7 @@ function createWorker({ spawn, timeoutMs = TIMEOUT_MS, startMs = 20000 }) {
     ready = new Promise((resolve) => {
       let proc;
       try {
-        proc = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-Command", "-"],
+        proc = spawn(powershellExe(process.env), ["-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-Command", "-"],
           { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
       } catch { resolve(false); return; }
       child = proc;

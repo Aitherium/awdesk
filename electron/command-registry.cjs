@@ -407,6 +407,15 @@ const COMMANDS = Object.freeze([
     surfaces: ["tray", "avatar-menu", "palette"],
     label: (ctx = {}) => (ctx.voiceMuted ? "Unmute all voices" : "Mute all voices"),
   }),
+  // A coding / terminal session is SILENT by default (owner, 2026-11-16: "they all talked over each
+  // other"): its words are a bubble. This row opts ONE session into a voice and back out.
+  Object.freeze({
+    id: "voice.session", group: "talk", scope: "slot", icon: "volume",
+    surfaces: ["avatar-menu"], when: (ctx = {}) => Boolean(ctx.sessionBody),
+    label: (ctx = {}) => (ctx.sessionVoice ? "Silence this session" : "Let this session talk"),
+    whySingle: "Opts the one coding session behind the right-clicked body into a voice (they are silent by default); "
+      + "voice.mute-all is the everywhere twin.",
+  }),
   Object.freeze({
     id: "voice.mute-agent", group: "talk", scope: "slot", icon: "volume-off",
     surfaces: ["avatar-menu"],
@@ -570,6 +579,14 @@ const COMMANDS = Object.freeze([
     // slot (main collapses the one grown body), so it needs none in hand.
     id: "avatar.to-fairy", label: "Back to the fairy", group: "slot",
     surfaces: ["avatar-menu", "palette"], when: (ctx = {}) => Boolean(ctx.grownFromFairy),
+  }),
+  // Stages by direct manipulation (owner 2026-11-16): drop a body on another to join a stage,
+  // right-click > Leave stage to step out, drag the stage's handle to move the group.
+  Object.freeze({
+    id: "stage.leave", label: "Leave stage", group: "slot", scope: "slot",
+    surfaces: ["avatar-menu"], when: (ctx = {}) => Boolean(ctx.inStage),
+    whySingle: "Shown only on a body that stands in a stage; it needs the body that was right-clicked "
+      + "(the tray's 'Stage: split them apart' is the same verb for every body at once).",
   }),
   Object.freeze({
     id: "avatar.remove", label: "Remove this avatar", group: "slot", scope: "slot",
@@ -998,7 +1015,9 @@ const COMMANDS = Object.freeze([
   // in AitherConnect's right-click; these rows are the desk / voice / awsh door.
   Object.freeze({
     id: "assist.open", label: "Aither at the caret: help me write…", menuLabel: "Help me write…", group: "capture",
-    accel: "Ctrl+Alt+J", accelFallback: "Ctrl+Alt+Shift+J",
+    // The writing actions live in Alt+Space (launcher-window.cjs `assist`): one box, one key.
+    // This chord stays BOUND as a hidden alias and is never printed on a menu, a hint or a doc.
+    accel: "Ctrl+Alt+J", accelFallback: "Ctrl+Alt+Shift+J", hiddenAccel: true,
     surfaces: ["tray", "palette"], assist: "open",
   }),
   Object.freeze({
@@ -1618,6 +1637,7 @@ function labelOf(command, ctx, { nested = false } = {}) {
   const text = typeof pick === "function" ? pick(ctx || {}) : pick;
   const dead = (ctx && ctx.deadAccels) || [];
   // The key main actually holds: a fallback that went live when the first was taken.
+  if (command.hiddenAccel) return text;
   const live = ctx && ctx.liveAccels && typeof ctx.liveAccels[command.id] === "string" ? ctx.liveAccels[command.id] : null;
   if (live) return `${text}  (${live})`;
   return command.accel && !dead.includes(command.accel) ? `${text}  (${command.accel})` : text;
@@ -1630,7 +1650,7 @@ function labelOf(command, ctx, { nested = false } = {}) {
  */
 function accelFor(id, ctx = {}) {
   const command = COMMANDS.find((c) => c.id === id);
-  if (!command || !command.accel) return null;
+  if (!command || !command.accel || command.hiddenAccel) return null;
   const live = ctx && ctx.liveAccels && typeof ctx.liveAccels[id] === "string" ? ctx.liveAccels[id] : null;
   if (live) return live;
   const dead = (ctx && ctx.deadAccels) || [];

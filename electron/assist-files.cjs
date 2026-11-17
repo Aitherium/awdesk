@@ -55,7 +55,10 @@ const BLOCKED_ROOTS = ["c:\\windows", "c:\\program files", "c:\\program files (x
 
 /** One absolute Windows path or null, with the reason it was refused. Pure given existsSync. */
 function checkPath(raw, existsSync = fs.existsSync) {
-  const first = String(Array.isArray(raw) ? raw[0] : raw || "").split(/\r?\n/)[0].trim().replace(/^"(.*)"$/, "$1");
+  let first = String(Array.isArray(raw) ? raw[0] : raw || "").split(/\r?\n/)[0].trim().replace(/^"(.*)"$/, "$1");
+  // The shell menu appends a `\.` sentinel (shell-menu.cjs launchCommand) so `D:\` survives
+  // command-line parsing; take exactly one off.
+  if (first.endsWith("\\.")) first = first.slice(0, -2);
   if (!first) return { ok: false, error: "No file or folder was given." };
   // eslint-disable-next-line no-control-regex -- control characters are exactly what this strips
   if (!/^[A-Za-z]:\\[^<>"|?*\u0000-\u001f]*$/.test(first) || first.startsWith("\\\\?\\")) return { ok: false, error: "That is not a plain local path." };
@@ -109,7 +112,7 @@ function uniqueOutput(input, ext, existsSync) {
 
 function createAssistFiles({
   fsImpl = fs, existsSync = (p) => fsImpl.existsSync(p), engine, gateway = null, vision = null, confirm = null, log = null,
-  execFile = require("node:child_process").execFile, findExe = () => null, getSettings = () => ({}), now = Date.now, newId = null,
+  execFile = require("node:child_process").execFile, findExe = () => null, verifyExe = null, getSettings = () => ({}), now = Date.now, newId = null,
 } = {}) {
   let counter = 0;
   const nextId = newId || (() => `f${now().toString(36)}${(counter += 1).toString(36)}`);
@@ -241,7 +244,10 @@ function createAssistFiles({
     if (!choice.available) return { ok: false, error: `${choice.missing}. Aither runs the tool you install; it does not bundle one.` };
     const out = uniqueOutput(info.path, choice.to, existsSync);
     if (!out) return { ok: false, error: "Could not find a free file name for the result." };
-    const exe = findExe(choice.tool);
+    // Locating is not trusting: the tool's signature is checked right before it runs.
+    const trusted = verifyExe ? await verifyExe(choice.tool) : { ok: true, path: findExe(choice.tool) };
+    if (!trusted || !trusted.ok || !trusted.path) return { ok: false, error: (trusted && trusted.error) || `${choice.tool} could not be verified.` };
+    const exe = trusted.path;
     const args = conversionArgs(choice.tool, info.path, out);
     const id = nextId();
     const failed = note(id, "file-convert", "started", { title: info.name }, { to: path.win32.basename(out), tool: choice.tool });

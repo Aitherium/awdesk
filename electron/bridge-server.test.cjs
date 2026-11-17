@@ -542,6 +542,22 @@ test("bearer: POST /fleet/down without a bearer is 401, never a stopped fleet", 
   assert.equal(basic.status, 401);
 });
 
+test("review of #96: POST /swarm needs the bearer (a null Origin is not a credential); GET /swarm stays a read", async (context) => {
+  const seen = [];
+  const address = await fleetBridge(context, { swarmHandler: async (req) => { seen.push(req.action); return { ok: true, action: req.action }; } });
+  const body = JSON.stringify({ action: "view" });
+  const none = await requestServer(address, { path: "/swarm", method: "POST", headers: { "content-type": "application/json" }, body });
+  assert.equal(none.status, 401);
+  const wrong = await requestServer(address, { path: "/swarm", method: "POST", headers: { "content-type": "application/json", authorization: "Bearer nope" }, body });
+  assert.equal(wrong.status, 401);
+  assert.deepEqual(seen, [], "nothing reached the swarm");
+  const ok = await requestServer(address, { path: "/swarm", method: "POST", headers: { "content-type": "application/json", authorization: "Bearer test-token" }, body });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(seen, ["view"]);
+  const read = await requestServer(address, { path: "/swarm" });
+  assert.equal(read.status, 200);
+});
+
 test("bearer: the right bearer reaches the fleet handler", async (context) => {
   const address = await fleetBridge(context);
   const ok = await requestServer(address, {
@@ -804,25 +820,30 @@ test("awconnect: the pinned extension may list and run the desk's palette comman
 
 // Aither at the caret, from the browser: carries page text and spends the owner's model
 // budget, so ONLY a pinned extension origin is accepted -- not loopback no-Origin callers.
+function postBearer(address, route, origin, body) {
+  return requestServer(address, { path: route, method: "POST", headers: { origin, "content-type": "application/json", authorization: `Bearer ${"A".repeat(43)}` }, body: JSON.stringify(body) });
+}
+
 test("assist: only a pinned AitherConnect origin reaches /assist/*; others and no-Origin are refused", async (context) => {
   const seen = [];
   const bridge = createBridgeServer({
     host: "127.0.0.1", port: 0, onEvent: () => {},
     assistHandler: async ({ route, body }) => { seen.push([route, body]); return { ok: true, route }; },
+    assistAuth: (h) => h === `Bearer ${"A".repeat(43)}`,
   });
   context.after(() => bridge.close());
   const address = await bridge.listen();
-  const ok = await postJson(address, "/assist/run", PINNED_EXT, { verb: "rewrite" });
+  const ok = await postBearer(address, "/assist/run", PINNED_EXT, { verb: "rewrite" });
   assert.equal(ok.status, 200);
   assert.deepEqual(JSON.parse(ok.body), { ok: true, route: "run" });
-  assert.equal((await postJson(address, "/assist/suggest", STORE_EXT, { ctx: {} })).status, 200);
+  assert.equal((await postBearer(address, "/assist/suggest", STORE_EXT, { ctx: {} })).status, 200);
   for (const origin of [OTHER_EXT, "https://evil.example", "http://127.0.0.1:3000"]) {
-    assert.equal((await postJson(address, "/assist/run", origin, { verb: "write" })).status, 403, origin);
+    assert.equal((await postBearer(address, "/assist/run", origin, { verb: "write" })).status, 403, origin);
   }
-  const noOrigin = await requestServer(address, { path: "/assist/run", method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  const noOrigin = await requestServer(address, { path: "/assist/run", method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${"A".repeat(43)}` }, body: "{}" });
   assert.equal(noOrigin.status, 403, "a no-Origin loopback caller is not trusted here, unlike /commands");
   assert.equal((await requestServer(address, { path: "/assist/run", headers: { origin: PINNED_EXT } })).status, 405);
-  assert.equal((await postJson(address, "/assist/bogus", PINNED_EXT, {})).status, 404);
+  assert.equal((await postBearer(address, "/assist/bogus", PINNED_EXT, {})).status, 404);
   assert.deepEqual(seen.map((x) => x[0]), ["run", "suggest"], "a refused request never reaches the handler");
 });
 

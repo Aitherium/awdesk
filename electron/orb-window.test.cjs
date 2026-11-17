@@ -1517,17 +1517,18 @@ test("click to talk with no chat wired says so, never pretends", async () => {
 test("the swarm page draws presence states and a click asks for that agent's chat; main + deck carry it through", () => {
   const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
   for (const st of ["idle", "working", "speaking", "waiting"]) assert.ok(html.includes(`.mate.st-${st} {`), st);
-  // #50: a companion WITH a card opens its newest card; one with no card (presence) opens the chat.
-  assert.match(html, /if \(hotMate\.id\) api\.openCard\(hotMate\.id, hotMate\.agent\);/);
-  assert.match(html, /else if \(hotMate\.agent && api\.chatAgent\) api\.chatAgent\(hotMate\.agent\);/);
+  // A click SELECTS a companion (2026-11-16, fairy-control.cjs) and opens its newest card when it
+  // carries one; a double click (or the menu's Chat row) opens the chat with that agent.
+  assert.match(html, /api\.select\(hotMate\.agent\);\s*if \(hotMate\.id\) api\.openCard\(hotMate\.id, hotMate\.agent\);/);
+  assert.match(html, /dblclick[\s\S]*?api\.chatAgent\(hotMate\.agent\)/);
   const preload = fs.readFileSync(path.join(__dirname, "orb-preload.cjs"), "utf8");
   assert.match(preload, /chatAgent: \(agent\) => ipcRenderer\.invoke\("desk:orb-chat-agent"/);
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
-  assert.match(main, /chat: \(agent, links\) => openAgentChat\(agent, links\)/);
+  assert.match(main, /chat: \(agent, links\) => \{[\s\S]*?getSwarmHost\(\)\.talkTo\(agent\)[\s\S]*?return openAgentChat\(agent, links\);/);
   assert.match(main, /type: "deck:open-chat"/);
   assert.match(main, /platformPresence = snap\.presence\.agents/);
   // The live Claude sessions ride beside the platform agents, one companion each.
-  assert.match(main, /orbWindow\.setPresence\(\[\.\.\.platformPresence, \.\.\.sessions\]\)/);
+  assert.match(main, /host\.withBase\(\[\.\.\.platformPresence, \.\.\.sessions\]\)/);
   assert.match(main, /orbWindow\.noteAgentPosted\(agent\)/);
   const deck = fs.readFileSync(path.join(__dirname, "..", "src", "components", "Deck.tsx"), "utf8");
   assert.match(deck, /event\.type !== 'deck:open-chat'/);
@@ -1594,7 +1595,7 @@ test("right click on a companion: the pill menu with every action, focused, besi
   assert.equal(r.ok, true);
   assert.deepEqual(r.items, ["open", "answer:yes", "snooze:1h", "snooze:4h", "snooze:tomorrow",
     "mute", "dismiss", "session", "link:open-aither", "link:open-system", "copy",
-    "hide-this", "hide-all", "show-all", "open-desktop", "open-spaces", "open-chat", "settings", "quiet-1h", "quiet-4h", "quit"]);
+    "fc:chat", "fc:grow", "fc:mute", "fc:pin", "fc:hide", "fc:session", "sv:menu"]);
   const mw = menuWin();
   assert.ok(mw.isVisible());
   assert.equal(mw.focused, true, "focused, so arrows / Enter / Esc work");
@@ -1685,7 +1686,7 @@ test("right click on the orb: inbox, answer window, quiet 1 h (nudges held), set
   if (orbWindow.nudging()) orbWindow.endNudge("seen", { stay: true });
   const r = await invoke("desk:orb-menu", orbWin());
   assert.deepEqual(r.items, ["inbox", "queue", "hide-this", "hide-all", "show-all", "open-desktop", "open-spaces",
-    "open-chat", "settings", "quiet-1h", "quiet-4h", "quit", "more"]);
+    "open-chat", "settings", "quiet-1h", "quiet-4h", "quit", "sv:menu", "more"]); // the card's fairy is in the cluster
   assert.match(lastSent(menuWin(), "orb:menu").header, /1 waiting on you/);
   assert.equal((await invoke("desk:menu-pick", menuWin(), "inbox")).ok, true);
   assert.deepEqual(calls.open, [null], "the Inbox, on no card in particular");

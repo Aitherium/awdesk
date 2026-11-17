@@ -353,8 +353,22 @@ function describeSend(rawCtx, settings) {
 
 // ── log records ──────────────────────────────────────────────────────────────
 
+// The per-install salt (assist-salt.cjs). Log hashes are HMAC-SHA256 under it, so a hash
+// read from the log cannot be brute-forced against guessable text off this machine.
+let logSalt = null;
+
+/** Install (or clear, with null) the per-install salt. Anything but a 16+ byte Buffer clears it. */
+function useLogSalt(salt) {
+  logSalt = Buffer.isBuffer(salt) && salt.length >= 16 ? Buffer.from(salt) : null;
+}
+
+/**
+ * 12 hex chars of HMAC-SHA256(salt, text). WITHOUT a salt this returns "" and the record
+ * omits the hash: an unsalted hash of guessable text is a leak, so there is no fallback.
+ */
 function shortHash(text) {
-  return nodeCrypto.createHash("sha256").update(String(text || "")).digest("hex").slice(0, 12);
+  if (!logSalt) return "";
+  return nodeCrypto.createHmac("sha256", logSalt).update(String(text || "")).digest("hex").slice(0, 12);
 }
 
 /**
@@ -378,12 +392,58 @@ function logRecord({ id, surface, verb, ctx, settings, outcome, error, text, ext
   };
   if (error) rec.error = clip(error, 300);
   if (text != null) {
-    rec.out = { chars: String(text).length, hash: shortHash(text) };
+    rec.out = { chars: String(text).length };
+    const outHash = shortHash(text);
+    if (outHash) rec.out.hash = outHash;
     if (s.logText) rec.out.text = clip(text, 4000);
   }
-  if (c.selection) rec.selectionHash = shortHash(c.selection);
+  if (c.selection) { const selectionHash = shortHash(c.selection); if (selectionHash) rec.selectionHash = selectionHash; }
   if (extra && typeof extra === "object") rec.extra = extra;
   return rec;
+}
+
+// -- Alt+Space (the launcher): the writing rows ---------------------------------------------
+
+/** What a launcher row does when chosen. Keys are `assist:<verb>` or `assist:chip:<n>` or `assist:write`. */
+const LAUNCHER_VERBS = Object.freeze(["rewrite", "explain", "summarize", "translate", "reply", "send-agent"]);
+
+/**
+ * The rows the Alt+Space box leads with when the owner pressed it ON a selection or in a
+ * text field: the prompt line (the typed words become "Write: ..."), up to 3 context chips,
+ * and the verbs that fit. Pure.
+ *
+ *   snap        the caret snapshot taken at KEY-DOWN (assist-caret.cjs)
+ *   typed       what is in the box now
+ *   insertable  whether the original window can take pasted text (not a terminal, not self)
+ *
+ * Returns null when there is nothing to write on -- the box then behaves exactly as before.
+ * A password field returns null too: nothing about it is shown anywhere.
+ */
+function writingGroup({ snap, typed = "", insertable = false } = {}) {
+  if (!snap || snap.ok === false || snap.sensitive) return null;
+  const hasSelection = Boolean(String(snap.selection || "").trim());
+  if (!hasSelection && snap.editable !== true) return null;
+  const ctx = normalizeContext({ surface: "desk", app: snap.app, title: snap.title, selection: snap.selection, field: snap.field, fieldLabel: snap.fieldLabel });
+  const where = ctx.app || "this window";
+  const into = insertable ? (hasSelection ? "replaces your selection" : "inserts at the caret") : "shown here; copy it";
+  const items = [];
+  const plan = new Map();
+  const add = (key, title, subtitle, action) => { items.push({ key, group: "assist", kind: "assist", title, subtitle, score: 1000 - items.length }); plan.set(key, action); };
+  const words = String(typed || "").trim();
+  if (words) add("assist:write", `Write: ${words.length > 80 ? `${words.slice(0, 79)}…` : words}`, `in ${where} \u00b7 ${into}`, { verb: "write", prompt: words, run: true, insert: insertable });
+  if (hasSelection) {
+    const verbs = insertable ? ["rewrite", "reply", "explain", "translate", "summarize", "send-agent"] : ["explain", "summarize", "translate", "send-agent"];
+    for (const id of verbs) {
+      const v = verbById(id);
+      if (!v) continue;
+      const run = id !== "translate" && id !== "send-agent"; // those ask for a language / an agent first
+      add(`assist:${id}`, v.label, `${id === "rewrite" || id === "reply" ? into : "the selection"} \u00b7 ${where}`, { verb: id, prompt: "", run, insert: insertable && v.kind === "transform" });
+    }
+  } else {
+    heuristicSuggestions(ctx).slice(0, 3).forEach((chip, i) => add(`assist:chip:${i}`, chip.text, `${into} \u00b7 ${where}`, { verb: chip.verb, prompt: chip.text, run: true, insert: insertable && chip.verb !== "explain" && chip.verb !== "summarize" }));
+  }
+  if (!items.length) return null;
+  return { group: { id: "assist", label: `Write in ${where}`, total: items.length, items }, plan, ctx };
 }
 
 /** Strip the chatter models add around "return only the text". */
@@ -402,5 +462,5 @@ module.exports = {
   verbById, normalizeContext, refusal, buildMessages,
   heuristicSuggestions, suggestionMessages, parseSuggestions,
   normalizeSettings, isByokModel, destination, mayAutoSuggest, describeSend,
-  logRecord, shortHash, cleanResult, fence, neutralise, inertLine,
+  logRecord, shortHash, useLogSalt, cleanResult, fence, neutralise, inertLine, writingGroup, LAUNCHER_VERBS,
 };

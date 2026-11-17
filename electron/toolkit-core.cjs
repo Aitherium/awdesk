@@ -222,7 +222,9 @@ function parseVoiceCommand(text) {
  * Now: 60 while someone speaks or the pointer is on it, 30 for a short tail, 20 when
  * merely idle... (see FRAME), 10 after a minute with nothing happening, 0 when the window is hidden.
  */
-const FRAME = Object.freeze({ active: 60, tail: 30, idle: 20, deep: 10, tailMs: 1500, deepAfterMs: 60_000 });
+// 2026-11-16 (owner: "they are lagging quite a bit now", renderer ~1.4 cores): capped at 30 fps while
+// anything is audible or being handled, 5 fps once nothing has moved for 1.5 s, 2 fps after 20 s.
+const FRAME = Object.freeze({ active: 30, tail: 30, idle: 5, deep: 2, tailMs: 1500, deepAfterMs: 20_000 });
 
 function frameBudget({ hidden = false, audible = false, orbiting = false, sinceInputMs = Infinity } = {}) {
   if (hidden) return 0;

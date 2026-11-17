@@ -157,6 +157,12 @@ export interface BeadSpaceOptions {
    * programmatic moves (flights, fits), so a host can act on gestures only.
    */
   onZoom?: (view: { k: number; fitK: number; user: boolean }) => void;
+  /**
+   * After the field has re-laid itself out for a new container size (debounced; a reshape
+   * of 48px or more). The camera has just been reset to home, so a host that had flown
+   * somewhere re-aims here instead of guessing the debounce with its own timer.
+   */
+  onResize?: (size: { width: number; height: number }) => void;
   /** Right-click, or a ~0.5 s long-press on touch, on a planet. */
   onContextMenu?: (node: BeadNode, at: { clientX: number; clientY: number }) => void;
 }

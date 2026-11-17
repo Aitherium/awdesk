@@ -846,3 +846,21 @@ test("resolveActor: the resident's `avatar` resolves under service:awdesk; defau
   assert.match(problems[0].reason, /vrm \| vam/);
   assert.equal(cast.resolveActor(config, ctx).avatar, "vrm");
 });
+
+test("owner P0 2026-11-16: a robot in defaults.character is never an automatic body; a robot the owner put on an agent's own row stays", () => {
+  const cast = require("./cast-config.cjs");
+  const roster = ["kato-straight-title-robot-anime", "aiko-droid-base-model", "charlie-5e48d775", "clara-hsr-vrm-0-0"];
+  const snapshot = {
+    defaults: { character: "kato-straight-title-robot-anime", voice: "en-US-JennyNeural" },
+    authors: { gobbonet: { character: "aiko-droid-base-model" } },
+  };
+  const session = cast.resolveActor(snapshot, { author: "claude-session-1", roster, taken: [] });
+  assert.notEqual(session.character, "kato-straight-title-robot-anime", "a terminal session does not wear the old robot default");
+  assert.ok(["charlie-5e48d775", "clara-hsr-vrm-0-0"].includes(session.character), "it draws from the proper pool");
+  assert.equal(session.characterFrom, "hash");
+  assert.equal(session.voice, "en-US-JennyNeural", "its voice is still the owner's default voice");
+  const owned = cast.resolveActor(snapshot, { author: "gobbonet", roster, taken: [] });
+  assert.equal(owned.character, "aiko-droid-base-model", "an agent's own row is the owner's choice and is never rewritten");
+  const proper = cast.resolveActor({ defaults: { character: "charlie-5e48d775" } }, { author: "x", roster, taken: [] });
+  assert.equal(proper.character, "charlie-5e48d775", "a proper default body still applies");
+});

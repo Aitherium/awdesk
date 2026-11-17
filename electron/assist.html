@@ -111,6 +111,7 @@
       const b = chip(u.label, () => runUtil(u), u.hint || ""); b.disabled = !u.available; if (!u.available) b.title = u.missing || "Not installed";
       tools.appendChild(b);
     });
+    if (state.autoRun) { const a = state.autoRun; state.autoRun = null; autoRunNow(a); }
     if (state.initialVerb) { const v = state.initialVerb; state.initialVerb = null; const found = (state.verbs || []).find((x) => x.id === v); if (found) pick(found); }
     $("prompt").focus();
   }
@@ -193,6 +194,11 @@
     $("accept").style.display = (run && run.kind === "transform") ? "" : "none";
     void verb;
     $("out").focus();
+  }
+  // From Alt+Space: the verb starts at once; a transform result is put in place with Undo ready.
+  async function autoRunNow(a) {
+    await submit(a.verb, a.prompt || "", "");
+    if (a.insert && last && last.kind === "transform" && $("out").value.trim() && !$("accept").disabled) $("accept").click();
   }
   async function submit(verb, prompt, arg) {
     if (busy) return; busy = true;

@@ -178,19 +178,19 @@ export function Beads() {
 
   const [hintDismissed, setHintDismissed] = useState(
     () => {
-      try { return window.localStorage.getItem('desk.beads-hint-dismissed') === '1'; }
+      try { return window.localStorage.getItem('desk.beads-hint-dismissed.v2') === '1'; }
       catch { return false; }
     },
   );
   const dismissHint = () => {
     setHintDismissed(true);
-    try { window.localStorage.setItem('desk.beads-hint-dismissed', '1'); } catch { /* best-effort */ }
+    try { window.localStorage.setItem('desk.beads-hint-dismissed.v2', '1'); } catch { /* best-effort */ }
   };
 
   // Gestures v5 (2026-09-18): no drag-mode state. One button, one meaning.
   const showHint = () => {
     setHintDismissed(false);
-    try { window.localStorage.removeItem('desk.beads-hint-dismissed'); } catch { /* best-effort */ }
+    try { window.localStorage.removeItem('desk.beads-hint-dismissed.v2'); } catch { /* best-effort */ }
   };
   const deck = bridgeDeck();
   if (rows.length === 0) return null;
@@ -215,7 +215,7 @@ export function Beads() {
           it, right-click opens its menu; empty space orbits. This bead only
           re-shows the legend. */}
       <Bead
-        label="Gestures: left-drag moves a body · right-drag turns it · wheel sizes it · right-click its menu · empty space orbits"
+        label="Gestures: left-drag moves a body (drop it on another to share a stage) · right-drag turns it · wheel sizes it · right-click its menu (Leave stage) · drag a stage handle to move the group · empty space orbits"
         onLeftClick={showHint}
       >
         <span className="bead-mode-label">?</span>
@@ -226,7 +226,14 @@ export function Beads() {
           so it never nags twice. */}
       {hintDismissed ? null : (
         <div className="bead-hint" role="note">
-          <span>Left-drag a body to move it · right-drag to turn it · scroll to size it · right-click for its menu · drag empty space to look around · the grid opens the console</span>
+          <span>
+            Left-drag a body to move it · right-drag to turn it · scroll to size it · right-click for its menu · drag empty
+            space to look around · the grid opens the console · Esc cancels a drag.
+            <br />
+            <b>Stages:</b> drop one body onto another to put them on a stage · right-click a body ▸ Leave stage · drag
+            the Stage handle above a group to move it. Row, circle and lock: tray ▸ Agent swarm. A locked stage never
+            detaches by itself.
+          </span>
           <button
             type="button"
             className="bead-hint-x"

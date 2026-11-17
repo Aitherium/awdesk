@@ -231,6 +231,8 @@ const launcher = require("./launcher-window.cjs").createLauncher({
   // Alt+Space opens on what the owner is LOOKING AT (launcher-context.cjs), sampled
   // on key-down, before the overlay takes focus.
   hostContext: () => require("./host-context.cjs").sampleHostContext(),
+  // Alt+Space on a selection / in a text field leads with the writing actions (assist-window.cjs).
+  assist: { capture: () => assistMain().window.launcher.capture(), group: (c, t) => assistMain().window.launcher.group(c, t), choose: (c, k, t) => assistMain().window.launcher.choose(c, k, t) },
   // ...and on the DECISION CARDS. The empty box leads with "Needs you (N)" so the
   // owner can answer without leaving the keyboard (owner, 2026-11-06).
   cards: () => decisionCards.listSnapshot(),
@@ -313,6 +315,7 @@ const {
   ensureFleetIpc,
   setCloseFallback: setFleetCloseFallback,
   setSpaceOpener: setFleetSpaceOpener,
+  setUniverseSource: setFleetUniverseSource,
   closeFleetWindow,
   isFleetWindowOpen,
   getControl: getFleetControl,
@@ -476,6 +479,11 @@ let deskUpdater = null;
 /** Crash/error reports + "Send feedback" to the company app (desk-support.cjs); tenant installs only. */
 let deskSupport = null;
 let updateNotice = null; // held, or a collected Notification loses its click handler
+// Every toast with a click handler goes through this: a bare local click listener is
+// garbage-collected and the click is lost (the dead "Phone connected" toast, 2026-11-16).
+const toaster = require("./held-toast.cjs").createToaster({
+  Notification, log: (line) => console.warn(`[desk] ${line}`),
+});
 /** Windows logging off / shutting down: a silent install now could be killed mid-way. */
 let sessionEnding = false;
 app.on("browser-window-created", (_event, win) => {
@@ -704,18 +712,23 @@ function loadSavedSize() {
     const raw = fs.readFileSync(SIZE_STATE_PATH(), "utf-8");
     const parsed = JSON.parse(raw);
     if (Number.isFinite(parsed?.width) && Number.isFinite(parsed?.height)) {
-      return { width: parsed.width, height: parsed.height };
+      return require("./window-size.cjs").effectiveSize(parsed, workAreaForSize());
     }
   } catch {
     /* no saved size yet, or file is corrupt — fall back to the default */
   }
-  return { width: WINDOW_WIDTH, height: WINDOW_HEIGHT };
+  return require("./window-size.cjs").effectiveSize(null, workAreaForSize());
+}
+
+/** The work area the default window size is a share of (a screen the owner is on, else the primary). */
+function workAreaForSize() {
+  try { return screen.getPrimaryDisplay().workArea; } catch { return null; }
 }
 
 function saveSize(width, height) {
   try {
     fs.mkdirSync(path.dirname(SIZE_STATE_PATH()), { recursive: true });
-    fs.writeFileSync(SIZE_STATE_PATH(), JSON.stringify({ width, height }), "utf-8");
+    fs.writeFileSync(SIZE_STATE_PATH(), JSON.stringify({ width, height, chosen: true }), "utf-8");
   } catch {
     /* best-effort — a failed save just means the next launch uses the old size */
   }
@@ -1192,6 +1205,10 @@ function createWindow() {
   // window caught every click in its 600x950 rect, painted or not. The renderer says
   // whether something is drawn under the cursor; forward:true keeps mouse moves flowing
   // while ignored so it can say "interactive" again. Sender-scoped like the drag above.
+  ipcMain.removeAllListeners("desk:avatar-pick");
+  ipcMain.on("desk:avatar-pick", (_event, pick) => {
+    avatarPickState = { hover: (pick && pick.hover) || null, selected: (pick && pick.selected) || null, at: Date.now() };
+  });
   ipcMain.removeAllListeners("desk:set-interactive");
   ipcMain.on("desk:set-interactive", (event, interactive) => {
     const win = BrowserWindow.fromWebContents(event.sender);
@@ -1199,6 +1216,7 @@ function createWindow() {
     if (process.env.AITHER_DESK_CLICK_THROUGH === "0") return win.setIgnoreMouseEvents(false);
     // Interact mode (toolkit.cjs): the desk holds the mouse until Esc / Ctrl+Alt+Y.
     if (require("./toolkit.cjs").interactMode()) return win.setIgnoreMouseEvents(false);
+    avatarInteractiveState = { interactive: interactive === true, at: Date.now() };
     win.setIgnoreMouseEvents(interactive !== true, { forward: true });
   });
 
@@ -1454,7 +1472,60 @@ function agentForSlot(slotId) {
  * file-wide default. No HTTP/MCP door passes it -- a request body never names
  * its own author.
  */
+/**
+ * THE FRONT DOOR of every spoken line (owner, 2026-11-16: "they all talked over each other").
+ * Two things happen here before anything is synthesized (speech-arbiter.cjs):
+ *   1. a coding / terminal SESSION actor is silent unless the owner opted that session into voice
+ *      from its menu: its words show as a (muted) bubble and nothing is said aloud;
+ *   2. every other line takes its turn in ONE global lane by priority (the owner's own
+ *      conversation > decision cards > Aither > the rest); a line that waits past ~20 s is dropped
+ *      but still captioned. Nothing overlaps.
+ */
+let speechArbiterInstance = null;
+let sessionVoicesInstance = null;
+const sessionSlotKeys = new Map(); // slotId -> the opt-in key its session speaks under
+function sessionVoices() {
+  if (!sessionVoicesInstance) {
+    sessionVoicesInstance = require("./speech-arbiter.cjs").createSessionVoices({
+      file: path.join(app.getPath("userData"), "session-voices.json"),
+    });
+  }
+  return sessionVoicesInstance;
+}
+function speechArbiter() {
+  if (!speechArbiterInstance) {
+    speechArbiterInstance = require("./speech-arbiter.cjs").createSpeechArbiter({
+      run: (job) => speakAloudNow(job.text, job.voice, job.speed, job.slotId, job.origin, job.speaker),
+      // A dropped line keeps its words on screen: the caption is the part that is never stale.
+      onDrop: (job) => { try { sendBubble(job.slotId, job.text, { muted: true }); } catch { /* cosmetic */ } },
+    });
+  }
+  return speechArbiterInstance;
+}
 async function speakAloud(
+  text,
+  voice = "nova",
+  speed = undefined,
+  slotId = "slot0",
+  origin = "service:awdesk",
+  speaker = null,
+) {
+  const arb = require("./speech-arbiter.cjs");
+  if (arb.isSessionSpeaker({ origin, speaker })) {
+    const key = arb.sessionKey({ speaker, origin, slotId });
+    sessionSlotKeys.set(slotId || "slot0", key);
+    if (!sessionVoices().has(key)) {
+      const shown = sendBubble(slotId, text, { muted: true });
+      return { ok: false, refused: "policy", reason: "coding sessions are silent unless you turn their voice on from the body's menu", captioned: shown > 0 };
+    }
+  }
+  return speechArbiter().enqueue({
+    rank: arb.priorityOf({ origin, slotId, speaker }),
+    text, voice, speed, slotId, origin, speaker,
+  });
+}
+
+async function speakAloudNow(
   text,
   voice = "nova",
   speed = undefined,
@@ -1976,6 +2047,264 @@ function setCompanionMode(mode) {
   return { ok: true, companion: next };
 }
 
+// ── the agent swarm (agent-swarm-host.cjs, owner 2026-11-16) ─────────────────────────
+// "I can see, talk to and interact with EVERY agent I run, as a fairy swarm and as full
+// avatars." One live roster (agent-roster-live.cjs reads the awdiscord bots, Genesis, the
+// harness sessions and the remote endpoints), one cluster (the orb's own swarm window), one
+// stage (this file's avatar window, a slot per grown agent) and GargBot's 2D goblin.
+/** The body under the pointer / the selected one, as the avatar window's pixel pick reports it. */
+let avatarPickState = { hover: null, selected: null, at: 0 };
+/** The last click-through verdict the avatar window sent (true = it takes clicks right now). */
+let avatarInteractiveState = { interactive: null, at: 0 };
+let swarmHostInstance = null;
+let goblinInstance = null;
+
+function getGoblin() {
+  if (goblinInstance) return goblinInstance;
+  goblinInstance = require("./goblin-window.cjs").createGoblin({
+    electron: { BrowserWindow, screen },
+    onDismissRequest: () => { void getSwarmHost().setAgentForm("gargbot", "fairy"); },
+    onChange: (state) => {
+      try { getSwarmHost().goblinChanged(state); } catch { /* the swarm is cosmetic */ }
+      if (tray) refreshTrayMenu();
+    },
+    log: debugLog,
+  });
+  // Right-click on the goblin himself sends him back into the fairy.
+  ipcMain.on("goblin:dismiss", (event) => {
+    // Only the goblin's own window may send it back (review of #96).
+    const win = getGoblin().window && getGoblin().window();
+    if (!win || win.isDestroyed() || event.sender !== win.webContents) return; // fails closed (review of #96)
+    void getSwarmHost().setAgentForm("gargbot", "fairy");
+  });
+  return goblinInstance;
+}
+
+/** The owner's words to an agent over the relay, and its real answer back (the agent's own
+ *  Discord bot replies in #agents). Never the gateway's ask_agent: that call holds the
+ *  shared MCP session for as long as the agent thinks and stalls every other desk plane. */
+async function askAgentOverRelay(agent, text, { timeoutMs = 75000, pollMs = 3500 } = {}) {
+  const since = Math.floor(Date.now() / 1000) - 1;
+  const sent = await postToRelay(RELAY_CHANNEL, `@${agent} ${String(text).slice(0, 600)}`);
+  if (!sent || sent.ok === false) throw new Error("the relay did not take the message");
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    await waitMs(pollMs);
+    const rows = await fetchRelayHistory();
+    const hit = (Array.isArray(rows) ? rows : []).find((r) => r && r.agent === true && Number(r.at) > since && r.text
+      && String(r.author || "").split("+")[0].toLowerCase() === agent);
+    if (hit) return String(hit.text);
+  }
+  return "";
+}
+
+function playAudioOnSlot({ slotId = "slot0", audioBase64, volume }) {
+  let delivered = 0;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    win.webContents.send("desk:event", { type: "speak", audioBase64, slotId: slotId || "slot0", volume: typeof volume === "number" ? volume : 1 });
+    delivered += 1;
+  }
+  return delivered;
+}
+
+function getSwarmHost() {
+  if (swarmHostInstance) return swarmHostInstance;
+  const live = require("./agent-roster-live.cjs");
+  swarmHostInstance = require("./agent-swarm-host.cjs").createSwarmHost({
+    reader: live.createRosterReader({
+      podman: () => live.runArgv(require("./fleet-distro.cjs").fleetPodmanArgv(live.PODMAN_PS)),
+      callTool: (name, args) => require("./gateway-mcp.cjs").callTool(name, args),
+      listSessions: () => require("./sessions-client.cjs").listSessions(),
+      readAuthors: () => {
+        const loaded = require("./cast-config.cjs").load();
+        return (loaded && loaded.snapshot && loaded.snapshot.authors) || {};
+      },
+      listCharacters: () => listCharacters(),
+      aitherBody: () => aitherCharacterToShow(),
+      cache: require("./last-good-cache.cjs").deskCache(),
+    }),
+    avatar: {
+      window: () => createWindow(),
+      savedSize: () => loadSavedSize(),
+      workArea: (point) => screen.getDisplayNearestPoint(point).workArea,
+      nextSlotId: () => nextFreeSlotId(),
+      spawnSlot: (slotId, name, agent, place) => spawnAvatarSlot(slotId, name, agent, place),
+      removeSlot: (slotId) => removeAvatarSlot(slotId),
+      send: (event) => {
+        if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.webContents.send("desk:event", event);
+      },
+      pick: () => avatarPickState,
+      hide: () => {
+        if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.hide();
+        if (tray) refreshTrayMenu();
+      },
+    },
+    orb: {
+      setPresence: (list) => orbWindow.setPresence(list),
+      setSwarmAnchor: (point) => orbWindow.setSwarmAnchor(point),
+      setSwarmVisible: (on) => orbWindow.setSwarmVisible(on),
+      swarmVisible: () => orbWindow.swarmVisible(),
+      hideTenantCompanion: () => orbWindow.setTenantCompanion(false),
+      fairyBounds: () => orbWindow.fairyBounds(),
+      chat: (agent) => orbWindow.chatWithAgent(agent),
+      expand: () => orbWindow.expandToAvatar(),
+      collapse: () => orbWindow.collapseToFairy(),
+    },
+    goblin: getGoblin(),
+    speakAloud: (text, voice, speed, slotId, origin, speaker) => speakAloud(text, voice, speed, slotId, origin, speaker),
+    playAudio: (a) => playAudioOnSlot(a),
+    askAgent: (agent, text) => askAgentOverRelay(agent, text),
+    // act(tool): the gateway's own tools, for an agent standing on this desk (the host refuses credential,
+    // money and destructive names; the gateway still decides who may call what).
+    runTool: (agent, tool, args) => require("./gateway-mcp.cjs").callTool(tool, { ...args, agent }),
+    log: debugLog,
+  });
+  return swarmHostInstance;
+}
+
+/** The ONE entry for the bridge (/swarm), MCP (swarm_*) and the tray: {action, ...}. */
+async function swarmApi(req = {}) {
+  const host = getSwarmHost();
+  switch (String(req.action || "")) {
+    case "state":
+      await host.refresh({ force: req.refresh === true });
+      return host.state();
+    case "form":
+      return host.setAgentForm(req.agent, req.form);
+    case "forms":
+      return host.setAllForms(req.form, { include: req.include });
+    case "mode":
+      return host.setMode(req.mode);
+    case "show":
+      return host.showSwarm(req.on !== false);
+    case "talk":
+      return host.talkTo(req.agent, { openChat: req.openChat === true });
+    case "speak": {
+      const input = req.audioStream
+        ? { audioStream: req.audioStream, mime: req.mime, volume: req.volume }
+        : req.audioBase64 ? { audioBase64: req.audioBase64, mime: req.mime, volume: req.volume }
+          : { text: String(req.text || ""), voice: req.voice, speed: req.speed };
+      return host.speak(req.agent, input);
+    }
+    case "visemes":
+      return host.visemes(req.agent, req.weights === undefined ? null : req.weights, req.ttlMs);
+    case "goblin":
+      return host.setAgentForm("gargbot", req.on === false ? "fairy" : "avatar");
+    case "perceive":
+      return host.perceive(req.agent, req.view);
+    case "act":
+      return host.act(req.agent, req.tool, req.args);
+    case "walk":
+      return host.walkTo(req.agent, req.rect);
+    case "look":
+      return host.lookAt(req.agent, req.point === undefined ? undefined : req.point);
+    case "register":
+      // GargBot's web overlay (or any page in the desk) names the goblin / agents it shows: they join
+      // THIS roster, deduped by agent identity (one cluster). agents: [] forgets the source.
+      return host.registerOverlay(req.source, req.agents);
+    case "view":
+      // Fine control over the fairies (fairy-control.cjs): mode, kind, radius, select, pin, hide.
+      return orbWindow.swarmViewOp(req);
+    case "stage":
+      return host.stageOp(String(req.op || "state"), req);
+    case "probe": {
+      // A test/diagnostic door (synthetic input into the avatar window, every window's title and pid,
+      // executeJavaScript): off unless the desk was started with AWDESK_SWARM_PROBE=1 (review of #96).
+      if (process.env.AWDESK_SWARM_PROBE !== "1") return { ok: false, error: "probe is a diagnostic door: start the desk with AWDESK_SWARM_PROBE=1" };
+      // Test/diagnostic read of the avatar window's pixel pick (hooks/avatarPick.ts installProbe).
+      if (!avatarWindow || avatarWindow.isDestroyed()) return { ok: false, error: "no avatar window" };
+      if (req.what === "procs") {
+        // Which window is burning CPU: every window's title, its renderer pid, and app metrics.
+        const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).map((w) => ({
+          title: w.getTitle(), pid: w.webContents.getOSProcessId(), visible: w.isVisible(), url: String(w.webContents.getURL()).slice(-60),
+        }));
+        return { ok: true, windows: wins, metrics: app.getAppMetrics().map((m) => ({ pid: m.pid, type: m.type, cpu: m.cpu.percentCPUUsage })) };
+      }
+      if (req.what === "input") {
+        // Drive the window's own input pipeline (Chromium-level, like a real pointer): a move, or a
+        // full left click, at CLIENT coordinates. Used by the hit-test proof.
+        const x = Math.round(Number(req.x) || 0);
+        const y = Math.round(Number(req.y) || 0);
+        const wc = avatarWindow.webContents;
+        wc.sendInputEvent({ type: "mouseMove", x, y });
+        await waitMs(350);
+        if (req.click === true) {
+          wc.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
+          await waitMs(60);
+          wc.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
+          await waitMs(120);
+        }
+        return { ok: true, pick: avatarPickState, interactive: avatarInteractiveState };
+      }
+      const js = req.what === "grid"
+        ? `window.__deskPick && window.__deskPick.grid(${Number(req.step) || 24})`
+        : req.what === "bounds" ? "window.__deskPick && window.__deskPick.bounds()"
+          : req.what === "info" ? "window.__deskPick && window.__deskPick.info()"
+          : req.what === "at" ? `window.__deskPick && window.__deskPick.pickAt(${Number(req.x) || 0}, ${Number(req.y) || 0})`
+            : "window.__deskPick && ({ state: window.__deskPick.state(), slots: window.__deskPick.slots(), size: window.__deskPick.size() })";
+      const value = await avatarWindow.webContents.executeJavaScript(js);
+      const wb = avatarWindow.getBounds();
+      const sf = screen.getDisplayNearestPoint({ x: wb.x, y: wb.y }).scaleFactor;
+      return { ok: true, value, window: wb, scaleFactor: sf, ignoring: null };
+    }
+    default:
+      return { ok: false, error: `unknown swarm action "${req.action}"` };
+  }
+}
+
+/** One tray submenu: the swarm as a whole, then each agent's form. Never nested deeper. */
+/** Gather / scatter / one orb / dock, and the kind filter (fairy-control.cjs): the tray's copy of the fairy menu's rows. */
+function swarmLayoutTrayRows(run) {
+  let now = { mode: "gather", kind: "all" };
+  try { now = orbWindow.swarmViewPayload(); } catch { /* the fairy is not up yet */ }
+  const fc = require("./fairy-control.cjs");
+  const label = { gather: "Gather around the fairy", scatter: "Scatter", orb: "Collapse into one orb", dock: "Dock to the screen edge" };
+  const kinds = { all: "Every kind", agents: "Agents only", terminals: "Terminal sessions only", subagents: "Subagents only", remote: "Remote endpoints only" };
+  return [
+    ...fc.MODES.map((m) => ({ label: label[m], type: "radio", checked: now.mode === m, click: run({ action: "view", mode: m }) })),
+    { type: "separator" },
+    ...fc.KIND_FILTERS.map((k) => ({ label: kinds[k], type: "radio", checked: now.kind === k, click: run({ action: "view", kind: k }) })),
+    { type: "separator" },
+    { label: "Reset the size", click: run({ action: "view", radius: 1 }) },
+    { label: "Show hidden fairies", click: run({ action: "view", showHidden: true }) },
+    { label: "Unpin every fairy", click: run({ action: "view", unpinAll: true }) },
+  ];
+}
+
+function swarmTrayRows() {
+  let state;
+  try { state = getSwarmHost().state(); } catch { return []; }
+  const run = (req) => () => { void swarmApi(req).then(() => { if (tray) refreshTrayMenu(); }); };
+  const rows = state.roster.slice(0, 24).map((r) => ({
+    label: `${r.form === "avatar" ? "Shrink" : "Grow"} ${r.label}${r.kind === "goblin" ? " (goblin)" : r.light ? " (terminal)" : ""}`,
+    click: run({ action: "form", agent: r.id, form: r.form === "avatar" ? "fairy" : "avatar" }),
+  }));
+  return [{
+    label: `Agent swarm (${state.roster.length})`,
+    submenu: [
+      { label: state.swarmVisible ? "Hide the fairy swarm" : "Show the fairy swarm", click: run({ action: "show", on: !state.swarmVisible }) },
+      { label: "Grow every agent", click: run({ action: "forms", form: "avatar" }) },
+      { label: "Shrink them all back", click: run({ action: "forms", form: "fairy" }) },
+      { label: state.mode === "light" ? "Light mode (terminals stay small)" : "Full mode (everyone grows)", click: run({ action: "mode", mode: state.mode === "light" ? "full" : "light" }) },
+      { label: "Fairy layout", submenu: swarmLayoutTrayRows(run) },
+      { type: "separator" },
+      { label: "Stage: join every grown agent", click: () => {
+        const bodies = state.bodies.map((b) => b.agent).filter((a) => a !== "gargbot");
+        for (let i = 1; i < bodies.length; i += 1) swarmApi({ action: "stage", op: "join", agent: bodies[i], target: bodies[0] }).catch(() => {});
+      } },
+      { label: "Stage: split them apart", click: () => { for (const b of state.bodies) swarmApi({ action: "stage", op: "leave", agent: b.agent }).catch(() => {}); } },
+      { label: "Stage: arrange in a row", click: run({ action: "stage", op: "arrange", mode: "row" }) },
+      { label: "Stage: arrange in a circle", click: run({ action: "stage", op: "arrange", mode: "circle" }) },
+      { label: "Stage: lock / unlock", click: run({ action: "stage", op: "lock", locked: !(state.stages[0] && state.stages[0].locked) }) },
+      { type: "separator" },
+      { label: state.goblin.summoned ? "Send the goblin back" : "Summon the goblin", click: run({ action: "goblin", on: !state.goblin.summoned }) },
+      { type: "separator" },
+      ...rows,
+    ],
+  }];
+}
+
 // ── the fairy grows into Aither (owner 2026-11-15) ───────────────────────────
 // "when I click the fairy or right-click and select an option I want it to expand into
 // that avatar". orb-window.cjs asks through its `expand` / `collapse` hooks; the body
@@ -2009,6 +2338,8 @@ function clearStageForAither() {
   try { roomStageHost.stopRoomStage(); } catch { /* not running */ }
   for (const slotId of [...avatarSlots.keys()]) {
     if (slotId === "slot0" || slotId === "default") continue;
+    // The agent swarm's own bodies are not "the room's": growing Aither must not send them away.
+    if (swarmHostInstance && swarmHostInstance.ownsSlot(slotId)) continue;
     try { removeAvatarSlot(slotId); gone.push(slotId); } catch { /* already gone */ }
   }
   return gone;
@@ -2016,6 +2347,12 @@ function clearStageForAither() {
 
 async function expandAvatarFromFairy({ from = null } = {}) {
   if (avatarGrowing) return { ok: false, error: "already growing" };
+  // Other agents already stand on the stage: Aither joins the row instead of re-sizing the window.
+  if (swarmHostInstance && swarmHostInstance.hasBodies()) {
+    const joined = await swarmHostInstance.growResidentIntoStage();
+    if (joined.ok) { swarmHostInstance.residentChanged("avatar"); return { ok: true, character: aitherCharacterToShow(), stage: true }; }
+    return joined;
+  }
   if (avatarDock && avatarDock.isDocked()) return { ok: false, error: "the avatar is docked in the browser" };
   const want = aitherCharacterToShow();
   if (!want) return { ok: false, error: "no Aither model in this desk's roster" };
@@ -2046,6 +2383,7 @@ async function expandAvatarFromFairy({ from = null } = {}) {
       win.webContents.send("desk:event", { type: "animation", animation: "GREETING", source: "fairy" });
     }
     if (tray) refreshTrayMenu();
+    try { getSwarmHost().residentChanged("avatar"); } catch { /* the swarm is cosmetic */ }
     return { ok: true, character: want, bounds: to };
   } finally {
     avatarGrowing = false;
@@ -2053,6 +2391,11 @@ async function expandAvatarFromFairy({ from = null } = {}) {
 }
 
 async function collapseAvatarToFairy({ to = null } = {}) {
+  if (swarmHostInstance && swarmHostInstance.hasBodies()) {
+    const left = await swarmHostInstance.shrinkResidentFromStage();
+    if (left.ok) swarmHostInstance.residentChanged("fairy");
+    return left.ok ? { ok: true } : left;
+  }
   const win = avatarWindow;
   if (!win || win.isDestroyed() || !win.isVisible()) return { ok: true };
   avatarGrowing = true;
@@ -2071,6 +2414,7 @@ async function collapseAvatarToFairy({ to = null } = {}) {
   }
   // The session bodies come back with the fairy (the stage re-seats whoever is talking).
   try { startRoomStage(); } catch { /* the room is optional */ }
+  try { getSwarmHost().residentChanged("fairy"); } catch { /* the swarm is cosmetic */ }
   if (tray) refreshTrayMenu();
   return { ok: true };
 }
@@ -2763,6 +3107,19 @@ function toggleAgentVoice(slotId) {
   }
 }
 
+/** A coding session's voice, opt-in from ITS menu: silent until the owner says otherwise. */
+function sessionVoiceOn(slotId) {
+  try { return sessionVoices().has(sessionSlotKeys.get(slotId) || slotId); } catch { return false; }
+}
+function toggleSessionVoice(slotId) {
+  const key = sessionSlotKeys.get(slotId) || slotId;
+  const next = !sessionVoices().has(key);
+  sessionVoices().set(key, next);
+  sendBubble(slotId || "slot0", next ? "My voice is on." : "My voice is off.", { muted: true });
+  try { refreshTrayMenu(); } catch { /* tray not up */ }
+  return next;
+}
+
 /** ONE body's voice set to a state (the Stage pane's per-row speaker). Throws when
  *  the slot names no agent, so the pane says so instead of showing a dead toggle. */
 function setAgentVoiceMuted(slotId, muted) {
@@ -2856,7 +3213,7 @@ function popupAvatarMenu(slotId) {
       "avatar-menu",
       (id) => runCommand(id, undefined, { surface: "avatar-menu", slotId }),
       {
-        ctx: { ...commandContext(), slotId, agent: agentForSlot(slotId) || agent, agentMuted: agentVoiceMuted(agentForSlot(slotId)), removable: !isDefault, sessionAddress },
+        ctx: { ...commandContext(), slotId, agent: agentForSlot(slotId) || agent, agentMuted: agentVoiceMuted(agentForSlot(slotId)), removable: !isDefault, sessionAddress, sessionBody: Boolean(sessionAddress), sessionVoice: sessionVoiceOn(slotId), inStage: Boolean(swarmHostInstance && swarmHostInstance.stageOfSlot(slotId)) },
         submenus: { "characters.pick": buildCharacterMenu() },
       },
     ),
@@ -2875,6 +3232,25 @@ function popupAvatarMenu(slotId) {
 
 ipcMain.on("desk:avatar-context-menu", (_event, slotId) => {
   popupAvatarMenu(String(slotId || ""));
+});
+
+// Stages by direct manipulation: a body dropped on another joins its stage; a stage moved by its
+// handle tells main where its members stand. Only the avatar window may send either.
+ipcMain.on("desk:stage-drop", (event, slotId, targetSlotId) => {
+  if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
+  void getSwarmHost().joinSlots(String(slotId || ""), String(targetSlotId || ""));
+});
+// A body whose model cannot be animated at all (no humanoid arms to pose) shrinks back to its fairy:
+// never a bind-posed T-pose on screen (owner P0 2026-11-16). Only the avatar window may send it.
+ipcMain.on("desk:body-broken", (event, slotId) => {
+  if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
+  const host = getSwarmHost();
+  const agent = host.agentOfSlot(String(slotId || ""));
+  if (agent) void host.setAgentForm(agent, "fairy");
+});
+ipcMain.on("desk:stage-sync", (event, positions) => {
+  if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
+  getSwarmHost().syncPositions(positions);
 });
 
 /** First "slotN" not already in avatarSlots — spawn_avatar/remove_avatar were MCP-only
@@ -3499,6 +3875,8 @@ function trayTemplateNow() {
       (id) => orbWindow.companionAction(id, { target: null }));
   } catch { /* the fairy module is not up yet: the next repaint has them */ }
   if (companionRows.length) companionRows.push({ type: "separator" });
+  // The agent swarm's own submenu (agent-swarm-host.cjs): grow / shrink, stages, the goblin.
+  try { trayTemplate.push(...swarmTrayRows()); } catch { /* the swarm is cosmetic */ }
   trayTemplate.unshift(...needsYouLib.trayRows(needsYou, (id) => openInbox(id)), ...companionRows, ...houseTrayRows());
   return trayTemplate;
 }
@@ -3825,6 +4203,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "voice.mute": return void toggleMicMute();
     case "voice.mute-all": return void toggleAllVoices();
     case "voice.mute-agent": return void toggleAgentVoice(slotId);
+    case "voice.session": return void toggleSessionVoice(slotId);
     // U27's room.steer record (palette surface only -- no slot in hand here;
     // the avatar menu's OWN "Message this session…" item, added in
     // popupAvatarMenu below, already knows its slot and does not reach this
@@ -3855,6 +4234,8 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "avatar.frame-all": return void sendToAvatar("focus-avatar", { slotId: null });
     case "avatar.reset": return void sendToAvatar("reset-avatar-layout", { slotId });
     case "avatar.remove": return void (slotId && removeAvatarSlot(slotId));
+    // Right-click a body in a stage > Leave stage (stages by direct manipulation, 2026-11-16).
+    case "stage.leave": return void (slotId && getSwarmHost().leaveSlot(slotId));
     // Grown from the fairy (owner 2026-11-15): the orb is down, the way back is on the body.
     case "avatar.to-fairy": return void orbWindow.collapseToFairy();
     case "avatar.from-fairy": return void orbWindow.expandToAvatar();
@@ -4686,7 +5067,14 @@ async function refreshAgentPresence() {
   }
   let sessions = [];
   try { sessions = agentPresence.sessionPresence(sessionContext.liveSessions()); } catch { /* none */ }
-  try { orbWindow.setPresence([...platformPresence, ...sessions]); } catch { /* the fairy is cosmetic */ }
+  try {
+    // The swarm reads its own sources (the bots, sessions, remotes) and publishes the merge.
+    const host = getSwarmHost();
+    host.withBase([...platformPresence, ...sessions]);
+    await host.refresh();
+  } catch {
+    try { orbWindow.setPresence([...platformPresence, ...sessions]); } catch { /* the fairy is cosmetic */ }
+  }
   return snap;
 }
 
@@ -5414,6 +5802,8 @@ browserWindow.configureInternal({
 // The Fleet page's "Open in Space" (fleet-window.cjs hands the raw link; we re-build it).
 // The page shows the link only when this build has a Space pane (Boolean(spacePane())).
 setFleetSpaceOpener((url) => openSpaceLink(url), () => Boolean(spacePane()));
+// The Fleet window's network reads the SAME universe client as the Space pane.
+setFleetUniverseSource((opts) => spaceClient().get(opts));
 
 // The LAST independent popup source folds in (owner, 2026-09-08: "I WANT TO
 // CONSOLIDATE AND DEDUPE"). A decision card had three unrelated homes -- awask's
@@ -5462,32 +5852,83 @@ let phoneLink = null;
 function phoneTrayRows() {
   if (!phoneUsb || !phoneLink) return [];
   return require("./phone-link.cjs").trayItems(phoneUsb.phones(), phoneLink.links(), {
-    use: (serial) => void usePhone(serial),
+    use: (serial) => void openThisPhone(serial),
     unlink: (serial) => void unlinkPhone(serial),
     forget: (deviceId, serial) => { phoneLink.forget(deviceId); void unlinkPhone(serial); },
   });
 }
 
+/** Link one cable: serve it, reverse the phone's port onto it, open Aither there. {ok, error?} */
 async function usePhone(serial) {
   const phone = phoneUsb.phones().find((p) => p.serial === serial && p.state === "device");
-  if (!phone) return;
+  if (!phone) return { ok: false, error: "That phone is no longer connected over USB." };
+  let result = { ok: true };
   try {
     const port = await phoneLink.openFor(serial, phone.model);
     const rev = await phoneUsb.reverse(serial, port);
     if (!rev.ok) throw new Error(`adb reverse failed: ${(rev.stderr || rev.error?.message || "").slice(0, 200)}`);
     const launched = await phoneUsb.launch(serial);
-    if (!launched.ok) console.warn(`[desk] phone link: could not open Aither on the phone: ${launched.stderr.slice(0, 200)}`);
+    if (!launched.ok) {
+      console.warn(`[desk] phone link: could not open Aither on the phone: ${launched.stderr.slice(0, 200)}`);
+      result = { ok: false, error: "Linked, but Aither would not open on the phone. Is the Aither app installed?" };
+    }
   } catch (e) {
     phoneLink.closeFor(serial);
-    dialog.showErrorBox("Phone link", String(e?.message || e));
+    result = { ok: false, error: String(e?.message || e) };
   }
   if (tray) refreshTrayMenu();
+  return result;
 }
 
 async function unlinkPhone(serial) {
   phoneLink.closeFor(serial);
   await phoneUsb.unreverse(serial).catch(() => {});
   if (tray) refreshTrayMenu();
+}
+
+/** The "Phone connected" toast, the tray row and the app all land here: ALWAYS a visible outcome. */
+async function openThisPhone(serial) {
+  const panel = require("./phone-panel.cjs");
+  panel.openPhonePanel(serial);
+  const phone = phoneUsb && phoneUsb.phones().find((p) => p.serial === serial);
+  const linked = phoneLink && phoneLink.links().some((l) => l.serial === serial);
+  if (phone && phone.state === "device" && !linked) await phoneAct(serial, "link");
+  void panel.refreshPhonePanel();
+}
+
+function phoneSnapshot(serial, ctx = {}) {
+  return require("./phone-panel.cjs").describePhone({
+    phone: phoneUsb ? phoneUsb.phones().find((p) => p.serial === serial) || null : null,
+    link: phoneLink ? phoneLink.links().find((l) => l.serial === serial) : undefined,
+    busy: ctx.busy, error: ctx.error, lastCapture: ctx.lastCapture,
+  });
+}
+
+async function phoneAct(serial, verb) {
+  const link = phoneLink.links().find((l) => l.serial === serial);
+  switch (verb) {
+    case "link": return usePhone(serial);
+    case "unlink": await unlinkPhone(serial); return { ok: true };
+    case "forget":
+      if (link && link.deviceId) phoneLink.forget(link.deviceId);
+      await unlinkPhone(serial);
+      return { ok: true };
+    case "open-app": {
+      const r = await phoneUsb.launch(serial);
+      return r.ok ? { ok: true } : { ok: false, error: "Aither would not open on the phone. Is the app installed?" };
+    }
+    case "capture": {
+      const r = await phoneUsb.screencap(serial);
+      if (!r.ok) return { ok: false, error: `Could not capture the screen: ${r.error}` };
+      const dir = path.join(app.getPath("downloads"), "From phone");
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `phone-screen-${new Date().toISOString().replace(/[:.]/g, "-")}.png`);
+      fs.writeFileSync(file, r.png);
+      try { shell.showItemInFolder(file); } catch { /* the path is shown in the panel */ }
+      return { ok: true, file };
+    }
+    default: return { ok: false, error: "unknown action" };
+  }
 }
 
 function phoneLinkActions() {
@@ -5603,8 +6044,9 @@ function startPhoneLink() {
       return response === 0;
     },
     actions: phoneLinkActions(),
-    onChange: () => { syncPhoneMesh(); if (tray) refreshTrayMenu(); },
+    onChange: () => { syncPhoneMesh(); if (tray) refreshTrayMenu(); void require("./phone-panel.cjs").refreshPhonePanel(); },
   });
+  require("./phone-panel.cjs").configurePhonePanel({ snapshot: phoneSnapshot, act: phoneAct });
   // The mesh/remote listener: only while a phone is approved and this PC has a tailnet
   // address (the Aither tunnel reaches it there). AWDESK_PHONE_MESH=0 keeps it cable-only.
   const { meshAddressOf } = require("./phone-link.cjs");
@@ -5629,13 +6071,16 @@ function startPhoneLink() {
       // the cable is out: that phone's server goes with it
       for (const p of removed) phoneLink.closeFor(p.serial);
       for (const p of added) {
-        if (p.state === "device" && Notification.isSupported()) {
-          const n = new Notification({ title: `Phone connected: ${p.model}`, body: "Click to use this phone with Aither" });
-          n.on("click", () => void usePhone(p.serial));
-          n.show();
+        if (p.state === "device") {
+          // The click links the cable AND opens the This phone panel, so it always shows something.
+          toaster.show({
+            title: `Phone connected: ${p.model}`, body: "Click to use this phone with Aither",
+            onClick: () => openThisPhone(p.serial),
+          });
         }
       }
       if (tray) refreshTrayMenu();
+      void require("./phone-panel.cjs").refreshPhonePanel();
     },
   });
   phoneUsb.start();
@@ -6497,6 +6942,14 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           undefined, undefined, "slot0", "service:awdesk-voice");
         return { ok: !failed, text: said, command: spokenCommand.id, result: ran };
       }
+      // Talking to an agent (its fairy was clicked, or it was just grown): the words go to
+      // THAT agent and its answer comes back in its own voice from its own body.
+      try {
+        const routed = await getSwarmHost().handleVoice(said);
+        if (routed) return { ok: true, text: said, agent: routed.agent, reply: routed.reply };
+      } catch (error) {
+        debugLog("swarm voice route failed", error?.message || error);
+      }
       try {
         void speakAloud("On it, asking now.", undefined, undefined, "slot0", "service:awdesk-voice");
         // The Aither Browser has focus: the words are about the page on screen, so the
@@ -6751,9 +7204,33 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           if (r && !r.ok && /ended/i.test(String(r.note || ""))) return deckSessionAct({ id, action: "resume" });
           return r;
         },
+        // Fine control over the fairies (fairy-control.cjs): a click selects one (push-to-talk
+        // goes to it), the menu grows it into its avatar or brings its terminal to the front.
+        select: (agent) => { try { getSwarmHost().talkTo(agent); } catch { /* the swarm is cosmetic */ } },
+        growAgent: (agent) => getSwarmHost().setAgentForm(agent, "avatar"),
+        focusAgentSession: async (agent, card) => {
+          if (card && card.sessionId) {
+            const r = await deckSessionAct({ id: card.id, action: "focus" });
+            if (r && !r.ok && /ended/i.test(String(r.note || ""))) return deckSessionAct({ id: card.id, action: "resume" });
+            return r;
+          }
+          const agentFairyLib = require("./agent-fairy.cjs");
+          for (const [id, live] of liveSessionMap({ fresh: true })) {
+            if (agentFairyLib.sessionKey(id) !== agent) continue;
+            const name = live && live.name ? live.name : "";
+            if (!name) return { ok: false, note: "That session has no terminal tab name." };
+            const r = await sessionContext.focusSessionTab(name);
+            return r.ok ? { ok: true, note: `Brought "${r.tab || name}" to the front.` } : { ok: false, note: `Could not find its terminal tab (${r.error}).` };
+          }
+          return { ok: false, note: "That session is not open." };
+        },
         // Click a companion fairy: the chat with THAT agent (same persona as its
         // Discord bot), continuing its thread when the board names one.
-        chat: (agent, links) => openAgentChat(agent, links),
+        chat: (agent, links) => {
+          // Clicking an agent is also choosing who the next push-to-talk goes to.
+          try { getSwarmHost().talkTo(agent); } catch { /* the swarm is cosmetic */ }
+          return openAgentChat(agent, links);
+        },
         // The fairy panel's session line (fairy-panel.cjs): the same live directory the
         // browser's Agents tab reads, polled only while the panel is on screen.
         sessions: () => require("./sessions-client.cjs").listSessions(),
@@ -7283,6 +7760,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // U28: the MCP `speak` tool door -- origin STAMPED here, same reason as
       // the bridge's speakHandler above.
       onSpeak: ({ text, voice, speed }) => speakAloud(text, voice, speed, undefined, "mcp:speak"),
+      swarm: (req) => swarmApi(req),
       onAsk: ({ question, timeoutMs }) => voiceAsk.ask(question, { timeoutMs }),
       // The Aither Browser's agent tools: the take-over gate runs before any of them.
       onBrowser: (action, args) => browserWindow.browserAgent({ askAgent: browserAskAgent })(action, args),
@@ -7323,9 +7801,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // U28: this is the POST /speak door -- origin STAMPED here, never read
       // off the request body (see speakAloud's own doc).
       speakHandler: ({ text, voice, speed, slot }) => speakAloud(text, voice, speed, slot, "bridge:/speak"),
+      swarmHandler: (req) => swarmApi(req),
       // The registry over loopback: what `awsh /desk` and `adk desk` list and run.
       // The browser overlay (AitherConnect) -> the same engine as the desk pop-up.
       assistHandler: (req) => assistMain().bridge(req),
+      assistAuth: (header) => assistMain().pairing.verify(header),
       commandsHandler: {
         list: () => commandRegistry.paletteRows(commandContext()),
         run: async (id, arg) => {
@@ -7809,12 +8289,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         actOnBrick,
         allowed: () => require("./desk-settings.cjs").current().updates?.enabled !== false
           && process.env.AWDESK_NO_UPDATE !== "1",
-        notify: ({ title, body, click }) => {
-          if (!Notification.isSupported()) return;
-          const n = new Notification({ title, body });
-          if (click) n.on("click", click);
-          n.show();
-        },
+        notify: ({ title, body, click }) => { toaster.show({ title, body, onClick: click }); },
         log: (line) => console.log(`[desk] ${line}`),
       }).start();
     } catch (e) {
