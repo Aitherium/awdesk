@@ -110,7 +110,8 @@ test("precedence: the Hub record decides over the VRM licence, tags may only rai
   assert.equal(r.resolveRating({ hub: allAges, tags: ["R-18"] }).rating, "r18");
   assert.equal(r.resolveRating({ hub: { r18: true }, tags: ["R15"] }).rating, "r18", "a teen tag never lowers the Hub's R18");
   assert.equal(r.resolveRating({ hub: { r18: true }, tags: ["R15"] }).rating_source, "vroid-hub");
-  assert.equal(r.resolveRating({ vrmMeta: meta }).rating_source, "vrm-meta", "no Hub: the licence speaks");
+  assert.equal(r.resolveRating({ vrmMeta: meta }).rating, "unrated",
+    "a licence alone is no verdict: unrated (= mature, hidden) stays unrated until someone looks");
   assert.deepEqual(r.resolveRating({}), { rating: "unrated", rating_source: "unrated", signal: "" });
 });
 
@@ -127,8 +128,8 @@ test("never lower: metadata only RAISES the vision guess, and relabels it at equ
   assert.equal(r.resolveRating({ vrmMeta: meta, current: vision("general") }).rating, "r15");
   assert.equal(r.resolveRating({ vrmMeta: meta, current: { rating: "general", source: "vroid" } }).rating, "general",
     "a verdict the Hub already wrote is not overruled by a licence permission");
-  assert.equal(r.resolveRating({ vrmMeta: meta, current: { rating: "general", source: "default" } }).rating, "r15",
-    "the rater's 'nobody looked' stamp is no floor");
+  assert.equal(r.resolveRating({ vrmMeta: meta, current: { rating: "general", source: "default" } }).rating, "unrated",
+    "the rater's 'nobody looked' stamp is no floor, and the licence alone never judges");
 });
 
 // ── on disk: the re-derive pass ─────────────────────────────────────────────────────────────
@@ -154,8 +155,8 @@ test("deriveCharacter writes rating + rating_source when stricter, keeps every o
   assert.equal(recordOf("hub-tagged").rating_source, "vroid-tags");
 
   character("no-file-yet", null, vrm1({ allowExcessivelySexualUsage: true }));
-  r.deriveCharacter(ROSTER, "no-file-yet");
-  assert.equal(recordOf("no-file-yet").rating, "r15");
+  assert.equal(r.deriveCharacter(ROSTER, "no-file-yet").changed, false, "never judged: left for the rater, still hidden");
+  assert.equal(fs.existsSync(path.join(ROSTER, "no-file-yet", "character.json")), false);
 });
 
 test("rederiveRoster returns only what changed; a dry run writes nothing", () => {
@@ -172,10 +173,13 @@ test("content-rating reads a derived verdict as JUDGED even over the rater's 'de
   process.env.DESK_ROSTER_DIR = ROSTER;
   delete require.cache[require.resolve("./content-rating.cjs")];
   const rating = require("./content-rating.cjs");
-  character("stamped", { rating: "general", source: "default" }, vrm0({ sexualUssageName: "Allow" }));
+  character("stamped", { rating: "general", source: "default", vroid_hub: { tags: ["NSFW"] } }, vrm0({}));
   assert.equal(rating.getRating("stamped"), "unrated");
   r.deriveCharacter(ROSTER, "stamped");
-  assert.equal(rating.getRating("stamped"), "r15");
+  assert.equal(rating.getRating("stamped"), "r18");
+  character("licence-only", { rating: "general", source: "default" }, vrm0({ sexualUssageName: "Allow" }));
+  r.deriveCharacter(ROSTER, "licence-only");
+  assert.equal(rating.getRating("licence-only"), "unrated", "a licence alone never un-hides a body");
 });
 
 test("the badge says who decided", () => {

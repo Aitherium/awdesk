@@ -192,7 +192,7 @@ test("a VRoid model is installed once; a non-downloadable one is never fetched",
 });
 
 test("while the gate is closed no R15/R18 row reaches the Deck", async () => {
-  const models = [{ id: "1", r18: true }, { id: "2", r15: true }, { id: "3" }];
+  const models = [{ id: "1", r18: true }, { id: "2", r15: true }, { id: "3", r18: false, r15: false }];
   assert.deepEqual(sync.visibleVroidModels(models, false, () => null).map((m) => m.id), ["3"]);
   assert.equal(sync.visibleVroidModels(models, true, () => null).length, 3);
   // The default rule is the real one: the mirror here is absent (closed), so an open `open` flag
@@ -207,8 +207,13 @@ test("while the gate is closed no R15/R18 row reaches the Deck", async () => {
   ];
   const closed = await sync.libraryView({ client: fakeClient({ avatars }), isAdultContentVisible: () => false });
   assert.deepEqual(closed.avatars.map((a) => a.id), ["Plain-cccc0000"]);
-  const open = await sync.libraryView({ client: fakeClient({ avatars }), isAdultContentVisible: () => true });
+  const open = await sync.libraryView({ client: fakeClient({ avatars }), isAdultContentVisible: () => true, ratingHidden: () => null });
   assert.equal(open.avatars.length, 3);
+  // The library is a door too: the real rule (mirror absent here = closed) still hides R15/R18
+  // and an unrated row, whatever the caller's `open` says.
+  const unrated = [...avatars, { id: "Nobody-dddd0000", sha256: "w" }];
+  const real = await sync.libraryView({ client: fakeClient({ avatars: unrated }), isAdultContentVisible: () => true });
+  assert.deepEqual(real.avatars.map((a) => a.id), ["Plain-cccc0000"]);
 });
 
 test("list_characters over the desk MCP shows an installed library avatar", async (context) => {

@@ -277,7 +277,8 @@ async function libraryView(deps = {}) {
   const lib = await d.client.avatarLibrary(deps.clientDeps);
   // R15/R18 entries are left out while the adult-content gate is closed.
   const open = gateOpen(deps);
-  const listed = (lib.avatars || []).filter((a) => open || !["r15", "r18"].includes(libraryRating(a)));
+  const listed = (lib.avatars || []).filter((a) => (open || !["r15", "r18"].includes(libraryRating(a)))
+    && !d.ratingHidden(libraryRating(a) || "unrated"));
   const avatars = listed.map((a) => {
     const name = libraryRosterName(a);
     const here = Boolean(name && hasModel(d.rosterDir, name)

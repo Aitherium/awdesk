@@ -285,6 +285,8 @@ function ratingHiddenReason(value, ceiling = contentCeiling()) {
     // roster nobody has rated is exactly how a lewd model gets found by
     // browsing. `content.hideUnrated: false` is the owner's opt-out for a
     // roster being rated.
+    // hideUnrated is the owner's opt-out from the MIRROR, never from AitherSafety.
+    if (rating === "unrated" && plane !== true) return "safety";
     if (rating === "unrated") return ceiling.hideUnrated === false ? null : "unjudged";
     if (ADULT_RATINGS.has(rating)) return "gate";
     return null;

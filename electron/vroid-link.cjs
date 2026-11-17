@@ -27,9 +27,8 @@ const IMAGE_HOSTS = [/\.pximg\.net$/i, /(^|\.)vroid\.com$/i];
 /** The model's rating from VRoid's own flags AND its tags (rating-resolve.cjs: an R18 tag on a
  *  model the uploader forgot to flag is still R18). Broker shape: r15 / r18 booleans, tags. */
 function ratingOfModel(m) {
-  const r = require("./rating-resolve.cjs").resolveRating({ hub: m && typeof m === "object" ? m : null });
-  // The broker always sends both flags; a row with neither and no tags is "all ages" as before.
-  return r.rating === "unrated" ? "general" : r.rating;
+  // A row with no flags and no tags is UNRATED (= mature), never "all ages" (review of slice 3).
+  return require("./rating-resolve.cjs").resolveRating({ hub: m && typeof m === "object" ? m : null }).rating;
 }
 
 /** The model's tier in his words (everyone | teen | mature). */

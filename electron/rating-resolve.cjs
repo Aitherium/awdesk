@@ -237,6 +237,9 @@ function resolveRating({ hub = null, tags = null, vrmMeta = null, current = null
     if (v) meta = { ...v, source: "vrm-meta" };
   }
   if (!meta && !cur) return { rating: "unrated", rating_source: "unrated", signal: "" };
+  // A licence permission is a FLOOR on a verdict, never a verdict by itself: alone, it would turn
+  // an unrated (= mature, hidden) body into a teen one nobody looked at (review of slice 3).
+  if (!cur && meta.source === "vrm-meta") return { rating: "unrated", rating_source: "unrated", signal: "" };
   if (!cur) return { rating: meta.rating, rating_source: meta.source, signal: meta.signal };
   const held = { rating: cur.rating, rating_source: String(cur.source), signal: String(current.signal || "") };
   if (!meta) return held;

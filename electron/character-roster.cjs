@@ -471,6 +471,8 @@ async function enrollFileChecked(plan, meta = {}, options = {}) {
       if (KNOWN_RATINGS.has(rating)) {
         record.rating = rating;
         record.source = String(meta.source || "manual");
+        record.rating_source = record.source;
+        delete record.rating_signal;
       }
       // A record with no judged rating is left for the rater (rateOnEnroll writes the
       // pending marker only when character.json is absent, so write nothing then).
