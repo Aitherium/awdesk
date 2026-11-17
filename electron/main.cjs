@@ -2919,6 +2919,9 @@ function toggleGallerySafeMode(on = !gallerySafeMode()) {
  *  bodies installed and allowed for the audience now. */
 function galleryRotationTick() {
   try {
+    // A cast.json that cannot be read is never rewritten from a rotation plan (re-review of #122:
+    // cast.write would start from an empty draft and replace the whole file).
+    if (require("./cast-config.cjs").load({}).error) return;
     const gallery = require("./avatar-gallery.cjs");
     const cast = require("./cast-config.cjs");
     const names = new Set(listCharacters());
@@ -2971,13 +2974,14 @@ function galleryDeps() {
  *  (file:// dist, the loopback dev server, or the browser's aither://gallery tab), and it is
  *  not the avatar window. */
 function isGallerySender(event) {
+  // Re-review of #122: a frame URL alone can be forged (history.pushState adds gallery=1), so
+  // the sender is identified by WHO it is: the gallery window itself, or the browser's
+  // aither://gallery/ tab (a host no other page can push itself onto).
   try {
-    if (avatarWindow && !avatarWindow.isDestroyed() && event.sender === avatarWindow.webContents) return false;
+    if (galleryWindow && !galleryWindow.isDestroyed() && event.sender === galleryWindow.webContents) return true;
     const raw = (event.senderFrame && event.senderFrame.url) || event.sender.getURL();
     const u = new URL(raw);
-    if (u.searchParams.get("gallery") !== "1") return false;
-    if (u.protocol === "file:" || u.protocol === "aither:") return true;
-    return u.protocol === "http:" && (u.hostname === "127.0.0.1" || u.hostname === "localhost");
+    return u.protocol === "aither:" && u.hostname === "gallery";
   } catch {
     return false;
   }
@@ -7098,7 +7102,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     {
       const handlers = require("./gallery-host.cjs").galleryHandlers(() => galleryDeps());
       ipcMain.handle("desk:gallery", (event, verb, arg) => {
-        // Only the gallery page itself (its window, its console pane, its browser tab) -- never the
+        // Only the gallery page itself (its window, or its aither://gallery tab) -- never the
         // avatar window or another preload.cjs window (review of #122).
         if (!isGallerySender(event)) return { ok: false, error: "only the gallery page may do that" };
         const fn = Object.prototype.hasOwnProperty.call(handlers, verb) ? handlers[verb] : null;
