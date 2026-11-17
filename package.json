@@ -63,6 +63,7 @@
     "test:overlay-host": "electron electron/overlay-host-smoke.cjs",
     "test:needs-you": "electron electron/needs-you-smoke.cjs",
     "test:space": "electron electron/space-smoke.cjs",
+    "test:fleet": "electron electron/fleet-smoke.cjs",
     "test:launcher": "electron electron/launcher-render-smoke.cjs",
     "test:command-center": "electron electron/command-center-smoke.cjs",
     "test:launcher-search": "electron electron/launcher-search-smoke.cjs",

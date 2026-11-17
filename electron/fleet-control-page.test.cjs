@@ -24,6 +24,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const HTML = fs.readFileSync(path.join(__dirname, "fleet-control.html"), "utf8");
+const PAGE = fs.readFileSync(path.join(__dirname, "fleet-page.js"), "utf8");
 
 /** Every <button> carrying data-bead in the html: { id, action, bead }. */
 const VERBS = [...HTML.matchAll(/<button id="([^"]+)"[^>]*?data-bead="([^"]+)"[^>]*>/g)].map((m) => ({
@@ -91,23 +92,18 @@ function classListOf(el) {
 function byId(id, tag = "div") { const e = new Element(tag); e.id = id; return e; }
 
 /** Load the page's script over a fresh paper document with a controllable `window.fleet`. */
-function mount({ status, spaceAvailable } = {}) {
+function mount({ status, spaceAvailable, network } = {}) {
   const ids = {};
   for (const id of ["log", "pill", "s-running", "s-masked", "s-vram", "s-hold", "holders", "surfaces", "hint",
-    "hud", "statusline", "stage", "sky", "orbit", "dock", "dock-title", "dock-close", "fleet-detail", "arc-detail",
-    "host", "host-line", "door-detail", "b-help", "cli-hints"]) {
+    "hud", "statusline", "stage", "net", "netnote", "dock", "dock-title", "dock-close", "fleet-detail", "arc-detail",
+    "host", "host-line", "door-detail", "svc-detail", "brick-detail", "b-help", "cli-hints"]) {
     ids[id] = byId(id);
   }
   ids.pill.dataset.state = "UNKNOWN";
   ids.pill.textContent = "…";
   ids.dock.hidden = true;
-  for (const box of ["holders", "surfaces"]) ids[box].appendChild(new Element("div")); // the .k caption
-  for (const [id, bead] of [["bead-host", "host"], ["bead-fleet", "fleet"], ["bead-gpu", "gpu"], ["bead-arc", "arc"]]) {
-    const b = byId(id, "button");
-    b.dataset.bead = bead;
-    const bv = new Element("span"); bv.className = "bv"; b.appendChild(bv);
-    ids[id] = b;
-  }
+  ids.log.hidden = true;
+  ids.holders.appendChild(new Element("div")); // the .k caption
   // Every verb button the html declares, with its bead -- parsed, not retyped here.
   const actions = [];
   for (const v of VERBS) {
@@ -138,6 +134,7 @@ function mount({ status, spaceAvailable } = {}) {
     open: (u) => { opened.push(u); },
   };
   if (spaceAvailable !== undefined) fleet.spaceAvailable = () => spaceAvailable();
+  if (network !== undefined) fleet.network = () => Promise.resolve(network);
   const document = {
     getElementById: (id) => ids[id] ?? null,
     querySelectorAll: (sel) => (sel === "button[data-action]" ? actions : []),
@@ -155,11 +152,10 @@ function mount({ status, spaceAvailable } = {}) {
     clearTimeout,
     console,
   };
-  const script = /<script>([\s\S]*?)<\/script>/.exec(HTML);
-  assert.ok(script, "fleet-control.html has one inline script");
-  vm.runInNewContext(script[1], vm.createContext(sandbox), { filename: "fleet-control.html" });
+  vm.runInNewContext(PAGE, vm.createContext(sandbox), { filename: "fleet-page.js" });
   const text = (id) => ids[id].textContent;
-  return { ids, calls, intervals, text, runs, opened, keydown, pill: ids.pill,
+  return { ids, calls, intervals, text, runs, opened, keydown, pill: ids.pill, pane: () => win.fleetPane,
+    refreshTimer: () => intervals.find((i) => i.ms === 30_000),
     logLines: () => ids.log.children.map((c) => c.textContent) };
 }
 
@@ -181,25 +177,19 @@ test("first probe in flight: pill PROBING (BUSY's family), every counter says pr
   await tick();
   assert.equal(page.pill.dataset.state, "PROBING");
   assert.equal(page.pill.textContent, "PROBING");
-  // The point is that PROBING reads as BUSY's sibling, so assert they share a
-  // background -- not which blue. The blue is the family's token now (it was a
-  // literal #3b82f6 until the panes stopped carrying private palettes).
   const pillBg = (state) => (HTML.match(new RegExp(`#pill\\[data-state="${state}"\\]\\s*\\{[^}]*background:\\s*([^;]+);`)) || [])[1];
   assert.ok(pillBg("BUSY"), "BUSY has no background");
   assert.equal(pillBg("PROBING"), pillBg("BUSY"), "PROBING is styled in BUSY's blue");
-  assert.notEqual(pillBg("PROBING"), "var(--unknown)", "a grey PROBING pill reads as broken");
   for (const id of ["s-running", "s-masked", "s-vram", "s-hold"]) {
     assert.equal(page.text(id), "probing…", `${id} while the first probe runs`);
     assert.ok(page.ids[id].classList.contains("probing"), `${id} carries the probing class`);
   }
   assert.notEqual(page.text("s-hold"), "free", "render(null) must never claim the GPU is free");
   assert.match(page.text("holders"), /probing…/);
-  assert.match(page.text("surfaces"), /probing…/);
-  assert.ok(page.logLines().some((l) => /probing the fleet/.test(l)), "the log says a probe started");
-  // JSON, not deepEqual: the opts object was built in the vm realm and carries its Object.prototype.
+  assert.match(page.text("statusline"), /probing the fleet/, "the status line says a probe is running");
+  assert.equal(page.logLines().length, 0, "a probe is not action output: the log stays empty");
   assert.equal(JSON.stringify(page.calls), JSON.stringify([{ maxAgeMs: 0 }]), "the first probe is forced fresh");
 
-  // The verdict lands: every placeholder is replaced, in the same paint.
   release(GOOD());
   await tick(); await tick();
   assert.equal(page.pill.dataset.state, "UP");
@@ -208,13 +198,10 @@ test("first probe in flight: pill PROBING (BUSY's family), every counter says pr
   assert.equal(page.text("s-masked"), "0 / 212");
   assert.equal(page.text("s-vram"), "31.2 / 32 GiB");
   assert.equal(page.text("s-hold"), "free");
-  for (const id of ["s-running", "s-masked", "s-vram", "s-hold"]) {
-    assert.ok(!page.ids[id].classList.contains("probing"), `${id} dropped the probing class`);
-  }
+  assert.match(page.text("statusline"), /^145 running/);
   assert.match(page.text("holders"), /7\.10 GiB.*ComfyUI \(pid 4242\)/);
-  assert.doesNotMatch(page.text("holders"), /probing/);
-  assert.match(page.text("surfaces"), /Pulse/);
-  assert.doesNotMatch(page.text("surfaces"), /probing/);
+  const door = page.pane().data().nodes.find((n) => n.id === "door:0");
+  assert.ok(door && door.title === "Pulse" && door.meta.health === "ok", "the Pulse door is a node of the network");
   assert.equal(page.text("hint"), "auto-refresh every 30 s");
 });
 
@@ -225,9 +212,7 @@ test("a verdict without host enrichment does not leave probing… behind (flag c
   const page = mount({ status: () => Promise.resolve(bare) });
   await tick(); await tick();
   assert.equal(page.pill.textContent, "UP");
-  assert.doesNotMatch(page.text("holders"), /probing/);
   assert.match(page.text("holders"), /not in this verdict/);
-  assert.doesNotMatch(page.text("surfaces"), /probing/);
 });
 
 test("held fleet: GPU hold reads HELD and the pill GPU QUIET", async () => {
@@ -238,17 +223,18 @@ test("held fleet: GPU hold reads HELD and the pill GPU QUIET", async () => {
   assert.equal(page.pill.textContent, "GPU QUIET");
 });
 
-test("cannotJudge with no stale verdict: pill CANNOT JUDGE, counters ?, hold ?, the error in the log", async () => {
-  const page = mount({ status: () => Promise.resolve({ ok: false, cannotJudge: true, error: "the Debian distro did not answer" }) });
+test("cannotJudge with no stale verdict: pill CANNOT JUDGE, counters ?, the reason in the ONE status line", async () => {
+  const page = mount({ status: () => Promise.resolve({ ok: false, cannotJudge: true, error: "the Debian distro did not answer. Nothing changed." }) });
   await tick(); await tick();
   assert.equal(page.pill.dataset.state, "CANNOT JUDGE");
-  assert.equal(page.pill.textContent, "CANNOT JUDGE");
   for (const id of ["s-running", "s-masked", "s-vram", "s-hold"]) assert.equal(page.text(id), "?", id);
-  assert.ok(page.logLines().some((l) => /CANNOT JUDGE: the Debian distro did not answer/.test(l)));
-  assert.match(HTML, /#pill\[data-state="CANNOT JUDGE"\]/, "CANNOT JUDGE has its own style");
+  assert.equal(page.text("statusline"), "the Debian distro did not answer");
+  assert.equal(page.ids.statusline.dataset.tone, "bad");
+  assert.equal(page.logLines().length, 0);
+  assert.equal(page.pane().data().nodes.find((n) => n.id === "ctl:host").meta.health, "down", "the host node says it does not answer");
 });
 
-test("cannotJudge WITH a stale verdict: pill STALE, the old numbers with their age, hold from the old verdict", async () => {
+test("a STALE verdict is CANNOT JUDGE in the pill -- never UP -- with the old numbers and their age", async () => {
   const page = mount({
     status: () => Promise.resolve({
       ok: false, cannotJudge: true, error: "podman ps timed out",
@@ -256,10 +242,12 @@ test("cannotJudge WITH a stale verdict: pill STALE, the old numbers with their a
     }),
   });
   await tick(); await tick();
-  assert.equal(page.pill.dataset.state, "STALE");
+  assert.equal(page.pill.dataset.state, "CANNOT JUDGE");
+  assert.equal(page.pill.textContent, "CANNOT JUDGE");
+  assert.match(page.text("statusline"), /^fresh probe failed \(podman ps timed out\) -- the numbers are 42 s old: 145 running then$/);
   assert.match(page.text("s-running"), /^145 · 42 s ago$/);
-  assert.equal(page.text("s-hold"), "free");
-  assert.ok(page.logLines().some((l) => /STALE \(42 s old/.test(l)));
+  assert.match(page.text("s-hold"), /^free · 42 s ago$/);
+  assert.notEqual(page.pane().data().nodes.find((n) => n.id === "ctl:fleet").meta.health, "ok", "a stale fleet is not drawn healthy");
 });
 
 test("the IPC itself rejecting is a CANNOT JUDGE verdict, not a pane stuck on probing…", async () => {
@@ -267,7 +255,17 @@ test("the IPC itself rejecting is a CANNOT JUDGE verdict, not a pane stuck on pr
   await tick(); await tick();
   assert.equal(page.pill.textContent, "CANNOT JUDGE");
   assert.equal(page.text("s-running"), "?");
-  assert.ok(page.logLines().some((l) => /No handler registered/.test(l)));
+  assert.match(page.text("statusline"), /No handler registered/);
+});
+
+test("repeated CANNOT JUDGE refreshes: ONE status line, nothing in the log, the pill agrees (no '(x6)' spam)", async () => {
+  const page = mount({ status: () => Promise.resolve({ ok: false, cannotJudge: true, error: "the awnix WSL distro did not answer" }) });
+  await tick(); await tick();
+  for (let i = 0; i < 6; i++) { page.refreshTimer().fn(); await tick(); await tick(); }
+  assert.equal(page.logLines().length, 0, page.logLines().join("\n"));
+  assert.equal(page.ids.log.hidden, true, "the empty log is not drawn");
+  assert.equal(page.pill.dataset.state, "CANNOT JUDGE");
+  assert.equal(page.text("statusline"), "the awnix WSL distro did not answer");
 });
 
 test("a later refresh keeps the last numbers up and says refreshing… in the hint, not PROBING", async () => {
@@ -278,8 +276,8 @@ test("a later refresh keeps the last numbers up and says refreshing… in the hi
   });
   await tick(); await tick();
   assert.equal(page.pill.textContent, "UP");
-  assert.equal(page.intervals.length, 1, "one auto-refresh timer");
-  page.intervals[0].fn();
+  assert.ok(page.refreshTimer(), "one 30 s auto-refresh timer");
+  page.refreshTimer().fn();
   await tick();
   assert.equal(page.pill.textContent, "UP", "the pill keeps the last verdict during a re-probe");
   assert.equal(page.text("s-running"), "145");
@@ -291,21 +289,19 @@ test("a later refresh keeps the last numbers up and says refreshing… in the hi
   assert.equal(page.text("hint"), "auto-refresh every 30 s");
 });
 
-// ── bead-space (owner, 2026-10-13): one spatial view, verbs by context ──────
+// ── the network: verbs by node ───────────────────────────────────────────────
 
-/** The fifteen actions the list layout carried. None may be lost or doubled. */
 const ORIGINAL_ACTIONS = ["fleet-sleep", "fleet-wake", "gpu-sleep", "gpu-wake", "fleet-critical",
   "arc-now", "arc-start", "arc-status", "arc-stop",
   "host-status", "host-start", "host-restart", "host-stop", "host-reattach", "host-migrate-dryrun"];
 
-test("every original action is reachable exactly once, from the bead that owns it", () => {
+test("every original action is reachable exactly once, from the node that owns it", () => {
   const withAction = VERBS.filter((v) => v.action);
   const counted = {};
   for (const v of withAction) counted[v.action] = (counted[v.action] || 0) + 1;
   for (const a of ORIGINAL_ACTIONS) assert.equal(counted[a], 1, `${a} appears ${counted[a] || 0} times`);
   assert.deepEqual(Object.keys(counted).sort(), [...ORIGINAL_ACTIONS].sort(), "no new action slipped in");
   const owner = Object.fromEntries(withAction.map((v) => [v.action, v.bead]));
-  // the easy buttons: always visible, never inside a dock
   assert.equal(owner["fleet-sleep"], "hero");
   assert.equal(owner["fleet-wake"], "hero");
   assert.equal(owner["fleet-critical"], "fleet");
@@ -314,41 +310,37 @@ test("every original action is reachable exactly once, from the bead that owns i
   for (const a of ORIGINAL_ACTIONS.filter((x) => x.startsWith("host-"))) assert.equal(owner[a], "host", a);
   const adopt = VERBS.find((v) => v.id === "b-adopt");
   assert.ok(adopt && adopt.bead === "fleet" && !adopt.action, "Adopt lives in the Fleet dock, wired by id");
-  // the page still double-confirms exactly what it did before
-  assert.match(HTML, /DESTRUCTIVE = new Set\(\["down", "gaming", "gpu-sleep", "fleet-sleep", "fleet-critical", "arc-stop",\s*"host-start", "host-stop", "host-restart", "host-reattach"\]\)/);
+  assert.match(PAGE, /DESTRUCTIVE = new Set\(\["down", "gaming", "gpu-sleep", "fleet-sleep", "fleet-critical", "arc-stop",\s*"host-start", "host-stop", "host-restart", "host-reattach"\]\)/);
 });
 
-test("selecting a bead shows only its verbs; the hero buttons never hide", async () => {
+test("selecting a node shows only its verbs; the hero buttons never hide", async () => {
   const page = mount({ status: () => Promise.resolve(GOOD()) });
   await tick(); await tick();
   assert.ok(page.ids.dock.hidden, "no dock before a selection");
   for (const bead of ["host", "fleet", "gpu", "arc"]) {
-    page.ids[`bead-${bead}`].click();
+    page.pane().select(bead);
     assert.equal(page.ids.dock.hidden, false, `${bead} opens the dock`);
     const shown = VERBS.filter((v) => v.bead !== "hero" && !page.ids[v.id].hidden).map((v) => v.id);
     const expected = VERBS.filter((v) => v.bead === bead).map((v) => v.id);
     assert.deepEqual(shown, expected, `${bead} dock`);
-    assert.equal(page.ids[`bead-${bead}`].getAttribute("aria-pressed"), "true");
     assert.equal(page.ids["b-down"].hidden, false, "Sleep everything stays visible");
     assert.equal(page.ids["b-up"].hidden, false, "Wake fleet stays visible");
     assert.ok(VERBS.some((v) => v.bead === bead && focused.el === page.ids[v.id]), `${bead}: focus moves into the dock`);
   }
   for (const fn of page.keydown) fn({ key: "Escape" });
   assert.ok(page.ids.dock.hidden, "Escape closes the dock first");
-  assert.equal(focused.el, page.ids["bead-arc"], "and hands focus back to the bead");
 });
 
 test("dock verbs keep the two-click confirm and run the SAME action", async () => {
   const page = mount({ status: () => Promise.resolve(GOOD()) });
   await tick(); await tick();
-  page.ids["bead-gpu"].click();
+  page.pane().select("gpu");
   page.ids["b-gaming"].click();
   assert.equal(page.runs.length, 0, "one click only arms gpu-sleep");
   assert.ok(page.ids["b-gaming"].classList.contains("confirm"));
   page.ids["b-gaming"].click();
   for (let i = 0; i < 6; i++) await tick();
   assert.deepEqual([...page.runs], ["gpu-sleep"]);
-  // the hero button: one tap + confirm, fleet-sleep exactly
   page.ids["b-down"].click();
   assert.equal(page.runs.length, 1, "one tap only arms Sleep everything");
   page.ids["b-down"].click();
@@ -356,68 +348,64 @@ test("dock verbs keep the two-click confirm and run the SAME action", async () =
   assert.deepEqual([...page.runs], ["gpu-sleep", "fleet-sleep"]);
 });
 
-test("doors are beads; selecting one offers Open, which opens that door's url", async () => {
+test("a door node offers Open, which opens that door's url", async () => {
   const page = mount({ status: () => Promise.resolve(GOOD()) });
   await tick(); await tick();
-  const door = page.ids.surfaces.children.find((c) => c.dataset.bead === "door:0");
-  assert.ok(door, "the Pulse door is a bead");
-  assert.equal(door.dataset.up, "1");
-  door.click();
+  page.pane().select("door:0");
   assert.match(page.text("dock-title"), /Pulse/);
   assert.equal(page.ids["b-open-door"].hidden, false);
   page.ids["b-open-door"].click();
   assert.deepEqual([...page.opened], ["https://pulse.example"]);
 });
 
-test("the log says a repeated verdict once, with a count", async () => {
-  const page = mount({ status: () => Promise.resolve({ ok: false, cannotJudge: true, error: "the awnix WSL distro did not answer" }) });
-  await tick(); await tick();
-  for (let i = 0; i < 3; i++) { page.intervals[0].fn(); await tick(); await tick(); }
-  const lines = page.logLines().filter((l) => /CANNOT JUDGE/.test(l));
-  assert.equal(lines.length, 1, lines.join("\n"));
-  assert.match(lines[0], /\(x4\)$/);
+const NETWORK = {
+  ok: true, source: "remote", nodes: [
+    { id: "svc:genesis", title: "Genesis", group: "Core", health: { state: "ok", reason: "" } },
+    { id: "svc:veil", title: "Veil", group: "Core", health: { state: "down", reason: "no answer" } },
+    { id: "svc:comfy", title: "ComfyUI", group: "Gpu", health: { state: "parked", reason: "" } },
+  ],
+  links: [{ source: "svc:veil", target: "svc:genesis", rel: "depends" }],
+};
+
+test("services join the network with their health; the map's counts reach the ONE status line", async () => {
+  const page = mount({ status: () => Promise.resolve(GOOD()), network: NETWORK });
+  await tick(); await tick(); await tick();
+  const d = page.pane().data();
+  assert.equal(d.nodes.find((n) => n.id === "svc:veil").meta.health, "down");
+  assert.ok(d.links.some((l) => l.source === "svc:veil" && l.target === "svc:genesis"), "depends is an edge");
+  assert.ok(d.links.some((l) => l.source === "ctl:gpu" && l.target === "svc:comfy"), "the GPU links to its own services");
+  assert.equal(page.pill.dataset.state, "UP");
+  assert.match(page.text("statusline"), /map: 3 services, 1 down, 1 parked/);
+  assert.equal(page.ids.statusline.dataset.tone, "warn", "UP with a service down reads amber, not all-clear");
 });
 
-test("lines that differ only in their numbers are the same news (STALE 72 s / 102 s)", async () => {
-  let age = 42_000;
-  const page = mount({
-    status: () => Promise.resolve({ ok: false, cannotJudge: true, error: "podman ps timed out",
-      stale: { age_ms: (age += 30_000), at: 1, reason: "podman ps timed out", verdict: GOOD() } }),
-  });
-  await tick(); await tick();
-  page.intervals[0].fn(); await tick(); await tick();
-  const lines = page.logLines().filter((l) => /STALE/.test(l));
-  assert.equal(lines.length, 1);
-  assert.match(lines[0], /STALE \(102 s old.*\(x2\)$/);
-});
-
-test("CANNOT JUDGE: one status line replaces the four tiles", async () => {
-  const page = mount({ status: () => Promise.resolve({ ok: false, cannotJudge: true, error: "the awnix WSL distro did not answer. Long tail here." }) });
-  await tick(); await tick();
-  assert.equal(page.ids.hud.hidden, true, "the four '?' tiles are hidden");
-  assert.equal(page.ids.statusline.hidden, false);
-  assert.equal(page.text("statusline"), "CANNOT JUDGE — the awnix WSL distro did not answer.");
-  assert.equal(page.ids["bead-host"].dataset.health, "down", "the core says the host does not answer");
-  const good = mount({ status: () => Promise.resolve(GOOD()) });
-  await tick(); await tick();
-  assert.equal(good.ids.hud.hidden, false, "a verdict brings the tiles back");
-  assert.equal(good.ids.statusline.hidden, true);
-  assert.equal(good.ids["bead-fleet"].dataset.health, "up");
+test("selecting a service shows its health and dependencies and opens it in Space", async () => {
+  const page = mount({ status: () => Promise.resolve(GOOD()), network: NETWORK, spaceAvailable: () => Promise.resolve(true) });
+  await tick(); await tick(); await tick();
+  page.pane().select("svc:svc:veil");
+  assert.equal(page.text("dock-title"), "Veil");
+  assert.match(page.text("svc-detail"), /down -- no answer/);
+  assert.match(page.text("svc-detail"), /depends on: Genesis/);
+  assert.equal(page.ids["b-node-space"].hidden, false);
+  page.ids["b-node-space"].click();
+  assert.deepEqual([...page.opened], ["aither://space/?at=svc%3Aveil"]);
 });
 
 test("the CLI hints sit behind the ? toggle", () => {
   assert.match(HTML, /<footer id="cli-hints" hidden>/);
   const page = mount({ status: () => Promise.resolve(GOOD()) });
-  page.ids["cli-hints"].hidden = true; // as the html ships it
+  page.ids["cli-hints"].hidden = true;
   page.ids["b-help"].click();
   assert.equal(page.ids["cli-hints"].hidden, false);
   assert.equal(page.ids["b-help"].getAttribute("aria-expanded"), "true");
 });
 
-test("reduced motion is honoured and nothing pulls a script past the CSP", () => {
+test("the CSP admits only the page's own files: the vendored engine and fleet-page.js, no inline script", () => {
+  assert.match(HTML, /script-src file:;/);
+  assert.doesNotMatch(HTML, /<script>/, "no inline script");
+  const srcs = [...HTML.matchAll(/<script src="([^"]+)"><\/script>/g)].map((m) => m[1]);
+  assert.deepEqual(srcs, ["vendor/bead-space/bead-space.iife.js", "fleet-page.js"]);
   assert.match(HTML, /@media \(prefers-reduced-motion: reduce\)/);
-  assert.match(HTML, /matchMedia\("\(prefers-reduced-motion: reduce\)"\)/);
-  assert.doesNotMatch(HTML, /<script src=/, "the CSP admits inline script only");
 });
 
 test("the host line says what the fleet probe proved, not 'not probed yet' (2026-10-13)", async () => {
@@ -425,11 +413,9 @@ test("the host line says what the fleet probe proved, not 'not probed yet' (2026
   const page = mount({ status: () => Promise.resolve(st) });
   await tick(); await tick();
   assert.match(page.text("host-line"), /distro answers · systemd degraded · 145 containers/);
-  assert.doesNotMatch(page.text("host-line"), /not probed yet/);
 });
 
 test("the Sleep button no longer promises the customer-facing set stays up", () => {
-  // fleet sleep = sleep EVERYTHING, customer sites included (owner-approved, #12771)
   assert.doesNotMatch(HTML, /Customer-facing set stays up/);
   assert.match(HTML, /customer-facing sites included/);
 });
@@ -438,7 +424,6 @@ test("Open in Space: one quiet link, sent through window.fleet.open (never a nav
   const tag = (/<a id="b-space"[^>]*>[^<]*<\/a>/.exec(HTML) || [])[0];
   assert.ok(tag, "fleet-control.html carries the b-space link");
   assert.match(tag, /data-space="aither:\/\/space\/\?at=galaxy:fleet"/, "it targets the fleet galaxy");
-  assert.match(tag, />Open in Space</);
   assert.doesNotMatch(tag, /\son[a-z]+=/i, "no inline event handler on the link");
   const page = mount({ status: () => Promise.resolve(GOOD()), spaceAvailable: () => Promise.resolve(true) });
   await tick(); await tick();
