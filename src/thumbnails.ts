@@ -49,21 +49,28 @@ type Frame = 'head' | 'body';
  *  tries a sign, measures the bounding box, and keeps whichever is narrower.
  *  A rig with no humanoid arm bones simply keeps its T-pose -- a wider frame
  *  is a worse dataset, not a failed render. */
-function relaxArms(vrm: import('@pixiv/three-vrm').VRM): boolean {
+export function relaxArms(vrm: import('@pixiv/three-vrm').VRM): boolean {
   const left = vrm.humanoid?.getNormalizedBoneNode('leftUpperArm');
   const right = vrm.humanoid?.getNormalizedBoneNode('rightUpperArm');
   if (!left || !right) return false;
   const ANGLE = 1.15; // ~66 deg: arms beside the body, not clipping the coat
-  const spanWith = (sign: number): number => {
+  // Arms raised straight up are exactly as NARROW as arms down (2026-11-17, the gallery's
+  // preview showed a body with its hands over its head), so the width alone cannot choose:
+  // the top of the box decides first -- raised arms are the tallest thing on the model.
+  const shapeWith = (sign: number): { top: number; span: number } => {
     left.rotation.z = sign * ANGLE;
     right.rotation.z = -sign * ANGLE;
     vrm.update(0);
     vrm.scene.updateMatrixWorld(true);
-    return new THREE.Box3().setFromObject(vrm.scene).getSize(new THREE.Vector3()).x;
+    // PRECISE: a skinned mesh's plain bounding box is its bind pose, so both arm signs measured
+    // the same T-pose and the tie kept whichever came last (arms up on some rigs).
+    const box = new THREE.Box3().setFromObject(vrm.scene, true);
+    return { top: box.max.y, span: box.max.x - box.min.x };
   };
-  const plus = spanWith(1);
-  const minus = spanWith(-1);
-  if (plus < minus) spanWith(1);
+  const plus = shapeWith(1);
+  const minus = shapeWith(-1);
+  const plusWins = Math.abs(plus.top - minus.top) > 0.02 ? plus.top < minus.top : plus.span < minus.span;
+  if (plusWins) shapeWith(1);
   return true;
 }
 /** A turntable shot: the body frame, rotated. Feeds a per-character LoRA --

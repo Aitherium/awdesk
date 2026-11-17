@@ -36,7 +36,8 @@ Desk exposes these tools:
 | `list_animations` | None | Lists the clips `play_animation` accepts, including installed `FILE:<name>.vrma` motion packs |
 | `list_characters` | None | Lists the installed character roster |
 | `set_character` | `name`: a roster character from `list_characters` | Switches the Desk character and reloads the avatar |
-| `spawn_avatar` | `slot_id`, `name` | Adds another avatar in a new slot without replacing the current one |
+| `spawn_avatar` | `slot_id`, `name` | Adds another avatar in a new slot without replacing the current one; only a body the owner assigned to someone |
+| `propose_avatar` | `persona`, `character`, `why?`, `by?` | Records a proposal in the owner's avatar gallery; never changes a body (he applies it with one click) |
 | `remove_avatar` | `slot_id` | Removes a spawned avatar slot (the default slot cannot be removed) |
 | `swarm_roster` | `refresh?` | Every agent the owner runs, read live (Discord persona bots, Genesis fleet agents, awsh/Claude Code sessions, subagents, remote endpoints, GargBot's goblin) with colour, body, voice and form |
 | `swarm_set_form` | `agent` (id or `all`), `form` (`fairy`/`avatar`), `include?` | setAgentForm: grow an agent into its avatar or shrink it back to a fairy, smoothly; `all` does the whole swarm (light mode keeps terminals small); `gargbot` summons the goblin |

@@ -130,6 +130,12 @@ const PANES = Object.freeze([
   // that body (drag, right-drag, wheel, right-click) -- useless when the body is
   // hidden, tiny or behind a window, which is how the owner lost control of the
   // stage in the first place.
+  // The rogues gallery FIRST under Stage (owner 2026-11-17): my avatars, personas, the
+  // audience profile and safe mode. Same renderer bundle (it needs three.js for the live preview).
+  Object.freeze({
+    id: "gallery", label: "Gallery", hint: "Your avatars and who wears them; who may see them", section: "Stage", icon: "users",
+    kind: "view", query: "gallery=1",
+  }),
   Object.freeze({
     id: "stage", label: "Stage", tabLabel: "On stage", hint: "Who is on stage, how they look and sound", section: "Stage", icon: "users",
     kind: "file", file: "stage.html",

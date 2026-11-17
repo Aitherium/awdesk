@@ -793,7 +793,7 @@ function emptyConfig() {
 const TOP_LEVEL_KEYS = [
   "version", "stage", "voice", "input", "hotkeys", "defaults", "authors", "actors",
   "channels", "models", "prompts", "vision", "sync", "files", "updates", "overlay", "clipboard", "content", "appearance",
-  "migratedLegacyAt",
+  "migratedLegacyAt", "gallery",
 ];
 
 /**
@@ -909,6 +909,9 @@ function validateCast(raw) {
   config.input = validateRecord(raw.input, INPUT_FIELDS, "input", problems);
   config.defaults = validateRecord(raw.defaults, ACTOR_FIELDS, "defaults", problems);
   config.content = validateRecord(raw.content, CONTENT_FIELDS, "content", problems);
+  // The rogues gallery (avatar-gallery.cjs owns the shape): audience profile, safe mode,
+  // per-avatar config and the owner's rotation sets.
+  config.gallery = require("./avatar-gallery.cjs").validateGallery(raw.gallery, problems);
   for (const [section, fields] of Object.entries(DESK_SECTIONS)) {
     config[section] = validateRecord(raw[section], fields, section, problems);
   }

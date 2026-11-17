@@ -102,14 +102,34 @@ function getSafetyExplicitAllowed() {
 /** The desk's own ceiling, from cast.json. Fails SOFT to the built-in (r18 +
  *  hideUnrated), because this file must never be the reason a roster empties. */
 function contentCeiling() {
+  const gallery = require("./avatar-gallery.cjs");
   try {
     const cast = require("./cast-config.cjs");
     const loaded = cast.load({});
     const resolved = cast.resolveContent(loaded.snapshot);
-    return { maxRating: resolved.maxRating, hideUnrated: resolved.hideUnrated };
+    // A cast.json that could not be READ (corrupt, locked) is the family audience, never the
+    // last profile it happened to say (review of #122: load() never throws, it falls back).
+    const audience = loaded.error ? "everyone" : gallery.audienceCap(gallery.readGallery(loaded.snapshot), { autoSafe });
+    return { maxRating: resolved.maxRating, hideUnrated: resolved.hideUnrated, audience };
   } catch {
-    return { maxRating: "r18", hideUnrated: true };
+    // An unreadable cast.json is the family audience, never "everything" (owner 2026-11-17).
+    return { maxRating: "r18", hideUnrated: true, audience: "everyone" };
   }
+}
+
+/**
+ * 4. THE AUDIENCE (owner 2026-11-17: "I can't let my mom, kids or strangers see this").
+ *    The active profile (Hearth = everyone, Work = teen, Personal = mature) and SAFE MODE
+ *    (the panic key, or a detected screen share/stream = everyone). Tightening-only, like the
+ *    rest: it ANDs with the three limits above. `unrated` counts as mature.
+ *    autoSafe is the in-memory half (share-detect); the switch he flips lives in cast.json.
+ */
+let autoSafe = false;
+function setAutoSafe(on) {
+  autoSafe = on === true;
+}
+function getAutoSafe() {
+  return autoSafe;
 }
 
 let gateCache = null;
@@ -221,6 +241,13 @@ function setRating(name, rating, source = "manual") {
 /** Why this character is hidden right now, or null when it is not. */
 function hiddenReason(name, ceiling = contentCeiling()) {
   const rating = getRating(name);
+  // The audience first: whatever the gate says, a body above the active profile (or anything
+  // but "everyone" in safe mode) is not drawn.
+  const audience = ceiling && ceiling.audience;
+  if (audience) {
+    const gallery = require("./avatar-gallery.cjs");
+    if (!gallery.tierAllowed(gallery.tierOf(rating), audience)) return "audience";
+  }
   const gateOpen = isAdultContentVisible() && safetyExplicitAllowed !== false;
   if (!gateOpen) {
     // Below the gate, an unjudged character is hidden WITH the adult ones: a
@@ -272,6 +299,9 @@ function refusalFor(name) {
   if (!why) return null;
   const rating = getRating(name);
   const reason = {
+    audience: `${name} is rated ${require("./avatar-gallery.cjs").tierOf(rating)}, above who may see this desk right now `
+      + `(${ceiling.audience} only${getAutoSafe() ? ": safe mode, a screen share or stream is running" : ""}). `
+      + "Switch the profile or turn safe mode off in the gallery.",
     unjudged: `${name} has not been rated yet, and an unjudged character stays hidden. `
       + "Rate the roster (python rate-characters.py --apply --vision --capture), "
       + "or set content.hideUnrated false in cast.json to browse it anyway.",
@@ -361,4 +391,6 @@ module.exports = {
   isHidden,
   ratingReport,
   setRating,
+  setAutoSafe,
+  getAutoSafe,
 };

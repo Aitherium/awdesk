@@ -721,10 +721,13 @@ try {
 
 /** "Detach to own window" — pull one extra avatar out of the shared canvas into its own
  *  real, separately-draggable/resizable OS window. See detached-avatar-window.cjs. */
+/** slotId -> the character a DETACHED window shows, so the audience can close it (review of #122). */
+const detachedBodies = new Map();
 function detachAvatarToOwnWindow(slotId) {
   const info = avatarSlots.get(slotId);
   if (!info) return false;
   removeAvatarSlot(slotId);
+  detachedBodies.set(slotId, info.name);
   openDetachedAvatar(slotId, info.modelUrl, info.agent || info.name, {
     onMergeBack: () => spawnAvatarSlot(nextFreeSlotId(), info.name, info.agent),
   });
@@ -2786,26 +2789,304 @@ function refreshNotificationBadges(cards = openDecisions) {
   if (process.platform !== "win32") app.setBadgeCount?.(waiting);
 }
 
-/** If the gate closed while an adult character was ON SCREEN, swap it off.
+/** If the gate closed (or the AUDIENCE narrowed) while a hidden character was ON SCREEN, swap it off.
  *
  *  Filtering the menus is not enough: the avatar is a persistent always-on-top
  *  window, so a character installed while the gate was open keeps rendering
- *  after it closes. Runs at startup and whenever the tray menu is rebuilt. */
+ *  after it closes. Runs at startup, whenever the tray menu is rebuilt, and on every
+ *  audience change (profile, safe mode, a share starting or ending).
+ *
+ *  Owner 2026-11-17: the swap is to HIS stand-in (gallery.standIn, an everyone-rated body he
+ *  chose), never "the first visible character" -- that was a pick. No stand-in: the body goes
+ *  and the fairy stays. The body he had is remembered and comes back when the audience allows. */
+const AUDIENCE_SWAP_FILE = () => path.join(app.getPath("userData"), "audience-swap.json");
+function readAudienceSwap() {
+  try { return JSON.parse(fs.readFileSync(AUDIENCE_SWAP_FILE(), "utf8")) || {}; } catch { return {}; }
+}
+function writeAudienceSwap(value) {
+  try { fs.writeFileSync(AUDIENCE_SWAP_FILE(), JSON.stringify(value || {})); } catch { /* a lost note only costs a manual switch back */ }
+}
+/** cast.json for the gallery: the raw rows, or -- when the file cannot be read -- the last good
+ *  config with SAFE MODE forced on (review of #122: an unreadable file never widens the audience). */
+function galleryCastRaw() {
+  const cast = require("./cast-config.cjs");
+  const loaded = cast.load({});
+  if (loaded.error) {
+    const snap = loaded.snapshot || {};
+    return { ...snap, gallery: { ...(snap.gallery || {}), safeMode: true } };
+  }
+  try {
+    return JSON.parse(fs.readFileSync(cast.CAST_FILE(), "utf8")) || {};
+  } catch {
+    return {};
+  }
+}
 function enforceActiveCharacterRating() {
   const active = getActiveCharacter();
-  if (!active || !isHidden(active)) return false;
-  const replacement = listCharacters()[0];
-  if (!replacement) {
-    debugLog("adult gate closed and no visible character remains; hiding overlay");
-    void hideOverlay();
+  const swap = readAudienceSwap();
+  if (active && isHidden(active)) {
+    const g = require("./avatar-gallery.cjs").readGallery(galleryCastRaw());
+    const standIn = g.standIn && listCharacters().includes(g.standIn) && !isHidden(g.standIn) ? g.standIn : null;
+    if (!swap.from) writeAudienceSwap({ from: active, at: new Date().toISOString() });
+    if (!standIn) {
+      debugLog("audience: the resident body is not for this audience and no stand-in is chosen; hiding the body");
+      void hideOverlay();
+      return true;
+    }
+    debugLog("audience: swapping the resident to the stand-in", standIn);
+    installCharacter(standIn);
+    if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.webContents.reloadIgnoringCache();
     return true;
   }
-  debugLog("adult gate closed; switching off hidden character", active);
-  installCharacter(replacement);
-  if (avatarWindow && !avatarWindow.isDestroyed()) {
-    avatarWindow.webContents.reloadIgnoringCache();
+  // The audience widened again: put back the body he had.
+  if (swap.from && swap.from !== active && listCharacters().includes(swap.from) && !isHidden(swap.from)) {
+    writeAudienceSwap({});
+    debugLog("audience: restoring the resident body", swap.from);
+    installCharacter(swap.from);
+    if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.webContents.reloadIgnoringCache();
+    return true;
   }
-  return true;
+  if (swap.from && swap.from === active) writeAudienceSwap({});
+  return false;
+}
+
+// -- the rogues gallery (owner 2026-11-17) ----------------------------------------
+// avatar-gallery.cjs owns the rules, gallery-host.cjs the page contract; this is the wiring:
+// the audience is re-enforced on screen after every change, safe mode has a key, a screen
+// share/stream turns safe mode on by itself, rotation follows HIS sets, and VRoid Studio exports
+// land in the gallery unassigned and unrated.
+let galleryWindow = null;
+let gallerySharing = [];
+let galleryShareWatch = null;
+let galleryStudioWatch = null;
+
+/** Every body on screen that the audience now hides goes: a swarm body back to its fairy, any
+ *  other slot removed, the resident swapped to his stand-in (or hidden). */
+function enforceAudience() {
+  try { require("./content-rating.cjs").invalidateGate(); } catch { /* the next read is fresh anyway */ }
+  enforceActiveCharacterRating();
+  const swarmBodies = new Map();
+  try {
+    for (const b of (swarmHostInstance ? swarmHostInstance.state().bodies : []) || []) swarmBodies.set(b.slotId, b.agent);
+  } catch { /* no swarm */ }
+  for (const [slotId, info] of [...avatarSlots]) {
+    if (!info || !info.name || !isHidden(info.name)) continue;
+    const agent = swarmBodies.get(slotId);
+    debugLog("audience: taking a body off screen", slotId, agent || "");
+    if (agent && swarmHostInstance) void swarmHostInstance.setAgentForm(agent, "fairy");
+    else removeAvatarSlot(slotId);
+  }
+  // A body pulled out into its own window is on screen too.
+  for (const [slotId, name] of [...detachedBodies]) {
+    const open = listDetachedWindows().some((w) => w.slotId === slotId);
+    if (!open) { detachedBodies.delete(slotId); continue; }
+    if (!isHidden(name)) continue;
+    debugLog("audience: closing a detached body", slotId);
+    require("./detached-avatar-window.cjs").closeDetachedAvatar(slotId);
+    detachedBodies.delete(slotId);
+  }
+}
+
+function galleryBroadcast(extra = {}) {
+  const event = { type: "gallery-changed", ...extra };
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("desk:event", event);
+  }
+}
+
+/** After a gallery change. Rotation moves only when the AUDIENCE changed (a body on a row may no
+ *  longer be allowed) -- never after his own assign (review of #122: it undid it at once). */
+function galleryChanged(reason = "edit") {
+  if (reason === "audience") galleryRotationTick();
+  enforceAudience();
+  galleryBroadcast();
+  refreshTrayMenu();
+}
+
+function gallerySafeMode() {
+  try { return require("./avatar-gallery.cjs").readGallery(galleryCastRaw()).safeMode; } catch { return true; }
+}
+
+/** The panic switch: ON is instant and unconditional; OFF is the same key again. */
+function toggleGallerySafeMode(on = !gallerySafeMode()) {
+  const r = require("./cast-config.cjs").write(require("./avatar-gallery.cjs").safeModeMutation(on));
+  debugLog("safe mode", on ? "ON" : "off", r && r.ok ? "" : (r && r.error) || "");
+  galleryChanged("audience");
+  return on;
+}
+
+/** His rotation sets, applied: today's pick from each set (dated, never random), only among
+ *  bodies installed and allowed for the audience now. */
+function galleryRotationTick() {
+  try {
+    // A cast.json that cannot be read is never rewritten from a rotation plan (re-review of #122:
+    // cast.write would start from an empty draft and replace the whole file).
+    if (require("./cast-config.cjs").load({}).error) return;
+    const gallery = require("./avatar-gallery.cjs");
+    const cast = require("./cast-config.cjs");
+    const names = new Set(listCharacters());
+    const plan = gallery.planRotation(galleryCastRaw(), { allowed: (n) => names.has(n) && !isHidden(n) });
+    if (!plan.length) return;
+    cast.write((draft) => {
+      for (const step of plan) gallery.rotationStepMutation(step)(draft);
+      return draft;
+    });
+    debugLog("rotation", plan.filter((s) => s.changed).map((s) => `${s.persona}=${s.name}`).join(", ") || "(period recorded)");
+  } catch (error) {
+    debugLog("rotation failed", error && error.message);
+  }
+}
+
+function galleryDeps() {
+  const rating = require("./content-rating.cjs");
+  const roster = require("./character-roster.cjs");
+  const cast = require("./cast-config.cjs");
+  const studio = require("./vroid-studio.cjs");
+  return {
+    rosterDir: ROSTER_DIR,
+    proposalsDir: path.dirname(cast.CAST_FILE()),
+    allNames: () => kidDesk.gateRoster(kidDeskMode(), roster.listAllCharacters()),
+    ratingOf: (name) => rating.getRating(name),
+    isHidden: (name) => isHidden(name),
+    castRaw: () => galleryCastRaw(),
+    rosterAgents: () => {
+      try { return Object.keys(cast.loadRosterPresence()); } catch { return []; }
+    },
+    autoSafe: () => rating.getAutoSafe(),
+    sharing: () => gallerySharing,
+    shareStatus: () => (galleryShareWatch ? galleryShareWatch.status() : "off"),
+    studio: () => studio.detect(),
+    hasThumb: (name) => fs.existsSync(characterThumbPath(name)),
+    writeCast: (mutation) => cast.write(mutation),
+    setRating: (name, value) => rating.setRating(name, value, "owner"),
+    onChanged: (reason) => galleryChanged(reason),
+    modelUrl: (name) => characterModelUrl(name),
+    launchStudio: () => {
+      const r = studio.launch();
+      if (!r.ok && !r.installed) void shell.openExternal(r.downloadUrl);
+      if (r.ok) startStudioExportWatch();
+      return r;
+    },
+  };
+}
+
+/** Is this IPC from the gallery page? Its frame URL carries gallery=1 on the desk's own renderer
+ *  (file:// dist, the loopback dev server, or the browser's aither://gallery tab), and it is
+ *  not the avatar window. */
+function isGallerySender(event) {
+  // Re-review of #122: a frame URL alone can be forged (history.pushState adds gallery=1), so
+  // the sender is identified by WHO it is: the gallery window itself, or the browser's
+  // aither://gallery/ tab (a host no other page can push itself onto).
+  try {
+    if (galleryWindow && !galleryWindow.isDestroyed() && event.sender === galleryWindow.webContents) return true;
+    const raw = (event.senderFrame && event.senderFrame.url) || event.sender.getURL();
+    const u = new URL(raw);
+    return u.protocol === "aither:" && u.hostname === "gallery";
+  } catch {
+    return false;
+  }
+}
+
+function createGalleryWindow(param = null) {
+  if (galleryWindow && !galleryWindow.isDestroyed()) {
+    if (param) galleryWindow.webContents.send("desk:event", { type: "gallery-focus", param });
+    galleryWindow.show();
+    galleryWindow.focus();
+    return galleryWindow;
+  }
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const width = Math.min(1240, workArea.width - 80);
+  const height = Math.min(820, workArea.height - 80);
+  galleryWindow = new BrowserWindow({
+    x: workArea.x + Math.round((workArea.width - width) / 2),
+    y: workArea.y + Math.round((workArea.height - height) / 2),
+    width,
+    height,
+    minWidth: 760,
+    minHeight: 520,
+    show: false,
+    backgroundColor: "#101218",
+    autoHideMenuBar: true,
+    title: `${PRODUCT_NAME} - Avatar gallery`,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  galleryWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  const url = rendererUrl() + (rendererUrl().includes("?") ? "&" : "?") + "gallery=1"
+    + (param ? `&focus=${encodeURIComponent(String(param))}` : "");
+  galleryWindow.webContents.on("will-navigate", (event, targetUrl) => {
+    if (!isAllowedRendererNavigation(targetUrl, url)) event.preventDefault();
+  });
+  galleryWindow.once("ready-to-show", () => {
+    galleryWindow.show();
+    galleryWindow.focus();
+  });
+  galleryWindow.on("closed", () => { galleryWindow = null; });
+  void galleryWindow.loadURL(url);
+  return galleryWindow;
+}
+
+/** VRoid Studio exports, watched only for a while after "Create new" launched it (review of
+ *  #122: an always-on watch imported every .vrm that landed in Downloads/Desktop/Documents). */
+const STUDIO_WATCH_MS = 3 * 60 * 60 * 1000;
+let galleryStudioTimer = null;
+function startStudioExportWatch() {
+  if (!galleryStudioWatch) {
+    const studio = require("./vroid-studio.cjs");
+    galleryStudioWatch = studio.watchExports({
+      onFile: (file) => {
+        const r = studio.importVrm(file, { rosterDir: ROSTER_DIR });
+        debugLog("VRoid export imported", file, r.ok ? r.name : r.reason);
+        if (!r.ok) return;
+        // Unrated = mature: on a profile that may see it, the gallery opens on it to ask the
+        // rating; on a narrower one nothing names it.
+        const visible = !isHidden(r.name);
+        galleryBroadcast(visible ? { imported: r.name } : {});
+        if (visible) createGalleryWindow(`rate:${r.name}`);
+      },
+    });
+  }
+  if (galleryStudioTimer) clearTimeout(galleryStudioTimer);
+  galleryStudioTimer = setTimeout(() => {
+    if (galleryStudioWatch) galleryStudioWatch.stop();
+    galleryStudioWatch = null;
+    galleryStudioTimer = null;
+  }, STUDIO_WATCH_MS);
+  if (typeof galleryStudioTimer.unref === "function") galleryStudioTimer.unref();
+}
+
+/** A screen share or stream is safe mode, by itself, for as long as it runs. */
+function startGalleryWatches() {
+  if (kidDeskMode().enabled) return;
+  const gallery = require("./avatar-gallery.cjs");
+  const rating = require("./content-rating.cjs");
+  // Always watched; `autoSafeOnShare: false` in cast.json is read on every change, not only at boot.
+  if (!galleryShareWatch) {
+    galleryShareWatch = require("./share-detect.cjs").createShareWatch({
+      onChange: (labels) => {
+        gallerySharing = labels;
+        const wanted = gallery.readGallery(galleryCastRaw()).autoSafeOnShare;
+        const was = rating.getAutoSafe();
+        rating.setAutoSafe(wanted && labels.length > 0);
+        if (was !== rating.getAutoSafe()) {
+          debugLog("audience: auto safe mode", rating.getAutoSafe() ? `ON (${labels.join(", ")})` : "off");
+          galleryChanged("audience");
+        }
+      },
+      onStatus: (status) => {
+        debugLog("share watch", status);
+        galleryBroadcast();
+      },
+    });
+    galleryShareWatch.start();
+  }
+  galleryRotationTick();
+  const hourly = setInterval(galleryRotationTick, 60 * 60 * 1000);
+  if (typeof hourly.unref === "function") hourly.unref();
 }
 
 /** May an agent tool (MCP set_character / spawn_avatar) put `name` on screen? Only when the owner
@@ -3691,6 +3972,7 @@ function commandContext() {
     fairyAvatar: (() => { try { return orbWindow.avatarMode(); } catch { return null; } })(),
     // Aither's bodies on this desk and the one in force (aither-body.cjs rows).
     aitherBodies: (() => { try { return aitherBody.rows(aitherBodyFacts()); } catch { return []; } })(),
+    safeMode: gallerySafeMode(),
     decisionsWaiting: inboxCounts().waiting,
     decisionsTotal: inboxCounts().total,
     listening: listeningNow(),
@@ -4268,6 +4550,9 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       openConsole("cast");
       return;
     }
+    case "gallery.open": return void createGalleryWindow();
+    case "gallery.safe-mode":
+    case "gallery.safe-mode-chord": return void toggleGallerySafeMode();
     // ONE door to everything about bodies: who is on stage, their looks, voices,
     // and the avatar window's size (the Stage pane and its tabs).
     case "stage.open": {
@@ -5876,6 +6161,13 @@ function wireConsoleHost(legacy) {
       // spawn chips and the Models & Market grid live here. It is the SAME renderer and the
       // same deck window as the inbox -- one component with a view prop -- so detaching it
       // reuses createDeckWindow rather than opening a second subscription to the same bridge.
+      gallery: {
+        open: () => createGalleryWindow(),
+        close: () => {
+          if (galleryWindow && !galleryWindow.isDestroyed()) galleryWindow.close();
+        },
+        isOpen: () => Boolean(galleryWindow && !galleryWindow.isDestroyed()),
+      },
       characters: {
         open: () => createDeckWindow(),
         close: () => {
@@ -6551,6 +6843,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // above: a child's desk never pulls an adult library).
     startAitherBody();
     avatarCatalogSync.startCatalogSync({ log: debugLog });
+    // The rogues gallery: share/stream = safe mode, VRoid Studio exports, his rotation sets.
+    startGalleryWatches();
     // Unpackaged runs (npx electron .) have no Start Menu shortcut registering
     // the AUMID, so Windows shows the RAW id as every toast's header — the
     // owner's decision-card notification read "com.xikhar.persona" instead of
@@ -6804,8 +7098,25 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // rendered offscreen. Names are slug-validated — the renderer never names
     // a path. A thumb read/write failure is never fatal: the card falls back
     // to its monogram tile.
+    // The rogues gallery's page contract (gallery-host.cjs): verb + one argument object.
+    {
+      const handlers = require("./gallery-host.cjs").galleryHandlers(() => galleryDeps());
+      ipcMain.handle("desk:gallery", (event, verb, arg) => {
+        // Only the gallery page itself (its window, or its aither://gallery tab) -- never the
+        // avatar window or another preload.cjs window (review of #122).
+        if (!isGallerySender(event)) return { ok: false, error: "only the gallery page may do that" };
+        const fn = Object.prototype.hasOwnProperty.call(handlers, verb) ? handlers[verb] : null;
+        if (!fn) return { ok: false, error: `unknown gallery verb ${String(verb)}` };
+        try {
+          return fn(arg && typeof arg === "object" ? arg : {});
+        } catch (error) {
+          return { ok: false, error: error && error.message ? error.message : String(error) };
+        }
+      });
+    }
     ipcMain.handle("desk:character-thumb", (_event, name) => {
-      if (!isValidCharacterName(name)) return null;
+      // A body the audience hides has no picture either (owner 2026-11-17).
+      if (!isValidCharacterName(name) || isHidden(name)) return null;
       try {
         const file = characterThumbPath(name);
         if (!fs.existsSync(file)) return null;
@@ -7874,6 +8185,13 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         return [...builtIn, ...custom];
       },
       onSpawnAvatar: (slotId, name) => agentMayShow(name) && spawnAvatarSlot(slotId, name),
+      // Agents PROPOSE a body; the owner applies it in the gallery with one click.
+      onProposeAvatar: ({ persona, character, why, by }) => {
+        if (!require("./character-roster.cjs").listAllCharacters().includes(String(character || ""))) return null;
+        const p = require("./avatar-gallery.cjs").propose(path.dirname(require("./cast-config.cjs").CAST_FILE()), { persona, character, why, by });
+        if (p) galleryBroadcast();
+        return p;
+      },
       onRemoveAvatar: (slotId) => removeAvatarSlot(slotId),
       onFleet: (action, opts) => fleetAction(action, opts),
       onCommand: (text, opts) => commandAction(text, opts),

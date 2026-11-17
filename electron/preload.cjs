@@ -87,6 +87,11 @@ contextBridge.exposeInMainWorld("deskBridge", {
     saveCharacterTurntable: (name, shot, dataUrl) =>
       ipcRenderer.invoke("desk:save-character-turntable", name ?? "", Number(shot) || 0, dataUrl ?? ""),
   },
+  // The rogues gallery (gallery-host.cjs): one verb channel. Every verb that changes a body is
+  // the owner's click on this page; agents only reach `propose_avatar` (MCP), never this.
+  gallery: {
+    call: (verb, arg) => ipcRenderer.invoke("desk:gallery", String(verb || ""), arg && typeof arg === "object" ? arg : {}),
+  },
   // The space pane (aither://space/, space-window.cjs). The page names a node and a
   // verb or an explore index; main re-reads the node from its own snapshot and decides
   // what runs. Card answers stay on deck.answer / deck.credential.
