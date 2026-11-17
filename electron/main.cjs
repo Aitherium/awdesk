@@ -4654,6 +4654,30 @@ function sweepEndedSessionCards(cards = openDecisions) {
   }
 }
 
+// -- a card for a Claude Code question closes once it was answered (ask-answered.cjs) --
+// 2026-11-17 (d-yjmc): answered in the terminal at 12:39:17, still up 26 s later.
+const askAnswered = require("./ask-answered.cjs");
+const ASK_SWEEP_MIN_MS = 8_000;
+let askSweepAt = 0;
+function sweepAnsweredAsks(cards = openDecisions) {
+  const now = Date.now();
+  if (now - askSweepAt < ASK_SWEEP_MIN_MS) return null;
+  askSweepAt = now;
+  try {
+    const result = askAnswered.sweep(cards, {
+      transcript: (card) => sessionContext.transcriptPath(card.sessionId, card.cwd),
+      cancel: (id, note) => decisionCards.cancelCard(id, note),
+    });
+    if (result.closed.length || result.failed.length) {
+      debugLog(`answered-asks sweep: closed ${result.closed.join(",") || "none"}, failed ${result.failed.join(",") || "none"}`);
+    }
+    return result;
+  } catch (error) {
+    debugLog(`answered-asks sweep failed: ${String((error && error.message) || error)}`);
+    return null;
+  }
+}
+
 function decisionsWithSessions(cards = openDecisions) {
   const live = liveSessionMap();
   const endedIds = endedIdSet(cards);
@@ -4795,13 +4819,19 @@ function deckState() {
   };
 }
 
-/** The terminal tab name of a card's session (deckSessionAct's lookup), "" when unknown. */
+/**
+ * The names a card's session's terminal tab may carry, most trusted first: the live
+ * session file (what Windows Terminal shows), then the journal's latest title (a rename
+ * can reach one before the other). [] when unknown.
+ */
 function cardSessionName(card) {
-  if (!card || !card.sessionId) return "";
+  if (!card || !card.sessionId) return [];
   const live = liveSessionMap({ fresh: true }).get(card.sessionId) || null;
-  if (live && live.name) return live.name;
+  const names = [];
+  if (live && live.name) names.push(live.name);
   const ctx = sessionContext.readContext(card.sessionId, card.cwd, { live, repo: "" });
-  return (ctx && ctx.ok && ctx.name) || "";
+  if (ctx && ctx.ok && ctx.name && !names.includes(ctx.name)) names.push(ctx.name);
+  return names;
 }
 
 /**
@@ -8222,6 +8252,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       onChange: (cards) => {
         openDecisions = cards;
         sweepEndedSessionCards(cards);
+        sweepAnsweredAsks(cards);
         needsYou = computeNeedsYou(cards);
         syncNeedsYouChip();
         refreshTrayMenu();
@@ -8284,6 +8315,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // close would wait for the next card. Two and a half minutes clears the two-look rule.
     const endedSweepTimer = setInterval(() => sweepEndedSessionCards(openDecisions), 150_000);
     endedSweepTimer.unref?.();
+    // A question answered in the terminal changes no card file, so no change event
+    // comes: look at the open question cards' journals on a short clock.
+    const askSweepTimer = setInterval(() => sweepAnsweredAsks(openDecisions), 10_000);
+    askSweepTimer.unref?.();
 
     // 🚩 register() RETURNS whether it got the accelerator, and the answer was
     // thrown away. Another app holding Ctrl+Shift+= takes the only keyboard path

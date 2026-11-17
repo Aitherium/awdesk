@@ -407,6 +407,11 @@
     white-space: pre-line; overflow-wrap: anywhere; }
   #n-facts { margin: 5px 0 0; padding-left: 16px; font-size: 11.5px; line-height: 1.4; color: #c4cfe2; }
   #n-facts li { white-space: pre-line; overflow-wrap: anywhere; margin-top: 2px; }
+  /* A question the card can only OPEN: its real answers, in the whisper's face (2026-11-17). */
+  #n-acts .n-choices { flex: 1 1 100%; margin: 0 0 4px; font-size: 12px; line-height: 1.4; color: var(--fg, #e6edf3); }
+  #n-acts .n-choices ol { margin: 3px 0 0; padding-left: 18px; }
+  #n-acts .n-choices li.rec { font-weight: 600; }
+  #n-acts .n-choices .cap { color: #c4cfe2; font-size: 11.5px; }
   #n-acts button .cons { display: block; font-size: 10.5px; font-weight: 400; opacity: 0.72; margin-top: 2px; }
   /* Owner 2026-11-08: "I need to see what the whole buttons say". Full labels, wrapped;
      the whisper window grows to fit (nudgeAct "size"). Never an ellipsis on a choice. */
@@ -1492,6 +1497,26 @@
         // as 2-3 large buttons, the recommended one highlighted, then "Later" and
         // "Show details" (the old card window lives behind that link only). A 4th
         // option waits behind "more" with the context.
+        // A question whose dialog is already on the terminal: its real answers are
+        // listed (not buttons -- nothing here can deliver them), then "Open the session".
+        const choices = Array.isArray(v.sessionChoices) ? v.sessionChoices : [];
+        if (choices.length) {
+          const wrap = document.createElement("div");
+          wrap.className = "n-choices";
+          const cap = document.createElement("div");
+          cap.className = "cap";
+          cap.textContent = "Its answers, waiting in the session:";
+          const ol = document.createElement("ol");
+          for (const c of choices) {
+            const li = document.createElement("li");
+            li.textContent = c.label;
+            if (c.recommended) li.className = "rec";
+            if (c.consequence) li.title = c.consequence;
+            ol.append(li);
+          }
+          wrap.append(cap, ol);
+          actsEl.append(wrap);
+        }
         const opts = v.options || [];
         const main = opts.find((o) => o.recommended) || opts[0] || null;
         altEl.textContent = "";

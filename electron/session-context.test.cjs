@@ -139,3 +139,10 @@ test("sessionKnownHere: a state file (even a dead pid's) or a transcript counts;
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("focusScript defines the Raise it calls (the foreground hand-over shared with tui-answer)", () => {
+  const s = sc.focusScript();
+  assert.ok(s.includes("function Raise([IntPtr]$h) {"), "Raise is defined");
+  assert.ok(s.indexOf("function Raise(") < s.indexOf("(Raise $h)"), "before it is called");
+  assert.ok(s.includes("AttachThreadInput($me, $other, $true)"));
+});
