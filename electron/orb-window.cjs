@@ -2429,6 +2429,8 @@ function deskDoors(reg) {
   return DESK_DOORS.filter(([id]) => reg && reg.byId && reg.byId(id)).map(([id, label]) => ({
     // The fairy's door names the actual ask, not a generic "Notifications":
     // "Needs you (3)" is the same group label the launcher and the deck use.
+    // `id` is the menu ROW key (what desk:menu-pick looks the row up by); the command
+    // that runs is the closed-over registry id below, never this prefixed key.
     id: `door:${id}`,
     label: id === "inbox.open" ? (attentionCards.length ? `Needs you (${attentionCards.length})` : "Inbox") : label,
     click: () => { void runCommandImpl?.(id); },
