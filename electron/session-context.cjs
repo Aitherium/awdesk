@@ -373,7 +373,9 @@ function focusScript() {
     "$ErrorActionPreference = 'Stop'",
     "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
     "Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes",
-    "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class AitherFg { [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr h, int c); [DllImport(\"user32.dll\")] public static extern bool IsIconic(IntPtr h); }'",
+    // The same foreground hand-over as tui-answer.cjs: a click on a non-focusable desk
+    // window gives the desk no right to raise another process's window (2026-11-17).
+    ...require("./tui-answer.cjs").raiseLines(),
     "$want = [Console]::In.ReadLine()",
     "function Norm([string]$s) { return ($s -replace '^[^\\p{L}\\p{N}]+', '' -replace '…$', '').Trim().ToLowerInvariant() }",
     "$w = Norm $want",
@@ -392,8 +394,7 @@ function focusScript() {
     "$sel = $found[1].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)",
     "$sel.Select()",
     "$h = [IntPtr]$found[0].Current.NativeWindowHandle",
-    "if ([AitherFg]::IsIconic($h)) { [void][AitherFg]::ShowWindow($h, 9) }",
-    "[void][AitherFg]::SetForegroundWindow($h)",
+    "if (-not (Raise $h)) { @{ ok = $false; tab = $found[1].Current.Name; error = 'Windows would not bring the terminal to the front' } | ConvertTo-Json -Compress; exit 0 }",
     "@{ ok = $true; tab = $found[1].Current.Name } | ConvertTo-Json -Compress",
   ].join("\r\n");
 }

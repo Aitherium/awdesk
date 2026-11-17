@@ -542,3 +542,57 @@ test("the whisper header folds the backlog: 'N more need you · M older'", () =>
   const v = fa.whisperView({ card: card(), level: 2, more: 41, older: 38 }, NOW);
   assert.equal(v.moreLabel, "3 more need you · 38 older");
 });
+
+// ── 2026-11-17, card d-yjmc ("Go live: openaw.org"), exactly as awask raised it ──────
+const D_YJMC_CARD = {
+  id: "d-yjmc", agent: "claude-code", kind: "blocked", urgency: "high",
+  sessionId: "bf1f0eee-f1de-444b-9a5e-05dfe7dabd03",
+  title: "Go live: openaw.org doesn't resolve because the Cloudflare zone is active but has no DNS records yet. Should I put openaw.org and www.openaw.org live now?",
+  options: [
+    { key: "tui:type", label: "Open the session", consequence: "opens the session so you can answer it there", recommended: false },
+    { key: "later", label: "Not now", consequence: "the session stays blocked; nothing is lost", recommended: false },
+  ],
+  defaultKey: "later",
+  facts: [
+    "Claude Code (openaw) is waiting on this question in the terminal.",
+    "1. Go live now (Recommended) -- Run go-live.sh: deploy the Worker to openaw.org + www, then run the live checks. It can be undone by removing the custom domains.",
+    "2. Placeholder only -- Serve a one-line 'OpenAW: coming Dec 1' page on openaw.org instead of the hub.",
+    "3. Hold -- Leave openaw.org dark for now.",
+  ],
+  createdAt: 1794918981.9725223,
+};
+const D_YJMC_NOW = 1794918990 * 1000;
+
+test("d-yjmc: the whisper shows the question's real answers, not only Open/Not now", () => {
+  const v = fa.whisperView({ card: D_YJMC_CARD, level: 3 }, D_YJMC_NOW);
+  assert.deepEqual(v.sessionChoices.map((c) => c.label), ["Go live now (Recommended)", "Placeholder only", "Hold"]);
+  assert.equal(v.sessionChoices[0].recommended, true);
+  assert.ok(!v.facts.some((f) => /^\d\. /.test(f)), "the choices are not repeated as hidden facts");
+});
+
+test("d-yjmc: a stopped session's question never suggests the no-op 'Not now'", () => {
+  const why = fa.whyNow(D_YJMC_CARD, D_YJMC_NOW);
+  assert.doesNotMatch(why, /Not now/);
+  assert.match(why, /suggested: “Go live now \(Recommended\)” in the session/);
+  assert.doesNotMatch(fa.arrivalLine(D_YJMC_CARD), /I suggest Not now/);
+  assert.equal(fa.whisperView({ card: D_YJMC_CARD, level: 3 }, D_YJMC_NOW).options.find((o) => o.key === "later").recommended, false);
+});
+
+test("d-yjmc: a held ask (ans: keys) suggests its recommended option, not 'Not now'", () => {
+  const hold = { ...D_YJMC_CARD, id: "d-qhc6", facts: [],
+    options: [
+      { key: "ans:1", label: "Go live now (Recommended)", recommended: true },
+      { key: "ans:2", label: "Placeholder only" }, { key: "ans:3", label: "Hold" },
+      { key: "ans:type", label: "Answer in the terminal" }, { key: "later", label: "Not now" },
+    ] };
+  assert.match(fa.whyNow(hold, D_YJMC_NOW), /suggested: “Go live now \(Recommended\)”$/);
+  assert.deepEqual(fa.sessionChoices(hold), [], "a card that CAN answer lists buttons, not a read-only list");
+  assert.deepEqual(fa.whisperView({ card: hold, level: 3 }, D_YJMC_NOW).options.slice(0, 3).map((o) => o.key), ["ans:1", "ans:2", "ans:3"]);
+});
+
+test("a blocked card with only a hold default suggests nothing; a real default still shows", () => {
+  const holdOnly = { ...D_YJMC_CARD, facts: [] };
+  assert.equal(fa.suggestedOption(holdOnly), null);
+  const real = { id: "d-real", kind: "decision", options: [{ key: "go", label: "Go" }, { key: "stay", label: "Stay" }], defaultKey: "go", createdAt: 1794918981 };
+  assert.deepEqual(fa.suggestedOption(real), { label: "Go", inSession: false });
+});
