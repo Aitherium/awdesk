@@ -779,6 +779,15 @@
   // for the page test and the smoke: the dock's map and what the network was given, read-only
   W.fleetPane = Object.freeze({
     select, closeDock, verdict: () => verdict(lastStatus), data: () => lastData,
+    /** Select by NODE id ("svc:veil", "aw:awnix", "ctl:gpu"): the same path a click on that node takes. */
+    selectNode: (id) => {
+      const n = nodeById(id);
+      const k = n && n.meta && n.meta.kind;
+      if (k === "ctl") select(n.meta.key);
+      else if (k === "door") select(`door:${n.meta.index}`);
+      else if (k === "svc") select(`svc:${id}`);
+      else if (k === "brick") select(`brick:${id}`);
+    },
     verbsFor: (k) => VERB_BUTTONS.filter((b) => b.dataset.bead === k).map((b) => b.dataset.action || b.id),
   });
 

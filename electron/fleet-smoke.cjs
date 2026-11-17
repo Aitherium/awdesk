@@ -89,7 +89,7 @@ async function run() {
   ipcMain.handle("desk:fleet-space", () => true);
   ipcMain.handle("desk:fleet-network", async () => fleetNetwork(REAL ? await realUniverse()
     : { universe: fixedUniverse(), source: "remote" }));
-  ipcMain.handle("desk:fleet-ecosystem", () => readEcosystem());
+  ipcMain.handle("desk:fleet-ecosystem", () => readEcosystem()); // takes no arguments, as in fleet-window.cjs
   ipcMain.on("desk:fleet-open", () => {});
   ipcMain.on("desk:fleet-close", () => {});
 

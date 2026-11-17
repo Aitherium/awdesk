@@ -382,7 +382,7 @@ test("services join the network with their health; the map's counts reach the ON
 test("selecting a service shows its health and dependencies and opens it in Space", async () => {
   const page = mount({ status: () => Promise.resolve(GOOD()), network: NETWORK, spaceAvailable: () => Promise.resolve(true) });
   await tick(); await tick(); await tick();
-  page.pane().select("svc:svc:veil");
+  page.pane().selectNode("svc:veil");
   assert.equal(page.text("dock-title"), "Veil");
   assert.match(page.text("svc-detail"), /down -- no answer/);
   assert.match(page.text("svc-detail"), /depends on: Genesis/);

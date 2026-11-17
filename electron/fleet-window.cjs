@@ -98,7 +98,10 @@ function wireIpc() {
   ipcMain.handle("desk:fleet-run", (_event, action) => getControl().run(String(action)));
   ipcMain.handle("desk:fleet-space", () => fleetSpaceAvailable());
   ipcMain.handle("desk:fleet-network", (_event, opts) => fleetNetworkNow(opts));
+  // No arguments, by design: the preload sends none, and the file is main's own vendored
+  // copy -- a renderer-chosen path here would be a file-read primitive.
   ipcMain.handle("desk:fleet-ecosystem", () => readEcosystem());
+  // No arguments, by design: the preload's doors() sends none; the probe list is main's.
   ipcMain.handle("desk:fleet-doors", () => require("./surfaces.cjs").probeSurfaces().catch(() => []));
   ipcMain.on("desk:fleet-close", (event) => {
     if (fleetWindow && !fleetWindow.isDestroyed() && (!event || event.sender === fleetWindow.webContents)) {
