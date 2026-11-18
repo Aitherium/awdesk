@@ -563,20 +563,36 @@ const endpointKey = (e) => `${e.host}:${e.port}`;
  *  which is why it is discovered at runtime and never written to cast.json --
  *  a pinned IP in config is a splint that silently rots. */
 let WSL_HOST = undefined;
-function wslHost() {
-  if (WSL_HOST !== undefined) return WSL_HOST;
-  WSL_HOST = null;
-  try {
-    const out = execFileSync("wsl", ["-d", fleetDistro(), "-u", "root", "hostname", "-I"], {
-      encoding: "utf8", timeout: 15000, windowsHide: true,
-    });
-    const hit = String(out).trim().split(/\s+/).find((a) => /^\d+\.\d+\.\d+\.\d+$/.test(a));
-    if (hit) WSL_HOST = hit;
-  } catch {
-    // No WSL, not Windows, or the distro is busy: the loopback attempts stand
-    // on their own. This is a FALLBACK, never a requirement.
-  }
-  return WSL_HOST;
+let WSL_HOST_PENDING = null;
+/** The distro address, discovered OFF the main thread. A synchronous `wsl` call
+ *  froze the whole desk ("Electron is not responding") for up to its 15 s timeout
+ *  every time a voice line timed out while the distro was wedged (2026-11-18:
+ *  hangs at 04:17 and 06:54, each inside a WSL wedge window). Resolves null on
+ *  any failure; one discovery in flight at a time; the answer is cached. */
+function wslHost({ execFile = require("node:child_process").execFile } = {}) {
+  if (WSL_HOST !== undefined) return Promise.resolve(WSL_HOST);
+  if (WSL_HOST_PENDING) return WSL_HOST_PENDING;
+  const pending = new Promise((resolve) => {
+    const settle = (hit) => {
+      // Only a found address is remembered: a wedged distro is retried later.
+      if (hit) WSL_HOST = hit;
+      if (WSL_HOST_PENDING === pending) WSL_HOST_PENDING = null;
+      resolve(hit || null);
+    };
+    try {
+      execFile("wsl", ["-d", fleetDistro(), "-u", "root", "hostname", "-I"],
+        { encoding: "utf8", timeout: 15000, windowsHide: true }, (err, out) => {
+          // Settle on the next tick, so a callback that fires synchronously still
+          // finds this promise registered (and clears it).
+          setImmediate(() => settle(err ? null : String(out || "").trim().split(/\s+/)
+            .find((a) => /^\d+\.\d+\.\d+\.\d+$/.test(a))));
+        });
+    } catch {
+      setImmediate(() => settle(null));  // no WSL, not Windows: loopback stands alone
+    }
+  });
+  WSL_HOST_PENDING = pending;
+  return pending;
 }
 
 /** Every (host, scheme) worth trying, best first. A remembered pair short-
@@ -659,7 +675,7 @@ async function synthesizeVerdict(text, voice = "nova", opts = {}) {
     const last = i === attempts.length - 1;
     if (last && sawSilence && !triedAlt && !opts._noWslFallback) {
       triedAlt = true;
-      const alt = wslHost();
+      const alt = await wslHost();
       if (alt && alt !== endpoint.host) {
         attempts.push({ host: alt, scheme: "https", mod: https });
         attempts.push({ host: alt, scheme: "http", mod: http });
@@ -758,6 +774,8 @@ function attemptSynthesis(attempt, endpoint, body) {
 
 module.exports = {
   routeDrop,
+  wslHost,
+  _resetWslHost: () => { WSL_HOST = undefined; },
   routeShare,
   synthesizeVerdict,
   voiceSpeed,
