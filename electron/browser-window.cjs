@@ -1375,6 +1375,16 @@ function captureStage(stageId = activeStageId()) {
   let list = ids.map(tabDescriptor).filter(Boolean);
   // A stage that could not be fully restored (the tab cap) keeps the tabs that never
   // opened: overwriting the document with the short strip would delete them for good.
+  // Two panes of the split on the same address both survive: the later ones get a twin
+  // number, so the saved list does not fold them into one tab.
+  const splitTabs = (arrangementSplit(stageId) || {}).tabs || [];
+  const twins = new Map();
+  list = list.map((d, i) => {
+    if (!splitTabs.includes(ids[i])) return d;
+    const n = twins.get(d.url) || 0;
+    twins.set(d.url, n + 1);
+    return n ? { ...d, twin: n } : d;
+  });
   const short = stagesShortfall.get(stageId);
   if (short && short.length) {
     const saved = (browserStages.find(getStages(), stageId) || {}).tabs || [];
@@ -1383,9 +1393,18 @@ function captureStage(stageId = activeStageId()) {
   // The split is saved by INDEX into the saved tabs (ids are per run): each saved tab's
   // live id is the first live tab of the arrangement with that address.
   list = browserStages.normalizeTabs(list);
-  const live = ids.map((id) => ({ id, url: (browserStages.normalizeTabs([tabDescriptor(id)])[0] || {}).url }))
-    .filter((x) => x.url);
-  const savedIds = list.map((d) => { const hit = live.find((x) => x.url === d.url); return hit ? hit.id : null; });
+  const twinOf = new Map();
+  const live = ids.map((id) => {
+    const d = browserStages.normalizeTabs([tabDescriptor(id)])[0];
+    if (!d) return null;
+    let twin = 0;
+    if (splitTabs.includes(id)) { twin = twinOf.get(d.url) || 0; twinOf.set(d.url, twin + 1); }
+    return { id, key: browserStages.tabKey({ url: d.url, twin }) };
+  }).filter(Boolean);
+  const savedIds = list.map((d) => {
+    const hit = live.find((x) => x.key === browserStages.tabKey(d)) || live.find((x) => x.key === d.url);
+    return hit ? hit.id : null;
+  });
   const split = browserStages.splitToSaved(arrangementSplit(stageId), savedIds);
   const r = browserStages.setTabs(getStages(), stageId, list, { split });
   if (r.ok) setStages(r.doc);
