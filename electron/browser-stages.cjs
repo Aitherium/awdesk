@@ -16,8 +16,11 @@
  *   tabs        the tab descriptors to bring back when the stage is first shown
  *               (url, title, kind, owner, pinned, key, label). InPrivate tabs are never
  *               saved -- that is the whole point of InPrivate.
- *   splits      the split-pane layout, carried for the split-panes slice; validated and
- *               round-tripped here so the document does not have to change when it lands.
+ *   splits      (legacy placeholder, still round-tripped so an older file keeps it)
+ *   split       the stage's SPLIT of the page area (browser-panes.cjs), or null:
+ *               {axis, panes: [index into `tabs`], sizes: [fraction], focus}. Indices,
+ *               not tab ids -- ids are per run, the saved tab order is not. Switching
+ *               stages restores the split with the tabs (splitToSaved / splitFromSaved).
  *   terminals   the awsh harness session ids the stage had attached
  *   roots       the file-explorer root ids the stage was working in
  *
@@ -54,6 +57,8 @@ const TAB_OWNERS = Object.freeze(["you", "agent"]);
 const DEFAULT_NAME = "Stage 1";
 /** The owner's own session (browser-window PARTITION); the default scope of a stage with no workspace. */
 const OWNER_PARTITION = "persist:aither-browser";
+
+const panesMath = require("./browser-panes.cjs");
 
 const isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
 // eslint-disable-next-line no-control-regex
@@ -152,15 +157,126 @@ function normalizeSplits(raw) {
   return out;
 }
 
+/**
+ * A stage's saved SPLIT (browser-panes.cjs's "stage" of the page area, by tab INDEX into
+ * the stage's saved `tabs`): `{axis, panes, sizes, focus}`, or null. Indices out of range
+ * or repeated are dropped; fewer than two panes is no split. Sizes are renormalized to
+ * the panes that survived, so a hand-edited file can never produce a zero-width pane.
+ */
+function normalizeSplit(raw, tabCount = Infinity) {
+  if (!isObj(raw) || !Array.isArray(raw.panes)) return null;
+  const axis = raw.axis === "vertical" ? "vertical" : "horizontal";
+  const sizesIn = Array.isArray(raw.sizes) ? raw.sizes : [];
+  const panes = [];
+  const sizes = [];
+  let focus = 0;
+  const wantFocus = Math.floor(Number(raw.focus) || 0);
+  raw.panes.forEach((p, i) => {
+    const at = Number(p);
+    if (!Number.isInteger(at) || at < 0 || at >= tabCount || panes.includes(at)) return;
+    if (panes.length >= panesMath.MAX_PANES) return;
+    if (i === wantFocus) focus = panes.length;
+    panes.push(at);
+    sizes.push(sizesIn[i]);
+  });
+  if (panes.length < 2) return null;
+  return { axis, panes, sizes: panesMath.normalizeSizes(sizes, panes.length), focus };
+}
+
+/**
+ * The live split (`{axis, tabs: [tabId], sizes, focus}`) as the document stores it:
+ * each pane's tab id becomes its index in `ids` (the tab ids of the saved `tabs`, in
+ * the same order). A pane whose tab is not saved (InPrivate, gone) is dropped.
+ */
+function splitToSaved(split, ids) {
+  if (!isObj(split) || !Array.isArray(split.tabs) || !Array.isArray(ids)) return null;
+  const sizes = Array.isArray(split.sizes) ? split.sizes : [];
+  const focusTab = split.tabs[split.focus];
+  const raw = { axis: split.axis, panes: [], sizes: [], focus: 0 };
+  split.tabs.forEach((id, i) => {
+    const at = ids.indexOf(id);
+    if (at < 0) return;
+    if (id === focusTab) raw.focus = raw.panes.length;
+    raw.panes.push(at);
+    raw.sizes.push(sizes[i]);
+  });
+  return normalizeSplit(raw, ids.length);
+}
+
+/**
+ * The saved split back as a live one, given `ids[i]` = the tab id the saved tab i opened
+ * as (null when the tab cap refused it). Fewer than two panes that opened is no split.
+ */
+function splitFromSaved(saved, ids) {
+  if (!Array.isArray(ids)) return null;
+  const s = normalizeSplit(saved, ids.length);
+  if (!s) return null;
+  const out = { axis: s.axis, tabs: [], sizes: [], focus: 0 };
+  s.panes.forEach((at, i) => {
+    const id = ids[at];
+    if (id == null || out.tabs.includes(id)) return;
+    if (i === s.focus) out.focus = out.tabs.length;
+    out.tabs.push(id);
+    out.sizes.push(s.sizes[i]);
+  });
+  if (out.tabs.length < 2) return null;
+  out.sizes = panesMath.normalizeSizes(out.sizes, out.tabs.length);
+  return out;
+}
+
+/**
+ * Which of a split's panes go on screen: a pane is drawn only when its tab is in the
+ * ACTIVE stage (`inActive(tabId)`) and nothing has asked the page views to step aside.
+ * A suspended stage's split is therefore never drawn over the active one's page.
+ */
+function splitPanesShown(split, inActive, aside = false) {
+  if (!isObj(split) || !Array.isArray(split.tabs)) return [];
+  return split.tabs.map((id) => !aside && Boolean(inActive(id)));
+}
+
+/**
+ * Where suspended stages keep their live split while another stage is on screen (stage
+ * id -> live split). `park` on leaving a stage, `take` on entering it; `forget` when the
+ * stage is deleted. A null split parks nothing, so leaving an unsplit stage clears it.
+ */
+function createSplitShelf() {
+  const shelf = new Map();
+  return {
+    park(id, split) {
+      if (split && Array.isArray(split.tabs) && split.tabs.length >= 2) {
+        shelf.set(id, { axis: split.axis, tabs: split.tabs.slice(), sizes: split.sizes.slice(), focus: split.focus });
+      } else {
+        shelf.delete(id);
+      }
+    },
+    take(id) {
+      const split = shelf.get(id) || null;
+      shelf.delete(id);
+      return split;
+    },
+    peek(id) {
+      return shelf.get(id) || null;
+    },
+    forget(id) {
+      shelf.delete(id);
+    },
+    has(id) {
+      return shelf.has(id);
+    },
+  };
+}
+
 function normalizeStage(raw, id) {
   const s = isObj(raw) ? raw : {};
   const workspace = typeof s.workspace === "string" && SLUG.test(s.workspace.trim().toLowerCase())
     ? s.workspace.trim().toLowerCase() : "";
+  const tabs = normalizeTabs(s.tabs);
   return {
     id,
     name: cleanText(s.name) || DEFAULT_NAME,
     workspace,
-    tabs: normalizeTabs(s.tabs),
+    tabs,
+    split: normalizeSplit(s.split, tabs.length),
     splits: normalizeSplits(s.splits),
     terminals: normalizeTerminals(s.terminals),
     roots: normalizeRoots(s.roots),
@@ -322,12 +438,19 @@ function setActive(doc, id) {
   return { ok: true, doc: normalizeDoc(d) };
 }
 
-/** Replace a stage's saved tabs (a switch writes the live strip back here). */
-function setTabs(doc, id, tabs) {
+/**
+ * Replace a stage's saved tabs (a switch writes the live strip back here). `split`, when
+ * given (null included), replaces the saved split -- its pane indices are into `tabs`.
+ * Without it the old split is kept only when the tab list is unchanged in length.
+ */
+function setTabs(doc, id, tabs, opts = {}) {
   const d = clone(doc);
   const stage = d.stages.find((s) => s.id === id);
   if (!stage) return { ok: false, error: `no stage ${id}` };
+  const before = stage.tabs.length;
   stage.tabs = normalizeTabs(tabs);
+  if (Object.prototype.hasOwnProperty.call(opts || {}, "split")) stage.split = opts.split;
+  else if (stage.tabs.length !== before) stage.split = null;
   return { ok: true, doc: normalizeDoc(d) };
 }
 
@@ -444,6 +567,11 @@ module.exports = {
   setTabs,
   setContext,
   setSplits,
+  normalizeSplit,
+  splitToSaved,
+  splitFromSaved,
+  splitPanesShown,
+  createSplitShelf,
   normalizeTabs,
   mergeUnopened,
   resolveScope,

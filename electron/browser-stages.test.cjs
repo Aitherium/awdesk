@@ -285,3 +285,103 @@ test("the wiring is there: the chrome exposes the switcher, the window filters a
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "desk-stages-"));
 }
+
+/* ── stages x split panes (#143/#144 merged with #145) ─────────────────────────── */
+
+const winSource = () => fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
+
+test("browser-window.cjs compiles: no identifier is declared twice by two merged features", () => {
+  const vm = require("node:vm");
+  // The CJS wrapper makes every top-level let/const/function one scope: a second
+  // `splitState` (or `stage`) declaration is an early SyntaxError, caught here.
+  assert.doesNotThrow(() => new vm.Script(`(function (exports, require, module, __filename, __dirname) {${winSource()}\n})`));
+});
+
+test("viewsAside() is true for each of the four step-aside flags, false with none", () => {
+  const src = winSource();
+  const at = src.indexOf("function viewsAside()");
+  assert.ok(at >= 0, "viewsAside is defined");
+  const body = src.slice(src.indexOf("{", at) + 1, src.indexOf("\n}", at));
+  const flags = ["dragging", "editingLayout", "stageDragging", "stagingMenu"];
+  const aside = new Function(...flags, body);
+  assert.equal(aside(false, false, false, false), false);
+  flags.forEach((name, i) => {
+    const args = flags.map((_, j) => j === i);
+    assert.equal(aside(...args), true, `viewsAside must be true while ${name}`);
+  });
+});
+
+test("switching arrangement hides the other arrangement's split panes", () => {
+  // Arrangement s1 has a split of tabs 1 and 2; s2 has a split of tabs 3 and 4.
+  const home = new Map([[1, "s1"], [2, "s1"], [3, "s2"], [4, "s2"]]);
+  const shelf = S.createSplitShelf();
+  let active = "s1";
+  let onScreen = { axis: "horizontal", tabs: [1, 2], sizes: [0.5, 0.5], focus: 0 };
+  shelf.park("s2", { axis: "vertical", tabs: [3, 4], sizes: [0.3, 0.7], focus: 1 });
+  const inActive = (id) => home.get(id) === active;
+  assert.deepEqual(S.splitPanesShown(onScreen, inActive), [true, true]);
+  // s2's parked split is never drawn while s1 is on screen.
+  assert.deepEqual(S.splitPanesShown(shelf.peek("s2"), inActive), [false, false]);
+  // Switch to s2: park s1's split, take s2's.
+  shelf.park(active, onScreen);
+  active = "s2";
+  onScreen = shelf.take("s2");
+  assert.deepEqual(onScreen.tabs, [3, 4]);
+  assert.deepEqual(S.splitPanesShown(onScreen, inActive), [true, true]);
+  assert.deepEqual(S.splitPanesShown(shelf.peek("s1"), inActive), [false, false], "s1's panes are hidden now");
+  // A split that somehow still names the other arrangement's tabs draws none of them.
+  assert.deepEqual(S.splitPanesShown({ tabs: [1, 3] }, inActive), [false, true]);
+  // A step-aside (a drag, the stage panel) hides every pane.
+  assert.deepEqual(S.splitPanesShown(onScreen, inActive, true), [false, false]);
+  // The window wires it: park before the incoming tabs activate, take after; layout filters.
+  const src = winSource();
+  const sw = src.slice(src.indexOf("function switchStage"), src.indexOf("function leaveSplit"));
+  assert.ok(sw.indexOf("leaveSplit(doc.active)") >= 0 && sw.indexOf("leaveSplit(doc.active)") < sw.indexOf("showStage(stageId)"),
+    "the outgoing split is parked before the incoming tabs are shown");
+  assert.ok(sw.indexOf("enterSplit(stageId)") > sw.indexOf("showStage(stageId)"), "the incoming split is restored after");
+  const lay = src.slice(src.indexOf("function layout()"), src.indexOf("// ── Split panes"));
+  assert.match(lay, /browserStages\.splitPanesShown\(stage, inActiveStage, viewsAside\(\)\)/);
+  assert.ok(lay.indexOf("inActiveStage(tabs.active)") < lay.indexOf("stageSettle()")
+    && lay.indexOf("stageSettle()") < lay.indexOf("stageAdoptActive()"),
+    "the arrangement hand-back runs first, then the split settles and adopts the active tab");
+  assert.match(lay, /dockIn\.splitRects\(rects\.page, dockSplitState\)/, "the dock-in split pane keeps its own state");
+});
+
+test("a split survives an arrangement round-trip: in this run, and through stages.json", () => {
+  // In-run: parked and taken back intact (tabs, sizes, axis, focus).
+  const shelf = S.createSplitShelf();
+  const split = { axis: "vertical", tabs: [7, 9, 8], sizes: [0.2, 0.5, 0.3], focus: 2 };
+  shelf.park("s1", split);
+  split.tabs.push(99); // the live object moving on does not change what was parked
+  assert.deepEqual(shelf.take("s1"), { axis: "vertical", tabs: [7, 9, 8], sizes: [0.2, 0.5, 0.3], focus: 2 });
+  assert.equal(shelf.take("s1"), null, "taken once");
+  shelf.park("s1", null);
+  assert.equal(shelf.has("s1"), false, "an unsplit arrangement parks nothing");
+
+  // Through the document: tab ids -> indices into the saved tabs -> new ids after a restart.
+  const live = { axis: "vertical", tabs: [12, 10], sizes: [0.25, 0.75], focus: 1 };
+  const savedIds = [10, 11, 12]; // saved tabs a, b, c were live as 10, 11, 12
+  const saved = S.splitToSaved(live, savedIds);
+  assert.deepEqual(saved, { axis: "vertical", panes: [2, 0], sizes: [0.25, 0.75], focus: 1 });
+  let doc = S.defaultDoc();
+  const id = doc.active;
+  const tabsList = [{ url: "https://a.example/" }, { url: "https://b.example/" }, { url: "https://c.example/" }];
+  doc = S.setTabs(doc, id, tabsList, { split: saved }).doc;
+  const dir = tmpDir();
+  const file = path.join(dir, S.FILE_NAME);
+  assert.equal(S.save(file, doc).ok, true);
+  const back = S.load(file).doc.stages[0];
+  assert.deepEqual(back.split, saved);
+  // After a restart the saved tabs open as 40, 41, 42: the split comes back on them.
+  assert.deepEqual(S.splitFromSaved(back.split, [40, 41, 42]),
+    { axis: "vertical", tabs: [42, 40], sizes: [0.25, 0.75], focus: 1 });
+  // A pane whose tab the cap refused drops; one pane left is no split.
+  assert.equal(S.splitFromSaved(back.split, [40, 41, null]), null);
+  // Garbage in the file never wedges the load: out-of-range / repeated panes drop.
+  assert.equal(S.normalizeSplit({ panes: [0, 0] }, 3), null);
+  assert.deepEqual(S.normalizeSplit({ axis: "x", panes: [5, 1, 0], sizes: [1, -1, "z"] }, 3).panes, [1, 0]);
+  // Changing the tab list without a split clears a stale one (its indices would lie).
+  doc = S.setTabs(doc, id, tabsList.slice(0, 2)).doc;
+  assert.equal(doc.stages[0].split, null);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

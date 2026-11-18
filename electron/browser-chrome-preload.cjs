@@ -3,7 +3,19 @@
 // Preload for the Aither Browser's TOOLBAR (browser-chrome.html). The page view
 // has no preload at all; this bridge exists only on the desk's own chrome, and
 // main checks the sender of every call (browser-window.cjs).
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
+
+/** Real on-disk paths of dropped File objects; a text/URL drop has none. */
+function pathsOf(fileList) {
+  const out = [];
+  for (const f of Array.from(fileList || [])) {
+    try {
+      const p = webUtils.getPathForFile(f);
+      if (p) out.push(p);
+    } catch { /* a non-file drop */ }
+  }
+  return out;
+}
 
 contextBridge.exposeInMainWorld("aitherBrowser", {
   state: () => ipcRenderer.invoke("desk:browser-state"),
@@ -13,6 +25,12 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   reload: () => ipcRenderer.send("desk:browser-nav", "reload"),
   stop: () => ipcRenderer.send("desk:browser-nav", "stop"),
   newTab: () => ipcRenderer.invoke("desk:browser-tab-new"),
+  /** "+": a new tab, or "Bring in a terminal…" (the picker, drawn by main). */
+  newTabMenu: () => ipcRenderer.invoke("desk:browser-newtab-menu"),
+  /** The picker on its own (Ctrl+Shift+`): daemon sessions attach, WT tabs resume here. */
+  terminalPicker: () => ipcRenderer.invoke("desk:browser-terminal-picker"),
+  /** A folder/file dropped on the tab strip: opens in Files (paths resolved here). */
+  dropFiles: (fileList) => ipcRenderer.invoke("desk:browser-drop", { paths: pathsOf(fileList), where: "tab" }),
   suggest: (text) => ipcRenderer.invoke("desk:browser-suggest", String(text ?? "")),
   toggleBookmark: () => ipcRenderer.invoke("desk:browser-bookmark"),
   /** The bookmarks bar: open one of the owner's bookmarks; a folder's menu (drawn by main). */
@@ -22,8 +40,13 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   closeTab: (id) => ipcRenderer.send("desk:browser-tab-close", Number(id)),
   popOut: (id) => ipcRenderer.invoke("desk:browser-tab-popout", Number(id)),
   dock: (id) => ipcRenderer.invoke("desk:browser-tab-dock", Number(id)),
-  /** A tab's right-click menu (Pin to canvas, pop out / dock back, close), drawn by main. */
+  /** A tab's right-click menu (Pin to canvas, split, pop out / dock back, close), drawn by main. */
   tabMenu: (id) => ipcRenderer.invoke("desk:browser-tab-menu", Number(id)),
+  /**
+   * Split panes: {op:"split"|"drop", id, side} | {op:"close"|"focus", index} |
+   * {op:"resize", index, x} | {op:"unsplit"} | {op:"drag", on}. main owns the geometry.
+   */
+  split: (op) => ipcRenderer.invoke("desk:browser-split", JSON.stringify(op || {})),
   /** The all-tabs button: every tab as one row, the active one checked, drawn by main. */
   tabsMenu: () => ipcRenderer.invoke("desk:browser-tabs-menu"),
   /**

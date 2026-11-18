@@ -357,8 +357,11 @@ test("the files IPC answers only the local files.html frame, by exact file path"
   const page = pathToFileURL(PAGE_FILE).href;
   assert.equal(senderAllowed({ senderFrame: { url: page } }), true);
   assert.equal(senderAllowed({ senderFrame: { url: `${page}?pane=1#x` } }), true);
+  // The same page as an aither://files pane in the browser (dock-in slice 2).
+  assert.equal(senderAllowed({ senderFrame: { url: "aither://files/?root=C%3A%5Cwork" } }), true);
   for (const bad of ["https://evil.example/files.html", pathToFileURL(path.join(os.tmpdir(), "files.html")).href,
-    `${page.replace(/files\.html$/, "x/files.html")}`, "data:text/html,files.html", ""]) {
+    `${page.replace(/files\.html$/, "x/files.html")}`, "data:text/html,files.html",
+    "aither://secrets/", "aither://files-other/", ""]) {
     assert.equal(senderAllowed({ senderFrame: { url: bad } }), false, bad);
   }
   assert.equal(senderAllowed({}), false);

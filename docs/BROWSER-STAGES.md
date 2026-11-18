@@ -14,7 +14,8 @@ this, and the avatar's is called a Room.
 | `name` | what the switcher shows (unique; ≤ 40 chars) |
 | `workspace` | a slug (`garg`, `aitherium`) or empty for your own session |
 | `tabs` | the tab descriptors to bring back: url, title, kind, owner, pinned, key, label |
-| `splits` | the split-pane layout — carried and validated now, applied by the split-panes slice |
+| `split` | the stage's split of the page area (`{axis, panes, sizes, focus}`, panes are indices into `tabs`) — switching stages parks the outgoing split and restores the incoming one |
+| `splits` | legacy placeholder, still round-tripped |
 | `terminals` | the awsh harness session ids the stage had attached (recorded from the terminal page) |
 | `roots` | file-explorer root ids (validated and stored; wired with the split-panes slice) |
 
@@ -72,4 +73,4 @@ apex.
 * Every stage's tabs count against the browser's 30-tab cap; a suspended tab is still a tab.
 * An agent tab belongs to the stage it was opened in. Switch away and the agent keeps
   driving that (now hidden) tab; its next `browser_open` lands in the stage you are in.
-* Splits and file roots are stored and validated but not yet applied (split-panes slice).
+* File roots are stored and validated but not yet applied. Splits ARE applied: in code the identifier `stage` is the split (browser-panes.cjs); a saved Stage is an *arrangement* (`arrangementSplit`, `splitShelf`).
