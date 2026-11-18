@@ -26,6 +26,7 @@
  */
 
 const agentFairy = require("./agent-fairy.cjs");
+const toolSurface = require("./tool-surface.cjs");
 
 /** A fairy whose source went unreadable is reaped this long after it was last seen. */
 const STALE_MS = 30_000;
@@ -86,13 +87,17 @@ function decisionEntries(cards, nowMs = Date.now()) {
 }
 
 /**
- * Normalise every session source to {id, label, state, harness}. Accepts
+ * Normalise every session source to {id, label, state, harness, detail}. Accepts
  * session-context.liveSessions() Maps (Claude Code tabs, pid-checked) and the awsh
  * daemon's /sessions/unified rows. Ended rows are dropped here.
+ *
+ * `detail` is the daemon's last_activity_summary. That is where a running tool call
+ * is named ("running Bash", "running mcp__aitheros__web_search"), so the fairy can
+ * fly to the surface doing the work (tool-surface.cjs -> fairy-flight.cjs).
  */
 function sessionRows(sources) {
   const out = new Map();
-  const add = (id, label, status, harness) => {
+  const add = (id, label, status, harness, detail = "") => {
     const sid = String(id || "").trim();
     if (!sid || ENDED_RE.test(String(status || "").trim())) return;
     const key = agentFairy.sessionKey(sid);
@@ -102,9 +107,11 @@ function sessionRows(sources) {
     if (prev) {
       if (state === "working") prev.state = "working";
       if (!prev.label && label) prev.label = label;
+      // The daemon row outranks the tab's bare status: it is the one that names the tool.
+      if (!prev.detail && detail) prev.detail = clip(detail, 120);
       return;
     }
-    out.set(key, { key, id: sid, label: clip(label, 40), state, harness: String(harness || "") });
+    out.set(key, { key, id: sid, label: clip(label, 40), state, harness: String(harness || ""), detail: clip(detail, 120) });
   };
   for (const src of Array.isArray(sources) ? sources : [sources]) {
     if (!src) continue;
@@ -121,7 +128,7 @@ function sessionRows(sources) {
       const label = row.name || row.title || row.label || row.harness || "";
       const status = row.status || row.state || "";
       if (row.alive === false || row.live === false) continue;
-      add(id, label, status, row.harness || row.kind || "");
+      add(id, label, status, row.harness || row.kind || "", row.last_activity_summary || row.detail || "");
     }
   }
   return [...out.values()];
@@ -130,11 +137,16 @@ function sessionRows(sources) {
 function sessionEntries(rows) {
   return (Array.isArray(rows) ? rows : []).map((s) => {
     const f = agentFairy.crewFairy(s.key);
+    const call = toolSurface.parseRunning(s.detail);
     return {
       key: `s:${s.key}`, kind: "session", source: "sessions",
       agent: s.key, label: s.label || "Agent session", ...looks(f),
       state: s.state, cardId: "", sessionId: s.id,
-      title: s.state === "working" ? `${s.label || "Session"} is working` : `${s.label || "Session"} is idle`,
+      // The live tool call, when the daemon names one (never from prose: see parseRunning).
+      tool: call ? call.tool : "", surface: call ? call.surface : "",
+      title: call
+        ? `${s.label || "Session"} is using ${call.tool}`
+        : s.state === "working" ? `${s.label || "Session"} is working` : `${s.label || "Session"} is idle`,
       count: 0,
     };
   });

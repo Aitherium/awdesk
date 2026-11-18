@@ -8847,7 +8847,12 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     relayFeedTimer = setInterval(() => { void refreshRelayFeed(); void refreshAgentPresence(); }, 60_000);
     void refreshClusterSessions();
     if (!smokeIsRequested) setTimeout(() => { void ensureAitherBrowserListed(); }, 20_000).unref?.();
-    const clusterSessionsTimer = setInterval(() => { void refreshClusterSessions(); }, 15_000);
+    // 6 s, not 15: this feed is also what makes a fairy visibly fly to the window an
+    // agent's tool call belongs to (tool-surface.cjs -> fairy-flight.cjs), and the
+    // daemon serves a snapshot its background refresher rebuilds every 2 s, so a
+    // 15 s poll simply missed most tool calls. One small request per tick; the
+    // cluster itself only redraws when its fairies change.
+    const clusterSessionsTimer = setInterval(() => { void refreshClusterSessions(); }, 6_000);
     clusterSessionsTimer.unref?.();
     relayFeedTimer.unref?.();
 

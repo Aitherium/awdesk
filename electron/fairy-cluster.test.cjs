@@ -122,3 +122,22 @@ test("platform agents count only while working or waiting; sessions are not doub
   ]);
   assert.deepEqual(e.map((x) => x.key), ["a:atlas"]);
 });
+
+test("a session row's running tool rides the fairy to the surface it belongs to", () => {
+  const entries = cluster.liveEntries({
+    sessions: [[
+      { session_id: "abcdef12-3456", status: "working", harness: "claude", last_activity_summary: "running Bash" },
+      { session_id: "99999999-0000", status: "working", harness: "claude", last_activity_summary: "running mcp__aitheros__web_search" },
+    ]],
+    nowMs: NOW,
+  });
+  const byTool = Object.fromEntries(entries.map((e) => [e.tool, e.surface]));
+  assert.deepEqual(byTool, { Bash: "terminal", "mcp__aitheros__web_search": "browser" });
+  assert.match(entries.find((e) => e.tool === "Bash").title, /is using Bash/);
+  // Prose is not a tool call: the fairy stays home.
+  const prose = cluster.liveEntries({
+    sessions: [[{ session_id: "77777777-0000", status: "working", last_activity_summary: "running tests now" }]],
+    nowMs: NOW,
+  });
+  assert.equal(prose[0].tool, "");
+});
