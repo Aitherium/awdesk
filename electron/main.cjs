@@ -2324,8 +2324,7 @@ async function swarmApi(req = {}) {
       if (op === "state") return engine.state();
       return engine.start({ topic: req.topic, agents: req.agents, rounds: req.rounds });
     }
-    case "visemes":
-      return host.visemes(req.agent, req.weights === undefined ? null : req.weights, req.ttlMs);
+    case "visemes":      return host.visemes(req.agent, req.weights === undefined ? null : req.weights, req.ttlMs);
     case "goblin":
       return host.setAgentForm("gargbot", req.on === false ? "fairy" : "avatar");
     case "perceive":
@@ -2343,6 +2342,9 @@ async function swarmApi(req = {}) {
     case "view":
       // Fine control over the fairies (fairy-control.cjs): mode, kind, radius, select, pin, hide.
       return orbWindow.swarmViewOp(req);
+    case "follow":
+      // "Fairies follow my window" (plan A4), default on: orb.json `follow`.
+      return orbWindow.setFollow(req.on !== false);
     case "stage":
       return host.stageOp(String(req.op || "state"), req);
     case "probe": {
@@ -2424,6 +2426,17 @@ function swarmTrayRows() {
       { label: "Grow every agent", click: run({ action: "forms", form: "avatar" }) },
       { label: "Shrink them all back", click: run({ action: "forms", form: "fairy" }) },
       { label: state.mode === "light" ? "Light mode (terminals stay small)" : "Full mode (everyone grows)", click: run({ action: "mode", mode: state.mode === "light" ? "full" : "light" }) },
+      // Plan A4: the cluster attaches to the window the owner switches to. On by default.
+      {
+        label: "Fairies follow my window",
+        type: "checkbox",
+        checked: (() => { try { return orbWindow.followState(); } catch { return true; } })(),
+        click: (() => {
+          let on = true;
+          try { on = !orbWindow.followState(); } catch { /* the fairy is not up yet */ }
+          return run({ action: "follow", on });
+        })(),
+      },
       { label: "Fairy layout", submenu: swarmLayoutTrayRows(run) },
       { type: "separator" },
       { label: "Stage: join every grown agent", click: () => {

@@ -107,8 +107,43 @@ test("dock picks the nearest edge and lays a strip along it", () => {
   assert.deepEqual(fc.dockOffset(0, 3, "top"), { x: -24, y: 0 });
 });
 
-test("collapsed to one orb there is no window; gather and scatter are centred squares", () => {
-  const area = { x: 0, y: 0, width: 1920, height: 1040 };
+test("dock mode sits ON the taskbar when its rect is known (plan A4)", () => {
+  const area = { x: 0, y: 0, width: 1920, height: 1040 }; // work area: the taskbar is the 40 px below it
+  const taskbar = { x: 0, y: 1040, width: 1920, height: 40 };
+  assert.equal(fc.taskbarEdge(taskbar, area), "bottom");
+  const onBar = fc.boundsFor({ mode: "dock" }, 5, { x: 900, y: 1030 }, area, taskbar);
+  assert.equal(onBar.edge, "bottom");
+  assert.equal(onBar.onTaskbar, true);
+  assert.ok(onBar.y >= 1040 && onBar.y + onBar.height <= 1080, `the strip is inside the taskbar: ${JSON.stringify(onBar)}`);
+  assert.ok(onBar.height <= 40, "never taller than the taskbar");
+  assert.ok(onBar.x >= 0 && onBar.x + onBar.width <= 1920);
+
+  // Without the rect the strip stays inside the work area -- the old behaviour.
+  const noBar = fc.boundsFor({ mode: "dock" }, 5, { x: 900, y: 1030 }, area, null);
+  assert.equal(noBar.onTaskbar, false);
+  assert.ok(noBar.y + noBar.height <= 1040, "inside the work area");
+
+  // A taskbar at the TOP is used for a top dock only.
+  const topBar = { x: 0, y: 0, width: 1920, height: 40 };
+  const topArea = { x: 0, y: 40, width: 1920, height: 1040 };
+  assert.equal(fc.taskbarEdge(topBar, topArea), "top");
+  const top = fc.boundsFor({ mode: "dock" }, 3, { x: 900, y: 45 }, topArea, topBar);
+  assert.equal(top.onTaskbar, true);
+  assert.ok(top.y >= 0 && top.y + top.height <= 40);
+
+  // A known taskbar on a DIFFERENT edge is not used for this dock.
+  const left = fc.boundsFor({ mode: "dock" }, 3, { x: 2, y: 500 }, area, taskbar);
+  assert.equal(left.edge, "left");
+  assert.equal(left.onTaskbar, false);
+
+  // Junk is ignored, never thrown.
+  assert.equal(fc.taskbarEdge(null, area), "");
+  assert.equal(fc.taskbarEdge({ x: "q" }, area), "");
+  assert.equal(fc.taskbarEdge({ x: 0, y: 0, width: 0, height: 0 }, area), "");
+  assert.equal(fc.dockOnTaskbar("bottom", 3, { x: 900, y: 500 }, null, area), null);
+});
+
+test("collapsed to one orb there is no window; gather and scatter are centred squares", () => {  const area = { x: 0, y: 0, width: 1920, height: 1040 };
   assert.equal(fc.boundsFor({ mode: "orb" }, 4, { x: 500, y: 500 }, area), null);
   assert.equal(fc.boundsFor({ mode: "gather" }, 0, { x: 500, y: 500 }, area), null);
   const g = fc.boundsFor({ mode: "gather" }, 4, { x: 500, y: 500 }, area);
