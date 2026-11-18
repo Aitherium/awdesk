@@ -272,6 +272,13 @@ function copilotKey() {
 const launcher = require("./launcher-window.cjs").createLauncher({
   electron: require("electron"),
   registry: commandRegistry,
+  // Owner 2026-11-17: "integrate with alt+space for push to talk too". In talk mode
+  // "hold" the HOLD gesture is push-to-talk (down = listen, keyup = send) and a TAP
+  // still opens the launcher -- the tap/hold split already existed for the radial, so
+  // nothing new is bound and every other talk mode is untouched. Idempotent on both
+  // ends so a second keydown cannot start a second transcription.
+  onHoldStart: () => { if (talkMode() === "hold" && !listeningNow()) toggleListening(); },
+  onHoldEnd: () => { if (talkMode() === "hold" && listeningNow()) toggleListening(); },
   run: (id, arg) => runCommand(id, arg, { surface: "launcher" }),
   ask: (text) => commandAction(text, { source: "launcher" }),
   spirit: null, // @ sends through the spirit.go registry row (a plain sentence = a search trip)
