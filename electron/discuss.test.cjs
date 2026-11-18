@@ -63,8 +63,12 @@ test("sseLineText: data lines only, [DONE] is terminal", () => {
   assert.equal(discuss.sseLineText('data: {"choices":[{"delta":{"content":"one"}}]}'), "one");
   assert.equal(discuss.sseLineText(": keepalive"), "");
   assert.equal(discuss.sseLineText("event: ping"), "");
-  assert.equal(discuss.sseLineText("data: [DONE]"), discuss.sseLineText("data: [DONE]"));
-  assert.notEqual(discuss.sseLineText("data: [DONE]"), "one");
+  // [DONE] must become the terminal sentinel, not text: a client that yielded the word
+  // would speak "DONE" aloud, and one that yielded "" would read on past the sentinel.
+  const done = discuss.sseLineText("data: [DONE]");
+  assert.notEqual(done, "");
+  assert.notEqual(done, "DONE");
+  assert.equal(typeof done, "symbol");
 });
 
 test("the persona prompt keeps the character and the spoken rules", () => {
@@ -157,6 +161,34 @@ test("the next turn streams while the previous line is still being spoken", asyn
   const result = await done;
   assert.equal(result.ok, true);
   assert.deepEqual(result.lines.map((l) => l.agent), ["atlas", "demiurge"]);
+});
+
+test("the generator is released as soon as the queue is back to the pipeline depth", async () => {
+  // Regression: the speaker released the held generator only at `queue.length < depth`,
+  // while `deliver` waits at `> depth`. Landing exactly ON the depth (the normal case once
+  // the queue fills) therefore slept one extra whole TTS clip.
+  const gates = [];
+  const speak = async (agent, text) => {
+    void agent;
+    await new Promise((resolve) => gates.push(resolve));
+    return { ok: true, text };
+  };
+  async function* stream() { for (let n = 1; n <= 8; n += 1) yield `s${n}. `; }
+  const engine = engineWith(stream, speak, { maxQueue: 2 });
+
+  const done = engine.discuss({ topic: "flow", agents: ["atlas"] });
+  await waitUntil(() => engine.state().queued === 3 && engine.state().rendered === 4, { label: "the generator to be held at the depth" });
+  assert.equal(engine.state().speaking, true);
+
+  gates.shift()(); // clip one ends: the queue is now exactly at depth and nothing else moves it
+  await waitUntil(() => engine.state().rendered === 5, {
+    timeoutMs: 500,
+    label: "the generator to be released at exactly the depth (it was held for another clip)",
+  });
+
+  engine.abort("done");
+  for (const resolve of gates.splice(0)) resolve();
+  await done;
 });
 
 test("abort stops generation, aborts the request and drops every queued line", async () => {
@@ -269,6 +301,9 @@ test("the scheduler client streams deltas from an injected SSE response and asks
       'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
       'data: {"choices":[{"delta":{"content":" there."}}]}\n\n',
       "data: [DONE]\n\n",
+      // A real stream can keep the connection after the sentinel (keepalives, or a server
+      // that flushes its tail): anything after [DONE] must never be spoken.
+      'data: {"choices":[{"delta":{"content":" MUST-NOT-BE-YIELDED"}}]}\n\n',
     ]);
     res.statusCode = 200;
     res.headers = { "content-type": "text/event-stream" };

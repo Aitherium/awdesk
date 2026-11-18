@@ -470,7 +470,10 @@ function createDiscussEngine({ stream, speak, postLine = null, now = Date.now, l
         await p;
         continue;
       }
-      if (run.queue.length < depth) releaseSpace(run);
+      // Once the queue is back to the pipeline depth the generator is no longer held
+      // (`deliver` waits while `> depth`), so this must be `<=`, not `<`: with `<` the
+      // generator slept through one more whole TTS clip every time the queue filled.
+      if (run.queue.length <= depth) releaseSpace(run);
       run.speaking = true;
       try {
         const result = await speak(line.agent, line.text);
