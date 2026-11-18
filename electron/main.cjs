@@ -154,6 +154,11 @@ if (kidDesk.allowCdpPort(kidDeskMode()) && /^\d{2,5}$/.test(String(process.env.D
   app.commandLine.appendSwitch("remote-debugging-port", String(process.env.DESK_CDP_PORT));
 }
 const decisionCards = require("./decision-cards.cjs");
+// A decision card as an ACTIONABLE Windows toast (Approve / Later / Open) that asks
+// and never opens a window (A1, attention plan 2026-11-18).
+const cardToast = require("./card-toast.cjs");
+/** The tickets a shown card toast carries: a desk:// link alone cannot answer a card. */
+const cardTickets = cardToast.createTicketStore();
 const sessionContext = require("./session-context.cjs");
 const tuiAnswer = require("./tui-answer.cjs");
 const signedApproval = require("./signed-approval.cjs");
@@ -661,7 +666,6 @@ const {
   desktopAppUrl,
   isAppOpen,
   toggleLivingDesktop,
-  raiseLivingDesktop,
   setShell: setDesktopShell,
   setGhostMode,
   setSolidBackground,
@@ -954,14 +958,6 @@ let relayPoller = null;
 let decisionWatchStop = null;
 // The liveness heartbeat's stop handle (decision-cards.cjs startHeartbeat).
 let deskHeartbeatStop = null;
-// How often an ORDINARY (low|normal) announcement may pull the Inbox open on
-// its own. A high|critical card bypasses this entirely (see announceDecisions):
-// the ask that must not wait out a quiet period is exactly the one whose
-// urgency says so. The window is per app run, not persisted — a restart is a
-// deliberate act, and the desk coming up on "N waiting" IS the surface.
-const INBOX_OPEN_MIN_MS = 10 * 60_000;
-let lastInboxOpenAt = 0;
-const URGENT_URGENCIES = new Set(["high", "critical"]);
 let hyprlandConfigured = false;
 let hyprlandConfiguring = false;
 let hyprlandConfigurationTimer = null;
@@ -1070,6 +1066,12 @@ function showOverlay({ focus = false } = {}) {
   // automatic call still CREATES the window (mic capture and the room stage live
   // in it) but never SHOWS it; only an explicit owner action (focus:true) does.
   if (!focus && companionMode() === "fairy") return;
+  // [stays-hidden 2026-11-18] The owner hid the avatar: it stays hidden across a crash and
+  // a restart (owner: "make sure they don't pop back up when the application crashes and
+  // starts back up"). The hide is saved to desk-companion.json; only an explicit owner
+  // action (focus:true) shows it again, and that clears the saved hide.
+  if (!focus && avatarHiddenByOwner()) return;
+  if (focus) setAvatarHiddenByOwner(false);
   if (window.isMinimized()) window.restore();
   if (focus) {
     if (!window.isVisible()) window.show();
@@ -1085,8 +1087,9 @@ function showOverlay({ focus = false } = {}) {
   if (tray) refreshTrayMenu();
 }
 
-async function hideOverlay() {
+async function hideOverlay({ byOwner = true } = {}) {
   debugLog("hide overlay");
+  if (byOwner) setAvatarHiddenByOwner(true);
   const placement = await getHyprlandWindowPlacement(process.pid);
   if (placement) {
     hyprlandLastPosition = { x: placement.x, y: placement.y };
@@ -1837,8 +1840,63 @@ function handleProtocolUrl(rawUrl) {
     // card the menu does (name, size, SHA-256, networking off) and calls nothing
     // until the owner clicks Detonate on it.
     else if (command.type === "sandbox") { void runSandboxDetonateFromLink(command.url); }
+    else if (command.type === "card-answer") handleCardToastAnswer(command);
   }
   return true;
+}
+
+/** The open card `id`, from the watcher's last list or the store. Shaped card or null. */
+function findOpenCard(id) {
+  if (typeof id !== "string" || !id) return null;
+  try {
+    const cached = openDecisions.find((c) => c && c.id === id);
+    if (cached) return cached;
+  } catch { /* the watcher has not run yet */ }
+  try {
+    return decisionCards.listOpen().find((c) => c && c.id === id) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A decision card's TOAST button came back (desk://card/answer). The toast carries
+ * only ids; the card is re-read here, and an approve goes through answerDeckCard --
+ * the ONE answer path -- so a signed card still opens the Windows Hello window
+ * instead of recording an unsigned answer that approves nothing (A1, critique #3).
+ */
+function handleCardToastAnswer(command) {
+  const cardId = command && command.card;
+  const ticket = command && command.ticket;
+  const action = String((command && command.action) || "").trim().toLowerCase();
+  // A desk:// link is reachable from any page that names it. Only the toast the DESK
+  // showed carries a live ticket, so a guessed link cannot ANSWER a card at all.
+  if (!cardTickets.verify(ticket, cardId)) {
+    debugLog(`[card-toast] refused ${cardId} ${action}: no live toast ticket`);
+    // Opening the card is not an ANSWER, and the toast outlives its ticket: a
+    // toast sits in Action Center past the 10-minute TTL, and the store is in
+    // memory so a desk restart clears every ticket. An owner clicking Open (or
+    // the toast body) on that toast must still get the card, not silence.
+    // Approve and Later stay refused -- they change state and need the proof.
+    if (action === "open" && cardToast.isCardId(cardId)) {
+      openInbox(cardId);
+      return { ok: true, opened: true, via: "toast-expired" };
+    }
+    return { ok: false, reason: "unknown ticket" };
+  }
+  const result = cardToast.dispatchCardAction({
+    cardId,
+    action,
+    choice: command && command.choice,
+    card: findOpenCard(cardId),
+    answer: (id, choice) => answerDeckCard(id, choice, null),
+    open: (id) => openInbox(id),
+    snooze: (id) => snoozeNeedsYou(id),
+    log: debugLog,
+  });
+  if (result.ok && result.via === "answer") debugLog(`[card-toast] answered ${cardId} (${command.choice})`);
+  else if (!result.ok) debugLog(`[card-toast] ${cardId} ${action}: ${result.reason || "not applied"}`);
+  return result;
 }
 
 function handleProtocolArgv(argv) {
@@ -1894,29 +1952,10 @@ function openTalkWindow() {
  *  Every bell, badge and menu item lands here, so there is exactly one place a
  *  notification can be found (owner, 2026-09-13: "no proper notification area").
  *  A card id focuses that card. */
-/** The owner's explicit "no card windows" switch — the same kill-file the awask
- *  side reads (~/.aither/decisions/.popup-off). Split out of cardWindowsMayOpen
- *  so a HIGH-URGENCY card can bypass the auto-open OPT-IN while still honouring
- *  this deliberate off switch: the opt-in defaults off because unrequested
- *  windows are the complaint, but a switch the owner flipped must never be
- *  overridden by urgency. */
-function cardPopupsOff() {
-  try {
-    const off = path.join(require("node:os").homedir(), ".aither", "decisions", ".popup-off");
-    return fs.existsSync(off);
-  } catch {
-    // An unreadable home is not a reason to start popping windows.
-    return true;
-  }
-}
-
-/** May the desk open a card window by ITSELF? Never by default: an
- *  unrequested always-on-top window is the complaint, not the feature. */
-function cardWindowsMayOpen() {
-  if (kidDeskMode().enabled) return false;  // kid mode: the classroom is the only window
-  if (process.env.DESK_CARDS_AUTO_OPEN !== "1") return false;
-  return !cardPopupsOff();
-}
+// (The card auto-open ladder that stood here -- DESK_CARDS_AUTO_OPEN and the
+// ~/.aither/decisions/.popup-off kill-file -- was removed with A1: a card no longer
+// opens a window by itself, so there is no automatic window left to gate. awask
+// still reads the kill-file for its own Tk card window.)
 
 // ── When the desk may raise a surface BY ITSELF (overlay-policy.cjs) ────────────────
 // Report, 2026-10-14: the AitherOS Online overlay "randomly pops up on the side of the
@@ -1958,6 +1997,38 @@ function notifyQuietly(title, body) {
   } catch (error) {
     debugLog("quiet notice failed", error?.message || error);
   }
+}
+
+/** Can a toast carry buttons? Windows only, and only when the desk:// handler is
+ *  registered -- a packaged install (main registers the protocol at ready). An
+ *  unpackaged run gets the plain toast, whose click still opens the card. Kid mode
+ *  never gets buttons: its protocol handler sends every desk:// link to the
+ *  classroom, so an Approve button would be swallowed (card-toast.canCarryActions). */
+function toastActionsAvailable() {
+  try {
+    return cardToast.canCarryActions({
+      platform: process.platform,
+      packaged: app.isPackaged,
+      kidMode: kidDeskMode().enabled,
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** One decision card as an OS toast (A1). The buttons -- the card's own primary
+ *  answer, Later, Open -- come back as desk://card/answer and land in
+ *  answerDeckCard, so a signed card still opens the Windows Hello window. The
+ *  click (Windows body click, or any non-Windows toast) opens the card. This is the
+ *  only thing a card arrival does: it never calls openInbox by itself. */
+function showCardToast(toast) {
+  if (!toast || !toast.cardId) return null;
+  return toaster.show({
+    title: toast.title,
+    body: toast.body,
+    ...(toast.toastXml ? { toastXml: toast.toastXml } : {}),
+    onClick: () => openInbox(toast.cardId),
+  });
 }
 
 /** Persist an overlay settings patch (known keys only) and apply it. */
@@ -2125,6 +2196,31 @@ function computeNeedsYou(cards = openDecisions) {
 // Fairy: the avatar window is not opened at boot, the red Needs-you chip stays
 // down and its count rides on the fairy's badge + its Notifications row instead.
 const COMPANION_FILE = path.join(require("node:os").homedir(), ".aither", "desk-companion.json");
+/** The owner's "Hide avatar", saved beside the companion mode so a crash cannot undo it. */
+function readCompanionFile() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(COMPANION_FILE, "utf8"));
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+function avatarHiddenByOwner() {
+  return readCompanionFile().avatarHidden === true;
+}
+function setAvatarHiddenByOwner(hidden) {
+  const cur = readCompanionFile();
+  if ((cur.avatarHidden === true) === Boolean(hidden)) return;
+  const next = { ...cur, avatarHidden: Boolean(hidden) };
+  try {
+    fs.mkdirSync(path.dirname(COMPANION_FILE), { recursive: true });
+    const tmp = `${COMPANION_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(next));
+    fs.renameSync(tmp, COMPANION_FILE);
+  } catch (error) {
+    debugLog("[stays-hidden] could not save the avatar hide", String((error && error.message) || error));
+  }
+}
 function companionMode() {
   try {
     const raw = JSON.parse(fs.readFileSync(COMPANION_FILE, "utf8"));
@@ -2137,7 +2233,7 @@ function setCompanionMode(mode) {
   const next = mode === "avatar" ? "avatar" : "fairy";
   try {
     fs.mkdirSync(path.dirname(COMPANION_FILE), { recursive: true });
-    fs.writeFileSync(COMPANION_FILE, JSON.stringify({ companion: next }));
+    fs.writeFileSync(COMPANION_FILE, JSON.stringify({ ...readCompanionFile(), companion: next }));   // keeps avatarHidden
   } catch { /* the choice holds for this run */ }
   if (next === "avatar") showOverlay({ focus: false });
   else if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.hide();
@@ -2362,8 +2458,7 @@ async function swarmApi(req = {}) {
       if (op === "state") return engine.state();
       return engine.start({ topic: req.topic, agents: req.agents, rounds: req.rounds });
     }
-    case "visemes":
-      return host.visemes(req.agent, req.weights === undefined ? null : req.weights, req.ttlMs);
+    case "visemes":      return host.visemes(req.agent, req.weights === undefined ? null : req.weights, req.ttlMs);
     case "goblin":
       return host.setAgentForm("gargbot", req.on === false ? "fairy" : "avatar");
     case "perceive":
@@ -2395,6 +2490,9 @@ async function swarmApi(req = {}) {
     case "view":
       // Fine control over the fairies (fairy-control.cjs): mode, kind, radius, select, pin, hide.
       return orbWindow.swarmViewOp(req);
+    case "follow":
+      // "Fairies follow my window" (plan A4), default on: orb.json `follow`.
+      return orbWindow.setFollow(req.on !== false);
     case "stage":
       return host.stageOp(String(req.op || "state"), req);
     case "probe": {
@@ -2476,6 +2574,17 @@ function swarmTrayRows() {
       { label: "Grow every agent", click: run({ action: "forms", form: "avatar" }) },
       { label: "Shrink them all back", click: run({ action: "forms", form: "fairy" }) },
       { label: state.mode === "light" ? "Light mode (terminals stay small)" : "Full mode (everyone grows)", click: run({ action: "mode", mode: state.mode === "light" ? "full" : "light" }) },
+      // Plan A4: the cluster attaches to the window the owner switches to. On by default.
+      {
+        label: "Fairies follow my window",
+        type: "checkbox",
+        checked: (() => { try { return orbWindow.followState(); } catch { return true; } })(),
+        click: (() => {
+          let on = true;
+          try { on = !orbWindow.followState(); } catch { /* the fairy is not up yet */ }
+          return run({ action: "follow", on });
+        })(),
+      },
       { label: "Fairy layout", submenu: swarmLayoutTrayRows(run) },
       { type: "separator" },
       { label: "Stage: join every grown agent", click: () => {
@@ -3022,7 +3131,7 @@ function enforceActiveCharacterRating() {
     if (!swap.from) writeAudienceSwap({ from: active, at: new Date().toISOString() });
     if (!standIn) {
       debugLog("audience: the resident body is not for this audience and no stand-in is chosen; hiding the body");
-      void hideOverlay();
+      void hideOverlay({ byOwner: false });   // automatic: never the owner's sticky hide
       return true;
     }
     debugLog("audience: swapping the resident to the stand-in", standIn);
@@ -4846,7 +4955,6 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     // When the desk may raise the overlay by itself (overlay-policy.cjs, cast.json overlay).
     case "desktop.overlay.auto-start": return void toggleOverlaySetting("autoOpenOnStart");
     case "desktop.overlay.edge-reveal": return void toggleOverlaySetting("edgeReveal");
-    case "desktop.overlay.raise-on-notify": return void toggleOverlaySetting("raiseOnNotifications");
     case "desktop.overlay.dnd": return void toggleOverlaySetting("doNotDisturb");
     case "desktop.space-home": return void toggleOverlaySetting("spaceHome");
     case "window.outline": return void toggleWindowOutline();
@@ -8821,7 +8929,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         }
         // A needs-you card LEADS the spoken line, backlog or not (needs-you.cjs):
         // a credential cannot be answered by voice, so it is said, not asked.
-        // The window ladder below still runs -- speaking is not raising.
+        // Speaking is not raising: the toast below is all a card arrival does.
         // Only on the backlog line or when a needs-you card is among the NEW ones:
         // an unrelated CI notice must not re-say the credential every time
         // (the hourly reminder below carries the repeat).
@@ -8839,7 +8947,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
               : `${n} decisions need you. The latest is: ${title}.`);
         // A NEW card is a spoken question the owner can answer out loud
         // (voice-card.cjs); a backlog, a muted mic or an ask already waiting
-        // keeps the plain announcement. The Inbox opens below either way.
+        // keeps the plain announcement. The toast below carries the answers.
+        // `silent` (A5): a P0 escalation is saying the line instead; nothing here
+        // speaks over the alarm.
         if (!silent) {
           if (spokeNeedsYou) {
             speakNeedsYou(list, isBacklog); // silent while the mic is muted
@@ -8851,44 +8961,34 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         }
         // WHICH card leads decides how loud the desk may be (owner, 2026-10-05:
         // a card "needs to actually come up in awdesk … not a separate thing").
-        // The NEWEST actionable card's urgency is the lever:
         //
-        //   high|critical -> open/focus the Inbox the moment it lands. The
-        //     throttle below is bypassed on purpose: a critical ask that waited
-        //     out a quiet period is the pile-up this whole plane exists to end.
-        //     The owner's own kill-file still wins — urgency may lift the
-        //     auto-open OPT-IN, never a switch they flipped deliberately.
-        //   low|normal -> one Inbox open per INBOX_OPEN_MIN_MS, and only when
-        //     the owner opted in (DESK_CARDS_AUTO_OPEN=1, no .popup-off).
-        // Owner, 2026-10-04: "decision cards still pop out on their own" — the
-        // bell, the tray count and the line above ARE the prompt, and the desk
-        // Inbox replaced the per-card Tk pop-out that used to spawn from here
-        // (up to three topmost windows beside the desk — the separate dialogue).
-        const newest = list.reduce(
-          (best, c) => (c && c.createdAt >= ((best && best.createdAt) ?? -1) ? c : best), null,
-        ) || lead;
-        const urgent = URGENT_URGENCIES.has(
-          String((newest && newest.urgency) || "normal").toLowerCase(),
-        );
-        const nowMs = Date.now();
-        // overlay-policy.cjs (2026-10-14): raising a window for a card is a
-        // NOTIFICATION trigger -- off by default (overlay.raiseOnNotifications) and
-        // silenced by Do not disturb; the card then lands as a tray balloon instead.
+        // A1 (attention plan, 2026-11-18): the card lands as an ACTIONABLE Windows
+        // toast -- the card's own primary answer / Later / Open -- and NOTHING opens
+        // a window by itself. The high|critical auto-open ladder that stood here is
+        // GONE (it called openInbox on arrival): an always-on-top window taking
+        // focus mid-keystroke was the owner's complaint, not the fix. The button
+        // comes back through the desk:// protocol into answerDeckCard; Open (or the
+        // bell, the tray, the chip) is the owner's own tap. Do not disturb still
+        // silences it, and so does the companion's quiet mode (the fairy's "be quiet"
+        // from its menu or the tray) -- a card toast is an unsolicited popup like any
+        // other, so it waits the same way; the badge and the tray still carry the card.
         try {
-          const mayRaise = !nowModeActive() && !cardPopupsOff() && overlayMayRaise(overlayPolicy.TRIGGERS.NOTIFICATION, "inbox");
-          if (urgent) {
-            if (mayRaise) {
-              openInbox(newest && newest.id ? newest.id : null);
-              raiseLivingDesktop();               // an already-open overlay comes forward too
-              lastInboxOpenAt = nowMs;
-            } else if (!overlaySettings().doNotDisturb && !nowModeActive()
-              && !orbWindow.carriesCards()) {
-              // (a fairy on screen carries it instead: the balloon was one more popup)
-              notifyQuietly("Aither — a decision needs you", String((newest && newest.title) || title).slice(0, 200));
-            }
-          } else if (mayRaise && cardWindowsMayOpen() && nowMs - lastInboxOpenAt >= INBOX_OPEN_MIN_MS) {
-            openInbox();                          // backlog: ONE console, no 30-popup storm
-            lastInboxOpenAt = nowMs;
+          let quietUntil = 0;
+          try { quietUntil = orbWindow.quietUntil(); } catch { quietUntil = 0; }
+          const verdict = cardToast.cardToastAllowed({
+            quietUntil, nowMode: nowModeActive(), doNotDisturb: overlaySettings().doNotDisturb,
+          });
+          if (!verdict.allow) {
+            debugLog(`[card-toast] ${list.length} card(s) held: ${verdict.reason}`);
+          } else {
+            // A backlog announces its best card once; the rest are the badge's.
+            cardToast.announceCards(list, {
+              max: isBacklog ? 1 : cardToast.MAX_CARD_TOASTS,
+              actionable: toastActionsAvailable(),
+              mintTicket: (card) => cardTickets.mint(card && card.id),
+              notify: showCardToast,
+              log: debugLog,
+            });
           }
         } catch { /* best-effort */ }
       } catch { /* a prompt must never crash the poll */ }

@@ -278,12 +278,6 @@ const COMMANDS = Object.freeze([
     type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.edgeReveal),
   }),
   Object.freeze({
-    id: "desktop.overlay.raise-on-notify", label: "Bring the overlay forward for notifications",
-    menuLabel: "Bring the overlay forward for notifications",
-    group: "desktop", surfaces: ["tray", "palette"],
-    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.raiseOnNotifications),
-  }),
-  Object.freeze({
     id: "desktop.overlay.dnd", label: "Do not disturb", menuLabel: "Do not disturb",
     group: "desktop", surfaces: ["tray", "palette"],
     type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.doNotDisturb),

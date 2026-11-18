@@ -65,6 +65,25 @@ test("desk://browse carries one http(s) page to the desk's Aither Browser, nothi
   assert.equal(parseProtocolUrl("other://browse?url=https%3A%2F%2Fx.test"), null);
 });
 
+test("desk:///card/answer carries a decision-card toast button (A1)", () => {
+  assert.deepEqual(parseProtocolUrl("desk://card/answer?card=d-1&action=approve&choice=yes&ticket=tkt-1234567"), [
+    { type: "card-answer", card: "d-1", action: "approve", choice: "yes", ticket: "tkt-1234567" },
+  ]);
+  assert.deepEqual(parseProtocolUrl("desk:///card/answer?card=d-2&action=open"), [
+    { type: "card-answer", card: "d-2", action: "open", choice: "", ticket: "" },
+  ]);
+  // The link only NAMES an action; main checks the ticket, re-reads the card and
+  // validates the choice.
+  assert.deepEqual(parseProtocolUrl("desk://card/answer?card=d-3&action=later"), [
+    { type: "card-answer", card: "d-3", action: "later", choice: "", ticket: "" },
+  ]);
+  // A traversal-shaped card id is refused here, before it ever names a file.
+  assert.equal(parseProtocolUrl("desk://card/answer?card=..%2F..%2Fetc&action=open"), null);
+  assert.equal(parseProtocolUrl("desk://card/answer?action=open"), null);
+  assert.equal(parseProtocolUrl("desk://card/other?card=d-1&action=open"), null);
+  assert.equal(parseProtocolUrl("other://card/answer?card=d-1&action=open"), null);
+});
+
 test("desk://sandbox/detonate carries a file to the SAME confirm flow, and needs one", () => {
   const file = "C:\\Users\\owner\\Downloads\\invoice.pdf";
   const url = `desk://sandbox/detonate?path=${encodeURIComponent(file)}`;

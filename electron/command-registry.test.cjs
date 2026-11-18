@@ -621,9 +621,12 @@ test("now-mode hides the needs-you chip and the balloon, and lapses on its own",
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.match(main, /case "now-mode":\s*nowModeUntil = arg === "on" \? Date\.now\(\) \+ NOW_MODE_TTL_MS : 0;/);
   assert.match(main, /hidden: overlaySettings\(\)\.doNotDisturb \|\| nowModeActive\(\)/);
-  // The balloon also stays down while the fairy carries the card (2026-11-08).
-  // 2026-11-16: whenever the desk's fairy cluster carries cards, in either companion mode.
-  assert.match(main, /!overlaySettings\(\)\.doNotDisturb && !nowModeActive\(\)\s*&& !orbWindow\.carriesCards\(\)\) \{[^]*?notifyQuietly\(/);
+  // Now mode still silences the automatic surface: the card arrival is an
+  // actionable toast (A1, 2026-11-18) and it stays down in now-mode and under
+  // Do not disturb -- the chip, not a popup, is what remains. The quiet doors are
+  // asked in one place (card-toast.cardToastAllowed), which includes now-mode.
+  assert.match(main, /cardToast\.cardToastAllowed\(\{[\s\S]*?nowMode: nowModeActive\(\)/);
+  assert.match(main, /cardToast\.announceCards\(list, \{/);
   const internal = require("./browser-internal.cjs");
   const link = internal.deepLinkOf(internal.parseInternalUrl("aither://cards/?mode=now"));
   assert.deepEqual(link, { mode: "now" });

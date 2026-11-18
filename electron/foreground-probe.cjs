@@ -2,17 +2,25 @@
 
 /**
  * foreground-probe.cjs -- where the focused window is, cheaply, for the swarm to stay
- * off its content (owner 2026-11-16). One long-lived PowerShell reads a line, answers a
- * line (a spawn per sample is ~200 ms of startup; host-context.cjs's one-shot probe is
- * for questions, this is for a loop). Windows only: elsewhere it answers null forever.
+ * off its content (owner 2026-11-16) and for the cluster to follow the window the
+ * owner is working in (plan A4). One long-lived PowerShell reads a line, answers a
+ * line (a spawn per sample is ~200 ms of startup; host-context.cjs's one-shot probe
+ * is for questions, this is for a loop). Windows only: elsewhere it answers null
+ * forever.
  *
  * The probe runs only while someone is watching (start/stop), so a hidden swarm costs
  * nothing. Coordinates leave here in DIPs (screen.screenToDipPoint), the unit the
  * windows use. A probe that cannot start answers null and stays quiet.
+ *
+ * Each answer also names the window (hwnd, pid), says whether Windows reports "do not
+ * interrupt" / a full-screen app (the quiet field), and reports a change when the
+ * WINDOW or the quiet state changes even if the rect did not move -- following the
+ * focus needs that, where avoiding its content did not.
  */
 
 const { spawn } = require("node:child_process");
 const fairyControl = require("./fairy-control.cjs");
+const spiritProbe = require("./spirit-probe.cjs");
 
 const SCRIPT = `
 $ErrorActionPreference = 'SilentlyContinue'
@@ -23,10 +31,15 @@ using System.Runtime.InteropServices;
 using System.Text;
 public class AitherFg {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
+  [DllImport("user32.dll")] public static extern bool GetMonitorInfo(IntPtr hm, ref MONITORINFO mi);
+  [DllImport("shell32.dll")] public static extern int SHQueryUserNotificationState(out int state);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
@@ -44,14 +57,24 @@ while ($true) {
   [void][AitherFg]::GetClassName($h, $c, 128)
   $t = New-Object System.Text.StringBuilder 160
   [void][AitherFg]::GetWindowText($h, $t, 160)
-  [pscustomobject]@{ ok = $true; x = $r.L; y = $r.T; w = ($r.R - $r.L); h = ($r.B - $r.T); cls = $c.ToString(); title = $t.ToString() } | ConvertTo-Json -Compress
+  $wpid = 0
+  [void][AitherFg]::GetWindowThreadProcessId($h, [ref]$wpid)
+  $q = 0
+  [void][AitherFg]::SHQueryUserNotificationState([ref]$q)
+  $mi = New-Object AitherFg+MONITORINFO
+  $mi.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf($mi)
+  $mon = [AitherFg]::MonitorFromWindow($h, 2)
+  [void][AitherFg]::GetMonitorInfo($mon, [ref]$mi)
+  [pscustomobject]@{ ok = $true; x = $r.L; y = $r.T; w = ($r.R - $r.L); h = ($r.B - $r.T); cls = $c.ToString(); title = $t.ToString(); hwnd = $h.ToInt64(); pid = $wpid; quns = $q; mx = $mi.rcMonitor.Left; my = $mi.rcMonitor.Top; mw = ($mi.rcMonitor.Right - $mi.rcMonitor.Left); mh = ($mi.rcMonitor.Bottom - $mi.rcMonitor.Top) } | ConvertTo-Json -Compress
 }
 `;
 
 /**
  * createForegroundProbe({spawnImpl, toDip, onChange, intervalMs})
- *   onChange(rect|null): the focused window's {x,y,width,height} in DIPs, or null (none,
- *   the desktop, minimised, or no probe). Called only when it moved by more than 3 px.
+ *   onChange(rect|null): the focused window in DIPs -- {x,y,width,height,title} plus
+ *   {hwnd, pid, cls, quiet} -- or null (none, the desktop, minimised, or no probe).
+ *   Called when the window changed, when it moved by more than 3 px, or when its
+ *   quiet state changed.
  */
 function createForegroundProbe({
   spawnImpl = spawn,
@@ -72,7 +95,11 @@ function createForegroundProbe({
   const exits = [];
 
   function emit(rect) {
-    if (fairyControl.sameRect(rect, last)) return;
+    // A new window or a new quiet verdict is a change even when the rect is identical.
+    if (last && rect && fairyControl.sameRect(rect, last)
+      && Number(last.hwnd || 0) === Number(rect.hwnd || 0)
+      && String(last.quiet || "") === String(rect.quiet || "")) return;
+    if (!last && !rect) return; // "nothing in front" twice is not a change
     last = rect;
     try { onChange(rect); } catch { /* a listener bug stays there */ }
   }
@@ -83,7 +110,21 @@ function createForegroundProbe({
     if (!raw) return emit(null);
     const a = toDip({ x: raw.x, y: raw.y });
     const b = toDip({ x: raw.x + raw.width, y: raw.y + raw.height });
-    emit({ x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y, title: raw.title });
+    // Windows' own "do not interrupt" answer, from the same sample: a full-screen app
+    // or game must never be something the cluster rides (plan A4).
+    const quiet = spiritProbe.quietFromAnswer({
+      ok: true,
+      quns: raw.quns,
+      className: raw.cls,
+      pid: raw.pid,
+      rect: { x: raw.x, y: raw.y, width: raw.width, height: raw.height },
+      monitor: raw.monitor,
+    }, { excludePid: process.pid });
+    emit({
+      x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y,
+      title: raw.title, hwnd: raw.hwnd, pid: raw.pid, cls: raw.cls,
+      quiet: quiet.quiet ? String(quiet.reason || "a full-screen app") : "",
+    });
   }
 
   function ensureChild() {

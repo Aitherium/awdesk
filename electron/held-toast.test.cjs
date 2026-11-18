@@ -63,6 +63,13 @@ test("a click handler that throws or rejects is logged, not thrown", async () =>
   assert.deepEqual(lines, ["toast click failed: boom", "toast click failed: later"]);
 });
 
+test("a toastXml (Windows action buttons) reaches the Notification options", () => {
+  const { N, made } = fakeNotification();
+  const t = createToaster({ Notification: N });
+  t.show({ title: "a", body: "b", toastXml: "<toast><actions /></toast>" });
+  assert.equal(made[0].opts.toastXml, "<toast><actions /></toast>");
+});
+
 test("unsupported toasts return null and never construct a Notification", () => {
   const { N, made } = fakeNotification({ supported: false });
   assert.equal(createToaster({ Notification: N }).show({ title: "a", body: "b" }), null);
