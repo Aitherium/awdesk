@@ -42,3 +42,16 @@ test("the Scene mounts the reporter, and the sampler module exists with a test",
   assert.ok(fs.existsSync(path.join(__dirname, "..", "src", "perf", "frameGap.ts")));
   assert.ok(fs.existsSync(path.join(__dirname, "..", "src", "perf", "frameGap.test.ts")));
 });
+
+test("the idle FPS mirror: Scene IDLE_FPS equals toolkit-core FRAME.idle", () => {
+  // toolkit-core.cjs says FRAME.idle "mirrors src/components/Scene.tsx IDLE_FPS (asserted by
+  // both test files)" — but until now no test read both ends, and the constant is duplicated.
+  // A drift silently restores the 2026-11-18 lag (idle animation at the wrong speed), which is
+  // the exact bug this slice fixes, so pin both.
+  const scene = read(path.join("..", "src", "components", "Scene.tsx"));
+  const m = /const IDLE_FPS = (\d+);/.exec(scene);
+  assert.ok(m, "Scene.tsx defines IDLE_FPS");
+  assert.equal(Number(m[1]), require("./toolkit-core.cjs").FRAME.idle,
+    "Scene IDLE_FPS must equal toolkit-core FRAME.idle");
+  assert.equal(Number(m[1]), 15, "idle is 15 fps (the S1 lag fix); deep idle stays 2");
+});
