@@ -6694,6 +6694,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     console.warn("[desk] support reports not started:", err?.message || err);
   }
   app.on("second-instance", (_event, argv) => {
+    // A keepalive knock (logon shim, desk alive but stalled) is no request: never show a thing.
+    if (argv.includes("--keepalive")) return;
     // Kid mode: whatever the second launch asked for (--open-deck, --fleet, --console,
     // --run=, a desk:// link), the child gets their classroom and nothing else.
     if (kidDeskMode().enabled) {

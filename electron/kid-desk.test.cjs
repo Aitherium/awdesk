@@ -278,7 +278,9 @@ test("the Space door adds no window, preload, IPC, bridge or environment read", 
 function handlerHead(src, event) {
   const at = src.indexOf(`app.on("${event}"`);
   assert.ok(at > 0, `main.cjs registers ${event}`);
-  return src.slice(at, at + 400);
+  // 700, not 400: the second-instance head now starts with the one-line keepalive no-op
+  // (keepalive-knock.test.cjs), which pushed handleProtocolArgv past a 400-char window.
+  return src.slice(at, at + 700);
 }
 
 test("main.cjs routes every roster read through the kid gate and stops before adult boot", () => {
