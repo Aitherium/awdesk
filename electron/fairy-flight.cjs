@@ -150,11 +150,13 @@ function createFlightPlanner({ mergeMs = MERGE_MS, maxCallMs = MAX_CALL_MS } = {
       const returningAll = [];
       for (const [id, row] of ended) {
         if (live.has(id)) { ended.delete(id); continue; }
-        if (now - row.endedAt >= mergeMs) { ended.delete(id); continue; }
-        returningAll.push({
-          at: row.endedAt,
-          flight: flightFor({ ...row.call, index: 0 }, { surfaces, cluster, nowMs: row.endedAt, state: "return" }),
-        });
+        // The trip home has to LAND before it merges: a far window's leg can take
+        // longer than mergeMs, and a re-plan in between (a post, a card, the 6 s feed)
+        // must not delete it mid-air. The caller's wake-up already waits
+        // durationMs + mergeMs, so these two agree.
+        const flight = flightFor({ ...row.call, index: 0 }, { surfaces, cluster, nowMs: row.endedAt, state: "return" });
+        if (now - row.endedAt >= mergeMs + flight.durationMs) { ended.delete(id); continue; }
+        returningAll.push({ at: row.endedAt, flight });
       }
       if (reducedMotion) {
         return { flights: [], returning: [], hover: [], throttled: [...live.keys()], reducedMotion: true };

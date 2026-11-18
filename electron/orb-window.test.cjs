@@ -2411,3 +2411,31 @@ test("the veil page eases the tool flights itself and honours reduced motion", (
   assert.match(veil, /prefers-reduced-motion: reduce/, "the OS setting is respected inside the page too");
   assert.match(veil, /state\.flights = Array\.isArray\(s\.flights\)/, "main hands over the legs once");
 });
+
+test("hiding the fairy takes its working sub-fairies off the screen at once", () => {
+  startAttention();
+  const files = new FakeWindow({ title: "Aither Files", x: 100, y: 100, width: 800, height: 600 });
+  files.loadFile(path.join(__dirname, "files.html"));
+  files.showInactive();
+  orbWindow.setClusterSessions([[{ session_id: "abcdef12-3456", status: "working", harness: "claude", last_activity_summary: "running Read" }]]);
+  const veil = FakeWindow.all.find((w) => !w.destroyed && w.opts.title === "Aither spirit trail");
+  assert.ok(veil && veil.isVisible(), "the flight is on screen");
+  orbWindow.hideOrb();
+  assert.equal(veil.isVisible(), false, "no frozen sub-fairy outlives the fairy it came from");
+});
+
+test("Fairy flights (reduced motion) is a row on the fairy's own menu and it is remembered", async () => {
+  startAttention();
+  assert.equal(orbWindow.setReducedMotion(false).reducedMotion, false);
+  await invoke("desk:orb-menu", orbWin());
+  await invoke("desk:menu-pick", menuWin(), "more");
+  const rows = lastSent(menuWin(), "orb:menu").items.filter((i) => !i.sep).map((i) => i.id);
+  assert.ok(rows.includes("spirit:flights"), `the setting is reachable: ${rows.join(", ")}`);
+  assert.equal((await invoke("desk:menu-pick", menuWin(), "spirit:flights")).ok, true, "the row runs");
+  assert.equal(orbWindow.flightPlan().reducedMotion, true, "reduced motion on: no flight");
+  assert.equal(JSON.parse(fs.readFileSync(STATE, "utf8")).reducedMotion, true, "remembered in orb.json");
+  await invoke("desk:orb-menu", orbWin());
+  await invoke("desk:menu-pick", menuWin(), "more");
+  assert.match(lastSent(menuWin(), "orb:menu").items.find((i) => i.id === "spirit:flights").label,
+    /off \(reduced motion\)/, "the row says what it now does");
+});

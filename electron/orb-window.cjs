@@ -1485,6 +1485,9 @@ function hideOrb({ auto = false } = {}) {
   sendPanel();
   const was = state.visible;
   state.visible = false;
+  // The tool flights have no fairy to come from any more: take their overlay down
+  // now, not on the next session tick (a frozen sub-fairy must not outlive the fairy).
+  try { updateToolFlights(); } catch { /* cosmetic */ }
   if (was) {
     saveState();
     notifyCompanions();
@@ -3919,6 +3922,9 @@ function spiritRows() {
     { id: "spirit:home", label: "Back to its corner", run: () => { void sendHome(); } },
     // The nudge chime (owner 2026-11-08): on by default, remembered in orb.json.
     { id: "spirit:sounds", label: `Fairy sounds: ${state.sounds === false ? "off" : "on"}`, run: () => { setSounds(state.sounds === false); } },
+    // Tool flights (2026-11-18): the sub-fairies that fly to the window a call belongs
+    // to. Off = reduced motion: a still glow, never a flight. Remembered in orb.json.
+    { id: "spirit:flights", label: `Fairy flights: ${state.reducedMotion === true ? "off (reduced motion)" : "on"}`, run: () => { setReducedMotion(state.reducedMotion !== true); } },
     ...(reg.byId("quick.open") ? [{ id: "spirit:quick", label: "Quick menu", run: () => { void runCommandImpl?.("quick.open"); } }] : []),
     { sep: true },
     // The fairy IS the owner's sprite: its own rows sit on its own menu.

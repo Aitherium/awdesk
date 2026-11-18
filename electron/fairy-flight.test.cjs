@@ -57,6 +57,20 @@ test("a call that finishes sends its sub-fairy home, then merges", () => {
   assert.deepEqual(planner.size(), { live: 0, returning: 0 });
 });
 
+test("a far window's trip home is not deleted mid-air by a re-plan before it lands", () => {
+  const planner = flight.createFlightPlanner({ mergeMs: 900 });
+  const far = { ...SURFACES, browser: { x: 2600, y: 200, width: 1000, height: 800 } };
+  planner.plan([call("b", "WebSearch", "browser")], { surfaces: far, cluster: CLUSTER, nowMs: NOW });
+  const home = planner.plan([], { surfaces: far, cluster: CLUSTER, nowMs: NOW + 1_000 });
+  const dur = home.returning[0].durationMs;
+  assert.ok(dur > 900, `the leg from a far window outlasts mergeMs (${dur} ms)`);
+  // Any unrelated update (an agent post, a card) re-plans while the fairy is flying.
+  const mid = planner.plan([], { surfaces: far, cluster: CLUSTER, nowMs: NOW + 1_000 + 900 });
+  assert.equal(mid.returning.length, 1, "still flying home, never deleted mid-air");
+  const after = planner.plan([], { surfaces: far, cluster: CLUSTER, nowMs: NOW + 1_000 + dur + 900 });
+  assert.equal(after.returning.length, 0, "merged once it has landed and rested");
+});
+
 test("a missing target window makes the fairy hover just outside the cluster", () => {
   const plan = flight.planFlights({
     calls: [call("a", "Read", "files")], surfaces: { ...SURFACES, files: null }, cluster: CLUSTER, nowMs: NOW,
