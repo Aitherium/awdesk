@@ -83,6 +83,11 @@ const everyday = require("./browser-everyday.cjs");
 // is the only one that touches Electron's `components`, and it is inert on stock Electron.
 const widevineMod = require("./browser-widevine.cjs");
 const workspaceMod = require("./browser-workspace.cjs");
+// STAGES: a named, saved arrangement of this window's tabs (and, later, its splits and
+// terminal sessions) bound to one workspace. Its own file, userData/stages.json --
+// browser-layout.json drops any key it does not name, so a stage document written there
+// would vanish on the next read. Pure model and store: browser-stages.cjs.
+const browserStages = require("./browser-stages.cjs");
 const { createSurfaceState } = require("./surface-state.cjs");
 let knowledgeImpl = null;
 function knowledgeClient() {
@@ -193,9 +198,15 @@ let dragging = false;
  * Not persisted: a restart never comes back in edit mode.
  */
 let editingLayout = false;
-/** Page views give the chrome page the whole window (a drag, or edit-layout mode). */
+/**
+ * The stage switcher's panel is open (the chrome's stage button). Page views are native
+ * children drawn OVER the chrome page, so the panel needs the page area to itself -- the
+ * same step-aside a gutter drag and edit-layout use. Not persisted.
+ */
+let stagingMenu = false;
+/** Page views give the chrome page the whole window (a drag, edit-layout, the stage panel). */
 function viewsAside() {
-  return dragging || editingLayout;
+  return dragging || editingLayout || stagingMenu;
 }
 
 /**
@@ -381,13 +392,16 @@ function activeView() {
 }
 
 /**
- * Every tab, with what the strip shows. This is the OWNER's view (the strip, the
- * panel); an agent gets agentTabView(tabList()), which withholds the owner's tabs.
+ * The tabs of the ACTIVE stage, with what the strip shows. This is the OWNER's view (the
+ * strip, the panel); an agent gets agentTabView(tabList()), which withholds the owner's
+ * tabs. A suspended stage's tabs are not here: they are not on screen, not clickable and
+ * not what the agent is looking at. Switching stages is what brings them back.
  */
 function tabList() {
   const snap = tabs.snapshot();
   const ownerSession = electron().session.fromPartition(PARTITION);
-  return snap.tabs.map((t) => {
+  const active = activeStageId();
+  return snap.tabs.filter((t) => tabStage(t.id) === active).map((t) => {
     const view = viewOf(t.id);
     const tab = tabs.get(t.id) || {};
     const url = view ? view.webContents.getURL() : (discarded.get(t.id) || {}).url || "";
@@ -429,6 +443,10 @@ function state() {
     agent: gate.snapshot(),
     contextPush: lastContextPush,
     tabs: tabList(),
+    // The stage switcher (left of the strip): every stage, the one you are in, and what
+    // its workspace binding really means right now (stageScope().live / .reason).
+    stages: { list: browserStages.list(getStages()), active: activeStageId(),
+      scope: stageScope(), warnings: stagesWarn },
     bookmarked: getLibrary().isBookmarked(wc.getURL()),
     // The chrome page's own height (the bookmarks bar adds a row) and that bar's contents.
     chromeHeight: chromeHeight(),
@@ -606,7 +624,9 @@ function layout() {
   const now = Date.now();
   for (const [id, view] of views) {
     if (!alive(view) || popped.has(id)) continue;
-    const shown = id === tabs.active && !viewsAside();
+    // Only the ACTIVE stage's active tab is on screen. A suspended stage's views stay
+    // alive but placed hidden -- switching back is a filter change, not a reload.
+    const shown = id === tabs.active && !viewsAside() && inActiveStage(id);
     if (shown) shownAt.set(id, now);
     placeView(view, shown, rects.page);
   }
@@ -909,6 +929,269 @@ function userDataPath(...parts) {
   return path.join(electron().app.getPath("userData"), ...parts);
 }
 
+/* ── stages: the window's tab arrangement, bound to a workspace ─────────────────── */
+
+/**
+ * Stages are the owner's arrangements (browser-stages.cjs): each holds its own tab
+ * strip. A tab carries `tab.stage` -- the stage it was opened in -- and the strip, the
+ * page area and every "the active tab" read only see the ACTIVE stage's tabs. Switching
+ * is therefore a filter change, not a teardown: the outgoing stage's views stay alive in
+ * `views`, detached from the window and invisible (layout() places them off), so
+ * switching back is instant and nothing reloads. A stage whose tabs are not live yet
+ * (first switch this run, or after a restart) is opened from the document on demand.
+ *
+ * The document is userData/stages.json, never browser-layout.json (see the module header).
+ */
+let stagesDoc = null;
+let stagesWarn = [];
+let stagesSaveTimer = null;
+function stagesFile() {
+  return userDataPath(browserStages.FILE_NAME);
+}
+function getStages() {
+  if (stagesDoc) return stagesDoc;
+  const read = browserStages.load(stagesFile());
+  stagesDoc = read.doc;
+  stagesWarn = read.warnings;
+  return stagesDoc;
+}
+/** Persist the document (debounced: a switch and a close come in bursts). */
+function saveStagesSoon() {
+  clearTimeout(stagesSaveTimer);
+  stagesSaveTimer = setTimeout(() => {
+    stagesSaveTimer = null;
+    const r = browserStages.save(stagesFile(), getStages());
+    if (!r.ok) stagesWarn = [`stages: could not be saved (${r.error})`];
+  }, 600);
+  if (typeof stagesSaveTimer.unref === "function") stagesSaveTimer.unref();
+}
+/** Write now (the window is closing: a debounced timer would never fire). */
+function flushStages() {
+  clearTimeout(stagesSaveTimer);
+  stagesSaveTimer = null;
+  const r = browserStages.save(stagesFile(), getStages());
+  if (!r.ok) stagesWarn = [`stages: could not be saved (${r.error})`];
+  return r;
+}
+function setStages(doc) {
+  stagesDoc = browserStages.normalizeDoc(doc);
+  saveStagesSoon();
+  return stagesDoc;
+}
+function activeStageId() {
+  return getStages().active;
+}
+/** The stage a tab belongs to. A tab opened before stages existed belongs to the active one. */
+function tabStage(id) {
+  const tab = id == null ? null : tabs.get(id);
+  return (tab && tab.stage) || activeStageId();
+}
+function inActiveStage(id) {
+  return tabStage(id) === activeStageId();
+}
+
+/**
+ * The workspace this desk is in, as a slug the owner would type ("garg", "aitherium").
+ * The signed workspace POLICY wins (it is the thing that can create a partition); without
+ * one, the desk tenant's own subdomain is the workspace the pages come from, and the
+ * apex is aitherium.
+ */
+function signedWorkspace() {
+  try {
+    const fromPolicy = String(getWorkspace().policy.tenantId() || "").toLowerCase();
+    if (/^[a-z0-9][a-z0-9._-]{0,63}$/.test(fromPolicy)) return fromPolicy;
+  } catch { /* no policy: fall through to the desk tenant */ }
+  try {
+    const tenant = deskTenant.currentTenant();
+    const host = tenant && tenant.host ? String(tenant.host).toLowerCase() : "";
+    // The apex IS the aitherium workspace; no tenant config is the same desk.
+    if (!host || host === deskTenant.APEX_HOST) return "aitherium";
+    if (host.endsWith(`.${deskTenant.APEX_HOST}`)) {
+      const slug = host.slice(0, -(deskTenant.APEX_HOST.length + 1)).split(".").pop();
+      if (/^[a-z0-9][a-z0-9._-]{0,63}$/.test(slug)) return slug;
+    }
+  } catch { /* treated as no tenant */ }
+  return "";
+}
+
+/** Which session the ACTIVE stage's tabs load under (browser-stages.resolveScope). */
+function stageScope() {
+  const stage = browserStages.activeStage(getStages());
+  let workPartition;
+  try { workPartition = getWorkspace().policy.partition() || null; } catch { workPartition = null; }
+  return browserStages.resolveScope(stage.workspace, { signed: signedWorkspace(), workPartition, ownerPartition: PARTITION });
+}
+
+/** A tab descriptor for the document: what openTab needs to bring the tab back. */
+function tabDescriptor(id) {
+  const tab = tabs.get(id);
+  if (!tab || tab.private) return null; // InPrivate is never remembered
+  const view = viewOf(id);
+  const parked = discarded.get(id) || {};
+  const url = view ? view.webContents.getURL() : parked.url || (tab.viewSpec || {}).url || "";
+  if (!url) return null;
+  return {
+    url,
+    title: view ? view.webContents.getTitle() : parked.title || "",
+    kind: tab.kind || "web",
+    by: tab.by,
+    pinned: Boolean(tab.pinned),
+    key: tab.key || null,
+    label: tab.label || "",
+  };
+}
+
+/** Write a stage's LIVE strip back into the document (before leaving it, or on close). */
+function captureStage(stageId = activeStageId()) {
+  const ids = tabs.tabs.filter((t) => tabStage(t.id) === stageId).map((t) => t.id);
+  const list = ids.map(tabDescriptor).filter(Boolean);
+  const r = browserStages.setTabs(getStages(), stageId, list);
+  if (r.ok) setStages(r.doc);
+  return r.ok;
+}
+
+/**
+ * Bring a stage's saved tabs back. Only when the stage has no live tab at all: a live
+ * tab is the tab, and re-opening it would fork its history. Returns the id of the last
+ * one opened (the one to show), or null.
+ */
+function openStageTabs(stageId) {
+  const stage = browserStages.find(getStages(), stageId);
+  if (!stage) return null;
+  let lastId = null;
+  for (const d of stage.tabs) {
+    const by = d.by === "agent" ? "agent" : "you";
+    const r = openTab(by, d.url, { stage: stageId, activate: false, pinned: d.pinned, key: d.key || null,
+      label: d.label || "", hostedPartition: d.kind === "hosted" ? onlinePartition() : null });
+    if (r.ok) lastId = r.id;
+  }
+  return lastId;
+}
+
+/**
+ * Make `stageId` the stage on screen: its live tabs if it has any (they were suspended,
+ * not closed), its saved tabs if it has never been shown this run, or a home page if it
+ * is empty. Returns how many tabs it has. Another stage's popped-out windows come home
+ * first -- a popped tab is its own window, and what it shows must not outlive its stage.
+ */
+function showStage(stageId) {
+  for (const id of [...popped.keys()]) {
+    if (tabStage(id) !== stageId) dockTab(id, { quiet: true });
+  }
+  const collect = () => tabs.tabs.filter((t) => tabStage(t.id) === stageId && !popped.has(t.id)).map((t) => t.id);
+  let live = collect();
+  let pick = null;
+  if (!live.length) {
+    pick = openStageTabs(stageId);
+    live = collect();
+  }
+  if (!live.length) {
+    const home = openTab("you", homeUrl(), { stage: stageId });
+    if (home.ok) { live = [home.id]; pick = home.id; }
+  }
+  const anyLive = live.length ? live : tabs.tabs.filter((t) => tabStage(t.id) === stageId).map((t) => t.id);
+  const show = pick != null && anyLive.includes(pick) ? pick : anyLive[0];
+  if (show != null) tabs.activate(show);
+  return anyLive.length;
+}
+
+/**
+ * Switch the window to another stage. The outgoing strip is written to the document,
+ * its views are suspended (still alive, off the window), the incoming stage's live tabs
+ * are shown again -- or, the first time, opened from the document. Nothing is destroyed,
+ * so switching back is instant.
+ */
+function switchStage(stageId) {
+  const doc = getStages();
+  const target = browserStages.find(doc, stageId);
+  if (!target) return { ok: false, error: `no stage called ${stageId}` };
+  if (doc.active === stageId) return { ok: true, changed: false };
+  captureStage(doc.active);
+  const set = browserStages.setActive(getStages(), stageId);
+  if (!set.ok) return set;
+  setStages(set.doc);
+  const count = showStage(stageId);
+  layout();
+  pushState();
+  return { ok: true, changed: true, active: stageId, tabs: count };
+}
+
+/**
+ * The switcher's verbs (the chrome's stage button, the palette). Same shape as
+ * layoutAction: null when the action is not one of ours, {ok} otherwise.
+ */
+function stageAction(action, arg) {
+  const parse = () => {
+    if (arg && typeof arg === "object") return arg;
+    try { return JSON.parse(String(arg || "")); } catch { return null; }
+  };
+  const done = (result) => {
+    if (!result || !result.ok) return result || { ok: false, error: "refused" };
+    layout();
+    pushState();
+    return { ok: true };
+  };
+  switch (action) {
+    case "menu":
+      // The chrome's stage panel opened or closed: the page views step aside (they are
+      // native children drawn over the chrome page, so a panel would be under them).
+      stagingMenu = arg === true || arg === "true";
+      layout();
+      return { ok: true, open: stagingMenu };
+    case "switch":
+      return switchStage(String(arg || ""));
+    case "create": {
+      const o = parse() || {};
+      captureStage();
+      const r = browserStages.create(getStages(), { name: o.name, workspace: o.workspace, at: o.at });
+      if (!r.ok) return r;
+      // The new stage starts EMPTY -- no tabs are inherited from the one you left -- but a
+      // blank window reads as broken: it opens its home page, like a fresh window does.
+      setStages(r.doc);
+      const home = openTab("you", homeUrl(), { stage: r.stage.id });
+      if (home.ok) tabs.activate(home.id);
+      return done({ ok: true });
+    }
+    case "rename": {
+      const o = parse() || {};
+      const r = browserStages.rename(getStages(), o.id || activeStageId(), o.name);
+      if (!r.ok) return r;
+      setStages(r.doc);
+      return done(r);
+    }
+    case "delete": {
+      const id = String(arg || "");
+      const wasActive = id === activeStageId();
+      const r = browserStages.remove(getStages(), id);
+      if (!r.ok) return r;
+      // The stage's views go with it: nothing hidden keeps a page alive.
+      for (const tab of [...tabs.tabs]) if (tabStage(tab.id) === id) closeTab(tab.id, "you");
+      setStages(r.doc);
+      // Deleting the stage you were in lands you on the neighbour, tabs and all.
+      if (wasActive) showStage(browserStages.activeStage(getStages()).id);
+      return done({ ok: true });
+    }
+    case "move": {
+      const o = parse() || {};
+      const r = browserStages.move(getStages(), o.id || activeStageId(), { index: o.index == null ? null : Number(o.index), by: Number(o.by) || 0 });
+      if (!r.ok) return r;
+      setStages(r.doc);
+      return done(r);
+    }
+    case "assign": {
+      const o = parse() || {};
+      // The binding decides the session of the tabs opened FROM NOW ON; a tab already open
+      // keeps the session it loaded in (its cookies cannot be moved between partitions).
+      const r = browserStages.assignWorkspace(getStages(), o.id || activeStageId(), o.workspace);
+      if (!r.ok) return r;
+      setStages(r.doc);
+      return done(r);
+    }
+    default:
+      return null;
+  }
+}
+
 // The managed browser (browser-workspace.cjs, docs/WORKSPACE-POLICY.md): the signed
 // workspace policy, its work partition, the mesh door, the watermark and the audit spool.
 // `workspaceSeam` is the smoke's (a test key, a local policy source); never set in the app.
@@ -1103,13 +1386,14 @@ function forgetTabExtras(id) {
 }
 
 /** An InPrivate tab: the in-memory partition, hardened like the others, no history. */
-function openPrivateTab(url, { activate = true, after = null } = {}) {
+function openPrivateTab(url, { activate = true, after = null, stage = null } = {}) {
   const { session } = electron();
   hardenSession(session.fromPartition(everyday.INPRIVATE_PARTITION));
   const added = tabs.add("you", { activate, after, kind: "web" });
   if (!added.ok) return added;
   const tab = tabs.get(added.id);
   tab.private = true;
+  tab.stage = stage || activeStageId();
   tab.label = "";
   tab.viewSpec = { kind: "web", paneId: null, partition: null, webPartition: everyday.INPRIVATE_PARTITION, url };
   const view = createPageView("web", { paneId: null }, null, everyday.INPRIVATE_PARTITION);
@@ -2271,6 +2555,9 @@ function adoptPopup(openerId, verdict, options, url, root = openerId) {
     tab.label = "";
     tab.popup = true;
     tab.popupRoot = root;
+    // A popup belongs to the stage that opened it, whatever stage is active by the time
+    // it lands (a link from a suspended stage's page must not appear in another's strip).
+    tab.stage = tabStage(openerId);
     if (verdict.private) tab.private = true;
     // Chromium made the popup in its opener's session; a discarded popup comes back in the same one.
     tab.viewSpec = { kind: "web", paneId: null, partition: null, webPartition: (opener.viewSpec || {}).webPartition || PARTITION,
@@ -2625,6 +2912,23 @@ function dockAction(action, arg) {
   return { ok: false, error: `no dock action ${action}` };
 }
 terminalWindow.setDockHost({ run: dockAction });
+
+/**
+ * A shell came or went in the terminal page: record the id on the STAGE that is active,
+ * so switching stages (now or after a restart) says which sessions that stage was using.
+ * The dock itself is one page per window -- the record is what makes it a stage's.
+ */
+function noteStageTerminal(sessionId, action) {
+  const id = String(sessionId || "");
+  if (!id) return;
+  const stage = browserStages.find(getStages(), activeStageId());
+  if (!stage) return;
+  const set = new Set(stage.terminals);
+  if (action === "attach") set.add(id); else set.delete(id);
+  const r = browserStages.setContext(getStages(), activeStageId(), { terminals: [...set] });
+  if (r.ok) setStages(r.doc);
+}
+terminalWindow.setSessionWatcher(noteStageTerminal);
 
 /** The terminal dock along the bottom (an aither://terminal page), created once per window. */
 function ensureDock() {
@@ -3002,7 +3306,7 @@ function ensureTaskbar() {
  * @returns {{ok: true, id: number, view: object} | {ok: false, error: string}}
  */
 function openTab(by, url, { activate = true, after = null, pinned = false, key = null, label = "",
-  hostedPartition = null, kind: wantKind = null, private: inPrivate = false } = {}) {
+  hostedPartition = null, kind: wantKind = null, private: inPrivate = false, stage = null } = {}) {
   if (!win || win.isDestroyed()) return { ok: false, error: "The Aither Browser is not open." };
   // InPrivate: the owner's, web pages only, on the in-memory partition (nothing on disk,
   // no history, no passwords, no session restore). An agent never opens one.
@@ -3010,7 +3314,7 @@ function openTab(by, url, { activate = true, after = null, pinned = false, key =
     if (by !== "you") return { ok: false, error: "only you open InPrivate tabs" };
     const privTarget = classify(url);
     if (privTarget.kind !== "web" && privTarget.kind !== "hosted") return { ok: false, error: "InPrivate opens web pages only" };
-    return openPrivateTab(privTarget.url, { activate, after });
+    return openPrivateTab(privTarget.url, { activate, after, stage });
   }
   // Aitherium's own apps open natively (owner 2026-11-08): an aitherium.com URL a pane
   // declares in `web` becomes its aither:// page. Owner tabs only -- an agent never gets
@@ -3044,12 +3348,21 @@ function openTab(by, url, { activate = true, after = null, pinned = false, key =
   // partition; an agent asking for a private app is refused before a tab exists.
   const work = kind === "web" ? getWorkspace().gateOpen({ by, url: target.url }) : {};
   if (work.error) return { ok: false, error: work.error };
-  const webPartition = work.partition || (kind === "extension" ? PARTITION : agentSessions.partitionFor({
-    by, url: target.url, sites: getPrefs().agentCookieSites, ownerPartition: PARTITION, agentPartition: AGENT_PARTITION,
-  }));
+  // The ACTIVE STAGE's workspace binding decides the session an owner web tab rides
+  // (stages): a stage bound to the workspace this desk is signed into, with a policy in
+  // force, loads its tabs in that workspace's partition -- separate cookies, separate
+  // history -- and `stageScope().live` says whether that is really what happened. An
+  // unbound stage, another workspace, or no policy all land on the owner's own session.
+  const scope = by === "you" && kind === "web" ? stageScope() : null;
+  const webPartition = work.partition || (kind === "extension" ? PARTITION : scope && scope.live && scope.workspace
+    ? scope.partition
+    : agentSessions.partitionFor({
+      by, url: target.url, sites: getPrefs().agentCookieSites, ownerPartition: PARTITION, agentPartition: AGENT_PARTITION,
+    }));
   const added = tabs.add(by, { activate, after, kind, pinned, key });
   if (!added.ok) return added;
   const tab = tabs.get(added.id);
+  tab.stage = stage || activeStageId();
   tab.paneId = target.paneId;
   tab.label = label;
   if (kind === "internal") ensureInternalSession();
@@ -3278,7 +3591,15 @@ function closeTab(id, by = "you") {
     view.webContents.close();
   }
   if (before && before.private) clearPrivateIfLast();
+  // The strip is the ACTIVE stage's: closing the last tab of one stage must not hand the
+  // window to a tab in another (TabSet picks the next tab in the whole list).
+  if (!inActiveStage(tabs.active)) {
+    const next = tabs.tabs.find((t) => tabStage(t.id) === activeStageId() && !popped.has(t.id));
+    if (next) tabs.activate(next.id);
+  }
   if (tabs.tabs.length === 0 && win && !win.isDestroyed()) openTab("you", homeUrl());
+  // The document follows the strip: a closed tab is not brought back by a later switch.
+  captureStage(before && before.stage ? before.stage : activeStageId());
   layout();
   pushState();
   if (before && before.by === "you" && !before.private) touchSync();
@@ -3327,7 +3648,7 @@ function popOutTab(id) {
 }
 
 /** Bring a popped-out tab's view back into the browser and close its window. */
-function dockTab(id, { closing = false } = {}) {
+function dockTab(id, { closing = false, quiet = false } = {}) {
   const pop = popped.get(id);
   popped.delete(id);
   const view = views.get(id);
@@ -3337,7 +3658,9 @@ function dockTab(id, { closing = false } = {}) {
     win.contentView.addChildView(view);
     if (alive(panelView)) win.contentView.addChildView(panelView);
     if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
-    tabs.activate(id);
+    // `quiet` is the stage switch bringing another stage's popped tab home: it must not
+    // become the tab on screen (layout() keeps a suspended stage's views hidden).
+    if (!quiet) tabs.activate(id);
   }
   if (pop && !closing && !pop.isDestroyed()) pop.close();
   layout();
@@ -3639,7 +3962,13 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     if (act && runBrowserAction(act.action, act.arg, tabs.active)) event.preventDefault();
   });
   // Session restore: what was open is written as the window closes (before the views go).
-  win.on("close", () => { if (getPrefs().restoreSession !== false) getSessionStore().flush(tabList()); });
+  win.on("close", () => {
+    // Both stores take what the window holds: the strip (session restore) and the ACTIVE
+    // stage's tabs (stages.json), so a switch back after a restart finds this one as it was.
+    captureStage();
+    flushStages();
+    if (getPrefs().restoreSession !== false) getSessionStore().flush(tabList());
+  });
 
   tabs = new TabSet();
   panelView = createAssistantPanel(WebContentsView);
@@ -4261,6 +4590,13 @@ function wireIpc() {
   ipcMain.handle("desk:browser-tab-menu", (event, id) => (fromChrome(event) ? tabMenu(Number(id)) : { ok: false }));
   // The all-tabs button beside +: the way to any tab once the strip scrolls.
   ipcMain.handle("desk:browser-tabs-menu", (event) => (fromChrome(event) ? tabsMenu() : { ok: false }));
+  // The stage switcher left of the strip (browser-stages.cjs): switch / create / rename /
+  // move / delete / assign workspace. Only the browser's own chrome, like the strip.
+  ipcMain.handle("desk:browser-stage", (event, action, arg) => {
+    if (!fromChrome(event)) return { ok: false, error: "not the browser's own chrome" };
+    const verdict = stageAction(String(action || ""), arg);
+    return verdict || { ok: false, error: "unknown stage action" };
+  });
   // aither://canvas: its boards, widgets and live app cards (browser-canvas.cjs).
   getCanvas().wire(ipcMain);
   ipcMain.handle("desk:browser-navigate", async (event, input) => {

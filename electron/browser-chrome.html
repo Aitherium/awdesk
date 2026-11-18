@@ -195,7 +195,7 @@
      SCROLLS (the wheel scrolls it sideways, the active tab is kept in view, a faded edge
      says more is there) and the all-tabs button lists every tab. + and the all-tabs
      button sit OUTSIDE the scroller, so they never scroll away. */
-  #tabbar { height: 34px; display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0; background: var(--bg-deep, var(--bg)); }
+  #tabbar { position: relative; height: 34px; display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px 0; background: var(--bg-deep, var(--bg)); }
   .tabs { flex: 0 1 auto; min-width: 0; height: 30px; display: flex; align-items: flex-end; gap: 2px;
     overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain; }
   .tabs.more-left { -webkit-mask-image: linear-gradient(to right, transparent, #000 28px); mask-image: linear-gradient(to right, transparent, #000 28px); }
@@ -229,6 +229,35 @@
   #tabsall { font-size: 13px; }
   #tabsall[hidden] { display: none; }
   #newtab:hover, #tabsall:hover { color: var(--fg); background: var(--surface-900, var(--panel)); }
+  /* STAGES: the switcher, left of the tabs. The dot is the workspace binding: hollow =
+     your own session, lit = this stage's workspace, amber = bound to a workspace this
+     desk is not in (its tabs open in your own session; the tooltip says so). */
+  #stagebtn { display: flex; align-items: center; gap: 5px; height: 26px; max-width: 176px; margin-bottom: 2px;
+    padding: 0 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--btn);
+    color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; flex: none; }
+  #stagebtn:hover { border-color: var(--primary, #7cd); }
+  #stagebtn .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--surface-500); flex: none; }
+  #stagebtn.bound .dot { background: var(--primary, #7cd); }
+  #stagebtn.away .dot { background: var(--warning); }
+  #stagebtn .caret { color: var(--muted); font-size: 10px; flex: none; }
+  #stagename { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  /* The panel floats over the page area: main steps the page views aside while it is open
+     (they are native children drawn over this page, so a panel would be underneath them). */
+  #stagepanel { position: absolute; top: 34px; left: 0; z-index: 50; width: 312px; max-height: 72vh; overflow: auto;
+    padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-deep, var(--bg));
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .45); font-size: 12px; display: grid; gap: 6px; }
+  #stagepanel[hidden] { display: none; }
+  #stagepanel .srow { display: flex; align-items: center; gap: 4px; }
+  #stagepanel input { flex: 1; min-width: 0; height: 26px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--fg); padding: 0 8px; font: inherit; font-size: 12px; }
+  #stagepanel button { height: 26px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--btn); color: var(--fg); cursor: pointer; font: inherit; font-size: 12px; flex: none; }
+  #stagepanel button:hover { border-color: var(--primary, #7cd); }
+  #stagepanel button:disabled { opacity: .4; cursor: default; }
+  #stagepanel .srow button.sw { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #stagepanel .srow button.sw.on { border-color: var(--primary, #7cd); }
+  #stagepanel .srow .meta { color: var(--muted); font-size: 11px; flex: none; }
+  #stagepanel .note { color: var(--muted); font-size: 11px; line-height: 15px; }
   .bar { height: 44px; display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
   .bar button { height: 30px; min-width: 30px; border-radius: 8px; border: 1px solid var(--line);
     background: var(--btn); color: var(--fg); cursor: pointer; }
@@ -323,6 +352,29 @@
   <div id="editor" hidden aria-label="Edit layout"></div>
   <div id="top">
   <div id="tabbar">
+    <!-- STAGES (browser-stages.cjs): a named tab arrangement, bound to a workspace. Left
+         of the tabs on purpose -- it says which set of tabs the strip is showing. -->
+    <button id="stagebtn" title="Stages: your saved tab arrangements, one per workspace" aria-label="Stages" aria-haspopup="true" aria-expanded="false">
+      <span class="dot"></span><span id="stagename">Stage 1</span><span class="caret">&#9662;</span>
+    </button>
+    <div id="stagepanel" hidden role="dialog" aria-label="Stages">
+      <div id="stages-list"></div>
+      <div class="srow">
+        <input type="text" id="stage-name" maxlength="40" placeholder="Stage name" aria-label="Stage name" />
+        <button id="stage-new" title="Save the tabs on screen as a new stage">New</button>
+        <button id="stage-rename" title="Rename the stage you are in to the name above">Rename</button>
+      </div>
+      <div class="srow">
+        <input type="text" id="stage-ws" maxlength="64" placeholder="Workspace (garg, aitherium)" aria-label="Workspace for this stage" />
+        <button id="stage-assign" title="Load this stage's tabs in that workspace's session">Assign</button>
+      </div>
+      <div class="srow">
+        <button id="stage-up" title="Move this stage earlier in the switcher" aria-label="Move stage earlier">&#8593;</button>
+        <button id="stage-down" title="Move this stage later in the switcher" aria-label="Move stage later">&#8595;</button>
+        <button id="stage-delete" title="Delete the stage you are in (its tabs close)">Delete stage</button>
+      </div>
+      <div class="note" id="stage-note"></div>
+    </div>
     <div id="tabs" class="tabs" role="tablist" aria-label="Tabs"></div>
     <button id="newtab" title="New tab" aria-label="New tab">+</button>
     <button id="tabsall" hidden title="All tabs" aria-label="All tabs" aria-haspopup="menu">&#8964;</button>
@@ -382,6 +434,109 @@
   $("reload").onclick = () => api.reload();
   $("newtab").onclick = () => api.newTab();
   $("star").onclick = () => api.toggleBookmark();
+
+  // ── stages (browser-stages.cjs): one named tab arrangement per workspace ────────────
+  // The button says which stage the strip is showing; the panel lists them, switches on
+  // click, and edits the stage you are in. A switch suspends the one you leave (its pages
+  // stay alive), so coming back is instant.
+  let stagesNow = { list: [], active: null, scope: null, warnings: [] };
+  let stageOpen = false;
+  const stageScopeText = (scope) => {
+    if (!scope || !scope.workspace) return "This stage uses your own browsing session.";
+    return scope.live ? `Workspace ${scope.workspace}: tabs you open here load in its own session.`
+      : (scope.reason || `Workspace ${scope.workspace}.`);
+  };
+  async function setStagePanel(open) {
+    stageOpen = Boolean(open);
+    $("stagepanel").hidden = !stageOpen;
+    $("stagebtn").setAttribute("aria-expanded", String(stageOpen));
+    // Main steps the page views aside so the panel is visible over the page area.
+    await api.stage("menu", stageOpen);
+    if (stageOpen) {
+      const activeRow = (stagesNow.list || []).find((s) => s.active);
+      $("stage-name").value = activeRow ? activeRow.name : "";
+      $("stage-ws").value = (stagesNow.scope && stagesNow.scope.workspace) || "";
+      renderStageList();
+    }
+  }
+  const closeStagePanel = () => { if (stageOpen) void setStagePanel(false); };
+  async function stageVerb(action, arg, done) {
+    const r = await api.stage(action, arg);
+    if (r && r.ok) { $("err").textContent = done || ""; return r; }
+    if (r) $("err").textContent = r.error || "refused";
+    return r;
+  }
+  $("stagebtn").onclick = (e) => { e.stopPropagation(); void setStagePanel(!stageOpen); };
+  $("stagepanel").onclick = (e) => e.stopPropagation();
+  document.addEventListener("click", closeStagePanel);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && stageOpen) { e.preventDefault(); closeStagePanel(); }
+  });
+  $("stage-new").onclick = async () => {
+    const name = $("stage-name").value.trim();
+    const ws = $("stage-ws").value.trim();
+    const r = await stageVerb("create", { name, workspace: ws }, name ? `New stage ${name}` : "New stage");
+    if (r && r.ok) { $("stage-name").value = ""; closeStagePanel(); }
+  };
+  $("stage-rename").onclick = async () => {
+    const name = $("stage-name").value.trim();
+    if (!name) { $("stage-name").focus(); return; }
+    const r = await stageVerb("rename", { id: stagesNow.active, name }, `Renamed to ${name}`);
+    if (r && r.ok) $("stage-name").value = "";
+  };
+  $("stage-assign").onclick = async () => {
+    const ws = $("stage-ws").value.trim();
+    const r = await stageVerb("assign", { id: stagesNow.active, workspace: ws }, ws ? `Stage bound to ${ws}` : "Stage unbound");
+    if (r && r.ok) renderStageList();
+  };
+  $("stage-up").onclick = () => stageVerb("move", { id: stagesNow.active, by: -1 }, "Stage moved");
+  $("stage-down").onclick = () => stageVerb("move", { id: stagesNow.active, by: 1 }, "Stage moved");
+  $("stage-delete").onclick = async () => {
+    const r = await stageVerb("delete", stagesNow.active, "Stage deleted");
+    if (r && r.ok) closeStagePanel();
+  };
+  $("stage-name").onkeydown = (e) => { if (e.key === "Enter") $("stage-new").click(); };
+  $("stage-ws").onkeydown = (e) => { if (e.key === "Enter") $("stage-assign").click(); };
+  /** The stage rows: click to switch, the active one lit, its workspace beside it. */
+  function renderStageList() {
+    const box = $("stages-list");
+    box.textContent = "";
+    const list = stagesNow.list || [];
+    for (const s of list) {
+      const row = document.createElement("div");
+      row.className = "srow";
+      const sw = document.createElement("button");
+      sw.className = "sw" + (s.active ? " on" : "");
+      sw.textContent = s.name; // never innerHTML
+      sw.title = s.workspace ? `${s.name} -- workspace ${s.workspace}, ${s.tabs} saved tab(s)` : `${s.name} -- ${s.tabs} saved tab(s)`;
+      sw.onclick = async () => {
+        if (s.active) { closeStagePanel(); return; }
+        const r = await stageVerb("switch", s.id, `Stage: ${s.name}`);
+        if (r && r.ok) closeStagePanel();
+      };
+      row.append(sw);
+      if (s.workspace) {
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        meta.textContent = s.workspace;
+        row.append(meta);
+      }
+      box.append(row);
+    }
+    $("stage-delete").disabled = list.length <= 1;
+    $("stage-note").textContent = stageScopeText(stagesNow.scope)
+      + (stagesNow.warnings && stagesNow.warnings.length ? ` ${stagesNow.warnings[0]}` : "");
+  }
+  function renderStages(st) {
+    if (st) stagesNow = st;
+    const active = (stagesNow.list || []).find((s) => s.active);
+    $("stagename").textContent = active ? active.name : "Stage";
+    const scope = stagesNow.scope || {};
+    $("stagebtn").classList.toggle("bound", Boolean(scope.workspace && scope.matched));
+    $("stagebtn").classList.toggle("away", Boolean(scope.workspace && !scope.matched));
+    $("stagebtn").title = stageScopeText(scope) + " Click for every stage.";
+    if (stageOpen) renderStageList();
+  }
   // Edge parity: the more-menu, the key, the zoom badge, find on page, notices.
   $("more").onclick = () => api.menu();
   $("pwkey").onclick = () => api.passwords();
@@ -1279,6 +1434,7 @@
     if (!s) return;
     renderRail(s.rail, s.tabs);
     renderTabs(s.tabs);
+    renderStages(s.stages);
     $("star").innerHTML = s.bookmarked ? "&#9733;" : "&#9734;";
     $("star").classList.toggle("on", Boolean(s.bookmarked));
     $("star").setAttribute("aria-pressed", String(Boolean(s.bookmarked)));

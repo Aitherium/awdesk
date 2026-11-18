@@ -26,6 +26,15 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   tabMenu: (id) => ipcRenderer.invoke("desk:browser-tab-menu", Number(id)),
   /** The all-tabs button: every tab as one row, the active one checked, drawn by main. */
   tabsMenu: () => ipcRenderer.invoke("desk:browser-tabs-menu"),
+  /**
+   * STAGES -- the switcher left of the strip: a named tab arrangement bound to a
+   * workspace. `menu` (true/false) steps the page views aside while the panel is open;
+   * the rest are the model's verbs: switch <id>, create {name, workspace},
+   * rename {id, name}, move {id, index|by}, delete <id>, assign {id, workspace}.
+   * A switch suspends the stage you leave (its views stay alive) and restores the one
+   * you enter. Answers {ok} or {ok:false, error}.
+   */
+  stage: (action, arg) => ipcRenderer.invoke("desk:browser-stage", String(action ?? ""), arg ?? ""),
   /** "Share with agent": an owner tab's URL and title reach the agent only while shared. */
   shareTab: (id, on) => ipcRenderer.invoke("desk:browser-tab-share", Number(id), Boolean(on)),
   /**
