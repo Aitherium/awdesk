@@ -71,6 +71,8 @@ const overlayMod = require("./browser-overlay.cjs");
 const deskTenant = require("./desk-tenant.cjs");
 const tenantApps = require("./tenant-apps.cjs");
 const tabDiscard = require("./tab-discard.cjs");
+// Split panes ("stages"): the pure layout math for two or three side-by-side pages.
+const panes = require("./browser-panes.cjs");
 const terminalWindow = require("./terminal-window.cjs");
 const agentSessions = require("./browser-agent-cookies.cjs");
 // The layout document (pane sides, presets, the rail's arrangement, detached bounds,
@@ -193,10 +195,29 @@ let dragging = false;
  * Not persisted: a restart never comes back in edit mode.
  */
 let editingLayout = false;
+/**
+ * A tab is being dragged onto the page area to split it (browser-chrome.html's tab
+ * drag). The page views step aside for the gesture -- a view under the cursor would
+ * swallow the drop -- and the chrome page draws the left/right drop zones.
+ */
+let stageDragging = false;
 /** Page views give the chrome page the whole window (a drag, or edit-layout mode). */
 function viewsAside() {
-  return dragging || editingLayout;
+  return dragging || editingLayout || stageDragging;
 }
+
+/**
+ * The split ("stage") of the page area -- owner, 2026-11-18: "one container with
+ * tabs and splits". `null` is the ordinary window: exactly one page, exactly as
+ * before. Otherwise `{axis, tabs: [tabId], sizes: [fraction], focus: index}`:
+ * `tabs[i]` is the tab pane i shows, `sizes` are its shares of the page area
+ * (browser-panes.cjs owns the math) and `focus` is the pane the address bar and
+ * the tab strip follow. Every pane is its own WebContentsView; layout() gives each
+ * the rect of its pane and hides every tab outside the stage.
+ */
+let stage = null;
+/** The last layoutPanes() answer: state() and the divider drag read one geometry. */
+let splitGeometry = null;
 
 /**
  * Panes in their own windows (desk-layout DETACHABLE: the assistant panel, the terminal
@@ -404,6 +425,9 @@ function tabList() {
       title: view ? view.webContents.getTitle() : (discarded.get(t.id) || {}).title || "",
       loading: view ? view.webContents.isLoading() : false,
       popped: popped.has(t.id),
+      // The split pane this tab shows in (0, 1, 2), or -1 when the page is not split
+      // or this tab is not one of its panes.
+      pane: stageHas(t.id) ? stage.tabs.indexOf(t.id) : -1,
       shared: t.by === "you" && tabs.isShared(t.id, url),
       // An AGENT tab riding the OWNER's cookies because its site is allowed
       // (BROWSER-M3): read from the live session, not from the prefs, so a tab
@@ -435,6 +459,11 @@ function state() {
     bookmarksBar: getPrefs().bookmarksBar ? libraryMod.barModel(getLibrary().bookmarks()) : null,
     downloads: downloads.list(),
     rail: railState(),
+    // The split, if there is one: each pane's rect and the dividers between them
+    // (content coordinates, the same space the chrome page draws in), with the
+    // page area beside it so a tab dragged to an edge can size its drop zones.
+    split: splitState(),
+    pageRect: currentRects().page,
     // "Let the agent use my sign-in" for the page on screen (BROWSER-M3): its site,
     // whether the agent may ride the owner's session there, and every allowed site.
     agentSignIn: agentSessions.stateFor(getPrefs().agentCookieSites, wc.getURL()),
@@ -595,8 +624,15 @@ function forgetPlacement(view) {
 function layout() {
   syncPageTaskbars();
   if (!win || win.isDestroyed()) return;
+  // A split whose tab closed or popped out settles first: a stage of one pane is
+  // no stage, and the tab it keeps becomes the page (no half-split left behind).
+  stageSettle();
+  // The tab made active outside the split takes the focused pane, so the page area
+  // and the address bar never disagree.
+  stageAdoptActive();
   // A discarded tab put on screen gets its renderer back first (tab-discard.cjs).
-  restoreDiscarded(tabs.active);
+  if (stage) for (const id of stage.tabs) restoreDiscarded(id);
+  else restoreDiscarded(tabs.active);
   // The rail (avatar slot, every Aither page, the layer strip) is the chrome page's
   // own left column; page views and the panel sit to its right (browser-rail.cjs).
   // A page in full screen (a video) takes the whole window instead (browser-fullscreen.cjs).
@@ -604,11 +640,31 @@ function layout() {
   const rects = htmlFullscreen.rects(currentRects(), win.getContentBounds(), tabs.active);
   placeFullscreenHint();
   const now = Date.now();
-  for (const [id, view] of views) {
-    if (!alive(view) || popped.has(id)) continue;
-    const shown = id === tabs.active && !viewsAside();
-    if (shown) shownAt.set(id, now);
-    placeView(view, shown, rects.page);
+  // A pane in page full screen owns the whole window: the rest of the split hides.
+  const fullId = htmlFullscreen.tab();
+  if (stage && !(fullId != null && stage.tabs.includes(fullId))) {
+    // One geometry for every pane, reused by state() and the divider drag.
+    const geo = panes.layoutPanes(rects.page, stage.sizes, stage.axis);
+    splitGeometry = geo;
+    const inStage = new Set(stage.tabs);
+    for (let i = 0; i < stage.tabs.length; i += 1) {
+      const id = stage.tabs[i];
+      const view = viewOf(id);
+      if (!alive(view) || popped.has(id)) continue;
+      const shown = !viewsAside();
+      if (shown) shownAt.set(id, now);
+      placeView(view, shown, geo.panes[i]);
+    }
+    // Every tab outside the stage is off screen (its place and address stay).
+    for (const [id, view] of views) if (!inStage.has(id)) placeView(view, false);
+  } else {
+    splitGeometry = null;
+    for (const [id, view] of views) {
+      if (!alive(view) || popped.has(id)) continue;
+      const shown = id === tabs.active && !viewsAside();
+      if (shown) shownAt.set(id, now);
+      placeView(view, shown, rects.page);
+    }
   }
   // A detached pane lives in its own window (detachPane): this layout leaves it alone.
   if (alive(panelView) && !paneDetached("panel")) placeView(panelView, !viewsAside() && rects.panel.width > 0, rects.panel);
@@ -630,6 +686,212 @@ function layout() {
   if (layoutChanged) notifyGeometry("layout");
 }
 
+// ── Split panes: one page area, two or three side-by-side views ──────────────────
+// The owner's "one container with tabs and splits" (2026-11-18). A stage is a list
+// of tab ids, one per pane; every pane is that tab's existing WebContentsView, so a
+// pane keeps the page's state and its sender checks. Nothing about the tab model,
+// the agent rules or session storage changes: a pane is a tab.
+
+/** Is this tab one of the stage's panes? */
+function stageHas(id) {
+  return Boolean(stage && stage.tabs.includes(id));
+}
+
+/** The page area the panes divide (content coordinates). */
+function stagePageRect() {
+  return htmlFullscreen.rects(currentRects(), win.getContentBounds(), tabs.active).page;
+}
+
+/**
+ * Drop panes whose tab is gone (closed, popped out); a stage of one pane is no
+ * stage. The tab it keeps becomes the page, so a split never leaves a dead pane.
+ */
+function stageSettle() {
+  if (!stage) return;
+  const focusTab = stage.tabs[stage.focus];
+  const keep = [];
+  const shares = [];
+  stage.tabs.forEach((id, i) => {
+    if (!tabs.get(id)) return;
+    keep.push(id);
+    shares.push(Number(stage.sizes[i]) || 1 / stage.tabs.length);
+  });
+  if (keep.length === stage.tabs.length && stage.sizes.length === keep.length) {
+    const at = keep.indexOf(focusTab);
+    if (at >= 0) stage.focus = at;
+    return;
+  }
+  if (keep.length < 2) {
+    stage = null;
+    splitGeometry = null;
+    if (keep.length === 1) tabs.activate(keep[0]);
+    return;
+  }
+  const at = keep.indexOf(focusTab);
+  stage.tabs = keep;
+  stage.sizes = panes.normalizeSizes(shares, keep.length);
+  stage.focus = at >= 0 ? at : Math.min(stage.focus, keep.length - 1);
+  tabs.activate(stage.tabs[stage.focus]);
+}
+
+/**
+ * The page area shows only the stage's panes. Anything that makes another tab the
+ * active one (a strip click, a link in a new tab, an agent switching to its tab)
+ * therefore takes the focused pane rather than leaving the address bar and the
+ * screen disagreeing.
+ */
+function stageAdoptActive() {
+  if (!stage) return;
+  const id = tabs.active;
+  if (id == null || stageHas(id)) return;
+  stage.tabs[stage.focus] = id;
+  splitGeometry = null;
+}
+
+/** Clicking a pane focuses it: the address bar, the strip and the agent follow. */
+function stageFocusTab(id) {
+  if (!stage) return false;
+  const at = stage.tabs.indexOf(id);
+  if (at < 0 || at === stage.focus) return false;
+  stage.focus = at;
+  tabs.activate(id);
+  pushState();
+  return true;
+}
+
+/** What the chrome page draws for the split: pane rects, dividers and the focus. */
+function splitState() {
+  if (!stage) return null;
+  const fullId = htmlFullscreen.tab();
+  if (fullId != null && stage.tabs.includes(fullId)) return null; // one pane is full screen
+  const rect = currentRects().page;
+  const geo = splitGeometry || panes.layoutPanes(rect, stage.sizes, stage.axis);
+  return {
+    axis: stage.axis,
+    focus: stage.focus,
+    panes: stage.tabs.map((id, i) => ({ tabId: id, rect: geo.panes[i] || null })),
+    dividers: geo.dividers,
+  };
+}
+
+/**
+ * Split: show a tab in a new pane beside the focused one. From the one-page window
+ * the page on screen keeps its place and `id` becomes the new pane; when `id` IS
+ * the page on screen (or null) a fresh home tab fills the new pane instead, so
+ * "Split right" on the only tab still gives you two panes.
+ */
+function splitTab(id, side = "right") {
+  if (!win || win.isDestroyed()) return { ok: false, error: "The Aither Browser is not open." };
+  const direction = side === "left" ? "left" : "right";
+  const at = stage ? stage.focus : 0;
+  let show = id == null ? null : Number(id);
+  if (show != null && !tabs.get(show)) return { ok: false, error: `no tab ${show}` };
+  if (show != null && popped.has(show)) return { ok: false, error: "dock that tab into the browser first" };
+  if (stage && show != null && stage.tabs.includes(show)) return { ok: false, error: "that tab is already in the split" };
+  if (stage && stage.tabs.length >= panes.MAX_PANES) {
+    return { ok: false, error: `a page splits into ${panes.MAX_PANES} panes at most; close one first` };
+  }
+  const base = stage ? stage.tabs[stage.focus] : tabs.active;
+  if (base == null || !tabs.get(base)) {
+    // Nothing on screen to split beside: open the page instead of a second empty pane.
+    const opened = openTab("you", homeUrl(), { activate: true });
+    return opened.ok ? { ok: true, panes: [opened.id], tab: opened.id } : opened;
+  }
+  if (show == null || show === base) {
+    // The pane beside the page on screen has nothing of its own to show yet.
+    const opened = openTab("you", homeUrl(), { activate: false });
+    if (!opened.ok) return opened;
+    show = opened.id;
+  }
+  if (!stage) {
+    stage = { axis: "horizontal", tabs: direction === "left" ? [show, base] : [base, show],
+      sizes: panes.defaultSizes(2), focus: direction === "left" ? 0 : 1 };
+  } else {
+    const insertAt = direction === "left" ? at : at + 1;
+    stage.tabs.splice(insertAt, 0, show);
+    stage.sizes = panes.insertPane(stage.sizes, insertAt);
+    stage.focus = insertAt;
+  }
+  tabs.activate(show);
+  layout();
+  pushState();
+  return { ok: true, panes: stage.tabs.slice(), tab: show };
+}
+
+/** Close one pane; its tab stays open in the strip. One pane left collapses the split. */
+function closePane(index) {
+  if (!stage) return { ok: false, error: "this page is not split" };
+  const at = Math.max(0, Math.min(stage.tabs.length - 1, Math.floor(Number(index) || 0)));
+  const [id] = stage.tabs.splice(at, 1);
+  stage.sizes = panes.removePane(stage.sizes, at);
+  if (stage.tabs.length < 2) {
+    const keep = stage.tabs[0];
+    stage = null;
+    splitGeometry = null;
+    if (keep != null) tabs.activate(keep);
+  } else {
+    stage.focus = Math.min(at, stage.tabs.length - 1);
+    tabs.activate(stage.tabs[stage.focus]);
+  }
+  layout();
+  pushState();
+  return { ok: true, closed: id, panes: stage ? stage.tabs.slice() : [] };
+}
+
+/** Remove a tab's pane when the tab closes or pops out; the split settles after. */
+function stageRemoveTab(id) {
+  const at = stage ? stage.tabs.indexOf(id) : -1;
+  if (at < 0) return false;
+  stage.tabs.splice(at, 1);
+  stage.sizes = panes.removePane(stage.sizes, at);
+  if (stage.tabs.length < 2) {
+    const keep = stage.tabs[0];
+    stage = null;
+    splitGeometry = null;
+    if (keep != null) tabs.activate(keep);
+  } else {
+    stage.focus = Math.min(at, stage.tabs.length - 1);
+    tabs.activate(stage.tabs[stage.focus]);
+  }
+  return true;
+}
+
+/** Close the whole split: the focused pane keeps the page area. */
+function unsplitStage() {
+  if (!stage) return { ok: true };
+  const keep = stage.tabs[stage.focus] != null ? stage.tabs[stage.focus] : stage.tabs[0];
+  stage = null;
+  splitGeometry = null;
+  if (keep != null) tabs.activate(keep);
+  layout();
+  pushState();
+  return { ok: true };
+}
+
+/**
+ * A divider drag: `index` is the divider between pane index and index+1, `x` the
+ * pointer in content coordinates. Only the two neighbours trade width; the rest
+ * keep their shares. Nothing is pushed mid-drag (the chrome page moves the divider
+ * element itself); the state follows when the drag ends.
+ */
+function stageResize(index, x) {
+  if (!stage) return { ok: false, error: "this page is not split" };
+  const rect = stagePageRect();
+  const horizontal = stage.axis !== "vertical";
+  const nth = Math.floor(Number(index));
+  const geo = panes.layoutPanes(rect, stage.sizes, stage.axis);
+  const divider = geo.dividers.find((d) => d.index === nth) || null;
+  if (!divider) return { ok: false, error: "no such divider" };
+  const pointer = Number(x);
+  if (!Number.isFinite(pointer)) return { ok: false, error: "no pointer position" };
+  const delta = Math.round(pointer - (horizontal ? divider.x : divider.y));
+  const next = panes.resize(stage.sizes, nth, delta, rect, stage.axis);
+  if (!next) return { ok: true, sizes: stage.sizes };
+  stage.sizes = next;
+  layout();
+  return { ok: true, sizes: stage.sizes };
+}
+
 // ── Hidden tabs give their renderer back (tab-discard.cjs) ─────────────────────────
 const shownAt = new Map(); // tab id -> when it was last on screen
 const discarded = new Map(); // tab id -> { url, title }
@@ -640,7 +902,8 @@ function tabFacts() {
     const view = views.get(t.id);
     let audible = false;
     try { audible = alive(view) && view.webContents.isCurrentlyAudible(); } catch { /* gone */ }
-    return { id: t.id, by: t.by, kind: t.kind, pinned: t.pinned, active: t.id === tabs.active, popped: popped.has(t.id),
+    return { id: t.id, by: t.by, kind: t.kind, pinned: t.pinned, active: t.id === tabs.active || stageHas(t.id),
+      popped: popped.has(t.id),
       audible, discarded: discarded.has(t.id), shownAt: shownAt.get(t.id) || 0,
       // Never discarded: a site that may notify the owner, a page with the camera or microphone.
       notifies: alive(view) && siteNotifies(view.webContents.getURL(), t), capturing: mediaTabs.has(t.id) };
@@ -672,7 +935,7 @@ function discardHiddenTabs({ pressure = false } = {}) {
   void tabDiscard.discardUnlessUnsaved(picked, pageHasUnsaved, (id) => {
     const view = views.get(id);
     // Shown, closed or popped out while its page was being asked: it stays.
-    if (!alive(view) || !win || win.isDestroyed() || id === tabs.active || popped.has(id)) return;
+    if (!alive(view) || !win || win.isDestroyed() || id === tabs.active || stageHas(id) || popped.has(id)) return;
     const wc = view.webContents;
     discarded.set(id, { url: wc.getURL(), title: wc.getTitle() });
     views.delete(id);
@@ -1081,11 +1344,24 @@ function restoreSession() {
   let n = 0;
   try {
     const saved = getSessionStore().load();
-    const activeAt = saved.findIndex((t) => t.active);
-    saved.forEach((t, i) => {
-      const r = openTab("you", t.url, { activate: i === (activeAt >= 0 ? activeAt : saved.length - 1) });
-      if (r.ok) n += 1;
+    const opened = [];
+    saved.forEach((t) => {
+      const r = openTab("you", t.url, { activate: false });
+      if (r.ok) { n += 1; opened.push({ entry: t, id: r.id }); }
     });
+    // Split panes come back when at least two of them are tabs that restore. A
+    // console page (aither://) and an InPrivate tab never do, so a mixed split
+    // restores its web panes and opens as a plain page otherwise.
+    const built = panes.stageFromSession(opened.map((o) => ({ id: o.id, pane: o.entry.pane })));
+    const activeEntry = opened.find((o) => o.entry.active) || opened[opened.length - 1] || null;
+    if (built) {
+      stage = built;
+      const at = activeEntry ? stage.tabs.indexOf(activeEntry.id) : -1;
+      stage.focus = at >= 0 ? at : 0;
+      tabs.activate(stage.tabs[stage.focus]);
+    } else if (activeEntry) {
+      tabs.activate(activeEntry.id);
+    }
   } catch { /* a broken file restores nothing */ }
   sessionRestored = true;
   return n;
@@ -3262,6 +3538,8 @@ function closeTab(id, by = "you") {
       title: alive(beforeView) ? beforeView.webContents.getTitle() : "" });
   }
   forgetTabExtras(id);
+  // A closed tab's pane goes with it (a split settles to one pane if that was its last).
+  stageRemoveTab(id);
   const pop = popped.get(id);
   popped.delete(id);
   if (pop && !pop.isDestroyed()) {
@@ -3294,6 +3572,8 @@ function popOutTab(id) {
   if (getWorkspace().policy.governs(view.webContents.getURL())) return { ok: false, error: "a workspace app stays in the browser window" };
   const existing = popped.get(id);
   if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return { ok: true }; }
+  // A pane that leaves the window leaves the split; the rest re-flow.
+  stageRemoveTab(id);
   const { BrowserWindow } = electron();
   const main = win.getBounds();
   const pop = new BrowserWindow({
@@ -3353,6 +3633,15 @@ function showTab(id) {
     pop.focus();
     return { ok: true };
   }
+  // A tab that IS a pane: showing it focuses that pane (the split itself does not change).
+  if (stageHas(id)) {
+    stage.focus = stage.tabs.indexOf(id);
+    const shown = tabs.activate(id);
+    layout();
+    pushState();
+    if (shown.ok) scheduleContextPush(id);
+    return shown;
+  }
   const shown = tabs.activate(id);
   if (shown.ok) {
     layout();
@@ -3364,6 +3653,9 @@ function showTab(id) {
 
 function wirePage(wc, id) {
   const kindOf = () => (tabs.get(id) || {}).kind || "web";
+  // Split panes: clicking into a pane focuses it, so the address bar, the strip and
+  // the agent's page all follow the pane the owner is actually looking at.
+  wc.on("focus", () => { if (stageHas(id)) stageFocusTab(id); });
   // A popup becomes a TAB beside its opener, owned by the opener's owner (an agent
   // page's popup is still the agent's), never a second window. A web page may only
   // open web pages; an aither:// page may open another Aither page or a web tab.
@@ -3642,6 +3934,9 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   win.on("close", () => { if (getPrefs().restoreSession !== false) getSessionStore().flush(tabList()); });
 
   tabs = new TabSet();
+  stage = null;
+  splitGeometry = null;
+  stageDragging = false;
   panelView = createAssistantPanel(WebContentsView);
   win.contentView.addChildView(panelView);
   win.on("resize", layout);
@@ -3699,6 +3994,9 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     popped.clear();
     views.clear();
     tabs = new TabSet();
+    stage = null;
+    splitGeometry = null;
+    stageDragging = false;
     win = null;
     panelView = null;
     gate.release();
@@ -4136,6 +4434,37 @@ function wireIpc() {
     if (alive(taskbarView) && event.sender === taskbarView.webContents) sendTaskbarState();
   });
   ipcMain.handle("desk:browser-tab-dock", (event, id) => (fromChrome(event) ? dockTab(Number(id)) : { ok: false }));
+  // Split panes (the owner's "one container with tabs and splits"): split a tab into
+  // a new pane, drop a dragged tab on an edge, focus or close a pane, drag a divider,
+  // or put the page back together. browser-panes.cjs owns the geometry.
+  ipcMain.handle("desk:browser-split", (event, op) => {
+    if (!fromChrome(event)) return { ok: false, error: "not the browser's own chrome" };
+    const o = parseArg(op) || {};
+    switch (o.op) {
+      case "split":
+      case "drop":
+        // A drop ends the tab drag even when the dragend event never arrives.
+        if (o.op === "drop") stageDragging = false;
+        return splitTab(o.id == null ? null : Number(o.id), o.side === "left" ? "left" : "right");
+      case "close": return closePane(Math.floor(Number(o.index)));
+      case "unsplit": return unsplitStage();
+      case "focus": {
+        const at = Math.floor(Number(o.index));
+        if (!stage || !(at >= 0 && at < stage.tabs.length)) return { ok: false, error: "no such pane" };
+        stage.focus = at;
+        tabs.activate(stage.tabs[at]);
+        pushState();
+        return { ok: true };
+      }
+      case "resize": return stageResize(Math.floor(Number(o.index)), Number(o.x));
+      case "drag": {
+        const on = o.on === true;
+        if (on !== stageDragging) { stageDragging = on; layout(); pushState(); }
+        return { ok: true };
+      }
+      default: return { ok: false, error: `no split op ${o.op}` };
+    }
+  });
   ipcMain.handle("desk:browser-rail", (event, action, arg) => {
     if (!fromChrome(event)) return { ok: false, error: "not the browser's own chrome" };
     const relayout = () => { layout(); pushState(); return { ok: true }; };
@@ -4750,9 +5079,18 @@ function tabMenu(id) {
     { label: "Pin this tab to desktop", enabled: desktopPin && pinnable,
       click: () => shellHost.run("pins.tab", id) },
     { type: "separator" },
+    // Split panes: this tab becomes a pane beside the focused one (a new home tab
+    // fills the pane when this tab IS the page on screen). A third pane is the limit.
+    { label: "Split right", enabled: !popped.has(id) && (!stage || stage.tabs.length < panes.MAX_PANES),
+      click: () => splitTab(id, "right") },
+    { label: "Split left", enabled: !popped.has(id) && (!stage || stage.tabs.length < panes.MAX_PANES),
+      click: () => splitTab(id, "left") },
+    stageHas(id) ? { label: "Close pane", click: () => closePane(stage.tabs.indexOf(id)) } : null,
+    stage ? { label: "Unsplit", click: () => unsplitStage() } : null,
+    { type: "separator" },
     popped.has(id) ? { label: "Dock back into the browser", click: () => dockTab(id) }
       : { label: "Pop out into its own window", click: () => popOutTab(id) },
-  ];
+  ].filter(Boolean);
   if (!tab.pinned) template.push({ label: "Close tab", click: () => closeTab(id) });
   Menu.buildFromTemplate(template).popup({ window: win });
   return { ok: true };
@@ -4922,6 +5260,11 @@ function canvasHostOf(wc) {
   if (id == null || !win || win.isDestroyed()) return null;
   const pop = popped.get(id);
   if (pop && !pop.isDestroyed()) return { window: pop, origin: { x: 0, y: 0 }, shown: pop.isVisible() };
+  // A canvas that IS a split pane draws its live cards inside that pane, not across
+  // the whole page area (browser-canvas.cjs places card views relative to this origin).
+  const at = stageHas(id) ? stage.tabs.indexOf(id) : -1;
+  const paneRect = at >= 0 && splitGeometry ? splitGeometry.panes[at] : null;
+  if (paneRect) return { window: win, origin: { x: paneRect.x, y: paneRect.y }, shown: !viewsAside() };
   const rects = currentRects();
   return { window: win, origin: { x: rects.page.x, y: rects.page.y }, shown: id === tabs.active && !viewsAside() };
 }

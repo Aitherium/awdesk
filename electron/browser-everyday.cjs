@@ -107,7 +107,12 @@ function createSessionStore({ file, fsImpl = fs, max = 60 } = {}) {
       return (Array.isArray(tabList) ? tabList : [])
         .filter((t) => t && t.by === "you" && t.kind === "web" && !t.private && /^https?:\/\//i.test(String(t.url || "")))
         .slice(0, max)
-        .map((t) => ({ url: String(t.url), title: String(t.title || "").slice(0, 200), active: Boolean(t.active) }));
+        .map((t) => {
+          const row = { url: String(t.url), title: String(t.title || "").slice(0, 200), active: Boolean(t.active) };
+          // Split panes: the tab remembers which pane it showed in (browser-panes.cjs).
+          if (Number.isInteger(t.pane) && t.pane >= 0) row.pane = { group: 1, index: t.pane };
+          return row;
+        });
     },
     /** Save soon (debounced: a page load fires many events). */
     save(tabList, { delayMs = 800 } = {}) {
