@@ -1070,6 +1070,12 @@ function showOverlay({ focus = false } = {}) {
   // automatic call still CREATES the window (mic capture and the room stage live
   // in it) but never SHOWS it; only an explicit owner action (focus:true) does.
   if (!focus && companionMode() === "fairy") return;
+  // [stays-hidden 2026-11-18] The owner hid the avatar: it stays hidden across a crash and
+  // a restart (owner: "make sure they don't pop back up when the application crashes and
+  // starts back up"). The hide is saved to desk-companion.json; only an explicit owner
+  // action (focus:true) shows it again, and that clears the saved hide.
+  if (!focus && avatarHiddenByOwner()) return;
+  if (focus) setAvatarHiddenByOwner(false);
   if (window.isMinimized()) window.restore();
   if (focus) {
     if (!window.isVisible()) window.show();
@@ -1085,8 +1091,9 @@ function showOverlay({ focus = false } = {}) {
   if (tray) refreshTrayMenu();
 }
 
-async function hideOverlay() {
+async function hideOverlay({ byOwner = true } = {}) {
   debugLog("hide overlay");
+  if (byOwner) setAvatarHiddenByOwner(true);
   const placement = await getHyprlandWindowPlacement(process.pid);
   if (placement) {
     hyprlandLastPosition = { x: placement.x, y: placement.y };
@@ -2125,6 +2132,31 @@ function computeNeedsYou(cards = openDecisions) {
 // Fairy: the avatar window is not opened at boot, the red Needs-you chip stays
 // down and its count rides on the fairy's badge + its Notifications row instead.
 const COMPANION_FILE = path.join(require("node:os").homedir(), ".aither", "desk-companion.json");
+/** The owner's "Hide avatar", saved beside the companion mode so a crash cannot undo it. */
+function readCompanionFile() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(COMPANION_FILE, "utf8"));
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+function avatarHiddenByOwner() {
+  return readCompanionFile().avatarHidden === true;
+}
+function setAvatarHiddenByOwner(hidden) {
+  const cur = readCompanionFile();
+  if ((cur.avatarHidden === true) === Boolean(hidden)) return;
+  const next = { ...cur, avatarHidden: Boolean(hidden) };
+  try {
+    fs.mkdirSync(path.dirname(COMPANION_FILE), { recursive: true });
+    const tmp = `${COMPANION_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(next));
+    fs.renameSync(tmp, COMPANION_FILE);
+  } catch (error) {
+    debugLog("[stays-hidden] could not save the avatar hide", String((error && error.message) || error));
+  }
+}
 function companionMode() {
   try {
     const raw = JSON.parse(fs.readFileSync(COMPANION_FILE, "utf8"));
@@ -2137,7 +2169,7 @@ function setCompanionMode(mode) {
   const next = mode === "avatar" ? "avatar" : "fairy";
   try {
     fs.mkdirSync(path.dirname(COMPANION_FILE), { recursive: true });
-    fs.writeFileSync(COMPANION_FILE, JSON.stringify({ companion: next }));
+    fs.writeFileSync(COMPANION_FILE, JSON.stringify({ ...readCompanionFile(), companion: next }));   // keeps avatarHidden
   } catch { /* the choice holds for this run */ }
   if (next === "avatar") showOverlay({ focus: false });
   else if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.hide();
@@ -3005,7 +3037,7 @@ function enforceActiveCharacterRating() {
     if (!swap.from) writeAudienceSwap({ from: active, at: new Date().toISOString() });
     if (!standIn) {
       debugLog("audience: the resident body is not for this audience and no stand-in is chosen; hiding the body");
-      void hideOverlay();
+      void hideOverlay({ byOwner: false });   // automatic: never the owner's sticky hide
       return true;
     }
     debugLog("audience: swapping the resident to the stand-in", standIn);

@@ -19,10 +19,15 @@ function grab(name) {
   return lines.slice(first, last + 1).join(String.fromCharCode(10));
 }
 
-function harness(mode) {
+/** `saved` is the desk-companion.json body: a companion mode string, or an object
+ *  (so the owner's saved `avatarHidden` can be exercised beside it). */
+function harness(saved) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fairy-"));
   const file = path.join(dir, "desk-companion.json");
-  if (mode) fs.writeFileSync(file, JSON.stringify({ companion: mode }));
+  if (saved) {
+    const body = typeof saved === "string" ? { companion: saved } : saved;
+    fs.writeFileSync(file, JSON.stringify(body));
+  }
   const calls = { shown: 0, inactive: 0, focused: 0 };
   const win = {
     isMinimized: () => false, restore() {}, isVisible: () => false,
@@ -30,12 +35,21 @@ function harness(mode) {
   };
   const body = `
     const COMPANION_FILE = ${JSON.stringify(file)};
+    ${grab("readCompanionFile")}
+    ${grab("avatarHiddenByOwner")}
+    ${grab("setAvatarHiddenByOwner")}
     ${grab("companionMode")}
     ${grab("showOverlay")}
     return showOverlay;`;
-  const make = new Function("fs", "createWindow", "scheduleHyprlandWindowConfiguration", "tray", "refreshTrayMenu", body);
-  const showOverlay = make(fs, () => win, () => {}, null, () => {});
-  return { showOverlay, calls };
+  const make = new Function(
+    "fs", "path", "debugLog", "createWindow",
+    "scheduleHyprlandWindowConfiguration", "tray", "refreshTrayMenu", body,
+  );
+  const showOverlay = make(fs, path, () => {}, () => win, () => {}, null, () => {});
+  const savedFile = () => {
+    try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return {}; }
+  };
+  return { showOverlay, calls, savedFile };
 }
 
 test("fairy mode (the default, no file): an AUTOMATIC show is suppressed", () => {
@@ -55,4 +69,31 @@ test("avatar mode: automatic shows behave exactly as before", () => {
   const { showOverlay, calls } = harness("avatar");
   showOverlay();
   assert.equal(calls.inactive, 1);
+});
+
+// ── "stays hidden across a crash and a restart" (the PR's whole point) ──────────
+test("avatar mode: an AUTOMATIC show is suppressed after the owner hid the avatar", () => {
+  const { showOverlay, calls } = harness({ companion: "avatar", avatarHidden: true });
+  showOverlay();
+  assert.equal(calls.inactive + calls.shown, 0, "the saved hide survives a restart");
+});
+
+test("avatar mode: an EXPLICIT show clears the saved hide", () => {
+  const { showOverlay, calls, savedFile } = harness({ companion: "avatar", avatarHidden: true });
+  showOverlay({ focus: true });
+  assert.equal(calls.shown, 1, "an explicit owner action still shows it");
+  assert.equal(savedFile().avatarHidden, false, "and the stale hide is not re-applied next launch");
+});
+
+test("avatar mode: an automatic show does not resurrect a hidden avatar", () => {
+  const { showOverlay, calls, savedFile } = harness({ companion: "avatar", avatarHidden: true });
+  showOverlay(); // a voice session / slot spawn
+  assert.equal(calls.inactive + calls.shown, 0);
+  assert.equal(savedFile().avatarHidden, true, "the automatic path never clears the owner's hide");
+});
+
+test("fairy mode: the hide flag is irrelevant, fairy gating still wins", () => {
+  const { showOverlay, calls } = harness({ companion: "fairy", avatarHidden: false });
+  showOverlay();
+  assert.equal(calls.inactive + calls.shown, 0);
 });
