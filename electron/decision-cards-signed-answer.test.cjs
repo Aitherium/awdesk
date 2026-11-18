@@ -84,6 +84,7 @@ test("an awstorage proposal card is routed signed from the voice/index path too"
   const dc = fresh(dir);
   const opened = [];
   dc.setSignedAnswerOpener((u) => opened.push(u));
+  assert.equal(dc.needsSignedAnswer(dc.readCardRaw("d-plan1")), true, "the exported predicate agrees with the route");
   assert.equal(dc.answerCardIndex("d-plan1", 1, { spawnFn: noSpawn }), true);
   assert.deepEqual(approveParams(opened[0]), { card: "d-plan1", choice: "approve", path: "/approve" });
 });

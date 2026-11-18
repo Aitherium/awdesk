@@ -67,12 +67,13 @@ let openSignedAnswer = (url) => {
   try { require("electron").shell.openExternal(url); } catch { /* no electron (tests) */ }
 };
 
-/** Pure: does this raw card need a signed answer? A Claude permission-grant card
- *  (AitherOS/dev/tools/claude_permission_grant.py) carries a `permission_rule: ` fact,
- *  and its grant is applied only after awstorage.attest verifies the receipt. */
+/** Pure: does this raw card need a signed answer? Delegates to the ONE definition
+ *  (signed-approval.requiresSignedAnswer): awstorage proposal/plan kinds and facts
+ *  (`proposal_id:`/`plan_id:`) need a signed receipt exactly as a Claude permission
+ *  grant (`permission_rule:`) does. Keeping a second, narrow copy here made this
+ *  predicate answer "no" for an awstorage card the answer path routes signed. */
 function needsSignedAnswer(raw) {
-  const facts = raw && Array.isArray(raw.facts) ? raw.facts : [];
-  return facts.some((f) => typeof f === "string" && f.startsWith("permission_rule: "));
+  return signedApproval.requiresSignedAnswer(raw);
 }
 
 /** The card's raw JSON from the store, or null (a bad id never becomes a path). */
