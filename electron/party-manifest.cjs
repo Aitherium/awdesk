@@ -267,7 +267,10 @@ function buildParty({ castFile = undefined, rosterDir = roster.ROSTER_DIR, now =
   // The platform-declared voice tier (below cast.json authors), so a party member sounds
   // like the agent it is on a desk that never authored it.
   const agentRoster = cast.loadRosterPresence();
-  const resolve = (ctx) => cast.resolveActor(snapshot, { roster: names, agentRoster, ...ctx });
+  // ...and the platform's canonical engine voice above that mirror, so the
+  // manifest reports what AitherVoice will actually speak, not a stock Edge name.
+  const agentVoices = cast.loadAgentVoices();
+  const resolve = (ctx) => cast.resolveActor(snapshot, { roster: names, agentRoster, agentVoices, ...ctx });
 
   const rows = [];
   for (const key of Object.keys(cfg.actors || {})) {

@@ -113,9 +113,10 @@ async function describeCast({ castFile, listCharacters } = {}) {
   }
 
   const cfg = snapshot && typeof snapshot === "object" ? snapshot : {};
-  // agentRoster: the platform-declared voice/character tier (below authors), so this
-  // provenance view names the SAME tier the live room-stage resolves through.
-  const ctxBase = { roster, agentRoster: cast.loadRosterPresence() };
+  // agentVoices + agentRoster: the platform's CANONICAL voice tier and the
+  // declared voice/character mirror below it, so this provenance view names the
+  // SAME tiers the live room-stage resolves through.
+  const ctxBase = { roster, agentVoices: cast.loadAgentVoices(), agentRoster: cast.loadRosterPresence() };
   const resolved = [];
   for (const key of Object.keys(cfg.actors || {})) {
     resolved.push({

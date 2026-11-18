@@ -443,6 +443,33 @@ async function okAsync(name, fn) {
     assert.deepStrictEqual(verdict, { ok: false, reason: "custom voice ghost not found in this workspace" });
   });
 
+  // ── the canonical map's engine ids reach AitherVoice VERBATIM ───────────────
+  // agent-voices.generated.json names kokoro:<id> / local:piper; AitherVoice's
+  // /voice/synthesize resolves those prefixes itself (AitherVoice.py
+  // synthesize(): KOKORO_PREFIX, LOCAL_VOICE). The desk must not translate them
+  // back to a stock Edge name -- that translation is the drift S6 removes.
+  await okAsync("synthesizeVerdict: canonical kokoro:/local:piper voices are POSTed unchanged to /voice/synthesize", async () => {
+    const seen = [];
+    const server = await withFakeVoiceServer((req, res, raw) => {
+      seen.push(JSON.parse(raw));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true, audio_base64: "SUQz" }));
+    });
+    try {
+      for (const voice of ["kokoro:am_michael", "kokoro:bf_isabella", "local:piper"]) {
+        const verdict = await synthesizeVerdict("hello", voice, {
+          endpoint: { host: "127.0.0.1", port: server.port, path: "/voice/synthesize" },
+          customSynth: async () => { throw new Error(`${voice} must not take the custom-voice path`); },
+        });
+        assert.ok(verdict.ok, verdict.reason);
+      }
+      assert.deepStrictEqual(seen.map((b) => b.voice), ["kokoro:am_michael", "kokoro:bf_isabella", "local:piper"],
+        "the engine id must reach AitherVoice exactly as the canonical map spells it");
+    } finally {
+      await server.close();
+    }
+  });
+
   console.log(`drop-router: ${passed} checks passed`);
   process.exit(process.exitCode ?? 0);
 })();
