@@ -226,6 +226,8 @@ function stateFile() {
 function loadState() {
   try {
     state = orbCore.sanitizeState(JSON.parse(fs.readFileSync(stateFile(), "utf8")));
+    // the owner's hide survives a crash: the cards waiting when they hid it stay quiet
+    ownerHidIds = state.ownerHid ? new Set(state.ownerHidIds) : null;
   } catch {
     state = orbCore.sanitizeState(null); // unreadable state -> defaults, never a crash
   }
@@ -1295,7 +1297,7 @@ function hideVeil() {
 // ── visibility ──────────────────────────────────────────────────────────────
 
 function showOrb({ auto = false } = {}) {
-  if (!auto) { autoSurfaced = false; ownerHidIds = null; }
+  if (!auto) { autoSurfaced = false; ownerHidIds = null; state.ownerHid = false; state.ownerHidIds = []; }
   // One cluster on this machine, ever (owner 2026-11-13): a second desk process (another
   // profile, a test build) never shows its own fairies while another desk owns them.
   const owner = fairyOwner.claim();
@@ -1326,7 +1328,10 @@ function showOrb({ auto = false } = {}) {
 
 function hideOrb({ auto = false } = {}) {
   // The owner hid it with cards waiting: those cards do not bring it back, a NEW one does.
-  if (!auto) { autoSurfaced = false; ownerHidIds = new Set(attentionCards.map((c) => c.id)); }
+  if (!auto) {
+    autoSurfaced = false; ownerHidIds = new Set(attentionCards.map((c) => c.id));
+    state.ownerHid = true; state.ownerHidIds = [...ownerHidIds];
+  }
   releaseHover();
   suppressed = true;
   pendingSlot = null;
@@ -1340,7 +1345,7 @@ function hideOrb({ auto = false } = {}) {
   sendPanel();
   const was = state.visible;
   state.visible = false;
-  if (was) {
+  if (was || !auto) {   // an owner hide is saved even when it was already hidden (its card ids changed)
     saveState();
     notifyCompanions();
   }

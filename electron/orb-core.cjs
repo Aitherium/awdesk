@@ -506,6 +506,11 @@ function sanitizeState(raw) {
     swarmView: require("./fairy-control.cjs").normalizeView(src.swarmView),
     // "Mute nudges 1 hour" from the orb's right-click menu (owner 2026-11-12): ms epoch.
     muteUntil: Math.max(0, finite(src.muteUntil) || 0),
+    // [stays-hidden 2026-11-18] The owner hid the fairies with these decisions waiting: they do
+    // not bring the cluster back after a crash or restart; a NEW decision does. Ids only.
+    ownerHid: src.ownerHid === true,
+    ownerHidIds: Array.isArray(src.ownerHidIds)
+      ? src.ownerHidIds.filter((v) => typeof v === "string" && v.length <= 200).slice(0, 500) : [],
   };
 }
 
