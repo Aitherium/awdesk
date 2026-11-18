@@ -169,6 +169,11 @@ test("main.cjs routes every spoken line through the arbiter and keeps sessions s
   assert.match(main, /async function speakAloudNow\(/);
   assert.match(main, /isSessionSpeaker\(/);
   assert.match(main, /case "voice\.session"/);
+  // A5: a cut must reach BOTH halves -- the runner (drops audio still synthesizing) and
+  // the renderer (stops a body already playing on its own slot).
+  assert.match(main, /isCut: \(\) => job\.cut === true/);
+  assert.match(main, /onCut: \(victim\)/);
+  assert.match(main, /type: "speak-stop"/);
 });
 
 
@@ -242,3 +247,29 @@ test("a waiting P0 is never dropped as stale, however long the owner talks", asy
   await tick();
   assert.deepEqual(log.map((l) => l.text), ["owner talking", "P0 alarm"]);
 });
+
+test("a cut marks the victim JOB, so a runner still synthesizing can drop its clip", async () => {
+  const c = clock();
+  const jobs = [];
+  let release;
+  const parked = new Promise((r) => { release = r; });
+  const a = arb.createSpeechArbiter({
+    now: c.now, setTimer: c.setTimer, clearTimer: c.clearTimer,
+    run: async (job) => {
+      jobs.push(job);
+      if (job.text === "victim") await parked; // synthesis still in flight
+      return { ok: true, durationMs: 1000 };
+    },
+  });
+  const victimDone = a.enqueue({ rank: 3, text: "victim" });
+  await tick();
+  assert.notEqual(jobs[0].cut, true, "not cut while it is the only line");
+  void a.enqueue({ rank: 1, text: "P0", preempt: true });
+  await tick();
+  assert.equal(jobs[0].cut, true, "main.cjs's run reads job.cut and returns without audio");
+  release();
+  await tick();
+  await tick();
+  assert.equal((await victimDone).ok, true, "the cut promise still settles");
+});
+

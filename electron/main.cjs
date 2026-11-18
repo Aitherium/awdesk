@@ -1559,9 +1559,30 @@ function sessionVoices() {
 function speechArbiter() {
   if (!speechArbiterInstance) {
     speechArbiterInstance = require("./speech-arbiter.cjs").createSpeechArbiter({
-      run: (job) => speakAloudNow(job.text, job.voice, job.speed, job.slotId, job.origin, job.speaker),
+      // `job.cut` is set by the arbiter when a P0 preempts this line, so a clip still
+      // being synthesized never reaches the speaker after the alarm started.
+      run: (job) => speakAloudNow(job.text, job.voice, job.speed, job.slotId, job.origin, job.speaker, {
+        isCut: () => job.cut === true,
+      }),
       // A dropped line keeps its words on screen: the caption is the part that is never stale.
       onDrop: (job) => { try { sendBubble(job.slotId, job.text, { muted: true }); } catch { /* cosmetic */ } },
+      // A cut must SILENCE the body that was playing it. The next `speak` only closes the
+      // AudioContext of its OWN slot, and a room-stage agent speaks on its own slot, so
+      // without this the cut line keeps talking underneath the alarm.
+      onCut: (victim) => {
+        const slot = (victim && victim.slotId) || "slot0";
+        try {
+          for (const win of BrowserWindow.getAllWindows()) {
+            if (!win.isDestroyed()) win.webContents.send("desk:event", { type: "speak-stop", slotId: slot });
+          }
+        } catch (error) {
+          debugLog("speech cut could not be delivered", error?.message || error);
+        }
+        // A cut before its clip ever played has no caption yet: keep its words on
+        // screen (the same promise onDrop makes). Re-sending an already-shown caption
+        // only restarts its reading timer.
+        try { sendBubble(victim && victim.slotId, victim && victim.text, { muted: true }); } catch { /* cosmetic */ }
+      },
     });
   }
   return speechArbiterInstance;
@@ -1600,7 +1621,13 @@ async function speakAloudNow(
   slotId = "slot0",
   origin = "service:awdesk",
   speaker = null,
+  options = {},
 ) {
+  // The speech arbiter sets `job.cut` when a P0 preempts this line. Synthesis is slow
+  // enough that the cut usually lands while we are waiting for it: handing the audio
+  // over then would start the victim AFTER the alarm (or on top of it).
+  const cutOff = () => Boolean(options && typeof options.isCut === "function" && options.isCut());
+  const cutResult = () => ({ ok: false, refused: "arbiter", reason: "cut by a P0", captioned: false });
   let effectiveVoice = voice || "nova";
   let effectiveSpeed = speed;
   let effectiveMaxChars = 2000;
@@ -1659,7 +1686,11 @@ async function speakAloudNow(
       debugLog("safety gate threw; speaking unfiltered", error?.message || error);
     }
   }
+  // A cut before synthesis means no clip is ever produced; a cut during it is caught
+  // again below, before anything reaches the speaker.
+  if (cutOff()) return cutResult();
   const tts = await synthesizeVerdict(spoken, effectiveVoice, { speed: effectiveSpeed, maxChars: effectiveMaxChars });
+  if (cutOff()) return cutResult();
   if (!tts.ok) {
     // A dead voice service takes the audio, not the words.
     const shown = captioned ? sendBubble(slotId, spoken, { muted: true }) : 0;
@@ -2743,20 +2774,30 @@ function p0ClaimStore() {
 }
 
 /**
- * A1's actionable toast. A1 (held-toast.cjs) exports `showCardToast(card)`; this slice
- * does not build a second toast plane, so the escalation raises THAT path only when it
- * is actually in the tree -- `typeof` on the module export, never a guessed call.
+ * The actionable toast for a P0. `held-toast.cjs` (A1's toast plane, already on this
+ * branch) exports `createToaster`, not a per-card `showCardToast`; main.cjs holds the
+ * one `toaster` instance above, so the escalation raises THAT path with a click that
+ * opens the card. Do-not-disturb and NOW mode still win -- a notice is not a reason to
+ * break the owner's quiet switch (the same rule announceDecisions applies).
  */
-function raiseP0Toast(card) {
-  let fn;
-  try { fn = require("./held-toast.cjs").showCardToast; } catch { return false; }
-  if (typeof fn !== "function") return false;
+function p0ToastAvailable() {
   try {
-    const r = fn(card);
-    if (r && typeof r.catch === "function") r.catch((e) => debugLog("P0 toast failed", e?.message || e));
+    if (overlaySettings().doNotDisturb || nowModeActive()) return false;
+  } catch { /* an unreadable setting is not a reason to go silent */ }
+  return typeof toaster.show === "function";
+}
+
+function raiseP0Toast(card) {
+  if (!p0ToastAvailable()) return false;
+  try {
+    toaster.show({
+      title: "Aither needs you now",
+      body: needsYouLib.p0Line(card, 120),
+      onClick: () => openInbox(card.id),
+    });
     return true;
   } catch (error) {
-    debugLog("P0 toast threw", error?.message || error);
+    debugLog("P0 toast failed", error?.message || error);
     return false;
   }
 }
@@ -2776,9 +2817,7 @@ function announceP0(card) {
   if (!card || !card.id || !needsYouLib.isP0(card)) return false;
   if (!p0ClaimStore().claim(card.id)) return false;
   const muted = voiceAllMuted() || micMuted();
-  const hasToast = (() => {
-    try { return typeof require("./held-toast.cjs").showCardToast === "function"; } catch { return false; }
-  })();
+  const hasToast = p0ToastAvailable();
   const plan = needsYouLib.p0AnnouncementPlan({ card, muted, hasToast });
   if (!plan.caption) return false;
   if (!plan.speak) {
@@ -8833,10 +8872,12 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         const fresh = actionable.filter((c) => c && !decisionsAnnounced.has(c.id));
         decisionsAnnounced = ids;
         // A new P0 is its own escalation; the generic announcement still runs for the
-        // window ladder but stays silent when the P0 said the line (one voice, one batch).
+        // window ladder but stays silent only when a P0 ACTUALLY said the line (one
+        // voice, one batch). A card already in the ledger announces nothing, so it must
+        // not suppress the generic line too.
         const freshP0 = fresh.filter((c) => needsYouLib.isP0(c));
-        for (const c of freshP0) announceP0(c);
-        if (fresh.length > 0) announceDecisions(fresh, false, { silent: freshP0.length > 0 });
+        const announcedP0 = freshP0.filter((c) => announceP0(c));
+        if (fresh.length > 0) announceDecisions(fresh, false, { silent: announcedP0.length > 0 });
       },
     });
     // The liveness heartbeat awask reads before opening its own Tk window

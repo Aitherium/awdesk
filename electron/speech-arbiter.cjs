@@ -155,6 +155,9 @@ function createSpeechArbiter({
     if (current.job.rank <= entry.rank) return false;
     const victim = current.job;
     current.cut = true;
+    // The job itself carries the cut: `run` may still be in flight (synthesis takes
+    // seconds), and only the runner can drop the audio it is about to hand over.
+    victim.cut = true;
     current = null;
     if (holdTimer) { clearTimer(holdTimer); holdTimer = null; }
     busy = false;
