@@ -133,6 +133,21 @@ test("tabs are descriptors: a private tab, a javascript: URL and a blank URL are
   assert.equal("private" in doc.stages[0].tabs[0], false, "InPrivate leaves no descriptor behind");
 });
 
+test("a tab the window's cap would not open is kept, in the document's own order", () => {
+  // Two of five opened (the window's 30-tab cap); the other three never were live.
+  const live = [tab("https://a.example/"), tab("https://d.example/")];
+  const saved = ["a", "b", "c", "d", "e"].map((n) => tab(`https://${n}.example/`));
+  const held = [saved[1], saved[2], saved[4]];
+  assert.deepEqual(S.mergeUnopened(live, saved, held).map((t) => t.url),
+    saved.map((t) => t.url), "nothing is dropped and the saved order survives");
+  // A tab opened after the switch (not in the document yet) keeps its place at the end.
+  const fresh = [...live, tab("https://new.example/")];
+  assert.deepEqual(S.mergeUnopened(fresh, saved, held).map((t) => t.url),
+    [...saved.map((t) => t.url), "https://new.example/"]);
+  // A tab the owner closed is gone (it was live, then is not, and is not held).
+  assert.deepEqual(S.mergeUnopened([saved[0]], saved, []).map((t) => t.url), [saved[0].url]);
+});
+
 test("context round-trips: awsh terminal session ids, file roots, splits (clamped)", () => {
   let doc = S.defaultDoc();
   const id = S.activeStage(doc).id;

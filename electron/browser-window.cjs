@@ -613,6 +613,14 @@ function forgetPlacement(view) {
 function layout() {
   syncPageTaskbars();
   if (!win || win.isDestroyed()) return;
+  // The strip and the page area are the ACTIVE stage's. A path outside the strip can
+  // still make a suspended tab "active" (a background popup's tab, an agent switching
+  // to its own hidden tab); hand the window back to a tab that is really on screen
+  // rather than leaving an empty page under a strip with no active row.
+  if (tabs.active != null && !inActiveStage(tabs.active)) {
+    const visible = tabs.tabs.find((t) => tabStage(t.id) === activeStageId() && !popped.has(t.id));
+    if (visible) tabs.activate(visible.id);
+  }
   // A discarded tab put on screen gets its renderer back first (tab-discard.cjs).
   restoreDiscarded(tabs.active);
   // The rail (avatar slot, every Aither page, the layer strip) is the chrome page's
@@ -945,6 +953,12 @@ function userDataPath(...parts) {
 let stagesDoc = null;
 let stagesWarn = [];
 let stagesSaveTimer = null;
+/**
+ * stage id -> saved tab descriptors the window's 30-tab cap would not let open on the
+ * first switch (a suspended tab is still a tab). They are retried the next time the stage
+ * is shown and put back by captureStage, so a cap never deletes a saved tab.
+ */
+const stagesShortfall = new Map();
 function stagesFile() {
   return userDataPath(browserStages.FILE_NAME);
 }
@@ -1044,28 +1058,57 @@ function tabDescriptor(id) {
 /** Write a stage's LIVE strip back into the document (before leaving it, or on close). */
 function captureStage(stageId = activeStageId()) {
   const ids = tabs.tabs.filter((t) => tabStage(t.id) === stageId).map((t) => t.id);
-  const list = ids.map(tabDescriptor).filter(Boolean);
+  let list = ids.map(tabDescriptor).filter(Boolean);
+  // A stage that could not be fully restored (the tab cap) keeps the tabs that never
+  // opened: overwriting the document with the short strip would delete them for good.
+  const short = stagesShortfall.get(stageId);
+  if (short && short.length) {
+    const saved = (browserStages.find(getStages(), stageId) || {}).tabs || [];
+    list = browserStages.mergeUnopened(list, saved, short);
+  }
   const r = browserStages.setTabs(getStages(), stageId, list);
   if (r.ok) setStages(r.doc);
   return r.ok;
 }
 
+/** Open ONE tab descriptor from the document into `stageId` (never activating it). */
+function openSavedTab(stageId, d) {
+  const by = d.by === "agent" ? "agent" : "you";
+  return openTab(by, d.url, { stage: stageId, activate: false, pinned: d.pinned, key: d.key || null,
+    label: d.label || "", hostedPartition: d.kind === "hosted" ? onlinePartition() : null });
+}
+
 /**
- * Bring a stage's saved tabs back. Only when the stage has no live tab at all: a live
- * tab is the tab, and re-opening it would fork its history. Returns the id of the last
- * one opened (the one to show), or null.
+ * Bring a stage's saved tabs back. A live tab is the tab, and re-opening it would fork
+ * its history, so this runs only when the stage has no live tab at all. Tabs the tab cap
+ * refuses are remembered in `stagesShortfall` (and retried by fillStageShortfall).
+ * Returns the id of the last one opened (the one to show), or null.
  */
 function openStageTabs(stageId) {
   const stage = browserStages.find(getStages(), stageId);
   if (!stage) return null;
   let lastId = null;
+  const failed = [];
   for (const d of stage.tabs) {
-    const by = d.by === "agent" ? "agent" : "you";
-    const r = openTab(by, d.url, { stage: stageId, activate: false, pinned: d.pinned, key: d.key || null,
-      label: d.label || "", hostedPartition: d.kind === "hosted" ? onlinePartition() : null });
+    const r = openSavedTab(stageId, d);
     if (r.ok) lastId = r.id;
+    else failed.push(d);
   }
+  if (failed.length) stagesShortfall.set(stageId, failed);
+  else stagesShortfall.delete(stageId);
   return lastId;
+}
+
+/** Retry a stage's unopened saved tabs (room may have appeared since the first switch). */
+function fillStageShortfall(stageId) {
+  const short = stagesShortfall.get(stageId);
+  if (!short || !short.length) return;
+  const left = [];
+  for (const d of short) {
+    if (!openSavedTab(stageId, d).ok) left.push(d);
+  }
+  if (left.length) stagesShortfall.set(stageId, left);
+  else stagesShortfall.delete(stageId);
 }
 
 /**
@@ -1083,6 +1126,9 @@ function showStage(stageId) {
   let pick = null;
   if (!live.length) {
     pick = openStageTabs(stageId);
+    live = collect();
+  } else if (stagesShortfall.has(stageId)) {
+    fillStageShortfall(stageId);
     live = collect();
   }
   if (!live.length) {
@@ -1164,11 +1210,22 @@ function stageAction(action, arg) {
       const wasActive = id === activeStageId();
       const r = browserStages.remove(getStages(), id);
       if (!r.ok) return r;
-      // The stage's views go with it: nothing hidden keeps a page alive.
-      for (const tab of [...tabs.tabs]) if (tabStage(tab.id) === id) closeTab(tab.id, "you");
+      // Point `active` at the neighbour FIRST: a tab opened while the closing runs (the
+      // last tab of the window opens a home page) then lands in a stage that exists,
+      // instead of an invisible orphan of the one being deleted.
       setStages(r.doc);
+      stagesShortfall.delete(id);
+      const target = activeStageId();
+      // The stage's views go with it: nothing hidden keeps a page alive. A pinned tab
+      // cannot be closed (the strip's own rule) and the pinned front is the desk's, so
+      // it moves to the surviving stage instead of dying with a stage that is gone.
+      for (const tab of [...tabs.tabs]) {
+        if (tabStage(tab.id) !== id) continue;
+        if (tab.pinned) { tab.stage = target; continue; }
+        closeTab(tab.id, "you");
+      }
       // Deleting the stage you were in lands you on the neighbour, tabs and all.
-      if (wasActive) showStage(browserStages.activeStage(getStages()).id);
+      if (wasActive) showStage(target);
       return done({ ok: true });
     }
     case "move": {
@@ -1830,7 +1887,9 @@ function runBrowserAction(action, arg, id = tabs.active) {
   const wc = pageWc(id);
   const tab = tabs.get(id) || {};
   const history = wc && wc.navigationHistory;
-  const order = tabs.snapshot().tabs.map((t) => t.id);
+  // Ctrl+Tab / Ctrl+1..9 walk the ACTIVE stage's strip, never a suspended stage's tab
+  // (showing one would leave the page area with nothing on screen).
+  const order = tabs.tabs.filter((t) => inActiveStage(t.id)).map((t) => t.id);
   const at = order.indexOf(tabs.active);
   // Print, translate and read aloud on a workspace app whose policy turns them off.
   if (getWorkspace().blocksAction(id, action)) return true;
@@ -2534,7 +2593,9 @@ function openFromPage(id, details) {
   if (verdict.action === "deny") return { action: "deny" };
   popupLedger.note(root);
   if (verdict.action === "tab") {
-    const opened = openTab(verdict.by, url, { activate: true, after: id });
+    // A new tab belongs to the stage its opener lives in: a link from a suspended
+    // stage's page must not surface in the strip the owner is looking at.
+    const opened = openTab(verdict.by, url, { activate: true, after: id, stage: tabStage(id) });
     if (opened.ok && tabs.get(opened.id)) tabs.get(opened.id).popupRoot = root;
     return { action: "deny" };
   }
@@ -2548,7 +2609,12 @@ function adoptPopup(openerId, verdict, options, url, root = openerId) {
   try {
     const opener = tabs.get(openerId);
     if (!opener || !win || win.isDestroyed()) return refuse();
-    const added = tabs.add(verdict.by, { activate: verdict.activate, after: openerId, kind: "web" });
+    const added = tabs.add(verdict.by, {
+      // A popup from a SUSPENDED stage's page lands there, not on screen: it must not
+      // hand the window a tab the strip is not showing.
+      activate: verdict.activate && tabStage(openerId) === activeStageId(),
+      after: openerId, kind: "web",
+    });
     // No room for another tab: the popup's page is closed at once.
     if (!added.ok) return refuse();
     const tab = tabs.get(added.id);
@@ -3359,10 +3425,13 @@ function openTab(by, url, { activate = true, after = null, pinned = false, key =
     : agentSessions.partitionFor({
       by, url: target.url, sites: getPrefs().agentCookieSites, ownerPartition: PARTITION, agentPartition: AGENT_PARTITION,
     }));
-  const added = tabs.add(by, { activate, after, kind, pinned, key });
+  // The tab's stage decides whether it may become the one on screen: a tab opened into
+  // a suspended stage (a popup from a hidden page) must never steal the page area.
+  const stageId = stage || activeStageId();
+  const added = tabs.add(by, { activate: activate && stageId === activeStageId(), after, kind, pinned, key });
   if (!added.ok) return added;
   const tab = tabs.get(added.id);
-  tab.stage = stage || activeStageId();
+  tab.stage = stageId;
   tab.paneId = target.paneId;
   tab.label = label;
   if (kind === "internal") ensureInternalSession();
@@ -3639,8 +3708,9 @@ function popOutTab(id) {
   retitle();
   pop.on("closed", () => dockTab(id, { closing: true }));
   popped.set(id, pop);
-  // The strip moves on to another tab; the popped one keeps its place in the list.
-  const next = tabs.tabs.find((t) => t.id !== id && !popped.has(t.id));
+  // The strip moves on to another tab OF THIS STAGE; the popped one keeps its place in
+  // the list (a suspended stage's tab must not come on screen under this strip).
+  const next = tabs.tabs.find((t) => t.id !== id && !popped.has(t.id) && tabStage(t.id) === activeStageId());
   if (next && tabs.active === id) tabs.activate(next.id);
   layout();
   pushState();
@@ -3675,6 +3745,14 @@ function showTab(id) {
     pop.show();
     pop.focus();
     return { ok: true };
+  }
+  // A tab of a suspended stage (the pinned front, an Aither pane, an extension page) is
+  // not on the strip you are looking at: showing it means switching to its stage first,
+  // or the click silently does nothing (layout() keeps a suspended stage's view hidden).
+  const stage = tabStage(id);
+  if (tabs.get(id) && stage !== activeStageId() && browserStages.find(getStages(), stage)) {
+    const switched = switchStage(stage);
+    if (!switched.ok) return switched;
   }
   const shown = tabs.activate(id);
   if (shown.ok) {

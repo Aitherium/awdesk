@@ -93,6 +93,25 @@ function normalizeTabs(raw) {
   return out;
 }
 
+/**
+ * The document's tabs for a stage that was only PARTLY restored: the live strip (`live`
+ * descriptors, in strip order) plus the saved ones the window's tab cap refused to open
+ * (`unopened`), in the document's own order. A cap must never erase a saved tab, so a
+ * capture merges instead of replacing while `unopened` is non-empty.
+ */
+function mergeUnopened(live, saved, unopened) {
+  const liveBy = new Map();
+  for (const tab of normalizeTabs(live)) if (!liveBy.has(tab.url)) liveBy.set(tab.url, tab);
+  const held = new Set((Array.isArray(unopened) ? unopened : []).map((d) => (d && d.url) || "").filter(Boolean));
+  const out = [];
+  for (const tab of normalizeTabs(saved)) {
+    if (liveBy.has(tab.url)) { out.push(liveBy.get(tab.url)); liveBy.delete(tab.url); }
+    else if (held.has(tab.url)) out.push(tab);
+  }
+  for (const tab of liveBy.values()) out.push(tab); // opened after the switch
+  return out;
+}
+
 function normalizeTerminals(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
@@ -426,6 +445,7 @@ module.exports = {
   setContext,
   setSplits,
   normalizeTabs,
+  mergeUnopened,
   resolveScope,
   load,
   save,
