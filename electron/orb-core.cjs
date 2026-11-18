@@ -505,6 +505,9 @@ function sanitizeState(raw) {
     // window an agent's tool call belongs to. Off when the owner asks for reduced
     // motion; the veil page also honours the OS's prefers-reduced-motion.
     reducedMotion: src.reducedMotion === true,
+    // Visual neurons (neurons-model.cjs, owner 2026-11-18): a small step graph around
+    // a working/speaking agent's fairy. OFF unless the owner switches it on.
+    neurons: src.neurons === true,
     // The cluster follows the window the owner is working in (plan A4, 2026-11-18):
     // ON unless turned off in the tray.
     follow: src.follow !== false,

@@ -119,6 +119,15 @@
     </section>
 
     <section>
+      <h2>Visual neurons</h2>
+      <p class="lede">See an agent think. While an agent is working or speaking, a small graph of its recent steps — thinking, a tool call, a result, a spoken line — draws around its fairy. Off by default.</p>
+      <div class="row">
+        <label style="min-width:0"><input type="checkbox" id="ovNeurons"> Show each agent's recent steps around its fairy</label>
+      </div>
+      <p class="note">Nodes pulse when fresh and fade over 20 seconds; parallel tool calls fan out from the thought. Nothing is recorded and nothing leaves this machine.</p>
+    </section>
+
+    <section>
       <h2>Hotkeys</h2>
       <p class="lede">Click Rebind, then press the key combo you want. Conflicts are checked before saving.</p>
       <div id="hotkeys" class="hotkeys"></div>
@@ -171,6 +180,7 @@
     }
     renderHotkeys(res.hotkeys || []);
     renderOverlay(res.overlay || {});
+    renderNeurons(res.neurons);
   }
 
   // Desktop overlay (overlay-policy.cjs): three switches, the edge and the dwell.
@@ -201,6 +211,19 @@
     const ms = Math.round(Number(ovDwell.value));
     if (!Number.isInteger(ms) || ms < 150 || ms > 5000) { say("rest time must be 150 to 5000 ms", "err"); return; }
     saveOverlay({ edgeDwellMs: ms });
+  });
+
+  // Visual neurons (neurons-model.cjs): one switch, off by default.
+  const ovNeurons = document.getElementById("ovNeurons");
+  function renderNeurons(on) { ovNeurons.checked = on === true; }
+  ovNeurons.addEventListener("change", async () => {
+    const result = await bridge.setNeurons(ovNeurons.checked);
+    if (result && result.ok) {
+      renderNeurons(result.neurons);
+      say(result.neurons ? "visual neurons on" : "visual neurons off", "ok");
+    } else {
+      say("could not save: " + (result && result.error || "unknown"), "err");
+    }
   });
 
   grantMicBtn.addEventListener("click", async () => {

@@ -110,6 +110,9 @@
      agent with a card waiting -- every one of them, on rings that grow with the
      count, drawn smaller as more appear; hovering one shows that agent's card. */
   body.swarm { background: transparent; overflow: hidden; }
+  /* Visual neurons (neurons-model.cjs): the step graph behind the companions. A
+     canvas drawn by THIS page at its own frame rate; never a per-frame IPC. */
+  #nn { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   #mates { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
   .mate { position: absolute; left: 0; top: 0; width: var(--m-size, 10px); height: var(--m-size, 10px);
     margin: calc(var(--m-size, 10px) / -2) 0 0 calc(var(--m-size, 10px) / -2); border-radius: 50%;
@@ -974,9 +977,11 @@
   // of the ring to pin it, the wheel over a fairy changes the radius, and the ring keeps off
   // the focused window's content area.
   if (view === "swarm") {
-    document.body.innerHTML = '<div id="mates"></div><div id="cluster-count" aria-live="polite"></div>';
+    document.body.innerHTML = '<canvas id="nn"></canvas><div id="mates"></div><div id="cluster-count" aria-live="polite"></div>';
     const matesEl = document.getElementById("mates");
     const countEl = document.getElementById("cluster-count");
+    const nn = document.getElementById("nn");
+    const nctx = nn ? nn.getContext("2d") : null;
     let mates = [];
     let hotMate = null;
     let inside = false;
@@ -984,6 +989,16 @@
     let panelOpen = false;
     let dragging = null; // {m, x, y, started}
     let wheelUntil = 0; // a wheel session holds the window interactive (see the wheel listener)
+    // Visual neurons (neurons-model.cjs): state first, so the shared callbacks below
+    // can never read a later `const` in its dead zone.
+    const reducedMotion = Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    let nnOn = false;
+    let nnTtl = 20000;
+    let nnPulse = 1200;
+    let nnGraphs = new Map();
+    let nnFrame = 0;
+    let nnTimer = 0; // reduced motion: ONE pending repaint, never a loop
+    let nnTint = "#d6ecff";
     // 2026-11-13 (owner: "the overlay feels laggy"): measured 19 style+layout passes a
     // second in THIS page while nothing happened (left/top at 20 fps, forever). Now the
     // lap moves `translate` (compositor only, no layout) and it RESTS after 20 s with no
@@ -1078,10 +1093,13 @@
         const doWhat = c.kind === "more" ? "click for the whole list" : c.cardId ? "click to open its card" : "click to select";
         return {
           el, slot: slots[i], x: 0, y: 0, id: String(c.cardId || ""), agent: String(c.agent || ""),
+          color: String(c.color || ""), // the fairy's own colour: the neuron graph wears it too
           tip: mateTip(c), aria: `${c.label || c.agent}${stateWord}: ${c.title || "a card"}${extra} -- ${doWhat}`,
         };
       });
       stir();
+      // A fairy moved: the graph around it moves with it (reduced motion repaints once).
+      if (nnOn) { if (reducedMotion) paintReduced(); else startNeurons(); }
     }
     function mateAt(dx, dy) {
       let best = null;
@@ -1226,6 +1244,170 @@
       lastLayoutKey = key;
       stir();
     }
+    // ── visual neurons (neurons-model.cjs): a small step graph around an agent ────
+    // Main batches steps at <= 10 Hz, so this page never receives an IPC per step or
+    // per frame. Each node fades on its own clock; the loop stops when nothing is
+    // live. A thinking step is a ring, a tool call a diamond, a result or a spoken
+    // line a warm spark. Reduced motion gets one frame per update and no pulse.
+    function nnAlpha(n, now) {
+      return Math.max(0, Math.min(1, 1 - (now - n.at) / nnTtl));
+    }
+    function nnSize() {
+      if (!nn || !nctx) return null;
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const cw = Math.round(w * dpr);
+      const ch = Math.round(h * dpr);
+      if (nn.width !== cw || nn.height !== ch) {
+        nn.width = cw;
+        nn.height = ch;
+        nn.style.width = `${w}px`;
+        nn.style.height = `${h}px`;
+      }
+      nctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { w, h };
+    }
+    /** One agent's graph around (ox, oy). Returns true while anything is still fading. */
+    function nnDrawGraph(g, ox, oy, radius, color, now) {
+      const live = new Map();
+      for (const n of Array.isArray(g.nodes) ? g.nodes : []) {
+        if (!n || !Number.isFinite(n.at) || !Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+        if (now - n.at >= nnTtl) continue;
+        live.set(n.id, n);
+      }
+      if (!live.size) return false;
+      nctx.lineWidth = 1;
+      for (const e of Array.isArray(g.edges) ? g.edges : []) {
+        const a = live.get(e && e.from);
+        const b = live.get(e && e.to);
+        if (!a || !b) continue;
+        const alpha = Math.min(nnAlpha(a, now), nnAlpha(b, now)) * 0.45;
+        if (alpha <= 0.02) continue;
+        nctx.strokeStyle = rgba(color, alpha);
+        nctx.beginPath();
+        nctx.moveTo(ox + a.x * radius, oy + a.y * radius);
+        nctx.lineTo(ox + b.x * radius, oy + b.y * radius);
+        nctx.stroke();
+      }
+      let any = false;
+      for (const n of live.values()) {
+        const alpha = nnAlpha(n, now);
+        if (alpha <= 0.02) continue;
+        any = true;
+        const x = ox + n.x * radius;
+        const y = oy + n.y * radius;
+        const pulse = reducedMotion ? 0 : Math.max(0, Math.min(1, 1 - (now - n.at) / nnPulse));
+        const size = 1.9 + pulse * 2.2;
+        if (n.kind === "thinking") {
+          nctx.strokeStyle = rgba(color, alpha * 0.9);
+          nctx.lineWidth = 1.2;
+          nctx.beginPath();
+          nctx.arc(x, y, size, 0, Math.PI * 2);
+          nctx.stroke();
+        } else if (n.kind === "tool") {
+          nctx.fillStyle = rgba(color, alpha);
+          nctx.beginPath();
+          nctx.moveTo(x, y - size);
+          nctx.lineTo(x + size, y);
+          nctx.lineTo(x, y + size);
+          nctx.lineTo(x - size, y);
+          nctx.closePath();
+          nctx.fill();
+        } else {
+          // A result or a spoken line: a warm core in a halo.
+          const halo = nctx.createRadialGradient(x, y, 0, x, y, size * 2.6);
+          halo.addColorStop(0, rgba(n.kind === "line" ? "#ffffff" : color, alpha * 0.9));
+          halo.addColorStop(1, rgba(color, 0));
+          nctx.fillStyle = halo;
+          nctx.beginPath();
+          nctx.arc(x, y, size * 2.6, 0, Math.PI * 2);
+          nctx.fill();
+          nctx.fillStyle = rgba("#ffffff", alpha);
+          nctx.beginPath();
+          nctx.arc(x, y, Math.max(1.1, size * 0.55), 0, Math.PI * 2);
+          nctx.fill();
+        }
+      }
+      return any;
+    }
+    /** One frame. True when something is still fading, so the loop runs on. */
+    function paintNeurons() {
+      if (!nnOn || !nctx) return false;
+      const size = nnSize();
+      if (!size) return false;
+      nctx.clearRect(0, 0, size.w, size.h);
+      const now = Date.now();
+      const cx = size.w / 2 - 8;
+      const cy = size.h / 2 - 8;
+      let live = false;
+      const inRing = new Set();
+      for (const m of mates) {
+        const g = nnGraphs.get(m.agent);
+        if (!g) continue;
+        inRing.add(m.agent);
+        const radius = Math.max(22, (m.slot ? m.slot.size : 12) * 1.8);
+        if (nnDrawGraph(g, cx + m.x, cy + m.y, radius, m.color || nnTint || "#d6ecff", now)) live = true;
+      }
+      // An agent whose fairy is not in the ring draws at the middle (the fairy itself):
+      // only the most recently active one, so two graphs never overlap.
+      let centre = null;
+      let centreAt = -Infinity;
+      for (const g of nnGraphs.values()) {
+        if (inRing.has(g.agent)) continue;
+        const last = (g.nodes || []).reduce((a, n) => Math.max(a, Number(n && n.at) || 0), -Infinity);
+        if (last > centreAt) { centre = g; centreAt = last; }
+      }
+      if (centre && nnDrawGraph(centre, cx, cy, 46, nnTint || "#d6ecff", now)) live = true;
+      return live;
+    }
+    function stopNeurons() {
+      if (nnFrame) { window.cancelAnimationFrame(nnFrame); nnFrame = 0; }
+      if (nnTimer) { window.clearTimeout(nnTimer); nnTimer = 0; }
+      if (nctx) nctx.clearRect(0, 0, nn.width, nn.height);
+    }
+    /** Reduced motion: how long until the next step expires, or Infinity. */
+    function nnNextExpiry(now) {
+      let next = Infinity;
+      for (const g of nnGraphs.values()) {
+        for (const n of Array.isArray(g.nodes) ? g.nodes : []) {
+          if (!n || !Number.isFinite(n.at)) continue;
+          const left = n.at + nnTtl - now;
+          if (left > 0 && left < next) next = left;
+        }
+      }
+      return next;
+    }
+    /** Reduced motion: ONE frame now, and one more when a step expires, so the graph
+     *  still clears. No loop and no pulse -- a still picture is not allowed to outlive
+     *  its own 20 s fade by staying on screen forever. */
+    function paintReduced() {
+      if (nnTimer) { window.clearTimeout(nnTimer); nnTimer = 0; }
+      paintNeurons();
+      const left = nnNextExpiry(Date.now());
+      if (Number.isFinite(left)) nnTimer = window.setTimeout(paintReduced, Math.max(50, left + 20));
+    }
+    function startNeurons() {
+      if (nnFrame || reducedMotion) return;
+      const tick = () => { nnFrame = 0; if (paintNeurons()) nnFrame = window.requestAnimationFrame(tick); };
+      nnFrame = window.requestAnimationFrame(tick);
+    }
+    function setNeurons(p) {
+      if (!p) return;
+      nnOn = Boolean(p.on);
+      if (Number(p.ttlMs) > 0) nnTtl = Number(p.ttlMs);
+      if (Number(p.pulseMs) > 0) nnPulse = Number(p.pulseMs);
+      const next = new Map();
+      for (const g of Array.isArray(p.agents) ? p.agents : []) {
+        if (g && g.agent && Array.isArray(g.nodes) && g.nodes.length) next.set(String(g.agent), g);
+      }
+      nnGraphs = next;
+      try { nnTint = String(getComputedStyle(document.documentElement).getPropertyValue("--tint") || "").trim() || "#d6ecff"; } catch { /* keep the default */ }
+      if (!nnOn || !next.size) { stopNeurons(); return; }
+      if (reducedMotion) { stopNeurons(); paintReduced(); return; } // honour it: one frame per update, no pulse, and one more when a step expires
+      startNeurons();
+    }
+    if (api.onNeurons) api.onNeurons(setNeurons);
     if (api.onSwarmView) api.onSwarmView(viewChanged);
     api.onCompanions(setMates);
     api.init().then((s) => {
@@ -1234,6 +1416,7 @@
       if (s.swarmView) sv = { ...sv, ...s.swarmView };
       lastLayoutKey = `${sv.mode}|${sv.radius}|${sv.edge}`;
       if (s.companions) setMates(s.companions);
+      if (s.neurons) setNeurons(s.neurons);
     });
   }
 
