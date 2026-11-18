@@ -310,7 +310,10 @@ test("migrateLegacy: folds .agent-avatars.json and the legacy AGENT_VOICES in on
 
   const { snapshot } = cast.load({ file });
   assert.equal(snapshot.authors.atlas.character, "owner-chosen-vrm", "an owner-authored value must survive migration untouched");
-  assert.equal(snapshot.authors.atlas.voice, cast.LEGACY_AGENT_VOICES.atlas, "voice was not pre-authored, so migration fills it");
+  assert.equal(snapshot.authors.atlas.voice, "kokoro:am_michael",
+    "a migrated agent gets the CANONICAL platform voice, not the legacy OpenAI-era name");
+  assert.equal(snapshot.authors.hydra.voice, cast.LEGACY_AGENT_VOICES.hydra,
+    "an agent the canonical map does not name still gets its legacy voice");
   assert.equal(snapshot.authors["weird name"].character, "weird-vrm");
   assert.ok(typeof snapshot.migratedLegacyAt === "string" && snapshot.migratedLegacyAt);
 

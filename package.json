@@ -58,6 +58,8 @@
     "test:console": "electron electron/console-smoke.cjs",
     "test:intent-bar": "electron electron/intent-bar-smoke.cjs",
     "desk-tools": "node scripts/desk-tools.cjs",
+    "voices:sync": "node electron/sync-agent-voices.cjs",
+    "voices:check": "node electron/sync-agent-voices.cjs --check",
     "test:browser": "electron electron/browser-smoke.cjs",
     "test:browser-parity": "electron electron/browser-parity-smoke.cjs",
     "test:browser-widevine": "electron electron/browser-widevine-smoke.cjs",

@@ -124,6 +124,19 @@ function AGENT_ROSTER_FILE() {
   return path.join(__dirname, "agent-roster.generated.json");
 }
 
+/** The CANONICAL agent-voice map (AitherOS/config/agent_voices.json), copied
+ *  in by electron/sync-agent-voices.cjs. Its `agents.<id>.voice` is the engine
+ *  id AitherVoice actually speaks ("kokoro:am_michael", "local:piper") -- the
+ *  ONE answer awvoice, awdk and the orchestrator pack already share. The roster
+ *  mirror below it carries stock Microsoft edge voices and used to win by
+ *  default, which is why Atlas spoke in a female en-US-MichelleNeural voice.
+ *  DESK_AGENT_VOICES_FILE is a test seam, like DESK_CAST_FILE. */
+function AGENT_VOICES_FILE() {
+  const override = process.env.DESK_AGENT_VOICES_FILE;
+  if (override && String(override).trim()) return path.resolve(String(override).trim());
+  return path.join(__dirname, "agent-voices.generated.json");
+}
+
 // ─── the built-in tier (the floor under the file, the env and the hash) ──────
 
 const SPEED_MIN = 0.25;
@@ -1464,6 +1477,72 @@ function loadRosterPresence({ file = AGENT_ROSTER_FILE() } = {}) {
   return presence;
 }
 
+// ─── the canonical voice tier (agent_voices.json, ahead of the roster) ───────
+
+/** The fields the canonical map may speak to. It is a VOICE authority, not a
+ *  body one: characters stay with the owner's cast and the platform roster. */
+const CANONICAL_FIELDS = Object.freeze(["voice"]);
+
+/** The engine prefixes AitherVoice /voice/synthesize understands (see
+ *  AitherOS/services/perception/AitherVoice.py: "kokoro:<id>" is served by the
+ *  Kokoro lane, "local:piper" by the local Piper voice; "custom:<name>" is
+ *  routed by the desk to Genesis /voice-builds). Anything else is an edge-tts
+ *  name, which is the drift this map exists to end. */
+const CANONICAL_ENGINE_PREFIXES = Object.freeze(["kokoro:", "local:piper", "custom:"]);
+
+/** Validate one canonical voice id. Pure. */
+function isCanonicalVoiceId(value) {
+  const verdict = ACTOR_FIELDS.voice(value);
+  if (!verdict.ok) return verdict;
+  const v = verdict.value.toLowerCase();
+  const known = CANONICAL_ENGINE_PREFIXES.some((p) => v === p || v.startsWith(p));
+  return known ? verdict : { ok: false, reason: "not a kokoro:/local:piper/custom: engine id" };
+}
+
+/**
+ * validateAgentVoices -- the generated canonical map, reduced to
+ * {agent: {voice?}} through the SAME ACTOR_FIELDS validator the cast file uses,
+ * so a value cast.json would drop is dropped here too. Pure; never throws.
+ * Accepts the whole document (its `agents` map) or the bare map.
+ */
+function validateAgentVoices(raw) {
+  const doc = plainObject(raw);
+  const map = plainObject("agents" in doc ? doc.agents : doc);
+  const out = {};
+  for (const [agent, record] of Object.entries(map)) {
+    const key = normaliseAuthor(agent);
+    const rec = plainObject(record);
+    if (!key) continue;
+    const verdict = isCanonicalVoiceId(rec.voice);
+    if (verdict.ok) out[key] = { voice: verdict.value };
+  }
+  return out;
+}
+
+const agentVoicesCache = new Map(); // resolved file -> { mtimeMs, voices }
+
+/**
+ * loadAgentVoices -- read the canonical map's voice per agent, fail soft: a
+ * missing or malformed copy yields {} (the tier says nothing and the roster
+ * still speaks), never a throw into a poll. Cached by mtime so a hot resolve
+ * costs one stat and a regenerated map is picked up without a restart.
+ */
+function loadAgentVoices({ file = AGENT_VOICES_FILE() } = {}) {
+  const resolved = path.resolve(file);
+  const mtimeMs = statMtime(resolved);
+  if (mtimeMs === null) return {};
+  const cached = agentVoicesCache.get(resolved);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.voices;
+  let voices;
+  try {
+    voices = validateAgentVoices(JSON.parse(fs.readFileSync(resolved, "utf8")));
+  } catch {
+    voices = {};
+  }
+  agentVoicesCache.set(resolved, { mtimeMs, voices });
+  return voices;
+}
+
 // ─── resolution ──────────────────────────────────────────────────────────────
 
 function normaliseSnapshot(snapshot) {
@@ -1700,6 +1779,10 @@ function resolveVoice(snapshot, { env = process.env } = {}) {
  *   actors["<kind>:*"]                 (the class grant)
  *   authors.<author>.seats[<seat>]     (this parallel session)
  *   authors.<author>
+ *   canonical.<agent>                  (voice ONLY: the platform's canonical
+ *                                       agent_voices.json -- kokoro:<id> /
+ *                                       local:piper / custom:<name> -- ahead of
+ *                                       the roster mirror's stock *Neural ids)
  *   roster.<agent>                     (voice and character ONLY: the agent's
  *                                       DECLARED desk_presence from the platform
  *                                       roster, ctx.agentRoster. Below every
@@ -1727,6 +1810,8 @@ function resolveVoice(snapshot, { env = process.env } = {}) {
  * @param {object} ctx
  *   {author, actorId, actorKind|kind, id, channel, nick, key, origin, seat,
  *    roster (SAFE character names), taken, resident, voices, env,
+ *    agentVoices ({agent: {voice}}, loadAgentVoices()'s shape; omitted = no
+ *    canonical tier),
  *    agentRoster ({agent: {voice?, character?}}, loadRosterPresence()'s
  *    shape; omitted = no roster tier)}
  * @returns {object} ActorResolution — never throws.
@@ -1770,6 +1855,15 @@ function resolveActor(snapshot, ctx = {}) {
     tiers.push({ prefix: `authors.${author}.seats[${seat}]`, record: authorRecord.seats[seat] });
   }
   if (authorRecord) tiers.push({ prefix: `authors.${author}`, record: authorRecord });
+  if (agentName && ctx.agentVoices && typeof ctx.agentVoices === "object") {
+    // The platform's ONE canonical voice, above the roster mirror: the roster
+    // is generated from config/identities desk_presence and carries stock
+    // en-US-*Neural ids, while agent_voices.json names the engine that actually
+    // speaks (kokoro:am_michael). An owner's authors.<agent>.voice above this
+    // tier still wins -- override first, canonical, then roster.
+    const canonical = validateAgentVoices(ctx.agentVoices)[agentName];
+    if (canonical) tiers.push({ prefix: `canonical.${agentName}`, record: canonical, only: CANONICAL_FIELDS });
+  }
   if (agentName && ctx.agentRoster && typeof ctx.agentRoster === "object") {
     const declared = validateRosterPresence(ctx.agentRoster)[agentName];
     if (declared) tiers.push({ prefix: `roster.${agentName}`, record: declared, only: ROSTER_FIELDS });
@@ -2142,11 +2236,16 @@ function migrateLegacy({ file = CAST_FILE(), avatarsFile = undefined, now = Date
           characters += 1;
         }
       }
+      // The canonical map is the voice the rest of the platform speaks, so a
+      // freshly migrated agent gets IT, not the legacy OpenAI-era name; the
+      // legacy value only fills agents the canonical map does not name.
+      const canonical = loadAgentVoices();
       for (const [agent, voice] of Object.entries(LEGACY_AGENT_VOICES)) {
         const record = row(agent);
         if (!record) continue;
         if (record.voice === undefined || record.voice === null) {
-          record.voice = voice;
+          const key = normaliseAuthor(agent);
+          record.voice = (canonical[key] && canonical[key].voice) || voice;
           voices += 1;
         }
       }
@@ -2256,6 +2355,7 @@ module.exports = {
   channelKey,
   hash33,
   load,
+  loadAgentVoices,
   loadRosterPresence,
   migrateLegacy,
   normaliseAuthor,
@@ -2272,7 +2372,12 @@ module.exports = {
   stableVoice,
   ownerBodies,
   validateCast,
+  validateAgentVoices,
   validateRosterPresence,
+  AGENT_VOICES_FILE,
+  CANONICAL_FIELDS,
+  CANONICAL_ENGINE_PREFIXES,
+  isCanonicalVoiceId,
   ROSTER_FIELDS,
   watch,
   write,

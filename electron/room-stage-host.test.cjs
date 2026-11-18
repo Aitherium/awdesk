@@ -554,16 +554,18 @@ test("castPaneImpl.describe lists the resident FIRST with its service:awdesk res
   assert.equal(first.resolution.physicsFrom.weight, "defaults.physics.weight");
 });
 
-test("buildResolver: an agent with no cast.json record speaks with its ROSTER voice; authors.<agent> still wins", () => {
+test("buildResolver: an agent with no cast.json record speaks with its CANONICAL voice; the roster is the "
+  + "fallback for an agent the map does not name; authors.<agent> still wins", () => {
   const dir = tmpDir();
   const file = castFileIn(dir);
   const rosterFile = path.join(dir, "agent-roster.generated.json");
   fs.writeFileSync(
     rosterFile,
     JSON.stringify({
-      agents: ["atlas", "hydra"],
+      agents: ["atlas", "athena", "hydra"],
       presence: {
         atlas: { voice: "en-US-MichelleNeural", character: "Luna" },
+        athena: { voice: "en-US-AriaNeural" },
         hydra: { voice: "en-US-AvaNeural" },
       },
     }),
@@ -573,9 +575,12 @@ test("buildResolver: an agent with no cast.json record speaks with its ROSTER vo
   const deps = baseDeps({ castFile: file, agentRosterFile: rosterFile });
   const resolve = host.buildResolver(deps, () => file, null);
   const atlas = resolve({ author: "atlas", actorId: "a1", actorKind: "agent" });
-  assert.equal(atlas.voice, "en-US-MichelleNeural");
-  assert.equal(atlas.voiceFrom, "roster.atlas.voice");
+  assert.equal(atlas.voice, "kokoro:am_michael", "the canonical map beats the roster mirror's Edge name");
+  assert.equal(atlas.voiceFrom, "canonical.atlas.voice");
   assert.equal(atlas.character, null, "owner 2026-11-17: a declared body is never worn without the owner");
+  const athena = resolve({ author: "athena", actorId: "t1", actorKind: "agent" });
+  assert.equal(athena.voice, "en-US-AriaNeural", "an agent the canonical map does not name still falls to the roster");
+  assert.equal(athena.voiceFrom, "roster.athena.voice");
   const hydra = resolve({ author: "hydra", actorId: "h1", actorKind: "agent" });
   assert.equal(hydra.voice, "en-US-AnaNeural");
   assert.equal(hydra.voiceFrom, "authors.hydra.voice");
@@ -587,7 +592,7 @@ test("agentRosterPresence: an unreadable mirror path is {} (fail-soft), never a 
   assert.deepEqual(host.agentRosterPresence(baseDeps({ agentRosterFile: () => { throw new Error("x"); } })), {});
 });
 
-test("end to end: a stage line reaches TTS with the agent's ROSTER voice on a desk that sets "
+test("end to end: a stage line reaches TTS with the agent's CANONICAL voice on a desk that sets "
   + "defaults.voice AND voice.defaultVoice", async () => {
   // The REAL RoomStage (timers off) + the REAL resolver + main.cjs's own gate
   // mapping (voice-resolve.speechCtx -> resolveSpeech -> effectiveVoice). The
@@ -649,7 +654,7 @@ test("end to end: a stage line reaches TTS with the agent's ROSTER voice on a de
     host.stopRoomStage();
   }
   assert.equal(synthesised.length, 1, "the line must reach synthesis");
-  assert.equal(synthesised[0].voice, "en-US-MichelleNeural", "the roster voice, not the file-wide Jenny");
-  assert.equal(synthesised[0].from, "roster.atlas.voice");
+  assert.equal(synthesised[0].voice, "kokoro:am_michael", "the canonical engine voice, not the roster's Edge name or the file-wide Jenny");
+  assert.equal(synthesised[0].from, "canonical.atlas.voice");
   assert.equal(synthesised[0].origin, "adk_agent:a1", "the gate resolves the row's OWN origin");
 });
