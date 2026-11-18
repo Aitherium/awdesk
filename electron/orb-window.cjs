@@ -4344,15 +4344,11 @@ function toggleBubbleFromOrb() {
   // The card the fairy carries counts as seen. Chat stays on the right-click menu.
   // Owner 2026-11-13: the badge links to the INBOX, where stale cards are cleared in
   // one place; nothing piles up on screen.
-  if (waiting) {
-    if (nudging) endNudge("seen", { stay: true });
-    if (alive(bubbleWindow) && bubbleWindow.isVisible()) bubbleWindow.hide();
-    hookValue("open", null);
-    return { ok: true, visible: false, inbox: true, waiting: attentionCards.length };
-  }
-  // Nothing waiting: the click grows the fairy into Aither (owner 2026-11-15). Chat
-  // stays one row away on the right-click menu ("Chat with Aither").
-  if (avatarMode() === "fairy") return expandToAvatar();
+  // Owner 2026-11-18: "what happened to the sleek little box where I could send it on
+  // tasks from clicking -- now it just opens AitherBrowser". A click on the orb is the
+  // ask box again, cards or not; the waiting count is the BADGE's click (needsYou ->
+  // the Inbox), so the queue stays one precise click away instead of hijacking the orb.
+  if (waiting && nudging) endNudge("seen", { stay: true });
   openBubble({ focus: true });
   return { ok: true, visible: true };
 }

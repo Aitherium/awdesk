@@ -25,7 +25,7 @@
   #orb .core { position: absolute; left: 50%; top: 50%; width: 15px; height: 15px; margin: -7.5px 0 0 -7.5px;
     border-radius: 50%; pointer-events: none;
     background: radial-gradient(circle at 45% 40%, #fff 0%, #fff 42%, rgba(244,250,255,0.85) 70%, rgba(255,255,255,0) 100%);
-    box-shadow: 0 0 8px 3px rgba(255,255,255,0.95), 0 0 20px 8px rgba(225,240,255,0.6), 0 0 36px 14px rgba(200,228,255,0.25); }
+    box-shadow: 0 0 8px 3px rgba(255,255,255,0.95), 0 0 11px 5px rgba(225,240,255,0.6), 0 0 14px 6px rgba(200,228,255,0.25); }
   #orb .wing { position: absolute; left: 50%; top: 50%; border-radius: 50%; pointer-events: none;
     background: radial-gradient(ellipse at 30% 50%, rgba(255,255,255,0.55), rgba(225,240,255,0.18) 70%, rgba(255,255,255,0.05));
     border: 1px solid rgba(255,255,255,0.45); transform-origin: 0 50%;
@@ -70,7 +70,7 @@
     border: 1px solid var(--tint, #f4faff); font: 700 10px/14px var(--font-sans, system-ui);
     text-align: center; display: none; pointer-events: none; }
   #queued.on { display: block; }
-  .drop-hover #orb { box-shadow: 0 0 0 2px var(--tint, #f4faff) inset, 0 0 22px 8px var(--tint-glow, rgba(225,240,255,0.7)); }
+  .drop-hover #orb { box-shadow: 0 0 0 2px var(--tint, #f4faff) inset, 0 0 12px 4px var(--tint-glow, rgba(225,240,255,0.7)); }
   .drop-hover #card { border-color: var(--tint, #f4faff); }
 
   /* ── the agent fairy (agent-fairy.cjs, owner 2026-11-09) ─────────────────
@@ -83,8 +83,8 @@
     rgba(244,250,255,0.85) 70%, rgba(255,255,255,0) 100%); }
   #orb.wearing .halo { background: radial-gradient(circle, rgba(255,255,255,0.62) 0%, var(--fairy-glow-soft) 20%,
     var(--fairy-glow-faint) 46%, rgba(255,255,255,0) 70%); }
-  #orb.wearing .core { box-shadow: 0 0 8px 3px rgba(255,255,255,0.95), 0 0 20px 8px var(--fairy-glow-soft),
-    0 0 36px 14px var(--fairy-glow-faint); }
+  #orb.wearing .core { box-shadow: 0 0 8px 3px rgba(255,255,255,0.95), 0 0 11px 5px var(--fairy-glow-soft),
+    0 0 14px 6px var(--fairy-glow-faint); }
   #orb.wearing .wing { background: radial-gradient(ellipse at 30% 50%, rgba(255,255,255,0.55), var(--fairy-wing) 70%,
     rgba(255,255,255,0.05)); border-color: var(--fairy-wing-edge); }
   #orb.swept .wing.up { width: 17px; height: 6px; border-radius: 0 80% 20% 80%; }
@@ -103,7 +103,7 @@
   #orb.aither .halo { background: radial-gradient(circle, rgba(255,255,255,0.75) 0%, rgba(255,214,120,0.55) 18%,
     rgba(255,200,87,0.3) 36%, rgba(56,189,248,0.1) 54%, rgba(255,255,255,0) 70%); }
   #orb.aither .core { width: 17px; height: 17px; margin: -8.5px 0 0 -8.5px;
-    box-shadow: 0 0 6px 3px rgba(255,255,255,0.95), 0 0 16px 7px rgba(255,200,87,0.75), 0 0 30px 12px rgba(255,190,80,0.32); }
+    box-shadow: 0 0 6px 3px rgba(255,255,255,0.95), 0 0 10px 4px rgba(255,200,87,0.75), 0 0 13px 6px rgba(255,190,80,0.32); }
   #orb.aither .wing { background: radial-gradient(ellipse at 30% 50%, rgba(255,255,255,0.6), rgba(56,189,248,0.32) 70%,
     rgba(255,255,255,0.05)); border-color: rgba(56,189,248,0.6); }
   /* The swarm (its own window, centred on the fairy): one companion per OTHER
@@ -348,7 +348,7 @@
   #orb.nudge3 .wing { animation-duration: 0.05s; }
   #orb.nudge3 .ping { border-color: rgba(255,204,128,0.95); animation: ping 0.9s ease-out infinite; }
   #orb.nudge3 .core { box-shadow: 0 0 8px 3px rgba(255,255,255,0.95), 0 0 20px 8px rgba(255,214,150,0.7),
-    0 0 36px 14px rgba(255,190,100,0.35); }
+    0 0 14px 6px rgba(255,190,100,0.35); }
   @keyframes ping { 0% { transform: scale(0.5); opacity: 0.9; } 100% { transform: scale(1.22); opacity: 0; } }
 
   /* ── the whisper (376 x 188 window): the card the fairy carries ─────── */
