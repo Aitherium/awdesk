@@ -72,6 +72,9 @@ const deskTenant = require("./desk-tenant.cjs");
 const tenantApps = require("./tenant-apps.cjs");
 const tabDiscard = require("./tab-discard.cjs");
 const terminalWindow = require("./terminal-window.cjs");
+// Dock terminals and folders INTO the container (the split pane, the "+" picker, drops):
+// the pure decisions live there; this file owns only the views and the window.
+const dockIn = require("./dock-in-model.cjs");
 const agentSessions = require("./browser-agent-cookies.cjs");
 // The layout document (pane sides, presets, the rail's arrangement, detached bounds,
 // canvas boards) -- one more key of browser-layout.json, never a second store.
@@ -229,6 +232,15 @@ let taskbarStatus = "off";
 let dockView = null;
 let dockStatus = "off";
 const DOCK_URL = "aither://terminal/?dock=1";
+/**
+ * The SPLIT PANE (dock-in slice 2): one second pane beside the active tab, so a docked
+ * terminal can be moved INTO the container instead of opening a whole new tab. It is a
+ * WebContentsView of an aither:// page (dockIn.moveToSplitUrl / asSplitUrl) placed by
+ * layout()'s splitRects. `axis` splits left/right or top/bottom; `ratio` is the active
+ * tab's share. One pane is enough to be useful and small enough to merge.
+ */
+let splitView = null;
+const splitState = { axis: "vertical", ratio: 0.5 };
 /**
  * Popped-out tabs (owner, 2026-10-04: "pop out any screen into its own floating window").
  * tab id -> its own BrowserWindow. The tab stays in the TabSet (same owner, same agent
@@ -609,6 +621,21 @@ function layout() {
     const shown = id === tabs.active && !viewsAside();
     if (shown) shownAt.set(id, now);
     placeView(view, shown, rects.page);
+  }
+  // The split pane (dock-in slice 2): the active tab takes the primary rect and the
+  // pane the secondary one. Hidden with the pages when a full-screen page takes over.
+  const split = splitShown();
+  if (split) {
+    const fullscreen = htmlFullscreen.tab() != null && htmlFullscreen.tab() === tabs.active;
+    const roomy = !viewsAside() && !fullscreen && rects.page.width >= 360 && rects.page.height >= 240;
+    if (roomy) {
+      const parts = dockIn.splitRects(rects.page, splitState);
+      const activeView = views.get(tabs.active);
+      if (alive(activeView) && !popped.has(tabs.active)) placeView(activeView, true, parts.primary);
+      placeView(split, true, parts.secondary);
+    } else {
+      placeView(split, false, null);
+    }
   }
   // A detached pane lives in its own window (detachPane): this layout leaves it alone.
   if (alive(panelView) && !paneDetached("panel")) placeView(panelView, !viewsAside() && rects.panel.width > 0, rects.panel);
@@ -2615,16 +2642,212 @@ function dockAction(action, arg) {
   if (action === "open") return setDockOpen(true);
   if (action === "close") return setDockOpen(false);
   if (action === "state") return { ok: true, open: Boolean(getPrefs().dockOpen) };
-  if (action === "popout") {
-    // The session moves to the full aither://terminal tab; the dock keeps its strip.
-    const id = String(arg || "");
-    if (!/^[A-Za-z0-9_-]{1,80}$/.test(id)) return { ok: false, error: "bad session id" };
-    return openInternalUrl(`aither://terminal/?attach=${encodeURIComponent(id)}`)
-      ? { ok: true } : { ok: false, error: "the terminal page is not available" };
+  // "Move to split" (was "popout"): the session opens BESIDE this page in the same
+  // window, not in a whole new tab. "popout" stays an alias for an older dock page.
+  if (action === "split" || action === "popout") {
+    const url = dockIn.moveToSplitUrl(arg);
+    if (!url) return { ok: false, error: "bad session id" };
+    const opened = openSplit(url);
+    return opened && opened.ok ? { ok: true, split: true } : (opened || { ok: false, error: "the split pane is not available" });
   }
   return { ok: false, error: `no dock action ${action}` };
 }
 terminalWindow.setDockHost({ run: dockAction });
+
+/** The split pane's view, when it is alive. */
+function splitShown() {
+  return alive(splitView) ? splitView : null;
+}
+
+/**
+ * Open `url` (an aither:// page) in a split pane of this window beside the active tab.
+ * One pane per window: opening another replaces it. Answers the failure, never throws.
+ */
+function openSplit(url) {
+  if (!win || win.isDestroyed()) return { ok: false, error: "the browser is not open" };
+  const address = dockIn.asSplitUrl(url);
+  const parsed = address && internal.parseInternalUrl(address);
+  if (!parsed) return { ok: false, error: "only an Aither page can open in a split pane" };
+  if (!internal.paneById(parsed.paneId)) return { ok: false, error: `no Aither page called ${parsed.paneId}` };
+  closeSplit();
+  ensureInternalSession();
+  ensurePinned();
+  splitView = createPageView("internal", { paneId: parsed.paneId, partition: null }, null);
+  const view = splitView;
+  const wc = view.webContents;
+  // The pane never leaves its page: a web link opens as a tab, like the dock.
+  wc.setWindowOpenHandler(({ url: next }) => {
+    if (/^https?:/i.test(String(next))) openTab("you", next, { activate: true });
+    return { action: "deny" };
+  });
+  wc.on("will-navigate", (event, next) => {
+    if (!String(next).startsWith("aither://")) event.preventDefault();
+  });
+  wc.on("before-input-event", (event, input) => {
+    if (isDockKey(input)) { event.preventDefault(); setDockOpen(undefined); }
+    if (isBringInKey(input)) { event.preventDefault(); void bringInMenu(); }
+  });
+  wc.on("render-process-gone", () => {
+    if (splitView !== view) return;
+    closeSplit();
+  });
+  win.contentView.addChildView(view);
+  if (alive(panelView)) win.contentView.addChildView(panelView);
+  if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
+  layout();
+  pushState();
+  void loadInView(view, address).catch(() => {
+    if (splitView !== view) return;
+    closeSplit();
+  });
+  return { ok: true };
+}
+
+/** Take the split pane away (its page is closed; nothing else is touched). */
+function closeSplit() {
+  const view = splitView;
+  splitView = null;
+  if (!view) return { ok: true, closed: false };
+  try { if (win && !win.isDestroyed()) win.contentView.removeChildView(view); } catch { /* already detached */ }
+  try { if (alive(view)) view.webContents.close(); } catch { /* closing */ }
+  forgetPlacement(view);
+  layout();
+  pushState();
+  return { ok: true, closed: true };
+}
+
+/** Ctrl+Shift+` : bring a terminal INTO the container (the picker). Pure. */
+function isBringInKey(input) {
+  if (!input || input.type !== "keyDown" || input.alt) return false;
+  if (!(input.control || input.meta) || !input.shift) return false;
+  return input.code === "Backquote" || input.key === "`" || input.key === "~";
+}
+
+/** The awsh client the picker reads /sessions/unified with (the daemon's bearer stays here). */
+let dockInClient = null;
+function terminalClient() {
+  if (!dockInClient) dockInClient = require("./terminal-client.cjs").createTerminalClient();
+  return dockInClient;
+}
+
+/** Resume a DISCOVERED Claude tab under the daemon, then move the new session into the pane. */
+async function resumeIntoPane(row) {
+  const r = await terminalClient().resume(row.id, { cwd: row.cwd });
+  if (!r || !r.ok || !r.session) return { ok: false, error: (r && r.error) || "the daemon could not resume it" };
+  return openSplit(dockIn.moveToSplitUrl(r.session.id));
+}
+
+/** "Raise that Windows Terminal tab": focus it (it is not ours; nothing is typed). */
+async function raiseExternalTab(row) {
+  try {
+    return await require("./tui-answer.cjs").typeIntoSession(row.label, "");
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error) };
+  }
+}
+
+/**
+ * The "Bring in a terminal" picker: the daemon's sessions attach directly; a Claude Code
+ * tab running under Windows Terminal cannot be attached (its pty is WT's), so it is
+ * offered as "Resume here" with the honest copy, plus the option to raise that WT tab.
+ */
+async function bringInMenu() {
+  if (!win || win.isDestroyed()) return { ok: false, error: "the browser is not open" };
+  const { Menu } = electron();
+  const client = terminalClient();
+  // The ONE directory the picker lists: /sessions/unified, split by origin. An older
+  // daemon without the route falls back to its two endpoints (same rows, same decision).
+  let directory = await client.unified();
+  if (!directory || !directory.ok) {
+    const [list, external] = await Promise.all([client.list(), client.external()]);
+    directory = {
+      ok: Boolean((list && list.ok) || (external && external.ok)),
+      sessions: (list && list.ok && list.sessions) || [],
+      external: (external && external.ok && external.sessions) || [],
+    };
+  }
+  const rows = dockIn.pickerRows({ sessions: directory.sessions, external: directory.external });
+  const template = [];
+  if (!rows.length) {
+    template.push({ label: directory.ok ? "No sessions to bring in" : "The awsh daemon did not answer", enabled: false });
+  }
+  for (const row of rows) {
+    if (row.kind === "daemon") {
+      template.push({ label: `Attach ${row.label}`, click: () => openSplit(dockIn.moveToSplitUrl(row.id)) });
+      continue;
+    }
+    template.push({
+      label: `Resume here — ${row.label}`,
+      submenu: [
+        { label: "Resume here", click: () => void resumeIntoPane(row) },
+        { label: row.detail, enabled: false },
+        { type: "separator" },
+        { label: "Raise the Windows Terminal tab (answer it there)", click: () => void raiseExternalTab(row) },
+      ],
+    });
+  }
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true, rows: rows.length };
+}
+
+/** The tab strip's "+" menu: a new tab, or a terminal brought INTO the container. */
+function newTabMenu() {
+  if (!win || win.isDestroyed()) return { ok: false, error: "the browser is not open" };
+  const { Menu } = electron();
+  Menu.buildFromTemplate([
+    { label: "New tab", click: () => runBrowserAction("new-tab") },
+    { label: "New InPrivate tab", click: () => runBrowserAction("inprivate") },
+    { type: "separator" },
+    { label: "Bring in a terminal…", accelerator: "CmdOrCtrl+Shift+`", registerAccelerator: false,
+      click: () => void bringInMenu() },
+  ]).popup({ window: win });
+  return { ok: true };
+}
+
+/** A dropped path's kind, judged by MAIN (the renderer never decides a path's kind). */
+function droppedEntries(paths) {
+  const fs = require("node:fs");
+  const out = [];
+  for (const p of Array.isArray(paths) ? paths.slice(0, 20) : []) {
+    const raw = String(p || "");
+    if (!raw) continue;
+    try {
+      out.push({ path: raw, dir: fs.statSync(raw).isDirectory() });
+    } catch { /* vanished, or not on this machine: dropRouting refuses an empty list */ }
+  }
+  return out;
+}
+
+/**
+ * A folder (or file) dropped on the tab strip or the split pane opens in Files: a
+ * folder as its own root; a file in its folder with the file selected. `where: "split"`
+ * puts it in the split pane, anything else opens a tab.
+ */
+function dockDrop(payload) {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const route = dockIn.dropRouting(droppedEntries(p.paths));
+  if (route.kind !== "files") return { ok: false, error: route.reason };
+  const params = new URLSearchParams({ root: route.root });
+  if (route.select) params.set("select", route.select);
+  const url = `aither://files/?${params.toString()}`;
+  if (p.where === "split") return openSplit(url);
+  // An already-open Files tab takes the drop (a deep link navigates it); else a new tab.
+  const existing = tabForPane("files");
+  if (existing) {
+    showTab(existing.id);
+    const view = viewOf(existing.id);
+    if (alive(view)) void loadInView(view, url).catch(() => {});
+    return { ok: true, tab: existing.id };
+  }
+  const opened = openTab("you", url);
+  return opened.ok ? { ok: true, tab: opened.id } : opened;
+}
+
+/** A drop must come from this window's chrome, or from the split pane's own page. */
+function fromSplitPane(event) {
+  const view = splitShown();
+  return Boolean(view && event && event.sender === view.webContents);
+}
 
 /** The terminal dock along the bottom (an aither://terminal page), created once per window. */
 function ensureDock() {
@@ -2644,6 +2867,7 @@ function ensureDock() {
   });
   wc.on("before-input-event", (event, input) => {
     if (isDockKey(input)) { event.preventDefault(); setDockOpen(undefined); }
+    if (isBringInKey(input)) { event.preventDefault(); void bringInMenu(); }
   });
   wc.on("did-finish-load", () => { dockStatus = "ok"; sendDockState(); });
   wc.on("did-fail-load", (_e, code, desc, _url, isMain) => {
@@ -3453,6 +3677,12 @@ function wirePage(wc, id) {
       setDockOpen(undefined);
       return;
     }
+    // Ctrl+Shift+`: bring a terminal INTO the container (the "+" picker).
+    if (isBringInKey(input)) {
+      event.preventDefault();
+      void bringInMenu();
+      return;
+    }
     // Ctrl+K: awsh from any tab (os-command). Console pages keep their own palette key.
     if (isAwshKey(input) && kindOf() !== "internal") {
       event.preventDefault();
@@ -3633,6 +3863,7 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   win.webContents.on("will-navigate", (event) => event.preventDefault());
   win.webContents.on("before-input-event", (event, input) => {
     if (isDockKey(input)) { event.preventDefault(); setDockOpen(undefined); return; }
+    if (isBringInKey(input)) { event.preventDefault(); void bringInMenu(); return; }
     // The standard keys work with the toolbar focused too (the address bar keeps its
     // own editing keys: none of them is a browser action).
     const act = everyday.keyAction(input);
@@ -3687,11 +3918,12 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     hideFullscreenHint();
     mediaTabs.clear();
     lastLayoutKey = "";
-    for (const view of [...views.values(), panelView, taskbarView, dockView]) {
+    for (const view of [...views.values(), panelView, taskbarView, dockView, splitView]) {
       if (alive(view)) view.webContents.close();
     }
     dockView = null;
     dockStatus = "off";
+    splitView = null;
     taskbarView = null;
     taskbarOpen = false;
     taskbarStatus = "off";
@@ -4261,6 +4493,12 @@ function wireIpc() {
   ipcMain.handle("desk:browser-tab-menu", (event, id) => (fromChrome(event) ? tabMenu(Number(id)) : { ok: false }));
   // The all-tabs button beside +: the way to any tab once the strip scrolls.
   ipcMain.handle("desk:browser-tabs-menu", (event) => (fromChrome(event) ? tabsMenu() : { ok: false }));
+  // "+": a new tab, or a terminal brought INTO the container (dock-in slice 2).
+  ipcMain.handle("desk:browser-newtab-menu", (event) => (fromChrome(event) ? newTabMenu() : { ok: false }));
+  ipcMain.handle("desk:browser-terminal-picker", (event) => (fromChrome(event) ? bringInMenu() : { ok: false }));
+  // A folder/file dropped on the tab strip (chrome) or the split pane (its own page).
+  ipcMain.handle("desk:browser-drop", (event, payload) =>
+    (fromChrome(event) || fromSplitPane(event) ? dockDrop(payload) : { ok: false, error: "not a drop target of this window" }));
   // aither://canvas: its boards, widgets and live app cards (browser-canvas.cjs).
   getCanvas().wire(ipcMain);
   ipcMain.handle("desk:browser-navigate", async (event, input) => {
@@ -5358,6 +5596,14 @@ module.exports = {
   setInboxBadge,
   ISOLATED_WORLD_ID,
   KEY_CODES,
+  /** Dock-in slice 2 (smoke/tests): the split pane, the picker and its keys. */
+  bringInMenu,
+  closeSplit,
+  dockDrop,
+  isBringInKey,
+  newTabMenu,
+  openSplit,
+  __splitPaneUrlForTest: () => (alive(splitView) ? splitView.webContents.getURL() : null),
   PARTITION,
   /** The agent's own session (BROWSER-M3); its tabs ride this unless a site is allowed. */
   AGENT_PARTITION,

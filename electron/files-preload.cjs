@@ -35,6 +35,8 @@ function pathsOfFiles(fileList) {
 
 contextBridge.exposeInMainWorld("aitherFiles", {
   roots: () => ipcRenderer.invoke("desk:files-roots"),
+  /** Resolve a dropped absolute path to a root + folder (aither://files/?root=<path>). */
+  openPath: (absPath) => ipcRenderer.invoke("desk:files-open-path", s(absPath)),
   list: (rootId, rel) => ipcRenderer.invoke("desk:files-list", s(rootId), s(rel)),
   open: (rootId, rel) => ipcRenderer.invoke("desk:files-open", s(rootId), s(rel)),
   reveal: (rootId, rel) => ipcRenderer.invoke("desk:files-reveal", s(rootId), s(rel)),

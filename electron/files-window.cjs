@@ -32,11 +32,11 @@
  * `--files` and says so with setFilesLaunchRouted(true).
  */
 
+const fs = require("node:fs");
 const path = require("node:path");
 const { fileURLToPath } = require("node:url");
 
 const PAGE_FILE = path.join(__dirname, "files.html");
-
 function electron() {
   return require("electron");
 }
@@ -59,8 +59,9 @@ function setFilesLaunchRouted(routed) {
 }
 
 /**
- * Is this IPC from the local Files page? Exact file:// path of electron/files.html
- * (query/hash ignored); http(s), data:, another page or a missing frame -> false.
+ * Is this IPC from the local Files page? The detached window's exact file:// path of
+ * electron/files.html (query/hash ignored), OR the aither://files pane it is opened as
+ * in the Aither Browser. http(s), data:, another pane or a missing frame -> false.
  * @param {object} event  IpcMainInvokeEvent
  * @param {string} [page] the expected page path (tests)
  * @returns {boolean}
@@ -70,6 +71,8 @@ function senderAllowed(event, page = PAGE_FILE) {
     const raw = event && event.senderFrame && event.senderFrame.url;
     if (!raw) return false;
     const url = new URL(String(raw));
+    // The same page in the browser (dock-in slice 2): aither://files/?root=... .
+    if (url.protocol === "aither:") return String(url.hostname).toLowerCase() === "files";
     if (url.protocol !== "file:" || (url.host && url.host !== "localhost")) return false;
     url.search = "";
     url.hash = "";
@@ -132,6 +135,44 @@ async function answer(fn) {
   } catch (error) {
     return { ok: false, error: String((error && error.message) || error) };
   }
+}
+
+/** Is `child` the same as or below `parent` (both absolute)? */
+function withinPath(parent, child) {
+  const rel = path.relative(parent, child);
+  return rel === "" || (rel.split(path.sep)[0] !== ".." && !path.isAbsolute(rel));
+}
+
+/**
+ * Resolve a DROPPED absolute path to a Files root + root-relative folder.
+ * Inside an existing root: that root and the relative folder. Otherwise the folder is
+ * added as a root (the same cast.json write "Add folder" does), so the page can list it.
+ * A file resolves to ITS FOLDER with the file named in `select`.
+ *
+ * @param {string} absPath
+ * @param {object} [deps] { files } for tests
+ * @returns {{rootId: string, rel: string, select: string|null, root: string, added: boolean}}
+ */
+function resolvePath(absPath, { files = access() } = {}) {
+  const raw = String(absPath == null ? "" : absPath);
+  if (!raw || !path.isAbsolute(raw)) throw new Error("expected an absolute path");
+  const target = path.resolve(raw);
+  let stat;
+  try {
+    stat = fs.statSync(target);
+  } catch {
+    throw new Error(`${target} is not on this machine`);
+  }
+  const isDir = stat.isDirectory();
+  const folder = isDir ? target : path.dirname(target);
+  const select = isDir ? null : path.basename(target);
+  const containing = files.roots().roots.find((r) => r && r.exists && withinPath(r.path, folder));
+  if (containing) {
+    const rel = path.relative(containing.path, folder).split(path.sep).join("/");
+    return { rootId: containing.id, rel, select, root: containing.path, added: false };
+  }
+  const made = files.addRoot(folder);
+  return { rootId: made.id, rel: "", select, root: folder, added: made.added === true };
 }
 
 function handOffLine(loc) {
@@ -209,6 +250,11 @@ function filesHandlers({
       return files.addRoot(picked);
     }),
     "desk:files-remove-root": (_e, rootId) => answer(() => files.removeRoot(String(rootId || ""))),
+    /**
+     * A dropped folder/file (dock-in slice 2): aither://files/?root=<path>&select=<name>.
+     * Answers {rootId, rel, select}; the page then opens that root at `rel`.
+     */
+    "desk:files-open-path": (_e, absPath) => answer(() => resolvePath(String(absPath || ""), { files })),
     // ── owner write verbs (files-ops.cjs); each resolves {ok, ...} | {ok:false, reason} ──
     "desk:files-mkdir": (_e, rootId, rel, name) => op().mkdir(s(rootId), s(rel), name ? s(name) : undefined),
     "desk:files-rename": (_e, rootId, rel, name) => op().rename(s(rootId), s(rel), s(name)),
@@ -298,4 +344,5 @@ function isFilesWindowOpen() {
 module.exports = {
   ensureFilesIpc, createFilesWindow, closeFilesWindow, isFilesWindowOpen, filesHandlers,
   setFilesHandOff, handOffLine, wine, setFilesLaunchRouted, senderAllowed, guardHandlers, PAGE_FILE,
+  resolvePath, withinPath,
 };

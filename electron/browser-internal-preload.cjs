@@ -19,15 +19,50 @@
  * pane's own exposed bridge.
  */
 
-const { ipcRenderer } = require("electron");
+const { ipcRenderer, webUtils } = require("electron");
 const internal = require("./browser-internal.cjs");
 
 const loc = globalThis.location;
 const href = String((loc && loc.href) || "");
 
+/** Is this document a SPLIT PANE (browser-window.cjs openSplit adds split=1)? */
+function isSplitPane(address) {
+  return /(?:[?&])split=1(?:&|$)/.test(String(address || ""));
+}
+
+/**
+ * A folder or file dropped on the split PANE opens in Files in that pane (dock-in slice
+ * 2). Only the pane wires this: a normal tab keeps the page's own drop behaviour, and a
+ * web page has no preload at all. Paths are resolved HERE with webUtils -- page script
+ * never names a path.
+ */
+function wireSplitDrop() {
+  const doc = globalThis.document;
+  if (!doc || typeof doc.addEventListener !== "function") return;
+  const hasFiles = (dt) => Boolean(dt) && Array.from(dt.types || []).includes("Files");
+  doc.addEventListener("dragover", (e) => {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  });
+  doc.addEventListener("drop", (e) => {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    const paths = [];
+    for (const f of Array.from(e.dataTransfer.files || [])) {
+      try {
+        const p = webUtils.getPathForFile(f);
+        if (p) paths.push(p);
+      } catch { /* a non-file drop */ }
+    }
+    if (paths.length) void ipcRenderer.invoke("desk:browser-drop", { paths, where: "split" });
+  });
+}
+
 if (loc && loc.protocol === internal.PROTOCOL) {
   const preload = internal.preloadForUrl(href);
   if (preload) require(`./${preload}`);
+  if (isSplitPane(href)) wireSplitDrop();
 
   // The owner's theme, per document -- what console-preload.cjs paints into each pane.
   const doc = globalThis.document;

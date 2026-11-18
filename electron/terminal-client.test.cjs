@@ -87,6 +87,20 @@ test("external: only DISCOVERED Claude Code tabs, never a daemon's own or anothe
   assert.deepEqual(r.sessions, [{ id: "ext-1", label: "repo dev 10:01", cwd: "C:\r", status: "idle", lastActivityAt: 5 }]);
 });
 
+test("unified: one directory split by origin -- daemon attaches, discovered resumes", async () => {
+  const { impl } = fakeFetch({ "GET /sessions/unified": { body: { sessions: [
+    { id: "d-1", origin: "daemon", harness: "terminal", name: "shell", status: "idle", created_at: 7, cwd: "C:\\w" },
+    { id: "ext-1", origin: "discovered", harness: "claude", name: "repo dev 10:01", cwd: "C:\\r", status: "idle", last_activity_at: 5 },
+    { id: "bad id!", origin: "daemon", harness: "terminal", title: "nope" },
+  ] } } });
+  const c = createTerminalClient({ fetchImpl: impl, base: "http://d", token: "t" });
+  const r = await c.unified();
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.sessions.map((s) => s.id), ["d-1"]);
+  assert.equal(r.sessions[0].label, "shell");
+  assert.deepEqual(r.external, [{ id: "ext-1", label: "repo dev 10:01", cwd: "C:\\r", status: "idle", lastActivityAt: 5 }]);
+});
+
 test("resume: a claude-tty pty session carrying the old id, sized like a new tab", async () => {
   const { impl, calls } = fakeFetch({
     "POST /sessions": { body: { id: "new1", harness: "claude-tty", state: "ready" } },

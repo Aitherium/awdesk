@@ -380,7 +380,26 @@
   $("back").onclick = () => api.back();
   $("forward").onclick = () => api.forward();
   $("reload").onclick = () => api.reload();
-  $("newtab").onclick = () => api.newTab();
+  // "+" opens a small menu: a new tab, or a terminal brought INTO the container
+  // (dock-in slice 2: daemon sessions attach, Windows Terminal tabs resume here).
+  $("newtab").onclick = () => { if (typeof api.newTabMenu === "function") void api.newTabMenu(); else api.newTab(); };
+  // Drop a folder (or a file) on the tab strip: it opens in Files as a new tab.
+  const stripDrop = $("tabbar");
+  stripDrop.addEventListener("dragover", (e) => {
+    if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  });
+  stripDrop.addEventListener("drop", (e) => {
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes("Files")) return;
+    e.preventDefault();
+    if (typeof api.dropFiles !== "function") return;
+    void Promise.resolve(api.dropFiles(e.dataTransfer.files)).then((r) => {
+      if (r && r.ok === false) $("err").textContent = r.error || "that drop could not open";
+      else $("err").textContent = "";
+    }).catch(() => { $("err").textContent = "that drop could not open"; });
+  });
   $("star").onclick = () => api.toggleBookmark();
   // Edge parity: the more-menu, the key, the zoom badge, find on page, notices.
   $("more").onclick = () => api.menu();

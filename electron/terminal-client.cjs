@@ -173,6 +173,38 @@ function createTerminalClient({ fetchImpl = globalThis.fetch, base = DAEMON, tok
       const rows = (r.data && Array.isArray(r.data.sessions)) ? r.data.sessions : [];
       return { ok: true, sessions: rows.map(externalRow).filter(Boolean) };
     },
+    /**
+     * `GET /sessions/unified`, split by ORIGIN (contract v1): the daemon's own sessions
+     * ("daemon" -- attach directly) and the interactive Claude Code tabs it discovered
+     * ("discovered" -- Windows Terminal owns their pty, so they can only be RESUMED).
+     * The "+" picker lists exactly this.
+     */
+    async unified() {
+      const r = await call("GET", "/sessions/unified", undefined, { timeoutMs: 8000 });
+      if (!r.ok) return r;
+      const rows = (r.data && Array.isArray(r.data.sessions)) ? r.data.sessions : [];
+      const sessions = [];
+      const external = [];
+      for (const s of rows) {
+        if (!s || !validId(s.id)) continue;
+        const origin = String(s.origin || "daemon");
+        if (origin === "discovered") {
+          const row = externalRow(s);
+          if (row) external.push(row);
+          continue;
+        }
+        sessions.push({
+          id: String(s.id),
+          harness: String(s.harness || ""),
+          label: String(s.name || s.title || HARNESS_LABELS[s.harness] || s.harness || "session").slice(0, 120),
+          state: String(s.status || s.state || ""),
+          cwd: String(s.cwd || ""),
+          exitCode: s.exit_code == null ? null : Number(s.exit_code),
+          createdAt: Number(s.created_at) || 0,
+        });
+      }
+      return { ok: true, sessions, external };
+    },
     /** Reopen a Claude Code session by its own id, as a daemon pty tab (claude-tty). */
     async resume(id, { cwd = "", rows = 30, cols = 100 } = {}) {
       if (!validId(id)) return { ok: false, error: "bad session id" };
