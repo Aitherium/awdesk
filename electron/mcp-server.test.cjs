@@ -694,3 +694,48 @@ test("files_ask is registered when the TokenGate lane is wired and passes the qu
   assert.deepEqual(body.evidence, [{ text: "the plan", start: 0, end: 8, kept: 2 }]);
   assert.deepEqual(asked, [{ root: "Shared", path: "plan.md", question: "should I ship?", maxKeptTokens: 256 }]);
 });
+
+test("swarm_discuss starts a discussion through the swarm controller, next to swarm_speak", async (context) => {
+  const calls = [];
+  const swarm = async (req) => {
+    calls.push(req);
+    if (req.op === "state") return { running: false };
+    if (req.op === "stop") return { ok: true, aborted: true, dropped: 2 };
+    return { ok: true, started: true, topic: req.topic };
+  };
+  const mcpHandler = createDeskMcpHandler({
+    onAnimation: () => true,
+    onWindowAction: () => true,
+    getStatus: () => ({ windowVisible: true, voiceState: null, listener: null }),
+    swarm,
+  });
+  const bridge = createBridgeServer({ port: 0, onEvent: () => {}, mcpHandler });
+  const address = await bridge.listen();
+  const client = new Client({ name: "desk-test-discuss", version: "1.0.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`));
+  context.after(async () => {
+    await client.close();
+    await bridge.close();
+  });
+  await client.connect(transport);
+
+  const tool = (await client.listTools()).tools.find((t) => t.name === "swarm_discuss");
+  assert.ok(tool, "swarm_discuss must be registered when the swarm is wired");
+
+  const started = await client.callTool({
+    name: "swarm_discuss",
+    arguments: { topic: "Ship it?", agents: ["atlas", "aither"], rounds: 2 },
+  });
+  assert.notEqual(started.isError, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].action, "discuss");
+  assert.equal(calls[0].topic, "Ship it?");
+  assert.deepEqual(calls[0].agents, ["atlas", "aither"]);
+  assert.equal(calls[0].rounds, 2);
+
+  const stopped = await client.callTool({ name: "swarm_discuss", arguments: { op: "stop" } });
+  assert.notEqual(stopped.isError, true);
+  assert.equal(calls[1].action, "discuss");
+  assert.equal(calls[1].op, "stop");
+  assert.equal(JSON.parse(stopped.content[0].text).aborted, true);
+});

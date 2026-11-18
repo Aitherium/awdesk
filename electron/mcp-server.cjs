@@ -519,6 +519,22 @@ function createDeskMcpServer({
       async ({ agent, text, audio_base64, volume }) => json(await swarm({ action: "speak", agent, text, audioBase64: audio_base64, volume })),
     );
     server.registerTool(
+      "swarm_discuss",
+      {
+        title: "Run a live multi-agent discussion on the desk",
+        description:
+          "discuss: the named agents (default Atlas, Demiurge, Aither, Lyra) take turns speaking aloud about `topic`, in their own voices and from their own bodies, each turn answering the one before. Lines stream from MicroScheduler and captions show even when voice is muted. op 'stop' aborts the run and drops every queued line; 'pause' / 'resume' / 'state' control a running one.",
+        inputSchema: {
+          topic: z.string().min(1).max(400).optional().describe("What they are discussing. Required to start."),
+          agents: z.array(z.string().min(1).max(64)).min(1).max(6).optional().describe("Roster ids, in speaking order. Default atlas, demiurge, aither, lyra."),
+          rounds: z.number().int().min(1).max(4).optional().describe("How many times round the ring. Default 1."),
+          op: z.enum(["start", "stop", "pause", "resume", "state"]).optional().describe("Default start."),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      },
+      async ({ topic, agents, rounds, op }) => json(await swarm({ action: "discuss", topic, agents, rounds, op })),
+    );
+    server.registerTool(
       "swarm_perceive",
       {
         title: "What an agent standing on the desk can see",

@@ -2237,6 +2237,45 @@ function getSwarmHost() {
   return swarmHostInstance;
 }
 
+/** Speak one discussion line through the agent's OWN body (agent-swarm-host speak).
+ *  If the live roster cannot see that agent (gateway/podman down), the words still
+ *  go on screen from the resident body: a caption is the part that must never fail. */
+function discussSpeak(agent, text) {
+  const id = String(agent || "aither").toLowerCase();
+  return Promise.resolve()
+    .then(() => getSwarmHost().speak(id, text))
+    .then((result) => {
+      if (result && result.ok !== false) return result;
+      if (result && result.error === "not an agent") {
+        return speakAloud(text, undefined, undefined, "slot0", "service:awdesk-swarm", { agent: id });
+      }
+      return result;
+    })
+    .catch(() => speakAloud(text, undefined, undefined, "slot0", "service:awdesk-swarm", { agent: id })
+      .catch((error) => ({ ok: false, error: String((error && error.message) || error) })));
+}
+
+/** The live discussion engine (discuss.cjs). Lazy: no state until a discussion starts. */
+let discussEngineInstance = null;
+function getDiscussEngine() {
+  if (discussEngineInstance) return discussEngineInstance;
+  const discuss = require("./discuss.cjs");
+  discussEngineInstance = discuss.createDiscussEngine({
+    stream: discuss.createSchedulerStream(),
+    speak: discussSpeak,
+    // AitherRelay companion channel: every line is posted so Discord, the web and the
+    // phone follow the same discussion. Fire-and-forget; a dead relay costs nothing.
+    postLine: (agent, text) => {
+      const channel = process.env.AWDESK_DISCUSS_RELAY_CHANNEL || RELAY_CHANNEL;
+      return postToRelay(channel, `${discuss.labelFor(agent)}: ${String(text).slice(0, 900)}`)
+        .then((sent) => { if (sent && sent.ok) void refreshRelayFeed(); return sent; })
+        .catch(() => null);
+    },
+    log: (...args) => debugLog("discuss", ...args),
+  });
+  return discussEngineInstance;
+}
+
 /** The ONE entry for the bridge (/swarm), MCP (swarm_*) and the tray: {action, ...}. */
 async function swarmApi(req = {}) {
   const host = getSwarmHost();
@@ -2260,6 +2299,17 @@ async function swarmApi(req = {}) {
         : req.audioBase64 ? { audioBase64: req.audioBase64, mime: req.mime, volume: req.volume }
           : { text: String(req.text || ""), voice: req.voice, speed: req.speed };
       return host.speak(req.agent, input);
+    }
+    case "discuss": {
+      // A live multi-agent discussion (discuss.cjs): start returns at once -- the run
+      // itself can last minutes -- while stop/pause/resume/state act on the current one.
+      const engine = getDiscussEngine();
+      const op = String(req.op || "start");
+      if (op === "stop") return engine.abort("stopped from the desk");
+      if (op === "pause") return engine.pause("paused from the desk");
+      if (op === "resume") return engine.resume();
+      if (op === "state") return engine.state();
+      return engine.start({ topic: req.topic, agents: req.agents, rounds: req.rounds });
     }
     case "visemes":
       return host.visemes(req.agent, req.weights === undefined ? null : req.weights, req.ttlMs);
@@ -7277,6 +7327,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         return { ok: false, error: String((error && error.message) || error) };
       }
     });
+    // A live discussion (discuss.cjs). Starting answers at once -- the run itself can
+    // last minutes -- and the engine speaks through the swarm's own bodies.
+    ipcMain.handle("desk:discuss", (_event, req) =>
+      swarmApi({ ...(req && typeof req === "object" ? req : {}), action: "discuss" }));
     ipcMain.handle("desk:voice-snapshot", () => voiceSnapshot());
     // Plan: configurable voice input + hotkeys, ONE settings surface.
     ipcMain.handle("desk:settings-get", () => {
@@ -7484,6 +7538,16 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     ipcMain.on("desk:voice-listen-state", (_event, state) => {
       const next = String(state || "idle");
       const prev = listenState;
+      // OWNER BARGE-IN: a live discussion pauses the moment the owner starts talking
+      // and comes back when the mic is idle again. Guarded: a discussion is a
+      // convenience and must never be able to break the voice path.
+      try {
+        const engine = getDiscussEngine();
+        if (engine.state().running) {
+          if (next === "listening") engine.pause("the owner started talking");
+          else if (next === "idle" || next.startsWith("error:")) engine.resume();
+        }
+      } catch { /* no discussion engine: nothing to pause */ }
       // A failed capture ends a waiting ask with the reason. Under open mic a
       // cough is not an answer: keep waiting until the ask's own timeout.
       if (next.startsWith("error:") && !openMicOn) voiceAsk.fail(next.slice(6).trim());

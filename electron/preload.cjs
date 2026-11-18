@@ -126,6 +126,11 @@ contextBridge.exposeInMainWorld("deskBridge", {
   // OWNER and runs it as a command, so the answer comes back through the same
   // mouth the agents speak with.
   voiceHeard: (text) => ipcRenderer.invoke("desk:voice-heard", String(text || "")),
+  // A live multi-agent discussion on the stage (discuss.cjs through main's swarmApi):
+  // { topic, agents?, rounds? } starts one and answers at once; { op: "stop" | "pause"
+  // | "resume" | "state" } controls a running one. Lines speak from the agents' own
+  // bodies and are posted to the AitherRelay companion channel.
+  discuss: (req) => ipcRenderer.invoke("desk:discuss", req && typeof req === "object" ? req : {}),
   /** listening / transcribing / idle / error: … — for the tray's mic line. */
   voiceListenState: (state) => ipcRenderer.send("desk:voice-listen-state", String(state || "")),
   // Plan: click/hold-to-talk on the avatar body (owner 2026-09-22). Routes
