@@ -33,6 +33,11 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, execFileSync } = require("node:child_process");
 const cardUi = require("./card-ui.cjs");
+// The ONE signed-approval implementation. This module used to carry its own
+// hub URL (the mission-control decisions tab, no card id), so it opened the whole
+// hub -- scope spinner, then a white screen -- instead of the card. `approveUrl`
+// builds `/approve?card=<id>&choice=<key>`, the deep link main.cjs already uses.
+const signedApproval = require("./signed-approval.cjs");
 
 /**
  * The ABSOLUTE path to the awask binary, resolved once. Spawning a bare
@@ -56,8 +61,6 @@ function awaskBin() {
   return _awaskBin;
 }
 
-/** Where an owner answers a card that must carry a SIGNED receipt. */
-const SIGNED_ANSWER_URL = "https://app.aitherium.com/mission-control?tab=decisions";
 const CARD_ID_RE = /^d-[A-Za-z0-9_-]{1,80}$/;
 let lastSignedHandoff = null;
 let openSignedAnswer = (url) => {
@@ -581,12 +584,18 @@ function openCardWindow(id) {
 function answerCard(id, choice, note = "", spawnFn = spawn) {
   if (typeof id !== "string" || id.length === 0) return false;
   if (typeof choice !== "string" || choice.length === 0) return false;
-  // A card whose answer must be SIGNED (a Claude permission grant) is approved in
-  // Online, where Genesis signs the answer for a fresh passkey session; a local
-  // `awask answer` would be recorded unsigned and grant nothing. Deny stays local.
-  if (choice !== "deny" && needsSignedAnswer(readCardRaw(id))) {
-    lastSignedHandoff = { id, url: SIGNED_ANSWER_URL, at: Date.now() };
-    openSignedAnswer(SIGNED_ANSWER_URL);
+  // A card whose answer must be SIGNED (an awstorage proposal/plan or a Claude
+  // permission grant) is approved where Genesis signs the answer for a fresh
+  // passkey session; a local `awask answer` would be recorded unsigned and grant
+  // nothing. The route is decided from the card FILE (or the gateway's raw card),
+  // never from the renderer's payload, and it is the SAME route main.cjs uses --
+  // one implementation, so a voice/index answer and a click cannot disagree.
+  // The deep link carries the card id and the choice; declining stays local.
+  const raw = rawCard(id) || readCardRaw(id);
+  if (signedApproval.answerRoute(raw, choice) === "window") {
+    const url = signedApproval.approveUrl(id, choice);
+    lastSignedHandoff = { id, choice, url, at: Date.now() };
+    openSignedAnswer(url);
     return true;
   }
   if (lastSource === "gateway") return answerRemote(id, choice, note);
@@ -1184,7 +1193,7 @@ function startHeartbeat({ dir = storeDir(), intervalMs = HEARTBEAT_MS, setInterv
 }
 
 module.exports = {
-  SIGNED_ANSWER_URL,
+  signedApproval,
   needsSignedAnswer,
   readCardRaw,
   lastSignedHandoff: () => lastSignedHandoff,

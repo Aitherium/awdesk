@@ -595,11 +595,16 @@ test("off-PC: the watcher reads decisions_list, and answer/cancel go through the
     assert.deepEqual(gw.calls.find((c) => c[0] === "decisions_answer"),
       ["decisions_answer", { decision_id: "d-r1", choice: "yes", via: "desk", note: "fine" }]);
 
-    // decisions_answer is UNSIGNED: an approve on a destructive card is refused,
-    // a decline goes through.
+    // decisions_answer is UNSIGNED: an approve on a destructive card goes to the
+    // signed /approve page instead (and sends nothing over the gateway), while a
+    // decline needs no proof and goes through.
     const before = gw.calls.length;
-    assert.equal(answerCard("d-s1", "yes"), false);
+    const opened = [];
+    cards.setSignedAnswerOpener((u) => opened.push(u));
+    assert.equal(answerCard("d-s1", "yes"), true);
     assert.equal(gw.calls.length, before, "nothing was sent for the signed approve");
+    assert.equal(opened.length, 1, "the signed approve opened the /approve deep link");
+    assert.match(opened[0], /\/approve\?card=d-s1&choice=yes$/);
     assert.equal(answerCard("d-s1", "reject"), true);
 
     assert.equal(steerCard("d-r1", "do this instead"), false, "the gateway has no steer verb");
