@@ -1559,9 +1559,30 @@ function sessionVoices() {
 function speechArbiter() {
   if (!speechArbiterInstance) {
     speechArbiterInstance = require("./speech-arbiter.cjs").createSpeechArbiter({
-      run: (job) => speakAloudNow(job.text, job.voice, job.speed, job.slotId, job.origin, job.speaker),
+      // `job.cut` is set by the arbiter when a P0 preempts this line, so a clip still
+      // being synthesized never reaches the speaker after the alarm started.
+      run: (job) => speakAloudNow(job.text, job.voice, job.speed, job.slotId, job.origin, job.speaker, {
+        isCut: () => job.cut === true,
+      }),
       // A dropped line keeps its words on screen: the caption is the part that is never stale.
       onDrop: (job) => { try { sendBubble(job.slotId, job.text, { muted: true }); } catch { /* cosmetic */ } },
+      // A cut must SILENCE the body that was playing it. The next `speak` only closes the
+      // AudioContext of its OWN slot, and a room-stage agent speaks on its own slot, so
+      // without this the cut line keeps talking underneath the alarm.
+      onCut: (victim) => {
+        const slot = (victim && victim.slotId) || "slot0";
+        try {
+          for (const win of BrowserWindow.getAllWindows()) {
+            if (!win.isDestroyed()) win.webContents.send("desk:event", { type: "speak-stop", slotId: slot });
+          }
+        } catch (error) {
+          debugLog("speech cut could not be delivered", error?.message || error);
+        }
+        // A cut before its clip ever played has no caption yet: keep its words on
+        // screen (the same promise onDrop makes). Re-sending an already-shown caption
+        // only restarts its reading timer.
+        try { sendBubble(victim && victim.slotId, victim && victim.text, { muted: true }); } catch { /* cosmetic */ }
+      },
     });
   }
   return speechArbiterInstance;
@@ -1573,6 +1594,7 @@ async function speakAloud(
   slotId = "slot0",
   origin = "service:awdesk",
   speaker = null,
+  options = {},
 ) {
   const arb = require("./speech-arbiter.cjs");
   if (arb.isSessionSpeaker({ origin, speaker })) {
@@ -1585,6 +1607,9 @@ async function speakAloud(
   }
   return speechArbiter().enqueue({
     rank: arb.priorityOf({ origin, slotId, speaker }),
+    // A5: only the P0 announcement passes this. It lets the arbiter cut the playing
+    // line once and drop a just-queued lower-priority one (speech-arbiter.cjs).
+    preempt: Boolean(options && options.preempt === true),
     text, voice, speed, slotId, origin, speaker,
   });
 }
@@ -1596,7 +1621,13 @@ async function speakAloudNow(
   slotId = "slot0",
   origin = "service:awdesk",
   speaker = null,
+  options = {},
 ) {
+  // The speech arbiter sets `job.cut` when a P0 preempts this line. Synthesis is slow
+  // enough that the cut usually lands while we are waiting for it: handing the audio
+  // over then would start the victim AFTER the alarm (or on top of it).
+  const cutOff = () => Boolean(options && typeof options.isCut === "function" && options.isCut());
+  const cutResult = () => ({ ok: false, refused: "arbiter", reason: "cut by a P0", captioned: false });
   let effectiveVoice = voice || "nova";
   let effectiveSpeed = speed;
   let effectiveMaxChars = 2000;
@@ -1655,7 +1686,11 @@ async function speakAloudNow(
       debugLog("safety gate threw; speaking unfiltered", error?.message || error);
     }
   }
+  // A cut before synthesis means no clip is ever produced; a cut during it is caught
+  // again below, before anything reaches the speaker.
+  if (cutOff()) return cutResult();
   const tts = await synthesizeVerdict(spoken, effectiveVoice, { speed: effectiveSpeed, maxChars: effectiveMaxChars });
+  if (cutOff()) return cutResult();
   if (!tts.ok) {
     // A dead voice service takes the audio, not the words.
     const shown = captioned ? sendBubble(slotId, spoken, { muted: true }) : 0;
@@ -2728,6 +2763,76 @@ function speakNeedsYou(actionable, isBacklog) {
   const line = needsYouLib.voiceLine(needsYou, actionable, isBacklog);
   needsYouSpokenAt = Date.now();
   try { void speakAloud(line, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { /* best-effort */ }
+  return true;
+}
+
+/** The P0 announcement ledger: once per card id, across restarts (desk userData). */
+let p0ClaimsStore = null;
+function p0ClaimStore() {
+  if (!p0ClaimsStore) p0ClaimsStore = needsYouLib.createP0Claims({ dir: needsYouSnoozeDir() });
+  return p0ClaimsStore;
+}
+
+/**
+ * The actionable toast for a P0. `held-toast.cjs` (A1's toast plane, already on this
+ * branch) exports `createToaster`, not a per-card `showCardToast`; main.cjs holds the
+ * one `toaster` instance above, so the escalation raises THAT path with a click that
+ * opens the card. Do-not-disturb and NOW mode still win -- a notice is not a reason to
+ * break the owner's quiet switch (the same rule announceDecisions applies).
+ */
+function p0ToastAvailable() {
+  try {
+    if (overlaySettings().doNotDisturb || nowModeActive()) return false;
+  } catch { /* an unreadable setting is not a reason to go silent */ }
+  return typeof toaster.show === "function";
+}
+
+function raiseP0Toast(card) {
+  if (!p0ToastAvailable()) return false;
+  try {
+    toaster.show({
+      title: "Aither needs you now",
+      body: needsYouLib.p0Line(card, 120),
+      onClick: () => openInbox(card.id),
+    });
+    return true;
+  } catch (error) {
+    debugLog("P0 toast failed", error?.message || error);
+    return false;
+  }
+}
+
+/**
+ * A5 -- "Aither yells": the ONE announcement class that may interrupt.
+ *
+ *   - the caption always shows, muted or not (the ask is never hidden by a mute);
+ *   - the line is spoken at most ONCE per card id (p0ClaimStore), preempting the
+ *     playing line once (speech-arbiter.cjs `preempt`);
+ *   - when the room is globally muted (cast.json `voice.muted`, or the mic mute) there
+ *     is NO audio: the owner's mute stands, the caption and the A1 toast path carry it.
+ *
+ * Returns true when THIS call claimed the card (i.e. it announced).
+ */
+function announceP0(card) {
+  if (!card || !card.id || !needsYouLib.isP0(card)) return false;
+  if (!p0ClaimStore().claim(card.id)) return false;
+  const muted = voiceAllMuted() || micMuted();
+  const hasToast = p0ToastAvailable();
+  const plan = needsYouLib.p0AnnouncementPlan({ card, muted, hasToast });
+  if (!plan.caption) return false;
+  if (!plan.speak) {
+    // Silent desk: the words are the whole announcement. `muted` paces the caption by
+    // reading speed because there is no audio to time against (sendBubble's own rule).
+    try { sendBubble("slot0", needsYouLib.p0Line(card), { muted: true }); } catch { /* cosmetic */ }
+  }
+  if (plan.toast) raiseP0Toast(card);
+  if (plan.speak) {
+    // The caption for a spoken line is sent by speakAloudNow, after synthesis: sending
+    // one here as well would show the same ask twice.
+    try {
+      void speakAloud(needsYouLib.p0Line(card), "nova", undefined, "slot0", "service:awdesk-decisions", null, { preempt: true });
+    } catch { /* best-effort */ }
+  }
   return true;
 }
 
@@ -8644,7 +8749,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // already has. A passive badge is why cards piled up unseen (owner,
     // 2026-09-21: "it doesnt prompt me, ask permission, give me anything to
     // click or respond to"). speakAloud + openInbox exist; wire them here.
-    const announceDecisions = (list, isBacklog) => {
+    // `silent`: a P0 escalation is saying the line instead (A5). The window ladder below
+    // still runs -- one surface, one voice -- but nothing here speaks over the alarm.
+    const announceDecisions = (list, isBacklog, { silent = false } = {}) => {
       try {
         // The FAIRY delivers cards (owner 2026-11-15, furious: the Inbox window this
         // used to raise is "ugly ass clunky cards ... and the fucking fairy isn't
@@ -8665,7 +8772,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         // (the hourly reminder below carries the repeat).
         const spokeNeedsYou = needsYou.length > 0
           && (isBacklog || list.some((c) => decisionCards.isNeedsYou(c)));
-        if (spokeNeedsYou) speakNeedsYou(list, isBacklog); // silent while the mic is muted
         const lead = (list[isBacklog ? 0 : list.length - 1]) || {};
         const title = String(lead.title || "a decision").slice(0, 120);
         const n = list.length;
@@ -8679,12 +8785,14 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         // A NEW card is a spoken question the owner can answer out loud
         // (voice-card.cjs); a backlog, a muted mic or an ask already waiting
         // keeps the plain announcement. The Inbox opens below either way.
-        if (spokeNeedsYou) {
-          /* said above, needs-you first */
-        } else if (!isBacklog && lead.id && !micMuted() && !voiceAsk.waiting) {
-          void answerCardByVoice(lead);
-        } else {
-          try { void speakAloud(phrase, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { /* best-effort */ }
+        if (!silent) {
+          if (spokeNeedsYou) {
+            speakNeedsYou(list, isBacklog); // silent while the mic is muted
+          } else if (!isBacklog && lead.id && !micMuted() && !voiceAsk.waiting) {
+            void answerCardByVoice(lead);
+          } else {
+            try { void speakAloud(phrase, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { /* best-effort */ }
+          }
         }
         // WHICH card leads decides how loud the desk may be (owner, 2026-10-05:
         // a card "needs to actually come up in awdesk … not a separate thing").
@@ -8752,14 +8860,24 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           return; // triage threw: keep the badge, never crash the poll
         }
         const ids = new Set(actionable.map((c) => c && c.id).filter(Boolean));
+        const p0Ids = actionable.filter((c) => needsYouLib.isP0(c)).map((c) => c && c.id).filter(Boolean);
         if (decisionsAnnounced === null) {
           decisionsAnnounced = ids;                 // first poll: surface backlog ONCE
+          // A backlog is not "new": the one needs-you line below carries it. Claim its P0s
+          // anyway so a restart cannot shout a card the owner already saw.
+          for (const id of p0Ids) p0ClaimStore().claim(id);
           if (actionable.length > 0) announceDecisions(actionable, true);
           return;
         }
         const fresh = actionable.filter((c) => c && !decisionsAnnounced.has(c.id));
         decisionsAnnounced = ids;
-        if (fresh.length > 0) announceDecisions(fresh, false);
+        // A new P0 is its own escalation; the generic announcement still runs for the
+        // window ladder but stays silent only when a P0 ACTUALLY said the line (one
+        // voice, one batch). A card already in the ledger announces nothing, so it must
+        // not suppress the generic line too.
+        const freshP0 = fresh.filter((c) => needsYouLib.isP0(c));
+        const announcedP0 = freshP0.filter((c) => announceP0(c));
+        if (fresh.length > 0) announceDecisions(fresh, false, { silent: announcedP0.length > 0 });
       },
     });
     // The liveness heartbeat awask reads before opening its own Tk window
