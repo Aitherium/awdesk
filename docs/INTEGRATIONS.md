@@ -47,6 +47,7 @@ Desk exposes these tools:
 | `swarm_walk_to` | `agent?`, `x`, `y`, `width?`, `height?` | A grown avatar walks to stand under a screen rectangle (screen DIPs), within the stage |
 | `swarm_look_at` | `agent?`, `x?`, `y?` | A grown avatar turns toward a screen point; omit x and y to turn back |
 | `swarm_speak` | `agent`, `text?` or `audio_base64?`, `volume?` | The agent speaks in its own voice from its own body; or plays pre-rendered audio on that body |
+| `swarm_discuss` | `topic`, `agents?`, `rounds?` | The agents on stage discuss the topic out loud, in turn, each line streamed from the scheduler and spoken from its own body; push-to-talk pauses it |
 | `swarm_visemes` | `agent`, `weights?` / `frames?`, `ttl_ms?` | Drive an agent's five VRM mouth shapes (aa ee ih oh ou); null releases |
 | `set_agent` | `agent`: an agent name such as `aither` | Shows the character assigned to that agent |
 | `list_agent_avatars` | None | Reads which character each agent is assigned to |
