@@ -115,6 +115,29 @@ test("static: mission-control?tab=decisions is never an approve target", () => {
   assert.deepEqual(offenders, [], `approve target must be /approve?card=&choice=, found in: ${offenders.join(", ")}`);
 });
 
+test("static: main.cjs opens the SAME in-app approve window for a launcher/palette answer", () => {
+  // decision-cards' default opener is shell.openExternal; main.cjs must replace it
+  // with the in-app window a click uses, or one card's approval lands in the system
+  // browser (no persisted approve partition, no navigation guard).
+  const src = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  const i = src.indexOf("decisionCards.setSignedAnswerOpener(");
+  assert.ok(i > 0, "main.cjs wires decision-cards' signed handoff");
+  const body = src.slice(i, i + 400);
+  assert.match(body, /signedApproval\.openApproveWindow\(\{ BrowserWindow/);
+});
+
+test("static: the launcher/palette reports a signed handoff as pending, never answered", () => {
+  // answerCardIndex/answerCardText return true for a handoff too, so "answered"
+  // would claim a card that is still open until the passkey ceremony lands.
+  const src = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  const i = src.indexOf('case "card-answer"');
+  assert.ok(i > 0);
+  const body = src.slice(i, i + 2000);
+  assert.match(body, /lastSignedHandoff\(\)/, "the branch tells a handoff apart from an answer");
+  assert.match(body, /pending: true/);
+  assert.match(body, /opened the signed approval/);
+});
+
 test("a malformed id never becomes a path", () => {
   const dc = fresh(fs.mkdtempSync(path.join(os.tmpdir(), "cards-")));
   assert.equal(dc.readCardRaw("../../etc/passwd"), null);
