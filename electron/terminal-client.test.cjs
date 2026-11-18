@@ -165,12 +165,14 @@ test("create node: the target rides to the daemon, a bad one never leaves the de
   assert.equal(r.ok, true);
   assert.equal(r.session.label, "dgx");
   assert.deepEqual(calls[0].body, { harness: "node", cwd: "", title: "dgx", target: "wzns@100.64.0.38" });
-  for (const bad of ["", "-oProxyCommand=calc.exe", "host;rm -rf /", "a b", 42]) {
+  for (const bad of ["", "-oProxyCommand=calc.exe", "host;rm -rf /", "a b", 42, "host:0", "host:65536", "host:99999"]) {
     const before = calls.length;
     const refused = await c.create({ harness: "node", target: bad });
     assert.equal(refused.ok, false);
     assert.equal(calls.length, before, `no daemon call for ${JSON.stringify(bad)}`);
   }
+  const edge = await c.create({ harness: "node", target: "root@10.0.0.39:65535" });
+  assert.equal(edge.ok, true);
   // Every other harness keeps its old body: no target field appears.
   await c.create({ harness: "terminal" });
   assert.equal("target" in calls[calls.length - 2].body, false);

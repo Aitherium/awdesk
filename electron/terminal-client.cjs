@@ -39,7 +39,10 @@ function validId(id) {
 }
 
 function validNodeTarget(target) {
-  return typeof target === "string" && NODE_TARGET.test(target);
+  if (typeof target !== "string" || !NODE_TARGET.test(target)) return false;
+  // The daemon also refuses a port outside 1-65535; refuse it here so it never leaves.
+  const port = /:([0-9]+)$/.exec(target);
+  return !port || (Number(port[1]) >= 1 && Number(port[1]) <= 65535);
 }
 
 /** What the "+ New" menu needs from a daemon /nodes row; null for one it cannot open. */
