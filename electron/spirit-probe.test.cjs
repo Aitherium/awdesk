@@ -159,3 +159,37 @@ test("the probe asks PowerShell for UTF-8 before writing anything", () => {
   assert.ok(encoding >= 0, "the probe must set UTF-8 output");
   assert.ok(encoding < PROBE_SCRIPT.indexOf("Add-Type"), "and set it before any output can happen");
 });
+
+test("the tray answer names the primary taskbar and every secondary one (plan A4)", () => {
+  const bars = probe.taskbarFromAnswer({
+    ok: true,
+    taskbars: [
+      { className: "Shell_TrayWnd", hwnd: 11, rect: { x: 0, y: 1040, width: 1920, height: 40 } },
+      { className: "Shell_SecondaryTrayWnd", hwnd: 12, rect: { x: 1920, y: 2120, width: 1920, height: 40 } },
+      { className: "Shell_SecondaryTrayWnd", hwnd: 13, rect: { x: 0, y: 0, width: 0, height: 0 } },
+    ],
+  });
+  assert.deepEqual(bars.primary, { className: "Shell_TrayWnd", hwnd: 11, x: 0, y: 1040, width: 1920, height: 40 });
+  assert.equal(bars.secondaries.length, 1, "an empty rect is dropped, not published");
+  assert.equal(bars.secondaries[0].hwnd, 12);
+  assert.deepEqual(probe.taskbarFromAnswer({ ok: false }), { primary: null, secondaries: [] });
+  assert.deepEqual(probe.taskbarFromAnswer(null), { primary: null, secondaries: [] });
+  assert.deepEqual(probe.taskbarFromAnswer({ ok: true, taskbars: "nope" }), { primary: null, secondaries: [] });
+});
+
+test("the script finds the taskbar by class, never by a guessed title", () => {
+  const { PROBE_SCRIPT } = require("./spirit-probe.cjs");
+  assert.ok(PROBE_SCRIPT.includes("FindWindow"), "FindWindow is declared");
+  assert.ok(PROBE_SCRIPT.includes("Shell_TrayWnd") && PROBE_SCRIPT.includes("Shell_SecondaryTrayWnd"));
+  assert.ok(PROBE_SCRIPT.includes("$req.op -eq 'tray'"), "the tray op is answered");
+});
+
+test("a ONE-element tray answer (PowerShell collapses the array) still names the primary", () => {
+  const bars = probe.taskbarFromAnswer({
+    ok: true,
+    taskbars: { className: "Shell_TrayWnd", hwnd: 11, rect: { x: 0, y: 1040, width: 1920, height: 40 } },
+  });
+  assert.equal(bars.primary.hwnd, 11, "the collapsed object is read as one bar");
+  assert.deepEqual(bars.secondaries, []);
+  assert.deepEqual(probe.taskbarFromAnswer({ ok: true, taskbars: [] }), { primary: null, secondaries: [] });
+});

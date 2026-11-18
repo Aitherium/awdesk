@@ -274,16 +274,79 @@ function dockBounds(edge, n, center, area) {
   return { x: edge === "left" ? a.x + DOCK_MARGIN : a.x + a.width - DOCK_THICK - DOCK_MARGIN, y, width: DOCK_THICK, height: h };
 }
 
+/** Which screen edge a taskbar rect sits on, or "" when it is not a usable rect. */
+function taskbarEdge(taskbar, area) {
+  if (!taskbar) return "";
+  const a = area || { x: 0, y: 0, width: 1920, height: 1080 };
+  const x = Number(taskbar.x);
+  const y = Number(taskbar.y);
+  const width = Number(taskbar.width);
+  const height = Number(taskbar.height);
+  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return "";
+  // The work area excludes the taskbar, so half-way is a safe separator on any edge.
+  if (width >= height) return y >= a.y + a.height / 2 ? "bottom" : "top";
+  return x >= a.x + a.width / 2 ? "right" : "left";
+}
+
+/**
+ * The taskbar on one display, or null. `taskbars` is every bar the probe published (the
+ * primary Shell_TrayWnd and each Shell_SecondaryTrayWnd), in DIPs; `displayBounds` is
+ * that display's full bounds in DIPs. A bar belongs to a display only when it lies INSIDE
+ * it. Work-area adjacency is NOT enough: with the second monitor stacked under the first,
+ * the primary monitor's bottom taskbar sits exactly against the second monitor's work
+ * area's top edge, so an edge test picked the first monitor's bar for a cluster on the
+ * second and jumped the docked strip onto a display the fairies were not on.
+ */
+function taskbarForDisplay(taskbars, displayBounds) {
+  const list = Array.isArray(taskbars) ? taskbars.filter(Boolean) : [];
+  if (!list.length) return null;
+  const d = displayBounds || { x: 0, y: 0, width: 1920, height: 1080 };
+  const pad = 3; // DPI rounding: a 40 px bar's far edge may land one pixel over
+  const inside = (t) => {
+    const x = Number(t.x);
+    const y = Number(t.y);
+    const width = Number(t.width);
+    const height = Number(t.height);
+    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return false;
+    return x >= d.x - pad && y >= d.y - pad
+      && x + width <= d.x + d.width + pad && y + height <= d.y + d.height + pad;
+  };
+  return list.find(inside) || null;
+}
+
+/**
+ * The docked strip ON the taskbar (plan A4: "anchor to the taskbar"). `taskbar` is the
+ * Shell_TrayWnd rect in the same units as `area`. null = no taskbar known, or the
+ * docked edge is not the taskbar's edge.
+ */
+function dockOnTaskbar(edge, n, center, taskbar, area) {
+  if (!taskbar || taskbarEdge(taskbar, area) !== edge) return null;
+  const t = taskbar;
+  const long = Math.max(DOCK_THICK, Math.max(1, n) * DOCK_STEP + 16);
+  if (edge === "top" || edge === "bottom") {
+    const w = Math.min(long, t.width);
+    const thickness = Math.max(8, Math.min(DOCK_THICK, t.height));
+    const x = Math.min(Math.max(t.x, Math.round(center.x - w / 2)), t.x + t.width - w);
+    return { x, y: Math.round(t.y + (t.height - thickness) / 2), width: Math.round(w), height: Math.round(thickness) };
+  }
+  const h = Math.min(long, t.height);
+  const thickness = Math.max(8, Math.min(DOCK_THICK, t.width));
+  const y = Math.min(Math.max(t.y, Math.round(center.y - h / 2)), t.y + t.height - h);
+  return { x: Math.round(t.x + (t.width - thickness) / 2), y: Math.round(y), width: Math.round(thickness), height: Math.round(h) };
+}
+
 /**
  * The swarm window's rect for a view: the ring square around `center`, or the docked
- * strip. null = no window (collapsed to one orb, or nothing to draw).
+ * strip. null = no window (collapsed to one orb, or nothing to draw). `taskbar`, when
+ * known, puts the dock strip ON the taskbar instead of inside the work area.
  */
-function boundsFor(view, count, center, area) {
+function boundsFor(view, count, center, area, taskbar = null) {
   const v = normalizeView(view);
   if (!count || v.mode === "orb") return null;
   if (v.mode === "dock") {
     const edge = dockEdge(center, area);
-    return { ...dockBounds(edge, count, center, area), edge };
+    const onBar = dockOnTaskbar(edge, count, center, taskbar, area);
+    return { ...(onBar || dockBounds(edge, count, center, area)), edge, onTaskbar: Boolean(onBar) };
   }
   const half = Math.max(48, swarmExtent(v.mode, count, v.radius));
   return {
@@ -325,7 +388,23 @@ function parseForeground(line) {
   if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
   const cls = String(row.cls || "");
   if (/^(Progman|WorkerW|Shell_TrayWnd|Shell_SecondaryTrayWnd)$/.test(cls)) return null;
-  return { x, y, width: w, height: h, cls, title: clip(row.title || "", 80) };
+  const hwnd = Number(row.hwnd);
+  const pid = Number(row.pid);
+  const quns = Number(row.quns);
+  const mw = Number(row.mw);
+  const mh = Number(row.mh);
+  const mx = Number(row.mx);
+  const my = Number(row.my);
+  return {
+    x, y, width: w, height: h, cls, title: clip(row.title || "", 80),
+    // Identity (plan A4): which window, and therefore whether it is the desk's own.
+    hwnd: Number.isFinite(hwnd) && hwnd > 0 ? hwnd : null,
+    pid: Number.isFinite(pid) && pid > 0 ? pid : null,
+    // Windows' "do not interrupt" code and the monitor it sits on (full-screen check).
+    quns: Number.isFinite(quns) ? quns : 0,
+    monitor: Number.isFinite(mw) && Number.isFinite(mh) && mw > 0 && mh > 0
+      ? { x: Number.isFinite(mx) ? mx : 0, y: Number.isFinite(my) ? my : 0, width: mw, height: mh } : null,
+  };
 }
 
 function sameRect(a, b, tol = 3) {
@@ -426,7 +505,7 @@ module.exports = {
   kindGroup, kindLabel, stateLabel, badgeMeaning, detailLines, detailText,
   clampRadius, stepRadius, normalizeView, applyView, decorate,
   swarmSlots, swarmOffset, dockOffset, avoidPoint, swarmExtent,
-  dockEdge, dockBounds, boundsFor,
+  dockEdge, dockBounds, dockOnTaskbar, taskbarEdge, taskbarForDisplay, boundsFor,
   contentRect, relativeRect, parseForeground, sameRect, joinsCluster,
   controlItems, viewItems, applyViewPick, toggleIn,
 };

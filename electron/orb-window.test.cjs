@@ -2342,6 +2342,118 @@ test("the card's 'Open in AitherBrowser' opens its aitherium.com page through th
   assert.match(html, /button\("Open in AitherBrowser", "link", \(\) => api\.nudgeAct\("browser"\)/);
 });
 
+// ── follow the focused window (plan A4) ────────────────────────────────────
+// The rule is asserted pure in follow-focus.test.cjs; here it is that the window layer
+// ACTS on it -- attaches, lets go on toggle-off, and never steals a hand attach.
+
+const NOTEPAD = { hwnd: 90210, pid: 777, cls: "Notepad", title: "Untitled - Notepad", x: 100, y: 120, width: 900, height: 700, quiet: "" };
+
+test("follow is on by default and a settled foreground change attaches the cluster", async () => {
+  start();
+  orbWindow.showOrb();
+  assert.equal(orbWindow.followState(), true, "default on");
+
+  orbWindow.__feedForeground(NOTEPAD);
+  orbWindow.__setFollowChangedAt(0); // the focus has held
+  const r = await orbWindow.__applyFollow();
+  assert.equal(r.act, "attach", JSON.stringify(r));
+  const a = orbWindow.attach();
+  assert.ok(a, "the cluster attached");
+  assert.equal(a.kind, "window");
+  assert.equal(a.title, "Untitled - Notepad");
+});
+
+test("turning the toggle off lets go of an attach follow made", async () => {
+  start();
+  orbWindow.showOrb();
+  orbWindow.__feedForeground(NOTEPAD);
+  orbWindow.__setFollowChangedAt(0);
+  assert.equal((await orbWindow.__applyFollow()).act, "attach");
+
+  const off = orbWindow.setFollow(false);
+  assert.equal(off.follow, false);
+  assert.equal(orbWindow.state().follow, false, "the switch is remembered in orb.json");
+  assert.equal(orbWindow.attach(), null, "nothing keeps following the window");
+});
+
+test("turning the toggle off leaves a fairy the owner placed by hand where it is", async () => {
+  start();
+  orbWindow.showOrb();
+  await orbWindow.attachTo({ kind: "window", hwnd: 42, title: "Pinned by hand", bounds: { x: 10, y: 10, width: 500, height: 400 } });
+  assert.ok(orbWindow.attach());
+  orbWindow.setFollow(false);
+  assert.ok(orbWindow.attach(), "a hand attach is not released by the follow switch");
+});
+
+test("the desk's own window is never followed", async () => {
+  start();
+  orbWindow.showOrb();
+  orbWindow.__feedForeground({ ...NOTEPAD, hwnd: 5, pid: process.pid, title: "Aither desk" });
+  orbWindow.__setFollowChangedAt(0);
+  const r = await orbWindow.__applyFollow();
+  assert.equal(r.act, "none");
+  assert.equal(r.reason, "the desk's own window");
+  assert.equal(orbWindow.attach(), null);
+});
+
+// The taskbar IS a Windows shell object (Shell_TrayWnd / Shell_SecondaryTrayWnd,
+// read by spirit-probe's PowerShell oracle): off Windows there is no bar to publish
+// and refreshTaskbar() must say so rather than invent one. The pure placement rule
+// (fairy-control.taskbarForDisplay) is exercised on every platform in
+// fairy-control.test.cjs; these two assert the WIRING through the real probe.
+const windowsOnly = { skip: process.platform !== "win32" ? "no Windows taskbar on this runner" : false };
+
+test("dock mode publishes no taskbar where the platform has none", { skip: process.platform === "win32" ? "Windows has a taskbar" : false }, async () => {
+  start();
+  orbWindow.showOrb();
+  orbWindow.setView({ mode: "dock" });
+  orbWindow.__setProbe({ taskbars: async () => ({ primary: { className: "Shell_TrayWnd", hwnd: 11, x: 0, y: 2120, width: 3840, height: 40 }, secondaries: [] }) });
+  assert.equal(await orbWindow.__refreshTaskbar(), null, "a non-Windows desk must not dock on an invented bar");
+  assert.equal(orbWindow.__taskbar(), null);
+});
+
+test("dock mode sits on the taskbar once its rect is published", windowsOnly, async () => {
+  // Resting at the bottom of the first display (work area ends at y=2120): the saved
+  // spot is read by startOrb, which places the orb there.
+  writeState({ visible: false, x: 100, y: 2000 });
+  start();
+  orbWindow.showOrb();
+  orbWindow.setView({ mode: "dock" });
+  assert.equal(orbWindow.__swarmBounds(0), null, "no companions: no strip");
+
+  orbWindow.__setProbe({ taskbars: async () => ({ primary: { className: "Shell_TrayWnd", hwnd: 11, x: 0, y: 2120, width: 3840, height: 40 }, secondaries: [] }) });
+  const bar = await orbWindow.__refreshTaskbar();
+  assert.deepEqual(bar, { x: 0, y: 2120, width: 3840, height: 40 });
+
+  const strip = orbWindow.__swarmBounds(3);
+  assert.ok(strip, "a docked strip exists");
+  assert.equal(strip.edge, "bottom");
+  assert.equal(strip.onTaskbar, true);
+  assert.ok(strip.y >= 2120 && strip.y + strip.height <= 2160, `on the taskbar: ${JSON.stringify(strip)}`);
+});
+
+test("dock mode on the second monitor uses ITS taskbar, never the first monitor's", windowsOnly, async () => {
+  // Display 2: bounds y 2160..3240, work area to 3200, its own bar at 3200..3240.
+  writeState({ visible: false, x: 2500, y: 2900 });
+  start();
+  orbWindow.showOrb();
+  orbWindow.setView({ mode: "dock" });
+  orbWindow.__setProbe({
+    taskbars: async () => ({
+      primary: { className: "Shell_TrayWnd", hwnd: 11, x: 0, y: 2120, width: 3840, height: 40 },
+      secondaries: [{ className: "Shell_SecondaryTrayWnd", hwnd: 12, x: 1920, y: 3200, width: 1920, height: 40 }],
+    }),
+  });
+  const bar = await orbWindow.__refreshTaskbar();
+  assert.deepEqual(bar, { x: 1920, y: 3200, width: 1920, height: 40 }, "the bar on the cluster's own display");
+
+  const strip = orbWindow.__swarmBounds(3);
+  assert.ok(strip, "a docked strip exists");
+  assert.equal(strip.onTaskbar, true);
+  assert.ok(strip.x >= 1920 && strip.x + strip.width <= 3840, `on the second monitor: ${JSON.stringify(strip)}`);
+  assert.ok(strip.y >= 3200 && strip.y + strip.height <= 3240, `on its taskbar: ${JSON.stringify(strip)}`);
+});
+
 test("the whisper card shows Read it to me and Answer by voice without opening 'more'", () => {
   const html = require("node:fs").readFileSync(require("node:path").join(__dirname, "orb.html"), "utf8");
   const voice = html.slice(html.indexOf('<div id="n-voice">'), html.indexOf('<div id="n-extra">'));
