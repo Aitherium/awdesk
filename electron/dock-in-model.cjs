@@ -54,6 +54,27 @@ function live(s) {
 }
 
 /**
+ * When a session last did anything. A `/sessions/unified` row (contract v1,
+ * adk/harnesses/daemon.py `_unified_row`) carries `last_activity_at`; `created_at`
+ * belongs to the `/sessions` rows only, so a unified row never has it. Either one is
+ * accepted here so the picker never reads a field the wire does not send.
+ */
+function activityOf(s) {
+  const raw = s && (s.lastActivityAt != null ? s.lastActivityAt : s.createdAt);
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * A path on another machine (`\\host\share\...`, `//host/share/...`). Dropping one
+ * must never reach this PC's Files roots: a stat on it blocks on the SMB timeout and
+ * can hand the share's host an NTLM challenge. Files opens folders on THIS machine.
+ */
+function isNetworkPath(p) {
+  return /^[\\/]{2}/.test(String(p == null ? "" : p).trim());
+}
+
+/**
  * The "+" menu's rows, in the order they are offered.
  *   {kind: "daemon",   action: "attach", id, label}   -- the daemon runs it; attach.
  *   {kind: "external", action: "resume", id, label, cwd, raise: true,
@@ -67,7 +88,7 @@ function pickerRows({ sessions = [], external = [] } = {}, limit = 8) {
   const daemon = (Array.isArray(sessions) ? sessions : [])
     .filter((s) => s && validId(s.id) && live(s))
     .slice()
-    .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+    .sort((a, b) => activityOf(b) - activityOf(a));
   const mine = new Set(daemon.map((s) => String(s.id)));
   const rows = daemon.map((s) => ({
     kind: "daemon",
@@ -78,7 +99,7 @@ function pickerRows({ sessions = [], external = [] } = {}, limit = 8) {
   const tabs = (Array.isArray(external) ? external : [])
     .filter((x) => x && validId(x.id) && !mine.has(String(x.id)))
     .slice()
-    .sort((a, b) => (Number(b.lastActivityAt) || 0) - (Number(a.lastActivityAt) || 0))
+    .sort((a, b) => activityOf(b) - activityOf(a))
     .slice(0, Math.max(0, Number(limit) || 0));
   for (const x of tabs) {
     rows.push({
@@ -191,5 +212,6 @@ function splitRects(bounds, state = {}) {
 
 module.exports = {
   RESUME_DETAIL, SPLIT_GAP, SPLIT_MAX_RATIO, SPLIT_MIN_RATIO,
-  actionFor, asSplitUrl, baseOf, clampRatio, dirnameOf, dropRouting, moveToSplitUrl, pickerRows, splitRects, trimPath, validId,
+  actionFor, activityOf, asSplitUrl, baseOf, clampRatio, dirnameOf, dropRouting, isNetworkPath,
+  moveToSplitUrl, pickerRows, splitRects, trimPath, validId,
 };

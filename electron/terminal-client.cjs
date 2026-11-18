@@ -200,7 +200,10 @@ function createTerminalClient({ fetchImpl = globalThis.fetch, base = DAEMON, tok
           state: String(s.status || s.state || ""),
           cwd: String(s.cwd || ""),
           exitCode: s.exit_code == null ? null : Number(s.exit_code),
-          createdAt: Number(s.created_at) || 0,
+          // The /sessions/unified wire row (contract v1, adk daemon `_unified_row`)
+          // carries last_activity_at and NEVER created_at: keying this on created_at
+          // left every daemon row at 0 and the picker in directory order.
+          lastActivityAt: Number(s.last_activity_at) || 0,
         });
       }
       return { ok: true, sessions, external };

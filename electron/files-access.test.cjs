@@ -373,4 +373,8 @@ test("a dropped path resolves to a root: inside a root it reuses it, outside it 
   // A relative path or one not on this machine is refused, never guessed.
   assert.throws(() => resolvePath("notes/todo.md", { files }), /absolute/);
   assert.throws(() => resolvePath(path.join(s.dir, "nope"), { files }), /not on this machine/);
+  // A share on another machine is refused BEFORE any stat: an SMB stat blocks the
+  // main process on its timeout and can hand the share's host an NTLM challenge.
+  assert.throws(() => resolvePath("\\\\srv\\share\\x", { files }), /another machine/);
+  assert.throws(() => resolvePath("//srv/share/x", { files }), /another machine/);
 });

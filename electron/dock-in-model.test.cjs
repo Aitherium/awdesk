@@ -18,17 +18,23 @@ test("move to split: the terminal pane, attached to that session, marked as a pa
 test("picker rows: session kind decides the action (attach vs resume)", () => {
   const rows = dockIn.pickerRows({
     sessions: [
-      { id: "s2", harness: "claude", label: "Claude Code", state: "ready", createdAt: 20 },
-      { id: "s1", harness: "terminal", label: "Shell", state: "ready", createdAt: 10 },
-      { id: "gone", harness: "terminal", label: "Ended", state: "exited", createdAt: 5 },
+      // /sessions/unified rows carry last_activity_at (contract v1), never created_at.
+      { id: "s2", harness: "claude", label: "Claude Code", state: "ready", lastActivityAt: 20 },
+      { id: "s1", harness: "terminal", label: "Shell", state: "ready", lastActivityAt: 10 },
+      { id: "gone", harness: "terminal", label: "Ended", state: "exited", lastActivityAt: 5 },
     ],
     external: [
       { id: "w1", label: "wt-project", cwd: "C:\\work", lastActivityAt: 100 },
       { id: "s1", label: "already daemon", lastActivityAt: 50 },
     ],
   });
+  // Newest first, both lists.
   assert.deepEqual(rows.map((r) => [r.kind, r.action, r.id]),
-    [["daemon", "attach", "s1"], ["daemon", "attach", "s2"], ["external", "resume", "w1"]]);
+    [["daemon", "attach", "s2"], ["daemon", "attach", "s1"], ["external", "resume", "w1"]]);
+  // The fallback path (/sessions rows carry createdAt, never last_activity_at) orders the same.
+  assert.deepEqual(dockIn.pickerRows({ sessions: [
+    { id: "a", state: "ready", createdAt: 1 }, { id: "b", state: "ready", createdAt: 9 },
+  ] }).map((r) => r.id), ["b", "a"]);
   assert.equal(rows[2].detail, dockIn.RESUME_DETAIL);
   assert.match(rows[2].detail, /keeps running/);
   assert.equal(rows[2].raise, true);
@@ -62,6 +68,15 @@ test("drop routing: text, a URL or nothing is refused without pretending", () =>
     const out = dockIn.dropRouting(dropped);
     assert.equal(out.kind, "refuse");
     assert.ok(out.reason);
+  }
+});
+
+test("a path on another machine is recognised: never a Files root, never stat'd", () => {
+  for (const p of ["\\\\srv\\share\\x", "//srv/share/x", " \\\\srv\\share "]) {
+    assert.equal(dockIn.isNetworkPath(p), true, p);
+  }
+  for (const p of ["C:\\work", "/tmp", "C:/work", "", null]) {
+    assert.equal(dockIn.isNetworkPath(p), false, String(p));
   }
 });
 

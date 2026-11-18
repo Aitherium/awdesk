@@ -2816,6 +2816,9 @@ function droppedEntries(paths) {
   for (const p of Array.isArray(paths) ? paths.slice(0, 20) : []) {
     const raw = String(p || "");
     if (!raw) continue;
+    // Never stat a path on another machine: it blocks on the SMB timeout and can
+    // hand a share's host an NTLM challenge. dockDrop refuses these before here.
+    if (dockIn.isNetworkPath(raw)) continue;
     try {
       out.push({ path: raw, dir: fs.statSync(raw).isDirectory() });
     } catch { /* vanished, or not on this machine: dropRouting refuses an empty list */ }
@@ -2830,7 +2833,12 @@ function droppedEntries(paths) {
  */
 function dockDrop(payload) {
   const p = payload && typeof payload === "object" ? payload : {};
-  const route = dockIn.dropRouting(droppedEntries(p.paths));
+  const paths = Array.isArray(p.paths) ? p.paths : [];
+  // A share on another machine is not a Files folder: say so rather than stat it.
+  if (paths.some((one) => dockIn.isNetworkPath(one))) {
+    return { ok: false, error: "that folder is on another machine — Files opens folders on this PC" };
+  }
+  const route = dockIn.dropRouting(droppedEntries(paths));
   if (route.kind !== "files") return { ok: false, error: route.reason };
   const params = new URLSearchParams({ root: route.root });
   if (route.select) params.set("select", route.select);
