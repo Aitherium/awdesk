@@ -501,6 +501,9 @@ function sanitizeState(raw) {
     // live session around the orb. On unless turned off; `swarm` above is the older
     // opt-in, kept so an old orb.json still reads.
     cluster: src.cluster !== false,
+    // Visual neurons (neurons-model.cjs, owner 2026-11-18): a small step graph around
+    // a working/speaking agent's fairy. OFF unless the owner switches it on.
+    neurons: src.neurons === true,
     // The cluster follows the window the owner is working in (plan A4, 2026-11-18):
     // ON unless turned off in the tray.
     follow: src.follow !== false,

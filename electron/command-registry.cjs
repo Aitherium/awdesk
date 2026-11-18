@@ -300,6 +300,17 @@ const COMMANDS = Object.freeze([
     id: "companion.avatar", label: "Companion: full avatar", group: "avatar",
     surfaces: ["tray", "palette"], when: (ctx = {}) => ctx.companion !== "avatar",
   }),
+  // Visual neurons (neurons-model.cjs, owner 2026-11-18): a small graph of an agent's
+  // recent steps around its fairy while it works or speaks. Off by default. A switch,
+  // not a door: its row is in Settings; the palette and POST /commands/run are its
+  // keyboard and agent paths.
+  Object.freeze({
+    id: "neurons.toggle", label: "Show agents thinking (visual neurons)",
+    menuLabel: "Visual neurons", group: "avatar",
+    surfaces: ["palette"], orb: "neurons",
+    whySingle: "A settings switch, not a door: its row is in Settings (Visual neurons); the palette and POST /commands/run are its keyboard and agent paths.",
+    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.neurons),
+  }),
   Object.freeze({
     id: "avatar.toggle", group: "avatar", accel: "Ctrl+Shift+A",
     surfaces: ["tray", "palette"],

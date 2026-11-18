@@ -98,6 +98,9 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   onAttach: (fn) => on("orb:attach", fn),
   onMode: (fn) => on("orb:mode", fn),
   onVeil: (fn) => on("orb:veil", fn),
+  // Visual neurons (neurons-model.cjs): each agent's recent steps, batched by main
+  // at <= 10 Hz. {on, agents:[{agent, nodes, edges}], ttlMs, pulseMs}
+  onNeurons: (fn) => on("orb:neurons", fn),
   // the owner's AitherSprite the fairy wears ({name, stage, mood, line, tooltip, tint} | null)
   onSprite: (fn) => on("orb:sprite", fn),
   // attention (fairy-attention.cjs): the whisper's buttons and the fairy's nudge level.
