@@ -2642,6 +2642,7 @@ function dockAction(action, arg) {
   if (action === "open") return setDockOpen(true);
   if (action === "close") return setDockOpen(false);
   if (action === "state") return { ok: true, open: Boolean(getPrefs().dockOpen) };
+  if (action === "split-close") return closeSplit();
   // "Move to split" (was "popout"): the session opens BESIDE this page in the same
   // window, not in a whole new tab. "popout" stays an alias for an older dock page.
   if (action === "split" || action === "popout") {
@@ -2794,13 +2795,17 @@ async function bringInMenu() {
 function newTabMenu() {
   if (!win || win.isDestroyed()) return { ok: false, error: "the browser is not open" };
   const { Menu } = electron();
-  Menu.buildFromTemplate([
+  const template = [
     { label: "New tab", click: () => runBrowserAction("new-tab") },
     { label: "New InPrivate tab", click: () => runBrowserAction("inprivate") },
     { type: "separator" },
     { label: "Bring in a terminal…", accelerator: "CmdOrCtrl+Shift+`", registerAccelerator: false,
       click: () => void bringInMenu() },
-  ]).popup({ window: win });
+  ];
+  // An open split pane needs a way out from anywhere (its page fills the pane, and a
+  // WebContentsView carries no chrome of its own).
+  if (splitShown()) template.push({ type: "separator" }, { label: "Close the split pane", click: () => closeSplit() });
+  Menu.buildFromTemplate(template).popup({ window: win });
   return { ok: true };
 }
 
