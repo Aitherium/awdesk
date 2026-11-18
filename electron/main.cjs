@@ -6694,14 +6694,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     console.warn("[desk] support reports not started:", err?.message || err);
   }
   app.on("second-instance", (_event, argv) => {
-    // The logon shim's keepalive (every 5 min) knocks when its /health probe times out on
-    // a desk that is alive but stalled. That knock is not the owner asking for anything:
-    // showing and focusing the overlay for it made the avatar vanish and reappear and
-    // windows flash every few minutes (owner, 2026-11-17). A running desk ignores it.
-    if (argv.includes("--keepalive")) {
-      debugLog("keepalive knock while running: ignored");
-      return;
-    }
+    // A keepalive knock (logon shim, desk alive but stalled) is no request: never show a thing.
+    if (argv.includes("--keepalive")) return;
     // Kid mode: whatever the second launch asked for (--open-deck, --fleet, --console,
     // --run=, a desk:// link), the child gets their classroom and nothing else.
     if (kidDeskMode().enabled) {
