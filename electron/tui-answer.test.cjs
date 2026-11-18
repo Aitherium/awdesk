@@ -197,7 +197,7 @@ test("the measured card shape resolves a session id, so the tab can be found", (
   const real = {
     id: "d-qh8f",
     sessionId: null,
-    source: { session_id: "d3d56e47-1036-4f1b-b8c4-d9f83ea98fff", agent: "claude-code", cwd: "C:\AitherOS-Fresh" },
+    source: { session_id: "d3d56e47-1036-4f1b-b8c4-d9f83ea98fff", agent: "claude-code", cwd: "C:\\AitherOS-Fresh" },
     dedupe_key: "cc-waiting:d3d56e47-1036-4f1b-b8c4-d9f83ea98fff:perm-5ddba63599a5af04",
   };
   assert.equal(tui.sessionIdOf(real), "d3d56e47-1036-4f1b-b8c4-d9f83ea98fff");
