@@ -265,4 +265,8 @@ test("main wires the toast action through answerDeckCard, the ONE answer path", 
   const verifyAt = body.indexOf("cardTickets.verify(");
   const dispatchAt = body.indexOf("dispatchCardAction(");
   assert.ok(verifyAt > 0 && dispatchAt > verifyAt, "the ticket is verified before anything is dispatched");
+  // A dead ticket still OPENS the card: the ticket gates ANSWERS, never
+  // navigation (Action Center outlives the TTL, and a restart clears the store).
+  assert.match(body, /action === "open" && cardToast\.isCardId\(cardId\)[\s\S]*?openInbox\(cardId\)/);
+  assert.match(body, /reason: "unknown ticket"/, "an answer with no live ticket is still refused");
 });

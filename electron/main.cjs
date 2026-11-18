@@ -1826,15 +1826,25 @@ function findOpenCard(id) {
 function handleCardToastAnswer(command) {
   const cardId = command && command.card;
   const ticket = command && command.ticket;
+  const action = String((command && command.action) || "").trim().toLowerCase();
   // A desk:// link is reachable from any page that names it. Only the toast the DESK
-  // showed carries a live ticket, so a guessed link cannot answer a card at all.
+  // showed carries a live ticket, so a guessed link cannot ANSWER a card at all.
   if (!cardTickets.verify(ticket, cardId)) {
-    debugLog(`[card-toast] refused ${cardId} ${command && command.action}: no live toast ticket`);
+    debugLog(`[card-toast] refused ${cardId} ${action}: no live toast ticket`);
+    // Opening the card is not an ANSWER, and the toast outlives its ticket: a
+    // toast sits in Action Center past the 10-minute TTL, and the store is in
+    // memory so a desk restart clears every ticket. An owner clicking Open (or
+    // the toast body) on that toast must still get the card, not silence.
+    // Approve and Later stay refused -- they change state and need the proof.
+    if (action === "open" && cardToast.isCardId(cardId)) {
+      openInbox(cardId);
+      return { ok: true, opened: true, via: "toast-expired" };
+    }
     return { ok: false, reason: "unknown ticket" };
   }
   const result = cardToast.dispatchCardAction({
     cardId,
-    action: command && command.action,
+    action,
     choice: command && command.choice,
     card: findOpenCard(cardId),
     answer: (id, choice) => answerDeckCard(id, choice, null),
@@ -1842,8 +1852,8 @@ function handleCardToastAnswer(command) {
     snooze: (id) => snoozeNeedsYou(id),
     log: debugLog,
   });
-  if (result.ok && result.via === "answer") debugLog(`[card-toast] answered ${command.card} (${command.choice})`);
-  else if (!result.ok) debugLog(`[card-toast] ${command.card} ${command.action}: ${result.reason || "not applied"}`);
+  if (result.ok && result.via === "answer") debugLog(`[card-toast] answered ${cardId} (${command.choice})`);
+  else if (!result.ok) debugLog(`[card-toast] ${cardId} ${action}: ${result.reason || "not applied"}`);
   return result;
 }
 

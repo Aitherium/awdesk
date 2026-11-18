@@ -24,7 +24,8 @@
  * PURE: no electron, no fs. Every rule here is asserted under `node --test`.
  */
 
-/** Toasts for a backlog: the rest are the badge's and the tray's job. */
+/** Most card toasts one announcement shows (a burst); the rest are the badge's
+ *  and the tray's job. A backlog shows one (see main's announceDecisions). */
 const MAX_CARD_TOASTS = 3;
 /** A toast action the card offers. Anything else is refused, not guessed. */
 const ACTIONS = Object.freeze(["approve", "later", "open"]);
