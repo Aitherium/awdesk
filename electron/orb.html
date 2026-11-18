@@ -932,6 +932,7 @@
     let nnPulse = 1200;
     let nnGraphs = new Map();
     let nnFrame = 0;
+    let nnTimer = 0; // reduced motion: ONE pending repaint, never a loop
     let nnTint = "#d6ecff";
     // 2026-11-13 (owner: "the overlay feels laggy"): measured 19 style+layout passes a
     // second in THIS page while nothing happened (left/top at 20 fps, forever). Now the
@@ -1032,7 +1033,8 @@
         };
       });
       stir();
-      if (nnOn) startNeurons(); // a fairy moved: the graph around it moves with it
+      // A fairy moved: the graph around it moves with it (reduced motion repaints once).
+      if (nnOn) { if (reducedMotion) paintReduced(); else startNeurons(); }
     }
     function mateAt(dx, dy) {
       let best = null;
@@ -1296,7 +1298,29 @@
     }
     function stopNeurons() {
       if (nnFrame) { window.cancelAnimationFrame(nnFrame); nnFrame = 0; }
+      if (nnTimer) { window.clearTimeout(nnTimer); nnTimer = 0; }
       if (nctx) nctx.clearRect(0, 0, nn.width, nn.height);
+    }
+    /** Reduced motion: how long until the next step expires, or Infinity. */
+    function nnNextExpiry(now) {
+      let next = Infinity;
+      for (const g of nnGraphs.values()) {
+        for (const n of Array.isArray(g.nodes) ? g.nodes : []) {
+          if (!n || !Number.isFinite(n.at)) continue;
+          const left = n.at + nnTtl - now;
+          if (left > 0 && left < next) next = left;
+        }
+      }
+      return next;
+    }
+    /** Reduced motion: ONE frame now, and one more when a step expires, so the graph
+     *  still clears. No loop and no pulse -- a still picture is not allowed to outlive
+     *  its own 20 s fade by staying on screen forever. */
+    function paintReduced() {
+      if (nnTimer) { window.clearTimeout(nnTimer); nnTimer = 0; }
+      paintNeurons();
+      const left = nnNextExpiry(Date.now());
+      if (Number.isFinite(left)) nnTimer = window.setTimeout(paintReduced, Math.max(50, left + 20));
     }
     function startNeurons() {
       if (nnFrame || reducedMotion) return;
@@ -1315,7 +1339,7 @@
       nnGraphs = next;
       try { nnTint = String(getComputedStyle(document.documentElement).getPropertyValue("--tint") || "").trim() || "#d6ecff"; } catch { /* keep the default */ }
       if (!nnOn || !next.size) { stopNeurons(); return; }
-      if (reducedMotion) { stopNeurons(); paintNeurons(); return; } // honour it: one frame per update, no pulse
+      if (reducedMotion) { stopNeurons(); paintReduced(); return; } // honour it: one frame per update, no pulse, and one more when a step expires
       startNeurons();
     }
     if (api.onNeurons) api.onNeurons(setNeurons);

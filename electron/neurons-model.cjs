@@ -77,7 +77,9 @@ function normalizeEvent(raw) {
   if (!KINDS.includes(kind)) return null;
   const agent = clipText(e.agent, 40).toLowerCase();
   if (!agent) return null;
-  const at = Number(e.at);
+  // `Number(null)` and `Number("")` are 0, i.e. 1970: a caller that did not stamp the
+  // step would have it pruned on the very next read. Only a real stamp counts.
+  const at = e.at == null || e.at === "" ? NaN : Number(e.at);
   return {
     agent,
     kind,

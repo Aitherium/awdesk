@@ -37,6 +37,19 @@ test("junk is dropped: no kind, no agent, not an object, a kind nobody defined",
   assert.deepEqual(b.snap().agents, []);
 });
 
+test("at: null / at: \"\" means 'no stamp' -- the engine's clock, never 1970", () => {
+  const b = bench();
+  const blank = b.neurons.ingest({ agent: "atlas", kind: "line", text: "hi", at: null }, b.at());
+  const empty = b.neurons.ingest({ agent: "atlas", kind: "line", text: "hi", at: "" }, b.at());
+  assert.ok(blank && empty);
+  assert.equal(blank.at, b.at(), "an unstamped step is stamped by the engine");
+  assert.equal(empty.at, b.at());
+  // A stamp of 0 IS a stamp (epoch): it is kept, and it expires on the next read.
+  const epoch = b.neurons.ingest({ agent: "atlas", kind: "line", at: 0 }, b.at());
+  assert.equal(epoch.at, 0);
+  assert.equal(b.snap().agents[0].nodes.length, 2, "the two stamped-now nodes are still on screen");
+});
+
 test("a step becomes a node; the next step hangs from it (the spine is the sequence)", () => {
   const b = bench();
   const a = b.step("atlas", "thinking", { text: "  reading the   board " });
