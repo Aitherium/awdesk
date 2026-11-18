@@ -31,7 +31,8 @@ test("one resident probe: a sample writes a line, the answer is DIP-converted an
   assert.equal(spawned, 1);
   assert.equal(child.writes.length, 1);
   child.stdout.emit("data", '{"ok":true,"x":100,"y":200,"w":800,"h":600,"cls":"Chrome_WidgetWin_1","title":"Doc"}\n');
-  assert.deepEqual({ ...seen[0], title: undefined }, { x: 50, y: 100, width: 400, height: 300, title: undefined });
+  assert.deepEqual({ ...seen[0], title: undefined, hwnd: undefined, pid: undefined, cls: undefined, quiet: undefined },
+    { x: 50, y: 100, width: 400, height: 300, title: undefined, hwnd: undefined, pid: undefined, cls: undefined, quiet: undefined });
   probe.sample();
   child.stdout.emit("data", '{"ok":true,"x":101,"y":201,"w":800,"h":600,"cls":"Chrome_WidgetWin_1","title":"Doc"}\n');
   assert.equal(seen.length, 1, "a move under the tolerance is not a change");
@@ -101,4 +102,51 @@ test("review of #101: stop/start cycles never count toward the respawn limit; a 
   const live = kids[kids.length - 1];
   live.stdin._error(new Error("EPIPE"));
   assert.equal(live.killed, true, "the child behind a broken pipe is killed");
+});
+
+test("the answer names the window and its quiet verdict, and a window change emits even without a move", () => {
+  const child = fakeChild();
+  const seen = [];
+  const probe = createForegroundProbe({
+    platform: "win32", spawnImpl: () => child, onChange: (r) => seen.push(r), setTimer: () => ({ unref() {} }), clearTimer: () => {},
+  });
+  probe.start();
+  const row = (over = {}) => `${JSON.stringify({
+    ok: true, x: 0, y: 0, w: 800, h: 600, cls: "Notepad", title: "Untitled", hwnd: 90210, pid: 777, quns: 1,
+    mx: 0, my: 0, mw: 1920, mh: 1080, ...over,
+  })}\n`;
+  child.stdout.emit("data", row());
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].hwnd, 90210, "the window's identity leaves the probe");
+  assert.equal(seen[0].pid, 777, "and its process, so the desk's own windows can be skipped");
+  assert.equal(seen[0].quiet, "", "an ordinary window is not quiet");
+
+  // The SAME rect, a different window: following needs to see this.
+  child.stdout.emit("data", row({ hwnd: 555, title: "Other" }));
+  assert.equal(seen.length, 2, "a different hwnd on the same rect is a change");
+
+  // The same window and rect, but Windows now says the owner is in a full-screen game.
+  child.stdout.emit("data", row({ hwnd: 555, title: "Other", quns: 3 }));
+  assert.equal(seen.length, 3, "a new quiet verdict is a change");
+  assert.match(seen[2].quiet, /full-screen game/);
+
+  // Nothing changed at all: no third-party churn.
+  child.stdout.emit("data", row({ hwnd: 555, title: "Other", quns: 3 }));
+  assert.equal(seen.length, 3);
+  probe.stop();
+});
+
+test("a maximized window (covers the work area, not the monitor) is not 'quiet'", () => {
+  const child = fakeChild();
+  const seen = [];
+  const probe = createForegroundProbe({
+    platform: "win32", spawnImpl: () => child, onChange: (r) => seen.push(r), setTimer: () => ({ unref() {} }), clearTimer: () => {},
+  });
+  probe.start();
+  child.stdout.emit("data", `${JSON.stringify({
+    ok: true, x: 0, y: 0, w: 1920, h: 1040, cls: "Chrome_WidgetWin_1", title: "Docs", hwnd: 1, pid: 2, quns: 1,
+    mx: 0, my: 0, mw: 1920, mh: 1080,
+  })}\n`);
+  assert.equal(seen[0].quiet, "", "a maximized window keeps the work area only");
+  probe.stop();
 });

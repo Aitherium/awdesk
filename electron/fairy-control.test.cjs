@@ -107,8 +107,80 @@ test("dock picks the nearest edge and lays a strip along it", () => {
   assert.deepEqual(fc.dockOffset(0, 3, "top"), { x: -24, y: 0 });
 });
 
-test("collapsed to one orb there is no window; gather and scatter are centred squares", () => {
-  const area = { x: 0, y: 0, width: 1920, height: 1040 };
+test("dock mode sits ON the taskbar when its rect is known (plan A4)", () => {
+  const area = { x: 0, y: 0, width: 1920, height: 1040 }; // work area: the taskbar is the 40 px below it
+  const taskbar = { x: 0, y: 1040, width: 1920, height: 40 };
+  assert.equal(fc.taskbarEdge(taskbar, area), "bottom");
+  const onBar = fc.boundsFor({ mode: "dock" }, 5, { x: 900, y: 1030 }, area, taskbar);
+  assert.equal(onBar.edge, "bottom");
+  assert.equal(onBar.onTaskbar, true);
+  assert.ok(onBar.y >= 1040 && onBar.y + onBar.height <= 1080, `the strip is inside the taskbar: ${JSON.stringify(onBar)}`);
+  assert.ok(onBar.height <= 40, "never taller than the taskbar");
+  assert.ok(onBar.x >= 0 && onBar.x + onBar.width <= 1920);
+
+  // Without the rect the strip stays inside the work area -- the old behaviour.
+  const noBar = fc.boundsFor({ mode: "dock" }, 5, { x: 900, y: 1030 }, area, null);
+  assert.equal(noBar.onTaskbar, false);
+  assert.ok(noBar.y + noBar.height <= 1040, "inside the work area");
+
+  // A taskbar at the TOP is used for a top dock only.
+  const topBar = { x: 0, y: 0, width: 1920, height: 40 };
+  const topArea = { x: 0, y: 40, width: 1920, height: 1040 };
+  assert.equal(fc.taskbarEdge(topBar, topArea), "top");
+  const top = fc.boundsFor({ mode: "dock" }, 3, { x: 900, y: 45 }, topArea, topBar);
+  assert.equal(top.onTaskbar, true);
+  assert.ok(top.y >= 0 && top.y + top.height <= 40);
+
+  // A known taskbar on a DIFFERENT edge is not used for this dock.
+  const left = fc.boundsFor({ mode: "dock" }, 3, { x: 2, y: 500 }, area, taskbar);
+  assert.equal(left.edge, "left");
+  assert.equal(left.onTaskbar, false);
+
+  // Junk is ignored, never thrown.
+  assert.equal(fc.taskbarEdge(null, area), "");
+  assert.equal(fc.taskbarEdge({ x: "q" }, area), "");
+  assert.equal(fc.taskbarEdge({ x: 0, y: 0, width: 0, height: 0 }, area), "");
+  assert.equal(fc.dockOnTaskbar("bottom", 3, { x: 900, y: 500 }, null, area), null);
+});
+
+test("the taskbar is chosen for the display the cluster is on, not the primary one", () => {
+  // Two monitors side by side, each with its 40 px taskbar at the bottom.
+  const primaryBounds = { x: 0, y: 0, width: 1920, height: 1080 };
+  const secondBounds = { x: 1920, y: 0, width: 1920, height: 1080 };
+  const primaryBar = { x: 0, y: 1040, width: 1920, height: 40 };
+  const secondBar = { x: 1920, y: 1040, width: 1920, height: 40 };
+  assert.equal(fc.taskbarForDisplay([primaryBar, secondBar], primaryBounds), primaryBar);
+  assert.equal(fc.taskbarForDisplay([primaryBar, secondBar], secondBounds), secondBar,
+    "the second monitor's own bar, never the first monitor's");
+
+  // The STACKED layout is why bounds (not work-area adjacency) decide: the primary's
+  // bottom bar sits exactly against the second monitor's work-area TOP, so an edge test
+  // picked it for a cluster on the second monitor.
+  const lowerBounds = { x: 0, y: 1080, width: 1920, height: 1080 };
+  const lowerArea = { x: 0, y: 1080, width: 1920, height: 1040 };
+  const lowerBar = { x: 0, y: 2120, width: 1920, height: 40 };
+  assert.equal(fc.taskbarForDisplay([primaryBar, lowerBar], lowerBounds), lowerBar);
+  assert.equal(fc.taskbarForDisplay([primaryBar, lowerBar], primaryBounds), primaryBar);
+  assert.equal(fc.taskbarForDisplay([primaryBar, secondBar], lowerBounds), null, "no bar on that display: fall back");
+
+  // A vertical (left) taskbar is inside its display just the same.
+  const leftBar = { x: 0, y: 0, width: 40, height: 1040 };
+  assert.equal(fc.taskbarForDisplay([leftBar], primaryBounds), leftBar);
+
+  // Junk is ignored, never thrown; no bars = no choice.
+  assert.equal(fc.taskbarForDisplay([], secondBounds), null);
+  assert.equal(fc.taskbarForDisplay(null, secondBounds), null);
+  assert.equal(fc.taskbarForDisplay([{ x: "q" }], secondBounds), null);
+
+  // End to end: the strip lands on the second monitor's bar, not the first's.
+  const strip = fc.boundsFor({ mode: "dock" }, 5, { x: 900, y: 2110 }, lowerArea,
+    fc.taskbarForDisplay([primaryBar, lowerBar], lowerBounds));
+  assert.equal(strip.onTaskbar, true);
+  assert.ok(strip.x >= 0 && strip.x + strip.width <= 1920, `on the second monitor: ${JSON.stringify(strip)}`);
+  assert.ok(strip.y >= 2120 && strip.y + strip.height <= 2160);
+});
+
+test("collapsed to one orb there is no window; gather and scatter are centred squares", () => {  const area = { x: 0, y: 0, width: 1920, height: 1040 };
   assert.equal(fc.boundsFor({ mode: "orb" }, 4, { x: 500, y: 500 }, area), null);
   assert.equal(fc.boundsFor({ mode: "gather" }, 0, { x: 500, y: 500 }, area), null);
   const g = fc.boundsFor({ mode: "gather" }, 4, { x: 500, y: 500 }, area);

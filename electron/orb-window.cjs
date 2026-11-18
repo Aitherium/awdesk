@@ -62,6 +62,7 @@ const agentsPanel = require("./agents-panel.cjs");
 const fairyControl = require("./fairy-control.cjs");
 const foregroundProbe = require("./foreground-probe.cjs");
 const fairyFlight = require("./fairy-flight.cjs");
+const followFocus = require("./follow-focus.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -131,6 +132,19 @@ let pinWindows = new Map();
 let pinDrag = null;
 let fgContent = null;
 let fgProbeImpl = null;
+/** Follow-the-focused-window (plan A4): the descriptor the probe last reported, when it
+ *  changed, and the settle timer that waits for the focus to hold before it moves. */
+let followSeen = null;
+let followChangedAt = 0;
+let followDebounce = null;
+let followBusy = false;
+/** Bounded retries while the fairy is mid-flight/card; a new focus resets the count. */
+let followRetries = 0;
+/** The taskbar rect on the cluster's OWN display (DIPs) dock mode sits on, every bar
+ *  the probe published (so the right monitor's is chosen), and the refresh timer. */
+let taskbarRect = null;
+let taskbarBars = [];
+let taskbarTimer = null;
 let lastSwarmViewKey = "";
 let lastCompanionsWho = "";
 let lastBounds = null;
@@ -233,6 +247,8 @@ function stateFile() {
 function loadState() {
   try {
     state = orbCore.sanitizeState(JSON.parse(fs.readFileSync(stateFile(), "utf8")));
+    // the owner's hide survives a crash: the cards waiting when they hid it stay quiet
+    ownerHidIds = state.ownerHid ? new Set(state.ownerHidIds) : null;
   } catch {
     state = orbCore.sanitizeState(null); // unreadable state -> defaults, never a crash
   }
@@ -724,7 +740,8 @@ function clusterCenter() {
 function swarmBounds(count) {
   const centre = clusterCenter();
   const area = workAreaAt(centre) || { x: 0, y: 0, width: 1920, height: 1080 };
-  return fairyControl.boundsFor(state.swarmView, count, centre, area);
+  // Dock mode anchors to the taskbar when its rect is known (plan A4).
+  return fairyControl.boundsFor(state.swarmView, count, centre, area, taskbarForDock());
 }
 
 /**
@@ -860,23 +877,222 @@ function screenToDip(p) {
   } catch { return p; }
 }
 
-/** The focused-window probe runs only while a ring is on screen to be kept clear. */
+/** A stable key for one foreground descriptor: the window, its box, its quiet verdict. */
+function foregroundKey(fg) {
+  if (!fg) return "";
+  return [Number(fg.hwnd) || 0, Number(fg.pid) || 0, fg.x, fg.y, fg.width, fg.height, String(fg.quiet || "")].join("|");
+}
+
+/**
+ * The probe reported the window in front. Two readers, one sample: the ring's obstacle
+ * (fgContent) and the follow rule, which waits for the focus to hold (followFocus).
+ */
+function onForeground(rect) {
+  fgContent = fairyControl.contentRect(rect);
+  const changed = foregroundKey(rect) !== foregroundKey(followSeen);
+  followSeen = rect;
+  if (changed) {
+    followChangedAt = Date.now();
+    followRetries = 0;
+    if (followDebounce) { clearTimeout(followDebounce); followDebounce = null; }
+    if (rect && state.follow === true) {
+      followDebounce = setTimeout(() => { followDebounce = null; void applyFollow(); }, followFocus.SETTLE_MS);
+      if (followDebounce.unref) followDebounce.unref();
+    }
+  }
+  sendSwarmView();
+}
+
+/** How often the rule is retried while a flight, a card or a drag holds the fairy, and
+ *  for how many ticks: long enough to outlast a 560 ms flight, short enough that a card
+ *  left open never wakes the main process for minutes. */
+const FOLLOW_RETRY_MS = 700;
+const FOLLOW_RETRIES_MAX = 20;
+
+/** The focus is held but the fairy was busy: try again shortly, not on a non-existent tick. */
+function scheduleFollowRetry() {
+  if (followDebounce || quitting || state.follow !== true) return;
+  if (followRetries >= FOLLOW_RETRIES_MAX) return;
+  followRetries += 1;
+  followDebounce = setTimeout(() => { followDebounce = null; void applyFollow(); }, FOLLOW_RETRY_MS);
+  if (followDebounce.unref) followDebounce.unref();
+}
+
+/**
+ * Run the pure follow rule against the last foreground sample and do what it says.
+ * An attach the owner made by hand is never stolen; a follow-made attach is let go
+ * when the focus lands on one of the desk's own windows (the AitherOS dock takes it
+ * back) or on a full-screen app/game.
+ */
+async function applyFollow() {
+  if (followBusy || quitting) {
+    // A focus that landed while the previous attach was still flying must not be lost.
+    if (!quitting) scheduleFollowRetry();
+    return { act: "none", reason: "busy" };
+  }
+  if (!state.visible || !alive(orbWindow)) return { act: "none", reason: "the fairy is down" };
+  followBusy = true;
+  try {
+    const decision = followFocus.decideFollow({
+      enabled: state.follow === true,
+      fg: followSeen,
+      attach,
+      changedAt: followChangedAt,
+      now: Date.now(),
+      ownPid: process.pid,
+    });
+    if (decision.act === "attach") {
+      // Never yank the fairy out of a flight, a card or a drag: retry shortly instead.
+      if (flight || tripBusy || nudging || dragging || regionWait) {
+        scheduleFollowRetry();
+        return { act: "none", reason: "the fairy is busy" };
+      }
+      if (attach && attach.hwnd && decision.target.hwnd && Number(attach.hwnd) === Number(decision.target.hwnd)) {
+        return { act: "none", reason: "already following it" };
+      }
+      await attachTo(decision.target, { quiet: true });
+      followRetries = 0;
+      return decision;
+    }
+    if (decision.act === "release") {
+      if (attach && attach.follow) {
+        detach({ silent: true });
+        // The AitherOS window may be exactly what was focused: ride it again, as the
+        // one-cluster rule wants, rather than leaving the fairy at its resting spot.
+        if (dockWindowId) {
+          const w = (() => { try { return electron().BrowserWindow.fromId(dockWindowId); } catch { return null; } })();
+          if (alive(w)) void setDockWindow(w).catch(() => { /* window gone this tick */ });
+        }
+      }
+      return decision;
+    }
+    return decision;
+  } catch {
+    // attachTo/setDockWindow are the only awaited calls here; an async rejection from
+    // either must not become an unhandled rejection in the main process.
+    return { act: "none", reason: "the follow step failed" };
+  } finally {
+    followBusy = false;
+  }
+}
+
+/** The tray/MCP door: "Fairies follow my window", default on. */
+function setFollow(on) {
+  const next = on !== false;
+  const changed = (state.follow === true) !== next;
+  state.follow = next;
+  if (changed) saveState();
+  if (!next) {
+    // Toggle-off path: let go of what FOLLOW made; a hand attach stays where it is.
+    if (followDebounce) { clearTimeout(followDebounce); followDebounce = null; }
+    followRetries = 0;
+    if (followFocus.releaseOnDisable(attach)) {
+      detach({ silent: true });
+      if (dockWindowId) {
+        const w = (() => { try { return electron().BrowserWindow.fromId(dockWindowId); } catch { return null; } })();
+        if (alive(w)) void setDockWindow(w).catch(() => { /* window gone */ });
+      }
+    }
+  } else if (followSeen) {
+    // Switched back on with a window already in front: settle, then follow it.
+    followRetries = 0;
+    followChangedAt = Date.now();
+    if (followDebounce) clearTimeout(followDebounce);
+    followDebounce = setTimeout(() => { followDebounce = null; void applyFollow(); }, followFocus.SETTLE_MS);
+    if (followDebounce.unref) followDebounce.unref();
+  }
+  syncForegroundProbe();
+  return { ok: true, follow: state.follow === true };
+}
+
+function followState() {
+  return state.follow === true;
+}
+
+/**
+ * The focused-window probe runs while a ring is on screen to be kept clear OR while
+ * the cluster is meant to follow the focused window.
+ */
 function syncForegroundProbe() {
-  const want = alive(swarmWindow) && swarmWindow.isVisible() && state.swarmView.mode !== "dock" && state.swarmView.mode !== "orb";
-  if (!want) {
+  const ring = alive(swarmWindow) && swarmWindow.isVisible() && state.swarmView.mode !== "dock" && state.swarmView.mode !== "orb";
+  const follow = state.follow === true && orbVisible();
+  // Dock mode's taskbar rect is its own watch: turning "follow my window" off must not
+  // silently drop a docked strip back off the taskbar.
+  const dock = state.swarmView.mode === "dock" && (orbVisible() || Boolean(swarmAnchor));
+  if (!ring && !follow && !dock) {
     if (fgProbeImpl) fgProbeImpl.stop();
+    stopTaskbarWatch();
     return;
   }
   let canDip = false;
   try { canDip = typeof electron().screen.screenToDipPoint === "function"; } catch { /* no screen module (tests) */ }
   if (!canDip) return; // no real screen: nothing to probe, nothing to spawn
-  if (!fgProbeImpl) {
-    fgProbeImpl = foregroundProbe.createForegroundProbe({
-      toDip: screenToDip,
-      onChange: (rect) => { fgContent = fairyControl.contentRect(rect); sendSwarmView(); },
-    });
+  if (ring || follow) {
+    if (!fgProbeImpl) {
+      fgProbeImpl = foregroundProbe.createForegroundProbe({
+        toDip: screenToDip,
+        onChange: onForeground,
+      });
+    }
+    fgProbeImpl.start();
+  } else if (fgProbeImpl) {
+    fgProbeImpl.stop(); // nothing reads the focus: no ring, and following is off
   }
-  fgProbeImpl.start();
+  if (dock) startTaskbarWatch(); else stopTaskbarWatch();
+}
+
+// ── the taskbar (plan A4: dock mode sits ON it) ─────────────────────────────
+/**
+ * The Shell_TrayWnd rect in DIPs, or null. It is published by the same resident window
+ * oracle the attach uses (spirit-probe's "tray" op), and converted to the unit the
+ * windows are placed in, exactly as the foreground probe converts its rect.
+ */
+async function refreshTaskbar() {
+  if (process.platform !== "win32") { taskbarRect = null; taskbarBars = []; return taskbarRect; }
+  try {
+    if (!probe) probe = spiritProbe.createWindowProbe();
+    const bars = await probe.taskbars();
+    // Every bar, not just the primary: the cluster may sit on a second monitor, and the
+    // primary bar is on the FIRST monitor. Picking by display bounds keeps the strip on
+    // the display the fairies are actually on.
+    const all = [bars && bars.primary, ...((bars && Array.isArray(bars.secondaries)) ? bars.secondaries : [])].filter(Boolean);
+    taskbarBars = all.map((bar) => {
+      const a = screenToDip({ x: bar.x, y: bar.y });
+      const b = screenToDip({ x: bar.x + bar.width, y: bar.y + bar.height });
+      return { x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y };
+    });
+    const centre = clusterCenter();
+    const display = (() => {
+      try { return electron().screen.getDisplayNearestPoint(centre); } catch { return null; }
+    })();
+    const next = display && display.bounds
+      ? fairyControl.taskbarForDisplay(taskbarBars, display.bounds)
+      : (taskbarBars[0] || null);
+    const changed = !taskbarRect !== !next
+      || (taskbarRect && next && ["x", "y", "width", "height"].some((k) => Math.round(taskbarRect[k]) !== Math.round(next[k])));
+    taskbarRect = next;
+    if (changed && state.swarmView.mode === "dock") placeSwarm(swarmCompanions);
+    return taskbarRect;
+  } catch {
+    return taskbarRect;
+  }
+}
+
+/** Only while dock mode is in use: one probe line every TASKBAR_MS, nothing else. */
+const TASKBAR_MS = 10_000;
+function startTaskbarWatch() {
+  if (state.swarmView.mode !== "dock") { stopTaskbarWatch(); return; }
+  if (taskbarTimer) return;
+  taskbarTimer = setInterval(() => { void refreshTaskbar(); }, TASKBAR_MS);
+  if (taskbarTimer.unref) taskbarTimer.unref();
+  void refreshTaskbar();
+}
+function stopTaskbarWatch() {
+  if (taskbarTimer) { clearInterval(taskbarTimer); taskbarTimer = null; }
+}
+/** The taskbar rect dock mode should use right now (null when unknown or unused). */
+function taskbarForDock() {
+  return state.swarmView.mode === "dock" ? taskbarRect : null;
 }
 
 /** Change the view, keep it, redraw. */
@@ -884,6 +1100,7 @@ function setView(patch) {
   state.swarmView = fairyControl.normalizeView({ ...state.swarmView, ...patch });
   saveState();
   sendFairy({ force: true });
+  syncForegroundProbe(); // dock mode swaps the taskbar watch in and out
   return state.swarmView;
 }
 
@@ -1440,7 +1657,7 @@ function hideVeil({ force = false } = {}) {
 // ── visibility ──────────────────────────────────────────────────────────────
 
 function showOrb({ auto = false } = {}) {
-  if (!auto) { autoSurfaced = false; ownerHidIds = null; }
+  if (!auto) { autoSurfaced = false; ownerHidIds = null; state.ownerHid = false; state.ownerHidIds = []; }
   // One cluster on this machine, ever (owner 2026-11-13): a second desk process (another
   // profile, a test build) never shows its own fairies while another desk owns them.
   const owner = fairyOwner.claim();
@@ -1471,7 +1688,10 @@ function showOrb({ auto = false } = {}) {
 
 function hideOrb({ auto = false } = {}) {
   // The owner hid it with cards waiting: those cards do not bring it back, a NEW one does.
-  if (!auto) { autoSurfaced = false; ownerHidIds = new Set(attentionCards.map((c) => c.id)); }
+  if (!auto) {
+    autoSurfaced = false; ownerHidIds = new Set(attentionCards.map((c) => c.id));
+    state.ownerHid = true; state.ownerHidIds = [...ownerHidIds];
+  }
   releaseHover();
   suppressed = true;
   pendingSlot = null;
@@ -1488,10 +1708,11 @@ function hideOrb({ auto = false } = {}) {
   // The tool flights have no fairy to come from any more: take their overlay down
   // now, not on the next session tick (a frozen sub-fairy must not outlive the fairy).
   try { updateToolFlights(); } catch { /* cosmetic */ }
-  if (was) {
+  if (was || !auto) {   // an owner hide is saved even when it was already hidden (its card ids changed)
     saveState();
     notifyCompanions();
   }
+  syncForegroundProbe(); // no orb on screen: no probe to keep it off (or following) anything
   fairyOwner.release(); // hidden: another desk may show the one cluster
   return { ok: true, visible: false };
 }
@@ -5029,6 +5250,16 @@ module.exports = {
   autoSurfaced: () => autoSurfaced,
   swarmViewOp, swarmViewPayload, selectAgent, swarmWheel, swarmDrag, pinAgent, viewCompanions, setView,
   pinWindows: () => pinWindows, __setForeground: (rect) => { fgContent = fairyControl.contentRect(rect); sendSwarmView(); },
+  // Follow the focused window (plan A4): the tray toggle, the rule's inputs and outputs.
+  setFollow, followState,
+  __feedForeground: (fg) => { onForeground(fg); },
+  __setFollowChangedAt: (t) => { followChangedAt = Number(t) || 0; },
+  __followSeen: () => followSeen,
+  __applyFollow: () => applyFollow(),
+  __taskbar: () => taskbarRect,
+  __refreshTaskbar: () => refreshTaskbar(),
+  __swarmBounds: (n) => swarmBounds(n),
+  __setProbe: (p) => { probe = p; },
   setSwarmAnchor, setSwarmVisible, swarmVisible: () => state.swarm === true, fairyBounds: () => (alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null),
   swarmWindow: () => (alive(swarmWindow) ? swarmWindow : null), soundsOn: () => state.sounds !== false,
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
@@ -5079,6 +5310,15 @@ module.exports = {
     pinDrag = null;
     if (pinWatchdog) { clearTimeout(pinWatchdog); pinWatchdog = null; }
     fgContent = null;
+    followSeen = null;
+    followChangedAt = 0;
+    followBusy = false;
+    followRetries = 0;
+    if (followDebounce) { clearTimeout(followDebounce); followDebounce = null; }
+    stopTaskbarWatch();
+    taskbarRect = null;
+    taskbarBars = [];
+    probe = null; // a fake injected by a test never outlives it
     lastSwarmViewKey = "";
     lastCompanionsWho = "";
     lastBounds = null;

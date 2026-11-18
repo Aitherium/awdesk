@@ -300,11 +300,11 @@ test("a bubble is never placed off-screen when the orb is in a negative-origin d
 // ── state file ──────────────────────────────────────────────────────────────
 
 test("a saved state is small and sanitized; junk costs settings, not a launch", () => {
-  const off = { tenantCompanion: false, companionsV: 0, swarm: false, cluster: true, reducedMotion: false, swarmView: require("./fairy-control.cjs").normalizeView(null) };
+  const off = { tenantCompanion: false, companionsV: 0, swarm: false, cluster: true, reducedMotion: false, follow: true, swarmView: require("./fairy-control.cjs").normalizeView(null) };
   // Hidden by default (owner 2026-11-13): no file, or a file that never said "visible".
-  assert.deepEqual(core.sanitizeState(null), { visible: false, pinned: false, x: null, y: null, freeRoam: false, sounds: true, muteUntil: 0, ...off });
-  assert.deepEqual(core.sanitizeState({ visible: false, x: "12.7", y: 400 }), { visible: false, pinned: false, x: 13, y: 400, freeRoam: false, sounds: true, muteUntil: 0, ...off });
-  assert.deepEqual(core.sanitizeState({ x: "nope", y: 1e9 }), { visible: false, pinned: false, x: null, y: 1000000000, freeRoam: false, sounds: true, muteUntil: 0, ...off });
+  assert.deepEqual(core.sanitizeState(null), { visible: false, pinned: false, x: null, y: null, freeRoam: false, sounds: true, muteUntil: 0, ownerHid: false, ownerHidIds: [], ...off });
+  assert.deepEqual(core.sanitizeState({ visible: false, x: "12.7", y: 400 }), { visible: false, pinned: false, x: 13, y: 400, freeRoam: false, sounds: true, muteUntil: 0, ownerHid: false, ownerHidIds: [], ...off });
+  assert.deepEqual(core.sanitizeState({ x: "nope", y: 1e9 }), { visible: false, pinned: false, x: null, y: 1000000000, freeRoam: false, sounds: true, muteUntil: 0, ownerHid: false, ownerHidIds: [], ...off });
   assert.equal(core.sanitizeState({ visible: true }).visible, true, "a person who showed it keeps it");
   assert.equal(core.sanitizeState({ tenantCompanion: true, companionsV: 1 }).tenantCompanion, true);
   assert.equal(core.sanitizeState({ companionsV: "1" }).companionsV, 1);
@@ -399,4 +399,16 @@ test("tool-flight reduced motion is a setting, off by default, only true turns i
   assert.equal(core.sanitizeState(null).reducedMotion, false);
   assert.equal(core.sanitizeState({ reducedMotion: "yes" }).reducedMotion, false);
   assert.equal(core.sanitizeState({ reducedMotion: true }).reducedMotion, true);
+});
+
+test("stays-hidden: the owner's fairy hide and its card ids survive a save and reload", () => {
+  const { sanitizeState } = require("./orb-core.cjs");
+  const saved = JSON.parse(JSON.stringify(sanitizeState({ visible: false, ownerHid: true, ownerHidIds: ["d-1", "d-2", 7] })));
+  const back = sanitizeState(saved);
+  assert.equal(back.visible, false);
+  assert.equal(back.ownerHid, true);
+  assert.deepEqual(back.ownerHidIds, ["d-1", "d-2"]);   // junk dropped
+  const fresh = sanitizeState(null);
+  assert.equal(fresh.ownerHid, false);
+  assert.deepEqual(fresh.ownerHidIds, []);
 });

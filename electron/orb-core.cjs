@@ -505,11 +505,19 @@ function sanitizeState(raw) {
     // window an agent's tool call belongs to. Off when the owner asks for reduced
     // motion; the veil page also honours the OS's prefers-reduced-motion.
     reducedMotion: src.reducedMotion === true,
+    // The cluster follows the window the owner is working in (plan A4, 2026-11-18):
+    // ON unless turned off in the tray.
+    follow: src.follow !== false,
     // How the swarm is drawn and what is pinned out of it (fairy-control.cjs): mode, radius,
     // kind filter, hidden / muted agents, pinned positions.
     swarmView: require("./fairy-control.cjs").normalizeView(src.swarmView),
     // "Mute nudges 1 hour" from the orb's right-click menu (owner 2026-11-12): ms epoch.
     muteUntil: Math.max(0, finite(src.muteUntil) || 0),
+    // [stays-hidden 2026-11-18] The owner hid the fairies with these decisions waiting: they do
+    // not bring the cluster back after a crash or restart; a NEW decision does. Ids only.
+    ownerHid: src.ownerHid === true,
+    ownerHidIds: Array.isArray(src.ownerHidIds)
+      ? src.ownerHidIds.filter((v) => typeof v === "string" && v.length <= 200).slice(0, 500) : [],
   };
 }
 

@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Fairies go to work: when an agent runs a tool, its fairy flies from the cluster to the window that tool belongs to (reading and editing files to Files, web research to the browser, shell and session-reading to the terminal), splits into one small sub-fairy per concurrent call the daemon names as running, and flies back / merges when the call finishes. A missing window makes it hover beside the cluster instead. At most four sub-fairies at once; reduced motion (the fairy menu's "Fairy flights" row, or the OS preference) shows a still glow instead of a flight.
+- A decision card now arrives as a Windows toast carrying the card's own answer, **Later** and **Open**, and nothing opens a window by itself: the urgent auto-open (a window taking focus mid-keystroke) is gone. A signed card's answer still goes to the Windows Hello approval page, and an unpackaged or non-Windows desk gets a plain toast whose click opens the card. Because a card never raises a window any more, the "Bring the overlay forward for notifications" switch had nothing left to do and was removed (Settings, the tray/palette row and `cast.json`; an old file's key is ignored). The toast also respects the companion's quiet mode and Do not disturb, and kid mode shows no toast buttons at all.
 - Kid desk: the tray has a second row, "My Space". It opens the child's own Space editor (the Learn Lab) in the same classroom window, on the same classroom host. "My classroom" brings them back. Nothing else is reachable: still one window, one host, no adult desk.
 
 ## 0.1.33 - 2026-11-14

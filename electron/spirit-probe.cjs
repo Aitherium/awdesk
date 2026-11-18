@@ -53,6 +53,10 @@ const PROBE_SCRIPT = [
   "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);",
   "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int count);",
   "  [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);",
+  // The taskbar, by class (plan A4): dock mode sits ON it instead of inside the work
+  // area. FindWindow takes the class name; Shell_TrayWnd is the primary taskbar and
+  // Shell_SecondaryTrayWnd each additional monitor's.
+  "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);",
   // The fairy's quiet check (fairy-attention): Windows' own "do not interrupt" answer
   // plus the foreground window's monitor, so a full-screen app or game holds a nudge.
   "  [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }",
@@ -103,6 +107,18 @@ const PROBE_SCRIPT = [
   "      if ($mon -ne [IntPtr]::Zero -and [AitherWin]::GetMonitorInfo($mon, [ref]$mi)) {",
   "        $res.monitor = @{ x = $mi.rcMonitor.Left; y = $mi.rcMonitor.Top; width = ($mi.rcMonitor.Right - $mi.rcMonitor.Left); height = ($mi.rcMonitor.Bottom - $mi.rcMonitor.Top) }",
   "      }",
+  "    } elseif ($req.op -eq 'tray') {",
+  // Every taskbar on the machine: the primary (Shell_TrayWnd) and each other monitor's.
+  // Physical pixels, like every rect this probe returns.
+  "      $bars = @()",
+  "      foreach ($cls in @('Shell_TrayWnd','Shell_SecondaryTrayWnd')) {",
+  "        $h = [AitherWin]::FindWindow($cls, $null)",
+  "        if ($h -eq [IntPtr]::Zero) { continue }",
+  "        $r = New-Object AitherWin+RECT",
+  "        if (-not [AitherWin]::GetWindowRect($h, [ref]$r)) { continue }",
+  "        $bars += @{ className = $cls; hwnd = $h.ToInt64(); visible = [AitherWin]::IsWindowVisible($h); rect = @{ x = $r.Left; y = $r.Top; width = ($r.Right - $r.Left); height = ($r.Bottom - $r.Top) } }",
+  "      }",
+  "      $res = @{ ok = $true; taskbars = $bars }",
   "    } elseif ($req.op -eq 'ping') {",
   "      $res = @{ ok = $true; pong = $true }",
   "    } else { $res = @{ ok = $false; error = \"unknown op $($req.op)\" } }",
@@ -140,6 +156,36 @@ function quietFromAnswer(answer, { excludePid = null } = {}) {
   return covers
     ? { quiet: true, reason: `${answer.process || "an app"} is full-screen` }
     : { quiet: false, reason: "" };
+}
+
+/**
+ * The tray answer -> {primary, secondaries}, each {className, hwnd, x, y, width, height}
+ * (physical pixels), or {primary: null, secondaries: []} when the probe could not answer.
+ */
+function taskbarFromAnswer(answer) {
+  const empty = { primary: null, secondaries: [] };
+  if (!answer || answer.ok !== true) return empty;
+  // PowerShell's ConvertTo-Json collapses a ONE-element array to the object itself.
+  const list = Array.isArray(answer.taskbars) ? answer.taskbars
+    : (answer.taskbars && typeof answer.taskbars === "object" ? [answer.taskbars] : []);
+  if (!list.length) return empty;
+  const rows = list.map((bar) => {
+    const r = bar && bar.rect;
+    if (!r) return null;
+    const x = Number(r.x);
+    const y = Number(r.y);
+    const width = Number(r.width);
+    const height = Number(r.height);
+    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+    return {
+      className: String(bar.className || ""), hwnd: Number(bar.hwnd) || null,
+      x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height),
+    };
+  }).filter(Boolean);
+  return {
+    primary: rows.find((b) => b.className === "Shell_TrayWnd") || null,
+    secondaries: rows.filter((b) => b.className === "Shell_SecondaryTrayWnd"),
+  };
 }
 
 /** The answer as the spirit's attach target, or null when it is not usable. */
@@ -301,6 +347,15 @@ function createWindowProbe({
     return quietFromAnswer(answer, opts);
   }
 
+  /**
+   * The taskbar rects (plan A4): {primary, secondaries} in PHYSICAL pixels, each
+   * {x,y,width,height} plus className/hwnd, or nulls when the probe cannot answer.
+   */
+  async function taskbars() {
+    const answer = await request({ op: "tray" });
+    return taskbarFromAnswer(answer);
+  }
+
   async function ping() {
     const answer = await request({ op: "ping" });
     return answer && answer.ok === true;
@@ -310,6 +365,7 @@ function createWindowProbe({
     pointAt,
     rectOf,
     quietState,
+    taskbars,
     ping,
     start,
     stop: () => drop("stopped"),
@@ -320,4 +376,5 @@ function createWindowProbe({
 
 module.exports = {
   PROBE_TIMEOUT_MS, PROBE_STARTUP_MS, PROBE_SCRIPT, createWindowProbe, targetFromAnswer, quietFromAnswer, QUNS_QUIET,
+  taskbarFromAnswer,
 };

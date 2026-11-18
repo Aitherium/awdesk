@@ -62,6 +62,22 @@ function parseProtocolUrl(rawUrl, protocolScheme = "desk") {
       if (!/^https?:\/\//i.test(target)) return null;
       return [{ type: "browse", url: target.slice(0, 4096) }];
     }
+    // desk://card/answer?card=<id>&action=approve|later|open[&choice=<key>][&ticket=<t>]
+    // -> a decision card's TOAST BUTTON (card-toast.cjs). The link only NAMES the
+    // action: main re-checks the ticket (proof the desk showed that toast), re-reads
+    // the card and refuses an answer the card no longer offers, and an approve goes
+    // through answerDeckCard, so a signed card still gets the passkey window instead
+    // of an unsigned answer that approves nothing.
+    if (action === "card" || action === "card/answer") {
+      const verb = action === "card" ? url.pathname.replace(/^\/+/, "").toLowerCase() : "answer";
+      if (verb !== "answer") return null;
+      const card = String(url.searchParams.get("card") || "").trim();
+      const cardAction = String(url.searchParams.get("action") || "").trim().toLowerCase();
+      const choice = String(url.searchParams.get("choice") || "").trim();
+      const ticket = String(url.searchParams.get("ticket") || "").trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(card) || card.includes("..")) return null;
+      return [{ type: "card-answer", card, action: cardAction, choice, ticket }];
+    }
     // desk://sandbox/detonate?path=<file> -> hand ONE local file to Windows Sandbox.
     // A LINK IS NEVER A CONFIRMATION: main routes this through the very same confirm
     // card the menu uses (file name, size, SHA-256, networking off), and the daemon
