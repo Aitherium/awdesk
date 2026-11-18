@@ -154,6 +154,11 @@ if (kidDesk.allowCdpPort(kidDeskMode()) && /^\d{2,5}$/.test(String(process.env.D
   app.commandLine.appendSwitch("remote-debugging-port", String(process.env.DESK_CDP_PORT));
 }
 const decisionCards = require("./decision-cards.cjs");
+// A decision card as an ACTIONABLE Windows toast (Approve / Later / Open) that asks
+// and never opens a window (A1, attention plan 2026-11-18).
+const cardToast = require("./card-toast.cjs");
+/** The tickets a shown card toast carries: a desk:// link alone cannot answer a card. */
+const cardTickets = cardToast.createTicketStore();
 const sessionContext = require("./session-context.cjs");
 const tuiAnswer = require("./tui-answer.cjs");
 const signedApproval = require("./signed-approval.cjs");
@@ -661,7 +666,6 @@ const {
   desktopAppUrl,
   isAppOpen,
   toggleLivingDesktop,
-  raiseLivingDesktop,
   setShell: setDesktopShell,
   setGhostMode,
   setSolidBackground,
@@ -954,14 +958,6 @@ let relayPoller = null;
 let decisionWatchStop = null;
 // The liveness heartbeat's stop handle (decision-cards.cjs startHeartbeat).
 let deskHeartbeatStop = null;
-// How often an ORDINARY (low|normal) announcement may pull the Inbox open on
-// its own. A high|critical card bypasses this entirely (see announceDecisions):
-// the ask that must not wait out a quiet period is exactly the one whose
-// urgency says so. The window is per app run, not persisted — a restart is a
-// deliberate act, and the desk coming up on "N waiting" IS the surface.
-const INBOX_OPEN_MIN_MS = 10 * 60_000;
-let lastInboxOpenAt = 0;
-const URGENT_URGENCIES = new Set(["high", "critical"]);
 let hyprlandConfigured = false;
 let hyprlandConfiguring = false;
 let hyprlandConfigurationTimer = null;
@@ -1802,8 +1798,53 @@ function handleProtocolUrl(rawUrl) {
     // card the menu does (name, size, SHA-256, networking off) and calls nothing
     // until the owner clicks Detonate on it.
     else if (command.type === "sandbox") { void runSandboxDetonateFromLink(command.url); }
+    else if (command.type === "card-answer") handleCardToastAnswer(command);
   }
   return true;
+}
+
+/** The open card `id`, from the watcher's last list or the store. Shaped card or null. */
+function findOpenCard(id) {
+  if (typeof id !== "string" || !id) return null;
+  try {
+    const cached = openDecisions.find((c) => c && c.id === id);
+    if (cached) return cached;
+  } catch { /* the watcher has not run yet */ }
+  try {
+    return decisionCards.listOpen().find((c) => c && c.id === id) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A decision card's TOAST button came back (desk://card/answer). The toast carries
+ * only ids; the card is re-read here, and an approve goes through answerDeckCard --
+ * the ONE answer path -- so a signed card still opens the Windows Hello window
+ * instead of recording an unsigned answer that approves nothing (A1, critique #3).
+ */
+function handleCardToastAnswer(command) {
+  const cardId = command && command.card;
+  const ticket = command && command.ticket;
+  // A desk:// link is reachable from any page that names it. Only the toast the DESK
+  // showed carries a live ticket, so a guessed link cannot answer a card at all.
+  if (!cardTickets.verify(ticket, cardId)) {
+    debugLog(`[card-toast] refused ${cardId} ${command && command.action}: no live toast ticket`);
+    return { ok: false, reason: "unknown ticket" };
+  }
+  const result = cardToast.dispatchCardAction({
+    cardId,
+    action: command && command.action,
+    choice: command && command.choice,
+    card: findOpenCard(cardId),
+    answer: (id, choice) => answerDeckCard(id, choice, null),
+    open: (id) => openInbox(id),
+    snooze: (id) => snoozeNeedsYou(id),
+    log: debugLog,
+  });
+  if (result.ok && result.via === "answer") debugLog(`[card-toast] answered ${command.card} (${command.choice})`);
+  else if (!result.ok) debugLog(`[card-toast] ${command.card} ${command.action}: ${result.reason || "not applied"}`);
+  return result;
 }
 
 function handleProtocolArgv(argv) {
@@ -1859,29 +1900,10 @@ function openTalkWindow() {
  *  Every bell, badge and menu item lands here, so there is exactly one place a
  *  notification can be found (owner, 2026-09-13: "no proper notification area").
  *  A card id focuses that card. */
-/** The owner's explicit "no card windows" switch — the same kill-file the awask
- *  side reads (~/.aither/decisions/.popup-off). Split out of cardWindowsMayOpen
- *  so a HIGH-URGENCY card can bypass the auto-open OPT-IN while still honouring
- *  this deliberate off switch: the opt-in defaults off because unrequested
- *  windows are the complaint, but a switch the owner flipped must never be
- *  overridden by urgency. */
-function cardPopupsOff() {
-  try {
-    const off = path.join(require("node:os").homedir(), ".aither", "decisions", ".popup-off");
-    return fs.existsSync(off);
-  } catch {
-    // An unreadable home is not a reason to start popping windows.
-    return true;
-  }
-}
-
-/** May the desk open a card window by ITSELF? Never by default: an
- *  unrequested always-on-top window is the complaint, not the feature. */
-function cardWindowsMayOpen() {
-  if (kidDeskMode().enabled) return false;  // kid mode: the classroom is the only window
-  if (process.env.DESK_CARDS_AUTO_OPEN !== "1") return false;
-  return !cardPopupsOff();
-}
+// (The card auto-open ladder that stood here -- DESK_CARDS_AUTO_OPEN and the
+// ~/.aither/decisions/.popup-off kill-file -- was removed with A1: a card no longer
+// opens a window by itself, so there is no automatic window left to gate. awask
+// still reads the kill-file for its own Tk card window.)
 
 // ── When the desk may raise a surface BY ITSELF (overlay-policy.cjs) ────────────────
 // Report, 2026-10-14: the AitherOS Online overlay "randomly pops up on the side of the
@@ -1923,6 +1945,32 @@ function notifyQuietly(title, body) {
   } catch (error) {
     debugLog("quiet notice failed", error?.message || error);
   }
+}
+
+/** Can a toast carry buttons? Windows only, and only when the desk:// handler is
+ *  registered -- a packaged install (main registers the protocol at ready). An
+ *  unpackaged run gets the plain toast, whose click still opens the card. */
+function toastActionsAvailable() {
+  try {
+    return process.platform === "win32" && app.isPackaged;
+  } catch {
+    return false;
+  }
+}
+
+/** One decision card as an OS toast (A1). The buttons -- the card's own primary
+ *  answer, Later, Open -- come back as desk://card/answer and land in
+ *  answerDeckCard, so a signed card still opens the Windows Hello window. The
+ *  click (Windows body click, or any non-Windows toast) opens the card. This is the
+ *  only thing a card arrival does: it never calls openInbox by itself. */
+function showCardToast(toast) {
+  if (!toast || !toast.cardId) return null;
+  return toaster.show({
+    title: toast.title,
+    body: toast.body,
+    ...(toast.toastXml ? { toastXml: toast.toastXml } : {}),
+    onClick: () => openInbox(toast.cardId),
+  });
 }
 
 /** Persist an overlay settings patch (known keys only) and apply it. */
@@ -8659,7 +8707,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         }
         // A needs-you card LEADS the spoken line, backlog or not (needs-you.cjs):
         // a credential cannot be answered by voice, so it is said, not asked.
-        // The window ladder below still runs -- speaking is not raising.
+        // Speaking is not raising: the toast below is all a card arrival does.
         // Only on the backlog line or when a needs-you card is among the NEW ones:
         // an unrelated CI notice must not re-say the credential every time
         // (the hourly reminder below carries the repeat).
@@ -8678,7 +8726,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
               : `${n} decisions need you. The latest is: ${title}.`);
         // A NEW card is a spoken question the owner can answer out loud
         // (voice-card.cjs); a backlog, a muted mic or an ask already waiting
-        // keeps the plain announcement. The Inbox opens below either way.
+        // keeps the plain announcement. The toast below carries the answers.
         if (spokeNeedsYou) {
           /* said above, needs-you first */
         } else if (!isBacklog && lead.id && !micMuted() && !voiceAsk.waiting) {
@@ -8688,44 +8736,25 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         }
         // WHICH card leads decides how loud the desk may be (owner, 2026-10-05:
         // a card "needs to actually come up in awdesk … not a separate thing").
-        // The NEWEST actionable card's urgency is the lever:
         //
-        //   high|critical -> open/focus the Inbox the moment it lands. The
-        //     throttle below is bypassed on purpose: a critical ask that waited
-        //     out a quiet period is the pile-up this whole plane exists to end.
-        //     The owner's own kill-file still wins — urgency may lift the
-        //     auto-open OPT-IN, never a switch they flipped deliberately.
-        //   low|normal -> one Inbox open per INBOX_OPEN_MIN_MS, and only when
-        //     the owner opted in (DESK_CARDS_AUTO_OPEN=1, no .popup-off).
-        // Owner, 2026-10-04: "decision cards still pop out on their own" — the
-        // bell, the tray count and the line above ARE the prompt, and the desk
-        // Inbox replaced the per-card Tk pop-out that used to spawn from here
-        // (up to three topmost windows beside the desk — the separate dialogue).
-        const newest = list.reduce(
-          (best, c) => (c && c.createdAt >= ((best && best.createdAt) ?? -1) ? c : best), null,
-        ) || lead;
-        const urgent = URGENT_URGENCIES.has(
-          String((newest && newest.urgency) || "normal").toLowerCase(),
-        );
-        const nowMs = Date.now();
-        // overlay-policy.cjs (2026-10-14): raising a window for a card is a
-        // NOTIFICATION trigger -- off by default (overlay.raiseOnNotifications) and
-        // silenced by Do not disturb; the card then lands as a tray balloon instead.
+        // A1 (attention plan, 2026-11-18): the card lands as an ACTIONABLE Windows
+        // toast -- the card's own primary answer / Later / Open -- and NOTHING opens
+        // a window by itself. The high|critical auto-open ladder that stood here is
+        // GONE (it called openInbox on arrival): an always-on-top window taking
+        // focus mid-keystroke was the owner's complaint, not the fix. The button
+        // comes back through the desk:// protocol into answerDeckCard; Open (or the
+        // bell, the tray, the chip) is the owner's own tap. Do not disturb still
+        // silences it.
         try {
-          const mayRaise = !nowModeActive() && !cardPopupsOff() && overlayMayRaise(overlayPolicy.TRIGGERS.NOTIFICATION, "inbox");
-          if (urgent) {
-            if (mayRaise) {
-              openInbox(newest && newest.id ? newest.id : null);
-              raiseLivingDesktop();               // an already-open overlay comes forward too
-              lastInboxOpenAt = nowMs;
-            } else if (!overlaySettings().doNotDisturb && !nowModeActive()
-              && !orbWindow.carriesCards()) {
-              // (a fairy on screen carries it instead: the balloon was one more popup)
-              notifyQuietly("Aither — a decision needs you", String((newest && newest.title) || title).slice(0, 200));
-            }
-          } else if (mayRaise && cardWindowsMayOpen() && nowMs - lastInboxOpenAt >= INBOX_OPEN_MIN_MS) {
-            openInbox();                          // backlog: ONE console, no 30-popup storm
-            lastInboxOpenAt = nowMs;
+          if (!nowModeActive() && !overlaySettings().doNotDisturb) {
+            // A backlog announces its best card once; the rest are the badge's.
+            cardToast.announceCards(list, {
+              max: isBacklog ? 1 : cardToast.MAX_CARD_TOASTS,
+              actionable: toastActionsAvailable(),
+              mintTicket: (card) => cardTickets.mint(card && card.id),
+              notify: showCardToast,
+              log: debugLog,
+            });
           }
         } catch { /* best-effort */ }
       } catch { /* a prompt must never crash the poll */ }

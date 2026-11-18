@@ -235,12 +235,21 @@ test("main: the startup open is the START trigger (unless the user passed --over
   assert.match(MAIN, /syncEdgeReveal\(\);/);
 });
 
-test("main: a card raises the Inbox only through the NOTIFICATION trigger, else a tray notice", () => {
-  const b = body("const mayRaise = ", 900);
-  assert.match(b, /overlayMayRaise\(overlayPolicy\.TRIGGERS\.NOTIFICATION/);
-  assert.match(b, /if \(mayRaise\) \{\s*openInbox\(/);
-  assert.match(b, /notifyQuietly\(/);
-  assert.match(b, /mayRaise && cardWindowsMayOpen\(\)/);
+test("main: a card raises a TOAST and never a window (A1)", () => {
+  // The NOTIFICATION trigger used to gate openInbox() for high|critical cards. A1
+  // (attention plan, 2026-11-18) makes a card arrival a toast: no window, no focus
+  // steal. This fails if the auto-open ladder -- or any other openInbox() in the
+  // arrival path -- comes back.
+  const at = MAIN.indexOf("const announceDecisions = (list, isBacklog) => {");
+  assert.ok(at >= 0, "main.cjs no longer announces decisions");
+  const end = MAIN.indexOf("let decisionsAnnounced", at);
+  assert.ok(end > at, "the announceDecisions body is not delimited");
+  const announce = MAIN.slice(at, end);
+  assert.match(announce, /cardToast\.announceCards\(/);
+  assert.doesNotMatch(announce, /openInbox\s*\(/);
+  assert.doesNotMatch(MAIN, /openInbox\(newest/);
+  // Do not disturb still silences the automatic surface.
+  assert.match(announce, /overlaySettings\(\)\.doNotDisturb/);
 });
 
 test("main: MCP desktop_open and POST /desktop/overlay are REQUEST triggers", () => {

@@ -393,5 +393,10 @@ test("kid mode closes the CDP doors a child could open from their own scope", ()
   const door = src.indexOf("process.env.DESK_CDP_PORT");
   assert.ok(resolved > 0 && scrub > resolved && door > scrub, "kid mode resolves before the CDP door");
   assert.match(src, /if \(kidDesk\.allowCdpPort\(kidDeskMode\(\)\) && \/\^\\d\{2,5\}\$\/\.test\(String\(process\.env\.DESK_CDP_PORT/);
-  assert.match(src, /function cardWindowsMayOpen\(\) \{\s*if \(kidDeskMode\(\)\.enabled\) return false;/);
+  // A card can no longer open a window at all (A1, 2026-11-18): an arrival is a
+  // toast, exactly what a child's desk should get. The old cardWindowsMayOpen()
+  // kid-mode guard went with the auto-open ladder; this fails if a window door
+  // comes back outside the classroom.
+  assert.match(src, /cardToast\.announceCards\(/);
+  assert.doesNotMatch(src, /openInbox\(newest/);
 });
