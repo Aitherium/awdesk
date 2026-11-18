@@ -22,8 +22,13 @@ contextBridge.exposeInMainWorld("aitherBrowser", {
   closeTab: (id) => ipcRenderer.send("desk:browser-tab-close", Number(id)),
   popOut: (id) => ipcRenderer.invoke("desk:browser-tab-popout", Number(id)),
   dock: (id) => ipcRenderer.invoke("desk:browser-tab-dock", Number(id)),
-  /** A tab's right-click menu (Pin to canvas, pop out / dock back, close), drawn by main. */
+  /** A tab's right-click menu (Pin to canvas, split, pop out / dock back, close), drawn by main. */
   tabMenu: (id) => ipcRenderer.invoke("desk:browser-tab-menu", Number(id)),
+  /**
+   * Split panes: {op:"split"|"drop", id, side} | {op:"close"|"focus", index} |
+   * {op:"resize", index, x} | {op:"unsplit"} | {op:"drag", on}. main owns the geometry.
+   */
+  split: (op) => ipcRenderer.invoke("desk:browser-split", JSON.stringify(op || {})),
   /** The all-tabs button: every tab as one row, the active one checked, drawn by main. */
   tabsMenu: () => ipcRenderer.invoke("desk:browser-tabs-menu"),
   /** "Share with agent": an owner tab's URL and title reach the agent only while shared. */

@@ -171,6 +171,23 @@
     border-radius: 10px; border: 1px solid var(--primary, #7cd); background: var(--bg-deep, var(--bg)); font-size: 12px;
     box-shadow: 0 6px 24px rgba(0, 0, 0, .4); }
   #editor .bar .away { color: var(--muted); }
+  /* Split panes. The divider is drawn in the gap browser-window leaves between two
+     pane views, so this page (which sits under the views) keeps the mouse while it is
+     dragged; the drop zones take a tab dragged from the strip. */
+  #stage { position: fixed; inset: 0; z-index: 4; pointer-events: none; }
+  #stage[hidden] { display: none; }
+  #stage .pane-divider { position: fixed; pointer-events: auto; cursor: col-resize; touch-action: none;
+    background: color-mix(in srgb, var(--line) 75%, transparent); }
+  #stage .pane-divider:hover, #stage .pane-divider.on { background: var(--primary, #7cd); }
+  #stage .pane-drop { position: fixed; pointer-events: auto; display: none; place-items: center; border-radius: 10px;
+    border: 2px dashed var(--primary, #7cd); color: var(--fg); font-weight: 600; font-size: 13px;
+    background: color-mix(in srgb, var(--primary, #7cd) 20%, transparent); }
+  body.stagedrag #stage .pane-drop { display: grid; }
+  body.stagedrag .tab { opacity: .55; }
+  #stage .pane-drop.over { background: color-mix(in srgb, var(--primary, #7cd) 42%, transparent); }
+  .tab .panebadge { flex: none; font-size: 9px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+    border: 1px solid var(--line); color: var(--muted); }
+  .tab.active .panebadge { color: var(--primary, #7cd); border-color: currentColor; }
   /* BROWSER-M3: "Let the agent use my sign-in". The switch is in the toolbar; the site
      list (see and revoke) is a rail card, because the chrome page owns the rail's
      height and the page views own everything below the toolbar. */
@@ -321,6 +338,7 @@
   <div id="grip-panel" class="grip" title="Drag to resize the panel"></div>
   <div id="grip-dock" class="grip row" title="Drag to resize the terminal dock; double-click to open or close it"></div>
   <div id="editor" hidden aria-label="Edit layout"></div>
+  <div id="stage" hidden aria-hidden="true"></div>
   <div id="top">
   <div id="tabbar">
     <div id="tabs" class="tabs" role="tablist" aria-label="Tabs"></div>
@@ -590,6 +608,9 @@
   // The strip. A purple dot marks an agent's tab; the agent never drives yours.
   function renderTabs(list) {
     const strip = $("tabs");
+    // A tab being dragged to split the page stays in the strip: rebuilding it would
+    // remove the element under the drag and starve its dragend.
+    if (stagedId != null) return;
     for (const node of Array.from(strip.querySelectorAll(".tab"))) node.remove();
     for (const t of list || []) {
       const tab = document.createElement("div");
@@ -608,6 +629,15 @@
       label.textContent = t.pinned && t.label ? t.label
         : t.loading && !t.title ? "Loading…" : (t.title || t.url || "New tab"); // never innerHTML
       tab.append(who, label);
+      // Which split pane this tab shows in (1, 2, 3): the strip says where it lives.
+      if (Number.isInteger(t.pane) && t.pane >= 0) {
+        const pane = document.createElement("span");
+        pane.className = "panebadge";
+        pane.textContent = String(t.pane + 1);
+        pane.title = `Pane ${t.pane + 1} of the split`;
+        pane.setAttribute("aria-label", pane.title);
+        tab.append(pane);
+      }
       if (t.badge > 0) {
         const badge = document.createElement("span");
         badge.className = "badge";
@@ -656,6 +686,26 @@
       }
       tab.onclick = () => api.activateTab(t.id);
       tab.onauxclick = (e) => { if (e.button === 1) api.closeTab(t.id); };
+      // Drag a tab onto the page area's left or right half to split it there.
+      tab.draggable = true;
+      tab.addEventListener("dragstart", (ev) => {
+        stagedId = t.id;
+        if (ev.dataTransfer) {
+          ev.dataTransfer.setData("text/plain", String(t.id));
+          ev.dataTransfer.effectAllowed = "move";
+        }
+        document.body.classList.add("stagedrag");
+        showZones();
+        // The page views step aside for the gesture so the drop lands on this page.
+        void api.split({ op: "drag", on: true });
+      });
+      tab.addEventListener("dragend", () => {
+        stagedId = null;
+        document.body.classList.remove("stagedrag");
+        for (const z of Array.from($("stage").querySelectorAll(".pane-drop"))) z.classList.remove("over");
+        if (!$("stage").querySelector(".pane-divider")) $("stage").hidden = true;
+        void api.split({ op: "drag", on: false });
+      });
       // Right-click (or the context-menu key on a focused tab): Pin to canvas, pop out, close.
       tab.tabIndex = 0;
       tab.oncontextmenu = (e) => { e.preventDefault(); void api.tabMenu(t.id); };
@@ -1061,6 +1111,118 @@
   $("grip-dock").onmousedown = (e) => startDrag("dock", e);
   $("grip-dock").ondblclick = () => api.rail("dock");
 
+  // ── Split panes: two or three pages side by side in one window ──────────────────
+  // main lays the pane views out (browser-window.cjs layout(), browser-panes.cjs's
+  // rects); this page draws the dividers in the gaps BETWEEN the views, so the mouse
+  // reaches this document while one is dragged, and takes a tab dragged onto the
+  // page area's left or right half as a split there. The geometry is main's: one
+  // layout, never a copy.
+  let splitDragging = false; // a divider is under the pointer: never rebuild it under itself
+  let splitKey = "";         // the last divider geometry drawn
+  let stagedId = null;       // the tab being dragged to an edge (its strip row stays)
+  let pageArea = null;       // the page area from the last state: the drop zones' bounds
+
+  function renderSplit(s) {
+    const host = $("stage");
+    const split = s && s.split;
+    const dividers = (split && split.dividers) || [];
+    host.hidden = !dividers.length && stagedId == null;
+    if (!dividers.length) {
+      if (stagedId == null && splitKey) { host.textContent = ""; splitKey = ""; }
+      return;
+    }
+    if (splitDragging || stagedId != null) return; // never pull the element in hand
+    const key = JSON.stringify(dividers);
+    if (key === splitKey) {
+      // Same geometry: a divider drag that ended where it began (main refused a
+      // sub-pixel move) can still have left the element under the pointer, so settle
+      // it back onto the gap the panes actually leave.
+      const live = Array.from(host.querySelectorAll(".pane-divider"));
+      dividers.forEach((d, i) => { if (live[i]) place(live[i], d); });
+      return;
+    }
+    splitKey = key;
+    for (const old of Array.from(host.querySelectorAll(".pane-divider"))) old.remove();
+    for (const d of dividers) {
+      const el = document.createElement("div");
+      el.className = "pane-divider";
+      place(el, d);
+      el.title = "Drag to resize the panes";
+      el.onmousedown = (e) => startSplitDrag(d.index, e);
+      host.append(el);
+    }
+  }
+
+  // A divider drag works exactly like a gutter drag: the page views step aside for
+  // the gesture so THIS page keeps every mousemove, and the pointer moves the
+  // divider element itself (main resizes the two panes beside it).
+  function startSplitDrag(index, e) {
+    e.preventDefault();
+    const el = e.currentTarget;
+    el.classList.add("on");
+    splitDragging = true;
+    void api.split({ op: "drag", on: true });
+    const half = (Number(String(el.style.width).replace("px", "")) || 6) / 2;
+    let frame = 0;
+    let x = e.clientX;
+    const send = () => { frame = 0; void api.split({ op: "resize", index, x }); };
+    const move = (ev) => {
+      x = ev.clientX;
+      el.style.left = `${Math.round(x - half)}px`;
+      if (!frame) frame = requestAnimationFrame(send);
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      if (frame) cancelAnimationFrame(frame);
+      const done = api.split({ op: "resize", index, x });
+      splitDragging = false;
+      el.classList.remove("on");
+      void Promise.resolve(done).finally(() => api.split({ op: "drag", on: false }));
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
+
+  // A tab dragged below the strip: main hides the page views for the gesture, so the
+  // drop lands on THIS page. Two zones, the page area's left and right half.
+  function showZones() {
+    const host = $("stage");
+    host.hidden = false;
+    let zones = Array.from(host.querySelectorAll(".pane-drop"));
+    if (zones.length < 2) {
+      for (const old of zones) old.remove();
+      zones = ["left", "right"].map((side) => {
+        const z = document.createElement("div");
+        z.className = "pane-drop";
+        z.dataset.side = side;
+        z.textContent = side === "left" ? "Split left" : "Split right";
+        z.addEventListener("dragover", (ev) => {
+          ev.preventDefault();
+          if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+          z.classList.add("over");
+        });
+        z.addEventListener("dragleave", () => z.classList.remove("over"));
+        z.addEventListener("drop", (ev) => {
+          ev.preventDefault();
+          z.classList.remove("over");
+          const raw = Number((ev.dataTransfer && ev.dataTransfer.getData("text/plain")) || stagedId);
+          if (Number.isFinite(raw) && raw > 0) void api.split({ op: "drop", id: raw, side });
+        });
+        host.append(z);
+        return z;
+      });
+    }
+    const r = pageArea;
+    if (!r) return;
+    const midX = Math.round(r.x + r.width / 2);
+    for (const z of zones) {
+      const left = z.dataset.side === "left" ? r.x : midX;
+      const right = z.dataset.side === "left" ? midX : r.x + r.width;
+      Object.assign(z.style, { left: `${left}px`, top: `${r.y}px`, width: `${right - left}px`, height: `${r.height}px` });
+    }
+  }
+
   function placeGrips(r) {
     const g = r.gutter || 6;
     const bottom = (r.taskbar && r.taskbar.height) || 0;
@@ -1278,6 +1440,8 @@
   function render(s) {
     if (!s) return;
     renderRail(s.rail, s.tabs);
+    pageArea = s.pageRect || null;
+    renderSplit(s);
     renderTabs(s.tabs);
     $("star").innerHTML = s.bookmarked ? "&#9733;" : "&#9734;";
     $("star").classList.toggle("on", Boolean(s.bookmarked));

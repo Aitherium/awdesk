@@ -62,6 +62,22 @@ test("session restore keeps only the owner's web tabs and survives a restart", (
   assert.ok(!fs.readFileSync(file, "utf8").includes("secret.test"));
 });
 
+test("a split pane's tab remembers which pane it was, and a tab outside a split carries none", () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "awdesk-sess-")), "split.json");
+  const store = e.createSessionStore({ file });
+  const tabsNow = [
+    { by: "you", kind: "web", url: "https://left.test/", title: "Left", pane: 0 },
+    { by: "you", kind: "web", url: "https://right.test/", title: "Right", active: true, pane: 1 },
+    { by: "you", kind: "web", url: "https://plain.test/", title: "Plain", pane: -1 },
+  ];
+  assert.equal(store.flush(tabsNow), true);
+  const again = e.createSessionStore({ file }).load();
+  assert.deepEqual(again.map((t) => t.url), ["https://left.test/", "https://right.test/", "https://plain.test/"]);
+  assert.deepEqual(again[0].pane, { group: 1, index: 0 });
+  assert.deepEqual(again[1].pane, { group: 1, index: 1 });
+  assert.equal(again[2].pane, undefined, "a tab outside the split carries no pane");
+});
+
 test("a missing or broken session file restores nothing", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "awdesk-sess-"));
   assert.deepEqual(e.createSessionStore({ file: path.join(dir, "none.json") }).load(), []);
