@@ -33,6 +33,11 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, execFileSync } = require("node:child_process");
 const cardUi = require("./card-ui.cjs");
+// The ONE signed-approval implementation. This module used to carry its own
+// hub URL (the mission-control decisions tab, no card id), so it opened the whole
+// hub -- scope spinner, then a white screen -- instead of the card. `approveUrl`
+// builds `/approve?card=<id>&choice=<key>`, the deep link main.cjs already uses.
+const signedApproval = require("./signed-approval.cjs");
 
 /**
  * The ABSOLUTE path to the awask binary, resolved once. Spawning a bare
@@ -56,20 +61,19 @@ function awaskBin() {
   return _awaskBin;
 }
 
-/** Where an owner answers a card that must carry a SIGNED receipt. */
-const SIGNED_ANSWER_URL = "https://app.aitherium.com/mission-control?tab=decisions";
 const CARD_ID_RE = /^d-[A-Za-z0-9_-]{1,80}$/;
 let lastSignedHandoff = null;
 let openSignedAnswer = (url) => {
   try { require("electron").shell.openExternal(url); } catch { /* no electron (tests) */ }
 };
 
-/** Pure: does this raw card need a signed answer? A Claude permission-grant card
- *  (AitherOS/dev/tools/claude_permission_grant.py) carries a `permission_rule: ` fact,
- *  and its grant is applied only after awstorage.attest verifies the receipt. */
+/** Pure: does this raw card need a signed answer? Delegates to the ONE definition
+ *  (signed-approval.requiresSignedAnswer): awstorage proposal/plan kinds and facts
+ *  (`proposal_id:`/`plan_id:`) need a signed receipt exactly as a Claude permission
+ *  grant (`permission_rule:`) does. Keeping a second, narrow copy here made this
+ *  predicate answer "no" for an awstorage card the answer path routes signed. */
 function needsSignedAnswer(raw) {
-  const facts = raw && Array.isArray(raw.facts) ? raw.facts : [];
-  return facts.some((f) => typeof f === "string" && f.startsWith("permission_rule: "));
+  return signedApproval.requiresSignedAnswer(raw);
 }
 
 /** The card's raw JSON from the store, or null (a bad id never becomes a path). */
@@ -581,12 +585,18 @@ function openCardWindow(id) {
 function answerCard(id, choice, note = "", spawnFn = spawn) {
   if (typeof id !== "string" || id.length === 0) return false;
   if (typeof choice !== "string" || choice.length === 0) return false;
-  // A card whose answer must be SIGNED (a Claude permission grant) is approved in
-  // Online, where Genesis signs the answer for a fresh passkey session; a local
-  // `awask answer` would be recorded unsigned and grant nothing. Deny stays local.
-  if (choice !== "deny" && needsSignedAnswer(readCardRaw(id))) {
-    lastSignedHandoff = { id, url: SIGNED_ANSWER_URL, at: Date.now() };
-    openSignedAnswer(SIGNED_ANSWER_URL);
+  // A card whose answer must be SIGNED (an awstorage proposal/plan or a Claude
+  // permission grant) is approved where Genesis signs the answer for a fresh
+  // passkey session; a local `awask answer` would be recorded unsigned and grant
+  // nothing. The route is decided from the card FILE (or the gateway's raw card),
+  // never from the renderer's payload, and it is the SAME route main.cjs uses --
+  // one implementation, so a voice/index answer and a click cannot disagree.
+  // The deep link carries the card id and the choice; declining stays local.
+  const raw = rawCard(id) || readCardRaw(id);
+  if (signedApproval.answerRoute(raw, choice) === "window") {
+    const url = signedApproval.approveUrl(id, choice);
+    lastSignedHandoff = { id, choice, url, at: Date.now() };
+    openSignedAnswer(url);
     return true;
   }
   if (lastSource === "gateway") return answerRemote(id, choice, note);
@@ -1184,7 +1194,7 @@ function startHeartbeat({ dir = storeDir(), intervalMs = HEARTBEAT_MS, setInterv
 }
 
 module.exports = {
-  SIGNED_ANSWER_URL,
+  signedApproval,
   needsSignedAnswer,
   readCardRaw,
   lastSignedHandoff: () => lastSignedHandoff,

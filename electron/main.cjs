@@ -4718,16 +4718,27 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       if (!spec || typeof spec.id !== "string" || spec.id.length === 0) {
         return { ok: false, error: "1 answer needs a card id — nothing was answered" };
       }
+      // A card whose answer must be SIGNED (a grant, an awstorage proposal/plan) is
+      // NOT answered here: decision-cards opens the approval window and the passkey
+      // ceremony records the answer. Report that as pending, never "answered" for a
+      // card that is still open -- the owner would think it was done.
+      const before = decisionCards.lastSignedHandoff();
+      const done = (did) => {
+        const handoff = decisionCards.lastSignedHandoff();
+        return handoff && handoff !== before && handoff.id === spec.id
+          ? { ok: true, pending: true, did: `opened the signed approval for ${spec.id} — finish it with Windows Hello` }
+          : { ok: true, did };
+      };
       const index = Number(spec.index);
       if (Number.isInteger(index) && index > 0) {
         return decisionCards.answerCardIndex(spec.id, index)
-          ? { ok: true, did: `answered ${spec.id} (option ${index})` }
+          ? done(`answered ${spec.id} (option ${index})`)
           : { ok: false, error: `1 card ${spec.id} has no option ${index} — nothing was answered` };
       }
       const text = String(spec.text || spec.key || "").trim();
       if (!text) return { ok: false, error: "1 answer needs an option key or number" };
       return decisionCards.answerCardText(spec.id, text)
-        ? { ok: true, did: `answered ${spec.id}: ${text}` }
+        ? done(`answered ${spec.id}: ${text}`)
         : { ok: false, error: `1 option "${text}" is not on ${spec.id} — nothing was answered` };
     }
     case "avatar.toggle": return void toggleOverlay();
@@ -6456,6 +6467,20 @@ setFleetUniverseSource((opts) => spaceClient().get(opts));
 // exists: the deck window if the Cards pane is DETACHED into it, otherwise the
 // console, and awask's popup only when neither is there to take it.
 decisionCards.setWindowRouter((_kind, id) => openInbox(id));
+// The signed approval is the SAME surface on every desk path. A click already goes
+// through answerDeckCard -> signedApproval.openApproveWindow; the launcher/palette
+// answer (card-answer -> decisionCards.answerCard*) fell back to that module's
+// shell.openExternal default, so one card opened the system browser and another an
+// in-app window. Give decision-cards the same window (the browser it lands in has no
+// persisted approve partition and no navigation guard).
+decisionCards.setSignedAnswerOpener((url) => {
+  try {
+    signedApproval.openApproveWindow({ BrowserWindow, url, log: debugLog });
+  } catch (err) {
+    debugLog(`[approve] window failed: ${err && err.message}`);
+    try { require("electron").shell.openExternal(url); } catch { /* no browser either */ }
+  }
+});
 
 /** Kid desk: one classroom window (the child's own Learn page and sprite) and a tray with
  *  "My classroom" and "My Space" only. See kid-desk.cjs. */
