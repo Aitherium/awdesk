@@ -18,6 +18,7 @@
  *    DESK_INTERNAL_CA                      an explicit file (the override)
  *    AITHEROS_ROOT/AitherOS/Library/Data/tls/ca-chain.pem   the monorepo layout
  *    AITHEROS_ROOT/Library/Data/tls/ca-chain.pem            a flattened deploy
+ *    AITHER_LIBRARY/Data/tls/ca-chain.pem                   the Library root the fleet uses
  *    AITHEROS_DATA/tls/ca-chain.pem                         the data root the python side uses
  *    ~/.aither/ca-chain.pem                                 a per-user copy
  *
@@ -39,6 +40,9 @@ function candidates(env = process.env, home = os.homedir()) {
     out.push(path.join(env.AITHEROS_ROOT, "AitherOS", CHAIN));
     out.push(path.join(env.AITHEROS_ROOT, CHAIN));
   }
+  // AITHER_LIBRARY names the Library root itself (…/Library), so the chain sits under Data/.
+  // Measured 2026-11-17: AITHEROS_DATA named a retired drive while AITHER_LIBRARY was right.
+  if (env.AITHER_LIBRARY) out.push(path.join(env.AITHER_LIBRARY, "Data", "tls", "ca-chain.pem"));
   if (env.AITHEROS_DATA) out.push(path.join(env.AITHEROS_DATA, "tls", "ca-chain.pem"));
   if (home) out.push(path.join(home, ".aither", "ca-chain.pem"));
   return out;
