@@ -80,8 +80,13 @@ function normalizeTab(raw) {
     pinned: raw.pinned === true,
     key: cleanText(raw.key, MAX_NAME) || null,
     label: cleanText(raw.label, MAX_NAME),
+    // A second tab on the same address kept because a split shows both (0 = the first).
+    twin: Number.isInteger(raw.twin) && raw.twin > 0 && raw.twin < 8 ? raw.twin : 0,
   };
 }
+
+/** The dedupe key of a saved tab: its address, plus its twin number when it has one. */
+const tabKey = (tab) => (tab.twin ? `${tab.url}#twin${tab.twin}` : tab.url);
 
 /** The saved tabs of one stage: in strip order, no duplicates, capped, never InPrivate. */
 function normalizeTabs(raw) {
@@ -90,8 +95,8 @@ function normalizeTabs(raw) {
   const seen = new Set();
   for (const item of raw) {
     const tab = normalizeTab(item);
-    if (!tab || seen.has(tab.url)) continue;
-    seen.add(tab.url);
+    if (!tab || seen.has(tabKey(tab))) continue;
+    seen.add(tabKey(tab));
     out.push(tab);
     if (out.length >= MAX_TABS) break;
   }
@@ -106,11 +111,11 @@ function normalizeTabs(raw) {
  */
 function mergeUnopened(live, saved, unopened) {
   const liveBy = new Map();
-  for (const tab of normalizeTabs(live)) if (!liveBy.has(tab.url)) liveBy.set(tab.url, tab);
+  for (const tab of normalizeTabs(live)) if (!liveBy.has(tabKey(tab))) liveBy.set(tabKey(tab), tab);
   const held = new Set((Array.isArray(unopened) ? unopened : []).map((d) => (d && d.url) || "").filter(Boolean));
   const out = [];
   for (const tab of normalizeTabs(saved)) {
-    if (liveBy.has(tab.url)) { out.push(liveBy.get(tab.url)); liveBy.delete(tab.url); }
+    if (liveBy.has(tabKey(tab))) { out.push(liveBy.get(tabKey(tab))); liveBy.delete(tabKey(tab)); }
     else if (held.has(tab.url)) out.push(tab);
   }
   for (const tab of liveBy.values()) out.push(tab); // opened after the switch
@@ -569,6 +574,7 @@ module.exports = {
   setSplits,
   normalizeSplit,
   splitToSaved,
+  tabKey,
   splitFromSaved,
   splitPanesShown,
   createSplitShelf,

@@ -385,3 +385,18 @@ test("a split survives an arrangement round-trip: in this run, and through stage
   assert.equal(doc.stages[0].split, null);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("a split of two tabs on the same address survives a save (twin key)", () => {
+  const bs = require("./browser-stages.cjs");
+  const tabs = bs.normalizeTabs([
+    { url: "https://a.example/" }, { url: "https://a.example/", twin: 1 }, { url: "https://a.example/" },
+  ]);
+  assert.strictEqual(tabs.length, 2, "twin kept, plain duplicate still folded");
+  assert.strictEqual(tabs[1].twin, 1);
+  const saved = bs.splitToSaved({ axis: "row", tabs: [11, 12], sizes: [0.5, 0.5], focus: 1 }, [11, 12]);
+  assert.deepStrictEqual(saved.panes, [0, 1]);
+  const back = bs.splitFromSaved(saved, [21, 22]);
+  assert.deepStrictEqual(back.tabs, [21, 22]);
+  const doc = JSON.parse(JSON.stringify({ tabs }));
+  assert.strictEqual(bs.normalizeTabs(doc.tabs).length, 2, "round trip through JSON keeps the twin");
+});
