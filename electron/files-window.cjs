@@ -156,10 +156,10 @@ function withinPath(parent, child) {
  */
 function resolvePath(absPath, { files = access() } = {}) {
   const raw = String(absPath == null ? "" : absPath);
-  if (!raw || !path.isAbsolute(raw)) throw new Error("expected an absolute path");
   // A share on another machine never becomes a root here: statSync on it blocks the
   // main process on the SMB timeout and can hand the share's host an NTLM challenge.
   if (dockIn.isNetworkPath(raw)) throw new Error(`${raw} is on another machine -- Files opens folders on this PC`);
+  if (!raw || !path.isAbsolute(raw)) throw new Error("expected an absolute path");
   const target = path.resolve(raw);
   let stat;
   try {
