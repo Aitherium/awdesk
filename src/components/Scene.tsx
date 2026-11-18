@@ -19,6 +19,7 @@ import { anyoneAudible } from '../hooks/voiceLevels';
 import { anyVisemes } from '../hooks/voiceVisemes';
 import { avatarPointerOut, avatarPointerOver } from '../hooks/clickThrough';
 import { forgetSlot, hasPicker, PICK_SLOP_PX, pickNear, registerAvatarGroup, setSelected } from '../hooks/avatarPick';
+import { createFrameGap } from '../perf/frameGap';
 import { AvatarPicker } from './AvatarPicker';
 import { onDragAbort } from '../hooks/dragSafety';
 import type { VRM } from '@pixiv/three-vrm';
@@ -226,7 +227,11 @@ const TAIL_FPS = 30;
  *  policy is electron/toolkit-core.cjs frameBudget (asserted there). */
 // Owner 2026-11-16 ("they are lagging quite a bit now", renderer ~1.4 cores): 30 fps cap, 5 fps when
 // nothing moves or is hovered, 2 fps after 20 s. Mirrors electron/toolkit-core.cjs FRAME.
-const IDLE_FPS = 5;
+// 2026-11-18 (S1): 5 fps was the second half of the lag — with Avatar.tsx's old 1/30 clamp the
+// idle mixer advanced 33 ms per 200 ms frame, so every body swayed and blinked at ~16 % speed.
+// The mixer now sub-steps (hooks/animationStep.ts), so 15 fps is the lowest rate that still
+// reads as real motion; deep idle stays at 2 fps (nothing is happening to look at).
+const IDLE_FPS = 15;
 const DEEP_IDLE_FPS = 2;
 const DEEP_IDLE_AFTER_MS = 20_000;
 /** Keep full rate this long after the last pointer/wheel input (orbit damping, drags). */
@@ -289,6 +294,31 @@ function FrameGovernor() {
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [gl, invalidate]);
+  return null;
+}
+
+/**
+ * The renderer's own frame rate (S1, 2026-11-18). Nothing in src/ reported frame timing
+ * before this: main.cjs had `mainLag`, and perf-gate.cjs was external and manual. This
+ * pushes one sample per RENDERED frame into a rolling sampler (perf/frameGap.ts) and ships
+ * `{fps, p95GapMs}` to main once a second; GET /health reports it as `stage.render`.
+ */
+const RENDER_STATS_EVERY_MS = 1000;
+
+function RenderStatsReporter() {
+  const sampler = useRef(createFrameGap(2000));
+  const sentAt = useRef(0);
+  useFrame(() => {
+    const now = performance.now();
+    sampler.current.push(now);
+    if (now - sentAt.current < RENDER_STATS_EVERY_MS) return;
+    sentAt.current = now;
+    const stats = sampler.current.stats();
+    try {
+      (window as unknown as { deskBridge?: { reportFrame?: (s: unknown) => void } }).deskBridge
+        ?.reportFrame?.(stats);
+    } catch { /* window closing */ }
+  });
   return null;
 }
 
@@ -951,9 +981,13 @@ export function Scene(props: SceneProps) {
         // (3.8 -> 2.65, measured 2026-09-18) and visibly staircases every outline.
         antialias: true,
         alpha: true,
-        // The click-through pixel test (hooks/clickThrough.ts paintedAt) reads ONE
-        // pixel of the last frame; with frameloop "demand" the buffer must survive.
-        preserveDrawingBuffer: true,
+        // NOT preserved (S1, 2026-11-18). It was kept for clickThrough.paintedAt, which reads
+        // ONE pixel of the last frame — but that probe only runs when NO picker is mounted
+        // (`if (hasPicker())` in clickThrough.ts), and this Canvas always mounts AvatarPicker.
+        // Preserving the buffer costs a full-frame copy every frame and forbids partial
+        // rendering, for a probe that can never run here. A window with no picker still needs
+        // it; that is a different Canvas, not this one.
+        preserveDrawingBuffer: false,
         powerPreference: 'high-performance',
         toneMapping: THREE.NoToneMapping,
         outputColorSpace: THREE.SRGBColorSpace,
@@ -975,6 +1009,7 @@ export function Scene(props: SceneProps) {
       />
       <Environment files={dawnEnvironment} />
       <FrameGovernor />
+      <RenderStatsReporter />
       <AvatarPicker />
       <FullBodyCamera objects={allObjects} focusUuid={focusUuid} />
       {/* Slot 0: default avatar, drives voice/animation/audio — unchanged. Now individually

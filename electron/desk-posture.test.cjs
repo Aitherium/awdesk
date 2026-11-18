@@ -28,15 +28,15 @@ test("AWDESK_POSTURE overrides the guess both ways", () => {
   assert.equal(deskPosture({ env: { AWDESK_POSTURE: "junk" }, tenant: GARG }).customer, true);
 });
 
-test("a customer desk: normal priority, Chromium throttling on, Lend memory off", () => {
+test("a customer desk: normal priority, Chromium throttling on, Lend memory off, GPU present", () => {
   const p = deskPosture({ env: {}, tenant: GARG });
   assert.equal(p.priority, "normal");
-  assert.equal(p.present, "auto", "software present measured lighter on a customer desk (487 MB / 7 % vs 797 MB / 16 %)");
+  assert.equal(p.present, "gpu", "nothing polls a customer's adapter: software compositing is a GPU→CPU copy per frame");
   assert.equal(p.throttle, true);
   assert.equal(p.lendByDefault, false);
   const o = deskPosture({ env: {}, tenant: null });
   assert.equal(o.priority, "above");
-  assert.equal(o.present, "auto");
+  assert.equal(o.present, "software", "the owner's fleet box: measured stall-free under the fleet poller");
   assert.equal(o.throttle, false);
   assert.equal(o.lendByDefault, true);
 });
@@ -48,13 +48,18 @@ test("process priority: a customer desk is left at normal unless DESK_PRIORITY=a
   assert.equal(wantedPriority({}), os.constants.priority.PRIORITY_ABOVE_NORMAL, "the owner's box is unchanged");
 });
 
-test("present policy: a customer Windows desk keeps software present (measured lighter); DESK_PRESENT still wins", () => {
+test("present policy: the posture's own ask reaches the GPU branch; DESK_PRESENT still wins", () => {
   const customer = deskPosture({ env: {}, tenant: GARG });
-  assert.equal(presentPolicy({ env: {}, platform: "win32", posture: customer }).present, "software");
+  // S1 (2026-11-18): this assertion is the bug being fixed — desk-posture returned "auto"
+  // while present-policy read `posture.present === "gpu"`, so the GPU branch was dead.
+  assert.equal(presentPolicy({ env: {}, platform: "win32", posture: customer }).present, "gpu");
+  assert.equal(presentPolicy({ env: { DESK_PRESENT: "software" }, platform: "win32", posture: customer }).present, "software",
+    "an explicit software override still wins");
   assert.equal(presentPolicy({ env: { DESK_PRESENT: "gpu" }, platform: "win32", posture: customer }).present, "gpu");
-  assert.equal(presentPolicy({ env: {}, platform: "win32", posture: { present: "gpu" } }).present, "gpu",
-    "a posture that asks for the GPU path gets it");
-  assert.equal(presentPolicy({ env: {}, platform: "win32" }).present, "software", "the owner's box is unchanged");
+  const owner = deskPosture({ env: {}, tenant: null });
+  assert.equal(presentPolicy({ env: {}, platform: "win32", posture: owner }).present, "software", "the owner's box is unchanged");
+  assert.equal(presentPolicy({ env: { DESK_PRESENT: "gpu" }, platform: "win32", posture: owner }).present, "gpu");
+  assert.equal(presentPolicy({ env: {}, platform: "win32" }).present, "gpu", "no posture: auto presents on the GPU");
 });
 
 test("main.cjs: a customer desk skips the DX12 info process, keeps an empty avatar stage hidden, and a 2nd launch opens the workspace", () => {

@@ -23,6 +23,13 @@ contextBridge.exposeInMainWorld("deskBridge", {
   // Which body is hovered / selected (src/hooks/avatarPick.ts): main keeps it for GET /swarm and the tests.
   reportPick: (state) => ipcRenderer.send("desk:avatar-pick", { hover: state && state.hover ? String(state.hover) : null, selected: state && state.selected ? String(state.selected) : null }),
   setInteractive: (interactive) => ipcRenderer.send("desk:set-interactive", interactive === true),
+  // The renderer's own frame rate (src/perf/frameGap.ts, Scene.tsx RenderStatsReporter):
+  // {fps, p95GapMs} once a second. main keeps the last sample for GET /health `stage.render`
+  // — the number "the avatar is lagging" could not be measured by before 2026-11-18.
+  reportFrame: (stats) => ipcRenderer.send("desk:frame-stats", {
+    fps: Math.max(0, Number(stats && stats.fps) || 0),
+    p95GapMs: Math.max(0, Number(stats && stats.p95GapMs) || 0),
+  }),
   subscribe: (listener) => {
     const handler = (_event, payload) => listener(payload);
     ipcRenderer.on("desk:event", handler);

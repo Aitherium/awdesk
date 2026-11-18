@@ -224,7 +224,10 @@ function parseVoiceCommand(text) {
  */
 // 2026-11-16 (owner: "they are lagging quite a bit now", renderer ~1.4 cores): capped at 30 fps while
 // anything is audible or being handled, 5 fps once nothing has moved for 1.5 s, 2 fps after 20 s.
-const FRAME = Object.freeze({ active: 30, tail: 30, idle: 5, deep: 2, tailMs: 1500, deepAfterMs: 20_000 });
+// 2026-11-18 (S1): idle 5 -> 15. At 5 fps with the old 1/30 s mixer clamp the idle animation ran
+// at ~16 % speed; the mixer now sub-steps (src/hooks/animationStep.ts), so 15 fps is real motion.
+// Mirrors src/components/Scene.tsx IDLE_FPS (asserted by both test files).
+const FRAME = Object.freeze({ active: 30, tail: 30, idle: 15, deep: 2, tailMs: 1500, deepAfterMs: 20_000 });
 
 function frameBudget({ hidden = false, audible = false, orbiting = false, sinceInputMs = Infinity } = {}) {
   if (hidden) return 0;

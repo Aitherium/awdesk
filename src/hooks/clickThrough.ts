@@ -14,7 +14,50 @@
  * has reported once, so a renderer that never loads cannot leave a ghost window.
  */
 
-import { hasPicker, PICK_SLOP_PX, pickNear, setHover } from './avatarPick';
+import { bodiesMoved, hasPicker, nearBody, PICK_SLOP_PX, pickNear, setHover } from './avatarPick';
+
+/** A body's projected screen box, in CSS pixels relative to the canvas. */
+export interface ScreenBox { x: number; y: number; w: number; h: number }
+
+/**
+ * Pure, unit-tested (clickThrough.test.ts): is the point within `slack` px of ANY body's
+ * projected screen box? The re-pick gate (see `shouldRePick`) — cheap, and the reason the
+ * window stops spending a full skinned render + synchronous readback on empty pixels.
+ */
+export function nearAnyBox(x: number, y: number, boxes: ReadonlyArray<ScreenBox>, slack = 0): boolean {
+  for (const b of boxes) {
+    if (x >= b.x - slack && x <= b.x + b.w + slack && y >= b.y - slack && y <= b.y + b.h + slack) return true;
+  }
+  return false;
+}
+
+/** Pure, unit-tested: did any body's box move by more than `epsilon` px since the last
+ *  sample? A body moving under a still cursor is the P0 case (a right-click on a swaying
+ *  shoulder reached the desktop); a box set whose length changed counts as a move. */
+export function anyBoxMoved(prev: ReadonlyArray<ScreenBox>, next: ReadonlyArray<ScreenBox>, epsilon = 1): boolean {
+  if (prev.length !== next.length) return true;
+  for (let i = 0; i < prev.length; i += 1) {
+    const a = prev[i];
+    const b = next[i];
+    if (
+      Math.abs(a.x - b.x) > epsilon
+      || Math.abs(a.y - b.y) > epsilon
+      || Math.abs(a.w - b.w) > epsilon
+      || Math.abs(a.h - b.h) > epsilon
+    ) return true;
+  }
+  return false;
+}
+
+/**
+ * Pure, unit-tested: should a RESTING cursor be re-decided? Only when it is near a body's
+ * projected box (the idle sway can carry an edge under it) or a body moved since the last
+ * check. A cursor outside every box with nothing moving has nothing to re-decide — that is
+ * the 8.3 Hz full-scene render the lag audit measured, paid forever for empty pixels.
+ */
+export function shouldRePick(near: boolean, moved: boolean): boolean {
+  return near || moved;
+}
 
 let overAvatar = 0;
 let lastSent: boolean | null = null;
@@ -46,6 +89,12 @@ export function paintedAt(clientX: number, clientY: number): boolean | null {
   if (!canvas) return null;
   const gl = (canvas.getContext('webgl2') || canvas.getContext('webgl')) as WebGLRenderingContext | null;
   if (!gl) return null;
+  // The probe reads the LAST frame. With `preserveDrawingBuffer: false` (Scene.tsx since S1)
+  // the compositor has already taken those pixels, so a read returns an empty buffer — which
+  // would read as "empty space" and pass a click through a body. Say "unknown" instead; the
+  // caller then falls back to the proxy box, exactly as when there is no GL at all.
+  const attrs = gl.getContextAttributes?.();
+  if (attrs && attrs.preserveDrawingBuffer === false) return null;
   const rect = canvas.getBoundingClientRect();
   if (!rect.width || !rect.height) return null;
   const sx = canvas.width / rect.width;
@@ -113,21 +162,30 @@ export function avatarPointerOut() { overAvatar = Math.max(0, overAvatar - 1); }
  *   - a held button always keeps the window (a drag or a press in flight).
  */
 export interface ClickThroughDeps {
-  /** The body under (or within the slack of) a point, or null. */
+  /** The body under (or within the slack of) a point, or null. EXPENSIVE: a full skinned
+   *  render into an id target plus a synchronous readback (components/AvatarPicker.tsx). */
   bodyAt(x: number, y: number): string | null;
   /** Is the element under the point only a backdrop (canvas, body, wrappers)? */
   backdropAt(x: number, y: number): boolean;
   report(interactive: boolean): void;
   hover?(slot: string | null): void;
+  /** Cheap pre-check: is the point within slack of a body's projected screen box? Absent
+   *  means "unknown" and the pick always runs (the pre-2026-11-18 behaviour). */
+  nearBox?(x: number, y: number): boolean;
+  /** Cheap: did any body's projected box move since the last check? */
+  bodyMoved?(): boolean;
 }
 
 export function createClickThroughController(deps: ClickThroughDeps) {
   let last: { x: number; y: number } | null = null;
   let held = false;
-  const decide = () => {
+  /** `force` runs the expensive pick even though the point is outside every cached box —
+   *  for the one case that needs it: a body that MOVED out from under a resting cursor. */
+  const decide = (force = false) => {
     if (!last) return;
     if (held) { deps.report(true); return; }
-    const slot = deps.bodyAt(last.x, last.y);
+    const near = force || (deps.nearBox ? deps.nearBox(last.x, last.y) : true);
+    const slot = near ? deps.bodyAt(last.x, last.y) : null;
     deps.hover?.(slot);
     deps.report(decideInteractive({ buttons: 0, overAvatar: slot !== null, backdrop: deps.backdropAt(last.x, last.y) }));
   };
@@ -143,9 +201,14 @@ export function createClickThroughController(deps: ClickThroughDeps) {
       held = down;
       if (down) deps.report(true);
     },
-    /** The clock: the body may have moved under a cursor that did not. */
+    /** The clock: the body may have moved under a cursor that did not. Only re-decide when
+     *  the cursor is near a body's projected box, or a body moved; never over empty pixels. */
     tick() {
-      if (!held) decide();
+      if (held || !last) return;
+      const near = deps.nearBox ? deps.nearBox(last.x, last.y) : true;
+      const moved = deps.bodyMoved ? deps.bodyMoved() : false;
+      if (!shouldRePick(near, moved)) return;
+      decide(moved && !near);
     },
     /** The pointer left the window (or the OS says so while the window flips): hover only. */
     leave() {
@@ -168,6 +231,12 @@ export function installClickThrough(): () => void {
     },
     backdropAt: (x, y) => isBackdrop(document.elementFromPoint(x, y)),
     report,
+    // The re-pick gate (2026-11-18 lag audit): a pick is a full skinned render into an id
+    // target plus a SYNCHRONOUS readback — it ran ~8x/s forever and on every pointer move.
+    // It now runs only when the cursor is within slack of a body's projected screen box or
+    // a body moved. The projected boxes are cached by the picker (see AvatarPicker.near).
+    nearBox: (x, y) => nearBody(x, y, PICK_SLOP_PX + 2),
+    bodyMoved: () => bodiesMoved(),
     hover: (slot) => {
       if (!hasPicker()) return;
       setHover(slot);

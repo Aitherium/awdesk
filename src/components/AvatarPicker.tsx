@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { decodeId, nearestIdInPatch, registeredGroup, registeredSlots, setPicker, type PickGroup } from '../hooks/avatarPick';
+import { anyBoxMoved, nearAnyBox, type ScreenBox } from '../hooks/clickThrough';
 
 /**
  * The ID-buffer pick (hooks/avatarPick.ts says why). Mounted inside the Canvas, it hands the
@@ -34,6 +35,45 @@ function meshesOf(group: PickGroup): MeshLike[] {
     if (mesh.isMesh && !mesh.userData?.pickProxy) out.push(mesh);
   });
   return out;
+}
+
+const worldBox = new THREE.Box3();
+const corner = new THREE.Vector3();
+
+/**
+ * A group's world bounds projected to CSS pixels. `Box3.setFromObject` reads each mesh's
+ * STATIC geometry bounds through its world matrix — it does not follow bone deformation,
+ * which is exactly right for the click-through gate: the idle sway stays inside the box
+ * plus the pick slack. A corner behind the camera makes the projection meaningless, so the
+ * whole window is returned — permissive, so the gate may spend a pick but never loses a
+ * clickable body.
+ */
+function projectedBoxOf(group: THREE.Object3D, camera: THREE.PerspectiveCamera, rect: DOMRect): ScreenBox | null {
+  worldBox.setFromObject(group);
+  if (worldBox.isEmpty()) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < 8; i += 1) {
+    corner
+      .set(
+        i & 1 ? worldBox.max.x : worldBox.min.x,
+        i & 2 ? worldBox.max.y : worldBox.min.y,
+        i & 4 ? worldBox.max.z : worldBox.min.z,
+      )
+      .applyMatrix4(camera.matrixWorldInverse);
+    if (corner.z >= -camera.near) return { x: 0, y: 0, w: rect.width, h: rect.height };
+    corner.applyMatrix4(camera.projectionMatrix);
+    const sx = (corner.x * 0.5 + 0.5) * rect.width;
+    const sy = (-corner.y * 0.5 + 0.5) * rect.height;
+    if (sx < minX) minX = sx;
+    if (sx > maxX) maxX = sx;
+    if (sy < minY) minY = sy;
+    if (sy > maxY) maxY = sy;
+  }
+  if (!Number.isFinite(minX) || maxX < minX || maxY < minY) return null;
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
 export function AvatarPicker() {
@@ -73,6 +113,37 @@ export function AvatarPicker() {
         patchTarget = makeTarget(size, size);
       }
       return patchTarget;
+    };
+
+    // -- the cheap gate for the window's click-through (hooks/clickThrough.ts) --------------
+    // Re-picking is a full skinned render + a synchronous readback. It must not run while the
+    // cursor is over empty pixels, so the window asks two cheap questions instead: "is the
+    // point near a body's projected box" and "did a body move". The boxes are cached for a
+    // tick (the resting re-check runs every 120 ms), recomputed from world bounds, not bones.
+    const BOX_TTL_MS = 120;
+    const BOX_MOVE_EPSILON_PX = 1;
+    const MOVED_RECENT_MS = 300;
+    let boxes: ScreenBox[] = [];
+    let boxesAt = 0;
+    let movedAt = 0;
+    const refreshBoxes = () => {
+      const now = performance.now();
+      if (boxesAt && now - boxesAt < BOX_TTL_MS) return;
+      boxesAt = now;
+      const camera = getState().camera as THREE.PerspectiveCamera;
+      const canvas = gl.domElement;
+      const rect = canvas.getBoundingClientRect();
+      const next: ScreenBox[] = [];
+      if (camera && rect.width > 0 && rect.height > 0) {
+        for (const slotId of registeredSlots()) {
+          const group = registeredGroup(slotId);
+          if (!group) continue;
+          const box = projectedBoxOf(group as unknown as THREE.Object3D, camera, rect);
+          if (box) next.push(box);
+        }
+      }
+      if (anyBoxMoved(boxes, next, BOX_MOVE_EPSILON_PX)) movedAt = now;
+      boxes = next;
     };
 
     /** Render with `wear` (mesh -> material) applied, everything else hidden; always restores. */
@@ -122,6 +193,24 @@ export function AvatarPicker() {
     };
 
     const api = {
+      /** Cheap: near any body's projected screen box (see refreshBoxes). Never throws. */
+      near(clientX: number, clientY: number, slack = 0): boolean {
+        try {
+          refreshBoxes();
+          return nearAnyBox(clientX, clientY, boxes, slack);
+        } catch {
+          return true; // an unknown scene must cost a pick, never a clickable body
+        }
+      },
+      /** Cheap: did any body's box move in the last 300 ms? */
+      moved(): boolean {
+        try {
+          refreshBoxes();
+          return performance.now() - movedAt < MOVED_RECENT_MS;
+        } catch {
+          return true;
+        }
+      },
       pickAt(clientX: number, clientY: number): string | null {
         const slots = registeredSlots();
         if (!slots.length) return null;

@@ -74,7 +74,7 @@ test("frame budget: idle work falls off and hidden draws nothing", () => {
   assert.equal(core.frameBudget({ hidden: true, audible: true }), 0);
   assert.equal(core.frameBudget({ audible: true }), 30);
   assert.equal(core.frameBudget({ sinceInputMs: 100 }), 30);
-  assert.equal(core.frameBudget({ sinceInputMs: 5000 }), 5);
+  assert.equal(core.frameBudget({ sinceInputMs: 5000 }), 15);
   assert.equal(core.frameBudget({ sinceInputMs: 30000 }), 2);
   assert.equal(core.frameBudget({}), 2);
 });
