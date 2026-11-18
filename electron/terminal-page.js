@@ -269,7 +269,8 @@
     cwd.spellcheck = false;
     head("Start");
     menu.append(cwd);
-    const [h, l, x] = await Promise.all([api.harnesses(), api.list(), api.external()]);
+    const [h, l, x, n] = await Promise.all([api.harnesses(), api.list(), api.external(),
+      api.nodes ? api.nodes() : null]);
     if (!h || !h.ok) {
       head(h && h.error ? h.error : "The awsh daemon did not answer.");
     } else {
@@ -278,6 +279,25 @@
           status("Starting " + harness.label + "…");
           const r = await api.create({ harness: harness.id, cwd: cwd.value.trim(), rows: 30, cols: 100 });
           if (!r || !r.ok) return status((r && r.error) || "could not start");
+          status("");
+          addTab(r.session);
+          if (DOCK) void refresh();
+        });
+      }
+    }
+    // A shell on another machine: the daemon lists your ssh_config aliases and the
+    // tailnet peers online now; ssh does the rest inside the tab (keys, host-key prompts).
+    const nodes = n && n.ok ? n.nodes : [];
+    if (nodes.length) {
+      head("Nodes");
+      for (const node of nodes.slice(0, 16)) {
+        const where = (node.user ? node.user + "@" : "") + (node.host || node.target)
+          + (node.port ? ":" + node.port : "");
+        const state = node.online === true ? "online" : node.online === false ? "offline" : "";
+        item(node.name, [state, node.os, where].filter(Boolean).join(" · "), async () => {
+          status("Connecting to " + node.name + "…");
+          const r = await api.create({ harness: "node", target: node.target, title: node.name, rows: 30, cols: 100 });
+          if (!r || !r.ok) return status((r && r.error) || "could not connect");
           status("");
           addTab(r.session);
           if (DOCK) void refresh();

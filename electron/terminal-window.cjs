@@ -62,6 +62,8 @@ function terminalHandlers(c = client(), { isTerminal = fromTerminalPage, dock = 
   };
   return {
     "desk:terminal-harnesses": guard(() => c.harnesses()),
+    /** Machines a node shell can open (ssh_config aliases + online tailnet peers). */
+    "desk:terminal-nodes": guard(() => c.nodes()),
     "desk:terminal-list": guard(() => c.list()),
     /** Claude Code tabs the daemon DISCOVERED (not its own): resumable here, never typed into. */
     "desk:terminal-external": guard(() => c.external()),
