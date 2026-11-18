@@ -22,6 +22,7 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 
@@ -86,4 +87,25 @@ test("sync-agent-voices --check: in sync with the canonical AitherOS map when th
     return;
   }
   assert.equal(sync.main(["--check"]), 0, "desk copy is STALE -- run node electron/sync-agent-voices.cjs");
+});
+
+test("sync-agent-voices --check: the SAME map from another checkout path is NOT drift (provenance is not content)", () => {
+  // The header records the absolute path the copy came from. A machine whose
+  // checkout lives elsewhere (AITHEROS_ROOT, --source, a release runner) used
+  // to see exit 1 "DRIFT" for a copy that is byte-identical in every agent.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-voices-"));
+  try {
+    const committed = readDoc();
+    const elsewhere = path.join(dir, "agent_voices.json");
+    fs.writeFileSync(elsewhere, JSON.stringify({
+      version: committed.version,
+      default_agent: committed.default_agent,
+      agents: committed.agents,
+    }), "utf8");
+    assert.notEqual(elsewhere.replace(/\\/g, "/"), committed._generated_from, "the fixture must be a different path");
+    assert.equal(sync.main(["--check", "--source", elsewhere]), 0,
+      "identical agents from another checkout path must report IN SYNC, not DRIFT");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

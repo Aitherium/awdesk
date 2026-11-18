@@ -80,6 +80,17 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
+/** What `--check` compares: the projected map WITHOUT its provenance header.
+ *  `_generated_from` is the absolute path of the checkout the copy was made
+ *  from, so the same map regenerated from a second checkout (AITHEROS_ROOT,
+ *  `--source`, a CI runner) is identical content at a different path. Comparing
+ *  the header too made the gate report DRIFT on a perfectly in-sync copy. */
+function contentKey(mirror) {
+  const content = { ...mirror };
+  delete content._generated_from;
+  return JSON.stringify(content);
+}
+
 function main(argv = process.argv.slice(2)) {
   const check = argv.includes("--check");
   const sourceFlag = argv.indexOf("--source");
@@ -110,7 +121,7 @@ function main(argv = process.argv.slice(2)) {
       console.error(`sync-agent-voices: the desk copy is missing or unreadable: ${error.message}`);
       return 1;
     }
-    const same = JSON.stringify(project(current, current._generated_from)) === JSON.stringify(next);
+    const same = contentKey(project(current, current._generated_from)) === contentKey(next);
     if (!same) {
       console.error("sync-agent-voices: DRIFT -- the desk copy disagrees with the canonical map. Run: node electron/sync-agent-voices.cjs");
       return 1;
