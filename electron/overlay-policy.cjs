@@ -13,8 +13,6 @@
  *                 ALWAYS allowed -- an explicit action is never second-guessed.
  *   start         Desk starting up             -> overlay.autoOpenOnStart (default off)
  *   edge          the cursor resting at an edge -> overlay.edgeReveal      (default off)
- *   notification  a decision card / notice      -> overlay.raiseOnNotifications (default
- *                 off: the notice goes to a tray balloon instead)
  *   request       another program asked: an agent's MCP desktop_open, a loopback POST
  *                 /desktop/overlay, a bridge-run command. Allowed (it is usually the
  *                 user asking through an agent or the browser extension) except under
@@ -23,6 +21,11 @@
  * overlay.doNotDisturb suppresses EVERY trigger but `user`. An unknown trigger is
  * refused: a new automatic door must be named here before it can raise anything.
  *
+ * THERE IS NO `notification` DOOR (A1, attention plan): a decision card arrives as an
+ * OS toast and never opens a window, so `overlay.raiseOnNotifications` had no window
+ * left to raise and its switch was removed everywhere (settings, tray/palette row,
+ * cast.json). The old key in an existing cast.json is ignored, not an error.
+ *
  * Pure (no electron): every decision is asserted under `node --test`.
  */
 
@@ -30,7 +33,6 @@ const TRIGGERS = Object.freeze({
   USER: "user",
   START: "start",
   EDGE: "edge",
-  NOTIFICATION: "notification",
   REQUEST: "request",
 });
 
@@ -44,7 +46,6 @@ const DEFAULTS = Object.freeze({
   edgeReveal: false,
   edge: "right",
   edgeDwellMs: 600,
-  raiseOnNotifications: false,
   doNotDisturb: false,
   // Not a door: where the Inbox and Fleet doors LEAD (space-home.cjs). Off = as before.
   spaceHome: false,
@@ -54,7 +55,6 @@ const DEFAULTS = Object.freeze({
 const TRIGGER_FLAG = Object.freeze({
   [TRIGGERS.START]: "autoOpenOnStart",
   [TRIGGERS.EDGE]: "edgeReveal",
-  [TRIGGERS.NOTIFICATION]: "raiseOnNotifications",
 });
 
 /** The resolved settings, every field present and valid; anything else -> its default. */
@@ -68,7 +68,6 @@ function normalize(raw) {
     edgeReveal: bool("edgeReveal"),
     edge: EDGES.includes(r.edge) ? r.edge : DEFAULTS.edge,
     edgeDwellMs: dwell,
-    raiseOnNotifications: bool("raiseOnNotifications"),
     doNotDisturb: bool("doNotDisturb"),
     spaceHome: bool("spaceHome"),
   };
@@ -82,7 +81,7 @@ function normalize(raw) {
 function cleanPatch(patch) {
   const p = patch && typeof patch === "object" && !Array.isArray(patch) ? patch : {};
   const out = {};
-  for (const key of ["autoOpenOnStart", "edgeReveal", "raiseOnNotifications", "doNotDisturb", "spaceHome"]) {
+  for (const key of ["autoOpenOnStart", "edgeReveal", "doNotDisturb", "spaceHome"]) {
     if (typeof p[key] === "boolean") out[key] = p[key];
   }
   if (EDGES.includes(p.edge)) out.edge = p.edge;
