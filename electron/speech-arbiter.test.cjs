@@ -31,13 +31,15 @@ function rig(over = {}) {
   const c = clock();
   const log = [];
   const dropped = [];
+  const cut = [];
   const a = arb.createSpeechArbiter({
     now: c.now, setTimer: c.setTimer, clearTimer: c.clearTimer,
     run: async (job) => { log.push({ text: job.text, at: c.now() }); return { ok: true, durationMs: job.dur ?? 1000 }; },
     onDrop: (job, why) => dropped.push({ text: job.text, why }),
+    onCut: (victim, by) => cut.push({ text: victim.text, by: by.text }),
     ...over,
   });
-  return { c, a, log, dropped };
+  return { c, a, log, dropped, cut };
 }
 
 test("priorityOf: owner conversation > decision cards > Aither > everything else", () => {
@@ -167,4 +169,107 @@ test("main.cjs routes every spoken line through the arbiter and keeps sessions s
   assert.match(main, /async function speakAloudNow\(/);
   assert.match(main, /isSessionSpeaker\(/);
   assert.match(main, /case "voice\.session"/);
+  // A5: a cut must reach BOTH halves -- the runner (drops audio still synthesizing) and
+  // the renderer (stops a body already playing on its own slot).
+  assert.match(main, /isCut: \(\) => job\.cut === true/);
+  assert.match(main, /onCut: \(victim\)/);
+  assert.match(main, /type: "speak-stop"/);
 });
+
+
+// ── A5: P0 preemption ───────────────────────────────────────────────────────
+
+test("a P0 cuts the line that is playing, once, instead of waiting out its hold", async () => {
+  const { c, a, log, cut } = rig();
+  void a.enqueue({ rank: 3, text: "session chatter", dur: 60_000 });
+  await tick();
+  assert.deepEqual(log.map((l) => l.text), ["session chatter"]);
+  c.advance(1000);
+  void a.enqueue({ rank: 1, text: "P0: a secret only you can give", dur: 2000, preempt: true });
+  await tick();
+  assert.deepEqual(log.map((l) => l.text), ["session chatter", "P0: a secret only you can give"],
+    "the alarm starts now, not after the 60 s line");
+  assert.deepEqual(cut, [{ text: "session chatter", by: "P0: a secret only you can give" }]);
+  // The cut line never reclaims the lane when its timer would have expired.
+  c.advance(120_000);
+  await tick();
+  assert.deepEqual(log.map((l) => l.text), ["session chatter", "P0: a secret only you can give"]);
+});
+
+test("a P0 never cuts the owner's own words (rank 0); it plays right after them", async () => {
+  const { c, a, log, cut } = rig();
+  void a.enqueue({ rank: 0, text: "owner talking", dur: 5000 });
+  await tick();
+  void a.enqueue({ rank: 1, text: "P0", dur: 1000, preempt: true });
+  await tick();
+  assert.deepEqual(log.map((l) => l.text), ["owner talking"], "the owner's sentence is not interrupted");
+  assert.deepEqual(cut, []);
+  c.advance(6000);
+  await tick();
+  assert.deepEqual(log.map((l) => l.text), ["owner talking", "P0"]);
+});
+
+test("a lower-priority line queued within 2 s is dropped when a P0 cuts in (caption kept)", async () => {
+  const { c, a, log, dropped } = rig();
+  void a.enqueue({ rank: 2, text: "Aither longer line", dur: 60_000 });
+  await tick();
+  c.advance(500);
+  void a.enqueue({ rank: 3, text: "room chatter", dur: 1000 }); // queued 1 s before the P0
+  c.advance(1000);
+  void a.enqueue({ rank: 1, text: "P0 alarm", dur: 1000, preempt: true });
+  await tick();
+  assert.deepEqual(dropped.map((d) => d.text), ["room chatter"]);
+  assert.equal(dropped[0].why, "preempted by a P0");
+  assert.deepEqual(log.map((l) => l.text), ["Aither longer line", "P0 alarm"], "the stale queued line never plays");
+});
+
+test("a queued line older than the 2 s grace survives the P0 and plays after it", async () => {
+  const { c, a, log, dropped } = rig();
+  void a.enqueue({ rank: 2, text: "Aither longer line", dur: 60_000 });
+  await tick();
+  void a.enqueue({ rank: 3, text: "room chatter", dur: 1000 });
+  c.advance(3000); // older than the grace window
+  void a.enqueue({ rank: 1, text: "P0 alarm", dur: 1000, preempt: true });
+  await tick();
+  assert.deepEqual(dropped.map((d) => d.text), [], "past 2 s it is not 'the news that just arrived'");
+  assert.deepEqual(log.map((l) => l.text), ["Aither longer line", "P0 alarm"]);
+  c.advance(1300);
+  await tick();
+  assert.deepEqual(log.map((l) => l.text), ["Aither longer line", "P0 alarm", "room chatter"]);
+});
+
+test("a waiting P0 is never dropped as stale, however long the owner talks", async () => {
+  const { c, a, log } = rig();
+  void a.enqueue({ rank: 0, text: "owner talking", dur: 60_000 });
+  await tick();
+  void a.enqueue({ rank: 1, text: "P0 alarm", dur: 1000, preempt: true });
+  c.advance(61_000); // well past STALE_MS, and past the owner clip
+  await tick();
+  assert.deepEqual(log.map((l) => l.text), ["owner talking", "P0 alarm"]);
+});
+
+test("a cut marks the victim JOB, so a runner still synthesizing can drop its clip", async () => {
+  const c = clock();
+  const jobs = [];
+  let release;
+  const parked = new Promise((r) => { release = r; });
+  const a = arb.createSpeechArbiter({
+    now: c.now, setTimer: c.setTimer, clearTimer: c.clearTimer,
+    run: async (job) => {
+      jobs.push(job);
+      if (job.text === "victim") await parked; // synthesis still in flight
+      return { ok: true, durationMs: 1000 };
+    },
+  });
+  const victimDone = a.enqueue({ rank: 3, text: "victim" });
+  await tick();
+  assert.notEqual(jobs[0].cut, true, "not cut while it is the only line");
+  void a.enqueue({ rank: 1, text: "P0", preempt: true });
+  await tick();
+  assert.equal(jobs[0].cut, true, "main.cjs's run reads job.cut and returns without audio");
+  release();
+  await tick();
+  await tick();
+  assert.equal((await victimDone).ok, true, "the cut promise still settles");
+});
+
