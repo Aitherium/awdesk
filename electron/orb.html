@@ -423,6 +423,11 @@
   #n-acts button:hover { border-color: rgba(244,250,255,0.7); }
   #n-acts button.rec { border-color: rgba(244,250,255,0.55); }
   #n-acts button.primary { background: #f4faff; color: #06101f; border-color: transparent; font-weight: 600; }
+  #n-voice { display: flex; gap: 8px; margin-top: 8px; }
+  #n-voice button { flex: 1; border: 1px solid var(--border, #2a3446); background: transparent;
+    color: var(--fg, #e6edf3); border-radius: 10px; padding: 7px 10px; font-size: 13px; cursor: pointer; }
+  #n-voice button:hover { background: rgba(255,255,255,0.06); }
+  #nudge.done #n-voice, #nudge.talking #n-voice { display: none; }
   #n-foot { display: flex; gap: 9px; margin-top: 7px; white-space: nowrap; overflow: hidden; }
   #n-foot button { border: 0; background: transparent; color: var(--fg-muted, #8b96ab); padding: 0; cursor: pointer;
     font: 10.5px var(--font-sans, system-ui); }
@@ -1346,9 +1351,10 @@
       + '<button id="n-x" title="Later: I will bring it back in an hour">&#10005;</button></div>'
       + '<div id="n-title"></div><div id="n-old"></div><div id="n-need" title="Open the card"></div><div id="n-why"></div>'
       + '<div id="n-ui"></div><div id="n-acts"></div>'
+      + '<div id="n-voice"><button data-act="read" title="Aither reads the card out loud">Read it to me</button>'
+      + '<button data-act="talk" title="Say an option, or what to do instead">Answer by voice</button></div>'
       + '<div id="n-extra"><div id="n-sum"></div><ul id="n-facts"></ul><div id="n-alt"></div>'
-      + '<div id="n-foot"><button data-act="read">Read it to me</button>'
-      + '<button data-act="talk" title="Talk it through out loud: say an option, or what to do instead">Talk</button>'
+      + '<div id="n-foot">'
       + '<button data-act="chat" title="Chat with the fairy about this card (also Alt+Space)">Chat</button>'
       + '<button data-act="keep" title="It matters: nudge harder until it is done">Keep nudging me</button>'
       + '<button data-act="mute" title="Leave it on the badge">Stop nudging this</button></div></div>'
@@ -1556,7 +1562,7 @@
     moreEl.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("more"); });
     needEl.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("open"); });
     document.getElementById("n-x").addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("later"); });
-    for (const b of document.querySelectorAll("#n-foot button")) {
+    for (const b of document.querySelectorAll("#n-foot button, #n-voice button")) {
       b.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct(b.dataset.act); });
     }
     api.onNudgeView(render);
@@ -1568,6 +1574,7 @@
       // a "keep" line (Listening...) keeps the options while the owner talks.
       box.classList.toggle("done", !f.error && !f.keep);
       box.classList.toggle("talking", Boolean(f.keep));
+      requestAnimationFrame(() => api.nudgeAct("size", String(Math.ceil(box.getBoundingClientRect().height + 20))));
     });
     api.init().then((s) => { if (s && s.nudge) render(s.nudge); });
   }

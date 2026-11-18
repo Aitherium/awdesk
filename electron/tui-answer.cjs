@@ -173,7 +173,7 @@ function flashFor(error, name) {
  * Focus the named session's tab. Never types: resolves typed:false always.
  * Resolves {ok, typed, tab?, error?}; never rejects.
  */
-function typeIntoSession(sessionName, keys, { spawn = require("node:child_process").spawn, timeoutMs = 15000, platform = process.platform } = {}) {
+function typeIntoSession(sessionName, keys, { spawn = require("node:child_process").spawn, timeoutMs = 45000, platform = process.platform } = {}) {
   const names = sessionNames(sessionName);
   const name = names.join("\t");
   const k = String(keys || "");
