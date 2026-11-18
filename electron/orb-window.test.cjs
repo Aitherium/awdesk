@@ -2396,7 +2396,23 @@ test("the desk's own window is never followed", async () => {
   assert.equal(orbWindow.attach(), null);
 });
 
-test("dock mode sits on the taskbar once its rect is published", async () => {
+// The taskbar IS a Windows shell object (Shell_TrayWnd / Shell_SecondaryTrayWnd,
+// read by spirit-probe's PowerShell oracle): off Windows there is no bar to publish
+// and refreshTaskbar() must say so rather than invent one. The pure placement rule
+// (fairy-control.taskbarForDisplay) is exercised on every platform in
+// fairy-control.test.cjs; these two assert the WIRING through the real probe.
+const windowsOnly = { skip: process.platform !== "win32" ? "no Windows taskbar on this runner" : false };
+
+test("dock mode publishes no taskbar where the platform has none", { skip: process.platform === "win32" ? "Windows has a taskbar" : false }, async () => {
+  start();
+  orbWindow.showOrb();
+  orbWindow.setView({ mode: "dock" });
+  orbWindow.__setProbe({ taskbars: async () => ({ primary: { className: "Shell_TrayWnd", hwnd: 11, x: 0, y: 2120, width: 3840, height: 40 }, secondaries: [] }) });
+  assert.equal(await orbWindow.__refreshTaskbar(), null, "a non-Windows desk must not dock on an invented bar");
+  assert.equal(orbWindow.__taskbar(), null);
+});
+
+test("dock mode sits on the taskbar once its rect is published", windowsOnly, async () => {
   // Resting at the bottom of the first display (work area ends at y=2120): the saved
   // spot is read by startOrb, which places the orb there.
   writeState({ visible: false, x: 100, y: 2000 });
@@ -2416,7 +2432,7 @@ test("dock mode sits on the taskbar once its rect is published", async () => {
   assert.ok(strip.y >= 2120 && strip.y + strip.height <= 2160, `on the taskbar: ${JSON.stringify(strip)}`);
 });
 
-test("dock mode on the second monitor uses ITS taskbar, never the first monitor's", async () => {
+test("dock mode on the second monitor uses ITS taskbar, never the first monitor's", windowsOnly, async () => {
   // Display 2: bounds y 2160..3240, work area to 3200, its own bar at 3200..3240.
   writeState({ visible: false, x: 2500, y: 2900 });
   start();
