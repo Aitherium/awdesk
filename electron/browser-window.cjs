@@ -4041,8 +4041,12 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   });
   // Session restore: what was open is written as the window closes (before the views go).
   win.on("close", () => {
-    // Both stores take what the window holds: the strip (session restore) and the ACTIVE
-    // stage's tabs (stages.json), so a switch back after a restart finds this one as it was.
+    // Both stores take what the window holds: every stage with a live tab (a popup can
+    // have landed in a suspended one) and the ACTIVE stage's strip (session restore), so
+    // a switch back after a restart finds each stage as it was.
+    for (const stage of getStages().stages) {
+      if (tabs.tabs.some((t) => tabStage(t.id) === stage.id)) captureStage(stage.id);
+    }
     captureStage();
     flushStages();
     if (getPrefs().restoreSession !== false) getSessionStore().flush(tabList());
