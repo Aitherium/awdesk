@@ -40,6 +40,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const orbCore = require("./orb-core.cjs");
+const neuronsModel = require("./neurons-model.cjs");
 const orbVision = require("./orb-vision.cjs");
 const spiritCore = require("./spirit-core.cjs");
 const spiritOps = require("./spirit-ops.cjs");
@@ -127,6 +128,14 @@ let fgProbeImpl = null;
 let lastSwarmViewKey = "";
 let lastCompanionsWho = "";
 let lastBounds = null;
+/** Visual neurons (neurons-model.cjs): the agent step graph, off unless switched on.
+ *  Steps are batched at NEURONS_FLUSH_MS (<= 10 Hz) -- never one IPC per step. */
+const NEURONS_FLUSH_MS = 100;
+const neurons = neuronsModel.createNeurons();
+let neuronTimer = null;
+let lastNeuronPayload = "";
+/** agent -> its last drawn state, so only a TRANSITION opens a "thinking" node. */
+let lastNeuronStates = new Map();
 let state = orbCore.sanitizeState(null);
 let queue = orbCore.createQueue();
 let tickTimer = null;
@@ -3121,6 +3130,23 @@ function sendFairy({ force = false } = {}) {
   }
   allCompanions = currentCompanions();
   const { visible: companions, pinned } = viewCompanions(allCompanions);
+  // Visual neurons: a companion that STARTS working opens a thought node; a state
+  // that did not change adds nothing. Spoken lines come from setSpeaker, which
+  // every line the desk says goes through.
+  if (neuronsOn()) {
+    const seen = new Set();
+    for (const c of companions) {
+      const key = String(c.agent || "");
+      if (!key) continue;
+      seen.add(key);
+      const was = lastNeuronStates.get(key);
+      if (c.state === "working" && was !== "working") {
+        noteNeuron({ agent: key, kind: "thinking", text: c.title || c.label || "working" });
+      }
+      lastNeuronStates.set(key, c.state);
+    }
+    for (const key of [...lastNeuronStates.keys()]) if (!seen.has(key)) lastNeuronStates.delete(key);
+  }
   const ckey = JSON.stringify({ companions, pinned: pinned.map((c) => [c.agent, c.state, c.count, c.selected]), view: state.swarmView });
   if (force || ckey !== lastCompanionsKey) {
     lastCompanionsKey = ckey;
@@ -3152,8 +3178,62 @@ function setSpeaker(agent, text = "") {
   if (fairySpeakerTimer) clearTimeout(fairySpeakerTimer);
   fairySpeakerTimer = setTimeout(() => { fairySpeakerTimer = null; fairySpeaker = null; sendFairy(); }, ms + 50);
   if (fairySpeakerTimer.unref) fairySpeakerTimer.unref();
+  // Visual neurons: a spoken line is a step the owner can see.
+  noteNeuron({ agent: key, kind: "line", text });
   sendFairy();
   return { ok: true, agent: key, ms };
+}
+
+// ── visual neurons (neurons-model.cjs): see an agent think ───────────────────
+//
+// Owner, 2026-11-18: "visual neurons -- let the owner SEE agents think". A step
+// (thinking, a tool call, a result, a spoken line) becomes a node around that
+// agent's fairy; edges are the sequence and the fan-out of parallel tool calls.
+// OFF unless Settings -> Visual neurons switches it on. The model owns the rules
+// (nodes, edges, decay, caps, layout); this owns WHEN a step is noted and the ONE
+// batched send (<= 10 Hz, never one IPC per step and never per frame).
+
+function neuronsOn() {
+  return state.neurons === true;
+}
+
+/** Note one step. Cheap and silent when the overlay is off (the default). */
+function noteNeuron(event) {
+  if (!neuronsOn()) return false;
+  if (!neurons.ingest(event)) return false;
+  scheduleNeuronFlush();
+  return true;
+}
+
+function scheduleNeuronFlush() {
+  if (neuronTimer) return;
+  neuronTimer = setTimeout(() => { neuronTimer = null; flushNeurons(); }, NEURONS_FLUSH_MS);
+  if (neuronTimer.unref) neuronTimer.unref();
+}
+
+/** What the pages draw: one graph per agent, plus the decay clock they fade on. */
+function neuronPayload(nowMs = Date.now()) {
+  return { on: neuronsOn(), ...neurons.snapshot(nowMs) };
+}
+
+function flushNeurons({ force = false } = {}) {
+  const payload = neuronPayload();
+  const key = JSON.stringify(payload);
+  if (!force && key === lastNeuronPayload) return payload;
+  lastNeuronPayload = key;
+  for (const win of [orbWindow, bubbleWindow, swarmWindow]) {
+    try { if (alive(win)) win.webContents.send("orb:neurons", payload); } catch { /* page mid-load: init() carries it */ }
+  }
+  return payload;
+}
+
+/** The switch (Settings, the palette row, POST /commands/run). Off is the default. */
+function setNeurons(next) {
+  const want = next === true;
+  if (state.neurons !== want) { state.neurons = want; saveState(); }
+  if (!want) { neurons.reset(); lastNeuronStates.clear(); }
+  flushNeurons({ force: true });
+  return { ok: true, neurons: want };
 }
 
 /**
@@ -4532,6 +4612,9 @@ function handlers() {
         nudgeLevel: nudging && !nudging.peek ? nudging.decision.level : 0,
         fairy: currentFairy(),
         companions: viewCompanions(currentCompanions()).visible,
+        // Visual neurons: the setting and the live graph, so a page that loads
+        // after the last flush still draws what is on screen.
+        neurons: neuronPayload(),
         swarmView: swarmViewPayload(),
         mate: view === "pin" ? pinMateFor(sender) : null,
         menu: view === "menu" ? publicMenu() : null,
@@ -4728,6 +4811,7 @@ function stopOrb() {
   if (spriteTimer) { clearInterval(spriteTimer); spriteTimer = null; }
   if (spriteKick) { clearTimeout(spriteKick); spriteKick = null; }
   if (clusterTimer) { clearInterval(clusterTimer); clusterTimer = null; }
+  if (neuronTimer) { clearTimeout(neuronTimer); neuronTimer = null; }
   stopAttention();
   for (const pending of pendingRuns.values()) {
     clearTimeout(pending.timer);
@@ -4769,6 +4853,8 @@ function run(verb, { arg = null, slotId = null } = {}) {
   const body = String(slotId || "") || null;
   if (body) pendingSlot = body;
   if (what === "toggle") return toggleOrb();
+  // Visual neurons (command-registry neurons.toggle): a plain on/off switch.
+  if (what === "neurons") return setNeurons(arg === "on" ? true : arg === "off" ? false : !neuronsOn());
   // The registry's companions.show / companions.hide (palette, jump list, bridge).
   if (what === "show-all" || what === "hide-all") return companionAction(what);
   // The fairy's menu from the keyboard (palette) or the bridge: the orb's menu, or a
@@ -4868,6 +4954,8 @@ module.exports = {
   quietUntil: () => (Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0),
   menuState: () => publicMenu(), __setMenuIdleMs: (ms) => { menuIdleMsOverride = Number(ms) || 0; }, fairy: () => currentFairy(), companions: () => currentCompanions(),
   setPresence, noteAgentPosted, chatWithAgent, setClusterSessions, clusterState, surfaceForCards,
+  // visual neurons (neurons-model.cjs): the switch, a step, and the drawn graph
+  setNeurons, noteNeuron, neuronsOn, neuronPayload,
   autoSurfaced: () => autoSurfaced,
   swarmViewOp, swarmViewPayload, selectAgent, swarmWheel, swarmDrag, pinAgent, viewCompanions, setView,
   pinWindows: () => pinWindows, __setForeground: (rect) => { fgContent = fairyControl.contentRect(rect); sendSwarmView(); },
@@ -4920,6 +5008,10 @@ module.exports = {
     fgContent = null;
     lastSwarmViewKey = "";
     lastCompanionsWho = "";
+    neurons.reset();
+    lastNeuronStates.clear();
+    lastNeuronPayload = "";
+    if (neuronTimer) { clearTimeout(neuronTimer); neuronTimer = null; }
     lastBounds = null;
     if (fgProbeImpl) { try { fgProbeImpl.stop(); } catch { /* gone */ } fgProbeImpl = null; }
     for (const agent of [...pinWindows.keys()]) destroyPin(agent);

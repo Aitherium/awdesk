@@ -2320,6 +2320,9 @@ function getDiscussEngine() {
         .catch(() => null);
     },
     log: (...args) => debugLog("discuss", ...args),
+    // Visual neurons (neurons-model.cjs): a turn opening is a "thinking" step
+    // around that agent's fairy. A no-op unless the owner switched the overlay on.
+    onEvent: (event) => orbWindow.noteNeuron(event),
   });
   return discussEngineInstance;
 }
@@ -2365,8 +2368,22 @@ async function swarmApi(req = {}) {
       return host.setAgentForm("gargbot", req.on === false ? "fairy" : "avatar");
     case "perceive":
       return host.perceive(req.agent, req.view);
-    case "act":
-      return host.act(req.agent, req.tool, req.args);
+    case "act": {
+      // Visual neurons (neurons-model.cjs): the tool call and its result are steps the
+      // owner can see. A no-op unless the overlay is switched on; never changes the run.
+      try { orbWindow.noteNeuron({ agent: req.agent, kind: "tool", tool: req.tool, text: req.tool }); } catch { /* cosmetic */ }
+      return Promise.resolve(host.act(req.agent, req.tool, req.args)).then((result) => {
+        try {
+          orbWindow.noteNeuron({
+            agent: req.agent,
+            kind: "result",
+            tool: req.tool,
+            text: result && result.ok === false ? String(result.error || "failed").slice(0, 120) : "done",
+          });
+        } catch { /* cosmetic */ }
+        return result;
+      });
+    }
     case "walk":
       return host.walkTo(req.agent, req.rect);
     case "look":
@@ -4214,6 +4231,8 @@ function commandContext() {
     overlaySolid: !desktop.transparent,
     // When the desk may raise the overlay by itself (the four Settings switches).
     overlayPolicy: overlaySettings(),
+    // Visual neurons (neurons-model.cjs): does the registry row read checked?
+    neurons: (() => { try { return orbWindow.neuronsOn(); } catch { return false; } })(),
     avatarDocked: Boolean(avatarDock && avatarDock.isDocked()),
     kvLend: Boolean(kvLendRuntime && kvLendRuntime.lend.settings().enabled),
     copilotKey: intentBarMemory.copilotKey(),
@@ -7489,7 +7508,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           const label = command ? commandRegistry.labelOf(command, ctx) : k.id;
           return { ...k, label, dead: deadAccels.has(k.accel) };
         });
-        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings() };
+        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings(), neurons: orbWindow.neuronsOn() };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }
@@ -7500,6 +7519,17 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       try {
         const result = setOverlaySettings(patch);
         return result.ok ? { ok: true, overlay: overlaySettings() } : { ok: false, error: result.error };
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+    });
+    // Visual neurons (neurons-model.cjs): a per-viewer switch in orb.json, off by
+    // default. orb-window owns the state, the graph and the batched send.
+    ipcMain.handle("desk:settings-set-neurons", (_event, on) => {
+      try {
+        const result = orbWindow.setNeurons(on === true);
+        refreshTrayMenu();
+        return { ok: true, neurons: result.neurons };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }

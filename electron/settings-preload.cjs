@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld("settingsBridge", {
   get: () => ipcRenderer.invoke("desk:settings-get"),
   setInput: (patch) => ipcRenderer.invoke("desk:settings-set-input", patch),
   setOverlay: (patch) => ipcRenderer.invoke("desk:settings-set-overlay", patch),
+  // Visual neurons (neurons-model.cjs): a per-viewer switch in orb.json, off by default.
+  setNeurons: (on) => ipcRenderer.invoke("desk:settings-set-neurons", on === true),
   probeAccel: (accel, excludeId) => ipcRenderer.invoke("desk:settings-probe-accel", accel, excludeId),
   setHotkey: (id, accel) => ipcRenderer.invoke("desk:settings-set-hotkey", id, accel),
   clearHotkey: (id) => ipcRenderer.invoke("desk:settings-set-hotkey", id, ""),

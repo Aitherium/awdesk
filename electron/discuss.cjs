@@ -373,20 +373,30 @@ function latch() {
 }
 
 /**
- * createDiscussEngine({ stream, speak, postLine?, now?, log?, maxQueue? })
+ * createDiscussEngine({ stream, speak, postLine?, onEvent?, now?, log?, maxQueue? })
  *
  *   discuss({topic, agents?, rounds?})  -> Promise<summary>  (resolves at the end)
  *   start({topic, agents?, rounds?})    -> {ok, started}      (returns at once)
  *   abort(reason?)                      -> {ok, dropped}
  *   pause(reason?), resume()            -> {ok, paused}
  *   state()                             -> {running, paused, queued, speaking, transcript}
+ *
+ * `onEvent({agent, kind, text})` is optional and fire-and-forget: a turn opening is
+ * a "thinking" step (visual neurons, neurons-model.cjs). Spoken lines are reported
+ * by the desk's own speak path, so this never doubles them.
  */
-function createDiscussEngine({ stream, speak, postLine = null, now = Date.now, log = () => {}, maxQueue = MAX_QUEUE } = {}) {
+function createDiscussEngine({ stream, speak, postLine = null, onEvent = null, now = Date.now, log = () => {}, maxQueue = MAX_QUEUE } = {}) {
   if (typeof stream !== "function") throw new Error("discuss needs stream({agent, messages, signal})");
   if (typeof speak !== "function") throw new Error("discuss needs speak(agent, text)");
   const depth = Math.max(1, Math.floor(Number(maxQueue) || MAX_QUEUE));
 
   let current = null;
+
+  /** One step for the visual-neurons overlay; a listener bug never stops the run. */
+  function note(event) {
+    if (typeof onEvent !== "function") return;
+    try { onEvent(event); } catch { /* cosmetic */ }
+  }
 
   function state() {
     if (!current) {
@@ -498,6 +508,8 @@ function createDiscussEngine({ stream, speak, postLine = null, now = Date.now, l
       const agent = run.agents[turn % run.agents.length];
       const round = Math.floor(turn / run.agents.length);
       run.turn = turn;
+      // Visual neurons: this agent is thinking now (before its first token exists).
+      note({ agent, kind: "thinking", text: run.topic });
       const messages = buildMessages({ agent, topic: run.topic, transcript: run.transcript, round, rounds: run.rounds, agents: run.agents });
       run.streams += 1;
       let buffer = "";
