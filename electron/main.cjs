@@ -1273,6 +1273,16 @@ function createWindow() {
     avatarInteractiveState = { interactive: interactive === true, at: Date.now() };
     win.setIgnoreMouseEvents(interactive !== true, { forward: true });
   });
+  // The renderer's own frame rate (S1, 2026-11-18). Sender-scoped like the two above: the
+  // avatar window is the only one that renders the stage. Published on GET /health as
+  // `stage.render {fps, p95GapMs}` — the acceptance number the desk never had.
+  ipcMain.removeAllListeners("desk:frame-stats");
+  ipcMain.on("desk:frame-stats", (event, stats) => {
+    if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
+    const fps = Math.max(0, Number(stats && stats.fps) || 0);
+    const p95GapMs = Math.max(0, Number(stats && stats.p95GapMs) || 0);
+    renderStats = { fps, p95GapMs, at: Date.now() };
+  });
 
   // Sender-scoped window controls: any window (deck, chat) can minimize or
   // close ITSELF — the chat window shipped frameless with no way out,
@@ -2110,6 +2120,9 @@ function setCompanionMode(mode) {
 let avatarPickState = { hover: null, selected: null, at: 0 };
 /** The last click-through verdict the avatar window sent (true = it takes clicks right now). */
 let avatarInteractiveState = { interactive: null, at: 0 };
+/** The renderer's last frame-gap sample (src/perf/frameGap.ts via Scene.tsx), for GET /health
+ *  `stage.render`. 0 until the avatar window has rendered for a second. */
+let renderStats = { fps: 0, p95GapMs: 0, at: 0 };
 let swarmHostInstance = null;
 let goblinInstance = null;
 
@@ -8358,7 +8371,13 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         if (pane === "inbox" || pane === "cards") return { ok: openInbox(id) !== false, pane: "inbox", card: id };
         return { ok: openConsole(pane) !== false, pane };
       },
-      stageStatusProvider: () => ({ ...(roomStageHost.status() || { room: false }), mainLag, present: { mode: presentState.present, gpu: presentState.gpu } }),
+      stageStatusProvider: () => ({
+        ...(roomStageHost.status() || { room: false }),
+        mainLag,
+        present: { mode: presentState.present, gpu: presentState.gpu },
+        // The RENDERER's frame rate (S1): what the stage actually drew, not what main saw.
+        render: { fps: renderStats.fps, p95GapMs: renderStats.p95GapMs, at: renderStats.at || null },
+      }),
       // POST /roster/capture (bearer): full-body frames for the rater. GET: progress.
       rosterCaptureHandler: (req) => (req.method === "GET" ? captureRosterStatus() : captureRoster(req)),
       avatarBoundsProvider: () =>

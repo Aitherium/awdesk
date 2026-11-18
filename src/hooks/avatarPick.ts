@@ -26,6 +26,11 @@ export interface PickerApi {
   pickNear?(clientX: number, clientY: number, radius: number): string | null;
   /** A body's silhouette as a coverage mask (alpha > 0 = the body), at `scale` of the canvas size. */
   silhouette(slotId: string, scale?: number): { width: number; height: number; alpha: Uint8Array } | null;
+  /** CHEAP: is the point within `slack` px of any body's projected screen box? Lets the
+   *  click-through gate skip the expensive pick over empty pixels (clickThrough.ts). */
+  near?(clientX: number, clientY: number, slack: number): boolean;
+  /** CHEAP: did any body's projected screen box move since the last call? */
+  moved?(): boolean;
 }
 
 /** Id colours: slot number n (1..255) is the red byte n; 0 is "nothing". */
@@ -113,6 +118,22 @@ export function pickNear(clientX: number, clientY: number, radius = PICK_SLOP_PX
   if (!picker) return null;
   if (picker.pickNear && radius > 0) return picker.pickNear(clientX, clientY, radius);
   return picker.pickAt(clientX, clientY);
+}
+
+/**
+ * Cheap proximity test used by the click-through gate (clickThrough.ts): is the point within
+ * `slack` px of a body's projected screen box? No picker (or a picker without box knowledge)
+ * answers TRUE, so an unknown picker costs a pick rather than losing a clickable body.
+ */
+export function nearBody(clientX: number, clientY: number, slack = 0): boolean {
+  if (!picker?.near) return true;
+  return picker.near(clientX, clientY, slack);
+}
+
+/** Cheap: did any body's projected screen box move since the last check? Unknown = true. */
+export function bodiesMoved(): boolean {
+  if (!picker?.moved) return true;
+  return picker.moved();
 }
 
 export function hasPicker(): boolean {
