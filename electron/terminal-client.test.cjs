@@ -140,3 +140,38 @@ test("dock model: resume offers external tabs not already ours, newest first", (
   assert.deepEqual(model.resumeChoices(ext, [{ id: "mine" }]).map((s) => s.id), ["y", "x"]);
   assert.equal(model.resumeChoices(ext, [], 1).length, 1);
 });
+
+test("nodes: rows the menu can open, an unopenable target dropped, an old daemon is no section", async () => {
+  const { impl } = fakeFetch({ "GET /nodes": { body: { nodes: [
+    { name: "dgx", target: "dgx", host: "100.64.0.38", user: "wzns", online: true, os: "linux", source: "ssh_config+tailnet" },
+    { name: "evil", target: "-oProxyCommand=calc.exe", online: true },
+    { name: "nas", target: "root@nas.lan:2222", online: null },
+  ] } } });
+  const c = createTerminalClient({ fetchImpl: impl, base: "http://d", token: "t" });
+  const r = await c.nodes();
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.nodes.map((n) => [n.name, n.target, n.online]), [["dgx", "dgx", true], ["nas", "root@nas.lan:2222", null]]);
+  const old = createTerminalClient({ fetchImpl: fakeFetch({}).impl, base: "http://d", token: "t" });
+  assert.deepEqual(await old.nodes(), { ok: true, nodes: [] });
+});
+
+test("create node: the target rides to the daemon, a bad one never leaves the desk", async () => {
+  const { impl, calls } = fakeFetch({
+    "POST /sessions": { body: { id: "n1", harness: "node", title: "dgx", state: "ready" } },
+    "POST /sessions/n1/resize": { body: { ok: true } },
+  });
+  const c = createTerminalClient({ fetchImpl: impl, base: "http://d", token: "t" });
+  const r = await c.create({ harness: "node", target: "wzns@100.64.0.38", title: "dgx" });
+  assert.equal(r.ok, true);
+  assert.equal(r.session.label, "dgx");
+  assert.deepEqual(calls[0].body, { harness: "node", cwd: "", title: "dgx", target: "wzns@100.64.0.38" });
+  for (const bad of ["", "-oProxyCommand=calc.exe", "host;rm -rf /", "a b", 42]) {
+    const before = calls.length;
+    const refused = await c.create({ harness: "node", target: bad });
+    assert.equal(refused.ok, false);
+    assert.equal(calls.length, before, `no daemon call for ${JSON.stringify(bad)}`);
+  }
+  // Every other harness keeps its old body: no target field appears.
+  await c.create({ harness: "terminal" });
+  assert.equal("target" in calls[calls.length - 2].body, false);
+});
