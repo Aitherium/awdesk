@@ -501,6 +501,10 @@ function sanitizeState(raw) {
     // live session around the orb. On unless turned off; `swarm` above is the older
     // opt-in, kept so an old orb.json still reads.
     cluster: src.cluster !== false,
+    // Tool flights (fairy-flight.cjs, 2026-11-18): the sub-fairies that fly to the
+    // window an agent's tool call belongs to. Off when the owner asks for reduced
+    // motion; the veil page also honours the OS's prefers-reduced-motion.
+    reducedMotion: src.reducedMotion === true,
     // How the swarm is drawn and what is pinned out of it (fairy-control.cjs): mode, radius,
     // kind filter, hidden / muted agents, pinned positions.
     swarmView: require("./fairy-control.cjs").normalizeView(src.swarmView),

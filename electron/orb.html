@@ -595,9 +595,69 @@
     document.body.innerHTML = '<canvas id="veil"></canvas>';
     const canvas = document.getElementById("veil");
     const ctx = canvas.getContext("2d");
-    let state = { width: 0, height: 0, tint: "#ffc861", trail: [], tether: null };
+    let state = { width: 0, height: 0, tint: "#ffc861", trail: [], tether: null, flights: [] };
     let lastKey = "";
     let frame = 0;
+    let flightFrame = 0;
+    const reduceQuery = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+    const reducedMotion = () => Boolean(reduceQuery && reduceQuery.matches);
+    // The sub-fairies an agent's tool calls sent out (fairy-flight.cjs). Main sends the
+    // legs and their timestamps ONCE per change; this page eases them at its own display
+    // rate, so a fleet of sub-fairies costs no IPC per frame.
+    function flightPoint(f, now) {
+      const t = Math.min(1, Math.max(0, (now - f.startedAt) / Math.max(1, f.durationMs)));
+      const eased = t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2;
+      const x = f.from.x + (f.to.x - f.from.x) * eased;
+      const y = f.from.y + (f.to.y - f.from.y) * eased;
+      const lift = Math.sin(Math.PI * t) * Math.min(70, Math.abs(f.to.x - f.from.x) / 6);
+      return { x, y: y - lift, t };
+    }
+    function drawFlights(now) {
+      const list = state.flights || [];
+      if (!list.length) return;
+      const still = reducedMotion();
+      for (const f of list) {
+        const end = f.startedAt + f.durationMs;
+        const home = f.state === "return";
+        // A working fairy STANDS at its window for as long as the call runs; only the
+        // trip home fades out (the call ending is what removes the outbound one).
+        const fade = home && now > end ? Math.max(0, 1 - (now - end) / 450) : 1;
+        if (fade <= 0) continue;
+        // Reduced motion: the work is shown as a still glow on the target, never a flight.
+        if (still && home) continue;
+        const p = still || now > end ? { x: f.to.x, y: f.to.y, t: 1 } : flightPoint(f, now);
+        const back = still ? p : flightPoint(f, Math.max(f.startedAt, now - 90));
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.beginPath();
+        ctx.strokeStyle = rgba(f.color || state.tint, 0.4);
+        ctx.lineWidth = 1.4;
+        ctx.lineCap = "round";
+        ctx.moveTo(back.x, back.y);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.fillStyle = rgba(f.color || state.tint, 0.22);
+        ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.fillStyle = rgba(f.core || "#ffffff", 0.9);
+        ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+    function flightTick() {
+      flightFrame = 0;
+      draw();
+      const now = Date.now();
+      const live = (state.flights || []).some((f) => now < f.startedAt + f.durationMs + 520);
+      if (live && !reducedMotion()) flightFrame = window.requestAnimationFrame(flightTick);
+    }
+    function startFlights() {
+      if (flightFrame) return;
+      flightFrame = window.requestAnimationFrame(flightTick);
+    }
     function sizeTo(s) {
       const dpr = window.devicePixelRatio || 1;
       state.width = Number(s.width) || window.innerWidth;
@@ -654,11 +714,13 @@
         ctx.stroke();
         ctx.restore();
       }
+      drawFlights(Date.now());
     }
     api.onVeil((s) => {
       if (!s) {
         state.trail = [];
         state.tether = null;
+        state.flights = [];
         lastKey = "";
         draw();
         return;
@@ -667,12 +729,15 @@
       state.tint = s.tint || state.tint;
       state.trail = Array.isArray(s.trail) ? s.trail : [];
       state.tether = Array.isArray(s.tether) ? s.tether : null;
+      state.flights = Array.isArray(s.flights) ? s.flights : [];
       const key = `${state.width}x${state.height}|${state.tint}|${state.trail.length}`
         + `|${state.trail.length ? `${state.trail[0].x},${state.trail[0].y},${state.trail[state.trail.length - 1].x},${state.trail[state.trail.length - 1].y}` : ""}`
-        + `|${state.tether ? state.tether.map((p) => `${p.x},${p.y}`).join(";") : ""}`;
+        + `|${state.tether ? state.tether.map((p) => `${p.x},${p.y}`).join(";") : ""}`
+        + `|${state.flights.map((f) => `${f.id},${f.state},${f.startedAt},${f.from.x},${f.from.y},${f.to.x},${f.to.y}`).join(";")}`;
       if (key === lastKey) return; // nothing moved: do not repaint, do not allocate
       lastKey = key;
       scheduleDraw(); // one paint per display frame, however many payloads arrive
+      if (state.flights.length) startFlights();
     });
     api.init().then((s) => { if (s && s.tint) { state.tint = s.tint.css || state.tint; applyTint(state.tint); } });
   }

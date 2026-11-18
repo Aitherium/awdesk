@@ -2323,7 +2323,8 @@ test("the swarm page shows the cluster count and draws the bead as +N", () => {
   assert.match(main, /claim: \(\) => \(orbWindow\.carriesCards\(\) \? \{ attention: "fairy" \} : null\)/,
     "the heartbeat claim no longer needs the fairy companion mode or an on-screen fairy");
   assert.doesNotMatch(main, /return "the avatar carries the cards"/);
-  assert.match(main, /setInterval\(\(\) => \{ void refreshClusterSessions\(\); \}, 15_000\)/);
+  assert.match(main, /setInterval\(\(\) => \{ void refreshClusterSessions\(\); \}, 6_000\)/,
+    "the session feed is fast enough to catch a running tool call (the daemon refreshes at 2 s)");
 });
 
 test("the card's 'Open in AitherBrowser' opens its aitherium.com page through the desk's browser, not the system one", async () => {
@@ -2355,4 +2356,58 @@ test("a flash re-measures the whisper so an error line is never cut off", () => 
   const html = require("node:fs").readFileSync(require("node:path").join(__dirname, "orb.html"), "utf8");
   const flash = html.slice(html.indexOf("api.onNudgeFlash"), html.indexOf("api.init().then((s) => { if (s && s.nudge)"));
   assert.match(flash, /nudgeAct\("size"/);
+});
+
+// ── tool flights: the fairy GOES DO the work (fairy-flight.cjs, 2026-11-18) ────
+
+test("a session's running tool flies its fairy to that window and home when it ends", () => {
+  startAttention();
+  const files = new FakeWindow({ title: "Aither Files", x: 100, y: 100, width: 800, height: 600 });
+  files.loadFile(path.join(__dirname, "files.html"));
+  files.showInactive();
+  const rows = [[{ session_id: "abcdef12-3456", status: "working", harness: "claude", last_activity_summary: "running Read" }]];
+  orbWindow.setClusterSessions(rows);
+
+  const surf = orbWindow.surfaceRects();
+  assert.deepEqual(surf.files, { x: 100, y: 100, width: 800, height: 600 }, "the Files window is found by title / page");
+  const plan = orbWindow.flightPlan();
+  assert.equal(plan.flights.length, 1, "one call, one sub-fairy");
+  assert.equal(plan.flights[0].surface, "files");
+  assert.equal(plan.flights[0].tool, "Read");
+  assert.equal(plan.flights[0].mode, "fly");
+  assert.deepEqual(plan.flights[0].to, { x: 500, y: 280 }, "it lands in the File Explorer window");
+
+  const veil = FakeWindow.all.find((w) => !w.destroyed && w.opts.title === "Aither spirit trail");
+  assert.ok(veil && veil.isVisible(), "the trail overlay is up for the flight");
+  const payload = lastSent(veil, "orb:veil");
+  assert.equal(payload.flights.length, 1, "the renderer is handed the leg once, not per frame");
+  assert.equal(payload.flights[0].tool, "Read");
+  assert.equal(payload.flights[0].state, "out");
+
+  // The tool call ends: the sub-fairy turns around and merges back at the cluster.
+  orbWindow.setClusterSessions([[]]);
+  const home = orbWindow.flightPlan();
+  assert.equal(home.flights.length, 0);
+  assert.equal(home.returning.length, 1, "a finished call flies home");
+  const orb = orbWindow.fairyBounds();
+  assert.deepEqual(home.returning[0].to, { x: Math.round(orb.x + orb.width / 2), y: Math.round(orb.y + orb.height / 2) },
+    "home is the fairy cluster's centre");
+  assert.notDeepEqual(home.returning[0].from, home.returning[0].to, "it moves, it does not teleport");
+
+  // Reduced motion: same live call, no flight at all.
+  orbWindow.setClusterSessions(rows);
+  const r = orbWindow.setReducedMotion(true);
+  assert.equal(r.reducedMotion, true);
+  assert.deepEqual(orbWindow.flightPlan().flights, []);
+  orbWindow.setReducedMotion(false);
+  assert.equal(orbWindow.flightPlan().flights.length, 1, "motion back on: the fairy works again");
+});
+
+test("the veil page eases the tool flights itself and honours reduced motion", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  const veil = html.slice(html.indexOf('if (view === "veil")'), html.indexOf('if (view === "orb")'));
+  assert.match(veil, /function drawFlights\(/, "the sub-fairies are drawn there");
+  assert.match(veil, /requestAnimationFrame\(flightTick\)/, "each leg is eased in the page, not by IPC per frame");
+  assert.match(veil, /prefers-reduced-motion: reduce/, "the OS setting is respected inside the page too");
+  assert.match(veil, /state\.flights = Array\.isArray\(s\.flights\)/, "main hands over the legs once");
 });

@@ -61,6 +61,7 @@ const fairyPanel = require("./fairy-panel.cjs");
 const agentsPanel = require("./agents-panel.cjs");
 const fairyControl = require("./fairy-control.cjs");
 const foregroundProbe = require("./foreground-probe.cjs");
+const fairyFlight = require("./fairy-flight.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -112,6 +113,12 @@ let autoSurfaced = false;
 /** Card ids waiting when the owner hid the fairy himself (null = he has not). */
 let ownerHidIds = null;
 let clusterTimer = null;
+/** Tool flights (fairy-flight.cjs): the last plan the renderer was given, the live
+ *  planner (it remembers a finished call long enough to fly home), and one timer that
+ *  re-plans when the last leg is over. No per-frame IPC: the veil page animates. */
+let toolFlightPlan = { flights: [], returning: [], hover: [], throttled: [], reducedMotion: false };
+let toolFlightTimer = null;
+const toolFlightPlanner = fairyFlight.createFlightPlanner();
 /** Where the ONE cluster is centred while the fairy itself is down (a full avatar stands
  *  where it was): the agent swarm sets it so the light fairies keep orbiting the avatar
  *  instead of vanishing with the orb. null = follow the orb, as always. */
@@ -1147,6 +1154,9 @@ function ensureVeil() {
   lastVeilKey = "";
   veilWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   veilWindow.webContents.on("will-navigate", (event) => event.preventDefault());
+  // A flight can start while the page is still loading (the veil is created on the
+  // first tool call): the payload sent into the void is re-sent once it is awake.
+  veilWindow.webContents.on("did-finish-load", () => { lastVeilKey = ""; try { drawVeil(); } catch { /* gone */ } });
   veilWindow.on("closed", () => { veilWindow = null; });
   void veilWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "veil" } });
   return veilWindow;
@@ -1250,6 +1260,26 @@ function veilPayload() {
     tint: tint.css,
     trail: trail.map(local),
     tether,
+    // The sub-fairies out doing an agent's work: the page eases each leg itself
+    // from these timestamps (one payload per change, never one per frame).
+    flights: toolFlightLegs().map((f) => {
+      const fairy = agentFairy.crewFairy(f.agent);
+      return {
+        id: f.id,
+        agent: f.agent,
+        label: f.label,
+        tool: f.tool,
+        surface: f.surface,
+        mode: f.mode,
+        state: f.state,
+        color: fairy.color,
+        core: fairy.core,
+        from: local(f.from),
+        to: local(f.to),
+        startedAt: f.startedAt,
+        durationMs: f.durationMs,
+      };
+    }),
   };
 }
 
@@ -1257,7 +1287,119 @@ function veilPayload() {
 function veilKey(payload) {
   if (!payload) return "";
   const points = (list) => (Array.isArray(list) ? list.map((p) => `${p.x},${p.y}`).join(";") : "");
-  return `${payload.width}x${payload.height}|${payload.tint}|${points(payload.trail)}|${points(payload.tether)}`;
+  const flights = Array.isArray(payload.flights)
+    ? payload.flights.map((f) => `${f.id}|${f.state}|${f.startedAt}|${points([f.from, f.to])}`).join(";")
+    : "";
+  return `${payload.width}x${payload.height}|${payload.tint}|${points(payload.trail)}|${points(payload.tether)}|${flights}`;
+}
+
+// ── tool flights: the fairy GOES DO the work (fairy-flight.cjs) ────────────────
+// The desk learns a running tool from the harness daemon's session row
+// ("running Bash" -> fairy-cluster.cjs carries tool + surface). Here we find the
+// window each surface lives in, ask the pure planner for the legs, and hand the
+// veil page ONE payload per change — the page animates the legs itself, so a fleet
+// of sub-fairies costs no IPC per frame.
+
+/** Which desk window each surface lives in, in screen DIPs. null = not open. */
+function surfaceRects() {
+  const out = { files: null, library: null, browser: null, terminal: null };
+  const { BrowserWindow } = electron();
+  const own = ownWindowIds();
+  let wins;
+  try { wins = BrowserWindow.getAllWindows(); } catch { wins = []; }
+  for (const w of wins) {
+    if (!alive(w) || own.has(w.id) || !w.isVisible()) continue;
+    try { if (w.isMinimized && w.isMinimized()) continue; } catch { /* no such verb */ }
+    let title = "";
+    let url = "";
+    try { title = String(w.getTitle() || ""); } catch { /* mid-teardown */ }
+    try { url = String(w.webContents && w.webContents.getURL ? w.webContents.getURL() : ""); } catch { /* mid-teardown */ }
+    const hay = `${title} ${url}`;
+    const bounds = (() => { try { return w.getBounds(); } catch { return null; } })();
+    if (!bounds) continue;
+    if (/files\.html|aither files|file explorer|disk explorer/i.test(hay)) out.files = out.files || bounds;
+    else if (/sessions\.html|aither sessions/i.test(hay)) out.terminal = out.terminal || bounds;
+    else if (/library|knowledge/i.test(title)) out.library = out.library || bounds;
+    else if (/aither browser|browser-chrome\.html/i.test(hay)) out.browser = out.browser || bounds;
+  }
+  // The Library app lives in the Files window; the terminal lives in the browser's
+  // dock. Both are places the work is actually visible, never an invented target.
+  if (!out.library) out.library = out.files;
+  if (!out.terminal && out.browser) out.terminal = out.browser;
+  return out;
+}
+
+/** Every companion currently naming a live tool call -> one call per sub-fairy. */
+function currentToolCalls() {
+  const calls = [];
+  for (const c of allCompanions) {
+    if (!c || !c.tool || !c.surface || c.surface === "unknown") continue;
+    calls.push({
+      id: `${c.agent}|${c.sessionId || c.agent}|${c.tool}`,
+      agent: c.agent,
+      session: c.sessionId || "",
+      label: c.label || c.agent,
+      tool: c.tool,
+      surface: c.surface,
+    });
+  }
+  return calls;
+}
+
+function toolFlightLegs() {
+  return [...toolFlightPlan.flights, ...toolFlightPlan.returning];
+}
+
+/**
+ * Re-plan the tool flights. Called on every companion/session update (the daemon's
+ * 6 s feed) and once when the last leg lands. Never per frame: the renderer eases
+ * the legs from the timestamps in the payload.
+ */
+function updateToolFlights() {
+  const now = Date.now();
+  // No fairies on screen (hidden by the owner, or the cluster switched off) = no
+  // flight: the work is not shown by a stray glow with no fairy behind it.
+  const shown = Boolean(orbVisible() || swarmAnchor) && (state.cluster !== false || state.swarm === true);
+  if (!shown) {
+    toolFlightPlanner.reset();
+    toolFlightPlan = { flights: [], returning: [], hover: [], throttled: [], reducedMotion: state.reducedMotion === true };
+  } else {
+    toolFlightPlan = toolFlightPlanner.plan(currentToolCalls(), {
+      surfaces: surfaceRects(),
+      cluster: clusterCenter(),
+      nowMs: now,
+      maxSubFairies: fairyFlight.MAX_SUB_FAIRIES,
+      reducedMotion: state.reducedMotion === true,
+    });
+  }
+  if (toolFlightTimer) { clearTimeout(toolFlightTimer); toolFlightTimer = null; }
+  const legs = toolFlightLegs();
+  if (legs.length) {
+    showVeil();
+    drawVeil();
+    // Only a RETURN leg has a deadline (it merges and is forgotten). An outbound leg
+    // stands at its window while the call runs; the session feed ends it. No timer
+    // churn while an agent works.
+    const homeward = legs.filter((f) => f.state === "return" && now < f.startedAt + f.durationMs + fairyFlight.MERGE_MS);
+    if (homeward.length) {
+      const lastEnd = Math.max(...homeward.map((f) => f.startedAt + f.durationMs + fairyFlight.MERGE_MS + 120));
+      const wait = Math.max(300, Math.min(60_000, lastEnd - now));
+      toolFlightTimer = setTimeout(() => { toolFlightTimer = null; updateToolFlights(); }, wait);
+      if (toolFlightTimer.unref) toolFlightTimer.unref();
+    }
+  } else {
+    drawVeil(); // clears the canvas flight list
+    if (!attach && !tripBusy && !flight) hideVeil();
+  }
+  return toolFlightPlan;
+}
+
+/** The owner's setting (and the OS preference in the page) decides if fairies fly. */
+function setReducedMotion(on) {
+  state.reducedMotion = on === true;
+  saveState();
+  updateToolFlights();
+  return { ok: true, reducedMotion: state.reducedMotion };
 }
 
 function drawVeil() {
@@ -1268,6 +1410,7 @@ function drawVeil() {
     const anchor = spiritCore.anchorFor(attach);
     if (anchor) points.push(anchor);
   }
+  for (const f of toolFlightLegs()) points.push(f.from, f.to);
   if (!points.length) return;
   coverVeil(points);
   const payload = veilPayload();
@@ -1286,7 +1429,9 @@ function showVeil() {
   if (!win.isVisible()) win.showInactive();
 }
 
-function hideVeil() {
+function hideVeil({ force = false } = {}) {
+  // A sub-fairy still out doing work keeps the overlay up; the page animates it.
+  if (!force && toolFlightLegs().length) return;
   trail = [];
   lastVeilKey = "";
   if (alive(veilWindow)) veilWindow.hide();
@@ -3135,6 +3280,9 @@ function sendFairy({ force = false } = {}) {
       if (alive(swarmWindow)) swarmWindow.webContents.send("orb:companions", companions);
     } catch { /* page mid-load: init() carries the list */ }
   }
+  // A session's running tool changed (or one ended): re-plan the tool flights. The
+  // planner keeps a finished call for its trip home, so this is safe to call often.
+  try { updateToolFlights(); } catch { /* cosmetic: a bad surface never breaks the cluster */ }
   return { look, companions };
 }
 
@@ -4721,6 +4869,8 @@ function stopOrb() {
   if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
   if (dragTimer) { clearInterval(dragTimer); dragTimer = null; }
   if (flightTimer) { clearInterval(flightTimer); flightTimer = null; }
+  if (toolFlightTimer) { clearTimeout(toolFlightTimer); toolFlightTimer = null; }
+  toolFlightPlanner.reset();
   stopFollow();
   stopOrbit();
   if (seekTimer) { clearInterval(seekTimer); seekTimer = null; }
@@ -4868,6 +5018,8 @@ module.exports = {
   quietUntil: () => (Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0),
   menuState: () => publicMenu(), __setMenuIdleMs: (ms) => { menuIdleMsOverride = Number(ms) || 0; }, fairy: () => currentFairy(), companions: () => currentCompanions(),
   setPresence, noteAgentPosted, chatWithAgent, setClusterSessions, clusterState, surfaceForCards,
+  // tool flights: the fairy goes to the window an agent's tool call belongs to
+  setReducedMotion, updateToolFlights, flightPlan: () => toolFlightPlan, surfaceRects,
   autoSurfaced: () => autoSurfaced,
   swarmViewOp, swarmViewPayload, selectAgent, swarmWheel, swarmDrag, pinAgent, viewCompanions, setView,
   pinWindows: () => pinWindows, __setForeground: (rect) => { fgContent = fairyControl.contentRect(rect); sendSwarmView(); },
@@ -4885,6 +5037,9 @@ module.exports = {
     if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
     if (dragTimer) { clearInterval(dragTimer); dragTimer = null; }
     if (flightTimer) { clearInterval(flightTimer); flightTimer = null; }
+    if (toolFlightTimer) { clearTimeout(toolFlightTimer); toolFlightTimer = null; }
+    toolFlightPlanner.reset();
+    toolFlightPlan = { flights: [], returning: [], hover: [], throttled: [], reducedMotion: false };
     lastVeilKey = "";
     lastPanelOpen = null;
     stopFollow();

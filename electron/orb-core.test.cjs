@@ -300,7 +300,7 @@ test("a bubble is never placed off-screen when the orb is in a negative-origin d
 // ── state file ──────────────────────────────────────────────────────────────
 
 test("a saved state is small and sanitized; junk costs settings, not a launch", () => {
-  const off = { tenantCompanion: false, companionsV: 0, swarm: false, cluster: true, swarmView: require("./fairy-control.cjs").normalizeView(null) };
+  const off = { tenantCompanion: false, companionsV: 0, swarm: false, cluster: true, reducedMotion: false, swarmView: require("./fairy-control.cjs").normalizeView(null) };
   // Hidden by default (owner 2026-11-13): no file, or a file that never said "visible".
   assert.deepEqual(core.sanitizeState(null), { visible: false, pinned: false, x: null, y: null, freeRoam: false, sounds: true, muteUntil: 0, ...off });
   assert.deepEqual(core.sanitizeState({ visible: false, x: "12.7", y: 400 }), { visible: false, pinned: false, x: 13, y: 400, freeRoam: false, sounds: true, muteUntil: 0, ...off });
@@ -393,4 +393,10 @@ test("one cluster: the desk hides the page's own fairy and docks on the AitherOS
   assert.ok(ow.includes('if (attach && !attach.auto) return { ok: true, docked: false, why: "attached by hand" };'),
     "an attachment the owner made is never replaced");
   assert.ok(ow.includes("if (attach.auto && (!win.isVisible() || win.isMinimized()))"), "a minimised window is let go");
+});
+
+test("tool-flight reduced motion is a setting, off by default, only true turns it on", () => {
+  assert.equal(core.sanitizeState(null).reducedMotion, false);
+  assert.equal(core.sanitizeState({ reducedMotion: "yes" }).reducedMotion, false);
+  assert.equal(core.sanitizeState({ reducedMotion: true }).reducedMotion, true);
 });
