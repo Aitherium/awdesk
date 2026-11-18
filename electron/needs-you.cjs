@@ -31,6 +31,18 @@ const SNOOZE_MS = 4 * 60 * 60 * 1000;
 const RESPEAK_MS = 60 * 60 * 1000;
 const SNOOZE_FILE = "needs-you-snooze.json";
 
+// P0 escalation (A5, "Aither yells"). A P0 is the one class that may shout: a secret only
+// the owner can type, a session stopped on him, or a high/critical ask. It is announced
+// ONCE per card id, may cut the line that is playing once (speech-arbiter.cjs
+// `preempt`), and when the room is muted it is a caption plus the A1 toast -- never audio.
+const P0_FILE = "needs-you-p0.json";
+const P0_KINDS = Object.freeze(["credential", "blocked"]);
+const P0_URGENCIES = Object.freeze(["critical", "high"]);
+/** "Once per card id" holds as long as the card could still be open (the store's stale window). */
+const P0_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const P0_MAX_IDS = 500;
+const CARD_ID_RE = /^d-[A-Za-z0-9_-]{1,64}$/;
+
 /** id -> until (epoch ms). Expired rows are dropped on read. */
 function loadSnoozes(dir, nowMs = Date.now()) {
   const out = new Map();
@@ -141,6 +153,95 @@ function respeakDue({ needsYou, lastSpokenAt, nowMs = Date.now(), muted = false,
   if (muted) return false;
   if (!Array.isArray(needsYou) || needsYou.length === 0) return false;
   return nowMs - (Number(lastSpokenAt) || 0) >= everyMs;
+}
+
+// ── P0: the one ask that may interrupt ──────────────────────────────────────
+//
+// The plan's priority ladder (attention §3): P0 = credential / blocked /
+// signed-destructive / fleet-down. A decision card carries no "signed
+// destructive" field, so the reachable P0 shapes are a credential or a blocked
+// card (kind or an explicit raiser flag) and a high/critical urgency on a real
+// decision. `kind=info` is a report whatever else it says, so it never shouts.
+
+/** Is this card a P0 (may interrupt with a spoken line)? */
+function isP0(card) {
+  if (!card || typeof card !== "object") return false;
+  const kind = String(card.kind || "").trim().toLowerCase();
+  if (kind === "info") return false;
+  if (P0_KINDS.includes(kind) || card.blocking === true) return true;
+  return P0_URGENCIES.includes(String(card.urgency || "").trim().toLowerCase());
+}
+
+/** The one line a P0 says: the ask first, never a path or a wall of text. */
+function p0Line(card, max = 160) {
+  if (!card) return "";
+  const what = card.secretName
+    ? `a secret only you can give: ${card.secretName}`
+    : String(card.title || card.id || "a blocked session").slice(0, 100);
+  const line = `Aither needs you now: ${what}`;
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/**
+ * What a P0 announcement does, as data, so the rule is testable without Electron:
+ *   caption  always -- the words are on screen even when there is no sound;
+ *   speak    only when the room is not muted (the owner's mute always stands);
+ *   toast    only when the A1 actionable-toast path actually exists (`hasToast`);
+ *   preempt  the arbiter may cut the playing line once.
+ * A non-P0 yields all-false: escalation is a class, not a volume knob.
+ */
+function p0AnnouncementPlan({ card = null, muted = false, hasToast = false } = {}) {
+  if (!isP0(card)) return { caption: false, speak: false, toast: false, preempt: false };
+  return { caption: true, speak: !muted, toast: Boolean(hasToast), preempt: true };
+}
+
+/**
+ * The once-per-card-id ledger for P0 announcements. A restart must not shout a
+ * card the owner already saw, so this is a small JSON file next to the snoozes
+ * (no dir = in-memory for the process, still once). fs/clock injected.
+ */
+function createP0Claims({ dir = "", file = P0_FILE, fs: fsImpl = fs, now = Date.now,
+  maxAgeMs = P0_MAX_AGE_MS, max = P0_MAX_IDS } = {}) {
+  let seen = null; // Map id -> announced-at
+  const load = () => {
+    if (seen) return seen;
+    seen = new Map();
+    if (!dir) return seen;
+    try {
+      const raw = JSON.parse(fsImpl.readFileSync(path.join(dir, file), "utf8"));
+      const t = now();
+      for (const [id, at] of Object.entries(raw && typeof raw === "object" ? raw : {})) {
+        const when = Number(at);
+        if (!CARD_ID_RE.test(id) || !Number.isFinite(when) || t - when > maxAgeMs) continue;
+        seen.set(id, when);
+      }
+    } catch { /* no file / unreadable = nothing announced yet */ }
+    return seen;
+  };
+  const save = () => {
+    if (!dir) return false;
+    try {
+      fsImpl.mkdirSync(dir, { recursive: true });
+      const rows = [...load().entries()].sort((a, b) => a[1] - b[1]);
+      while (rows.length > max) rows.shift();
+      fsImpl.writeFileSync(path.join(dir, file), JSON.stringify(Object.fromEntries(rows)));
+      return true;
+    } catch { return false; }
+  };
+  return {
+    /** true only the FIRST time this card id is claimed (then it is recorded). */
+    claim(id) {
+      const key = String(id == null ? "" : id);
+      if (!CARD_ID_RE.test(key)) return false;
+      const map = load();
+      if (map.has(key)) return false;
+      map.set(key, now());
+      save();
+      return true;
+    },
+    has: (id) => load().has(String(id == null ? "" : id)),
+    size: () => load().size,
+  };
 }
 
 function escapeHtml(text) {
@@ -269,6 +370,8 @@ module.exports = {
   SNOOZE_MS,
   RESPEAK_MS,
   SNOOZE_FILE,
+  P0_FILE,
+  P0_MAX_AGE_MS,
   CHIP_OPEN_SCHEME,
   loadSnoozes,
   saveSnoozes,
@@ -279,6 +382,10 @@ module.exports = {
   trayRows,
   voiceLine,
   respeakDue,
+  isP0,
+  p0Line,
+  p0AnnouncementPlan,
+  createP0Claims,
   chipHtml,
   chipTarget,
   needsYouSignature,

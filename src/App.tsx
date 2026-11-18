@@ -464,6 +464,27 @@ function AvatarSceneApp() {
             event.volume,
           );
         }
+      } else if (event.type === 'speak-stop') {
+        // A P0 preempted this line (speech-arbiter.cjs `onCut` -> main's onCut). Stop
+        // the body NOW: the next `speak` only closes the context of its OWN slot, and a
+        // room-stage agent speaks on its own slot, so without this the cut sentence
+        // keeps playing underneath the alarm.
+        const victim = event.slotId && event.slotId !== 'slot0' ? event.slotId : null;
+        if (victim) {
+          slotAudioRefs.current.get(victim)?.current?.close().catch(() => {});
+          slotAudioRefs.current.delete(victim);
+          clearLevel(victim);
+          setSlotVoices((current) =>
+            current[victim]?.speaking
+              ? { ...current, [victim]: { ...current[victim], level: 0, speaking: false } }
+              : current,
+          );
+        } else {
+          audioCtxRef.current?.close().catch(() => {});
+          audioCtxRef.current = null;
+          setLevel('slot0', 0);
+          setVoice((current) => ({ ...current, activity: 'idle' }));
+        }
       }
     });
   }, []);
