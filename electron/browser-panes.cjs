@@ -211,6 +211,31 @@ function removePane(sizes, index) {
 }
 
 /**
+ * Which pane index owns the focus after the pane at `removed` leaves a stage that
+ * keeps `remaining` panes. Removing a pane to the LEFT of the focused one shifts
+ * that pane down one slot; removing one to its RIGHT leaves the focus where it is
+ * (the owner was looking at another pane); removing the focused pane itself lets
+ * the next pane slide into its slot (the last slot when it was the last pane).
+ * Garbage in is index 0, never NaN.
+ *
+ * @param {number} focus the focused pane's index BEFORE the removal
+ * @param {number} removed the removed pane's index
+ * @param {number} remaining how many panes are left
+ * @returns {number}
+ */
+function focusAfterRemove(focus, removed, remaining) {
+  const count = Math.max(0, Math.floor(Number(remaining) || 0));
+  if (!count) return 0;
+  const was = Math.floor(Number(focus));
+  const at = Math.floor(Number(removed));
+  if (!Number.isFinite(was) || was < 0) return 0;
+  if (!Number.isFinite(at) || at < 0) return Math.min(was, count - 1);
+  if (at < was) return Math.max(0, Math.min(was - 1, count - 1));
+  if (at > was) return Math.min(was, count - 1);
+  return Math.min(at, count - 1);
+}
+
+/**
  * Rebuild a stage from what the session store kept: entries shaped
  * `{id, pane: {group, index}}` (browser-everyday.cjs writes `pane` for a tab that
  * was in a split). Fewer than two panes restored is no split at all (null).
@@ -233,6 +258,7 @@ module.exports = {
   PANE_MIN_VERTICAL,
   defaultSizes,
   fitSpan,
+  focusAfterRemove,
   insertPane,
   layoutPanes,
   normalizeSizes,

@@ -822,6 +822,7 @@ function splitTab(id, side = "right") {
 function closePane(index) {
   if (!stage) return { ok: false, error: "this page is not split" };
   const at = Math.max(0, Math.min(stage.tabs.length - 1, Math.floor(Number(index) || 0)));
+  const wasFocus = stage.focus;
   const [id] = stage.tabs.splice(at, 1);
   stage.sizes = panes.removePane(stage.sizes, at);
   if (stage.tabs.length < 2) {
@@ -830,7 +831,8 @@ function closePane(index) {
     splitGeometry = null;
     if (keep != null) tabs.activate(keep);
   } else {
-    stage.focus = Math.min(at, stage.tabs.length - 1);
+    // Closing a pane the owner was NOT in never moves them off their pane.
+    stage.focus = panes.focusAfterRemove(wasFocus, at, stage.tabs.length);
     tabs.activate(stage.tabs[stage.focus]);
   }
   layout();
@@ -842,6 +844,7 @@ function closePane(index) {
 function stageRemoveTab(id) {
   const at = stage ? stage.tabs.indexOf(id) : -1;
   if (at < 0) return false;
+  const wasFocus = stage.focus;
   stage.tabs.splice(at, 1);
   stage.sizes = panes.removePane(stage.sizes, at);
   if (stage.tabs.length < 2) {
@@ -850,7 +853,9 @@ function stageRemoveTab(id) {
     splitGeometry = null;
     if (keep != null) tabs.activate(keep);
   } else {
-    stage.focus = Math.min(at, stage.tabs.length - 1);
+    // The focused pane follows its TAB, not its index: closing another pane (a tab's
+    // X in the strip, a pop-out) never steals the owner's focus.
+    stage.focus = panes.focusAfterRemove(wasFocus, at, stage.tabs.length);
     tabs.activate(stage.tabs[stage.focus]);
   }
   return true;
@@ -4442,10 +4447,17 @@ function wireIpc() {
     const o = parseArg(op) || {};
     switch (o.op) {
       case "split":
-      case "drop":
+      case "drop": {
         // A drop ends the tab drag even when the dragend event never arrives.
         if (o.op === "drop") stageDragging = false;
-        return splitTab(o.id == null ? null : Number(o.id), o.side === "left" ? "left" : "right");
+        const splitResult = splitTab(o.id == null ? null : Number(o.id), o.side === "left" ? "left" : "right");
+        // A REFUSED split (the stage is full, the tab is already a pane) must still put
+        // the views back: splitTab lays out only on success, so the drag's hidden views
+        // would otherwise leave the page area (and panel, dock and taskbar) blank until
+        // some unrelated action happened to re-lay the window out.
+        if (!splitResult.ok) { layout(); pushState(); }
+        return splitResult;
+      }
       case "close": return closePane(Math.floor(Number(o.index)));
       case "unsplit": return unsplitStage();
       case "focus": {

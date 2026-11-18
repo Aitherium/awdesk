@@ -1133,16 +1133,20 @@
     }
     if (splitDragging || stagedId != null) return; // never pull the element in hand
     const key = JSON.stringify(dividers);
-    if (key === splitKey) return;
+    if (key === splitKey) {
+      // Same geometry: a divider drag that ended where it began (main refused a
+      // sub-pixel move) can still have left the element under the pointer, so settle
+      // it back onto the gap the panes actually leave.
+      const live = Array.from(host.querySelectorAll(".pane-divider"));
+      dividers.forEach((d, i) => { if (live[i]) place(live[i], d); });
+      return;
+    }
     splitKey = key;
     for (const old of Array.from(host.querySelectorAll(".pane-divider"))) old.remove();
     for (const d of dividers) {
       const el = document.createElement("div");
       el.className = "pane-divider";
-      el.style.left = `${d.x}px`;
-      el.style.top = `${d.y}px`;
-      el.style.width = `${d.width}px`;
-      el.style.height = `${d.height}px`;
+      place(el, d);
       el.title = "Drag to resize the panes";
       el.onmousedown = (e) => startSplitDrag(d.index, e);
       host.append(el);

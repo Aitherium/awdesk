@@ -73,7 +73,7 @@ test("a vertical split stacks the panes and the divider runs across", () => {
 test("no panes at all is an empty layout, not a crash", () => {
   assert.deepEqual(panes.layoutPanes(area, []), { axis: "horizontal", panes: [], dividers: [] });
   assert.deepEqual(panes.layoutPanes(area, null), { axis: "horizontal", panes: [], dividers: [] });
-  assert.deepEqual(panes.layoutPanes(area, [1]), panes.layoutPanes(area, [1]));
+  assert.equal(panes.layoutPanes(area, [1]).panes.length, 1, "one fraction is one pane, not none");
 });
 
 test("one pane is the whole page area (the unsplit window)", () => {
@@ -146,6 +146,23 @@ test("the session rebuilds a split from saved pane indexes, and one pane is no s
   assert.equal(panes.stageFromSession([{ id: 4, pane: { group: 1, index: 0 } }]), null);
   assert.equal(panes.stageFromSession([]), null);
   assert.equal(panes.stageFromSession(null), null);
+});
+
+test("closing a pane the owner was not in never moves the focus off their pane", () => {
+  // Focused on the left pane, a pane to its right closes: they stay on the left.
+  assert.equal(panes.focusAfterRemove(0, 1, 2), 0);
+  assert.equal(panes.focusAfterRemove(0, 2, 2), 0);
+  // A pane to the LEFT closes: the same tab is now one slot further left.
+  assert.equal(panes.focusAfterRemove(1, 0, 2), 0);
+  assert.equal(panes.focusAfterRemove(2, 0, 2), 1);
+  // The focused pane itself closes: the next pane slides into its slot, or the last.
+  assert.equal(panes.focusAfterRemove(0, 0, 2), 0);
+  assert.equal(panes.focusAfterRemove(1, 1, 2), 1);
+  assert.equal(panes.focusAfterRemove(2, 2, 2), 1);
+  // Nothing left, or garbage in, is index 0 -- never NaN, never out of range.
+  assert.equal(panes.focusAfterRemove(1, 1, 0), 0);
+  assert.equal(panes.focusAfterRemove(NaN, 0, 2), 0);
+  assert.equal(panes.focusAfterRemove(2, 9, 2), 1);
 });
 
 test("fitSpan always fills the span exactly, whatever the fractions", () => {
