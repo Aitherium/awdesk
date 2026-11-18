@@ -415,9 +415,10 @@
     $("dock-pop").onclick = () => {
       const id = active;
       if (!id) return;
-      // The full terminal tab attaches it (replaying its stream); the dock lets go.
-      void api.dock("popout", id).then((r) => {
-        if (r && r.ok) void detachTab(id); else status((r && r.error) || "could not pop out");
+      // Move to split: the session opens BESIDE the page in the same window (its own
+      // pane attaches and replays the stream); the dock lets go of it.
+      void api.dock("split", id).then((r) => {
+        if (r && r.ok) void detachTab(id); else status((r && r.error) || "could not move it to a split pane");
       });
     };
     $("dock-detach").onclick = () => { if (active) void detachTab(active); };
