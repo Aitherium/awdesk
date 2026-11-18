@@ -257,7 +257,7 @@ test("main: a card raises a TOAST and never a window (A1)", () => {
   // (attention plan, 2026-11-18) makes a card arrival a toast: no window, no focus
   // steal. This fails if the auto-open ladder -- or any other openInbox() in the
   // arrival path -- comes back.
-  const at = MAIN.indexOf("const announceDecisions = (list, isBacklog) => {");
+  const at = MAIN.indexOf("const announceDecisions = (list, isBacklog");
   assert.ok(at >= 0, "main.cjs no longer announces decisions");
   const end = MAIN.indexOf("let decisionsAnnounced", at);
   assert.ok(end > at, "the announceDecisions body is not delimited");

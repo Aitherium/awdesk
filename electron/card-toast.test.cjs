@@ -295,7 +295,7 @@ test("main: kid mode removes the buttons, quiet mode holds the toast", () => {
   assert.match(actions, /cardToast\.canCarryActions\(/);
   assert.match(actions, /kidMode:\s*kidDeskMode\(\)\.enabled/, "kid mode is asked, not assumed");
   // announceDecisions must check the companion quiet door, not only DND.
-  const at = src.indexOf("const announceDecisions = (list, isBacklog) => {");
+  const at = src.indexOf("const announceDecisions = (list, isBacklog");
   const end = src.indexOf("let decisionsAnnounced", at);
   const announce = src.slice(at, end);
   assert.match(announce, /orbWindow\.quietUntil\(\)/);
