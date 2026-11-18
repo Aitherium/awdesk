@@ -144,9 +144,12 @@ function createFlightPlanner({ mergeMs = MERGE_MS, maxCallMs = MAX_CALL_MS } = {
         if (!ended.has(id)) ended.set(id, { endedAt: now, call: { ...row.call, id } });
         seen.delete(id);
       }
-      // Returning legs: the call ENDED; start the trip home at the end.
+      // Returning legs: the call ENDED; start the trip home at the end. A call that
+      // is live again under the same id (same tool, same session, next call) is ONE
+      // fairy that never left: its trip home is cancelled, never shown beside it.
       const returningAll = [];
       for (const [id, row] of ended) {
+        if (live.has(id)) { ended.delete(id); continue; }
         if (now - row.endedAt >= mergeMs) { ended.delete(id); continue; }
         returningAll.push({
           at: row.endedAt,

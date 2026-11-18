@@ -126,3 +126,13 @@ test("a re-plan does not restart a fairy already at its window", () => {
   assert.equal(again.flights[0].startedAt, first.flights[0].startedAt, "the same leg, still standing there");
   assert.equal(again.flights[0].to.x, first.flights[0].to.x);
 });
+
+test("a call that starts again under the same id cancels its trip home", () => {
+  const planner = flight.createFlightPlanner({ mergeMs: 2000 });
+  planner.plan([call("a", "Read", "files")], { surfaces: SURFACES, cluster: CLUSTER, nowMs: NOW });
+  const home = planner.plan([], { surfaces: SURFACES, cluster: CLUSTER, nowMs: NOW + 500 });
+  assert.equal(home.returning.length, 1);
+  const again = planner.plan([call("a", "Read", "files")], { surfaces: SURFACES, cluster: CLUSTER, nowMs: NOW + 700 });
+  assert.equal(again.flights.length, 1, "back at work");
+  assert.equal(again.returning.length, 0, "one fairy, never one leaving and one arriving");
+});
