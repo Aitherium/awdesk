@@ -2415,3 +2415,25 @@ test("dock mode sits on the taskbar once its rect is published", async () => {
   assert.equal(strip.onTaskbar, true);
   assert.ok(strip.y >= 2120 && strip.y + strip.height <= 2160, `on the taskbar: ${JSON.stringify(strip)}`);
 });
+
+test("dock mode on the second monitor uses ITS taskbar, never the first monitor's", async () => {
+  // Display 2: bounds y 2160..3240, work area to 3200, its own bar at 3200..3240.
+  writeState({ visible: false, x: 2500, y: 2900 });
+  start();
+  orbWindow.showOrb();
+  orbWindow.setView({ mode: "dock" });
+  orbWindow.__setProbe({
+    taskbars: async () => ({
+      primary: { className: "Shell_TrayWnd", hwnd: 11, x: 0, y: 2120, width: 3840, height: 40 },
+      secondaries: [{ className: "Shell_SecondaryTrayWnd", hwnd: 12, x: 1920, y: 3200, width: 1920, height: 40 }],
+    }),
+  });
+  const bar = await orbWindow.__refreshTaskbar();
+  assert.deepEqual(bar, { x: 1920, y: 3200, width: 1920, height: 40 }, "the bar on the cluster's own display");
+
+  const strip = orbWindow.__swarmBounds(3);
+  assert.ok(strip, "a docked strip exists");
+  assert.equal(strip.onTaskbar, true);
+  assert.ok(strip.x >= 1920 && strip.x + strip.width <= 3840, `on the second monitor: ${JSON.stringify(strip)}`);
+  assert.ok(strip.y >= 3200 && strip.y + strip.height <= 3240, `on its taskbar: ${JSON.stringify(strip)}`);
+});

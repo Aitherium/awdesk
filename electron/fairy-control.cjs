@@ -289,6 +289,32 @@ function taskbarEdge(taskbar, area) {
 }
 
 /**
+ * The taskbar on one display, or null. `taskbars` is every bar the probe published (the
+ * primary Shell_TrayWnd and each Shell_SecondaryTrayWnd), in DIPs; `displayBounds` is
+ * that display's full bounds in DIPs. A bar belongs to a display only when it lies INSIDE
+ * it. Work-area adjacency is NOT enough: with the second monitor stacked under the first,
+ * the primary monitor's bottom taskbar sits exactly against the second monitor's work
+ * area's top edge, so an edge test picked the first monitor's bar for a cluster on the
+ * second and jumped the docked strip onto a display the fairies were not on.
+ */
+function taskbarForDisplay(taskbars, displayBounds) {
+  const list = Array.isArray(taskbars) ? taskbars.filter(Boolean) : [];
+  if (!list.length) return null;
+  const d = displayBounds || { x: 0, y: 0, width: 1920, height: 1080 };
+  const pad = 3; // DPI rounding: a 40 px bar's far edge may land one pixel over
+  const inside = (t) => {
+    const x = Number(t.x);
+    const y = Number(t.y);
+    const width = Number(t.width);
+    const height = Number(t.height);
+    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return false;
+    return x >= d.x - pad && y >= d.y - pad
+      && x + width <= d.x + d.width + pad && y + height <= d.y + d.height + pad;
+  };
+  return list.find(inside) || null;
+}
+
+/**
  * The docked strip ON the taskbar (plan A4: "anchor to the taskbar"). `taskbar` is the
  * Shell_TrayWnd rect in the same units as `area`. null = no taskbar known, or the
  * docked edge is not the taskbar's edge.
@@ -479,7 +505,7 @@ module.exports = {
   kindGroup, kindLabel, stateLabel, badgeMeaning, detailLines, detailText,
   clampRadius, stepRadius, normalizeView, applyView, decorate,
   swarmSlots, swarmOffset, dockOffset, avoidPoint, swarmExtent,
-  dockEdge, dockBounds, dockOnTaskbar, taskbarEdge, boundsFor,
+  dockEdge, dockBounds, dockOnTaskbar, taskbarEdge, taskbarForDisplay, boundsFor,
   contentRect, relativeRect, parseForeground, sameRect, joinsCluster,
   controlItems, viewItems, applyViewPick, toggleIn,
 };
