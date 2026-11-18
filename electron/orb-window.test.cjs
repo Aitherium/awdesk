@@ -2341,3 +2341,18 @@ test("the card's 'Open in AitherBrowser' opens its aitherium.com page through th
   const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
   assert.match(html, /button\("Open in AitherBrowser", "link", \(\) => api\.nudgeAct\("browser"\)/);
 });
+
+test("the whisper card shows Read it to me and Answer by voice without opening 'more'", () => {
+  const html = require("node:fs").readFileSync(require("node:path").join(__dirname, "orb.html"), "utf8");
+  const voice = html.slice(html.indexOf('<div id="n-voice">'), html.indexOf('<div id="n-extra">'));
+  assert.ok(voice.length > 0, "the voice row sits OUTSIDE the hidden extra block");
+  assert.match(voice, /data-act="read"/);
+  assert.match(voice, /data-act="talk"/);
+  assert.match(html, /#n-foot button, #n-voice button/);
+});
+
+test("a flash re-measures the whisper so an error line is never cut off", () => {
+  const html = require("node:fs").readFileSync(require("node:path").join(__dirname, "orb.html"), "utf8");
+  const flash = html.slice(html.indexOf("api.onNudgeFlash"), html.indexOf("api.init().then((s) => { if (s && s.nudge)"));
+  assert.match(flash, /nudgeAct\("size"/);
+});
