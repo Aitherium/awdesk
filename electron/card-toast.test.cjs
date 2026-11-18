@@ -252,6 +252,57 @@ test("the answer link is built and rejected by one rule, shared with the parser"
   assert.equal(ct.answerLink({ cardId: "a/b", action: "open" }), null);
 });
 
+// ── the desk's quiet doors, and kid mode ─────────────────────────────────────
+
+test("cardToastAllowed: companion quiet mode, now-mode and DND each HOLD the toast", () => {
+  const now = 1_000_000;
+  assert.equal(ct.cardToastAllowed({ now }).allow, true, "the ordinary case speaks");
+  // The fairy's "be quiet until ..." (orbWindow.quietUntil) is an unsolicited-surface
+  // door like any other: a card toast waits while it is live, and speaks again after.
+  const quiet = ct.cardToastAllowed({ now, quietUntil: now + 60_000 });
+  assert.equal(quiet.allow, false);
+  assert.match(quiet.reason, /quiet/);
+  assert.equal(ct.cardToastAllowed({ now, quietUntil: now - 1 }).allow, true, "an expired quiet window is over");
+  assert.equal(ct.cardToastAllowed({ now, doNotDisturb: true }).allow, false);
+  assert.equal(ct.cardToastAllowed({ now, nowMode: true }).allow, false);
+  // Garbage must not silence the desk forever: a NaN/Infinity deadline is not a hold.
+  assert.equal(ct.cardToastAllowed({ now, quietUntil: "not a time" }).allow, true);
+  assert.equal(ct.cardToastAllowed({ now, quietUntil: Infinity }).allow, true);
+});
+
+test("canCarryActions: Windows + packaged only, and NEVER kid mode", () => {
+  assert.equal(ct.canCarryActions({ platform: "win32", packaged: true }), true);
+  assert.equal(ct.canCarryActions({ platform: "win32", packaged: false }), false, "unpackaged: no desk:// handler");
+  assert.equal(ct.canCarryActions({ platform: "darwin", packaged: true }), false);
+  assert.equal(ct.canCarryActions({ platform: "linux", packaged: true }), false);
+  // Kid mode routes every desk:// link to the classroom, so an Approve button would be
+  // swallowed (and a child is not who answers a permission card): no buttons at all.
+  assert.equal(ct.canCarryActions({ platform: "win32", packaged: true, kidMode: true }), false);
+});
+
+test("a kid-mode toast is a plain toast: no buttons, and no ticket to mint", () => {
+  const actionable = ct.canCarryActions({ platform: "win32", packaged: true, kidMode: true });
+  const toast = ct.buildCardToast(card(), { actionable, ticket: "tkt-1234567" });
+  assert.equal(toast.toastXml, null, "no toastXml means no protocol buttons to swallow");
+  assert.deepEqual(toast.actions.map((a) => a.action), ["approve", "later", "open"], "the descriptor is unchanged");
+});
+
+test("main: kid mode removes the buttons, quiet mode holds the toast", () => {
+  const src = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  const actionsAt = src.indexOf("function toastActionsAvailable(");
+  assert.ok(actionsAt >= 0);
+  const actions = src.slice(actionsAt, src.indexOf("\n}", actionsAt));
+  assert.match(actions, /cardToast\.canCarryActions\(/);
+  assert.match(actions, /kidMode:\s*kidDeskMode\(\)\.enabled/, "kid mode is asked, not assumed");
+  // announceDecisions must check the companion quiet door, not only DND.
+  const at = src.indexOf("const announceDecisions = (list, isBacklog) => {");
+  const end = src.indexOf("let decisionsAnnounced", at);
+  const announce = src.slice(at, end);
+  assert.match(announce, /orbWindow\.quietUntil\(\)/);
+  assert.match(announce, /cardToast\.cardToastAllowed\(/);
+  assert.match(announce, /\bverdict\.allow\b/);
+});
+
 test("main wires the toast action through answerDeckCard, the ONE answer path", () => {
   const src = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   // The signed route lives in answerDeckCard; an unsigned decisionCards.answerCard

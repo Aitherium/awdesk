@@ -52,6 +52,34 @@ function isOptionKey(key) {
 }
 
 /**
+ * May a card toast be shown RIGHT NOW? The desk already has doors that quiet every
+ * unsolicited surface, and a card toast is one: companion quiet mode (`quietUntil`,
+ * set from the fairy's menu or the tray), now-mode, and Do not disturb. A held toast
+ * is not lost -- the badge, the tray and the Inbox still carry the card; only the
+ * popup waits.
+ * @returns {{allow: boolean, reason: string}}
+ */
+function cardToastAllowed({ quietUntil = 0, now = Date.now(), doNotDisturb = false, nowMode = false } = {}) {
+  if (nowMode) return { allow: false, reason: "now mode" };
+  if (doNotDisturb) return { allow: false, reason: "do not disturb is on" };
+  // Number() so a NaN/garbage deadline can never hold every toast forever.
+  const until = Number(quietUntil);
+  if (Number.isFinite(until) && until > Number(now)) return { allow: false, reason: "companion quiet mode" };
+  return { allow: true, reason: "the desk may speak" };
+}
+
+/**
+ * Can a toast carry BUTTONS? Windows (toastXml actions) and only packaged (the desk://
+ * protocol handler is registered then). NEVER kid mode: kid mode routes every desk://
+ * link to the classroom -- a child's desk must not show an Approve button whose link is
+ * swallowed, and a child is not the one to answer a permission card.
+ */
+function canCarryActions({ platform = process.platform, packaged = false, kidMode = false } = {}) {
+  if (kidMode) return false;
+  return platform === "win32" && Boolean(packaged);
+}
+
+/**
  * The card's own primary answer -- `default_key`, else the recommended option, else the
  * first. Mirrors `primaryChoice` in src/deck/deck-types.ts (the Inbox's button) so a
  * toast and the Inbox never offer different answers for one card.
@@ -299,6 +327,8 @@ module.exports = {
   TICKET_TTL_MS,
   isCardId,
   isOptionKey,
+  cardToastAllowed,
+  canCarryActions,
   primaryChoice,
   answerLink,
   escapeXml,

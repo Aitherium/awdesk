@@ -623,8 +623,9 @@ test("now-mode hides the needs-you chip and the balloon, and lapses on its own",
   assert.match(main, /hidden: overlaySettings\(\)\.doNotDisturb \|\| nowModeActive\(\)/);
   // Now mode still silences the automatic surface: the card arrival is an
   // actionable toast (A1, 2026-11-18) and it stays down in now-mode and under
-  // Do not disturb -- the chip, not a popup, is what remains.
-  assert.match(main, /if \(!nowModeActive\(\) && !overlaySettings\(\)\.doNotDisturb\) \{/);
+  // Do not disturb -- the chip, not a popup, is what remains. The quiet doors are
+  // asked in one place (card-toast.cardToastAllowed), which includes now-mode.
+  assert.match(main, /cardToast\.cardToastAllowed\(\{[\s\S]*?nowMode: nowModeActive\(\)/);
   assert.match(main, /cardToast\.announceCards\(list, \{/);
   const internal = require("./browser-internal.cjs");
   const link = internal.deepLinkOf(internal.parseInternalUrl("aither://cards/?mode=now"));

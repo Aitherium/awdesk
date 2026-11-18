@@ -13,24 +13,33 @@ const path = require("node:path");
 const policy = require("./overlay-policy.cjs");
 const { TRIGGERS } = policy;
 
-const AUTOMATIC = [TRIGGERS.START, TRIGGERS.EDGE, TRIGGERS.NOTIFICATION, TRIGGERS.REQUEST];
+const AUTOMATIC = [TRIGGERS.START, TRIGGERS.EDGE, TRIGGERS.REQUEST];
 const FLAG_OF = {
   [TRIGGERS.START]: "autoOpenOnStart",
   [TRIGGERS.EDGE]: "edgeReveal",
-  [TRIGGERS.NOTIFICATION]: "raiseOnNotifications",
 };
 
-test("defaults are quiet: nothing opens at start, at an edge or for a notification", () => {
+test("defaults are quiet: nothing opens at start or at an edge", () => {
   const d = policy.normalize({});
   assert.deepEqual(d, {
     autoOpenOnStart: false, edgeReveal: false, edge: "right", edgeDwellMs: 600,
-    raiseOnNotifications: false, doNotDisturb: false, spaceHome: false,
+    doNotDisturb: false, spaceHome: false,
   });
-  for (const t of [TRIGGERS.START, TRIGGERS.EDGE, TRIGGERS.NOTIFICATION]) {
+  for (const t of [TRIGGERS.START, TRIGGERS.EDGE]) {
     assert.equal(policy.decide({}, t).allow, false, `${t} must be off by default`);
     assert.equal(policy.decide(undefined, t).allow, false, `${t} with no settings at all`);
   }
   assert.equal(policy.decide({}, TRIGGERS.REQUEST).allow, true, "a program's request is honoured unless DND");
+});
+
+test("there is no notification door (A1): the trigger is refused as unknown", () => {
+  // A decision card is a toast and never a window, so the switch that used to gate an
+  // automatic window for a card was removed with it. A caller still asking for the old
+  // door must be REFUSED (never allowed by a stale setting).
+  assert.equal(policy.TRIGGERS.NOTIFICATION, undefined, "the trigger is gone from the module");
+  const v = policy.decide({ autoOpenOnStart: true, edgeReveal: true, raiseOnNotifications: true }, "notification");
+  assert.equal(v.allow, false);
+  assert.match(v.reason, /unknown trigger/);
 });
 
 test("each automatic trigger obeys ITS OWN switch and no other", () => {
@@ -52,7 +61,7 @@ test("an explicit user action always passes: DND, everything off, junk settings"
 });
 
 test("Do not disturb suppresses EVERY automatic trigger, even with its switch on", () => {
-  const all = { autoOpenOnStart: true, edgeReveal: true, raiseOnNotifications: true, doNotDisturb: true };
+  const all = { autoOpenOnStart: true, edgeReveal: true, doNotDisturb: true };
   for (const t of AUTOMATIC) {
     const v = policy.decide(all, t);
     assert.equal(v.allow, false, t);
@@ -63,17 +72,17 @@ test("Do not disturb suppresses EVERY automatic trigger, even with its switch on
 });
 
 test("an unknown trigger is refused, so a new automatic door must be named first", () => {
-  const v = policy.decide({ autoOpenOnStart: true, edgeReveal: true, raiseOnNotifications: true }, "idle");
+  const v = policy.decide({ autoOpenOnStart: true, edgeReveal: true }, "idle");
   assert.equal(v.allow, false);
   assert.match(v.reason, /unknown trigger/);
 });
 
 test("non-boolean switches read as their default, never as on", () => {
-  const s = policy.normalize({ autoOpenOnStart: "yes", edgeReveal: 1, raiseOnNotifications: "true", doNotDisturb: "no" });
+  const s = policy.normalize({ autoOpenOnStart: "yes", edgeReveal: 1, doNotDisturb: "no" });
   assert.equal(s.autoOpenOnStart, false);
   assert.equal(s.edgeReveal, false);
-  assert.equal(s.raiseOnNotifications, false);
   assert.equal(s.doNotDisturb, false);
+  assert.equal("raiseOnNotifications" in s, false, "the retired switch is not resurrected by a file");
   assert.equal(policy.normalize({ edge: "diagonal", edgeDwellMs: 10 }).edge, "right");
   assert.equal(policy.normalize({ edgeDwellMs: 10 }).edgeDwellMs, 600);
   assert.equal(policy.normalize({ edgeDwellMs: 999999 }).edgeDwellMs, 600);
@@ -186,9 +195,15 @@ test("cast.json overlay: defaults, a saved value round-trips, junk is a named pr
     assert.equal(back.autoOpenOnStart, false);
     const loaded = cast.load({ file });
     assert.equal(loaded.problems.some((p) => p.path === "overlay"), false, "overlay is a known top-level key");
-    const junk = cast.resolveDesk({ version: 1, overlay: { raiseOnNotifications: "always" } }, { env: {} });
-    assert.equal(junk.overlay.raiseOnNotifications, false, "junk never turns a raise on");
-    assert.ok(junk.problems.some((p) => p.path === "overlay.raiseOnNotifications"), JSON.stringify(junk.problems));
+    // A1 retired overlay.raiseOnNotifications. An old file still carrying it must load
+    // CLEANLY -- ignored, never an "unknown key" warning on every launch. It is also not
+    // read back, so a stale `true` can never turn a notification door back on.
+    fs.writeFileSync(file, JSON.stringify({ version: 1, overlay: { raiseOnNotifications: true, doNotDisturb: true } }));
+    const oldFile = cast.load({ file });
+    assert.equal(oldFile.problems.some((p) => /raiseOnNotifications/.test(p.path || "")), false, JSON.stringify(oldFile.problems));
+    const resolved = cast.resolveDesk(oldFile.snapshot, { env: {} });
+    assert.equal(resolved.overlay.raiseOnNotifications, undefined, "the retired switch is never read");
+    assert.equal(desk.current({ file, env: {} }).overlay.doNotDisturb, true, "the rest of the section still applies");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -196,15 +211,17 @@ test("cast.json overlay: defaults, a saved value round-trips, junk is a named pr
 
 // ─── the registry rows (tray + palette) ───────────────────────────────────────
 
-test("tray rows: the four switches, plain labels, checked from ctx.overlayPolicy", () => {
+test("tray rows: the three switches, plain labels, checked from ctx.overlayPolicy", () => {
   const registry = require("./command-registry.cjs");
   assert.deepEqual(registry.conformance(), []);
   const rows = {
     "desktop.overlay.auto-start": ["Open the desktop overlay when Aither starts", "autoOpenOnStart"],
     "desktop.overlay.edge-reveal": ["Reveal the overlay at the screen edge", "edgeReveal"],
-    "desktop.overlay.raise-on-notify": ["Bring the overlay forward for notifications", "raiseOnNotifications"],
     "desktop.overlay.dnd": ["Do not disturb", "doNotDisturb"],
   };
+  // A1: the "Bring the overlay forward for notifications" row was removed with the
+  // notification door it gated -- it must not come back as a dead control.
+  assert.equal(registry.byId("desktop.overlay.raise-on-notify"), null);
   for (const [id, [label, key]] of Object.entries(rows)) {
     const c = registry.byId(id);
     assert.ok(c, id);
@@ -248,8 +265,9 @@ test("main: a card raises a TOAST and never a window (A1)", () => {
   assert.match(announce, /cardToast\.announceCards\(/);
   assert.doesNotMatch(announce, /openInbox\s*\(/);
   assert.doesNotMatch(MAIN, /openInbox\(newest/);
-  // Do not disturb still silences the automatic surface.
-  assert.match(announce, /overlaySettings\(\)\.doNotDisturb/);
+  // The desk's quiet doors silence the toast: Do not disturb AND companion quiet mode.
+  assert.match(announce, /cardToast\.cardToastAllowed\(/);
+  assert.match(announce, /orbWindow\.quietUntil\(\)/);
 });
 
 test("main: MCP desktop_open and POST /desktop/overlay are REQUEST triggers", () => {
@@ -264,7 +282,7 @@ test("main: MCP desktop_open and POST /desktop/overlay are REQUEST triggers", ()
 test("main: the edge watcher drives a reveal, the settings door is wired", () => {
   assert.match(MAIN, /overlayPolicy\.createEdgeWatcher\(/);
   assert.match(MAIN, /ipcMain\.handle\("desk:settings-set-overlay"/);
-  for (const id of ["auto-start", "edge-reveal", "raise-on-notify", "dnd"]) {
+  for (const id of ["auto-start", "edge-reveal", "dnd"]) {
     assert.match(MAIN, new RegExp(`case "desktop\\.overlay\\.${id}": return void toggleOverlaySetting\\(`), id);
   }
 });

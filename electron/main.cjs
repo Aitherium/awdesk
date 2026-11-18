@@ -1959,10 +1959,16 @@ function notifyQuietly(title, body) {
 
 /** Can a toast carry buttons? Windows only, and only when the desk:// handler is
  *  registered -- a packaged install (main registers the protocol at ready). An
- *  unpackaged run gets the plain toast, whose click still opens the card. */
+ *  unpackaged run gets the plain toast, whose click still opens the card. Kid mode
+ *  never gets buttons: its protocol handler sends every desk:// link to the
+ *  classroom, so an Approve button would be swallowed (card-toast.canCarryActions). */
 function toastActionsAvailable() {
   try {
-    return process.platform === "win32" && app.isPackaged;
+    return cardToast.canCarryActions({
+      platform: process.platform,
+      packaged: app.isPackaged,
+      kidMode: kidDeskMode().enabled,
+    });
   } catch {
     return false;
   }
@@ -4769,7 +4775,6 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     // When the desk may raise the overlay by itself (overlay-policy.cjs, cast.json overlay).
     case "desktop.overlay.auto-start": return void toggleOverlaySetting("autoOpenOnStart");
     case "desktop.overlay.edge-reveal": return void toggleOverlaySetting("edgeReveal");
-    case "desktop.overlay.raise-on-notify": return void toggleOverlaySetting("raiseOnNotifications");
     case "desktop.overlay.dnd": return void toggleOverlaySetting("doNotDisturb");
     case "desktop.space-home": return void toggleOverlaySetting("spaceHome");
     case "window.outline": return void toggleWindowOutline();
@@ -8754,9 +8759,18 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         // focus mid-keystroke was the owner's complaint, not the fix. The button
         // comes back through the desk:// protocol into answerDeckCard; Open (or the
         // bell, the tray, the chip) is the owner's own tap. Do not disturb still
-        // silences it.
+        // silences it, and so does the companion's quiet mode (the fairy's "be quiet"
+        // from its menu or the tray) -- a card toast is an unsolicited popup like any
+        // other, so it waits the same way; the badge and the tray still carry the card.
         try {
-          if (!nowModeActive() && !overlaySettings().doNotDisturb) {
+          let quietUntil = 0;
+          try { quietUntil = orbWindow.quietUntil(); } catch { quietUntil = 0; }
+          const verdict = cardToast.cardToastAllowed({
+            quietUntil, nowMode: nowModeActive(), doNotDisturb: overlaySettings().doNotDisturb,
+          });
+          if (!verdict.allow) {
+            debugLog(`[card-toast] ${list.length} card(s) held: ${verdict.reason}`);
+          } else {
             // A backlog announces its best card once; the rest are the badge's.
             cardToast.announceCards(list, {
               max: isBacklog ? 1 : cardToast.MAX_CARD_TOASTS,

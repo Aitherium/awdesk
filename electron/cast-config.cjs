@@ -686,14 +686,14 @@ const UPDATES_FIELDS = Object.freeze({
 /** overlay.* -> overlay-policy.cjs: when the desk may raise the AitherOS Online overlay
  *  (and the Inbox) by ITSELF. Every automatic door is off by default; an explicit
  *  click, hotkey or menu row ignores all of these. doNotDisturb silences every
- *  automatic door at once. */
+ *  automatic door at once. `raiseOnNotifications` was RETIRED with A1 (a card is a
+ *  toast now, not a window): see RETIRED_SECTION_KEYS so an old file is not an error. */
 const overlayPolicy = require("./overlay-policy.cjs");
 const OVERLAY_FIELDS = Object.freeze({
   autoOpenOnStart: vBool,
   edgeReveal: vBool,
   edge: (v) => vEnum(v, overlayPolicy.EDGES),
   edgeDwellMs: (v) => vInt(v, { min: overlayPolicy.DWELL_MIN_MS, max: overlayPolicy.DWELL_MAX_MS }),
-  raiseOnNotifications: vBool,
   doNotDisturb: vBool,
   // Inbox and Fleet open into BeadSpace (space-home.cjs). Reversible; off by default.
   spaceHome: vBool,
@@ -717,6 +717,14 @@ const BUILTIN_DESK = Object.freeze({
   updates: Object.freeze({ enabled: true }),
   overlay: overlayPolicy.DEFAULTS,
   clipboard: Object.freeze({ sync: false }),
+});
+
+/** Keys a shipped cast.json may still carry after their switch was removed. They are
+ *  skipped by validateCast (never read, never an "unknown key" problem) so an upgrade
+ *  does not greet the owner with a warning about a setting that no longer exists.
+ *  overlay.raiseOnNotifications: retired with A1 -- a card is a toast, not a window. */
+const RETIRED_SECTION_KEYS = Object.freeze({
+  overlay: Object.freeze(["raiseOnNotifications"]),
 });
 
 const DESK_SECTIONS = Object.freeze({
@@ -926,7 +934,11 @@ function validateCast(raw) {
   // per-avatar config and the owner's rotation sets.
   config.gallery = require("./avatar-gallery.cjs").validateGallery(raw.gallery, problems);
   for (const [section, fields] of Object.entries(DESK_SECTIONS)) {
-    config[section] = validateRecord(raw[section], fields, section, problems);
+    // A key this module RETIRED is left in an old file by every upgrade: accept it in
+    // silence (it is not read) instead of reporting "unknown key" on every launch.
+    config[section] = validateRecord(raw[section], fields, section, problems, {
+      extraKeys: RETIRED_SECTION_KEYS[section] || [],
+    });
   }
 
   const hotkeysRaw = raw.hotkeys;

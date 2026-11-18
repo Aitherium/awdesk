@@ -110,15 +110,12 @@
         <input type="number" id="ovDwell" min="150" max="5000" step="50" style="width:6em"> ms
       </div>
       <div class="row">
-        <label style="min-width:0"><input type="checkbox" id="ovNotify"> Bring the overlay forward for notifications</label>
-      </div>
-      <div class="row">
         <label style="min-width:0"><input type="checkbox" id="ovDnd"> Do not disturb</label>
       </div>
       <div class="row">
         <label style="min-width:0"><input type="checkbox" id="ovSpaceHome"> Inbox and Fleet open into Space</label>
       </div>
-      <p class="note">With notifications off, a decision that needs you shows a small notice by the tray instead. Do not disturb stops everything that opens on its own, including requests from agents.</p>
+      <p class="note">A decision that needs you arrives as a toast by the tray; nothing opens a window by itself. Do not disturb stops everything that opens on its own, including requests from agents.</p>
     </section>
 
     <section>
@@ -176,11 +173,10 @@
     renderOverlay(res.overlay || {});
   }
 
-  // Desktop overlay (overlay-policy.cjs): four switches, the edge and the dwell.
+  // Desktop overlay (overlay-policy.cjs): three switches, the edge and the dwell.
   const ov = {
     autoOpenOnStart: document.getElementById("ovAutoStart"),
     edgeReveal: document.getElementById("ovEdge"),
-    raiseOnNotifications: document.getElementById("ovNotify"),
     doNotDisturb: document.getElementById("ovDnd"),
     spaceHome: document.getElementById("ovSpaceHome"),
   };
