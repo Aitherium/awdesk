@@ -70,10 +70,16 @@
     color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     background: color-mix(in oklch, var(--bg-sunk), transparent 30%); padding: 3px 8px; border-radius: 8px; }
   /* ── the overview: what needs you, then one line per group ─────────────── */
-  #overview { position: absolute; inset: 0; overflow: auto; padding: 12px 14px; }
+  /* Two panes that scroll on their own: "Needs you" can never be scrolled out of sight by
+     a long group list (live screenshot 2026-11-18). No scroll anchoring: a re-render of a
+     list above the anchor jumped the view to the bottom. */
+  #overview { position: absolute; inset: 0; padding: 12px 14px; display: grid; gap: 14px;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); overflow-anchor: none; }
+  #overview section { min-height: 0; overflow: auto; overflow-anchor: none; }
+  @media (max-width: 760px) { #overview { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    #attention { max-height: 48vh; } }
   #overview h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
     margin: 4px 0 6px; font-weight: 600; }
-  #overview section + section { margin-top: 14px; }
   #overview .none { color: var(--muted); font-size: 12px; }
   #overview .clear { color: var(--ok); font-size: 13px; }
   .att { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 4px 10px; align-items: center;
@@ -87,7 +93,7 @@
   .att .verbs { display: flex; gap: 6px; }
   .att .verbs button { padding: 4px 10px; font-size: 12px; font-weight: 500; }
   .grp { width: 100%; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 10px; align-items: center;
-    padding: 6px 8px; border-radius: 8px; font-weight: 500; margin-bottom: 4px; }
+    padding: 4px 8px; border-radius: 8px; font-weight: 500; font-size: 13px; margin-bottom: 3px; }
   .grp .gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .grp .gcount { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .members { margin: 0 0 8px 26px; }
