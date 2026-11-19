@@ -69,6 +69,31 @@
   .netnote { position: absolute; left: 12px; top: 10px; max-width: calc(100% - 24px); z-index: 4; pointer-events: none;
     color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     background: color-mix(in oklch, var(--bg-sunk), transparent 30%); padding: 3px 8px; border-radius: 8px; }
+  /* ── the overview: what needs you, then one line per group ─────────────── */
+  #overview { position: absolute; inset: 0; overflow: auto; padding: 12px 14px; }
+  #overview h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+    margin: 4px 0 6px; font-weight: 600; }
+  #overview section + section { margin-top: 14px; }
+  #overview .none { color: var(--muted); font-size: 12px; }
+  #overview .clear { color: var(--ok); font-size: 13px; }
+  .att { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 4px 10px; align-items: center;
+    padding: 7px 8px; border-radius: 10px; border: 1px solid var(--line); margin-bottom: 6px; background: var(--card); }
+  .att .dot, .grp .dot, .mem .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--unknown); }
+  .dot.s-down { background: var(--down); } .dot.s-degraded { background: var(--mixed); } .dot.s-parked { background: var(--quiet); }
+  .dot.s-ok { background: var(--up); } .dot.s-starting { background: var(--primary); }
+  .att .who { min-width: 0; }
+  .att .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .att .why { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .att .verbs { display: flex; gap: 6px; }
+  .att .verbs button { padding: 4px 10px; font-size: 12px; font-weight: 500; }
+  .grp { width: 100%; display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+    padding: 6px 8px; border-radius: 8px; font-weight: 500; margin-bottom: 4px; }
+  .grp .gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .grp .gcount { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .members { margin: 0 0 8px 26px; }
+  .mem { display: grid; grid-template-columns: 9px minmax(0, 1fr); gap: 8px; align-items: center; font-size: 12px; padding: 2px 0; }
+  .mem .mt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @media (max-width: 520px) { .att { grid-template-columns: 10px minmax(0, 1fr); } .att .verbs { grid-column: 2; } }
   /* in the toolbar, not over the map: an overlay legend sat on the bottom row of labels */
   .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-right: 10px; }
   .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
@@ -133,9 +158,9 @@
     <h1>Aither Fleet</h1>
     <div class="hud" id="hud" aria-live="polite">
       <span class="stat"><span class="k">running</span><span class="v" id="s-running">–</span></span>
-      <span class="stat"><span class="k">masked</span><span class="v" id="s-masked">–</span></span>
+      <span class="stat"><span class="k">down</span><span class="v" id="s-down">–</span></span>
+      <span class="stat"><span class="k">parked</span><span class="v" id="s-parked">–</span></span>
       <span class="stat"><span class="k">VRAM</span><span class="v" id="s-vram">–</span></span>
-      <span class="stat"><span class="k">hold</span><span class="v" id="s-hold">–</span></span>
     </div>
     <div id="pill" data-state="UNKNOWN">…</div>
     <div id="statusline" role="status"></div>
@@ -153,10 +178,21 @@
     </button>
   </div>
 
-  <!-- The network. Select a node for its verbs; drag to pan, wheel to zoom. -->
-  <div id="stage" aria-label="Fleet network">
-    <div id="net"></div>
-    <div class="netnote" id="netnote">loading the network…</div>
+  <!-- DEFAULT: the overview (what needs you, then every group as one line). The network
+       map is behind the "Show map" toggle. Select a node for its verbs; wheel to zoom. -->
+  <div id="stage" aria-label="Fleet">
+    <div id="overview" aria-label="Fleet overview">
+      <section id="attention" aria-labelledby="attention-h">
+        <h2 id="attention-h">Needs you</h2>
+        <div id="attention-list"><div class="none">reading the service map…</div></div>
+      </section>
+      <section id="groups" aria-labelledby="groups-h">
+        <h2 id="groups-h">By group</h2>
+        <div id="group-list"></div>
+      </section>
+    </div>
+    <div id="net" hidden></div>
+    <div class="netnote" id="netnote" hidden>loading the network…</div>
 
     <div id="dock" role="dialog" aria-labelledby="dock-title" hidden>
       <div id="dock-head">
@@ -247,6 +283,7 @@
 
   <div class="row">
     <button id="b-refresh">Refresh status</button>
+    <button id="b-view" aria-pressed="false" title="Switch between the overview and the full network map">Show map</button>
     <span class="hint" id="hint">auto-refresh every 30 s</span>
     <span class="spacer"></span>
     <div class="legend" aria-hidden="true">
@@ -270,6 +307,7 @@
   </footer>
 
 <script src="vendor/bead-space/bead-space.iife.js"></script>
+<script src="fleet-overview.js"></script>
 <script src="fleet-page.js"></script>
 </body>
 </html>

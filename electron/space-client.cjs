@@ -43,7 +43,12 @@ const CACHE_KEY = "space-universe";
 
 /** Genesis instances the local fallback asks, in order (the LB name is haproxy's). */
 const LOCAL_GENESIS_CONTAINERS = Object.freeze(["aitheros-genesis-a", "aitheros-genesis-b"]);
-const LOCAL_FETCH_TIMEOUT_MS = 30000;
+// Genesis builds the universe on demand: 5-35 s measured 2026-11-18 under host load 60-88
+// (the structure cache refreshes every 300 s, and that read is the slow one). The old
+// 20 s curl cap / 30 s exec cap failed BOTH instances on every slow build, so the Fleet
+// window drew an 11-day-old last-good copy while Genesis was healthy.
+const LOCAL_CURL_MAX_S = 55;
+const LOCAL_FETCH_TIMEOUT_MS = (LOCAL_CURL_MAX_S + 10) * 1000;
 /** universe.py unit verbs: start / park ONE unit (space-window.cjs runs them). */
 const UNIT_VERB_RE = /^unit-(start|park):([A-Za-z0-9][A-Za-z0-9_.@-]{0,120})$/;
 
@@ -274,7 +279,7 @@ function veilUniverseFetcher({ token, fetchImpl = globalThis.fetch, apiBase = AP
  */
 function localGenesisArgv(container, { distro = distroName(), local = inFleetHost() } = {}) {
   if (!LOCAL_GENESIS_CONTAINERS.includes(container)) throw new Error(`not a Genesis instance: ${container}`);
-  const inner = ["podman", "exec", container, "curl", "-sk", "--max-time", "20",
+  const inner = ["podman", "exec", container, "curl", "-sk", "--max-time", String(LOCAL_CURL_MAX_S),
     "-H", "X-Caller-Type: platform", "-H", "Accept: application/json",
     "https://localhost:8001/beadspace/universe"];
   if (local) return { file: inner[0], args: inner.slice(1) };
@@ -444,6 +449,8 @@ module.exports = {
   CACHE_TTL_MS,
   FLEET_VERDICT_MAX_AGE_MS,
   FETCH_TIMEOUT_MS,
+  LOCAL_FETCH_TIMEOUT_MS,
+  LOCAL_CURL_MAX_S,
   FLEET_VERBS,
   GPU_VERBS,
   GALAXIES,

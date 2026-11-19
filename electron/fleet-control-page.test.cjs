@@ -25,6 +25,7 @@ const vm = require("node:vm");
 
 const HTML = fs.readFileSync(path.join(__dirname, "fleet-control.html"), "utf8");
 const PAGE = fs.readFileSync(path.join(__dirname, "fleet-page.js"), "utf8");
+const OVERVIEW = fs.readFileSync(path.join(__dirname, "fleet-overview.js"), "utf8");
 
 /** Every <button> carrying data-bead in the html: { id, action, bead }. */
 const VERBS = [...HTML.matchAll(/<button id="([^"]+)"[^>]*?data-bead="([^"]+)"[^>]*>/g)].map((m) => ({
@@ -94,11 +95,14 @@ function byId(id, tag = "div") { const e = new Element(tag); e.id = id; return e
 /** Load the page's script over a fresh paper document with a controllable `window.fleet`. */
 function mount({ status, spaceAvailable, network } = {}) {
   const ids = {};
-  for (const id of ["log", "pill", "s-running", "s-masked", "s-vram", "s-hold", "holders", "surfaces", "hint",
+  for (const id of ["log", "pill", "s-running", "s-down", "s-parked", "s-vram", "holders", "surfaces", "hint",
     "hud", "statusline", "stage", "net", "netnote", "dock", "dock-title", "dock-close", "fleet-detail", "arc-detail",
-    "host", "host-line", "door-detail", "svc-detail", "brick-detail", "b-help", "cli-hints"]) {
+    "host", "host-line", "door-detail", "svc-detail", "brick-detail", "b-help", "cli-hints",
+    "overview", "attention-list", "group-list"]) {
     ids[id] = byId(id);
   }
+  ids.net.hidden = /<div id="net" hidden>/.test(HTML); // as the html ships it
+  ids.netnote.hidden = /id="netnote" hidden/.test(HTML);
   ids.pill.dataset.state = "UNKNOWN";
   ids.pill.textContent = "…";
   ids.dock.hidden = true;
@@ -116,6 +120,7 @@ function mount({ status, spaceAvailable, network } = {}) {
     if (v.action) actions.push(b);
   }
   ids["b-refresh"] = byId("b-refresh", "button");
+  ids["b-view"] = byId("b-view", "button");
   // "Open in Space": the anchor's data-space, read from the html like the verbs.
   ids["b-space"] = byId("b-space", "a");
   ids["b-space"].dataset.space = (/<a id="b-space"[^>]*data-space="([^"]+)"/.exec(HTML) || [])[1];
@@ -123,6 +128,7 @@ function mount({ status, spaceAvailable, network } = {}) {
 
   const calls = [];
   const runs = [];
+  const services = [];
   const opened = [];
   const keydown = [];
   const fleet = {
@@ -132,6 +138,11 @@ function mount({ status, spaceAvailable, network } = {}) {
     onProgress: () => () => {},
     close: () => {},
     open: (u) => { opened.push(u); },
+    service: (verb, name) => {
+      services.push([verb, name]);
+      return Promise.resolve(verb === "show" ? { ok: true, log: "line one\nboom: port in use", status: "exited" }
+        : { ok: true, verified: "running" });
+    },
   };
   if (spaceAvailable !== undefined) fleet.spaceAvailable = () => spaceAvailable();
   if (network !== undefined) fleet.network = () => Promise.resolve(network);
@@ -152,9 +163,11 @@ function mount({ status, spaceAvailable, network } = {}) {
     clearTimeout,
     console,
   };
-  vm.runInNewContext(PAGE, vm.createContext(sandbox), { filename: "fleet-page.js" });
+  const ctx = vm.createContext(sandbox);
+  vm.runInContext(OVERVIEW, ctx, { filename: "fleet-overview.js" });
+  vm.runInContext(PAGE, ctx, { filename: "fleet-page.js" });
   const text = (id) => ids[id].textContent;
-  return { ids, calls, intervals, text, runs, opened, keydown, pill: ids.pill, pane: () => win.fleetPane,
+  return { ids, calls, intervals, text, runs, opened, keydown, services, pill: ids.pill, pane: () => win.fleetPane,
     refreshTimer: () => intervals.find((i) => i.ms === 30_000),
     logLines: () => ids.log.children.map((c) => c.textContent) };
 }
@@ -180,11 +193,10 @@ test("first probe in flight: pill PROBING (BUSY's family), every counter says pr
   const pillBg = (state) => (HTML.match(new RegExp(`#pill\\[data-state="${state}"\\]\\s*\\{[^}]*background:\\s*([^;]+);`)) || [])[1];
   assert.ok(pillBg("BUSY"), "BUSY has no background");
   assert.equal(pillBg("PROBING"), pillBg("BUSY"), "PROBING is styled in BUSY's blue");
-  for (const id of ["s-running", "s-masked", "s-vram", "s-hold"]) {
+  for (const id of ["s-running", "s-vram"]) {
     assert.equal(page.text(id), "probing…", `${id} while the first probe runs`);
     assert.ok(page.ids[id].classList.contains("probing"), `${id} carries the probing class`);
   }
-  assert.notEqual(page.text("s-hold"), "free", "render(null) must never claim the GPU is free");
   assert.match(page.text("holders"), /probing…/);
   assert.match(page.text("statusline"), /probing the fleet/, "the status line says a probe is running");
   assert.equal(page.logLines().length, 0, "a probe is not action output: the log stays empty");
@@ -195,9 +207,7 @@ test("first probe in flight: pill PROBING (BUSY's family), every counter says pr
   assert.equal(page.pill.dataset.state, "UP");
   assert.equal(page.pill.textContent, "UP");
   assert.equal(page.text("s-running"), "145");
-  assert.equal(page.text("s-masked"), "0 / 212");
-  assert.equal(page.text("s-vram"), "31.2 / 32 GiB");
-  assert.equal(page.text("s-hold"), "free");
+  assert.equal(page.text("s-vram"), "31.2 used · 0.6 free GiB", "VRAM is used AND free, not a ratio to do in your head");
   assert.match(page.text("statusline"), /^145 running/);
   assert.match(page.text("holders"), /7\.10 GiB.*ComfyUI \(pid 4242\)/);
   const door = page.pane().data().nodes.find((n) => n.id === "door:0");
@@ -219,16 +229,21 @@ test("held fleet: GPU hold reads HELD and the pill GPU QUIET", async () => {
   const st = GOOD(); st.held = true;
   const page = mount({ status: () => Promise.resolve(st) });
   await tick(); await tick();
-  assert.equal(page.text("s-hold"), "HELD");
+  assert.match(page.text("statusline"), /GPU held/);
   assert.equal(page.pill.textContent, "GPU QUIET");
 });
 
-test("cannotJudge with no stale verdict: pill CANNOT JUDGE, counters ?, the reason in the ONE status line", async () => {
+test("cannotJudge with no stale verdict: pill CANNOT JUDGE, counters say WHY (never a bare ?), reason in the status line", async () => {
   const page = mount({ status: () => Promise.resolve({ ok: false, cannotJudge: true, error: "the Debian distro did not answer. Nothing changed." }) });
   await tick(); await tick();
   assert.equal(page.pill.dataset.state, "CANNOT JUDGE");
-  for (const id of ["s-running", "s-masked", "s-vram", "s-hold"]) assert.equal(page.text(id), "?", id);
-  assert.equal(page.text("statusline"), "the Debian distro did not answer");
+  for (const id of ["s-running", "s-down", "s-parked", "s-vram"]) {
+    assert.notEqual(page.text(id), "?", `${id} is a bare ?`);
+    assert.equal(page.text(id), "unknown", id);
+    assert.ok(page.ids[id].title, `${id} carries its reason as a tooltip`);
+  }
+  assert.equal(page.ids["s-running"].title, "status probe failed: the Debian distro did not answer");
+  assert.equal(page.text("statusline"), "status probe failed: the Debian distro did not answer");
   assert.equal(page.ids.statusline.dataset.tone, "bad");
   assert.equal(page.logLines().length, 0);
   assert.equal(page.pane().data().nodes.find((n) => n.id === "ctl:host").meta.health, "down", "the host node says it does not answer");
@@ -246,7 +261,7 @@ test("a STALE verdict is CANNOT JUDGE in the pill -- never UP -- with the old nu
   assert.equal(page.pill.textContent, "CANNOT JUDGE");
   assert.match(page.text("statusline"), /^fresh probe failed \(podman ps timed out\) -- the numbers are 42 s old: 145 running then$/);
   assert.match(page.text("s-running"), /^145 · 42 s ago$/);
-  assert.match(page.text("s-hold"), /^free · 42 s ago$/);
+  assert.match(page.text("s-vram"), /^31\.2 used · 0\.6 free GiB · 42 s ago$/);
   assert.notEqual(page.pane().data().nodes.find((n) => n.id === "ctl:fleet").meta.health, "ok", "a stale fleet is not drawn healthy");
 });
 
@@ -254,8 +269,8 @@ test("the IPC itself rejecting is a CANNOT JUDGE verdict, not a pane stuck on pr
   const page = mount({ status: () => Promise.reject(new Error("No handler registered for 'desk:fleet-status'")) });
   await tick(); await tick();
   assert.equal(page.pill.textContent, "CANNOT JUDGE");
-  assert.equal(page.text("s-running"), "?");
-  assert.match(page.text("statusline"), /No handler registered/);
+  assert.equal(page.text("s-running"), "unknown");
+  assert.match(page.text("statusline"), /^status probe failed: No handler registered/);
 });
 
 test("repeated CANNOT JUDGE refreshes: ONE status line, nothing in the log, the pill agrees (no '(x6)' spam)", async () => {
@@ -265,7 +280,7 @@ test("repeated CANNOT JUDGE refreshes: ONE status line, nothing in the log, the 
   assert.equal(page.logLines().length, 0, page.logLines().join("\n"));
   assert.equal(page.ids.log.hidden, true, "the empty log is not drawn");
   assert.equal(page.pill.dataset.state, "CANNOT JUDGE");
-  assert.equal(page.text("statusline"), "the awnix WSL distro did not answer");
+  assert.equal(page.text("statusline"), "status probe failed: the awnix WSL distro did not answer");
 });
 
 test("a later refresh keeps the last numbers up and says refreshing… in the hint, not PROBING", async () => {
@@ -404,7 +419,7 @@ test("the CSP admits only the page's own files: the vendored engine and fleet-pa
   assert.match(HTML, /script-src file:;/);
   assert.doesNotMatch(HTML, /<script>/, "no inline script");
   const srcs = [...HTML.matchAll(/<script src="([^"]+)"><\/script>/g)].map((m) => m[1]);
-  assert.deepEqual(srcs, ["vendor/bead-space/bead-space.iife.js", "fleet-page.js"]);
+  assert.deepEqual(srcs, ["vendor/bead-space/bead-space.iife.js", "fleet-overview.js", "fleet-page.js"]);
   assert.match(HTML, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
@@ -442,4 +457,106 @@ test("Open in Space stays hidden unless main reports a Space pane (no dead link 
     await tick(); await tick();
     assert.equal(page.ids["b-space"].hidden, true, label);
   }
+});
+
+// ── the overview (owner 2026-11-18: "can we make this better and work?") ──────────
+
+const SICK = {
+  ok: true, source: "genesis", nodes: [
+    { id: "svc:genesis", title: "Genesis", group: "Core", health: { state: "ok", reason: "" }, unit: "aither-genesis" },
+    { id: "svc:avatars", title: "AitherAvatars", group: "Platform", health: { state: "down", reason: "Watch: offline" },
+      unit: "aither-avatars", criticality: "optional" },
+    { id: "svc:cognition", title: "CognitionAdvanced", group: "Cognition", health: { state: "down", reason: "Watch: offline" },
+      unit: "aither-cognition-advanced", criticality: "core" },
+    { id: "svc:alerts", title: "AlertManager", group: "Monitoring", health: { state: "degraded", reason: "relay missing" },
+      unit: "aither-alertmanager" },
+    { id: "ctr:leftover", title: "leftover", group: "Parked", health: { state: "parked", reason: "nothing runs it" }, unit: null },
+  ],
+  links: [],
+};
+
+test("the DEFAULT view is the overview: the network map is behind a toggle", async () => {
+  assert.match(HTML, /<div id="net" hidden>/, "the map ships hidden");
+  const page = mount({ status: () => Promise.resolve(GOOD()), network: SICK });
+  await tick(); await tick(); await tick();
+  assert.equal(page.pane().view(), "overview");
+  assert.equal(page.ids.overview.hidden, false);
+  assert.equal(page.ids.net.hidden, true);
+  page.ids["b-view"].click();
+  assert.equal(page.pane().view(), "map");
+  assert.equal(page.ids.net.hidden, false, "the toggle shows the map");
+  assert.equal(page.ids.overview.hidden, true);
+  assert.equal(page.text("b-view"), "Show overview");
+  page.ids["b-view"].click();
+  assert.equal(page.pane().view(), "overview");
+});
+
+test("the header counts are real: running, down (+degraded), parked, VRAM used/free", async () => {
+  const page = mount({ status: () => Promise.resolve(GOOD()), network: SICK });
+  await tick(); await tick(); await tick();
+  assert.equal(page.text("s-running"), "145");
+  assert.equal(page.text("s-down"), "2 +1 degraded");
+  assert.equal(page.text("s-parked"), "1");
+  assert.equal(page.text("s-vram"), "31.2 used · 0.6 free GiB");
+});
+
+test("needs-you: down before degraded, core before optional, each with Restart and Logs; parked is not on it", async () => {
+  const page = mount({ status: () => Promise.resolve(GOOD()), network: SICK });
+  await tick(); await tick(); await tick();
+  const rows = page.ids["attention-list"].children.filter((c) => c.className === "att");
+  assert.deepEqual(rows.map((r) => r.dataset.id), ["svc:cognition", "svc:avatars", "svc:alerts"]);
+  const verbs = rows[0].children[2].children;
+  assert.deepEqual(verbs.map((b) => b.textContent), ["Restart", "Logs"]);
+  assert.match(rows[0].textContent, /CognitionAdvanced.*down · Cognition -- Watch: offline/);
+});
+
+test("Logs reads ONE service's log into the log box; Restart needs a second click", async () => {
+  const page = mount({ status: () => Promise.resolve(GOOD()), network: SICK });
+  await tick(); await tick(); await tick();
+  const row = () => page.ids["attention-list"].children.find((c) => c.dataset.id === "svc:avatars");
+  const [restart, logs] = row().children[2].children;
+  logs.click();
+  for (let i = 0; i < 4; i++) await tick();
+  assert.deepEqual(page.services, [["show", "aither-avatars"]]);
+  assert.ok(page.logLines().some((l) => /boom: port in use/.test(l)), page.logLines().join("\n"));
+  restart.click();
+  await tick();
+  assert.equal(page.services.length, 1, "one click only arms the restart");
+  assert.equal(restart.textContent, "Confirm restart");
+  restart.click();
+  for (let i = 0; i < 4; i++) await tick();
+  assert.deepEqual(page.services[1], ["restart", "aither-avatars"]);
+  assert.ok(page.logLines().some((l) => /restart aither-avatars: running/.test(l)));
+});
+
+test("groups are collapsed to one line of counts, worst first; a click opens one", async () => {
+  const page = mount({ status: () => Promise.resolve(GOOD()), network: SICK });
+  await tick(); await tick(); await tick();
+  const heads = () => page.ids["group-list"].children.filter((c) => c.className === "grp");
+  assert.equal(page.ids["group-list"].children.length, heads().length, "every group starts collapsed");
+  assert.deepEqual(heads().map((h) => h.dataset.group).slice(0, 2), ["Cognition", "Platform"]);
+  assert.match(heads()[0].textContent, /0\/1 up · 1 down/);
+  heads()[0].click();
+  assert.ok(page.ids["group-list"].children.some((c) => c.className === "members"), "the clicked group lists its members");
+});
+
+test("the map labels only the control nodes and the services that are not ok (no overlapping hairball)", () => {
+  const page = mount({ status: () => Promise.resolve(GOOD()) });
+  const label = page.pane().mapLabel;
+  assert.equal(label({ title: "Genesis", meta: { kind: "svc", health: "ok" } }), "");
+  assert.equal(label({ title: "Veil", meta: { kind: "svc", health: "down" } }), "Veil");
+  assert.equal(label({ title: "awnix host", meta: { kind: "ctl", key: "host" } }), "awnix host");
+  assert.equal(label({ title: "awdk", meta: { kind: "brick" } }), "");
+});
+
+test("a saved map copy says how old it is and WHY the live read failed", async () => {
+  // the package is "type": "module", so the page's classic script is loaded the way the page loads it
+  const w = {};
+  vm.runInNewContext(OVERVIEW, { window: w });
+  const OV = w.FleetOverview;
+  const now = Date.parse("2026-11-18T19:00:00Z");
+  const txt = OV.mapSource({ ok: true, source: "last-good", savedAt: "2026-11-07T19:00:00Z",
+    error: "universe route unreachable: TimeoutError; local Genesis: aitheros-genesis-a: no answer" }, now);
+  assert.match(txt, /^saved copy \(11 days old\) -- live read failed: universe route unreachable/);
+  assert.equal(OV.mapSource({ ok: true, source: "genesis" }), "live from Genesis");
 });

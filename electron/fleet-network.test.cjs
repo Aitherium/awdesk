@@ -55,3 +55,24 @@ test("readEcosystem reads the vendored public registry; a bad file is an error, 
   fs.writeFileSync(bad, "{}");
   assert.equal(readEcosystem(bad).ok, false);
 });
+
+test("fleetNetwork carries the unit the service verbs take, only when it fits the verb grammar", () => {
+  const u = {
+    universe_version: 1,
+    nodes: [
+      { id: "galaxy:fleet", level: "galaxy", parent: "platform", title: "fleet" },
+      { id: "solar:fleet/p", level: "solar", parent: "galaxy:fleet", title: "Platform" },
+      { id: "svc:avatars", level: "system", parent: "solar:fleet/p", title: "AitherAvatars",
+        health: { state: "down", reason: "Watch: offline" }, meta: { unit: "aither-avatars", criticality: "optional" } },
+      { id: "ctr:aither-leftover", level: "system", parent: "solar:fleet/p", title: "leftover", health: { state: "parked" } },
+      { id: "svc:evil", level: "system", parent: "solar:fleet/p", title: "x", meta: { unit: "a; rm -rf /" } },
+    ],
+    links: [],
+  };
+  const net = fleetNetwork({ universe: u });
+  const by = Object.fromEntries(net.nodes.map((n) => [n.id, n]));
+  assert.equal(by["svc:avatars"].unit, "aither-avatars");
+  assert.equal(by["svc:avatars"].criticality, "optional");
+  assert.equal(by["ctr:aither-leftover"].unit, "aither-leftover", "a bare container is its own name");
+  assert.equal(by["svc:evil"].unit, null, "a unit outside the grammar is never passed on");
+});

@@ -274,12 +274,12 @@ async function run() {
       "({ pill: document.getElementById('pill').textContent,"
       + " state: document.getElementById('pill').dataset.state,"
       + " running: document.getElementById('s-running').textContent,"
-      + " hold: document.getElementById('s-hold').textContent })",
+      + " vram: document.getElementById('s-vram').textContent })",
     );
     const placeholder = seen.pill === "…" || seen.state === "UNKNOWN" || seen.running === "–";
     check("fleet pane says what it is doing", !placeholder, JSON.stringify(seen));
     check("fleet pane never paints 'free' before a verdict",
-      seen.state !== "PROBING" || (seen.hold === "probing…" && seen.running === "probing…"),
+      seen.state !== "PROBING" || (seen.vram === "probing…" && seen.running === "probing…"),
       JSON.stringify(seen));
   }
 

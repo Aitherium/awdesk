@@ -26,4 +26,6 @@ contextBridge.exposeInMainWorld("fleet", {
   // the public aw* registry vendored beside the engine. Read-only.
   network: (opts) => ipcRenderer.invoke("desk:fleet-network", opts ?? {}),
   ecosystem: () => ipcRenderer.invoke("desk:fleet-ecosystem"),
+  // ONE service: "restart" it or "show" its recent log (main validates both words).
+  service: (verb, name) => ipcRenderer.invoke("desk:fleet-service", String(verb), String(name)),
 });
