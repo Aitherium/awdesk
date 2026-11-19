@@ -98,7 +98,7 @@ function mount({ status, spaceAvailable, network } = {}) {
   for (const id of ["log", "pill", "s-running", "s-down", "s-parked", "s-vram", "holders", "surfaces", "hint",
     "hud", "statusline", "stage", "net", "netnote", "dock", "dock-title", "dock-close", "fleet-detail", "arc-detail",
     "host", "host-line", "door-detail", "svc-detail", "brick-detail", "b-help", "cli-hints",
-    "overview", "attention-list", "group-list"]) {
+    "overview", "attention", "groups", "attention-list", "group-list"]) {
     ids[id] = byId(id);
   }
   ids.net.hidden = /<div id="net" hidden>/.test(HTML); // as the html ships it
@@ -559,4 +559,17 @@ test("a saved map copy says how old it is and WHY the live read failed", async (
     error: "universe route unreachable: TimeoutError; local Genesis: aitheros-genesis-a: no answer" }, now);
   assert.match(txt, /^saved copy \(11 days old\) -- live read failed: universe route unreachable/);
   assert.equal(OV.mapSource({ ok: true, source: "genesis" }), "live from Genesis");
+});
+
+test("a refresh leaves each overview list where it was scrolled; Needs you has its own pane", async () => {
+  assert.match(HTML, /#overview section \{[^}]*overflow: auto/, "each list scrolls on its own");
+  assert.match(HTML, /overflow-anchor: none/);
+  const page = mount({ status: () => Promise.resolve(GOOD()), network: SICK });
+  await tick(); await tick(); await tick();
+  page.ids.groups.scrollTop = 120;
+  page.ids.attention.scrollTop = 0;
+  page.refreshTimer().fn();
+  for (let i = 0; i < 4; i++) await tick();
+  assert.equal(page.ids.groups.scrollTop, 120);
+  assert.equal(page.ids.attention.scrollTop, 0);
 });

@@ -611,9 +611,12 @@
 
   function renderOverview() {
     if (!$("overview")) return;
+    // a re-render (every refresh) must leave each list where the owner scrolled it
+    const keep = ["attention", "groups"].map((id) => [id, $(id) ? $(id).scrollTop : 0]);
     renderAttention();
     renderGroups();
     paintStats();
+    for (const [id, top] of keep) if ($(id)) $(id).scrollTop = top;
   }
 
   /** Restart (confirm: a second click within 6 s) or read the log of ONE service. */
