@@ -390,8 +390,8 @@ test("one cluster: the desk hides the page's own fairy and docks on the AitherOS
   assert.ok(ld.includes('"[data-os-fairy-root]{display:none !important}"'), "the page fairy is not drawn in desk windows");
   for (const event of ["show", "hide", "minimize", "restore"]) assert.ok(ld.includes(`"${event}"`), event);
   assert.ok(ld.includes("appWin = null;\n    syncFairyDock();"), "a closed window lets the fairy go");
-  assert.ok(ow.includes('if (attach && !attach.auto) return { ok: true, docked: false, why: "attached by hand" };'),
-    "an attachment the owner made is never replaced");
+  assert.ok(ow.includes('if (attach && !attach.auto && !attach.follow) return { ok: true, docked: false, why: "attached by hand" };'),
+    "an attachment the owner made is never replaced (a follow attach is not one)");
   assert.ok(ow.includes("if (attach.auto && (!win.isVisible() || win.isMinimized()))"), "a minimised window is let go");
 });
 

@@ -2396,6 +2396,69 @@ test("turning the toggle off leaves a fairy the owner placed by hand where it is
   assert.ok(orbWindow.attach(), "a hand attach is not released by the follow switch");
 });
 
+// Owner 2026-11-12 (one cluster) vs plan A4 (follow), owner screenshots 2026-11-19: with
+// the AitherOS window open, focusing ANY other app (Discord in Edge) pulled the one
+// cluster off the AitherOS window onto that app, and focusing the desk again let it go
+// SILENTLY -- stranded where it was, the veil's trail/tether still painted across the
+// screen. The AitherOS window outranks "follow my window".
+function openAitherOS() {
+  const host = new FakeWindow({ title: "AitherOS", x: 200, y: 150, width: 1400, height: 900 });
+  host.visible = true;
+  host.isMinimized = () => false;
+  return host;
+}
+function veilWin() { return FakeWindow.all.find((w) => !w.destroyed && w.opts.title === "Aither spirit trail") || null; }
+
+test("one cluster: an open AitherOS window keeps the cluster when another app takes the focus", async () => {
+  start();
+  orbWindow.showOrb();
+  const host = openAitherOS();
+  const docked = await orbWindow.setDockWindow(host);
+  assert.equal(docked.docked, true, JSON.stringify(docked));
+
+  orbWindow.__feedForeground(NOTEPAD);
+  orbWindow.__setFollowChangedAt(0);
+  const r = await orbWindow.__applyFollow();
+  assert.equal(r.act, "none", `follow must not steal the AitherOS dock: ${JSON.stringify(r)}`);
+  const a = orbWindow.attach();
+  assert.ok(a, "still attached");
+  assert.equal(a.kind, "desk");
+  assert.equal(a.title, "AitherOS", "the cluster stays on the AitherOS window, not on Notepad");
+});
+
+test("follow lets go: the cluster flies home and the trail/tether is not left painted", async () => {
+  start();
+  orbWindow.showOrb();
+  orbWindow.__feedForeground(NOTEPAD);
+  orbWindow.__setFollowChangedAt(0);
+  assert.equal((await orbWindow.__applyFollow()).act, "attach");
+  const onNotepad = orbWin().getBounds();
+  assert.ok(veilWin() && veilWin().isVisible(), "attached: the tether is drawn");
+
+  // The owner clicks back into the desk's own window: follow releases.
+  orbWindow.__feedForeground({ ...NOTEPAD, hwnd: 5, pid: process.pid, title: "Aither Browser" });
+  orbWindow.__setFollowChangedAt(0);
+  assert.equal((await orbWindow.__applyFollow()).act, "release");
+  assert.equal(orbWindow.attach(), null);
+  await wait(700); // the 480 ms flight home
+  const after = orbWin().getBounds();
+  assert.notDeepEqual({ x: after.x, y: after.y }, { x: onNotepad.x, y: onNotepad.y }, "not stranded on the window it left");
+  assert.ok(!veilWin() || !veilWin().isVisible(), "no stale trail/tether left across other windows");
+});
+
+test("the AitherOS window opening takes the cluster from a follow attach", async () => {
+  start();
+  orbWindow.showOrb();
+  orbWindow.__feedForeground(NOTEPAD);
+  orbWindow.__setFollowChangedAt(0);
+  assert.equal((await orbWindow.__applyFollow()).act, "attach");
+  const host = openAitherOS();
+  const r = await orbWindow.setDockWindow(host);
+  assert.equal(r.docked, true, `a follow attach is not a hand attach: ${JSON.stringify(r)}`);
+  const a = orbWindow.attach();
+  assert.ok(a && a.kind === "desk" && a.title === "AitherOS", `rides the AitherOS window: ${JSON.stringify(a)}`);
+});
+
 test("the desk's own window is never followed", async () => {
   start();
   orbWindow.showOrb();

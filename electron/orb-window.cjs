@@ -443,7 +443,9 @@ async function setDockWindow(win) {
   // Hidden fairies stay hidden (owner 2026-11-13): docking never shows them.
   if (ride && !state.visible) return { ok: true, docked: false, why: "the fairies are hidden" };
   if (ride) {
-    if (attach && !attach.auto) return { ok: true, docked: false, why: "attached by hand" };
+    // A FOLLOW attach is not a hand attach: the AitherOS window outranks "follow my
+    // window" (one cluster), so it takes the cluster from whatever follow was riding.
+    if (attach && !attach.auto && !attach.follow) return { ok: true, docked: false, why: "attached by hand" };
     if (attach && attach.auto && attach.windowId === ride.id) return { ok: true, docked: true };
     const r = await attachTo({ kind: "desk", windowId: ride.id, title: ride.getTitle() || "AitherOS", bounds: ride.getBounds(), auto: true },
       { quiet: true });
@@ -965,12 +967,18 @@ async function applyFollow() {
     }
     if (decision.act === "release") {
       if (attach && attach.follow) {
-        detach({ silent: true });
         // The AitherOS window may be exactly what was focused: ride it again, as the
-        // one-cluster rule wants, rather than leaving the fairy at its resting spot.
-        if (dockWindowId) {
-          const w = (() => { try { return electron().BrowserWindow.fromId(dockWindowId); } catch { return null; } })();
-          if (alive(w)) void setDockWindow(w).catch(() => { /* window gone this tick */ });
+        // one-cluster rule wants. Otherwise fly HOME and take the veil down: a silent
+        // detach left the cluster stranded on the window it followed with the trail and
+        // tether still painted across the screen (owner screenshots 2026-11-19).
+        const w = dockWindowId
+          ? (() => { try { return electron().BrowserWindow.fromId(dockWindowId); } catch { return null; } })()
+          : null;
+        if (alive(w) && w.isVisible() && !w.isMinimized()) {
+          detach({ silent: true });
+          void setDockWindow(w).catch(() => { /* window gone this tick */ });
+        } else {
+          detach();
         }
       }
       return decision;
