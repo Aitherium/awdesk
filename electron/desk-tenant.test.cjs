@@ -216,7 +216,9 @@ test("the shipped modules route the overlay base, browser home, titles and tray 
   assert.match(browser, /deskTenant\.baseUrl\(deskTenant\.currentTenant\(\), "https:\/\/aitherium\.com"\)/);
   assert.match(browser, /title: deskTenant\.decorateTitle\("Aither Browser"/);
   const main = read("main.cjs");
-  assert.match(main, /deskTenant\.decorateTitle\(badgeTooltip\(/);
+  // The tray tooltip names the workspace by its own brand + the account (desk-account.cjs).
+  assert.match(main, /const view = accountView\(\);/);
+  assert.match(main, /badgeTooltip\(waiting, cards\.length, needsYou\) \+ where/);
   assert.match(main, /deskTenant\.tenantTrayItems\(deskTenant\.currentTenant\(\)/);
   assert.match(main, /deskTenant\.persistFirstRunHost\(tenantArg\)/);
 });

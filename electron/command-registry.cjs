@@ -238,14 +238,30 @@ const COMMANDS = Object.freeze([
   // are signed in as (`ctx.account`, living-desktop-window.cjs accountStatus()), and
   // the click signs in BOTH windows (desk-session.cjs: auth.json, then the system
   // browser's idp.aitherium.com session -- nothing typed).
+  // customer report 2026-11-19 ("which workspace am I in, as whom?"): signed in, the row IS the
+  // account indicator -- "<workspace by its own brand> — <email>" (desk-account.cjs
+  // indicator, `ctx.accountView`), flagged when the account is not a member there.
   Object.freeze({
     id: "desktop.signin", group: "desktop", surfaces: ["tray", "palette"],
     label: (ctx = {}) => (ctx.account && ctx.account.signedIn
-      ? `AitherOS Online: signed in as ${ctx.account.username || "you"} (refresh)`
+      ? `AitherOS Online: ${(ctx.accountView && ctx.accountView.line) || `signed in as ${ctx.account.username || "you"}`} (refresh)`
       : "AitherOS Online: sign in…"),
     menuLabel: (ctx = {}) => (ctx.account && ctx.account.signedIn
-      ? `Signed in as ${ctx.account.username || "you"}`
+      ? (ctx.accountView && ctx.accountView.line) || `Signed in as ${ctx.account.username || "you"}`
       : "Sign in…"),
+  }),
+  // Switch to another account: sign out, then the same desk sign-in with the IdP's
+  // account chooser (living-desktop-window switchAccount). No second auth path.
+  Object.freeze({
+    id: "account.switch", label: "Switch account…", group: "desktop", surfaces: ["tray", "palette"],
+    when: (ctx = {}) => Boolean(ctx.account && ctx.account.signedIn),
+  }),
+  // A member of several workspaces (Identity /auth/me allowed_tenants) picks which one
+  // the Desk opens. Never shown for one workspace, and never for the platform owner
+  // (who has workspace.switch / "Open a workspace…" over every tenant instead).
+  Object.freeze({
+    id: "workspace.choose", label: "Choose workspace…", group: "desktop", surfaces: ["tray", "palette"],
+    when: (ctx = {}) => Boolean(ctx.workspace && !ctx.workspace.owner && ctx.workspace.memberCount > 1),
   }),
   // Owner, 2026-11-12: switching workspace was a tray-only picker, so awsh, an agent and
   // the palette could not do it and nothing said where the Desk was. One verb:
@@ -289,6 +305,14 @@ const COMMANDS = Object.freeze([
     group: "desktop", surfaces: ["palette"],
     whySingle: "A settings switch, not a door: its row is in Settings (Desktop overlay); the palette and POST /commands/run are its keyboard and agent paths (owner, 2026-10-15: no more menus).",
     type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.spaceHome),
+  }),
+  // customer report 2026-11-19: "an Aitherium sidebar keeps popping up". overlay.workspaceAutoOpen
+  // (overlay-policy.cjs, default on): off = no workspace window opens unless clicked.
+  Object.freeze({
+    id: "desktop.workspace-auto-open", label: "Open my workspace by itself (at start and after sign-in)",
+    group: "desktop", surfaces: ["palette"],
+    whySingle: "A settings switch, not a door: its row is in Settings (Desktop overlay); the palette and POST /commands/run are its keyboard and agent paths (one control per concern).",
+    type: "checkbox", checked: (ctx = {}) => Boolean(!ctx.overlayPolicy || ctx.overlayPolicy.workspaceAutoOpen !== false),
   }),
   // Companion (owner 2026-11-02): the fairy is the default; the full avatar is opt-in.
   // main.cjs companionMode()/setCompanionMode(); exactly one row shows.

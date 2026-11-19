@@ -225,6 +225,7 @@ function cookieDetails(token, { now = Date.now(), expiresAt = null } = {}) {
  * the caller's cookie only.
  *
  * deps: openExternal(url) (required), fetchImpl, idp, hostname, homeDir, fsImpl,
+ * prompt ("select_account" for Switch account; the device-code fallback has no chooser),
  * plus the desk-oidc test seams (ports, createServer, sleep, now, loopbackTimeoutMs),
  * and `writeAuth(tokenBody)` to override the auth.json writer.
  */
@@ -240,6 +241,9 @@ async function signInWithBrowser(deps = {}) {
   try {
     got = await oidc.signInLoopback({
       ...common, ports: d.ports, timeoutMs: d.loopbackTimeoutMs, createServer: d.createServer,
+      // "Switch account" asks the IdP for its chooser (prompt=select_account); a plain
+      // sign-in keeps the silent SSO. Only the two OIDC values Identity honours pass.
+      prompt: ["select_account", "login"].includes(d.prompt) ? d.prompt : "",
     });
   } catch (e) {
     if (!(e instanceof oidc.SignInError) || !["ports_busy", "timeout"].includes(e.code)) throw e;

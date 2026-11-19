@@ -697,6 +697,8 @@ const OVERLAY_FIELDS = Object.freeze({
   doNotDisturb: vBool,
   // Inbox and Fleet open into BeadSpace (space-home.cjs). Reversible; off by default.
   spaceHome: vBool,
+  // The workspace pop-ups (customer taskbar at start, the window after sign-in). On by default.
+  workspaceAutoOpen: vBool,
 });
 
 /** clipboard.* -> clipboard-sync.cjs. `sync: true` pushes local copies to the

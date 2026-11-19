@@ -885,6 +885,106 @@ async function switchWorkspaceCommand(arg, surface) {
   console.log(`[desk] workspace.switch ${arg || "(status)"}: ${result.ok ? result.line : result.error}`);
   return result;
 }
+
+// ── Which account, which workspace (desk-account.cjs) ─────────────────────────────
+// customer report 2026-11-19: the Desk knew the account and the workspace and said neither. The
+// tray's account row, its tooltip and the browser rail's brand button now name both,
+// the workspace by its OWN brand (its public config.js + logo). A member of several
+// workspaces is asked once at sign-in (and can pick again: "Choose workspace…"); the
+// list is Identity /auth/me's, never the Desk's. "Switch account…" reuses desk sign-in.
+const deskAccount = require("./desk-account.cjs");
+/** The current workspace's brand ({host, brand}); loaded once per host. */
+let workspaceBrand = { host: null, brand: null };
+/** The workspaces the signed-in account is a member of ({key, list}); one probe per account. */
+let memberWorkspaces = { key: "", list: [] };
+
+function accountView() {
+  try {
+    const tenant = deskTenant.currentTenant();
+    const brand = tenant && workspaceBrand.host === tenant.host ? workspaceBrand.brand : null;
+    return deskAccount.indicator({ account: desktopAccount(), tenant, brand });
+  } catch {
+    return null;
+  }
+}
+
+/** Re-read the brand of the workspace the Desk is in, then repaint what shows it. */
+async function refreshWorkspaceBrand() {
+  const tenant = deskTenant.currentTenant();
+  const host = tenant && tenant.firstParty ? tenant.host : null;
+  if (host === workspaceBrand.host && (workspaceBrand.brand || !host)) return;
+  workspaceBrand = { host, brand: null };
+  if (host) {
+    const brand = await deskAccount.loadWorkspaceBrand(host);
+    if (workspaceBrand.host !== host) return; // moved again meanwhile
+    workspaceBrand = { host, brand };
+  }
+  if (tray) { refreshTrayMenu(); refreshNotificationBadges(); }
+  try { browserWindow.refreshShell(); } catch { /* no browser yet */ }
+}
+
+/** Re-list the signed-in account's workspaces when the account changed. */
+async function refreshMemberWorkspaces() {
+  const acct = desktopAccount();
+  const key = acct && acct.signedIn ? `${acct.tenantId}|${(acct.memberships || []).join(",")}` : "";
+  if (key === memberWorkspaces.key) return memberWorkspaces.list;
+  memberWorkspaces = { key, list: [] };
+  if (!key || (acct.memberships || []).length < 2) return [];
+  const list = await deskTenantAuto.listMemberWorkspaces({ tenantId: acct.tenantId, memberships: acct.memberships });
+  if (memberWorkspaces.key === key) memberWorkspaces = { key, list };
+  if (tray) refreshTrayMenu();
+  return list;
+}
+
+/** The "which workspace?" prompt: a native message box, one button per workspace. */
+async function askWhichWorkspace(workspaces, identity) {
+  const tenant = deskTenant.currentTenant();
+  const model = deskAccount.choiceDialog(workspaces,
+    { currentHost: (tenant && tenant.host) || "", who: (identity && identity.email) || "" });
+  const { response } = await dialog.showMessageBox({
+    type: "question", title: model.title, message: model.message, detail: model.detail,
+    buttons: model.buttons, cancelId: model.cancelId, defaultId: model.defaultId, noLink: true,
+  });
+  return model.pick(response);
+}
+deskTenantAuto.setWorkspaceChooser(askWhichWorkspace);
+
+/** The bearer of the account the windows are signed in as (the indicator's account). */
+async function windowsBearer() {
+  try {
+    const own = await require("./living-desktop-window.cjs").windowSessionToken();
+    if (own) return own;
+  } catch { /* fall back to the Online tab / auth.json */ }
+  return ownerBearer();
+}
+
+/** "Choose workspace…": the account's own workspaces, re-validated by Identity on open. */
+async function chooseMemberWorkspace() {
+  const list = await refreshMemberWorkspaces();
+  if (list.length < 2) return { ok: false, error: "this account belongs to one workspace" };
+  const picked = await askWhichWorkspace(list, desktopAccount());
+  if (!picked) return { ok: true, changed: false };
+  const result = await deskTenantAuto.openMemberWorkspace(await windowsBearer(), picked);
+  if (!result.opened) console.warn(`[desk] workspace not opened: ${result.refused || result.reason}`);
+  return { ok: Boolean(result.opened), changed: Boolean(result.opened), error: result.refused || result.reason };
+}
+
+/** "Switch account…": the windows sign out and sign in again through the IdP chooser;
+ *  the new session also goes into the Online tab so the two never disagree on who. */
+function switchDeskAccount() {
+  return require("./living-desktop-window.cjs").switchAccount({
+    onToken: async (token, expiresAt) => {
+      const { session } = require("electron");
+      const details = require("./desk-session.cjs").cookieDetails(token, { expiresAt });
+      await session.fromPartition("persist:aither-browser").cookies.set(details);
+    },
+  });
+}
+
+/** Settings / palette: overlay.workspaceAutoOpen (overlay-policy.cjs). */
+function toggleWorkspaceAutoOpen() {
+  return setOverlaySettings({ workspaceAutoOpen: !overlaySettings().workspaceAutoOpen });
+}
 /** "Open the Desk panel at startup" — the owner's quick path into the panel, and a
  *  deterministic way to verify the deck live (restart with this flag, screenshot). */
 const deckIsRequested = process.argv.includes("--open-deck");
@@ -3095,7 +3195,10 @@ function refreshNotificationBadges(cards = openDecisions) {
   const key = needsYou.length > 0;
   const houseLine = deskPostureState.customer ? "" : housePosture.houseTooltipLine(latestHouse);
   const inkNow = require("./ink-window.cjs").status();
-  const tooltip = deskTenant.decorateTitle(badgeTooltip(waiting, cards.length, needsYou), deskTenant.currentTenant())
+  // The workspace by its own brand and the signed-in account (desk-account.cjs).
+  const view = accountView();
+  const where = view ? ` · ${view.workspace.name}${view.signedIn ? ` · ${view.who}` : ""}` : "";
+  const tooltip = badgeTooltip(waiting, cards.length, needsYou) + where
     + (houseLine ? ` · ${houseLine}` : "")
     + (inkNow.active ? " · Drawing on screen (Esc to stop)" : "");
   if (tray) {
@@ -4398,8 +4501,12 @@ function commandContext() {
     workspace: (() => {
       const tenant = deskTenant.currentTenant();
       return { owner: deskTenantAuto.signedInTenantId() === deskTenantAuto.PLATFORM_TENANT,
-        name: (tenant && (tenant.name || tenant.host)) || "", host: (tenant && tenant.host) || "" };
+        name: (tenant && (tenant.name || tenant.host)) || "", host: (tenant && tenant.host) || "",
+        // How many workspaces this account may choose between (Identity /auth/me).
+        memberCount: memberWorkspaces.list.length };
     })(),
+    // "<workspace> — <account>" (desk-account.cjs): the desktop.signin row's label.
+    accountView: accountView(),
   };
 }
 
@@ -4980,6 +5087,9 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "desktop.overlay.reload": return void reloadLivingDesktop();
     case "desktop.signin": return void beginDesktopSignIn();
     case "desktop.signout": return void signOutDesktop();
+    case "account.switch": return void switchDeskAccount();
+    case "workspace.choose": return chooseMemberWorkspace();
+    case "desktop.workspace-auto-open": return void toggleWorkspaceAutoOpen();
     case "workspace.switch": return switchWorkspaceCommand(arg, surface);
     // When the desk may raise the overlay by itself (overlay-policy.cjs, cast.json overlay).
     case "desktop.overlay.auto-start": return void toggleOverlaySetting("autoOpenOnStart");
@@ -5826,6 +5936,8 @@ require("./living-desktop-window.cjs").onVisibilityChange(() => {
 browserWindow.setShellHost({
   isOwner: () => linkedRole === "owner",
   signedIn: () => Boolean(desktopAccount() && desktopAccount().signedIn),
+  // The rail's brand button names the workspace (its own logo) and the account.
+  account: () => accountView(),
   docked: () => avatarDock.isDocked(),
   overlayVisible: () => Boolean(desktopStatus().overlay.visible),
   popupMenu: (win) => Menu.buildFromTemplate(trayTemplateNow()).popup({ window: win }),
@@ -6930,7 +7042,15 @@ function createTray() {
   if (!deskPostureState.customer) setInterval(() => void refreshHouseStatus(), 60_000).unref?.();
   // The sign-in row names the account: learn it at boot (cookie + auth.json, no
   // window), and re-render the tray whenever it changes.
-  onDesktopAccountChange(() => { if (tray) refreshTrayMenu(); });
+  // The account also names the workspaces it may choose between and the rail's indicator.
+  onDesktopAccountChange(() => {
+    if (tray) { refreshTrayMenu(); refreshNotificationBadges(); }
+    try { browserWindow.refreshShell(); } catch { /* no browser yet */ }
+    void refreshMemberWorkspaces().catch(() => {});
+  });
+  // overlay.workspaceAutoOpen: the window a sign-in would open by itself asks first.
+  require("./living-desktop-window.cjs").setAutoOpenGate(
+    () => overlayMayRaise(overlayPolicy.TRIGGERS.WORKSPACE, "workspace window after sign-in"));
   void refreshDesktopAccount().catch(() => {});
   refreshNotificationBadges();
   tray.on("click", toggleOverlay);
@@ -7306,7 +7426,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       browserWindow.followTenant();
       refreshNotificationBadges();
       if (tray) refreshTrayMenu();
+      void refreshWorkspaceBrand();
     });
+    void refreshWorkspaceBrand();
     // Already signed in when the Desk starts: the Online session's own bearer.
     void adoptWorkspaceFromOnline();
     // "Message everyone -> My devices" (Hearth broadcast): this person's own messages to
@@ -8841,8 +8963,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     if (process.argv.includes("--overlay")) showLivingDesktop();
     // A customer desk opens on its taskbar (customer report 2026-10-20: "when he opens the
     // Aither app he just wants the taskbar") -- the same surface a second launch brings up.
-    else if (deskPostureState.customer && !startInBackground) showLivingDesktop();
-    else if (overlayMayRaise(overlayPolicy.TRIGGERS.START)) showLivingDesktop();
+    // overlay.workspaceAutoOpen off (customer report 2026-11-19: "it keeps popping up") holds it back.
+    else if (deskPostureState.customer && !startInBackground) {
+      if (overlayMayRaise(overlayPolicy.TRIGGERS.WORKSPACE, "customer taskbar")) showLivingDesktop();
+    } else if (overlayMayRaise(overlayPolicy.TRIGGERS.START)) showLivingDesktop();
     syncEdgeReveal();
     setInterval(syncEdgeReveal, 30_000).unref?.();
     if (process.argv.includes("--desktop")) showDesktopApp();

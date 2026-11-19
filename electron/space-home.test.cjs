@@ -93,7 +93,8 @@ test("overlay-policy carries spaceHome: default off, normalized, patchable", () 
   // Not a door: it never lets anything raise itself.
   const s = { spaceHome: true };
   for (const trigger of Object.values(overlayPolicy.TRIGGERS)) {
-    if (trigger === overlayPolicy.TRIGGERS.USER || trigger === overlayPolicy.TRIGGERS.REQUEST) continue;
+    // USER / REQUEST always may; WORKSPACE is on by default (overlay.workspaceAutoOpen).
+    if ([overlayPolicy.TRIGGERS.USER, overlayPolicy.TRIGGERS.REQUEST, overlayPolicy.TRIGGERS.WORKSPACE].includes(trigger)) continue;
     assert.equal(overlayPolicy.decide(s, trigger).allow, false, trigger);
   }
 });

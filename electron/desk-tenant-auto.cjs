@@ -37,13 +37,61 @@ const TENANT_DECL_RE = /window\.__AITHER_TENANT__\s*=\s*["']([a-z0-9-]{1,63})["'
 const BRAND_RE = /window\.__AITHER_TENANT_BRAND__\s*=\s*(\{.*\})\s*;?\s*$/m;
 const MAX_CONFIG_BYTES = 256 * 1024;
 const PROBE_TIMEOUT_MS = 8000;
+/** Identity's platform principal's tenant id. */
+const PLATFORM_TENANT = "platform";
 
-/** The tenant fields of an Identity /auth/me body; nothing else survives. */
+const TENANT_ID_RE = /^[a-z0-9_]{1,80}$/;
+const MAX_MEMBERSHIPS = 20;
+const MAX_EMAIL = 254;
+
+/** Identity's `allowed_tenants` entry (a tenant id OR a slug) as a canonical customer
+ *  tenant id, or "" -- the `*` sentinel and the platform tenant are never a workspace a
+ *  member list can name (a `platform` principal has its own picker below). */
+function memberTenantId(raw) {
+  const v = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (!v || v === "*" || v === PLATFORM_TENANT) return "";
+  if (v.startsWith("tnt_")) return TENANT_ID_RE.test(v) ? v : "";
+  return LABEL_RE.test(v) ? tenantIdForLabel(v) : "";
+}
+
+/** The fields of an Identity /auth/me body the Desk uses; nothing else survives.
+ *  `memberships` = the customer tenants the ACCOUNT belongs to, from Identity's own
+ *  `allowed_tenants` (home tenant first). It is read from the authenticated /auth/me
+ *  answer only -- never from a page, a menu or a file -- and a `*` (Identity's "every
+ *  tenant" sentinel) is dropped, so a non-platform account can never be shown a
+ *  workspace it was not given. `email` is shown to the user in the account indicator. */
 function tenantIdentity(body) {
   if (!body || typeof body !== "object") return null;
   const str = (v) => (typeof v === "string" ? v.trim().toLowerCase() : "");
   const out = { tenantId: str(body.tenant_id), tenantSlug: str(body.tenant_slug), workspaceSlug: str(body.workspace_slug) };
-  return out.tenantId ? out : null;
+  if (!out.tenantId) return null;
+  const memberships = [];
+  for (const raw of [out.tenantId, ...(Array.isArray(body.allowed_tenants) ? body.allowed_tenants : [])]) {
+    const id = memberTenantId(raw);
+    if (id && !memberships.includes(id) && memberships.length < MAX_MEMBERSHIPS) memberships.push(id);
+  }
+  out.memberships = memberships;
+  const email = str(body.email);
+  if (email && email.length <= MAX_EMAIL && /^[^\s@]+@[^\s@]+$/.test(email)) out.email = email;
+  return out;
+}
+
+/** The customer tenant ids this identity is a member of (home first). */
+function memberTenantIds(identity) {
+  if (!identity) return [];
+  const list = Array.isArray(identity.memberships) ? identity.memberships : [];
+  const out = [];
+  for (const raw of [identity.tenantId, ...list]) {
+    const id = memberTenantId(raw);
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** Is `tenantId` one of this identity's workspaces (per Identity /auth/me)? */
+function isMemberOf(identity, tenantId) {
+  const id = memberTenantId(tenantId);
+  return Boolean(id) && memberTenantIds(identity).includes(id);
 }
 
 /** Identity's canonical tenant id for a host label (AitherIdentity._canonical_tenant_id). */
@@ -82,10 +130,17 @@ function declaredBrand(text) {
   try {
     const brand = JSON.parse(m[1]);
     if (!brand || typeof brand !== "object") return {};
-    return {
+    // logo/favicon: a same-host PATH only ("/assets/x.svg"); desk-account.cjs fetches it.
+    const assetPath = (v) => (typeof v === "string" && /^\/[A-Za-z0-9._\-/]{1,200}$/.test(v) && !v.includes("..") ? v : undefined);
+    const out = {
       name: typeof brand.name === "string" ? brand.name : undefined,
       accent: typeof brand.accent === "string" ? brand.accent : undefined,
     };
+    const favicon = assetPath(brand.favicon);
+    const logo = assetPath(brand.logo_url);
+    if (favicon) out.favicon = favicon;
+    if (logo) out.logo = logo;
+    return out;
   } catch {
     return {};
   }
@@ -138,7 +193,7 @@ async function discoverTenantHost(identity, { fetchImpl = globalThis.fetch, time
  * `cleared` means the tenant changed and windows should follow.
  */
 async function autoResolveTenant(identity, {
-  current = () => deskTenant.currentResolution(), homedir, fsImpl, fetchImpl, timeoutMs,
+  current = () => deskTenant.currentResolution(), homedir, fsImpl, fetchImpl, timeoutMs, choose,
 } = {}) {
   let resolution;
   try {
@@ -158,7 +213,7 @@ async function autoResolveTenant(identity, {
   }
   const deskWritten = Boolean(tenant && (tenant.auto || tenant.ownerSwitch));
   if (tenant && !deskWritten) return { adopted: false, reason: "tenant already configured" };
-  if (tenant && tenant.auto && tenant.tenantId === identity.tenantId) {
+  if (tenant && tenant.auto && (tenant.tenantId === identity.tenantId || isMemberOf(identity, tenant.tenantId))) {
     return { adopted: false, reason: "already this account's workspace" };
   }
   // THE HOST DECIDES (Garg 2026-11-09): a customer with two accounts had Desk pinned to
@@ -171,17 +226,86 @@ async function autoResolveTenant(identity, {
   if (tenant && tenant.auto && tenant.tenantId && tenant.tenantId !== identity.tenantId) {
     return { adopted: false, kept: true, reason: "another account's workspace stays until Sign out" };
   }
-  const found = candidateLabels(identity).length ? await discoverTenantHost(identity, { fetchImpl, timeoutMs }) : null;
+  // Every workspace the account is a MEMBER of (Identity /auth/me), each host validated
+  // by its own public config.js. One -> open it. Several -> ask once (the chooser main
+  // registers; cancelled or none = the home workspace). None -> the apex, as before.
+  const workspaces = await listMemberWorkspaces(identity, { fetchImpl, timeoutMs });
+  let found = workspaces.length === 1 ? workspaces[0] : null;
+  let chosen = false;
+  if (workspaces.length > 1) {
+    const chooser = typeof choose === "function" ? choose : workspaceChooser;
+    let picked = null;
+    if (chooser) {
+      try { picked = await chooser(workspaces, identity); } catch { picked = null; }
+    }
+    // Only an id FROM THE LIST counts: the chooser can pick, never add.
+    const hit = workspaces.find((w) => w.tenantId === picked);
+    found = hit || workspaces[0];
+    chosen = Boolean(hit);
+  }
   if (!found) {
     if (deskWritten) {
       const gone = deskTenant.forgetAutoTenant({ homedir, fsImpl });
       if (gone.removed) return { adopted: false, cleared: true, reason: "another account's workspace forgotten" };
     }
-    return { adopted: false, reason: candidateLabels(identity).length ? "no host declares this tenant" : "no workspace host for this account" };
+    return { adopted: false, reason: memberTenantIds(identity).length ? "no host declares this tenant" : "no workspace host for this account" };
   }
-  const wrote = deskTenant.persistAutoTenant({ ...found, tenantId: identity.tenantId }, { homedir, fsImpl });
+  const wrote = deskTenant.persistAutoTenant(found, { homedir, fsImpl });
   if (!wrote.written) return { adopted: false, reason: wrote.reason };
-  return { adopted: true, host: found.host, file: wrote.file, replaced: Boolean(wrote.replaced) };
+  return { adopted: true, host: found.host, file: wrote.file, replaced: Boolean(wrote.replaced),
+    workspaces: workspaces.length, ...(workspaces.length > 1 ? { chosen } : {}) };
+}
+
+/** {tenantId, host, label, name?, accent?, favicon?, logo?} for every workspace the
+ *  identity is a member of whose host declares it, home first. Never throws. */
+async function listMemberWorkspaces(identity, { fetchImpl = globalThis.fetch, timeoutMs } = {}) {
+  const ids = memberTenantIds(identity);
+  const found = await Promise.all(ids.map(async (id) => {
+    const home = identity && id === identity.tenantId;
+    const probe = { tenantId: id, tenantSlug: home ? identity.tenantSlug || "" : "",
+      workspaceSlug: home ? identity.workspaceSlug || "" : "" };
+    try {
+      const host = await discoverTenantHost(probe, { fetchImpl, timeoutMs });
+      return host ? { tenantId: id, ...host } : null;
+    } catch {
+      return null;
+    }
+  }));
+  return found.filter(Boolean);
+}
+
+// The "which workspace?" prompt (main registers a native dialog; Electron-free here).
+let workspaceChooser = null;
+/** Register fn(workspaces, identity) => Promise<tenantId|null>; null unregisters. */
+function setWorkspaceChooser(fn) {
+  workspaceChooser = typeof fn === "function" ? fn : null;
+}
+
+/**
+ * "Choose workspace…" for a signed-in member account: re-ask Identity who `token` is,
+ * refuse any tenant that account is not a member of, validate the host, pin it
+ * (`source: "sign-in"`) and tell every window. A hand-written config is never replaced.
+ */
+async function openMemberWorkspace(token, tenantId, { check, homedir, fsImpl, fetchImpl = globalThis.fetch, timeoutMs } = {}) {
+  if (typeof token !== "string" || !token) return { opened: false, refused: "not signed in" };
+  let verdict;
+  try {
+    const checker = check || ((t) => require("./desk-session.cjs").checkToken(t));
+    verdict = await checker(token);
+  } catch {
+    return { opened: false, refused: "session check failed" };
+  }
+  if (!verdict || verdict.state !== "valid" || !verdict.identity) return { opened: false, refused: "not signed in" };
+  const id = memberTenantId(tenantId);
+  if (!id || !isMemberOf(verdict.identity, id)) return { opened: false, refused: "this account is not a member of that workspace" };
+  const found = await discoverTenantHost({ tenantId: id, tenantSlug: "", workspaceSlug: "" }, { fetchImpl, timeoutMs });
+  if (!found) return { opened: false, reason: "no host declares this tenant" };
+  const wrote = deskTenant.persistAutoTenant({ ...found, tenantId: id }, { homedir, fsImpl });
+  if (!wrote.written) return { opened: false, reason: wrote.reason };
+  lastTenantId = verdict.identity.tenantId;
+  const result = { opened: true, adopted: true, host: found.host, file: wrote.file };
+  notify(result);
+  return result;
 }
 
 // ── One adopter for the whole process ───────────────────────────────────────────
@@ -268,7 +392,6 @@ function signedOut(opts = {}) {
 }
 
 // ── The platform owner opens a customer workspace ("Open a workspace") ───────────
-const PLATFORM_TENANT = "platform";
 const MAX_WORKSPACES = 500;
 
 /** True only for Identity's platform principal (tenant_id exactly `platform`). */
@@ -499,10 +622,12 @@ function _resetForTests() {
   listeners.clear();
   lastTenantId = null;
   inFlight = null;
+  workspaceChooser = null;
 }
 
 module.exports = {
   tenantIdentity, tenantIdForLabel, candidateLabels, declaredTenant, declaredBrand,
+  memberTenantId, memberTenantIds, isMemberOf, listMemberWorkspaces, setWorkspaceChooser, openMemberWorkspace,
   fetchConfigJs, discoverTenantHost, autoResolveTenant,
   onWorkspaceChange, adoptIdentity, adoptFromToken, signedOut, _resetForTests,
   PLATFORM_TENANT, isPlatformIdentity, signedInTenantId, ownerSession, listOwnerWorkspaces,

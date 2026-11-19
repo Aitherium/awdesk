@@ -38,9 +38,10 @@ function tempHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "desk-tenant-auto-"));
 }
 
-test("tenantIdentity keeps only the tenant fields and needs a tenant_id", () => {
+test("tenantIdentity keeps only the tenant fields, memberships and email; needs a tenant_id", () => {
   assert.deepEqual(auto.tenantIdentity({ tenant_id: "TNT_ACME", tenant_slug: "acme", workspace_slug: "w",
-    username: "u", email: "e@x", roles: ["owner"] }), { tenantId: "tnt_acme", tenantSlug: "acme", workspaceSlug: "w" });
+    username: "u", email: "e@x", roles: ["owner"] }),
+  { tenantId: "tnt_acme", tenantSlug: "acme", workspaceSlug: "w", memberships: ["tnt_acme"], email: "e@x" });
   assert.equal(auto.tenantIdentity({ username: "u" }), null);
   assert.equal(auto.tenantIdentity(null), null);
 });
@@ -190,7 +191,8 @@ test("checkToken / resolveSession carry the tenant identity (and nothing secret)
     json: { username: "jdoe", tenant_id: "tnt_acme", tenant_slug: "acme", email: "j@x", roles: ["owner"] } } });
   const v = await deskSession.checkToken("tok", { fetchImpl });
   assert.equal(v.state, "valid");
-  assert.deepEqual(v.identity, { tenantId: "tnt_acme", tenantSlug: "acme", workspaceSlug: "" });
+  assert.deepEqual(v.identity, { tenantId: "tnt_acme", tenantSlug: "acme", workspaceSlug: "",
+    memberships: ["tnt_acme"], email: "j@x" });
   const verdict = await deskSession.resolveSession({ cookieToken: "tok", check: async () => v });
   assert.deepEqual(verdict.identity, v.identity);
 });

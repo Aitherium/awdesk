@@ -115,6 +115,9 @@
       <div class="row">
         <label style="min-width:0"><input type="checkbox" id="ovSpaceHome"> Inbox and Fleet open into Space</label>
       </div>
+      <div class="row">
+        <label style="min-width:0"><input type="checkbox" id="ovWorkspace"> Open my workspace by itself (at start and after sign-in)</label>
+      </div>
       <p class="note">A decision that needs you arrives as a toast by the tray; nothing opens a window by itself. Do not disturb stops everything that opens on its own, including requests from agents.</p>
     </section>
 
@@ -189,6 +192,7 @@
     edgeReveal: document.getElementById("ovEdge"),
     doNotDisturb: document.getElementById("ovDnd"),
     spaceHome: document.getElementById("ovSpaceHome"),
+    workspaceAutoOpen: document.getElementById("ovWorkspace"),
   };
   const ovEdgeSide = document.getElementById("ovEdgeSide");
   const ovDwell = document.getElementById("ovDwell");

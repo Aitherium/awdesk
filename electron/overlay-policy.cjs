@@ -17,8 +17,14 @@
  *                 /desktop/overlay, a bridge-run command. Allowed (it is usually the
  *                 user asking through an agent or the browser extension) except under
  *                 Do not disturb.
+ *   workspace     the desk opening the signed-in WORKSPACE by itself: a customer desk's
+ *                 taskbar at start, the AitherDesktop window after a sign-in
+ *                 -> overlay.workspaceAutoOpen (default ON: unchanged for everyone)
  *
- * overlay.doNotDisturb suppresses EVERY trigger but `user`. An unknown trigger is
+ * overlay.doNotDisturb suppresses EVERY trigger but `user`. overlay.workspaceAutoOpen
+ * off does the same for the workspace pop-ups AND every other automatic door (customer
+ * report, customer report 2026-11-19: "an Aitherium sidebar keeps popping up" -- one switch that
+ * means "never open a workspace window unless I click"). An unknown trigger is
  * refused: a new automatic door must be named here before it can raise anything.
  *
  * THERE IS NO `notification` DOOR (A1, attention plan): a decision card arrives as an
@@ -34,6 +40,7 @@ const TRIGGERS = Object.freeze({
   START: "start",
   EDGE: "edge",
   REQUEST: "request",
+  WORKSPACE: "workspace",
 });
 
 const EDGES = Object.freeze(["left", "right", "top", "bottom"]);
@@ -49,12 +56,16 @@ const DEFAULTS = Object.freeze({
   doNotDisturb: false,
   // Not a door: where the Inbox and Fleet doors LEAD (space-home.cjs). Off = as before.
   spaceHome: false,
+  // The workspace pop-ups (customer taskbar at start, the window after sign-in). ON keeps
+  // the behaviour every desk had; OFF = nothing workspace-shaped opens unless clicked.
+  workspaceAutoOpen: true,
 });
 
 /** Which setting gates which automatic trigger. */
 const TRIGGER_FLAG = Object.freeze({
   [TRIGGERS.START]: "autoOpenOnStart",
   [TRIGGERS.EDGE]: "edgeReveal",
+  [TRIGGERS.WORKSPACE]: "workspaceAutoOpen",
 });
 
 /** The resolved settings, every field present and valid; anything else -> its default. */
@@ -70,6 +81,7 @@ function normalize(raw) {
     edgeDwellMs: dwell,
     doNotDisturb: bool("doNotDisturb"),
     spaceHome: bool("spaceHome"),
+    workspaceAutoOpen: bool("workspaceAutoOpen"),
   };
 }
 
@@ -81,7 +93,7 @@ function normalize(raw) {
 function cleanPatch(patch) {
   const p = patch && typeof patch === "object" && !Array.isArray(patch) ? patch : {};
   const out = {};
-  for (const key of ["autoOpenOnStart", "edgeReveal", "doNotDisturb", "spaceHome"]) {
+  for (const key of ["autoOpenOnStart", "edgeReveal", "doNotDisturb", "spaceHome", "workspaceAutoOpen"]) {
     if (typeof p[key] === "boolean") out[key] = p[key];
   }
   if (EDGES.includes(p.edge)) out.edge = p.edge;
@@ -104,6 +116,7 @@ function decide(settings, trigger) {
     return { allow: false, reason: `unknown trigger ${JSON.stringify(trigger)}` };
   }
   if (s.doNotDisturb) return { allow: false, reason: "do not disturb is on" };
+  if (!s.workspaceAutoOpen) return { allow: false, reason: "overlay.workspaceAutoOpen is off" };
   if (trigger === TRIGGERS.REQUEST) return { allow: true, reason: "requested by another program" };
   const flag = TRIGGER_FLAG[trigger];
   return s[flag]
