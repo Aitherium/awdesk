@@ -913,8 +913,8 @@ test("quiet, a hidden fairy, or the owner away: no nudge, and the claim follows 
   assert.equal(orbWindow.ownsAttention(), false, "hidden: awask's window comes back");
 });
 
-test("clicking the orb mid-nudge opens the waiting queue; the card it carried counts as seen", async () => {
-  // Owner 2026-11-12: a companion's click opens ITS card; the orb is the whole queue.
+test("clicking the orb mid-nudge opens the ask box; the card it carried counts as seen", async () => {
+  // Owner 2026-11-18: the orb's click is the ask box again; the Inbox is the badge's click.
   let listed = 0;
   startAttention({ openList: () => { listed += 1; return true; } });
   orbWindow.setAttentionCards([blockedCard()]);
@@ -922,13 +922,14 @@ test("clicking the orb mid-nudge opens the waiting queue; the card it carried co
   await wait(1000);
   const r = await invoke("desk:orb-click", orbWin());
   assert.equal(r.ok, true);
-  assert.equal(r.inbox, true, "the badge links to the Inbox (owner 2026-11-13)");
+  assert.equal(r.visible, true, "the ask box opens");
+  assert.equal(r.inbox, undefined, "the orb never opens the Inbox");
   assert.equal(listed, 0, "no on-screen list");
   assert.equal(orbWindow.nudging(), null);
   assert.equal(orbWindow.attentionMems()["d-fair"].ignored || 0, 0, "seen, not ignored");
 });
 
-test("clicking the orb with cards waiting opens the queue, even when the card was put off with Later", async () => {
+test("clicking the orb with cards waiting opens the ask box; the Inbox stays on the badge", async () => {
   // Owner, 2026-11-10: the badge said 1, the click opened an empty chat. 2026-11-12:
   // the orb's click is the waiting LIST; a companion's click is its card.
   let listed = 0;
@@ -944,10 +945,11 @@ test("clicking the orb with cards waiting opens the queue, even when the card wa
   assert.equal(orbWindow.nudging(), null);
   const r = await invoke("desk:orb-click", orbWin());
   assert.equal(r.ok, true);
-  assert.equal(r.inbox, true, "the badge links to the Inbox (owner 2026-11-13)");
+  assert.equal(r.visible, true, "the ask box opens with cards waiting too");
   assert.equal(listed, 0, "no on-screen list");
-  assert.deepEqual(calls.open, [null], "the Inbox itself, never on an arbitrary card");
+  assert.deepEqual(calls.open, [], "the orb's click never opens the Inbox");
   assert.equal(orbWindow.nudging(), null, "no card pops from the orb's click");
+  bubbleWin().hide();
   // Nothing waiting: the click still opens the chat.
   orbWindow.setAttentionCards([]);
   const chat = await invoke("desk:orb-click", orbWin());
@@ -955,7 +957,7 @@ test("clicking the orb with cards waiting opens the queue, even when the card wa
   assert.equal(chat.card, undefined);
 });
 
-test("a trip that hangs never swallows the click: the queue still opens, and the trip times out", async () => {
+test("a trip that hangs never swallows the click: the ask box still opens, and the trip times out", async () => {
   // Owner, 2026-11-10: "nothing is happening when I click on fairies... they just change
   // colors". A trip whose step never settled held tripBusy, and every click only
   // cancelled that trip.
@@ -973,8 +975,9 @@ test("a trip that hangs never swallows the click: the queue still opens, and the
   if (orbWindow.nudging()) orbWindow.endNudge("seen", { stay: true });
   const r = await invoke("desk:orb-click", orbWin());
   assert.equal(r.ok, true);
-  assert.equal(r.inbox, true, "the badge links to the Inbox (owner 2026-11-13)");
+  assert.equal(r.visible, true, "the click is never swallowed by the hung trip");
   assert.equal(listed, 0, "no on-screen list");
+  bubbleWin().hide();
   // The hung trip itself ends on its limit instead of holding the spirit for good.
   const hung = orbWindow.go({ kind: "search", target: "hangs again" });
   const verdict = await Promise.race([hung, wait(6000).then(() => ({ stuck: true }))]);
@@ -2140,7 +2143,7 @@ test("no avatar hook: the menu offers no Show Aither and a click still opens the
   await invoke("desk:menu-pick", menuWin(), "");
 });
 
-test("click the fairy with nothing waiting: it grows into Aither, the cluster goes down, and comes back", async () => {
+test("click the fairy with nothing waiting: the ask box; Show Aither grows the body and it comes back", async () => {
   const grows = [];
   const shrinks = [];
   startAttention({
@@ -2151,7 +2154,12 @@ test("click the fairy with nothing waiting: it grows into Aither, the cluster go
   const b = bubbleWin();
   if (b && b.isVisible()) b.hide();
   assert.equal(orbWindow.avatarMode(), "fairy");
-  const r = await invoke("desk:orb-click", orbWin());
+  const click = await invoke("desk:orb-click", orbWin());
+  assert.deepEqual(click, { ok: true, visible: true }, "a click is the ask box (owner 2026-11-18)");
+  assert.equal(grows.length, 0, "a click never grows the body");
+  bubbleWin().hide();
+  orbWindow.orbMenu();                        // the menu window exists once it has opened
+  const r = await invoke("desk:menu-pick", menuWin(), "expand");
   assert.deepEqual(r, { ok: true, expanded: true, character: "aither-v2" });
   assert.equal(grows.length, 1);
   assert.ok(grows[0].from && Number.isFinite(grows[0].from.x), "it grows FROM where the fairy is");
@@ -2173,6 +2181,7 @@ test("click the fairy with nothing waiting: it grows into Aither, the cluster go
   assert.equal(again.items[0], "expand");
   const pick = await invoke("desk:menu-pick", menuWin(), "expand");
   assert.equal(pick.expanded, true);
+  assert.equal(grows.length, 2);
   // The body hidden some other way (tray): only the fairy comes back, no second shrink.
   await orbWindow.collapseToFairy({ fromAvatar: true });
   assert.equal(shrinks.length, 1);
@@ -2188,16 +2197,17 @@ test("a body that will not open leaves the fairy where it was", async () => {
   assert.equal(orbWin().isVisible(), true);
 });
 
-test("cards waiting: the click is still the Inbox, never the body", async () => {
+test("cards waiting: the click is the ask box, never the body and never the Inbox", async () => {
   const grows = [];
   const calls = startAttention({ expand: async () => { grows.push(1); return { ok: true }; } });
   orbWindow.setAttentionCards([blockedCard({ id: "d-g1", agent: "atlas" })]);
   if (orbWindow.nudging()) orbWindow.endNudge("seen", { stay: true });
   await wait(2600);
   const r = await invoke("desk:orb-click", orbWin());
-  assert.equal(r.inbox, true);
+  assert.equal(r.visible, true);
   assert.equal(grows.length, 0);
-  assert.ok(calls.open.length >= 1);
+  assert.deepEqual(calls.open, []);
+  bubbleWin().hide();
   orbWindow.setAttentionCards([]);
 });
 
