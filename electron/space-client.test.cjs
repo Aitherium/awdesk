@@ -245,3 +245,12 @@ test("FleetControl records when a state-changing verb finished, and status reads
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.match(main, /verdict: control\.lastStatus, at: control\.lastStatusAt, changedAt: control\.lastChangeAt/);
 });
+
+test("the local Genesis read outlasts a slow universe build (5-35 s measured 2026-11-18)", () => {
+  const { localGenesisArgv, LOCAL_CURL_MAX_S, LOCAL_FETCH_TIMEOUT_MS } = require("./space-client.cjs");
+  const argv = localGenesisArgv("aitheros-genesis-a", { distro: "awnix", local: false });
+  const maxTime = Number(argv.args[argv.args.indexOf("--max-time") + 1]);
+  assert.ok(maxTime >= 45, `curl --max-time ${maxTime} s cuts off a 35 s build; both instances then fail and the map goes stale`);
+  assert.equal(maxTime, LOCAL_CURL_MAX_S);
+  assert.ok(LOCAL_FETCH_TIMEOUT_MS > maxTime * 1000, "the exec timeout must outlast curl's own cap, or curl never gets to answer");
+});

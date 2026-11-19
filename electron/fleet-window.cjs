@@ -13,7 +13,7 @@
 
 const path = require("node:path");
 const { BrowserWindow, ipcMain, shell } = require("electron");
-const { FleetControl, summarize, classify } = require("./fleet-control.cjs");
+const { FleetControl, summarize, classify, runServiceVerb } = require("./fleet-control.cjs");
 const { OPENABLE } = require("./surfaces.cjs");
 const { fleetNetwork, readEcosystem } = require("./fleet-network.cjs");
 
@@ -101,6 +101,9 @@ function wireIpc() {
   // No arguments, by design: the preload sends none, and the file is main's own vendored
   // copy -- a renderer-chosen path here would be a file-read primitive.
   ipcMain.handle("desk:fleet-ecosystem", () => readEcosystem());
+  // ONE service's restart or recent log (the attention list's two verbs). Both
+  // arguments are re-validated in buildServiceCommand; a click is the consent.
+  ipcMain.handle("desk:fleet-service", (_event, verb, name) => runServiceVerb(String(verb), String(name)));
   // No arguments, by design: the preload's doors() sends none; the probe list is main's.
   ipcMain.handle("desk:fleet-doors", () => require("./surfaces.cjs").probeSurfaces().catch(() => []));
   ipcMain.on("desk:fleet-close", (event) => {

@@ -57,11 +57,18 @@ function fleetNetwork(answer) {
     const solar = byId.get(n.parent) || {};
     const h = n.health && typeof n.health === "object" ? n.health : {};
     const state = HEALTH.has(h.state) ? h.state : "unknown";
+    const meta = n.meta && typeof n.meta === "object" ? n.meta : {};
+    // The name the service verbs (restart / logs) take: the quadlet unit, else a bare
+    // container id. Only a name the verb grammar accepts is passed on.
+    const unitName = typeof meta.unit === "string" ? meta.unit
+      : n.id.startsWith("ctr:") ? n.id.slice(4) : "";
     nodes.push({
       id: n.id,
       title: text(n.title || n.id, 80),
       group: text(solar.title || n.parent || "fleet", 60),
       health: { state, reason: text(h.reason), at: text(h.at, 40) },
+      unit: /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,120}$/.test(unitName) ? unitName : null,
+      criticality: text(meta.criticality, 20) || null,
     });
     if (nodes.length >= MAX_NODES) break;
   }

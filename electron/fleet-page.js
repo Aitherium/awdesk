@@ -20,6 +20,8 @@
 
   const $ = (id) => document.getElementById(id);
   const W = window;
+  /** fleet-overview.js (loaded before this script): the header counts, the attention list. */
+  const OV = W.FleetOverview;
   const log = $("log");
   const pill = $("pill");
   const buttons = [...document.querySelectorAll("button[data-action]")];
@@ -66,6 +68,10 @@
   let net = null;          // window.fleet.network() answer
   let eco = null;          // window.fleet.ecosystem() answer
   let netError = "";
+  /** "overview" (the default: what needs you, groups collapsed) or "map" (the network). */
+  let view = "overview";
+  const openGroups = new Set();
+  let armedService = null;   // the restart button waiting for its confirming second click
   const healthSeen = new Map();   // id -> state at the last draw
   const changedAt = new Map();    // id -> when its health last changed
 
@@ -157,7 +163,7 @@
           text: `fresh probe failed (${firstClause(stale.reason || st.error)}) -- the numbers are ${Math.round(stale.age_ms / 1000)} s old`
             + (fl.running != null ? `: ${fl.running} running then` : "") };
       }
-      return { state: "CANNOT JUDGE", text: firstClause(st.error), tone: "bad" };
+      return { state: "CANNOT JUDGE", text: `status probe failed: ${firstClause(st.error)}`, tone: "bad" };
     }
     const state = classify(st);
     const fl = st.fleet || {};
@@ -245,19 +251,7 @@
     const stale = st && st.cannotJudge && st.stale ? st.stale : null;
     const src = stale ? stale.verdict : st;
     const fl = (src && src.fleet) || {};
-    const age = stale ? ` <small>· ${Math.round(stale.age_ms / 1000)} s ago</small>` : "";
-    const blank = src && !(st.cannotJudge && !stale) ? null : (probing ? "probing…" : "?");
-    const stat = (id, html) => {
-      const node = $(id);
-      node.classList.toggle("probing", blank === "probing…");
-      node.innerHTML = blank != null ? blank : html;
-    };
-    stat("s-running", fl.running == null ? "?" : `${fl.running}${age}`);
-    stat("s-masked", fl.masked == null ? "?" : `${fl.masked} <small>/ ${fl.units ?? "?"}</small>${age}`);
-    const v = src && src.vram;
-    stat("s-vram", v ? `${(v.used_mib / 1024).toFixed(1)} <small>/ ${(v.total_mib / 1024).toFixed(0)} GiB</small>${age}` : "?");
-    // GPU hold must never DEFAULT to "free": with no verdict the answer is unknown.
-    stat("s-hold", !src || src.cannotJudge ? "?" : `${src.held ? (holdIsStale(src) ? "stale" : "HELD") : "free"}${age}`);
+    paintStats();
     renderHolders(src && src.gpu_holders, src && src.gpu_holders_error);
     doors = Array.isArray(src && src.surfaces) ? src.surfaces : [];
     if (selected && selected.startsWith("door:") && !doors[Number(selected.slice(5))]) closeDock();
@@ -268,6 +262,29 @@
     paintHeader();
     paintDetails();
     redraw();
+  }
+
+  /**
+   * The header's four numbers. A number nobody could read says so in words ("unknown",
+   * with the reason as its tooltip and in the status line) -- never a bare "?".
+   */
+  function paintStats() {
+    const c = OV.hudCounts(lastStatus, net, hostVerdict);
+    const unknown = probing ? "probing…" : "unknown";
+    const age = c.staleS != null ? ` <small>· ${c.staleS} s ago</small>` : "";
+    const stat = (id, html, why) => {
+      const node = $(id);
+      const blank = html == null;
+      node.classList.toggle("probing", blank && unknown === "probing…");
+      node.innerHTML = blank ? unknown : html;
+      node.title = blank ? (why || "") : "";
+    };
+    stat("s-running", c.running == null ? null
+      : `${c.running}${c.runningFrom === "host" ? " <small>(host probe)</small>" : age}`, c.why);
+    const mapWhy = netError ? `service map: ${netError}` : "service map not read yet";
+    stat("s-down", c.down == null ? null : `${c.down}${c.degraded ? ` <small>+${c.degraded} degraded</small>` : ""}`, mapWhy);
+    stat("s-parked", c.parked == null ? null : String(c.parked), mapWhy);
+    stat("s-vram", c.vram ? `${c.vram.usedGiB.toFixed(1)} <small>used · ${c.vram.freeGiB.toFixed(1)} free GiB</small>${age}` : null, c.why);
   }
 
   // ── health of the four control nodes ───────────────────────────────────────
@@ -408,9 +425,7 @@
     const parts = [];
     const m = mapCounts();
     if (net && net.ok) {
-      const src = net.source === "remote" ? "live" : net.source === "genesis" ? "live from Genesis"
-        : net.source === "last-good" ? `last good copy${net.savedAt ? ` from ${new Date(net.savedAt).toLocaleString()}` : ""}` : "local skeleton";
-      parts.push(`${m.total} services, ${(net.links || []).length} links (${src})`);
+      parts.push(`${m.total} services, ${(net.links || []).length} links (${OV.mapSource(net)})`);
     } else {
       parts.push(netError ? `services: ${short(netError, 90)}` : "services: reading the universe…");
     }
@@ -443,6 +458,10 @@
       healthSeen.set(n.id, h);
     }
     note(netNote());
+    renderOverview();
+    // The engine runs only while the map is shown: hidden, it measured a 0x0 box, and
+    // laying out 300 bodies nobody is looking at cost the window its frame rate.
+    if (view !== "map") return;
     const engine = W.BeadSpace;
     if (!engine || typeof engine.createBeadSpace !== "function") return;
     const sig = sigOf(data);
@@ -465,7 +484,10 @@
           return 4.5 + Math.min(6, (degree.get(n.id) || 0) * 0.45);
         },
         nodeClass: (n) => (n.meta && n.meta.health === "down" ? "bs-down" : null),
-        nodeLabel: (n) => short(n.title, n.meta && n.meta.kind === "ctl" ? 24 : 20),
+        // Labels only where they carry news: the four control nodes and any service that
+        // is not ok. Two hundred always-on labels overlapped into an unreadable hairball
+        // (owner screenshot 2026-11-18); every other name is on hover (tooltips).
+        nodeLabel: (n) => mapLabel(n),
         labelCollision: true,
         labelsAlwaysBelow: 0,
         labelZoom: 0.01,
@@ -501,6 +523,143 @@
       }
       if (busy) space.packet("ctl:host", "ctl:fleet", { color: "#5aa8ff" });
     } catch { /* the engine is between levels */ }
+  }
+
+  /** The map's label for a node: only the control nodes and the services that are not ok. */
+  function mapLabel(n) {
+    const k = n && n.meta && n.meta.kind;
+    if (k === "ctl") return short(n.title, 24);
+    const h = n && n.meta && n.meta.health;
+    return k === "svc" && (h === "down" || h === "degraded") ? short(n.title, 20) : "";
+  }
+
+  // ── the overview: what needs you, then every group as one line ──────────────
+  function dot(state) { return el("span", `dot s-${state}`); }
+
+  function serviceButton(label, verb, row) {
+    const b = el("button", verb === "restart" ? "down" : "quiet", label);
+    b.dataset.verb = verb;
+    b.dataset.unit = row.unit || "";
+    if (!row.unit) { b.disabled = true; b.title = "no unit owns this service -- nothing to restart or read"; }
+    b.addEventListener("click", () => void serviceVerb(b, verb, row));
+    return b;
+  }
+
+  function renderAttention() {
+    const box = $("attention-list");
+    box.textContent = "";
+    if (!net || !net.ok) {
+      box.appendChild(el("div", "none", netError ? `service map unreadable: ${short(netError, 160)}` : "reading the service map…"));
+      return;
+    }
+    const a = OV.attentionList(net.nodes);
+    if (!a.total) { box.appendChild(el("div", "clear", `Nothing is down or degraded (${net.nodes.length} services).`)); return; }
+    for (const r of a.rows) {
+      const row = el("div", "att");
+      row.dataset.id = r.id;
+      row.appendChild(dot(r.state));
+      const who = el("div", "who");
+      who.appendChild(el("div", "name", r.title));
+      const why = el("div", "why", `${r.state}${r.group ? ` · ${r.group}` : ""}${r.reason ? ` -- ${r.reason}` : ""}`);
+      why.title = r.reason || r.state;
+      who.appendChild(why);
+      row.appendChild(who);
+      const verbs = el("div", "verbs");
+      verbs.appendChild(serviceButton("Restart", "restart", r));
+      verbs.appendChild(serviceButton("Logs", "show", r));
+      row.appendChild(verbs);
+      box.appendChild(row);
+    }
+    if (a.more) box.appendChild(el("div", "none", `+${a.more} more -- see the groups below or the map`));
+  }
+
+  function renderGroups() {
+    const box = $("group-list");
+    box.textContent = "";
+    if (!net || !net.ok) return;
+    for (const g of OV.groupSummary(net.nodes)) {
+      const worst = g.down ? "down" : g.degraded ? "degraded" : g.starting ? "starting" : g.ok ? "ok" : g.parked ? "parked" : "unknown";
+      const head = el("button", "grp");
+      head.dataset.group = g.group;
+      setAttr(head, "aria-expanded", openGroups.has(g.group) ? "true" : "false");
+      head.appendChild(dot(worst));
+      head.appendChild(el("span", "gname", g.group));
+      const bits = [`${g.ok}/${g.total} up`];
+      if (g.down) bits.push(`${g.down} down`);
+      if (g.degraded) bits.push(`${g.degraded} degraded`);
+      if (g.parked) bits.push(`${g.parked} parked`);
+      if (g.unknown) bits.push(`${g.unknown} unknown`);
+      head.appendChild(el("span", "gcount", bits.join(" · ")));
+      head.addEventListener("click", () => {
+        if (openGroups.has(g.group)) openGroups.delete(g.group); else openGroups.add(g.group);
+        renderGroups();
+      });
+      box.appendChild(head);
+      if (!openGroups.has(g.group)) continue;
+      const list = el("div", "members");
+      for (const m of g.members) {
+        const r = el("div", "mem");
+        r.appendChild(dot(m.state));
+        const t = el("span", "mt", `${m.title}${m.state === "ok" ? "" : ` -- ${m.state}${m.reason ? `: ${m.reason}` : ""}`}`);
+        t.title = m.reason || m.state;
+        r.appendChild(t);
+        list.appendChild(r);
+      }
+      box.appendChild(list);
+    }
+  }
+
+  function renderOverview() {
+    if (!$("overview")) return;
+    renderAttention();
+    renderGroups();
+    paintStats();
+  }
+
+  /** Restart (confirm: a second click within 6 s) or read the log of ONE service. */
+  async function serviceVerb(button, verb, row) {
+    if (!row.unit || typeof W.fleet.service !== "function") return;
+    if (verb === "restart" && armedService !== button) {
+      if (armedService) { armedService.textContent = "Restart"; armedService.classList.remove("confirm"); }
+      armedService = button;
+      button.textContent = "Confirm restart";
+      button.classList.add("confirm");
+      setTimeout(() => {
+        if (armedService === button) { armedService = null; button.textContent = "Restart"; button.classList.remove("confirm"); }
+      }, 6000);
+      return;
+    }
+    armedService = null;
+    button.classList.remove("confirm");
+    button.disabled = true;
+    button.textContent = verb === "restart" ? "Restarting…" : "Reading…";
+    line(`> ${verb === "show" ? "logs" : verb} ${row.unit}`, "cmd");
+    let v;
+    try { v = await W.fleet.service(verb, row.unit); } catch (error) { v = { ok: false, error: (error && error.message) || String(error) }; }
+    if (verb === "show") {
+      if (v && v.ok && typeof v.log === "string") {
+        for (const l of v.log.split(/\r?\n/).slice(-25)) if (l.trim()) line(l);
+        line(`logs ${row.unit}: ${v.status || "read"}`, "ok");
+      } else line(`logs ${row.unit}: ${(v && v.error) || "no log"}`, "err");
+    } else {
+      line(`restart ${row.unit}: ${v && v.ok ? (v.verified || "ok") : (v && v.error) || "failed"}`, v && v.ok ? "ok" : "err");
+      void loadNetwork(true);
+    }
+    button.disabled = false;
+    button.textContent = verb === "restart" ? "Restart" : "Logs";
+  }
+
+  function setView(next) {
+    view = next === "map" ? "map" : "overview";
+    $("overview").hidden = view !== "overview";
+    $("net").hidden = view !== "map";
+    $("netnote").hidden = view !== "map";
+    const b = $("b-view");
+    b.textContent = view === "map" ? "Show overview" : "Show map";
+    setAttr(b, "aria-pressed", view === "map" ? "true" : "false");
+    if (view === "overview" && selected) closeDock();
+    lastSig = "";
+    redraw();
   }
 
   async function loadNetwork(fresh) {
@@ -755,6 +914,7 @@
     });
   }
   $("b-refresh").addEventListener("click", () => { void refresh(true); void loadNetwork(true); });
+  $("b-view").addEventListener("click", () => setView(view === "map" ? "overview" : "map"));
   $("b-adopt").addEventListener("click", () => void run("adopt"));
 
   W.fleet.onProgress((p) => {
@@ -778,7 +938,7 @@
 
   // for the page test and the smoke: the dock's map and what the network was given, read-only
   W.fleetPane = Object.freeze({
-    select, closeDock, verdict: () => verdict(lastStatus), data: () => lastData,
+    select, closeDock, verdict: () => verdict(lastStatus), data: () => lastData, setView, view: () => view, mapLabel,
     /** Select by NODE id ("svc:veil", "aw:awnix", "ctl:gpu"): the same path a click on that node takes. */
     selectNode: (id) => {
       const n = nodeById(id);

@@ -622,3 +622,44 @@ test("an inference verdict keeps its lane table through parseVerdict", () => {
   assert.equal(v.mode, "DEGRADED");
   assert.equal(v.lanes[0].lane, "orchestrator");
 });
+
+test("an UNHEALTHY judgement names its problems, never a bare 'refused' (owner 2026-11-18)", () => {
+  // fleet_host.py status --json answered in 14 s with ok:false, verdict UNHEALTHY and two
+  // problems -- and no `error`, so every renderer printed "host-status: refused".
+  const v = parseVerdict(JSON.stringify({ ok: false, verdict: "UNHEALTHY", distro: "awnix",
+    problems: ["systemd is 'starting' (want running)", "no aither-tier*.target installed - nothing starts the fleet"] }), 0);
+  assert.equal(v.ok, false);
+  assert.equal(v.error, "UNHEALTHY: systemd is 'starting' (want running); no aither-tier*.target installed - nothing starts the fleet");
+  assert.doesNotMatch(v.error, /^refused$/);
+  // an explicit error still wins, and a healthy verdict carries none
+  assert.equal(parseVerdict('{"ok": false, "error": "boom", "problems": ["x"]}', 1).error, "boom");
+  assert.equal(parseVerdict('{"ok": true, "verdict": "HEALTHY", "problems": []}', 0).error, undefined);
+});
+
+test("service verbs: restart|show ONE validated name, through the one sh -c string", () => {
+  const { buildServiceCommand } = require("./fleet-control.cjs");
+  const cmd = buildServiceCommand("restart", "aither-avatars", { servicesScript: "C:/x/inv.py", distro: "awnix", local: false });
+  assert.equal(cmd.file, "wsl.exe");
+  assert.deepEqual(cmd.args.slice(0, 5), ["-d", "awnix", "-u", "root", "sh"]);
+  assert.equal(cmd.args.at(-1), "python3 '/mnt/c/x/inv.py' restart aither-avatars --json");
+  assert.equal(buildServiceCommand("show", "aither-genesis-a.service", { servicesScript: "/s.py", local: true }).args.at(-1),
+    "python3 '/s.py' show aither-genesis-a.service --json");
+  for (const bad of ["x; rm -rf /", "$(id)", "-rf", "a b", "", "`x`"]) {
+    assert.throws(() => buildServiceCommand("restart", bad), /not a service name/, bad);
+  }
+  assert.throws(() => buildServiceCommand("stop", "aither-avatars"), /restart or show/);
+});
+
+test("runServiceVerb: a log answer is ok; a refusal says why", async () => {
+  const { runServiceVerb } = require("./fleet-control.cjs");
+  const fake = (out, code = 0) => (file, args, opts, cb) => cb(code ? Object.assign(new Error("x"), { code }) : null, out, "");
+  const show = await runServiceVerb("show", "aither-avatars", { execFile: fake('{"name": "aitheros-avatars", "log": "boom"}') });
+  assert.equal(show.ok, true);
+  assert.equal(show.log, "boom");
+  const refused = await runServiceVerb("restart", "aither-avatars",
+    { execFile: fake('{"ok": false, "refused": "fleet-held", "why": "the fleet is HELD"}', 1) });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, "fleet-held: the fleet is HELD");
+  const bad = await runServiceVerb("restart", "$(id)", { execFile: () => { throw new Error("must not spawn"); } });
+  assert.equal(bad.ok, false);
+});
