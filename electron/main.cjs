@@ -5514,6 +5514,7 @@ function answerDeckCard(id, choice, parent, note = "") {
           BrowserWindow,
           parent: parent && !parent.isDestroyed() ? parent : null,
           url: signedApproval.approveUrl(id, choice),
+          card: raw,
           log: debugLog,
         });
         return { pending: true, via: "approve-window" };
@@ -6602,7 +6603,8 @@ decisionCards.setWindowRouter((_kind, id) => openInbox(id));
 // persisted approve partition and no navigation guard).
 decisionCards.setSignedAnswerOpener((url) => {
   try {
-    signedApproval.openApproveWindow({ BrowserWindow, url, log: debugLog });
+    signedApproval.openApproveWindow({ BrowserWindow, url, log: debugLog, readCard: (id) =>
+      decisionCards.rawCard(id) || signedApproval.readCardRaw(id, decisionCards.storeDir()) });
   } catch (err) {
     debugLog(`[approve] window failed: ${err && err.message}`);
     try { require("electron").shell.openExternal(url); } catch { /* no browser either */ }
