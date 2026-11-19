@@ -596,3 +596,49 @@ test("a blocked card with only a hold default suggests nothing; a real default s
   const real = { id: "d-real", kind: "decision", options: [{ key: "go", label: "Go" }, { key: "stay", label: "Stay" }], defaultKey: "go", createdAt: 1794918981 };
   assert.deepEqual(fa.suggestedOption(real), { label: "Go", inSession: false });
 });
+
+// ── the summon (owner 2026-11-19 "FIX THE ATTENTION LAYER") ─────────────────
+
+test("a summoned card flies through the idle hold and the pacing gap, insisting and spoken", () => {
+  const grant = card({ id: "d-t96r", kind: "blocked", urgency: "high" });
+  const other = card({ id: "d-nvsk" });
+  const summons = { "d-t96r": sec(NOW - 5_000) };
+  const held = fa.plan([other, grant], {}, { nowMs: NOW, idleMs: 10 * MIN, lastNudgeAt: NOW - 1000 });
+  assert.equal(held.act, "none", "without a summon the away owner gets nothing");
+  const d = fa.plan([other, grant], {}, { nowMs: NOW, idleMs: 10 * MIN, lastNudgeAt: NOW - 1000, summons });
+  assert.equal(d.act, "nudge");
+  assert.equal(d.card.id, "d-t96r", "the summoned card, not the backlog's top");
+  assert.equal(d.level, fa.LEVEL.INSIST);
+  assert.equal(d.summoned, true);
+  assert.equal(d.voice, true);
+});
+
+test("one summon shows once; the next re-ping shows again", () => {
+  const grant = card({ id: "d-t96r", urgency: "high" });
+  const at = NOW - 5_000;
+  const d = fa.plan([grant], {}, { nowMs: NOW, summons: { "d-t96r": sec(at) } });
+  const mem = fa.recordSummoned({}, d.summonAt, NOW);
+  const again = fa.plan([grant], { "d-t96r": mem }, { nowMs: NOW + 1000, idleMs: 10 * MIN, summons: { "d-t96r": sec(at) } });
+  assert.equal(again.act, "none");
+  const later = fa.plan([grant], { "d-t96r": mem }, { nowMs: NOW + 10 * MIN, summons: { "d-t96r": sec(NOW + 9 * MIN) } });
+  assert.equal(later.summoned, true);
+  assert.equal(fa.sanitizeMems({ "d-t96r": mem })["d-t96r"].lastSummonAt, mem.lastSummonAt, "survives a restart");
+});
+
+test("quiet holds a summon unless it is critical; a hidden fairy never holds it; Later and Stop nudging do", () => {
+  const high = card({ id: "d-aa", urgency: "high" });
+  const crit = card({ id: "d-bb", urgency: "critical" });
+  const summons = { "d-aa": sec(NOW - 1000), "d-bb": sec(NOW - 2000) };
+  assert.equal(fa.plan([high], {}, { nowMs: NOW, quiet: "a full-screen app", summons }).act, "none");
+  assert.equal(fa.plan([high, crit], {}, { nowMs: NOW, quiet: "a full-screen app", summons }).card.id, "d-bb");
+  assert.equal(fa.plan([high], {}, { nowMs: NOW, quiet: "the fairy is hidden", summons }).summoned, true);
+  assert.equal(fa.plan([high], { "d-aa": { muted: true } }, { nowMs: NOW, summons, idleMs: 10 * MIN }).act, "none");
+  assert.equal(fa.plan([high], { "d-aa": { snoozeUntil: NOW + MIN } }, { nowMs: NOW, summons, idleMs: 10 * MIN }).act, "none");
+});
+
+test("readSummons keeps only well-formed ids and treats a broken file as none", () => {
+  const files = { [require("node:path").join("S", ".summon.json")]: JSON.stringify({ cards: { "d-ab12": 5, "../x": 9, "d-cd": "nope" } }) };
+  assert.deepEqual(fa.readSummons("S", (p) => files[p]), { "d-ab12": 5 });
+  assert.deepEqual(fa.readSummons("S", () => { throw new Error("ENOENT"); }), {});
+  assert.deepEqual(fa.readSummons("S", () => "{not json"), {});
+});
