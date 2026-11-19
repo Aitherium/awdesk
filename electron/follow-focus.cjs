@@ -16,7 +16,8 @@
  *     the cluster across the screen;
  *   - never the desk's own window (pid), never a full-screen app or game, never a
  *     window too small to stand on;
- *   - an attach the owner made by hand is never stolen.
+ *   - an attach the owner made by hand is never stolen;
+ *   - the AitherOS-window dock (one cluster, owner 2026-11-12) is never stolen.
  *
  * What this module does NOT answer: how quickly the cluster reaches the window once
  * attached. That is the live 4 Hz tether plus the probe interval; it is a measured
@@ -74,6 +75,12 @@ function decideFollow({
   if (enabled !== true) return { act: "none", reason: "follow is off" };
   if (!fg) return { act: "none", reason: "no window in front" };
 
+  // One cluster (owner 2026-11-12): while it rides the open AitherOS window (the `auto`
+  // dock, orb-window setDockWindow) no other window may take it. Before this, focusing
+  // Discord in Edge pulled the cluster off the AitherOS window (owner screenshots
+  // 2026-11-19); the dock lets go by itself when that window closes or minimises.
+  if (attach && attach.auto === true) return { act: "none", reason: "riding the AitherOS window (one cluster)" };
+
   const following = Boolean(attach && attach.follow === true);
   const release = (reason) => (following ? { act: "release", reason } : { act: "none", reason });
 
@@ -93,7 +100,7 @@ function decideFollow({
     return { act: "none", reason: "already following it" };
   }
   // A hand-placed fairy stays where the owner put it.
-  if (attach && attach.follow !== true && attach.auto !== true) return { act: "none", reason: "attached by hand" };
+  if (attach && attach.follow !== true) return { act: "none", reason: "attached by hand" };
 
   // Debounce: a focus that just landed may be an alt-tab in flight. An unknown
   // change time counts as held (the caller simply has no clock for it).

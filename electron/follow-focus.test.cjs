@@ -41,6 +41,12 @@ test("an attach FOLLOW made is released when the toggle goes off; a hand attach 
   assert.equal(ff.releaseOnDisable(null), false);
 });
 
+test("the AitherOS-window dock (auto) is never stolen by follow: one cluster (owner 2026-11-12)", () => {
+  const r = ff.decideFollow({ ...base, fg: notepad, attach: { kind: "desk", windowId: 3, auto: true } });
+  assert.equal(r.act, "none");
+  assert.match(r.reason, /AitherOS/);
+});
+
 test("a focus that has not held yet moves nothing (alt-tab in flight)", () => {
   const r = ff.decideFollow({ ...base, fg: notepad, attach: null, changedAt: 9_900, now: 10_000 });
   assert.equal(r.act, "none");
