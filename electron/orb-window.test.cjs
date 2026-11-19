@@ -2440,7 +2440,7 @@ test("follow lets go: the cluster flies home and the trail/tether is not left pa
   orbWindow.__setFollowChangedAt(0);
   assert.equal((await orbWindow.__applyFollow()).act, "release");
   assert.equal(orbWindow.attach(), null);
-  await wait(700); // the 480 ms flight home
+  await orbWindow.__homeFlight(); // the flight home has landed and its .then has run
   const after = orbWin().getBounds();
   assert.notDeepEqual({ x: after.x, y: after.y }, { x: onNotepad.x, y: onNotepad.y }, "not stranded on the window it left");
   assert.ok(!veilWin() || !veilWin().isVisible(), "no stale trail/tether left across other windows");

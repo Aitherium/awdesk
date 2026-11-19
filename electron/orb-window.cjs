@@ -2495,6 +2495,8 @@ function publicAttach() {
     : null;
 }
 
+/** The last detach's flight home, settled once the veil is down (tests await it). */
+let homeFlight = Promise.resolve();
 function detach({ silent = false, reason = null } = {}) {
   if (!attach) return { ok: true, attached: false };
   stopFollow();
@@ -2506,7 +2508,7 @@ function detach({ silent = false, reason = null } = {}) {
   if (reason) pushStatus(reason, 6000, 6000);
   if (!silent) {
     const back = home || orbCenter();
-    void flyTo(back, { durationMs: 480 }).then(() => { if (!attach) hideVeil(); });
+    homeFlight = flyTo(back, { durationMs: 480 }).then(() => { if (!attach) hideVeil(); });
   }
   sendAttach();
   return { ok: true, attached: false, was: { kind: was.kind, title: was.title } };
@@ -5486,6 +5488,7 @@ module.exports = {
   setReservedBox,
   setDockWindow,
   __dock: () => ({ windowId: dockWindowId, attached: Boolean(attach && attach.auto) }),
+  __homeFlight: () => homeFlight,
   __reservedBox: () => reservedBox,
   __dockSpot: (target) => dockSpot(target),
   __refreshObstacles: () => refreshAllObstacles(),
