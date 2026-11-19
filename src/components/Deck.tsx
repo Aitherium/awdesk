@@ -57,6 +57,7 @@ import {
   wakeInvestigateMessage,
   wakeWhyLine,
   type AwarenessLine,
+  desktopAwarenessText,
 } from '../deck/inbox-view';
 import { SPACE_NEXT_LINK, spaceCardLink } from '../deck/space-links';
 import {
@@ -2067,19 +2068,7 @@ function SystemSection() {
     return 'up';
   })();
 
-  const desktopLine = (() => {
-    if (!desktop?.ok) return `unreachable — ${desktop?.reason ?? ''}`;
-    const win = desktop.window as
-      | { available?: boolean; process?: string; title?: string; message?: string; reason?: string }
-      | null | undefined;
-    if (win?.available === false) {
-      return `unavailable — ${win.message ?? win.reason ?? 'platform'}`;
-    }
-    const winNote = noteOf(desktop.window as SnapshotSource);
-    if (winNote) return winNote;
-    if (win?.process) return `${win.process}${win.title ? ` — ${win.title}` : ''}`;
-    return 'no window data';
-  })();
+  const desktopLine = desktopAwarenessText(desktop);
 
   const connectLine = (() => {
     if (!connect?.ok) return `unreachable — ${connect?.reason ?? ''}`;
