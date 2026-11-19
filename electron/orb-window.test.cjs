@@ -896,8 +896,9 @@ test("an ignored nudge counts toward the next level; Later snoozes; answered els
   assert.equal(again.act, "none");
   orbWindow.__setAttentionHooks({ quiet: () => "", idleMs: () => 0, fullScreen: async () => "" });
   orbWindow.setAttentionCards([blockedCard({ id: "d-next", createdAt: Math.floor(Date.now() / 1000) })]);
-  // the old card left the queue: its memory is pruned
-  assert.equal(orbWindow.attentionMems()["d-fair"], undefined);
+  // the old card left the queue: its memory is stamped gone and pruned after the grace
+  // (an empty start-up feed must not reset the ladder -- 2026-11-19, d-ennp)
+  assert.ok(orbWindow.attentionMems()["d-fair"].goneAt > 0, "kept through the grace, stamped gone");
 });
 
 test("quiet, a hidden fairy, or the owner away: no nudge, and the claim follows visibility", async () => {
@@ -2560,4 +2561,77 @@ test("Fairy flights (reduced motion) is a row on the fairy's own menu and it is 
   await invoke("desk:menu-pick", menuWin(), "more");
   assert.match(lastSent(menuWin(), "orb:menu").items.find((i) => i.id === "spirit:flights").label,
     /off \(reduced motion\)/, "the row says what it now does");
+});
+
+// ── 2026-11-19: d-ennp sat 2 h un-nagged across two desk restarts ──────────────
+
+const ATTENTION_LOG = path.join(os.tmpdir(), `fairy-attention-${process.pid}.log`);
+process.env.DESK_FAIRY_ATTENTION_LOG = ATTENTION_LOG;
+
+test("a desk restart resumes the ladder: main's empty first feed no longer resets it, and the card climbs", async () => {
+  fs.rmSync(ATTENTION_LOG, { force: true });
+  startAttention();
+  const c = blockedCard({ id: "d-ennp" }); // blocked high, a real default: a flutter that climbs
+  orbWindow.setAttentionCards([c]);
+  const first = await orbWindow.attentionTick();
+  assert.equal(first.act, "nudge");
+  assert.equal(first.level, 2);
+  orbWindow.endNudge("timeout", { stay: true });
+  assert.equal(orbWindow.attentionMems()["d-ennp"].ignored, 1);
+  // Age the memory file as if that nudge ran 6 min ago, then restart the way main does:
+  // the orb loads the file, the first feed is EMPTY (no store read yet), then the queue.
+  const disk = JSON.parse(fs.readFileSync(ATTENTION_FILE, "utf8"));
+  disk.cards["d-ennp"].lastNudgeAt -= 6 * 60_000;
+  disk.lastNudgeAt -= 6 * 60_000;
+  fs.writeFileSync(ATTENTION_FILE, JSON.stringify(disk));
+  orbWindow.__reset();
+  start();
+  orbWindow.showOrb();
+  orbWindow.__setAttentionHooks({ quiet: () => "", idleMs: () => 0, fullScreen: async () => "", speak: () => true });
+  orbWindow.setAttentionCards([]);
+  orbWindow.setAttentionCards([c]);
+  const mem = orbWindow.attentionMems()["d-ennp"];
+  assert.ok(mem, "the card's memory survived the empty start-up feed");
+  assert.equal(mem.nudges, 1);
+  assert.equal(mem.ignored, 1);
+  const again = await orbWindow.attentionTick();
+  assert.equal(again.act, "nudge", "nudged again: its 5 min interval is up");
+  assert.equal(again.level, 3, "one level louder than before the restart");
+  assert.equal(again.lead, "Still waiting on you");
+  orbWindow.endNudge("seen", { stay: true });
+});
+
+test("the whisper's X on stopped work puts it off 20 min, not an hour; every nudge and hold is in the log", async () => {
+  fs.rmSync(ATTENTION_LOG, { force: true });
+  startAttention();
+  const c = blockedCard({ id: "d-ennp", options: [{ key: "grant", label: "Grant" }, { key: "deny", label: "Deny" }], defaultKey: "deny" });
+  orbWindow.setAttentionCards([c]);
+  const d = await orbWindow.attentionTick();
+  assert.equal(d.act, "nudge");
+  await wait(900);
+  const r = await invoke("desk:nudge-act", nudgeWin(), "close");
+  assert.equal(r.ok, true);
+  const mem = orbWindow.attentionMems()["d-ennp"];
+  const left = mem.snoozeUntil - Date.now();
+  assert.ok(left > 19 * 60_000 && left <= 20 * 60_000, `put off ${Math.round(left / 60_000)} min`);
+  const held = await orbWindow.attentionTick();
+  assert.equal(held.act, "none");
+  const log = fs.readFileSync(ATTENTION_LOG, "utf8").trim().split("\n");
+  assert.ok(log.some((l) => / nudge \{"id":"d-ennp","level":3/.test(l)), "the nudge is logged");
+  assert.ok(log.some((l) => / end \{"id":"d-ennp","outcome":"close"/.test(l)), "its outcome is logged");
+  assert.ok(log.some((l) => / hold \{"reason":"/.test(l)), "the hold after it is logged, with its reason");
+  // GET /attention's source: the card, its level, its snooze, and why it is not nagging.
+  const s = orbWindow.attentionState();
+  assert.equal(s.ok, true);
+  assert.equal(s.quiet, "");
+  const row = s.cards.find((x) => x.id === "d-ennp");
+  assert.equal(row.level, 3);
+  assert.equal(row.nudges, 1);
+  assert.equal(row.nextDueAt, mem.snoozeUntil);
+  assert.match(row.reason, /put off/);
+  assert.equal(s.lastPlan.act, "none");
+  assert.equal(s.log, ATTENTION_LOG);
+  // A quiet reason from main is reported as such.
+  orbWindow.__setAttentionHooks({ quiet: () => "game on", idleMs: () => 0, fullScreen: async () => "" });
+  assert.equal(orbWindow.attentionState().quiet, "game on");
 });

@@ -273,6 +273,10 @@ function createBridgeServer({
   // GET /needs-you: the open cards only the owner can unblock (credential /
   // blocked / blocking), in rank order. Same read-only trust class as /decisions.
   needsYouProvider = null,
+  // GET /attention: why the desk fairy is or is not nagging -- every fed card's level,
+  // nudges, lastNudgeAt, nextDueAt and hold reason, plus the current quiet reason
+  // (orb-window attentionState). Same read-only trust class as /decisions.
+  attentionProvider = null,
   // () => the awrise wake snapshot main holds (jobs, clock liveness, staleness).
   // READ ONLY on this bridge: mutations go to the harness daemon's /wakes
   // window, which owns the bearer check and the argv control. A second
@@ -410,6 +414,44 @@ function createBridgeServer({
       } else {
         send(value);
       }
+      return;
+    }
+
+    // Why the fairy is or is not nagging (2026-11-19: d-ennp sat 2 h with no visible
+    // reason). Read-only, the /decisions trust class: loopback host, a desk/owner
+    // origin or none, GET only. It names card ids, titles and hold reasons -- what
+    // /decisions already shows -- and never answers or snoozes anything.
+    if (request.url === "/attention" || request.url.startsWith("/attention?")) {
+      if (!decisionsReadOriginAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      const cors = origin ? { "access-control-allow-origin": origin, vary: "Origin" } : {};
+      if (request.method === "OPTIONS") {
+        response.writeHead(204, { ...cors, "access-control-allow-methods": "GET, OPTIONS", "access-control-allow-headers": "content-type" });
+        response.end();
+        return;
+      }
+      if (request.method !== "GET") {
+        response.writeHead(405, { allow: "GET, OPTIONS" });
+        response.end();
+        return;
+      }
+      if (attentionProvider == null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      const send = (status, body) => {
+        if (response.headersSent) return;
+        response.writeHead(status, { ...cors, "content-type": "application/json" });
+        response.end(JSON.stringify(body));
+      };
+      Promise.resolve()
+        .then(() => attentionProvider())
+        .then((value) => send(200, value && typeof value === "object" ? value : { ok: false, error: "no attention state" }))
+        .catch((error) => send(500, { ok: false, error: error?.message || String(error) }));
       return;
     }
 

@@ -8686,6 +8686,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // The daemon's list (it expires due cards; the file read does not), the
       // local read only when the daemon is down -- labelled stale.
       decisionsProvider: () => decisionCards.bridgeQueue({ endedOf: endedIdSet }),
+      // GET /attention: why the fairy is or is not nagging (orb-window attentionState).
+      attentionProvider: () => orbWindow.attentionState(),
       needsYouProvider: () => decisionCards.bridgeNeedsYou({
         snoozed: needsYouLib.snoozedIds(needsYouSnoozeDir()),
         endedOf: endedIdSet,

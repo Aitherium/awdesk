@@ -1596,7 +1596,7 @@
     document.body.innerHTML = '<div id="nudge" class="gone">'
       + '<div id="n-head"><span id="n-dot"></span><span id="n-lead"></span>'
       + '<span id="n-more" title="See everything that is waiting"></span>'
-      + '<button id="n-x" title="Later: I will bring it back in an hour">&#10005;</button></div>'
+      + '<button id="n-x" title="Close: I will bring it back (in 20 min if a session is stopped on it)">&#10005;</button></div>'
       + '<div id="n-title"></div><div id="n-old"></div><div id="n-need" title="Open the card"></div><div id="n-why"></div>'
       + '<div id="n-ui"></div><div id="n-acts"></div>'
       + '<div id="n-voice"><button data-act="read" title="Aither reads the card out loud">Read it to me</button>'
@@ -1809,7 +1809,7 @@
     }
     moreEl.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("more"); });
     needEl.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("open"); });
-    document.getElementById("n-x").addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("later"); });
+    document.getElementById("n-x").addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("close"); });
     for (const b of document.querySelectorAll("#n-foot button, #n-voice button")) {
       b.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct(b.dataset.act); });
     }

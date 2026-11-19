@@ -930,3 +930,44 @@ test("space verb route: 404 until the console host wired the space handlers", as
     headers: { authorization: "Bearer test-token" } });
   assert.equal(res.status, 404);
 });
+
+test("GET /attention says why the fairy is or is not nagging, read-only (2026-11-19, d-ennp)", async (context) => {
+  const fa = require("./fairy-attention.cjs");
+  const now = Date.now();
+  const card = {
+    id: "d-ennp", title: "Allow Claude to use: Bash(bash enroll.sh:*)", kind: "blocked", urgency: "high",
+    createdAt: Math.floor(now / 1000) - 2 * 3600, options: [{ key: "grant", label: "Grant" }, { key: "deny", label: "Deny" }],
+    defaultKey: "deny",
+  };
+  const mems = { "d-ennp": fa.recordClose(fa.recordShown({}, now - 60_000), now - 58_000, { card }) };
+  let quiet = "";
+  const bridge = createBridgeServer({
+    port: 0,
+    onEvent: () => {},
+    attentionProvider: () => ({ ok: true, ...fa.attentionReport([card], mems, { nowMs: Date.now(), quiet }) }),
+    bridgeToken: null,
+  });
+  const address = await bridge.listen();
+  context.after(() => bridge.close());
+  const r = await requestServer(address, { path: "/attention" });
+  assert.equal(r.status, 200);
+  const body = JSON.parse(r.body);
+  const row = body.cards.find((c) => c.id === "d-ennp");
+  assert.ok(row, "the fed card is listed");
+  assert.equal(row.level, fa.LEVEL.INSIST);
+  assert.equal(row.nudges, 1);
+  assert.equal(row.lastNudgeAt, now - 60_000);
+  assert.equal(row.nextDueAt, now - 58_000 + fa.DEFAULTS.closeStopsWorkMs);
+  assert.match(row.reason, /put off/, "the hold reason is named");
+  assert.equal(body.quiet, "");
+  quiet = "game on";
+  const held = JSON.parse((await requestServer(address, { path: "/attention" })).body);
+  assert.equal(held.quiet, "game on", "the current quiet reason rides along");
+  // The same trust class as /decisions: a foreign origin cannot read it, nothing is posted to it.
+  assert.equal((await requestServer(address, { path: "/attention", headers: { origin: "https://evil.example" } })).status, 403);
+  assert.equal((await requestServer(address, { path: "/attention", method: "POST", body: "{}" })).status, 405);
+  const bare = createBridgeServer({ port: 0, onEvent: () => {}, bridgeToken: null });
+  const addr2 = await bare.listen();
+  context.after(() => bare.close());
+  assert.equal((await requestServer(addr2, { path: "/attention" })).status, 404, "no provider = no route");
+});
