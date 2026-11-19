@@ -685,7 +685,7 @@ test("with no quiet reason, a blocked card is never more than 30 min without a n
     const outcome = outcomes[(count[id] = (count[id] || 0) + 1) % outcomes.length];
     if (outcome === "timeout") mems[id] = fa.recordIgnored(mems[id], { importance: d.importance, nowMs: end, climbs: d.climbs });
     else if (outcome === "close") mems[id] = close(mems[id], end, d.card);
-    else if (outcome === "seen") mems[id] = fa.recordActed(mems[id]);
+    else if (outcome === "seen") mems[id] = (fa.recordSeen || fa.recordActed)(mems[id]);
     t = Math.max(t, end - TICK); // the fairy is busy while the whisper is up
   }
   for (const [id, times] of Object.entries(shownAt)) {
@@ -717,4 +717,24 @@ test("attentionReport says per card why the fairy is or is not nagging", () => {
   assert.equal(due.plan.act, "nudge");
   assert.equal(due.cards[0].reason, "");
   assert.equal(due.cards[0].nextDueAt, NOW);
+});
+
+test("a nudge the desk quit under counts as ignored on the next load, once", () => {
+  const mems = fa.sanitizeMems({ "d-ennp": { lastNudgeAt: NOW, nudges: 3, ignored: 1, openAt: NOW }, "d-done": { nudges: 1 } });
+  assert.equal(mems["d-ennp"].openAt, NOW, "an open nudge is persisted");
+  const settled = fa.settleOpenNudges(mems);
+  assert.equal(settled["d-ennp"].ignored, 2, "the unanswered nudge is one more ignored");
+  assert.equal(settled["d-ennp"].openAt, undefined);
+  assert.deepEqual(settled["d-done"], { nudges: 1 });
+  assert.deepEqual(fa.settleOpenNudges(settled), settled, "settling twice counts nothing twice");
+});
+
+test("d-ennp's live memory {nudges 6, ignored 0} was already at the insist: stopped work starts at the top", () => {
+  // The coordinator's question (2026-11-19): did ignored 0 keep it at glow/flutter? Not for
+  // this card: a blocked card whose default is "deny" holds work, importance 3, level 3
+  // from its first nudge whatever `ignored` says.
+  const c = grant({ createdAt: sec(NOW - 2 * 60 * MIN) });
+  const d = fa.plan([c], { "d-ennp": { lastNudgeAt: NOW - 10 * MIN, nudges: 6 } }, { nowMs: NOW });
+  assert.equal(d.act, "nudge");
+  assert.equal(d.level, fa.LEVEL.INSIST);
 });

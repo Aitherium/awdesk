@@ -2635,3 +2635,39 @@ test("the whisper's X on stopped work puts it off 20 min, not an hour; every nud
   orbWindow.__setAttentionHooks({ quiet: () => "game on", idleMs: () => 0, fullScreen: async () => "" });
   assert.equal(orbWindow.attentionState().quiet, "game on");
 });
+
+test("seeing the fairy (an orb click) is not answering: the ignored count stays, the next nudge is louder", async () => {
+  startAttention();
+  const c = blockedCard({ id: "d-seen" });
+  orbWindow.setAttentionCards([c]);
+  assert.equal((await orbWindow.attentionTick()).level, 2);
+  await wait(1000); // the flight to the pointer lands
+  orbWindow.endNudge("timeout", { stay: true });
+  assert.equal(orbWindow.attentionMems()["d-seen"].ignored, 1);
+  // Its interval is up; the second nudge, then the owner clicks the orb to ask something else.
+  orbWindow.attentionMems()["d-seen"].lastNudgeAt -= 6 * 60_000;
+  orbWindow.__resetAttentionClock();
+  const second = await orbWindow.attentionTick();
+  assert.equal(second.act, "nudge");
+  assert.equal(second.level, 3, "climbed once");
+  await invoke("desk:orb-click", orbWin());
+  assert.equal(orbWindow.nudging(), null, "the click ended the nudge");
+  const b = bubbleWin();
+  if (b && b.isVisible()) b.hide();
+  assert.equal(orbWindow.attentionMems()["d-seen"].ignored, 1, "a click on the orb did not reset the ladder");
+});
+
+test("a nudge still up when the desk quits counts as ignored after the restart", async () => {
+  startAttention();
+  const c = blockedCard({ id: "d-quit" });
+  orbWindow.setAttentionCards([c]);
+  assert.equal((await orbWindow.attentionTick()).act, "nudge");
+  assert.ok(orbWindow.nudging(), "the whisper is up");
+  // The desk quits mid-nudge (it restarted at 06:47 and 07:01 on 2026-11-19): no outcome is recorded.
+  orbWindow.__reset();
+  start();
+  const mem = orbWindow.attentionMems()["d-quit"];
+  assert.equal(mem.nudges, 1);
+  assert.equal(mem.ignored, 1, "the unanswered nudge counts");
+  assert.equal(mem.openAt, undefined);
+});

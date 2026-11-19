@@ -3285,10 +3285,13 @@ let attentionFullScreen = "";
 function loadAttention() {
   try {
     const raw = JSON.parse(fs.readFileSync(attentionFile(), "utf8"));
-    attentionMems = fairyAttention.sanitizeMems(raw && raw.cards);
+    const loaded = fairyAttention.sanitizeMems(raw && raw.cards);
+    // A nudge the desk quit under was never answered: it counts as ignored, once.
+    attentionMems = fairyAttention.settleOpenNudges(loaded);
     attentionLastAt = Number(raw && raw.lastNudgeAt) || 0;
     attentionVoiceAt = Number(raw && raw.lastVoiceAt) || 0;
     attentionOlderAt = Number(raw && raw.olderMentionedAt) || 0;
+    if (JSON.stringify(loaded) !== JSON.stringify(attentionMems)) saveAttention();
   } catch {
     attentionMems = {}; // unreadable memory = every card starts at the bottom of the ladder
   }
@@ -3953,7 +3956,9 @@ function startNudge(decision, { peek = false } = {}) {
   const nowMs = Date.now();
   const id = decision.card.id;
   if (!peek) {
-    attentionMems[id] = fairyAttention.recordShown(attentionMems[id] || {}, nowMs);
+    // openAt: the nudge is up. Cleared when it ends; still set at the next load = the desk
+    // quit under it, and settleOpenNudges counts it as ignored.
+    attentionMems[id] = { ...fairyAttention.recordShown(attentionMems[id] || {}, nowMs), openAt: nowMs };
     attentionLog.nudge({
       id, level: decision.level, importance: decision.importance, arrival: Boolean(decision.arrival),
       returned: Boolean(decision.returned), voice: Boolean(decision.voice), nudges: attentionMems[id].nudges,
@@ -4042,13 +4047,18 @@ function endNudge(outcome = "timeout", { stay = false } = {}) {
   if (n.flutter) clearInterval(n.flutter);
   const id = n.decision.card.id;
   const nowMs = Date.now();
-  const mem = attentionMems[id] || {};
+  const mem = { ...(attentionMems[id] || {}) };
+  delete mem.openAt; // the nudge is over, whatever its outcome
+  if (attentionMems[id]) attentionMems[id] = mem;
   if (n.peek && (outcome === "timeout" || outcome === "peek")) {
     // A peek was the owner's hover, not a nudge: nothing to learn from it.
   } else if (outcome === "timeout") {
     attentionMems[id] = fairyAttention.recordIgnored(mem, { importance: n.decision.importance, nowMs, climbs: n.decision.climbs });
-  } else if (outcome === "acted" || outcome === "seen") {
+  } else if (outcome === "acted") {
     attentionMems[id] = fairyAttention.recordActed(mem);
+  } else if (outcome === "seen") {
+    // Seen is not answered: the ladder keeps its place (2026-11-19).
+    attentionMems[id] = fairyAttention.recordSeen(mem);
   } else if (outcome === "later") {
     attentionMems[id] = fairyAttention.recordLater(mem, nowMs);
   } else if (outcome === "close") {
