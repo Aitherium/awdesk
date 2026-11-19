@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { DeckDecision, RelayRow, WakeRow } from './deck-types';
 import {
   awarenessLine,
+  desktopAwarenessText,
   capList,
   decisionGroup,
   decisionSource,
@@ -348,5 +349,43 @@ describe('filterRows — typing narrows the list, never re-ranks it', () => {
   it('requires every token to match', () => {
     expect(filterRows(rows, 'merge 42').map((c) => c.id)).toEqual(['d-pr']);
     expect(filterRows(rows, 'merge gmail')).toEqual([]);
+  });
+});
+
+describe('desktopAwarenessText', () => {
+  const linuxGateway = { available: false, message: 'Desktop context tools require Windows platform' };
+  const line = (desktop: Parameters<typeof desktopAwarenessText>[0]) =>
+    awarenessLine('Desktop', desktopAwarenessText(desktop), 'Desktop context');
+
+  it('reads OK when the host sample works, even though the gateway says Windows-only', () => {
+    const got = line({ ok: true, window: { available: true, source: 'host', process: 'Code', title: 'Deck.tsx' } });
+    expect(got.ok).toBe(true);
+    expect(got.state).toBe('Desktop context OK');
+    expect(got.detail).toContain('Code — Deck.tsx');
+  });
+
+  it('still reads not available when the host sample AND the gateway fail', () => {
+    const got = line({ ok: true, window: { ...linuxGateway, source: 'gateway', hostReason: 'probe timed out' } });
+    expect(got.ok).toBe(false);
+    expect(got.state).toBe('Desktop context not available on this machine');
+    expect(got.detail).toContain('probe timed out');
+  });
+
+  it('a dead gateway behind a failed host probe reads not answering', () => {
+    const got = line({ ok: true, window: { note: 'ERROR: no session bearer', source: 'gateway', hostReason: 'probe timed out' } });
+    expect(got.ok).toBe(false);
+    expect(got.state).toBe('Desktop context not answering');
+  });
+
+  it('never reads OK on silence', () => {
+    expect(line({ ok: true, window: {} }).ok).toBe(false);
+    expect(line({ ok: true }).ok).toBe(false);
+    expect(line({ ok: false, reason: 'ipc gone' }).ok).toBe(false);
+    expect(line(undefined).ok).toBe(false);
+  });
+
+  it('a gateway window still shows when the host probe failed', () => {
+    const got = line({ ok: true, window: { process: 'Code.exe', title: 'x', source: 'gateway', hostReason: 'n/a' } });
+    expect(got.ok).toBe(true);
   });
 });

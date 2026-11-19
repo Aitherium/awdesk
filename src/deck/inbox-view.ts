@@ -414,6 +414,37 @@ export interface AwarenessLine {
  * ("unreachable — Server disconnected without sending a response"); the
  * headline names the thing and its state, the raw text becomes the detail.
  */
+/**
+ * The raw Desktop awareness text from a `desk:desktop-snapshot` answer, for
+ * `awarenessLine`. The focused window is sampled on THIS host first
+ * (`source: 'host'`); the gateway's `get_active_window` is only a fallback and,
+ * running in a Linux container, says "requires Windows platform". So:
+ *   - host sample present          -> `up — <app> — <title>` (reads OK)
+ *   - host failed, gateway answers  -> the gateway's window
+ *   - host failed AND gateway failed -> unavailable/unreachable, both reasons named
+ * Never "up" on silence: no window data at all is not a pass.
+ */
+export function desktopAwarenessText(
+  desktop: { ok?: boolean; reason?: string; window?: unknown } | null | undefined,
+): string {
+  if (!desktop?.ok) return `unreachable — ${desktop?.reason ?? ''}`;
+  const win = (desktop.window && typeof desktop.window === 'object' ? desktop.window : {}) as {
+    available?: boolean; source?: string; process?: string; title?: string;
+    message?: string; reason?: string; note?: string; hostReason?: string;
+  };
+  const named = (text: string) => `${text}${win.title ? ` — ${win.title}` : ''}`;
+  if (win.source === 'host' && win.process) return `up — ${named(win.process)}`;
+  const host = win.hostReason ? ` (host: ${win.hostReason})` : '';
+  if (win.available === false) return `unavailable — ${win.message ?? win.reason ?? 'platform'}${host}`;
+  if (typeof win.note === 'string' && win.note) {
+    return /^ERROR:\s*/.test(win.note)
+      ? `unreachable — ${win.note.replace(/^ERROR:\s*/, '')}${host}`
+      : `${win.note}${host}`;
+  }
+  if (win.process) return named(win.process);
+  return `unavailable — no window data${host}`;
+}
+
 export function awarenessLine(name: string, raw: string, noun = `${name} service`): AwarenessLine {
   const text = String(raw || '').trim();
   if (!text || text === 'up' || /^up\b/i.test(text)) return { name, ok: true, state: `${noun} OK`, detail: text };
