@@ -56,7 +56,7 @@ test("without actionable platform support the toast is plain -- no invented butt
   const toast = ct.buildCardToast(card());
   assert.equal(toast.toastXml, null);
   assert.equal(toast.title, "Approve the deploy?");
-  assert.equal(toast.body, "Two files, no migrations.");
+  assert.equal(toast.body, ["If you approve: Approve.", "Two files, no migrations."].join(String.fromCharCode(10)));
   assert.equal(toast.actions.length, 3, "the description still says what the card offers");
 });
 

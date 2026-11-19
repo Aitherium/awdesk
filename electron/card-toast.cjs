@@ -26,6 +26,8 @@
 
 /** Most card toasts one announcement shows (a burst); the rest are the badge's
  *  and the tray's job. A backlog shows one (see main's announceDecisions). */
+const notifyPolicy = require("./notify-policy.cjs");
+
 const MAX_CARD_TOASTS = 3;
 /** A toast action the card offers. Anything else is refused, not guessed. */
 const ACTIONS = Object.freeze(["approve", "later", "open"]);
@@ -176,11 +178,11 @@ function cardToastXml({ cardId, title, body, approve, ticket = "" }, scheme = DE
  *   registered). `ticket`: proof, minted by the desk when it showed this toast, that
  *   the button came from it and not from a page that guessed a desk:// link.
  */
-function buildCardToast(card, { scheme = DEFAULT_SCHEME, actionable = false, ticket = "" } = {}) {
+function buildCardToast(card, { scheme = DEFAULT_SCHEME, actionable = false, ticket = "", policy = null } = {}) {
   if (!card || !isCardId(card.id)) return null;
-  const title = String(card.title || "A decision needs you").slice(0, 120);
-  const body = String(card.summary || card.detail || "").replace(/\s+/g, " ").trim().slice(0, 200)
-    || "Open it to see what this needs.";
+  // The ONE message shape (notify-policy.cjs, owner 2026-11-18): a <=60 char sentence
+  // title never cut mid-word, an "If you approve:" body, no line repeating the title.
+  const { title, body } = notifyPolicy.shape(card, policy || notifyPolicy.readPolicy());
   const approve = primaryChoice(card);
   const actions = [];
   if (approve) actions.push({ action: "approve", label: approve.label, choice: approve.key });

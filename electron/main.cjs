@@ -2023,6 +2023,35 @@ function toastActionsAvailable() {
  *  only thing a card arrival does: it never calls openInbox by itself. */
 function showCardToast(toast) {
   if (!toast || !toast.cardId) return null;
+  // One desk toast per card id (notify-policy.cjs ledger, shared with every sender):
+  // the same words again show nothing, changed words REPLACE the toast already up.
+  let verdict = "new";
+  try {
+    verdict = cardToastLedger.claim(toast.cardId, notifyPolicy.fingerprint(toast));
+  } catch (error) {
+    debugLog(`[card-toast] ledger unreadable, showing: ${error && error.message}`);
+  }
+  if (verdict === "dup") {
+    debugLog(`[card-toast] ${toast.cardId} already shown once (notify-policy: one per card)`);
+    return null;
+  }
+  const previous = shownCardToasts.get(toast.cardId);
+  if (previous) {
+    try { previous.close(); } catch { /* already gone from the screen */ }
+    shownCardToasts.delete(toast.cardId);
+  }
+  const shown = showCardToastNow(toast);
+  if (shown) {
+    shownCardToasts.set(toast.cardId, shown);
+    while (shownCardToasts.size > 50) shownCardToasts.delete(shownCardToasts.keys().next().value);
+  }
+  return shown;
+}
+const notifyPolicy = require("./notify-policy.cjs");
+const cardToastLedger = notifyPolicy.createLedger();
+/** cardId -> the Notification on screen, so an update closes it before replacing it. */
+const shownCardToasts = new Map();
+function showCardToastNow(toast) {
   return toaster.show({
     title: toast.title,
     body: toast.body,
