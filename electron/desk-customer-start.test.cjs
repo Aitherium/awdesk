@@ -10,7 +10,13 @@ const path = require("node:path");
 const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
 
 test("first launch: a customer desk shows the Living Desktop unless started in the background", () => {
-  assert.match(main, /else if \(deskPostureState\.customer && !startInBackground\) showLivingDesktop\(\);/);
+  // ...and unless the user turned overlay.workspaceAutoOpen off (customer report 2026-11-19: "it
+  // keeps popping up"): the customer taskbar at start asks the WORKSPACE door first.
+  assert.match(main, /else if \(deskPostureState\.customer && !startInBackground\) \{\s*if \(overlayMayRaise\(overlayPolicy\.TRIGGERS\.WORKSPACE, "customer taskbar"\)\) showLivingDesktop\(\);/);
+});
+
+test("after a sign-in the workspace window asks the WORKSPACE door before opening by itself", () => {
+  assert.match(main, /setAutoOpenGate\(\s*\(\) => overlayMayRaise\(overlayPolicy\.TRIGGERS\.WORKSPACE,/);
 });
 
 test("second launch: a customer desk brings up the Living Desktop, not the avatar stage", () => {

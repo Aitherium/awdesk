@@ -443,7 +443,8 @@ let account = { signedIn: false, username: "", source: "", state: "unknown", che
 const ACCOUNT_RECHECK_MS = 5 * 60 * 1000;
 const accountListeners = new Set();
 function setAccount(next) {
-  const changed = next.signedIn !== account.signedIn || next.username !== account.username;
+  const changed = next.signedIn !== account.signedIn || next.username !== account.username
+    || (next.email || "") !== (account.email || "") || (next.tenantId || "") !== (account.tenantId || "");
   account = { ...next, checkedAt: Date.now() };
   if (changed) {
     for (const fn of accountListeners) {
@@ -459,7 +460,17 @@ function accountStatus() {
   return {
     signedIn: account.signedIn, username: account.username, source: account.source, state: account.state,
     line: deskSession.accountLine(account),
+    // From Identity /auth/me only (desk-tenant-auto.tenantIdentity): the account
+    // indicator's email and the workspaces this account is a member of. Never a token.
+    email: account.email || "", tenantId: account.tenantId || "",
+    memberships: Array.isArray(account.memberships) ? [...account.memberships] : [],
   };
+}
+/** The account fields an Identity /auth/me identity adds to setAccount. */
+function identityFields(identity) {
+  if (!identity) return {};
+  return { email: identity.email || "", tenantId: identity.tenantId || "",
+    memberships: Array.isArray(identity.memberships) ? identity.memberships : [] };
 }
 function onAccountChange(fn) {
   accountListeners.add(fn);
@@ -598,7 +609,8 @@ async function syncPortalSessionCookie({ force = false, useVault = true } = {}) 
     log(`session write failed: ${err}`);
   }
   const signedIn = verdict.action === "keep" || verdict.action === "set";
-  setAccount({ signedIn, username: verdict.username || "", source: verdict.source, state: verdict.state });
+  setAccount({ signedIn, username: verdict.username || "", source: verdict.source, state: verdict.state,
+    ...(signedIn ? identityFields(verdict.identity) : {}) });
   if (signedIn && verdict.identity) await adoptWorkspaceHost(verdict.identity);
   return accountStatus();
 }
@@ -635,6 +647,21 @@ function reloadSignedInWindows() {
   if (isAppOpen()) void appWin.loadURL(desktopAppUrl());
 }
 
+// overlay.workspaceAutoOpen (overlay-policy.cjs): may the desk open the workspace window
+// BY ITSELF after a sign-in? main sets the gate; with none set, the old behaviour stands.
+let autoOpenGate = () => true;
+function setAutoOpenGate(fn) {
+  autoOpenGate = typeof fn === "function" ? fn : () => true;
+}
+/** After a sign-in: reload what is open, or open the workspace window when allowed. */
+function afterSignIn() {
+  if (isOpen() || isAppOpen()) return void reloadSignedInWindows();
+  let allow;
+  try { allow = autoOpenGate() !== false; } catch { allow = true; }
+  if (allow) showDesktopApp();
+  else log("sign-in: the workspace window was not opened (overlay.workspaceAutoOpen is off)");
+}
+
 let signInRunning = null;
 /**
  * "Sign in…" -- for BOTH windows, the AitherDesktop app as much as the overlay.
@@ -645,28 +672,37 @@ let signInRunning = null;
  * 3. If that cannot run, the old in-window aitherium.com/login page, in the window
  *    the owner is looking at, with a cookie watch that returns him to the desktop.
  */
-function beginSignIn() {
+function beginSignIn({ chooseAccount = false, onToken = null } = {}) {
   if (signInRunning) return signInRunning;
   userSignedOut = false;
   signInRunning = (async () => {
     try {
-      const now = await syncPortalSessionCookie({ force: true });
-      if (now.signedIn) {
-        log(`sign-in: already signed in (${now.source}) — reloading the windows`);
-        if (!isOpen() && !isAppOpen()) showDesktopApp();
-        else reloadSignedInWindows();
-        return now;
+      // "Switch account" never re-links the login this machine already has: that IS the
+      // account being left. It goes straight to the browser with the IdP's chooser.
+      if (!chooseAccount) {
+        const now = await syncPortalSessionCookie({ force: true });
+        if (now.signedIn) {
+          log(`sign-in: already signed in (${now.source}) — reloading the windows`);
+          afterSignIn();
+          return now;
+        }
       }
-      log("sign-in: no usable login on this machine — opening the browser sign-in");
-      const got = await deskSession.signInWithBrowser({ openExternal: (url) => shell.openExternal(url) });
+      log(chooseAccount ? "switch account: opening the browser sign-in with the account chooser"
+        : "sign-in: no usable login on this machine — opening the browser sign-in");
+      const got = await deskSession.signInWithBrowser({ openExternal: (url) => shell.openExternal(url),
+        ...(chooseAccount ? { prompt: "select_account" } : {}) });
       await setPartitionToken(got.token, got.expiresAt);
       const checked = await deskSession.checkToken(got.token);
+      // The Online tab's jar follows a switch (main), so the two never disagree on who.
+      if (typeof onToken === "function") {
+        try { await onToken(got.token, got.expiresAt); } catch { /* the Online tab re-reads on its own */ }
+      }
       got.token = null;
-      setAccount({ signedIn: true, username: got.username, source: `browser:${got.via}`, state: "valid" });
+      setAccount({ signedIn: true, username: checked.username || got.username, source: `browser:${got.via}`,
+        state: "valid", ...identityFields(checked.identity) });
       if (checked.identity) await adoptWorkspaceHost(checked.identity);
       log(`sign-in: signed in via the browser (${got.via}); auth.json updated`);
-      if (!isOpen() && !isAppOpen()) showDesktopApp();
-      else reloadSignedInWindows();
+      afterSignIn();
       return accountStatus();
     } catch (err) {
       log(`sign-in: browser sign-in did not complete (${err && err.code ? err.code : err}) — in-window login`);
@@ -713,6 +749,19 @@ async function signOut() {
   log("signed out of the window partition");
   reloadSignedInWindows();
   return accountStatus();
+}
+
+/**
+ * "Switch account…": sign the windows out (the account's sign-in-picked workspace goes
+ * with it), then the SAME desk sign-in with the IdP's account chooser, so another
+ * account can be picked even while the browser holds this one's IdP session. Nothing
+ * new on the auth path: desk-session.signInWithBrowser with `prompt=select_account`.
+ * `onToken(token, expiresAt)` lets main put the new session in the Online tab too.
+ */
+async function switchAccount({ onToken = null } = {}) {
+  if (signInRunning) return signInRunning;
+  await signOut();
+  return beginSignIn({ chooseAccount: true, onToken });
 }
 
 function log(line) {
@@ -1232,6 +1281,10 @@ module.exports = {
   reloadLivingDesktop,
   beginSignIn,
   signOut,
+  switchAccount,
+  setAutoOpenGate,
+  /** The windows' own session bearer (main only: re-asking Identity on a workspace pick). */
+  windowSessionToken: partitionCookieToken,
   accountStatus,
   onAccountChange,
   refreshAccount,

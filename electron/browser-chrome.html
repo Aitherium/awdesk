@@ -36,6 +36,14 @@
   #aither .mark { width: 18px; height: 18px; border-radius: 50%; flex: none;
     background: radial-gradient(circle at 35% 35%, var(--primary, #7cd), var(--agent-purple, #96f)); }
   #aither .caret { margin-left: auto; color: var(--muted); font-weight: 400; }
+  /* The workspace (its own logo + name) and the signed-in account (customer report 2026-11-19). */
+  #aither .mark.logo { background: center / contain no-repeat; border-radius: 4px; }
+  #aither .tw { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; text-align: left; }
+  #aither .tw .t, #aither .tw .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #aither .tw .who { font-size: 10px; font-weight: 400; color: var(--muted); }
+  #aither .tw .who:empty { display: none; }
+  #aither.notmember .who { color: var(--danger, #e66); }
+  body.collapsed #aither .tw { display: none; }
   #collapse { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: none;
     color: var(--muted); cursor: pointer; flex: none; }
   #slot { flex: none; position: relative; margin: 0; border-radius: 12px;
@@ -324,7 +332,7 @@
   <nav id="rail" aria-label="Aither">
     <div class="brand">
       <button id="aither" title="The Aither menu: the same one as the tray and a body's right-click">
-        <span class="mark"></span><span class="t">Aither</span><span class="caret">&#9662;</span>
+        <span class="mark"></span><span class="tw"><span class="t">Aither</span><span class="who"></span></span><span class="caret">&#9662;</span>
       </button>
       <button id="custom" title="Customize the layout" aria-label="Customize the layout" aria-expanded="false">&#9881;</button>
       <button id="collapse" title="Collapse the rail" aria-label="Collapse the rail">&#171;</button>
@@ -1431,9 +1439,25 @@
     $("paneltoggle").classList.toggle("on", !(p && p.collapsed));
   }
 
+  // The brand button names the workspace the Desk is in -- by its OWN logo and name,
+  // "Aitherium" on the apex -- and the account signed in (desk-account.cjs indicator).
+  // textContent only; the logo is a data: image main validated (img-src data: CSP).
+  const AITHER_TITLE = $("aither").title;
+  function renderAccount(a) {
+    const btn = $("aither");
+    const mark = btn.querySelector(".mark");
+    btn.querySelector(".t").textContent = a && a.name ? a.name : "Aither";
+    btn.querySelector(".who").textContent = a && a.signedIn ? a.who : (a ? "Not signed in" : "");
+    btn.classList.toggle("notmember", Boolean(a && a.member === false));
+    const logo = a && typeof a.logo === "string" && a.logo.startsWith("data:image/") ? a.logo : "";
+    mark.classList.toggle("logo", Boolean(logo));
+    mark.style.backgroundImage = logo ? `url("${logo}")` : "";
+    btn.title = a && a.tooltip ? [a.tooltip, "", AITHER_TITLE].join(String.fromCharCode(10)) : AITHER_TITLE;
+  }
   function renderRail(r, tabsNow) {
     if (!r) return;
     lastRail = r;
+    renderAccount(r.account || null);
     placeGrips(r);
     const L = r.layout || {};
     const sides = L.sides || {};

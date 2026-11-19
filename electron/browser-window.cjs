@@ -351,6 +351,18 @@ function hostSignedIn() {
 function hostDocked() {
   try { return Boolean(shellHost && shellHost.docked()); } catch { return false; }
 }
+/** Which workspace and account (desk-account.cjs indicator): only the fields the rail
+ *  draws -- names, host, a data: logo -- never a token. null when main has none. */
+function hostAccount() {
+  let v;
+  try { v = shellHost && typeof shellHost.account === "function" ? shellHost.account() : null; } catch { v = null; }
+  if (!v || !v.workspace) return null;
+  const logo = typeof v.workspace.logo === "string" && /^data:image\/(?:svg\+xml|png|webp);base64,[A-Za-z0-9+/=]+$/.test(v.workspace.logo)
+    ? v.workspace.logo : null;
+  return { name: String(v.workspace.name || ""), host: String(v.workspace.host || ""), apex: Boolean(v.workspace.apex),
+    accent: v.workspace.accent || null, logo, who: String(v.who || ""), signedIn: Boolean(v.signedIn),
+    member: v.member === true || v.member === false ? v.member : null, tooltip: String(v.tooltip || "") };
+}
 let pushTimer = null;
 /** History + bookmarks (browser-library.json in userData), opened on first use. */
 let library = null;
@@ -3686,6 +3698,8 @@ function railState() {
     // Reveal the non-primary destinations (the rail's "More destinations").
     allSections: Boolean(p.railAllSections),
     docked,
+    // The brand button's workspace + account indicator (customer report 2026-11-19).
+    account: hostAccount(),
     slot: rects ? rects.avatar : null,
     // The owner's arrangement (desk-layout arrangeRail) BEFORE the five-row cap, so
     // "+N more" applies to the rail they arranged. Pinned is always a primary section.

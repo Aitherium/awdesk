@@ -236,9 +236,15 @@ test("living-desktop-window: the session comes from desk-session, auth.json befo
 });
 
 test("living-desktop-window: Sign in reaches the AitherDesktop APP window, not only the overlay", () => {
-  const body = ldw.slice(ldw.indexOf("function beginSignIn()"), ldw.indexOf("let signInPoll"));
+  const body = ldw.slice(ldw.indexOf("function beginSignIn("), ldw.indexOf("let signInPoll"));
   assert.match(body, /deskSession\.signInWithBrowser\(/);
-  assert.match(body, /reloadSignedInWindows\(\)/);
+  assert.match(body, /afterSignIn\(\)/);
+  // afterSignIn: reload what is open; open the app window only when the gate allows
+  // (overlay.workspaceAutoOpen -- off = nothing pops up by itself).
+  const after = ldw.slice(ldw.indexOf("function afterSignIn()"), ldw.indexOf("let signInRunning"));
+  assert.match(after, /reloadSignedInWindows\(\)/);
+  assert.match(after, /autoOpenGate\(\)/);
+  assert.match(after, /showDesktopApp\(\)/);
   const reload = ldw.slice(ldw.indexOf("function reloadSignedInWindows()"), ldw.indexOf("let signInRunning"));
   assert.match(reload, /isAppOpen\(\)/);
   assert.match(reload, /appWin\.loadURL/);

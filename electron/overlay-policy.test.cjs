@@ -23,7 +23,7 @@ test("defaults are quiet: nothing opens at start or at an edge", () => {
   const d = policy.normalize({});
   assert.deepEqual(d, {
     autoOpenOnStart: false, edgeReveal: false, edge: "right", edgeDwellMs: 600,
-    doNotDisturb: false, spaceHome: false,
+    doNotDisturb: false, spaceHome: false, workspaceAutoOpen: true,
   });
   for (const t of [TRIGGERS.START, TRIGGERS.EDGE]) {
     assert.equal(policy.decide({}, t).allow, false, `${t} must be off by default`);
@@ -285,4 +285,29 @@ test("main: the edge watcher drives a reveal, the settings door is wired", () =>
   for (const id of ["auto-start", "edge-reveal", "dnd"]) {
     assert.match(MAIN, new RegExp(`case "desktop\\.overlay\\.${id}": return void toggleOverlaySetting\\(`), id);
   }
+});
+
+// customer report 2026-11-19: "an Aitherium sidebar keeps popping up". overlay.workspaceAutoOpen
+// (default ON, so no other desk changes) gates the desk opening a workspace by itself,
+// and OFF silences every other automatic door too -- the switch means "only when I click".
+test("workspace door: on by default, off by its own switch, DND wins", () => {
+  assert.equal(policy.decide({}, TRIGGERS.WORKSPACE).allow, true, "unchanged for every desk that never set it");
+  const off = policy.decide({ workspaceAutoOpen: false }, TRIGGERS.WORKSPACE);
+  assert.equal(off.allow, false);
+  assert.match(off.reason, /workspaceAutoOpen/);
+  assert.equal(policy.decide({ doNotDisturb: true }, TRIGGERS.WORKSPACE).allow, false);
+});
+
+test("workspaceAutoOpen off refuses EVERY automatic door, never a click", () => {
+  const s = { workspaceAutoOpen: false, autoOpenOnStart: true, edgeReveal: true };
+  for (const t of [TRIGGERS.START, TRIGGERS.EDGE, TRIGGERS.REQUEST, TRIGGERS.WORKSPACE]) {
+    assert.equal(policy.decide(s, t).allow, false, `${t} must stay shut`);
+  }
+  assert.equal(policy.decide(s, TRIGGERS.USER).allow, true, "an explicit action always works");
+});
+
+test("workspaceAutoOpen: a patch keeps only a boolean; junk falls back to on", () => {
+  assert.deepEqual(policy.cleanPatch({ workspaceAutoOpen: false }), { workspaceAutoOpen: false });
+  assert.deepEqual(policy.cleanPatch({ workspaceAutoOpen: "no" }), {});
+  assert.equal(policy.normalize({ workspaceAutoOpen: "no" }).workspaceAutoOpen, true);
 });
