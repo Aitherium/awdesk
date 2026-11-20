@@ -31,6 +31,14 @@ const SAMPLE_MS = 15_000;
 const RECLAIM_EVERY_MS = 60_000;
 const RUNAWAY_MB = 400;
 const RUNAWAY_WINDOW_MS = 60_000;
+// A "runaway" is growth of this much while the main process was ALREADY this large.
+// Without the floor, the desk's ordinary start-up and bulk-work ramps counted: measured
+// 2026-11-20, the avatar-library seed carried main from ~150 MB to ~650 MB in one pass,
+// every 15 s sample looked like "+400 MB in a minute", and the desk restarted itself --
+// twice, then quit under the restart cap. The 2026-10-16 leak this rule exists for grew
+// ~5 GB/min, so a floor at 700 MB still catches it on the next sample while a desk that
+// starts at 150 and settles at 650 is left alone.
+const RUNAWAY_FLOOR_MB = 700;
 const MAX_RESTARTS_PER_HOUR = 2;
 // After the restart cap Desk used to quit FOR GOOD: on 2026-11-09 it restarted at
 // 13:30 and 13:51, hit the cap, quit, and stayed down -- the Startup .vbs only runs
@@ -78,9 +86,12 @@ function assess(metrics, budget) {
  * @param deps.quit () => void
  * @param deps.notify (text) => void
  * @param deps.restartsInLastHour () => number
+ * @param deps.hold () => string|false  deliberate bulk work in progress (a reason string
+ *   while true). Held ticks still reclaim under pressure, but never restart/quit the
+ *   desk: the memory is the work, not a leak.
  */
 function createWatchdog({ budget, sample, reclaim, restart, quit, notify = () => {}, now = Date.now,
-  restartsInLastHour = () => 0, log = () => {} }) {
+  restartsInLastHour = () => 0, log = () => {}, hold = () => false }) {
   let lastReclaimAt = -Infinity;
   let hardRun = 0;
   const history = []; // [at, mainMb]
@@ -92,9 +103,24 @@ function createWatchdog({ budget, sample, reclaim, restart, quit, notify = () =>
     const a = assess(sample(), budget);
     history.push([t, a.mainMb]);
     while (history.length && history[0][0] < t - RUNAWAY_WINDOW_MS) history.shift();
-    const runaway = history.length > 1 && a.mainMb - history[0][1] >= RUNAWAY_MB;
+    // Growth counts as a runaway only once the desk was already big (RUNAWAY_FLOOR_MB):
+    // a 150 -> 650 MB start-up/bulk ramp is not the 5 GB/min leak this rule is for.
+    const runaway = history.length > 1
+      && history[0][1] >= RUNAWAY_FLOOR_MB
+      && a.mainMb - history[0][1] >= RUNAWAY_MB;
     hardRun = a.level === "hard" ? hardRun + 1 : 0;
     if (a.level === "ok" && !runaway) return a;
+    // Deliberate bulk work: keep the desk, reclaim if it is soft, never act on a restart.
+    let held;
+    try { held = hold(); } catch { held = false; }
+    if (held) {
+      if ((a.level === "soft" || a.level === "hard") && t - lastReclaimAt >= RECLAIM_EVERY_MS) {
+        lastReclaimAt = t;
+        log(`held (${held}): main ${a.mainMb} MB, total ${a.totalMb} MB -- reclaiming, not restarting`);
+        reclaim({ pressure: a.level === "hard" });
+      }
+      return { ...a, held: String(held) };
+    }
     if (a.level === "soft" && !runaway) {
       if (t - lastReclaimAt >= RECLAIM_EVERY_MS) {
         lastReclaimAt = t;
@@ -273,7 +299,7 @@ function relaunchAfterCooldown({ execPath = process.execPath, args = process.arg
 
 /** Electron wiring for the memory guard. */
 function startResourceWatchdog({ app, posture, reclaim, notify = () => {}, log = (l) => console.log(`[desk] watchdog: ${l}`),
-  intervalMs = SAMPLE_MS }) {
+  intervalMs = SAMPLE_MS, hold = () => false }) {
   const budget = posture && posture.customer ? BUDGETS.customer : BUDGETS.owner;
   const restarts = restartLog(path.join(app.getPath("userData"), "self-restarts.json"));
   const dog = createWatchdog({
@@ -282,6 +308,7 @@ function startResourceWatchdog({ app, posture, reclaim, notify = () => {}, log =
     reclaim,
     notify,
     log,
+    hold,
     restartsInLastHour: () => restarts.inLastHour(),
     restart: () => {
       restarts.record();
@@ -289,6 +316,9 @@ function startResourceWatchdog({ app, posture, reclaim, notify = () => {}, log =
       app.exit(0);
     },
     quit: () => {
+      // Record the quit too: a desk that vanished with no entry in self-restarts.json
+      // looked like a crash, and the two 2026-11-20 disappearances were this path.
+      restarts.record();
       relaunchAfterCooldown({ log });
       app.exit(0);
     },
@@ -337,7 +367,7 @@ function startHangWatchdog({ utilityProcess, log = (l) => console.log(`[desk] ha
 
 module.exports = {
   BUDGETS, COOLDOWN_RELAUNCH_MS, GPU_LIMIT_MB, GPU_MAX_KILLS_PER_HOUR, HANG_TIMEOUT_MS, MAX_RESTARTS_PER_HOUR,
-  RUNAWAY_MB, SAMPLE_MS,
+  RUNAWAY_MB, RUNAWAY_FLOOR_MB, SAMPLE_MS,
   assess, createGpuGuard, delayedRelaunchSpec, winQuoteArg, relaunchAfterCooldown, createWatchdog, gpuProcess, gpuVerdict, hangVerdict, restartLog,
   startHangWatchdog, startResourceWatchdog,
 };

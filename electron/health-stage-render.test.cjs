@@ -19,7 +19,16 @@ test("main publishes the renderer frame stats on GET /health as stage.render", (
   // The bridge serves `stage` from that provider.
   const bridge = read("bridge-server.cjs");
   assert.match(bridge, /stage = stageStatusProvider \? stageStatusProvider\(\) : null/);
-  assert.match(bridge, /JSON\.stringify\(\{ ok: true, lastState: .*?, avatar, stage \}\)/);
+  assert.match(bridge, /JSON\.stringify\(\{ ok: true, lastState: .*?, avatar, stage, memory \}\)/);
+});
+
+test("main publishes its own memory numbers on GET /health as memory", () => {
+  // The soak gate (scripts/mem-soak.cjs) reads the desk's OWN accounting, not Task Manager.
+  const main = read("main.cjs");
+  assert.match(main, /memoryProvider: \(\) => \{/);
+  assert.match(main, /mainMb: main \? mb\(main\) : 0/);
+  const bridge = read("bridge-server.cjs");
+  assert.match(bridge, /memory = memoryProvider \? memoryProvider\(\) : null/);
 });
 
 test("main accepts desk:frame-stats only from the avatar window", () => {

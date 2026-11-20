@@ -42,7 +42,9 @@
  */
 
 const fs = require("node:fs");
+const fsp = require("node:fs/promises");
 const path = require("node:path");
+const { setImmediate: yieldToLoop } = require("node:timers/promises");
 
 const nodeCrypto = require("node:crypto");
 const localOnly = require("./local-only.cjs");
@@ -52,6 +54,34 @@ const LIBRARY_RATINGS = new Set(["general", "r15", "r18"]);
 /** Stop a library pass after this many failures in a row (the service is down: the
  *  next tick retries, instead of timing out on every remaining character now). */
 const LIBRARY_FAIL_STREAK = 3;
+/**
+ * The library seed used to read EVERY model.vrm whole (`readFileSync`) on the Electron
+ * MAIN thread and hold the Buffers while each upload was in flight. On the owner's desk
+ * (93 characters, 92 models, 2.0 GB, the largest 63 MiB) that walked the main process
+ * from ~150 MB to ~650 MB in a pass, with 0.2-1 s of main-thread stall per file -- and
+ * the resource watchdog reads that ramp as a runaway (`RUNAWAY_MB = 400` in a minute)
+ * and restarts the desk. Measured 2026-11-20 on 0.1.35: main 150 -> 655 MB, then the
+ * desk vanished. The seed is streamed now (a 1 MiB window, not the whole file), yields
+ * between characters, and reads a file's bytes only when it must actually upload it.
+ * A pass also stops after this many bytes and lets the next tick finish the rest, so a
+ * single tick can never hold the whole roster.
+ */
+const SEED_READ_CHUNK = 1 * 1024 * 1024;
+const MAX_SEED_BYTES_PER_PASS = 1024 * 1024 * 1024;
+// Uploading a model makes the client hold the file as a Buffer AND a Blob (and the
+// fetch body is a third copy), ~3x the model. A first seed with 27 unstamped 60 MB
+// models otherwise kept ~5 of those alive between GCs -- the 300+ MB external peak
+// measured 2026-11-20. At most this many uploads / bytes go up per pass; the rest are
+// deferred to the next tick (each upload stamps its folder, so nothing repeats).
+const MAX_SEED_UPLOADS_PER_PASS = 8;
+const MAX_SEED_UPLOAD_BYTES_PER_PASS = 256 * 1024 * 1024;
+/** The in-process FALLBACK (the utility process could not start) is stricter: its
+ *  copies are the desk's own heap, so two models per tick at most. */
+const FALLBACK_SEED_UPLOADS = 2;
+const FALLBACK_SEED_UPLOAD_BYTES = 128 * 1024 * 1024;
+const GLB_MAGIC = 0x46546c67;
+const GLB_JSON_CHUNK = 0x4e4f534a;
+const GLB_MAX_JSON = 16 * 1024 * 1024;
 
 function defaults(deps = {}) {
   const roster = deps.roster || require("./character-roster.cjs");
@@ -74,16 +104,57 @@ function readRecord(rosterDir, name) {
   }
 }
 
-function stampLibraryId(rosterDir, name, record) {
+function stampLibraryId(rosterDir, name, record, digest = null) {
   const file = path.join(rosterDir, name, "character.json");
   const current = readRecord(rosterDir, name);
   const next = { ...current, library_id: String(record.id), library_sha256: String(record.sha256 || "") };
+  // Keep the digest we just computed so a later pass can look the model up WITHOUT
+  // re-reading a 63 MiB file (the factory already writes this field on a rebuild).
+  if (typeof digest === "string" && /^[0-9a-f]{64}$/i.test(digest)) next.model_sha256 = digest.toLowerCase();
   try {
     fs.writeFileSync(file, JSON.stringify(next, null, 2));
     return true;
   } catch {
     return false;
   }
+}
+
+/** The first ~16 MiB of a GLB (its whole JSON chunk), or null when it is not a GLB.
+ *  Bounded on purpose: the local-only stamp lives in that chunk, never in the mesh. */
+async function readGlbPrefix(file) {
+  let handle;
+  try {
+    handle = await fsp.open(file, "r");
+    const head = Buffer.alloc(20);
+    const first = await handle.read(head, 0, 20, 0);
+    if (first.bytesRead < 20) return null;
+    if (head.readUInt32LE(0) !== GLB_MAGIC || head.readUInt32LE(16) !== GLB_JSON_CHUNK) return null;
+    const n = head.readUInt32LE(12);
+    if (n <= 0 || n > GLB_MAX_JSON) return null;
+    const json = Buffer.alloc(n);
+    const second = await handle.read(json, 0, n, 20);
+    if (second.bytesRead < n) return null;
+    return Buffer.concat([head, json]);
+  } catch {
+    return null;
+  } finally {
+    try { await handle?.close(); } catch { /* already closed */ }
+  }
+}
+
+/** sha256 of a file in 1 MiB chunks: memory stays flat whatever the model's size. */
+function hashFileStreaming(file) {
+  return new Promise((resolve, reject) => {
+    const hash = nodeCrypto.createHash("sha256");
+    const stream = fs.createReadStream(file, { highWaterMark: SEED_READ_CHUNK });
+    stream.on("error", reject);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+async function fileSize(file) {
+  try { return (await fsp.stat(file)).size; } catch { return 0; }
 }
 
 /** Where agent-avatar-defaults.json lives: beside cast.json (null when unresolvable). */
@@ -337,8 +408,17 @@ function ownMeshCharacters(d) {
  */
 async function seedLibraryFromDesk(deps = {}) {
   const d = defaults(deps);
+  const budget = Number.isFinite(deps.maxSeedBytes) && deps.maxSeedBytes > 0
+    ? deps.maxSeedBytes : MAX_SEED_BYTES_PER_PASS;
+  const uploadCap = Number.isFinite(deps.maxSeedUploads) && deps.maxSeedUploads >= 0
+    ? deps.maxSeedUploads : MAX_SEED_UPLOADS_PER_PASS;
+  const uploadByteCap = Number.isFinite(deps.maxSeedUploadBytes) && deps.maxSeedUploadBytes > 0
+    ? deps.maxSeedUploadBytes : MAX_SEED_UPLOAD_BYTES_PER_PASS;
   const lib = await d.client.avatarLibrary(deps.clientDeps);
-  const out = { ok: false, reason: "", uploaded: 0, present: 0, skipped: 0, held: 0, failed: 0, results: [] };
+  const out = {
+    ok: false, reason: "", uploaded: 0, present: 0, skipped: 0, held: 0, failed: 0, deferred: 0,
+    bytesRead: 0, uploads: 0, uploadBytes: 0, results: [],
+  };
   if (!lib.ok) return { ...out, reason: lib.reason || "the avatar library is unavailable", unavailable: true };
   const ids = new Set();
   const byHash = new Map();
@@ -349,6 +429,13 @@ async function seedLibraryFromDesk(deps = {}) {
   }
   let streak = 0;
   for (const name of ownMeshCharacters(d)) {
+    // The main thread is shared with every window's IPC, the watchdog heartbeat and
+    // the 50 ms lag ticker: never hand it a long synchronous run of file work.
+    await yieldToLoop();
+    if (out.bytesRead >= budget) {
+      out.deferred += 1;
+      continue;
+    }
     const rec = readRecord(d.rosterDir, name);
     if (localOnly.isLocalOnlyRecord(rec)) {
       out.skipped += 1;
@@ -364,23 +451,29 @@ async function seedLibraryFromDesk(deps = {}) {
       out.present += 1;
       continue;
     }
-    let bytes;
+    const file = path.join(d.rosterDir, name, "model.vrm");
+    // The local-only byte mark sits in the GLB's JSON chunk: peek at that, never the mesh.
+    // A file whose prefix does not parse is treated exactly as before (no byte mark): the
+    // digest/upload path below still handles it (and a broken model fails there).
+    const prefix = await readGlbPrefix(file);
+    if (prefix && localOnly.isLocalOnlyModel(prefix)) {
+      out.skipped += 1;
+      out.results.push({ name, ok: true, skipped: "a local-only imported body, never uploaded" });
+      continue;
+    }
+    const size = await fileSize(file);
+    let digest;
     try {
-      bytes = fs.readFileSync(path.join(d.rosterDir, name, "model.vrm"));
+      digest = await hashFileStreaming(file);
+      out.bytesRead += size;
     } catch (error) {
       out.failed += 1;
       out.results.push({ name, ok: false, reason: String((error && error.message) || error) });
       continue;
     }
-    if (localOnly.isLocalOnlyModel(bytes)) {
-      out.skipped += 1;
-      out.results.push({ name, ok: true, skipped: "a local-only imported body, never uploaded" });
-      continue;
-    }
-    const digest = nodeCrypto.createHash("sha256").update(bytes).digest("hex");
     const held = byHash.get(digest);
     if (held) {
-      stampLibraryId(d.rosterDir, name, held);
+      stampLibraryId(d.rosterDir, name, held, digest);
       out.present += 1;
       out.results.push({ name, ok: true, id: held.id, present: true });
       continue;
@@ -394,7 +487,34 @@ async function seedLibraryFromDesk(deps = {}) {
       out.held += 1;
       continue;
     }
-    const up = await d.client.uploadAvatar(bytes, label, rating, deps.clientDeps);
+    if (out.uploads >= uploadCap || out.uploadBytes + size > uploadByteCap) {
+      // The upload makes the client hold ~3 copies of the model. Bounded per pass; the
+      // next tick resumes (every upload stamps its folder, so nothing repeats).
+      out.deferred += 1;
+      continue;
+    }
+    let bytes;
+    try {
+      bytes = await fsp.readFile(file);
+    } catch (error) {
+      out.failed += 1;
+      out.results.push({ name, ok: false, reason: String((error && error.message) || error) });
+      continue;
+    }
+    let up;
+    try {
+      // Defence in depth: the bytes may carry the stamp even when the record does not.
+      if (localOnly.isLocalOnlyModel(bytes)) {
+        out.skipped += 1;
+        out.results.push({ name, ok: true, skipped: "a local-only imported body, never uploaded" });
+        continue;
+      }
+      up = await d.client.uploadAvatar(bytes, label, rating, deps.clientDeps);
+    } catch (error) {
+      out.failed += 1;
+      out.results.push({ name, ok: false, reason: String((error && error.message) || error) });
+      continue;
+    }
     if (!up.ok && /content gate/i.test(String(up.reason || ""))) {
       out.held += 1;
       continue;
@@ -411,14 +531,19 @@ async function seedLibraryFromDesk(deps = {}) {
       continue;
     }
     streak = 0;
-    stampLibraryId(d.rosterDir, name, up.record);
+    out.uploads += 1;
+    out.uploadBytes += size;
+    stampLibraryId(d.rosterDir, name, up.record, digest);
     ids.add(String(up.record.id));
     if (up.record.sha256) byHash.set(String(up.record.sha256).toLowerCase(), up.record);
     out.uploaded += 1;
     out.results.push({ name, ok: true, id: up.record.id, uploaded: true, rating });
   }
   out.ok = out.failed === 0;
-  d.log("avatar library seeded from this desk", { uploaded: out.uploaded, present: out.present, failed: out.failed });
+  d.log("avatar library seeded from this desk", {
+    uploaded: out.uploaded, present: out.present, failed: out.failed, deferred: out.deferred,
+    bytesRead: out.bytesRead,
+  });
   return out;
 }
 
@@ -477,7 +602,6 @@ async function seedIfCatalogEmpty(deps = {}, retryAgents = null) {
 const SEED_MAX_TRIES = 12;
 
 function startCatalogSync(deps = {}) {
-  let running = false;
   let seedPending = true;
   let seedTries = 0;
   let retryAgents = null;
@@ -490,31 +614,66 @@ function startCatalogSync(deps = {}) {
       (deps.log || (() => {}))("agent avatar defaults failed", String((error && error.message) || error));
     }
   }
-  const tick = async () => {
-    if (running) return;
-    running = true;
-    try {
-      if (deps.registryDefaults !== false) await pushPendingDefaults(deps);
-      if (seedPending && seedTries < SEED_MAX_TRIES) {
-        seedTries += 1;
-        const out = await seedIfCatalogEmpty(deps, retryAgents);
-        if (out.ok) seedPending = false;
-        else if (out.seeded) retryAgents = out.failed;
-        if (!out.ok) (deps.log || (() => {}))("avatar catalog seed will retry", out.reason || out.failed);
-      }
-      await syncFromCatalog(deps);
-      // Every tick: new desk characters keep syncing, a failed pass (service down) is
-      // simply tried again. Cheap once seeded -- stamped folders are never re-read.
-      if (deps.librarySeed !== false) {
-        const lib = await seedLibraryFromDesk(deps);
-        if (!lib.ok) (deps.log || (() => {}))("avatar library seed will retry", lib.reason || lib.failed);
-      }
-    } catch (error) {
-      (deps.log || (() => {}))("avatar catalog sync failed", String((error && error.message) || error));
-    } finally {
-      running = false;
-    }
+  // Passes are SERIALISED, not dropped: a tick that arrives while one is running waits
+  // for it and then runs its own. The old `if (running) return;` silently lost the pass
+  // (measured 2026-11-20: a tick fired while the library seed was still running and the
+  // catalog retry it carried never happened). At most two are ever queued.
+  let chain = Promise.resolve();
+  let queued = 0;
+  const tick = () => {
+    if (queued >= 2) return chain;
+    queued += 1;
+    const next = chain.then(runPass, runPass).finally(() => { queued -= 1; });
+    chain = next.catch(() => {});
+    return next;
   };
+  async function runPass() {
+      // The whole pass (push, catalog pull with its model downloads, library seed) does
+      // bulk I/O with big Buffers. Tell the caller the desk is doing deliberate work so
+      // its memory guard reclaims but never restarts it (resource-watchdog.cjs `hold`).
+      try { deps.onWork?.(true); } catch { /* cosmetic */ }
+      try {
+        if (deps.registryDefaults !== false) await pushPendingDefaults(deps);
+        if (seedPending && seedTries < SEED_MAX_TRIES) {
+          seedTries += 1;
+          const out = await seedIfCatalogEmpty(deps, retryAgents);
+          if (out.ok) seedPending = false;
+          else if (out.seeded) retryAgents = out.failed;
+          if (!out.ok) (deps.log || (() => {}))("avatar catalog seed will retry", out.reason || out.failed);
+        }
+        await syncFromCatalog(deps);
+        // Every tick: new desk characters keep syncing, a failed pass (service down) is
+        // simply tried again. Cheap once seeded -- stamped folders are never re-read.
+        if (deps.librarySeed !== false) {
+          // Off the main process when the caller can fork one (main.cjs passes Electron's
+          // utilityProcess): two gigabytes of model reads and upload buffers must not be
+          // the desk's own heap. `null` from the runner means "could not start": the
+          // bounded, streaming in-process seed below still runs.
+          let lib = null;
+          if (typeof deps.seedRunner === "function") {
+            try { lib = await deps.seedRunner(); } catch (error) {
+              (deps.log || (() => {}))("avatar library seed worker failed", String((error && error.message) || error));
+            }
+          }
+          if (!lib) {
+            // In-process fallback: keep its upload copies to at most two models a tick.
+            const fallback = typeof deps.seedRunner === "function"
+              ? {
+                maxSeedUploads: Number.isFinite(deps.maxSeedUploads) ? deps.maxSeedUploads : FALLBACK_SEED_UPLOADS,
+                maxSeedUploadBytes: Number.isFinite(deps.maxSeedUploadBytes) ? deps.maxSeedUploadBytes : FALLBACK_SEED_UPLOAD_BYTES,
+                ...deps,
+              }
+              : deps;
+            lib = await seedLibraryFromDesk(fallback);
+          }
+          if (!lib.ok) (deps.log || (() => {}))("avatar library seed will retry", lib.reason || lib.failed);
+        }
+      } catch (error) {
+        (deps.log || (() => {}))("avatar catalog sync failed", String((error && error.message) || error));
+      } finally {
+        try { deps.onWork?.(false); } catch { /* cosmetic */ }
+      }
+  }
   void tick();
   const timer = setInterval(() => void tick(), deps.intervalMs || PULL_INTERVAL_MS);
   if (timer.unref) timer.unref();
@@ -527,6 +686,9 @@ module.exports = {
   pushPendingDefaults,
   PULL_INTERVAL_MS,
   SEED_MAX_TRIES,
+  MAX_SEED_BYTES_PER_PASS,
+  hashFileStreaming,
+  readGlbPrefix,
   pushAssignment,
   seedFromDesk,
   seedLibraryFromDesk,

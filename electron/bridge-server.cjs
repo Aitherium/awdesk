@@ -312,6 +312,10 @@ function createBridgeServer({
   avatarBoundsProvider = null,
   // () => the room stage's status (who is on stage, queue, spoken), or null.
   stageStatusProvider = null,
+  // () => {mainMb, totalMb, processes} from app.getAppMetrics (the resource watch
+  // numbers). Reported on GET /health so a soak/perf script measures the desk's OWN
+  // accounting instead of guessing from Task Manager. Null = field absent.
+  memoryProvider = null,
   // POST /roster/capture {names?, force?} (bearer: it writes into characters/)
   // renders a full-body frame per character for the content rater;
   // GET /roster/capture reports progress. Null = route absent (404).
@@ -347,7 +351,13 @@ function createBridgeServer({
       } catch {
         stage = null;
       }
-      response.end(JSON.stringify({ ok: true, lastState: lastStateEvent?.state ?? null, avatar, stage }));
+      let memory;
+      try {
+        memory = memoryProvider ? memoryProvider() : null;
+      } catch {
+        memory = null;
+      }
+      response.end(JSON.stringify({ ok: true, lastState: lastStateEvent?.state ?? null, avatar, stage, memory }));
       return;
     }
 
