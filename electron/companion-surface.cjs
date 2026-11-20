@@ -18,8 +18,13 @@
  *                  body shows where it stands. The fairy steps down either way.
  *   fairy target:  the body leaves and the fairy comes back to her spot.
  *
- * Docked in the browser rail is the ONE declared exception (owner: docking is
- * the way to a separate surface), so a docked plan keeps both.
+ * Docking in the browser rail says WHERE the body lives, not that a second
+ * companion is allowed: a docked body still stands the fairy down (owner's rule:
+ * one companion. "Dock the avatar in the browser" used to be read as an
+ * exception, and a docked desk then showed the body in the rail AND the fairy
+ * floating beside it -- the same two-surface bug in a different place). The only
+ * two-surface modes are the owner's own `both`/`swarm` display modes, and those
+ * are answered in main (showBodyDirect), never through this plan.
  *
  * PURE: no electron, no windows, no clocks. node --test.
  */
@@ -37,7 +42,6 @@ const WANTS = Object.freeze(["avatar", "fairy", "toggle"]);
  *   fairyWanted: the fairy's own saved switch says shown (orb.json `visible`) --
  *     still true while she is stood down for the body.
  *   avatarVisible: the body window is on screen.
- *   docked: the body lives in the browser rail (a separate surface by design).
  *
  * Returns:
  *   {fairy: "show"|"hide"|"keep",
@@ -52,20 +56,8 @@ function plan({
   fairyVisible = false,
   fairyWanted = false,
   avatarVisible = false,
-  docked = false,
 } = {}) {
   const ask = WANTS.includes(want) ? want : "toggle";
-  if (docked) {
-    // The body is the browser's surface; it moves with the browser, not with this
-    // switch. Docking is the one declared way to have both.
-    return {
-      fairy: "keep",
-      avatar: "keep",
-      collapse: false,
-      visible: [fairyVisible && "fairy", avatarVisible && "avatar"].filter(Boolean),
-      why: "the body is docked in the browser",
-    };
-  }
 
   const bodyUp = expanded || avatarVisible;
   const target = ask === "toggle" ? (bodyUp ? "fairy" : "avatar") : ask;

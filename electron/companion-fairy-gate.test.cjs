@@ -94,9 +94,12 @@ test("a suppressed automatic show never touches the fairy", () => {
 });
 
 // ── review findings, 2026-11-20: the one-surface invariants hold under edges ──
-test("the tray toggle still shows/hides a DOCKED body (docking is the separate surface)", () => {
-  assert.match(src, /if \(facts\.docked\) \{/);
-  assert.match(src, /if \(facts\.avatarVisible\) await hideOverlay\(\);\s*\n\s*else await showOverlay\(\{ focus: true \}\);/);
+test("docking is NOT a two-surface exception: no toggle branch and no dock guard survive", () => {
+  // The owner's avatar-dock.json is `docked:true`; the old code read docking as a
+  // licence for both companions. Docking says WHERE the body lives, nothing more.
+  assert.doesNotMatch(src, /if \(facts\.docked\) \{/, "the toggle's docked bypass is gone");
+  assert.doesNotMatch(src, /!\(avatarDock && avatarDock\.isDocked\(\)\)/, "no dock guard on the stand-down");
+  assert.doesNotMatch(src, /facts\.docked/, "the plan never sees a docked fact");
 });
 
 test("a companion-mode switch is not recorded as the owner's sticky hide", () => {
