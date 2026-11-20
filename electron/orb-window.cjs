@@ -57,6 +57,7 @@ const fairyOwner = require("./fairy-owner.cjs");
 const fairyCounts = require("./fairy-counts.cjs");
 const fairyCluster = require("./fairy-cluster.cjs");
 const displayMode = require("./display-mode.cjs");
+const orbRadial = require("./orb-radial-menu.cjs");
 const linkOpener = require("./link-opener.cjs");
 const fairyHoverGuard = require("./fairy-hover-guard.cjs");
 const fairyPanel = require("./fairy-panel.cjs");
@@ -4465,13 +4466,17 @@ function moreMenu({ atFairy = false } = {}) {
   const rows = spiritRows();
   const items = [...rows.map((r) => (r.sep ? { sep: true } : { id: r.id, label: r.label })),
     { sep: true }, { id: "less", label: "Back", hint: "The short menu" }];
-  return showMenu("orb", { header: "Aither · more", items }, { atFairy });
+  // Same RADIAL menu as the root: the rows are paginated five + More per ring, so
+  // every door stays one or two clicks away and the look never forks (owner 2026-11-20).
+  return showMenu("orb", { header: "Aither · more", items }, { atFairy, radial: true });
 }
 
 /** The old native "spirit menu" entry points (right click on the page, the bridge) now
  *  open THE pill menu: there is one fairy menu. */
 function spiritMenu() {
-  return orbMenu();
+  // The keyboard/bridge door opens the ring ON the fairy (the pointer's door is the
+  // right click), so the fan is centred where the owner is looking.
+  return orbMenu({ atFairy: true });
 }
 
 // ── drag and click ──────────────────────────────────────────────────────────
@@ -4671,6 +4676,23 @@ function publicMenu() {
   return menuState ? { kind: menuState.kind, header: menuState.header, items: menuState.items } : null;
 }
 
+/** The view the menu page draws: the flat list as built, plus -- for the orb's radial
+ *  menu -- the ring model for the CURRENT page, so a page that reloads restores the
+ *  same fan instead of falling back to a vertical stack. Reads `display` through the
+ *  same rows the menu was built from (the tick is in the rows, not re-derived here). */
+function menuView() {
+  const base = publicMenu();
+  if (!base) return null;
+  if (!menuState.radial) return { ...base, layout: "list" };
+  const at = menuState.at;
+  const model = orbRadial.radialModel(base.items, { at, area: menuAreaAt(at), page: menuState.page });
+  return {
+    ...base,
+    layout: "radial", page: model.page, pages: model.pages,
+    window: model.window, hub: model.hub, nodes: model.nodes,
+  };
+}
+
 function cursorPoint() {
   try { return electron().screen.getCursorScreenPoint(); } catch { return { x: 0, y: 0 }; }
 }
@@ -4699,17 +4721,30 @@ function showMenu(kind, built, ctx = {}) {
   hideTip();
   const win = ensureMenu();
   menuState = { kind, cardId: String(ctx.cardId || ""), agent: String(ctx.agent || ""), ...built };
-  menuState.at = ctx.at && Number.isFinite(Number(ctx.at.x)) ? { x: Number(ctx.at.x), y: Number(ctx.at.y) } : cursorPoint();
   // A right click puts the menu at the pointer (or the anchor the caller measured); the
-  // palette / bridge row ("fairy.menu", keyboard reach) puts it beside the fairy.
+  // palette / bridge row ("fairy.menu", keyboard reach) puts it on the fairy.
   const anchor = ctx.at && Number.isFinite(Number(ctx.at.x)) && Number.isFinite(Number(ctx.at.y))
     ? { x: Math.round(Number(ctx.at.x)), y: Math.round(Number(ctx.at.y)) } : null;
   const at = anchor || (ctx.atFairy && alive(orbWindow) ? orbCentre() : cursorPoint());
+  // The anchor ACTUALLY used, so a page turn or a re-render draws the same fan.
+  menuState.at = { x: Math.round(at.x), y: Math.round(at.y) };
   const area = menuAreaAt(at);
-  const size = fairyMenu.menuSize(built.items, area);
-  const pos = fairyMenu.menuPlacement(at, area, size);
-  win.setBounds({ ...pos, ...size });
-  deliverTo(win, "orb:menu", publicMenu());
+  // The owner's radial (orb-radial-menu.cjs): a ring centred on the click, the four
+  // Display modes on the inner ring, one page of actions outside + More, the fan
+  // flipped inward when the window clamps at a screen edge. Every other menu (a
+  // card's own rows) keeps the list.
+  menuState.radial = Boolean(ctx.radial);
+  menuState.page = Number(ctx.page) || 0;
+  const payload = menuView();
+  if (ctx.radial) {
+    menuState.page = payload.page;
+    win.setBounds(payload.window);
+  } else {
+    const size = fairyMenu.menuSize(built.items, area);
+    const pos = fairyMenu.menuPlacement(at, area, size);
+    win.setBounds({ ...pos, ...size });
+  }
+  deliverTo(win, "orb:menu", payload);
   win.show();
   try {
     win.focus();
@@ -4799,14 +4834,30 @@ function openCompanionMenu(target = "tenant", { at = null } = {}) {
   }, { at });
 }
 
-/** Right click on the orb. */
-function orbMenu({ atFairy = false } = {}) {
+/**
+ * The mode the SCREEN is in, which is what the Display tick must say. The state the
+ * renderer holds is the owner's preference, but a body that is not up is not
+ * "avatar": main's avatarBounds hook is null while the body is down (the sticky hide,
+ * a failed raise, the tray's own show/hide). Body down = the fairy is what shows;
+ * body up while the preference says fairy = a body surface is what shows.
+ */
+function displayModeInForce() {
+  let body;
+  try { body = Boolean(hookValue("avatarBounds")); } catch { body = false; }
+  if (!body) return "fairy";
+  return display.mode === "fairy" ? "avatar" : display.mode;
+}
+
+/** Right click on the orb: the RADIAL menu (owner 2026-11-20). It is built fresh on
+ *  every open from the ONE command list, so the Display tick is read from the mode
+ *  actually in force at the moment the menu opens -- never a stale render. */
+function orbMenu({ atFairy = false, at = null, page = 0 } = {}) {
   return showMenu("orb", fairyMenu.orbItems({
     waiting: attentionCards.length, quietUntil: state.muteUntil, tenantVisible: Boolean(state.tenantCompanion),
     fairyVisible: orbVisible(), nowMs: Date.now(), avatar: avatarMode(),
     bodies: hookValue("aitherBodies") || [], swarm: allCompanions.length,
-    display: displayMode.modeItems(display), displayMode: display.mode,
-  }), { atFairy });
+    display: displayMode.modeItems({ mode: displayModeInForce() }), displayMode: display.mode,
+  }), { atFairy, radial: true, at, page });
 }
 
 /** The card a fairy menu is about, still open, or null. */
@@ -4827,18 +4878,38 @@ function endNudgeFor(cardId, outcome) {
 async function menuPick(id) {
   const ms = menuState;
   const what = String(id || "");
-  hideMenu();
-  if (!ms || !what) return { ok: true, closed: true };
+  if (!ms || !what) { hideMenu(); return { ok: true, closed: true }; }
+  // Radial paging is not an action: repaint the SAME menu on its next ring page.
+  const page = orbRadial.pageFromId(what);
+  if (page != null) {
+    if (ms.kind === "orb") orbMenu({ at: ms.at, page });
+    return { ok: true, page };
+  }
   const item = ms.items.find((i) => i && !i.sep && i.id === what);
-  if (!item) return { ok: false, error: "not on that menu" };
-  if (item.disabled) return { ok: false, error: item.hint || "not available" };
+  if (!item) { hideMenu(); return { ok: false, error: "not on that menu" }; }
+  if (item.disabled) { hideMenu(); return { ok: false, error: item.hint || "not available" }; }
+  // A Display pick APPLIES, then repaints the still-open menu from the mode the desk
+  // actually entered (main may clamp it). The tick can never lag the screen.
+  if (what.startsWith("dm:")) {
+    const r = displayPick(what);
+    if (!r || r.ok === false) { hideMenu(); return r; }
+    let applied = r.applied;
+    if (applied && typeof applied.then === "function") {
+      try { applied = await applied; } catch { applied = null; }
+    }
+    if (applied && displayMode.MODES.includes(applied.mode)) {
+      setDisplayModeState({ ...display, mode: applied.mode });
+    }
+    if (ms.kind === "orb") orbMenu({ at: ms.at, page: ms.page });
+    return r;
+  }
+  hideMenu();
   // The companion rows mean the same on every menu (companion-menu.cjs).
   if (companionMenu.isCompanionId(what)) {
     return companionAction(what, { target: ms.kind === "tenant" ? "tenant" : "fairy" });
   }
   if (what.startsWith("sv:")) return swarmPick(what, ms);
   if (what.startsWith("fc:")) return controlPick(what, ms);
-  if (what.startsWith("dm:")) return displayPick(what);
   if (ms.kind === "orb") return orbPick(what);
   if (what === "talk") return chatWithAgent(ms.agent);
   const card = menuCard(ms);
@@ -5259,7 +5330,7 @@ function handlers() {
         neurons: neuronPayload(),
         swarmView: swarmViewPayload(),
         mate: view === "pin" ? pinMateFor(sender) : null,
-        menu: view === "menu" ? publicMenu() : null,
+        menu: view === "menu" ? menuView() : null,
         tipDwellMs: fairyMenu.TIP_DWELL_MS,
         panelView: view === "bubble" ? currentPanelView() : null,
       };
@@ -5618,7 +5689,8 @@ module.exports = {
   __swarmBounds: (n) => swarmBounds(n),
   __setProbe: (p) => { probe = p; },
   setSwarmAnchor, setSwarmVisible, swarmVisible: () => state.swarm === true,
-  setDisplayModeState, displayModeState, displayPick, fairyBounds: () => (alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null),
+  setDisplayModeState, displayModeState, displayModeInForce, displayPick,
+  fairyBounds: () => (alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null),
   swarmWindow: () => (alive(swarmWindow) ? swarmWindow : null), soundsOn: () => state.sounds !== false,
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
   attentionMems: () => attentionMems,
