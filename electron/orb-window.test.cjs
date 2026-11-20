@@ -2252,6 +2252,23 @@ test("the ask panel cannot pop beside the body", () => {
   orbWindow.returnFromAvatar();
 });
 
+test("growing back down leaves the fairy able to speak (suppression is cleared)", async () => {
+  const grows = [];
+  startAttention({
+    expand: async () => { grows.push(1); return { ok: true }; },
+    collapse: async () => ({ ok: true }),
+  });
+  orbWindow.setAttentionCards([]);
+  await orbWindow.expandToAvatar();
+  // 'Show all companions' while grown (or a card auto-surfacing): showOrb keeps the
+  // orb down AND must keep the ask panel suppressed.
+  orbWindow.showOrb();
+  assert.equal(orbWindow.__suppressed(), true);
+  await orbWindow.collapseToFairy();
+  assert.equal(orbWindow.expanded(), false);
+  assert.equal(orbWindow.__suppressed(), false, "the fairy can open its bubble again");
+});
+
 test("a fairy the owner had hidden is not resurrected when the body leaves", () => {
   writeState({ visible: false, x: 200, y: 200 });
   start();

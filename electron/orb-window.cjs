@@ -4813,6 +4813,9 @@ async function collapseToFairy({ fromAvatar = false } = {}) {
     if (attach) showVeil();
     placeSwarm();
   }
+  // The body is gone and the fairy is back: the ask panel may open with her again.
+  // Set AFTER the shrink resolves, so no bubble appears while the body is leaving.
+  suppressed = false;
   return { ok: true, expanded: false };
 }
 
@@ -5431,7 +5434,7 @@ module.exports = {
   expandToAvatar, collapseToFairy, avatarMode, expanded: () => expanded,
   // one companion surface: the body's own window stands the fairy down and back
   orbVisible, fairyWanted: () => state.visible === true, stoodDown: () => stoodDownForAvatar,
-  standDownForAvatar, returnFromAvatar,
+  standDownForAvatar, returnFromAvatar, __suppressed: () => suppressed,
   stateFile, loadState, saveState, pump, queue: () => queue, state: () => state,
   // spirit
   go, sendHome, attachTo, detach, toggleAttach, cancelTrip, receiveDrop, pickResult, runHoldAction,
