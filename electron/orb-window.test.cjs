@@ -222,6 +222,7 @@ function start(opts = {}) {
     ...(opts.speak ? { speak: opts.speak } : {}),
     ...(opts.avatarTargets ? { avatarTargets: opts.avatarTargets } : {}),
     ...(opts.runCommand ? { runCommand: opts.runCommand } : {}),
+    ...(opts.display ? { display: opts.display } : {}),
     ...(opts.hideByDefault !== undefined ? { hideByDefault: opts.hideByDefault } : {}),
   });
   return { ...r, capture };
@@ -1904,7 +1905,7 @@ test("the orb and swarm pages: right click opens the pill menu, hover only dwell
   assert.match(preload, /menuPick: \(id\) => ipcRenderer\.invoke\("desk:menu-pick"/);
 });
 
-test("fairy.menu (palette / bridge): the orb's menu opens beside the fairy, focused, from the keyboard", async () => {
+test("fairy.menu (palette / bridge): the orb's menu is a ring on the fairy, focused, from the keyboard", async () => {
   startAttention();
   orbWindow.setAttentionCards([]);
   cursor = { x: 5, y: 5 };
@@ -1917,8 +1918,15 @@ test("fairy.menu (palette / bridge): the orb's menu opens beside the fairy, focu
   const b = mw.getBounds();
   const cx = o.x + o.width / 2;
   const cy = o.y + o.height / 2;
-  const near = (b.x === cx + 8 || b.x === cx - b.width - 8) && (b.y === cy + 4 || b.y === cy - b.height - 4);
-  assert.ok(near, `beside the fairy (flipped at the screen edge), not at the pointer: ${JSON.stringify({ b, cx, cy })}`);
+  // RADIAL (owner 2026-11-20): a square ring CENTRED on the fairy (clamped onto the
+  // work area at an edge), not a column flipped beside it, and never the pointer
+  // when the keyboard opened it.
+  assert.equal(b.width, b.height, "a square ring");
+  assert.ok(cx >= b.x && cx <= b.x + b.width && cy >= b.y && cy <= b.y + b.height,
+    `the fairy sits inside its ring: ${JSON.stringify({ b, cx, cy })}`);
+  const area = displays[0].workArea;
+  assert.ok(b.x >= area.x && b.y >= area.y && b.x + b.width <= area.x + area.width && b.y + b.height <= area.y + area.height,
+    "the ring stays on the work area");
   const reg = require("./command-registry.cjs");
   const row = reg.byId("fairy.menu");
   assert.equal(row.orb, "menu");
@@ -2782,4 +2790,109 @@ test("display mode swarm: 3 separate orb windows around the avatar, distinct bad
   assert.equal(activePins().length, 0, "avatar mode owns no fairies");
   const ring = orbWindow.swarmWindow();
   assert.ok(!ring || !ring.isVisible(), "no cluster window in avatar mode");
+});
+
+// ── the tick is the mode in force, and the menu is RADIAL (owner 2026-11-20) ──
+// Live defect: the menu said "Display: avatar only ✓" over a fairy orb and no avatar,
+// because the tick and the renderer read different stores. The rows now come from the
+// renderer's own state, so the test drives the state and reads the tick back.
+
+const displayModeModule = require("./display-mode.cjs");
+
+test("the Display tick equals the mode the renderer holds, for each of the four modes", () => {
+  // The body is up for every mode but fairy, exactly as applyDisplayMode leaves it.
+  startAttention({
+    avatarBounds: () => (orbWindow.displayModeState().mode === "fairy"
+      ? null : { x: 0, y: 0, width: 120, height: 400 }),
+  });
+  for (const mode of displayModeModule.MODES) {
+    orbWindow.setDisplayModeState({ mode, swarm: 4 });
+    orbWindow.orbMenu();
+    const payload = lastSent(menuWin(), "orb:menu");
+    assert.equal(payload.layout, "radial");
+    const inner = payload.nodes.filter((n) => n.ring === "inner");
+    assert.deepEqual(inner.map((n) => n.id), ["dm:avatar", "dm:fairy", "dm:both", "dm:swarm"]);
+    assert.equal(inner.filter((n) => n.checked).length, 1, `${mode}: exactly one tick`);
+    assert.equal(inner.find((n) => n.checked).id, `dm:${mode}`, `${mode}: the tick is on it`);
+    assert.match(inner.find((n) => n.checked).label, /✓/);
+  }
+});
+
+test("a legacy store (avatarHidden:true, no mode) resolves to fairy: the renderer draws the fairy and the tick says fairy", () => {
+  const resolved = displayModeModule.resolveStore({ companionText: '{"companion":"avatar","avatarHidden":true}' });
+  assert.equal(resolved.legacy, true);
+  start({ display: resolved.settings });
+  orbWindow.showOrb();
+  assert.equal(orbWindow.displayModeState().mode, "fairy", "the renderer holds the resolved mode");
+  assert.equal(orbWindow.orbVisible(), true, "and the fairy is what is drawn");
+  orbWindow.orbMenu();
+  const payload = lastSent(menuWin(), "orb:menu");
+  assert.equal(payload.nodes.find((n) => n.checked).id, "dm:fairy", "the tick agrees with the screen");
+});
+
+test("clicking a Display row applies it AND the repainted menu ticks the new mode", async () => {
+  const applied = [];
+  startAttention({
+    setDisplayMode: async (settings) => { applied.push(settings.mode); return { mode: settings.mode, swarm: settings.swarm }; },
+    avatarBounds: () => (orbWindow.displayModeState().mode === "fairy"
+      ? null : { x: 0, y: 0, width: 120, height: 400 }),
+  });
+  orbWindow.setDisplayModeState({ mode: "fairy" });
+  orbWindow.orbMenu();
+  assert.equal(lastSent(menuWin(), "orb:menu").nodes.find((n) => n.checked).id, "dm:fairy");
+  const r = await invoke("desk:menu-pick", menuWin(), "dm:both");
+  assert.equal(r.ok, true);
+  assert.deepEqual(applied, ["both"], "main was told the same mode");
+  assert.equal(orbWindow.displayModeState().mode, "both", "applied to the renderer");
+  assert.equal(menuWin().isVisible(), true, "the menu stays up so the new tick is visible");
+  const after = lastSent(menuWin(), "orb:menu");
+  assert.equal(after.nodes.find((n) => n.checked).id, "dm:both");
+  assert.match(after.nodes.find((n) => n.id === "dm:both").label, /✓/);
+  assert.doesNotMatch(after.nodes.find((n) => n.id === "dm:fairy").label, /✓/);
+  // A reopen from scratch carries the same tick (nothing cached).
+  await invoke("desk:orb-menu", orbWin());
+  assert.equal(lastSent(menuWin(), "orb:menu").nodes.find((n) => n.checked).id, "dm:both");
+});
+
+test("the orb menu is a radial centred on the click, and More pages it without losing an action", async () => {
+  startAttention();
+  cursor = { x: 800, y: 600 };
+  const r = await invoke("desk:orb-menu", orbWin());
+  const mw = menuWin();
+  const first = lastSent(mw, "orb:menu");
+  assert.equal(first.layout, "radial");
+  assert.equal(first.window.width, first.window.height, "a square ring");
+  const b = mw.getBounds();
+  assert.equal(b.width, first.window.width, "the window takes the ring's bounds");
+  assert.ok(Math.abs((b.x + b.width / 2) - first.window.x - first.window.width / 2) < 1);
+  const more = first.nodes.find((n) => n.more);
+  assert.ok(more, "more actions than one ring: a More button");
+  assert.ok(first.nodes.filter((n) => n.ring === "outer" && !n.more).length <= 5);
+  const page = await invoke("desk:menu-pick", mw, more.id);
+  assert.equal(page.ok, true);
+  assert.equal(page.page, more.page, "the pick only turns the page");
+  const second = lastSent(mw, "orb:menu");
+  assert.equal(second.page, 1);
+  assert.notDeepEqual(second.nodes.map((n) => n.id), first.nodes.map((n) => n.id));
+  // Every id the API advertised is reachable across the pages (More wraps).
+  const all = new Set([...first.nodes, ...second.nodes].map((n) => n.id));
+  let cur = second;
+  for (let guard = 0; cur.nodes.some((n) => n.more) && guard < 10; guard += 1) {
+    const next = cur.nodes.find((n) => n.more);
+    await invoke("desk:menu-pick", mw, next.id);
+    cur = lastSent(mw, "orb:menu");
+    for (const n of cur.nodes) all.add(n.id);
+  }
+  for (const id of r.items) assert.ok(all.has(id) || id === "more", `${id} is on a ring`);
+});
+
+test("the menu page renders the radial fan, not a column: hub, nodes and number keys", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  assert.match(html, /function renderRadial\(m\)/, "the radial renderer exists");
+  assert.match(html, /m\.layout === "radial"/, "the payload's layout decides");
+  assert.match(html, /className = "m-hub"/, "the hub closes the ring");
+  assert.match(html, /api\.menuPick\(""\)/, "the hub / Esc closes");
+  assert.match(html, /dataset\.key === e\.key/, "number keys pick a ring button");
+  assert.match(html, /ArrowRight/, "arrows walk the ring");
+  assert.match(html, /#m-ring/, "the ring is drawn");
 });

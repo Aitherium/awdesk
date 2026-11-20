@@ -190,6 +190,39 @@
   .m-item[aria-disabled="true"] { opacity: 0.45; cursor: default; box-shadow: none; }
   .m-sep { height: 9px; }
   @keyframes m-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
+  /* ── the RADIAL Aither menu (orb-radial-menu.cjs, owner 2026-11-20) ──────
+     A ring centred on the click: the four Display modes on the inner ring, one
+     page of actions outside, a hub that closes it. Positions arrive already
+     computed (window-local); the page only converts them to absolute CSS. */
+  body.menu.radial { padding: 0; }
+  body.menu.radial #menu { position: relative; width: 100%; height: 100%; display: block; }
+  body.menu.radial #m-head { position: absolute; left: 0; right: 0; top: 2px; justify-content: center;
+    text-align: center; pointer-events: none; }
+  body.menu.radial #m-items { position: absolute; inset: 0; display: block; overflow: visible; }
+  #m-ring { position: absolute; border-radius: 50%; pointer-events: none;
+    border: 1px solid rgba(214,236,255,0.14);
+    background: radial-gradient(circle, rgba(124,196,255,0.05) 0%, rgba(10,15,24,0.55) 62%, rgba(10,15,24,0) 100%); }
+  .m-node { position: absolute; transform: translate(-50%, -50%); margin: 0; padding: 0 10px;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    border-radius: 999px; border: 1px solid rgba(214,236,255,0.32); background: rgba(12,18,32,0.95);
+    color: #f4f9ff; font: 600 12px/1.1 var(--font-sans, system-ui); cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.4), 0 0 12px rgba(214,236,255,0.08);
+    animation: m-in 140ms ease-out both; }
+  .m-node.m-chip { border-radius: 50%; padding: 4px; font-size: 11px; }
+  .m-node.checked { border-color: #fff; background: rgba(236,246,255,0.96); color: #0b1220; }
+  .m-node.more { border-style: dashed; opacity: 0.92; }
+  .m-node:hover, .m-node:focus-visible, .m-node:focus { border-color: #fff; outline: none;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.35), 0 0 0 2px rgba(214,236,255,0.8); }
+  .m-node[aria-disabled="true"] { opacity: 0.45; cursor: default; box-shadow: none; }
+  .m-hub { position: absolute; transform: translate(-50%, -50%); border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    border: 1px solid rgba(214,236,255,0.45); background: rgba(20,27,42,0.98); color: #eef6ff;
+    font: 600 10px/1.15 var(--font-sans, system-ui); letter-spacing: 0.03em; cursor: pointer;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+  .m-hub:hover, .m-hub:focus { outline: none; border-color: #fff; box-shadow: 0 0 0 2px rgba(214,236,255,0.7); }
+  .m-key { position: absolute; right: 4px; top: 3px; font: 700 8px/1 system-ui, sans-serif;
+    opacity: 0.6; pointer-events: none; }
   body.tip { background: transparent; }
   body.tip.multi #tip { height: auto; max-width: 326px; padding: 7px 12px; border-radius: 12px; white-space: pre-line;
     line-height: 17px; overflow: visible; text-overflow: clip; }
@@ -1549,11 +1582,8 @@
     const list = document.getElementById("m-items");
     let buttons = [];
     const usable = () => buttons.filter((b) => b.getAttribute("aria-disabled") !== "true");
-    function render(m) {
-      list.textContent = "";
-      buttons = [];
-      if (!m || !Array.isArray(m.items)) return;
-      head.textContent = String(m.header || "Aither");
+    /** The flat pill list: a card's own rows (fairy-menu.cjs fairyItems). */
+    function renderList(m) {
       for (const it of m.items) {
         if (!it || it.sep) {
           const d = document.createElement("div");
@@ -1574,7 +1604,80 @@
         list.append(b);
         buttons.push(b);
       }
-      const first = usable()[0] || buttons[0];
+    }
+    /** The RADIAL Aither menu: geometry is computed by orb-radial-menu.cjs and sent
+     *  with the payload, so this page only places buttons. Every node carries its
+     *  number key; the inner ring is the four Display modes with the tick on the one
+     *  in force, the outer ring this page's actions + More, the hub closes. */
+    function renderRadial(m) {
+      const c = m.window ? { x: m.window.width / 2, y: m.window.height / 2 } : { x: 224, y: 224 };
+      if (m.nodes.some((n) => n.ring === "inner") && m.nodes.some((n) => n.ring === "outer")) {
+        const ring = document.createElement("div");
+        ring.id = "m-ring";
+        const outer = Math.max(...m.nodes.map((n) => Math.hypot(n.x - c.x, n.y - c.y))) + 16;
+        ring.style.left = `${c.x - outer}px`;
+        ring.style.top = `${c.y - outer}px`;
+        ring.style.width = `${outer * 2}px`;
+        ring.style.height = `${outer * 2}px`;
+        list.append(ring);
+      }
+      if (m.hub) {
+        const hub = document.createElement("button");
+        hub.type = "button";
+        hub.id = "m-hub";
+        hub.className = "m-hub";
+        hub.setAttribute("role", "menuitem");
+        hub.dataset.id = "";
+        hub.title = "Close the menu (Esc)";
+        hub.style.left = `${m.hub.x}px`;
+        hub.style.top = `${m.hub.y}px`;
+        hub.style.width = `${m.hub.width}px`;
+        hub.style.height = `${m.hub.height}px`;
+        hub.textContent = `${String(m.hub.label || "Aither")} ✕`;
+        hub.addEventListener("click", () => api.menuPick(""));
+        list.append(hub);
+        buttons.push(hub);
+      }
+      for (const node of m.nodes) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = `m-node ${node.ring === "inner" ? "m-chip" : "m-pill"}`
+          + `${node.checked ? " checked" : ""}${node.more ? " more" : ""}`;
+        b.setAttribute("role", node.ring === "inner" ? "menuitemradio" : "menuitem");
+        if (node.checked) b.setAttribute("aria-checked", "true");
+        b.dataset.id = String(node.id || "");
+        b.dataset.key = String(node.key || "");
+        b.style.left = `${node.x}px`;
+        b.style.top = `${node.y}px`;
+        if (node.width) b.style.width = `${node.width}px`;
+        if (node.height) b.style.height = `${node.height}px`;
+        b.textContent = node.ring === "inner"
+          ? String(node.short || node.label || node.id)
+          : String(node.label || node.id);
+        if (node.hint) b.title = `${node.hint}${node.key ? `  [${node.key}]` : ""}`;
+        if (node.disabled) b.setAttribute("aria-disabled", "true");
+        if (node.key) {
+          const key = document.createElement("span");
+          key.className = "m-key";
+          key.textContent = String(node.key);
+          b.append(key);
+        }
+        b.style.animationDelay = `${buttons.length * 16}ms`;
+        b.addEventListener("click", () => { if (!node.disabled) api.menuPick(node.id); });
+        list.append(b);
+        buttons.push(b);
+      }
+    }
+    function render(m) {
+      list.textContent = "";
+      buttons = [];
+      document.body.classList.toggle("radial", Boolean(m && m.layout === "radial"));
+      if (!m || !Array.isArray(m.items)) return;
+      head.textContent = String(m.header || "Aither");
+      if (m.layout === "radial" && Array.isArray(m.nodes)) renderRadial(m);
+      else renderList(m);
+      const on = usable();
+      const first = on.find((b) => b.dataset.key) || on[0] || buttons[0];
       if (first) first.focus();
     }
     function move(step) {
@@ -1588,8 +1691,18 @@
     document.addEventListener("keydown", (e) => {
       if (api.menuHover) api.menuHover("key"); // a key keeps the menu up, like the pointer on it
       if (e.key === "Escape") { e.preventDefault(); api.menuPick(""); return; }
-      if (e.key === "ArrowDown" || (e.key === "Tab" && !e.shiftKey)) { e.preventDefault(); move(1); return; }
-      if (e.key === "ArrowUp" || (e.key === "Tab" && e.shiftKey)) { e.preventDefault(); move(-1); return; }
+      // Radial numbering: the payload assigns 1..N (inner ring first), so the same
+      // digits pick the same action on every page.
+      if (document.body.classList.contains("radial") && /^[1-9]$/.test(e.key)) {
+        const hit = buttons.find((b) => b.dataset.key === e.key);
+        if (hit) {
+          e.preventDefault();
+          if (hit.getAttribute("aria-disabled") !== "true") hit.click();
+        }
+        return;
+      }
+      if (e.key === "ArrowRight" || e.key === "ArrowDown" || (e.key === "Tab" && !e.shiftKey)) { e.preventDefault(); move(1); return; }
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp" || (e.key === "Tab" && e.shiftKey)) { e.preventDefault(); move(-1); return; }
       if (e.key === "Home") { e.preventDefault(); move("home"); return; }
       if (e.key === "End") { e.preventDefault(); move("end"); return; }
       // A letter jumps to the next item that starts with it.

@@ -150,3 +150,56 @@ test("the menu offers four modes, exactly one checked; a pick persists; the key 
     ["both", "swarm", "avatar", "fairy", "both"],
   );
 });
+
+// ── one resolver for TWO stores (owner's wrong tick, 2026-11-20) ────────────
+// The live desk had userData/avatar-dock.json {displayMode:"avatar"} while
+// ~/.aither/desk-companion.json said {companion:"avatar", avatarHidden:true}: the
+// menu ticked "avatar only" over a fairy, because the menu read one store and the
+// renderer honoured the other. resolveStore() is the ONE answer both now read.
+
+test("a legacy companion store with avatarHidden true draws the fairy -- and the tick says fairy", () => {
+  const r = dm.resolveStore({ companionText: '{"avatarHidden":true}' });
+  assert.deepEqual(r.settings, { mode: "fairy", swarm: dm.DEFAULT_SWARM });
+  assert.equal(r.legacy, true, "an older shape: main writes the mode back once");
+  // The migration writes the resolved mode where the display settings live.
+  const written = dm.writeStore('{"docked":true}', r.settings);
+  assert.deepEqual(JSON.parse(written), { docked: true, displayMode: "fairy", displaySwarm: dm.DEFAULT_SWARM });
+  assert.deepEqual(dm.resolveStore({ dockText: written }).settings.mode, "fairy", "and the written mode wins next boot");
+});
+
+test("a legacy companion store without the hide resolves to the body (avatar)", () => {
+  for (const text of ['{"avatarHidden":false}', '{"companion":"avatar"}', '{"companion":"avatar","avatarHidden":false}']) {
+    const r = dm.resolveStore({ companionText: text });
+    assert.equal(r.settings.mode, "avatar", `${text} -> the body`);
+    assert.equal(r.legacy, true);
+  }
+  assert.equal(dm.resolveStore({ companionText: '{"companion":"fairy"}' }).settings.mode, "fairy");
+});
+
+test("an explicit mode ALWAYS wins over a contradictory legacy flag", () => {
+  const both = dm.resolveStore({
+    dockText: '{"displayMode":"both","displaySwarm":3}',
+    companionText: '{"companion":"fairy","avatarHidden":true}',
+  });
+  assert.deepEqual(both.settings, { mode: "both", swarm: 3 }, "the newer, specific statement holds");
+  assert.equal(both.legacy, false, "no migration needed: the mode is already explicit");
+  const comp = dm.resolveStore({ companionText: '{"mode":"swarm","avatarHidden":true}' });
+  assert.equal(comp.settings.mode, "swarm", "a mode key in the companion store wins there too");
+});
+
+test("a fresh install and a pre-feature dock store both resolve to the fairy", () => {
+  const fresh = dm.resolveStore({});
+  assert.deepEqual(fresh.settings, { mode: "fairy", swarm: dm.DEFAULT_SWARM });
+  assert.equal(fresh.legacy, false, "nothing to migrate: there is no store yet");
+  assert.equal(fresh.source, "fresh");
+  const old = dm.resolveStore({ dockText: '{"docked":true}' });
+  assert.equal(old.settings.mode, "fairy");
+  assert.equal(old.legacy, true, "an upgraded store does get the mode written once");
+});
+
+test("modeItems carries the short word the radial inner ring draws, tick on exactly one", () => {
+  const rows = dm.modeItems({ mode: "swarm" });
+  assert.deepEqual(rows.map((r) => r.short), ["Avatar", "Fairy", "Both", "Swarm"]);
+  assert.equal(rows.filter((r) => r.checked).length, 1);
+  assert.equal(rows.find((r) => r.checked).short, "Swarm");
+});

@@ -49,6 +49,13 @@ const MODE_HINT = Object.freeze({
   both: "The body, with the fairy cluster parked beside it -- never on it",
   swarm: "The body, with up to N agent fairies spread around it",
 });
+/** The four words a radial inner ring can carry (the full MODE_TEXT is the title). */
+const MODE_SHORT = Object.freeze({
+  avatar: "Avatar",
+  fairy: "Fairy",
+  both: "Both",
+  swarm: "Swarm",
+});
 
 function clampInt(value, min, max, fallback) {
   const n = Number(value);
@@ -83,6 +90,64 @@ function writeStore(text, settings) {
   const base = src && typeof src === "object" && !Array.isArray(src) ? src : {};
   const next = normalize(settings);
   return JSON.stringify({ ...base, displayMode: next.mode, displaySwarm: next.swarm });
+}
+
+function parseObject(text) {
+  try {
+    const src = JSON.parse(String(text == null ? "" : text));
+    return src && typeof src === "object" && !Array.isArray(src) ? src : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The desk has TWO stores that can say how the companion is drawn:
+ *
+ *   userData/avatar-dock.json   {displayMode, displaySwarm, docked}   (this module)
+ *   ~/.aither/desk-companion.json {companion:"avatar"|"fairy", avatarHidden:bool}
+ *                                 (the companion switch, and the sticky "Hide avatar")
+ *
+ * The renderer (orb-window) and the menu must read the SAME resolved value, or the
+ * tick says one mode while the screen draws another (owner's screenshot, 2026-11-20:
+ * "Display: avatar only ✓" over a fairy orb and no avatar). The rule, in order:
+ *
+ *   1. An explicit mode -- `displayMode` in the dock store, `mode`/`displayMode` in
+ *      the companion store -- always wins. It is the newest, most specific statement.
+ *   2. Otherwise the companion store says what is actually on screen: `avatarHidden`
+ *      true (the body was hidden) means the fairy is what the owner sees; a stored
+ *      `companion` is the body switch the renderer honours.
+ *   3. Neither file says: the desk's own default, the fairy (what a fresh boot draws).
+ *
+ * `legacy: true` means the answer came from an older shape and main should write the
+ * mode back once, so no later reader has to guess again.
+ */
+function resolveStore({ dockText = "", companionText = "" } = {}) {
+  const dock = parseObject(dockText);
+  const companion = parseObject(companionText);
+  const swarm = clampInt(dock ? dock.displaySwarm : undefined, 1, SWARM_MAX, DEFAULT_SWARM);
+  const explicit = [dock && dock.displayMode, companion && companion.mode, companion && companion.displayMode]
+    .find((mode) => MODES.includes(mode));
+  if (explicit) {
+    return {
+      settings: { mode: explicit, swarm },
+      legacy: false,
+      source: dock && dock.displayMode === explicit ? "dock" : "companion",
+    };
+  }
+  if (!dock && !companion) {
+    return { settings: { mode: DEFAULT_MODE, swarm }, legacy: false, source: "fresh" };
+  }
+  const hidden = companion && companion.avatarHidden === true;
+  const wanted = companion && (companion.companion === "avatar" ? "avatar" : companion.companion === "fairy" ? "fairy" : "");
+  // avatarHidden true: the body is put away, so the fairy is what the owner sees.
+  if (hidden) return { settings: { mode: "fairy", swarm }, legacy: true, source: "companion" };
+  if (wanted) return { settings: { mode: wanted, swarm }, legacy: true, source: "companion" };
+  if (companion && companion.avatarHidden === false) {
+    return { settings: { mode: "avatar", swarm }, legacy: true, source: "companion" };
+  }
+  // An older store that predates this feature (e.g. {docked:true}) was drawing the fairy.
+  return { settings: { mode: DEFAULT_MODE, swarm }, legacy: true, source: "dock" };
 }
 
 /** Which of the desk's companion layers this mode allows. `cluster` is the fairy
@@ -306,6 +371,7 @@ function modeItems(settings = {}) {
   return MODES.map((mode) => ({
     id: `dm:${mode}`,
     label: s.mode === mode ? `${MODE_TEXT[mode]} ✓` : MODE_TEXT[mode],
+    short: MODE_SHORT[mode],
     hint: MODE_HINT[mode],
     checked: s.mode === mode,
   }));
@@ -328,8 +394,8 @@ function cycle(mode) {
 }
 
 module.exports = {
-  MODES, DEFAULT_MODE, SWARM_MAX, DEFAULT_SWARM, ORB_SIZE,
-  normalize, readStore, writeStore,
+  MODES, DEFAULT_MODE, SWARM_MAX, DEFAULT_SWARM, ORB_SIZE, MODE_TEXT, MODE_SHORT,
+  normalize, readStore, writeStore, resolveStore,
   layers, capacity, clusterAnchor, clusterRect, clusterCenter, swarmOrbs,
   releaseTarget, settle, modeItems, applyModePick, cycle,
 };

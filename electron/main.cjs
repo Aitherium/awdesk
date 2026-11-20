@@ -4521,8 +4521,12 @@ function commandContext() {
     platform: process.platform,
     shellMenu: shellMenuOn,
     companion: companionMode(),
-    // The display-mode radio rows read this (owner 2026-11-20).
-    displayMode: displaySettingsNow().mode,
+    // The display-mode radio rows read the mode IN FORCE -- the same function the orb
+    // menu ticks with (owner 2026-11-20: the tick said "avatar only" over a fairy).
+    // The store only answers before the renderer exists.
+    displayMode: (() => {
+      try { return orbWindow.displayModeInForce(); } catch { return displaySettingsNow().mode; }
+    })(),
     clipboardSync: capture.clipboardSyncOn(),
     // Screen ink's mode (ink-mode.cjs): the tray row says "Drawing" while it draws.
     inkMode: require("./ink-window.cjs").status().mode,
@@ -5927,15 +5931,28 @@ function writeAvatarDockText(text) {
     fs.renameSync(tmp, AVATAR_DOCK_PATH());
   } catch { /* best-effort: the next launch docks and draws as defaults */ }
 }
-/** The display mode now. A store written BEFORE this feature has no displayMode:
- *  an owner who ran the full-avatar companion keeps it -- never a silent downgrade. */
+/** The companion store (~/.aither/desk-companion.json) as TEXT: the second half of
+ *  the display-mode question (display-mode.cjs resolveStore). */
+function readCompanionStore() {
+  try { return fs.readFileSync(COMPANION_FILE, "utf-8"); } catch { return ""; }
+}
+/** The display mode actually in force, resolved from BOTH stores by ONE rule.
+ *
+ *  A store written BEFORE this feature has no displayMode. The old answer guessed
+ *  "avatar" whenever the companion switch said avatar -- which disagreed with a
+ *  screen showing the fairy because the sticky `avatarHidden` was set. The resolver
+ *  reads what is drawn instead, and `legacy` says the answer came from an older
+ *  shape: the mode is then written back ONCE, so the menu never has to guess again. */
+let displayMigrated = false;
 function displaySettingsNow() {
-  const text = readAvatarDockFile();
-  const out = displayMode.readStore(text);
-  let hasMode;
-  try { hasMode = Object.prototype.hasOwnProperty.call(JSON.parse(text), "displayMode"); } catch { /* no store yet */ }
-  if (!hasMode && companionMode() === "avatar") out.mode = "avatar";
-  return out;
+  const dockText = readAvatarDockFile();
+  const resolved = displayMode.resolveStore({ dockText, companionText: readCompanionStore() });
+  if (resolved.legacy && !displayMigrated) {
+    displayMigrated = true;
+    // Best effort: a failed write leaves the resolver answering the same way.
+    writeAvatarDockText(displayMode.writeStore(dockText, resolved.settings));
+  }
+  return resolved.settings;
 }
 function saveDisplaySettings(settings) {
   writeAvatarDockText(displayMode.writeStore(readAvatarDockFile(), settings));
@@ -5952,14 +5969,17 @@ function saveDisplaySettings(settings) {
 async function applyDisplayMode(mode) {
   await waitForAvatarGrow();
   const next = displayMode.normalize({ ...displaySettingsNow(), mode });
-  saveDisplaySettings(next);
-  const bodyVisible = Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible());
+  const bodyVisible = () => Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible());
   if (next.mode === "fairy") {
     if (companionMode() !== "fairy") await setCompanionMode("fairy");
-    else if (!bodyVisible) { try { orbWindow.returnFromAvatar(); } catch { /* not started */ } }
+    else if (!bodyVisible()) { try { orbWindow.returnFromAvatar(); } catch { /* not started */ } }
   } else if (next.mode === "avatar") {
+    // An explicit `avatar` mode outranks the legacy sticky hide: `avatarHidden` was
+    // set by an older "Hide avatar" click, and leaving it in force is what made the
+    // menu tick "avatar only" over a fairy (owner's screenshot, 2026-11-20).
+    setAvatarHiddenByOwner(false);
     if (companionMode() !== "avatar") await setCompanionMode("avatar");
-    else if (!bodyVisible) await showOverlay({ focus: false });
+    else if (!bodyVisible()) await showOverlay({ focus: false });
   } else {
     // both/swarm: the body is its own surface and the ONE cluster stays. Do NOT go
     // through showOverlay/setCompanionMode -- both run the one-surface stand-down,
@@ -5974,10 +5994,16 @@ async function applyDisplayMode(mode) {
     setAvatarHiddenByOwner(false);
     showBodyDirect();
   }
-  try { orbWindow.setDisplayModeState(next); } catch { /* orb not started yet (boot path) */ }
+  // The tick is ALWAYS the mode in force (owner 2026-11-20). A body that could not
+  // be raised is not "avatar" -- the screen shows the fairy, so the applied state says
+  // fairy. The owner's choice stays PERSISTED (`saveDisplaySettings(next)`), so the
+  // next launch retries it rather than silently downgrading the preference.
+  const applied = next.mode !== "fairy" && !bodyVisible() ? { ...next, mode: "fairy" } : next;
+  saveDisplaySettings(next);
+  try { orbWindow.setDisplayModeState(applied); } catch { /* orb not started yet (boot path) */ }
   if (tray) refreshTrayMenu();
   pushDeskState();
-  return { ok: true, ...next };
+  return { ok: true, ...applied };
 }
 avatarDock = createAvatarDock({
   avatar: () => (avatarWindow && !avatarWindow.isDestroyed() ? avatarWindow : null),
@@ -8426,12 +8452,20 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       },
       display: displaySettingsNow(),
     });
-    // Display mode restored from avatar-dock.json (owner 2026-11-20). A `fairy` boot
-    // is today's behaviour exactly; the other modes make the avatar window agree.
+    // Display mode restored from the TWO stores through ONE resolver (owner 2026-11-20):
+    // the renderer and the menu read the same value, so the tick cannot disagree with
+    // the screen. The renderer is told the resolved mode at once; a body mode then
+    // raises the window, and applyDisplayMode reports back what the screen really got.
     {
       const boot = displaySettingsNow();
       if (boot.mode === "fairy") orbWindow.setDisplayModeState(boot);
-      else applyDisplayMode(boot.mode);
+      else {
+        // applyDisplayMode reports what the screen really got and sets the renderer's
+        // state itself; a failure leaves the fairy up rather than a blank desk.
+        applyDisplayMode(boot.mode).catch((error) => {
+          debugLog("[display-mode] the boot restore failed", String((error && error.message) || error));
+        });
+      }
     }
     // [audio] System speakers + microphone. onChange re-renders the tray so its
     // Mute/Unmute rows match Windows; the warm helper is late so boot is not
