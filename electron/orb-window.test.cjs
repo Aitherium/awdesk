@@ -737,6 +737,8 @@ test("the count is a BUTTON, not decoration (owner 2026-11-20: the 58 read as pa
   // A keyboard user gets the same door.
   assert.match(html, /badge\.addEventListener\("keydown"/);
   assert.match(html, /role", "button"/);
+  // A companion passing over the badge cannot steal the press (review 2026-11-20).
+  assert.match(html, /if \(badgeUnder\(e\)\) return;/, "the badge wins before a companion's card");
 });
 
 test("the fairy door is labelled Needs you (N) when cards are waiting", () => {
@@ -2220,6 +2222,34 @@ test("the body's own window stands the fairy down and brings her back -- one sur
   orbWindow.returnFromAvatar();
   assert.equal(orbWin().isVisible(), true);
   assert.equal(orbWindow.stoodDown(), false);
+});
+
+test("an automatic hide while the body is up cannot let the next card float the fairy again", async () => {
+  writeState({ visible: true, x: 200, y: 200 });
+  start();
+  orbWindow.standDownForAvatar();
+  // A card auto-surfaced the fairy, then was answered: the auto-hide runs while the
+  // body is still up. It must not clear the stand-down (review 2026-11-20).
+  orbWindow.hideOrb({ auto: true });
+  assert.equal(orbWindow.stoodDown(), true, "the body still owns the surface");
+  const shown = orbWindow.showOrb({ auto: true });
+  assert.equal(shown.body, true, "a new card does not put the fairy beside the body");
+  assert.equal(orbWin().isVisible(), false);
+  // A collapse with nothing grown (a dock/palette verb) must not clear it either.
+  await orbWindow.collapseToFairy();
+  assert.equal(orbWindow.stoodDown(), true);
+  assert.equal(orbWindow.showOrb().body, true);
+  assert.equal(orbWin().isVisible(), false);
+  orbWindow.returnFromAvatar();
+});
+
+test("the ask panel cannot pop beside the body", () => {
+  writeState({ visible: true, x: 200, y: 200 });
+  start();
+  orbWindow.standDownForAvatar();
+  orbWindow.openBubble({ focus: false });
+  assert.equal(bubbleWin(), null, "no bubble window was raised");
+  orbWindow.returnFromAvatar();
 });
 
 test("a fairy the owner had hidden is not resurrected when the body leaves", () => {

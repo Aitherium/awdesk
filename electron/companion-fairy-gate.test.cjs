@@ -93,6 +93,26 @@ test("a suppressed automatic show never touches the fairy", () => {
   assert.equal(calls.stoodDown, 0, "nothing was raised, so nothing stands down");
 });
 
+// ── review findings, 2026-11-20: the one-surface invariants hold under edges ──
+test("the tray toggle still shows/hides a DOCKED body (docking is the separate surface)", () => {
+  assert.match(src, /if \(facts\.docked\) \{/);
+  assert.match(src, /if \(facts\.avatarVisible\) await hideOverlay\(\);\s*\n\s*else await showOverlay\(\{ focus: true \}\);/);
+});
+
+test("a companion-mode switch is not recorded as the owner's sticky hide", () => {
+  // 'Companion: fairy only' hides the body for now -- not forever. The old call wrote
+  // avatarHidden, which then silently blocked 'Companion: full avatar'.
+  assert.match(src, /await hideOverlay\(\{ byOwner: false \}\);/);
+  // Choosing a body clears any earlier sticky hide before it plans the grow.
+  assert.match(src, /setAvatarHiddenByOwner\(false\);\s*\n\s*if \(plan\.avatar === "grow"\)/);
+});
+
+test("a toggle during the grow animation waits for it instead of racing to zero surfaces", () => {
+  assert.match(src, /async function waitForAvatarGrow\(\)/);
+  assert.match(src, /async function toggleOverlay\(\) \{\s*\n\s*await waitForAvatarGrow\(\);/);
+  assert.match(src, /async function setCompanionMode\(mode\) \{\s*\n\s*await waitForAvatarGrow\(\);/);
+});
+
 // ── "stays hidden across a crash and a restart" (the PR's whole point) ──────────
 test("avatar mode: an AUTOMATIC show is suppressed after the owner hid the avatar", () => {
   const { showOverlay, calls } = harness({ companion: "avatar", avatarHidden: true });

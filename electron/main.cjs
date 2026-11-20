@@ -1132,10 +1132,27 @@ function companionSurfaceFacts() {
   };
 }
 
+/** A toggle/mode switch during the ~200 ms grow/shrink must not race it into zero
+ *  surfaces: the body is already visible while `expanded` is still false, so a second
+ *  toggle would "hide" it while the grow then hides the fairy (nothing on screen).
+ *  Wait for the animation to settle, then plan against the real state. */
+async function waitForAvatarGrow() {
+  for (let i = 0; i < 160 && avatarGrowing; i += 1) await waitMs(25); // <= 4 s
+}
+
 /** The tray's Show avatar / Hide avatar line. Same decision as every other verb:
  *  the fairy GROWS into the body in place; hiding her body brings her back. */
 async function toggleOverlay() {
-  const plan = companionSurface.plan({ want: "toggle", ...companionSurfaceFacts() });
+  await waitForAvatarGrow();
+  const facts = companionSurfaceFacts();
+  if (facts.docked) {
+    // Docking is the separate-surface mode: the toggle is the browser body's own
+    // show/hide, exactly as it was before the one-surface plan.
+    if (facts.avatarVisible) await hideOverlay();
+    else await showOverlay({ focus: true });
+    return { ok: true, visible: !facts.avatarVisible };
+  }
+  const plan = companionSurface.plan({ want: "toggle", ...facts });
   if (plan.avatar === "hide") {
     if (plan.collapse) {
       try { await orbWindow.collapseToFairy(); return { ok: true, visible: false }; } catch { /* fall through */ }
@@ -2313,6 +2330,7 @@ function companionMode() {
   }
 }
 async function setCompanionMode(mode) {
+  await waitForAvatarGrow();
   const next = mode === "avatar" ? "avatar" : "fairy";
   try {
     fs.mkdirSync(path.dirname(COMPANION_FILE), { recursive: true });
@@ -2320,8 +2338,12 @@ async function setCompanionMode(mode) {
   } catch { /* the choice holds for this run */ }
   // The same one-surface plan the tray's toggle uses: growing in place when the
   // fairy is on screen, standing her down when the body shows alone (owner 2026-11-20).
-  const plan = companionSurface.plan({ want: next, ...companionSurfaceFacts() });
+  const facts = companionSurfaceFacts();
+  const plan = companionSurface.plan({ want: next, ...facts });
   if (next === "avatar") {
+    // Choosing a body IS an explicit owner ask: a sticky hide saved by an earlier
+    // "Hide avatar" must not swallow it (this row used to be blocked that way).
+    setAvatarHiddenByOwner(false);
     if (plan.avatar === "grow") {
       let grown;
       try { grown = await orbWindow.expandToAvatar(); } catch { grown = null; }
@@ -2331,10 +2353,17 @@ async function setCompanionMode(mode) {
     }
   } else if (plan.collapse) {
     try { await orbWindow.collapseToFairy(); } catch { /* the fairy comes back on the next call */ }
-  } else if (avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) {
-    await hideOverlay();
+  } else if (!facts.docked && avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) {
+    // A mode switch is not the owner hiding the body for good: do not write the
+    // persistent avatarHidden that would keep "Companion: full avatar" from working.
+    await hideOverlay({ byOwner: false });
   } else if (plan.fairy === "show") {
     try { orbWindow.returnFromAvatar(); } catch { /* the fairy is not up */ }
+  }
+  // Whatever path ran, the plan's fairy side still holds (e.g. a body already up
+  // from a voice session while the mode changes to avatar).
+  if (plan.fairy === "hide") {
+    try { orbWindow.standDownForAvatar(); } catch { /* the fairy is not up */ }
   }
   syncNeedsYouChip();
   if (tray) refreshTrayMenu();

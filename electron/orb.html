@@ -854,6 +854,10 @@
     window.addEventListener("pointerdown", (e) => {
       dwell.off();
       if (e.button !== 0) return;
+      // The counted badge is the click's own (2026-11-20): an orbiting companion can
+      // pass over the top-right band, and its capture handler would otherwise swallow
+      // the press and open that agent's card instead of the Inbox.
+      if (badgeUnder(e)) return;
       const m = mateUnder(e);
       if (!m) return;
       e.preventDefault();

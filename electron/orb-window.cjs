@@ -1692,12 +1692,16 @@ function showOrb({ auto = false } = {}) {
   const win = ensureOrb();
   const was = state.visible;
   state.visible = true;
-  suppressed = false;
   if (!was) saveState();
   // Grown into the avatar: the body IS the fairy right now (one cluster), so the orb
   // stays down until "Back to the fairy" (collapseToFairy). Stood down because the
-  // body is up as its own surface: same rule -- one companion, never two.
-  if (expanded || stoodDownForAvatar) return { ok: true, visible: true, expanded, body: stoodDownForAvatar };
+  // body is up as its own surface: same rule -- one companion, never two. `suppressed`
+  // stays true here: pump/syncBubble must not pop the ask panel beside the body.
+  if (expanded || stoodDownForAvatar) {
+    suppressed = true;
+    return { ok: true, visible: true, expanded, body: stoodDownForAvatar };
+  }
+  suppressed = false;
   if (!win.isVisible()) win.showInactive();
   if (attach) showVeil();
   placeSwarm();
@@ -1712,7 +1716,10 @@ function showOrb({ auto = false } = {}) {
 }
 
 function hideOrb({ auto = false } = {}) {
-  stoodDownForAvatar = false;   // an explicit hide wins over any stand-down
+  // NOTE: the stand-down flag is NOT cleared here. An automatic hide (a card leaving
+  // the auto-surfaced fairy) and an owner hide both happen while the body can still be
+  // up; clearing it let the next showOrb float the fairy beside the body again. Only
+  // the body leaving (returnFromAvatar) or a grow ending clears it.
   // The owner hid it with cards waiting: those cards do not bring it back, a NEW one does.
   if (!auto) {
     autoSurfaced = false; ownerHidIds = new Set(attentionCards.map((c) => c.id));
@@ -1775,6 +1782,13 @@ function syncBubble() {
 
 function openBubble({ focus = false } = {}) {
   showOrb();
+  // ONE surface (owner 2026-11-20): while the body is up it carries the cards, so no
+  // floating ask panel may pop where the fairy used to rest. (showOrb already refuses
+  // to raise the orb; without this guard openBubble raised the bubble anyway.)
+  if (expanded || stoodDownForAvatar) {
+    sendPanel();
+    return { ok: true, suppressed: true };
+  }
   const win = ensureBubble();
   placeBubble();
   if (!win.isVisible()) win.showInactive();
@@ -4781,8 +4795,11 @@ async function expandToAvatar() {
  * something else (its own close, the tray) -- only bring the fairy back.
  */
 async function collapseToFairy({ fromAvatar = false } = {}) {
-  stoodDownForAvatar = false;
   if (!expanded) return { ok: true, expanded: false };
+  // Growing DOWN is the only thing that clears a stand-down here; the body can still
+  // be up while collapse is called with nothing grown (a dock/palette verb), and the
+  // fairy must not float beside it.
+  stoodDownForAvatar = false;
   expanded = false;
   if (!fromAvatar && typeof (attentionHooks && attentionHooks.collapse) === "function") {
     const to = alive(orbWindow) ? orbWindow.getBounds() : null;
@@ -4818,6 +4835,10 @@ function standDownForAvatar() {
   if (alive(orbWindow)) orbWindow.hide();
   if (alive(swarmWindow)) swarmWindow.hide();
   hideVeil();
+  // A flight or a foreground follow outliving the fairy would keep drawing beside the
+  // body (hideOrb does the same two calls for the same reason).
+  try { updateToolFlights(); } catch { /* cosmetic */ }
+  syncForegroundProbe();
   sendPanel();
   return { ok: true, visible: false };
 }
