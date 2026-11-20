@@ -119,6 +119,22 @@
     </section>
 
     <section>
+      <h2>Companion display</h2>
+      <p class="lede">What stands on your desk: the full avatar, the fairy cluster, or BOTH at once — the body with the cluster parked beside it, never on it. Saved with the avatar dock, so it survives a restart.</p>
+      <div class="row">
+        <label>Mode</label>
+        <select id="displayMode">
+          <option value="avatar">Avatar only</option>
+          <option value="fairy">Fairy only (default)</option>
+          <option value="both">Avatar and fairy</option>
+          <option value="swarm">Swarm around the avatar</option>
+        </select>
+        <span class="note" style="margin:0">Ctrl+Alt+Shift+M cycles</span>
+      </div>
+      <p class="note">Both parks the cluster beside the body; swarm draws up to a handful of agent orbs around it, each draggable and carrying its own badge. There is still only ONE cluster.</p>
+    </section>
+
+    <section>
       <h2>Visual neurons</h2>
       <p class="lede">See an agent think. While an agent is working or speaking, a small graph of its recent steps — thinking, a tool call, a result, a spoken line — draws around its fairy. Off by default.</p>
       <div class="row">
@@ -181,6 +197,7 @@
     renderHotkeys(res.hotkeys || []);
     renderOverlay(res.overlay || {});
     renderNeurons(res.neurons);
+    renderDisplay(res.display);
   }
 
   // Desktop overlay (overlay-policy.cjs): three switches, the edge and the dwell.
@@ -224,6 +241,16 @@
     } else {
       say("could not save: " + (result && result.error || "unknown"), "err");
     }
+  });
+
+  // Companion display (display-mode.cjs, owner 2026-11-20): avatar, fairy, both, swarm.
+  // The same four rows are on the fairy/avatar menus and the palette; this is the switch.
+  const displayModeSel = document.getElementById("displayMode");
+  function renderDisplay(d) { displayModeSel.value = (d && d.mode) || "fairy"; }
+  displayModeSel.addEventListener("change", async () => {
+    const result = await bridge.setDisplay(displayModeSel.value);
+    if (result && result.ok) { renderDisplay(result.display || {}); say("display mode saved", "ok"); }
+    else say("could not save: " + (result && result.error || "unknown"), "err");
   });
 
   grantMicBtn.addEventListener("click", async () => {

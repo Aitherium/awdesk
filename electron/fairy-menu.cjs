@@ -146,10 +146,12 @@ function fairyItems(card, { label = "", agent = "" } = {}) {
  *   opts.swarm: how many agent fairies exist (a "Swarm layout…" row, only with some).
  *   opts.bodies: aither-body.cjs rows [{id, label, checked}] -- Aither (female) /
  *     Aither (male). Empty when this desk has fewer than two (no choice, no row).
+ *   opts.display: display-mode.cjs modeItems rows (avatar / fairy / both / swarm),
+ *     the four-way switch the owner asked for on 2026-11-20. Empty = no row.
  */
 function orbItems({
   waiting = 0, mutedUntil = 0, quietUntil = 0, tenantVisible = false, fairyVisible = true, nowMs = Date.now(),
-  avatar = null, bodies = [], swarm = 0,
+  avatar = null, bodies = [], swarm = 0, display = [],
 } = {}) {
   const n = Math.max(0, Number(waiting) || 0);
   const items = [];
@@ -179,6 +181,9 @@ function orbItems({
   }));
   // Fine control of the agent fairies (fairy-control.cjs): only with agents to arrange.
   if (Number(swarm) > 0) items.push({ id: "sv:menu", label: "Swarm layout…", hint: "Gather, scatter, one orb, dock to the edge, filter by kind" });
+  // Display mode (display-mode.cjs, owner 2026-11-20): avatar alone, fairy alone, or
+  // BOTH -- the docked body with the cluster parked beside it / a swarm around it.
+  if (Array.isArray(display) && display.length) items.push({ sep: true }, ...display);
   items.push({ sep: true }, { id: "more", label: "More…", hint: "Search, ask, attach, sounds and the desk's doors" });
   return { header: n ? `Aither · ${n} waiting on you` : "Aither", items };
 }

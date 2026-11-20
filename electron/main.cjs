@@ -200,6 +200,8 @@ const recorder = require("./recorder-window.cjs");
 // The floating ask orb (owner, 2026-11-02): orb-window.cjs owns both windows
 // and every desk:orb-* channel; main only starts it and routes its registry rows.
 const orbWindow = require("./orb-window.cjs");
+// How the companion is drawn (owner 2026-11-20): avatar, fairy, both or swarm.
+const displayMode = require("./display-mode.cjs");
 // The list behind the fairy's "N more waiting ›" (owner, 2026-11-10: 99+ cards,
 // and the one a session was stopped on could not be found). fairy-queue.cjs is
 // the pure view; this module owns the window and opens a card on openInbox.
@@ -1099,6 +1101,16 @@ function showOverlay({ focus = false } = {}) {
   if (tray) refreshTrayMenu();
 }
 
+/** Raise the body as its own surface WITHOUT the one-surface stand-down. The display
+ *  modes `both`/`swarm` (owner 2026-11-20) are the declared exception: the body and
+ *  the ONE fairy cluster stand together, so showOverlay's stand-down must not run. */
+function showBodyDirect() {
+  const win = createWindow();
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.showInactive();
+  scheduleHyprlandWindowConfiguration();
+}
+
 async function hideOverlay({ byOwner = true } = {}) {
   debugLog("hide overlay");
   if (byOwner) setAvatarHiddenByOwner(true);
@@ -1151,6 +1163,20 @@ async function toggleOverlay() {
     if (facts.avatarVisible) await hideOverlay();
     else await showOverlay({ focus: true });
     return { ok: true, visible: !facts.avatarVisible };
+  }
+  // `both`/`swarm` are the owner's declared two-surface modes (2026-11-20): the
+  // toggle is then the BODY's own show/hide and the fairy cluster keeps its place.
+  // showOverlay would run the one-surface stand-down, so the body is raised directly.
+  const dmode = displaySettingsNow().mode;
+  if (dmode === "both" || dmode === "swarm") {
+    if (facts.avatarVisible) {
+      await hideOverlay({ byOwner: false });
+      try { orbWindow.setDisplayModeState(orbWindow.displayModeState()); } catch { /* not started */ }
+      return { ok: true, visible: false };
+    }
+    setAvatarHiddenByOwner(false);
+    showBodyDirect();
+    return { ok: true, visible: true };
   }
   const plan = companionSurface.plan({ want: "toggle", ...facts });
   if (plan.avatar === "hide") {
@@ -1232,6 +1258,22 @@ function createWindow() {
       reposition: !hyprlandConfigured || hyprlandLastPosition != null,
     });
   });
+  // both/swarm (owner 2026-11-20): the one cluster is parked BESIDE the avatar, so a
+  // dragged or docked body must re-place it. Debounced: "move" fires per pixel.
+  let displayFollowTimer = null;
+  const followDisplayMode = () => {
+    if (displayFollowTimer) clearTimeout(displayFollowTimer);
+    displayFollowTimer = setTimeout(() => {
+      displayFollowTimer = null;
+      try {
+        const s = orbWindow.displayModeState();
+        if (s && (s.mode === "both" || s.mode === "swarm")) orbWindow.setDisplayModeState(s);
+      } catch { /* the orb is not up yet */ }
+    }, 60);
+    if (displayFollowTimer.unref) displayFollowTimer.unref();
+  };
+  avatarWindow.on("move", followDisplayMode);
+  avatarWindow.on("resize", followDisplayMode);
   avatarWindow.on("close", (event) => {
     if (isQuitting) return;
     event.preventDefault();
@@ -4486,6 +4528,8 @@ function commandContext() {
     platform: process.platform,
     shellMenu: shellMenuOn,
     companion: companionMode(),
+    // The display-mode radio rows read this (owner 2026-11-20).
+    displayMode: displaySettingsNow().mode,
     clipboardSync: capture.clipboardSyncOn(),
     // Screen ink's mode (ink-mode.cjs): the tray row says "Drawing" while it draws.
     inkMode: require("./ink-window.cjs").status().mode,
@@ -5008,6 +5052,11 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "avatar.toggle": return void toggleOverlay();
     case "companion.fairy": return void setCompanionMode("fairy");
     case "companion.avatar": return void setCompanionMode("avatar");
+    case "display.mode.avatar": return void applyDisplayMode("avatar");
+    case "display.mode.fairy": return void applyDisplayMode("fairy");
+    case "display.mode.both": return void applyDisplayMode("both");
+    case "display.mode.swarm": return void applyDisplayMode("swarm");
+    case "display.mode.cycle": return void applyDisplayMode(displayMode.cycle(displaySettingsNow().mode));
     case "avatar.dock": {
       // Docking opens the browser it docks into; floating leaves the browser alone.
       if (avatarDock.isDocked()) return void avatarDock.undock();
@@ -5859,6 +5908,71 @@ browserWindow.setAgentsHost(agentsPanel.createAgentsSource({
 // overlay"). The avatar docks into the browser rail and follows it; the rail pops
 // THE menu (the tray's) and runs its allowlisted commands through runCommand.
 const AVATAR_DOCK_PATH = () => path.join(app.getPath("userData"), "avatar-dock.json");
+/** The one store the dock and the display mode share: read as TEXT, merged on write,
+ *  so `{docked}` and `{displayMode, displaySwarm}` never overwrite each other. */
+function readAvatarDockFile() {
+  try { return fs.readFileSync(AVATAR_DOCK_PATH(), "utf-8"); } catch { return ""; }
+}
+function writeAvatarDockText(text) {
+  try {
+    fs.mkdirSync(path.dirname(AVATAR_DOCK_PATH()), { recursive: true });
+    const tmp = `${AVATAR_DOCK_PATH()}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, text, "utf-8");
+    fs.renameSync(tmp, AVATAR_DOCK_PATH());
+  } catch { /* best-effort: the next launch docks and draws as defaults */ }
+}
+/** The display mode now. A store written BEFORE this feature has no displayMode:
+ *  an owner who ran the full-avatar companion keeps it -- never a silent downgrade. */
+function displaySettingsNow() {
+  const text = readAvatarDockFile();
+  const out = displayMode.readStore(text);
+  let hasMode;
+  try { hasMode = Object.prototype.hasOwnProperty.call(JSON.parse(text), "displayMode"); } catch { /* no store yet */ }
+  if (!hasMode && companionMode() === "avatar") out.mode = "avatar";
+  return out;
+}
+function saveDisplaySettings(settings) {
+  writeAvatarDockText(displayMode.writeStore(readAvatarDockFile(), settings));
+  return displaySettingsNow();
+}
+/**
+ * Apply + persist one display mode (owner 2026-11-20).
+ *
+ * The desk's ONE-surface rule (companion-surface.cjs, same day) has a declared
+ * exception now: the owner's own display mode. `avatar` and `fairy` keep that plan;
+ * `both`/`swarm` deliberately keep the body AND the ONE fairy cluster -- the mode IS
+ * the exception, so they never go through setCompanionMode's stand-down.
+ */
+async function applyDisplayMode(mode) {
+  await waitForAvatarGrow();
+  const next = displayMode.normalize({ ...displaySettingsNow(), mode });
+  saveDisplaySettings(next);
+  const bodyVisible = Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible());
+  if (next.mode === "fairy") {
+    if (companionMode() !== "fairy") await setCompanionMode("fairy");
+    else if (!bodyVisible) { try { orbWindow.returnFromAvatar(); } catch { /* not started */ } }
+  } else if (next.mode === "avatar") {
+    if (companionMode() !== "avatar") await setCompanionMode("avatar");
+    else if (!bodyVisible) await showOverlay({ focus: false });
+  } else {
+    // both/swarm: the body is its own surface and the ONE cluster stays. Do NOT go
+    // through showOverlay/setCompanionMode -- both run the one-surface stand-down,
+    // which is exactly what this declared mode suspends. Write the preference so the
+    // rest of the desk (tray labels, automatic callers) agrees the body is wanted.
+    try {
+      fs.mkdirSync(path.dirname(COMPANION_FILE), { recursive: true });
+      fs.writeFileSync(COMPANION_FILE, JSON.stringify({ ...readCompanionFile(), companion: "avatar" }));
+    } catch { /* the mode still holds for this run */ }
+    // A body that grew out of the fairy has no cluster to park: shrink her back first.
+    try { if (orbWindow.expanded()) await orbWindow.collapseToFairy(); } catch { /* cosmetic */ }
+    setAvatarHiddenByOwner(false);
+    showBodyDirect();
+  }
+  try { orbWindow.setDisplayModeState(next); } catch { /* orb not started yet (boot path) */ }
+  if (tray) refreshTrayMenu();
+  pushDeskState();
+  return { ok: true, ...next };
+}
 avatarDock = createAvatarDock({
   avatar: () => (avatarWindow && !avatarWindow.isDestroyed() ? avatarWindow : null),
   browser: () => browserWindow.getWindow(),
@@ -5871,12 +5985,10 @@ avatarDock = createAvatarDock({
     }
   },
   save: (docked) => {
-    try {
-      fs.mkdirSync(path.dirname(AVATAR_DOCK_PATH()), { recursive: true });
-      fs.writeFileSync(AVATAR_DOCK_PATH(), JSON.stringify({ docked }), "utf-8");
-    } catch {
-      /* best-effort: the next launch docks by default */
-    }
+    // Merge: the display mode lives in this same file (display-mode.cjs).
+    let src;
+    try { src = JSON.parse(readAvatarDockFile()); } catch { /* first run */ }
+    writeAvatarDockText(JSON.stringify({ ...(src && typeof src === "object" ? src : {}), docked }));
   },
   onChange: () => {
     applyDockedCss();
@@ -7754,7 +7866,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           const label = command ? commandRegistry.labelOf(command, ctx) : k.id;
           return { ...k, label, dead: deadAccels.has(k.accel) };
         });
-        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings(), neurons: orbWindow.neuronsOn() };
+        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings(), neurons: orbWindow.neuronsOn(), display: displaySettingsNow() };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }
@@ -7776,6 +7888,19 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         const result = orbWindow.setNeurons(on === true);
         refreshTrayMenu();
         return { ok: true, neurons: result.neurons };
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+    });
+    // Companion display (display-mode.cjs, owner 2026-11-20): the same four modes the
+    // fairy/avatar menus and the palette carry; this is the Settings switch.
+    ipcMain.handle("desk:settings-set-display", async (_event, mode) => {
+      try {
+        if (!displayMode.MODES.includes(String(mode || ""))) {
+          return { ok: false, error: `mode is one of ${displayMode.MODES.join(", ")}` };
+        }
+        const result = await applyDisplayMode(String(mode));
+        return { ok: true, display: { mode: result.mode, swarm: result.swarm } };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }
@@ -8243,6 +8368,16 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           try { void speakAloud(line, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { return false; }
           return true;
         },
+        // Display mode (owner 2026-11-20): the pure layout hangs `both`/`swarm` on the
+        // avatar window's real rect, and a fairy-menu pick persists through main (the
+        // same store the dock uses) so the next boot restores it.
+        avatarBounds: () => {
+          try {
+            return avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()
+              ? avatarWindow.getBounds() : null;
+          } catch { return null; }
+        },
+        setDisplayMode: (settings) => applyDisplayMode((settings && settings.mode) || "fairy"),
       },
       runCommand: (id, arg) => runCommand(id, arg, { surface: "spirit" }),
       // The fairy wears the owner's AitherSprite: the ONE desk sign-in (the bearer
@@ -8275,7 +8410,15 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         }
         return out;
       },
+      display: displaySettingsNow(),
     });
+    // Display mode restored from avatar-dock.json (owner 2026-11-20). A `fairy` boot
+    // is today's behaviour exactly; the other modes make the avatar window agree.
+    {
+      const boot = displaySettingsNow();
+      if (boot.mode === "fairy") orbWindow.setDisplayModeState(boot);
+      else applyDisplayMode(boot.mode);
+    }
     // [audio] System speakers + microphone. onChange re-renders the tray so its
     // Mute/Unmute rows match Windows; the warm helper is late so boot is not
     // slowed (the first hotkey pays the one Add-Type compile otherwise).

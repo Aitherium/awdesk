@@ -300,6 +300,34 @@ const COMMANDS = Object.freeze([
     id: "companion.avatar", label: "Companion: full avatar", group: "avatar",
     surfaces: ["tray", "palette"], when: (ctx = {}) => ctx.companion !== "avatar",
   }),
+  // Display mode (owner 2026-11-20, with a screenshot of the VRM and the fairy
+  // cluster standing side by side): the docked avatar AND the fairy at once. The
+  // four radio rows are the toggle; the cycle row is the one keyboard chord. The
+  // state is persisted in avatar-dock.json (display-mode.cjs readStore/writeStore).
+  Object.freeze({
+    id: "display.mode.avatar", label: "Companion: avatar only", menuLabel: "Avatar only",
+    group: "avatar", surfaces: ["avatar-menu", "palette"], type: "radio",
+    checked: (ctx = {}) => ctx.displayMode === "avatar",
+  }),
+  Object.freeze({
+    id: "display.mode.fairy", label: "Companion: fairy only", menuLabel: "Fairy only",
+    group: "avatar", surfaces: ["avatar-menu", "palette"], type: "radio",
+    checked: (ctx = {}) => ctx.displayMode !== "avatar" && ctx.displayMode !== "both" && ctx.displayMode !== "swarm",
+  }),
+  Object.freeze({
+    id: "display.mode.both", label: "Companion: avatar and fairy", menuLabel: "Avatar and fairy",
+    group: "avatar", surfaces: ["avatar-menu", "palette"], type: "radio",
+    checked: (ctx = {}) => ctx.displayMode === "both",
+  }),
+  Object.freeze({
+    id: "display.mode.swarm", label: "Companion: swarm around the avatar", menuLabel: "Swarm around the avatar",
+    group: "avatar", surfaces: ["avatar-menu", "palette"], type: "radio",
+    checked: (ctx = {}) => ctx.displayMode === "swarm",
+  }),
+  Object.freeze({
+    id: "display.mode.cycle", label: "Companion display: next mode", group: "avatar",
+    surfaces: ["tray", "palette"], accel: "Ctrl+Alt+Shift+M",
+  }),
   // Visual neurons (neurons-model.cjs, owner 2026-11-18): a small graph of an agent's
   // recent steps around its fairy while it works or speaks. Off by default. A switch,
   // not a door: its row is in Settings; the palette and POST /commands/run are its

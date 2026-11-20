@@ -1706,7 +1706,8 @@ test("right click on the orb: inbox, answer window, quiet 1 h (nudges held), set
   if (orbWindow.nudging()) orbWindow.endNudge("seen", { stay: true });
   const r = await invoke("desk:orb-menu", orbWin());
   assert.deepEqual(r.items, ["inbox", "queue", "hide-this", "hide-all", "show-all", "open-desktop", "open-spaces",
-    "open-chat", "settings", "quiet-1h", "quiet-4h", "quit", "sv:menu", "more"]); // the card's fairy is in the cluster
+    "open-chat", "settings", "quiet-1h", "quiet-4h", "quit", "sv:menu",
+    "dm:avatar", "dm:fairy", "dm:both", "dm:swarm", "more"]); // the card's fairy is in the cluster
   assert.match(lastSent(menuWin(), "orb:menu").header, /1 waiting on you/);
   assert.equal((await invoke("desk:menu-pick", menuWin(), "inbox")).ok, true);
   assert.deepEqual(calls.open, [null], "the Inbox, on no card in particular");
@@ -2712,4 +2713,73 @@ test("Fairy flights (reduced motion) is a row on the fairy's own menu and it is 
   await invoke("desk:menu-pick", menuWin(), "more");
   assert.match(lastSent(menuWin(), "orb:menu").items.find((i) => i.id === "spirit:flights").label,
     /off \(reduced motion\)/, "the row says what it now does");
+});
+
+// ── display mode: the avatar AND the fairy at once (owner 2026-11-20) ───────
+
+function intersectsRect(a, b) {
+  return a.x < b.x + b.width && b.x < a.x + a.width
+    && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
+function activePins() {
+  return FakeWindow.all.filter((w) => !w.destroyed && String(w.opts.title || "").startsWith("Aither pin "));
+}
+
+test("display mode both: the cluster window is parked beside the avatar, and the orb disc steps down", () => {
+  const AV = { x: 200, y: 150, width: 400, height: 600 };
+  writeState({ visible: true, x: 2500, y: 300 });
+  const hooks = { quiet: () => "", idleMs: () => 0, fullScreen: async () => "", avatarBounds: () => AV };
+  orbWindow.__setAttentionHooks(hooks);
+  start();
+  orbWindow.setDisplayModeState({ mode: "both", swarm: 4 });
+  orbWindow.setPresence([
+    { agent: "atlas", state: "working" },
+    { agent: "lyra", state: "working" },
+  ]);
+  const swarm = orbWindow.swarmWindow();
+  assert.ok(swarm && swarm.isVisible(), "both draws the cluster");
+  assert.equal(intersectsRect(swarm.getBounds(), AV), false, "never painted over the avatar");
+  assert.equal(orbWin().isVisible(), false, "the orb disc is down in both/swarm");
+  // Back to fairy: the orb returns (it was left visible) and the cluster rides it again.
+  orbWindow.setDisplayModeState({ mode: "fairy", swarm: 4 });
+  assert.equal(orbWin().isVisible(), true);
+});
+
+test("display mode swarm: 3 separate orb windows around the avatar, distinct badges; a release returns to its slot", () => {
+  const AV = { x: 200, y: 150, width: 400, height: 600 };
+  orbWindow.__setAttentionHooks({ quiet: () => "", idleMs: () => 0, fullScreen: async () => "", avatarBounds: () => AV });
+  start();
+  orbWindow.setDisplayModeState({ mode: "swarm", swarm: 3 });
+  orbWindow.setPresence([
+    { agent: "atlas", state: "working" },
+    { agent: "lyra", state: "working" },
+    { agent: "hera", state: "working" },
+    { agent: "apollo", state: "working" },
+  ]);
+  const pins = activePins();
+  assert.equal(pins.length, 3, "N=3 makes three orbs, not the whole roster");
+  const agents = pins.map((w) => w.opts.title.slice("Aither pin ".length));
+  assert.equal(new Set(agents).size, 3, "each orb is its own agent");
+  for (const w of pins) {
+    assert.equal(w.getBounds().width, 44);
+    assert.equal(intersectsRect(w.getBounds(), AV), false, "no orb sits on the avatar");
+    const mate = lastSent(w, "orb:pin-mate").mate;
+    assert.equal(mate.agent, w.opts.title.slice("Aither pin ".length), "the orb carries its own badge (the mate row)");
+  }
+  // A drag released anywhere puts it back on its slot -- never home, never a stray pin.
+  const atlas = pins.find((w) => w.opts.title === "Aither pin atlas");
+  const slot = atlas.getBounds();
+  cursor = { x: 1700, y: 900 };
+  orbWindow.swarmDrag("start", "atlas", "pin");
+  cursor = { x: 1750, y: 950 };
+  const end = orbWindow.swarmDrag("end", "atlas", "pin");
+  assert.equal(end.rejoined, true);
+  assert.equal(end.releasedTo.to, "slot");
+  assert.deepEqual(atlas.getBounds(), slot, "back on its slot, not where it was dropped");
+  // The one-cluster rule in avatar mode: no cluster window, no orbs, no orb disc.
+  orbWindow.setDisplayModeState({ mode: "avatar" });
+  assert.equal(activePins().length, 0, "avatar mode owns no fairies");
+  const ring = orbWindow.swarmWindow();
+  assert.ok(!ring || !ring.isVisible(), "no cluster window in avatar mode");
 });
