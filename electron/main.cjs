@@ -1093,9 +1093,12 @@ function showOverlay({ focus = false } = {}) {
   // SEPARATE AVATAR WHEN THE FAIRY IS SUPPOSED TO TURN INTO THAT AVATAR"). The body
   // is up now, so the fairy stands down -- never both, whatever raised the body (a
   // voice session, a room stage, the tray's old Show avatar path). A grow
-  // (expandToAvatar) already does this itself; docking in the browser is the one
-  // declared exception (owner: docking is how you get a separate surface).
-  if (!avatarGrowing && !(avatarDock && avatarDock.isDocked())) {
+  // (expandToAvatar) already does this itself. Docking is NOT an exception: it is
+  // where the body lives, and a docked desk that kept the fairy floating beside the
+  // rail was the same bug wearing a different hat (owner's avatar-dock.json is
+  // `docked:true`). The ONLY two-surface modes are the owner's `both`/`swarm`, and
+  // those never come through here (showBodyDirect).
+  if (!avatarGrowing) {
     try { orbWindow.standDownForAvatar(); } catch { /* the fairy is not up */ }
   }
   if (tray) refreshTrayMenu();
@@ -1119,11 +1122,9 @@ async function hideOverlay({ byOwner = true } = {}) {
     hyprlandLastPosition = { x: placement.x, y: placement.y };
   }
   avatarWindow?.hide();
-  // ONE surface: the body left, so the fairy comes back where she rests -- unless
-  // the body was docked (it is the browser's, and the fairy kept her place).
-  if (!(avatarDock && avatarDock.isDocked())) {
-    try { orbWindow.returnFromAvatar(); } catch { /* the fairy is not up */ }
-  }
+  // ONE surface: the body left, so the fairy comes back where she rests -- docked or
+  // not (she stood down for a docked body exactly like a floating one).
+  try { orbWindow.returnFromAvatar(); } catch { /* the fairy is not up */ }
   if (tray) refreshTrayMenu();
 }
 
@@ -1140,7 +1141,6 @@ function companionSurfaceFacts() {
     fairyWanted,
     expanded,
     avatarVisible: Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()),
-    docked: Boolean(avatarDock && avatarDock.isDocked()),
   };
 }
 
@@ -1157,13 +1157,6 @@ async function waitForAvatarGrow() {
 async function toggleOverlay() {
   await waitForAvatarGrow();
   const facts = companionSurfaceFacts();
-  if (facts.docked) {
-    // Docking is the separate-surface mode: the toggle is the browser body's own
-    // show/hide, exactly as it was before the one-surface plan.
-    if (facts.avatarVisible) await hideOverlay();
-    else await showOverlay({ focus: true });
-    return { ok: true, visible: !facts.avatarVisible };
-  }
   // `both`/`swarm` are the owner's declared two-surface modes (2026-11-20): the
   // toggle is then the BODY's own show/hide and the fairy cluster keeps its place.
   // showOverlay would run the one-surface stand-down, so the body is raised directly.
@@ -2395,7 +2388,7 @@ async function setCompanionMode(mode) {
     }
   } else if (plan.collapse) {
     try { await orbWindow.collapseToFairy(); } catch { /* the fairy comes back on the next call */ }
-  } else if (!facts.docked && avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) {
+  } else if (avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) {
     // A mode switch is not the owner hiding the body for good: do not write the
     // persistent avatarHidden that would keep "Companion: full avatar" from working.
     await hideOverlay({ byOwner: false });
@@ -5059,10 +5052,23 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "display.mode.cycle": return void applyDisplayMode(displayMode.cycle(displaySettingsNow().mode));
     case "avatar.dock": {
       // Docking opens the browser it docks into; floating leaves the browser alone.
-      if (avatarDock.isDocked()) return void avatarDock.undock();
+      // Either way the body ends up on screen, so the fairy stands down: docking is
+      // WHERE the body lives, not a second companion (owner's one-surface rule).
+      const finishDockMove = () => {
+        const dmode = displaySettingsNow().mode;
+        if (dmode === "both" || dmode === "swarm") return;
+        // Only when the body really is on screen: docking into a browser whose rail
+        // slot is not ready yet must not stand the fairy down with nothing to show.
+        if (!avatarWindow || avatarWindow.isDestroyed() || !avatarWindow.isVisible()) return;
+        try { if (!orbWindow.expanded()) orbWindow.standDownForAvatar(); } catch { /* not up */ }
+        if (tray) refreshTrayMenu();
+      };
+      if (avatarDock.isDocked()) { void avatarDock.undock(); finishDockMove(); return; }
       createWindow();
       browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
-      return void avatarDock.dock();
+      void avatarDock.dock();
+      finishDockMove();
+      return;
     }
     case "voice.talk": return void toggleListening();
     case "window.size.bigger": return void growWindow();
@@ -5993,6 +5999,14 @@ avatarDock = createAvatarDock({
   onChange: () => {
     applyDockedCss();
     browserWindow.refreshShell();
+    // Dedocking/docking re-parents a visible body: the fairy must still be the only
+    // other thing on the desk for that instant (owner's one-surface rule).
+    if (!avatarGrowing && avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) {
+      const dmode = displaySettingsNow().mode;
+      if (dmode !== "both" && dmode !== "swarm" && !orbWindow.expanded()) {
+        try { orbWindow.standDownForAvatar(); } catch { /* the fairy is not up */ }
+      }
+    }
     if (tray) refreshTrayMenu();
   },
 });

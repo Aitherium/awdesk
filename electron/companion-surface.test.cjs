@@ -4,7 +4,8 @@
  * The owner's bug (2026-11-20): the tray's "Show avatar" raised the body while the
  * fairy stayed floating -- TWO surfaces. The plan is the whole fix, so every
  * combination that can happen on a desk is asserted here: after applying a plan
- * at most ONE companion surface is visible (docking is the declared exception).
+ * at most ONE companion surface is visible. Docking is not an exception -- it is
+ * where the body lives -- so a docked desk is asserted the same way.
  */
 
 const test = require("node:test");
@@ -67,24 +68,27 @@ test("a fairy the owner never showed is not resurrected by hiding the body", () 
   assert.deepEqual(visibleAfter(p), []);
 });
 
-test("docked in the browser is the one declared separate surface: nothing is moved", () => {
+test("a docked body is still ONE companion: the plan stands the fairy down like any body", () => {
+  // The owner's avatar-dock.json says `docked:true`. Docking is WHERE the body lives,
+  // not a licence for a second companion, so the plan must not special-case it; the
+  // old early return kept the fairy floating beside the browser rail.
   const p = plan({ want: "avatar", docked: true, fairyVisible: true, fairyWanted: true, avatarVisible: true });
   assert.equal(p.avatar, "keep");
-  assert.equal(p.fairy, "keep");
-  assert.equal(p.collapse, false);
-  assert.equal(p.why, "the body is docked in the browser");
+  assert.equal(p.fairy, "hide");
+  assert.deepEqual(visibleAfter(p), ["avatar"]);
 });
 
-test("every non-docked plan leaves at most ONE surface visible", () => {
+test("every plan leaves at most ONE surface visible -- docked or not", () => {
   const bools = [false, true];
   for (const want of ["avatar", "fairy", "toggle", "nonsense"]) {
     for (const expanded of bools) for (const fairyVisible of bools)
-      for (const fairyWanted of bools) for (const avatarVisible of bools) {
-        const facts = { expanded, fairyVisible, fairyWanted, avatarVisible };
-        const p = plan({ want, ...facts });
-        const shown = p.visible.filter(Boolean);
-        assert.ok(shown.length <= 1, `${want} ${JSON.stringify(facts)} left ${shown.join("+")}`);
-      }
+      for (const fairyWanted of bools) for (const avatarVisible of bools)
+        for (const docked of bools) {
+          const facts = { expanded, fairyVisible, fairyWanted, avatarVisible, docked };
+          const p = plan({ want, ...facts });
+          const shown = p.visible.filter(Boolean);
+          assert.ok(shown.length <= 1, `${want} ${JSON.stringify(facts)} left ${shown.join("+")}`);
+        }
   }
 });
 
