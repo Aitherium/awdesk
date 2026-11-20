@@ -1,6 +1,6 @@
 {
   "name": "awdesk",
-  "version": "0.1.35",
+  "version": "0.1.36",
   "description": "Aither: your Aitherium agent, browser and workspace on the desktop.",
   "author": {
     "name": "Aitherium",
@@ -46,6 +46,7 @@
     "native:test": "node scripts/test-native.cjs",
     "audit:production": "npm audit --omit=dev --audit-level=high",
     "check": "npm run lint && npm test && npm run assets:check && npm run audit:production && npm run build",
+    "soak:memory": "node scripts/mem-soak.cjs",
     "dist:linux": "npm run build && node scripts/build-linux.cjs",
     "dist:appimage": "npm run build && electron-builder --linux AppImage --publish never",
     "dist:windows": "npm run native:build && npm run native:test && npm run build && electron-builder --win nsis --publish never",

@@ -72,10 +72,40 @@ test("hard twice in a row: reclaim hard, then restart Desk -- never wait for Tas
 });
 
 test("a runaway (main +400 MB inside a minute) restarts without waiting for the hard line", () => {
-  const { calls, step } = harness([[200], [500], [800]]);
+  // The original leak grew ~5 GB/min from an already-big desk: the floor is crossed
+  // before the growth is counted, so this is still a runaway.
+  const { calls, step } = harness([[wd.RUNAWAY_FLOOR_MB], [wd.RUNAWAY_FLOOR_MB + 450]]);
   step(15_000);
   step(15_000);
-  step(15_000);
+  assert.ok(calls.some((c) => c[0] === "restart"), JSON.stringify(calls));
+});
+
+test("a start-up/bulk ramp from a small main process is NOT a runaway (2026-11-20)", () => {
+  // Measured on 0.1.35: the avatar-library seed carried main 150 -> 655 MB in a pass.
+  // That restarted the desk twice and then (restart cap) quit it. It is not the leak.
+  const { calls, step } = harness([[150], [420], [650], [660]]);
+  for (let k = 0; k < 4; k += 1) step(15_000);
+  assert.ok(!calls.some((c) => c[0] === "restart" || c[0] === "quit"), JSON.stringify(calls));
+});
+
+test("hold: deliberate bulk work reclaims but never restarts or quits", () => {
+  const hard = wd.BUDGETS.customer.mainHardMb + 500;
+  const { calls, step } = harness([[hard], [hard], [hard]], { hold: () => "avatar library seed" });
+  step();
+  step();
+  step();
+  assert.ok(!calls.some((c) => c[0] === "restart" || c[0] === "quit"), JSON.stringify(calls));
+  assert.ok(calls.some((c) => c[0] === "reclaim"), "still reclaims while held");
+});
+
+test("hold is released: the same desk is restarted once the bulk work ends", () => {
+  const hard = wd.BUDGETS.customer.mainHardMb + 500;
+  let busy = true;
+  const { calls, step } = harness([[hard], [hard], [hard]], { hold: () => (busy ? "seed" : false) });
+  step();
+  step();
+  busy = false;
+  step();
   assert.ok(calls.some((c) => c[0] === "restart"), JSON.stringify(calls));
 });
 

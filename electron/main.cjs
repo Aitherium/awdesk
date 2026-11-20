@@ -929,6 +929,9 @@ let tray = null;
 // 2026-08-31 (owner decision) — the tray badge, deck and Discord fanout carry
 // the push; DTOAST001 gates the notify.py twins against Windows toasts.
 let openDecisions = [];
+// True while the avatar-library seed runs (avatar-seed-runner.cjs, its own utility
+// process). The memory guard must not read that pass's deliberate I/O as a leak.
+let avatarSeedActive = false;
 // The asks only the owner can unblock (credential / blocked / blocking), in rank
 // order, snoozed ones removed -- the tray's row 0, the red key, the chip and the
 // voice lead (needs-you.cjs). Recomputed with every watcher change.
@@ -3293,8 +3296,14 @@ function enforceActiveCharacterRating() {
     const standIn = g.standIn && listCharacters().includes(g.standIn) && !isHidden(g.standIn) ? g.standIn : null;
     if (!swap.from) writeAudienceSwap({ from: active, at: new Date().toISOString() });
     if (!standIn) {
-      debugLog("audience: the resident body is not for this audience and no stand-in is chosen; hiding the body");
-      void hideOverlay({ byOwner: false });   // automatic: never the owner's sticky hide
+      // Only act when the body is actually ON SCREEN. refreshTrayMenu() calls THIS
+      // function and hideOverlay() calls refreshTrayMenu(), so an unconditional hide
+      // was an infinite async loop: measured 2026-11-20, 17 "hiding the body" log lines
+      // a second, main +60 MB/min, the desk gone within minutes with no crash report.
+      if (avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) {
+        debugLog("audience: the resident body is not for this audience and no stand-in is chosen; hiding the body");
+        void hideOverlay({ byOwner: false });   // automatic: never the owner's sticky hide
+      }
       return true;
     }
     debugLog("audience: swapping the resident to the stand-in", standIn);
@@ -7485,6 +7494,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       require("./resource-watchdog.cjs").startResourceWatchdog({
         app,
         posture: deskPostureState,
+        // Deliberate bulk work (the avatar library seed, in its own utility process) is
+        // not a leak: while it runs the guard reclaims but never restarts the desk.
+        hold: () => (avatarSeedActive ? "avatar library seed" : false),
         reclaim: ({ pressure }) => {
           try { browserWindow.discardHiddenTabs({ pressure }); } catch { /* no browser */ }
           // Under pressure every page session gives up its cache, the agent's own too
@@ -7525,7 +7537,24 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // Which avatar each agent wears, from the person's catalog (after the kid-desk return
     // above: a child's desk never pulls an adult library).
     startAitherBody();
-    avatarCatalogSync.startCatalogSync({ log: debugLog });
+    avatarCatalogSync.startCatalogSync({
+      log: debugLog,
+      // The whole pass (catalog pull downloads + library seed) does bulk I/O with big
+      // Buffers: the desk is doing DELIBERATE work, so the memory guard must not read
+      // it as a leak (it reclaims, never restarts).
+      onWork: (active) => { avatarSeedActive = Boolean(active); },
+      // The library seed walks the whole roster, so it runs in a utility process: its
+      // 2 GB of model reads never become the desk's own heap (2026-11-20: main
+      // 150 -> 655 MB in one pass, then the desk vanished).
+      seedRunner: (() => {
+        const runner = require("./avatar-seed-runner.cjs").createSeedRunner({
+          fork: (script, args, options) => require("electron").utilityProcess.fork(script, args, options),
+          scriptPath: path.join(__dirname, "avatar-library-seed-worker.cjs"),
+          log: debugLog,
+        });
+        return () => runner.run();
+      })(),
+    });
     // The rogues gallery: share/stream = safe mode, VRoid Studio exports, his rotation sets.
     startGalleryWatches();
     // Unpackaged runs (npx electron .) have no Start Menu shortcut registering
@@ -9039,6 +9068,22 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         // The RENDERER's frame rate (S1): what the stage actually drew, not what main saw.
         render: { fps: renderStats.fps, p95GapMs: renderStats.p95GapMs, at: renderStats.at || null },
       }),
+      // The resource watchdog's own numbers, for soak/perf scripts (`npm run soak:memory`).
+      memoryProvider: () => {
+        const list = app.getAppMetrics();
+        const mb = (m) => Math.round(((m && m.memory && (Number(m.memory.privateBytes) > 0
+          ? Number(m.memory.privateBytes) : Number(m.memory.workingSetSize))) || 0) / 1024);
+        const main = list.find((m) => m && m.type === "Browser");
+        return {
+          mainMb: main ? mb(main) : 0,
+          totalMb: list.reduce((sum, m) => sum + mb(m), 0),
+          processes: list.length,
+          // Per-process detail: the watchdog's numbers, by pid and type. A utility
+          // process (the avatar-library seed) is visible here as its own row.
+          list: list.map((m) => ({ pid: m.pid, type: m.type, mb: mb(m) })),
+          at: Date.now(),
+        };
+      },
       // POST /roster/capture (bearer): full-body frames for the rater. GET: progress.
       rosterCaptureHandler: (req) => (req.method === "GET" ? captureRosterStatus() : captureRoster(req)),
       avatarBoundsProvider: () =>
