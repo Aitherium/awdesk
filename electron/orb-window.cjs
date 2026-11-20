@@ -49,6 +49,7 @@ const spriteCore = require("./sprite-core.cjs");
 const awCli = require("./aw-cli.cjs");
 const selectionReader = require("./selection-reader.cjs");
 const fairyAttention = require("./fairy-attention.cjs");
+const { createAttentionLog } = require("./attention-log.cjs");
 const agentFairy = require("./agent-fairy.cjs");
 const fairyMenu = require("./fairy-menu.cjs");
 const freeSpace = require("./free-space.cjs");
@@ -3303,13 +3304,27 @@ function attentionFile() {
   return path.join(app.getPath("userData"), "fairy-attention.json");
 }
 
+/** The always-on nudge ledger (attention-log.cjs): next to the memory file. */
+function attentionLogFile() {
+  if (process.env.DESK_FAIRY_ATTENTION_LOG) return String(process.env.DESK_FAIRY_ATTENTION_LOG);
+  return path.join(path.dirname(attentionFile()), "fairy-attention.log");
+}
+const attentionLog = createAttentionLog({ file: attentionLogFile });
+/** The last judgement, for GET /attention: {at, act, reason, card, level}. */
+let attentionLastPlan = null;
+/** The last full-screen verdict the probe gave a due nudge ("" = none). */
+let attentionFullScreen = "";
+
 function loadAttention() {
   try {
     const raw = JSON.parse(fs.readFileSync(attentionFile(), "utf8"));
-    attentionMems = fairyAttention.sanitizeMems(raw && raw.cards);
+    const loaded = fairyAttention.sanitizeMems(raw && raw.cards);
+    // A nudge the desk quit under was never answered: it counts as ignored, once.
+    attentionMems = fairyAttention.settleOpenNudges(loaded);
     attentionLastAt = Number(raw && raw.lastNudgeAt) || 0;
     attentionVoiceAt = Number(raw && raw.lastVoiceAt) || 0;
     attentionOlderAt = Number(raw && raw.olderMentionedAt) || 0;
+    if (JSON.stringify(loaded) !== JSON.stringify(attentionMems)) saveAttention();
   } catch {
     attentionMems = {}; // unreadable memory = every card starts at the bottom of the ladder
   }
@@ -3362,9 +3377,12 @@ function setAttentionCards(cards, allOpen = null) {
   attentionCards = Array.isArray(cards) ? cards.filter((c) => c && typeof c.id === "string") : [];
   attentionOpen = Array.isArray(allOpen) ? allOpen : null;
   const ids = new Set(attentionCards.map((c) => c.id));
-  const before = Object.keys(attentionMems).length;
-  attentionMems = fairyAttention.pruneMems(attentionMems, ids);
-  if (Object.keys(attentionMems).length !== before) saveAttention();
+  // A card missing from this feed keeps its memory for a grace (pruneMems): main's
+  // first feed at start-up is EMPTY, and pruning it at once reset every card's ladder
+  // on each desk restart (2026-11-19, d-ennp).
+  const before = JSON.stringify(attentionMems);
+  attentionMems = fairyAttention.pruneMems(attentionMems, ids, { nowMs: Date.now() });
+  if (JSON.stringify(attentionMems) !== before) saveAttention();
   // Answered somewhere else (the Inbox, Discord, the phone): the whisper goes.
   if (nudging && !ids.has(nudging.decision.card.id)) endNudge("answered");
   surfaceForCards();
@@ -3764,6 +3782,45 @@ async function fullScreenNow() {
   }
 }
 
+/**
+ * Why the fairy is or is not nagging, for GET /attention on the desk bridge: every fed
+ * card's level, nudges, last nudge, next due time and hold reason
+ * (fairyAttention.attentionReport), the quiet reason main gives, the last judgement,
+ * the probe's last full-screen verdict and where the nudge ledger is. Read-only: it
+ * runs no probe and changes no memory.
+ */
+function attentionState() {
+  const nowMs = Date.now();
+  const idleMs = Math.max(0, Number(hookValue("idleMs")) || 0);
+  const muted = Number(state.muteUntil) > nowMs ? "nudges muted from the fairy's menu" : "";
+  const quiet = !state.visible ? "the fairy is hidden" : muted || String(hookValue("quiet") || "");
+  const busy = Boolean(nudging || flight || tripBusy || dragging || inflight || drafting || regionWait
+    || (alive(bubbleWindow) && bubbleWindow.isVisible()));
+  const mutedAgents = (state.swarmView && state.swarmView.muted) || [];
+  const report = fairyAttention.attentionReport(attentionCards, attentionMems, {
+    nowMs, lastNudgeAt: attentionLastAt, lastVoiceAt: attentionVoiceAt, olderMentionedAt: attentionOlderAt,
+    quiet, idleMs, busy, returned: nowMs < attentionReturnUntil,
+  });
+  for (const row of report.cards) {
+    const card = attentionCards.find((c) => c.id === row.id);
+    if (card && mutedAgents.length && mutedAgents.includes(agentFairy.cardAgent(card))) {
+      row.reason = `agent muted from the fairy menu${row.reason ? `; ${row.reason}` : ""}`;
+    }
+  }
+  return {
+    ok: true,
+    ...report,
+    running: Boolean(attentionTimer && !quitting),
+    busy,
+    idleMs,
+    fullScreen: attentionFullScreen,
+    lastNudgeAt: attentionLastAt || null,
+    lastPlan: attentionLastPlan,
+    nudging: nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null,
+    log: attentionLog.file(),
+  };
+}
+
 /** One judgement: maybe start a nudge. Returns the plan (for tests and the bridge). */
 async function attentionTick() {
   if (attentionTicking || quitting || !alive(orbWindow)) return { act: "none", reason: "not ready" };
@@ -3803,7 +3860,15 @@ async function attentionTick() {
     }
     if (decision.act === "nudge") {
       const full = await fullScreenNow();
+      attentionFullScreen = full;
       if (full) decision = { act: "none", reason: `held while quiet: ${full}` };
+    }
+    attentionLastPlan = {
+      at: nowMs, act: decision.act, reason: decision.reason || "",
+      card: decision.card ? decision.card.id : null, level: decision.level == null ? null : decision.level,
+    };
+    if (decision.act !== "nudge" && attentionCards.length) {
+      attentionLog.hold(decision.reason || "no reason given", { cards: attentionCards.length });
     }
     if (decision.act === "nudge" && !nudging && !quitting) {
       // Where the flutter lands is judged against what is clickable right now.
@@ -3925,7 +3990,14 @@ function startNudge(decision, { peek = false } = {}) {
   const nowMs = Date.now();
   const id = decision.card.id;
   if (!peek) {
-    attentionMems[id] = fairyAttention.recordShown(attentionMems[id] || {}, nowMs);
+    // openAt: the nudge is up. Cleared when it ends; still set at the next load = the desk
+    // quit under it, and settleOpenNudges counts it as ignored.
+    attentionMems[id] = { ...fairyAttention.recordShown(attentionMems[id] || {}, nowMs), openAt: nowMs };
+    attentionLog.nudge({
+      id, level: decision.level, importance: decision.importance, arrival: Boolean(decision.arrival),
+      returned: Boolean(decision.returned), voice: Boolean(decision.voice), nudges: attentionMems[id].nudges,
+      ignored: Number(attentionMems[id].ignored) || 0, more: Number(decision.more) || 0,
+    });
     attentionLastAt = nowMs;
     if (decision.returned) attentionReturnUntil = 0;
   }
@@ -4009,21 +4081,36 @@ function endNudge(outcome = "timeout", { stay = false } = {}) {
   if (n.flutter) clearInterval(n.flutter);
   const id = n.decision.card.id;
   const nowMs = Date.now();
-  const mem = attentionMems[id] || {};
+  const mem = { ...(attentionMems[id] || {}) };
+  delete mem.openAt; // the nudge is over, whatever its outcome
+  if (attentionMems[id]) attentionMems[id] = mem;
   if (n.peek && (outcome === "timeout" || outcome === "peek")) {
     // A peek was the owner's hover, not a nudge: nothing to learn from it.
   } else if (outcome === "timeout") {
     attentionMems[id] = fairyAttention.recordIgnored(mem, { importance: n.decision.importance, nowMs, climbs: n.decision.climbs });
-  } else if (outcome === "acted" || outcome === "seen") {
+  } else if (outcome === "acted") {
     attentionMems[id] = fairyAttention.recordActed(mem);
+  } else if (outcome === "seen") {
+    // Seen is not answered: the ladder keeps its place (2026-11-19).
+    attentionMems[id] = fairyAttention.recordSeen(mem);
   } else if (outcome === "later") {
     attentionMems[id] = fairyAttention.recordLater(mem, nowMs);
+  } else if (outcome === "close") {
+    // The whisper's X: stopped work comes back in 20 min, anything else in an hour.
+    attentionMems[id] = fairyAttention.recordClose(mem, nowMs, { card: n.decision.card });
   } else if (outcome === "mute") {
     attentionMems[id] = fairyAttention.recordMute(mem);
   } else if (outcome === "keep") {
     attentionMems[id] = fairyAttention.recordKeep(fairyAttention.recordActed(mem));
   }
   saveAttention();
+  if (!n.peek) {
+    const after = attentionMems[id] || {};
+    attentionLog.outcome({
+      id, outcome, afterMs: nowMs - n.startedAt, level: n.decision.level,
+      ignored: Number(after.ignored) || 0, snoozeUntil: Number(after.snoozeUntil) > nowMs ? new Date(after.snoozeUntil).toISOString() : null,
+    });
+  }
   // Click-through at once; the page fades and unmounts the card; the window hides
   // when the fade is done (hiding first froze the fade's last frame on screen).
   if (alive(nudgeWindow)) {
@@ -4117,6 +4204,10 @@ async function nudgeAct(action, key) {
   }
   if (what === "later" || what === "dismiss") {
     endNudge("later");
+    return { ok: true };
+  }
+  if (what === "close") {
+    endNudge("close");
     return { ok: true };
   }
   // "Open in AitherBrowser" under the card's answers: its page, AitherBrowser first.
@@ -5396,7 +5487,7 @@ module.exports = {
   ORB_SIZE, BUBBLE_SIZE, TICK_MS, REGION_WAIT_MS,
   startOrb, stopOrb, run, hoverGuard: () => hoverGuardImpl, ensureIpc, showOrb, hideOrb, toggleOrb, openBubble, setAttention,
   // attention: the fairy carries the cards (fairy-attention.cjs)
-  NUDGE_SIZE, setAttentionCards, attentionTick, ownsAttention, carriesCards, nudgeAct, endNudge,
+  NUDGE_SIZE, setAttentionCards, attentionTick, attentionState, ownsAttention, carriesCards, nudgeAct, endNudge,
   nudgeCard, chatAboutCard, setSounds,
   // the agent fairy (agent-fairy.cjs): whose colours, which companions
   setSpeaker, peekCard, openFairyCard, fairyMenuFor, orbMenu, menuPick, showTip, hideTip,
@@ -5458,6 +5549,8 @@ module.exports = {
     attentionVoiceAt = 0;
     attentionReturnUntil = 0;
     attentionAway = false;
+    attentionLastPlan = null;
+    attentionFullScreen = "";
     attentionHooks = {};
     companionListeners.clear();
     fairySpeaker = null;

@@ -86,6 +86,16 @@ const DEFAULTS = Object.freeze({
   restMs: 4 * HOUR,
   /** "Later" puts a card off this long. */
   laterMs: HOUR,
+  /** The whisper's close (X) on a card a session is STOPPED on puts it off only this
+   *  long. Measured 2026-11-19: d-ennp (a blocked permission grant) was closed 2.1 s
+   *  after its sixth nudge appeared and the close was an hour's "Later", so the card a
+   *  session was waiting on went silent for 60 min. The explicit "Later" button keeps
+   *  its hour; a reflexive close does not buy one on stopped work. */
+  closeStopsWorkMs: 20 * MIN,
+  /** A card missing from a feed keeps its memory this long. main feeds the fairy an
+   *  EMPTY queue once at start-up (before the first store read lands), and a failed
+   *  read is empty too: pruning at once reset every card's ladder on each restart. */
+  pruneGraceMs: 30 * MIN,
   /** Ignored nudges per level step: one. The second nudge is already a step up. */
   escalateEvery: 1,
   /** A spoken repeat no more often than this, across all cards. */
@@ -515,6 +525,73 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
   };
 }
 
+/**
+ * Why the fairy is or is not nagging, per card: what GET /attention on the desk bridge
+ * answers (2026-11-19: d-ennp sat 2 h with no visible reason). Same inputs as `plan`.
+ * Returns {nowMs, quiet, plan:{act, reason, card}, cards:[{id, title, kind, urgency,
+ * importance, level, nudges, ignored, lastNudgeAt, nextDueAt, snoozeUntil, muted, keep,
+ * stopsWork, reason}]}. `nextDueAt` is when the card may next be nudged by its own
+ * interval, its snooze and the global gap (null = badge only); `reason` is "" when it is
+ * due and nothing holds it. Times are epoch ms.
+ */
+function attentionReport(cards, mems, ctx = {}, cfg = DEFAULTS) {
+  const nowMs = Number(ctx.nowMs) || Date.now();
+  const list = Array.isArray(cards) ? cards.filter((c) => c && c.id) : [];
+  const memory = mems && typeof mems === "object" ? mems : {};
+  const decision = plan(list, memory, ctx, cfg);
+  const globalHold = ctx.quiet ? `held while quiet: ${ctx.quiet}`
+    : ctx.busy ? "the fairy is busy"
+      : (Number(ctx.idleMs) || 0) >= cfg.idleHoldMs ? "the owner is away" : "";
+  const out = list.map((card) => {
+    const mem = memory[card.id] || {};
+    const arrived = isArrival(card, mem, nowMs, cfg);
+    const base = importance(card, nowMs, mem, cfg);
+    const imp = arrived ? Math.max(2, base) : base;
+    const louder = climbs(card, nowMs, mem, cfg);
+    const level = levelFor(imp, mem, cfg, { climbs: louder });
+    const last = Number(mem.lastNudgeAt) || 0;
+    const snooze = Number(mem.snoozeUntil) || 0;
+    let nextDueAt = null;
+    let reason = "";
+    if (imp <= 0) {
+      reason = mem.muted ? "Stop nudging: badge only"
+        : isStale(card, nowMs, cfg) ? "older than 48 h: badge only" : "a report or low: badge only";
+    } else {
+      const own = last ? last + (cfg.intervalMs[level] || cfg.intervalMs[1]) : 0;
+      const gap = arrived && imp >= 2 ? cfg.arrivalGapMs : (cfg.gapMs[level] || cfg.gapMs[1]);
+      const pace = (Number(ctx.lastNudgeAt) || 0) + gap;
+      nextDueAt = Math.max(nowMs, own, snooze > nowMs ? snooze : 0, pace);
+      if (snooze > nowMs) reason = `put off (Later / close x${Number(mem.laterCount) || 1}) until ${new Date(snooze).toISOString()}`;
+      else if (own > nowMs) reason = `re-nudge interval for level ${level}`;
+      else if (globalHold) reason = globalHold;
+      else if (pace > nowMs) reason = "pacing: a nudge just ran";
+    }
+    return {
+      id: card.id,
+      title: String(card.title || "").replace(/^Claude Code needs you:\s*/i, "").slice(0, 120),
+      kind: lower(card.kind) || "decision",
+      urgency: lower(card.urgency) || "normal",
+      importance: imp,
+      level,
+      nudges: Number(mem.nudges) || 0,
+      ignored: Number(mem.ignored) || 0,
+      lastNudgeAt: last || null,
+      nextDueAt,
+      snoozeUntil: snooze > nowMs ? snooze : null,
+      muted: mem.muted === true,
+      keep: mem.keep === true,
+      stopsWork: stopsWork(card, nowMs, mem, cfg),
+      reason,
+    };
+  });
+  return {
+    nowMs,
+    quiet: String(ctx.quiet || ""),
+    plan: { act: decision.act, reason: decision.reason || "", card: decision.card ? decision.card.id : null },
+    cards: out,
+  };
+}
+
 // ── per-card memory (pure updates; the caller persists the map) ─────────────
 
 function recordShown(mem = {}, nowMs = Date.now()) {
@@ -531,12 +608,52 @@ function recordIgnored(mem = {}, { importance: imp = 2, nowMs = Date.now(), clim
   }
   return { ...mem, ignored };
 }
+/**
+ * The owner SAW the fairy (clicked the orb to ask something else, dragged it, opened
+ * the list, chatted about the card) but did not answer this card: the ladder keeps its
+ * place. Measured 2026-11-19: "seen" went through recordActed and reset `ignored` to 0,
+ * so a card the owner kept brushing past never climbed (d-ennp: 6 nudges, ignored 0).
+ */
+function recordSeen(mem = {}) {
+  return { ...mem };
+}
+/**
+ * Load-time settlement: a nudge that was still up when the desk quit (`openAt`, set when
+ * a nudge starts and cleared when it ends) was never answered, so it counts as ignored,
+ * once. The desk restarted at 06:47 and 07:01 on 2026-11-19 and those nudges were lost.
+ */
+function settleOpenNudges(mems) {
+  const out = {};
+  for (const [id, mem] of Object.entries(mems && typeof mems === "object" ? mems : {})) {
+    if (!mem || typeof mem !== "object") continue;
+    if (!mem.openAt) { out[id] = mem; continue; }
+    const rest = { ...mem };
+    delete rest.openAt;
+    out[id] = { ...rest, ignored: (Number(rest.ignored) || 0) + 1 };
+  }
+  return out;
+}
 /** Opened or answered: the ladder starts over (an answered card leaves the queue anyway). */
 function recordActed(mem = {}) {
   return { ...mem, ignored: 0 };
 }
 function recordLater(mem = {}, nowMs = Date.now(), cfg = DEFAULTS) {
   return { ...mem, snoozeUntil: nowMs + cfg.laterMs, laterCount: (Number(mem.laterCount) || 0) + 1 };
+}
+/**
+ * A card a session is STOPPED on (blocked / blocking, not a report, still fresh enough
+ * to climb). Its silence costs running work, so a close never buys it a full hour.
+ */
+function stopsWork(card, nowMs = Date.now(), mem = {}, cfg = DEFAULTS) {
+  if (!card || typeof card !== "object") return false;
+  if (!(card.blocking === true || lower(card.kind) === "blocked")) return false;
+  return !ackOnly(card) && climbs(card, nowMs, mem, cfg);
+}
+/** The whisper's X: "not this second". A card that stops work comes back in
+ *  `closeStopsWorkMs` (louder, like Later); any other card is put off like Later. */
+function recordClose(mem = {}, nowMs = Date.now(), { card = null } = {}, cfg = DEFAULTS) {
+  const ms = stopsWork(card, nowMs, mem, cfg) ? cfg.closeStopsWorkMs : cfg.laterMs;
+  return { ...mem, snoozeUntil: nowMs + ms, laterCount: (Number(mem.laterCount) || 0) + 1 };
 }
 function recordMute(mem = {}) {
   return { ...mem, muted: true, keep: false };
@@ -545,12 +662,32 @@ function recordKeep(mem = {}) {
   return { ...mem, keep: true, muted: false, snoozeUntil: 0 };
 }
 
-/** Drop memory for cards that are no longer open, so the file cannot grow forever. */
-function pruneMems(mems, openIds) {
+/**
+ * Drop memory for cards that are no longer open, so the file cannot grow forever.
+ * With `nowMs`, a card missing from this feed is kept (stamped `goneAt`) until it has
+ * been gone `graceMs`: the start-up feed is empty before the first store read, and a
+ * restart must RESUME the ladder, not reset it (2026-11-19). A card that is back loses
+ * its `goneAt`. Without `nowMs`, the old immediate prune.
+ */
+function pruneMems(mems, openIds, { nowMs = null, graceMs = DEFAULTS.pruneGraceMs } = {}) {
   const keep = openIds instanceof Set ? openIds : new Set(openIds || []);
+  const grace = Number.isFinite(Number(nowMs)) && nowMs != null;
   const out = {};
   for (const [id, mem] of Object.entries(mems && typeof mems === "object" ? mems : {})) {
-    if (keep.has(id) && mem && typeof mem === "object") out[id] = mem;
+    if (!mem || typeof mem !== "object") continue;
+    if (keep.has(id)) {
+      if (mem.goneAt) {
+        const rest = { ...mem };
+        delete rest.goneAt;
+        out[id] = rest;
+      } else {
+        out[id] = mem;
+      }
+      continue;
+    }
+    if (!grace) continue;
+    const goneAt = Number(mem.goneAt) || Number(nowMs);
+    if (Number(nowMs) - goneAt < graceMs) out[id] = { ...mem, goneAt };
   }
   return out;
 }
@@ -562,7 +699,7 @@ function sanitizeMems(raw) {
   for (const [id, mem] of Object.entries(raw)) {
     if (!/^d-[a-z0-9]{2,16}$/i.test(id) || !mem || typeof mem !== "object") continue;
     const clean = {};
-    for (const key of ["lastNudgeAt", "nudges", "ignored", "snoozeUntil", "laterCount"]) {
+    for (const key of ["lastNudgeAt", "nudges", "ignored", "snoozeUntil", "laterCount", "goneAt", "openAt"]) {
       const n = Number(mem[key]);
       if (Number.isFinite(n) && n > 0) clean[key] = n;
     }
@@ -830,7 +967,12 @@ module.exports = {
   recordShown,
   recordIgnored,
   recordActed,
+  recordSeen,
+  settleOpenNudges,
   recordLater,
+  recordClose,
+  stopsWork,
+  attentionReport,
   recordMute,
   recordKeep,
   pruneMems,

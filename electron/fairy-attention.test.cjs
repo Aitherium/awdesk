@@ -596,3 +596,145 @@ test("a blocked card with only a hold default suggests nothing; a real default s
   const real = { id: "d-real", kind: "decision", options: [{ key: "go", label: "Go" }, { key: "stay", label: "Stay" }], defaultKey: "go", createdAt: 1794918981 };
   assert.deepEqual(fa.suggestedOption(real), { label: "Go", inSession: false });
 });
+
+// ── 2026-11-19: d-ennp (blocked, high, a permission grant) sat 2 h un-nagged ────
+//
+// Measured in the live desk's fairy-attention.json: six nudges, then a close (X) 2.1 s
+// after the sixth appeared bought it an hour's "Later"; the desk restarted twice and
+// main feeds the fairy an EMPTY queue once at start-up, which pruned every card's
+// ladder. These replay that: a restart resumes the ladder, a close on stopped work is
+// short, and no blocked card goes 30 min without a nudge while nothing holds the fairy.
+
+function grant(over = {}) {
+  // d-ennp's shape: claude-permission-grant, blocked, high, "deny" by default.
+  return qabc({ id: "d-ennp", title: "Allow Claude to use: Bash(bash enroll.sh:*)", ...over });
+}
+
+/** A desk restart, the way main runs it: memory file round-trip, the empty first feed,
+ *  then the real queue. */
+function restart(mems, cards, nowMs) {
+  let m = fa.sanitizeMems(JSON.parse(JSON.stringify(mems)));
+  m = fa.pruneMems(m, [], { nowMs });
+  return fa.pruneMems(m, cards.map((c) => c.id), { nowMs });
+}
+
+test("d-ennp: a blocked high card left unanswered across a restart is nudged again within its interval, and climbs", () => {
+  // defaultKey grant = the session would go on: importance 2, a flutter that climbs.
+  const c = grant({ defaultKey: "grant", createdAt: sec(NOW - 5 * MIN) });
+  const first = fa.plan([c], {}, { nowMs: NOW });
+  assert.equal(first.act, "nudge");
+  assert.equal(first.level, fa.LEVEL.FLUTTER);
+  let mems = { [c.id]: fa.recordIgnored(fa.recordShown({}, NOW), { importance: first.importance, nowMs: NOW, climbs: first.climbs }) };
+  const at = NOW + 3 * MIN;
+  mems = restart(mems, [c], at);
+  assert.equal(mems[c.id].nudges, 1, "the restart kept the nudge count");
+  assert.equal(mems[c.id].ignored, 1, "and the ignored nudge");
+  const interval = fa.DEFAULTS.intervalMs[fa.LEVEL.INSIST];
+  const again = fa.plan([c], mems, { nowMs: NOW + interval + 1000, lastNudgeAt: NOW });
+  assert.equal(again.act, "nudge", "nudged again once its interval is up");
+  assert.equal(again.level, fa.LEVEL.INSIST, "one level louder than before the restart");
+  assert.equal(again.lead, "Still waiting on you");
+});
+
+test("memory of a card missing from one feed survives the grace, then goes", () => {
+  const mems = { "d-aaaa": { nudges: 2 } };
+  const kept = fa.pruneMems(mems, [], { nowMs: NOW });
+  assert.equal(kept["d-aaaa"].goneAt, NOW, "stamped, not dropped");
+  assert.deepEqual(fa.pruneMems(kept, ["d-aaaa"], { nowMs: NOW + MIN }), { "d-aaaa": { nudges: 2 } }, "back: unstamped");
+  assert.deepEqual(fa.pruneMems(kept, [], { nowMs: NOW + fa.DEFAULTS.pruneGraceMs + 1 }), {}, "gone past the grace: dropped");
+  assert.equal(fa.sanitizeMems(kept)["d-aaaa"].goneAt, NOW, "the stamp is persisted");
+});
+
+test("a close (X) on stopped work comes back in 20 min; the explicit Later keeps its hour", () => {
+  const c = grant();
+  const closed = fa.recordClose(fa.recordShown({}, NOW), NOW, { card: c });
+  assert.equal(closed.snoozeUntil, NOW + fa.DEFAULTS.closeStopsWorkMs);
+  assert.equal(fa.plan([c], { [c.id]: closed }, { nowMs: NOW + 21 * MIN }).act, "nudge");
+  const ordinary = card({ defaultKey: "cut" });
+  assert.equal(fa.recordClose({}, NOW, { card: ordinary }).snoozeUntil, NOW + fa.DEFAULTS.laterMs, "nobody stopped: an hour");
+  assert.equal(fa.recordLater({}, NOW).snoozeUntil, NOW + fa.DEFAULTS.laterMs);
+});
+
+test("with no quiet reason, a blocked card is never more than 30 min without a nudge (6 h, restarts, closes, a backlog)", () => {
+  const blocked = [
+    grant(),
+    grant({ id: "d-bnky", defaultKey: "grant" }),
+    qabc({ id: "d-v8gh", blocking: true, kind: "decision" }),
+  ];
+  const backlog = [];
+  for (let i = 0; i < 8; i += 1) backlog.push(card({ id: `d-o${i}`, defaultKey: "cut", createdAt: sec(NOW - (60 + i) * MIN) }));
+  const cards = [...backlog, ...blocked];
+  const close = fa.recordClose ? (m, t, c) => fa.recordClose(m, t, { card: c }) : (m, t) => fa.recordLater(m, t);
+  // How each nudge of a card ends, in turn: ignored, closed, preempted by a click, seen.
+  const outcomes = ["timeout", "close", "timeout", "preempted", "seen", "close"];
+  const restartsAt = new Set([47, 61, 150, 240].map((m) => NOW + m * MIN));
+  let mems = {};
+  let lastNudgeAt = 0;
+  const shownAt = Object.fromEntries(blocked.map((c) => [c.id, [NOW]]));
+  const count = {};
+  const TICK = 15_000;
+  for (let t = NOW; t <= NOW + 6 * 60 * MIN; t += TICK) {
+    if ([...restartsAt].some((r) => r > t - TICK && r <= t)) mems = restart(mems, cards, t);
+    const d = fa.plan(cards, mems, { nowMs: t, lastNudgeAt });
+    if (d.act !== "nudge") continue;
+    const id = d.card.id;
+    mems[id] = fa.recordShown(mems[id] || {}, t);
+    lastNudgeAt = t;
+    if (shownAt[id]) shownAt[id].push(t);
+    const end = t + d.showMs;
+    const outcome = outcomes[(count[id] = (count[id] || 0) + 1) % outcomes.length];
+    if (outcome === "timeout") mems[id] = fa.recordIgnored(mems[id], { importance: d.importance, nowMs: end, climbs: d.climbs });
+    else if (outcome === "close") mems[id] = close(mems[id], end, d.card);
+    else if (outcome === "seen") mems[id] = (fa.recordSeen || fa.recordActed)(mems[id]);
+    t = Math.max(t, end - TICK); // the fairy is busy while the whisper is up
+  }
+  for (const [id, times] of Object.entries(shownAt)) {
+    times.push(NOW + 6 * 60 * MIN);
+    let worst = 0;
+    for (let i = 1; i < times.length; i += 1) worst = Math.max(worst, times[i] - times[i - 1]);
+    assert.ok(worst <= 30 * MIN, `${id}: ${Math.round(worst / MIN)} min without a nudge (${times.length - 2} nudges)`);
+  }
+});
+
+test("attentionReport says per card why the fairy is or is not nagging", () => {
+  const c = grant();
+  const closed = fa.recordClose(fa.recordShown({}, NOW), NOW, { card: c });
+  const r = fa.attentionReport([c], { [c.id]: closed }, { nowMs: NOW + MIN, lastNudgeAt: NOW });
+  assert.equal(r.plan.act, "none");
+  const row = r.cards[0];
+  assert.equal(row.id, "d-ennp");
+  assert.equal(row.level, fa.LEVEL.INSIST);
+  assert.equal(row.nudges, 1);
+  assert.equal(row.lastNudgeAt, NOW);
+  assert.equal(row.nextDueAt, NOW + fa.DEFAULTS.closeStopsWorkMs);
+  assert.equal(row.stopsWork, true);
+  assert.match(row.reason, /put off/);
+  const quiet = fa.attentionReport([c], {}, { nowMs: NOW, quiet: "game on" });
+  assert.equal(quiet.quiet, "game on");
+  assert.match(quiet.plan.reason, /game on/);
+  assert.match(quiet.cards[0].reason, /held while quiet: game on/);
+  const due = fa.attentionReport([c], {}, { nowMs: NOW });
+  assert.equal(due.plan.act, "nudge");
+  assert.equal(due.cards[0].reason, "");
+  assert.equal(due.cards[0].nextDueAt, NOW);
+});
+
+test("a nudge the desk quit under counts as ignored on the next load, once", () => {
+  const mems = fa.sanitizeMems({ "d-ennp": { lastNudgeAt: NOW, nudges: 3, ignored: 1, openAt: NOW }, "d-done": { nudges: 1 } });
+  assert.equal(mems["d-ennp"].openAt, NOW, "an open nudge is persisted");
+  const settled = fa.settleOpenNudges(mems);
+  assert.equal(settled["d-ennp"].ignored, 2, "the unanswered nudge is one more ignored");
+  assert.equal(settled["d-ennp"].openAt, undefined);
+  assert.deepEqual(settled["d-done"], { nudges: 1 });
+  assert.deepEqual(fa.settleOpenNudges(settled), settled, "settling twice counts nothing twice");
+});
+
+test("d-ennp's live memory {nudges 6, ignored 0} was already at the insist: stopped work starts at the top", () => {
+  // The coordinator's question (2026-11-19): did ignored 0 keep it at glow/flutter? Not for
+  // this card: a blocked card whose default is "deny" holds work, importance 3, level 3
+  // from its first nudge whatever `ignored` says.
+  const c = grant({ createdAt: sec(NOW - 2 * 60 * MIN) });
+  const d = fa.plan([c], { "d-ennp": { lastNudgeAt: NOW - 10 * MIN, nudges: 6 } }, { nowMs: NOW });
+  assert.equal(d.act, "nudge");
+  assert.equal(d.level, fa.LEVEL.INSIST);
+});
