@@ -3296,8 +3296,14 @@ function enforceActiveCharacterRating() {
     const standIn = g.standIn && listCharacters().includes(g.standIn) && !isHidden(g.standIn) ? g.standIn : null;
     if (!swap.from) writeAudienceSwap({ from: active, at: new Date().toISOString() });
     if (!standIn) {
-      debugLog("audience: the resident body is not for this audience and no stand-in is chosen; hiding the body");
-      void hideOverlay({ byOwner: false });   // automatic: never the owner's sticky hide
+      // Only act when the body is actually ON SCREEN. refreshTrayMenu() calls THIS
+      // function and hideOverlay() calls refreshTrayMenu(), so an unconditional hide
+      // was an infinite async loop: measured 2026-11-20, 17 "hiding the body" log lines
+      // a second, main +60 MB/min, the desk gone within minutes with no crash report.
+      if (avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) {
+        debugLog("audience: the resident body is not for this audience and no stand-in is chosen; hiding the body");
+        void hideOverlay({ byOwner: false });   // automatic: never the owner's sticky hide
+      }
       return true;
     }
     debugLog("audience: swapping the resident to the stand-in", standIn);
