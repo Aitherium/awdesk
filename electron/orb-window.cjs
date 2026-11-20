@@ -56,6 +56,7 @@ const companionMenu = require("./companion-menu.cjs");
 const fairyOwner = require("./fairy-owner.cjs");
 const fairyCounts = require("./fairy-counts.cjs");
 const fairyCluster = require("./fairy-cluster.cjs");
+const displayMode = require("./display-mode.cjs");
 const linkOpener = require("./link-opener.cjs");
 const fairyHoverGuard = require("./fairy-hover-guard.cjs");
 const fairyPanel = require("./fairy-panel.cjs");
@@ -131,6 +132,10 @@ let selectedAgent = "";
 let allCompanions = [];
 let pinWindows = new Map();
 let pinDrag = null;
+/** The orbs swarm mode owns (display-mode.cjs, owner 2026-11-20): each is a pin
+ *  window we placed; being here, and not in swarmView.pins, keeps a mode switch from
+ *  persisting them as the owner's pins. */
+let swarmPinAgents = new Set();
 let fgContent = null;
 let fgProbeImpl = null;
 /** Follow-the-focused-window (plan A4): the descriptor the probe last reported, when it
@@ -158,6 +163,10 @@ let lastNeuronPayload = "";
 /** agent -> its last drawn state, so only a TRANSITION opens a "thinking" node. */
 let lastNeuronStates = new Map();
 let state = orbCore.sanitizeState(null);
+/** How the companion is drawn (display-mode.cjs, owner 2026-11-20): avatar, fairy,
+ *  both or swarm. Persisted by main in avatar-dock.json; applied here by
+ *  setDisplayModeState from the menu, the palette, the key or the boot restore. */
+let display = displayMode.normalize(null);
 let queue = orbCore.createQueue();
 let tickTimer = null;
 let dragTimer = null;
@@ -608,7 +617,10 @@ function setOrbCenter(point) {
 }
 
 function orbVisible() {
-  return Boolean(state.visible && alive(orbWindow) && orbWindow.isVisible());
+  // The display mode can take the orb disc down while leaving the cluster up: `both`
+  // and `swarm` are avatar + cluster, and `avatar` is the VRM alone (owner 2026-11-20).
+  const mk = displayMode.layers(display.mode);
+  return Boolean(state.visible && mk.orb && alive(orbWindow) && orbWindow.isVisible());
 }
 
 // ── the windows ─────────────────────────────────────────────────────────────
@@ -744,8 +756,33 @@ function ensureSwarm() {
   return swarmWindow;
 }
 
-/** Where the cluster is centred: the anchor while a body stands in for the fairy, else the orb. */
+/** The avatar window's rect, when main can see it: both/swarm hang the cluster on it. */
+function avatarBoundsNow() {
+  const fn = attentionHooks && attentionHooks.avatarBounds;
+  if (typeof fn !== "function") return null;
+  try {
+    const r = fn();
+    return r && Number(r.width) > 0 && Number(r.height) > 0 ? r : null;
+  } catch { return null; }
+}
+
+/** Half the cluster window's side for `count` fairies (fairy-control owns the ring). */
+function clusterHalfFor(count) {
+  return Math.max(48, fairyControl.swarmExtent(state.swarmView.mode, Math.max(1, count), state.swarmView.radius));
+}
+
+/** Where the cluster is centred: beside the avatar (both/swarm), the anchor while a
+ *  body stands in for the fairy, else the orb. */
 function clusterCenter() {
+  if (display.mode === "both" || display.mode === "swarm") {
+    const avatar = avatarBoundsNow();
+    if (avatar) {
+      const area = workAreaAt({ x: avatar.x + avatar.width / 2, y: avatar.y + avatar.height / 2 }) || restoreWorkArea();
+      const count = displayMode.capacity(display.mode, swarmCompanions.length || 1, display);
+      const point = displayMode.clusterCenter(display.mode, { avatarRect: avatar, clusterHalf: clusterHalfFor(count), area });
+      if (point) return point;
+    }
+  }
   if (swarmAnchor && !orbVisible()) return { x: swarmAnchor.x, y: swarmAnchor.y };
   if (alive(orbWindow)) {
     const b = orbWindow.getBounds();
@@ -779,14 +816,21 @@ function placeSwarm(companions = swarmCompanions, { raise = false } = {}) {
   // The cluster is ON (owner 2026-11-16, overriding 2026-11-13's "don't show a swarm":
   // "the cluster of fairies should grow with agents and decisions queued"); orb.json
   // `cluster: false` (or the swarm switch set off) turns it off. Nothing live = no window.
-  const next = list.length && (orbVisible() || swarmAnchor) && (state.cluster !== false || state.swarm === true)
-    ? swarmBounds(list.length) : null;
+  // The display MODE (owner 2026-11-20) gates it too: `avatar` has no cluster, and
+  // both/swarm draw it beside the avatar even while the ask orb itself is down.
+  const mk = displayMode.layers(display.mode);
+  const onDesk = orbVisible() || swarmAnchor || display.mode === "both" || display.mode === "swarm";
+  // `swarm` draws each fairy as its own orb around the avatar (syncSwarmOrbs), so the
+  // small ring window stays down -- there is still ONE cluster, it just has another form.
+  const next = mk.cluster && display.mode !== "swarm" && list.length && onDesk
+    && (state.cluster !== false || state.swarm === true) ? swarmBounds(list.length) : null;
   if (!next) {
     if (alive(swarmWindow) && swarmWindow.isVisible()) swarmWindow.hide();
     lastBounds = null;
     syncForegroundProbe();
     sendSwarmView();
     syncPins();
+    try { syncSwarmOrbs(); } catch { /* cosmetic */ }
     return;
   }
   const win = ensureSwarm();
@@ -805,6 +849,7 @@ function placeSwarm(companions = swarmCompanions, { raise = false } = {}) {
   syncForegroundProbe();
   sendSwarmView();
   syncPins();
+  try { syncSwarmOrbs(); } catch { /* cosmetic */ }
 }
 
 /**
@@ -829,6 +874,72 @@ function setSwarmVisible(on) {
   return { ok: true, swarm: state.swarm === true };
 }
 
+// ── display mode: avatar, fairy, both, swarm (display-mode.cjs, owner 2026-11-20) ──
+// "the docked avatar AND a fairy -- or a swarm of fairies -- at the same time."
+// One setting, persisted by main in avatar-dock.json beside `docked`; the pure
+// layout (cluster beside the avatar, never on it) is display-mode.cjs.
+
+/** The mode the desk draws now, and how many fairies a swarm shows. */
+function displayModeState() {
+  return { ...display };
+}
+
+/** Put each window on the layers this mode allows, WITHOUT touching the owner's
+ *  remembered `visible`: a mode switch is not a show/hide. `both`/`swarm` take the
+ *  orb disc down and leave the cluster up beside the avatar; `avatar` takes both. */
+function applyDisplayLayers() {
+  const mk = displayMode.layers(display.mode);
+  if (alive(orbWindow)) {
+    if (mk.orb && state.visible) { if (!orbWindow.isVisible()) orbWindow.showInactive(); }
+    else if (orbWindow.isVisible()) orbWindow.hide();
+  }
+  if (!mk.orb && alive(bubbleWindow) && bubbleWindow.isVisible()) bubbleWindow.hide();
+}
+
+/**
+ * Apply a display mode (owner pick, avatar/fairy menu, palette, key or boot restore).
+ * Settles the ONE cluster: a hand/follow attach lets go, the trail veil comes down,
+ * stray pins go where a slot layout owns the fairies, then both windows are placed
+ * again -- a switch never leaves an overlay painted from the previous mode.
+ */
+function setDisplayModeState(next) {
+  const before = display.mode;
+  display = displayMode.normalize(next);
+  const plan = displayMode.settle(before, display.mode);
+  if (plan.changed) {
+    if (attach && attach.auto) { attach = null; stopFollow(); }
+    if (pinDrag) {
+      pinDrag = null;
+      if (pinWatchdog) { clearTimeout(pinWatchdog); pinWatchdog = null; }
+    }
+    hideMenu();
+    hideTip();
+    hideVeil({ force: true });
+    releaseHover();
+    if (display.mode !== "swarm") {
+      for (const agent of [...swarmPinAgents]) destroyPin(agent);
+      swarmPinAgents = new Set();
+    }
+    if (plan.clearPins) for (const agent of [...pinWindows.keys()]) destroyPin(agent);
+  }
+  applyDisplayLayers();
+  sendFairy({ force: true });
+  placeSwarm(swarmCompanions, { raise: true });
+  return displayModeState();
+}
+
+/** A `dm:<mode>` menu pick. Draw it here at once, then tell main (it persists the
+ *  choice and settles the avatar window); a build with no hook still works, so the
+ *  row is never dead. */
+function displayPick(what) {
+  const r = displayMode.applyModePick(display, what);
+  if (r.error) return { ok: false, error: r.error };
+  if (!r.changed) return { ok: true, mode: display.mode, changed: false };
+  setDisplayModeState(r.settings);
+  const applied = hookValue("setDisplayMode", r.settings);
+  return { ok: true, mode: display.mode, changed: true, applied: applied || null };
+}
+
 // ── fine control over the fairies (fairy-control.cjs, owner 2026-11-16) ─────────
 // Select, a full tooltip, a menu per fairy, pin out of / back into the swarm, gather /
 // scatter / one orb / dock / filter, the scroll radius, and keeping off the focused
@@ -840,10 +951,13 @@ const pinKeys = new Map();
 function viewCompanions(all = allCompanions) {
   const split = fairyControl.applyView(all, state.swarmView);
   const dec = (c) => fairyControl.decorate(c, state.swarmView, { selected: selectedAgent });
+  // `swarm` draws up to N (owner 2026-11-20); `avatar` draws none; fairy/both all.
+  const room = displayMode.capacity(display.mode, split.visible.length, display);
+  const visible = room === split.visible.length ? split.visible : split.visible.slice(0, room);
   return {
-    visible: state.swarmView.mode === "orb" ? [] : split.visible.map(dec),
+    visible: state.swarmView.mode === "orb" ? [] : visible.map(dec),
     pinned: split.pinned.map(dec),
-    split,
+    split: { ...split, visible, hidden: split.hidden + (split.visible.length - visible.length) },
   };
 }
 
@@ -1200,8 +1314,53 @@ function syncPins() {
     if (!win.isVisible()) win.showInactive();
   }
   for (const agent of [...pinWindows.keys()]) {
+    if (swarmPinAgents.has(agent)) continue; // swarm mode owns where this orb stands
     if (!v.pins[agent] && !(pinDrag && pinDrag.agent === agent)) destroyPin(agent);
   }
+}
+
+/**
+ * Swarm mode (owner 2026-11-20): "a swarm of fairies ... spread around the avatar,
+ * each a separate draggable orb with its own agent badge". Every orb is a pin
+ * window placed by display-mode.swarmOrbs on a radius outside the body; not in
+ * swarmView.pins, so leaving the mode destroys exactly these and nothing the owner
+ * pinned by hand.
+ */
+function syncSwarmOrbs() {
+  if (display.mode !== "swarm") {
+    for (const agent of [...swarmPinAgents]) destroyPin(agent);
+    swarmPinAgents = new Set();
+    return [];
+  }
+  const avatar = avatarBoundsNow();
+  if (!avatar) return [];
+  const area = workAreaAt({ x: avatar.x + avatar.width / 2, y: avatar.y + avatar.height / 2 }) || restoreWorkArea();
+  const { visible } = viewCompanions();
+  const orbs = displayMode.swarmOrbs(avatar, visible, { max: display.swarm, area });
+  const want = new Set(orbs.map((o) => o.agent));
+  for (const agent of [...swarmPinAgents]) {
+    if (want.has(agent)) continue;
+    destroyPin(agent);
+    swarmPinAgents.delete(agent);
+  }
+  const mates = new Map(visible.map((c) => [String(c.agent || "").toLowerCase(), c]));
+  for (const orb of orbs) {
+    const win = ensurePin(orb.agent);
+    swarmPinAgents.add(orb.agent);
+    if (!alive(win)) continue;
+    const cur = win.getBounds();
+    if (cur.x !== orb.rect.x || cur.y !== orb.rect.y || cur.width !== orb.rect.width || cur.height !== orb.rect.height) {
+      win.setBounds(orb.rect);
+    }
+    const c = mates.get(orb.agent) || null;
+    const key = JSON.stringify(c);
+    if (pinKeys.get(orb.agent) !== key) {
+      pinKeys.set(orb.agent, key);
+      deliverTo(win, "orb:pin-mate", { mate: c ? fairyControl.decorate(c, state.swarmView, { selected: selectedAgent }) : null });
+    }
+    if (!win.isVisible()) win.showInactive();
+  }
+  return orbs;
 }
 
 /**
@@ -1221,7 +1380,7 @@ function swarmDrag(phase, agentRaw, from = "swarm") {
     hideMenu();
     const win = ensurePin(agent);
     const b = alive(win) ? win.getBounds() : { x: p.x, y: p.y };
-    const grab = from === "pin" && state.swarmView.pins[agent]
+    const grab = from === "pin" && (state.swarmView.pins[agent] || swarmPinAgents.has(agent))
       ? { dx: p.x - b.x, dy: p.y - b.y }
       : { dx: PIN_SIZE.width / 2, dy: PIN_SIZE.height / 2 };
     pinDrag = { agent, from, grab };
@@ -1247,12 +1406,35 @@ function swarmDrag(phase, agentRaw, from = "swarm") {
     pinDrag = null;
     if (pinWatchdog) { clearTimeout(pinWatchdog); pinWatchdog = null; }
     try { if (alive(win)) win.setIgnoreMouseEvents(false); } catch { /* gone */ }
+    // Swarm mode: the orb is never pinned as the owner's; it returns to its slot.
+    if (display.mode === "swarm") {
+      const orbs = syncSwarmOrbs();
+      const mine = orbs.find((o) => o.agent === agent);
+      if (mine) {
+        try { if (alive(win)) win.setBounds(mine.rect); } catch { /* gone */ }
+        return {
+          ok: true, pinned: false, rejoined: true,
+          releasedTo: displayMode.releaseTarget({
+            mode: "swarm",
+            slot: { x: mine.rect.x + mine.rect.width / 2, y: mine.rect.y + mine.rect.height / 2 },
+            home: home || orbCenter(),
+          }),
+        };
+      }
+    }
     const pins = { ...state.swarmView.pins };
-    const rejoin = fairyControl.joinsCluster(p, clusterCenter());
+    // both/swarm are slot layouts: a released fairy always flies back to its slot
+    // (display-mode.releaseTarget), never out to an arbitrary pin (owner 2026-11-20).
+    const slotLayout = display.mode === "both" || display.mode === "swarm";
+    const centre = clusterCenter();
+    const rejoin = slotLayout || fairyControl.joinsCluster(p, centre);
     let result;
     if (rejoin) {
       delete pins[agent];
-      result = { ok: true, pinned: false, rejoined: true };
+      result = {
+        ok: true, pinned: false, rejoined: true,
+        releasedTo: displayMode.releaseTarget({ mode: display.mode, slot: centre, home: home || orbCenter() }),
+      };
     } else {
       pins[agent] = clampPin({ x: p.x - grab.dx, y: p.y - grab.dy });
       result = { ok: true, pinned: true, at: pins[agent] };
@@ -3461,6 +3643,9 @@ function setClusterSessions(sources, { ok = true } = {}) {
  */
 function surfaceForCards() {
   if (quitting || expanded) return;
+  // both/swarm show the cluster itself, beside the avatar: there is no orb disc to
+  // bring up, and surfacing one would break the mode's layout (owner 2026-11-20).
+  if (display.mode === "both" || display.mode === "swarm") return;
   const fresh = !ownerHidIds || attentionCards.some((c) => !ownerHidIds.has(c.id));
   if (attentionCards.length > 0 && !state.visible && fresh) {
     autoSurfaced = true; // before showOrb: its save must not record the owner's choice
@@ -3727,6 +3912,7 @@ function stopAttention() {
 /** Does the fairy carry the cards right now? Only while it is meant to be on screen
  *  and its loop runs -- hidden, the awask window comes back (fail toward visible). */
 function ownsAttention() {
+  if (display.mode === "avatar") return false; // no cluster on an avatar-only desk
   return Boolean(attentionTimer && !quitting && state.visible && alive(orbWindow));
 }
 
@@ -3739,6 +3925,7 @@ function ownsAttention() {
  * fairies"). The cluster turned off (orb.json cluster:false) gives the claim back.
  */
 function carriesCards() {
+  if (display.mode === "avatar") return false; // the one cluster is off in avatar mode
   return Boolean(attentionTimer && !quitting && alive(orbWindow) && state.cluster !== false);
 }
 
@@ -4618,6 +4805,7 @@ function orbMenu({ atFairy = false } = {}) {
     waiting: attentionCards.length, quietUntil: state.muteUntil, tenantVisible: Boolean(state.tenantCompanion),
     fairyVisible: orbVisible(), nowMs: Date.now(), avatar: avatarMode(),
     bodies: hookValue("aitherBodies") || [], swarm: allCompanions.length,
+    display: displayMode.modeItems(display), displayMode: display.mode,
   }), { atFairy });
 }
 
@@ -4650,6 +4838,7 @@ async function menuPick(id) {
   }
   if (what.startsWith("sv:")) return swarmPick(what, ms);
   if (what.startsWith("fc:")) return controlPick(what, ms);
+  if (what.startsWith("dm:")) return displayPick(what);
   if (ms.kind === "orb") return orbPick(what);
   if (what === "talk") return chatWithAgent(ms.agent);
   const card = menuCard(ms);
@@ -5221,6 +5410,8 @@ function startOrb(opts = {}) {
   if (opts.spriteToken) spriteTokenImpl = opts.spriteToken;
   if (opts.spriteClient) spriteClientImpl = opts.spriteClient;
   if (opts.attention && typeof opts.attention === "object") attentionHooks = { ...opts.attention };
+  // How the companion is drawn (display-mode.cjs): main restores the persisted mode.
+  if (opts.display) display = displayMode.normalize(opts.display);
   ensureIpc();
   loadState();
   {
@@ -5426,7 +5617,8 @@ module.exports = {
   __refreshTaskbar: () => refreshTaskbar(),
   __swarmBounds: (n) => swarmBounds(n),
   __setProbe: (p) => { probe = p; },
-  setSwarmAnchor, setSwarmVisible, swarmVisible: () => state.swarm === true, fairyBounds: () => (alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null),
+  setSwarmAnchor, setSwarmVisible, swarmVisible: () => state.swarm === true,
+  setDisplayModeState, displayModeState, displayPick, fairyBounds: () => (alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null),
   swarmWindow: () => (alive(swarmWindow) ? swarmWindow : null), soundsOn: () => state.sounds !== false,
   nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
   attentionMems: () => attentionMems,
@@ -5495,6 +5687,8 @@ module.exports = {
     lastNeuronPayload = "";
     if (neuronTimer) { clearTimeout(neuronTimer); neuronTimer = null; }
     lastBounds = null;
+    display = displayMode.normalize(null);
+    swarmPinAgents = new Set();
     if (fgProbeImpl) { try { fgProbeImpl.stop(); } catch { /* gone */ } fgProbeImpl = null; }
     for (const agent of [...pinWindows.keys()]) destroyPin(agent);
     agentPresence = [];
