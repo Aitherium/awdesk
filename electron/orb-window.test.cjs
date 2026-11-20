@@ -724,6 +724,21 @@ test("the fairy's badge opens the Inbox list (inbox.open), never answers a card"
   orbWindow.pump();
 });
 
+test("the count is a BUTTON, not decoration (owner 2026-11-20: the 58 read as paint)", () => {
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  // It takes the pointer only when it has a count, and looks pressable.
+  assert.match(html, /#badge\.on \{[^}]*pointer-events: auto/, "a counted badge takes clicks");
+  assert.match(html, /#badge\.on:hover[^{]*\{[^}]*box-shadow: 0 0 0 2px #fff/, "it wears a ring on hover");
+  assert.match(html, /#badge\.on:active \{ transform: scale\(0\.94\)/, "it presses");
+  assert.match(html, /#badge\.on::after \{ content: "›"/, "a chevron says 'this opens something'");
+  // The 72 px window ignores clicks outside the disc: the badge must be in the hit test.
+  assert.match(html, /function badgeUnder\(e\)/, "the badge's rect is measured");
+  assert.match(html, /toggleHit\(onDisc \|\| Boolean\(m\) \|\| badgeUnder\(e\)\)/, "and it is part of the hit test");
+  // A keyboard user gets the same door.
+  assert.match(html, /badge\.addEventListener\("keydown"/);
+  assert.match(html, /role", "button"/);
+});
+
 test("the fairy door is labelled Needs you (N) when cards are waiting", () => {
   const src = fs.readFileSync(path.join(__dirname, "orb-window.cjs"), "utf8");
   // The door carries the fairy's own number (fairy-counts.cjs), not the blocker strip's.
@@ -2188,8 +2203,35 @@ test("click the fairy with nothing waiting: the ask box; Show Aither grows the b
   assert.equal(orbWin().isVisible(), true);
 });
 
-test("a body that will not open leaves the fairy where it was", async () => {
-  startAttention({ expand: async () => ({ ok: false, error: "no Aither model" }) });
+// ── ONE companion surface (owner 2026-11-20) ──────────────────────────────────
+test("the body's own window stands the fairy down and brings her back -- one surface", () => {
+  writeState({ visible: true, x: 200, y: 200 });
+  start();
+  assert.equal(orbWin().isVisible(), true);
+  orbWindow.standDownForAvatar();
+  assert.equal(orbWin().isVisible(), false, "no fairy beside the body");
+  assert.equal(orbWindow.state().visible, true, "the owner's switch is remembered");
+  assert.equal(orbWindow.stoodDown(), true);
+  // 'Show all companions' while the body is up cannot put a second surface on screen.
+  const shown = orbWindow.showOrb();
+  assert.deepEqual([shown.ok, shown.visible, shown.body], [true, true, true]);
+  assert.equal(orbWin().isVisible(), false, "she stays down while the body is up");
+  // The body leaves: she comes back where she rests.
+  orbWindow.returnFromAvatar();
+  assert.equal(orbWin().isVisible(), true);
+  assert.equal(orbWindow.stoodDown(), false);
+});
+
+test("a fairy the owner had hidden is not resurrected when the body leaves", () => {
+  writeState({ visible: false, x: 200, y: 200 });
+  start();
+  orbWindow.standDownForAvatar();
+  orbWindow.returnFromAvatar();
+  assert.equal(orbWin() ? orbWin().isVisible() : false, false);
+  assert.equal(orbWindow.state().visible, false);
+});
+
+test("a body that will not open leaves the fairy where it was", async () => {  startAttention({ expand: async () => ({ ok: false, error: "no Aither model" }) });
   orbWindow.setAttentionCards([]);
   const r = await orbWindow.expandToAvatar();
   assert.deepEqual(r, { ok: false, error: "no Aither model" });

@@ -413,6 +413,9 @@ const { createSystemWindow, setSystemHandOff, sharedSystemMonitor } = require(".
 // browser_* tools) while the owner watches and can take over.
 const browserWindow = require("./browser-window.cjs");
 const { createAvatarDock, DOCKED_CSS } = require("./avatar-dock.cjs");
+// ONE companion surface (companion-surface.cjs): every avatar/fairy verb resolves
+// through this plan, so the fairy and the body can never both be on screen.
+const companionSurface = require("./companion-surface.cjs");
 const { createBrowserInOnline } = require("./browser-in-online.cjs");
 // The aither:// scheme: every console pane as a page of the Aither Browser (plan
 // slices 8+9). Privileged schemes must be registered BEFORE app ready, exactly once.
@@ -1084,6 +1087,15 @@ function showOverlay({ focus = false } = {}) {
   // menu is BUILT, so a toggle left it saying the wrong thing until something
   // else rebuilt the menu (owner, 2026-09-18: "the hide avatar button doesn't
   // change to unhide"). Rebuild on every show/hide.
+  // ONE companion surface (owner 2026-11-20: "WHY DOES CLICKING DESKTOP TRAY OPEN A
+  // SEPARATE AVATAR WHEN THE FAIRY IS SUPPOSED TO TURN INTO THAT AVATAR"). The body
+  // is up now, so the fairy stands down -- never both, whatever raised the body (a
+  // voice session, a room stage, the tray's old Show avatar path). A grow
+  // (expandToAvatar) already does this itself; docking in the browser is the one
+  // declared exception (owner: docking is how you get a separate surface).
+  if (!avatarGrowing && !(avatarDock && avatarDock.isDocked())) {
+    try { orbWindow.standDownForAvatar(); } catch { /* the fairy is not up */ }
+  }
   if (tray) refreshTrayMenu();
 }
 
@@ -1095,12 +1107,54 @@ async function hideOverlay({ byOwner = true } = {}) {
     hyprlandLastPosition = { x: placement.x, y: placement.y };
   }
   avatarWindow?.hide();
+  // ONE surface: the body left, so the fairy comes back where she rests -- unless
+  // the body was docked (it is the browser's, and the fairy kept her place).
+  if (!(avatarDock && avatarDock.isDocked())) {
+    try { orbWindow.returnFromAvatar(); } catch { /* the fairy is not up */ }
+  }
   if (tray) refreshTrayMenu();
 }
 
-function toggleOverlay() {
-  if (avatarWindow?.isVisible()) void hideOverlay();
-  else showOverlay({ focus: true });
+/** The facts the one-surface plan reads, from the ONE owner of each (no guessing). */
+function companionSurfaceFacts() {
+  let fairyVisible = false;
+  let fairyWanted = false;
+  let expanded = false;
+  try { fairyVisible = orbWindow.orbVisible(); } catch { /* not started */ }
+  try { fairyWanted = orbWindow.fairyWanted(); } catch { /* not started */ }
+  try { expanded = orbWindow.expanded(); } catch { /* not started */ }
+  return {
+    fairyVisible,
+    fairyWanted,
+    expanded,
+    avatarVisible: Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()),
+    docked: Boolean(avatarDock && avatarDock.isDocked()),
+  };
+}
+
+/** The tray's Show avatar / Hide avatar line. Same decision as every other verb:
+ *  the fairy GROWS into the body in place; hiding her body brings her back. */
+async function toggleOverlay() {
+  const plan = companionSurface.plan({ want: "toggle", ...companionSurfaceFacts() });
+  if (plan.avatar === "hide") {
+    if (plan.collapse) {
+      try { await orbWindow.collapseToFairy(); return { ok: true, visible: false }; } catch { /* fall through */ }
+    }
+    await hideOverlay();
+    return { ok: true, visible: false };
+  }
+  if (plan.avatar === "grow") {
+    try {
+      const grown = await orbWindow.expandToAvatar();
+      if (grown && grown.ok) return { ok: true, visible: true, grown: true };
+    } catch { /* the body can still stand alone below */ }
+  }
+  if (plan.avatar === "keep") {
+    if (tray) refreshTrayMenu();
+    return { ok: true, visible: true };
+  }
+  await showOverlay({ focus: true });
+  return { ok: true, visible: true };
 }
 
 /** One bundle, three modes: the default avatar scene, `?solo=<model>` detached windows,
@@ -2258,14 +2312,30 @@ function companionMode() {
     return "fairy";
   }
 }
-function setCompanionMode(mode) {
+async function setCompanionMode(mode) {
   const next = mode === "avatar" ? "avatar" : "fairy";
   try {
     fs.mkdirSync(path.dirname(COMPANION_FILE), { recursive: true });
     fs.writeFileSync(COMPANION_FILE, JSON.stringify({ ...readCompanionFile(), companion: next }));   // keeps avatarHidden
   } catch { /* the choice holds for this run */ }
-  if (next === "avatar") showOverlay({ focus: false });
-  else if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.hide();
+  // The same one-surface plan the tray's toggle uses: growing in place when the
+  // fairy is on screen, standing her down when the body shows alone (owner 2026-11-20).
+  const plan = companionSurface.plan({ want: next, ...companionSurfaceFacts() });
+  if (next === "avatar") {
+    if (plan.avatar === "grow") {
+      let grown;
+      try { grown = await orbWindow.expandToAvatar(); } catch { grown = null; }
+      if (!grown || grown.ok === false) await showOverlay({ focus: false });
+    } else if (plan.avatar === "show") {
+      await showOverlay({ focus: false });
+    }
+  } else if (plan.collapse) {
+    try { await orbWindow.collapseToFairy(); } catch { /* the fairy comes back on the next call */ }
+  } else if (avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) {
+    await hideOverlay();
+  } else if (plan.fairy === "show") {
+    try { orbWindow.returnFromAvatar(); } catch { /* the fairy is not up */ }
+  }
   syncNeedsYouChip();
   if (tray) refreshTrayMenu();
   return { ok: true, companion: next };
@@ -4350,8 +4420,16 @@ function commandContext() {
     interactMode: require("./toolkit.cjs").interactMode(),
     avatarShown: Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()),
     grownFromFairy: (() => { try { return orbWindow.expanded(); } catch { return false; } })(),
-    // "fairy" = the fairy can grow into Aither now; "expanded" = she is grown; null = no body.
-    fairyAvatar: (() => { try { return orbWindow.avatarMode(); } catch { return null; } })(),
+    // "fairy" = the fairy can grow into Aither now; "expanded" = she is grown; null =
+    // no body (or the body is already up as its own surface: "Show Aither" would be a
+    // second way to show what is already on screen).
+    fairyAvatar: (() => {
+      try {
+        if (orbWindow.expanded()) return "expanded";
+        if (avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) return null;
+        return orbWindow.avatarMode();
+      } catch { return null; }
+    })(),
     // Aither's bodies on this desk and the one in force (aither-body.cjs rows).
     aitherBodies: (() => { try { return aitherBody.rows(aitherBodyFacts()); } catch { return []; } })(),
     safeMode: gallerySafeMode(),

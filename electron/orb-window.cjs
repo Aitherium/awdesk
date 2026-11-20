@@ -198,6 +198,13 @@ let regionWait = false;
 let suppressed = false;
 /** The fairy has grown into Aither's full avatar (expandToAvatar); transient, never saved. */
 let expanded = false;
+/** Aither's body is up as its OWN surface (main's avatar window, not a grow): the
+ *  fairy stands down while it is, without forgetting that the owner wants her
+ *  (state.visible stays true). Owner 2026-11-20: "WHY DOES CLICKING DESKTOP TRAY
+ *  OPEN A SEPARATE AVATAR WHEN THE FAIRY IS SUPPOSED TO TURN INTO THAT AVATAR" --
+ *  the tray's Show avatar raised the body and left the fairy floating beside it.
+ *  One companion surface, always; docking in the browser is the declared exception. */
+let stoodDownForAvatar = false;
 let ops = null;
 let probe = null;
 let pendingRuns = new Map(); // trip id -> {resolve, timer}
@@ -1688,8 +1695,9 @@ function showOrb({ auto = false } = {}) {
   suppressed = false;
   if (!was) saveState();
   // Grown into the avatar: the body IS the fairy right now (one cluster), so the orb
-  // stays down until "Back to the fairy" (collapseToFairy).
-  if (expanded) return { ok: true, visible: true, expanded: true };
+  // stays down until "Back to the fairy" (collapseToFairy). Stood down because the
+  // body is up as its own surface: same rule -- one companion, never two.
+  if (expanded || stoodDownForAvatar) return { ok: true, visible: true, expanded, body: stoodDownForAvatar };
   if (!win.isVisible()) win.showInactive();
   if (attach) showVeil();
   placeSwarm();
@@ -1704,6 +1712,7 @@ function showOrb({ auto = false } = {}) {
 }
 
 function hideOrb({ auto = false } = {}) {
+  stoodDownForAvatar = false;   // an explicit hide wins over any stand-down
   // The owner hid it with cards waiting: those cards do not bring it back, a NEW one does.
   if (!auto) {
     autoSurfaced = false; ownerHidIds = new Set(attentionCards.map((c) => c.id));
@@ -1744,7 +1753,7 @@ function toggleOrb() {
  *  the owner is typing in it, or it is holding/showing something. Nothing else
  *  keeps it open — and a bubble the owner closed stays closed. */
 function bubbleWanted() {
-  if (suppressed || !state.visible) return false;
+  if (suppressed || stoodDownForAvatar || !state.visible) return false;
   return Boolean(queue.cur) || queue.items.length > 0 || inflight || drafting
     || regionWait || Boolean(hold) || Boolean(results) || tripBusy;
 }
@@ -3757,7 +3766,8 @@ async function attentionTick() {
     const busy = Boolean(nudging || flight || tripBusy || dragging || inflight || drafting || regionWait
       || (alive(bubbleWindow) && bubbleWindow.isVisible()));
     const muted = Number(state.muteUntil) > nowMs ? "nudges muted from the fairy's menu" : "";
-    const quiet = !state.visible ? "the fairy is hidden" : muted || String(hookValue("quiet") || "");
+    // The body carries the cards while it is up (one companion surface).
+    const quiet = !state.visible ? "the fairy is hidden" : (stoodDownForAvatar ? "the body is carrying the cards" : muted || String(hookValue("quiet") || ""));
     const ctx = {
       nowMs,
       lastNudgeAt: attentionLastAt,
@@ -4771,6 +4781,7 @@ async function expandToAvatar() {
  * something else (its own close, the tray) -- only bring the fairy back.
  */
 async function collapseToFairy({ fromAvatar = false } = {}) {
+  stoodDownForAvatar = false;
   if (!expanded) return { ok: true, expanded: false };
   expanded = false;
   if (!fromAvatar && typeof (attentionHooks && attentionHooks.collapse) === "function") {
@@ -4786,6 +4797,43 @@ async function collapseToFairy({ fromAvatar = false } = {}) {
     placeSwarm();
   }
   return { ok: true, expanded: false };
+}
+
+// -- ONE companion surface (owner 2026-11-20) -------------------------------
+// main's avatar window can come up as its own surface (tray "Show avatar", a voice
+// session, a room stage). The fairy must never float beside it: two surfaces is the
+// bug. She stands down, remembering the owner still wants her; when the body goes she
+// comes back to her resting spot. A grow (expandToAvatar) already does this itself.
+
+/** The body is up as its own surface: take the whole fairy cluster down, keep the switch. */
+function standDownForAvatar() {
+  if (expanded) return { ok: true, already: "expanded" };
+  stoodDownForAvatar = true;
+  suppressed = true;
+  releaseHover();
+  hideMenu();
+  hideTip();
+  if (nudging) endNudge("hidden");
+  if (alive(bubbleWindow)) bubbleWindow.hide();
+  if (alive(orbWindow)) orbWindow.hide();
+  if (alive(swarmWindow)) swarmWindow.hide();
+  hideVeil();
+  sendPanel();
+  return { ok: true, visible: false };
+}
+
+/** The body left: the fairy comes back where she rests, if the owner wanted her. */
+function returnFromAvatar() {
+  stoodDownForAvatar = false;
+  suppressed = false;
+  if (expanded) return { ok: true, visible: false, expanded: true }; // collapse places her
+  if (state.visible && alive(orbWindow) && !orbWindow.isVisible()) {
+    if (!attach) placeOrb();
+    orbWindow.showInactive();
+    if (attach) showVeil();
+    placeSwarm();
+  }
+  return { ok: true, visible: Boolean(state.visible && alive(orbWindow) && orbWindow.isVisible()) };
 }
 
 // -- the companions: hidden by default, one set of rows everywhere ------------
@@ -5360,6 +5408,9 @@ module.exports = {
   attentionMems: () => attentionMems,
   askScreen, askRegion, askText, askImage, toggleBubbleFromOrb, beginDrag, endDrag,
   expandToAvatar, collapseToFairy, avatarMode, expanded: () => expanded,
+  // one companion surface: the body's own window stands the fairy down and back
+  orbVisible, fairyWanted: () => state.visible === true, stoodDown: () => stoodDownForAvatar,
+  standDownForAvatar, returnFromAvatar,
   stateFile, loadState, saveState, pump, queue: () => queue, state: () => state,
   // spirit
   go, sendHome, attachTo, detach, toggleAttach, cancelTrip, receiveDrop, pickResult, runHoldAction,

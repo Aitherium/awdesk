@@ -60,11 +60,22 @@
     0%, 100% { transform: scale(1); filter: brightness(1); }
     50% { transform: scale(1.06); filter: brightness(1.18); }
   }
-  #badge { cursor: pointer; position: absolute; top: 4px; right: 4px; min-width: 18px; height: 18px; padding: 0 5px;
+  #badge { cursor: pointer; position: absolute; top: 4px; right: 4px; min-width: 18px; height: 18px; padding: 0 6px;
     border-radius: 9px; background: var(--accent-primary, #7aa2ff); color: #06101f;
     font: 700 11px/18px var(--font-sans, system-ui); text-align: center; display: none;
     box-shadow: 0 1px 4px rgba(0,0,0,0.45); pointer-events: none; }
-  #badge.on { display: block; }
+  /* Actionable, not decoration (owner 2026-11-20: the "58" read as a painted-on
+     number). A counted badge is a BUTTON: it takes the pointer, wears a ring and a
+     chevron, lifts on hover and presses on click -- and clicking it opens the
+     decision Inbox (needsYou -> inbox.open). */
+  #badge.on { display: block; pointer-events: auto;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.6), 0 2px 8px rgba(0,0,0,0.55);
+    transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease; }
+  #badge.on::after { content: "›"; margin-left: 2px; font-weight: 800; opacity: 0.9; }
+  #badge.on:hover, #badge.on:focus-visible {
+    filter: brightness(1.18); transform: translateY(-1px) scale(1.06);
+    box-shadow: 0 0 0 2px #fff, 0 3px 10px rgba(0,0,0,0.6); outline: none; }
+  #badge.on:active { transform: scale(0.94); }
   #queued { position: absolute; bottom: -2px; right: 0; min-width: 15px; height: 15px; padding: 0 4px;
     border-radius: 8px; background: #3a2a10; color: var(--tint, #f4faff);
     border: 1px solid var(--tint, #f4faff); font: 700 10px/14px var(--font-sans, system-ui);
@@ -789,6 +800,14 @@
       inside = isInside;
       api.hit(isInside);
     }
+    // The counted badge is a button, so the 72 px window must STOP being click-through
+    // over it (the orb's disc is the only other hot area). Without this the page's
+    // pointer-events:auto is never reached: main ignores every click outside the disc.
+    function badgeUnder(e) {
+      if (!badge.classList.contains("on")) return false;
+      const r = badge.getBoundingClientRect();
+      return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+    }
     // ── the agent fairy: its colours, and the companions orbiting it ───
     function wearFairy(f) {
       if (!f || !f.color) return;
@@ -821,7 +840,7 @@
       const onDisc = Math.hypot(dx, dy) <= RADIUS;
       const own = onDisc && !downAt && !panelOpen ? tip : "";
       dwell.on(m ? `m:${m.agent}` : (own ? "orb" : null), m ? mateTip(m) : own, () => lastPoint);
-      toggleHit(onDisc || Boolean(m));
+      toggleHit(onDisc || Boolean(m) || badgeUnder(e));
     });
     window.addEventListener("mouseleave", () => { hotMate = null; dwell.off(); showTip(); toggleHit(false); });
     // Main took the window back (the pointer left without a mouseleave): re-arm.
@@ -892,12 +911,23 @@
       badge.textContent = String(n);
       badge.title = b && typeof b === "object" && b.title ? String(b.title) : "";
       badge.classList.toggle("on", n > 0);
+      // A count is a door, so it is announced as one (owner 2026-11-20).
+      badge.setAttribute("role", "button");
+      badge.tabIndex = n > 0 ? 0 : -1;
+      badge.setAttribute("aria-label", n > 0 ? `${n} waiting — open the Inbox` : "Nothing waiting");
     }
     api.onBadge(drawBadge);
     // Click the count -> the Inbox list. The orb's own press/drag must not see
     // this click (it would toggle the bubble underneath).
     badge.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
     badge.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (Number(badge.textContent) > 0) api.needsYou();
+    });
+    // Keyboard path: a focused badge answers Enter/Space like the button it is.
+    badge.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
       e.stopPropagation();
       if (Number(badge.textContent) > 0) api.needsYou();
     });
