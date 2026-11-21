@@ -3979,6 +3979,9 @@ async function attentionTick() {
       idleMs,
       busy,
       returned: nowMs < attentionReturnUntil,
+      // The escalator's re-ping (.summon.json): an unanswered card flies back to the
+      // foreground through the idle hold and the pacing (fairy-attention summonDue).
+      summons: hookValue("summons") || {},
     };
     // A muted agent (fairy menu > Mute) never nudges; its cards stay on the badge and in the list.
     const mutedAgents = state.swarmView.muted;
@@ -3991,7 +3994,13 @@ async function attentionTick() {
     }
     if (decision.act === "nudge") {
       const full = await fullScreenNow();
-      if (full) decision = { act: "none", reason: `held while quiet: ${full}` };
+      const breaks = decision.summoned && fairyAttention.summonBreaksQuiet(decision.card, full);
+      if (full && !breaks) decision = { act: "none", reason: `held while quiet: ${full}` };
+    }
+    // A summon brings a hidden fairy back (the owner hid it; an overdue card is new news).
+    if (decision.act === "nudge" && decision.summoned && !state.visible) {
+      const shown = showOrb({ auto: true });
+      if (!shown || !shown.ok) decision = { act: "none", reason: (shown && shown.error) || "could not show the fairy" };
     }
     if (decision.act === "nudge" && !nudging && !quitting) {
       // Where the flutter lands is judged against what is clickable right now.
@@ -4113,7 +4122,9 @@ function startNudge(decision, { peek = false } = {}) {
   const nowMs = Date.now();
   const id = decision.card.id;
   if (!peek) {
-    attentionMems[id] = fairyAttention.recordShown(attentionMems[id] || {}, nowMs);
+    attentionMems[id] = decision.summoned
+      ? fairyAttention.recordSummoned(attentionMems[id] || {}, decision.summonAt, nowMs)
+      : fairyAttention.recordShown(attentionMems[id] || {}, nowMs);
     attentionLastAt = nowMs;
     if (decision.returned) attentionReturnUntil = 0;
   }

@@ -8368,6 +8368,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         idleMs: () => {
           try { return powerMonitor.getSystemIdleTime() * 1000; } catch { return 0; }
         },
+        // The escalator's re-ping (owner 2026-11-19 "FIX THE ATTENTION LAYER"): an
+        // unanswered card is summoned back to the foreground (fairy-attention summonDue).
+        summons: () => require("./fairy-attention.cjs").readSummons(decisionCards.storeDir(),
+          (p) => fs.readFileSync(p, "utf8")),
         // The nudge chime is silent while every voice is muted (the tray's Voices off).
         soundMuted: () => voiceAllMuted(),
         // "Talk": the voice card flow about THIS card, answered through answerDeckCard.

@@ -446,8 +446,14 @@ function arrivalLine(card, { needNow = 0, older = 0, mentionOlder = false } = {}
  */
 function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
   const nowMs = Number(ctx.nowMs) || Date.now();
-  if (ctx.quiet) return { act: "none", reason: `held while quiet: ${ctx.quiet}` };
+  // While quiet only a summon that breaks quiet counts (a critical card, or a hidden fairy).
+  const summon = summonDue(cards, mems, ctx.summons, nowMs,
+    ctx.quiet ? (c) => summonBreaksQuiet(c, ctx.quiet) : null);
+  if (ctx.quiet && !summon) {
+    return { act: "none", reason: `held while quiet: ${ctx.quiet}` };
+  }
   if (ctx.busy) return { act: "none", reason: "the fairy is busy" };
+  if (summon) return summonDecision(summon, cards, nowMs, cfg);
   if ((Number(ctx.idleMs) || 0) >= cfg.idleHoldMs) return { act: "none", reason: "the owner is away" };
   const list = Array.isArray(cards) ? cards.filter((c) => c && c.id) : [];
   const memory = mems && typeof mems === "object" ? mems : {};
@@ -515,7 +521,94 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
   };
 }
 
+// ── the summon: an unanswered card comes back to the foreground (2026-11-19) ──
+//
+// Owner: "fairies still aren't getting my attention to approve this... FIX THE
+// ATTENTION LAYER". Measured that day: a grant card and a scheduled-job card (both
+// high) sat open for hours while the fairy held -- the owner had been idle 2 min, a
+// full-screen app was up, or a 15-minute glow gap was running, and with ~36 cards open
+// its one nudge after a restart went to a different card. The escalator's re-ping
+// (escalate_decision_cards.py: critical every 2 min, high 10, normal 30) DMs the card,
+// pushes it, and writes `.summon.json` {cards: {id: epochSeconds}} in the card store.
+// A summoned card is flown to the foreground on the next tick, INSISTING and spoken,
+// through the idle hold, the pacing gap and the per-card interval. Only the owner's
+// own word holds it: "Later" (snooze) or "Stop nudging" (muted) on that card, or quiet
+// (Do not disturb, a full-screen app) -- and quiet holds everything but a critical card.
+
+/** The summon to honour now: the newest summoned open card not yet shown for that
+ *  summon, as {card, atMs}. `summons` maps id -> epoch SECONDS (Python wrote it). */
+function summonDue(cards, mems, summons, nowMs = Date.now(), allow = null) {
+  if (!summons || typeof summons !== "object") return null;
+  const memory = mems && typeof mems === "object" ? mems : {};
+  let best = null;
+  for (const card of Array.isArray(cards) ? cards : []) {
+    if (!card || !card.id || (allow && !allow(card))) continue;
+    const at = Number(summons[card.id]) * 1000;
+    if (!Number.isFinite(at) || at <= 0 || at > nowMs + MIN) continue;
+    const mem = memory[card.id] || {};
+    if (mem.muted || (mem.snoozeUntil && nowMs < mem.snoozeUntil)) continue;
+    if ((Number(mem.lastSummonAt) || 0) >= at) continue;
+    if (!best || at > best.atMs) best = { card, atMs: at };
+  }
+  return best;
+}
+
+/** Quiet holds a summon unless the card is critical. The fairy being HIDDEN is not
+ *  quiet the owner chose for this card: a summon brings it back (orb-window). */
+function summonBreaksQuiet(card, quiet) {
+  if (/fairy is hidden/i.test(String(quiet || ""))) return true;
+  return lower(card && card.urgency) === "critical";
+}
+
+function summonDecision(summon, cards, nowMs, cfg = DEFAULTS) {
+  const list = Array.isArray(cards) ? cards.filter((c) => c && c.id) : [];
+  const split = backlogSplit(list, nowMs, cfg);
+  return {
+    act: "nudge",
+    card: summon.card,
+    level: LEVEL.INSIST,
+    importance: 3,
+    climbs: true,
+    hold: holdsWork(summon.card),
+    arrival: false,
+    returned: false,
+    summoned: true,
+    summonAt: summon.atMs,
+    why: whyNow(summon.card, nowMs),
+    lead: "Still waiting on you",
+    more: list.length - 1,
+    voice: true,
+    needNow: split.now.length,
+    older: split.older.length,
+    mentionOlder: false,
+    showMs: cfg.showMs[LEVEL.INSIST],
+  };
+}
+
+/** `.summon.json` in the card store -> {id: epochSeconds}. `readText(path)` is
+ *  injected (fs.readFileSync in the desk); anything unreadable is "no summons". */
+function readSummons(storeDir, readText) {
+  try {
+    const raw = JSON.parse(String(readText(require("node:path").join(String(storeDir), ".summon.json"))));
+    const cards = raw && typeof raw === "object" ? raw.cards : null;
+    if (!cards || typeof cards !== "object") return {};
+    const out = {};
+    for (const [id, at] of Object.entries(cards)) {
+      const n = Number(at);
+      if (/^d-[a-z0-9]{2,16}$/i.test(id) && Number.isFinite(n) && n > 0) out[id] = n;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 // ── per-card memory (pure updates; the caller persists the map) ─────────────
+
+/** Shown for a summon: the same summon never shows twice. */
+function recordSummoned(mem = {}, atMs = Date.now(), nowMs = Date.now()) {
+  return { ...recordShown(mem, nowMs), lastSummonAt: atMs };
+}
 
 function recordShown(mem = {}, nowMs = Date.now()) {
   return { ...mem, lastNudgeAt: nowMs, nudges: (Number(mem.nudges) || 0) + 1 };
@@ -562,7 +655,7 @@ function sanitizeMems(raw) {
   for (const [id, mem] of Object.entries(raw)) {
     if (!/^d-[a-z0-9]{2,16}$/i.test(id) || !mem || typeof mem !== "object") continue;
     const clean = {};
-    for (const key of ["lastNudgeAt", "nudges", "ignored", "snoozeUntil", "laterCount"]) {
+    for (const key of ["lastNudgeAt", "nudges", "ignored", "snoozeUntil", "laterCount", "lastSummonAt"]) {
       const n = Number(mem[key]);
       if (Number.isFinite(n) && n > 0) clean[key] = n;
     }
@@ -827,6 +920,10 @@ module.exports = {
   backlogLabel,
   arrivalLine,
   plan,
+  summonDue,
+  summonBreaksQuiet,
+  recordSummoned,
+  readSummons,
   recordShown,
   recordIgnored,
   recordActed,
