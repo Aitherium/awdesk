@@ -4895,7 +4895,9 @@ function scriptFor(action, args = {}) {
         refs.set(ref, el);
         const tag = el.tagName.toLowerCase();
         const role = el.getAttribute("role");
-        const item = { ref, tag, label: labelOf(el) };
+        const r = el.getBoundingClientRect();
+        const item = { ref, tag, label: labelOf(el),
+          rect: [r.left, r.top, r.width, r.height], page: false };
         if (role) item.role = role;
         if (tag === "input") item.type = String(el.type || "text").toLowerCase();
         if (el.disabled) item.disabled = true;
@@ -4918,7 +4920,11 @@ function scriptFor(action, args = {}) {
       }
       const frames = document.querySelectorAll("iframe").length;
       const out = { ok: true, url: location.href, title: document.title, count: elements.length, total,
-        truncated: total > elements.length, elements };
+        truncated: total > elements.length, elements,
+        // awscreen.dom.DomSnapshot shape: awscreen state --dom joins with no converter.
+        viewport: { dpr: window.devicePixelRatio || 1, vw: innerWidth, vh: innerHeight,
+          sx: scrollX || 0, sy: scrollY || 0 },
+        origin_px: [0, 0], image_scale: "fit" };
       if (frames) {
         out.frames = frames;
         out.note = "Elements inside iframes (captchas, embedded sign-in, card fields) are not listed. "
