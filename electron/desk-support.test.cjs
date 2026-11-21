@@ -124,6 +124,28 @@ test("crash hooks monitor exceptions and report renderer/child crashes and hangs
   assert.match(seen[0][1], /TypeError: x is undefined/);
 });
 
+test("an unresponsive window is reloaded once, then left alone inside the cooldown", () => {
+  const seen = [];
+  const app = new EventEmitter();
+  const proc = new EventEmitter();
+  support.installCrashHooks({ app, crashReporter: null, proc, report: (...a) => seen.push(a) });
+  const wc = new EventEmitter();
+  wc.getURL = () => "file:///deck.html";
+  let reloads = 0;
+  wc.reload = () => { reloads += 1; };
+  app.emit("web-contents-created", {}, wc);
+  wc.emit("unresponsive");
+  wc.emit("unresponsive");
+  assert.equal(reloads, 1, "a hung renderer must be recovered, not left on the OS dialog");
+  assert.ok(seen.some((s) => /reloaded an unresponsive window/.test(String(s[1]))),
+    "the recovery is reported so a repeat is visible");
+  // A second hang inside the cooldown must NOT reload again, or a renderer that
+  // hangs immediately after loading becomes an invisible reload loop.
+  wc.emit("responsive");
+  wc.emit("unresponsive");
+  assert.equal(reloads, 1, "a repeat hang inside the cooldown must not reload again");
+});
+
 test("an existing unhandledRejection handler is left in charge", () => {
   const proc = new EventEmitter();
   proc.on("unhandledRejection", () => {});
