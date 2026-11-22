@@ -155,11 +155,25 @@ jobs:
           signtool sign /fd SHA256 /f out\AitherShellMenu.pfx /p $plain /tr http://timestamp.digicert.com /td SHA256 out\AitherShellMenu.msix
           if ($LASTEXITCODE -ne 0) { throw "signtool sign failed" }
 
-          # Trust the public cert for THIS runner so the verification below exercises
-          # the same store an installer uses (per-user TrustedPeople, no admin).
-          Import-Certificate -FilePath out\AitherShellMenu.cer -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
-          signtool verify /pa /v out\AitherShellMenu.msix
-          if ($LASTEXITCODE -ne 0) { throw "signtool verify failed" }
+          # Trust the public cert on THIS runner so the verification below exercises a
+          # real policy. `signtool verify /pa` walks the Authenticode chain, which ends
+          # at Trusted Root -- a self-signed cert in CurrentUser\TrustedPeople alone
+          # fails with CERT_E_UNTRUSTEDROOT (measured on the first run). The production
+          # install still uses per-user TrustedPeople; these machine stores exist only
+          # for this throwaway runner and are removed right after.
+          $stores = 'Cert:\CurrentUser\TrustedPeople','Cert:\LocalMachine\TrustedPeople','Cert:\LocalMachine\Root'
+          foreach ($store in $stores) {
+            Import-Certificate -FilePath out\AitherShellMenu.cer -CertStoreLocation $store | Out-Null
+          }
+          try {
+            signtool verify /pa /v out\AitherShellMenu.msix
+            if ($LASTEXITCODE -ne 0) { throw "signtool verify failed" }
+          } finally {
+            foreach ($store in $stores) {
+              Get-ChildItem $store | Where-Object { $_.Subject -eq $subject } |
+                ForEach-Object { Remove-Item $_.PSPath -Force -ErrorAction SilentlyContinue }
+            }
+          }
           Remove-Item out\AitherShellMenu.pfx -Force
 
       - name: Checksums
