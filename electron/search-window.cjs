@@ -19,7 +19,7 @@
 
 const path = require("node:path");
 const { createSearchClient } = require("./search-client.cjs");
-const { APPS_FOLDER_PREFIX, DISCOVER_KINDS, encodedCommand } = require("./universal-search.cjs");
+const { APPS_FOLDER_PREFIX, encodedCommand } = require("./universal-search.cjs");
 
 /** Env var the constant launch script reads the AppsFolder target from. */
 const APPS_FOLDER_ENV = "AWDESK_APPS_FOLDER_TARGET";
@@ -128,17 +128,6 @@ function setWebOpener(fn) {
   openWeb = typeof fn === "function" ? fn : null;
 }
 
-/** Open an http(s) URL through the wired web opener (an Aither browser tab). */
-async function openWebUrl(url) {
-  const u = String(url || "");
-  if (!/^https?:\/\//i.test(u)) return { ok: false, error: "1 address is not http(s) — nothing opened" };
-  if (!openWeb) return { ok: false, error: "1 web opener not wired in main.cjs" };
-  try { await openWeb(u); } catch (error) {
-    return { ok: false, error: `1 page did not open — ${String((error && error.message) || error).slice(0, 200)}` };
-  }
-  return { ok: true, did: "opened in the Aither browser" };
-}
-
 /**
  * main says how a desk command runs: (id) => verdict. The verdict is reported, not
  * assumed: {ok:false, ...} or {cancelled:true} (a confirm the owner cancelled) is a
@@ -170,18 +159,7 @@ function publicRun(r) {
     id: g.id, label: g.label, total: g.total,
     items: g.items.map((it) => {
       remembered.set(it.key, it);
-      const row = { key: it.key, kind: it.kind, title: it.title, subtitle: it.subtitle, score: it.score };
-      // A CARD row carries its own options so the launcher can number them and
-      // send the number back. Keys and labels only -- the card's summary is the
-      // raiser's text, and the value of a credential card never travels at all.
-      if (it.kind === "card") {
-        row.cardId = it.cardId;
-        row.defaultKey = it.defaultKey;
-        row.options = (Array.isArray(it.options) ? it.options : []).map((o) => ({
-          index: o.index, key: o.key, label: o.label, recommended: o.recommended === true,
-        }));
-      }
-      return row;
+      return { key: it.key, kind: it.kind, title: it.title, subtitle: it.subtitle, score: it.score };
     }),
   }));
   return { ok: true, query: r.query, phase: r.phase, groups, total: r.total, errors: r.errors, notes: r.notes, tookMs: r.tookMs };
@@ -259,8 +237,7 @@ async function launchItem(key, query, { shell, clipboard, action = runAction, ch
     clipboard.writeText(item.target);
     return { ok: true, did: "copied to the clipboard" };
   }
-  // An AitherOS app (kind "osapp") is a command-registry row too: the same runner, by id.
-  if (item.kind === "action" || item.kind === "osapp") {
+  if (item.kind === "action") {
     if (!action) return { ok: false, error: UNWIRED.action };
     let result;
     try {
@@ -269,9 +246,9 @@ async function launchItem(key, query, { shell, clipboard, action = runAction, ch
       return { ok: false, error: `1 desk action failed — ${String((error && error.message) || error).slice(0, 200)}` };
     }
     const bad = failureOf(result, "desk action");
-    return bad ? { ok: false, error: bad } : { ok: true, did: item.kind === "osapp" ? `opened ${item.title}` : `ran ${item.title}` };
+    return bad ? { ok: false, error: bad } : { ok: true, did: `ran ${item.title}` };
   }
-  if (DISCOVER_KINDS.has(item.kind)) {
+  if (item.kind === "agent") {
     if (!chat) return { ok: false, error: UNWIRED.chat };
     return sendChat(chat, require("./universal-search.cjs").chatPrompt(query, item), acceptMs ? { acceptMs } : {});
   }
@@ -456,7 +433,7 @@ function registerLauncherShortcut(globalShortcut, { onPress = () => toggleLaunch
 }
 
 module.exports = {
-  rememberedItem, openWebUrl,
+  rememberedItem,
   CHAT_ACCEPT_MS, LAUNCHER_ACCELS, UNWIRED,
   client, ensureSearchIpc, failureOf, openAppsFolderEntry, fromSearchPage, hideLauncher, launchItem, publicRun, registerLauncherShortcut,
   searchHandlers, sendChat, setActionRunner, setChatSender, setForgeOpener, setWebOpener, toggleLauncher, universal,

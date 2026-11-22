@@ -261,16 +261,21 @@ function buildParty({ castFile = undefined, rosterDir = roster.ROSTER_DIR, now =
   const names = listRoster(rosterDir);
   const problems = loaded.error ? [{ path: "", reason: loaded.error }] : [];
 
-  // A CONFIGURED character is judged against the full roster so an r18 body resolves to
-  // itself and is then excluded (below) instead of vanishing in silence. There is no
-  // automatic body any more (owner 2026-11-17): an unconfigured row has none.
-  // The platform-declared voice tier (below cast.json authors), so a party member sounds
-  // like the agent it is on a desk that never authored it.
+  // Two rosters, on purpose. A CONFIGURED character is judged against the full
+  // roster so an r18 body resolves to itself and is then excluded (below) instead
+  // of being swapped for a hashed one in silence. An UNCONFIGURED row hashes the
+  // way the desk itself does -- into the SAFE roster -- so the gate never makes a
+  // whole actor vanish from the party just because its fallback hash landed on a
+  // hidden body.
+  const safeNames = names.filter((n) => !hiddenNow(ratingOf(readCharacterJson(rosterDir, n))));
+  // The platform-declared voice/character tier (below cast.json authors), so a
+  // party member sounds like the agent it is on a desk that never authored it.
   const agentRoster = cast.loadRosterPresence();
-  // ...and the platform's canonical engine voice above that mirror, so the
-  // manifest reports what AitherVoice will actually speak, not a stock Edge name.
-  const agentVoices = cast.loadAgentVoices();
-  const resolve = (ctx) => cast.resolveActor(snapshot, { roster: names, agentRoster, agentVoices, ...ctx });
+  const resolve = (ctx) => {
+    const full = cast.resolveActor(snapshot, { roster: names, agentRoster, ...ctx });
+    if (full.characterFrom !== "hash") return full;
+    return cast.resolveActor(snapshot, { roster: safeNames, agentRoster, ...ctx });
+  };
 
   const rows = [];
   for (const key of Object.keys(cfg.actors || {})) {
@@ -312,8 +317,6 @@ function buildParty({ castFile = undefined, rosterDir = roster.ROSTER_DIR, now =
     const character = row.resolved.character && names.includes(row.resolved.character) ? row.resolved.character : null;
     admit(memberFor({ resolved: row.resolved, character, rosterDir, originKey: row.originKey }));
   }
-  // party.json is an EXPORT of the library (decision 2: a roster folder is a persona), rated and
-  // filtered like everything else; it puts no body on this desk. Reviewed for owner P0 2026-11-17.
   for (const name of names) {
     if (claimed.has(name)) continue;
     // What the desk WOULD resolve for this body with no row of its own: the

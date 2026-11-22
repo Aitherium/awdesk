@@ -146,11 +146,7 @@ def write_rating(name: str, rating: str, source: str) -> bool:
     try:
         target.write_text(
             json.dumps(
-                # rating_source too: the desk reads it first (rating-resolve.cjs), so a verdict
-                # written without it would be credited to the previous, stale source.
-                {**existing, "rating": rating, "source": source, "rating_source": source},
-                indent=2,
-                ensure_ascii=False,
+                {**existing, "rating": rating, "source": source}, indent=2, ensure_ascii=False
             ),
             encoding="utf-8",
         )

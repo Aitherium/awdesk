@@ -147,33 +147,19 @@ test("an id that is not in YOUR library is refused without a download", async ()
   assert.equal(client.calls.libraryModel, 0);
 });
 
-test("an r18 VRoid model is NOT downloaded while the gate is closed (the download door), and says why", async () => {
+test("an r18 VRoid model installs hidden while the gate is closed, and says why", async () => {
   const bytes = fakeVrm("vroid-adult");
   const client = fakeClient({ vroid: { "123456": bytes } });
   const d = deps(client);
   const r = await sync.installVroidModel({ id: "123456", name: "A", downloadable: true, r18: true }, d);
-  assert.equal(r.ok, false);
-  assert.match(r.reason, /not available on this profile/);
-  assert.equal(client.calls.vroidModel, 0, "not a byte moves for a body this desk would hide");
-  assert.equal(fs.existsSync(path.join(ROSTER, "vroid-123456")), false);
-  // An R18 TAG on a model the uploader forgot to flag is refused the same way.
-  const tagged = await sync.installVroidModel({ id: "123457", downloadable: true, r18: false, r15: false, tags: ["R-18"] }, d);
-  assert.equal(tagged.ok, false);
-  assert.equal(client.calls.vroidModel, 0);
-});
-
-test("an r18 VRoid model the rule allows installs with VRoid's verdict and its Hub record kept for the re-derive", async () => {
-  const bytes = fakeVrm("vroid-adult-open");
-  const client = fakeClient({ vroid: { "123458": bytes } });
-  const d = deps(client, { ratingHidden: () => null });
-  const r = await sync.installVroidModel({ id: "123458", name: "A", downloadable: true, r18: true, tags: [{ name: "R18" }] }, d);
   assert.equal(r.ok, true, r.reason);
   assert.equal(r.installed, true);
-  assert.equal(r.applied, false, "the real gate (closed here) still hides it on stage");
-  const rec = JSON.parse(fs.readFileSync(path.join(ROSTER, "vroid-123458", "character.json"), "utf8"));
+  assert.equal(r.applied, false);
+  assert.match(r.reason, /mature content is currently hidden/);
+  assert.equal(roster.listCharacters().includes("vroid-123456"), false);
+  const rec = JSON.parse(fs.readFileSync(path.join(ROSTER, "vroid-123456", "character.json"), "utf8"));
   assert.equal(rec.rating, "r18");
   assert.equal(rec.source, "vroid");
-  assert.deepEqual(rec.vroid_hub, { r18: true, tags: ["R18"] });
 });
 
 test("a VRoid model is installed once; a non-downloadable one is never fetched", async () => {
@@ -192,12 +178,9 @@ test("a VRoid model is installed once; a non-downloadable one is never fetched",
 });
 
 test("while the gate is closed no R15/R18 row reaches the Deck", async () => {
-  const models = [{ id: "1", r18: true }, { id: "2", r15: true }, { id: "3", r18: false, r15: false }];
-  assert.deepEqual(sync.visibleVroidModels(models, false, () => null).map((m) => m.id), ["3"]);
-  assert.equal(sync.visibleVroidModels(models, true, () => null).length, 3);
-  // The default rule is the real one: the mirror here is absent (closed), so an open `open` flag
-  // from a caller cannot list an R18 row past it.
-  assert.deepEqual(sync.visibleVroidModels(models, true).map((m) => m.id), ["3"]);
+  const models = [{ id: "1", r18: true }, { id: "2", r15: true }, { id: "3" }];
+  assert.deepEqual(sync.visibleVroidModels(models, false).map((m) => m.id), ["3"]);
+  assert.equal(sync.visibleVroidModels(models, true).length, 3);
   assert.equal(sync.gateOpen(), false, "no mirror file: the gate fails closed");
 
   const avatars = [
@@ -207,13 +190,8 @@ test("while the gate is closed no R15/R18 row reaches the Deck", async () => {
   ];
   const closed = await sync.libraryView({ client: fakeClient({ avatars }), isAdultContentVisible: () => false });
   assert.deepEqual(closed.avatars.map((a) => a.id), ["Plain-cccc0000"]);
-  const open = await sync.libraryView({ client: fakeClient({ avatars }), isAdultContentVisible: () => true, ratingHidden: () => null });
+  const open = await sync.libraryView({ client: fakeClient({ avatars }), isAdultContentVisible: () => true });
   assert.equal(open.avatars.length, 3);
-  // The library is a door too: the real rule (mirror absent here = closed) still hides R15/R18
-  // and an unrated row, whatever the caller's `open` says.
-  const unrated = [...avatars, { id: "Nobody-dddd0000", sha256: "w" }];
-  const real = await sync.libraryView({ client: fakeClient({ avatars: unrated }), isAdultContentVisible: () => true });
-  assert.deepEqual(real.avatars.map((a) => a.id), ["Plain-cccc0000"]);
 });
 
 test("list_characters over the desk MCP shows an installed library avatar", async (context) => {

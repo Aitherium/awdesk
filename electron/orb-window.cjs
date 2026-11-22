@@ -40,7 +40,6 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const orbCore = require("./orb-core.cjs");
-const neuronsModel = require("./neurons-model.cjs");
 const orbVision = require("./orb-vision.cjs");
 const spiritCore = require("./spirit-core.cjs");
 const spiritOps = require("./spirit-ops.cjs");
@@ -48,34 +47,9 @@ const spiritProbe = require("./spirit-probe.cjs");
 const spriteCore = require("./sprite-core.cjs");
 const awCli = require("./aw-cli.cjs");
 const selectionReader = require("./selection-reader.cjs");
-const fairyAttention = require("./fairy-attention.cjs");
-const agentFairy = require("./agent-fairy.cjs");
-const fairyMenu = require("./fairy-menu.cjs");
-const freeSpace = require("./free-space.cjs");
-const companionMenu = require("./companion-menu.cjs");
-const fairyOwner = require("./fairy-owner.cjs");
-const fairyCounts = require("./fairy-counts.cjs");
-const fairyCluster = require("./fairy-cluster.cjs");
-const displayMode = require("./display-mode.cjs");
-const orbRadial = require("./orb-radial-menu.cjs");
-const linkOpener = require("./link-opener.cjs");
-const fairyHoverGuard = require("./fairy-hover-guard.cjs");
-const fairyPanel = require("./fairy-panel.cjs");
-const agentsPanel = require("./agents-panel.cjs");
-const fairyControl = require("./fairy-control.cjs");
-const foregroundProbe = require("./foreground-probe.cjs");
-const fairyFlight = require("./fairy-flight.cjs");
-const followFocus = require("./follow-focus.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
-/** The whisper: the card the fairy carries, beside it. Small on purpose. */
-const NUDGE_SIZE = Object.freeze({ width: 420, height: 188 });
-/** The whisper grows to its content (full button labels), within these bounds. */
-const NUDGE_MIN_H = 140;
-const NUDGE_MAX_H = 560;
-const ATTENTION_TICK_MS = 15_000;
-const NUDGE_STEP_MS = 250;
 const TICK_MS = 250;
 const DRAG_STEP_MS = 16;
 const CLICK_SLOP_PX = 4;
@@ -101,73 +75,7 @@ let wired = false;
 let orbWindow = null;
 let bubbleWindow = null;
 let veilWindow = null;
-let nudgeWindow = null;
-/** The fairy cluster (fairy-cluster.cjs): one per decision and live session, capped
- *  into a counted bead. swarmCompanions is what it draws right now. */
-let swarmWindow = null;
-let swarmCompanions = [];
-/** Live session rows (Claude Code tabs Map + awsh daemon rows) and which sources read. */
-let clusterSessions = [];
-let clusterOk = { cards: true, sessions: true, presence: true };
-const clusterReaper = fairyCluster.createReaper();
-let clusterTotal = 0;
-let clusterLabel = "";
-/** The orb was shown BY the cluster (decisions waiting while hidden), not by the owner. */
-let autoSurfaced = false;
-/** Card ids waiting when the owner hid the fairy himself (null = he has not). */
-let ownerHidIds = null;
-let clusterTimer = null;
-/** Tool flights (fairy-flight.cjs): the last plan the renderer was given, the live
- *  planner (it remembers a finished call long enough to fly home), and one timer that
- *  re-plans when the last leg is over. No per-frame IPC: the veil page animates. */
-let toolFlightPlan = { flights: [], returning: [], hover: [], throttled: [], reducedMotion: false };
-let toolFlightTimer = null;
-const toolFlightPlanner = fairyFlight.createFlightPlanner();
-/** Where the ONE cluster is centred while the fairy itself is down (a full avatar stands
- *  where it was): the agent swarm sets it so the light fairies keep orbiting the avatar
- *  instead of vanishing with the orb. null = follow the orb, as always. */
-let swarmAnchor = null;
-/** Fine control (fairy-control.cjs): the click-selected fairy, every live companion before the
- *  view filters it, the pinned fairies' own windows, the drag in flight, the focused window. */
-let selectedAgent = "";
-let allCompanions = [];
-let pinWindows = new Map();
-let pinDrag = null;
-/** The orbs swarm mode owns (display-mode.cjs, owner 2026-11-20): each is a pin
- *  window we placed; being here, and not in swarmView.pins, keeps a mode switch from
- *  persisting them as the owner's pins. */
-let swarmPinAgents = new Set();
-let fgContent = null;
-let fgProbeImpl = null;
-/** Follow-the-focused-window (plan A4): the descriptor the probe last reported, when it
- *  changed, and the settle timer that waits for the focus to hold before it moves. */
-let followSeen = null;
-let followChangedAt = 0;
-let followDebounce = null;
-let followBusy = false;
-/** Bounded retries while the fairy is mid-flight/card; a new focus resets the count. */
-let followRetries = 0;
-/** The taskbar rect on the cluster's OWN display (DIPs) dock mode sits on, every bar
- *  the probe published (so the right monitor's is chosen), and the refresh timer. */
-let taskbarRect = null;
-let taskbarBars = [];
-let taskbarTimer = null;
-let lastSwarmViewKey = "";
-let lastCompanionsWho = "";
-let lastBounds = null;
-/** Visual neurons (neurons-model.cjs): the agent step graph, off unless switched on.
- *  Steps are batched at NEURONS_FLUSH_MS (<= 10 Hz) -- never one IPC per step. */
-const NEURONS_FLUSH_MS = 100;
-const neurons = neuronsModel.createNeurons();
-let neuronTimer = null;
-let lastNeuronPayload = "";
-/** agent -> its last drawn state, so only a TRANSITION opens a "thinking" node. */
-let lastNeuronStates = new Map();
 let state = orbCore.sanitizeState(null);
-/** How the companion is drawn (display-mode.cjs, owner 2026-11-20): avatar, fairy,
- *  both or swarm. Persisted by main in avatar-dock.json; applied here by
- *  setDisplayModeState from the menu, the palette, the key or the boot restore. */
-let display = displayMode.normalize(null);
 let queue = orbCore.createQueue();
 let tickTimer = null;
 let dragTimer = null;
@@ -185,9 +93,6 @@ let flight = null; // {path, from, to, startedAt, duration, resolve, cancelled}
 let flightTimer = null;
 let trail = [];
 let lastTrailAt = 0;
-// The last veil payload actually sent. A 60 Hz flight used to re-send identical
-// frames and the renderer reallocated its canvas for every one of them.
-let lastVeilKey = "";
 let home = null; // {x,y} free resting point (orb CENTRE) captured when attaching
 let tint = spiritCore.tintFor("slot0");
 let hold = null;
@@ -195,26 +100,13 @@ let results = null; // {mode:"find"|"web"|"folder", rows, more, total, query}
 let tripQueue = spiritCore.createTripQueue();
 let tripLog = spiritCore.createTripLog();
 let tripBusy = false;
-/** The longest one spirit trip may run before it is called failed (a vision read is ~30 s). */
-let TRIP_LIMIT_MS = 120_000;
-let bubbleMode = null; // "find" | "web" | "card" | null
-/** The card the bubble is chatting about (bubbleMode "card"): {id, title, context}. */
-let cardChat = null;
+let bubbleMode = null; // "find" | "web" | null
 /** The body whose avatar-menu row opened the bubble: it speaks the answer the
  *  owner types there (an avatar-menu row cannot carry a text prompt). */
 let pendingSlot = null;
 let regionWait = false;
 /** A bubble the owner closed stays closed until something NEW arrives. */
 let suppressed = false;
-/** The fairy has grown into Aither's full avatar (expandToAvatar); transient, never saved. */
-let expanded = false;
-/** Aither's body is up as its OWN surface (main's avatar window, not a grow): the
- *  fairy stands down while it is, without forgetting that the owner wants her
- *  (state.visible stays true). Owner 2026-11-20: "WHY DOES CLICKING DESKTOP TRAY
- *  OPEN A SEPARATE AVATAR WHEN THE FAIRY IS SUPPOSED TO TURN INTO THAT AVATAR" --
- *  the tray's Show avatar raised the body and left the fairy floating beside it.
- *  One companion surface, always; docking in the browser is the declared exception. */
-let stoodDownForAvatar = false;
 let ops = null;
 let probe = null;
 let pendingRuns = new Map(); // trip id -> {resolve, timer}
@@ -273,8 +165,6 @@ function stateFile() {
 function loadState() {
   try {
     state = orbCore.sanitizeState(JSON.parse(fs.readFileSync(stateFile(), "utf8")));
-    // the owner's hide survives a crash: the cards waiting when they hid it stay quiet
-    ownerHidIds = state.ownerHid ? new Set(state.ownerHidIds) : null;
   } catch {
     state = orbCore.sanitizeState(null); // unreadable state -> defaults, never a crash
   }
@@ -285,8 +175,7 @@ function saveState() {
   try {
     const file = stateFile();
     const tmp = `${file}.${process.pid}.tmp`;
-    // A cluster-surfaced orb (decisions waiting) is not the owner's choice to show it.
-    fs.writeFileSync(tmp, JSON.stringify(autoSurfaced ? { ...state, visible: false } : state));
+    fs.writeFileSync(tmp, JSON.stringify(state));
     fs.renameSync(tmp, file);
   } catch { /* per-viewer convenience: losing it costs a remembered spot only */ }
 }
@@ -323,305 +212,44 @@ function restoreWorkArea() {
   if (state.x != null && state.y != null) {
     try {
       const display = screen.getDisplayNearestPoint({ x: state.x, y: state.y });
-      if (display && display.workArea) return fairyArea(display.workArea);
+      if (display && display.workArea) return display.workArea;
     } catch { /* fall through to the primary */ }
   }
-  try { return fairyArea(screen.getPrimaryDisplay().workArea); } catch { return { x: 0, y: 0, width: 1920, height: 1080 }; }
-}
-
-// ── A box the fairy never rests in (the tenant site's own companion) ────────
-// living-desktop-window.cjs reports where the overlay page draws `[data-companion]`
-// (GARG's goblin). The fairy's resting spot, its whisper, its answer bubble and its
-// menu are placed in the work area MINUS that box (orb-core areaAvoiding). The saved
-// spot in orb.json is not rewritten: back in a workspace with no companion the fairy
-// returns to it. RESERVE_PAD keeps the swarm that circles the fairy off the box too.
-const RESERVE_PAD = 124;
-let reservedBox = null;
-function fairyArea(area) {
-  return area ? orbCore.areaAvoiding(area, reservedBox, RESERVE_PAD) : area;
-}
-function setReservedBox(box) {
-  const next = box && Number(box.width) > 0 && Number(box.height) > 0
-    ? { x: Number(box.x), y: Number(box.y), width: Number(box.width), height: Number(box.height) } : null;
-  if (JSON.stringify(next) === JSON.stringify(reservedBox)) return false;
-  reservedBox = next;
-  // At rest only: a flight, a drag, an attachment or a nudge finishes on its own terms.
-  if (alive(orbWindow) && !dragging && !attach && !tripBusy && !nudging) {
-    placeOrb();
-    try { placeSwarm(); } catch { /* no swarm yet */ }
-  }
-  return true;
-}
-
-/** Where the fairy rests (window top-left): the saved spot, or the first-run corner,
- *  inside the area it may use right now (fairyArea). Every resting path asks this. */
-function restSpot() {
-  const area = restoreWorkArea();
-  return state.x != null && state.y != null
-    ? orbCore.clampToWorkArea({ x: state.x, y: state.y }, ORB_SIZE, area)
-    : orbCore.defaultOrbPosition(area, ORB_SIZE);
-}
-
-// ── One cluster: the fairy docks on the AitherOS window (owner, 2026-11-12) ─────
-// "I have two clusters of fairies. When the AitherOS desktop/app/workspace is open, the
-// fairy cluster from awdesk should become this one: attach to the AitherOS desktop and
-// not be stuck behind the goblin, and automatically detach."
-// The second cluster is the served page's own fairy (Veil os-fairy.tsx); the desk hides
-// it in its own windows (living-desktop-window HIDE_PAGE_FAIRY_CSS), so the one cluster
-// is this one, with the counts of fairy-counts.cjs. While the AitherOS window is open
-// and not minimised the fairy is attached to it with the EXISTING attach/follow (kind
-// "desk"), marked `auto`; it rides the window's bottom-right, left of the tenant's
-// companion. Closed, hidden or minimised: it lets go and flies back to its resting
-// spot. An attachment the owner made by hand is never replaced or dropped by this.
-let dockWindowId = 0;
-function dockSpot(target) {
-  const base = target && target.auto
-    ? orbCore.windowDockSpot(target.bounds, ORB_SIZE, reservedBox, RESERVE_PAD)
-    : spiritCore.dockPosition(target, ORB_SIZE);
-  // A body has no buttons under it; a WINDOW does. Owner 2026-11-16: the fairy sat on
-  // CertTrack's "Review" tab. Stand on the first spot of the window that covers nothing.
-  if (!target || target.kind === "avatar") return base;
-  const b = spiritCore.normBounds(target.bounds);
-  if (!b) return base;
-  const pick = freeSpace.pickFree(
-    freeSpace.dockCandidates(b, ORB_SIZE, { first: base }), ORB_SIZE, obstaclesFor(target), { pad: 10, area: b },
-  );
-  return pick ? { x: pick.x, y: pick.y } : base;
-}
-
-// -- what is clickable under the fairy (free-space.cjs) -------------------------------
-// The desk's own windows are asked, from inside the page, where their buttons, tabs and
-// fields are; a window owned by another program gets its title bar as one obstacle. The
-// answers are cached for a second and a half: the dock follows a window at 4 Hz and must
-// never wait on a page.
-const OBSTACLE_TTL_MS = 1500;
-const obstacleCache = new Map(); // windowId -> { at, rects }
-const obstacleBusy = new Set();
-
-function ownWindowIds() {
-  return new Set([orbWindow, bubbleWindow, veilWindow, nudgeWindow, swarmWindow, menuWindow, tipWindow]
-    .filter((w) => alive(w)).map((w) => w.id));
-}
-
-async function refreshObstacles(win) {
-  if (!alive(win) || obstacleBusy.has(win.id)) return;
-  const cached = obstacleCache.get(win.id);
-  if (cached && Date.now() - cached.at < OBSTACLE_TTL_MS) return;
-  obstacleBusy.add(win.id);
-  try {
-    const wc = win.webContents;
-    const rows = await Promise.race([
-      wc.executeJavaScript(freeSpace.probeSource(), true),
-      new Promise((resolve) => { const t = setTimeout(() => resolve(null), 800); if (t.unref) t.unref(); }),
-    ]);
-    if (!Array.isArray(rows)) return; // a page that would not answer is "unknown", not "empty"
-    let zoom = 1;
-    try { zoom = wc.getZoomFactor ? wc.getZoomFactor() : 1; } catch { /* default 1 */ }
-    obstacleCache.set(win.id, { at: Date.now(), rects: freeSpace.toScreenRects(rows, win.getContentBounds(), zoom) });
-  } catch { /* a page mid-navigation: try again next tick */ } finally {
-    obstacleBusy.delete(win.id);
-  }
-}
-
-/** Ask every visible desk window (the fairy's own excluded) what is clickable in it. */
-async function refreshAllObstacles() {
-  const { BrowserWindow } = electron();
-  const own = ownWindowIds();
-  let wins;
-  try { wins = BrowserWindow.getAllWindows(); } catch { wins = []; }
-  const live = wins.filter((w) => alive(w) && !own.has(w.id) && w.isVisible() && !w.isMinimized());
-  for (const id of [...obstacleCache.keys()]) if (!live.some((w) => w.id === id)) obstacleCache.delete(id);
-  await Promise.all(live.map((w) => refreshObstacles(w)));
-}
-
-/** The clickable rects for one dock target (screen coordinates). */
-function obstaclesFor(target) {
-  if (!target) return [];
-  if (target.kind === "desk" && target.windowId) {
-    const cached = obstacleCache.get(target.windowId);
-    return cached ? cached.rects : [];
-  }
-  // Another program's window: no page to ask, so its title bar and tab strip stand in.
-  const chrome = freeSpace.chromeObstacle(target.bounds);
-  return chrome ? [chrome] : [];
-}
-
-/** Every clickable rect we know of across the desk's windows, for the flutter. */
-function allObstacles() {
-  const out = [];
-  for (const entry of obstacleCache.values()) if (Date.now() - entry.at < 60_000) out.push(...entry.rects);
-  return out;
-}
-/** `win` = the AitherOS window to ride, or null when there is none to ride. */
-async function setDockWindow(win) {
-  const ride = alive(win) && win.isVisible() && !win.isMinimized() ? win : null;
-  dockWindowId = ride ? ride.id : 0;
-  if (!alive(orbWindow) || dragging) return { ok: false };
-  // Hidden fairies stay hidden (owner 2026-11-13): docking never shows them.
-  if (ride && !state.visible) return { ok: true, docked: false, why: "the fairies are hidden" };
-  if (ride) {
-    // A FOLLOW attach is not a hand attach: the AitherOS window outranks "follow my
-    // window" (one cluster), so it takes the cluster from whatever follow was riding.
-    if (attach && !attach.auto && !attach.follow) return { ok: true, docked: false, why: "attached by hand" };
-    if (attach && attach.auto && attach.windowId === ride.id) return { ok: true, docked: true };
-    const r = await attachTo({ kind: "desk", windowId: ride.id, title: ride.getTitle() || "AitherOS", bounds: ride.getBounds(), auto: true },
-      { quiet: true });
-    return { ok: Boolean(r && r.ok), docked: Boolean(r && r.ok) };
-  }
-  if (attach && attach.auto) {
-    home = null; // back to the RESTING spot, not to wherever it was when it docked
-    detach({ silent: true });
-    await flyHome(480);
-    return { ok: true, docked: false };
-  }
-  return { ok: true, docked: false };
+  try { return screen.getPrimaryDisplay().workArea; } catch { return { x: 0, y: 0, width: 1920, height: 1080 }; }
 }
 
 function placeOrb() {
   if (!alive(orbWindow)) return;
-  const pos = restSpot();
+  const area = restoreWorkArea();
+  const pos = state.x != null && state.y != null
+    ? orbCore.clampToWorkArea({ x: state.x, y: state.y }, ORB_SIZE, area)
+    : orbCore.defaultOrbPosition(area, ORB_SIZE);
   orbWindow.setBounds({ ...pos, ...ORB_SIZE });
 }
 
 function placeBubble() {
   if (!alive(bubbleWindow) || !alive(orbWindow)) return;
   const [x, y] = orbWindow.getPosition();
-  const area = fairyArea(displayForOrb().workArea);
-  const size = { width: BUBBLE_SIZE.width, height: bubbleHeight };
+  const area = displayForOrb().workArea;
   const pos = orbCore.bubblePosition(
     { x, y, width: ORB_SIZE.width, height: ORB_SIZE.height },
-    size,
+    BUBBLE_SIZE,
     area,
     10,
   );
-  bubbleWindow.setBounds({ ...pos, ...size });
-}
-
-// ── the panel: one box, one button (fairy-panel.cjs, owner 2026-11-14) ──────
-/** The bubble's height, set by the page from its content (no dead space). */
-let bubbleHeight = 180;
-/** The session the owner switched the panel to (null = follow the attach). */
-let panelSessionId = null;
-/** session id ("free" = none) -> the last few exchanges, newest last. */
-let panelHistory = new Map();
-let panelSessions = { rows: null, note: "" };
-let panelTimer = null;
-let panelSessionsInflight = false;
-const PANEL_POLL_MS = 5000;
-
-function currentPanelView() {
-  return fairyPanel.panelView({
-    sessions: panelSessions.rows,
-    sessionsNote: panelSessions.note,
-    cards: attentionCards,
-    history: panelHistory,
-    chosenId: panelSessionId,
-    attach: publicAttach(),
-    current: queue.cur,
-  });
-}
-
-function sendPanelView() {
-  if (!alive(bubbleWindow)) return null;
-  const view = currentPanelView();
-  try { bubbleWindow.webContents.send("orb:panel-view", view); } catch { /* page mid-load: init carries it */ }
-  return view;
-}
-
-/** Re-read the live sessions (the harness daemon, via main's hook). Never throws. */
-async function refreshPanelSessions() {
-  if (panelSessionsInflight) return panelSessions;
-  const fn = attentionHooks && attentionHooks.sessions;
-  if (typeof fn !== "function") return panelSessions;
-  panelSessionsInflight = true;
-  try {
-    const shaped = agentsPanel.shapeSessions(await fn());
-    panelSessions = { rows: shaped.ok ? shaped.rows : [], note: shaped.note };
-  } catch (e) {
-    panelSessions = { rows: [], note: String((e && e.message) || "sessions unavailable") };
-  } finally {
-    panelSessionsInflight = false;
-  }
-  sendPanelView();
-  return panelSessions;
-}
-
-/** Poll the sessions only while the panel is on screen (perf first). */
-function syncPanelPoll() {
-  const up = alive(bubbleWindow) && bubbleWindow.isVisible();
-  if (up && !panelTimer) {
-    void refreshPanelSessions();
-    panelTimer = setInterval(() => { void refreshPanelSessions(); }, PANEL_POLL_MS);
-    if (panelTimer.unref) panelTimer.unref();
-  } else if (!up && panelTimer) {
-    clearInterval(panelTimer);
-    panelTimer = null;
-  }
-}
-
-function panelKey() {
-  const v = currentPanelView();
-  return v.line.kind === "session" ? v.line.id : "free";
-}
-
-/** What one action returned, as one line of history. */
-function exchangeText(r) {
-  if (!r || typeof r !== "object") return "";
-  if (r.ok === false) return String(r.error || r.reason || r.line || "it did not work");
-  if (r.text || r.answer) return String(r.text || r.answer);
-  if (results && Array.isArray(results.rows)) {
-    const top = results.rows[0];
-    return `${results.rows.length} result${results.rows.length === 1 ? "" : "s"}${top ? `: ${top.title || top.target || top.url || ""}` : ""}`;
-  }
-  if (r.held && r.held.path) return `holding ${r.held.path}`;
-  return "";
-}
-
-/**
- * Move the orb, PINNING its size on every call.
- *
- * `setPosition()` alone is not a move on Windows: at this display's fractional
- * scale factor Electron re-rounds the window's width/height on each call, so the
- * size creeps up by 1-2 px per move. The hover timer calls this at ORBIT_MS
- * (33 ms), the drift compounds (area, then the layered GPU surface, grows with
- * it) and the transparent always-on-top orb reaches desktop size: measured
- * 2026-11-07 a 72 px orb at 28466x27338 with the GPU process at 9.2 GB private /
- * 16.9 GB working set, twice driving the host's commit charge past 92%.
- * setBounds() that repeats width/height cannot drift.
- */
-function moveOrb(x, y) {
-  if (!alive(orbWindow)) return;
-  // Every move lands on a real screen (owner 2026-11-07: the fairy flew off-screen
-  // following a window parked off the desktop, and clicking it sent it back there).
-  // This is the one choke point flights, orbits and follows all go through.
-  let pos = { x: Number(x), y: Number(y) };
-  try {
-    const { screen } = electron();
-    const centre = { x: Math.round(pos.x + ORB_SIZE.width / 2), y: Math.round(pos.y + ORB_SIZE.height / 2) };
-    const area = screen.getDisplayNearestPoint(centre).workArea;
-    pos = orbCore.clampToWorkArea(pos, ORB_SIZE, area);
-  } catch { /* no screen module (tests): keep the requested spot */ }
-  orbWindow.setBounds({
-    x: Math.round(Number(pos.x)),
-    y: Math.round(Number(pos.y)),
-    width: ORB_SIZE.width,
-    height: ORB_SIZE.height,
-  });
-  if (swarmCompanions.length) placeSwarm();
+  bubbleWindow.setBounds({ ...pos, ...BUBBLE_SIZE });
 }
 
 function setOrbCenter(point) {
-  moveOrb(
-    Number(point && point.x) - ORB_SIZE.width / 2,
-    Number(point && point.y) - ORB_SIZE.height / 2,
+  if (!alive(orbWindow)) return;
+  orbWindow.setPosition(
+    Math.round(Number(point && point.x) - ORB_SIZE.width / 2),
+    Math.round(Number(point && point.y) - ORB_SIZE.height / 2),
   );
 }
 
 function orbVisible() {
-  // The display mode can take the orb disc down while leaving the cluster up: `both`
-  // and `swarm` are avatar + cluster, and `avatar` is the VRM alone (owner 2026-11-20).
-  const mk = displayMode.layers(display.mode);
-  return Boolean(state.visible && mk.orb && alive(orbWindow) && orbWindow.isVisible());
+  return Boolean(state.visible && alive(orbWindow) && orbWindow.isVisible());
 }
 
 // ── the windows ─────────────────────────────────────────────────────────────
@@ -632,28 +260,6 @@ function send(channel, payload) {
       if (alive(win)) win.webContents.send(channel, payload);
     } catch { /* a page mid-load misses one update; the next tick resends */ }
   }
-}
-
-/**
- * Is a card or panel open over the fairy (the whisper, the bubble)? The orb and
- * swarm pages drop their native hover tooltips while it is: measured 2026-11-09,
- * "Aither: HOST AT 97.5% COMMIT ... (16 cards)" drew over the open card's title.
- */
-let lastPanelOpen = null;
-function panelOpen() {
-  return Boolean(nudging) || Boolean(alive(bubbleWindow) && bubbleWindow.isVisible());
-}
-function sendPanel() {
-  const open = panelOpen();
-  if (open === lastPanelOpen) return open;
-  lastPanelOpen = open;
-  if (open) releaseHover();
-  for (const win of [orbWindow, swarmWindow]) {
-    try {
-      if (alive(win)) win.webContents.send("orb:panel", { open });
-    } catch { /* a page mid-load: init() carries it */ }
-  }
-  return open;
 }
 
 function ensureOrb() {
@@ -673,8 +279,6 @@ function ensureOrb() {
     webPreferences: {
       preload: path.join(__dirname, "orb-preload.cjs"),
       contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
-      // The nudge chime (WebAudio) plays without a click: the fairy is never clicked first.
-      autoplayPolicy: "no-user-gesture-required",
     },
   });
   orbWindow.setAlwaysOnTop(true, "screen-saver");
@@ -695,7 +299,7 @@ function ensureBubble() {
   if (alive(bubbleWindow)) return bubbleWindow;
   const { BrowserWindow } = electron();
   bubbleWindow = new BrowserWindow({
-    width: BUBBLE_SIZE.width, height: bubbleHeight,
+    ...BUBBLE_SIZE,
     show: false, frame: false, transparent: true, resizable: false, movable: false,
     minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true,
     alwaysOnTop: true, hasShadow: true, title: "Ask Aither",
@@ -710,852 +314,9 @@ function ensureBubble() {
   bubbleWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   bubbleWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   bubbleWindow.on("closed", () => { bubbleWindow = null; });
-  bubbleWindow.on("blur", () => {
-    drafting = false;
-    // Owner 2026-11-14: it closes when you leave it and click elsewhere -- but never
-    // mid-answer or mid-trip, and never while the pointer is still on it.
-    if (!inflight && !tripBusy && !regionWait && alive(bubbleWindow)
-        && !fairyHoverGuard.inside(cursorPoint(), bubbleWindow.getBounds())) {
-      closeBubble();
-      return;
-    }
-    syncBubble();
-  });
+  bubbleWindow.on("blur", () => { drafting = false; syncBubble(); });
   void bubbleWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "bubble" } });
   return bubbleWindow;
-}
-
-/**
- * The swarm: every companion fairy (one per agent with a card waiting), on rings
- * around the fairy that grow with the count. Its own transparent window, sized to
- * the outer ring and centred on the orb, so the 72 px orb window never grows (the
- * 2026-11-07 GPU leak was a growing orb). Click-through except the companion under
- * the pointer (the page reports it); never focused; kept BELOW the orb window so
- * the orb disc still takes its own presses.
- */
-function ensureSwarm() {
-  if (alive(swarmWindow)) return swarmWindow;
-  const { BrowserWindow } = electron();
-  swarmWindow = new BrowserWindow({
-    x: 0, y: 0, width: 160, height: 160,
-    show: false, frame: false, transparent: true, resizable: false, movable: false,
-    minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true,
-    alwaysOnTop: true, hasShadow: false, focusable: false, title: "Aither swarm",
-    backgroundColor: "#00000000",
-    webPreferences: {
-      preload: path.join(__dirname, "orb-preload.cjs"),
-      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
-    },
-  });
-  swarmWindow.setAlwaysOnTop(true, "screen-saver");
-  try { swarmWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch { /* no-op */ }
-  swarmWindow.setIgnoreMouseEvents(true, { forward: true });
-  swarmWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  swarmWindow.webContents.on("will-navigate", (event) => event.preventDefault());
-  swarmWindow.on("closed", () => { swarmWindow = null; });
-  void swarmWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "swarm" } });
-  return swarmWindow;
-}
-
-/** The avatar window's rect, when main can see it: both/swarm hang the cluster on it. */
-function avatarBoundsNow() {
-  const fn = attentionHooks && attentionHooks.avatarBounds;
-  if (typeof fn !== "function") return null;
-  try {
-    const r = fn();
-    return r && Number(r.width) > 0 && Number(r.height) > 0 ? r : null;
-  } catch { return null; }
-}
-
-/** Half the cluster window's side for `count` fairies (fairy-control owns the ring). */
-function clusterHalfFor(count) {
-  return Math.max(48, fairyControl.swarmExtent(state.swarmView.mode, Math.max(1, count), state.swarmView.radius));
-}
-
-/** Where the cluster is centred: beside the avatar (both/swarm), the anchor while a
- *  body stands in for the fairy, else the orb. */
-function clusterCenter() {
-  if (display.mode === "both" || display.mode === "swarm") {
-    const avatar = avatarBoundsNow();
-    if (avatar) {
-      const area = workAreaAt({ x: avatar.x + avatar.width / 2, y: avatar.y + avatar.height / 2 }) || restoreWorkArea();
-      const count = displayMode.capacity(display.mode, swarmCompanions.length || 1, display);
-      const point = displayMode.clusterCenter(display.mode, { avatarRect: avatar, clusterHalf: clusterHalfFor(count), area });
-      if (point) return point;
-    }
-  }
-  if (swarmAnchor && !orbVisible()) return { x: swarmAnchor.x, y: swarmAnchor.y };
-  if (alive(orbWindow)) {
-    const b = orbWindow.getBounds();
-    return { x: b.x + ORB_SIZE.width / 2, y: b.y + ORB_SIZE.height / 2 };
-  }
-  return { x: 0, y: 0 };
-}
-
-/** The swarm window's rect for the view (fairy-control.boundsFor), or null = no window. */
-function swarmBounds(count) {
-  const centre = clusterCenter();
-  const area = workAreaAt(centre) || { x: 0, y: 0, width: 1920, height: 1080 };
-  // Dock mode anchors to the taskbar when its rect is known (plan A4).
-  return fairyControl.boundsFor(state.swarmView, count, centre, area, taskbarForDock());
-}
-
-/**
- * The fairy above its swarm. Measured live 2026-11-09 (ctypes GetWindow order):
- * "Aither spirit" at z 12 above "Aither swarm" at z 21 -- right -- but nothing
- * kept it so after a later swarm show. Raised after every companion update.
- */
-function raiseOrbOverSwarm() {
-  try {
-    if (alive(orbWindow) && typeof orbWindow.moveTop === "function") orbWindow.moveTop();
-  } catch { /* a window mid-teardown */ }
-}
-
-/** Show, size, follow or hide the swarm for the current companions. */
-function placeSwarm(companions = swarmCompanions, { raise = false } = {}) {
-  const list = Array.isArray(companions) ? companions : [];
-  // The cluster is ON (owner 2026-11-16, overriding 2026-11-13's "don't show a swarm":
-  // "the cluster of fairies should grow with agents and decisions queued"); orb.json
-  // `cluster: false` (or the swarm switch set off) turns it off. Nothing live = no window.
-  // The display MODE (owner 2026-11-20) gates it too: `avatar` has no cluster, and
-  // both/swarm draw it beside the avatar even while the ask orb itself is down.
-  const mk = displayMode.layers(display.mode);
-  const onDesk = orbVisible() || swarmAnchor || display.mode === "both" || display.mode === "swarm";
-  // `swarm` draws each fairy as its own orb around the avatar (syncSwarmOrbs), so the
-  // small ring window stays down -- there is still ONE cluster, it just has another form.
-  const next = mk.cluster && display.mode !== "swarm" && list.length && onDesk
-    && (state.cluster !== false || state.swarm === true) ? swarmBounds(list.length) : null;
-  if (!next) {
-    if (alive(swarmWindow) && swarmWindow.isVisible()) swarmWindow.hide();
-    lastBounds = null;
-    syncForegroundProbe();
-    sendSwarmView();
-    syncPins();
-    try { syncSwarmOrbs(); } catch { /* cosmetic */ }
-    return;
-  }
-  const win = ensureSwarm();
-  const cur = win.getBounds();
-  if (cur.x !== next.x || cur.y !== next.y || cur.width !== next.width || cur.height !== next.height) {
-    win.setBounds({ x: next.x, y: next.y, width: next.width, height: next.height }); // full bounds every time: a bare setPosition drifts the size
-  }
-  lastBounds = next;
-  if (!win.isVisible()) {
-    win.showInactive();
-    raise = true;
-  }
-  // The orb disc stays above its swarm, so a press on the fairy is the fairy's and
-  // its glow is never drawn under the companions.
-  if (raise) raiseOrbOverSwarm();
-  syncForegroundProbe();
-  sendSwarmView();
-  syncPins();
-  try { syncSwarmOrbs(); } catch { /* cosmetic */ }
-}
-
-/**
- * Centre the ONE cluster on a point while the fairy is down (the agent swarm: light
- * fairies keep orbiting the full avatar that stands where the orb was). null releases it.
- */
-function setSwarmAnchor(point) {
-  swarmAnchor = point && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y))
-    ? { x: Math.round(Number(point.x)), y: Math.round(Number(point.y)) }
-    : null;
-  placeSwarm(swarmCompanions, { raise: true });
-  return { ok: true, anchor: swarmAnchor };
-}
-
-/** The swarm's own switch (orb.json `swarm`): the agent fairies orbiting the main one. */
-function setSwarmVisible(on) {
-  const next = on === true;
-  // The swarm switch is the cluster's switch too (2026-11-16): off hides the cluster.
-  if (state.swarm !== next || state.cluster !== next) { state.swarm = next; state.cluster = next; saveState(); }
-  sendFairy({ force: true });
-  placeSwarm(swarmCompanions, { raise: true });
-  return { ok: true, swarm: state.swarm === true };
-}
-
-// ── display mode: avatar, fairy, both, swarm (display-mode.cjs, owner 2026-11-20) ──
-// "the docked avatar AND a fairy -- or a swarm of fairies -- at the same time."
-// One setting, persisted by main in avatar-dock.json beside `docked`; the pure
-// layout (cluster beside the avatar, never on it) is display-mode.cjs.
-
-/** The mode the desk draws now, and how many fairies a swarm shows. */
-function displayModeState() {
-  return { ...display };
-}
-
-/** Put each window on the layers this mode allows, WITHOUT touching the owner's
- *  remembered `visible`: a mode switch is not a show/hide. `both`/`swarm` take the
- *  orb disc down and leave the cluster up beside the avatar; `avatar` takes both. */
-function applyDisplayLayers() {
-  const mk = displayMode.layers(display.mode);
-  if (alive(orbWindow)) {
-    if (mk.orb && state.visible) { if (!orbWindow.isVisible()) orbWindow.showInactive(); }
-    else if (orbWindow.isVisible()) orbWindow.hide();
-  }
-  if (!mk.orb && alive(bubbleWindow) && bubbleWindow.isVisible()) bubbleWindow.hide();
-}
-
-/**
- * Apply a display mode (owner pick, avatar/fairy menu, palette, key or boot restore).
- * Settles the ONE cluster: a hand/follow attach lets go, the trail veil comes down,
- * stray pins go where a slot layout owns the fairies, then both windows are placed
- * again -- a switch never leaves an overlay painted from the previous mode.
- */
-function setDisplayModeState(next) {
-  const before = display.mode;
-  display = displayMode.normalize(next);
-  const plan = displayMode.settle(before, display.mode);
-  if (plan.changed) {
-    if (attach && attach.auto) { attach = null; stopFollow(); }
-    if (pinDrag) {
-      pinDrag = null;
-      if (pinWatchdog) { clearTimeout(pinWatchdog); pinWatchdog = null; }
-    }
-    hideMenu();
-    hideTip();
-    hideVeil({ force: true });
-    releaseHover();
-    if (display.mode !== "swarm") {
-      for (const agent of [...swarmPinAgents]) destroyPin(agent);
-      swarmPinAgents = new Set();
-    }
-    if (plan.clearPins) for (const agent of [...pinWindows.keys()]) destroyPin(agent);
-  }
-  applyDisplayLayers();
-  sendFairy({ force: true });
-  placeSwarm(swarmCompanions, { raise: true });
-  return displayModeState();
-}
-
-/** A `dm:<mode>` menu pick. Draw it here at once, then tell main (it persists the
- *  choice and settles the avatar window); a build with no hook still works, so the
- *  row is never dead. */
-function displayPick(what) {
-  const r = displayMode.applyModePick(display, what);
-  if (r.error) return { ok: false, error: r.error };
-  if (!r.changed) return { ok: true, mode: display.mode, changed: false };
-  setDisplayModeState(r.settings);
-  const applied = hookValue("setDisplayMode", r.settings);
-  return { ok: true, mode: display.mode, changed: true, applied: applied || null };
-}
-
-// ── fine control over the fairies (fairy-control.cjs, owner 2026-11-16) ─────────
-// Select, a full tooltip, a menu per fairy, pin out of / back into the swarm, gather /
-// scatter / one orb / dock / filter, the scroll radius, and keeping off the focused
-// window. The view lives in orb.json `swarmView`; the pure rules are fairy-control.cjs.
-
-const PIN_SIZE = Object.freeze({ width: 44, height: 44 });
-const pinKeys = new Map();
-
-function viewCompanions(all = allCompanions) {
-  const split = fairyControl.applyView(all, state.swarmView);
-  const dec = (c) => fairyControl.decorate(c, state.swarmView, { selected: selectedAgent });
-  // `swarm` draws up to N (owner 2026-11-20); `avatar` draws none; fairy/both all.
-  const room = displayMode.capacity(display.mode, split.visible.length, display);
-  const visible = room === split.visible.length ? split.visible : split.visible.slice(0, room);
-  return {
-    visible: state.swarmView.mode === "orb" ? [] : visible.map(dec),
-    pinned: split.pinned.map(dec),
-    split: { ...split, visible, hidden: split.hidden + (split.visible.length - visible.length) },
-  };
-}
-
-/** What the swarm and orb pages need beside the companion rows. */
-function swarmViewPayload() {
-  const v = state.swarmView;
-  const { split } = viewCompanions();
-  let avoid = null;
-  if (v.avoid && fgContent && lastBounds && v.mode !== "dock" && v.mode !== "orb") {
-    const c = clusterCenter();
-    const sitsOnIt = c.x >= fgContent.x && c.x <= fgContent.x + fgContent.width
-      && c.y >= fgContent.y && c.y <= fgContent.y + fgContent.height;
-    // The fairy put on that window on purpose: the ring keeps its place around it.
-    if (!sitsOnIt) {
-      avoid = fairyControl.relativeRect(fgContent, { x: lastBounds.x + lastBounds.width / 2, y: lastBounds.y + lastBounds.height / 2 });
-    }
-  }
-  return {
-    mode: v.mode, radius: v.radius, kind: v.kind, edge: lastBounds ? lastBounds.edge : "",
-    total: split.total, shown: split.visible.length, hidden: split.hidden, pinned: split.pinned.length, avoid,
-    selected: selectedAgent,
-  };
-}
-
-/** The pin window's own fairy (its agent comes in the page URL). */
-function pinMateFor(sender) {
-  let agent = "";
-  try { agent = String(new URL(sender.getURL()).searchParams.get("agent") || "").toLowerCase(); } catch { /* filename only */ }
-  const c = viewCompanions().pinned.find((x) => x.agent === agent) || (pinDrag && pinDrag.agent === agent
-    ? fairyControl.decorate(allCompanions.find((x) => x.agent === agent) || { agent }, state.swarmView, { selected: selectedAgent }) : null);
-  return c || null;
-}
-
-function sendSwarmView({ force = false } = {}) {
-  const payload = swarmViewPayload();
-  const key = JSON.stringify(payload);
-  if (!force && key === lastSwarmViewKey) return payload;
-  lastSwarmViewKey = key;
-  for (const win of [swarmWindow, orbWindow]) {
-    try { if (alive(win)) win.webContents.send("orb:swarm-view", payload); } catch { /* page mid-load: init() carries it */ }
-  }
-  return payload;
-}
-
-function screenToDip(p) {
-  try {
-    const { screen } = electron();
-    return typeof screen.screenToDipPoint === "function" ? screen.screenToDipPoint(p) : p;
-  } catch { return p; }
-}
-
-/** A stable key for one foreground descriptor: the window, its box, its quiet verdict. */
-function foregroundKey(fg) {
-  if (!fg) return "";
-  return [Number(fg.hwnd) || 0, Number(fg.pid) || 0, fg.x, fg.y, fg.width, fg.height, String(fg.quiet || "")].join("|");
-}
-
-/**
- * The probe reported the window in front. Two readers, one sample: the ring's obstacle
- * (fgContent) and the follow rule, which waits for the focus to hold (followFocus).
- */
-function onForeground(rect) {
-  fgContent = fairyControl.contentRect(rect);
-  const changed = foregroundKey(rect) !== foregroundKey(followSeen);
-  followSeen = rect;
-  if (changed) {
-    followChangedAt = Date.now();
-    followRetries = 0;
-    if (followDebounce) { clearTimeout(followDebounce); followDebounce = null; }
-    if (rect && state.follow === true) {
-      followDebounce = setTimeout(() => { followDebounce = null; void applyFollow(); }, followFocus.SETTLE_MS);
-      if (followDebounce.unref) followDebounce.unref();
-    }
-  }
-  sendSwarmView();
-}
-
-/** How often the rule is retried while a flight, a card or a drag holds the fairy, and
- *  for how many ticks: long enough to outlast a 560 ms flight, short enough that a card
- *  left open never wakes the main process for minutes. */
-const FOLLOW_RETRY_MS = 700;
-const FOLLOW_RETRIES_MAX = 20;
-
-/** The focus is held but the fairy was busy: try again shortly, not on a non-existent tick. */
-function scheduleFollowRetry() {
-  if (followDebounce || quitting || state.follow !== true) return;
-  if (followRetries >= FOLLOW_RETRIES_MAX) return;
-  followRetries += 1;
-  followDebounce = setTimeout(() => { followDebounce = null; void applyFollow(); }, FOLLOW_RETRY_MS);
-  if (followDebounce.unref) followDebounce.unref();
-}
-
-/**
- * Run the pure follow rule against the last foreground sample and do what it says.
- * An attach the owner made by hand is never stolen; a follow-made attach is let go
- * when the focus lands on one of the desk's own windows (the AitherOS dock takes it
- * back) or on a full-screen app/game.
- */
-async function applyFollow() {
-  if (followBusy || quitting) {
-    // A focus that landed while the previous attach was still flying must not be lost.
-    if (!quitting) scheduleFollowRetry();
-    return { act: "none", reason: "busy" };
-  }
-  if (!state.visible || !alive(orbWindow)) return { act: "none", reason: "the fairy is down" };
-  followBusy = true;
-  try {
-    const decision = followFocus.decideFollow({
-      enabled: state.follow === true,
-      fg: followSeen,
-      attach,
-      changedAt: followChangedAt,
-      now: Date.now(),
-      ownPid: process.pid,
-    });
-    if (decision.act === "attach") {
-      // Never yank the fairy out of a flight, a card or a drag: retry shortly instead.
-      if (flight || tripBusy || nudging || dragging || regionWait) {
-        scheduleFollowRetry();
-        return { act: "none", reason: "the fairy is busy" };
-      }
-      if (attach && attach.hwnd && decision.target.hwnd && Number(attach.hwnd) === Number(decision.target.hwnd)) {
-        return { act: "none", reason: "already following it" };
-      }
-      await attachTo(decision.target, { quiet: true });
-      followRetries = 0;
-      return decision;
-    }
-    if (decision.act === "release") {
-      if (attach && attach.follow) {
-        // The AitherOS window may be exactly what was focused: ride it again, as the
-        // one-cluster rule wants. Otherwise fly HOME and take the veil down: a silent
-        // detach left the cluster stranded on the window it followed with the trail and
-        // tether still painted across the screen (owner screenshots 2026-11-19).
-        const w = dockWindowId
-          ? (() => { try { return electron().BrowserWindow.fromId(dockWindowId); } catch { return null; } })()
-          : null;
-        if (alive(w) && w.isVisible() && !w.isMinimized()) {
-          detach({ silent: true });
-          void setDockWindow(w).catch(() => { /* window gone this tick */ });
-        } else {
-          detach();
-        }
-      }
-      return decision;
-    }
-    return decision;
-  } catch {
-    // attachTo/setDockWindow are the only awaited calls here; an async rejection from
-    // either must not become an unhandled rejection in the main process.
-    return { act: "none", reason: "the follow step failed" };
-  } finally {
-    followBusy = false;
-  }
-}
-
-/** The tray/MCP door: "Fairies follow my window", default on. */
-function setFollow(on) {
-  const next = on !== false;
-  const changed = (state.follow === true) !== next;
-  state.follow = next;
-  if (changed) saveState();
-  if (!next) {
-    // Toggle-off path: let go of what FOLLOW made; a hand attach stays where it is.
-    if (followDebounce) { clearTimeout(followDebounce); followDebounce = null; }
-    followRetries = 0;
-    if (followFocus.releaseOnDisable(attach)) {
-      detach({ silent: true });
-      if (dockWindowId) {
-        const w = (() => { try { return electron().BrowserWindow.fromId(dockWindowId); } catch { return null; } })();
-        if (alive(w)) void setDockWindow(w).catch(() => { /* window gone */ });
-      }
-    }
-  } else if (followSeen) {
-    // Switched back on with a window already in front: settle, then follow it.
-    followRetries = 0;
-    followChangedAt = Date.now();
-    if (followDebounce) clearTimeout(followDebounce);
-    followDebounce = setTimeout(() => { followDebounce = null; void applyFollow(); }, followFocus.SETTLE_MS);
-    if (followDebounce.unref) followDebounce.unref();
-  }
-  syncForegroundProbe();
-  return { ok: true, follow: state.follow === true };
-}
-
-function followState() {
-  return state.follow === true;
-}
-
-/**
- * The focused-window probe runs while a ring is on screen to be kept clear OR while
- * the cluster is meant to follow the focused window.
- */
-function syncForegroundProbe() {
-  const ring = alive(swarmWindow) && swarmWindow.isVisible() && state.swarmView.mode !== "dock" && state.swarmView.mode !== "orb";
-  const follow = state.follow === true && orbVisible();
-  // Dock mode's taskbar rect is its own watch: turning "follow my window" off must not
-  // silently drop a docked strip back off the taskbar.
-  const dock = state.swarmView.mode === "dock" && (orbVisible() || Boolean(swarmAnchor));
-  if (!ring && !follow && !dock) {
-    if (fgProbeImpl) fgProbeImpl.stop();
-    stopTaskbarWatch();
-    return;
-  }
-  let canDip = false;
-  try { canDip = typeof electron().screen.screenToDipPoint === "function"; } catch { /* no screen module (tests) */ }
-  if (!canDip) return; // no real screen: nothing to probe, nothing to spawn
-  if (ring || follow) {
-    if (!fgProbeImpl) {
-      fgProbeImpl = foregroundProbe.createForegroundProbe({
-        toDip: screenToDip,
-        onChange: onForeground,
-      });
-    }
-    fgProbeImpl.start();
-  } else if (fgProbeImpl) {
-    fgProbeImpl.stop(); // nothing reads the focus: no ring, and following is off
-  }
-  if (dock) startTaskbarWatch(); else stopTaskbarWatch();
-}
-
-// ── the taskbar (plan A4: dock mode sits ON it) ─────────────────────────────
-/**
- * The Shell_TrayWnd rect in DIPs, or null. It is published by the same resident window
- * oracle the attach uses (spirit-probe's "tray" op), and converted to the unit the
- * windows are placed in, exactly as the foreground probe converts its rect.
- */
-async function refreshTaskbar() {
-  if (process.platform !== "win32") { taskbarRect = null; taskbarBars = []; return taskbarRect; }
-  try {
-    if (!probe) probe = spiritProbe.createWindowProbe();
-    const bars = await probe.taskbars();
-    // Every bar, not just the primary: the cluster may sit on a second monitor, and the
-    // primary bar is on the FIRST monitor. Picking by display bounds keeps the strip on
-    // the display the fairies are actually on.
-    const all = [bars && bars.primary, ...((bars && Array.isArray(bars.secondaries)) ? bars.secondaries : [])].filter(Boolean);
-    taskbarBars = all.map((bar) => {
-      const a = screenToDip({ x: bar.x, y: bar.y });
-      const b = screenToDip({ x: bar.x + bar.width, y: bar.y + bar.height });
-      return { x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y };
-    });
-    const centre = clusterCenter();
-    const display = (() => {
-      try { return electron().screen.getDisplayNearestPoint(centre); } catch { return null; }
-    })();
-    const next = display && display.bounds
-      ? fairyControl.taskbarForDisplay(taskbarBars, display.bounds)
-      : (taskbarBars[0] || null);
-    const changed = !taskbarRect !== !next
-      || (taskbarRect && next && ["x", "y", "width", "height"].some((k) => Math.round(taskbarRect[k]) !== Math.round(next[k])));
-    taskbarRect = next;
-    if (changed && state.swarmView.mode === "dock") placeSwarm(swarmCompanions);
-    return taskbarRect;
-  } catch {
-    return taskbarRect;
-  }
-}
-
-/** Only while dock mode is in use: one probe line every TASKBAR_MS, nothing else. */
-const TASKBAR_MS = 10_000;
-function startTaskbarWatch() {
-  if (state.swarmView.mode !== "dock") { stopTaskbarWatch(); return; }
-  if (taskbarTimer) return;
-  taskbarTimer = setInterval(() => { void refreshTaskbar(); }, TASKBAR_MS);
-  if (taskbarTimer.unref) taskbarTimer.unref();
-  void refreshTaskbar();
-}
-function stopTaskbarWatch() {
-  if (taskbarTimer) { clearInterval(taskbarTimer); taskbarTimer = null; }
-}
-/** The taskbar rect dock mode should use right now (null when unknown or unused). */
-function taskbarForDock() {
-  return state.swarmView.mode === "dock" ? taskbarRect : null;
-}
-
-/** Change the view, keep it, redraw. */
-function setView(patch) {
-  state.swarmView = fairyControl.normalizeView({ ...state.swarmView, ...patch });
-  saveState();
-  sendFairy({ force: true });
-  syncForegroundProbe(); // dock mode swaps the taskbar watch in and out
-  return state.swarmView;
-}
-
-function selectAgent(agent) {
-  const key = String(agent || "").trim().toLowerCase();
-  if (key === selectedAgent) return { ok: true, selected: selectedAgent };
-  selectedAgent = key;
-  if (key) hookValue("select", key);
-  sendFairy({ force: true });
-  return { ok: true, selected: selectedAgent };
-}
-
-function swarmWheel(deltaY) {
-  const next = fairyControl.stepRadius(state.swarmView.radius, deltaY);
-  if (next === state.swarmView.radius) return { ok: true, radius: next };
-  setView({ radius: next });
-  return { ok: true, radius: state.swarmView.radius };
-}
-
-// -- pinned fairies: each its own small window ------------------------------------
-
-function ensurePin(agent) {
-  const have = pinWindows.get(agent);
-  if (alive(have)) return have;
-  const win = overlayWindow(`Aither pin ${agent}`, { focusable: false });
-  win.setBounds({ x: 0, y: 0, ...PIN_SIZE });
-  win.on("closed", () => { if (pinWindows.get(agent) === win) pinWindows.delete(agent); });
-  void win.loadFile(path.join(__dirname, "orb.html"), { query: { view: "pin", agent } });
-  pinWindows.set(agent, win);
-  pinKeys.delete(agent);
-  return win;
-}
-
-function destroyPin(agent) {
-  const win = pinWindows.get(agent);
-  pinWindows.delete(agent);
-  pinKeys.delete(agent);
-  try { if (alive(win)) win.destroy(); } catch { /* gone */ }
-}
-
-function clampPin(at) {
-  const centre = { x: at.x + PIN_SIZE.width / 2, y: at.y + PIN_SIZE.height / 2 };
-  const area = menuAreaAt(centre);
-  if (!area) return { x: Math.round(at.x), y: Math.round(at.y) };
-  return {
-    x: Math.round(Math.min(Math.max(area.x, at.x), area.x + area.width - PIN_SIZE.width)),
-    y: Math.round(Math.min(Math.max(area.y, at.y), area.y + area.height - PIN_SIZE.height)),
-  };
-}
-
-/** Make the pin windows match the view: one per pinned agent that is live, none for the rest. */
-function syncPins() {
-  const v = state.swarmView;
-  const show = !quitting && (orbVisible() || Boolean(swarmAnchor));
-  const live = new Map(viewCompanions().pinned.map((c) => [c.agent, c]));
-  for (const [agent, at] of Object.entries(v.pins)) {
-    if (pinDrag && pinDrag.agent === agent) continue; // under the pointer: the drag moves it
-    const c = live.get(agent);
-    const have = pinWindows.get(agent);
-    if (!c || !show) {
-      if (alive(have) && have.isVisible()) { try { have.hide(); } catch { /* gone */ } }
-      continue;
-    }
-    const win = ensurePin(agent);
-    const next = clampPin(at);
-    const cur = win.getBounds();
-    if (cur.x !== next.x || cur.y !== next.y || cur.width !== PIN_SIZE.width) win.setBounds({ ...next, ...PIN_SIZE });
-    const key = JSON.stringify(c);
-    if (pinKeys.get(agent) !== key) {
-      pinKeys.set(agent, key);
-      deliverTo(win, "orb:pin-mate", { mate: c });
-    }
-    if (!win.isVisible()) win.showInactive();
-  }
-  for (const agent of [...pinWindows.keys()]) {
-    if (swarmPinAgents.has(agent)) continue; // swarm mode owns where this orb stands
-    if (!v.pins[agent] && !(pinDrag && pinDrag.agent === agent)) destroyPin(agent);
-  }
-}
-
-/**
- * Swarm mode (owner 2026-11-20): "a swarm of fairies ... spread around the avatar,
- * each a separate draggable orb with its own agent badge". Every orb is a pin
- * window placed by display-mode.swarmOrbs on a radius outside the body; not in
- * swarmView.pins, so leaving the mode destroys exactly these and nothing the owner
- * pinned by hand.
- */
-function syncSwarmOrbs() {
-  if (display.mode !== "swarm") {
-    for (const agent of [...swarmPinAgents]) destroyPin(agent);
-    swarmPinAgents = new Set();
-    return [];
-  }
-  const avatar = avatarBoundsNow();
-  if (!avatar) return [];
-  const area = workAreaAt({ x: avatar.x + avatar.width / 2, y: avatar.y + avatar.height / 2 }) || restoreWorkArea();
-  const { visible } = viewCompanions();
-  const orbs = displayMode.swarmOrbs(avatar, visible, { max: display.swarm, area });
-  const want = new Set(orbs.map((o) => o.agent));
-  for (const agent of [...swarmPinAgents]) {
-    if (want.has(agent)) continue;
-    destroyPin(agent);
-    swarmPinAgents.delete(agent);
-  }
-  const mates = new Map(visible.map((c) => [String(c.agent || "").toLowerCase(), c]));
-  for (const orb of orbs) {
-    const win = ensurePin(orb.agent);
-    swarmPinAgents.add(orb.agent);
-    if (!alive(win)) continue;
-    const cur = win.getBounds();
-    if (cur.x !== orb.rect.x || cur.y !== orb.rect.y || cur.width !== orb.rect.width || cur.height !== orb.rect.height) {
-      win.setBounds(orb.rect);
-    }
-    const c = mates.get(orb.agent) || null;
-    const key = JSON.stringify(c);
-    if (pinKeys.get(orb.agent) !== key) {
-      pinKeys.set(orb.agent, key);
-      deliverTo(win, "orb:pin-mate", { mate: c ? fairyControl.decorate(c, state.swarmView, { selected: selectedAgent }) : null });
-    }
-    if (!win.isVisible()) win.showInactive();
-  }
-  return orbs;
-}
-
-/**
- * A drag of one fairy, from the ring ("swarm") or from its own pin ("pin"). main reads
- * the real cursor on every phase (the page only says what happened), so a page that
- * lost its mouse capture cannot strand a fairy. start: the pin window follows the
- * pointer; end: dropped on the fairy it rejoins the ring, anywhere else it is pinned.
- */
-function swarmDrag(phase, agentRaw, from = "swarm") {
-  const agent = String(agentRaw || "").trim().toLowerCase();
-  const p = cursorPoint();
-  if (phase === "start") {
-    const c = allCompanions.find((x) => x.agent === agent);
-    if (!c) return { ok: false, error: "no such fairy" };
-    if (pinDrag) swarmDrag("end", pinDrag.agent, pinDrag.from);
-    hideTip();
-    hideMenu();
-    const win = ensurePin(agent);
-    const b = alive(win) ? win.getBounds() : { x: p.x, y: p.y };
-    const grab = from === "pin" && (state.swarmView.pins[agent] || swarmPinAgents.has(agent))
-      ? { dx: p.x - b.x, dy: p.y - b.y }
-      : { dx: PIN_SIZE.width / 2, dy: PIN_SIZE.height / 2 };
-    pinDrag = { agent, from, grab };
-    armPinWatchdog();
-    // From the ring the press belongs to the ring's window (it holds the mouse): the pin
-    // window that follows the pointer must not steal it.
-    if (from === "swarm") { try { win.setIgnoreMouseEvents(true); } catch { /* gone */ } }
-    win.setBounds({ x: Math.round(p.x - grab.dx), y: Math.round(p.y - grab.dy), ...PIN_SIZE });
-    pinKeys.set(agent, "");
-    deliverTo(win, "orb:pin-mate", { mate: fairyControl.decorate(c, state.swarmView, { selected: selectedAgent }) });
-    if (!win.isVisible()) win.showInactive();
-    return { ok: true, dragging: agent };
-  }
-  if (!pinDrag || pinDrag.agent !== agent) return { ok: false, error: "no drag in flight" };
-  const win = pinWindows.get(agent);
-  const grab = pinDrag.grab;
-  if (phase === "move") {
-    armPinWatchdog();
-    if (alive(win)) win.setBounds({ x: Math.round(p.x - grab.dx), y: Math.round(p.y - grab.dy), ...PIN_SIZE });
-    return { ok: true };
-  }
-  if (phase === "end") {
-    pinDrag = null;
-    if (pinWatchdog) { clearTimeout(pinWatchdog); pinWatchdog = null; }
-    try { if (alive(win)) win.setIgnoreMouseEvents(false); } catch { /* gone */ }
-    // Swarm mode: the orb is never pinned as the owner's; it returns to its slot.
-    if (display.mode === "swarm") {
-      const orbs = syncSwarmOrbs();
-      const mine = orbs.find((o) => o.agent === agent);
-      if (mine) {
-        try { if (alive(win)) win.setBounds(mine.rect); } catch { /* gone */ }
-        return {
-          ok: true, pinned: false, rejoined: true,
-          releasedTo: displayMode.releaseTarget({
-            mode: "swarm",
-            slot: { x: mine.rect.x + mine.rect.width / 2, y: mine.rect.y + mine.rect.height / 2 },
-            home: home || orbCenter(),
-          }),
-        };
-      }
-    }
-    const pins = { ...state.swarmView.pins };
-    // both/swarm are slot layouts: a released fairy always flies back to its slot
-    // (display-mode.releaseTarget), never out to an arbitrary pin (owner 2026-11-20).
-    const slotLayout = display.mode === "both" || display.mode === "swarm";
-    const centre = clusterCenter();
-    const rejoin = slotLayout || fairyControl.joinsCluster(p, centre);
-    let result;
-    if (rejoin) {
-      delete pins[agent];
-      result = {
-        ok: true, pinned: false, rejoined: true,
-        releasedTo: displayMode.releaseTarget({ mode: display.mode, slot: centre, home: home || orbCenter() }),
-      };
-    } else {
-      pins[agent] = clampPin({ x: p.x - grab.dx, y: p.y - grab.dy });
-      result = { ok: true, pinned: true, at: pins[agent] };
-    }
-    setView({ pins });
-    return result;
-  }
-  return { ok: false, error: `unknown drag phase ${phase}` };
-}
-
-/** A drag the page never finished (it lost the pointer; the swarm window is not focusable so no blur comes)
- *  ends itself after PIN_DRAG_IDLE_MS without a move: the window gets the mouse back (review of #101). */
-const PIN_DRAG_IDLE_MS = 10_000;
-let pinWatchdog = null;
-function armPinWatchdog() {
-  if (pinWatchdog) clearTimeout(pinWatchdog);
-  pinWatchdog = setTimeout(() => {
-    pinWatchdog = null;
-    if (pinDrag) swarmDrag("end", pinDrag.agent, pinDrag.from);
-  }, PIN_DRAG_IDLE_MS);
-  if (pinWatchdog.unref) pinWatchdog.unref();
-}
-
-/** Pin `agent` centred on a point (a menu pick, the bridge) -- or unpin it (at null). */
-function pinAgent(agent, at = null) {
-  const key = String(agent || "").trim().toLowerCase();
-  const pins = { ...state.swarmView.pins };
-  if (!at) delete pins[key];
-  else pins[key] = clampPin({ x: at.x - PIN_SIZE.width / 2, y: at.y - PIN_SIZE.height / 2 });
-  setView({ pins });
-  return { ok: true, pinned: Boolean(pins[key]), at: pins[key] || null };
-}
-
-// -- menu picks -------------------------------------------------------------------
-
-async function controlPick(what, ms) {
-  const agent = String((ms && ms.agent) || "");
-  const view = state.swarmView;
-  if (what === "fc:chat") return chatWithAgent(agent);
-  if (what === "fc:grow") {
-    let r;
-    try { r = await hookValue("growAgent", agent); } catch (error) { r = { ok: false, error: String((error && error.message) || error) }; }
-    return r && typeof r === "object" ? r : { ok: false, error: "growing a fairy is not wired in this build" };
-  }
-  if (what === "fc:mute") {
-    const muted = fairyControl.toggleIn(view.muted, agent);
-    if (muted.includes(agent)) {
-      // Muting is for real: attentionTick leaves a muted agent's cards out of the nudge plan (the badge
-      // keeps counting) and a nudge it already shows is put away. Unmuting needs no clean-up: nothing
-      // was written to the cards (review of #101).
-      for (const c of attentionCards) {
-        if (c && agentFairy.cardAgent(c) === agent) endNudgeFor(c.id, "snoozed");
-      }
-    }
-    setView({ muted });
-    return { ok: true, muted: muted.includes(agent) };
-  }
-  if (what === "fc:pin") {
-    if (view.pins[agent]) return pinAgent(agent, null);
-    return pinAgent(agent, (ms && ms.at) || cursorPoint());
-  }
-  if (what === "fc:hide") {
-    setView({ hidden: view.hidden.includes(agent) ? view.hidden : [...view.hidden, agent] });
-    return { ok: true, hidden: agent };
-  }
-  if (what === "fc:session") {
-    let r;
-    try { r = await hookValue("focusAgentSession", agent, menuCard(ms)); } catch (error) { r = { ok: false, error: String(error) }; }
-    return r && typeof r === "object" ? r : { ok: false, error: "no session for this agent" };
-  }
-  return { ok: false, error: `unknown menu item ${what}` };
-}
-
-function swarmViewMenu({ at = null } = {}) {
-  const { split } = viewCompanions();
-  const built = fairyControl.viewItems(state.swarmView, {
-    total: split.total, hidden: split.hidden, pinned: split.pinned.length,
-  });
-  return showMenu("swarmview", built, { at });
-}
-
-function swarmPick(what, ms) {
-  if (what === "sv:menu") return swarmViewMenu({ at: (ms && ms.at) || null });
-  const r = fairyControl.applyViewPick(state.swarmView, what);
-  if (r.error) return { ok: false, error: r.error };
-  if (r.changed) setView(r.view);
-  return { ok: true, view: state.swarmView };
-}
-
-/** The bridge / MCP door: {mode, kind, radius, showHidden, unpinAll, select, hide, pin:{agent,x,y}|{agent,off}}. */
-function swarmViewOp(req = {}) {
-  const patch = {};
-  if (req.mode != null) {
-    if (!fairyControl.MODES.includes(req.mode)) return { ok: false, error: `mode is one of ${fairyControl.MODES.join(", ")}` };
-    patch.mode = req.mode;
-  }
-  if (req.kind != null) {
-    if (!fairyControl.KIND_FILTERS.includes(req.kind)) return { ok: false, error: `kind is one of ${fairyControl.KIND_FILTERS.join(", ")}` };
-    patch.kind = req.kind;
-  }
-  if (req.radius != null) patch.radius = req.radius;
-  if (req.avoid != null) patch.avoid = req.avoid === true;
-  if (req.showHidden === true) patch.hidden = [];
-  if (req.unpinAll === true) patch.pins = {};
-  if (Object.keys(patch).length) setView(patch);
-  if (req.select != null) selectAgent(req.select);
-  if (req.pin && req.pin.agent) {
-    if (req.pin.off) pinAgent(req.pin.agent, null);
-    else if (Number.isFinite(Number(req.pin.x)) && Number.isFinite(Number(req.pin.y))) pinAgent(req.pin.agent, { x: Number(req.pin.x), y: Number(req.pin.y) });
-    else return { ok: false, error: "pin needs x and y (or off: true)" };
-  }
-  if (req.hide) setView({ hidden: [...new Set([...state.swarmView.hidden, String(req.hide).toLowerCase()])] });
-  let scale = 1;
-  try { scale = electron().screen.getDisplayNearestPoint(clusterCenter()).scaleFactor || 1; } catch { /* no screen module (tests) */ }
-  const { visible } = viewCompanions();
-  return {
-    ok: true, view: state.swarmView, ...swarmViewPayload(), pins: Object.keys(state.swarmView.pins), bounds: lastBounds, scale,
-    fg: fgContent, mates: visible.map((c) => ({ agent: c.agent, label: c.label, group: c.group, state: c.state, count: c.count })),
-    pinBounds: Object.fromEntries([...pinWindows].filter(([, w]) => alive(w) && w.isVisible()).map(([a, w]) => [a, w.getBounds()])),
-  };
 }
 
 /** The trail/tether overlay. Transparent, click-through, never focused. */
@@ -1575,12 +336,8 @@ function ensureVeil() {
   });
   veilWindow.setAlwaysOnTop(true, "screen-saver");
   veilWindow.setIgnoreMouseEvents(true);
-  lastVeilKey = "";
   veilWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   veilWindow.webContents.on("will-navigate", (event) => event.preventDefault());
-  // A flight can start while the page is still loading (the veil is created on the
-  // first tool call): the payload sent into the void is re-sent once it is awake.
-  veilWindow.webContents.on("did-finish-load", () => { lastVeilKey = ""; try { drawVeil(); } catch { /* gone */ } });
   veilWindow.on("closed", () => { veilWindow = null; });
   void veilWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "veil" } });
   return veilWindow;
@@ -1603,69 +360,27 @@ function veilRect(points) {
   };
 }
 
-/** The union of every display's bounds: the largest rect the veil may cover. */
-function displayUnion() {
-  try {
-    const displays = electron().screen.getAllDisplays();
-    if (!Array.isArray(displays) || !displays.length) return null;
-    let left = Infinity;
-    let top = Infinity;
-    let right = -Infinity;
-    let bottom = -Infinity;
-    for (const display of displays) {
-      const b = display && display.bounds;
-      if (!b) continue;
-      left = Math.min(left, b.x);
-      top = Math.min(top, b.y);
-      right = Math.max(right, b.x + b.width);
-      bottom = Math.max(bottom, b.y + b.height);
-    }
-    if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
-    return { x: left, y: top, width: right - left, height: bottom - top };
-  } catch {
-    return null;
-  }
+function unionRect(a, b) {
+  const left = Math.min(a.x, b.x);
+  const top = Math.min(a.y, b.y);
+  const right = Math.max(a.x + a.width, b.x + b.width);
+  const bottom = Math.max(a.y + a.height, b.y + b.height);
+  return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
-/** Keep a rect on the virtual desktop: a window larger than the screens buys nothing. */
-function clampRect(rect, area) {
-  if (!area) return rect;
-  const x = Math.round(Math.max(area.x, Math.min(rect.x, area.x + area.width - 1)));
-  const y = Math.round(Math.max(area.y, Math.min(rect.y, area.y + area.height - 1)));
-  const right = Math.min(rect.x + rect.width, area.x + area.width);
-  const bottom = Math.min(rect.y + rect.height, area.y + area.height);
-  return {
-    x,
-    y,
-    width: Math.max(1, Math.round(right - x)),
-    height: Math.max(1, Math.round(bottom - y)),
-  };
-}
-
-/**
- * Where the veil belongs for these points: its CURRENT extent, clamped to the screens.
- *
- * It must SHRINK as the trail moves on. The old code grew the window to the union of
- * where it had ever been and never shrank it; a flying spirit therefore left behind a
- * transparent always-on-top window spanning the whole desktop, re-laid-out at 60 Hz.
- * Measured 2026-11-07: the window reached 25568x24656 and the GPU process climbed to
- * 9.2 GB private / 16.9 GB working set under software present, twice hard-rebooting the
- * host's commit charge. So: current points only, never bounded by the past.
- */
-function veilPlacement(points, area) {
-  return clampRect(veilRect(points), area);
-}
-
+/** Grow (never shrink) the veil so every point it must draw is inside it. */
 function coverVeil(points) {
   const win = ensureVeil();
-  const want = veilPlacement(points, displayUnion());
-  const bounds = win.getBounds();
-  if (want.x !== bounds.x || want.y !== bounds.y
-    || want.width !== bounds.width || want.height !== bounds.height) {
-    win.setBounds(want);
+  const want = veilRect(points);
+  let bounds = win.getBounds();
+  const union = unionRect(bounds, want);
+  if (union.x !== bounds.x || union.y !== bounds.y
+    || union.width !== bounds.width || union.height !== bounds.height) {
+    win.setBounds(union);
+    bounds = union;
   }
   if (!win.isVisible()) win.showInactive();
-  return want;
+  return bounds;
 }
 
 function veilPayload() {
@@ -1684,146 +399,7 @@ function veilPayload() {
     tint: tint.css,
     trail: trail.map(local),
     tether,
-    // The sub-fairies out doing an agent's work: the page eases each leg itself
-    // from these timestamps (one payload per change, never one per frame).
-    flights: toolFlightLegs().map((f) => {
-      const fairy = agentFairy.crewFairy(f.agent);
-      return {
-        id: f.id,
-        agent: f.agent,
-        label: f.label,
-        tool: f.tool,
-        surface: f.surface,
-        mode: f.mode,
-        state: f.state,
-        color: fairy.color,
-        core: fairy.core,
-        from: local(f.from),
-        to: local(f.to),
-        startedAt: f.startedAt,
-        durationMs: f.durationMs,
-      };
-    }),
   };
-}
-
-/** A cheap content key: identical frames are never re-sent to the renderer. */
-function veilKey(payload) {
-  if (!payload) return "";
-  const points = (list) => (Array.isArray(list) ? list.map((p) => `${p.x},${p.y}`).join(";") : "");
-  const flights = Array.isArray(payload.flights)
-    ? payload.flights.map((f) => `${f.id}|${f.state}|${f.startedAt}|${points([f.from, f.to])}`).join(";")
-    : "";
-  return `${payload.width}x${payload.height}|${payload.tint}|${points(payload.trail)}|${points(payload.tether)}|${flights}`;
-}
-
-// ── tool flights: the fairy GOES DO the work (fairy-flight.cjs) ────────────────
-// The desk learns a running tool from the harness daemon's session row
-// ("running Bash" -> fairy-cluster.cjs carries tool + surface). Here we find the
-// window each surface lives in, ask the pure planner for the legs, and hand the
-// veil page ONE payload per change — the page animates the legs itself, so a fleet
-// of sub-fairies costs no IPC per frame.
-
-/** Which desk window each surface lives in, in screen DIPs. null = not open. */
-function surfaceRects() {
-  const out = { files: null, library: null, browser: null, terminal: null };
-  const { BrowserWindow } = electron();
-  const own = ownWindowIds();
-  let wins;
-  try { wins = BrowserWindow.getAllWindows(); } catch { wins = []; }
-  for (const w of wins) {
-    if (!alive(w) || own.has(w.id) || !w.isVisible()) continue;
-    try { if (w.isMinimized && w.isMinimized()) continue; } catch { /* no such verb */ }
-    let title = "";
-    let url = "";
-    try { title = String(w.getTitle() || ""); } catch { /* mid-teardown */ }
-    try { url = String(w.webContents && w.webContents.getURL ? w.webContents.getURL() : ""); } catch { /* mid-teardown */ }
-    const hay = `${title} ${url}`;
-    const bounds = (() => { try { return w.getBounds(); } catch { return null; } })();
-    if (!bounds) continue;
-    if (/files\.html|aither files|file explorer|disk explorer/i.test(hay)) out.files = out.files || bounds;
-    else if (/sessions\.html|aither sessions/i.test(hay)) out.terminal = out.terminal || bounds;
-    else if (/library|knowledge/i.test(title)) out.library = out.library || bounds;
-    else if (/aither browser|browser-chrome\.html/i.test(hay)) out.browser = out.browser || bounds;
-  }
-  // The Library app lives in the Files window; the terminal lives in the browser's
-  // dock. Both are places the work is actually visible, never an invented target.
-  if (!out.library) out.library = out.files;
-  if (!out.terminal && out.browser) out.terminal = out.browser;
-  return out;
-}
-
-/** Every companion currently naming a live tool call -> one call per sub-fairy. */
-function currentToolCalls() {
-  const calls = [];
-  for (const c of allCompanions) {
-    if (!c || !c.tool || !c.surface || c.surface === "unknown") continue;
-    calls.push({
-      id: `${c.agent}|${c.sessionId || c.agent}|${c.tool}`,
-      agent: c.agent,
-      session: c.sessionId || "",
-      label: c.label || c.agent,
-      tool: c.tool,
-      surface: c.surface,
-    });
-  }
-  return calls;
-}
-
-function toolFlightLegs() {
-  return [...toolFlightPlan.flights, ...toolFlightPlan.returning];
-}
-
-/**
- * Re-plan the tool flights. Called on every companion/session update (the daemon's
- * 6 s feed) and once when the last leg lands. Never per frame: the renderer eases
- * the legs from the timestamps in the payload.
- */
-function updateToolFlights() {
-  const now = Date.now();
-  // No fairies on screen (hidden by the owner, or the cluster switched off) = no
-  // flight: the work is not shown by a stray glow with no fairy behind it.
-  const shown = Boolean(orbVisible() || swarmAnchor) && (state.cluster !== false || state.swarm === true);
-  if (!shown) {
-    toolFlightPlanner.reset();
-    toolFlightPlan = { flights: [], returning: [], hover: [], throttled: [], reducedMotion: state.reducedMotion === true };
-  } else {
-    toolFlightPlan = toolFlightPlanner.plan(currentToolCalls(), {
-      surfaces: surfaceRects(),
-      cluster: clusterCenter(),
-      nowMs: now,
-      maxSubFairies: fairyFlight.MAX_SUB_FAIRIES,
-      reducedMotion: state.reducedMotion === true,
-    });
-  }
-  if (toolFlightTimer) { clearTimeout(toolFlightTimer); toolFlightTimer = null; }
-  const legs = toolFlightLegs();
-  if (legs.length) {
-    showVeil();
-    drawVeil();
-    // Only a RETURN leg has a deadline (it merges and is forgotten). An outbound leg
-    // stands at its window while the call runs; the session feed ends it. No timer
-    // churn while an agent works.
-    const homeward = legs.filter((f) => f.state === "return" && now < f.startedAt + f.durationMs + fairyFlight.MERGE_MS);
-    if (homeward.length) {
-      const lastEnd = Math.max(...homeward.map((f) => f.startedAt + f.durationMs + fairyFlight.MERGE_MS + 120));
-      const wait = Math.max(300, Math.min(60_000, lastEnd - now));
-      toolFlightTimer = setTimeout(() => { toolFlightTimer = null; updateToolFlights(); }, wait);
-      if (toolFlightTimer.unref) toolFlightTimer.unref();
-    }
-  } else {
-    drawVeil(); // clears the canvas flight list
-    if (!attach && !tripBusy && !flight) hideVeil();
-  }
-  return toolFlightPlan;
-}
-
-/** The owner's setting (and the OS preference in the page) decides if fairies fly. */
-function setReducedMotion(on) {
-  state.reducedMotion = on === true;
-  saveState();
-  updateToolFlights();
-  return { ok: true, reducedMotion: state.reducedMotion };
 }
 
 function drawVeil() {
@@ -1834,18 +410,9 @@ function drawVeil() {
     const anchor = spiritCore.anchorFor(attach);
     if (anchor) points.push(anchor);
   }
-  for (const f of toolFlightLegs()) points.push(f.from, f.to);
   if (!points.length) return;
   coverVeil(points);
-  const payload = veilPayload();
-  const key = veilKey(payload);
-  if (key === lastVeilKey) return;
-  lastVeilKey = key;
-  try {
-    veilWindow.webContents.send("orb:veil", payload);
-  } catch {
-    lastVeilKey = ""; // page mid-load: the next tick sends again
-  }
+  try { veilWindow.webContents.send("orb:veil", veilPayload()); } catch { /* page loading */ }
 }
 
 function showVeil() {
@@ -1853,83 +420,33 @@ function showVeil() {
   if (!win.isVisible()) win.showInactive();
 }
 
-function hideVeil({ force = false } = {}) {
-  // A sub-fairy still out doing work keeps the overlay up; the page animates it.
-  if (!force && toolFlightLegs().length) return;
+function hideVeil() {
   trail = [];
-  lastVeilKey = "";
   if (alive(veilWindow)) veilWindow.hide();
 }
 
 // ── visibility ──────────────────────────────────────────────────────────────
 
-function showOrb({ auto = false } = {}) {
-  if (!auto) { autoSurfaced = false; ownerHidIds = null; state.ownerHid = false; state.ownerHidIds = []; }
-  // One cluster on this machine, ever (owner 2026-11-13): a second desk process (another
-  // profile, a test build) never shows its own fairies while another desk owns them.
-  const owner = fairyOwner.claim();
-  if (!owner.ok) {
-    suppressed = true;
-    return { ok: false, visible: false, error: `another Aither desk (pid ${owner.pid}) shows the fairies` };
-  }
+function showOrb() {
   const win = ensureOrb();
   const was = state.visible;
   state.visible = true;
-  if (!was) saveState();
-  // Grown into the avatar: the body IS the fairy right now (one cluster), so the orb
-  // stays down until "Back to the fairy" (collapseToFairy). Stood down because the
-  // body is up as its own surface: same rule -- one companion, never two. `suppressed`
-  // stays true here: pump/syncBubble must not pop the ask panel beside the body.
-  if (expanded || stoodDownForAvatar) {
-    suppressed = true;
-    return { ok: true, visible: true, expanded, body: stoodDownForAvatar };
-  }
   suppressed = false;
+  if (!was) saveState();
   if (!win.isVisible()) win.showInactive();
   if (attach) showVeil();
-  placeSwarm();
-  if (!was) {
-    notifyCompanions();
-    // Shown while an AitherOS window is up: ride it (one cluster, PR #68).
-    if (dockWindowId) {
-      try { void setDockWindow(electron().BrowserWindow.fromId(dockWindowId)); } catch { /* window gone */ }
-    }
-  }
   return { ok: true, visible: true };
 }
 
-function hideOrb({ auto = false } = {}) {
-  // NOTE: the stand-down flag is NOT cleared here. An automatic hide (a card leaving
-  // the auto-surfaced fairy) and an owner hide both happen while the body can still be
-  // up; clearing it let the next showOrb float the fairy beside the body again. Only
-  // the body leaving (returnFromAvatar) or a grow ending clears it.
-  // The owner hid it with cards waiting: those cards do not bring it back, a NEW one does.
-  if (!auto) {
-    autoSurfaced = false; ownerHidIds = new Set(attentionCards.map((c) => c.id));
-    state.ownerHid = true; state.ownerHidIds = [...ownerHidIds];
-  }
-  releaseHover();
+function hideOrb() {
   suppressed = true;
   pendingSlot = null;
-  if (nudging) endNudge("hidden");
   if (alive(bubbleWindow)) bubbleWindow.hide();
   if (alive(orbWindow)) orbWindow.hide();
-  if (alive(swarmWindow)) swarmWindow.hide();
-  hideMenu();
-  hideTip();
   hideVeil();
-  sendPanel();
   const was = state.visible;
   state.visible = false;
-  // The tool flights have no fairy to come from any more: take their overlay down
-  // now, not on the next session tick (a frozen sub-fairy must not outlive the fairy).
-  try { updateToolFlights(); } catch { /* cosmetic */ }
-  if (was || !auto) {   // an owner hide is saved even when it was already hidden (its card ids changed)
-    saveState();
-    notifyCompanions();
-  }
-  syncForegroundProbe(); // no orb on screen: no probe to keep it off (or following) anything
-  fairyOwner.release(); // hidden: another desk may show the one cluster
+  if (was) saveState();
   return { ok: true, visible: false };
 }
 
@@ -1943,7 +460,7 @@ function toggleOrb() {
  *  the owner is typing in it, or it is holding/showing something. Nothing else
  *  keeps it open — and a bubble the owner closed stays closed. */
 function bubbleWanted() {
-  if (suppressed || stoodDownForAvatar || !state.visible) return false;
+  if (suppressed || !state.visible) return false;
   return Boolean(queue.cur) || queue.items.length > 0 || inflight || drafting
     || regionWait || Boolean(hold) || Boolean(results) || tripBusy;
 }
@@ -1959,19 +476,10 @@ function syncBubble() {
     bubbleWindow.hide();
     drafting = false;
   }
-  sendPanel();
-  syncPanelPoll();
 }
 
 function openBubble({ focus = false } = {}) {
   showOrb();
-  // ONE surface (owner 2026-11-20): while the body is up it carries the cards, so no
-  // floating ask panel may pop where the fairy used to rest. (showOrb already refuses
-  // to raise the orb; without this guard openBubble raised the bubble anyway.)
-  if (expanded || stoodDownForAvatar) {
-    sendPanel();
-    return { ok: true, suppressed: true };
-  }
   const win = ensureBubble();
   placeBubble();
   if (!win.isVisible()) win.showInactive();
@@ -1980,20 +488,14 @@ function openBubble({ focus = false } = {}) {
     win.focus();
     try { win.webContents.send("orb:focus"); } catch { /* page loading: focuses on load */ }
   }
-  sendPanel();
-  syncPanelPoll();
-  sendPanelView();
 }
 
 function closeBubble() {
   suppressed = true;
   bubbleMode = null;
-  cardChat = null;
   pendingSlot = null;
   drafting = false;
   if (alive(bubbleWindow)) bubbleWindow.hide();
-  sendPanel();
-  syncPanelPoll();
   return { ok: true };
 }
 
@@ -2015,7 +517,7 @@ function pump() {
   } else if (!queue.cur && before) {
     send("orb:line", null);
   }
-  sendBadge();
+  send("orb:badge", orbCore.unreadCount(queue) + attention.count);
   syncBubble();
   send("orb:queue", orbCore.queueSummary(queue));
   send("orb:busy", inflight || tripBusy);
@@ -2311,19 +813,6 @@ async function askText(text, { slotId = null } = {}) {
   openBubble({ focus: false });
   if (!claimAsk()) return busyLine();
   try {
-    // Chatting about a card (the whisper's Chat, or Alt+Space -> "Ask the fairy
-    // about"): the card is the context, ahead of a held file or a past screen.
-    if (bubbleMode === "card" && cardChat) {
-      const question = fairyAttention.chatQuestion(cardChat.context, said);
-      const shot = await captureScreen();
-      if (!shot) {
-        fail("I could not capture the screen to answer that.\n\nCheck Settings > Privacy > Screen recording, then ask again.", { code: "capture" });
-        return { ok: false, error: "screen capture failed" };
-      }
-      const r = await runAsk(shot, orbCore.buildPrompt("text", question), said, { label: "Thinking about the card" });
-      if (r.ok) speakAnswer(r.text, slotId, { onlyIfAttached: true });
-      return r;
-    }
     // A held file or link is the context for the next question: the owner asked
     // for "follow-up questions keep the file as context".
     if (hold && hold.kind === "file") {
@@ -2493,7 +982,7 @@ function lookoutPoint() {
 
 async function sendHome() {
   detach({ silent: true });
-  const area = fairyArea(displayForOrb().workArea);
+  const area = displayForOrb().workArea;
   const pos = orbCore.defaultOrbPosition(area, ORB_SIZE);
   await flyTo({ x: pos.x + ORB_SIZE.width / 2, y: pos.y + ORB_SIZE.height / 2 });
   state.x = pos.x;
@@ -2566,7 +1055,7 @@ function startFollow() {
 async function refreshAttach() {
   // Never yank the orb back to a shoulder while it is flying or working: the
   // tether catches up when the trip is done.
-  if (!attach || flight || tripBusy || nudging) return;
+  if (!attach || flight || tripBusy) return;
   let bounds = attach.bounds;
   if (attach.kind === "window" && attach.hwnd) {
     if (!probe) probe = spiritProbe.createWindowProbe();
@@ -2583,15 +1072,10 @@ async function refreshAttach() {
     const { BrowserWindow } = electron();
     const win = BrowserWindow.fromId(attach.windowId);
     if (!alive(win)) {
-      detach({ reason: attach.auto ? null : "that window closed" });
-      return;
-    }
-    if (attach.auto && (!win.isVisible() || win.isMinimized())) {
-      void setDockWindow(null);
+      detach({ reason: "that window closed" });
       return;
     }
     bounds = win.getBounds();
-    void refreshObstacles(win); // the next tick docks on what this finds
   } else if (attach.kind === "avatar" && attach.slotId) {
     const targets = await attachableTargets();
     const now = targets.find((t) => t.slotId === attach.slotId);
@@ -2606,7 +1090,7 @@ async function refreshAttach() {
   }
   attach.bounds = spiritCore.normBounds(bounds) || attach.bounds;
   if (attach.kind === "avatar") return; // the orbit timer moves it around the body
-  const dock = dockSpot(attach);
+  const dock = spiritCore.dockPosition(attach, ORB_SIZE);
   setOrbCenter({ x: dock.x + ORB_SIZE.width / 2, y: dock.y + ORB_SIZE.height / 2 });
   drawVeil();
 }
@@ -2619,7 +1103,7 @@ function startOrbit() {
   stopOrbit();
   let lastFront = 0;
   orbitTimer = setInterval(() => {
-    if (!attach || attach.kind !== "avatar" || flight || tripBusy || dragging || nudging) return;
+    if (!attach || attach.kind !== "avatar" || flight || tripBusy || dragging) return;
     const p = spiritCore.orbitPoint(attach.bounds, Date.now());
     if (!p) return;
     setOrbCenter(p);
@@ -2630,7 +1114,7 @@ function startOrbit() {
 
 /** A free spirit (not set free by the owner) finds an avatar and starts orbiting it. */
 async function seekAvatar() {
-  if (attach || flight || tripBusy || dragging || nudging || state.freeRoam || !orbVisible()) return;
+  if (attach || flight || tripBusy || dragging || state.freeRoam || !orbVisible()) return;
   const body = (await attachableTargets()).find((t) => t && t.kind === "avatar");
   if (body) await attachTo(body, { quiet: true });
 }
@@ -2640,13 +1124,10 @@ let hoverTimer = null;
 function startHover() {
   if (hoverTimer) return;
   hoverTimer = setInterval(() => {
-    if (attach || flight || tripBusy || dragging || nudging || !orbVisible()) return;
+    if (attach || flight || tripBusy || dragging || !orbVisible()) return;
     if (state.x == null || state.y == null) return;
     const d = spiritCore.hoverOffset(Date.now());
-    // The hover circles the RESTING spot: the saved one, kept inside the area the
-    // fairy may use right now (restSpot), so it never drifts back onto a reserved box.
-    const rest = restSpot();
-    setOrbCenter({ x: rest.x + ORB_SIZE.width / 2 + d.x, y: rest.y + ORB_SIZE.height / 2 + d.y });
+    setOrbCenter({ x: state.x + ORB_SIZE.width / 2 + d.x, y: state.y + ORB_SIZE.height / 2 + d.y });
   }, ORBIT_MS);
   if (hoverTimer.unref) hoverTimer.unref();
 }
@@ -2683,7 +1164,7 @@ async function attachTo(target, { quiet = false } = {}) {
   if (attach.kind === "avatar") {
     targetPoint = spiritCore.orbitPoint(attach.bounds, Date.now() + 560);
   } else {
-    const dock = dockSpot(attach);
+    const dock = spiritCore.dockPosition(attach, ORB_SIZE);
     targetPoint = { x: dock.x + ORB_SIZE.width / 2, y: dock.y + ORB_SIZE.height / 2 };
   }
   showVeil();
@@ -2701,8 +1182,6 @@ function publicAttach() {
     : null;
 }
 
-/** The last detach's flight home, settled once the veil is down (tests await it). */
-let homeFlight = Promise.resolve();
 function detach({ silent = false, reason = null } = {}) {
   if (!attach) return { ok: true, attached: false };
   stopFollow();
@@ -2714,7 +1193,7 @@ function detach({ silent = false, reason = null } = {}) {
   if (reason) pushStatus(reason, 6000, 6000);
   if (!silent) {
     const back = home || orbCenter();
-    homeFlight = flyTo(back, { durationMs: 480 }).then(() => { if (!attach) hideVeil(); });
+    void flyTo(back, { durationMs: 480 }).then(() => { if (!attach) hideVeil(); });
   }
   sendAttach();
   return { ok: true, attached: false, was: { kind: was.kind, title: was.title } };
@@ -2904,7 +1383,6 @@ function sendAttach() {
     label: spiritCore.attachLabel(attach),
     tint: tint.css,
   });
-  sendPanelView();
 }
 
 function sendHold() {
@@ -2967,28 +1445,12 @@ async function pumpTrips() {
     let trip = spiritCore.dequeue(tripQueue);
     while (trip) {
       let outcome;
-      let limit = null;
       try {
-        // A trip that never settles (a vision or file call that hangs) held tripBusy
-        // for good, and every later trip and click queued behind it (2026-11-10).
-        outcome = await Promise.race([
-          executeTrip(trip),
-          new Promise((resolve) => {
-            limit = setTimeout(() => resolve({ ok: false, timedOut: true, reason: "the trip took too long" }), TRIP_LIMIT_MS);
-            if (limit.unref) limit.unref();
-          }),
-        ]);
+        outcome = await executeTrip(trip);
       } catch (error) {
         outcome = { ok: false, reason: String((error && error.message) || error) };
       }
-      if (limit) clearTimeout(limit);
       spiritCore.finish(tripQueue, trip.id);
-      if (outcome && outcome.timedOut) {
-        // The hung step may still settle later: isCurrentTrip() is false by then, so it
-        // returns quietly. The spirit stops wherever it is and goes home now.
-        if (flight) { flight.cancelled = true; finishFlight(); }
-        void flyHome(520);
-      }
       const summary = spiritCore.tripSummary(trip, outcome);
       spiritCore.logTrip(tripLog, { label: summary, ok: outcome.ok !== false });
       sendTrips();
@@ -3073,14 +1535,10 @@ async function executeTrip(trip) {
     const flew = await flyTo(route.point);
     if (flew.cancelled || !isCurrentTrip(trip)) return { ok: false, cancelled: true };
   }
-  // An agent that sent the spirit lends it its fairy colour and name for the trip
-  // (agent-fairies.json); otherwise the body's own slot tint, as before.
-  const lent = spiritCore.tripTint(trip);
-  if (trip.slotId || lent.agent) {
-    tint = lent;
+  if (trip.slotId) {
+    tint = spiritCore.tintFor(trip.slotId);
     sendTint();
   }
-  if (lent.agent) setSpeaker(lent.agent, caption);
   const outcome = await performTrip(trip, route.target);
   if (!isCurrentTrip(trip)) return { ok: false, cancelled: true };
   await flyHome(520);
@@ -3432,12 +1890,7 @@ const DESK_DOORS = Object.freeze([
 ]);
 function deskDoors(reg) {
   return DESK_DOORS.filter(([id]) => reg && reg.byId && reg.byId(id)).map(([id, label]) => ({
-    // The fairy's door names the actual ask, not a generic "Notifications":
-    // "Needs you (3)" is the same group label the launcher and the deck use.
-    // `id` is the menu ROW key (what desk:menu-pick looks the row up by); the command
-    // that runs is the closed-over registry id below, never this prefixed key.
-    id: `door:${id}`,
-    label: id === "inbox.open" ? (attentionCards.length ? `Needs you (${attentionCards.length})` : "Inbox") : label,
+    label: id === "inbox.open" && attention.count ? `${label} (${attention.count} need you)` : label,
     click: () => { void runCommandImpl?.(id); },
   }));
 }
@@ -3446,1046 +1899,48 @@ function deskDoors(reg) {
 let attention = { count: 0, line: null };
 function setAttention(count, line = null) {
   attention = { count: Math.max(0, Number(count) || 0), line: line ? String(line).slice(0, 160) : null };
-  sendBadge();
+  send("orb:badge", orbCore.unreadCount(queue) + attention.count);
   send("orb:attention", attention);
   return attention;
 }
 
-// ── attention: the fairy carries the cards (fairy-attention.cjs) ────────────
-//
-// Owner, 2026-11-08: the cards "need to live in the fairy ... it can come flutter
-// in front of my eyes to get my attention without blocking anything". So a card is
-// no longer a window: the fairy picks the ONE that matters now (fairy-attention
-// plan), and either glows where it rests with a whisper beside it (L1) or flies to
-// where the owner is looking -- the pointer, never ON it -- flutters there with the
-// whisper (L2/L3), then goes home. The whisper never takes focus and is
-// click-through except while the pointer is on it; an ignored nudge climbs the
-// ladder, an answered/opened one starts it over. While this loop runs and the fairy
-// is on screen, the desk's heartbeat tells awask so its Tk card window stays down.
-
-let attentionCards = [];
-let attentionMems = {};
-let attentionTimer = null;
-let attentionSoon = null;
-let attentionTicking = false;
-let attentionLastAt = 0;
-let attentionVoiceAt = 0;
-/** When the fairy last said "M older cards are on the list" (once a day at most). */
-let attentionOlderAt = 0;
-let attentionAway = false;
-let attentionReturnUntil = 0;
-/** {decision, view, startedAt, until, anchor, whisperAt, hovered, shown, timer, flutter} */
-let nudging = null;
-/** Injected by main: answer(id,key), open(id|null), quiet() -> "", idleMs(), speak(line,{force});
- *  tests also pass fullScreen() so no real window probe is spawned. */
-let attentionHooks = {};
-
-function attentionFile() {
-  if (process.env.DESK_FAIRY_ATTENTION_FILE) return String(process.env.DESK_FAIRY_ATTENTION_FILE);
-  const { app } = electron();
-  return path.join(app.getPath("userData"), "fairy-attention.json");
-}
-
-function loadAttention() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(attentionFile(), "utf8"));
-    attentionMems = fairyAttention.sanitizeMems(raw && raw.cards);
-    attentionLastAt = Number(raw && raw.lastNudgeAt) || 0;
-    attentionVoiceAt = Number(raw && raw.lastVoiceAt) || 0;
-    attentionOlderAt = Number(raw && raw.olderMentionedAt) || 0;
-  } catch {
-    attentionMems = {}; // unreadable memory = every card starts at the bottom of the ladder
-  }
-}
-
-function saveAttention() {
-  try {
-    const file = attentionFile();
-    const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ cards: attentionMems, lastNudgeAt: attentionLastAt, lastVoiceAt: attentionVoiceAt, olderMentionedAt: attentionOlderAt }));
-    fs.renameSync(tmp, file);
-  } catch { /* per-viewer convenience: losing it restarts the ladder, nothing more */ }
-}
-
-/**
- * Every number the fairy shows, from one function (fairy-counts.cjs): the badge is the
- * queue's count, "N more waiting" is that minus the card shown, a companion's badge is
- * its agent's share. Owner 2026-11-12: four different numbers were on screen at once.
- */
-let attentionOpen = null;
-function currentCounts() {
-  let worn = "";
-  try { worn = agentFairy.crewKey(currentFairy().agent) || ""; } catch { /* no look yet */ }
-  return fairyCounts.fairyCounts({
-    decisions: attentionCards,
-    open: attentionOpen,
-    agentOf: agentFairy.cardAgent,
-    worn,
-    blockers: attention.count,
-    unread: orbCore.unreadCount(queue),
-  });
-}
-
-/** The orb badge: the cards that need the owner. With none, the answers left to read. */
-function badgeView(counts = currentCounts()) {
-  if (counts.needYou > 0) return { n: counts.badge, title: fairyCounts.badgeTitle(counts) };
-  return {
-    n: counts.unread,
-    title: counts.unread ? `${counts.unread} answer${counts.unread === 1 ? "" : "s"} to read` : "",
-  };
-}
-
-function sendBadge() {
-  send("orb:badge", badgeView());
-}
-
-/** main hands over the ranked decision queue (decisions only, no reports) on every
- *  change, and every open card beside it so reports can be named, never guessed. */
-function setAttentionCards(cards, allOpen = null) {
-  attentionCards = Array.isArray(cards) ? cards.filter((c) => c && typeof c.id === "string") : [];
-  attentionOpen = Array.isArray(allOpen) ? allOpen : null;
-  const ids = new Set(attentionCards.map((c) => c.id));
-  const before = Object.keys(attentionMems).length;
-  attentionMems = fairyAttention.pruneMems(attentionMems, ids);
-  if (Object.keys(attentionMems).length !== before) saveAttention();
-  // Answered somewhere else (the Inbox, Discord, the phone): the whisper goes.
-  if (nudging && !ids.has(nudging.decision.card.id)) endNudge("answered");
-  surfaceForCards();
-  sendFairy();
-  sendBadge();
-  sendPanelView();
-  ensureAttention();
-  ensureClusterClock();
-  scheduleAttentionTick(1500); // a NEW card is judged now, not on the next 15 s tick
-  return { ok: true, count: attentionCards.length };
-}
-
-// ── the agent fairy: whose colours the fairy wears (agent-fairy.cjs) ────────
-//
-// Owner, 2026-11-09: the desk fairy takes on the colour of whoever is talking or
-// whose card it carries; when several agents have cards waiting, small companion
-// fairies (one per agent, at most four) orbit it, and hovering one shows that
-// agent's card. The owner's idle fairy stays Aither white-gold.
-
-/** {agent, until} -- the agent whose line is being spoken, for about that long. */
-let fairySpeaker = null;
-let fairySpeakerTimer = null;
-let lastFairyKey = "";
-let lastCompanionsKey = "";
-
-/** The fairy to wear now: the carried card's agent, else the speaker, else Aither. */
-function currentFairy(nowMs = Date.now()) {
-  if (nudging && nudging.decision && nudging.decision.card) {
-    const f = agentFairy.crewFairy(nudging.decision.card.agent);
-    if (f.known || f.crew) return f;
-  }
-  if (fairySpeaker && nowMs < fairySpeaker.until) return agentFairy.crewFairy(fairySpeaker.agent);
-  return agentFairy.restingFairy();
-}
-
-/** Who is active on the platform (GET /atlas/presence via MCP atlas_presence). */
-let agentPresence = [];
-/** agent -> until (ms): a line spoken or a post just now; the companion flashes. */
-let agentPosts = new Map();
-let agentPostTimer = null;
-
-function speakingNow(nowMs = Date.now()) {
-  const out = [];
-  for (const [agent, until] of agentPosts) {
-    if (until > nowMs) out.push(agent);
-    else agentPosts.delete(agent);
-  }
-  return out;
-}
-
-/**
- * The cluster now (fairy-cluster.cjs): one fairy per queued decision, per live agent
- * session and per working platform agent, reconciled against what was there before
- * (an entry its source dropped leaves; an unreadable source's entries are reaped
- * after 30 s), then capped into a counted bead.
- */
-function currentCompanions(nowMs = Date.now()) {
-  const entries = fairyCluster.liveEntries({
-    cards: attentionCards, sessions: clusterSessions, presence: agentPresence, nowMs,
-  });
-  const { kept } = clusterReaper.reconcile(entries, { nowMs, ok: clusterOk });
-  const c = fairyCluster.collapse(kept, fairyCluster.CAP);
-  clusterTotal = c.total;
-  clusterLabel = fairyCluster.countLabel(kept);
-  const talking = new Set(speakingNow());
-  return c.shown.map((e) => (e.kind !== "decision" && talking.has(e.agent) ? { ...e, state: "speaking" } : e));
-}
-
-/** What the cluster holds: {total, label, shown}. For the bridge, tray and proofs. */
-function clusterState() {
-  const shown = currentCompanions();
-  return { total: clusterTotal, label: clusterLabel, shown: shown.length, keys: clusterReaper.keys(), autoSurfaced };
-}
-
-/**
- * Main hands over the live agent sessions: the Claude Code tabs (session-context
- * liveSessions, pid-checked) and the awsh daemon's rows. `ok:false` = that read
- * failed; the cluster then holds the last fairies for 30 s, never forever.
- */
-function setClusterSessions(sources, { ok = true } = {}) {
-  // Unreadable: nothing is "fresh" from this source; the reaper holds the last fairies
-  // for its 30 s and then lets them go (orphans never stay).
-  clusterSessions = ok === false ? [] : (Array.isArray(sources) ? sources : [sources]);
-  clusterOk = { ...clusterOk, sessions: ok !== false };
-  sendFairy();
-  return { ok: true, total: clusterTotal };
-}
-
-/**
- * Decisions ride the fairy (owner 2026-11-16: "these bullshit decision cards instead
- * of fairies"). A hidden orb with decisions waiting comes up by itself -- the cluster
- * IS the decision surface now -- and goes back down when the queue empties, unless
- * the owner showed it himself meanwhile. Grown into the avatar: the body carries it.
- */
-function surfaceForCards() {
-  if (quitting || expanded) return;
-  // both/swarm show the cluster itself, beside the avatar: there is no orb disc to
-  // bring up, and surfacing one would break the mode's layout (owner 2026-11-20).
-  if (display.mode === "both" || display.mode === "swarm") return;
-  const fresh = !ownerHidIds || attentionCards.some((c) => !ownerHidIds.has(c.id));
-  if (attentionCards.length > 0 && !state.visible && fresh) {
-    autoSurfaced = true; // before showOrb: its save must not record the owner's choice
-    const r = showOrb({ auto: true });
-    if (!r || !r.ok) autoSurfaced = false;
-  } else if (attentionCards.length === 0 && autoSurfaced) {
-    autoSurfaced = false;
-    if (state.visible) hideOrb({ auto: true });
-  }
-}
-
-/** Reconcile on a clock too: a fairy whose source went silent leaves within ~30 s. */
-function ensureClusterClock() {
-  if (clusterTimer || quitting) return;
-  clusterTimer = setInterval(() => { try { sendFairy(); } catch { /* cosmetic */ } }, 10_000);
-  if (clusterTimer.unref) clusterTimer.unref();
-}
-
-/**
- * Main hands over the platform presence list: every agent that is active (its
- * Discord bot, its work on Atlas' board, a card). A list that could not be read
- * is NOT handed over (the last one stands), so a dead gateway never empties the swarm.
- */
-function setPresence(list) {
-  agentPresence = Array.isArray(list) ? list.slice(0, 200) : [];
-  sendFairy();
-  return { ok: true, count: agentPresence.length };
-}
-
-/**
- * An agent just spoke or posted (its Discord bot, the relay): its companion flashes
- * bright for a few seconds. The main fairy is not re-coloured by a post -- only by
- * the card it carries or a line spoken aloud.
- */
-function noteAgentPosted(agent, { ms = 4000 } = {}) {
-  const key = agentFairy.crewKey(agent);
-  if (!key) return { ok: false, reason: "not an agent" };
-  agentPosts.set(key, Date.now() + ms);
-  if (agentPostTimer) clearTimeout(agentPostTimer);
-  agentPostTimer = setTimeout(() => { agentPostTimer = null; sendFairy(); }, ms + 50);
-  if (agentPostTimer.unref) agentPostTimer.unref();
-  sendFairy();
-  return { ok: true, agent: key };
-}
-
-/** Click a companion: talk to THAT agent (main opens its chat; the hook decides how). */
-function chatWithAgent(agent) {
-  // The counted bead: the whole waiting list, never a chat with "more".
-  if (String(agent || "") === "more") {
-    const r = hookValue("openList");
-    return r === undefined ? { ok: false, reason: "no waiting list in this build" } : { ok: true, list: true };
-  }
-  const key = agentFairy.crewKey(agent);
-  if (!key) return { ok: false, reason: "not an agent" };
-  const row = currentCompanions().find((c) => c.agent === key) || null;
-  const opened = hookValue("chat", key, { threadUrl: row ? row.threadUrl : "", dmUrl: row ? row.dmUrl : "" });
-  return opened === false || opened === undefined
-    ? { ok: false, reason: "chat is not wired in this build" }
-    : { ok: true, agent: key };
-}
-
-/** Push the look and the companions to the orb page, only when they changed. */
-function sendFairy({ force = false } = {}) {
-  const look = currentFairy();
-  const key = JSON.stringify(look);
-  if (force || key !== lastFairyKey) {
-    lastFairyKey = key;
-    send("orb:fairy", look);
-  }
-  allCompanions = currentCompanions();
-  const { visible: companions, pinned } = viewCompanions(allCompanions);
-  // Visual neurons: a companion that STARTS working opens a thought node; a state
-  // that did not change adds nothing. Spoken lines come from setSpeaker, which
-  // every line the desk says goes through.
-  if (neuronsOn()) {
-    const seen = new Set();
-    for (const c of companions) {
-      const key = String(c.agent || "");
-      if (!key) continue;
-      seen.add(key);
-      const was = lastNeuronStates.get(key);
-      if (c.state === "working" && was !== "working") {
-        noteNeuron({ agent: key, kind: "thinking", text: c.title || c.label || "working" });
-      }
-      lastNeuronStates.set(key, c.state);
-    }
-    for (const key of [...lastNeuronStates.keys()]) if (!seen.has(key)) lastNeuronStates.delete(key);
-  }
-  const ckey = JSON.stringify({ companions, pinned: pinned.map((c) => [c.agent, c.state, c.count, c.selected]), view: state.swarmView });
-  if (force || ckey !== lastCompanionsKey) {
-    lastCompanionsKey = ckey;
-    swarmCompanions = companions;
-    // Who is in the ring changed: every fairy has a new slot, so let go of any hover. A change of
-    // radius, layout or selection keeps the same fairies, and the wheel must keep the window.
-    const who = JSON.stringify(companions.map((c) => [c.agent, c.state, c.count]));
-    if (who !== lastCompanionsWho) { lastCompanionsWho = who; releaseHover(); }
-    send("orb:companions", companions);
-    placeSwarm(companions, { raise: true });
-    try {
-      if (alive(swarmWindow)) swarmWindow.webContents.send("orb:companions", companions);
-    } catch { /* page mid-load: init() carries the list */ }
-  }
-  // A session's running tool changed (or one ended): re-plan the tool flights. The
-  // planner keeps a finished call for its trip home, so this is safe to call often.
-  try { updateToolFlights(); } catch { /* cosmetic: a bad surface never breaks the cluster */ }
-  return { look, companions };
-}
-
-/**
- * Someone is talking: the fairy wears that agent's colours for about as long as
- * the line takes, then returns to the card it carries or to Aither. An unknown
- * name (a character, not an agent) changes nothing.
- */
-function setSpeaker(agent, text = "") {
-  const key = agentFairy.normalizeAgent(agent);
-  if (!key) return { ok: false, reason: "not an agent with a fairy" };
-  const ms = agentFairy.speakingMs(text);
-  fairySpeaker = { agent: key, until: Date.now() + ms };
-  agentPosts.set(key, Date.now() + ms); // its companion flashes while it talks
-  if (fairySpeakerTimer) clearTimeout(fairySpeakerTimer);
-  fairySpeakerTimer = setTimeout(() => { fairySpeakerTimer = null; fairySpeaker = null; sendFairy(); }, ms + 50);
-  if (fairySpeakerTimer.unref) fairySpeakerTimer.unref();
-  // Visual neurons: a spoken line is a step the owner can see.
-  noteNeuron({ agent: key, kind: "line", text });
-  sendFairy();
-  return { ok: true, agent: key, ms };
-}
-
-// ── visual neurons (neurons-model.cjs): see an agent think ───────────────────
-//
-// Owner, 2026-11-18: "visual neurons -- let the owner SEE agents think". A step
-// (thinking, a tool call, a result, a spoken line) becomes a node around that
-// agent's fairy; edges are the sequence and the fan-out of parallel tool calls.
-// OFF unless Settings -> Visual neurons switches it on. The model owns the rules
-// (nodes, edges, decay, caps, layout); this owns WHEN a step is noted and the ONE
-// batched send (<= 10 Hz, never one IPC per step and never per frame).
-
-function neuronsOn() {
-  return state.neurons === true;
-}
-
-/** Note one step. Cheap and silent when the overlay is off (the default). */
-function noteNeuron(event) {
-  if (!neuronsOn()) return false;
-  if (!neurons.ingest(event)) return false;
-  scheduleNeuronFlush();
-  return true;
-}
-
-function scheduleNeuronFlush() {
-  if (neuronTimer) return;
-  neuronTimer = setTimeout(() => { neuronTimer = null; flushNeurons(); }, NEURONS_FLUSH_MS);
-  if (neuronTimer.unref) neuronTimer.unref();
-}
-
-/** What the pages draw: one graph per agent, plus the decay clock they fade on. */
-function neuronPayload(nowMs = Date.now()) {
-  return { on: neuronsOn(), ...neurons.snapshot(nowMs) };
-}
-
-function flushNeurons({ force = false } = {}) {
-  const payload = neuronPayload();
-  const key = JSON.stringify(payload);
-  if (!force && key === lastNeuronPayload) return payload;
-  lastNeuronPayload = key;
-  for (const win of [orbWindow, bubbleWindow, swarmWindow]) {
-    try { if (alive(win)) win.webContents.send("orb:neurons", payload); } catch { /* page mid-load: init() carries it */ }
-  }
-  return payload;
-}
-
-/** The switch (Settings, the palette row, POST /commands/run). Off is the default. */
-function setNeurons(next) {
-  const want = next === true;
-  if (state.neurons !== want) { state.neurons = want; saveState(); }
-  if (!want) { neurons.reset(); lastNeuronStates.clear(); }
-  flushNeurons({ force: true });
-  return { ok: true, neurons: want };
-}
-
-/**
- * Hovering a companion shows that agent's card in the whisper, beside the fairy
- * where it rests. A PEEK, not a nudge: it neither climbs nor resets the ladder,
- * and a real nudge in flight keeps its card.
- */
-function peekCard(id, { explicit = false } = {}) {
-  const card = attentionCards.find((c) => c && c.id === String(id || ""));
-  if (!card) return { ok: false, reason: "no such card" };
-  // An old card never pops on a hover: the badge and the list only (owner
-  // 2026-11-09, "Waiting 22 d"). A click on its fairy is asking, so it opens.
-  if (!explicit && fairyAttention.isStale(card, Date.now())) return { ok: false, reason: "old: the badge only" };
-  if (nudging && nudging.decision.card.id === card.id) {
-    if (explicit) {
-      nudging.until = Math.max(nudging.until, Date.now() + fairyMenu.PINNED_MS);
-      nudging.explicit = true;
-    }
-    return { ok: true, id: card.id, already: true };
-  }
-  if (nudging && !nudging.peek && !explicit) return { ok: false, reason: "a nudge is showing" };
-  // A hover never replaces a card the owner CLICKED open, or one the pointer is on:
-  // on the way from the orb to the card's buttons the pointer crosses the companion
-  // fairies, and each hover swapped the card out (owner 2026-11-10: "I click but I
-  // can't get to the card because it changes when I hover over a different fairy").
-  if (nudging && !explicit && (nudging.explicit || nudging.hovered)) {
-    return { ok: false, reason: "the owner opened this one" };
-  }
-  // A click outranks a running nudge; "preempted" teaches the ladder nothing.
-  // A fairy that had flown out to the pointer still goes home when this one ends.
-  const away = nudging && nudging.anchor ? nudging.anchor : null;
-  if (nudging) endNudge(nudging.peek ? "peek" : "preempted", { stay: true });
-  const f = agentFairy.crewFairy(card.agent);
-  const decision = {
-    act: "nudge", card, level: fairyAttention.LEVEL.GLOW, importance: 0, arrival: false, returned: false,
-    why: fairyAttention.whyNow(card, Date.now()),
-    lead: f.known || f.crew ? `From ${f.label}` : "Waiting on you",
-    // A CLICKED card is pinned: it stays until closed or another click (owner
-    // 2026-11-12), never timed out from under the pointer.
-    more: fairyCounts.moreAfter(attentionCards, card.id), voice: false, showMs: explicit ? fairyMenu.PINNED_MS : 8000,
-  };
-  const r = startNudge(decision, { peek: true });
-  if (away && nudging && !nudging.anchor) nudging.anchor = away;
-  if (explicit && nudging) nudging.explicit = true;
-  return r;
-}
-
-/**
- * A click on an agent's fairy: that agent's newest card opens in the whisper,
- * never the empty chat bubble (owner 2026-11-09). `id` is the companion's card;
- * an id that is gone falls back to the same agent's newest open card.
- */
-function openFairyCard(id, agent = "") {
-  let card = attentionCards.find((c) => c && c.id === String(id || ""));
-  if (!card && agent) {
-    const key = agentFairy.crewKey(agent);
-    const mine = key ? attentionCards.filter((c) => c && agentFairy.cardAgent(c) === key) : [];
-    card = mine.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))[0];
-  }
-  if (!card) return { ok: false, reason: "no card for that fairy" };
-  return peekCard(card.id, { explicit: true });
-}
-
-function ensureAttention() {
-  if (attentionTimer || quitting) return;
-  attentionTimer = setInterval(() => { void attentionTick(); }, ATTENTION_TICK_MS);
-  if (attentionTimer.unref) attentionTimer.unref();
-}
-
-function scheduleAttentionTick(ms) {
-  if (attentionSoon || quitting) return;
-  attentionSoon = setTimeout(() => { attentionSoon = null; void attentionTick(); }, ms);
-  if (attentionSoon.unref) attentionSoon.unref();
-}
-
-function stopAttention() {
-  if (attentionTimer) { clearInterval(attentionTimer); attentionTimer = null; }
-  if (attentionSoon) { clearTimeout(attentionSoon); attentionSoon = null; }
-  if (nudging) {
-    if (nudging.timer) clearInterval(nudging.timer);
-    if (nudging.flutter) clearInterval(nudging.flutter);
-    nudging = null;
-  }
-}
-
-/** Does the fairy carry the cards right now? Only while it is meant to be on screen
- *  and its loop runs -- hidden, the awask window comes back (fail toward visible). */
-function ownsAttention() {
-  if (display.mode === "avatar") return false; // no cluster on an avatar-only desk
-  return Boolean(attentionTimer && !quitting && state.visible && alive(orbWindow));
-}
-
-/**
- * Will the fairy cluster carry a NEW card? True while the attention loop runs and the
- * orb exists, hidden or not: a hidden orb comes up for a card (surfaceForCards), and a
- * fairy grown into the avatar carries it in the body. This is the desk's claim on the
- * card (the `.desk-alive` "attention": "fairy"), so awask leaves its Tk card window
- * down (owner 2026-11-16: "still getting these bullshit decision cards instead of
- * fairies"). The cluster turned off (orb.json cluster:false) gives the claim back.
- */
-function carriesCards() {
-  if (display.mode === "avatar") return false; // the one cluster is off in avatar mode
-  return Boolean(attentionTimer && !quitting && alive(orbWindow) && state.cluster !== false);
-}
-
-function hookValue(name, ...args) {
-  const fn = attentionHooks && attentionHooks[name];
-  if (typeof fn !== "function") return undefined;
-  try { return fn(...args); } catch { return undefined; }
-}
-
-/** A full-screen app or game in front (the probe's quiet op). "" = not quiet / unknown. */
-async function fullScreenNow() {
-  if (typeof (attentionHooks && attentionHooks.fullScreen) === "function") {
-    try { return String((await attentionHooks.fullScreen()) || ""); } catch { return ""; }
-  }
-  if (process.platform !== "win32") return "";
-  try {
-    if (!probe) probe = spiritProbe.createWindowProbe();
-    if (typeof probe.quietState !== "function") return "";
-    const verdict = await probe.quietState({ excludePid: process.pid });
-    return verdict && verdict.quiet ? String(verdict.reason || "a full-screen app") : "";
-  } catch {
-    return ""; // a probe that cannot answer must not silence the fairy forever
-  }
-}
-
-/** One judgement: maybe start a nudge. Returns the plan (for tests and the bridge). */
-async function attentionTick() {
-  if (attentionTicking || quitting || !alive(orbWindow)) return { act: "none", reason: "not ready" };
-  attentionTicking = true;
-  try {
-    const nowMs = Date.now();
-    const idleMs = Math.max(0, Number(hookValue("idleMs")) || 0);
-    if (idleMs >= fairyAttention.DEFAULTS.awayMs) {
-      attentionAway = true;
-    } else if (attentionAway && idleMs < 30_000) {
-      attentionAway = false;
-      attentionReturnUntil = nowMs + 5 * 60_000; // the next nudge is "while you were away"
-    }
-    const busy = Boolean(nudging || flight || tripBusy || dragging || inflight || drafting || regionWait
-      || (alive(bubbleWindow) && bubbleWindow.isVisible()));
-    const muted = Number(state.muteUntil) > nowMs ? "nudges muted from the fairy's menu" : "";
-    // The body carries the cards while it is up (one companion surface).
-    const quiet = !state.visible ? "the fairy is hidden" : (stoodDownForAvatar ? "the body is carrying the cards" : muted || String(hookValue("quiet") || ""));
-    const ctx = {
-      nowMs,
-      lastNudgeAt: attentionLastAt,
-      lastVoiceAt: attentionVoiceAt,
-      olderMentionedAt: attentionOlderAt,
-      quiet,
-      idleMs,
-      busy,
-      returned: nowMs < attentionReturnUntil,
-    };
-    // A muted agent (fairy menu > Mute) never nudges; its cards stay on the badge and in the list.
-    const mutedAgents = state.swarmView.muted;
-    const nudgeable = mutedAgents.length ? attentionCards.filter((c) => !mutedAgents.includes(agentFairy.cardAgent(c))) : attentionCards;
-    let decision = fairyAttention.plan(nudgeable, attentionMems, ctx);
-    // "N more waiting" is everything else that needs the owner, the same number a
-    // click shows and the badge minus one -- not only the cards due a nudge.
-    if (decision.act === "nudge" && decision.card) {
-      decision = { ...decision, more: fairyCounts.moreAfter(attentionCards, decision.card.id) };
-    }
-    if (decision.act === "nudge") {
-      const full = await fullScreenNow();
-      if (full) decision = { act: "none", reason: `held while quiet: ${full}` };
-    }
-    if (decision.act === "nudge" && !nudging && !quitting) {
-      // Where the flutter lands is judged against what is clickable right now.
-      try { await refreshAllObstacles(); } catch { /* the placement then uses what it last knew */ }
-      if (!nudging && !quitting) startNudge(decision);
-    }
-    return decision;
-  } finally {
-    attentionTicking = false;
-  }
-}
-
-function ensureNudge() {
-  if (alive(nudgeWindow)) return nudgeWindow;
-  const { BrowserWindow } = electron();
-  nudgeWindow = new BrowserWindow({
-    ...NUDGE_SIZE,
-    show: false, frame: false, transparent: true, resizable: false, movable: false,
-    minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true,
-    // focusable:false -- the whisper NEVER takes the keyboard from what the owner is doing.
-    alwaysOnTop: true, hasShadow: false, focusable: false, title: "Aither nudge",
-    backgroundColor: "#00000000",
-    webPreferences: {
-      preload: path.join(__dirname, "orb-preload.cjs"),
-      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
-      // An occluded transparent window is throttled: its fade stalled mid-way and the
-      // last frame (~30%) stayed over the page (owner 2026-11-14). It is small; let it paint.
-      backgroundThrottling: false,
-    },
-  });
-  nudgeWindow.setAlwaysOnTop(true, "screen-saver");
-  try { nudgeWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch { /* no-op */ }
-  nudgeWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  nudgeWindow.webContents.on("will-navigate", (event) => event.preventDefault());
-  // Click-through until the pointer is ON the card (the page reports it): the
-  // transparent margin and a whisper you are not touching never block a click.
-  nudgeWindow.setIgnoreMouseEvents(true, { forward: true });
-  nudgeWindow.on("closed", () => { nudgeWindow = null; });
-  void nudgeWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "nudge" } });
-  return nudgeWindow;
-}
-
-function sendNudge(channel, payload) {
-  try {
-    if (alive(nudgeWindow)) nudgeWindow.webContents.send(channel, payload);
-  } catch { /* page mid-load: init() carries the view */ }
-}
-
-/** The whisper's fade, then the window goes: never hidden mid-fade, never left up. */
-const NUDGE_FADE_MS = 280;
-let nudgeHideTimer = null;
-function cancelNudgeHide() {
-  if (nudgeHideTimer) { clearTimeout(nudgeHideTimer); nudgeHideTimer = null; }
-}
-
-function showWhisper() {
-  if (!nudging) return;
-  cancelNudgeHide();
-  const win = ensureNudge();
-  const at = nudging.whisperAt || { x: 0, y: 0 };
-  win.setBounds({ x: Math.round(at.x), y: Math.round(at.y), ...NUDGE_SIZE });
-  nudging.shown = true;
-  sendNudge("orb:nudge-view", { ...nudging.view, side: nudging.side || "right" });
-  if (!win.isVisible()) win.showInactive();
-}
-
-function startFlutter() {
-  if (!nudging || !nudging.anchor) return;
-  if (nudging.flutter) clearInterval(nudging.flutter);
-  const level = nudging.decision.level;
-  nudging.flutter = setInterval(() => {
-    if (!nudging || !nudging.anchor || flight || dragging) return;
-    const d = fairyAttention.flutterOffset(Date.now(), level);
-    setOrbCenter({ x: nudging.anchor.x + d.x, y: nudging.anchor.y + d.y });
-  }, ORBIT_MS);
-  if (nudging.flutter.unref) nudging.flutter.unref();
-}
-
-function speakNudge(decision, { force = false } = {}) {
-  const line = fairyAttention.voiceLine(decision.card, Date.now(), { more: decision.more });
-  attentionVoiceAt = Date.now();
-  return hookValue("speak", line, { force }) !== false;
-}
-
-/**
- * A card that just ARRIVED is delivered by the fairy out loud (owner 2026-11-15:
- * "the fucking fairy isn't talking to me"): with the mic on it ASKS -- the voice card
- * flow speaks the question and the next words answer it ("option two", "later"),
- * through the one desk answer path; with the mic off it says the question, the
- * suggestion and how many more wait. The whisper's buttons work either way.
- */
-function deliverArrival(n) {
-  const d = n.decision;
-  attentionVoiceAt = Date.now();
-  if (d.mentionOlder) attentionOlderAt = Date.now();
-  const line = fairyAttention.arrivalLine(d.card, d);
-  const credential = String(d.card.kind).toLowerCase() === "credential";
-  const canTalk = !credential && typeof (attentionHooks && attentionHooks.talk) === "function"
-    && !hookValue("micMuted");
-  if (canTalk) {
-    // The voice card prompt says the question and its numbered options, then
-    // listens; only the backlog line goes before it, so nothing is said twice.
-    const others = Math.max(0, (Number(d.needNow) || 0) - 1);
-    const pre = [
-      others ? `${others} more need${others === 1 ? "s" : ""} you after this one.` : "",
-      d.mentionOlder && d.older > 0 ? `${d.older} older card${d.older === 1 ? " is" : "s are"} on the list.` : "",
-    ].filter(Boolean).join(" ");
-    if (pre) hookValue("speak", pre, { force: true });
-    void talkNudge(n);
-    return { ok: true, mode: "ask", line };
-  }
-  return { ok: hookValue("speak", line, { force: true }) !== false, mode: "say" };
-}
-
-function startNudge(decision, { peek = false } = {}) {
-  if (!alive(orbWindow) || !decision || !decision.card) return { ok: false };
-  const view = fairyAttention.whisperView(decision, Date.now());
-  if (!view) return { ok: false };
-  const nowMs = Date.now();
-  const id = decision.card.id;
-  if (!peek) {
-    attentionMems[id] = fairyAttention.recordShown(attentionMems[id] || {}, nowMs);
-    attentionLastAt = nowMs;
-    if (decision.returned) attentionReturnUntil = 0;
-  }
-  // The whisper is signed by the agent fairy whose card it is.
-  view.agent = agentFairy.crewFairy(decision.card.agent);
-  nudging = {
-    decision, view, peek, startedAt: nowMs, until: nowMs + (decision.showMs || 9000),
-    anchor: null, whisperAt: null, side: "right", hovered: false, shown: false, timer: null, flutter: null,
-  };
-  const n = nudging;
-  ensureNudge();
-  sendPanel();
-  // The fairy wears the colours of the agent whose card it now carries.
-  sendFairy();
-  // The chime rides the level change (the orb page synthesizes it). The plan already
-  // held this nudge while quiet; a muted desk or "Fairy sounds: off" is silent too.
-  // A peek is the owner's own hover: no chime, no glow.
-  if (!peek) send("orb:nudge", { level: decision.level, chime: chimeFor(decision.level) });
-  if (decision.level >= fairyAttention.LEVEL.FLUTTER) {
-    const { screen } = electron();
-    let cursor = null;
-    let area;
-    try {
-      cursor = screen.getCursorScreenPoint();
-      area = screen.getDisplayNearestPoint(cursor).workArea;
-    } catch { area = displayForOrb().workArea; }
-    const place = fairyAttention.nudgePlacement(cursor, area, ORB_SIZE, NUDGE_SIZE, { obstacles: allObstacles() });
-    n.anchor = place.orb;
-    n.whisperAt = place.whisper;
-    n.side = place.side;
-    // The clock starts when it ARRIVES: the flight is not reading time.
-    const durationMs = decision.level >= fairyAttention.LEVEL.INSIST ? 620 : 860;
-    n.until += durationMs;
-    void flyTo(place.orb, { durationMs }).then((r) => {
-      if (nudging !== n) return;
-      if (r && r.cancelled) return; // grabbed or re-routed mid-air: beginDrag ended it
-      showWhisper();
-      startFlutter();
-    });
-  } else {
-    // A glow: the whisper beside the fairy where it rests.
-    const [x, y] = orbWindow.getPosition();
-    n.whisperAt = orbCore.bubblePosition(
-      { x, y, width: ORB_SIZE.width, height: ORB_SIZE.height }, NUDGE_SIZE, fairyArea(displayForOrb().workArea), 6,
-    );
-    showWhisper();
-  }
-  if (!peek) saveAttention();
-  if (decision.arrival && decision.voice && !peek) deliverArrival(n);
-  else if (decision.voice && !peek) speakNudge(decision);
-  n.timer = setInterval(() => {
-    if (nudging !== n) return;
-    const now = Date.now();
-    // A whisper the owner is reading (pointer on it) stays while they read.
-    if (n.hovered) n.until = Math.max(n.until, now + 2500);
-    if (now >= n.until) endNudge("timeout");
-  }, NUDGE_STEP_MS);
-  if (n.timer.unref) n.timer.unref();
-  return { ok: true, id, level: decision.level };
-}
-
-async function returnFromNudge() {
-  if (!alive(orbWindow) || dragging) return;
-  if (attach && attach.kind === "avatar") {
-    const p = spiritCore.orbitPoint(attach.bounds, Date.now() + 700);
-    if (p) await flyTo(p, { durationMs: 700 });
-  } else if (attach) {
-    const dock = dockSpot(attach);
-    await flyTo({ x: dock.x + ORB_SIZE.width / 2, y: dock.y + ORB_SIZE.height / 2 }, { durationMs: 700 });
-  } else {
-    await flyHome(760);
-  }
-}
-
-/** End the running nudge. `outcome` feeds the ladder: timeout = ignored. */
-function endNudge(outcome = "timeout", { stay = false } = {}) {
-  const n = nudging;
-  if (!n) return { ok: true, ended: false };
-  nudging = null;
-  if (n.timer) clearInterval(n.timer);
-  if (n.flutter) clearInterval(n.flutter);
-  const id = n.decision.card.id;
-  const nowMs = Date.now();
-  const mem = attentionMems[id] || {};
-  if (n.peek && (outcome === "timeout" || outcome === "peek")) {
-    // A peek was the owner's hover, not a nudge: nothing to learn from it.
-  } else if (outcome === "timeout") {
-    attentionMems[id] = fairyAttention.recordIgnored(mem, { importance: n.decision.importance, nowMs, climbs: n.decision.climbs });
-  } else if (outcome === "acted" || outcome === "seen") {
-    attentionMems[id] = fairyAttention.recordActed(mem);
-  } else if (outcome === "later") {
-    attentionMems[id] = fairyAttention.recordLater(mem, nowMs);
-  } else if (outcome === "mute") {
-    attentionMems[id] = fairyAttention.recordMute(mem);
-  } else if (outcome === "keep") {
-    attentionMems[id] = fairyAttention.recordKeep(fairyAttention.recordActed(mem));
-  }
-  saveAttention();
-  // Click-through at once; the page fades and unmounts the card; the window hides
-  // when the fade is done (hiding first froze the fade's last frame on screen).
-  if (alive(nudgeWindow)) {
-    try { nudgeWindow.setIgnoreMouseEvents(true, { forward: true }); } catch { /* gone */ }
-  }
-  sendNudge("orb:nudge-view", null);
-  cancelNudgeHide();
-  nudgeHideTimer = setTimeout(() => {
-    nudgeHideTimer = null;
-    if (!nudging && alive(nudgeWindow)) {
-      try { nudgeWindow.hide(); } catch { /* gone */ }
-    }
-  }, NUDGE_FADE_MS);
-  if (nudgeHideTimer.unref) nudgeHideTimer.unref();
-  send("orb:nudge", { level: 0 });
-  sendPanel();
-  sendFairy();
-  if (n.anchor && !stay && !quitting) void returnFromNudge();
-  return { ok: true, ended: true, outcome };
-}
-
-/** Close the whisper after a short confirmation line the owner can read. */
-function confirmThenEnd(n, line, outcome) {
-  sendNudge("orb:nudge-flash", { text: line });
-  n.until = Date.now() + 60_000; // the confirmation, not the timer, ends it
-  const t = setTimeout(() => { if (nudging === n) endNudge(outcome); }, 1300);
-  if (t.unref) t.unref();
-}
-
-/** The whisper's buttons (and a click on the fairy itself mid-nudge = open). */
-async function nudgeAct(action, key) {
-  const n = nudging;
-  if (!n) return { ok: false, error: "nothing is up" };
-  const card = n.decision.card;
-  const what = String(action || "");
-  if (what === "size") {
-    // The page measured its card; fit the window to it and keep it on screen.
-    const h = Math.max(NUDGE_MIN_H, Math.min(NUDGE_MAX_H, Math.round(Number(key) || 0)));
-    if (!alive(nudgeWindow) || !h) return { ok: false };
-    const b = nudgeWindow.getBounds();
-    let y = b.y;
-    let x = b.x;
-    try {
-      const { screen } = electron();
-      const area = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y }).workArea;
-      if (y + h > area.y + area.height) y = Math.max(area.y, area.y + area.height - h);
-      x = Math.min(Math.max(b.x, area.x), area.x + area.width - NUDGE_SIZE.width);
-    } catch { /* no screen module (tests) */ }
-    nudgeWindow.setBounds({ x, y, width: NUDGE_SIZE.width, height: h });
-    return { ok: true, height: h };
-  }
-  if (what === "hover") {
-    n.hovered = key === true || key === "true";
-    if (alive(nudgeWindow)) nudgeWindow.setIgnoreMouseEvents(!n.hovered, { forward: true });
-    return { ok: true };
-  }
-  if (what === "answer") {
-    const opt = (Array.isArray(card.options) ? card.options : []).find((o) => o && o.key === String(key));
-    if (!opt || String(card.kind).toLowerCase() === "credential") {
-      return { ok: false, error: "not one of this card's options" };
-    }
-    let verdict;
-    try { verdict = await hookValue("answer", card.id, opt.key); } catch { verdict = false; }
-    if (nudging !== n) return { ok: Boolean(verdict) };
-    if (verdict && typeof verdict === "object" && verdict.ok === false) {
-      // A terminal ask the desk could not type into (tui-answer.cjs): nothing was
-      // recorded, the session is still waiting -- say where to answer it.
-      sendNudge("orb:nudge-flash", { text: verdict.flash || "That did not go through. Open it?", error: true });
-      return { ok: false, error: verdict.error || "the answer did not go through" };
-    }
-    if (!verdict) {
-      sendNudge("orb:nudge-flash", { text: "That did not go through. Open it?", error: true });
-      return { ok: false, error: "the answer did not go through" };
-    }
-    const pending = Boolean(verdict && typeof verdict === "object" && verdict.pending);
-    confirmThenEnd(n, pending ? "Finish it in the approval window" : `Done: ${opt.label || opt.key}`, "acted");
-    return { ok: true, pending };
-  }
-  if (what === "open" || what === "more") {
-    // "more" is the QUEUE, not "open some card": the Inbox opened on whatever it
-    // last showed, which is how a card a session was blocked on stayed unfound
-    // (owner, 2026-11-10, 99+ waiting). Falls back to the Inbox when the desk did
-    // not wire a list (a stripped build).
-    if (what === "more" && typeof (attentionHooks && attentionHooks.openList) === "function") {
-      hookValue("openList");
-    } else {
-      hookValue("open", what === "more" ? null : card.id);
-    }
-    endNudge("acted");
-    return { ok: true };
-  }
-  if (what === "later" || what === "dismiss") {
-    endNudge("later");
-    return { ok: true };
-  }
-  // "Open in AitherBrowser" under the card's answers: its page, AitherBrowser first.
-  if (what === "browser") return openCardPage(card.id, "aither");
-  if (what === "mute") {
-    confirmThenEnd(n, "Okay, it stays on the badge.", "mute");
-    return { ok: true };
-  }
-  if (what === "keep") {
-    confirmThenEnd(n, "I'll keep at you about this one.", "keep");
-    return { ok: true };
-  }
-  if (what === "read") {
-    n.until = Math.max(n.until, Date.now() + 9000);
-    return { ok: speakNudge(n.decision, { force: true }) };
-  }
-  if (what === "talk") return talkNudge(n);
-  if (what === "chat") {
-    const r = chatAboutCard(card.id);
-    if (r.ok && nudging === n) endNudge("seen", { stay: true });
-    return r;
-  }
-  return { ok: false, error: `unknown nudge action ${what}` };
-}
-
-/** The chime for a nudge at `level`, or null when the fairy should stay silent. */
-function chimeFor(level) {
-  if (state.sounds === false) return null;
-  if (hookValue("soundMuted")) return null;
-  const pattern = fairyAttention.chimePattern(level);
-  return pattern.length ? pattern : null;
-}
-
-/** "Fairy sounds: on/off" -- persisted in orb.json. */
-function setSounds(on) {
-  state.sounds = Boolean(on);
-  saveState();
-  return { ok: true, sounds: state.sounds };
-}
-
-/**
- * "Talk": a spoken back-and-forth about THIS card through the desk's own voice card
- * flow (main's `talk` hook = answerCardByVoice), which answers through the ONE desk
- * answer path. The whisper stays up while the owner talks and shows the outcome.
- */
-async function talkNudge(n) {
-  const card = n.decision.card;
-  if (String(card.kind).toLowerCase() === "credential") {
-    sendNudge("orb:nudge-flash", { text: "A secret is never said out loud. Open it to enter it.", error: true });
-    return { ok: false, error: "a credential card is not answered by voice" };
-  }
-  if (typeof (attentionHooks && attentionHooks.talk) !== "function") {
-    sendNudge("orb:nudge-flash", { text: "Talking is not wired in this build. Open it?", error: true });
-    return { ok: false, error: "no talk hook" };
-  }
-  if (n.talking) return { ok: false, error: "already talking about it" };
-  n.talking = true;
-  n.until = Math.max(n.until, Date.now() + 100_000); // the question, then up to 90 s to answer
-  sendNudge("orb:nudge-flash", { text: "Listening: say an option, or what to do instead", keep: true });
-  let verdict;
-  try { verdict = await attentionHooks.talk(card); } catch (error) { verdict = { ok: false, error: String((error && error.message) || error) }; }
-  n.talking = false;
-  if (nudging !== n) return verdict || { ok: false };
-  const v = verdict && typeof verdict === "object" ? verdict : { ok: false };
-  if (v.muted) {
-    n.until = Date.now() + 9000;
-    sendNudge("orb:nudge-flash", { text: "Your mic is muted. Unmute it from the tray, or pick an option here.", error: true });
-    return { ok: false, muted: true, error: "microphone is muted" };
-  }
-  if (v.ok && v.kind === "answer") {
-    confirmThenEnd(n, v.pending ? "Finish it in the approval window" : `Done: ${v.label || "answered"}`, "acted");
-    return v;
-  }
-  if (v.ok && v.kind === "steer") {
-    confirmThenEnd(n, "Sent what you said to the session", "acted");
-    return v;
-  }
-  if (v.ok && v.kind === "later") {
-    confirmThenEnd(n, "Later it is. I'll bring it back.", "later");
-    return v;
-  }
-  n.until = Date.now() + 9000;
-  sendNudge("orb:nudge-flash", { text: v.error ? `I did not get that (${String(v.error).slice(0, 60)})` : "I did not get that. Try again, or pick one here.", error: true });
-  return { ok: false, error: v.error || "no answer" };
-}
-
-/** The card the fairy is nudging about right now ({id, title}), or null. */
-function nudgeCard() {
-  if (!nudging) return null;
-  const card = nudging.decision.card;
-  return { id: card.id, title: String(card.title || "") };
-}
-
-/**
- * Open the fairy bubble focused with an open card loaded as context: whatever the
- * owner types next is answered about that card (askText, bubbleMode "card").
- * For a session's card, main's `session` hook adds what the session last said.
- */
-function chatAboutCard(id) {
-  const card = attentionCards.find((c) => c && c.id === String(id || ""));
-  if (!card) return { ok: false, error: "that card is no longer open" };
-  let session = null;
-  if (card.sessionId) {
-    const s = hookValue("session", card);
-    if (s && typeof s === "object" && s.ok) session = s;
-  }
-  const f = agentFairy.crewFairy(card.agent);
-  cardChat = {
-    id: card.id,
-    // The bubble header names the agent in plain words, never a sprite id/stage/tier.
-    who: f.known || f.crew ? f.label : "",
-    title: String(card.title || "this card").replace(/^Claude Code needs you:\s*/i, "").slice(0, 80),
-    context: fairyAttention.chatContext(card, Date.now(), { session }),
-  };
-  suppressed = false;
-  bubbleMode = "card";
-  openBubble({ focus: true });
-  send("orb:mode", { mode: "card", title: cardChat.title, who: cardChat.who });
-  return { ok: true, id: card.id, mode: "card" };
-}
-
-/**
- * The spirit's own rows -- search, ask, find, attach, sounds, the sprite, the desk's
- * doors. They used to open a SECOND menu (a dark native list) from "More...", beside the
- * pill menu every other fairy surface draws; two fairy menus, two looks (owner screenshots
- * 2026-11-16). Now they are a second PAGE of the one pill menu: same window, same keys,
- * same Esc. `run` is looked up again at pick time, so a stale click runs nothing.
- */
-function spiritRows() {
+function spiritMenu() {
+  const { Menu } = electron();
   const reg = commandRegistry();
-  return [
-    { id: "spirit:web", label: "Search the web…", run: () => openMode("web") },
-    { id: "spirit:ask", label: "Ask a question…", run: () => { openMode(null); try { bubbleWindow.focus(); } catch { /* gone */ } } },
-    { id: "spirit:find", label: "Find a file…", run: () => openMode("find") },
-    ...(hold ? [{ id: "spirit:read", label: `Read ${spiritCore.holdLabel(hold)}`, run: () => { void runHoldAction("read"); } }] : []),
-    { sep: true },
-    { id: "spirit:attach", label: attach ? "Let go of this window" : "Stay on this window", run: () => { void toggleAttach(); } },
-    { id: "spirit:home", label: "Back to its corner", run: () => { void sendHome(); } },
-    // The nudge chime (owner 2026-11-08): on by default, remembered in orb.json.
-    { id: "spirit:sounds", label: `Fairy sounds: ${state.sounds === false ? "off" : "on"}`, run: () => { setSounds(state.sounds === false); } },
-    // Tool flights (2026-11-18): the sub-fairies that fly to the window a call belongs
-    // to. Off = reduced motion: a still glow, never a flight. Remembered in orb.json.
-    { id: "spirit:flights", label: `Fairy flights: ${state.reducedMotion === true ? "off (reduced motion)" : "on"}`, run: () => { setReducedMotion(state.reducedMotion !== true); } },
-    ...(reg.byId("quick.open") ? [{ id: "spirit:quick", label: "Quick menu", run: () => { void runCommandImpl?.("quick.open"); } }] : []),
-    { sep: true },
+  const anythingHeld = Boolean(hold);
+  const template = [
+    { label: "Search the web…", click: () => openMode("web") },
+    { label: "Ask a question…", click: () => { openMode(null); try { bubbleWindow.focus(); } catch { /* gone */ } } },
+    { label: "Find a file…", click: () => openMode("find") },
+    ...(anythingHeld ? [{ label: `Read ${spiritCore.holdLabel(hold)}`, click: () => { void runHoldAction("read"); } }] : []),
+    { type: "separator" },
+    { label: attach ? "Detach the spirit" : "Attach the spirit", click: () => { void toggleAttach(); } },
+    { label: "Send home", click: () => { void sendHome(); } },
+    ...(reg.byId("quick.open") ? [{ label: "Quick menu", click: () => { void runCommandImpl?.("quick.open"); } }] : []),
+    { type: "separator" },
     // The fairy IS the owner's sprite: its own rows sit on its own menu.
-    { id: "spirit:sprite", label: sprite ? `${sprite.name}: how are you?` : "How is my sprite?", run: () => { void spriteStatus(); } },
-    { id: "spirit:teach", label: "Teach it what I selected", run: () => { void spriteTeach(null); } },
-    { id: "spirit:sprite-page", label: "Open my sprite page…", run: () => { openUrl(spriteCore.SPRITE_PAGE); } },
-    { sep: true },
+    { label: sprite ? `${sprite.name}: how are you?` : "How is my sprite?", click: () => { void spriteStatus(); } },
+    { label: "Teach it the selection", click: () => { void spriteTeach(null); } },
+    { label: "Open Sprite…", click: () => { openUrl(spriteCore.SPRITE_PAGE); } },
+    { type: "separator" },
     // The desk's doors live on the fairy now (owner 2026-11-02: "consolidate the
     // awdesk icons around the fairy"): the bead rail's rows, plus Show avatar.
-    ...deskDoors(reg).map((d) => ({ id: d.id, label: d.label, run: d.click })),
+    ...deskDoors(reg),
+    { type: "separator" },
+    { label: "Hide the spirit", click: () => hideOrb() },
   ];
-}
-
-/** The second page of the one fairy menu. */
-function moreMenu({ atFairy = false } = {}) {
-  const rows = spiritRows();
-  const items = [...rows.map((r) => (r.sep ? { sep: true } : { id: r.id, label: r.label })),
-    { sep: true }, { id: "less", label: "Back", hint: "The short menu" }];
-  // Same RADIAL menu as the root: the rows are paginated five + More per ring, so
-  // every door stays one or two clicks away and the look never forks (owner 2026-11-20).
-  return showMenu("orb", { header: "Aither · more", items }, { atFairy, radial: true });
-}
-
-/** The old native "spirit menu" entry points (right click on the page, the bridge) now
- *  open THE pill menu: there is one fairy menu. */
-function spiritMenu() {
-  // The keyboard/bridge door opens the ring ON the fairy (the pointer's door is the
-  // right click), so the fan is centred where the owner is looking.
-  return orbMenu({ atFairy: true });
+  try {
+    Menu.buildFromTemplate(template).popup({ window: orbWindow });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error) };
+  }
 }
 
 // ── drag and click ──────────────────────────────────────────────────────────
 
 function beginDrag() {
   if (dragging || !alive(orbWindow)) return { ok: true };
-  hideTip();
-  // Grabbing the fairy mid-nudge: the owner saw it. It stays where they put it.
-  if (nudging) endNudge("seen", { stay: true });
   // Pulling the orb off a body/window detaches it; dropping it again re-attaches.
   if (attach) detach({ silent: true });
   if (flight) {
@@ -4498,7 +1953,6 @@ function beginDrag() {
   const [x, y] = orbWindow.getPosition();
   dragging = { cx: cursor.x, cy: cursor.y, x, y, moved: 0 };
   if (alive(bubbleWindow)) bubbleWindow.hide();
-  sendPanel();
   dragTimer = setInterval(() => {
     if (!dragging || !alive(orbWindow)) return;
     let cur;
@@ -4506,7 +1960,7 @@ function beginDrag() {
     const dx = cur.x - dragging.cx;
     const dy = cur.y - dragging.cy;
     dragging.moved = Math.max(dragging.moved, Math.abs(dx) + Math.abs(dy));
-    moveOrb(dragging.x + dx, dragging.y + dy);
+    orbWindow.setPosition(Math.round(dragging.x + dx), Math.round(dragging.y + dy));
   }, DRAG_STEP_MS);
   if (dragTimer.unref) dragTimer.unref();
   return { ok: true };
@@ -4527,9 +1981,9 @@ async function endDrag() {
   }
   if (alive(orbWindow)) {
     const [x, y] = orbWindow.getPosition();
-    const area = fairyArea(displayForOrb().workArea);
+    const area = displayForOrb().workArea;
     const pos = orbCore.clampToWorkArea({ x, y }, ORB_SIZE, area);
-    if (pos.x !== x || pos.y !== y) moveOrb(pos.x, pos.y);
+    if (pos.x !== x || pos.y !== y) orbWindow.setPosition(pos.x, pos.y);
     state.x = pos.x;
     state.y = pos.y;
     saveState();
@@ -4551,743 +2005,25 @@ async function endDrag() {
 }
 
 function toggleBubbleFromOrb() {
-  hideMenu();
-  hideTip();
-  const waiting = attentionCards.length > 0;
-  // A click mid-trip cancels the trip and brings the spirit home. With cards waiting it
-  // ALSO opens the queue (owner 2026-11-10: "nothing is happening when I click on
-  // fairies... they just change colors"): a trip that never finished held tripBusy, so
-  // every click only cancelled a trip.
+  // A click mid-trip cancels the trip and brings the spirit home.
   if (tripBusy || flight) {
     const r = cancelTrip();
-    if (!waiting) return { ...r, visible: Boolean(alive(bubbleWindow) && bubbleWindow.isVisible()) };
-  } else if (!waiting && alive(bubbleWindow) && bubbleWindow.isVisible()) {
+    return { ...r, visible: Boolean(alive(bubbleWindow) && bubbleWindow.isVisible()) };
+  }
+  if (alive(bubbleWindow) && bubbleWindow.isVisible()) {
     return closeBubble();
   }
-  // Cards waiting: a LEFT click on the orb opens the waiting queue -- every card, one
-  // list (owner 2026-11-12: "make the left-click and right-click interactions
-  // better"). A companion fairy's click opens ITS card; the orb is the whole queue.
-  // The card the fairy carries counts as seen. Chat stays on the right-click menu.
-  // Owner 2026-11-13: the badge links to the INBOX, where stale cards are cleared in
-  // one place; nothing piles up on screen.
-  // Owner 2026-11-18: "what happened to the sleek little box where I could send it on
-  // tasks from clicking -- now it just opens AitherBrowser". A click on the orb is the
-  // ask box again, cards or not; the waiting count is the BADGE's click (needsYou ->
-  // the Inbox), so the queue stays one precise click away instead of hijacking the orb.
-  if (waiting && nudging) endNudge("seen", { stay: true });
   openBubble({ focus: true });
   return { ok: true, visible: true };
-}
-
-/** The waiting LIST (fairy-queue-window); the Inbox when this build wired no list. */
-function openQueue() {
-  if (typeof (attentionHooks && attentionHooks.openList) === "function") return hookValue("openList");
-  return hookValue("open", null);
-}
-
-// ── the right-click menu and the hover tooltip (owner 2026-11-12) ──────────
-//
-// Both are their own windows: the 72 px orb and the ring-sized swarm are too small
-// to draw a menu in, and the orb window never grows (the 2026-11-07 GPU leak).
-// The MENU takes focus (the owner asked for it with a right click), so arrows,
-// Enter and Esc work, and it closes when it loses focus. The TIP never takes
-// focus and never takes a click: one line, after a dwell, beside the pointer.
-
-let menuWindow = null;
-/** {kind: "fairy"|"orb", cardId, agent, header, items} while a menu is up. */
-let menuState = null;
-let tipWindow = null;
-const TIP_SIZE = Object.freeze({ width: 300, height: 30 });
-/** Windows may refuse the menu the keyboard (no recent input to the desk, so no
- *  foreground right) while Electron still reports it focused: then blur never
- *  fires (measured live 2026-11-12). So a menu closes itself once neither the
- *  pointer nor a key has touched it for this long; it can never be stuck. */
-const MENU_IDLE_MS = 6000;
-let menuHover = false;
-let menuTouchedAt = 0;
-let menuIdleTimer = null;
-let menuIdleMsOverride = 0;
-
-function overlayWindow(title, { focusable }) {
-  const { BrowserWindow } = electron();
-  const win = new BrowserWindow({
-    x: 0, y: 0, width: 200, height: 100,
-    show: false, frame: false, transparent: true, resizable: false, movable: false,
-    minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true,
-    alwaysOnTop: true, hasShadow: false, focusable, title,
-    backgroundColor: "#00000000",
-    webPreferences: {
-      preload: path.join(__dirname, "orb-preload.cjs"),
-      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
-    },
-  });
-  win.setAlwaysOnTop(true, "screen-saver");
-  try { win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch { /* no-op */ }
-  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  win.webContents.on("will-navigate", (event) => event.preventDefault());
-  return win;
-}
-
-function ensureMenu() {
-  if (alive(menuWindow)) return menuWindow;
-  menuWindow = overlayWindow("Aither menu", { focusable: true });
-  // Clicking anywhere else closes it, exactly like a native context menu.
-  menuWindow.on("blur", () => { hideMenu(); });
-  menuWindow.on("closed", () => { menuWindow = null; menuState = null; });
-  void menuWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "menu" } });
-  return menuWindow;
-}
-
-/** The safety net under every hover (fairy-hover-guard.cjs): the tip hides itself,
- *  and a window the page made clickable goes back to click-through once the pointer
- *  is off it, whatever the page managed to report (owner 2026-11-14, stuck pills). */
-let hoverGuardImpl = null;
-function hoverWin(key) {
-  return key === "swarm" ? swarmWindow : key === "orb" ? orbWindow : null;
-}
-function hoverGuard() {
-  if (hoverGuardImpl) return hoverGuardImpl;
-  hoverGuardImpl = fairyHoverGuard.createHoverGuard({
-    cursor: () => cursorPoint(),
-    hideTip: () => hideTipWindow(),
-    setClickThrough: (key, through) => {
-      const win = hoverWin(key);
-      if (alive(win)) win.setIgnoreMouseEvents(Boolean(through), { forward: true });
-    },
-    // The page still thinks the pointer is on it: tell it to drop its hover.
-    released: (key) => {
-      const win = hoverWin(key);
-      try { if (alive(win)) win.webContents.send("orb:hit-reset", true); } catch { /* gone */ }
-    },
-  });
-  return hoverGuardImpl;
-}
-
-function ensureTip() {
-  if (alive(tipWindow)) return tipWindow;
-  tipWindow = overlayWindow("Aither tip", { focusable: false });
-  tipWindow.setIgnoreMouseEvents(true);
-  tipWindow.on("closed", () => { tipWindow = null; });
-  void tipWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "tip" } });
-  return tipWindow;
-}
-
-function publicMenu() {
-  return menuState ? { kind: menuState.kind, header: menuState.header, items: menuState.items } : null;
-}
-
-/** The view the menu page draws: the flat list as built, plus -- for the orb's radial
- *  menu -- the ring model for the CURRENT page, so a page that reloads restores the
- *  same fan instead of falling back to a vertical stack. Reads `display` through the
- *  same rows the menu was built from (the tick is in the rows, not re-derived here). */
-function menuView() {
-  const base = publicMenu();
-  if (!base) return null;
-  if (!menuState.radial) return { ...base, layout: "list" };
-  const at = menuState.at;
-  const model = orbRadial.radialModel(base.items, { at, area: menuAreaAt(at), page: menuState.page });
-  return {
-    ...base,
-    layout: "radial", page: model.page, pages: model.pages,
-    window: model.window, hub: model.hub, nodes: model.nodes,
-  };
-}
-
-function cursorPoint() {
-  try { return electron().screen.getCursorScreenPoint(); } catch { return { x: 0, y: 0 }; }
-}
-
-function workAreaAt(point) {
-  try { return fairyArea(electron().screen.getDisplayNearestPoint(point).workArea); } catch { return null; }
-}
-
-/** Where a MENU may go: the display's whole work area at the click. Never the fairy's
- *  area (which avoids the workspace companion's box): measured 2026-11-13, a right
- *  click on the goblin opened its menu far away beside the fairies, because the area
- *  minus the goblin's box was the left of the screen. A menu anchors to the click. */
-function menuAreaAt(point) {
-  try { return electron().screen.getDisplayNearestPoint(point).workArea; } catch { return null; }
-}
-
-/** Send to a page now, or once it has loaded (a window made a moment ago). */
-function deliverTo(win, channel, payload) {
-  const go = () => { try { if (alive(win)) win.webContents.send(channel, payload); } catch { /* gone */ } };
-  const wc = win.webContents;
-  if (typeof wc.isLoading === "function" && wc.isLoading() && typeof wc.once === "function") wc.once("did-finish-load", go);
-  else go();
-}
-
-function showMenu(kind, built, ctx = {}) {
-  hideTip();
-  const win = ensureMenu();
-  menuState = { kind, cardId: String(ctx.cardId || ""), agent: String(ctx.agent || ""), ...built };
-  // A right click puts the menu at the pointer (or the anchor the caller measured); the
-  // palette / bridge row ("fairy.menu", keyboard reach) puts it on the fairy.
-  const anchor = ctx.at && Number.isFinite(Number(ctx.at.x)) && Number.isFinite(Number(ctx.at.y))
-    ? { x: Math.round(Number(ctx.at.x)), y: Math.round(Number(ctx.at.y)) } : null;
-  const at = anchor || (ctx.atFairy && alive(orbWindow) ? orbCentre() : cursorPoint());
-  // The anchor ACTUALLY used, so a page turn or a re-render draws the same fan.
-  menuState.at = { x: Math.round(at.x), y: Math.round(at.y) };
-  const area = menuAreaAt(at);
-  // The owner's radial (orb-radial-menu.cjs): a ring centred on the click, the four
-  // Display modes on the inner ring, one page of actions outside + More, the fan
-  // flipped inward when the window clamps at a screen edge. Every other menu (a
-  // card's own rows) keeps the list.
-  menuState.radial = Boolean(ctx.radial);
-  menuState.page = Number(ctx.page) || 0;
-  const payload = menuView();
-  if (ctx.radial) {
-    menuState.page = payload.page;
-    win.setBounds(payload.window);
-  } else {
-    const size = fairyMenu.menuSize(built.items, area);
-    const pos = fairyMenu.menuPlacement(at, area, size);
-    win.setBounds({ ...pos, ...size });
-  }
-  deliverTo(win, "orb:menu", payload);
-  win.show();
-  try {
-    win.focus();
-    win.webContents.focus();
-  } catch { /* focus is a nicety */ }
-  menuHover = false;
-  menuTouchedAt = Date.now();
-  if (!menuIdleTimer) {
-    menuIdleTimer = setInterval(() => {
-      if (!menuState || !alive(menuWindow)) return stopMenuIdle();
-      if (!menuHover && Date.now() - menuTouchedAt >= (menuIdleMsOverride || MENU_IDLE_MS)) hideMenu();
-    }, 500);
-    if (menuIdleTimer.unref) menuIdleTimer.unref();
-  }
-  return { ok: true, kind, items: built.items.filter((i) => !i.sep).map((i) => i.id) };
-}
-
-function stopMenuIdle() {
-  if (menuIdleTimer) { clearInterval(menuIdleTimer); menuIdleTimer = null; }
-}
-
-/** The menu page: the pointer entered (true) or left (false) it, or a key ("key"). */
-function menuPointer(inside) {
-  if (inside !== "key") menuHover = inside === true;
-  menuTouchedAt = Date.now();
-  return { ok: true };
-}
-
-function hideMenu() {
-  stopMenuIdle();
-  menuHover = false;
-  menuState = null;
-  if (alive(menuWindow) && menuWindow.isVisible()) {
-    try { menuWindow.hide(); } catch { /* gone */ }
-  }
-  return { ok: true };
-}
-
-function orbCentre() {
-  const b = orbWindow.getBounds();
-  return { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) };
-}
-
-/** Right click on a companion fairy: its card's menu (or "Talk to" for presence), then the
- *  control rows every fairy has (chat, grow, mute, pin, hide, open session, swarm layout). */
-function fairyMenuFor(cardId, agent = "", { atFairy = false } = {}) {
-  let card = attentionCards.find((c) => c && c.id === String(cardId || "")) || null;
-  if (!card && agent) {
-    const key = agentFairy.crewKey(agent);
-    const mine = key ? attentionCards.filter((c) => c && agentFairy.cardAgent(c) === key) : [];
-    card = mine.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))[0] || null;
-  }
-  const f = agentFairy.crewFairy(card ? card.agent : agent);
-  const label = f.known || f.crew ? f.label : String(agent || "");
-  const key = String((card ? agentFairy.cardAgent(card) : agentFairy.crewKey(agent)) || agent || "").toLowerCase();
-  const view = state.swarmView;
-  const base = fairyMenu.fairyItems(card, { label, agent });
-  const rows = fairyControl.controlItems({
-    label, agent: key, muted: view.muted.includes(key), pinned: Boolean(view.pins[key]),
-    hasSession: Boolean((card && card.sessionId) || key.startsWith("session-")),
-    canGrow: typeof (attentionHooks && attentionHooks.growAgent) === "function",
-  }).filter((r) => card || r.id !== "fc:chat"); // no card: the base menu's "Talk to" is the chat row
-  const items = [...base.items, { sep: true }, ...rows];
-  // No companion rows here (hide all, quiet, quit...): they live on the orb's menu and the tray, and
-  // next to "Hide this fairy" they read as the same thing twice.
-  return showMenu("fairy", { ...base, items }, { cardId: card ? card.id : "", agent: key, atFairy });
-}
-
-/** The switches and the clock companion-menu.items reads. */
-function companionOpts(target) {
-  return {
-    target,
-    fairyVisible: orbVisible(),
-    tenantVisible: Boolean(state.tenantCompanion),
-    quietUntil: Number(state.muteUntil) || 0,
-    nowMs: Date.now(),
-  };
-}
-
-/** Right click on the workspace's own companion (GARG's goblin): the companion rows.
- *  `target` "tenant" = that companion; null = all of them (palette / bridge). */
-function openCompanionMenu(target = "tenant", { at = null } = {}) {
-  const kind = target === "tenant" ? "tenant" : "companions";
-  return showMenu(kind, {
-    header: target === "tenant" ? "Workspace companion" : "Aither companions",
-    items: companionMenu.items(companionOpts(target === "tenant" ? "tenant" : null)),
-  }, { at });
-}
-
-/**
- * The mode the SCREEN is in, which is what the Display tick must say. The state the
- * renderer holds is the owner's preference, but a body that is not up is not
- * "avatar": main's avatarBounds hook is null while the body is down (the sticky hide,
- * a failed raise, the tray's own show/hide). Body down = the fairy is what shows;
- * body up while the preference says fairy = a body surface is what shows.
- */
-function displayModeInForce() {
-  let body;
-  try { body = Boolean(hookValue("avatarBounds")); } catch { body = false; }
-  if (!body) return "fairy";
-  return display.mode === "fairy" ? "avatar" : display.mode;
-}
-
-/** Right click on the orb: the RADIAL menu (owner 2026-11-20). It is built fresh on
- *  every open from the ONE command list, so the Display tick is read from the mode
- *  actually in force at the moment the menu opens -- never a stale render. */
-function orbMenu({ atFairy = false, at = null, page = 0 } = {}) {
-  return showMenu("orb", fairyMenu.orbItems({
-    waiting: attentionCards.length, quietUntil: state.muteUntil, tenantVisible: Boolean(state.tenantCompanion),
-    fairyVisible: orbVisible(), nowMs: Date.now(), avatar: avatarMode(),
-    bodies: hookValue("aitherBodies") || [], swarm: allCompanions.length,
-    display: displayMode.modeItems({ mode: displayModeInForce() }), displayMode: display.mode,
-  }), { atFairy, radial: true, at, page });
-}
-
-/** The card a fairy menu is about, still open, or null. */
-function menuCard(ms) {
-  return ms && ms.cardId ? attentionCards.find((c) => c && c.id === ms.cardId) || null : null;
-}
-
-function setCardMem(id, mem) {
-  attentionMems[id] = mem;
-  saveAttention();
-}
-
-function endNudgeFor(cardId, outcome) {
-  if (nudging && nudging.decision.card.id === cardId) endNudge(outcome, { stay: true });
-}
-
-/** A pick from the menu. Every id is checked against the items the menu SHOWED. */
-async function menuPick(id) {
-  const ms = menuState;
-  const what = String(id || "");
-  if (!ms || !what) { hideMenu(); return { ok: true, closed: true }; }
-  // Radial paging is not an action: repaint the SAME menu on its next ring page.
-  const page = orbRadial.pageFromId(what);
-  if (page != null) {
-    if (ms.kind === "orb") orbMenu({ at: ms.at, page });
-    return { ok: true, page };
-  }
-  const item = ms.items.find((i) => i && !i.sep && i.id === what);
-  if (!item) { hideMenu(); return { ok: false, error: "not on that menu" }; }
-  if (item.disabled) { hideMenu(); return { ok: false, error: item.hint || "not available" }; }
-  // A Display pick APPLIES, then repaints the still-open menu from the mode the desk
-  // actually entered (main may clamp it). The tick can never lag the screen.
-  if (what.startsWith("dm:")) {
-    const r = displayPick(what);
-    if (!r || r.ok === false) { hideMenu(); return r; }
-    let applied = r.applied;
-    if (applied && typeof applied.then === "function") {
-      try { applied = await applied; } catch { applied = null; }
-    }
-    if (applied && displayMode.MODES.includes(applied.mode)) {
-      setDisplayModeState({ ...display, mode: applied.mode });
-    }
-    if (ms.kind === "orb") orbMenu({ at: ms.at, page: ms.page });
-    return r;
-  }
-  hideMenu();
-  // The companion rows mean the same on every menu (companion-menu.cjs).
-  if (companionMenu.isCompanionId(what)) {
-    return companionAction(what, { target: ms.kind === "tenant" ? "tenant" : "fairy" });
-  }
-  if (what.startsWith("sv:")) return swarmPick(what, ms);
-  if (what.startsWith("fc:")) return controlPick(what, ms);
-  if (ms.kind === "orb") return orbPick(what);
-  if (what === "talk") return chatWithAgent(ms.agent);
-  const card = menuCard(ms);
-  if (!card) return { ok: false, error: "that card is no longer open" };
-  if (what === "open") return openFairyCard(card.id, ms.agent);
-  if (what.startsWith("answer:")) return answerRecommended(card, what);
-  const until = fairyMenu.snoozeUntil(what, Date.now());
-  if (until) {
-    endNudgeFor(card.id, "snoozed");
-    setCardMem(card.id, fairyMenu.recordSnooze(attentionMems[card.id] || {}, until));
-    return { ok: true, snoozeUntil: until };
-  }
-  if (what === "mute") {
-    endNudgeFor(card.id, "snoozed");
-    setCardMem(card.id, fairyAttention.recordMute(attentionMems[card.id] || {}));
-    return { ok: true, muted: card.id };
-  }
-  if (what === "dismiss") {
-    let ok;
-    try { ok = await hookValue("cancel", card.id, "owner dismissed it from the desk fairy"); } catch { ok = false; }
-    if (!ok) return { ok: false, error: "the card could not be cancelled" };
-    endNudgeFor(card.id, "acted");
-    return { ok: true, dismissed: card.id };
-  }
-  if (what === "session") {
-    let r;
-    try { r = await hookValue("focusSession", card.id); } catch (error) { r = { ok: false, note: String(error) }; }
-    return r && typeof r === "object" ? r : { ok: false, error: "no session hook in this build" };
-  }
-  if (what === "link:open-aither" || what === "link:open-system") {
-    return openCardPage(card.id, what === "link:open-aither" ? "aither" : "system");
-  }
-  if (what === "copy") {
-    const link = String(hookValue("cardLink", card.id) || fairyMenu.cardLink(card.id));
-    try { electron().clipboard.writeText(link); } catch { return { ok: false, error: "no clipboard" }; }
-    return { ok: true, link };
-  }
-  return { ok: false, error: `unknown menu item ${what}` };
-}
-
-/**
- * A card's page (aitherium.com/decide?id=...) in AitherBrowser or the system browser
- * (link-opener.cjs). AitherBrowser is main's openUrl (the browser policy + an Aither
- * Browser window); the system one is shell.openExternal.
- */
-function openCardPage(id, prefer = "") {
-  const link = String(hookValue("cardLink", id) || fairyMenu.cardLink(id));
-  return linkOpener.openLink(link, {
-    prefer,
-    openAither: (u) => (openUrlImpl ? openUrlImpl(u) : { ok: false, error: "no AitherBrowser in this build" }),
-    openSystem: (u) => { void electron().shell.openExternal(u); return { ok: true }; },
-  });
-}
-
-/** "Answer: <recommended>" -- through the ONE desk answer path (main's answerDeckCard). */
-async function answerRecommended(card, what) {
-  const opt = fairyMenu.recommendedOption(card);
-  if (!opt || `answer:${opt.key}` !== what) return { ok: false, error: "not this card's recommended option" };
-  let verdict;
-  try { verdict = await hookValue("answer", card.id, opt.key); } catch { verdict = false; }
-  if (verdict && typeof verdict === "object" && verdict.ok === false) {
-    return { ok: false, error: verdict.error || "the answer did not go through" };
-  }
-  if (!verdict) return { ok: false, error: "the answer did not go through" };
-  endNudgeFor(card.id, "acted");
-  return { ok: true, answered: opt.key, pending: Boolean(verdict && verdict.pending) };
-}
-
-function orbPick(what) {
-  if (what === "inbox" || what === "queue") {
-    if (nudging) endNudge("seen", { stay: true });
-    if (what === "queue") openQueue();
-    else hookValue("open", null);
-    return { ok: true };
-  }
-  if (what === "more") return moreMenu();
-  if (what === "less") return orbMenu();
-  if (what.startsWith("spirit:") || what.startsWith("door:")) {
-    const row = spiritRows().find((r) => r && !r.sep && r.id === what);
-    if (!row) return { ok: false, error: "that row is not on the menu any more" };
-    try { row.run(); } catch (error) { return { ok: false, error: String((error && error.message) || error) }; }
-    return { ok: true, ran: what };
-  }
-  if (what === "expand") return expandToAvatar();
-  if (what === "collapse") return collapseToFairy();
-  if (what.startsWith("body:")) return pickBody(what.slice(5));
-  return { ok: false, error: `unknown menu item ${what}` };
-}
-
-/** "Aither (female)" / "Aither (male)" on the orb's menu: main saves the choice
- *  (aither-body.cjs), then the fairy grows into that body. Already grown: main swaps
- *  the body where it stands. */
-async function pickBody(id) {
-  const r = hookValue("pickAitherBody", id);
-  if (!r || r.ok === false) return { ok: false, error: (r && r.error) || "that body is not on this desk" };
-  if (avatarMode() === "fairy") {
-    const grown = await expandToAvatar();
-    return { ...grown, body: r.body, character: r.character };
-  }
-  return { ok: true, body: r.body, character: r.character };
-}
-
-// -- the avatar: the fairy grows into Aither's full body (owner 2026-11-15) ---------
-// "when I click the fairy or right-click and select an option I want it to expand
-// into that avatar". The body is main's ONE avatar window (the attention hooks
-// `expand` / `collapse`); nothing here renders a VRM. While expanded the orb and its
-// swarm are down -- one cluster: the body stands where the fairy was.
-
-/** null = this build wired no avatar to grow into; else "fairy" | "expanded". */
-function avatarMode() {
-  if (typeof (attentionHooks && attentionHooks.expand) !== "function") return null;
-  return expanded ? "expanded" : "fairy";
-}
-
-function hideCluster() {
-  releaseHover();
-  hideMenu();
-  hideTip();
-  for (const win of [bubbleWindow, orbWindow, swarmAnchor ? null : swarmWindow]) {
-    try { if (alive(win) && win.isVisible()) win.hide(); } catch { /* gone */ }
-  }
-  hideVeil();
-}
-
-/** Grow the fairy into the avatar, from where the fairy is. */
-async function expandToAvatar() {
-  if (avatarMode() === null) return { ok: false, error: "this desk has no avatar to grow into" };
-  if (expanded) return { ok: true, expanded: true };
-  if (nudging) endNudge("seen", { stay: true });
-  const from = alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null;
-  hideMenu();
-  hideTip();
-  let r;
-  try { r = await attentionHooks.expand({ from }); } catch (error) { r = { ok: false, error: String((error && error.message) || error) }; }
-  if (!r || r.ok === false) return { ok: false, error: (r && r.error) || "the avatar did not open" };
-  expanded = true;
-  hideCluster();
-  return { ok: true, expanded: true, character: r.character || null };
-}
-
-/**
- * Shrink the avatar back into the fairy. `fromAvatar`: the body was already hidden by
- * something else (its own close, the tray) -- only bring the fairy back.
- */
-async function collapseToFairy({ fromAvatar = false } = {}) {
-  if (!expanded) return { ok: true, expanded: false };
-  // Growing DOWN is the only thing that clears a stand-down here; the body can still
-  // be up while collapse is called with nothing grown (a dock/palette verb), and the
-  // fairy must not float beside it.
-  stoodDownForAvatar = false;
-  expanded = false;
-  if (!fromAvatar && typeof (attentionHooks && attentionHooks.collapse) === "function") {
-    const to = alive(orbWindow) ? orbWindow.getBounds() : null;
-    try { await attentionHooks.collapse({ to }); } catch { /* the fairy comes back regardless */ }
-  }
-  if (state.visible && alive(orbWindow) && !orbWindow.isVisible()) {
-    // Back where the fairy rests, never where the window was last parked: a fairy that was
-    // only ever hidden at the screen's top-left corner came back there (proof run 2026-11-16).
-    if (!attach) placeOrb();
-    orbWindow.showInactive();
-    if (attach) showVeil();
-    placeSwarm();
-  }
-  // The body is gone and the fairy is back: the ask panel may open with her again.
-  // Set AFTER the shrink resolves, so no bubble appears while the body is leaving.
-  suppressed = false;
-  return { ok: true, expanded: false };
-}
-
-// -- ONE companion surface (owner 2026-11-20) -------------------------------
-// main's avatar window can come up as its own surface (tray "Show avatar", a voice
-// session, a room stage). The fairy must never float beside it: two surfaces is the
-// bug. She stands down, remembering the owner still wants her; when the body goes she
-// comes back to her resting spot. A grow (expandToAvatar) already does this itself.
-
-/** The body is up as its own surface: take the whole fairy cluster down, keep the switch. */
-function standDownForAvatar() {
-  if (expanded) return { ok: true, already: "expanded" };
-  stoodDownForAvatar = true;
-  suppressed = true;
-  releaseHover();
-  hideMenu();
-  hideTip();
-  if (nudging) endNudge("hidden");
-  if (alive(bubbleWindow)) bubbleWindow.hide();
-  if (alive(orbWindow)) orbWindow.hide();
-  if (alive(swarmWindow)) swarmWindow.hide();
-  hideVeil();
-  // A flight or a foreground follow outliving the fairy would keep drawing beside the
-  // body (hideOrb does the same two calls for the same reason).
-  try { updateToolFlights(); } catch { /* cosmetic */ }
-  syncForegroundProbe();
-  sendPanel();
-  return { ok: true, visible: false };
-}
-
-/** The body left: the fairy comes back where she rests, if the owner wanted her. */
-function returnFromAvatar() {
-  stoodDownForAvatar = false;
-  suppressed = false;
-  if (expanded) return { ok: true, visible: false, expanded: true }; // collapse places her
-  if (state.visible && alive(orbWindow) && !orbWindow.isVisible()) {
-    if (!attach) placeOrb();
-    orbWindow.showInactive();
-    if (attach) showVeil();
-    placeSwarm();
-  }
-  return { ok: true, visible: Boolean(state.visible && alive(orbWindow) && orbWindow.isVisible()) };
-}
-
-// -- the companions: hidden by default, one set of rows everywhere ------------
-// (owner 2026-11-13, companion-menu.cjs). The fairy's switch is orb.json `visible`;
-// the workspace companion's is `tenantCompanion` (living-desktop-window hides
-// `[data-companion]` while it is off). Listeners: main repaints the tray, the
-// overlay re-applies its CSS.
-const companionListeners = new Set();
-function onCompanionsChange(fn) {
-  if (typeof fn !== "function") return () => {};
-  companionListeners.add(fn);
-  return () => companionListeners.delete(fn);
-}
-function companionsState() {
-  return {
-    fairy: orbVisible(),
-    tenant: Boolean(state.tenantCompanion),
-    quietUntil: Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0,
-  };
-}
-function notifyCompanions() {
-  const snap = companionsState();
-  for (const fn of companionListeners) {
-    try { fn(snap); } catch { /* a listener's failure is its own */ }
-  }
-}
-function setTenantCompanion(visible) {
-  const next = visible === true;
-  if (Boolean(state.tenantCompanion) === next) return { ok: true, tenant: next };
-  state.tenantCompanion = next;
-  saveState();
-  notifyCompanions();
-  return { ok: true, tenant: next };
-}
-/** Quiet mode: no nudges, chimes or popups until `until` (0 ends it). */
-let quietTimer = null;
-function setQuiet(until) {
-  state.muteUntil = Math.max(0, Number(until) || 0);
-  saveState();
-  if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; }
-  const left = state.muteUntil - Date.now();
-  if (left > 0) {
-    quietTimer = setTimeout(() => { quietTimer = null; notifyCompanions(); }, left + 1000);
-    if (quietTimer.unref) quietTimer.unref();
-  }
-  if (state.muteUntil > Date.now() && nudging && !nudging.explicit) endNudge("seen", { stay: true });
-  notifyCompanions();
-  return { ok: true, quietUntil: state.muteUntil };
-}
-/** The tray's companion rows (companion-menu items, the tray's own subset). */
-function companionTrayItems() {
-  return companionMenu.items({ ...companionOpts(null), doors: "tray" });
-}
-
-/**
- * Run one companion row. The SAME function answers the right-click menus, the tray
- * and the registry verbs, so a row cannot mean two things.
- *
- * Args:
- *   id: a companion-menu id.
- *   opts.target: "fairy" | "tenant" -- what "Hide this" hides.
- */
-function companionAction(id, { target = "fairy" } = {}) {
-  const what = String(id || "");
-  // main hands the doors in (attention.door); a build without one runs the registry id.
-  const door = (name, commandId) => {
-    const hook = attentionHooks && attentionHooks.door;
-    if (typeof hook === "function") {
-      let verdict;
-      try { verdict = hook(name); } catch (error) { return { ok: false, error: String((error && error.message) || error) }; }
-      return { ok: verdict !== false, door: name };
-    }
-    if (typeof runCommandImpl !== "function") return { ok: false, error: `no ${name} door in this build` };
-    void runCommandImpl(commandId);
-    return { ok: true, door: name };
-  };
-  switch (what) {
-    case "hide-this":
-      return target === "tenant" ? setTenantCompanion(false) : hideOrb();
-    case "hide-all":
-      hideOrb();
-      setTenantCompanion(false);
-      return { ok: true, ...companionsState() };
-    case "show-all": {
-      setTenantCompanion(true);
-      const shown = showOrb();
-      // Another desk owns the fairies: the companion shows, and the answer says why
-      // the fairies did not (never a silent ok).
-      return shown.ok === false ? { ok: true, ...companionsState(), fairy: false, note: shown.error }
-        : { ok: true, ...companionsState() };
-    }
-    case "open-desktop": return door("desktop", "desktop.overlay.toggle");
-    case "open-spaces": return door("spaces", "osapp.spaces");
-    case "open-chat": return door("chat", "chat.open");
-    case "settings": return door("settings", "settings.open");
-    case "quit": return door("quit", "quit");
-    case "quiet-off": return setQuiet(0);
-    default: {
-      const until = companionMenu.quietUntilFor(what, Date.now());
-      if (until) return setQuiet(until);
-      return { ok: false, error: `unknown companion row ${what}` };
-    }
-  }
-}
-
-/** The one-line hover tooltip. null/"" hides it. Never focused, never clicked. */
-function showTip(text, point) {
-  // A fairy's full tooltip is several lines (fairy-control.detailLines); every other tip is one.
-  const multi = String(text || "").includes("\n");
-  const line = multi ? String(text).slice(0, 420) : String(text || "").slice(0, fairyMenu.TIP_MAX + 1);
-  const wrapped = multi ? line.split("\n").reduce((n, l) => n + Math.max(1, Math.ceil(l.length / 40)), 0) : 1;
-  const size = multi ? { width: 330, height: 18 + 17 * Math.min(9, wrapped) } : TIP_SIZE;
-  // No tooltip over a menu, or over a card the owner clicked open.
-  if (!line || menuState || (nudging && nudging.explicit)) return hideTip();
-  const win = ensureTip();
-  const p = point && Number.isFinite(Number(point.x)) ? { x: Number(point.x), y: Number(point.y) } : cursorPoint();
-  const area = workAreaAt(p) || { x: 0, y: 0, width: 1920, height: 1080 };
-  let x = Math.round(p.x + 14);
-  let y = Math.round(p.y - size.height - 10);
-  if (x + size.width > area.x + area.width) x = Math.round(p.x - size.width - 14);
-  if (y < area.y) y = Math.round(p.y + 18);
-  win.setBounds({ x, y, ...size });
-  deliverTo(win, "orb:tip", { text: line, side: x < p.x ? "left" : "right", ...(multi ? { multi: true } : {}) });
-  if (!win.isVisible()) win.showInactive();
-  hoverGuard().tipShown(p);
-  return { ok: true, text: line };
-}
-
-function hideTipWindow() {
-  if (alive(tipWindow) && tipWindow.isVisible()) {
-    try { tipWindow.hide(); } catch { /* gone */ }
-  }
-}
-
-function hideTip() {
-  hideTipWindow();
-  if (hoverGuardImpl) hoverGuardImpl.tipHidden();
-  return { ok: true, hidden: true };
-}
-
-/** Drop every hover at once: the tip, and click-through back on the orb and swarm. */
-function releaseHover() {
-  if (hoverGuardImpl) hoverGuardImpl.release();
-  else hideTipWindow();
 }
 
 // ── IPC ─────────────────────────────────────────────────────────────────────
 
 function fromOrb(sender) {
-  const ids = [orbWindow, bubbleWindow, nudgeWindow, swarmWindow, menuWindow, tipWindow, ...pinWindows.values()]
+  const ids = [orbWindow, bubbleWindow]
     .filter(alive)
     .map((w) => w.webContents);
   return ids.some((wc) => wc === sender);
-}
-
-/** One panel/orb action: screen, region, text, find, web, or a typed aw-verb or sprite teach. */
-async function orbAsk(what, text, slotId) {
-  const asked = String(slotId || "") || null;
-  const slot = asked || pendingSlot;
-  if (asked || pendingSlot) pendingSlot = null;
-  if (what === "screen") return askScreen({ slotId: slot });
-  if (what === "region") return askRegion({ slotId: slot });
-  if (what === "text") return askText(text, { slotId: slot });
-  // Carry the body remembered when its menu row opened the field: the
-  // delegation must not lose the slot between the handler and run().
-  if (what === "find") return run("find", { surface: "bubble", arg: text, slotId: slot });
-  if (what === "web") return run("web", { surface: "bubble", arg: text, slotId: slot });
-  // The bubble field typed for a sprite teach or an aw* verb (openMode set it).
-  if (what === "sprite-teach" || awCli.AW_VERBS[what]) return run(what, { surface: "bubble", arg: text });
-  return { ok: false, error: `unknown orb ask ${what}` };
 }
 
 function handlers() {
@@ -5307,7 +2043,7 @@ function handlers() {
         ok: true,
         view,
         line: queue.cur,
-        badge: badgeView(),
+        badge: orbCore.unreadCount(queue),
         summary: orbCore.queueSummary(queue),
         visible: orbVisible(),
         hold,
@@ -5317,104 +2053,32 @@ function handlers() {
         tint: { name: tint.name, css: tint.css },
         attach: publicAttach(),
         mode: bubbleMode,
-        modeTitle: bubbleMode === "card" && cardChat ? cardChat.title : null,
-        modeWho: bubbleMode === "card" && cardChat ? cardChat.who : null,
-        panel: panelOpen(),
         sprite: publicSprite(),
-        nudge: nudging && nudging.shown ? nudging.view : null,
-        nudgeLevel: nudging && !nudging.peek ? nudging.decision.level : 0,
-        fairy: currentFairy(),
-        companions: viewCompanions(currentCompanions()).visible,
-        // Visual neurons: the setting and the live graph, so a page that loads
-        // after the last flush still draws what is on screen.
-        neurons: neuronPayload(),
-        swarmView: swarmViewPayload(),
-        mate: view === "pin" ? pinMateFor(sender) : null,
-        menu: view === "menu" ? menuView() : null,
-        tipDwellMs: fairyMenu.TIP_DWELL_MS,
-        panelView: view === "bubble" ? currentPanelView() : null,
       };
     }),
     "desk:orb-hit": guard((_sender, inside) => {
       if (dragging) return { ok: true };
-      hoverGuard().hit("orb", Boolean(inside), () => orbWindow.getBounds());
+      if (alive(orbWindow)) orbWindow.setIgnoreMouseEvents(!inside, { forward: true });
       return { ok: true };
     }),
     "desk:orb-drag-start": guard(() => beginDrag()),
     "desk:orb-drag-end": guard(() => endDrag()),
     "desk:orb-click": guard(() => toggleBubbleFromOrb()),
-    // The badge click (fairy, 2026-11-06) lands on the SAME Inbox list every
-    // other entry point uses. It opens; it never answers.
-    // A HOVER never opens a card (owner 2026-11-12: "hovering over fairies causes
-    // cards to keep popping and they change so fast"). A page that still asks is
-    // refused; a hover shows a one-line tooltip (desk:fairy-tip), a click opens the card.
-    "desk:orb-peek": guard(() => ({ ok: false, reason: "a hover never opens a card: click the fairy" })),
-    "desk:fairy-tip": guard((_sender, text, point) => (text ? showTip(text, point) : hideTip())),
-    // Right click: a companion's menu, or the orb's. A pick is checked against the menu shown.
-    "desk:fairy-menu": guard((_sender, id, agent) => fairyMenuFor(id, agent)),
-    "desk:orb-menu": guard(() => orbMenu()),
-    "desk:menu-pick": guard((_sender, id) => menuPick(id)),
-    "desk:menu-hover": guard((_sender, inside) => menuPointer(inside)),
-    // A CLICK on a companion (or on one under the fairy's own disc): its newest card.
-    "desk:orb-open-card": guard((_sender, id, agent) => openFairyCard(id, agent)),
-    // The swarm is click-through except the companion under the pointer.
-    // Click a companion: open a chat with that agent.
-    "desk:orb-chat-agent": guard((_sender, agent) => chatWithAgent(agent)),
-    // Fine control (fairy-control.cjs): select, scroll radius, drag out / back.
-    "desk:swarm-select": guard((_sender, agent) => selectAgent(agent)),
-    "desk:swarm-wheel": guard((_sender, deltaY) => swarmWheel(deltaY)),
-    "desk:swarm-drag": guard((_sender, phase, agent, from) => swarmDrag(String(phase || ""), String(agent || ""), from === "pin" ? "pin" : "swarm")),
-    "desk:swarm-hit": guard((_sender, inside) => {
-      hoverGuard().hit("swarm", Boolean(inside), () => swarmWindow.getBounds());
-      return { ok: true };
-    }),
-    "desk:orb-needs-you": guard(() => {
-      void runCommandImpl?.("inbox.open");
-      return { ok: true };
-    }),
-    "desk:orb-ask": guard(async (sender, verb, text, slotId) => {
+    "desk:orb-ask": guard(async (_sender, verb, text, slotId) => {
       const what = String(verb || "");
-      const r = await orbAsk(what, text, slotId);
-      const said = { screen: "What's on my screen?", region: "Explain this region" }[what]
-        || (what === "find" ? `Find ${String(text || "").trim()}` : what === "web" ? `Search ${String(text || "").trim()}` : String(text || "").trim());
-      const a = exchangeText(r);
-      if (said && a) {
-        fairyPanel.recordExchange(panelHistory, panelKey(), { q: said, a, kind: r && r.ok === false ? "error" : "answer" });
-        sendPanelView();
-      }
-      return r;
-    }),
-    // The panel's one-line session switcher: pick a session, or "" to follow the attach.
-    "desk:panel-session": guard((_sender, id) => {
-      const want = String(id || "");
-      if (want === "detach") {
-        panelSessionId = null;
-        const r = detach({ silent: false });
-        sendPanelView();
-        return r;
-      }
-      panelSessionId = want || null;
-      return { ok: true, view: sendPanelView() };
-    }),
-    // A card the attached session raised, answered from the panel: the ONE desk answer path.
-    "desk:panel-answer": guard(async (_sender, id, key) => {
-      const card = attentionCards.find((c) => c && c.id === String(id || ""));
-      if (!card) return { ok: false, error: "that card is no longer open" };
-      const opt = (card.options || []).find((o) => o && o.key === String(key || ""));
-      if (!opt) return { ok: false, error: "that is not one of its options" };
-      let verdict;
-      try { verdict = await hookValue("answer", card.id, opt.key); } catch { verdict = false; }
-      const ok = Boolean(verdict && (verdict === true || verdict.ok !== false));
-      return ok ? { ok: true, id: card.id, key: opt.key } : { ok: false, error: (verdict && (verdict.flash || verdict.error)) || "the answer did not go through" };
-    }),
-    // The page measured its content: the window fits it (no dead space).
-    "desk:panel-size": guard((_sender, px) => {
-      const h = fairyPanel.fitHeight(px, { max: BUBBLE_SIZE.height });
-      if (h !== bubbleHeight) {
-        bubbleHeight = h;
-        placeBubble();
-      }
-      return { ok: true, height: bubbleHeight };
+      const asked = String(slotId || "") || null;
+      const slot = asked || pendingSlot;
+      if (asked || pendingSlot) pendingSlot = null;
+      if (what === "screen") return askScreen({ slotId: slot });
+      if (what === "region") return askRegion({ slotId: slot });
+      if (what === "text") return askText(text, { slotId: slot });
+      // Carry the body remembered when its menu row opened the field: the
+      // delegation must not lose the slot between the handler and run().
+      if (what === "find") return run("find", { surface: "bubble", arg: text, slotId: slot });
+      if (what === "web") return run("web", { surface: "bubble", arg: text, slotId: slot });
+      // The bubble field typed for a sprite teach or an aw* verb (openMode set it).
+      if (what === "sprite-teach" || awCli.AW_VERBS[what]) return run(what, { surface: "bubble", arg: text });
+      return { ok: false, error: `unknown orb ask ${what}` };
     }),
     "desk:orb-copy": guard((_sender, id) => {
       const line = queue.cur && (!id || queue.cur.id === id) ? queue.cur : null;
@@ -5435,9 +2099,6 @@ function handlers() {
       return { ok: true };
     }),
     "desk:orb-toggle": guard(() => toggleOrb()),
-    // The whisper's buttons. The KEY is checked against the card's own options in
-    // main; the page cannot answer with a choice the card does not have.
-    "desk:nudge-act": guard((_sender, action, key) => nudgeAct(action, key)),
     "desk:spirit-menu": guard(() => spiritMenu()),
     "desk:spirit-pick": guard((_sender, index, action) => pickResult(index, action)),
     "desk:spirit-hold": guard((_sender, action) => runHoldAction(action)),
@@ -5480,21 +2141,8 @@ function startOrb(opts = {}) {
   if (opts.searchClient) searchClientImpl = opts.searchClient;
   if (opts.spriteToken) spriteTokenImpl = opts.spriteToken;
   if (opts.spriteClient) spriteClientImpl = opts.spriteClient;
-  if (opts.attention && typeof opts.attention === "object") attentionHooks = { ...opts.attention };
-  // How the companion is drawn (display-mode.cjs): main restores the persisted mode.
-  if (opts.display) display = displayMode.normalize(opts.display);
   ensureIpc();
   loadState();
-  {
-    // Hidden by default (owner 2026-11-13): an installed build that predates the rule
-    // is moved to hidden ONCE; after that the person's own choice holds.
-    const m = companionMenu.migrate(state, { packaged: opts.hideByDefault === true });
-    if (m.changed) {
-      state = m.state; // already sanitized: re-sanitizing would turn a null spot into 0,0
-      saveState();
-    }
-  }
-  loadAttention();
   ensureOrb();
   placeOrb();
   ensureOps();
@@ -5509,27 +2157,20 @@ function startOrb(opts = {}) {
   spriteKick = setTimeout(() => { spriteKick = null; void refreshSprite(); }, 4000);
   spriteKick.unref?.();
   startSpritePoll();
-  ensureAttention();
   return { ok: true, visible: state.visible };
 }
 
 function stopOrb() {
   quitting = true;
-  fairyOwner.release();
   if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
   if (dragTimer) { clearInterval(dragTimer); dragTimer = null; }
   if (flightTimer) { clearInterval(flightTimer); flightTimer = null; }
-  if (toolFlightTimer) { clearTimeout(toolFlightTimer); toolFlightTimer = null; }
-  toolFlightPlanner.reset();
   stopFollow();
   stopOrbit();
   if (seekTimer) { clearInterval(seekTimer); seekTimer = null; }
   if (hoverTimer) { clearInterval(hoverTimer); hoverTimer = null; }
   if (spriteTimer) { clearInterval(spriteTimer); spriteTimer = null; }
   if (spriteKick) { clearTimeout(spriteKick); spriteKick = null; }
-  if (clusterTimer) { clearInterval(clusterTimer); clusterTimer = null; }
-  if (neuronTimer) { clearTimeout(neuronTimer); neuronTimer = null; }
-  stopAttention();
   for (const pending of pendingRuns.values()) {
     clearTimeout(pending.timer);
     pending.resolve({ ok: false, error: "the desk is quitting" });
@@ -5539,20 +2180,9 @@ function stopOrb() {
     try { probe.stop(); } catch { /* already gone */ }
     probe = null;
   }
-  stopMenuIdle();
-  menuIdleMsOverride = 0;
-  if (fgProbeImpl) { try { fgProbeImpl.stop(); } catch { /* gone */ } fgProbeImpl = null; }
-  for (const agent of [...pinWindows.keys()]) destroyPin(agent);
-  for (const win of [menuWindow, tipWindow, nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
+  for (const win of [veilWindow, bubbleWindow, orbWindow]) {
     try { if (alive(win)) win.destroy(); } catch { /* already gone */ }
   }
-  menuWindow = null;
-  menuState = null;
-  tipWindow = null;
-  if (hoverGuardImpl) hoverGuardImpl.release();
-  hoverGuardImpl = null;
-  if (panelTimer) { clearInterval(panelTimer); panelTimer = null; }
-  nudgeWindow = null;
   veilWindow = null;
   bubbleWindow = null;
   orbWindow = null;
@@ -5570,37 +2200,6 @@ function run(verb, { arg = null, slotId = null } = {}) {
   const body = String(slotId || "") || null;
   if (body) pendingSlot = body;
   if (what === "toggle") return toggleOrb();
-  // Visual neurons (command-registry neurons.toggle): a plain on/off switch.
-  if (what === "neurons") return setNeurons(arg === "on" ? true : arg === "off" ? false : !neuronsOn());
-  // The registry's companions.show / companions.hide (palette, jump list, bridge).
-  if (what === "show-all" || what === "hide-all") return companionAction(what);
-  // The fairy's menu from the keyboard (palette) or the bridge: the orb's menu, or a
-  // card's menu when `arg` names an open card. Opens beside the fairy.
-  if (what === "menu") {
-    if (!orbVisible()) showOrb();
-    const id = arg == null ? "" : String(arg).trim();
-    return id ? fairyMenuFor(id, "", { atFairy: true }) : orbMenu({ atFairy: true });
-  }
-  // What the fairy is showing, as numbers: the bridge's way to check the screen
-  // (POST /commands/run {"id":"fairy.counts"}). Opens nothing.
-  if (what === "counts") {
-    const counts = currentCounts();
-    const companions = currentCompanions().map((m) => ({ agent: m.agent, label: m.label, count: m.count, kind: m.kind }));
-    // Every decision is its own fairy now (fairy-cluster.cjs), so the per-agent badge
-    // sum no longer applies; the cluster is checked against the queue instead.
-    const problems = fairyCounts.problems(counts, []);
-    const drawn = companions.reduce((a, m) => a + (m.kind === "decision" ? 1 : 0), 0)
-      + (swarmCompanions.find((m) => m.kind === "more") || { waiting: 0 }).waiting;
-    if (state.cluster !== false && drawn > counts.needYou) problems.push(`cluster draws ${drawn} decisions, needYou ${counts.needYou}`);
-    return {
-      ok: problems.length === 0,
-      line: `${fairyCounts.badgeTitle(counts)}. The whisper says "${fairyAttention.moreLabel(counts.more) || "nothing more"}".`,
-      counts,
-      badge: badgeView(counts),
-      companions,
-      problems,
-    };
-  }
   if (what === "ask-screen") {
     const use = body || pendingSlot;
     pendingSlot = null;
@@ -5659,46 +2258,8 @@ async function askImage(imagePath, prompt, question) {
 
 module.exports = {
   ORB_SIZE, BUBBLE_SIZE, TICK_MS, REGION_WAIT_MS,
-  startOrb, stopOrb, run, hoverGuard: () => hoverGuardImpl, ensureIpc, showOrb, hideOrb, toggleOrb, openBubble, setAttention,
-  // attention: the fairy carries the cards (fairy-attention.cjs)
-  NUDGE_SIZE, setAttentionCards, attentionTick, ownsAttention, carriesCards, nudgeAct, endNudge,
-  nudgeCard, chatAboutCard, setSounds,
-  // the agent fairy (agent-fairy.cjs): whose colours, which companions
-  setSpeaker, peekCard, openFairyCard, fairyMenuFor, orbMenu, menuPick, showTip, hideTip,
-  // the companions (companion-menu.cjs): hidden by default, one set of rows everywhere
-  openCompanionMenu, companionAction, companionTrayItems, companionsState, onCompanionsChange,
-  setTenantCompanion, setQuiet, tenantCompanionVisible: () => Boolean(state.tenantCompanion),
-  quietUntil: () => (Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0),
-  menuState: () => publicMenu(), __setMenuIdleMs: (ms) => { menuIdleMsOverride = Number(ms) || 0; }, fairy: () => currentFairy(), companions: () => currentCompanions(),
-  setPresence, noteAgentPosted, chatWithAgent, setClusterSessions, clusterState, surfaceForCards,
-  // tool flights: the fairy goes to the window an agent's tool call belongs to
-  setReducedMotion, updateToolFlights, flightPlan: () => toolFlightPlan, surfaceRects,
-  // visual neurons (neurons-model.cjs): the switch, a step, and the drawn graph
-  setNeurons, noteNeuron, neuronsOn, neuronPayload,
-  autoSurfaced: () => autoSurfaced,
-  swarmViewOp, swarmViewPayload, selectAgent, swarmWheel, swarmDrag, pinAgent, viewCompanions, setView,
-  pinWindows: () => pinWindows, __setForeground: (rect) => { fgContent = fairyControl.contentRect(rect); sendSwarmView(); },
-  // Follow the focused window (plan A4): the tray toggle, the rule's inputs and outputs.
-  setFollow, followState,
-  __feedForeground: (fg) => { onForeground(fg); },
-  __setFollowChangedAt: (t) => { followChangedAt = Number(t) || 0; },
-  __followSeen: () => followSeen,
-  __applyFollow: () => applyFollow(),
-  __taskbar: () => taskbarRect,
-  __refreshTaskbar: () => refreshTaskbar(),
-  __swarmBounds: (n) => swarmBounds(n),
-  __setProbe: (p) => { probe = p; },
-  setSwarmAnchor, setSwarmVisible, swarmVisible: () => state.swarm === true,
-  setDisplayModeState, displayModeState, displayModeInForce, displayPick,
-  fairyBounds: () => (alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null),
-  swarmWindow: () => (alive(swarmWindow) ? swarmWindow : null), soundsOn: () => state.sounds !== false,
-  nudging: () => (nudging ? { id: nudging.decision.card.id, level: nudging.decision.level, shown: nudging.shown } : null),
-  attentionMems: () => attentionMems,
+  startOrb, stopOrb, run, ensureIpc, showOrb, hideOrb, toggleOrb, openBubble, setAttention,
   askScreen, askRegion, askText, askImage, toggleBubbleFromOrb, beginDrag, endDrag,
-  expandToAvatar, collapseToFairy, avatarMode, expanded: () => expanded,
-  // one companion surface: the body's own window stands the fairy down and back
-  orbVisible, fairyWanted: () => state.visible === true, stoodDown: () => stoodDownForAvatar,
-  standDownForAvatar, returnFromAvatar, __suppressed: () => suppressed,
   stateFile, loadState, saveState, pump, queue: () => queue, state: () => state,
   // spirit
   go, sendHome, attachTo, detach, toggleAttach, cancelTrip, receiveDrop, pickResult, runHoldAction,
@@ -5707,83 +2268,15 @@ module.exports = {
     if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
     if (dragTimer) { clearInterval(dragTimer); dragTimer = null; }
     if (flightTimer) { clearInterval(flightTimer); flightTimer = null; }
-    if (toolFlightTimer) { clearTimeout(toolFlightTimer); toolFlightTimer = null; }
-    toolFlightPlanner.reset();
-    toolFlightPlan = { flights: [], returning: [], hover: [], throttled: [], reducedMotion: false };
-    lastVeilKey = "";
-    lastPanelOpen = null;
     stopFollow();
     for (const pending of pendingRuns.values()) {
       clearTimeout(pending.timer);
       pending.resolve({ ok: false, error: "reset" });
     }
     pendingRuns = new Map();
-    stopAttention();
-    attentionCards = [];
-    attentionMems = {};
-    attentionLastAt = 0;
-    attentionVoiceAt = 0;
-    attentionReturnUntil = 0;
-    attentionAway = false;
-    attentionHooks = {};
-    companionListeners.clear();
-    fairySpeaker = null;
-    if (fairySpeakerTimer) { clearTimeout(fairySpeakerTimer); fairySpeakerTimer = null; }
-    lastFairyKey = "";
-    lastCompanionsKey = "";
-    swarmCompanions = [];
-    clusterSessions = [];
-    clusterOk = { cards: true, sessions: true, presence: true };
-    clusterReaper.reset();
-    autoSurfaced = false;
-    ownerHidIds = null;
-    if (clusterTimer) { clearInterval(clusterTimer); clusterTimer = null; }
-    allCompanions = [];
-    selectedAgent = "";
-    pinDrag = null;
-    if (pinWatchdog) { clearTimeout(pinWatchdog); pinWatchdog = null; }
-    fgContent = null;
-    followSeen = null;
-    followChangedAt = 0;
-    followBusy = false;
-    followRetries = 0;
-    if (followDebounce) { clearTimeout(followDebounce); followDebounce = null; }
-    stopTaskbarWatch();
-    taskbarRect = null;
-    taskbarBars = [];
-    probe = null; // a fake injected by a test never outlives it
-    lastSwarmViewKey = "";
-    lastCompanionsWho = "";
-    neurons.reset();
-    lastNeuronStates.clear();
-    lastNeuronPayload = "";
-    if (neuronTimer) { clearTimeout(neuronTimer); neuronTimer = null; }
-    lastBounds = null;
-    display = displayMode.normalize(null);
-    swarmPinAgents = new Set();
-    if (fgProbeImpl) { try { fgProbeImpl.stop(); } catch { /* gone */ } fgProbeImpl = null; }
-    for (const agent of [...pinWindows.keys()]) destroyPin(agent);
-    agentPresence = [];
-    agentPosts = new Map();
-    if (agentPostTimer) { clearTimeout(agentPostTimer); agentPostTimer = null; }
-    cardChat = null;
-    stopMenuIdle();
-    menuIdleMsOverride = 0;
-    for (const win of [menuWindow, tipWindow, swarmWindow, nudgeWindow, veilWindow, bubbleWindow, orbWindow]) {
+    for (const win of [veilWindow, bubbleWindow, orbWindow]) {
       try { if (alive(win)) win.destroy(); } catch { /* gone */ }
     }
-    menuWindow = null;
-    menuState = null;
-    tipWindow = null;
-    if (hoverGuardImpl) hoverGuardImpl.release();
-    hoverGuardImpl = null;
-    if (panelTimer) { clearInterval(panelTimer); panelTimer = null; }
-    panelSessionId = null;
-    panelHistory = new Map();
-    panelSessions = { rows: null, note: "" };
-    bubbleHeight = 180;
-    nudgeWindow = null;
-    swarmWindow = null;
     veilWindow = null;
     bubbleWindow = null;
     orbWindow = null;
@@ -5794,7 +2287,6 @@ module.exports = {
     inflight = false;
     drafting = false;
     suppressed = false;
-    expanded = false;
     regionWait = false;
     attach = null;
     flight = null;
@@ -5826,22 +2318,10 @@ module.exports = {
   __setLastCaption: (t) => { lastCaption = String(t || ""); },
   sprite: () => publicSprite(),
   refreshSprite, restTint,
-  setReservedBox,
-  setDockWindow,
-  __dock: () => ({ windowId: dockWindowId, attached: Boolean(attach && attach.auto) }),
-  __homeFlight: () => homeFlight,
-  __reservedBox: () => reservedBox,
-  __dockSpot: (target) => dockSpot(target),
-  __refreshObstacles: () => refreshAllObstacles(),
   __setCapture: (c) => { captureImpl = c; },
   __setAskVision: (f) => { askVisionImpl = f; },
   __setSpeak: (f) => { speakImpl = f; },
   __setAvatarTargets: (f) => { avatarTargetsImpl = f; },
   __setOps: (o) => { ops = o; },
   __setWired: () => { wired = true; },
-  __setTripLimitMs: (ms) => { TRIP_LIMIT_MS = Number(ms) || 120_000; },
-  // The veil's layout AND the orb's move both leaked (2026-11-07); assert them directly.
-  __test: { clampRect, coverVeil, drawVeil, moveOrb, veilPlacement, veilRect },
-  __setAttentionHooks: (h) => { attentionHooks = { ...(h || {}) }; },
-  __resetAttentionClock: () => { attentionLastAt = 0; attentionVoiceAt = 0; attentionOlderAt = 0; },
 };

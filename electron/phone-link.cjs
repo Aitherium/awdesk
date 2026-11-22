@@ -54,8 +54,6 @@ const ACTIONS = Object.freeze(new Set([
   "command.list", "command.run",
   "clipboard.get", "clipboard.set",
   "file.send", "file.list", "file.get",
-  // Desktop pins + screen ink (2026-11-07): push a URL or a GIF to the desk, toggle ink.
-  "pin.add", "pin.list", "pin.close", "gif.pin", "ink.toggle",
 ]));
 
 function audienceOf(deskId) {
@@ -116,7 +114,6 @@ class PinStore {
 
 /** A file name from a phone: one plain segment, no path, no device names. */
 function safeFileName(name) {
-  // eslint-disable-next-line no-control-regex -- control characters (\x00-\x1f) must not survive in a file name
   const base = String(name || "").replace(/[\\/]/g, "_").replace(/[<>:"|?*\x00-\x1f]/g, "_").trim().slice(0, 120);
   if (!base || base === "." || base === ".." || /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(base)) return null;
   return base.replace(/^\.+/, "_");

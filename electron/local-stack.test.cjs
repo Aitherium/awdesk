@@ -183,3 +183,104 @@ test("install.sh emits the progress lines this window reads", { skip: !fs.exists
   assert.match(sh, /@@aither-step %s %s %s/);
   assert.match(sh, /report_setup\(\) \{\n {2}progress "\$1" "\$2"/);
 });
+
+// ---- Windows (2026-11-16): the same window runs install.ps1 under PowerShell -----------------
+
+test("Windows is supported now, and still never starts by itself", () => {
+  assert.equal(ls.supported("win32"), true);
+  assert.equal(ls.supported("freebsd"), false);
+  const dir = tmp();
+  const win = new ls.LocalStack({ platform: "win32", stateFile: path.join(dir, "w.json"), env: {} });
+  assert.equal(win.snapshot().supported, true);
+  assert.equal(win.maybeAutoStart(), false, "only the button starts it on Windows");
+});
+
+test("fetchInstaller takes install.ps1 by its own start, not a shebang", async () => {
+  const ps = "<#\n  AitherOS installer\n#>\nparam()\n";
+  assert.equal(await ls.fetchInstaller({ url: ls.INSTALL_URL_WIN, fetchImpl: async () => res(200, ps) }), ps);
+  assert.equal(await ls.fetchInstaller({ url: ls.INSTALL_URL_WIN, fetchImpl: async () => res(200, "\ufeff" + ps) }), ps,
+    "a byte-order mark must not make a good script look like a page");
+  await assert.rejects(ls.fetchInstaller({ url: ls.INSTALL_URL_WIN, fetchImpl: async () => res(200, "<!doctype html>") }),
+    /install\.ps1 did not come back as a script/);
+  await assert.rejects(ls.fetchInstaller({ url: ls.INSTALL_URL_WIN, fetchImpl: async () => res(404, "no") }), /install\.ps1 answered HTTP 404/);
+});
+
+test("parseProgress names the sign-in row the way this window does", () => {
+  assert.deepEqual(ls.parseProgress("@@aither-step signed_in ok tester@test.invalid"),
+    { step: "signin", status: "ok", detail: "tester@test.invalid" });
+});
+
+test("childEnv on Windows leaves PATH to PowerShell and still drops the Electron leaks", () => {
+  const env = ls.childEnv({ PATH: "C:\Windows\System32", ELECTRON_RUN_AS_NODE: "1", USERPROFILE: "C:\Users\g" },
+    { AITHER_SETUP_CODE: CODE }, "win32");
+  assert.equal(env.PATH, "C:\Windows\System32");
+  assert.equal(env.ELECTRON_RUN_AS_NODE, undefined);
+  assert.equal(env.AITHER_SETUP_CODE, CODE);
+});
+
+test("run on Windows: PowerShell runs install.ps1 with the code in the environment, never argv", async () => {
+  const seen = {};
+  const dir = tmp();
+  const spawn = (cmd, args, opts) => {
+    Object.assign(seen, { cmd, args, env: opts.env, hide: opts.windowsHide, script: fs.readFileSync(args[args.indexOf("-File") + 1], "utf8") });
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    setImmediate(() => {
+      for (const l of ["@@aither-step signed_in ok tester@test.invalid", "@@aither-step awdk ok",
+        "@@aither-step mcp ok Claude Code", `  [OK] a line mentioning ${CODE}`, "@@aither-step done ok"]) child.stdout.write(`${l}\n`);
+      child.stdout.end(); child.stderr.end();
+      setImmediate(() => child.emit("close", 0));
+    });
+    return child;
+  };
+  const stack = new ls.LocalStack({
+    spawn, openExternal: async () => {}, platform: "win32", env: { USERPROFILE: dir, PATH: "C:\Windows" },
+    fetchImpl: async (url) => { assert.equal(url, ls.INSTALL_URL_WIN); return res(200, "<#\n installer\n#>\n"); },
+    stateFile: path.join(dir, "state.json"), tmpDir: dir,
+    signIn: async () => ({ accessToken: BEARER, claims: { email: "tester@test.invalid" } }),
+    mint: async () => CODE,
+  });
+  const snap = await stack.run();
+  assert.equal(snap.state, "done");
+  assert.equal(seen.cmd, "powershell.exe");
+  assert.deepEqual(seen.args.slice(0, 4), ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+  assert.ok(seen.args.includes("-NonInteractive") && seen.args.includes("-SkipDesk"));
+  assert.ok(seen.args[4].endsWith("install.ps1"));
+  assert.ok(!seen.args.join(" ").includes(CODE), "the setup code reached argv");
+  assert.equal(seen.env.AITHER_SETUP_CODE, CODE);
+  assert.equal(seen.env.AITHER_PROGRESS, "1");
+  assert.equal(seen.hide, true, "no console window may flash on the person's desktop");
+  assert.equal(snap.steps.awdk.status, "ok");
+  assert.equal(snap.steps.mcp.detail, "Claude Code");
+  assert.equal(snap.steps.signin.detail, "tester@test.invalid");
+  assert.ok(!JSON.stringify(snap).includes(CODE), "a secret reached the window");
+});
+
+test("run on Windows: a failed install says what to do next in plain words", async () => {
+  const dir = tmp();
+  const spawn = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    setImmediate(() => { child.stdout.end(); child.stderr.end(); setImmediate(() => child.emit("close", 1)); });
+    return child;
+  };
+  const stack = new ls.LocalStack({
+    spawn, openExternal: async () => {}, platform: "win32", env: { USERPROFILE: dir },
+    fetchImpl: async () => res(200, "<#\n#>\n"), stateFile: path.join(dir, "s.json"), tmpDir: dir,
+    signIn: async () => ({ accessToken: BEARER, claims: {} }), mint: async () => CODE,
+  });
+  const snap = await stack.run();
+  assert.equal(snap.state, "failed");
+  assert.ok(snap.log.some((l) => /Setup stopped .* Choose Try again/.test(l)), snap.log.join("|"));
+  assert.ok(!snap.log.some((l) => /bash/.test(l)), "a Windows person must not be told about bash");
+});
+
+const INSTALL_PS1 = path.join(__dirname, "..", "..", "..", "AitherOS", "apps", "AitherVeil", "public", "install.ps1");
+test("install.ps1 prints the progress lines this window reads", { skip: !fs.existsSync(INSTALL_PS1) && "monorepo only" }, () => {
+  const ps = fs.readFileSync(INSTALL_PS1, "utf8");
+  assert.match(ps, /\$env:AITHER_PROGRESS/);
+  assert.match(ps, /Write-Host "@@aither-step \$Step \$Status \$line"/);
+  assert.ok(ps.startsWith("<#"), "fetchInstaller recognises install.ps1 by its leading help block");
+});

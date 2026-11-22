@@ -124,19 +124,6 @@ function AGENT_ROSTER_FILE() {
   return path.join(__dirname, "agent-roster.generated.json");
 }
 
-/** The CANONICAL agent-voice map (AitherOS/config/agent_voices.json), copied
- *  in by electron/sync-agent-voices.cjs. Its `agents.<id>.voice` is the engine
- *  id AitherVoice actually speaks ("kokoro:am_michael", "local:piper") -- the
- *  ONE answer awvoice, awdk and the orchestrator pack already share. The roster
- *  mirror below it carries stock Microsoft edge voices and used to win by
- *  default, which is why Atlas spoke in a female en-US-MichelleNeural voice.
- *  DESK_AGENT_VOICES_FILE is a test seam, like DESK_CAST_FILE. */
-function AGENT_VOICES_FILE() {
-  const override = process.env.DESK_AGENT_VOICES_FILE;
-  if (override && String(override).trim()) return path.resolve(String(override).trim());
-  return path.join(__dirname, "agent-voices.generated.json");
-}
-
 // ─── the built-in tier (the floor under the file, the env and the hash) ──────
 
 const SPEED_MIN = 0.25;
@@ -686,14 +673,14 @@ const UPDATES_FIELDS = Object.freeze({
 /** overlay.* -> overlay-policy.cjs: when the desk may raise the AitherOS Online overlay
  *  (and the Inbox) by ITSELF. Every automatic door is off by default; an explicit
  *  click, hotkey or menu row ignores all of these. doNotDisturb silences every
- *  automatic door at once. `raiseOnNotifications` was RETIRED with A1 (a card is a
- *  toast now, not a window): see RETIRED_SECTION_KEYS so an old file is not an error. */
+ *  automatic door at once. */
 const overlayPolicy = require("./overlay-policy.cjs");
 const OVERLAY_FIELDS = Object.freeze({
   autoOpenOnStart: vBool,
   edgeReveal: vBool,
   edge: (v) => vEnum(v, overlayPolicy.EDGES),
   edgeDwellMs: (v) => vInt(v, { min: overlayPolicy.DWELL_MIN_MS, max: overlayPolicy.DWELL_MAX_MS }),
+  raiseOnNotifications: vBool,
   doNotDisturb: vBool,
   // Inbox and Fleet open into BeadSpace (space-home.cjs). Reversible; off by default.
   spaceHome: vBool,
@@ -717,14 +704,6 @@ const BUILTIN_DESK = Object.freeze({
   updates: Object.freeze({ enabled: true }),
   overlay: overlayPolicy.DEFAULTS,
   clipboard: Object.freeze({ sync: false }),
-});
-
-/** Keys a shipped cast.json may still carry after their switch was removed. They are
- *  skipped by validateCast (never read, never an "unknown key" problem) so an upgrade
- *  does not greet the owner with a warning about a setting that no longer exists.
- *  overlay.raiseOnNotifications: retired with A1 -- a card is a toast, not a window. */
-const RETIRED_SECTION_KEYS = Object.freeze({
-  overlay: Object.freeze(["raiseOnNotifications"]),
 });
 
 const DESK_SECTIONS = Object.freeze({
@@ -814,7 +793,7 @@ function emptyConfig() {
 const TOP_LEVEL_KEYS = [
   "version", "stage", "voice", "input", "hotkeys", "defaults", "authors", "actors",
   "channels", "models", "prompts", "vision", "sync", "files", "updates", "overlay", "clipboard", "content", "appearance",
-  "migratedLegacyAt", "gallery",
+  "migratedLegacyAt",
 ];
 
 /**
@@ -930,15 +909,8 @@ function validateCast(raw) {
   config.input = validateRecord(raw.input, INPUT_FIELDS, "input", problems);
   config.defaults = validateRecord(raw.defaults, ACTOR_FIELDS, "defaults", problems);
   config.content = validateRecord(raw.content, CONTENT_FIELDS, "content", problems);
-  // The rogues gallery (avatar-gallery.cjs owns the shape): audience profile, safe mode,
-  // per-avatar config and the owner's rotation sets.
-  config.gallery = require("./avatar-gallery.cjs").validateGallery(raw.gallery, problems);
   for (const [section, fields] of Object.entries(DESK_SECTIONS)) {
-    // A key this module RETIRED is left in an old file by every upgrade: accept it in
-    // silence (it is not read) instead of reporting "unknown key" on every launch.
-    config[section] = validateRecord(raw[section], fields, section, problems, {
-      extraKeys: RETIRED_SECTION_KEYS[section] || [],
-    });
+    config[section] = validateRecord(raw[section], fields, section, problems);
   }
 
   const hotkeysRaw = raw.hotkeys;
@@ -1371,44 +1343,47 @@ function seatIndexFor(state, { author, actorId } = {}) {
   return arrivals.length - 1;
 }
 
-// ─── no automatic body, ever ─────────────────────────────────────────────────
+// ─── the stable hashes ───────────────────────────────────────────────────────
 
 /**
- * 🚩 A BODY IS ONLY EVER THE OWNER'S CHOICE (owner, 2026-11-17: "I can't have Aither/bots
- * randomly selecting avatars ... I can't let my mom, kids or strangers see this"). A Claude
- * Code session actor with no cast row was handed a mature fox-girl model by the rendezvous
- * hash that lived here (stableCharacter over character-pool.properPool), at 3x size, over
- * his Discord. The hash, the proper pool and the `defaults.character` fallback are gone:
- * an actor wears a body only when an owner-written row names it (actors[...] or authors.*),
- * otherwise it has NO body and stays a fairy. room-stage records that as "no-character".
- * Agents may PROPOSE a body (the gallery's proposals); only the owner applies one.
- * no-auto-body.test.cjs asserts no source file can bring the pick back.
+ * characterOrder — the order a seed prefers the roster in. A seed-dependent
+ * permutation (rendezvous hashing), NOT a modulo index.
+ *
+ * This is the fix for "the same agent changes body between runs". Two bugs, one
+ * cause — a pick whose INDEX depends on the size of the pool:
+ *   1. today's pickCharacter filters `taken`/`resident` BEFORE the modulo, so
+ *      a newcomer arriving shrinks the pool and re-indexes everyone already on
+ *      stage;
+ *   2. hashing the seed into `sorted[h % len]` also re-indexes every agent the
+ *      moment a character is ADDED to the roster (a new VRM in the directory,
+ *      a content pack installed) — the same symptom, on a slower clock.
+ * Ranking each name by hash(seedHash:name) removes the length from the
+ * arithmetic: taken/resident become SKIPS in a fixed order, and adding a name
+ * only moves a seed's pick if the newcomer outranks it (1 in n+1), instead of
+ * almost always.
  */
-/**
- * ownerBodies -- every body name an owner-written row of cast.json names (authors, their seats,
- * actors, stage.resident). An agent tool may SHOW one of these (it is already his choice); it
- * may never put any other body on screen. `raw` is the snapshot or the raw file.
- */
-function ownerBodies(raw) {
-  const cfg = plainObject(raw);
-  const out = new Set();
-  const take = (row) => {
-    const c = plainObject(row).character;
-    if (typeof c === "string" && c.trim()) out.add(c.trim());
-  };
-  for (const row of Object.values(plainObject(cfg.authors))) {
-    take(row);
-    for (const seat of Array.isArray(plainObject(row).seats) ? row.seats : []) take(seat);
-  }
-  for (const row of Object.values(plainObject(cfg.actors))) take(row);
-  const resident = plainObject(cfg.stage).resident;
-  if (typeof resident === "string" && resident.trim()) out.add(resident.trim());
-  return out;
+function characterOrder(seed, roster) {
+  const names = [
+    ...new Set((Array.isArray(roster) ? roster : []).filter((n) => typeof n === "string" && n)),
+  ].sort();
+  const seedHash = hash33(String(seed == null ? "" : seed).toLowerCase());
+  return names
+    .map((name) => ({ name, rank: hash33(`${seedHash}:${name}`) }))
+    .sort((a, b) => b.rank - a.rank || (a.name < b.name ? -1 : 1))
+    .map((entry) => entry.name);
 }
 
-/** Tiers whose `character` the owner wrote for THIS actor. */
-function isOwnerCharacterTier(prefix) {
-  return typeof prefix === "string" && (prefix.startsWith("actors[") || prefix.startsWith("authors."));
+/**
+ * stableCharacter — a body for a seed with no configured character: the first
+ * name in its own preference order that is neither the resident nor already on
+ * stage. Pure. null when nothing is free to wear.
+ */
+function stableCharacter(seed, roster, { taken = [], resident = null } = {}) {
+  const blocked = new Set([resident, ...(Array.isArray(taken) ? taken : [])].filter(Boolean));
+  for (const name of characterOrder(seed, roster)) {
+    if (!blocked.has(name)) return name;
+  }
+  return null;
 }
 
 /**
@@ -1487,72 +1462,6 @@ function loadRosterPresence({ file = AGENT_ROSTER_FILE() } = {}) {
   }
   rosterPresenceCache.set(resolved, { mtimeMs, presence });
   return presence;
-}
-
-// ─── the canonical voice tier (agent_voices.json, ahead of the roster) ───────
-
-/** The fields the canonical map may speak to. It is a VOICE authority, not a
- *  body one: characters stay with the owner's cast and the platform roster. */
-const CANONICAL_FIELDS = Object.freeze(["voice"]);
-
-/** The engine prefixes AitherVoice /voice/synthesize understands (see
- *  AitherOS/services/perception/AitherVoice.py: "kokoro:<id>" is served by the
- *  Kokoro lane, "local:piper" by the local Piper voice; "custom:<name>" is
- *  routed by the desk to Genesis /voice-builds). Anything else is an edge-tts
- *  name, which is the drift this map exists to end. */
-const CANONICAL_ENGINE_PREFIXES = Object.freeze(["kokoro:", "local:piper", "custom:"]);
-
-/** Validate one canonical voice id. Pure. */
-function isCanonicalVoiceId(value) {
-  const verdict = ACTOR_FIELDS.voice(value);
-  if (!verdict.ok) return verdict;
-  const v = verdict.value.toLowerCase();
-  const known = CANONICAL_ENGINE_PREFIXES.some((p) => v === p || v.startsWith(p));
-  return known ? verdict : { ok: false, reason: "not a kokoro:/local:piper/custom: engine id" };
-}
-
-/**
- * validateAgentVoices -- the generated canonical map, reduced to
- * {agent: {voice?}} through the SAME ACTOR_FIELDS validator the cast file uses,
- * so a value cast.json would drop is dropped here too. Pure; never throws.
- * Accepts the whole document (its `agents` map) or the bare map.
- */
-function validateAgentVoices(raw) {
-  const doc = plainObject(raw);
-  const map = plainObject("agents" in doc ? doc.agents : doc);
-  const out = {};
-  for (const [agent, record] of Object.entries(map)) {
-    const key = normaliseAuthor(agent);
-    const rec = plainObject(record);
-    if (!key) continue;
-    const verdict = isCanonicalVoiceId(rec.voice);
-    if (verdict.ok) out[key] = { voice: verdict.value };
-  }
-  return out;
-}
-
-const agentVoicesCache = new Map(); // resolved file -> { mtimeMs, voices }
-
-/**
- * loadAgentVoices -- read the canonical map's voice per agent, fail soft: a
- * missing or malformed copy yields {} (the tier says nothing and the roster
- * still speaks), never a throw into a poll. Cached by mtime so a hot resolve
- * costs one stat and a regenerated map is picked up without a restart.
- */
-function loadAgentVoices({ file = AGENT_VOICES_FILE() } = {}) {
-  const resolved = path.resolve(file);
-  const mtimeMs = statMtime(resolved);
-  if (mtimeMs === null) return {};
-  const cached = agentVoicesCache.get(resolved);
-  if (cached && cached.mtimeMs === mtimeMs) return cached.voices;
-  let voices;
-  try {
-    voices = validateAgentVoices(JSON.parse(fs.readFileSync(resolved, "utf8")));
-  } catch {
-    voices = {};
-  }
-  agentVoicesCache.set(resolved, { mtimeMs, voices });
-  return voices;
 }
 
 // ─── resolution ──────────────────────────────────────────────────────────────
@@ -1791,10 +1700,6 @@ function resolveVoice(snapshot, { env = process.env } = {}) {
  *   actors["<kind>:*"]                 (the class grant)
  *   authors.<author>.seats[<seat>]     (this parallel session)
  *   authors.<author>
- *   canonical.<agent>                  (voice ONLY: the platform's canonical
- *                                       agent_voices.json -- kokoro:<id> /
- *                                       local:piper / custom:<name> -- ahead of
- *                                       the roster mirror's stock *Neural ids)
  *   roster.<agent>                     (voice and character ONLY: the agent's
  *                                       DECLARED desk_presence from the platform
  *                                       roster, ctx.agentRoster. Below every
@@ -1822,8 +1727,6 @@ function resolveVoice(snapshot, { env = process.env } = {}) {
  * @param {object} ctx
  *   {author, actorId, actorKind|kind, id, channel, nick, key, origin, seat,
  *    roster (SAFE character names), taken, resident, voices, env,
- *    agentVoices ({agent: {voice}}, loadAgentVoices()'s shape; omitted = no
- *    canonical tier),
  *    agentRoster ({agent: {voice?, character?}}, loadRosterPresence()'s
  *    shape; omitted = no roster tier)}
  * @returns {object} ActorResolution — never throws.
@@ -1867,15 +1770,6 @@ function resolveActor(snapshot, ctx = {}) {
     tiers.push({ prefix: `authors.${author}.seats[${seat}]`, record: authorRecord.seats[seat] });
   }
   if (authorRecord) tiers.push({ prefix: `authors.${author}`, record: authorRecord });
-  if (agentName && ctx.agentVoices && typeof ctx.agentVoices === "object") {
-    // The platform's ONE canonical voice, above the roster mirror: the roster
-    // is generated from config/identities desk_presence and carries stock
-    // en-US-*Neural ids, while agent_voices.json names the engine that actually
-    // speaks (kokoro:am_michael). An owner's authors.<agent>.voice above this
-    // tier still wins -- override first, canonical, then roster.
-    const canonical = validateAgentVoices(ctx.agentVoices)[agentName];
-    if (canonical) tiers.push({ prefix: `canonical.${agentName}`, record: canonical, only: CANONICAL_FIELDS });
-  }
   if (agentName && ctx.agentRoster && typeof ctx.agentRoster === "object") {
     const declared = validateRosterPresence(ctx.agentRoster)[agentName];
     if (declared) tiers.push({ prefix: `roster.${agentName}`, record: declared, only: ROSTER_FIELDS });
@@ -1899,27 +1793,22 @@ function resolveActor(snapshot, ctx = {}) {
   // ── character: configured, else hashed into the safe roster ──
   const roster = Array.isArray(ctx.roster) ? ctx.roster.filter((n) => typeof n === "string" && n) : null;
   const inRoster = (value) => {
-    // null = this caller does not judge (a provenance read); an EMPTY roster fails CLOSED -- a
-    // roster that could not be read, or one the rating hides entirely, shows nothing.
-    if (!roster) return { ok: true, value };
+    if (!roster || roster.length === 0) return { ok: true, value }; // nothing to judge against
     if (roster.includes(value)) return { ok: true, value };
     return { ok: false, reason: "not in the safe roster (content rating / missing model)" };
   };
-  // Only an owner-written row names a body: never the platform roster tier, never
-  // `defaults.character` (it dressed every undressed actor -- the robot, then the hash).
-  const characterHit = (() => {
-    for (const tier of tiers) {
-      if (!isOwnerCharacterTier(tier.prefix)) continue;
-      const hit = readField(tier.record, "character", tier.prefix, problems, (v) => {
-        const verdict = ACTOR_FIELDS.character(v);
-        return verdict.ok ? inRoster(verdict.value) : verdict;
-      });
-      if (hit) return hit;
-    }
-    return null;
-  })();
-  const character = characterHit ? characterHit.value : null;
-  const characterFrom = characterHit ? characterHit.from : "none";
+  const characterHit = pick("character", (v) => {
+    const verdict = ACTOR_FIELDS.character(v);
+    return verdict.ok ? inRoster(verdict.value) : verdict;
+  });
+  const resident = ctx.resident !== undefined ? ctx.resident : resolveStage(snapshot, { env }).resident;
+  let character = characterHit ? characterHit.value : null;
+  let characterFrom = characterHit ? characterHit.from : null;
+  if (!character) {
+    const hashed = stableCharacter(seed, roster || [], { taken: ctx.taken || [], resident });
+    character = hashed;
+    characterFrom = hashed ? "hash" : "none";
+  }
 
   // ── voice ──
   const voiceHit =
@@ -2248,16 +2137,11 @@ function migrateLegacy({ file = CAST_FILE(), avatarsFile = undefined, now = Date
           characters += 1;
         }
       }
-      // The canonical map is the voice the rest of the platform speaks, so a
-      // freshly migrated agent gets IT, not the legacy OpenAI-era name; the
-      // legacy value only fills agents the canonical map does not name.
-      const canonical = loadAgentVoices();
       for (const [agent, voice] of Object.entries(LEGACY_AGENT_VOICES)) {
         const record = row(agent);
         if (!record) continue;
         if (record.voice === undefined || record.voice === null) {
-          const key = normaliseAuthor(agent);
-          record.voice = (canonical[key] && canonical[key].voice) || voice;
+          record.voice = voice;
           voices += 1;
         }
       }
@@ -2365,9 +2249,9 @@ module.exports = {
   SPEED_MIN,
   VOICES,
   channelKey,
+  characterOrder,
   hash33,
   load,
-  loadAgentVoices,
   loadRosterPresence,
   migrateLegacy,
   normaliseAuthor,
@@ -2381,15 +2265,10 @@ module.exports = {
   resolveStage,
   resolveVoice,
   seatIndexFor,
+  stableCharacter,
   stableVoice,
-  ownerBodies,
   validateCast,
-  validateAgentVoices,
   validateRosterPresence,
-  AGENT_VOICES_FILE,
-  CANONICAL_FIELDS,
-  CANONICAL_ENGINE_PREFIXES,
-  isCanonicalVoiceId,
   ROSTER_FIELDS,
   watch,
   write,

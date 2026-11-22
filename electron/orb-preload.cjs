@@ -65,10 +65,6 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   dragStart: () => ipcRenderer.invoke("desk:orb-drag-start"),
   dragEnd: () => ipcRenderer.invoke("desk:orb-drag-end"),
   click: () => ipcRenderer.invoke("desk:orb-click"),
-  // The BADGE is the needs-you door: one click opens the Inbox list (never
-  // answers anything). Kept separate from `click` so the orb body keeps its
-  // open/close meaning.
-  needsYou: () => ipcRenderer.invoke("desk:orb-needs-you"),
   ask: (verb, text) => ipcRenderer.invoke("desk:orb-ask", String(verb || ""), String(text || "")),
   copy: (id) => ipcRenderer.invoke("desk:orb-copy", String(id || "")),
   pin: (id, pinned) => ipcRenderer.invoke("desk:orb-pin", String(id || ""), Boolean(pinned)),
@@ -98,56 +94,6 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   onAttach: (fn) => on("orb:attach", fn),
   onMode: (fn) => on("orb:mode", fn),
   onVeil: (fn) => on("orb:veil", fn),
-  // Visual neurons (neurons-model.cjs): each agent's recent steps, batched by main
-  // at <= 10 Hz. {on, agents:[{agent, nodes, edges}], ttlMs, pulseMs}
-  onNeurons: (fn) => on("orb:neurons", fn),
   // the owner's AitherSprite the fairy wears ({name, stage, mood, line, tooltip, tint} | null)
   onSprite: (fn) => on("orb:sprite", fn),
-  // attention (fairy-attention.cjs): the whisper's buttons and the fairy's nudge level.
-  nudgeAct: (action, key) => ipcRenderer.invoke("desk:nudge-act", String(action || ""),
-    typeof key === "boolean" ? key : String(key == null ? "" : key)),
-  onNudge: (fn) => on("orb:nudge", fn),
-  onNudgeView: (fn) => on("orb:nudge-view", fn),
-  onNudgeFlash: (fn) => on("orb:nudge-flash", fn),
-  // The agent fairy (agent-fairy.cjs): whose colours the fairy wears, the
-  // companions orbiting it. `peek` is refused since 2026-11-12: a hover never opens a card.
-  onFairy: (fn) => on("orb:fairy", fn),
-  onCompanions: (fn) => on("orb:companions", fn),
-  peek: (id) => ipcRenderer.invoke("desk:orb-peek", String(id || "")),
-  swarmHit: (inside) => ipcRenderer.invoke("desk:swarm-hit", Boolean(inside)),
-  // A CLICK on an agent's fairy opens that agent's newest card (never the empty chat).
-  openCard: (id, agent) => ipcRenderer.invoke("desk:orb-open-card", String(id || ""), String(agent || "")),
-  // A card or panel is open over the fairy: hover tooltips stand down ({open}).
-  onPanel: (fn) => on("orb:panel", fn),
-  // Click a companion fairy: a chat with that agent.
-  chatAgent: (agent) => ipcRenderer.invoke("desk:orb-chat-agent", String(agent || "")),
-  // Hover = a one-line tooltip after a dwell, never a card (owner 2026-11-12).
-  // text "" hides it; point is the pointer in screen DIPs.
-  tip: (text, point) => ipcRenderer.invoke("desk:fairy-tip", String(text || ""),
-    point && Number.isFinite(Number(point.x)) ? { x: Number(point.x), y: Number(point.y) } : null),
-  onTip: (fn) => on("orb:tip", fn),
-  // Main gave this window back to click-through (the pointer left it without a
-  // mouseleave reaching the page): drop the hover so the next move re-arms it.
-  onHitReset: (fn) => on("orb:hit-reset", fn),
-  // The panel (fairy-panel.cjs): the session switcher, a card answered in place, and
-  // the page's own content height so the window fits it.
-  panelSession: (id) => ipcRenderer.invoke("desk:panel-session", String(id || "")),
-  panelAnswer: (id, key) => ipcRenderer.invoke("desk:panel-answer", String(id || ""), String(key || "")),
-  panelSize: (px) => ipcRenderer.invoke("desk:panel-size", Number(px) || 0),
-  onPanelView: (fn) => on("orb:panel-view", fn),
-  // Right click: a companion's menu (its card) or the orb's; a pick names an item id.
-  fairyMenu: (id, agent) => ipcRenderer.invoke("desk:fairy-menu", String(id || ""), String(agent || "")),
-  orbMenu: () => ipcRenderer.invoke("desk:orb-menu"),
-  menuPick: (id) => ipcRenderer.invoke("desk:menu-pick", String(id || "")),
-  menuHover: (inside) => ipcRenderer.invoke("desk:menu-hover", inside === "key" ? "key" : Boolean(inside)),
-  onMenu: (fn) => on("orb:menu", fn),
-  // Fine control over the fairies (fairy-control.cjs): a click selects one, the wheel
-  // changes the swarm's radius, a drag takes one out of the ring (pin) or back in (rejoin);
-  // main reads the real cursor on every phase. `onSwarmView` carries the layout, the
-  // focused window to keep off and the counts; `onPinMate` is a pinned fairy's own row.
-  select: (agent) => ipcRenderer.invoke("desk:swarm-select", String(agent || "")),
-  swarmWheel: (deltaY) => ipcRenderer.invoke("desk:swarm-wheel", Number(deltaY) || 0),
-  swarmDrag: (phase, agent, from) => ipcRenderer.invoke("desk:swarm-drag", String(phase || ""), String(agent || ""), from === "pin" ? "pin" : "swarm"),
-  onSwarmView: (fn) => on("orb:swarm-view", fn),
-  onPinMate: (fn) => on("orb:pin-mate", fn),
 });

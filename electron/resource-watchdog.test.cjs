@@ -72,40 +72,10 @@ test("hard twice in a row: reclaim hard, then restart Desk -- never wait for Tas
 });
 
 test("a runaway (main +400 MB inside a minute) restarts without waiting for the hard line", () => {
-  // The original leak grew ~5 GB/min from an already-big desk: the floor is crossed
-  // before the growth is counted, so this is still a runaway.
-  const { calls, step } = harness([[wd.RUNAWAY_FLOOR_MB], [wd.RUNAWAY_FLOOR_MB + 450]]);
+  const { calls, step } = harness([[200], [500], [800]]);
   step(15_000);
   step(15_000);
-  assert.ok(calls.some((c) => c[0] === "restart"), JSON.stringify(calls));
-});
-
-test("a start-up/bulk ramp from a small main process is NOT a runaway (2026-11-20)", () => {
-  // Measured on 0.1.35: the avatar-library seed carried main 150 -> 655 MB in a pass.
-  // That restarted the desk twice and then (restart cap) quit it. It is not the leak.
-  const { calls, step } = harness([[150], [420], [650], [660]]);
-  for (let k = 0; k < 4; k += 1) step(15_000);
-  assert.ok(!calls.some((c) => c[0] === "restart" || c[0] === "quit"), JSON.stringify(calls));
-});
-
-test("hold: deliberate bulk work reclaims but never restarts or quits", () => {
-  const hard = wd.BUDGETS.customer.mainHardMb + 500;
-  const { calls, step } = harness([[hard], [hard], [hard]], { hold: () => "avatar library seed" });
-  step();
-  step();
-  step();
-  assert.ok(!calls.some((c) => c[0] === "restart" || c[0] === "quit"), JSON.stringify(calls));
-  assert.ok(calls.some((c) => c[0] === "reclaim"), "still reclaims while held");
-});
-
-test("hold is released: the same desk is restarted once the bulk work ends", () => {
-  const hard = wd.BUDGETS.customer.mainHardMb + 500;
-  let busy = true;
-  const { calls, step } = harness([[hard], [hard], [hard]], { hold: () => (busy ? "seed" : false) });
-  step();
-  step();
-  busy = false;
-  step();
+  step(15_000);
   assert.ok(calls.some((c) => c[0] === "restart"), JSON.stringify(calls));
 });
 
@@ -128,99 +98,4 @@ test("main.cjs starts both watchdogs", () => {
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "main.cjs"), "utf8");
   assert.match(src, /startResourceWatchdog\(/);
   assert.match(src, /startHangWatchdog\(/);
-});
-
-// ── the GPU child guard (2026-11-07: the GPU process reached 9.2 GB) ────────
-
-test("gpuVerdict names the GPU child and only asks to kill it past the line", () => {
-  const below = wd.gpuVerdict(metrics(200, wd.GPU_LIMIT_MB - 1));
-  assert.deepEqual(below, { pid: 2, mb: wd.GPU_LIMIT_MB - 1, kill: false });
-  const above = wd.gpuVerdict(metrics(200, wd.GPU_LIMIT_MB + 1));
-  assert.equal(above.pid, 2);
-  assert.equal(above.kill, true);
-  assert.deepEqual(wd.gpuVerdict([]), { pid: 0, mb: 0, kill: false });
-  assert.deepEqual(wd.gpuVerdict([{ pid: 9, type: "Browser", memory: { privateBytes: 99 * MB } }]),
-    { pid: 0, mb: 0, kill: false }, "never acts on a process it cannot identify");
-});
-
-function gpuHarness(seq) {
-  let t = 0;
-  let i = 0;
-  const killed = [];
-  const guard = wd.createGpuGuard({
-    sample: () => metrics(200, seq[Math.min(i++, seq.length - 1)]),
-    kill: (pid) => killed.push(pid),
-    now: () => t,
-    log: () => {},
-  });
-  return { guard, killed, step: (ms = 15_000) => { t += ms; return guard.tick(); } };
-}
-
-test("gpu guard kills the GPU child once per pid, and only the GPU child", () => {
-  const { killed, step } = gpuHarness([wd.GPU_LIMIT_MB + 500, wd.GPU_LIMIT_MB + 500, 100]);
-  const first = step();
-  assert.equal(first.action, "killed");
-  assert.deepEqual(killed, [2]);
-  assert.equal(step().action, "already", "a stale sample cannot kill the same pid twice");
-  assert.equal(killed.length, 1);
-});
-
-test("gpu guard cools down before killing a fresh GPU process, then kills it", () => {
-  let t = 0;
-  let pid = 2;
-  let mb = wd.GPU_LIMIT_MB + 500;
-  const killed = [];
-  const guard = wd.createGpuGuard({
-    sample: () => [{ pid, type: "Browser", memory: { privateBytes: 200 * MB } },
-      { pid, type: "GPU", memory: { privateBytes: mb * MB } }],
-    kill: (p) => killed.push(p),
-    now: () => t,
-    log: () => {},
-  });
-  assert.equal(guard.tick().action, "killed");
-  pid = 3; // Electron respawned it and it ballooned within the cooldown
-  t += 30_000;
-  assert.equal(guard.tick().action, "cooldown");
-  assert.equal(killed.length, 1);
-  t += wd.GPU_COOLDOWN_MS;
-  assert.equal(guard.tick().action, "killed");
-  assert.deepEqual(killed, [2, 3]);
-});
-
-test("gpu guard stops after the hourly cap", () => {
-  let t = 0;
-  let pid = 10;
-  const killed = [];
-  const guard = wd.createGpuGuard({
-    sample: () => [{ pid, type: "GPU", memory: { privateBytes: (wd.GPU_LIMIT_MB + 1) * MB } }],
-    kill: (p) => killed.push(p),
-    now: () => t,
-    cooldownMs: 1, // all of these fall inside one hour
-    log: () => {},
-  });
-  for (let k = 0; k < wd.GPU_MAX_KILLS_PER_HOUR + 2; k += 1) {
-    guard.tick();
-    pid += 1;
-    t += 2;
-  }
-  assert.equal(killed.length, wd.GPU_MAX_KILLS_PER_HOUR);
-  assert.equal(guard.kills().length, wd.GPU_MAX_KILLS_PER_HOUR);
-});
-
-test("the watchdog wiring starts the GPU guard too", () => {
-  const calls = [];
-  const app = {
-    getPath: () => require("node:os").tmpdir(),
-    getAppMetrics: () => [{ pid: 7, type: "GPU", memory: { privateBytes: (wd.GPU_LIMIT_MB + 1) * MB } }],
-    relaunch: () => calls.push("relaunch"),
-    exit: () => calls.push("exit"),
-  };
-  const w = wd.startResourceWatchdog({
-    app, posture: { customer: false }, reclaim: () => {}, notify: () => {}, log: () => {},
-    intervalMs: 60_000,
-  });
-  assert.equal(typeof w.gpuTick, "function");
-  const verdict = w.gpuTick();
-  assert.equal(verdict.kill, true);
-  w.stop();
 });

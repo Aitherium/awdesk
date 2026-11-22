@@ -11,7 +11,9 @@
  * rendered by plane-page.js), one IPC verb for all of them.
  *
  * Read-only by construction: the only verb is a snapshot, and the snapshot can
- * only run the reads plane-client.cjs lists for that plane.
+ * only run the reads plane-client.cjs lists for that plane. The Strata page's node
+ * browser adds two more reads (node list, one folder level) through
+ * node-browser-client.cjs -- the gateway's storage_files_nodes / storage_files_tree.
  */
 
 const path = require("node:path");
@@ -52,11 +54,23 @@ function planeFile(planeId) {
   return `plane-${checkPlane(planeId)}.html`;
 }
 
-/** The handler table, pure over an injected client so it is testable without Electron. */
-function planeHandlers(planes = client()) {
+let browserImpl = null;
+
+/** The Strata page's node browser (node-browser-client.cjs, gateway storage_files_* tools). */
+function nodeBrowser() {
+  if (!browserImpl) browserImpl = require("./node-browser-client.cjs").createNodeBrowserClient();
+  return browserImpl;
+}
+
+/** The handler table, pure over injected clients so it is testable without Electron.
+ *  The node browser's two verbs are reads too: a node list and one folder level. */
+function planeHandlers(planes = client(), browser = null) {
+  const files = () => browser || nodeBrowser();
   return {
     "desk:plane-list": () => answer(() => planes.planes()),
     "desk:plane-snapshot": (_e, planeId) => answer(() => planes.snapshot(checkPlane(planeId))),
+    "desk:plane-files-nodes": () => answer(() => files().nodes()),
+    "desk:plane-files-tree": (_e, node, dir) => answer(() => files().tree(String(node || ""), String(dir || ""))),
   };
 }
 

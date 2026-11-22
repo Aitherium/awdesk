@@ -26,7 +26,6 @@ export function deckStateFromEvent(event: Record<string, unknown>): DeckState {
     decisions: (event.decisions as DeckDecision[]) ?? [],
     openCount: (event.openCount as number) ?? 0,
     totalCount: event.totalCount as number | undefined,
-    endedCount: event.endedCount as number | undefined,
     needsYouIds: (event.needsYouIds as string[] | undefined) ?? [],
     fyiIds: (event.fyiIds as string[] | undefined) ?? [],
     deskVisible: (event.deskVisible as boolean) ?? false,

@@ -18,10 +18,7 @@ contextBridge.exposeInMainWorld("aitherTerminal", {
     title: String((opts && opts.title) || ""),
     rows: Number(opts && opts.rows) || 30,
     cols: Number(opts && opts.cols) || 100,
-    target: String((opts && opts.target) || ""),
   }),
-  /** Machines a node shell can open: ssh_config aliases + tailnet peers online now. */
-  nodes: () => ipcRenderer.invoke("desk:terminal-nodes"),
   input: (id, text) => ipcRenderer.invoke("desk:terminal-input", String(id), String(text ?? "")),
   resize: (id, rows, cols) => ipcRenderer.invoke("desk:terminal-resize", String(id), Number(rows), Number(cols)),
   interrupt: (id) => ipcRenderer.invoke("desk:terminal-interrupt", String(id)),
@@ -30,7 +27,7 @@ contextBridge.exposeInMainWorld("aitherTerminal", {
   detach: (id) => ipcRenderer.invoke("desk:terminal-detach", String(id)),
   external: () => ipcRenderer.invoke("desk:terminal-external"),
   resume: (id, cwd) => ipcRenderer.invoke("desk:terminal-resume", String(id), String(cwd || "")),
-  /** The browser's bottom dock: "open" | "close" | "toggle" | "state" | "split" (arg = session id). */
+  /** The browser's bottom dock: "open" | "close" | "toggle" | "state" | "popout" (arg = session id). */
   dock: (action, arg) => ipcRenderer.invoke("desk:terminal-dock", String(action), arg == null ? null : String(arg)),
   onDockState: (listener) => {
     const handler = (_event, s) => listener({ open: Boolean(s && s.open) });

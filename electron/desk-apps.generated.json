@@ -47,6 +47,7 @@
     "connections": "my-settings",
     "admin": "workspace-admin",
     "control": "workspace-admin",
+    "hq": "workspace-admin",
     "lockbox": "workspace-admin",
     "services": "fleet",
     "netmon": "fleet",
@@ -57,6 +58,7 @@
     "backups": "fleet",
     "sovereign-stats": "fleet",
     "moe": "fleet",
+    "neuralnet": "fleet",
     "desktop": "setup"
   },
   "panelParents": {
@@ -155,6 +157,7 @@
     "builder",
     "calculator",
     "calendar",
+    "canvas",
     "chat-history",
     "civic",
     "classroom",
@@ -163,6 +166,7 @@
     "comms",
     "company-room",
     "connections",
+    "contribute",
     "control",
     "create-family",
     "darkmatters",
@@ -177,6 +181,7 @@
     "elysium",
     "explore",
     "family",
+    "family-chat",
     "files",
     "fleet",
     "flow",
@@ -189,6 +194,7 @@
     "hera",
     "home",
     "homestead",
+    "hq",
     "ide",
     "image-studio",
     "invites",
@@ -206,6 +212,9 @@
     "my-workspace",
     "myspace",
     "netmon",
+    "network",
+    "neuralnet",
+    "notebook",
     "notes",
     "office",
     "online",
@@ -214,6 +223,7 @@
     "portal",
     "relay",
     "research",
+    "roadmap",
     "saga",
     "search",
     "sentry",
@@ -258,14 +268,17 @@
     "fleet",
     "gobbonet",
     "homestead",
+    "hq",
     "ide",
     "image-studio",
     "lockbox",
     "mediaforge",
     "netmon",
+    "network",
     "persona",
     "relay",
     "research",
+    "roadmap",
     "saga",
     "sentry",
     "services",
@@ -450,6 +463,20 @@
       "order": 6
     },
     {
+      "id": "family-chat",
+      "label": "Family chat",
+      "hint": "Talk with the kids on their phones",
+      "destination": "talk",
+      "parent": "",
+      "category": "",
+      "rail": false,
+      "mobile": true,
+      "icon": "MessageCircle",
+      "route": "/?app=family-chat",
+      "kind": "online",
+      "order": 7
+    },
+    {
       "id": "forums",
       "label": "Boards",
       "hint": "The message boards — threads that last",
@@ -461,7 +488,7 @@
       "icon": "MessagesSquare",
       "route": "/?app=forums",
       "kind": "online",
-      "order": 7
+      "order": 8
     },
     {
       "id": "greeter",
@@ -475,7 +502,7 @@
       "icon": "Sparkles",
       "route": "/?app=greeter",
       "kind": "online",
-      "order": 8
+      "order": 9
     },
     {
       "id": "hangout",
@@ -489,7 +516,7 @@
       "icon": "Users",
       "route": "/?app=hangout",
       "kind": "online",
-      "order": 9
+      "order": 10
     },
     {
       "id": "hearth",
@@ -503,7 +530,21 @@
       "icon": "Home",
       "route": "/?app=hearth",
       "kind": "online",
-      "order": 10
+      "order": 11
+    },
+    {
+      "id": "network",
+      "label": "Wesyn",
+      "hint": "Profiles, people and worlds: reputation earned in communities",
+      "destination": "talk",
+      "parent": "",
+      "category": "",
+      "rail": true,
+      "mobile": true,
+      "icon": "Users",
+      "route": "/?app=network",
+      "kind": "online",
+      "order": 12
     },
     {
       "id": "playground",
@@ -517,7 +558,7 @@
       "icon": "FlaskConical",
       "route": "/?app=playground",
       "kind": "online",
-      "order": 11
+      "order": 13
     },
     {
       "id": "relay",
@@ -531,7 +572,7 @@
       "icon": "Radio",
       "route": "/?app=relay",
       "kind": "online",
-      "order": 12
+      "order": 14
     },
     {
       "id": "atlas-pm",
@@ -618,6 +659,20 @@
       "order": 5
     },
     {
+      "id": "roadmap",
+      "label": "Roadmap",
+      "hint": "My day, the timeline, who does what",
+      "destination": "work",
+      "parent": "",
+      "category": "work",
+      "rail": true,
+      "mobile": true,
+      "icon": "Milestone",
+      "route": "/?app=roadmap",
+      "kind": "online",
+      "order": 6
+    },
+    {
       "id": "aitherone",
       "label": "AitherOne",
       "hint": "The office suite",
@@ -660,6 +715,20 @@
       "order": 2
     },
     {
+      "id": "canvas",
+      "label": "Canvas",
+      "hint": "An infinite whiteboard that is also your files",
+      "destination": "know",
+      "parent": "",
+      "category": "",
+      "rail": false,
+      "mobile": true,
+      "icon": "PenLine",
+      "route": "/?app=canvas",
+      "kind": "online",
+      "order": 3
+    },
+    {
       "id": "civic",
       "label": "Civic",
       "hint": "Who represents you, and how to vote where you live",
@@ -671,7 +740,7 @@
       "icon": "Landmark",
       "route": "/?app=civic",
       "kind": "online",
-      "order": 3
+      "order": 4
     },
     {
       "id": "classroom",
@@ -685,7 +754,7 @@
       "icon": "School",
       "route": "/?app=classroom",
       "kind": "online",
-      "order": 4
+      "order": 5
     },
     {
       "id": "clipboard",
@@ -699,7 +768,7 @@
       "icon": "Clipboard",
       "route": "/?app=clipboard",
       "kind": "online",
-      "order": 5
+      "order": 6
     },
     {
       "id": "deep-research",
@@ -713,7 +782,7 @@
       "icon": "Microscope",
       "route": "/?app=deep-research",
       "kind": "online",
-      "order": 6
+      "order": 7
     },
     {
       "id": "docs",
@@ -727,7 +796,7 @@
       "icon": "NotebookPen",
       "route": "/?app=docs",
       "kind": "online",
-      "order": 7
+      "order": 8
     },
     {
       "id": "files",
@@ -741,7 +810,7 @@
       "icon": "Folder",
       "route": "/?app=files",
       "kind": "online",
-      "order": 8
+      "order": 9
     },
     {
       "id": "learn",
@@ -755,7 +824,7 @@
       "icon": "GraduationCap",
       "route": "/?app=learn",
       "kind": "online",
-      "order": 9
+      "order": 10
     },
     {
       "id": "my-files",
@@ -769,7 +838,21 @@
       "icon": "Folder",
       "route": "/?app=my-files",
       "kind": "online",
-      "order": 10
+      "order": 11
+    },
+    {
+      "id": "notebook",
+      "label": "Notebooks",
+      "hint": "Notebooks, sections, pages — paper pages too",
+      "destination": "know",
+      "parent": "",
+      "category": "",
+      "rail": false,
+      "mobile": true,
+      "icon": "NotebookPen",
+      "route": "/?app=notebook",
+      "kind": "online",
+      "order": 12
     },
     {
       "id": "notes",
@@ -783,7 +866,7 @@
       "icon": "NotebookPen",
       "route": "/?app=notes",
       "kind": "online",
-      "order": 11
+      "order": 13
     },
     {
       "id": "research",
@@ -797,7 +880,7 @@
       "icon": "Search",
       "route": "/?app=research",
       "kind": "online",
-      "order": 12
+      "order": 14
     },
     {
       "id": "search",
@@ -811,7 +894,7 @@
       "icon": "Search",
       "route": "/?app=search",
       "kind": "online",
-      "order": 13
+      "order": 15
     },
     {
       "id": "storage",
@@ -825,7 +908,7 @@
       "icon": "HardDrive",
       "route": "/?app=storage",
       "kind": "online",
-      "order": 14
+      "order": 16
     },
     {
       "id": "strata-files",
@@ -839,7 +922,7 @@
       "icon": "Cloud",
       "route": "/?app=strata-files",
       "kind": "online",
-      "order": 15
+      "order": 17
     },
     {
       "id": "agents",
@@ -1360,6 +1443,20 @@
       "order": 5
     },
     {
+      "id": "contribute",
+      "label": "Contribute",
+      "hint": "Lend a machine, an agent or your own API key to the community",
+      "destination": "platform",
+      "parent": "",
+      "category": "work",
+      "rail": false,
+      "mobile": true,
+      "icon": "Cpu",
+      "route": "/?app=contribute",
+      "kind": "online",
+      "order": 6
+    },
+    {
       "id": "control",
       "label": "Aither Control",
       "hint": "Your devices, lending and models -- owner only",
@@ -1371,7 +1468,7 @@
       "icon": "SlidersHorizontal",
       "route": "/?app=control",
       "kind": "online",
-      "order": 6
+      "order": 7
     },
     {
       "id": "desktop",
@@ -1385,7 +1482,7 @@
       "icon": "MonitorSmartphone",
       "route": "/?app=desktop",
       "kind": "online",
-      "order": 7
+      "order": 8
     },
     {
       "id": "devplane",
@@ -1399,7 +1496,7 @@
       "icon": "TerminalSquare",
       "route": "/?app=devplane",
       "kind": "online",
-      "order": 8
+      "order": 9
     },
     {
       "id": "family",
@@ -1413,7 +1510,7 @@
       "icon": "Users",
       "route": "/?app=family",
       "kind": "online",
-      "order": 9
+      "order": 10
     },
     {
       "id": "fleet",
@@ -1427,7 +1524,21 @@
       "icon": "Rocket",
       "route": "/?app=fleet",
       "kind": "online",
-      "order": 10
+      "order": 11
+    },
+    {
+      "id": "hq",
+      "label": "HQ",
+      "hint": "Aitherium HQ — every workspace you run, at a glance",
+      "destination": "platform",
+      "parent": "workspace-admin",
+      "category": "system",
+      "rail": true,
+      "mobile": true,
+      "icon": "Globe2",
+      "route": "/?app=hq",
+      "kind": "online",
+      "order": 12
     },
     {
       "id": "lockbox",
@@ -1441,7 +1552,7 @@
       "icon": "Lock",
       "route": "/?app=lockbox",
       "kind": "online",
-      "order": 11
+      "order": 13
     },
     {
       "id": "moe",
@@ -1455,7 +1566,7 @@
       "icon": "Boxes",
       "route": "/?app=moe",
       "kind": "online",
-      "order": 12
+      "order": 14
     },
     {
       "id": "my-lockbox",
@@ -1469,7 +1580,7 @@
       "icon": "Lock",
       "route": "/?app=my-lockbox",
       "kind": "online",
-      "order": 13
+      "order": 15
     },
     {
       "id": "my-settings",
@@ -1483,7 +1594,7 @@
       "icon": "SlidersHorizontal",
       "route": "/?app=my-settings",
       "kind": "online",
-      "order": 14
+      "order": 16
     },
     {
       "id": "netmon",
@@ -1497,7 +1608,21 @@
       "icon": "Network",
       "route": "/?app=netmon",
       "kind": "online",
-      "order": 15
+      "order": 17
+    },
+    {
+      "id": "neuralnet",
+      "label": "NeuralNet",
+      "hint": "Every service, live — who talks to whom, who is sick",
+      "destination": "platform",
+      "parent": "fleet",
+      "category": "system",
+      "rail": false,
+      "mobile": true,
+      "icon": "BrainIcon",
+      "route": "/?app=neuralnet",
+      "kind": "online",
+      "order": 18
     },
     {
       "id": "sentry",
@@ -1511,7 +1636,7 @@
       "icon": "Shield",
       "route": "/?app=sentry",
       "kind": "online",
-      "order": 16
+      "order": 19
     },
     {
       "id": "services",
@@ -1525,7 +1650,7 @@
       "icon": "ServerCog",
       "route": "/?app=services",
       "kind": "online",
-      "order": 17
+      "order": 20
     },
     {
       "id": "setup",
@@ -1539,7 +1664,7 @@
       "icon": "Rocket",
       "route": "/?app=setup",
       "kind": "online",
-      "order": 18
+      "order": 21
     },
     {
       "id": "shop",
@@ -1553,7 +1678,7 @@
       "icon": "ShoppingBag",
       "route": "/?app=shop",
       "kind": "online",
-      "order": 19
+      "order": 22
     },
     {
       "id": "sovereign-stats",
@@ -1567,7 +1692,7 @@
       "icon": "Activity",
       "route": "/?app=sovereign-stats",
       "kind": "online",
-      "order": 20
+      "order": 23
     },
     {
       "id": "system-settings",
@@ -1581,7 +1706,7 @@
       "icon": "SlidersHorizontal",
       "route": "/?app=system-settings",
       "kind": "online",
-      "order": 21
+      "order": 24
     },
     {
       "id": "this-device",
@@ -1595,7 +1720,7 @@
       "icon": "MonitorSmartphone",
       "route": "/?app=this-device",
       "kind": "online",
-      "order": 22
+      "order": 25
     },
     {
       "id": "tunnel",
@@ -1609,7 +1734,7 @@
       "icon": "Network",
       "route": "/?app=tunnel",
       "kind": "online",
-      "order": 23
+      "order": 26
     },
     {
       "id": "workspace-admin",
@@ -1623,7 +1748,7 @@
       "icon": "ShieldCheck",
       "route": "/?app=workspace-admin",
       "kind": "online",
-      "order": 24
+      "order": 27
     }
   ],
   "panes": [
@@ -1643,15 +1768,6 @@
       "section": "Now",
       "tabOf": null,
       "destination": "know",
-      "kind": "page"
-    },
-    {
-      "id": "canvas",
-      "label": "Canvas",
-      "hint": "Pin apps and widgets on a board",
-      "section": "Now",
-      "tabOf": null,
-      "destination": "today",
       "kind": "page"
     },
     {
@@ -1919,6 +2035,7 @@
     "models": "brain",
     "my-workspace": "portal",
     "myspace": "spaces",
+    "projects": "roadmap",
     "take-it-home": "setup",
     "vera": "agents"
   }

@@ -28,16 +28,11 @@ const FLOAT_MIN = Object.freeze({ width: 320, height: 480 });
  * browser, chat, Online), and a 248 px slot cannot fit both a body and a column of
  * buttons -- owner screenshot 2026-10-04. The bubble stays, inside the slot.
  * Injected by main with webContents.insertCSS, so no renderer rebuild is needed.
- *
- * The bubble keeps CLEAR of the body here (--bubble-keep-clear, read by the renderer's
- * SpeechBubbleView): only the lines that fit above the head, the rest ellipsized. The
- * old cap (max-height 34vh + overflow hidden) let a long caption cover the whole body
- * and cut it mid-line, tail and all (owner screenshot 2026-11-16).
  */
 const DOCKED_CSS = [
   ".beads { display: none !important; }",
   ".speech-bubble-nudge { max-width: calc(100vw - 12px) !important; left: 6px !important; right: 6px !important; }",
-  ".speech-bubble { font-size: 11px !important; --bubble-keep-clear: 1 !important; }",
+  ".speech-bubble { font-size: 11px !important; max-height: 34vh !important; overflow: hidden !important; }",
 ].join("\n");
 const DOCKED_MIN = Object.freeze({ width: 120, height: 160 });
 

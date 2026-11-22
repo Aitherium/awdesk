@@ -14,7 +14,7 @@
  *
  * In-fleet doors (genesis, registry) are reached through the two host-visible
  * front doors that exist: the MCP gateway (:8182, rung 1 of the dispatch
- * ladder) and the awsh harness daemon (:8362, rooms + decisions). Genesis itself
+ * ladder) and the awdk daemon (:8362, rooms + decisions). Genesis itself
  * publishes no host port — that is deliberate and documented in
  * .claude/rules/aitheros-dispatch.md — so its row IS the gateway's health.
  */
@@ -25,20 +25,10 @@ const os = require("node:os");
 const https = require("node:https");
 const path = require("node:path");
 
-// The awsh harness daemon (:8362, rooms + decisions) is a process on the WINDOWS host.
-// Inside the fleet host (the awnix brain, AWDESK_FLEET_LOCAL=1) 127.0.0.1 is awnix's own
-// loopback, where nothing listens, so the row read "DOWN ECONNREFUSED" while the daemon
-// answered; the host bridge (aither-harness-proxy.service) republishes it at the podman
-// gateway. AWDESK_DAEMON_URL overrides both.
-function daemonProbeUrl(env = process.env) {
-  if (env.AWDESK_DAEMON_URL) return env.AWDESK_DAEMON_URL;
-  return env.AWDESK_FLEET_LOCAL === "1" ? "http://10.89.0.1:8362/health" : "http://127.0.0.1:8362/health";
-}
-
 // Doors every install has: its own loopback front doors.
 const LOCAL_SURFACES = [
   { id: "mcp", label: "Genesis via MCP gateway", open: "http://127.0.0.1:8182/health", probe: "http://127.0.0.1:8182/health", scope: "fleet" },
-  { id: "daemon", label: "awsh harness daemon (rooms, decisions)", open: "http://127.0.0.1:8362/health", probe: daemonProbeUrl(), scope: "host" },
+  { id: "daemon", label: "awdk daemon (rooms, decisions)", open: "http://127.0.0.1:8362/health", probe: "http://127.0.0.1:8362/health", scope: "host" },
   { id: "registry", label: "Registry", open: "https://127.0.0.1:8149/health", probe: "https://127.0.0.1:8149/health", scope: "fleet" },
   { id: "relay", label: "Relay (#agents)", open: "https://127.0.0.1:8205/health", probe: "https://127.0.0.1:8205/health", scope: "fleet" },
 ];
@@ -235,7 +225,6 @@ module.exports = {
   LOCAL_SURFACES,
   PLATFORM_SURFACES,
   buildSurfaces,
-  daemonProbeUrl,
   platformSurfaces,
   OPENABLE,
   SURFACES,
