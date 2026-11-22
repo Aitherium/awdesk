@@ -14,7 +14,6 @@ import {
   isFileAnimation,
   parseFileAnimation,
 } from '../animation-catalog';
-import { buildProceduralIdle } from '../animation/procedural-idle';
 import {
   configureAnimationAction,
   crossFadeAnimationActions,
@@ -38,14 +37,7 @@ function transitionSeconds(previous: AnimationType | null, next: AnimationType):
   return 0.7;
 }
 
-/** Reloads of a clip that failed to load: the file may only have been missing for a moment (a rebuild
- *  of dist/ while the window was open). */
-const RETRY_DELAYS_MS = [1500, 6000, 20000];
-
-export function useVrmAnimation(vrm: VRM | null, onBroken?: () => void) {
-  const brokenRef = useRef(onBroken);
-  brokenRef.current = onBroken;
-  const retries = useRef(0);
+export function useVrmAnimation(vrm: VRM | null) {
   const mixer = useRef<THREE.AnimationMixer | null>(null);
   const current = useRef<THREE.AnimationAction | null>(null);
   const currentType = useRef<AnimationType | null>(null);
@@ -85,21 +77,6 @@ export function useVrmAnimation(vrm: VRM | null, onBroken?: () => void) {
       proxy.name = 'VRMLookAtQuaternionProxy';
       vrm.scene.add(proxy);
     }
-    // A body NEVER stands in a T-pose (owner P0 2026-11-16): the moment it exists it plays a procedural
-    // idle built from its own bones, and the real clip fades over it when (if) it loads. A body that
-    // cannot even be posed this way is handed back to its fairy instead of being shown bind-posed.
-    const floor = buildProceduralIdle(vrm);
-    if (floor) {
-      const action = animationMixer.clipAction(floor);
-      configureAnimationAction(action, 'loop');
-      action.play();
-      current.current = action;
-      currentType.current = null;
-      currentPath.current = null;
-    } else {
-      queueMicrotask(() => brokenRef.current?.());
-    }
-    retries.current = 0;
     const clipCache = clips.current;
     return () => {
       animationMixer.removeEventListener('finished', handleFinished);
@@ -127,7 +104,6 @@ export function useVrmAnimation(vrm: VRM | null, onBroken?: () => void) {
     return animation;
   }, []);
 
-  const playRef = useRef<((t: AnimationType | string, o?: PlayOptions) => Promise<void>) | null>(null);
   const play = useCallback(
     async (
       typeOrFile: AnimationType | string,
@@ -198,24 +174,10 @@ export function useVrmAnimation(vrm: VRM | null, onBroken?: () => void) {
         if (generation === requestGeneration.current && playback === 'once') {
           onComplete?.();
         }
-        // The procedural idle (started with the body) keeps standing in; try the file again later
-        // when it was only missing for a moment. Only the newest request retries.
-        const delay = RETRY_DELAYS_MS[retries.current];
-        if (delay !== undefined && generation === requestGeneration.current) {
-          retries.current += 1;
-          const again = typeOrFile;
-          window.setTimeout(() => {
-            if (generation === requestGeneration.current) void playRef.current?.(again, { onComplete, playback });
-          }, delay);
-        }
       }
     },
     [load, vrm],
   );
-
-  useEffect(() => {
-    playRef.current = play;
-  }, [play]);
 
   const update = useCallback((delta: number) => mixer.current?.update(delta), []);
   return { play, update };

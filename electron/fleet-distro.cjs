@@ -6,7 +6,7 @@
  * The rule is IDENTICAL to AitherOS/lib/core/fleet_distro.py (read its header);
  * AitherOS/dev/tests/test_fleet_distro_resolvers.py runs both on the same fixtures:
  *   1. env AITHER_FLEET_DISTRO, then AITHER_WSL_DISTRO, FLEET_DISTRO, AWDESK_FLEET_DISTRO
- *   2. nodes.<debian-fleet>.fleet_distro in AitherOS/config/nodes.yaml
+ *   2. nodes.<awnix>.fleet_distro in AitherOS/config/nodes.yaml
  *      (path override: env AITHER_NODES_YAML; the repo is found relative to this
  *      file, then AITHEROS_ROOT, then C:\AitherOS-Fresh for a packaged desk)
  *   3. "awnix"
@@ -18,7 +18,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const DEFAULT_FLEET_DISTRO = "awnix";
-const FLEET_NODE_ID = "debian-fleet";
+const FLEET_NODE_ID = "awnix";
 const ENV_VARS = Object.freeze(["AITHER_FLEET_DISTRO", "AITHER_WSL_DISTRO", "FLEET_DISTRO", "AWDESK_FLEET_DISTRO"]);
 const NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -35,7 +35,7 @@ function indentOf(line) {
   return line.length - line.replace(/^\s+/, "").length;
 }
 
-/** nodes.<debian-fleet>.fleet_distro, or null. Same line scan as the Python resolver. */
+/** nodes.<awnix>.fleet_distro, or null. Same line scan as the Python resolver. */
 function readNodesFleetDistro(nodesPath) {
   let text;
   try {
@@ -46,7 +46,7 @@ function readNodesFleetDistro(nodesPath) {
   let indent = -1;
   for (const line of text.split(/\r?\n/)) {
     if (indent < 0) {
-      const m = /^(\s*)debian-fleet:\s*(#.*)?$/.exec(line);
+      const m = /^(\s*)awnix:\s*(#.*)?$/.exec(line);
       if (m) indent = m[1].length;
       continue;
     }
@@ -87,7 +87,7 @@ function fleetDistro() {
 /* ─── fleet-host TRANSPORT (same rule as lib/core/fleet_distro.py resolve_fleet_host) ───
  *   1. env AITHER_FLEET_TRANSPORT = wsl[:<d>] | local | ssh:<user@host> | machine[:<m>]
  *      (auto / empty falls through)
- *   2. nodes.<debian-fleet>.fleet_transport (auto falls through)
+ *   2. nodes.<awnix>.fleet_transport (auto falls through)
  *   3. platform: win32 -> wsl:<fleet distro>; linux with /run/systemd/system and podman
  *      -> local; darwin -> machine:podman-machine-default; anything else throws.
  * An invalid value at 1 or 2 throws (FleetHostUnresolved) -- never a guess. */
@@ -103,7 +103,7 @@ class FleetHostUnresolved extends Error {
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
-/** nodes.<debian-fleet>.<dotted>, or null: each segment at its block's CHILD indent. */
+/** nodes.<awnix>.<dotted>, or null: each segment at its block's CHILD indent. */
 function readNodesValue(dotted, nodesPath) {
   let text;
   try {

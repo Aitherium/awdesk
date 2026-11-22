@@ -22,7 +22,7 @@ const NODES = [
   "nodes:",
   "  local:",
   "    fleet_transport: machine:wrong",
-  "  debian-fleet:",
+  "  awnix:",
   "    fleet_distro: awnix-x",
   "    fleet_transport: ssh:core@fleet   # c",
   "    host_roots:",
@@ -40,7 +40,7 @@ test("env transport beats nodes.yaml; nodes.yaml beats the platform", () => {
 test("bare wsl takes the distro rule; auto falls through to the platform", () => {
   const p = nodesFile(NODES);
   assert.equal(fd.resolveFleetHost({ AITHER_FLEET_TRANSPORT: "wsl" }, p, "win32").spec, "wsl:awnix-x");
-  const auto = nodesFile("nodes:\n  debian-fleet:\n    fleet_transport: auto\n");
+  const auto = nodesFile("nodes:\n  awnix:\n    fleet_transport: auto\n");
   const h = fd.resolveFleetHost({}, auto, "win32");
   assert.deepEqual([h.spec, h.source], ["wsl:awnix", "platform:win32"]);
   assert.equal(fd.resolveFleetHost({}, auto, "darwin").spec, "machine:podman-machine-default");
@@ -48,7 +48,7 @@ test("bare wsl takes the distro rule; auto falls through to the platform", () =>
 });
 
 test("a nested fleet_transport is never read as the node's own key", () => {
-  const p = nodesFile("nodes:\n  debian-fleet:\n    host_roots:\n      fleet_transport: local\n");
+  const p = nodesFile("nodes:\n  awnix:\n    host_roots:\n      fleet_transport: local\n");
   assert.equal(fd.readNodesValue("fleet_transport", p), null);
   assert.equal(fd.readNodesValue("host_roots.fleet_transport", p), "local");
 });

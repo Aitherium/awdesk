@@ -19,42 +19,23 @@ function grab(name) {
   return lines.slice(first, last + 1).join(String.fromCharCode(10));
 }
 
-/** `saved` is the desk-companion.json body: a companion mode string, or an object
- *  (so the owner's saved `avatarHidden` can be exercised beside it). */
-function harness(saved) {
+function harness(mode) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fairy-"));
   const file = path.join(dir, "desk-companion.json");
-  if (saved) {
-    const body = typeof saved === "string" ? { companion: saved } : saved;
-    fs.writeFileSync(file, JSON.stringify(body));
-  }
-  const calls = { shown: 0, inactive: 0, focused: 0, stoodDown: 0 };
+  if (mode) fs.writeFileSync(file, JSON.stringify({ companion: mode }));
+  const calls = { shown: 0, inactive: 0, focused: 0 };
   const win = {
     isMinimized: () => false, restore() {}, isVisible: () => false,
     show() { calls.shown++; }, showInactive() { calls.inactive++; }, focus() { calls.focused++; },
   };
-  // ONE companion surface (owner 2026-11-20): raising the body stands the fairy down.
-  const orb = { standDownForAvatar() { calls.stoodDown++; return { ok: true }; } };
   const body = `
     const COMPANION_FILE = ${JSON.stringify(file)};
-    let avatarGrowing = false;
-    const avatarDock = { isDocked: () => false };
-    const orbWindow = injectedOrb;
-    ${grab("readCompanionFile")}
-    ${grab("avatarHiddenByOwner")}
-    ${grab("setAvatarHiddenByOwner")}
     ${grab("companionMode")}
     ${grab("showOverlay")}
     return showOverlay;`;
-  const make = new Function(
-    "fs", "path", "debugLog", "createWindow", "injectedOrb",
-    "scheduleHyprlandWindowConfiguration", "tray", "refreshTrayMenu", body,
-  );
-  const showOverlay = make(fs, path, () => {}, () => win, orb, () => {}, null, () => {});
-  const savedFile = () => {
-    try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return {}; }
-  };
-  return { showOverlay, calls, savedFile };
+  const make = new Function("fs", "createWindow", "scheduleHyprlandWindowConfiguration", "tray", "refreshTrayMenu", body);
+  const showOverlay = make(fs, () => win, () => {}, null, () => {});
+  return { showOverlay, calls };
 }
 
 test("fairy mode (the default, no file): an AUTOMATIC show is suppressed", () => {
@@ -74,71 +55,4 @@ test("avatar mode: automatic shows behave exactly as before", () => {
   const { showOverlay, calls } = harness("avatar");
   showOverlay();
   assert.equal(calls.inactive, 1);
-  assert.equal(calls.stoodDown, 1, "ONE surface: the fairy steps down when the body is up");
-});
-
-// ── ONE companion surface (owner 2026-11-20) ───────────────────────────────────
-test("a shown body always stands the fairy down -- never two surfaces", () => {
-  for (const saved of ["fairy", "avatar"]) {
-    const { showOverlay, calls } = harness(saved);
-    showOverlay({ focus: true });   // the tray's explicit path, whatever the mode
-    assert.equal(calls.shown, 1, `${saved}: the body still comes up`);
-    assert.equal(calls.stoodDown, 1, `${saved}: and the fairy does not float beside it`);
-  }
-});
-
-test("a suppressed automatic show never touches the fairy", () => {
-  const { showOverlay, calls } = harness("fairy");
-  showOverlay();
-  assert.equal(calls.stoodDown, 0, "nothing was raised, so nothing stands down");
-});
-
-// ── review findings, 2026-11-20: the one-surface invariants hold under edges ──
-test("docking is NOT a two-surface exception: no toggle branch and no dock guard survive", () => {
-  // The owner's avatar-dock.json is `docked:true`; the old code read docking as a
-  // licence for both companions. Docking says WHERE the body lives, nothing more.
-  assert.doesNotMatch(src, /if \(facts\.docked\) \{/, "the toggle's docked bypass is gone");
-  assert.doesNotMatch(src, /!\(avatarDock && avatarDock\.isDocked\(\)\)/, "no dock guard on the stand-down");
-  assert.doesNotMatch(src, /facts\.docked/, "the plan never sees a docked fact");
-});
-
-test("a companion-mode switch is not recorded as the owner's sticky hide", () => {
-  // 'Companion: fairy only' hides the body for now -- not forever. The old call wrote
-  // avatarHidden, which then silently blocked 'Companion: full avatar'.
-  assert.match(src, /await hideOverlay\(\{ byOwner: false \}\);/);
-  // Choosing a body clears any earlier sticky hide before it plans the grow.
-  assert.match(src, /setAvatarHiddenByOwner\(false\);\s*\n\s*if \(plan\.avatar === "grow"\)/);
-});
-
-test("a toggle during the grow animation waits for it instead of racing to zero surfaces", () => {
-  assert.match(src, /async function waitForAvatarGrow\(\)/);
-  assert.match(src, /async function toggleOverlay\(\) \{\s*\n\s*await waitForAvatarGrow\(\);/);
-  assert.match(src, /async function setCompanionMode\(mode\) \{\s*\n\s*await waitForAvatarGrow\(\);/);
-});
-
-// ── "stays hidden across a crash and a restart" (the PR's whole point) ──────────
-test("avatar mode: an AUTOMATIC show is suppressed after the owner hid the avatar", () => {
-  const { showOverlay, calls } = harness({ companion: "avatar", avatarHidden: true });
-  showOverlay();
-  assert.equal(calls.inactive + calls.shown, 0, "the saved hide survives a restart");
-});
-
-test("avatar mode: an EXPLICIT show clears the saved hide", () => {
-  const { showOverlay, calls, savedFile } = harness({ companion: "avatar", avatarHidden: true });
-  showOverlay({ focus: true });
-  assert.equal(calls.shown, 1, "an explicit owner action still shows it");
-  assert.equal(savedFile().avatarHidden, false, "and the stale hide is not re-applied next launch");
-});
-
-test("avatar mode: an automatic show does not resurrect a hidden avatar", () => {
-  const { showOverlay, calls, savedFile } = harness({ companion: "avatar", avatarHidden: true });
-  showOverlay(); // a voice session / slot spawn
-  assert.equal(calls.inactive + calls.shown, 0);
-  assert.equal(savedFile().avatarHidden, true, "the automatic path never clears the owner's hide");
-});
-
-test("fairy mode: the hide flag is irrelevant, fairy gating still wins", () => {
-  const { showOverlay, calls } = harness({ companion: "fairy", avatarHidden: false });
-  showOverlay();
-  assert.equal(calls.inactive + calls.shown, 0);
 });

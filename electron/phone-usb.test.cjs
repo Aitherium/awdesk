@@ -28,7 +28,7 @@ test("USB phones only: Wi-Fi debugging and emulators are not a cable", () => {
   assert.equal(isUsbSerial("10.0.0.2:5555"), false);
 });
 
-test("adbArgv builds exactly five shapes and refuses everything else", () => {
+test("adbArgv builds exactly four shapes and refuses everything else", () => {
   assert.deepEqual(adbArgv("devices"), ["devices", "-l"]);
   assert.deepEqual(adbArgv("reverse", { serial: "R5CT", pcPort: 50123 }),
     ["-s", "R5CT", "reverse", `tcp:${PHONE_PORT}`, "tcp:50123"]);
@@ -36,8 +36,6 @@ test("adbArgv builds exactly five shapes and refuses everything else", () => {
   const launch = adbArgv("launch", { serial: "R5CT" });
   assert.equal(launch[2], "shell");
   assert.equal(launch.at(-1), "'https://app.aitherium.com/?app=control&tab=pc'");
-  assert.deepEqual(adbArgv("screencap", { serial: "R5CT" }), ["-s", "R5CT", "exec-out", "screencap", "-p"]);
-  assert.throws(() => adbArgv("screencap", { serial: "R5CT; reboot" }), /bad serial/);
   assert.throws(() => adbArgv("shell", { serial: "R5CT" }), /not allowed/);
   assert.throws(() => adbArgv("install", { serial: "R5CT" }), /not allowed/);
   assert.throws(() => adbArgv("reverse", { serial: "R5CT; rm -rf /", pcPort: 50123 }), /bad serial/);

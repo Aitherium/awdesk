@@ -24,6 +24,12 @@
  *                readable) and AITHER_PROGRESS=1, so each checklist change arrives as one
  *                `@@aither-step <step> <status> <detail>` line and becomes a row here.
  *
+ * WINDOWS (2026-11-16). The same three steps run there with install.ps1 instead: PowerShell
+ * with -ExecutionPolicy Bypass on a file written to the temp folder, the same environment
+ * variables, and the same `@@aither-step` lines (install.ps1 prints them when AITHER_PROGRESS
+ * is set). This is the path a non-technical person takes from "Set up this computer" in Desk.
+ * It is never started on its own on Windows (maybeAutoStart), only by the button.
+ *
  * Electron-free and dependency-injected: local-stack.test.cjs runs it against a fake IdP
  * and a fake bash. The renderer gets step rows and redacted log lines, never a token.
  */
@@ -36,12 +42,15 @@ const oidc = require("./desk-oidc.cjs");
 const deskSession = require("./desk-session.cjs");
 
 const INSTALL_URL = "https://aitherium.com/install.sh";
+const INSTALL_URL_WIN = "https://aitherium.com/install.ps1";
 /** Rows the window shows, in order. install.sh reports the server vocabulary plus three
  *  local-only prerequisites (python, installer, node). */
 const STEPS = Object.freeze([
-  "signin", "python", "installer", "node", "awdk", "awnode", "awsh",
-  "household", "mesh", "settings", "mcp", "done",
+  "signin", "python", "installer", "node", "awdk", "awnode", "awsh", "awconnect", "awdesk",
+  "household", "mesh", "settings", "mcp", "verify", "done",
 ]);
+/** The server checklist calls the sign-in row `signed_in`; this window has always called it `signin`. */
+const STEP_ALIASES = Object.freeze({ signed_in: "signin" });
 const STATUSES = new Set(["running", "ok", "skip", "fail"]);
 const LOG_MAX = 400;
 /** The AppImage runtime and Electron leak these into children; a system bash, curl or
@@ -52,22 +61,23 @@ const ENV_DROP = [
   "CHROME_DESKTOP", "GDK_BACKEND",
 ];
 
-/** Is local-stack install possible on this platform? install.sh is POSIX. */
+/** Is local-stack install possible on this platform? install.sh (POSIX) or install.ps1 (Windows). */
 function supported(platform = process.platform) {
-  return platform === "linux" || platform === "darwin";
+  return platform === "linux" || platform === "darwin" || platform === "win32";
 }
 
 /** `@@aither-step awdk ok detail words` -> {step, status, detail} or null. Pure. */
 function parseProgress(line) {
   const m = /^@@aither-step\s+([a-z_]+)\s+([a-z]+)\s?(.*)$/.exec(String(line || "").trim());
   if (!m || !STATUSES.has(m[2])) return null;
-  return { step: m[1], status: m[2], detail: m[3].slice(0, 200) };
+  return { step: STEP_ALIASES[m[1]] || m[1], status: m[2], detail: m[3].slice(0, 200) };
 }
 
 /** The child's environment: Desk's, minus the AppImage/Electron leaks, plus ours. Pure. */
-function childEnv(base, extra) {
+function childEnv(base, extra, platform = "") { // "win32" only when the caller says so
   const env = { ...base };
   for (const k of ENV_DROP) delete env[k];
+  if (platform === "win32") return { ...env, ...extra }; // PowerShell finds its own tools
   const home = env.HOME || os.homedir();
   const localBin = path.posix.join(home, ".local", "bin"); // bash on Linux/macOS only
   const parts = String(env.PATH || "/usr/local/bin:/usr/bin:/bin").split(":");
@@ -130,13 +140,17 @@ async function mintSetupCode({ idp = oidc.DEFAULT_IDP, accessToken, clientName, 
   return ch.device_code;
 }
 
-/** Fetch install.sh: https from the one host, and it must be a shell script, not a page. */
+/** Fetch the installer: https from the one host, and it must be a script, not a page.
+ *  install.sh starts with a shebang; install.ps1 with its `<#` help block. */
 async function fetchInstaller({ url = INSTALL_URL, fetchImpl = fetch }) {
   if (!/^https:\/\/aitherium\.com\//.test(url)) throw new Error(`refusing installer URL ${url}`);
   const res = await fetchImpl(url, { headers: { "User-Agent": "aither-desk" } });
-  if (res.status !== 200) throw new Error(`install.sh answered HTTP ${res.status}`);
-  const text = await res.text();
-  if (!text.startsWith("#!")) throw new Error("install.sh did not come back as a script");
+  const name = url.endsWith(".ps1") ? "install.ps1" : "install.sh";
+  if (res.status !== 200) throw new Error(`${name} answered HTTP ${res.status}`);
+  let text = await res.text();
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  const isScript = name === "install.ps1" ? text.startsWith("<#") : text.startsWith("#!");
+  if (!isScript) throw new Error(`${name} did not come back as a script`);
   return text;
 }
 
@@ -152,6 +166,7 @@ class LocalStack extends EventEmitter {
   constructor({ spawn, openExternal, fetchImpl = fetch, stateFile, tmpDir = os.tmpdir(), idp = oidc.DEFAULT_IDP,
     hostname = os.hostname(), env = process.env, platform = process.platform, installUrl = INSTALL_URL,
     signIn = signInNoTyping, mint = mintSetupCode, log = () => {} } = {}) {
+    if (installUrl === INSTALL_URL && platform === "win32") installUrl = INSTALL_URL_WIN;
     super();
     Object.assign(this, { spawn, openExternal, fetchImpl, stateFile, tmpDir, idp, hostname, env, platform,
       installUrl, signIn, mint, logFn: log });
@@ -196,6 +211,7 @@ class LocalStack extends EventEmitter {
   /** Run once after "Connect this computer", and never again on its own: not when it was
    *  tried before, and not where adk is already installed (a set-up machine). */
   maybeAutoStart() {
+    if (this.platform === "win32") return false; // Windows: only the button starts it
     if (!supported(this.platform) || this.state === "running" || this.remembered()) return false;
     if (onPath("adk", this.env)) return false;
     void this.run({ auto: true });
@@ -223,13 +239,18 @@ class LocalStack extends EventEmitter {
       this.setStep("signin", "ok", claims.email || claims.preferred_username || "signed in");
 
       const script = await fetchInstaller({ url: this.installUrl, fetchImpl: this.fetchImpl });
-      file = path.join(fs.mkdtempSync(path.join(this.tmpDir, "aither-install-")), "install.sh");
+      file = path.join(fs.mkdtempSync(path.join(this.tmpDir, "aither-install-")),
+        this.platform === "win32" ? "install.ps1" : "install.sh");
       fs.writeFileSync(file, script, { mode: 0o600 });
       const rc = await this.exec(file, code);
       const ok = rc === 0 && this.steps.awdk.status === "ok";
       this.state = ok ? "done" : "failed";
       this.remember({ attempted: true, auto, done: ok, rc });
-      if (!ok) this.addLine(`install.sh ended with exit ${rc}`);
+      if (!ok) {
+        this.addLine(this.platform === "win32"
+          ? `Setup stopped (code ${rc}). The lines above say where. Choose Try again once that is fixed.`
+          : `install.sh ended with exit ${rc}`);
+      }
     } catch (e) {
       this.state = "failed";
       const msg = oidc.redact(e && e.message ? e.message : String(e), this.secrets);
@@ -247,13 +268,18 @@ class LocalStack extends EventEmitter {
   /** bash install.sh, the code in the environment; resolves with the exit code. */
   exec(file, code) {
     return new Promise((resolve) => {
-      const env = childEnv(this.env, { AITHER_SETUP_CODE: code, AITHER_PROGRESS: "1" });
+      const env = childEnv(this.env, { AITHER_SETUP_CODE: code, AITHER_PROGRESS: "1" }, this.platform);
+      const win = this.platform === "win32";
+      const [cmd, args] = win
+        // Desk is already running, so the installer skips Desk; the code is already approved.
+        ? ["powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", file, "-NonInteractive", "-SkipDesk"]]
+        : ["bash", [file, "--non-interactive", "--skip-desk"]];
       let child;
       try {
-        child = this.spawn("bash", [file, "--non-interactive", "--skip-desk"],
-          { env, stdio: ["ignore", "pipe", "pipe"], cwd: env.HOME || os.homedir() });
+        child = this.spawn(cmd, args, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+          cwd: env.HOME || env.USERPROFILE || os.homedir() });
       } catch (e) {
-        this.addLine(`could not start bash: ${e.message}`);
+        this.addLine(win ? `could not start PowerShell: ${e.message}` : `could not start bash: ${e.message}`);
         return resolve(127);
       }
       const pump = (stream) => {
@@ -278,6 +304,6 @@ class LocalStack extends EventEmitter {
 }
 
 module.exports = {
-  INSTALL_URL, STEPS, LocalStack, childEnv, fetchInstaller, mintSetupCode, onPath, parseProgress, plain,
+  INSTALL_URL, INSTALL_URL_WIN, STEPS, STEP_ALIASES, LocalStack, childEnv, fetchInstaller, mintSetupCode, onPath, parseProgress, plain,
   signInNoTyping, supported,
 };

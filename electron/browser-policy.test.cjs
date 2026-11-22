@@ -8,7 +8,6 @@ const {
   AgentGate,
   MAX_ASK_PAGE_CHARS,
   allowPermission,
-  allowPermissionFor,
   buildAskPrompt,
   createBrowserAgent,
   isNavigable,
@@ -70,42 +69,7 @@ test("allowPermission: every page permission is denied by default", () => {
   for (const p of ["media", "geolocation", "notifications", "midi", "clipboard-read", "display-capture",
     "hid", "serial", "usb", "fullscreen", "unknown-future-permission"]) {
     assert.equal(allowPermission(p), false, p);
-    assert.equal(allowPermission(p, { owner: true }), false, p);
   }
-});
-
-test("allowPermissionFor: protected media goes to the owner's own web tab, never to an agent's tab", () => {
-  const owner = { by: "you", kind: "web" };
-  const agent = { by: "agent", kind: "web" };
-  // The owner's web tab on the owner's session: granted.
-  assert.equal(allowPermissionFor("mediaKeySystem", { owner: true, tab: owner }), true);
-  assert.equal(allowPermissionFor("mediaKeySystem", { owner: true, tab: { by: "you" } }), true, "kind defaults to web");
-  assert.equal(allowPermissionFor("mediaKeySystem", { owner: true, tab: owner, agentOnSession: true }), true,
-    "an agent's tab elsewhere on the session does not take the owner's playback away");
-  // An agent's tab RIDING the owner's session (a site the owner let agents sign in to): denied.
-  assert.equal(allowPermissionFor("mediaKeySystem", { owner: true, tab: agent }), false);
-  assert.equal(allowPermissionFor("mediaKeySystem", { owner: true, tab: agent, agentOnSession: true }), false);
-  // A console page is not a web tab.
-  assert.equal(allowPermissionFor("mediaKeySystem", { owner: true, tab: { by: "you", kind: "internal" } }), false);
-  // No session grant, no tab grant: the agent's own session, InPrivate.
-  assert.equal(allowPermissionFor("mediaKeySystem", { owner: false, tab: owner }), false);
-  assert.equal(allowPermissionFor("mediaKeySystem", { tab: owner }), false);
-  assert.equal(allowPermissionFor("mediaKeySystem"), false);
-  // An unknown sender (a cross-origin frame's check has no webContents): only while no
-  // agent tab is on the session, so an agent's frame cannot borrow the grant.
-  assert.equal(allowPermissionFor("mediaKeySystem", { owner: true, tab: null }), true);
-  assert.equal(allowPermissionFor("mediaKeySystem", { owner: true, tab: null, agentOnSession: true }), false);
-  // Everything else stays denied for everyone, here too.
-  for (const p of ["media", "geolocation", "notifications", "clipboard-read", "midi", "hid", "serial", "usb"]) {
-    assert.equal(allowPermissionFor(p, { owner: true, tab: owner }), false, p);
-  }
-});
-
-test("allowPermission: protected media is granted to the owner's session only", () => {
-  assert.equal(allowPermission("mediaKeySystem", { owner: true }), true);
-  assert.equal(allowPermission("mediaKeySystem"), false, "the agent's session and InPrivate pass no owner");
-  assert.equal(allowPermission("mediaKeySystem", { owner: false }), false);
-  assert.equal(allowPermission("mediaKeySystem", { owner: "yes" }), false, "only a real true");
 });
 
 function fakeDriver() {
@@ -250,20 +214,8 @@ test("browser-window: page view has no preload, is sandboxed, isolated, and popu
   // One page view per tab, all built in openTab().
   const page = src.match(/const view = new WebContentsView\(\{[\s\S]*?\n {2}\}\);/);
   assert.ok(page, "page view construction found");
-  assert.equal((src.match(/new WebContentsView\(/g) || []).length, 5,
-    "one page-view builder (openTab) + the panel + the taskbar + the adopted popup + the full-screen exit hint");
-  // The fifth is main's own "<site> is full screen - press Esc" (browser-fullscreen.cjs):
-  // its own in-memory session, sandboxed, no script, no preload.
-  const hint = src.match(/const hint = new WebContentsView\(\{[\s\S]*?\}\);/);
-  assert.ok(hint, "exit hint view construction found");
-  assert.match(hint[0], /partition: "aither-fullscreen-hint", sandbox: true, contextIsolation: true,\s*nodeIntegration: false, javascript: false/);
-  assert.doesNotMatch(hint[0], /preload/);
-  // The fourth shows a popup's OWN page (browser-popups.cjs): it is handed the page
-  // Chromium already made in the opener's session and sandbox, and no preferences at all.
-  assert.equal((src.match(/new WebContentsView\(\{ webContents: guest \}\)/g) || []).length, 1,
-    "the adopted popup is built from its own webContents, with no webPreferences and no preload");
-  assert.match(src, /wc\.setWindowOpenHandler\(\(details\) => openFromPage\(id, details\)\);/,
-    "a tab's window.open goes through the popup verdict");
+  assert.equal((src.match(/new WebContentsView\(/g) || []).length, 3,
+    "one page-view builder (openTab) + the panel + the taskbar");
   // The taskbar is web content too (app.aitherium.com/embed/taskbar): hosted prefs, and ONLY
   // its own desk-plane preload (browser-taskbar-preload.cjs, 2026-10-28) -- never the
   // desk-host or an internal one.
@@ -302,27 +254,7 @@ test("browser-window: page view has no preload, is sandboxed, isolated, and popu
   assert.equal(web.sandbox, true);
   assert.equal(web.partition, require("./browser-window.cjs").PARTITION);
   assert.match(src, /setWindowOpenHandler\(\(\{ url \}\) => \{[\s\S]*?return \{ action: "deny" \};/);
-  // Permissions: still deny-by-default (policy.allowPermission); the five the owner may
-  // grant go through browser-permissions.cjs decide(), which refuses every agent tab.
-  assert.match(src, /setPermissionRequestHandler\(\(wc, permission, callback, details\) => requestPermission\(wc, permission, callback, details, grant\)\)/);
-  assert.match(src, /setPermissionCheckHandler\(\(wc, permission, origin, details\) => checkPermission\(wc, permission, origin, details, grant\)\)/);
-  const request = src.slice(src.indexOf("function requestPermission("), src.indexOf("function checkPermission("));
-  assert.match(request, /sitePermissions\.decide|judgePermission\(/);
-  assert.match(request, /verdict\.verdict === "deny" \|\| agentDrives\(verdict\.id\)\) return callback\(false\)/);
-  assert.ok(request.indexOf("agentDrives(verdict.id)) return callback(false)") < request.indexOf("permPrompts.ask("), "denied before anything is asked");
-  assert.match(src, /sitePermissions\.decide\(\{ permission, details: details \|\| \{\}, url, tab, store \}\)/);
-  // The one unasked grant (protected media) is judged per TAB in both handlers, never by
-  // the session alone: an agent's tab can ride the owner's session.
-  const check = src.slice(src.indexOf("function checkPermission("), src.indexOf("function showPermissionPrompt("));
-  assert.match(request, /if \(standingGrant\(wc, permission, grant\)\) return callback\(true\);/);
-  assert.match(check, /if \(standingGrant\(wc, permission, grant\)\) return true;/);
-  assert.doesNotMatch(request + check, /policy\.allowPermission\(/, "no handler grants on the session alone");
-  const standing = src.slice(src.indexOf("function standingGrant("), src.indexOf("function requestPermission("));
-  assert.match(standing, /policy\.allowPermissionFor\(permission, \{ owner: grant\.owner === true, tab, agentOnSession: agentRidesOwnerSession\(\) \}\)/);
-  // Only the owner's persistent session is hardened as the owner's.
-  assert.match(src, /hardenSession\(session\.fromPartition\(PARTITION\), \{ owner: true \}\)/);
-  assert.match(src, /hardenSession\(session\.fromPartition\(AGENT_PARTITION\)\);/);
-  assert.match(src, /hardenSession\(session\.fromPartition\(everyday\.INPRIVATE_PARTITION\)\);/);
+  assert.match(src, /setPermissionRequestHandler\(\(_wc, permission, callback\) => callback\(policy\.allowPermission\(permission\)\)\)/);
   assert.match(src, /wc\.on\("will-navigate", guard\)/);
   assert.match(src, /executeJavaScriptInIsolatedWorld/);
 });

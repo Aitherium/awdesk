@@ -44,7 +44,7 @@ const DEFAULT_ARC_SCRIPT = "C:\\AitherOS-Fresh\\.DEPLOYMENT\\scripts\\arc-contro
 // quadlet owns rather than bouncing it into a state nothing supervises.
 const DEFAULT_SERVICES_SCRIPT = "C:\\AitherOS-Fresh\\.DEPLOYMENT\\scripts\\fleet-inventory-distro.py";
 // The distro is RESOLVED, never a literal: env AITHER_FLEET_DISTRO (or the legacy
-// AWDESK_FLEET_DISTRO) > nodes.yaml debian-fleet.fleet_distro > "awnix".
+// AWDESK_FLEET_DISTRO) > nodes.yaml awnix.fleet_distro > "awnix".
 // Until 2026-09-27 this was the literal "Debian", which the awnix migration retired.
 
 /** The owner's verb set (2026-09-27: "all the app surfaces ... need to be updated to work
@@ -416,11 +416,6 @@ function parseVerdict(stdout, code, stderrTail = "", child = "wsl.exe") {
         // carry `refused`; every renderer reads `error`.
         if (doc.refused && !doc.error) doc.error = doc.refused;
         if (typeof doc.ok !== "boolean") doc.ok = code === 0;
-        // A JUDGEMENT that came back unhealthy (fleet_host.py: verdict UNHEALTHY with its
-        // problems) carries no `error`, and every renderer then printed "refused" -- the
-        // owner read "host-status: refused" (2026-11-18) while the probe had answered in
-        // 14 s with two named problems. Say the verdict and its first problems instead.
-        if (!doc.ok && !doc.error) doc.error = verdictReason(doc);
         return doc;
       }
     } catch {
@@ -470,53 +465,6 @@ function parseVerdict(stdout, code, stderrTail = "", child = "wsl.exe") {
     ok: code === 0,
     error: code === 0 ? null : (stderrTail.trim() || `exit ${code}`),
   };
-}
-
-/** "UNHEALTHY: a; b" from a verdict's own words; null when it carries none. */
-function verdictReason(doc) {
-  const problems = Array.isArray(doc && doc.problems) ? doc.problems.filter(Boolean).map(String) : [];
-  const word = doc && typeof doc.verdict === "string" ? doc.verdict : "";
-  if (!problems.length) return word || null;
-  const head = problems.slice(0, 2).join("; ") + (problems.length > 2 ? ` (+${problems.length - 2} more)` : "");
-  return `${word || "not ok"}: ${head}`.slice(0, 400);
-}
-
-/** ONE service, by container or unit name: restart it, or read its recent log
- *  (fleet-inventory-distro.py restart|show <name> --json). The Fleet window's attention
- *  list offers these two verbs on each down service. */
-const SERVICE_VERB_ARG_RE = /^(restart|show)$/;
-const SERVICE_NAME_ARG_RE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,120}$/;
-const SERVICE_VERB_TIMEOUT_MS = Object.freeze({ restart: 660_000, show: 150_000 });
-
-/** The process for `fleet-inventory-distro.py <restart|show> <name> --json`; both arguments
- *  are validated against a closed grammar BEFORE they enter the one `sh -c` string. */
-function buildServiceCommand(verb, name, { servicesScript = servicesScriptPath(), distro = distroName(), local = inFleetHost() } = {}) {
-  if (!SERVICE_VERB_ARG_RE.test(String(verb))) throw new Error(`service verb must be restart or show, not ${String(verb).slice(0, 40)}`);
-  if (!SERVICE_NAME_ARG_RE.test(String(name))) throw new Error(`not a service name: ${String(name).slice(0, 80)}`);
-  const inner = `python3 '${toDistroPath(servicesScript)}' ${verb} ${name} --json`;
-  if (local) return { file: "sh", args: ["-c", inner] };
-  return { file: "wsl.exe", args: ["-d", distro, "-u", "root", "sh", "-c", inner] };
-}
-
-/** Run ONE service verb; resolves the script's JSON ({ok, log?, refused?, why?}), never rejects. */
-function runServiceVerb(verb, name, { execFile = require("node:child_process").execFile } = {}) {
-  let cmd;
-  try {
-    cmd = buildServiceCommand(verb, name);
-  } catch (error) {
-    return Promise.resolve({ ok: false, error: String(error.message || error) });
-  }
-  return new Promise((resolve) => {
-    execFile(cmd.file, cmd.args, { windowsHide: true, timeout: SERVICE_VERB_TIMEOUT_MS[verb], maxBuffer: 4 * 1024 * 1024 },
-      (error, stdout, stderr) => {
-        const code = error ? (typeof error.code === "number" ? error.code : 1) : 0;
-        const verdict = parseVerdict(stdout, code, String(stderr || "").slice(-600), cmd.file);
-        // `show` prints the row + its log and no `ok`: an answer with a log is ok
-        if (verb === "show" && typeof verdict.log === "string") { verdict.ok = true; verdict.error = null; }
-        if (verdict && verdict.refused && verdict.why) verdict.error = `${verdict.refused}: ${verdict.why}`;
-        resolve(verdict);
-      });
-  });
 }
 
 /** One-line human summary of a `status` verdict, for the tray tooltip / MCP. */
@@ -912,9 +860,6 @@ module.exports = {
   buildCommand,
   buildUnitCommand,
   runUnitVerb,
-  buildServiceCommand,
-  runServiceVerb,
-  verdictReason,
   inFleetHost,
   classify,
   holdIsStale,

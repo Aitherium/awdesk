@@ -10,6 +10,7 @@ const {
   RoomStage,
   VOICES,
   idleSlots,
+  pickCharacter,
   readsLikeSpeech,
   selectUtterances,
   shouldVoice,
@@ -44,8 +45,26 @@ test("voiceFor: resolution.voice wins outright; with none, the ORIGIN-KEY seed h
   assert.equal(voiceFor("claude_code:aaaa", undefined), a, "no resolution at all still hashes, never throws");
 });
 
-test("room-stage has no automatic body pick (owner 2026-11-17: no random bodies, ever)", () => {
-  assert.equal(require("./room-stage.cjs").pickCharacter, undefined);
+test("pickCharacter: deterministic per seed, skips the resident and whatever is already taken (delegates to cast-config.stableCharacter)", () => {
+  const roster = ["a", "b", "c", "d"];
+  const first = pickCharacter("atlas-seed", roster, { resident: "a" });
+  assert.notEqual(first, "a", "never hands out the resident's own character");
+  assert.equal(pickCharacter("atlas-seed", roster, { resident: "a" }), first, "stable across calls with the same roster");
+  // Another body gets taken: the seed's pick should SKIP it, not collide.
+  const second = pickCharacter("atlas-seed", roster, { resident: "a", taken: [first] });
+  assert.notEqual(second, first);
+  assert.equal(pickCharacter("atlas-seed", roster, { resident: "a", taken: [first] }), second, "stable");
+  assert.equal(pickCharacter("solo-seed", ["only"], { resident: "only" }), null, "nothing free to wear");
+  // A name is ADDED to the roster. For THIS seed/roster pair "z-unrelated"
+  // happens not to outrank the existing pick (verified once, not asserted in
+  // general -- rendezvous hashing only makes a move LESS likely, 1-in-(n+1),
+  // never impossible for an arbitrary seed; cast-config.test.cjs (U01) is
+  // where the general HASH STABILITY property is actually proven). This arm
+  // exists to catch a regression to a `sorted[hash % len]` MODULO index
+  // (today's old, pre-delegation pickCharacter), which would move almost
+  // every seed on a roster growth, not just an occasional rank-loser.
+  const grown = pickCharacter("atlas-seed", [...roster, "z-unrelated"], { resident: "a" });
+  assert.equal(grown, first, "stable for this seed across a roster growth");
 });
 
 test("truncateText: truncates to the given limit with an ellipsis, and falls back to MAX_UTTERANCE_CHARS when maxChars is not usable", () => {
@@ -124,12 +143,6 @@ test("idleSlots: silent slots retire, slot0 never does", () => {
 const ROSTER = ["resident", "bob", "cara", "dee"];
 const RESIDENT_CHARACTER = "resident";
 
-/** The FAKE resolver's stand-in for a configured row: the first free roster name. A test
- *  fixture only -- production has no automatic pick (cast-config resolveActor). */
-function fixturePick(taken) {
-  return ROSTER.find((n) => n !== RESIDENT_CHARACTER && !taken.includes(n)) || null;
-}
-
 function harness({ rows = [], durationMs = 0, resolveOverrides = {} } = {}) {
   const calls = { spawn: [], remove: [], speak: [], evict: [] };
   let clock = 100000;
@@ -143,7 +156,7 @@ function harness({ rows = [], durationMs = 0, resolveOverrides = {} } = {}) {
     const character =
       override.character !== undefined
         ? override.character
-        : assignedAvatar[u.author] || fixturePick(taken);
+        : assignedAvatar[u.author] || pickCharacter(key, ROSTER, { taken, resident: RESIDENT_CHARACTER });
     const presence = override.presence || "normal";
     const speak = override.speak !== undefined ? override.speak : true;
     const body = override.body !== undefined ? override.body : true;
@@ -266,9 +279,7 @@ test("RoomStage: utterances are serialised — one at a time, in order", async (
     { seq: 7, agent: true, author: "atlas", actorKind: "adk_agent", actorId: "a1", kind: "agent_message", text: "b" },
   ];
   await h.stage.tick();
-  // Wait for the work, not a fixed 120 ms: under load (a full suite beside a build) the two
-  // 10 ms utterances can take longer, and the assertion is about ORDER, not speed.
-  for (let i = 0; i < 100 && order.length < 4; i++) await new Promise((r) => setTimeout(r, 20));
+  await new Promise((r) => setTimeout(r, 120));
   assert.deepEqual(order, ["start a", "end a", "start b", "end b"]);
 });
 

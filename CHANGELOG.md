@@ -1,80 +1,8 @@
 # Changelog
 
-## 0.1.36 - 2026-11-20
+## Unreleased
 
-- Aither stays up past 400 MB. The desk's avatar-library sync used to read every model in your roster WHOLE on the app's own main thread (93 characters, 2 GB of models, largest 63 MiB) while uploading the ones the library lacked. On this PC that carried the main process 150 -> 655 MB in a pass -- and the self-protection watchdog reads "the main process grew 400 MB in a minute" as a runaway, so the desk restarted itself, and after two restarts in an hour it quit for a ten-minute cooldown. Measured 2026-11-20: desk gone at 10:03 and 10:05 with no crash report. Now: the library sync runs in its own utility process (its memory is never the desk's), files are hashed in 1 MiB chunks instead of being read whole, files are read only when one actually has to be uploaded, and a pass is capped (8 uploads / 256 MB per pass; two in the fallback) and yields between characters so the desk stays responsive. The watchdog also stops calling an ordinary start-up ramp a runaway (growth counts only once the main process is already at 700 MB) and never restarts the desk while a catalog sync is deliberately running; a quit is recorded in `self-restarts.json` instead of looking like a crash.
-- `GET /health` now reports the desk's own memory (`memory`: main MB, total MB, per-process rows) so a soak can follow it without Task Manager.
-- A hidden body no longer puts the desk into a spin. When the audience hid the resident body and no stand-in was chosen, the hide re-entered through the tray menu it refreshed and hid again, forever: measured 17 "hiding the body" lines a second, main +60 MB/min, the desk gone within minutes with no crash report. The hide now only fires while the body is actually on screen, so the second pass sees a hidden window and stops.
-- New `npm run soak:memory` (scripts/mem-soak.cjs): watches a running desk for N minutes and fails on growth, a 400 MB/minute jump, or a restart gap. Regression guards: `electron/avatar-catalog-sync.soak.test.cjs` (a pass over 6 x 24 MB stays bounded and never blocks the loop), `electron/audience-hide-loop.test.cjs`, and the new watchdog runaway/hold tests.
-
-## 0.1.35 - 2026-11-20
-
-- One companion, everywhere, including a docked one. Docking the avatar in the browser says **where** the body lives, not that a second companion is allowed, so the fairy now stands down for a docked body exactly as she does for a floating one and comes back when the body leaves. The old reading -- "docking is the separate surface" -- meant a desk with `docked:true` (the owner's) put the body in the browser rail while the fairy kept floating beside it: the same two-surface bug with a different hat. **Avatar and fairy** and **Swarm around the avatar** remain the only two-companion modes. `Companion: fairy only` also hides a docked body now instead of leaving it in the rail.
-
-## 0.1.34 - 2026-11-20
-
-- One companion, one surface: the tray's **Show avatar** (and **Aither (female)** / **Aither (male)**) now grows the fairy into Aither's body where she stands. It used to raise a separate avatar window while the fairy kept floating beside it. Hiding the body brings the fairy back; **Dock the avatar in the browser** still moves the body into the browser rail.
-- The fairy's count (for example "58") is a button now: it takes the click, wears a ring and a chevron, lifts on hover and presses, and Enter/Space work. Clicking it opens the decision Inbox.
-- Fairies go to work: when an agent runs a tool, its fairy flies from the cluster to the window that tool belongs to (reading and editing files to Files, web research to the browser, shell and session-reading to the terminal), splits into one small sub-fairy per concurrent call the daemon names as running, and flies back / merges when the call finishes. A missing window makes it hover beside the cluster instead. At most four sub-fairies at once; reduced motion (the fairy menu's "Fairy flights" row, or the OS preference) shows a still glow instead of a flight.
-- A decision card now arrives as a Windows toast carrying the card's own answer, **Later** and **Open**, and nothing opens a window by itself: the urgent auto-open (a window taking focus mid-keystroke) is gone. A signed card's answer still goes to the Windows Hello approval page, and an unpackaged or non-Windows desk gets a plain toast whose click opens the card. Because a card never raises a window any more, the "Bring the overlay forward for notifications" switch had nothing left to do and was removed (Settings, the tray/palette row and `cast.json`; an old file's key is ignored). The toast also respects the companion's quiet mode and Do not disturb, and kid mode shows no toast buttons at all.
-- Kid desk: the tray has a second row, "My Space". It opens the child's own Space editor (the Learn Lab) in the same classroom window, on the same classroom host. "My classroom" brings them back. Nothing else is reachable: still one window, one host, no adult desk.
-
-## 0.1.33 - 2026-11-14
-
-- Tools: one grouped menu (Create, Capture, Send) on the tray and on the companion's right-click, also on Alt+Space.
-- Create: Sketch pad (layers, brushes, eraser, fill, PNG), Play notes (piano; record, save MIDI or WAV, seed a Song Studio project), Quick type (turn text into a sticky note, a task, a Relay post, a note or a question for Aither), sticky notes on the desktop with paper colours and Send to Notes.
-- Whiteboard: arrows, connectors that follow the items they join, Kanban/Retro/Mind map/Flow templates and PDF export.
-- Box a region: a small workspace beside the box that shows it live, reads its text offline and answers questions with the box's picture attached; pin, save, send, record or present it (everything else dims, laser on).
-- Edit an image: resize and convert on the desk; remove background, upscale, colour grade and sharpen on this computer's Media Forge, never a paid service.
-- Send to: Aither, your inbox, Notes, a project task, the company room, Relay, Drive, Discord (copied) or the clipboard. Anything made in one workspace is never sent into another.
-- Interact mode (Ctrl+Alt+Y): the desk takes the mouse until you press Esc; a strip at the top says so. Otherwise clicks go through to your desktop.
-- Voice: short commands ("record this", "draw", "open whiteboard", "aither, send it to notes") run on the desk; talking stops an agent that is speaking; optional wake word for the open mic.
-- Faster when idle: the avatar draws 20 frames a second when idle, 10 after a minute and none while hidden, and the fairies stop animating when nobody is using them (idle CPU 128% to 40% of one core, GPU 57% to 12%, measured).
-
-## 0.1.32 - 2026-11-13
-
-- The fairies and the workspace's own companion (for example a goblin) are hidden until you show them. A new install starts with none on screen; an install updated to this version hides them once, and after that your choice is remembered.
-- Right-click any companion (the fairy, a fairy in its swarm, or the workspace's companion) for one menu: Hide this, Hide all companions, Show all companions, Open AitherOS desktop, Open Spaces, Chat with Aither, Settings, Quiet for 1 hour or 4 hours (no popups, nudges or chimes), and Quit Aither. Arrow keys, Enter and Esc work in it.
-- The tray icon carries the same rows at the top: Show or Hide all companions, Open AitherOS desktop, Open Spaces and quiet mode (Chat, Settings and Quit are further down). Right-clicking Aither on the taskbar offers Show or Hide the fairies too, and Ctrl+K has both.
-- One cluster: in the desk's AitherOS windows the page's own fairy is not drawn, and the desk's fairy rides the AitherOS window while it is open. A hidden fairy never docks itself.
-- One fairy cluster per computer: a second Aither desk running at the same time (another profile or a test build) never draws its own fairies.
-- No swarm: the fairy shows one badge with the count, and clicking it opens the Inbox, where old cards are cleared in one place.
-- Menus open where you clicked, including on the workspace's companion, stay on the screen, and scroll when they are long. The tray's Sound and Capture rows are grouped so the tray fits on the screen.
-- The workspace's companion can be dragged: the desktop keeps the mouse from press to release.
-
-## 0.1.31 - 2026-11-13
-
-- Alt+Space is the command center. The one box now finds and acts on your agents and work, not just apps and files: Claude Code and awsh sessions, live agent runs (Atlas presence), fleet agents, the awdk agents on this PC and managed twins (Agents & runs); projects, tasks, the 2027 roadmap, your open PRs and the decision cards (Work); plans, agent notebooks and memory (Knowledge); awrise schedules with their last verdict, routines and the calendar (Time); the team and contacts (People). Type a category word (agents, runs, prs, calendar, people) to list it. The empty box shows Needs you and Working now.
-- Act without leaving the keyboard: Enter opens; Ctrl+Enter steers a session, run, agent or twin (the box becomes the message, Enter sends; a shell gets it typed into its input); Ctrl+. twice stops; Ctrl+T shows the transcript; Ctrl+P copies a card's phone approve link.
-- Ctrl+G graphs the selected item: its neighbours from the desk's own sources (a person's meetings and tasks, a run's agent, a task's project) plus the platform's graph_find and graph_traverse, each edge labelled with where it came from.
-- A source that cannot answer says so in the status line (for example managed twins while Genesis refuses the desk's token) instead of showing an empty list.
-
-- Atlas on the Inbox: the program-manager board shows its counts per stage and one row per issue, with the age, the pull request and the thread (both open in Aither Browser), the board's own updated-at, and a **Send digest now** button. It reads through the same gateway door as the rest of the Desk; before the gateway tools are deployed the section says Atlas is unavailable instead of breaking the panel.
-
-## 0.1.30 - 2026-11-09
-
-- Release build: the Windows smoke test finds the per-machine install (0.1.29 was never published because of it).
-
-## 0.1.29 - 2026-11-09
-
-- Desk stays in your workspace. If you have two accounts, the other account signing in (for example in the Online tab) no longer moves Desk out of your company's workspace. Sign out is the only thing that forgets it, so a shared PC still starts fresh for the next person.
-- Drawing and using your desktop are one motion now. Ink never disappears when you stop drawing: Esc, a right-click or Ctrl+Alt+D hands the desktop back and the marks stay. Hold Ctrl+Alt to draw for a moment, and release to click again (AWDESK_INK_HOLD=ctrl+shift or off changes it). The mouse wheel always scrolls the app underneath. Drawing mode shows a thin glow at the screen edge, the tool palette docks to the bottom edge, and the tray says "Drawing".
-- Middle-drag moves things: a mark on the screen (even while you are not drawing), a desktop pin, an item on a whiteboard. Shift+middle-drag resizes, Ctrl+middle-drag duplicates. Locked items stay put. The same gesture works in the AitherOne canvas.
-- New keys: Ctrl+Alt+E saves the drawing to a board, Ctrl+Alt+X snips with ink, Ctrl+Alt+F GIF (picker), Ctrl+Alt+U pins the link on your clipboard, Ctrl+Alt+T pins the browser tab, Ctrl+Alt+H shows or hides all pins, and Ctrl+Alt+/ lists every shortcut and says which ones another app holds.
-- AitherOS Online pages can pin a page, start ink or open the GIF picker through the desk (window.aitherDeskVerbs). Ink saved to a board keeps pen pressure, so it syncs to the AitherOne canvas.
-- Browser layout you can rearrange: Customize (⚙) → Edit layout shows every pane as a box. Move the assistant panel left or right, the terminal dock above or below the page, the rail to either edge, and the avatar slot and layer tiles to the top or bottom of the rail. Drag a pane's handle to a highlighted edge or use its buttons. Esc finishes.
-- Detach any pane: the assistant panel, terminal dock and taskbar each pop into their own window and come back. Each window reopens where you left it; closing it from its title bar puts the pane back.
-- Layout presets: Default, Focus (rail collapsed, no panel), Ops (tall dock, wide panel), plus your own (save, rename, delete). Export and import a layout file that also carries your presets.
-- Rearrange the rail: drag rows and sections in edit mode, or press Alt+Up/Down on a focused row or section. Right-click a row to pin it to a Pinned section, remove it, move it to another section, or pin it to the canvas. Alt+Left/Right reorders the layer tiles.
-- Canvas (aither://canvas, under Today on the rail): your whiteboards as a pannable, zoomable board with a snap grid. It is the same board the floating whiteboard window draws on (Float opens it there). Pin live pages and Aither pages, YouTube (privacy embed), GIFs, images, sticky notes and widgets: clock, Inbox count, awsh sessions, inference, system. Cards move, resize, lock and remove, by mouse or keyboard. Right-click a tab → Pin to canvas.
-- Link a board to an AitherOne canvas: "Link to AitherOne" creates the doc, and "Sync" sends or fetches whichever side changed. If both sides changed, it asks which to keep and writes nothing until you choose. AitherOne items the desk cannot show are kept, not dropped. Unlinked boards stay local and work offline.
-- Every new gesture is also a palette command (layout.*, rail.*, canvas.*).
-- Drawing over the screen is smoother: strokes are one tapered, curve-traced shape (pen pressure where the pen reports it, speed for a mouse) built from every pointer sample, not one straight segment per frame.
-- Ink toolbar: Click-through (Ctrl+Alt+K) keeps your marks on screen while clicks reach the apps underneath; To board turns the marks into an editable whiteboard; Snip cuts a region with the ink in it.
-- Desktop pins: pin a GIF, an image, a YouTube video, a web page, the browser tab you are on, an app tile or a note to the desktop. Each pin moves, resizes, fades (opacity), locks (click-through), stays on top or sits at desktop level, mutes and closes, and comes back after a restart. The tray's Pins menu lists them.
-- GIF picker (Ctrl+Alt+I): search Tenor or Giphy, click to pin to the desktop, Shift+click to put it on your whiteboard, or drag it into any app. Results are always rated (G, or PG-13 when adult content is allowed). It works with no key: it searches the web through the desk's own search and reads Giphy and Tenor pages for the GIFs (word-filtered while adult content is off). A TENOR_API_KEY or GIPHY_API_KEY in the vault gives better results.
-- Alt+Space verbs: `draw` (and `draw through|board|snip|clear`), `gif <words>` (Enter pins the top GIF), `pin <address | this tab | app name>`, `youtube <link or words>`, `board`, `canvas`, `pins`.
-- From your phone or the awconnect extension: send a link or a GIF to the desk as a pin, or toggle ink (`pins.add`, `gif.pin`, `ink.toggle`; awconnect's right-click menu has Pin to desktop).
+- Strata page: a Node browser card. Pick any machine -- one Genesis indexed, or one that only published a signed inventory -- and drill its folders with sizes. Each folder says where the answer came from (Genesis, or the signed inventory with its release, when it was published and when its signature was checked).
 
 ## 0.1.28 - 2026-11-01
 

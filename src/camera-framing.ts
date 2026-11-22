@@ -6,15 +6,6 @@ export interface FullBodyFraming {
   distance: number;
 }
 
-/**
- * Where the camera's eye sits on the body: a share of its height from the feet.
- * Owner 2026-11-15: the desk looked UP at the avatar (camera at hip height, so a
- * skirt read from below). Chest-to-eye height looks level-to-slightly-down, the
- * way you see someone standing on your desk. The target stays the body's centre,
- * so the whole body is still framed.
- */
-export const EYE_SHARE = 0.82;
-
 export function calculateFullBodyFraming(
   box: THREE.Box3,
   verticalFovDegrees: number,
@@ -32,9 +23,8 @@ export function calculateFullBodyFraming(
   const distance =
     Math.max(heightDistance, widthDistance) * margin / zoom + depthPadding;
 
-  const eyeY = box.min.y + size.y * EYE_SHARE;
   return {
-    position: new THREE.Vector3(target.x, eyeY, target.z + distance),
+    position: target.clone().add(new THREE.Vector3(0, 0, distance)),
     target,
     distance,
   };

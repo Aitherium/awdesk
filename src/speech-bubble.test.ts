@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BUBBLE_MAX_CHARS, bubbleDurationMs, bubbleText, captionLines, clampIntoViewport, stackOffset } from './speech-bubble';
+import { BUBBLE_MAX_CHARS, bubbleDurationMs, bubbleText, clampIntoViewport } from './speech-bubble';
 
 describe('bubbleText', () => {
   it('collapses whitespace and leaves a short line alone', () => {
@@ -68,40 +68,5 @@ describe('clampIntoViewport', () => {
 
   it('a non-finite rect is no nudge, never NaN into a style', () => {
     expect(clampIntoViewport({ left: Number.NaN, top: 100, right: 10, bottom: 150 }, viewport)).toEqual({ dx: 0, dy: 0 });
-  });
-});
-
-describe('stackOffset: a newer bubble stacks over an older one instead of covering it', () => {
-  const box = (left: number, top: number, w = 100, h = 30) => ({ left, top, right: left + w, bottom: top + h });
-  it('needs no move when nothing overlaps', () => {
-    expect(stackOffset(box(0, 100), [box(200, 100)])).toBe(0);
-    expect(stackOffset(box(0, 100), [box(0, 40)])).toBe(0);
-  });
-  it('lifts a bubble that overlaps an older one to just above it', () => {
-    expect(stackOffset(box(10, 110), [box(0, 100)])).toBe(100 - 6 - 30 - 110);
-  });
-  it('clears several stacked bubbles in one pass', () => {
-    const dy = stackOffset(box(0, 100), [box(0, 100), box(0, 64)]);
-    const top = 100 + dy;
-    expect(top + 30).toBeLessThanOrEqual(64);
-  });
-});
-
-describe('captionLines (docked: keep clear of the body)', () => {
-  // Owner screenshot 2026-11-16: in the 230 px rail slot a long caption wrapped down over the
-  // whole avatar. Docked, the caption gets only the lines that fit above the head.
-  it('fits the room between the top margin and the anchor above the head', () => {
-    // anchor 70 px down, 8 px margin, 16 px padding+border, 15 px lines -> (70 - 8 - 16) / 15 = 3
-    expect(captionLines(70, 15, 16)).toBe(3);
-    expect(captionLines(40, 15, 16)).toBe(1);
-  });
-  it('is at least one line (a caption nobody can see is worse) and bounded', () => {
-    expect(captionLines(5, 15, 16)).toBe(1);
-    expect(captionLines(-100, 15, 16)).toBe(1);
-    expect(captionLines(5000, 15, 16)).toBe(12);
-  });
-  it('never throws on garbage measurements', () => {
-    expect(captionLines(Number.NaN, 15)).toBe(1);
-    expect(captionLines(100, 0)).toBe(1);
   });
 });

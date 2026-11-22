@@ -14,9 +14,6 @@ import { browserMeter, createHandsFree } from './voice/handsFree';
 import { createPushToTalk } from './voice/pushToTalk';
 import { Scene } from './components/Scene';
 import { clearLevel, setLevel } from './hooks/voiceLevels';
-import { setVisemes } from './hooks/voiceVisemes';
-import { AvatarOutline } from './components/AvatarOutline';
-import { installProbe, setSlotLook } from './hooks/avatarPick';
 import { speechGain } from './speech-gain';
 import { bubbleDurationMs, bubbleText, type SpeechBubble } from './speech-bubble';
 import { Deck } from './components/Deck';
@@ -36,7 +33,6 @@ import {
 
 // aither://space/ (?space=1): its own chunk, so the avatar window never loads the universe.
 const SpaceView = lazy(() => import('./space/SpaceView'));
-const Gallery = lazy(() => import('./gallery/Gallery').then((m) => ({ default: m.Gallery })));
 
 const INITIAL_STATE: VoiceState = {
   activity: 'idle',
@@ -127,10 +123,8 @@ export function App() {
   // ONE hook, then the returns: a second useState after `if (isDeck) return`
   // was itself the conditional-hook shape this comment warns about (lint
   // measured it again 2026-09-18).
-  const [mode] = useState<'deck' | 'characters' | 'chat' | 'space' | 'gallery' | 'avatar'>(() => {
+  const [mode] = useState<'deck' | 'characters' | 'chat' | 'space' | 'avatar'>(() => {
     const params = new URLSearchParams(window.location.search);
-    // ?gallery=1 -- the rogues gallery (owner 2026-11-17): every body, every persona, who may see them.
-    if (params.get('gallery') === '1') return 'gallery';
     // ?space=1 -- the BeadSpace universe, the console's first Now pane.
     if (params.get('space') === '1') return 'space';
     if (params.get('deck') === '1') return 'deck';
@@ -144,13 +138,6 @@ export function App() {
     return (
       <Suspense fallback={null}>
         <SpaceView />
-      </Suspense>
-    );
-  }
-  if (mode === 'gallery') {
-    return (
-      <Suspense fallback={null}>
-        <Gallery />
       </Suspense>
     );
   }
@@ -169,8 +156,6 @@ function AvatarSceneApp() {
     useState<BodyAnimationOverride | null>(null);
   const [talkTurn, setTalkTurn] = useState(0);
   const [extraSlots, setExtraSlots] = useState<Array<{ slotId: string; modelUrl: string }>>([]);
-  // Bodies main hid without removing (the swarm: the resident stays mounted while Aither is a fairy).
-  const [hiddenSlots, setHiddenSlots] = useState<Record<string, true>>({});
   // Per-slot mouth state for spawned avatars (the room stage): level + speaking.
   const [slotVoices, setSlotVoices] = useState<Record<string, { level: number; speaking: boolean }>>({});
   const previousPhase = useRef<VoicePhase>('inactive');
@@ -192,7 +177,6 @@ function AvatarSceneApp() {
   const bubbleSeq = useRef(0);
   // Clicks pass through everything this window does not draw (hooks/clickThrough.ts).
   useEffect(() => installClickThrough(), []);
-  useEffect(() => installProbe(), []);
   useEffect(() => {
     const timers = bubbleTimers.current;
     return () => {
@@ -300,19 +284,6 @@ function AvatarSceneApp() {
       } else if (event.type === 'avatar-source') {
         setAvatarSource(avatarSourceFromEvent(event));
         setVamStreamError(null);
-      } else if (event.type === 'viseme') {
-        setVisemes(event.slotId || 'slot0', event.weights, event.ttlMs);
-      } else if (event.type === 'slot-look') {
-        setSlotLook(event.slotId, event.look);
-      } else if (event.type === 'slot-visible') {
-        const id = event.slotId || 'slot0';
-        setHiddenSlots((current) => {
-          if (event.visible === false) return current[id] ? current : { ...current, [id]: true };
-          if (!current[id]) return current;
-          const next = { ...current };
-          delete next[id];
-          return next;
-        });
       } else if (event.type === 'spawn-avatar') {
         // Idempotent by slotId: main replays every tracked slot on each
         // snapshot pull (that is how slots survive the window reload a
@@ -381,19 +352,6 @@ function AvatarSceneApp() {
         // the mic is released on every exit path, including a throw from the
         // gateway -- a stream left open keeps the OS mic light on, which reads
         // as "it is still listening to me".
-        // Barge-in (owner 2026-11-13: "interrupting the agent's speech"): the owner
-        // starting to talk silences every voice that is speaking right now.
-        if (event.listening) {
-          audioCtxRef.current?.close().catch(() => {});
-          audioCtxRef.current = null;
-          setLevel('slot0', 0);
-          for (const [slotId, ref] of slotAudioRefs.current.entries()) {
-            ref.current?.close().catch(() => {});
-            ref.current = null;
-            setLevel(slotId, 0);
-          }
-          setVoice((current) => ({ ...current, activity: 'idle' }));
-        }
         if (event.listening && event.oneShot) void handsFreeRef.current?.oneShot();
         else if (event.listening) void talkRef.current?.start();
         else talkRef.current?.stop();
@@ -406,8 +364,7 @@ function AvatarSceneApp() {
         const slotId = event.slotId || 'slot0';
         bubbleSeq.current += 1;
         const seq = bubbleSeq.current;
-        const lifeMs = bubbleDurationMs(text, event.durationMs);
-        setBubbles((current) => ({ ...current, [slotId]: { text, muted: Boolean(event.muted), seq, lifeMs } }));
+        setBubbles((current) => ({ ...current, [slotId]: { text, muted: Boolean(event.muted), seq } }));
         const timers = bubbleTimers.current;
         const previous = timers.get(slotId);
         if (previous !== undefined) window.clearTimeout(previous);
@@ -423,7 +380,7 @@ function AvatarSceneApp() {
               delete next[slotId];
               return next;
             });
-          }, lifeMs),
+          }, bubbleDurationMs(text, event.durationMs)),
         );
       } else if (event.type === 'speak') {
         // Drop-to-avatar (2026-08-29): main TTS'd a verdict and handed the
@@ -463,27 +420,6 @@ function AvatarSceneApp() {
             audioCtxRef,
             event.volume,
           );
-        }
-      } else if (event.type === 'speak-stop') {
-        // A P0 preempted this line (speech-arbiter.cjs `onCut` -> main's onCut). Stop
-        // the body NOW: the next `speak` only closes the context of its OWN slot, and a
-        // room-stage agent speaks on its own slot, so without this the cut sentence
-        // keeps playing underneath the alarm.
-        const victim = event.slotId && event.slotId !== 'slot0' ? event.slotId : null;
-        if (victim) {
-          slotAudioRefs.current.get(victim)?.current?.close().catch(() => {});
-          slotAudioRefs.current.delete(victim);
-          clearLevel(victim);
-          setSlotVoices((current) =>
-            current[victim]?.speaking
-              ? { ...current, [victim]: { ...current[victim], level: 0, speaking: false } }
-              : current,
-          );
-        } else {
-          audioCtxRef.current?.close().catch(() => {});
-          audioCtxRef.current = null;
-          setLevel('slot0', 0);
-          setVoice((current) => ({ ...current, activity: 'idle' }));
         }
       }
     });
@@ -569,11 +505,8 @@ function AvatarSceneApp() {
         slotVoices={slotVoices}
         bubbles={bubbles}
         modelUrl={soloModelUrl ?? undefined}
-        hideResident={bodyView.showVam || Boolean(hiddenSlots.slot0)}
-        hiddenSlots={hiddenSlots}
+        hideResident={bodyView.showVam}
       />
-      {/* The hover outline + selection state: the body's real silhouette (hooks/avatarPick.ts). */}
-      {soloModelUrl ? null : <AvatarOutline />}
       {/* Floating beads — the notification badge + quick actions that live ON
           the avatar box. Not in solo mode: a detached single-character window
           is a view of one avatar, not the desk. */}

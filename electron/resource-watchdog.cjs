@@ -31,22 +31,7 @@ const SAMPLE_MS = 15_000;
 const RECLAIM_EVERY_MS = 60_000;
 const RUNAWAY_MB = 400;
 const RUNAWAY_WINDOW_MS = 60_000;
-// A "runaway" is growth of this much while the main process was ALREADY this large.
-// Without the floor, the desk's ordinary start-up and bulk-work ramps counted: measured
-// 2026-11-20, the avatar-library seed carried main from ~150 MB to ~650 MB in one pass,
-// every 15 s sample looked like "+400 MB in a minute", and the desk restarted itself --
-// twice, then quit under the restart cap. The 2026-10-16 leak this rule exists for grew
-// ~5 GB/min, so a floor at 700 MB still catches it on the next sample while a desk that
-// starts at 150 and settles at 650 is left alone.
-const RUNAWAY_FLOOR_MB = 700;
 const MAX_RESTARTS_PER_HOUR = 2;
-// After the restart cap Desk used to quit FOR GOOD: on 2026-11-09 it restarted at
-// 13:30 and 13:51, hit the cap, quit, and stayed down -- the Startup .vbs only runs
-// at logon and the awrise keepalive was starved behind slow jobs -- so every card,
-// the fleet's awdesk_* tools and the desk browser went dark until a human noticed.
-// Now the cap means "stop looping, cool down, come back": a detached helper
-// relaunches Desk after this long.
-const COOLDOWN_RELAUNCH_MS = 10 * 60_000;
 const HANG_BEAT_MS = 5_000;
 const HANG_TIMEOUT_MS = 45_000;
 // After the hang watchdog restarts the GPU child it waits this long for the heartbeat to
@@ -56,17 +41,6 @@ const HANG_TIMEOUT_MS = 45_000;
 // 2026-11-22. Respawning that ONE child takes under a second and is invisible; ending the
 // whole desk is the last resort, not the first.
 const HANG_RECOVER_MS = 10_000;
-// The GPU process is the one child that can balloon on its own (software present +
-// a giant transparent window, 2026-11-07: 9.2 GB private). Restarting Desk for it is
-// a sledgehammer -- it interrupted the owner twice -- but killing the GPU child makes
-// Electron respawn a clean one in under a second, with no visible re-layout.
-const GPU_LIMIT_MB = 3000;
-const GPU_SAMPLE_MS = 15_000;
-// The leak this guards measured ~5 GB/min, so a five-minute cooldown would let the
-// next regression reach the 12 GB total budget and force a full app relaunch -- the
-// outcome the guard exists to avoid. One kill a minute, six an hour, is enough.
-const GPU_COOLDOWN_MS = 60_000;
-const GPU_MAX_KILLS_PER_HOUR = 6;
 
 /** KB (Electron's unit) -> MB, private bytes when the platform has them. */
 function procMb(m) {
@@ -93,12 +67,9 @@ function assess(metrics, budget) {
  * @param deps.quit () => void
  * @param deps.notify (text) => void
  * @param deps.restartsInLastHour () => number
- * @param deps.hold () => string|false  deliberate bulk work in progress (a reason string
- *   while true). Held ticks still reclaim under pressure, but never restart/quit the
- *   desk: the memory is the work, not a leak.
  */
 function createWatchdog({ budget, sample, reclaim, restart, quit, notify = () => {}, now = Date.now,
-  restartsInLastHour = () => 0, log = () => {}, hold = () => false }) {
+  restartsInLastHour = () => 0, log = () => {} }) {
   let lastReclaimAt = -Infinity;
   let hardRun = 0;
   const history = []; // [at, mainMb]
@@ -110,24 +81,9 @@ function createWatchdog({ budget, sample, reclaim, restart, quit, notify = () =>
     const a = assess(sample(), budget);
     history.push([t, a.mainMb]);
     while (history.length && history[0][0] < t - RUNAWAY_WINDOW_MS) history.shift();
-    // Growth counts as a runaway only once the desk was already big (RUNAWAY_FLOOR_MB):
-    // a 150 -> 650 MB start-up/bulk ramp is not the 5 GB/min leak this rule is for.
-    const runaway = history.length > 1
-      && history[0][1] >= RUNAWAY_FLOOR_MB
-      && a.mainMb - history[0][1] >= RUNAWAY_MB;
+    const runaway = history.length > 1 && a.mainMb - history[0][1] >= RUNAWAY_MB;
     hardRun = a.level === "hard" ? hardRun + 1 : 0;
     if (a.level === "ok" && !runaway) return a;
-    // Deliberate bulk work: keep the desk, reclaim if it is soft, never act on a restart.
-    let held;
-    try { held = hold(); } catch { held = false; }
-    if (held) {
-      if ((a.level === "soft" || a.level === "hard") && t - lastReclaimAt >= RECLAIM_EVERY_MS) {
-        lastReclaimAt = t;
-        log(`held (${held}): main ${a.mainMb} MB, total ${a.totalMb} MB -- reclaiming, not restarting`);
-        reclaim({ pressure: a.level === "hard" });
-      }
-      return { ...a, held: String(held) };
-    }
     if (a.level === "soft" && !runaway) {
       if (t - lastReclaimAt >= RECLAIM_EVERY_MS) {
         lastReclaimAt = t;
@@ -147,7 +103,7 @@ function createWatchdog({ budget, sample, reclaim, restart, quit, notify = () =>
     const why = runaway ? `its memory grew ${RUNAWAY_MB} MB in under a minute` : `it was using ${a.totalMb} MB`;
     if (restartsInLastHour() >= MAX_RESTARTS_PER_HOUR) {
       log(`hard again after ${MAX_RESTARTS_PER_HOUR} restarts this hour -- quitting`);
-      notify(`Aither closed itself: ${why}, again. It starts again in ${Math.round(COOLDOWN_RELAUNCH_MS / 60_000)} minutes.`);
+      notify(`Aither closed itself: ${why}, again. Start it from the Start menu when you need it.`);
       quit();
     } else {
       log(`hard: restarting Desk (${why})`);
@@ -194,62 +150,6 @@ function gpuProcess(metrics) {
   return { pid: Number(gpu.pid) || 0, mb: procMb(gpu) };
 }
 
-/**
- * Pure verdict for one sample. `kill` is true only for a real GPU child above the line;
- * a missing metric or a zero pid is "ok" (we cannot identify it, so we do not act).
- */
-function gpuVerdict(metrics, { limitMb = GPU_LIMIT_MB } = {}) {
-  const gpu = gpuProcess(metrics);
-  if (!gpu || !gpu.pid) return { pid: 0, mb: 0, kill: false };
-  return { pid: gpu.pid, mb: gpu.mb, kill: gpu.mb > limitMb };
-}
-
-/**
- * Kills ONLY the verified GPU child when it passes `limitMb`; Electron respawns it.
- * Idempotent by pid (a stale metric cannot kill the same process twice), rate-limited
- * (cooldown + a per-hour cap) and logged on every decision.
- *
- * @param deps.sample () => app.getAppMetrics()-shaped list
- * @param deps.kill (pid) => void
- */
-function createGpuGuard({ sample, kill, limitMb = GPU_LIMIT_MB, cooldownMs = GPU_COOLDOWN_MS,
-  maxPerHour = GPU_MAX_KILLS_PER_HOUR, now = Date.now, log = () => {} }) {
-  let lastKillAt = -Infinity;
-  let killedPid = 0;
-  let kills = [];
-
-  function tick() {
-    const verdict = gpuVerdict(sample(), { limitMb });
-    if (!verdict.kill) {
-      if (killedPid && verdict.pid && verdict.pid !== killedPid) killedPid = 0;
-      return verdict;
-    }
-    if (verdict.pid === killedPid) return { ...verdict, action: "already" };
-    const t = now();
-    if (t - lastKillAt < cooldownMs) {
-      log(`gpu-guard: pid ${verdict.pid} at ${verdict.mb} MB -- cooling down, not killing`);
-      return { ...verdict, action: "cooldown" };
-    }
-    kills = kills.filter((at) => at > t - 3600_000);
-    if (kills.length >= maxPerHour) {
-      log(`gpu-guard: pid ${verdict.pid} at ${verdict.mb} MB -- ${maxPerHour} kills this hour, not killing`);
-      return { ...verdict, action: "capped" };
-    }
-    kills.push(t);
-    lastKillAt = t;
-    killedPid = verdict.pid;
-    log(`gpu-guard: pid ${verdict.pid} at ${verdict.mb} MB (limit ${limitMb}) -- restarting the GPU process`);
-    try {
-      kill(verdict.pid);
-    } catch (error) {
-      log(`gpu-guard: kill ${verdict.pid} failed: ${error?.message || error}`);
-    }
-    return { ...verdict, action: "killed" };
-  }
-
-  return { tick, kills: () => kills.slice() };
-}
-
 /** Restart bookkeeping in userData: the times of recent self-restarts. */
 function restartLog(file) {
   const read = () => {
@@ -271,62 +171,9 @@ function restartLog(file) {
   };
 }
 
-/** Pure: one argv element quoted for the Windows CRT parser (CommandLineToArgvW rules). */
-function winQuoteArg(arg) {
-  const s = String(arg);
-  if (s && !/[\s"]/.test(s)) return s;
-  let out = '"';
-  let slashes = 0;
-  for (const ch of s) {
-    if (ch === "\\") { slashes += 1; continue; }
-    if (ch === '"') { out += "\\".repeat(slashes * 2 + 1) + '"'; slashes = 0; continue; }
-    out += "\\".repeat(slashes) + ch;
-    slashes = 0;
-  }
-  return out + "\\".repeat(slashes * 2) + '"';
-}
-
-/**
- * Pure: the detached helper that starts Desk again after `delayMs`. It is the OS
- * shell, never the Desk binary run as Node: a packaged Desk has the RunAsNode fuse
- * OFF (electron-fuses.test.cjs), so a "-e" script through it would start a full Desk
- * at once -- a relaunch loop. PowerShell on Windows, /bin/sh elsewhere; both sleep,
- * then start `execPath args` in `cwd`, and outlive the Desk that is quitting.
- */
-function delayedRelaunchSpec({ execPath, args = [], delayMs = COOLDOWN_RELAUNCH_MS, cwd = process.cwd(),
-  platform = process.platform }) {
-  const secs = Math.max(0, Math.ceil((Number(delayMs) || 0) / 1000));
-  if (platform === "win32") {
-    const q = (v) => `'${String(v).split("'").join("''")}'`;
-    // Windows PowerShell 5.1 joins an -ArgumentList array with bare spaces, so
-    // "C:\Program Files\x" would split in two: hand it ONE pre-quoted line instead.
-    const argList = args.length ? ` -ArgumentList ${q(args.map(winQuoteArg).join(" "))}` : "";
-    const command = `Start-Sleep -Seconds ${secs}; `
-      + `Start-Process -FilePath ${q(execPath)}${argList} -WorkingDirectory ${q(cwd)}`;
-    return { command: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
-      "-Command", command], cwd };
-  }
-  return { command: "/bin/sh", args: ["-c", `sleep ${secs}; exec "$0" "$@"`, execPath, ...args], cwd };
-}
-
-/** Start the helper; never throws (a failed helper just means a manual start). */
-function relaunchAfterCooldown({ execPath = process.execPath, args = process.argv.slice(1),
-  delayMs = COOLDOWN_RELAUNCH_MS, spawn = require("node:child_process").spawn, log = () => {} } = {}) {
-  try {
-    const spec = delayedRelaunchSpec({ execPath, args, delayMs });
-    const child = spawn(spec.command, spec.args, { detached: true, stdio: "ignore", cwd: spec.cwd, windowsHide: true });
-    if (child && typeof child.unref === "function") child.unref();
-    log(`cooldown: Desk starts again in ${Math.round(delayMs / 1000)} s`);
-    return true;
-  } catch (error) {
-    log(`cooldown relaunch helper failed: ${error?.message || error}`);
-    return false;
-  }
-}
-
 /** Electron wiring for the memory guard. */
 function startResourceWatchdog({ app, posture, reclaim, notify = () => {}, log = (l) => console.log(`[desk] watchdog: ${l}`),
-  intervalMs = SAMPLE_MS, hold = () => false }) {
+  intervalMs = SAMPLE_MS }) {
   const budget = posture && posture.customer ? BUDGETS.customer : BUDGETS.owner;
   const restarts = restartLog(path.join(app.getPath("userData"), "self-restarts.json"));
   const dog = createWatchdog({
@@ -335,44 +182,19 @@ function startResourceWatchdog({ app, posture, reclaim, notify = () => {}, log =
     reclaim,
     notify,
     log,
-    hold,
     restartsInLastHour: () => restarts.inLastHour(),
     restart: () => {
       restarts.record();
       app.relaunch();
       app.exit(0);
     },
-    quit: () => {
-      // Record the quit too: a desk that vanished with no entry in self-restarts.json
-      // looked like a crash, and the two 2026-11-20 disappearances were this path.
-      restarts.record();
-      relaunchAfterCooldown({ log });
-      app.exit(0);
-    },
+    quit: () => app.exit(0),
   });
   const timer = setInterval(() => {
     try { dog.tick(); } catch (error) { log(`tick failed: ${error?.message || error}`); }
   }, intervalMs);
   if (typeof timer.unref === "function") timer.unref();
-  // The GPU child has its own guard: killing it is cheap, restarting Desk is not.
-  const gpu = createGpuGuard({
-    sample: () => app.getAppMetrics(),
-    kill: (pid) => {
-      if (!pid || pid === process.pid) return; // never the main process
-      process.kill(pid);
-    },
-    log,
-  });
-  const gpuTimer = setInterval(() => {
-    try { gpu.tick(); } catch (error) { log(`gpu-guard failed: ${error?.message || error}`); }
-  }, GPU_SAMPLE_MS);
-  if (typeof gpuTimer.unref === "function") gpuTimer.unref();
-  return {
-    budget,
-    tick: dog.tick,
-    gpuTick: gpu.tick,
-    stop: () => { clearInterval(timer); clearInterval(gpuTimer); },
-  };
+  return { budget, tick: dog.tick, stop: () => clearInterval(timer) };
 }
 
 /** Electron wiring for the hang guard: a utility process that outlives a stuck main thread. */
@@ -399,10 +221,7 @@ function startHangWatchdog({ utilityProcess, log = (l) => console.log(`[desk] ha
 }
 
 module.exports = {
-  BUDGETS, COOLDOWN_RELAUNCH_MS, GPU_LIMIT_MB, GPU_MAX_KILLS_PER_HOUR, HANG_RECOVER_MS, HANG_TIMEOUT_MS,
-  MAX_RESTARTS_PER_HOUR,
-  RUNAWAY_MB, RUNAWAY_FLOOR_MB, SAMPLE_MS,
-  assess, createGpuGuard, delayedRelaunchSpec, winQuoteArg, relaunchAfterCooldown, createWatchdog, gpuProcess,
-  gpuVerdict, hangAction, hangVerdict, restartLog,
-  startHangWatchdog, startResourceWatchdog,
+  BUDGETS, HANG_RECOVER_MS, HANG_TIMEOUT_MS, MAX_RESTARTS_PER_HOUR, RUNAWAY_MB, SAMPLE_MS,
+  assess, createWatchdog, gpuProcess, hangAction, hangVerdict, restartLog, startHangWatchdog,
+  startResourceWatchdog,
 };

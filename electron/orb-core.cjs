@@ -324,7 +324,7 @@ function classifyVisionFailure(message, ctx = {}) {
       code: "tls-mismatch",
       title: "Vision is dialled over plain http",
       text: `The MCP gateway${gateway} reached PerceptionMedia over http:// and the service answered TLS — the socket closed before a response.`,
-      remedy: "Set AITHER_PERCEPTIONMEDIA_URL=https://aitheros-perception-media:8084 (and AITHER_VOICE_URL likewise) in the gateway's environment, then restart aitheros-mcpgateway. The orb tried the local service directly; this card means both paths failed.",
+      remedy: "Point AITHER_PERCEPTIONMEDIA_URL at the PerceptionMedia service's https:// URL (and AITHER_VOICE_URL likewise) in the gateway's environment, then restart the MCP gateway. The orb tried the local service directly; this card means both paths failed.",
     };
   }
   if (/no session bearer|HTTP 401|HTTP 403|unauthor/i.test(raw)) {
@@ -393,58 +393,6 @@ function clampToWorkArea(pos, size, workArea) {
   };
 }
 
-/**
- * The work area minus a box somebody else owns: the largest of the four rectangles
- * (left of, right of, above, below) that does not touch the box grown by `pad`.
- * 2026-11-12 (Garg): the tenant site draws its own companion (a goblin) in the
- * bottom-right corner, which is also the fairy's first-run spot, so the two sat on
- * top of each other. The fairy yields. No box, a box off this area, or a box that
- * leaves no usable rectangle: the area unchanged.
- */
-function areaAvoiding(workArea, box, pad = 0) {
-  const a = workArea || { x: 0, y: 0, width: 1920, height: 1080 };
-  if (!box || typeof box !== "object") return a;
-  if (!(num(box.width) > 0 && num(box.height) > 0)) return a;
-  const p = Math.max(0, num(pad));
-  const left = Math.max(a.x, num(box.x) - p);
-  const top = Math.max(a.y, num(box.y) - p);
-  const right = Math.min(a.x + a.width, num(box.x) + num(box.width) + p);
-  const bottom = Math.min(a.y + a.height, num(box.y) + num(box.height) + p);
-  if (right <= left || bottom <= top) return a;
-  const usable = [
-    { x: a.x, y: a.y, width: left - a.x, height: a.height },
-    { x: right, y: a.y, width: a.x + a.width - right, height: a.height },
-    { x: a.x, y: a.y, width: a.width, height: top - a.y },
-    { x: a.x, y: bottom, width: a.width, height: a.y + a.height - bottom },
-  ].filter((c) => c.width >= 240 && c.height >= 240);
-  if (!usable.length) return a;
-  return usable.sort((m, n) => n.width * n.height - m.width * m.height)[0];
-}
-
-/** A page rect (CSS px of a window at zoom 1) as a screen rect, or null when it is
- *  not a sane on-screen box. `bounds` is the window's content bounds. */
-function pageRectOnScreen(rect, bounds) {
-  if (!rect || typeof rect !== "object" || !bounds) return null;
-  const vals = [rect.x, rect.y, rect.width, rect.height].map(Number);
-  if (!vals.every(Number.isFinite)) return null;
-  const [x, y, width, height] = vals;
-  if (!(width > 0 && height > 0) || width > 640 || height > 640) return null;
-  return { x: Math.round(num(bounds.x) + x), y: Math.round(num(bounds.y) + y), width: Math.round(width), height: Math.round(height) };
-}
-
-/**
- * The fairy's spot while it is DOCKED on the AitherOS window (owner, 2026-11-12: "the
- * fairy cluster from awdesk should attach to the AitherOS desktop and not be stuck
- * behind the goblin"). Bottom-right INSIDE the window, above its bottom bar, and out
- * of the box the tenant's companion stands in. Top-left of the orb window.
- */
-function windowDockSpot(bounds, size, box, pad = 0, { bar = 64 } = {}) {
-  const b = bounds || { x: 0, y: 0, width: 1280, height: 800 };
-  const inside = { x: num(b.x), y: num(b.y), width: num(b.width), height: Math.max(num(size && size.height) + 56, num(b.height) - bar) };
-  const free = areaAvoiding(inside, box, pad);
-  return clampToWorkArea(defaultOrbPosition(free, size), size, free);
-}
-
 /** First-run spot: bottom-right of the work area, clear of the taskbar. */
 function defaultOrbPosition(workArea, size, margin = 28) {
   const area = workArea || { x: 0, y: 0, width: 1920, height: 1080 };
@@ -480,47 +428,12 @@ function sanitizeState(raw) {
   const src = raw && typeof raw === "object" ? raw : {};
   const finite = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
   return {
-    // Hidden until somebody shows it (owner 2026-11-13, companion-menu.cjs): a fresh
-    // install shows no fairy; the tray icon and the menus bring it back.
-    visible: src.visible === true,
-    // The tenant site's own companion (GARG's goblin, `[data-companion]`): hidden too.
-    tenantCompanion: src.tenantCompanion === true,
-    // companion-menu.migrate has moved an older install to hidden (1) or not yet (0).
-    companionsV: Math.max(0, finite(src.companionsV) || 0),
+    visible: src.visible !== false,
     pinned: src.pinned === true,
     x: finite(src.x),
     y: finite(src.y),
     // The owner pulled the spirit off its avatar and left it free: do not re-orbit.
     freeRoam: src.freeRoam === true,
-    // The fairy chimes when it nudges (owner 2026-11-08), on unless turned off.
-    sounds: src.sounds !== false,
-    // The swarm of agent fairies around the orb: off unless asked for (owner 2026-11-13).
-    swarm: src.swarm === true,
-    // The fairy CLUSTER (fairy-cluster.cjs, owner 2026-11-16: "the cluster of fairies
-    // should grow with agents and decisions queued"): one fairy per decision and per
-    // live session around the orb. On unless turned off; `swarm` above is the older
-    // opt-in, kept so an old orb.json still reads.
-    cluster: src.cluster !== false,
-    // Tool flights (fairy-flight.cjs, 2026-11-18): the sub-fairies that fly to the
-    // window an agent's tool call belongs to. Off when the owner asks for reduced
-    // motion; the veil page also honours the OS's prefers-reduced-motion.
-    reducedMotion: src.reducedMotion === true,
-    // Visual neurons (neurons-model.cjs, owner 2026-11-18): a small step graph around
-    // a working/speaking agent's fairy. OFF unless the owner switches it on.
-    neurons: src.neurons === true,
-    // The cluster follows the window the owner is working in (plan A4, 2026-11-18):
-    // ON unless turned off in the tray.
-    follow: src.follow !== false,
-    // How the swarm is drawn and what is pinned out of it (fairy-control.cjs): mode, radius,
-    // kind filter, hidden / muted agents, pinned positions.
-    swarmView: require("./fairy-control.cjs").normalizeView(src.swarmView),
-    // "Mute nudges 1 hour" from the orb's right-click menu (owner 2026-11-12): ms epoch.
-    muteUntil: Math.max(0, finite(src.muteUntil) || 0),
-    // [stays-hidden 2026-11-18] The owner hid the fairies with these decisions waiting: they do
-    // not bring the cluster back after a crash or restart; a NEW decision does. Ids only.
-    ownerHid: src.ownerHid === true,
-    ownerHidIds: Array.isArray(src.ownerHidIds)
-      ? src.ownerHidIds.filter((v) => typeof v === "string" && v.length <= 200).slice(0, 500) : [],
   };
 }
 
@@ -529,5 +442,5 @@ module.exports = {
   SCREEN_PROMPT, REGION_PROMPT,
   readingTimeMs, createQueue, push, tick, setPinned, clear, queueSummary, unreadCount,
   buildPrompt, interpretGatewayAnswer, classifyVisionFailure, failureCard,
-  clampToWorkArea, areaAvoiding, pageRectOnScreen, windowDockSpot, defaultOrbPosition, bubblePosition, sanitizeState,
+  clampToWorkArea, defaultOrbPosition, bubblePosition, sanitizeState,
 };

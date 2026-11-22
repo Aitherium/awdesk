@@ -154,14 +154,18 @@ if (kidDesk.allowCdpPort(kidDeskMode()) && /^\d{2,5}$/.test(String(process.env.D
   app.commandLine.appendSwitch("remote-debugging-port", String(process.env.DESK_CDP_PORT));
 }
 const decisionCards = require("./decision-cards.cjs");
-// A decision card as an ACTIONABLE Windows toast (Approve / Later / Open) that asks
-// and never opens a window (A1, attention plan 2026-11-18).
-const cardToast = require("./card-toast.cjs");
-/** The tickets a shown card toast carries: a desk:// link alone cannot answer a card. */
-const cardTickets = cardToast.createTicketStore();
-const sessionContext = require("./session-context.cjs");
-const tuiAnswer = require("./tui-answer.cjs");
 const signedApproval = require("./signed-approval.cjs");
+
+/** The desk's own session (auth.json) into the approve window's partition, so a card
+ *  approval opens on the passkey step instead of a fresh sign-in (owner 2026-11-15). */
+function seedApproveFromDesk() {
+  return signedApproval.seedApproveSession({
+    session: require("electron").session,
+    readToken: () => require("./desk-session.cjs").readAuthStoreToken(),
+    cookieDetails: require("./desk-session.cjs").cookieDetails,
+    log: debugLog,
+  });
+}
 const {
   fetchChannels: fetchRelayChannels,
   fetchHistory: fetchRelayHistory,
@@ -179,17 +183,10 @@ const avatarLibrarySync = require("./avatar-library-sync.cjs");
 const avatarCatalogSync = require("./avatar-catalog-sync.cjs");
 /** VRoid models the broker last returned, by id -- the install handler's source of truth. */
 const vroidSeen = new Map();
-/** Market listing ids the Deck was last shown -- the only ids desk:market-install accepts. */
-const marketSeen = new Set();
 // Full system awareness (#9): the five snapshot clients the deck's System
 // section renders. Each fails soft (ok:true + per-source ERROR notes) — a
 // down gateway is a rendered state, never a broken panel.
 const { systemSnapshot } = require("./system-client.cjs");
-// The Atlas program-manager board (Genesis /atlas/issues/board through the
-// gateway MCP door). Both verbs answer {ok:false, error} on failure.
-const { atlasBoard, atlasDigest, atlasPresence } = require("./atlas-client.cjs");
-// The fairy's swarm: who posted (relay) and who is active (presence). Pure helpers.
-const agentPresence = require("./agent-fairy.cjs");
 const { voiceSnapshot } = require("./voice-client.cjs");
 const { visionSnapshot } = require("./vision-client.cjs");
 const { routeDrop, routeShare, synthesizeVerdict, stagePath, cleanupStage } = require("./drop-router.cjs");
@@ -200,18 +197,13 @@ const recorder = require("./recorder-window.cjs");
 // The floating ask orb (owner, 2026-11-02): orb-window.cjs owns both windows
 // and every desk:orb-* channel; main only starts it and routes its registry rows.
 const orbWindow = require("./orb-window.cjs");
-// How the companion is drawn (owner 2026-11-20): avatar, fairy, both or swarm.
-const displayMode = require("./display-mode.cjs");
-// The list behind the fairy's "N more waiting ›" (owner, 2026-11-10: 99+ cards,
-// and the one a session was stopped on could not be found). fairy-queue.cjs is
-// the pure view; this module owns the window and opens a card on openInbox.
-const fairyQueueWindow = require("./fairy-queue-window.cjs");
 // [audio] System speakers + microphone (Core Audio through one warm PowerShell);
 // audio-control.cjs owns the OSD + the Audio flyout. Registry rows: group "audio".
 const audio = require("./audio-control.cjs");
 const { desktopSnapshot } = require("./browser-client.cjs");
 const { connectSnapshot } = require("./connect-client.cjs");
 const { createBridgeServer, DEFAULT_PORT } = require("./bridge-server.cjs");
+const { sampleHostContext } = require("./host-context.cjs");
 // ONE inventory of what Desk can do and which menus carry it. Menus are rendered
 // from it; nothing lists a capability by hand (docs/UX-REIMPLEMENTATION.md).
 const commandRegistry = require("./command-registry.cjs");
@@ -225,67 +217,12 @@ const quickMenu = require("./quick-menu.cjs").createQuickMenu({
   registry: commandRegistry,
   run: (id) => runCommand(id, undefined, { surface: "shortcut" }),
 });
-// The intent bar (owner 2026-11-16, intent-bar.cjs): the registry's palette rows as
-// tools with schemas and effects, `>` ranking with pinned + recent, and a sentence
-// planned through MicroScheduler (the local Bonsai only when the platform is down).
-// The SAME instance answers the launcher, the desk MCP server (desk_tools /
-// desk_tool_run / desk_intent) and scripts/desk-tools.cjs, so agents and the owner
-// use one command surface. Built on first use.
-const intentBarMemory = require("./intent-bar.cjs").createBarMemory();
-let intentBarInstance = null;
-function intentBar() {
-  if (!intentBarInstance) {
-    const llm = require("./assist-llm.cjs").createAssistLlm({ gateway: require("./gateway-mcp.cjs") });
-    intentBarInstance = require("./intent-bar.cjs").createIntentBar({
-      registry: commandRegistry,
-      ctx: () => commandContext(),
-      memory: intentBarMemory,
-      chat: (opts) => llm.chat(opts),
-      localChat: (messages) => require("./local-ai.cjs").createLocalAi().chat(messages),
-      runTool: (id, args, { surface }) => runBarTool(id, args, surface),
-    });
-  }
-  return intentBarInstance;
-}
-// `timer 10m tea` (desk-timers.cjs): a desktop notification when it ends.
-let deskTimersInstance = null;
-function deskTimers() {
-  if (!deskTimersInstance) {
-    deskTimersInstance = require("./desk-timers.cjs").createTimers({
-      notify: ({ title, body }) => {
-        if (Notification.isSupported()) new Notification({ title, body }).show();
-        Promise.resolve().then(() => speakAloud(`${title.replace(/^\W+/, "")} — time is up`, undefined, undefined, undefined, "service:awdesk"))
-          .catch(() => { /* voice is optional; the notification already showed */ });
-      },
-    });
-  }
-  return deskTimersInstance;
-}
-// The keyboard's Copilot key opens the bar (copilot-key.cjs). Started after app ready
-// when the setting is on (default); stopped in before-quit.
-let copilotKeyInstance = null;
-function copilotKey() {
-  if (!copilotKeyInstance) {
-    copilotKeyInstance = require("./copilot-key.cjs").createCopilotKey({
-      onPress: () => launcher.press(),
-      log: (line) => console.warn(`[desk] ${line}`),
-    });
-  }
-  return copilotKeyInstance;
-}
 // ONE Alt+Space key (owner 2026-11-02): tap = the Alfred launcher, hold = the radial
 // above. The key stays the "search.universal" row; only the SHORTCUT surface routes
 // here, so the tray/palette keep opening the search page's launcher.
 const launcher = require("./launcher-window.cjs").createLauncher({
   electron: require("electron"),
   registry: commandRegistry,
-  // Owner 2026-11-17: "integrate with alt+space for push to talk too". In talk mode
-  // "hold" the HOLD gesture is push-to-talk (down = listen, keyup = send) and a TAP
-  // still opens the launcher -- the tap/hold split already existed for the radial, so
-  // nothing new is bound and every other talk mode is untouched. Idempotent on both
-  // ends so a second keydown cannot start a second transcription.
-  onHoldStart: () => { if (talkMode() === "hold" && !listeningNow()) toggleListening(); },
-  onHoldEnd: () => { if (talkMode() === "hold" && listeningNow()) toggleListening(); },
   run: (id, arg) => runCommand(id, arg, { surface: "launcher" }),
   ask: (text) => commandAction(text, { source: "launcher" }),
   spirit: null, // @ sends through the spirit.go registry row (a plain sentence = a search trip)
@@ -293,24 +230,6 @@ const launcher = require("./launcher-window.cjs").createLauncher({
   // Alt+Space opens on what the owner is LOOKING AT (launcher-context.cjs), sampled
   // on key-down, before the overlay takes focus.
   hostContext: () => require("./host-context.cjs").sampleHostContext(),
-  // Alt+Space on a selection / in a text field leads with the writing actions (assist-window.cjs).
-  assist: { capture: () => assistMain().window.launcher.capture(), group: (c, t) => assistMain().window.launcher.group(c, t), choose: (c, k, t) => assistMain().window.launcher.choose(c, k, t) },
-  // ...and on the DECISION CARDS. The empty box leads with "Needs you (N)" so the
-  // owner can answer without leaving the keyboard (owner, 2026-11-06).
-  cards: () => decisionCards.listSnapshot(),
-  // ...and while the fairy carries a card (a nudge is up), the empty box leads with
-  // "Ask the fairy about: <card>" -- Enter opens the fairy bubble with that card as
-  // context (owner, 2026-11-08). No nudge up: the box is exactly as before.
-  fairy: () => orbWindow.nudgeCard(),
-  askFairy: (id) => orbWindow.chatAboutCard(id),
-  // The Aither Browser's verbs (browser-verbs.cjs): `history <words>`, `bookmark <words>`
-  // and `tab <words>` list the OWNER's library and tabs -- never an agent's, never InPrivate.
-  browser: {
-    history: (words, limit) => browserWindow.ownerHistory(words, limit),
-    bookmarks: (words, limit) => browserWindow.ownerBookmarks(words, limit),
-    tabs: () => browserWindow.ownerTabs(),
-  },
-  intentBar: () => intentBar(),
 });
 // `!private` reveal (private-reveal.cjs): Windows Hello / Touch ID first; on a PC with
 // neither, a fresh Aitherium sign-in as THIS desk's owner. Created here, once, with
@@ -333,31 +252,6 @@ const shellMenu = require("./shell-menu.cjs").createShellMenu({
   available: (id) => Boolean(commandRegistry.byId(id)),
 });
 let shellMenuOn = false;
-// The Explorer FILE / FOLDER right-click (assist-files.cjs): the same consent, the same
-// reversible HKCU mechanism, its own roots and marker. One tray row turns both on / off.
-const sm = require("./shell-menu.cjs");
-const fileShellMenu = sm.createShellMenu({
-  exe: process.execPath,
-  appArgs: app.isPackaged ? [] : [app.getAppPath()],
-  roots: sm.FILE_ROOTS,
-  entries: sm.FILE_ENTRIES,
-  stateFile: path.join(require("node:os").homedir(), ".aither", "desk-shell-menu-files.json"),
-  available: (id) => Boolean(commandRegistry.byId(id)),
-});
-// Aither at the caret (assist-main.cjs): created on first use so a desk that never opens the
-// pop-up pays nothing; the Windows caret worker is warmed a few seconds after startup.
-let assistMainInstance = null;
-function assistMain() {
-  if (!assistMainInstance) {
-    assistMainInstance = require("./assist-main.cjs").createAssistMain({
-      electron: require("electron"),
-      userDataDir: app.getPath("userData"),
-      gateway: require("./gateway-mcp.cjs"),
-      notes: { createNote: (opts) => boardsWindow.createNote(opts) },
-    });
-  }
-  return assistMainInstance;
-}
 const boardsWindow = require("./boards-window.cjs");
 // The registry's `blog` records: gateway blog_* MCP tools via gateway-mcp.cjs.
 // Machine paths create DRAFTS; `blog.publish` opens the Veil editor for a human
@@ -378,7 +272,6 @@ const {
   ensureFleetIpc,
   setCloseFallback: setFleetCloseFallback,
   setSpaceOpener: setFleetSpaceOpener,
-  setUniverseSource: setFleetUniverseSource,
   closeFleetWindow,
   isFleetWindowOpen,
   getControl: getFleetControl,
@@ -415,9 +308,6 @@ const { createSystemWindow, setSystemHandOff, sharedSystemMonitor } = require(".
 // browser_* tools) while the owner watches and can take over.
 const browserWindow = require("./browser-window.cjs");
 const { createAvatarDock, DOCKED_CSS } = require("./avatar-dock.cjs");
-// ONE companion surface (companion-surface.cjs): every avatar/fairy verb resolves
-// through this plan, so the fairy and the body can never both be on screen.
-const companionSurface = require("./companion-surface.cjs");
 const { createBrowserInOnline } = require("./browser-in-online.cjs");
 // The aither:// scheme: every console pane as a page of the Aither Browser (plan
 // slices 8+9). Privileged schemes must be registered BEFORE app ready, exactly once.
@@ -516,6 +406,11 @@ const vamAvatar = require("./vam-avatar.cjs");
 // text-address fallback the "room-steer" deck-action uses when the renderer
 // hands over free text instead of an already-picked session id.
 const { resolveAddress } = require("./room-address.cjs");
+// cast-config (U01): the one file everything above it defers to. Required
+// directly here (not only through room-stage-host) for stableCharacter --
+// see the deleted fallbackCharacterForAgent's replacement in "spawn-agent"
+// below, "so Add-Avatar and the room agree on what an agent looks like".
+const cast = require("./cast-config.cjs");
 const {
   configureHyprlandWindow,
   getHyprlandWindowPlacement,
@@ -523,7 +418,6 @@ const {
 const { createAudioListener } = require("./audio-listener.cjs");
 const { isAllowedRendererNavigation } = require("./navigation-policy.cjs");
 const { parseProtocolUrl, voiceState } = require("./protocol-actions.cjs");
-const sandboxDetonate = require("./sandbox-detonate.cjs");
 const { lendProcessSpawner, startKvLend } = require("./kv-lend-electron.cjs");
 const { createDeviceConnect } = require("./device-connect.cjs");
 const { createNearbyDevices } = require("./nearby-devices.cjs");
@@ -540,11 +434,6 @@ let deskUpdater = null;
 /** Crash/error reports + "Send feedback" to the company app (desk-support.cjs); tenant installs only. */
 let deskSupport = null;
 let updateNotice = null; // held, or a collected Notification loses its click handler
-// Every toast with a click handler goes through this: a bare local click listener is
-// garbage-collected and the click is lost (the dead "Phone connected" toast, 2026-11-16).
-const toaster = require("./held-toast.cjs").createToaster({
-  Notification, log: (line) => console.warn(`[desk] ${line}`),
-});
 /** Windows logging off / shutting down: a silent install now could be killed mid-way. */
 let sessionEnding = false;
 app.on("browser-window-created", (_event, win) => {
@@ -639,7 +528,6 @@ const {
   planSlotInstall,
   queueInstall,
   listCharacters: rosterListCharacters,
-  defaultAitherCharacter,
 } = require("./character-roster.cjs");
 // Kid desk wrappers (kidDeskMode is resolved at the top of this file).
 function listCharacters() {
@@ -671,6 +559,7 @@ const {
   desktopAppUrl,
   isAppOpen,
   toggleLivingDesktop,
+  raiseLivingDesktop,
   setShell: setDesktopShell,
   setGhostMode,
   setSolidBackground,
@@ -737,13 +626,10 @@ try {
 
 /** "Detach to own window" — pull one extra avatar out of the shared canvas into its own
  *  real, separately-draggable/resizable OS window. See detached-avatar-window.cjs. */
-/** slotId -> the character a DETACHED window shows, so the audience can close it (review of #122). */
-const detachedBodies = new Map();
 function detachAvatarToOwnWindow(slotId) {
   const info = avatarSlots.get(slotId);
   if (!info) return false;
   removeAvatarSlot(slotId);
-  detachedBodies.set(slotId, info.name);
   openDetachedAvatar(slotId, info.modelUrl, info.agent || info.name, {
     onMergeBack: () => spawnAvatarSlot(nextFreeSlotId(), info.name, info.agent),
   });
@@ -775,23 +661,18 @@ function loadSavedSize() {
     const raw = fs.readFileSync(SIZE_STATE_PATH(), "utf-8");
     const parsed = JSON.parse(raw);
     if (Number.isFinite(parsed?.width) && Number.isFinite(parsed?.height)) {
-      return require("./window-size.cjs").effectiveSize(parsed, workAreaForSize());
+      return { width: parsed.width, height: parsed.height };
     }
   } catch {
     /* no saved size yet, or file is corrupt — fall back to the default */
   }
-  return require("./window-size.cjs").effectiveSize(null, workAreaForSize());
-}
-
-/** The work area the default window size is a share of (a screen the owner is on, else the primary). */
-function workAreaForSize() {
-  try { return screen.getPrimaryDisplay().workArea; } catch { return null; }
+  return { width: WINDOW_WIDTH, height: WINDOW_HEIGHT };
 }
 
 function saveSize(width, height) {
   try {
     fs.mkdirSync(path.dirname(SIZE_STATE_PATH()), { recursive: true });
-    fs.writeFileSync(SIZE_STATE_PATH(), JSON.stringify({ width, height, chosen: true }), "utf-8");
+    fs.writeFileSync(SIZE_STATE_PATH(), JSON.stringify({ width, height }), "utf-8");
   } catch {
     /* best-effort — a failed save just means the next launch uses the old size */
   }
@@ -871,6 +752,15 @@ async function openOwnerWorkspace(tenantId) {
 function backToAitherium() {
   return deskTenantAuto.backToApex();
 }
+// The workspace the owner picks inside the Aitherium account menu is remembered like the
+// tray picker's: the overlay's top-level navigation reaches the same owner-only paths
+// (desk-workspace-follow.cjs). No page-callable IPC is added.
+require("./living-desktop-window.cjs").setNavigationFollower((url) =>
+  require("./desk-workspace-follow.cjs").followNavigation(url, {
+    currentTenant: () => deskTenant.currentTenant(),
+    open: (id) => openOwnerWorkspace(id),
+    back: () => backToAitherium(),
+  }));
 /** "Open a workspace…": list what Identity lets the owner open, pop the picker. */
 async function pickOwnerWorkspace() {
   const listing = await deskTenantAuto.listOwnerWorkspaces(await ownerBearer());
@@ -880,15 +770,6 @@ async function pickOwnerWorkspace() {
   });
   Menu.buildFromTemplate(template).popup();
   return { ok: listing.ok !== false, count: (listing.workspaces || []).length, error: listing.refused || listing.error };
-}
-/** `workspace.switch [word]`: the same switch by name (palette, awsh /desk, an agent).
- *  Resolves { ok, line, ... } where `line` says where the Desk is AFTER the action. */
-async function switchWorkspaceCommand(arg, surface) {
-  const result = await deskTenantAuto.switchWorkspace(await ownerBearer(), arg);
-  // A click with no word gets the picker; another program gets the list in the answer.
-  if (result.pick && surface !== "bridge") void pickOwnerWorkspace();
-  console.log(`[desk] workspace.switch ${arg || "(status)"}: ${result.ok ? result.line : result.error}`);
-  return result;
 }
 /** "Open the Desk panel at startup" — the owner's quick path into the panel, and a
  *  deterministic way to verify the deck live (restart with this flag, screenshot). */
@@ -929,9 +810,6 @@ let tray = null;
 // 2026-08-31 (owner decision) — the tray badge, deck and Discord fanout carry
 // the push; DTOAST001 gates the notify.py twins against Windows toasts.
 let openDecisions = [];
-// True while the avatar-library seed runs (avatar-seed-runner.cjs, its own utility
-// process). The memory guard must not read that pass's deliberate I/O as a leak.
-let avatarSeedActive = false;
 // The asks only the owner can unblock (credential / blocked / blocking), in rank
 // order, snoozed ones removed -- the tray's row 0, the red key, the chip and the
 // voice lead (needs-you.cjs). Recomputed with every watcher change.
@@ -966,6 +844,14 @@ let relayPoller = null;
 let decisionWatchStop = null;
 // The liveness heartbeat's stop handle (decision-cards.cjs startHeartbeat).
 let deskHeartbeatStop = null;
+// How often an ORDINARY (low|normal) announcement may pull the Inbox open on
+// its own. A high|critical card bypasses this entirely (see announceDecisions):
+// the ask that must not wait out a quiet period is exactly the one whose
+// urgency says so. The window is per app run, not persisted — a restart is a
+// deliberate act, and the desk coming up on "N waiting" IS the surface.
+const INBOX_OPEN_MIN_MS = 10 * 60_000;
+let lastInboxOpenAt = 0;
+const URGENT_URGENCIES = new Set(["high", "critical"]);
 let hyprlandConfigured = false;
 let hyprlandConfiguring = false;
 let hyprlandConfigurationTimer = null;
@@ -1068,18 +954,15 @@ function scheduleHyprlandWindowConfiguration({
 function showOverlay({ focus = false } = {}) {
   const window = createWindow();
   // Fairy mode (owner 2026-11-06: "awdesk keeps spawning these avatars when I am
-  // intending to switch to FAIRIES"). ~20 AUTOMATIC callers -- the room stage, the
-  // voice session, open mic, a slot spawn, a reload -- each called showOverlay(),
-  // so the full bodies came back whenever an agent spoke. In fairy mode an
-  // automatic call still CREATES the window (mic capture and the room stage live
-  // in it) but never SHOWS it; only an explicit owner action (focus:true) does.
+  // intending to switch to FAIRIES"). Boot kept the avatar window closed, but ~20
+  // AUTOMATIC callers -- the room stage putting a speaker on, the voice session
+  // starting, open mic, a slot spawn, a reload -- each called showOverlay(), so the
+  // full bodies came straight back the moment any agent spoke. One gate here
+  // instead of twenty at the call sites: in fairy mode an automatic call still
+  // CREATES the window (it hosts mic capture and the room stage's renderer) but
+  // never SHOWS it. Only an explicit owner action -- focus:true, which is what the
+  // tray, the toggle, the palette and "show" commands pass -- brings bodies up.
   if (!focus && companionMode() === "fairy") return;
-  // [stays-hidden 2026-11-18] The owner hid the avatar: it stays hidden across a crash and
-  // a restart (owner: "make sure they don't pop back up when the application crashes and
-  // starts back up"). The hide is saved to desk-companion.json; only an explicit owner
-  // action (focus:true) shows it again, and that clears the saved hide.
-  if (!focus && avatarHiddenByOwner()) return;
-  if (focus) setAvatarHiddenByOwner(false);
   if (window.isMinimized()) window.restore();
   if (focus) {
     if (!window.isVisible()) window.show();
@@ -1092,108 +975,22 @@ function showOverlay({ focus = false } = {}) {
   // menu is BUILT, so a toggle left it saying the wrong thing until something
   // else rebuilt the menu (owner, 2026-09-18: "the hide avatar button doesn't
   // change to unhide"). Rebuild on every show/hide.
-  // ONE companion surface (owner 2026-11-20: "WHY DOES CLICKING DESKTOP TRAY OPEN A
-  // SEPARATE AVATAR WHEN THE FAIRY IS SUPPOSED TO TURN INTO THAT AVATAR"). The body
-  // is up now, so the fairy stands down -- never both, whatever raised the body (a
-  // voice session, a room stage, the tray's old Show avatar path). A grow
-  // (expandToAvatar) already does this itself. Docking is NOT an exception: it is
-  // where the body lives, and a docked desk that kept the fairy floating beside the
-  // rail was the same bug wearing a different hat (owner's avatar-dock.json is
-  // `docked:true`). The ONLY two-surface modes are the owner's `both`/`swarm`, and
-  // those never come through here (showBodyDirect).
-  if (!avatarGrowing) {
-    try { orbWindow.standDownForAvatar(); } catch { /* the fairy is not up */ }
-  }
   if (tray) refreshTrayMenu();
 }
 
-/** Raise the body as its own surface WITHOUT the one-surface stand-down. The display
- *  modes `both`/`swarm` (owner 2026-11-20) are the declared exception: the body and
- *  the ONE fairy cluster stand together, so showOverlay's stand-down must not run. */
-function showBodyDirect() {
-  const win = createWindow();
-  if (win.isMinimized()) win.restore();
-  if (!win.isVisible()) win.showInactive();
-  scheduleHyprlandWindowConfiguration();
-}
-
-async function hideOverlay({ byOwner = true } = {}) {
+async function hideOverlay() {
   debugLog("hide overlay");
-  if (byOwner) setAvatarHiddenByOwner(true);
   const placement = await getHyprlandWindowPlacement(process.pid);
   if (placement) {
     hyprlandLastPosition = { x: placement.x, y: placement.y };
   }
   avatarWindow?.hide();
-  // ONE surface: the body left, so the fairy comes back where she rests -- docked or
-  // not (she stood down for a docked body exactly like a floating one).
-  try { orbWindow.returnFromAvatar(); } catch { /* the fairy is not up */ }
   if (tray) refreshTrayMenu();
 }
 
-/** The facts the one-surface plan reads, from the ONE owner of each (no guessing). */
-function companionSurfaceFacts() {
-  let fairyVisible = false;
-  let fairyWanted = false;
-  let expanded = false;
-  try { fairyVisible = orbWindow.orbVisible(); } catch { /* not started */ }
-  try { fairyWanted = orbWindow.fairyWanted(); } catch { /* not started */ }
-  try { expanded = orbWindow.expanded(); } catch { /* not started */ }
-  return {
-    fairyVisible,
-    fairyWanted,
-    expanded,
-    avatarVisible: Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()),
-  };
-}
-
-/** A toggle/mode switch during the ~200 ms grow/shrink must not race it into zero
- *  surfaces: the body is already visible while `expanded` is still false, so a second
- *  toggle would "hide" it while the grow then hides the fairy (nothing on screen).
- *  Wait for the animation to settle, then plan against the real state. */
-async function waitForAvatarGrow() {
-  for (let i = 0; i < 160 && avatarGrowing; i += 1) await waitMs(25); // <= 4 s
-}
-
-/** The tray's Show avatar / Hide avatar line. Same decision as every other verb:
- *  the fairy GROWS into the body in place; hiding her body brings her back. */
-async function toggleOverlay() {
-  await waitForAvatarGrow();
-  const facts = companionSurfaceFacts();
-  // `both`/`swarm` are the owner's declared two-surface modes (2026-11-20): the
-  // toggle is then the BODY's own show/hide and the fairy cluster keeps its place.
-  // showOverlay would run the one-surface stand-down, so the body is raised directly.
-  const dmode = displaySettingsNow().mode;
-  if (dmode === "both" || dmode === "swarm") {
-    if (facts.avatarVisible) {
-      await hideOverlay({ byOwner: false });
-      try { orbWindow.setDisplayModeState(orbWindow.displayModeState()); } catch { /* not started */ }
-      return { ok: true, visible: false };
-    }
-    setAvatarHiddenByOwner(false);
-    showBodyDirect();
-    return { ok: true, visible: true };
-  }
-  const plan = companionSurface.plan({ want: "toggle", ...facts });
-  if (plan.avatar === "hide") {
-    if (plan.collapse) {
-      try { await orbWindow.collapseToFairy(); return { ok: true, visible: false }; } catch { /* fall through */ }
-    }
-    await hideOverlay();
-    return { ok: true, visible: false };
-  }
-  if (plan.avatar === "grow") {
-    try {
-      const grown = await orbWindow.expandToAvatar();
-      if (grown && grown.ok) return { ok: true, visible: true, grown: true };
-    } catch { /* the body can still stand alone below */ }
-  }
-  if (plan.avatar === "keep") {
-    if (tray) refreshTrayMenu();
-    return { ok: true, visible: true };
-  }
-  await showOverlay({ focus: true });
-  return { ok: true, visible: true };
+function toggleOverlay() {
+  if (avatarWindow?.isVisible()) void hideOverlay();
+  else showOverlay({ focus: true });
 }
 
 /** One bundle, three modes: the default avatar scene, `?solo=<model>` detached windows,
@@ -1254,37 +1051,10 @@ function createWindow() {
       reposition: !hyprlandConfigured || hyprlandLastPosition != null,
     });
   });
-  // both/swarm (owner 2026-11-20): the one cluster is parked BESIDE the avatar, so a
-  // dragged or docked body must re-place it. Debounced: "move" fires per pixel.
-  let displayFollowTimer = null;
-  const followDisplayMode = () => {
-    if (displayFollowTimer) clearTimeout(displayFollowTimer);
-    displayFollowTimer = setTimeout(() => {
-      displayFollowTimer = null;
-      try {
-        const s = orbWindow.displayModeState();
-        if (s && (s.mode === "both" || s.mode === "swarm")) orbWindow.setDisplayModeState(s);
-      } catch { /* the orb is not up yet */ }
-    }, 60);
-    if (displayFollowTimer.unref) displayFollowTimer.unref();
-  };
-  avatarWindow.on("move", followDisplayMode);
-  avatarWindow.on("resize", followDisplayMode);
   avatarWindow.on("close", (event) => {
     if (isQuitting) return;
     event.preventDefault();
     void hideOverlay();
-  });
-  // Grown from the fairy and then hidden some other way (tray, close, hotkey): the
-  // fairy comes back, so the desk is never left with neither.
-  avatarWindow.on("hide", () => {
-    if (avatarGrowing) return;
-    try {
-      if (orbWindow.expanded()) {
-        void orbWindow.collapseToFairy({ fromAvatar: true });
-        startRoomStage();
-      }
-    } catch { /* cosmetic */ }
   });
   avatarWindow.on("closed", () => {
     clearTimeout(hyprlandConfigurationTimer);
@@ -1380,29 +1150,12 @@ function createWindow() {
   // window caught every click in its 600x950 rect, painted or not. The renderer says
   // whether something is drawn under the cursor; forward:true keeps mouse moves flowing
   // while ignored so it can say "interactive" again. Sender-scoped like the drag above.
-  ipcMain.removeAllListeners("desk:avatar-pick");
-  ipcMain.on("desk:avatar-pick", (_event, pick) => {
-    avatarPickState = { hover: (pick && pick.hover) || null, selected: (pick && pick.selected) || null, at: Date.now() };
-  });
   ipcMain.removeAllListeners("desk:set-interactive");
   ipcMain.on("desk:set-interactive", (event, interactive) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
     if (process.env.AITHER_DESK_CLICK_THROUGH === "0") return win.setIgnoreMouseEvents(false);
-    // Interact mode (toolkit.cjs): the desk holds the mouse until Esc / Ctrl+Alt+Y.
-    if (require("./toolkit.cjs").interactMode()) return win.setIgnoreMouseEvents(false);
-    avatarInteractiveState = { interactive: interactive === true, at: Date.now() };
     win.setIgnoreMouseEvents(interactive !== true, { forward: true });
-  });
-  // The renderer's own frame rate (S1, 2026-11-18). Sender-scoped like the two above: the
-  // avatar window is the only one that renders the stage. Published on GET /health as
-  // `stage.render {fps, p95GapMs}` — the acceptance number the desk never had.
-  ipcMain.removeAllListeners("desk:frame-stats");
-  ipcMain.on("desk:frame-stats", (event, stats) => {
-    if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
-    const fps = Math.max(0, Number(stats && stats.fps) || 0);
-    const p95GapMs = Math.max(0, Number(stats && stats.p95GapMs) || 0);
-    renderStats = { fps, p95GapMs, at: Date.now() };
   });
 
   // Sender-scoped window controls: any window (deck, chat) can minimize or
@@ -1657,57 +1410,6 @@ function agentForSlot(slotId) {
  * file-wide default. No HTTP/MCP door passes it -- a request body never names
  * its own author.
  */
-/**
- * THE FRONT DOOR of every spoken line (owner, 2026-11-16: "they all talked over each other").
- * Two things happen here before anything is synthesized (speech-arbiter.cjs):
- *   1. a coding / terminal SESSION actor is silent unless the owner opted that session into voice
- *      from its menu: its words show as a (muted) bubble and nothing is said aloud;
- *   2. every other line takes its turn in ONE global lane by priority (the owner's own
- *      conversation > decision cards > Aither > the rest); a line that waits past ~20 s is dropped
- *      but still captioned. Nothing overlaps.
- */
-let speechArbiterInstance = null;
-let sessionVoicesInstance = null;
-const sessionSlotKeys = new Map(); // slotId -> the opt-in key its session speaks under
-function sessionVoices() {
-  if (!sessionVoicesInstance) {
-    sessionVoicesInstance = require("./speech-arbiter.cjs").createSessionVoices({
-      file: path.join(app.getPath("userData"), "session-voices.json"),
-    });
-  }
-  return sessionVoicesInstance;
-}
-function speechArbiter() {
-  if (!speechArbiterInstance) {
-    speechArbiterInstance = require("./speech-arbiter.cjs").createSpeechArbiter({
-      // `job.cut` is set by the arbiter when a P0 preempts this line, so a clip still
-      // being synthesized never reaches the speaker after the alarm started.
-      run: (job) => speakAloudNow(job.text, job.voice, job.speed, job.slotId, job.origin, job.speaker, {
-        isCut: () => job.cut === true,
-      }),
-      // A dropped line keeps its words on screen: the caption is the part that is never stale.
-      onDrop: (job) => { try { sendBubble(job.slotId, job.text, { muted: true }); } catch { /* cosmetic */ } },
-      // A cut must SILENCE the body that was playing it. The next `speak` only closes the
-      // AudioContext of its OWN slot, and a room-stage agent speaks on its own slot, so
-      // without this the cut line keeps talking underneath the alarm.
-      onCut: (victim) => {
-        const slot = (victim && victim.slotId) || "slot0";
-        try {
-          for (const win of BrowserWindow.getAllWindows()) {
-            if (!win.isDestroyed()) win.webContents.send("desk:event", { type: "speak-stop", slotId: slot });
-          }
-        } catch (error) {
-          debugLog("speech cut could not be delivered", error?.message || error);
-        }
-        // A cut before its clip ever played has no caption yet: keep its words on
-        // screen (the same promise onDrop makes). Re-sending an already-shown caption
-        // only restarts its reading timer.
-        try { sendBubble(victim && victim.slotId, victim && victim.text, { muted: true }); } catch { /* cosmetic */ }
-      },
-    });
-  }
-  return speechArbiterInstance;
-}
 async function speakAloud(
   text,
   voice = "nova",
@@ -1715,40 +1417,7 @@ async function speakAloud(
   slotId = "slot0",
   origin = "service:awdesk",
   speaker = null,
-  options = {},
 ) {
-  const arb = require("./speech-arbiter.cjs");
-  if (arb.isSessionSpeaker({ origin, speaker })) {
-    const key = arb.sessionKey({ speaker, origin, slotId });
-    sessionSlotKeys.set(slotId || "slot0", key);
-    if (!sessionVoices().has(key)) {
-      const shown = sendBubble(slotId, text, { muted: true });
-      return { ok: false, refused: "policy", reason: "coding sessions are silent unless you turn their voice on from the body's menu", captioned: shown > 0 };
-    }
-  }
-  return speechArbiter().enqueue({
-    rank: arb.priorityOf({ origin, slotId, speaker }),
-    // A5: only the P0 announcement passes this. It lets the arbiter cut the playing
-    // line once and drop a just-queued lower-priority one (speech-arbiter.cjs).
-    preempt: Boolean(options && options.preempt === true),
-    text, voice, speed, slotId, origin, speaker,
-  });
-}
-
-async function speakAloudNow(
-  text,
-  voice = "nova",
-  speed = undefined,
-  slotId = "slot0",
-  origin = "service:awdesk",
-  speaker = null,
-  options = {},
-) {
-  // The speech arbiter sets `job.cut` when a P0 preempts this line. Synthesis is slow
-  // enough that the cut usually lands while we are waiting for it: handing the audio
-  // over then would start the victim AFTER the alarm (or on top of it).
-  const cutOff = () => Boolean(options && typeof options.isCut === "function" && options.isCut());
-  const cutResult = () => ({ ok: false, refused: "arbiter", reason: "cut by a P0", captioned: false });
   let effectiveVoice = voice || "nova";
   let effectiveSpeed = speed;
   let effectiveMaxChars = 2000;
@@ -1783,11 +1452,6 @@ async function speakAloudNow(
       if (typeof gate.volume === "number" && Number.isFinite(gate.volume)) effectiveVolume = gate.volume;
     }
   }
-  // The fairy wears the colours of whoever is talking (agent-fairy.cjs, owner
-  // 2026-11-09). A character that is not an agent with a fairy changes nothing.
-  try {
-    orbWindow.setSpeaker((speaker && speaker.agent) || agentForSlot(slotId), text);
-  } catch { /* the fairy is cosmetic: never let it stop a line being spoken */ }
   // THE SAFETY FUNNEL, speech half (`.AITHERIUM/CAPABILITY/AVATAR-FORGE-PIPELINE.md` stage
   // 6). The cast gate above decided WHETHER this origin may be heard; this decides WHAT is
   // said. AitherSafety filters rather than refusing, so a rewritten line is spoken in its
@@ -1807,11 +1471,7 @@ async function speakAloudNow(
       debugLog("safety gate threw; speaking unfiltered", error?.message || error);
     }
   }
-  // A cut before synthesis means no clip is ever produced; a cut during it is caught
-  // again below, before anything reaches the speaker.
-  if (cutOff()) return cutResult();
   const tts = await synthesizeVerdict(spoken, effectiveVoice, { speed: effectiveSpeed, maxChars: effectiveMaxChars });
-  if (cutOff()) return cutResult();
   if (!tts.ok) {
     // A dead voice service takes the audio, not the words.
     const shown = captioned ? sendBubble(slotId, spoken, { muted: true }) : 0;
@@ -1843,6 +1503,23 @@ async function speakAloudNow(
     if (fwd) void fwd.speakingStart(spoken, tts.durationMs || 0);
   }
   return { ok: true, chars: text.length, windows: delivered, durationMs: tts.durationMs || 0, slotId: slotId || "slot0" };
+}
+
+/** Play audio that was synthesized ELSEWHERE through the avatar (POST /speak/audio).
+ *  Unlike speakAloud there is no TTS step and no safety rewrite of the words: the clip
+ *  is what a call already played, and re-filtering text that no longer matches it would
+ *  only desynchronize the caption. `volume` 0 = lip sync only (the default). */
+function playExternalSpeech(audioBase64, volume = 0, slotId = "slot0", text = "") {
+  const slot = slotId || "slot0";
+  let delivered = 0;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    win.webContents.send("desk:event", { type: "speak", audioBase64, slotId: slot, volume });
+    delivered += 1;
+  }
+  if (delivered === 0) return { ok: false, reason: "no avatar window to speak from" };
+  if (text) sendBubble(slot, text, { muted: volume === 0 });
+  return { ok: true, windows: delivered, slotId: slot, volume };
 }
 
 /** Deps shared by room-stage-host's startRoomStage() and castPaneImpl() --
@@ -1954,67 +1631,8 @@ function handleProtocolUrl(rawUrl) {
       if (kvLendRuntime) void kvLendRuntime.enrollFromUrl(command.url);
       else pendingEnroll.push(command.url);
     }
-    // A desk:// link is a HAND-OFF, not a confirmation: it raises the same confirm
-    // card the menu does (name, size, SHA-256, networking off) and calls nothing
-    // until the owner clicks Detonate on it.
-    else if (command.type === "sandbox") { void runSandboxDetonateFromLink(command.url); }
-    else if (command.type === "card-answer") handleCardToastAnswer(command);
   }
   return true;
-}
-
-/** The open card `id`, from the watcher's last list or the store. Shaped card or null. */
-function findOpenCard(id) {
-  if (typeof id !== "string" || !id) return null;
-  try {
-    const cached = openDecisions.find((c) => c && c.id === id);
-    if (cached) return cached;
-  } catch { /* the watcher has not run yet */ }
-  try {
-    return decisionCards.listOpen().find((c) => c && c.id === id) || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * A decision card's TOAST button came back (desk://card/answer). The toast carries
- * only ids; the card is re-read here, and an approve goes through answerDeckCard --
- * the ONE answer path -- so a signed card still opens the Windows Hello window
- * instead of recording an unsigned answer that approves nothing (A1, critique #3).
- */
-function handleCardToastAnswer(command) {
-  const cardId = command && command.card;
-  const ticket = command && command.ticket;
-  const action = String((command && command.action) || "").trim().toLowerCase();
-  // A desk:// link is reachable from any page that names it. Only the toast the DESK
-  // showed carries a live ticket, so a guessed link cannot ANSWER a card at all.
-  if (!cardTickets.verify(ticket, cardId)) {
-    debugLog(`[card-toast] refused ${cardId} ${action}: no live toast ticket`);
-    // Opening the card is not an ANSWER, and the toast outlives its ticket: a
-    // toast sits in Action Center past the 10-minute TTL, and the store is in
-    // memory so a desk restart clears every ticket. An owner clicking Open (or
-    // the toast body) on that toast must still get the card, not silence.
-    // Approve and Later stay refused -- they change state and need the proof.
-    if (action === "open" && cardToast.isCardId(cardId)) {
-      openInbox(cardId);
-      return { ok: true, opened: true, via: "toast-expired" };
-    }
-    return { ok: false, reason: "unknown ticket" };
-  }
-  const result = cardToast.dispatchCardAction({
-    cardId,
-    action,
-    choice: command && command.choice,
-    card: findOpenCard(cardId),
-    answer: (id, choice) => answerDeckCard(id, choice, null),
-    open: (id) => openInbox(id),
-    snooze: (id) => snoozeNeedsYou(id),
-    log: debugLog,
-  });
-  if (result.ok && result.via === "answer") debugLog(`[card-toast] answered ${cardId} (${command.choice})`);
-  else if (!result.ok) debugLog(`[card-toast] ${cardId} ${action}: ${result.reason || "not applied"}`);
-  return result;
 }
 
 function handleProtocolArgv(argv) {
@@ -2070,10 +1688,29 @@ function openTalkWindow() {
  *  Every bell, badge and menu item lands here, so there is exactly one place a
  *  notification can be found (owner, 2026-09-13: "no proper notification area").
  *  A card id focuses that card. */
-// (The card auto-open ladder that stood here -- DESK_CARDS_AUTO_OPEN and the
-// ~/.aither/decisions/.popup-off kill-file -- was removed with A1: a card no longer
-// opens a window by itself, so there is no automatic window left to gate. awask
-// still reads the kill-file for its own Tk card window.)
+/** The owner's explicit "no card windows" switch — the same kill-file the awask
+ *  side reads (~/.aither/decisions/.popup-off). Split out of cardWindowsMayOpen
+ *  so a HIGH-URGENCY card can bypass the auto-open OPT-IN while still honouring
+ *  this deliberate off switch: the opt-in defaults off because unrequested
+ *  windows are the complaint, but a switch the owner flipped must never be
+ *  overridden by urgency. */
+function cardPopupsOff() {
+  try {
+    const off = path.join(require("node:os").homedir(), ".aither", "decisions", ".popup-off");
+    return fs.existsSync(off);
+  } catch {
+    // An unreadable home is not a reason to start popping windows.
+    return true;
+  }
+}
+
+/** May the desk open a card window by ITSELF? Never by default: an
+ *  unrequested always-on-top window is the complaint, not the feature. */
+function cardWindowsMayOpen() {
+  if (kidDeskMode().enabled) return false;  // kid mode: the classroom is the only window
+  if (process.env.DESK_CARDS_AUTO_OPEN !== "1") return false;
+  return !cardPopupsOff();
+}
 
 // ── When the desk may raise a surface BY ITSELF (overlay-policy.cjs) ────────────────
 // Report, 2026-10-14: the AitherOS Online overlay "randomly pops up on the side of the
@@ -2099,13 +1736,6 @@ function overlayMayRaise(trigger, what = "overlay") {
 
 /** A notice that does not take the screen: a tray balloon (Windows), else an OS notification. */
 function notifyQuietly(title, body) {
-  // Quiet mode from a companion menu or the tray (companion-menu.cjs): no popups.
-  try {
-    if (orbWindow.quietUntil() > Date.now()) {
-      debugLog(`[quiet] notice held: ${String(title).slice(0, 63)}`);
-      return;
-    }
-  } catch { /* the fairy module is not up: notices are not held */ }
   try {
     if (process.platform === "win32" && tray && !tray.isDestroyed?.()) {
       tray.displayBalloon({ title: String(title).slice(0, 63), content: String(body).slice(0, 255), iconType: "info" });
@@ -2115,67 +1745,6 @@ function notifyQuietly(title, body) {
   } catch (error) {
     debugLog("quiet notice failed", error?.message || error);
   }
-}
-
-/** Can a toast carry buttons? Windows only, and only when the desk:// handler is
- *  registered -- a packaged install (main registers the protocol at ready). An
- *  unpackaged run gets the plain toast, whose click still opens the card. Kid mode
- *  never gets buttons: its protocol handler sends every desk:// link to the
- *  classroom, so an Approve button would be swallowed (card-toast.canCarryActions). */
-function toastActionsAvailable() {
-  try {
-    return cardToast.canCarryActions({
-      platform: process.platform,
-      packaged: app.isPackaged,
-      kidMode: kidDeskMode().enabled,
-    });
-  } catch {
-    return false;
-  }
-}
-
-/** One decision card as an OS toast (A1). The buttons -- the card's own primary
- *  answer, Later, Open -- come back as desk://card/answer and land in
- *  answerDeckCard, so a signed card still opens the Windows Hello window. The
- *  click (Windows body click, or any non-Windows toast) opens the card. This is the
- *  only thing a card arrival does: it never calls openInbox by itself. */
-function showCardToast(toast) {
-  if (!toast || !toast.cardId) return null;
-  // One desk toast per card id (notify-policy.cjs ledger, shared with every sender):
-  // the same words again show nothing, changed words REPLACE the toast already up.
-  let verdict = "new";
-  try {
-    verdict = cardToastLedger.claim(toast.cardId, notifyPolicy.fingerprint(toast));
-  } catch (error) {
-    debugLog(`[card-toast] ledger unreadable, showing: ${error && error.message}`);
-  }
-  if (verdict === "dup") {
-    debugLog(`[card-toast] ${toast.cardId} already shown once (notify-policy: one per card)`);
-    return null;
-  }
-  const previous = shownCardToasts.get(toast.cardId);
-  if (previous) {
-    try { previous.close(); } catch { /* already gone from the screen */ }
-    shownCardToasts.delete(toast.cardId);
-  }
-  const shown = showCardToastNow(toast);
-  if (shown) {
-    shownCardToasts.set(toast.cardId, shown);
-    while (shownCardToasts.size > 50) shownCardToasts.delete(shownCardToasts.keys().next().value);
-  }
-  return shown;
-}
-const notifyPolicy = require("./notify-policy.cjs");
-const cardToastLedger = notifyPolicy.createLedger();
-/** cardId -> the Notification on screen, so an update closes it before replacing it. */
-const shownCardToasts = new Map();
-function showCardToastNow(toast) {
-  return toaster.show({
-    title: toast.title,
-    body: toast.body,
-    ...(toast.toastXml ? { toastXml: toast.toastXml } : {}),
-    onClick: () => openInbox(toast.cardId),
-  });
 }
 
 /** Persist an overlay settings patch (known keys only) and apply it. */
@@ -2326,7 +1895,7 @@ function needsYouSnoozeDir() {
 function computeNeedsYou(cards = openDecisions) {
   try {
     const snoozed = needsYouLib.snoozedIds(needsYouSnoozeDir());
-    return decisionCards.partitionCards(cards, { snoozed, ended: endedIdSet(cards) }).needsYou;
+    return decisionCards.partitionCards(cards, { snoozed }).needsYou;
   } catch {
     return [];
   }
@@ -2343,31 +1912,6 @@ function computeNeedsYou(cards = openDecisions) {
 // Fairy: the avatar window is not opened at boot, the red Needs-you chip stays
 // down and its count rides on the fairy's badge + its Notifications row instead.
 const COMPANION_FILE = path.join(require("node:os").homedir(), ".aither", "desk-companion.json");
-/** The owner's "Hide avatar", saved beside the companion mode so a crash cannot undo it. */
-function readCompanionFile() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(COMPANION_FILE, "utf8"));
-    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-  } catch {
-    return {};
-  }
-}
-function avatarHiddenByOwner() {
-  return readCompanionFile().avatarHidden === true;
-}
-function setAvatarHiddenByOwner(hidden) {
-  const cur = readCompanionFile();
-  if ((cur.avatarHidden === true) === Boolean(hidden)) return;
-  const next = { ...cur, avatarHidden: Boolean(hidden) };
-  try {
-    fs.mkdirSync(path.dirname(COMPANION_FILE), { recursive: true });
-    const tmp = `${COMPANION_FILE}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(next));
-    fs.renameSync(tmp, COMPANION_FILE);
-  } catch (error) {
-    debugLog("[stays-hidden] could not save the avatar hide", String((error && error.message) || error));
-  }
-}
 function companionMode() {
   try {
     const raw = JSON.parse(fs.readFileSync(COMPANION_FILE, "utf8"));
@@ -2376,657 +1920,21 @@ function companionMode() {
     return "fairy";
   }
 }
-async function setCompanionMode(mode) {
-  await waitForAvatarGrow();
+function setCompanionMode(mode) {
   const next = mode === "avatar" ? "avatar" : "fairy";
   try {
     fs.mkdirSync(path.dirname(COMPANION_FILE), { recursive: true });
-    fs.writeFileSync(COMPANION_FILE, JSON.stringify({ ...readCompanionFile(), companion: next }));   // keeps avatarHidden
+    fs.writeFileSync(COMPANION_FILE, JSON.stringify({ companion: next }));
   } catch { /* the choice holds for this run */ }
-  // The same one-surface plan the tray's toggle uses: growing in place when the
-  // fairy is on screen, standing her down when the body shows alone (owner 2026-11-20).
-  const facts = companionSurfaceFacts();
-  const plan = companionSurface.plan({ want: next, ...facts });
-  if (next === "avatar") {
-    // Choosing a body IS an explicit owner ask: a sticky hide saved by an earlier
-    // "Hide avatar" must not swallow it (this row used to be blocked that way).
-    setAvatarHiddenByOwner(false);
-    if (plan.avatar === "grow") {
-      let grown;
-      try { grown = await orbWindow.expandToAvatar(); } catch { grown = null; }
-      if (!grown || grown.ok === false) await showOverlay({ focus: false });
-    } else if (plan.avatar === "show") {
-      await showOverlay({ focus: false });
-    }
-  } else if (plan.collapse) {
-    try { await orbWindow.collapseToFairy(); } catch { /* the fairy comes back on the next call */ }
-  } else if (avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) {
-    // A mode switch is not the owner hiding the body for good: do not write the
-    // persistent avatarHidden that would keep "Companion: full avatar" from working.
-    await hideOverlay({ byOwner: false });
-  } else if (plan.fairy === "show") {
-    try { orbWindow.returnFromAvatar(); } catch { /* the fairy is not up */ }
-  }
-  // Whatever path ran, the plan's fairy side still holds (e.g. a body already up
-  // from a voice session while the mode changes to avatar).
-  if (plan.fairy === "hide") {
-    try { orbWindow.standDownForAvatar(); } catch { /* the fairy is not up */ }
-  }
+  if (next === "avatar") showOverlay({ focus: false });
+  else if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.hide();
   syncNeedsYouChip();
   if (tray) refreshTrayMenu();
   return { ok: true, companion: next };
 }
 
-// ── the agent swarm (agent-swarm-host.cjs, owner 2026-11-16) ─────────────────────────
-// "I can see, talk to and interact with EVERY agent I run, as a fairy swarm and as full
-// avatars." One live roster (agent-roster-live.cjs reads the awdiscord bots, Genesis, the
-// harness sessions and the remote endpoints), one cluster (the orb's own swarm window), one
-// stage (this file's avatar window, a slot per grown agent) and GargBot's 2D goblin.
-/** The body under the pointer / the selected one, as the avatar window's pixel pick reports it. */
-let avatarPickState = { hover: null, selected: null, at: 0 };
-/** The last click-through verdict the avatar window sent (true = it takes clicks right now). */
-let avatarInteractiveState = { interactive: null, at: 0 };
-/** The renderer's last frame-gap sample (src/perf/frameGap.ts via Scene.tsx), for GET /health
- *  `stage.render`. 0 until the avatar window has rendered for a second. */
-let renderStats = { fps: 0, p95GapMs: 0, at: 0 };
-let swarmHostInstance = null;
-let goblinInstance = null;
-
-function getGoblin() {
-  if (goblinInstance) return goblinInstance;
-  goblinInstance = require("./goblin-window.cjs").createGoblin({
-    electron: { BrowserWindow, screen },
-    onDismissRequest: () => { void getSwarmHost().setAgentForm("gargbot", "fairy"); },
-    onChange: (state) => {
-      try { getSwarmHost().goblinChanged(state); } catch { /* the swarm is cosmetic */ }
-      if (tray) refreshTrayMenu();
-    },
-    log: debugLog,
-  });
-  // Right-click on the goblin himself sends him back into the fairy.
-  ipcMain.on("goblin:dismiss", (event) => {
-    // Only the goblin's own window may send it back (review of #96).
-    const win = getGoblin().window && getGoblin().window();
-    if (!win || win.isDestroyed() || event.sender !== win.webContents) return; // fails closed (review of #96)
-    void getSwarmHost().setAgentForm("gargbot", "fairy");
-  });
-  return goblinInstance;
-}
-
-/**
- * ONE bar tool (intent-bar.cjs). `agent.ask` hands the words to the taskbar chat, or to a
- * named persona over the relay (its real answer comes back); every other id is a registry
- * row through runCommand. An agent's call (mcp) runs as a `bridge` surface, so Do not
- * disturb still refuses what would put the overlay on the owner's screen.
- */
-async function runBarTool(id, args = {}, surface = "launcher") {
-  const text = String((args && args.text) || "");
-  if (id === "agent.ask") {
-    if (args && args.persona) {
-      const persona = String(args.persona).toLowerCase();
-      const reply = await askAgentOverRelay(persona, text);
-      return reply ? { ok: true, text: `${persona}: ${reply}` }
-        : { ok: false, error: `${persona} did not answer within 75 s — the question is in #agents` };
-    }
-    return require("./search-window.cjs").sendChat((t) => commandAction(t, { source: `intent-bar:${surface}` }), text);
-  }
-  return runCommand(id, text || undefined, { surface: surface === "launcher" ? "launcher" : "bridge" });
-}
-
-/** The owner's words to an agent over the relay, and its real answer back (the agent's own
- *  Discord bot replies in #agents). Never the gateway's ask_agent: that call holds the
- *  shared MCP session for as long as the agent thinks and stalls every other desk plane. */
-async function askAgentOverRelay(agent, text, { timeoutMs = 75000, pollMs = 3500 } = {}) {
-  const since = Math.floor(Date.now() / 1000) - 1;
-  const sent = await postToRelay(RELAY_CHANNEL, `@${agent} ${String(text).slice(0, 600)}`);
-  if (!sent || sent.ok === false) throw new Error("the relay did not take the message");
-  const end = Date.now() + timeoutMs;
-  while (Date.now() < end) {
-    await waitMs(pollMs);
-    const rows = await fetchRelayHistory();
-    const hit = (Array.isArray(rows) ? rows : []).find((r) => r && r.agent === true && Number(r.at) > since && r.text
-      && String(r.author || "").split("+")[0].toLowerCase() === agent);
-    if (hit) return String(hit.text);
-  }
-  return "";
-}
-
-function playAudioOnSlot({ slotId = "slot0", audioBase64, volume }) {
-  let delivered = 0;
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed()) continue;
-    win.webContents.send("desk:event", { type: "speak", audioBase64, slotId: slotId || "slot0", volume: typeof volume === "number" ? volume : 1 });
-    delivered += 1;
-  }
-  return delivered;
-}
-
-function getSwarmHost() {
-  if (swarmHostInstance) return swarmHostInstance;
-  const live = require("./agent-roster-live.cjs");
-  swarmHostInstance = require("./agent-swarm-host.cjs").createSwarmHost({
-    reader: live.createRosterReader({
-      podman: () => live.runArgv(require("./fleet-distro.cjs").fleetPodmanArgv(live.PODMAN_PS)),
-      callTool: (name, args) => require("./gateway-mcp.cjs").callTool(name, args),
-      listSessions: () => require("./sessions-client.cjs").listSessions(),
-      readAuthors: () => {
-        const loaded = require("./cast-config.cjs").load();
-        return (loaded && loaded.snapshot && loaded.snapshot.authors) || {};
-      },
-      listCharacters: () => listCharacters(),
-      aitherBody: () => aitherCharacterToShow(),
-      cache: require("./last-good-cache.cjs").deskCache(),
-    }),
-    avatar: {
-      window: () => createWindow(),
-      savedSize: () => loadSavedSize(),
-      workArea: (point) => screen.getDisplayNearestPoint(point).workArea,
-      nextSlotId: () => nextFreeSlotId(),
-      spawnSlot: (slotId, name, agent, place) => spawnAvatarSlot(slotId, name, agent, place),
-      removeSlot: (slotId) => removeAvatarSlot(slotId),
-      send: (event) => {
-        if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.webContents.send("desk:event", event);
-      },
-      pick: () => avatarPickState,
-      hide: () => {
-        if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.hide();
-        if (tray) refreshTrayMenu();
-      },
-    },
-    orb: {
-      setPresence: (list) => orbWindow.setPresence(list),
-      setSwarmAnchor: (point) => orbWindow.setSwarmAnchor(point),
-      setSwarmVisible: (on) => orbWindow.setSwarmVisible(on),
-      swarmVisible: () => orbWindow.swarmVisible(),
-      hideTenantCompanion: () => orbWindow.setTenantCompanion(false),
-      fairyBounds: () => orbWindow.fairyBounds(),
-      chat: (agent) => orbWindow.chatWithAgent(agent),
-      expand: () => orbWindow.expandToAvatar(),
-      collapse: () => orbWindow.collapseToFairy(),
-    },
-    goblin: getGoblin(),
-    speakAloud: (text, voice, speed, slotId, origin, speaker) => speakAloud(text, voice, speed, slotId, origin, speaker),
-    playAudio: (a) => playAudioOnSlot(a),
-    askAgent: (agent, text) => askAgentOverRelay(agent, text),
-    // act(tool): the gateway's own tools, for an agent standing on this desk (the host refuses credential,
-    // money and destructive names; the gateway still decides who may call what).
-    runTool: (agent, tool, args) => require("./gateway-mcp.cjs").callTool(tool, { ...args, agent }),
-    log: debugLog,
-  });
-  return swarmHostInstance;
-}
-
-/** Speak one discussion line through the agent's OWN body (agent-swarm-host speak).
- *  If the live roster cannot see that agent (gateway/podman down), the words still
- *  go on screen from the resident body: a caption is the part that must never fail. */
-function discussSpeak(agent, text) {
-  const id = String(agent || "aither").toLowerCase();
-  return Promise.resolve()
-    .then(() => getSwarmHost().speak(id, text))
-    .then((result) => {
-      if (result && result.ok !== false) return result;
-      if (result && result.error === "not an agent") {
-        return speakAloud(text, undefined, undefined, "slot0", "service:awdesk-swarm", { agent: id });
-      }
-      return result;
-    })
-    .catch(() => speakAloud(text, undefined, undefined, "slot0", "service:awdesk-swarm", { agent: id })
-      .catch((error) => ({ ok: false, error: String((error && error.message) || error) })));
-}
-
-/** The live discussion engine (discuss.cjs). Lazy: no state until a discussion starts. */
-let discussEngineInstance = null;
-function getDiscussEngine() {
-  if (discussEngineInstance) return discussEngineInstance;
-  const discuss = require("./discuss.cjs");
-  discussEngineInstance = discuss.createDiscussEngine({
-    stream: discuss.createSchedulerStream(),
-    speak: discussSpeak,
-    // AitherRelay companion channel: every line is posted so Discord, the web and the
-    // phone follow the same discussion. Fire-and-forget; a dead relay costs nothing.
-    postLine: (agent, text) => {
-      const channel = process.env.AWDESK_DISCUSS_RELAY_CHANNEL || RELAY_CHANNEL;
-      return postToRelay(channel, `${discuss.labelFor(agent)}: ${String(text).slice(0, 900)}`)
-        .then((sent) => { if (sent && sent.ok) void refreshRelayFeed(); return sent; })
-        .catch(() => null);
-    },
-    log: (...args) => debugLog("discuss", ...args),
-    // Visual neurons (neurons-model.cjs): a turn opening is a "thinking" step
-    // around that agent's fairy. A no-op unless the owner switched the overlay on.
-    onEvent: (event) => orbWindow.noteNeuron(event),
-  });
-  return discussEngineInstance;
-}
-
-/** The ONE entry for the bridge (/swarm), MCP (swarm_*) and the tray: {action, ...}. */
-async function swarmApi(req = {}) {
-  const host = getSwarmHost();
-  switch (String(req.action || "")) {
-    case "state":
-      await host.refresh({ force: req.refresh === true });
-      return host.state();
-    case "form":
-      return host.setAgentForm(req.agent, req.form);
-    case "forms":
-      return host.setAllForms(req.form, { include: req.include });
-    case "mode":
-      return host.setMode(req.mode);
-    case "show":
-      return host.showSwarm(req.on !== false);
-    case "talk":
-      return host.talkTo(req.agent, { openChat: req.openChat === true });
-    case "speak": {
-      const input = req.audioStream
-        ? { audioStream: req.audioStream, mime: req.mime, volume: req.volume }
-        : req.audioBase64 ? { audioBase64: req.audioBase64, mime: req.mime, volume: req.volume }
-          : { text: String(req.text || ""), voice: req.voice, speed: req.speed };
-      return host.speak(req.agent, input);
-    }
-    case "discuss": {
-      // A live multi-agent discussion (discuss.cjs): start returns at once -- the run
-      // itself can last minutes -- while stop/pause/resume/state act on the current one.
-      const engine = getDiscussEngine();
-      const op = String(req.op || "start");
-      if (op === "stop") return engine.abort("stopped from the desk");
-      if (op === "pause") return engine.pause("paused from the desk");
-      if (op === "resume") return engine.resume();
-      if (op === "state") return engine.state();
-      return engine.start({ topic: req.topic, agents: req.agents, rounds: req.rounds });
-    }
-    case "visemes":      return host.visemes(req.agent, req.weights === undefined ? null : req.weights, req.ttlMs);
-    case "goblin":
-      return host.setAgentForm("gargbot", req.on === false ? "fairy" : "avatar");
-    case "perceive":
-      return host.perceive(req.agent, req.view);
-    case "act": {
-      // Visual neurons (neurons-model.cjs): the tool call and its result are steps the
-      // owner can see. A no-op unless the overlay is switched on; never changes the run.
-      try { orbWindow.noteNeuron({ agent: req.agent, kind: "tool", tool: req.tool, text: req.tool }); } catch { /* cosmetic */ }
-      return Promise.resolve(host.act(req.agent, req.tool, req.args)).then((result) => {
-        try {
-          orbWindow.noteNeuron({
-            agent: req.agent,
-            kind: "result",
-            tool: req.tool,
-            text: result && result.ok === false ? String(result.error || "failed").slice(0, 120) : "done",
-          });
-        } catch { /* cosmetic */ }
-        return result;
-      });
-    }
-    case "walk":
-      return host.walkTo(req.agent, req.rect);
-    case "look":
-      return host.lookAt(req.agent, req.point === undefined ? undefined : req.point);
-    case "register":
-      // GargBot's web overlay (or any page in the desk) names the goblin / agents it shows: they join
-      // THIS roster, deduped by agent identity (one cluster). agents: [] forgets the source.
-      return host.registerOverlay(req.source, req.agents);
-    case "view":
-      // Fine control over the fairies (fairy-control.cjs): mode, kind, radius, select, pin, hide.
-      return orbWindow.swarmViewOp(req);
-    case "follow":
-      // "Fairies follow my window" (plan A4), default on: orb.json `follow`.
-      return orbWindow.setFollow(req.on !== false);
-    case "stage":
-      return host.stageOp(String(req.op || "state"), req);
-    case "probe": {
-      // A test/diagnostic door (synthetic input into the avatar window, every window's title and pid,
-      // executeJavaScript): off unless the desk was started with AWDESK_SWARM_PROBE=1 (review of #96).
-      if (process.env.AWDESK_SWARM_PROBE !== "1") return { ok: false, error: "probe is a diagnostic door: start the desk with AWDESK_SWARM_PROBE=1" };
-      // Test/diagnostic read of the avatar window's pixel pick (hooks/avatarPick.ts installProbe).
-      if (!avatarWindow || avatarWindow.isDestroyed()) return { ok: false, error: "no avatar window" };
-      if (req.what === "procs") {
-        // Which window is burning CPU: every window's title, its renderer pid, and app metrics.
-        const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).map((w) => ({
-          title: w.getTitle(), pid: w.webContents.getOSProcessId(), visible: w.isVisible(), url: String(w.webContents.getURL()).slice(-60),
-        }));
-        return { ok: true, windows: wins, metrics: app.getAppMetrics().map((m) => ({ pid: m.pid, type: m.type, cpu: m.cpu.percentCPUUsage })) };
-      }
-      if (req.what === "input") {
-        // Drive the window's own input pipeline (Chromium-level, like a real pointer): a move, or a
-        // full left click, at CLIENT coordinates. Used by the hit-test proof.
-        const x = Math.round(Number(req.x) || 0);
-        const y = Math.round(Number(req.y) || 0);
-        const wc = avatarWindow.webContents;
-        wc.sendInputEvent({ type: "mouseMove", x, y });
-        await waitMs(350);
-        if (req.click === true) {
-          wc.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
-          await waitMs(60);
-          wc.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
-          await waitMs(120);
-        }
-        return { ok: true, pick: avatarPickState, interactive: avatarInteractiveState };
-      }
-      const js = req.what === "grid"
-        ? `window.__deskPick && window.__deskPick.grid(${Number(req.step) || 24})`
-        : req.what === "bounds" ? "window.__deskPick && window.__deskPick.bounds()"
-          : req.what === "info" ? "window.__deskPick && window.__deskPick.info()"
-          : req.what === "at" ? `window.__deskPick && window.__deskPick.pickAt(${Number(req.x) || 0}, ${Number(req.y) || 0})`
-            : "window.__deskPick && ({ state: window.__deskPick.state(), slots: window.__deskPick.slots(), size: window.__deskPick.size() })";
-      const value = await avatarWindow.webContents.executeJavaScript(js);
-      const wb = avatarWindow.getBounds();
-      const sf = screen.getDisplayNearestPoint({ x: wb.x, y: wb.y }).scaleFactor;
-      return { ok: true, value, window: wb, scaleFactor: sf, ignoring: null };
-    }
-    default:
-      return { ok: false, error: `unknown swarm action "${req.action}"` };
-  }
-}
-
-/** One tray submenu: the swarm as a whole, then each agent's form. Never nested deeper. */
-/** Gather / scatter / one orb / dock, and the kind filter (fairy-control.cjs): the tray's copy of the fairy menu's rows. */
-function swarmLayoutTrayRows(run) {
-  let now = { mode: "gather", kind: "all" };
-  try { now = orbWindow.swarmViewPayload(); } catch { /* the fairy is not up yet */ }
-  const fc = require("./fairy-control.cjs");
-  const label = { gather: "Gather around the fairy", scatter: "Scatter", orb: "Collapse into one orb", dock: "Dock to the screen edge" };
-  const kinds = { all: "Every kind", agents: "Agents only", terminals: "Terminal sessions only", subagents: "Subagents only", remote: "Remote endpoints only" };
-  return [
-    ...fc.MODES.map((m) => ({ label: label[m], type: "radio", checked: now.mode === m, click: run({ action: "view", mode: m }) })),
-    { type: "separator" },
-    ...fc.KIND_FILTERS.map((k) => ({ label: kinds[k], type: "radio", checked: now.kind === k, click: run({ action: "view", kind: k }) })),
-    { type: "separator" },
-    { label: "Reset the size", click: run({ action: "view", radius: 1 }) },
-    { label: "Show hidden fairies", click: run({ action: "view", showHidden: true }) },
-    { label: "Unpin every fairy", click: run({ action: "view", unpinAll: true }) },
-  ];
-}
-
-function swarmTrayRows() {
-  let state;
-  try { state = getSwarmHost().state(); } catch { return []; }
-  const run = (req) => () => { void swarmApi(req).then(() => { if (tray) refreshTrayMenu(); }); };
-  const rows = state.roster.slice(0, 24).map((r) => ({
-    label: `${r.form === "avatar" ? "Shrink" : "Grow"} ${r.label}${r.kind === "goblin" ? " (goblin)" : r.light ? " (terminal)" : ""}`,
-    click: run({ action: "form", agent: r.id, form: r.form === "avatar" ? "fairy" : "avatar" }),
-  }));
-  return [{
-    label: `Agent swarm (${state.roster.length})`,
-    submenu: [
-      { label: state.swarmVisible ? "Hide the fairy swarm" : "Show the fairy swarm", click: run({ action: "show", on: !state.swarmVisible }) },
-      { label: "Grow every agent", click: run({ action: "forms", form: "avatar" }) },
-      { label: "Shrink them all back", click: run({ action: "forms", form: "fairy" }) },
-      { label: state.mode === "light" ? "Light mode (terminals stay small)" : "Full mode (everyone grows)", click: run({ action: "mode", mode: state.mode === "light" ? "full" : "light" }) },
-      // Plan A4: the cluster attaches to the window the owner switches to. On by default.
-      {
-        label: "Fairies follow my window",
-        type: "checkbox",
-        checked: (() => { try { return orbWindow.followState(); } catch { return true; } })(),
-        click: (() => {
-          let on = true;
-          try { on = !orbWindow.followState(); } catch { /* the fairy is not up yet */ }
-          return run({ action: "follow", on });
-        })(),
-      },
-      { label: "Fairy layout", submenu: swarmLayoutTrayRows(run) },
-      { type: "separator" },
-      { label: "Stage: join every grown agent", click: () => {
-        const bodies = state.bodies.map((b) => b.agent).filter((a) => a !== "gargbot");
-        for (let i = 1; i < bodies.length; i += 1) swarmApi({ action: "stage", op: "join", agent: bodies[i], target: bodies[0] }).catch(() => {});
-      } },
-      { label: "Stage: split them apart", click: () => { for (const b of state.bodies) swarmApi({ action: "stage", op: "leave", agent: b.agent }).catch(() => {}); } },
-      { label: "Stage: arrange in a row", click: run({ action: "stage", op: "arrange", mode: "row" }) },
-      { label: "Stage: arrange in a circle", click: run({ action: "stage", op: "arrange", mode: "circle" }) },
-      { label: "Stage: lock / unlock", click: run({ action: "stage", op: "lock", locked: !(state.stages[0] && state.stages[0].locked) }) },
-      { type: "separator" },
-      { label: state.goblin.summoned ? "Send the goblin back" : "Summon the goblin", click: run({ action: "goblin", on: !state.goblin.summoned }) },
-      { type: "separator" },
-      ...rows,
-    ],
-  }];
-}
-
-// ── the fairy grows into Aither (owner 2026-11-15) ───────────────────────────
-// "when I click the fairy or right-click and select an option I want it to expand into
-// that avatar". orb-window.cjs asks through its `expand` / `collapse` hooks; the body
-// is THIS file's one avatar window (no second renderer), wearing the default Aither
-// (character-roster DEFAULT_AITHER: aither-v2, else the older aither). The geometry is
-// avatar-grow.cjs. Transient: desk-companion.json is not touched, so the next boot is
-// the fairy again.
-const avatarGrow = require("./avatar-grow.cjs");
-let avatarGrowing = false;
-
-function waitMs(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function playFrames(win, frames) {
-  for (const frame of frames) {
-    if (!win || win.isDestroyed()) return;
-    try {
-      win.setBounds(frame.bounds);
-      win.setOpacity(frame.opacity);
-    } catch { /* mid-teardown */ }
-    await waitMs(avatarGrow.FRAME_MS);
-  }
-}
-
-/** ONE body while grown (owner 2026-11-15: "still have this other lil robot?"): the room
- *  stage's session bodies share this window, so it stops and its bodies leave; collapse
- *  starts it again. Returns the slots it sent away. */
-function clearStageForAither() {
-  const gone = [];
-  try { roomStageHost.stopRoomStage(); } catch { /* not running */ }
-  for (const slotId of [...avatarSlots.keys()]) {
-    if (slotId === "slot0" || slotId === "default") continue;
-    // The agent swarm's own bodies are not "the room's": growing Aither must not send them away.
-    if (swarmHostInstance && swarmHostInstance.ownsSlot(slotId)) continue;
-    try { removeAvatarSlot(slotId); gone.push(slotId); } catch { /* already gone */ }
-  }
-  return gone;
-}
-
-async function expandAvatarFromFairy({ from = null } = {}) {
-  if (avatarGrowing) return { ok: false, error: "already growing" };
-  // Other agents already stand on the stage: Aither joins the row instead of re-sizing the window.
-  if (swarmHostInstance && swarmHostInstance.hasBodies()) {
-    const joined = await swarmHostInstance.growResidentIntoStage();
-    if (joined.ok) { swarmHostInstance.residentChanged("avatar"); return { ok: true, character: aitherCharacterToShow(), stage: true }; }
-    return joined;
-  }
-  if (avatarDock && avatarDock.isDocked()) return { ok: false, error: "the avatar is docked in the browser" };
-  const want = aitherCharacterToShow();
-  if (!want) return { ok: false, error: "no Aither model in this desk's roster" };
-  avatarGrowing = true;
-  try {
-    const win = createWindow();
-    const cleared = clearStageForAither();
-    if (cleared.length) debugLog("fairy grows: one body; sent away", cleared.join(","));
-    if (getActiveCharacter() !== want) {
-      if (!installCharacter(want)) return { ok: false, error: `could not put ${want} on stage` };
-      debugLog("fairy grows into", want);
-      win.webContents.reloadIgnoringCache();
-    }
-    const size = loadSavedSize();
-    const point = from ? { x: Math.round(from.x + from.width / 2), y: Math.round(from.y + from.height / 2) } : screen.getCursorScreenPoint();
-    const area = screen.getDisplayNearestPoint(point).workArea;
-    const to = avatarGrow.targetBounds(from, size, area);
-    const frames = avatarGrow.growFrames(from, to);
-    try { win.setMinimumSize(1, 1); } catch { /* older electron */ }
-    win.setOpacity(0);
-    win.setBounds(frames[0].bounds);
-    if (!win.isVisible()) win.showInactive();
-    await playFrames(win, frames);
-    try { win.setMinimumSize(320, 480); } catch { /* older electron */ }
-    if (!win.isDestroyed()) {
-      win.setBounds(to);
-      win.setOpacity(1);
-      win.webContents.send("desk:event", { type: "animation", animation: "GREETING", source: "fairy" });
-    }
-    if (tray) refreshTrayMenu();
-    try { getSwarmHost().residentChanged("avatar"); } catch { /* the swarm is cosmetic */ }
-    return { ok: true, character: want, bounds: to };
-  } finally {
-    avatarGrowing = false;
-  }
-}
-
-async function collapseAvatarToFairy({ to = null } = {}) {
-  if (swarmHostInstance && swarmHostInstance.hasBodies()) {
-    const left = await swarmHostInstance.shrinkResidentFromStage();
-    if (left.ok) swarmHostInstance.residentChanged("fairy");
-    return left.ok ? { ok: true } : left;
-  }
-  const win = avatarWindow;
-  if (!win || win.isDestroyed() || !win.isVisible()) return { ok: true };
-  avatarGrowing = true;
-  const body = win.getBounds();
-  try {
-    try { win.setMinimumSize(1, 1); } catch { /* older electron */ }
-    await playFrames(win, avatarGrow.shrinkFrames(body, to));
-    if (!win.isDestroyed()) {
-      win.hide();
-      win.setMinimumSize(320, 480);
-      win.setBounds(body);   // the next grow / tray Show starts from the full size
-      win.setOpacity(1);
-    }
-  } finally {
-    avatarGrowing = false;
-  }
-  // The session bodies come back with the fairy (the stage re-seats whoever is talking).
-  try { startRoomStage(); } catch { /* the room is optional */ }
-  try { getSwarmHost().residentChanged("fairy"); } catch { /* the swarm is cosmetic */ }
-  if (tray) refreshTrayMenu();
-  return { ok: true };
-}
-
-// -- Aither's body: female or male (aither-body.cjs, owner 2026-11-16) -------------
-// "can select male or female Aither and have it transform from fairy to full avatar".
-// The choice is cast.json authors.aither.character (the row awsettings and the avatar
-// catalog carry), so every desk follows it; the fairy grows into the chosen body.
-const aitherBody = require("./aither-body.cjs");
-
-function aitherBodyDir() {
-  try { return app.getPath("userData"); } catch { return null; }
-}
-
-function characterRecord(name) {
-  if (!name) return null;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(ROSTER_DIR, String(name), "character.json"), "utf8"));
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function aitherBodyFacts() {
-  const assigned = getAgentAvatar(aitherBody.AGENT);
-  const dir = aitherBodyDir();
-  return {
-    assigned,
-    record: characterRecord(assigned),
-    names: listCharacters(),
-    pending: dir ? aitherBody.readState(dir).pending || null : null,
-  };
-}
-
-/** The roster name the fairy grows into: the chosen body, else the older default. */
-function aitherCharacterToShow() {
-  const facts = aitherBodyFacts();
-  return aitherBody.characterToShow({ ...facts, fallback: defaultAitherCharacter(facts.names) });
-}
-
-/** Tell the person's avatar catalog (every other desk, the web, the phone). `pending`
- *  is cleared only when the catalog took it, so a pull cannot undo the choice first. */
-function pushAitherBody(id) {
-  const body = aitherBody.bodyById(id);
-  if (!body) return Promise.resolve({ ok: false, reason: "unknown body" });
-  return avatarCatalogSync.pushAssignment(aitherBody.AGENT, body.character)
-    .then((r) => {
-      debugLog("Aither body pushed to your library", id, r.ok ? r.id : r.reason);
-      if (!r.ok) return r;
-      const dir = aitherBodyDir();
-      const state = dir ? aitherBody.readState(dir) : {};
-      // A newer choice was made while this one was on its way: leave that one alone.
-      if (state.pending && state.pending !== id) return r;
-      setAgentAvatar(aitherBody.AGENT, r.name || body.character);
-      if (dir && state.pending) {
-        delete state.pending;
-        aitherBody.writeState(dir, state);
-      }
-      if (tray) refreshTrayMenu();
-      return r;
-    })
-    .catch((error) => {
-      debugLog("Aither body push failed", id, String((error && error.message) || error));
-      return { ok: false, reason: String((error && error.message) || error) };
-    });
-}
-
-/** Choose Aither's body. The body on screen changes with it when it IS Aither. */
-function setAitherBody(id) {
-  const body = aitherBody.bodyById(id);
-  if (!body) return { ok: false, error: `unknown Aither body ${id}` };
-  if (!kidDesk.allowCharacterChange(kidDeskMode())) return { ok: false, error: "this desk does not change characters" };
-  if (!listCharacters().includes(body.character)) return { ok: false, error: `${body.label} is not on this desk` };
-  if (!setAgentAvatar(aitherBody.AGENT, body.character)) return { ok: false, error: "the choice could not be saved" };
-  const dir = aitherBodyDir();
-  if (dir) aitherBody.writeState(dir, { ...aitherBody.readState(dir), pending: body.id });
-  const active = getActiveCharacter();
-  const grown = (() => { try { return orbWindow.expanded(); } catch { return false; } })();
-  if (active !== body.character && (grown || aitherBody.bodyOfCharacter(active, characterRecord(active)))) {
-    if (installCharacter(body.character) && avatarWindow && !avatarWindow.isDestroyed()) {
-      avatarWindow.webContents.reloadIgnoringCache();
-    }
-  }
-  debugLog("Aither body chosen", body.id, body.character);
-  if (tray) refreshTrayMenu();
-  void pushAitherBody(body.id);
-  return { ok: true, body: body.id, character: body.character };
-}
-
-/** Boot: move an old Aither row to the default body ONCE, and re-send a choice the
- *  catalog never got (aither-body.cjs planMigration / pending). */
-function startAitherBody() {
-  const dir = aitherBodyDir();
-  if (!dir) return;
-  try {
-    const state = aitherBody.readState(dir);
-    const plan = aitherBody.planMigration({ ...aitherBodyFacts(), state });
-    if (plan) {
-      const next = { ...state, migratedAt: new Date().toISOString() };
-      if (plan.to && setAgentAvatar(aitherBody.AGENT, plan.to)) {
-        if (plan.from) next.from = plan.from;
-        next.pending = plan.body;
-        debugLog("Aither's avatar moved to the default body", plan.from || "(none)", "->", plan.to);
-      }
-      aitherBody.writeState(dir, next);
-    }
-    const pending = aitherBody.readState(dir).pending;
-    if (pending) void pushAitherBody(pending);
-  } catch (error) {
-    debugLog("Aither body start failed", String((error && error.message) || error));
-  }
-}
-
-/** Why the fairy must not interrupt right now, or "" (fairy-attention quiet). The
- *  full-screen check is the fairy's own (spirit-probe quiet op), run only when a
- *  nudge is actually due. */
-function fairyQuietReason() {
-  try {
-    if (kidDeskMode().enabled) return "kid mode";
-    if (overlaySettings().doNotDisturb) return "Do not disturb";
-    if (nowModeActive()) return "NOW mode";
-    if (require("./game-posture.cjs").hostIsGaming()) return "game on";
-  } catch { /* an unreadable setting is not a reason to go silent */ }
-  return "";
-}
-
-/** The fairy carries the decision queue (decisions only -- reports stay on the badge). */
-function feedFairyCards() {
-  try {
-    orbWindow.setAttentionCards(decisionCards.partitionCards(openDecisions, { ended: endedIdSet(openDecisions) }).decisions, openDecisions);
-  } catch { /* the fairy is not up yet; the next change feeds it */ }
-}
-
 function syncNeedsYouChip() {
-  feedFairyCards();
-  // The fairy cluster carries needs-you cards in either companion mode (2026-11-16);
-  // the separate needs-you chip is only for a desk whose cluster is off.
-  if (companionMode() === "fairy" || (() => { try { return orbWindow.carriesCards(); } catch { return false; } })()) {
+  if (companionMode() === "fairy") {
     try {
       const first = needsYou[0];
       orbWindow.setAttention(needsYou.length, first && (first.title || first.why || null));
@@ -3064,76 +1972,6 @@ function speakNeedsYou(actionable, isBacklog) {
   const line = needsYouLib.voiceLine(needsYou, actionable, isBacklog);
   needsYouSpokenAt = Date.now();
   try { void speakAloud(line, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { /* best-effort */ }
-  return true;
-}
-
-/** The P0 announcement ledger: once per card id, across restarts (desk userData). */
-let p0ClaimsStore = null;
-function p0ClaimStore() {
-  if (!p0ClaimsStore) p0ClaimsStore = needsYouLib.createP0Claims({ dir: needsYouSnoozeDir() });
-  return p0ClaimsStore;
-}
-
-/**
- * The actionable toast for a P0. `held-toast.cjs` (A1's toast plane, already on this
- * branch) exports `createToaster`, not a per-card `showCardToast`; main.cjs holds the
- * one `toaster` instance above, so the escalation raises THAT path with a click that
- * opens the card. Do-not-disturb and NOW mode still win -- a notice is not a reason to
- * break the owner's quiet switch (the same rule announceDecisions applies).
- */
-function p0ToastAvailable() {
-  try {
-    if (overlaySettings().doNotDisturb || nowModeActive()) return false;
-  } catch { /* an unreadable setting is not a reason to go silent */ }
-  return typeof toaster.show === "function";
-}
-
-function raiseP0Toast(card) {
-  if (!p0ToastAvailable()) return false;
-  try {
-    toaster.show({
-      title: "Aither needs you now",
-      body: needsYouLib.p0Line(card, 120),
-      onClick: () => openInbox(card.id),
-    });
-    return true;
-  } catch (error) {
-    debugLog("P0 toast failed", error?.message || error);
-    return false;
-  }
-}
-
-/**
- * A5 -- "Aither yells": the ONE announcement class that may interrupt.
- *
- *   - the caption always shows, muted or not (the ask is never hidden by a mute);
- *   - the line is spoken at most ONCE per card id (p0ClaimStore), preempting the
- *     playing line once (speech-arbiter.cjs `preempt`);
- *   - when the room is globally muted (cast.json `voice.muted`, or the mic mute) there
- *     is NO audio: the owner's mute stands, the caption and the A1 toast path carry it.
- *
- * Returns true when THIS call claimed the card (i.e. it announced).
- */
-function announceP0(card) {
-  if (!card || !card.id || !needsYouLib.isP0(card)) return false;
-  if (!p0ClaimStore().claim(card.id)) return false;
-  const muted = voiceAllMuted() || micMuted();
-  const hasToast = p0ToastAvailable();
-  const plan = needsYouLib.p0AnnouncementPlan({ card, muted, hasToast });
-  if (!plan.caption) return false;
-  if (!plan.speak) {
-    // Silent desk: the words are the whole announcement. `muted` paces the caption by
-    // reading speed because there is no audio to time against (sendBubble's own rule).
-    try { sendBubble("slot0", needsYouLib.p0Line(card), { muted: true }); } catch { /* cosmetic */ }
-  }
-  if (plan.toast) raiseP0Toast(card);
-  if (plan.speak) {
-    // The caption for a spoken line is sent by speakAloudNow, after synthesis: sending
-    // one here as well would show the same ask twice.
-    try {
-      void speakAloud(needsYouLib.p0Line(card), "nova", undefined, "slot0", "service:awdesk-decisions", null, { preempt: true });
-    } catch { /* best-effort */ }
-  }
   return true;
 }
 
@@ -3240,10 +2078,8 @@ function refreshNotificationBadges(cards = openDecisions) {
   // A red KEY instead of the numeral while a secret / blocked session waits.
   const key = needsYou.length > 0;
   const houseLine = deskPostureState.customer ? "" : housePosture.houseTooltipLine(latestHouse);
-  const inkNow = require("./ink-window.cjs").status();
   const tooltip = deskTenant.decorateTitle(badgeTooltip(waiting, cards.length, needsYou), deskTenant.currentTenant())
-    + (houseLine ? ` · ${houseLine}` : "")
-    + (inkNow.active ? " · Drawing on screen (Esc to stop)" : "");
+    + (houseLine ? ` · ${houseLine}` : "");
   if (tray) {
     tray.setToolTip(tooltip);
     // The macOS menu bar has room for the word itself.
@@ -3265,369 +2101,26 @@ function refreshNotificationBadges(cards = openDecisions) {
   if (process.platform !== "win32") app.setBadgeCount?.(waiting);
 }
 
-/** If the gate closed (or the AUDIENCE narrowed) while a hidden character was ON SCREEN, swap it off.
+/** If the gate closed while an adult character was ON SCREEN, swap it off.
  *
  *  Filtering the menus is not enough: the avatar is a persistent always-on-top
  *  window, so a character installed while the gate was open keeps rendering
- *  after it closes. Runs at startup, whenever the tray menu is rebuilt, and on every
- *  audience change (profile, safe mode, a share starting or ending).
- *
- *  Owner 2026-11-17: the swap is to HIS stand-in (gallery.standIn, an everyone-rated body he
- *  chose), never "the first visible character" -- that was a pick. No stand-in: the body goes
- *  and the fairy stays. The body he had is remembered and comes back when the audience allows. */
-const AUDIENCE_SWAP_FILE = () => path.join(app.getPath("userData"), "audience-swap.json");
-function readAudienceSwap() {
-  try { return JSON.parse(fs.readFileSync(AUDIENCE_SWAP_FILE(), "utf8")) || {}; } catch { return {}; }
-}
-function writeAudienceSwap(value) {
-  try { fs.writeFileSync(AUDIENCE_SWAP_FILE(), JSON.stringify(value || {})); } catch { /* a lost note only costs a manual switch back */ }
-}
-/** cast.json for the gallery: the raw rows, or -- when the file cannot be read -- the last good
- *  config with SAFE MODE forced on (review of #122: an unreadable file never widens the audience). */
-function galleryCastRaw() {
-  const cast = require("./cast-config.cjs");
-  const loaded = cast.load({});
-  if (loaded.error) {
-    const snap = loaded.snapshot || {};
-    return { ...snap, gallery: { ...(snap.gallery || {}), safeMode: true } };
-  }
-  try {
-    return JSON.parse(fs.readFileSync(cast.CAST_FILE(), "utf8")) || {};
-  } catch {
-    return {};
-  }
-}
+ *  after it closes. Runs at startup and whenever the tray menu is rebuilt. */
 function enforceActiveCharacterRating() {
   const active = getActiveCharacter();
-  const swap = readAudienceSwap();
-  if (active && isHidden(active)) {
-    const g = require("./avatar-gallery.cjs").readGallery(galleryCastRaw());
-    const standIn = g.standIn && listCharacters().includes(g.standIn) && !isHidden(g.standIn) ? g.standIn : null;
-    if (!swap.from) writeAudienceSwap({ from: active, at: new Date().toISOString() });
-    if (!standIn) {
-      // Only act when the body is actually ON SCREEN. refreshTrayMenu() calls THIS
-      // function and hideOverlay() calls refreshTrayMenu(), so an unconditional hide
-      // was an infinite async loop: measured 2026-11-20, 17 "hiding the body" log lines
-      // a second, main +60 MB/min, the desk gone within minutes with no crash report.
-      if (avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) {
-        debugLog("audience: the resident body is not for this audience and no stand-in is chosen; hiding the body");
-        void hideOverlay({ byOwner: false });   // automatic: never the owner's sticky hide
-      }
-      return true;
-    }
-    debugLog("audience: swapping the resident to the stand-in", standIn);
-    installCharacter(standIn);
-    if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.webContents.reloadIgnoringCache();
+  if (!active || !isHidden(active)) return false;
+  const replacement = listCharacters()[0];
+  if (!replacement) {
+    debugLog("adult gate closed and no visible character remains; hiding overlay");
+    void hideOverlay();
     return true;
   }
-  // The audience widened again: put back the body he had.
-  if (swap.from && swap.from !== active && listCharacters().includes(swap.from) && !isHidden(swap.from)) {
-    writeAudienceSwap({});
-    debugLog("audience: restoring the resident body", swap.from);
-    installCharacter(swap.from);
-    if (avatarWindow && !avatarWindow.isDestroyed()) avatarWindow.webContents.reloadIgnoringCache();
-    return true;
+  debugLog("adult gate closed; switching off hidden character", active);
+  installCharacter(replacement);
+  if (avatarWindow && !avatarWindow.isDestroyed()) {
+    avatarWindow.webContents.reloadIgnoringCache();
   }
-  if (swap.from && swap.from === active) writeAudienceSwap({});
-  return false;
-}
-
-// -- the rogues gallery (owner 2026-11-17) ----------------------------------------
-// avatar-gallery.cjs owns the rules, gallery-host.cjs the page contract; this is the wiring:
-// the audience is re-enforced on screen after every change, safe mode has a key, a screen
-// share/stream turns safe mode on by itself, rotation follows HIS sets, and VRoid Studio exports
-// land in the gallery unassigned and unrated.
-let galleryWindow = null;
-const galleryVroidSeen = new Map();
-let gallerySharing = [];
-let galleryShareWatch = null;
-let galleryStudioWatch = null;
-
-/** Every body on screen that the audience now hides goes: a swarm body back to its fairy, any
- *  other slot removed, the resident swapped to his stand-in (or hidden). */
-function enforceAudience() {
-  try { require("./content-rating.cjs").invalidateGate(); } catch { /* the next read is fresh anyway */ }
-  enforceActiveCharacterRating();
-  const swarmBodies = new Map();
-  try {
-    for (const b of (swarmHostInstance ? swarmHostInstance.state().bodies : []) || []) swarmBodies.set(b.slotId, b.agent);
-  } catch { /* no swarm */ }
-  for (const [slotId, info] of [...avatarSlots]) {
-    if (!info || !info.name || !isHidden(info.name)) continue;
-    const agent = swarmBodies.get(slotId);
-    debugLog("audience: taking a body off screen", slotId, agent || "");
-    if (agent && swarmHostInstance) void swarmHostInstance.setAgentForm(agent, "fairy");
-    else removeAvatarSlot(slotId);
-  }
-  // A body pulled out into its own window is on screen too.
-  for (const [slotId, name] of [...detachedBodies]) {
-    const open = listDetachedWindows().some((w) => w.slotId === slotId);
-    if (!open) { detachedBodies.delete(slotId); continue; }
-    if (!isHidden(name)) continue;
-    debugLog("audience: closing a detached body", slotId);
-    require("./detached-avatar-window.cjs").closeDetachedAvatar(slotId);
-    detachedBodies.delete(slotId);
-  }
-}
-
-/** The desk-start re-derive pass over characters/ (rating-resolve.cjs). Never throws. */
-function rederiveRatingsAtStart() {
-  try {
-    const changed = require("./rating-resolve.cjs").rederiveRoster(ROSTER_DIR);
-    for (const row of changed) {
-      debugLog("rating", `${row.name}: ${row.before} -> ${row.rating} (${row.rating_source}${row.signal ? `: ${row.signal}` : ""})`);
-    }
-    if (changed.length) require("./content-rating.cjs").invalidateGate();
-  } catch (error) {
-    debugLog("rating re-derive failed", error && error.message);
-  }
-}
-
-function galleryBroadcast(extra = {}) {
-  const event = { type: "gallery-changed", ...extra };
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send("desk:event", event);
-  }
-}
-
-/** After a gallery change. Rotation moves only when the AUDIENCE changed (a body on a row may no
- *  longer be allowed) -- never after his own assign (review of #122: it undid it at once). */
-function galleryChanged(reason = "edit") {
-  if (reason === "audience") galleryRotationTick();
-  enforceAudience();
-  galleryBroadcast();
-  refreshTrayMenu();
-}
-
-function gallerySafeMode() {
-  try { return require("./avatar-gallery.cjs").readGallery(galleryCastRaw()).safeMode; } catch { return true; }
-}
-
-/** The panic switch: ON is instant and unconditional; OFF is the same key again. */
-function toggleGallerySafeMode(on = !gallerySafeMode()) {
-  const r = require("./cast-config.cjs").write(require("./avatar-gallery.cjs").safeModeMutation(on));
-  debugLog("safe mode", on ? "ON" : "off", r && r.ok ? "" : (r && r.error) || "");
-  galleryChanged("audience");
-  return on;
-}
-
-/** His rotation sets, applied: today's pick from each set (dated, never random), only among
- *  bodies installed and allowed for the audience now. */
-function galleryRotationTick() {
-  try {
-    // A cast.json that cannot be read is never rewritten from a rotation plan (re-review of #122:
-    // cast.write would start from an empty draft and replace the whole file).
-    if (require("./cast-config.cjs").load({}).error) return;
-    const gallery = require("./avatar-gallery.cjs");
-    const cast = require("./cast-config.cjs");
-    const names = new Set(listCharacters());
-    const plan = gallery.planRotation(galleryCastRaw(), { allowed: (n) => names.has(n) && !isHidden(n) });
-    if (!plan.length) return;
-    cast.write((draft) => {
-      for (const step of plan) gallery.rotationStepMutation(step)(draft);
-      return draft;
-    });
-    debugLog("rotation", plan.filter((s) => s.changed).map((s) => `${s.persona}=${s.name}`).join(", ") || "(period recorded)");
-  } catch (error) {
-    debugLog("rotation failed", error && error.message);
-  }
-}
-
-function galleryDeps() {
-  const rating = require("./content-rating.cjs");
-  const roster = require("./character-roster.cjs");
-  const cast = require("./cast-config.cjs");
-  const studio = require("./vroid-studio.cjs");
-  return {
-    rosterDir: ROSTER_DIR,
-    proposalsDir: path.dirname(cast.CAST_FILE()),
-    allNames: () => kidDesk.gateRoster(kidDeskMode(), roster.listAllCharacters()),
-    ratingOf: (name) => rating.getRating(name),
-    isHidden: (name) => isHidden(name),
-    castRaw: () => galleryCastRaw(),
-    rosterAgents: () => {
-      try { return Object.keys(cast.loadRosterPresence()); } catch { return []; }
-    },
-    autoSafe: () => rating.getAutoSafe(),
-    sharing: () => gallerySharing,
-    shareStatus: () => (galleryShareWatch ? galleryShareWatch.status() : "off"),
-    studio: () => studio.detect(),
-    hasThumb: (name) => fs.existsSync(characterThumbPath(name)),
-    writeCast: (mutation) => cast.write(mutation),
-    setRating: (name, value) => rating.setRating(name, value, "owner"),
-    onChanged: (reason) => galleryChanged(reason),
-    modelUrl: (name) => characterModelUrl(name),
-    vroidBrowse: (source, keyword, cursor) => marketClient.vroidBrowse(source, keyword, cursor),
-    // The gallery's OWN seen-map, fed only the models the audience may see (review of #123:
-    // the Deck's map installs with apply, and it must never learn a hidden model from here).
-    rememberVroid: (models) => {
-      for (const model of models) galleryVroidSeen.set(model.id, model);
-      while (galleryVroidSeen.size > 500) galleryVroidSeen.delete(galleryVroidSeen.keys().next().value);
-    },
-    vroidRosterName: (id) => avatarLibrarySync.vroidRosterName(id) || "",
-    vroidInstall: async (id) => {
-      const model = galleryVroidSeen.get(id);
-      if (!model) return { ok: false, error: "browse VRoid Hub again, then choose the model" };
-      const tier = require("./vroid-link.cjs").tierOfModel(model);
-      const g = require("./avatar-gallery.cjs");
-      const cap = g.audienceCap(g.readGallery(galleryCastRaw()), { autoSafe: rating.getAutoSafe() });
-      if (!g.tierAllowed(tier, cap)) return { ok: false, error: "not available on this profile" };
-      // The same rule every installed body answers to (mirror gate + AitherSafety + ceiling).
-      if (rating.ratingHiddenReason(require("./vroid-link.cjs").ratingOfModel(model))) {
-        return { ok: false, error: "not available on this profile" };
-      }
-      // Downloaded, never worn: `apply` is a no-op, so it lands in My avatars UNASSIGNED.
-      const r = await avatarLibrarySync.installVroidModel(model, { apply: () => false });
-      if (r.ok) galleryBroadcast();
-      return r.ok ? { ok: true, name: r.name, installed: r.installed } : { ok: false, error: r.reason || "not downloaded" };
-    },
-    vroidLink: async () => require("./vroid-link.cjs").startLink({
-      storeRequest: marketClient.storeRequest,
-      openExternal: (url) => void shell.openExternal(url),
-      onLinked: (res) => { debugLog("VRoid Hub link", res.ok ? "linked" : res.reason); galleryBroadcast(); },
-    }),
-    vroidLinkPaste: async (url) => require("./vroid-link.cjs").finishPasted(url, { storeRequest: marketClient.storeRequest }),
-    launchStudio: () => {
-      const r = studio.launch();
-      if (!r.ok && !r.installed) void shell.openExternal(r.downloadUrl);
-      if (r.ok) startStudioExportWatch();
-      return r;
-    },
-  };
-}
-
-/** Is this IPC from the gallery page? Its frame URL carries gallery=1 on the desk's own renderer
- *  (file:// dist, the loopback dev server, or the browser's aither://gallery tab), and it is
- *  not the avatar window. */
-function isGallerySender(event) {
-  // Re-review of #122: a frame URL alone can be forged (history.pushState adds gallery=1), so
-  // the sender is identified by WHO it is: the gallery window itself, or the browser's
-  // aither://gallery/ tab (a host no other page can push itself onto).
-  try {
-    if (galleryWindow && !galleryWindow.isDestroyed() && event.sender === galleryWindow.webContents) return true;
-    const raw = (event.senderFrame && event.senderFrame.url) || event.sender.getURL();
-    const u = new URL(raw);
-    return u.protocol === "aither:" && u.hostname === "gallery";
-  } catch {
-    return false;
-  }
-}
-
-function createGalleryWindow(param = null) {
-  if (galleryWindow && !galleryWindow.isDestroyed()) {
-    if (param) galleryWindow.webContents.send("desk:event", { type: "gallery-focus", param });
-    galleryWindow.show();
-    galleryWindow.focus();
-    return galleryWindow;
-  }
-  const workArea = screen.getPrimaryDisplay().workArea;
-  const width = Math.min(1240, workArea.width - 80);
-  const height = Math.min(820, workArea.height - 80);
-  galleryWindow = new BrowserWindow({
-    x: workArea.x + Math.round((workArea.width - width) / 2),
-    y: workArea.y + Math.round((workArea.height - height) / 2),
-    width,
-    height,
-    minWidth: 760,
-    minHeight: 520,
-    show: false,
-    backgroundColor: "#101218",
-    autoHideMenuBar: true,
-    title: `${PRODUCT_NAME} - Avatar gallery`,
-    webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  galleryWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  const url = rendererUrl() + (rendererUrl().includes("?") ? "&" : "?") + "gallery=1"
-    + (param ? `&focus=${encodeURIComponent(String(param))}` : "");
-  galleryWindow.webContents.on("will-navigate", (event, targetUrl) => {
-    if (!isAllowedRendererNavigation(targetUrl, url)) event.preventDefault();
-  });
-  galleryWindow.once("ready-to-show", () => {
-    galleryWindow.show();
-    galleryWindow.focus();
-  });
-  galleryWindow.on("closed", () => { galleryWindow = null; });
-  void galleryWindow.loadURL(url);
-  return galleryWindow;
-}
-
-/** VRoid Studio exports, watched only for a while after "Create new" launched it (review of
- *  #122: an always-on watch imported every .vrm that landed in Downloads/Desktop/Documents). */
-const STUDIO_WATCH_MS = 3 * 60 * 60 * 1000;
-let galleryStudioTimer = null;
-function startStudioExportWatch() {
-  if (!galleryStudioWatch) {
-    const studio = require("./vroid-studio.cjs");
-    galleryStudioWatch = studio.watchExports({
-      onFile: (file) => {
-        const r = studio.importVrm(file, { rosterDir: ROSTER_DIR });
-        debugLog("VRoid export imported", file, r.ok ? r.name : r.reason);
-        if (!r.ok) return;
-        // Unrated = mature: on a profile that may see it, the gallery opens on it to ask the
-        // rating; on a narrower one nothing names it.
-        const visible = !isHidden(r.name);
-        galleryBroadcast(visible ? { imported: r.name } : {});
-        if (visible) createGalleryWindow(`rate:${r.name}`);
-      },
-    });
-  }
-  if (galleryStudioTimer) clearTimeout(galleryStudioTimer);
-  galleryStudioTimer = setTimeout(() => {
-    if (galleryStudioWatch) galleryStudioWatch.stop();
-    galleryStudioWatch = null;
-    galleryStudioTimer = null;
-  }, STUDIO_WATCH_MS);
-  if (typeof galleryStudioTimer.unref === "function") galleryStudioTimer.unref();
-}
-
-/** A screen share or stream is safe mode, by itself, for as long as it runs. */
-function startGalleryWatches() {
-  if (kidDeskMode().enabled) return;
-  const gallery = require("./avatar-gallery.cjs");
-  const rating = require("./content-rating.cjs");
-  // Always watched; `autoSafeOnShare: false` in cast.json is read on every change, not only at boot.
-  if (!galleryShareWatch) {
-    galleryShareWatch = require("./share-detect.cjs").createShareWatch({
-      onChange: (labels) => {
-        gallerySharing = labels;
-        const wanted = gallery.readGallery(galleryCastRaw()).autoSafeOnShare;
-        const was = rating.getAutoSafe();
-        rating.setAutoSafe(wanted && labels.length > 0);
-        if (was !== rating.getAutoSafe()) {
-          debugLog("audience: auto safe mode", rating.getAutoSafe() ? `ON (${labels.join(", ")})` : "off");
-          galleryChanged("audience");
-        }
-      },
-      onStatus: (status) => {
-        debugLog("share watch", status);
-        galleryBroadcast();
-      },
-    });
-    galleryShareWatch.start();
-  }
-  galleryRotationTick();
-  const hourly = setInterval(galleryRotationTick, 60 * 60 * 1000);
-  if (typeof hourly.unref === "function") hourly.unref();
-}
-
-/** May an agent tool (MCP set_character / spawn_avatar) put `name` on screen? Only when the owner
- *  already chose that body for someone (cast.json rows, or his Aither female/male choice). Any
- *  other body is refused: agents propose bodies, the owner applies them (owner P0 2026-11-17). */
-function agentMayShow(name) {
-  const wanted = String(name || "").trim();
-  if (!wanted) return false;
-  try {
-    const cast = require("./cast-config.cjs");
-    if (cast.ownerBodies(cast.load({}).snapshot).has(wanted)) return true;
-  } catch {
-    return false;
-  }
-  return wanted === aitherCharacterToShow();
+  return true;
 }
 
 /** Switch to a roster character and hot-reload the renderer (no app restart). */
@@ -3872,54 +2365,87 @@ const voiceAsk = require("./voice-ask.cjs").createVoiceAsk({
  * option's words answers it, anything else steers the raising session. A card
  * answered by click while the question was out is left alone.
  */
+// ── unverified-heard queue ────────────────────────────────────────────
+// A transcript the desk HEARD but could not confirm was the owner (ambient
+// audio, media playing, the always-on mic). It is NEVER steered or answered on
+// its own; it waits here for an explicit click (desk:deck-confirm-unverified).
+// Capped so a noisy room cannot grow it without bound.
+const pendingUnverifiedHeard = [];
+const MAX_PENDING_UNVERIFIED = 20;
+
+function recordUnverifiedHeard(card, text, reason = "ambient") {
+  const said = String(text || "").trim();
+  if (!said) return null;
+  const item = {
+    id: `u-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    cardId: card && card.id ? card.id : "",
+    title: String((card && card.title) || "").slice(0, 160),
+    text: said.slice(0, 2000),
+    reason: String(reason || "ambient"),
+    at: Date.now(),
+  };
+  pendingUnverifiedHeard.push(item);
+  while (pendingUnverifiedHeard.length > MAX_PENDING_UNVERIFIED) pendingUnverifiedHeard.shift();
+  debugLog("unverified heard held for confirmation", item.cardId, item.reason);
+  return item;
+}
+
+function listUnverifiedHeard() {
+  return pendingUnverifiedHeard.map((x) => ({ ...x }));
+}
+
+/** Explicit owner click: their confirmation turns a held utterance into a steer. */
+function confirmUnverifiedHeard(id) {
+  const idx = pendingUnverifiedHeard.findIndex((x) => x.id === id);
+  if (idx < 0) return { ok: false, error: "not found" };
+  const [item] = pendingUnverifiedHeard.splice(idx, 1);
+  if (!item.cardId) return { ok: false, error: "no card" };
+  return { ok: decisionCards.steerCard(item.cardId, item.text), cardId: item.cardId };
+}
+
+function dismissUnverifiedHeard(id) {
+  const idx = pendingUnverifiedHeard.findIndex((x) => x.id === id);
+  if (idx >= 0) pendingUnverifiedHeard.splice(idx, 1);
+  return { ok: idx >= 0 };
+}
+
 async function answerCardByVoice(card) {
-  const { cardPrompt, matchReply } = require("./voice-card.cjs");
+  const { cardPrompt, gateReply } = require("./voice-card.cjs");
   let res;
   try {
     res = await voiceAsk.ask(cardPrompt(card), { timeoutMs: 90000 });
   } catch (error) {
     debugLog("voice card ask failed", error && error.message);
-    return { ok: false, error: String((error && error.message) || error) };
+    return;
   }
-  // unanswered: the popup and the inbox still have it
-  if (!res || !res.ok) return { ok: false, kind: "none", error: (res && res.error) || "no answer" };
+  if (!res || !res.ok) return; // unanswered: the popup and the inbox still have it
   if (!openDecisions.some((c) => c && c.id === card.id)) {
     void speakAloud("That one was already answered.", undefined, undefined, "slot0", "service:awdesk-voice");
-    return { ok: false, kind: "none", error: "already answered" };
+    return;
   }
-  const reply = matchReply(card, res.answer);
+  // FAIL CLOSED. The ask opens the microphone by itself and waits; anything it
+  // hears meanwhile -- a video in the room, another person -- must never become
+  // the owner's answer or steer (a prompt-injection path: see voice-card.cjs).
+  // No owner voiceprint verifier is wired yet, so nothing auto-captured is
+  // verified: the transcript is HELD and the owner confirms it with a click.
+  const reply = gateReply(card, res.answer, {
+    capture: "open-mic",     // the ask auto-arms the recorder; this is not a key press
+    speakerVerified: false,  // needs an enrolled owner voiceprint; none exists yet
+    mediaPlaying: false,     // system-audio exposes mute only, no cheap "render playing" probe
+  });
+  if (reply.kind === "unverified") {
+    recordUnverifiedHeard(card, reply.text, reply.reason);
+    void speakAloud("I heard something I could not confirm was you, so I did not send it. "
+      + "It is waiting on the card for you to confirm.", undefined, undefined, "slot0", "service:awdesk-voice");
+    return;
+  }
   if (reply.kind === "answer") {
-    // The ONE desk answer path: a destructive card still goes to the signed window.
-    let verdict = await answerDeckCard(card.id, reply.key, null, "answered by voice");
-    if (verdict && typeof verdict === "object" && verdict.ok === false) verdict = false;
-    const pending = Boolean(verdict && typeof verdict === "object" && verdict.pending);
-    const line = pending ? "Finish it in the approval window." : verdict ? `Answered: ${reply.label}.` : "I could not record that answer.";
-    void speakAloud(line, undefined, undefined, "slot0", "service:awdesk-voice");
-    return verdict ? { ok: true, kind: "answer", key: reply.key, label: reply.label, pending } : { ok: false, kind: "answer", error: "the answer did not go through" };
-  }
-  if (reply.kind === "later") {
-    // "Later" said to the fairy: nothing is recorded on the card; the fairy puts it off.
-    void speakAloud("Okay, later.", undefined, undefined, "slot0", "service:awdesk-voice");
-    return { ok: true, kind: "later" };
-  }
-  if (reply.kind === "steer") {
+    const ok = decisionCards.answerCard(card.id, reply.key, "answered by voice");
+    void speakAloud(ok ? `Answered: ${reply.label}.` : "I could not record that answer.", undefined, undefined, "slot0", "service:awdesk-voice");
+  } else if (reply.kind === "steer") {
     const ok = decisionCards.steerCard(card.id, reply.text);
     void speakAloud(ok ? "Sent that to the session." : "I could not send that.", undefined, undefined, "slot0", "service:awdesk-voice");
-    return ok ? { ok: true, kind: "steer" } : { ok: false, kind: "steer", error: "the steer did not go through" };
   }
-  return { ok: false, kind: "none", error: "nothing heard" };
-}
-
-/**
- * The fairy whisper's "Talk" (owner 2026-11-08): the same voice card flow, started
- * by the owner. A muted mic or an ask already waiting is said in the whisper, never
- * a silent no-op.
- */
-async function talkAboutCard(card) {
-  if (!card || !card.id) return { ok: false, error: "no card" };
-  if (micMuted()) return { ok: false, muted: true, error: "microphone is muted" };
-  if (voiceAsk.waiting) return { ok: false, error: "already listening for another answer" };
-  return answerCardByVoice(card);
 }
 
 function toggleMicMute() {
@@ -3991,19 +2517,6 @@ function toggleAgentVoice(slotId) {
   } catch (error) {
     debugLog("toggleAgentVoice failed", error && error.message);
   }
-}
-
-/** A coding session's voice, opt-in from ITS menu: silent until the owner says otherwise. */
-function sessionVoiceOn(slotId) {
-  try { return sessionVoices().has(sessionSlotKeys.get(slotId) || slotId); } catch { return false; }
-}
-function toggleSessionVoice(slotId) {
-  const key = sessionSlotKeys.get(slotId) || slotId;
-  const next = !sessionVoices().has(key);
-  sessionVoices().set(key, next);
-  sendBubble(slotId || "slot0", next ? "My voice is on." : "My voice is off.", { muted: true });
-  try { refreshTrayMenu(); } catch { /* tray not up */ }
-  return next;
 }
 
 /** ONE body's voice set to a state (the Stage pane's per-row speaker). Throws when
@@ -4099,18 +2612,11 @@ function popupAvatarMenu(slotId) {
       "avatar-menu",
       (id) => runCommand(id, undefined, { surface: "avatar-menu", slotId }),
       {
-        ctx: { ...commandContext(), slotId, agent: agentForSlot(slotId) || agent, agentMuted: agentVoiceMuted(agentForSlot(slotId)), removable: !isDefault, sessionAddress, sessionBody: Boolean(sessionAddress), sessionVoice: sessionVoiceOn(slotId), inStage: Boolean(swarmHostInstance && swarmHostInstance.stageOfSlot(slotId)) },
+        ctx: { ...commandContext(), slotId, agent: agentForSlot(slotId) || agent, agentMuted: agentVoiceMuted(agentForSlot(slotId)), removable: !isDefault, sessionAddress },
         submenus: { "characters.pick": buildCharacterMenu() },
       },
     ),
   ];
-  // The local toolkit is ONE grouped submenu here too (owner 2026-11-13: "menus are
-  // already crowded"): the registry's quick.open row carries the Create/Capture/Send list.
-  const toolsRow = template.find((row) => typeof row.label === "string" && row.label.startsWith("Tools — "));
-  if (toolsRow) {
-    toolsRow.submenu = quickMenu.submenuItems((id) => runCommand(id, undefined, { surface: "avatar-menu", slotId }));
-    delete toolsRow.click;
-  }
   if (avatarWindow && !avatarWindow.isDestroyed()) {
     Menu.buildFromTemplate(template).popup({ window: avatarWindow });
   }
@@ -4118,25 +2624,6 @@ function popupAvatarMenu(slotId) {
 
 ipcMain.on("desk:avatar-context-menu", (_event, slotId) => {
   popupAvatarMenu(String(slotId || ""));
-});
-
-// Stages by direct manipulation: a body dropped on another joins its stage; a stage moved by its
-// handle tells main where its members stand. Only the avatar window may send either.
-ipcMain.on("desk:stage-drop", (event, slotId, targetSlotId) => {
-  if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
-  void getSwarmHost().joinSlots(String(slotId || ""), String(targetSlotId || ""));
-});
-// A body whose model cannot be animated at all (no humanoid arms to pose) shrinks back to its fairy:
-// never a bind-posed T-pose on screen (owner P0 2026-11-16). Only the avatar window may send it.
-ipcMain.on("desk:body-broken", (event, slotId) => {
-  if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
-  const host = getSwarmHost();
-  const agent = host.agentOfSlot(String(slotId || ""));
-  if (agent) void host.setAgentForm(agent, "fairy");
-});
-ipcMain.on("desk:stage-sync", (event, positions) => {
-  if (!avatarWindow || avatarWindow.isDestroyed() || event.sender !== avatarWindow.webContents) return;
-  getSwarmHost().syncPositions(positions);
 });
 
 /** First "slotN" not already in avatarSlots — spawn_avatar/remove_avatar were MCP-only
@@ -4460,24 +2947,16 @@ function fsMkdirSafe(dir) {
 
 /** Ask the LIVE safety plane whether explicit content is permitted and hand
  *  the verdict to content-rating (its limit 2 -- tightening only; see that
- *  file's three-limits note). Fire-and-forget on the tray refresh and every
- *  SAFETY_POLL_MS: a slow or dead fleet must never hold up a menu. A plane that
- *  does not answer is not written (the last answer ages out after
- *  content-rating's SAFETY_TRUST_MS, and then mature is CLOSED). When the
- *  effective verdict moves, the audience is re-enforced on screen at once. */
-const SAFETY_POLL_MS = 2 * 60 * 1000;
+ *  file's three-limits note). Fire-and-forget on the tray refresh: a slow or
+ *  dead fleet must never hold up a menu, and a plane that does not answer
+ *  leaves the verdict untouched. */
 function refreshSafetyPosture() {
   try {
     const { explicitAllowed } = require("./safety-gate.cjs");
-    const rating = require("./content-rating.cjs");
-    const before = rating.getSafetyExplicitAllowed();
+    const { setSafetyExplicitAllowed } = require("./content-rating.cjs");
     void explicitAllowed()
       .then((verdict) => {
-        if (verdict !== null) rating.setSafetyExplicitAllowed(verdict);
-        if (rating.getSafetyExplicitAllowed() !== before) {
-          debugLog("safety plane", `explicit ${String(before)} -> ${String(rating.getSafetyExplicitAllowed())}`);
-          galleryChanged("audience");
-        }
+        if (verdict !== null) setSafetyExplicitAllowed(verdict);
       })
       .catch(() => {});
   } catch (error) {
@@ -4499,22 +2978,7 @@ const liveAccels = {};
 function commandContext() {
   const desktop = desktopStatus().overlay;
   return {
-    interactMode: require("./toolkit.cjs").interactMode(),
     avatarShown: Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()),
-    grownFromFairy: (() => { try { return orbWindow.expanded(); } catch { return false; } })(),
-    // "fairy" = the fairy can grow into Aither now; "expanded" = she is grown; null =
-    // no body (or the body is already up as its own surface: "Show Aither" would be a
-    // second way to show what is already on screen).
-    fairyAvatar: (() => {
-      try {
-        if (orbWindow.expanded()) return "expanded";
-        if (avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) return null;
-        return orbWindow.avatarMode();
-      } catch { return null; }
-    })(),
-    // Aither's bodies on this desk and the one in force (aither-body.cjs rows).
-    aitherBodies: (() => { try { return aitherBody.rows(aitherBodyFacts()); } catch { return []; } })(),
-    safeMode: gallerySafeMode(),
     decisionsWaiting: inboxCounts().waiting,
     decisionsTotal: inboxCounts().total,
     listening: listeningNow(),
@@ -4522,6 +2986,8 @@ function commandContext() {
     voiceMuted: voiceAllMuted(),
     talkMode: talkMode(),
     openMic: openMicOn,
+    // Heard but unverified utterances waiting for an explicit click (never a note yet).
+    unverifiedHeard: pendingUnverifiedHeard.length,
     overlayOpen: desktop.open,
     overlayVisible: desktop.visible,
     overlayShell: desktop.shell,
@@ -4529,25 +2995,14 @@ function commandContext() {
     overlaySolid: !desktop.transparent,
     // When the desk may raise the overlay by itself (the four Settings switches).
     overlayPolicy: overlaySettings(),
-    // Visual neurons (neurons-model.cjs): does the registry row read checked?
-    neurons: (() => { try { return orbWindow.neuronsOn(); } catch { return false; } })(),
     avatarDocked: Boolean(avatarDock && avatarDock.isDocked()),
     kvLend: Boolean(kvLendRuntime && kvLendRuntime.lend.settings().enabled),
-    copilotKey: intentBarMemory.copilotKey(),
     deadAccels: [...deadAccels],
     liveAccels: { ...liveAccels },
     platform: process.platform,
     shellMenu: shellMenuOn,
     companion: companionMode(),
-    // The display-mode radio rows read the mode IN FORCE -- the same function the orb
-    // menu ticks with (owner 2026-11-20: the tick said "avatar only" over a fairy).
-    // The store only answers before the renderer exists.
-    displayMode: (() => {
-      try { return orbWindow.displayModeInForce(); } catch { return displaySettingsNow().mode; }
-    })(),
     clipboardSync: capture.clipboardSyncOn(),
-    // Screen ink's mode (ink-mode.cjs): the tray row says "Drawing" while it draws.
-    inkMode: require("./ink-window.cjs").status().mode,
     printScreenOwner: capture.printScreenOwner(),
     recording: recorder.isRecording(),
     // [audio] Windows endpoint mute flags, cached by audio-control (30 s poll +
@@ -4557,15 +3012,6 @@ function commandContext() {
     awconnect: latestAwconnectStatus,
     // Who the AitherDesktop window + overlay are signed in as (never a token).
     account: desktopAccount(),
-    // The browser.* rows' labels: which way sync and ad blocking go, the site on screen.
-    browser: browserWindow.commandFacts(),
-    // Which workspace the Desk is in, and whether this account may switch (a hint:
-    // every switch re-asks Identity). The workspace.switch row's label is this.
-    workspace: (() => {
-      const tenant = deskTenant.currentTenant();
-      return { owner: deskTenantAuto.signedInTenantId() === deskTenantAuto.PLATFORM_TENANT,
-        name: (tenant && (tenant.name || tenant.host)) || "", host: (tenant && tenant.host) || "" };
-    })(),
   };
 }
 
@@ -4659,11 +3105,6 @@ require("./notebooks-window.cjs").ensureNotebooksIpc({
   // awconnect also gets), falling back to the `adk login` profile when signed out.
   token: () => browserWindow.onlineToken(),
 });
-// Explore: aither://explore's IPC (knowledge graphs, the wiki, agent / LLM context). A
-// wiki page's external link opens as an ordinary tab of the owner's.
-require("./explore-window.cjs").ensureExploreIpc({
-  openUrl: (url) => void browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url }),
-});
 // The browser's extensions page (aither://extensions).
 require("./extensions-window.cjs").ensureExtensionsIpc();
 // The aw* stack page (aither://bricks): the awkno catalog and man pages.
@@ -4746,12 +3187,10 @@ function trayTemplateNow() {
   // Two capture rows are doors to a LIVE list, not one-shot verbs: the quick grid
   // (the same cells the Ctrl+Alt+Q pop-up shows) and the open Boards list, where
   // a put-away note/whiteboard comes back with one click (owner 2026-11-02).
-  const quickRow = trayTemplate.find((row) => typeof row.label === "string" && row.label.startsWith("Tools — "));
+  const quickRow = trayTemplate.find((row) => typeof row.label === "string" && row.label.startsWith("Quick menu"));
   if (quickRow) { quickRow.submenu = quickMenu.submenuItems(); delete quickRow.click; }
   const boardsRow = trayTemplate.find((row) => typeof row.label === "string" && row.label.startsWith("Boards…"));
   if (boardsRow) { boardsRow.submenu = boardsWindow.traySubmenu(); delete boardsRow.click; }
-  const pinsRow = trayTemplate.find((row) => typeof row.label === "string" && row.label.startsWith("Pins…"));
-  if (pinsRow) { pinsRow.submenu = require("./pins-window.cjs").traySubmenu(); delete pinsRow.click; }
   // A dead voice listener is otherwise INVISIBLE (see voice-tray-line.cjs). It is
   // a STATUS line rather than a command, so it is spliced in after the avatar
   // group rather than declared in the registry.
@@ -4778,18 +3217,7 @@ function trayTemplateNow() {
   // Row 0: what only the owner can unblock ("Secret needed: <name> (from ...)").
   // A click opens the Inbox ON that card; nothing here opens by itself.
   // Then the house: "● House: Dark", the Posture switcher and a Wake/Sleep row per group.
-  // Then the companions (owner 2026-11-13: hidden by default, one click back): Show/Hide
-  // all, the AitherOS desktop, Spaces and quiet mode. Chat, Settings and Quit are the
-  // tray's own rows further down (companion-menu items doors:"tray").
-  let companionRows = [];
-  try {
-    companionRows = require("./companion-menu.cjs").menuRows(orbWindow.companionTrayItems(),
-      (id) => orbWindow.companionAction(id, { target: null }));
-  } catch { /* the fairy module is not up yet: the next repaint has them */ }
-  if (companionRows.length) companionRows.push({ type: "separator" });
-  // The agent swarm's own submenu (agent-swarm-host.cjs): grow / shrink, stages, the goblin.
-  try { trayTemplate.push(...swarmTrayRows()); } catch { /* the swarm is cosmetic */ }
-  trayTemplate.unshift(...needsYouLib.trayRows(needsYou, (id) => openInbox(id)), ...companionRows, ...houseTrayRows());
+  trayTemplate.unshift(...needsYouLib.trayRows(needsYou, (id) => openInbox(id)), ...houseTrayRows());
   return trayTemplate;
 }
 
@@ -4836,173 +3264,6 @@ function refreshTrayMenu() {
  * be RETURNED to a palette (which shows it) rather than dialogued at a tray
  * click, which has nowhere else to put it.
  */
-// ── desktop pins + GIFs (2026-11-07) ─────────────────────────────────────────
-// pins-window.cjs owns the windows; these three turn a command's typed argument
-// (palette, phone link, POST /commands/run from awconnect) into a pin.
-
-/** pins.add: an address, or a pin-item JSON card {kind, src, title?}. */
-function pinFromArg(arg) {
-  const text = String(arg == null ? "" : arg).trim();
-  if (!text) return { ok: false, error: "pins.add needs an address — a web page, a YouTube or GIF link, or aither://page" };
-  let input = text;
-  if (text.startsWith("{")) {
-    try { input = JSON.parse(text); } catch { return { ok: false, error: "pins.add: that JSON did not parse" }; }
-  }
-  const verdict = require("./pins-window.cjs").addPin(input);
-  return verdict.ok ? verdict : { ok: false, error: verdict.reason };
-}
-
-/** pins.tab: the Aither browser's active tab, or the tab whose id is `arg`. */
-function pinBrowserTab(arg) {
-  const tabs = (browserWindow.getState && browserWindow.getState().tabs) || [];
-  const want = String(arg == null ? "" : arg).trim();
-  const tab = (want && tabs.find((t) => String(t.id) === want)) || tabs.find((t) => t.active) || null;
-  if (!tab || !/^https?:/i.test(String(tab.url || ""))) {
-    return { ok: false, error: "0 web tabs to pin — open a page in the Aither browser first" };
-  }
-  const verdict = require("./pins-window.cjs").pinTab(tab);
-  return verdict.ok ? verdict : { ok: false, error: verdict.reason };
-}
-
-/** gif.pin: search the words, pin the top GIF (the phone's "send a GIF to my desk"). */
-async function pinTopGif(arg) {
-  const words = String(arg == null ? "" : arg).trim();
-  if (!words) return { ok: false, error: "gif.pin needs words to search" };
-  const picker = require("./gif-picker-window.cjs");
-  const found = await picker.gifSearch().search(words, { limit: 1 });
-  if (!found.ok) return { ok: false, error: found.reason, needsKey: Boolean(found.needsKey) };
-  if (!found.results.length) return { ok: false, error: `0 GIFs for "${words}"` };
-  const verdict = picker.pinGif(found.results[0].id);
-  return verdict.ok ? verdict : { ok: false, error: verdict.reason };
-}
-
-/** An app pin's click: an aither:// page in the browser, a Store app, a shortcut. */
-async function launchPinnedApp(src) {
-  const target = String(src || "");
-  if (/^aither:\/\//i.test(target)) {
-    return browserWindow.openInternalUrl(target, { askAgent: browserAskAgent }) === false
-      ? { ok: false, reason: `no page called ${target}` } : { ok: true };
-  }
-  const sw = require("./search-window.cjs");
-  if (target.startsWith("shell:AppsFolder\\")) {
-    const err = await sw.openAppsFolderEntry(target);
-    return err ? { ok: false, reason: String(err) } : { ok: true };
-  }
-  const err = await shell.openPath(target);
-  return err ? { ok: false, reason: String(err) } : { ok: true };
-}
-
-// ── Windows Sandbox detonation (sandbox-detonate.cjs) ───────────────────────
-// Two doors, ONE flow: the registry row "sandbox.detonate" (a native single-file
-// picker) and a desk://sandbox/detonate?path= link (Explorer "Send to", another
-// app). Both only PREPARE a confirm card; the daemon is untouched until the owner
-// clicks Detonate on that card. Windows allows one sandbox at a time, so a second
-// request while one runs gets a busy card rather than a second call.
-let sandboxDetonatorInstance = null;
-function sandboxDetonator() {
-  if (!sandboxDetonatorInstance) {
-    sandboxDetonatorInstance = sandboxDetonate.createSandboxDetonator({
-      // The desk's OWN app-data folder: the bytes detonated are a copy the desk
-      // wrote and hashed, never the file the owner picked in place.
-      staging: path.join(app.getPath("userData"), "sandbox-staging"),
-      openPath: (target) => shell.openPath(target),
-      log: (line) => console.log(`[desk] ${line}`),
-    });
-  }
-  return sandboxDetonatorInstance;
-}
-
-/**
- * Render one card from sandbox-detonate.cjs with the desk's native dialog.
- * Guest text is already plain (the module's `plainText`), and `detail` is TEXT:
- * no markup is parsed, so nothing the guest produced can become a control.
- */
-async function presentSandboxCard(card) {
-  if (!card || typeof card !== "object") return;
-  const lines = Array.isArray(card.lines) ? card.lines.filter(Boolean).join("\n") : "";
-  if (card.kind === "confirm") {
-    const { response } = await dialog.showMessageBox({
-      type: "warning",
-      title: card.title,
-      message: card.title,
-      detail: lines,
-      buttons: [card.confirmLabel || "Detonate", card.cancelLabel || "Cancel"],
-      // Cancel is the default: a stray Enter must never run a file.
-      defaultId: 1,
-      cancelId: 1,
-      noLink: true,
-    });
-    if (response === 0) {
-      const outcome = await sandboxDetonator().confirm(card.token);
-      await presentSandboxCard(outcome.card);
-    } else {
-      sandboxDetonator().cancel(card.token);
-    }
-    return;
-  }
-  if (card.kind === "report") {
-    const detail = [
-      lines,
-      card.guestText ? `\nSandbox output (untrusted, shown as text):\n${card.guestText}` : "",
-      card.error ? `\nError: ${card.error}` : "",
-    ].filter(Boolean).join("\n");
-    const buttons = card.openFolder ? ["Open folder", "Close"] : ["Close"];
-    const { response } = await dialog.showMessageBox({
-      type: "info",
-      title: card.title,
-      message: card.title,
-      detail,
-      buttons,
-      defaultId: buttons.length - 1,
-      cancelId: buttons.length - 1,
-      noLink: true,
-    });
-    if (card.openFolder && response === 0) {
-      const opened = await sandboxDetonator().openFolder(card);
-      if (!opened.ok) {
-        await dialog.showMessageBox({
-          type: "warning",
-          title: "Could not open the run folder",
-          message: "Could not open the run folder",
-          detail: opened.error || opened.reason,
-          buttons: ["OK"],
-          noLink: true,
-        });
-      }
-    }
-    return;
-  }
-  // doctor (not ready: its EXACT fix text, nothing runs), busy, and problem cards.
-  await dialog.showMessageBox({
-    type: card.kind === "busy" ? "info" : "warning",
-    title: card.title,
-    message: card.title,
-    detail: card.text || lines,
-    buttons: ["OK"],
-    noLink: true,
-  });
-}
-
-async function runSandboxDetonate(target) {
-  const outcome = await sandboxDetonator().request(target);
-  await presentSandboxCard(outcome.card);
-}
-
-async function runSandboxDetonateFromLink(rawUrl) {
-  const outcome = await sandboxDetonator().requestFromLink(rawUrl);
-  await presentSandboxCard(outcome.card);
-}
-
-async function sandboxDetonateCommand() {
-  const picked = await dialog.showOpenDialog({
-    title: "Detonate a file in Windows Sandbox",
-    buttonLabel: "Inspect",
-    properties: ["openFile"],
-  });
-  if (picked.canceled || !Array.isArray(picked.filePaths) || picked.filePaths.length === 0) return;
-  await runSandboxDetonate(picked.filePaths[0]);
-}
-
 function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
   // A command can flip a fact a label reads (overlay open, ghost mode, mic on).
   // Re-render AFTER it ran rather than let the tray show the state from before
@@ -5029,68 +3290,15 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     }
     case "inbox.open": return void openInbox();
     case "inbox.now": return void openInboxNow();
-    // Answer ONE card by name: the launcher's 1-9 keys and typed answers, and
-    // the palette's "<card id> <option key|number>". The write is awask's
-    // (decision-cards resolves the number/text to the card's own option key).
-    case "card-answer": {
-      let spec = arg;
-      if (typeof spec === "string") {
-        const [id, ...rest] = spec.trim().split(/\s+/);
-        spec = { id, text: rest.join(" ") };
-      }
-      if (!spec || typeof spec.id !== "string" || spec.id.length === 0) {
-        return { ok: false, error: "1 answer needs a card id — nothing was answered" };
-      }
-      // A card whose answer must be SIGNED (a grant, an awstorage proposal/plan) is
-      // NOT answered here: decision-cards opens the approval window and the passkey
-      // ceremony records the answer. Report that as pending, never "answered" for a
-      // card that is still open -- the owner would think it was done.
-      const before = decisionCards.lastSignedHandoff();
-      const done = (did) => {
-        const handoff = decisionCards.lastSignedHandoff();
-        return handoff && handoff !== before && handoff.id === spec.id
-          ? { ok: true, pending: true, did: `opened the signed approval for ${spec.id} — finish it with Windows Hello` }
-          : { ok: true, did };
-      };
-      const index = Number(spec.index);
-      if (Number.isInteger(index) && index > 0) {
-        return decisionCards.answerCardIndex(spec.id, index)
-          ? done(`answered ${spec.id} (option ${index})`)
-          : { ok: false, error: `1 card ${spec.id} has no option ${index} — nothing was answered` };
-      }
-      const text = String(spec.text || spec.key || "").trim();
-      if (!text) return { ok: false, error: "1 answer needs an option key or number" };
-      return decisionCards.answerCardText(spec.id, text)
-        ? done(`answered ${spec.id}: ${text}`)
-        : { ok: false, error: `1 option "${text}" is not on ${spec.id} — nothing was answered` };
-    }
     case "avatar.toggle": return void toggleOverlay();
     case "companion.fairy": return void setCompanionMode("fairy");
     case "companion.avatar": return void setCompanionMode("avatar");
-    case "display.mode.avatar": return void applyDisplayMode("avatar");
-    case "display.mode.fairy": return void applyDisplayMode("fairy");
-    case "display.mode.both": return void applyDisplayMode("both");
-    case "display.mode.swarm": return void applyDisplayMode("swarm");
-    case "display.mode.cycle": return void applyDisplayMode(displayMode.cycle(displaySettingsNow().mode));
     case "avatar.dock": {
       // Docking opens the browser it docks into; floating leaves the browser alone.
-      // Either way the body ends up on screen, so the fairy stands down: docking is
-      // WHERE the body lives, not a second companion (owner's one-surface rule).
-      const finishDockMove = () => {
-        const dmode = displaySettingsNow().mode;
-        if (dmode === "both" || dmode === "swarm") return;
-        // Only when the body really is on screen: docking into a browser whose rail
-        // slot is not ready yet must not stand the fairy down with nothing to show.
-        if (!avatarWindow || avatarWindow.isDestroyed() || !avatarWindow.isVisible()) return;
-        try { if (!orbWindow.expanded()) orbWindow.standDownForAvatar(); } catch { /* not up */ }
-        if (tray) refreshTrayMenu();
-      };
-      if (avatarDock.isDocked()) { void avatarDock.undock(); finishDockMove(); return; }
+      if (avatarDock.isDocked()) return void avatarDock.undock();
       createWindow();
       browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
-      void avatarDock.dock();
-      finishDockMove();
-      return;
+      return void avatarDock.dock();
     }
     case "voice.talk": return void toggleListening();
     case "window.size.bigger": return void growWindow();
@@ -5108,9 +3316,6 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "darkmatter.open": return void createDarkmatterLinkWindow();
     case "localai.open": return void browserWindow.openInternal("local-ai", null, { askAgent: browserAskAgent });
     case "notebooks.open": return void browserWindow.openInternal("notebooks", null, { askAgent: browserAskAgent });
-    // arg: {tab, q, node, page, source, session} from Alt+Space; exploreUrl keeps only those.
-    case "explore.open": return void browserWindow.openInternalUrl(
-      require("./explore-verbs.cjs").exploreUrl(arg && typeof arg === "object" ? arg : {}), { askAgent: browserAskAgent });
     case "files.open": return void createFilesWindow();
     case "tunnel.open": return void createTunnelWindow();
     // Alt+Space is ONE key (owner 2026-11-02): the global SHORTCUT gets the tap/hold
@@ -5129,9 +3334,6 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       openConsole("cast");
       return;
     }
-    case "gallery.open": return void createGalleryWindow();
-    case "gallery.safe-mode":
-    case "gallery.safe-mode-chord": return void toggleGallerySafeMode();
     // ONE door to everything about bodies: who is on stage, their looks, voices,
     // and the avatar window's size (the Stage pane and its tabs).
     case "stage.open": {
@@ -5147,7 +3349,6 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "voice.mute": return void toggleMicMute();
     case "voice.mute-all": return void toggleAllVoices();
     case "voice.mute-agent": return void toggleAgentVoice(slotId);
-    case "voice.session": return void toggleSessionVoice(slotId);
     // U27's room.steer record (palette surface only -- no slot in hand here;
     // the avatar menu's OWN "Message this session…" item, added in
     // popupAvatarMenu below, already knows its slot and does not reach this
@@ -5164,10 +3365,10 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "desktop.overlay.reload": return void reloadLivingDesktop();
     case "desktop.signin": return void beginDesktopSignIn();
     case "desktop.signout": return void signOutDesktop();
-    case "workspace.switch": return switchWorkspaceCommand(arg, surface);
     // When the desk may raise the overlay by itself (overlay-policy.cjs, cast.json overlay).
     case "desktop.overlay.auto-start": return void toggleOverlaySetting("autoOpenOnStart");
     case "desktop.overlay.edge-reveal": return void toggleOverlaySetting("edgeReveal");
+    case "desktop.overlay.raise-on-notify": return void toggleOverlaySetting("raiseOnNotifications");
     case "desktop.overlay.dnd": return void toggleOverlaySetting("doNotDisturb");
     case "desktop.space-home": return void toggleOverlaySetting("spaceHome");
     case "window.outline": return void toggleWindowOutline();
@@ -5177,13 +3378,6 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "avatar.frame-all": return void sendToAvatar("focus-avatar", { slotId: null });
     case "avatar.reset": return void sendToAvatar("reset-avatar-layout", { slotId });
     case "avatar.remove": return void (slotId && removeAvatarSlot(slotId));
-    // Right-click a body in a stage > Leave stage (stages by direct manipulation, 2026-11-16).
-    case "stage.leave": return void (slotId && getSwarmHost().leaveSlot(slotId));
-    // Grown from the fairy (owner 2026-11-15): the orb is down, the way back is on the body.
-    case "avatar.to-fairy": return void orbWindow.collapseToFairy();
-    case "avatar.from-fairy": return void orbWindow.expandToAvatar();
-    case "aither.body.female": return void setAitherBody("female");
-    case "aither.body.male": return void setAitherBody("male");
     case "setup.open": return void setupWindow().createSetupWindow({ openAwsh: () => openConsole() });
     case "about": return void showAboutDesk();
     case "aeon.state": return runAeonStateCommand({ surface });
@@ -5211,34 +3405,10 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     // click menu live in their own modules; nothing here invents a second list.
     case "quick.open": return void quickMenu.openRadial();
     case "terminal.open": return void browserWindow.openInternal("terminal", null, { askAgent: browserAskAgent });
-    // The local toolkit (toolkit.cjs, owner 2026-11-13): windows, region flow, send,
-    // interact mode. Each case returns the module's verdict.
-    case "sketch.new":
-    case "piano.open":
-    case "scratch.new":
-    case "sticky.new":
-    case "graphics.open":
-    case "region.box":
-    case "present.start":
-    case "send.last":
-    case "interact.toggle":
-      return require("./toolkit.cjs").run(id, arg);
-    case "timer.start": return deskTimers().start(String(arg || ""));
-    case "copilot-key.toggle": {
-      const on = intentBarMemory.setCopilotKey(!intentBarMemory.copilotKey());
-      const st = copilotKey().set(on);
-      if (!on) return { ok: true, did: "the Copilot key is Windows' again" };
-      return st.reason && st.reason !== "starting"
-        ? { ok: false, error: `Copilot key: ${st.reason}. ${require("./copilot-key.cjs").FALLBACK}` }
-        : { ok: true, did: "the Copilot key opens the Aither bar" };
-    }
     case "note.new": return void boardsWindow.createNote();
     case "board.new": return void boardsWindow.createBoard();
     case "boards.open": return void boardsWindow.openList();
     case "shellmenu.add": {
-      void fileShellMenu.enable({ consent: true }).then((verdict) => {
-        if (!verdict || !verdict.ok) console.warn("[desk] file right-click menu not added:", (verdict && verdict.reason) || "unknown");
-      });
       void shellMenu.enable({ consent: true }).then((verdict) => {
         shellMenuOn = Boolean(verdict && verdict.ok);
         if (!shellMenuOn) {
@@ -5252,9 +3422,6 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
       return;
     }
     case "shellmenu.remove": {
-      void fileShellMenu.restore().then((verdict) => {
-        if (!verdict || !verdict.ok) console.warn("[desk] file right-click menu not removed:", (verdict && verdict.reason) || "unknown");
-      });
       void shellMenu.restore().then((verdict) => {
         shellMenuOn = !(verdict && verdict.ok);
         if (!verdict || !verdict.ok) {
@@ -5280,38 +3447,10 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "ink.laser": return void require("./ink-window.cjs").toggleTool("laser");
     case "ink.spotlight": return void require("./ink-window.cjs").toggleTool("spotlight");
     case "ink.clear": return void require("./ink-window.cjs").clearDrawings();
-    // Ink, pins, GIFs (2026-11-07): ink-window / pins-window / gif-picker-window own
-    // the work; these return verdicts so the phone link and POST /commands/run see them.
-    case "ink.passthrough": return require("./ink-window.cjs").setPassThrough(null);
-    case "ink.board": return require("./ink-window.cjs").saveToBoard();
-    case "ink.snip": return require("./ink-window.cjs").snipWithInk();
-    case "gif.open": return require("./gif-picker-window.cjs").openGifPicker(typeof arg === "string" ? arg : "");
-    // With no words (the Ctrl+Alt+F key) gif.pin opens the picker; with no address
-    // (Ctrl+Alt+U) pins.add pins what is on the clipboard.
-    case "gif.pin": return String(arg || "").trim() ? pinTopGif(arg) : require("./gif-picker-window.cjs").openGifPicker("");
-    case "pins.add": return pinFromArg(String(arg || "").trim() ? arg : require("electron").clipboard.readText().trim().slice(0, 4096));
-    case "shortcuts.open": {
-      const text = commandRegistry.shortcutSheetText(commandContext());
-      void dialog.showMessageBox({ type: "info", title: "Keyboard shortcuts", message: "Keyboard shortcuts",
-        detail: `${text}\n\nHold Ctrl+Alt to draw on the screen; release to use your desktop.\n`
-          + "Middle-drag moves a mark or a pin (Shift resizes, Ctrl duplicates).", buttons: ["OK"] });
-      return { ok: true };
-    }
-    case "pins.tab": return pinBrowserTab(arg);
-    case "pins.open": {
-      // The tray carries the Pins submenu; from the palette this brings every pin
-      // forward, or opens the GIF picker when the desk has none yet.
-      const pinsWindow = require("./pins-window.cjs");
-      const all = pinsWindow.listPins();
-      if (!all.length) return require("./gif-picker-window.cjs").openGifPicker("");
-      // Every pin showing -> hide them all; otherwise bring every one back.
-      return pinsWindow.setAllHidden(all.every((p) => !p.hidden));
-    }
     case "missioncontrol.open":
       // The page host, plain: mission control is a page, not an OS window.
       return void browserWindow.createBrowserWindow({
         askAgent: browserAskAgent, url: "https://app.aitherium.com/mission-control" });
-    case "sandbox.detonate": return void sandboxDetonateCommand();
     default: {
       // The size presets and the stage arrangements are DATA on their registry
       // records, so a new one is a line there and needs no case here.
@@ -5356,31 +3495,12 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
         // Returned (not void) so the palette can await and show the verdict.
         return runBlogMenuCommand(command, arg, { surface });
       }
-      if (command && command.layout) {
-        // The browser's layout and the pin canvas (desk-layout.cjs, browser-canvas.cjs):
-        // the verb is data on the record, browser-window.layoutCommand runs it, and the
-        // verdict is RETURNED so the palette can show why a typed name was refused.
-        return browserWindow.layoutCommand(command.layout, arg);
-      }
-      if (command && command.browser) {
-        // The Aither Browser's own capabilities (tabs, library pages, passwords, import,
-        // sync, ad blocking, the page tools): the verb is data on the record and
-        // browser-window.browserCommand runs it for the OWNER -- it opens the browser when
-        // it is closed and never acts on an agent's tab. The verdict is RETURNED so the
-        // palette and Alt+Space can say why not.
-        return browserWindow.browserCommand(command.browser, arg, { askAgent: browserAskAgent, surface });
-      }
       if (command && command.orb) {
         // The floating ask orb / spirit: orb-window.cjs owns the windows, the
         // queue, the trips and the vision ladder; a row is data (`orb: "toggle" |
         // "ask-screen" | "find" | "web" | "attach" | "go"`). The verdict is
         // RETURNED so the bridge's POST /commands/run can report the trip.
         return orbWindow.run(command.orb, { surface, arg, slotId });
-      }
-      if (command && command.assist) {
-        // Aither at the caret (assist-main.cjs): "open" = the pop-up at the focused app's
-        // caret; a verb id = the pop-up with that verb on the selection.
-        return assistMain().run(command.assist, { surface, arg });
       }
       console.warn(`[desk] command ${id} has no handler`);
     }
@@ -5441,178 +3561,7 @@ function showAboutDesk() {
  */
 function inboxCounts(cards = openDecisions) {
   // decisionCards.waitingCount is THE number (the fairy, the bridge and the bell read it too).
-  const ended = endedIdSet(cards);
-  return { waiting: decisionCards.waitingCount(cards, undefined, ended), total: cards.length, ended: ended.size };
-}
-
-// -- the session behind a card (session-context.cjs) --------------------------
-// Owner, 2026-11-08: the Inbox had "not enough info and no easy way to interact or
-// dive deeper or engage with those sessions". Liveness comes from the running
-// processes' own state files (5 s cache: the deck re-renders often); the context
-// and every action resolve the session from MAIN's copy of the card.
-let liveSessionCache = { at: 0, map: new Map(), judged: false };
-function liveSessionRead({ fresh = false } = {}) {
-  const now = Date.now();
-  if (fresh || now - liveSessionCache.at > 5000) {
-    try {
-      const { live, judged } = sessionContext.liveSessionsChecked();
-      liveSessionCache = { at: now, map: live, judged };
-    } catch { liveSessionCache = { at: now, map: new Map(), judged: false }; }
-  }
-  return liveSessionCache;
-}
-function liveSessionMap(opts) {
-  return liveSessionRead(opts).map;
-}
-
-/**
- * Ids of the cards whose asking session has ENDED on this machine (ended-cards.endedIds):
- * the one set every "waiting" number, the fairy and the needs-you strip leave out, so a
- * card nobody can answer for is never counted. Unknown sessions (WSL, containers) and
- * key requests are never in it.
- */
-function endedIdSet(cards = openDecisions) {
-  try {
-    const { map, judged } = liveSessionRead();
-    return endedCards.endedIds(cards, map, {
-      host: require("node:os").hostname(),
-      known: (sessionId) => sessionContext.sessionKnownHere(sessionId),
-      judged,
-    });
-  } catch {
-    return new Set(); // cannot tell: count everything
-  }
-}
-
-/** The deck's cards, each session card carrying {live, status, name} for its row. */
-// -- cards from sessions that have ENDED close themselves (ended-cards.cjs) ----
-// Owner, 2026-11-16: 40 waiting, 22 real. The rest were "Allow Claude to use ..." grants
-// and Approve cards under an "ended" badge, asked by sessions nobody can answer for.
-// A sweep runs after every card change (at most once a minute) and on the 5-minute
-// timer; the two-look rule, the grace period and the audit line are in the module.
-const endedCards = require("./ended-cards.cjs");
-const ENDED_SWEEP_MIN_MS = 60_000;
-const endedSeen = new Map();
-let endedSweepAt = 0;
-function sweepEndedSessionCards(cards = openDecisions) {
-  const now = Date.now();
-  if (now - endedSweepAt < ENDED_SWEEP_MIN_MS) return null;
-  endedSweepAt = now;
-  try {
-    const { live, judged } = sessionContext.liveSessionsChecked();
-    const result = endedCards.sweep(cards, live, {
-      cancel: (id, note) => decisionCards.cancelCard(id, note),
-      seen: endedSeen,
-      known: (sessionId) => sessionContext.sessionKnownHere(sessionId),
-      host: require("node:os").hostname(),
-      judged,
-    });
-    if (result.closed.length || result.failed.length || result.error) {
-      debugLog(`ended-sessions sweep: closed ${result.closed.length}, failed ${result.failed.length}${result.error ? `, ${result.error}` : ""}`);
-    }
-    return result;
-  } catch (error) {
-    debugLog(`ended-sessions sweep failed: ${String((error && error.message) || error)}`);
-    return null; // a sweep that cannot run leaves every card where it was
-  }
-}
-
-// -- a card for a Claude Code question closes once it was answered (ask-answered.cjs) --
-// 2026-11-17 (d-yjmc): answered in the terminal at 12:39:17, still up 26 s later.
-const askAnswered = require("./ask-answered.cjs");
-const ASK_SWEEP_MIN_MS = 8_000;
-let askSweepAt = 0;
-function sweepAnsweredAsks(cards = openDecisions) {
-  const now = Date.now();
-  if (now - askSweepAt < ASK_SWEEP_MIN_MS) return null;
-  askSweepAt = now;
-  try {
-    const result = askAnswered.sweep(cards, {
-      transcript: (card) => sessionContext.transcriptPath(card.sessionId, card.cwd),
-      cancel: (id, note) => decisionCards.cancelCard(id, note),
-    });
-    if (result.closed.length || result.failed.length) {
-      debugLog(`answered-asks sweep: closed ${result.closed.join(",") || "none"}, failed ${result.failed.join(",") || "none"}`);
-    }
-    return result;
-  } catch (error) {
-    debugLog(`answered-asks sweep failed: ${String((error && error.message) || error)}`);
-    return null;
-  }
-}
-
-function decisionsWithSessions(cards = openDecisions) {
-  const live = liveSessionMap();
-  const endedIds = endedIdSet(cards);
-  return cards.map((card) => {
-    if (!card || !card.sessionId) return card;
-    const row = live.get(card.sessionId);
-    // `ended` is only true when this machine holds a trace of the session: a session that
-    // ran in WSL or a container is "not running HERE", which says nothing about it.
-    return { ...card, session: { live: Boolean(row), status: row ? row.status : "", name: row ? row.name : "", ended: !row && endedIds.has(card.id) } };
-  });
-}
-
-function openCardById(id) {
-  return typeof id === "string" && id ? openDecisions.find((c) => c && c.id === id) || null : null;
-}
-
-function deckSession(cardId) {
-  const card = openCardById(cardId);
-  if (!card) return { ok: false, error: "That card is no longer open." };
-  if (!card.sessionId) return { ok: false, error: "This card did not come from a session." };
-  const live = liveSessionMap().get(card.sessionId) || null;
-  return sessionContext.readContext(card.sessionId, card.cwd, { live });
-}
-
-async function deckSessionAct(payload) {
-  const { id, action, text } = payload || {};
-  const card = openCardById(id);
-  if (!card || !card.sessionId) return { ok: false, note: "That card is no longer open." };
-  const live = liveSessionMap({ fresh: true }).get(card.sessionId) || null;
-  let name = live && live.name ? live.name : "";
-  if (!name) {
-    const ctx = sessionContext.readContext(card.sessionId, card.cwd, { live, repo: "" });
-    name = (ctx && ctx.ok && ctx.name) || "";
-  }
-  const what = String(action || "");
-  if (what === "focus") {
-    if (!live) return { ok: false, note: "It has ended. Resume it instead." };
-    const r = await sessionContext.focusSessionTab(name);
-    return r.ok
-      ? { ok: true, via: "tab", note: `Brought "${r.tab || name}" to the front.` }
-      : { ok: false, note: `Could not find its terminal tab (${r.error}).` };
-  }
-  if (what === "resume") {
-    if (live) return { ok: false, note: "It is still open. Use Go to it." };
-    const r = sessionContext.resumeSession({ sessionId: card.sessionId, cwd: card.cwd, title: name });
-    return r.ok
-      ? { ok: true, via: "resumed", note: "Reopened in a new terminal tab." }
-      : { ok: false, note: `Could not reopen it (${r.error}).` };
-  }
-  if (what === "reply") {
-    const body = String(text || "").trim().slice(0, 4000);
-    if (!body) return { ok: false, note: "Nothing to send." };
-    if (live) {
-      // The mailbox is drained at the session's NEXT prompt (adk steerback) -- said
-      // as exactly that, never "delivered".
-      const ok = decisionCards.steerCard(card.id, body);
-      if (ok) {
-        void postToRelay(RELAY_CHANNEL, `steered ${card.id}: ${body.slice(0, 300)} (via desk session panel)`)
-          .then(() => void refreshRelayFeed());
-      }
-      const f = await sessionContext.focusSessionTab(name);
-      if (!ok) return { ok: false, via: f.ok ? "tab" : undefined, note: "awask did not start, so nothing was queued." };
-      return f.ok
-        ? { ok: true, via: "mailbox+tab", note: "Queued, and its tab is in front: it reads this at its next prompt." }
-        : { ok: true, via: "mailbox", note: "Queued: it reads this at its next prompt." };
-    }
-    const r = sessionContext.resumeSession({ sessionId: card.sessionId, cwd: card.cwd, title: name, prompt: body });
-    return r.ok
-      ? { ok: true, via: "resumed", note: "Resumed in a new terminal tab with your message." }
-      : { ok: false, note: `Could not reopen it (${r.error}).` };
-  }
-  return { ok: false, note: `unknown action ${what}` };
+  return { waiting: decisionCards.waitingCount(cards), total: cards.length };
 }
 
 function deckState() {
@@ -5621,20 +3570,14 @@ function deckState() {
     // The fleet HOST (the WSL distro) as last judged by fleet_host.py -- a cache
     // read, never a wsl.exe spawn; null when nothing judged it in the last 15 min.
     fleetHost: require("./fleet-host-cache.cjs").readFleetHostSummary(),
-    decisions: decisionsWithSessions(openDecisions),
+    decisions: openDecisions,
     openCount: counts.waiting,
     totalCount: counts.total,
-    // Cards whose asking session ended: listed in the Inbox under their own line, never in `openCount`.
-    endedCount: counts.ended,
     // The split the flipper renders: needs-you ids pinned first, FYI ids
     // collapsed below it (decision-cards partitionCards).
     needsYouIds: needsYou.map((c) => c.id),
     fyiIds: (() => {
-      // Cards from ended sessions ride in the collapsed list: never in the flipper's "N of M".
-      try {
-        const part = decisionCards.partitionCards(openDecisions, { ended: endedIdSet(openDecisions) });
-        return [...part.fyi, ...part.ended].map((c) => c.id);
-      } catch { return []; }
+      try { return decisionCards.partitionCards(openDecisions).fyi.map((c) => c.id); } catch { return []; }
     })(),
     deskVisible: Boolean(
       avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible(),
@@ -5683,33 +3626,13 @@ function deckState() {
 }
 
 /**
- * The names a card's session's terminal tab may carry, most trusted first: the live
- * session file (what Windows Terminal shows), then the journal's latest title (a rename
- * can reach one before the other). [] when unknown.
- */
-function cardSessionName(card) {
-  // The id lives in `source.session_id` on every card awask/awdk writes today (measured
-  // 2026-11-17: all open cards had `sessionId: null`), so reading the top-level field
-  // alone made "Open the session" flash "no name" for every terminal card, every click.
-  const sid = tuiAnswer.sessionIdOf(card);
-  if (!sid) return [];
-  const live = liveSessionMap({ fresh: true }).get(sid) || null;
-  const names = [];
-  if (live && live.name) names.push(live.name);
-  const cwd = card.cwd || (card.source && card.source.cwd) || "";
-  const ctx = sessionContext.readContext(sid, cwd, { live, repo: "" });
-  if (ctx && ctx.ok && ctx.name && !names.includes(ctx.name)) names.push(ctx.name);
-  return names;
-}
-
-/**
  * Answer an open card from a desk surface -- the ONE answer path. The deck, the
  * console Inbox (desk:deck-answer) and the browser side panel's Agents tab
  * (browser-window setAgentsHost) all land here, so a destructive card is routed
  * to the signed approval window from every surface, never to awask unsigned.
  * `parent` is the window the approval dialog belongs to.
  */
-function answerDeckCard(id, choice, parent, note = "") {
+function answerDeckCard(id, choice, parent) {
   // A destructive card (awstorage proposal/plan) is approved only by a SIGNED
   // answer, which needs a fresh passkey session: open Veil's /approve page
   // (Windows Hello) instead of the unsigned `awask answer`. The route is
@@ -5721,13 +3644,31 @@ function answerDeckCard(id, choice, parent, note = "") {
     // (decision-cards rawCard) decides the route instead, so a destructive card
     // still goes to the signed window rather than an unsigned answer.
     const raw = decisionCards.rawCard(id) || signedApproval.readCardRaw(id, decisionCards.storeDir());
-    if (signedApproval.answerRoute(raw, choice) === "window") {
+    const route = signedApproval.answerRoute(raw, choice);
+    if (route === "agent-approval") {
+      // The agent-approval page in the signed-in approve window: Windows Hello confirms
+      // it on that session (no second sign-in). Never a card answer.
       try {
         signedApproval.openApproveWindow({
+          seed: seedApproveFromDesk,
+          BrowserWindow,
+          parent: parent && !parent.isDestroyed() ? parent : null,
+          url: signedApproval.agentApprovalUrl(signedApproval.agentApprovalId(raw)),
+          log: debugLog,
+        });
+        return { pending: true, via: "approve-window" };
+      } catch (err) {
+        debugLog(`[approve] agent approval window failed for ${id}: ${err && err.message}`);
+        return false;
+      }
+    }
+    if (route === "window") {
+      try {
+        signedApproval.openApproveWindow({
+          seed: seedApproveFromDesk,
           BrowserWindow,
           parent: parent && !parent.isDestroyed() ? parent : null,
           url: signedApproval.approveUrl(id, choice),
-          card: raw,
           log: debugLog,
         });
         return { pending: true, via: "approve-window" };
@@ -5737,27 +3678,7 @@ function answerDeckCard(id, choice, parent, note = "") {
       }
     }
   }
-  // After the signed route: a Claude Code terminal ask (`tui:<n>` / `tui:type`).
-  // Nothing can type into the terminal (measured 2026-11-08), so this brings the
-  // session's tab to the front and NEVER records a number answer as delivered
-  // (tui-answer.cjs). Resolves true for "open it", else {ok:false, flash}.
-  const tuiCard = openCardById(id);
-  if (tuiCard && tuiAnswer.tuiAction(tuiCard, choice)) {
-    return tuiAnswer.answerInTerminal(tuiCard, choice, {
-      sessionName: cardSessionName,
-      type: (name, keys) => tuiAnswer.typeIntoSession(name, keys),
-      record: (cardId, key, why) => decisionCards.answerCard(cardId, key, note || why),
-    }).then((r) => {
-      if (!r.ok) {
-        debugLog(`[tui-answer] ${id} ${choice}: ${r.error}`);
-        return { ok: false, flash: r.flash, error: r.error };
-      }
-      void postToRelay(RELAY_CHANNEL, `opened the session for ${id} (via desk)`)
-        .then(() => void refreshRelayFeed());
-      return true;
-    });
-  }
-  const ok = note ? decisionCards.answerCard(id, choice, note) : decisionCards.answerCard(id, choice);
+  const ok = decisionCards.answerCard(id, choice);
   if (ok) {
     // The loop closes only if the SESSIONS see the answer: post it to the
     // coordination channel the fleet already reads. Best-effort — a quiet
@@ -5870,26 +3791,6 @@ setOverlayHost({
     pushDeskState();
     return { ok: true, url: verdict.url };
   },
-  // window.aitherDeskVerbs from a desk-hosted Veil page (living-desktop-preload.cjs).
-  deskVerb: (verb, msg) => {
-    if (verb === "pin") {
-      const item = msg && msg.item && typeof msg.item === "object" ? msg.item : null;
-      if (!item) return { ok: false, error: "pin needs a card {kind, src, title}" };
-      // A url/youtube/gif/image card is re-derived from its address (a Veil page sends
-      // the watch URL for YouTube); app/note/widget cards go through normalizePinItem.
-      const fromUrl = ["url", "youtube", "gif", "image"].includes(item.kind)
-        ? require("./pin-item.cjs").pinItemFromUrl(String(item.src || ""), { title: item.title || "" }) : null;
-      const verdict = require("./pins-window.cjs").addPin(fromUrl || item);
-      return verdict.ok ? { ok: true, id: verdict.pin.id } : { ok: false, error: verdict.reason };
-    }
-    if (verb === "ink") { require("./ink-window.cjs").toggleDraw(); return { ok: true }; }
-    if (verb === "gif") return require("./gif-picker-window.cjs").openGifPicker(String((msg && msg.query) || ""));
-    if (verb === "canvas") {
-      if (commandRegistry.byId("canvas.open")) return runCommand("canvas.open", undefined, { surface: "online" }) || { ok: true };
-      return boardsWindow.createBoard();
-    }
-    return { ok: false, error: "unknown desk verb" };
-  },
   command: (id) => {
     if (!overlayBrowserHost.allowedCommand(id)) return;
     if (id === "desk.hide") return void hideLivingDesktop();
@@ -5898,9 +3799,13 @@ setOverlayHost({
       return void app.quit();
     }
     if (id === "terminal-dock.toggle") {
-      // The dock lives in the browser window: raise it first, then flip the dock.
-      if (!browserWindow.isBrowserWindowOpen()) browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
-      browserWindow.dockAction("toggle");
+      // The dock lives in the browser window. A click with no browser on screen must SHOW the
+      // terminal: a fresh window used to be flipped by "toggle" (the owner, 2026-11-16: the
+      // Terminal button opened the browser with only the closed session strip). Open it.
+      if (!browserWindow.isBrowserWindowOpen()) {
+        browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
+        browserWindow.dockAction("open");
+      } else browserWindow.dockAction("toggle");
     } else if (id === "browser.open") browserWindow.createBrowserWindow({ askAgent: browserAskAgent });
     else if (id === "browser.takeover") browserWindow.getGate().takeOver();
     else if (id === "browser.handback") browserWindow.getGate().handBack();
@@ -5925,104 +3830,17 @@ browserWindow.setAgentsHost(agentsPanel.createAgentsSource({
   getRoomStatus: () => (roomPublisher ? (roomPublisher.lastError || "ok") : "not started"),
   // Wrapped by createAgentsSource: an answered id stays unanswerable until the
   // decision watcher drops the card (awask's success is "spawned", not "took it").
-  answer: (id, choice, parent) => Promise.resolve(answerDeckCard(id, choice, parent)).then((result) => {
+  answer: (id, choice, parent) => {
+    const result = answerDeckCard(id, choice, parent);
     if (result && typeof result === "object" && result.pending) return { ok: true, pending: true, via: result.via };
-    if (result && typeof result === "object" && result.ok === false) return { ok: false, error: result.flash || result.error };
     return result ? { ok: true } : { ok: false, error: "awask did not take the answer" };
-  }),
+  },
 }));
 
 // The layers (owner, 2026-10-04: "awsh -> awdesk/avatar -> browser -> AitherOS Online
 // overlay"). The avatar docks into the browser rail and follows it; the rail pops
 // THE menu (the tray's) and runs its allowlisted commands through runCommand.
 const AVATAR_DOCK_PATH = () => path.join(app.getPath("userData"), "avatar-dock.json");
-/** The one store the dock and the display mode share: read as TEXT, merged on write,
- *  so `{docked}` and `{displayMode, displaySwarm}` never overwrite each other. */
-function readAvatarDockFile() {
-  try { return fs.readFileSync(AVATAR_DOCK_PATH(), "utf-8"); } catch { return ""; }
-}
-function writeAvatarDockText(text) {
-  try {
-    fs.mkdirSync(path.dirname(AVATAR_DOCK_PATH()), { recursive: true });
-    const tmp = `${AVATAR_DOCK_PATH()}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, text, "utf-8");
-    fs.renameSync(tmp, AVATAR_DOCK_PATH());
-  } catch { /* best-effort: the next launch docks and draws as defaults */ }
-}
-/** The companion store (~/.aither/desk-companion.json) as TEXT: the second half of
- *  the display-mode question (display-mode.cjs resolveStore). */
-function readCompanionStore() {
-  try { return fs.readFileSync(COMPANION_FILE, "utf-8"); } catch { return ""; }
-}
-/** The display mode actually in force, resolved from BOTH stores by ONE rule.
- *
- *  A store written BEFORE this feature has no displayMode. The old answer guessed
- *  "avatar" whenever the companion switch said avatar -- which disagreed with a
- *  screen showing the fairy because the sticky `avatarHidden` was set. The resolver
- *  reads what is drawn instead, and `legacy` says the answer came from an older
- *  shape: the mode is then written back ONCE, so the menu never has to guess again. */
-let displayMigrated = false;
-function displaySettingsNow() {
-  const dockText = readAvatarDockFile();
-  const resolved = displayMode.resolveStore({ dockText, companionText: readCompanionStore() });
-  if (resolved.legacy && !displayMigrated) {
-    displayMigrated = true;
-    // Best effort: a failed write leaves the resolver answering the same way.
-    writeAvatarDockText(displayMode.writeStore(dockText, resolved.settings));
-  }
-  return resolved.settings;
-}
-function saveDisplaySettings(settings) {
-  writeAvatarDockText(displayMode.writeStore(readAvatarDockFile(), settings));
-  return displaySettingsNow();
-}
-/**
- * Apply + persist one display mode (owner 2026-11-20).
- *
- * The desk's ONE-surface rule (companion-surface.cjs, same day) has a declared
- * exception now: the owner's own display mode. `avatar` and `fairy` keep that plan;
- * `both`/`swarm` deliberately keep the body AND the ONE fairy cluster -- the mode IS
- * the exception, so they never go through setCompanionMode's stand-down.
- */
-async function applyDisplayMode(mode) {
-  await waitForAvatarGrow();
-  const next = displayMode.normalize({ ...displaySettingsNow(), mode });
-  const bodyVisible = () => Boolean(avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible());
-  if (next.mode === "fairy") {
-    if (companionMode() !== "fairy") await setCompanionMode("fairy");
-    else if (!bodyVisible()) { try { orbWindow.returnFromAvatar(); } catch { /* not started */ } }
-  } else if (next.mode === "avatar") {
-    // An explicit `avatar` mode outranks the legacy sticky hide: `avatarHidden` was
-    // set by an older "Hide avatar" click, and leaving it in force is what made the
-    // menu tick "avatar only" over a fairy (owner's screenshot, 2026-11-20).
-    setAvatarHiddenByOwner(false);
-    if (companionMode() !== "avatar") await setCompanionMode("avatar");
-    else if (!bodyVisible()) await showOverlay({ focus: false });
-  } else {
-    // both/swarm: the body is its own surface and the ONE cluster stays. Do NOT go
-    // through showOverlay/setCompanionMode -- both run the one-surface stand-down,
-    // which is exactly what this declared mode suspends. Write the preference so the
-    // rest of the desk (tray labels, automatic callers) agrees the body is wanted.
-    try {
-      fs.mkdirSync(path.dirname(COMPANION_FILE), { recursive: true });
-      fs.writeFileSync(COMPANION_FILE, JSON.stringify({ ...readCompanionFile(), companion: "avatar" }));
-    } catch { /* the mode still holds for this run */ }
-    // A body that grew out of the fairy has no cluster to park: shrink her back first.
-    try { if (orbWindow.expanded()) await orbWindow.collapseToFairy(); } catch { /* cosmetic */ }
-    setAvatarHiddenByOwner(false);
-    showBodyDirect();
-  }
-  // The tick is ALWAYS the mode in force (owner 2026-11-20). A body that could not
-  // be raised is not "avatar" -- the screen shows the fairy, so the applied state says
-  // fairy. The owner's choice stays PERSISTED (`saveDisplaySettings(next)`), so the
-  // next launch retries it rather than silently downgrading the preference.
-  const applied = next.mode !== "fairy" && !bodyVisible() ? { ...next, mode: "fairy" } : next;
-  saveDisplaySettings(next);
-  try { orbWindow.setDisplayModeState(applied); } catch { /* orb not started yet (boot path) */ }
-  if (tray) refreshTrayMenu();
-  pushDeskState();
-  return { ok: true, ...applied };
-}
 avatarDock = createAvatarDock({
   avatar: () => (avatarWindow && !avatarWindow.isDestroyed() ? avatarWindow : null),
   browser: () => browserWindow.getWindow(),
@@ -6035,22 +3853,16 @@ avatarDock = createAvatarDock({
     }
   },
   save: (docked) => {
-    // Merge: the display mode lives in this same file (display-mode.cjs).
-    let src;
-    try { src = JSON.parse(readAvatarDockFile()); } catch { /* first run */ }
-    writeAvatarDockText(JSON.stringify({ ...(src && typeof src === "object" ? src : {}), docked }));
+    try {
+      fs.mkdirSync(path.dirname(AVATAR_DOCK_PATH()), { recursive: true });
+      fs.writeFileSync(AVATAR_DOCK_PATH(), JSON.stringify({ docked }), "utf-8");
+    } catch {
+      /* best-effort: the next launch docks by default */
+    }
   },
   onChange: () => {
     applyDockedCss();
     browserWindow.refreshShell();
-    // Dedocking/docking re-parents a visible body: the fairy must still be the only
-    // other thing on the desk for that instant (owner's one-surface rule).
-    if (!avatarGrowing && avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()) {
-      const dmode = displaySettingsNow().mode;
-      if (dmode !== "both" && dmode !== "swarm" && !orbWindow.expanded()) {
-        try { orbWindow.standDownForAvatar(); } catch { /* the fairy is not up */ }
-      }
-    }
     if (tray) refreshTrayMenu();
   },
 });
@@ -6106,8 +3918,7 @@ browserWindow.setShellHost({
   docked: () => avatarDock.isDocked(),
   overlayVisible: () => Boolean(desktopStatus().overlay.visible),
   popupMenu: (win) => Menu.buildFromTemplate(trayTemplateNow()).popup({ window: win }),
-  // The tab menu hands an argument too (pins.tab: the tab id); rail rows send none.
-  run: (id, arg) => runCommand(id, arg, { surface: "browser-rail" }),
+  run: (id) => runCommand(id, undefined, { surface: "browser-rail" }),
   // Read aloud from the browser: AitherVoice through the desk's one speech path (the
   // master/actor faders, mutes and pronunciation apply), in the docked body's voice.
   speak: (text) => speakAloud(String(text || "").slice(0, 2000)),
@@ -6117,146 +3928,8 @@ browserWindow.setShellHost({
  *  renders "relay unavailable" rather than pretending the channel is empty. */
 async function refreshRelayFeed() {
   const rows = await fetchRelayHistory();
-  // An agent that posted since the last read: its companion fairy flashes
-  // (agent-fairy.cjs presence, owner 2026-11-09). The first read only sets the mark.
-  for (const agent of agentPresence.newPosters(rows, relaySeenAt)) {
-    try { orbWindow.noteAgentPosted(agent); } catch { /* cosmetic */ }
-  }
-  relaySeenAt = agentPresence.latestAt(rows, relaySeenAt);
   relayFeed = rows;
   sendDeckState();
-}
-
-/** The newest relay message time already seen (0 = never read). */
-let relaySeenAt = 0;
-
-/**
- * Who is active on the platform, for the fairy's swarm: ONE read of Atlas'
- * presence (GET /atlas/presence through the gateway's atlas_presence tool), which is
- * itself built from the company board in Pulse + the Discord bot roster -- no
- * per-source poller here. A failed read keeps the last list. The live Claude Code
- * sessions on THIS machine join it, one companion each (owner 2026-11-10: "what about
- * discord fairies vs local fairy vs claude/terminal fairies") -- read from the same
- * ~/.claude/sessions list the Inbox session panel uses, so they show even when the
- * platform read fails.
- */
-let platformPresence = [];
-async function refreshAgentPresence() {
-  const snap = await atlasPresence();
-  if (snap && snap.ok && snap.presence && Array.isArray(snap.presence.agents)) {
-    platformPresence = snap.presence.agents;
-  }
-  let sessions = [];
-  try { sessions = agentPresence.sessionPresence(sessionContext.liveSessions()); } catch { /* none */ }
-  try {
-    // The swarm reads its own sources (the bots, sessions, remotes) and publishes the merge.
-    const host = getSwarmHost();
-    host.withBase([...platformPresence, ...sessions]);
-    await host.refresh();
-  } catch {
-    try { orbWindow.setPresence([...platformPresence, ...sessions]); } catch { /* the fairy is cosmetic */ }
-  }
-  return snap;
-}
-
-/**
- * A link a desk door opens (owner 2026-11-16: "no option for aitherbrowser?"):
- * link-opener.cjs decides -- an Aitherium URL goes to AitherBrowser, anything else to
- * the system browser; `prefer` ("aither" | "system") is an explicit pick.
- */
-function openLinkFromDesk(url, prefer = "") {
-  return require("./link-opener.cjs").openLink(url, {
-    prefer,
-    openAither: (u) => {
-      const verdict = browserPolicy.sanitizeUrl(u);
-      if (!verdict.ok) return { ok: false, error: verdict.reason };
-      browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
-      return { ok: true };
-    },
-    openSystem: (u) => { void shell.openExternal(u); return { ok: true }; },
-  });
-}
-
-/**
- * AitherBrowser in Windows' "open with" list. The HKCU registration was written only
- * by "Make Aither your default browser...", so the chooser never offered it (measured
- * 2026-11-16: no AitherBrowserURL key). Registering does NOT make it the default --
- * only the person picks that in Settings -- so the desk registers itself quietly at
- * start when it is not registered (or points at another build). Skipped for smoke and
- * scratch runs (AWDESK_NO_BROWSER_REGISTER=1), which must not repoint the owner's.
- */
-async function ensureAitherBrowserListed() {
-  if (process.platform !== "win32" || process.env.AWDESK_NO_BROWSER_REGISTER === "1") return { ok: false, skipped: true };
-  try {
-    const reg = require("./browser-default.cjs").createDefaultBrowser({
-      exe: process.execPath, appArgs: app.isPackaged ? [] : [app.getAppPath()],
-    });
-    if (await reg.registered()) return { ok: true, already: true };
-    const r = await reg.register({ openSettings: false });
-    debugLog(`[browser] AitherBrowser ${r.ok ? "listed in Windows' open-with" : `not listed: ${r.error}`}`);
-    return r;
-  } catch (error) {
-    return { ok: false, error: String((error && error.message) || error) };
-  }
-}
-
-/**
- * The fairy cluster's session fairies (fairy-cluster.cjs): one per live agent session,
- * read every 15 s so an ended session's fairy leaves inside ~30 s. Two sources merged
- * by session id: this machine's Claude Code tabs (pid-checked) and the awsh harness
- * daemon's unified list (its own sessions + discovered tabs; "exited" rows drop). A
- * daemon that does not answer keeps its last rows for 30 s, then they are reaped.
- */
-let clusterDaemonRows = [];
-let clusterDaemonAt = 0;
-let clusterSessionsBusy = false;
-async function refreshClusterSessions() {
-  if (clusterSessionsBusy) return;
-  clusterSessionsBusy = true;
-  try {
-    const checked = sessionContext.liveSessionsChecked();
-    let daemon = null;
-    try { daemon = await require("./sessions-client.cjs").listSessions({ timeoutMs: 4000 }); } catch { daemon = null; }
-    const now = Date.now();
-    if (daemon && daemon.ok) {
-      clusterDaemonRows = daemon.sessions;
-      clusterDaemonAt = now;
-    } else if (now - clusterDaemonAt > 30_000) {
-      clusterDaemonRows = [];
-    }
-    orbWindow.setClusterSessions([checked.live, clusterDaemonRows], { ok: checked.judged || Boolean(daemon && daemon.ok) });
-  } catch { /* the cluster is cosmetic; the next tick tries again */ } finally {
-    clusterSessionsBusy = false;
-  }
-}
-
-/**
- * The chat with one agent: the deck's per-agent chat (the relay thread under its
- * newest #agents message, the same persona its Discord bot speaks as). The deck
- * also offers the thread the board names (a Discord or GitHub thread) and its
- * Discord DM. Returns true when a surface took it.
- */
-function openAgentChat(agent, links = {}) {
-  const event = {
-    type: "deck:open-chat",
-    agent: String(agent || ""),
-    threadUrl: String((links && links.threadUrl) || ""),
-    dmUrl: String((links && links.dmUrl) || ""),
-  };
-  if (!event.agent) return false;
-  if (deckWindow && !deckWindow.isDestroyed()) {
-    deckWindow.show();
-    deckWindow.focus();
-    deckWindow.webContents.send("desk:event", event);
-    return true;
-  }
-  const opened = openConsole("cards", null) !== false;
-  try { browserWindow.sendToInternalTabs("desk:event", event); } catch { /* no browser yet */ }
-  // A tab that is still loading misses the first send: say it again once it is up.
-  setTimeout(() => {
-    try { browserWindow.sendToInternalTabs("desk:event", event); } catch { /* no browser */ }
-  }, 1500).unref?.();
-  return opened;
 }
 
 /** Pull the wake list from the harness daemon. Keeps the previous snapshot so
@@ -6700,32 +4373,6 @@ function wireConsoleHost(legacy) {
         close: () => {},
         isOpen: () => false,
       },
-      // The browser's library pages live in the browser (browser-library-pages.cjs).
-      history: {
-        open: () => browserWindow.openInternal("history", null, { askAgent: browserAskAgent }),
-        close: () => {},
-        isOpen: () => false,
-      },
-      bookmarks: {
-        open: () => browserWindow.openInternal("bookmarks", null, { askAgent: browserAskAgent }),
-        close: () => {},
-        isOpen: () => false,
-      },
-      downloads: {
-        open: () => browserWindow.openInternal("downloads", null, { askAgent: browserAskAgent }),
-        close: () => {},
-        isOpen: () => false,
-      },
-      permissions: {
-        open: () => browserWindow.openInternal("permissions", null, { askAgent: browserAskAgent }),
-        close: () => {},
-        isOpen: () => false,
-      },
-      "clear-data": {
-        open: () => browserWindow.openInternal("clear-data", null, { askAgent: browserAskAgent }),
-        close: () => {},
-        isOpen: () => false,
-      },
       projects: {
         open: () => browserWindow.openInternal("projects", null, { askAgent: browserAskAgent }),
         close: () => {},
@@ -6733,17 +4380,6 @@ function wireConsoleHost(legacy) {
       },
       notebooks: {
         open: () => browserWindow.openInternal("notebooks", null, { askAgent: browserAskAgent }),
-        close: () => {},
-        isOpen: () => false,
-      },
-      explore: {
-        open: () => browserWindow.openInternal("explore", null, { askAgent: browserAskAgent }),
-        close: () => {},
-        isOpen: () => false,
-      },
-      // The pin canvas lives in the browser (its app cards are live page views there).
-      canvas: {
-        open: () => browserWindow.openInternal("canvas", null, { askAgent: browserAskAgent }),
         close: () => {},
         isOpen: () => false,
       },
@@ -6845,13 +4481,6 @@ function wireConsoleHost(legacy) {
       // spawn chips and the Models & Market grid live here. It is the SAME renderer and the
       // same deck window as the inbox -- one component with a view prop -- so detaching it
       // reuses createDeckWindow rather than opening a second subscription to the same bridge.
-      gallery: {
-        open: () => createGalleryWindow(),
-        close: () => {
-          if (galleryWindow && !galleryWindow.isDestroyed()) galleryWindow.close();
-        },
-        isOpen: () => Boolean(galleryWindow && !galleryWindow.isDestroyed()),
-      },
       characters: {
         open: () => createDeckWindow(),
         close: () => {
@@ -6897,8 +4526,6 @@ browserWindow.configureInternal({
 // The Fleet page's "Open in Space" (fleet-window.cjs hands the raw link; we re-build it).
 // The page shows the link only when this build has a Space pane (Boolean(spacePane())).
 setFleetSpaceOpener((url) => openSpaceLink(url), () => Boolean(spacePane()));
-// The Fleet window's network reads the SAME universe client as the Space pane.
-setFleetUniverseSource((opts) => spaceClient().get(opts));
 
 // The LAST independent popup source folds in (owner, 2026-09-08: "I WANT TO
 // CONSOLIDATE AND DEDUPE"). A decision card had three unrelated homes -- awask's
@@ -6908,42 +4535,23 @@ setFleetUniverseSource((opts) => spaceClient().get(opts));
 // exists: the deck window if the Cards pane is DETACHED into it, otherwise the
 // console, and awask's popup only when neither is there to take it.
 decisionCards.setWindowRouter((_kind, id) => openInbox(id));
-// The signed approval is the SAME surface on every desk path. A click already goes
-// through answerDeckCard -> signedApproval.openApproveWindow; the launcher/palette
-// answer (card-answer -> decisionCards.answerCard*) fell back to that module's
-// shell.openExternal default, so one card opened the system browser and another an
-// in-app window. Give decision-cards the same window (the browser it lands in has no
-// persisted approve partition and no navigation guard).
-decisionCards.setSignedAnswerOpener((url) => {
-  try {
-    signedApproval.openApproveWindow({ BrowserWindow, url, log: debugLog, readCard: (id) =>
-      decisionCards.rawCard(id) || signedApproval.readCardRaw(id, decisionCards.storeDir()) });
-  } catch (err) {
-    debugLog(`[approve] window failed: ${err && err.message}`);
-    try { require("electron").shell.openExternal(url); } catch { /* no browser either */ }
-  }
-});
 
 /** Kid desk: one classroom window (the child's own Learn page and sprite) and a tray with
- *  "My classroom" and "My Space" only. See kid-desk.cjs. */
+ *  "My classroom" only. See kid-desk.cjs. */
 let kidDeskWindow = null;
-/** Open or bring forward the one classroom window (the only window kid mode ever shows).
- *  `door` is a kid-desk door NAME ("classroom" | "space"); none = only bring it forward. */
-function openKidClassroom(door = "") {
+/** Open or bring forward the one classroom window (the only window kid mode ever shows). */
+function openKidClassroom() {
   if (!app.isReady()) return;
-  kidDeskWindow = kidDesk.openClassroomWindow({ BrowserWindow }, { state: kidDeskMode(), existing: kidDeskWindow, door });
+  kidDeskWindow = kidDesk.openClassroomWindow({ BrowserWindow }, { state: kidDeskMode(), existing: kidDeskWindow });
 }
 function startKidDesk() {
-  const open = () => openKidClassroom();
+  const open = openKidClassroom;
   open();
   try {
     const iconPath = path.join(__dirname, "..", "build", "icon.png");
     tray = new Tray(nativeImage.createFromPath(iconPath).resize({ width: 20, height: 20 }));
     tray.setToolTip("My classroom");
-    tray.setContextMenu(Menu.buildFromTemplate(kidDesk.kidTrayTemplate({
-      openClassroom: () => openKidClassroom("classroom"),
-      openSpace: () => openKidClassroom("space"),
-    })));
+    tray.setContextMenu(Menu.buildFromTemplate(kidDesk.kidTrayTemplate({ openClassroom: open })));
     tray.on("click", open);
   } catch (error) {
     debugLog("kid desk tray unavailable", error?.message || error);
@@ -6962,83 +4570,32 @@ let phoneLink = null;
 function phoneTrayRows() {
   if (!phoneUsb || !phoneLink) return [];
   return require("./phone-link.cjs").trayItems(phoneUsb.phones(), phoneLink.links(), {
-    use: (serial) => void openThisPhone(serial),
+    use: (serial) => void usePhone(serial),
     unlink: (serial) => void unlinkPhone(serial),
     forget: (deviceId, serial) => { phoneLink.forget(deviceId); void unlinkPhone(serial); },
   });
 }
 
-/** Link one cable: serve it, reverse the phone's port onto it, open Aither there. {ok, error?} */
 async function usePhone(serial) {
   const phone = phoneUsb.phones().find((p) => p.serial === serial && p.state === "device");
-  if (!phone) return { ok: false, error: "That phone is no longer connected over USB." };
-  let result = { ok: true };
+  if (!phone) return;
   try {
     const port = await phoneLink.openFor(serial, phone.model);
     const rev = await phoneUsb.reverse(serial, port);
     if (!rev.ok) throw new Error(`adb reverse failed: ${(rev.stderr || rev.error?.message || "").slice(0, 200)}`);
     const launched = await phoneUsb.launch(serial);
-    if (!launched.ok) {
-      console.warn(`[desk] phone link: could not open Aither on the phone: ${launched.stderr.slice(0, 200)}`);
-      result = { ok: false, error: "Linked, but Aither would not open on the phone. Is the Aither app installed?" };
-    }
+    if (!launched.ok) console.warn(`[desk] phone link: could not open Aither on the phone: ${launched.stderr.slice(0, 200)}`);
   } catch (e) {
     phoneLink.closeFor(serial);
-    result = { ok: false, error: String(e?.message || e) };
+    dialog.showErrorBox("Phone link", String(e?.message || e));
   }
   if (tray) refreshTrayMenu();
-  return result;
 }
 
 async function unlinkPhone(serial) {
   phoneLink.closeFor(serial);
   await phoneUsb.unreverse(serial).catch(() => {});
   if (tray) refreshTrayMenu();
-}
-
-/** The "Phone connected" toast, the tray row and the app all land here: ALWAYS a visible outcome. */
-async function openThisPhone(serial) {
-  const panel = require("./phone-panel.cjs");
-  panel.openPhonePanel(serial);
-  const phone = phoneUsb && phoneUsb.phones().find((p) => p.serial === serial);
-  const linked = phoneLink && phoneLink.links().some((l) => l.serial === serial);
-  if (phone && phone.state === "device" && !linked) await phoneAct(serial, "link");
-  void panel.refreshPhonePanel();
-}
-
-function phoneSnapshot(serial, ctx = {}) {
-  return require("./phone-panel.cjs").describePhone({
-    phone: phoneUsb ? phoneUsb.phones().find((p) => p.serial === serial) || null : null,
-    link: phoneLink ? phoneLink.links().find((l) => l.serial === serial) : undefined,
-    busy: ctx.busy, error: ctx.error, lastCapture: ctx.lastCapture,
-  });
-}
-
-async function phoneAct(serial, verb) {
-  const link = phoneLink.links().find((l) => l.serial === serial);
-  switch (verb) {
-    case "link": return usePhone(serial);
-    case "unlink": await unlinkPhone(serial); return { ok: true };
-    case "forget":
-      if (link && link.deviceId) phoneLink.forget(link.deviceId);
-      await unlinkPhone(serial);
-      return { ok: true };
-    case "open-app": {
-      const r = await phoneUsb.launch(serial);
-      return r.ok ? { ok: true } : { ok: false, error: "Aither would not open on the phone. Is the app installed?" };
-    }
-    case "capture": {
-      const r = await phoneUsb.screencap(serial);
-      if (!r.ok) return { ok: false, error: `Could not capture the screen: ${r.error}` };
-      const dir = path.join(app.getPath("downloads"), "From phone");
-      fs.mkdirSync(dir, { recursive: true });
-      const file = path.join(dir, `phone-screen-${new Date().toISOString().replace(/[:.]/g, "-")}.png`);
-      fs.writeFileSync(file, r.png);
-      try { shell.showItemInFolder(file); } catch { /* the path is shown in the panel */ }
-      return { ok: true, file };
-    }
-    default: return { ok: false, error: "unknown action" };
-  }
 }
 
 function phoneLinkActions() {
@@ -7109,15 +4666,6 @@ function phoneLinkActions() {
       const verdict = await runCommand(command.id, arg, { surface: "phone" });
       return { ok: true, id: command.id, ...(verdict && typeof verdict === "object" ? { verdict } : {}) };
     },
-    // Desktop pins + ink from a paired phone (2026-11-07): "push a URL or a GIF to
-    // the desktop". The same pairing auth as every verb here; nothing new is opened.
-    "pin.add": async ({ url, card }) => pinFromArg(card && typeof card === "object" ? JSON.stringify(card) : url),
-    "pin.list": async () => ({ ok: true, pins: require("./pins-window.cjs").listPins() }),
-    "pin.close": async ({ id }) => require("./pins-window.cjs").closePin(String(id || "")),
-    "gif.pin": async ({ query }) => pinTopGif(query),
-    "ink.toggle": async ({ through = false }) => (through
-      ? require("./ink-window.cjs").setPassThrough(null)
-      : require("./ink-window.cjs").toggleDraw()),
     "clipboard.get": async () => ({ ok: true, text: clipboard.readText().slice(0, 64 * 1024) }),
     "clipboard.set": async ({ text }) => { clipboard.writeText(String(text ?? "").slice(0, 64 * 1024)); return { ok: true }; },
     "file.send": async (a) => {
@@ -7154,9 +4702,8 @@ function startPhoneLink() {
       return response === 0;
     },
     actions: phoneLinkActions(),
-    onChange: () => { syncPhoneMesh(); if (tray) refreshTrayMenu(); void require("./phone-panel.cjs").refreshPhonePanel(); },
+    onChange: () => { syncPhoneMesh(); if (tray) refreshTrayMenu(); },
   });
-  require("./phone-panel.cjs").configurePhonePanel({ snapshot: phoneSnapshot, act: phoneAct });
   // The mesh/remote listener: only while a phone is approved and this PC has a tailnet
   // address (the Aither tunnel reaches it there). AWDESK_PHONE_MESH=0 keeps it cable-only.
   const { meshAddressOf } = require("./phone-link.cjs");
@@ -7181,16 +4728,13 @@ function startPhoneLink() {
       // the cable is out: that phone's server goes with it
       for (const p of removed) phoneLink.closeFor(p.serial);
       for (const p of added) {
-        if (p.state === "device") {
-          // The click links the cable AND opens the This phone panel, so it always shows something.
-          toaster.show({
-            title: `Phone connected: ${p.model}`, body: "Click to use this phone with Aither",
-            onClick: () => openThisPhone(p.serial),
-          });
+        if (p.state === "device" && Notification.isSupported()) {
+          const n = new Notification({ title: `Phone connected: ${p.model}`, body: "Click to use this phone with Aither" });
+          n.on("click", () => void usePhone(p.serial));
+          n.show();
         }
       }
       if (tray) refreshTrayMenu();
-      void require("./phone-panel.cjs").refreshPhonePanel();
     },
   });
   phoneUsb.start();
@@ -7329,8 +4873,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     console.warn("[desk] support reports not started:", err?.message || err);
   }
   app.on("second-instance", (_event, argv) => {
-    // A keepalive knock (logon shim, desk alive but stalled) is no request: never show a thing.
-    if (argv.includes("--keepalive")) return;
     // Kid mode: whatever the second launch asked for (--open-deck, --fleet, --console,
     // --run=, a desk:// link), the child gets their classroom and nothing else.
     if (kidDeskMode().enabled) {
@@ -7339,13 +4881,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     }
     const handled = argv.some((value) => value.startsWith(`${protocolScheme}://`));
     handleProtocolArgv(argv);
-    // A link from another app once Aither is the default browser (browser-default.cjs
-    // registers `--browser-url "%1"`), or the Start menu's Aither Browser (`--browser`).
-    const browserUrl = require("./browser-default.cjs").urlFromArgv(argv);
-    if (browserUrl || argv.includes("--browser")) {
-      browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: browserUrl });
-      return;
-    }
     // `Desk.exe --quit` (the jump list's "Quit Aither"): quit now. The launcher ends this
     // process itself if this line never runs (quit-others.cjs).
     if (argv.includes("--quit")) {
@@ -7440,11 +4975,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     deadAccels.clear();
     for (const k of Object.keys(liveAccels)) delete liveAccels[k];
     for (const { id, accel, electron: key, fallback } of commandRegistry.shortcuts(loadHotkeyOverrides())) {
-      // A desk hotkey while Ctrl+Alt is held is a CHORD, not hold-to-draw (ink-hold.cjs).
-      const onPress = () => {
-        try { require("./ink-window.cjs").noteHotkey(); } catch { /* ink not loaded */ }
-        return runCommand(id, undefined, { surface: "shortcut" });
-      };
+      const onPress = () => runCommand(id, undefined, { surface: "shortcut" });
       if (!globalShortcut.register(key, onPress)) {
         deadAccels.add(accel);
         // The default key is taken (PowerToys Run holds Alt+Space): try the fallback.
@@ -7461,18 +4992,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
   }
 
   app.whenReady().then(async () => {
-    // Protected video and music: start the Widevine CDM install (castLabs build) before
-    // any browser window exists, so a DRM page finds it. Not awaited: it settles in about
-    // a second, never rejects, and on stock Electron (no `components`) it does nothing.
-    try { void require("./browser-widevine.cjs").getWidevine().ensure(); } catch { /* the browser falls back to Edge */ }
     // Build the ONE Alt+Space launcher's window (and its IPC) now: a global shortcut
     // reports only key-down, so the box must already be loaded when the key lands.
     launcher.warm();
-    // The Copilot key -> this bar (copilot-key.cjs), when the setting is on (default).
-    if (intentBarMemory.copilotKey()) {
-      const st = copilotKey().start();
-      if (st.reason && st.reason !== "starting") console.warn(`[desk] Copilot key: ${st.reason}`);
-    }
     // Microphone permission: Electron DENIES getUserMedia by default, so the
     // push-to-talk renderer captured nothing and Ctrl+Shift+Space "had no effect"
     // (owner 2026-09-22). Grant audio/media to the desk's own windows.
@@ -7510,9 +5032,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       require("./resource-watchdog.cjs").startResourceWatchdog({
         app,
         posture: deskPostureState,
-        // Deliberate bulk work (the avatar library seed, in its own utility process) is
-        // not a leak: while it runs the guard reclaims but never restarts the desk.
-        hold: () => (avatarSeedActive ? "avatar library seed" : false),
         reclaim: ({ pressure }) => {
           try { browserWindow.discardHiddenTabs({ pressure }); } catch { /* no browser */ }
           // Under pressure every page session gives up its cache, the agent's own too
@@ -7546,13 +5065,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     }
     // Kid desk: the child's classroom and nothing else -- no avatar overlay, roster, agent
     // apps, palette, shortcuts, bridge or MCP. Everything adult below is never started.
-    // Ratings from what each model and VRoid Hub SAY about it (rating-resolve.cjs): raise, never
-    // lower, before any door reads a rating. Then keep asking AitherSafety: a plane that stops
-    // answering closes mature once its last answer is too old.
-    rederiveRatingsAtStart();
-    refreshSafetyPosture();
-    const safetyPoll = setInterval(refreshSafetyPosture, SAFETY_POLL_MS);
-    if (typeof safetyPoll.unref === "function") safetyPoll.unref();
     if (kidDeskMode().enabled) {
       startKidDesk();
       return;
@@ -7563,27 +5075,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     startAvatarSourceWatch();
     // Which avatar each agent wears, from the person's catalog (after the kid-desk return
     // above: a child's desk never pulls an adult library).
-    startAitherBody();
-    avatarCatalogSync.startCatalogSync({
-      log: debugLog,
-      // The whole pass (catalog pull downloads + library seed) does bulk I/O with big
-      // Buffers: the desk is doing DELIBERATE work, so the memory guard must not read
-      // it as a leak (it reclaims, never restarts).
-      onWork: (active) => { avatarSeedActive = Boolean(active); },
-      // The library seed walks the whole roster, so it runs in a utility process: its
-      // 2 GB of model reads never become the desk's own heap (2026-11-20: main
-      // 150 -> 655 MB in one pass, then the desk vanished).
-      seedRunner: (() => {
-        const runner = require("./avatar-seed-runner.cjs").createSeedRunner({
-          fork: (script, args, options) => require("electron").utilityProcess.fork(script, args, options),
-          scriptPath: path.join(__dirname, "avatar-library-seed-worker.cjs"),
-          log: debugLog,
-        });
-        return () => runner.run();
-      })(),
-    });
-    // The rogues gallery: share/stream = safe mode, VRoid Studio exports, his rotation sets.
-    startGalleryWatches();
+    avatarCatalogSync.startCatalogSync({ log: debugLog });
     // Unpackaged runs (npx electron .) have no Start Menu shortcut registering
     // the AUMID, so Windows shows the RAW id as every toast's header — the
     // owner's decision-card notification read "com.xikhar.persona" instead of
@@ -7703,34 +5195,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // whose right answer was not one of its options had to be retyped in a
     // terminal. Mirrored to the coordination channel like an answer, so the
     // sessions see the order and not just its effect.
-    ipcMain.handle("desk:deck-session", (_event, cardId) => deckSession(cardId));
-    ipcMain.handle("desk:deck-session-act", (_event, payload) => deckSessionAct(payload));
-    ipcMain.handle("desk:deck-open-file", (_event, cardId, file) => {
-      const ctx = deckSession(cardId);
-      const wanted = String(file || "");
-      if (!ctx || !ctx.ok || !Array.isArray(ctx.files) || !ctx.files.includes(wanted)) {
-        return { ok: false, error: "not a file this session edited" };
-      }
-      try {
-        if (!fs.existsSync(wanted)) return { ok: false, error: "that file is gone" };
-        shell.showItemInFolder(wanted);
-        return { ok: true };
-      } catch (error) {
-        return { ok: false, error: String((error && error.message) || error) };
-      }
-    });
-    // A link in a card (a PR, a URL in a session's answer): http(s) only, through
-    // the browser policy, into an Aither Browser window -- never shell.openExternal.
-    ipcMain.handle("desk:deck-open-url", (_event, url) => {
-      const verdict = browserPolicy.sanitizeUrl(String(url || ""));
-      if (!verdict.ok || !/^https?:/i.test(verdict.url)) return { ok: false, error: verdict.reason || "not a web link" };
-      try {
-        browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: verdict.url });
-        return { ok: true };
-      } catch (error) {
-        return { ok: false, error: String((error && error.message) || error) };
-      }
-    });
     ipcMain.handle("desk:deck-steer", (_event, payload) => {
       const { id, text } = payload || {};
       const ok = decisionCards.steerCard(id, text);
@@ -7739,6 +5203,19 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           .then(() => void refreshRelayFeed());
       }
       return ok;
+    });
+    // Unverified heard: a spoken utterance the desk captured but could not
+    // confirm was the owner. It is NOT a note until the owner clicks to confirm
+    // (desk:deck-confirm-unverified); dismissing it drops it. This is the only
+    // door from ambient speech to a card, and it is an explicit click.
+    ipcMain.handle("desk:deck-pending-unverified", () => listUnverifiedHeard());
+    ipcMain.handle("desk:deck-confirm-unverified", (_event, payload) => {
+      const { id } = payload || {};
+      return confirmUnverifiedHeard(id);
+    });
+    ipcMain.handle("desk:deck-dismiss-unverified", (_event, payload) => {
+      const { id } = payload || {};
+      return dismissUnverifiedHeard(id);
     });
     // A credential typed into a desk card row. The row's masked field hands the
     // value straight here; main pipes it into secret_prompt.py's stdin door and
@@ -7752,44 +5229,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     });
     // One-stop-shop data: the Aitherium marketplace via market-client.cjs
     // (MCP to the local gateway, session bearer — same story as relay).
-    ipcMain.handle("desk:market-browse", async (_event, query) => {
-      const result = await marketClient.browse(typeof query === "string" ? query : "", "", 24);
-      // Only a listing THIS process was shown can be installed (same rule as vroidSeen):
-      // the renderer names an id, never a path or a flag.
-      for (const listing of result.listings || []) {
-        if (listing && typeof listing.id === "string") marketSeen.add(listing.id);
-      }
-      return result;
-    });
-    // Install = `adk pack install <id>` (awdk's one resolver: awpack, Library, awnode
-    // ext; one lock record with source + sha256). Main asks first, in a native dialog
-    // the page cannot answer for it, and asks AGAIN before any third-party add-on.
-    ipcMain.handle("desk:market-install", async (_event, listingId) => {
-      const id = typeof listingId === "string" ? listingId : "";
-      if (!marketSeen.has(id)) return { ok: false, id, detail: "not a listing the market showed this desk" };
-      const parent = deckWindow && !deckWindow.isDestroyed() ? deckWindow : undefined;
-      const confirm = async (step, info) => {
-        const third = step === "community";
-        const options = {
-          type: third ? "warning" : "question",
-          buttons: [third ? "Install anyway" : "Install", "Cancel"],
-          defaultId: third ? 1 : 0,
-          cancelId: 1,
-          title: third ? "Third-party add-on" : "Install add-on",
-          message: third
-            ? `${info.id} is a third-party add-on nobody at Aitherium reviewed.`
-            : `Install ${info.id}?`,
-          detail: third
-            ? "It runs with your permissions. Read it first. Install it anyway?"
-            : `Runs: adk pack install ${info.id} (verified, recorded with its source and hash).`,
-        };
-        const { response } = parent
-          ? await dialog.showMessageBox(parent, options)
-          : await dialog.showMessageBox(options);
-        return response === 0;
-      };
-      return marketClient.installWithConsent(id, { confirm });
-    });
+    ipcMain.handle("desk:market-browse", (_event, query) =>
+      marketClient.browse(typeof query === "string" ? query : "", "", 24));
     // The avatar store (W4-04): the person's own library and VRoid Hub search,
     // both through the broker (market-client.cjs -> portal /api/avatars). The
     // renderer names a library id or a VRoid model id, never a path, a rating or
@@ -7807,11 +5248,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // While the adult-content gate is closed no R15/R18 row reaches the Deck
       // (ACG004, carried over from model-browser.py); only listed models enter
       // vroidSeen, so an unlisted one cannot be installed either.
-      // ...and the AUDIENCE (owner 2026-11-17): Hearth/Work/safe mode list nothing above them.
-      const g = require("./avatar-gallery.cjs");
-      const cap = g.audienceCap(g.readGallery(galleryCastRaw()), { autoSafe: require("./content-rating.cjs").getAutoSafe() });
-      const models = avatarLibrarySync.visibleVroidModels(result.models, avatarLibrarySync.gateOpen())
-        .filter((m) => g.tierAllowed(require("./vroid-link.cjs").tierOfModel(m), cap));
+      const models = avatarLibrarySync.visibleVroidModels(result.models, avatarLibrarySync.gateOpen());
       for (const model of models) {
         if (model && typeof model.id === "string") vroidSeen.set(model.id, model);
       }
@@ -7828,11 +5265,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       } else if (kind === "vroid") {
         const model = vroidSeen.get(id);
         if (!model) return { ok: false, reason: "search VRoid Hub again, then choose the model" };
-        {
-          const g = require("./avatar-gallery.cjs");
-          const cap = g.audienceCap(g.readGallery(galleryCastRaw()), { autoSafe: require("./content-rating.cjs").getAutoSafe() });
-          if (!g.tierAllowed(require("./vroid-link.cjs").tierOfModel(model), cap)) return { ok: false, reason: "not available for who may see this desk right now" };
-        }
         result = await avatarLibrarySync.installVroidModel(model, deps);
       } else {
         return { ok: false, reason: "unknown avatar source" };
@@ -7846,25 +5278,8 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // rendered offscreen. Names are slug-validated — the renderer never names
     // a path. A thumb read/write failure is never fatal: the card falls back
     // to its monogram tile.
-    // The rogues gallery's page contract (gallery-host.cjs): verb + one argument object.
-    {
-      const handlers = require("./gallery-host.cjs").galleryHandlers(() => galleryDeps());
-      ipcMain.handle("desk:gallery", (event, verb, arg) => {
-        // Only the gallery page itself (its window, or its aither://gallery tab) -- never the
-        // avatar window or another preload.cjs window (review of #122).
-        if (!isGallerySender(event)) return { ok: false, error: "only the gallery page may do that" };
-        const fn = Object.prototype.hasOwnProperty.call(handlers, verb) ? handlers[verb] : null;
-        if (!fn) return { ok: false, error: `unknown gallery verb ${String(verb)}` };
-        try {
-          return fn(arg && typeof arg === "object" ? arg : {});
-        } catch (error) {
-          return { ok: false, error: error && error.message ? error.message : String(error) };
-        }
-      });
-    }
     ipcMain.handle("desk:character-thumb", (_event, name) => {
-      // A body the audience hides has no picture either (owner 2026-11-17).
-      if (!isValidCharacterName(name) || isHidden(name)) return null;
+      if (!isValidCharacterName(name)) return null;
       try {
         const file = characterThumbPath(name);
         if (!fs.existsSync(file)) return null;
@@ -7930,11 +5345,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       fetchRelayThread(RELAY_CHANNEL, typeof messageId === "string" ? messageId : ""));
     // System awareness snapshots (#9) — read-only, fail-soft by contract.
     ipcMain.handle("desk:system-snapshot", () => systemSnapshot());
-    // The Atlas board + digest, through atlas-client.cjs (gateway MCP). The
-    // digest is a write, so main never accepts an argument for it: the tool
-    // targets the owner the gateway already knows.
-    ipcMain.handle("desk:atlas-board", () => atlasBoard());
-    ipcMain.handle("desk:atlas-digest", () => atlasDigest());
     ipcMain.handle("desk:run-command", (_event, id) => {
       try {
         runCommand(String(id || ""), undefined, { surface: "avatar" });
@@ -7943,10 +5353,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         return { ok: false, error: String((error && error.message) || error) };
       }
     });
-    // A live discussion (discuss.cjs). Starting answers at once -- the run itself can
-    // last minutes -- and the engine speaks through the swarm's own bodies.
-    ipcMain.handle("desk:discuss", (_event, req) =>
-      swarmApi({ ...(req && typeof req === "object" ? req : {}), action: "discuss" }));
     ipcMain.handle("desk:voice-snapshot", () => voiceSnapshot());
     // Plan: configurable voice input + hotkeys, ONE settings surface.
     ipcMain.handle("desk:settings-get", () => {
@@ -7962,7 +5368,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           const label = command ? commandRegistry.labelOf(command, ctx) : k.id;
           return { ...k, label, dead: deadAccels.has(k.accel) };
         });
-        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings(), neurons: orbWindow.neuronsOn(), display: displaySettingsNow() };
+        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings() };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }
@@ -7973,30 +5379,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       try {
         const result = setOverlaySettings(patch);
         return result.ok ? { ok: true, overlay: overlaySettings() } : { ok: false, error: result.error };
-      } catch (error) {
-        return { ok: false, error: String((error && error.message) || error) };
-      }
-    });
-    // Visual neurons (neurons-model.cjs): a per-viewer switch in orb.json, off by
-    // default. orb-window owns the state, the graph and the batched send.
-    ipcMain.handle("desk:settings-set-neurons", (_event, on) => {
-      try {
-        const result = orbWindow.setNeurons(on === true);
-        refreshTrayMenu();
-        return { ok: true, neurons: result.neurons };
-      } catch (error) {
-        return { ok: false, error: String((error && error.message) || error) };
-      }
-    });
-    // Companion display (display-mode.cjs, owner 2026-11-20): the same four modes the
-    // fairy/avatar menus and the palette carry; this is the Settings switch.
-    ipcMain.handle("desk:settings-set-display", async (_event, mode) => {
-      try {
-        if (!displayMode.MODES.includes(String(mode || ""))) {
-          return { ok: false, error: `mode is one of ${displayMode.MODES.join(", ")}` };
-        }
-        const result = await applyDisplayMode(String(mode));
-        return { ok: true, display: { mode: result.mode, swarm: result.swarm } };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }
@@ -8082,7 +5464,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       const res = await require("./link-client.cjs").linkStart();
       const url = res.ok && res.data && res.data.approve_url;
       // Only an https link from Identity is opened; anything else is shown, not followed.
-      if (typeof url === "string" && /^https:\/\//.test(url)) openLinkFromDesk(url);
+      if (typeof url === "string" && /^https:\/\//.test(url)) void shell.openExternal(url);
       return res;
     });
     ipcMain.handle("desk:link-poll", async (_event, deviceCode) => {
@@ -8125,13 +5507,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // publisher is attached to, so the owner's words appear in the room and the
     // answer comes back through the avatar's voice.
     ipcMain.handle("desk:voice-heard", async (_event, text) => {
-      // Optional wake word (cast.json voice.wakeWord): with the open mic on, only words
-      // that start with it are acted on (toolkit-core wakeGate). Push-to-talk passes.
-      let wakeWord = "";
-      try { wakeWord = String(((require("./desk-settings.cjs").current() || {}).voice || {}).wakeWord || ""); } catch { /* none */ }
-      const woke = require("./toolkit-core.cjs").wakeGate(String(text || ""), { wakeWord, openMic: openMicOn });
-      if (!woke.pass && String(text || "").trim()) return { ok: true, ignored: "no wake word" };
-      const said = woke.text;
+      const said = String(text || "").trim();
       listenState = "idle";
       refreshTrayMenu();
       if (!said) return { ok: false, error: "nothing was heard" };
@@ -8139,27 +5515,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       if (voiceAsk.offer(said)) {
         void speakAloud("Got it.", undefined, undefined, "slot0", "service:awdesk-voice");
         return { ok: true, text: said, answered: true };
-      }
-      // Voice control (owner 2026-11-13: "record this", "draw", "send to Jason", "open
-      // whiteboard"): a short command runs the desk command; everything else is speech.
-      const spokenCommand = require("./toolkit.cjs").voiceCommand(said);
-      if (spokenCommand) {
-        const toolkit = require("./toolkit.cjs");
-        const ran = await Promise.resolve(toolkit.handles(spokenCommand.id)
-          ? toolkit.run(spokenCommand.id, spokenCommand.arg)
-          : runCommand(spokenCommand.id, spokenCommand.arg, { surface: "voice" }));
-        const failed = ran && ran.ok === false;
-        void speakAloud(failed ? String(ran.error || ran.reason || "That did not work.").slice(0, 160) : "Done.",
-          undefined, undefined, "slot0", "service:awdesk-voice");
-        return { ok: !failed, text: said, command: spokenCommand.id, result: ran };
-      }
-      // Talking to an agent (its fairy was clicked, or it was just grown): the words go to
-      // THAT agent and its answer comes back in its own voice from its own body.
-      try {
-        const routed = await getSwarmHost().handleVoice(said);
-        if (routed) return { ok: true, text: said, agent: routed.agent, reply: routed.reply };
-      } catch (error) {
-        debugLog("swarm voice route failed", error?.message || error);
       }
       try {
         void speakAloud("On it, asking now.", undefined, undefined, "slot0", "service:awdesk-voice");
@@ -8178,16 +5533,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     ipcMain.on("desk:voice-listen-state", (_event, state) => {
       const next = String(state || "idle");
       const prev = listenState;
-      // OWNER BARGE-IN: a live discussion pauses the moment the owner starts talking
-      // and comes back when the mic is idle again. Guarded: a discussion is a
-      // convenience and must never be able to break the voice path.
-      try {
-        const engine = getDiscussEngine();
-        if (engine.state().running) {
-          if (next === "listening") engine.pause("the owner started talking");
-          else if (next === "idle" || next.startsWith("error:")) engine.resume();
-        }
-      } catch { /* no discussion engine: nothing to pause */ }
       // A failed capture ends a waiting ask with the reason. Under open mic a
       // cough is not an answer: keep waiting until the ask's own timeout.
       if (next.startsWith("error:") && !openMicOn) voiceAsk.fail(next.slice(6).trim());
@@ -8316,33 +5661,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       askImage: (filePath) => routeDrop({ filePath, mime: "image/png" }),
       onAnswer: announceDrop,
     });
-    // The local toolkit (toolkit.cjs): every transport injected here, none invented there.
-    require("./toolkit.cjs").configureToolkit({
-      runCommand: (cmd, cmdArg) => runCommand(cmd, cmdArg, { surface: "toolkit" }),
-      askImage: ({ filePath, prompt }) => routeDrop({ filePath, mime: "image/png", prompt }),
-      askText: (text) => commandAction(text, { source: "toolkit" }),
-      onAnswer: announceDrop,
-      postRelay: (text) => postToRelay(RELAY_CHANNEL, text),
-      token: () => browserWindow.onlineToken(),
-      currentTenant: () => deskTenant.currentTenant(),
-      lastCapture: () => {
-        const fsx = require("node:fs");
-        const mtime = (f) => { try { return f ? fsx.statSync(f).mtimeMs : 0; } catch { return 0; } };
-        const snip = capture.lastScreenshot();
-        const rec = recorder.lastRecordingPath();
-        return mtime(rec) > mtime(snip) ? rec : snip;
-      },
-      nativeFrame: (display) => capture.nativeFrame(display),
-      isRecording: () => recorder.isRecording(),
-      setForceInteractive: (on) => {
-        try { require("./living-desktop-window.cjs").setForceInteractive(on); } catch { /* no overlay */ }
-        if (avatarWindow && !avatarWindow.isDestroyed()) {
-          avatarWindow.setIgnoreMouseEvents(!on, { forward: true });
-          sendToAvatar("interact-mode", { on });
-        }
-        if (tray) refreshTrayMenu();
-      },
-    });
     // Warm the GDI grabber so Print Screen on a screen Chromium cannot see (the 4K on
     // the RTX 5090) opens in ~0.2 s instead of ~2.5 s. Late, so boot is not slowed.
     setTimeout(() => { try { capture.warmNativeGrabber(); } catch { /* the snip falls back to one-shot */ } }, 15_000);
@@ -8363,118 +5681,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // from the registry rows (orb.* / spirit.*), so there is no second key list
     // here. The spirit gets the desk's own voice, command runner, browser and
     // avatar rects -- it never invents a second TTS, runner or body list.
-    // The waiting list (fairy-queue-window.cjs) reads main's ONE ranked queue and
-    // opens a card on the same Inbox door every other surface uses. Nothing there
-    // answers a card; the Inbox stays the only answer surface.
-    fairyQueueWindow.configure({
-      cards: () => openDecisions,
-      openCard: (id) => openInbox(id),
-    });
-    // Hidden by default (owner 2026-11-13): an installed build moves an older orb.json
-    // to hidden once; a fresh one is hidden anyway. The tray repaints on every change.
-    orbWindow.onCompanionsChange(() => { if (tray) refreshTrayMenu(); });
     orbWindow.startOrb({
-      hideByDefault: app.isPackaged,
       speak: (text, { slotId = null, origin = "desk:spirit" } = {}) =>
         speakAloud(text, undefined, undefined, slotId || "slot0", origin),
-      // The cards live in the fairy (owner 2026-11-08, fairy-attention.cjs): it answers
-      // through the ONE desk answer path (signed approvals still go to their window),
-      // opens the Inbox on the card, and holds while quiet. A repeat is spoken unless
-      // the mic is muted; "Read it to me" (force) is the owner asking, so it speaks.
-      attention: {
-        answer: (id, key) => answerDeckCard(id, key, null),
-        open: (id) => openInbox(id || null),
-        // "N more waiting ›" (owner, 2026-11-10): the whole queue as ONE searchable
-        // list, not the Inbox on whatever card it last showed. Read-only; a row
-        // opens that card on `open` above.
-        openList: () => {
-          fairyQueueWindow.openQueue();
-          return true;
-        },
-        quiet: () => fairyQuietReason(),
-        idleMs: () => {
-          try { return powerMonitor.getSystemIdleTime() * 1000; } catch { return 0; }
-        },
-        // The nudge chime is silent while every voice is muted (the tray's Voices off).
-        soundMuted: () => voiceAllMuted(),
-        // "Talk": the voice card flow about THIS card, answered through answerDeckCard.
-        talk: (card) => talkAboutCard(card),
-        // An arrival ASKS when the mic is on and SAYS when it is off (deliverArrival).
-        micMuted: () => micMuted() || Boolean(voiceAsk.waiting),
-        // The fairy's right-click menu (owner 2026-11-12): "Dismiss" withdraws the
-        // card through awask (the raising session is told), "Go to session" brings
-        // its terminal tab forward, or reopens a session that has ended.
-        cancel: (id, note) => decisionCards.cancelCard(id, note),
-        // The doors on every companion menu and the tray's companion rows
-        // (companion-menu.cjs, owner 2026-11-13). Each opens; none toggles shut.
-        door: (name) => {
-          if (name === "desktop") { showLivingDesktop(); return true; }
-          const id = { spaces: "osapp.spaces", chat: "chat.open", settings: "settings.open", quit: "quit" }[name];
-          if (!id) return false;
-          runCommand(id, undefined, { surface: "fairy" });
-          return true;
-        },
-        // The fairy grows into Aither and back (avatar-grow.cjs, owner 2026-11-15).
-        expand: (opts) => expandAvatarFromFairy(opts),
-        collapse: (opts) => collapseAvatarToFairy(opts),
-        // Aither (female) / Aither (male) on the fairy's menu (aither-body.cjs).
-        aitherBodies: () => aitherBody.rows(aitherBodyFacts()),
-        pickAitherBody: (id) => setAitherBody(id),
-        focusSession: async (id) => {
-          const r = await deckSessionAct({ id, action: "focus" });
-          if (r && !r.ok && /ended/i.test(String(r.note || ""))) return deckSessionAct({ id, action: "resume" });
-          return r;
-        },
-        // Fine control over the fairies (fairy-control.cjs): a click selects one (push-to-talk
-        // goes to it), the menu grows it into its avatar or brings its terminal to the front.
-        select: (agent) => { try { getSwarmHost().talkTo(agent); } catch { /* the swarm is cosmetic */ } },
-        growAgent: (agent) => getSwarmHost().setAgentForm(agent, "avatar"),
-        focusAgentSession: async (agent, card) => {
-          if (card && card.sessionId) {
-            const r = await deckSessionAct({ id: card.id, action: "focus" });
-            if (r && !r.ok && /ended/i.test(String(r.note || ""))) return deckSessionAct({ id: card.id, action: "resume" });
-            return r;
-          }
-          const agentFairyLib = require("./agent-fairy.cjs");
-          for (const [id, live] of liveSessionMap({ fresh: true })) {
-            if (agentFairyLib.sessionKey(id) !== agent) continue;
-            const name = live && live.name ? live.name : "";
-            if (!name) return { ok: false, note: "That session has no terminal tab name." };
-            const r = await sessionContext.focusSessionTab(name);
-            return r.ok ? { ok: true, note: `Brought "${r.tab || name}" to the front.` } : { ok: false, note: `Could not find its terminal tab (${r.error}).` };
-          }
-          return { ok: false, note: "That session is not open." };
-        },
-        // Click a companion fairy: the chat with THAT agent (same persona as its
-        // Discord bot), continuing its thread when the board names one.
-        chat: (agent, links) => {
-          // Clicking an agent is also choosing who the next push-to-talk goes to.
-          try { getSwarmHost().talkTo(agent); } catch { /* the swarm is cosmetic */ }
-          return openAgentChat(agent, links);
-        },
-        // The fairy panel's session line (fairy-panel.cjs): the same live directory the
-        // browser's Agents tab reads, polled only while the panel is on screen.
-        sessions: () => require("./sessions-client.cjs").listSessions(),
-        // "Chat": a session card brings what the session last asked and said.
-        session: (card) => {
-          try { return card && card.sessionId ? deckSession(card.id) : null; } catch { return null; }
-        },
-        speak: (line, { force = false } = {}) => {
-          if (!force && micMuted()) return false;
-          try { void speakAloud(line, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { return false; }
-          return true;
-        },
-        // Display mode (owner 2026-11-20): the pure layout hangs `both`/`swarm` on the
-        // avatar window's real rect, and a fairy-menu pick persists through main (the
-        // same store the dock uses) so the next boot restores it.
-        avatarBounds: () => {
-          try {
-            return avatarWindow && !avatarWindow.isDestroyed() && avatarWindow.isVisible()
-              ? avatarWindow.getBounds() : null;
-          } catch { return null; }
-        },
-        setDisplayMode: (settings) => applyDisplayMode((settings && settings.mode) || "fairy"),
-      },
       runCommand: (id, arg) => runCommand(id, arg, { surface: "spirit" }),
       // The fairy wears the owner's AitherSprite: the ONE desk sign-in (the bearer
       // awconnect and notebooks also get); signed out -> the `adk login` profile ->
@@ -8506,23 +5715,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         }
         return out;
       },
-      display: displaySettingsNow(),
     });
-    // Display mode restored from the TWO stores through ONE resolver (owner 2026-11-20):
-    // the renderer and the menu read the same value, so the tick cannot disagree with
-    // the screen. The renderer is told the resolved mode at once; a body mode then
-    // raises the window, and applyDisplayMode reports back what the screen really got.
-    {
-      const boot = displaySettingsNow();
-      if (boot.mode === "fairy") orbWindow.setDisplayModeState(boot);
-      else {
-        // applyDisplayMode reports what the screen really got and sets the renderer's
-        // state itself; a failure leaves the fairy up rather than a blank desk.
-        applyDisplayMode(boot.mode).catch((error) => {
-          debugLog("[display-mode] the boot restore failed", String((error && error.message) || error));
-        });
-      }
-    }
     // [audio] System speakers + microphone. onChange re-renders the tray so its
     // Mute/Unmute rows match Windows; the warm helper is late so boot is not
     // slowed (the first hotkey pays the one Add-Type compile otherwise).
@@ -8594,7 +5787,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           // The old `portal.` host is RETIRED: it 301s to the apex (measured
           // 2026-09-19). Open the apex directly so the app does not depend on a
           // redirect that exists only for old links.
-          openLinkFromDesk("https://aitherium.com");
+          void shell.openExternal("https://aitherium.com");
           return true;
         case "switch-character": {
           // One-stop-shop switching: same path set_character over MCP uses,
@@ -8610,8 +5803,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           // Open one marketplace listing (aither:// or https://) externally.
           if (typeof arg !== "string" || arg.length === 0) return false;
           if (!/^(aither|https?):\/\//.test(arg)) return false;
-          if (/^https?:/.test(arg)) openLinkFromDesk(arg);
-          else void shell.openExternal(arg);
+          void shell.openExternal(arg);
           return true;
         }
         case "add-character": {
@@ -8662,22 +5854,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
             const result = await wakesFeedClient.mutate({ name: arg, verb });
             await refreshWakesFeed();
             return result;
-          } finally {
-            wakesPending.delete(key);
-          }
-        }
-        // Investigate: ONE agent session on the harness daemon, briefed with
-        // the wake's why + output tail. Fire-and-forget: the session lives on
-        // in the daemon (Agents panel); the row shows its id or the error.
-        case "wake-investigate": {
-          if (typeof arg !== "string" || !wakesFeedClient.WAKE_NAME_RE.test(arg)) {
-            return { ok: false, error: "invalid wake name" };
-          }
-          const key = `investigate:${arg}`;
-          if (wakesPending.has(key)) return { ok: false, error: "already in flight" };
-          wakesPending.add(key);
-          try {
-            return await wakesFeedClient.investigateWake(arg);
           } finally {
             wakesPending.delete(key);
           }
@@ -8923,13 +6099,16 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         }
         case "spawn-agent": {
           if (typeof arg !== "string" || arg.length === 0) return false;
-          // Owner 2026-11-17: only the body the owner assigned (cast.json authors), and only
-          // when the content rating lets it show. No assignment = no body: the agent stays a
-          // fairy until he picks one in the gallery. There is no automatic pick to fall to.
+          // U28: DELETED fallbackCharacterForAgent's own ad hoc hash in favour
+          // of cast-config's stableCharacter -- the SAME hash room-stage-host
+          // uses to seat an agent that arrives with no assignment, "so
+          // Add-Avatar and the room agree on what an agent looks like".
           const { filterCharacters } = require("./content-rating.cjs");
           const roster = filterCharacters(listCharacters());
           const assigned = getAgentAvatar(arg);
-          const character = assigned && roster.includes(assigned) ? assigned : null;
+          const taken = [...avatarSlots.values()].map((info) => info.name).filter(Boolean);
+          const resident = getActiveCharacter() || null;
+          const character = assigned || cast.stableCharacter(arg, roster, { taken, resident });
           if (!character) return false;
           return spawnAvatarSlot(nextFreeSlotId(), character, arg);
         }
@@ -8953,6 +6132,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     const mcpHandler = createDeskMcpHandler({
       filesAccess: filesAgent,
       systemInfo: sharedSystemMonitor().agent, // off Windows every system_* answers {ok:false, reason}
+      hostContext: () => sampleHostContext(), // host_context: the owner's foreground window
       fileAsk: require("./file-ask.cjs").createFileAsk({ files: filesAgent }),
       onAnimation: (animation) => {
         let animationEvent;
@@ -8982,8 +6162,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         active: getActiveCharacter(),
         characters: listCharacters(),
       }),
-      // Owner P0 2026-11-17: an agent may SHOW a body the owner already chose, never pick one.
-      onCharacter: (name) => agentMayShow(name) && applyCharacter(name),
+      onCharacter: (name) => applyCharacter(name),
       onAgent: (agent) => applyAgentAvatar(agent),
       listAgentAvatars: () => loadAgentAvatars(),
       onExportPortrait: async () => {
@@ -8996,25 +6175,15 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         const custom = listAvailableAnimations().map((file) => `FILE:${file}`);
         return [...builtIn, ...custom];
       },
-      onSpawnAvatar: (slotId, name) => agentMayShow(name) && spawnAvatarSlot(slotId, name),
-      // Agents PROPOSE a body; the owner applies it in the gallery with one click.
-      onProposeAvatar: ({ persona, character, why, by }) => {
-        if (!require("./character-roster.cjs").listAllCharacters().includes(String(character || ""))) return null;
-        const p = require("./avatar-gallery.cjs").propose(path.dirname(require("./cast-config.cjs").CAST_FILE()), { persona, character, why, by });
-        if (p) galleryBroadcast();
-        return p;
-      },
+      onSpawnAvatar: (slotId, name) => spawnAvatarSlot(slotId, name),
       onRemoveAvatar: (slotId) => removeAvatarSlot(slotId),
       onFleet: (action, opts) => fleetAction(action, opts),
       onCommand: (text, opts) => commandAction(text, opts),
-      // desk_tools / desk_tool_run / desk_intent: the intent bar's ONE command surface.
-      intentBar: () => intentBar(),
       onUniversalSearch: (q) => require("./search-window.cjs").universal().run(q, { phase: "all" }),
       tunnels: require("./tunnel-window.cjs").getTunnelClient(),
       // U28: the MCP `speak` tool door -- origin STAMPED here, same reason as
       // the bridge's speakHandler above.
       onSpeak: ({ text, voice, speed }) => speakAloud(text, voice, speed, undefined, "mcp:speak"),
-      swarm: (req) => swarmApi(req),
       onAsk: ({ question, timeoutMs }) => voiceAsk.ask(question, { timeoutMs }),
       // The Aither Browser's agent tools: the take-over gate runs before any of them.
       onBrowser: (action, args) => browserWindow.browserAgent({ askAgent: browserAskAgent })(action, args),
@@ -9039,14 +6208,16 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // sees the queue at all. Read-only; answering stays in the queue window.
       // The daemon's list (it expires due cards; the file read does not), the
       // local read only when the daemon is down -- labelled stale.
-      decisionsProvider: () => decisionCards.bridgeQueue({ endedOf: endedIdSet }),
+      decisionsProvider: () => decisionCards.bridgeQueue(),
       needsYouProvider: () => decisionCards.bridgeNeedsYou({
         snoozed: needsYouLib.snoozedIds(needsYouSnoozeDir()),
-        endedOf: endedIdSet,
       }),
       // Read-only: the hosted web surfaces see the same wake snapshot the deck
       // does. Mutations are NOT offered here — they go to the daemon window.
       wakesProvider: () => wakesFeed,
+      // GET /context/what: the host OS's foreground window, so an agent can ask
+      // "what am I looking at" instead of guessing. LOOPBACK ONLY (see the route).
+      hostContextProvider: () => sampleHostContext(),
       fleetHandler: (verb, { fresh = false } = {}) => fleetAction(verb === "open" ? "open_panel" : verb, { fresh }),
       // Genesis POST /beadspace/verbs (aitherium.com) relays here: the SAME desk:space-verb
       // the space pane runs, re-checked against main's own universe snapshot.
@@ -9055,11 +6226,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // U28: this is the POST /speak door -- origin STAMPED here, never read
       // off the request body (see speakAloud's own doc).
       speakHandler: ({ text, voice, speed, slot }) => speakAloud(text, voice, speed, slot, "bridge:/speak"),
-      swarmHandler: (req) => swarmApi(req),
+      // POST /speak/audio (bearer): a clip already synthesized elsewhere (a Discord
+      // call's own voice) played through the avatar, silent by default, so the mouth
+      // follows the audio the room is hearing instead of a second synthesis of the text.
+      speakAudioHandler: ({ audioBase64, volume, slot, text }) => playExternalSpeech(audioBase64, volume, slot, text),
       // The registry over loopback: what `awsh /desk` and `adk desk` list and run.
-      // The browser overlay (AitherConnect) -> the same engine as the desk pop-up.
-      assistHandler: (req) => assistMain().bridge(req),
-      assistAuth: (header) => assistMain().pairing.verify(header),
       commandsHandler: {
         list: () => commandRegistry.paletteRows(commandContext()),
         run: async (id, arg) => {
@@ -9088,29 +6259,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         if (pane === "inbox" || pane === "cards") return { ok: openInbox(id) !== false, pane: "inbox", card: id };
         return { ok: openConsole(pane) !== false, pane };
       },
-      stageStatusProvider: () => ({
-        ...(roomStageHost.status() || { room: false }),
-        mainLag,
-        present: { mode: presentState.present, gpu: presentState.gpu },
-        // The RENDERER's frame rate (S1): what the stage actually drew, not what main saw.
-        render: { fps: renderStats.fps, p95GapMs: renderStats.p95GapMs, at: renderStats.at || null },
-      }),
-      // The resource watchdog's own numbers, for soak/perf scripts (`npm run soak:memory`).
-      memoryProvider: () => {
-        const list = app.getAppMetrics();
-        const mb = (m) => Math.round(((m && m.memory && (Number(m.memory.privateBytes) > 0
-          ? Number(m.memory.privateBytes) : Number(m.memory.workingSetSize))) || 0) / 1024);
-        const main = list.find((m) => m && m.type === "Browser");
-        return {
-          mainMb: main ? mb(main) : 0,
-          totalMb: list.reduce((sum, m) => sum + mb(m), 0),
-          processes: list.length,
-          // Per-process detail: the watchdog's numbers, by pid and type. A utility
-          // process (the avatar-library seed) is visible here as its own row.
-          list: list.map((m) => ({ pid: m.pid, type: m.type, mb: mb(m) })),
-          at: Date.now(),
-        };
-      },
+      stageStatusProvider: () => ({ ...(roomStageHost.status() || { room: false }), mainLag, present: { mode: presentState.present, gpu: presentState.gpu } }),
       // POST /roster/capture (bearer): full-body frames for the rater. GET: progress.
       rosterCaptureHandler: (req) => (req.method === "GET" ? captureRosterStatus() : captureRoster(req)),
       avatarBoundsProvider: () =>
@@ -9156,31 +6305,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     boardsWindow.ensureIpc();
     boardsWindow.setChangeHook(() => { if (tray) refreshTrayMenu(); });
     void boardsWindow.restoreOpenBoards();
-    // ── desktop pins + GIF picker (2026-11-07) ────────────────────────────────
-    // Pins come back where they were; embedded pages open as Aither browser tabs
-    // when they try to leave their origin. The GIF filter is the strict one on a
-    // kid desk whatever the adult gate says.
-    try {
-      require("./pins-window.cjs").configurePins({
-        openInBrowser: (url) => { browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url }); return { ok: true, url }; },
-        launchApp: (src) => launchPinnedApp(src),
-        onChange: () => { if (tray) refreshTrayMenu(); },
-      });
-      const gifSearch = require("./gif-search.cjs");
-      require("./gif-picker-window.cjs").configureGifPicker({
-        gifs: gifSearch.createGifSearch({ strict: () => kidDeskMode().enabled || gifSearch.defaultStrict() }),
-      });
-      if (!kidDeskMode().enabled) require("./pins-window.cjs").restorePins();
-      // Screen ink: a mode change repaints the tray row + tooltip; hold-to-draw
-      // (Ctrl+Alt held, AWDESK_INK_HOLD to change or turn off) starts its key-state
-      // poller here and stops on quit.
-      const inkWindow = require("./ink-window.cjs");
-      inkWindow.configureInk({ onChange: () => { if (tray) { refreshTrayMenu(); refreshNotificationBadges(); } } });
-      if (!kidDeskMode().enabled) inkWindow.startHoldToDraw();
-      app.once("before-quit", () => { try { inkWindow.stopHoldToDraw(); } catch { /* gone */ } });
-    } catch (error) {
-      console.warn(`[desk] pins restore failed: ${error && error.message}`);
-    }
     void shellMenu.status().then((state) => {
       shellMenuOn = Boolean(state && state.enabled);
       if (tray) refreshTrayMenu();
@@ -9221,15 +6345,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     setFilesLaunchRouted(true);
     // The DLL reads this at click time; it must exist before the first click.
     rememberLaunchCommand();
-    if (process.platform === "win32" && !smokeIsRequested) setTimeout(() => { try { void assistMain().caret.prewarm(); } catch { /* pop-up warms on first use */ } }, 8000).unref?.();
     // The shell-menu flyout cold-starts Desk on first use after login; route
     // its --run/--arg pair exactly like a second launch does.
     routeColdRunRequest();
-    // A web link opened while the desk was not running (Aither as the default browser).
-    {
-      const coldUrl = require("./browser-default.cjs").urlFromArgv(process.argv);
-      if (coldUrl || process.argv.includes("--browser")) browserWindow.createBrowserWindow({ askAgent: browserAskAgent, url: coldUrl });
-    }
     // Keep the tray's Fleet line honest: re-render the menu after every verdict.
     getFleetControl().on("progress", (p) => {
       if (p?.phase === "end") refreshTrayMenu();
@@ -9243,18 +6361,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // immediately, then every 60s. A cockpit feed lags the channel by design
     // — it is a summary, not a client.
     void refreshRelayFeed();
-    void refreshAgentPresence();
-    // One tick for both: the relay feed and the platform presence (no extra poller).
-    relayFeedTimer = setInterval(() => { void refreshRelayFeed(); void refreshAgentPresence(); }, 60_000);
-    void refreshClusterSessions();
-    if (!smokeIsRequested) setTimeout(() => { void ensureAitherBrowserListed(); }, 20_000).unref?.();
-    // 6 s, not 15: this feed is also what makes a fairy visibly fly to the window an
-    // agent's tool call belongs to (tool-surface.cjs -> fairy-flight.cjs), and the
-    // daemon serves a snapshot its background refresher rebuilds every 2 s, so a
-    // 15 s poll simply missed most tool calls. One small request per tick; the
-    // cluster itself only redraws when its fairies change.
-    const clusterSessionsTimer = setInterval(() => { void refreshClusterSessions(); }, 6_000);
-    clusterSessionsTimer.unref?.();
+    relayFeedTimer = setInterval(() => void refreshRelayFeed(), 60_000);
     relayFeedTimer.unref?.();
 
     // awrise wakes: poll the daemon every 30 s and push only when something
@@ -9318,29 +6425,17 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // already has. A passive badge is why cards piled up unseen (owner,
     // 2026-09-21: "it doesnt prompt me, ask permission, give me anything to
     // click or respond to"). speakAloud + openInbox exist; wire them here.
-    // `silent`: a P0 escalation is saying the line instead (A5). The window ladder below
-    // still runs -- one surface, one voice -- but nothing here speaks over the alarm.
-    const announceDecisions = (list, isBacklog, { silent = false } = {}) => {
+    const announceDecisions = (list, isBacklog) => {
       try {
-        // The FAIRY delivers cards (owner 2026-11-15, furious: the Inbox window this
-        // used to raise is "ugly ass clunky cards ... and the fucking fairy isn't
-        // talking to me"). While the fairy is on screen and its loop runs, a new card
-        // is ITS arrival (fairy-attention isArrival): it flies to the pointer, speaks
-        // the question and shows one whisper with the card's own answers. Nothing here
-        // may speak over it or open the Inbox window; the old window stays behind the
-        // whisper's "Show details" and the list.
-        if (orbWindow.carriesCards()) {
-          debugLog(`[cards] ${list.length} ${isBacklog ? "backlog" : "new"} card(s) handed to the fairy`);
-          return;
-        }
         // A needs-you card LEADS the spoken line, backlog or not (needs-you.cjs):
         // a credential cannot be answered by voice, so it is said, not asked.
-        // Speaking is not raising: the toast below is all a card arrival does.
+        // The window ladder below still runs -- speaking is not raising.
         // Only on the backlog line or when a needs-you card is among the NEW ones:
         // an unrelated CI notice must not re-say the credential every time
         // (the hourly reminder below carries the repeat).
         const spokeNeedsYou = needsYou.length > 0
           && (isBacklog || list.some((c) => decisionCards.isNeedsYou(c)));
+        if (spokeNeedsYou) speakNeedsYou(list, isBacklog); // silent while the mic is muted
         const lead = (list[isBacklog ? 0 : list.length - 1]) || {};
         const title = String(lead.title || "a decision").slice(0, 120);
         const n = list.length;
@@ -9353,48 +6448,52 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
               : `${n} decisions need you. The latest is: ${title}.`);
         // A NEW card is a spoken question the owner can answer out loud
         // (voice-card.cjs); a backlog, a muted mic or an ask already waiting
-        // keeps the plain announcement. The toast below carries the answers.
-        // `silent` (A5): a P0 escalation is saying the line instead; nothing here
-        // speaks over the alarm.
-        if (!silent) {
-          if (spokeNeedsYou) {
-            speakNeedsYou(list, isBacklog); // silent while the mic is muted
-          } else if (!isBacklog && lead.id && !micMuted() && !voiceAsk.waiting) {
-            void answerCardByVoice(lead);
-          } else {
-            try { void speakAloud(phrase, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { /* best-effort */ }
-          }
+        // keeps the plain announcement. The Inbox opens below either way.
+        if (spokeNeedsYou) {
+          /* said above, needs-you first */
+        } else if (!isBacklog && lead.id && !micMuted() && !voiceAsk.waiting) {
+          void answerCardByVoice(lead);
+        } else {
+          try { void speakAloud(phrase, "nova", undefined, "slot0", "service:awdesk-decisions"); } catch { /* best-effort */ }
         }
         // WHICH card leads decides how loud the desk may be (owner, 2026-10-05:
         // a card "needs to actually come up in awdesk … not a separate thing").
+        // The NEWEST actionable card's urgency is the lever:
         //
-        // A1 (attention plan, 2026-11-18): the card lands as an ACTIONABLE Windows
-        // toast -- the card's own primary answer / Later / Open -- and NOTHING opens
-        // a window by itself. The high|critical auto-open ladder that stood here is
-        // GONE (it called openInbox on arrival): an always-on-top window taking
-        // focus mid-keystroke was the owner's complaint, not the fix. The button
-        // comes back through the desk:// protocol into answerDeckCard; Open (or the
-        // bell, the tray, the chip) is the owner's own tap. Do not disturb still
-        // silences it, and so does the companion's quiet mode (the fairy's "be quiet"
-        // from its menu or the tray) -- a card toast is an unsolicited popup like any
-        // other, so it waits the same way; the badge and the tray still carry the card.
+        //   high|critical -> open/focus the Inbox the moment it lands. The
+        //     throttle below is bypassed on purpose: a critical ask that waited
+        //     out a quiet period is the pile-up this whole plane exists to end.
+        //     The owner's own kill-file still wins — urgency may lift the
+        //     auto-open OPT-IN, never a switch they flipped deliberately.
+        //   low|normal -> one Inbox open per INBOX_OPEN_MIN_MS, and only when
+        //     the owner opted in (DESK_CARDS_AUTO_OPEN=1, no .popup-off).
+        // Owner, 2026-10-04: "decision cards still pop out on their own" — the
+        // bell, the tray count and the line above ARE the prompt, and the desk
+        // Inbox replaced the per-card Tk pop-out that used to spawn from here
+        // (up to three topmost windows beside the desk — the separate dialogue).
+        const newest = list.reduce(
+          (best, c) => (c && c.createdAt >= ((best && best.createdAt) ?? -1) ? c : best), null,
+        ) || lead;
+        const urgent = URGENT_URGENCIES.has(
+          String((newest && newest.urgency) || "normal").toLowerCase(),
+        );
+        const nowMs = Date.now();
+        // overlay-policy.cjs (2026-10-14): raising a window for a card is a
+        // NOTIFICATION trigger -- off by default (overlay.raiseOnNotifications) and
+        // silenced by Do not disturb; the card then lands as a tray balloon instead.
         try {
-          let quietUntil = 0;
-          try { quietUntil = orbWindow.quietUntil(); } catch { quietUntil = 0; }
-          const verdict = cardToast.cardToastAllowed({
-            quietUntil, nowMode: nowModeActive(), doNotDisturb: overlaySettings().doNotDisturb,
-          });
-          if (!verdict.allow) {
-            debugLog(`[card-toast] ${list.length} card(s) held: ${verdict.reason}`);
-          } else {
-            // A backlog announces its best card once; the rest are the badge's.
-            cardToast.announceCards(list, {
-              max: isBacklog ? 1 : cardToast.MAX_CARD_TOASTS,
-              actionable: toastActionsAvailable(),
-              mintTicket: (card) => cardTickets.mint(card && card.id),
-              notify: showCardToast,
-              log: debugLog,
-            });
+          const mayRaise = !nowModeActive() && !cardPopupsOff() && overlayMayRaise(overlayPolicy.TRIGGERS.NOTIFICATION, "inbox");
+          if (urgent) {
+            if (mayRaise) {
+              openInbox(newest && newest.id ? newest.id : null);
+              raiseLivingDesktop();               // an already-open overlay comes forward too
+              lastInboxOpenAt = nowMs;
+            } else if (!overlaySettings().doNotDisturb && !nowModeActive()) {
+              notifyQuietly("Aither — a decision needs you", String((newest && newest.title) || title).slice(0, 200));
+            }
+          } else if (mayRaise && cardWindowsMayOpen() && nowMs - lastInboxOpenAt >= INBOX_OPEN_MIN_MS) {
+            openInbox();                          // backlog: ONE console, no 30-popup storm
+            lastInboxOpenAt = nowMs;
           }
         } catch { /* best-effort */ }
       } catch { /* a prompt must never crash the poll */ }
@@ -9403,8 +6502,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     decisionWatchStop = decisionCards.watch({
       onChange: (cards) => {
         openDecisions = cards;
-        sweepEndedSessionCards(cards);
-        sweepAnsweredAsks(cards);
         needsYou = computeNeedsYou(cards);
         syncNeedsYouChip();
         refreshTrayMenu();
@@ -9421,45 +6518,24 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           return; // triage threw: keep the badge, never crash the poll
         }
         const ids = new Set(actionable.map((c) => c && c.id).filter(Boolean));
-        const p0Ids = actionable.filter((c) => needsYouLib.isP0(c)).map((c) => c && c.id).filter(Boolean);
         if (decisionsAnnounced === null) {
           decisionsAnnounced = ids;                 // first poll: surface backlog ONCE
-          // A backlog is not "new": the one needs-you line below carries it. Claim its P0s
-          // anyway so a restart cannot shout a card the owner already saw.
-          for (const id of p0Ids) p0ClaimStore().claim(id);
           if (actionable.length > 0) announceDecisions(actionable, true);
           return;
         }
         const fresh = actionable.filter((c) => c && !decisionsAnnounced.has(c.id));
         decisionsAnnounced = ids;
-        // A new P0 is its own escalation; the generic announcement still runs for the
-        // window ladder but stays silent only when a P0 ACTUALLY said the line (one
-        // voice, one batch). A card already in the ledger announces nothing, so it must
-        // not suppress the generic line too.
-        const freshP0 = fresh.filter((c) => needsYouLib.isP0(c));
-        const announcedP0 = freshP0.filter((c) => announceP0(c));
-        if (fresh.length > 0) announceDecisions(fresh, false, { silent: announcedP0.length > 0 });
+        if (fresh.length > 0) announceDecisions(fresh, false);
       },
     });
     // The liveness heartbeat awask reads before opening its own Tk window
     // (adk.decisions.notify.desk_alive): while the desk is up, the card is the
     // DESK's to surface — this watch just proved it is watching. Beat every
     // 20 s; stopped (and removed) on quit in before-quit.
-    // The fairy's claim rides the beat (2026-11-08): while it is on screen and its
-    // nudge loop runs, awask leaves its frameless Tk card window down -- the card is
-    // the fairy's to carry. Hidden fairy / avatar companion / dead desk = no claim.
-    deskHeartbeatStop = decisionCards.startHeartbeat({
-      // 2026-11-16 (owner: "still getting these bullshit decision cards instead of
-      // fairies"): the claim no longer needs the fairy ON SCREEN or the fairy companion
-      // mode -- the cluster surfaces a hidden orb for a card itself (orb-window
-      // surfaceForCards), so while the desk carries cards awask's Tk window stays down.
-      claim: () => (orbWindow.carriesCards() ? { attention: "fairy" } : null),
-    });
-    feedFairyCards();
+    deskHeartbeatStop = decisionCards.startHeartbeat();
     // Unanswered needs-you cards are re-spoken hourly (micMuted wins; a snooze
     // drops the card from the list). Also notices snoozes running out.
     const needsYouTimer = setInterval(() => {
-      sweepEndedSessionCards(openDecisions);
       const before = needsYouLib.needsYouSignature(needsYou);
       needsYou = computeNeedsYou();
       if (needsYouLib.needsYouSignature(needsYou) !== before) {
@@ -9473,14 +6549,6 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       }
     }, 5 * 60_000);
     needsYouTimer.unref?.();
-    // The second look of the ended-session sweep: a change event may never come, so the
-    // close would wait for the next card. Two and a half minutes clears the two-look rule.
-    const endedSweepTimer = setInterval(() => sweepEndedSessionCards(openDecisions), 150_000);
-    endedSweepTimer.unref?.();
-    // A question answered in the terminal changes no card file, so no change event
-    // comes: look at the open question cards' journals on a short clock.
-    const askSweepTimer = setInterval(() => sweepAnsweredAsks(openDecisions), 10_000);
-    askSweepTimer.unref?.();
 
     // 🚩 register() RETURNS whether it got the accelerator, and the answer was
     // thrown away. Another app holding Ctrl+Shift+= takes the only keyboard path
@@ -9580,7 +6648,12 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         actOnBrick,
         allowed: () => require("./desk-settings.cjs").current().updates?.enabled !== false
           && process.env.AWDESK_NO_UPDATE !== "1",
-        notify: ({ title, body, click }) => { toaster.show({ title, body, onClick: click }); },
+        notify: ({ title, body, click }) => {
+          if (!Notification.isSupported()) return;
+          const n = new Notification({ title, body });
+          if (click) n.on("click", click);
+          n.show();
+        },
         log: (line) => console.log(`[desk] ${line}`),
       }).start();
     } catch (e) {
@@ -9638,11 +6711,8 @@ app.on("activate", () => (kidDeskMode().enabled ? openKidClassroom() : showOverl
 
 app.on("before-quit", () => {
   isQuitting = true;
-  // The Copilot key hook leaves with the desk (it also exits when its stdin closes).
-  try { if (copilotKeyInstance) copilotKeyInstance.stop(); } catch { /* not started */ }
   // The orb is always-on-top glass; it leaves with the desk (its timers stop too).
   try { orbWindow.stopOrb(); } catch { /* not started */ }
-  try { if (assistMainInstance) { assistMainInstance.caret.stop(); assistMainInstance.utils.stop(); } } catch { /* no caret worker */ }
   // Windows: a verified installer waiting for this quit runs now, silently, no relaunch.
   deskUpdater?.installOnQuit({ sessionEnding });
   clearTimeout(hyprlandConfigurationTimer);

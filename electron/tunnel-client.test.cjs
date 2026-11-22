@@ -390,13 +390,9 @@ test("the up timeout kills the whole tree: taskkill /T /F on Windows, the proces
   assert.deepEqual(killed, [[-4242, "SIGTERM"]]);
 });
 
-test("the deny map is built from the REAL services.yaml plus the aw* daemons, named reasons kept", (t) => {
+test("the deny map is built from the REAL services.yaml plus the aw* daemons, named reasons kept", () => {
   const { ports, source } = loadDenyPorts({ env: {} });
-  // services.yaml belongs to the AitherOS checkout, not to this repo: CI runners have
-  // neither it nor C:\AitherOS-Fresh, so there is nothing to read. The FALLBACK map
-  // (same aw* daemons, named reasons) is asserted by the next test.
-  if (!source) return t.skip("AitherOS/config/services.yaml is not on this machine (owner checkout only)");
-  assert.ok(source.endsWith(path.join("config", "services.yaml")), `services.yaml found: ${source}`);
+  assert.ok(source && source.endsWith(path.join("config", "services.yaml")), `services.yaml found: ${source}`);
   assert.ok(Object.keys(ports).length > 100);
   for (const port of [8286, 9001, 8362, 8369, 47933]) assert.equal(ports[port], AW_DAEMON_PORTS[port]);
   assert.match(ports[8199], /AitherGym/);

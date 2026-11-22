@@ -79,12 +79,6 @@ const PANES = Object.freeze([
     id: "search", label: "Search", hint: "Web + platform search, deep research, Media Forge", section: "Now", icon: "search",
     kind: "file", file: "search.html",
   }),
-  // The pin canvas (owner, 2026-11-07: "have access to a canvas for pinning apps and
-  // widgets"): boards of live pages and widgets. canvas-model.cjs / browser-canvas.cjs.
-  Object.freeze({
-    id: "canvas", label: "Canvas", hint: "Pin apps and widgets on a board", section: "Now", icon: "grid",
-    kind: "file", file: "canvas.html",
-  }),
   Object.freeze({
     id: "cards", label: "Inbox", hint: "Decisions and messages", section: "Now", icon: "bell",
     kind: "view", query: "deck=1",
@@ -130,12 +124,6 @@ const PANES = Object.freeze([
   // that body (drag, right-drag, wheel, right-click) -- useless when the body is
   // hidden, tiny or behind a window, which is how the owner lost control of the
   // stage in the first place.
-  // The rogues gallery FIRST under Stage (owner 2026-11-17): my avatars, personas, the
-  // audience profile and safe mode. Same renderer bundle (it needs three.js for the live preview).
-  Object.freeze({
-    id: "gallery", label: "Gallery", hint: "Your avatars and who wears them; who may see them", section: "Stage", icon: "users",
-    kind: "view", query: "gallery=1",
-  }),
   Object.freeze({
     id: "stage", label: "Stage", tabLabel: "On stage", hint: "Who is on stage, how they look and sound", section: "Stage", icon: "users",
     kind: "file", file: "stage.html",
@@ -168,14 +156,6 @@ const PANES = Object.freeze([
   Object.freeze({
     id: "secrets", label: "Secrets", hint: "Names and masked hints, never values", section: "Data", icon: "key",
     kind: "file", file: "secrets.html",
-  }),
-  // Knowledge in one place (owner, 2026-11-13: "an easy way to query view knowledge graph
-  // and graphs and lyrawiki/llm.wiki + agent/llm context"): the platform graphs, the wiki
-  // (LyraWiki, or a wiki folder read offline) and what a session actually had.
-  // explore-window.cjs; Alt+Space graph / wiki / context land here (explore-verbs.cjs).
-  Object.freeze({
-    id: "explore", label: "Explore", hint: "Knowledge graphs, the wiki, and what an agent had in context", section: "Data", icon: "network",
-    kind: "file", file: "explore.html",
   }),
   Object.freeze({
     id: "fleet", label: "Fleet", hint: "Containers, VRAM, doors", section: "System", icon: "server",
@@ -224,30 +204,6 @@ const PANES = Object.freeze([
   Object.freeze({
     id: "local-ai", label: "Local AI", hint: "An AI model on this computer; chat when offline", section: "System", icon: "server",
     kind: "file", file: "local-ai.html",
-  }),
-  // The Aither Browser's own library, like edge://history and friends (owner, 2026-11-13,
-  // "close the gaps"): what you visited, your bookmarks, your downloads, what each site
-  // may use, and clearing it all. One page script (library-page.js) and one bridge
-  // (library-preload.cjs); browser-library-pages.cjs answers each page only its own data.
-  Object.freeze({
-    id: "history", label: "History", hint: "Pages you and your agents visited; search and delete", section: "Browser", icon: "book",
-    kind: "file", file: "library-history.html",
-  }),
-  Object.freeze({
-    id: "bookmarks", label: "Bookmarks", hint: "Your bookmarks and folders; import and export", section: "Browser", icon: "folder",
-    kind: "file", file: "library-bookmarks.html",
-  }),
-  Object.freeze({
-    id: "downloads", label: "Downloads", hint: "Files this browser downloaded", section: "Browser", icon: "archive",
-    kind: "file", file: "library-downloads.html",
-  }),
-  Object.freeze({
-    id: "permissions", label: "Site permissions", hint: "Camera, microphone, location, notifications and clipboard, per site", section: "Browser", icon: "key",
-    kind: "file", file: "library-permissions.html",
-  }),
-  Object.freeze({
-    id: "clear-data", label: "Clear browsing data", hint: "History, cookies, cache and saved passwords", section: "Browser", icon: "archive",
-    kind: "file", file: "library-clear.html",
   }),
   // One read-only status page per platform plane, all rendered by plane-page.js
   // over plane-client.cjs's fixed reads (Veil /api/admin/planes). Detach opens the

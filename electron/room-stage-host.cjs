@@ -122,20 +122,6 @@ function agentRosterPresence(deps) {
   }
 }
 
-/** The CANONICAL agent->voice map (agent-voices.generated.json, copied from
- *  AitherOS/config/agent_voices.json), handed to resolveActor as the voice tier
- *  BELOW cast.json `authors` and ABOVE the roster mirror. The roster carries
- *  stock *Neural ids; the canonical map carries the engine AitherVoice speaks
- *  (kokoro:am_michael). `deps.agentVoicesFile` is the test seam. Fail-soft. */
-function agentVoicesPresence(deps) {
-  try {
-    const raw = typeof deps.agentVoicesFile === "function" ? deps.agentVoicesFile() : deps.agentVoicesFile;
-    return cast.loadAgentVoices(raw ? { file: raw } : {});
-  } catch {
-    return {};
-  }
-}
-
 /**
  * liveResident — the character NAME the resident avatar (slot0) currently
  * wears, so a hash-picked visitor never lands on the same body. `stage.resident`
@@ -207,7 +193,6 @@ function buildResolver(deps, castFile, getSnapshot) {
       roster: safeRoster(deps),
       taken: takenCharacters(),
       resident: liveResident(deps, snapshot),
-      agentVoices: agentVoicesPresence(deps),
       agentRoster: agentRosterPresence(deps),
       env,
     });

@@ -2,7 +2,14 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { cardPrompt, matchReply } = require("./voice-card.cjs");
+const {
+  cardPrompt,
+  matchReply,
+  classifyCapture,
+  gateReply,
+  CAPTURE_PUSH_TO_TALK,
+  CAPTURE_OPEN_MIC,
+} = require("./voice-card.cjs");
 
 const card = {
   id: "c1",
@@ -19,7 +26,7 @@ test("the prompt reads the title and numbers every option, marking the recommend
   assert.equal(
     cardPrompt(card),
     "A decision needs you: Restart the scheduler?. Options: one, Restart now, recommended; "
-      + "two, Later tonight; three, Restart now and clear the queue. Say a number, later, or tell me what to do instead.",
+      + "two, Later tonight; three, Restart now and clear the queue. Say a number, or tell me what to do instead.",
   );
   assert.match(cardPrompt({ title: "Free text", options: [] }), /Tell me what to do\.$/);
 });
@@ -56,11 +63,71 @@ test("silence is nothing, and a card without options only steers", () => {
   assert.equal(matchReply({ title: "t", options: [] }, "yes").kind, "steer");
 });
 
-test("'later' / 'not now' puts the card off -- unless the card's own option says it", () => {
-  const plain = { id: "c2", title: "Ship it?", options: [{ key: "yes", label: "Ship" }, { key: "no", label: "Hold" }] };
-  for (const said of ["later", "Later.", "not now", "ask me later", "remind me later please"]) {
-    assert.deepEqual(matchReply(plain, said), { kind: "later" }, said);
-  }
-  assert.equal(matchReply(card, "later").kind, "answer", "an option named later wins");
-  assert.equal(matchReply(plain, "do it later after the deploy").kind, "steer");
+// ── owner-voice gate (prompt-injection defence) ───────────────────────
+// The defect: a card ask opened the mic, a YouTube video in the room was heard,
+// and the stray sentence was STEERED to the raising session as the OWNER's words
+// (a note marked "queued"). Ambient speech may never answer or steer a card.
+
+test("an ambient (open-mic) transcript is UNVERIFIED and never becomes a steer or answer", () => {
+  // The flagged sentence, verbatim in spirit: not a matching option.
+  const stray = "as we saw here in Lowell Massachusetts where the law sided with the community";
+  const g = gateReply(card, stray, { capture: CAPTURE_OPEN_MIC });
+  assert.equal(g.kind, "unverified", "ambient speech must not be steered");
+  assert.equal(g.verified, false);
+  assert.equal(g.reason, "ambient");
+  assert.equal(g.text, stray, "the caller may show it, but must not apply it");
+
+  // Even an option's exact words heard on the open mic is UNVERIFIED: nobody
+  // positive that the owner said it.
+  assert.equal(gateReply(card, "Restart now", { capture: CAPTURE_OPEN_MIC }).kind, "unverified");
+  // Defaults fail closed too: no options means the safest capture is ambient.
+  assert.equal(gateReply(card, "Restart now").kind, "unverified");
+});
+
+test("a transcript taken while media is playing is UNVERIFIED even on push-to-talk", () => {
+  assert.deepEqual(
+    classifyCapture({ capture: CAPTURE_PUSH_TO_TALK, mediaPlaying: true }),
+    { verified: false, reason: "media-playing" },
+  );
+  assert.equal(
+    gateReply(card, "do the other one", { capture: CAPTURE_PUSH_TO_TALK, mediaPlaying: true }).kind,
+    "unverified",
+  );
+});
+
+test("a positive speaker match makes the transcript verified and still steers/answers", () => {
+  // A matching speaker verifier is the strongest signal and wins over media.
+  assert.deepEqual(
+    classifyCapture({ capture: CAPTURE_OPEN_MIC, speakerVerified: true, mediaPlaying: true }),
+    { verified: true, reason: "speaker-match" },
+  );
+  // A verified, non-matching reply is still a steer (the feature keeps working).
+  assert.deepEqual(
+    gateReply(card, "wait until the ARC run finishes", { speakerVerified: true }),
+    { kind: "steer", text: "wait until the ARC run finishes", verified: true },
+  );
+  // A verified option pick is still an answer.
+  assert.deepEqual(
+    gateReply(card, "two", { speakerVerified: true }),
+    { kind: "answer", key: "later", label: "Later tonight", verified: true },
+  );
+});
+
+test("an explicit push-to-talk with no media is verified and still steers", () => {
+  assert.deepEqual(
+    classifyCapture({ capture: CAPTURE_PUSH_TO_TALK, mediaPlaying: false }),
+    { verified: true, reason: "explicit-push-to-talk" },
+  );
+  assert.deepEqual(
+    gateReply(card, "wait until the ARC run finishes", { capture: CAPTURE_PUSH_TO_TALK }),
+    { kind: "steer", text: "wait until the ARC run finishes", verified: true },
+  );
+});
+
+test("empty speech gates to none, never unverified noise", () => {
+  assert.deepEqual(gateReply(card, "   ", { capture: CAPTURE_OPEN_MIC }), {
+    kind: "none",
+    verified: false,
+    reason: "empty",
+  });
 });

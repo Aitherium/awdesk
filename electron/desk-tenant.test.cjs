@@ -132,7 +132,7 @@ test("JSON that is not an object -> warning, apex", () => {
 });
 
 test("BOM-prefixed file (PowerShell Set-Content) still parses", () => {
-  const r = resolve({ homedir: home(`\uFEFF${JSON.stringify({ host: "acme.aitherium.com" })}`) });
+  const r = resolve({ homedir: home(`﻿${JSON.stringify({ host: "acme.aitherium.com" })}`) });
   assert.equal(r.tenant.host, "acme.aitherium.com");
 });
 
@@ -239,24 +239,6 @@ test("a first-party tenant IS the overlay origin", () => {
   assert.equal(r.tenant.firstParty, true);
   assert.equal(tenant.overlayBaseUrl(r.tenant, "https://aitherium.com/"), "https://acme.aitherium.com/");
   assert.equal(tenant.overlayBaseUrl(null, "https://aitherium.com/"), "https://aitherium.com/");
-});
-
-test("the app window keeps a tenant's own shell; the apex keeps Desktop Anywhere", () => {
-  // Garg 2026-11-12: `?shell=aither-desktop` on the tenant host replaced the shell that
-  // reads the tenant's entitlement, so the GARG window showed the platform's generic apps.
-  const r = resolve({ homedir: home({ host: "acme.aitherium.com" }) });
-  const base = tenant.overlayBaseUrl(r.tenant, "https://aitherium.com/");
-  assert.equal(tenant.appWindowShell(r.tenant, base, "aither-desktop"), "");
-  // The apex (no tenant) is unchanged.
-  assert.equal(tenant.appWindowShell(null, "https://aitherium.com/", "aither-desktop"), "aither-desktop");
-  // An allowed_hosts tenant keeps the apex base, so it keeps the apex shell too.
-  const other = resolve({ homedir: home({ host: "workspace.acme.example", allowed_hosts: ["workspace.acme.example"] }) });
-  assert.equal(tenant.appWindowShell(other.tenant, tenant.overlayBaseUrl(other.tenant, "https://aitherium.com/"), "aither-desktop"),
-    "aither-desktop");
-  // ...and the window module asks this rule, never a constant.
-  const win = fs.readFileSync(path.join(__dirname, "living-desktop-window.cjs"), "utf8");
-  assert.match(win, /deskTenant\.appWindowShell\(TENANT, BASE_URL, DESKTOP_APP_SHELL\)/);
-  assert.doesNotMatch(win, /searchParams\.set\("shell", DESKTOP_APP_SHELL\)/);
 });
 
 test("CRASH: a host object with a hostile toString does not throw (fail open to apex)", () => {

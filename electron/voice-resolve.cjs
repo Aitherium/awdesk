@@ -135,21 +135,6 @@ function rosterFor(ctx) {
   }
 }
 
-// ─── the canonical tier (the platform's ONE voice per agent) ──────────────────
-
-/** The canonical agent_voices map for this call: ctx.agentVoices when a caller
- *  (a test) hands one, else the generated copy via cast.loadAgentVoices
- *  (mtime-cached, fail-soft to {}). ctx.agentVoicesFile is the file test seam.
- *  It sits ABOVE the roster mirror: kokoro:am_michael, not en-US-MichelleNeural. */
-function canonicalFor(ctx) {
-  if (ctx.agentVoices && typeof ctx.agentVoices === "object") return ctx.agentVoices;
-  try {
-    return cast.loadAgentVoices(ctx.agentVoicesFile ? { file: ctx.agentVoicesFile } : {});
-  } catch {
-    return {};
-  }
-}
-
 // ─── the gate ────────────────────────────────────────────────────────────────
 
 /**
@@ -158,10 +143,9 @@ function canonicalFor(ctx) {
  * @param {object} ctx
  *   {origin: string, slotId?: string, agent?: string, author?: string,
  *    seat?: number, text?: string, file?: string, agentRoster?: object,
- *    agentRosterFile?: string, agentVoices?: object, agentVoicesFile?: string}
+ *    agentRosterFile?: string}
  *   `agent` is the body's agent; voice.mutedAgents silences it, and it keys
- *   both the canonical (canonical.<agent>) and roster (roster.<agent>) tiers.
- *   `author`/`seat` are what a room-stage
+ *   the roster tier (roster.<agent>). `author`/`seat` are what a room-stage
  *   row was resolved with (main.cjs's speakAloud `speaker` argument) -- never
  *   a request body's field.
  *   `file` is a TEST SEAM (see cast-config.cjs's own DESK_CAST_FILE doc) --
@@ -189,14 +173,9 @@ function resolveSpeech(ctx = {}) {
       // would outrank an owner's authors record here and undo it at TTS time.
       author: ctx.author || null,
       seat: Number.isInteger(ctx.seat) && ctx.seat >= 0 ? ctx.seat : null,
-      // The agent's CANONICAL voice (the platform's agent_voices.json, mirrored
-      // in as agent-voices.generated.json): kokoro:<id> / local:piper / custom:<name>,
-      // the id AitherVoice actually speaks.
-      agentVoices: canonicalFor(ctx),
       // The agent's DECLARED voice (config/identities desk_presence, mirrored
       // into agent-roster.generated.json). Without it every voice.defaultVoice
-      // / defaults.voice replaced the roster voice the stage had picked. It is
-      // BELOW the canonical map: the roster still carries stock *Neural ids.
+      // / defaults.voice replaced the roster voice the stage had picked.
       agentRoster: rosterFor(ctx),
     });
 
