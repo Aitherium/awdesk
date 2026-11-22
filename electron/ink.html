@@ -148,7 +148,12 @@
   let cursor = { x: 0, y: 0, on: false };
   let chromeVisible = true;
   let fadeTimer = null;
-  let raf = 0;
+  // One pending repaint tick, and whether it is a rAF (drawing) or a slow idle timer.
+  // The in-flight mark is painted on the effects canvas every frame; the committed
+  // scene on #ink is repainted only when the document changes, so a 2880x1652 high-DPI
+  // surface is not cleared and re-rastered on every pointer sample.
+  let frameHandle = null;
+  let frameUsingRaf = false;
 
   // ── canvases ───────────────────────────────────────────────────────────────
   function fitCanvas(canvas) {
@@ -236,16 +241,43 @@
 
   // Fade ages are measured against item.createdAt (Date.now()), so marks are
   // faded on the epoch clock -- never performance.now() (which starts at ~0).
+  // The COMMITTED scene only. The mark being drawn lives on the effects canvas (see
+  // frame()), so this full-surface repaint runs on a document change, not per sample.
   function drawMarks(now = core.now()) {
     inkCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
     for (const item of doc.items) drawOne(inkCtx, item, core.fadeAlpha(item, now, st.fadeMs));
-    if (current) drawOne(inkCtx, current, 1);
   }
 
-  // ── effects: laser, cursor, ripples, spotlight ─────────────────────────────
+  // ── effects: the in-flight mark, laser, cursor, ripples, spotlight ─────────
+  //
+  // ONE repaint tick drives everything that moves. While drawing, a pointer sample only
+  // appends a point and asks for a tick: the committed #ink scene is never touched, and
+  // the in-flight mark is redrawn here on the cheap effects canvas. A pointer stream
+  // therefore costs at most one tick per frame, not one full-scene repaint per sample.
+  function scheduleFrame() {
+    const live = Boolean(st.active || current);
+    if (frameHandle != null) {
+      // Never run two ticks. If a slow idle timer is pending and we are now live,
+      // swap it for a rAF so the first point of a stroke paints on the next frame.
+      if (live && !frameUsingRaf) { clearTimeout(frameHandle); frameHandle = null; }
+      else return;
+    }
+    frameUsingRaf = live;
+    frameHandle = live ? requestAnimationFrame(frameTick) : setTimeout(frameTick, 300);
+  }
+
+  function frameTick() {
+    frameHandle = null;
+    frame();
+    scheduleFrame();
+  }
+
   function frame() {
     const now = performance.now();
     fxCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    // The mark being drawn is the ONLY thing that changes while the pointer moves, so
+    // it alone is re-outlined each frame (one stroke, not the whole scene).
+    if (current) drawOne(fxCtx, current, 1);
     if (st.active) {
       // laser trail: brightness by age
       laser = core.laserTrail(laser, now, LASER_TTL, 160);
@@ -296,7 +328,6 @@
     } else {
       spot.classList.remove("on");
     }
-    raf = st.active ? requestAnimationFrame(frame) : setTimeout(frame, 300);
   }
 
   // ── state from main ────────────────────────────────────────────────────────
@@ -316,6 +347,12 @@
     doc = { items: Array.isArray(next.items) ? next.items : [], undo: doc.undo, redo: doc.redo };
     document.body.classList.toggle("active", Boolean(st.active));
     toolbar.hidden = !(st.active && st.toolbar && chromeVisible);
+    // Leaving draw mode abandons a stroke still in flight (it was never committed) and
+    // wipes its effects-canvas copy, so no ghost is left behind.
+    if (!st.active && current) {
+      current = null;
+      fxCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    }
     drawMarks();
     renderToolbar();
     if (st.tool !== wasTool && st.tool !== "laser") laser = [];
@@ -324,6 +361,7 @@
       showHint(`${st.tool === "laser" ? "Laser" : st.tool === "spotlight" ? "Spotlight" : "Drawing"} on · `
         + "Esc exits · Ctrl+Alt+D toggles · Ctrl+Alt+C clears");
     }
+    scheduleFrame();
   }
 
   function renderToolbar() {
@@ -391,6 +429,7 @@
     }
     if (st.tool === "laser") {
       laser.push({ x: p.x, y: p.y, t: performance.now() });
+      scheduleFrame();
       return;
     }
     if (st.tool === "spotlight") return;
@@ -400,6 +439,7 @@
     } else {
       current = { ...baseItem(st.tool), type: "shape", a: { x: p.x, y: p.y }, b: { x: p.x, y: p.y } };
     }
+    scheduleFrame();
     e.preventDefault();
   }
 
@@ -419,14 +459,24 @@
     }
     if (!current) return;
     if (current.type === "stroke") {
-      const last = current.points[current.points.length - 1];
-      if (Math.hypot(p.x - last.x, p.y - last.y) < 1.2) return;
-      current.points.push({ x: p.x, y: p.y, p: pressureOf(e) });
-      if (current.points.length > core.MAX_POINTS) current.points.shift();
+      // Coalesced events: a 1000 Hz pen or a 4K mouse delivers several samples per
+      // frame; pointermove alone sees one. Every sample feeds the stroke.
+      const samples = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [];
+      const list = samples && samples.length ? samples : [e];
+      let grew = false;
+      for (const s of list) {
+        const q = local(s);
+        const last = current.points[current.points.length - 1];
+        if (Math.hypot(q.x - last.x, q.y - last.y) < 1.2) continue;
+        current.points.push({ x: q.x, y: q.y, p: pressureOf(s) });
+        grew = true;
+      }
+      if (current.points.length > core.MAX_POINTS) current.points.splice(0, current.points.length - core.MAX_POINTS);
+      if (!grew) return;
     } else {
       current.b = { x: p.x, y: p.y };
     }
-    drawMarks();
+    scheduleFrame();
   }
 
   async function onUp(e) {
@@ -438,6 +488,9 @@
     if (done.type === "shape"
       && Math.hypot(done.b.x - done.a.x, done.b.y - done.a.y) < 3
       && done.tool !== "rect" && done.tool !== "ellipse") { drawMarks(); return; }
+    // Keep the finished mark on the committed canvas until main's state lands, so it
+    // never blinks out for a frame between pointerup and the IPC reply.
+    drawOne(inkCtx, done, 1);
     const state = await api.add(done);
     if (state) applyState(state);
   }
@@ -446,7 +499,11 @@
   function onCancel(e) {
     releasePointer(e);
     erasing = false;
-    if (current) { current = null; drawMarks(); }
+    if (current) {
+      current = null;
+      fxCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      drawMarks();
+    }
   }
 
   // ── text boxes ─────────────────────────────────────────────────────────────
@@ -570,7 +627,7 @@
     const next = await api.init();
     applyState(next);
     startFadeClock();
-    if (!raf) frame();
+    scheduleFrame();
   })().catch(() => { /* the overlay stays blank; main owns the failure */ });
 </script>
 </body>

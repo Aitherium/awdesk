@@ -523,4 +523,6 @@ module.exports = {
   setTool, setColor, setWidth, setFade, clearDrawings, saveDrawing, status,
   closeInk, handlers, lastDrawingPath: () => lastDrawingPath, __state,
   __setDoc: setDoc, __doc: (displayId) => docs.get(displayId) || null,
+  // Probe seam (ink-draw-perf.cjs): the overlay's webContents for one display.
+  __senderOf: (displayId) => { const e = entryFor(displayId); return e ? e.win.webContents : null; },
 };
