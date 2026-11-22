@@ -1083,6 +1083,15 @@ function createWindow() {
   });
   avatarWindow.webContents.on("render-process-gone", (_event, details) => {
     debugLog("RENDERER PROCESS GONE", details.reason, details.exitCode);
+    // Restart the RENDERER, not the desk: a crashed/oom-killed avatar page used to leave
+    // an empty window (and, when the browser process stalled on it, an AppHangXProcB1
+    // that ended the whole app). Electron makes a fresh renderer on reload; did-finish-load
+    // above re-applies the docked look.
+    if (details.reason !== "clean-exit") {
+      try {
+        setTimeout(() => { if (!avatarWindow.isDestroyed()) avatarWindow.webContents.reload(); }, 500).unref?.();
+      } catch { /* window closing */ }
+    }
   });
   // Electron 39's console-message event passes ONE object, not five positional args —
   // the five-arg form still fires (nothing breaks) but logs a deprecation warning on
@@ -4013,6 +4022,13 @@ function createDeckWindow() {
   });
   deckWindow.webContents.on("render-process-gone", (_event, details) => {
     debugLog("DECK RENDERER PROCESS GONE", details.reason, details.exitCode);
+    // Same ladder as the avatar: reload THIS renderer (a fresh process) rather than
+    // leaving the deck blank or letting the stall reach the hang watchdog.
+    if (details.reason !== "clean-exit") {
+      try {
+        setTimeout(() => { if (!deckWindow.isDestroyed()) deckWindow.webContents.reload(); }, 500).unref?.();
+      } catch { /* window closing */ }
+    }
   });
   deckWindow.once("ready-to-show", () => {
     deckWindow.show();
@@ -5030,7 +5046,18 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           try { if (Notification.isSupported()) new Notification({ title: PRODUCT_NAME, body }).show(); } catch { /* no toast */ }
         },
       });
-      require("./resource-watchdog.cjs").startHangWatchdog({ utilityProcess });
+      // The hang guard gets the GPU child's pid so a main thread blocked in a
+      // synchronous wait on that child is cured by restarting the child (AppHangXProcB1,
+      // measured 2026-11-22: "Electron is not responding" while the GPU child was wedged).
+      // Ending the whole desk is the ladder's last rung, not its first.
+      const watchdog = require("./resource-watchdog.cjs");
+      watchdog.startHangWatchdog({
+        utilityProcess,
+        gpuPid: () => {
+          const gpu = watchdog.gpuProcess(app.getAppMetrics());
+          return gpu && gpu.pid ? gpu.pid : 0;
+        },
+      });
     }
     if (smokeIsRequested) {
       runSmokeTest();

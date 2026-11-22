@@ -34,6 +34,13 @@ const RUNAWAY_WINDOW_MS = 60_000;
 const MAX_RESTARTS_PER_HOUR = 2;
 const HANG_BEAT_MS = 5_000;
 const HANG_TIMEOUT_MS = 45_000;
+// After the hang watchdog restarts the GPU child it waits this long for the heartbeat to
+// return before it ends the main process. Chromium's browser process talks to its GPU
+// process synchronously, so a wedged GPU child (a driver stall, kernel-pool pressure, a
+// 3 GB child) reads to Windows as "Aither is not responding" -- AppHangXProcB1, measured
+// 2026-11-22. Respawning that ONE child takes under a second and is invisible; ending the
+// whole desk is the last resort, not the first.
+const HANG_RECOVER_MS = 10_000;
 
 /** KB (Electron's unit) -> MB, private bytes when the platform has them. */
 function procMb(m) {
@@ -115,6 +122,34 @@ function hangVerdict({ lastBeatAt, now, timeoutMs = HANG_TIMEOUT_MS }) {
   return now - lastBeatAt > timeoutMs ? "kill" : "ok";
 }
 
+/**
+ * Two-stage hang ladder -- "restart the child, not the desk".
+ *
+ *   "ok"      the main thread beat within `timeoutMs`
+ *   "recover" the main thread is silent, and the cheap cure (restart the GPU child) has
+ *              not been tried yet for THIS silence
+ *   "wait"    the GPU child was restarted `recoverMs` ago or less; give the main thread
+ *              that grace to come back before doing anything more
+ *   "kill"    still silent past the grace: the block is not the GPU child, so end it
+ *
+ * `gpuKilledAt` is cleared whenever a beat arrives (the child does that), so a fresh
+ * silence is always offered the cheap cure first. Pure; the child process owns the clock.
+ */
+function hangAction({ lastBeatAt, now, timeoutMs = HANG_TIMEOUT_MS, gpuKilledAt = null, recoverMs = HANG_RECOVER_MS }) {
+  if (lastBeatAt == null) return "ok"; // never beat yet: still starting
+  if (now - lastBeatAt <= timeoutMs) return "ok";
+  if (gpuKilledAt == null) return "recover";
+  return now - gpuKilledAt > recoverMs ? "kill" : "wait";
+}
+
+/** The GPU child's pid and private bytes, from an app.getAppMetrics()-shaped list. */
+function gpuProcess(metrics) {
+  const list = Array.isArray(metrics) ? metrics : [];
+  const gpu = list.find((m) => m && (m.type === "GPU" || m.type === "GPU Process"));
+  if (!gpu) return null;
+  return { pid: Number(gpu.pid) || 0, mb: procMb(gpu) };
+}
+
 /** Restart bookkeeping in userData: the times of recent self-restarts. */
 function restartLog(file) {
   const read = () => {
@@ -164,7 +199,7 @@ function startResourceWatchdog({ app, posture, reclaim, notify = () => {}, log =
 
 /** Electron wiring for the hang guard: a utility process that outlives a stuck main thread. */
 function startHangWatchdog({ utilityProcess, log = (l) => console.log(`[desk] hang-watchdog: ${l}`),
-  beatMs = HANG_BEAT_MS, timeoutMs = HANG_TIMEOUT_MS }) {
+  beatMs = HANG_BEAT_MS, timeoutMs = HANG_TIMEOUT_MS, recoverMs = HANG_RECOVER_MS, gpuPid = () => 0 }) {
   if (!utilityProcess || typeof utilityProcess.fork !== "function") return null;
   let child;
   try {
@@ -173,13 +208,20 @@ function startHangWatchdog({ utilityProcess, log = (l) => console.log(`[desk] ha
     log(`not started: ${error?.message || error}`);
     return null;
   }
-  child.postMessage({ type: "start", pid: process.pid, timeoutMs });
-  const beat = setInterval(() => { try { child.postMessage({ type: "beat" }); } catch { /* exited */ } }, beatMs);
+  // The GPU child's pid rides on every beat so the watchdog can restart THAT process
+  // when the main thread goes silent, instead of ending the whole desk. A caller that
+  // cannot answer (or an older main) sends 0 and the watchdog keeps its old behaviour.
+  const currentGpuPid = () => { try { return Number(gpuPid()) || 0; } catch { return 0; } };
+  child.postMessage({ type: "start", pid: process.pid, timeoutMs, recoverMs, gpuPid: currentGpuPid() });
+  const beat = setInterval(() => {
+    try { child.postMessage({ type: "beat", gpuPid: currentGpuPid() }); } catch { /* exited */ }
+  }, beatMs);
   if (typeof beat.unref === "function") beat.unref();
   return { child, stop: () => { clearInterval(beat); try { child.kill(); } catch { /* gone */ } } };
 }
 
 module.exports = {
-  BUDGETS, HANG_TIMEOUT_MS, MAX_RESTARTS_PER_HOUR, RUNAWAY_MB, SAMPLE_MS,
-  assess, createWatchdog, hangVerdict, restartLog, startHangWatchdog, startResourceWatchdog,
+  BUDGETS, HANG_RECOVER_MS, HANG_TIMEOUT_MS, MAX_RESTARTS_PER_HOUR, RUNAWAY_MB, SAMPLE_MS,
+  assess, createWatchdog, gpuProcess, hangAction, hangVerdict, restartLog, startHangWatchdog,
+  startResourceWatchdog,
 };
