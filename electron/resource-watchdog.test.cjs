@@ -130,6 +130,48 @@ test("main.cjs starts both watchdogs", () => {
   assert.match(src, /startHangWatchdog\(/);
 });
 
+// ── the hang ladder (2026-11-22: AppHangXProcB1 ended the whole desk) ───────
+
+test("hang action: silent -> restart the GPU child first, end the desk only after the grace", () => {
+  const base = { timeoutMs: 45_000, recoverMs: 10_000 };
+  assert.equal(wd.hangAction({ ...base, lastBeatAt: 0, now: 44_000 }), "ok");
+  // Silent past the limit, cheap cure not tried yet.
+  assert.equal(wd.hangAction({ ...base, lastBeatAt: 0, now: 46_000 }), "recover");
+  // GPU child restarted 3 s ago: give the main thread its grace.
+  assert.equal(wd.hangAction({ ...base, lastBeatAt: 0, now: 49_000, gpuKilledAt: 46_000 }), "wait");
+  // Still silent past the grace: the block is not the GPU child.
+  assert.equal(wd.hangAction({ ...base, lastBeatAt: 0, now: 57_000, gpuKilledAt: 46_000 }), "kill");
+  // No beat yet: still starting, never act.
+  assert.equal(wd.hangAction({ ...base, lastBeatAt: null, now: 999_999 }), "ok");
+});
+
+test("startHangWatchdog hands the GPU child's pid to the watchdog on start and every beat", () => {
+  const { EventEmitter } = require("node:events");
+  const child = new EventEmitter();
+  const posts = [];
+  child.postMessage = (m) => posts.push(m);
+  child.kill = () => {};
+  const utilityProcess = { fork: () => child };
+  const dog = wd.startHangWatchdog({ utilityProcess, gpuPid: () => 4242, beatMs: 1 });
+  assert.equal(posts[0].type, "start");
+  assert.equal(posts[0].gpuPid, 4242);
+  assert.ok(Number.isFinite(posts[0].recoverMs) && posts[0].recoverMs >= 1000, "the grace rides on start");
+  return new Promise((resolve) => setTimeout(() => {
+    dog.stop();
+    const beats = posts.filter((p) => p.type === "beat");
+    assert.ok(beats.length >= 1, "at least one beat fired");
+    assert.equal(beats[0].gpuPid, 4242, "the pid rides on every beat");
+    resolve();
+  }, 30));
+});
+
+test("main.cjs gives the hang watchdog the GPU pid and reloads a dead renderer, not the desk", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "main.cjs"), "utf8");
+  assert.match(src, /startHangWatchdog\(\s*\{[\s\S]{0,400}?gpuPid:/, "the GPU pid reaches the watchdog");
+  assert.match(src, /gpuProcess\(app\.getAppMetrics\(\)\)/, "the pid comes from the real metrics");
+  assert.match(src, /render-process-gone[\s\S]{0,400}?webContents\.reload\(\)/, "a dead renderer reloads itself");
+});
+
 // ── the GPU child guard (2026-11-07: the GPU process reached 9.2 GB) ────────
 
 test("gpuVerdict names the GPU child and only asks to kill it past the line", () => {
