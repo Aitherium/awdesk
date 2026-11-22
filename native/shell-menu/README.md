@@ -243,8 +243,14 @@ independently of the desk build.
 
 ## Verification status
 
-- **Built and signed in CI:** the workflow compiles, packs, signs, verifies the
-  publisher, and uploads the artifact. See the run linked on the PR.
+- **Built, packed and signed in CI (measured 2026-11-22):** the workflow
+  `Build Aither Shell Menu (Win11)` compiles both native files on a hosted
+  `windows-latest` runner, asserts AMD64 and a static CRT, packs the sparse
+  MSIX, signs it with a per-run self-signed certificate whose subject equals
+  `Identity/@Publisher`, verifies the signature, and uploads
+  `aither-shell-menu-win11`. The artifact was downloaded and re-checked: both
+  PE files are `0x8664`, the package contains `AppxManifest.xml`, `Assets\*`
+  and `AppxSignature.p7x`, and `SHA256SUMS.txt` matches.
 - **Not verified here:** installation on a real Windows 11 desktop, including
   the per-user (`%LOCALAPPDATA%\Aither`) ExternalLocation and whether the
   deployment stack accepts the stub as `Application/@Executable` without
