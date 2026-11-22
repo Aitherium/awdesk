@@ -28,6 +28,7 @@ const fs = require("node:fs");
 const { BrowserWindow, ipcMain, screen, session, shell } = require("electron");
 
 const deskTenant = require("./desk-tenant.cjs");
+const chatPopout = require("./chat-popout.cjs");
 
 //: Tenant mode (desk-tenant.cjs): a validated tenant host replaces the apex; no tenant
 //: config -> the apex, unchanged. LIVING_DESKTOP_URL stays the developer override.
@@ -204,6 +205,22 @@ ipcMain.on("living-desktop:desk-command", (event, id) => {
   if (!fromOverlay(event) || !overlayHost || typeof overlayHost.command !== "function") return;
   overlayHost.command(String(id || ""));
 });
+// window.aitherDeskVerbs (2026-11-07, the aitherone-canvas lane's contract): Veil asks
+// the desk to pin a card, start ink, open the GIF picker or the canvas. Fenced like
+// every plane; the preload adds the human-gesture check; main validates the card.
+const DESK_VERBS = new Set(["pin", "ink", "gif", "canvas"]);
+ipcMain.handle("living-desktop:desk-verb", async (event, msg) => {
+  if (!fromOverlay(event)) return { ok: false, error: "not the AitherOS Online overlay" };
+  const m = msg && typeof msg === "object" ? msg : {};
+  const verb = String(m.verb || "");
+  if (!DESK_VERBS.has(verb)) return { ok: false, error: `unknown desk verb ${verb.slice(0, 40)}` };
+  if (!overlayHost || typeof overlayHost.deskVerb !== "function") return { ok: false, error: "the desk has no verbs wired" };
+  try {
+    return (await overlayHost.deskVerb(verb, m)) || { ok: true };
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error).slice(0, 200) };
+  }
+});
 // aither-host/1 desk-browse: the OS's Browser app opens a URL in a NEW OWNER tab of the
 // Aither Browser (the same act as the bridge's POST /browser/open). Fenced like every
 // plane; main sanitizes the URL. Always answered so the page can fall back at once.
@@ -234,7 +251,8 @@ function cursorOnChrome(win) {
 
 function applyGhostTick() {
   if (!isOpen() || !desktopWin.isVisible()) return;
-  const shouldInteract = !ghostMode || !transparentMode || cursorOverInteractive();
+  // Interact mode (toolkit.cjs, Ctrl+Alt+Y): the desk holds the mouse until Esc.
+  const shouldInteract = forceInteractive || !ghostMode || !transparentMode || cursorOverCompanion() || cursorOverInteractive();
   const shouldIgnore = !shouldInteract;
   if (shouldIgnore !== ignoringMouse) {
     ignoringMouse = shouldIgnore;
@@ -244,7 +262,15 @@ function applyGhostTick() {
   }
 }
 
+let forceInteractive = false;
+/** toolkit.cjs interact mode: true = this overlay takes every click until it is turned off. */
+function setForceInteractive(on) {
+  forceInteractive = Boolean(on);
+  try { applyGhostTick(); } catch { /* the 60 ms loop applies it */ }
+}
+
 function startGhostLoop() {
+  startCompanionWatch(); // idempotent: it returns when its own timer exists
   if (ghostTimer) return;
   ghostTimer = setInterval(applyGhostTick, 60);
 }
@@ -258,6 +284,149 @@ function stopGhostLoop() {
     ignoringMouse = false;
     desktopWin.setIgnoreMouseEvents(false);
   }
+}
+
+// ── The tenant's own companion and the fairy never share a spot ─────────────────
+// A tenant site may draw its own companion on every page (`[data-companion]`; GARG's
+// goblin, bottom-right). The fairy is a native window above this one and rested on the
+// same corner. Every few seconds the overlay is asked where that element is; the fairy
+// keeps out of the box (orb-window setReservedBox). No element, a hidden one, or a
+// closed overlay: no box, and the fairy is where the owner left it.
+const COMPANION_PROBE = "(function(){try{var e=document.querySelector('[data-companion]');if(!e)return null;"
+  + "var r=e.getBoundingClientRect();if(!(r.width>0&&r.height>0))return null;"
+  + "return{x:r.left,y:r.top,width:r.width,height:r.height}}catch(_){return null}})()";
+let companionTimer = null;
+let companionBox = null; // the last answer, for /desktop/status
+/** The page's own fairy (Veil os-fairy.tsx) is the SECOND cluster the owner saw. Inside
+ *  the desk's windows the desk fairy is the one cluster, so the page's is not drawn. */
+const HIDE_PAGE_FAIRY_CSS = "[data-os-fairy-root]{display:none !important}";
+const pageFairyHidden = new WeakSet(); // webContents with the rule in this page load
+function hidePageFairy(win) {
+  try {
+    const wc = win.webContents;
+    if (pageFairyHidden.has(wc)) return; // one rule per load (it was one per 2.5 s: ~1,400 an hour)
+    pageFairyHidden.add(wc);
+    void wc.insertCSS(HIDE_PAGE_FAIRY_CSS).catch(() => { pageFairyHidden.delete(wc); });
+  } catch { /* window gone */ }
+}
+/** A new page load drops inserted rules: the next hidePageFairy inserts again. */
+function forgetPageFairy(win) {
+  try { pageFairyHidden.delete(win.webContents); } catch { /* window gone */ }
+}
+/** The AitherOS window the fairy rides: the app window while it is up, else none. */
+function rideWindow() {
+  return isAppOpen() && appWin.isVisible() && !appWin.isMinimized() ? appWin : null;
+}
+// The workspace's own companion (GARG's goblin) is HIDDEN until the person shows it
+// (owner 2026-11-13: "hide them by default"; the switch is orb.json tenantCompanion,
+// companion-menu.cjs). One inserted rule per page load, removed when it is shown.
+const HIDE_TENANT_COMPANION_CSS = "[data-companion]{display:none !important}";
+const tenantCssKeys = new WeakMap(); // webContents -> insertCSS key
+function tenantCompanionVisible() {
+  try { return require("./orb-window.cjs").tenantCompanionVisible(); } catch { return false; }
+}
+// One chain per page: an insert and a remove never interleave, and each step re-reads
+// what is WANTED after its await (a Hide then a Show inside one insert lands shown).
+const tenantCssChains = new WeakMap();
+function applyTenantCompanion(win) {
+  if (!win || win.isDestroyed()) return Promise.resolve();
+  const wc = win.webContents;
+  const next = (tenantCssChains.get(wc) || Promise.resolve()).then(async () => {
+    if (win.isDestroyed()) return;
+    const key = tenantCssKeys.get(wc);
+    try {
+      if (tenantCompanionVisible()) {
+        if (key) {
+          tenantCssKeys.delete(wc);
+          await wc.removeInsertedCSS(key);
+        }
+      } else if (!key) {
+        const inserted = await wc.insertCSS(HIDE_TENANT_COMPANION_CSS);
+        if (!win.isDestroyed()) tenantCssKeys.set(wc, inserted);
+        if (tenantCompanionVisible()) await applyTenantCompanionNow(win);
+      }
+    } catch { /* the page is loading or gone: the next load applies it */ }
+  });
+  tenantCssChains.set(wc, next);
+  return next;
+}
+/** The wanted state changed while an insert was in flight: undo it in the same step. */
+async function applyTenantCompanionNow(win) {
+  const wc = win.webContents;
+  const key = tenantCssKeys.get(wc);
+  if (key && tenantCompanionVisible()) {
+    tenantCssKeys.delete(wc);
+    try { await wc.removeInsertedCSS(key); } catch { /* gone */ }
+  }
+}
+/** A page load drops every inserted rule: forget the key, then apply again. */
+function reapplyTenantCompanion(win) {
+  if (!win || win.isDestroyed()) return;
+  ensureCompanionListener();
+  const wc = win.webContents;
+  tenantCssChains.set(wc, (tenantCssChains.get(wc) || Promise.resolve()).then(() => { tenantCssKeys.delete(wc); }));
+  void applyTenantCompanion(win);
+}
+function syncTenantCompanion() {
+  if (isOpen()) void applyTenantCompanion(desktopWin);
+  if (isAppOpen()) void applyTenantCompanion(appWin);
+}
+let companionListening = false;
+function ensureCompanionListener() {
+  if (companionListening) return;
+  companionListening = true;
+  try { require("./orb-window.cjs").onCompanionsChange(() => syncTenantCompanion()); } catch { /* no fairy in this process */ }
+}
+
+// Right click on the workspace's own companion: the desk's companion menu (the
+// preload sends this only for a `[data-companion]` element, from our own windows).
+ipcMain.on("living-desktop:companion-menu", (event, point) => {
+  const own = (isOpen() && event.sender === desktopWin.webContents) || (isAppOpen() && event.sender === appWin.webContents);
+  if (!own) return;
+  const p = point && typeof point === "object" ? point : {};
+  const at = Number.isFinite(p.x) && Number.isFinite(p.y) && (p.x || p.y) ? { x: p.x, y: p.y } : screen.getCursorScreenPoint();
+  try { require("./orb-window.cjs").openCompanionMenu("tenant", { at }); } catch { /* no fairy in this process */ }
+});
+
+// A press on the companion holds the overlay interactive until release (10 s at most),
+// and the companion's own box always takes the mouse: the goblin drags and clicks.
+let companionHoldUntil = 0;
+ipcMain.on("living-desktop:companion-hold", (event, on) => {
+  if (!isOpen() || event.sender !== desktopWin.webContents) return;
+  companionHoldUntil = on === true ? Date.now() + 10_000 : 0;
+});
+function cursorOverCompanion() {
+  if (Date.now() < companionHoldUntil) return true;
+  const box = companionBox;
+  if (!box || !tenantCompanionVisible()) return false;
+  const c = screen.getCursorScreenPoint();
+  return c.x >= box.x && c.x <= box.x + box.width && c.y >= box.y && c.y <= box.y + box.height;
+}
+
+function syncFairyDock() {
+  try { void require("./orb-window.cjs").setDockWindow(rideWindow()); } catch { /* no fairy in this process */ }
+}
+async function probeCompanion() {
+  let box = null;
+  // The companion is asked of the window the fairy rides, else of the overlay.
+  const host = rideWindow() || (isOpen() && desktopWin.isVisible() ? desktopWin : null);
+  if (host) {
+    try {
+      const rect = await host.webContents.executeJavaScript(COMPANION_PROBE, false);
+      if (!host.isDestroyed()) box = require("./orb-core.cjs").pageRectOnScreen(rect, host.getContentBounds());
+    } catch { /* the page is loading or gone: no box this round */ }
+  }
+  companionBox = box;
+  try { require("./orb-window.cjs").setReservedBox(box); } catch { /* no fairy in this process */ }
+  return box;
+}
+function startCompanionWatch() {
+  if (companionTimer) return;
+  companionTimer = setInterval(() => {
+    if (isOpen()) hidePageFairy(desktopWin); // idempotent: the same rule again changes nothing
+    void probeCompanion();
+  }, 2500);
+  if (typeof companionTimer.unref === "function") companionTimer.unref();
 }
 
 // ── Session (why the shell shows "sign in" instead of david@) ─────────────────────
@@ -440,15 +609,6 @@ async function syncPortalSessionCookie({ force = false, useVault = true } = {}) 
 // tab's own sign-in reaches it too); every window follows its ONE change notice below.
 const deskTenantAuto = require("./desk-tenant-auto.cjs");
 const APEX_BASE_URL = "https://aitherium.com/";
-const workspaceFollow = require("./desk-workspace-follow.cjs");
-// A page that moved to another workspace's host (the Aitherium menu's switcher) is told to
-// the desk's owner paths by main (desk-workspace-follow.cjs): the choice survives a relaunch.
-let navigationFollower = null;
-function setNavigationFollower(fn) { navigationFollower = typeof fn === "function" ? fn : null; }
-function noteNavigation(url) {
-  if (!navigationFollower || process.env.LIVING_DESKTOP_URL) return;
-  Promise.resolve().then(() => navigationFollower(url)).catch((err) => log(`workspace follow failed: ${err}`));
-}
 async function adoptWorkspaceHost(identity) {
   if (process.env.LIVING_DESKTOP_URL || !identity) return false;
   const result = await deskTenantAuto.adoptIdentity(identity);
@@ -463,13 +623,8 @@ function followTenant() {
   BASE_URL = next;
   log(`workspace host is now ${new URL(BASE_URL).hostname} (from the signed-in account)`);
   // A window already showing a page moves now; one still opening loads the new base.
-  // A page the owner already moved to that workspace (the menu's switcher) stays where it is.
-  if (isOpen() && desktopWin.webContents.getURL() && workspaceFollow.needsReload(desktopWin.webContents.getURL(), BASE_URL)) {
-    void desktopWin.loadURL(urlFor(transparentMode)).catch(() => {});
-  }
-  if (isAppOpen() && appWin.webContents.getURL() && workspaceFollow.needsReload(appWin.webContents.getURL(), BASE_URL)) {
-    void appWin.loadURL(desktopAppUrl()).catch(() => {});
-  }
+  if (isOpen() && desktopWin.webContents.getURL()) void desktopWin.loadURL(urlFor(transparentMode)).catch(() => {});
+  if (isAppOpen() && appWin.webContents.getURL()) void appWin.loadURL(desktopAppUrl()).catch(() => {});
   return true;
 }
 deskTenantAuto.onWorkspaceChange(() => followTenant());
@@ -566,6 +721,11 @@ function log(line) {
   } catch {
     /* logging must never break the overlay */
   }
+}
+
+/** What a popped-out Chat window shares with the desktop that opened it (chat-popout.cjs). */
+function popoutBase() {
+  return { partition: PARTITION, preload: path.join(__dirname, "living-desktop-preload.cjs") };
 }
 
 function isAitheriumFamily(rawUrl) {
@@ -680,7 +840,7 @@ function createWindow() {
   // Keep the overlay inside the aitherium family; anything else goes to the system
   // browser instead of hijacking the overlay surface.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isAitheriumFamily(url)) return { action: "allow" };
+    if (isAitheriumFamily(url)) return chatPopout.openHandlerAnswer(url, popoutBase());
     void shell.openExternal(url);
     return { action: "deny" };
   });
@@ -692,8 +852,7 @@ function createWindow() {
   });
 
   // A new page has not said where its UI is yet: forget the last page's layout.
-  win.webContents.on("did-navigate", (_e, navUrl) => {
-    noteNavigation(navUrl);
+  win.webContents.on("did-navigate", () => {
     hitState.regions = [];
     hitState.dock = null;
     hitState.reportedAt = 0;
@@ -703,6 +862,9 @@ function createWindow() {
     if (isMainFrame) log(`did-fail-load ${failedUrl}: ${code} ${desc}`);
   });
   win.webContents.on("did-finish-load", () => {
+    forgetPageFairy(win);
+    hidePageFairy(win);
+    reapplyTenantCompanion(win);
     // Local-node probing consent (owner-approved 2026-08-25): the shell's detector
     // (Veil local-node-optin.ts) only probes loopback after an explicit opt-in, and
     // this overlay partition starts with none — so the owner's own shell "detects no
@@ -896,12 +1058,20 @@ function pushHostThread(threadId) {
 const DESKTOP_APP_SHELL = "aither-desktop";
 let appWin = null;
 
+/** "" in a tenant workspace (the tenant's stamped shell), else Desktop Anywhere. */
+function desktopAppShell() {
+  return deskTenant.appWindowShell(TENANT, BASE_URL, DESKTOP_APP_SHELL);
+}
+
 // `app` opens one window on arrival: both desktop shells read `?app=<id>` once.
 function desktopAppUrl(app = "") {
   try {
     const url = new URL(BASE_URL);
     url.searchParams.delete("mode");
-    url.searchParams.set("shell", DESKTOP_APP_SHELL);
+    // A tenant workspace keeps its own shell (desk-tenant appWindowShell says why).
+    const shellForApp = desktopAppShell();
+    if (shellForApp) url.searchParams.set("shell", shellForApp);
+    else url.searchParams.delete("shell");
     if (app) url.searchParams.set("app", app);
     return url.href;
   } catch {
@@ -942,7 +1112,7 @@ function showDesktopApp({ app = "" } = {}) {
     },
   });
   appWin.webContents.setWindowOpenHandler(({ url }) => {
-    if (isAitheriumFamily(url)) return { action: "allow" };
+    if (isAitheriumFamily(url)) return chatPopout.openHandlerAnswer(url, popoutBase());
     void shell.openExternal(url);
     return { action: "deny" };
   });
@@ -952,7 +1122,6 @@ function showDesktopApp({ app = "" } = {}) {
       void shell.openExternal(targetUrl);
     }
   });
-  appWin.webContents.on("did-navigate", (_e, navUrl) => noteNavigation(navUrl));
   appWin.webContents.on("did-fail-load", (_e, code, desc, failedUrl, isMainFrame) => {
     if (isMainFrame) log(`[app] did-fail-load ${failedUrl}: ${code} ${desc}`);
   });
@@ -984,8 +1153,15 @@ function showDesktopApp({ app = "" } = {}) {
     appWin.show();
     appWin.focus();
   });
+  appWin.webContents.on("did-finish-load", () => {
+    forgetPageFairy(appWin);
+    hidePageFairy(appWin);
+    reapplyTenantCompanion(appWin);
+  });
+  for (const event of ["show", "hide", "minimize", "restore"]) appWin.on(event, () => syncFairyDock());
   appWin.on("closed", () => {
     appWin = null;
+    syncFairyDock();
   });
   log(`[app] opening ${desktopAppUrl(app)}`);
   void (async () => {
@@ -1000,8 +1176,11 @@ function showDesktopApp({ app = "" } = {}) {
 function desktopStatus() {
   return {
     overlay: { open: isOpen(), visible: isOpen() && desktopWin.isVisible(), shell: shellId, ghost: ghostMode, transparent: transparentMode },
-    app: { open: isAppOpen(), visible: isAppOpen() && appWin.isVisible(), shell: DESKTOP_APP_SHELL },
+    app: { open: isAppOpen(), visible: isAppOpen() && appWin.isVisible(), shell: desktopAppShell() || "workspace" },
     url: BASE_URL,
+    companion: companionBox, // where the tenant site draws its own companion, screen DIP
+    companionShown: tenantCompanionVisible(),
+    fairyDock: (() => { try { return require("./orb-window.cjs").__dock(); } catch { return null; } })(),
     shells: SHELL_CHOICES.map((c) => ({ id: c.id, label: c.label })),
   };
 }
@@ -1032,6 +1211,7 @@ function refreshAccount() {
 }
 
 module.exports = {
+  setForceInteractive,
   ensureDesktopSession,
   portalLoginUrl: () => PORTAL_LOGIN_URL,
   openLivingDesktop: showLivingDesktop, // kept for older callers
@@ -1058,7 +1238,6 @@ module.exports = {
   setDeskStateProvider,
   setOverlayHost,
   setExtraHosts,
-  setNavigationFollower,
   pushDeskState,
   framedForOverlay,
   pushHostAuth,

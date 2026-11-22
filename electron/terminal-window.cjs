@@ -26,6 +26,15 @@ let dockHost = null;
 function setDockHost(host) {
   dockHost = host && typeof host.run === "function" ? host : null;
 }
+/**
+ * Who hears about a session being attached or detached: the browser window records the
+ * ids on the STAGE that was active (browser-window.cjs), so a stage remembers the shells
+ * it was working in. Optional; absent everywhere but the browser.
+ */
+let sessionWatcher = null;
+function setSessionWatcher(fn) {
+  sessionWatcher = typeof fn === "function" ? fn : null;
+}
 /** `${webContentsId}:${sessionId}` -> AbortController of its stream. */
 const streams = new Map();
 
@@ -51,7 +60,7 @@ function stopStream(key) {
 }
 
 /** The handler table, pure over an injected client so it is testable without Electron. */
-function terminalHandlers(c = client(), { isTerminal = fromTerminalPage, dock = () => dockHost } = {}) {
+function terminalHandlers(c = client(), { isTerminal = fromTerminalPage, dock = () => dockHost, onSession = () => sessionWatcher } = {}) {
   const guard = (fn) => async (event, ...args) => {
     if (!event || !event.sender || !isTerminal(event.sender)) return { ok: false, error: "not the terminal page" };
     try {
@@ -60,8 +69,16 @@ function terminalHandlers(c = client(), { isTerminal = fromTerminalPage, dock = 
       return { ok: false, error: String((error && error.message) || error) };
     }
   };
+  /** Tell the watcher (the active stage's record) that a session came or went. Never breaks a session. */
+  const note = (id, action) => {
+    const watch = onSession();
+    if (typeof watch !== "function") return;
+    try { watch(String(id || ""), action); } catch { /* recording is bookkeeping, never terminal I/O */ }
+  };
   return {
     "desk:terminal-harnesses": guard(() => c.harnesses()),
+    /** Machines a node shell can open (ssh_config aliases + online tailnet peers). */
+    "desk:terminal-nodes": guard(() => c.nodes()),
     "desk:terminal-list": guard(() => c.list()),
     /** Claude Code tabs the daemon DISCOVERED (not its own): resumable here, never typed into. */
     "desk:terminal-external": guard(() => c.external()),
@@ -76,9 +93,12 @@ function terminalHandlers(c = client(), { isTerminal = fromTerminalPage, dock = 
     "desk:terminal-input": guard((_e, id, text) => c.input(id, text)),
     "desk:terminal-resize": guard((_e, id, rows, cols) => c.resize(id, rows, cols)),
     "desk:terminal-interrupt": guard((_e, id) => c.interrupt(id)),
-    "desk:terminal-close": guard((event, id) => {
+    "desk:terminal-close": guard(async (event, id) => {
       stopStream(`${event.sender.id}:${id}`);
-      return c.close(id);
+      const closed = await c.close(id);
+      // Only a session that really closed leaves the stage's list; a refusal keeps it.
+      if (closed && closed.ok) note(id, "detach");
+      return closed;
     }),
     /** Attach: stream events to this page from `since`; detach on page close or re-attach. */
     "desk:terminal-attach": guard((event, id, since) => {
@@ -91,6 +111,7 @@ function terminalHandlers(c = client(), { isTerminal = fromTerminalPage, dock = 
       const send = (payload) => {
         if (!sender.isDestroyed || !sender.isDestroyed()) sender.send("desk:terminal-event", id, payload);
       };
+      note(id, "attach");
       void c.stream(id, since, (ev) => send({ type: "event", event: ev }), ctl.signal).then((r) => {
         if (streams.get(key) === ctl) streams.delete(key);
         if (!ctl.signal.aborted) send({ type: "end", ok: Boolean(r && r.ok), error: r && r.error });
@@ -99,6 +120,7 @@ function terminalHandlers(c = client(), { isTerminal = fromTerminalPage, dock = 
     }),
     "desk:terminal-detach": guard((event, id) => {
       stopStream(`${event.sender.id}:${id}`);
+      note(id, "detach");
       return { ok: true };
     }),
   };
@@ -111,4 +133,4 @@ function ensureTerminalIpc() {
   for (const [channel, handler] of Object.entries(terminalHandlers())) ipcMain.handle(channel, handler);
 }
 
-module.exports = { ensureTerminalIpc, fromTerminalPage, setDockHost, terminalHandlers };
+module.exports = { ensureTerminalIpc, fromTerminalPage, setDockHost, setSessionWatcher, terminalHandlers };

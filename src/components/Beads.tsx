@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { hintClosesOn } from '../hooks/clickThrough';
 
 
 /**
@@ -91,6 +92,8 @@ const FALLBACK_ROWS: CommandRow[] = [
   { id: 'console.open', label: 'Open Aither', icon: 'grid', group: 'go' },
 ];
 
+const HINT_DISMISSED_KEY = 'desk.beads-hint-dismissed.v2';
+
 interface BeadDeckBridge {
   getState(): Promise<{ openCount: number }>;
   open(): void;
@@ -108,15 +111,20 @@ interface BeadProps {
   count?: number;
   onLeftClick: () => void;
   children: React.ReactNode;
+  /** The help bead: a press on it toggles the help instead of counting as "outside". */
+  hintToggle?: boolean;
+  expanded?: boolean;
 }
 
-function Bead({ label, count, onLeftClick, children }: BeadProps) {
+function Bead({ label, count, onLeftClick, children, hintToggle, expanded }: BeadProps) {
   return (
     <button
       type="button"
       className="bead"
       title={label}
       aria-label={label}
+      aria-expanded={hintToggle ? Boolean(expanded) : undefined}
+      data-hint-toggle={hintToggle ? '' : undefined}
       onClick={onLeftClick}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -178,20 +186,50 @@ export function Beads() {
 
   const [hintDismissed, setHintDismissed] = useState(
     () => {
-      try { return window.localStorage.getItem('desk.beads-hint-dismissed') === '1'; }
+      try { return window.localStorage.getItem(HINT_DISMISSED_KEY) === '1'; }
       catch { return false; }
     },
   );
-  const dismissHint = () => {
+  const dismissHint = useCallback(() => {
     setHintDismissed(true);
-    try { window.localStorage.setItem('desk.beads-hint-dismissed', '1'); } catch { /* best-effort */ }
-  };
+    try { window.localStorage.setItem(HINT_DISMISSED_KEY, '1'); } catch { /* best-effort */ }
+  }, []);
 
   // Gestures v5 (2026-09-18): no drag-mode state. One button, one meaning.
   const showHint = () => {
     setHintDismissed(false);
-    try { window.localStorage.removeItem('desk.beads-hint-dismissed'); } catch { /* best-effort */ }
+    try { window.localStorage.removeItem(HINT_DISMISSED_KEY); } catch { /* best-effort */ }
   };
+
+  // The help is a popover, and one popover at a time (owner screenshot 2026-11-16: it
+  // stayed open under the Inbox, its text cut off). Esc, a press anywhere else (a bead,
+  // a body) and the window losing focus (the Inbox, or any app, took it) all close it.
+  const hintRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (hintDismissed) return undefined;
+    // Only a help that is on screen closes: docked, the rail is display:none, and a
+    // blur there must not use up the first-run note nobody saw.
+    const shown = () => Boolean(hintRef.current && hintRef.current.getClientRects().length > 0);
+    const onEvent = (e: Event) => {
+      const target = e.target instanceof Node ? e.target : null;
+      const closes = hintClosesOn({
+        type: e.type,
+        key: (e as KeyboardEvent).key,
+        insideHint: Boolean(target && hintRef.current?.contains(target)),
+        onToggle: Boolean(target instanceof Element && target.closest('[data-hint-toggle]')),
+      });
+      if (closes && shown()) dismissHint();
+    };
+    window.addEventListener('keydown', onEvent);
+    window.addEventListener('pointerdown', onEvent, true);
+    window.addEventListener('blur', onEvent);
+    return () => {
+      window.removeEventListener('keydown', onEvent);
+      window.removeEventListener('pointerdown', onEvent, true);
+      window.removeEventListener('blur', onEvent);
+    };
+  }, [hintDismissed, dismissHint]);
+
   const deck = bridgeDeck();
   if (rows.length === 0) return null;
   return (
@@ -212,11 +250,13 @@ export function Beads() {
       {/* Gestures v5 (2026-09-18): the ROT/MOVE toggle was the fourth gesture
           design and the owner's verdict was "I'm confused". One button, one
           meaning — left-drag MOVES a body, right-drag TURNS it, the wheel SIZES
-          it, right-click opens its menu; empty space orbits. This bead only
-          re-shows the legend. */}
+          it, right-click opens its menu; empty space orbits. This bead shows and
+          hides the legend. */}
       <Bead
-        label="Gestures: left-drag moves a body · right-drag turns it · wheel sizes it · right-click its menu · empty space orbits"
-        onLeftClick={showHint}
+        label="Gestures: left-drag moves a body (drop it on another to share a stage) · right-drag turns it · wheel sizes it · right-click its menu (Leave stage) · drag a stage handle to move the group · empty space orbits"
+        onLeftClick={hintDismissed ? showHint : dismissHint}
+        hintToggle
+        expanded={!hintDismissed}
       >
         <span className="bead-mode-label">?</span>
       </Bead>
@@ -225,8 +265,15 @@ export function Beads() {
           round icons does not announce itself. One dismissible note, persisted,
           so it never nags twice. */}
       {hintDismissed ? null : (
-        <div className="bead-hint" role="note">
-          <span>Left-drag a body to move it · right-drag to turn it · scroll to size it · right-click for its menu · drag empty space to look around · the grid opens the console</span>
+        <div className="bead-hint" role="note" aria-label="Gestures help" ref={hintRef}>
+          <span>
+            Left-drag a body to move it · right-drag to turn it · scroll to size it · right-click for its menu · drag empty
+            space to look around · the grid opens the console · Esc cancels a drag.
+            <br />
+            <b>Stages:</b> drop one body onto another to put them on a stage · right-click a body ▸ Leave stage · drag
+            the Stage handle above a group to move it. Row, circle and lock: tray ▸ Agent swarm. A locked stage never
+            detaches by itself.
+          </span>
           <button
             type="button"
             className="bead-hint-x"

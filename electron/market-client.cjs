@@ -27,6 +27,61 @@ const { callTool } = require("./gateway-mcp.cjs");
  * settings tabs all read as dead buttons).
  */
 async function browse(query = "", type = "", limit = 24) {
+  // The WORKING catalog first: marketplace_browse -> Genesis /v1/marketplace/catalog.
+  // agent_marketplace_browse's backend (the standalone marketplace service) does not
+  // resolve on the fleet, so on its own the Deck showed "market unavailable" while the
+  // catalog was one tool away. It stays as the fallback, never the only door.
+  const reasons = [];
+  const primary = await browseCatalog(query, type, limit);
+  if (primary.ok) return primary;
+  reasons.push(`marketplace_browse: ${primary.reason}`);
+  const legacy = await browseLegacy(query, type, limit);
+  if (legacy.ok) return legacy;
+  reasons.push(`agent_marketplace_browse: ${legacy.reason}`);
+  return { ok: false, listings: [], reason: reasons.join("; ").slice(0, 300) };
+}
+
+/** Map a catalog listing onto the fields the Deck renders, adding only what exists. */
+function normalizeListing(l) {
+  if (!l || typeof l !== "object") return null;
+  const out = { ...l };
+  if (out.listing_type === undefined && typeof l.kind === "string") out.listing_type = l.kind;
+  if (out.short_description === undefined && typeof l.summary === "string") out.short_description = l.summary;
+  if (typeof out.id !== "string" || !out.id) return null;
+  return out;
+}
+
+function matchesQuery(l, q) {
+  if (!q) return true;
+  const hay = [l.id, l.name, l.description, l.short_description, ...(Array.isArray(l.tags) ? l.tags : [])];
+  return hay.some((h) => typeof h === "string" && h.toLowerCase().includes(q));
+}
+
+async function browseCatalog(query, type, limit) {
+  try {
+    // marketplace_browse has no free-text query: fetch a wider page, filter here.
+    const text = await callTool("marketplace_browse", {
+      max_results: Math.max(limit * 4, 100),
+      ...(type ? { kind: type } : {}),
+    });
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return { ok: false, listings: [], reason: String(text).slice(0, 300) };
+    }
+    if (!parsed || !Array.isArray(parsed.listings)) {
+      return { ok: false, listings: [], reason: String(text).slice(0, 300) };
+    }
+    const q = String(query || "").trim().toLowerCase();
+    const listings = parsed.listings.map(normalizeListing).filter((l) => l && matchesQuery(l, q)).slice(0, limit);
+    return { ok: true, listings, count: listings.length, source: "marketplace_browse" };
+  } catch (error) {
+    return { ok: false, listings: [], reason: String(error?.message || error).slice(0, 300) };
+  }
+}
+
+async function browseLegacy(query, type, limit) {
   try {
     const text = await callTool("agent_marketplace_browse", {
       query,
@@ -41,18 +96,82 @@ async function browse(query = "", type = "", limit = 24) {
       parsed = JSON.parse(text);
     } catch {
       // Some tools return plain prose; wrap it rather than guessing.
-      return { ok: true, listings: [], note: text.slice(0, 500) };
+      return { ok: true, listings: [], note: String(text).slice(0, 500) };
     }
     if (!parsed.listings) {
-      // A validation error (or prose) has no listings — say so loudly,
-      // but keep the declared shape: the panel renders listings key
-      // unconditionally (2026-08-27 blank-deck-window crash).
-      return { ok: false, listings: [], reason: text.slice(0, 300) };
+      return { ok: false, listings: [], reason: String(text).slice(0, 300) };
     }
-    return { ok: true, listings: parsed.listings, count: parsed.count ?? parsed.listings.length };
+    return { ok: true, listings: parsed.listings, count: parsed.count ?? parsed.listings.length, source: "agent_marketplace_browse" };
   } catch (error) {
     return { ok: false, listings: [], reason: String(error?.message || error).slice(0, 300) };
   }
+}
+
+// ─── install: the same `adk pack install` every other surface runs ─────────────
+//
+// The desk never installs anything itself: it runs awdk's one resolver
+// (adk.addons: awpack, then Library, then awnode ext), which installs through
+// the owning brick and writes the one lock record (source + sha256). The id is
+// validated here and passed as ONE argv element (no shell), so a listing id can
+// never become a flag or a command.
+
+const LISTING_ID_RE = /^(community:)?[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+
+function installArgv(listingId, { allowCommunity = false } = {}) {
+  const id = String(listingId || "");
+  if (!LISTING_ID_RE.test(id)) return null;
+  return ["-m", "adk.cli", "pack", "install", id, "--json", ...(allowCommunity ? ["--allow-community"] : [])];
+}
+
+function defaultRunPython(argv) {
+  const { spawnSync } = require("node:child_process");
+  const python = process.env.AITHER_PYTHON || (process.platform === "win32" ? "python" : "python3");
+  const r = spawnSync(python, argv, {
+    encoding: "utf-8", timeout: INSTALL_TIMEOUT_MS, windowsHide: true,
+  });
+  return { status: r.error ? null : r.status, stdout: r.stdout || "", stderr: r.stderr || "", error: r.error };
+}
+
+/**
+ * Install one listing through `adk pack install <id> --json`.
+ * Resolves {ok, id, kind, detail, record, next, needsCommunityConsent}; never throws.
+ * `needsCommunityConsent` = adk refused a third-party add-on until the person says
+ * so explicitly (the caller asks, then retries with allowCommunity).
+ */
+async function install(listingId, { allowCommunity = false, runPython = defaultRunPython } = {}) {
+  const argv = installArgv(listingId, { allowCommunity });
+  if (!argv) return { ok: false, id: String(listingId || ""), detail: "not a pack id", needsCommunityConsent: false };
+  let r;
+  try {
+    r = await runPython(argv);
+  } catch (error) {
+    return { ok: false, id: listingId, detail: String(error?.message || error).slice(0, 300), needsCommunityConsent: false };
+  }
+  if (!r || r.status === null) {
+    const why = r && r.error ? String(r.error.message || r.error) : "python did not start";
+    return { ok: false, id: listingId, detail: `could not run adk (${why}); install awdk: pip install -U awdk`, needsCommunityConsent: false };
+  }
+  let obj = null;
+  for (const line of String(r.stdout || "").trim().split(/\r?\n/).reverse()) {
+    if (line.trim().startsWith("{")) {
+      try { obj = JSON.parse(line); break; } catch { /* keep looking */ }
+    }
+  }
+  if (!obj) {
+    const tail = String(r.stderr || r.stdout || "").trim().split(/\r?\n/).slice(-2).join(" ");
+    return { ok: false, id: listingId, detail: `adk exited ${r.status}${tail ? `: ${tail.slice(0, 240)}` : ""}`, needsCommunityConsent: false };
+  }
+  const detail = String(obj.detail || "");
+  return {
+    ok: obj.ok === true && r.status === 0,
+    id: String(obj.id || listingId),
+    kind: String(obj.kind || ""),
+    detail,
+    record: obj.record || null,
+    next: String(obj.next || ""),
+    needsCommunityConsent: obj.ok !== true && detail.includes("--allow-community"),
+  };
 }
 
 /** One listing's full detail (invoke/pricing metadata). */
@@ -65,6 +184,26 @@ async function detail(listingId) {
   } catch (error) {
     return { ok: false, reason: String(error?.message || error).slice(0, 300) };
   }
+}
+
+/**
+ * Install with the person's say-so, twice for third-party code.
+ * `confirm(step, info)` resolves true/false: step "install" before anything runs;
+ * step "community" only when adk refused a third-party add-on, before the retry
+ * with --allow-community. Nothing installs on a false. Resolves install()'s shape
+ * plus {cancelled}.
+ */
+async function installWithConsent(listingId, { confirm, runPython } = {}) {
+  const ask = typeof confirm === "function" ? confirm : async () => false;
+  if (!(await ask("install", { id: listingId }))) {
+    return { ok: false, id: String(listingId || ""), detail: "cancelled", cancelled: true, needsCommunityConsent: false };
+  }
+  const first = await install(listingId, { runPython });
+  if (first.ok || !first.needsCommunityConsent) return { ...first, cancelled: false };
+  if (!(await ask("community", { id: listingId, detail: first.detail }))) {
+    return { ...first, cancelled: true };
+  }
+  return { ...(await install(listingId, { allowCommunity: true, runPython })), cancelled: false };
 }
 
 // ─── the avatar store: your library + VRoid Hub, through the broker ──────────
@@ -287,6 +426,10 @@ async function vroidModel(modelId, deps = {}) {
 
 module.exports = {
   browse,
+  install,
+  installArgv,
+  installWithConsent,
+  normalizeListing,
   detail,
   avatarLibrary,
   avatarCatalog,

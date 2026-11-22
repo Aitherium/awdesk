@@ -61,6 +61,21 @@
   .row .kind { flex: none; color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; }
   .row.sel { background: var(--accent-soft); border-color: rgba(124, 196, 255, 0.4); }
   .row.more { color: var(--accent); font-size: 12.5px; justify-content: center; }
+  /* A card row expands IN PLACE: the list never reflows, and the options the
+     raiser defined are one key or one click away. */
+  .row.card { flex-wrap: wrap; align-items: flex-start; }
+  .row.card.open { background: rgba(255, 255, 255, 0.035); border-color: rgba(255, 255, 255, 0.09); }
+  .row.card .sub { white-space: normal; }
+  .card-body { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; padding: 6px 2px 2px 32px; }
+  .card-opt {
+    all: unset; display: flex; gap: 8px; align-items: baseline; padding: 3px 6px;
+    border-radius: 6px; cursor: pointer; color: var(--ink); font-size: 12.5px;
+  }
+  .card-opt:hover, .card-opt:focus-visible { background: var(--accent-soft); }
+  .card-opt .n { flex: none; width: 16px; text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .card-opt .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-opt .rec { flex: none; color: var(--muted); font-size: 10.5px; }
+  .card-hint { color: var(--muted); font-size: 10.5px; padding-left: 24px; }
   #empty { color: var(--muted); padding: 28px 12px; text-align: center; }
   #output {
     margin: 0 10px 8px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px;
@@ -79,9 +94,32 @@
   #status {
     flex: none; padding: 8px 14px 11px; color: var(--muted); font-size: 11.5px;
     border-top: 1px solid rgba(255, 255, 255, 0.05); overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap;
+    /* Two lines, then the ellipsis: the idle line names every source and a down
+       source's remedy is a sentence -- one clipped line hid both (2026-11-13). */
+    white-space: normal; line-height: 1.35; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
   }
   #status.warn { color: var(--warn); }
+  /* The command center's pane: a transcript / detail text or the item's graph,
+     drawn OVER the results (the box stays the one input; Esc closes the pane). */
+  #pane {
+    position: absolute; left: 0; right: 0; top: 52px; bottom: 34px; display: none; flex-direction: column;
+    background: var(--bg-solid); border-top: 1px solid rgba(255, 255, 255, 0.08); z-index: 5;
+  }
+  #pane.open { display: flex; }
+  #pane-head { display: flex; justify-content: space-between; gap: 10px; padding: 7px 14px; color: var(--muted); font-size: 11.5px; }
+  #pane-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+  #pane-body { flex: 1; overflow: auto; padding: 4px 14px 10px; user-select: text; }
+  #pane-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.45 "Cascadia Mono", Consolas, monospace; color: #d6dae1; }
+  #pane-body svg { width: 100%; height: 100%; min-height: 300px; display: block; }
+  #pane-notes { padding: 4px 14px 8px; color: var(--muted); font-size: 10.5px; }
+  .verbs { flex: none; display: none; gap: 4px; }
+  .row.sel .verbs { display: flex; }
+  .verb {
+    all: unset; cursor: pointer; font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
+    color: var(--accent); border: 1px solid rgba(124, 196, 255, 0.3);
+  }
+  .verb:hover { background: var(--accent-soft); }
+  #chip.steer { color: var(--warn); border-color: rgba(255, 184, 107, 0.45); background: rgba(255, 184, 107, 0.12); max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
@@ -89,15 +127,20 @@
   <div id="top">
     <span id="chip">Everything</span>
     <input id="input" type="text" spellcheck="false" autocomplete="off"
-      placeholder="Search apps, files, desk actions, agents and the web" aria-label="Aither launcher" />
-    <span id="hint">↑↓ · Tab groups · Enter run · Esc close</span>
+      placeholder="Search AitherOS apps, PC apps, files, agents, tools, skills, knowledge and the web" aria-label="Aither launcher" />
+    <span id="hint">↑↓ · Tab groups · Enter open · &gt; commands · ? ask · @ agent · Ctrl+P pin · Esc close</span>
   </div>
   <div id="results" role="listbox" aria-label="Results"></div>
   <div id="output">
     <div id="output-head"><span id="output-title">Output</span><button id="output-close" type="button">clear</button></div>
     <pre id="output-body"></pre>
   </div>
-  <div id="status" role="status">Indexed: apps, files, desk actions, screenshots, clipboard, agents and the web — type to search</div>
+  <div id="pane" aria-live="polite">
+    <div id="pane-head"><span id="pane-title"></span><span>Esc closes</span></div>
+    <div id="pane-body"></div>
+    <div id="pane-notes"></div>
+  </div>
+  <div id="status" role="status">Searches AitherOS apps, PC apps, files, desk actions, agents, tools, skills, runs, work, knowledge &amp; memory, calendar, people, clipboard, screenshots, the web · narrow: app, file, agent, tool, skill, mem, web · &gt; run · ? ask · @ spirit</div>
 </div>
 <script>
   const input = document.getElementById("input");
@@ -108,13 +151,35 @@
   const outputTitle = document.getElementById("output-title");
   const outputBody = document.getElementById("output-body");
 
-  const CHIPS = { all: "Everything", command: "> awsh / adk desk", ask: "? Ask Aither", spirit: "@ Spirit" };
-  const IDLE = "Indexed: apps, files, desk actions, screenshots, clipboard, agents and the web — type to search";
+  const CHIPS = { all: "Everything", command: "> Desk commands", ask: "? Ask Aither", spirit: "@ Spirit" };
+  // The same line launcher-core.cjs IDLE_STATUS sends (launcher-render.test.cjs holds them equal).
+  const IDLE = "Searches AitherOS apps, PC apps, files, desk actions, agents, tools, skills, runs, work, knowledge & memory, calendar, people, clipboard, screenshots, the web · narrow: app, file, agent, tool, skill, mem, web · > run · ? ask · @ spirit";
+  const pane = document.getElementById("pane");
+  const paneTitle = document.getElementById("pane-title");
+  const paneBody = document.getElementById("pane-body");
+  const paneNotes = document.getElementById("pane-notes");
+  // Every kind the command center (command-center.cjs) answers with: these rows take verbs.
+  const CC = new Set(["session", "run", "fleet-agent", "local-agent", "twin", "project", "task", "roadmap", "pr",
+    "plan", "notebook", "memory", "schedule", "routine", "event", "person"]);
+  const VERBS = {
+    session: ["open", "steer", "stop", "transcript", "graph"], run: ["open", "steer", "stop", "graph"],
+    "fleet-agent": ["open", "steer", "graph"], "local-agent": ["open", "steer", "graph"], twin: ["open", "steer", "graph"],
+  };
+  // The badge on the right of a row: AitherOS apps and the PC's own apps must not read alike.
+  const KIND_BADGE = { osapp: "AitherOS app", app: "PC app", down: "not answering", ask: "ask Aither", assist: "write", intent: "plan it" };
+  // A desk command's badge says what Enter will do to the world (intent-bar.cjs effects).
+  const EFFECT_BADGE = { read: "reads", ui: "opens", write: "changes", send: "sends", spend: "spends" };
+  const VERB_KEYS = { steer: "Ctrl+Enter", stop: "Ctrl+.", transcript: "Ctrl+T", graph: "Ctrl+G", open: "Enter", detail: "Ctrl+I" };
+  // Steer mode: the ONE box becomes the message for the chosen row; Esc returns to the search.
+  let steer = null; // {key, title, query}
+  let stopArmed = "";
 
-  let state = { token: 0, mode: "all", term: "", groups: [], rows: [], selected: 0, expanded: new Set() };
+  let state = { token: 0, mode: "all", term: "", groups: [], rows: [], selected: 0, expanded: new Set(), openCard: null };
   let searchTimer = null;
   let lastQuery = "";
   let commandArmed = "";
+  // The intent plan waiting for its confirm line: {id, text}. Enter confirms, Esc cancels.
+  let intentWait = null;
 
   function prefixOf(text) {
     const raw = String(text || "").trim();
@@ -125,6 +190,10 @@
     return { mode: "all", term: raw };
   }
 
+  // A verb's answer (steer sent, stop armed, an error) must not be painted over by a
+  // slow search phase landing a moment later.
+  let holdStatusUntil = 0;
+  function holdStatus(text, warn) { setStatus(text, warn); holdStatusUntil = Date.now() + 6000; }
   function setStatus(text, warn) {
     status.textContent = text || IDLE;
     status.classList.toggle("warn", Boolean(warn));
@@ -134,7 +203,9 @@
     const rows = [];
     for (const group of state.groups) {
       const expanded = state.expanded.has(group.id);
-      const items = expanded ? group.items : group.shown;
+      // A group may send only `items` (the empty overlay's cards and "Right now");
+      // `shown` is the collapsed slice when a group is too long to draw in full.
+      const items = expanded ? group.items : (group.shown || group.items || []);
       for (const item of items) rows.push({ kind: "item", group: group.id, item });
       if (group.more > 0 && !expanded) rows.push({ kind: "more", group: group.id, more: group.more });
     }
@@ -167,7 +238,9 @@
       head.append(name, count);
       results.append(head);
       const expanded = state.expanded.has(group.id);
-      const items = expanded ? group.items : group.shown;
+      // A group may send only `items` (the empty overlay's cards and "Right now");
+      // `shown` is the collapsed slice when a group is too long to draw in full.
+      const items = expanded ? group.items : (group.shown || group.items || []);
       for (const item of items) {
         results.append(rowFor(group.id, item, cursor));
         cursor += 1;
@@ -186,13 +259,15 @@
   }
 
   function rowFor(groupId, item, index) {
+    const isCard = item.kind === "card";
     const row = document.createElement("div");
-    row.className = "row";
+    row.className = isCard ? "row card" : "row";
     row.dataset.group = groupId;
     row.dataset.index = String(index);
+    if (isCard) row.dataset.key = item.key;
     const glyph = document.createElement("span");
     glyph.className = "glyph";
-    glyph.textContent = glyphFor(item.kind);
+    glyph.textContent = isCard ? "◉" : glyphFor(item.kind);
     const text = document.createElement("span");
     text.className = "text";
     const title = document.createElement("div");
@@ -207,18 +282,127 @@
     }
     const kind = document.createElement("span");
     kind.className = "kind";
-    kind.textContent = String(item.kind || "");
-    row.append(glyph, text, kind);
-    row.addEventListener("click", () => {
-      state.selected = Number(row.dataset.index) || 0;
-      paintSelection();
-      void runSelected();
-    });
+    kind.textContent = isCard ? "card" : item.kind === "tool" ? (EFFECT_BADGE[item.effect] || "command")
+      : (KIND_BADGE[item.kind] || String(item.kind || ""));
+    row.append(glyph, text);
+    if (CC.has(item.kind)) {
+      const verbs = document.createElement("span");
+      verbs.className = "verbs";
+      for (const v of (VERBS[item.kind] || ["open", "graph"])) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "verb";
+        b.textContent = v;
+        b.title = VERB_KEYS[v] || "";
+        b.addEventListener("click", (event) => { event.stopPropagation(); state.selected = index; paintSelection(); void verb(v); });
+        verbs.append(b);
+      }
+      row.append(verbs);
+    }
+    row.append(kind);
+    if (isCard) {
+      if (state.openCard === item.key) {
+        row.classList.add("open");
+        row.append(cardBody(item));
+      }
+      // Enter/click on the row EXPANDS it. Answering is the options' job (or a
+      // number key), so opening a card can never answer it by accident.
+      row.addEventListener("click", (event) => {
+        if (event.target.closest(".card-opt")) return;
+        state.selected = Number(row.dataset.index) || 0;
+        paintSelection();
+        toggleCard(item.key);
+      });
+    } else {
+      row.addEventListener("click", () => {
+        state.selected = Number(row.dataset.index) || 0;
+        paintSelection();
+        void runSelected();
+      });
+    }
     return row;
   }
 
+  /** The expanded card, rendered inside its own row: summary + numbered options. */
+  function cardBody(item) {
+    const body = document.createElement("div");
+    body.className = "card-body";
+    const options = Array.isArray(item.options) ? item.options : [];
+    for (const option of options) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "card-opt";
+      const number = document.createElement("span");
+      number.className = "n";
+      number.textContent = String(option.index);
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = option.label || option.key;
+      button.append(number, label);
+      if (option.recommended) {
+        const rec = document.createElement("span");
+        rec.className = "rec";
+        rec.textContent = "recommended";
+        button.append(rec);
+      }
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void answerOption(item, option.index);
+      });
+      body.append(button);
+    }
+    const hint = document.createElement("div");
+    hint.className = "card-hint";
+    hint.textContent = options.length
+      ? "1-9 answer · Enter the recommended one · Esc collapses"
+      : "No options on this card — open the deck to steer it · Esc collapses";
+    body.append(hint);
+    return body;
+  }
+
+  function toggleCard(key) {
+    state.openCard = state.openCard === key ? null : key;
+    render();
+  }
+
+  /** The rule optionFromText/answerByQuery use: exact key, exact label, then a
+   *  UNIQUE 2+ character label prefix. Ambiguous text is not an answer. */
+  function matchOption(options, text) {
+    const want = String(text || "").trim().toLowerCase();
+    if (!want) return null;
+    const list = Array.isArray(options) ? options : [];
+    const key = list.find((o) => String(o.key || "").toLowerCase() === want);
+    if (key) return key;
+    const label = list.find((o) => String(o.label || "").toLowerCase() === want);
+    if (label) return label;
+    if (want.length < 2) return null;
+    const prefixed = list.filter((o) => String(o.label || "").toLowerCase().startsWith(want));
+    return prefixed.length === 1 ? prefixed[0] : null;
+  }
+
+  function recommendedIndex(item) {
+    const options = Array.isArray(item.options) ? item.options : [];
+    const rec = options.find((o) => o.recommended);
+    if (rec) return rec.index;
+    const declared = item.defaultKey ? options.find((o) => o.key === item.defaultKey) : null;
+    if (declared) return declared.index;
+    return options.length ? options[0].index : null;
+  }
+
+  async function answerOption(item, index) {
+    const reply = await window.aitherLauncher.run(item.key, String(index));
+    if (reply && reply.ok === false) {
+      setStatus(reply.error || "1 answer failed — try it from the deck", true);
+      return;
+    }
+    if (reply && reply.did) setStatus(reply.did, false);
+  }
+
   function glyphFor(kind) {
-    return ({ app: "▣", file: "▤", screenshot: "▦", clip: "▥", action: "◆", agent: "◈", web: "◐" })[kind] || "•";
+    return ({ app: "▣", osapp: "❖", file: "▤", screenshot: "▦", clip: "▥", action: "◆", agent: "◈", tool: "⚙", skill: "✧",
+      pack: "▨", lane: "⇢", web: "◐", ask: "?", down: "⚠", assist: "✎", intent: "⚡",
+      session: "❯", run: "▶", "fleet-agent": "◈", "local-agent": "◇", twin: "◎", project: "▧", task: "☐", roadmap: "⚑", pr: "⇄",
+      plan: "✎", notebook: "▤", memory: "✦", schedule: "⏱", routine: "↻", event: "◷", person: "☺" })[kind] || "•";
   }
 
   function paintSelection() {
@@ -234,14 +418,21 @@
   }
 
   function apply(payload) {
-    if (!payload || payload.ignored) return;
+    // A superseded run (a newer keystroke won) carries an EMPTY group list: painting it
+    // blanked the box while the newer answer was still on its way (measured live 2026-11-13).
+    if (!payload || payload.ignored || payload.superseded) return;
     if (payload.token && payload.token < state.token) return;
     state.token = payload.token || state.token;
     state.mode = payload.mode || state.mode;
     state.term = payload.term || "";
     state.groups = payload.groups || [];
-    if (payload.status) setStatus(payload.status, /down|refused|missing|failed|unavailable/i.test(payload.status));
-    chip.textContent = CHIPS[state.mode] || CHIPS.all;
+    if (state.openCard) {
+      const still = state.groups.some((g) => (g.items || []).some((i) => i.key === state.openCard));
+      if (!still) state.openCard = null;
+    }
+    if (payload.status && Date.now() >= holdStatusUntil) setStatus(payload.status, /down|refused|missing|failed|unavailable/i.test(payload.status));
+    // A scoped search ("tool git") names its scope on the chip: "Tools only".
+    chip.textContent = payload.chip || CHIPS[state.mode] || CHIPS.all;
     state.selected = 0;
     render();
   }
@@ -250,20 +441,18 @@
     const parsed = prefixOf(text);
     chip.textContent = CHIPS[parsed.mode];
     if (parsed.mode !== "all") { commandArmed = ""; }
-    if (!parsed.term && parsed.mode === "all") {
-      state.groups = [];
-      state.term = "";
-      state.mode = "all";
-      setStatus(IDLE, false);
-      render();
-      return;
-    }
+    // An EMPTY box is a question too: main answers it with "Needs you (N)" and
+    // the foreground-window group. Clearing the list locally here was why the
+    // launcher looked blank while eight cards were open.
     void window.aitherLauncher.search(text).then(apply).catch((error) => {
       setStatus(`1 search failed — ${String((error && error.message) || error)}`, true);
     });
   }
 
   input.addEventListener("input", () => {
+    if (steer) return;
+    stopArmed = "";
+    if (pane.classList.contains("open")) closePane();
     const text = input.value;
     chip.textContent = CHIPS[prefixOf(text).mode];
     clearTimeout(searchTimer);
@@ -279,16 +468,152 @@
     const parsed = prefixOf(input.value);
     const term = parsed.term;
     if (row && row.kind === "more") { expand(row.group); return; }
-    if (parsed.mode === "command") { await submitCommand(); return; }
+    if (parsed.mode === "command" && !(row && row.kind === "item" && row.item.kind === "tool")) { await submitCommand(); return; }
     if (parsed.mode === "ask") { await submitAsk(); return; }
     if (parsed.mode === "spirit") { await submitSpirit(); return; }
     if (!row || row.kind !== "item") return;
-    const reply = await window.aitherLauncher.run(row.item.key, term);
+    const item = row.item;
+    if (item.kind === "card") {
+      // Typed text that NAMES an option is the answer ("not now"); otherwise
+      // Enter opens the card and a second Enter takes the recommendation.
+      if (term) {
+        const named = matchOption(item.options, term);
+        if (named) { await answerOption(item, named.index); return; }
+      }
+      if (state.openCard !== item.key) { toggleCard(item.key); return; }
+      const index = recommendedIndex(item);
+      if (index) { await answerOption(item, index); return; }
+      setStatus("This card has no options to take — open the deck to steer it", true);
+      return;
+    }
+    if (item.kind === "intent") { await submitIntent(term); return; }
+    const reply = await window.aitherLauncher.run(item.key, term);
     if (reply && reply.ok === false) {
       setStatus(reply.error || "1 result failed — try it from the palette (Ctrl+K)", true);
       return;
     }
     if (reply && reply.did) setStatus(reply.did, false);
+  }
+
+  function closePane() {
+    pane.classList.remove("open");
+    paneBody.replaceChildren();
+    paneNotes.textContent = "";
+  }
+
+  function showText(title, text) {
+    paneTitle.textContent = title || "";
+    const pre = document.createElement("pre");
+    pre.textContent = text || "";
+    paneBody.replaceChildren(pre);
+    paneNotes.textContent = "";
+    pane.classList.add("open");
+  }
+
+  const KIND_COLOR = { session: "#7cc4ff", run: "#9be38f", "fleet-agent": "#c7a2ff", "local-agent": "#c7a2ff", twin: "#c7a2ff",
+    project: "#ffd36b", task: "#ffd36b", roadmap: "#ffd36b", pr: "#ffd36b", plan: "#7fe0d0", notebook: "#7fe0d0", memory: "#7fe0d0",
+    schedule: "#ff9f7c", routine: "#ff9f7c", event: "#ff9f7c", person: "#ff8fc8", graph: "#8b93a1" };
+
+  /** The neighbourhood as a radial SVG: the item in the middle, every neighbour on a ring. */
+  function showGraph(g) {
+    const NS = "http://www.w3.org/2000/svg";
+    const el = (name, attrs, text) => {
+      const n = document.createElementNS(NS, name);
+      for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, String(v));
+      if (text != null) n.textContent = text;
+      return n;
+    };
+    const W = 720; const H = 330; const cx = W / 2; const cy = H / 2;
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Graph of ${g.center.title}` });
+    const nodes = Array.isArray(g.nodes) ? g.nodes : [];
+    const edges = Array.isArray(g.edges) ? g.edges : [];
+    const label = (t, n) => (String(t || "").length > n ? `${String(t).slice(0, n - 1)}…` : String(t || ""));
+    const pos = nodes.map((n, i) => {
+      const a = (2 * Math.PI * i) / Math.max(1, nodes.length) - Math.PI / 2;
+      // Alternate two rings so neighbouring labels do not sit on each other.
+      const ring = nodes.length > 10 && i % 2 ? 0.72 : 1;
+      const rx = (nodes.length > 8 ? 300 : 240) * ring; const ry = 132 * ring;
+      return { x: cx + rx * Math.cos(a), y: cy + ry * Math.sin(a) };
+    });
+    nodes.forEach((n, i) => {
+      const p = pos[i];
+      svg.append(el("line", { x1: cx, y1: cy, x2: p.x, y2: p.y, stroke: "rgba(255,255,255,0.18)", "stroke-width": 1.2 }));
+      const e = edges[i] || {};
+      svg.append(el("text", { x: (cx + p.x) / 2, y: (cy + p.y) / 2 - 3, fill: "#8b93a1", "font-size": 9.5, "text-anchor": "middle" }, label(e.label, 18)));
+    });
+    nodes.forEach((n, i) => {
+      const p = pos[i];
+      const color = KIND_COLOR[n.kind] || "#8b93a1";
+      svg.append(el("circle", { cx: p.x, cy: p.y, r: 6, fill: color }));
+      svg.append(el("text", { x: p.x, y: p.y + 17, fill: "#e8ebef", "font-size": 10.5, "text-anchor": "middle" }, label(n.title, 26)));
+      svg.append(el("text", { x: p.x, y: p.y + 29, fill: "#8b93a1", "font-size": 9, "text-anchor": "middle" }, label(`${n.kind}${(edges[i] && edges[i].source) ? ` · ${edges[i].source}` : ""}`, 34)));
+    });
+    svg.append(el("circle", { cx, cy, r: 11, fill: KIND_COLOR[g.center.kind] || "#7cc4ff", stroke: "#fff", "stroke-width": 1.5 }));
+    svg.append(el("text", { x: cx, y: cy + 26, fill: "#fff", "font-size": 12.5, "font-weight": 600, "text-anchor": "middle" }, label(g.center.title, 44)));
+    if (!nodes.length) svg.append(el("text", { x: cx, y: cy + 48, fill: "#ffb86b", "font-size": 11, "text-anchor": "middle" }, "0 neighbours found in the desk sources or the platform graphs"));
+    paneTitle.textContent = `Graph — ${g.center.title} (${nodes.length} neighbours)`;
+    paneBody.replaceChildren(svg);
+    paneNotes.textContent = (g.notes || []).join(" · ");
+    if (g.explore) {
+      // The same question in aither://explore: search, expand neighbours, node detail.
+      const more = document.createElement("button");
+      more.type = "button";
+      more.id = "graph-explore";
+      more.textContent = "Open in Explore";
+      more.style.cssText = "margin-left:8px;font:inherit;color:#7cc4ff;background:none;border:0;cursor:pointer;text-decoration:underline";
+      more.addEventListener("click", () => { void window.aitherLauncher.run(g.explore, ""); });
+      paneNotes.append(more);
+    }
+    pane.classList.add("open");
+  }
+
+  /** Run one verb on the selected row. */
+  async function verb(v, text) {
+    const row = selectedRow();
+    if (!row || row.kind !== "item") return;
+    const item = row.item;
+    if (v === "steer" && text == null) { enterSteer(item); return; }
+    if (v === "stop" && stopArmed !== item.key) {
+      stopArmed = item.key;
+      holdStatus(`Press Ctrl+. again to stop “${item.title}”`, true);
+      return;
+    }
+    stopArmed = "";
+    if (v === "graph" && pane.classList.contains("open") && paneTitle.textContent.startsWith("Graph")) { closePane(); return; }
+    holdStatus(v === "graph" ? "Reading the neighbourhood (desk sources + graph_find + graph_traverse)…" : `${v}…`, false);
+    const reply = await window.aitherLauncher.act(item.key, v, text || "");
+    if (!reply || reply.ok === false) { holdStatus((reply && reply.error) || `1 ${v} failed`, true); return; }
+    if (reply.pane && reply.pane.kind === "graph") showGraph(reply.pane);
+    else if (reply.pane && reply.pane.kind === "text") showText(reply.pane.title, reply.pane.text);
+    holdStatus(reply.did || `${v} done`, false);
+  }
+
+  function enterSteer(item) {
+    steer = { key: item.key, title: item.title, query: input.value };
+    chip.textContent = `Steer → ${item.title}`;
+    chip.classList.add("steer");
+    input.value = "";
+    input.placeholder = "Type the message for this agent, Enter sends, Esc returns to the search";
+    holdStatus(`Steering “${item.title}” — Enter sends, Esc cancels`, false);
+  }
+
+  function leaveSteer() {
+    const back = steer ? steer.query : "";
+    steer = null;
+    chip.classList.remove("steer");
+    chip.textContent = CHIPS[prefixOf(back).mode];
+    input.placeholder = "Search AitherOS apps, PC apps, files, agents, tools, skills, knowledge and the web";
+    input.value = back;
+  }
+
+  async function sendSteer() {
+    const text = input.value.trim();
+    if (!text) { holdStatus("0 words to send — type the message first", true); return; }
+    const target = steer;
+    const reply = await window.aitherLauncher.act(target.key, "steer", text);
+    if (!reply || reply.ok === false) { holdStatus((reply && reply.error) || "1 steer failed", true); return; }
+    leaveSteer();
+    holdStatus(reply.did || `steered ${target.title}`, false);
   }
 
   async function submitAsk() {
@@ -322,6 +647,64 @@
     showOutput(term, reply);
   }
 
+  /** "Do it": plan the sentence, show what ran inline, hold the confirm line for what writes/sends/spends. */
+  async function submitIntent(text) {
+    const body = String(text || "").trim();
+    if (!body) { setStatus("0 words — type what you want done", true); return; }
+    holdStatus(`Planning “${body.slice(0, 60)}” with your desk's tools…`, false);
+    const reply = await window.aitherLauncher.intent(body);
+    showIntent(body, reply);
+  }
+
+  function intentLines(reply) {
+    const lines = [];
+    if (reply.say) lines.push(reply.say, "");
+    for (const r of reply.ran || []) lines.push(`${r.ok ? "✓" : "✗"} ${r.line} — ${r.text}`);
+    if (reply.pending) for (const step of reply.pending.steps || []) lines.push(`… waiting: ${step}`);
+    for (const why of reply.rejected || []) lines.push(`· dropped: ${why}`);
+    if ((reply.context || []).length) lines.push("", `context sent: ${reply.context.join(", ")}`);
+    for (const why of reply.dropped || []) lines.push(`context held back: ${why}`);
+    if (reply.via) lines.push(`planned by ${reply.via === "local-bonsai" ? "the local Bonsai (the platform is down)" : "MicroScheduler"}${reply.model ? ` · ${reply.model}` : ""}`);
+    return lines;
+  }
+
+  function showIntent(body, reply) {
+    if (!reply || reply.ok === false && !(reply.ran || []).length) {
+      intentWait = null;
+      holdStatus((reply && reply.error) || "1 plan failed", true);
+      return;
+    }
+    const lines = intentLines(reply);
+    output.classList.add("open");
+    outputTitle.textContent = `Do it · ${body.slice(0, 70)}`;
+    outputBody.textContent = lines.join("\n") || "(nothing to do)";
+    if (reply.pending) {
+      intentWait = { id: reply.pending.id, text: input.value };
+      holdStatus(reply.pending.line, true);
+      return;
+    }
+    intentWait = null;
+    const ran = (reply.ran || []).length;
+    holdStatus(ran ? `ran ${ran} step${ran === 1 ? "" : "s"}` : "nothing ran — see the plan", !reply.ok);
+  }
+
+  async function confirmIntent() {
+    const wait = intentWait;
+    intentWait = null;
+    const reply = await window.aitherLauncher.intentConfirm(wait.id);
+    if (!reply || reply.ok === false && !(reply.ran || []).length) { holdStatus((reply && reply.error) || "1 confirm failed", true); return; }
+    const lines = intentLines(reply);
+    outputBody.textContent = `${outputBody.textContent}\n\nconfirmed:\n${lines.join("\n")}`;
+    holdStatus(reply.ok ? "done" : "1 step failed — see the output", !reply.ok);
+  }
+
+  async function togglePin(item) {
+    const reply = await window.aitherLauncher.pin(item.key);
+    if (!reply || reply.ok === false) { holdStatus((reply && reply.error) || "1 pin failed", true); return; }
+    holdStatus(reply.did, false);
+    requestSearch(input.value);
+  }
+
   function showOutput(line, reply) {
     output.classList.add("open");
     const exit = reply.timedOut ? "timed out" : `exit ${reply.code}`;
@@ -336,7 +719,56 @@
   });
 
   input.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") { event.preventDefault(); void window.aitherLauncher.hide(); return; }
+    if (steer) {
+      if (event.key === "Escape") { event.preventDefault(); leaveSteer(); setStatus("", false); return; }
+      if (event.key === "Enter") { event.preventDefault(); void sendSteer(); return; }
+      return;
+    }
+    // A plan is waiting on its confirm line: Enter runs exactly those steps, Esc drops them,
+    // and typing anything else drops them too (the line no longer matches the box).
+    if (intentWait) {
+      if (event.key === "Enter" && input.value === intentWait.text) { event.preventDefault(); void confirmIntent(); return; }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        const id = intentWait.id;
+        intentWait = null;
+        void window.aitherLauncher.intentCancel(id).then((r) => holdStatus((r && r.did) || "plan cancelled", false));
+        return;
+      }
+    }
+    if (event.ctrlKey && !event.altKey && (event.key === "p" || event.key === "P")) {
+      const row = selectedRow();
+      if (row && row.kind === "item" && row.item.kind === "tool") { event.preventDefault(); void togglePin(row.item); return; }
+    }
+    if (event.ctrlKey && !event.altKey) {
+      const row = selectedRow();
+      const isItem = row && row.kind === "item";
+      const map = { Enter: "steer", ".": "stop", t: "transcript", T: "transcript", g: "graph", G: "graph", i: "detail", I: "detail", p: "phone", P: "phone" };
+      const v = map[event.key];
+      if (v && isItem && (CC.has(row.item.kind) || (row.item.kind === "card" && v === "phone"))) {
+        event.preventDefault();
+        void verb(v);
+        return;
+      }
+    }
+    if (event.key === "Escape" && pane.classList.contains("open")) { event.preventDefault(); closePane(); return; }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      // Esc COLLAPSES an open card first; only the second Esc closes the
+      // window. It never answers, snoozes or hides a card.
+      if (state.openCard) { state.openCard = null; render(); return; }
+      void window.aitherLauncher.hide();
+      return;
+    }
+    // 1-9 answer the focused card while the box is EMPTY (with text in the box a
+    // digit is search text, as typed).
+    if (!input.value && /^[1-9]$/.test(event.key) && state.mode === "all") {
+      const row = selectedRow();
+      if (row && row.kind === "item" && row.item.kind === "card") {
+        const option = (row.item.options || []).find((o) => o.index === Number(event.key));
+        if (option) { event.preventDefault(); void answerOption(row.item, option.index); return; }
+      }
+    }
     if (event.key === "ArrowDown") {
       event.preventDefault();
       if (state.rows.length) { state.selected = (state.selected + 1) % state.rows.length; paintSelection(); }

@@ -101,8 +101,16 @@ jobs:
           $setup = (Get-ChildItem release/Desk-*-setup.exe | Select-Object -First 1).FullName
           if (-not $setup) { throw "no installer found in release/" }
           Start-Process -FilePath $setup -ArgumentList '/S' -Wait
-          $exe = Join-Path $env:LOCALAPPDATA 'Programs\Desk\Desk.exe'
-          if (-not (Test-Path $exe)) { throw "installed exe not found: $exe" }
+          # The installer is perMachine (package.json nsis.perMachine): a silent install lands
+          # in Program Files. The per-user path is kept for an older per-user build. Looking
+          # only under LOCALAPPDATA failed v0.1.29 (run 42660520000: "installed exe not
+          # found" right after a successful install).
+          $candidates = @(
+            (Join-Path $env:ProgramFiles 'Desk\Desk.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\Desk\Desk.exe')
+          )
+          $exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) { throw "installed exe not found in: $($candidates -join ', ')" }
           $proc = Start-Process -FilePath $exe -ArgumentList '--disable-gpu','--smoke' -PassThru -Wait
           if ($proc.ExitCode -ne 0) { throw "smoke failed with exit code $($proc.ExitCode)" }
       - name: Smoke test the installed app

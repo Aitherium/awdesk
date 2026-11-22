@@ -54,19 +54,3 @@ ul.list li { word-break: break-word; }
 pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font: 11px/1.5 var(--font-mono);
   color: var(--muted); max-height: 240px; overflow: auto; }
 .more { color: var(--muted); font-size: 11px; padding-top: 4px; }
-/* Strata node browser (plane-page.js nodeBrowserView). */
-.nb-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
-.nb-bar select { flex: 1; min-width: 0; background: var(--btn); color: var(--fg);
-  border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit; }
-.nb-crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 6px;
-  font-family: var(--font-mono); font-size: 12px; }
-.nb-crumbs > * + *::before { content: "/"; color: var(--muted); margin-right: 4px; }
-.nb-crumb { appearance: none; border: 0; background: none; color: var(--brand); cursor: pointer;
-  padding: 0; font: inherit; }
-.nb-here { color: var(--fg); }
-.nb-source { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; margin-bottom: 6px;
-  font-size: 12px; }
-.nb-source .summary.warn { margin-bottom: 0; }
-tr.nb-open td:first-child { cursor: pointer; color: var(--fg); }
-tr.nb-open:hover td { background: var(--btn); }
-td.nb-size { white-space: nowrap; font-variant-numeric: tabular-nums; }

@@ -13,8 +13,7 @@
  * companion.
  *
  * MEASURED 2026-11-02 on the owner's box — the reason the direct door exists:
- *   the MCP gateway carries AITHER_PERCEPTIONMEDIA_URL pointed at the PerceptionMedia
- *   service over plain http:// (an internal service endpoint)
+ *   aitheros-mcpgateway carries AITHER_PERCEPTIONMEDIA_URL=http://aitheros-perception-media:8084
  *   while the service serves TLS, so the gateway's ask_about_image answers
  *   "Error: Vision upload-analyze: Server disconnected without sending a response."
  *   A direct https POST with the AitherNet CA answered correctly in 5.7 s

@@ -61,3 +61,23 @@ test("notes list vs search; a bad note id never reaches the gateway", async () =
   assert.equal((await client.viewNote("../etc")).ok, false);
   assert.equal(calls.length, 2);
 });
+
+test("wiki search is real: wiki_search rows, and LyraWiki being down is said, never an empty list", async () => {
+  const up = fake({ wiki_search: { query: "loop", results: [{ slug: "agent-loop", title: "Agent Loop", score: 0.8, snippet: "how an agent runs" }, { title: "no slug" }] } });
+  const r = await up.client.searchWiki("  loop ", { limit: 99 });
+  assert.deepEqual(up.calls, [["wiki_search", { query: "loop", limit: 50 }]]);
+  assert.deepEqual(r, { ok: true, query: "loop", pages: [{ slug: "agent-loop", title: "Agent Loop", snippet: "how an agent runs", score: 0.8 }] });
+  // Measured against the live gateway with LyraWiki stopped (2026-11-13).
+  const down = await fake({ wiki_search: { error: "[Errno -2] Name or service not known: aitheros-lyra" } }).client.searchWiki("loop");
+  assert.equal(down.ok, false);
+  assert.match(down.error, /the wiki did not answer: .*aitheros-lyra/);
+  assert.equal((await fake({ wiki_search: new Error("gateway timeout") }).client.searchWiki("loop")).error, "gateway timeout");
+  assert.equal((await fake({ wiki_search: () => "not json" }).client.searchWiki("loop")).ok, false);
+  const none = fake({});
+  assert.equal((await none.client.searchWiki("   ")).ok, false);
+  assert.equal(none.calls.length, 0);
+  // Page-change lookups still make exactly two calls: the wiki is asked only on purpose.
+  const page = fake({ notes_search: { matches: [] }, recall: { memories: [] } });
+  await page.client.related({ title: "Quadlets", url: "https://x.test/" });
+  assert.deepEqual(page.calls.map((c) => c[0]), ["notes_search", "recall"]);
+});

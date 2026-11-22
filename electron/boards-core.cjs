@@ -9,8 +9,16 @@
  *
  * A board is ONE JSON document, the source of truth:
  *
- *   {version:1, id, kind:"note"|"board", title, createdAt, updatedAt,
- *    open, visible, bounds:{x,y,width,height}, items:[...], text:"..."}
+ *   {version:2, id, kind:"note"|"board", title, createdAt, updatedAt,
+ *    open, visible, bounds:{x,y,width,height}, items:[...], text:"...",
+ *    pins:[pin-item], view:{scale,x,y}, windowView:{x,y}, grid, snap, link}
+ *
+ * Version 2 (2026-11-07, aither://canvas): a board also holds PINNED CARDS (`pins`,
+ * pin-item.cjs: live pages, YouTube, GIFs, images, widgets, notes) beside its drawing
+ * `items`, the canvas view (`view`, AitherOne's SceneView shape), its snap grid, and
+ * `link` -- the AitherOne canvas doc it syncs with, if any. A version-1 file migrates
+ * on read (migrateBoard): no pins, the default view, unlinked. The floating board
+ * window and the canvas page edit the SAME document.
  *
  * `open`      the board exists in the Boards list (a closed board is not restored).
  * `visible`   its window is on screen. "Put away" clears visible and keeps open, so
@@ -29,6 +37,9 @@
 
 const os = require("node:os");
 const path = require("node:path");
+// The pinned cards on a board (aither://canvas): one card model, shared with the
+// desktop pins and AitherOne scenes.
+const pinItem = require("./pin-item.cjs");
 
 const BOARDS_DIR_NAME = "Aither Boards";
 const KINDS = Object.freeze(["note", "board"]);
@@ -37,6 +48,13 @@ const NOTE_SIZE = Object.freeze({ width: 360, height: 300 });
 const BOARD_SIZE = Object.freeze({ width: 760, height: 560 });
 const MIN_WIDTH = 240;
 const MIN_HEIGHT = 180;
+const BOARD_VERSION = 2;
+const MAX_PINS = 100;
+const GRID_MIN = 4;
+const GRID_MAX = 64;
+const DEFAULT_GRID = 16;
+const SCALE_MIN = 0.25;
+const SCALE_MAX = 2;
 
 function pad(n, width = 2) {
   return String(n).padStart(width, "0");
@@ -142,7 +160,7 @@ function newBoard({ kind = "board", date = new Date(), id, title, bounds } = {})
   const at = date instanceof Date ? date : new Date(date);
   const iso = at.toISOString();
   return {
-    version: 1,
+    version: BOARD_VERSION,
     id: id || newId(k, at),
     kind: k,
     title: String(title || titleFor(k, at)),
@@ -156,6 +174,12 @@ function newBoard({ kind = "board", date = new Date(), id, title, bounds } = {})
     } : { x: 0, y: 0, ...defaultSize(k) },
     items: [],
     text: "",
+    pins: [],
+    view: { scale: 1, x: 0, y: 0 },
+    windowView: { x: 0, y: 0 },
+    grid: DEFAULT_GRID,
+    snap: true,
+    link: null,
   };
 }
 
@@ -174,17 +198,28 @@ function normalizeItem(raw) {
     h: Math.max(1, finite(raw.h, 1)),
   };
   if (raw.type === "stroke") {
+    // Pressure `p`, `tool`, `opacity` and `z` are KEPT (2026-11-07): ink saved from the
+    // screen is stored in the AitherOne stroke contract (aitherone-canvas SYNC.md:
+    // {id, kind:"stroke", points:[{x,y,p}], color, width, tool, opacity?, z}).
     const points = Array.isArray(raw.points)
       ? raw.points.filter((p) => p && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y)))
-        .map((p) => ({ x: Number(p.x), y: Number(p.y) }))
+        .slice(0, 4000)
+        .map((p) => (Number.isFinite(Number(p.p))
+          ? { x: Number(p.x), y: Number(p.y), p: Math.max(0.05, Math.min(1, Number(p.p))) }
+          : { x: Number(p.x), y: Number(p.y) }))
       : [];
     if (points.length < 2) return null;
-    return { ...base, points, color: String(raw.color || "#e6e8eb"), width: Math.max(1, finite(raw.width, 3)) };
+    const stroke = { ...base, points, color: String(raw.color || "#e6e8eb"), width: Math.max(1, Math.min(64, finite(raw.width, 3))) };
+    if (raw.kind === "stroke") stroke.kind = "stroke";
+    if (raw.tool === "pen" || raw.tool === "highlighter") stroke.tool = raw.tool;
+    if (Number.isFinite(Number(raw.opacity))) stroke.opacity = Math.max(0, Math.min(1, Number(raw.opacity)));
+    if (Number.isFinite(Number(raw.z))) stroke.z = Math.trunc(Number(raw.z));
+    return stroke;
   }
   if (raw.type === "shape") {
     return {
       ...base,
-      shape: ["line", "rect", "ellipse"].includes(raw.shape) ? raw.shape : "rect",
+      shape: ["line", "arrow", "rect", "ellipse"].includes(raw.shape) ? raw.shape : "rect",
       color: String(raw.color || "#e6e8eb"),
       width: Math.max(1, finite(raw.width, 3)),
     };
@@ -194,6 +229,14 @@ function normalizeItem(raw) {
   }
   if (raw.type === "note") {
     return { ...base, text: String(raw.text || "").slice(0, 4000), color: String(raw.color || "#3a3a2a") };
+  }
+  // A connector (toolkit whiteboard, 2026-11-13) joins two items by id and follows them
+  // when they move; one whose end is gone is dropped by the page.
+  if (raw.type === "connector") {
+    const from = String(raw.from || "").slice(0, 80);
+    const to = String(raw.to || "").slice(0, 80);
+    if (!from || !to || from === to) return null;
+    return { ...base, from, to, color: String(raw.color || "#3b4250"), width: Math.max(1, Math.min(12, finite(raw.width, 2))) };
   }
   if (raw.type === "image") {
     const dataUrl = String(raw.dataUrl || "");
@@ -208,8 +251,9 @@ function normalizeBoard(raw) {
   if (!raw || typeof raw !== "object") return null;
   if (!raw.id || !KINDS.includes(raw.kind)) return null;
   const items = Array.isArray(raw.items) ? raw.items.map(normalizeItem).filter(Boolean) : [];
+  const v2 = migrateBoard(raw);
   return {
-    version: 1,
+    version: BOARD_VERSION,
     id: String(raw.id).slice(0, 120),
     kind: raw.kind,
     title: String(raw.title || titleFor(raw.kind)).slice(0, 160),
@@ -226,6 +270,55 @@ function normalizeBoard(raw) {
       : { x: 0, y: 0, ...defaultSize(raw.kind) },
     items,
     text: String(raw.text || "").slice(0, 200_000),
+    // The workspace the board was made in (toolkit.cjs): a later workspace sync files it
+    // into that workspace's Whiteboard only (owner-hard-workspace-isolation).
+    ...(typeof raw.workspace === "string" && raw.workspace ? { workspace: raw.workspace.slice(0, 64) } : {}),
+    ...v2,
+  };
+}
+
+/**
+ * The version-2 fields of a board, from any version. A v1 file has none of them and
+ * gets the defaults; a v2 file has each read back through its own sanitizer.
+ */
+function migrateBoard(raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const seen = new Set();
+  const pins = [];
+  for (const p of Array.isArray(r.pins) ? r.pins : []) {
+    const pin = pinItem.normalizePinItem(p);
+    if (!pin || seen.has(pin.id)) continue;
+    seen.add(pin.id);
+    pins.push(pin);
+    if (pins.length >= MAX_PINS) break;
+  }
+  const v = r.view && typeof r.view === "object" ? r.view : {};
+  const wv = r.windowView && typeof r.windowView === "object" ? r.windowView : {};
+  const clamp = (n, lo, hi, d) => (Number.isFinite(Number(n)) ? Math.min(hi, Math.max(lo, Number(n))) : d);
+  const l = r.link && typeof r.link === "object" && r.link.aitherone && typeof r.link.aitherone === "object" ? r.link.aitherone : null;
+  const docId = l && typeof l.docId === "string" && /^[A-Za-z0-9_.:-]{1,120}$/.test(l.docId) ? l.docId : null;
+  return {
+    pins,
+    view: { scale: clamp(v.scale, SCALE_MIN, SCALE_MAX, 1), x: Math.round(clamp(v.x, -1e5, 1e5, 0)), y: Math.round(clamp(v.y, -1e5, 1e5, 0)) },
+    // The FLOATING WINDOW's pan (board.html, middle-drag on empty space), apart from the
+    // canvas page's `view`: the two views of one board keep their own place.
+    windowView: { x: Math.round(clamp(wv.x, -1e5, 1e5, 0)), y: Math.round(clamp(wv.y, -1e5, 1e5, 0)) },
+    grid: Math.round(clamp(r.grid, GRID_MIN, GRID_MAX, DEFAULT_GRID)),
+    snap: r.snap !== false,
+    link: docId ? { aitherone: {
+      docId,
+      // The doc's updated_at when we last agreed with it, and our own updatedAt then:
+      // the two halves of last-writer-wins (aitherone-link.cjs).
+      remoteUpdatedAt: typeof l.remoteUpdatedAt === "string" ? l.remoteUpdatedAt.slice(0, 40) : null,
+      localUpdatedAt: typeof l.localUpdatedAt === "string" ? l.localUpdatedAt.slice(0, 40) : null,
+      // AitherOne's content_hash at the last agreement (the base_hash of the next save)
+      // and the scene `rev` counter (aitherone-canvas SYNC.md).
+      remoteHash: typeof l.remoteHash === "string" ? l.remoteHash.slice(0, 128) : null,
+      rev: Number.isInteger(l.rev) && l.rev >= 0 ? l.rev : 0,
+      // AitherOne scene nodes the desk cannot show (files, arrows ...): kept verbatim
+      // and written back on the next push, never dropped.
+      keep: Array.isArray(l.keep) ? l.keep.filter((k) => k && typeof k === "object").slice(0, 200) : [],
+    } } : null,
   };
 }
 
@@ -238,6 +331,14 @@ function applySave(board, patch, now = Date.now()) {
     text: p.text != null ? p.text : board.text,
     items: Array.isArray(p.items) ? p.items : board.items,
     bounds: p.bounds && typeof p.bounds === "object" ? p.bounds : board.bounds,
+    // The canvas's half of the document; the board window never sends these, so a
+    // window save keeps the pins the canvas placed (and the other way round).
+    pins: Array.isArray(p.pins) ? p.pins : board.pins,
+    view: p.view && typeof p.view === "object" ? p.view : board.view,
+    grid: p.grid != null ? p.grid : board.grid,
+    snap: typeof p.snap === "boolean" ? p.snap : board.snap,
+    link: p.link !== undefined ? p.link : board.link,
+    windowView: p.windowView && typeof p.windowView === "object" ? p.windowView : board.windowView,
     // A save never resurrects a closed board and never un-hides a put-away one.
     open: board.open,
     visible: board.visible,
@@ -327,6 +428,7 @@ function syncItems(board, { png = null } = {}) {
 }
 
 module.exports = {
+  BOARD_VERSION, MAX_PINS, DEFAULT_GRID, migrateBoard,
   BOARDS_DIR_NAME, KINDS, MAX_LIST, NOTE_SIZE, BOARD_SIZE, MIN_WIDTH, MIN_HEIGHT,
   pad, stamp, titleFor, uniqueTitle, newId, dirCandidates, boardFile, thumbnailFile, exportFile,
   defaultSize, placeAt, usableBounds,

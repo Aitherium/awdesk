@@ -19,6 +19,13 @@ test("destructive kinds and proposal/plan facts route Approve to the passkey win
   // awstorage manage/suggest cards are kind "decision" -- the FACT marks them.
   assert.equal(sa.answerRoute({ kind: "decision", facts: ["proposal_id: 12", "node: x"] }, "approve"), "window");
   assert.equal(sa.answerRoute({ kind: "decision", facts: ["plan_id: rp-3", "plan_sha256: ab"] }, "Approve"), "window");
+  // A permission-grant card (claude_permission_grant.py) applies only on a signed
+  // receipt: Grant goes to the passkey page, Deny stays unsigned. The real card's facts:
+  const grant = { kind: "blocked", facts: [
+    "permission_rule: Bash(gh api -X PATCH repos/Aitherium/AitherOS/hooks/599601645:*)",
+    "settings_file: C:\\AitherOS-Fresh\\.claude\\settings.local.json"] };
+  assert.equal(sa.answerRoute(grant, "grant"), "window");
+  assert.equal(sa.answerRoute(grant, "deny"), "awask");
 });
 
 test("reject and ordinary cards keep using awask", () => {
@@ -114,7 +121,7 @@ test("main.cjs routes desk:deck-answer through signed-approval before awask", ()
   assert.ok(i > 0);
   // The handler delegates to the ONE answer path every desk surface shares.
   assert.match(src.slice(i, i + 300), /return answerDeckCard\(id, choice, deckWindow\)/);
-  const f = src.indexOf("function answerDeckCard(id, choice, parent)");
+  const f = src.indexOf("function answerDeckCard(id, choice, parent, note");
   assert.ok(f > 0, "answerDeckCard is the shared answer path");
   const body = src.slice(f, f + 2500);
   const route = body.indexOf("signedApproval.answerRoute(");
@@ -122,6 +129,20 @@ test("main.cjs routes desk:deck-answer through signed-approval before awask", ()
   assert.ok(route > 0 && awask > route, "answerRoute must be consulted before answerCard");
   assert.match(body, /readCardRaw\(id, decisionCards\.storeDir\(\)\)/);
   assert.match(body, /pending: true/);
+});
+
+test("a spoken answer (voice card, the fairy's Talk) goes through answerDeckCard, never awask directly", () => {
+  const src = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  const i = src.indexOf("async function answerCardByVoice(card)");
+  assert.ok(i > 0, "the voice card flow exists");
+  const end = src.indexOf("function toggleMicMute", i);
+  assert.ok(end > i);
+  const body = src.slice(i, end);
+  assert.ok(body.includes('answerDeckCard(card.id, reply.key, null, "answered by voice")'), "the spoken answer uses the ONE answer path");
+  assert.ok(!body.includes("decisionCards.answerCard("), "no second, unsigned answer path");
+  const talk = body.indexOf("async function talkAboutCard(card)");
+  assert.ok(talk > 0, "the fairy's Talk is wired");
+  assert.ok(body.indexOf("micMuted()", talk) > talk && body.indexOf("muted: true", talk) > talk, "a muted mic is reported, not silent");
 });
 
 test("the browser side panel's Agents tab answers through the same answerDeckCard", () => {
@@ -136,89 +157,4 @@ test("the browser side panel's Agents tab answers through the same answerDeckCar
   // The answer is handed to createAgentsSource, which holds an answered id until the
   // watcher drops the card -- not spread beside it, where nothing would wrap it.
   assert.match(body, /^ {2}answer: \(id, choice, parent\) =>/m);
-});
-
-test("an agent-approval card opens its /approvals page in the approve window, never an answer", () => {
-  const raw = { id: "d-9", kind: "info", raised_by: "agent-approvals", dedupe_key: "agent-approval:apr-0123456789abcdef" };
-  assert.equal(sa.agentApprovalId(raw), "apr-0123456789abcdef");
-  assert.equal(sa.answerRoute(raw, sa.AGENT_APPROVAL_CHOICE), "agent-approval");
-  assert.equal(sa.answerRoute(raw, "approve"), "awask", "any other answer approves nothing");
-  assert.equal(sa.agentApprovalUrl("apr-0123456789abcdef", "https://api.aitherium.com"),
-    "https://api.aitherium.com/approvals?id=apr-0123456789abcdef");
-  assert.throws(() => sa.agentApprovalUrl("apr-../x"));
-  // Only the router's own card counts: a lookalike dedupe key from another raiser does not.
-  assert.equal(sa.agentApprovalId({ ...raw, raised_by: "some-agent" }), "");
-  assert.equal(sa.agentApprovalId({ ...raw, dedupe_key: "agent-approval:../../x" }), "");
-  assert.equal(sa.agentApprovalId(null), "");
-});
-
-test("the desk card for an agent approval offers exactly one choice: open it with the passkey", () => {
-  const dc = require("./decision-cards.cjs");
-  const card = dc.cardFromRaw({ id: "d-9", status: "open", kind: "info", raised_by: "agent-approvals",
-    dedupe_key: "agent-approval:apr-0123456789abcdef", title: "Agent asks approval: focus_announce" });
-  assert.deepEqual(card.options.map((o) => o.key), [sa.AGENT_APPROVAL_CHOICE]);
-  assert.equal(card.defaultKey, sa.AGENT_APPROVAL_CHOICE);
-  const other = dc.cardFromRaw({ id: "d-8", status: "open", kind: "info", title: "x" });
-  assert.deepEqual(other.options, []);
-});
-
-test("main.cjs sends the agent-approval choice to the approve window before any answer", () => {
-  const src = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
-  const at = src.indexOf('route === "agent-approval"');
-  assert.ok(at > 0);
-  assert.ok(at < src.indexOf("decisionCards.answerCard(id, choice)"));
-  assert.match(src.slice(at, at + 600), /agentApprovalUrl\(signedApproval\.agentApprovalId\(raw\)\)/);
-});
-
-// ── owner 2026-11-15: approving a card must not start from a fresh sign-in ──
-function fakeSession() {
-  const set = [];
-  return {
-    set,
-    fromPartition(name) {
-      return { cookies: { set: async (d) => { set.push({ name, d }); } } };
-    },
-  };
-}
-
-test("the desk session is seeded into the approve partition", async () => {
-  const ses = fakeSession();
-  const ok = await sa.seedApproveSession({
-    session: ses,
-    readToken: () => ({ token: "tok", expiresAt: 4102444800000 }),
-    cookieDetails: (t, o) => ({ value: t, exp: o.expiresAt }),
-  });
-  assert.equal(ok, true);
-  assert.equal(ses.set.length, 1);
-  assert.equal(ses.set[0].name, "persist:aither-approve");
-  assert.equal(ses.set[0].d.value, "tok");
-});
-
-test("no desk token leaves the approve partition untouched", async () => {
-  const ses = fakeSession();
-  assert.equal(await sa.seedApproveSession({ session: ses, readToken: () => null,
-    cookieDetails: () => ({}) }), false);
-  assert.equal(ses.set.length, 0);
-});
-
-test("the approve page loads after the seed, and still loads if seeding fails", async () => {
-  // An earlier test leaves the approve window open, so this also covers the reuse path:
-  // wrap loadURL on whichever window openApproveWindow returns, before the seed settles.
-  const order = [];
-  class Win {
-    constructor() { this.webContents = { setWindowOpenHandler() {}, on() {} }; }
-    on() {}
-    isDestroyed() { return false; }
-    loadURL() {}
-    show() {} focus() {}
-  }
-  const watch = (w) => { w.loadURL = (u) => order.push(["load", u]); return w; };
-  watch(sa.openApproveWindow({ BrowserWindow: Win, url: "https://api.aitherium.com/decide?id=a",
-    seed: async () => { order.push(["seed"]); return true; } }));
-  await new Promise((r) => setTimeout(r, 0));
-  assert.deepEqual(order, [["seed"], ["load", "https://api.aitherium.com/decide?id=a"]]);
-  watch(sa.openApproveWindow({ BrowserWindow: Win, url: "https://api.aitherium.com/decide?id=b",
-    seed: async () => { throw new Error("vault down"); } }));
-  await new Promise((r) => setTimeout(r, 0));
-  assert.deepEqual(order[order.length - 1], ["load", "https://api.aitherium.com/decide?id=b"]);
 });

@@ -18,11 +18,15 @@
  *   priority normal, Chromium throttling ON for hidden/occluded windows, Lend memory
  *   OFF until the user turns it on.
  *
- * Present stays SOFTWARE (present-policy.cjs auto), measured on the customer build with
- * the workspace overlay up on a 3840x2112 screen, avatar hidden (2026-10-16):
+ * Present policy is part of the posture, and it must NAME its choice: desk-posture returning
+ * "auto" while present-policy.cjs read `posture.present === "gpu"` made the GPU branch dead
+ * (plan 2027 slice S1, 2026-11-18). So:
  *
- *   software present   487 MB private, 7.3 % of one core
- *   GPU present        797 MB private, 16.2 % of one core  (GPU process alone 491 MB)
+ *   owner (the fleet box):    software present — measured stall-free there, because the fleet
+ *                             polls that adapter (present-policy.cjs docblock: 0 stalls vs
+ *                             3-6 per 10 s when the swap chain lands on the dGPU). 487 MB.
+ *   customer (a workspace):   GPU present — nothing polls the customer's adapter, and software
+ *                             compositing copies every frame GPU→CPU before DWM sees it.
  *
  * Which posture: AWDESK_POSTURE=owner|customer wins; otherwise a tenant host other than
  * the apex (desk-tenant.cjs, written by the setup page's installer) means customer.
@@ -31,7 +35,7 @@
 
 const APEX_HOSTS = new Set(["aitherium.com", "www.aitherium.com", "app.aitherium.com"]);
 
-/** @returns {{customer: boolean, reason: string, priority: "normal"|"above", present: "auto",
+/** @returns {{customer: boolean, reason: string, priority: "normal"|"above", present: "auto"|"software"|"gpu",
  *   throttle: boolean, lendByDefault: boolean}} */
 function deskPosture({ env = process.env, tenant = null } = {}) {
   const asked = String((env && env.AWDESK_POSTURE) || "").trim().toLowerCase();
@@ -49,7 +53,7 @@ function deskPosture({ env = process.env, tenant = null } = {}) {
     customer,
     reason,
     priority: customer ? "normal" : "above",
-    present: "auto", // measured: software present is lighter on a customer desk too (above)
+    present: customer ? "gpu" : "software",
     throttle: customer,
     lendByDefault: !customer,
   };

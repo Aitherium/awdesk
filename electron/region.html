@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:">
+<title>Region</title>
+<style>
+  :root { --bar: #171b21; --edge: #2b323c; --ink: #e6e8eb; --muted: #8b93a1; --accent: #7cc4ff; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14171c; color: var(--ink);
+    font: 13px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; display: flex; flex-direction: column; }
+  #bar { height: 32px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 6px 0 10px; background: var(--bar);
+    border-bottom: 1px solid var(--edge); -webkit-app-region: drag; }
+  #bar .kind { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; flex: 1; }
+  button, select, input, textarea { -webkit-app-region: no-drag; }
+  button { all: unset; cursor: pointer; padding: 5px 8px; border-radius: 7px; font-size: 12px; white-space: nowrap; }
+  button:hover { background: rgba(124,196,255,.16); }
+  button.on { background: var(--accent); color: #0d1117; font-weight: 600; }
+  #x:hover { background: #b0424a; }
+  #view { flex: none; height: 220px; display: grid; place-items: center; background: #0e1116; border-bottom: 1px solid var(--edge); }
+  #frame { max-width: 100%; max-height: 220px; object-fit: contain; }
+  .row { flex: none; display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding: 4px 6px; border-bottom: 1px solid var(--edge); }
+  select { background: #10141a; color: var(--ink); border: 1px solid var(--edge); border-radius: 6px; padding: 3px 5px; font-size: 12px; }
+  #log { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
+  .msg { margin: 0 0 8px; white-space: pre-wrap; user-select: text; }
+  .msg.me { color: var(--accent); }
+  .msg.sys { color: var(--muted); font-size: 12px; }
+  #ask { flex: none; display: flex; gap: 6px; padding: 6px; border-top: 1px solid var(--edge); }
+  #q { flex: 1; resize: none; height: 38px; background: #10141a; color: var(--ink); border: 1px solid var(--edge); border-radius: 8px; padding: 6px 8px; font: inherit; outline: none; }
+</style>
+</head>
+<body>
+<div id="bar"><span class="kind" id="kind">Region</span>
+  <button id="live" class="on" title="Refresh the picture every 2 s">Live</button><button id="x">✕</button></div>
+<div id="view"><img id="frame" alt="the boxed region"></div>
+<div class="row">
+  <button id="draw" title="Draw on top of it (Ctrl+Alt+D)">Draw</button>
+  <button id="ocr" title="Read the text in the box (offline)">Read text</button>
+  <button id="rec" title="Record the screen (pick the same box)">Record</button>
+  <button id="present" title="Dim everything else, laser on">Present</button>
+  <button id="rebox">Re-box</button>
+  <button id="pin" title="Pin this picture to the desktop">Pin</button>
+  <button id="save">Save</button>
+  <select id="to"><option value="">Send to…</option></select>
+</div>
+<div id="log"><p class="msg sys">This box is a mini workspace: ask about what is in it, and every question carries its current picture (and text, once read).</p></div>
+<div id="ask"><textarea id="q" placeholder="Ask about this region… (Enter)"></textarea><button id="go">Ask</button></div>
+<script>
+  const tk = window.toolkit;
+  const $ = (id) => document.getElementById(id);
+  let frame = null;
+  let ocrText = "";
+  let live = true;
+  let timer = null;
+  const say = (text, cls) => { const p = document.createElement("p"); p.className = "msg " + (cls || ""); p.textContent = text; $("log").append(p); $("log").scrollTop = 1e9; };
+  const verdict = (v) => say(v && v.ok ? (v.answer || v.line || "done") : ((v && (v.error || v.reason)) || "failed"), v && v.ok ? "" : "sys");
+  async function grab() {
+    const v = await tk.call("region.frame");
+    if (v && v.ok) { frame = v.dataB64; $("frame").src = `data:image/png;base64,${frame}`; $("kind").textContent = `Region ${v.width}×${v.height}`; }
+    return v;
+  }
+  function loop() {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    // Only while it is on screen and Live: a hidden region costs nothing.
+    if (!live || document.hidden) return;
+    timer = setTimeout(async () => { await grab().catch(() => null); loop(); }, 2000);
+  }
+  document.addEventListener("visibilitychange", loop);
+  (async () => {
+    if (!tk) return;
+    const info = await tk.info();
+    for (const t of (info.targets || [])) { const o = document.createElement("option"); o.value = t.id; o.textContent = t.label; $("to").append(o); }
+    const v = await grab();
+    if (!v || !v.ok) say((v && v.error) || "could not capture the region", "sys");
+    loop();
+  })();
+  $("live").onclick = () => { live = !live; $("live").classList.toggle("on", live); loop(); };
+  $("draw").onclick = async () => verdict(await tk.run("ink.toggle"));
+  $("ocr").onclick = async () => { say("Reading…", "sys"); const v = await tk.call("region.ocr"); if (v && v.ok) { ocrText = v.text; say(v.text || "(no text found)"); } else verdict(v); };
+  $("rec").onclick = async () => verdict(await tk.call("region.record"));
+  $("present").onclick = async () => verdict(await tk.call("region.present"));
+  $("rebox").onclick = async () => { const v = await tk.call("region.rebox"); if (v && v.ok) await grab(); else verdict(v); };
+  $("pin").onclick = async () => { if (frame) verdict(await tk.call("pin.image", { dataB64: frame, title: "Region" })); };
+  $("save").onclick = async () => { if (frame) verdict(await tk.save({ kind: "image", name: "region.png", mime: "image/png", dataB64: frame })); };
+  $("to").onchange = async () => {
+    const id = $("to").value; $("to").value = "";
+    if (!id || !frame) return;
+    verdict(await tk.send(id, { kind: "image", name: "region.png", mime: "image/png", dataB64: frame, title: "Screen region", text: ocrText }));
+  };
+  async function ask() {
+    const q = $("q").value.trim();
+    if (!q) return;
+    $("q").value = "";
+    say(q, "me");
+    await grab().catch(() => null);
+    const question = ocrText ? `${q}\n\nText read from the region:\n${ocrText.slice(0, 3000)}` : q;
+    const v = await tk.ask(question, frame || "");
+    verdict(v);
+  }
+  $("go").onclick = ask;
+  $("q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void ask(); } });
+  $("x").onclick = () => tk.close();
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.activeElement !== $("q")) tk.close(); });
+</script>
+</body>
+</html>

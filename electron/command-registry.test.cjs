@@ -166,7 +166,11 @@ test("a command on BOTH menus reads the same and sits under the same parent", ()
 test("every id a body's menu claims is really ON a body's menu", () => {
   // popupAvatarMenu was hand-written, so `surfaces: [... "avatar-menu"]` was a
   // claim nothing checked: cast.open was declared there and absent from it.
-  const body = leavesOf("avatar-menu", { slotId: "slot1", removable: true, sessionAddress: {} });
+  const body = leavesOf("avatar-menu", {
+    slotId: "slot1", removable: true, sessionAddress: {}, sessionBody: true, grownFromFairy: true, inStage: true,
+    // Both Aither builds on this desk (aither-body.cjs rows): the choice renders.
+    aitherBodies: [{ id: "female", checked: true }, { id: "male", checked: false }],
+  });
   for (const command of commandsFor("avatar-menu")) {
     if (command.dynamic) continue;
     assert.ok(body.has(command.id), `${command.id} names avatar-menu and does not render there`);
@@ -259,7 +263,7 @@ test("an exported overlay opener has a caller", () => {
 test("shortcuts are registered FROM the registry, and a dead key is not advertised", () => {
   const keys = shortcuts();
   assert.deepEqual(keys.map((k) => k.accel).sort(),
-    ["Alt+Space", "Ctrl+Alt+0", "Ctrl+Alt+9", "Ctrl+Alt+B", "Ctrl+Alt+C", "Ctrl+Alt+D", "Ctrl+Alt+Down", "Ctrl+Alt+G", "Ctrl+Alt+L", "Ctrl+Alt+M", "Ctrl+Alt+N", "Ctrl+Alt+O", "Ctrl+Alt+P", "Ctrl+Alt+Q", "Ctrl+Alt+S", "Ctrl+Alt+Up", "Ctrl+Alt+W", "Ctrl+Shift+,", "Ctrl+Shift+-", "Ctrl+Shift+=", "Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+Shift+Escape", "Ctrl+Shift+M", "Ctrl+Shift+Space", "PrintScreen", "Shift+PrintScreen"]);
+    ["Alt+Space", "Ctrl+Alt+/", "Ctrl+Alt+0", "Ctrl+Alt+9", "Ctrl+Alt+B", "Ctrl+Alt+C", "Ctrl+Alt+D", "Ctrl+Alt+Down", "Ctrl+Alt+E", "Ctrl+Alt+F", "Ctrl+Alt+G", "Ctrl+Alt+H", "Ctrl+Alt+I", "Ctrl+Alt+J", "Ctrl+Alt+K", "Ctrl+Alt+L", "Ctrl+Alt+M", "Ctrl+Alt+N", "Ctrl+Alt+O", "Ctrl+Alt+P", "Ctrl+Alt+Q", "Ctrl+Alt+S", "Ctrl+Alt+Shift+M", "Ctrl+Alt+Shift+S", "Ctrl+Alt+T", "Ctrl+Alt+U", "Ctrl+Alt+Up", "Ctrl+Alt+W", "Ctrl+Alt+X", "Ctrl+Alt+Y", "Ctrl+Shift+,", "Ctrl+Shift+-", "Ctrl+Shift+=", "Ctrl+Shift+A", "Ctrl+Shift+D", "Ctrl+Shift+Escape", "Ctrl+Shift+M", "Ctrl+Shift+Space", "PrintScreen", "Scrolllock", "Shift+PrintScreen"]);
   // Every Ctrl chord maps to CommandOrControl; a bare key (PrintScreen, the snip) passes through.
   assert.ok(keys.every((k) => (k.accel.startsWith("Ctrl+") ? k.electron.startsWith("CommandOrControl+") : k.electron === k.accel)));
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
@@ -355,11 +359,42 @@ test("every command either has a handler or a dynamic submenu", () => {
         `${command.id} names blog verb "${command.blog}" that blog-commands.cjs does not know`);
       continue;
     }
+    if (command.layout) {
+      // The browser's layout + canvas verbs: the default branch hands the verb (and the
+      // palette's typed argument) to browser-window.layoutCommand, which must run it.
+      assert.match(body, /command\.layout/, "the layout branch is gone");
+      assert.match(body, /browserWindow\.layoutCommand\(command\.layout, arg\)/, "nothing routes a layout verb");
+      const bw = fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
+      const runs = command.layout.startsWith("preset:") ? bw.includes('v.startsWith("preset:")')
+        : bw.includes(`case "${command.layout}":`);
+      assert.ok(runs, `${command.id} names layout verb "${command.layout}" that layoutCommand does not run`);
+      continue;
+    }
+    if (command.browser) {
+      // The Aither Browser's verbs: the default branch hands the verb, the typed argument
+      // and the SURFACE to browser-window.browserCommand, which must run it.
+      assert.match(body, /command\.browser/, "the browser branch is gone");
+      assert.match(body, /browserWindow\.browserCommand\(command\.browser, arg, \{ askAgent: browserAskAgent, surface \}\)/,
+        "nothing routes a browser verb with its argument and surface");
+      const bw = fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
+      const fn = bw.slice(bw.indexOf("function browserCommand("), bw.indexOf("\nfunction ", bw.indexOf("function browserCommand(") + 10));
+      assert.ok(fn.includes(`case "${command.browser}":`), `${command.id} names browser verb "${command.browser}" that browserCommand does not run`);
+      continue;
+    }
     if (command.orb) {
       // The floating ask orb: the default branch hands the verb to orb-window.run,
       // so a new orb row is one record and no case.
       assert.match(body, /command\.orb/, "the orb branch is gone");
       assert.match(body, /orbWindow\.run\(command\.orb/, "nothing routes an orb verb");
+      continue;
+    }
+    if (command.assist) {
+      // Aither at the caret: the default branch hands the verb to assist-main.run, so a
+      // new assist row is one record and no case. The verb must be one the engine knows.
+      assert.match(body, /command\.assist/, "the assist branch is gone");
+      assert.match(body, /assistMain\(\)\.run\(command\.assist/, "nothing routes an assist verb");
+      assert.ok(command.assist === "open" || /^file:(summarize|ask|rename|convert|pipeline|pack)$/.test(command.assist) || require("./assist-core.cjs").verbById(command.assist),
+        `${command.id} names assist verb "${command.assist}" that assist-core.cjs does not know`);
       continue;
     }
     if (command.osApp) {
@@ -414,7 +449,16 @@ test("blog: drafts everywhere, publishing nowhere (owner ruling 2026-09-19)", ()
   const asking = rows.filter((row) => row.prompt).map((row) => row.id);
   // spirit.go is the second prompt row (the spirit lane, 2026-11-02): a trip
   // argument is typed as JSON or a sentence, exactly the palette's job.
-  assert.deepEqual(asking, ["spirit.go", "blog.draft", "blog.show", "blog.publish"]);
+  // The browser-layout rows (2026-11-07) prompt for a layout name, a pane, a rail row or
+  // an address -- the typed twins of the Customize panel, edit-layout mode and right-clicks.
+  const layoutPrompts = ["layout.save", "layout.load", "layout.move-pane", "layout.detach-pane", "layout.attach-pane",
+    "rail.pin", "rail.remove", "rail.move", "canvas.pin-url"];
+  // The browser's typed rows (2026-11-13): a tab to switch to, an address, search words,
+  // an extension's store address -- each also an Alt+Space verb (browser-verbs.cjs).
+  const browserPrompts = ["browser.tab.switch", "browser.go", "browser.search", "browser.extension.add"];
+  assert.deepEqual(asking, ["card-answer", ...browserPrompts, ...layoutPrompts, "spirit.go", "gif.pin", "pins.add",
+    // The intent bar's timer (2026-11-16): a duration typed, e.g. `10m tea`.
+    "timer.start", "blog.draft", "blog.show", "blog.publish"]);
   assert.equal(rows.find((row) => row.id === "blog.list").prompt, undefined);
   // And a prompt row on a surface with no text field is a conformance problem.
   const stray = [{
@@ -577,7 +621,12 @@ test("now-mode hides the needs-you chip and the balloon, and lapses on its own",
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.match(main, /case "now-mode":\s*nowModeUntil = arg === "on" \? Date\.now\(\) \+ NOW_MODE_TTL_MS : 0;/);
   assert.match(main, /hidden: overlaySettings\(\)\.doNotDisturb \|\| nowModeActive\(\)/);
-  assert.match(main, /!overlaySettings\(\)\.doNotDisturb && !nowModeActive\(\)\) \{\s*notifyQuietly\(/);
+  // Now mode still silences the automatic surface: the card arrival is an
+  // actionable toast (A1, 2026-11-18) and it stays down in now-mode and under
+  // Do not disturb -- the chip, not a popup, is what remains. The quiet doors are
+  // asked in one place (card-toast.cardToastAllowed), which includes now-mode.
+  assert.match(main, /cardToast\.cardToastAllowed\(\{[\s\S]*?nowMode: nowModeActive\(\)/);
+  assert.match(main, /cardToast\.announceCards\(list, \{/);
   const internal = require("./browser-internal.cjs");
   const link = internal.deepLinkOf(internal.parseInternalUrl("aither://cards/?mode=now"));
   assert.deepEqual(link, { mode: "now" });
@@ -619,6 +668,147 @@ test("the sprite and aw groups nest under one parent label on the tray", () => {
   assert.ok(reg.LAYOUT["avatar-menu"].includes("sprite") && reg.LAYOUT["avatar-menu"].includes("aw"));
 });
 
+// ── the Aither Browser's own capabilities (owner 2026-11-13: "and integrate with the
+// Alt+Space hot key and whatnot?") ────────────────────────────────────────────────────
+
+test("every browser capability is a registry row: the palette and Alt+Space reach all of them", () => {
+  const reg = require("./command-registry.cjs");
+  // id -> the browser-window.browserCommand verb it runs.
+  const want = {
+    "browser.tab.new": "new-tab", "browser.tab.private": "inprivate", "browser.tab.reopen": "reopen-closed",
+    "browser.history": "history", "browser.bookmarks": "bookmarks", "browser.downloads": "downloads",
+    "browser.permissions": "permissions", "browser.clear-data": "clear-data", "browser.passwords": "passwords",
+    "browser.import.edge": "import-edge", "browser.import.passwords": "import-passwords", "browser.default": "default",
+    "browser.sync": "sync", "browser.ads.site": "ads-site", "browser.ads.all": "ads-all",
+    "browser.translate": "translate", "browser.find": "find", "browser.print": "print", "browser.open-edge": "open-edge",
+    "browser.bookmark-page": "bookmark", "browser.extension.add": "extension",
+    "browser.go": "go", "browser.search": "search", "browser.tab.switch": "tab",
+  };
+  const palette = reg.paletteRows({});
+  for (const [id, verb] of Object.entries(want)) {
+    const c = reg.byId(id);
+    assert.ok(c, `${id} exists`);
+    assert.equal(c.browser, verb, `${id} runs browserCommand("${verb}")`);
+    assert.equal(c.group, "browser");
+    assert.ok(c.surfaces.includes("palette"), `${id} is on the palette`);
+    assert.ok(palette.some((r) => r.id === id), `${id} is a palette row with no context in hand`);
+    assert.equal(c.accel, undefined, `${id} claims no global key (the browser's own keys stay the browser's)`);
+  }
+  assert.deepEqual(reg.COMMANDS.filter((c) => c.browser).map((c) => c.id).sort(), Object.keys(want).sort(),
+    "a browser row was added or dropped without this list");
+  // Alt+Space lists every row that needs no typing (universal-search actionsProvider drops
+  // `prompt` rows); the four that need text have a typed verb there instead.
+  const { actionsProvider } = require("./universal-search.cjs");
+  const listed = actionsProvider().search().map((r) => r.target);
+  const typed = ["browser.go", "browser.search", "browser.tab.switch", "browser.extension.add"];
+  for (const id of Object.keys(want)) {
+    assert.equal(listed.includes(id), !typed.includes(id), `${id} ${typed.includes(id) ? "prompts, so it is typed" : "is listed in Alt+Space"}`);
+  }
+  assert.deepEqual(reg.COMMANDS.filter((c) => c.browser && c.prompt).map((c) => c.id).sort(), [...typed].sort());
+  assert.deepEqual(reg.conformance(), []);
+});
+
+test("the browser rows nest under ONE tray parent, and the page tools stay off the tray", () => {
+  const reg = require("./command-registry.cjs");
+  assert.equal(reg.GROUPS.browser.menu, "Browser");
+  const ran = [];
+  const tray = buildMenu("tray", (id) => ran.push(id), { ctx: { platform: "win32" } });
+  const parent = tray.filter((row) => row.label === "Browser");
+  assert.equal(parent.length, 1, "one Browser parent");
+  const labels = parent[0].submenu.map((row) => row.label);
+  for (const label of ["New tab", "New InPrivate tab", "Reopen closed tab", "History", "Bookmarks", "Downloads", "Site permissions",
+    "Clear browsing data…", "Saved passwords…", "Import from Edge…", "Import passwords from a CSV…", "Make Aither the default browser…"]) {
+    assert.ok(labels.includes(label), `tray Browser menu has "${label}"`);
+  }
+  parent[0].submenu[0].click();
+  assert.deepEqual(ran, ["browser.tab.new"]);
+  // A page tool acts on the tab on screen: its menu is the browser's own, never the tray.
+  for (const id of ["browser.find", "browser.print", "browser.translate", "browser.open-edge", "browser.bookmark-page", "browser.ads.site"]) {
+    assert.deepEqual(reg.byId(id).surfaces, ["palette"], id);
+    assert.match(reg.byId(id).whySingle, /owner's active tab/, `${id} says whose tab it acts on`);
+  }
+  // Windows-only: absent elsewhere, present when the caller has no platform in hand.
+  assert.equal(buildMenu("tray", () => {}, { ctx: { platform: "darwin" } }).find((row) => row.label === "Browser")
+    .submenu.some((row) => /default browser/.test(row.label)), false);
+});
+
+test("the sync, ad-blocking and bookmark labels say which way the click goes", () => {
+  const reg = require("./command-registry.cjs");
+  const label = (id, browser) => reg.labelOf(reg.byId(id), browser === undefined ? {} : { browser });
+  assert.equal(label("browser.sync", { syncOn: true }), "Browser sync: turn off");
+  assert.equal(label("browser.sync", { syncOn: false }), "Browser sync: turn on");
+  assert.equal(label("browser.sync"), "Browser sync: turn on or off");
+  assert.equal(label("browser.sync", { syncOn: null }), "Browser sync: turn on or off");
+  assert.equal(label("browser.ads.all", { adsOn: true }), "Ad blocking: pause everywhere");
+  assert.equal(label("browser.ads.all", { adsOn: false }), "Ad blocking: resume everywhere");
+  assert.equal(label("browser.ads.all"), "Ad blocking: pause or resume everywhere");
+  assert.equal(label("browser.ads.site", { siteAllowed: false, host: "news.example" }), "Ad blocking: pause on news.example");
+  assert.equal(label("browser.ads.site", { siteAllowed: true, host: "news.example" }), "Ad blocking: resume on news.example");
+  assert.equal(label("browser.ads.site"), "Ad blocking: pause or resume on this site");
+  assert.equal(label("browser.bookmark-page", { bookmarked: true }), "Browser: remove this page's bookmark");
+  assert.equal(label("browser.bookmark-page", { bookmarked: false }), "Browser: bookmark this page");
+  const nested = (id, browser) => reg.labelOf(reg.byId(id), { browser }, { nested: true });
+  assert.equal(nested("browser.sync", { syncOn: true }), "Turn sync off");
+  assert.equal(nested("browser.ads.all", { adsOn: false }), "Resume ad blocking everywhere");
+  // Greyed, not absent, when there is nothing to reopen; live before the browser was read.
+  const reopen = reg.byId("browser.tab.reopen");
+  assert.equal(reopen.enabled({ browser: { closedTabs: 0 } }), false);
+  assert.equal(reopen.enabled({ browser: { closedTabs: 2 } }), true);
+  assert.equal(reopen.enabled({}), true);
+  // main feeds those facts from the browser itself.
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /browser: browserWindow\.commandFacts\(\),/);
+});
+
+test("a browser command opens the browser and acts for the OWNER, never on an agent's tab", () => {
+  const bw = fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
+  const start = bw.indexOf("function browserCommand(");
+  const fn = bw.slice(start, bw.indexOf("\nfunction ", start + 10));
+  // The owner's tab is the active tab only when the owner opened it.
+  assert.match(bw, /function ownerActiveTab\(\) \{\s+const tab = tabs\.get\(tabs\.active\);\s+return tab && tab\.by === "you" \? tab : null;/);
+  assert.match(fn, /if \(!tab\) return \{ error: "1 tab on screen is the agent's/);
+  // Every page verb goes through ownerPage(); none reads tabs.active for its target.
+  for (const verb of ["ads-site", "translate", "find", "print", "open-edge", "bookmark"]) {
+    const at = fn.indexOf(`case "${verb}": {`);
+    assert.ok(at > 0, `${verb} has a case`);
+    const body = fn.slice(at, fn.indexOf("\n    case ", at + 10));
+    assert.match(body, /const p = ownerPage\(\);\s+if \(p\.error\) return \{ ok: false, error: p\.error \};/, `${verb} takes the owner's page or refuses`);
+    assert.doesNotMatch(body, /tabs\.active/, `${verb} never falls back to whatever tab is on screen`);
+  }
+  // Every tab a command opens is the owner's.
+  assert.doesNotMatch(fn, /openTab\("agent"/);
+  assert.ok((fn.match(/openTab\("you"/g) || []).length >= 4);
+  // Closed -> it opens; open -> it comes forward. Every case reaches createBrowserWindow
+  // itself or through a door that does (openInternal -> showInternal, openSearch).
+  assert.match(fn, /const raise = \(\{ home = true \} = \{\}\) => createBrowserWindow\(\{ askAgent: ask, url: null, home \}\);/);
+  const cases = fn.split(/\n {4}case "/).slice(1);
+  const blocks = [];
+  for (const chunk of cases) {
+    // Stacked labels (history / bookmarks / ...) share the last one's body.
+    if (/^[a-z-]+":\s*$/.test(chunk.trim())) continue;
+    blocks.push(chunk);
+  }
+  assert.ok(blocks.length >= 18, `browserCommand has its cases (${blocks.length})`);
+  for (const block of blocks) {
+    const name = block.slice(0, block.indexOf('"'));
+    assert.match(block, /raise\(|ownerPage\(\)|openInternal\(|createBrowserWindow\(/, `${name} opens or raises the browser`);
+  }
+  // Another program (POST /commands/run) may not flip sync or ad blocking, or pull Edge's data in.
+  assert.match(bw, /const OWNER_HAND_ONLY = new Set\(\["sync", "ads-all", "ads-site", "import-edge"\]\);/);
+  assert.match(fn, /if \(surface === "bridge" && OWNER_HAND_ONLY\.has\(v\)\) \{\s+return \{ ok: false,/);
+  // Alt+Space's lists are the owner's: no agent visit, no agent tab, no InPrivate tab.
+  assert.match(bw, /historyPage\(\{ q: first, by: "you", limit: 1000, offset \}\)/);
+  assert.match(bw, /tabList\(\)\.filter\(\(t\) => t\.by === "you" && !t\.private\)/);
+  const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.match(main, /history: \(words, limit\) => browserWindow\.ownerHistory\(words, limit\),/);
+  assert.match(main, /tabs: \(\) => browserWindow\.ownerTabs\(\),/);
+});
+
+test("Back to the fairy is on a body's menu only while Aither is grown from the fairy", () => {
+  assert.ok(leavesOf("avatar-menu", { slotId: "slot0", grownFromFairy: true }).has("avatar.to-fairy"));
+  assert.ok(!leavesOf("avatar-menu", { slotId: "slot0" }).has("avatar.to-fairy"), "never a dead row");
+});
+
 // ── 2026-11-16: "Reset position  size" and "Stage  characters..." lost their "&" ──
 // A single "&" in a native menu label is the keyboard-mnemonic marker and is not drawn.
 test("menuText doubles a lone ampersand and keeps an already-doubled one", () => {
@@ -653,4 +843,10 @@ test("every native menu row that carries an ampersand escapes it; the palette ke
   // The registry's own text is untouched, so the palette / rail / jump list read "&".
   assert.equal(byId("avatar.reset").label, "Reset position & size");
   assert.ok(rowsFor("palette", { slotId: "slot1" }).every((r) => !r.label.includes("&&")));
+});
+
+test("Back to the fairy reaches POST /commands/run (palette) only while Aither is grown", () => {
+  const rows = (ctx) => new Set(require("./command-registry.cjs").paletteRows(ctx).map((r) => r.id));
+  assert.ok(rows({ grownFromFairy: true }).has("avatar.to-fairy"), "the bridge can send her back");
+  assert.ok(!rows({}).has("avatar.to-fairy"), "never a dead row");
 });

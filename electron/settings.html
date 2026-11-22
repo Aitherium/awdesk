@@ -110,15 +110,37 @@
         <input type="number" id="ovDwell" min="150" max="5000" step="50" style="width:6em"> ms
       </div>
       <div class="row">
-        <label style="min-width:0"><input type="checkbox" id="ovNotify"> Bring the overlay forward for notifications</label>
-      </div>
-      <div class="row">
         <label style="min-width:0"><input type="checkbox" id="ovDnd"> Do not disturb</label>
       </div>
       <div class="row">
         <label style="min-width:0"><input type="checkbox" id="ovSpaceHome"> Inbox and Fleet open into Space</label>
       </div>
-      <p class="note">With notifications off, a decision that needs you shows a small notice by the tray instead. Do not disturb stops everything that opens on its own, including requests from agents.</p>
+      <p class="note">A decision that needs you arrives as a toast by the tray; nothing opens a window by itself. Do not disturb stops everything that opens on its own, including requests from agents.</p>
+    </section>
+
+    <section>
+      <h2>Companion display</h2>
+      <p class="lede">What stands on your desk: the full avatar, the fairy cluster, or BOTH at once — the body with the cluster parked beside it, never on it. Saved with the avatar dock, so it survives a restart.</p>
+      <div class="row">
+        <label>Mode</label>
+        <select id="displayMode">
+          <option value="avatar">Avatar only</option>
+          <option value="fairy">Fairy only (default)</option>
+          <option value="both">Avatar and fairy</option>
+          <option value="swarm">Swarm around the avatar</option>
+        </select>
+        <span class="note" style="margin:0">Ctrl+Alt+Shift+M cycles</span>
+      </div>
+      <p class="note">Both parks the cluster beside the body; swarm draws up to a handful of agent orbs around it, each draggable and carrying its own badge. There is still only ONE cluster.</p>
+    </section>
+
+    <section>
+      <h2>Visual neurons</h2>
+      <p class="lede">See an agent think. While an agent is working or speaking, a small graph of its recent steps — thinking, a tool call, a result, a spoken line — draws around its fairy. Off by default.</p>
+      <div class="row">
+        <label style="min-width:0"><input type="checkbox" id="ovNeurons"> Show each agent's recent steps around its fairy</label>
+      </div>
+      <p class="note">Nodes pulse when fresh and fade over 20 seconds; parallel tool calls fan out from the thought. Nothing is recorded and nothing leaves this machine.</p>
     </section>
 
     <section>
@@ -174,13 +196,14 @@
     }
     renderHotkeys(res.hotkeys || []);
     renderOverlay(res.overlay || {});
+    renderNeurons(res.neurons);
+    renderDisplay(res.display);
   }
 
-  // Desktop overlay (overlay-policy.cjs): four switches, the edge and the dwell.
+  // Desktop overlay (overlay-policy.cjs): three switches, the edge and the dwell.
   const ov = {
     autoOpenOnStart: document.getElementById("ovAutoStart"),
     edgeReveal: document.getElementById("ovEdge"),
-    raiseOnNotifications: document.getElementById("ovNotify"),
     doNotDisturb: document.getElementById("ovDnd"),
     spaceHome: document.getElementById("ovSpaceHome"),
   };
@@ -205,6 +228,29 @@
     const ms = Math.round(Number(ovDwell.value));
     if (!Number.isInteger(ms) || ms < 150 || ms > 5000) { say("rest time must be 150 to 5000 ms", "err"); return; }
     saveOverlay({ edgeDwellMs: ms });
+  });
+
+  // Visual neurons (neurons-model.cjs): one switch, off by default.
+  const ovNeurons = document.getElementById("ovNeurons");
+  function renderNeurons(on) { ovNeurons.checked = on === true; }
+  ovNeurons.addEventListener("change", async () => {
+    const result = await bridge.setNeurons(ovNeurons.checked);
+    if (result && result.ok) {
+      renderNeurons(result.neurons);
+      say(result.neurons ? "visual neurons on" : "visual neurons off", "ok");
+    } else {
+      say("could not save: " + (result && result.error || "unknown"), "err");
+    }
+  });
+
+  // Companion display (display-mode.cjs, owner 2026-11-20): avatar, fairy, both, swarm.
+  // The same four rows are on the fairy/avatar menus and the palette; this is the switch.
+  const displayModeSel = document.getElementById("displayMode");
+  function renderDisplay(d) { displayModeSel.value = (d && d.mode) || "fairy"; }
+  displayModeSel.addEventListener("change", async () => {
+    const result = await bridge.setDisplay(displayModeSel.value);
+    if (result && result.ok) { renderDisplay(result.display || {}); say("display mode saved", "ok"); }
+    else say("could not save: " + (result && result.error || "unknown"), "err");
   });
 
   grantMicBtn.addEventListener("click", async () => {

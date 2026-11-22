@@ -36,8 +36,19 @@ Desk exposes these tools:
 | `list_animations` | None | Lists the clips `play_animation` accepts, including installed `FILE:<name>.vrma` motion packs |
 | `list_characters` | None | Lists the installed character roster |
 | `set_character` | `name`: a roster character from `list_characters` | Switches the Desk character and reloads the avatar |
-| `spawn_avatar` | `slot_id`, `name` | Adds another avatar in a new slot without replacing the current one |
+| `spawn_avatar` | `slot_id`, `name` | Adds another avatar in a new slot without replacing the current one; only a body the owner assigned to someone |
+| `propose_avatar` | `persona`, `character`, `why?`, `by?` | Records a proposal in the owner's avatar gallery; never changes a body (he applies it with one click) |
 | `remove_avatar` | `slot_id` | Removes a spawned avatar slot (the default slot cannot be removed) |
+| `swarm_roster` | `refresh?` | Every agent the owner runs, read live (Discord persona bots, Genesis fleet agents, awsh/Claude Code sessions, subagents, remote endpoints, GargBot's goblin) with colour, body, voice and form |
+| `swarm_set_form` | `agent` (id or `all`), `form` (`fairy`/`avatar`), `include?` | setAgentForm: grow an agent into its avatar or shrink it back to a fairy, smoothly; `all` does the whole swarm (light mode keeps terminals small); `gargbot` summons the goblin |
+| `swarm_stage` | `op` (`join`/`leave`/`lock`/`arrange`/`move`/`size`/`turn`/`state`), `agent?`, `target?`, `mode?` | Combine and split stages: an explicit group of grown avatars that moves, sizes and turns together (a locked stage never detaches by itself) |
+| `swarm_perceive` | `agent?`, `view?` (`self`/`stage`/`roster`/`screen`) | What an agent standing on the desk can see: its own row, form, slot and stage, every body, the roster, the focused window |
+| `swarm_act` | `agent?`, `tool`, `args?` | An agent runs one gateway tool; credential, money and destructive tool names are refused here and the gateway still decides |
+| `swarm_walk_to` | `agent?`, `x`, `y`, `width?`, `height?` | A grown avatar walks to stand under a screen rectangle (screen DIPs), within the stage |
+| `swarm_look_at` | `agent?`, `x?`, `y?` | A grown avatar turns toward a screen point; omit x and y to turn back |
+| `swarm_speak` | `agent`, `text?` or `audio_base64?`, `volume?` | The agent speaks in its own voice from its own body; or plays pre-rendered audio on that body |
+| `swarm_discuss` | `topic`, `agents?`, `rounds?` | The agents on stage discuss the topic out loud, in turn, each line streamed from the scheduler and spoken from its own body; push-to-talk pauses it |
+| `swarm_visemes` | `agent`, `weights?` / `frames?`, `ttl_ms?` | Drive an agent's five VRM mouth shapes (aa ee ih oh ou); null releases |
 | `set_agent` | `agent`: an agent name such as `aither` | Shows the character assigned to that agent |
 | `list_agent_avatars` | None | Reads which character each agent is assigned to |
 | `cast_describe` | None | Read-only view of the room cast configuration, its provenance and problems |
@@ -80,6 +91,9 @@ Desk exposes these tools:
 | `fleet_status` | optional `fresh` | Reads the AitherOS fleet status (cached unless `fresh`) |
 | `fleet_control` | `action`: `down`, `up`, `gaming`, `resume`, `adopt`, `open_panel`, `arc-status`, `arc-start`, `arc-now`, `arc-stop` | Runs a fleet action; the same implementation as the Fleet window |
 | `desk_command` | `text` | Runs a command in the Aither Command window |
+| `desk_tools` | optional `query`, `limit` | Lists the Alt+Space bar's tools (every palette command plus `agent.ask`) with `effect` and argument `schema`, fuzzy-ranked |
+| `desk_tool_run` | `id`, optional `args`, `confirm` | Runs one bar tool; a `write` / `send` / `spend` tool needs `confirm: true` (the owner agreed) |
+| `desk_intent` | `text`, optional `run` | Plans a sentence as bar tools through MicroScheduler (local Bonsai only when the platform is down); `run` runs only the read/ui steps |
 
 The roster, avatar, fleet, command and voice tools register only when the running Desk provides the matching
 capability (roster, fleet control, voice, and so on).

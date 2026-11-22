@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    include: ['src/**/*.test.ts'],
+    // .tsx: component render tests (react-dom/server, no DOM needed).
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 });
