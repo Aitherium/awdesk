@@ -1,0 +1,169 @@
+name: Build Aither Shell Menu (Win11)
+
+# Builds the Windows 11 top-level context menu for aither:
+#   AitherShellMenu.dll  the IExplorerCommand COM handler (x64, static CRT)
+#   Desk.exe             the per-user launcher stub the sparse package needs
+#   AitherShellMenu.msix the signed sparse package (manifest + Assets only)
+#   AitherShellMenu.cer  the matching public certificate
+#
+# The owner's PC has no Visual C++ or Windows SDK, so the native build lives on a
+# hosted windows-latest runner. The package is signed with a self-signed cert
+# generated per run (CN=Aither Shell Menu, which MUST equal Identity/@Publisher).
+# Install needs no admin for a per-user ExternalLocation; see
+# native/shell-menu/README.md and Install-AitherShellMenu.ps1.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "native/shell-menu/**"
+      - ".github/workflows/build-awdesk-shell-menu.yml"
+  pull_request:
+    paths:
+      - "native/shell-menu/**"
+      - ".github/workflows/build-awdesk-shell-menu.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shell-menu-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, pack and sign (x64)
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Enter the Visual C++ x64 environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found on the runner" }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "no Visual Studio with the C++ x64 toolset" }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found at $vcvars" }
+          cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($matches[1])" -Value $matches[2] }
+          }
+          foreach ($tool in 'cl.exe','rc.exe','link.exe','makeappx.exe','signtool.exe') {
+            $found = (Get-Command $tool -ErrorAction SilentlyContinue)
+            if (-not $found) { throw "$tool is not on PATH after vcvars64" }
+            Write-Host "$tool -> $($found.Source)"
+          }
+          "VS=$vs" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build the COM handler and the launcher stub (static CRT)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force out, out\stub | Out-Null
+          $src = 'native\shell-menu\src'
+
+          # Icon resource for GetIcon() ("<dll>,-101").
+          rc /nologo /fo out\aither.res "$src\aither.rc"
+          if ($LASTEXITCODE -ne 0) { throw "rc failed" }
+
+          # The DLL: the .def exports DllGetClassObject / DllCanUnloadNow, and the
+          # static CRT (/MT) means the target PC needs no Visual C++ redistributable.
+          cl /nologo /std:c++17 /O2 /MT /EHsc /W4 /DUNICODE /D_UNICODE `
+             /Fo:out\ "$src\ShellMenu.cpp" out\aither.res `
+             /Fe:out\AitherShellMenu.dll /LD `
+             /link /DEF:"$src\exports.def" /SUBSYSTEM:WINDOWS
+          if ($LASTEXITCODE -ne 0) { throw "cl (DLL) failed" }
+
+          # The stub manifest's Application/@Executable resolves to this file.
+          cl /nologo /std:c++17 /O2 /MT /EHsc /W4 /DUNICODE /D_UNICODE `
+             /Fo:out\stub\ "$src\DeskStub.cpp" `
+             /Fe:out\Desk.exe /link /SUBSYSTEM:WINDOWS
+          if ($LASTEXITCODE -ne 0) { throw "cl (stub) failed" }
+
+      - name: Verify x64 and a static runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Get-PeMachine([string]$Path) {
+            $bytes = [IO.File]::ReadAllBytes($Path)
+            $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+            if ([BitConverter]::ToUInt32($bytes, $pe) -ne 0x00004550) { throw "$Path has no PE header" }
+            return [BitConverter]::ToUInt16($bytes, $pe + 4)
+          }
+          foreach ($f in 'out\AitherShellMenu.dll','out\Desk.exe') {
+            $machine = Get-PeMachine $f
+            if ($machine -ne 0x8664) { throw "$f is not x64 (machine 0x{0:X4})" -f $machine }
+            $deps = (dumpbin /nologo /dependents $f | Out-String)
+            if ($deps -match 'VCRUNTIME|MSVCP\d|MSVCR\d') {
+              throw "$f links the Visual C++ redistributable -- expected /MT"
+            }
+            Write-Host "$f is x64 and statically linked"
+          }
+
+      - name: Pack the sparse MSIX
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Only the manifest and Assets live INSIDE the package. Desk.exe and
+          # shell-menu\AitherShellMenu.dll resolve against the ExternalLocation,
+          # which is why makeappx runs with /nv (no external-path validation).
+          New-Item -ItemType Directory -Force stage | Out-Null
+          Copy-Item native\shell-menu\AppxManifest.xml stage\
+          Copy-Item -Recurse native\shell-menu\Assets stage\Assets
+          if (-not (Test-Path stage\Assets\StoreLogo.png)) { throw "stage\Assets is incomplete" }
+          makeappx pack /d stage /p out\AitherShellMenu.msix /nv
+          if ($LASTEXITCODE -ne 0) { throw "makeappx failed" }
+
+      - name: Sign with a per-run self-signed certificate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $publisher = ([xml](Get-Content native\shell-menu\AppxManifest.xml -Raw)).Package.Identity.Publisher
+          $subject = 'CN=Aither Shell Menu'
+          if ($publisher -ne $subject) { throw "Identity/@Publisher '$publisher' differs from the signing subject '$subject'" }
+
+          $cert = New-SelfSignedCertificate -Type Custom -Subject $subject `
+            -KeyUsage DigitalSignature -FriendlyName 'Aither Shell Menu (CI)' `
+            -CertStoreLocation 'Cert:\CurrentUser\My' `
+            -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3','2.5.29.19={text}')
+          if ($cert.Subject -ne $subject) { throw "certificate subject '$($cert.Subject)' differs from '$subject'" }
+
+          $plain = [guid]::NewGuid().ToString('N')
+          $secure = ConvertTo-SecureString -String $plain -Force -AsPlainText
+          Export-PfxCertificate -Cert $cert -FilePath out\AitherShellMenu.pfx -Password $secure | Out-Null
+          Export-Certificate -Cert $cert -FilePath out\AitherShellMenu.cer | Out-Null
+
+          signtool sign /fd SHA256 /f out\AitherShellMenu.pfx /p $plain /tr http://timestamp.digicert.com /td SHA256 out\AitherShellMenu.msix
+          if ($LASTEXITCODE -ne 0) { throw "signtool sign failed" }
+
+          # Trust the public cert for THIS runner so the verification below exercises
+          # the same store an installer uses (per-user TrustedPeople, no admin).
+          Import-Certificate -FilePath out\AitherShellMenu.cer -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
+          signtool verify /pa /v out\AitherShellMenu.msix
+          if ($LASTEXITCODE -ne 0) { throw "signtool verify failed" }
+          Remove-Item out\AitherShellMenu.pfx -Force
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          $files = 'out\AitherShellMenu.msix','out\AitherShellMenu.dll','out\Desk.exe','out\AitherShellMenu.cer'
+          $lines = foreach ($f in $files) { "{0}  {1}" -f (Get-FileHash $f -Algorithm SHA256).Hash.ToLower(), (Split-Path $f -Leaf) }
+          $lines | Set-Content out\SHA256SUMS.txt -Encoding ascii
+          Get-Content out\SHA256SUMS.txt | Write-Host
+
+      - name: Publish the installable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aither-shell-menu-win11
+          if-no-files-found: error
+          path: |
+            out/AitherShellMenu.msix
+            out/AitherShellMenu.dll
+            out/Desk.exe
+            out/AitherShellMenu.cer
+            out/SHA256SUMS.txt
+            native/shell-menu/Install-AitherShellMenu.ps1
+            native/shell-menu/README.md
