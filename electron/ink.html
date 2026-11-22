@@ -171,7 +171,13 @@
   let cursor = { x: 0, y: 0, on: false };
   let chromeVisible = true;
   let fadeTimer = null;
-  let raf = 0;
+  // One pending repaint tick, and whether it is a rAF (drawing/animation) or a slow
+  // idle timer. The in-flight mark is painted on the effects canvas every frame; the
+  // committed scene on #ink is repainted ONLY when the document actually changes, so a
+  // 2880x1652 high-DPI surface is not cleared and re-rastered on every pointer sample.
+  let frameHandle = null;
+  let frameUsingRaf = false;
+  let sceneDirty = false;      // the committed scene itself moved (middle-drag)
 
   // ── canvases ───────────────────────────────────────────────────────────────
   function fitCanvas(canvas) {
@@ -284,6 +290,9 @@
     return core.translateItem(item, dx, dy);
   }
 
+  // The COMMITTED scene only. The mark being drawn lives on the effects canvas (see
+  // frame()), so this expensive full-surface repaint runs on a document change, not on
+  // every pointer sample.
   function drawMarks(now = core.now()) {
     inkCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
     for (const item of doc.items) {
@@ -292,7 +301,6 @@
       if (drag && drag.gesture === "duplicate" && item.id === drag.id) drawOne(inkCtx, item, alpha);
       drawOne(inkCtx, dragged(item), alpha);
     }
-    if (current) drawOne(inkCtx, current, 1);
   }
 
   /** The hover outline main asks for while interacting (something to grab). */
@@ -311,10 +319,39 @@
     fxCtx.restore();
   }
 
-  // ── effects: laser, cursor, ripples, spotlight ─────────────────────────────
+  // ── effects: the in-flight mark, laser, cursor, ripples, spotlight ─────────
+  //
+  // ONE repaint tick drives everything that moves. While drawing, a pointer sample only
+  // appends a point and asks for a tick: the committed #ink scene is never touched, and
+  // the in-flight mark is redrawn here on the cheap effects canvas. A pointer stream
+  // therefore costs at most one tick per frame, not one full-scene repaint per sample.
+  function scheduleFrame() {
+    const live = Boolean(st.active || drag || current || (st.view && st.view.hoverId));
+    if (frameHandle != null) {
+      // Never run two ticks. If a slow idle timer is pending and we are now live,
+      // swap it for a rAF so the first point of a stroke paints on the next frame.
+      if (live && !frameUsingRaf) { clearTimeout(frameHandle); frameHandle = null; }
+      else return;
+    }
+    frameUsingRaf = live;
+    frameHandle = live ? requestAnimationFrame(frameTick) : setTimeout(frameTick, 120);
+  }
+
+  function frameTick() {
+    frameHandle = null;
+    frame();
+    scheduleFrame();
+  }
+
   function frame() {
     const now = performance.now();
     fxCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    // A middle-drag is the only case where the committed scene itself moves: coalesce
+    // its repaint to one per frame instead of one per pointer sample.
+    if (sceneDirty) { sceneDirty = false; drawMarks(); }
+    // The mark being drawn is the ONLY thing that changes while the pointer moves, so
+    // it alone is re-outlined each frame (one stroke, not the whole scene).
+    if (current) drawOne(fxCtx, current, 1);
     if (st.active) {
       // laser trail: brightness by age
       laser = core.laserTrail(laser, now, LASER_TTL, 160);
@@ -366,8 +403,6 @@
       spot.classList.remove("on");
     }
     drawHover();
-    const live = st.active || drag || (st.view && st.view.hoverId);
-    raf = live ? requestAnimationFrame(frame) : setTimeout(frame, 120);
   }
 
   // ── state from main ────────────────────────────────────────────────────────
@@ -433,6 +468,7 @@
       showHint(`${st.tool === "laser" ? "Laser" : st.tool === "spotlight" ? "Spotlight" : "Drawing"} · `
         + "Esc or right-click: back to the desktop, ink stays · hold Ctrl+Alt to draw briefly", 2200);
     }
+    scheduleFrame();
   }
 
   function renderToolbar() {
@@ -531,6 +567,7 @@
     }
     if (st.tool === "laser") {
       laser.push({ x: p.x, y: p.y, t: performance.now() });
+      scheduleFrame();
       return;
     }
     if (st.tool === "spotlight") return;
@@ -540,13 +577,14 @@
     } else {
       current = { ...baseItem(st.tool), type: "shape", a: { x: p.x, y: p.y }, b: { x: p.x, y: p.y } };
     }
+    scheduleFrame();
     e.preventDefault();
   }
 
   function onMove(e) {
     const p = local(e);
     cursor = { x: p.x, y: p.y, on: Boolean(st.active) };
-    if (drag) { drag.now = p; drawMarks(); return; }
+    if (drag) { drag.now = p; sceneDirty = true; scheduleFrame(); return; }
     // Pen: a pen arriving while interacting draws; the mouse moving under pen mode
     // hands the desktop back. (Click-through forwards MOUSE moves only -- Electron:
     // "forwards mouse move messages to Chromium" -- so a pen is seen here only once
@@ -583,13 +621,16 @@
     } else {
       current.b = { x: p.x, y: p.y };
     }
-    drawMarks();
+    scheduleFrame();
   }
 
   async function commitStroke(done) {
     if (done.type === "shape"
       && Math.hypot(done.b.x - done.a.x, done.b.y - done.a.y) < 3
       && done.tool !== "rect" && done.tool !== "ellipse") { drawMarks(); return; }
+    // Keep the finished mark on the committed canvas until main's state lands, so it
+    // never blinks out for a frame between pointerup and the IPC reply.
+    drawOne(inkCtx, done, 1);
     const state = await api.add(done);
     if (state) applyState(state);
   }
@@ -604,6 +645,8 @@
     if (done.type === "shape"
       && Math.hypot(done.b.x - done.a.x, done.b.y - done.a.y) < 3
       && done.tool !== "rect" && done.tool !== "ellipse") { drawMarks(); return; }
+    // Hold the finished mark on #ink across the IPC gap (see commitStroke).
+    drawOne(inkCtx, done, 1);
     const state = await api.add(done);
     if (state) applyState(state);
   }
@@ -758,7 +801,7 @@
     const next = await api.init();
     applyState(next);
     startFadeClock();
-    if (!raf) frame();
+    scheduleFrame();
   })().catch(() => { /* the overlay stays blank; main owns the failure */ });
 </script>
 </body>
