@@ -1006,11 +1006,15 @@ test("a trip that hangs never swallows the click: the ask box still opens, and t
   orbWindow.setAttentionCards([]);
 });
 
-test("an ordinary card only glows beside the fairy where it rests", async () => {
+// [2026-11-22] an ordinary ask's FIRST ask now flies to the pointer (fairy-attention: a
+// glow in the corner is not being asked). What still only glows where the fairy rests is
+// a card that does not climb: here an ask more than a day old.
+test("a day-old ask only glows beside the fairy where it rests", async () => {
   startAttention();
   const homeBefore = orbWin().getBounds();
   orbWindow.setAttentionCards([blockedCard({
     id: "d-glow", kind: "decision", urgency: "normal", blocking: false, tab: "",
+    createdAt: Math.floor(Date.now() / 1000) - 30 * 3600,
     options: [{ key: "cut", label: "Cut 0.4.4 now" }, { key: "wait", label: "Wait" }], defaultKey: "wait",
   })]);
   const plan = await orbWindow.attentionTick();

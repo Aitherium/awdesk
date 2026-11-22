@@ -65,6 +65,13 @@ const DEFAULTS = Object.freeze({
    *  on a desk restart every un-nudged card read as an arrival and the fairy
    *  fluttered through the whole backlog 20 s apart. */
   arrivalWindowMs: 10 * MIN,
+  /** A FIRST ASK (a card that may be asked and never has been) waits only this after
+   *  any nudge, and `firstAsksPerRepeat` of them run for each repeat of an ignored
+   *  card. Not the arrival gap: 20 s apart was the backlog flood of 2026-11-08. At
+   *  3 min and 3:1 the 2026-11-22 queue (28 askable cards) is asked through in about
+   *  two hours while each climbing repeat still gets a slot about every 14 minutes. */
+  firstAskGapMs: 3 * MIN,
+  firstAsksPerRepeat: 3,
   /** Re-nudge the same card no sooner than this, by level. */
   intervalMs: Object.freeze({ 1: 20 * MIN, 2: 10 * MIN, 3: 5 * MIN }),
   /** How long a nudge stays up (a hovered whisper stays while hovered). */
@@ -462,8 +469,15 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
     const imp = arrived ? Math.max(2, importance(card, nowMs, mem, cfg)) : importance(card, nowMs, mem, cfg);
     if (imp <= 0) continue;
     const louder = climbs(card, nowMs, mem, cfg);
-    live.push({ card, mem, imp, louder, arrived, hold: holdsWork(card) && louder,
-      level: levelFor(imp, mem, cfg, { climbs: louder }), order: i });
+    // A FIRST ASK: a card that may be asked and never has been. A real ask (one that
+    // climbs) comes to the pointer once -- a flutter at least, whatever level its
+    // importance would start it at: a glow in the corner is not being asked. A card that
+    // does not climb (a no-op suggestion, a day-old ask: the noise of 2026-11-10) keeps
+    // its glow, but takes its turn like any first ask (below).
+    const firstAsk = !arrived && !(Number(mem.lastNudgeAt) > 0);
+    const base = levelFor(imp, mem, cfg, { climbs: louder });
+    live.push({ card, mem, imp, louder, arrived, firstAsk, hold: holdsWork(card) && louder,
+      level: firstAsk && louder ? Math.max(base, LEVEL.FLUTTER) : base, order: i });
   }
   if (!live.length) return { act: "none", reason: "nothing waiting that needs a nudge" };
   const due = live.filter((x) => {
@@ -477,7 +491,33 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
   // once already) -- the other way round starved every repeat behind the backlog.
   // A card that just arrived goes before everything but stopped work: it is the one
   // the owner has never been told about (2026-11-15).
+  //
+  // FIRST ASKS AND REPEATS TAKE TURNS (owner 2026-11-22: "where are the cards, why
+  // aren't the fairies asking me"). Measured that day on the live queue (80 open, 28
+  // askable, 25 never asked): replaying these rules for three hours with every nudge
+  // ignored gave 36 nudges, 18 each to the same two climbing cards, and none to the
+  // other 25 -- some had waited 17 hours. A climbed repeat is due every 10 minutes and
+  // outranked every never-asked card (a glow, which also needs 15 quiet minutes that
+  // never came). 2026-11-12 fixed the opposite starvation (first asks crowding out
+  // repeats) by ranking repeats first; ranking either one first starves the other.
+  // So they take turns: `firstAsksPerRepeat` first asks, then one repeat. Read off the
+  // memory alone (no new state): the first asks made since the newest repeat are the
+  // cards nudged exactly once, later than any card nudged more than once. One kind
+  // waiting alone takes every slot.
+  let lastRepeatAt = 0;
+  for (const id of Object.keys(memory)) {
+    const m = memory[id];
+    if (m && (Number(m.nudges) || 0) > 1) lastRepeatAt = Math.max(lastRepeatAt, Number(m.lastNudgeAt) || 0);
+  }
+  let firstAsksSince = 0;
+  for (const id of Object.keys(memory)) {
+    const m = memory[id];
+    if (m && (Number(m.nudges) || 0) === 1 && (Number(m.lastNudgeAt) || 0) > lastRepeatAt) firstAsksSince += 1;
+  }
+  const repeatsTurn = firstAsksSince >= cfg.firstAsksPerRepeat;
+  const turn = (x) => (x.firstAsk !== repeatsTurn ? 1 : 0);   // whose turn it is: 1 goes first
   due.sort((a, b) => ((b.hold ? 1 : 0) - (a.hold ? 1 : 0)) || ((b.arrived ? 1 : 0) - (a.arrived ? 1 : 0))
+    || (turn(b) - turn(a))
     || (b.level - a.level) || (b.imp - a.imp)
     || ((Number(b.mem.ignored) || 0) - (Number(a.mem.ignored) || 0))
     || ((a.mem.lastNudgeAt ? 1 : 0) - (b.mem.lastNudgeAt ? 1 : 0)) || (a.order - b.order));
@@ -485,7 +525,9 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
   const arrival = top.arrived;
   if (!ctx.returned) {
     const gap = nowMs - (Number(ctx.lastNudgeAt) || 0);
-    const need = arrival && top.imp >= 2 ? cfg.arrivalGapMs : (cfg.gapMs[top.level] || cfg.gapMs[1]);
+    const need = arrival && top.imp >= 2 ? cfg.arrivalGapMs
+      : top.firstAsk ? Math.min(cfg.firstAskGapMs, cfg.gapMs[top.level] || cfg.gapMs[1])
+        : (cfg.gapMs[top.level] || cfg.gapMs[1]);
     if (gap < need) return { act: "none", reason: "pacing: a nudge just ran" };
   }
   const more = live.length - 1;
@@ -507,7 +549,10 @@ function plan(cards, mems, ctx = {}, cfg = DEFAULTS) {
     more,
     // The fairy SPEAKS an arrival (the question, once -- owner 2026-11-15: "the fairy
     // isn't talking to me") and an insisting REPEAT.
-    voice: arrival || (top.level >= LEVEL.INSIST && Boolean(top.mem.lastNudgeAt) && voiceDue),
+    // ... and a FIRST ASK, paced by the voice gap: replayed on the 2026-11-22 queue the
+    // fairy said nothing aloud in three hours (no arrival, nothing reached insist).
+    voice: arrival || (top.firstAsk && voiceDue) || (top.level >= LEVEL.INSIST && Boolean(top.mem.lastNudgeAt) && voiceDue),
+    firstAsk: Boolean(top.firstAsk),
     needNow: split.now.length,
     older: split.older.length,
     mentionOlder,

@@ -139,8 +139,19 @@ test("one card per nudge, the loudest first, the rest ride as +N more", () => {
 test("the global gap holds a second nudge; a new important card may cut it short", () => {
   const cards = [card({ id: "d-aaaa" })];
   assert.equal(fa.plan(cards, {}, { nowMs: NOW, lastNudgeAt: NOW - 60_000 }).act, "none");
-  assert.equal(fa.plan(cards, {}, { nowMs: NOW, lastNudgeAt: NOW - 10 * MIN }).act, "none", "a glow waits 15 min");
-  assert.equal(fa.plan(cards, {}, { nowMs: NOW, lastNudgeAt: NOW - 16 * MIN }).act, "nudge");
+  // [2026-11-22] a FIRST ASK waits 3 min, not a glow's 15: a never-asked ordinary card
+  // waited behind every repeat for hours on the live queue (the turn-taking test below)
+  const first = fa.plan(cards, {}, { nowMs: NOW, lastNudgeAt: NOW - 4 * MIN });
+  assert.equal(first.act, "nudge", "a first ask waits 3 min");
+  assert.equal(first.level, fa.LEVEL.FLUTTER, "and comes to the pointer");
+  assert.equal(first.firstAsk, true);
+  // a REPEAT of a card that does not climb (a day-old ask) is still a glow and still waits 15 min
+  const old = [card({ id: "d-olda", createdAt: sec(NOW - 30 * 60 * MIN) })];
+  const asked = { "d-olda": fa.recordShown({}, NOW - 60 * MIN) };
+  assert.equal(fa.plan(old, asked, { nowMs: NOW, lastNudgeAt: NOW - 10 * MIN }).act, "none", "a glow waits 15 min");
+  const glow = fa.plan(old, asked, { nowMs: NOW, lastNudgeAt: NOW - 16 * MIN });
+  assert.equal(glow.act, "nudge");
+  assert.equal(glow.level, fa.LEVEL.GLOW);
   const urgent = [card({ id: "d-bbbb", urgency: "high", createdAt: sec(NOW - 2 * MIN) })];
   assert.equal(fa.plan(urgent, {}, { nowMs: NOW, lastNudgeAt: NOW - 30_000 }).act, "nudge");
 });
@@ -167,9 +178,12 @@ test("snoozed cards are skipped until Later runs out", () => {
   assert.equal(fa.plan(cards, mems, { nowMs: NOW }).act, "none");
 });
 
-test("voice is the REPEAT at insist level, never the arrival, and paced", () => {
+test("voice is a FIRST ASK or the REPEAT at insist level, and paced", () => {
   const cards = [card({ id: "d-aaaa", deadline: sec(NOW + 10 * MIN) })];
-  assert.equal(fa.plan(cards, {}, { nowMs: NOW }).voice, false, "arrival is spoken by the desk already");
+  // [2026-11-22] a first ask is spoken (replayed on the live queue the fairy said nothing in 3 h) ...
+  assert.equal(fa.plan(cards, {}, { nowMs: NOW }).voice, true, "a first ask is spoken");
+  // ... but never closer than the voice gap
+  assert.equal(fa.plan(cards, {}, { nowMs: NOW, lastVoiceAt: NOW - MIN }).voice, false, "paced by the voice gap");
   const mems = { "d-aaaa": fa.recordShown({}, NOW - 7 * MIN) };
   assert.equal(fa.plan(cards, mems, { nowMs: NOW, lastNudgeAt: NOW - 7 * MIN }).voice, true);
   assert.equal(fa.plan(cards, mems, { nowMs: NOW, lastNudgeAt: NOW - 7 * MIN, lastVoiceAt: NOW - MIN }).voice, false);
@@ -595,4 +609,61 @@ test("a blocked card with only a hold default suggests nothing; a real default s
   assert.equal(fa.suggestedOption(holdOnly), null);
   const real = { id: "d-real", kind: "decision", options: [{ key: "go", label: "Go" }, { key: "stay", label: "Stay" }], defaultKey: "go", createdAt: 1794918981 };
   assert.deepEqual(fa.suggestedOption(real), { label: "Go", inSession: false });
+});
+
+// ── first asks and repeats take turns (2026-11-22) ──────────────────────────
+
+test("a backlog is asked through while ignored cards keep repeating: neither starves the other", () => {
+  // The live queue of 2026-11-22 in small: two cards the owner keeps ignoring, and a
+  // dozen ordinary asks, hours old, that have never been nudged. Before: 36 nudges in
+  // three hours, 18 + 18 on the two, none on the rest.
+  const cards = [
+    card({ id: "d-hog1", createdAt: sec(NOW - 40 * MIN) }),
+    card({ id: "d-hog2", createdAt: sec(NOW - 50 * MIN) }),
+  ];
+  for (let i = 0; i < 12; i += 1) cards.push(card({ id: `d-w${String(i).padStart(3, "0")}`, createdAt: sec(NOW - (3 + i) * 60 * MIN) }));
+  let mems = {
+    "d-hog1": { lastNudgeAt: NOW - 11 * MIN, nudges: 5, ignored: 5 },
+    "d-hog2": { lastNudgeAt: NOW - 16 * MIN, nudges: 2, ignored: 2 },
+  };
+  let lastNudgeAt = NOW - 11 * MIN, lastVoiceAt = 0;
+  const got = {}, levels = {}, order = [];
+  let spoken = 0;
+  for (let t = NOW; t < NOW + 120 * MIN; t += 20_000) {
+    const p = fa.plan(cards, mems, { nowMs: t, lastNudgeAt, lastVoiceAt, idleMs: 0 });
+    if (p.act !== "nudge") continue;
+    const id = p.card.id;
+    got[id] = (got[id] || 0) + 1; order.push(id);
+    if (!(id in levels)) levels[id] = p.level;
+    if (p.voice) { spoken += 1; lastVoiceAt = t; }
+    lastNudgeAt = t;
+    mems = { ...mems, [id]: fa.recordIgnored(fa.recordShown(mems[id] || {}, t), { importance: p.importance, nowMs: t + p.showMs, climbs: p.climbs }) };
+  }
+  const waiting = cards.slice(2).map((c) => c.id);
+  assert.deepEqual(waiting.filter((id) => !got[id]), [], "every never-asked card was asked within two hours");
+  for (const id of waiting) assert.ok(levels[id] >= fa.LEVEL.FLUTTER, `${id}'s first ask came to the pointer`);
+  assert.ok(got["d-hog1"] >= 3 && got["d-hog2"] >= 3, "the ignored cards still repeat (2026-11-12: a repeat is never starved)");
+  // while the backlog is still being asked through, no card takes more than a third of the nudges
+  // (once it is drained the two ignored cards are the only ones left and repeat on their own interval)
+  const lastFirst = order.reduce((at, id, i) => (id.startsWith("d-w") ? i : at), -1);
+  const during = order.slice(0, lastFirst + 1), share = {};
+  for (const id of during) share[id] = (share[id] || 0) + 1;
+  assert.ok(Math.max(...Object.values(share)) <= during.length / 3, `no card hogs the backlog's slots (${JSON.stringify(share)} of ${during.length})`);
+  // three first asks, then a repeat, while both kinds wait
+  const head = order.slice(0, 8).map((id) => (id.startsWith("d-w") ? "F" : "R")).join("");
+  assert.match(head, /^(F{1,3}R){2}/, `first asks and repeats take turns (${head})`);
+  assert.ok(spoken >= 6, `the fairy spoke (${spoken} times in two hours, never closer than the voice gap)`);
+});
+
+test("one kind waiting alone takes every slot", () => {
+  // only repeats: nothing waits for a first ask that is not there
+  const cards = [card({ id: "d-aaaa", createdAt: sec(NOW - 30 * MIN) })];
+  const mems = { "d-aaaa": { lastNudgeAt: NOW - 11 * MIN, nudges: 1, ignored: 1 } };
+  assert.equal(fa.plan(cards, mems, { nowMs: NOW, lastNudgeAt: NOW - 11 * MIN }).act, "nudge");
+  // only first asks: three in a row do not stall waiting for a repeat
+  const fresh = [0, 1, 2, 3].map((i) => card({ id: `d-f${i}`, createdAt: sec(NOW - (2 + i) * 60 * MIN) }));
+  const asked = { "d-f0": fa.recordShown({}, NOW - 12 * MIN), "d-f1": fa.recordShown({}, NOW - 8 * MIN), "d-f2": fa.recordShown({}, NOW - 4 * MIN) };
+  const p = fa.plan(fresh, asked, { nowMs: NOW, lastNudgeAt: NOW - 4 * MIN });
+  assert.equal(p.act, "nudge");
+  assert.equal(p.card.id, "d-f3", "the fourth never-asked card is asked, not held for a repeat that is not due");
 });
