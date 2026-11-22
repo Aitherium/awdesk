@@ -17,6 +17,8 @@ clicked — not when the package is registered.
 
 ```
 ┌─ Aither
+│  Aither Files               --run=files.open
+│  Strata storage             --run=strata.open
 │  Snip a region              --run=snip.region
 │  Record a region            --run=record.region
 │  Record a region with sound --run=record.region.audio
@@ -226,6 +228,8 @@ The menu contract uses the ids below. The orb lane owns `orb.ask-screen` and
 
 | Menu item | `--run=` id | Owner lane / develop |
 |---|---|---|
+| Aither Files | `files.open` | develop |
+| Strata storage | `strata.open` | develop |
 | Snip a region | `snip.region` | develop |
 | Record a region | `record.region` | develop |
 | Record a region with sound | `record.region.audio` | develop |
