@@ -69,6 +69,11 @@ struct Verb {
 // command contract; see native/shell-menu/README.md for which ids already
 // exist in electron/command-registry.cjs.
 const Verb kVerbs[] = {
+    // Files and Strata first: the same two the classic menu leads with, so the
+    // Windows 11 top-level flyout is not missing entries the owner already sees
+    // under "Show more options".
+    {L"files.open", L"Aither Files", L"Open Aither's file browser"},
+    {L"strata.open", L"Strata storage", L"Open Aither Strata storage"},
     {L"snip.region", L"Snip a region", L"Capture part of the screen with Aither"},
     {L"record.region", L"Record a region", L"Record part of the screen with Aither"},
     {L"record.region.audio", L"Record a region with sound",

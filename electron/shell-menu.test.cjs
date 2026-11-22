@@ -219,3 +219,23 @@ test("S8 non-Windows is refused, and entries can be filtered to what the registr
   assert.ok(!text.includes("--run=orb.ask-screen"), "a missing orb.ask-screen must not be installed");
   assert.ok(text.includes("--run=note.new"));
 });
+
+// ── the Windows 11 (modern) menu must offer the same core verbs as the classic
+//    one; the DLL lives in C++, so this is the only place the two can drift. ──
+
+test("the Win11 DLL offers the same core verbs as the classic HKCU menu", () => {
+  const cpp = fs.readFileSync(path.join(__dirname, "..", "native", "shell-menu", "src", "ShellMenu.cpp"), "utf8");
+  const verbs = [...cpp.matchAll(/\{\s*L"([a-z0-9][a-z0-9._-]*)",\s*L"/gi)].map((m) => m[1]);
+  assert.ok(verbs.length >= sm.ENTRIES.length, `only ${verbs.length} verbs in the DLL table`);
+  // Every classic background-menu verb must be reachable from the modern menu too,
+  // otherwise Windows 11 top-level "Aither" silently lacks an entry the owner sees
+  // under Show more options (Aither Files and Strata storage were missing once).
+  for (const entry of sm.ENTRIES) {
+    assert.ok(verbs.includes(entry.id), `the Win11 menu is missing ${entry.id} (${entry.label})`);
+  }
+  // And every DLL id must be a real desk command id (an unknown id launches nothing).
+  const registry = fs.readFileSync(path.join(__dirname, "command-registry.cjs"), "utf8");
+  for (const id of verbs) {
+    assert.ok(registry.includes(`"${id}"`), `the DLL names ${id}, which command-registry.cjs does not define`);
+  }
+});
