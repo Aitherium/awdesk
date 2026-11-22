@@ -203,6 +203,7 @@ test("tab preferences: web = no preload + sandbox; internal = its own session + 
   assert.equal(web.preload, undefined);
   assert.equal(web.sandbox, true);
   assert.equal(web.partition, "persist:aither-browser");
+  assert.equal(web.plugins, true, "PDFs open in the tab (Chromium's viewer)");
   const inside = internal.tabPreferences("internal", { webPartition: "persist:aither-browser" });
   assert.equal(inside.partition, internal.INTERNAL_PARTITION);
   assert.notEqual(inside.partition, web.partition, "the scheme's session must not be the web session");
@@ -335,6 +336,10 @@ function consolePreloadPicks(href) {
   };
   const fakeRequire = (name) => {
     if (name === "electron") return electron;
+    // console-preload.cjs decides the Files frame with real node:path/node:url
+    // (isOwnFilesPage). Stubbing them as {} makes that check throw and the frame
+    // silently read as "not files", so the run would disagree with preloadFor.
+    if (name === "node:path" || name === "node:url") return require(name);
     required.push(String(name).replace(/^\.\//, ""));
     return {};
   };
@@ -343,6 +348,9 @@ function consolePreloadPicks(href) {
     location: { href },
     document: { readyState: "complete", documentElement: root, addEventListener: noop },
     Promise,
+    // The VM has no Node globals; isOwnFilesPage uses URL and __dirname.
+    URL,
+    __dirname,
   };
   sandbox.self = sandbox;
   sandbox.top = sandbox;
@@ -510,12 +518,12 @@ test("the deck's character models reach an aither:// page through /_models/, fro
 });
 
 test("the pinned AitherOS Online tab opens app.aitherium.com (the one page host)", () => {
-  assert.equal(internal.onlineUrl({}), "https://app.aitherium.com/");
+  assert.equal(internal.onlineUrl({}, null), "https://app.aitherium.com/");
   assert.equal(internal.onlineUrl({ DESK_ONLINE_URL: "https://app.aitherium.com/?x=1" }),
     "https://app.aitherium.com/?x=1");
-  assert.equal(internal.onlineUrl({ DESK_ONLINE_URL: "https://evil.test/" }), "https://app.aitherium.com/");
+  assert.equal(internal.onlineUrl({ DESK_ONLINE_URL: "https://evil.test/" }, null), "https://app.aitherium.com/");
   const online = internal.pinnedTabs({}).find((p) => p.key === "online");
-  const route = internal.resolveRequest(online.url, { hostedUrl: () => internal.onlineUrl({}) });
+  const route = internal.resolveRequest(online.url, { hostedUrl: () => internal.onlineUrl({}, null) });
   assert.equal(route.type, "hosted");
   assert.equal(route.url, "https://app.aitherium.com/");
   const main = read("main.cjs");
@@ -574,4 +582,22 @@ test("aither://space/ deep links reach the renderer as ?space=1&<key>=, validate
   // The address bar passes the link through (browser-window desk:browser-navigate).
   const bw = read("browser-window.cjs");
   assert.match(bw, /const link = internal\.deepLinkOf\(page\);\s*return openInternal\(page\.paneId, link\)/);
+});
+
+test("no console pane takes a reserved aither:// name (Strata tiers) or an invalid host", () => {
+  assert.deepEqual(internal.paneNamespaceViolations(), []);
+  assert.deepEqual(internal.paneNamespaceViolations([{ id: "warm" }, { id: "x.aither" }, { id: "files" }]), ["warm", "x.aither"]);
+});
+
+test("an aitherium.com URL upgrades to aither:// only when a pane declares that path", () => {
+  const panes = [{ id: "notebooks", kind: "file", file: "notebooks.html", web: ["/notebooks/"] }];
+  assert.equal(internal.upgradeToInternal("https://app.aitherium.com/notebooks", panes), "aither://notebooks/");
+  assert.equal(internal.upgradeToInternal("https://aitherium.com/notebooks/abc?x=1", panes), "aither://notebooks/");
+  assert.equal(internal.upgradeToInternal("https://aitherium.com/notebooksX", panes), null);
+  assert.equal(internal.upgradeToInternal("https://aitherium.com/canvas", panes), null);
+  assert.equal(internal.upgradeToInternal("http://aitherium.com/notebooks", panes), null);
+  assert.equal(internal.upgradeToInternal("https://evil.example/notebooks", panes), null);
+  assert.equal(internal.upgradeToInternal("https://aitherium.com.evil.example/notebooks", panes), null);
+  // a name match is NOT a mapping: no pane declares `web`, so nothing upgrades today
+  assert.equal(internal.upgradeToInternal("https://app.aitherium.com/sessions"), null);
 });

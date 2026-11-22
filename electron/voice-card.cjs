@@ -37,6 +37,9 @@ function norm(text) {
 }
 
 /** The sentence the avatar asks. Options are numbered so "two" is an answer. */
+/** A short reply that means "not now". */
+const LATER = /^(?:(?:ok(?:ay)?|no|not now|maybe) )?(?:later|not now|ask me later|remind me later|not right now|snooze(?: it)?)(?: please| thanks)?$/;
+
 function cardPrompt(card) {
   const title = String((card && card.title) || "a decision").slice(0, 160);
   const options = (card && Array.isArray(card.options) ? card.options : []).slice(0, MAX_OPTIONS);
@@ -44,7 +47,7 @@ function cardPrompt(card) {
   const listed = options
     .map((o, i) => `${SPOKEN[i]}, ${String(o.label || o.key).slice(0, 80)}${o.recommended ? ", recommended" : ""}`)
     .join("; ");
-  return `A decision needs you: ${title}. Options: ${listed}. Say a number, or tell me what to do instead.`;
+  return `A decision needs you: ${title}. Options: ${listed}. Say a number, later, or tell me what to do instead.`;
 }
 
 /**
@@ -89,66 +92,11 @@ function matchReply(card, transcript) {
       if (rec) return pick(rec);
     }
   }
+  // "Later" / "not now" puts the card off (the fairy's Later), never a steer sent to
+  // the session. Checked AFTER the options, so a card whose own option says "Later"
+  // still gets that option.
+  if (LATER.test(said)) return { kind: "later" };
   return { kind: "steer", text: String(transcript).trim() };
 }
 
-// ── who is allowed to speak for the owner ─────────────────────────────
-// A card ask (voice-ask.cjs) says the question ALOUD and then opens the
-// microphone. Whatever that mic hears next -- a video playing in the room,
-// another person, the avatar's own audio bleeding back -- used to be treated as
-// the owner's reply, and anything that was not a matching option was STEERED to
-// the raising session as the OWNER's words (a note marked "queued"). That is a
-// prompt-injection path: ambient speech can steer an agent. This gate fails
-// CLOSED, so an utterance only reaches a card when it is POSITIVELY the owner.
-
-/** The owner pressed the talk key and spoke: an explicit, deliberate capture. */
-const CAPTURE_PUSH_TO_TALK = "push-to-talk";
-/** The always-on / auto-armed recorder: heard, but nobody chose to be heard. */
-const CAPTURE_OPEN_MIC = "open-mic";
-
-/**
- * Was this capture POSITIVELY the owner speaking? Returns {verified, reason}.
- *
- * Positive signals, in order:
- *   - ``speakerVerified``: a match against an enrolled owner voiceprint (the
- *     only true identity check; no verifier is wired yet, so callers pass
- *     false and everything fails closed until one is);
- *   - an explicit push-to-talk with no media playing.
- * Anything heard while media is playing, or from the ambient open mic, is
- * UNVERIFIED: it may never answer or steer a card.
- */
-function classifyCapture({ capture = CAPTURE_OPEN_MIC, speakerVerified = false, mediaPlaying = false } = {}) {
-  if (speakerVerified === true) return { verified: true, reason: "speaker-match" };
-  if (mediaPlaying === true) return { verified: false, reason: "media-playing" };
-  if (capture === CAPTURE_PUSH_TO_TALK) return { verified: true, reason: "explicit-push-to-talk" };
-  return { verified: false, reason: "ambient" };
-}
-
-/**
- * Gate a spoken reply to a card.
- *
- *   verified   -> the same {kind:"answer"|"steer"|"none"} matchReply gives,
- *                 plus ``verified: true``; the caller may apply it.
- *   unverified -> {kind:"unverified", text, reason}; the caller MUST NOT apply
- *                 it. At most it is held as an "unverified heard" item the owner
- *                 confirms with an explicit click.
- */
-function gateReply(card, transcript, options = {}) {
-  const text = String(transcript || "").trim();
-  if (!text) return { kind: "none", verified: false, reason: "empty" };
-  const capture = classifyCapture(options);
-  if (!capture.verified) {
-    return { kind: "unverified", text, reason: capture.reason, verified: false };
-  }
-  return { ...matchReply(card, transcript), verified: true };
-}
-
-module.exports = {
-  cardPrompt,
-  matchReply,
-  norm,
-  CAPTURE_PUSH_TO_TALK,
-  CAPTURE_OPEN_MIC,
-  classifyCapture,
-  gateReply,
-};
+module.exports = { cardPrompt, matchReply, norm };

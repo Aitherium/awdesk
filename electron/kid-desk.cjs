@@ -5,14 +5,18 @@
  *
  * A grown-up turns it on for the child's computer; the child never can from inside the
  * desk. In kid mode the desk is ONE thing: the child's own classroom (Aither Learn at
- * app.aitherium.com/learn, signed in as the child) with their own sprite. Everything adult
- * is absent, not hidden behind a toggle:
+ * app.aitherium.com/learn, signed in as the child) with their own sprite. The one window has
+ * two doors, both fixed paths on the classroom host: "My classroom" (/learn) and "My Space"
+ * (/learn/lab?go=space, where the child builds their own family-only page). A door is a
+ * NAME from KID_DOORS, never a URL: no caller can hand the window a path or a host.
+ * Everything adult is absent, not hidden behind a toggle:
  *
  *   - the character ROSTER is empty (no VRM bodies, no adult-rated anything, no agent
  *     avatars): listCharacters() answers [] and a switch/install/spawn is refused;
  *   - no avatar overlay, no agent apps, no command palette, no global shortcuts, no
  *     settings window, no fleet, no MCP bridge;
- *   - the classroom window navigates only on the EXACT classroom host (app.aitherium.com
+ *   - the ONE classroom window (both doors load in it; there is never a second window, a
+ *     preload, an IPC channel or a bridge) navigates only on the EXACT classroom host (app.aitherium.com
  *     unless the machine policy names another aitherium.com page host); any other link
  *     (a sibling subdomain, a new window, a redirect off-site) is refused and never opens a
  *     browser. It has its own session partition, so no grown-up's desk sign-in rides along.
@@ -44,6 +48,13 @@ const path = require("node:path");
 
 const DEFAULT_ONLINE = "https://app.aitherium.com/";
 const CLASSROOM_PATH = "/learn";
+const SPACE_PATH = "/learn/lab";
+/** The only places the kid desk itself ever sends the window. Frozen: a door is picked by
+ *  NAME, and its path and query are these constants on the one classroom origin. */
+const KID_DOORS = Object.freeze({
+  classroom: Object.freeze({ label: "My classroom", path: CLASSROOM_PATH, query: "desk=kid" }),
+  space: Object.freeze({ label: "My Space", path: SPACE_PATH, query: "go=space&desk=kid" }),
+});
 const FILE = "kid-desk.json";
 const PARTITION = "persist:awdesk-kid";
 const REG_KEY = "HKLM\\SOFTWARE\\Policies\\Aitherium\\AWDesk";
@@ -170,10 +181,28 @@ function resolveKidDesk({ platform = process.platform, policyFile = "", readRegi
   });
 }
 
+/** The door called `name`, or null: only an own key of KID_DOORS is a door. */
+function kidDoor(name) {
+  return typeof name === "string" && Object.prototype.hasOwnProperty.call(KID_DOORS, name)
+    ? KID_DOORS[name] : null;
+}
+
+/** The URL of a named door on the classroom origin, or "" when `name` is not a door. */
+function kidDoorUrl(state, name) {
+  const door = kidDoor(name);
+  if (!door) return "";
+  const origin = (state && state.origin) || classroomOrigin("");
+  return new URL(`${door.path}?${door.query}`, `${origin}/`).toString();
+}
+
 /** The classroom URL for a resolved state (or the default page host). */
 function classroomUrl(state) {
-  const origin = (state && state.origin) || classroomOrigin("");
-  return new URL(`${CLASSROOM_PATH}?desk=kid`, `${origin}/`).toString();
+  return kidDoorUrl(state, "classroom");
+}
+
+/** The child's own Space editor (the Learn Lab's Space activity), on the classroom origin. */
+function spaceUrl(state) {
+  return kidDoorUrl(state, "space");
 }
 
 /** May the kid-desk window go to `target`? Only https on the EXACT classroom origin (same
@@ -186,6 +215,19 @@ function allowNavigation(target, state) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Is the window, showing `current`, already behind the door called `name`? Then picking
+ * that door only brings the window forward and the child's place on the page is kept.
+ * Space = the Lab on its Space activity; classroom = anywhere else under /learn.
+ */
+function onKidDoor(current, state, name) {
+  if (!kidDoor(name) || !allowNavigation(current, state)) return false;
+  const u = new URL(String(current));
+  if (name === "space") return u.pathname === SPACE_PATH && u.searchParams.get("go") === "space";
+  const inLab = u.pathname === SPACE_PATH || u.pathname.startsWith(`${SPACE_PATH}/`);
+  return !inLab && (u.pathname === CLASSROOM_PATH || u.pathname.startsWith(`${CLASSROOM_PATH}/`));
 }
 
 /**
@@ -223,19 +265,31 @@ function allowCharacterChange(state) {
   return !(state && state.enabled);
 }
 
-/** The tray menu template in kid mode: open my classroom, nothing else. */
-function kidTrayTemplate({ openClassroom }) {
+/** The tray menu template in kid mode: my classroom and my Space, nothing else. Both rows
+ *  act on the one window. */
+function kidTrayTemplate({ openClassroom, openSpace }) {
   return [
-    { label: "My classroom", click: () => openClassroom() },
+    { label: KID_DOORS.classroom.label, click: () => openClassroom() },
+    { label: KID_DOORS.space.label, click: () => openSpace() },
   ];
 }
 
 /**
  * Open (or focus) the single kid-desk window. `deps` carries Electron's BrowserWindow so a
  * test can pass a fake. Returns the window.
+ *
+ * `door` is a KID_DOORS name. With an open window: no door (a second launch, a click on the
+ * tray icon) only brings it forward; a named door also loads that door in the SAME window
+ * unless the child is already there. Anything that is not a door name is treated as no
+ * door. A new window starts at the named door, else the classroom.
  */
-function openClassroomWindow(deps, { state = null, existing = null } = {}) {
+function openClassroomWindow(deps, { state = null, existing = null, door = "" } = {}) {
+  const target = kidDoorUrl(state, door);
   if (existing && !existing.isDestroyed()) {
+    if (target && allowNavigation(target, state)
+      && !onKidDoor(existing.webContents?.getURL?.() || "", state, door)) {
+      existing.loadURL(target);
+    }
     existing.show();
     existing.focus();
     return existing;
@@ -264,13 +318,15 @@ function openClassroomWindow(deps, { state = null, existing = null } = {}) {
   contents.on("will-navigate", guard);
   contents.on("will-redirect", guard);
   contents.on("will-attach-webview", (event) => event.preventDefault());
-  win.loadURL(classroomUrl(state));
+  win.loadURL(target || classroomUrl(state));
   return win;
 }
 
 module.exports = {
   CLASSROOM_PATH,
   DEFAULT_ONLINE,
+  KID_DOORS,
+  SPACE_PATH,
   FILE,
   PARTITION,
   DEBUG_SWITCHES,
@@ -287,12 +343,15 @@ module.exports = {
   classroomUrl,
   gateRoster,
   isAitheriumHost,
+  kidDoorUrl,
   kidTrayTemplate,
   machineProgramData,
+  onKidDoor,
   openClassroomWindow,
   policyFilePath,
   readRegistryPolicy,
   regString,
   resolveKidDesk,
   scrubDebugSwitches,
+  spaceUrl,
 };

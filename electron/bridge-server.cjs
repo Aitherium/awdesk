@@ -13,9 +13,6 @@ const path = require("node:path");
 // overrides; the aitheros launcher passes what pickPort() actually found free.
 const DEFAULT_PORT = 47931;
 const MAX_BODY_BYTES = 64 * 1024;
-// POST /speak/audio carries a finished clip (base64 WAV), so it gets its own, larger cap:
-// 40 s of 16 kHz mono 16-bit audio is ~1.3 MB, ~1.8 MB as base64.
-const MAX_AUDIO_BODY_BYTES = 3 * 1024 * 1024;
 const TRUSTED_ORIGIN =
   /^(?:https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?|codex-app:\/\/[A-Za-z0-9._~-]*)$/i;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
@@ -237,14 +234,14 @@ function jsonRpcError(response, status, code, message) {
   );
 }
 
-function readJsonBody(request, maxBytes = MAX_BODY_BYTES) {
+function readJsonBody(request) {
   return new Promise((resolve, reject) => {
     let bytes = 0;
     const chunks = [];
 
     request.on("data", (chunk) => {
       bytes += chunk.length;
-      if (bytes > maxBytes) {
+      if (bytes > MAX_BODY_BYTES) {
         const error = new Error("Request body is too large");
         error.code = "BODY_TOO_LARGE";
         reject(error);
@@ -254,7 +251,7 @@ function readJsonBody(request, maxBytes = MAX_BODY_BYTES) {
       chunks.push(chunk);
     });
     request.on("end", () => {
-      if (bytes > maxBytes) return;
+      if (bytes > MAX_BODY_BYTES) return;
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       } catch {
@@ -281,14 +278,6 @@ function createBridgeServer({
   // window, which owns the bearer check and the argv control. A second
   // mutating door here would be a rival window with its own credential story.
   wakesProvider = null,
-  // GET /context/what: what the HOST OPERATING SYSTEM says the user is doing --
-  // the foreground application, its window title and pid (host-context.cjs).
-  // LOOPBACK ONLY, and deliberately NOT a desk surface: the pinned awconnect
-  // extension reads the browser, and must not be able to read which desktop
-  // app the owner has focused. A provider that answers {ok:false, reason} is
-  // returned as a 503, never as an empty 200 -- "could not read the host" and
-  // "nothing is open" are different facts and must not look alike.
-  hostContextProvider = null,
   fleetHandler = null,
   commandHandler = null,
   // POST /space/verb {nodeId, verbId, confirmed}: the space pane's desk:space-verb, for
@@ -300,10 +289,11 @@ function createBridgeServer({
   desktopHandler = null,
   // POST /speak {text, voice?}: the avatar says it through AitherVoice.
   speakHandler = null,
-  // POST /speak/audio {audioBase64, volume?, slot?, text?}: a clip that is ALREADY
-  // synthesized (a Discord call's own voice) is played through the avatar so its mouth
-  // follows it. Bearer-gated: unlike /speak it plays caller-supplied audio.
-  speakAudioHandler = null,
+  // The agent swarm (agent-swarm-host.cjs). GET /swarm = the live roster + forms;
+  // POST /swarm {action, ...} = form | forms | mode | show | talk | speak | visemes | goblin;
+  // POST /swarm/speak?agent=<id> with an audio/* body = that audio, streamed, in the agent's
+  // own body. Same trust class as /speak: a desk origin, loopback only.
+  swarmHandler = null,
   // POST /console/open {pane?, card?}: raise the Aither Console on a pane (default inbox);
   // card focuses that decision card in the Inbox (a remote "Open secure prompt" tap).
   consoleHandler = null,
@@ -316,10 +306,16 @@ function createBridgeServer({
   // local page or process answering here could feed an agent forged page content.
   chromeBridge = null,
   commandsHandler = null,
+  assistHandler = null,
+  assistAuth = null,
   // () => {x, y, width, height} of the visible avatar window, or null.
   avatarBoundsProvider = null,
   // () => the room stage's status (who is on stage, queue, spoken), or null.
   stageStatusProvider = null,
+  // () => {mainMb, totalMb, processes} from app.getAppMetrics (the resource watch
+  // numbers). Reported on GET /health so a soak/perf script measures the desk's OWN
+  // accounting instead of guessing from Task Manager. Null = field absent.
+  memoryProvider = null,
   // POST /roster/capture {names?, force?} (bearer: it writes into characters/)
   // renders a full-body frame per character for the content rater;
   // GET /roster/capture reports progress. Null = route absent (404).
@@ -355,7 +351,13 @@ function createBridgeServer({
       } catch {
         stage = null;
       }
-      response.end(JSON.stringify({ ok: true, lastState: lastStateEvent?.state ?? null, avatar, stage }));
+      let memory;
+      try {
+        memory = memoryProvider ? memoryProvider() : null;
+      } catch {
+        memory = null;
+      }
+      response.end(JSON.stringify({ ok: true, lastState: lastStateEvent?.state ?? null, avatar, stage, memory }));
       return;
     }
 
@@ -583,6 +585,59 @@ function createBridgeServer({
       return;
     }
 
+    // AITHER AT THE CARET, from the browser (assist-main.cjs bridge): the AitherConnect
+    // overlay sends the context it captured in the page on the user's own gesture, and the
+    // desk's engine runs the verb through MicroScheduler with the owner's models/keys. The
+    // ONLY accepted origin is a pinned AitherConnect extension: unlike /commands this route
+    // carries page text and spends the owner's model budget, so a loopback no-Origin
+    // caller (curl, a local script) is refused, not trusted.
+    //
+    // The Origin header is NOT a credential (any local process can write one), so every
+    // route except the two pairing steps and `hello` (the desk proving its identity) ALSO needs the per-install bearer
+    // (assist-pairing.cjs): without it, or with a wrong one, 401 -- fail closed, including
+    // when the desk has no verifier at all. The pairing steps need only the pinned origin:
+    // they hand the bearer out, once, after the owner clicks Allow in a native dialog.
+    if (/^\/assist\/(suggest|refine|run|route|note|hello|pair\/start|pair\/finish)$/.test(String(request.url || ""))) {
+      if (!extensionOriginAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      if (assistHandler == null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      if (request.method !== "POST") {
+        response.writeHead(405, { allow: "POST" });
+        response.end();
+        return;
+      }
+      const assistRoute = String(request.url).slice("/assist/".length);
+      if (!assistRoute.startsWith("pair/") && assistRoute !== "hello") {
+        let authorised;
+        try { authorised = typeof assistAuth === "function" && assistAuth(request.headers.authorization) === true; } catch { authorised = false; }
+        if (!authorised) {
+          response.writeHead(401, { "content-type": "application/json", "www-authenticate": "Bearer" });
+          response.end(JSON.stringify({ ok: false, pair: true, error: "pairing required: pair AitherConnect with this desk first" }));
+          return;
+        }
+      }
+      readJsonBody(request)
+        .then((body) => assistHandler({ route: assistRoute, body, origin }))
+        .then((result) => {
+          if (response.headersSent) return;
+          response.writeHead(result && result.ok === false && result.status ? result.status : 200, { "content-type": "application/json" });
+          response.end(JSON.stringify(result ?? { ok: false, error: "no answer" }));
+        })
+        .catch((error) => {
+          if (response.headersSent) return;
+          response.writeHead(error && error.code === "BODY_TOO_LARGE" ? 413 : 500, { "content-type": "application/json" });
+          response.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+        });
+      return;
+    }
+
     if (request.url === "/chrome/next" || request.url === "/chrome/result") {
       if (!extensionOriginAllowed(origin)) {
         response.writeHead(403);
@@ -756,61 +811,51 @@ function createBridgeServer({
       return;
     }
 
-    if (request.url === "/speak/audio") {
+    if (request.url === "/swarm" || request.url.startsWith("/swarm/") || request.url.startsWith("/swarm?")) {
       if (!deskOriginAllowed(origin)) {
         response.writeHead(403);
         response.end();
         return;
       }
-      if (request.method !== "POST") {
-        response.writeHead(405, { allow: "POST" });
-        response.end();
-        return;
-      }
-      if (denyUnlessBearer(request, response, token)) return;
-      if (speakAudioHandler == null) {
+      if (swarmHandler == null) {
         response.writeHead(404);
         response.end();
         return;
       }
-      readJsonBody(request, MAX_AUDIO_BODY_BYTES)
-        .then((body) => {
-          const audioBase64 = typeof body?.audioBase64 === "string" ? body.audioBase64 : "";
-          if (!audioBase64 || !/^[A-Za-z0-9+/=]+$/.test(audioBase64)) {
-            response.writeHead(400, { "content-type": "application/json" });
-            response.end(JSON.stringify({ ok: false, error: "audioBase64 required (base64 audio)" }));
-            return null;
-          }
-          // A real clip, not any base64: RIFF/WAVE, MP3 (ID3 or frame sync), Ogg or FLAC.
-          const head = Buffer.from(audioBase64.slice(0, 16), "base64");
-          const magic = head.subarray(0, 4).toString("latin1");
-          const isAudio = magic === "RIFF" || magic === "OggS" || magic === "fLaC"
-            || magic.startsWith("ID3") || (head[0] === 0xff && (head[1] & 0xe0) === 0xe0);
-          if (!isAudio) {
-            response.writeHead(400, { "content-type": "application/json" });
-            response.end(JSON.stringify({ ok: false, error: "audioBase64 is not a WAV/MP3/Ogg/FLAC clip" }));
-            return null;
-          }
-          // Lip sync only by default: the clip is already audible in the call, so the
-          // desk's own speakers stay silent unless the caller asks for volume.
-          const volume = Number.isFinite(Number(body?.volume)) && body?.volume != null
-            ? Math.max(0, Math.min(1, Number(body.volume)))
-            : 0;
-          const slot = typeof body?.slot === "string" && /^[a-z0-9_-]{1,32}$/.test(body.slot) ? body.slot : undefined;
-          const text = typeof body?.text === "string" ? body.text.trim().slice(0, 400) : "";
-          return speakAudioHandler({ audioBase64, volume, slot, text });
-        })
-        .then((result) => {
-          if (result == null || response.headersSent) return;
-          response.writeHead(result.ok === false ? 502 : 200, { "content-type": "application/json" });
-          response.end(JSON.stringify(result));
-        })
-        .catch((error) => {
-          if (response.headersSent) return;
-          const tooLarge = error?.code === "BODY_TOO_LARGE";
-          response.writeHead(tooLarge ? 413 : 500, { "content-type": "application/json" });
-          response.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
-        });
+      const reply = (status, body) => {
+        if (response.headersSent) return;
+        response.writeHead(status, { "content-type": "application/json" });
+        response.end(JSON.stringify(body));
+      };
+      const url = new URL(request.url, "http://127.0.0.1");
+      // Review of #96: POST /swarm drives bodies, voices and a test probe. Host + Origin alone let ANY
+      // local process do that (a null Origin is allowed), so every POST needs the same bearer the fleet
+      // routes do. GET /swarm stays a read of the roster.
+      if (request.method === "POST" && denyUnlessBearer(request, response, token)) return;
+      if (request.method === "GET" && url.pathname === "/swarm") {
+        Promise.resolve(swarmHandler({ action: "state", refresh: url.searchParams.get("refresh") === "1" }))
+          .then((result) => reply(200, result))
+          .catch((error) => reply(500, { ok: false, error: error?.message || String(error) }));
+        return;
+      }
+      if (request.method !== "POST") {
+        response.writeHead(405, { allow: "GET, POST" });
+        response.end();
+        return;
+      }
+      const done = (result) => reply(result && result.ok === false ? (result.refused ? 409 : 400) : 200, result);
+      const fail = (error) => reply(500, { ok: false, error: error?.message || String(error) });
+      const contentType = String(request.headers["content-type"] || "");
+      if (url.pathname === "/swarm/speak" && /^audio\//i.test(contentType)) {
+        // The audio itself, streamed in the body: handed to the host as a Readable.
+        const agent = String(url.searchParams.get("agent") || "");
+        Promise.resolve(swarmHandler({ action: "speak", agent, audioStream: request, mime: contentType }))
+          .then(done, fail);
+        return;
+      }
+      readJsonBody(request)
+        .then((body) => swarmHandler({ ...(body && typeof body === "object" ? body : {}), action: String((body && body.action) || url.pathname.split("/")[2] || "") }))
+        .then(done, fail);
       return;
     }
 
@@ -895,47 +940,6 @@ function createBridgeServer({
           if (response.headersSent) return;
           response.writeHead(500, { "content-type": "application/json" });
           response.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
-        });
-      return;
-    }
-
-    // GET /context/what -- the one namespace the desk, awsh and any agent share for
-    // "what is the owner looking at on this machine". Before this, the desk could
-    // only answer for its OWN browser window, so every other question about the
-    // host was a guess.
-    if (request.url === "/context/what" || request.url.startsWith("/context/")) {
-      if (!originAllowed(origin)) {
-        response.writeHead(403);
-        response.end();
-        return;
-      }
-      if (hostContextProvider == null) {
-        response.writeHead(404, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: false, error: "host context is not wired on this desk" }));
-        return;
-      }
-      if (request.url.split("?")[0] !== "/context/what") {
-        response.writeHead(404, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: false, error: "unknown context surface (what)" }));
-        return;
-      }
-      if (request.method !== "GET") {
-        response.writeHead(405, { allow: "GET" });
-        response.end();
-        return;
-      }
-      Promise.resolve()
-        .then(() => hostContextProvider())
-        .then((context) => {
-          if (response.headersSent) return;
-          const ok = context && context.ok === true;
-          response.writeHead(ok ? 200 : 503, { "content-type": "application/json" });
-          response.end(JSON.stringify(context || { ok: false, reason: "no answer" }));
-        })
-        .catch((error) => {
-          if (response.headersSent) return;
-          response.writeHead(503, { "content-type": "application/json" });
-          response.end(JSON.stringify({ ok: false, reason: error?.message || String(error) }));
         });
       return;
     }

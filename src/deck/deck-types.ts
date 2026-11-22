@@ -4,6 +4,8 @@
  * vitest arms exercise exactly this logic.
  */
 
+import type { CardUiNode } from './card-ui-tree';
+
 export interface DeckDecision {
   id: string;
   title: string;
@@ -12,13 +14,22 @@ export interface DeckDecision {
   kind?: string;
   urgency: string;
   createdAt: number;
-  options: Array<{ key: string; label: string; recommended: boolean }>;
+  /** `consequence` = what the button DOES (a recipe card's action sentence,
+   *  <=200 chars). Older mains omit it. */
+  options: Array<{ key: string; label: string; recommended: boolean; consequence?: string }>;
   defaultKey: string;
   tab: string;
   cwd: string;
   agent: string;
   /** WHICH session is waiting (an id, never a path). Optional on older mains. */
   sessionId?: string;
+  /** The asking session's state, sent only when the card has a sessionId.
+   *  `status` "idle" = waiting at its prompt, "busy" = working. Older mains omit it. */
+  session?: { live: boolean; status: string; name: string; ended?: boolean };
+  /** The raiser's longer explanation (<=2000 chars) and short facts (<=6).
+   *  Older mains omit both. */
+  detail?: string;
+  facts?: string[];
   /** The universe object this card concerns (`svc:Secrets`, `secret:NAME`); "" = none. */
   subject?: string;
   /** WHICH machine raised it, as the raiser labelled it. */
@@ -40,6 +51,11 @@ export interface DeckDecision {
   /** The signed audit of a CLOSED credential card (never the value). Normally
    *  null — a listed card is open by definition. */
   credentialReceipt?: unknown;
+  /** The card's generated UI as a render tree (electron/card-ui.cjs), present only
+   *  when its card_hash is current and it validated against `options`; null/absent
+   *  = draw the card as always. Never on a credential card. */
+  uiTree?: CardUiNode | null;
+  uiCurrent?: boolean;
 }
 
 export interface DeckSlot {
@@ -85,6 +101,16 @@ export interface WakeRow {
   running: boolean;
   runningSince: string | null;
   nextDueAt: string | null;
+  /** The most informative error line of the last bad wake (awrise reads it
+   *  off the run's own output, redacted). "" on an older daemon. */
+  lastWhy?: string;
+  /** dependency-down | code-bug | timeout | config | unknown, or "". */
+  lastCause?: string;
+  /** Same why this many wakes in a row. */
+  whyStreak?: number;
+  /** awrise is skipping the job until then (a dependency is down). */
+  heldUntil?: string | null;
+  heldOn?: string;
   /** The decision card awrise raised for this failing streak, when it did. */
   cardId: string;
   error: string;
@@ -119,6 +145,8 @@ export interface DeckState {
   openCount: number;
   /** Every open card, FYI ones included. Optional: an older main does not send it. */
   totalCount?: number;
+  /** Cards whose asking session ended (never in `openCount`). Older mains omit it. */
+  endedCount?: number;
   /** Ids only the owner can unblock (credential / blocked), pinned first. */
   needsYouIds?: string[];
   /** Ids of FYI cards: collapsed below the flipper, never in its "N of M". */
@@ -440,6 +468,13 @@ export function normalizeWakes(raw: unknown): WakesFeed {
     staleSince: typeof value.stale_since === 'number' ? value.stale_since : null,
     error: typeof value.error === 'string' ? value.error : null,
   };
+}
+
+/** What the Investigate button gets back: the daemon session it started. */
+export interface WakeInvestigateResult {
+  ok?: boolean;
+  session?: string | null;
+  error?: string | null;
 }
 
 export interface WakeActionResult {

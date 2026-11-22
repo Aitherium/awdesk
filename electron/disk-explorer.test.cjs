@@ -131,8 +131,8 @@ test("nodes and proposals use the caller-scoped routes", async () => {
 test("awstorageWhoami: env, then ~/.aither/node-id, then hostname -- never a bare guess first", () => {
   const home = () => "/home/u";
   const noFile = () => { throw new Error("ENOENT"); };
-  assert.deepEqual(awstorageWhoami({ env: { AWSTORAGE_NODE: "awnix" }, readFile: noFile, homedir: home, hostname: () => "h" }),
-    { node: "awnix", source: "env:AWSTORAGE_NODE" });
+  assert.deepEqual(awstorageWhoami({ env: { AWSTORAGE_NODE: "debian-fleet" }, readFile: noFile, homedir: home, hostname: () => "h" }),
+    { node: "debian-fleet", source: "env:AWSTORAGE_NODE" });
   const fromFile = awstorageWhoami({ env: {}, readFile: () => "local\n", homedir: home, hostname: () => "h" });
   assert.equal(fromFile.node, "local");
   assert.match(fromFile.source, /^file:/);
@@ -194,11 +194,11 @@ test("routeShare: proposes a share of the ORIGINAL path from this node", async (
 
 test("routeShare: with no node given it uses awstorage whoami, not a bare hostname", async () => {
   const prev = process.env.AWSTORAGE_NODE;
-  process.env.AWSTORAGE_NODE = "awnix";
+  process.env.AWSTORAGE_NODE = "debian-fleet";
   try {
     let body = null;
     await routeShare({ filePath: "/x" }, { stat: () => ({}), share: async (b) => { body = b; return { ok: true, data: { proposal_id: 1 } }; } });
-    assert.equal(body.node, "awnix");
+    assert.equal(body.node, "debian-fleet");
   } finally {
     if (prev === undefined) delete process.env.AWSTORAGE_NODE; else process.env.AWSTORAGE_NODE = prev;
   }

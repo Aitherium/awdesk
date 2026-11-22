@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { DeckDecision, RelayRow, WakeRow } from './deck-types';
 import {
   awarenessLine,
+  desktopAwarenessText,
   capList,
   decisionGroup,
   decisionSource,
@@ -17,7 +18,11 @@ import {
   relayNick,
   splitWakes,
   successorId,
+  wakeCausePill,
   wakeErrorLine,
+  wakeHeldPill,
+  wakeInvestigateMessage,
+  wakeWhyLine,
   VISIBLE_CAP,
 } from './inbox-view';
 
@@ -138,6 +143,32 @@ describe('wakes', () => {
   });
 });
 
+describe('wake why / cause / held', () => {
+  it('the why line keeps the host:port and path that say what broke', () => {
+    const w = wake({ lastReason: 'exit_2', lastWhy: 'publish_moe_tiers: no llama-server on spark.local:8118 (or ssh failed)' });
+    expect(wakeWhyLine(w)).toBe('publish_moe_tiers: no llama-server on spark.local:8118 (or ssh failed)');
+    expect(wakeWhyLine(wake({ lastReason: 'exit_1', lastWhy: '' }))).toBe('exited 1');
+    expect(wakeWhyLine(wake({ lastWhy: 'x'.repeat(300) })).length).toBe(160);
+  });
+  it('the cause pill names the bucket and the streak', () => {
+    expect(wakeCausePill(wake({ lastCause: 'code-bug', whyStreak: 5 }))).toBe('code-bug ×5');
+    expect(wakeCausePill(wake({ lastCause: 'timeout', whyStreak: 1 }))).toBe('timeout');
+    expect(wakeCausePill(wake({}))).toBe('');
+  });
+  it('the held pill shows only while the hold is in the future', () => {
+    const future = new Date(NOW + 30 * 60_000).toISOString();
+    const past = new Date(NOW - 60_000).toISOString();
+    expect(wakeHeldPill(wake({ heldUntil: future, heldOn: 'no llama-server' }), NOW)).toMatch(/^held until \d\d:\d\d — no llama-server$/);
+    expect(wakeHeldPill(wake({ heldUntil: past, heldOn: 'x' }), NOW)).toBe('');
+    expect(wakeHeldPill(wake({ heldUntil: 'garbage' }), NOW)).toBe('');
+  });
+  it('the investigate note says the session or the error', () => {
+    expect(wakeInvestigateMessage({ ok: true, session: 's-1' })).toBe('investigating — agent session s-1');
+    expect(wakeInvestigateMessage({ ok: false, error: 'daemon unreachable' })).toBe('investigate failed: daemon unreachable');
+    expect(wakeInvestigateMessage(null)).toBe('investigate: no answer from the desk');
+  });
+});
+
 describe('capList', () => {
   it('shows five and counts the rest', () => {
     const { shown, more } = capList([1, 2, 3, 4, 5, 6, 7]);
@@ -241,5 +272,120 @@ describe('awarenessLine', () => {
   it('healthy sources are ok', () => {
     expect(awarenessLine('Voice', 'up').ok).toBe(true);
     expect(awarenessLine('Workspace', 'default · 2 terminal session(s)', 'Workspace').ok).toBe(true);
+  });
+});
+
+import { staleGroup, optionByIndex, answerByQuery, filterRows } from './inbox-view';
+
+describe('staleGroup — the fold, and what never falls into it', () => {
+  it('folds approve/choose cards older than the window', () => {
+    const old = card({ id: 'd-old', createdAt: NOW / 1000 - 8 * DAY });
+    expect(staleGroup([old], NOW).map((c) => c.id)).toEqual(['d-old']);
+  });
+
+  it('never folds a credential or blocked card, however old', () => {
+    const cred = card({ id: 'd-cred', kind: 'credential', createdAt: NOW / 1000 - 90 * DAY });
+    const blocked = card({ id: 'd-blk', kind: 'blocked', createdAt: NOW / 1000 - 90 * DAY });
+    expect(staleGroup([cred, blocked], NOW)).toEqual([]);
+  });
+
+  it('groupDecisions agrees with staleGroup term for term', () => {
+    const rows = [
+      card({ id: 'd-fresh' }),
+      card({ id: 'd-old', createdAt: NOW / 1000 - 8 * DAY }),
+      card({ id: 'd-cred', kind: 'credential', createdAt: NOW / 1000 - 8 * DAY }),
+    ];
+    const { stale } = groupDecisions(rows, NOW);
+    expect(stale.map((c) => c.id)).toEqual(staleGroup(rows, NOW).map((c) => c.id));
+  });
+});
+
+describe('optionByIndex — the number keys', () => {
+  const options = [{ key: 'a', label: 'A' }, { key: 'b', label: 'B' }];
+  it('is 1-based', () => {
+    expect(optionByIndex(options, 1)?.key).toBe('a');
+    expect(optionByIndex(options, 2)?.key).toBe('b');
+  });
+  it('does nothing out of range instead of answering the last option', () => {
+    expect(optionByIndex(options, 3)).toBeNull();
+    expect(optionByIndex(options, 0)).toBeNull();
+    expect(optionByIndex(options, -1)).toBeNull();
+    expect(optionByIndex([], 1)).toBeNull();
+  });
+});
+
+describe('answerByQuery — typed answers', () => {
+  const options = [
+    { key: 'ack', label: 'I am looking now' },
+    { key: 'not_now', label: 'Not now' },
+  ];
+  it('matches an exact key or label, case-insensitively', () => {
+    expect(answerByQuery(options, 'ack')?.key).toBe('ack');
+    expect(answerByQuery(options, 'not now')?.key).toBe('not_now');
+  });
+  it('matches a unique prefix but refuses an ambiguous one', () => {
+    expect(answerByQuery(options, 'i am')?.key).toBe('ack');
+    expect(answerByQuery(options, 'n')).toBeNull();
+  });
+  it('empty text is not an answer', () => {
+    expect(answerByQuery(options, '   ')).toBeNull();
+  });
+});
+
+describe('filterRows — typing narrows the list, never re-ranks it', () => {
+  const rows = [
+    card({ id: 'd-cred', title: 'Gmail credential', kind: 'credential', summary: 'type the app password' }),
+    card({ id: 'd-pr', title: 'Merge PR 42', agent: 'claude-code' }),
+    card({ id: 'd-fyi', title: 'Nightly digest' }),
+  ];
+  it('returns every row in order for an empty query', () => {
+    expect(filterRows(rows, '').map((c) => c.id)).toEqual(['d-cred', 'd-pr', 'd-fyi']);
+  });
+  it('matches title, summary, kind and source', () => {
+    expect(filterRows(rows, 'gmail').map((c) => c.id)).toEqual(['d-cred']);
+    expect(filterRows(rows, 'password').map((c) => c.id)).toEqual(['d-cred']);
+    expect(filterRows(rows, 'claude').map((c) => c.id)).toEqual(['d-pr']);
+  });
+  it('requires every token to match', () => {
+    expect(filterRows(rows, 'merge 42').map((c) => c.id)).toEqual(['d-pr']);
+    expect(filterRows(rows, 'merge gmail')).toEqual([]);
+  });
+});
+
+describe('desktopAwarenessText', () => {
+  const linuxGateway = { available: false, message: 'Desktop context tools require Windows platform' };
+  const line = (desktop: Parameters<typeof desktopAwarenessText>[0]) =>
+    awarenessLine('Desktop', desktopAwarenessText(desktop), 'Desktop context');
+
+  it('reads OK when the host sample works, even though the gateway says Windows-only', () => {
+    const got = line({ ok: true, window: { available: true, source: 'host', process: 'Code', title: 'Deck.tsx' } });
+    expect(got.ok).toBe(true);
+    expect(got.state).toBe('Desktop context OK');
+    expect(got.detail).toContain('Code — Deck.tsx');
+  });
+
+  it('still reads not available when the host sample AND the gateway fail', () => {
+    const got = line({ ok: true, window: { ...linuxGateway, source: 'gateway', hostReason: 'probe timed out' } });
+    expect(got.ok).toBe(false);
+    expect(got.state).toBe('Desktop context not available on this machine');
+    expect(got.detail).toContain('probe timed out');
+  });
+
+  it('a dead gateway behind a failed host probe reads not answering', () => {
+    const got = line({ ok: true, window: { note: 'ERROR: no session bearer', source: 'gateway', hostReason: 'probe timed out' } });
+    expect(got.ok).toBe(false);
+    expect(got.state).toBe('Desktop context not answering');
+  });
+
+  it('never reads OK on silence', () => {
+    expect(line({ ok: true, window: {} }).ok).toBe(false);
+    expect(line({ ok: true }).ok).toBe(false);
+    expect(line({ ok: false, reason: 'ipc gone' }).ok).toBe(false);
+    expect(line(undefined).ok).toBe(false);
+  });
+
+  it('a gateway window still shows when the host probe failed', () => {
+    const got = line({ ok: true, window: { process: 'Code.exe', title: 'x', source: 'gateway', hostReason: 'n/a' } });
+    expect(got.ok).toBe(true);
   });
 });

@@ -27,6 +27,18 @@ test("DESK_INTERNAL_CA wins, AITHEROS_DATA and ~/.aither follow", () => {
   ]);
 });
 
+test("AITHER_LIBRARY is tried before a stale AITHEROS_DATA (the Registry row read UNABLE_TO_GET_ISSUER_CERT_LOCALLY)", () => {
+  const list = candidates(
+    { AITHER_LIBRARY: path.join("L", "Library"), AITHEROS_DATA: path.join("gone", "Data") },
+    path.join("h", "ome"),
+  );
+  assert.deepEqual(list, [
+    path.join("L", "Library", "Data", "tls", "ca-chain.pem"),
+    path.join("gone", "Data", "tls", "ca-chain.pem"),
+    path.join("h", "ome", ".aither", "ca-chain.pem"),
+  ]);
+});
+
 test("the first READABLE candidate is returned; none readable -> undefined / {}", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "desk-ca-"));
   try {

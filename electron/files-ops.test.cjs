@@ -140,8 +140,13 @@ test("move refuses to overwrite and names the remedy", async (t) => {
 test("a cross-volume move copies, then sends the SOURCE to the Recycle Bin", async (t) => {
   const s = sandbox(t);
   const real = fs.renameSync;
+  // files-access canonicalizes every granted root, so the destination carrying the
+  // move is B's REAL path -- /var/... becomes /private/var/... on macOS and the 8.3
+  // short form becomes the long name on Windows. Compare against the same value.
+  const bReal = (fs.realpathSync.native || fs.realpathSync)(s.b);
   t.mock.method(fs, "renameSync", (from, to) => {
-    if (String(to).startsWith(s.b)) { const e = new Error("EXDEV"); e.code = "EXDEV"; throw e; }
+    const dest = String(to);
+    if (dest === bReal || dest.startsWith(bReal + path.sep)) { const e = new Error("EXDEV"); e.code = "EXDEV"; throw e; }
     return real(from, to);
   });
   const res = await s.ops.move(s.ids.A, ["note.txt"], s.ids.B, "");
@@ -352,8 +357,11 @@ test("the files IPC answers only the local files.html frame, by exact file path"
   const page = pathToFileURL(PAGE_FILE).href;
   assert.equal(senderAllowed({ senderFrame: { url: page } }), true);
   assert.equal(senderAllowed({ senderFrame: { url: `${page}?pane=1#x` } }), true);
+  // The same page as an aither://files pane in the browser (dock-in slice 2).
+  assert.equal(senderAllowed({ senderFrame: { url: "aither://files/?root=C%3A%5Cwork" } }), true);
   for (const bad of ["https://evil.example/files.html", pathToFileURL(path.join(os.tmpdir(), "files.html")).href,
-    `${page.replace(/files\.html$/, "x/files.html")}`, "data:text/html,files.html", ""]) {
+    `${page.replace(/files\.html$/, "x/files.html")}`, "data:text/html,files.html",
+    "aither://secrets/", "aither://files-other/", ""]) {
     assert.equal(senderAllowed({ senderFrame: { url: bad } }), false, bad);
   }
   assert.equal(senderAllowed({}), false);

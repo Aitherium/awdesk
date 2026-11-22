@@ -65,7 +65,7 @@ const AUDIT_STATE = `${AUDIT_LOG}.state`;
  *  getRating() answers for a missing file AND for a rater stamp nobody judged. */
 const ADULT_RATINGS = new Set(["r18", "r15", "unrated"]);
 /** Rating-file sources that mean "nobody looked": treated as unrated. */
-const UNJUDGED_SOURCES = new Set(["", "default"]);
+const UNJUDGED_SOURCES = new Set(["", "default", "unrated"]);
 
 /** How restrictive each rating is, for the ceiling below. */
 const RATING_ORDER = { general: 0, r15: 1, r18: 2 };
@@ -78,9 +78,13 @@ const RATING_ORDER = { general: 0, r15: 1, r18: 2 };
  *      it and can never open it. Fails closed.
  *   2. THE LIVE SAFETY PLANE -- AitherSafety's own level, pushed in by main
  *      (safety-gate.cjs). It may only TIGHTEN: a plane saying "no explicit"
- *      closes what the mirror opened, and a plane that never answers changes
- *      nothing, because failing closed on an unreachable fleet service would
- *      hide the owner's whole roster every time a container restarts.
+ *      closes what the mirror opened (teen and mature, whatever the profile).
+ *      A plane that has NOT answered -- never, or not within SAFETY_TRUST_MS --
+ *      is CLOSED FOR MATURE (owner 2026-11-17: "respect aithersafety content
+ *      settings"): r18 and unrated bodies hide with reason "safety", teen and
+ *      everyone stay with the mirror. That bounds the old fear (a restarting
+ *      container emptying the roster) to the mature tier, for as long as the
+ *      plane is actually silent.
  *   3. THE DESK'S OWN CEILING -- cast.json `content.maxRating` /
  *      `content.hideUnrated`, the owner's per-machine "even when it is
  *      unlocked, not above this". Also tightening-only, which is why it is
@@ -88,28 +92,54 @@ const RATING_ORDER = { general: 0, r15: 1, r18: 2 };
  *
  * All three AND together, and every one of them can only hide more.
  */
-let safetyExplicitAllowed = null; // null = the plane has not answered
+let safetyVerdict = null; // {value: boolean, at: ms}; null = the plane has not answered
+/** How long one answer from the plane is trusted. main re-asks every couple of minutes, so a
+ *  verdict this old means the plane stopped answering: mature closes. */
+const SAFETY_TRUST_MS = 10 * 60 * 1000;
 
 /** main pushes AitherSafety's verdict here; null forgets it (tests, a restart). */
-function setSafetyExplicitAllowed(value) {
-  safetyExplicitAllowed = value === null || value === undefined ? null : value === true;
+function setSafetyExplicitAllowed(value, now = Date.now()) {
+  safetyVerdict = value === null || value === undefined ? null : { value: value === true, at: now };
 }
 
-function getSafetyExplicitAllowed() {
-  return safetyExplicitAllowed;
+/** The plane's verdict while it is fresh: true | false, or null = unknown / unreachable / stale. */
+function getSafetyExplicitAllowed(now = Date.now()) {
+  if (!safetyVerdict) return null;
+  if (now - safetyVerdict.at > SAFETY_TRUST_MS) return null;
+  return safetyVerdict.value;
 }
 
 /** The desk's own ceiling, from cast.json. Fails SOFT to the built-in (r18 +
  *  hideUnrated), because this file must never be the reason a roster empties. */
 function contentCeiling() {
+  const gallery = require("./avatar-gallery.cjs");
   try {
     const cast = require("./cast-config.cjs");
     const loaded = cast.load({});
     const resolved = cast.resolveContent(loaded.snapshot);
-    return { maxRating: resolved.maxRating, hideUnrated: resolved.hideUnrated };
+    // A cast.json that could not be READ (corrupt, locked) is the family audience, never the
+    // last profile it happened to say (review of #122: load() never throws, it falls back).
+    const audience = loaded.error ? "everyone" : gallery.audienceCap(gallery.readGallery(loaded.snapshot), { autoSafe });
+    return { maxRating: resolved.maxRating, hideUnrated: resolved.hideUnrated, audience };
   } catch {
-    return { maxRating: "r18", hideUnrated: true };
+    // An unreadable cast.json is the family audience, never "everything" (owner 2026-11-17).
+    return { maxRating: "r18", hideUnrated: true, audience: "everyone" };
   }
+}
+
+/**
+ * 4. THE AUDIENCE (owner 2026-11-17: "I can't let my mom, kids or strangers see this").
+ *    The active profile (Hearth = everyone, Work = teen, Personal = mature) and SAFE MODE
+ *    (the panic key, or a detected screen share/stream = everyone). Tightening-only, like the
+ *    rest: it ANDs with the three limits above. `unrated` counts as mature.
+ *    autoSafe is the in-memory half (share-detect); the switch he flips lives in cast.json.
+ */
+let autoSafe = false;
+function setAutoSafe(on) {
+  autoSafe = on === true;
+}
+function getAutoSafe() {
+  return autoSafe;
 }
 
 let gateCache = null;
@@ -166,7 +196,7 @@ function getRating(name) {
     const record = ratingRecord(node);
     const rating = String(record.rating || "").toLowerCase();
     if (!rating) return null;
-    if (UNJUDGED_SOURCES.has(String(record.source || ""))) return null;
+    if (UNJUDGED_SOURCES.has(String(record.rating_source || record.source || ""))) return null;
     return rating;
   };
   // A fork nobody has looked at is UNRATED, whatever its base was: the recipe
@@ -197,7 +227,14 @@ function getRating(name) {
   return worst;
 }
 
-/** Record a rating. Returns false when it could not be written. */
+function withoutSignal(record) {
+  delete record.rating_signal;
+  return record;
+}
+
+/** Record a rating. Returns false when it could not be written. The derive pass
+ *  (rating-resolve.cjs) may RAISE it again at the next desk start when the model's
+ *  own Hub record, tags or licence say it is stricter -- it never lowers one. */
 function setRating(name, rating, source = "manual") {
   const dir = path.join(ROSTER_DIR, name);
   if (!fs.existsSync(dir)) return false;
@@ -210,7 +247,7 @@ function setRating(name, rating, source = "manual") {
   try {
     fs.writeFileSync(
       path.join(dir, RATING_FILE),
-      JSON.stringify({ ...existing, rating, source }, null, 2),
+      JSON.stringify(withoutSignal({ ...existing, rating, source, rating_source: source }), null, 2),
     );
     return true;
   } catch {
@@ -220,17 +257,43 @@ function setRating(name, rating, source = "manual") {
 
 /** Why this character is hidden right now, or null when it is not. */
 function hiddenReason(name, ceiling = contentCeiling()) {
-  const rating = getRating(name);
-  const gateOpen = isAdultContentVisible() && safetyExplicitAllowed !== false;
+  return ratingHiddenReason(getRating(name), ceiling);
+}
+
+/**
+ * Why a body of `rating` (general | r15 | r18 | unrated) is hidden right now, or null.
+ * THE one rule: hiddenReason applies it to an installed character, and the doors that judge a
+ * body BEFORE it is installed (VRoid Hub browse and download, the library view) apply it to the
+ * rating the source declares, so no door can see a body another door would hide.
+ */
+function ratingHiddenReason(value, ceiling = contentCeiling()) {
+  // Anything that is not a known rating is judged as unrated (= mature), never as general.
+  // ("pg" is the game stage's word for general.)
+  const said = String(value || "").toLowerCase();
+  const rating = said === "pg" ? "general" : RATING_ORDER[said] === undefined ? "unrated" : said;
+  // The audience first: whatever the gate says, a body above the active profile (or anything
+  // but "everyone" in safe mode) is not drawn.
+  const audience = ceiling && ceiling.audience;
+  if (audience) {
+    const gallery = require("./avatar-gallery.cjs");
+    if (!gallery.tierAllowed(gallery.tierOf(rating), audience)) return "audience";
+  }
+  const plane = getSafetyExplicitAllowed();
+  const gateOpen = isAdultContentVisible() && plane !== false;
   if (!gateOpen) {
     // Below the gate, an unjudged character is hidden WITH the adult ones: a
     // roster nobody has rated is exactly how a lewd model gets found by
     // browsing. `content.hideUnrated: false` is the owner's opt-out for a
     // roster being rated.
+    // hideUnrated is the owner's opt-out from the MIRROR, never from AitherSafety.
+    if (rating === "unrated" && plane !== true) return "safety";
     if (rating === "unrated") return ceiling.hideUnrated === false ? null : "unjudged";
     if (ADULT_RATINGS.has(rating)) return "gate";
     return null;
   }
+  // The gate is OPEN but the safety plane has not said explicit is allowed (unreachable,
+  // never answered, or stale): closed for MATURE. Teen stays with the mirror.
+  if (plane !== true && (rating === "r18" || rating === "unrated")) return "safety";
   // The gate is OPEN: the owner has said they are an adult, so an unjudged
   // character is their call, not ours -- `hideUnrated` is about being FOUND by
   // accident, which is only possible below the gate. The ceiling still applies.
@@ -272,12 +335,18 @@ function refusalFor(name) {
   if (!why) return null;
   const rating = getRating(name);
   const reason = {
+    audience: `${name} is rated ${require("./avatar-gallery.cjs").tierOf(rating)}, above who may see this desk right now `
+      + `(${ceiling.audience} only${getAutoSafe() ? ": safe mode, a screen share or stream is running" : ""}). `
+      + "Switch the profile or turn safe mode off in the gallery.",
     unjudged: `${name} has not been rated yet, and an unjudged character stays hidden. `
       + "Rate the roster (python rate-characters.py --apply --vision --capture), "
       + "or set content.hideUnrated false in cast.json to browse it anyway.",
     ceiling: `${name} is rated ${rating}, above this desk's own ceiling `
       + `(content.maxRating = ${ceiling.maxRating}). Raise it with `
       + "awsettings --domain desk set content.maxRating r18.",
+    safety: `${name} is rated ${require("./avatar-gallery.cjs").tierOf(rating)}, and mature bodies stay hidden `
+      + "until AitherSafety answers that explicit content is allowed (it is unreachable, has not "
+      + "answered yet, or its last answer is too old).",
     gate: `${name} is rated ${rating} and mature content is currently hidden. `
       + "Turn it on in the platform's safety setting (the desk only reads it; it needs "
       + "an adult opt-in AND age verification).",
@@ -349,6 +418,8 @@ module.exports = {
   ratingRecord,
   contentCeiling,
   hiddenReason,
+  ratingHiddenReason,
+  SAFETY_TRUST_MS,
   setSafetyExplicitAllowed,
   getSafetyExplicitAllowed,
   AUDIT_LOG,
@@ -361,4 +432,6 @@ module.exports = {
   isHidden,
   ratingReport,
   setRating,
+  setAutoSafe,
+  getAutoSafe,
 };

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src file:; img-src data:;" />
+<title>Canvas</title>
+<link rel="stylesheet" href="aither-tokens.css" />
+<style>
+  /* aither://canvas -- boards of pinned apps and widgets (canvas-model.cjs). The page
+     draws boards, cards and widgets; an APP card's body is a live page main lays over
+     it (browser-canvas.cjs), so nothing here may sit on top of a card body. */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+    font: 13px/1.4 var(--font-sans); }
+  #bar { height: 44px; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line);
+    background: var(--bg-deep, var(--bg)); overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
+  #bar > * { flex: none; }
+  #bar .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+  #bar button, #bar select, #bar input { height: 28px; border-radius: 7px; border: 1px solid var(--line); background: var(--btn);
+    color: var(--fg); font: inherit; font-size: 12px; padding: 0 8px; }
+  #bar button { cursor: pointer; }
+  #bar button:hover { border-color: color-mix(in srgb, var(--primary, #7cd) 60%, var(--line)); }
+  #bar button.on { border-color: var(--primary, #7cd); color: var(--primary, #7cd); }
+  #bar button.danger { border-color: var(--destructive); color: var(--destructive); }
+  #bar input { width: 200px; }
+  #bar input[hidden], #bar button[hidden] { display: none; }
+  #zoom { min-width: 46px; text-align: center; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  #err { color: var(--destructive); font-size: 12px; margin-left: auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 30%; }
+  #viewport { position: absolute; top: 44px; left: 0; right: 0; bottom: 0; overflow: hidden; cursor: default;
+    background-color: var(--bg);
+    background-image: radial-gradient(circle, color-mix(in srgb, var(--fg) 14%, transparent) 1px, transparent 1.2px); }
+  #viewport.panning { cursor: grabbing; }
+  #plane { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  /* The board's drawing (boards-core items: the floating window's strokes, shapes,
+     notes, text, images), read-only here and under the cards. */
+  #drawing { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+  .ditem { position: absolute; pointer-events: none; overflow: hidden; border-radius: 6px; font-size: 13px; }
+  .ditem.note { padding: 8px; color: #222; }
+  .ao { color: var(--muted); font-size: 11px; }
+  .card { position: absolute; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--card, var(--panel)); box-shadow: 0 6px 24px rgba(0, 0, 0, .35); outline: none; }
+  .card:focus-visible, .card.sel { border-color: var(--primary, #7cd); }
+  .card .head { height: 30px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 6px 0 10px;
+    border-bottom: 1px solid var(--line); cursor: grab; user-select: none; }
+  .card.locked .head { cursor: default; }
+  .card .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; font-size: 12px; }
+  .card .head button { width: 22px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 6px;
+    background: none; color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; }
+  .card .head button:hover { border-color: var(--line); color: var(--fg); }
+  .card.locked .lock { color: var(--warning); }
+  .card .body { flex: 1; min-height: 0; position: relative; overflow: hidden; padding: 10px; }
+  .card.app .body { padding: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+  .card .grip { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize;
+    background: linear-gradient(135deg, transparent 50%, var(--muted) 50%, var(--muted) 60%, transparent 60%, transparent 75%, var(--muted) 75%, var(--muted) 85%, transparent 85%); }
+  .card.locked .grip { display: none; }
+  .stat .v { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .tone-ok { color: var(--green, #6c9); } .tone-warn { color: var(--amber, var(--warning)); }
+  .tone-bad { color: var(--red, var(--destructive)); } .tone-muted { color: var(--muted); }
+  .sub { color: var(--muted); font-size: 11px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .list .row { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font-size: 12px; }
+  .list .row span:first-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .list .row span:last-child { flex: none; font-variant-numeric: tabular-nums; }
+  .clock .time { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .note textarea { width: 100%; height: 100%; resize: none; border: 0; outline: none; background: transparent; color: var(--fg);
+    font: inherit; }
+  .err { color: var(--muted); font-size: 12px; }
+  #empty { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); color: var(--muted); text-align: center;
+    max-width: 420px; pointer-events: none; }
+  #empty[hidden] { display: none; }
+  #help { color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+  <div id="bar" role="toolbar" aria-label="Canvas">
+    <select id="board" aria-label="Board"></select>
+    <button id="board-new" title="A new, empty board">+ Board</button>
+    <input id="board-name" hidden aria-label="Board name" maxlength="160" />
+    <button id="board-rename" title="Rename this board">Rename</button>
+    <button id="board-delete" title="Take this board off the list (its file stays in ~/Aither Boards)">Delete</button>
+    <button id="board-float" title="Float this board in its own window (the same board: draw on it there)">Float</button>
+    <span class="sep"></span>
+    <input id="app-url" placeholder="Pin a page, YouTube, GIF, image or aither://" aria-label="Address to pin" spellcheck="false" />
+    <button id="app-add" title="Pin it as a card (a YouTube link becomes the player, a .gif a GIF)">Pin</button>
+    <button id="note-add" title="A sticky note on the board">+ Note</button>
+    <select id="widget" aria-label="Widget to add"></select>
+    <button id="widget-add" title="Add the chosen widget">+ Widget</button>
+    <span class="sep"></span>
+    <button id="zoom-out" title="Zoom out (-)" aria-label="Zoom out">&minus;</button>
+    <span id="zoom" role="status">100%</span>
+    <button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button>
+    <button id="fit" title="Fit every card (0)">Fit</button>
+    <button id="snap" title="Snap to the grid">Snap</button>
+    <select id="grid" aria-label="Grid size" title="Grid size"><option>8</option><option>16</option><option>32</option></select>
+    <span class="sep"></span>
+    <button id="ao-sync" title="Sync this board with an AitherOne canvas (creates one the first time)">Sync with AitherOne</button>
+    <button id="ao-open" title="Open the linked AitherOne canvas in a tab" hidden>Open in AitherOne</button>
+    <button id="ao-desk" class="danger" hidden title="Both changed: keep this desk's board and overwrite AitherOne">Keep desk</button>
+    <button id="ao-remote" class="danger" hidden title="Both changed: keep AitherOne's canvas and replace this board">Keep AitherOne</button>
+    <span id="err" role="status"></span>
+  </div>
+  <div id="viewport" tabindex="0" aria-label="Board. Drag the background or use the wheel to pan; Ctrl+wheel zooms.">
+    <div id="plane"></div>
+    <div id="empty">Nothing pinned yet. Pin an address above, add a widget, or right-click a tab or a rail row and choose <b>Pin to canvas</b>.<br /><span id="help">Middle-drag moves a card (Shift resizes, Ctrl duplicates; middle-drag the background to pan). Arrows move the selected card, Shift+arrows resize it, L locks it, Delete removes it. Float opens this same board in its own window to draw on.</span></div>
+  </div>
+  <script src="middle-drag.js"></script>
+  <script src="pin-cards.js"></script>
+  <script src="canvas-page.js"></script>
+</body>
+</html>

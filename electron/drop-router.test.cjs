@@ -4,6 +4,13 @@
 // suite would read the OWNER'S live file, and go red the day they change a setting.
 process.env.DESK_CAST_FILE = require("node:path").join(
   require("node:os").tmpdir(), `desk-no-cast-${process.pid}`, "cast.json");
+// Hermetic stage (2026-11-07): a drop is staged under the Library host. The default is
+// the REAL shared C:\AitherOS-Data\Library\tmp\desk-uploads, which other test files
+// (and the owner's live desk) stage into at the same moment -- the stage-cleanup test
+// counted one of THEIR files and flaked ("a staged file was left behind (1 !== 0)").
+// This file gets its own Library; the cleanup test gets a fresh one per run.
+process.env.AWDESK_LIBRARY_HOST = require("node:fs").mkdtempSync(
+  require("node:path").join(require("node:os").tmpdir(), "drop-router-library-"));
 
 /**
  * drop-router tests — the four lanes + the bridge contract, with the
@@ -245,7 +252,10 @@ async function okAsync(name, fn) {
 
   await okAsync("stage is cleaned up even when the lane fails", async () => {
     const { dir, p } = tmpfile("bad.png", IMAGE_PNG);
-    const stageDir = path.join(LIBRARY_HOST, "tmp", "desk-uploads");
+    // Its OWN stage: nothing else on the machine can drop a file into it.
+    const libraryHost = fs.mkdtempSync(path.join(os.tmpdir(), "drop-router-stage-"));
+    const stageDir = path.join(libraryHost, "tmp", "desk-uploads");
+    assert.ok(!stageDir.startsWith(path.join(LIBRARY_HOST, "tmp")), "the test stage is not the shared one");
     // The stage directory is created on first use, so a machine that has never
     // staged a drop has none -- absent is zero, not a failure. (It read as one on
     // every non-Windows CI runner: ENOENT scandir before the drop even ran.)
@@ -257,12 +267,18 @@ async function okAsync(name, fn) {
       }
     };
     const before = staged();
+    let sawStaged = 0;
     await routeDrop({ filePath: p, mime: "image/png" }, {
-      call: async () => { throw new Error("vision down"); },
+      libraryHost,
+      // The lane fails AFTER the file was staged: prove it was there, then gone.
+      call: async () => { sawStaged = staged(); throw new Error("vision down"); },
     });
     const after = staged();
-    assert.strictEqual(after, before, "a staged file was left behind");
+    assert.strictEqual(before, 0, "a fresh stage starts empty");
+    assert.strictEqual(sawStaged, 1, "the drop was staged in this test's own stage");
+    assert.strictEqual(after, 0, "a staged file was left behind");
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(libraryHost, { recursive: true, force: true });
   });
 
   // ── voiceSpeed precedence: explicit -> config -> env -> builtin ──────────
@@ -425,6 +441,33 @@ async function okAsync(name, fn) {
       customSynth: async () => ({ ok: false, reason: "custom voice ghost not found in this workspace" }),
     });
     assert.deepStrictEqual(verdict, { ok: false, reason: "custom voice ghost not found in this workspace" });
+  });
+
+  // ── the canonical map's engine ids reach AitherVoice VERBATIM ───────────────
+  // agent-voices.generated.json names kokoro:<id> / local:piper; AitherVoice's
+  // /voice/synthesize resolves those prefixes itself (AitherVoice.py
+  // synthesize(): KOKORO_PREFIX, LOCAL_VOICE). The desk must not translate them
+  // back to a stock Edge name -- that translation is the drift S6 removes.
+  await okAsync("synthesizeVerdict: canonical kokoro:/local:piper voices are POSTed unchanged to /voice/synthesize", async () => {
+    const seen = [];
+    const server = await withFakeVoiceServer((req, res, raw) => {
+      seen.push(JSON.parse(raw));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true, audio_base64: "SUQz" }));
+    });
+    try {
+      for (const voice of ["kokoro:am_michael", "kokoro:bf_isabella", "local:piper"]) {
+        const verdict = await synthesizeVerdict("hello", voice, {
+          endpoint: { host: "127.0.0.1", port: server.port, path: "/voice/synthesize" },
+          customSynth: async () => { throw new Error(`${voice} must not take the custom-voice path`); },
+        });
+        assert.ok(verdict.ok, verdict.reason);
+      }
+      assert.deepStrictEqual(seen.map((b) => b.voice), ["kokoro:am_michael", "kokoro:bf_isabella", "local:piper"],
+        "the engine id must reach AitherVoice exactly as the canonical map spells it");
+    } finally {
+      await server.close();
+    }
   });
 
   console.log(`drop-router: ${passed} checks passed`);

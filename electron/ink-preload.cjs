@@ -26,6 +26,21 @@ contextBridge.exposeInMainWorld("aitherInk", {
   setColor: (color) => ipcRenderer.invoke("ink:set-color", String(color || "")),
   setWidth: (width) => ipcRenderer.invoke("ink:set-width", Number(width)),
   setFade: (fadeMs) => ipcRenderer.invoke("ink:set-fade", Number(fadeMs)),
+  /** Click-through drawing: true / false, or null to toggle. */
+  passThrough: (on) => ipcRenderer.invoke("ink:pass-through", on == null ? null : Boolean(on)),
+  /**
+   * A mode event from the overlay (ink-mode.cjs): escape, right-click, pen-enter,
+   * pen-leave, mouse, wheel, middle-down {id, shift, ctrl, meta}, middle-up.
+   */
+  mode: (event) => ipcRenderer.invoke("ink:mode", event && typeof event === "object" ? {
+    type: String(event.type || ""),
+    ...(event.id != null ? { id: String(event.id).slice(0, 80) } : {}),
+    shift: event.shift === true, ctrl: event.ctrl === true, meta: event.meta === true,
+  } : {}),
+  /** A finished middle-drag: main applies it to the item it recorded on middle-down. */
+  grabEnd: (delta) => ipcRenderer.invoke("ink:grab-end", { dx: Number(delta && delta.dx) || 0, dy: Number(delta && delta.dy) || 0 }),
+  toBoard: () => ipcRenderer.invoke("ink:to-board"),
+  snip: () => ipcRenderer.invoke("ink:snip"),
   onState: (fn) => {
     const listener = (_event, state) => { try { fn(state); } catch { /* a page bug stays in the page */ } };
     ipcRenderer.on("ink:state", listener);

@@ -32,6 +32,12 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn, execFileSync } = require("node:child_process");
+const cardUi = require("./card-ui.cjs");
+// The ONE signed-approval implementation. This module used to carry its own
+// hub URL (the mission-control decisions tab, no card id), so it opened the whole
+// hub -- scope spinner, then a white screen -- instead of the card. `approveUrl`
+// builds `/approve?card=<id>&choice=<key>`, the deep link main.cjs already uses.
+const signedApproval = require("./signed-approval.cjs");
 
 /**
  * The ABSOLUTE path to the awask binary, resolved once. Spawning a bare
@@ -53,6 +59,31 @@ function awaskBin() {
     _awaskBin = "awask";
   }
   return _awaskBin;
+}
+
+const CARD_ID_RE = /^d-[A-Za-z0-9_-]{1,80}$/;
+let lastSignedHandoff = null;
+let openSignedAnswer = (url) => {
+  try { require("electron").shell.openExternal(url); } catch { /* no electron (tests) */ }
+};
+
+/** Pure: does this raw card need a signed answer? Delegates to the ONE definition
+ *  (signed-approval.requiresSignedAnswer): awstorage proposal/plan kinds and facts
+ *  (`proposal_id:`/`plan_id:`) need a signed receipt exactly as a Claude permission
+ *  grant (`permission_rule:`) does. Keeping a second, narrow copy here made this
+ *  predicate answer "no" for an awstorage card the answer path routes signed. */
+function needsSignedAnswer(raw) {
+  return signedApproval.requiresSignedAnswer(raw);
+}
+
+/** The card's raw JSON from the store, or null (a bad id never becomes a path). */
+function readCardRaw(id, dir = storeDir()) {
+  if (typeof id !== "string" || !CARD_ID_RE.test(id)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, `${id}.json`), "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 function storeDir() {
@@ -146,20 +177,20 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
           recommended: Boolean(o.recommended),
         }))
     : [];
-  // An agent-approval card carries no options (answering a card must never approve):
-  // the desk offers its one route, opening the approval page (signed-approval.cjs).
-  let defaultKey = typeof raw.default_key === "string" ? raw.default_key : "";
-  if (options.length === 0) {
-    const sa = require("./signed-approval.cjs");
-    if (sa.agentApprovalId(raw)) {
-      options.push({ ...sa.AGENT_APPROVAL_OPTION });
-      defaultKey = sa.AGENT_APPROVAL_CHOICE;
-    }
-  }
+  // The card's generated UI (A2UI v0.9, awdk card_ui): drawn ONLY when its
+  // card_hash matches this card's text and it validates against the options
+  // above (card-ui.cjs). Never on a credential card; bounded to 32 KB.
+  const { ui, uiCurrent, uiTree } = cardUi.cardUi(raw, options.map((o) => o.key));
   return {
     id: raw.id,
     title: typeof raw.title === "string" ? raw.title : "Decision needed",
     summary: typeof raw.summary === "string" ? raw.summary : "",
+    // The card's long form and its facts (2026-11-08: the Inbox showed only the
+    // clipped summary, "not enough info"). Bounded: a row is not a document.
+    detail: typeof raw.detail === "string" ? raw.detail.slice(0, 2000) : "",
+    facts: Array.isArray(raw.facts)
+      ? raw.facts.filter((f) => typeof f === "string" && f.trim()).slice(0, 6).map((f) => f.slice(0, 240))
+      : [],
     kind,
     urgency: typeof raw.urgency === "string" ? raw.urgency : "normal",
     createdAt: Number(raw.created_at) || 0,
@@ -168,7 +199,7 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
     // without it is hiding the fact that not answering is also a choice.
     deadline: Number(raw.deadline) || 0,
     options,
-    defaultKey,
+    defaultKey: typeof raw.default_key === "string" ? raw.default_key : "",
     // The recipe this card was built from, "" for a hand-raised card. A desk
     // surface uses it to say the answer will DO something rather than merely be
     // recorded, and it is the only honest way to distinguish the two.
@@ -210,6 +241,11 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
     // rather than re-ask.
     credentialReceipt: credential && raw.credential_receipt
       && typeof raw.credential_receipt === "object" ? raw.credential_receipt : null,
+    // null/false/null on a card with no (current, valid) ui: every surface then
+    // draws the card exactly as it did before generated UI existed.
+    ui,
+    uiCurrent,
+    uiTree,
   };
 }
 
@@ -217,14 +253,29 @@ if (typeof raw.id !== "string" || raw.id.length === 0) return null;
 //
 // Oldest-first put the Proton Bridge credential card at #28 of 41: the one ask
 // only the owner can answer sat under 27 PR reviews and CI notices. This is the
-// SAME key as the awdk store's rank_key; both are pinned by the shared fixture
-// awdk/tests/fixtures/card_rank_cases.json (decision-cards.test.cjs asserts these
-// constants equal its fields, then runs every case):
-//   1. credential / blocked first;  2. urgency (unknown = normal);
-//   3. fresh before straggler (open and older than stale_after_seconds);
-//   4. created_at, oldest first;    5. id (code-point order, like Python's str <).
+// SAME key as the awask/adk store's rank_key; both are pinned by the shared
+// fixture awdk/tests/fixtures/card_rank_cases.json (decision-cards.test.cjs
+// asserts these constants equal its fields, then runs every case):
+//   1. credential / blocked first;
+//   2. cards that ANSWER THEMSELVES (a deadline that applies its own default) or
+//      whose suggestion is a no-op ("Skip") yield to every card needing a human;
+//   3. urgency (unknown = normal);
+//   4. fresh before straggler (open and older than stale_after_seconds);
+//   5. created_at, oldest first;  6. id (code-point order, like Python's str <).
+//
+// Term 2 exists because of the 2026-11-10 owner report: a 43 h revenue-governor
+// card that picks "Keep refusing" for him at its deadline, and awrise cards that
+// pick "Keep it scheduled" in 19 h, floated on top of 99+ and hid a permission
+// grant a live session was STOPPED on. A card that needs no answer is not a
+// needs-you card, however old or urgent it is (kind still wins: a credential or
+// blocked card leads even when it carries a default).
 const RANK_RULES = Object.freeze({
   rank_first_kinds: Object.freeze(["credential", "blocked"]),
+  // A suggested answer that changes nothing: the owner's own words for the
+  // repeat offenders ("Skip", "Keep refusing", "Keep it scheduled").
+  noop_labels: Object.freeze(["skip", "keep refusing", "keep it scheduled"]),
+  // 1 = yields to every card with no default; 0 = needs the owner.
+  auto_default_rank: 1,
   urgency_rank: Object.freeze({ critical: 0, high: 1, normal: 2, low: 3 }),
   stale_after_seconds: 604800,
 });
@@ -244,6 +295,46 @@ function isNeedsYou(card) {
   return RANK_RULES.rank_first_kinds.includes(kind) || card.blocking === true;
 }
 
+/** The label of the option this card suggests (`defaultKey`), "" when it has none. */
+function suggestedLabel(card) {
+  const key = String((card && card.defaultKey) || "").trim();
+  if (!key) return "";
+  const options = Array.isArray(card && card.options) ? card.options : [];
+  const hit = options.find((o) => o && String(o.key) === key)
+    || options.find((o) => o && String(o.key).toLowerCase() === key.toLowerCase());
+  return hit ? String(hit.label || hit.key || "") : "";
+}
+
+/** Matches `noop` at the START of a label on a word boundary ("Skip", "Skip this", "Keep it scheduled (19 h)"). */
+function startsWithWord(label, noop) {
+  if (!label.startsWith(noop)) return false;
+  const next = label.charAt(noop.length);
+  return next === "" || !/[a-z0-9]/i.test(next);
+}
+
+/** The suggested answer changes nothing: "Skip", "Keep refusing", "Keep it scheduled". */
+function isNoopSuggestion(card) {
+  const label = suggestedLabel(card).trim().toLowerCase();
+  if (!label) return false;
+  return RANK_RULES.noop_labels.some((noop) => startsWithWord(label, noop));
+}
+
+/**
+ * The card answers itself: a deadline that applies its declared default when it
+ * passes. Not answering is then a choice the STORE makes, so the card never
+ * needs the queue's top slot. Clock-independent on purpose -- the key must not
+ * change as the deadline crosses.
+ */
+function hasAutoDefault(card) {
+  if (!card || typeof card !== "object") return false;
+  return Number(card.deadline) > 0 && String(card.defaultKey || "").trim() !== "";
+}
+
+/** A card the owner does not have to touch: it will answer itself, or its answer is a no-op. */
+function isSelfAnswering(card) {
+  return hasAutoDefault(card) || isNoopSuggestion(card);
+}
+
 /** The rank key as a tuple -- the store's rank_key, term for term. */
 function rankKey(card, nowSec) {
   const kind = String(card.kind || "").trim().toLowerCase();
@@ -251,6 +342,7 @@ function rankKey(card, nowSec) {
   const created = Number(card.createdAt) || 0;
   return [
     RANK_RULES.rank_first_kinds.includes(kind) ? 0 : 1,
+    isSelfAnswering(card) ? RANK_RULES.auto_default_rank : 0,
     urgency === undefined ? 2 : urgency,
     nowSec - created > staleAfterSeconds() ? 1 : 0,
     created,
@@ -274,38 +366,6 @@ function rankCards(cards, nowSec = Date.now() / 1000) {
 }
 
 /**
- * THE SURFACE ordering — what to act on NOW, for the surfaces that show ONE card
- * (the Inbox's Next line, Now mode, the tray's "Needs you" row, the fairy).
- *
- * Owner, 2026-11-20, on an inbox of 58: "the newest high-urgency card is always
- * the one surfaced". `rankKey` above answers a different question — what has
- * waited longest — and is right for the LIST; a one-card stage that leads with
- * the oldest ask is how a live question never reaches him. This key mirrors
- * `adk.decisions.beam.ask_rank` term for term (needs-you kinds, then urgency,
- * then NEWEST first, then id), so the desk and the daemon's `attention` beam
- * cannot disagree about which card is first. The Python twin is
- * `adk.decisions.store.surface_order`.
- */
-function surfaceKey(card, nowSec) {
-  const kind = String(card.kind || "").trim().toLowerCase();
-  const urgency = RANK_RULES.urgency_rank[String(card.urgency || "").trim().toLowerCase()];
-  const created = Number(card.createdAt) || 0;
-  return [
-    RANK_RULES.rank_first_kinds.includes(kind) ? 0 : 1,
-    urgency === undefined ? 2 : urgency,
-    -created,
-    String(card.id || ""),
-  ];
-}
-
-/** The cards in SURFACE order (a new array; the input is not touched). */
-function surfaceCards(cards, nowSec = Date.now() / 1000) {
-  const keyed = (Array.isArray(cards) ? cards.filter(Boolean) : []).map((c) => [surfaceKey(c, nowSec), c]);
-  keyed.sort((x, y) => compareKeys(x[0], y[0]));
-  return keyed.map(([, c]) => c);
-}
-
-/**
  * Split a ranked list for the surfaces: `needsYou` (credential / blocked /
  * blocking — the pinned strip, the tray's row 0, the red key), `decisions`
  * (what the badge counts — triageCard === "decision", so the flipper's "N of M"
@@ -313,25 +373,26 @@ function surfaceCards(cards, nowSec = Date.now() / 1000) {
  * `snoozed` is a Set of ids the owner put off with "Later": they stay in the
  * flipper but leave the needs-you strip until the snooze runs out.
  */
-function partitionCards(cards, { patterns, snoozed = null, nowSec } = {}) {
-  // SURFACE order, not queue order: every caller of this split feeds a ONE-CARD
-  // surface (needsYou[0] is the tray row, the chip, the voice lead, the Inbox's
-  // Next line), and the owner asked for the newest urgent ask to lead.
-  const ranked = surfaceCards(cards, nowSec);
+function partitionCards(cards, { patterns, snoozed = null, nowSec, ended = null } = {}) {
+  const ranked = rankCards(cards, nowSec);
   const decisions = [];
   const fyi = [];
+  const fromEnded = [];
   for (const card of ranked) {
-    let verdict = "decision";
+    // A card whose asking session has ended is nobody's waiting ask: it leaves the
+    // number, the fairy and the strip, and is listed on its own line (`ended`).
+    if (ended && typeof ended.has === "function" && ended.has(card.id)) { fromEnded.push(card); continue; }
+    let verdict;
     try { verdict = triageCard(card, patterns); } catch { verdict = "decision"; }
     if (verdict === "decision" || isNeedsYou(card)) decisions.push(card);
     else fyi.push(card);
   }
   // needs-you cards lead the strip whatever the rank put between them.
   const needsYou = decisions.filter((c) => isNeedsYou(c) && !(snoozed && snoozed.has(c.id)));
-  return { needsYou, decisions, fyi };
+  return { needsYou, decisions, fyi, ended: fromEnded };
 }
 
-/** Open cards in SURFACE order (see surfaceCards) — needs-you first, then urgency, then NEWEST. */
+/** Open cards in rank order (see rankCards) — credential/blocked first, then urgency, then oldest. */
 function listOpen(dir = storeDir()) {
   let entries;
   try {
@@ -351,7 +412,7 @@ function listOpen(dir = storeDir()) {
     const card = cardFromRaw(raw);
     if (card) cards.push(card);
   }
-  return surfaceCards(cards);
+  return rankCards(cards);
 }
 
 /**
@@ -524,6 +585,20 @@ function openCardWindow(id) {
 function answerCard(id, choice, note = "", spawnFn = spawn) {
   if (typeof id !== "string" || id.length === 0) return false;
   if (typeof choice !== "string" || choice.length === 0) return false;
+  // A card whose answer must be SIGNED (an awstorage proposal/plan or a Claude
+  // permission grant) is approved where Genesis signs the answer for a fresh
+  // passkey session; a local `awask answer` would be recorded unsigned and grant
+  // nothing. The route is decided from the card FILE (or the gateway's raw card),
+  // never from the renderer's payload, and it is the SAME route main.cjs uses --
+  // one implementation, so a voice/index answer and a click cannot disagree.
+  // The deep link carries the card id and the choice; declining stays local.
+  const raw = rawCard(id) || readCardRaw(id);
+  if (signedApproval.answerRoute(raw, choice) === "window") {
+    const url = signedApproval.approveUrl(id, choice);
+    lastSignedHandoff = { id, choice, url, at: Date.now() };
+    openSignedAnswer(url);
+    return true;
+  }
   if (lastSource === "gateway") return answerRemote(id, choice, note);
   const args = ["answer", id, choice, "--via", "desk"];
   if (note) args.push("--note", String(note).slice(0, 2000));
@@ -564,6 +639,94 @@ function steerCard(id, text, spawnFn = spawn) {
   // `awask steer <id> <text...>` -- the text is positional and variadic; pass it
   // as ONE argv element so a sentence is not re-split into flags.
   return runAwask(["steer", id, body.slice(0, 2000), "--via", "desk"], spawnFn);
+}
+
+/**
+ * A launcher-sized snapshot of the open queue: the same order every other
+ * surface uses (rankCards == the store's rank_key), flattened for a list that is
+ * read on a keypress. Read-only; nothing here can answer or write.
+ *
+ * It prefers the watcher's cache (lastOpen) because walking a store that has
+ * held thousands of answered cards, synchronously, on every Alt+Space keystroke
+ * is what makes a launcher feel dead. `cards` is injectable for a caller that
+ * already has the list.
+ */
+function listSnapshot({ dir = storeDir(), nowSec = Date.now() / 1000, cards } = {}) {
+  const source = Array.isArray(cards) ? cards : lastOpen(dir);
+  const staleAfter = staleAfterSeconds();
+  return rankCards(source, nowSec).map((card, position) => ({
+    id: card.id,
+    title: card.title,
+    summary: card.summary,
+    kind: card.kind,
+    urgency: card.urgency,
+    createdAt: card.createdAt,
+    deadline: card.deadline,
+    defaultKey: card.defaultKey,
+    needsYou: isNeedsYou(card),
+    stale: nowSec - card.createdAt > staleAfter,
+    // 0-based position in the ONE ranking, so a surface can say "N of M" without
+    // ranking a second way.
+    position,
+    // `index` is 1-based: the number key the owner presses (1-9). The card's
+    // own key travels beside it so an answer can always be sent as a key too.
+    options: (Array.isArray(card.options) ? card.options : []).map((o, i) => ({
+      index: i + 1,
+      key: o.key,
+      label: o.label,
+      consequence: o.consequence,
+      recommended: o.recommended === true,
+    })),
+  }));
+}
+
+/**
+ * Answer card `id` with the Nth option (1-based), for the launcher's 1-9 keys.
+ *
+ * `awask answer` takes the option KEY, not an index, so the index is resolved
+ * here against the card's own options and then answered through the exact same
+ * path as answerCard(). That keeps awask the only writer (DCS001) and means a
+ * number key and a click are one implementation.
+ */
+function answerCardIndex(id, index, { note = "", spawnFn = spawn, dir = storeDir(), cards } = {}) {
+  if (typeof id !== "string" || id.length === 0) return false;
+  const n = Number(index);
+  if (!Number.isInteger(n) || n < 1) return false;
+  const source = Array.isArray(cards) ? cards : lastOpen(dir);
+  const card = source.find((c) => c.id === id);
+  const option = card && Array.isArray(card.options) ? card.options[n - 1] : null;
+  if (!option || typeof option.key !== "string") return false;
+  return answerCard(id, option.key, note, spawnFn);
+}
+
+/**
+ * The option the owner TYPED, as the card's own option. Exact key first, then
+ * exact label, then the single label that starts with the text (2+ characters --
+ * "n" is how you find a card, not how you answer it). Ambiguous text is null;
+ * guessing which of Ack / Not-now "n" meant is how a card gets answered wrong.
+ * The deck's answerByQuery (src/deck/inbox-view.ts) is the same rule.
+ */
+function optionFromText(options, text) {
+  const want = String(text || "").trim().toLowerCase();
+  if (!want) return null;
+  const list = Array.isArray(options) ? options : [];
+  const byKey = list.find((o) => String(o.key || "").toLowerCase() === want);
+  if (byKey) return byKey;
+  const byLabel = list.find((o) => String(o.label || "").toLowerCase() === want);
+  if (byLabel) return byLabel;
+  if (want.length < 2) return null;
+  const prefixed = list.filter((o) => String(o.label || "").toLowerCase().startsWith(want));
+  return prefixed.length === 1 ? prefixed[0] : null;
+}
+
+/** Answer a card with the option the owner typed (the launcher's free-text path). */
+function answerCardText(id, text, { note = "", spawnFn = spawn, dir = storeDir(), cards } = {}) {
+  if (typeof id !== "string" || id.length === 0) return false;
+  const source = Array.isArray(cards) ? cards : lastOpen(dir);
+  const card = source.find((c) => c.id === id);
+  const option = card ? optionFromText(card.options, text) : null;
+  if (!option || typeof option.key !== "string") return false;
+  return answerCard(id, option.key, note, spawnFn);
 }
 
 // ── off-PC: the same store through the gateway (see the module header) ─────
@@ -672,7 +835,7 @@ function answerRemote(id, choice, note) {
   // main routes those to the approval window using rawCard().
   try {
     const { answerRoute } = require("./signed-approval.cjs");
-    if (answerRoute(remoteRaw.get(id) || null, choice) !== "awask") {
+    if (answerRoute(remoteRaw.get(id) || null, choice) === "window") {
       lastRemoteError = `${id}: a signed approval cannot go through decisions_answer`;
       return false;
     }
@@ -736,7 +899,7 @@ async function scanAsync(dir = storeDir(), cache = new Map(), fsp = fs.promises,
     );
   }
   for (const name of [...cache.keys()]) if (!seen.has(name)) cache.delete(name);
-  const cards = surfaceCards([...cache.values()].map((v) => v.card));
+  const cards = rankCards([...cache.values()].map((v) => v.card));
   return { signature: `${count}:${newest}:${total}`, cards };
 }
 
@@ -754,12 +917,7 @@ function daemonBase(env = process.env) {
   return `http://${host}:${port}`;
 }
 
-/**
- * GET <daemon>/decisions?status=open&order=surface -> shaped cards in SURFACE
- * order. Throws on anything else. The daemon also drops cards nobody can answer
- * (a permission grant whose session is gone) from this list, so the desk's
- * counts and its one-card stage never see them at all.
- */
+/** GET <daemon>/decisions?status=open -> ranked shaped cards. Throws on anything else. */
 async function fetchDaemonOpen({
   fetchFn = globalThis.fetch,
   base = daemonBase(),
@@ -771,7 +929,7 @@ async function fetchDaemonOpen({
   }
   if (!token) throw new Error("no harness token");
   if (typeof fetchFn !== "function") throw new Error("no fetch");
-  const response = await fetchFn(`${base}/decisions?status=open&order=surface`, {
+  const response = await fetchFn(`${base}/decisions?status=open`, {
     method: "GET",
     headers: { Authorization: `Bearer ${token}`, accept: "application/json" },
     signal: AbortSignal.timeout(timeoutMs),
@@ -781,9 +939,7 @@ async function fetchDaemonOpen({
   const payload = await response.json();
   const rows = payload && Array.isArray(payload.decisions) ? payload.decisions : null;
   if (!rows) throw new Error("daemon answered no card list");
-  // The daemon already answered in surface order; re-applying the key is
-  // idempotent and keeps a LOCAL fallback and a daemon answer in one order.
-  return surfaceCards(rows.filter(Boolean).map(cardFromRaw));
+  return rankCards(rows.map(cardFromRaw));
 }
 
 /**
@@ -793,9 +949,9 @@ async function fetchDaemonOpen({
  * "waiting" number anywhere a person reads it. Owner 2026-11-16: bell 22, fairy 40,
  * launcher fairy 39 -- three answers to one question.
  */
-function waitingCount(cards, patterns) {
+function waitingCount(cards, patterns, ended = null) {
   try {
-    return partitionCards(cards, { patterns }).decisions.length;
+    return partitionCards(cards, { patterns, ended }).decisions.length;
   } catch {
     return actionableCount(cards, patterns);
   }
@@ -806,17 +962,23 @@ function waitingCount(cards, patterns) {
  * (`source: "daemon"`), else the watcher's local read labelled `stale: true`
  * with the reason. Never throws.
  */
-async function bridgeQueue({ fetchOpen = fetchDaemonOpen, localOpen = () => lastOpen() } = {}) {
+async function bridgeQueue({ fetchOpen = fetchDaemonOpen, localOpen = () => lastOpen(), endedOf = () => null } = {}) {
+  const endedSet = (cards) => { try { return endedOf(cards) || null; } catch { return null; } };
   try {
     const decisions = await fetchOpen();
-    return { decisions, count: decisions.length, waiting: waitingCount(decisions), source: "daemon", stale: false };
+    const ended = endedSet(decisions);
+    return {
+      decisions, count: decisions.length, waiting: waitingCount(decisions, undefined, ended),
+      endedSessions: ended ? ended.size : 0, source: "daemon", stale: false,
+    };
   } catch (error) {
-    let decisions = [];
-    try { decisions = surfaceCards(localOpen()); } catch { decisions = []; }
+    let decisions;
+    try { decisions = rankCards(localOpen()); } catch { decisions = []; }
     return {
       decisions,
       count: decisions.length,
-      waiting: waitingCount(decisions),
+      waiting: waitingCount(decisions, undefined, endedSet(decisions)),
+      endedSessions: (endedSet(decisions) || { size: 0 }).size,
       source: "local",
       stale: true,
       error: String((error && error.message) || error).slice(0, 200),
@@ -827,7 +989,9 @@ async function bridgeQueue({ fetchOpen = fetchDaemonOpen, localOpen = () => last
 /** GET /needs-you: bridgeQueue narrowed to the needs-you cards (snoozes removed). */
 async function bridgeNeedsYou({ snoozed = null, ...queueOpts } = {}) {
   const queue = await bridgeQueue(queueOpts);
-  const list = partitionCards(queue.decisions, { snoozed }).needsYou;
+  let ended = null;
+  try { ended = (queueOpts.endedOf && queueOpts.endedOf(queue.decisions)) || null; } catch { /* count them all */ }
+  const list = partitionCards(queue.decisions, { snoozed, ended }).needsYou;
   return { ...queue, decisions: list, count: list.length };
 }
 
@@ -835,7 +999,9 @@ async function bridgeNeedsYou({ snoozed = null, ...queueOpts } = {}) {
 // /decisions, the deck state) that must not walk the store themselves.
 let lastOpenCards = null;
 function lastOpen(dir = storeDir()) {
-  return lastOpenCards ?? listOpen(dir);
+  // The cache is the OWNER store's (local or via the gateway); a caller reading
+  // any other directory (tests, a scratch store) must not be handed it.
+  return dir === storeDir() && lastOpenCards ? lastOpenCards : listOpen(dir);
 }
 
 /** fs.watch fires a burst of events per write (tmp create, rename, ...); one scan
@@ -889,7 +1055,7 @@ function watch({
     if (remoteTimer && typeof remoteTimer.unref === "function") remoteTimer.unref();
   };
   const read = async () => {
-    let remote = false;
+    let remote;
     try { remote = await useRemoteFn(); } catch { remote = false; }
     if (remote) {
       try {
@@ -989,13 +1155,29 @@ const HEARTBEAT_MS = 20_000;
  * is UNREF'D (it must never hold the app open) and every failure is swallowed —
  * a heartbeat that cannot be written must not take the desk down; the cost is
  * only that awask falls back to its own Tk window.
+ *
+ * `claim()` (2026-11-08): returns {attention: "fairy"} while the fairy carries the
+ * cards (it is on screen and its nudge loop runs -- orb-window ownsAttention), else
+ * null. awask (adk.decisions.notify.desk_attention_claim) skips its Tk window ONLY
+ * on a FRESH beat that carries the claim, so a dead desk or a hidden fairy brings
+ * the window back: the claim is re-judged on every beat, never cached.
  */
-function startHeartbeat({ dir = storeDir(), intervalMs = HEARTBEAT_MS, setIntervalFn = setInterval, clearIntervalFn = clearInterval } = {}) {
+function heartbeatBody(claim) {
+  const body = { pid: process.pid, at: new Date().toISOString() };
+  let extra;
+  try { extra = typeof claim === "function" ? claim() : null; } catch { extra = null; }
+  if (extra && typeof extra.attention === "string" && /^[a-z]{1,24}$/.test(extra.attention)) {
+    body.attention = extra.attention;
+  }
+  return body;
+}
+
+function startHeartbeat({ dir = storeDir(), intervalMs = HEARTBEAT_MS, setIntervalFn = setInterval, clearIntervalFn = clearInterval, claim = null } = {}) {
   const beatPath = path.join(dir, DESK_ALIVE_FILENAME);
   const beat = () => {
     try {
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(beatPath, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+      fs.writeFileSync(beatPath, JSON.stringify(heartbeatBody(claim)));
     } catch {
       /* best-effort: see above */
     }
@@ -1012,16 +1194,25 @@ function startHeartbeat({ dir = storeDir(), intervalMs = HEARTBEAT_MS, setInterv
 }
 
 module.exports = {
+  signedApproval,
+  needsSignedAnswer,
+  readCardRaw,
+  lastSignedHandoff: () => lastSignedHandoff,
+  setSignedAnswerOpener: (fn) => { openSignedAnswer = fn; },
   storeDir,
   signature,
   listOpen,
+  listSnapshot,
   lastOpen,
   scanAsync,
   RANK_RULES,
   isNeedsYou,
+  hasAutoDefault,
+  isNoopSuggestion,
+  isSelfAnswering,
+  suggestedLabel,
+  rankKey,
   rankCards,
-  surfaceKey,
-  surfaceCards,
   partitionCards,
   fetchDaemonOpen,
   bridgeQueue,
@@ -1036,10 +1227,14 @@ module.exports = {
   openQueueWindow,
   openCardWindow,
   answerCard,
+  answerCardIndex,
+  answerCardText,
+  optionFromText,
   cancelCard,
   steerCard,
   watch,
   startHeartbeat,
+  heartbeatBody,
   rawCard,
   scanRemote,
   sourceStatus,

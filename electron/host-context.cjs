@@ -238,7 +238,13 @@ async function sampleHostContext(options = {}) {
         return fail("xprop answered but reported no _NET_ACTIVE_WINDOW (a Wayland session?)");
       }
       if (match[1].toLowerCase() === "0x0") {
-        return { ok: true, platform, pid: 0, app: "", title: "", exe: "", sampledAt };
+        // MEASURED 2026-11-06 on the fleet distro: xprop answers `0x0` and exits 0
+        // under a Wayland/WSLg session while the user plainly has windows open.
+        // Reporting that as an empty-but-successful window makes an agent assert
+        // "nothing is open" — a confident lie. It is a CANNOT-JUDGE, so say so.
+        return fail(
+          "X11 reports no _NET_ACTIVE_WINDOW (0x0) — a Wayland/WSLg session or no focused window; the foreground app cannot be inferred",
+        );
       }
       const detailOut = await run(
         "xprop",

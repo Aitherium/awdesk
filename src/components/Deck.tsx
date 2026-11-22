@@ -1,6 +1,13 @@
-import { useCallback, useEffect, useReducer, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type CSSProperties } from 'react';
 
 import { renderVrmThumbnail } from '../thumbnails';
+import { LinkedText, Markdown, SessionPanel } from './SessionPanel';
+import { CardUi } from './CardUi';
+import { AtlasSection } from './AtlasSection';
+import { FairyMark } from './FairyMark';
+import { drawableCardUi } from '../deck/card-ui-tree';
+import { DeckLinks, canOpenUrl, hasSessionBridge, openDeskUrl, type DeckLinkHandlers } from '../deck/session-context';
+import { endedSessionIds, sessionPill, sessionRowTitle } from '../deck/session-text';
 import { useDeckState } from '../deck/use-deck-state';
 import {
   cardFocusParam,
@@ -22,6 +29,7 @@ import {
   type DeckState,
   type RelayRow,
   type WakeActionResult,
+  type WakeInvestigateResult,
   type WakeRow,
 } from '../deck/deck-types';
 import {
@@ -36,13 +44,20 @@ import {
   healthySummary,
   moveCursor,
   nextActionLine,
+  optionByIndex,
+  answerByQuery,
+  filterRows,
   orderRelay,
   plainAsk,
   relayNick,
   splitWakes,
   successorId,
-  wakeErrorLine,
+  wakeCausePill,
+  wakeHeldPill,
+  wakeInvestigateMessage,
+  wakeWhyLine,
   type AwarenessLine,
+  desktopAwarenessText,
 } from '../deck/inbox-view';
 import { SPACE_NEXT_LINK, spaceCardLink } from '../deck/space-links';
 import {
@@ -64,6 +79,11 @@ import {
  * reuses the same functions the old menus used, so the panel is a VIEW, not a
  * second implementation.
  */
+
+/** Open cards that are neither waiting nor from an ended session: the FYI ones. */
+function fyiOnlyCount(state: { openCount: number; totalCount?: number; endedCount?: number }): number {
+  return Math.max(0, (state.totalCount ?? 0) - state.openCount - (state.endedCount ?? 0));
+}
 
 function BellIcon() {
   return (
@@ -144,7 +164,7 @@ interface BridgeDeck {
   answer(id: string, choice: string): Promise<boolean | { pending: true; via?: string }>;
   /** Most verbs answer a boolean; the wake verbs answer the daemon's
    *  {ok, detail, exitCode, started, pid} so the row can say what happened. */
-  action(name: string, arg?: string): Promise<boolean | WakeActionResult>;
+  action(name: string, arg?: string): Promise<boolean | WakeActionResult | WakeInvestigateResult>;
   /** The thread under a relay message — the per-agent direct chat read path. */
   relayThread(messageId: string): Promise<RelayRow[]>;
 }
@@ -252,7 +272,7 @@ function WakesSection({
   nowMs: number;
   notes: Record<string, string>;
   pending: Set<string>;
-  onAction: (verb: 'enable' | 'disable' | 'run', name: string) => void;
+  onAction: (verb: 'enable' | 'disable' | 'run' | 'investigate', name: string) => void;
 }) {
   const live = wakes.source === 'daemon' && wakes.installed === true;
   const { broken, healthy } = splitWakes(wakes.wakes);
@@ -286,6 +306,16 @@ function WakesSection({
       >
         Run now
       </button>
+      {wake.consecutiveFailures > 0 ? (
+        <button
+          className="deck-btn deck-btn-xs"
+          disabled={!live || pending.has(wake.name)}
+          title="Dispatch an agent with this wake's why and output tail to find and fix the cause"
+          onClick={() => onAction('investigate', wake.name)}
+        >
+          Investigate
+        </button>
+      ) : null}
       <button
         className="deck-btn deck-btn-xs"
         disabled={!live || pending.has(wake.name)}
@@ -298,19 +328,25 @@ function WakesSection({
   );
   // The same row at two weights: the first is the one the owner acts on, the
   // next two are real but quieter, and the rest fold into one line.
-  const brokenRow = (wake: WakeRow, primary = false) => (
+  const brokenRow = (wake: WakeRow, primary = false) => {
+    const cause = wakeCausePill(wake);
+    const held = wakeHeldPill(wake, nowMs);
+    return (
     <div className="deck-broken-row" key={wake.name}>
       <span className="deck-broken-name" title={wake.run || wake.name}>{wake.name}</span>
       <span className="deck-broken-count">{brokenCountLabel(wake)}</span>
-      {/* The REASON, one hover from the whole text. */}
-      <span className="deck-broken-error" title={[wake.lastState, wake.lastReason, wake.error].filter(Boolean).join(' — ')}>
-        {wakeErrorLine(wake)}
+      {cause ? <span className={`deck-wake-cause deck-wake-cause-${(wake.lastCause || '').replace(/[^a-z-]/g, '')}`}>{cause}</span> : null}
+      {held ? <span className="deck-wake-held">{held}</span> : null}
+      {/* The WHY (awrise read it off the run's output), one hover from the whole text. */}
+      <span className="deck-broken-error" title={[wake.lastWhy, wake.lastState, wake.lastReason, wake.error].filter(Boolean).join(' — ')}>
+        {wakeWhyLine(wake)}
       </span>
       <span className="deck-broken-age">{wakeAgeLabel(wake, nowMs)}</span>
       {actions(wake, primary)}
       {notes[wake.name] ? <span className="deck-wake-note">{notes[wake.name]}</span> : null}
     </div>
-  );
+    );
+  };
   return (
     <section className="deck-section" aria-label="Broken">
       <h2 className="deck-section-head">
@@ -479,12 +515,16 @@ function AgentChatPane({
   nowMs,
   onSend,
   onClose,
+  links,
 }: {
   agent: string;
   rows: RelayRow[];
   nowMs: number;
   onSend: (text: string) => void;
   onClose: () => void;
+  /** Where else this agent's conversation lives: the thread it is working (a
+   *  Discord or GitHub thread from Atlas' board) and its Discord DM. */
+  links?: { threadUrl?: string; dmUrl?: string };
 }) {
   const [draft, setDraft] = useState('');
   const submit = () => {
@@ -559,9 +599,28 @@ function AgentChatPane({
     <section className="deck-section" aria-label={`Chat with ${agent}`}>
       <h2 className="deck-section-head">
         <span className="deck-section-icon"><ChatIcon /></span>
+        <FairyMark agent={agent} />
         <span className="deck-row-label" title={`Direct conversation with ${agent}`}>
           Chat with {agent}
         </span>
+        {links?.threadUrl && canOpenUrl() ? (
+          <button
+            className="deck-chip"
+            title={`Continue the thread ${agent} is working: ${links.threadUrl}`}
+            onClick={() => void openDeskUrl(links.threadUrl as string)}
+          >
+            Continue thread
+          </button>
+        ) : null}
+        {links?.dmUrl && canOpenUrl() ? (
+          <button
+            className="deck-chip"
+            title={`${agent}'s Discord DM -- the same agent, the same memory`}
+            onClick={() => void openDeskUrl(links.dmUrl as string)}
+          >
+            Discord DM
+          </button>
+        ) : null}
         <button
           className="deck-icon-btn deck-close-inline"
           aria-label="Close chat"
@@ -644,6 +703,27 @@ interface MarketListing {
   url?: string;
   pricing?: { model?: string; cost_per_unit?: number; unit_label?: string };
   tags?: string[];
+}
+
+/** What desk:market-install resolves (market-client.cjs installWithConsent). */
+interface MarketInstallResult {
+  ok: boolean;
+  id: string;
+  kind?: string;
+  detail?: string;
+  cancelled?: boolean;
+  next?: string;
+}
+
+/** One matter-of-fact line for a listing's install outcome. */
+function marketInstallLabel(res: MarketInstallResult | null | undefined): string {
+  if (!res) return 'install failed — no answer from the desk';
+  if (res.ok) {
+    const next = (res.next ?? '').split('\n').find((line) => line.trim() && !line.trim().startsWith('#'));
+    return `installed${res.kind ? ` (${res.kind})` : ''}${next ? ` — next: ${next.trim().slice(0, 80)}` : ''}`;
+  }
+  if (res.cancelled) return 'not installed — cancelled';
+  return `not installed — ${reasonText(res.detail ?? 'unknown reason')}`;
 }
 
 /** Stable per-character hue so the roster reads as tiles instead of a text
@@ -877,6 +957,25 @@ function ModelsMarketSection({
     runMarket('');
   }, [runMarket]);
 
+  // Install: main confirms (twice for third-party code), then runs `adk pack install`.
+  // Per-listing state so a row says what happened: installing, installed, or the reason.
+  const [installs, setInstalls] = useState<Record<string, string>>({});
+  const installListing = useCallback((id: string) => {
+    const deck = window.deskBridge as unknown as {
+      deck?: { marketInstall?: (id: string) => Promise<MarketInstallResult> };
+    } | undefined;
+    if (!deck?.deck?.marketInstall) {
+      setInstalls((s) => ({ ...s, [id]: 'install needs a newer desk' }));
+      return;
+    }
+    setInstalls((s) => ({ ...s, [id]: 'installing…' }));
+    void deck.deck.marketInstall(id).catch((err: unknown) => (
+      { ok: false, id, detail: reasonText(err) } as MarketInstallResult
+    )).then((res) => {
+      setInstalls((s) => ({ ...s, [id]: marketInstallLabel(res) }));
+    });
+  }, []);
+
   // Real previews (owner, 2026-09-10): cached thumbnail if one exists, else
   // render the character's own model offscreen ONCE and store it beside the
   // model. Serialized by thumbnails.ts; failed names stay on the monogram
@@ -1003,13 +1102,24 @@ function ModelsMarketSection({
           <span className="deck-row-label">
             {l.name ?? l.id}
             <span className="deck-card-age"> · {l.listing_type ?? 'pack'} · {price(l)}</span>
+            {installs[l.id] && <span className="deck-card-age"> · {installs[l.id]}</span>}
           </span>
+          {l.url && (
+            <button
+              className="deck-chip"
+              title={l.short_description ?? l.description ?? ''}
+              onClick={() => onAction('market-open', l.url as string)}
+            >
+              Open
+            </button>
+          )}
           <button
             className="deck-chip"
-            title={l.short_description ?? l.description ?? ''}
-            onClick={() => l.url && onAction('market-open', l.url)}
+            title={`adk pack install ${l.id}`}
+            disabled={installs[l.id] === 'installing…'}
+            onClick={() => installListing(l.id)}
           >
-            Open
+            Install
           </button>
         </div>
       ))}
@@ -1032,7 +1142,8 @@ function ModelsMarketSection({
  */
 const GROUP_PAGE = VISIBLE_CAP;
 
-function NeedsYouSection({
+/** Exported for the render tests (Deck.inbox.test.tsx). */
+export function NeedsYouSection({
   cards,
   fyi,
   openCount,
@@ -1042,6 +1153,7 @@ function NeedsYouSection({
   onPopupAll,
   onSpace,
   focus,
+  onFocusCard,
 }: {
   cards: DeckDecision[];
   fyi: DeckDecision[];
@@ -1055,21 +1167,31 @@ function NeedsYouSection({
   /** A card the owner clicked somewhere else (tray row, chip, ?card=): open it.
    *  `nonce` re-applies the same id after the owner moved away. */
   focus?: { id: string; nonce: number } | null;
+  /** A `d-xxxx` link inside card text was clicked: open that card here. */
+  onFocusCard?: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [staleOpen, setStaleOpen] = useState(false);
   const [folded, setFolded] = useState<Set<string>>(() => new Set());
+  // Typed text narrows the list (title/summary/source); typing an option's key
+  // answers the focused card. It NEVER re-ranks -- filterRows keeps the store's
+  // order, so the cursor does not jump while the owner types.
+  const [query, setQuery] = useState('');
   // A group shows its first GROUP_PAGE cards; "N more" opens the rest.
   const [more, setMore] = useState<Set<string>>(() => new Set());
-  const [bulk, setBulk] = useState<{ verb: string; done: number; total: number; refused: number } | null>(null);
+  // `scope` says WHICH bulk control owns the progress line: the stale fold's
+  // Later / Dismiss all, or the "from ended sessions" chip on Blocked on you.
+  const [bulk, setBulk] = useState<{ verb: string; done: number; total: number; refused: number; scope: 'stale' | 'ended' } | null>(null);
   const [confirmDismiss, setConfirmDismiss] = useState(false);
   const [confirmLater, setConfirmLater] = useState(false);
+  const [confirmEnded, setConfirmEnded] = useState(false);
   // A bulk run is a loop of clicks; the owner must be able to stop it.
   const cancelBulk = useRef(false);
-  const { groups, stale } = groupDecisions(cards, nowMs);
+  const rows = query ? filterRows(cards, query) : cards;
+  const { groups, stale } = groupDecisions(rows, nowMs);
   // THE next action — one line, before any group, so nothing has to be scanned.
-  const next = nextActionLine(cards, openCount);
+  const next = nextActionLine(rows, openCount);
   const nextChoice = next ? next.choice : null;
   // FYI keeps the same five-and-a-fold shape as every other list here.
   const fyiCap = capList(fyi, VISIBLE_CAP);
@@ -1080,8 +1202,22 @@ function NeedsYouSection({
     ...groups.filter((g) => !folded.has(g.key)).flatMap((g) => shownCards(g.key, g.cards).map((c) => c.id)),
     ...(staleOpen ? stale.map((c) => c.id) : []),
   ];
-  const allIds = cards.map((c) => c.id);
+  const allIds = rows.map((c) => c.id);
   const previousIds = useRef<string[]>(allIds);
+
+  // What a link inside card text can do: a d-xxxx id that is waiting HERE opens
+  // that card (an answered one stays plain text); URLs and PRs open in Aither
+  // Browser when this main can (deck.openUrl), else stay plain text.
+  const cardIdsKey = cards.map((c) => c.id).join('|');
+  const links = useMemo<DeckLinkHandlers>(() => {
+    const ids = new Set(cardIdsKey ? cardIdsKey.split('|') : []);
+    return {
+      repo: '',
+      focusCard: onFocusCard,
+      hasCard: (id: string) => ids.has(id),
+      openUrl: canOpenUrl() ? (url: string) => { void openDeskUrl(url); } : undefined,
+    };
+  }, [cardIdsKey, onFocusCard]);
 
   // An answered card leaves the list: open the card now in its slot.
   const idsKey = allIds.join('|');
@@ -1136,11 +1272,29 @@ function NeedsYouSection({
       } else if (event.key === 'k' || event.key === 'ArrowUp') {
         event.preventDefault();
         setCursor((current) => moveCursor(visible, current, -1));
+      } else if (/^[1-9]$/.test(event.key) && cursor) {
+        // 1-9 answer the FOCUSED row's option, collapsed or not: the owner asked
+        // to answer without clicking a row open first.
+        const card = rows.find((c) => c.id === cursor);
+        const option = card ? optionByIndex(card.options, Number(event.key)) : null;
+        if (option) {
+          event.preventDefault();
+          onAnswer(card!.id, option.key);
+        }
       } else if (event.key === 'Enter' && cursor && !(target && target.closest('button, [role="button"]'))) {
         event.preventDefault();
+        const card = rows.find((c) => c.id === cursor);
+        // An OPEN card takes its recommendation on Enter; a closed one opens.
+        if (card && expanded === cursor) {
+          const choice = primaryChoice(card);
+          if (choice) { onAnswer(card.id, choice.key); return; }
+        }
         setExpanded((current) => (current === cursor ? null : cursor));
       } else if (event.key === 'Escape') {
-        setExpanded(null);
+        // Esc COLLAPSES first; only the second Esc leaves the inbox. It never
+        // answers, snoozes or hides a card.
+        if (expanded) setExpanded(null);
+        else bridgeDeck()?.close();
       }
     };
     document.addEventListener('keydown', onKey);
@@ -1154,14 +1308,18 @@ function NeedsYouSection({
     setExpanded((current) => (current === id ? null : id));
   };
 
-  /** One verb over every stale card, one at a time, and say how it went. */
-  const runBulk = async (verb: 'card-later' | 'card-not-needed') => {
+  /** One verb over a set of cards (every stale card, or the Blocked cards whose
+   *  session has ended), one at a time, and say how it went. */
+  const runBulk = async (
+    verb: 'card-later' | 'card-not-needed',
+    ids: string[] = stale.map((c) => c.id),
+    scope: 'stale' | 'ended' = 'stale',
+  ) => {
     const deck = bridgeDeck();
-    if (!deck || bulk) return;
-    const ids = stale.map((c) => c.id);
+    if (!deck || bulk || ids.length === 0) return;
     cancelBulk.current = false;
     let refused = 0;
-    setBulk({ verb, done: 0, total: ids.length, refused: 0 });
+    setBulk({ verb, done: 0, total: ids.length, refused: 0, scope });
     for (let i = 0; i < ids.length; i += 1) {
       if (cancelBulk.current) break;
       try {
@@ -1170,16 +1328,39 @@ function NeedsYouSection({
       } catch {
         refused += 1;
       }
-      setBulk({ verb, done: i + 1, total: ids.length, refused });
+      setBulk({ verb, done: i + 1, total: ids.length, refused, scope });
     }
     setConfirmDismiss(false);
     setConfirmLater(false);
+    setConfirmEnded(false);
     window.setTimeout(() => setBulk(null), 6000);
   };
+
+  /** The progress line + Cancel a running bulk shows in place of its buttons. */
+  const bulkProgress = (active: NonNullable<typeof bulk>) => (
+    <>
+      <span className="deck-ny-bulk-note" role="status">
+        {active.verb === 'card-later' ? 'Snoozing' : 'Withdrawing'} {active.done}/{active.total}
+        {active.refused ? ` · ${active.refused} refused` : ''}
+      </span>
+      <button
+        className="deck-btn deck-btn-xs"
+        title="Stop after the card in flight"
+        onClick={() => { cancelBulk.current = true; }}
+      >
+        Cancel
+      </button>
+    </>
+  );
 
   const row = (card: DeckDecision) => {
     const open = expanded === card.id;
     const source = decisionSource(card);
+    // A session card is titled by its session ("Desktop canvas layout"), not by
+    // the raiser's "Claude Code needs you: <project> — " boilerplate, and wears
+    // the session's state where the bare "claude-code" source label used to be.
+    const title = card.sessionId ? sessionRowTitle(card) : card.title;
+    const pill = sessionPill(card.session);
     return (
       <div key={card.id} className={`deck-ny-item ${open ? 'deck-ny-item-open' : ''}`}>
         <div
@@ -1195,8 +1376,20 @@ function NeedsYouSection({
           }}
         >
           <span className="deck-urgency-dot" style={{ background: urgencyTone(card.urgency) }} />
-          <span className="deck-ny-title">{card.title}</span>
-          {source ? <span className="deck-ny-source">{source}</span> : null}
+          <FairyMark agent={card.agent} />
+          <span className="deck-ny-title">{title}</span>
+          {pill ? (
+            <span
+              className={`deck-session-pill deck-session-pill-${pill}`}
+              title={pill === 'ended'
+                ? 'The session that asked has ended'
+                : pill === 'working'
+                  ? 'The session that asked is live and working'
+                  : 'The session that asked is live, waiting at its prompt'}
+            >
+              {pill}
+            </span>
+          ) : source ? <span className="deck-ny-source">{source}</span> : null}
           <time className="deck-ny-age">{formatAge(card.createdAt, nowMs)}</time>
         </div>
         {open ? (
@@ -1241,6 +1434,7 @@ function NeedsYouSection({
   });
 
   return (
+    <DeckLinks.Provider value={links}>
     <section className="deck-section" aria-label="Needs you" data-current-card={expanded ?? ''}>
       <h2 className="deck-section-head">
         <span className="deck-section-icon"><BellIcon /></span>
@@ -1255,6 +1449,23 @@ function NeedsYouSection({
           </button>
         ) : null}
       </h2>
+      {cards.length > 0 ? (
+        <input
+          className="deck-ny-filter"
+          type="search"
+          value={query}
+          placeholder="Filter cards — or type an option key and press Enter"
+          aria-label="Filter decision cards"
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            const card = cursor ? rows.find((c) => c.id === cursor) : null;
+            const option = card && query.trim() ? answerByQuery(card.options, query) : null;
+            if (card && option) onAnswer(card.id, option.key);
+          }}
+        />
+      ) : null}
       {cards.length === 0 ? (
         <p className="deck-empty">Nothing waiting — every session is unblocked.</p>
       ) : (
@@ -1280,17 +1491,42 @@ function NeedsYouSection({
               </button>
             </div>
           ) : null}
-          {groups.map((group) => (
+          {rows.length === 0 ? (
+            <p className="deck-empty">No card matches “{query}”.</p>
+          ) : null}
+          {groups.map((group) => {
+            // Blocked cards whose asking session has ENDED: nobody is waiting on
+            // them any more. One chip withdraws exactly those (same mechanics and
+            // two-click confirm as the stale fold's "Dismiss all").
+            const ended = group.key === 'blocked' ? endedSessionIds(group.cards) : [];
+            return (
             <div className="deck-ny-group" key={group.key}>
-              <button
-                className="deck-ny-group-head"
-                aria-expanded={!folded.has(group.key)}
-                onClick={() => toggleGroup(group.key)}
-              >
-                <span className="deck-ny-caret">{folded.has(group.key) ? '▸' : '▾'}</span>
-                {group.label}
-                <span className="deck-ny-group-count">{group.cards.length}</span>
-              </button>
+              <div className="deck-ny-group-bar">
+                <button
+                  className="deck-ny-group-head"
+                  aria-expanded={!folded.has(group.key)}
+                  onClick={() => toggleGroup(group.key)}
+                >
+                  <span className="deck-ny-caret">{folded.has(group.key) ? '▸' : '▾'}</span>
+                  {group.label}
+                  <span className="deck-ny-group-count">{group.cards.length}</span>
+                </button>
+                {ended.length > 0 ? (
+                  bulk && bulk.scope === 'ended' ? bulkProgress(bulk) : (
+                    <button
+                      className={`deck-chip deck-ny-ended-chip${confirmEnded ? ' deck-ny-ended-chip-confirm' : ''}`}
+                      disabled={bulk !== null}
+                      title={`Withdraw the ${ended.length} card${ended.length === 1 ? '' : 's'} whose session has ended; each is marked "owner: not needed"`}
+                      onClick={() => (confirmEnded ? void runBulk('card-not-needed', ended, 'ended') : setConfirmEnded(true))}
+                      onBlur={() => setConfirmEnded(false)}
+                    >
+                      {confirmEnded
+                        ? `Withdraw ${ended.length}?`
+                        : `${ended.length} from ended session${ended.length === 1 ? '' : 's'} — close ${ended.length === 1 ? 'it' : 'them'}`}
+                    </button>
+                  )
+                ) : null}
+              </div>
               {folded.has(group.key) ? null : shownCards(group.key, group.cards).map(row)}
               {!folded.has(group.key) && group.cards.length > GROUP_PAGE && !more.has(group.key) ? (
                 <button className="deck-fold-more" onClick={() => setMore((current) => new Set(current).add(group.key))}>
@@ -1298,7 +1534,8 @@ function NeedsYouSection({
                 </button>
               ) : null}
             </div>
-          ))}
+            );
+          })}
           {stale.length > 0 ? (
             <div className="deck-ny-group deck-ny-group-stale">
               <div className="deck-ny-group-bar">
@@ -1313,24 +1550,11 @@ function NeedsYouSection({
                     : `${stale.length} more — none older than ${STALE_DECISION_DAYS}d shown`}
                   {staleOpen ? <span className="deck-ny-group-count">{stale.length}</span> : null}
                 </button>
-                {bulk ? (
-                  <>
-                    <span className="deck-ny-bulk-note" role="status">
-                      {bulk.verb === 'card-later' ? 'Snoozing' : 'Withdrawing'} {bulk.done}/{bulk.total}
-                      {bulk.refused ? ` · ${bulk.refused} refused` : ''}
-                    </span>
-                    <button
-                      className="deck-btn deck-btn-xs"
-                      title="Stop after the card in flight"
-                      onClick={() => { cancelBulk.current = true; }}
-                    >
-                      Cancel
-                    </button>
-                  </>
-                ) : (
+                {bulk && bulk.scope === 'stale' ? bulkProgress(bulk) : (
                   <>
                     <button
                       className={`deck-btn deck-btn-xs ${confirmLater ? 'deck-btn-primary' : ''}`}
+                      disabled={bulk !== null}
                       title="Off the needs-you strip and the tray for 4 hours (the cards stay open)"
                       onClick={() => (confirmLater ? void runBulk('card-later') : setConfirmLater(true))}
                       onBlur={() => setConfirmLater(false)}
@@ -1339,6 +1563,7 @@ function NeedsYouSection({
                     </button>
                     <button
                       className={`deck-btn deck-btn-xs ${confirmDismiss ? 'deck-btn-danger' : ''}`}
+                      disabled={bulk !== null}
                       title={`Withdraw all ${stale.length}; each asking session is told "owner: not needed"`}
                       onClick={() => (confirmDismiss ? void runBulk('card-not-needed') : setConfirmDismiss(true))}
                       onBlur={() => setConfirmDismiss(false)}
@@ -1376,10 +1601,12 @@ function NeedsYouSection({
         </details>
       ) : null}
     </section>
+    </DeckLinks.Provider>
   );
 }
 
-function DecisionRow({
+/** Exported for the render tests (Deck.inbox.test.tsx). */
+export function DecisionRow({
   card,
   nowMs,
   onAnswer,
@@ -1388,53 +1615,150 @@ function DecisionRow({
   nowMs: number;
   onAnswer: (id: string, choice: string) => void;
 }) {
+  const [summaryOpen, setSummaryOpen] = useState(false);
   const primary = primaryChoice(card);
   const others = otherChoices(card);
   const where = cardWhere(card);
   const isCredential = card.kind === 'credential';
+  // A card raised by a coding session gets the SESSION PANEL (is it still open,
+  // what was it asked, what did it last say, Go to it / Resume, a Reply box that
+  // is always there) -- only when this main serves deck.session (older mains keep
+  // the plain card), and never on a credential card: a free-text reply beside a
+  // secret field invites pasting the secret into a message.
+  const sessionMode = Boolean(card.sessionId) && !isCredential && hasSessionBridge();
+  const numberOf = (key: string) => card.options.findIndex((o) => o.key === key) + 1;
+  const consequenceOf = (key: string) => (card.options.find((o) => o.key === key)?.consequence ?? '').trim();
+  const facts = Array.isArray(card.facts)
+    ? card.facts.filter((fact): fact is string => typeof fact === 'string' && fact.trim().length > 0).slice(0, 6)
+    : [];
+  const detail = typeof card.detail === 'string' ? card.detail.trim() : '';
+  // WHAT EACH BUTTON DOES, on the card and not only in a tooltip: a recipe card's
+  // answer runs an action, and the owner must read that before pressing.
+  const consequences = (primary ? [primary, ...others] : others)
+    .map((option) => ({ key: option.key, n: numberOf(option.key), label: option.label, text: consequenceOf(option.key) }))
+    .filter((entry) => entry.text);
+  const optionTitle = (key: string, lead: string) => {
+    const effect = consequenceOf(key);
+    return effect ? `${lead} — ${effect}` : lead;
+  };
+
+  // The card's generated UI (A2UI v0.9 subset), only when main found it current
+  // and valid and it re-checks here; otherwise the buttons below, as always.
+  const uiTree = isCredential ? null : drawableCardUi(card);
+  const answers = isCredential ? (
+    <CredentialRow card={card} />
+  ) : uiTree ? (
+    <>
+      <CardUi
+        tree={uiTree}
+        shown={[card.title, card.summary, ...facts]}
+        optionKeys={card.options.map((o) => o.key)}
+        onAnswer={(key) => onAnswer(card.id, key)}
+      />
+      {consequences.length > 0 ? (
+        <ul className="deck-card-consequences">
+          {consequences.map((entry) => (
+            <li key={entry.key}>
+              <span className="deck-card-consequence-key">{`${entry.n}. ${entry.label}`}</span>
+              <span className="deck-card-consequence-text"><LinkedText text={entry.text} /></span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </>
+  ) : (
+    <>
+      <footer className="deck-card-actions">
+        {primary ? (
+          <button
+            className="deck-btn deck-btn-primary"
+            title={optionTitle(primary.key, `Answer "${primary.label}" — recorded, and the asking session is told right away`)}
+            onClick={() => onAnswer(card.id, primary.key)}
+          >
+            {`${numberOf(primary.key)}. ${primary.label}`}
+          </button>
+        ) : (
+          <button
+            className="deck-btn deck-btn-primary"
+            title="Open this card in the full answer window"
+            onClick={() => void bridgeDeck()?.action('popup')}
+          >
+            Open answer window
+          </button>
+        )}
+        {others.map((option) => (
+          <button
+            key={option.key}
+            className="deck-btn"
+            title={optionTitle(option.key, `Answer "${option.label}" instead`)}
+            onClick={() => onAnswer(card.id, option.key)}
+          >
+            {`${numberOf(option.key)}. ${option.label}`}
+          </button>
+        ))}
+      </footer>
+      {consequences.length > 0 ? (
+        <ul className="deck-card-consequences">
+          {consequences.map((entry) => (
+            <li key={entry.key}>
+              <span className="deck-card-consequence-key">{`${entry.n}. ${entry.label}`}</span>
+              <span className="deck-card-consequence-text"><LinkedText text={entry.text} /></span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </>
+  );
+
   return (
-    <article className="deck-card">
+    <article className={`deck-card${sessionMode ? ' deck-card-session' : ''}`}>
       <header className="deck-card-head">
         <span className="deck-urgency-dot" style={{ background: urgencyTone(card.urgency) }} />
         <h3 className="deck-card-title">{card.title}</h3>
         <time className="deck-card-age">{formatAge(card.createdAt, nowMs)}</time>
       </header>
-      {card.summary ? <p className="deck-card-summary">{card.summary}</p> : null}
-      {where ? <p className="deck-card-where">{where}</p> : null}
-      {isCredential ? (
-        <CredentialRow card={card} />
+      {sessionMode ? (
+        <>
+          <SessionPanel card={card} nowMs={nowMs} />
+          {where ? <p className="deck-card-where" title={where}>{where}</p> : null}
+          {answers}
+          {/* The raiser's own blob, kept one click away: the panel above replaces
+              it, but nothing the card said is ever dropped. */}
+          {card.summary || detail ? (
+            <details className="deck-fold deck-card-raw">
+              <summary>Raw card text</summary>
+              {card.summary ? <p className="deck-card-raw-text"><LinkedText text={card.summary} /></p> : null}
+              {detail ? <Markdown text={detail} className="deck-card-detail" /> : null}
+            </details>
+          ) : null}
+        </>
       ) : (
-        <footer className="deck-card-actions">
-          {primary ? (
-            <button
-              className="deck-btn deck-btn-primary"
-              title={`Answer "${primary.label}" — recorded, and the asking session is told right away`}
-              onClick={() => onAnswer(card.id, primary.key)}
+        <>
+          {card.summary ? (
+            <p
+              className={`deck-card-summary${summaryOpen ? ' deck-card-summary-open' : ''}`}
+              title={summaryOpen ? undefined : 'Click to read all of it'}
+              onClick={() => setSummaryOpen(true)}
             >
-              {primary.label}
-            </button>
-          ) : (
-            <button
-              className="deck-btn deck-btn-primary"
-              title="Open this card in the full answer window"
-              onClick={() => void bridgeDeck()?.action('popup')}
-            >
-              Open answer window
-            </button>
-          )}
-          {others.map((option) => (
-            <button
-              key={option.key}
-              className="deck-btn"
-              title={`Answer "${option.label}" instead`}
-              onClick={() => onAnswer(card.id, option.key)}
-            >
-              {option.label}
-            </button>
-          ))}
-        </footer>
+              <LinkedText text={card.summary} />
+            </p>
+          ) : null}
+          {facts.length > 0 ? (
+            <ul className="deck-card-facts">
+              {facts.map((fact, i) => <li key={i}><LinkedText text={fact} /></li>)}
+            </ul>
+          ) : null}
+          {where ? <p className="deck-card-where" title={where}>{where}</p> : null}
+          {detail ? (
+            <details className="deck-fold deck-card-more">
+              <summary>More</summary>
+              <Markdown text={detail} className="deck-card-detail" />
+            </details>
+          ) : null}
+          {answers}
+          <SteerBox card={card} />
+        </>
       )}
-      <SteerBox card={card} />
     </article>
   );
 }
@@ -1744,19 +2068,7 @@ function SystemSection() {
     return 'up';
   })();
 
-  const desktopLine = (() => {
-    if (!desktop?.ok) return `unreachable — ${desktop?.reason ?? ''}`;
-    const win = desktop.window as
-      | { available?: boolean; process?: string; title?: string; message?: string; reason?: string }
-      | null | undefined;
-    if (win?.available === false) {
-      return `unavailable — ${win.message ?? win.reason ?? 'platform'}`;
-    }
-    const winNote = noteOf(desktop.window as SnapshotSource);
-    if (winNote) return winNote;
-    if (win?.process) return `${win.process}${win.title ? ` — ${win.title}` : ''}`;
-    return 'no window data';
-  })();
+  const desktopLine = desktopAwarenessText(desktop);
 
   const connectLine = (() => {
     if (!connect?.ok) return `unreachable — ${connect?.reason ?? ''}`;
@@ -1816,6 +2128,8 @@ function SystemSection() {
         <div className="deck-sys-row deck-sys-bad" key={line.name} title={line.detail}>
           <span className="deck-sys-dot" />
           <span className="deck-sys-state">{line.state}</span>
+          {/* Owner 2026-11-08: an error with no reason is useless. Show WHY, not a tooltip. */}
+          {line.detail ? <span className="deck-sys-detail">{line.detail}</span> : null}
         </div>
       ))}
       {!pending && degraded.length === 0 ? <p className="deck-empty">Everything answering.</p> : null}
@@ -2006,6 +2320,9 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
   // a time, anchored on the agent's most recent #agents message — the relay
   // thread under it IS the conversation (no per-agent channels exist).
   const [chatTarget, setChatTarget] = useState<string | null>(null);
+  const [chatLinks, setChatLinks] = useState<{ threadUrl?: string; dmUrl?: string }>({});
+  // The fairy's click lands in an effect declared before openChat exists.
+  const openChatRef = useRef<((agent: string) => void) | null>(null);
   const [chatRootId, setChatRootId] = useState<string | null>(null);
   const [chatRows, setChatRows] = useState<RelayRow[]>([]);
   // Drop-to-avatar (2026-08-29): the drag state + the verdict list. The
@@ -2073,6 +2390,29 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
   // notifications and system awareness, so the button read as dead
   // (owner, 2026-08-27). Main sends scroll-to-section on that action;
   // scroll the section into view here.
+  // A d-xxxx link inside card text: the same focus path main's 'deck:focus-card'
+  // takes, so the linked card opens (and scrolls into view) in its slot.
+  const focusCardById = useCallback((id: string) => {
+    setFocusCard((current) => ({ id, nonce: (current?.nonce ?? 0) + 1 }));
+  }, []);
+
+  // Click a companion fairy (orb-window chatWithAgent -> main openAgentChat): the
+  // chat with THAT agent opens here, with its thread and Discord DM one click away.
+  useEffect(() => {
+    return bridgeSubscribe((event) => {
+      if (event.type !== 'deck:open-chat' || typeof event.agent !== 'string' || !event.agent) return;
+      const agent = event.agent;
+      openChatRef.current?.(agent);
+      setChatLinks({
+        threadUrl: typeof event.threadUrl === 'string' ? event.threadUrl : '',
+        dmUrl: typeof event.dmUrl === 'string' ? event.dmUrl : '',
+      });
+      window.setTimeout(() => {
+        document.querySelector(`[aria-label="Chat with ${CSS.escape(agent)}"]`)?.scrollIntoView({ block: 'start' });
+      }, 50);
+    });
+  }, []);
+
   useEffect(() => {
     return bridgeSubscribe((event) => {
       if (event.type !== 'deck:focus-card' || typeof event.id !== 'string') return;
@@ -2129,7 +2469,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
   /** Fire one wake verb and SAY what came back. `run` answers 202 with a pid
    *  long before the wake finishes — reporting that as plain success would be
    *  the lie this line exists to prevent. */
-  const handleWakeAction = useCallback((verb: 'enable' | 'disable' | 'run', name: string) => {
+  const handleWakeAction = useCallback((verb: 'enable' | 'disable' | 'run' | 'investigate', name: string) => {
     setWakePending((current) => {
       if (current.has(name)) return current;
       const next = new Set(current);
@@ -2139,7 +2479,10 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
     void bridgeDeck()
       ?.action(`wake-${verb}`, name)
       .then((result) => {
-        setWakeNotes((current) => ({ ...current, [name]: wakeActionMessage(verb, result) }));
+        const note = verb === 'investigate'
+          ? wakeInvestigateMessage(result as WakeInvestigateResult | boolean | null)
+          : wakeActionMessage(verb, result as WakeActionResult | boolean | null);
+        setWakeNotes((current) => ({ ...current, [name]: note }));
       })
       .catch(() => {
         setWakeNotes((current) => ({ ...current, [name]: `${verb} failed: the desk did not answer` }));
@@ -2159,6 +2502,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
    *  feed messages when it has no thread yet. */
   const openChat = useCallback((agent: string) => {
     setChatTarget(agent);
+    setChatLinks({});
     const agentRows = state.relay
       .filter((row) => row.agent && (row.author === agent || row.author.startsWith(`${agent}+`)))
       .sort((a, b) => b.at - a.at);
@@ -2173,6 +2517,10 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
         .catch(() => {});
     }
   }, [state.relay]);
+
+  useEffect(() => {
+    openChatRef.current = openChat;
+  }, [openChat]);
 
   /** Send one message in the open direct chat: a thread-reply when an anchor
    *  message exists, else a plain channel post mentioning the agent (the
@@ -2292,7 +2640,8 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
         <h1 className="deck-title">Inbox</h1>
         <span className={`deck-count ${state.openCount > 0 ? 'deck-count-live' : ''}`}>
           {state.openCount > 0 ? `1 of ${state.openCount} waiting` : 'all clear'}
-          {(state.totalCount ?? 0) > state.openCount ? ` · ${(state.totalCount ?? 0) - state.openCount} FYI` : ''}
+          {fyiOnlyCount(state) > 0 ? ` · ${fyiOnlyCount(state)} FYI` : ''}
+          {(state.endedCount ?? 0) > 0 ? ` · ${state.endedCount} from ended sessions` : ''}
         </span>
         {!isCharacters ? (
           <button
@@ -2380,6 +2729,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
           onPopupAll={() => runAction('popup')}
           onSpace={state.spaceAvailable ? (link) => void bridgeDeck()?.action('space', link) : undefined}
           focus={focusCard}
+          onFocusCard={focusCardById}
         />
 
         <WakesSection
@@ -2398,6 +2748,11 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
         />
 
         <SystemSection />
+
+        {/* The Atlas program-manager board (Genesis /atlas/issues/board via
+            the gateway MCP door): counts per stage, the issue rows with PR and
+            thread links, and the owner digest verb. Fails soft like System. */}
+        <AtlasSection />
         </>) : null}
 
         <section className="deck-section" aria-label="Avatars" hidden={!isCharacters}>
@@ -2413,6 +2768,7 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
           ) : (
             state.slots.map((slot) => (
               <div className="deck-row deck-row-static" key={slot.slotId}>
+                <FairyMark agent={slot.agent} />
                 {/* The label ellipsizes in CSS; the title keeps the full name one
                     hover away instead of truncating it with no way to read it. */}
                 <span
@@ -2475,7 +2831,8 @@ export function Deck({ view = 'inbox' }: { view?: 'inbox' | 'characters' } = {})
             rows={chatRows}
             nowMs={nowMs}
             onSend={sendChat}
-            onClose={() => setChatTarget(null)}
+            onClose={() => { setChatTarget(null); setChatLinks({}); }}
+            links={chatLinks}
           />
         ) : null}
 

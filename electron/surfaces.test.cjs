@@ -23,6 +23,7 @@ const {
   LOCAL_SURFACES,
   PLATFORM_SURFACES,
   buildSurfaces,
+  daemonProbeUrl,
   platformSurfaces,
   OPENABLE,
   SURFACES,
@@ -31,6 +32,18 @@ const {
   probeSurfaces,
   summarizeSurfaces,
 } = require("./surfaces.cjs");
+
+test("the harness daemon row probes the Windows host from both sides of the WSL boundary", () => {
+  // On Windows the daemon is on loopback.
+  assert.equal(daemonProbeUrl({}), "http://127.0.0.1:8362/health");
+  // Inside awnix (the brain) loopback is awnix's own: nothing listens there, so the row read
+  // DOWN ECONNREFUSED while the daemon answered. The host bridge publishes it at the gateway.
+  assert.equal(daemonProbeUrl({ AWDESK_FLEET_LOCAL: "1" }), "http://10.89.0.1:8362/health");
+  assert.equal(daemonProbeUrl({ AWDESK_FLEET_LOCAL: "1", AWDESK_DAEMON_URL: "http://h:1/health" }), "http://h:1/health");
+  const row = LOCAL_SURFACES.find((s) => s.id === "daemon");
+  assert.equal(row.open, "http://127.0.0.1:8362/health", "the owner opens it from Windows");
+  assert.match(row.label, /^awsh harness daemon/);
+});
 
 test("SURFACES names every door the owner asked for, each with an openable URL", () => {
   const ids = SURFACES.map((s) => s.id);

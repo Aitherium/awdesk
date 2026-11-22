@@ -47,11 +47,23 @@ function libraryRating(record) {
   return ["general", "r15", "r18"].includes(r) ? r : null;
 }
 
+/** VRoid's own verdict for a broker row: its r18/r15 flags and its tags (rating-resolve.cjs). */
 function vroidRating(model) {
   if (!model) return null;
-  if (model.r18) return "r18";
-  if (model.r15) return "r15";
-  return "general";
+  return require("./vroid-link.cjs").ratingOfModel(model);
+}
+
+/** The Hub fields kept in character.json so the desk-start re-derive can read them again. */
+function hubRecord(model) {
+  const out = {};
+  if (typeof model.r18 === "boolean") out.r18 = model.r18;
+  if (typeof model.r15 === "boolean") out.r15 = model.r15;
+  if (model.age_limit && typeof model.age_limit === "object") out.age_limit = model.age_limit;
+  if (model.license && typeof model.license === "object") out.license = model.license;
+  if (Array.isArray(model.tags)) {
+    out.tags = model.tags.map((t) => String(t && typeof t === "object" ? t.name : t).slice(0, 40)).filter(Boolean).slice(0, 40);
+  }
+  return out;
 }
 
 function readRecord(rosterDir, name) {
@@ -80,6 +92,8 @@ function defaults(deps = {}) {
     apply: deps.apply || roster.installCharacter,
     exportParty: deps.exportParty || (() => require("./party-manifest.cjs").exportParty()),
     refusalFor: deps.refusalFor || ((name) => require("./content-rating.cjs").refusalFor(name)),
+    // The rule an installed body answers to, for a body not installed yet (gate + AitherSafety).
+    ratingHidden: deps.ratingHidden || ((rating) => require("./content-rating.cjs").ratingHiddenReason(rating)),
     enrollOptions: deps.enrollOptions || {},
   };
 }
@@ -125,7 +139,7 @@ function findInstalled(rosterDir, record) {
   const sha = String((record && record.sha256) || "");
   const own = libraryRosterName(record);
   if (own && hasModel(rosterDir, own) && (!sha || readRecord(rosterDir, own).library_sha256 === sha)) return own;
-  let names = [];
+  let names;
   try {
     names = fs.readdirSync(rosterDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
   } catch {
@@ -233,6 +247,11 @@ async function installVroidModel(model, deps = {}) {
   if (model.downloadable !== true) {
     return { ok: false, name, installed: false, applied: false, reason: "VRoid Hub does not allow this account to download that model" };
   }
+  // A body this desk would hide is not downloaded at all (the mirror gate, AitherSafety, the
+  // audience): every door judges the same rating, before a byte moves.
+  if (d.ratingHidden(vroidRating(model))) {
+    return { ok: false, name, installed: false, applied: false, reason: "not available on this profile" };
+  }
   if (hasModel(d.rosterDir, name) && readRecord(d.rosterDir, name).vroid_model_id === String(id)) {
     return finish(d, name, false);
   }
@@ -242,7 +261,8 @@ async function installVroidModel(model, deps = {}) {
   const enrolled = await enrollBytes(d, name, got.bytes, {
     rating: vroidRating(model),
     source: "vroid",
-    extra: { vroid_model_id: String(id), display_name: String(model.name || name).slice(0, 80) },
+    hub: model,
+    extra: { vroid_model_id: String(id), display_name: String(model.name || name).slice(0, 80), vroid_hub: hubRecord(model) },
   });
   if (!enrolled.ok) return { ok: false, name, installed: false, applied: false, reason: enrolled.reason };
   return finish(d, name, true);
@@ -257,7 +277,8 @@ async function libraryView(deps = {}) {
   const lib = await d.client.avatarLibrary(deps.clientDeps);
   // R15/R18 entries are left out while the adult-content gate is closed.
   const open = gateOpen(deps);
-  const listed = (lib.avatars || []).filter((a) => open || !["r15", "r18"].includes(libraryRating(a)));
+  const listed = (lib.avatars || []).filter((a) => (open || !["r15", "r18"].includes(libraryRating(a)))
+    && !d.ratingHidden(libraryRating(a) || "unrated"));
   const avatars = listed.map((a) => {
     const name = libraryRosterName(a);
     const here = Boolean(name && hasModel(d.rosterDir, name)
@@ -286,8 +307,10 @@ function gateOpen(deps = {}) {
 
 /** ACG004's invariant, carried over from model-browser.py: while the gate is
  *  closed no R15/R18 row reaches the Deck (and so none can be chosen). */
-function visibleVroidModels(models, open) {
-  return (Array.isArray(models) ? models : []).filter((m) => open || !(m && (m.r18 || m.r15)));
+function visibleVroidModels(models, open, ratingHidden = (rating) => require("./content-rating.cjs").ratingHiddenReason(rating)) {
+  return (Array.isArray(models) ? models : []).filter((m) => m
+    && (open || !(m.r18 || m.r15 || vroidRating(m) !== "general"))
+    && !ratingHidden(vroidRating(m)));
 }
 
 module.exports = {

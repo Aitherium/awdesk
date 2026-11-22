@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "_generated_from": "C:/AitherOS-Fresh/AitherOS/config/agent_voices.json",
+  "_generator": "electron/sync-agent-voices.cjs",
+  "_note": [
+    "DO NOT EDIT. A copy of AitherOS/config/agent_voices.json (the canonical",
+    "map) so awdesk resolves every agent's voice from the same answer as",
+    "awvoice and awdk. Regenerate with: node electron/sync-agent-voices.cjs",
+    "`voice` is the id handed to AitherVoice /voice/synthesize: kokoro:<id>,",
+    "local:piper, or custom:<name>."
+  ],
+  "default_agent": "aither",
+  "agents": {
+    "aither": {
+      "display": "Aither",
+      "engine": "piper",
+      "voice": "local:piper",
+      "custom_id": "custom:aither",
+      "timbre": "the platform's own built voice",
+      "edge_fallback": "en-GB-RyanNeural"
+    },
+    "atlas": {
+      "display": "Atlas",
+      "engine": "kokoro",
+      "voice": "kokoro:am_michael",
+      "timbre": "even, measured male -- observability and command",
+      "edge_fallback": "en-US-ChristopherNeural"
+    },
+    "demiurge": {
+      "display": "Demiurge",
+      "engine": "kokoro",
+      "voice": "kokoro:am_fenrir",
+      "timbre": "deep, deliberate male -- the code architect",
+      "edge_fallback": "en-US-GuyNeural"
+    },
+    "lyra": {
+      "display": "Lyra",
+      "engine": "kokoro",
+      "voice": "kokoro:af_bella",
+      "timbre": "bright, curious female -- research",
+      "edge_fallback": "en-US-JennyNeural"
+    },
+    "iris": {
+      "display": "Iris",
+      "engine": "kokoro",
+      "voice": "kokoro:af_nicole",
+      "timbre": "soft, close-mic female -- media and imagery",
+      "edge_fallback": "en-US-MichelleNeural"
+    },
+    "saga": {
+      "display": "Saga",
+      "engine": "kokoro",
+      "voice": "kokoro:bf_isabella",
+      "timbre": "warm British female -- storytelling",
+      "edge_fallback": "en-GB-LibbyNeural"
+    },
+    "vera": {
+      "display": "Vera",
+      "engine": "kokoro",
+      "voice": "kokoro:af_sarah",
+      "timbre": "clear, precise female -- documentation",
+      "edge_fallback": "en-US-SteffanNeural"
+    },
+    "hera": {
+      "display": "Hera",
+      "engine": "kokoro",
+      "voice": "kokoro:bf_alice",
+      "timbre": "assured British female -- growth and brand",
+      "edge_fallback": "en-GB-MaisieNeural"
+    }
+  }
+}

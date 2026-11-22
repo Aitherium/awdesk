@@ -87,6 +87,25 @@ test("external: only DISCOVERED Claude Code tabs, never a daemon's own or anothe
   assert.deepEqual(r.sessions, [{ id: "ext-1", label: "repo dev 10:01", cwd: "C:\r", status: "idle", lastActivityAt: 5 }]);
 });
 
+test("unified: one directory split by origin -- daemon attaches, discovered resumes", async () => {
+  const { impl } = fakeFetch({ "GET /sessions/unified": { body: { sessions: [
+    // The exact wire shape of adk daemon._unified_row: last_activity_at, no created_at.
+    { id: "d-1", origin: "daemon", harness: "terminal", name: "shell", status: "idle", last_activity_at: 7, cwd: "C:\\w" },
+    { id: "ext-1", origin: "discovered", harness: "claude", name: "repo dev 10:01", cwd: "C:\\r", status: "idle", last_activity_at: 5 },
+    { id: "bad id!", origin: "daemon", harness: "terminal", title: "nope" },
+  ] } } });
+  const c = createTerminalClient({ fetchImpl: impl, base: "http://d", token: "t" });
+  const r = await c.unified();
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.sessions.map((s) => s.id), ["d-1"]);
+  assert.equal(r.sessions[0].label, "shell");
+  // Read from the field the endpoint actually sends (a dead created_at left every
+  // daemon row at 0 and the picker unordered).
+  assert.equal(r.sessions[0].lastActivityAt, 7);
+  assert.equal("createdAt" in r.sessions[0], false, "a unified row never carries created_at");
+  assert.deepEqual(r.external, [{ id: "ext-1", label: "repo dev 10:01", cwd: "C:\\r", status: "idle", lastActivityAt: 5 }]);
+});
+
 test("resume: a claude-tty pty session carrying the old id, sized like a new tab", async () => {
   const { impl, calls } = fakeFetch({
     "POST /sessions": { body: { id: "new1", harness: "claude-tty", state: "ready" } },
@@ -139,4 +158,41 @@ test("dock model: resume offers external tabs not already ours, newest first", (
   const ext = [{ id: "x", lastActivityAt: 1 }, { id: "y", lastActivityAt: 9 }, { id: "mine", lastActivityAt: 99 }];
   assert.deepEqual(model.resumeChoices(ext, [{ id: "mine" }]).map((s) => s.id), ["y", "x"]);
   assert.equal(model.resumeChoices(ext, [], 1).length, 1);
+});
+
+test("nodes: rows the menu can open, an unopenable target dropped, an old daemon is no section", async () => {
+  const { impl } = fakeFetch({ "GET /nodes": { body: { nodes: [
+    { name: "dgx", target: "dgx", host: "100.64.0.38", user: "wzns", online: true, os: "linux", source: "ssh_config+tailnet" },
+    { name: "evil", target: "-oProxyCommand=calc.exe", online: true },
+    { name: "nas", target: "root@nas.lan:2222", online: null },
+  ] } } });
+  const c = createTerminalClient({ fetchImpl: impl, base: "http://d", token: "t" });
+  const r = await c.nodes();
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.nodes.map((n) => [n.name, n.target, n.online]), [["dgx", "dgx", true], ["nas", "root@nas.lan:2222", null]]);
+  const old = createTerminalClient({ fetchImpl: fakeFetch({}).impl, base: "http://d", token: "t" });
+  assert.deepEqual(await old.nodes(), { ok: true, nodes: [] });
+});
+
+test("create node: the target rides to the daemon, a bad one never leaves the desk", async () => {
+  const { impl, calls } = fakeFetch({
+    "POST /sessions": { body: { id: "n1", harness: "node", title: "dgx", state: "ready" } },
+    "POST /sessions/n1/resize": { body: { ok: true } },
+  });
+  const c = createTerminalClient({ fetchImpl: impl, base: "http://d", token: "t" });
+  const r = await c.create({ harness: "node", target: "wzns@100.64.0.38", title: "dgx" });
+  assert.equal(r.ok, true);
+  assert.equal(r.session.label, "dgx");
+  assert.deepEqual(calls[0].body, { harness: "node", cwd: "", title: "dgx", target: "wzns@100.64.0.38" });
+  for (const bad of ["", "-oProxyCommand=calc.exe", "host;rm -rf /", "a b", 42, "host:0", "host:65536", "host:99999"]) {
+    const before = calls.length;
+    const refused = await c.create({ harness: "node", target: bad });
+    assert.equal(refused.ok, false);
+    assert.equal(calls.length, before, `no daemon call for ${JSON.stringify(bad)}`);
+  }
+  const edge = await c.create({ harness: "node", target: "root@10.0.0.39:65535" });
+  assert.equal(edge.ok, true);
+  // Every other harness keeps its old body: no target field appears.
+  await c.create({ harness: "terminal" });
+  assert.equal("target" in calls[calls.length - 2].body, false);
 });

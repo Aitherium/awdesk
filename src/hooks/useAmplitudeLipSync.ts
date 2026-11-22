@@ -1,5 +1,6 @@
 import { useCallback, useRef } from 'react';
 import type { VRM } from '@pixiv/three-vrm';
+import type { VisemeWeights } from './voiceVisemes';
 
 const VISEMES = ['aa', 'ee', 'ih', 'oh', 'ou'] as const;
 
@@ -11,8 +12,16 @@ export function useAmplitudeLipSync(vrm: VRM | null) {
   const rested = useRef(false);
 
   return useCallback(
-    (delta: number, level: number, speaking: boolean) => {
+    (delta: number, level: number, speaking: boolean, override: VisemeWeights | null = null) => {
       if (!vrm?.expressionManager) return;
+      // A driver (the swarm API's `visemes`) owns the mouth while its override is fresh:
+      // the five shapes exactly as sent, no amplitude flutter on top.
+      if (override) {
+        for (const viseme of VISEMES) vrm.expressionManager.setValue(viseme, override[viseme]);
+        smoothed.current = 0;
+        rested.current = false;
+        return;
+      }
       const audible = speaking && level > 0.008;
       const normalized = audible ? Math.min(1, Math.max(0, level) * 2.8) : 0;
       const smoothing = 1 - Math.exp(-delta / (normalized > smoothed.current ? 0.055 : 0.1));

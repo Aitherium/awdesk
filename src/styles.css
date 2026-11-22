@@ -101,15 +101,32 @@ body {
   z-index: 20;
   display: flex;
   flex-direction: column;
+  /* The beads keep their edge when the open help widens the column (they used to jump
+     left by the help's width), and the column -- beads plus help -- always fits the
+     window: the help is the one part that gives way, and it scrolls. */
+  align-items: flex-end;
+  max-height: calc(100vh - 24px);
   gap: 10px;
   pointer-events: auto;
 }
 
+.beads > .bead {
+  flex: none;
+}
+
+/* The gestures help: a popover (Beads.tsx closes it on Esc, a press elsewhere, blur). It
+   fits the window or scrolls -- owner screenshot 2026-11-16 had it running off under the
+   Inbox, cut mid-word. */
 .bead-hint {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
-  max-width: 190px;
+  max-width: 250px;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
   padding: 8px 10px;
   border-radius: 10px;
   border: 1px solid var(--deck-edge);
@@ -124,6 +141,9 @@ body {
 
 .bead-hint-x {
   flex: none;
+  /* Stays reachable while the help scrolls. */
+  position: sticky;
+  top: 0;
   width: 20px;
   height: 20px;
   border: none;
@@ -275,6 +295,10 @@ body {
 .deck-body {
   flex: 1;
   overflow-y: auto;
+  /* A card that expands must not shift anything else: reserve the scrollbar
+     gutter so the body's width (and therefore every row's wrap) is constant
+     whether or not the list is long enough to scroll. */
+  scrollbar-gutter: stable;
   padding: 6px 12px 12px;
 }
 
@@ -1164,7 +1188,12 @@ body {
 .speech-bubble {
   position: relative;
   width: max-content;
-  max-width: 260px;
+  /* Never wider than the window: in the 230 px browser-rail slot a 260 px caption ran off
+     the edge, cut mid-word (owner screenshot 2026-11-16). It wraps instead. */
+  max-width: min(260px, calc(100vw - 16px));
+  /* 1 = keep clear of the body: only the lines that fit above the head, the rest
+     ellipsized (SpeechBubbleView). The docked rail sets it (avatar-dock.cjs DOCKED_CSS). */
+  --bubble-keep-clear: 0;
   padding: 7px 11px;
   border-radius: 12px;
   background: var(--bead-bg);
@@ -1180,7 +1209,7 @@ body {
   /* Anchored by its BOTTOM edge, so a longer caption grows upward, away from
      the face, instead of down over it. */
   transform: translateY(-50%);
-  animation: speech-bubble-in 160ms ease-out;
+  animation: speech-bubble-in 160ms ease-out, speech-bubble-out 450ms ease-in var(--bubble-life, 60s) forwards;
 }
 
 .speech-bubble::after {
@@ -1203,6 +1232,15 @@ body {
   will-change: transform;
 }
 
+/* The words. A line clamp lives HERE, not on the bubble, so ellipsizing never clips the
+   bubble's tail (::after hangs below its box). No clamp is set unless the caption must keep
+   clear of the body (SpeechBubbleView). */
+.speech-bubble__text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* Muted: same words, visibly NOT being said aloud -- a dashed edge and a
    speaker-off mark, so a silent room never looks like a broken voice service. */
 .speech-bubble--muted {
@@ -1220,6 +1258,11 @@ body {
 @keyframes speech-bubble-in {
   from { opacity: 0; transform: translateY(-42%) scale(0.96); }
   to { opacity: 1; transform: translateY(-50%) scale(1); }
+}
+
+@keyframes speech-bubble-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1335,8 +1378,22 @@ body {
 .deck-ny-group-stale .deck-ny-group-head { color: color-mix(in oklch, var(--deck-muted), transparent 20%); }
 .deck-ny-bulk-note { font-size: 11px; color: var(--deck-muted); }
 
-.deck-ny-item { border-radius: 8px; }
-.deck-ny-item-open { background: var(--deck-panel); border: 1px solid var(--deck-edge); margin: 2px 0 6px; }
+.deck-ny-item {
+  /* The border box and margins are IDENTICAL open and closed, so expanding a
+     card cannot move the rows below it -- the old -open rule added a border and
+     8px of margin and every click nudged the list (the arrow "kept moving"). */
+  border: 1px solid transparent;
+  border-radius: 8px;
+  margin: 0;
+}
+.deck-ny-item-open { background: var(--deck-panel); border-color: var(--deck-edge); }
+.deck-ny-filter {
+  width: 100%; height: 26px; margin: 2px 0 4px; padding: 0 8px;
+  border: 1px solid var(--deck-edge); border-radius: 8px;
+  background: var(--deck-panel); color: var(--deck-text); font: inherit; font-size: 12px;
+}
+.deck-ny-filter::placeholder { color: var(--deck-muted); }
+.deck-ny-filter:focus { outline: 1px solid var(--deck-accent); outline-offset: -1px; }
 .deck-ny-row {
   display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 8px;
   cursor: pointer; font-size: 12.5px; color: var(--deck-text);
@@ -1386,6 +1443,12 @@ body {
   white-space: normal; overflow: hidden;
   font-size: 11.5px; line-height: 1.35; color: var(--deck-soft);
 }
+.deck-wake-cause, .deck-wake-held {
+  flex: none; font-size: 10.5px; font-weight: 600; padding: 0 6px; border-radius: 999px; line-height: 16px;
+  border: 1px solid var(--deck-edge); color: var(--deck-soft);
+}
+.deck-wake-cause-code-bug { border-color: var(--destructive); color: var(--destructive); }
+.deck-wake-cause-dependency-down, .deck-wake-held { border-color: var(--warning); color: var(--warning); }
 .deck-broken-age { flex: none; font-size: 11px; color: var(--deck-muted); }
 .deck-broken-row .deck-wake-actions, .deck-wake-table .deck-wake-actions { display: inline-flex; gap: 4px; margin: 0; }
 .deck-broken-row .deck-wake-note { flex-basis: 100%; }
@@ -1432,7 +1495,27 @@ body {
 .deck-sys-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warning); }
 .deck-sys-dot-ok { background: var(--success, var(--pastel-mint)); }
 .deck-sys-state { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.deck-sys-detail { flex: none; max-width: 40%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: var(--deck-muted); }
+.deck-sys-row.deck-sys-bad { flex-wrap: wrap; padding-block: 4px; }
+.deck-sys-detail { flex: 1 1 100%; padding-left: 16px; white-space: normal; overflow-wrap: anywhere; font-size: 11px; color: var(--deck-muted); }
+
+/* Atlas — the program-manager board: stage counts as chips, then one row per
+   issue with its PR and thread; both open in Aither Browser like every other
+   desk link. */
+.deck-atlas-counts { gap: 6px; }
+.deck-atlas-count { cursor: default; font-variant-numeric: tabular-nums; }
+.deck-atlas-row { flex-wrap: wrap; }
+.deck-atlas-number { color: var(--deck-accent); font-variant-numeric: tabular-nums; }
+.deck-atlas-stage { text-transform: capitalize; }
+.deck-atlas-age { min-width: 2.5em; text-align: right; }
+.deck-atlas-link {
+  flex: none; color: var(--deck-accent); font-size: 11.5px; text-decoration: none;
+  padding: 2px 6px; border: 1px solid var(--deck-edge); border-radius: 6px;
+}
+.deck-atlas-link:hover { background: var(--deck-edge); text-decoration: underline; }
+.deck-atlas-updated { margin: 2px 4px 6px; }
+.deck-atlas-digest { display: flex; align-items: center; gap: 8px; margin: 2px 4px 6px; }
+.deck-atlas-note { overflow-wrap: anywhere; }
+.deck-atlas-digest-text { margin: 4px 0 0; padding-left: 8px; white-space: pre-wrap; user-select: text; color: var(--deck-text); }
 
 /* NOW mode (ADHD gap 3): one card on the whole window, the next slides in. */
 .deck-now { position: fixed; inset: 0; z-index: 1000; border-radius: 0; }
@@ -1459,3 +1542,175 @@ body {
 .deck-now-enter { margin-left: 8px; }
 @keyframes deck-now-slide { from { opacity: 0; transform: translateX(48px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .deck-now-card { animation: none; } }
+
+/* ── Inbox SESSION PANEL (owner, 2026-11-08: "not enough info, no easy way to
+      interact or dive deeper or engage with those sessions"). A card raised by a
+      coding session says whether that session is open, what it was asked, what
+      it last said, and gives a door to it (Go to it / Resume / Reply). ──────── */
+.deck-session-pill {
+  flex: none; font-size: 10.5px; font-weight: 650; line-height: 16px; padding: 0 7px; border-radius: 999px;
+  border: 1px solid currentColor; text-transform: lowercase; letter-spacing: 0.02em;
+}
+.deck-session-pill-live { color: var(--success, var(--pastel-mint)); }
+.deck-session-pill-working { color: var(--deck-accent); }
+.deck-session-pill-ended { color: var(--deck-muted); opacity: 0.85; }
+.deck-ny-ended-chip { flex: none; padding: 2px 10px; font-size: 11px; }
+.deck-ny-ended-chip-confirm { border-color: var(--destructive); color: var(--destructive); }
+.deck-ny-ended-chip:disabled { opacity: 0.4; cursor: default; }
+
+.deck-session {
+  display: flex; flex-direction: column; gap: 6px; margin: 2px 0 6px; padding: 8px 10px;
+  border: 1px solid var(--deck-edge); border-radius: 10px;
+  background: color-mix(in oklch, var(--deck-bg), transparent 40%);
+}
+.deck-session-status { display: flex; align-items: center; gap: 8px; min-height: 24px; font-size: 12.5px; }
+.deck-session-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--deck-muted); }
+.deck-session-dot-idle { background: var(--success, var(--pastel-mint)); box-shadow: 0 0 0 3px color-mix(in oklch, var(--success, var(--pastel-mint)), transparent 80%); }
+.deck-session-dot-busy { background: var(--deck-accent); }
+.deck-session-dot-ended { background: var(--deck-muted); opacity: 0.7; }
+.deck-session-state { flex: none; font-weight: 650; color: var(--deck-text); }
+.deck-session-name {
+  flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--deck-soft);
+}
+.deck-session-go { flex: none; margin-left: auto; display: flex; gap: 6px; }
+.deck-session-quiet { margin: 0; font-size: 11.5px; color: var(--deck-muted); }
+.deck-session-note { margin: 0; font-size: 11.5px; color: var(--deck-soft); overflow-wrap: anywhere; }
+.deck-session-note-bad { color: var(--destructive); }
+
+/* Label column + content: Asked / Then / It said / Edited. */
+.deck-session-field { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 2px 10px; align-items: start; }
+.deck-session-label {
+  padding-top: 1px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--deck-muted);
+}
+.deck-session-text { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--deck-text); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+
+/* Folding by height, not -webkit-line-clamp: the folded content can be tables
+   and lists, which a line clamp does not cut. */
+.deck-clamp-wrap { min-width: 0; }
+/* One font size + line height for everything that folds, so N lines of the
+   max-height below is exactly N lines of its text. */
+.deck-clamp { font-size: 12.5px; line-height: 1.45; }
+.deck-clamp-folded {
+  max-height: calc(var(--deck-clamp-lines, 4) * 1.45em); overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.2em), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.2em), transparent);
+}
+.deck-clamp-clickable { cursor: pointer; }
+.deck-clamp-toggle {
+  border: 0; background: none; padding: 0; margin: 1px 0 0; cursor: pointer; font: inherit; font-size: 11px;
+  color: var(--deck-muted); text-decoration: underline dotted;
+}
+.deck-clamp-toggle:hover { color: var(--deck-text); }
+
+/* Light markdown: built as React nodes from parsed blocks, never as HTML. */
+.deck-md { font-size: 12.5px; line-height: 1.45; color: var(--deck-text); user-select: text; overflow-wrap: anywhere; }
+.deck-md-p, .deck-md-h { margin: 0 0 6px; white-space: pre-wrap; }
+.deck-md-h { font-weight: 700; }
+.deck-md > :last-child { margin-bottom: 0; }
+.deck-md-list { margin: 0 0 6px; padding-left: 18px; }
+.deck-md-list li { margin: 1px 0; }
+.deck-md-code, .deck-md-pre {
+  font-family: var(--font-mono); font-size: 0.92em; background: var(--surface-800); border-radius: 4px;
+}
+.deck-md-code { padding: 0 4px; }
+.deck-md-pre { margin: 0 0 6px; padding: 6px 8px; white-space: pre-wrap; overflow-x: auto; }
+.deck-md-table-wrap { margin: 0 0 6px; overflow-x: auto; }
+.deck-md-table { border-collapse: collapse; font-size: 11.5px; }
+.deck-md-table th, .deck-md-table td {
+  border: 1px solid var(--deck-edge); padding: 2px 8px; text-align: left; vertical-align: top;
+}
+.deck-md-table th { background: var(--surface-800); color: var(--deck-soft); font-weight: 650; }
+
+/* Links inside card text: buttons that read as links (d-ids, PRs, URLs). */
+.deck-inline-link {
+  border: 0; background: none; padding: 0; margin: 0; font: inherit; color: var(--deck-accent); cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px; text-align: left; overflow-wrap: anywhere;
+}
+.deck-inline-link:hover, .deck-inline-link:focus-visible { filter: brightness(1.2); }
+.deck-inline-card { font-family: var(--font-mono); font-size: 0.95em; }
+.deck-inline-id { font-family: var(--font-mono); font-size: 0.95em; color: var(--deck-muted); }
+
+.deck-session-turns { margin: 0; }
+.deck-session-turn { margin: 4px 0 6px; padding-left: 8px; border-left: 2px solid var(--deck-edge); }
+.deck-session-turn-user { border-left-color: color-mix(in oklch, var(--deck-accent), transparent 40%); }
+.deck-session-turn-head { display: flex; align-items: baseline; gap: 8px; font-size: 10.5px; color: var(--deck-muted); }
+.deck-session-turn-role { font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+
+.deck-session-files { display: flex; flex-wrap: wrap; gap: 4px; }
+.deck-session-file { cursor: default; padding: 1px 8px; font-size: 11px; font-family: var(--font-mono); }
+
+.deck-session-reply { display: flex; gap: 6px; align-items: flex-end; margin-top: 2px; }
+.deck-session-reply-input {
+  flex: 1; min-width: 0; min-height: 44px; resize: vertical;
+  border: 1px solid var(--deck-edge); background: rgba(0, 0, 0, 0.25); color: inherit;
+  border-radius: 8px; padding: 6px 8px; font: inherit; font-size: 12.5px; line-height: 1.4;
+}
+.deck-session-reply-input:focus { outline: 1px solid var(--deck-accent); outline-offset: -1px; }
+.deck-session-effect { margin: 0; font-size: 11px; color: var(--deck-muted); }
+.deck-session-meta {
+  margin: 0; font-size: 10.5px; color: var(--deck-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.deck-session-path { font-family: var(--font-mono); user-select: text; }
+
+/* The rest of an expanded card: raw text, facts, detail, what each answer does. */
+.deck-card-summary-open {
+  display: block; -webkit-line-clamp: unset; overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
+}
+.deck-card-summary:not(.deck-card-summary-open) { cursor: pointer; }
+.deck-card-raw-text { margin: 2px 0 6px; font-size: 11.5px; color: var(--deck-soft); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.deck-card-detail { margin: 2px 0 6px; }
+.deck-card-facts { margin: 6px 0 0; padding-left: 18px; font-size: 12px; color: var(--deck-soft); }
+.deck-card-facts li { margin: 1px 0; }
+.deck-card-consequences { list-style: none; margin: 6px 0 0; padding: 0; font-size: 11px; color: var(--deck-muted); }
+.deck-card-consequences li { display: flex; gap: 6px; margin: 1px 0; }
+.deck-card-consequence-key { flex: none; font-weight: 650; color: var(--deck-soft); }
+.deck-card-consequence-text { min-width: 0; overflow-wrap: anywhere; }
+
+/* ── the agent fairy mark (FairyMark.tsx; palette electron/agent-fairies.json) ──
+   The same fairy as the desk orb and the Discord avatars: a white-hot core in
+   the agent's bloom, two small wings in its colour. Swept = Hera's wings, ring =
+   a ring-shaped glow. */
+.fairy-mark {
+  position: relative; display: inline-block; flex: none; vertical-align: middle;
+  width: var(--fm-size, 14px); height: var(--fm-size, 14px); margin: 0 4px; border-radius: 50%;
+  background: radial-gradient(circle, #fff 0%, var(--fm-core, #fff) 26%, var(--fm-color) 58%, rgba(255, 255, 255, 0) 100%);
+  box-shadow: 0 0 6px 1px var(--fm-glow);
+}
+.fairy-mark::before,
+.fairy-mark::after {
+  content: ''; position: absolute; top: 12%; width: 55%; height: 38%; border-radius: 50%;
+  background: var(--fm-wing); border: 0.5px solid rgba(255, 255, 255, 0.45);
+}
+.fairy-mark::before { right: 72%; transform: rotate(18deg); }
+.fairy-mark::after { left: 72%; transform: rotate(-18deg); }
+.fairy-mark-swept::before,
+.fairy-mark-swept::after { height: 26%; border-radius: 0 80% 20% 80%; }
+.fairy-mark-ring { outline: 1px solid var(--fm-glow); outline-offset: 1px; }
+
+/* A stage's handle (src/stage/StageHandles.tsx): a small chip over a group of bodies; drag it to
+   move the whole stage. It is drawn DOM, so the window takes the pointer there. */
+.stage-handle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--deck-edge, rgba(214, 236, 255, 0.35));
+  background: var(--bead-bg, rgba(10, 14, 24, 0.9));
+  color: var(--bead-fg, #eef6ff);
+  font: 600 11px/1.2 system-ui, sans-serif;
+  white-space: nowrap;
+  cursor: grab;
+  user-select: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.stage-handle:active {
+  cursor: grabbing;
+}
+
+.stage-handle-grip {
+  font-size: 14px;
+  opacity: 0.75;
+}

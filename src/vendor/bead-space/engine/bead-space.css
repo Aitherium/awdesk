@@ -137,12 +137,15 @@
   stroke: rgb(6 12 21 / 88%);
   stroke-width: 3px;
   stroke-linejoin: round;
-  transition: opacity 140ms ease;
+  visibility: hidden;
+  transition: opacity 140ms ease, visibility 0s linear 140ms;
 }
 
 .bead-space.bs-labels-on .bs-label,
 .bead-space .bs-node.selected .bs-label {
   opacity: 1;
+  visibility: visible;
+  transition: opacity 140ms ease, visibility 0s;
 }
 
 .bead-space .bs-node.selected .bs-label {
@@ -153,6 +156,7 @@
 /* A dimmed planet's label would just be noise around the thing you selected. */
 .bead-space .bs-node.dim .bs-label {
   opacity: 0;
+  visibility: hidden;
 }
 
 /*
@@ -367,8 +371,10 @@
    Hosts that drive levels (universe -> galaxy -> system) opt in through options;
    nothing below changes a host that sets none of them. */
 
+/* display:none, not opacity:0 -- an invisible stroked label is still laid out and
+   painted on every camera frame (2026-11-07: ~300 of them on the blog journey). */
 .bead-space .bs-node.bs-label-hidden .bs-label {
-  opacity: 0 !important;
+  display: none;
 }
 
 /* A new level fades in while the camera flies (the flight itself is d3). */

@@ -23,6 +23,8 @@ export interface SpeechBubble {
   muted: boolean;
   /** Monotonic id, so a repeat of the SAME sentence still restarts its timer. */
   seq: number;
+  /** How long it stays, so the fade-out can be timed to the end of its life. */
+  lifeMs?: number;
 }
 
 /** Collapse whitespace and cut at a word boundary. A caption is one glance, not
@@ -78,3 +80,35 @@ export function clampIntoViewport(
     dy: axis(rect.top, rect.bottom, viewport.height),
   };
 }
+
+/** How far to move a bubble UP so it clears every box in `above` (bubbles that arrived earlier keep
+ *  their place; a newer one stacks over them, never on top). Pure. Boxes that do not overlap
+ *  horizontally are ignored; the result is 0 when nothing is in the way, else a negative dy. */
+export function stackOffset(rect: Box, above: Box[], gap = 6): number {
+  let top = rect.top;
+  const height = rect.bottom - rect.top;
+  // Settle against the boxes from the lowest to the highest: moving up can run into the next one.
+  const sorted = above
+    .filter((b) => b.left < rect.right && b.right > rect.left)
+    .sort((a, b) => b.top - a.top);
+  for (const b of sorted) {
+    const bottom = top + height;
+    if (bottom > b.top && top < b.bottom) top = b.top - gap - height;
+  }
+  return top - rect.top;
+}
+
+/** How many lines a caption may use when it must keep CLEAR of the body (docked in the browser
+ *  rail, where the slot is barely wider than the avatar: owner screenshot 2026-11-16 had a caption
+ *  wrap down over the whole body and run off the slot's edge). The room is what lies between the
+ *  window's top margin and the caption's anchor above the head; the rest is ellipsized. At least
+ *  one line: a caption nobody can see is worse than one that grazes the hair. Pure.
+ *  `anchorBottom` is the caption's natural bottom edge (client px), `chrome` its padding+border. */
+export function captionLines(anchorBottom: number, lineHeight: number, chrome = 0, margin = 8, max = 12): number {
+  if (!Number.isFinite(anchorBottom) || !(lineHeight > 0)) return 1;
+  const room = anchorBottom - margin - Math.max(0, Number(chrome) || 0);
+  return Math.max(1, Math.min(max, Math.floor(room / lineHeight)));
+}
+
+/** The fade-out starts this long before the bubble is removed (see styles.css .speech-bubble). */
+export const BUBBLE_FADE_MS = 450;

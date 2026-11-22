@@ -47,7 +47,20 @@ const policy = require("./browser-policy.cjs");
 const internal = require("./browser-internal.cjs");
 const contextPush = require("./browser-context-push.cjs");
 const { TabSet, agentTabView } = require("./browser-tabs.cjs");
-const { createLibrary } = require("./browser-library.cjs");
+const libraryMod = require("./browser-library.cjs");
+const { createLibrary } = libraryMod;
+// The library pages (aither://history, bookmarks, downloads, permissions, clear-data) and
+// the per-site permission prompt. Both pure; this module installs their host.
+const libraryPages = require("./browser-library-pages.cjs");
+const sitePermissions = require("./browser-permissions.cjs");
+// The high-impact Edge gaps (2026-11-13): a plain Chrome user agent, page full screen and
+// Copy buttons, popups that keep their opener, and links that open another app.
+const browserUa = require("./browser-user-agent.cjs");
+const quietGrants = require("./browser-quiet-grants.cjs");
+const fullscreenMod = require("./browser-fullscreen.cjs");
+const popups = require("./browser-popups.cjs");
+const externalApps = require("./browser-external-apps.cjs");
+const pageErrors = require("./browser-page-errors.cjs");
 const { createDownloads } = require("./browser-downloads.cjs");
 const agentsPanel = require("./agents-panel.cjs");
 const rail = require("./browser-rail.cjs");
@@ -56,9 +69,31 @@ const taskbar = require("./browser-taskbar.cjs");
 const extensions = require("./browser-extensions.cjs");
 const overlayMod = require("./browser-overlay.cjs");
 const deskTenant = require("./desk-tenant.cjs");
+const tenantApps = require("./tenant-apps.cjs");
 const tabDiscard = require("./tab-discard.cjs");
+// Split panes ("stages"): the pure layout math for two or three side-by-side pages.
+const panes = require("./browser-panes.cjs");
 const terminalWindow = require("./terminal-window.cjs");
+// Dock terminals and folders INTO the container (the split pane, the "+" picker, drops):
+// the pure decisions live there; this file owns only the views and the window.
+const dockIn = require("./dock-in-model.cjs");
 const agentSessions = require("./browser-agent-cookies.cjs");
+// The layout document (pane sides, presets, the rail's arrangement, detached bounds,
+// canvas boards) -- one more key of browser-layout.json, never a second store.
+const deskLayout = require("./desk-layout.cjs");
+// Edge parity (owner 2026-11-13, "close the gaps"): keys, right-click, find, zoom, print,
+// InPrivate, session restore, translate, DRM hand-off. The pure parts live there.
+const everyday = require("./browser-everyday.cjs");
+// Protected video and music (Widevine): the castLabs build installs the CDM; this module
+// is the only one that touches Electron's `components`, and it is inert on stock Electron.
+const widevineMod = require("./browser-widevine.cjs");
+const workspaceMod = require("./browser-workspace.cjs");
+// STAGES: a named, saved arrangement of this window's tabs (and, later, its splits and
+// terminal sessions) bound to one workspace. Its own file, userData/stages.json --
+// browser-layout.json drops any key it does not name, so a stage document written there
+// would vanish on the next read. Pure model and store: browser-stages.cjs.
+const browserStages = require("./browser-stages.cjs");
+const { createSurfaceState } = require("./surface-state.cjs");
 let knowledgeImpl = null;
 function knowledgeClient() {
   if (!knowledgeImpl) knowledgeImpl = require("./knowledge-client.cjs").createKnowledgeClient();
@@ -69,6 +104,8 @@ const PARTITION = "persist:aither-browser";
 /** The agent's OWN session (BROWSER-M3, browser-agent-cookies.cjs): its tabs ride this. */
 const AGENT_PARTITION = agentSessions.AGENT_PARTITION;
 const CHROME_HEIGHT = 78; // tab strip (34) + toolbar (44, the agent indicator lives in it); browser-chrome.html matches
+/** The bookmarks bar under the toolbar (Ctrl+Shift+B, off by default); browser-chrome.html #bmbar matches. */
+const BOOKMARKS_BAR_HEIGHT = 30;
 // The assistant panel: one HTML file + one preload. Point these at the awkit
 // Connect panel to swap it (see createAssistantPanel).
 const ASSISTANT_PANEL = Object.freeze({
@@ -159,6 +196,63 @@ function setPrefs(patch) {
 }
 /** A gutter is being dragged: page views are hidden so the chrome page keeps the mouse. */
 let dragging = false;
+/**
+ * Edit-layout mode (the Customize panel's "Edit layout", the palette's layout.edit):
+ * every page view steps aside, exactly as during a gutter drag, so the chrome page can
+ * draw the panes as labelled boxes with drop zones and handles over the whole window.
+ * Not persisted: a restart never comes back in edit mode.
+ */
+let editingLayout = false;
+/**
+/**
+ * The stage switcher's panel is open (the chrome's stage button). Page views are native
+ * children drawn OVER the chrome page, so the panel needs the page area to itself -- the
+ * same step-aside a gutter drag and edit-layout use. Not persisted. (A "Stage" in the UI
+ * is a saved ARRANGEMENT of tabs, browser-stages.cjs; the identifier `stage` below is the
+ * SPLIT of the page area. They are different things.)
+ */
+let stagingMenu = false;
+/**
+ * A tab is being dragged onto the page area to split it (browser-chrome.html's tab
+ * drag). The page views step aside for the gesture -- a view under the cursor would
+ * swallow the drop -- and the chrome page draws the left/right drop zones.
+ */
+let stageDragging = false;
+/** Page views give the chrome page the whole window (a drag, edit-layout, a split drag, the stage panel). */
+function viewsAside() {
+  return dragging || editingLayout || stageDragging || stagingMenu;
+}
+
+/**
+ * The split ("stage") of the page area -- owner, 2026-11-18: "one container with
+ * tabs and splits". `null` is the ordinary window: exactly one page, exactly as
+ * before. Otherwise `{axis, tabs: [tabId], sizes: [fraction], focus: index}`:
+ * `tabs[i]` is the tab pane i shows, `sizes` are its shares of the page area
+ * (browser-panes.cjs owns the math) and `focus` is the pane the address bar and
+ * the tab strip follow. Every pane is its own WebContentsView; layout() gives each
+ * the rect of its pane and hides every tab outside the stage.
+ */
+let stage = null;
+/** The last layoutPanes() answer: state() and the divider drag read one geometry. */
+let splitGeometry = null;
+
+/**
+ * Panes in their own windows (desk-layout DETACHABLE: the assistant panel, the terminal
+ * dock, the taskbar). surface-state.cjs owns WHERE each one is -- the same single owner
+ * the console's panes have -- and the pane windows are the oracle it is reconciled
+ * against, so a window closed from its own title bar reattaches instead of leaving a
+ * hole the layout still reserves.
+ */
+const paneSurfaces = createSurfaceState(deskLayout.DETACHABLE);
+/** pane -> its own BrowserWindow, while detached. */
+const paneWindows = new Map();
+/** The browser window is closing: pane windows go with it and stay "open" for next time. */
+let closingBrowser = false;
+function paneDetached(pane) {
+  return paneSurfaces.presentationOf(pane) === "detached";
+}
+/** The canvas host (browser-canvas.cjs), made on first use. */
+let canvasHost = null;
 /** The living desktop's taskbar (browser-taskbar.cjs): its view, and whether its menu is open. */
 let taskbarView = null;
 let taskbarOpen = false;
@@ -173,6 +267,15 @@ let taskbarStatus = "off";
 let dockView = null;
 let dockStatus = "off";
 const DOCK_URL = "aither://terminal/?dock=1";
+/**
+ * The SPLIT PANE (dock-in slice 2): one second pane beside the active tab, so a docked
+ * terminal can be moved INTO the container instead of opening a whole new tab. It is a
+ * WebContentsView of an aither:// page (dockIn.moveToSplitUrl / asSplitUrl) placed by
+ * layout()'s splitRects. `axis` splits left/right or top/bottom; `ratio` is the active
+ * tab's share. One pane is enough to be useful and small enough to merge.
+ */
+let splitView = null;
+const dockSplitState = { axis: "vertical", ratio: 0.5 };
 /**
  * Popped-out tabs (owner, 2026-10-04: "pop out any screen into its own floating window").
  * tab id -> its own BrowserWindow. The tab stays in the TabSet (same owner, same agent
@@ -325,13 +428,16 @@ function activeView() {
 }
 
 /**
- * Every tab, with what the strip shows. This is the OWNER's view (the strip, the
- * panel); an agent gets agentTabView(tabList()), which withholds the owner's tabs.
+ * The tabs of the ACTIVE stage, with what the strip shows. This is the OWNER's view (the
+ * strip, the panel); an agent gets agentTabView(tabList()), which withholds the owner's
+ * tabs. A suspended stage's tabs are not here: they are not on screen, not clickable and
+ * not what the agent is looking at. Switching stages is what brings them back.
  */
 function tabList() {
   const snap = tabs.snapshot();
   const ownerSession = electron().session.fromPartition(PARTITION);
-  return snap.tabs.map((t) => {
+  const active = activeStageId();
+  return snap.tabs.filter((t) => tabStage(t.id) === active).map((t) => {
     const view = viewOf(t.id);
     const tab = tabs.get(t.id) || {};
     const url = view ? view.webContents.getURL() : (discarded.get(t.id) || {}).url || "";
@@ -348,11 +454,15 @@ function tabList() {
       title: view ? view.webContents.getTitle() : (discarded.get(t.id) || {}).title || "",
       loading: view ? view.webContents.isLoading() : false,
       popped: popped.has(t.id),
+      // The split pane this tab shows in (0, 1, 2), or -1 when the page is not split
+      // or this tab is not one of its panes.
+      pane: stageHas(t.id) ? stage.tabs.indexOf(t.id) : -1,
       shared: t.by === "you" && tabs.isShared(t.id, url),
       // An AGENT tab riding the OWNER's cookies because its site is allowed
       // (BROWSER-M3): read from the live session, not from the prefs, so a tab
       // opened before the allow shows where it really is.
       agentSignIn: t.by === "agent" && Boolean(view) && view.webContents.session === ownerSession,
+      private: Boolean(tab.private),
     };
   });
 }
@@ -372,12 +482,25 @@ function state() {
     agent: gate.snapshot(),
     contextPush: lastContextPush,
     tabs: tabList(),
+    // The stage switcher (left of the strip): every stage, the one you are in, and what
+    // its workspace binding really means right now (stageScope().live / .reason).
+    stages: { list: browserStages.list(getStages()), active: activeStageId(),
+      scope: stageScope(), warnings: stagesWarn },
     bookmarked: getLibrary().isBookmarked(wc.getURL()),
+    // The chrome page's own height (the bookmarks bar adds a row) and that bar's contents.
+    chromeHeight: chromeHeight(),
+    bookmarksBar: getPrefs().bookmarksBar ? libraryMod.barModel(getLibrary().bookmarks()) : null,
     downloads: downloads.list(),
     rail: railState(),
+    // The split, if there is one: each pane's rect and the dividers between them
+    // (content coordinates, the same space the chrome page draws in), with the
+    // page area beside it so a tab dragged to an edge can size its drop zones.
+    split: splitState(),
+    pageRect: currentRects().page,
     // "Let the agent use my sign-in" for the page on screen (BROWSER-M3): its site,
     // whether the agent may ride the owner's session there, and every allowed site.
     agentSignIn: agentSessions.stateFor(getPrefs().agentCookieSites, wc.getURL()),
+    ...everydayState(wc),
   };
 }
 
@@ -402,6 +525,7 @@ function pushState() {
   }, wait);
 }
 function pushStateNow() {
+  if (win && !win.isDestroyed() && sessionRestored && getPrefs().restoreSession !== false) getSessionStore().save(tabList());
   const payload = state();
   if (win && !win.isDestroyed()) win.webContents.send("desk:browser-state", payload);
   if (alive(panelView)) panelView.webContents.send("desk:browser-state", payload);
@@ -413,23 +537,47 @@ function pushStateNow() {
  * guard is per session -- one hardened session must not leave the next one open.
  */
 const hardenedSessions = new WeakSet();
-function hardenSession(ses) {
+function hardenSession(ses, { owner = false } = {}) {
   if (!ses || hardenedSessions.has(ses)) return;
   hardenedSessions.add(ses);
-  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(policy.allowPermission(permission)));
-  ses.setPermissionCheckHandler((_wc, permission) => policy.allowPermission(permission));
+  // Sites see plain Chrome, not "Electron/39" (browser-user-agent.cjs): this session, and
+  // the app-wide fallback a popup and a service worker read.
+  browserUa.install(ses, electron().app);
+  // Deny by default (policy.allowPermission). Five permissions ASK the owner instead, on
+  // the owner's own web tab only, and remember the answer per site (browser-permissions.cjs).
+  // `owner` is true for the owner's persistent session only: there, protected media
+  // (mediaKeySystem) is granted unasked to the owner's own web tab (standingGrant).
+  const grant = { owner: owner === true };
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => requestPermission(wc, permission, callback, details, grant));
+  ses.setPermissionCheckHandler((wc, permission, origin, details) => checkPermission(wc, permission, origin, details, grant));
   if (typeof ses.setDevicePermissionHandler === "function") ses.setDevicePermissionHandler(() => false);
+  // Ads and trackers are cancelled at the network layer (browser-adblock.cjs).
+  // The InPrivate session is told apart: a pause chosen there lives in memory only.
+  try {
+    const inPrivate = ses === electron().session.fromPartition(everyday.INPRIVATE_PARTITION);
+    // The workspace policy's request guard rides the same (one per session) listener.
+    getAdblock().attach(ses, { onBlocked: () => pushState(), private: inPrivate, guard: (details) => getWorkspace().cancelsRequest(details) });
+  } catch {
+    // No ad blocking: browsing still works, and the policy's guard still stands.
+    try {
+      ses.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"] },
+        (details, callback) => callback({ cancel: getWorkspace().cancelsRequest(details) }));
+    } catch { /* a session with no webRequest */ }
+  }
   // A download an AGENT triggers lands on the owner's disk unseen; while the agent
   // drives (and the owner has not taken over) downloads are cancelled. The owner
   // takes over to download. Either way it is a ROW on the shelf (browser-downloads):
   // a silent cancel read as "the download button is broken".
-  ses.on("will-download", (_event, item) => {
+  ses.on("will-download", (_event, item, wc) => {
+    // A workspace app whose policy turns downloads off: cancelled, said and audited there.
+    if (getWorkspace().blocksDownload(item, wc)) return;
     const g = gate.snapshot();
     const meta = { filename: item.getFilename(), url: item.getURL(), total: item.getTotalBytes() };
     if (g.driving && !g.paused) {
       item.cancel();
       downloads.start({ ...meta, blocked: true });
       pushState();
+      libraryChanged();
       return;
     }
     const id = downloads.start(meta);
@@ -437,24 +585,50 @@ function hardenSession(ses) {
       downloads.update(id, { received: item.getReceivedBytes(), total: item.getTotalBytes(),
         state: st === "interrupted" ? "interrupted" : "progressing" });
       pushState();
+      libraryChanged();
     });
     item.once("done", (_e, st) => {
       downloads.update(id, { state: st, received: item.getReceivedBytes(), path: item.getSavePath() });
       pushState();
+      libraryChanged();
     });
     pushState();
+    libraryChanged();
   });
 }
 
 async function loadInView(view, url) {
+  // `.aither` addresses resolve through the AitherNet Index (aither-address.cjs); a
+  // failure anywhere shows a dark page with the reason, never a blank white view
+  // (owner 2026-11-08: "why blank white page, I hate it").
+  const addr = require("./aither-address.cjs");
+  // A workspace app opens in its work tab or not at all (browser-workspace.cjs beforeLoad).
+  if (await getWorkspace().beforeLoad(view, url)) return;
+  let target;
   try {
-    await view.webContents.loadURL(url);
+    target = await addr.resolveAitherUrl(url);
+  } catch (error) {
+    if (alive(view)) await view.webContents.loadURL(addr.errorPageUrl(url, String((error && error.message) || error))).catch(() => {});
+    throw error;
+  }
+  // This load shows its own error page below; the tab's did-fail-load must not show a second.
+  const wc = view.webContents;
+  loaderBusy.add(wc);
+  try {
+    await view.webContents.loadURL(target);
   } catch (error) {
     // A redirect or a client-side navigation aborts the first load (-3); the
     // page still arrives. Anything else is a real failure.
-    if (!/ERR_ABORTED|\(-3\)/.test(String(error && error.message))) throw error;
+    if (/ERR_ABORTED|\(-3\)/.test(String(error && error.message))) return;
+    if (alive(view) && /^https?:/i.test(String(target))) {
+      await view.webContents.loadURL(addr.errorPageUrl(url, String((error && error.message) || error))).catch(() => {});
+    }
+    throw error;
+  } finally {
+    loaderBusy.delete(wc);
   }
 }
+const loaderBusy = new WeakSet(); // pages loadInView is loading right now
 
 // What each view was last given, so an unchanged layout touches no native window. Measured
 // on Garg's tenant 2026-10-16: re-setting identical bounds on every pass (and re-seating
@@ -483,31 +657,307 @@ function forgetPlacement(view) {
 function layout() {
   syncPageTaskbars();
   if (!win || win.isDestroyed()) return;
+  // The strip and the page area are the ACTIVE arrangement's ("Stage" in the UI). A path
+  // outside the strip can still make a suspended tab "active" (a background popup's tab,
+  // an agent switching to its own hidden tab); hand the window back to a tab that is
+  // really on screen rather than leaving an empty page under a strip with no active row.
+  if (tabs.active != null && !inActiveStage(tabs.active)) {
+    const visible = tabs.tabs.find((t) => tabStage(t.id) === activeStageId() && !popped.has(t.id));
+    if (visible) tabs.activate(visible.id);
+  }
+  // A split whose tab closed or popped out settles first: a stage of one pane is
+  // no stage, and the tab it keeps becomes the page (no half-split left behind).
+  stageSettle();
+  // The tab made active outside the split takes the focused pane, so the page area
+  // and the address bar never disagree. (After the hand-back above, so a suspended
+  // arrangement's tab never lands in this arrangement's split.)
+  stageAdoptActive();
   // A discarded tab put on screen gets its renderer back first (tab-discard.cjs).
-  restoreDiscarded(tabs.active);
+  if (stage) for (const id of stage.tabs) restoreDiscarded(id);
+  else restoreDiscarded(tabs.active);
   // The rail (avatar slot, every Aither page, the layer strip) is the chrome page's
   // own left column; page views and the panel sit to its right (browser-rail.cjs).
-  const rects = currentRects();
+  // A page in full screen (a video) takes the whole window instead (browser-fullscreen.cjs).
+  endStaleFullscreen();
+  const rects = htmlFullscreen.rects(currentRects(), win.getContentBounds(), tabs.active);
+  placeFullscreenHint();
   const now = Date.now();
-  for (const [id, view] of views) {
-    if (!alive(view) || popped.has(id)) continue;
-    const shown = id === tabs.active && !dragging;
-    if (shown) shownAt.set(id, now);
-    placeView(view, shown, rects.page);
+  // A pane in page full screen owns the whole window: the rest of the split hides.
+  const fullId = htmlFullscreen.tab();
+  if (stage && !(fullId != null && stage.tabs.includes(fullId))) {
+    // One geometry for every pane, reused by state() and the divider drag.
+    const geo = panes.layoutPanes(rects.page, stage.sizes, stage.axis);
+    splitGeometry = geo;
+    const inStage = new Set(stage.tabs);
+    const paneShown = browserStages.splitPanesShown(stage, inActiveStage, viewsAside());
+    for (let i = 0; i < stage.tabs.length; i += 1) {
+      const id = stage.tabs[i];
+      const view = viewOf(id);
+      if (!alive(view) || popped.has(id)) continue;
+      // Only panes whose tab is in the ACTIVE arrangement: a suspended arrangement's
+      // split is never drawn over this one's.
+      const shown = paneShown[i];
+      if (shown) shownAt.set(id, now);
+      placeView(view, shown, geo.panes[i]);
+    }
+    // Every tab outside the stage is off screen (its place and address stay); a
+    // suspended arrangement's views stay alive, placed hidden.
+    for (const [id, view] of views) if (!inStage.has(id)) placeView(view, false);
+  } else {
+    splitGeometry = null;
+    for (const [id, view] of views) {
+      if (!alive(view) || popped.has(id)) continue;
+      // Only the ACTIVE arrangement's active tab is on screen. A suspended arrangement's
+      // views stay alive but placed hidden -- switching back is a filter change, not a reload.
+      const shown = id === tabs.active && !viewsAside() && inActiveStage(id);
+      if (shown) shownAt.set(id, now);
+      placeView(view, shown, rects.page);
+    }
   }
-  if (alive(panelView)) placeView(panelView, !dragging && rects.panel.width > 0, rects.panel);
-  if (alive(taskbarView)) {
-    const shown = !dragging && rects.taskbar.height > 0;
+  // The split pane (dock-in slice 2): the active tab takes the primary rect and the
+  // pane the secondary one. Hidden with the pages when a full-screen page takes over.
+  const split = splitShown();
+  if (split) {
+    const fullscreen = htmlFullscreen.tab() != null && htmlFullscreen.tab() === tabs.active;
+    const roomy = !viewsAside() && !fullscreen && rects.page.width >= 360 && rects.page.height >= 240;
+    if (roomy) {
+      const parts = dockIn.splitRects(rects.page, dockSplitState);
+      const activeView = views.get(tabs.active);
+      if (alive(activeView) && !popped.has(tabs.active) && inActiveStage(tabs.active)) placeView(activeView, true, parts.primary);
+      placeView(split, true, parts.secondary);
+    } else {
+      placeView(split, false, null);
+    }
+  }
+  // A detached pane lives in its own window (detachPane): this layout leaves it alone.
+  if (alive(panelView) && !paneDetached("panel")) placeView(panelView, !viewsAside() && rects.panel.width > 0, rects.panel);
+  if (alive(taskbarView) && !paneDetached("taskbar")) {
+    const shown = !viewsAside() && rects.taskbar.height > 0;
     // Its Start menu and tray popovers open UPWARD: while one is open the view grows
     // over the page (the page is still there underneath; closing it shrinks back).
     placeView(taskbarView, shown, taskbarOpen ? taskbar.expandedRect(rects) : rects.taskbar);
   }
-  if (alive(dockView)) placeView(dockView, !dragging && rects.dock.height > 0, rects.dock);
+  if (alive(dockView) && !paneDetached("dock")) placeView(dockView, !viewsAside() && rects.dock.height > 0, rects.dock);
+  // The canvas's live app cards follow its tab (shown, hidden, moved, popped out).
+  if (canvasHost) canvasHost.relayout();
+  // The watermark over a workspace app, and the capture guard, follow the tab on screen.
+  getWorkspace().sync();
   // The docked avatar follows the rail only when the rail really moved.
   const key = JSON.stringify([rects.avatar || null, rects.page, win.getContentBounds()]);
   const layoutChanged = key !== lastLayoutKey;
   lastLayoutKey = key;
   if (layoutChanged) notifyGeometry("layout");
+}
+
+// ── Split panes: one page area, two or three side-by-side views ──────────────────
+// The owner's "one container with tabs and splits" (2026-11-18). A stage is a list
+// of tab ids, one per pane; every pane is that tab's existing WebContentsView, so a
+// pane keeps the page's state and its sender checks. Nothing about the tab model,
+// the agent rules or session storage changes: a pane is a tab.
+
+/** Is this tab one of the stage's panes? */
+function stageHas(id) {
+  return Boolean(stage && stage.tabs.includes(id));
+}
+
+/** The page area the panes divide (content coordinates). */
+function stagePageRect() {
+  return htmlFullscreen.rects(currentRects(), win.getContentBounds(), tabs.active).page;
+}
+
+/**
+ * Drop panes whose tab is gone (closed, popped out); a stage of one pane is no
+ * stage. The tab it keeps becomes the page, so a split never leaves a dead pane.
+ */
+function stageSettle() {
+  if (!stage) return;
+  const focusTab = stage.tabs[stage.focus];
+  const keep = [];
+  const shares = [];
+  stage.tabs.forEach((id, i) => {
+    if (!tabs.get(id)) return;
+    keep.push(id);
+    shares.push(Number(stage.sizes[i]) || 1 / stage.tabs.length);
+  });
+  if (keep.length === stage.tabs.length && stage.sizes.length === keep.length) {
+    const at = keep.indexOf(focusTab);
+    if (at >= 0) stage.focus = at;
+    return;
+  }
+  if (keep.length < 2) {
+    stage = null;
+    splitGeometry = null;
+    if (keep.length === 1) tabs.activate(keep[0]);
+    return;
+  }
+  const at = keep.indexOf(focusTab);
+  stage.tabs = keep;
+  stage.sizes = panes.normalizeSizes(shares, keep.length);
+  stage.focus = at >= 0 ? at : Math.min(stage.focus, keep.length - 1);
+  tabs.activate(stage.tabs[stage.focus]);
+}
+
+/**
+ * The page area shows only the stage's panes. Anything that makes another tab the
+ * active one (a strip click, a link in a new tab, an agent switching to its tab)
+ * therefore takes the focused pane rather than leaving the address bar and the
+ * screen disagreeing.
+ */
+function stageAdoptActive() {
+  if (!stage) return;
+  const id = tabs.active;
+  if (id == null || stageHas(id)) return;
+  stage.tabs[stage.focus] = id;
+  splitGeometry = null;
+}
+
+/** Clicking a pane focuses it: the address bar, the strip and the agent follow. */
+function stageFocusTab(id) {
+  if (!stage) return false;
+  const at = stage.tabs.indexOf(id);
+  if (at < 0 || at === stage.focus) return false;
+  stage.focus = at;
+  tabs.activate(id);
+  pushState();
+  return true;
+}
+
+/** What the chrome page draws for the split: pane rects, dividers and the focus. */
+function splitState() {
+  if (!stage) return null;
+  const fullId = htmlFullscreen.tab();
+  if (fullId != null && stage.tabs.includes(fullId)) return null; // one pane is full screen
+  const rect = currentRects().page;
+  const geo = splitGeometry || panes.layoutPanes(rect, stage.sizes, stage.axis);
+  return {
+    axis: stage.axis,
+    focus: stage.focus,
+    panes: stage.tabs.map((id, i) => ({ tabId: id, rect: geo.panes[i] || null })),
+    dividers: geo.dividers,
+  };
+}
+
+/**
+ * Split: show a tab in a new pane beside the focused one. From the one-page window
+ * the page on screen keeps its place and `id` becomes the new pane; when `id` IS
+ * the page on screen (or null) a fresh home tab fills the new pane instead, so
+ * "Split right" on the only tab still gives you two panes.
+ */
+function splitTab(id, side = "right") {
+  if (!win || win.isDestroyed()) return { ok: false, error: "The Aither Browser is not open." };
+  const direction = side === "left" ? "left" : "right";
+  const at = stage ? stage.focus : 0;
+  let show = id == null ? null : Number(id);
+  if (show != null && !tabs.get(show)) return { ok: false, error: `no tab ${show}` };
+  if (show != null && popped.has(show)) return { ok: false, error: "dock that tab into the browser first" };
+  if (stage && show != null && stage.tabs.includes(show)) return { ok: false, error: "that tab is already in the split" };
+  if (stage && stage.tabs.length >= panes.MAX_PANES) {
+    return { ok: false, error: `a page splits into ${panes.MAX_PANES} panes at most; close one first` };
+  }
+  const base = stage ? stage.tabs[stage.focus] : tabs.active;
+  if (base == null || !tabs.get(base)) {
+    // Nothing on screen to split beside: open the page instead of a second empty pane.
+    const opened = openTab("you", homeUrl(), { activate: true });
+    return opened.ok ? { ok: true, panes: [opened.id], tab: opened.id } : opened;
+  }
+  if (show == null || show === base) {
+    // The pane beside the page on screen has nothing of its own to show yet.
+    const opened = openTab("you", homeUrl(), { activate: false });
+    if (!opened.ok) return opened;
+    show = opened.id;
+  }
+  if (!stage) {
+    stage = { axis: "horizontal", tabs: direction === "left" ? [show, base] : [base, show],
+      sizes: panes.defaultSizes(2), focus: direction === "left" ? 0 : 1 };
+  } else {
+    const insertAt = direction === "left" ? at : at + 1;
+    stage.tabs.splice(insertAt, 0, show);
+    stage.sizes = panes.insertPane(stage.sizes, insertAt);
+    stage.focus = insertAt;
+  }
+  tabs.activate(show);
+  layout();
+  pushState();
+  return { ok: true, panes: stage.tabs.slice(), tab: show };
+}
+
+/** Close one pane; its tab stays open in the strip. One pane left collapses the split. */
+function closePane(index) {
+  if (!stage) return { ok: false, error: "this page is not split" };
+  const at = Math.max(0, Math.min(stage.tabs.length - 1, Math.floor(Number(index) || 0)));
+  const wasFocus = stage.focus;
+  const [id] = stage.tabs.splice(at, 1);
+  stage.sizes = panes.removePane(stage.sizes, at);
+  if (stage.tabs.length < 2) {
+    const keep = stage.tabs[0];
+    stage = null;
+    splitGeometry = null;
+    if (keep != null) tabs.activate(keep);
+  } else {
+    // Closing a pane the owner was NOT in never moves them off their pane.
+    stage.focus = panes.focusAfterRemove(wasFocus, at, stage.tabs.length);
+    tabs.activate(stage.tabs[stage.focus]);
+  }
+  layout();
+  pushState();
+  return { ok: true, closed: id, panes: stage ? stage.tabs.slice() : [] };
+}
+
+/** Remove a tab's pane when the tab closes or pops out; the split settles after. */
+function stageRemoveTab(id) {
+  const at = stage ? stage.tabs.indexOf(id) : -1;
+  if (at < 0) return false;
+  const wasFocus = stage.focus;
+  stage.tabs.splice(at, 1);
+  stage.sizes = panes.removePane(stage.sizes, at);
+  if (stage.tabs.length < 2) {
+    const keep = stage.tabs[0];
+    stage = null;
+    splitGeometry = null;
+    if (keep != null) tabs.activate(keep);
+  } else {
+    // The focused pane follows its TAB, not its index: closing another pane (a tab's
+    // X in the strip, a pop-out) never steals the owner's focus.
+    stage.focus = panes.focusAfterRemove(wasFocus, at, stage.tabs.length);
+    tabs.activate(stage.tabs[stage.focus]);
+  }
+  return true;
+}
+
+/** Close the whole split: the focused pane keeps the page area. */
+function unsplitStage() {
+  if (!stage) return { ok: true };
+  const keep = stage.tabs[stage.focus] != null ? stage.tabs[stage.focus] : stage.tabs[0];
+  stage = null;
+  splitGeometry = null;
+  if (keep != null) tabs.activate(keep);
+  layout();
+  pushState();
+  return { ok: true };
+}
+
+/**
+ * A divider drag: `index` is the divider between pane index and index+1, `x` the
+ * pointer in content coordinates. Only the two neighbours trade width; the rest
+ * keep their shares. Nothing is pushed mid-drag (the chrome page moves the divider
+ * element itself); the state follows when the drag ends.
+ */
+function stageResize(index, x) {
+  if (!stage) return { ok: false, error: "this page is not split" };
+  const rect = stagePageRect();
+  const horizontal = stage.axis !== "vertical";
+  const nth = Math.floor(Number(index));
+  const geo = panes.layoutPanes(rect, stage.sizes, stage.axis);
+  const divider = geo.dividers.find((d) => d.index === nth) || null;
+  if (!divider) return { ok: false, error: "no such divider" };
+  const pointer = Number(x);
+  if (!Number.isFinite(pointer)) return { ok: false, error: "no pointer position" };
+  const delta = Math.round(pointer - (horizontal ? divider.x : divider.y));
+  const next = panes.resize(stage.sizes, nth, delta, rect, stage.axis);
+  if (!next) return { ok: true, sizes: stage.sizes };
+  stage.sizes = next;
+  layout();
+  return { ok: true, sizes: stage.sizes };
 }
 
 // ── Hidden tabs give their renderer back (tab-discard.cjs) ─────────────────────────
@@ -520,27 +970,47 @@ function tabFacts() {
     const view = views.get(t.id);
     let audible = false;
     try { audible = alive(view) && view.webContents.isCurrentlyAudible(); } catch { /* gone */ }
-    return { id: t.id, by: t.by, kind: t.kind, pinned: t.pinned, active: t.id === tabs.active, popped: popped.has(t.id),
-      audible, discarded: discarded.has(t.id), shownAt: shownAt.get(t.id) || 0 };
+    return { id: t.id, by: t.by, kind: t.kind, pinned: t.pinned, active: t.id === tabs.active || stageHas(t.id),
+      popped: popped.has(t.id),
+      audible, discarded: discarded.has(t.id), shownAt: shownAt.get(t.id) || 0,
+      // Never discarded: a site that may notify the owner, a page with the camera or microphone.
+      notifies: alive(view) && siteNotifies(view.webContents.getURL(), t), capturing: mediaTabs.has(t.id) };
   });
 }
 
-/** Close the renderers of hidden tabs nobody is looking at; their place and address stay. */
+/** The owner allowed this page's site to show notifications (remembered, never InPrivate). */
+function siteNotifies(url, tab) {
+  if (!tab || tab.private) return false;
+  const origin = sitePermissions.promptableOrigin(url);
+  try { return Boolean(origin) && getPermissionStore().get(origin, "notifications") === "allow"; } catch { return false; }
+}
+
+/** Ask the tab's page, in its isolated world, whether it holds text the owner typed and has not sent. */
+function pageHasUnsaved(id) {
+  const view = views.get(id);
+  return alive(view) ? isolated(view.webContents, tabDiscard.UNSAVED_SCRIPT) : Promise.resolve(false);
+}
+
+/**
+ * Close the renderers of hidden tabs nobody is looking at; their place and address stay.
+ * Each one is first asked whether it holds unsaved input (tab-discard UNSAVED_SCRIPT);
+ * a page that does is kept. Returns how many tabs were picked (the checks are async).
+ */
 function discardHiddenTabs({ pressure = false } = {}) {
   if (!win || win.isDestroyed() || !tabs) return 0;
-  let n = 0;
-  for (const id of tabDiscard.pickDiscards(tabFacts(), { now: Date.now(), pressure })) {
+  const picked = tabDiscard.pickDiscards(tabFacts(), { now: Date.now(), pressure });
+  if (!picked.length) return 0;
+  void tabDiscard.discardUnlessUnsaved(picked, pageHasUnsaved, (id) => {
     const view = views.get(id);
-    if (!alive(view)) continue;
+    // Shown, closed or popped out while its page was being asked: it stays.
+    if (!alive(view) || !win || win.isDestroyed() || id === tabs.active || stageHas(id) || popped.has(id)) return;
     const wc = view.webContents;
     discarded.set(id, { url: wc.getURL(), title: wc.getTitle() });
     views.delete(id);
     try { win.contentView.removeChildView(view); } catch { /* already detached */ }
     try { wc.close(); } catch { /* already closing */ }
-    n += 1;
-  }
-  if (n) pushState();
-  return n;
+  }).then((r) => { if (r.discarded.length) pushState(); });
+  return picked.length;
 }
 
 /** A discarded tab is about to be shown: give it a renderer and reload its address. */
@@ -737,6 +1207,8 @@ async function readAloud() {
   if (!shellHost || typeof shellHost.speak !== "function") return { ok: false, error: "the desk has no voice wired" };
   const view = activeView();
   if (!alive(view)) return { ok: false, error: "no page" };
+  // It reads the selection first: that is a copy as much as a capture.
+  if (getWorkspace().blocksRead(tabs.active, "selection")) return { ok: false, error: "the workspace policy does not let this page be read" };
   let text;
   try { text = await view.webContents.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: READ_ALOUD_SCRIPT }]); } catch { text = ""; }
   text = String(text || "").slice(0, 2000);
@@ -744,6 +1216,2059 @@ async function readAloud() {
   void Promise.resolve(shellHost.speak(text)).catch(() => {});
   return { ok: true, chars: text.length };
 }
+
+// ================================================================== Edge parity
+// Owner, 2026-11-13: "close the gaps" (what switching from Edge would lose). Everything
+// here acts for the OWNER only: an agent tab never gets a password, a fill, an InPrivate
+// tab or a session entry. Page work runs in the isolated world (web tabs have no preload).
+
+const closedTabs = everyday.createClosedTabs();
+const tabNotices = new Map(); // tab id -> { kind, text, actions: [{id, label}], data, keep }
+const findResults = new Map(); // tab id -> { text, matches, active }
+const pwFilled = new Map(); // tab id -> the URL already autofilled (once per page)
+// tab id -> { key, prev }: the capture key of the document on screen and of the one before
+// (its submit message can land just after the next document starts). browser-passwords.cjs.
+const pwKeys = new Map();
+const drmStay = new Set(); // hosts the owner chose to keep here this run
+const cosmeticSheets = new Map(); // webContents id -> Promise<key> of the ad-box style sheet in its document
+const translateMuted = new Set(); // hosts the owner answered "Not now" on, this run
+const translateAsked = new Map(); // tab id -> the URL its language was already read on
+let translateBackendsOverride = null; // the smoke's fake model
+let sessionRestored = false;
+
+function userDataPath(...parts) {
+  return path.join(electron().app.getPath("userData"), ...parts);
+}
+
+/* ── stages: the window's tab arrangement, bound to a workspace ─────────────────── */
+
+/**
+ * Stages are the owner's arrangements (browser-stages.cjs): each holds its own tab
+ * strip. A tab carries `tab.stage` -- the stage it was opened in -- and the strip, the
+ * page area and every "the active tab" read only see the ACTIVE stage's tabs. Switching
+ * is therefore a filter change, not a teardown: the outgoing stage's views stay alive in
+ * `views`, detached from the window and invisible (layout() places them off), so
+ * switching back is instant and nothing reloads. A stage whose tabs are not live yet
+ * (first switch this run, or after a restart) is opened from the document on demand.
+ *
+ * The document is userData/stages.json, never browser-layout.json (see the module header).
+ */
+let stagesDoc = null;
+let stagesWarn = [];
+let stagesSaveTimer = null;
+/**
+ * stage id -> saved tab descriptors the window's 30-tab cap would not let open on the
+ * first switch (a suspended tab is still a tab). They are retried the next time the stage
+ * is shown and put back by captureStage, so a cap never deletes a saved tab.
+ */
+const stagesShortfall = new Map();
+/**
+ * Each SUSPENDED arrangement's live split (`stage`, browser-panes.cjs) while another
+ * arrangement is on screen. The module-level `stage` is always the ACTIVE arrangement's
+ * split; switching parks it here and takes the incoming one's back, so a split survives
+ * a round trip with its tabs, sizes and axis (browser-stages.createSplitShelf).
+ */
+const splitShelf = browserStages.createSplitShelf();
+/** The live split of arrangement `stageId`: the one on screen, or the one parked. */
+function arrangementSplit(stageId) {
+  return stageId === activeStageId() ? stage : splitShelf.peek(stageId);
+}
+function stagesFile() {
+  return userDataPath(browserStages.FILE_NAME);
+}
+function getStages() {
+  if (stagesDoc) return stagesDoc;
+  const read = browserStages.load(stagesFile());
+  stagesDoc = read.doc;
+  stagesWarn = read.warnings;
+  return stagesDoc;
+}
+/** Persist the document (debounced: a switch and a close come in bursts). */
+function saveStagesSoon() {
+  clearTimeout(stagesSaveTimer);
+  stagesSaveTimer = setTimeout(() => {
+    stagesSaveTimer = null;
+    const r = browserStages.save(stagesFile(), getStages());
+    if (!r.ok) stagesWarn = [`stages: could not be saved (${r.error})`];
+  }, 600);
+  if (typeof stagesSaveTimer.unref === "function") stagesSaveTimer.unref();
+}
+/** Write now (the window is closing: a debounced timer would never fire). */
+function flushStages() {
+  clearTimeout(stagesSaveTimer);
+  stagesSaveTimer = null;
+  const r = browserStages.save(stagesFile(), getStages());
+  if (!r.ok) stagesWarn = [`stages: could not be saved (${r.error})`];
+  return r;
+}
+function setStages(doc) {
+  stagesDoc = browserStages.normalizeDoc(doc);
+  saveStagesSoon();
+  return stagesDoc;
+}
+function activeStageId() {
+  return getStages().active;
+}
+/** The stage a tab belongs to. A tab opened before stages existed belongs to the active one. */
+function tabStage(id) {
+  const tab = id == null ? null : tabs.get(id);
+  return (tab && tab.stage) || activeStageId();
+}
+function inActiveStage(id) {
+  return tabStage(id) === activeStageId();
+}
+
+/**
+ * The workspace this desk is in, as a slug the owner would type ("garg", "aitherium").
+ * The signed workspace POLICY wins (it is the thing that can create a partition); without
+ * one, the desk tenant's own subdomain is the workspace the pages come from, and the
+ * apex is aitherium.
+ */
+function signedWorkspace() {
+  try {
+    const fromPolicy = String(getWorkspace().policy.tenantId() || "").toLowerCase();
+    if (/^[a-z0-9][a-z0-9._-]{0,63}$/.test(fromPolicy)) return fromPolicy;
+  } catch { /* no policy: fall through to the desk tenant */ }
+  try {
+    const tenant = deskTenant.currentTenant();
+    const host = tenant && tenant.host ? String(tenant.host).toLowerCase() : "";
+    // The apex IS the aitherium workspace; no tenant config is the same desk.
+    if (!host || host === deskTenant.APEX_HOST) return "aitherium";
+    if (host.endsWith(`.${deskTenant.APEX_HOST}`)) {
+      const slug = host.slice(0, -(deskTenant.APEX_HOST.length + 1)).split(".").pop();
+      if (/^[a-z0-9][a-z0-9._-]{0,63}$/.test(slug)) return slug;
+    }
+  } catch { /* treated as no tenant */ }
+  return "";
+}
+
+/** Which session the ACTIVE stage's tabs load under (browser-stages.resolveScope). */
+function stageScope() {
+  const arrangement = browserStages.activeStage(getStages());
+  let workPartition;
+  try { workPartition = getWorkspace().policy.partition() || null; } catch { workPartition = null; }
+  return browserStages.resolveScope(arrangement.workspace, { signed: signedWorkspace(), workPartition, ownerPartition: PARTITION });
+}
+
+/** A tab descriptor for the document: what openTab needs to bring the tab back. */
+function tabDescriptor(id) {
+  const tab = tabs.get(id);
+  if (!tab || tab.private) return null; // InPrivate is never remembered
+  const view = viewOf(id);
+  const parked = discarded.get(id) || {};
+  const url = view ? view.webContents.getURL() : parked.url || (tab.viewSpec || {}).url || "";
+  if (!url) return null;
+  return {
+    url,
+    title: view ? view.webContents.getTitle() : parked.title || "",
+    kind: tab.kind || "web",
+    by: tab.by,
+    pinned: Boolean(tab.pinned),
+    key: tab.key || null,
+    label: tab.label || "",
+  };
+}
+
+/** Write a stage's LIVE strip back into the document (before leaving it, or on close). */
+function captureStage(stageId = activeStageId()) {
+  const ids = tabs.tabs.filter((t) => tabStage(t.id) === stageId).map((t) => t.id);
+  let list = ids.map(tabDescriptor).filter(Boolean);
+  // A stage that could not be fully restored (the tab cap) keeps the tabs that never
+  // opened: overwriting the document with the short strip would delete them for good.
+  // Two panes of the split on the same address both survive: the later ones get a twin
+  // number, so the saved list does not fold them into one tab.
+  const splitTabs = (arrangementSplit(stageId) || {}).tabs || [];
+  const twins = new Map();
+  list = list.map((d, i) => {
+    if (!splitTabs.includes(ids[i])) return d;
+    const n = twins.get(d.url) || 0;
+    twins.set(d.url, n + 1);
+    return n ? { ...d, twin: n } : d;
+  });
+  const short = stagesShortfall.get(stageId);
+  if (short && short.length) {
+    const saved = (browserStages.find(getStages(), stageId) || {}).tabs || [];
+    list = browserStages.mergeUnopened(list, saved, short);
+  }
+  // The split is saved by INDEX into the saved tabs (ids are per run): each saved tab's
+  // live id is the first live tab of the arrangement with that address.
+  list = browserStages.normalizeTabs(list);
+  const twinOf = new Map();
+  const live = ids.map((id) => {
+    const d = browserStages.normalizeTabs([tabDescriptor(id)])[0];
+    if (!d) return null;
+    let twin = 0;
+    if (splitTabs.includes(id)) { twin = twinOf.get(d.url) || 0; twinOf.set(d.url, twin + 1); }
+    return { id, key: browserStages.tabKey({ url: d.url, twin }) };
+  }).filter(Boolean);
+  const savedIds = list.map((d) => {
+    const hit = live.find((x) => x.key === browserStages.tabKey(d)) || live.find((x) => x.key === d.url);
+    return hit ? hit.id : null;
+  });
+  const split = browserStages.splitToSaved(arrangementSplit(stageId), savedIds);
+  const r = browserStages.setTabs(getStages(), stageId, list, { split });
+  if (r.ok) setStages(r.doc);
+  return r.ok;
+}
+
+/** Open ONE tab descriptor from the document into `stageId` (never activating it). */
+function openSavedTab(stageId, d) {
+  const by = d.by === "agent" ? "agent" : "you";
+  return openTab(by, d.url, { stage: stageId, activate: false, pinned: d.pinned, key: d.key || null,
+    label: d.label || "", hostedPartition: d.kind === "hosted" ? onlinePartition() : null });
+}
+
+/**
+ * Bring a stage's saved tabs back. A live tab is the tab, and re-opening it would fork
+ * its history, so this runs only when the stage has no live tab at all. Tabs the tab cap
+ * refuses are remembered in `stagesShortfall` (and retried by fillStageShortfall).
+ * Returns the id of the last one opened (the one to show), or null.
+ */
+function openStageTabs(stageId) {
+  const arrangement = browserStages.find(getStages(), stageId);
+  if (!arrangement) return null;
+  let lastId = null;
+  const failed = [];
+  const openedIds = [];
+  for (const d of arrangement.tabs) {
+    const r = openSavedTab(stageId, d);
+    if (r.ok) lastId = r.id;
+    else failed.push(d);
+    openedIds.push(r.ok ? r.id : null);
+  }
+  if (failed.length) stagesShortfall.set(stageId, failed);
+  else stagesShortfall.delete(stageId);
+  // The saved split comes back with its tabs: parked, so the switch takes it on screen.
+  const split = browserStages.splitFromSaved(arrangement.split, openedIds);
+  if (split) {
+    splitShelf.park(stageId, split);
+    lastId = split.tabs[split.focus];
+  }
+  return lastId;
+}
+
+/** Retry a stage's unopened saved tabs (room may have appeared since the first switch). */
+function fillStageShortfall(stageId) {
+  const short = stagesShortfall.get(stageId);
+  if (!short || !short.length) return;
+  const left = [];
+  for (const d of short) {
+    if (!openSavedTab(stageId, d).ok) left.push(d);
+  }
+  if (left.length) stagesShortfall.set(stageId, left);
+  else stagesShortfall.delete(stageId);
+}
+
+/**
+ * Make `stageId` the stage on screen: its live tabs if it has any (they were suspended,
+ * not closed), its saved tabs if it has never been shown this run, or a home page if it
+ * is empty. Returns how many tabs it has. Another stage's popped-out windows come home
+ * first -- a popped tab is its own window, and what it shows must not outlive its stage.
+ */
+function showStage(stageId) {
+  for (const id of [...popped.keys()]) {
+    if (tabStage(id) !== stageId) dockTab(id, { quiet: true });
+  }
+  const collect = () => tabs.tabs.filter((t) => tabStage(t.id) === stageId && !popped.has(t.id)).map((t) => t.id);
+  let live = collect();
+  let pick = null;
+  if (!live.length) {
+    pick = openStageTabs(stageId);
+    live = collect();
+  } else if (stagesShortfall.has(stageId)) {
+    fillStageShortfall(stageId);
+    live = collect();
+  }
+  if (!live.length) {
+    const home = openTab("you", homeUrl(), { stage: stageId });
+    if (home.ok) { live = [home.id]; pick = home.id; }
+  }
+  const anyLive = live.length ? live : tabs.tabs.filter((t) => tabStage(t.id) === stageId).map((t) => t.id);
+  const show = pick != null && anyLive.includes(pick) ? pick : anyLive[0];
+  if (show != null) tabs.activate(show);
+  return anyLive.length;
+}
+
+/**
+ * Switch the window to another stage. The outgoing strip is written to the document,
+ * its views are suspended (still alive, off the window), the incoming stage's live tabs
+ * are shown again -- or, the first time, opened from the document. Nothing is destroyed,
+ * so switching back is instant.
+ */
+function switchStage(stageId) {
+  const doc = getStages();
+  const target = browserStages.find(doc, stageId);
+  if (!target) return { ok: false, error: `no stage called ${stageId}` };
+  if (doc.active === stageId) return { ok: true, changed: false };
+  captureStage(doc.active);
+  const set = browserStages.setActive(getStages(), stageId);
+  if (!set.ok) return set;
+  // The outgoing arrangement's split is parked with its tabs (still alive, hidden) BEFORE
+  // the incoming tabs activate -- else stageAdoptActive would pull them into it.
+  leaveSplit(doc.active);
+  setStages(set.doc);
+  const count = showStage(stageId);
+  enterSplit(stageId);
+  layout();
+  pushState();
+  return { ok: true, changed: true, active: stageId, tabs: count };
+}
+
+/** Park the on-screen split as arrangement `stageId`'s; the page area is unsplit after. */
+function leaveSplit(stageId) {
+  splitShelf.park(stageId, stage);
+  stage = null;
+  splitGeometry = null;
+}
+
+/** Put arrangement `stageId`'s parked split back on screen (panes whose tab closed drop). */
+function enterSplit(stageId) {
+  stage = splitShelf.take(stageId);
+  splitGeometry = null;
+  if (!stage) return;
+  stage.tabs = stage.tabs.filter((id) => tabs.get(id) && tabStage(id) === stageId && !popped.has(id));
+  stageSettle();
+  if (stage) tabs.activate(stage.tabs[stage.focus]);
+}
+
+/**
+ * The switcher's verbs (the chrome's stage button, the palette). Same shape as
+ * layoutAction: null when the action is not one of ours, {ok} otherwise.
+ */
+function stageAction(action, arg) {
+  const parse = () => {
+    if (arg && typeof arg === "object") return arg;
+    try { return JSON.parse(String(arg || "")); } catch { return null; }
+  };
+  const done = (result) => {
+    if (!result || !result.ok) return result || { ok: false, error: "refused" };
+    layout();
+    pushState();
+    return { ok: true };
+  };
+  switch (action) {
+    case "menu":
+      // The chrome's stage panel opened or closed: the page views step aside (they are
+      // native children drawn over the chrome page, so a panel would be under them).
+      stagingMenu = arg === true || arg === "true";
+      layout();
+      return { ok: true, open: stagingMenu };
+    case "switch":
+      return switchStage(String(arg || ""));
+    case "create": {
+      const o = parse() || {};
+      captureStage();
+      const leaving = activeStageId();
+      const r = browserStages.create(getStages(), { name: o.name, workspace: o.workspace, at: o.at });
+      if (!r.ok) return r;
+      // The new stage starts EMPTY -- no tabs are inherited from the one you left -- but a
+      // blank window reads as broken: it opens its home page, like a fresh window does.
+      leaveSplit(leaving);
+      setStages(r.doc);
+      const home = openTab("you", homeUrl(), { stage: r.stage.id });
+      if (home.ok) tabs.activate(home.id);
+      return done({ ok: true });
+    }
+    case "rename": {
+      const o = parse() || {};
+      const r = browserStages.rename(getStages(), o.id || activeStageId(), o.name);
+      if (!r.ok) return r;
+      setStages(r.doc);
+      return done(r);
+    }
+    case "delete": {
+      const id = String(arg || "");
+      const wasActive = id === activeStageId();
+      const r = browserStages.remove(getStages(), id);
+      if (!r.ok) return r;
+      // Point `active` at the neighbour FIRST: a tab opened while the closing runs (the
+      // last tab of the window opens a home page) then lands in a stage that exists,
+      // instead of an invisible orphan of the one being deleted.
+      setStages(r.doc);
+      stagesShortfall.delete(id);
+      splitShelf.forget(id);
+      // The deleted arrangement's split goes with it (its tabs are closing).
+      if (wasActive) { stage = null; splitGeometry = null; }
+      const target = activeStageId();
+      // The stage's views go with it: nothing hidden keeps a page alive. A pinned tab
+      // cannot be closed (the strip's own rule) and the pinned front is the desk's, so
+      // it moves to the surviving stage instead of dying with a stage that is gone.
+      for (const tab of [...tabs.tabs]) {
+        if (tabStage(tab.id) !== id) continue;
+        if (tab.pinned) { tab.stage = target; continue; }
+        closeTab(tab.id, "you");
+      }
+      // Deleting the stage you were in lands you on the neighbour, tabs and all.
+      if (wasActive) { showStage(target); enterSplit(target); }
+      return done({ ok: true });
+    }
+    case "move": {
+      const o = parse() || {};
+      const r = browserStages.move(getStages(), o.id || activeStageId(), { index: o.index == null ? null : Number(o.index), by: Number(o.by) || 0 });
+      if (!r.ok) return r;
+      setStages(r.doc);
+      return done(r);
+    }
+    case "assign": {
+      const o = parse() || {};
+      // The binding decides the session of the tabs opened FROM NOW ON; a tab already open
+      // keeps the session it loaded in (its cookies cannot be moved between partitions).
+      const r = browserStages.assignWorkspace(getStages(), o.id || activeStageId(), o.workspace);
+      if (!r.ok) return r;
+      setStages(r.doc);
+      return done(r);
+    }
+    default:
+      return null;
+  }
+}
+
+// The managed browser (browser-workspace.cjs, docs/WORKSPACE-POLICY.md): the signed
+// workspace policy, its work partition, the mesh door, the watermark and the audit spool.
+// `workspaceSeam` is the smoke's (a test key, a local policy source); never set in the app.
+let workspaceImpl = null;
+let workspaceSeam = null;
+function getWorkspace() {
+  if (workspaceImpl) return workspaceImpl;
+  const seam = workspaceSeam || {};
+  workspaceImpl = workspaceMod.createWorkspace({
+    electron, userData: () => userDataPath(), window: () => (win && !win.isDestroyed() ? win : null),
+    tab: (id) => tabs.get(id) || null, tabIds: () => tabs.tabs.map((t) => t.id), activeId: () => tabs.active,
+    tabIdOf: tabIdOfContents, pageOf: pageWc,
+    activeBounds: () => { const v = activeView(); return v && !viewsAside() && !popped.has(tabs.active) ? v.getBounds() : null; },
+    setNotice, isolated, hardenSession: (ses) => hardenSession(ses), openTab: (by, url, opts) => openTab(by, url, opts),
+    blockedPage: (url, reason) => require("./aither-address.cjs").errorPageUrl(url, reason),
+    keys: seam.keys || null,
+    allowLoopbackTargets: seam.allowLoopbackTargets === true,
+    // Remote debugging (CDP) on this launch: workspace apps stay closed while it is.
+    debugDoor: () => (typeof seam.debugDoor === "function" ? seam.debugDoor()
+      : workspaceMod.debugDoor({ commandLine: electron().app.commandLine, env: process.env, inspectorUrl: require("node:inspector").url() || "" })),
+    accountTenant: async () => {
+      if (seam.accountTenant) return seam.accountTenant();
+      const bearer = await onlineToken();
+      if (!bearer) return "";
+      const who = await require("./desk-session.cjs").checkToken(bearer);
+      return who && who.state === "valid" && who.identity ? who.identity.tenantId : "";
+    },
+    remote: { origin: () => seam.origin || internal.platformOrigin(), token: async () => (seam.token ? seam.token() : onlineToken()),
+      fetchImpl: (url, init) => electron().net.fetch(url, init) },
+    account: async () => {
+      if (seam.account) return seam.account();
+      const bearer = await onlineToken();
+      return bearer ? syncAccount(bearer) : "";
+    },
+  });
+  return workspaceImpl;
+}
+
+let adblockImpl = null;
+function getAdblock() {
+  if (!adblockImpl) {
+    adblockImpl = require("./browser-adblock.cjs").createAdblock({ dir: userDataPath("adblock") });
+    adblockImpl.loadCached();
+    void adblockImpl.refresh().catch(() => {});
+  }
+  return adblockImpl;
+}
+
+/**
+ * Hide the boxes blocked ads leave behind: the lists' element hiding rules for this
+ * page's host, as a user style sheet (a page's own `!important` cannot undo it). One
+ * sheet per document; taken out again when blocking is paused. Web tabs only: never a
+ * console pane, an extension page or the pinned AitherOS Online tab.
+ */
+function syncCosmetics(wc, id) {
+  if (!wc || wc.isDestroyed()) return;
+  const tab = tabs.get(id) || {};
+  let css;
+  try { css = tab.kind === "web" && !tab.pinned && adblockImpl ? adblockImpl.cssFor(wc.getURL(), { private: Boolean(tab.private) }) : ""; } catch { css = ""; }
+  const have = cosmeticSheets.get(wc.id);
+  if (css && !have) {
+    cosmeticSheets.set(wc.id, wc.insertCSS(css, { cssOrigin: "user" }).catch(() => null));
+  } else if (!css && have) {
+    cosmeticSheets.delete(wc.id);
+    void have.then((key) => (key && !wc.isDestroyed() ? wc.removeInsertedCSS(key) : null)).catch(() => {});
+  }
+}
+
+/** Blocking was switched on or off everywhere: every open page gains or loses its sheet. */
+function syncAllCosmetics() {
+  for (const [id, view] of views) {
+    if (alive(view)) syncCosmetics(view.webContents, id);
+  }
+}
+
+let vaultImpl = null;
+function passwordsMod() { return require("./browser-passwords.cjs"); }
+function getVault() {
+  if (!vaultImpl) vaultImpl = passwordsMod().createVault({ file: userDataPath("browser-passwords.json"), safeStorage: electron().safeStorage });
+  return vaultImpl;
+}
+
+let sessionStoreImpl = null;
+function getSessionStore() {
+  if (!sessionStoreImpl) sessionStoreImpl = everyday.createSessionStore({ file: userDataPath("browser-session.json") });
+  return sessionStoreImpl;
+}
+
+// Sync (browser-sync.cjs): bookmarks, history and the owner's open tabs follow the
+// account through the platform's per-user preferences store, with the Online session's
+// bearer. OFF until the owner turns it on. InPrivate and agent tabs never leave.
+let syncImpl = null;
+let syncSeam = null; // the smoke's store and token; never set in the app
+let syncWho = null;
+function syncMod() { return require("./browser-sync.cjs"); }
+// The store is the platform's, never the page host: in tenant mode the desk's pages come
+// from the tenant's site, which has no store and must never be sent the Online bearer.
+function syncOrigin() {
+  return (syncSeam && syncSeam.origin) || internal.platformOrigin();
+}
+/**
+ * Whose bearer this is, so one account's bookmarks never reach another's store: the
+ * username Identity answers for the Online bearer (asked once per bearer). Unknown,
+ * and sync sends nothing.
+ */
+async function syncAccount(bearer) {
+  if (syncSeam && syncSeam.account) return syncSeam.account(bearer);
+  if (!syncWho) syncWho = syncMod().createAccountResolver({ check: (b) => require("./desk-session.cjs").checkToken(b) });
+  return syncWho(bearer);
+}
+/** The owner's own web tabs as sync sees them (it drops InPrivate, agent and non-web ones). */
+function syncTabs() {
+  return tabs.snapshot().tabs.map((t) => {
+    const tab = tabs.get(t.id) || {};
+    const view = views.get(t.id);
+    const parked = discarded.get(t.id) || {};
+    return { by: tab.by, kind: tab.kind, private: Boolean(tab.private),
+      url: alive(view) ? view.webContents.getURL() : parked.url || "",
+      title: alive(view) ? view.webContents.getTitle() : parked.title || "" };
+  });
+}
+function getSync() {
+  if (!syncImpl) {
+    const seam = syncSeam || {};
+    syncImpl = syncMod().createBrowserSync({
+      file: userDataPath("browser-sync.json"), library: getLibrary(), tabs: syncTabs,
+      transport: syncMod().createPrefsTransport({
+        origin: () => { try { return syncOrigin(); } catch { return ""; } },
+        token: async () => (seam.token ? seam.token() : onlineToken()),
+        account: syncAccount,
+        fetchImpl: (url, init) => electron().net.fetch(url, init),
+      }),
+      onChange: (st) => {
+        pushState();
+        // Another account signed in: sync turned itself off before sending anything. Say so once.
+        if (st && st.state === "account-changed") {
+          try { setNotice(tabs.active, { kind: "info", text: "Sync is off: a different AitherOS account signed in. Nothing was sent to it. Turn \"Sync this browser\" on again to add this computer's bookmarks to that account." }); } catch { /* no tab to say it in */ }
+        }
+      },
+    });
+  }
+  return syncImpl;
+}
+/** Something sync carries changed (a visit, a bookmark, a closed tab). A no-op while it is off. */
+function touchSync() {
+  try { getSync().touch(); } catch { /* sync never breaks browsing */ }
+}
+/** The menu's switch. Says what happened in the tab's notice bar. */
+async function setSyncEnabled(on) {
+  const id = tabs.active;
+  const st = await getSync().setEnabled(on);
+  setNotice(id, { kind: "info", text: !on
+    ? "Sync is off. Nothing was removed from this computer."
+    : st.state === "ok"
+      ? "Sync is on: bookmarks, history and open tabs follow your AitherOS account. Passwords stay on this computer."
+      : `Sync is on, but not synced yet. ${syncMod().statusLine(st)}` });
+  return st;
+}
+function syncMenuItems() {
+  const sync = getSync();
+  return syncMod().menuItems(sync.status(), sync.otherDevices(), {
+    toggle: (on) => { void setSyncEnabled(on); },
+    syncNow: () => { void sync.syncNow(); },
+    open: (url) => { openTab("you", url); },
+  });
+}
+
+/** Reopen last time's tabs. Returns how many came back. Saving starts only after this. */
+function restoreSession() {
+  let n = 0;
+  try {
+    const saved = getSessionStore().load();
+    const opened = [];
+    saved.forEach((t) => {
+      const r = openTab("you", t.url, { activate: false });
+      if (r.ok) { n += 1; opened.push({ entry: t, id: r.id }); }
+    });
+    // Split panes come back when at least two of them are tabs that restore. A
+    // console page (aither://) and an InPrivate tab never do, so a mixed split
+    // restores its web panes and opens as a plain page otherwise.
+    const built = panes.stageFromSession(opened.map((o) => ({ id: o.id, pane: o.entry.pane })));
+    const activeEntry = opened.find((o) => o.entry.active) || opened[opened.length - 1] || null;
+    if (built) {
+      stage = built;
+      const at = activeEntry ? stage.tabs.indexOf(activeEntry.id) : -1;
+      stage.focus = at >= 0 ? at : 0;
+      tabs.activate(stage.tabs[stage.focus]);
+    } else if (activeEntry) {
+      tabs.activate(activeEntry.id);
+    }
+  } catch { /* a broken file restores nothing */ }
+  sessionRestored = true;
+  return n;
+}
+
+function forgetTabExtras(id) {
+  dropPermissionPrompts(id);
+  permGranted.delete(id);
+  forgetPageGrants(id, { closed: true });
+  translateAsked.delete(id);
+  tabNotices.delete(id);
+  findResults.delete(id);
+  pwFilled.delete(id);
+  pwKeys.delete(id);
+}
+
+/** An InPrivate tab: the in-memory partition, hardened like the others, no history. */
+function openPrivateTab(url, { activate = true, after = null, stage: arrangementId = null } = {}) {
+  const { session } = electron();
+  hardenSession(session.fromPartition(everyday.INPRIVATE_PARTITION));
+  const added = tabs.add("you", { activate, after, kind: "web" });
+  if (!added.ok) return added;
+  const tab = tabs.get(added.id);
+  tab.private = true;
+  tab.stage = arrangementId || activeStageId();
+  tab.label = "";
+  tab.viewSpec = { kind: "web", paneId: null, partition: null, webPartition: everyday.INPRIVATE_PARTITION, url };
+  const view = createPageView("web", { paneId: null }, null, everyday.INPRIVATE_PARTITION);
+  views.set(added.id, view);
+  wirePage(view.webContents, added.id);
+  win.contentView.addChildView(view);
+  if (alive(panelView)) win.contentView.addChildView(panelView);
+  if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
+  layout();
+  pushState();
+  void loadInView(view, url).catch(() => {});
+  return { ok: true, id: added.id, view };
+}
+
+/** The last InPrivate tab closed: its cookies, cache and storage go with it. */
+function clearPrivateIfLast() {
+  const anyLeft = tabs.snapshot().tabs.some((t) => (tabs.get(t.id) || {}).private);
+  if (anyLeft) return;
+  if (adblockImpl) adblockImpl.clearPrivate(); // the sites paused from InPrivate tabs
+  try {
+    const ses = electron().session.fromPartition(everyday.INPRIVATE_PARTITION);
+    void ses.clearStorageData().catch(() => {});
+    void ses.clearCache().catch(() => {});
+  } catch { /* nothing to clear */ }
+}
+
+function privateHomeUrl() {
+  const home = homeUrl();
+  const c = classify(home);
+  return c.kind === "web" ? c.url : "https://duckduckgo.com/";
+}
+
+function setNotice(id, notice) {
+  // A question raised under a full-screen page (the toolbar is covered) cannot be
+  // answered until the page has left full screen and the question has been seen.
+  if (notice && fullscreenMod.needsEyes(notice) && htmlFullscreen.tab() === id) {
+    notice = fullscreenMod.heldNotice(notice);
+    leavePageFullscreen(id);
+  }
+  // A site waiting on Allow / Block keeps its question up; another notice follows it.
+  const shown = tabNotices.get(id);
+  if (shown && shown.kind === "permission" && permPrompts.pending(id) && (!notice || notice.kind !== "permission")) {
+    if (notice) noticeBehind.set(id, { keep: false, ...notice });
+    return;
+  }
+  if (notice) tabNotices.set(id, { keep: false, ...notice });
+  else tabNotices.delete(id);
+  pushState();
+}
+
+/** The parity facts of the tab on screen, merged into state(). */
+function everydayState(wc) {
+  const id = tabs.active;
+  const tab = tabs.get(id) || {};
+  const url = wc.getURL();
+  const notice = tabNotices.get(id);
+  let saved = 0;
+  try {
+    if (!tab.private && tab.by === "you" && passwordsMod().shouldOffer({ tabBy: tab.by, url })) saved = getVault().forOrigin(url).length;
+  } catch { /* vault unavailable: no key icon */ }
+  const ab = adblockImpl;
+  return {
+    private: Boolean(tab.private),
+    zoom: Math.round((wc.getZoomFactor() || 1) * 100),
+    find: findResults.get(id) || null,
+    notice: notice ? { kind: notice.kind, text: notice.text, title: notice.title || notice.text, actions: notice.actions || [] } : null,
+    passwords: saved,
+    adblock: ab ? { enabled: ab.enabled(), siteOff: ab.siteOff(url, { private: Boolean(tab.private) }), blocked: ab.blockedOn(wc.id),
+      web: tab.kind === "web" && !tab.pinned && /^https?:/i.test(url) } : null,
+    widevine: widevineMod.getWidevine().snapshot(),
+  };
+}
+
+function isolated(wc, code) {
+  return wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code }]).catch(() => null);
+}
+
+/** May this tab's page get password capture and fill? The owner's own, saved-able page only. */
+function passwordsAllowed(id, wc) {
+  const tab = tabs.get(id);
+  if (!tab || tab.private || tab.by !== "you") return false;
+  try { return passwordsMod().shouldOffer({ tabBy: tab.by, url: wc.getURL() }); } catch { return false; }
+}
+
+/** A login the page just submitted: offer to save it (never when it is already saved as is). */
+async function collectLogin(id, wc) {
+  if (!passwordsAllowed(id, wc)) return;
+  const got = await isolated(wc, passwordsMod().PENDING_SCRIPT);
+  offerLogin(id, wc, got);
+}
+
+/** A login the page submitted (from the console channel or the pending read): offer to save it. */
+function offerLogin(id, wc, got) {
+  if (!got || !got.password || !passwordsAllowed(id, wc)) return;
+  const P = passwordsMod();
+  const shown = tabNotices.get(id);
+  if (shown && shown.kind === "password-save" && shown.data && shown.data.origin === got.origin
+    && shown.data.username === got.username && shown.data.password === got.password) return;
+  if (got.origin !== P.normalizeOrigin(wc.getURL())) return;
+  try {
+    const vault = getVault();
+    const same = vault.forOrigin(got.origin).find((e) => e.username === (got.username || ""));
+    if (same && vault.reveal(same.id) === got.password) return;
+    const host = new URL(got.origin).host;
+    setNotice(id, {
+      kind: "password-save", keep: true, data: got,
+      text: same ? `Update the saved password for ${got.username || "this account"} on ${host}?`
+        : `Save the password for ${got.username || "this account"} on ${host}?`,
+      actions: [{ id: "password-save", label: same ? "Update" : "Save" }, { id: "dismiss", label: "Not now" }],
+    });
+  } catch { /* no vault: nothing offered */ }
+}
+
+/**
+ * A login form with saved accounts: OFFER the fill, never fill unasked. A password put
+ * into the DOM on load is readable by every script on the page (Chromium hides an
+ * autofilled value from scripts until the user interacts; a page here cannot), so the
+ * owner's click is the gesture: the notice's Fill, or the key icon.
+ */
+async function autofill(id, wc) {
+  if (!passwordsAllowed(id, wc)) return;
+  const url = wc.getURL();
+  // One capture listener per document, with that document's own key.
+  const keys = pwKeys.get(id) || { key: null, prev: null };
+  if (!keys.key) {
+    keys.key = passwordsMod().newCaptureKey();
+    pwKeys.set(id, keys);
+    void isolated(wc, passwordsMod().captureScriptFor(keys.key));
+  }
+  let entries;
+  try { entries = getVault().forOrigin(url); } catch { return; }
+  pushState();
+  if (!entries.length || pwFilled.get(id) === url || tabNotices.has(id)) return;
+  const hasLogin = await isolated(wc, passwordsMod().DETECT_LOGIN_SCRIPT);
+  if (!hasLogin || pageWc(id) !== wc || wc.getURL() !== url) return;
+  const one = entries.length === 1 ? entries[0] : null;
+  setNotice(id, {
+    kind: "password-fill", data: { url, entryId: one ? one.id : null },
+    text: one ? `Sign in as ${one.username || "your saved account"}?` : `${entries.length} saved accounts for this site.`,
+    actions: one ? [{ id: "password-fill", label: "Fill" }, { id: "dismiss", label: "Not now" }]
+      : [{ id: "password-pick", label: "Choose…" }, { id: "dismiss", label: "Not now" }],
+  });
+}
+
+async function fillAccount(id, wc, entryId) {
+  if (!passwordsAllowed(id, wc)) return { ok: false };
+  const vault = getVault();
+  const entry = vault.forOrigin(wc.getURL()).find((e) => e.id === entryId);
+  if (!entry) return { ok: false };
+  pwFilled.set(id, wc.getURL());
+  const r = await isolated(wc, passwordsMod().fillScript(entry.username, vault.reveal(entry.id),
+    passwordsMod().normalizeOrigin(wc.getURL())));
+  return { ok: Boolean(r && r.filled) };
+}
+
+/** Load-time hooks for one page: right-click, find results, logins, DRM, ad counter. */
+function wireEveryday(wc, id) {
+  wc.on("context-menu", (_event, params) => showContextMenu(id, wc, params));
+  wc.on("found-in-page", (_event, result) => {
+    const prev = findResults.get(id) || { text: "" };
+    findResults.set(id, { text: prev.text, matches: result.matches || 0, active: result.activeMatchOrdinal || 0 });
+    pushState();
+  });
+  wc.on("did-start-navigation", (details, legacyUrl, legacyInPlace, legacyMain) => {
+    const isMain = details && typeof details.isMainFrame === "boolean" ? details.isMainFrame : legacyMain;
+    const same = details && typeof details.isSameDocument === "boolean" ? details.isSameDocument : legacyInPlace;
+    if (!isMain || same) return;
+    // The page that asked for a permission is leaving: it is denied, nothing remembered.
+    dropPermissionPrompts(id);
+    permGranted.delete(id);
+    // The old document's isolated world still holds a login it just submitted.
+    void collectLogin(id, wc);
+    if (adblockImpl) adblockImpl.resetCount(wc.id);
+    findResults.delete(id);
+  });
+  // A login submitted in the isolated world arrives here before the page unloads.
+  wc.on("console-message", (details, legacyLevel, legacyMessage) => {
+    const message = details && typeof details.message === "string" ? details.message : legacyMessage;
+    if (typeof message !== "string" || !message.startsWith(passwordsMod().CHANNEL)) return;
+    const keys = pwKeys.get(id);
+    if (!keys) return;
+    const got = passwordsMod().decodeCaptured(message, keys.key) || passwordsMod().decodeCaptured(message, keys.prev);
+    if (got) offerLogin(id, wc, got);
+  });
+  // Ad boxes: a new document starts without the sheet; it goes in as soon as the DOM is there.
+  wc.on("did-navigate", () => cosmeticSheets.delete(wc.id));
+  wc.on("dom-ready", () => syncCosmetics(wc, id));
+  wc.once("destroyed", () => cosmeticSheets.delete(wc.id));
+  wc.on("did-navigate", (_event, url) => {
+    const k = pwKeys.get(id);
+    if (k) pwKeys.set(id, { key: null, prev: k.key || k.prev });
+    // A prompt the old document raised while it was leaving goes with it.
+    dropPermissionPrompts(id);
+    permGranted.delete(id);
+    forgetPageGrants(id);
+    const n = tabNotices.get(id);
+    if (n && n.keep) n.keep = false;
+    else if (n) tabNotices.delete(id);
+    const tab = tabs.get(id);
+    offerDrm(id, wc, url);
+    const store = require("./browser-webstore.cjs").parseExtensionId(url);
+    if (tab && tab.by === "you" && !tab.private && store.ok && /\/detail\//.test(url)) {
+      setNotice(id, {
+        kind: "extension", data: { url },
+        text: "Install this extension in the Aither Browser (the store's own button asks for Chrome).",
+        actions: [{ id: "extension-install", label: "Add to Aither" }, { id: "dismiss", label: "Not now" }],
+      });
+    }
+  });
+  wc.on("did-stop-loading", () => {
+    void collectLogin(id, wc).then(() => autofill(id, wc)).then(() => offerTranslation(id, wc)).catch(() => {});
+  });
+}
+
+/** What a DRM page is told, from the Widevine state (browser-widevine.cjs decides). */
+function drmNoticeFor(id, url) {
+  const tab = tabs.get(id);
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* not a URL */ }
+  return widevineMod.drmNotice({
+    needsDrm: everyday.needsDrm(url), tabBy: tab ? tab.by : "", snap: widevineMod.getWidevine().snapshot(),
+    hasEdge: Boolean(everyday.edgeExecutable()), stayed: drmStay.has(host), url, host,
+  });
+}
+
+/**
+ * A DRM site just loaded in an owner tab. Widevine ready: nothing, the page plays.
+ * Still installing (the first seconds of a first run): a wait line, then one reload so
+ * the player sees the CDM. Missing or failed: the Open in Edge fallback.
+ */
+function offerDrm(id, wc, url) {
+  const notice = drmNoticeFor(id, url);
+  if (!notice) return;
+  setNotice(id, notice);
+  if (notice.kind !== "drm-wait") return;
+  void widevineMod.getWidevine().ensure().then((snap) => {
+    const now = tabNotices.get(id);
+    if (!now || now.kind !== "drm-wait" || wc.isDestroyed() || wc.getURL() !== url) return;
+    setNotice(id, snap.state === "ready" ? null : drmNoticeFor(id, url));
+    if (snap.state === "ready") wc.reload();
+  });
+}
+
+/** The more-menu's Widevine line was clicked: retry a failed install, then say what happened. */
+function widevineCheck() {
+  const id = tabs.active;
+  const wv = widevineMod.getWidevine();
+  void wv.ensure({ retry: true }).then((snap) => {
+    setNotice(id, { kind: "info", text: snap.state === "failed" ? `Protected playback did not install: ${snap.error}` : widevineMod.widevineMenuLabel(snap) });
+  });
+  return true;
+}
+
+/** Open Edge on `url` (only Edge: shell.openExternal would come back here once Aither is the default). */
+function openInEdge(url) {
+  const exe = everyday.edgeExecutable();
+  if (!exe) return { ok: false, error: "Microsoft Edge is not installed" };
+  const target = String(url || "");
+  if (!/^(https?|edge):/i.test(target)) return { ok: false, error: "only web pages open in Edge" };
+  // A workspace app stays in the managed browser: Edge has no policy, watermark or audit.
+  if (getWorkspace().policy.governs(target)) return { ok: false, error: "1 workspace app stays in this browser — your workspace policy does not let it open in Edge" };
+  try {
+    require("node:child_process").spawn(exe, [target], { detached: true, stdio: "ignore", windowsHide: false }).unref();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error) };
+  }
+}
+
+/** The tab's page, if it is a live web page. */
+function pageWc(id) {
+  const view = viewOf(id);
+  return alive(view) ? view.webContents : null;
+}
+
+function translateMod() { return require("./browser-translate.cjs"); }
+
+/** The language the owner reads: the app's locale, by name ("English"). */
+function translateTarget() {
+  let locale = "en";
+  try { locale = electron().app.getLocale() || "en"; } catch { /* English */ }
+  return { locale, name: translateMod().languageName(locale) || "English" };
+}
+
+/**
+ * Who can translate, in the order they are asked (browser-translate.cjs has the
+ * measurements behind it): the fleet's MicroScheduler, the local node, the bundled
+ * local model, then the desk's agent. Every one is on this machine or its own fleet
+ * except the last, which is whatever the owner's desk already talks to.
+ */
+function translateBackends() {
+  if (translateBackendsOverride) return translateBackendsOverride;
+  const T = translateMod();
+  const prefer = String(process.env.AWDESK_TRANSLATE_MODEL || "");
+  const base = String(process.env.AITHER_MICROSCHEDULER_URL || "https://127.0.0.1:8150").replace(/\/+$/, "");
+  const out = [
+    T.schedulerBackend({ base, prefer, http: T.createJsonHttp({ tls: require("./internal-ca.cjs").internalCaOptions() }) }),
+    T.nodeBackend({ answer: (msg) => overlayAnswer(msg), prefer }),
+    T.bonsaiLocalBackend({ chat: (messages) => require("./local-ai.cjs").createLocalAi().chat(messages) }),
+  ];
+  if (typeof askAgent === "function") out.push(T.agentBackend({ askAgent }));
+  return out;
+}
+
+/**
+ * Translate the page in place. The text goes to the first model that answers (see
+ * translateBackends) and the notice names it; nothing goes to a translation service.
+ */
+async function translatePage(id) {
+  const wc = pageWc(id);
+  if (!wc) return { ok: false };
+  if (getWorkspace().blocks(id, "capture")) return { ok: false };
+  const T = translateMod();
+  const target = translateTarget().name;
+  const url = wc.getURL();
+  const got = await isolated(wc, everyday.TRANSLATE_COLLECT_SCRIPT);
+  const texts = got && Array.isArray(got.texts) ? got.texts : [];
+  if (!texts.length) { setNotice(id, { kind: "info", text: "Nothing on this page to translate." }); return { ok: false }; }
+  const here = () => pageWc(id) === wc && !wc.isDestroyed() && wc.getURL() === url;
+  const original = [{ id: "show-original", label: "Show original" }];
+  const r = await T.createTranslator({ backends: translateBackends() }).translate({
+    texts, target,
+    apply: (start, out) => isolated(wc, everyday.translateApplyScript(start, out)),
+    stillWanted: here,
+    onProgress: ({ done, total, backend }) => {
+      if (!here()) return;
+      setNotice(id, { kind: "info", actions: original, text: backend
+        ? `Translating into ${target} with ${backend}… ${done}/${total}`
+        : `Translating into ${target}: asking a model this machine can reach…` });
+    },
+  }).catch((error) => ({ ok: false, changed: 0, backend: null, tried: [{ id: "error", label: "translate", ok: false, error: String((error && error.message) || error) }] }));
+  if (here()) {
+    setNotice(id, r.ok
+      ? { kind: "info", text: `Translated into ${target} by ${r.backend.label}.`, actions: original }
+      : { kind: "info", text: `Not translated: no model answered. ${T.describeTried(r.tried) || "None is set up (see aither://local-ai)."}` });
+  }
+  return r;
+}
+
+/**
+ * "This page is in German. Translate?" -- asked once per page, on the owner's own web
+ * tabs. Never InPrivate and never on an agent's tab (browser-translate shouldOffer);
+ * only the page's language is worked out here, nothing is sent to a model until asked.
+ */
+async function offerTranslation(id, wc) {
+  const tab = tabs.get(id);
+  if (!tab || tab.by !== "you" || tab.private || tab.kind !== "web" || tab.pinned) return;
+  if (getPrefs().translateOffer === false || wc.isDestroyed()) return;
+  const url = wc.getURL();
+  if (!/^https?:/i.test(url) || tabNotices.has(id) || translateAsked.get(id) === url) return;
+  translateAsked.set(id, url);
+  const T = translateMod();
+  const got = await isolated(wc, T.LANGUAGE_SAMPLE_SCRIPT);
+  if (!got || pageWc(id) !== wc || wc.isDestroyed() || wc.getURL() !== url || tabNotices.has(id)) return;
+  const lang = T.pageLanguage({ htmlLang: got.lang, text: got.text });
+  let host = "";
+  try { host = new URL(url).hostname.toLowerCase(); } catch { /* not a URL */ }
+  const target = translateTarget();
+  if (!T.shouldOffer({ pageLang: lang, appLang: target.locale, tab: { by: tab.by, private: Boolean(tab.private), kind: tab.kind },
+    host, muted: translateMuted })) return;
+  setNotice(id, {
+    kind: "translate-offer", data: { url, host, lang },
+    text: `This page is in ${T.languageName(lang)}. Translate it into ${target.name}?`,
+    actions: [{ id: "translate", label: "Translate" }, { id: "translate-mute", label: "Not now" }],
+  });
+}
+
+/** The shield in the toolbar: what was blocked here, pause on this site, pause everywhere. */
+function shieldFacts(id = tabs.active) {
+  const wc = pageWc(id);
+  const tab = tabs.get(id) || {};
+  const url = wc ? wc.getURL() : "";
+  const ab = getAdblock();
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* no page */ }
+  return { wc, url, ab, tab, facts: { enabled: ab.enabled(), siteOff: ab.siteOff(url, { private: Boolean(tab.private) }), blocked: wc ? ab.blockedOn(wc.id) : 0, host,
+    web: tab.kind === "web" && !tab.pinned && /^https?:/i.test(url) } };
+}
+
+/**
+ * One shield menu choice. The page reloads so the owner sees the difference at once.
+ * From an InPrivate tab, "pause on this site" is kept in memory and never saved: the
+ * settings file must not name a site that was only ever visited InPrivate.
+ */
+function shieldAction(actionId, checked, id = tabs.active) {
+  const { wc, url, ab, tab } = shieldFacts(id);
+  if (actionId === "pause-site") {
+    if (!/^https?:/i.test(url)) return { ok: false };
+    ab.setSiteOff(url, Boolean(checked), { private: Boolean(tab.private) });
+  } else if (actionId === "pause-all") {
+    ab.setEnabled(!checked);
+    syncAllCosmetics();
+  } else {
+    return { ok: false };
+  }
+  if (wc) wc.reload();
+  pushState();
+  return { ok: true };
+}
+
+function shieldMenu() {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const { Menu } = electron();
+  const id = tabs.active;
+  const spec = require("./browser-adblock.cjs").shieldMenuSpec(shieldFacts(id).facts);
+  const template = spec.map((item) => (item.type === "separator" ? { type: "separator" } : {
+    label: item.label, enabled: item.enabled !== false,
+    ...(item.checked === undefined ? {} : { type: "checkbox", checked: item.checked }),
+    click: (menuItem) => shieldAction(item.id, menuItem.checked, id),
+  }));
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+function zoomTo(wc, dir) {
+  if (!wc) return false;
+  wc.setZoomFactor(everyday.nextZoom(wc.getZoomFactor(), dir));
+  pushState();
+  return true;
+}
+
+function sendToChrome(channel, payload) {
+  if (!win || win.isDestroyed()) return false;
+  win.webContents.focus();
+  win.webContents.send(channel, payload);
+  return true;
+}
+
+/**
+ * One place every standard key, menu item and right-click lands. Returns true when it
+ * was a browser action (so the key is not passed to the page).
+ */
+function runBrowserAction(action, arg, id = tabs.active) {
+  const wc = pageWc(id);
+  const tab = tabs.get(id) || {};
+  const history = wc && wc.navigationHistory;
+  // Ctrl+Tab / Ctrl+1..9 walk the ACTIVE stage's strip, never a suspended stage's tab
+  // (showing one would leave the page area with nothing on screen).
+  const order = tabs.tabs.filter((t) => inActiveStage(t.id)).map((t) => t.id);
+  const at = order.indexOf(tabs.active);
+  // Print, translate and read aloud on a workspace app whose policy turns them off.
+  if (getWorkspace().blocksAction(id, action)) return true;
+  switch (action) {
+    case "new-tab": return openTab("you", homeUrl()).ok || true;
+    case "close-tab": closeTab(tabs.active, "you"); return true;
+    case "focus-address": return sendToChrome("desk:browser-focus-address");
+    case "find": return sendToChrome("desk:browser-find-open", (findResults.get(id) || {}).text || "");
+    case "find-next":
+    case "find-prev": {
+      const text = (findResults.get(id) || {}).text;
+      if (wc && text) wc.findInPage(text, { forward: action === "find-next", findNext: true });
+      return true;
+    }
+    case "print": if (wc) wc.print({ printBackground: true }, () => {}); return true;
+    case "zoom-in": return zoomTo(wc, 1);
+    case "zoom-out": return zoomTo(wc, -1);
+    case "zoom-reset": return zoomTo(wc, 0);
+    case "inprivate": return openTab("you", arg || privateHomeUrl(), { private: true }).ok || true;
+    case "reopen-closed": {
+      const last = closedTabs.pop();
+      if (last) openTab("you", last.url);
+      return true;
+    }
+    case "next-tab": case "prev-tab": {
+      if (order.length > 1) showTab(order[(at + (action === "next-tab" ? 1 : -1) + order.length) % order.length]);
+      return true;
+    }
+    case "tab-index": {
+      const n = Number(arg);
+      const pick = n === 9 ? order[order.length - 1] : order[n - 1];
+      if (pick != null) showTab(pick);
+      return true;
+    }
+    case "reload": if (wc) wc.reload(); return true;
+    case "back": if (history && history.canGoBack()) history.goBack(); return true;
+    case "forward": if (history && history.canGoForward()) history.goForward(); return true;
+    case "home": if (wc) void loadInView(viewOf(id), homeUrl()).catch(() => {}); return true;
+    case "fullscreen": if (win && !win.isDestroyed()) win.setFullScreen(!win.isFullScreen()); return true;
+    case "bookmark":
+      if (wc && !tab.private) getLibrary().toggleBookmark(wc.getURL(), wc.getTitle());
+      touchSync();
+      pushState();
+      libraryChanged();
+      return true;
+    case "history":
+    case "downloads":
+    case "bookmarks":
+    case "permissions":
+    case "clear-data": return openInternal(action, null) !== false;
+    case "bookmarks-bar": setBookmarksBar(!getPrefs().bookmarksBar); return true;
+    case "translate": void translatePage(id); return true;
+    case "read-aloud": void readAloud(); return true;
+    case "open-edge": return openInEdge(wc ? wc.getURL() : "").ok;
+    case "widevine-check": return widevineCheck();
+    default: return false;
+  }
+}
+
+/** The page's right-click menu (Electron draws none). */
+function showContextMenu(id, wc, params) {
+  const { Menu, clipboard, dialog } = electron();
+  const history = wc.navigationHistory;
+  const tab = tabs.get(id) || {};
+  const spec = everyday.contextMenuSpec(params, {
+    canGoBack: history ? history.canGoBack() : false,
+    canGoForward: history ? history.canGoForward() : false,
+    private: Boolean(tab.private),
+  });
+  const run = (item) => {
+    // Copy, paste, save, print, inspect: each row a workspace policy can turn off.
+    if (getWorkspace().blocksMenu(id, item.id)) return;
+    switch (item.id) {
+      case "spell-replace": wc.replaceMisspelling(item.arg); break;
+      case "spell-add": wc.session.addWordToSpellCheckerDictionary(item.arg); break;
+      case "link-new-tab": openTab(tab.private ? "you" : (tab.by || "you"), item.arg,
+        { activate: false, after: id, private: Boolean(tab.private) }); break;
+      case "link-inprivate": openTab("you", item.arg, { private: true }); break;
+      case "copy-text": clipboard.writeText(String(item.arg || "")); break;
+      case "image-save": wc.downloadURL(item.arg); break;
+      case "image-copy": wc.copyImageAt(params.x, params.y); break;
+      case "undo": wc.undo(); break;
+      case "redo": wc.redo(); break;
+      case "cut": wc.cut(); break;
+      case "copy": wc.copy(); break;
+      case "paste": wc.paste(); break;
+      case "paste-plain": wc.pasteAndMatchStyle(); break;
+      case "select-all": wc.selectAll(); break;
+      case "search": openSearch(item.arg); break;
+      case "save-page":
+        void dialog.showSaveDialog(win, { defaultPath: `${(wc.getTitle() || "page").replace(/[\\/:*?"<>|]+/g, " ").slice(0, 80)}.html`,
+          filters: [{ name: "Web page, complete", extensions: ["html"] }] })
+          .then((r) => { if (!r.canceled && r.filePath) return wc.savePage(r.filePath, "HTMLComplete"); return null; })
+          .catch(() => {});
+        break;
+      case "inspect": wc.inspectElement(params.x, params.y); break;
+      default: runBrowserAction(item.id, item.arg, id);
+    }
+  };
+  const template = spec.map((item) => (item.type === "separator" ? { type: "separator" }
+    : { label: item.label, enabled: item.enabled !== false, click: () => run(item) }));
+  Menu.buildFromTemplate(template).popup({ window: win });
+}
+
+/** A notice button (save password, open in Edge, add extension...). */
+async function noticeAction(actionId) {
+  const id = tabs.active;
+  const notice = tabNotices.get(id);
+  const wc = pageWc(id);
+  if (!notice) return { ok: false };
+  if (externalApps.isAction(actionId)) return answerExternalApp(id, notice, actionId);
+  switch (actionId) {
+    case "password-save": {
+      const d = notice.data || {};
+      tabNotices.delete(id);
+      let r;
+      try { r = getVault().add({ origin: d.origin, username: d.username || "", password: d.password }); } catch (error) { r = { ok: false, error: String(error.message) }; }
+      setNotice(id, r && r.ok ? null : { kind: "info", text: `The password was not saved: ${(r && r.error) || "the vault refused"}` });
+      return r;
+    }
+    case "open-edge": {
+      const r = openInEdge((notice.data && notice.data.url) || (wc ? wc.getURL() : ""));
+      setNotice(id, r.ok ? null : { kind: "info", text: r.error });
+      return r;
+    }
+    case "password-fill": {
+      const d = notice.data || {};
+      setNotice(id, null);
+      if (!wc || wc.getURL() !== d.url || !d.entryId) return { ok: false };
+      return fillAccount(id, wc, d.entryId);
+    }
+    case "password-pick": setNotice(id, null); return passwordMenu();
+    case "drm-stay": drmStay.add((notice.data && notice.data.host) || ""); setNotice(id, null); return { ok: true };
+    case "extension-install": return installExtensionFrom(id, (notice.data && notice.data.url) || (wc ? wc.getURL() : ""));
+    case "show-original": setNotice(id, null); if (wc) wc.reload(); return { ok: true };
+    case "crash-reload": setNotice(id, null); if (wc) wc.reload(); return { ok: true };
+    case "permission-allow":
+      // A prompt that only just appeared may sit under a click meant for something else.
+      if (!sitePermissions.armed(notice.at, Date.now())) return { ok: false, early: true };
+      return answerPermission(id, true, true);
+    case "permission-block": return answerPermission(id, false, true);
+    case "translate": return translatePage(id);
+    case "translate-mute":
+      if (notice.data && notice.data.host) translateMuted.add(notice.data.host);
+      setNotice(id, null);
+      return { ok: true };
+    case "delete-file": {
+      const file = notice.data && notice.data.file;
+      try { if (file) require("node:fs").unlinkSync(file); setNotice(id, { kind: "info", text: "The CSV file is deleted." }); } catch (error) {
+        setNotice(id, { kind: "info", text: `Could not delete ${file}: ${error.message}` });
+      }
+      return { ok: true };
+    }
+    default:
+      // "Not now" on a permission prompt: the site is denied this once, nothing remembered.
+      if (notice.kind === "permission") return answerPermission(id, false, false);
+      setNotice(id, null);
+      return { ok: true };
+  }
+}
+
+/** Add a Chrome Web Store / Edge Add-ons extension (its page's URL) to the browser. */
+async function installExtensionFrom(id, url) {
+  setNotice(id, { kind: "info", text: "Downloading the extension…" });
+  const store = require("./browser-webstore.cjs");
+  const r = await store.installFromStore(url, { dir: userDataPath("extensions-store") }).catch((error) => ({ ok: false, error: String(error.message || error) }));
+  if (!r || !r.ok) { setNotice(id, { kind: "info", text: `The extension was not installed: ${(r && r.error) || "unknown error"}` }); return r; }
+  // Show what it may touch BEFORE it loads into the owner's session (review 2026-11-13).
+  // Unpacked to disk is inert; it runs only after this confirm.
+  const reach = extensionReach(r.path);
+  const { dialog } = electron();
+  const ask = await dialog.showMessageBox(win, {
+    type: "warning", buttons: ["Add extension", "Cancel"], defaultId: 1, cancelId: 1, noLink: true,
+    message: `Add "${r.name}" ${r.version}?`,
+    detail: `It will be able to:\n${reach.join("\n") || "- (asks for no special permissions)"}`,
+  });
+  if (ask.response !== 0) {
+    try { require("node:fs").rmSync(r.path, { recursive: true, force: true }); } catch { /* inert files */ }
+    setNotice(id, { kind: "info", text: `${r.name} was not added.` });
+    return { ok: false, error: "cancelled" };
+  }
+  const ew = require("./extensions-window.cjs");
+  ew.saveDirs([...ew.savedDirs(), r.path]);
+  try {
+    const ses = electron().session.fromPartition(PARTITION);
+    const api = ses.extensions || ses;
+    for (const e of (api.getAllExtensions ? api.getAllExtensions() : [])) if (e.id === r.id) api.removeExtension(e.id);
+    await api.loadExtension(r.path, { allowFileAccess: false });
+  } catch (error) {
+    setNotice(id, { kind: "info", text: `${r.name} is installed but did not load: ${error.message}` });
+    return { ok: false, error: error.message };
+  }
+  const warn = Array.isArray(r.warnings) && r.warnings.length ? ` Some parts may not work here (${r.warnings.join(", ")}).` : "";
+  setNotice(id, { kind: "info", text: `${r.name} ${r.version} is added.${warn}` });
+  return r;
+}
+
+/** What an unpacked extension asks to reach, in plain lines, from its manifest. */
+function extensionReach(dir) {
+  let m;
+  try { m = JSON.parse(require("node:fs").readFileSync(path.join(dir, "manifest.json"), "utf8")); } catch { return ["- (manifest unreadable)"]; }
+  const hosts = new Set([...(Array.isArray(m.host_permissions) ? m.host_permissions : []),
+    ...(Array.isArray(m.permissions) ? m.permissions.filter((p) => /[:/*]/.test(String(p))) : []),
+    ...(Array.isArray(m.content_scripts) ? m.content_scripts.flatMap((c) => (Array.isArray(c.matches) ? c.matches : [])) : [])]);
+  const perms = (Array.isArray(m.permissions) ? m.permissions : []).filter((p) => !/[:/*]/.test(String(p)));
+  const out = [];
+  const all = [...hosts].some((h) => /<all_urls>|^\*:\/\/\*\/|^https?:\/\/\*\//.test(String(h)));
+  if (all) out.push("- Read and change everything on every website you visit");
+  else if (hosts.size) out.push(`- Read and change: ${[...hosts].slice(0, 8).join(", ")}${hosts.size > 8 ? ` (+${hosts.size - 8} more)` : ""}`);
+  if (perms.length) out.push(`- Use: ${perms.slice(0, 12).join(", ")}${perms.length > 12 ? " ..." : ""}`);
+  return out;
+}
+
+async function importPasswordsCsv() {
+  const { dialog } = electron();
+  const id = tabs.active;
+  const pick = await dialog.showOpenDialog(win, { title: "Passwords CSV exported from Edge", properties: ["openFile"],
+    filters: [{ name: "CSV", extensions: ["csv"] }] });
+  if (pick.canceled || !pick.filePaths[0]) return { ok: false };
+  const file = pick.filePaths[0];
+  let r;
+  try {
+    const text = require("node:fs").readFileSync(file, "utf8");
+    r = await require("./browser-edge-import.cjs").importPasswordCsv({ text, vault: getVault() });
+  } catch (error) {
+    r = { ok: false, error: String(error.message) };
+  }
+  setNotice(id, r && r.ok
+    ? { kind: "info", text: `Imported ${r.added} passwords${r.skipped ? ` (${r.skipped} skipped)` : ""}. The CSV holds them in plain text: delete it now.`, data: { file },
+      actions: [{ id: "delete-file", label: "Delete the CSV" }, { id: "dismiss", label: "Keep it" }] }
+    : { kind: "info", text: `No passwords imported: ${(r && r.error) || "unreadable file"}` });
+  return r;
+}
+
+async function importFromEdgeProfile(dir) {
+  const id = tabs.active;
+  setNotice(id, { kind: "info", text: "Importing from Edge…" });
+  const r = await require("./browser-edge-import.cjs").importFromEdge({ profileDir: dir, library: getLibrary() })
+    .catch((error) => ({ ok: false, bookmarks: 0, history: 0, errors: [String(error.message)] }));
+  setNotice(id, { kind: "info", text: `From Edge: ${r.bookmarks} bookmarks and ${r.history} history entries added.`
+    + `${r.errors && r.errors.length ? ` Not imported: ${r.errors.join("; ")}.` : ""} Passwords: export them from Edge and import the CSV (menu > Passwords).` });
+  return r;
+}
+
+async function makeDefaultBrowser() {
+  const { app, shell } = electron();
+  const id = tabs.active;
+  const r = await require("./browser-default.cjs").createDefaultBrowser({
+    exe: process.execPath, appArgs: app.isPackaged ? [] : [app.getAppPath()], openExternal: (u) => shell.openExternal(u),
+  }).register();
+  setNotice(id, r.ok
+    ? { kind: "info", text: "Aither Browser is registered. In the Settings window that opened, click \"Set default\" next to Aither Browser." }
+    : { kind: "info", text: `Could not register: ${r.error}` });
+  return r;
+}
+
+/**
+ * The saved-passwords rows: one per account (copy, delete), then import. ONE list for
+ * the ⋯ menu's Passwords submenu and the desk's "Saved passwords…" command.
+ */
+function savedPasswordItems(clipboard) {
+  let accounts = [];
+  try { accounts = getVault().list(); } catch { /* no vault */ }
+  const rows = accounts.slice(0, 40).map((a) => ({
+    label: `${a.origin.replace(/^https:\/\//, "")}  ${a.username || "(no name)"}`,
+    submenu: [
+      { label: "Copy password", click: () => { clipboard.writeText(getVault().reveal(a.id) || ""); setTimeout(() => clipboard.clear(), 30000); } },
+      { label: "Copy username", click: () => clipboard.writeText(a.username || "") },
+      { label: "Delete", click: () => { getVault().remove(a.id); pushState(); } },
+    ],
+  }));
+  return { accounts, items: [
+    ...(rows.length ? rows : [{ label: "No saved passwords yet", enabled: false }]),
+    { type: "separator" },
+    { label: "Import passwords from a CSV…", click: () => { void importPasswordsCsv(); } },
+    { label: "Export them from Edge first…", enabled: Boolean(everyday.edgeExecutable()), click: () => openInEdge("edge://settings/passwords") },
+  ] };
+}
+
+/** The ⋯ menu: everything Edge keeps in its own. */
+function browserMenu() {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const { Menu, clipboard } = electron();
+  const id = tabs.active;
+  const wc = pageWc(id);
+  const url = wc ? wc.getURL() : "";
+  const ab = getAdblock();
+  const zoom = wc ? Math.round(wc.getZoomFactor() * 100) : 100;
+  let edgeProfiles = [];
+  try { edgeProfiles = require("./browser-edge-import.cjs").edgeProfileDirs(); } catch { /* no Edge */ }
+  const store = require("./browser-webstore.cjs").parseExtensionId(url);
+  const { accounts, items: pwSubmenu } = savedPasswordItems(clipboard);
+  const template = [
+    { label: "New tab", accelerator: "CmdOrCtrl+T", registerAccelerator: false, click: () => runBrowserAction("new-tab") },
+    { label: "New InPrivate tab", accelerator: "CmdOrCtrl+Shift+N", registerAccelerator: false, click: () => runBrowserAction("inprivate") },
+    { label: "Reopen closed tab", accelerator: "CmdOrCtrl+Shift+T", registerAccelerator: false, enabled: closedTabs.list().length > 0, click: () => runBrowserAction("reopen-closed") },
+    { type: "separator" },
+    { label: "History", accelerator: "CmdOrCtrl+H", registerAccelerator: false, click: () => runBrowserAction("history") },
+    { label: "Bookmarks", accelerator: "CmdOrCtrl+Shift+O", registerAccelerator: false, click: () => runBrowserAction("bookmarks") },
+    { label: "Show the bookmarks bar", type: "checkbox", checked: Boolean(getPrefs().bookmarksBar), accelerator: "CmdOrCtrl+Shift+B",
+      registerAccelerator: false, click: (item) => setBookmarksBar(item.checked) },
+    { label: "Downloads", accelerator: "CmdOrCtrl+J", registerAccelerator: false, click: () => runBrowserAction("downloads") },
+    { type: "separator" },
+    { label: `Zoom (${zoom}%)`, submenu: [
+      { label: "Zoom in", accelerator: "CmdOrCtrl+=", registerAccelerator: false, click: () => runBrowserAction("zoom-in") },
+      { label: "Zoom out", accelerator: "CmdOrCtrl+-", registerAccelerator: false, click: () => runBrowserAction("zoom-out") },
+      { label: "Reset to 100%", accelerator: "CmdOrCtrl+0", registerAccelerator: false, click: () => runBrowserAction("zoom-reset") },
+    ] },
+    { label: "Find on page", accelerator: "CmdOrCtrl+F", registerAccelerator: false, click: () => runBrowserAction("find") },
+    { label: "Print…", accelerator: "CmdOrCtrl+P", registerAccelerator: false, click: () => runBrowserAction("print") },
+    { label: "Translate page", click: () => runBrowserAction("translate") },
+    { label: "Offer to translate pages in other languages", type: "checkbox", checked: getPrefs().translateOffer !== false,
+      click: (item) => setPrefs({ translateOffer: item.checked }) },
+    { label: "Read aloud", click: () => runBrowserAction("read-aloud") },
+    { label: "Open in Edge", enabled: /^https?:/i.test(url) && Boolean(everyday.edgeExecutable()), click: () => runBrowserAction("open-edge") },
+    { label: widevineMod.widevineMenuLabel(widevineMod.getWidevine().snapshot()), click: () => runBrowserAction("widevine-check") },
+    { type: "separator" },
+    { label: "Block ads and trackers", type: "checkbox", checked: ab.enabled(), click: (item) => { ab.setEnabled(item.checked); syncAllCosmetics(); pushState(); } },
+    { label: "Allow ads on this site", type: "checkbox", enabled: ab.enabled() && /^https?:/i.test(url), checked: shieldFacts(id).facts.siteOff,
+      click: (item) => { shieldAction("pause-site", item.checked, id); } },
+    { label: "Remove tracking from links (utm_*, fbclid, gclid…)", type: "checkbox", checked: ab.stripParams(),
+      click: (item) => { ab.setStripParams(item.checked); } },
+    { label: "Tell sites not to sell or share my data (GPC)", type: "checkbox", checked: ab.gpc(),
+      click: (item) => { ab.setGpc(item.checked); } },
+    { label: `Update the block lists (${ab.hostCount().toLocaleString()} hosts, ${ab.stats().rules.toLocaleString()} rules, ${ab.stats().cosmetic.toLocaleString()} hidden boxes)`,
+      click: () => { void ab.refresh({ force: true }).then(() => pushState()); } },
+    { type: "separator" },
+    { label: `Passwords (${accounts.length})`, submenu: pwSubmenu },
+    { label: "Import from Edge", submenu: edgeProfiles.length
+      ? edgeProfiles.map((p) => ({ label: `${p.name}: bookmarks and history`, click: () => { void importFromEdgeProfile(p.dir); } }))
+      : [{ label: "No Edge profile found", enabled: false }] },
+    { label: "Extensions", submenu: [
+      { label: "Add this extension to Aither", enabled: store.ok, click: () => { void installExtensionFrom(id, url); } },
+      { label: "Open the Chrome Web Store", click: () => openTab("you", "https://chromewebstore.google.com/") },
+      { label: "Open Edge Add-ons", click: () => openTab("you", "https://microsoftedge.microsoft.com/addons") },
+      { label: "Manage extensions", click: () => openInternal("extensions", null) },
+    ] },
+    { label: "Site permissions", click: () => runBrowserAction("permissions") },
+    { label: "Clear browsing data…", accelerator: "CmdOrCtrl+Shift+Delete", registerAccelerator: false, click: () => runBrowserAction("clear-data") },
+    { type: "separator" },
+    ...syncMenuItems(),
+    { type: "separator" },
+    { label: "Reopen my tabs when the browser starts", type: "checkbox", checked: getPrefs().restoreSession !== false,
+      click: (item) => setPrefs({ restoreSession: item.checked }) },
+    { label: "Make Aither your default browser…", visible: process.platform === "win32", click: () => { void makeDefaultBrowser(); } },
+  ];
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+/** The key icon: fill one of this site's saved accounts. */
+function passwordMenu() {
+  const id = tabs.active;
+  const wc = pageWc(id);
+  if (!wc || !passwordsAllowed(id, wc)) return { ok: false };
+  const { Menu } = electron();
+  const entries = getVault().forOrigin(wc.getURL());
+  const template = entries.map((e) => ({ label: `Fill ${e.username || "(no name)"}`, click: () => { void fillAccount(id, wc, e.id); } }));
+  if (!template.length) return { ok: false };
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------- site permissions
+// Camera, microphone, location, notifications, clipboard: the OWNER is asked once per
+// site, in the toolbar's notice, and the answer is remembered (browser-permissions.cjs).
+// An agent's tab is never asked and never allowed, and neither is a tab the agent is
+// driving right now. InPrivate asks every time and writes nothing.
+
+const permPrompts = sitePermissions.createPrompts();
+const permGranted = new Map(); // tab id -> Set("origin kind") allowed for the page on screen
+const noticeBehind = new Map(); // tab id -> the notice that waits behind a permission prompt
+let permStoreImpl = null;
+function getPermissionStore() {
+  if (!permStoreImpl) permStoreImpl = sitePermissions.createPermissionStore({ file: userDataPath("browser-permissions.json") });
+  return permStoreImpl;
+}
+
+function tabIdOfContents(wc) {
+  if (!wc) return null;
+  for (const [id, view] of views) if (alive(view) && view.webContents === wc) return id;
+  return null;
+}
+
+function grantedNow(id, origin, kinds) {
+  const set = permGranted.get(id);
+  return Boolean(set) && kinds.length > 0 && kinds.every((kind) => set.has(`${origin} ${kind}`));
+}
+
+/** The agent holds this tab right now (it is driving and the owner has not taken over). */
+function agentDrives(id) {
+  const g = gate.snapshot();
+  return Boolean(g.driving && !g.paused && tabs.snapshot().agentTarget === id);
+}
+
+function judgePermission(wc, permission, details, url) {
+  const id = tabIdOfContents(wc);
+  const tab = id == null ? null : tabs.get(id);
+  let store = null;
+  try { store = getPermissionStore(); } catch { /* no store: every site is asked */ }
+  return { id, ...sitePermissions.decide({ permission, details: details || {}, url, tab, store }) };
+}
+
+/** An agent's tab is on the owner's session right now (a site the owner let agents sign in to). */
+function agentRidesOwnerSession() {
+  const ownerSession = electron().session.fromPartition(PARTITION);
+  for (const [id, view] of views) {
+    const tab = tabs.get(id);
+    if (tab && tab.by === "agent" && alive(view) && view.webContents.session === ownerSession) return true;
+  }
+  return false;
+}
+
+/**
+ * The grant nobody is asked about (protected media on the owner's session), for THIS
+ * sender: the owner's own web tab gets it, an agent's tab never does even when it rides
+ * the owner's session (browser-policy allowPermissionFor). `grant` is the session's.
+ */
+function standingGrant(wc, permission, grant) {
+  if (!grant || !policy.allowPermission(permission, grant)) return false;
+  const id = tabIdOfContents(wc);
+  const tab = id == null ? null : tabs.get(id) || null;
+  return policy.allowPermissionFor(permission, { owner: grant.owner === true, tab, agentOnSession: agentRidesOwnerSession() });
+}
+
+/** Electron's permission REQUEST (getUserMedia, Notification.requestPermission, geolocation...). */
+function requestPermission(wc, permission, callback, details, grant) {
+  // A Copy button / a clipboard read on a workspace app whose policy turns it off.
+  if (getWorkspace().blocksPermission(wc, permission)) return callback(false);
+  if (standingGrant(wc, permission, grant)) return callback(true);
+  // Full screen, a Copy button and app links are not owner prompts (answerQuietly).
+  if (answerQuietly(wc, permission, callback, details)) return undefined;
+  let url = details && details.requestingUrl;
+  try { if (!url && wc) url = wc.getURL(); } catch { url = ""; }
+  const verdict = judgePermission(wc, permission, details, url);
+  if (verdict.verdict === "allow") return callback(noteMedia(verdict, !agentDrives(verdict.id)));
+  if (verdict.verdict === "deny" || agentDrives(verdict.id)) return callback(false);
+  if (grantedNow(verdict.id, verdict.origin, verdict.kinds)) return callback(noteMedia(verdict, true));
+  permPrompts.ask(verdict.id, verdict, callback);
+  showPermissionPrompt(verdict.id);
+  return undefined;
+}
+
+/** Electron's permission CHECK (Notification.permission, device labels): never prompts. */
+function checkPermission(wc, permission, origin, details, grant) {
+  if (getWorkspace().blocksPermission(wc, permission, { quiet: true })) return false;
+  if (standingGrant(wc, permission, grant)) return true;
+  const quiet = checkQuietly(wc, permission, details);
+  if (quiet != null) return quiet;
+  let url = origin || (details && (details.requestingUrl || details.securityOrigin));
+  try { if (!url && wc) url = wc.getURL(); } catch { url = ""; }
+  const verdict = judgePermission(wc, permission, details, url);
+  if (verdict.verdict === "allow") return !agentDrives(verdict.id);
+  return verdict.verdict === "prompt" && grantedNow(verdict.id, verdict.origin, verdict.kinds);
+}
+
+function showPermissionPrompt(id) {
+  const head = permPrompts.head(id);
+  if (!head) return;
+  const shown = tabNotices.get(id);
+  // The notice the prompt covers (a save-password offer...) waits behind it and comes back.
+  if (shown && shown.kind !== "permission") noticeBehind.set(id, shown);
+  // The same question asked again keeps its clock; a new one starts the Allow delay over.
+  const same = shown && shown.kind === "permission" && shown.data && shown.data.origin === head.origin
+    && shown.data.kinds.join() === head.kinds.join();
+  setNotice(id, {
+    kind: "permission", keep: true, data: head, text: head.text, at: same ? shown.at : Date.now(),
+    title: `${head.origin} — ${head.text}`,
+    actions: [{ id: "permission-allow", label: "Allow" }, { id: "permission-block", label: "Block" }, { id: "dismiss", label: "Not now" }],
+  });
+}
+
+/** The owner answered the prompt on screen. `remember` false = "Not now": denied once. */
+function answerPermission(id, allow, remember) {
+  const head = permPrompts.head(id);
+  if (!head) { tabNotices.delete(id); pushState(); return { ok: false }; }
+  const tab = tabs.get(id) || {};
+  if (allow) {
+    const set = permGranted.get(id) || new Set();
+    for (const kind of head.kinds) set.add(`${head.origin} ${kind}`);
+    permGranted.set(id, set);
+    noteMedia({ id, kinds: head.kinds }, true);
+  }
+  // InPrivate never writes: the answer lives as long as the page does.
+  if (remember && !tab.private) {
+    try { getPermissionStore().set(head.origin, head.kinds, allow ? "allow" : "block"); } catch { /* asked again next time */ }
+    libraryChanged();
+  }
+  permPrompts.answer(id, allow);
+  afterPermissionPrompt(id);
+  return { ok: true, allowed: Boolean(allow), origin: head.origin, kinds: head.kinds };
+}
+
+/** The next waiting prompt, else the notice that waited behind, else nothing. */
+function afterPermissionPrompt(id) {
+  tabNotices.delete(id);
+  if (permPrompts.pending(id)) { showPermissionPrompt(id); return; }
+  const behind = noticeBehind.get(id);
+  noticeBehind.delete(id);
+  if (behind) tabNotices.set(id, behind);
+  pushState();
+}
+
+/**
+ * An answer was taken back on aither://permissions: the open pages lose it now, not at
+ * their next navigation. A prompt that is waiting stays; it was never answered.
+ */
+function revokePermission(origin, kind) {
+  const n = sitePermissions.revokeGranted(permGranted, origin, kind);
+  if (n) pushState();
+  return n;
+}
+
+/** The page left or its tab closed: whatever it asked for is denied and nothing is kept. */
+function dropPermissionPrompts(id) {
+  const behind = noticeBehind.get(id);
+  noticeBehind.delete(id);
+  permPrompts.cancel(id);
+  const shown = tabNotices.get(id);
+  if (!shown || shown.kind !== "permission") return;
+  // The notice the prompt covered is on screen again, as if the prompt had never been.
+  if (behind) tabNotices.set(id, behind);
+  else tabNotices.delete(id);
+}
+
+// ---------------------------------------------------------------- the high-impact Edge gaps
+// Page full screen and Copy buttons (browser-quiet-grants.cjs, browser-fullscreen.cjs),
+// popups that keep their opener (browser-popups.cjs), links that open another app
+// (browser-external-apps.cjs) and the tabs a discard must leave alone (tab-discard.cjs).
+// The modules decide; this is the wiring. None of it reaches an agent's tab.
+
+const htmlFullscreen = fullscreenMod.createFullscreen();
+const popupLedger = popups.createPopupLedger();
+const mediaTabs = new Set(); // tab ids whose page on screen was given the camera or the microphone
+let externalStoreImpl = null;
+let openExternalImpl = null; // the smoke's stand-in for shell.openExternal
+const externalAutoAt = new Map(); // tab id -> when a remembered "Always" last opened an app unasked
+const navFrom = new WeakMap(); // a page's webContents -> the address its main-frame navigation is on (who redirects)
+let hintView = null; // the "<site> is full screen - press Esc" view, main's own, on top of the page
+let hintTimer = null;
+
+function getExternalStore() {
+  if (!externalStoreImpl) externalStoreImpl = externalApps.createExternalStore({ file: userDataPath("browser-external-apps.json") });
+  return externalStoreImpl;
+}
+
+/** The camera or the microphone was given to this tab's page (tab-discard keeps it). Returns `allowed`. */
+function noteMedia(verdict, allowed) {
+  const media = verdict && (verdict.kinds || []).some((kind) => kind === "camera" || kind === "microphone");
+  if (allowed && media && verdict.id != null) mediaTabs.add(verdict.id);
+  return allowed;
+}
+
+/** The page left (or its tab closed): what was granted to it is gone. */
+function forgetPageGrants(id, { closed = false } = {}) {
+  mediaTabs.delete(id);
+  if (!closed) return;
+  popupLedger.forget(id);
+  externalAutoAt.delete(id);
+  // A tab closed while its page was full screen: the window comes back out of full screen.
+  if (htmlFullscreen.leave(id) && win && !win.isDestroyed() && win.isFullScreen()) win.setFullScreen(false);
+}
+
+/**
+ * The exit hint (browser-fullscreen.cjs): every time a page enters full screen, main
+ * shows whose page it is and how to leave, for a few seconds, in a view of its own on
+ * top of the page. Page content cannot reach it: its own in-memory session, sandboxed,
+ * no preload, no script, a document main wrote.
+ */
+function showFullscreenHint(id) {
+  const page = viewOf(id);
+  if (!page || !win || win.isDestroyed()) return;
+  hideFullscreenHint();
+  const { WebContentsView } = electron();
+  const hint = new WebContentsView({ webPreferences: { partition: "aither-fullscreen-hint", sandbox: true, contextIsolation: true,
+    nodeIntegration: false, javascript: false } });
+  hint.setBackgroundColor("#00000000");
+  hint.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  hint.webContents.on("will-navigate", (event) => event.preventDefault());
+  hintView = hint;
+  void hint.webContents.loadURL(fullscreenMod.hintPage(page.webContents.getURL())).catch(() => {});
+  placeFullscreenHint();
+  hintTimer = setTimeout(hideFullscreenHint, fullscreenMod.HINT_MS);
+}
+
+/** The hint stays the TOP child view and follows the window as it grows into full screen. */
+function placeFullscreenHint() {
+  if (!hintView || !win || win.isDestroyed()) return;
+  win.contentView.addChildView(hintView);
+  hintView.setBounds(fullscreenMod.hintRect(win.getContentBounds()));
+}
+
+function hideFullscreenHint() {
+  clearTimeout(hintTimer);
+  hintTimer = null;
+  const hint = hintView;
+  hintView = null;
+  if (!hint) return;
+  try { if (win && !win.isDestroyed()) win.contentView.removeChildView(hint); } catch { /* already detached */ }
+  try { hint.webContents.close(); } catch { /* already gone */ }
+}
+
+/** End tab `id`'s page full screen from main; the window is forced out if the page does not answer. */
+function leavePageFullscreen(id) {
+  const view = viewOf(id);
+  if (view) void isolated(view.webContents, fullscreenMod.EXIT_SCRIPT);
+  setTimeout(() => {
+    if (htmlFullscreen.tab() !== id) return;
+    htmlFullscreen.leave(id);
+    if (win && !win.isDestroyed() && win.isFullScreen()) win.setFullScreen(false);
+    afterPageFullscreen(id);
+  }, 1500);
+}
+
+/** The page left full screen: a question that waited in the covered toolbar starts its half second now. */
+function afterPageFullscreen(id) {
+  hideFullscreenHint();
+  const now = Date.now();
+  fullscreenMod.restamp(tabNotices.get(id), now);
+  fullscreenMod.restamp(noticeBehind.get(id), now);
+  layout();
+}
+
+/** Another tab was put on screen while a page was full screen: that page leaves full screen. */
+function endStaleFullscreen() {
+  const id = htmlFullscreen.stale(tabs.active);
+  if (id == null) return;
+  htmlFullscreen.leave(id);
+  const view = viewOf(id);
+  if (view) void isolated(view.webContents, fullscreenMod.EXIT_SCRIPT);
+}
+
+/**
+ * Permission REQUESTS that are not owner prompts. Returns true when it answered.
+ *   fullscreen / clipboard write: the owner's web tab only (browser-quiet-grants.cjs);
+ *     a Copy needs the owner's click, read from the page's isolated world.
+ *   openExternal: an app link Chromium could not follow by itself (a frame's, a
+ *     script's). It is never launched from here: the owner is asked (offerExternalApp).
+ */
+function answerQuietly(wc, permission, callback, details) {
+  const id = tabIdOfContents(wc);
+  const answer = (allow) => { try { callback(Boolean(allow)); } catch { /* the page is gone */ } };
+  if (permission === "openExternal") {
+    answer(false);
+    void offerExternalApp(id, details && details.externalURL, { via: "frame", requestingUrl: details && details.requestingUrl });
+    return true;
+  }
+  const verdict = quietGrants.decide({ permission, details: details || {}, tab: id == null ? null : tabs.get(id), agentDriving: agentDrives(id) });
+  if (!verdict) return false;
+  if (!verdict.allow || !verdict.gesture) { answer(verdict.allow); return true; }
+  void isolated(wc, quietGrants.GESTURE_SCRIPT).then((active) => answer(active === true));
+  return true;
+}
+
+/** The same for a permission CHECK (navigator.permissions.query). null = not one of these. */
+function checkQuietly(wc, permission, details) {
+  if (permission === "openExternal") return false;
+  const id = tabIdOfContents(wc);
+  const verdict = quietGrants.decide({ permission, details: details || {}, tab: id == null ? null : tabs.get(id), agentDriving: agentDrives(id) });
+  return verdict ? verdict.allow : null;
+}
+
+/** Full screen follows the page; a page that crashed or did not load says so (browser-page-errors.cjs). */
+function wirePageGaps(wc, id) {
+  wc.on("enter-html-full-screen", () => { htmlFullscreen.enter(id); layout(); showFullscreenHint(id); });
+  wc.on("leave-html-full-screen", () => { htmlFullscreen.leave(id); afterPageFullscreen(id); });
+  // Where the tab's navigation is right now: the site named when it redirects to an app link.
+  wc.on("did-start-navigation", (details) => {
+    if (details && details.isMainFrame && !details.isSameDocument) navFrom.set(wc, String(details.url || ""));
+  });
+  wc.on("render-process-gone", (_event, details) => {
+    const notice = pageErrors.crashNotice(details);
+    if (notice && tabs.get(id)) setNotice(id, notice);
+  });
+  // A followed link that did not load: the same dark page a typed address gets.
+  wc.on("did-fail-load", (_event, code, desc, url, isMainFrame) => {
+    const failed = pageErrors.failedLoad({ code, desc, url, isMainFrame });
+    if (!failed || loaderBusy.has(wc)) return;
+    // After Chromium has committed its own (empty) error document, not during it.
+    setTimeout(() => {
+      if (wc.isDestroyed() || loaderBusy.has(wc)) return;
+      void wc.loadURL(require("./aither-address.cjs").errorPageUrl(failed.url, failed.reason)).catch(() => {});
+    }, 50);
+  });
+}
+
+/**
+ * window.open() from tab `id` (browser-popups.cjs). A web tab's popup is ADOPTED: it is
+ * a tab beside its opener that keeps window.opener, owned by the opener's owner and in
+ * the opener's session. Everything else opens the old way or is refused.
+ */
+function openFromPage(id, details) {
+  const opener = tabs.get(id);
+  const url = String((details && details.url) || "");
+  // An agent tab the owner let ride their session is never adopted from (its popup's session is picked again).
+  const from = opener ? { ...opener, ownerSession: opener.by === "agent" && (opener.viewSpec || {}).webPartition === PARTITION } : null;
+  // The burst is counted against the ROOT of the opener chain, for both ways of opening.
+  const root = popups.rootOf(opener, id);
+  const verdict = popups.popupVerdict({ opener: from, url, disposition: details && details.disposition, recent: popupLedger.count(root),
+    isInternalUrl: internal.isInternalUrl, isHostedSite: internal.isHostedSite });
+  if (verdict.action === "deny") return { action: "deny" };
+  popupLedger.note(root);
+  if (verdict.action === "tab") {
+    // A new tab belongs to the stage its opener lives in: a link from a suspended
+    // stage's page must not surface in the strip the owner is looking at.
+    const opened = openTab(verdict.by, url, { activate: true, after: id, stage: tabStage(id) });
+    if (opened.ok && tabs.get(opened.id)) tabs.get(opened.id).popupRoot = root;
+    return { action: "deny" };
+  }
+  return { action: "allow", outlivesOpener: true, createWindow: (options) => adoptPopup(id, verdict, options, url, root) };
+}
+
+/** Electron's createWindow for an adopted popup: show the popup's OWN page as a tab. */
+function adoptPopup(openerId, verdict, options, url, root = openerId) {
+  const guest = options.webContents;
+  const refuse = () => { setImmediate(() => { try { guest.close(); } catch { /* already gone */ } }); return guest; };
+  try {
+    const opener = tabs.get(openerId);
+    if (!opener || !win || win.isDestroyed()) return refuse();
+    const added = tabs.add(verdict.by, {
+      // A popup from a SUSPENDED stage's page lands there, not on screen: it must not
+      // hand the window a tab the strip is not showing.
+      activate: verdict.activate && tabStage(openerId) === activeStageId(),
+      after: openerId, kind: "web",
+    });
+    // No room for another tab: the popup's page is closed at once.
+    if (!added.ok) return refuse();
+    const tab = tabs.get(added.id);
+    tab.label = "";
+    tab.popup = true;
+    tab.popupRoot = root;
+    // A popup belongs to the stage that opened it, whatever stage is active by the time
+    // it lands (a link from a suspended stage's page must not appear in another's strip).
+    tab.stage = tabStage(openerId);
+    if (verdict.private) tab.private = true;
+    // Chromium made the popup in its opener's session; a discarded popup comes back in the same one.
+    tab.viewSpec = { kind: "web", paneId: null, partition: null, webPartition: (opener.viewSpec || {}).webPartition || PARTITION,
+      url: url || "about:blank" };
+    const { WebContentsView } = electron();
+    const view = new WebContentsView({ webContents: guest });
+    views.set(added.id, view);
+    wirePage(guest, added.id);
+    wirePopupClose(guest, added.id, view);
+    win.contentView.addChildView(view);
+    if (alive(panelView)) win.contentView.addChildView(panelView);
+    if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
+    layout();
+    pushState();
+    return guest;
+  } catch {
+    return refuse();
+  }
+}
+
+/** window.close() from a popup (or its opener closing it) closes that tab. */
+function wirePopupClose(wc, id, view) {
+  wc.once("destroyed", () => {
+    // Closed by the browser itself (the tab's X, a discard, the window going): already handled.
+    if (views.get(id) !== view || !win || win.isDestroyed()) return;
+    try { win.contentView.removeChildView(view); } catch { /* already detached */ }
+    const tab = tabs.get(id);
+    if (tab) closeTab(id, tab.by);
+  });
+}
+
+/** The origin of the frame that started a navigation (will-navigate's event.initiator), or null. */
+function initiatorOriginOf(event) {
+  try { return event && event.initiator ? String(event.initiator.origin || "") || null : null; } catch { return null; }
+}
+
+function launchExternal(url) {
+  const open = openExternalImpl || ((target) => electron().shell.openExternal(target));
+  try { return Promise.resolve(open(url)).catch(() => {}); } catch { return Promise.resolve(); }
+}
+
+/**
+ * A link to another app (mailto:, tel:, Zoom...) followed in tab `id`
+ * (browser-external-apps.cjs). The owner's tab and the allow-list only: the toolbar asks
+ * "Open <App>?", or a remembered "Always for this site" opens it on a page the owner
+ * has used, at most once every few seconds. An agent's tab and every other scheme get nothing.
+ *
+ * `source` says WHO asked (externalApps.whoAsks): {via: "navigate", initiatorOrigin} for a
+ * navigation in the tab, {via: "redirect", redirectFrom} for a web address that redirected
+ * to the link, {via: "frame", requestingUrl} for a frame's or a script's. Only the page
+ * itself asking can use or set "Always".
+ */
+async function offerExternalApp(id, url, source = {}) {
+  const tab = id == null ? null : tabs.get(id);
+  const wc = id == null ? null : pageWc(id);
+  if (!tab || !wc) return false;
+  let store = null;
+  try { store = getExternalStore(); } catch { /* no store: asked every time */ }
+  const ask = { url, tab, pageUrl: wc.getURL(), via: source.via, initiatorOrigin: source.initiatorOrigin, redirectFrom: source.redirectFrom,
+    requestingUrl: source.requestingUrl, store, sinceAuto: Date.now() - (externalAutoAt.get(id) || 0) };
+  let verdict = externalApps.judge({ ...ask, gesture: true });
+  if (verdict.verdict === "deny") return false;
+  if (verdict.verdict === "open" && (await isolated(wc, externalApps.INTERACTED_SCRIPT)) !== true) verdict = externalApps.judge({ ...ask, gesture: false });
+  if (verdict.verdict === "open") {
+    externalAutoAt.set(id, Date.now());
+    void launchExternal(verdict.url);
+    return true;
+  }
+  // keep: the page that asked often moves on to a "launching..." page right away.
+  setNotice(id, { ...externalApps.noticeFor(verdict), keep: true });
+  return true;
+}
+
+/** Open / Always for this site on the "Open <App>?" notice. */
+function answerExternalApp(id, notice, actionId) {
+  if (notice.kind !== "external-app") return { ok: false };
+  // A question that only just appeared may sit under a click meant for something else.
+  if (!sitePermissions.armed(notice.at, Date.now())) return { ok: false, early: true };
+  const data = notice.data || {};
+  const link = externalApps.launchable(data.url);
+  const tab = tabs.get(id);
+  setNotice(id, null);
+  if (!link || !tab || tab.by !== "you") return { ok: false };
+  const always = actionId === "external-always" && Boolean(data.canAlways) && !tab.private;
+  if (always) {
+    try { getExternalStore().allow(data.origin, link.scheme); } catch { /* asked again next time */ }
+    libraryChanged();
+  }
+  void launchExternal(link.url);
+  return { ok: true, opened: link.url, always };
+}
+
+// ---------------------------------------------------------------- the library pages
+// aither://history, bookmarks, downloads, permissions, clear-data, the bookmarks bar
+// and "Clear browsing data". browser-library-pages.cjs owns the channels and the fence;
+// this is the host it calls.
+
+function chromeHeight() {
+  return CHROME_HEIGHT + (getPrefs().bookmarksBar ? BOOKMARKS_BAR_HEIGHT : 0);
+}
+
+function setBookmarksBar(on) {
+  setPrefs({ bookmarksBar: Boolean(on) });
+  layout();
+  pushState();
+  libraryChanged();
+  return Boolean(getPrefs().bookmarksBar);
+}
+
+/** Tell the open library pages their data moved (at most a few times a second). */
+let libraryChangedTimer = null;
+function libraryChanged() {
+  if (libraryChangedTimer) return;
+  libraryChangedTimer = setTimeout(() => {
+    libraryChangedTimer = null;
+    for (const t of tabs.tabs) {
+      if (t.kind !== "internal" || !libraryPages.PAGES.includes(t.paneId)) continue;
+      const view = viewOf(t.id);
+      if (view) {
+        try { view.webContents.send("desk:library-changed"); } catch { /* a page mid-navigation */ }
+      }
+    }
+  }, 250);
+  if (typeof libraryChangedTimer.unref === "function") libraryChangedTimer.unref();
+}
+
+/** A click on the bookmarks bar: the address must be one of the owner's bookmarks. */
+function openBookmark(url) {
+  if (!getLibrary().isBookmarked(url)) return { ok: false, error: "not a bookmark" };
+  const id = tabs.active;
+  const tab = tabs.get(id) || {};
+  const view = viewOf(id);
+  // In place on the owner's own web tab (as Edge does); a console page keeps its tab.
+  if (view && tab.by === "you" && (tab.kind || "web") === "web") {
+    void loadInView(view, url).catch(() => {});
+    return { ok: true, id };
+  }
+  const opened = openTab("you", url);
+  return opened.ok ? { ok: true, id: opened.id } : opened;
+}
+
+/** A folder on the bookmarks bar: its bookmarks (and its subfolders') as a menu. */
+function bookmarkFolderMenu(name) {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const folder = libraryMod.normFolder(name);
+  const rows = getLibrary().bookmarks().filter((b) => b.folder === folder || b.folder.startsWith(`${folder}/`));
+  if (!folder || !rows.length) return { ok: false };
+  const { Menu } = electron();
+  const template = rows.slice(0, 60).map((b) => {
+    const sub = b.folder === folder ? "" : `${b.folder.slice(folder.length + 1)} / `;
+    return { label: `${sub}${(b.title || b.url).slice(0, 70)}`.replace(/&/g, "&&"), click: () => { openBookmark(b.url); } };
+  });
+  template.push({ type: "separator" }, { label: "Manage bookmarks", click: () => { runBrowserAction("bookmarks"); } });
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+/** The smoke run answers the confirm itself; the owner gets a real dialog. */
+let confirmImpl = null;
+async function confirmWithOwner({ message, detail = "", button = "OK" } = {}) {
+  if (confirmImpl) return Boolean(await confirmImpl({ message, detail, button }));
+  if (!win || win.isDestroyed()) return false;
+  const r = await electron().dialog.showMessageBox(win, {
+    type: "warning", buttons: [String(button), "Cancel"], defaultId: 1, cancelId: 1, noLink: true,
+    message: String(message), detail: String(detail),
+  });
+  return r.response === 0;
+}
+
+/**
+ * "Clear browsing data", for the OWNER's profile only (PARTITION): never the agent's
+ * session, never the Online sign-in. `plan` is browser-library-pages clearPlan().
+ * Cookies, site data and the cache go whole: Electron exposes no time range for them.
+ */
+async function clearBrowsingData(plan) {
+  const out = { errors: [] };
+  const ses = electron().session.fromPartition(PARTITION);
+  if (plan.history) {
+    const lib = getLibrary();
+    const before = lib.historyPage({ limit: 0 }).total;
+    lib.clearHistory({ since: plan.since });
+    // All of it: sync must not hand it back from the account's store (browser-sync.cjs).
+    if (!plan.since) noteHistoryCleared();
+    out.history = before - lib.historyPage({ limit: 0 }).total;
+  }
+  const wipe = async (label, dataTypes, fallback) => {
+    try {
+      // clearData leaves extensions' own storage alone (awconnect keeps working).
+      if (typeof ses.clearData === "function") await ses.clearData({ dataTypes });
+      else await fallback();
+      return true;
+    } catch (error) {
+      out.errors.push(`${label}: ${(error && error.message) || error}`);
+      return false;
+    }
+  };
+  if (plan.cookies) {
+    out.cookies = await wipe("cookies and site data",
+      ["cookies", "localStorage", "indexedDB", "fileSystems", "serviceWorkers", "webSQL", "backgroundFetch"],
+      () => ses.clearStorageData({ storages: ["cookies", "localstorage", "indexdb", "filesystem", "serviceworkers", "websql", "cachestorage"] }));
+  }
+  if (plan.cache) out.cache = await wipe("cache", ["cache"], () => ses.clearCache());
+  if (plan.passwords) {
+    try {
+      const vault = getVault();
+      const gone = vault.list().filter((e) => !plan.since || (Number(e.at) || 0) >= plan.since);
+      for (const e of gone) vault.remove(e.id);
+      out.passwords = gone.length;
+    } catch (error) {
+      out.errors.push(`passwords: ${(error && error.message) || error}`);
+    }
+  }
+  pushState();
+  return out;
+}
+
+/** The owner cleared ALL history: sync drops it on every device instead of restoring it here. */
+function noteHistoryCleared() {
+  try { getSync().noteHistoryCleared(); } catch { /* sync never breaks browsing */ }
+}
+
+const libraryHost = Object.freeze({
+  library: () => getLibrary(),
+  downloads: () => downloads,
+  // The remembered "Always open <App>" answers are listed and taken back with the rest.
+  permissions: () => externalApps.withExternal(getPermissionStore(), getExternalStore()),
+  revokePermission,
+  open: (url) => openTab("you", url).ok,
+  goto: (pane) => openInternal(pane, null) !== false,
+  openFile: (file) => electron().shell.openPath(file),
+  showFile: (file) => electron().shell.showItemInFolder(file),
+  /** Ask for a file again, in the owner's session (will-download makes it a row). */
+  download: (url) => {
+    if (!policy.isNavigable(url)) return false;
+    electron().session.fromPartition(PARTITION).downloadURL(url);
+    return true;
+  },
+  confirm: confirmWithOwner,
+  pickSave: async ({ title, name }) => {
+    const { app, dialog } = electron();
+    const r = await dialog.showSaveDialog(win, { title, defaultPath: path.join(app.getPath("documents"), name),
+      filters: [{ name: "Bookmarks HTML", extensions: ["html"] }] });
+    return r.canceled || !r.filePath ? null : r.filePath;
+  },
+  pickOpen: async ({ title }) => {
+    const r = await electron().dialog.showOpenDialog(win, { title, properties: ["openFile"],
+      filters: [{ name: "Bookmarks HTML", extensions: ["html", "htm"] }] });
+    return r.canceled || !r.filePaths[0] ? null : r.filePaths[0];
+  },
+  clearData: clearBrowsingData,
+  passwordCount: () => { try { return getVault().count(); } catch { return 0; } },
+  bar: () => Boolean(getPrefs().bookmarksBar),
+  setBar: (on) => setBookmarksBar(on),
+  historyCleared: noteHistoryCleared,
+  // A bookmark added, renamed or deleted on a library page is a change sync carries.
+  changed: () => { pushState(); libraryChanged(); touchSync(); },
+});
+// ============================================================== end Edge parity
 
 /** AitherOS Online is hovering on the real desktop (the desk's overlay window). */
 function overlayOnDesktop() {
@@ -762,11 +3287,16 @@ function syncPageTaskbars() {
 
 function currentRectsFor(bounds, docked) {
   const p = getPrefs();
+  const panes = p.desk.panes;
+  // A detached pane takes no room here: its window holds it.
   return rail.railLayout(bounds, {
-    collapsed: p.railCollapsed, docked, chromeHeight: CHROME_HEIGHT, railWidth: p.railWidth,
-    panelWidth: p.panelWidth, panelCollapsed: p.panelCollapsed,
-    taskbarHeight: stripShown() ? rail.TASKBAR_HEIGHT : 0,
-    dockHeight: dockShown() ? rail.dockHeightFor(p) : 0,
+    collapsed: p.railCollapsed, docked, chromeHeight: chromeHeight(), railWidth: p.railWidth,
+    panelWidth: p.panelWidth, panelCollapsed: p.panelCollapsed || paneDetached("panel"),
+    taskbarHeight: stripShown() && !paneDetached("taskbar") ? rail.TASKBAR_HEIGHT : 0,
+    dockHeight: dockShown() && !paneDetached("dock") ? rail.dockHeightFor(p) : 0,
+    railSide: panes.rail.side, panelSide: panes.panel.side, dockSide: panes.dock.side,
+    avatarSide: panes.avatar.side, layersSide: panes.layers.side, layersVisible: panes.layers.visible,
+    avatarOrder: panes.avatar.order, layersOrder: panes.layers.order,
   });
 }
 
@@ -825,16 +3355,242 @@ function dockAction(action, arg) {
   if (action === "open") return setDockOpen(true);
   if (action === "close") return setDockOpen(false);
   if (action === "state") return { ok: true, open: Boolean(getPrefs().dockOpen) };
-  if (action === "popout") {
-    // The session moves to the full aither://terminal tab; the dock keeps its strip.
-    const id = String(arg || "");
-    if (!/^[A-Za-z0-9_-]{1,80}$/.test(id)) return { ok: false, error: "bad session id" };
-    return openInternalUrl(`aither://terminal/?attach=${encodeURIComponent(id)}`)
-      ? { ok: true } : { ok: false, error: "the terminal page is not available" };
+  if (action === "split-close") return closeSplit();
+  // "Move to split" (was "popout"): the session opens BESIDE this page in the same
+  // window, not in a whole new tab. "popout" stays an alias for an older dock page.
+  if (action === "split" || action === "popout") {
+    const url = dockIn.moveToSplitUrl(arg);
+    if (!url) return { ok: false, error: "bad session id" };
+    const opened = openSplit(url);
+    return opened && opened.ok ? { ok: true, split: true } : (opened || { ok: false, error: "the split pane is not available" });
   }
   return { ok: false, error: `no dock action ${action}` };
 }
 terminalWindow.setDockHost({ run: dockAction });
+
+/**
+ * A shell came or went in the terminal page: record the id on the STAGE that is active,
+ * so switching stages (now or after a restart) says which sessions that stage was using.
+ * The dock itself is one page per window -- the record is what makes it a stage's.
+ */
+function noteStageTerminal(sessionId, action) {
+  const id = String(sessionId || "");
+  if (!id) return;
+  const arrangement = browserStages.find(getStages(), activeStageId());
+  if (!arrangement) return;
+  const set = new Set(arrangement.terminals);
+  if (action === "attach") set.add(id); else set.delete(id);
+  const r = browserStages.setContext(getStages(), activeStageId(), { terminals: [...set] });
+  if (r.ok) setStages(r.doc);
+}
+terminalWindow.setSessionWatcher(noteStageTerminal);
+
+/** The split pane's view, when it is alive. */
+function splitShown() {
+  return alive(splitView) ? splitView : null;
+}
+
+/**
+ * Open `url` (an aither:// page) in a split pane of this window beside the active tab.
+ * One pane per window: opening another replaces it. Answers the failure, never throws.
+ */
+function openSplit(url) {
+  if (!win || win.isDestroyed()) return { ok: false, error: "the browser is not open" };
+  const address = dockIn.asSplitUrl(url);
+  const parsed = address && internal.parseInternalUrl(address);
+  if (!parsed) return { ok: false, error: "only an Aither page can open in a split pane" };
+  if (!internal.paneById(parsed.paneId)) return { ok: false, error: `no Aither page called ${parsed.paneId}` };
+  closeSplit();
+  ensureInternalSession();
+  ensurePinned();
+  splitView = createPageView("internal", { paneId: parsed.paneId, partition: null }, null);
+  const view = splitView;
+  const wc = view.webContents;
+  // The pane never leaves its page: a web link opens as a tab, like the dock.
+  wc.setWindowOpenHandler(({ url: next }) => {
+    if (/^https?:/i.test(String(next))) openTab("you", next, { activate: true });
+    return { action: "deny" };
+  });
+  wc.on("will-navigate", (event, next) => {
+    if (!String(next).startsWith("aither://")) event.preventDefault();
+  });
+  wc.on("before-input-event", (event, input) => {
+    if (isDockKey(input)) { event.preventDefault(); setDockOpen(undefined); }
+    if (isBringInKey(input)) { event.preventDefault(); void bringInMenu(); }
+  });
+  wc.on("render-process-gone", () => {
+    if (splitView !== view) return;
+    closeSplit();
+  });
+  win.contentView.addChildView(view);
+  if (alive(panelView)) win.contentView.addChildView(panelView);
+  if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
+  layout();
+  pushState();
+  void loadInView(view, address).catch(() => {
+    if (splitView !== view) return;
+    closeSplit();
+  });
+  return { ok: true };
+}
+
+/** Take the split pane away (its page is closed; nothing else is touched). */
+function closeSplit() {
+  const view = splitView;
+  splitView = null;
+  if (!view) return { ok: true, closed: false };
+  try { if (win && !win.isDestroyed()) win.contentView.removeChildView(view); } catch { /* already detached */ }
+  try { if (alive(view)) view.webContents.close(); } catch { /* closing */ }
+  forgetPlacement(view);
+  layout();
+  pushState();
+  return { ok: true, closed: true };
+}
+
+/** Ctrl+Shift+` : bring a terminal INTO the container (the picker). Pure. */
+function isBringInKey(input) {
+  if (!input || input.type !== "keyDown" || input.alt) return false;
+  if (!(input.control || input.meta) || !input.shift) return false;
+  return input.code === "Backquote" || input.key === "`" || input.key === "~";
+}
+
+/** The awsh client the picker reads /sessions/unified with (the daemon's bearer stays here). */
+let dockInClient = null;
+function terminalClient() {
+  if (!dockInClient) dockInClient = require("./terminal-client.cjs").createTerminalClient();
+  return dockInClient;
+}
+
+/** Resume a DISCOVERED Claude tab under the daemon, then move the new session into the pane. */
+async function resumeIntoPane(row) {
+  const r = await terminalClient().resume(row.id, { cwd: row.cwd });
+  if (!r || !r.ok || !r.session) return { ok: false, error: (r && r.error) || "the daemon could not resume it" };
+  return openSplit(dockIn.moveToSplitUrl(r.session.id));
+}
+
+/** "Raise that Windows Terminal tab": focus it (it is not ours; nothing is typed). */
+async function raiseExternalTab(row) {
+  try {
+    return await require("./tui-answer.cjs").typeIntoSession(row.label, "");
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error) };
+  }
+}
+
+/**
+ * The "Bring in a terminal" picker: the daemon's sessions attach directly; a Claude Code
+ * tab running under Windows Terminal cannot be attached (its pty is WT's), so it is
+ * offered as "Resume here" with the honest copy, plus the option to raise that WT tab.
+ */
+async function bringInMenu() {
+  if (!win || win.isDestroyed()) return { ok: false, error: "the browser is not open" };
+  const { Menu } = electron();
+  const client = terminalClient();
+  // The ONE directory the picker lists: /sessions/unified, split by origin. An older
+  // daemon without the route falls back to its two endpoints (same rows, same decision).
+  let directory = await client.unified();
+  if (!directory || !directory.ok) {
+    const [list, external] = await Promise.all([client.list(), client.external()]);
+    directory = {
+      ok: Boolean((list && list.ok) || (external && external.ok)),
+      sessions: (list && list.ok && list.sessions) || [],
+      external: (external && external.ok && external.sessions) || [],
+    };
+  }
+  const rows = dockIn.pickerRows({ sessions: directory.sessions, external: directory.external });
+  const template = [];
+  if (!rows.length) {
+    template.push({ label: directory.ok ? "No sessions to bring in" : "The awsh daemon did not answer", enabled: false });
+  }
+  for (const row of rows) {
+    if (row.kind === "daemon") {
+      template.push({ label: `Attach ${row.label}`, click: () => openSplit(dockIn.moveToSplitUrl(row.id)) });
+      continue;
+    }
+    template.push({
+      label: `Resume here — ${row.label}`,
+      submenu: [
+        { label: "Resume here", click: () => void resumeIntoPane(row) },
+        { label: row.detail, enabled: false },
+        { type: "separator" },
+        { label: "Raise the Windows Terminal tab (answer it there)", click: () => void raiseExternalTab(row) },
+      ],
+    });
+  }
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true, rows: rows.length };
+}
+
+/** The tab strip's "+" menu: a new tab, or a terminal brought INTO the container. */
+function newTabMenu() {
+  if (!win || win.isDestroyed()) return { ok: false, error: "the browser is not open" };
+  const { Menu } = electron();
+  const template = [
+    { label: "New tab", click: () => runBrowserAction("new-tab") },
+    { label: "New InPrivate tab", click: () => runBrowserAction("inprivate") },
+    { type: "separator" },
+    { label: "Bring in a terminal…", accelerator: "CmdOrCtrl+Shift+`", registerAccelerator: false,
+      click: () => void bringInMenu() },
+  ];
+  // An open split pane needs a way out from anywhere (its page fills the pane, and a
+  // WebContentsView carries no chrome of its own).
+  if (splitShown()) template.push({ type: "separator" }, { label: "Close the split pane", click: () => closeSplit() });
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+/** A dropped path's kind, judged by MAIN (the renderer never decides a path's kind). */
+function droppedEntries(paths) {
+  const fs = require("node:fs");
+  const out = [];
+  for (const p of Array.isArray(paths) ? paths.slice(0, 20) : []) {
+    const raw = String(p || "");
+    if (!raw) continue;
+    // Never stat a path on another machine: it blocks on the SMB timeout and can
+    // hand a share's host an NTLM challenge. dockDrop refuses these before here.
+    if (dockIn.isNetworkPath(raw)) continue;
+    try {
+      out.push({ path: raw, dir: fs.statSync(raw).isDirectory() });
+    } catch { /* vanished, or not on this machine: dropRouting refuses an empty list */ }
+  }
+  return out;
+}
+
+/**
+ * A folder (or file) dropped on the tab strip or the split pane opens in Files: a
+ * folder as its own root; a file in its folder with the file selected. `where: "split"`
+ * puts it in the split pane, anything else opens a tab.
+ */
+function dockDrop(payload) {
+  const p = payload && typeof payload === "object" ? payload : {};
+  const paths = Array.isArray(p.paths) ? p.paths : [];
+  // A share on another machine is not a Files folder: say so rather than stat it.
+  if (paths.some((one) => dockIn.isNetworkPath(one))) {
+    return { ok: false, error: "that folder is on another machine — Files opens folders on this PC" };
+  }
+  const route = dockIn.dropRouting(droppedEntries(paths));
+  if (route.kind !== "files") return { ok: false, error: route.reason };
+  const params = new URLSearchParams({ root: route.root });
+  if (route.select) params.set("select", route.select);
+  const url = `aither://files/?${params.toString()}`;
+  if (p.where === "split") return openSplit(url);
+  // An already-open Files tab takes the drop (a deep link navigates it); else a new tab.
+  const existing = tabForPane("files");
+  if (existing) {
+    showTab(existing.id);
+    const view = viewOf(existing.id);
+    if (alive(view)) void loadInView(view, url).catch(() => {});
+    return { ok: true, tab: existing.id };
+  }
+  const opened = openTab("you", url);
+  return opened.ok ? { ok: true, tab: opened.id } : opened;
+}
+
+/** A drop must come from this window's chrome, or from the split pane's own page. */
+function fromSplitPane(event) {
+  const view = splitShown();
+  return Boolean(view && event && event.sender === view.webContents);
+}
 
 /** The terminal dock along the bottom (an aither://terminal page), created once per window. */
 function ensureDock() {
@@ -854,6 +3610,7 @@ function ensureDock() {
   });
   wc.on("before-input-event", (event, input) => {
     if (isDockKey(input)) { event.preventDefault(); setDockOpen(undefined); }
+    if (isBringInKey(input)) { event.preventDefault(); void bringInMenu(); }
   });
   wc.on("did-finish-load", () => { dockStatus = "ok"; sendDockState(); });
   wc.on("did-fail-load", (_e, code, desc, _url, isMain) => {
@@ -930,11 +3687,45 @@ function railState() {
     allSections: Boolean(p.railAllSections),
     docked,
     slot: rects ? rects.avatar : null,
-    sections: withAwconnectRow(rail.railView(rail.railSections(require("./console-window.cjs").PANES,
-      { activePane: active && active.by === "you" ? active.paneId || null : null, signedIn: hostSignedIn(),
-        owner: hostOwner(), modes: p.launchModes }), { expanded: p.expandedSections || [] }), active),
+    // The owner's arrangement (desk-layout arrangeRail) BEFORE the five-row cap, so
+    // "+N more" applies to the rail they arranged. Pinned is always a primary section.
+    sections: withAwconnectRow(rail.railView(arrangedSections(active),
+      { expanded: p.expandedSections || [], primary: [deskLayout.PINNED_SECTION, ...rail.PRIMARY_SECTIONS] }), active),
     awconnect: awconnect.ok ? { ok: true, version: awconnect.version } : { ok: false, error: awconnect.error },
-    layers: rail.layerRows({ docked, overlayVisible, browserOpen: true, overPages: getPrefs().overlay }),
+    layers: deskLayout.orderLayers(rail.layerRows({ docked, overlayVisible, browserOpen: true, overPages: getPrefs().overlay }),
+      p.desk.layerOrder),
+    // Every pane's rectangle: the grips, the edit-layout schematic and the chrome's own
+    // columns are placed from these, never from a second copy of the geometry.
+    rects: rects ? { rail: rects.rail, page: rects.page, panel: rects.panel, dock: rects.dock, taskbar: rects.taskbar } : null,
+    layout: layoutState(),
+  };
+}
+
+/** railSections() in the owner's arrangement (pins, moved and removed rows, section order). */
+function arrangedSections(active = tabs.get(tabs.active)) {
+  const p = getPrefs();
+  return deskLayout.arrangeRail(rail.railSections(require("./console-window.cjs").PANES,
+    { activePane: active && active.by === "you" ? active.paneId || null : null, signedIn: hostSignedIn(),
+      owner: hostOwner(), modes: p.launchModes }), p.desk.rail);
+}
+
+/** What the Customize panel and edit-layout mode render: sides, presets, what is detached. */
+function layoutState() {
+  const desk = getPrefs().desk;
+  return {
+    editing: editingLayout,
+    sides: Object.fromEntries(Object.entries(desk.panes).map(([id, pane]) => [id, pane.side])),
+    layersVisible: desk.panes.layers.visible,
+    avatarOrder: desk.panes.avatar.order,
+    layersOrder: desk.panes.layers.order,
+    allowed: deskLayout.SIDES,
+    labels: deskLayout.PANE_LABELS,
+    detachable: deskLayout.DETACHABLE,
+    detached: paneSurfaces.snapshot(),
+    presets: deskLayout.presetList(desk),
+    activePreset: desk.activePreset,
+    hiddenRows: desk.rail.hidden.length,
+    pinnedRows: desk.rail.pinned.length,
   };
 }
 
@@ -984,6 +3775,45 @@ async function loadHostedTab(view, url) {
 function onlinePartition() {
   const hosted = require("./console-window.cjs").PANES.find((pane) => pane && pane.kind === "hosted");
   return (hosted && hosted.partition) || PARTITION;
+}
+
+/**
+ * What the tenant workspace this desk sits in grants (tenant-apps.cjs), read with the owner's
+ * signed-in partition so the answer is the one Veil's own page reads. Made on first use: the apex
+ * and a customer's desk never pay for it.
+ */
+let tenantEntitlement = null;
+function tenantEntitlementStore() {
+  if (!tenantEntitlement) {
+    tenantEntitlement = tenantApps.createEntitlementStore({
+      fetchImpl: (url, init) => electron().session.fromPartition(onlinePartition()).fetch(url, init),
+      log: (line) => console.warn(line),
+    });
+  }
+  return tenantEntitlement;
+}
+
+/** Ask the owner's switched workspace what it grants as the browser opens, so the first rail click knows. */
+function warmTenantEntitlement() {
+  try {
+    const tenant = deskTenant.currentTenant();
+    if (tenant && tenant.ownerSwitch === true) void tenantEntitlementStore().refresh(tenant.host);
+  } catch { /* an app still opens where it always did */ }
+}
+
+/**
+ * Where Online app `id` opens in `mode` right now: the tenant host, or the platform for an app the
+ * owner's workspace switch does not grant (garg.aitherium.com/solo/?app=aeon, owner 2026-11-17).
+ * Never waits: an answer not read yet means the tenant, as before.
+ */
+function placeOnlineApp(id, mode) {
+  const tenant = deskTenant.currentTenant();
+  return tenantApps.plan(id, mode, {
+    tenant,
+    entry: tenant && tenant.ownerSwitch === true ? tenantEntitlementStore().peek(tenant.host) : null,
+    tenantBase: internal.onlineUrl(),
+    platformBase: internal.platformOrigin(),
+  });
 }
 
 /** A page the taskbar asked for: an aitherium.com page in the pinned Online tab, else a web tab. */
@@ -1139,8 +3969,20 @@ function ensureTaskbar() {
  * @returns {{ok: true, id: number, view: object} | {ok: false, error: string}}
  */
 function openTab(by, url, { activate = true, after = null, pinned = false, key = null, label = "",
-  hostedPartition = null, kind: wantKind = null } = {}) {
+  hostedPartition = null, kind: wantKind = null, private: inPrivate = false, stage: arrangementId = null } = {}) {
   if (!win || win.isDestroyed()) return { ok: false, error: "The Aither Browser is not open." };
+  // InPrivate: the owner's, web pages only, on the in-memory partition (nothing on disk,
+  // no history, no passwords, no session restore). An agent never opens one.
+  if (inPrivate) {
+    if (by !== "you") return { ok: false, error: "only you open InPrivate tabs" };
+    const privTarget = classify(url);
+    if (privTarget.kind !== "web" && privTarget.kind !== "hosted") return { ok: false, error: "InPrivate opens web pages only" };
+    return openPrivateTab(privTarget.url, { activate, after, stage: arrangementId });
+  }
+  // Aitherium's own apps open natively (owner 2026-11-08): an aitherium.com URL a pane
+  // declares in `web` becomes its aither:// page. Owner tabs only -- an agent never gets
+  // an internal pane (browser-internal.upgradeToInternal; null = load the web page).
+  if (by === "you" && !wantKind) url = internal.upgradeToInternal(url) || url;
   // Main wires the pane's handlers (and where the bundle and AitherOS Online are)
   // BEFORE the page is classified or loads: a pane talks to main the moment it loads.
   if (by === "you" && internal.isInternalUrl(url) && typeof internalConfig.beforeInternal === "function") {
@@ -1165,12 +4007,28 @@ function openTab(by, url, { activate = true, after = null, pinned = false, key =
   // WHICH session the tab rides (BROWSER-M3): the owner's PARTITION for every owner
   // tab; an agent tab gets its OWN session unless the owner allowed this site ("Let
   // the agent use my sign-in"). One picker, so no view is ever built without it.
-  const webPartition = kind === "extension" ? PARTITION : agentSessions.partitionFor({
-    by, url: target.url, sites: getPrefs().agentCookieSites, ownerPartition: PARTITION, agentPartition: AGENT_PARTITION,
-  });
-  const added = tabs.add(by, { activate, after, kind, pinned, key });
+  // A workspace app (browser-workspace.cjs): the owner's tab rides the tenant's work
+  // partition; an agent asking for a private app is refused before a tab exists.
+  const work = kind === "web" ? getWorkspace().gateOpen({ by, url: target.url }) : {};
+  if (work.error) return { ok: false, error: work.error };
+  // The ACTIVE STAGE's workspace binding decides the session an owner web tab rides
+  // (stages): a stage bound to the workspace this desk is signed into, with a policy in
+  // force, loads its tabs in that workspace's partition -- separate cookies, separate
+  // history -- and `stageScope().live` says whether that is really what happened. An
+  // unbound stage, another workspace, or no policy all land on the owner's own session.
+  const scope = by === "you" && kind === "web" ? stageScope() : null;
+  const webPartition = work.partition || (kind === "extension" ? PARTITION : scope && scope.live && scope.workspace
+    ? scope.partition
+    : agentSessions.partitionFor({
+      by, url: target.url, sites: getPrefs().agentCookieSites, ownerPartition: PARTITION, agentPartition: AGENT_PARTITION,
+    }));
+  // The tab's stage decides whether it may become the one on screen: a tab opened into
+  // a suspended stage (a popup from a hidden page) must never steal the page area.
+  const stageId = arrangementId || activeStageId();
+  const added = tabs.add(by, { activate: activate && stageId === activeStageId(), after, kind, pinned, key });
   if (!added.ok) return added;
   const tab = tabs.get(added.id);
+  tab.stage = stageId;
   tab.paneId = target.paneId;
   tab.label = label;
   if (kind === "internal") ensureInternalSession();
@@ -1224,14 +4082,15 @@ function openAgentApp(id) {
 function openOnlineApp(id) {
   if (!launchModes.isAppId(id)) return { ok: false, error: "not an app id" };
   if (!win || win.isDestroyed()) createBrowserWindow({ url: null, home: false });
-  const mode = launchModes.launchModeFor(getPrefs().launchModes, id);
-  const url = launchModes.appUrl(internal.onlineUrl(), id, mode);
+  const placed = placeOnlineApp(id, launchModes.launchModeFor(getPrefs().launchModes, id));
+  const mode = placed.mode;
+  const url = launchModes.appUrl(placed.base, id, placed.mode);
   if (!url) return { ok: false, error: "no AitherOS Online address" };
   if (mode === "desktop") {
     openFromTaskbar(url);
     return { ok: true, mode };
   }
-  const key = `app:${id}`;
+  const key = placed.key;
   let tab = tabs.byKey(key);
   if (!tab || !viewOf(tab.id)) {
     const opened = openTab("you", url, { key, hostedPartition: onlinePartition() });
@@ -1372,8 +4231,18 @@ function setInboxBadge({ count = 0, image = null, tooltip = "" } = {}) {
 
 /** Close a tab (the owner, or the agent for its own). The last tab closing opens a fresh home tab. */
 function closeTab(id, by = "you") {
+  const before = tabs.get(id);
+  const beforeView = views.get(id);
+  const beforeUrl = alive(beforeView) ? beforeView.webContents.getURL() : (discarded.get(id) || {}).url || "";
   const closed = tabs.close(id, by);
   if (!closed.ok) return closed;
+  if (before) {
+    closedTabs.push({ by: before.by, private: before.private, url: beforeUrl,
+      title: alive(beforeView) ? beforeView.webContents.getTitle() : "" });
+  }
+  forgetTabExtras(id);
+  // A closed tab's pane goes with it (a split settles to one pane if that was its last).
+  stageRemoveTab(id);
   const pop = popped.get(id);
   popped.delete(id);
   if (pop && !pop.isDestroyed()) {
@@ -1389,9 +4258,19 @@ function closeTab(id, by = "you") {
     if (win && !win.isDestroyed()) win.contentView.removeChildView(view);
     view.webContents.close();
   }
+  if (before && before.private) clearPrivateIfLast();
+  // The strip is the ACTIVE stage's: closing the last tab of one stage must not hand the
+  // window to a tab in another (TabSet picks the next tab in the whole list).
+  if (!inActiveStage(tabs.active)) {
+    const next = tabs.tabs.find((t) => tabStage(t.id) === activeStageId() && !popped.has(t.id));
+    if (next) tabs.activate(next.id);
+  }
   if (tabs.tabs.length === 0 && win && !win.isDestroyed()) openTab("you", homeUrl());
+  // The document follows the strip: a closed tab is not brought back by a later switch.
+  captureStage(before && before.stage ? before.stage : activeStageId());
   layout();
   pushState();
+  if (before && before.by === "you" && !before.private) touchSync();
   return { ok: true, closed: id, active: tabs.active };
 }
 
@@ -1400,8 +4279,12 @@ function popOutTab(id) {
   const view = viewOf(id);
   const tab = tabs.get(id);
   if (!view || !tab || !win || win.isDestroyed()) return { ok: false, error: "no such tab" };
+  // A workspace app stays under the browser window's watermark and capture guard.
+  if (getWorkspace().policy.governs(view.webContents.getURL())) return { ok: false, error: "a workspace app stays in the browser window" };
   const existing = popped.get(id);
   if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return { ok: true }; }
+  // A pane that leaves the window leaves the split; the rest re-flow.
+  stageRemoveTab(id);
   const { BrowserWindow } = electron();
   const main = win.getBounds();
   const pop = new BrowserWindow({
@@ -1426,8 +4309,9 @@ function popOutTab(id) {
   retitle();
   pop.on("closed", () => dockTab(id, { closing: true }));
   popped.set(id, pop);
-  // The strip moves on to another tab; the popped one keeps its place in the list.
-  const next = tabs.tabs.find((t) => t.id !== id && !popped.has(t.id));
+  // The strip moves on to another tab OF THIS STAGE; the popped one keeps its place in
+  // the list (a suspended stage's tab must not come on screen under this strip).
+  const next = tabs.tabs.find((t) => t.id !== id && !popped.has(t.id) && tabStage(t.id) === activeStageId());
   if (next && tabs.active === id) tabs.activate(next.id);
   layout();
   pushState();
@@ -1435,7 +4319,7 @@ function popOutTab(id) {
 }
 
 /** Bring a popped-out tab's view back into the browser and close its window. */
-function dockTab(id, { closing = false } = {}) {
+function dockTab(id, { closing = false, quiet = false } = {}) {
   const pop = popped.get(id);
   popped.delete(id);
   const view = views.get(id);
@@ -1445,7 +4329,9 @@ function dockTab(id, { closing = false } = {}) {
     win.contentView.addChildView(view);
     if (alive(panelView)) win.contentView.addChildView(panelView);
     if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
-    tabs.activate(id);
+    // `quiet` is the stage switch bringing another stage's popped tab home: it must not
+    // become the tab on screen (layout() keeps a suspended stage's views hidden).
+    if (!quiet) tabs.activate(id);
   }
   if (pop && !closing && !pop.isDestroyed()) pop.close();
   layout();
@@ -1461,6 +4347,24 @@ function showTab(id) {
     pop.focus();
     return { ok: true };
   }
+  // A tab of a suspended arrangement (the pinned front, an Aither pane, an extension
+  // page) is not on the strip you are looking at: showing it means switching to its
+  // arrangement first, or the click silently does nothing (layout() keeps a suspended
+  // arrangement's view hidden). The switch brings that arrangement's split back with it.
+  const home = tabStage(id);
+  if (tabs.get(id) && home !== activeStageId() && browserStages.find(getStages(), home)) {
+    const switched = switchStage(home);
+    if (!switched.ok) return switched;
+  }
+  // A tab that IS a pane: showing it focuses that pane (the split itself does not change).
+  if (stageHas(id)) {
+    stage.focus = stage.tabs.indexOf(id);
+    const shown = tabs.activate(id);
+    layout();
+    pushState();
+    if (shown.ok) scheduleContextPush(id);
+    return shown;
+  }
   const shown = tabs.activate(id);
   if (shown.ok) {
     layout();
@@ -1472,19 +4376,16 @@ function showTab(id) {
 
 function wirePage(wc, id) {
   const kindOf = () => (tabs.get(id) || {}).kind || "web";
+  // Split panes: clicking into a pane focuses it, so the address bar, the strip and
+  // the agent's page all follow the pane the owner is actually looking at.
+  wc.on("focus", () => { if (stageHas(id)) stageFocusTab(id); });
   // A popup becomes a TAB beside its opener, owned by the opener's owner (an agent
   // page's popup is still the agent's), never a second window. A web page may only
   // open web pages; an aither:// page may open another Aither page or a web tab.
-  wc.setWindowOpenHandler(({ url }) => {
-    const opener = tabs.get(id);
-    if (!opener) return { action: "deny" };
-    if (policy.isNavigable(url)) {
-      openTab(opener.by, url, { activate: true, after: id });
-    } else if (opener.kind === "internal" && internal.isInternalUrl(url)) {
-      openTab("you", url, { activate: true, after: id });
-    }
-    return { action: "deny" };
-  });
+  // A WEB tab's popup keeps its opener (sign-in and payment popups): openFromPage.
+  wc.setWindowOpenHandler((details) => openFromPage(id, details));
+  wirePageGaps(wc, id);
+  getWorkspace().wire(wc, id);
   // Navigation is judged per tab KIND (browser-internal navigationVerdict): a web
   // tab never reaches aither://; an internal tab sends a web link to a web tab.
   // An extension tab stays on ITS extension's pages (never hops to another extension's).
@@ -1502,20 +4403,31 @@ function wirePage(wc, id) {
       : internal.navigationVerdict("web", url) === "allow" ? "web-tab" : "deny")
     : internal.navigationVerdict(kindOf(), url, opts));
   const guard = (event, url) => {
+    if (getWorkspace().onNavigate(id, url, event)) return;
     const verdict = verdictFor(url);
     if (verdict === "allow") return;
     event.preventDefault();
     const opener = tabs.get(id);
     if (verdict === "web-tab" && opener) openTab(opener.by, url, { activate: true, after: id });
+    // mailto:, tel:, Zoom...: the owner is asked "Open <App>?" (never an agent's tab).
+    else void offerExternalApp(id, url, { via: "navigate", initiatorOrigin: initiatorOriginOf(event) });
   };
   wc.on("will-navigate", guard);
   // A redirect cannot be split into another tab: anything but "allow" stops it.
   wc.on("will-redirect", (event, url) => {
-    if (verdictFor(url) !== "allow") event.preventDefault();
+    if (event.isMainFrame !== false && getWorkspace().onNavigate(id, url, event)) return;
+    if (verdictFor(url) === "allow") {
+      if (event.isMainFrame !== false) navFrom.set(wc, String(url || ""));
+      return;
+    }
+    event.preventDefault();
+    // A web address that redirected to an app link: always asked, and the redirecting site is named.
+    if (event.isMainFrame !== false) void offerExternalApp(id, url, { via: "redirect", redirectFrom: navFrom.get(wc) || null });
   });
   // Frames: a web page cannot frame aither:// (its session has no handler either).
   wc.on("will-frame-navigate", (details) => {
     if (!details || details.isMainFrame) return;
+    if (getWorkspace().onNavigate(id, details.url, details, { frame: true })) return;
     const verdict = kindOf() === "extension" ? verdictFor(details.url, { frame: true })
       : internal.navigationVerdict(kindOf(), details.url, { frame: true });
     if (verdict !== "allow") details.preventDefault();
@@ -1537,8 +4449,14 @@ function wirePage(wc, id) {
     const css = JSON.stringify(taskbar.HOST_DOCK_CSS);
     void frame.executeJavaScript(`(() => { ${taskbar.hostFlagScript(true)}; const s = document.createElement("style"); s.textContent = ${css}; document.head.append(s); })()`).catch(() => {});
   });
+  wireEveryday(wc, id);
   // Alt+O, awconnect's own key for the overlay.
   wc.on("before-input-event", (event, input) => {
+    const act = everyday.keyAction(input);
+    if (act && runBrowserAction(act.action, act.arg, id)) {
+      event.preventDefault();
+      return;
+    }
     if (input.type === "keyDown" && input.alt && !input.control && !input.meta && String(input.key).toLowerCase() === "o") {
       event.preventDefault();
       setOverlay(!getPrefs().overlay);
@@ -1548,6 +4466,12 @@ function wirePage(wc, id) {
     if (isDockKey(input)) {
       event.preventDefault();
       setDockOpen(undefined);
+      return;
+    }
+    // Ctrl+Shift+`: bring a terminal INTO the container (the "+" picker).
+    if (isBringInKey(input)) {
+      event.preventDefault();
+      void bringInMenu();
       return;
     }
     // Ctrl+K: awsh from any tab (os-command). Console pages keep their own palette key.
@@ -1562,7 +4486,8 @@ function wirePage(wc, id) {
   wc.on("did-stop-loading", () => {
     const tab = tabs.get(id);
     // Console pages are not "history": the address bar suggests them by name instead.
-    if (tab && tab.kind === "web") getLibrary().visit(wc.getURL(), wc.getTitle(), tab.by);
+    if (tab && tab.kind === "web" && !tab.private && getLibrary().visit(wc.getURL(), wc.getTitle(), tab.by)) libraryChanged();
+    if (tab && tab.kind === "web" && !tab.private && tab.by === "you") touchSync();
   });
 }
 
@@ -1578,6 +4503,8 @@ function agentMaySee(id) {
 /** The owner's "Share with agent" toggle on one of their tabs (the strip's button). */
 function shareTab(id, on) {
   const view = viewOf(id);
+  // A workspace app is never handed to an agent.
+  if (on && view && getWorkspace().policy.governs(view.webContents.getURL())) return { ok: false, error: "a workspace app is not shared with an agent" };
   const result = tabs.share(id, on ? (view ? view.webContents.getURL() : "") : null);
   if (result.ok && result.shared) scheduleContextPush(id);
   pushState();
@@ -1696,7 +4623,9 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     return win;
   }
   const { BrowserWindow, WebContentsView, session } = electron();
-  hardenSession(session.fromPartition(PARTITION));
+  // Widevine: main started this at app ready; a caller that did not still gets it here.
+  void widevineMod.getWidevine().ensure();
+  hardenSession(session.fromPartition(PARTITION), { owner: true });
   // The agent's own session is hardened the same way (deny-by-default permissions,
   // an agent's download cancelled), and gets NO owner extension: awconnect is loaded
   // into PARTITION only, so an agent tab cannot reach the desk's signed-in bridges.
@@ -1724,10 +4653,30 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event) => event.preventDefault());
   win.webContents.on("before-input-event", (event, input) => {
-    if (isDockKey(input)) { event.preventDefault(); setDockOpen(undefined); }
+    if (isDockKey(input)) { event.preventDefault(); setDockOpen(undefined); return; }
+    if (isBringInKey(input)) { event.preventDefault(); void bringInMenu(); return; }
+    // The standard keys work with the toolbar focused too (the address bar keeps its
+    // own editing keys: none of them is a browser action).
+    const act = everyday.keyAction(input);
+    if (act && runBrowserAction(act.action, act.arg, tabs.active)) event.preventDefault();
+  });
+  // Session restore: what was open is written as the window closes (before the views go).
+  win.on("close", () => {
+    // Both stores take what the window holds: every stage with a live tab (a popup can
+    // have landed in a suspended one) and the ACTIVE stage's strip (session restore), so
+    // a switch back after a restart finds each stage as it was.
+    for (const arrangement of getStages().stages) {
+      if (tabs.tabs.some((t) => tabStage(t.id) === arrangement.id)) captureStage(arrangement.id);
+    }
+    captureStage();
+    flushStages();
+    if (getPrefs().restoreSession !== false) getSessionStore().flush(tabList());
   });
 
   tabs = new TabSet();
+  stage = null;
+  splitGeometry = null;
+  stageDragging = false;
   panelView = createAssistantPanel(WebContentsView);
   win.contentView.addChildView(panelView);
   win.on("resize", layout);
@@ -1739,6 +4688,12 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   win.once("ready-to-show", () => {
     ensureDock();
     ensureTaskbar();
+    warmTenantEntitlement();
+    // Panes the owner left in their own windows come back there, where they were.
+    for (const pane of deskLayout.DETACHABLE) {
+      const was = getPrefs().desk.detached[pane];
+      if (was && was.open) detachPane(pane);
+    }
     layout();
     win.show();
     win.focus();
@@ -1748,18 +4703,31 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   discardTimer = setInterval(() => discardHiddenTabs(), 60 * 1000);
   if (typeof discardTimer.unref === "function") discardTimer.unref();
   win.on("closed", () => {
+    if (syncImpl) syncImpl.stop();
+    if (workspaceImpl) workspaceImpl.windowClosed();
+    // Pane windows close with the browser, but stay "open" in the layout for next time.
+    closingBrowser = true;
+    for (const [, w] of paneWindows) if (w && !w.isDestroyed()) w.destroy();
+    paneWindows.clear();
+    paneSurfaces.reconcile(Object.fromEntries(deskLayout.DETACHABLE.map((pane) => [pane, false])));
+    closingBrowser = false;
+    editingLayout = false;
     if (discardTimer) clearInterval(discardTimer);
     discardTimer = null;
     if (openSignal) openSignal.dispose();
     openSignal = null;
     discarded.clear();
     shownAt.clear();
+    htmlFullscreen.leave(null);
+    hideFullscreenHint();
+    mediaTabs.clear();
     lastLayoutKey = "";
-    for (const view of [...views.values(), panelView, taskbarView, dockView]) {
+    for (const view of [...views.values(), panelView, taskbarView, dockView, splitView]) {
       if (alive(view)) view.webContents.close();
     }
     dockView = null;
     dockStatus = "off";
+    splitView = null;
     taskbarView = null;
     taskbarOpen = false;
     taskbarStatus = "off";
@@ -1767,6 +4735,9 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     popped.clear();
     views.clear();
     tabs = new TabSet();
+    stage = null;
+    splitGeometry = null;
+    stageDragging = false;
     win = null;
     panelView = null;
     gate.release();
@@ -1776,7 +4747,15 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   void win.loadFile(path.join(__dirname, "browser-chrome.html"));
   // `home: false` is the console door (openInternal): it opens its own pane tab,
   // so a home page underneath it would be one more tab nobody asked for.
-  if (home || (target && target.ok)) openTab("you", target && target.ok ? target.url : homeUrl());
+  // Continue where you left off (Edge's default): the owner's tabs from last time come
+  // back first, then the page this open asked for. Nothing saved: the home page.
+  const restored = getPrefs().restoreSession === false ? 0 : restoreSession();
+  if (target && target.ok) openTab("you", target.url);
+  else if (home && !restored) openTab("you", homeUrl());
+  // Sync runs while the browser is open, and only if the owner turned it on.
+  try { getSync().start(); } catch { /* sync never blocks the browser */ }
+  // The workspace policy: read from userData now, then asked of the platform.
+  try { getWorkspace().start(); } catch { /* no policy: ordinary browsing */ }
   return win;
 }
 
@@ -1861,6 +4840,19 @@ const PAGE_HELPERS = `
  * lives in the isolated world, so page JS can neither read nor forge it, and a
  * navigation clears it), or {selector}.
  */
+/** Pure: does an editor's innerText hold what was typed? innerText adds a
+ *  trailing newline in some editors and renders NBSP for runs of spaces. */
+function editorKept(now, want) {
+  const NBSP = String.fromCharCode(160);
+  const LF = String.fromCharCode(10);
+  const norm = (v) => {
+    let t = String(v ?? "").split(NBSP).join(" ");
+    while (t.endsWith(LF)) t = t.slice(0, -1);
+    return t;
+  };
+  return norm(now) === norm(want);
+}
+
 function scriptFor(action, args = {}) {
   if (action === "read") {
     return `(() => ({ ok: true, url: location.href, title: document.title,
@@ -1961,7 +4953,20 @@ function scriptFor(action, args = {}) {
       el.scrollIntoView({ block: "center" });
       el.focus();
       let now;
-      if (el.isContentEditable) { el.textContent = text; now = el.textContent; }
+      if (el.isContentEditable) {
+        // A rich editor (Discord's Slate, Lexical, ProseMirror) keeps its OWN model
+        // and redraws from it: textContent shows the words while the model stays
+        // empty, so Enter sends nothing (measured 2026-11-09, three Enters into a
+        // Discord DM). Select the editor's contents here; the main process then
+        // inserts the text as real input (webContents.insertText), which every
+        // editor handles through beforeinput, and reads it back.
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return { ok: true, editable: true, into: el.tagName.toLowerCase(), label };
+      }
       else if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
         const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value");
         if (desc && desc.set) desc.set.call(el, text); else el.value = text;
@@ -2007,6 +5012,10 @@ function scriptFor(action, args = {}) {
       el.style.outlineOffset = "3px";
       return { ok: true, label }; })()`;
   }
+  if (action === "readback") {
+    return `(() => { ${find}
+      return { ok: true, now: el.isContentEditable ? el.innerText : el.value, label }; })()`;
+  }
   if (action === "focus") {
     return `(() => { ${find}
       el.scrollIntoView({ block: "center" }); el.focus();
@@ -2035,6 +5044,9 @@ async function runInPage(action, args, who = "agent") {
   const picked = viewFor(who);
   if (!picked.ok) return { ok: false, error: picked.error };
   const wc = picked.view.webContents;
+  // A workspace app whose policy forbids capturing it is not read -- by "Ask about this
+  // page", by an agent's tool, by anyone; its selection also not when copying is forbidden.
+  if (getWorkspace().blocksRead(who === "owner" ? tabs.active : picked.id, action)) return { ok: false, error: "the workspace policy does not let this page be read" };
   await waitForIdle(wc);
   const result = await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: scriptFor(action, args) }], false);
   return result && typeof result === "object" ? result : { ok: false, error: "page returned nothing" };
@@ -2080,7 +5092,23 @@ const driver = {
   read: () => runInPage("read", {}),
   snapshot: () => runInPage("snapshot", {}),
   click: (target) => runInPage("click", { target }),
-  type: (target, text) => runInPage("type", { target, text }),
+  async type(target, text) {
+    const first = await runInPage("type", { target, text });
+    if (!first || !first.editable) return first;
+    // A contenteditable: the page selected its contents; insert as real input.
+    const picked = viewFor("agent");
+    if (!picked.ok) return { ok: false, error: picked.error };
+    const wc = picked.view.webContents;
+    wc.focus();
+    const want = String(text ?? "");
+    if (want) await wc.insertText(want);
+    else wc.delete();
+    const back = await runInPage("readback", { target });
+    const now = back && back.ok ? String(back.now ?? "") : "";
+    const kept = editorKept(now, want);
+    return { ok: kept, typed: want.length, into: first.into, label: first.label,
+      error: kept ? undefined : `the editor did not keep the text (it holds ${now.length} characters)` };
+  },
   select: (target, option) => runInPage("select", { target, option }),
   check: (target, checked) => runInPage("check", { target, checked }),
   highlight: (target) => runInPage("highlight", { target }),
@@ -2103,6 +5131,7 @@ const driver = {
     const picked = viewFor("agent");
     if (!picked.ok) return { ok: false, error: picked.error };
     const wc = picked.view.webContents;
+    if (getWorkspace().blocks(picked.id, "capture")) return { ok: false, error: "the workspace policy does not let this page be captured" };
     await waitForIdle(wc);
     let image = await wc.capturePage();
     const size = image.getSize();
@@ -2146,11 +5175,53 @@ function wireIpc() {
     if (alive(taskbarView) && event.sender === taskbarView.webContents) sendTaskbarState();
   });
   ipcMain.handle("desk:browser-tab-dock", (event, id) => (fromChrome(event) ? dockTab(Number(id)) : { ok: false }));
+  // Split panes (the owner's "one container with tabs and splits"): split a tab into
+  // a new pane, drop a dragged tab on an edge, focus or close a pane, drag a divider,
+  // or put the page back together. browser-panes.cjs owns the geometry.
+  ipcMain.handle("desk:browser-split", (event, op) => {
+    if (!fromChrome(event)) return { ok: false, error: "not the browser's own chrome" };
+    const o = parseArg(op) || {};
+    switch (o.op) {
+      case "split":
+      case "drop": {
+        // A drop ends the tab drag even when the dragend event never arrives.
+        if (o.op === "drop") stageDragging = false;
+        const splitResult = splitTab(o.id == null ? null : Number(o.id), o.side === "left" ? "left" : "right");
+        // A REFUSED split (the stage is full, the tab is already a pane) must still put
+        // the views back: splitTab lays out only on success, so the drag's hidden views
+        // would otherwise leave the page area (and panel, dock and taskbar) blank until
+        // some unrelated action happened to re-lay the window out.
+        if (!splitResult.ok) { layout(); pushState(); }
+        return splitResult;
+      }
+      case "close": return closePane(Math.floor(Number(o.index)));
+      case "unsplit": return unsplitStage();
+      case "focus": {
+        const at = Math.floor(Number(o.index));
+        if (!stage || !(at >= 0 && at < stage.tabs.length)) return { ok: false, error: "no such pane" };
+        stage.focus = at;
+        tabs.activate(stage.tabs[at]);
+        pushState();
+        return { ok: true };
+      }
+      case "resize": return stageResize(Math.floor(Number(o.index)), Number(o.x));
+      case "drag": {
+        const on = o.on === true;
+        if (on !== stageDragging) { stageDragging = on; layout(); pushState(); }
+        return { ok: true };
+      }
+      default: return { ok: false, error: `no split op ${o.op}` };
+    }
+  });
   ipcMain.handle("desk:browser-rail", (event, action, arg) => {
     if (!fromChrome(event)) return { ok: false, error: "not the browser's own chrome" };
     const relayout = () => { layout(); pushState(); return { ok: true }; };
     if (action === "collapse") return setPrefs({ railCollapsed: Boolean(arg) }) && relayout();
-    if (action === "panel") return setPrefs({ panelCollapsed: Boolean(arg) }) && relayout();
+    if (action === "panel") {
+      // Hiding a panel that floats in its own window brings it home first.
+      if (arg && paneDetached("panel")) attachPane("panel");
+      return setPrefs({ panelCollapsed: Boolean(arg) }) && relayout();
+    }
     if (action === "overlay") {
       // Back from the desktop (or off): the desk's overlay window steps down first.
       if (overlayOnDesktop()) shellHost.run("desktop.overlay.toggle");
@@ -2190,12 +5261,10 @@ function wireIpc() {
       const on = arg == null ? !getPrefs().railAllSections : Boolean(arg);
       return setPrefs({ railAllSections: on }) && relayout();
     }
-    if (action === "reset-layout") return setPrefs({ railWidth: null, panelWidth: null, railCollapsed: false,
-      panelCollapsed: false, taskbar: true, collapsedSections: [], expandedSections: [], railAllSections: false,
-      dock: true, dockOpen: false, dockHeight: null })
-      && (ensureDock(), relayout());
+    if (action === "reset-layout") return resetLayout();
     // The terminal dock: on/off for good, open/closed, and a drag of its top edge.
     if (action === "dock-on") {
+      if (!arg && paneDetached("dock")) attachPane("dock");
       setPrefs({ dock: Boolean(arg) });
       if (arg) ensureDock();
       else if (alive(dockView)) placeView(dockView, false, null);
@@ -2205,7 +5274,7 @@ function wireIpc() {
     if (action === "dock-drag") {
       const bounds = win.getContentBounds();
       setPrefs(rail.dockHeightFromDrag(Number(arg), { height: bounds.height,
-        taskbarHeight: stripShown() ? rail.TASKBAR_HEIGHT : 0 }));
+        taskbarHeight: stripShown() ? rail.TASKBAR_HEIGHT : 0, side: getPrefs().desk.panes.dock.side, top: chromeHeight() }));
       sendDockState();
       return relayout();
     }
@@ -2258,8 +5327,32 @@ function wireIpc() {
       shellHost.popupMenu(win);
       return { ok: true };
     }
+    // The layout document (desk-layout.cjs): edit mode, sides, detach, presets, the
+    // rail's arrangement, layer order, export/import. Every one is also a palette
+    // command (layoutCommand) -- no capability is gesture-only.
+    const layoutVerdict = layoutAction(action, arg);
+    if (layoutVerdict) return layoutVerdict;
     return { ok: false, error: "unknown rail action" };
   });
+  // A tab's right-click: Pin to canvas, pop out / dock back, close.
+  ipcMain.handle("desk:browser-tab-menu", (event, id) => (fromChrome(event) ? tabMenu(Number(id)) : { ok: false }));
+  // The all-tabs button beside +: the way to any tab once the strip scrolls.
+  ipcMain.handle("desk:browser-tabs-menu", (event) => (fromChrome(event) ? tabsMenu() : { ok: false }));
+  // The stage switcher left of the strip (browser-stages.cjs): switch / create / rename /
+  // move / delete / assign workspace. Only the browser's own chrome, like the strip.
+  ipcMain.handle("desk:browser-stage", (event, action, arg) => {
+    if (!fromChrome(event)) return { ok: false, error: "not the browser's own chrome" };
+    const verdict = stageAction(String(action || ""), arg);
+    return verdict || { ok: false, error: "unknown stage action" };
+  });
+  // "+": a new tab, or a terminal brought INTO the container (dock-in slice 2).
+  ipcMain.handle("desk:browser-newtab-menu", (event) => (fromChrome(event) ? newTabMenu() : { ok: false }));
+  ipcMain.handle("desk:browser-terminal-picker", (event) => (fromChrome(event) ? bringInMenu() : { ok: false }));
+  // A folder/file dropped on the tab strip (chrome) or the split pane (its own page).
+  ipcMain.handle("desk:browser-drop", (event, payload) =>
+    (fromChrome(event) || fromSplitPane(event) ? dockDrop(payload) : { ok: false, error: "not a drop target of this window" }));
+  // aither://canvas: its boards, widgets and live app cards (browser-canvas.cjs).
+  getCanvas().wire(ipcMain);
   ipcMain.handle("desk:browser-navigate", async (event, input) => {
     if (!fromChrome(event)) return { ok: false, reason: "not the browser toolbar" };
     // The OWNER typing aither://<pane> into the address bar opens that console page.
@@ -2308,8 +5401,41 @@ function wireIpc() {
     const view = activeView();
     if (!fromChrome(event) || !view) return { ok: false };
     const on = getLibrary().toggleBookmark(view.webContents.getURL(), view.webContents.getTitle());
+    touchSync();
     pushState();
+    libraryChanged();
     return { ok: true, bookmarked: on };
+  });
+  // The bookmarks bar: a bookmark opens only when it IS one; a folder's menu is drawn here.
+  ipcMain.handle("desk:browser-bookmark-open", (event, url) => (fromChrome(event) ? openBookmark(String(url || "")) : { ok: false }));
+  ipcMain.handle("desk:browser-bookmark-folder", (event, name) => (fromChrome(event) ? bookmarkFolderMenu(String(name || "")) : { ok: false }));
+  // The library pages (aither://history, bookmarks, downloads, permissions, clear-data).
+  libraryPages.setLibraryHost(libraryHost);
+  libraryPages.ensureLibraryIpc();
+  // Edge parity: the ⋯ menu, the key icon, a notice's buttons, find on page, zoom badge.
+  ipcMain.handle("desk:browser-menu", (event) => (fromChrome(event) ? browserMenu() : { ok: false }));
+  ipcMain.handle("desk:browser-passwords", (event) => (fromChrome(event) ? passwordMenu() : { ok: false }));
+  ipcMain.handle("desk:browser-shield", (event) => (fromChrome(event) ? shieldMenu() : { ok: false }));
+  ipcMain.handle("desk:browser-notice", (event, action) => (fromChrome(event) ? noticeAction(String(action || "")) : { ok: false }));
+  ipcMain.on("desk:browser-find", (event, text, forward) => {
+    const wc = pageWc(tabs.active);
+    if (!fromChrome(event) || !wc) return;
+    const q = typeof text === "string" ? text.slice(0, 500) : "";
+    const prev = findResults.get(tabs.active) || {};
+    if (!q) { wc.stopFindInPage("clearSelection"); findResults.delete(tabs.active); pushState(); return; }
+    findResults.set(tabs.active, { text: q, matches: prev.text === q ? prev.matches : 0, active: prev.text === q ? prev.active : 0 });
+    wc.findInPage(q, { forward: forward !== false, findNext: prev.text === q });
+  });
+  ipcMain.on("desk:browser-find-stop", (event) => {
+    const wc = pageWc(tabs.active);
+    if (!fromChrome(event) || !wc) return;
+    wc.stopFindInPage("keepSelection");
+    findResults.delete(tabs.active);
+    pushState();
+    wc.focus();
+  });
+  ipcMain.on("desk:browser-action", (event, action) => {
+    if (fromChrome(event)) runBrowserAction(String(action || ""), null, tabs.active);
   });
   // The Connect panel: what the owner has selected, an agent task, and "Open in Chrome".
   // Notes and memory about the page on screen (knowledge-client.cjs). The PANEL asks;
@@ -2490,6 +5616,805 @@ async function screenPage() {
 }
 
 /** main installs the Agents tab's sources + answer path (see agentsHost). */
+// ── the layout document: detach, presets, the rail's arrangement, the canvas ──────
+// Owner, 2026-11-07: "resize and detach/reattach, reorganize and rearrange, and have
+// access to a canvas for pinning apps and widgets." The pure rules live in
+// desk-layout.cjs and canvas-model.cjs; this block is the electron half.
+
+/** The view a detachable pane is. */
+function paneView(pane) {
+  return pane === "panel" ? panelView : pane === "dock" ? dockView : pane === "taskbar" ? taskbarView : null;
+}
+
+/** Ask the pane windows (the oracle) and fold the answer into paneSurfaces. */
+function observePanes() {
+  const observed = {};
+  for (const pane of deskLayout.DETACHABLE) {
+    const w = paneWindows.get(pane);
+    observed[pane] = Boolean(w && !w.isDestroyed());
+  }
+  return paneSurfaces.reconcile(observed);
+}
+
+/** Default size of a pane's own window, before the owner moves it. */
+const PANE_WINDOW_SIZE = Object.freeze({
+  panel: { width: 420, height: 760 }, dock: { width: 960, height: 380 }, taskbar: { width: 960, height: 120 },
+});
+
+/**
+ * Pop a pane into its own window (put it on any monitor). Same move as a popped-out
+ * tab: the VIEW changes window, so the page keeps its state and its IPC sender is
+ * still the one main checks. Its bounds are remembered per pane and reused next time
+ * -- unless that monitor is gone (desk-layout.fitBounds).
+ */
+function detachPane(pane) {
+  if (!deskLayout.DETACHABLE.includes(pane)) {
+    return { ok: false, error: `${deskLayout.PANE_LABELS[pane] || pane} cannot leave the window (it is the window's own chrome)` };
+  }
+  if (!win || win.isDestroyed()) return { ok: false, error: "The Aither Browser is not open." };
+  if (pane === "dock") { if (!getPrefs().dock) setPrefs({ dock: true }); ensureDock(); }
+  if (pane === "taskbar") { if (!getPrefs().taskbar) setPrefs({ taskbar: true }); ensureTaskbar(); }
+  if (pane === "panel" && getPrefs().panelCollapsed) setPrefs({ panelCollapsed: false });
+  const view = paneView(pane);
+  if (!alive(view)) return { ok: false, error: `${deskLayout.PANE_LABELS[pane]} is not running` };
+  const existing = paneWindows.get(pane);
+  if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return { ok: true }; }
+  const { BrowserWindow, screen } = electron();
+  const main = win.getBounds();
+  const size = PANE_WINDOW_SIZE[pane];
+  const fallback = { x: main.x + 80, y: main.y + 80, ...size };
+  let areas = [];
+  try { areas = screen.getAllDisplays().map((d) => d.workArea); } catch { /* no screen yet */ }
+  const saved = getPrefs().desk.detached[pane];
+  const bounds = deskLayout.fitBounds(saved && saved.bounds, areas, fallback);
+  const w = new BrowserWindow({
+    ...bounds, minWidth: 240, minHeight: 100, title: `${deskLayout.PANE_LABELS[pane]} — Aither`,
+    autoHideMenuBar: true, backgroundColor: "#0f1218",
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  w.loadURL("about:blank").catch(() => {});
+  try { win.contentView.removeChildView(view); } catch { /* not a child */ }
+  w.contentView.addChildView(view);
+  const fit = () => {
+    if (w.isDestroyed() || !alive(view)) return;
+    const { width, height } = w.getContentBounds();
+    forgetPlacement(view);
+    view.setVisible(true);
+    view.setBounds({ x: 0, y: 0, width, height });
+  };
+  fit();
+  let saveTimer = null;
+  const remember = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (!w.isDestroyed()) setPrefs({ desk: deskLayout.withDetached(getPrefs().desk, pane, { bounds: w.getBounds() }) });
+    }, 300);
+  };
+  w.on("resize", () => { fit(); remember(); });
+  w.on("move", remember);
+  // Closed from its own title bar: the pane comes home (the window is the oracle).
+  w.on("closed", () => { clearTimeout(saveTimer); attachPane(pane, { closing: true }); });
+  paneWindows.set(pane, w);
+  setPrefs({ desk: deskLayout.withDetached(getPrefs().desk, pane, { bounds: w.getBounds(), open: true }) });
+  observePanes();
+  layout();
+  pushState();
+  return { ok: true };
+}
+
+/** Bring a detached pane back into the browser and close its window. */
+function attachPane(pane, { closing = false } = {}) {
+  if (!deskLayout.DETACHABLE.includes(pane)) return { ok: false, error: `${pane} is not a detachable pane` };
+  const w = paneWindows.get(pane);
+  paneWindows.delete(pane);
+  const view = paneView(pane);
+  if (w && !w.isDestroyed() && alive(view)) {
+    try { w.contentView.removeChildView(view); } catch { /* already gone */ }
+  }
+  if (alive(view) && win && !win.isDestroyed() && !closingBrowser) {
+    forgetPlacement(view);
+    win.contentView.addChildView(view);
+    // The taskbar stays on top (its menus open upward over the page).
+    if (pane !== "taskbar" && alive(taskbarView) && !paneDetached("taskbar")) win.contentView.addChildView(taskbarView);
+  }
+  // A browser that is closing keeps "open": the pane comes back detached next time.
+  if (!closingBrowser) setPrefs({ desk: deskLayout.withDetached(getPrefs().desk, pane, { open: false }) });
+  if (w && !closing && !w.isDestroyed()) w.close();
+  observePanes();
+  layout();
+  pushState();
+  return { ok: true };
+}
+
+/** Reset layout: geometry, sides, layer order and the rail's section/row order. Pins, presets and boards stay. */
+function resetLayout() {
+  for (const pane of deskLayout.DETACHABLE) if (paneDetached(pane)) attachPane(pane);
+  const desk = getPrefs().desk;
+  const fresh = deskLayout.normalizeDesk({});
+  setPrefs({ railWidth: null, panelWidth: null, railCollapsed: false,
+    panelCollapsed: false, taskbar: true, collapsedSections: [], expandedSections: [], railAllSections: false,
+    dock: true, dockOpen: false, dockHeight: null,
+    desk: { ...desk, panes: fresh.panes, layerOrder: fresh.layerOrder, activePreset: null,
+      rail: { ...fresh.rail, pinned: desk.rail.pinned } } });
+  ensureDock();
+  ensureTaskbar();
+  layout();
+  pushState();
+  return { ok: true };
+}
+
+/** A structured argument from the chrome page (the preload stringifies everything). */
+function parseArg(arg) {
+  if (arg && typeof arg === "object") return arg;
+  try { return JSON.parse(String(arg || "")); } catch { return null; }
+}
+
+/** Apply a prefs patch from desk-layout and re-lay the window. */
+function applyPatch(result) {
+  if (!result || !result.ok) return result || { ok: false, error: "refused" };
+  setPrefs(result.patch);
+  if (getPrefs().dock) ensureDock();
+  if (getPrefs().taskbar) ensureTaskbar();
+  if (canvasHost && result.patch.desk && result.patch.desk.boards) canvasHost.broadcast();
+  layout();
+  pushState();
+  sendDockState();
+  return { ok: true };
+}
+
+/** One edit of the rail's arrangement (desk-layout.editRail), judged against what is on screen. */
+function railEdit(op) {
+  const result = deskLayout.editRail(getPrefs().desk.rail, op, arrangedSections());
+  if (!result.ok) return result;
+  setPrefs({ desk: { ...getPrefs().desk, rail: result.custom } });
+  layout();
+  pushState();
+  return { ok: true };
+}
+
+/** Every rail row as the owner sees it now, flat, with the section it shows in. */
+function railRows() {
+  const out = [];
+  for (const sec of arrangedSections()) for (const row of sec.rows) out.push({ row, section: sec.name });
+  return out;
+}
+
+/** A row's address, for "Pin to canvas" (null: a command row opens nothing to pin). */
+function rowUrl(row) {
+  if (!row) return null;
+  try {
+    if (row.kind === "page") return internal.internalUrl(internal.paneById(row.id), null);
+    if (row.kind === "workspace") return new URL(row.id, internal.onlineUrl()).href;
+    if (row.kind === "local") return String(row.id);
+    if (row.kind === "online") { const placed = placeOnlineApp(row.id, "tab"); return launchModes.appUrl(placed.base, row.id, placed.mode); }
+  } catch { /* not addressable */ }
+  return null;
+}
+
+/** A rail row's right-click: pin / remove / move, and Pin to canvas. Keyboard: the context-menu key. */
+function rowMenu(key) {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const { Menu } = electron();
+  const all = railRows();
+  const hit = all.find((x) => deskLayout.railRowKey(x.row) === key);
+  if (!hit) return { ok: false, error: "that row is not on the rail" };
+  const custom = getPrefs().desk.rail;
+  const pinned = custom.pinned.includes(key);
+  const sections = arrangedSections().map((s) => s.name).filter((n) => n !== deskLayout.PINNED_SECTION);
+  const url = rowUrl(hit.row);
+  const template = [
+    pinned ? { label: "Unpin from rail", click: () => railEdit({ op: "unpin", key }) }
+      : { label: "Pin to rail", click: () => railEdit({ op: "pin", key }) },
+    { label: "Remove from rail", click: () => railEdit({ op: "hide", key }) },
+    { type: "separator" },
+    { label: "Move up", accelerator: "Alt+Up", click: () => railEdit({ op: "nudge-row", key, by: -1 }) },
+    { label: "Move down", accelerator: "Alt+Down", click: () => railEdit({ op: "nudge-row", key, by: 1 }) },
+    { label: "Move to section", submenu: sections.filter((n) => n !== hit.section)
+      .map((name) => ({ label: name, click: () => railEdit({ op: "move-row", key, section: name, index: 0 }) })) },
+    { type: "separator" },
+    { label: "Pin to canvas", enabled: Boolean(url), click: () => pinToCanvas(url, hit.row.label) },
+  ];
+  if (custom.hidden.length) {
+    template.push({ type: "separator" },
+      { label: `Restore removed rows (${custom.hidden.length})`, click: () => railEdit({ op: "restore" }) });
+  }
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+/** A tab's right-click (also the context-menu key on a focused tab). */
+function tabMenu(id) {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const tab = tabs.get(id);
+  const view = viewOf(id);
+  if (!tab) return { ok: false, error: "no such tab" };
+  const { Menu } = electron();
+  const url = view ? view.webContents.getURL() : (discarded.get(id) || {}).url || "";
+  const title = view ? view.webContents.getTitle() : "";
+  const pinnable = Boolean(canvasModelUrl(url)) && tab.by === "you";
+  // "Pin this tab to desktop" is desk-pins-ink's `pins.tab` command (a card on the real
+  // desktop); the row is live only once the registry carries it.
+  const desktopPin = Boolean(require("./command-registry.cjs").byId("pins.tab")) && Boolean(shellHost);
+  const template = [
+    { label: "Pin to canvas", enabled: pinnable, click: () => void pinToCanvas(url, title) },
+    { label: "Pin this tab to desktop", enabled: desktopPin && pinnable,
+      click: () => shellHost.run("pins.tab", id) },
+    { type: "separator" },
+    // Split panes: this tab becomes a pane beside the focused one (a new home tab
+    // fills the pane when this tab IS the page on screen). A third pane is the limit.
+    { label: "Split right", enabled: !popped.has(id) && (!stage || stage.tabs.length < panes.MAX_PANES),
+      click: () => splitTab(id, "right") },
+    { label: "Split left", enabled: !popped.has(id) && (!stage || stage.tabs.length < panes.MAX_PANES),
+      click: () => splitTab(id, "left") },
+    stageHas(id) ? { label: "Close pane", click: () => closePane(stage.tabs.indexOf(id)) } : null,
+    stage ? { label: "Unsplit", click: () => unsplitStage() } : null,
+    { type: "separator" },
+    popped.has(id) ? { label: "Dock back into the browser", click: () => dockTab(id) }
+      : { label: "Pop out into its own window", click: () => popOutTab(id) },
+  ].filter(Boolean);
+  if (!tab.pinned) template.push({ label: "Close tab", click: () => closeTab(id) });
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+/** The all-tabs button beside +: every tab by name, the active one checked (browser-tabs.cjs). */
+function tabsMenu() {
+  if (!win || win.isDestroyed()) return { ok: false };
+  const { Menu } = electron();
+  const rows = require("./browser-tabs.cjs").allTabsMenuRows(tabList());
+  if (!rows.length) return { ok: false, error: "no tabs" };
+  const template = rows.map((row) => ({ label: row.label, type: "checkbox", checked: row.checked, click: () => showTab(row.id) }));
+  Menu.buildFromTemplate(template).popup({ window: win });
+  return { ok: true };
+}
+
+function canvasModelUrl(url) {
+  return require("./canvas-model.cjs").appUrl(url);
+}
+
+/** "Export layout": the layout model, the owner's presets and boards, as one JSON file. */
+async function exportLayout() {
+  const { dialog } = electron();
+  const doc = deskLayout.exportDoc(getPrefs());
+  const pick = await dialog.showSaveDialog(win && !win.isDestroyed() ? win : undefined, {
+    title: "Export the browser layout", defaultPath: "aither-layout.json",
+    filters: [{ name: "Aither layout", extensions: ["json"] }],
+  });
+  if (pick.canceled || !pick.filePath) return { ok: false, canceled: true };
+  require("node:fs").writeFileSync(pick.filePath, JSON.stringify(doc, null, 2));
+  return { ok: true, path: pick.filePath };
+}
+
+/** "Import layout": strict (desk-layout.importDoc) -- a bad file says why and changes nothing. */
+async function importLayout() {
+  const { dialog } = electron();
+  const pick = await dialog.showOpenDialog(win && !win.isDestroyed() ? win : undefined, {
+    title: "Import a browser layout", properties: ["openFile"],
+    filters: [{ name: "Aither layout", extensions: ["json"] }],
+  });
+  if (pick.canceled || !pick.filePaths || !pick.filePaths[0]) return { ok: false, canceled: true };
+  const fs = require("node:fs");
+  const file = pick.filePaths[0];
+  if (fs.statSync(file).size > 2 * 1024 * 1024) return { ok: false, error: "that file is over 2 MB; a layout is a few KB" };
+  const result = deskLayout.importDoc(getPrefs(), fs.readFileSync(file, "utf8"));
+  if (!result.ok) return { ok: false, error: result.errors.slice(0, 5).join("; ") };
+  return applyPatch(result);
+}
+
+/**
+ * The rail/customize actions of the layout document. Returns null for an action that
+ * is not one of these (the caller keeps looking).
+ */
+function layoutAction(action, arg) {
+  const relayout = () => { layout(); pushState(); return { ok: true }; };
+  switch (action) {
+    case "edit-layout":
+      editingLayout = typeof arg === "boolean" ? arg : !editingLayout;
+      return relayout();
+    case "pane-side": {
+      const want = deskLayout.parsePaneSide(arg);
+      if (!want) return { ok: false, error: "say a pane and a side: panel:left" };
+      return applyPatch(deskLayout.setPaneSide(getPrefs(), want.pane, want.side));
+    }
+    case "pane-detach":
+      return detachPane(String(arg || ""));
+    case "pane-attach":
+      return attachPane(String(arg || ""));
+    case "layers-visible": {
+      const desk = JSON.parse(JSON.stringify(getPrefs().desk));
+      desk.panes.layers.visible = typeof arg === "boolean" ? arg : !desk.panes.layers.visible;
+      desk.activePreset = null;
+      setPrefs({ desk });
+      return relayout();
+    }
+    case "preset":
+      return applyPatch(deskLayout.applyPreset(getPrefs(), String(arg || "")));
+    case "preset-save":
+      return applyPatch(deskLayout.savePreset(getPrefs(), String(arg || "")));
+    case "preset-rename": {
+      const o = parseArg(arg) || {};
+      return applyPatch(deskLayout.renamePreset(getPrefs(), o.from, o.to));
+    }
+    case "preset-delete":
+      return applyPatch(deskLayout.deletePreset(getPrefs(), String(arg || "")));
+    case "layout-export":
+      return exportLayout();
+    case "layout-import":
+      return importLayout();
+    case "rail-edit":
+      return railEdit(parseArg(arg));
+    case "row-menu":
+      return rowMenu(String(arg || ""));
+    case "layer-move": {
+      const o = parseArg(arg) || {};
+      const moved = deskLayout.moveLayer(getPrefs().desk.layerOrder, String(o.key || ""),
+        { index: o.index == null ? null : Number(o.index), by: Number(o.by) || 0 });
+      if (!moved.ok) return moved;
+      setPrefs({ desk: { ...getPrefs().desk, layerOrder: moved.order } });
+      return relayout();
+    }
+    default:
+      return null;
+  }
+}
+
+/* ── the canvas (aither://canvas) ─────────────────────────────────────────────── */
+
+/**
+ * The live view behind an app card: the browser's ONE page-view builder, the session a
+ * tab of that address would ride (the owner's; an aitherium.com page signed in), and
+ * the same navigation rules a tab of that kind has.
+ */
+function makeCardView(url) {
+  const target = classify(url);
+  if (target.kind === "refused") return { ok: false, error: target.error };
+  let kind = target.kind;
+  let address = target.url;
+  let hostedPartition = target.partition || null;
+  if (kind === "web") {
+    const verdict = policy.sanitizeUrl(url);
+    if (!verdict.ok) return { ok: false, error: verdict.reason };
+    address = verdict.url;
+    const signedIn = internal.ownerHostedPartition("you", address, { explicit: null, online: onlinePartition() });
+    if (signedIn) { kind = "hosted"; hostedPartition = signedIn; }
+  }
+  if (kind === "internal") {
+    if (target.paneId === "canvas") return { ok: false, error: "the canvas does not hold itself" };
+    if (typeof internalConfig.beforeInternal === "function") {
+      try { internalConfig.beforeInternal(); } catch { /* the page shows its own error */ }
+    }
+    ensureInternalSession();
+  }
+  const view = createPageView(kind, { ...target, partition: hostedPartition }, hostedPartition, PARTITION);
+  guardCardView(view.webContents, kind);
+  if (kind === "hosted") void loadHostedTab(view, address).catch(() => {});
+  else void loadInView(view, address).catch(() => {});
+  return { ok: true, view, kind };
+}
+
+/** A card's page obeys its kind's navigation rules; a popup or a foreign link becomes an owner tab. */
+function guardCardView(wc, kind) {
+  wc.setWindowOpenHandler(({ url }) => {
+    if (policy.isNavigable(url)) openTab("you", url, { activate: true });
+    else if (kind === "internal" && internal.isInternalUrl(url)) openTab("you", url, { activate: true });
+    return { action: "deny" };
+  });
+  const verdict = (url, opts) => internal.navigationVerdict(kind, url, opts);
+  wc.on("will-navigate", (event, url) => {
+    const v = verdict(url);
+    if (v === "allow") return;
+    event.preventDefault();
+    if (v === "web-tab") openTab("you", url, { activate: true });
+  });
+  wc.on("will-redirect", (event, url) => { if (verdict(url) !== "allow") event.preventDefault(); });
+  wc.on("will-frame-navigate", (details) => {
+    if (!details || details.isMainFrame) return;
+    if (verdict(details.url, { frame: true }) !== "allow") details.preventDefault();
+  });
+  wc.on("will-attach-webview", (event) => event.preventDefault());
+}
+
+/** Which window holds the canvas page `wc`, where its page area starts, and is it on screen. */
+function canvasHostOf(wc) {
+  let id = null;
+  for (const [tabId, view] of views) if (alive(view) && view.webContents === wc) { id = tabId; break; }
+  if (id == null || !win || win.isDestroyed()) return null;
+  const pop = popped.get(id);
+  if (pop && !pop.isDestroyed()) return { window: pop, origin: { x: 0, y: 0 }, shown: pop.isVisible() };
+  // A canvas that IS a split pane draws its live cards inside that pane, not across
+  // the whole page area (browser-canvas.cjs places card views relative to this origin).
+  const at = stageHas(id) ? stage.tabs.indexOf(id) : -1;
+  const paneRect = at >= 0 && splitGeometry ? splitGeometry.panes[at] : null;
+  if (paneRect) return { window: win, origin: { x: paneRect.x, y: paneRect.y }, shown: !viewsAside() };
+  const rects = currentRects();
+  return { window: win, origin: { x: rects.page.x, y: rects.page.y }, shown: id === tabs.active && !viewsAside() };
+}
+
+let termClient = null;
+let aitheroneClient = null;
+function getCanvas() {
+  if (canvasHost) return canvasHost;
+  canvasHost = require("./browser-canvas.cjs").createCanvasHost({
+    // ONE store: the canvas is a desk whiteboard (boards-core / boards-window).
+    store: require("./boards-window.cjs"),
+    // The layout document only says WHICH board the canvas shows.
+    getActive: () => getPrefs().desk.canvasBoard,
+    setActive: (id) => setPrefs({ desk: { ...getPrefs().desk, canvasBoard: id || null } }),
+    // AitherOne: the Online site's /api/docs/* (the routes Veil's canvas uses), with
+    // the desk's existing Online session bearer. No new credential path.
+    aitherone: () => {
+      let base;
+      try { base = internal.onlineUrl(); } catch { base = null; }
+      if (!base) return null;
+      if (!aitheroneClient || aitheroneClient.base !== base) {
+        aitheroneClient = { base, client: require("./aitherone-link.cjs").createClient({
+          base, token: async () => onlineToken(), fetchImpl: (url, init) => electron().net.fetch(url, init) }) };
+      }
+      return aitheroneClient;
+    },
+    makeView: (url) => makeCardView(url),
+    hostOf: (wc) => canvasHostOf(wc),
+    openTab: (url) => {
+      if (internal.isInternalUrl(url)) return openInternalUrl(url) ? { ok: true } : { ok: false, error: "no such Aither page" };
+      const opened = openTab("you", url, { activate: true });
+      return opened.ok ? { ok: true } : { ok: false, error: opened.error };
+    },
+    // Read-only sources for the widgets (canvas-widgets/*.cjs): the same numbers the
+    // tray badge, the terminal page and the Inference Ops window show.
+    widgetCtx: {
+      inbox: () => inbox.count,
+      sessions: () => {
+        if (!termClient) termClient = require("./terminal-client.cjs").createTerminalClient();
+        return termClient.list();
+      },
+      inference: () => require("./inference-window.cjs").getInferenceOpsWidget().poll(),
+    },
+  });
+  return canvasHost;
+}
+
+/** Pin an address onto the active board (as the kind it is: pin-item.pinItemFromUrl). */
+async function pinToCanvas(url, title = "") {
+  const result = await getCanvas().pin(String(url || ""), String(title || ""));
+  if (result.ok) pushState();
+  return result.ok ? { ok: true, card: result.pin } : result;
+}
+
+/** A rail row by what the owner typed: its label (case-insensitive) or its key. */
+function rowByName(text) {
+  const want = String(text || "").trim().toLowerCase();
+  if (!want) return null;
+  const rows = railRows();
+  return rows.find((x) => deskLayout.railRowKey(x.row).toLowerCase() === want)
+    || rows.find((x) => String(x.row.label || "").toLowerCase() === want) || null;
+}
+
+/**
+ * The registry's layout commands (command-registry records carrying `layout`), so every
+ * gesture has a palette path. `arg` is the palette's typed text for a `prompt` record.
+ */
+function layoutCommand(verb, arg = "") {
+  const v = String(verb || "");
+  const text = String(arg == null ? "" : arg).trim();
+  if (!win || win.isDestroyed()) createBrowserWindow({ url: null, home: true });
+  if (v.startsWith("preset:")) return layoutAction("preset", v.slice("preset:".length));
+  switch (v) {
+    case "edit": return layoutAction("edit-layout", undefined);
+    case "save": return layoutAction("preset-save", text);
+    case "load": return layoutAction("preset", text);
+    case "export": return exportLayout();
+    case "import": return importLayout();
+    case "reset": return resetLayout();
+    case "side": {
+      // "panel left", "dock top", "rail right"
+      const [pane, side] = text.toLowerCase().split(/[\s:]+/);
+      return layoutAction("pane-side", `${pane || ""}:${side || ""}`);
+    }
+    case "detach": return detachPane(text.toLowerCase());
+    case "attach": return attachPane(text.toLowerCase());
+    case "layers": return layoutAction("layers-visible", undefined);
+    case "rail.pin":
+    case "rail.remove": {
+      const hit = rowByName(text);
+      if (!hit) return { ok: false, error: `no rail row called ${text}` };
+      return railEdit({ op: v === "rail.pin" ? "pin" : "hide", key: deskLayout.railRowKey(hit.row) });
+    }
+    case "rail.restore": return railEdit({ op: "restore" });
+    case "rail.move": {
+      // "Files up" | "Files down" | "Files to Work"
+      const m = /^(.+?)\s+(up|down|to\s+(.+))$/i.exec(text);
+      const hit = m && rowByName(m[1]);
+      if (!hit) return { ok: false, error: "say a row and up, down, or 'to <section>'" };
+      const key = deskLayout.railRowKey(hit.row);
+      if (m[3]) {
+        const section = arrangedSections().map((s) => s.name).find((n) => n.toLowerCase() === m[3].trim().toLowerCase());
+        if (!section) return { ok: false, error: `no section called ${m[3]}` };
+        return railEdit({ op: "move-row", key, section, index: 0 });
+      }
+      return railEdit({ op: "nudge-row", key, by: m[2].toLowerCase() === "up" ? -1 : 1 });
+    }
+    case "canvas.open":
+      return openInternal("canvas", null) ? { ok: true } : { ok: false, error: "the canvas page is missing" };
+    case "canvas.pin-tab": {
+      const view = activeView();
+      if (!view) return { ok: false, error: "no tab to pin" };
+      return pinToCanvas(view.webContents.getURL(), view.webContents.getTitle());
+    }
+    case "canvas.pin-url":
+      return pinToCanvas(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`, "");
+    default:
+      return { ok: false, error: `no layout command ${v}` };
+  }
+}
+
+// ---------------------------------------------------------------- desk commands
+// The browser from OUTSIDE the browser (owner, 2026-11-13: "and integrate with the
+// Alt+Space hot key and whatnot?"): the registry's `browser.*` rows -- the palette, the
+// tray's Browser menu and Alt+Space (browser-verbs.cjs) -- all land in browserCommand.
+// Two rules hold for every verb:
+//   1. it opens the browser when it is closed and brings it forward when it is not;
+//   2. it acts for the OWNER. A page verb (find, print, translate, bookmark, open in
+//      Edge, pause ads here) takes the tab on screen only when that tab is the owner's;
+//      while an agent's tab is showing it is refused, never run on the agent's page.
+
+/** The tab on screen when it is the OWNER's; null while an agent's tab is showing. */
+function ownerActiveTab() {
+  const tab = tabs.get(tabs.active);
+  return tab && tab.by === "you" ? tab : null;
+}
+
+/** The owner's own open tabs (agent and InPrivate tabs left out), for Alt+Space `tab <words>`. */
+function ownerTabs() {
+  if (!win || win.isDestroyed()) return [];
+  return tabList().filter((t) => t.by === "you" && !t.private)
+    .map((t) => ({ id: t.id, url: t.url, title: t.label || t.title, active: t.active }));
+}
+
+/**
+ * Pages the OWNER visited whose title or address holds every word, newest first.
+ * An agent's visits are left out; InPrivate pages were never recorded (wirePage).
+ */
+function ownerHistory(words, limit = 8) {
+  const { matchEntries } = require("./browser-verbs.cjs");
+  const first = String(words || "").trim().split(/\s+/)[0] || "";
+  const out = [];
+  for (let offset = 0; out.length < limit; offset += 1000) {
+    const got = getLibrary().historyPage({ q: first, by: "you", limit: 1000, offset });
+    out.push(...matchEntries(got.entries, words));
+    if (!got.entries.length || offset + 1000 >= got.total) break;
+  }
+  return out.slice(0, limit).map((h) => ({ url: h.url, title: h.title || "", at: h.at }));
+}
+
+/** The owner's bookmarks whose title or address holds every word. */
+function ownerBookmarks(words, limit = 8) {
+  const { matchEntries } = require("./browser-verbs.cjs");
+  return matchEntries(getLibrary().bookmarks(), words).slice(0, limit)
+    .map((b) => ({ url: b.url, title: b.title || "", folder: b.folder || "" }));
+}
+
+/**
+ * What the `browser.*` rows' labels read (command-registry ctx.browser): which way the
+ * sync and ad-blocking switches go, the site on screen, whether it is bookmarked.
+ * A switch nobody has opened this run stays null: reading it here would start the
+ * block-list download and the sync engine from a tray repaint.
+ */
+function commandFacts() {
+  const open = Boolean(win && !win.isDestroyed());
+  const facts = { open, syncOn: null, adsOn: null, siteAllowed: null, host: "", bookmarked: null, closedTabs: closedTabs.list().length };
+  try { if (syncImpl) facts.syncOn = Boolean(syncImpl.status().enabled); } catch { /* unknown */ }
+  try { if (adblockImpl) facts.adsOn = Boolean(adblockImpl.enabled()); } catch { /* unknown */ }
+  const tab = open ? ownerActiveTab() : null;
+  const wc = tab ? pageWc(tab.id) : null;
+  if (!wc) return facts;
+  try {
+    if (adblockImpl) {
+      const shield = shieldFacts(tab.id).facts;
+      if (shield.web) { facts.siteAllowed = Boolean(shield.siteOff); facts.host = shield.host; }
+    }
+    if (!tab.private && tab.kind === "web") facts.bookmarked = Boolean(getLibrary().isBookmarked(wc.getURL()));
+  } catch { /* a closing tab */ }
+  return facts;
+}
+
+/** Verbs another PROGRAM (POST /commands/run: awsh /desk, an agent) may not run for the owner. */
+const OWNER_HAND_ONLY = new Set(["sync", "ads-all", "ads-site", "import-edge"]);
+
+/**
+ * One `browser.*` registry row. `verb` is the row's `browser` field, `arg` the typed
+ * argument (an address, words, "#<tab id>"). Returns a verdict ({ok, ...} | {ok:false,
+ * error}) or a promise of one, so the palette and the launcher can say why not.
+ */
+function browserCommand(verb, arg = "", { askAgent: ask = null, surface = "menu" } = {}) {
+  const v = String(verb || "");
+  const text = String(arg == null ? "" : arg).trim().slice(0, 2048);
+  if (surface === "bridge" && OWNER_HAND_ONLY.has(v)) {
+    return { ok: false, error: `1 browser command refused — "${v}" changes what this browser keeps or sends; run it from the desk itself` };
+  }
+  const wasOpen = Boolean(win && !win.isDestroyed());
+  /** Open the browser (last time's tabs, else the home page), or bring it forward. */
+  const raise = ({ home = true } = {}) => createBrowserWindow({ askAgent: ask, url: null, home });
+  /** The owner's page on screen, or the sentence that says why there is none. */
+  const ownerPage = () => {
+    raise();
+    const tab = ownerActiveTab();
+    if (!tab) return { error: "1 tab on screen is the agent's — switch to one of your own tabs first" };
+    const wc = pageWc(tab.id);
+    if (!wc) return { error: "0 pages open in your active tab — open a page first" };
+    return { tab, id: tab.id, wc, url: wc.getURL(), web: tab.kind === "web" && /^https?:/i.test(wc.getURL()) };
+  };
+  switch (v) {
+    case "go": {
+      if (!text) return { ok: false, error: "0 addresses given — type one (example.com)" };
+      // The OWNER typing aither://<pane> opens that page, as in the address bar.
+      const page = internal.parseInternalUrl(text);
+      if (page) {
+        const link = internal.deepLinkOf(page);
+        return openInternal(page.paneId, link, { askAgent: ask }) ? { ok: true, url: internal.internalUrl(page.paneId, link) }
+          : { ok: false, error: `no Aither page called ${page.paneId}` };
+      }
+      const verdict = policy.sanitizeUrl(text);
+      if (!verdict.ok) return rail.isSearchText(text) ? browserCommand("search", text, { askAgent: ask, surface }) : { ok: false, error: verdict.reason };
+      // Closed: the window opens ON this address (after last time's tabs), no home tab beside it.
+      if (!wasOpen) { createBrowserWindow({ askAgent: ask, url: verdict.url }); return { ok: true, url: verdict.url, tab: tabs.active }; }
+      raise();
+      const opened = openTab("you", verdict.url);
+      return opened.ok ? { ok: true, url: verdict.url, tab: opened.id } : { ok: false, error: opened.error };
+    }
+    case "search":
+      if (!text) return { ok: false, error: "0 words to search for" };
+      if (!wasOpen) raise({ home: false });
+      return openSearch(text) ? { ok: true, url: "aither://search/" } : { ok: false, error: "search is not available" };
+    case "new-tab": {
+      raise({ home: false });
+      const opened = openTab("you", homeUrl());
+      return opened.ok ? { ok: true, tab: opened.id } : { ok: false, error: opened.error };
+    }
+    case "inprivate": {
+      let url = privateHomeUrl();
+      if (text) {
+        const verdict = policy.sanitizeUrl(text);
+        if (!verdict.ok) return { ok: false, error: verdict.reason };
+        url = verdict.url;
+      }
+      raise({ home: false });
+      const opened = openTab("you", url, { private: true });
+      return opened.ok ? { ok: true, tab: opened.id, private: true } : { ok: false, error: opened.error };
+    }
+    case "reopen-closed": {
+      raise();
+      const last = closedTabs.pop();
+      if (!last) return { ok: false, error: "0 closed tabs to reopen" };
+      const opened = openTab("you", last.url);
+      return opened.ok ? { ok: true, url: last.url, tab: opened.id } : { ok: false, error: opened.error };
+    }
+    case "tab": {
+      if (!wasOpen) raise();
+      const mine = ownerTabs();
+      const byId = /^#(\d+)$/.exec(text);
+      const hit = byId ? mine.find((t) => t.id === Number(byId[1]))
+        : require("./browser-verbs.cjs").matchEntries(mine, text)[0];
+      if (!text || !hit) return { ok: false, error: text ? `0 of your open tabs match “${text.slice(0, 60)}”` : "0 tabs named — type words from its title or address" };
+      raise();
+      const shown = showTab(hit.id);
+      return shown.ok ? { ok: true, tab: hit.id, url: hit.url } : { ok: false, error: shown.error || "the tab is gone" };
+    }
+    case "history":
+    case "bookmarks":
+    case "downloads":
+    case "permissions":
+    case "clear-data":
+      return openInternal(v, null, { askAgent: ask }) ? { ok: true, url: `aither://${v}/` } : { ok: false, error: `the ${v} page is missing` };
+    case "passwords": {
+      raise();
+      const { Menu, clipboard } = electron();
+      // Inside the browser's own window, under the toolbar: the pointer may be anywhere.
+      Menu.buildFromTemplate(savedPasswordItems(clipboard).items).popup({ window: win, x: 24, y: chromeHeight() + 8 });
+      return { ok: true };
+    }
+    case "import-edge": {
+      raise();
+      let profiles = [];
+      try { profiles = require("./browser-edge-import.cjs").edgeProfileDirs(); } catch { /* no Edge */ }
+      if (!profiles.length) return { ok: false, error: "0 Edge profiles found on this computer" };
+      const named = text ? profiles.find((p) => String(p.name).toLowerCase() === text.toLowerCase()) : null;
+      if (text && !named) return { ok: false, error: `no Edge profile called ${text.slice(0, 60)} — there is ${profiles.map((p) => p.name).join(", ")}` };
+      const one = named || (profiles.length === 1 ? profiles[0] : null);
+      if (one) return importFromEdgeProfile(one.dir).then((r) => ({ ...r, ok: !r || r.ok !== false }));
+      // Several profiles: the owner picks, as in the ⋯ menu.
+      const { Menu } = electron();
+      Menu.buildFromTemplate(profiles.map((p) => ({ label: `${p.name}: bookmarks and history`, click: () => { void importFromEdgeProfile(p.dir); } })))
+        .popup({ window: win, x: 24, y: chromeHeight() + 8 });
+      return { ok: true, asked: profiles.map((p) => p.name) };
+    }
+    case "import-passwords":
+      raise();
+      // No file chosen is not a failure.
+      return importPasswordsCsv().then((r) => (r && (r.ok || r.error) ? r : { ok: true, imported: 0 }));
+    case "default":
+      raise();
+      return makeDefaultBrowser();
+    case "sync": {
+      raise();
+      const on = !getSync().status().enabled;
+      // The first sync is a network round trip: the tab's notice reports it, the caller is not kept waiting.
+      void setSyncEnabled(on).catch(() => {});
+      return { ok: true, enabled: on };
+    }
+    case "ads-all": {
+      raise();
+      const pausing = getAdblock().enabled();
+      const tab = ownerActiveTab();
+      shieldAction("pause-all", pausing, tab ? tab.id : null);
+      return { ok: true, blocking: !pausing };
+    }
+    case "ads-site": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      if (!p.web) return { ok: false, error: "0 web pages on screen — ad blocking pauses per site, on a web page" };
+      const pausing = !shieldFacts(p.id).facts.siteOff;
+      const done = shieldAction("pause-site", pausing, p.id);
+      return done.ok ? { ok: true, paused: pausing, host: shieldFacts(p.id).facts.host } : { ok: false, error: "ad blocking could not be changed for this page" };
+    }
+    case "translate": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      if (!p.web) return { ok: false, error: "0 web pages on screen — only a web page is translated" };
+      // A workspace app whose policy forbids capturing it: said, audited, and the caller is told.
+      if (getWorkspace().blocks(p.id, "capture")) return { ok: false, error: "1 page not translated — your workspace policy turns that off on this site" };
+      void translatePage(p.id);
+      return { ok: true };
+    }
+    case "find": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      if (!text) return runBrowserAction("find", null, p.id) ? { ok: true } : { ok: false, error: "the browser's toolbar is not up yet" };
+      const q = text.slice(0, 500);
+      findResults.set(p.id, { text: q, matches: 0, active: 0 });
+      p.wc.findInPage(q);
+      // The find bar opens ON these words (true: replace what it held), so Enter / F3 carry on.
+      win.webContents.send("desk:browser-find-open", q, true);
+      return { ok: true, text: q };
+    }
+    case "print": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      if (getWorkspace().blocks(p.id, "print")) return { ok: false, error: "1 page not printed — your workspace policy turns printing off on this site" };
+      runBrowserAction("print", null, p.id);
+      return { ok: true };
+    }
+    case "open-edge": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      return openInEdge(p.url);
+    }
+    case "bookmark": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      if (p.tab.private) return { ok: false, error: "1 InPrivate page is not bookmarked — open it in an ordinary tab first" };
+      if (!p.web) return { ok: false, error: "0 web pages on screen — only a web page is bookmarked" };
+      runBrowserAction("bookmark", null, p.id);
+      return { ok: true, bookmarked: Boolean(getLibrary().isBookmarked(p.url)), url: p.url };
+    }
+    case "extension": {
+      raise();
+      let url = text;
+      if (!url) {
+        const tab = ownerActiveTab();
+        const wc = tab ? pageWc(tab.id) : null;
+        url = wc ? wc.getURL() : "";
+      }
+      if (!require("./browser-webstore.cjs").parseExtensionId(url).ok) {
+        return { ok: false, error: "1 address is not a Chrome Web Store or Edge Add-ons extension page" };
+      }
+      return installExtensionFrom(tabs.active, url);
+    }
+    default:
+      return { ok: false, error: `no browser command ${v}` };
+  }
+}
+
+
 function setAgentsHost(host) {
   const ok = host && typeof host.view === "function" && typeof host.check === "function"
     && typeof host.answer === "function";
@@ -2537,6 +6462,14 @@ module.exports = {
   setInboxBadge,
   ISOLATED_WORLD_ID,
   KEY_CODES,
+  /** Dock-in slice 2 (smoke/tests): the split pane, the picker and its keys. */
+  bringInMenu,
+  closeSplit,
+  dockDrop,
+  isBringInKey,
+  newTabMenu,
+  openSplit,
+  __splitPaneUrlForTest: () => (alive(splitView) ? splitView.webContents.getURL() : null),
   PARTITION,
   /** The agent's own session (BROWSER-M3); its tabs ride this unless a site is allowed. */
   AGENT_PARTITION,
@@ -2550,6 +6483,62 @@ module.exports = {
   getState: () => state(),
   getLibrary,
   screenPage,
+  /** Edge parity: a standard key / menu action by name, a notice button, and their pieces (smoke). */
+  runBrowserAction,
+  noticeAction,
+  browserMenu,
+  /** The toolbar shield's menu choices (pause-site / pause-all), and page translation (smoke). */
+  shieldAction,
+  translatePage,
+  __setTranslateBackendsForTest: (list) => { translateBackendsOverride = Array.isArray(list) ? list : null; },
+  getAdblock,
+  getVault,
+  /** The library pages and site permissions (browser-parity-smoke.cjs). */
+  getPermissionStore,
+  getDownloads: () => downloads,
+  BOOKMARKS_BAR_HEIGHT,
+  __setConfirmForTest: (fn) => { confirmImpl = typeof fn === "function" ? fn : null; },
+  /** The high-impact gaps (browser-parity-smoke.cjs): app links, page full screen, the discard pass. */
+  getExternalStore,
+  __setOpenExternalForTest: (fn) => { openExternalImpl = typeof fn === "function" ? fn : null; },
+  __viewBoundsForTest: (id) => { const v = viewOf(id); return v ? v.getBounds() : null; },
+  __fullscreenTabForTest: () => htmlFullscreen.tab(),
+  /** The exit hint: where it is, whether it is the top child view, and the document main wrote for it. */
+  __fullscreenHintForTest: () => {
+    if (!hintView || !win || win.isDestroyed()) return null;
+    const children = win.contentView.children;
+    return { bounds: hintView.getBounds(), top: children[children.length - 1] === hintView, url: hintView.webContents.getURL(),
+      ownSession: hintView.webContents.session !== electron().session.fromPartition(PARTITION) };
+  },
+  __tabFactsForTest: () => tabFacts(),
+  __pageHasUnsavedForTest: (id) => pageHasUnsaved(id),
+  /** What a tab's page is answered for a permission, through the handlers its session has (smoke). */
+  __permissionForTest: (id, permission) => {
+    const wc = pageWc(id);
+    if (!wc) return null;
+    const grant = { owner: wc.session === electron().session.fromPartition(PARTITION) };
+    let request = null;
+    requestPermission(wc, permission, (ok) => { request = ok; }, { requestingUrl: wc.getURL(), isMainFrame: true }, grant);
+    return { owner: grant.owner, request, check: checkPermission(wc, permission, wc.getURL(), { requestingUrl: wc.getURL(), isMainFrame: true }, grant) };
+  },
+  /** Sync (browser-sync.cjs): the engine, and for the smoke its menu rows and a local store. */
+  getSync,
+  __syncMenuForTest: () => syncMenuItems(),
+  __syncOriginForTest: () => syncOrigin(),
+  __syncTabsForTest: () => syncTabs(),
+  /** The managed browser (browser-workspace.cjs); the seam is the smoke's test key and policy source. */
+  getWorkspace,
+  __workspaceSeamForTest: async (seam) => {
+    if (workspaceImpl) await workspaceImpl.dispose();
+    workspaceImpl = null;
+    workspaceSeam = seam || null;
+    const ws = getWorkspace();
+    if (win && !win.isDestroyed()) ws.start();
+    return ws;
+  },
+  __syncSeamForTest: (seam) => { if (syncImpl) syncImpl.stop(); syncImpl = null; syncSeam = seam || null; return getSync(); },
+  __pageForTest: (id) => pageWc(id),
+  __noticeForTest: (id) => tabNotices.get(id) || null,
   /** The owner clicking a tab, for browser-tabs-smoke.cjs (the strip's IPC needs a real sender). */
   __showTabForTest: (id) => showTab(id),
   /**
@@ -2586,7 +6575,20 @@ module.exports = {
   /** A tab the owner opened, for overlay-smoke.cjs. */
   __openTabForTest: (url) => openTab("you", url),
   isBrowserWindowOpen,
+  /** The registry's layout.* / rail.* / canvas.* commands (command-registry `layout` field). */
+  layoutCommand,
+  /** The registry's browser.* commands (command-registry `browser` field), their labels' facts, and Alt+Space's lists. */
+  browserCommand,
+  commandFacts,
+  ownerTabs,
+  ownerHistory,
+  ownerBookmarks,
+  /** "Pin to canvas" from outside the browser (main, a phone): an address onto the active board. */
+  pinToCanvas,
+  /** The floating board window's pin door (boards-window.cjs): same cards, same live views. */
+  pinHost: () => getCanvas().boardWindow,
   scriptFor,
+  editorKept,
   setAgentsHost,
   setShellHost,
   refreshShell,

@@ -9,6 +9,9 @@
  * silent cancel reads as "the download button is broken"). Every download is now
  * a row: in progress, done (with where it went), failed, or "blocked: an agent
  * started it", which the owner can redo themselves by taking over.
+ *
+ * aither://downloads is the same shelf as a page: a row can be removed from the list
+ * (the file stays on disk), and a download that did not finish can be asked for again.
  */
 
 const MAX_ROWS = 50;
@@ -57,7 +60,21 @@ function createDownloads({ now = () => Date.now() } = {}) {
     return row ? { ...row } : null;
   }
 
-  return { clearFinished, get, list, start, update };
+  /** Take one row off the list (never the file). A download still running stays. */
+  function remove(id) {
+    const row = rows.find((r) => r.id === id);
+    if (!row || row.state === "progressing") return false;
+    rows = rows.filter((r) => r.id !== id);
+    return true;
+  }
+
+  /** Can this row be asked for again? Anything with a web address that is not done or running. */
+  function retryable(id) {
+    const row = rows.find((r) => r.id === id);
+    return Boolean(row && /^https?:\/\//i.test(row.url) && ["cancelled", "interrupted", "blocked"].includes(row.state));
+  }
+
+  return { clearFinished, get, list, remove, retryable, start, update };
 }
 
 module.exports = { MAX_ROWS, STATES, createDownloads };

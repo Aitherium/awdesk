@@ -83,6 +83,24 @@ function setChangeHook(fn) {
 
 function notifyChange() {
   try { changeHook(); } catch { /* a tray refresh must not fail a board */ }
+  notifyContent();
+}
+
+/**
+ * Listeners on board CONTENT (aither://canvas, browser-canvas.cjs): told the id of a
+ * board that changed, from its window or from the canvas, so both views of the one
+ * document stay current. Separate from changeHook, which rebuilds the tray.
+ */
+const contentListeners = new Set();
+function onBoardsChanged(fn) {
+  if (typeof fn !== "function") return () => {};
+  contentListeners.add(fn);
+  return () => contentListeners.delete(fn);
+}
+function notifyContent(id = null) {
+  for (const fn of contentListeners) {
+    try { fn(id); } catch { /* one listener never blocks another */ }
+  }
 }
 
 function enqueueUpload(item) {
@@ -156,11 +174,16 @@ function windowFor(board) {
   win.on("moved", () => queueBoundsSave(board, win));
   win.on("resized", () => queueBoundsSave(board, win));
   win.on("closed", () => {
+    // The CURRENT document, not `board`: every save replaces entry.board (applySave
+    // returns a new object), so the creation-time object here is stale -- persisting
+    // it wrote the board back as it was when the window opened (its later drawing,
+    // pins and pan lost on close; caught by the windowView smoke, 2026-11-07).
+    const current = (entries.get(board.id) || {}).board || board;
     entries.delete(board.id);
     if (quitting) return; // a restart must find the board open
-    board.open = false;
-    board.visible = false;
-    persist(board);
+    current.open = false;
+    current.visible = false;
+    persist(current);
     notifyChange();
   });
   void win.loadFile(path.join(__dirname, "board.html"), { query: { kind: board.kind, id: board.id } });
@@ -174,15 +197,17 @@ function queueBoundsSave(board, win) {
   entry.moveTimer = setTimeout(() => {
     if (!win.isDestroyed()) {
       const b = win.getBounds();
-      board.bounds = { x: b.x, y: b.y, width: b.width, height: b.height };
-      persist(board);
+      // The current document (see the closed handler): never a stale copy.
+      const current = entry.board;
+      current.bounds = { x: b.x, y: b.y, width: b.width, height: b.height };
+      persist(current);
     }
   }, 300);
   if (entry.moveTimer.unref) entry.moveTimer.unref();
 }
 
 /** Open a NEW note/board (or focus an existing one). `at` is a screen point. */
-function create(kind, { at, restored = null } = {}) {
+function create(kind, { at, restored = null, text = "", title = "" } = {}) {
   const k = kind === "note" ? "note" : "board";
   if (restored) {
     const board = core.normalizeBoard(restored);
@@ -199,7 +224,9 @@ function create(kind, { at, restored = null } = {}) {
   const point = at || electron().screen.getCursorScreenPoint();
   const display = electron().screen.getDisplayNearestPoint(point);
   const box = core.placeAt(point, core.defaultSize(k), display.workArea);
-  const board = core.newBoard({ kind: k, date: now, title: uniqueTitleFor(k, now), bounds: box });
+  const board = core.newBoard({ kind: k, date: now, title: title ? String(title).slice(0, 80) : uniqueTitleFor(k, now), bounds: box });
+  if (k === "note" && text) board.text = String(text).slice(0, 20000); // "Save to a note" (assist-engine)
+  try { if (typeof workspaceOf === "function") board.workspace = String(workspaceOf() || "").slice(0, 64) || undefined; } catch { /* untagged */ }
   const win = windowFor(board);
   entries.set(board.id, { board, win, lastThumbAt: 0, lastSyncAt: 0, moveTimer: null });
   persist(board);
@@ -288,6 +315,12 @@ async function syncBoard(entry, png, { force = false } = {}) {
   if (!bytes) bytes = await captureThumbnail(entry);
   entry.lastSyncAt = now;
   const board = entry.board;
+  // A board syncs only into the workspace it was made in (owner-hard-workspace-isolation).
+  if (board.workspace && typeof workspaceOf === "function") {
+    let here;
+    try { here = String(workspaceOf() || ""); } catch { here = ""; }
+    if (here && here !== board.workspace) return { ok: false, reason: `made in workspace "${board.workspace}", the desk is in "${here}"` };
+  }
   if (board.kind === "note" && !bytes) {
     // A note's markdown is still worth syncing without a picture.
     const md = core.syncItems(board, { png: null });
@@ -302,6 +335,33 @@ async function syncBoard(entry, png, { force = false } = {}) {
 }
 
 // ── export ──────────────────────────────────────────────────────────────────
+
+/** toolkit.cjs: the active workspace key, stamped on every new board. */
+let workspaceOf = null;
+function setWorkspaceOf(fn) {
+  workspaceOf = typeof fn === "function" ? fn : null;
+}
+
+/** "PDF": the PNG the page rendered, laid on one landscape page by a hidden window. */
+async function exportPdf(dataUrl) {
+  const folder = resolveDir();
+  if (!decodePng(dataUrl)) return { ok: false, reason: "the export was not a PNG" };
+  if (!folder) return { ok: false, reason: "no writable boards folder" };
+  const { BrowserWindow } = electron();
+  const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, javascript: false } });
+  try {
+    const html = `<!doctype html><meta charset="utf-8"><style>@page{size:A4 landscape;margin:10mm}html,body{margin:0}img{width:100%;height:auto}</style><img src="${dataUrl}">`;
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    const pdf = await win.webContents.printToPDF({ landscape: true, printBackground: true, pageSize: "A4" });
+    const file = core.exportFile(folder, `export-${Date.now()}`, new Date()).replace(/\.png$/i, ".pdf");
+    fs.writeFileSync(file, pdf);
+    return { ok: true, path: file, name: path.basename(file) };
+  } catch (error) {
+    return { ok: false, reason: `could not make the PDF: ${String((error && error.message) || error).slice(0, 160)}` };
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
+}
 
 function exportPng(dataUrl) {
   const folder = resolveDir();
@@ -394,6 +454,7 @@ function handlers() {
       if (!entry) return { ok: false, reason: "not a board window" };
       entry.board = core.applySave(entry.board, patch);
       const saved = persist(entry.board);
+      notifyContent(entry.board.id);
       entry.win.setTitle(entry.board.title);
       // The full-size PNG rides an occasional save; a note's thumbnail is captured.
       const png = patch && typeof patch.png === "string" ? patch.png : null;
@@ -437,13 +498,51 @@ function handlers() {
         return { ok: false, reason: String((error && error.message) || error).slice(0, 160) };
       }
     },
+    // ── the board's pinned cards (the same renderer and host as aither://canvas) ──
+    "board:pins": (event) => {
+      const entry = entryFor(event);
+      if (!entry) return { ok: false, reason: "not a board window" };
+      return pinHost().state(event.sender, entry.board.id, hostFor(entry));
+    },
+    "board:pin-op": (event, op) => {
+      const entry = entryFor(event);
+      if (!entry) return { ok: false, reason: "not a board window" };
+      return pinHost().op(entry.board.id, op);
+    },
+    "board:pin-views": (event, data) => {
+      const entry = entryFor(event);
+      if (!entry) return { ok: false, reason: "not a board window" };
+      return pinHost().views(event.sender, entry.board.id, hostFor(entry), data);
+    },
+    "board:pin-widget": (event, id) => (entryFor(event) ? pinHost().widget(id) : { ok: false, reason: "not a board window" }),
+    "board:pin-open": (event, id) => {
+      const entry = entryFor(event);
+      if (!entry) return { ok: false, reason: "not a board window" };
+      return pinHost().open(entry.board.id, id);
+    },
     "board:export": (event, dataUrl) => {
       const entry = entryFor(event);
       if (!entry) return { ok: false, reason: "not a board window" };
       const verdict = exportPng(dataUrl);
       return verdict;
     },
+    "board:export-pdf": (event, dataUrl) => {
+      const entry = entryFor(event);
+      if (!entry) return { ok: false, reason: "not a board window" };
+      return exportPdf(String(dataUrl || ""));
+    },
   };
+}
+
+/** The canvas host's board-window door (browser-window.cjs), required lazily: no cycle at load. */
+function pinHost() {
+  return require("./browser-window.cjs").pinHost();
+}
+
+/** Where a board window's live cards go: its own window, from its content origin. */
+function hostFor(entry) {
+  return () => (entry.win.isDestroyed() ? null
+    : { window: entry.win, origin: { x: 0, y: 0 }, shown: entry.win.isVisible() && !entry.win.isMinimized() });
 }
 
 function ensureIpc() {
@@ -456,15 +555,136 @@ function ensureIpc() {
   } catch { /* no app (probe teardown): the flag stays false */ }
 }
 
+// ── the canvas's door onto the same store (aither://canvas) ──────────────────
+// The canvas page reads and edits boards WITHOUT a floating window: an open window's
+// in-memory board wins (it is the newest), otherwise the file in ~/Aither Boards is.
+
+/** Every listed whiteboard (kind "board", open), newest first: a window's copy wins. */
+function allBoards() {
+  const byId = new Map(loadBoards(resolveDir()).map((b) => [b.id, b]));
+  for (const entry of entries.values()) byId.set(entry.board.id, entry.board);
+  return core.listedBoards([...byId.values()]).filter((b) => b.kind === "board");
+}
+
+function getBoard(id) {
+  const entry = entries.get(String(id || ""));
+  if (entry) return entry.board;
+  return allBoards().find((b) => b.id === String(id || "")) || null;
+}
+
+/**
+ * Save a canvas edit to board `id`: the same applySave a window save goes through, so
+ * neither half can drop the other's fields. A board with an open window is updated in
+ * place and its window is told to reload (board:changed).
+ */
+function updateBoard(id, patch) {
+  const current = getBoard(id);
+  if (!current) return { ok: false, reason: "no such board" };
+  const next = core.applySave(current, patch);
+  const entry = entries.get(next.id);
+  if (entry) {
+    entry.board = next;
+    try { if (!entry.win.isDestroyed()) entry.win.webContents.send("board:changed", { ...next }); } catch { /* closing */ }
+  }
+  const saved = persist(next);
+  notifyContent(next.id);
+  return saved.ok || !resolveDir() ? { ok: true, board: next, saved: saved.ok } : { ...saved, board: next };
+}
+
+/**
+ * Record "the desk and AitherOne agreed at this version" on a board's link WITHOUT
+ * bumping updatedAt (a bump would read as a desk edit on the next sync).
+ */
+function stampLink(id) {
+  const board = getBoard(id);
+  if (!board || !board.link || !board.link.aitherone) return { ok: false, reason: "that board is not linked" };
+  board.link = { aitherone: { ...board.link.aitherone, localUpdatedAt: board.updatedAt } };
+  const entry = entries.get(board.id);
+  if (entry) entry.board = board;
+  persist(board);
+  return { ok: true, board };
+}
+
+/** A new whiteboard for the canvas: on the Boards list (put away), no window opened. */
+function createCanvasBoard(title) {
+  const now = new Date();
+  const board = core.newBoard({ kind: "board", date: now,
+    title: String(title || "").trim().slice(0, 160) || uniqueTitleFor("board", now) });
+  board.visible = false;
+  persist(board);
+  notifyChange();
+  return { ok: true, board };
+}
+
+/** Take a board off the list (open:false, the file stays): the canvas's "Delete". */
+function closeBoard(id) {
+  const entry = entries.get(String(id || ""));
+  if (entry && !entry.win.isDestroyed()) {
+    entry.board.open = false;
+    entry.board.visible = false;
+    persist(entry.board);
+    entry.win.close();
+    notifyChange();
+    return { ok: true };
+  }
+  const board = getBoard(id);
+  if (!board) return { ok: false, reason: "no such board" };
+  persist({ ...board, open: false, visible: false });
+  notifyChange();
+  return { ok: true };
+}
+
+/** Float a board in its own window (the board window stays the floating view). */
+function float(id) {
+  if (entries.has(String(id || ""))) return show(id);
+  const board = getBoard(id);
+  if (!board) return { ok: false, reason: "no such board" };
+  return create("board", { restored: { ...board, visible: true } });
+}
+
 /** Test/probe seam: the open entries, read-only copy. */
 function list() {
   return [...entries.values()].map((entry) => ({ ...entry.board }));
 }
 
+/**
+ * Put one image on "the current board": the most recently touched whiteboard that
+ * is on screen (else any open one), shown at the cursor; a desk with no whiteboard
+ * gets a new one. The renderer adds it (it owns the item model) and saves as for a
+ * paste. Used by the GIF picker's Shift+click (2026-11-07).
+ *
+ * @param {{dataUrl: string, name?: string, width?: number, height?: number}} img
+ * @returns {{ok: true, boardId: string, created: boolean} | {ok: false, reason: string}}
+ */
+function addImageToCurrentBoard(img) {
+  if (!img || !/^data:image\//.test(String(img.dataUrl || ""))) return { ok: false, reason: "not an image" };
+  const boards = core.sortBoards([...entries.values()].map((e) => e.board))
+    .filter((b) => b.kind === "board" && b.open !== false);
+  const target = boards.find((b) => b.visible !== false) || boards[0] || null;
+  let created = false;
+  let entry = target ? entries.get(target.id) : null;
+  if (!entry) {
+    const made = createBoard();
+    if (!made || !made.ok) return { ok: false, reason: (made && made.reason) || "no board could be opened" };
+    entry = entries.get(made.board.id);
+    created = true;
+  } else if (entry.board.visible === false) {
+    show(entry.board.id);
+  }
+  if (!entry || !entry.win || entry.win.isDestroyed()) return { ok: false, reason: "the board window closed" };
+  const payload = { dataUrl: img.dataUrl, name: img.name, width: img.width, height: img.height };
+  const deliver = () => { try { entry.win.webContents.send("board:add-image", payload); } catch { /* closing */ } };
+  // A brand-new board has not booted its page yet: deliver after it loads.
+  if (created || entry.win.webContents.isLoading()) entry.win.webContents.once("did-finish-load", () => setTimeout(deliver, 150));
+  else deliver();
+  return { ok: true, boardId: entry.board.id, created };
+}
+
 module.exports = {
   ensureIpc, setEnqueue, setChangeHook, setBoardsDir, resolveDir, loadBoards, persist,
   createNote, createBoard, create, show, putAway, restoreOpenBoards, openList, traySubmenu,
-  exportPng, syncBoard, list,
+  exportPng, exportPdf, setWorkspaceOf, syncBoard, list, addImageToCurrentBoard,
+  allBoards, getBoard, updateBoard, stampLink, createCanvasBoard, closeBoard, float, onBoardsChanged,
   // exposed for the probe
   __entries: entries,
 };

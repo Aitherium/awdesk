@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' file:; img-src data: blob:">
+<title>Sketch</title>
+<style>
+  :root { --bg:#14171c; --bar:#171b21; --edge:#2b323c; --ink:#e6e8eb; --dim:#8a93a0; --acc:#7cc4ff; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); font:12px "Segoe UI", system-ui, sans-serif; overflow:hidden; user-select:none; }
+  body { display:grid; grid-template-rows:32px 1fr 34px 22px; height:100vh; }
+  button, select, input { font:inherit; color:var(--ink); background:#1d222a; border:1px solid var(--edge); border-radius:4px; }
+  button { padding:3px 8px; cursor:pointer; -webkit-app-region:no-drag; }
+  button:hover { border-color:var(--acc); }
+  button.on { background:#22384d; border-color:var(--acc); color:#fff; }
+  #top { display:flex; align-items:center; gap:8px; padding:0 8px; background:var(--bar); border-bottom:1px solid var(--edge); -webkit-app-region:drag; }
+  #top b { font-weight:600; letter-spacing:.3px; }
+  #top .sp { flex:1; }
+  #top button, #top label { -webkit-app-region:no-drag; }
+  #main { display:grid; grid-template-columns:132px 1fr 176px; min-height:0; }
+  #tools, #side { background:var(--bar); padding:8px; display:flex; flex-direction:column; gap:6px; overflow:auto; }
+  #tools { border-right:1px solid var(--edge); }
+  #side { border-left:1px solid var(--edge); }
+  #tools .tool { text-align:left; }
+  .lbl { color:var(--dim); font-size:11px; margin-top:4px; }
+  input[type=range] { width:100%; accent-color:var(--acc); background:none; border:0; }
+  input[type=color] { width:100%; height:26px; padding:1px; }
+  .sw { display:grid; grid-template-columns:repeat(5, 1fr); gap:3px; }
+  .sw i { height:16px; border-radius:3px; border:1px solid var(--edge); cursor:pointer; }
+  #stage { position:relative; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  #view { max-width:calc(100% - 16px); max-height:calc(100% - 16px); touch-action:none; cursor:crosshair; box-shadow:0 0 0 1px var(--edge); }
+  #view.paper { background:#fff; }
+  #view.checker { background:repeating-conic-gradient(#2a2f37 0 25%, #20242b 0 50%) 0 0/16px 16px; }
+  #layers { display:flex; flex-direction:column; gap:3px; }
+  .ly { display:grid; grid-template-columns:22px 1fr; gap:4px; align-items:center; padding:3px; border:1px solid var(--edge); border-radius:4px; cursor:pointer; }
+  .ly.act { border-color:var(--acc); background:#1c2a38; }
+  .ly .eye { padding:0; width:22px; height:20px; font-size:11px; }
+  .ly .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ly input.ren { width:100%; padding:1px 3px; }
+  .row { display:flex; gap:4px; flex-wrap:wrap; }
+  #bar { display:flex; align-items:center; gap:6px; padding:0 8px; background:var(--bar); border-top:1px solid var(--edge); }
+  #status { padding:2px 8px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; border-top:1px solid var(--edge); }
+  #status.bad { color:#ff9b9b; } #status.good { color:#9be3a8; }
+</style>
+</head>
+<body>
+<div id="top"><b>Sketch</b><span id="ws" class="lbl"></span><span class="sp"></span>
+  <button id="paper" title="Paper: white / transparent">Paper: white</button>
+  <button id="undo" title="Ctrl+Z">Undo</button><button id="redo" title="Ctrl+Y">Redo</button>
+  <button id="close" title="Esc">&#x2715;</button></div>
+<div id="main">
+  <div id="tools">
+    <button class="tool" data-t="brush">Brush <span class="lbl">B</span></button>
+    <button class="tool" data-t="marker">Marker <span class="lbl">M</span></button>
+    <button class="tool" data-t="airbrush">Airbrush <span class="lbl">A</span></button>
+    <button class="tool" data-t="eraser">Eraser <span class="lbl">E</span></button>
+    <button class="tool" data-t="fill">Fill <span class="lbl">G</span></button>
+    <button class="tool" data-t="picker">Eyedropper <span class="lbl">I</span></button>
+    <div class="lbl">Size <span id="sizeV"></span></div><input id="size" type="range" min="1" max="200" value="8">
+    <div class="lbl">Opacity <span id="opV"></span></div><input id="op" type="range" min="1" max="100" value="100">
+    <div class="lbl">Fill tolerance <span id="tolV"></span></div><input id="tol" type="range" min="0" max="255" value="32">
+    <div class="lbl">Colour</div><input id="color" type="color" value="#1b1f24">
+    <div class="sw" id="swatches"></div>
+    <div class="lbl">Recent</div><div class="sw" id="recent"></div>
+  </div>
+  <div id="stage"><canvas id="view"></canvas></div>
+  <div id="side">
+    <div class="lbl">Layers</div>
+    <div class="row"><button id="lAdd" title="New layer">+</button><button id="lDel" title="Delete layer">&minus;</button>
+      <button id="lUp" title="Move up">&uarr;</button><button id="lDown" title="Move down">&darr;</button></div>
+    <div class="lbl">Layer opacity <span id="lOpV"></span></div><input id="lOp" type="range" min="0" max="100" value="100">
+    <div id="layers"></div>
+  </div>
+</div>
+<div id="bar">
+  <button id="save" title="Ctrl+S">Save PNG</button><button id="copy" title="Ctrl+C">Copy</button>
+  <select id="send"><option value="">Send to&hellip;</option></select>
+  <button id="ask">Ask Aither</button><span class="sp" style="flex:1"></span>
+  <span class="lbl">Ctrl+V pastes an image as a layer</span>
+</div>
+<div id="status">Ready.</div>
+<script src="sketch-core.cjs"></script>
+<script>
+(() => {
+  "use strict";
+  const S = window.sketchCore;
+  const tk = window.toolkit || null;
+  const $ = (id) => document.getElementById(id);
+  const view = $("view"), vctx = view.getContext("2d", { willReadFrequently: true });
+  const SWATCHES = ["#1b1f24", "#ffffff", "#e5484d", "#f76b15", "#ffc53d", "#46a758", "#12a594", "#0090ff", "#8e4ec6", "#d6409f"];
+  const state = { tool: "brush", size: 8, opacity: 1, tol: 32, color: "#1b1f24", recent: [], paper: true, stroke: null };
+  let doc = S.createDoc({ width: 1200, height: 800 });
+  view.width = doc.width; view.height = doc.height;
+
+  // ---------- status ----------
+  function status(text, kind) { const el = $("status"); el.textContent = text; el.title = text; el.className = kind || ""; }
+
+  // ---------- layer canvases (one offscreen canvas per layer) ----------
+  const layerCv = new Map();   // id -> {cv, ctx, n (ops rendered), img}
+  const strokeCv = document.createElement("canvas"), sctx = strokeCv.getContext("2d");
+  const scratch = document.createElement("canvas"), xctx = scratch.getContext("2d");
+  strokeCv.width = scratch.width = doc.width; strokeCv.height = scratch.height = doc.height;
+
+  function mkCanvas() { const cv = document.createElement("canvas"); cv.width = doc.width; cv.height = doc.height; return cv; }
+
+  function entry(layer, img) {
+    let e = layerCv.get(layer.id);
+    if (!e) {
+      const cv = mkCanvas();
+      e = { cv, ctx: cv.getContext("2d", { willReadFrequently: true }), n: -1, img: img || null };
+      layerCv.set(layer.id, e);
+    }
+    if (layer.image && !e.img) {
+      e.img = new Image();
+      e.img.onload = () => { e.n = -1; sync(); };
+      e.img.src = layer.image;
+    }
+    return e;
+  }
+
+  /** Replay a layer from scratch: picture first, then every op. Only called on undo/redo/load. */
+  function rebuild(layer, e) {
+    e.ctx.clearRect(0, 0, doc.width, doc.height);
+    if (e.img && e.img.complete && e.img.naturalWidth) {
+      const k = Math.min(1, doc.width / e.img.naturalWidth, doc.height / e.img.naturalHeight);
+      const w = e.img.naturalWidth * k, h = e.img.naturalHeight * k;
+      e.ctx.drawImage(e.img, (doc.width - w) / 2, (doc.height - h) / 2, w, h);
+    }
+    for (const op of layer.ops) commitOp(op, e.ctx);
+    e.n = layer.ops.length;
+  }
+
+  /** Bring every layer canvas in line with the doc, drop canvases of gone layers, render once. */
+  function sync() {
+    const ids = new Set(doc.layers.map((l) => l.id));
+    for (const id of layerCv.keys()) if (!ids.has(id)) layerCv.delete(id);
+    for (const l of doc.layers) { const e = entry(l); if (e.n !== l.ops.length) rebuild(l, e); }
+    renderLayers(); requestRender();
+  }
+
+  // ---------- on-demand rendering: one rAF per burst of changes, never a loop ----------
+  let rafPending = false;
+  function requestRender() { if (!rafPending) { rafPending = true; requestAnimationFrame(render); } }
+  function composeActive(target, base, op) {
+    // a layer's pixels + the stroke in flight, through the op's blend
+    target.drawImage(base, 0, 0);
+    target.save();
+    target.globalAlpha = op.tool === "airbrush" ? 1 : op.opacity;
+    target.globalCompositeOperation = op.tool === "eraser" ? "destination-out" : op.tool === "marker" ? "multiply" : "source-over";
+    target.drawImage(strokeCv, 0, 0);
+    target.restore();
+  }
+  function flatten(ctx, withPaper) {
+    ctx.clearRect(0, 0, doc.width, doc.height);
+    if (withPaper) { ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, doc.width, doc.height); }
+    for (const l of doc.layers) {
+      if (!l.visible) continue;
+      const e = layerCv.get(l.id); if (!e) continue;
+      let src = e.cv;
+      if (state.stroke && l.id === doc.active) {
+        xctx.clearRect(0, 0, doc.width, doc.height); composeActive(xctx, e.cv, state.stroke); src = scratch;
+      }
+      ctx.globalAlpha = l.opacity; ctx.drawImage(src, 0, 0); ctx.globalAlpha = 1;
+    }
+  }
+  function render() { rafPending = false; flatten(vctx, false); }
+
+  // ---------- painting ----------
+  function rng(seed) { let s = seed >>> 0 || 1; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+  function widthAt(op, p) { return Math.max(0.5, op.size * (p == null ? 1 : p)); }
+
+  /** Draw points [from..] of op onto ctx (the stroke canvas), quadratic midpoints for smoothness. */
+  function drawSegment(ctx, op, from, rand) {
+    const pts = op.points;
+    ctx.fillStyle = ctx.strokeStyle = op.color;
+    for (let i = Math.max(from, 0); i < pts.length; i += 1) {
+      const p = pts[i];
+      if (op.tool === "airbrush") {
+        const r = widthAt(op, p.p), n = Math.max(4, Math.round(r * 0.6));
+        ctx.globalAlpha = 0.18 * op.opacity;
+        for (let k = 0; k < n; k += 1) {
+          const a = rand() * Math.PI * 2, d = Math.sqrt(rand()) * r;
+          ctx.fillRect(p.x + Math.cos(a) * d, p.y + Math.sin(a) * d, 1.4, 1.4);
+        }
+        ctx.globalAlpha = 1;
+        continue;
+      }
+      ctx.lineCap = op.tool === "marker" ? "square" : "round"; ctx.lineJoin = op.tool === "marker" ? "bevel" : "round";
+      ctx.lineWidth = op.tool === "marker" ? op.size : widthAt(op, p.p);
+      if (i === 0) {
+        ctx.beginPath(); ctx.arc(p.x, p.y, ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill(); continue;
+      }
+      const a = pts[i - 1], b = i >= 2 ? pts[i - 2] : a;
+      const m0x = (b.x + a.x) / 2, m0y = (b.y + a.y) / 2, m1x = (a.x + p.x) / 2, m1y = (a.y + p.y) / 2;
+      ctx.beginPath(); ctx.moveTo(i >= 2 ? m0x : a.x, i >= 2 ? m0y : a.y);
+      ctx.quadraticCurveTo(a.x, a.y, m1x, m1y); ctx.stroke();
+    }
+  }
+
+  /** Scanline flood fill of the target layer's pixels into the stroke canvas (mask in op colour). */
+  function floodFill(op, layerCtx) {
+    const W = doc.width, H = doc.height, x0 = Math.floor(op.points[0].x), y0 = Math.floor(op.points[0].y);
+    if (x0 < 0 || y0 < 0 || x0 >= W || y0 >= H) return;
+    const src = layerCtx.getImageData(0, 0, W, H).data, out = sctx.createImageData(W, H), dst = out.data;
+    const i0 = (y0 * W + x0) * 4, t = [src[i0], src[i0 + 1], src[i0 + 2], src[i0 + 3]], tol = op.tolerance;
+    const col = [parseInt(op.color.slice(1, 3), 16), parseInt(op.color.slice(3, 5), 16), parseInt(op.color.slice(5, 7), 16)];
+    const seen = new Uint8Array(W * H);
+    const match = (j) => { const k = j * 4; return Math.abs(src[k] - t[0]) <= tol && Math.abs(src[k + 1] - t[1]) <= tol && Math.abs(src[k + 2] - t[2]) <= tol && Math.abs(src[k + 3] - t[3]) <= tol; };
+    const stack = [x0, y0];
+    while (stack.length) {
+      const y = stack.pop(); let x = stack.pop();
+      while (x > 0 && !seen[y * W + x - 1] && match(y * W + x - 1)) x -= 1;
+      let up = false, dn = false;
+      for (; x < W; x += 1) {
+        const j = y * W + x;
+        if (seen[j] || !match(j)) break;
+        seen[j] = 1; const k = j * 4; dst[k] = col[0]; dst[k + 1] = col[1]; dst[k + 2] = col[2]; dst[k + 3] = 255;
+        if (y > 0) { const u = j - W; if (!seen[u] && match(u)) { if (!up) { stack.push(x, y - 1); up = true; } } else up = false; }
+        if (y < H - 1) { const d = j + W; if (!seen[d] && match(d)) { if (!dn) { stack.push(x, y + 1); dn = true; } } else dn = false; }
+      }
+    }
+    sctx.putImageData(out, 0, 0);
+  }
+
+  /** Render a finished op into a layer context (same path as the live preview). */
+  function commitOp(op, layerCtx) {
+    sctx.clearRect(0, 0, doc.width, doc.height);
+    if (op.tool === "fill") floodFill(op, layerCtx); else drawSegment(sctx, op, 0, rng(op.seed));
+    const snap = mkCanvas(); const c = snap.getContext("2d");
+    c.drawImage(layerCtx.canvas, 0, 0);
+    layerCtx.clearRect(0, 0, doc.width, doc.height); composeActive(layerCtx, snap, op);
+  }
+
+  // ---------- pointer input ----------
+  function toDoc(ev) {
+    const r = view.getBoundingClientRect();
+    return { x: (ev.clientX - r.left) * (doc.width / r.width), y: (ev.clientY - r.top) * (doc.height / r.height),
+      p: ev.pointerType === "pen" ? Math.max(0.05, ev.pressure || 0.5) : 1 };
+  }
+  function activeLayer() { return doc.layers.find((l) => l.id === doc.active); }
+
+  view.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    const pt = toDoc(ev), layer = activeLayer();
+    if (state.tool === "picker") { pick(pt); return; }
+    if (!layer.visible) { status("The active layer is hidden: show it to paint.", "bad"); return; }
+    const op = { tool: state.tool, color: state.color, size: state.size, opacity: state.opacity, points: [pt],
+      seed: (Math.random() * 0x7fffffff) | 0, tolerance: state.tol };
+    if (state.tool === "fill") { finish(op); return; }
+    try { view.setPointerCapture(ev.pointerId); } catch { /* synthetic or already-released pointer */ }
+    state.stroke = op; state.rand = rng(op.seed);
+    sctx.clearRect(0, 0, doc.width, doc.height);
+    drawSegment(sctx, op, 0, state.rand); requestRender();
+  });
+  view.addEventListener("pointermove", (ev) => {
+    const op = state.stroke; if (!op) return;
+    const co = ev.getCoalescedEvents ? ev.getCoalescedEvents() : [];
+    const evs = co.length ? co : [ev];
+    const from = op.points.length;
+    for (const e of evs) if (op.points.length < S.MAX_POINTS) op.points.push(toDoc(e));
+    drawSegment(sctx, op, from, state.rand); requestRender();
+  });
+  const end = () => { const op = state.stroke; if (!op) return; state.stroke = null; finish(op); };
+  view.addEventListener("pointerup", end);
+  view.addEventListener("pointercancel", end);
+
+  function finish(op) {
+    const stored = S.pushOp(doc, op); if (!stored) return;
+    const e = layerCv.get(doc.active);
+    commitOp(stored, e.ctx); e.n = activeLayer().ops.length;
+    if (stored.tool !== "eraser") remember(stored.color);
+    requestRender();
+  }
+  function pick(pt) {
+    const d = vctx.getImageData(Math.floor(pt.x), Math.floor(pt.y), 1, 1).data;
+    if (!d[3]) { status("Nothing to pick there.", ""); return; }
+    setColor("#" + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, "0")).join(""));
+    status("Picked " + state.color, "good");
+  }
+
+  // ---------- tools / colours UI ----------
+  function setTool(t) { state.tool = t; document.querySelectorAll(".tool").forEach((b) => b.classList.toggle("on", b.dataset.t === t)); }
+  function setColor(c) { state.color = c; $("color").value = c; }
+  function setSize(v) { state.size = Math.min(200, Math.max(1, Math.round(v))); $("size").value = state.size; $("sizeV").textContent = state.size; }
+  function remember(c) {
+    state.recent = [c, ...state.recent.filter((x) => x !== c)].slice(0, 10);
+    paintSwatches($("recent"), state.recent);
+  }
+  function paintSwatches(el, list) {
+    el.textContent = "";
+    for (const c of list) { const i = document.createElement("i"); i.style.background = c; i.title = c; i.onclick = () => setColor(c); el.appendChild(i); }
+  }
+  document.querySelectorAll(".tool").forEach((b) => (b.onclick = () => setTool(b.dataset.t)));
+  $("size").oninput = (e) => setSize(+e.target.value);
+  $("op").oninput = (e) => { state.opacity = +e.target.value / 100; $("opV").textContent = e.target.value + "%"; };
+  $("tol").oninput = (e) => { state.tol = +e.target.value; $("tolV").textContent = e.target.value; };
+  $("color").oninput = (e) => { state.color = e.target.value; };
+  paintSwatches($("swatches"), SWATCHES);
+  setTool("brush"); setSize(8); $("opV").textContent = "100%"; $("tolV").textContent = "32";
+
+  function setPaper(on) {
+    state.paper = on; view.classList.toggle("paper", on); view.classList.toggle("checker", !on);
+    $("paper").textContent = on ? "Paper: white" : "Paper: transparent";
+  }
+  $("paper").onclick = () => setPaper(!state.paper);
+  setPaper(true);
+
+  // ---------- layers panel ----------
+  function renderLayers() {
+    const box = $("layers"); box.textContent = "";
+    for (const l of [...doc.layers].reverse()) {
+      const row = document.createElement("div"); row.className = "ly" + (l.id === doc.active ? " act" : "");
+      const eye = document.createElement("button"); eye.className = "eye"; eye.textContent = l.visible ? "◉" : "○";
+      eye.title = l.visible ? "Hide" : "Show";
+      eye.onclick = (ev) => { ev.stopPropagation(); S.setLayerProps(doc, l.id, { visible: !l.visible }); renderLayers(); requestRender(); };
+      const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = l.name;
+      row.onclick = () => { S.setActive(doc, l.id); renderLayers(); };
+      row.ondblclick = () => {
+        const inp = document.createElement("input"); inp.className = "ren"; inp.value = l.name;
+        const done = () => { S.setLayerProps(doc, l.id, { name: inp.value }); renderLayers(); };
+        inp.onblur = done; inp.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") inp.blur(); if (e.key === "Escape") { inp.value = l.name; inp.blur(); } };
+        nm.replaceWith(inp); inp.focus(); inp.select();
+      };
+      row.append(eye, nm); box.appendChild(row);
+    }
+    const a = activeLayer(); $("lOp").value = Math.round(a.opacity * 100); $("lOpV").textContent = Math.round(a.opacity * 100) + "%";
+    $("undo").disabled = !S.canUndo(doc); $("redo").disabled = !S.canRedo(doc);
+  }
+  $("lOp").oninput = (e) => { S.setLayerProps(doc, doc.active, { opacity: +e.target.value / 100 }); $("lOpV").textContent = e.target.value + "%"; requestRender(); };
+  $("lAdd").onclick = () => { if (!S.addLayer(doc)) status("Layer limit reached.", "bad"); sync(); };
+  $("lDel").onclick = () => { if (!S.removeLayer(doc, doc.active)) status("The last layer stays.", "bad"); sync(); };
+  $("lUp").onclick = () => { S.moveLayer(doc, doc.active, 1); sync(); };
+  $("lDown").onclick = () => { S.moveLayer(doc, doc.active, -1); sync(); };
+
+  function undo() { if (S.undo(doc)) { sync(); status("Undone.", ""); } }
+  function redo() { if (S.redo(doc)) { sync(); status("Redone.", ""); } }
+  $("undo").onclick = undo; $("redo").onclick = redo;
+
+  // ---------- images in: paste, desk events ----------
+  function addImageLayer(dataUrl, name) {
+    const img = new Image();
+    img.onload = () => {
+      const layer = S.addLayer(doc, { name, image: dataUrl });
+      if (!layer) { status("Layer limit reached.", "bad"); return; }
+      rebuild(layer, entry(layer, img)); sync();
+      status("Opened image as " + layer.name + " (" + img.naturalWidth + "x" + img.naturalHeight + ").", "good");
+    };
+    img.onerror = () => status("That image could not be read.", "bad");
+    img.src = dataUrl;
+  }
+  document.addEventListener("paste", (ev) => {
+    const items = ev.clipboardData ? [...ev.clipboardData.items] : [];
+    const it = items.find((i) => i.kind === "file" && i.type.startsWith("image/"));
+    if (!it) { status("Clipboard has no image.", ""); return; }
+    ev.preventDefault();
+    const fr = new FileReader();
+    fr.onload = () => addImageLayer(String(fr.result), "Pasted");
+    fr.readAsDataURL(it.getAsFile());
+  });
+  if (tk && tk.onEvent) {
+    tk.onEvent((msg) => {
+      if (msg && msg.type === "load-image" && typeof msg.dataB64 === "string" && /^[A-Za-z0-9+/=]+$/.test(msg.dataB64)) {
+        addImageLayer("data:image/png;base64," + msg.dataB64, "Snip");
+      }
+    });
+  }
+
+  // ---------- export ----------
+  function exportB64() {
+    const cv = mkCanvas(); flatten(cv.getContext("2d"), state.paper);
+    return cv.toDataURL("image/png").split(",")[1];
+  }
+  const stamp = () => new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+  const verdict = (r, okText) => (r && r.ok !== false ? status(okText + (r.path ? " " + r.path : ""), "good") : status("Failed: " + ((r && r.error) || "no answer"), "bad"));
+  function download(b64, name) {
+    const a = document.createElement("a"); a.href = "data:image/png;base64," + b64; a.download = name; a.click();
+    status("Downloaded " + name, "good");
+  }
+  async function savePng() {
+    const name = "sketch-" + stamp() + ".png", b64 = exportB64();
+    if (!tk) { download(b64, name); return; }
+    try { verdict(await tk.save({ kind: "image", name, mime: "image/png", dataB64: b64 }), "Saved"); }
+    catch (err) { status("Save failed: " + err.message, "bad"); }
+  }
+  async function copyPng() {
+    const b64 = exportB64();
+    try {
+      if (tk) { verdict(await tk.copy({ kind: "image", mime: "image/png", dataB64: b64 }), "Copied to clipboard."); return; }
+      const bin = atob(b64), bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+      const blob = new Blob([bytes], { type: "image/png" });
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      status("Copied to clipboard.", "good");
+    } catch (err) { status("Copy failed: " + err.message + " -- use Save PNG.", "bad"); }
+  }
+  $("save").onclick = savePng; $("copy").onclick = copyPng;
+  $("send").onchange = async (e) => {
+    const target = e.target.value; e.target.value = ""; if (!target || !tk) return;
+    const name = "sketch-" + stamp() + ".png";
+    status("Sending to " + target + "…", "");
+    try { verdict(await tk.send(target, { kind: "image", name, mime: "image/png", dataB64: exportB64(), title: "Sketch" }), "Sent to " + target + "."); }
+    catch (err) { status("Send failed: " + err.message, "bad"); }
+  };
+  $("ask").onclick = async () => {
+    if (!tk) { status("Ask Aither needs the desk (window.toolkit is missing).", "bad"); return; }
+    const q = window.prompt("Ask Aither about this sketch:", "What do you see?");
+    if (!q) return;
+    status("Asking Aither…", "");
+    try {
+      const r = await tk.ask(q, exportB64());
+      if (r && r.ok) status("Aither: " + String(r.answer || "").replace(/\s+/g, " "), "good");
+      else status("Ask failed: " + ((r && r.error) || "no answer"), "bad");
+    } catch (err) { status("Ask failed: " + err.message, "bad"); }
+  };
+  function closeWin() { if (tk) tk.close(); else window.close(); }
+  $("close").onclick = closeWin;
+
+  // ---------- keys ----------
+  const KEYS = { b: "brush", m: "marker", a: "airbrush", e: "eraser", g: "fill", i: "picker" };
+  document.addEventListener("keydown", (ev) => {
+    if (ev.target && ev.target.tagName === "INPUT" && ev.target.type === "text") return;
+    const k = ev.key.toLowerCase();
+    if (ev.ctrlKey || ev.metaKey) {
+      if (k === "z" && !ev.shiftKey) { ev.preventDefault(); undo(); }
+      else if (k === "y" || (k === "z" && ev.shiftKey)) { ev.preventDefault(); redo(); }
+      else if (k === "s") { ev.preventDefault(); savePng(); }
+      else if (k === "c") { ev.preventDefault(); copyPng(); }
+      return; // Ctrl+V falls through to the paste event
+    }
+    if (k === "escape") { closeWin(); return; }
+    if (KEYS[k]) { setTool(KEYS[k]); return; }
+    if (k === "[") setSize(state.size - Math.max(1, Math.round(state.size * 0.15)));
+    if (k === "]") setSize(state.size + Math.max(1, Math.round(state.size * 0.15)));
+  });
+
+  // ---------- boot ----------
+  sync();
+  if (tk && tk.info) {
+    tk.info().then((info) => {
+      if (info && info.workspace) $("ws").textContent = info.workspace.name || info.workspace.key || "";
+      const sel = $("send"), groups = new Map();
+      for (const t of (info && Array.isArray(info.targets) ? info.targets : [])) {
+        const g = String(t.group || "Other");
+        if (!groups.has(g)) { const og = document.createElement("optgroup"); og.label = g; groups.set(g, og); sel.appendChild(og); }
+        const o = document.createElement("option"); o.value = t.id; o.textContent = t.label || t.id; groups.get(g).appendChild(o);
+      }
+      status(info && info.offline ? "Ready (offline: sends may queue or fail)." : "Ready.", "");
+    }).catch((err) => status("Desk info failed: " + err.message, "bad"));
+  } else {
+    $("send").disabled = true;
+    status("Ready (standalone: Save downloads the PNG).", "");
+  }
+})();
+</script>
+</body>
+</html>

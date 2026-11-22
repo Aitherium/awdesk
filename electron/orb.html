@@ -25,7 +25,7 @@
   #orb .core { position: absolute; left: 50%; top: 50%; width: 15px; height: 15px; margin: -7.5px 0 0 -7.5px;
     border-radius: 50%; pointer-events: none;
     background: radial-gradient(circle at 45% 40%, #fff 0%, #fff 42%, rgba(244,250,255,0.85) 70%, rgba(255,255,255,0) 100%);
-    box-shadow: 0 0 8px 3px rgba(255,255,255,0.95), 0 0 20px 8px rgba(225,240,255,0.6), 0 0 36px 14px rgba(200,228,255,0.25); }
+    box-shadow: 0 0 8px 3px rgba(255,255,255,0.95), 0 0 11px 5px rgba(225,240,255,0.6), 0 0 14px 6px rgba(200,228,255,0.25); }
   #orb .wing { position: absolute; left: 50%; top: 50%; border-radius: 50%; pointer-events: none;
     background: radial-gradient(ellipse at 30% 50%, rgba(255,255,255,0.55), rgba(225,240,255,0.18) 70%, rgba(255,255,255,0.05));
     border: 1px solid rgba(255,255,255,0.45); transform-origin: 0 50%;
@@ -43,6 +43,11 @@
   #orb:active { cursor: grabbing; }
   #orb.busy .halo { animation: pulse 0.9s ease-in-out infinite; }
   #orb.busy .wing { animation-duration: 0.09s; }
+  /* Rest (owner 2026-11-13: "the overlay feels laggy ... throttle the fairies"): after 20 s
+     with no pointer, no work and no nudge the flutter, bob, pulse and twinkle PAUSE, so an
+     idle orb asks the compositor for no frames at all. Any pointer or busy wakes it. */
+  body.rest #orb, body.rest #orb .halo, body.rest #orb .wing, body.rest #orb .spark,
+  body.rest .mate, body.rest .mate::before, body.rest .mate::after { animation-play-state: paused; }
   #orb.attached { outline: 0; }
   #orb .halo, #orb .core { transition: transform 0.6s ease, opacity 0.6s ease; }
   #orb.behind .core { transform: scale(0.72); opacity: 0.6; }
@@ -55,22 +60,186 @@
     0%, 100% { transform: scale(1); filter: brightness(1); }
     50% { transform: scale(1.06); filter: brightness(1.18); }
   }
-  #badge { position: absolute; top: 4px; right: 4px; min-width: 18px; height: 18px; padding: 0 5px;
+  #badge { cursor: pointer; position: absolute; top: 4px; right: 4px; min-width: 18px; height: 18px; padding: 0 6px;
     border-radius: 9px; background: var(--accent-primary, #7aa2ff); color: #06101f;
     font: 700 11px/18px var(--font-sans, system-ui); text-align: center; display: none;
     box-shadow: 0 1px 4px rgba(0,0,0,0.45); pointer-events: none; }
-  #badge.on { display: block; }
+  /* Actionable, not decoration (owner 2026-11-20: the "58" read as a painted-on
+     number). A counted badge is a BUTTON: it takes the pointer, wears a ring and a
+     chevron, lifts on hover and presses on click -- and clicking it opens the
+     decision Inbox (needsYou -> inbox.open). */
+  #badge.on { display: block; pointer-events: auto;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.6), 0 2px 8px rgba(0,0,0,0.55);
+    transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease; }
+  #badge.on::after { content: "›"; margin-left: 2px; font-weight: 800; opacity: 0.9; }
+  #badge.on:hover, #badge.on:focus-visible {
+    filter: brightness(1.18); transform: translateY(-1px) scale(1.06);
+    box-shadow: 0 0 0 2px #fff, 0 3px 10px rgba(0,0,0,0.6); outline: none; }
+  #badge.on:active { transform: scale(0.94); }
   #queued { position: absolute; bottom: -2px; right: 0; min-width: 15px; height: 15px; padding: 0 4px;
     border-radius: 8px; background: #3a2a10; color: var(--tint, #f4faff);
     border: 1px solid var(--tint, #f4faff); font: 700 10px/14px var(--font-sans, system-ui);
     text-align: center; display: none; pointer-events: none; }
   #queued.on { display: block; }
-  .drop-hover #orb { box-shadow: 0 0 0 2px var(--tint, #f4faff) inset, 0 0 22px 8px var(--tint-glow, rgba(225,240,255,0.7)); }
+  .drop-hover #orb { box-shadow: 0 0 0 2px var(--tint, #f4faff) inset, 0 0 12px 4px var(--tint-glow, rgba(225,240,255,0.7)); }
   .drop-hover #card { border-color: var(--tint, #f4faff); }
 
-  /* ── the bubble (392 x 480 window) ──────────────────────────────────── */
-  body.bubble { padding: 8px; }
-  #card { width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden;
+  /* ── the agent fairy (agent-fairy.cjs, owner 2026-11-09) ─────────────────
+     One palette with Discord and aitherium.com (agent-fairies.json). The core
+     always takes the agent's core (Aither: white-gold). While the fairy carries
+     an agent's card or speaks for one (#orb.wearing), the bloom and the wings
+     take that agent's colour too; swept = Hera's pointed wings, ring = a
+     ring-shaped outer glow, sparkles = the owner's glints. */
+  #orb .core { background: radial-gradient(circle at 45% 40%, #fff 0%, var(--fairy-core, #fff) 42%,
+    rgba(244,250,255,0.85) 70%, rgba(255,255,255,0) 100%); }
+  #orb.wearing .halo { background: radial-gradient(circle, rgba(255,255,255,0.62) 0%, var(--fairy-glow-soft) 20%,
+    var(--fairy-glow-faint) 46%, rgba(255,255,255,0) 70%); }
+  #orb.wearing .core { box-shadow: 0 0 8px 3px rgba(255,255,255,0.95), 0 0 11px 5px var(--fairy-glow-soft),
+    0 0 14px 6px var(--fairy-glow-faint); }
+  #orb.wearing .wing { background: radial-gradient(ellipse at 30% 50%, rgba(255,255,255,0.55), var(--fairy-wing) 70%,
+    rgba(255,255,255,0.05)); border-color: var(--fairy-wing-edge); }
+  #orb.swept .wing.up { width: 17px; height: 6px; border-radius: 0 80% 20% 80%; }
+  #orb.swept .wing.lo { width: 12px; height: 4px; border-radius: 0 80% 20% 80%; }
+  #orb.swept .wing.r.up { transform: rotate(-34deg); } #orb.swept .wing.l.up { margin-left: -17px; transform: rotate(34deg); }
+  #orb.swept .wing.l.lo { margin-left: -12px; }
+  #orb.ring .halo::after { content: ""; position: absolute; inset: 6px; border-radius: 50%;
+    border: 1.5px solid var(--fairy-glow-soft); box-shadow: 0 0 8px var(--fairy-glow-soft); }
+  #orb.nosparkle .spark { display: none; }
+  /* The owner's own fairy at rest: Aither white-gold (the Discord avatar's core
+     #fff6dc in a gold #ffc857 bloom, sky #38bdf8 wings), full brightness. Live
+     2026-11-09 it read as "a faint pale-gold blur" on a white page: the old pale
+     blue-white halo has no contrast there. A thin dark rim on the core keeps it
+     legible on any background (invisible on a dark one). */
+  #orb .core { filter: drop-shadow(0 0 1px rgba(8,12,20,0.55)); }
+  #orb.aither .halo { background: radial-gradient(circle, rgba(255,255,255,0.75) 0%, rgba(255,214,120,0.55) 18%,
+    rgba(255,200,87,0.3) 36%, rgba(56,189,248,0.1) 54%, rgba(255,255,255,0) 70%); }
+  #orb.aither .core { width: 17px; height: 17px; margin: -8.5px 0 0 -8.5px;
+    box-shadow: 0 0 6px 3px rgba(255,255,255,0.95), 0 0 10px 4px rgba(255,200,87,0.75), 0 0 13px 6px rgba(255,190,80,0.32); }
+  #orb.aither .wing { background: radial-gradient(ellipse at 30% 50%, rgba(255,255,255,0.6), rgba(56,189,248,0.32) 70%,
+    rgba(255,255,255,0.05)); border-color: rgba(56,189,248,0.6); }
+  /* The swarm (its own window, centred on the fairy): one companion per OTHER
+     agent with a card waiting -- every one of them, on rings that grow with the
+     count, drawn smaller as more appear; hovering one shows that agent's card. */
+  body.swarm { background: transparent; overflow: hidden; }
+  /* Visual neurons (neurons-model.cjs): the step graph behind the companions. A
+     canvas drawn by THIS page at its own frame rate; never a per-frame IPC. */
+  #nn { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #mates { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
+  .mate { position: absolute; left: 0; top: 0; width: var(--m-size, 10px); height: var(--m-size, 10px);
+    margin: calc(var(--m-size, 10px) / -2) 0 0 calc(var(--m-size, 10px) / -2); border-radius: 50%;
+    background: radial-gradient(circle, #fff 0%, var(--m-core, #fff) 30%, var(--m-color) 62%, rgba(255,255,255,0) 100%);
+    box-shadow: 0 0 6px 2px var(--m-glow); transition: transform 0.12s ease; }
+  .mate::before, .mate::after { content: ""; position: absolute; top: 1px; width: 6px; height: 4px; border-radius: 50%;
+    background: var(--m-wing); border: 0.5px solid rgba(255,255,255,0.5); animation: flap 0.18s ease-in-out infinite alternate; }
+  .mate::before { right: 7px; transform-origin: 100% 50%; } .mate::after { left: 7px; transform-origin: 0 50%; }
+  .mate.hot { transform: scale(1.45); }
+  /* Fine control (fairy-control.cjs): selected = a white ring; muted = washed out; drag = the
+     ring's copy dims while its pin window follows the pointer. */
+  .mate.sel { box-shadow: 0 0 0 2px #fff, 0 0 12px 5px var(--m-glow); transform: scale(1.25); }
+  .mate.muted { filter: grayscale(0.85); opacity: 0.6; }
+  .mate.drag { opacity: 0.2; }
+  body.pin { background: transparent; }
+  body.pin #mates { pointer-events: none; }
+  body.pin .mate { --m-size: 18px; cursor: grab; }
+  body.pin.grabbing .mate { cursor: grabbing; }
+  #chip { position: absolute; right: 4px; bottom: 6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; display: none;
+    background: rgba(10,14,24,0.9); color: #eef6ff; border: 1px solid rgba(214,236,255,0.45);
+    font: 700 10px/14px var(--font-sans, system-ui); text-align: center; pointer-events: none; }
+  #chip.on { display: block; }
+  /* Presence (owner 2026-11-09: one agent = one presence everywhere): idle = a dim
+     glow, working = a pulse, speaking/posting = a bright flash, waiting on the
+     owner = full colour + its count badge. */
+  .mate.st-idle { opacity: 0.42; box-shadow: 0 0 3px 1px var(--m-glow); }
+  .mate.st-working { animation: matepulse 1.6s ease-in-out infinite; }
+  .mate.st-speaking { animation: mateflash 0.5s ease-in-out infinite alternate;
+    box-shadow: 0 0 9px 4px var(--m-glow), 0 0 2px 1px #fff; }
+  .mate.st-waiting { box-shadow: 0 0 7px 3px var(--m-glow); }
+  /* The counted bead: the cluster's tail past the cap (fairy-cluster.cjs collapse). */
+  .mate.bead { border-radius: 50%; outline: 1.5px solid rgba(255,255,255,0.85); }
+  .mate.bead::before, .mate.bead::after { display: none; }
+  #cluster-count { position: absolute; left: 50%; top: 2px; transform: translateX(-50%); min-width: 14px; height: 14px;
+    padding: 0 4px; border-radius: 7px; background: rgba(13,17,23,0.82); color: #ffe8a3; font: 600 10px/14px system-ui, sans-serif;
+    text-align: center; pointer-events: none; box-shadow: 0 0 6px rgba(255,200,87,0.55); }
+  @keyframes matepulse { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
+  @keyframes mateflash { from { filter: brightness(1); } to { filter: brightness(1.9); } }
+  .mate b { position: absolute; left: 60%; top: -70%; min-width: 9px; height: 9px; padding: 0 2px; border-radius: 5px;
+    background: #0b0f16; color: #fff; border: 1px solid var(--m-color); font: 700 7px/8px var(--font-sans, system-ui);
+    text-align: center; }
+
+  /* ── the right-click menu and the hover tip (owner 2026-11-12) ────────
+     Online's fairy look (Veil fairy-style.ts .osf-pill / .osf-hint): dark glass
+     pills, the first one light, a white ring on hover and focus. Sizes match
+     fairy-menu.cjs MENU (row 34 = 30 + 2 + 2, head 30, separator 9, pad 12). */
+  body.menu { padding: 12px; background: transparent; height: 100vh; box-sizing: border-box; overflow: hidden; }
+  /* A menu taller than the screen scrolls inside its own window (owner 2026-11-13:
+     menus ran off the top and bottom of the screen). */
+  #menu { display: flex; flex-direction: column; outline: none; height: 100%; min-height: 0; }
+  #m-head { height: 30px; padding: 0 12px; display: flex; align-items: center;
+    font: 600 11px/1 var(--font-sans, system-ui); letter-spacing: 0.03em; color: rgba(238,246,255,0.86);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
+  #m-items { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .m-item { height: 30px; margin: 2px 0; padding: 0 14px; display: flex; align-items: center; width: 100%;
+    border-radius: 999px; border: 1px solid rgba(214,236,255,0.3); background: rgba(12,18,32,0.94);
+    color: #f4f9ff; font: 600 13px/1 var(--font-sans, system-ui); text-align: left; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.35), 0 0 12px rgba(214,236,255,0.08);
+    animation: m-in 140ms ease-out both; }
+  .m-item.first { background: rgba(236,246,255,0.96); color: #0b1220; border-color: #fff; }
+  .m-item:hover, .m-item:focus-visible, .m-item:focus { border-color: #fff; outline: none;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.35), 0 0 0 2px rgba(214,236,255,0.8); }
+  .m-item[aria-disabled="true"] { opacity: 0.45; cursor: default; box-shadow: none; }
+  .m-sep { height: 9px; }
+  @keyframes m-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
+  /* ── the RADIAL Aither menu (orb-radial-menu.cjs, owner 2026-11-20) ──────
+     A ring centred on the click: the four Display modes on the inner ring, one
+     page of actions outside, a hub that closes it. Positions arrive already
+     computed (window-local); the page only converts them to absolute CSS. */
+  body.menu.radial { padding: 0; }
+  body.menu.radial #menu { position: relative; width: 100%; height: 100%; display: block; }
+  body.menu.radial #m-head { position: absolute; left: 0; right: 0; top: 2px; justify-content: center;
+    text-align: center; pointer-events: none; }
+  body.menu.radial #m-items { position: absolute; inset: 0; display: block; overflow: visible; }
+  #m-ring { position: absolute; border-radius: 50%; pointer-events: none;
+    border: 1px solid rgba(214,236,255,0.14);
+    background: radial-gradient(circle, rgba(124,196,255,0.05) 0%, rgba(10,15,24,0.55) 62%, rgba(10,15,24,0) 100%); }
+  .m-node { position: absolute; transform: translate(-50%, -50%); margin: 0; padding: 0 10px;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    border-radius: 999px; border: 1px solid rgba(214,236,255,0.32); background: rgba(12,18,32,0.95);
+    color: #f4f9ff; font: 600 12px/1.1 var(--font-sans, system-ui); cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.4), 0 0 12px rgba(214,236,255,0.08);
+    animation: m-in 140ms ease-out both; }
+  .m-node.m-chip { border-radius: 50%; padding: 4px; font-size: 11px; }
+  .m-node.checked { border-color: #fff; background: rgba(236,246,255,0.96); color: #0b1220; }
+  .m-node.more { border-style: dashed; opacity: 0.92; }
+  .m-node:hover, .m-node:focus-visible, .m-node:focus { border-color: #fff; outline: none;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.35), 0 0 0 2px rgba(214,236,255,0.8); }
+  .m-node[aria-disabled="true"] { opacity: 0.45; cursor: default; box-shadow: none; }
+  .m-hub { position: absolute; transform: translate(-50%, -50%); border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    border: 1px solid rgba(214,236,255,0.45); background: rgba(20,27,42,0.98); color: #eef6ff;
+    font: 600 10px/1.15 var(--font-sans, system-ui); letter-spacing: 0.03em; cursor: pointer;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+  .m-hub:hover, .m-hub:focus { outline: none; border-color: #fff; box-shadow: 0 0 0 2px rgba(214,236,255,0.7); }
+  .m-key { position: absolute; right: 4px; top: 3px; font: 700 8px/1 system-ui, sans-serif;
+    opacity: 0.6; pointer-events: none; }
+  body.tip { background: transparent; }
+  body.tip.multi #tip { height: auto; max-width: 326px; padding: 7px 12px; border-radius: 12px; white-space: pre-line;
+    line-height: 17px; overflow: visible; text-overflow: clip; }
+  body.tip.multi #tip::first-line { font-weight: 700; }
+  #tip { position: absolute; left: 0; top: 2px; max-width: 296px; height: 26px; padding: 0 11px;
+    border-radius: 999px; background: rgba(10,14,24,0.9); border: 1px solid rgba(214,236,255,0.25);
+    color: #eef6ff; font: 500 12px/24px var(--font-sans, system-ui); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  body.tip.left #tip { left: auto; right: 0; }
+  @media (prefers-reduced-motion: reduce) { .m-item { animation: none; } }
+
+  /* ── the bubble: the Aither panel (fairy-panel.cjs, owner 2026-11-14) ────
+     One box, one button: the input on top, four small chips under it, ONE session
+     line, then only real content. The card is as tall as what it holds (the page
+     reports its height and main fits the window), never a fixed 480 px of air. */
+  body.bubble { padding: 8px; height: auto; }
+  #card { width: 100%; max-height: 464px; display: flex; flex-direction: column; overflow: hidden;
     border-radius: 14px; background: var(--bg-elevated, #12161f); border: 1px solid var(--border, #2a3346);
     box-shadow: 0 12px 40px rgba(0,0,0,0.55); }
   #head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px; }
@@ -84,31 +253,67 @@
     font-size: 16px; line-height: 1; padding: 4px 6px; border-radius: 6px; flex: none; }
   #close:hover { background: var(--bg-sunk, #0b0f16); color: var(--fg, #e6edf3); }
 
-  #actions { display: flex; gap: 6px; padding: 0 12px 8px; flex-wrap: wrap; }
-  #actions button { flex: 1 1 auto; border: 1px solid var(--border, #2a3346); border-radius: 8px;
-    background: var(--bg-sunk, #0b0f16); color: var(--fg, #e6edf3); padding: 6px 8px; cursor: pointer;
-    font: 12px var(--font-sans, system-ui); white-space: nowrap; }
-  #actions button:hover { border-color: var(--tint, #f4faff); }
+  #actions { display: flex; gap: 4px; padding: 0 10px 8px; }
+  #actions button { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border, #2a3346);
+    border-radius: 999px; background: transparent; color: var(--fg-muted, #8b96ab); padding: 2px 8px;
+    cursor: pointer; font: 11px var(--font-sans, system-ui); white-space: nowrap; }
+  #actions button svg { width: 12px; height: 12px; flex: none; }
+  #actions button:hover, #actions button:focus-visible, #actions button.on { color: var(--fg, #e6edf3);
+    border-color: var(--tint, #f4faff); outline: none; }
 
-  #stage { flex: 1; overflow: auto; padding: 2px 12px 8px; }
-  #line { display: none; border-radius: 10px; padding: 10px 12px; background: var(--bg-sunk, #0b0f16);
-    border: 1px solid var(--border, #2a3346); white-space: pre-wrap; word-break: break-word;
-    user-select: text; line-height: 1.5; }
+  /* the ONE session line: who the fairy is with, and what it is doing */
+  #session { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-top: 1px solid var(--border, #2a3346);
+    font-size: 11.5px; min-width: 0; }
+  #s-state { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--fg-muted, #8b96ab); }
+  #s-state.working, #s-state.busy, #s-state.running { background: var(--accent-warning, #f0b429); }
+  #s-state.waiting-input, #s-state.waiting { background: var(--accent-primary, #7aa2ff); }
+  #s-state.idle { background: var(--accent-success, #3fb950); }
+  #s-title { font-weight: 600; flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #s-last { flex: 1; min-width: 0; color: var(--fg-muted, #8b96ab); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #s-pick { width: 64px; flex: none; border: 1px solid var(--border, #2a3346); border-radius: 6px; background: var(--bg-sunk, #0b0f16);
+    color: var(--fg-muted, #8b96ab); font: 11px var(--font-sans, system-ui); padding: 1px 2px; }
+  #s-detach { display: none; }
+  #s-detach.on { display: inline-block; }
+  #s-detach, #close { border: 0; background: transparent; color: var(--fg-muted, #8b96ab); cursor: pointer;
+    font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 6px; flex: none; }
+  #s-detach:hover, #close:hover { background: var(--bg-sunk, #0b0f16); color: var(--fg, #e6edf3); }
+
+  #stage { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 10px 8px; }
+  #stage.idle { display: none; }
+  /* what the attached session raised, answerable here */
+  #cards { display: none; flex-direction: column; gap: 6px; margin-top: 8px; }
+  #cards.on { display: flex; }
+  .pcard { border: 1px solid var(--border, #2a3346); border-radius: 9px; padding: 6px 8px; background: var(--bg-sunk, #0b0f16); }
+  .pcard.high, .pcard.critical { border-color: var(--accent-warning, #f0b429); }
+  .pcard-title { font-size: 12px; font-weight: 600; margin-bottom: 5px; }
+  .pcard-opts { display: flex; gap: 4px; flex-wrap: wrap; }
+  .pcard-opts button { border: 1px solid var(--border, #2a3346); border-radius: 7px; background: transparent;
+    color: var(--fg, #e6edf3); padding: 2px 8px; cursor: pointer; font: 11px var(--font-sans, system-ui); }
+  .pcard-opts button.rec { border-color: var(--tint, #f4faff); }
+  .pcard-opts button:hover, .pcard-opts button:focus-visible { background: var(--bg-elevated, #12161f); border-color: var(--tint, #f4faff); outline: none; }
+  /* the last few exchanges, newest last */
+  #history { display: none; flex-direction: column; gap: 5px; margin-top: 8px; }
+  #history.on { display: flex; }
+  .ex { font-size: 11.5px; line-height: 1.4; }
+  .ex-q { color: var(--fg-muted, #8b96ab); }
+  .ex-a { color: var(--fg, #e6edf3); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .ex.error .ex-a { color: var(--accent-danger, #ff6b6b); }
+  #line { display: none; border-radius: 10px; padding: 8px 10px; background: var(--bg-sunk, #0b0f16);
+    border: 1px solid var(--border, #2a3346); word-break: break-word; user-select: text; line-height: 1.5; }
+  #line-text { white-space: pre-wrap; }
   #line.on { display: block; }
   #line.error { border-color: var(--accent-danger, #ff6b6b); }
   #line.error #line-title { display: block; color: var(--accent-danger, #ff6b6b); font-weight: 600; margin-bottom: 4px; }
   #line-title { display: none; }
   #line.status { color: var(--fg-muted, #8b96ab); font-style: italic; }
-  #meta { display: none; margin-top: 8px; font-size: 11px; color: var(--fg-muted, #8b96ab); }
+  #meta { display: none; margin-top: 4px; font-size: 11px; color: var(--fg-muted, #8b96ab); }
   #meta.on { display: block; }
-  #foot { display: none; gap: 6px; margin-top: 8px; }
+  #foot { display: none; gap: 6px; margin-top: 6px; }
   #foot.on { display: flex; }
   #foot button { border: 1px solid var(--border, #2a3346); border-radius: 7px; background: transparent;
     color: var(--fg-muted, #8b96ab); padding: 3px 8px; cursor: pointer; font: 11px var(--font-sans, system-ui); }
   #foot button:hover { color: var(--fg, #e6edf3); border-color: var(--accent-primary, #7aa2ff); }
   #foot button.active { color: #06101f; background: var(--accent-primary, #7aa2ff); border-color: transparent; }
-  #empty { color: var(--fg-muted, #8b96ab); padding: 6px 2px; font-size: 12px; }
-  #empty.off { display: none; }
 
   /* held thing: a chip under the orb, draggable out as a real OS file */
   #hold { display: none; margin-top: 8px; border-radius: 10px; border: 1px solid var(--tint, #f4faff);
@@ -159,7 +364,7 @@
   #trip-more { font-size: 10.5px; color: var(--fg-muted, #8b96ab); margin-top: 2px; }
   #trip-queue { font-size: 11px; color: var(--tint, #f4faff); margin-top: 4px; }
 
-  #ask { display: flex; gap: 6px; padding: 8px 12px 12px; border-top: 1px solid var(--border, #2a3346); }
+  #ask { display: flex; gap: 6px; align-items: stretch; padding: 10px 10px 6px; }
   #q { flex: 1; resize: none; max-height: 84px; min-height: 30px; padding: 6px 8px; border-radius: 8px;
     border: 1px solid var(--border, #2a3346); background: var(--bg, #0d1117); color: var(--fg, #e6edf3);
     font: 12.5px/1.4 var(--font-sans, system-ui); outline: none; }
@@ -167,8 +372,140 @@
   #send { border: 0; border-radius: 8px; padding: 0 12px; background: var(--tint, #f4faff);
     color: #06101f; font-weight: 600; cursor: pointer; font: 600 12px var(--font-sans, system-ui); }
   #send:disabled { opacity: 0.5; cursor: default; }
-  #hint { display: none; padding: 0 12px 6px; font-size: 11px; color: var(--accent-danger, #ff6b6b); }
+  #hint { display: none; padding: 0 10px 6px; font-size: 11px; color: var(--accent-danger, #ff6b6b); }
   #hint.on { display: block; }
+
+  /* ── the fairy asking for attention (fairy-attention.cjs ladder) ─────
+     L1 glow: a slow sonar ping and a brighter halo where it rests.
+     L2 flutter: faster wings and ping (it has flown to the owner's eye line).
+     L3 insist: warm amber, fastest -- the "you said you need this" level. */
+  #orb .ping { position: absolute; inset: 6px; border-radius: 50%; pointer-events: none;
+    border: 2px solid rgba(255,255,255,0.85); opacity: 0; }
+  #orb.nudge1 .halo { animation: pulse 1.2s ease-in-out infinite; }
+  #orb.nudge1 .ping { animation: ping 2.4s ease-out infinite; }
+  #orb.nudge2 .halo { animation: pulse 0.8s ease-in-out infinite; }
+  #orb.nudge2 .wing { animation-duration: 0.07s; }
+  #orb.nudge2 .ping { animation: ping 1.4s ease-out infinite; }
+  #orb.nudge3 .halo { animation: pulse 0.55s ease-in-out infinite;
+    background: radial-gradient(circle, rgba(255,255,255,0.7) 0%, rgba(255,226,170,0.45) 22%,
+      rgba(255,190,100,0.28) 44%, rgba(255,255,255,0) 70%); }
+  #orb.nudge3 .wing { animation-duration: 0.05s; }
+  #orb.nudge3 .ping { border-color: rgba(255,204,128,0.95); animation: ping 0.9s ease-out infinite; }
+  #orb.nudge3 .core { box-shadow: 0 0 8px 3px rgba(255,255,255,0.95), 0 0 20px 8px rgba(255,214,150,0.7),
+    0 0 14px 6px rgba(255,190,100,0.35); }
+  @keyframes ping { 0% { transform: scale(0.5); opacity: 0.9; } 100% { transform: scale(1.22); opacity: 0; } }
+
+  /* ── the whisper (376 x 188 window): the card the fairy carries ─────── */
+  body.nudge { padding: 10px; }
+  #nudge { position: relative; width: 100%; overflow: hidden; border-radius: 14px;
+    background: rgba(14,18,27,0.95); border: 1px solid rgba(244,250,255,0.28);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 16px rgba(225,240,255,0.16);
+    padding: 9px 12px 9px; opacity: 0; transform: translateX(-12px) scale(0.98);
+    transition: opacity 0.22s ease, transform 0.22s ease; }
+  #nudge.left { transform: translateX(12px) scale(0.98); }
+  #nudge.on { opacity: 1; transform: none; }
+  /* Owner 2026-11-14: a dismissed card froze at ~30% over the page. A card that is
+     not "on" never takes a click, and once its fade ends it is unmounted. */
+  #nudge:not(.on) { pointer-events: none; }
+  #nudge.gone { display: none; }
+  /* Short and readable: one title line, one "what is needed" line, one primary + Open;
+     the rest (other options, one line of context, the voice/chat row) behind "more". */
+  #n-need { margin-top: 2px; font-size: 11.5px; color: #c4cfe2; cursor: pointer; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  #n-need:hover { color: var(--fg, #e6edf3); text-decoration: underline; }
+  #n-acts #n-moretoggle { flex: none; border: 0; background: transparent; color: var(--fg-muted, #8b96ab);
+    cursor: pointer; font: 11px var(--font-sans, system-ui); padding: 0 2px; margin-left: auto; align-self: center; }
+  #n-acts #n-moretoggle:hover { color: var(--fg, #e6edf3); text-decoration: underline; }
+  #n-extra { display: none; }
+  #nudge.expanded #n-extra { display: block; }
+  #n-extra #n-sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Performance first (owner rule): the glow pulses a few times on arrival, never forever. */
+  #nudge.lv2 { border-color: rgba(244,250,255,0.5); animation: nglow 1.8s ease-in-out 3; }
+  #nudge.lv3 { border-color: rgba(255,200,120,0.8); animation: nglow3 1.1s ease-in-out 4; }
+  /* The answer buttons: big enough to hit while doing something else. */
+  #n-acts button.opt { flex: 1 1 100%; font-size: 13px; padding: 8px 12px; border-radius: 10px; }
+  #n-links { display: flex; gap: 14px; flex: 1 1 100%; margin-top: 2px; }
+  #n-acts #n-links button.link { flex: none; border: 0; background: transparent; padding: 2px 0;
+    color: var(--fg-muted, #8b96ab); font: 11.5px var(--font-sans, system-ui); }
+  #n-acts #n-links button.link:hover { color: var(--fg, #e6edf3); text-decoration: underline; }
+  @keyframes nglow { 0%, 100% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 12px rgba(225,240,255,0.16); }
+    50% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 26px rgba(225,240,255,0.42); } }
+  @keyframes nglow3 { 0%, 100% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 12px rgba(255,190,100,0.25); }
+    50% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 28px rgba(255,190,100,0.6); } }
+  #n-head { display: flex; align-items: center; gap: 7px; font-size: 10.5px; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--fg-muted, #8b96ab); }
+  #n-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #fff;
+    box-shadow: 0 0 8px rgba(225,240,255,0.9); }
+  #nudge.lv3 #n-dot { background: #ffd28a; box-shadow: 0 0 9px rgba(255,190,100,0.95); }
+  #n-lead { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #n-more { cursor: pointer; text-transform: none; letter-spacing: 0; border-radius: 6px; padding: 1px 6px;
+    white-space: nowrap; }
+  #n-more:hover { color: var(--fg, #e6edf3); background: rgba(255,255,255,0.07); }
+  #n-x { border: 0; background: transparent; color: var(--fg-muted, #8b96ab); cursor: pointer; font-size: 12px;
+    line-height: 1; padding: 3px 5px; border-radius: 6px; flex: none; }
+  #n-x:hover { background: rgba(255,255,255,0.07); color: var(--fg, #e6edf3); }
+  #n-title { margin-top: 4px; font-weight: 600; font-size: 13.5px; line-height: 1.3; color: var(--fg, #e6edf3);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #n-old { margin-top: 3px; font-size: 11.5px; font-weight: 600; color: #ffd28a; }
+  #n-why { margin-top: 3px; font-size: 11.5px; line-height: 1.35; color: #c4cfe2;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  /* What the card says (owner 2026-11-08: "give me more fucking info"). */
+  #n-sum { margin-top: 6px; font-size: 12px; line-height: 1.4; color: var(--fg, #e6edf3);
+    white-space: pre-line; overflow-wrap: anywhere; }
+  #n-facts { margin: 5px 0 0; padding-left: 16px; font-size: 11.5px; line-height: 1.4; color: #c4cfe2; }
+  #n-facts li { white-space: pre-line; overflow-wrap: anywhere; margin-top: 2px; }
+  /* A question the card can only OPEN: its real answers, in the whisper's face (2026-11-17). */
+  #n-acts .n-choices { flex: 1 1 100%; margin: 0 0 4px; font-size: 12px; line-height: 1.4; color: var(--fg, #e6edf3); }
+  #n-acts .n-choices ol { margin: 3px 0 0; padding-left: 18px; }
+  #n-acts .n-choices li.rec { font-weight: 600; }
+  #n-acts .n-choices .cap { color: #c4cfe2; font-size: 11.5px; }
+  #n-acts button .cons { display: block; font-size: 10.5px; font-weight: 400; opacity: 0.72; margin-top: 2px; }
+  /* Owner 2026-11-08: "I need to see what the whole buttons say". Full labels, wrapped;
+     the whisper window grows to fit (nudgeAct "size"). Never an ellipsis on a choice. */
+  #n-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  #n-acts button { flex: 1 1 auto; min-width: 0; max-width: 100%; white-space: normal; text-align: left;
+    line-height: 1.3; overflow-wrap: anywhere;
+    border: 1px solid var(--border, #2a3346); border-radius: 8px; background: var(--bg-sunk, #0b0f16);
+    color: var(--fg, #e6edf3); padding: 5px 9px; cursor: pointer; font: 12px var(--font-sans, system-ui); }
+  #n-acts button:hover { border-color: rgba(244,250,255,0.7); }
+  #n-acts button.rec { border-color: rgba(244,250,255,0.55); }
+  #n-acts button.primary { background: #f4faff; color: #06101f; border-color: transparent; font-weight: 600; }
+  #n-voice { display: flex; gap: 8px; margin-top: 8px; }
+  #n-voice button { flex: 1; border: 1px solid var(--border, #2a3446); background: transparent;
+    color: var(--fg, #e6edf3); border-radius: 10px; padding: 7px 10px; font-size: 13px; cursor: pointer; }
+  #n-voice button:hover { background: rgba(255,255,255,0.06); }
+  #nudge.done #n-voice, #nudge.talking #n-voice { display: none; }
+  #n-foot { display: flex; gap: 9px; margin-top: 7px; white-space: nowrap; overflow: hidden; }
+  #n-foot button { border: 0; background: transparent; color: var(--fg-muted, #8b96ab); padding: 0; cursor: pointer;
+    font: 10.5px var(--font-sans, system-ui); }
+  #n-foot button:hover { color: var(--fg, #e6edf3); text-decoration: underline; }
+  #n-flash { display: none; margin-top: 8px; font-size: 12px; color: #bfe8c8; }
+  #n-flash.on { display: block; }
+  #n-flash.error { color: var(--accent-danger, #ff6b6b); }
+  /* A card's generated UI (A2UI v0.9 subset, card-ui.cjs): Column/Row/Text/Button.
+     Buttons are full width and WRAP, exactly like #n-acts: never an ellipsis. */
+  #n-ui { display: none; margin-top: 4px; max-height: 380px; overflow-y: auto; }
+  #n-ui.on { display: block; }
+  #n-ui .u-col { display: flex; flex-direction: column; gap: 5px; align-items: stretch; }
+  #n-ui .u-col.a-start { align-items: flex-start; } #n-ui .u-col.a-center { align-items: center; }
+  #n-ui .u-col.a-end { align-items: flex-end; }
+  #n-ui .u-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+  #n-ui .u-row.j-spaceBetween { justify-content: space-between; } #n-ui .u-row.j-center { justify-content: center; }
+  #n-ui .u-row.j-end { justify-content: flex-end; }
+  #n-ui .u-text { font-size: 12px; line-height: 1.35; color: #c4cfe2; overflow-wrap: anywhere; white-space: pre-wrap; }
+  #n-ui .u-text.v-h1, #n-ui .u-text.v-h2, #n-ui .u-text.v-h3, #n-ui .u-text.v-h4, #n-ui .u-text.v-h5 {
+    font-weight: 600; font-size: 13.5px; line-height: 1.3; color: var(--fg, #e6edf3); }
+  #n-ui .u-text.v-caption { font-size: 11px; color: var(--fg-muted, #8b96ab); }
+  #n-ui button { width: 100%; min-width: 0; white-space: normal; text-align: left; line-height: 1.3;
+    overflow-wrap: anywhere; border: 1px solid var(--border, #2a3346); border-radius: 8px;
+    background: var(--bg-sunk, #0b0f16); color: var(--fg, #e6edf3); padding: 5px 9px; cursor: pointer;
+    font: 12px var(--font-sans, system-ui); }
+  #n-ui button:hover { border-color: rgba(244,250,255,0.7); }
+  #n-ui button.primary { background: #f4faff; color: #06101f; border-color: transparent; font-weight: 600; }
+  #n-ui button.borderless { border-color: rgba(244,250,255,0.18); }
+  #nudge.done #n-acts, #nudge.done #n-foot, #nudge.done #n-ui { display: none; }
+  /* talking: the options stay clickable, the foot gives its line to "Listening..." */
+  #nudge.talking #n-foot { display: none; }
 
   /* ── the veil (transparent overlay: trail + tether) ─────────────────── */
   body.veil { background: transparent; }
@@ -179,10 +516,12 @@
 <script>
   const api = window.aitherOrb;
   const params = new URLSearchParams(location.search);
-  const view = ["bubble", "veil"].includes(params.get("view")) ? params.get("view") : "orb";
+  const view = ["bubble", "veil", "nudge", "swarm", "menu", "tip", "pin"].includes(params.get("view")) ? params.get("view") : "orb";
   document.body.className = view;
   // All three windows load this page; each shape names itself.
-  document.title = view === "bubble" ? "Ask Aither" : view === "veil" ? "Aither spirit trail" : "Aither spirit";
+  document.title = view === "bubble" ? "Ask Aither" : view === "veil" ? "Aither spirit trail"
+    : view === "nudge" ? "Aither nudge" : view === "swarm" ? "Aither swarm"
+    : view === "menu" ? "Aither menu" : view === "tip" ? "Aither tip" : view === "pin" ? "Aither pinned fairy" : "Aither spirit";
 
   function rgba(hex, alpha) {
     const h = String(hex || "#ffc861").replace("#", "");
@@ -191,6 +530,105 @@
     if (!Number.isFinite(n)) return `rgba(255,200,97,${alpha})`;
     return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
   }
+  // The swarm's layout (fairy-control.cjs owns it; fairy-control.test.cjs pins this copy to it):
+  // gather = 6 on the first ring, 4 more on each ring out, 14 px, a quarter pixel smaller per
+  // companion past six; scatter = a wide loose spread; dock = a line along a screen edge. The
+  // radius scale is the scroll wheel's. Every ring orbits OUTSIDE the disc (owner 2026-11-10,
+  // "there is only one"): under it, six companions were invisible and a hover or press on the
+  // fairy went to one of them, so a click only recoloured it.
+  /* SWARM_LAYOUT:begin */
+  function swarmSlots(mode, n, scale) {
+    const sc = Math.min(2.5, Math.max(0.8, Number(scale) || 1));
+    const spread = mode === "scatter";
+    const size = Math.max(9, 14 - 0.25 * Math.max(0, n - 6));
+    const hit = Math.max(16, size + 4);
+    const slots = [];
+    let ring = 0;
+    let left = n;
+    while (left > 0) {
+      const cap = spread ? 4 + ring * 3 : 6 + ring * 4;
+      const on = Math.min(cap, left);
+      const base = spread ? 70 + ring * 46 : 44 + ring * 18;
+      for (let i = 0; i < on; i += 1) slots.push({ ring, radius: base * sc, index: i, of: on, size, hit, squash: spread ? 0.92 : 0.82 });
+      left -= on;
+      ring += 1;
+    }
+    return slots;
+  }
+  function swarmOffset(slot, now) {
+    const dir = slot.ring % 2 === 0 ? 1 : -1;
+    const turn = (now / (9000 + slot.ring * 3000)) * dir;
+    const a = 2 * Math.PI * (slot.index / Math.max(1, slot.of)) + 2 * Math.PI * turn + slot.ring * 0.4;
+    return { x: Math.round(Math.cos(a) * slot.radius), y: Math.round(Math.sin(a) * slot.radius * slot.squash) };
+  }
+  function dockOffset(i, n, edge) {
+    const along = (i - (n - 1) / 2) * 24;
+    return edge === "top" || edge === "bottom" ? { x: Math.round(along), y: 0 } : { x: 0, y: Math.round(along) };
+  }
+  function avoidPoint(p, rect, margin) {
+    if (!rect) return p;
+    const l = rect.l - margin;
+    const t = rect.t - margin;
+    const r = rect.r + margin;
+    const b = rect.b + margin;
+    if (p.x < l || p.x > r || p.y < t || p.y > b) return p;
+    const dl = p.x - l;
+    const dr = r - p.x;
+    const dt = p.y - t;
+    const db = b - p.y;
+    const m = Math.min(dl, dr, dt, db);
+    if (m === dl) return { x: l, y: p.y };
+    if (m === dr) return { x: r, y: p.y };
+    if (m === dt) return { x: p.x, y: t };
+    return { x: p.x, y: b };
+  }
+  /* SWARM_LAYOUT:end */
+  /** What main last said about the swarm: layout, radius, the window to keep off, the counts. */
+  let sv = { mode: "gather", radius: 1, kind: "all", edge: "", avoid: null, total: 0, shown: 0, hidden: 0, pinned: 0, selected: "" };
+  /** The companion under (dx, dy) from the fairy's centre, or null (rings only: a dock or one orb has none). */
+  function swarmMateAt(list, dx, dy, now = Date.now()) {
+    if (sv.mode !== "gather" && sv.mode !== "scatter") return null;
+    const slots = swarmSlots(sv.mode, list.length, sv.radius);
+    let best = null;
+    let bestD = Infinity;
+    list.forEach((c, i) => {
+      const o = swarmOffset(slots[i], now);
+      const d = Math.hypot(dx - o.x, dy - o.y);
+      if (d <= slots[i].hit / 2 + 2 && d < bestD) { best = c; bestD = d; }
+    });
+    return best;
+  }
+  // Hover (owner 2026-11-12: "don't engage on hover"): ONE line after a dwell, in its
+  // own never-focused window beside the pointer. Never a card; a sweep across the
+  // swarm shows nothing. fairy-menu.cjs TIP_DWELL_MS / tipText are the same rules.
+  const TIP_DWELL_MS = 400;
+  function mateTip(c) {
+    if (c && c.detail) return String(c.detail);
+    const who = String((c && (c.label || c.agent)) || "Agent");
+    const n = Number(c && c.count) || 0;
+    const more = n > 1 ? ` (+${n - 1})` : "";
+    const st = String((c && c.state) || "");
+    const what = c && c.title ? String(c.title) : (st && st !== "waiting" ? st : "");
+    const line = (what ? `${who}: ${what}${more}` : `${who}${more}`).replace(/\s+/g, " ").trim();
+    return line.length > 72 ? `${line.slice(0, 71)}…` : line;
+  }
+  function createDwell() {
+    let timer = 0;
+    let key = null;
+    return {
+      /** The pointer is on `k` (null = nothing): show `text` after the dwell. */
+      on(k, text, point) {
+        if (k === key) return;
+        key = k;
+        if (timer) { window.clearTimeout(timer); timer = 0; }
+        if (api.tip) api.tip("");
+        if (k === null || !text) return;
+        timer = window.setTimeout(() => { timer = 0; if (key === k && api.tip) api.tip(text, point()); }, TIP_DWELL_MS);
+      },
+      off() { this.on(null); },
+    };
+  }
+
   function applyTint(css) {
     const el = document.documentElement;
     el.style.setProperty("--tint", css || "#f4faff");
@@ -204,16 +642,92 @@
     document.body.innerHTML = '<canvas id="veil"></canvas>';
     const canvas = document.getElementById("veil");
     const ctx = canvas.getContext("2d");
-    let state = { width: 0, height: 0, tint: "#ffc861", trail: [], tether: null };
+    let state = { width: 0, height: 0, tint: "#ffc861", trail: [], tether: null, flights: [] };
+    let lastKey = "";
+    let frame = 0;
+    let flightFrame = 0;
+    const reduceQuery = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+    const reducedMotion = () => Boolean(reduceQuery && reduceQuery.matches);
+    // The sub-fairies an agent's tool calls sent out (fairy-flight.cjs). Main sends the
+    // legs and their timestamps ONCE per change; this page eases them at its own display
+    // rate, so a fleet of sub-fairies costs no IPC per frame.
+    function flightPoint(f, now) {
+      const t = Math.min(1, Math.max(0, (now - f.startedAt) / Math.max(1, f.durationMs)));
+      const eased = t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2;
+      const x = f.from.x + (f.to.x - f.from.x) * eased;
+      const y = f.from.y + (f.to.y - f.from.y) * eased;
+      const lift = Math.sin(Math.PI * t) * Math.min(70, Math.abs(f.to.x - f.from.x) / 6);
+      return { x, y: y - lift, t };
+    }
+    function drawFlights(now) {
+      const list = state.flights || [];
+      if (!list.length) return;
+      const still = reducedMotion();
+      for (const f of list) {
+        const end = f.startedAt + f.durationMs;
+        const home = f.state === "return";
+        // A working fairy STANDS at its window for as long as the call runs; only the
+        // trip home fades out (the call ending is what removes the outbound one).
+        const fade = home && now > end ? Math.max(0, 1 - (now - end) / 450) : 1;
+        if (fade <= 0) continue;
+        // Reduced motion: the work is shown as a still glow on the target, never a flight.
+        if (still && home) continue;
+        const p = still || now > end ? { x: f.to.x, y: f.to.y, t: 1 } : flightPoint(f, now);
+        const back = still ? p : flightPoint(f, Math.max(f.startedAt, now - 90));
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.beginPath();
+        ctx.strokeStyle = rgba(f.color || state.tint, 0.4);
+        ctx.lineWidth = 1.4;
+        ctx.lineCap = "round";
+        ctx.moveTo(back.x, back.y);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.fillStyle = rgba(f.color || state.tint, 0.22);
+        ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.fillStyle = rgba(f.core || "#ffffff", 0.9);
+        ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+    function flightTick() {
+      flightFrame = 0;
+      draw();
+      const now = Date.now();
+      const live = (state.flights || []).some((f) => now < f.startedAt + f.durationMs + 520);
+      if (live && !reducedMotion()) flightFrame = window.requestAnimationFrame(flightTick);
+    }
+    function startFlights() {
+      if (flightFrame) return;
+      flightFrame = window.requestAnimationFrame(flightTick);
+    }
     function sizeTo(s) {
       const dpr = window.devicePixelRatio || 1;
       state.width = Number(s.width) || window.innerWidth;
       state.height = Number(s.height) || window.innerHeight;
-      canvas.width = Math.max(1, Math.round(state.width * dpr));
-      canvas.height = Math.max(1, Math.round(state.height * dpr));
-      canvas.style.width = `${state.width}px`;
-      canvas.style.height = `${state.height}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const w = Math.max(1, Math.round(state.width * dpr));
+      const h = Math.max(1, Math.round(state.height * dpr));
+      // Reassigning width/height REALLOCATES the whole backing store. At the old
+      // 60 Hz payload rate on a desktop-sized veil that was ~100 MB per frame, and
+      // the GPU process grew until it died (2026-11-07). Only resize when the
+      // pixel size actually changed.
+      if (w !== canvas.width || h !== canvas.height) {
+        canvas.width = w;
+        canvas.height = h;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+      const cssW = `${state.width}px`;
+      const cssH = `${state.height}px`;
+      if (canvas.style.width !== cssW) canvas.style.width = cssW;
+      if (canvas.style.height !== cssH) canvas.style.height = cssH;
+    }
+    function scheduleDraw() {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => { frame = 0; draw(); });
     }
     function draw() {
       ctx.clearRect(0, 0, state.width, state.height);
@@ -247,42 +761,149 @@
         ctx.stroke();
         ctx.restore();
       }
+      drawFlights(Date.now());
     }
     api.onVeil((s) => {
-      if (!s) { state.trail = []; state.tether = null; draw(); return; }
+      if (!s) {
+        state.trail = [];
+        state.tether = null;
+        state.flights = [];
+        lastKey = "";
+        draw();
+        return;
+      }
       sizeTo(s);
       state.tint = s.tint || state.tint;
       state.trail = Array.isArray(s.trail) ? s.trail : [];
       state.tether = Array.isArray(s.tether) ? s.tether : null;
-      draw();
+      state.flights = Array.isArray(s.flights) ? s.flights : [];
+      const key = `${state.width}x${state.height}|${state.tint}|${state.trail.length}`
+        + `|${state.trail.length ? `${state.trail[0].x},${state.trail[0].y},${state.trail[state.trail.length - 1].x},${state.trail[state.trail.length - 1].y}` : ""}`
+        + `|${state.tether ? state.tether.map((p) => `${p.x},${p.y}`).join(";") : ""}`
+        + `|${state.flights.map((f) => `${f.id},${f.state},${f.startedAt},${f.from.x},${f.from.y},${f.to.x},${f.to.y}`).join(";")}`;
+      if (key === lastKey) return; // nothing moved: do not repaint, do not allocate
+      lastKey = key;
+      scheduleDraw(); // one paint per display frame, however many payloads arrive
+      if (state.flights.length) startFlights();
     });
     api.init().then((s) => { if (s && s.tint) { state.tint = s.tint.css || state.tint; applyTint(state.tint); } });
   }
 
   // ── the orb disc ──────────────────────────────────────────────────────
   if (view === "orb") {
-    document.body.innerHTML = '<div id="orb" title="Aither — click to open, drag onto a window or avatar to attach, right-click for the menu">'
+    document.body.innerHTML = '<div id="orb" data-tip="Aither — click: what is waiting · right-click: menu · drag to move">'
       + '<i class="halo"></i><i class="wing l up"></i><i class="wing r up"></i><i class="wing l lo"></i><i class="wing r lo"></i>'
-      + '<i class="core"></i><i class="spark a"></i><i class="spark b"></i><i class="spark c"></i></div>'
-      + '<div id="badge"></div><div id="queued"></div>';
+      + '<i class="core"></i><i class="spark a"></i><i class="spark b"></i><i class="spark c"></i><i class="ping"></i></div>'
+      + '<div id="badge"></div><div id="queued"></div><div id="chip" title="Every agent fairy is folded into this one orb"></div>';
     const orb = document.getElementById("orb");
+    const chip = document.getElementById("chip");
+    // Collapsed into one orb (fairy-control mode "orb"): the ring is gone, the count stays.
+    function drawView(v) {
+      if (!v) return;
+      sv = { ...sv, ...v };
+      const folded = sv.mode === "orb" && sv.total - sv.pinned > 0;
+      chip.textContent = folded ? String(sv.total - sv.pinned) : "";
+      chip.classList.toggle("on", folded);
+    }
+    if (api.onSwarmView) api.onSwarmView(drawView);
     const badge = document.getElementById("badge");
     const queued = document.getElementById("queued");
     const RADIUS = 30; // a little past the 28 px disc: forgiving, never the corners
+    const CORE = 10; // the fairy's own core: a press here is always the fairy's
     let inside = null;
     let downAt = null;
+    // The companions (agent-fairy.cjs): every ring orbits outside this disc.
+    let mates = [];
+    let hotMate = null;
+    let downMate = null;
+    let panelOpen = false;
+    let tip = "";
+    function mateUnder(e) {
+      const dx = e.clientX - window.innerWidth / 2;
+      const dy = e.clientY - window.innerHeight / 2;
+      if (Math.hypot(dx, dy) <= CORE || !mates.length) return null;
+      return swarmMateAt(mates, dx, dy);
+    }
+    // No NATIVE tooltip (owner 2026-11-14: stuck pills): Windows draws it in a window
+    // main cannot hide. The fairy's own line rides the guarded tip window instead.
+    function showTip() { orb.title = ""; }
 
     function toggleHit(isInside) {
       if (isInside === inside) return;
       inside = isInside;
       api.hit(isInside);
     }
+    // The counted badge is a button, so the 72 px window must STOP being click-through
+    // over it (the orb's disc is the only other hot area). Without this the page's
+    // pointer-events:auto is never reached: main ignores every click outside the disc.
+    function badgeUnder(e) {
+      if (!badge.classList.contains("on")) return false;
+      const r = badge.getBoundingClientRect();
+      return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+    }
+    // ── the agent fairy: its colours, and the companions orbiting it ───
+    function wearFairy(f) {
+      if (!f || !f.color) return;
+      const el = document.documentElement;
+      el.style.setProperty("--fairy-core", f.core || "#ffffff");
+      el.style.setProperty("--fairy-glow-soft", rgba(f.glow || f.color, 0.42));
+      el.style.setProperty("--fairy-glow-faint", rgba(f.glow || f.color, 0.2));
+      el.style.setProperty("--fairy-wing", rgba(f.color, 0.34));
+      el.style.setProperty("--fairy-wing-edge", rgba(f.color, 0.6));
+      const resting = !f.agent || f.agent === "aither";
+      orb.classList.toggle("wearing", !resting);
+      orb.classList.toggle("aither", resting);
+      orb.classList.toggle("swept", f.wings === "swept");
+      orb.classList.toggle("ring", Boolean(f.ring));
+      orb.classList.toggle("nosparkle", !f.sparkles && !resting);
+      orb.dataset.agent = f.agent || "";
+    }
+    // A hover NEVER opens a card (owner 2026-11-12): one line after a dwell.
+    const dwell = createDwell();
+    let lastPoint = { x: 0, y: 0 };
     window.addEventListener("mousemove", (e) => {
       const dx = e.clientX - window.innerWidth / 2;
       const dy = e.clientY - window.innerHeight / 2;
-      toggleHit(Math.hypot(dx, dy) <= RADIUS);
+      lastPoint = { x: e.screenX, y: e.screenY };
+      const m = downAt ? null : mateUnder(e);
+      if (m !== hotMate) {
+        hotMate = m;
+        showTip();
+      }
+      const onDisc = Math.hypot(dx, dy) <= RADIUS;
+      const own = onDisc && !downAt && !panelOpen ? tip : "";
+      dwell.on(m ? `m:${m.agent}` : (own ? "orb" : null), m ? mateTip(m) : own, () => lastPoint);
+      toggleHit(onDisc || Boolean(m) || badgeUnder(e));
     });
-    window.addEventListener("mouseleave", () => toggleHit(false));
+    window.addEventListener("mouseleave", () => { hotMate = null; dwell.off(); showTip(); toggleHit(false); });
+    // Main took the window back (the pointer left without a mouseleave): re-arm.
+    if (api.onHitReset) api.onHitReset(() => { hotMate = null; dwell.off(); inside = null; });
+    if (api.onFairy) api.onFairy(wearFairy);
+    if (api.onCompanions) api.onCompanions((list) => { mates = Array.isArray(list) ? list : []; hotMate = null; dwell.off(); });
+    if (api.onPanel) api.onPanel((p) => { panelOpen = Boolean(p && p.open); showTip(); });
+
+    // A press on a companion under the disc is that companion's: its newest card
+    // opens (never the empty chat bubble the fairy's own click opens).
+    window.addEventListener("pointerdown", (e) => {
+      dwell.off();
+      if (e.button !== 0) return;
+      // The counted badge is the click's own (2026-11-20): an orbiting companion can
+      // pass over the top-right band, and its capture handler would otherwise swallow
+      // the press and open that agent's card instead of the Inbox.
+      if (badgeUnder(e)) return;
+      const m = mateUnder(e);
+      if (!m) return;
+      e.preventDefault();
+      e.stopPropagation();
+      downMate = m;
+    }, true);
+    window.addEventListener("pointerup", (e) => {
+      if (!downMate) return;
+      const m = downMate;
+      downMate = null;
+      e.stopPropagation();
+      api.openCard(m.cardId, m.agent);
+    }, true);
 
     orb.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
@@ -304,24 +925,93 @@
     }
     orb.addEventListener("pointerup", up);
     orb.addEventListener("pointercancel", () => { if (downAt) { downAt = null; api.dragEnd(); } });
-    orb.addEventListener("contextmenu", (e) => { e.preventDefault(); api.menu(); });
+    // RIGHT click: a companion's menu (its card), else the orb's own menu. Both are
+    // the pill menu (orb.html view=menu), keyboard-navigable, Esc closes.
+    window.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      dwell.off();
+      const m = mateUnder(e);
+      if (m && api.fairyMenu) api.fairyMenu(m.cardId, m.agent);
+      else if (api.orbMenu) api.orbMenu();
+      else api.menu();
+    });
     // Esc mid-trip cancels and brings the spirit home; otherwise it hides.
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
       api.cancelTrip().then((r) => { if (!r || !r.ok) api.hide(); });
     });
 
-    api.onBadge((n) => {
+    // {n, title}: the cards that need the owner and what the number counts (a bare
+    // number is still accepted). The title is the label: "31 need you · all workspaces".
+    function drawBadge(b) {
+      const n = b && typeof b === "object" ? Number(b.n) || 0 : Number(b) || 0;
       badge.textContent = String(n);
-      badge.classList.toggle("on", Number(n) > 0);
+      badge.title = b && typeof b === "object" && b.title ? String(b.title) : "";
+      badge.classList.toggle("on", n > 0);
+      // A count is a door, so it is announced as one (owner 2026-11-20).
+      badge.setAttribute("role", "button");
+      badge.tabIndex = n > 0 ? 0 : -1;
+      badge.setAttribute("aria-label", n > 0 ? `${n} waiting — open the Inbox` : "Nothing waiting");
+    }
+    api.onBadge(drawBadge);
+    // Click the count -> the Inbox list. The orb's own press/drag must not see
+    // this click (it would toggle the bubble underneath).
+    badge.addEventListener("pointerdown", (e) => { e.stopPropagation(); });
+    badge.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (Number(badge.textContent) > 0) api.needsYou();
+    });
+    // Keyboard path: a focused badge answers Enter/Space like the button it is.
+    badge.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (Number(badge.textContent) > 0) api.needsYou();
     });
     api.onBusy((busy) => orb.classList.toggle("busy", Boolean(busy)));
+    // The attention ladder: 0 = resting, 1 glow, 2 flutter, 3 insist.
+    function setNudge(level) {
+      for (const n of [1, 2, 3]) orb.classList.toggle(`nudge${n}`, Number(level) === n);
+    }
+    // The nudge chime (fairy-attention chimePattern): synthesized, no audio files.
+    // Main sends a pattern only when sounds are on and the desk is not muted.
+    let audio = null;
+    function chime(notes) {
+      if (!Array.isArray(notes) || !notes.length) return;
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        if (!audio) audio = new Ctx();
+        if (audio.state === "suspended") audio.resume();
+        const t0 = audio.currentTime + 0.02;
+        for (const n of notes.slice(0, 4)) {
+          const osc = audio.createOscillator();
+          const amp = audio.createGain();
+          const start = t0 + Math.max(0, Number(n.at) || 0);
+          const dur = Math.min(1.5, Math.max(0.05, Number(n.dur) || 0.3));
+          const peak = Math.min(0.2, Math.max(0, Number(n.gain) || 0.05));
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(Math.min(4000, Math.max(100, Number(n.freq) || 880)), start);
+          amp.gain.setValueAtTime(0.0001, start);
+          amp.gain.exponentialRampToValueAtTime(peak, start + 0.015);
+          amp.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+          osc.connect(amp).connect(audio.destination);
+          osc.start(start);
+          osc.stop(start + dur + 0.05);
+        }
+      } catch { /* no audio device: the glow still carries the nudge */ }
+    }
+    if (api.onNudge) api.onNudge((x) => { setNudge(x && x.level); if (x && x.chime) chime(x.chime); });
     if (api.onDepth) api.onDepth((d) => orb.classList.toggle("behind", Boolean(d && d.front < 0)));
     api.onTint((t) => { if (t) applyTint(t.css); });
     // The fairy IS the owner's sprite: its name, stage and mood on hover. null =
     // the plain fairy (signed out / offline), which keeps the plain tooltip.
-    const PLAIN_TIP = orb.title;
-    function wearSprite(sp) { orb.title = sp && sp.tooltip ? sp.tooltip : PLAIN_TIP; }
+    const PLAIN_TIP = orb.dataset.tip;
+    function wearSprite(sp) {
+      tip = sp && sp.tooltip ? sp.tooltip : PLAIN_TIP;
+      orb.dataset.tip = tip;
+      showTip();
+    }
     if (api.onSprite) api.onSprite(wearSprite);
     api.onAttach((a) => { orb.classList.toggle("attached", Boolean(a && a.attached)); });
     api.onTrips((t) => {
@@ -331,31 +1021,973 @@
     });
     api.init().then((s) => {
       if (!s) return;
-      if (s.badge) { badge.textContent = String(s.badge); badge.classList.toggle("on", s.badge > 0); }
+      if (s.badge) drawBadge(s.badge);
       if (s.tint) applyTint(s.tint.css);
       wearSprite(s.sprite);
       if (s.attach) orb.classList.add("attached");
+      if (s.nudgeLevel) setNudge(s.nudgeLevel);
+      if (s.fairy) wearFairy(s.fairy);
+      if (Array.isArray(s.companions)) mates = s.companions;
+      drawView(s.swarmView);
+      if (s.panel) { panelOpen = true; showTip(); }
       const n = s.trips && s.trips.count > 1 ? s.trips.count - 1 : 0;
       queued.textContent = String(n);
       queued.classList.toggle("on", n > 0);
     });
   }
 
+  // ── the swarm: every companion fairy, on rings (agent-fairy.cjs, fairy-control.cjs) ──
+  // Its own click-through window centred on the fairy (orb-window placeSwarm). A companion
+  // under the pointer makes the window hit-testable and shows ITS full tooltip; everywhere
+  // else, clicks pass to the desktop. Fine control (owner 2026-11-16): a click SELECTS (and a
+  // card it carries opens), a double click chats, right-click is its menu, a drag takes it out
+  // of the ring to pin it, the wheel over a fairy changes the radius, and the ring keeps off
+  // the focused window's content area.
+  if (view === "swarm") {
+    document.body.innerHTML = '<canvas id="nn"></canvas><div id="mates"></div><div id="cluster-count" aria-live="polite"></div>';
+    const matesEl = document.getElementById("mates");
+    const countEl = document.getElementById("cluster-count");
+    const nn = document.getElementById("nn");
+    const nctx = nn ? nn.getContext("2d") : null;
+    let mates = [];
+    let hotMate = null;
+    let inside = false;
+    let frame = 0;
+    let panelOpen = false;
+    let dragging = null; // {m, x, y, started}
+    let wheelUntil = 0; // a wheel session holds the window interactive (see the wheel listener)
+    // Visual neurons (neurons-model.cjs): state first, so the shared callbacks below
+    // can never read a later `const` in its dead zone.
+    const reducedMotion = Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    let nnOn = false;
+    let nnTtl = 20000;
+    let nnPulse = 1200;
+    let nnGraphs = new Map();
+    let nnFrame = 0;
+    let nnTimer = 0; // reduced motion: ONE pending repaint, never a loop
+    let nnTint = "#d6ecff";
+    // 2026-11-13 (owner: "the overlay feels laggy"): measured 19 style+layout passes a
+    // second in THIS page while nothing happened (left/top at 20 fps, forever). Now the
+    // lap moves `translate` (compositor only, no layout) and it RESTS after 20 s with no
+    // pointer and no companion speaking (a waiting one keeps its colour and badge, still); a pointer or a new list wakes it.
+    const REST_AFTER_MS = 20_000;
+    const AVOID_MARGIN = 12;
+    const DRAG_PX = 8;
+    let lastStir = Date.now();
+    const lively = () => mates.some((m) => /st-speaking/.test(m.el.className));
+    function stir() {
+      lastStir = Date.now();
+      if (!frame && mates.length) place();
+    }
+    /** Where a companion is NOW: its slot (or its dock spot), pushed off the focused window. */
+    function spot(m, i, now) {
+      let o = sv.mode === "dock" ? dockOffset(i, mates.length, sv.edge) : swarmOffset(m.slot, now);
+      if (sv.avoid && sv.mode !== "dock") o = avoidPoint(o, sv.avoid, AVOID_MARGIN);
+      const lx = window.innerWidth / 2 - 8;
+      const ly = window.innerHeight / 2 - 8;
+      return { x: Math.max(-lx, Math.min(lx, o.x)), y: Math.max(-ly, Math.min(ly, o.y)) };
+    }
+    // The orbit's clock stands still while the pointer is on a fairy (or drags one): a fairy that
+    // circles out from under the pointer between the press and the release is a click that misses.
+    let clock = Date.now();
+    let lastTick = clock;
+    function advance() {
+      const t = Date.now();
+      if (!hotMate && !dragging) clock += t - lastTick;
+      lastTick = t;
+      return clock;
+    }
+    window.__swarmClockOffset = () => { advance(); return clock - Date.now(); }; // a test seam: where the orbit is vs the wall clock
+    function place() {
+      frame = 0;
+      if (!mates.length) return;
+      const now = advance();
+      mates.forEach((m, i) => {
+        const o = spot(m, i, now);
+        m.el.style.translate = `${o.x}px ${o.y}px`;
+        m.x = o.x;
+        m.y = o.y;
+      });
+      // The fairy orbited out from under a still pointer: no mousemove comes, so
+      // let go here, or the tip stays up and the window keeps the clicks.
+      if (!dragging && hotMate && mateAt(lastClient.x, lastClient.y) !== hotMate) {
+        hotMate.el.classList.remove("hot");
+        hotMate = null;
+        dwell.off();
+        if (Date.now() >= wheelUntil) setInside(false);
+      }
+      const wall = Date.now();
+      if (sv.mode === "dock" && !sv.avoid && !lively() && wall - lastStir > 1500) return; // a docked column holds still
+      if (!lively() && wall - lastStir > REST_AFTER_MS) { document.body.classList.add("rest"); return; }
+      document.body.classList.remove("rest");
+      frame = window.setTimeout(place, 50); // 20 fps is plenty for a slow lap
+    }
+    function setMates(list) {
+      matesEl.textContent = "";
+      if (frame) { window.clearTimeout(frame); frame = 0; }
+      // Every fairy moves to a new slot: whatever was hovered is gone (2026-11-14:
+      // the tip stayed up and the window kept the mouse after a list change).
+      if (!dragging) {
+        hotMate = null;
+        dwell.off(); // declared below; setMates only ever runs after the page is set up
+        if (Date.now() >= wheelUntil) setInside(false);
+      }
+      const items = Array.isArray(list) ? list : [];
+      const slots = swarmSlots(sv.mode, items.length, sv.radius);
+      // The visible count (fairy-cluster.cjs): every fairy, the bead's hidden ones too.
+      const total = items.reduce((a, c) => a + (c && c.kind === "more" ? Math.max(0, Number(c.count) || 0) : 1), 0);
+      countEl.textContent = total > 0 ? String(total) : "";
+      countEl.style.display = total > 0 ? "" : "none";
+      mates = items.map((c, i) => {
+        const el = document.createElement("i");
+        const st = ["waiting", "speaking", "working", "idle"].includes(c.state) ? c.state
+          : (Number(c.count) > 0 ? "waiting" : "idle");
+        el.className = `mate st-${st}${c.kind === "more" ? " bead" : ""}${c.kind ? ` k-${c.kind}` : ""}${c.selected ? " sel" : ""}${c.muted ? " muted" : ""}${dragging && dragging.m.agent === String(c.agent || "") ? " drag" : ""}`;
+        el.dataset.agent = String(c.agent || "");
+        el.style.setProperty("--m-size", `${slots[i].size}px`);
+        el.style.setProperty("--m-color", rgba(c.color, 0.95));
+        el.style.setProperty("--m-core", c.core || "#ffffff");
+        el.style.setProperty("--m-glow", rgba(c.glow || c.color, 0.55));
+        el.style.setProperty("--m-wing", rgba(c.color, 0.4));
+        if (c.kind === "more" || Number(c.count) > 1) {
+          const badge = document.createElement("b");
+          badge.textContent = c.kind === "more" ? `+${Number(c.count) || 0}` : String(Number(c.count));
+          el.append(badge);
+        }
+        matesEl.append(el);
+        const extra = Number(c.count) > 1 ? ` (${Number(c.count)} cards)` : "";
+        const stateWord = st === "waiting" ? "" : ` [${st}]`;
+        const doWhat = c.kind === "more" ? "click for the whole list" : c.cardId ? "click to open its card" : "click to select";
+        return {
+          el, slot: slots[i], x: 0, y: 0, id: String(c.cardId || ""), agent: String(c.agent || ""),
+          color: String(c.color || ""), // the fairy's own colour: the neuron graph wears it too
+          tip: mateTip(c), aria: `${c.label || c.agent}${stateWord}: ${c.title || "a card"}${extra} -- ${doWhat}`,
+        };
+      });
+      stir();
+      // A fairy moved: the graph around it moves with it (reduced motion repaints once).
+      if (nnOn) { if (reducedMotion) paintReduced(); else startNeurons(); }
+    }
+    function mateAt(dx, dy) {
+      let best = null;
+      let bestD = Infinity;
+      for (const m of mates) {
+        const d = Math.hypot(dx - m.x, dy - m.y);
+        if (d <= m.slot.hit / 2 + 2 && d < bestD) { best = m; bestD = d; }
+      }
+      return best;
+    }
+    function setInside(next) {
+      if (next === inside) return;
+      inside = next;
+      api.swarmHit(next);
+    }
+    // HOVER: the companion grows and, after a dwell, its FULL tooltip says who, what kind,
+    // its status and what its badge means. It never opens a card (owner 2026-11-12: "hovering
+    // over fairies causes cards to keep popping and they change so fast -- don't engage on hover").
+    const dwell = createDwell();
+    let lastPoint = { x: 0, y: 0 };
+    let lastClient = { x: 1e9, y: 1e9 };
+    // -- drag out (pin) ----------------------------------------------------------------
+    // A press that travels DRAG_PX with the button down takes the fairy out of the ring: main
+    // moves its pin window under the real cursor on every move and decides at the end (on the
+    // fairy = rejoin, anywhere else = pinned). The drag ends on ANY of: pointerup, mouseup,
+    // pointercancel, blur, a buttonless move -- so it can never be stranded.
+    let press = null;
+    let droppedAt = 0;
+    function endDrag(reason) {
+      const d = dragging;
+      press = null;
+      if (!d) return;
+      dragging = null;
+      droppedAt = Date.now();
+      document.body.classList.remove("dragging");
+      try { document.body.releasePointerCapture(d.pointerId); } catch { /* not captured */ }
+      api.swarmDrag("end", d.m.agent, "swarm");
+      void reason;
+    }
+    window.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || !hotMate) return;
+      press = { m: hotMate, x: e.screenX, y: e.screenY, pointerId: e.pointerId };
+    });
+    window.addEventListener("pointerup", () => endDrag("up"));
+    window.addEventListener("mouseup", () => endDrag("mouseup"));
+    window.addEventListener("pointercancel", () => endDrag("cancel"));
+    window.addEventListener("blur", () => endDrag("blur"));
+    document.addEventListener("visibilitychange", () => { if (document.hidden) endDrag("hidden"); });
+    window.addEventListener("keydown", (e) => { if (e.key === "Escape") endDrag("escape"); });
+    window.addEventListener("mousemove", (e) => {
+      stir();
+      if (dragging) {
+        if (e.buttons === 0) return endDrag("buttonless");
+        api.swarmDrag("move", dragging.m.agent, "swarm");
+        return;
+      }
+      if (press && e.buttons === 1 && Math.hypot(e.screenX - press.x, e.screenY - press.y) > DRAG_PX) {
+        const m = press.m;
+        press = null;
+        dragging = { m, pointerId: e.pointerId };
+        try { document.body.setPointerCapture(e.pointerId); } catch { /* capture is a nicety */ }
+        m.el.classList.add("drag");
+        dwell.off();
+        document.body.classList.add("dragging");
+        api.swarmDrag("start", m.agent, "swarm");
+        return;
+      }
+      lastClient = { x: e.clientX - window.innerWidth / 2, y: e.clientY - window.innerHeight / 2 };
+      const m = mateAt(lastClient.x, lastClient.y);
+      lastPoint = { x: e.screenX, y: e.screenY };
+      if (m !== hotMate) {
+        if (hotMate) hotMate.el.classList.remove("hot");
+        hotMate = m;
+        if (m) m.el.classList.add("hot");
+      }
+      dwell.on(m && !panelOpen ? `m:${m.agent}` : null, m ? m.tip : "", () => lastPoint);
+      setInside(Boolean(m));
+    });
+    window.addEventListener("mouseleave", () => {
+      if (dragging) return; // the pointer is captured: the drag owns it
+      if (hotMate) { hotMate.el.classList.remove("hot"); hotMate = null; }
+      if (Date.now() < wheelUntil) return; // a resize under the pointer is not the pointer leaving
+      lastClient = { x: 1e9, y: 1e9 };
+      dwell.off();
+      setInside(false);
+    });
+    // Main took the window back (the pointer left without a mouseleave): re-arm.
+    if (api.onHitReset) api.onHitReset(() => {
+      if (dragging) return;
+      if (hotMate) { hotMate.el.classList.remove("hot"); hotMate = null; }
+      dwell.off();
+      if (Date.now() < wheelUntil) { inside = false; setInside(true); return; } // keep the wheel
+      lastClient = { x: 1e9, y: 1e9 };
+      inside = false;
+    });
+    // The wheel over a fairy changes the swarm's radius (up = wider, down = tighter).
+    // Each notch re-lays the ring under a pointer that has not moved, so the fairy it was on slides
+    // away: for 1.5 s after a notch the window keeps the wheel (and the pointer) wherever it is.
+    let wheelTimer = 0;
+    window.addEventListener("wheel", (e) => {
+      if ((!hotMate && Date.now() >= wheelUntil) || dragging) return;
+      e.preventDefault();
+      wheelUntil = Date.now() + 1500;
+      if (wheelTimer) window.clearTimeout(wheelTimer);
+      wheelTimer = window.setTimeout(() => { wheelTimer = 0; if (!hotMate && !dragging) setInside(false); }, 1550);
+      api.swarmWheel(e.deltaY);
+    }, { passive: false });
+    // LEFT click on a companion SELECTS it (an outline; push-to-talk goes to it) and, when it
+    // carries a card, opens its newest one -- pinned until closed or another click. A double
+    // click opens a chat with THAT agent.
+    window.addEventListener("click", () => {
+      dwell.off();
+      if (Date.now() - droppedAt < 400) return; // the release of a drag is not a click
+      if (!hotMate) return;
+      // The counted bead (fairy-cluster.cjs): the whole waiting list, never a selection.
+      if (hotMate.agent === "more") { if (api.chatAgent) api.chatAgent("more"); return; }
+      api.select(hotMate.agent);
+      if (hotMate.id) api.openCard(hotMate.id, hotMate.agent);
+    });
+    window.addEventListener("dblclick", () => {
+      if (hotMate && hotMate.agent && api.chatAgent) api.chatAgent(hotMate.agent);
+    });
+    // RIGHT click on a companion: its menu (chat, grow, mute, pin, hide, open session, and its
+    // card's rows: open, answer, snooze, stop, dismiss, go to the session, copy the link).
+    window.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      dwell.off();
+      if (hotMate && api.fairyMenu) api.fairyMenu(hotMate.id, hotMate.agent);
+    });
+    if (api.onPanel) api.onPanel((p) => { panelOpen = Boolean(p && p.open); if (panelOpen) dwell.off(); });
+    // Layout, the focused window to keep off, the radius: re-lay the ring and move at once.
+    let lastLayoutKey = "";
+    function viewChanged(v) {
+      if (!v) return;
+      sv = { ...sv, ...v };
+      const key = `${sv.mode}|${sv.radius}|${sv.edge}`;
+      if (key !== lastLayoutKey && mates.length) {
+        lastLayoutKey = key;
+        const slots = swarmSlots(sv.mode, mates.length, sv.radius);
+        mates.forEach((m, i) => { m.slot = slots[i]; });
+      }
+      lastLayoutKey = key;
+      stir();
+    }
+    // ── visual neurons (neurons-model.cjs): a small step graph around an agent ────
+    // Main batches steps at <= 10 Hz, so this page never receives an IPC per step or
+    // per frame. Each node fades on its own clock; the loop stops when nothing is
+    // live. A thinking step is a ring, a tool call a diamond, a result or a spoken
+    // line a warm spark. Reduced motion gets one frame per update and no pulse.
+    function nnAlpha(n, now) {
+      return Math.max(0, Math.min(1, 1 - (now - n.at) / nnTtl));
+    }
+    function nnSize() {
+      if (!nn || !nctx) return null;
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const cw = Math.round(w * dpr);
+      const ch = Math.round(h * dpr);
+      if (nn.width !== cw || nn.height !== ch) {
+        nn.width = cw;
+        nn.height = ch;
+        nn.style.width = `${w}px`;
+        nn.style.height = `${h}px`;
+      }
+      nctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { w, h };
+    }
+    /** One agent's graph around (ox, oy). Returns true while anything is still fading. */
+    function nnDrawGraph(g, ox, oy, radius, color, now) {
+      const live = new Map();
+      for (const n of Array.isArray(g.nodes) ? g.nodes : []) {
+        if (!n || !Number.isFinite(n.at) || !Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+        if (now - n.at >= nnTtl) continue;
+        live.set(n.id, n);
+      }
+      if (!live.size) return false;
+      nctx.lineWidth = 1;
+      for (const e of Array.isArray(g.edges) ? g.edges : []) {
+        const a = live.get(e && e.from);
+        const b = live.get(e && e.to);
+        if (!a || !b) continue;
+        const alpha = Math.min(nnAlpha(a, now), nnAlpha(b, now)) * 0.45;
+        if (alpha <= 0.02) continue;
+        nctx.strokeStyle = rgba(color, alpha);
+        nctx.beginPath();
+        nctx.moveTo(ox + a.x * radius, oy + a.y * radius);
+        nctx.lineTo(ox + b.x * radius, oy + b.y * radius);
+        nctx.stroke();
+      }
+      let any = false;
+      for (const n of live.values()) {
+        const alpha = nnAlpha(n, now);
+        if (alpha <= 0.02) continue;
+        any = true;
+        const x = ox + n.x * radius;
+        const y = oy + n.y * radius;
+        const pulse = reducedMotion ? 0 : Math.max(0, Math.min(1, 1 - (now - n.at) / nnPulse));
+        const size = 1.9 + pulse * 2.2;
+        if (n.kind === "thinking") {
+          nctx.strokeStyle = rgba(color, alpha * 0.9);
+          nctx.lineWidth = 1.2;
+          nctx.beginPath();
+          nctx.arc(x, y, size, 0, Math.PI * 2);
+          nctx.stroke();
+        } else if (n.kind === "tool") {
+          nctx.fillStyle = rgba(color, alpha);
+          nctx.beginPath();
+          nctx.moveTo(x, y - size);
+          nctx.lineTo(x + size, y);
+          nctx.lineTo(x, y + size);
+          nctx.lineTo(x - size, y);
+          nctx.closePath();
+          nctx.fill();
+        } else {
+          // A result or a spoken line: a warm core in a halo.
+          const halo = nctx.createRadialGradient(x, y, 0, x, y, size * 2.6);
+          halo.addColorStop(0, rgba(n.kind === "line" ? "#ffffff" : color, alpha * 0.9));
+          halo.addColorStop(1, rgba(color, 0));
+          nctx.fillStyle = halo;
+          nctx.beginPath();
+          nctx.arc(x, y, size * 2.6, 0, Math.PI * 2);
+          nctx.fill();
+          nctx.fillStyle = rgba("#ffffff", alpha);
+          nctx.beginPath();
+          nctx.arc(x, y, Math.max(1.1, size * 0.55), 0, Math.PI * 2);
+          nctx.fill();
+        }
+      }
+      return any;
+    }
+    /** One frame. True when something is still fading, so the loop runs on. */
+    function paintNeurons() {
+      if (!nnOn || !nctx) return false;
+      const size = nnSize();
+      if (!size) return false;
+      nctx.clearRect(0, 0, size.w, size.h);
+      const now = Date.now();
+      const cx = size.w / 2 - 8;
+      const cy = size.h / 2 - 8;
+      let live = false;
+      const inRing = new Set();
+      for (const m of mates) {
+        const g = nnGraphs.get(m.agent);
+        if (!g) continue;
+        inRing.add(m.agent);
+        const radius = Math.max(22, (m.slot ? m.slot.size : 12) * 1.8);
+        if (nnDrawGraph(g, cx + m.x, cy + m.y, radius, m.color || nnTint || "#d6ecff", now)) live = true;
+      }
+      // An agent whose fairy is not in the ring draws at the middle (the fairy itself):
+      // only the most recently active one, so two graphs never overlap.
+      let centre = null;
+      let centreAt = -Infinity;
+      for (const g of nnGraphs.values()) {
+        if (inRing.has(g.agent)) continue;
+        const last = (g.nodes || []).reduce((a, n) => Math.max(a, Number(n && n.at) || 0), -Infinity);
+        if (last > centreAt) { centre = g; centreAt = last; }
+      }
+      if (centre && nnDrawGraph(centre, cx, cy, 46, nnTint || "#d6ecff", now)) live = true;
+      return live;
+    }
+    function stopNeurons() {
+      if (nnFrame) { window.cancelAnimationFrame(nnFrame); nnFrame = 0; }
+      if (nnTimer) { window.clearTimeout(nnTimer); nnTimer = 0; }
+      if (nctx) nctx.clearRect(0, 0, nn.width, nn.height);
+    }
+    /** Reduced motion: how long until the next step expires, or Infinity. */
+    function nnNextExpiry(now) {
+      let next = Infinity;
+      for (const g of nnGraphs.values()) {
+        for (const n of Array.isArray(g.nodes) ? g.nodes : []) {
+          if (!n || !Number.isFinite(n.at)) continue;
+          const left = n.at + nnTtl - now;
+          if (left > 0 && left < next) next = left;
+        }
+      }
+      return next;
+    }
+    /** Reduced motion: ONE frame now, and one more when a step expires, so the graph
+     *  still clears. No loop and no pulse -- a still picture is not allowed to outlive
+     *  its own 20 s fade by staying on screen forever. */
+    function paintReduced() {
+      if (nnTimer) { window.clearTimeout(nnTimer); nnTimer = 0; }
+      paintNeurons();
+      const left = nnNextExpiry(Date.now());
+      if (Number.isFinite(left)) nnTimer = window.setTimeout(paintReduced, Math.max(50, left + 20));
+    }
+    function startNeurons() {
+      if (nnFrame || reducedMotion) return;
+      const tick = () => { nnFrame = 0; if (paintNeurons()) nnFrame = window.requestAnimationFrame(tick); };
+      nnFrame = window.requestAnimationFrame(tick);
+    }
+    function setNeurons(p) {
+      if (!p) return;
+      nnOn = Boolean(p.on);
+      if (Number(p.ttlMs) > 0) nnTtl = Number(p.ttlMs);
+      if (Number(p.pulseMs) > 0) nnPulse = Number(p.pulseMs);
+      const next = new Map();
+      for (const g of Array.isArray(p.agents) ? p.agents : []) {
+        if (g && g.agent && Array.isArray(g.nodes) && g.nodes.length) next.set(String(g.agent), g);
+      }
+      nnGraphs = next;
+      try { nnTint = String(getComputedStyle(document.documentElement).getPropertyValue("--tint") || "").trim() || "#d6ecff"; } catch { /* keep the default */ }
+      if (!nnOn || !next.size) { stopNeurons(); return; }
+      if (reducedMotion) { stopNeurons(); paintReduced(); return; } // honour it: one frame per update, no pulse, and one more when a step expires
+      startNeurons();
+    }
+    if (api.onNeurons) api.onNeurons(setNeurons);
+    if (api.onSwarmView) api.onSwarmView(viewChanged);
+    api.onCompanions(setMates);
+    api.init().then((s) => {
+      if (!s) return;
+      if (s.panel) panelOpen = true;
+      if (s.swarmView) sv = { ...sv, ...s.swarmView };
+      lastLayoutKey = `${sv.mode}|${sv.radius}|${sv.edge}`;
+      if (s.companions) setMates(s.companions);
+      if (s.neurons) setNeurons(s.neurons);
+    });
+  }
+
+  // ── a pinned fairy: its own small window, wherever the owner put it ─────────────
+  // Hover = the full tooltip, click = select (and its card), right-click = the same menu as in
+  // the ring (the pin row reads "Unpin"), drag = move it; dropped on the main fairy it rejoins
+  // the swarm. The window moves under the pointer, so the drag is measured in SCREEN
+  // coordinates; main reads the real cursor and decides at the end.
+  if (view === "pin") {
+    document.body.innerHTML = '<div id="mates"></div>';
+    const matesEl = document.getElementById("mates");
+    const dwell = createDwell();
+    let mate = null;
+    let el = null;
+    let press = null;
+    let dragging = false;
+    let droppedAt = 0;
+    let lastPoint = { x: 0, y: 0 };
+    function draw(c) {
+      mate = c && c.agent ? c : null;
+      matesEl.textContent = "";
+      el = null;
+      if (!mate) return;
+      el = document.createElement("i");
+      const st = ["waiting", "speaking", "working", "idle"].includes(mate.state) ? mate.state : "idle";
+      el.className = `mate st-${st}${mate.selected ? " sel" : ""}${mate.muted ? " muted" : ""}`;
+      el.style.translate = "0px 0px";
+      el.style.setProperty("--m-color", rgba(mate.color, 0.95));
+      el.style.setProperty("--m-core", mate.core || "#ffffff");
+      el.style.setProperty("--m-glow", rgba(mate.glow || mate.color, 0.55));
+      el.style.setProperty("--m-wing", rgba(mate.color, 0.4));
+      if (Number(mate.count) > 1) {
+        const badge = document.createElement("b");
+        badge.textContent = String(Number(mate.count));
+        el.append(badge);
+      }
+      matesEl.append(el);
+    }
+    function endDrag() {
+      press = null;
+      if (!dragging) return;
+      dragging = false;
+      droppedAt = Date.now();
+      document.body.classList.remove("grabbing");
+      if (mate) api.swarmDrag("end", mate.agent, "pin");
+    }
+    window.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || !mate) return;
+      press = { x: e.screenX, y: e.screenY };
+      dwell.off();
+      try { document.body.setPointerCapture(e.pointerId); } catch { /* capture is a nicety */ }
+    });
+    window.addEventListener("mousemove", (e) => {
+      lastPoint = { x: e.screenX, y: e.screenY };
+      if (dragging) {
+        if (e.buttons === 0) return endDrag();
+        api.swarmDrag("move", mate.agent, "pin");
+        return;
+      }
+      if (press && e.buttons === 1 && Math.hypot(e.screenX - press.x, e.screenY - press.y) > 8 && mate) {
+        press = null;
+        dragging = true;
+        document.body.classList.add("grabbing");
+        api.swarmDrag("start", mate.agent, "pin");
+        return;
+      }
+      if (el) el.classList.add("hot");
+      dwell.on(mate ? `p:${mate.agent}` : null, mate ? mateTip(mate) : "", () => lastPoint);
+    });
+    window.addEventListener("mouseleave", () => { if (dragging) return; if (el) el.classList.remove("hot"); dwell.off(); });
+    for (const ev of ["pointerup", "mouseup", "pointercancel", "blur"]) window.addEventListener(ev, endDrag);
+    window.addEventListener("click", () => {
+      dwell.off();
+      if (!mate || Date.now() - droppedAt < 400) return;
+      api.select(mate.agent);
+      if (mate.cardId) api.openCard(mate.cardId, mate.agent);
+    });
+    window.addEventListener("dblclick", () => { if (mate && api.chatAgent) api.chatAgent(mate.agent); });
+    window.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      dwell.off();
+      if (mate && api.fairyMenu) api.fairyMenu(mate.cardId || "", mate.agent);
+    });
+    if (api.onPinMate) api.onPinMate((p) => draw(p && p.mate));
+    api.init().then((s) => { if (s && s.mate) draw(s.mate); });
+  }
+
+  // ── the right-click menu (fairy-menu.cjs builds it, orb-window.cjs picks) ──
+  // Its own focused window: arrows / Tab / Home / End move, Enter or a click picks,
+  // Esc (or clicking anywhere else) closes. A pick sends only the item's id; main
+  // checks it against the menu it showed.
+  if (view === "menu") {
+    document.body.innerHTML = '<div id="menu" role="menu" aria-label="Aither menu">'
+      + '<div id="m-head"></div><div id="m-items"></div></div>';
+    const head = document.getElementById("m-head");
+    const list = document.getElementById("m-items");
+    let buttons = [];
+    const usable = () => buttons.filter((b) => b.getAttribute("aria-disabled") !== "true");
+    /** The flat pill list: a card's own rows (fairy-menu.cjs fairyItems). */
+    function renderList(m) {
+      for (const it of m.items) {
+        if (!it || it.sep) {
+          const d = document.createElement("div");
+          d.className = "m-sep";
+          list.append(d);
+          continue;
+        }
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = `m-item${buttons.length === 0 ? " first" : ""}`;
+        b.setAttribute("role", "menuitem");
+        b.dataset.id = String(it.id || "");
+        b.textContent = String(it.label || it.id || "");
+        if (it.hint) b.title = String(it.hint);
+        if (it.disabled) b.setAttribute("aria-disabled", "true");
+        b.style.animationDelay = `${buttons.length * 18}ms`;
+        b.addEventListener("click", () => { if (!it.disabled) api.menuPick(it.id); });
+        list.append(b);
+        buttons.push(b);
+      }
+    }
+    /** The RADIAL Aither menu: geometry is computed by orb-radial-menu.cjs and sent
+     *  with the payload, so this page only places buttons. Every node carries its
+     *  number key; the inner ring is the four Display modes with the tick on the one
+     *  in force, the outer ring this page's actions + More, the hub closes. */
+    function renderRadial(m) {
+      const c = m.window ? { x: m.window.width / 2, y: m.window.height / 2 } : { x: 224, y: 224 };
+      if (m.nodes.some((n) => n.ring === "inner") && m.nodes.some((n) => n.ring === "outer")) {
+        const ring = document.createElement("div");
+        ring.id = "m-ring";
+        const outer = Math.max(...m.nodes.map((n) => Math.hypot(n.x - c.x, n.y - c.y))) + 16;
+        ring.style.left = `${c.x - outer}px`;
+        ring.style.top = `${c.y - outer}px`;
+        ring.style.width = `${outer * 2}px`;
+        ring.style.height = `${outer * 2}px`;
+        list.append(ring);
+      }
+      if (m.hub) {
+        const hub = document.createElement("button");
+        hub.type = "button";
+        hub.id = "m-hub";
+        hub.className = "m-hub";
+        hub.setAttribute("role", "menuitem");
+        hub.dataset.id = "";
+        hub.title = "Close the menu (Esc)";
+        hub.style.left = `${m.hub.x}px`;
+        hub.style.top = `${m.hub.y}px`;
+        hub.style.width = `${m.hub.width}px`;
+        hub.style.height = `${m.hub.height}px`;
+        hub.textContent = `${String(m.hub.label || "Aither")} ✕`;
+        hub.addEventListener("click", () => api.menuPick(""));
+        list.append(hub);
+        buttons.push(hub);
+      }
+      for (const node of m.nodes) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = `m-node ${node.ring === "inner" ? "m-chip" : "m-pill"}`
+          + `${node.checked ? " checked" : ""}${node.more ? " more" : ""}`;
+        b.setAttribute("role", node.ring === "inner" ? "menuitemradio" : "menuitem");
+        if (node.checked) b.setAttribute("aria-checked", "true");
+        b.dataset.id = String(node.id || "");
+        b.dataset.key = String(node.key || "");
+        b.style.left = `${node.x}px`;
+        b.style.top = `${node.y}px`;
+        if (node.width) b.style.width = `${node.width}px`;
+        if (node.height) b.style.height = `${node.height}px`;
+        b.textContent = node.ring === "inner"
+          ? String(node.short || node.label || node.id)
+          : String(node.label || node.id);
+        if (node.hint) b.title = `${node.hint}${node.key ? `  [${node.key}]` : ""}`;
+        if (node.disabled) b.setAttribute("aria-disabled", "true");
+        if (node.key) {
+          const key = document.createElement("span");
+          key.className = "m-key";
+          key.textContent = String(node.key);
+          b.append(key);
+        }
+        b.style.animationDelay = `${buttons.length * 16}ms`;
+        b.addEventListener("click", () => { if (!node.disabled) api.menuPick(node.id); });
+        list.append(b);
+        buttons.push(b);
+      }
+    }
+    function render(m) {
+      list.textContent = "";
+      buttons = [];
+      document.body.classList.toggle("radial", Boolean(m && m.layout === "radial"));
+      if (!m || !Array.isArray(m.items)) return;
+      head.textContent = String(m.header || "Aither");
+      if (m.layout === "radial" && Array.isArray(m.nodes)) renderRadial(m);
+      else renderList(m);
+      const on = usable();
+      const first = on.find((b) => b.dataset.key) || on[0] || buttons[0];
+      if (first) first.focus();
+    }
+    function move(step) {
+      const on = usable();
+      if (!on.length) return;
+      const i = on.indexOf(document.activeElement);
+      const next = step === "home" ? 0 : step === "end" ? on.length - 1
+        : i < 0 ? 0 : (i + step + on.length) % on.length;
+      on[next].focus();
+    }
+    document.addEventListener("keydown", (e) => {
+      if (api.menuHover) api.menuHover("key"); // a key keeps the menu up, like the pointer on it
+      if (e.key === "Escape") { e.preventDefault(); api.menuPick(""); return; }
+      // Radial numbering: the payload assigns 1..N (inner ring first), so the same
+      // digits pick the same action on every page.
+      if (document.body.classList.contains("radial") && /^[1-9]$/.test(e.key)) {
+        const hit = buttons.find((b) => b.dataset.key === e.key);
+        if (hit) {
+          e.preventDefault();
+          if (hit.getAttribute("aria-disabled") !== "true") hit.click();
+        }
+        return;
+      }
+      if (e.key === "ArrowRight" || e.key === "ArrowDown" || (e.key === "Tab" && !e.shiftKey)) { e.preventDefault(); move(1); return; }
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp" || (e.key === "Tab" && e.shiftKey)) { e.preventDefault(); move(-1); return; }
+      if (e.key === "Home") { e.preventDefault(); move("home"); return; }
+      if (e.key === "End") { e.preventDefault(); move("end"); return; }
+      // A letter jumps to the next item that starts with it.
+      if (e.key.length === 1 && /\S/.test(e.key)) {
+        const on = usable();
+        const from = Math.max(0, on.indexOf(document.activeElement));
+        const hit = [...on.slice(from + 1), ...on.slice(0, from + 1)]
+          .find((b) => b.textContent.trim().toLowerCase().startsWith(e.key.toLowerCase()));
+        if (hit) hit.focus();
+      }
+    });
+    document.addEventListener("contextmenu", (e) => e.preventDefault());
+    // Main closes an unfocused menu once the pointer has been off it a while.
+    if (api.menuHover) {
+      const root = document.documentElement;
+      root.addEventListener("mouseenter", () => api.menuHover(true));
+      root.addEventListener("mouseleave", () => api.menuHover(false));
+    }
+    api.onMenu(render);
+    api.init().then((s) => { if (s && s.menu) render(s.menu); });
+  }
+
+  // ── the hover tip: one line, never focused, never clicked ──────────────────
+  if (view === "tip") {
+    document.body.innerHTML = '<div id="tip" role="tooltip"></div>';
+    const tipEl = document.getElementById("tip");
+    api.onTip((t) => {
+      tipEl.textContent = t && t.text ? String(t.text) : "";
+      document.body.classList.toggle("left", Boolean(t && t.side === "left"));
+      document.body.classList.toggle("multi", Boolean(t && t.multi));
+    });
+  }
+
+  // ── the whisper: the card the fairy carries (fairy-attention.cjs) ──────
+  // Never focused (the window is focusable:false) and click-through until the
+  // pointer is ON the card: main flips hit testing when this page says so.
+  if (view === "nudge") {
+    document.body.innerHTML = '<div id="nudge" class="gone">'
+      + '<div id="n-head"><span id="n-dot"></span><span id="n-lead"></span>'
+      + '<span id="n-more" title="See everything that is waiting"></span>'
+      + '<button id="n-x" title="Later: I will bring it back in an hour">&#10005;</button></div>'
+      + '<div id="n-title"></div><div id="n-old"></div><div id="n-need" title="Open the card"></div><div id="n-why"></div>'
+      + '<div id="n-ui"></div><div id="n-acts"></div>'
+      + '<div id="n-voice"><button data-act="read" title="Aither reads the card out loud">Read it to me</button>'
+      + '<button data-act="talk" title="Say an option, or what to do instead">Answer by voice</button></div>'
+      + '<div id="n-extra"><div id="n-sum"></div><ul id="n-facts"></ul><div id="n-alt"></div>'
+      + '<div id="n-foot">'
+      + '<button data-act="chat" title="Chat with the fairy about this card (also Alt+Space)">Chat</button>'
+      + '<button data-act="keep" title="It matters: nudge harder until it is done">Keep nudging me</button>'
+      + '<button data-act="mute" title="Leave it on the badge">Stop nudging this</button></div></div>'
+      + '<div id="n-flash"></div></div>';
+    const box = document.getElementById("nudge");
+    const leadEl = document.getElementById("n-lead");
+    const moreEl = document.getElementById("n-more");
+    const titleEl = document.getElementById("n-title");
+    const whyEl = document.getElementById("n-why");
+    const actsEl = document.getElementById("n-acts");
+    const uiEl = document.getElementById("n-ui");
+    const flashEl = document.getElementById("n-flash");
+    let inside = false;
+    function setInside(next) {
+      if (next === inside) return;
+      inside = next;
+      api.nudgeAct("hover", next);
+    }
+    window.addEventListener("mousemove", (e) => {
+      const r = box.getBoundingClientRect();
+      setInside(box.classList.contains("on")
+        && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
+    });
+    window.addEventListener("mouseleave", () => setInside(false));
+    function button(label, cls, onClick, tip) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      if (cls) b.className = cls;
+      if (tip) b.title = tip;
+      b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); });
+      return b;
+    }
+    // The card's generated UI: a render tree main built and validated
+    // (card-ui.cjs). DOM APIs only -- createElement/textContent, never innerHTML --
+    // and a button reports ONLY its key; main re-checks it against the card's
+    // options before anything is answered. Any surprise = null = today's layout.
+    // `shown`: what the whisper already printed above (title, summary, facts) --
+    // a generated Text repeating one is skipped (undefined), not drawn twice.
+    function alreadyShown(text, shown) {
+      const t = text.replace(/[ \t]+\n/g, "\n").trim();
+      return shown.some((s) => s && (s === t || (s.endsWith("…") && t.startsWith(s.slice(0, -1)))));
+    }
+    // undefined = skip this node; null = the tree cannot be drawn (fall back).
+    function uiNode(n, depth, keys, shown) {
+      if (!n || typeof n !== "object" || depth > 8) return null;
+      if (n.type === "text" && typeof n.text === "string") {
+        if (alreadyShown(n.text, shown)) return undefined;
+        const t = document.createElement("div");
+        t.className = `u-text v-${/^(h[1-5]|body|caption)$/.test(n.variant) ? n.variant : "body"}`;
+        t.textContent = n.text;
+        return t;
+      }
+      if (n.type === "button" && typeof n.text === "string" && keys.includes(n.key)) {
+        const cls = n.variant === "primary" ? "primary" : n.variant === "borderless" ? "borderless" : "";
+        return button(n.text, cls, () => api.nudgeAct("answer", n.key), "");
+      }
+      if ((n.type === "column" || n.type === "row") && Array.isArray(n.children)) {
+        const el = document.createElement("div");
+        el.className = n.type === "row"
+          ? `u-row j-${/^(spaceBetween|center|end)$/.test(n.justify) ? n.justify : "start"}`
+          : `u-col a-${/^(start|center|end)$/.test(n.align) ? n.align : "stretch"}`;
+        for (const c of n.children) {
+          const child = uiNode(c, depth + 1, keys, shown);
+          if (child === null) return null;
+          if (child) el.append(child);
+        }
+        return el.childNodes.length || depth === 0 ? el : undefined;
+      }
+      return null;
+    }
+    function renderUi(v) {
+      uiEl.textContent = "";
+      uiEl.classList.remove("on");
+      if (!v.ui || v.credential) return false;
+      // Every key the CARD offers (the whisper's own option list is capped at 4).
+      const keys = Array.isArray(v.uiKeys) ? v.uiKeys.filter((k) => typeof k === "string") : [];
+      const shown = [v.title, v.summary, ...(v.facts || [])].filter((x) => typeof x === "string");
+      const tree = uiNode(v.ui, 0, keys, shown);
+      if (!tree || !tree.querySelector("button")) return false;
+      uiEl.append(tree);
+      uiEl.classList.add("on");
+      return true;
+    }
+    // The fade ALWAYS finishes and the card is unmounted: transitionend, or a timer
+    // when no transition event comes (a hidden/throttled window never sends one).
+    let unmount = 0;
+    function finishFade() {
+      if (unmount) { window.clearTimeout(unmount); unmount = 0; }
+      if (box.classList.contains("on")) return;
+      box.classList.add("gone");
+      box.classList.remove("expanded");
+    }
+    box.addEventListener("transitionend", (e) => { if (e.target === box && e.propertyName === "opacity") finishFade(); });
+    const needEl = document.getElementById("n-need");
+    const altEl = document.getElementById("n-alt");
+    const extraEl = document.getElementById("n-extra");
+    function render(v) {
+      if (!v) {
+        box.classList.remove("on", "done");
+        setInside(false);
+        if (unmount) window.clearTimeout(unmount);
+        unmount = window.setTimeout(finishFade, 320);
+        return;
+      }
+      if (unmount) { window.clearTimeout(unmount); unmount = 0; }
+      box.className = `lv${Number(v.level) || 1}${v.side === "left" ? " left" : ""}`;
+      leadEl.textContent = v.lead || "Waiting on you";
+      // The dot is the fairy of the agent whose card this is (agent-fairy.cjs).
+      const dot = document.getElementById("n-dot");
+      const who = v.agent && v.agent.known && v.agent.agent !== "aither" ? v.agent : null;
+      dot.style.background = who ? who.color : "";
+      dot.style.boxShadow = who ? `0 0 8px ${rgba(who.glow || who.color, 0.9)}` : "";
+      dot.title = who ? who.label : "";
+      // The true count ("99+" past that), and a door to the whole list.
+      moreEl.textContent = v.more > 0 ? `${v.moreLabel || `${v.more > 99 ? "99+" : v.more} more waiting`} ›` : "";
+      moreEl.style.display = v.more > 0 ? "" : "none";
+      const oldEl = document.getElementById("n-old");
+      oldEl.textContent = v.old || "";
+      oldEl.style.display = v.old ? "" : "none";
+      titleEl.textContent = v.title || "";
+      titleEl.title = v.title || "";
+      // ONE line of what is needed, linked to the card.
+      needEl.textContent = v.why || `Card ${v.id} needs you`;
+      whyEl.textContent = "";
+      whyEl.style.display = "none";
+      const sumEl = document.getElementById("n-sum");
+      const factsEl = document.getElementById("n-facts");
+      sumEl.textContent = v.summary || "";
+      sumEl.style.display = v.summary ? "" : "none";
+      factsEl.textContent = "";
+      for (const f of v.facts || []) {
+        const li = document.createElement("li");
+        li.textContent = f;
+        factsEl.append(li);
+      }
+      factsEl.style.display = (v.facts || []).length ? "" : "none";
+      actsEl.textContent = "";
+      // The generated surface draws the answers; title, summary and facts stay
+      // above it (its own copies of them are skipped in uiNode).
+      if (renderUi(v)) {
+        actsEl.append(button("Open", "", () => api.nudgeAct("open"), "Open the whole card"));
+      } else if (v.credential) {
+        actsEl.append(button("Enter it", "primary", () => api.nudgeAct("open"), "Opens the masked field in your Inbox"));
+      } else {
+        // Owner 2026-11-15: ONE bubble the fairy delivers -- the card's own answers
+        // as 2-3 large buttons, the recommended one highlighted, then "Later" and
+        // "Show details" (the old card window lives behind that link only). A 4th
+        // option waits behind "more" with the context.
+        // A question whose dialog is already on the terminal: its real answers are
+        // listed (not buttons -- nothing here can deliver them), then "Open the session".
+        const choices = Array.isArray(v.sessionChoices) ? v.sessionChoices : [];
+        if (choices.length) {
+          const wrap = document.createElement("div");
+          wrap.className = "n-choices";
+          const cap = document.createElement("div");
+          cap.className = "cap";
+          cap.textContent = "Its answers, waiting in the session:";
+          const ol = document.createElement("ol");
+          for (const c of choices) {
+            const li = document.createElement("li");
+            li.textContent = c.label;
+            if (c.recommended) li.className = "rec";
+            if (c.consequence) li.title = c.consequence;
+            ol.append(li);
+          }
+          wrap.append(cap, ol);
+          actsEl.append(wrap);
+        }
+        const opts = v.options || [];
+        const main = opts.find((o) => o.recommended) || opts[0] || null;
+        altEl.textContent = "";
+        opts.forEach((o, i) => {
+          const b = button(o.label, `opt${o === main ? " primary" : ""}`, () => api.nudgeAct("answer", o.key),
+            o.consequence || (o === main ? "Suggested" : ""));
+          (i < 3 ? actsEl : altEl).append(b);
+        });
+        if (!main) actsEl.append(button("Show details", "primary", () => api.nudgeAct("open"), "Open the whole card"));
+      }
+      const links = document.createElement("div");
+      links.id = "n-links";
+      links.append(
+        button("Later", "link", () => api.nudgeAct("later"), "I will bring it back in an hour"),
+        button("Show details", "link", () => api.nudgeAct("open"), "Open the whole card"),
+        button("Open in AitherBrowser", "link", () => api.nudgeAct("browser"), "The card's page in the desk's own browser"),
+      );
+      actsEl.append(links);
+      const extra = Boolean(v.summary || (v.facts || []).length || altEl.childElementCount);
+      const toggle = button("more", "", () => {
+        box.classList.toggle("expanded");
+        toggle.textContent = box.classList.contains("expanded") ? "less" : "more";
+        api.nudgeAct("size", String(Math.ceil(box.getBoundingClientRect().height + 20)));
+      }, "Context and the other options");
+      toggle.id = "n-moretoggle";
+      actsEl.append(toggle);
+      extraEl.dataset.has = extra ? "1" : "";
+      flashEl.textContent = "";
+      flashEl.className = "";
+      box.classList.remove("talking");
+      requestAnimationFrame(() => {
+        box.classList.add("on");
+        // Tell main how tall the card really is, so long labels are never clipped.
+        api.nudgeAct("size", String(Math.ceil(box.getBoundingClientRect().height + 20)));
+      });
+    }
+    moreEl.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("more"); });
+    needEl.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("open"); });
+    document.getElementById("n-x").addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct("later"); });
+    for (const b of document.querySelectorAll("#n-foot button, #n-voice button")) {
+      b.addEventListener("click", (e) => { e.stopPropagation(); api.nudgeAct(b.dataset.act); });
+    }
+    api.onNudgeView(render);
+    api.onNudgeFlash((f) => {
+      if (!f) return;
+      flashEl.textContent = String(f.text || "");
+      flashEl.className = f.error ? "on error" : "on";
+      // A confirmation replaces the buttons; an error keeps them (Open still works);
+      // a "keep" line (Listening...) keeps the options while the owner talks.
+      box.classList.toggle("done", !f.error && !f.keep);
+      box.classList.toggle("talking", Boolean(f.keep));
+      requestAnimationFrame(() => api.nudgeAct("size", String(Math.ceil(box.getBoundingClientRect().height + 20))));
+    });
+    api.init().then((s) => { if (s && s.nudge) render(s.nudge); });
+  }
+
   // ── the bubble card ───────────────────────────────────────────────────
   if (view === "bubble") {
     document.body.innerHTML = `
       <div id="card">
-        <div id="head"><span id="dot"></span><span id="title">Aither</span>
-          <span id="where"></span>
-          <button id="close" title="Close (Esc)">&#10005;</button></div>
-        <div id="actions">
-          <button data-ask="screen">What's on my screen?</button>
-          <button data-ask="region">Explain a region</button>
-          <button data-mode="find">Find a file…</button>
-          <button data-mode="web">Search the web…</button>
+        <div id="ask"><textarea id="q" rows="1" placeholder="Ask about what you see…" aria-label="Ask Aither"></textarea>
+          <button id="send" disabled>Send</button></div>
+        <div id="actions" role="toolbar" aria-label="Quick actions">
+          <button data-ask="screen" title="What is on my screen?"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5"/><path d="M5.5 14h5"/></svg>Screen</button>
+          <button data-ask="region" title="Explain a region you select"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2 5V2h3M11 2h3v3M14 11v3h-3M5 14H2v-3"/></svg>Region</button>
+          <button data-mode="find" title="Find a file (type its name, Enter)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 1.5h6l4 4v9H3z"/><path d="M9 1.5v4h4"/></svg>File</button>
+          <button data-mode="web" title="Search the web (type the query, Enter)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13M8 1.5c2 2 2 11 0 13M8 1.5c-2 2-2 11 0 13"/></svg>Web</button>
         </div>
+        <div id="hint"></div>
         <div id="stage">
-          <div id="empty">Click the orb and ask, drop a file on it, or right-click for the menu.</div>
           <div id="line"><div id="line-title"></div><span id="line-text"></span>
             <div id="meta"></div>
             <div id="foot">
@@ -374,12 +2006,16 @@
             <div id="rows"></div>
             <div id="results-more"></div>
           </div>
+          <div id="cards"></div>
+          <div id="history"></div>
           <div id="trips"><div id="trips-head">Trips</div><div id="trip-list"></div>
             <div id="trip-more"></div><div id="trip-queue"></div></div>
         </div>
-        <div id="hint"></div>
-        <div id="ask"><textarea id="q" rows="1" placeholder="Ask about what you see…"></textarea>
-          <button id="send" disabled>Send</button></div>
+        <div id="session"><span id="s-state"></span><span id="title">Aither</span><span id="s-title"></span>
+          <span id="s-last"></span><span id="where" hidden></span>
+          <select id="s-pick" aria-label="Switch session" title="Switch the session this panel is about"></select>
+          <button id="s-detach" title="Detach the fairy">&#8856;</button>
+          <button id="close" title="Close (Esc)">&#10005;</button></div>
       </div>`;
     const q = document.getElementById("q");
     const send = document.getElementById("send");
@@ -391,7 +2027,14 @@
     const foot = document.getElementById("foot");
     const copy = document.getElementById("copy");
     const pin = document.getElementById("pin");
-    const empty = document.getElementById("empty");
+    const stage = document.getElementById("stage");
+    const cardsEl = document.getElementById("cards");
+    const historyEl = document.getElementById("history");
+    const sState = document.getElementById("s-state");
+    const sTitle = document.getElementById("s-title");
+    const sLast = document.getElementById("s-last");
+    const sPick = document.getElementById("s-pick");
+    const sDetach = document.getElementById("s-detach");
     const hint = document.getElementById("hint");
     const where = document.getElementById("where");
     const holdEl = document.getElementById("hold");
@@ -416,6 +2059,7 @@
       "aw-graph": "Query the code graph (awgraph)…",
       "aw-recover": "Snapshot store directory (awrecover list)…",
       "aw-recover-restore": "<store> <label> <dest> -- the current dest is kept aside",
+      card: "Ask anything about this card…",
       null: "Ask about what you see…",
     };
     // A mode whose typed text goes back to main under the mode's own verb.
@@ -427,16 +2071,92 @@
       hint.textContent = text || "";
       hint.classList.toggle("on", Boolean(text));
     }
+    // The card is as tall as its content: main fits the window to it.
+    let lastH = 0;
+    function fit() {
+      const card = document.getElementById("card");
+      stage.classList.toggle("idle", !stage.querySelector(".on"));
+      const h = Math.ceil(card.getBoundingClientRect().height) + 16;
+      if (Math.abs(h - lastH) > 1 && api.panelSize) { lastH = h; api.panelSize(h); }
+    }
+    let panel = null;
+    function renderPanel(v) {
+      panel = v || null;
+      const line = (v && v.line) || { kind: "free", title: "Aither" };
+      sState.className = line.status || "";
+      sState.style.display = line.kind === "session" ? "" : "none";
+      document.getElementById("title").style.display = line.kind === "free" ? "" : "none";
+      sTitle.textContent = line.kind === "free" ? "" : line.title;
+      sLast.textContent = line.kind === "session"
+        ? [line.statusText, line.last].filter(Boolean).join(" · ")
+        : line.kind === "window" ? "attached" : "";
+      sDetach.classList.toggle("on", Boolean(v && v.attached));
+      // the switcher: follow the attach, or any live session
+      sPick.textContent = "";
+      const opt = (value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; return o; };
+      // The line already names the session: the switcher is a small "Switch" menu.
+      sPick.append(opt("", "Switch"));
+      for (const c of (v && v.choices) || []) {
+        const here = line.kind === "session" && line.id === c.id;
+        sPick.append(opt(c.id, `${here ? "* " : ""}${c.title}${c.statusText ? ` (${c.statusText})` : ""}`));
+      }
+      sPick.value = "";
+      sPick.style.display = v && v.choices && v.choices.length ? "" : "none";
+      // what that session raised, answerable here
+      cardsEl.textContent = "";
+      for (const c of (v && v.cards) || []) {
+        const el = document.createElement("div");
+        el.className = `pcard ${c.urgency}`;
+        const t = document.createElement("div");
+        t.className = "pcard-title";
+        t.textContent = c.title;
+        const opts = document.createElement("div");
+        opts.className = "pcard-opts";
+        for (const o of c.options) {
+          const b = document.createElement("button");
+          b.textContent = o.label;
+          if (o.recommended) b.className = "rec";
+          b.addEventListener("click", () => {
+            b.disabled = true;
+            api.panelAnswer(c.id, o.key).then((r) => {
+              if (r && r.ok) { el.remove(); fit(); } else { b.disabled = false; setHint((r && r.error) || "the answer did not go through"); }
+            });
+          });
+          opts.append(b);
+        }
+        el.append(t, opts);
+        cardsEl.append(el);
+      }
+      cardsEl.classList.toggle("on", cardsEl.childElementCount > 0);
+      // the last few exchanges, newest last
+      historyEl.textContent = "";
+      for (const h of (v && v.history) || []) {
+        const el = document.createElement("div");
+        el.className = `ex ${h.kind || ""}`;
+        const qq = document.createElement("div");
+        qq.className = "ex-q";
+        qq.textContent = h.q;
+        const aa = document.createElement("div");
+        aa.className = "ex-a";
+        aa.textContent = h.a;
+        el.append(qq, aa);
+        historyEl.append(el);
+      }
+      historyEl.classList.toggle("on", historyEl.childElementCount > 0);
+      fit();
+    }
     function render(line) {
+      // A status that only repeats the session line (e.g. "attached to <window>")
+      // is not content: the session line already says it (owner 2026-11-14).
+      if (line && line.kind === "status" && /^attached to /i.test(String(line.text || ""))) line = null;
       current = line || null;
       if (!line) {
         lineEl.classList.remove("on", "error", "status");
         meta.classList.remove("on");
         foot.classList.remove("on");
-        empty.classList.remove("off");
+        fit();
         return;
       }
-      empty.classList.add("off");
       lineEl.classList.add("on");
       lineEl.classList.toggle("error", line.kind === "error");
       lineEl.classList.toggle("status", line.kind === "status");
@@ -453,10 +2173,11 @@
       pin.textContent = line.pinned ? "Pinned" : "Pin";
       pin.classList.toggle("active", Boolean(line.pinned));
       copy.textContent = "Copy";
+      fit();
     }
     function renderHold(payload) {
       const h = payload && payload.hold;
-      if (!h) { holdEl.classList.remove("on"); return; }
+      if (!h) { holdEl.classList.remove("on"); fit(); return; }
       holdEl.classList.add("on");
       holdLabel.textContent = (payload && payload.label) || "held";
       holdSub.textContent = h.kind === "file" ? h.path || "" : h.kind === "web" ? (h.url || "") : "dropped text";
@@ -471,9 +2192,10 @@
         });
         holdActions.appendChild(b);
       }
+      fit();
     }
     function renderResults(payload) {
-      if (!payload || !Array.isArray(payload.rows)) { resultsEl.classList.remove("on"); return; }
+      if (!payload || !Array.isArray(payload.rows)) { resultsEl.classList.remove("on"); fit(); return; }
       resultsEl.classList.add("on");
       resultsTitle.textContent = payload.mode === "web"
         ? `Web — ${payload.query || ""}`
@@ -508,6 +2230,7 @@
         rowsEl.appendChild(rowEl);
       });
       resultsMore.textContent = payload.more ? `+${payload.more} more` : "";
+      fit();
     }
     function renderTrips(payload) {
       const view = (payload && payload.view) || { items: [], more: 0, moreLine: "" };
@@ -528,10 +2251,18 @@
       }
       tripMore.textContent = view.moreLine || "";
       tripQueue.textContent = (payload && payload.line) || "";
+      fit();
     }
-    function setMode(next) {
+    function setMode(next, title, who) {
       mode = next || null;
-      q.placeholder = PLACEHOLDERS[mode] || PLACEHOLDERS.null;
+      // Owner 2026-11-09: the header read "BB-00 · baby · dormant" -- an internal
+      // sprite id. It names the agent whose card this is, in plain words, or Aither.
+      const head = document.getElementById("title");
+      head.textContent = mode === "card" && who ? `${String(who).slice(0, 40)} · about this card` : "Aither";
+      q.placeholder = mode === "card" && title
+        ? `Ask about “${String(title).slice(0, 60)}”…`
+        : PLACEHOLDERS[mode] || PLACEHOLDERS.null;
+      for (const b of document.querySelectorAll("#actions button[data-mode]")) b.classList.toggle("on", b.dataset.mode === mode);
     }
     function reportDraft() {
       api.state({ drafting: q.value.trim().length > 0 });
@@ -564,6 +2295,8 @@
     });
     send.addEventListener("click", submit);
     close.addEventListener("click", () => api.close());
+    sPick.addEventListener("change", () => { api.panelSession(sPick.value).then((r) => { if (r && r.view) renderPanel(r.view); }); });
+    sDetach.addEventListener("click", () => { api.panelSession("detach"); });
     for (const b of document.querySelectorAll("#actions button")) {
       b.addEventListener("click", () => {
         if (b.dataset.mode) { api.mode(b.dataset.mode).then(() => { q.focus(); }); setMode(b.dataset.mode); return; }
@@ -599,29 +2332,41 @@
     api.onHold(renderHold);
     api.onResults(renderResults);
     api.onTrips(renderTrips);
-    api.onMode((payload) => setMode(payload && payload.mode));
+    api.onMode((payload) => setMode(payload && payload.mode, payload && payload.title, payload && payload.who));
     api.onTint((t) => { if (t) applyTint(t.css); });
     api.onAttach((a) => { where.textContent = a && a.attached ? (a.label || "attached") : "free"; });
     api.onFocus(() => { q.focus(); });
-    const titleEl = document.getElementById("title");
-    function wearSprite(sp) {
-      titleEl.textContent = sp && sp.line ? sp.line : "Aither";
-      titleEl.title = sp && sp.tooltip ? sp.tooltip.split(" — ")[0] : "";
-    }
-    if (api.onSprite) api.onSprite(wearSprite);
+    if (api.onPanelView) api.onPanelView(renderPanel);
     api.init().then((s) => {
       if (!s) return;
       if (s.tint) applyTint(s.tint.css);
-      wearSprite(s.sprite);
       if (s.line) render(s.line);
       if (s.hold) renderHold({ hold: s.hold, label: s.hold.label, actions: s.holdActions });
       if (s.results) renderResults(s.results);
       if (s.trips) renderTrips(s.trips);
       if (s.attach) where.textContent = s.attach.label || "attached";
-      setMode(s.mode);
+      setMode(s.mode, s.modeTitle, s.modeWho);
+      renderPanel(s.panelView);
       if (s.view === "bubble") setTimeout(() => q.focus(), 30);
     });
   }
+</script>
+<script>
+  // The orb's rest timer (see body.rest above). Not while busy or nudging.
+  (() => {
+    const REST_AFTER_MS = 20_000;
+    let timer = 0;
+    const orbEl = document.getElementById("orb");
+    const awake = () => Boolean(orbEl && /(busy|nudge[123])/.test(orbEl.className));
+    const arm = () => {
+      document.body.classList.remove("rest");
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (awake()) arm(); else document.body.classList.add("rest"); }, REST_AFTER_MS);
+    };
+    for (const ev of ["pointermove", "pointerdown", "wheel", "keydown"]) document.addEventListener(ev, arm, { passive: true });
+    if (orbEl) new MutationObserver(() => { if (awake()) arm(); }).observe(orbEl, { attributes: true, attributeFilter: ["class"] });
+    arm();
+  })();
 </script>
 </body>
 </html>

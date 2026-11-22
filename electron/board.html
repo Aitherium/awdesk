@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' file:; img-src data: blob:">
 <title>Aither board</title>
 <style>
   :root {
@@ -33,6 +33,7 @@
   #tools button { all: unset; cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 12px; color: var(--muted); }
   #tools button:hover { color: var(--ink); background: rgba(255,255,255,.06); }
   #tools button.on { color: #0d1117; background: var(--accent); font-weight: 600; }
+  #tools select { background: #10141a; color: var(--ink); border: 1px solid var(--edge); border-radius: 6px; font-size: 12px; }
   #tools input[type=color] { width: 26px; height: 24px; border: 1px solid var(--edge); border-radius: 6px; background: transparent; padding: 0; }
   #tools input[type=range] { width: 84px; accent-color: var(--accent); }
   #tools .sep { width: 1px; background: var(--edge); margin: 2px 4px; }
@@ -52,6 +53,29 @@
     border: 1px solid var(--edge); box-shadow: 0 8px 22px rgba(0,0,0,.45); opacity: 0; transition: opacity 140ms ease;
     pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #toast.show { opacity: 1; }
+  /* Pinned cards (pin-cards.js, the renderer aither://canvas uses): over the drawing,
+     in the same board coordinates. A page card's body is a live view main lays on top. */
+  #pins { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 3; }
+  #pinsPlane { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  #pins .card { position: absolute; pointer-events: auto; display: flex; flex-direction: column; border: 1px solid var(--edge);
+    border-radius: 10px; background: #1b2028; color: var(--ink); box-shadow: 0 6px 20px rgba(0,0,0,.35); outline: none; }
+  #pins .card.sel, #pins .card:focus-visible { border-color: var(--accent); }
+  #pins .head { height: 26px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 4px 0 8px;
+    border-bottom: 1px solid var(--edge); cursor: grab; }
+  #pins .card.locked .head { cursor: default; }
+  #pins .t { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; font-size: 11.5px; }
+  #pins .head button { all: unset; cursor: pointer; width: 20px; height: 20px; text-align: center; border-radius: 5px; color: var(--muted); font-size: 11px; }
+  #pins .head button:hover { color: var(--ink); background: rgba(255,255,255,.08); }
+  #pins .body { flex: 1; min-height: 0; position: relative; overflow: hidden; padding: 8px; font-size: 12px; }
+  #pins .card.app .body { padding: 0; display: grid; place-items: center; color: var(--muted); }
+  #pins .grip { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; cursor: nwse-resize;
+    background: linear-gradient(135deg, transparent 55%, var(--muted) 55%); }
+  #pins .card.locked .grip { display: none; }
+  #pins .note textarea { width: 100%; height: 100%; resize: none; border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; user-select: text; }
+  #pins .stat .v { font-size: 28px; font-weight: 700; } #pins .sub { color: var(--muted); font-size: 11px; }
+  #pins .list .row { display: flex; justify-content: space-between; gap: 6px; padding: 2px 0; }
+  #pins .clock .time { font-size: 26px; font-weight: 700; } #pins .err { color: var(--muted); }
+  #pins .tone-ok { color: #6c9; } #pins .tone-warn { color: #e5b04a; } #pins .tone-bad { color: #e5656b; }
 </style>
 </head>
 <body>
@@ -60,6 +84,7 @@
   <input id="title" spellcheck="false" aria-label="Board title">
   <button id="putAway" class="ghost" title="Put away -- stays in the Boards list (or hold Esc)">Put away</button>
   <button id="export" class="ghost" title="Export this board as a PNG">PNG</button>
+  <button id="exportPdf" class="ghost" title="Export this board as a PDF">PDF</button>
   <button id="close" class="close" title="Close this board for good">×</button>
 </div>
 <div id="workspace">
@@ -69,11 +94,14 @@
     <button data-tool="eraser" title="Erase an item">Eraser</button>
     <span class="sep"></span>
     <button data-tool="line" title="Line">Line</button>
+    <button data-tool="arrow" title="Arrow">Arrow</button>
     <button data-tool="rect" title="Rectangle">Rect</button>
     <button data-tool="ellipse" title="Ellipse">Ellipse</button>
     <span class="sep"></span>
     <button data-tool="text" title="Click to write text">Text</button>
     <button data-tool="note" title="Click to drop a sticky note">Sticky</button>
+    <button data-tool="connector" title="Click one item, then another: a connector that follows them">Connect</button>
+    <select id="template" title="Add a template"><option value="">Template…</option><option value="kanban">Kanban</option><option value="retro">Retro</option><option value="mindmap">Mind map</option><option value="flow">Flow</option></select>
     <span class="sep"></span>
     <input type="color" id="color" value="#1f6feb" title="Ink colour">
     <input type="range" id="width" min="1" max="12" value="3" title="Ink width">
@@ -81,11 +109,14 @@
   </div>
   <div id="stage">
     <canvas id="canvas"></canvas>
+    <div id="pins" aria-label="Pinned cards"><div id="pinsPlane"></div></div>
     <textarea id="editor" spellcheck="false"></textarea>
     <div id="toast" role="status"></div>
   </div>
 </div>
 <div id="noteView"><textarea id="noteText" spellcheck="false" aria-label="Note text (markdown)"></textarea></div>
+<script src="middle-drag.js"></script>
+<script src="pin-cards.js"></script>
 <script>
 (() => {
   const api = window.aitherBoard;
@@ -98,6 +129,7 @@
 
   let board = null;
   let tool = "pen";
+  let connectFrom = null;
   let color = "#1f6feb";
   let inkWidth = 3;
   let dpr = 1;
@@ -122,9 +154,15 @@
   const newId = () => `i-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
   const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
   function canvasSize() { return { width: Math.max(1, canvas.clientWidth), height: Math.max(1, canvas.clientHeight) }; }
+  /**
+   * The board's pan (middle-drag on empty space, the owner's rule): content point =
+   * screen point - pan. Saved as the board's `windowView` (boards-core), so the window
+   * reopens where it was left; the canvas page keeps its own `view`.
+   */
+  let pan = { x: 0, y: 0 };
   function pos(event) {
     const r = canvas.getBoundingClientRect();
-    return { x: clamp(event.clientX - r.left, 0, r.width), y: clamp(event.clientY - r.top, 0, r.height) };
+    return { x: clamp(event.clientX - r.left, 0, r.width) - pan.x, y: clamp(event.clientY - r.top, 0, r.height) - pan.y };
   }
   function normRect(a, b) {
     return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
@@ -132,7 +170,7 @@
 
   // ── persistence ───────────────────────────────────────────────────────────
   function payload() {
-    const p = { title: $("title").value.trim() || board.title };
+    const p = { title: $("title").value.trim() || board.title, windowView: { x: pan.x, y: pan.y } };
     if (board.kind === "note") p.text = $("noteText").value;
     else p.items = board.items;
     return p;
@@ -191,6 +229,53 @@
     }
     if (lines < maxLines && line) ctx.fillText(line, x, y + lines * lineHeight);
   }
+  function centerOf(i) { return { x: i.x + i.w / 2, y: i.y + i.h / 2 }; }
+  /** Where the line from i's centre toward p leaves i's box. */
+  function edgePoint(i, p) {
+    const c = centerOf(i);
+    const dx = p.x - c.x, dy = p.y - c.y;
+    if (!dx && !dy) return c;
+    const sx = Math.abs(i.w / 2 / (dx || 1e-9)), sy = Math.abs(i.h / 2 / (dy || 1e-9));
+    const k = Math.min(sx, sy, 1);
+    return { x: c.x + dx * k, y: c.y + dy * k };
+  }
+  function arrowHead(x0, y0, x1, y1, width) {
+    const a = Math.atan2(y1 - y0, x1 - x0), s = 8 + width * 2;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x1 - s * Math.cos(a - 0.45), y1 - s * Math.sin(a - 0.45));
+    ctx.lineTo(x1 - s * Math.cos(a + 0.45), y1 - s * Math.sin(a + 0.45));
+    ctx.closePath(); ctx.fillStyle = ctx.strokeStyle; ctx.fill();
+  }
+  /** Templates: plain items, so they save, move and export like anything drawn. */
+  function addTemplate(name) {
+    const o = { x: 40 - pan.x, y: 40 - pan.y };
+    const note = (x, y, text, w = 170, h = 90) => ({ id: newId(), type: "note", x: o.x + x, y: o.y + y, w, h, text, color: "#f7e98e" });
+    const rect = (x, y, w, h) => ({ id: newId(), type: "shape", shape: "rect", x: o.x + x, y: o.y + y, w, h, color: "#9aa4b2", width: 2 });
+    const label = (x, y, t) => ({ id: newId(), type: "text", x: o.x + x, y: o.y + y, w: 220, h: 30, text: t, color: "#111827", size: 18 });
+    const link = (a, b) => ({ id: newId(), type: "connector", from: a.id, to: b.id, x: 0, y: 0, w: 1, h: 1, color: "#3b4250", width: 2 });
+    const items = [];
+    if (name === "kanban" || name === "retro") {
+      const cols = name === "kanban" ? ["To do", "Doing", "Done"] : ["Went well", "To improve", "Actions"];
+      cols.forEach((c, i) => { items.push(rect(i * 240, 0, 220, 420), label(i * 240 + 8, 6, c)); });
+      items.push(note(15, 50, name === "kanban" ? "First card" : "Something good"));
+    } else if (name === "mindmap") {
+      const hub = note(260, 160, "Central idea", 180, 80);
+      items.push(hub);
+      [[0, 0], [520, 0], [0, 320], [520, 320]].forEach(([x, y], i) => {
+        const n = note(x, y, `Branch ${i + 1}`);
+        items.push(n, link(hub, n));
+      });
+    } else if (name === "flow") {
+      const steps = ["Start", "Step", "Decide", "Done"].map((t, i) => note(i * 230, 120, t, 160, 70));
+      items.push(...steps);
+      for (let i = 1; i < steps.length; i += 1) items.push(link(steps[i - 1], steps[i]));
+    }
+    if (!items.length) return;
+    board.items.push(...items);
+    redraw();
+    markDirty();
+  }
   function drawItem(item) {
     ctx.save();
     if (item.type === "stroke") {
@@ -202,10 +287,24 @@
       ctx.strokeStyle = item.color; ctx.lineWidth = item.width; ctx.lineCap = "round";
       const x = item.x, y = item.y, w = item.w, h = item.h;
       ctx.beginPath();
-      if (item.shape === "line") { ctx.moveTo(x, y); ctx.lineTo(x + w, y + h); }
+      if (item.shape === "line" || item.shape === "arrow") { ctx.moveTo(x, y); ctx.lineTo(x + w, y + h); }
       else if (item.shape === "rect") ctx.rect(x, y, w, h);
       else ctx.ellipse(x + w / 2, y + h / 2, Math.max(1, Math.abs(w) / 2), Math.max(1, Math.abs(h) / 2), 0, 0, Math.PI * 2);
       ctx.stroke();
+      if (item.shape === "arrow") arrowHead(x, y, x + w, y + h, item.width);
+    } else if (item.type === "connector") {
+      const a = board.items.find((i) => i.id === item.from);
+      const b = board.items.find((i) => i.id === item.to);
+      if (a && b) {
+        const ca = centerOf(a), cb = centerOf(b);
+        const ea = edgePoint(a, cb), eb = edgePoint(b, ca);
+        ctx.strokeStyle = item.color; ctx.lineWidth = item.width; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(ea.x, ea.y);
+        const mx = (ea.x + eb.x) / 2;
+        ctx.bezierCurveTo(mx, ea.y, mx, eb.y, eb.x, eb.y);
+        ctx.stroke();
+        arrowHead(mx, eb.y, eb.x, eb.y, item.width);
+      }
     } else if (item.type === "text") {
       ctx.fillStyle = item.color; ctx.font = `${item.size}px "Segoe UI", system-ui, sans-serif`; ctx.textBaseline = "top";
       const lines = String(item.text || "").split("\n");
@@ -229,8 +328,12 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = "#fdfdfb";
     ctx.fillRect(0, 0, size.width, size.height);
+    ctx.setTransform(dpr, 0, 0, dpr, pan.x * dpr, pan.y * dpr);
     for (const item of board.items) drawItem(item);
     if (drawing && drawing.kind === "shape") drawItem(drawing.item);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const plane = document.getElementById("pinsPlane");
+    if (plane) plane.style.transform = `translate(${pan.x}px, ${pan.y}px)`;
   }
   function renderExport() {
     return canvas.toDataURL("image/png"); // the on-screen canvas already paints white
@@ -251,6 +354,7 @@
   // ── item edits ────────────────────────────────────────────────────────────
   function hit(item, p) {
     const pad = 6;
+    if (item.type === "connector") return false;
     if (item.type === "stroke") return p.x >= item.x - pad && p.x <= item.x + item.w + pad && p.y >= item.y - pad && p.y <= item.y + item.h + pad;
     return p.x >= Math.min(item.x, item.x + item.w) - pad && p.x <= Math.max(item.x, item.x + item.w) + pad
       && p.y >= Math.min(item.y, item.y + item.h) - pad && p.y <= Math.max(item.y, item.y + item.h) + pad;
@@ -265,8 +369,8 @@
     editing = { item, original: isNew ? null : JSON.parse(JSON.stringify(item)) };
     const r = canvas.getBoundingClientRect();
     editor.style.display = "block";
-    editor.style.left = `${item.x}px`;
-    editor.style.top = `${item.y}px`;
+    editor.style.left = `${item.x + pan.x}px`;
+    editor.style.top = `${item.y + pan.y}px`;
     editor.style.width = `${Math.max(140, item.w)}px`;
     editor.style.height = `${Math.max(item.type === "note" ? 90 : 38, item.h)}px`;
     editor.value = item.text || "";
@@ -298,19 +402,33 @@
     markDirty();
   }
 
+
   // ── pointer ───────────────────────────────────────────────────────────────
   canvas.addEventListener("pointerdown", (event) => {
     if (board.kind !== "board") return;
+    // The middle button is the owner's move/resize/duplicate rule (below); the tools
+    // draw with the primary button only.
+    if (event.button !== 0) return;
     if (editing) commitEditor();
     const p = pos(event);
     canvas.setPointerCapture(event.pointerId);
     if (tool === "pen") {
       drawing = { kind: "pen", item: { id: newId(), type: "stroke", points: [p], color, width: inkWidth, x: p.x, y: p.y, w: 1, h: 1 } };
-    } else if (tool === "line" || tool === "rect" || tool === "ellipse") {
+    } else if (tool === "connector") {
+      const item = topItem(p);
+      if (!item || item.type === "connector") { connectFrom = null; toast("Click an item to connect from"); }
+      else if (!connectFrom) { connectFrom = item.id; toast("Now click the item to connect to"); }
+      else if (connectFrom !== item.id) { addItem({ id: newId(), type: "connector", from: connectFrom, to: item.id, x: 0, y: 0, w: 1, h: 1, color: "#3b4250", width: 2 }); connectFrom = null; }
+    } else if (tool === "line" || tool === "arrow" || tool === "rect" || tool === "ellipse") {
       drawing = { kind: "shape", start: p, item: { id: newId(), type: "shape", shape: tool, x: p.x, y: p.y, w: 1, h: 1, color, width: inkWidth } };
     } else if (tool === "eraser") {
       const item = topItem(p);
-      if (item) { board.items.splice(board.items.indexOf(item), 1); redraw(); markDirty(); }
+      if (item) {
+        board.items.splice(board.items.indexOf(item), 1);
+        // A connector whose end was erased goes with it.
+        board.items = board.items.filter((i) => i.type !== "connector" || (i.from !== item.id && i.to !== item.id));
+        redraw(); markDirty();
+      }
     } else if (tool === "select") {
       const item = topItem(p);
       if (item) moving = { item, last: p, points: item.type === "stroke" ? item.points : null };
@@ -362,6 +480,103 @@
   }
   canvas.addEventListener("pointerup", endPointer);
   canvas.addEventListener("pointercancel", endPointer);
+
+  // ── the owner's middle-button rule on ink (middle-drag.js) ────────────────────
+  // middle-drag moves an item, Shift resizes it, Ctrl duplicates it; middle-drag on
+  // empty space pans the board (drawing and cards together).
+  window.AitherMiddleDrag.suppressAutoscroll(canvas);
+  canvas.addEventListener("pointerdown", (event) => {
+    if (board.kind !== "board" || event.button !== 1) return;
+    const p = pos(event);
+    const found = topItem(p);
+    const gesture = window.AitherMiddleDrag.classify(event, Boolean(found));
+    if (!gesture) return;
+    if (gesture === "pan") {
+      const from = { ...pan };
+      canvas.style.cursor = "grabbing";
+      window.AitherMiddleDrag.track(event, canvas, {
+        onMove: ({ dx, dy }) => { pan = { x: Math.round(from.x + dx), y: Math.round(from.y + dy) }; redraw(); reportPinViews(); },
+        onEnd: ({ moved }) => { canvas.style.cursor = ""; if (moved) markDirty(); },
+      });
+      return;
+    }
+    if (editing) commitEditor();
+    let item = found;
+    if (gesture === "duplicate") {
+      item = { ...JSON.parse(JSON.stringify(found)), id: newId() };
+      board.items.push(item);
+    }
+    const start = JSON.parse(JSON.stringify(item));
+    window.AitherMiddleDrag.track(event, canvas, {
+      onMove: ({ dx, dy }) => {
+        if (gesture === "resize") resizeItem(item, start, dx, dy);
+        else moveItem(item, start, dx, dy);
+        redraw();
+      },
+      onEnd: ({ moved }) => { if (moved || gesture === "duplicate") markDirty(); redraw(); },
+    });
+  });
+  function moveItem(item, start, dx, dy) {
+    item.x = start.x + dx;
+    item.y = start.y + dy;
+    if (item.points) item.points = start.points.map((q) => ({ x: q.x + dx, y: q.y + dy }));
+  }
+  function resizeItem(item, start, dx, dy) {
+    const w = Math.max(8, start.w + dx);
+    const h = Math.max(8, start.h + dy);
+    if (item.points) {
+      const sx = w / Math.max(1, start.w);
+      const sy = h / Math.max(1, start.h);
+      item.points = start.points.map((q) => ({ x: start.x + (q.x - start.x) * sx, y: start.y + (q.y - start.y) * sy }));
+      updateStrokeBounds(item);
+    } else {
+      item.w = w;
+      item.h = h;
+    }
+  }
+
+  // ── pinned cards: the SAME renderer as aither://canvas (pin-cards.js) ──────────
+  let pinState = { pins: [], widgets: [] };
+  let pinSelected = null;
+  const pinTimers = new Map();
+  const pinCards = window.AitherPinCards.create({
+    api: { op: (o) => api.pinOp(o), widget: (id) => api.pinWidget(id), open: (id) => api.pinOpen(id) },
+    widgets: () => pinState.widgets, zoom: () => 1,
+    select: (id) => { pinSelected = id; for (const n of document.querySelectorAll("#pins .card")) n.classList.toggle("sel", n.dataset.id === id); },
+    selected: () => pinSelected, timers: pinTimers, onDrag: () => reportPinViews(), say: toast,
+    onSettle: () => { if (pinsStale) { pinsStale = false; void loadPins(); } },
+  });
+  let pinsStale = false;
+  function renderPins() {
+    for (const t of pinTimers.values()) clearInterval(t);
+    pinTimers.clear();
+    const layer = $("pinsPlane");
+    layer.textContent = "";
+    for (const pin of pinState.pins) layer.append(pinCards.renderCard(pin));
+    reportPinViews();
+  }
+  let pinFrame = 0;
+  function reportPinViews() {
+    if (pinFrame) return;
+    pinFrame = requestAnimationFrame(() => {
+      pinFrame = 0;
+      const v = $("stage").getBoundingClientRect();
+      const cards = [];
+      for (const node of document.querySelectorAll("#pins .card.app")) {
+        const r = node.querySelector(".body").getBoundingClientRect();
+        cards.push({ id: node.dataset.id, rect: { x: r.left, y: r.top, width: r.width, height: r.height } });
+      }
+      void api.pinViews({ viewport: { x: v.left, y: v.top, width: v.width, height: v.height }, cards });
+    });
+  }
+  async function loadPins() {
+    // Never re-render under a card drag (the dragged node would lose its pointerup).
+    if (pinCards.busy()) { pinsStale = true; return; }
+    const reply = await api.pins();
+    if (!reply || !reply.ok) return;
+    pinState = reply;
+    renderPins();
+  }
 
   function updateStrokeBounds(item) {
     const xs = item.points.map((p) => p.x);
@@ -501,6 +716,15 @@
   }
   $("putAway").addEventListener("click", () => void putAway());
   $("export").addEventListener("click", () => void exportNow());
+  $("exportPdf").addEventListener("click", async () => {
+    const size = canvasSize();
+    const out = document.createElement("canvas");
+    out.width = Math.round(size.width * dpr); out.height = Math.round(size.height * dpr);
+    exportReplay(out.getContext("2d"));
+    const reply = await api.exportPdf(out.toDataURL("image/png"));
+    toast(reply && reply.ok ? `Saved ${reply.name}` : (reply && reply.reason) || "could not export this board");
+  });
+  $("template").addEventListener("change", (e) => { const v = e.target.value; e.target.value = ""; if (v) addTemplate(v); });
   $("close").addEventListener("click", async () => { commitEditor(); await saveNow(); await api.close(); });
   $("title").addEventListener("input", markDirty);
   $("title").addEventListener("keydown", (event) => { if (event.key === "Enter") $("title").blur(); });
@@ -512,22 +736,40 @@
     const reply = await api.init();
     if (!reply || !reply.ok) { toast((reply && reply.reason) || "could not open this board"); return; }
     board = reply.board;
+    if (board.windowView) pan = { x: Number(board.windowView.x) || 0, y: Number(board.windowView.y) || 0 };
     document.body.classList.toggle("note", board.kind === "note");
     $("kind").textContent = board.kind === "note" ? "Note" : "Whiteboard";
     $("title").value = board.title;
     $("export").style.display = board.kind === "note" ? "none" : "";
+    $("exportPdf").style.display = board.kind === "note" ? "none" : "";
     if (board.kind === "note") {
       $("noteText").value = board.text || "";
       setTimeout(() => $("noteText").focus(), 60);
     } else {
       resizeCanvas();
-      new ResizeObserver(() => resizeCanvas()).observe($("stage"));
+      new ResizeObserver(() => { resizeCanvas(); reportPinViews(); }).observe($("stage"));
+      void loadPins();
+      // A pin added or moved from aither://canvas (or a tab's "Pin to canvas") lands here too.
+      api.onChanged(() => void loadPins());
     }
     window.addEventListener("beforeunload", () => {
       // Best effort: main persists on its own timers; never block a close.
       if (dirty) void api.save(payload());
     });
+    for (const img of pendingImages.splice(0)) addOutsideImage(img);
   }
+  // Images handed in from outside (the GIF picker's Shift+click, 2026-11-07):
+  // main sends {dataUrl, name, width, height}; it lands centred like a paste. One
+  // that arrives before boot() has the board is queued, not dropped.
+  const pendingImages = [];
+  function addOutsideImage(img) {
+    if (!img || !/^data:image\//.test(String(img.dataUrl || ""))) return;
+    if (!board) { pendingImages.push(img); return; }
+    if (board.kind !== "board") return;
+    const box = fitBox({ width: Number(img.width) || 240, height: Number(img.height) || 180 }, canvasSize(), null, 0.5);
+    addItem({ id: newId(), type: "image", dataUrl: img.dataUrl, name: String(img.name || "image").slice(0, 120), ...box });
+  }
+  if (typeof api.onAddImage === "function") api.onAddImage(addOutsideImage);
   boot();
 })();
 </script>

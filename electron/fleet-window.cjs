@@ -13,8 +13,9 @@
 
 const path = require("node:path");
 const { BrowserWindow, ipcMain, shell } = require("electron");
-const { FleetControl, summarize, classify } = require("./fleet-control.cjs");
+const { FleetControl, summarize, classify, runServiceVerb } = require("./fleet-control.cjs");
 const { OPENABLE } = require("./surfaces.cjs");
+const { fleetNetwork, readEcosystem } = require("./fleet-network.cjs");
 
 let fleetWindow = null;
 let control = null;
@@ -37,6 +38,22 @@ let spaceAvailable = null;
 function setSpaceOpener(fn, isAvailable = null) {
   spaceOpener = typeof fn === "function" ? fn : null;
   spaceAvailable = typeof isAvailable === "function" ? isAvailable : null;
+}
+
+/** Main's universe reader (space-client get) -- the services the network draws. */
+let universeSource = null;
+
+function setUniverseSource(fn) {
+  universeSource = typeof fn === "function" ? fn : null;
+}
+
+async function fleetNetworkNow(opts) {
+  if (!universeSource) return { ok: false, error: "this desk build has no universe reader", nodes: [], links: [] };
+  try {
+    return fleetNetwork(await universeSource({ fresh: Boolean(opts && opts.fresh) }));
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error).slice(0, 240), nodes: [], links: [] };
+  }
 }
 
 /** True only when an opener is wired AND main reports a Space pane. */
@@ -80,6 +97,14 @@ function wireIpc() {
     getControl().status(opts && typeof opts === "object" ? opts : {}));
   ipcMain.handle("desk:fleet-run", (_event, action) => getControl().run(String(action)));
   ipcMain.handle("desk:fleet-space", () => fleetSpaceAvailable());
+  ipcMain.handle("desk:fleet-network", (_event, opts) => fleetNetworkNow(opts));
+  // No arguments, by design: the preload sends none, and the file is main's own vendored
+  // copy -- a renderer-chosen path here would be a file-read primitive.
+  ipcMain.handle("desk:fleet-ecosystem", () => readEcosystem());
+  // ONE service's restart or recent log (the attention list's two verbs). Both
+  // arguments are re-validated in buildServiceCommand; a click is the consent.
+  ipcMain.handle("desk:fleet-service", (_event, verb, name) => runServiceVerb(String(verb), String(name)));
+  // No arguments, by design: the preload's doors() sends none; the probe list is main's.
   ipcMain.handle("desk:fleet-doors", () => require("./surfaces.cjs").probeSurfaces().catch(() => []));
   ipcMain.on("desk:fleet-close", (event) => {
     if (fleetWindow && !fleetWindow.isDestroyed() && (!event || event.sender === fleetWindow.webContents)) {
@@ -114,8 +139,8 @@ function createFleetWindow() {
     return fleetWindow;
   }
   fleetWindow = new BrowserWindow({
-    width: 640,
-    height: 720,
+    width: 1120,
+    height: 800,
     minWidth: 480,
     minHeight: 560,
     show: false,
@@ -164,6 +189,7 @@ module.exports = {
   ensureFleetIpc,
   setCloseFallback,
   setSpaceOpener,
+  setUniverseSource,
   fleetSpaceAvailable,
   closeFleetWindow,
   isFleetWindowOpen,

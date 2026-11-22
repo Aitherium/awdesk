@@ -542,6 +542,22 @@ test("bearer: POST /fleet/down without a bearer is 401, never a stopped fleet", 
   assert.equal(basic.status, 401);
 });
 
+test("review of #96: POST /swarm needs the bearer (a null Origin is not a credential); GET /swarm stays a read", async (context) => {
+  const seen = [];
+  const address = await fleetBridge(context, { swarmHandler: async (req) => { seen.push(req.action); return { ok: true, action: req.action }; } });
+  const body = JSON.stringify({ action: "view" });
+  const none = await requestServer(address, { path: "/swarm", method: "POST", headers: { "content-type": "application/json" }, body });
+  assert.equal(none.status, 401);
+  const wrong = await requestServer(address, { path: "/swarm", method: "POST", headers: { "content-type": "application/json", authorization: "Bearer nope" }, body });
+  assert.equal(wrong.status, 401);
+  assert.deepEqual(seen, [], "nothing reached the swarm");
+  const ok = await requestServer(address, { path: "/swarm", method: "POST", headers: { "content-type": "application/json", authorization: "Bearer test-token" }, body });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(seen, ["view"]);
+  const read = await requestServer(address, { path: "/swarm" });
+  assert.equal(read.status, 200);
+});
+
 test("bearer: the right bearer reaches the fleet handler", async (context) => {
   const address = await fleetBridge(context);
   const ok = await requestServer(address, {
@@ -802,6 +818,42 @@ test("awconnect: the pinned extension may list and run the desk's palette comman
   assert.deepEqual(runs, [["note.new", "hello"]]);
 });
 
+// Aither at the caret, from the browser: carries page text and spends the owner's model
+// budget, so ONLY a pinned extension origin is accepted -- not loopback no-Origin callers.
+function postBearer(address, route, origin, body) {
+  return requestServer(address, { path: route, method: "POST", headers: { origin, "content-type": "application/json", authorization: `Bearer ${"A".repeat(43)}` }, body: JSON.stringify(body) });
+}
+
+test("assist: only a pinned AitherConnect origin reaches /assist/*; others and no-Origin are refused", async (context) => {
+  const seen = [];
+  const bridge = createBridgeServer({
+    host: "127.0.0.1", port: 0, onEvent: () => {},
+    assistHandler: async ({ route, body }) => { seen.push([route, body]); return { ok: true, route }; },
+    assistAuth: (h) => h === `Bearer ${"A".repeat(43)}`,
+  });
+  context.after(() => bridge.close());
+  const address = await bridge.listen();
+  const ok = await postBearer(address, "/assist/run", PINNED_EXT, { verb: "rewrite" });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(JSON.parse(ok.body), { ok: true, route: "run" });
+  assert.equal((await postBearer(address, "/assist/suggest", STORE_EXT, { ctx: {} })).status, 200);
+  for (const origin of [OTHER_EXT, "https://evil.example", "http://127.0.0.1:3000"]) {
+    assert.equal((await postBearer(address, "/assist/run", origin, { verb: "write" })).status, 403, origin);
+  }
+  const noOrigin = await requestServer(address, { path: "/assist/run", method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${"A".repeat(43)}` }, body: "{}" });
+  assert.equal(noOrigin.status, 403, "a no-Origin loopback caller is not trusted here, unlike /commands");
+  assert.equal((await requestServer(address, { path: "/assist/run", headers: { origin: PINNED_EXT } })).status, 405);
+  assert.equal((await postBearer(address, "/assist/bogus", PINNED_EXT, {})).status, 404);
+  assert.deepEqual(seen.map((x) => x[0]), ["run", "suggest"], "a refused request never reaches the handler");
+});
+
+test("assist: a desk with no assist handler answers 404", async (context) => {
+  const bridge = createBridgeServer({ host: "127.0.0.1", port: 0, onEvent: () => {} });
+  context.after(() => bridge.close());
+  const address = await bridge.listen();
+  assert.equal((await postJson(address, "/assist/run", PINNED_EXT, {})).status, 404);
+});
+
 test("awconnect: a wildcard in AWDESK_TRUSTED_EXTENSION_IDS cannot widen the set", () => {
   const { extensionOriginAllowed, trustedExtensionOrigins } = require("./bridge-server.cjs");
   assert.equal(extensionOriginAllowed(PINNED_EXT, {}), true);
@@ -876,125 +928,5 @@ test("space verb route: 404 until the console host wired the space handlers", as
   context.after(() => bridge.close());
   const res = await requestServer(address, { path: "/space/verb", method: "POST", body: "{}",
     headers: { authorization: "Bearer test-token" } });
-  assert.equal(res.status, 404);
-});
-
-// --------------------------------------------------------------------------- //
-// GET /context/what — the host OS's foreground window
-// --------------------------------------------------------------------------- //
-
-test("context/what returns the foreground app when the host answers", async (context) => {
-  const bridge = createBridgeServer({
-    port: 0,
-    onEvent: () => {},
-    hostContextProvider: async () => ({
-      ok: true,
-      platform: "win32",
-      app: "Code",
-      title: "main.py",
-      pid: 42,
-    }),
-  });
-  const address = await bridge.listen();
-  context.after(() => bridge.close());
-  const res = await requestServer(address, { path: "/context/what" });
-  assert.equal(res.status, 200);
-  assert.equal(JSON.parse(res.body).app, "Code");
-});
-
-test("context/what answers 503 when the host CANNOT be read -- never an empty 200", async (context) => {
-  const bridge = createBridgeServer({
-    port: 0,
-    onEvent: () => {},
-    hostContextProvider: async () => ({ ok: false, reason: "xprop: no _NET_ACTIVE_WINDOW" }),
-  });
-  const address = await bridge.listen();
-  context.after(() => bridge.close());
-  const res = await requestServer(address, { path: "/context/what" });
-  assert.equal(res.status, 503);
-  assert.match(JSON.parse(res.body).reason, /_NET_ACTIVE_WINDOW/);
-});
-
-test("context/what answers 503 when the provider THROWS", async (context) => {
-  const bridge = createBridgeServer({
-    port: 0,
-    onEvent: () => {},
-    hostContextProvider: () => {
-      throw new Error("Access is denied.");
-    },
-  });
-  const address = await bridge.listen();
-  context.after(() => bridge.close());
-  const res = await requestServer(address, { path: "/context/what" });
-  assert.equal(res.status, 503);
-  assert.match(JSON.parse(res.body).reason, /Access is denied/);
-});
-
-test("context/what is absent (404) on a desk that never wired it", async (context) => {
-  const bridge = createBridgeServer({ port: 0, onEvent: () => {} });
-  const address = await bridge.listen();
-  context.after(() => bridge.close());
-  const res = await requestServer(address, { path: "/context/what" });
-  assert.equal(res.status, 404);
-});
-
-test("context/what refuses a foreign origin and a non-GET", async (context) => {
-  const bridge = createBridgeServer({
-    port: 0,
-    onEvent: () => {},
-    hostContextProvider: async () => ({ ok: true, app: "Code", pid: 1, title: "" }),
-  });
-  const address = await bridge.listen();
-  context.after(() => bridge.close());
-  const foreign = await requestServer(address, {
-    path: "/context/what",
-    headers: { origin: "https://evil.example" },
-  });
-  assert.equal(foreign.status, 403);
-  const post = await requestServer(address, { path: "/context/what", method: "POST" });
-  assert.equal(post.status, 405);
-  const unknown = await requestServer(address, { path: "/context/who" });
-  assert.equal(unknown.status, 404);
-});
-
-test("/speak/audio: bearer required, audio validated, lip-sync-only volume by default", async (context) => {
-  const seen = [];
-  const bridge = createBridgeServer({
-    port: 0,
-    onEvent: () => {},
-    bridgeToken: "test-token",
-    speakAudioHandler: async (req) => { seen.push(req); return { ok: true, windows: 1 }; },
-  });
-  context.after(() => bridge.close());
-  const address = await bridge.listen();
-  const clip = Buffer.from("RIFFxxxxWAVE").toString("base64");
-  const post = (headers, payload) => requestServer(address, {
-    path: "/speak/audio", method: "POST", body: JSON.stringify(payload),
-    headers: { "content-type": "application/json", ...headers },
-  });
-  assert.equal((await post({}, { audioBase64: clip })).status, 401);
-  assert.deepEqual(seen, []);
-  const auth = { authorization: "Bearer test-token" };
-  assert.equal((await post(auth, { audioBase64: "not base64 !!" })).status, 400);
-  assert.equal((await post(auth, {})).status, 400);
-  // valid base64 that is not audio is refused before it reaches any window
-  assert.equal((await post(auth, { audioBase64: Buffer.from("<html>not a clip at all</html>").toString("base64") })).status, 400);
-  const ok = await post(auth, { audioBase64: clip, text: "hello there" });
-  assert.equal(ok.status, 200);
-  assert.deepEqual(seen, [{ audioBase64: clip, volume: 0, slot: undefined, text: "hello there" }]);
-  await post(auth, { audioBase64: clip, volume: 7, slot: "slot0" });
-  assert.equal(seen[1].volume, 1);
-  // a body past the audio cap is refused, not buffered
-  const huge = await post(auth, { audioBase64: "A".repeat(3 * 1024 * 1024 + 8) });
-  assert.equal(huge.status, 413);
-});
-
-test("/speak/audio: the route is absent (404) when the desk wires no handler", async (context) => {
-  const bridge = createBridgeServer({ port: 0, onEvent: () => {}, bridgeToken: "t" });
-  context.after(() => bridge.close());
-  const address = await bridge.listen();
-  const res = await requestServer(address, { path: "/speak/audio", method: "POST",
-    body: JSON.stringify({ audioBase64: "AAAA" }),
-    headers: { "content-type": "application/json", authorization: "Bearer t" } });
   assert.equal(res.status, 404);
 });
