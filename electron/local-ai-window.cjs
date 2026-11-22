@@ -74,12 +74,16 @@ function ensureLocalAiIpc() {
 /** Toast once when the workspace drops and the local model can answer. `open` shows the page. */
 function startOfflineWatch(open) {
   const { Notification } = require("electron");
-  const toaster = require("./held-toast.cjs").createToaster({ Notification });
   return localAi.createOfflineWatch({
     tenantHost,
     probe: (h) => localAi.probeCloud(h),
     local: () => localAi.localRunning(),
-    notify: (title, body, onClick) => { toaster.show({ title, body, onClick }); },
+    notify: (title, body, onClick) => {
+      if (!Notification.isSupported()) return;
+      const n = new Notification({ title, body });
+      n.on("click", onClick);
+      n.show();
+    },
     open,
   }).start();
 }

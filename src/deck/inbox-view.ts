@@ -16,7 +16,6 @@ import {
   transportNote,
   type DeckDecision,
   type RelayRow,
-  type WakeInvestigateResult,
   type WakeRow,
   type WakesFeed,
 } from './deck-types';
@@ -153,20 +152,6 @@ export interface DecisionGroup {
 }
 
 /**
- * The "Older than 7 days" fold: approve/choose cards old enough to stop leading,
- * in the order they arrived. Credential and blocked cards NEVER age out -- a
- * session stopped on the owner is still stopped on day 30, and folding it away
- * is the exact "the card was there and I could not find it" report this view
- * exists to kill. One rule, used by groupDecisions and by the launcher.
- */
-export function staleGroup(cards: DeckDecision[], nowMs: number, days = STALE_DECISION_DAYS): DeckDecision[] {
-  return (cards || []).filter((card) => {
-    const key = decisionGroup(card);
-    return key !== 'credential' && key !== 'blocked' && isStaleDecision(card, nowMs, days);
-  });
-}
-
-/**
  * Fresh cards in their groups (fixed order, main's rank order kept inside a
  * group), and the stale approve/choose ones apart. Empty groups are dropped.
  */
@@ -175,67 +160,17 @@ export function groupDecisions(cards: DeckDecision[], nowMs: number, days = STAL
   stale: DeckDecision[];
 } {
   const buckets = new Map<DecisionGroupKey, DeckDecision[]>(GROUP_ORDER.map((k) => [k, []]));
-  const staleIds = new Set(staleGroup(cards, nowMs, days).map((card) => card.id));
   const stale: DeckDecision[] = [];
   for (const card of cards) {
-    if (staleIds.has(card.id)) stale.push(card);
-    else buckets.get(decisionGroup(card))!.push(card);
+    const key = decisionGroup(card);
+    // A session stopped on the owner (credential / blocked) never ages out of view.
+    if (key !== 'credential' && key !== 'blocked' && isStaleDecision(card, nowMs, days)) stale.push(card);
+    else buckets.get(key)!.push(card);
   }
   const groups = GROUP_ORDER
     .map((key) => ({ key, label: DECISION_GROUP_LABELS[key], cards: buckets.get(key)! }))
     .filter((g) => g.cards.length > 0);
   return { groups, stale };
-}
-
-/**
- * The option a number key selects: 1-based, clamped to the card's own list.
- * Out of range is null, never "the last one" -- pressing 9 on a two-option card
- * must do nothing, not answer.
- */
-export function optionByIndex<T extends { key: string }>(options: T[], index: number): T | null {
-  const list = Array.isArray(options) ? options : [];
-  const n = Math.trunc(Number(index));
-  if (!Number.isFinite(n) || n < 1 || n > list.length) return null;
-  return list[n - 1] || null;
-}
-
-/**
- * A typed answer for the focused card: the option whose KEY or LABEL the owner
- * typed ("ack", "Not now"), or the single option whose label starts with it.
- * Ambiguous text answers nothing -- typing "n" on Ack/Not-now must not guess
- * which one the owner meant.
- */
-export function answerByQuery<T extends { key: string; label?: string }>(options: T[], query: string): T | null {
-  const text = String(query || '').trim().toLowerCase();
-  if (!text) return null;
-  const list = Array.isArray(options) ? options : [];
-  const key = list.find((o) => String(o.key || '').toLowerCase() === text);
-  if (key) return key;
-  const label = list.find((o) => String(o.label || '').toLowerCase() === text);
-  if (label) return label;
-  // A one-letter prefix is how you FIND a card, not how you answer it: "n" in
-  // an option search box must never silently pick "Not now".
-  if (text.length < 2) return null;
-  const prefixed = list.filter((o) => String(o.label || '').toLowerCase().startsWith(text));
-  return prefixed.length === 1 ? prefixed[0] : null;
-}
-
-/**
- * Rows matching what the owner typed, in the order they arrived (the store's
- * rank order -- filtering never re-ranks). Every token must match somewhere, so
- * "cred gmail" narrows instead of widening. An empty query is every row.
- */
-export function filterRows(cards: DeckDecision[], query: string): DeckDecision[] {
-  const list = cards || [];
-  const tokens = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return list.slice();
-  return list.filter((card) => {
-    const hay = [card.title, card.summary, card.kind, decisionSource(card)]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-    return tokens.every((token) => hay.includes(token));
-  });
 }
 
 /** Where a card came from, for its one-line row: the agent or tab, else the host. */
@@ -333,50 +268,6 @@ export function wakeErrorLine(wake: WakeRow): string {
   return line || 'no reason recorded';
 }
 
-function clipLine(text: string, max: number): string {
-  const out = text.replace(/\s+/g, ' ').trim();
-  return out.length > max ? `${out.slice(0, max - 1)}…` : out;
-}
-
-/** The line under a broken wake: awrise's own WHY (the error line it read off
- *  the run's output) when the daemon carries one, else the old reason line. */
-export function wakeWhyLine(wake: WakeRow): string {
-  // NOT oneClause: the why IS the error line, and its host:port, URL or path
-  // ("no llama-server on spark.local:8118", "POST /decisions: HTTP 400") is the
-  // part that says what broke. Whitespace collapsed, length capped, nothing cut.
-  const why = clipLine(String(wake.lastWhy || ''), 160);
-  return why || wakeErrorLine(wake);
-}
-
-/** The cause pill: '' when awrise has not classified this streak. */
-export function wakeCausePill(wake: WakeRow): string {
-  const cause = String(wake.lastCause || '').trim();
-  if (!cause) return '';
-  const streak = Number(wake.whyStreak) || 0;
-  return streak > 1 ? `${cause} ×${streak}` : cause;
-}
-
-/** "held until 14:05 — no llama-server on spark.local:8118" while the hold is
- *  in the future; '' once it has lapsed (the next wake retries). */
-export function wakeHeldPill(wake: WakeRow, nowMs: number): string {
-  if (!wake.heldUntil) return '';
-  const until = Date.parse(wake.heldUntil);
-  if (!Number.isFinite(until) || until <= nowMs) return '';
-  const d = new Date(until);
-  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  const on = clipLine(String(wake.heldOn || ''), 80);
-  return on ? `held until ${hhmm} — ${on}` : `held until ${hhmm}`;
-}
-
-/** The note an Investigate click leaves on the row. */
-export function wakeInvestigateMessage(result: WakeInvestigateResult | boolean | null | undefined): string {
-  if (result === null || result === undefined || typeof result === 'boolean') {
-    return result === true ? 'investigating' : 'investigate: no answer from the desk';
-  }
-  if (result.ok && result.session) return `investigating — agent session ${result.session}`;
-  return `investigate failed: ${result.error || 'refused'}`;
-}
-
 /** Is the scheduler's own clock the broken thing? Then it leads the Broken list. */
 export function clockIsBroken(feed: WakesFeed): boolean {
   return feed.source === 'daemon' && feed.installed === true && !feed.error && feed.clockStale;
@@ -414,37 +305,6 @@ export interface AwarenessLine {
  * ("unreachable — Server disconnected without sending a response"); the
  * headline names the thing and its state, the raw text becomes the detail.
  */
-/**
- * The raw Desktop awareness text from a `desk:desktop-snapshot` answer, for
- * `awarenessLine`. The focused window is sampled on THIS host first
- * (`source: 'host'`); the gateway's `get_active_window` is only a fallback and,
- * running in a Linux container, says "requires Windows platform". So:
- *   - host sample present          -> `up — <app> — <title>` (reads OK)
- *   - host failed, gateway answers  -> the gateway's window
- *   - host failed AND gateway failed -> unavailable/unreachable, both reasons named
- * Never "up" on silence: no window data at all is not a pass.
- */
-export function desktopAwarenessText(
-  desktop: { ok?: boolean; reason?: string; window?: unknown } | null | undefined,
-): string {
-  if (!desktop?.ok) return `unreachable — ${desktop?.reason ?? ''}`;
-  const win = (desktop.window && typeof desktop.window === 'object' ? desktop.window : {}) as {
-    available?: boolean; source?: string; process?: string; title?: string;
-    message?: string; reason?: string; note?: string; hostReason?: string;
-  };
-  const named = (text: string) => `${text}${win.title ? ` — ${win.title}` : ''}`;
-  if (win.source === 'host' && win.process) return `up — ${named(win.process)}`;
-  const host = win.hostReason ? ` (host: ${win.hostReason})` : '';
-  if (win.available === false) return `unavailable — ${win.message ?? win.reason ?? 'platform'}${host}`;
-  if (typeof win.note === 'string' && win.note) {
-    return /^ERROR:\s*/.test(win.note)
-      ? `unreachable — ${win.note.replace(/^ERROR:\s*/, '')}${host}`
-      : `${win.note}${host}`;
-  }
-  if (win.process) return named(win.process);
-  return `unavailable — no window data${host}`;
-}
-
 export function awarenessLine(name: string, raw: string, noun = `${name} service`): AwarenessLine {
   const text = String(raw || '').trim();
   if (!text || text === 'up' || /^up\b/i.test(text)) return { name, ok: true, state: `${noun} OK`, detail: text };

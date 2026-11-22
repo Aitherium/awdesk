@@ -20,17 +20,9 @@
  * The launcher is one box with one input, grouped results capped at five with a
  * real "+N more", and three prefixes:
  *
- *   (verbs)  a first word the desk owns: draw, gif, pin, youtube, board (desk-verbs.cjs)
- *            and the Aither Browser's -- a bare address, go, search, private, history,
- *            bookmark, tab, find, extension (browser-verbs.cjs).
- *   (plain)  universal search: AitherOS apps, the PC's own apps, desk actions, files,
- *            screenshots, clipboard, agents/tools/skills, and the web (search-client.cjs's
- *            awfind path, registered as one more provider -- never a parallel indexer).
- *            The last row is always "Ask Aither: <what you typed>".
- *   (scope)  a first word that narrows the box: app, file, agent, tool, skill, mem
- *            (memory / context / knowledge), web, action (launcher-core.cjs parseScope).
- *   (down)   a source that did not answer is a ROW with its reason and remedy
- *            ("Not answering"), never a silently empty group.
+ *   (plain)  universal search: apps, desk actions, files, screenshots, clipboard,
+ *            agents/tools, and the web (search-client.cjs's awfind path, registered
+ *            as one more provider -- never a parallel indexer).
  *   >        an awsh / `adk desk ...` command line, spawned without a shell.
  *   ?        Ask Aither down the desk's existing /command path (or orb.ask when a
  *            parallel lane lands it).
@@ -181,47 +173,10 @@ function createLauncher({
   // before showAtCursor() takes focus -- sampled any later, the foreground window
   // is the launcher itself. Null = the empty box stays "Type to search".
   hostContext = null,
-  // The writing rows (assist-window.cjs `launcher`): {capture(), group(captured, typed), choose(captured, key, typed)}.
-  // capture() is started on KEY-DOWN with hostContext, before the box takes the focus: when the
-  // owner pressed Alt+Space on a selection or in a text field, the box leads with the writing
-  // actions and choosing one inserts / replaces at that caret. Null or no text = Alt+Space is
-  // exactly what it was.
-  assist = null,
-  // Talk mode "hold" (Settings -> Talk mode -> Hold): the HOLD gesture is push-to-talk --
-  // Alt+Space down starts listening, the keyup (the radial reports it) stops and sends.
-  // A tap still opens the launcher, because that decision was already made before the
-  // hold timer fires. Null = Alt+Space-only launcher, exactly as before.
-  onHoldStart = null,
-  onHoldEnd = null,
-  // () => cards list (decision-cards.listSnapshot()). The empty box leads with
-  // "Needs you (N)" -- the owner's cards ARE the reason to press the key -- and
-  // the foreground-window group follows. Null = no card group.
-  cards = null,
-  // () => {id, title} | null -- the card the fairy is nudging about right now
-  // (orb-window.nudgeCard). Non-null: the empty box leads with "Ask the fairy
-  // about: <title>"; null: the box is exactly as before.
-  fairy = null,
-  // (cardId) => verdict -- open the fairy bubble with that card as context.
-  askFairy = null,
-  // The Aither Browser's lists for `history <words>`, `bookmark <words>` and `tab <words>`
-  // (browser-verbs.cjs): {history(words, limit), bookmarks(words, limit), tabs()}, each the
-  // OWNER's own -- main hands browser-window's ownerHistory/ownerBookmarks/ownerTabs.
-  // Null = those verbs answer with their page row only.
-  browser = null,
-  // () => the universal search (universal-search.cjs). Null = search-window.cjs's shared
-  // one; launcher-search.test.cjs hands a fake so scope / ask / down rows run under node.
-  universalSearch = null,
-  // The intent bar (intent-bar.cjs createIntentBar): the registry as tools with schemas,
-  // `>` ranks them (pinned + recent first), and a plain sentence with no exact match
-  // gets a "Do it" row that plans it through MicroScheduler. Null = Alt+Space as before.
-  intentBar = null,
-  // (text) => boolean: clipboard text that must not ride along (clipboard-sync looksSecret).
-  looksSecret = (text) => require("./clipboard-sync.cjs").looksSecret(text),
 } = {}) {
   // The "Right now" sample for THIS press. A promise, so the empty search can wait
   // the few hundred ms the probe takes instead of racing it.
   let pressContext = null;
-  let pressAssist = null;
   if (!electron) throw new Error("launcher needs electron");
   if (!quickMenu) throw new Error("launcher needs the quick menu's radial");
 
@@ -242,18 +197,6 @@ function createLauncher({
   let searchSeq = 0;
   let inflight = null;
   let webRegistered = false;
-  let ccRegistered = false;
-  // The rows the last VERB answer offered (desk-verbs.cjs): key -> action. The page
-  // runs a row BY KEY; the action never crosses the bridge.
-  const verbActions = new Map();
-  // The "Not answering" rows of the last run: key -> the full line Enter repeats.
-  const issueLines = new Map();
-  // What the "Ask Aither: ..." row sends: the term main last searched, never page text alone.
-  let askTerm = "";
-  // The tool rows of the last run: key -> {id, arg}. The page runs a tool BY KEY.
-  const toolRows = new Map();
-  // The intent plan waiting for its confirm line (intent-bar createPlanRunner id).
-  let intentPending = "";
 
   function alive() {
     return Boolean(win && !win.isDestroyed());
@@ -337,19 +280,13 @@ function createLauncher({
   function enterRadial() {
     clearTimers();
     phase = "radial-hold";
-    if (typeof onHoldStart === "function") { try { onHoldStart(); } catch { /* voice optional */ } }
     if (alive()) win.hide();
     const opened = quickMenu.openRadial({
       at: screen.getCursorScreenPoint(),
       hold: true,
-      onDone: () => {
-        phase = "idle"; lastPressAt = pressAt; releasedAt = now();
-        if (typeof onHoldEnd === "function") { try { onHoldEnd(); } catch { /* voice optional */ } }
-      },
+      onDone: () => { phase = "idle"; lastPressAt = pressAt; releasedAt = now(); },
     });
     if (!opened || !opened.ok) {
-      // No radial, so no keyup will come through it: end the hold here.
-      if (typeof onHoldEnd === "function") { try { onHoldEnd(); } catch { /* voice optional */ } }
       // No radial actions in this build: a hold is still a usable launcher.
       phase = "idle";
       showAtCursor();
@@ -383,11 +320,6 @@ function createLauncher({
     heldSeen = false;
     pressContext = hostContext
       ? Promise.resolve().then(() => hostContext()).catch((error) => ({ ok: false, reason: String((error && error.message) || error) }))
-      : null;
-    // Captured BEFORE showAtCursor() takes the focus, like hostContext. A capture that lost the
-    // race (the foreground is already the desk) is dropped by assist.group (pid check).
-    pressAssist = assist && typeof assist.capture === "function"
-      ? Promise.resolve().then(() => assist.capture()).catch(() => null)
       : null;
     showAtCursor();
     // The key is down; the renderer can only report it coming UP if it has focus.
@@ -476,406 +408,17 @@ function createLauncher({
     webRegistered = true;
   }
 
-  // The COMMAND CENTER (command-center.cjs): agents & runs, work, knowledge, time and
-  // people as five more providers on the same registry -- the box stays ONE box.
-  function commandCenter() {
-    return require("./command-center.cjs").sharedCommandCenter();
-  }
-
-  function ensureCommandCenter(universal) {
-    if (ccRegistered || !universal || !universal.registry) return;
-    for (const p of commandCenter().providers()) {
-      if (!universal.registry.has(p.id)) universal.register(p);
-    }
-    ccRegistered = true;
-  }
-
-  /** Open decision cards whose words match the term, as the answerable "Needs you" group. */
-  async function matchingCards(term) {
-    if (typeof cards !== "function") return null;
-    let snapshot;
-    try { snapshot = await cards(); } catch { return null; }
-    const words = String(term || "").toLowerCase().split(/\s+/).filter(Boolean);
-    if (!words.length) return null;
-    const t = String(term).toLowerCase().trim();
-    const wantsAll = ["cards", "decisions", "needs you", "approve"].includes(t);
-    // A category word ("runs", "agents") asks for that category, not for every card containing it.
-    if (!wantsAll && Object.values(require("./command-center.cjs").CATEGORY_WORDS).some((w) => w.includes(t))) return null;
-    const hits = (Array.isArray(snapshot) ? snapshot : []).filter((c) => {
-      const hay = `${c.title || ""} ${c.summary || ""} ${c.raisedBy || c.raised_by || ""}`.toLowerCase();
-      return wantsAll || words.every((w) => hay.includes(w));
-    });
-    const built = require("./launcher-context.cjs").needsYouGroup(hits);
-    if (!built.group) return null;
-    const shown = require("./search-window.cjs").publicRun({ ok: true, query: term, phase: "idle", groups: [built.group], total: built.items.length });
-    return shown.groups[0] || null;
-  }
-
-  /** Carry out a command-center verdict: a URL, a file, a chat line, or text for the pane. */
-  async function carryOut(verdict) {
-    const sw = require("./search-window.cjs");
-    if (!verdict || verdict.ok === false) return verdict || { ok: false, error: "1 action answered nothing" };
-    if (verdict.url) {
-      const r = await sw.openWebUrl(verdict.url);
-      if (!r.ok) return r;
-      return { ok: true, did: verdict.did, hide: true };
-    }
-    if (verdict.file) {
-      const err = await shell.openPath(verdict.file);
-      return err ? { ok: false, error: `1 file did not open — ${err}` } : { ok: true, did: verdict.did, hide: true };
-    }
-    if (verdict.chat) {
-      if (!ask) return { ok: false, error: "1 Ask path not wired in main.cjs" };
-      const sent = await sw.sendChat(ask, verdict.chat);
-      return sent.ok ? { ok: true, did: sent.did, hide: true } : sent;
-    }
-    if (verdict.text != null) return { ok: true, did: verdict.did, pane: { kind: "text", title: verdict.title || "", text: String(verdict.text) } };
-    if (verdict.center) {
-      // Edge refs stay in main: the pane needs only opaque node ids.
-      const edges = (verdict.edges || []).map((e) => ({ to: e.to, label: e.label, source: e.source }));
-      // The peek's way into the full view: a row action the pane's button runs (runVerb).
-      if (verdict.explore) verbActions.set("verb:explore-from-graph", { type: "command", id: "explore.open", arg: verdict.explore });
-      return { ok: true, did: verdict.did || "graph", pane: { kind: "graph", center: verdict.center, nodes: verdict.nodes, edges, notes: verdict.notes,
-        explore: verdict.explore ? "verb:explore-from-graph" : null } };
-    }
-    return { ok: true, did: verdict.did };
-  }
-
-  /** A verb on one result (Ctrl+Enter steer, Ctrl+. stop, Ctrl+T transcript, Ctrl+G graph, Ctrl+P phone link). */
-  async function actRow(key, verb, text) {
-    const sw = require("./search-window.cjs");
-    const k = String(key || "");
-    const v = String(verb || "open");
-    const remembered = sw.rememberedItem ? sw.rememberedItem(k) : null;
-    if (k.startsWith("card:")) {
-      const id = (remembered && remembered.cardId) || k.slice("card:".length);
-      if (v === "phone") {
-        const url = `https://aitherium.com/approve?card=${encodeURIComponent(id)}`;
-        clipboard.writeText(url);
-        return { ok: true, did: `copied the phone approve link (${url})` };
-      }
-      return { ok: false, error: "1 card takes 1-9 to answer, or Ctrl+P for its phone approve link" };
-    }
-    const { CC_KINDS } = require("./command-center.cjs");
-    if (!remembered || !CC_KINDS.has(remembered.kind)) {
-      return { ok: false, error: "1 result has no agent verbs — steer, stop, transcript and graph work on agents, runs, work, knowledge, time and people" };
-    }
-    const verdict = await commandCenter().act(remembered.target, v, text);
-    const done = await carryOut(verdict);
-    if (done && done.hide) { lastPressAt = pressAt; hide(); }
-    return done;
-  }
-
-  function statusFor(groups, errors, indexing, scope = null) {
-    const narrowed = scope ? `${scope.label} only · ` : "";
+  function statusFor(groups, errors, indexing) {
     if (errors && errors.length) return core.statusText({ errors });
-    if (groups && groups.length) return narrowed + core.statusText({ groups, indexing });
-    if (indexing && scope) return `Searching ${scope.label.toLowerCase()} — still coming`;
-    if (indexing) return "Searching — apps, desk actions and screenshots answered; files, agents, tools, skills, knowledge and the web are still coming";
-    if (scope) return `0 ${scope.label.toLowerCase()} match “${scope.term}” — drop “${scope.word}” to search everything, or Enter asks Aither`;
-    return "0 results — Enter asks Aither; or try a shorter word, or > for a command";
-  }
-
-  // ── the intent bar ───────────────────────────────────────────────────────
-  function bar() {
-    return typeof intentBar === "function" ? intentBar() : intentBar;
-  }
-
-  const EFFECT_NOTE = { read: "reads", ui: "opens", write: "changes something · Enter twice", send: "sends · Enter twice", spend: "spends compute · Enter twice" };
-  // A `>` row that writes / sends / spends: the first Enter arms it (the status says
-  // what it will do), a second Enter on the SAME row within ARM_MS runs it.
-  const ARM_MS = 8_000;
-  let armedTool = { key: "", at: 0 };
-
-  /** Ranked tools as launcher items. `arg` rides with a prompt tool picked by its first word. */
-  function toolItems(ranked, arg = "") {
-    return ranked.map((r) => {
-      const t = r.tool;
-      const takes = Boolean(t.schema && (t.schema.required || []).includes("text"));
-      const key = `tool:${t.id}${takes && arg ? `:${require("./universal-search.cjs").itemKey("arg", arg)}` : ""}`;
-      toolRows.set(key, { id: t.id, arg: takes ? arg : "" });
-      return {
-        key, kind: "tool", group: "tools", effect: t.effect, pinned: r.pinned,
-        title: `${r.pinned ? "★ " : ""}${t.label}${takes && arg ? ` — “${arg.slice(0, 60)}”` : ""}`,
-        subtitle: `${t.id} · ${EFFECT_NOTE[t.effect] || t.effect}${takes && !arg ? " · type the argument after the name" : ""}`,
-      };
-    });
-  }
-
-  /** `>` words: the tools whose name matches, and prompt tools named by the FIRST word with the rest as the argument. */
-  function toolGroups(term) {
-    const b = bar();
-    if (!b) return [];
-    toolRows.clear();
-    const words = String(term || "").trim().split(/\s+/).filter(Boolean);
-    let items = toolItems(b.rank(term, { limit: 40 }));
-    if (words.length > 1) {
-      const head = b.rank(words[0], { limit: 10 }).filter((r) => r.tool.schema && (r.tool.schema.required || []).includes("text"));
-      const withArg = toolItems(head, words.slice(1).join(" "));
-      const seen = new Set(withArg.map((i) => i.key));
-      items = [...withArg, ...items.filter((i) => !seen.has(i.key))];
-    }
-    if (!items.length) return [];
-    return [{ id: "tools", label: words.length ? "Desk commands" : "Pinned, recent and every desk command", total: items.length, items }];
-  }
-
-  /** The empty box's Pinned and Recent groups (tools the owner keeps reaching for). */
-  function memoryGroups() {
-    const b = bar();
-    if (!b) return [];
-    toolRows.clear();
-    const all = b.rank("", { limit: 300 });
-    const pinned = toolItems(all.filter((r) => r.pinned));
-    const recent = toolItems(all.filter((r) => r.recent && !r.pinned).slice(0, 5));
-    const out = [];
-    if (pinned.length) out.push({ id: "pinned", label: "Pinned", total: pinned.length, items: pinned });
-    if (recent.length) out.push({ id: "recent", label: "Recent", total: recent.length, items: recent });
-    return out;
-  }
-
-  /** The "Do it" row: a sentence becomes a plan of desk tools. */
-  function intentGroup(term) {
-    if (!bar() || !String(term || "").trim()) return null;
-    const item = { key: "intent:query", kind: "intent", title: `Do it: ${String(term).slice(0, 120)}`,
-      subtitle: "Plan it with the desk's own tools (MicroScheduler) — reads run now, changes ask first" };
-    return { id: "intent", label: "Intent", total: 1, items: [item] };
-  }
-
-  /** The screen context that may ride with an intent (#109 rules: intent-bar contextParts). */
-  async function intentContext() {
-    const ib = require("./intent-bar.cjs");
-    let captured;
-    let host;
-    try { captured = pressAssist ? await pressAssist : null; } catch { captured = null; }
-    try { host = pressContext ? await pressContext : null; } catch { host = null; }
-    let clip;
-    try { clip = clipboard && clipboard.readText ? clipboard.readText() : ""; } catch { clip = ""; }
-    if (captured && captured.pid === process.pid) captured = null; // the box itself is never the subject
-    return ib.contextParts({ captured, host, clipboard: clip, looksSecret });
-  }
-
-  async function runIntent(text) {
-    const b = bar();
-    if (!b) return { ok: false, error: "1 intent bar not wired in main.cjs — ? asks Aither" };
-    const body = String(text || "").trim();
-    if (!body) return { ok: false, error: "0 words — type what you want done" };
-    if (intentPending) { b.cancel(intentPending); intentPending = ""; }
-    const answer = await b.intent(body, { context: await intentContext(), surface: "launcher" });
-    if (answer && answer.pending) intentPending = answer.pending.id;
-    return { ...answer, kind: "intent" };
-  }
-
-  async function confirmIntent(id) {
-    const b = bar();
-    if (!b || !id || id !== intentPending) return { ok: false, error: "1 plan expired — press Enter on “Do it” again" };
-    intentPending = "";
-    return { ...(await b.confirm(id)), kind: "intent" };
-  }
-
-  function cancelIntent(id) {
-    const b = bar();
-    if (b && id && id === intentPending) b.cancel(id);
-    intentPending = "";
-    return { ok: true, did: "plan cancelled — nothing that changes anything ran" };
-  }
-
-  async function runTool(key, query) {
-    const row = toolRows.get(String(key || ""));
-    const b = bar();
-    if (!row || !b) return { ok: false, error: "1 row expired — type it again" };
-    const arg = row.arg || "";
-    const tool = b.tools().find((t) => t.id === row.id);
-    if (!tool) return { ok: false, error: `1 command ${row.id} is not available right now` };
-    const takes = Boolean(tool.schema && (tool.schema.required || []).includes("text"));
-    if (takes && !arg) return { ok: false, error: `${tool.label} needs words — type them after its name (e.g. >${tool.id.split(".")[0]} …)` };
-    if (!require("./intent-bar.cjs").AUTO.has(tool.effect)) {
-      const armed = armedTool.key === String(key) && now() - armedTool.at < ARM_MS;
-      if (!armed) {
-        armedTool = { key: String(key), at: now() };
-        return { ok: false, needsConfirm: true, error: `Enter again to run: ${tool.label}${arg ? ` “${arg.slice(0, 120)}”` : ""} [${tool.effect}] — Esc cancels` };
-      }
-      armedTool = { key: "", at: 0 };
-    }
-    if (row.id === "agent.ask") return runAsk(arg || query);
-    const sw = require("./search-window.cjs");
-    const verdict = await run(row.id, takes ? arg : undefined);
-    const bad = sw.failureOf(verdict, "desk command");
-    if (bad) return { ok: false, error: bad };
-    b.touch(row.id);
-    lastPressAt = pressAt;
-    hide();
-    return { ok: true, did: (verdict && (verdict.did || verdict.message)) || tool.label };
-  }
-
-  function pinTool(key) {
-    const row = toolRows.get(String(key || ""));
-    const b = bar();
-    if (!row || !b) return { ok: false, error: "1 row is not a desk command — only commands pin" };
-    const on = b.togglePin(row.id);
-    return { ok: true, pinned: on, did: on ? `pinned ${row.id}` : `unpinned ${row.id}` };
-  }
-
-  /** The tail every plain search carries: the Ask Aither row, then the sources that did not answer. */
-  function tailGroups(term, errors, notes) {
-    const out = [];
-    const doIt = intentGroup(term);
-    if (doIt) out.push(doIt);
-    const ask = core.askGroup(term);
-    if (ask) out.push(ask);
-    const issues = core.issuesGroup(errors, notes);
-    issueLines.clear();
-    if (issues) {
-      for (const it of issues.items) issueLines.set(it.key, `${it.title} — ${it.subtitle}`);
-      out.push(issues);
-    }
-    return out;
-  }
-
-  /**
-   * A desk verb (draw, gif, pin, youtube, board, canvas, pins -- desk-verbs.cjs).
-   * Returns the launcher answer, or {extraGroup, status} for a bare verb that keeps
-   * the ordinary search underneath its rows.
-   */
-  async function verbSearch(v, token) {
-    const verbs = require("./desk-verbs.cjs");
-    const ctx = { hasCanvas: Boolean(registry && registry.byId && registry.byId("canvas.open")) };
-    if (v.verb === "gif" && v.arg) {
-      try { ctx.gifs = await require("./gif-picker-window.cjs").gifSearch().search(v.arg, { limit: 8 }); }
-      catch (error) { ctx.gifs = { ok: false, reason: message(error) }; }
-    }
-    if (v.verb === "pin" && v.target === "app") {
-      try {
-        const r = await require("./search-window.cjs").universal().run(v.value, { phase: "fast" });
-        const apps = r && r.ok ? r.groups.find((g) => g.id === "apps") : null;
-        ctx.apps = apps ? apps.items : [];
-      } catch { ctx.apps = []; }
-    }
-    if (v.verb === "pins") {
-      try { ctx.pins = require("./pins-window.cjs").listPins(); } catch { ctx.pins = []; }
-    }
-    if (token !== searchSeq) return { ok: true, token, ignored: true };
-    const { rows, status } = verbs.verbRows(v, ctx);
-    verbActions.clear();
-    for (const r of rows) verbActions.set(r.key, r.action);
-    const group = verbs.verbGroup(v, rows);
-    if (v.bare && ["draw", "board", "canvas", "pins"].includes(v.verb)) return { extraGroup: group, status };
-    return { ok: true, token, mode: "all", term: v.arg, phase: "idle", groups: group ? core.capGroups([group]) : [], status };
-  }
-
-  /**
-   * A browser verb (a bare address, go, search, private, history, bookmark, tab, find,
-   * extension -- browser-verbs.cjs). Same answer shape as verbSearch: its own rows, or
-   * {extraGroup, status} when the ordinary search stays underneath (`keepSearch`).
-   */
-  async function browserVerbSearch(v, token) {
-    const verbs = require("./browser-verbs.cjs");
-    const ctx = {};
-    const ask = async (name, ...args) => {
-      if (!browser || typeof browser[name] !== "function") return [];
-      try { const got = await browser[name](...args); return Array.isArray(got) ? got : []; } catch { return []; }
-    };
-    if (v.verb === "history" && v.target === "match") ctx.history = await ask("history", v.arg, verbs.MAX_ROWS);
-    if (v.verb === "bookmark" && v.target === "match") ctx.bookmarks = await ask("bookmarks", v.arg, verbs.MAX_ROWS);
-    if (v.verb === "tab") ctx.tabs = await ask("tabs");
-    if (token !== searchSeq) return { ok: true, token, ignored: true };
-    const { rows, status } = verbs.verbRows(v, ctx);
-    verbActions.clear();
-    for (const r of rows) verbActions.set(r.key, r.action);
-    const group = verbs.verbGroup(v, rows);
-    if (v.keepSearch) return { extraGroup: group, status };
-    return { ok: true, token, mode: "all", term: v.arg, phase: "idle", groups: group ? core.capGroups([group]) : [], status };
-  }
-
-  /**
-   * An Explore verb (graph, wiki, context -- explore-verbs.cjs). The "open Explore" row
-   * paints at once; the inline results land when the source answers (a graph search is
-   * seconds), on the same token, so a newer keystroke still wins.
-   */
-  async function exploreVerbSearch(v, token) {
-    const verbs = require("./explore-verbs.cjs");
-    const paint = (ctx) => {
-      const { rows, status } = verbs.verbRows(v, ctx);
-      verbActions.clear();
-      for (const r of rows) verbActions.set(r.key, r.action);
-      return { group: verbs.verbGroup(v, rows), status };
-    };
-    const first = paint({});
-    if (v.keepSearch) return { extraGroup: first.group, status: first.status };
-    const answer = (p, phase) => ({ ok: true, token, mode: "all", term: v.arg, phase,
-      groups: p.group ? core.capGroups([p.group]) : [], status: p.status });
-    if (!v.session) {
-      void (async () => {
-        let ctx;
-        try { ctx = await require("./explore-window.cjs").verbLookup(v); }
-        catch (error) { ctx = { [v.verb === "context" ? "sessions" : v.verb]: { ok: false, reason: message(error) } }; }
-        if (token !== searchSeq) return;
-        send("launcher:results", answer(paint(ctx), "all"));
-      })();
-    }
-    return answer(first, v.session ? "idle" : "fast");
-  }
-
-  async function runVerb(key) {
-    const action = verbActions.get(String(key || ""));
-    if (!action) return { ok: false, error: "1 row expired — type it again" };
-    const sw = require("./search-window.cjs");
-    let verdict;
-    if (action.type === "command") verdict = await run(action.id, action.arg);
-    else if (action.type === "pin") verdict = require("./pins-window.cjs").addPin(action.card);
-    else if (action.type === "pin-tab") verdict = await run("pins.tab");
-    else if (action.type === "gif-pin") verdict = require("./gif-picker-window.cjs").pinGif(action.id);
-    else if (action.type === "gif-picker") verdict = require("./gif-picker-window.cjs").openGifPicker(action.query || "");
-    else if (action.type === "browse") verdict = require("./pins-window.cjs").openInBrowser(action.url);
-    else if (action.type === "pin-show") verdict = require("./pins-window.cjs").showPin(action.id);
-    else if (action.type === "pin-close") verdict = require("./pins-window.cjs").closePin(action.id);
-    else return { ok: false, error: `1 verb row has an unknown action ${action.type}` };
-    const bad = sw.failureOf(verdict, "desk action");
-    if (bad) return { ok: false, error: bad };
-    lastPressAt = pressAt;
-    hide();
-    return { ok: true, did: action.type };
+    if (groups && groups.length) return core.statusText({ groups, indexing });
+    if (indexing) return "Searching — apps, desk actions and screenshots answered; files, agents and the web are still coming";
+    return "0 results — try a shorter word, or > for a command and ? to ask Aither";
   }
 
   async function search(text) {
     const token = ++searchSeq;
     if (inflight) { try { inflight.ctl.abort(); } catch { /* already done */ } inflight = null; }
-    const verb = require("./desk-verbs.cjs").parseDeskVerb(text);
-    const exploreVerb = verb ? null : require("./explore-verbs.cjs").parseExploreVerb(text);
-    let verbExtra = null;
-    if (verb) {
-      const answered = await verbSearch(verb, token);
-      if (!("extraGroup" in answered)) return answered;
-      verbExtra = answered;
-    } else if (exploreVerb) {
-      // graph / wiki / context <words>: rows that open aither://explore at that query.
-      const answered = await exploreVerbSearch(exploreVerb, token);
-      if (!("extraGroup" in answered)) return answered;
-      verbExtra = answered;
-    } else {
-      // The Aither Browser's verbs: an address, go, search, private, history, bookmark, tab, find.
-      const browserVerb = require("./browser-verbs.cjs").parseBrowserVerb(text);
-      if (browserVerb) {
-        const answered = await browserVerbSearch(browserVerb, token);
-        if (!("extraGroup" in answered)) return answered;
-        verbExtra = answered;
-      }
-    }
-    if (token !== searchSeq) return { ok: true, token, ignored: true };
-    let cardGroup = null;
-    let writeGroup = null;
-    const withVerb = (groups) => {
-      const lead = [writeGroup, verbExtra && verbExtra.extraGroup, cardGroup].filter(Boolean);
-      return lead.length ? [...lead, ...groups] : groups;
-    };
     const parsed = core.parseQuery(text);
-    if (parsed.mode === "command" && bar() && !/^(adk|awsh)(\s|$)/i.test(parsed.term)) {
-      const groups = toolGroups(parsed.term);
-      return {
-        ok: true, token, mode: "command", term: parsed.term, phase: "idle", groups: core.capGroups(groups, 8), chip: "> Desk commands",
-        status: groups.length ? "Enter runs · Ctrl+P pins · arguments after the name (>timer 10m tea) · >adk / >awsh for a command line"
-          : `0 desk commands match “${parsed.term}” — Esc, then type it as a sentence for “Do it”`,
-      };
-    }
     if (parsed.mode === "command") {
       const plan = core.commandPlan(parsed.term);
       return {
@@ -913,111 +456,57 @@ function createLauncher({
         status: "Enter to confirm" };
     }
     if (!parsed.term) {
-      // The empty box is the LISTS: "Needs you (N)" first (the open decision
-      // cards, in the store's one rank order), then what the owner is LOOKING AT
-      // (launcher-context.cjs). Both groups are rows launchItem can run, so
-      // nothing new becomes executable here.
-      const sw = require("./search-window.cjs");
-      const context = require("./launcher-context.cjs");
-      const groups = [];
-      let status = "";
-      let total = 0;
-      if (typeof fairy === "function" && typeof askFairy === "function") {
-        let nudge;
-        try { nudge = await fairy(); } catch { nudge = null; }
-        if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
-        const builtFairy = context.fairyGroup(nudge);
-        if (builtFairy.group) { groups.push(builtFairy.group); total += builtFairy.items.length; }
-      }
-      if (typeof cards === "function") {
-        let snapshot;
-        try { snapshot = await cards(); } catch { snapshot = []; }
-        if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
-        const builtCards = context.needsYouGroup(snapshot);
-        if (builtCards.group) { groups.push(builtCards.group); total += builtCards.items.length; }
-      }
-      try {
-        const hot = await commandCenter().workingNow();
-        if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
-        if (hot.length) {
-          const items = hot.map((r, i) => ({ key: require("./universal-search.cjs").itemKey(r.kind, r.ref), group: "cc-live", kind: r.kind,
-            title: r.title, subtitle: r.subtitle, target: r.ref, score: 1 - i / 1000 }));
-          groups.push({ id: "cc-live", label: "Working now", total: items.length, items });
-          total += items.length;
-        }
-      } catch { /* the command center is optional on an empty box */ }
-      if (pressAssist && assist) {
-        const captured = await pressAssist;
-        if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
-        const writing = assist.group(captured, "");
-        if (writing) { groups.unshift(writing); total += writing.items.length; }
-      }
+      // The empty box answers with what the owner is LOOKING AT (launcher-context.cjs)
+      // instead of a blank "Type to search".
       if (pressContext) {
-        const sample = await pressContext;
+        const context = await pressContext;
         if (token !== searchSeq) return { ok: true, token, superseded: true, groups: [] };
         const hasAction = (id) => Boolean(registry && registry.byId && registry.byId(id));
-        const built = context.rightNowGroup(sample, hasAction);
-        if (built.group) { groups.push(built.group); total += built.items.length; }
-        if (built.status) status = built.status;
+        const built = require("./launcher-context.cjs").rightNowGroup(context, hasAction);
+        if (built.group) {
+          const sw = require("./search-window.cjs");
+          const shown = sw.publicRun({ ok: true, query: "", phase: "idle", groups: [built.group], total: built.items.length });
+          return { ok: true, token, mode: "all", term: "", phase: "idle", groups: shown.groups, status: built.status };
+        }
+        if (built.status) return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: built.status };
       }
-      groups.push(...memoryGroups());
-      if (groups.length === 0) {
-        return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: status || core.IDLE_STATUS };
-      }
-      const shown = sw.publicRun({ ok: true, query: "", phase: "idle", groups, total });
-      // The empty box names every source it searches even while its lists are up.
-      return { ok: true, token, mode: "all", term: "", phase: "idle", groups: core.capGroups(shown.groups), status: status || core.IDLE_STATUS };
+      return { ok: true, token, mode: "all", term: "", phase: "idle", groups: [], status: core.IDLE_STATUS };
     }
     const sw = require("./search-window.cjs");
-    const universal = typeof universalSearch === "function" ? universalSearch() : sw.universal();
+    const universal = sw.universal();
     ensureWeb(universal);
-    ensureCommandCenter(universal);
-    // A scope word (`tool git`, `file invoice`, `mem roadmap`) narrows the SAME run to
-    // its providers; a verb that kept the search underneath is never also a scope.
-    const scope = verbExtra ? null : core.parseScope(text);
-    const term = scope ? scope.term : parsed.term;
-    const narrowed = scope ? { only: scope.only, scope: { id: scope.id, domains: scope.domains || null } } : {};
-    const chip = scope ? core.scopeChip(scope) : "";
-    askTerm = term;
-    if (!scope) cardGroup = await matchingCards(parsed.term);
-    // On a selection / in a text field, what was typed is also a WRITING request: the first row.
-    if (!scope && !verbExtra && pressAssist && assist) {
-      writeGroup = assist.group(await pressAssist, parsed.term);
-    }
-    if (token !== searchSeq) return { ok: true, token, ignored: true };
     const ctl = new AbortController();
     inflight = { token, ctl };
     const view = (result) => {
       if (result && result.ok) {
         const shown = sw.publicRun(result);
-        return { groups: shown.groups || [], errors: shown.errors || [], notes: shown.notes || [] };
+        return { groups: shown.groups || [], errors: shown.errors || [] };
       }
       if (result && result.superseded) return null;
-      return { groups: [], errors: [{ group: "search", label: "Search", reason: (result && result.reason) || "no answer" }], notes: [] };
+      return { groups: [], errors: [{ label: "Search", reason: (result && result.reason) || "no answer" }] };
     };
-    const none = { groups: [], errors: [], notes: [] };
     let fast;
-    try { fast = await universal.run(term, { phase: "fast", signal: ctl.signal, ...narrowed }); }
+    try { fast = await universal.run(parsed.term, { phase: "fast", signal: ctl.signal }); }
     catch (error) { fast = { ok: false, reason: message(error) }; }
     if (token !== searchSeq) return { ok: true, token, ignored: true };
-    const fastView = view(fast) || none;
+    const fastView = view(fast) || { groups: [], errors: [] };
     const payload = {
-      ok: true, token, mode: "all", term, phase: "fast", chip,
-      groups: core.capGroups([...withVerb(fastView.groups), ...tailGroups(term, fastView.errors, fastView.notes)]),
-      status: statusFor(fastView.groups, fastView.errors, true, scope),
+      ok: true, token, mode: "all", term: parsed.term, phase: "fast",
+      groups: core.capGroups(fastView.groups),
+      status: statusFor(fastView.groups, fastView.errors, true),
     };
     // The slow half (files, agents, the web) lands when it lands; the box is usable
     // the moment the fast half paints.
     void (async () => {
       let all;
-      try { all = await universal.run(term, { phase: "all", signal: ctl.signal, ...narrowed }); }
+      try { all = await universal.run(parsed.term, { phase: "all", signal: ctl.signal }); }
       catch (error) { all = { ok: false, reason: message(error) }; }
       if (token !== searchSeq) return;
-      const allView = view(all) || none;
+      const allView = view(all) || { groups: [], errors: [] };
       send("launcher:results", {
-        ok: true, token, mode: "all", term, phase: "all", chip,
-        groups: core.capGroups([...withVerb(allView.groups), ...tailGroups(term, allView.errors, allView.notes)]),
-        status: statusFor(allView.groups, allView.errors, false, scope),
+        ok: true, token, mode: "all", term: parsed.term, phase: "all",
+        groups: core.capGroups(allView.groups),
+        status: statusFor(allView.groups, allView.errors, false),
       });
     })();
     return payload;
@@ -1025,52 +514,6 @@ function createLauncher({
 
   // ── actions ───────────────────────────────────────────────────────────────
   async function runRow(key, query) {
-    if (String(key || "").startsWith("verb:")) return runVerb(key);
-    if (String(key || "").startsWith("tool:")) return runTool(key, query);
-    if (key === "intent:query") return runIntent(askTerm || query);
-    if (String(key || "").startsWith("assist:")) {
-      if (!assist || typeof assist.choose !== "function") return { ok: false, error: "1 writing action is not wired in main.cjs" };
-      const captured = pressAssist ? await pressAssist : null;
-      // The box leaves FIRST: the pop-up then opens at the original caret and the original
-      // window gets its focus back for the insert.
-      hide();
-      const result = await assist.choose(captured, String(key), String(query || ""));
-      return result && result.ok === false ? result : { ok: true, did: "writing in the window you were in" };
-    }
-    if (String(key || "").startsWith("fairy:")) {
-      const id = String(key).slice("fairy:".length);
-      if (typeof askFairy !== "function") return { ok: false, error: "1 fairy chat not wired in main.cjs" };
-      const sw = require("./search-window.cjs");
-      const verdict = await askFairy(id);
-      const bad = sw.failureOf(verdict, "fairy chat");
-      if (bad) return { ok: false, error: bad };
-      hide();
-      return { ok: true, did: "asked the fairy" };
-    }
-    if (String(key || "").startsWith("card:")) {
-      // A card row: `query` is a NUMBER (the 1-9 keys) or the option the owner
-      // typed. Both resolve to the card's own key and are written by awask, so a
-      // number key, a click and a typed answer are one implementation (DCS001).
-      const sw = require("./search-window.cjs");
-      const remembered = sw.rememberedItem ? sw.rememberedItem(key) : null;
-      const id = (remembered && remembered.cardId) || String(key).slice("card:".length);
-      const text = String(query || "").trim();
-      if (!text) return { ok: false, error: "Press Enter to open the card, or 1-9 / type an option to answer" };
-      const spec = /^\d+$/.test(text) ? { id, index: Number(text) } : { id, text };
-      const verdict = await run("card-answer", spec);
-      const bad = sw.failureOf(verdict, "answer");
-      if (bad) return { ok: false, error: bad };
-      if (verdict && verdict.ok === false) return verdict;
-      hide();
-      return { ok: true, did: (verdict && verdict.did) || `answered ${id}` };
-    }
-    // The fall-through row: what was typed goes to Aither, down the `?` path.
-    if (key === "ask:query") return runAsk(askTerm || query);
-    // A source that did not answer: Enter repeats the reason and the remedy; nothing runs.
-    if (String(key || "").startsWith("issue:")) {
-      const line = issueLines.get(String(key));
-      return { ok: false, error: line ? `1 source down — ${line}` : "1 row expired — search again" };
-    }
     if (key === "reveal:unlock" || key === "reveal:lock") {
       const reveal = require("./private-reveal.cjs").sharedReveal();
       if (key === "reveal:lock") return { ...reveal.lock(), did: "hidden results hidden again" };
@@ -1078,11 +521,6 @@ function createLauncher({
       return verdict.ok
         ? { ok: true, did: "showing hidden results for 5 minutes" }
         : { ok: false, error: `Hidden results stay hidden — ${verdict.reason}` };
-    }
-    {
-      const sw = require("./search-window.cjs");
-      const item = sw.rememberedItem ? sw.rememberedItem(key) : null;
-      if (item && require("./command-center.cjs").CC_KINDS.has(item.kind)) return actRow(key, "open", "");
     }
     const sw = require("./search-window.cjs");
     const remembered = String(key || "").startsWith("ctx:") && sw.rememberedItem ? sw.rememberedItem(key) : null;
@@ -1159,13 +597,8 @@ function createLauncher({
     ipcMain.handle("launcher:command", guard((text, confirm) => runLine(text, confirm === true)));
     ipcMain.handle("launcher:ask", guard((text) => runAsk(text)));
     ipcMain.handle("launcher:spirit", guard((text) => runSpirit(text)));
-    ipcMain.handle("launcher:act", guard((key, verb, text) => actRow(key, verb, text)));
     ipcMain.handle("launcher:hide", guard(() => { hide(); return { ok: true }; }));
     ipcMain.handle("launcher:release", guard(() => release()));
-    ipcMain.handle("launcher:intent", guard((text) => runIntent(text)));
-    ipcMain.handle("launcher:intent-confirm", guard((id) => confirmIntent(String(id || ""))));
-    ipcMain.handle("launcher:intent-cancel", guard((id) => cancelIntent(String(id || ""))));
-    ipcMain.handle("launcher:pin", guard((key) => pinTool(key)));
   }
 
   /** Create the window after `app.whenReady()` so the first press paints at once. */
@@ -1179,11 +612,9 @@ function createLauncher({
   }
 
   return {
-    press, release, hide, search, runRow, runAsk, runSpirit, runLine, warm, actRow,
-    runIntent, confirmIntent, cancelIntent, pinTool,
+    press, release, hide, search, runRow, runAsk, runSpirit, runLine, warm,
     isVisible: () => Boolean(alive() && win.isVisible()),
     phase: () => phase,
-    __armAssist: (promise) => { pressAssist = promise; },
     __state: () => ({ phase, pressAt, lastPressAt, releasedAt, ignoreUntil }),
   };
 }

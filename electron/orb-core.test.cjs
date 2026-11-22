@@ -226,8 +226,8 @@ test("a gateway Error is a failure, never an answer", () => {
 test("the measured TLS mismatch gets its exact remedy", () => {
   const f = core.classifyVisionFailure("Error: Vision upload-analyze: Server disconnected without sending a response.");
   assert.equal(f.code, "tls-mismatch");
-  assert.match(f.remedy, /AITHER_PERCEPTIONMEDIA_URL=https:\/\/aitheros-perception-media:8084/);
-  assert.match(f.remedy, /restart aitheros-mcpgateway/);
+  assert.match(f.remedy, /AITHER_PERCEPTIONMEDIA_URL at the PerceptionMedia service's https:\/\/ URL/);
+  assert.match(f.remedy, /restart the MCP gateway/);
 });
 
 test("a refused socket says the gateway is not answering, with the health command", () => {
@@ -300,115 +300,14 @@ test("a bubble is never placed off-screen when the orb is in a negative-origin d
 // ── state file ──────────────────────────────────────────────────────────────
 
 test("a saved state is small and sanitized; junk costs settings, not a launch", () => {
-  const off = { tenantCompanion: false, companionsV: 0, swarm: false, cluster: true, reducedMotion: false, neurons: false, follow: true, swarmView: require("./fairy-control.cjs").normalizeView(null) };
-  // Hidden by default (owner 2026-11-13): no file, or a file that never said "visible".
-  assert.deepEqual(core.sanitizeState(null), { visible: false, pinned: false, x: null, y: null, freeRoam: false, sounds: true, muteUntil: 0, ownerHid: false, ownerHidIds: [], ...off });
-  assert.deepEqual(core.sanitizeState({ visible: false, x: "12.7", y: 400 }), { visible: false, pinned: false, x: 13, y: 400, freeRoam: false, sounds: true, muteUntil: 0, ownerHid: false, ownerHidIds: [], ...off });
-  assert.deepEqual(core.sanitizeState({ x: "nope", y: 1e9 }), { visible: false, pinned: false, x: null, y: 1000000000, freeRoam: false, sounds: true, muteUntil: 0, ownerHid: false, ownerHidIds: [], ...off });
-  assert.equal(core.sanitizeState({ visible: true }).visible, true, "a person who showed it keeps it");
-  assert.equal(core.sanitizeState({ tenantCompanion: true, companionsV: 1 }).tenantCompanion, true);
-  assert.equal(core.sanitizeState({ companionsV: "1" }).companionsV, 1);
+  assert.deepEqual(core.sanitizeState(null), { visible: true, pinned: false, x: null, y: null, freeRoam: false });
+  assert.deepEqual(core.sanitizeState({ visible: false, x: "12.7", y: 400 }), { visible: false, pinned: false, x: 13, y: 400, freeRoam: false });
+  assert.deepEqual(core.sanitizeState({ x: "nope", y: 1e9 }), { visible: true, pinned: false, x: null, y: 1000000000, freeRoam: false });
   assert.equal(core.sanitizeState({ pinned: true }).pinned, true);
-});
-
-test("fairy sounds default on and turn off only when explicitly false", () => {
-  assert.equal(core.sanitizeState(null).sounds, true);
-  assert.equal(core.sanitizeState({ sounds: "no" }).sounds, true);
-  assert.equal(core.sanitizeState({ sounds: false }).sounds, false);
-});
-
-test("a nudge mute from the fairy's menu is remembered as a time, junk = not muted", () => {
-  assert.equal(core.sanitizeState({ muteUntil: 1_800_000_000_000 }).muteUntil, 1_800_000_000_000);
-  assert.equal(core.sanitizeState({ muteUntil: "soon" }).muteUntil, 0);
-  assert.equal(core.sanitizeState({ muteUntil: -5 }).muteUntil, 0);
 });
 
 test("freeRoam is remembered only when explicitly true", () => {
   assert.equal(core.sanitizeState({ freeRoam: true }).freeRoam, true);
   assert.equal(core.sanitizeState({ freeRoam: "yes" }).freeRoam, false);
   assert.equal(core.sanitizeState(null).freeRoam, false);
-});
-
-test("areaAvoiding: the fairy's area leaves out a box the tenant site owns (GARG's goblin)", () => {
-  const area = { x: 0, y: 0, width: 2194, height: 1206 };
-  const goblin = { x: 2054, y: 962, width: 132, height: 132 }; // right:8, bottom:112
-  const free = core.areaAvoiding(area, goblin, 124);
-  // The largest rectangle that misses the padded box is everything left of it.
-  assert.deepEqual(free, { x: 0, y: 0, width: 1930, height: 1206 });
-  // The first-run spot and a saved spot inside the corner both land outside the box.
-  for (const pos of [core.defaultOrbPosition(free, { width: 72, height: 72 }),
-    core.clampToWorkArea({ x: 2100, y: 1000 }, { width: 72, height: 72 }, free)]) {
-    assert.ok(pos.x + 72 <= goblin.x - 124, `fairy at ${pos.x} still reaches the goblin`);
-  }
-  // No box, an empty box, a box on another display: the area is untouched.
-  assert.equal(core.areaAvoiding(area, null, 124), area);
-  assert.equal(core.areaAvoiding(area, { x: 10, y: 10, width: 0, height: 0 }, 124), area);
-  assert.equal(core.areaAvoiding(area, { x: 5000, y: 10, width: 132, height: 132 }, 124), area);
-  // A box that would leave nothing usable does not shrink the area to a sliver.
-  const small = { x: 0, y: 0, width: 400, height: 400 };
-  assert.equal(core.areaAvoiding(small, { x: 100, y: 100, width: 200, height: 200 }, 0), small);
-});
-
-test("pageRectOnScreen: a page rect becomes a screen rect; junk is no box", () => {
-  assert.deepEqual(core.pageRectOnScreen({ x: 2054, y: 962, width: 132, height: 132 }, { x: 0, y: 0, width: 2194, height: 1206 }),
-    { x: 2054, y: 962, width: 132, height: 132 });
-  assert.deepEqual(core.pageRectOnScreen({ x: 10, y: 20, width: 132, height: 132 }, { x: -1920, y: 40, width: 1920, height: 1040 }),
-    { x: -1910, y: 60, width: 132, height: 132 });
-  for (const bad of [null, {}, { x: 0, y: 0, width: 0, height: 10 }, { x: "a", y: 0, width: 5, height: 5 }, { x: 0, y: 0, width: 4000, height: 50 }]) {
-    assert.equal(core.pageRectOnScreen(bad, { x: 0, y: 0, width: 100, height: 100 }), null);
-  }
-});
-
-test("every resting path of the fairy asks restSpot, the hover included", () => {
-  // 2026-11-12: placeOrb kept out of the goblin's box and the 33 ms hover loop put the
-  // fairy straight back on the saved spot, because it read state.x/y itself.
-  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "orb-window.cjs"), "utf8");
-  assert.ok(src.includes("const rest = restSpot();"), "the hover asks restSpot");
-  assert.doesNotMatch(src, /setOrbCenter\(\{ x: state\.x \+/);
-  assert.ok(src.includes("  if (!alive(orbWindow)) return;\n  const pos = restSpot();"), "placeOrb asks restSpot");
-});
-
-test("windowDockSpot: docked, the fairy is inside the window, above its bar, off the companion", () => {
-  const size = { width: 72, height: 72 };
-  const winBounds = { x: 100, y: 50, width: 1400, height: 900 };
-  const goblin = { x: 100 + 1400 - 8 - 132, y: 50 + 900 - 112 - 132, width: 132, height: 132 };
-  const bare = core.windowDockSpot(winBounds, size, null, 124);
-  assert.ok(bare.x + 72 <= 1500 && bare.x >= 100 && bare.y >= 50, "inside the window");
-  assert.ok(bare.y + 72 <= 50 + 900 - 64, "above the bottom bar");
-  const withGoblin = core.windowDockSpot(winBounds, size, goblin, 124);
-  assert.ok(withGoblin.x + 72 <= goblin.x - 124, "left of the companion and the swarm's reach");
-  // The window moved to another monitor: the spot moves with it.
-  const moved = core.windowDockSpot({ ...winBounds, x: -1800 }, size, null, 124);
-  assert.equal(moved.x - bare.x, -1900);
-});
-
-test("one cluster: the desk hides the page's own fairy and docks on the AitherOS window by itself", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const ld = fs.readFileSync(path.join(__dirname, "living-desktop-window.cjs"), "utf8");
-  const ow = fs.readFileSync(path.join(__dirname, "orb-window.cjs"), "utf8");
-  assert.ok(ld.includes('"[data-os-fairy-root]{display:none !important}"'), "the page fairy is not drawn in desk windows");
-  for (const event of ["show", "hide", "minimize", "restore"]) assert.ok(ld.includes(`"${event}"`), event);
-  assert.ok(ld.includes("appWin = null;\n    syncFairyDock();"), "a closed window lets the fairy go");
-  assert.ok(ow.includes('if (attach && !attach.auto && !attach.follow) return { ok: true, docked: false, why: "attached by hand" };'),
-    "an attachment the owner made is never replaced (a follow attach is not one)");
-  assert.ok(ow.includes("if (attach.auto && (!win.isVisible() || win.isMinimized()))"), "a minimised window is let go");
-});
-
-test("tool-flight reduced motion is a setting, off by default, only true turns it on", () => {
-  assert.equal(core.sanitizeState(null).reducedMotion, false);
-  assert.equal(core.sanitizeState({ reducedMotion: "yes" }).reducedMotion, false);
-  assert.equal(core.sanitizeState({ reducedMotion: true }).reducedMotion, true);
-});
-
-test("stays-hidden: the owner's fairy hide and its card ids survive a save and reload", () => {
-  const { sanitizeState } = require("./orb-core.cjs");
-  const saved = JSON.parse(JSON.stringify(sanitizeState({ visible: false, ownerHid: true, ownerHidIds: ["d-1", "d-2", 7] })));
-  const back = sanitizeState(saved);
-  assert.equal(back.visible, false);
-  assert.equal(back.ownerHid, true);
-  assert.deepEqual(back.ownerHidIds, ["d-1", "d-2"]);   // junk dropped
-  const fresh = sanitizeState(null);
-  assert.equal(fresh.ownerHid, false);
-  assert.deepEqual(fresh.ownerHidIds, []);
 });

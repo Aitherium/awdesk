@@ -10,7 +10,7 @@ const cast = require("./cast-config.cjs");
 const {
   createFilesAccess, agentToolCall, cleanRel, agentDenied, agentDeniedRel, AGENT_TOOLS,
 } = require("./files-access.cjs");
-const { filesHandlers, handOffLine, resolvePath } = require("./files-window.cjs");
+const { filesHandlers, handOffLine } = require("./files-window.cjs");
 
 function sandbox(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "awdesk-files-"));
@@ -349,32 +349,4 @@ test("an innocently named link to a denied file or folder is withheld, read and 
     assert.throws(() => files.agent.read("Shared", "readme.txt"), /withheld/);
     assert.ok(!files.agent.list("Shared", "").entries.some((e) => e.name === "readme.txt"));
   }
-});
-
-test("a dropped path resolves to a root: inside a root it reuses it, outside it is added", (t) => {
-  const s = sandbox(t);
-  writeCast(s.castFile, [{ path: s.shared, label: "Shared" }]);
-  const files = createFilesAccess({ castFile: s.castFile, home: s.home });
-  // A dropped FILE opens its folder with the file selected.
-  const file = resolvePath(path.join(s.shared, "notes", "todo.md"), { files });
-  assert.equal(file.root, s.shared);
-  assert.equal(file.rel, "notes");
-  assert.equal(file.select, "todo.md");
-  assert.equal(file.added, false);
-  // A dropped FOLDER opens itself, no selection.
-  const folder = resolvePath(path.join(s.shared, "notes"), { files });
-  assert.equal(folder.rel, "notes");
-  assert.equal(folder.select, null);
-  // Outside every root: the folder is added (the same cast.json write "Add folder" does).
-  const outside = resolvePath(s.privateDir, { files });
-  assert.equal(outside.added, true);
-  assert.equal(outside.root, s.privateDir);
-  assert.ok(files.roots().roots.some((r) => r.path === s.privateDir), "the dropped folder is now a place");
-  // A relative path or one not on this machine is refused, never guessed.
-  assert.throws(() => resolvePath("notes/todo.md", { files }), /absolute/);
-  assert.throws(() => resolvePath(path.join(s.dir, "nope"), { files }), /not on this machine/);
-  // A share on another machine is refused BEFORE any stat: an SMB stat blocks the
-  // main process on its timeout and can hand the share's host an NTLM challenge.
-  assert.throws(() => resolvePath("\\\\srv\\share\\x", { files }), /another machine/);
-  assert.throws(() => resolvePath("//srv/share/x", { files }), /another machine/);
 });

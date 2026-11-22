@@ -22,42 +22,13 @@ const { DAEMON, harnessToken } = require("./sessions-client.cjs");
 const HARNESS_ORDER = Object.freeze(["terminal", "claude", "aither", "codex", "gemini", "opencode", "aider"]);
 const HARNESS_LABELS = Object.freeze({
   terminal: "Shell", claude: "Claude Code", aither: "Aither", codex: "Codex",
-  gemini: "Gemini", opencode: "OpenCode", aider: "Aider", node: "Node shell",
+  gemini: "Gemini", opencode: "OpenCode", aider: "Aider",
 });
 const SESSION_ID = /^[A-Za-z0-9_-]{1,80}$/;
 const MAX_INPUT = 64 * 1024;
-/**
- * A node shell's target, `[user@]host[:port]` -- the daemon's own rule (awdk
- * adk/harnesses/pty_session.py `_NODE_TARGET`), repeated here so the desk never
- * forwards a target the daemon would refuse. Nothing that starts with `-` passes:
- * the target lands on ssh's command line.
- */
-const NODE_TARGET = /^(?:[A-Za-z0-9._][A-Za-z0-9._-]{0,63}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,252}(?::[0-9]{1,5})?$/;
 
 function validId(id) {
   return SESSION_ID.test(String(id || ""));
-}
-
-function validNodeTarget(target) {
-  if (typeof target !== "string" || !NODE_TARGET.test(target)) return false;
-  // The daemon also refuses a port outside 1-65535; refuse it here so it never leaves.
-  const port = /:([0-9]+)$/.exec(target);
-  return !port || (Number(port[1]) >= 1 && Number(port[1]) <= 65535);
-}
-
-/** What the "+ New" menu needs from a daemon /nodes row; null for one it cannot open. */
-function nodeRow(n) {
-  if (!n || !validNodeTarget(n.target)) return null;
-  return {
-    name: String(n.name || n.target).slice(0, 80),
-    target: n.target,
-    host: String(n.host || ""),
-    user: String(n.user || ""),
-    port: String(n.port || ""),
-    os: String(n.os || ""),
-    online: n.online === true ? true : n.online === false ? false : null,
-    source: String(n.source || ""),
-  };
 }
 
 /**
@@ -173,41 +144,6 @@ function createTerminalClient({ fetchImpl = globalThis.fetch, base = DAEMON, tok
       const rows = (r.data && Array.isArray(r.data.sessions)) ? r.data.sessions : [];
       return { ok: true, sessions: rows.map(externalRow).filter(Boolean) };
     },
-    /**
-     * `GET /sessions/unified`, split by ORIGIN (contract v1): the daemon's own sessions
-     * ("daemon" -- attach directly) and the interactive Claude Code tabs it discovered
-     * ("discovered" -- Windows Terminal owns their pty, so they can only be RESUMED).
-     * The "+" picker lists exactly this.
-     */
-    async unified() {
-      const r = await call("GET", "/sessions/unified", undefined, { timeoutMs: 8000 });
-      if (!r.ok) return r;
-      const rows = (r.data && Array.isArray(r.data.sessions)) ? r.data.sessions : [];
-      const sessions = [];
-      const external = [];
-      for (const s of rows) {
-        if (!s || !validId(s.id)) continue;
-        const origin = String(s.origin || "daemon");
-        if (origin === "discovered") {
-          const row = externalRow(s);
-          if (row) external.push(row);
-          continue;
-        }
-        sessions.push({
-          id: String(s.id),
-          harness: String(s.harness || ""),
-          label: String(s.name || s.title || HARNESS_LABELS[s.harness] || s.harness || "session").slice(0, 120),
-          state: String(s.status || s.state || ""),
-          cwd: String(s.cwd || ""),
-          exitCode: s.exit_code == null ? null : Number(s.exit_code),
-          // The /sessions/unified wire row (contract v1, adk daemon `_unified_row`)
-          // carries last_activity_at and NEVER created_at: keying this on created_at
-          // left every daemon row at 0 and the picker in directory order.
-          lastActivityAt: Number(s.last_activity_at) || 0,
-        });
-      }
-      return { ok: true, sessions, external };
-    },
     /** Reopen a Claude Code session by its own id, as a daemon pty tab (claude-tty). */
     async resume(id, { cwd = "", rows = 30, cols = 100 } = {}) {
       if (!validId(id)) return { ok: false, error: "bad session id" };
@@ -218,24 +154,10 @@ function createTerminalClient({ fetchImpl = globalThis.fetch, base = DAEMON, tok
       if (validId(session.id)) await call("POST", `/sessions/${session.id}/resize`, { rows, cols }).catch(() => {});
       return { ok: true, session };
     },
-    /**
-     * Machines a node shell can open (the daemon's GET /nodes: your ssh_config aliases
-     * plus the tailnet peers online now). An older daemon without the route answers 404:
-     * that is "no nodes section", not an error the menu should shout.
-     */
-    async nodes() {
-      const r = await call("GET", "/nodes", undefined, { timeoutMs: 8000 });
-      if (!r.ok) return r.status === 404 ? { ok: true, nodes: [] } : r;
-      const rows = (r.data && Array.isArray(r.data.nodes)) ? r.data.nodes : [];
-      return { ok: true, nodes: rows.map(nodeRow).filter(Boolean) };
-    },
-    async create({ harness = "terminal", cwd = "", title = "", rows = 30, cols = 100, target = "" } = {}) {
-      const node = harness === "node";
-      if (!node && !HARNESS_ORDER.includes(harness)) return { ok: false, error: `not a terminal harness: ${harness}` };
-      if (node && !validNodeTarget(target)) return { ok: false, error: `not a node target: ${String(target).slice(0, 80)}` };
-      const body = { harness, cwd: String(cwd || ""), title: String(title || "") };
-      if (node) body.target = target;
-      const r = await call("POST", "/sessions", body, { timeoutMs: 30000 });
+    async create({ harness = "terminal", cwd = "", title = "", rows = 30, cols = 100 } = {}) {
+      if (!HARNESS_ORDER.includes(harness)) return { ok: false, error: `not a terminal harness: ${harness}` };
+      const r = await call("POST", "/sessions", { harness, cwd: String(cwd || ""), title: String(title || "") },
+        { timeoutMs: 30000 });
       if (!r.ok) return r;
       const session = tabRow(r.data || {});
       if (validId(session.id)) await call("POST", `/sessions/${session.id}/resize`, { rows, cols }).catch(() => {});
@@ -293,7 +215,4 @@ function createTerminalClient({ fetchImpl = globalThis.fetch, base = DAEMON, tok
   };
 }
 
-module.exports = {
-  HARNESS_LABELS, HARNESS_ORDER, createSseParser, createTerminalClient, externalRow, nodeRow, tabRow,
-  validId, validNodeTarget,
-};
+module.exports = { HARNESS_LABELS, HARNESS_ORDER, createSseParser, createTerminalClient, externalRow, tabRow, validId };

@@ -12,24 +12,9 @@ contextBridge.exposeInMainWorld("deskBridge", {
   // below is suppressed for avatar hits via a dataset flag the renderer sets on the
   // canvas at pointerdown — the deck opening behind the avatar menu reads as a bug.
   avatarContextMenu: (slotId) => ipcRenderer.send("desk:avatar-context-menu", slotId),
-  // Stages by direct manipulation (src/stage/stage-direct.ts): drop a body on another to join it,
-  // drag a stage's handle to move the group. Main applies both through the swarm host.
-  stageDrop: (slotId, targetSlotId) => ipcRenderer.send("desk:stage-drop", String(slotId || ""), String(targetSlotId || "")),
-  // A body that cannot be animated at all (no humanoid arms): main hands it back to its fairy.
-  bodyBroken: (slotId) => ipcRenderer.send("desk:body-broken", String(slotId || "")),
-  stageSync: (positions) => ipcRenderer.send("desk:stage-sync", positions && typeof positions === "object" ? positions : {}),
   // Click-through (src/hooks/clickThrough.ts): false = nothing drawn under the cursor,
   // let the click reach the app below. main applies it to the SENDING window only.
-  // Which body is hovered / selected (src/hooks/avatarPick.ts): main keeps it for GET /swarm and the tests.
-  reportPick: (state) => ipcRenderer.send("desk:avatar-pick", { hover: state && state.hover ? String(state.hover) : null, selected: state && state.selected ? String(state.selected) : null }),
   setInteractive: (interactive) => ipcRenderer.send("desk:set-interactive", interactive === true),
-  // The renderer's own frame rate (src/perf/frameGap.ts, Scene.tsx RenderStatsReporter):
-  // {fps, p95GapMs} once a second. main keeps the last sample for GET /health `stage.render`
-  // — the number "the avatar is lagging" could not be measured by before 2026-11-18.
-  reportFrame: (stats) => ipcRenderer.send("desk:frame-stats", {
-    fps: Math.max(0, Number(stats && stats.fps) || 0),
-    p95GapMs: Math.max(0, Number(stats && stats.p95GapMs) || 0),
-  }),
   subscribe: (listener) => {
     const handler = (_event, payload) => listener(payload);
     ipcRenderer.on("desk:event", handler);
@@ -50,16 +35,6 @@ contextBridge.exposeInMainWorld("deskBridge", {
     // "None of these — do this instead": the card plane's steer verb, so a card
     // whose right answer is not one of its options no longer needs a terminal.
     steer: (id, text) => ipcRenderer.invoke("desk:deck-steer", { id, text }),
-    // The session behind a card (session-context.cjs): what it is doing, whether it
-    // is still open, and the three ways to reach it. Main resolves the session from
-    // ITS copy of the card; the page names only the card.
-    session: (id) => ipcRenderer.invoke("desk:deck-session", String(id || "")),
-    sessionAct: (id, action, text) => ipcRenderer.invoke("desk:deck-session-act",
-      { id: String(id || ""), action: String(action || ""), text: text == null ? "" : String(text) }),
-    openUrl: (url) => ipcRenderer.invoke("desk:deck-open-url", String(url || "")),
-    // Show a file the session edited in Explorer. Main accepts ONLY a path from
-    // that card's own session context, never an arbitrary path from the page.
-    openFile: (id, file) => ipcRenderer.invoke("desk:deck-open-file", String(id || ""), String(file || "")),
     action: (name, arg) => ipcRenderer.invoke("desk:deck-action", name, arg),
     // The rows of a non-menu surface ("beads"), from command-registry.cjs: id,
     // resolved label, icon name. A bead sends its id back through `action`.
@@ -68,9 +43,6 @@ contextBridge.exposeInMainWorld("deskBridge", {
     // (market-client.cjs speaks MCP to the local gateway with the session
     // bearer; same credential story as the relay feed).
     marketBrowse: (query) => ipcRenderer.invoke("desk:market-browse", query ?? ""),
-    // Install one listing: main confirms in a native dialog, then runs
-    // `adk pack install <id>` (the same resolver every surface uses).
-    marketInstall: (id) => ipcRenderer.invoke("desk:market-install", String(id ?? "")),
     // The avatar store (W4-04): your own library and VRoid Hub search through the
     // broker; install names an id only (main looks up everything else).
     avatarLibrary: () => ipcRenderer.invoke("desk:avatar-library"),
@@ -94,11 +66,6 @@ contextBridge.exposeInMainWorld("deskBridge", {
     saveCharacterTurntable: (name, shot, dataUrl) =>
       ipcRenderer.invoke("desk:save-character-turntable", name ?? "", Number(shot) || 0, dataUrl ?? ""),
   },
-  // The rogues gallery (gallery-host.cjs): one verb channel. Every verb that changes a body is
-  // the owner's click on this page; agents only reach `propose_avatar` (MCP), never this.
-  gallery: {
-    call: (verb, arg) => ipcRenderer.invoke("desk:gallery", String(verb || ""), arg && typeof arg === "object" ? arg : {}),
-  },
   // The space pane (aither://space/, space-window.cjs). The page names a node and a
   // verb or an explore index; main re-reads the node from its own snapshot and decides
   // what runs. Card answers stay on deck.answer / deck.credential.
@@ -117,13 +84,6 @@ contextBridge.exposeInMainWorld("deskBridge", {
     desktop: () => ipcRenderer.invoke("desk:desktop-snapshot"),
     connect: () => ipcRenderer.invoke("desk:connect-snapshot"),
   },
-  // The Atlas program-manager board. board() is the snapshot the Atlas
-  // section renders; digest() sends the owner digest now. Both answer
-  // {ok:true, ...} or {ok:false, error} -- never a throw into the page.
-  atlas: {
-    board: () => ipcRenderer.invoke("desk:atlas-board"),
-    digest: () => ipcRenderer.invoke("desk:atlas-digest"),
-  },
   // Push-to-talk (2026-08-29): renderer captures the mic, main writes the wav
   // to a temp file and runs it through the gateway's transcribe_audio tool.
   // Returns the transcript text, or an error string starting with "ERROR:".
@@ -133,11 +93,6 @@ contextBridge.exposeInMainWorld("deskBridge", {
   // OWNER and runs it as a command, so the answer comes back through the same
   // mouth the agents speak with.
   voiceHeard: (text) => ipcRenderer.invoke("desk:voice-heard", String(text || "")),
-  // A live multi-agent discussion on the stage (discuss.cjs through main's swarmApi):
-  // { topic, agents?, rounds? } starts one and answers at once; { op: "stop" | "pause"
-  // | "resume" | "state" } controls a running one. Lines speak from the agents' own
-  // bodies and are posted to the AitherRelay companion channel.
-  discuss: (req) => ipcRenderer.invoke("desk:discuss", req && typeof req === "object" ? req : {}),
   /** listening / transcribing / idle / error: … — for the tray's mic line. */
   voiceListenState: (state) => ipcRenderer.send("desk:voice-listen-state", String(state || "")),
   // Plan: click/hold-to-talk on the avatar body (owner 2026-09-22). Routes

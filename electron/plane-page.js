@@ -170,8 +170,129 @@
     return "Offline copy from " + ago + " -- live read failed: " + ((read && read.error) || "no answer");
   }
 
+
+  // ── Strata node browser (node-browser-client.cjs via the aitherPlane bridge) ──
+  // Pure: a model from one storage_files_tree answer, and a view of it as plain
+  // {tag, cls, text, children, action} nodes that the DOM half turns into elements
+  // (textContent only). The test renders the view from a fixture.
+
+  /** A child's full path in index spelling: roots are already full, the rest join with "/". */
+  function childPath(parent, name) {
+    if (!parent) return String(name);
+    return (String(parent).endsWith("/") ? parent : parent + "/") + name;
+  }
+
+  /** "3 min ago" from an ISO string or epoch seconds; "unknown" when neither parses. */
+  function agoText(when, nowMs) {
+    const t = typeof when === "number" ? when * 1000 : Date.parse(when);
+    if (!Number.isFinite(t)) return "unknown";
+    const ms = Math.max(0, (nowMs || Date.now()) - t);
+    return ms < 90000 ? "just now" : ms < 5400000 ? Math.round(ms / 60000) + " min ago"
+      : ms < 172800000 ? Math.round(ms / 3600000) + " h ago" : Math.round(ms / 86400000) + " d ago";
+  }
+
+  /**
+   * Which source answered and how fresh it is. "inventory" names the signed release,
+   * when it was published and when its signature was verified; "genesis" names the
+   * newest scan/push of the index. A stale index is a warning, never hidden.
+   */
+  function sourceModel(answer, nowMs) {
+    const a = answer || {};
+    if (a.source === "inventory") {
+      const inv = a.inventory && !Array.isArray(a.inventory) ? a.inventory : {};
+      const lines = ["Signed inventory " + (inv.release || "(release unknown)")
+        + " · published " + agoText(inv.published_at, nowMs)
+        + " · signature verified " + agoText(inv.verified_at, nowMs)];
+      if (a.genesis_error) lines.push("Genesis did not answer: " + a.genesis_error);
+      if (a.inventory_warning) lines.push(a.inventory_warning);
+      return { pill: "inventory", tone: a.inventory_warning || a.stale ? "warn" : "ok", lines,
+        publishedAt: inv.published_at || null };
+    }
+    const roots = Array.isArray(a.indexed_roots) ? a.indexed_roots : [];
+    let newest = null;
+    for (const r of roots) {
+      for (const v of [r && r.last_push_at, r && r.scanned_at]) {
+        if (typeof v === "string" && v && (newest === null || Date.parse(v) > Date.parse(newest))) newest = v;
+      }
+    }
+    return { pill: "genesis", tone: a.stale ? "warn" : "ok", publishedAt: null,
+      lines: ["Genesis index · updated " + (newest ? agoText(newest, nowMs) : "unknown")
+        + (a.stale ? " · STALE (older than 48 h)" : "")] };
+  }
+
+  /** One folder level as rows: full path, size text, and whether it can be opened. */
+  function nodeTreeModel(answer, nowMs) {
+    const a = answer || {};
+    const kids = Array.isArray(a.children) ? a.children : [];
+    const rows = kids.filter((c) => c && typeof c === "object" && c.name != null).map((c) => ({
+      name: String(c.name),
+      path: childPath(a.path || "", String(c.name)),
+      kind: String(c.kind || "file"),
+      bytes: Number(c.bytes) || 0,
+      size: humanBytes(Number(c.bytes) || 0),
+      files: Number(c.files) || 0,
+      modified: c.newest_mtime ? agoText(Number(c.newest_mtime), nowMs) : "—",
+      open: c.kind === "dir" || c.kind === "root",
+    }));
+    const total = rows.reduce((n, r) => n + r.bytes, 0);
+    return { node: String(a.node || ""), path: String(a.path || ""), rows,
+      total: humanBytes(total), truncated: Boolean(a.truncated), source: sourceModel(a, nowMs) };
+  }
+
+  /**
+   * The browser card as plain nodes. state: {nodes:[nodeRow], node, stack:[path],
+   * answer, error, loading}. Actions: {type:"node", value}, {type:"open", path},
+   * {type:"crumb", index}, {type:"reload"}.
+   */
+  function nodeBrowserView(state, nowMs) {
+    const s = state || {};
+    const n = (tag, cls, text, children, extra) => Object.assign({ tag, cls: cls || "", text: text == null ? null : String(text),
+      children: children || [] }, extra || {});
+    const options = (s.nodes || []).map((r) => n("option", "", r.node + (r.source === "inventory"
+      ? " (inventory" + (r.inventory && r.inventory.verified ? "" : ", not yet verified") + ")" : ""),
+    [], { value: r.node, selected: r.node === s.node }));
+    const head = n("h3", "", null, [n("span", "", "Node browser"), n("span", "grow"),
+      n("span", "tool muted", "storage_files_tree")]);
+    const bar = n("div", "nb-bar", null, [
+      n("select", "nb-node", null, [n("option", "", "pick a node…", [], { value: "" }), ...options],
+        { action: { type: "node" } }),
+      n("button", "chip", "Reload", [], { action: { type: "reload" } }),
+    ]);
+    const out = [head, bar];
+    if (s.nodesError) out.push(n("div", "summary bad", "Nodes: " + s.nodesError));
+    if (!s.node) {
+      out.push(n("div", "placeholder", (s.nodes || []).length ? "Pick a node to browse its folders."
+        : "No node has a file index or a signed inventory yet."));
+      return n("section", "card wide nb", null, out);
+    }
+    const stack = s.stack && s.stack.length ? s.stack : [""];
+    out.push(n("div", "nb-crumbs", null, stack.map((p, i) => n(i === stack.length - 1 ? "span" : "button",
+      i === stack.length - 1 ? "nb-here" : "nb-crumb", i === 0 ? s.node : p.split("/").filter(Boolean).pop() || p,
+      [], i === stack.length - 1 ? {} : { action: { type: "crumb", index: i } }))));
+    if (s.loading) out.push(n("div", "placeholder", "reading…"));
+    if (s.error) {
+      out.push(n("div", "summary bad", "Could not read this folder: " + s.error));
+      return n("section", "card wide nb", null, out);
+    }
+    if (!s.answer) return n("section", "card wide nb", null, out);
+    const m = nodeTreeModel(s.answer, nowMs);
+    out.push(n("div", "nb-source", null, [n("span", "pill " + m.source.tone, m.source.pill),
+      ...m.source.lines.map((l) => n("span", m.source.tone === "warn" ? "summary warn" : "muted", l))]));
+    if (!m.rows.length) {
+      out.push(n("div", "placeholder", "Empty: nothing indexed under this path."));
+      return n("section", "card wide nb", null, out);
+    }
+    const header = n("tr", "", null, ["name", "size", "files", "modified"].map((c) => n("th", "", c)));
+    const rows = m.rows.map((r) => n("tr", r.open ? "nb-open" : "", null, [
+      n("td", "", (r.open ? "▸ " : "") + r.name, [], r.open ? { action: { type: "open", path: r.path } } : {}),
+      n("td", "nb-size", r.size), n("td", "", String(r.files)), n("td", "muted", r.modified)]));
+    out.push(n("table", "nb-table", null, [header, ...rows]));
+    out.push(n("div", "more", m.rows.length + " entries · " + m.total + (m.truncated ? " · more not shown" : "")));
+    return n("section", "card wide nb", null, out);
+  }
+
   const pure = { humanBytes, formatScalar, serviceVerdict, tableColumns, spendCardModel, meshHealthModel, staleNote,
-    MAX_ROWS, MAX_COLS };
+    childPath, agoText, sourceModel, nodeTreeModel, nodeBrowserView, MAX_ROWS, MAX_COLS };
   if (typeof module === "object" && module.exports) {
     module.exports = pure;
     return;
@@ -330,6 +451,82 @@
     return card;
   }
 
+
+  // ── Strata node browser (DOM) ───────────────────────────────────────────────
+  // One persistent card: the 30 s auto-refresh re-appends it, never re-reads it, so
+  // a folder the owner drilled into stays put.
+  const browserOn = planeId === "strata" && bridge && typeof bridge.filesNodes === "function";
+  const nb = { nodes: [], node: "", stack: [""], answer: null, error: null, nodesError: null, loading: false };
+  let nbCard = null;
+
+  function materialize(v) {
+    const e = el(v.tag, v.cls || "", v.text);
+    if (v.value !== undefined) e.value = v.value;
+    if (v.selected) e.selected = true;
+    for (const c of v.children || []) e.appendChild(materialize(c));
+    if (v.action) {
+      const act = v.action;
+      if (v.tag === "select") e.addEventListener("change", () => void nbAct({ type: "node", value: e.value }));
+      else e.addEventListener("click", () => void nbAct(act));
+    }
+    return e;
+  }
+
+  function nbDraw() {
+    const next = materialize(nodeBrowserView(nb));
+    if (nbCard && nbCard.parentNode) nbCard.parentNode.replaceChild(next, nbCard);
+    nbCard = next;
+  }
+
+  async function nbLoadNodes() {
+    const res = await bridge.filesNodes().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    if (res && res.ok) {
+      nb.nodes = (res.data && res.data.nodes) || [];
+      nb.nodesError = [res.data && res.data.genesisError ? "Genesis: " + res.data.genesisError : null,
+        res.data && res.data.inventoryError ? res.data.inventoryError : null].filter(Boolean).join(" · ") || null;
+    } else {
+      nb.nodesError = (res && res.error) || "no answer";
+    }
+    nbDraw();
+  }
+
+  async function nbLoadTree() {
+    nb.loading = true;
+    nb.error = null;
+    nbDraw();
+    const res = await bridge.filesTree(nb.node, nb.stack[nb.stack.length - 1])
+      .catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    nb.loading = false;
+    if (res && res.ok) nb.answer = res.data;
+    else { nb.answer = null; nb.error = (res && res.error) || "no answer"; }
+    nbDraw();
+  }
+
+  async function nbAct(act) {
+    if (act.type === "node") {
+      nb.node = act.value || "";
+      nb.stack = [""];
+      nb.answer = null;
+      nb.error = null;
+      if (nb.node) await nbLoadTree(); else nbDraw();
+    } else if (act.type === "open") {
+      nb.stack = nb.stack.concat([act.path]);
+      await nbLoadTree();
+    } else if (act.type === "crumb") {
+      nb.stack = nb.stack.slice(0, act.index + 1);
+      await nbLoadTree();
+    } else if (act.type === "reload") {
+      await nbLoadNodes();
+      if (nb.node) await nbLoadTree();
+    }
+  }
+
+  function browserCard() {
+    if (!browserOn) return null;
+    if (!nbCard) { nbDraw(); void nbLoadNodes(); }
+    return nbCard;
+  }
+
   async function refresh() {
     if (busy) return;
     busy = true;
@@ -343,6 +540,8 @@
       if (!res || !res.ok) {
         grid.replaceChildren(el("div", "summary bad", "Could not read " + planeId + ": "
           + ((res && res.error) || "no answer")));
+        const card = browserCard();
+        if (card) grid.appendChild(card);
         say("read failed", true);
         return;
       }
@@ -351,6 +550,8 @@
       grid.replaceChildren(...reads.map(renderRead));
       if (spendAsk) grid.appendChild(renderSpendCard(await spendAsk));
       if (!reads.length) grid.appendChild(el("div", "placeholder", "This plane has no reads."));
+      const card = browserCard();
+      if (card) grid.appendChild(card);
       const failed = Number(snap.failed) || 0;
       const stale = Number(snap.stale) || 0;
       say(failed ? failed + " of " + reads.length + " reads failed -- see below"

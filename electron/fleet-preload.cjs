@@ -22,10 +22,4 @@ contextBridge.exposeInMainWorld("fleet", {
   open: (url) => ipcRenderer.send("desk:fleet-open", String(url)),
   // Does this desk build have a BeadSpace pane? The page shows "Open in Space" only on true.
   spaceAvailable: () => ipcRenderer.invoke("desk:fleet-space"),
-  // The living network: galaxy:fleet's services + links (space-client, read in main) and
-  // the public aw* registry vendored beside the engine. Read-only.
-  network: (opts) => ipcRenderer.invoke("desk:fleet-network", opts ?? {}),
-  ecosystem: () => ipcRenderer.invoke("desk:fleet-ecosystem"),
-  // ONE service: "restart" it or "show" its recent log (main validates both words).
-  service: (verb, name) => ipcRenderer.invoke("desk:fleet-service", String(verb), String(name)),
 });

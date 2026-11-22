@@ -242,7 +242,10 @@ test("taskbar strip: every kind it handles or posts is a message of the contract
 
 test("the desk's main dispatches terminal-dock.toggle to the browser's dock; the strip's IPC is fenced", () => {
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
-  assert.match(main, /if \(id === "terminal-dock\.toggle"\) \{[\s\S]{0,300}browserWindow\.dockAction\("toggle"\)/);
+  assert.match(main, /if \(id === "terminal-dock\.toggle"\) \{[\s\S]{0,700}browserWindow\.dockAction\("toggle"\)/);
+  // A fresh browser window is OPENED to the terminal, never flipped: toggling a new window left
+  // the owner on a browser with only the closed session strip (2026-11-16).
+  assert.match(main, /createBrowserWindow\(\{ askAgent: browserAskAgent \}\);\s*browserWindow\.dockAction\("open"\);/);
   const bw = fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
   assert.match(bw, /ipcMain\.on\("desk:taskbar-command", \(event, id\) => \{\s*if \(!alive\(taskbarView\) \|\| event\.sender !== taskbarView\.webContents\) return;/);
 });

@@ -41,25 +41,14 @@ function pick(value, allowed) {
 /** Pure: env + platform (+ desk-posture) → { present, gpu, switches[], gpuPreference|null }.
  *  The software-present default answers a lock on the OWNER's fleet GPU; a customer desk
  *  (desk-posture.cjs) has no fleet polling its adapter, and software compositing there is
- *  pure CPU cost plus a GPU→CPU copy of every frame (Garg 2026-10-16: the GPU process alone
- *  at 22 % of a core, idle).
- *
- *  2026-11-18 (plan 2027 slice S1, cause 3): the customer test used to read
- *  `posture.present === "gpu"` while desk-posture.cjs hard-coded `present: "auto"`, so the GPU
- *  branch was DEAD — every Windows desk, customer and owner, forced software compositing. The
- *  posture now names what it wants ("gpu" customer, "software" owner), and "auto" presents on
- *  the GPU. Only an explicit software ask (DESK_PRESENT=software, or a posture that says so)
- *  keeps the CPU path. */
+ *  pure CPU cost (Garg 2026-10-16: the GPU process alone at 22 % of a core, idle). So a
+ *  customer desk presents on the GPU and leaves the adapter choice to Windows. */
 function presentPolicy({ env = process.env, platform = process.platform, posture = null } = {}) {
   const wantPresent = pick(env.DESK_PRESENT, PRESENT_MODES);
   const wantGpu = pick(env.DESK_GPU, GPU_CHOICES);
-  const posturePresent = pick(posture && posture.present, PRESENT_MODES);
-  // Explicit ask wins, env first, then the posture; otherwise auto means the GPU path.
-  const present = wantPresent !== "auto"
-    ? wantPresent
-    : posturePresent !== "auto"
-      ? posturePresent
-      : "gpu";
+  const customer = Boolean(posture && posture.present === "gpu");
+  // The lock is a WDDM behaviour; other platforms keep Chromium's default.
+  const present = wantPresent === "auto" ? (platform === "win32" && !customer ? "software" : "gpu") : wantPresent;
   // Software present must not read frames back from the contended adapter.
   const gpu = wantGpu === "auto" ? (present === "software" ? "integrated" : "default") : wantGpu;
   const switches = present === "software" ? ["disable-gpu-compositing"] : [];

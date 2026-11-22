@@ -290,12 +290,11 @@ function report(verb, res) {
 }
 
 // ── tabs ──────────────────────────────────────────────────────────────────────
-function newTab(rootId, rel, select) {
+function newTab(rootId, rel) {
   state.tabs.push({ rootId, rel: rel || "", back: [], fwd: [] });
   state.active = state.tabs.length - 1;
   renderTabs();
-  // `select` is a dropped file already in this folder: open it SELECTED (dock-in slice 2).
-  return go(rootId, rel || "", { push: false, select: select || null });
+  return go(rootId, rel || "", { push: false });
 }
 function closeTab(i) {
   if (state.tabs.length < 2) return;
@@ -1105,25 +1104,8 @@ document.addEventListener("mouseup", (ev) => { if (ev.button === 3) goBack(); if
 
 setView(state.view);
 setPreview(state.preview);
-// A dropped folder/file (dock-in slice 2) arrives as aither://files/?root=<path>&select=<name>.
-// Main resolves the path to a configured (or newly added) root; the page then opens it.
-async function startFromUrl() {
-  const q = new URLSearchParams(location.search);
-  const rootPath = q.get("root");
-  if (!rootPath) return false;
-  if (!(await loadRoots())) return false;
-  const res = await files.openPath(rootPath);
-  if (!res || !res.ok) { say("1 dropped folder not opened — " + why(res), "err"); return false; }
-  const d = res.data || {};
-  if (!rootById(d.rootId)) await loadRoots();
-  if (!rootById(d.rootId)) { say("1 dropped folder is not in the places list — open it from Files", "err"); return false; }
-  await newTab(d.rootId, d.rel || "", d.select || q.get("select") || null);
-  return true;
-}
-
 if (!files) say("1 files bridge missing in this frame — reopen Files from the console", "err");
-else if (!new URLSearchParams(location.search).get("root")) void refresh();
-else void startFromUrl().then((opened) => { if (!opened) void refresh(); });
+else void refresh();
 </script>
 </body>
 </html>

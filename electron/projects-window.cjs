@@ -41,10 +41,7 @@ function projectsHandlers(c = client(), { isProjects = fromProjectsPage } = {}) 
     "desk:projects-list": guard(async () => ({ ok: true, projects: await c.folders() })),
     "desk:projects-add": guard((dir) => c.add(dir)),
     "desk:projects-remove": guard((dir) => c.remove(dir)),
-    // The last result, instantly (no process runs); the page then asks for a fresh read.
-    "desk:projects-cached": guard((dir) => c.cached(dir)),
     "desk:projects-state": guard((dir) => c.state(dir)),
-    "desk:projects-cached-pr": guard((dir, n) => c.cachedPr(dir, n)),
     "desk:projects-pr": guard((dir, n) => c.pr(dir, n)),
   };
 }

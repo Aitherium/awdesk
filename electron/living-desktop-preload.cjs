@@ -11,66 +11,7 @@
  *  that is what makes the real Windows desktop clickable THROUGH the overlay everywhere
  *  Aitheros Online isn.t drawing a window/dock. */
 
-const { ipcRenderer, contextBridge } = require("electron");
-
-// window.aitherDeskVerbs (version 1) -- the Veil Ctrl+K palette shows the desk's verbs
-// only when this exists (aitherone-canvas desk.ts deskVerbs()). Every call needs a
-// HUMAN gesture moments ago (a page script cannot pin or start ink on its own), and
-// main validates the card through pin-item.cjs before anything is pinned.
-function humanGesture() {
-  const activation = navigator.userActivation;
-  return Boolean(activation && activation.isActive);
-}
-function deskVerb(verb, extra) {
-  if (!humanGesture()) return Promise.resolve({ ok: false, error: "needs a click or key press" });
-  return ipcRenderer.invoke("living-desktop:desk-verb", { verb, ...extra })
-    .catch((error) => ({ ok: false, error: String((error && error.message) || error) }));
-}
-try {
-  contextBridge.exposeInMainWorld("aitherDeskVerbs", Object.freeze({
-    version: 1,
-    pin: (item) => {
-      const i = item && typeof item === "object" ? item : {};
-      // Only the card's own fields cross; main re-reads them through normalizePinItem.
-      const card = {
-        kind: String(i.kind || ""), src: String(i.src || "").slice(0, 20000), title: String(i.title || "").slice(0, 160),
-        ...(i.widget ? { widget: String(i.widget).slice(0, 40) } : {}),
-        ...(i.bounds && typeof i.bounds === "object" ? { bounds: {
-          x: Number(i.bounds.x) || 0, y: Number(i.bounds.y) || 0,
-          width: Number(i.bounds.width) || 0, height: Number(i.bounds.height) || 0 } } : {}),
-      };
-      return deskVerb("pin", { item: card });
-    },
-    ink: () => { void deskVerb("ink", {}); },
-    gif: (query) => { void deskVerb("gif", { query: String(query || "").slice(0, 100) }); },
-    canvas: () => { void deskVerb("canvas", {}); },
-  }));
-} catch { /* contextIsolation off (an old host): the page simply sees no desk verbs */ }
-
-// Right click on the workspace's own companion (`[data-companion]`, GARG's goblin):
-// the desk's companion menu -- Hide this, Hide all, Show all, the doors, quiet, quit
-// (owner 2026-11-13). Capture phase, so the page's own handler never eats it.
-window.addEventListener("contextmenu", (event) => {
-  const target = event && event.target;
-  const hit = target && typeof target.closest === "function" ? target.closest("[data-companion]") : null;
-  if (!hit) return;
-  event.preventDefault();
-  event.stopPropagation();
-  // Where the click was, so the menu opens AT the companion (screen DIP).
-  ipcRenderer.send("living-desktop:companion-menu", { x: Number(event.screenX) || 0, y: Number(event.screenY) || 0 });
-}, true);
-
-// Dragging the companion: the overlay keeps the mouse from press to release, so the
-// click-through loop cannot drop the drag halfway (owner 2026-11-13: "the goblin can't
-// be dragged or moved properly").
-window.addEventListener("pointerdown", (event) => {
-  const target = event && event.target;
-  const hit = target && typeof target.closest === "function" ? target.closest("[data-companion]") : null;
-  if (hit) ipcRenderer.send("living-desktop:companion-hold", true);
-}, true);
-for (const name of ["pointerup", "pointercancel", "blur"]) {
-  window.addEventListener(name, () => ipcRenderer.send("living-desktop:companion-hold", false), true);
-}
+const { ipcRenderer } = require("electron");
 
 window.addEventListener("message", (event) => {
   const data = event && event.data;

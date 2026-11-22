@@ -113,10 +113,9 @@ async function describeCast({ castFile, listCharacters } = {}) {
   }
 
   const cfg = snapshot && typeof snapshot === "object" ? snapshot : {};
-  // agentVoices + agentRoster: the platform's CANONICAL voice tier and the
-  // declared voice/character mirror below it, so this provenance view names the
-  // SAME tiers the live room-stage resolves through.
-  const ctxBase = { roster, agentVoices: cast.loadAgentVoices(), agentRoster: cast.loadRosterPresence() };
+  // agentRoster: the platform-declared voice/character tier (below authors), so this
+  // provenance view names the SAME tier the live room-stage resolves through.
+  const ctxBase = { roster, agentRoster: cast.loadRosterPresence() };
   const resolved = [];
   for (const key of Object.keys(cfg.actors || {})) {
     resolved.push({
@@ -178,11 +177,8 @@ function createDeskMcpServer({
   listAnimations = null,
   onAgent = null,
   listAgentAvatars = null,
-  // agent-swarm-host: every agent the owner runs, as fairies or grown avatars. Null = no swarm_* tools.
-  swarm = null,
   onExportPortrait = null,
   onSpawnAvatar = null,
-  onProposeAvatar = null,
   onRemoveAvatar = null,
   onFleet = null,
   onCommand = null,
@@ -204,6 +200,10 @@ function createDeskMcpServer({
   // system-monitor.cjs createSystemMonitor().agent: READ-ONLY processes / ports /
   // connections on this machine. Null = the system_* tools are absent. No kill tool.
   systemInfo = null,
+  // host-context.cjs sampleHostContext: () => {ok, app, title, pid} | {ok:false, reason}.
+  // The HOST OS's foreground window -- what the owner is looking at outside the desk.
+  // Null = host_context is absent. Read-only, no input, nothing it can change.
+  hostContext = null,
   // The Aither Browser's dispatcher (browser-policy.createBrowserAgent): (action, args) => verdict.
   onBrowser = null,
   // The owner's OWN Chrome through awconnect (chrome-bridge.cjs call): (action, args) => verdict.
@@ -216,10 +216,6 @@ function createDeskMcpServer({
   // the tool requires party-manifest.cjs lazily, so a broken writer costs the
   // one tool call, never the server.
   partyExport = null,
-  // The intent bar (intent-bar.cjs createIntentBar), or a () => bar thunk: desk_tools,
-  // desk_tool_run and desk_intent -- the SAME tools, schemas and confirm rule the owner
-  // gets on Alt+Space. Null = those three tools are absent.
-  intentBar = null,
 }) {
   const server = new McpServer(
     {
@@ -444,8 +440,7 @@ function createDeskMcpServer({
             ? `Desk switched to the ${name} character.`
             : refusalText(
               name,
-              `${name} was not shown: it is not installed, or the owner has not chosen it for anyone. `
-              + "Agents may only show bodies the owner assigned; he picks bodies in the gallery.",
+              `No character named ${name} is installed. Use list_characters to see the roster.`,
             ),
         );
       },
@@ -472,144 +467,6 @@ function createDeskMcpServer({
       // had no way to discover which packs existed short of listing the assets directory
       // by hand. Registering it closes that (recorded in the AitherOS ledger).
       async () => textResult(JSON.stringify(await listAnimations())),
-    );
-  }
-
-  if (swarm != null) {
-    const json = (value) => textResult(JSON.stringify(value, null, 1));
-    server.registerTool(
-      "swarm_roster",
-      {
-        title: "The agent swarm roster",
-        description:
-          "Every agent the owner runs, read live (Discord persona bots, Genesis fleet agents, awsh/Claude Code sessions, subagents, remote endpoints, GargBot's goblin), each with its colour, body, voice and current form (fairy or avatar). Read-only.",
-        inputSchema: { refresh: z.boolean().optional().describe("Re-read every source now instead of the 15 s cache.") },
-        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      },
-      async ({ refresh } = {}) => json(await swarm({ action: "state", refresh: Boolean(refresh) })),
-    );
-    server.registerTool(
-      "swarm_set_form",
-      {
-        title: "Grow an agent into its avatar, or shrink it back to a fairy",
-        description:
-          "setAgentForm: put one agent (or 'all') in the 'fairy' or 'avatar' form, with a smooth grow / shrink. 'all' + 'avatar' grows the Aitherium agents (light mode keeps terminals and remote endpoints small unless include is 'all'); GargBot's goblin is summoned with agent 'gargbot'.",
-        inputSchema: {
-          agent: z.string().min(1).max(64).describe("A roster id (aither, atlas, gargbot, session-xxxxxxxx ...) or 'all'."),
-          form: z.enum(["fairy", "avatar"]),
-          include: z.enum(["all"]).optional().describe("With agent 'all': also grow terminals, subagents and remote endpoints."),
-        },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      },
-      async ({ agent, form, include }) => json(await swarm(agent === "all" ? { action: "forms", form, include } : { action: "form", agent, form })),
-    );
-    server.registerTool(
-      "swarm_speak",
-      {
-        title: "Make one agent speak in its own voice",
-        description:
-          "speak: the agent says `text` in its own voice from its own body (fairy or avatar). Use audio_base64 instead to play pre-rendered audio on that body (a lip-sync driver's own TTS).",
-        inputSchema: {
-          agent: z.string().min(1).max(64),
-          text: z.string().min(1).max(2000).optional(),
-          audio_base64: z.string().max(8_000_000).optional(),
-          volume: z.number().min(0).max(2).optional(),
-        },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-      },
-      async ({ agent, text, audio_base64, volume }) => json(await swarm({ action: "speak", agent, text, audioBase64: audio_base64, volume })),
-    );
-    server.registerTool(
-      "swarm_discuss",
-      {
-        title: "Run a live multi-agent discussion on the desk",
-        description:
-          "discuss: the named agents (default Atlas, Demiurge, Aither, Lyra) take turns speaking aloud about `topic`, in their own voices and from their own bodies, each turn answering the one before. Lines stream from MicroScheduler and captions show even when voice is muted. op 'stop' aborts the run and drops every queued line; 'pause' / 'resume' / 'state' control a running one.",
-        inputSchema: {
-          topic: z.string().min(1).max(400).optional().describe("What they are discussing. Required to start."),
-          agents: z.array(z.string().min(1).max(64)).min(1).max(6).optional().describe("Roster ids, in speaking order. Default atlas, demiurge, aither, lyra."),
-          rounds: z.number().int().min(1).max(4).optional().describe("How many times round the ring. Default 1."),
-          op: z.enum(["start", "stop", "pause", "resume", "state"]).optional().describe("Default start."),
-        },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-      },
-      async ({ topic, agents, rounds, op }) => json(await swarm({ action: "discuss", topic, agents, rounds, op })),
-    );
-    server.registerTool(
-      "swarm_perceive",
-      {
-        title: "What an agent standing on the desk can see",
-        description: "view: self (its row, form, slot, stage, the screen), stage (every body and stage), roster, screen (the focused window).",
-        inputSchema: { agent: z.string().max(64).optional(), view: z.enum(["self", "stage", "roster", "screen"]).optional() },
-        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      },
-      async ({ agent, view }) => json(await swarm({ action: "perceive", agent, view })),
-    );
-    server.registerTool(
-      "swarm_act",
-      {
-        title: "An agent runs one gateway tool",
-        description: "Runs a gateway tool for the agent. Credential, money and destructive tool names are refused here.",
-        inputSchema: { agent: z.string().max(64).optional(), tool: z.string().max(64), args: z.record(z.string(), z.unknown()).optional() },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-      },
-      async ({ agent, tool, args }) => json(await swarm({ action: "act", agent, tool, args })),
-    );
-    server.registerTool(
-      "swarm_walk_to",
-      {
-        title: "An avatar walks to a screen rectangle",
-        description: "Screen DIP rect {x, y, width, height}; the grown body walks to stand under its centre, within the stage.",
-        inputSchema: { agent: z.string().max(64).optional(), x: z.number(), y: z.number(), width: z.number().min(0).optional(), height: z.number().min(0).optional() },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-      },
-      async ({ agent, x, y, width, height }) => json(await swarm({ action: "walk", agent, rect: { x, y, width: width ?? 0, height: height ?? 0 } })),
-    );
-    server.registerTool(
-      "swarm_look_at",
-      {
-        title: "An avatar turns toward a screen point",
-        description: "Screen DIP point {x, y}; omit both to turn the body back to the owner.",
-        inputSchema: { agent: z.string().max(64).optional(), x: z.number().optional(), y: z.number().optional() },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      },
-      async ({ agent, x, y }) => json(await swarm({ action: "look", agent, point: x === undefined || y === undefined ? null : { x, y } })),
-    );
-    server.registerTool(
-      "swarm_stage",
-      {
-        title: "Combine, split and arrange stages",
-        description:
-          "A stage is an explicit group of grown avatars. op: join (agent joins target's stage), leave, lock (a locked stage never loses a member by itself), arrange (mode row | circle), move (dx), size (scale), turn (yaw), state.",
-        inputSchema: {
-          op: z.enum(["state", "join", "leave", "lock", "arrange", "move", "size", "turn"]),
-          agent: z.string().max(64).optional(),
-          target: z.string().max(64).optional(),
-          mode: z.enum(["row", "circle"]).optional(),
-          locked: z.boolean().optional(),
-          dx: z.number().min(-4).max(4).optional(),
-          scale: z.number().min(0.3).max(3).optional(),
-          yaw: z.number().min(-7).max(7).optional(),
-        },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-      },
-      async (args) => json(await swarm({ action: "stage", ...args })),
-    );
-    server.registerTool(
-      "swarm_visemes",
-      {
-        title: "Drive an agent's mouth shapes",
-        description:
-          "visemes: the five VRM mouth shapes (aa ee ih oh ou, 0..1) for one agent's body, held for ttl_ms then back to amplitude lip sync; frames [{t, aa..}] plays a timed sequence; omit weights to release.",
-        inputSchema: {
-          agent: z.string().min(1).max(64),
-          weights: z.record(z.string(), z.number().min(0).max(1)).optional(),
-          frames: z.array(z.record(z.string(), z.number())).max(1200).optional(),
-          ttl_ms: z.number().min(16).max(5000).optional(),
-        },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-      },
-      async ({ agent, weights, frames, ttl_ms }) => json(await swarm({ action: "visemes", agent, weights: frames ? { frames, ttlMs: ttl_ms } : weights ?? null, ttlMs: ttl_ms })),
     );
   }
 
@@ -674,32 +531,6 @@ function createDeskMcpServer({
     );
   }
 
-  if (onProposeAvatar != null) {
-    server.registerTool(
-      "propose_avatar",
-      {
-        title: "Propose a body for a persona",
-        description:
-          "Suggest which installed avatar a persona (aither, atlas, iris, ...) should wear. This only "
-          + "RECORDS a proposal in the owner's avatar gallery; it never changes a body. The owner "
-          + "applies it with one click, and only if its rating suits who is watching.",
-        inputSchema: {
-          persona: z.string().min(1).max(64).describe("The persona id, e.g. atlas."),
-          character: z.string().min(1).max(120).describe("The roster character name (list_characters)."),
-          why: z.string().max(240).optional().describe("One line the owner will read."),
-          by: z.string().max(64).optional().describe("Who proposes it (your agent name)."),
-        },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      },
-      async ({ persona, character, why, by }) => {
-        const p = await onProposeAvatar({ persona, character, why: why || "", by: by || "agent" });
-        return textResult(p
-          ? `Proposed ${character} for ${persona}. The owner decides in the avatar gallery; nothing changed on screen.`
-          : "Not recorded: a persona and a character are both required.");
-      },
-    );
-  }
-
   if (onSpawnAvatar != null) {
     server.registerTool(
       "spawn_avatar",
@@ -735,7 +566,7 @@ function createDeskMcpServer({
             : refusalText(
               name,
               `Failed to spawn avatar: slot_id may be reserved (use a custom id like 'slot1'), `
-              + `or ${name} is not installed or not a body the owner chose (agents may only show bodies he assigned).`,
+              + `or character ${name} is not installed.`,
             ),
         );
       },
@@ -811,65 +642,6 @@ function createDeskMcpServer({
           content: [{ type: "text", text: result.reply }],
           isError: result.ok === false,
         };
-      },
-    );
-  }
-
-  if (intentBar != null) {
-    const bar = () => (typeof intentBar === "function" ? intentBar() : intentBar);
-    const json = (value, isError = false) => ({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }], isError });
-    server.registerTool(
-      "desk_tools",
-      {
-        title: "List the desk's tools (the Alt+Space bar's commands)",
-        description:
-          "Every command the owner's desk can run, as {id, label, effect, schema}: the same registry rows Alt+Space, the Ctrl+K palette and the tray run. effect is read | ui | write | send | spend; read and ui run at once, the others need confirm:true in desk_tool_run. `query` fuzzy-ranks them (pinned and recent first).",
-        inputSchema: {
-          query: z.string().max(200).optional().describe("Words to rank by (e.g. whiteboard, screenshot, timer). Omit for all."),
-          limit: z.number().int().min(1).max(300).optional().describe("How many to return (default 50)."),
-        },
-        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      },
-      async ({ query, limit }) => {
-        const ranked = bar().rank(query || "", { limit: limit || 50 });
-        return json({ ok: true, tools: ranked.map((r) => ({ id: r.tool.id, label: r.tool.label, effect: r.tool.effect, schema: r.tool.schema, pinned: r.pinned })) });
-      },
-    );
-    server.registerTool(
-      "desk_tool_run",
-      {
-        title: "Run one desk tool",
-        description:
-          "Run ONE desk tool by id with its arguments (see desk_tools for the schema). A tool whose effect is write, send or spend is refused with needsConfirm unless confirm is true -- set it only after the owner agreed to that exact action.",
-        inputSchema: {
-          id: z.string().min(1).max(80).describe("The tool id from desk_tools (e.g. board.new, timer.start, browser.go)."),
-          args: z.record(z.string(), z.string()).optional().describe("The tool's arguments, e.g. {\"text\": \"10m tea\"}."),
-          confirm: z.boolean().optional().describe("true = the owner agreed to this write / send / spend."),
-        },
-        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-      },
-      async ({ id, args, confirm }) => {
-        const verdict = await bar().run(id, args || {}, { confirm: confirm === true, surface: "mcp" });
-        return json(verdict, verdict.ok === false);
-      },
-    );
-    server.registerTool(
-      "desk_intent",
-      {
-        title: "Plan a sentence as desk tools (the Alt+Space intent engine)",
-        description:
-          "Turn one sentence into a plan of desk tools through the owner's MicroScheduler (the local Bonsai only when the platform is down). With run=false (default) it only returns the plan: which steps would run at once and which need the owner's confirm. With run=true the read/ui steps run and the rest come back as `pending` (never run from here).",
-        inputSchema: {
-          text: z.string().min(1).max(1000).describe("What the owner wants done, as a sentence."),
-          run: z.boolean().optional().describe("true = run the read/ui steps now. Default false (plan only)."),
-        },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-      },
-      async ({ text, run }) => {
-        const verdict = await bar().intent(text, { surface: "mcp", dryRun: run !== true });
-        // An agent never holds the owner's confirm: a waiting step is reported, its id dropped.
-        if (verdict && verdict.pending) verdict.pending = { line: verdict.pending.line, steps: verdict.pending.steps };
-        return json(verdict, verdict.ok === false);
       },
     );
   }
@@ -1400,6 +1172,34 @@ function createDeskMcpServer({
         annotations: readOnly,
       },
       async ({ pid, name, limit }) => systemToolCall(systemInfo, "system_connections", { pid, name, limit }),
+    );
+  }
+
+  // host_context -- the one question an agent otherwise GUESSES at: what app does the
+  // owner have in front of them right now. An unreadable host (a Wayland session, a
+  // locked screen) is returned as ok:false WITH the reason, never as an empty window:
+  // "could not read the host" and "nothing is open" are different facts.
+  if (hostContext != null) {
+    server.registerTool(
+      "host_context",
+      {
+        title: "What the owner is looking at on this machine",
+        description:
+          "The host operating system's FOREGROUND window: application name, window title and pid. " +
+          "Use it instead of asking the owner to describe their screen. Read-only. " +
+          "`ok:false` means the host could not be read (the reason says why) -- it never means nothing is open.",
+        inputSchema: {},
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      },
+      async () => {
+        let context;
+        try {
+          context = await hostContext();
+        } catch (error) {
+          context = { ok: false, reason: (error && error.message) || String(error) };
+        }
+        return { content: [{ type: "text", text: JSON.stringify(context || { ok: false, reason: "no answer" }) }] };
+      },
     );
   }
 

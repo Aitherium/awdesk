@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { MAX_TABS, TabSet, agentTabView, allTabsMenuRows } = require("./browser-tabs.cjs");
+const { MAX_TABS, TabSet, agentTabView } = require("./browser-tabs.cjs");
 
 test("an agent has no tab until it opens one; then it drives that tab", () => {
   const tabs = new TabSet();
@@ -147,22 +147,4 @@ test("only the owner's web tabs can be shared, and sharing never lets the agent 
   assert.match(tabs.close(web, "agent").error, /owner's/);
   assert.deepEqual(tabs.share(web, null), { ok: true, id: web, shared: false });
   assert.equal(tabs.isShared(web, "https://x.example/"), false);
-});
-
-test("the all-tabs menu: every tab by the name the strip shows, active checked, & kept, one line", () => {
-  const rows = allTabsMenuRows([
-    { id: 1, by: "you", pinned: true, label: "Inbox", title: "Inbox - 31 waiting", active: false },
-    { id: 2, by: "you", title: `Q&A  ${String.fromCharCode(10)} notes`, url: "https://x.test/", active: true },
-    { id: 3, by: "agent", title: "", url: "https://agent.test/page" },
-    { id: 4, by: "you", title: "", url: "" },
-    { id: 5, by: "you", title: "G".repeat(200), popped: true },
-  ]);
-  assert.deepEqual(rows.map((r) => r.id), [1, 2, 3, 4, 5], "strip order, nothing dropped");
-  assert.equal(rows[0].label, "Inbox", "a pinned tab keeps its own name");
-  assert.equal(rows[1].label, "Q&&A notes", "& is doubled (a Windows mnemonic otherwise) and whitespace folded");
-  assert.deepEqual(rows.map((r) => r.checked), [false, true, false, false, false]);
-  assert.equal(rows[2].label, "Agent: https://agent.test/page");
-  assert.equal(rows[3].label, "New tab");
-  assert.ok(rows[4].label.startsWith("(popped out) G") && rows[4].label.endsWith("…") && rows[4].label.length <= 64);
-  assert.deepEqual(allTabsMenuRows(null), []);
 });

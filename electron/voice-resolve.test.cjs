@@ -364,14 +364,6 @@ function rosterFileIn(dir) {
   return file;
 }
 
-/** A canonical-map fixture: the platform's engine ids, which are NOT the roster's
- *  Microsoft edge names. */
-function voicesFileIn(dir, agents = { atlas: { engine: "kokoro", voice: "kokoro:am_michael" }, aither: { engine: "piper", voice: "local:piper" } }) {
-  const file = path.join(dir, "agent-voices.generated.json");
-  fs.writeFileSync(file, JSON.stringify({ version: 1, agents }), "utf8");
-  return file;
-}
-
 // The owner's real cast.json sets BOTH file-wide voices; before the gate read
 // the roster these replaced every agent's declared voice at TTS time.
 const FILE_WIDE = {
@@ -380,14 +372,11 @@ const FILE_WIDE = {
   voice: { defaultVoice: "en-US-JennyNeural" },
 };
 
-// ─── canonical > roster ──────────────────────────────────────────────────────
-
-test("resolveSpeech: a stage speaker gets the CANONICAL engine voice, ahead of the roster mirror's *Neural name", () => {
+test("resolveSpeech: a stage speaker's ROSTER voice beats defaults.voice / voice.defaultVoice", () => {
   const dir = tmpDir();
   const file = castFileIn(dir);
   writeCast(file, FILE_WIDE);
   const agentRosterFile = rosterFileIn(dir);
-  const agentVoicesFile = voicesFileIn(dir);
   const ctx = speechCtx({
     text: "hi",
     slotId: "room-atlas",
@@ -395,105 +384,48 @@ test("resolveSpeech: a stage speaker gets the CANONICAL engine voice, ahead of t
     speaker: { origin: "adk_agent:a1", author: "atlas", agent: "atlas", seat: 0 },
     slotAgent: "atlas",
   });
-  const gate = resolveSpeech({ ...ctx, file, agentRosterFile, agentVoicesFile });
+  const gate = resolveSpeech({ ...ctx, file, agentRosterFile });
   assert.equal(gate.allowed, true);
-  assert.equal(gate.voice, "kokoro:am_michael", "the canonical map wins over roster.atlas (en-US-MichelleNeural)");
-  assert.equal(gate.provenance.voiceFrom, "canonical.atlas.voice");
-  // What main.cjs then synthesises with: the canonical id, not the roster's Edge name.
-  assert.equal(effectiveVoice("en-US-MichelleNeural", gate), "kokoro:am_michael", "a caller's roster voice cannot re-voice an agent the map names");
-});
-
-test("resolveSpeech: the roster is still the fallback for an agent the canonical map does NOT name", () => {
-  const dir = tmpDir();
-  const file = castFileIn(dir);
-  writeCast(file, FILE_WIDE);
-  const agentRosterFile = rosterFileIn(dir);
-  const agentVoicesFile = voicesFileIn(dir, { demiurge: { engine: "kokoro", voice: "kokoro:am_fenrir" } });
-  const speaker = { origin: "adk_agent:a1", author: "atlas", agent: "atlas", seat: 0 };
-  const gate = resolveSpeech({
-    ...speechCtx({ text: "hi", slotId: "room-atlas", origin: speaker.origin, speaker }),
-    file,
-    agentRosterFile,
-    agentVoicesFile,
-  });
   assert.equal(gate.voice, "en-US-MichelleNeural");
   assert.equal(gate.provenance.voiceFrom, "roster.atlas.voice");
+  // What main.cjs then synthesises with: the stage asked for Michelle too.
+  assert.equal(effectiveVoice("en-US-MichelleNeural", gate), "en-US-MichelleNeural");
 });
 
-test("resolveSpeech: authors.<agent> still beats the CANONICAL map at the gate (owner override first)", () => {
+test("resolveSpeech: authors.<agent> still beats the roster at the gate when the stage hands its author", () => {
   const dir = tmpDir();
   const file = castFileIn(dir);
   writeCast(file, { ...FILE_WIDE, authors: { atlas: { voice: "en-US-EmmaNeural" } } });
   const agentRosterFile = rosterFileIn(dir);
-  const agentVoicesFile = voicesFileIn(dir);
   const speaker = { origin: "adk_agent:a1", author: "atlas", agent: "atlas", seat: 0 };
   const gate = resolveSpeech({
     ...speechCtx({ text: "hi", slotId: "room-atlas", origin: speaker.origin, speaker }),
     file,
     agentRosterFile,
-    agentVoicesFile,
   });
   assert.equal(gate.voice, "en-US-EmmaNeural");
   assert.equal(gate.provenance.voiceFrom, "authors.atlas.voice");
 });
 
-test("resolveSpeech: a caller that hands no author (a fairy / slot0 utterance) never consults authors, "
-  + "so the canonical map governs that agent's voice", () => {
-  const dir = tmpDir();
-  const file = castFileIn(dir);
-  // The owner HAS an authors.atlas row; a swarm speak() only ever sends {agent}.
-  writeCast(file, { ...FILE_WIDE, authors: { atlas: { voice: "custom:my-atlas" } } });
-  const agentVoicesFile = voicesFileIn(dir);
-  const gate = resolveSpeech({
-    ...speechCtx({ text: "hi", slotId: "slot1", origin: "service:awdesk-swarm", speaker: { agent: "atlas" } }),
-    file,
-    agentVoicesFile,
-  });
-  assert.equal(gate.voice, "kokoro:am_michael");
-  assert.equal(gate.provenance.voiceFrom, "canonical.atlas.voice");
-});
-
-test("resolveSpeech: the resident (slot0 = aither) gets its canonical voice over voice.defaultVoice, "
-  + "and an actors[\"service:awdesk\"] voice still wins", () => {
+test("resolveSpeech: the resident (slot0 = aither) gets its roster voice over voice.defaultVoice, "
+  + "but an actors[\"service:awdesk\"] voice still wins", () => {
   const dir = tmpDir();
   const file = castFileIn(dir);
   writeCast(file, { version: 1, voice: { defaultVoice: "en-US-JennyNeural" } });
   const agentRosterFile = rosterFileIn(dir);
-  const agentVoicesFile = voicesFileIn(dir);
   const ctx = speechCtx({ text: "hi", slotId: "slot0", origin: "service:awdesk", slotAgent: "aither" });
-  const plain = resolveSpeech({ ...ctx, file, agentRosterFile, agentVoicesFile });
-  assert.equal(plain.voice, "local:piper");
-  assert.equal(plain.provenance.voiceFrom, "canonical.aither.voice");
+  const plain = resolveSpeech({ ...ctx, file, agentRosterFile });
+  assert.equal(plain.voice, "en-US-AnaNeural");
+  assert.equal(plain.provenance.voiceFrom, "roster.aither.voice");
 
   writeCast(file, {
     version: 1,
     voice: { defaultVoice: "en-US-JennyNeural" },
     actors: { "service:awdesk": { voice: "custom:aither" } },
   });
-  const owned = resolveSpeech({ ...ctx, file, agentRosterFile, agentVoicesFile });
+  const owned = resolveSpeech({ ...ctx, file, agentRosterFile });
   assert.equal(owned.voice, "custom:aither");
   assert.match(owned.provenance.voiceFrom, /^actors\[/);
-});
-
-test("resolveSpeech: end to end on the SHIPPED canonical map -- no agent resolves to a stock *Neural voice", () => {
-  const dir = tmpDir();
-  const file = castFileIn(dir);
-  // Two file-wide Edge defaults, i.e. exactly the drift the map has to beat.
-  writeCast(file, FILE_WIDE);
-  const shipped = require("./agent-voices.generated.json");
-  assert.ok(shipped.agents && Object.keys(shipped.agents).length >= 8, "the shipped map must name the roster agents");
-  for (const [agent, record] of Object.entries(shipped.agents)) {
-    const gate = resolveSpeech({
-      ...speechCtx({ text: "hi", slotId: "slot0", origin: "service:awdesk", slotAgent: agent }),
-      file,
-      agentRoster: { [agent]: { voice: "en-US-MichelleNeural" } },
-      agentRosterFile: path.join(dir, "absent-roster.json"),
-    });
-    assert.equal(gate.voice, record.voice, `${agent} must resolve to its canonical voice`);
-    assert.equal(gate.provenance.voiceFrom, `canonical.${agent}.voice`);
-    assert.doesNotMatch(gate.voice, /Neural$/i, `${agent} still speaks a stock Edge voice (${gate.voice})`);
-    assert.match(gate.voice, /^(kokoro:|local:piper|custom:)/, `${agent}'s voice is not an id AitherVoice understands: ${gate.voice}`);
-  }
 });
 
 test("speechCtx: an HTTP/MCP door (no speaker) never names an author; the slot's agent keys the roster", () => {

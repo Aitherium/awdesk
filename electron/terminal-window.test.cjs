@@ -42,24 +42,6 @@ test("the dock's verbs reach the browser window only from the terminal page", as
   assert.equal(lone.ok, false, "a terminal page with no browser window has no dock to drive");
 });
 
-test("a stage hears which shell it is working in: attach, detach and a real close", async () => {
-  const seen = [];
-  const client = {
-    stream: async () => ({ ok: true }),
-    close: async (id) => (id === "keep" ? { ok: false, error: "the daemon said no" } : { ok: true }),
-  };
-  const page = { sender: sender("aither://terminal/") };
-  const handlers = terminalHandlers(client, { onSession: () => (id, action) => seen.push([id, action]) });
-  await handlers["desk:terminal-attach"](page, "s1", 0);
-  await handlers["desk:terminal-detach"](page, "s1");
-  await handlers["desk:terminal-close"](page, "s2");
-  await handlers["desk:terminal-close"](page, "keep");
-  assert.deepEqual(seen, [["s1", "attach"], ["s1", "detach"], ["s2", "detach"]], "a refused close keeps the session");
-  // A watcher that throws is bookkeeping breaking, never a shell: attach still succeeds.
-  const safe = terminalHandlers(client, { onSession: () => () => { throw new Error("bookkeeping"); } });
-  assert.equal((await safe["desk:terminal-attach"](page, "s3", 0)).ok, true);
-});
-
 test("Ctrl+` (or Cmd+`) alone toggles the dock; popout refuses a bad id", () => {
   const bw = require("./browser-window.cjs");
   assert.equal(bw.isDockKey({ type: "keyDown", control: true, code: "Backquote", key: "`" }), true);

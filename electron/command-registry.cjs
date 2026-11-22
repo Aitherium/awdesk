@@ -59,13 +59,7 @@ const GROUPS = Object.freeze({
   arc: Object.freeze({ menu: "ARC" }),
   blog: Object.freeze({ menu: "Blog" }),
   sprite: Object.freeze({ menu: "Sprite" }),
-  sandbox: Object.freeze({ menu: "Windows Sandbox" }),
   aw: Object.freeze({ menu: "aw tools" }),
-  browser: Object.freeze({ menu: "Browser" }),
-  layout: Object.freeze({ menu: "Browser layout" }),
-  // Nested 2026-11-13: the tray ran past the top and bottom of the screen (61 rows).
-  audio: Object.freeze({ menu: "Sound" }),
-  capture: Object.freeze({ menu: "Capture and draw" }),
 });
 
 /**
@@ -78,7 +72,7 @@ const GROUPS = Object.freeze({
  * ITEMS are one list; only the reading order differs.
  */
 const LAYOUT = Object.freeze({
-  tray: Object.freeze(["go", "desktop", "avatar", "window-size", "talk", "audio", "stage", "fleet", "arc", "blog", "sprite", "sandbox", "aw", "capture", "app"]),
+  tray: Object.freeze(["go", "desktop", "avatar", "window-size", "talk", "audio", "stage", "fleet", "arc", "blog", "sprite", "aw", "capture", "app"]),
   // ONE menu (owner, 2026-10-04: "the 3 different menu surfaces are still confusing").
   // A body's menu is the tray's menu with what is about THAT body on top: the rows
   // after "body"/"slot" read in exactly the tray's order, and the browser's Aither
@@ -103,9 +97,6 @@ const LAYOUT = Object.freeze({
  * - `blog`      a blog verb (blog-commands.cjs BLOG_VERBS): main routes it to
  *               runBlogCommand, which speaks to the gateway's blog_* MCP tools.
  *               NO verb publishes: `publish` opens the Veil editor for a human.
- * - `browser`   an Aither Browser verb (browser-window.cjs browserCommand): main hands it
- *               the verb and the typed argument. It opens the browser when it is closed
- *               and acts on the OWNER's active tab, never an agent's.
  * - `prompt`    `{ placeholder }` -- the command needs ONE typed argument (a title,
  *               a slug). Only the palette has a text field, so a prompt command
  *               may name no other surface (`conformance()` refuses), and it still
@@ -151,17 +142,6 @@ const COMMANDS = Object.freeze([
       const waiting = Number(ctx.decisionsWaiting || 0);
       return waiting > 0 ? `Now — one card at a time (${waiting})` : "Now — one card at a time";
     },
-  }),
-  Object.freeze({
-    // The launcher's answer path (1-9 / typed option) declares itself here too, so
-    // "where does answering appear?" has ONE answer. A menu row cannot carry the
-    // card id, so the palette's text field is its manual path; the launcher calls
-    // the same id directly.
-    id: "card-answer", group: "go", icon: "bell",
-    surfaces: ["palette"],
-    prompt: Object.freeze({ placeholder: "<card id> <option key|number> — e.g. d-3f2a ack" }),
-    whySingle: "Answers ONE named card, so it needs a card id the menus do not have in hand; the launcher's number keys/typed answers and the palette are the only places with that argument.",
-    label: "Answer a decision card…",
   }),
   Object.freeze({
     // "Open Aither" since the browser became the console (plan slice 9): it raises the
@@ -247,16 +227,6 @@ const COMMANDS = Object.freeze([
       ? `Signed in as ${ctx.account.username || "you"}`
       : "Sign in…"),
   }),
-  // Owner, 2026-11-12: switching workspace was a tray-only picker, so awsh, an agent and
-  // the palette could not do it and nothing said where the Desk was. One verb:
-  // no arg = where you are + the list, `garg` / `aitherium` = go there. The label IS
-  // the status line (law 3: restate state), so the palette row answers "where am I".
-  Object.freeze({
-    id: "workspace.switch", group: "desktop", surfaces: ["palette"],
-    whySingle: "the tray already carries the owner's picker rows (desk-tenant-auto ownerTrayItems); this is the same switch by name for the palette, awsh /desk and agents",
-    label: (ctx = {}) => `Workspace: ${(ctx.workspace && ctx.workspace.name) || "Aitherium"} — switch…`,
-    when: (ctx = {}) => Boolean(ctx.workspace && ctx.workspace.owner),
-  }),
   Object.freeze({
     id: "desktop.signout", label: "AitherOS Online: sign out", menuLabel: "Sign out",
     group: "desktop", surfaces: ["tray", "palette"],
@@ -276,6 +246,12 @@ const COMMANDS = Object.freeze([
     menuLabel: "Reveal the overlay at the screen edge",
     group: "desktop", surfaces: ["tray", "palette"],
     type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.edgeReveal),
+  }),
+  Object.freeze({
+    id: "desktop.overlay.raise-on-notify", label: "Bring the overlay forward for notifications",
+    menuLabel: "Bring the overlay forward for notifications",
+    group: "desktop", surfaces: ["tray", "palette"],
+    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.overlayPolicy && ctx.overlayPolicy.raiseOnNotifications),
   }),
   Object.freeze({
     id: "desktop.overlay.dnd", label: "Do not disturb", menuLabel: "Do not disturb",
@@ -299,45 +275,6 @@ const COMMANDS = Object.freeze([
   Object.freeze({
     id: "companion.avatar", label: "Companion: full avatar", group: "avatar",
     surfaces: ["tray", "palette"], when: (ctx = {}) => ctx.companion !== "avatar",
-  }),
-  // Display mode (owner 2026-11-20, with a screenshot of the VRM and the fairy
-  // cluster standing side by side): the docked avatar AND the fairy at once. The
-  // four radio rows are the toggle; the cycle row is the one keyboard chord. The
-  // state is persisted in avatar-dock.json (display-mode.cjs readStore/writeStore).
-  Object.freeze({
-    id: "display.mode.avatar", label: "Companion: avatar only", menuLabel: "Avatar only",
-    group: "avatar", surfaces: ["avatar-menu", "palette"], type: "radio",
-    checked: (ctx = {}) => ctx.displayMode === "avatar",
-  }),
-  Object.freeze({
-    id: "display.mode.fairy", label: "Companion: fairy only", menuLabel: "Fairy only",
-    group: "avatar", surfaces: ["avatar-menu", "palette"], type: "radio",
-    checked: (ctx = {}) => ctx.displayMode !== "avatar" && ctx.displayMode !== "both" && ctx.displayMode !== "swarm",
-  }),
-  Object.freeze({
-    id: "display.mode.both", label: "Companion: avatar and fairy", menuLabel: "Avatar and fairy",
-    group: "avatar", surfaces: ["avatar-menu", "palette"], type: "radio",
-    checked: (ctx = {}) => ctx.displayMode === "both",
-  }),
-  Object.freeze({
-    id: "display.mode.swarm", label: "Companion: swarm around the avatar", menuLabel: "Swarm around the avatar",
-    group: "avatar", surfaces: ["avatar-menu", "palette"], type: "radio",
-    checked: (ctx = {}) => ctx.displayMode === "swarm",
-  }),
-  Object.freeze({
-    id: "display.mode.cycle", label: "Companion display: next mode", group: "avatar",
-    surfaces: ["tray", "palette"], accel: "Ctrl+Alt+Shift+M",
-  }),
-  // Visual neurons (neurons-model.cjs, owner 2026-11-18): a small graph of an agent's
-  // recent steps around its fairy while it works or speaks. Off by default. A switch,
-  // not a door: its row is in Settings; the palette and POST /commands/run are its
-  // keyboard and agent paths.
-  Object.freeze({
-    id: "neurons.toggle", label: "Show agents thinking (visual neurons)",
-    menuLabel: "Visual neurons", group: "avatar",
-    surfaces: ["palette"], orb: "neurons",
-    whySingle: "A settings switch, not a door: its row is in Settings (Visual neurons); the palette and POST /commands/run are its keyboard and agent paths.",
-    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.neurons),
   }),
   Object.freeze({
     id: "avatar.toggle", group: "avatar", accel: "Ctrl+Shift+A",
@@ -440,15 +377,6 @@ const COMMANDS = Object.freeze([
     surfaces: ["tray", "avatar-menu", "palette"],
     label: (ctx = {}) => (ctx.voiceMuted ? "Unmute all voices" : "Mute all voices"),
   }),
-  // A coding / terminal session is SILENT by default (owner, 2026-11-16: "they all talked over each
-  // other"): its words are a bubble. This row opts ONE session into a voice and back out.
-  Object.freeze({
-    id: "voice.session", group: "talk", scope: "slot", icon: "volume",
-    surfaces: ["avatar-menu"], when: (ctx = {}) => Boolean(ctx.sessionBody),
-    label: (ctx = {}) => (ctx.sessionVoice ? "Silence this session" : "Let this session talk"),
-    whySingle: "Opts the one coding session behind the right-clicked body into a voice (they are silent by default); "
-      + "voice.mute-all is the everywhere twin.",
-  }),
   Object.freeze({
     id: "voice.mute-agent", group: "talk", scope: "slot", icon: "volume-off",
     surfaces: ["avatar-menu"],
@@ -548,28 +476,6 @@ const COMMANDS = Object.freeze([
     id: "stage.open", label: "Stage & characters…", group: "avatar",
     surfaces: ["tray", "avatar-menu", "palette"],
   }),
-  // The rogues gallery (owner 2026-11-17: "a proper rogues gallery / persona ... browse and
-  // rotate avatars without a headache"): every body, every persona, the audience profile and
-  // safe mode in one window (console pane "gallery"). Only the owner assigns a body there.
-  Object.freeze({
-    id: "gallery.open", label: "Avatar gallery…", group: "avatar", icon: "users",
-    surfaces: ["tray", "avatar-menu", "palette"],
-  }),
-  // SAFE MODE, the panic switch (owner 2026-11-17: "I can't let my mom, kids or strangers see
-  // this"): only everyone-rated bodies, instantly. ONE key (Scroll Lock -- the classic boss
-  // key); the chord row below holds Ctrl+Alt+Shift+S too, for keyboards without one. Both are
-  // always held (an accelFallback only binds when the first key is refused, and a keyboard
-  // with no Scroll Lock never refuses it).
-  Object.freeze({
-    id: "gallery.safe-mode", label: "Safe mode: family-safe bodies only", menuLabel: "Safe mode (family-safe bodies)",
-    group: "avatar", surfaces: ["tray", "palette"], accel: "Scrolllock",
-    type: "checkbox", checked: (ctx = {}) => Boolean(ctx.safeMode),
-  }),
-  Object.freeze({
-    id: "gallery.safe-mode-chord", label: "Safe mode (Ctrl+Alt+Shift+S)", group: "avatar", surfaces: ["palette"],
-    accel: "Ctrl+Alt+Shift+S", when: () => false,
-    whySingle: "The second key of gallery.safe-mode, for keyboards with no Scroll Lock; no surface of its own.",
-  }),
   // cast.open is the one door onto cast.json (U01) from all three surfaces.
   Object.freeze({
     id: "cast.open", label: "Cast & voices…", group: "avatar",
@@ -604,44 +510,6 @@ const COMMANDS = Object.freeze([
     id: "stage.reset", label: "Stage: reset everyone", menuLabel: "Reset everyone", group: "stage",
     surfaces: ["palette"],
     whySingle: "Lives on the Stage page / console now (owner, 2026-10-03: too many menus); the palette (Ctrl+K) is its keyboard path.", arrangement: "reset",
-  }),
-  // Aither's body (owner 2026-11-16: "can select male or female Aither and have it
-  // transform from fairy to full avatar"). aither-body.cjs owns the two bodies; main
-  // reports the ones this desk has in ctx.aitherBodies ([{id, checked}]), so a desk with
-  // one build shows no choice. The fairy's own menu carries the same two rows.
-  Object.freeze({
-    id: "aither.body.female", label: "Aither (female)", group: "avatar",
-    surfaces: ["tray", "avatar-menu", "palette"], type: "radio",
-    when: (ctx = {}) => (ctx.aitherBodies || []).some((b) => b && b.id === "female"),
-    checked: (ctx = {}) => (ctx.aitherBodies || []).some((b) => b && b.id === "female" && b.checked),
-  }),
-  Object.freeze({
-    id: "aither.body.male", label: "Aither (male)", group: "avatar",
-    surfaces: ["tray", "avatar-menu", "palette"], type: "radio",
-    when: (ctx = {}) => (ctx.aitherBodies || []).some((b) => b && b.id === "male"),
-    checked: (ctx = {}) => (ctx.aitherBodies || []).some((b) => b && b.id === "male" && b.checked),
-  }),
-  // The fairy grows into Aither from the tray and the palette too (the fairy may be
-  // hidden, and POST /commands/run is how an agent or a test reaches it).
-  Object.freeze({
-    id: "avatar.from-fairy", label: "Show Aither", group: "avatar",
-    surfaces: ["tray", "palette"], when: (ctx = {}) => ctx.fairyAvatar === "fairy",
-  }),
-  Object.freeze({
-    // On the palette too, so POST /commands/run sends her back the way avatar.from-fairy
-    // grew her. Measured 2026-11-16: an agent could grow the fairy over the bridge but had
-    // no way back short of right-clicking a moving, pixel-hit-tested body. It names no
-    // slot (main collapses the one grown body), so it needs none in hand.
-    id: "avatar.to-fairy", label: "Back to the fairy", group: "slot",
-    surfaces: ["avatar-menu", "palette"], when: (ctx = {}) => Boolean(ctx.grownFromFairy),
-  }),
-  // Stages by direct manipulation (owner 2026-11-16): drop a body on another to join a stage,
-  // right-click > Leave stage to step out, drag the stage's handle to move the group.
-  Object.freeze({
-    id: "stage.leave", label: "Leave stage", group: "slot", scope: "slot",
-    surfaces: ["avatar-menu"], when: (ctx = {}) => Boolean(ctx.inStage),
-    whySingle: "Shown only on a body that stands in a stage; it needs the body that was right-clicked "
-      + "(the tray's 'Stage: split them apart' is the same verb for every body at once).",
   }),
   Object.freeze({
     id: "avatar.remove", label: "Remove this avatar", group: "slot", scope: "slot",
@@ -720,14 +588,6 @@ const COMMANDS = Object.freeze([
     surfaces: ["palette"],
     whySingle: "A Console pane (Agents section) already; the palette (Ctrl+K) is its keyboard path.",
   }),
-  // Explore (owner, 2026-11-13): aither://explore -- the knowledge graphs, the wiki and
-  // agent / LLM context in one pane. Its argument ({tab, q, node, page, source, session})
-  // comes from the Alt+Space verbs graph / wiki / context (explore-verbs.cjs).
-  Object.freeze({
-    id: "explore.open", label: "Explore: knowledge graphs, wiki, agent context…", group: "go", icon: "network",
-    surfaces: ["palette"],
-    whySingle: "A Console pane (Data section) already; Alt+Space graph / wiki / context and the palette (Ctrl+K) are its keyboard paths.",
-  }),
   // Aither Files (files-window.cjs): the owner's File Explorer replacement --
   // tabs, breadcrumb + address bar, list/grid with thumbnails, preview, new
   // folder / rename / copy / move / delete-to-Recycle-Bin, Send to Aitherium, Ask
@@ -786,237 +646,6 @@ const COMMANDS = Object.freeze([
     id: "browser.open", label: "Aither Browser…", group: "go", icon: "globe",
     surfaces: ["palette", "beads", "jumplist"],
   }),
-  // ── the browser's own capabilities (owner, 2026-11-13: "and integrate with the
-  // Alt+Space hot key and whatnot?"). Tabs, the library pages, passwords, import, sync,
-  // ad blocking and the page tools lived only in the browser's toolbar, its ⋯ menu and
-  // its keys. DATA rows: `browser` is the verb browser-window.browserCommand runs, so a
-  // new one is a record here and a case there. Every one raises the browser when it is
-  // closed and acts on the OWNER's active tab -- never on a tab an agent opened.
-  // Alt+Space lists the rows without a `prompt`; the ones that take text have a typed
-  // verb there instead (browser-verbs.cjs: go, search, private, history, bookmark, tab,
-  // find, extension).
-  Object.freeze({
-    id: "browser.tab.new", label: "Browser: new tab", menuLabel: "New tab", group: "browser",
-    browser: "new-tab", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "browser.tab.private", label: "Browser: new InPrivate tab", menuLabel: "New InPrivate tab", group: "browser",
-    browser: "inprivate", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "browser.tab.reopen", label: "Browser: reopen closed tab", menuLabel: "Reopen closed tab", group: "browser",
-    browser: "reopen-closed", surfaces: ["tray", "palette"],
-    enabled: (ctx = {}) => !ctx.browser || ctx.browser.closedTabs > 0,
-  }),
-  Object.freeze({
-    id: "browser.tab.switch", label: "Browser: switch to an open tab…", group: "browser", browser: "tab",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Words from the tab's title or address" }),
-    whySingle: "Needs the tab named (only the palette has a text field); the tab strip is the mouse path and Alt+Space `tab <words>` lists the matches.",
-  }),
-  Object.freeze({
-    id: "browser.go", label: "Browser: open an address…", group: "browser", browser: "go",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "example.com, https://… or aither://page" }),
-    whySingle: "Needs an address typed; the browser's address bar is the mouse path and Alt+Space takes a bare address or `go <address>`.",
-  }),
-  Object.freeze({
-    id: "browser.search", label: "Browser: search the web…", group: "browser", browser: "search",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Words to search for" }),
-    whySingle: "Needs the words typed; the address bar searches plain words and Alt+Space `search <words>` is its other door.",
-  }),
-  Object.freeze({
-    id: "browser.history", label: "Browser: history", menuLabel: "History", group: "browser",
-    browser: "history", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "browser.bookmarks", label: "Browser: bookmarks", menuLabel: "Bookmarks", group: "browser",
-    browser: "bookmarks", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "browser.bookmark-page", group: "browser", browser: "bookmark", surfaces: ["palette"],
-    whySingle: "Acts on the page in the owner's active tab: the star in the browser's toolbar is its button; the palette and Alt+Space `bookmark` are its keyboard paths.",
-    label: (ctx = {}) => (ctx.browser && ctx.browser.bookmarked ? "Browser: remove this page's bookmark" : "Browser: bookmark this page"),
-  }),
-  Object.freeze({
-    id: "browser.downloads", label: "Browser: downloads", menuLabel: "Downloads", group: "browser",
-    browser: "downloads", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "browser.permissions", label: "Browser: site permissions", menuLabel: "Site permissions", group: "browser",
-    browser: "permissions", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "browser.clear-data", label: "Browser: clear browsing data…", menuLabel: "Clear browsing data…", group: "browser",
-    browser: "clear-data", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "browser.passwords", label: "Browser: saved passwords…", menuLabel: "Saved passwords…", group: "browser",
-    browser: "passwords", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "browser.import.edge", label: "Browser: import bookmarks and history from Edge…", menuLabel: "Import from Edge…",
-    group: "browser", browser: "import-edge", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "browser.import.passwords", label: "Browser: import passwords from a CSV…", menuLabel: "Import passwords from a CSV…",
-    group: "browser", browser: "import-passwords", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "browser.default", label: "Make Aither your default browser…", menuLabel: "Make Aither the default browser…",
-    group: "browser", browser: "default", surfaces: ["tray", "palette"],
-    // Windows' default-apps registration (browser-default.cjs). `{}` (Alt+Space's own
-    // listing) has no platform in hand, so the row shows and the command answers.
-    when: (ctx = {}) => !ctx.platform || ctx.platform === "win32",
-  }),
-  // The two switches SAY which way a click goes once the browser has been opened this
-  // run (ctx.browser, browser-window.commandFacts); before that nobody has read the
-  // setting, so the label names both directions rather than guess one.
-  Object.freeze({
-    id: "browser.sync", group: "browser", browser: "sync", surfaces: ["tray", "palette"],
-    label: (ctx = {}) => {
-      const on = ctx.browser ? ctx.browser.syncOn : null;
-      return on === true ? "Browser sync: turn off" : on === false ? "Browser sync: turn on" : "Browser sync: turn on or off";
-    },
-    menuLabel: (ctx = {}) => {
-      const on = ctx.browser ? ctx.browser.syncOn : null;
-      return on === true ? "Turn sync off" : on === false ? "Turn sync on" : "Sync on or off";
-    },
-  }),
-  Object.freeze({
-    id: "browser.ads.all", group: "browser", browser: "ads-all", surfaces: ["tray", "palette"],
-    label: (ctx = {}) => {
-      const on = ctx.browser ? ctx.browser.adsOn : null;
-      return on === true ? "Ad blocking: pause everywhere" : on === false ? "Ad blocking: resume everywhere" : "Ad blocking: pause or resume everywhere";
-    },
-    menuLabel: (ctx = {}) => {
-      const on = ctx.browser ? ctx.browser.adsOn : null;
-      return on === true ? "Pause ad blocking everywhere" : on === false ? "Resume ad blocking everywhere" : "Ad blocking: pause or resume everywhere";
-    },
-  }),
-  Object.freeze({
-    id: "browser.ads.site", group: "browser", browser: "ads-site", surfaces: ["palette"],
-    whySingle: "Acts on the site in the owner's active tab: the shield in the browser's toolbar is its menu; the palette and Alt+Space are its keyboard paths.",
-    label: (ctx = {}) => {
-      const b = ctx.browser || {};
-      if (b.siteAllowed === true) return `Ad blocking: resume on ${b.host || "this site"}`;
-      if (b.siteAllowed === false) return `Ad blocking: pause on ${b.host || "this site"}`;
-      return "Ad blocking: pause or resume on this site";
-    },
-  }),
-  Object.freeze({
-    id: "browser.translate", label: "Browser: translate this page", group: "browser", browser: "translate", surfaces: ["palette"],
-    whySingle: "Acts on the page in the owner's active tab: the browser's ⋯ menu and the translate offer are its mouse paths; the palette and Alt+Space are its keyboard paths.",
-  }),
-  Object.freeze({
-    id: "browser.find", label: "Browser: find on this page", group: "browser", browser: "find", surfaces: ["palette"],
-    whySingle: "Acts on the page in the owner's active tab: Ctrl+F and the ⋯ menu inside the browser are its other paths; Alt+Space `find <words>` carries the words.",
-  }),
-  Object.freeze({
-    id: "browser.print", label: "Browser: print this page…", group: "browser", browser: "print", surfaces: ["palette"],
-    whySingle: "Acts on the page in the owner's active tab: Ctrl+P and the ⋯ menu inside the browser are its other paths.",
-  }),
-  Object.freeze({
-    id: "browser.open-edge", label: "Browser: open this page in Edge", group: "browser", browser: "open-edge", surfaces: ["palette"],
-    whySingle: "Acts on the page in the owner's active tab: the ⋯ menu inside the browser is its mouse path.",
-  }),
-  Object.freeze({
-    id: "browser.extension.add", label: "Browser: add an extension from a store address…", group: "browser", browser: "extension",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "A Chrome Web Store or Edge Add-ons page address (empty = the page on screen)" }),
-    whySingle: "Needs a store page's address typed; on a store page the ⋯ menu's Extensions ▸ Add this extension is the mouse path, and Alt+Space `extension <address>` is its other door.",
-  }),
-  // ── the browser's layout and the pin canvas (owner, 2026-11-07: "resize and
-  // detach/reattach, reorganize and rearrange, and have access to a canvas for pinning
-  // apps and widgets"). DATA rows: `layout` is the verb browser-window.layoutCommand
-  // runs, so every drag, right-click and Customize-panel button has a palette path
-  // (docs/UX-REIMPLEMENTATION.md: no capability is gesture-only). One commented block.
-  Object.freeze({
-    id: "layout.edit", label: "Browser: edit layout (move, detach, hide panes)", menuLabel: "Edit layout",
-    group: "layout", layout: "edit", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "layout.preset.default", label: "Browser layout: Default", menuLabel: "Default", group: "layout",
-    layout: "preset:Default", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "layout.preset.focus", label: "Browser layout: Focus (rail collapsed, no panel)", menuLabel: "Focus", group: "layout",
-    layout: "preset:Focus", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "layout.preset.ops", label: "Browser layout: Ops (tall dock, wide panel)", menuLabel: "Ops", group: "layout",
-    layout: "preset:Ops", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "layout.save", label: "Browser layout: save as…", group: "layout", layout: "save",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Name for this layout" }),
-    whySingle: "Needs a typed name (only the palette has a text field); the browser's Customize panel has Save as.",
-  }),
-  Object.freeze({
-    id: "layout.load", label: "Browser layout: load a saved layout…", group: "layout", layout: "load",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Name of a saved layout" }),
-    whySingle: "Needs a typed name; the Customize panel's layout picker is the mouse path.",
-  }),
-  Object.freeze({
-    id: "layout.export", label: "Browser layout: export to a file…", menuLabel: "Export…", group: "layout",
-    layout: "export", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "layout.import", label: "Browser layout: import from a file…", menuLabel: "Import…", group: "layout",
-    layout: "import", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "layout.reset", label: "Browser layout: reset", menuLabel: "Reset", group: "layout",
-    layout: "reset", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "layout.move-pane", label: "Browser layout: move a pane…", group: "layout", layout: "side",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "panel left | dock top | rail right | avatar bottom | layers top" }),
-    whySingle: "Needs a pane and a side typed; edit-layout mode's drop zones and buttons are the mouse path.",
-  }),
-  Object.freeze({
-    id: "layout.detach-pane", label: "Browser layout: detach a pane into its own window…", group: "layout", layout: "detach",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "panel | dock | taskbar" }),
-    whySingle: "Needs a pane typed; edit-layout mode's Detach buttons are the mouse path.",
-  }),
-  Object.freeze({
-    id: "layout.attach-pane", label: "Browser layout: reattach a pane…", group: "layout", layout: "attach",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "panel | dock | taskbar" }),
-    whySingle: "Needs a pane typed; edit-layout mode's Reattach button and closing the pane's window are the mouse paths.",
-  }),
-  Object.freeze({
-    id: "layout.layers", label: "Browser layout: show or hide the layer tiles", menuLabel: "Layer tiles", group: "layout",
-    layout: "layers", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "rail.pin", label: "Rail: pin a row…", group: "layout", layout: "rail.pin",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Row name (e.g. Files)" }),
-    whySingle: "Needs a row named; right-click a rail row for the mouse path.",
-  }),
-  Object.freeze({
-    id: "rail.remove", label: "Rail: remove a row…", group: "layout", layout: "rail.remove",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Row name (e.g. Chaos)" }),
-    whySingle: "Needs a row named; right-click a rail row for the mouse path.",
-  }),
-  Object.freeze({
-    id: "rail.move", label: "Rail: move a row…", group: "layout", layout: "rail.move",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "Files up | Files down | Files to Work" }),
-    whySingle: "Needs a row and a direction typed; dragging in edit-layout mode and Alt+Up/Down on a row are the other paths.",
-  }),
-  Object.freeze({
-    id: "rail.restore", label: "Rail: restore removed rows", menuLabel: "Restore removed rail rows", group: "layout",
-    layout: "rail.restore", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "canvas.open", label: "Canvas: pinned apps and widgets", menuLabel: "Canvas", group: "go", icon: "grid",
-    layout: "canvas.open", surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "canvas.pin-tab", label: "Canvas: pin the current tab", group: "layout", layout: "canvas.pin-tab",
-    surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "canvas.pin-url", label: "Canvas: pin an address…", group: "layout", layout: "canvas.pin-url",
-    surfaces: ["palette"], prompt: Object.freeze({ placeholder: "https://… or aither://fleet" }),
-    whySingle: "Needs an address typed; the canvas page's own Pin field and a tab's right-click are the mouse paths.",
-  }),
   // Aither Hearth (2026-09-30): the owner's PLATFORM Hearth -- reminders, approval
   // cards, signed receipts -- as the `hearth` window on the AitherDesktop app. The
   // cards are answered there, by the owner; no row here approves anything.
@@ -1063,83 +692,6 @@ const COMMANDS = Object.freeze([
     accel: "Ctrl+Alt+W", accelFallback: "Ctrl+Alt+Shift+W",
     surfaces: ["tray", "palette"], orb: "ask-screen",
   }),
-  // ── Aither at the caret (assist-main.cjs; owner 2026-11-16: Edge's "help me write"
-  // pop-up, for every app, plus verbs on any selection). `assist` is what run() hands
-  // assist-main.run: "open" = the pop-up at the caret of the focused app; a verb id =
-  // the pop-up with that verb applied to the selection. The browser has the same verbs
-  // in AitherConnect's right-click; these rows are the desk / voice / awsh door.
-  Object.freeze({
-    id: "assist.open", label: "Aither at the caret: help me write…", menuLabel: "Help me write…", group: "capture",
-    // The writing actions live in Alt+Space (launcher-window.cjs `assist`): one box, one key.
-    // This chord stays BOUND as a hidden alias and is never printed on a menu, a hint or a doc.
-    accel: "Ctrl+Alt+J", accelFallback: "Ctrl+Alt+Shift+J", hiddenAccel: true,
-    surfaces: ["tray", "palette"], assist: "open",
-  }),
-  Object.freeze({
-    id: "assist.explain", label: "Aither: explain my selection", group: "capture",
-    surfaces: ["palette"], assist: "explain",
-    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
-  }),
-  Object.freeze({
-    id: "assist.rewrite", label: "Aither: rewrite my selection", group: "capture",
-    surfaces: ["palette"], assist: "rewrite",
-    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
-  }),
-  Object.freeze({
-    id: "assist.translate", label: "Aither: translate my selection", group: "capture",
-    surfaces: ["palette"], assist: "translate",
-    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
-  }),
-  Object.freeze({
-    id: "assist.summarize", label: "Aither: summarize my selection", group: "capture",
-    surfaces: ["palette"], assist: "summarize",
-    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
-  }),
-  Object.freeze({
-    id: "assist.reply", label: "Aither: reply to my selection", group: "capture",
-    surfaces: ["palette"], assist: "reply",
-    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
-  }),
-  Object.freeze({
-    id: "assist.ask-agent", label: "Aither: ask an agent about my selection", group: "capture",
-    surfaces: ["palette"], assist: "ask-agent",
-    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
-  }),
-  Object.freeze({
-    id: "assist.file.summarize", label: "Aither (Explorer): summarize this file or folder", group: "capture",
-    surfaces: ["palette"], assist: "file:summarize", when: () => false,
-    whySingle: "an Explorer right-click verb: the shell menu launches it with --arg=<path>; it is hidden from the palette because the palette has no file to give it",
-  }),
-  Object.freeze({
-    id: "assist.file.ask", label: "Aither (Explorer): ask about this file or folder", group: "capture",
-    surfaces: ["palette"], assist: "file:ask", when: () => false,
-    whySingle: "an Explorer right-click verb: the shell menu launches it with --arg=<path>; it is hidden from the palette because the palette has no file to give it",
-  }),
-  Object.freeze({
-    id: "assist.file.rename", label: "Aither (Explorer): rename this file smartly", group: "capture",
-    surfaces: ["palette"], assist: "file:rename", when: () => false,
-    whySingle: "an Explorer right-click verb: the shell menu launches it with --arg=<path>; it is hidden from the palette because the palette has no file to give it",
-  }),
-  Object.freeze({
-    id: "assist.file.convert", label: "Aither (Explorer): convert this file", group: "capture",
-    surfaces: ["palette"], assist: "file:convert", when: () => false,
-    whySingle: "an Explorer right-click verb: the shell menu launches it with --arg=<path>; it is hidden from the palette because the palette has no file to give it",
-  }),
-  Object.freeze({
-    id: "assist.file.pipeline", label: "Aither (Explorer): send to knowledge (documents / data)", group: "capture",
-    surfaces: ["palette"], assist: "file:pipeline", when: () => false,
-    whySingle: "an Explorer right-click verb: the shell menu launches it with --arg=<path>; it is hidden from the palette because the palette has no file to give it",
-  }),
-  Object.freeze({
-    id: "assist.file.pack", label: "Aither (Explorer): run a tool pack on this", group: "capture",
-    surfaces: ["palette"], assist: "file:pack", when: () => false,
-    whySingle: "an Explorer right-click verb: the shell menu launches it with --arg=<path>; it is hidden from the palette because the palette has no file to give it",
-  }),
-  Object.freeze({
-    id: "assist.save-memory", label: "Aither: save my selection to memory", group: "capture",
-    surfaces: ["palette"], assist: "save-memory",
-    whySingle: "a verb on the current selection: the tray row is the one 'help me write' pop-up, which lists every verb",
-  }),
   // ── the spirit (orb-window.cjs, owner 2026-11-02: "integrate with the awdesk
   // avatar/persona too" · "make the spirit attachable/detachable" · "awdesk avatars
   // ... can send the spirit orb to do stuff around the desktop, go look at files,
@@ -1166,32 +718,6 @@ const COMMANDS = Object.freeze([
     whySingle: "A web trip dispatched by THIS body, which speaks the answer; the "
       + "bubble's field takes the query. spirit.go is the palette's general door.",
   }),
-  // The companions are HIDDEN by default (owner 2026-11-13, companion-menu.cjs). The
-  // tray carries the same two rows at its top; these are the palette's, the jump
-  // list's (right-click Aither on the taskbar) and the bridge's way back.
-  Object.freeze({
-    id: "companions.show", label: "Show the fairies and companions", group: "go",
-    surfaces: ["palette", "jumplist"], orb: "show-all",
-  }),
-  Object.freeze({
-    id: "companions.hide", label: "Hide the fairies and companions", group: "go",
-    surfaces: ["palette", "jumplist"], orb: "hide-all",
-  }),
-  // The fairy's right-click menu, reachable from the keyboard (owner 2026-11-12:
-  // "menus are navigable"). It opens beside the fairy; arrows, Enter and Esc work.
-  Object.freeze({
-    id: "fairy.menu", label: "Open the fairy menu", group: "go",
-    surfaces: ["palette"], orb: "menu",
-    whySingle: "A right click on the fairy is the pointer's door; this row is the keyboard's "
-      + "and the bridge's (POST /commands/run). The tray has its own menu already.",
-  }),
-  Object.freeze({
-    id: "fairy.counts", label: "Fairy: what the counts are", group: "go",
-    surfaces: ["palette"], orb: "counts",
-    whySingle: "A check, not a destination: it answers with the badge, the whisper's "
-      + "'N more' and each companion's share so a script (POST /commands/run) can "
-      + "assert they agree. The numbers themselves are already on the fairy.",
-  }),
   Object.freeze({
     id: "spirit.attach-toggle", label: "Attach or detach the spirit", group: "go",
     accel: "Ctrl+Alt+G", accelFallback: "Ctrl+Alt+Shift+G",
@@ -1211,7 +737,7 @@ const COMMANDS = Object.freeze([
   // (UI Automation, no faked keys), else the clipboard, else the last snip's
   // caption -- the bubble field is the typed path.
   Object.freeze({
-    id: "sprite.teach", label: "Teach my sprite the selection / clipboard", menuLabel: "Teach it what I selected",
+    id: "sprite.teach", label: "Teach my sprite the selection / clipboard", menuLabel: "Teach it the selection",
     group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-teach",
   }),
   Object.freeze({
@@ -1219,17 +745,8 @@ const COMMANDS = Object.freeze([
     group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-status",
   }),
   Object.freeze({
-    id: "sprite.open", label: "Open my sprite (aitherium.com)", menuLabel: "Open my sprite page…",
+    id: "sprite.open", label: "Open my sprite (aitherium.com)", menuLabel: "Open Sprite…",
     group: "sprite", surfaces: ["tray", "palette", "avatar-menu"], orb: "sprite-open",
-  }),
-  // ── Windows Sandbox (sandbox-detonate.cjs): a file you do not trust runs in a
-  // fresh throwaway guest with networking OFF. The picker only PREPARES a confirm
-  // card naming the file, its size and its SHA-256; the owner's click on that card
-  // is the confirmation, and nothing reaches the daemon before it. doctor's "not
-  // ready" text is shown verbatim -- the desk never elevates on its own.
-  Object.freeze({
-    id: "sandbox.detonate", label: "Detonate a file in Windows Sandbox…", menuLabel: "Detonate a file in a sandbox…",
-    group: "sandbox", surfaces: ["tray", "palette"],
   }),
   // ── the aw* CLIs (aw-cli.cjs): system binaries via execFile, 30 s cap, output in
   // the orb's bubble. A verb that needs a query opens the bubble's field when run
@@ -1319,9 +836,9 @@ const COMMANDS = Object.freeze([
   // probed free on this desk (2026-11-02); each has a Shift fallback for machines
   // where another tool holds the primary.
   Object.freeze({
-    id: "quick.open", label: "Tools — Create · Capture · Send", group: "capture",
+    id: "quick.open", label: "Quick menu at the cursor", group: "capture",
     accel: "Ctrl+Alt+Q", accelFallback: "Ctrl+Alt+Shift+Q",
-    surfaces: ["tray", "palette", "avatar-menu"],
+    surfaces: ["tray", "palette"],
   }),
   Object.freeze({
     id: "note.new", label: "New note", group: "capture",
@@ -1356,9 +873,7 @@ const COMMANDS = Object.freeze([
   // the video. The four keys are the only door: while drawing, the overlay holds
   // the mouse, so the tray is one glance away rather than in the way.
   Object.freeze({
-    id: "ink.toggle", group: "capture", accel: "Ctrl+Alt+D",
-    // The tray's visible ink state (no floating bar): the row says it is drawing.
-    label: (ctx = {}) => (ctx.inkMode && ctx.inkMode !== "interact" ? "Drawing on screen — stop (Esc)" : "Draw on screen"),
+    id: "ink.toggle", label: "Draw on screen", group: "capture", accel: "Ctrl+Alt+D",
     surfaces: ["tray", "palette"],
   }),
   Object.freeze({
@@ -1371,108 +886,6 @@ const COMMANDS = Object.freeze([
   }),
   Object.freeze({
     id: "ink.clear", label: "Clear drawings", group: "capture", accel: "Ctrl+Alt+C",
-    surfaces: ["tray", "palette"],
-  }),
-  // ── the local toolkit (toolkit.cjs; owner 2026-11-13 22:01 + 22:04). Offline-first
-  // windows and verbs; the quick menu groups them Create / Capture / Send
-  // (toolkit-core.cjs MENU). Only interact mode holds a key: it is the way BACK to
-  // normal mouse control, so it must not need the menu it overrides.
-  Object.freeze({ id: "sketch.new", label: "Sketch pad", group: "capture", surfaces: ["palette"],
-    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
-  Object.freeze({ id: "piano.open", label: "Play notes (piano)", group: "capture", surfaces: ["palette"],
-    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
-  Object.freeze({ id: "scratch.new", label: "Quick type", group: "capture", surfaces: ["palette"],
-    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
-  Object.freeze({ id: "sticky.new", label: "Sticky note on the desktop", group: "capture", surfaces: ["palette"],
-    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
-  Object.freeze({ id: "graphics.open", label: "Edit an image (remove background, upscale…)", group: "capture", surfaces: ["palette"],
-    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
-  Object.freeze({ id: "region.box", label: "Box a region (ask about it)", group: "capture", surfaces: ["palette"],
-    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
-  Object.freeze({ id: "present.start", label: "Present a region (laser)", group: "capture", surfaces: ["palette"],
-    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
-  Object.freeze({ id: "send.last", label: "Send last capture to…", group: "capture", surfaces: ["palette"],
-    whySingle: "One grouped list carries it to the tray and the companion's right-click: the Tools submenu (quick-menu.cjs submenuItems, toolkit-core MENU); the palette (Ctrl+K / Alt+Space) is its typed path." }),
-  Object.freeze({
-    id: "interact.toggle", group: "capture", accel: "Ctrl+Alt+Y", accelFallback: "Ctrl+Alt+Shift+Y",
-    label: (ctx = {}) => (ctx.interactMode ? "Interact mode — leave (Esc)" : "Interact mode (the desk takes the mouse)"),
-    surfaces: ["tray", "palette"],
-  }),
-  // Ink, pins and GIFs (owner 2026-11-07: "drawing over the screen, searching for
-  // GIFs and pinning them on the desktop, or a YouTube video, or a web page tab, or
-  // an app"). Ctrl+Alt+K / Ctrl+Alt+I were free against every accel in this file
-  // that day; each has the usual Shift fallback. Alt+Space verbs (desk-verbs.cjs)
-  // reach all of them by typing: draw, gif <word>, pin <url|this tab|app>, pins.
-  Object.freeze({
-    id: "ink.passthrough", label: "Draw with clicks going through", group: "capture",
-    accel: "Ctrl+Alt+K", accelFallback: "Ctrl+Alt+Shift+K",
-    surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "ink.board", label: "Save drawing to a board", group: "capture",
-    accel: "Ctrl+Alt+E", accelFallback: "Ctrl+Alt+Shift+E",
-    surfaces: ["palette"],
-    whySingle: "Its button is on the ink toolbar (To board); the palette (Ctrl+K) and Alt+Space `draw board` are its keyboard paths.",
-  }),
-  Object.freeze({
-    id: "ink.snip", label: "Snip with ink", group: "capture",
-    accel: "Ctrl+Alt+X", accelFallback: "Ctrl+Alt+Shift+X",
-    surfaces: ["palette"],
-    whySingle: "Its button is on the ink toolbar (Snip); the palette (Ctrl+K) and Alt+Space `draw snip` are its keyboard paths.",
-  }),
-  Object.freeze({
-    id: "gif.open", label: "GIF picker…", group: "capture",
-    accel: "Ctrl+Alt+I", accelFallback: "Ctrl+Alt+Shift+I",
-    surfaces: ["tray", "palette"],
-  }),
-  Object.freeze({
-    id: "gif.pin", label: "Pin a GIF to the desktop", group: "capture",
-    // The key has no text to carry: with no words it opens the GIF picker.
-    accel: "Ctrl+Alt+F", accelFallback: "Ctrl+Alt+Shift+F",
-    surfaces: ["palette"],
-    whySingle: "Needs words to search; the palette (and POST /commands/run, the phone link, awconnect) carry the text. The GIF picker is its menu door.",
-    prompt: Object.freeze({ placeholder: "Words to search; the top GIF is pinned" }),
-  }),
-  Object.freeze({
-    id: "pins.add", label: "Pin to desktop…", group: "capture",
-    // The key pins the address on the clipboard (a copied link becomes a pin).
-    accel: "Ctrl+Alt+U", accelFallback: "Ctrl+Alt+Shift+U",
-    surfaces: ["palette"],
-    whySingle: "Needs an address; the palette (and POST /commands/run, the phone link, awconnect) carry it. Alt+Space `pin <address>` is its other door.",
-    prompt: Object.freeze({ placeholder: "A web address, a YouTube or GIF link, or aither://page" }),
-  }),
-  Object.freeze({
-    id: "pins.tab", label: "Pin this tab to desktop", group: "capture",
-    accel: "Ctrl+Alt+T", accelFallback: "Ctrl+Alt+Shift+T",
-    surfaces: ["palette"],
-    whySingle: "Acts on the Aither browser's tab: its menu row is the tab's own right-click menu (browser chrome); the palette and Alt+Space `pin this tab` are its keyboard paths.",
-  }),
-  Object.freeze({
-    id: "pins.open", label: "Pins…", group: "capture",
-    // The key shows every pin, or hides them all when they are all showing.
-    accel: "Ctrl+Alt+H", accelFallback: "Ctrl+Alt+Shift+H",
-    surfaces: ["tray", "palette"],
-  }),
-  // The intent bar's timers (desk-timers.cjs): `10m tea` ends in a desktop notification.
-  Object.freeze({
-    id: "timer.start", label: "Start a timer…", group: "capture",
-    surfaces: ["palette"],
-    whySingle: "Needs a duration typed; the palette, Alt+Space (`>timer`, or plain words like “set a 10 minute tea timer”), POST /commands/run and the desk MCP server carry it.",
-    prompt: Object.freeze({ placeholder: "10m tea · 90s · 1h30m stretch" }),
-  }),
-  // The keyboard's Copilot key (LWin+LShift+F23) opens the Alt+Space bar instead of
-  // Microsoft Copilot (copilot-key.cjs, a low-level hook in a hidden child). Default on.
-  Object.freeze({
-    id: "copilot-key.toggle", label: "Copilot key opens the Aither bar", group: "capture",
-    surfaces: ["palette"],
-    whySingle: "A one-time preference (owner 2026-11-16: too many tray rows); the palette and Alt+Space are its doors.",
-    type: "checkbox", checked: (ctx = {}) => ctx.copilotKey !== false,
-  }),
-  // ONE sheet of every live key (owner 2026-11-07: "every ink, pin and gif action
-  // ... with a default key"): what is bound, what fell back, what another app holds.
-  Object.freeze({
-    id: "shortcuts.open", label: "Keyboard shortcuts…", group: "capture",
-    accel: "Ctrl+Alt+/", accelFallback: "Ctrl+Alt+Shift+/",
     surfaces: ["tray", "palette"],
   }),
   Object.freeze({
@@ -1707,7 +1120,6 @@ function labelOf(command, ctx, { nested = false } = {}) {
   const text = typeof pick === "function" ? pick(ctx || {}) : pick;
   const dead = (ctx && ctx.deadAccels) || [];
   // The key main actually holds: a fallback that went live when the first was taken.
-  if (command.hiddenAccel) return text;
   const live = ctx && ctx.liveAccels && typeof ctx.liveAccels[command.id] === "string" ? ctx.liveAccels[command.id] : null;
   if (live) return `${text}  (${live})`;
   return command.accel && !dead.includes(command.accel) ? `${text}  (${command.accel})` : text;
@@ -1720,7 +1132,7 @@ function labelOf(command, ctx, { nested = false } = {}) {
  */
 function accelFor(id, ctx = {}) {
   const command = COMMANDS.find((c) => c.id === id);
-  if (!command || !command.accel || command.hiddenAccel) return null;
+  if (!command || !command.accel) return null;
   const live = ctx && ctx.liveAccels && typeof ctx.liveAccels[id] === "string" ? ctx.liveAccels[id] : null;
   if (live) return live;
   const dead = (ctx && ctx.deadAccels) || [];
@@ -1730,57 +1142,6 @@ function accelFor(id, ctx = {}) {
 /** "Ctrl+Shift+D" -> Electron's "CommandOrControl+Shift+D". */
 function electronAccel(accel) {
   return String(accel || "").replace(/^Ctrl\+/, "CommandOrControl+");
-}
-
-/**
- * Every key the desk binds, from the registry (accel + accelFallback) plus the keys
- * registered OUTSIDE it (`extra`: [{accel, id}], e.g. the launcher's LAUNCHER_ACCELS),
- * and the conflicts: the same chord bound to two DIFFERENT commands. Chords compare
- * case-insensitively. shortcuts.test.cjs fails on any conflict.
- */
-function bindingConflicts(extra = [], commands = COMMANDS) {
-  const owners = new Map();
-  const add = (accel, id, role) => {
-    if (!accel) return;
-    const key = String(accel).toLowerCase().replace(/\s+/g, "");
-    if (!owners.has(key)) owners.set(key, []);
-    owners.get(key).push({ id, accel, role });
-  };
-  for (const c of commands) {
-    add(c.accel, c.id, "default");
-    add(c.accelFallback, c.id, "fallback");
-  }
-  for (const e of Array.isArray(extra) ? extra : []) add(e.accel, e.id, "extra");
-  const conflicts = [];
-  for (const [, list] of owners) {
-    const ids = [...new Set(list.map((o) => o.id))];
-    if (ids.length > 1) conflicts.push({ accel: list[0].accel, ids });
-  }
-  return conflicts;
-}
-
-/**
- * The Shortcuts sheet: one row per bound command, in registry order, with what is
- * LIVE right now (ctx.liveAccels / ctx.deadAccels from main's applyHotkeys).
- */
-function shortcutSheet(ctx = {}) {
-  const dead = new Set(Array.isArray(ctx.deadAccels) ? ctx.deadAccels : []);
-  const live = ctx.liveAccels && typeof ctx.liveAccels === "object" ? ctx.liveAccels : {};
-  return COMMANDS.filter((c) => c.accel).map((c) => {
-    const now = live[c.id] || (dead.has(c.accel) ? null : c.accel);
-    return {
-      id: c.id, label: labelOf(c, ctx), accel: c.accel, fallback: c.accelFallback || null, live: now,
-      state: now === c.accel ? "bound" : now ? "fallback" : "held by another app",
-    };
-  });
-}
-
-/** The sheet as plain text lines ("Ctrl+Alt+D   Draw on screen"). */
-function shortcutSheetText(ctx = {}) {
-  return shortcutSheet(ctx).map((r) => {
-    const key = r.live || `${r.accel} (taken)`;
-    return `${key.padEnd(20)} ${r.label}${r.state === "fallback" ? `  [fallback; ${r.accel} is taken]` : ""}`;
-  }).join("\n");
 }
 
 /** Every command that owns a global shortcut, for main to register from. */
@@ -1956,22 +1317,6 @@ const OSAPP_BROWSER_TAB = Object.freeze({
   passkeys: "https://app.aitherium.com/settings/passkeys",
 });
 
-// AITHEROS APPS vs HOST OS APPS (owner 2026-11-13). Alt+Space lists the rows that OPEN
-// an Aither app in their own "AitherOS apps" group, apart from the host's Start-menu
-// apps (universal-search.cjs aitherAppsProvider). Every `osApp` row is one; these are
-// the desk's OWN app windows. A toggle, a setting or a one-shot verb is a desk action
-// and does not belong here. command-registry.test.cjs asserts each id is a palette row.
-const AITHER_APP_IDS = Object.freeze(new Set([
-  "console.open", "inbox.open", "missioncontrol.open", "browser.open", "files.open", "strata.open",
-  "notebooks.open", "terminal.open", "disk.open", "system.open", "localai.open", "darkmatter.open",
-  "hearth.open", "canvas.open", "fleet.open", "boards.open",
-]));
-
-/** Does this command open an AitherOS app (an `osApp`, or one of the desk's app windows)? */
-function isAitherApp(command) {
-  return Boolean(command && (command.osApp || AITHER_APP_IDS.has(command.id)));
-}
-
 /** The browser-tab URL for an osApp, or null when it opens the desktop shell. */
 function osAppTabUrl(osApp) {
   return OSAPP_BROWSER_TAB[String(osApp || "")] || null;
@@ -1979,6 +1324,5 @@ function osAppTabUrl(osApp) {
 
 module.exports = {
   SURFACES, GROUPS, LAYOUT, COMMANDS, commandsFor, groupFor, paletteRows, rowsFor, byId, labelOf,
-  buildMenu, menuText, conformance, shortcuts, electronAccel, accelFor, appliesTo, osAppTabUrl, AITHER_APP_IDS, isAitherApp,
-  bindingConflicts, shortcutSheet, shortcutSheetText,
+  buildMenu, menuText, conformance, shortcuts, electronAccel, accelFor, appliesTo, osAppTabUrl,
 };

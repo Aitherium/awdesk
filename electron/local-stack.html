@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' file:; script-src 'unsafe-inline';" />
-<title>Install the full local stack</title>
+<title>Set up this computer</title>
 <link rel="stylesheet" href="aither-tokens.css" />
 <!-- "Install the full local stack": awdk, awnode, awsh, household, mesh and settings on this
      computer with one click (owner, 2026-10-04: nothing typed on the Steam Deck). The work is
@@ -32,20 +32,21 @@
 </head>
 <body>
 <main>
-  <h1>Install the full local stack</h1>
-  <p>Puts the Aither tools on this computer for you, with nothing to type. It uses your Aither sign-in (or your browser, if Aither is not signed in yet), then installs everything into your home folder: no admin password, safe on a Steam Deck.</p>
+  <h1>Set up this computer</h1>
+  <p>Gets this computer ready to use Aither, with nothing to type. It uses your Aither sign-in (or your browser, if Aither is not signed in yet), then puts everything in your own folder: no administrator password needed.</p>
   <ul id="steps"></ul>
   <div class="row">
-    <button id="go" class="primary">Install the full local stack</button>
+    <button id="go" class="primary">Set up this computer</button>
     <button id="close">Close</button>
   </div>
   <div id="status" role="status"></div>
   <pre id="log" aria-label="Installer output"></pre>
 </main>
 <script>
-  const LABELS = { signin: "Sign in", python: "Python", installer: "Python tools (uv)", node: "Node.js",
-    awdk: "awdk + adk", awnode: "awnode", awsh: "aither terminal", household: "Household devices",
-    mesh: "Your mesh", settings: "Your settings", mcp: "MCP for IDEs", done: "Finished" };
+  const LABELS = { signin: "Sign in", python: "Basic tools", installer: "Tool installer", node: "Web tools",
+    awdk: "Your always-on helper", awnode: "Link to this computer", awsh: "Aither command window", awconnect: "Browser extension",
+    awdesk: "Aither Desktop", household: "Your other devices", mesh: "Private network", settings: "Your settings",
+    mcp: "Claude Code, connected to your workspace", verify: "Final check", done: "Finished" };
   const ICON = { ok: "✓", fail: "✕", skip: "–", running: "…" };
   const $ = (id) => document.getElementById(id);
   let steps = {};
@@ -70,11 +71,11 @@
   }
   function setState(st) {
     $("go").disabled = st === "running";
-    $("go").textContent = st === "failed" ? "Try again" : st === "done" ? "Run it again" : "Install the full local stack";
+    $("go").textContent = st === "failed" ? "Try again" : st === "done" ? "Run it again" : "Set up this computer";
     $("status").textContent = st === "running" ? "Installing. You can leave this window open."
       : st === "done" ? ((steps.mesh || {}).status === "ok"
-        ? "Done. Everything is installed and this computer is on your mesh."
-        : "Installed. Joining your mesh did not finish: the output below says why, and Run it again retries.")
+        ? "Done. This computer is ready."
+        : "Ready, except the private network between your devices, which did not finish. Everything else works. The notes below say why; Run it again tries once more.")
       : st === "failed" ? "Stopped. The output below says where." : "";
     $("status").className = st === "done" ? "ok" : st === "failed" ? "fail" : "";
   }

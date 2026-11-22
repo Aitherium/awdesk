@@ -59,19 +59,6 @@ type AvatarBridgeEvent =
       from?: string;
     }
   | { type: 'reset-avatar-layout'; slotId: string }
-  // The swarm API (electron/agent-swarm-host.cjs). `viseme`: a body's five VRM mouth shapes,
-  // driven by whoever owns real-time lip sync; it holds for ttlMs then lapses back to the
-  // amplitude lip sync. null weights release at once. `slot-visible`: show or hide ONE body
-  // without removing it (the resident stays mounted while the swarm is up but Aither is a fairy).
-  | { type: 'viseme'; slotId: string; weights: Partial<Record<'aa' | 'ee' | 'ih' | 'oh' | 'ou', number>> | null; ttlMs?: number }
-  | { type: 'slot-visible'; slotId: string; visible: boolean }
-  // A body's name tag and outline colour (the agent's own): shown on hover and selection.
-  | { type: 'slot-look'; slotId: string; look: { label: string; color: string } | null }
-  // Which bodies share a stage (electron/agent-swarm-host.cjs): the renderer draws a handle over each group.
-  // The entity verbs (electron/agent-swarm-host.cjs): a body walks to a screen rect (window client px) / turns toward a point.
-  | { type: 'walk-to'; slotId: string; rect: { x: number; y: number; width: number; height: number } }
-  | { type: 'look-at'; slotId: string; point: { x: number; y: number } | null }
-  | { type: 'stage-groups'; groups: Array<{ id: string; slots: string[]; members: string[]; locked: boolean }> }
   // Plan 40 slice G: main names an ARRANGEMENT and the renderer places every
   // live body (src/stage/arrangements.ts holds the geometry, beside the bounds).
   // `slotId` is the subject for `focus`; `pair` names the two for `pair`.
@@ -116,9 +103,6 @@ type AvatarBridgeEvent =
   // `volume` is cast.json's master x actor fader, already multiplied (0..2).
   // Optional: an absent value plays at full volume (see speech-gain.ts).
   | { type: 'speak'; audioBase64: string; slotId?: string; volume?: number }
-  // A P0 preempted the line this slot was playing (speech-arbiter.cjs `preempt` ->
-  // main's onCut): close that slot's AudioContext so it cannot talk under the alarm.
-  | { type: 'speak-stop'; slotId?: string }
   // The words over the speaker's head. Arrives WITH a speak event when there is
   // audio, and ALONE when there is none (muted, or the voice service is down):
   // `muted` means "there is no clip to time this against".
@@ -164,13 +148,6 @@ interface Window {
     minimize(): void;
     close(): void;
     avatarContextMenu(slotId: string): void;
-    /** A body was dropped on another: they join one stage (main -> agent-swarm-host stageOp join). */
-    stageDrop?(slotId: string, targetSlotId: string): void;
-    bodyBroken?(slotId: string): void;
-    /** A stage was moved by its handle: where each member stands now ({slotId: x}). */
-    stageSync?(positions: Record<string, number>): void;
-    /** The picked body under the pointer / the selected one (main exposes it on GET /swarm). */
-    reportPick?(state: { hover: string | null; selected: string | null }): void;
     subscribe(listener: (event: AvatarBridgeEvent) => void): () => void;
     /** Mic clip -> gateway transcribe_audio -> text (or an "ERROR: …" string). */
     voiceTranscribe?(audioB64: string, format: string): Promise<string>;

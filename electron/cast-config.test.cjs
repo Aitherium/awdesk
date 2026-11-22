@@ -157,11 +157,52 @@ test("resolveActor: speed falls through actors -> voice.defaultSpeed -> legacy e
   assert.equal(bare.speedFrom, "builtin");
 });
 
-// ─── no automatic body (owner 2026-11-17) ─────────────────────────────────────
+// ─── hash stability (the plan's stated "risk"; see failureProof) ────────────
 
-test("cast-config exports no automatic body pick", () => {
-  assert.equal(cast.stableCharacter, undefined);
-  assert.equal(cast.characterOrder, undefined);
+test("stableCharacter: a seed's pick survives a name being ADDED to the roster", () => {
+  const roster = ["alpha", "bravo", "charlie", "delta"];
+  const seed = "aitheros-fresh:0";
+  const before = cast.stableCharacter(seed, roster, { taken: [], resident: null });
+  assert.ok(before, "expected a pick from a non-empty roster");
+  const grown = cast.stableCharacter(seed, [...roster, "echo-new-arrival"], { taken: [], resident: null });
+  assert.equal(grown, before, "adding a name to the roster must not move an existing agent's body");
+});
+
+test("stableCharacter: a seed's pick survives an UNRELATED body being taken", () => {
+  const roster = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+  // Find two seeds whose unconstrained picks differ, so "Y's body is taken"
+  // is a real, non-degenerate precondition rather than an accidental no-op.
+  let seedX;
+  let nameX;
+  let nameY;
+  for (let i = 0; i < 50; i += 1) {
+    const a = `agent-${i}:0`;
+    const b = `agent-${i + 1}:0`;
+    const na = cast.stableCharacter(a, roster, { taken: [], resident: null });
+    const nb = cast.stableCharacter(b, roster, { taken: [], resident: null });
+    if (na && nb && na !== nb) {
+      seedX = a;
+      nameX = na;
+      nameY = nb;
+      break;
+    }
+  }
+  assert.ok(seedX, "could not find two distinct picks in 50 tries — roster too small");
+
+  const nameXAfterYArrives = cast.stableCharacter(seedX, roster, { taken: [nameY], resident: null });
+  assert.equal(nameXAfterYArrives, nameX, "an unrelated arrival taking a body must not reindex X");
+});
+
+test("stableCharacter: a taken or resident name is skipped, in the seed's own rank order", () => {
+  const roster = ["alpha", "bravo", "charlie"];
+  const seed = "agent-z:0";
+  const free = cast.stableCharacter(seed, roster, { taken: [], resident: null });
+  assert.ok(roster.includes(free));
+  const blocked = cast.stableCharacter(seed, roster, { taken: [free], resident: null });
+  assert.notEqual(blocked, free);
+  assert.ok(blocked === null || roster.includes(blocked));
+  const allBlocked = cast.stableCharacter(seed, roster, { taken: roster, resident: null });
+  assert.equal(allBlocked, null, "nothing free to wear must resolve to null, never throw");
 });
 
 // ─── malformed file handling ─────────────────────────────────────────────────
@@ -258,14 +299,16 @@ test("validateCast: an unknown key is REPORTED, never dropped in silence", () =>
   assert.match(hit.reason, /unknown key/);
 });
 
-test("resolveActor: a character not in the safe roster is reported and the actor has NO body", () => {
-  const snapshot = { version: 1, authors: { y: { character: "atlas-bot" } } };
+test("resolveActor: a character not in the safe roster is reported and falls through to the hash", () => {
+  const snapshot = { version: 1, defaults: { character: "atlas-bot" } };
   const roster = ["nova-vrm", "echo-vrm"];
-  const r = cast.resolveActor(snapshot, { author: "y", roster, taken: [], resident: null });
-  assert.equal(r.character, null);
-  assert.equal(r.characterFrom, "none");
-  const hit = r.problems.find((p) => p.path === "authors.y.character");
-  assert.ok(hit, "expected a problem naming authors.y.character");
+  const r = cast.resolveActor(snapshot, { kind: "claude_code", id: "y", roster, taken: [], resident: null });
+
+  assert.notEqual(r.character, "atlas-bot");
+  assert.equal(r.characterFrom, "hash");
+  assert.ok(roster.includes(r.character));
+  const hit = r.problems.find((p) => p.path === "defaults.character");
+  assert.ok(hit, "expected a problem naming defaults.character");
   assert.match(hit.reason, /safe roster/);
 });
 
@@ -310,10 +353,7 @@ test("migrateLegacy: folds .agent-avatars.json and the legacy AGENT_VOICES in on
 
   const { snapshot } = cast.load({ file });
   assert.equal(snapshot.authors.atlas.character, "owner-chosen-vrm", "an owner-authored value must survive migration untouched");
-  assert.equal(snapshot.authors.atlas.voice, "kokoro:am_michael",
-    "a migrated agent gets the CANONICAL platform voice, not the legacy OpenAI-era name");
-  assert.equal(snapshot.authors.hydra.voice, cast.LEGACY_AGENT_VOICES.hydra,
-    "an agent the canonical map does not name still gets its legacy voice");
+  assert.equal(snapshot.authors.atlas.voice, cast.LEGACY_AGENT_VOICES.atlas, "voice was not pre-authored, so migration fills it");
   assert.equal(snapshot.authors["weird name"].character, "weird-vrm");
   assert.ok(typeof snapshot.migratedLegacyAt === "string" && snapshot.migratedLegacyAt);
 
@@ -674,20 +714,23 @@ const ROSTER = Object.freeze({
   hydra: { voice: "en-US-AvaNeural", character: "vrm-1-0" },
 });
 
-test("resolveActor: the roster tier gives an unauthored agent its declared VOICE, never a body", () => {
+test("resolveActor: the roster tier gives an unauthored agent its declared voice and character", () => {
   const r = cast.resolveActor({}, { author: "atlas", roster: ["charlie", "Nova"], agentRoster: ROSTER });
   assert.equal(r.voice, "en-US-MichelleNeural");
   assert.equal(r.voiceFrom, "roster.atlas.voice");
-  assert.equal(r.character, null, "a platform-declared body is a proposal, not an assignment");
-  assert.equal(r.characterFrom, "none");
+  assert.equal(r.character, "charlie");
+  assert.equal(r.characterFrom, "roster.atlas.character");
 });
 
-test("resolveActor: cast.json authors.<agent> BEATS the roster, per field; only the owner's row names a body", () => {
+test("resolveActor: cast.json authors.<agent> BEATS the roster, per field (owner override wins)", () => {
   const snapshot = { authors: { atlas: { voice: "en-US-AnaNeural" } } };
   const r = cast.resolveActor(snapshot, { author: "atlas", roster: ["charlie"], agentRoster: ROSTER });
   assert.equal(r.voice, "en-US-AnaNeural");
   assert.equal(r.voiceFrom, "authors.atlas.voice");
-  assert.equal(r.character, null);
+  // the owner said nothing about atlas's body, so the roster still answers it
+  assert.equal(r.character, "charlie");
+  assert.equal(r.characterFrom, "roster.atlas.character");
+  // and a seat record beats the roster too
   const seated = cast.resolveActor(
     { authors: { atlas: { seats: [{ character: "Nova" }] } } },
     { author: "atlas", seat: 0, roster: ["charlie", "Nova"], agentRoster: ROSTER },
@@ -696,9 +739,9 @@ test("resolveActor: cast.json authors.<agent> BEATS the roster, per field; only 
   assert.equal(seated.characterFrom, "authors.atlas.seats[0].character");
 });
 
-test("resolveActor: an actors[...] record beats the roster; defaults.character never dresses anyone", () => {
+test("resolveActor: an actors[...] record beats the roster; the roster beats defaults and voice.defaultVoice", () => {
   const snapshot = {
-    actors: { "agent:atlas": { voice: "onyx", character: "charlie" } },
+    actors: { "agent:atlas": { voice: "onyx" } },
     defaults: { voice: "alloy", character: "Nova" },
     voice: { defaultVoice: "echo" },
   };
@@ -706,21 +749,18 @@ test("resolveActor: an actors[...] record beats the roster; defaults.character n
     author: "atlas", kind: "agent", id: "atlas", roster: ["charlie", "Nova"], agentRoster: ROSTER,
   });
   assert.equal(byKey.voice, "onyx");
-  assert.equal(byKey.character, "charlie");
   const byRoster = cast.resolveActor(snapshot, { author: "atlas", roster: ["charlie", "Nova"], agentRoster: ROSTER });
   assert.equal(byRoster.voice, "en-US-MichelleNeural");
-  assert.equal(byRoster.character, null);
+  assert.equal(byRoster.character, "charlie");
   const other = cast.resolveActor(snapshot, { author: "saga", roster: ["charlie", "Nova"], agentRoster: ROSTER });
   assert.equal(other.voiceFrom, "defaults.voice");
-  assert.equal(other.character, null);
-  assert.equal(other.characterFrom, "none");
+  assert.equal(other.characterFrom, "defaults.character");
 });
 
-test("resolveActor: no agentRoster in ctx = no roster tier (the voice hash still answers; no body)", () => {
+test("resolveActor: no agentRoster in ctx = no roster tier (the hash still answers)", () => {
   const r = cast.resolveActor({}, { author: "atlas", roster: ["charlie", "Nova"] });
   assert.equal(r.voiceFrom, "hash");
-  assert.equal(r.character, null);
-  assert.equal(r.characterFrom, "none");
+  assert.equal(r.characterFrom, "hash");
 });
 
 test("resolveActor: the roster speaks ONLY to voice/character -- never presence, speak or volume", () => {
@@ -732,6 +772,13 @@ test("resolveActor: the roster speaks ONLY to voice/character -- never presence,
   assert.equal(r.presence, "normal");
   assert.equal(r.speak, true);
   assert.equal(r.voiced, true);
+});
+
+test("resolveActor: a roster character missing from the SAFE roster falls through to the hash", () => {
+  const r = cast.resolveActor({}, { author: "atlas", roster: ["Nova"], agentRoster: ROSTER });
+  assert.equal(r.character, "Nova");
+  assert.equal(r.characterFrom, "hash");
+  assert.equal(r.voiceFrom, "roster.atlas.voice");
 });
 
 test("validateRosterPresence: keeps voice/character only, drops what the file would drop, normalises keys", () => {
@@ -763,19 +810,15 @@ test("loadRosterPresence: fail-soft on a missing or malformed mirror; re-reads a
   assert.deepEqual(cast.loadRosterPresence({ file }), ROSTER);
 });
 
-// 2026-11-15 (owner: "a proper avatar for every one of our agents"): the Order leads wear their
-// avatar-factory builds (media-forge specs/<agent>.json); the rest keep the 2026-10-04 cast.
 test("the committed roster mirror declares the owner's cast for the crew agents", () => {
   const presence = cast.loadRosterPresence({ file: path.join(__dirname, "agent-roster.generated.json") });
-  // 2026-11-16: Aither's own default is the aither-v2 build (identity desk_presence), not the
-  // 2026-10-04 mermaid; the male build is a choice on the desk (aither-body.cjs), not a default.
+  // 2026-11-16: every agent with an avatar-factory build wears it (AitherOS/config/agent-avatars.json).
   assert.deepEqual(presence.aither, { voice: "en-US-AnaNeural", character: "aither-v2" });
   assert.deepEqual(presence.atlas, { voice: "en-US-MichelleNeural", character: "atlas" });
   assert.deepEqual(presence.demiurge, { voice: "en-US-EmmaNeural", character: "demiurge" });
   assert.deepEqual(presence.lyra, { voice: "en-US-JennyNeural", character: "lyra" });
-  for (const agent of ["themis", "saga", "vera"]) assert.deepEqual(presence[agent], { character: agent });
+  for (const agent of ["themis", "saga", "vera", "hera"]) assert.deepEqual(presence[agent], { character: agent });
   assert.deepEqual(presence.iris, { voice: "en-US-AriaNeural", character: "iris" });
-  assert.deepEqual(presence.hera, { character: "hera" });
   assert.deepEqual(presence.hydra, { voice: "en-US-AvaNeural", character: "vrm-1-0" });
   assert.deepEqual(presence.athena, { voice: "en-US-AriaNeural", character: "siren-head" });
 });
@@ -798,19 +841,4 @@ test("resolveActor: the resident's `avatar` resolves under service:awdesk; defau
   assert.equal(problems.length, 1);
   assert.match(problems[0].reason, /vrm \| vam/);
   assert.equal(cast.resolveActor(config, ctx).avatar, "vrm");
-});
-
-test("owner P0 2026-11-17: a session actor with no row gets NO body (no pool, no default); the owner's row stays", () => {
-  const cast = require("./cast-config.cjs");
-  const roster = ["kato-straight-title-robot-anime", "aiko-droid-base-model", "charlie-5e48d775", "gold-kitsune"];
-  const snapshot = {
-    defaults: { character: "gold-kitsune", voice: "en-US-JennyNeural" },
-    authors: { gobbonet: { character: "aiko-droid-base-model" } },
-  };
-  const session = cast.resolveActor(snapshot, { author: "room-custom-name-server-butto-bf1f", kind: "claude_code", id: "bf1f", roster, taken: [] });
-  assert.equal(session.character, null, "a session wears nothing it was not given");
-  assert.equal(session.characterFrom, "none");
-  assert.equal(session.voice, "en-US-JennyNeural", "its voice is still the owner's default voice");
-  const owned = cast.resolveActor(snapshot, { author: "gobbonet", roster, taken: [] });
-  assert.equal(owned.character, "aiko-droid-base-model", "an agent's own row is the owner's choice and is never rewritten");
 });

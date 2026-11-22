@@ -129,37 +129,3 @@ test("sync still follows a slot that really moved", () => {
   dock.sync();
   assert.deepEqual(avatar.bounds, { x: 20, y: 70, width: 248, height: 360 });
 });
-
-test("docked, the caption keeps clear of the body: the renderer reads the same flag main injects", () => {
-  // Owner screenshot 2026-11-16: in the rail slot a long caption wrapped down over the whole
-  // body and ran off the slot's edge. DOCKED_CSS now asks the renderer to keep the caption to
-  // the room above the head (SpeechBubbleView reads --bubble-keep-clear); a renamed property on
-  // either side would silently bring the old caption back, so both halves are pinned here.
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const { DOCKED_CSS } = require("./avatar-dock.cjs");
-  assert.match(DOCKED_CSS, /\.speech-bubble \{[^}]*--bubble-keep-clear: 1/);
-  assert.doesNotMatch(DOCKED_CSS, /max-height: 34vh/, "the old cap cut captions mid-line and hid the tail");
-  const view = fs.readFileSync(path.join(__dirname, "..", "src", "components", "SpeechBubbleView.tsx"), "utf8");
-  assert.match(view, /getPropertyValue\('--bubble-keep-clear'\)/);
-  const css = fs.readFileSync(path.join(__dirname, "..", "src", "styles.css"), "utf8");
-  assert.match(css, /max-width: min\(260px, calc\(100vw - 16px\)\)/, "a caption is never wider than its window");
-});
-
-test("the gestures help fits its window or scrolls, and the beads keep their edge while it is open", () => {
-  // Owner screenshot 2026-11-16: the help ran off under the Inbox, cut mid-word. The bead
-  // column (beads + help) is capped to the window; the help is the part that gives way and
-  // scrolls. Beads.tsx closes it on Esc / a press elsewhere / blur (src/components/Beads.test.tsx).
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const css = fs.readFileSync(path.join(__dirname, "..", "src", "styles.css"), "utf8").replace(/\r\n/g, "\n");
-  const rule = (sel) => {
-    const at = css.indexOf(`\n${sel} {`);
-    assert.ok(at >= 0, `${sel} rule missing`);
-    return css.slice(at, css.indexOf("}", at));
-  };
-  assert.match(rule(".beads"), /max-height: calc\(100vh - 24px\)/);
-  assert.match(rule(".beads"), /align-items: flex-end/);
-  assert.match(rule(".bead-hint"), /overflow-y: auto/);
-  assert.match(rule(".bead-hint"), /min-height: 0/);
-});

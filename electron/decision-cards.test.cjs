@@ -7,7 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { signature, listOpen, actionableCount, watch, answerCard, cancelCard,
-  steerCard, startHeartbeat, heartbeatBody,
+  steerCard, startHeartbeat,
 } = require("./decision-cards.cjs");
 const cards = require("./decision-cards.cjs");
 
@@ -37,7 +37,7 @@ test("listOpen carries the card's ORIGIN (tab/cwd/agent) so a toast can name it"
   assert.equal(bare.tab, "");
 });
 
-test("listOpen returns open cards oldest-first and skips closed/broken ones", () => {
+test("listOpen returns open cards NEWEST-first (surface order) and skips closed/broken ones", () => {
   const dir = tmpStore();
   writeCard(dir, "d-old", { created_at: 100 });
   writeCard(dir, "d-new", { created_at: 200 });
@@ -46,7 +46,7 @@ test("listOpen returns open cards oldest-first and skips closed/broken ones", ()
   fs.writeFileSync(path.join(dir, "channels.json"), "{}"); // not a card file
 
   const cards = listOpen(dir);
-  assert.deepEqual(cards.map((c) => c.id), ["d-old", "d-new"]);
+  assert.deepEqual(cards.map((c) => c.id), ["d-new", "d-old"]);
 });
 
 test("signature moves on create, write and delete — and never on a plain re-read", () => {
@@ -299,28 +299,6 @@ test("startHeartbeat writes a fresh .desk-alive and removes it on stop", () => {
   stop();
   assert.equal(beatFn, null, "stop clears the interval");
   assert.equal(fs.existsSync(beatPath), false, "quit removes the heartbeat — awask back on its own window");
-});
-
-test("the heartbeat carries the fairy's claim only while claim() says so, re-judged every beat", () => {
-  const dir = tmpStore();
-  let beatFn = null;
-  let owns = true;
-  const stop = startHeartbeat({
-    dir,
-    claim: () => (owns ? { attention: "fairy" } : null),
-    setIntervalFn: (fn) => { beatFn = fn; return { unref() {} }; },
-    clearIntervalFn: () => {},
-  });
-  const read = () => JSON.parse(fs.readFileSync(path.join(dir, ".desk-alive"), "utf8"));
-  assert.equal(read().attention, "fairy", "the fairy is up: awask leaves its Tk window down");
-  owns = false;
-  beatFn();
-  assert.equal(read().attention, undefined, "the fairy hid: the next beat drops the claim, the window comes back");
-  stop();
-  // A throwing or junk claim is no claim (fail toward the window).
-  assert.equal(heartbeatBody(() => { throw new Error("x"); }).attention, undefined);
-  assert.equal(heartbeatBody(() => ({ attention: "<script>" })).attention, undefined);
-  assert.equal(heartbeatBody(null).attention, undefined);
 });
 
 test("the heartbeat filename is ONE contract across the two languages", () => {
@@ -595,16 +573,11 @@ test("off-PC: the watcher reads decisions_list, and answer/cancel go through the
     assert.deepEqual(gw.calls.find((c) => c[0] === "decisions_answer"),
       ["decisions_answer", { decision_id: "d-r1", choice: "yes", via: "desk", note: "fine" }]);
 
-    // decisions_answer is UNSIGNED: an approve on a destructive card goes to the
-    // signed /approve page instead (and sends nothing over the gateway), while a
-    // decline needs no proof and goes through.
+    // decisions_answer is UNSIGNED: an approve on a destructive card is refused,
+    // a decline goes through.
     const before = gw.calls.length;
-    const opened = [];
-    cards.setSignedAnswerOpener((u) => opened.push(u));
-    assert.equal(answerCard("d-s1", "yes"), true);
+    assert.equal(answerCard("d-s1", "yes"), false);
     assert.equal(gw.calls.length, before, "nothing was sent for the signed approve");
-    assert.equal(opened.length, 1, "the signed approve opened the /approve deep link");
-    assert.match(opened[0], /\/approve\?card=d-s1&choice=yes$/);
     assert.equal(answerCard("d-s1", "reject"), true);
 
     assert.equal(steerCard("d-r1", "do this instead"), false, "the gateway has no steer verb");
@@ -689,12 +662,6 @@ test("rankCards: the JS constants ARE the fixture's rules", (t) => {
   assert.deepEqual(cards.RANK_RULES.rank_first_kinds, fixture.rank_first_kinds);
   assert.deepEqual({ ...cards.RANK_RULES.urgency_rank }, fixture.urgency_rank);
   assert.equal(cards.RANK_RULES.stale_after_seconds, fixture.stale_after_seconds);
-  // Optional in an older fixture (a tree that predates the self-answering term);
-  // when the fixture carries it, the JS constants and the Python rank must agree.
-  if (fixture.noop_labels) assert.deepEqual([...cards.RANK_RULES.noop_labels], fixture.noop_labels);
-  if (fixture.auto_default_rank !== undefined) {
-    assert.equal(cards.RANK_RULES.auto_default_rank, fixture.auto_default_rank);
-  }
 });
 
 test("rankCards: every case the Python rank runs (the d-nwh4 credential leads)", (t) => {
@@ -727,51 +694,7 @@ test("rankCards: a normal credential outranks a high PR review; info goes to FYI
   assert.equal(split.decisions.length, actionableCount(shaped), "badge parity");
 });
 
-// ── cards that answer themselves yield (owner, 2026-11-10) ───────────────────
-// A 43 h revenue-governor card that picks "Keep refusing" at its deadline, and
-// awrise "wake X failed 5x" cards that pick "Keep it scheduled" in 19 h, floated
-// over 99+ and hid the permission grant a live session was stopped on.
-
-test("rankCards: a card with an auto-default ranks below every card needing a human", () => {
-  const shaped = [
-    // The noise: CRITICAL, oldest, and the store will answer it itself.
-    {
-      id: "d-revenue", kind: "decision", urgency: "critical", created_at: 1,
-      deadline: 9_999_999_999, default_key: "refuse",
-      options: [{ key: "refuse", label: "Keep refusing" }, { key: "launch", label: "Launch" }],
-    },
-    // The ask nobody else can answer, normal urgency and brand new.
-    {
-      id: "d-grant", kind: "decision", urgency: "normal", created_at: 500,
-      options: [{ key: "allow", label: "Allow" }, { key: "deny", label: "Deny" }],
-    },
-  ].map((raw) => cards.cardFromRaw({ status: "open", ...raw }));
-  assert.deepEqual(cards.rankCards(shaped, 600).map((c) => c.id), ["d-grant", "d-revenue"]);
-  assert.equal(cards.hasAutoDefault(shaped[0]), true);
-  assert.equal(cards.isSelfAnswering(shaped[0]), true, "auto-default OR no-op suggestion");
-  assert.equal(cards.isSelfAnswering(shaped[1]), false);
-});
-
-test("rankCards: a no-op suggestion ('Skip', 'Keep it scheduled') yields; kind still leads", () => {
-  const shaped = [
-    { id: "d-share", kind: "decision", urgency: "high", created_at: 1, default_key: "skip",
-      options: [{ key: "share", label: "Share" }, { key: "skip", label: "Skip" }] },
-    { id: "d-wake", kind: "decision", urgency: "high", created_at: 2, deadline: 9_999_999_999, default_key: "keep",
-      options: [{ key: "keep", label: "Keep it scheduled (recommended)" }, { key: "fix", label: "Fix it" }] },
-    { id: "d-ask", kind: "decision", urgency: "low", created_at: 3,
-      options: [{ key: "a", label: "Approve" }, { key: "b", label: "Deny" }] },
-    // A BLOCKED card with a default still leads: a session is stopped on it.
-    { id: "d-stopped", kind: "blocked", urgency: "low", created_at: 4, default_key: "skip",
-      options: [{ key: "go", label: "Go" }, { key: "skip", label: "Skip" }] },
-  ].map((raw) => cards.cardFromRaw({ status: "open", ...raw }));
-  assert.deepEqual(cards.rankCards(shaped, 10).map((c) => c.id).slice(0, 2), ["d-stopped", "d-ask"]);
-  assert.equal(cards.isNoopSuggestion(shaped[0]), true);
-  assert.equal(cards.isNoopSuggestion(shaped[1]), true, "a suffix does not defeat the match");
-  assert.equal(cards.isNoopSuggestion(shaped[2]), false);
-});
-
-
-test("listOpen and scanAsync both return rank order: the d-nwh4 shape leads a 41-card queue", async () => {
+test("listOpen and scanAsync both return surface order: the d-nwh4 credential still leads", async () => {
   const dir = tmpStore();
   for (let i = 0; i < 40; i += 1) {
     writeCard(dir, `d-pr${i}`, { created_at: 100 + i, urgency: i % 2 ? "high" : "critical", options: [{ key: "ok", label: "OK" }] });
@@ -821,7 +744,7 @@ test("bridgeQueue: the daemon's list when it answers, the local read LABELLED st
   assert.match(down.error, /daemon HTTP 0/);
 });
 
-test("fetchDaemonOpen asks for status=open with the bearer and ranks the answer", async () => {
+test("fetchDaemonOpen asks for status=open in SURFACE order with the bearer", async () => {
   const seen = [];
   const fetchFn = async (url, opts) => {
     seen.push([url, opts.headers.Authorization]);
@@ -835,7 +758,7 @@ test("fetchDaemonOpen asks for status=open with the bearer and ranks the answer"
   };
   const list = await cards.fetchDaemonOpen({ fetchFn, base: "http://127.0.0.1:1", token: "tok" });
   assert.deepEqual(list.map((c) => c.id), ["d-cred", "d-pr"]);
-  assert.deepEqual(seen[0], ["http://127.0.0.1:1/decisions?status=open", "Bearer tok"]);
+  assert.deepEqual(seen[0], ["http://127.0.0.1:1/decisions?status=open&order=surface", "Bearer tok"]);
   await assert.rejects(cards.fetchDaemonOpen({ fetchFn: async () => ({ status: 401 }), base: "x", token: "t" }), /401/);
 });
 
@@ -862,70 +785,6 @@ test("cardFromRaw drops an invalid subject and a missing host to empty strings",
   assert.equal(cards.subjectFromRaw(" repo:Aitherium/AitherOS "), "repo:Aitherium/AitherOS");
 });
 
-test("listSnapshot keeps the ONE ranking and numbers options from 1", () => {
-  const dir = tmpStore();
-  writeCard(dir, "d-old", { created_at: 100, options: [{ key: "ack", label: "Ack", recommended: true }, { key: "later", label: "Later" }] });
-  writeCard(dir, "d-cred", { kind: "credential", created_at: 900 });
-  const rows = cards.listSnapshot({ dir, nowSec: 1000 });
-  assert.deepEqual(rows.map((r) => r.id), ["d-cred", "d-old"], "credential first, like rank_key");
-  assert.deepEqual(rows.map((r) => r.position), [0, 1]);
-  const old = rows.find((r) => r.id === "d-old");
-  assert.deepEqual(old.options.map((o) => [o.index, o.key, o.recommended]), [[1, "ack", true], [2, "later", false]]);
-  assert.equal(old.defaultKey, "");
-  assert.equal(rows.find((r) => r.id === "d-cred").needsYou, true);
-});
-
-test("listSnapshot marks stragglers stale but never a credential card's group membership", () => {
-  const dir = tmpStore();
-  const week = 7 * 86400;
-  writeCard(dir, "d-stale", { created_at: 100 });
-  writeCard(dir, "d-cred", { kind: "credential", created_at: 100 });
-  const rows = cards.listSnapshot({ dir, nowSec: 100 + week + 1 });
-  assert.equal(rows.find((r) => r.id === "d-stale").stale, true);
-  assert.equal(rows.find((r) => r.id === "d-cred").stale, true);
-});
-
-test("listSnapshot reads an injected card list without touching the store", () => {
-  const rows = cards.listSnapshot({
-    dir: "/nonexistent-dir-should-not-be-read",
-    nowSec: 10,
-    cards: [{ id: "d-x", title: "X", status: "open", createdAt: 5, options: [] }],
-  });
-  assert.deepEqual(rows.map((r) => r.id), ["d-x"]);
-});
-
-test("answerCardIndex resolves the nth option to the card's own KEY and runs awask", () => {
-  const dir = tmpStore();
-  writeCard(dir, "d-idx", { options: [{ key: "ack", label: "Ack" }, { key: "tunnel", label: "Tunnel" }] });
-  const seen = [];
-  const spawnFn = (bin, args) => { seen.push([bin, args]); return { unref() {} }; };
-  assert.equal(cards.answerCardIndex("d-idx", 2, { dir, spawnFn }), true);
-  assert.equal(seen.length, 1);
-  assert.match(seen[0][0], /awask/i);
-  assert.deepEqual(seen[0][1], ["answer", "d-idx", "tunnel", "--via", "desk"]);
-  assert.equal(cards.answerCardIndex("d-idx", 9, { dir, spawnFn }), false, "out of range is refused");
-  assert.equal(cards.answerCardIndex("d-idx", 0, { dir, spawnFn }), false);
-});
-
-test("optionFromText answers an exact key/label, a unique prefix, and never a guess", () => {
-  const options = [{ key: "ack", label: "I am looking now" }, { key: "not_now", label: "Not now" }];
-  assert.equal(cards.optionFromText(options, "ACK").key, "ack");
-  assert.equal(cards.optionFromText(options, "not now").key, "not_now");
-  assert.equal(cards.optionFromText(options, "i am").key, "ack");
-  assert.equal(cards.optionFromText(options, "n"), null, "one letter is not an answer");
-  assert.equal(cards.optionFromText(options, "zzz"), null);
-});
-
-test("answerCardText resolves the typed option and answers through awask", () => {
-  const dir = tmpStore();
-  writeCard(dir, "d-txt", { options: [{ key: "ack", label: "I am looking now" }, { key: "later", label: "Not now" }] });
-  const seen = [];
-  const spawnFn = (bin, args) => { seen.push(args); return { unref() {} }; };
-  assert.equal(cards.answerCardText("d-txt", "not now", { dir, spawnFn }), true);
-  assert.deepEqual(seen[0], ["answer", "d-txt", "later", "--via", "desk"]);
-  assert.equal(cards.answerCardText("d-txt", "nonsense", { dir, spawnFn }), false);
-});
-
 test("waitingCount is the ONE number: decisions only, the same as the fairy's queue and the bridge's `waiting`", async () => {
   const open = [
     cards.cardFromRaw({ id: "d-a", status: "open", kind: "blocked" }),
@@ -937,4 +796,56 @@ test("waitingCount is the ONE number: decisions only, the same as the fairy's qu
   const queue = await cards.bridgeQueue({ fetchOpen: async () => open });
   assert.equal(queue.count, 3);
   assert.equal(queue.waiting, 2, "count (every open card) and waiting (what needs the owner) are different words");
+});
+
+// ── SURFACE order (owner 2026-11-20: the inbox of 58, "the newest high-urgency
+//    card is always the one surfaced"). The one-card surfaces lead with the
+//    NEWEST urgent ask; the LIST keeps its longest-waiting order.
+test("surfaceCards: the newest high-urgency card leads, and a live ask is first", () => {
+  const shaped = [
+    { id: "d-old", kind: "blocked", urgency: "high", created_at: 100, options: [] },
+    { id: "d-new", kind: "blocked", urgency: "high", created_at: 900, options: [] },
+    { id: "d-normal", kind: "decision", urgency: "normal", created_at: 950,
+      options: [{ key: "ok", label: "OK" }] },
+  ].map((raw) => cards.cardFromRaw({ status: "open", ...raw }));
+
+  assert.deepEqual(cards.surfaceCards(shaped, 1000).map((c) => c.id),
+    ["d-new", "d-old", "d-normal"]);
+  // the LIST order is unchanged and deliberately different (oldest first)
+  assert.equal(cards.rankCards(shaped, 1000)[0].id, "d-old");
+  // the one-card split leads with the same card the Now stage shows
+  assert.equal(cards.partitionCards(shaped, { nowSec: 1000 }).needsYou[0].id, "d-new");
+});
+
+test("listOpen and scanAsync return SURFACE order: a fresh ask leads, an old one does not", async () => {
+  const dir = tmpStore();
+  writeCard(dir, "d-old-high", { kind: "blocked", urgency: "high", created_at: 100, options: [] });
+  writeCard(dir, "d-new-high", { kind: "blocked", urgency: "high", created_at: 900, options: [] });
+  writeCard(dir, "d-fresh-decision", { urgency: "high", created_at: 950,
+    options: [{ key: "ok", label: "OK" }] });
+
+  assert.equal(listOpen(dir)[0].id, "d-new-high");
+  const scanned = await cards.scanAsync(dir);
+  assert.equal(scanned.cards[0].id, "d-new-high");
+  assert.equal(cards.waitingCount(scanned.cards), 3, "the badge counts every actionable ask");
+});
+
+test("fetchDaemonOpen asks for surface order and keeps the daemon's actionable-only list", async () => {
+  const seen = [];
+  const fetchFn = async (url) => {
+    seen.push(url);
+    return {
+      status: 200,
+      async json() {
+        return { decisions: [
+          { id: "d-b", status: "open", kind: "blocked", urgency: "high", created_at: 900 },
+          { id: "d-a", status: "open", kind: "blocked", urgency: "high", created_at: 100 },
+        ] };
+      },
+    };
+  };
+  const out = await cards.fetchDaemonOpen({ fetchFn, token: "t" });
+  assert.match(seen[0], /\/decisions\?status=open&order=surface$/);
+  assert.deepEqual(out.map((c) => c.id), ["d-b", "d-a"]);
+  assert.equal(cards.waitingCount(out), 2);
 });

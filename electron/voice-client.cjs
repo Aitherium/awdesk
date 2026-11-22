@@ -27,8 +27,9 @@ const _http = require("node:http");
 const _fs = require("node:fs");
 const STT_SHIM_URL = process.env.AWDESK_STT_SHIM_URL || "http://127.0.0.1:8195/voice/transcribe/base64";
 
-/** Host STT shim (perception :8084 down; desk_stt_shim.py mirrors its contract
- *  on the host and reads the HOST file directly). Resolves the transcript
+/** STT compat port :8195. Since 2026-11-16 the awnix unit aither-desk-stt-bridge
+ *  serves it (plain http in, TLS to perception-media :8084 /voice); before that it
+ *  was desk_stt_shim.py on the host. This side reads the HOST file. Resolves the transcript
  *  string, or null on any failure so the caller falls back to the gateway. */
 function transcribeHostFile(hostPath) {
   return new Promise((resolve) => {
