@@ -46,8 +46,15 @@ function deskPosture({ env = process.env, tenant = null } = {}) {
     reason = `AWDESK_POSTURE=${asked}`;
   } else {
     const host = tenant && typeof tenant.host === "string" ? tenant.host.toLowerCase() : "";
-    customer = Boolean(host) && !APEX_HOSTS.has(host);
-    reason = customer ? `workspace install (${host})` : "no workspace host";
+    // The platform owner looking INTO a customer workspace from his own box ("Open a
+    // workspace": desk-tenant's `ownerSwitch`) is still on the owner's machine. Measured
+    // 2026-11-22: the fleet box had carried garg.aitherium.com as an owner-switch since
+    // 11-12, ran the customer budget (3000 MB) and restarted itself twice in nine minutes
+    // ("it was using 3004 MB"); a third time would have quit it for ten.
+    const ownerSwitch = Boolean(tenant && tenant.ownerSwitch === true);
+    customer = Boolean(host) && !APEX_HOSTS.has(host) && !ownerSwitch;
+    reason = customer ? `workspace install (${host})`
+      : ownerSwitch && host ? `the owner's box, looking into ${host}` : "no workspace host";
   }
   return {
     customer,

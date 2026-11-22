@@ -22,6 +22,21 @@ test("a workspace (tenant) install is a customer desk; the apex and no tenant ar
   assert.equal(deskPosture({ env: {}, tenant: { host: "app.aitherium.com" } }).customer, false);
 });
 
+test("the owner looking into a customer workspace from his own box keeps the owner posture", () => {
+  // desk-tenant.json { host: "garg.aitherium.com", source: "owner-switch" } -> tenant.ownerSwitch
+  const looking = deskPosture({ env: {}, tenant: { ...GARG, ownerSwitch: true } });
+  assert.equal(looking.customer, false);
+  assert.match(looking.reason, /owner's box, looking into garg\.aitherium\.com/);
+  assert.equal(looking.priority, "above");
+  assert.equal(looking.lendByDefault, true);
+  // a real workspace install (no owner-switch) is still a customer desk, and the override still wins
+  assert.equal(deskPosture({ env: {}, tenant: { ...GARG, ownerSwitch: false } }).customer, true);
+  assert.equal(deskPosture({ env: { AWDESK_POSTURE: "customer" }, tenant: { ...GARG, ownerSwitch: true } }).customer, true);
+  // and the budget that follows: the owner's, not the 3000 MB one that restarted the fleet box
+  const { BUDGETS } = require("./resource-watchdog.cjs");
+  assert.equal((looking.customer ? BUDGETS.customer : BUDGETS.owner).totalHardMb, 12000);
+});
+
 test("AWDESK_POSTURE overrides the guess both ways", () => {
   assert.equal(deskPosture({ env: { AWDESK_POSTURE: "owner" }, tenant: GARG }).customer, false);
   assert.equal(deskPosture({ env: { AWDESK_POSTURE: "customer" }, tenant: null }).customer, true);
