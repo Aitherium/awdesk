@@ -50,6 +50,11 @@ const PROBE_SCRIPT = [
   "  [DllImport(\"user32.dll\")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);",
   "  [DllImport(\"user32.dll\")] public static extern bool IsWindowVisible(IntPtr hWnd);",
   "  [DllImport(\"user32.dll\")] public static extern bool IsIconic(IntPtr hWnd);",
+  // Alt+Space hold vs tap (owner 2026-11-23: the ring lagged the whole PC). A global
+  // shortcut reports key-DOWN only, so the launcher used to show a window to catch the
+  // keyup -- stealing focus and sampling the host on EVERY press. Reading the physical
+  // key state here lets a hold open the ring without touching the foreground app.
+  "  [DllImport(\"user32.dll\")] public static extern short GetAsyncKeyState(int vKey);",
   "  [DllImport(\"user32.dll\")] public static extern int GetWindowTextLength(IntPtr hWnd);",
   "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);",
   "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int count);",
@@ -120,6 +125,12 @@ const PROBE_SCRIPT = [
   "        $bars += @{ className = $cls; hwnd = $h.ToInt64(); visible = [AitherWin]::IsWindowVisible($h); rect = @{ x = $r.Left; y = $r.Top; width = ($r.Right - $r.Left); height = ($r.Bottom - $r.Top) } }",
   "      }",
   "      $res = @{ ok = $true; taskbars = $bars }",
+  "    } elseif ($req.op -eq 'keys') {",
+  // VK_SPACE 0x20, VK_MENU 0x12, VK_LMENU 0xA4, VK_RMENU 0xA5. The high bit is set
+  // while the key is physically down.
+  "      $sp = (([int][AitherWin]::GetAsyncKeyState(32) -band 0x8000) -ne 0)",
+  "      $al = (([int][AitherWin]::GetAsyncKeyState(18) -band 0x8000) -ne 0) -or (([int][AitherWin]::GetAsyncKeyState(164) -band 0x8000) -ne 0) -or (([int][AitherWin]::GetAsyncKeyState(165) -band 0x8000) -ne 0)",
+  "      $res = @{ ok = $true; space = $sp; alt = $al }",
   "    } elseif ($req.op -eq 'ping') {",
   "      $res = @{ ok = $true; pong = $true }",
   "    } else { $res = @{ ok = $false; error = \"unknown op $($req.op)\" } }",
@@ -369,12 +380,25 @@ function createWindowProbe({
     return answer && answer.ok === true;
   }
 
+  /**
+   * Is Alt and/or Space physically DOWN right now? {space, alt} or null when the
+   * probe cannot answer (so the caller can fall back to its old path). One cheap
+   * request; the launcher polls it while a press is pending instead of stealing the
+   * foreground to catch a keyup.
+   */
+  async function keyDown() {
+    const answer = await request({ op: "keys" });
+    if (!answer || answer.ok !== true) return null;
+    return { space: answer.space === true, alt: answer.alt === true };
+  }
+
   return {
     pointAt,
     rectOf,
     quietState,
     taskbars,
     ping,
+    keyDown,
     start,
     stop: () => drop("stopped"),
     get running() { return Boolean(child); },

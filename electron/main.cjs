@@ -290,6 +290,10 @@ const launcher = require("./launcher-window.cjs").createLauncher({
   ask: (text) => commandAction(text, { source: "launcher" }),
   spirit: null, // @ sends through the spirit.go registry row (a plain sentence = a search trip)
   quickMenu,
+  // Hold vs tap from the PHYSICAL keys (spirit-probe's resident PowerShell): a hold
+  // never shows the launcher or samples the focused app, which is what made every
+  // Alt+Space press stutter (owner 2026-11-23). Null-equivalent (probe mute) = old path.
+  keyState: () => orbWindow.keyState(),
   // Alt+Space opens on what the owner is LOOKING AT (launcher-context.cjs), sampled
   // on key-down, before the overlay takes focus.
   hostContext: () => require("./host-context.cjs").sampleHostContext(),
@@ -7452,6 +7456,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // Build the ONE Alt+Space launcher's window (and its IPC) now: a global shortcut
     // reports only key-down, so the box must already be loaded when the key lands.
     launcher.warm();
+    // The radial window too: a global hotkey must never pay a page load on the press.
+    quickMenu.warm();
+    // And the resident window probe the hold/tap check reads: warm it in the
+    // background so the first Alt+Space does not pay PowerShell's Add-Type.
+    try { orbWindow.warmProbe(); } catch { /* the fairy is not up yet: it warms later */ }
     // The Copilot key -> this bar (copilot-key.cjs), when the setting is on (default).
     if (intentBarMemory.copilotKey()) {
       const st = copilotKey().start();

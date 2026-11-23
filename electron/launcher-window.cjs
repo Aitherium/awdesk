@@ -53,6 +53,11 @@ const SIZE = Object.freeze({ width: 760, height: 480 });
 /** A held key's first repeat can land before the focus check; give focus this long. */
 const FOCUS_CHECK_MS = 90;
 
+/** How often the physical key state is read while a press is pending. */
+const KEYS_POLL_MS = 35;
+/** A stuck key-state read is abandoned for the old focus path after this long. */
+const KEYS_MAX_MS = 8_000;
+
 /** After a focus-locked press, ignore auto-repeats this long (else it closes itself). */
 const LOCKED_IGNORE_MS = 1_000;
 
@@ -61,7 +66,9 @@ const COMMAND_TIMEOUT_MS = 30_000;
 const OUTPUT_CAP = 200_000;
 
 let wired = false;
-let win = null;
+// NOTE: the window is PER LAUNCHER (declared inside createLauncher). A module-level
+// one made any second instance adopt the first one's window -- invisible in the app
+// (one launcher) but it wedged tests and would wedge a second launcher.
 
 function message(error) {
   return String((error && error.message) || error || "no reason").slice(0, 200);
@@ -177,6 +184,13 @@ function execPlan(plan) {
  */
 function createLauncher({
   electron, registry, run, ask = null, spirit = null, quickMenu, now = Date.now,
+  // () => Promise<{space, alt} | null>. The PHYSICAL key state, so a HOLD can be
+  // decided without showing a focus-taking window or sampling the host on every
+  // press (owner 2026-11-23: the Alt+Space ring made the whole PC stutter). Null =
+  // the old focus-catching path, unchanged.
+  keyState = null,
+  /** How often the physical keys are read (tests make this 1 ms). */
+  pollMs = KEYS_POLL_MS,
   // () => Promise<host-context sample>. Started the instant Alt+Space goes DOWN,
   // before showAtCursor() takes focus -- sampled any later, the foreground window
   // is the launcher itself. Null = the empty box stays "Type to search".
@@ -227,6 +241,7 @@ function createLauncher({
 
   const { BrowserWindow, ipcMain, screen, shell, clipboard } = electron;
   let phase = "idle"; // idle | pending | launcher | radial-hold
+  let win = null;
   let pressAt = 0;
   let lastPressAt = 0;
   let releasedAt = 0;
@@ -239,6 +254,7 @@ function createLauncher({
   // tap as a hold and opened the radial. No proof by HOLD_GRACE_MS -> a tap.
   let heldSeen = false;
   let graceTimer = null;
+  let pressPoll = null;
   let searchSeq = 0;
   let inflight = null;
   let webRegistered = false;
@@ -263,6 +279,7 @@ function createLauncher({
     if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
     if (focusTimer) { clearTimeout(focusTimer); focusTimer = null; }
     if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; }
+    if (pressPoll) { clearInterval(pressPoll); pressPoll = null; }
   }
 
   function send(channel, payload) {
@@ -361,26 +378,9 @@ function createLauncher({
    * The global shortcut. Called ONLY for surface "shortcut" (Alt+Space / the
    * fallback); the tray and the palette keep the existing search-page launcher.
    */
-  function press() {
-    const at = now();
-    const decision = core.pressDecision({ phase, now: at, lastPressAt, releasedAt, ignoreUntil });
-    if (decision === "ignore") {
-      // An auto-repeat while pending IS the proof of a hold.
-      if (phase === "pending") {
-        heldSeen = true;
-        if (!holdTimer && graceTimer) enterRadial();
-      }
-      return { ok: true, ignored: true };
-    }
-    if (decision === "close") {
-      hide();
-      return { ok: true, closed: true };
-    }
-    phase = "pending";
-    pressAt = at;
-    lastPressAt = at;
-    releasedAt = 0;
-    heldSeen = false;
+  /** Start the host sample and the writing capture NOW, while the app under the
+   *  owner still owns the foreground (showAtCursor takes it a moment later). */
+  function sampleForeground() {
     pressContext = hostContext
       ? Promise.resolve().then(() => hostContext()).catch((error) => ({ ok: false, reason: String((error && error.message) || error) }))
       : null;
@@ -389,6 +389,24 @@ function createLauncher({
     pressAssist = assist && typeof assist.capture === "function"
       ? Promise.resolve().then(() => assist.capture()).catch(() => null)
       : null;
+  }
+
+  /** The TAP outcome: the key came up before HOLD_MS. Sample, then show the box. */
+  function beginTap() {
+    sampleForeground();
+    showAtCursor();
+    enterLauncher({ locked: !(alive() && win.isFocused()) });
+  }
+
+  /** The HOLD outcome: no launcher window, no host sample -- the ring takes over. */
+  function beginHold() {
+    enterRadial();
+  }
+
+  /** The old focus-catching path: show the box and infer tap/hold from focus and
+   *  the OS auto-repeat. Used when the physical key state is unavailable. */
+  function beginLegacyPress() {
+    sampleForeground();
     showAtCursor();
     // The key is down; the renderer can only report it coming UP if it has focus.
     focusTimer = setTimeout(() => {
@@ -408,6 +426,68 @@ function createLauncher({
         enterLauncher({ locked: !(alive() && win.isFocused()) });
       }, core.HOLD_GRACE_MS);
     }, core.HOLD_MS);
+  }
+
+  /** Decide tap vs hold from the PHYSICAL keys: no focus steal, no host sample, and
+   *  the ring opens the instant HOLD_MS is crossed. Falls back if the probe is mute. */
+  function startKeyPoll(startedAt) {
+    clearTimers();
+    let busy = false;
+    pressPoll = setInterval(() => {
+      if (phase !== "pending" || busy) return;
+      busy = true;
+      Promise.resolve()
+        .then(() => keyState())
+        .catch(() => null)
+        .then((keys) => {
+          busy = false;
+          if (phase !== "pending") return;
+          const elapsed = now() - startedAt;
+          if (keys === null || elapsed > KEYS_MAX_MS) {
+            clearTimers();
+            // Fail soft: a broken legacy path must never leave the press pending.
+            try { beginLegacyPress(); } catch (error) { console.warn(`[desk] launcher fallback: ${error && error.message ? error.message : error}`); }
+            return;
+          }
+          const down = keys.space === true || keys.alt === true;
+          if (!down) {
+            clearTimers();
+            if (elapsed < core.HOLD_MS) beginTap(); else beginHold();
+          } else if (elapsed >= core.HOLD_MS) {
+            clearTimers();
+            beginHold();
+          }
+        });
+    }, Math.max(1, Number(pollMs) || KEYS_POLL_MS));
+    if (pressPoll && typeof pressPoll.unref === "function") pressPoll.unref();
+  }
+
+  function press() {
+    const at = now();
+    const decision = core.pressDecision({ phase, now: at, lastPressAt, releasedAt, ignoreUntil });
+    if (decision === "ignore") {
+      // An auto-repeat while pending IS the proof of a hold -- under the old path.
+      // With the key poll, the poll owns tap/hold and the repeat is simply ignored.
+      if (phase === "pending" && !pressPoll) {
+        heldSeen = true;
+        if (!holdTimer && graceTimer) enterRadial();
+      }
+      return { ok: true, ignored: true };
+    }
+    if (decision === "close") {
+      hide();
+      return { ok: true, closed: true };
+    }
+    phase = "pending";
+    pressAt = at;
+    lastPressAt = at;
+    releasedAt = 0;
+    heldSeen = false;
+    // The physical-key path decides first and only samples the foreground on a TAP, so
+    // a HOLD never touches the owner's focused app (owner 2026-11-23: stutter). No key
+    // state reachable = the old path, exactly as it was.
+    if (typeof keyState === "function") startKeyPoll(at);
+    else beginLegacyPress();
     return { ok: true, phase };
   }
 
