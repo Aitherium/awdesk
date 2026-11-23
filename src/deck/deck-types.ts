@@ -235,6 +235,44 @@ export function formatAge(createdAtSec: number, nowMs: number): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
+const START_WITH_PREFIX = /^\s*start with\s*[:\-—]\s*/i;
+
+function squash(text: string): string {
+  return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/**
+ * Some agents build an option whose label is the card's whole title again,
+ * prefixed "Start with:" (measured 2026-11-23: three cards in one run). That is
+ * not a choice — pressing it just says "do the title", and the owner answered
+ * "None of these" every time. Strip the prefix; when what is left only repeats
+ * the title, name what the button does. Keys are untouched, so the recorded
+ * answer never changes — only what the owner reads.
+ */
+export function cleanOptionLabel(label: string, title = ''): string {
+  const raw = String(label ?? '').replace(/\s+/g, ' ').trim();
+  if (!raw) return raw;
+  const stripped = raw.replace(START_WITH_PREFIX, '');
+  if (stripped === raw) return raw;
+  const body = stripped.trim();
+  if (!body) return 'Go ahead';
+  const a = squash(body);
+  const b = squash(title);
+  const repeatsTitle = Boolean(b) && (
+    a === b ||
+    (a.length >= 20 && b.startsWith(a.slice(0, 40))) ||
+    (b.length >= 20 && a.startsWith(b.slice(0, 40)))
+  );
+  return repeatsTitle ? 'Go ahead' : body;
+}
+
+/** One-line clamp for a stage title or a button label: a status paragraph set
+ *  as a title is unreadable and (before this) ran off the card. */
+export function clampTitle(text: string, max = 160): string {
+  const t = String(text ?? '').replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
+}
+
 /** The one button the owner is most likely to want: the raiser's default key
  *  wins, then a recommended option, then the first option. */
 export function primaryChoice(
@@ -244,7 +282,7 @@ export function primaryChoice(
   if (!first) return null;
   const byKey = (key: string) => card.options.find((o) => o.key === key);
   const pick = byKey(card.defaultKey) ?? card.options.find((o) => o.recommended) ?? first;
-  return { key: pick.key, label: pick.label };
+  return { key: pick.key, label: clampTitle(cleanOptionLabel(pick.label, card.title), 110) };
 }
 
 /** The defer path: the first NON-recommended option, so a card's "ack / later"
@@ -279,8 +317,9 @@ export function otherChoices(
   const ordered = [...rest.filter((o) => !o.recommended), ...rest.filter((o) => o.recommended)];
   const seen = new Set([primary.label.trim().toLowerCase()]);
   return ordered.map((o) => {
-    const plain = o.label.trim().toLowerCase();
-    const label = seen.has(plain) ? `${o.label} (${o.key})` : o.label;
+    const clean = clampTitle(cleanOptionLabel(o.label, card.title), 110);
+    const plain = clean.trim().toLowerCase();
+    const label = seen.has(plain) ? `${clean} (${o.key})` : clean;
     seen.add(plain);
     return { key: o.key, label };
   });

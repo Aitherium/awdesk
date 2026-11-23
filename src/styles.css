@@ -1564,15 +1564,39 @@ body {
 .deck-now-exit { margin-left: auto; }
 .deck-now-card {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 18px; padding: 24px 32px 48px; text-align: center; min-height: 0; overflow: auto;
+  gap: 18px; padding: 24px 32px 48px; text-align: center; min-height: 0; overflow: auto; overflow-x: hidden;
   animation: deck-now-slide 220ms ease-out;
 }
 .deck-now-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--deck-muted); }
-.deck-now-title { margin: 0; max-width: 760px; font-size: 28px; line-height: 1.25; font-weight: 700; color: var(--deck-text); user-select: text; }
+.deck-now-title {
+  margin: 0; max-width: 760px; font-size: 28px; line-height: 1.25; font-weight: 700;
+  color: var(--deck-text); user-select: text; text-align: center;
+  overflow-wrap: anywhere; word-break: break-word;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
+}
 .deck-now-why { margin: 0; max-width: 640px; font-size: 15px; line-height: 1.45; color: var(--deck-soft); user-select: text; }
 .deck-now-primary { font-size: 18px; padding: 14px 36px; border-radius: 12px; min-width: 240px; }
-.deck-now-options { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.deck-now-options { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 100%; }
+.deck-now-options .deck-btn { white-space: normal; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; text-align: center; }
 .deck-now-later { opacity: 0.75; }
+/* The body the owner is blessing — the command an approval runs, or the draft a
+   post publishes. NOW mode used to show neither (owner screenshot 2026-11-23:
+   "publishes exactly the text shown" with no text). */
+.deck-now-payload { width: min(720px, 100%); text-align: left; font-size: 13px; color: var(--deck-soft); }
+.deck-now-payload summary { cursor: pointer; font-weight: 600; color: var(--deck-muted); padding: 2px 0; }
+.deck-now-payload-body {
+  margin-top: 6px; max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--deck-panel, rgba(127, 127, 127, 0.08)); border: 1px solid var(--deck-edge);
+  border-radius: 8px; padding: 8px 10px; font-family: var(--font-mono, monospace); font-size: 12px;
+  line-height: 1.45; user-select: text;
+}
+/* A run of same-raiser "could not clear" cards: one press clears the whole run. */
+.deck-now-batch {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 8px 12px; border: 1px dashed var(--deck-edge); border-radius: 10px; max-width: 720px;
+}
+.deck-now-batch-label { font-size: 12px; color: var(--deck-muted); }
+.deck-now-batch-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
 .deck-now-credential { width: min(560px, 100%); text-align: left; }
 .deck-now kbd {
   font-family: var(--font-mono, monospace); font-size: 0.75em; padding: 1px 5px; margin: 0 2px;

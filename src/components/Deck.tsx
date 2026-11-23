@@ -13,6 +13,7 @@ import { useDeckState } from '../deck/use-deck-state';
 import {
   cardFocusParam,
   cardWhere,
+  clampTitle,
   splitFlipper,
   clockLabel,
   clockTone,
@@ -63,11 +64,14 @@ import {
 import { SPACE_NEXT_LINK, spaceCardLink } from '../deck/space-links';
 import {
   NOW_IDLE,
+  nowBatch,
   nowCounter,
   nowCurrent,
   nowKeyIntent,
   nowModeParam,
   nowOptions,
+  nowPayload,
+  nowQueue,
   nowReducer,
   nowWhy,
   type NowState,
@@ -2193,10 +2197,13 @@ function NowStage({
   onExit: () => void;
 }) {
   const card = nowCurrent(cards, state);
+  const queue = useMemo(() => nowQueue(cards, state), [cards, state]);
   const counter = nowCounter(cards, state);
   const primary = card ? primaryChoice(card) : null;
   const options = card ? nowOptions(card) : [];
   const why = card ? nowWhy(card) : '';
+  const payload = card ? nowPayload(card) : null;
+  const batch = nowBatch(queue, card);
   const source = card ? decisionSource(card) : '';
   const isCredential = card?.kind === 'credential';
 
@@ -2245,8 +2252,14 @@ function NowStage({
             {source ? <span>{source}</span> : null}
             <time>{formatAge(card.createdAt, nowMs)}</time>
           </div>
-          <h1 className="deck-now-title" title={card.title}>{plainAsk(card)}</h1>
+          <h1 className="deck-now-title" title={card.title}>{clampTitle(plainAsk(card), 200)}</h1>
           {why ? <p className="deck-now-why" title={card.summary}>{why}</p> : null}
+          {payload ? (
+            <details className="deck-now-payload" open>
+              <summary>{payload.heading}</summary>
+              <div className="deck-now-payload-body">{payload.body}</div>
+            </details>
+          ) : null}
           {isCredential ? (
             <div className="deck-now-credential"><CredentialRow card={card} /></div>
           ) : (
@@ -2280,6 +2293,25 @@ function NowStage({
                       {o.hotkey ? <kbd>{o.hotkey}</kbd> : null} {o.label}
                     </button>
                   ))}
+                </div>
+              ) : null}
+              {batch ? (
+                <div className="deck-now-batch">
+                  <span className="deck-now-batch-label">
+                    {batch.cards.length} {batch.agent} PRs could not clear — same call for each
+                  </span>
+                  <div className="deck-now-batch-actions">
+                    {batch.keys.take ? (
+                      <button className="deck-btn deck-btn-xs" onClick={() => batch.cards.forEach((c) => onAnswer(c.id, batch.keys.take))}>
+                        I&apos;ll take all {batch.cards.length}
+                      </button>
+                    ) : null}
+                    {batch.keys.park ? (
+                      <button className="deck-btn deck-btn-xs" onClick={() => batch.cards.forEach((c) => onAnswer(c.id, batch.keys.park))}>
+                        Park all {batch.cards.length}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
             </>

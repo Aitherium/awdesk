@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import type { DeckDecision } from './deck-types';
+import { cleanOptionLabel, clampTitle, type DeckDecision } from './deck-types';
 import { nextActionLine } from './inbox-view';
 import {
   NOW_IDLE,
+  nowBatch,
   nowCounter,
   nowCurrent,
   nowKeyIntent,
   nowModeParam,
   nowOptions,
+  nowPayload,
   nowQueue,
   nowReducer,
   nowWhy,
@@ -170,5 +172,61 @@ describe('now mode follows the Next order', () => {
     state = nowReducer(state, { type: 'handled', id: 'd-d' });
     expect(nowCurrent(cards, state)?.id).toBe('d-s');
     expect(nowCounter(cards, state).label).toBe('3 of 3');
+  });
+});
+
+describe('readability fixes (owner video 2026-11-23)', () => {
+  it('a "Start with: <the title>" option is named what it does, key unchanged', () => {
+    const c = card({
+      title: 'the reboot is B2 and tonight is fine',
+      options: [
+        { key: '1', label: 'Start with: the reboot is B2 and tonight is fine', recommended: true },
+        { key: '2', label: 'None of these - I will tell you', recommended: false },
+      ],
+      defaultKey: '2',
+    });
+    // primary is the default ("2") — unchanged; the degenerate option reads "Go ahead".
+    expect(nowOptions(c).map((o) => o.label)).toEqual(['Go ahead']);
+    // keys are what get recorded — never altered by the label cleanup
+    expect(nowOptions(c).map((o) => o.key)).toEqual(['1']);
+  });
+
+  it('cleanOptionLabel strips the prefix generally; leaves real labels alone', () => {
+    expect(cleanOptionLabel('Start with: scan the skins', 'different title')).toBe('scan the skins');
+    expect(cleanOptionLabel('Start with:', 'x')).toBe('Go ahead');
+    expect(cleanOptionLabel('Approve once', 'Approve once')).toBe('Approve once');
+    expect(cleanOptionLabel('', 'x')).toBe('');
+  });
+
+  it('clampTitle caps a status paragraph set as a title', () => {
+    expect(clampTitle('x'.repeat(400), 160).length).toBe(160);
+    expect(clampTitle('x'.repeat(400), 160).endsWith('…')).toBe(true);
+    expect(clampTitle('  short   title  ')).toBe('short title');
+  });
+
+  it('nowPayload surfaces the command / draft the owner is blessing', () => {
+    expect(nowPayload(card({ kind: 'approval', detail: 'command: gh release create v1' })))
+      .toEqual({ heading: 'It runs', body: 'command: gh release create v1' });
+    const post = card({ summary: 'publishes exactly the text shown', facts: ['x'.repeat(200)] });
+    expect(nowPayload(post)).toEqual({ heading: 'The text', body: 'x'.repeat(200) });
+    expect(nowPayload(card({ summary: 'pick one' }))).toBeNull();
+  });
+
+  it('nowBatch groups a consecutive same-raiser "could not clear" run', () => {
+    const mk = (i: number, agent = 'atlas', extra: Partial<DeckDecision> = {}) => card({
+      id: `d-${i}`, agent, title: `Atlas could not clear: PR #${i} thing`,
+      options: [
+        { key: 'retry', label: 'Try again', recommended: false },
+        { key: 'park', label: 'Park it', recommended: false },
+        { key: 'mine', label: 'I will handle it', recommended: false },
+      ], defaultKey: 'park', ...extra,
+    });
+    const queue = [mk(1), mk(2), mk(3), card({ id: 'd-x', agent: 'atlas', title: 'other' })];
+    const batch = nowBatch(queue, queue[0]);
+    expect(batch?.cards.map((c) => c.id)).toEqual(['d-1', 'd-2', 'd-3']);
+    expect(batch?.keys).toEqual({ park: 'park', take: 'mine' });
+    // a different raiser breaks the run; a lone card is not a batch
+    expect(nowBatch([mk(1, 'atlas'), mk(2, 'other')], mk(1, 'atlas'))).toBeNull();
+    expect(nowBatch([mk(1)], mk(1))).toBeNull();
   });
 });

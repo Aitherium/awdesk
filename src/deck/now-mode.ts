@@ -130,6 +130,64 @@ export function nowWhy(card: DeckDecision, max = 160): string {
   return first.length > max ? `${first.slice(0, max - 1)}…` : first;
 }
 
+/**
+ * The body a card actually asks the owner to bless — the command an approval
+ * will run, or the draft a post will publish. NOW mode showed only the title and
+ * one line of why, so the owner approved a Discord post whose own summary said
+ * "publishes exactly the text shown" while showing NO text (measured 2026-11-23).
+ * Returns null when the card carries nothing worth a block (a plain choice).
+ */
+export function nowPayload(card: DeckDecision): { heading: string; body: string } | null {
+  const detail = String(card.detail || '').trim();
+  if (detail.length >= 20) {
+    return { heading: card.kind === 'approval' ? 'It runs' : 'Detail', body: detail };
+  }
+  const facts = (card.facts || []).filter((f) => typeof f === 'string' && f.trim().length > 0);
+  const why = nowWhy(card);
+  const longest = facts.slice().sort((a, b) => b.length - a.length)[0] || '';
+  if (longest.length >= 60 && longest.trim() !== why.trim()) {
+    return { heading: 'The text', body: longest };
+  }
+  return null;
+}
+
+export interface NowBatch {
+  agent: string;
+  cards: DeckDecision[];
+  keys: { park: string; take: string };
+}
+
+/**
+ * A run of consecutive "… could not clear: PR #…" cards from the SAME raiser —
+ * one agent dumping one card per PR on the owner. In the 2026-11-23 video the
+ * owner cleared four of them one click at a time, picking the same answer each
+ * time. Let a whole run clear in one press. Only offered when every card in the
+ * run carries the bulk key, so a bulk press can never silently no-op on some.
+ */
+export function nowBatch(queue: DeckDecision[], current: DeckDecision | null): NowBatch | null {
+  if (!current || !/could not clear/i.test(current.title || '')) return null;
+  const agent = current.agent || '';
+  if (!agent) return null;
+  const startAt = queue.findIndex((c) => c.id === current.id);
+  if (startAt < 0) return null;
+  const cards: DeckDecision[] = [];
+  for (let i = startAt; i < queue.length; i++) {
+    const c = queue[i];
+    if (!/could not clear/i.test(c.title || '') || (c.agent || '') !== agent) break;
+    cards.push(c);
+  }
+  if (cards.length < 2) return null;
+  const keyFor = (aliases: string[]) => {
+    for (const a of aliases) {
+      const hit = cards.every((c) => c.options.some((o) => o.key === a || o.key.toLowerCase() === a));
+      if (hit) return a;
+    }
+    return '';
+  };
+  return { agent, cards, keys: { park: keyFor(['park']), take: keyFor(['mine']) } };
+}
+
+
 /** `?mode=now` on the Inbox URL opens straight into Now mode (tray / palette door). */
 export function nowModeParam(search: string): boolean {
   try {
