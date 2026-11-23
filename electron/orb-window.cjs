@@ -2219,7 +2219,7 @@ function pruneCaptures(keep) {
     dir = os.tmpdir();
     const cutoff = Date.now() - CAPTURE_TTL_MS;
     for (const name of fs.readdirSync(dir)) {
-      if (!name.startsWith("aither-orb-") || !name.endsWith(".png")) continue;
+      if (!name.startsWith("aither-orb-") || !/\.(png|jpg)$/.test(name)) continue;
       const file = path.join(dir, name);
       if (file === keep) continue;
       try {
@@ -2248,7 +2248,16 @@ function restoreAfterCapture(shown) {
   }
 }
 
-/** A rect of the screen (physical pixels) as a PNG for the vision ladder. */
+/** A rect of the screen (physical pixels) as a JPEG for the vision ladder.
+ *
+ *  MEASURED 2026-11-23: this used to write a full 4K PNG, and `imageDataUrl`
+ *  then decoded that PNG, downscaled and re-encoded it as JPEG -- an encode
+ *  (~940 ms measured for 4K PNG on this box), a temp-file round trip and a
+ *  decode for pixels the model never saw. The capture is now downscaled and
+ *  JPEG-encoded ONCE here, at the same 1024 long edge the model is sent, so the
+ *  data-URI path re-encodes nothing. One file still lands in %TEMP% because the
+ *  gateway/direct doors upload a path. */
+const CAPTURE_MAX_EDGE = 1024;
 async function captureRect(rect) {
   const bounds = spiritCore.normBounds(rect);
   if (!bounds) return null;
@@ -2259,14 +2268,32 @@ async function captureRect(rect) {
     image = null;
   }
   if (!image || (typeof image.isEmpty === "function" && image.isEmpty())) return null;
-  const out = path.join(os.tmpdir(), `aither-orb-${process.pid}-${Date.now()}.png`);
-  let png;
-  try { png = image.toPNG(); } catch { png = null; }
-  // An undecodable nativeImage yields a zero-byte PNG; that is a failed capture,
-  // not an image the vision ladder should be asked about.
-  if (!png || !png.length) return null;
+  let jpg;
+  let ext = "jpg";
   try {
-    fs.writeFileSync(out, png);
+    let img = image;
+    const size = typeof image.getSize === "function" ? image.getSize() : null;
+    if (size && Math.max(size.width, size.height) > CAPTURE_MAX_EDGE) {
+      const scale = CAPTURE_MAX_EDGE / Math.max(size.width, size.height);
+      img = image.resize({
+        width: Math.max(1, Math.round(size.width * scale)),
+        height: Math.max(1, Math.round(size.height * scale)),
+        quality: "good",
+      });
+    }
+    jpg = img.toJPEG(82);
+  } catch { jpg = null; }
+  if (!jpg && typeof image.toPNG === "function") {
+    // An image object without a JPEG encoder (a test double, or an old Electron):
+    // fall back to PNG rather than calling the capture a failure.
+    try { jpg = image.toPNG(); ext = "png"; } catch { jpg = null; }
+  }
+  // An undecodable nativeImage yields an empty buffer; that is a failed capture,
+  // not an image the vision ladder should be asked about.
+  if (!jpg || !jpg.length) return null;
+  const out = path.join(os.tmpdir(), `aither-orb-${process.pid}-${Date.now()}.${ext}`);
+  try {
+    fs.writeFileSync(out, jpg);
   } catch {
     return null;
   }

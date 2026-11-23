@@ -238,35 +238,49 @@ function schedulerUrl() {
 function visionModel() {
   return visionModels()[0];
 }
-/** Bonsai lanes raced in parallel (first good answer wins). Measured 2026-11-02:
- *  the 5090 lane queued a user ask 94 s behind a worker's 9.6k-token jobs while the
- *  DGX lane answered the same 4K screenshot in ~4 s. AWDESK_VISION_MODEL=a,b overrides. */
+/** Bonsai lanes raced in parallel (first good answer wins). AWDESK_VISION_MODEL=a,b overrides.
+ *
+ *  MEASURED 2026-11-23: the default used to race `bonsai-27b-dgx`, which the
+ *  catalog marks `live_in_postures: [v41-pool]` -- OFF in the active posture
+ *  (pool-fast-spark-embed) and retired on the Spark. Every orb ask therefore
+ *  opened a second request that neither answered nor errored: a lone call to
+ *  that name hung past 100 s, so when the 5090 lane was busy or cold the ladder
+ *  waited out the scheduler timeout on a lane that could never answer. The
+ *  default is the one lane the platform actually serves; a second name is opt-in
+ *  and only worth setting when a real second lane exists. */
 function visionModels() {
-  const raw = String(process.env.AWDESK_VISION_MODEL || "bonsai-27b-dgx,bonsai2-27b-5090");
+  const raw = String(process.env.AWDESK_VISION_MODEL || "bonsai2-27b-5090");
   const list = raw.split(",").map((m) => m.trim()).filter(Boolean);
-  return list.length ? list : ["bonsai-27b-dgx"];
+  return list.length ? list : ["bonsai2-27b-5090"];
 }
 function imageDataUrl(imagePath, maxWidth = 1024) {
   try {
     const { nativeImage } = require("electron");
     if (nativeImage && typeof nativeImage.createFromPath === "function") {
-      let img = nativeImage.createFromPath(imagePath);
+      const img = nativeImage.createFromPath(imagePath);
       if (img && !img.isEmpty()) {
         const size = img.getSize();
-        if (size.width > maxWidth) img = img.resize({ width: maxWidth, quality: "good" });
-        return `data:image/jpeg;base64,${img.toJPEG(82).toString("base64")}`;
+        // Already downscaled to the model's edge by captureRect: send its bytes.
+        // Decoding and re-encoding a JPEG that is already the right size is the
+        // second encode this path used to pay (MEASURED 2026-11-23).
+        if (size.width <= maxWidth) {
+          return `data:${mimeFor(imagePath)};base64,${fs.readFileSync(imagePath).toString("base64")}`;
+        }
+        const small = img.resize({ width: maxWidth, quality: "good" });
+        return `data:image/jpeg;base64,${small.toJPEG(82).toString("base64")}`;
       }
     }
   } catch { /* plain node (tests): send the file as it is */ }
   return `data:${mimeFor(imagePath)};base64,${fs.readFileSync(imagePath).toString("base64")}`;
 }
-function postJson(url, payload, timeoutMs) {
+function postJson(url, payload, timeoutMs, signal) {
   const body = Buffer.from(JSON.stringify(payload));
   return new Promise((resolve, reject) => {
     const target = new URL(url);
     const secure = target.protocol === "https:";
     const req = (secure ? https : http).request(target, {
       method: "POST", timeout: timeoutMs,
+      ...(signal ? { signal } : {}),
       ...(secure ? internalCaOptions() : {}),
       headers: { "Content-Type": "application/json", "Content-Length": body.length },
     }, (res) => {
@@ -286,13 +300,17 @@ async function askViaScheduler(imagePath, question, opts = {}) {
     const models = visionModels();
     if (models.length > 1) {
       // Race: resolve with the first ok answer; if all fail, report every error.
-      const runs = models.map((model) => askViaScheduler(imagePath, question, { ...opts, model }));
+      // The losers are ABORTED on the first answer: a losing lane used to keep its
+      // request open for the full scheduler timeout, holding a slot on a shared
+      // model lane long after the owner had his answer.
+      const ac = new AbortController();
+      const runs = models.map((model) => askViaScheduler(imagePath, question, { ...opts, model, signal: ac.signal }));
       return new Promise((resolve) => {
         let left = runs.length;
         const errors = [];
         for (const run of runs) {
           run.then((r) => {
-            if (r.ok) { resolve(r); return; }
+            if (r.ok) { try { ac.abort(); } catch { /* already settled */ } resolve(r); return; }
             errors.push(r.error);
             left -= 1;
             if (left === 0) resolve({ ok: false, via: "scheduler", error: errors.join("; ") });
@@ -313,7 +331,7 @@ async function askViaScheduler(imagePath, question, opts = {}) {
         { type: "image_url", image_url: { url: imageDataUrl(imagePath) } },
       ] }],
     };
-    const res = await post(`${schedulerUrl()}/v1/chat/completions`, payload, opts.schedulerTimeoutMs || SCHEDULER_TIMEOUT_MS);
+    const res = await post(`${schedulerUrl()}/v1/chat/completions`, payload, opts.schedulerTimeoutMs || SCHEDULER_TIMEOUT_MS, opts.signal);
     if (res.status !== 200) return { ok: false, via: "scheduler", error: `MicroScheduler answered ${res.status}` };
     const doc = JSON.parse(res.body || "{}");
     const text = String(((doc.choices || [])[0] || {}).message?.content || "").trim();
