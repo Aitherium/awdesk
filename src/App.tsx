@@ -242,7 +242,14 @@ function AvatarSceneApp() {
       },
       transcribe: (base64, format) =>
         window.deskBridge?.voiceTranscribe?.(base64, format) ?? Promise.resolve(''),
-      deliver: (text) => { void window.deskBridge?.voiceHeard?.(text); },
+      deliver: (text) => {
+        // How this clip was triggered decides how much the voice gate trusts it:
+        // an always-open microphone hears the room, a press is the owner's own
+        // gesture (voice-gate.cjs).
+        const mode = handsFreeRef.current?.mode;
+        const provenance = mode === 'open' ? 'open-mic' : mode === 'one-shot' ? 'one-shot' : 'push-to-talk';
+        void window.deskBridge?.voiceHeard?.(text, { mode: provenance });
+      },
       onState: (state) => window.deskBridge?.voiceListenState?.(state),
       onError: (message) => window.deskBridge?.voiceListenState?.(`error: ${message}`),
     });

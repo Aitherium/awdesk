@@ -174,8 +174,9 @@ interface Window {
     subscribe(listener: (event: AvatarBridgeEvent) => void): () => void;
     /** Mic clip -> gateway transcribe_audio -> text (or an "ERROR: …" string). */
     voiceTranscribe?(audioB64: string, format: string): Promise<string>;
-    /** A finished transcript: main posts it to the room and answers it. */
-    voiceHeard?(text: string): Promise<unknown>;
+    /** A finished transcript: main posts it to the room and answers it.
+     *  `provenance.mode` (push-to-talk / one-shot / open-mic) feeds the voice gate. */
+    voiceHeard?(text: string, provenance?: { mode?: string }): Promise<unknown>;
     /** Listening / transcribing / idle, so the tray can say what the mic is doing. */
     voiceListenState?(state: string): void;
     runCommand?(id: string): Promise<{ ok: boolean; error?: string }>;

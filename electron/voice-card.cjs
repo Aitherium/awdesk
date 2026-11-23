@@ -43,11 +43,14 @@ const LATER = /^(?:(?:ok(?:ay)?|no|not now|maybe) )?(?:later|not now|ask me late
 function cardPrompt(card) {
   const title = String((card && card.title) || "a decision").slice(0, 160);
   const options = (card && Array.isArray(card.options) ? card.options : []).slice(0, MAX_OPTIONS);
-  if (!options.length) return `A decision needs you: ${title}. Tell me what to do.`;
+  // The voice gate requires a spoken card answer to address the desk: the desk
+  // opened the microphone, so it cannot treat the next sentence in the room as
+  // the owner's reply (that is how a media fragment became a steer, 2026-11-23).
+  if (!options.length) return `A decision needs you: ${title}. Say Aither and what to do.`;
   const listed = options
     .map((o, i) => `${SPOKEN[i]}, ${String(o.label || o.key).slice(0, 80)}${o.recommended ? ", recommended" : ""}`)
     .join("; ");
-  return `A decision needs you: ${title}. Options: ${listed}. Say a number, later, or tell me what to do instead.`;
+  return `A decision needs you: ${title}. Options: ${listed}. Say Aither, then a number, later, or what to do instead.`;
 }
 
 /**

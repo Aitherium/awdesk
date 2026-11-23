@@ -117,6 +117,17 @@ public static class AitherAudio
         int GetVolumeRange(out float min, out float max, out float inc);
     }
 
+    // The render endpoint's own peak meter: how loud the speakers are right NOW.
+    // The voice gate reads it to tell "the owner spoke" from "the PC played this".
+    [ComImport, Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioMeterInformation
+    {
+        int GetPeakValue(out float peak);
+        int GetMeteringChannelCount(out uint count);
+        int GetChannelsPeakValues(uint channelCount, [Out, MarshalAs(UnmanagedType.LPArray)] float[] peaks);
+        int QueryHardwareSupport(out uint mask);
+    }
+
     // Undocumented since Vista and still present on Windows 11: it is what the
     // Sound control panel itself calls when a device is set as default.
     [ComImport, Guid("F8679F50-850A-41CF-9C72-430F290290C8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -203,6 +214,25 @@ public static class AitherAudio
         object o;
         Check(dev.Activate(ref iid, CLSCTX_ALL, IntPtr.Zero, out o), "Activate(IAudioEndpointVolume)");
         return (IAudioEndpointVolume)o;
+    }
+
+    // 0..1 peak on the default endpoint. A device that exposes no meter (some
+    // virtual sinks) reports 0 rather than failing the voice path.
+    static float Peak(EDataFlow flow)
+    {
+        try
+        {
+            IMMDevice dev = DefaultDevice(flow);
+            if (dev == null) return 0f;
+            Guid iid = typeof(IAudioMeterInformation).GUID;
+            object o;
+            if (dev.Activate(ref iid, CLSCTX_ALL, IntPtr.Zero, out o) != 0) return 0f;
+            float peak;
+            if (((IAudioMeterInformation)o).GetPeakValue(out peak) != 0) return 0f;
+            if (peak < 0f) return 0f;
+            return peak > 1f ? 1f : peak;
+        }
+        catch { return 0f; }
     }
 
     static EDataFlow Flow(string flow)
@@ -331,6 +361,7 @@ public static class AitherAudio
                 case "ping": return "{\"ok\":true}";
                 case "state": return StateJson();
                 case "list": return "{\"ok\":true,\"render\":" + ListEndpointJson(EDataFlow.eRender) + ",\"capture\":" + ListEndpointJson(EDataFlow.eCapture) + "}";
+                case "peak": return "{\"ok\":true,\"peak\":" + Peak(Flow(p.Length > 1 ? p[1] : "render")).ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture) + "}";
                 case "set-volume": SetVolume(Flow(p.Length > 1 ? p[1] : "render"), p.Length > 2 ? p[2] : "0"); return StateJson();
                 case "set-mute":
                 {
@@ -650,6 +681,21 @@ async function listDevices() {
   return normalizeList(await request("list"));
 }
 
+/**
+ * How loud the default endpoint is RIGHT NOW, 0..1. A short timeout on purpose:
+ * the voice gate calls this per transcript and a slow probe must never hold a
+ * captured sentence. Any failure is `{ok:false}` and the gate treats playback
+ * as unknown, never as a reason to drop the owner's words.
+ */
+async function getPeak(kind = "render", { timeoutMs = 1500 } = {}) {
+  const reply = await request(`peak ${flowFor(kind)}`, { timeoutMs });
+  if (!reply || reply.ok === false) {
+    return { ok: false, peak: 0, error: String((reply && reply.error) || "the Windows audio helper did not answer") };
+  }
+  const peak = Number(reply.peak);
+  return { ok: true, peak: Number.isFinite(peak) ? Math.max(0, Math.min(1, peak)) : 0 };
+}
+
 /** Set the master volume for `flow`; `percent` is absolute 0..100. */
 async function setVolume(flow, percent) {
   return normalizeState(await request(`set-volume ${flowFor(flow)} ${clampPercent(percent)}`));
@@ -680,7 +726,7 @@ module.exports = {
   clampPercent, normalizeEndpoint, normalizeState, normalizeList, parseReply, flowFor, osdModel,
   buildHelperScript, scriptFile,
   // helper lifecycle + commands
-  warm, stopHelper, getState, listDevices, setVolume, adjustVolume, setMuted, toggleMute, setDefaultDevice,
+  warm, stopHelper, getState, listDevices, getPeak, setVolume, adjustVolume, setMuted, toggleMute, setDefaultDevice,
   // test seam
   __setHelperForTest(next) { helper = next; },
   __requestForTest(line, options) { return request(line, options); },
