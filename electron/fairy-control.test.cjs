@@ -242,6 +242,13 @@ test("the fairy menu carries chat, grow, mute, pin, hide, open session and the l
   assert.match(no.find((r) => r.id === "fc:pin").label, /^Unpin/);
 });
 
+test("the fairy menu carries its own drop answer (fairy-drop.cjs), the one in force marked", () => {
+  const rows = fc.controlItems({ label: "Lyra", agent: "lyra", drop: { mode: "return" } });
+  const dropRows = rows.filter((r) => r && String(r.id || "").startsWith("fc:drop:"));
+  assert.deepEqual(dropRows.map((r) => r.id), ["fc:drop:pin", "fc:drop:timed:10", "fc:drop:return"]);
+  assert.match(dropRows[2].label, /✓/);
+});
+
 test("the swarm layout menu marks what is on and picks change the view", () => {
   const v = { mode: "scatter", kind: "terminals", radius: 1.4, hidden: ["a"], pins: { b: { x: 1, y: 1 } } };
   const m = fc.viewItems(v, { total: 5, hidden: 1, pinned: 1 });

@@ -135,6 +135,25 @@
     </section>
 
     <section>
+      <h2>Fairy drops</h2>
+      <p class="lede">What happens when you drag a fairy onto a window. Dropping it docks it to the NEAREST corner of that window, and it follows the window when it moves or resizes. Minimise hides it with the window; closing sends it home.</p>
+      <div class="row">
+        <label>After I drop it</label>
+        <select id="dropMode">
+          <option value="pin">Pin until I move it</option>
+          <option value="timed">Stay N seconds, then fly home</option>
+          <option value="return">Fly home straight away</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>…seconds</label>
+        <input type="number" id="dropSeconds" min="3" max="600" step="1" style="width:6em">
+        <span class="note" style="margin:0">5, 10, 15 or any seconds</span>
+      </div>
+      <p class="note">This is the default for every fairy. Each fairy can have its own answer from its right-click menu, under "Dropped:".</p>
+    </section>
+
+    <section>
       <h2>Visual neurons</h2>
       <p class="lede">See an agent think. While an agent is working or speaking, a small graph of its recent steps — thinking, a tool call, a result, a spoken line — draws around its fairy. Off by default.</p>
       <div class="row">
@@ -198,6 +217,7 @@
     renderOverlay(res.overlay || {});
     renderNeurons(res.neurons);
     renderDisplay(res.display);
+    renderFairy(res.fairy);
   }
 
   // Desktop overlay (overlay-policy.cjs): three switches, the edge and the dwell.
@@ -251,6 +271,27 @@
     const result = await bridge.setDisplay(displayModeSel.value);
     if (result && result.ok) { renderDisplay(result.display || {}); say("display mode saved", "ok"); }
     else say("could not save: " + (result && result.error || "unknown"), "err");
+  });
+
+  // Fairy drops (fairy-drop.cjs, owner 2026-11-23): pin / stay N seconds / fly home.
+  const dropModeSel = document.getElementById("dropMode");
+  const dropSecondsEl = document.getElementById("dropSeconds");
+  function renderFairy(f) {
+    const d = (f && f.drop) || { mode: "pin", seconds: 10 };
+    dropModeSel.value = d.mode;
+    dropSecondsEl.value = String(d.seconds || 10);
+    dropSecondsEl.disabled = d.mode !== "timed";
+  }
+  async function saveFairy(patch) {
+    const result = await bridge.setFairy(patch);
+    if (result && result.ok) { renderFairy(result.fairy || { drop: result.drop }); say("fairy drop saved", "ok"); }
+    else say("could not save: " + (result && result.error || "unknown"), "err");
+  }
+  dropModeSel.addEventListener("change", () => saveFairy({ mode: dropModeSel.value }));
+  dropSecondsEl.addEventListener("change", () => {
+    const secs = Math.round(Number(dropSecondsEl.value));
+    if (!Number.isInteger(secs) || secs < 3 || secs > 600) { say("seconds must be 3 to 600", "err"); return; }
+    saveFairy({ mode: "timed", seconds: secs });
   });
 
   grantMicBtn.addEventListener("click", async () => {

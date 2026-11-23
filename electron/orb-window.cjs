@@ -66,6 +66,7 @@ const fairyControl = require("./fairy-control.cjs");
 const foregroundProbe = require("./foreground-probe.cjs");
 const fairyFlight = require("./fairy-flight.cjs");
 const followFocus = require("./follow-focus.cjs");
+const fairyDrop = require("./fairy-drop.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -137,6 +138,14 @@ let pinDrag = null;
  *  window we placed; being here, and not in swarmView.pins, keeps a mode switch from
  *  persisting them as the owner's pins. */
 let swarmPinAgents = new Set();
+/** Drop behaviour (fairy-drop.cjs, owner 2026-11-23): a "timed" drop's return timer, a
+ *  hand placement that follow must not steal, the drop resolution in flight, and the
+ *  pinned fairies that ride a window (agent -> {hwnd, corner}). */
+let dropReturnTimer = null;
+let manualPlacement = false;
+let resolvingDrop = false;
+let pinDocks = new Map();
+let pinDockTimer = null;
 let fgContent = null;
 let fgProbeImpl = null;
 /** Follow-the-focused-window (plan A4): the descriptor the probe last reported, when it
@@ -377,7 +386,10 @@ let dockWindowId = 0;
 function dockSpot(target) {
   const base = target && target.auto
     ? orbCore.windowDockSpot(target.bounds, ORB_SIZE, reservedBox, RESERVE_PAD)
-    : spiritCore.dockPosition(target, ORB_SIZE);
+    // A hand drop remembers its corner (`attach.corner`), so following a window that
+    // moves or resizes keeps the fairy where the owner put it instead of flipping to
+    // whichever corner is nearest now. Without a corner this is the old top-right.
+    : spiritCore.dockPosition(target, ORB_SIZE, { corner: target && target.corner, dropPoint: target && target.dropPoint });
   // A body has no buttons under it; a WINDOW does. Owner 2026-11-16: the fairy sat on
   // CertTrack's "Review" tab. Stand on the first spot of the window that covers nothing.
   if (!target || target.kind === "avatar") return base;
@@ -460,6 +472,9 @@ async function setDockWindow(win) {
   // Hidden fairies stay hidden (owner 2026-11-13): docking never shows them.
   if (ride && !state.visible) return { ok: true, docked: false, why: "the fairies are hidden" };
   if (ride) {
+    // Where the OWNER put the fairy wins over both the AitherOS dock and follow: a
+    // drop is not something the desk may undo a second later (owner 2026-11-23).
+    if (manualPlacement) return { ok: true, docked: false, why: "placed by hand" };
     // A FOLLOW attach is not a hand attach: the AitherOS window outranks "follow my
     // window" (one cluster), so it takes the cluster from whatever follow was riding.
     if (attach && !attach.auto && !attach.follow) return { ok: true, docked: false, why: "attached by hand" };
@@ -1064,6 +1079,8 @@ async function applyFollow() {
     return { act: "none", reason: "busy" };
   }
   if (!state.visible || !alive(orbWindow)) return { act: "none", reason: "the fairy is down" };
+  // The owner put it there by hand: follow never moves it again until the next drag.
+  if (manualPlacement || resolvingDrop) return { act: "none", reason: "placed by hand" };
   followBusy = true;
   try {
     const decision = followFocus.decideFollow({
@@ -1277,6 +1294,7 @@ function destroyPin(agent) {
   const win = pinWindows.get(agent);
   pinWindows.delete(agent);
   pinKeys.delete(agent);
+  pinDocks.delete(agent);
   try { if (alive(win)) win.destroy(); } catch { /* gone */ }
 }
 
@@ -1424,14 +1442,18 @@ function swarmDrag(phase, agentRaw, from = "swarm") {
       }
     }
     const pins = { ...state.swarmView.pins };
-    // both/swarm are slot layouts: a released fairy always flies back to its slot
-    // (display-mode.releaseTarget), never out to an arbitrary pin (owner 2026-11-20).
+    // both/swarm are slot layouts: "return" flies the fairy back to its slot. A PIN
+    // or a timed stay keeps a drop outside the ring where it landed, even in a slot
+    // layout -- otherwise every drop flew straight back (owner 2026-11-23).
     const slotLayout = display.mode === "both" || display.mode === "swarm";
     const centre = clusterCenter();
-    const rejoin = slotLayout || fairyControl.joinsCluster(p, centre);
+    const nearCluster = fairyControl.joinsCluster(p, centre);
+    const verdict = fairyDrop.decideDrop(dropBehaviorFor(agent));
+    const rejoin = verdict.mode === "return" ? (slotLayout || nearCluster) : nearCluster;
     let result;
     if (rejoin) {
       delete pins[agent];
+      pinDocks.delete(agent);
       result = {
         ok: true, pinned: false, rejoined: true,
         releasedTo: displayMode.releaseTarget({ mode: display.mode, slot: centre, home: home || orbCenter() }),
@@ -1439,6 +1461,9 @@ function swarmDrag(phase, agentRaw, from = "swarm") {
     } else {
       pins[agent] = clampPin({ x: p.x - grab.dx, y: p.y - grab.dy });
       result = { ok: true, pinned: true, at: pins[agent] };
+      // A drop over a real window snaps to that window's nearest corner and rides it.
+      void snapPinToWindow(agent, p);
+      if (verdict.returnAfterMs != null) schedulePinReturn(agent, verdict.returnAfterMs);
     }
     setView({ pins });
     return result;
@@ -1465,8 +1490,85 @@ function pinAgent(agent, at = null) {
   const pins = { ...state.swarmView.pins };
   if (!at) delete pins[key];
   else pins[key] = clampPin({ x: at.x - PIN_SIZE.width / 2, y: at.y - PIN_SIZE.height / 2 });
+  if (!pins[key]) pinDocks.delete(key);
   setView({ pins });
   return { ok: true, pinned: Boolean(pins[key]), at: pins[key] || null };
+}
+
+// -- a pinned fairy that rides a window (owner 2026-11-23) -------------------------
+// A companion dropped over a real window docks to that window's nearest corner and
+// follows it: moves and resizes move the fairy, a minimise hides it with the window,
+// and a close sends it home (back into the ring).
+const PIN_DOCK_MS = 250;
+
+/** Snap a freshly pinned fairy to the window under the drop, and remember that window. */
+async function snapPinToWindow(agent, point) {
+  const t = await probeTargetAt(point);
+  if (!t || t.kind !== "window" || !t.hwnd) return null;
+  const pins = { ...state.swarmView.pins };
+  if (!pins[agent]) return null; // unpinned while the probe was out
+  const dock = fairyDrop.dockFor(t.bounds, PIN_SIZE, { dropPoint: point });
+  pins[agent] = clampPin({ x: dock.x, y: dock.y });
+  pinDocks.set(agent, { hwnd: t.hwnd, corner: dock.corner });
+  setView({ pins });
+  ensurePinDockTimer();
+  return dock;
+}
+
+/** "Stay N seconds" for a companion: back into the ring after N. */
+function schedulePinReturn(agent, ms) {
+  const timer = setTimeout(() => {
+    const pins = { ...state.swarmView.pins };
+    if (!pins[agent]) return; // moved or unpinned already
+    delete pins[agent];
+    pinDocks.delete(agent);
+    setView({ pins });
+  }, Math.max(0, Number(ms) || 0));
+  if (timer.unref) timer.unref();
+}
+
+function unpinToRing(agent) {
+  const pins = { ...state.swarmView.pins };
+  delete pins[agent];
+  pinDocks.delete(agent);
+  setView({ pins });
+}
+
+function ensurePinDockTimer() {
+  if (pinDockTimer || pinDocks.size === 0) return;
+  pinDockTimer = setInterval(() => { void refreshPinDocks(); }, PIN_DOCK_MS);
+  if (pinDockTimer.unref) pinDockTimer.unref();
+}
+
+async function refreshPinDocks() {
+  if (quitting) return;
+  for (const [agent, info] of [...pinDocks]) {
+    if (!state.swarmView.pins[agent]) { pinDocks.delete(agent); continue; }
+    if (!probe) probe = spiritProbe.createWindowProbe();
+    let now;
+    try { now = await probe.rectOf(info.hwnd, { excludePid: process.pid }); } catch { now = null; }
+    if (!now) {
+      unpinToRing(agent); // the window closed: home, back into the ring
+      continue;
+    }
+    const win = ensurePin(agent);
+    if (!alive(win)) continue;
+    const minimised = now.minimised || fairyDrop.windowState(now.bounds, { visible: now.visible }) === "minimised";
+    if (minimised) {
+      try { if (win.isVisible()) win.hide(); } catch { /* gone */ }
+      continue;
+    }
+    const at = clampPin(fairyDrop.cornerAnchor(now.bounds, info.corner, PIN_SIZE));
+    const cur = win.getBounds();
+    if (cur.x !== at.x || cur.y !== at.y) win.setBounds({ ...at, ...PIN_SIZE });
+    if (!win.isVisible() && orbVisible()) { try { win.showInactive(); } catch { /* gone */ } }
+    const stored = state.swarmView.pins[agent];
+    if (stored && (stored.x !== at.x || stored.y !== at.y)) setView({ pins: { ...state.swarmView.pins, [agent]: at } });
+  }
+  if (pinDocks.size === 0 && pinDockTimer) {
+    clearInterval(pinDockTimer);
+    pinDockTimer = null;
+  }
 }
 
 // -- menu picks -------------------------------------------------------------------
@@ -1474,6 +1576,16 @@ function pinAgent(agent, at = null) {
 async function controlPick(what, ms) {
   const agent = String((ms && ms.agent) || "");
   const view = state.swarmView;
+  // "When I drop it…" -- a per-fairy answer to the drop behaviour (owner 2026-11-23).
+  if (what.startsWith("fc:drop:")) {
+    const rest = what.slice("fc:drop:".length);
+    const patch = rest === "pin" ? { mode: "pin" }
+      : rest === "return" ? { mode: "return" }
+        : rest.startsWith("timed:") ? { mode: "timed", seconds: Number(rest.slice(6)) || 10 }
+          : null;
+    if (!patch) return { ok: false, error: `unknown drop row ${what}` };
+    return setDropBehavior(agent, patch);
+  }
   if (what === "fc:chat") return chatWithAgent(agent);
   if (what === "fc:grow") {
     let r;
@@ -2577,8 +2689,26 @@ async function refreshAttach() {
       return;
     }
     followMisses = 0;
-    bounds = now.bounds;
     attach.title = now.title || attach.title;
+    // A minimised window: the fairy waits with it (hidden) and comes back when the
+    // window is restored. A closed window resolves as null above and flies home.
+    if (now.minimised || fairyDrop.windowState(now.bounds, { visible: now.visible }) === "minimised") {
+      if (!attach.minimised) {
+        attach.minimised = true;
+        if (alive(orbWindow) && orbWindow.isVisible()) {
+          try { orbWindow.hide(); } catch { /* gone */ }
+        }
+        hideVeil();
+      }
+      return;
+    }
+    if (attach.minimised) {
+      attach.minimised = false;
+      if (state.visible && alive(orbWindow) && !orbWindow.isVisible()) {
+        try { orbWindow.showInactive(); } catch { /* gone */ }
+      }
+    }
+    bounds = now.bounds;
   } else if (attach.kind === "desk" && attach.windowId) {
     const { BrowserWindow } = electron();
     const win = BrowserWindow.fromId(attach.windowId);
@@ -2630,7 +2760,8 @@ function startOrbit() {
 
 /** A free spirit (not set free by the owner) finds an avatar and starts orbiting it. */
 async function seekAvatar() {
-  if (attach || flight || tripBusy || dragging || nudging || state.freeRoam || !orbVisible()) return;
+  // A hand-placed fairy is not seeking a body: it stays where the owner put it.
+  if (attach || flight || tripBusy || dragging || nudging || state.freeRoam || manualPlacement || resolvingDrop || !orbVisible()) return;
   const body = (await attachableTargets()).find((t) => t && t.kind === "avatar");
   if (body) await attachTo(body, { quiet: true });
 }
@@ -2640,7 +2771,7 @@ let hoverTimer = null;
 function startHover() {
   if (hoverTimer) return;
   hoverTimer = setInterval(() => {
-    if (attach || flight || tripBusy || dragging || nudging || !orbVisible()) return;
+    if (attach || flight || tripBusy || dragging || nudging || resolvingDrop || !orbVisible()) return;
     if (state.x == null || state.y == null) return;
     const d = spiritCore.hoverOffset(Date.now());
     // The hover circles the RESTING spot: the saved one, kept inside the area the
@@ -2657,7 +2788,7 @@ function startSeek() {
   if (seekTimer.unref) seekTimer.unref();
 }
 
-async function attachTo(target, { quiet = false } = {}) {
+async function attachTo(target, { quiet = false, dropPoint = null } = {}) {
   if (!target || !spiritCore.normBounds(target.bounds)) {
     fail("That is not something I can attach to.");
     return { ok: false, error: "no usable bounds" };
@@ -2670,8 +2801,17 @@ async function attachTo(target, { quiet = false } = {}) {
     flight.cancelled = true;
     finishFlight();
   }
+  // An explicit attach replaces a pending "stay N seconds" return.
+  clearDropReturn();
   if (!attach && !home) home = orbCenter();
   const next = { ...target, bounds: spiritCore.normBounds(target.bounds) };
+  // A hand drop remembers which corner it chose (fixed for the life of the attach)
+  // and where the pointer was, so the first dock is the nearest corner -- not the
+  // top-right the fairy would otherwise fly across the window to reach.
+  if (dropPoint && next.kind !== "avatar") {
+    next.corner = fairyDrop.nearestCorner(next.bounds, dropPoint);
+    next.dropPoint = { x: Math.round(Number(dropPoint.x) || 0), y: Math.round(Number(dropPoint.y) || 0) };
+  }
   next.tint = next.kind === "avatar"
     ? spiritCore.tintFor(next.slotId, next.tint || next.color || next.colour)
     : restTint();
@@ -2709,6 +2849,11 @@ function detach({ silent = false, reason = null } = {}) {
   stopOrbit();
   const was = attach;
   attach = null;
+  // A window that minimised hid the fairy; when it closes the fairy comes back
+  // home, so it must be visible for the flight.
+  if (state.visible && alive(orbWindow) && !orbWindow.isVisible()) {
+    try { orbWindow.showInactive(); } catch { /* gone */ }
+  }
   tint = restTint();
   sendTint();
   if (reason) pushStatus(reason, 6000, 6000);
@@ -4479,11 +4624,69 @@ function spiritMenu() {
   return orbMenu({ atFairy: true });
 }
 
+// ── drop behaviour (fairy-drop.cjs, owner 2026-11-23) ───────────────────────
+/** The behaviour in force for one fairy ("orb" for the main fairy). */
+function dropBehaviorFor(agent = "") {
+  return fairyDrop.behaviorFor(state, agent);
+}
+
+function clearDropReturn() {
+  if (dropReturnTimer) {
+    clearTimeout(dropReturnTimer);
+    dropReturnTimer = null;
+  }
+}
+
+/** "Stay N seconds": fly home (to where it rested before the drop) unless something
+ *  else attaches first. A null delay is "pin": no timer at all. */
+function scheduleReturnAfter(ms, homeSpot = null) {
+  clearDropReturn();
+  if (ms == null) return;
+  dropReturnTimer = setTimeout(() => {
+    dropReturnTimer = null;
+    if (quitting || !state.visible) return;
+    if (attach) detach({ silent: true });
+    if (homeSpot && homeSpot.x != null && homeSpot.y != null) {
+      state.x = homeSpot.x;
+      state.y = homeSpot.y;
+      saveState();
+    }
+    void flyHome(520);
+  }, Math.max(0, Number(ms) || 0));
+  if (dropReturnTimer.unref) dropReturnTimer.unref();
+}
+
+/** Settings: set the GLOBAL default for new drops. */
+function setDropDefault(patch) {
+  const next = fairyDrop.normalizeDrop({ ...(state.drop || {}), ...(patch && typeof patch === "object" ? patch : {}) });
+  state = { ...state, drop: next };
+  saveState();
+  return { ok: true, drop: next };
+}
+
+/** A fairy's menu: set ONE fairy's answer ("orb" for the main fairy). */
+function setDropBehavior(agent, patch) {
+  const current = fairyDrop.behaviorFor(state, agent);
+  const next = fairyDrop.normalizeDrop({ ...current, ...(patch && typeof patch === "object" ? patch : {}) });
+  state = fairyDrop.withBehavior(state, agent, next);
+  saveState();
+  return { ok: true, agent: fairyDrop.behaviorKey(agent), drop: next };
+}
+
+/** The Settings page's view: the global default plus per-fairy overrides. */
+function dropSettings() {
+  return { drop: { ...(state.drop || fairyDrop.normalizeDrop(null)) }, byAgent: { ...(state.dropBy || {}) } };
+}
+
 // ── drag and click ──────────────────────────────────────────────────────────
 
 function beginDrag() {
   if (dragging || !alive(orbWindow)) return { ok: true };
   hideTip();
+  // A new grab cancels a pending "stay N seconds" return; the placement itself is
+  // cleared only when this drag actually drops somewhere (a plain click must not
+  // hand a pinned fairy back to follow).
+  clearDropReturn();
   // Grabbing the fairy mid-nudge: the owner saw it. It stays where they put it.
   if (nudging) endNudge("seen", { stay: true });
   // Pulling the orb off a body/window detaches it; dropping it again re-attaches.
@@ -4515,6 +4718,9 @@ function beginDrag() {
 async function endDrag() {
   if (!dragging) return { ok: true, click: false };
   const moved = dragging.moved > CLICK_SLOP_PX;
+  // Where it rested BEFORE this drop: a "return" goes back there, not to where it
+  // was let go.
+  const restBefore = { x: state.x, y: state.y };
   let dropPoint;
   try {
     const { screen } = electron();
@@ -4536,15 +4742,54 @@ async function endDrag() {
   }
   let attached = null;
   if (moved && dropPoint) {
-    const target = await resolveDropTarget(dropPoint);
-    // Dropped on a body -> it orbits again; dropped anywhere else -> it stays free.
-    state.freeRoam = !(target && target.kind === "avatar");
-    saveState();
-    if (target) {
-      await attachTo(target);
-      attached = publicAttach();
-    } else {
-      hideVeil();
+    resolvingDrop = true;
+    try {
+      const target = await resolveDropTarget(dropPoint);
+      // The owner placed it: until the next drag, follow, seek and the AitherOS
+      // dock must not move it. This is the "flies away again" bug.
+      manualPlacement = true;
+      // Dropped on a body -> it orbits again; anywhere else -> it stays free.
+      state.freeRoam = !(target && target.kind === "avatar");
+      saveState();
+      clearDropReturn();
+      const verdict = fairyDrop.decideDrop(dropBehaviorFor("orb"));
+      if (target && target.kind === "avatar") {
+        // A body is not a window: the fairy orbits it, as it always has.
+        await attachTo(target, { dropPoint });
+        attached = publicAttach();
+      } else if (target) {
+        if (verdict.dock) {
+          await attachTo(target, { dropPoint, quiet: true });
+          attached = publicAttach();
+          if (verdict.returnAfterMs != null) scheduleReturnAfter(verdict.returnAfterMs, restBefore);
+        } else {
+          // "Return immediately": today's behaviour, kept as an option. It goes back
+          // to where it rested BEFORE the drop, not to where it was let go.
+          attach = null;
+          hideVeil();
+          if (restBefore.x != null && restBefore.y != null) {
+            state.x = restBefore.x;
+            state.y = restBefore.y;
+            saveState();
+          }
+          void flyHome(520);
+        }
+      } else {
+        // No window under the drop: pin keeps it here, "return" goes home.
+        hideVeil();
+        if (verdict.dock) {
+          scheduleReturnAfter(verdict.returnAfterMs, restBefore);
+        } else {
+          if (restBefore.x != null && restBefore.y != null) {
+            state.x = restBefore.x;
+            state.y = restBefore.y;
+            saveState();
+          }
+          void flyHome(520);
+        }
+      }
+    } finally {
+      resolvingDrop = false;
     }
   }
   return { ok: true, click: !moved, moved, attached };
@@ -4806,6 +5051,7 @@ function fairyMenuFor(cardId, agent = "", { atFairy = false } = {}) {
     label, agent: key, muted: view.muted.includes(key), pinned: Boolean(view.pins[key]),
     hasSession: Boolean((card && card.sessionId) || key.startsWith("session-")),
     canGrow: typeof (attentionHooks && attentionHooks.growAgent) === "function",
+    drop: dropBehaviorFor(key),
   }).filter((r) => card || r.id !== "fc:chat"); // no card: the base menu's "Talk to" is the chat row
   const items = [...base.items, { sep: true }, ...rows];
   // No companion rows here (hide all, quiet, quit...): they live on the orb's menu and the tray, and
@@ -4852,12 +5098,19 @@ function displayModeInForce() {
  *  every open from the ONE command list, so the Display tick is read from the mode
  *  actually in force at the moment the menu opens -- never a stale render. */
 function orbMenu({ atFairy = false, at = null, page = 0 } = {}) {
-  return showMenu("orb", fairyMenu.orbItems({
+  const built = fairyMenu.orbItems({
     waiting: attentionCards.length, quietUntil: state.muteUntil, tenantVisible: Boolean(state.tenantCompanion),
     fairyVisible: orbVisible(), nowMs: Date.now(), avatar: avatarMode(),
     bodies: hookValue("aitherBodies") || [], swarm: allCompanions.length,
     display: displayMode.modeItems({ mode: displayModeInForce() }), displayMode: display.mode,
-  }), { atFairy, radial: true, at, page });
+  });
+  // "When I drop it…" for the ORB itself (fairy-drop.cjs, owner 2026-11-23), placed
+  // just before the final "More…" door.
+  const items = Array.isArray(built.items) ? built.items : [];
+  const more = items.findIndex((i) => i && i.id === "more");
+  const insertAt = more > 0 && items[more - 1] && items[more - 1].sep ? more - 1 : (more >= 0 ? more : items.length);
+  built.items = [...items.slice(0, insertAt), ...fairyDrop.menuRows(dropBehaviorFor("orb")), ...items.slice(insertAt)];
+  return showMenu("orb", built, { atFairy, radial: true, at, page });
 }
 
 /** The card a fairy menu is about, still open, or null. */
@@ -5523,6 +5776,9 @@ function stopOrb() {
   toolFlightPlanner.reset();
   stopFollow();
   stopOrbit();
+  clearDropReturn();
+  if (pinDockTimer) { clearInterval(pinDockTimer); pinDockTimer = null; }
+  pinDocks = new Map();
   if (seekTimer) { clearInterval(seekTimer); seekTimer = null; }
   if (hoverTimer) { clearInterval(hoverTimer); hoverTimer = null; }
   if (spriteTimer) { clearInterval(spriteTimer); spriteTimer = null; }
@@ -5680,6 +5936,9 @@ module.exports = {
   pinWindows: () => pinWindows, __setForeground: (rect) => { fgContent = fairyControl.contentRect(rect); sendSwarmView(); },
   // Follow the focused window (plan A4): the tray toggle, the rule's inputs and outputs.
   setFollow, followState,
+  // Drop behaviour (fairy-drop.cjs, owner 2026-11-23): the Settings default, one
+  // fairy's own answer, and where the two live.
+  setDropDefault, setDropBehavior, dropSettings, dropBehaviorFor,
   __feedForeground: (fg) => { onForeground(fg); },
   __setFollowChangedAt: (t) => { followChangedAt = Number(t) || 0; },
   __followSeen: () => followSeen,
@@ -5742,6 +6001,11 @@ module.exports = {
     selectedAgent = "";
     pinDrag = null;
     if (pinWatchdog) { clearTimeout(pinWatchdog); pinWatchdog = null; }
+    clearDropReturn();
+    manualPlacement = false;
+    resolvingDrop = false;
+    pinDocks = new Map();
+    if (pinDockTimer) { clearInterval(pinDockTimer); pinDockTimer = null; }
     fgContent = null;
     followSeen = null;
     followChangedAt = 0;

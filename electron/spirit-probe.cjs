@@ -49,6 +49,7 @@ const PROBE_SCRIPT = [
   "  [DllImport(\"user32.dll\")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);",
   "  [DllImport(\"user32.dll\")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);",
   "  [DllImport(\"user32.dll\")] public static extern bool IsWindowVisible(IntPtr hWnd);",
+  "  [DllImport(\"user32.dll\")] public static extern bool IsIconic(IntPtr hWnd);",
   "  [DllImport(\"user32.dll\")] public static extern int GetWindowTextLength(IntPtr hWnd);",
   "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);",
   "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int count);",
@@ -79,7 +80,7 @@ const PROBE_SCRIPT = [
   "  [void][AitherWin]::GetWindowThreadProcessId($h, [ref]$procId)",
   "  $proc = ''",
   "  try { $proc = (Get-Process -Id $procId -ErrorAction Stop).ProcessName } catch { }",
-  "  return @{ ok = $true; hwnd = $h.ToInt64(); title = [AitherWin]::Title($h); className = [AitherWin]::Class($h); process = $proc; pid = $procId; visible = [AitherWin]::IsWindowVisible($h); rect = @{ x = $r.Left; y = $r.Top; width = ($r.Right - $r.Left); height = ($r.Bottom - $r.Top) } }",
+  "  return @{ ok = $true; hwnd = $h.ToInt64(); title = [AitherWin]::Title($h); className = [AitherWin]::Class($h); process = $proc; pid = $procId; visible = [AitherWin]::IsWindowVisible($h); minimised = [AitherWin]::IsIconic($h); rect = @{ x = $r.Left; y = $r.Top; width = ($r.Right - $r.Left); height = ($r.Bottom - $r.Top) } }",
   "}",
   "while ($true) {",
   "  $line = [Console]::In.ReadLine()",
@@ -194,7 +195,12 @@ function targetFromAnswer(answer, { excludePid = null } = {}) {
   if (!answer.rect) return null;
   const width = Number(answer.rect.width);
   const height = Number(answer.rect.height);
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 40 || height < 40) return null;
+  // A MINIMISED window is still attached to (so the fairy can wait for it to come
+  // back): Windows parks its rect far off-screen, so its size is not a reason to
+  // drop it. A normal window needs a rect big enough to stand on.
+  const minimised = answer.minimised === true;
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  if (!minimised && (width < 40 || height < 40)) return null;
   if (excludePid != null && Number(answer.pid) === Number(excludePid)) return null;
   return {
     kind: "window",
@@ -203,6 +209,8 @@ function targetFromAnswer(answer, { excludePid = null } = {}) {
     process: String(answer.process || ""),
     pid: Number(answer.pid) || null,
     className: String(answer.className || ""),
+    visible: answer.visible !== false,
+    minimised,
     bounds: {
       x: Math.round(Number(answer.rect.x) || 0),
       y: Math.round(Number(answer.rect.y) || 0),

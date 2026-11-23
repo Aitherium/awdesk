@@ -1620,7 +1620,8 @@ test("right click on a companion: the pill menu with every action, focused, besi
   assert.equal(r.ok, true);
   assert.deepEqual(r.items, ["open", "answer:yes", "snooze:1h", "snooze:4h", "snooze:tomorrow",
     "mute", "dismiss", "session", "link:open-aither", "link:open-system", "copy",
-    "fc:chat", "fc:grow", "fc:mute", "fc:pin", "fc:hide", "fc:session", "sv:menu"]);
+    "fc:chat", "fc:grow", "fc:mute", "fc:pin", "fc:hide", "fc:session", "sv:menu",
+    "fc:drop:pin", "fc:drop:timed:10", "fc:drop:return"]);
   const mw = menuWin();
   assert.ok(mw.isVisible());
   assert.equal(mw.focused, true, "focused, so arrows / Enter / Esc work");
@@ -1712,7 +1713,7 @@ test("right click on the orb: inbox, answer window, quiet 1 h (nudges held), set
   const r = await invoke("desk:orb-menu", orbWin());
   assert.deepEqual(r.items, ["inbox", "queue", "hide-this", "hide-all", "show-all", "open-desktop", "open-spaces",
     "open-chat", "settings", "quiet-1h", "quiet-4h", "quit", "sv:menu",
-    "dm:avatar", "dm:fairy", "dm:both", "dm:swarm", "more"]); // the card's fairy is in the cluster
+    "dm:avatar", "dm:fairy", "dm:both", "dm:swarm", "fc:drop:pin", "fc:drop:timed:10", "fc:drop:return", "more"]); // the card's fairy is in the cluster
   assert.match(lastSent(menuWin(), "orb:menu").header, /1 waiting on you/);
   assert.equal((await invoke("desk:menu-pick", menuWin(), "inbox")).ok, true);
   assert.deepEqual(calls.open, [null], "the Inbox, on no card in particular");
