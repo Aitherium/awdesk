@@ -194,7 +194,13 @@ async function invoke(channel, win, ...args) {
 }
 
 function image() {
-  return { isEmpty: () => false, toPNG: () => Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]) };
+  return {
+    isEmpty: () => false,
+    getSize: () => ({ width: 800, height: 600 }),
+    resize: () => image(),
+    toJPEG: () => Buffer.from([0xff, 0xd8, 0xff, 1, 2, 3, 4]),
+    toPNG: () => Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]),
+  };
 }
 
 function captureFake({ onFrame = null } = {}) {

@@ -221,7 +221,8 @@ test("door 0: MicroScheduler Bonsai at user priority answers first", async () =>
   assert.equal(r.text, "A code editor.");
   assert.match(sent[0].url, /\/v1\/chat\/completions$/);
   assert.equal(sent[0].payload.priority, "user", "a desk ask must not queue behind background work");
-  assert.deepEqual(sent.map((x) => x.payload.model).sort(), ["bonsai-27b-dgx", "bonsai2-27b-5090"], "both Bonsai lanes are raced");
+  assert.deepEqual(sent.map((x) => x.payload.model), ["bonsai2-27b-5090"],
+    "only the lane the platform actually serves is dialled by default -- racing the retired DGX lane hung every ask");
   assert.match(sent[0].payload.messages[0].content[1].image_url.url, /^data:image\//);
 });
 
@@ -234,16 +235,29 @@ test("door 0 failing falls through to the other doors, and says why", async () =
   assert.match(m.error, /502/);
 });
 
-test("the first Bonsai lane to answer wins the race", async () => {
+test("the first Bonsai lane to answer wins the race, and the loser is aborted", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orbvis-"));
   const file = path.join(dir, "s.png");
   fs.writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-  const r = await vision.askViaScheduler(file, "q", {
-    postJson: async (_url, payload) => {
-      if (payload.model === "bonsai2-27b-5090") { await new Promise((res) => setTimeout(res, 200)); return { status: 502, body: "" }; }
-      return { status: 200, body: JSON.stringify({ model: payload.model, choices: [{ message: { content: "dgx answer" } }] }) };
-    },
-  });
-  assert.equal(r.ok, true);
-  assert.equal(r.text, "dgx answer");
+  const prev = process.env.AWDESK_VISION_MODEL;
+  process.env.AWDESK_VISION_MODEL = "lane-a,lane-b";
+  try {
+    let loserSignal = null;
+    const r = await vision.askViaScheduler(file, "q", {
+      postJson: async (_url, payload, _timeout, signal) => {
+        if (payload.model === "lane-a") {
+          loserSignal = signal;
+          await new Promise((res) => setTimeout(res, 300));
+          return { status: 502, body: "" };
+        }
+        return { status: 200, body: JSON.stringify({ model: payload.model, choices: [{ message: { content: "lane-b answer" } }] }) };
+      },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.text, "lane-b answer");
+    assert.equal(loserSignal && loserSignal.aborted, true, "the losing lane's request is aborted, not left holding a slot");
+  } finally {
+    if (prev === undefined) delete process.env.AWDESK_VISION_MODEL;
+    else process.env.AWDESK_VISION_MODEL = prev;
+  }
 });
