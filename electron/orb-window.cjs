@@ -75,7 +75,8 @@ const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
 const NUDGE_SIZE = Object.freeze({ width: 420, height: 188 });
 /** The whisper grows to its content (full button labels), within these bounds. */
 const NUDGE_MIN_H = 140;
-const NUDGE_MAX_H = 560;
+/** Absolute safety bound; the real cap is 70% of the display (card-stay.heightCap). */
+const NUDGE_MAX_H = 2000;
 const ATTENTION_TICK_MS = 15_000;
 const NUDGE_STEP_MS = 250;
 const TICK_MS = 250;
@@ -4649,12 +4650,24 @@ async function attentionTick() {
   }
 }
 
+/** The whisper's size: the owner's remembered width, and either its content
+ *  height (fit, capped at 70% of the display) or the height they left it at. */
+let nudgeContentH = 0;
+let nudgeSettingBounds = false;
+function cardWindowSize(area = null) {
+  const card = cardStay.normalizeCard(state.card);
+  const cap = cardStay.heightCap(area || displayForOrb().workArea);
+  const height = Math.min(card.fit ? (nudgeContentH || card.height) : card.height, cap);
+  return { width: card.width, height: Math.max(NUDGE_MIN_H, height) };
+}
+
 function ensureNudge() {
   if (alive(nudgeWindow)) return nudgeWindow;
   const { BrowserWindow } = electron();
+  const size = cardWindowSize();
   nudgeWindow = new BrowserWindow({
-    ...NUDGE_SIZE,
-    show: false, frame: false, transparent: true, resizable: false, movable: false,
+    ...size,
+    show: false, frame: false, transparent: true, resizable: true, movable: false,
     minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true,
     // focusable:false -- the whisper NEVER takes the keyboard from what the owner is doing.
     alwaysOnTop: true, hasShadow: false, focusable: false, title: "Aither nudge",
@@ -4675,6 +4688,14 @@ function ensureNudge() {
   // transparent margin and a whisper you are not touching never block a click.
   nudgeWindow.setIgnoreMouseEvents(true, { forward: true });
   nudgeWindow.on("closed", () => { nudgeWindow = null; });
+  // The owner dragged an edge: remember the size and stop auto-fitting, so the
+  // next content measurement cannot snap the window back. Settings can re-enable fit.
+  nudgeWindow.on("resize", () => {
+    if (nudgeSettingBounds || !alive(nudgeWindow)) return;
+    const b = nudgeWindow.getBounds();
+    state = { ...state, card: cardStay.normalizeCard({ ...state.card, width: b.width, height: b.height, fit: false }) };
+    saveState();
+  });
   void nudgeWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "nudge" } });
   return nudgeWindow;
 }
@@ -4697,7 +4718,10 @@ function showWhisper() {
   cancelNudgeHide();
   const win = ensureNudge();
   const at = nudging.whisperAt || { x: 0, y: 0 };
-  win.setBounds({ x: Math.round(at.x), y: Math.round(at.y), ...NUDGE_SIZE });
+  const size = cardWindowSize();
+  nudgeSettingBounds = true;
+  win.setBounds({ x: Math.round(at.x), y: Math.round(at.y), ...size });
+  nudgeSettingBounds = false;
   nudging.shown = true;
   sendNudge("orb:nudge-view", { ...nudging.view, side: nudging.side || "right" });
   if (!win.isVisible()) win.showInactive();
@@ -4788,7 +4812,7 @@ function startNudge(decision, { peek = false } = {}) {
       cursor = screen.getCursorScreenPoint();
       area = screen.getDisplayNearestPoint(cursor).workArea;
     } catch { area = displayForOrb().workArea; }
-    const place = fairyAttention.nudgePlacement(cursor, area, ORB_SIZE, NUDGE_SIZE, { obstacles: allObstacles() });
+    const place = fairyAttention.nudgePlacement(cursor, area, ORB_SIZE, cardWindowSize(area), { obstacles: allObstacles() });
     n.anchor = place.orb;
     n.whisperAt = place.whisper;
     n.side = place.side;
@@ -4804,8 +4828,9 @@ function startNudge(decision, { peek = false } = {}) {
   } else {
     // A glow: the whisper beside the fairy where it rests.
     const [x, y] = orbWindow.getPosition();
+    const area = fairyArea(displayForOrb().workArea);
     n.whisperAt = orbCore.bubblePosition(
-      { x, y, width: ORB_SIZE.width, height: ORB_SIZE.height }, NUDGE_SIZE, fairyArea(displayForOrb().workArea), 6,
+      { x, y, width: ORB_SIZE.width, height: ORB_SIZE.height }, cardWindowSize(area), area, 6,
     );
     showWhisper();
   }
@@ -4896,20 +4921,36 @@ async function nudgeAct(action, key) {
   const card = n.decision.card;
   const what = String(action || "");
   if (what === "size") {
-    // The page measured its card; fit the window to it and keep it on screen.
-    const h = Math.max(NUDGE_MIN_H, Math.min(NUDGE_MAX_H, Math.round(Number(key) || 0)));
-    if (!alive(nudgeWindow) || !h) return { ok: false };
+    // The page measured its card: fit the window to it (up to 70% of the display)
+    // unless the owner turned fit off or resized it by hand. Beyond the cap the
+    // page scrolls inside the window.
+    const measured = Math.max(NUDGE_MIN_H, Math.min(NUDGE_MAX_H, Math.round(Number(key) || 0)));
+    if (!alive(nudgeWindow) || !measured) return { ok: false };
+    nudgeContentH = measured;
+    const card = cardStay.normalizeCard(state.card);
     const b = nudgeWindow.getBounds();
     let y = b.y;
     let x = b.x;
+    let cap = NUDGE_MAX_H;
     try {
       const { screen } = electron();
       const area = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y }).workArea;
+      cap = cardStay.heightCap(area);
+      const h = Math.min(card.fit ? measured : card.height, cap);
       if (y + h > area.y + area.height) y = Math.max(area.y, area.y + area.height - h);
-      x = Math.min(Math.max(b.x, area.x), area.x + area.width - NUDGE_SIZE.width);
-    } catch { /* no screen module (tests) */ }
-    nudgeWindow.setBounds({ x, y, width: NUDGE_SIZE.width, height: h });
-    return { ok: true, height: h };
+      x = Math.min(Math.max(b.x, area.x), area.x + area.width - card.width);
+      nudgeSettingBounds = true;
+      nudgeWindow.setBounds({ x, y, width: card.width, height: h });
+      nudgeSettingBounds = false;
+      return { ok: true, height: h, width: card.width, cap };
+    } catch {
+      /* no screen module (tests) */
+      const h = Math.min(card.fit ? measured : card.height, cap);
+      nudgeSettingBounds = true;
+      nudgeWindow.setBounds({ x, y, width: card.width, height: h });
+      nudgeSettingBounds = false;
+      return { ok: true, height: h, width: card.width, cap };
+    }
   }
   if (what === "hover") {
     n.hovered = key === true || key === "true";
@@ -5228,6 +5269,8 @@ function setCardSettings(patch) {
     try { bubbleWindow.setMovable(next.pin); } catch { /* Windows: no-op on a gone window */ }
   }
   armCardIdle();
+  // The whisper may be up: apply a new width/height/fit immediately.
+  if (nudging && alive(nudgeWindow)) void nudgeAct("size", String(nudgeContentH || next.height));
   return { ok: true, card: next };
 }
 

@@ -133,8 +133,8 @@ describe('DecisionRow', () => {
     const buttonAt = html.indexOf('1. I am looking now');
     expect(fairyAt).toBeGreaterThan(-1);
     expect(buttonAt).toBeGreaterThan(fairyAt);
-    expect(html).toContain('AitherOS-Fresh — Desktop canvas layout.');
     expect(html).toContain('I am looking now — Nothing else changes');
+    expect(html).not.toContain('Desktop canvas layout.</span>'); // never repeats the title above
     expect(html).toContain('Read it to me');
   });
 

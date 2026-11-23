@@ -384,34 +384,42 @@ function voiceLine(card, nowMs, { more = 0 } = {}) {
   return `Hey. ${title} is still waiting for you.${why ? ` ${why}.` : ""}${tail}`;
 }
 
+/** Normalised words, for "is this consequence just the label again?". */
+function plainWords(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/^(done|ok|okay|yes)\s*[-:]\s*/, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
 /**
- * ONE plain sentence on what the card is and what each answer does (owner
- * 2026-11-23), built ONLY from the card's own facts: its title and its options'
- * labels + consequences. Nothing is generated or inferred -- a card whose title
- * is wrong stays wrong here, which is how the classifier bug was caught.
- * "Read it to me" reads this exact sentence.
+ * ONE plain sentence: what each answer DOES, and nothing the title already says
+ * (owner 2026-11-23). A consequence that merely repeats its label is dropped, not
+ * printed twice ("Done: I added … — Done: I added …"). If no option adds anything,
+ * the fairy says NOTHING -- the title above is already the card. Built only from
+ * the card's own facts; "Read it to me" reads this exact sentence.
  */
 function fairySummary(card) {
   if (!card || typeof card !== "object") return "";
   const kind = lower(card.kind);
-  const head = String(card.title || "A decision")
-    .replace(/^Claude Code needs you:\s*/i, "")
-    .replace(/\s*\((?:G\d+|B[1-3])\)\s*$/i, "")
-    .trim()
-    .replace(/[.:;!?]+$/, "");
-  if (!head) return "";
-  if (kind === "credential") return `${head}. It needs a secret; open it to enter it.`;
+  if (kind === "credential") return "It needs a secret; open it to enter it.";
   const options = Array.isArray(card.options) ? card.options.slice(0, 4) : [];
-  if (!options.length) return `${head}.`;
   const parts = options.map((o) => {
     const label = String((o && (o.label || o.key)) || "").trim().slice(0, 60);
-    // The consequence's FIRST clause only: "The call stays blocked; the agent is
-    // told no." -> "The call stays blocked". Never invent a shorter meaning.
-    const consequence = String((o && o.consequence) || "").trim()
+    // The consequence's FIRST clause: "The call stays blocked; the agent is told
+    // no." -> "The call stays blocked". Never a shorter, invented meaning.
+    const clause = String((o && o.consequence) || "").trim()
       .split(/[.;]\s/)[0].replace(/[.;:!?]+$/, "").slice(0, 140);
-    return consequence ? `${label} — ${consequence}` : label;
+    const l = plainWords(label);
+    const c = plainWords(clause);
+    if (!c || !l) return "";
+    // The same words either way (or one wholly contains the other) says nothing
+    // about what the answer DOES: drop it.
+    if (c === l || l.includes(c) || c.startsWith(l) || l.startsWith(c)) return "";
+    return `${label} — ${clause}`;
   }).filter(Boolean);
-  return `${head}. ${parts.join("; ")}.`.slice(0, 480);
+  return parts.length ? `${parts.join("; ")}.`.slice(0, 480) : "";
 }
 
 /**
@@ -762,7 +770,7 @@ function whisperView(decision, nowMs = Date.now()) {
     why: decision.why || whyNow(card, nowMs),
     // ONE plain sentence, from the card's own facts: what it is, what each answer
     // does. The whisper streams it above the buttons; "Read it to me" speaks it.
-    fairy: kind === "credential" ? "" : fairySummary(card),
+    fairy: fairySummary(card),
     // Owner 2026-11-08: "I need this to give me more info". The whisper carries
     // what the card actually says -- its summary, its facts -- not just a title.
     summary: kind === "credential" ? "" : clip(String(card.summary || card.detail || ""), 420),
