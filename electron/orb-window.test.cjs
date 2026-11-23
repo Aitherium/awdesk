@@ -1907,11 +1907,14 @@ test("a hidden fairy never docks itself onto the AitherOS window", async () => {
   assert.ok(!orbWin().isVisible());
 });
 
-test("the orb and swarm pages: right click opens the pill menu, hover only dwells a tip, the menu page handles keys", () => {
+test("the orb and swarm pages: right click opens the ONE ring, hover only dwells a tip, the menu page handles keys", () => {
   const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
   const orb = html.slice(html.indexOf('if (view === "orb")'), html.indexOf('if (view === "swarm")'));
   assert.match(orb, /api\.fairyMenu\(m\.cardId, m\.agent\)/);
-  assert.match(orb, /api\.orbMenu\(\)/);
+  // Owner 2026-11-23: the pill menu is retired into the ONE ring; a right-click on the
+  // fairy must open the ring (the "This fairy" page), never the old api.orbMenu path.
+  assert.match(orb, /else api\.menu\(\)/);
+  assert.doesNotMatch(orb, /api\.orbMenu/, "the retired pill menu is not reachable from a right-click");
   const swarm = html.slice(html.indexOf('if (view === "swarm")'), html.indexOf("// ── the right-click menu"));
   assert.match(swarm, /addEventListener\("contextmenu"[\s\S]*api\.fairyMenu\(hotMate\.id, hotMate\.agent\)/);
   assert.match(swarm, /dwell\.on\(/, "the hover is a dwell, not a peek");

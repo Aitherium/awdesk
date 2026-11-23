@@ -950,14 +950,14 @@
     }
     orb.addEventListener("pointerup", up);
     orb.addEventListener("pointercancel", () => { if (downAt) { downAt = null; api.dragEnd(); } });
-    // RIGHT click: a companion's menu (its card), else the orb's own menu. Both are
-    // the pill menu (orb.html view=menu), keyboard-navigable, Esc closes.
+    // RIGHT click: a companion's own menu (its card), else the fairy's ONE ring on the
+    // "This fairy" page. Owner 2026-11-23: the pill menu is retired into the ring, so
+    // this handler opens the ring and never the old pill menu again.
     window.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       dwell.off();
       const m = mateUnder(e);
       if (m && api.fairyMenu) api.fairyMenu(m.cardId, m.agent);
-      else if (api.orbMenu) api.orbMenu();
       else api.menu();
     });
     // Esc mid-trip cancels and brings the spirit home; otherwise it hides.
