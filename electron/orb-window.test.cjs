@@ -119,6 +119,7 @@ class FakeWindow extends EventEmitter {
   }
   getBounds() { return { ...this.bounds }; }
   setBounds(next) { Object.assign(this.bounds, next); }
+  setMovable(movable) { this.movable = Boolean(movable); }
   isVisible() { return this.visible && !this.destroyed; }
   /** Z-order, top first, the way GetWindow(GW_HWNDNEXT) walks it: a show or a
    *  moveTop puts a window on top. */
@@ -994,7 +995,10 @@ test("a trip that hangs never swallows the click: the ask box still opens, and t
   const trip = orbWindow.go({ kind: "search", target: "hangs" });
   await wait(400);
   const b = bubbleWin();
-  if (b && b.isVisible()) b.hide();
+  // Dismiss the card the hung trip opened (owner 2026-11-22: a click on the fairy
+  // dismisses an OPEN card, so the "click opens the ask box" half is tested with the
+  // card closed first). The click must still cancel the hung trip and open the box.
+  if (b && b.isVisible()) await invoke("desk:orb-close", b);
   orbWindow.setAttentionCards([blockedCard({ id: "d-trip" })]);
   if (orbWindow.nudging()) orbWindow.endNudge("seen", { stay: true });
   const r = await invoke("desk:orb-click", orbWin());
@@ -2101,7 +2105,7 @@ test("panel: the session line follows a pick, shows that session's cards, and an
   assert.deepEqual(v.cards, [], "another session's cards are not this one's");
 });
 
-test("panel: the window fits its content, and clicking elsewhere with the pointer off it closes it", async () => {
+test("panel: the window fits its content, and losing focus with the pointer off it KEEPS it open", async () => {
   start();
   orbWindow.openBubble({ focus: true });
   const bubble = bubbleWin();
@@ -2114,9 +2118,79 @@ test("panel: the window fits its content, and clicking elsewhere with the pointe
   cursor = { x: b.x + 10, y: b.y + 10 };
   bubble.emit("blur");
   assert.equal(bubble.isVisible(), true, "the pointer is still on it: it stays");
+  // Owner 2026-11-22: the card vanished before it could be read or screenshotted.
+  // Losing focus and moving the pointer away must no longer close it.
   cursor = { x: b.x + b.width + 300, y: b.y };
   bubble.emit("blur");
-  assert.equal(bubble.isVisible(), false, "left and clicked elsewhere: it closes");
+  assert.equal(bubble.isVisible(), true, "focus changed with the pointer away: it STAYS OPEN");
+  // The 250 ms pump must not hide it either (nothing else is "live" on the card).
+  orbWindow.pump();
+  assert.equal(bubble.isVisible(), true, "the pump keeps an open card open");
+  // Dismissals still work: the close button, and a click on the fairy.
+  await invoke("desk:orb-close", bubble);
+  assert.equal(bubble.isVisible(), false, "the × dismisses it");
+  orbWindow.openBubble({ focus: true });
+  assert.equal(bubble.isVisible(), true);
+  orbWindow.toggleBubbleFromOrb();
+  assert.equal(bubble.isVisible(), false, "a click on the fairy dismisses it");
+});
+
+test("the asking card's idle timeout is OFF by default and opt-in from its own setting", () => {
+  start();
+  const card = orbWindow.dropSettings().card;
+  assert.equal(card.mode, "open");
+  assert.equal(require("./card-stay.cjs").decide(card).closeAfterMs, null, "no timer by default");
+  const r = orbWindow.setCardSettings({ mode: "idle", idleSeconds: 30 });
+  assert.equal(r.ok, true);
+  assert.equal(r.card.mode, "idle");
+  assert.equal(r.card.idleSeconds, 30);
+  assert.equal(orbWindow.dropSettings().card.mode, "idle", "the Settings family reads it back");
+  orbWindow.setCardSettings({ mode: "open" });
+});
+
+test("a pinned card becomes draggable and docks to the nearest screen corner", async () => {
+  start();
+  orbWindow.openBubble({ focus: true });
+  const bubble = bubbleWin();
+  const r = await invoke("desk:orb-pin-card", bubble, true);
+  assert.equal(r.ok, true);
+  assert.equal(r.card.pin, true);
+  assert.equal(bubble.movable, true, "a pinned card can be dragged");
+  // The owner drags it to the top-left of the primary display.
+  bubble.setBounds({ x: 60, y: 60, width: bubble.bounds.width, height: bubble.bounds.height });
+  bubble.emit("moved");
+  await wait(320);
+  const area = displays[0].workArea;
+  const corner = require("./card-stay.cjs").dockCorner(area, bubble.getBounds());
+  const pos = require("./card-stay.cjs").dockPosition(area, { width: bubble.bounds.width, height: bubble.bounds.height }, corner);
+  assert.deepEqual({ x: bubble.getBounds().x, y: bubble.getBounds().y }, pos, "docked to the nearest corner");
+  assert.deepEqual({ x: orbWindow.state().card.x, y: orbWindow.state().card.y }, pos, "the spot is remembered");
+  await invoke("desk:orb-pin-card", bubble, false);
+  assert.equal(bubble.movable, false, "unpinning stops the window dragging");
+});
+
+test("new web results append into an open card instead of replacing or closing it", async () => {
+  let round = 0;
+  orbWindow.__setOps({
+    findFiles: async () => ({ ok: true, rows: [], more: 0, total: 0 }),
+    listFolder: async () => ({ ok: true, rows: [], more: 0, total: 0 }),
+    readFile: async () => ({ ok: true }),
+    webSearch: async () => {
+      round += 1;
+      return { ok: true, rows: [{ title: `hit ${round}`, url: `https://e.test/${round}`, snippet: "s" }], more: 0, total: 1 };
+    },
+  });
+  start();
+  orbWindow.openBubble({ focus: true });
+  const bubble = bubbleWin();
+  const b = bubble.getBounds();
+  cursor = { x: b.x + b.width + 500, y: b.y };
+  await orbWindow.run("web", { arg: "first" });
+  bubble.emit("blur");
+  await orbWindow.run("web", { arg: "second" });
+  assert.equal(bubble.isVisible(), true, "the card stayed open across the second search");
+  assert.deepEqual((orbWindow.results() || {}).rows.map((x) => x.title), ["hit 1", "hit 2"],
+    "the second search streamed into the open card instead of wiping the first");
 });
 
 test("panel markup: input on top, four small chips, one session line, no empty box", () => {
@@ -2129,6 +2203,9 @@ test("panel markup: input on top, four small chips, one session line, no empty b
   assert.doesNotMatch(markup, /id="empty"/, "no empty box");
   assert.doesNotMatch(markup, /What's on my screen\?<\/button>/, "chips are small labels, not sentences");
   assert.match(markup, /id="session"/);
+  // The card's own pin and drag bar (card-stay.cjs, owner 2026-11-22).
+  assert.match(markup, /id="s-pin"/, "the card has a pin button");
+  assert.match(markup, /id="dragbar"/, "a pinned card has a drag bar");
   assert.match(bubble, /\^attached to \/i/, "a status that repeats the session line is dropped");
 });
 
@@ -2434,10 +2511,13 @@ test("the counted bead opens the whole waiting list, never a chat", async () => 
   assert.equal(listed, 1);
 });
 
-test("the swarm page shows the cluster count and draws the bead as +N", () => {
+test("the swarm page keeps the cluster count behind the ring, never a floating number", () => {
   const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
   assert.match(html, /id="cluster-count"/);
-  assert.match(html, /c\.kind === "more" \? `\+\$\{Number\(c\.count\) \|\| 0\}`/);
+  // Owner 2026-11-22: no unlabelled "+40" over the cluster. The bead's count lives
+  // in its hover line (mateTip) and in the count element's title/aria.
+  assert.doesNotMatch(html, /c\.kind === "more" \? `\+\$/, "the bead draws no number");
+  assert.match(html, /countEl\.title = total > 0/, "the ring's total stays in the title");
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.match(main, /claim: \(\) => \(orbWindow\.carriesCards\(\) \? \{ attention: "fairy" \} : null\)/,
     "the heartbeat claim no longer needs the fairy companion mode or an on-screen fairy");

@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld("settingsBridge", {
   setDesktopRing: (on) => ipcRenderer.invoke("desk:settings-set-desktop-ring", on === true),
   // Where the ring opens: "centre" (default) or "click".
   setRingAt: (mode) => ipcRenderer.invoke("desk:settings-set-ring-at", String(mode || "centre")),
+  // How long the asking card stays open (card-stay.cjs, owner 2026-11-22).
+  setCard: (patch) => ipcRenderer.invoke("desk:settings-set-card", patch),
   probeAccel: (accel, excludeId) => ipcRenderer.invoke("desk:settings-probe-accel", accel, excludeId),
   setHotkey: (id, accel) => ipcRenderer.invoke("desk:settings-set-hotkey", id, accel),
   clearHotkey: (id) => ipcRenderer.invoke("desk:settings-set-hotkey", id, ""),

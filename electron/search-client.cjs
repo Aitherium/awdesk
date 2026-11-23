@@ -269,8 +269,15 @@ function createSearchClient({
       if (out.error.name === "AbortError" || out.error.code === "ABORT_ERR") {
         return { ok: false, error: "superseded by a newer search" };
       }
+      const tail = out.stderr.trim().split("\n").pop() || String(out.error.message);
+      // A half-installed editable awfind (its console script exists, its import does
+      // not) used to surface only the truncated Python traceback, which named no
+      // fix. Say which lane repairs it: the package's own editable install.
+      const broken = /ModuleNotFoundError/i.test(out.stderr) && /\bawfind\b/i.test(out.stderr);
       const why = out.error.code === "ENOENT" ? "awfind is not installed (pip install -e the awfind package)"
-        : out.error.killed ? "the search took too long" : (out.stderr.trim().split("\n").pop() || String(out.error.message));
+        : out.error.killed ? "the search took too long"
+          : broken ? "awfind is installed but its package is broken; reinstall it in its own lane: python -m pip install -e packages/awfind"
+            : tail;
       return { ok: false, error: why };
     }
     let data;

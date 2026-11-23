@@ -163,6 +163,19 @@
         </select>
       </div>
       <p class="note">The fairy flies there first for both the Alt+Space hold and the desktop right-click, then expands the ring around itself, and flies back when the ring closes.</p>
+      <div class="row" style="margin-top:14px">
+        <label>Asking card</label>
+        <select id="cardMode">
+          <option value="open">Stay open until I close it</option>
+          <option value="idle">Close after N seconds with no activity</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>…seconds</label>
+        <input type="number" id="cardSeconds" min="10" max="3600" step="5" style="width:6em">
+        <span class="note" style="margin:0">Off by default: the card stays until Esc, the ×, or a click on the fairy</span>
+      </div>
+      <p class="note">Pin on the card keeps it open and lets you drag it; it docks to the nearest screen corner, the same rule a dropped fairy follows.</p>
     </section>
 
     <section>
@@ -290,15 +303,27 @@
   // Fairy drops (fairy-drop.cjs, owner 2026-11-23): pin / stay N seconds / fly home.
   const dropModeSel = document.getElementById("dropMode");
   const dropSecondsEl = document.getElementById("dropSeconds");
+  // The asking card's stay rule (card-stay.cjs, owner 2026-11-22): OFF by default.
+  const cardModeSel = document.getElementById("cardMode");
+  const cardSecondsEl = document.getElementById("cardSeconds");
   function renderFairy(f) {
     const d = (f && f.drop) || { mode: "pin", seconds: 10 };
     dropModeSel.value = d.mode;
     dropSecondsEl.value = String(d.seconds || 10);
     dropSecondsEl.disabled = d.mode !== "timed";
+    const c = (f && f.card) || { mode: "open", idleSeconds: 60 };
+    cardModeSel.value = c.mode;
+    cardSecondsEl.value = String(c.idleSeconds || 60);
+    cardSecondsEl.disabled = c.mode !== "idle";
   }
   async function saveFairy(patch) {
     const result = await bridge.setFairy(patch);
     if (result && result.ok) { renderFairy(result.fairy || { drop: result.drop }); say("fairy drop saved", "ok"); }
+    else say("could not save: " + (result && result.error || "unknown"), "err");
+  }
+  async function saveCard(patch) {
+    const result = await bridge.setCard(patch);
+    if (result && result.ok) { renderFairy(result.fairy || { card: result.card }); say("card setting saved", "ok"); }
     else say("could not save: " + (result && result.error || "unknown"), "err");
   }
   dropModeSel.addEventListener("change", () => saveFairy({ mode: dropModeSel.value }));
@@ -321,6 +346,12 @@
   dropSecondsEl.addEventListener("change", () => {
     const secs = Math.round(Number(dropSecondsEl.value));
     if (!Number.isInteger(secs) || secs < 3 || secs > 600) { say("seconds must be 3 to 600", "err"); return; }    saveFairy({ mode: "timed", seconds: secs });
+  });
+  cardModeSel.addEventListener("change", () => saveCard({ mode: cardModeSel.value }));
+  cardSecondsEl.addEventListener("change", () => {
+    const secs = Math.round(Number(cardSecondsEl.value));
+    if (!Number.isInteger(secs) || secs < 10 || secs > 3600) { say("card seconds must be 10 to 3600", "err"); return; }
+    saveCard({ mode: "idle", idleSeconds: secs });
   });
 
   grantMicBtn.addEventListener("click", async () => {

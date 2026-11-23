@@ -72,14 +72,22 @@
     box-shadow: 0 0 0 1px rgba(255,255,255,0.6), 0 2px 8px rgba(0,0,0,0.55);
     transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease; }
   #badge.on::after { content: "›"; margin-left: 2px; font-weight: 800; opacity: 0.9; }
+  /* Owner 2026-11-22: the fairy carried three unlabelled numbers (45, +40, 5).
+     Now there is ONE primary count, and it says what it counts ("waiting"). The
+     rest live behind the hover (badge title / fairy tips) and the ring. */
+  #badge.on::before { content: attr(data-label); position: absolute; left: 0; right: 0; top: 100%;
+    margin-top: 1px; font: 600 7px/1 var(--font-sans, system-ui); letter-spacing: 0.06em;
+    text-transform: uppercase; color: #fff; text-align: center; opacity: 0.9;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.85); }
   #badge.on:hover, #badge.on:focus-visible {
     filter: brightness(1.18); transform: translateY(-1px) scale(1.06);
     box-shadow: 0 0 0 2px #fff, 0 3px 10px rgba(0,0,0,0.6); outline: none; }
   #badge.on:active { transform: scale(0.94); }
-  #queued { position: absolute; bottom: -2px; right: 0; min-width: 15px; height: 15px; padding: 0 4px;
-    border-radius: 8px; background: #3a2a10; color: var(--tint, #f4faff);
-    border: 1px solid var(--tint, #f4faff); font: 700 10px/14px var(--font-sans, system-ui);
-    text-align: center; display: none; pointer-events: none; }
+  /* Trips queued used to be a second, unlabelled number ("5"). It is now a dot:
+     the count is in the fairy's hover line. */
+  #queued { position: absolute; bottom: -2px; right: 0; width: 7px; height: 7px; padding: 0;
+    border-radius: 50%; background: #f0b429; border: 1px solid var(--tint, #f4faff);
+    display: none; pointer-events: none; }
   #queued.on { display: block; }
   .drop-hover #orb { box-shadow: 0 0 0 2px var(--tint, #f4faff) inset, 0 0 12px 4px var(--tint-glow, rgba(225,240,255,0.7)); }
   .drop-hover #card { border-color: var(--tint, #f4faff); }
@@ -142,9 +150,9 @@
   body.pin #mates { pointer-events: none; }
   body.pin .mate { --m-size: 18px; cursor: grab; }
   body.pin.grabbing .mate { cursor: grabbing; }
-  #chip { position: absolute; right: 4px; bottom: 6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; display: none;
-    background: rgba(10,14,24,0.9); color: #eef6ff; border: 1px solid rgba(214,236,255,0.45);
-    font: 700 10px/14px var(--font-sans, system-ui); text-align: center; pointer-events: none; }
+  /* Folded-cluster marker: a dot, not a fifth number. Its count is in the title. */
+  #chip { position: absolute; right: 6px; bottom: 7px; width: 7px; height: 7px; padding: 0; border-radius: 50%; display: none;
+    background: #eef6ff; border: 1px solid rgba(214,236,255,0.75); pointer-events: none; }
   #chip.on { display: block; }
   /* Presence (owner 2026-11-09: one agent = one presence everywhere): idle = a dim
      glow, working = a pulse, speaking/posting = a bright flash, waiting on the
@@ -157,9 +165,9 @@
   /* The counted bead: the cluster's tail past the cap (fairy-cluster.cjs collapse). */
   .mate.bead { border-radius: 50%; outline: 1.5px solid rgba(255,255,255,0.85); }
   .mate.bead::before, .mate.bead::after { display: none; }
-  #cluster-count { position: absolute; left: 50%; top: 2px; transform: translateX(-50%); min-width: 14px; height: 14px;
-    padding: 0 4px; border-radius: 7px; background: rgba(13,17,23,0.82); color: #ffe8a3; font: 600 10px/14px system-ui, sans-serif;
-    text-align: center; pointer-events: none; box-shadow: 0 0 6px rgba(255,200,87,0.55); }
+  /* The ring IS the count (owner 2026-11-22): the cluster's total is never a sixth
+     number on screen; it stays in the element's title/aria for a screen reader. */
+  #cluster-count { display: none; }
   @keyframes matepulse { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
   @keyframes mateflash { from { filter: brightness(1); } to { filter: brightness(1.9); } }
   .mate b { position: absolute; left: 60%; top: -70%; min-width: 9px; height: 9px; padding: 0 2px; border-radius: 5px;
@@ -242,6 +250,14 @@
   #card { width: 100%; max-height: 464px; display: flex; flex-direction: column; overflow: hidden;
     border-radius: 14px; background: var(--bg-elevated, #12161f); border: 1px solid var(--border, #2a3346);
     box-shadow: 0 12px 40px rgba(0,0,0,0.55); }
+  /* A pinned card is dragged by this bar; main docks it to the nearest screen corner
+     when the drag settles (card-stay.cjs). Hidden until the owner pins the card. */
+  #dragbar { display: none; align-items: center; justify-content: center; height: 15px; flex: none;
+    color: var(--fg-muted, #8b96ab); font: 11px/15px var(--font-sans, system-ui); letter-spacing: 2px;
+    border-bottom: 1px solid var(--border, #2a3346); cursor: grab; user-select: none;
+    -webkit-app-region: drag; }
+  #card.pinned #dragbar { display: flex; }
+  #dragbar:active { cursor: grabbing; }
   #head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px; }
   #dot { width: 10px; height: 10px; border-radius: 50%; flex: none;
     background: radial-gradient(circle at 35% 30%, #fff, var(--tint, #f4faff) 70%);
@@ -274,9 +290,12 @@
     color: var(--fg-muted, #8b96ab); font: 11px var(--font-sans, system-ui); padding: 1px 2px; }
   #s-detach { display: none; }
   #s-detach.on { display: inline-block; }
-  #s-detach, #close { border: 0; background: transparent; color: var(--fg-muted, #8b96ab); cursor: pointer;
+  #s-detach, #s-pin, #close { border: 0; background: transparent; color: var(--fg-muted, #8b96ab); cursor: pointer;
     font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 6px; flex: none; }
-  #s-detach:hover, #close:hover { background: var(--bg-sunk, #0b0f16); color: var(--fg, #e6edf3); }
+  #s-pin { font-size: 11px; border: 1px solid var(--border, #2a3346); padding: 1px 6px; }
+  #s-pin.active { color: #06101f; background: var(--tint, #f4faff); border-color: transparent; font-weight: 600; }
+  #s-detach:hover, #s-pin:hover, #close:hover { background: var(--bg-sunk, #0b0f16); color: var(--fg, #e6edf3); }
+  #s-pin.active:hover { color: #06101f; background: var(--tint, #f4faff); }
 
   #stage { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 10px 8px; }
   #stage.idle { display: none; }
@@ -797,12 +816,15 @@
       + '<div id="badge"></div><div id="queued"></div><div id="chip" title="Every agent fairy is folded into this one orb"></div>';
     const orb = document.getElementById("orb");
     const chip = document.getElementById("chip");
-    // Collapsed into one orb (fairy-control mode "orb"): the ring is gone, the count stays.
+    // Collapsed into one orb (fairy-control mode "orb"): a DOT says the ring is folded
+    // away; the number it stands for is in the title, never a fourth number on screen.
     function drawView(v) {
       if (!v) return;
       sv = { ...sv, ...v };
       const folded = sv.mode === "orb" && sv.total - sv.pinned > 0;
-      chip.textContent = folded ? String(sv.total - sv.pinned) : "";
+      const n = folded ? sv.total - sv.pinned : 0;
+      chip.textContent = "";
+      chip.title = folded ? `${n} more companion${n === 1 ? "" : "s"} folded into this orb` : "";
       chip.classList.toggle("on", folded);
     }
     if (api.onSwarmView) api.onSwarmView(drawView);
@@ -818,6 +840,9 @@
     let downMate = null;
     let panelOpen = false;
     let tip = "";
+    /** Trips waiting behind the running one. Never a badge: it joins the hover line. */
+    let tripQueued = 0;
+    let baseTip = "";
     function mateUnder(e) {
       const dx = e.clientX - window.innerWidth / 2;
       const dy = e.clientY - window.innerHeight / 2;
@@ -941,17 +966,20 @@
       api.cancelTrip().then((r) => { if (!r || !r.ok) api.hide(); });
     });
 
-    // {n, title}: the cards that need the owner and what the number counts (a bare
-    // number is still accepted). The title is the label: "31 need you · all workspaces".
+    // {n, label, title}: ONE primary count plus what it counts (owner 2026-11-22:
+    // "each number must say what it counts"). The label draws under the badge; the
+    // full sentence stays in the title/aria. A bare number is still accepted.
     function drawBadge(b) {
       const n = b && typeof b === "object" ? Number(b.n) || 0 : Number(b) || 0;
+      const label = b && typeof b === "object" && b.label ? String(b.label) : "";
       badge.textContent = String(n);
+      badge.dataset.label = label;
       badge.title = b && typeof b === "object" && b.title ? String(b.title) : "";
       badge.classList.toggle("on", n > 0);
       // A count is a door, so it is announced as one (owner 2026-11-20).
       badge.setAttribute("role", "button");
       badge.tabIndex = n > 0 ? 0 : -1;
-      badge.setAttribute("aria-label", n > 0 ? `${n} waiting — open the Inbox` : "Nothing waiting");
+      badge.setAttribute("aria-label", n > 0 ? `${n} ${label || "waiting"} — open the Inbox` : "Nothing waiting");
     }
     api.onBadge(drawBadge);
     // Click the count -> the Inbox list. The orb's own press/drag must not see
@@ -1007,17 +1035,25 @@
     // The fairy IS the owner's sprite: its name, stage and mood on hover. null =
     // the plain fairy (signed out / offline), which keeps the plain tooltip.
     const PLAIN_TIP = orb.dataset.tip;
+    /** The one hover line: what the fairy is, plus anything waiting behind it. */
+    function refreshTip() {
+      const queueLine = tripQueued > 0 ? `${tripQueued} trip${tripQueued === 1 ? "" : "s"} queued` : "";
+      tip = [baseTip || PLAIN_TIP, queueLine].filter(Boolean).join(" · ");
+    }
     function wearSprite(sp) {
-      tip = sp && sp.tooltip ? sp.tooltip : PLAIN_TIP;
+      baseTip = sp && sp.tooltip ? sp.tooltip : PLAIN_TIP;
+      refreshTip();
       orb.dataset.tip = tip;
       showTip();
     }
     if (api.onSprite) api.onSprite(wearSprite);
     api.onAttach((a) => { orb.classList.toggle("attached", Boolean(a && a.attached)); });
     api.onTrips((t) => {
-      const n = t && Number(t.count) > 1 ? Number(t.count) - 1 : 0; // the running one is the orb itself
-      queued.textContent = String(n);
-      queued.classList.toggle("on", n > 0);
+      // The running one is the orb itself; the rest are a dot plus the hover line.
+      tripQueued = t && Number(t.count) > 1 ? Number(t.count) - 1 : 0;
+      queued.classList.toggle("on", tripQueued > 0);
+      queued.title = tripQueued > 0 ? `${tripQueued} trip${tripQueued === 1 ? "" : "s"} queued` : "";
+      refreshTip();
     });
     api.init().then((s) => {
       if (!s) return;
@@ -1031,8 +1067,10 @@
       drawView(s.swarmView);
       if (s.panel) { panelOpen = true; showTip(); }
       const n = s.trips && s.trips.count > 1 ? s.trips.count - 1 : 0;
-      queued.textContent = String(n);
+      tripQueued = n;
       queued.classList.toggle("on", n > 0);
+      queued.title = n > 0 ? `${n} trip${n === 1 ? "" : "s"} queued` : "";
+      refreshTip();
     });
   }
 
@@ -1136,8 +1174,11 @@
       const slots = swarmSlots(sv.mode, items.length, sv.radius);
       // The visible count (fairy-cluster.cjs): every fairy, the bead's hidden ones too.
       const total = items.reduce((a, c) => a + (c && c.kind === "more" ? Math.max(0, Number(c.count) || 0) : 1), 0);
-      countEl.textContent = total > 0 ? String(total) : "";
-      countEl.style.display = total > 0 ? "" : "none";
+      // The ring is the count: no number is drawn over the cluster (owner 2026-11-22).
+      countEl.textContent = "";
+      countEl.title = total > 0 ? `${total} companion${total === 1 ? "" : "s"} on the ring` : "";
+      countEl.setAttribute("aria-label", countEl.title);
+      countEl.style.display = "none";
       mates = items.map((c, i) => {
         const el = document.createElement("i");
         const st = ["waiting", "speaking", "working", "idle"].includes(c.state) ? c.state
@@ -1149,11 +1190,9 @@
         el.style.setProperty("--m-core", c.core || "#ffffff");
         el.style.setProperty("--m-glow", rgba(c.glow || c.color, 0.55));
         el.style.setProperty("--m-wing", rgba(c.color, 0.4));
-        if (c.kind === "more" || Number(c.count) > 1) {
-          const badge = document.createElement("b");
-          badge.textContent = c.kind === "more" ? `+${Number(c.count) || 0}` : String(Number(c.count));
-          el.append(badge);
-        }
+        // A companion's "how many" is in its hover line (mateTip: "Atlas: title (+4)")
+        // and the bead's label ("40 more"). It is never a floating number on the ring.
+        el.title = "";
         matesEl.append(el);
         const extra = Number(c.count) > 1 ? ` (${Number(c.count)} cards)` : "";
         const stateWord = st === "waiting" ? "" : ` [${st}]`;
@@ -1515,11 +1554,7 @@
       el.style.setProperty("--m-core", mate.core || "#ffffff");
       el.style.setProperty("--m-glow", rgba(mate.glow || mate.color, 0.55));
       el.style.setProperty("--m-wing", rgba(mate.color, 0.4));
-      if (Number(mate.count) > 1) {
-        const badge = document.createElement("b");
-        badge.textContent = String(Number(mate.count));
-        el.append(badge);
-      }
+      // The count stays in the hover/aria (mateTip), never a floating number.
       matesEl.append(el);
     }
     function endDrag() {
@@ -1978,6 +2013,7 @@
   if (view === "bubble") {
     document.body.innerHTML = `
       <div id="card">
+        <div id="dragbar" title="Drag to move the pinned card (it docks to the nearest corner)">&#8942;&#8942;&#8942;</div>
         <div id="ask"><textarea id="q" rows="1" placeholder="Ask about what you see…" aria-label="Ask Aither"></textarea>
           <button id="send" disabled>Send</button></div>
         <div id="actions" role="toolbar" aria-label="Quick actions">
@@ -2014,6 +2050,7 @@
         <div id="session"><span id="s-state"></span><span id="title">Aither</span><span id="s-title"></span>
           <span id="s-last"></span><span id="where" hidden></span>
           <select id="s-pick" aria-label="Switch session" title="Switch the session this panel is about"></select>
+          <button id="s-pin" title="Pin this card open; then drag the top edge to move it">Pin</button>
           <button id="s-detach" title="Detach the fairy">&#8856;</button>
           <button id="close" title="Close (Esc)">&#10005;</button></div>
       </div>`;
@@ -2035,6 +2072,8 @@
     const sLast = document.getElementById("s-last");
     const sPick = document.getElementById("s-pick");
     const sDetach = document.getElementById("s-detach");
+    const sPin = document.getElementById("s-pin");
+    const cardEl = document.getElementById("card");
     const hint = document.getElementById("hint");
     const where = document.getElementById("where");
     const holdEl = document.getElementById("hold");
@@ -2314,6 +2353,38 @@
         else setHint((r && r.reason) || "that answer is gone");
       });
     });
+    // The card's OWN pin (card-stay.cjs, owner 2026-11-22): the card stays open and
+    // becomes draggable; main docks it to the nearest corner when the drag settles.
+    let cardPinned = false;
+    function applyCardPin(card) {
+      cardPinned = Boolean(card && card.pin);
+      cardEl.classList.toggle("pinned", cardPinned);
+      sPin.textContent = cardPinned ? "Pinned" : "Pin";
+      sPin.classList.toggle("active", cardPinned);
+      sPin.title = cardPinned
+        ? "Pinned open and draggable — click to unpin (it still stays until you close it)"
+        : "Pin this card open; then drag the top edge to move it";
+      fit();
+    }
+    sPin.addEventListener("click", () => {
+      if (!api.pinCard) return;
+      api.pinCard(!cardPinned).then((r) => {
+        if (r && r.ok) applyCardPin(r.card);
+        else setHint((r && r.error) || "could not pin the card");
+      });
+    });
+    // Activity restarts the opt-in idle timeout (OFF by default). Throttled: one
+    // message every 1.5 s is enough to mean "still using it".
+    let lastActivity = 0;
+    function reportActivity() {
+      const now = Date.now();
+      if (now - lastActivity < 1500) return;
+      lastActivity = now;
+      if (api.activity) api.activity();
+    }
+    for (const ev of ["pointermove", "pointerdown", "keydown", "wheel"]) {
+      document.addEventListener(ev, reportActivity, { passive: true });
+    }
     holdGrip.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
@@ -2346,6 +2417,7 @@
       if (s.trips) renderTrips(s.trips);
       if (s.attach) where.textContent = s.attach.label || "attached";
       setMode(s.mode, s.modeTitle, s.modeWho);
+      if (s.card) applyCardPin(s.card);
       renderPanel(s.panelView);
       if (s.view === "bubble") setTimeout(() => q.focus(), 30);
     });
