@@ -218,6 +218,28 @@ test("the voice line drops the 'Claude Code needs you' prefix", () => {
   assert.match(line, /And 2 more after that\.$/);
 });
 
+test("the fairy summary says what the card is and what each answer does, from its own facts", () => {
+  const c = card({
+    title: "Owner terminal wants to send outside the fleet to 127.0.0.1:8182/mcp (G5)",
+    options: [
+      { key: "deny", label: "Deny", consequence: "The call stays blocked; the agent is told no." },
+      { key: "approve", label: "Approve this one", consequence: "This exact call runs once for this session." },
+    ],
+  });
+  assert.equal(fa.fairySummary(c),
+    "Owner terminal wants to send outside the fleet to 127.0.0.1:8182/mcp. "
+    + "Deny — The call stays blocked; Approve this one — This exact call runs once for this session.");
+});
+
+test("the whisper never clips the title and carries the summary above the buttons", () => {
+  const long = "Owner terminal wants to send outside the fleet to 127.0.0.1:8182/mcp (G5)";
+  const view = fa.whisperView({ card: card({ title: long }), level: 1 }, NOW);
+  assert.equal(view.title, long, "the full title, never a 110-char cut");
+  assert.match(view.fairy, /^Owner terminal wants to send/);
+  const cred = fa.whisperView({ card: card({ kind: "credential", title: "A secret" }), level: 1 }, NOW);
+  assert.equal(cred.fairy, "", "a credential card is not narrated");
+});
+
 test("the whisper offers the card's OWN options (max 3), none for a credential", () => {
   const d = fa.plan([card()], {}, { nowMs: NOW });
   const view = fa.whisperView(d, NOW);

@@ -385,6 +385,36 @@ function voiceLine(card, nowMs, { more = 0 } = {}) {
 }
 
 /**
+ * ONE plain sentence on what the card is and what each answer does (owner
+ * 2026-11-23), built ONLY from the card's own facts: its title and its options'
+ * labels + consequences. Nothing is generated or inferred -- a card whose title
+ * is wrong stays wrong here, which is how the classifier bug was caught.
+ * "Read it to me" reads this exact sentence.
+ */
+function fairySummary(card) {
+  if (!card || typeof card !== "object") return "";
+  const kind = lower(card.kind);
+  const head = String(card.title || "A decision")
+    .replace(/^Claude Code needs you:\s*/i, "")
+    .replace(/\s*\((?:G\d+|B[1-3])\)\s*$/i, "")
+    .trim()
+    .replace(/[.:;!?]+$/, "");
+  if (!head) return "";
+  if (kind === "credential") return `${head}. It needs a secret; open it to enter it.`;
+  const options = Array.isArray(card.options) ? card.options.slice(0, 4) : [];
+  if (!options.length) return `${head}.`;
+  const parts = options.map((o) => {
+    const label = String((o && (o.label || o.key)) || "").trim().slice(0, 60);
+    // The consequence's FIRST clause only: "The call stays blocked; the agent is
+    // told no." -> "The call stays blocked". Never invent a shorter meaning.
+    const consequence = String((o && o.consequence) || "").trim()
+      .split(/[.;]\s/)[0].replace(/[.;:!?]+$/, "").slice(0, 140);
+    return consequence ? `${label} — ${consequence}` : label;
+  }).filter(Boolean);
+  return `${head}. ${parts.join("; ")}.`.slice(0, 480);
+}
+
+/**
  * A card that just ARRIVED: never nudged, raised inside `arrivalWindowMs`, not a
  * report, not muted. Owner, 2026-11-15 ("fairies are still not getting my attention
  * to answer these decision cards"): a NEW normal/low card was a soft glow or the
@@ -726,8 +756,13 @@ function whisperView(decision, nowMs = Date.now()) {
     level: decision.level,
     lead: old ? `${lead} · ${fmtSpan(nowMs - createdMs(card))} old` : lead,
     old: old ? "Old — still relevant?" : "",
-    title: title.length > 110 ? `${title.slice(0, 109)}…` : title,
+    // Owner 2026-11-23: never clip the title. The card wraps and scrolls; the
+    // 110-char cut turned "…to 127.0.0.1:…" into the thing the owner saw.
+    title,
     why: decision.why || whyNow(card, nowMs),
+    // ONE plain sentence, from the card's own facts: what it is, what each answer
+    // does. The whisper streams it above the buttons; "Read it to me" speaks it.
+    fairy: kind === "credential" ? "" : fairySummary(card),
     // Owner 2026-11-08: "I need this to give me more info". The whisper carries
     // what the card actually says -- its summary, its facts -- not just a title.
     summary: kind === "credential" ? "" : clip(String(card.summary || card.detail || ""), 420),
@@ -867,6 +902,7 @@ module.exports = {
   whyNow,
   leadFor,
   voiceLine,
+  fairySummary,
   isArrival,
   backlogSplit,
   backlogLabel,

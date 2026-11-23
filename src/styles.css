@@ -369,9 +369,48 @@ body {
   font-weight: 650;
   margin: 0;
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  /* Owner 2026-11-23: wrap the FULL title, never clip it. The card grows and the
+     deck body scrolls; an ellipsis hid the loopback host and the rule's target. */
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.deck-fairy {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: rgba(244, 250, 255, 0.06);
+  border: 1px solid rgba(244, 250, 255, 0.14);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--deck-soft);
+}
+.deck-fairy-glyph {
+  color: var(--deck-accent);
+  flex: none;
+  line-height: 1.45;
+}
+.deck-fairy-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  /* Streams in (a stepped wipe) while the buttons below are already live. */
+  animation: deck-fairy-reveal 1.1s steps(22, end) both;
+}
+@keyframes deck-fairy-reveal {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .deck-fairy-text { animation: none; }
+}
+.deck-fairy-read {
+  flex: none;
+  align-self: center;
 }
 
 .deck-card-age {

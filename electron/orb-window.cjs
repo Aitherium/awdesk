@@ -4716,7 +4716,10 @@ function startFlutter() {
 }
 
 function speakNudge(decision, { force = false } = {}) {
-  const line = fairyAttention.voiceLine(decision.card, Date.now(), { more: decision.more });
+  // "Read it to me" reads the FAIRY SUMMARY -- one plain sentence built from the
+  // card's facts (owner 2026-11-23), the same sentence shown above the buttons.
+  const line = fairyAttention.fairySummary(decision.card)
+    || fairyAttention.voiceLine(decision.card, Date.now(), { more: decision.more });
   attentionVoiceAt = Date.now();
   return hookValue("speak", line, { force }) !== false;
 }
