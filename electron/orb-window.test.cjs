@@ -1226,6 +1226,15 @@ test("the whisper grows to fit its full button labels, clamped and kept on scree
   orbWindow.endNudge("seen", { stay: true });
 });
 
+test("the whisper measures its NATURAL height, never the current window's", () => {
+  // The 188 px window capped the card at calc(100vh - 20px) = 168, so the page
+  // reported 188 forever and the buttons stayed below the fold (owner 2026-11-23).
+  const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
+  const nudge = html.slice(html.indexOf("#nudge {"), html.indexOf("#nudge.left"));
+  assert.doesNotMatch(nudge, /max-height:\s*calc\(100vh/, "the card must not be capped by the window it is measuring");
+  assert.match(html, /body\.nudge \{[^}]*overflow-y: auto/, "longer cards scroll in the body once the window hits the screen cap");
+});
+
 test("the whisper grows to its content, remembers a hand resize, and fit can be re-enabled", async () => {
   startAttention();
   orbWindow.setAttentionCards([blockedCard()]);
