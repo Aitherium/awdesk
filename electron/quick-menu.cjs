@@ -255,18 +255,28 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
     return Boolean(alive() && event && event.sender === win.webContents);
   }
 
-  function finish(result) {
+  /**
+   * Every way a ring session ends -- choose, release, Esc, click-away (blur), a grid
+   * toggle -- must run the ONE `onDone` the fairy gave us. A bare hide() used to skip
+   * it, which left orb-window's `ringOpen` stuck true and every later open refused
+   * (found live 2026-11-23: "Aither quick menu" hidden, no ring).
+   */
+  function endSession(result) {
     const callback = done;
     done = null;
     hold = false;
-    hide();
+    if (alive() && win.isVisible()) win.hide();
     if (callback) {
       try { callback(result); } catch { /* a caller bug stays in the caller */ }
     }
   }
 
+  function finish(result) {
+    endSession(result);
+  }
+
   function hide() {
-    if (alive() && win.isVisible()) win.hide();
+    endSession({ closed: true });
   }
 
   function slicesForPage() {

@@ -2757,8 +2757,17 @@ function restoreAfterRing(back) {
  * the ring is on screen; the returned promise never rejects.
  */
 async function openRing({ at = null, hold = false, onDone = null, page = 0 } = {}) {
-  if (ringOpen) return { ok: false, reason: "the ring is already up" };
-  if (typeof ringOpener !== "function") return { ok: false, reason: "no ring renderer is wired" };
+  const api = ringOpener;
+  const openFn = typeof api === "function" ? api
+    : (api && typeof api.openRadial === "function" ? (o) => api.openRadial(o) : null);
+  if (!openFn) return { ok: false, reason: "no ring renderer is wired" };
+  if (ringOpen) {
+    // A leaked session (a close path that skipped onDone) must never wedge the ring.
+    const visible = api && typeof api.isVisible === "function" ? api.isVisible() : false;
+    if (visible) return { ok: false, reason: "the ring is already up" };
+    ringOpen = false;
+    ringReturn = null;
+  }
   let point = at && Number.isFinite(Number(at.x)) && Number.isFinite(Number(at.y))
     ? { x: Number(at.x), y: Number(at.y) } : null;
   if (!point) {
@@ -2776,8 +2785,6 @@ async function openRing({ at = null, hold = false, onDone = null, page = 0 } = {
   if (flight) { flight.cancelled = true; finishFlight(); }
   try {
     await flyTo({ x: destination.x, y: destination.y }, { durationMs: 420 });
-    const api = ringOpener;
-    const openFn = typeof api === "function" ? api : (o) => api.openRadial(o);
     const opened = openFn({
       at: destination,
       hold: Boolean(hold),
