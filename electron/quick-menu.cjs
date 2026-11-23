@@ -127,22 +127,28 @@ function specItem(entry, registry, ctx) {
 }
 
 /**
- * The live slices for one page, clockwise from the top. A page also carries doors to
- * the pages beside it, so every action stays reachable and nothing overlaps.
+ * The live slices for one page, clockwise from the top. `pages` defaults to the
+ * general ring; the fairy's OWN right-click passes its own pages (cards + controls).
+ * A page carries doors to the pages beside it, so every action stays reachable and
+ * nothing overlaps.
  */
-function pageSlices(registry, { page = 0, ctx = {} } = {}) {
-  const n = PAGES.length;
+function pageSlices(registry, { page = 0, pages = PAGES, ctx = {} } = {}) {
+  const list = Array.isArray(pages) && pages.length ? pages : PAGES;
+  const n = list.length;
   const index = Math.min(Math.max(0, Math.trunc(Number(page) || 0)), n - 1);
   const items = [];
-  for (const entry of PAGES[index].spec) {
+  for (const entry of list[index].spec) {
     const item = specItem(entry, registry, ctx);
     if (item) items.push(item);
   }
   const door = (to, label) => ({ id: `radial:page:${to}`, label: `${label} ring`, group: "Pages", icon: "grid", short: label, page: to });
+  const labelOf = (i) => String((list[i] && list[i].label) || `Page ${i + 1}`);
   if (n > 1) {
-    if (index === 0) items.push(door(1, "Fairy ›"));
-    if (index === 1) items.push(door(2, "More ›"), door(0, "‹ Tools"));
-    if (index === 2) items.push(door(1, "‹ Fairy"));
+    if (index === 0) items.push(door(1, `${labelOf(1)} ›`));
+    else {
+      if (index < n - 1) items.push(door(index + 1, `${labelOf(index + 1)} ›`));
+      items.push(door(index - 1, `‹ ${labelOf(index - 1)}`));
+    }
   }
   return items.map((item, i) => ({
     ...item,
@@ -246,6 +252,8 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
   let center = null;
   let done = null;
   let page = 0;
+  /** The pages this OPEN ring uses (the general ring, or the fairy's own set). */
+  let activePages = PAGES;
 
   function alive() {
     return Boolean(win && !win.isDestroyed());
@@ -280,12 +288,12 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
   }
 
   function slicesForPage() {
-    return pageSlices(registry, { page });
+    return pageSlices(registry, { page, pages: activePages });
   }
 
   /** Repaint the SAME open ring on another page (a page door is not an exit). */
   function showPage(next) {
-    page = Math.min(Math.max(0, Math.trunc(Number(next) || 0)), PAGES.length - 1);
+    page = Math.min(Math.max(0, Math.trunc(Number(next) || 0)), activePages.length - 1);
     if (win && win.webContents && typeof win.webContents.send === "function") win.webContents.send("quick:refresh");
     return { ok: true, page };
   }
@@ -317,7 +325,7 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
       if (!fromMenu(event)) return { ok: false, reason: "not the quick menu" };
       if (mode === "radial") {
         return {
-          ok: true, mode, hold, page, pages: PAGES.map((p) => ({ id: p.id, label: p.label })),
+          ok: true, mode, hold, page, pages: activePages.map((p) => ({ id: p.id, label: p.label })),
           slices: slicesForPage(),
           radius: RADIAL.radius, item: RADIAL.item, deadZonePx: RADIAL.deadZonePx, size: RADIAL.size,
         };
@@ -409,12 +417,16 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
     return { ok: true, bounds };
   }
 
-  /** Open (or hide) the ONE radial ring at a point. `page` picks the first page. */
-  function openRadial({ at = null, hold: held = false, onDone = null, force = false, page: startPage = 0 } = {}) {
+  /**
+   * Open (or hide) the ONE radial ring at a point. `page` picks the first page;
+   * `pages` replaces the general ring's pages for this open (the fairy's own set).
+   */
+  function openRadial({ at = null, hold: held = false, onDone = null, force = false, page: startPage = 0, pages = null } = {}) {
     const point = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? at : screen.getCursorScreenPoint();
     const display = screen.getDisplayNearestPoint(point);
-    const first = Math.min(Math.max(0, Math.trunc(Number(startPage) || 0)), PAGES.length - 1);
-    const slices = pageSlices(registry, { page: first });
+    activePages = Array.isArray(pages) && pages.length ? pages : PAGES;
+    const first = Math.min(Math.max(0, Math.trunc(Number(startPage) || 0)), activePages.length - 1);
+    const slices = pageSlices(registry, { page: first, pages: activePages });
     if (!slices.length) return { ok: false, reason: "no radial actions are available" };
     ensureIpc();
     if (!alive()) create();

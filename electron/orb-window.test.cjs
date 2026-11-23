@@ -1760,9 +1760,15 @@ test("right click on the orb: inbox, answer window, quiet 1 h (nudges held), set
   await invoke("desk:menu-pick", menuWin(), "more");
   assert.equal((await invoke("desk:menu-pick", menuWin(), "less")).ok, true);
   assert.ok(lastSent(menuWin(), "orb:menu").items.some((i) => i.id === "more"), "Back returns to the short menu");
+  // Owner 2026-11-23: the orb's own right-click menu is retired into the ONE ring.
+  let openedRing = null;
+  orbWindow.setRingOpener({ openRadial: (o) => { openedRing = o; if (typeof o.onDone === "function") o.onDone({ closed: true }); return { ok: true }; }, isVisible: () => false, hide() {} });
   const viaPage = await invoke("desk:spirit-menu", orbWin());
-  assert.equal(viaPage.ok, true, "the page's own right click (api.menu) opens the same pill menu");
-  assert.equal(nativeMenuPopups, 0);
+  assert.equal(viaPage.ok, true, "the fairy's right click opens the ONE ring");
+  assert.equal(openedRing.page, 1, "it opens on the This-fairy page");
+  assert.ok(openedRing.pages.some((p) => p.id === "self"), "with the fairy's own pages");
+  assert.equal(nativeMenuPopups, 0, "the old pill menu is not opened any more");
+  orbWindow.setRingOpener(null);
   await invoke("desk:orb-menu", orbWin());
   await invoke("desk:menu-pick", menuWin(), "hide-this");
   assert.equal(orbWin().isVisible(), false, "Hide the fairies hides the fairy and its swarm");

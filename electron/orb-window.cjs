@@ -2874,7 +2874,7 @@ function restoreAfterRing(back) {
  * ring around the fairy. `hold` = the Alt+Space hold (release selects). Resolves once
  * the ring is on screen; the returned promise never rejects.
  */
-async function openRing({ at = null, hold = false, onDone = null, page = 0 } = {}) {
+async function openRing({ at = null, hold = false, onDone = null, page = 0, fly = true, pages = null } = {}) {
   const api = ringOpener;
   const openFn = typeof api === "function" ? api
     : (api && typeof api.openRadial === "function" ? (o) => api.openRadial(o) : null);
@@ -2899,9 +2899,10 @@ async function openRing({ at = null, hold = false, onDone = null, page = 0 } = {
   const { centre } = displayAt(point);
   // Settings "Ring opens at": the CENTRE of the screen under the cursor (default,
   // the owner's design, for the hold and the desktop right-click alike) or exactly
-  // where the owner clicked / the cursor when the key went down.
-  const destination = ringAtMode() === "click" ? point : centre;
-  ringReturn = ringHome();
+  // where the owner clicked / the cursor when the key went down. `fly:false` (the
+  // fairy's OWN right-click) opens the ring where the fairy already is.
+  const destination = !fly ? point : (ringAtMode() === "click" ? point : centre);
+  ringReturn = { ...ringHome(), moved: Boolean(fly) };
   ringOpen = true;
   clearDropReturn();
   // No tether/trail while the fairy is at the ring anchor (it would draw a long line
@@ -2909,16 +2910,17 @@ async function openRing({ at = null, hold = false, onDone = null, page = 0 } = {
   hideVeil({ force: true });
   if (flight) { flight.cancelled = true; finishFlight(); }
   try {
-    await flyTo({ x: destination.x, y: destination.y }, { durationMs: 420 });
+    if (fly) await flyTo({ x: destination.x, y: destination.y }, { durationMs: 420 });
     const opened = openFn({
       at: destination,
       hold: Boolean(hold),
       page,
+      ...(Array.isArray(pages) && pages.length ? { pages } : {}),
       onDone: (result) => {
         ringOpen = false;
         const back = ringReturn;
         ringReturn = null;
-        restoreAfterRing(back);
+        if (back && back.moved) restoreAfterRing(back);
         if (typeof onDone === "function") { try { onDone(result); } catch { /* caller */ } }
       },
     });
@@ -2934,7 +2936,7 @@ async function openRing({ at = null, hold = false, onDone = null, page = 0 } = {
       ringOpen = false;
       const back = ringReturn;
       ringReturn = null;
-      restoreAfterRing(back);
+      if (back && back.moved) restoreAfterRing(back);
       return opened || { ok: false, reason: "the ring did not open" };
     }
     return opened;
@@ -2942,7 +2944,7 @@ async function openRing({ at = null, hold = false, onDone = null, page = 0 } = {
     ringOpen = false;
     const back = ringReturn;
     ringReturn = null;
-    restoreAfterRing(back);
+    if (back && back.moved) restoreAfterRing(back);
     return { ok: false, error: String((error && error.message) || error) };
   }
 }
@@ -2953,8 +2955,137 @@ function runRingExtra(id) {
   if (what === "orb.drop.pin") return setDropBehavior("orb", { mode: "pin" });
   if (what === "orb.drop.timed") return setDropBehavior("orb", { mode: "timed", seconds: 10 });
   if (what === "orb.drop.return") return setDropBehavior("orb", { mode: "return" });
+  // ── "This fairy": everything the old orb right-click menu did, as ring slices ──
+  if (what.startsWith("ring:card:")) return openFairyCard(what.slice("ring:card:".length));
+  if (what.startsWith("ring:body:")) return pickBody(what.slice("ring:body:".length));
+  switch (what) {
+    case "ring:queue": if (nudging) endNudge("seen", { stay: true }); openQueue(); return { ok: true };
+    case "ring:show-hide": return state.visible ? hideOrb() : showOrb();
+    case "ring:expand": return expandToAvatar();
+    case "ring:collapse": return collapseToFairy();
+    case "ring:drop:pin": return setDropBehavior("orb", { mode: "pin" });
+    case "ring:drop:timed": return setDropBehavior("orb", { mode: "timed", seconds: 10 });
+    case "ring:drop:return": return setDropBehavior("orb", { mode: "return" });
+    case "ring:swarm": return swarmViewMenu({ at: cursorPoint() });
+    case "ring:quiet:1h": return companionAction("quiet-1h", { target: "fairy" });
+    case "ring:quiet:4h": return companionAction("quiet-4h", { target: "fairy" });
+    case "ring:quiet:off": return companionAction("quiet-off", { target: "fairy" });
+    case "ring:hide-this": return companionAction("hide-this", { target: "fairy" });
+    case "ring:hide-all": return companionAction("hide-all", { target: "fairy" });
+    case "ring:show-all": return companionAction("show-all", { target: "fairy" });
+    case "ring:sounds": return setSounds(state.sounds === false);
+    case "ring:flights": return setReducedMotion(state.reducedMotion !== true);
+    case "ring:web": return openMode("web");
+    case "ring:ask": return openMode(null);
+    case "ring:find": return openMode("find");
+    case "ring:read": return runHoldAction("read");
+    case "ring:attach": return toggleAttach();
+    case "ring:home": return sendHome();
+    case "ring:sprite": return spriteStatus();
+    case "ring:teach": return spriteTeach(null);
+    case "ring:sprite-page": return openUrl(spriteCore.SPRITE_PAGE);
+    case "ring:quick": return runCommandImpl ? runCommandImpl("quick.open") : { ok: false, error: "no command door" };
+    case "ring:desktop": return companionAction("open-desktop", { target: "fairy" });
+    case "ring:spaces": return companionAction("open-spaces", { target: "fairy" });
+    case "ring:chat": return companionAction("open-chat", { target: "fairy" });
+    case "ring:settings": return companionAction("settings", { target: "fairy" });
+    case "ring:quit": return companionAction("quit", { target: "fairy" });
+    default: break;
+  }
   if (typeof extraRunner === "function") return extraRunner(what);
   return { ok: false, error: `unknown ring row ${what}` };
+}
+
+/**
+ * The fairy's OWN ring pages (right-click on the fairy). Nothing the old orb menu did
+ * is missing: the cards become one slice each, and every control is a slice.
+ * Guarded to <= 11 slices a page (the 142 px radius fits 11 x 74 px circles).
+ */
+function selfRingPages() {
+  const cards = Array.isArray(attentionCards) ? attentionCards : [];
+  const cardSpec = cards.slice(0, 6).map((c, i) => ({
+    id: `ring:card:${c.id}`,
+    short: `Card ${i + 1}`,
+    label: String((c && c.title) || "a card").replace(/^Claude Code needs you:\s*/i, ""),
+    extra: true,
+  }));
+  const bodies = (hookValue("aitherBodies") || []).slice(0, 2);
+  const quietOn = Number(state.muteUntil) > Date.now();
+  const visible = state.visible === true;
+  const anyHidden = !visible || !state.tenantCompanion;
+  const page = (id, label, spec) => ({ id, label, spec });
+  return [
+    page("tools", "Tools", RADIAL_SPEC_FOR_SELF()),
+    page("self", "This fairy", [
+      ...cardSpec,
+      ...(cards.length ? [{ id: "ring:queue", short: "Answer window", extra: true }] : []),
+      { id: "ring:show-hide", short: visible ? "Hide fairies" : "Show fairies", extra: true },
+    ]),
+    page("controls", "Controls", [
+      ...(avatarMode() === "fairy" ? [{ id: "ring:expand", short: "Show Aither", extra: true }] : []),
+      ...(avatarMode() === "expanded" ? [{ id: "ring:collapse", short: "Back to fairy", extra: true }] : []),
+      ...bodies.map((b) => ({ id: `ring:body:${b.id}`, short: b.label, extra: true })),
+      { id: "display.mode.fairy", short: "Fairy" },
+      { id: "display.mode.avatar", short: "Avatar" },
+      { id: "display.mode.both", short: "Both" },
+      { id: "display.mode.swarm", short: "Swarm" },
+      { id: "inbox.open", short: "Inbox" },
+    ]),
+    page("companion", "Companion", [
+      ...(visible ? [{ id: "ring:hide-this", short: "Hide fairies", extra: true }] : []),
+      ...(visible || state.tenantCompanion ? [{ id: "ring:hide-all", short: "Hide all", extra: true }] : []),
+      ...(anyHidden ? [{ id: "ring:show-all", short: "Show all", extra: true }] : []),
+      quietOn
+        ? { id: "ring:quiet:off", short: "End quiet", extra: true }
+        : { id: "ring:quiet:1h", short: "Quiet 1h", extra: true },
+      ...(quietOn ? [] : [{ id: "ring:quiet:4h", short: "Quiet 4h", extra: true }]),
+      { id: "ring:swarm", short: "Swarm layout", extra: true },
+      { id: "ring:sounds", short: state.sounds === false ? "Sounds on" : "Sounds off", extra: true },
+      { id: "ring:flights", short: state.reducedMotion === true ? "Flights on" : "Flights off", extra: true },
+    ]),
+    page("setup", "Fairy setup", [
+      { id: "ring:drop:pin", short: "Pin drop", extra: true },
+      { id: "ring:drop:timed", short: "Stay drop", extra: true },
+      { id: "ring:drop:return", short: "Home drop", extra: true },
+      { id: "ring:web", short: "Search web", extra: true },
+      { id: "ring:ask", short: "Ask", extra: true },
+      { id: "ring:find", short: "Find file", extra: true },
+      ...(hold ? [{ id: "ring:read", short: "Read held", extra: true }] : []),
+    ]),
+    page("desk", "Desk", [
+      { id: "ring:attach", short: attach ? "Let go" : "Stay on window", extra: true },
+      { id: "ring:home", short: "Home", extra: true },
+      { id: "ring:sprite", short: "My sprite", extra: true },
+      { id: "ring:teach", short: "Teach it", extra: true },
+      { id: "ring:sprite-page", short: "Sprite page", extra: true },
+      { id: "ring:desktop", short: "Open desktop", extra: true },
+      { id: "ring:spaces", short: "Spaces", extra: true },
+    ]),
+    page("desk2", "Desk 2", [
+      { id: "ring:chat", short: "Chat", extra: true },
+      { id: "console.open", short: "Open Aither" },
+      { id: "browser.open", short: "Browser" },
+      { id: "avatar.toggle", short: "Show avatar" },
+      { id: "ring:settings", short: "Settings", extra: true },
+      { id: "ring:quit", short: "Quit Aither", extra: true },
+    ]),
+  ];
+}
+
+/** The tool page's spec (the same ten the general ring leads with). */
+function RADIAL_SPEC_FOR_SELF() {
+  return [
+    { id: "snip.region", short: "Snip" },
+    { id: "record.region", short: "Record" },
+    { id: "ink.toggle", short: "Draw" },
+    { id: "note.new", short: "Note" },
+    { id: "board.new", short: "Board" },
+    { id: "orb.ask-screen", fallback: "chat.open", short: "Ask" },
+    { id: "desktop.overlay.toggle", short: "Overlay" },
+    { id: "terminal.open", short: "Terminal" },
+    { id: "files.open", short: "Files" },
+    { id: "audio.settings", short: "Audio" },
+  ];
 }
 
 
@@ -4960,9 +5091,18 @@ function moreMenu({ atFairy = false } = {}) {
 /** The old native "spirit menu" entry points (right click on the page, the bridge) now
  *  open THE pill menu: there is one fairy menu. */
 function spiritMenu() {
-  // The keyboard/bridge door opens the ring ON the fairy (the pointer's door is the
-  // right click), so the fan is centred where the owner is looking.
-  return orbMenu({ atFairy: true });
+  // Owner 2026-11-23: the orb's own right-click menu is retired into the ONE ring.
+  // "This fairy" is the page it opens on: one slice per open card, plus every control
+  // the old menu carried (Hide, Dock answers, display, sprite, desk doors, quit).
+  hideMenu();
+  hideTip();
+  return openRing({
+    at: orbCenter(),
+    hold: false,
+    fly: false,
+    pages: selfRingPages(),
+    page: 1,
+  });
 }
 
 // ── drop behaviour (fairy-drop.cjs, owner 2026-11-23) ───────────────────────
