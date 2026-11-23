@@ -42,7 +42,7 @@ test("the token file is the generated one, and carries the family's eleven theme
     assert.ok(css.includes(`[data-theme="${theme.id}"]`), `${theme.id} is offered and has no tokens`);
   }
   // the family accent: tools/family-kit/tokens.css --fk-accent.
-  assert.equal(themes.themes[0].accent, "#5ec9cc");
+  assert.equal(themes.themes[0].accent, "#b0daff");
   // the names the pane pages already use must resolve, or a pane goes unstyled
   for (const alias of ["--bg", "--panel", "--line", "--fg", "--muted", "--btn", "--btn-hi", "--brand"]) {
     assert.match(css, new RegExp(`\\n  ${alias}: `), `${alias} is not defined -- every rule using it falls back to nothing`);
