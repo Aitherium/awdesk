@@ -4759,6 +4759,11 @@ async function endDrag() {
         attached = publicAttach();
       } else if (target) {
         if (verdict.dock) {
+          // "Home" is where the fairy rested BEFORE this drop, never the drop point:
+          // when the window later closes, detach must fly it back there.
+          if (!home && restBefore.x != null && restBefore.y != null) {
+            home = { x: restBefore.x + ORB_SIZE.width / 2, y: restBefore.y + ORB_SIZE.height / 2 };
+          }
           await attachTo(target, { dropPoint, quiet: true });
           attached = publicAttach();
           if (verdict.returnAfterMs != null) scheduleReturnAfter(verdict.returnAfterMs, restBefore);
