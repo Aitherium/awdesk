@@ -40,8 +40,12 @@ const ITEM_IDS = Object.freeze([...toolkitCore.MENU_IDS]);
 const MENU_META = new Map(toolkitCore.MENU.flatMap((g) => g.items.map((i) => [i.id, { group: g.group, short: i.short }])));
 
 /**
- * The radial's slices, clockwise from the top. Same 10 capabilities the owner
- * named; `fallback` is used only while the preferred command does not exist.
+ * The ONE ring, paged. Owner 2026-11-23: the fairy's ring and the Alt+Space ring
+ * become one system, and the fairy controls join the tools instead of a second menu.
+ *
+ * Page 0 = the 10 tools + "Fairy ›"; page 1 = the fairy controls + "More ›" and
+ * "‹ Tools"; page 2 = the dock answers + "‹ Fairy". Eleven slices is the most that
+ * fits the 142 px radius without labels colliding (11 x 74 px chords = 80.7 px).
  */
 const RADIAL_SPEC = Object.freeze([
   Object.freeze({ id: "snip.region", short: "Snip" }),
@@ -56,6 +60,32 @@ const RADIAL_SPEC = Object.freeze([
   Object.freeze({ id: "audio.settings", short: "Audio" }),
 ]);
 const RADIAL_IDS = Object.freeze(RADIAL_SPEC.map((s) => s.id));
+
+/** Page 1: the fairy itself -- show it, its four display modes, chat, Spaces, desk. */
+const FAIRY_SPEC = Object.freeze([
+  Object.freeze({ id: "avatar.from-fairy", short: "Show Aither" }),
+  Object.freeze({ id: "display.mode.fairy", short: "Fairy" }),
+  Object.freeze({ id: "display.mode.avatar", short: "Avatar" }),
+  Object.freeze({ id: "display.mode.both", short: "Both" }),
+  Object.freeze({ id: "display.mode.swarm", short: "Swarm" }),
+  Object.freeze({ id: "chat.open", short: "Chat" }),
+  Object.freeze({ id: "osapp.spaces", short: "Spaces" }),
+  Object.freeze({ id: "console.open", short: "Desktop" }),
+]);
+
+/** Page 2: how a dropped fairy behaves. Ids main owns (no registry row). */
+const FAIRY_MORE_SPEC = Object.freeze([
+  Object.freeze({ id: "orb.drop.pin", short: "Pin drop", extra: true }),
+  Object.freeze({ id: "orb.drop.timed", short: "Stay drop", extra: true }),
+  Object.freeze({ id: "orb.drop.return", short: "Home drop", extra: true }),
+]);
+const EXTRA_IDS = Object.freeze(FAIRY_MORE_SPEC.filter((s) => s.extra).map((s) => s.id));
+
+const PAGES = Object.freeze([
+  Object.freeze({ id: "tools", label: "Tools", spec: RADIAL_SPEC }),
+  Object.freeze({ id: "fairy", label: "Fairy", spec: FAIRY_SPEC }),
+  Object.freeze({ id: "fairy-more", label: "More", spec: FAIRY_MORE_SPEC }),
+]);
 
 /** Ring geometry, in DIPs: the window is a square centred on the cursor. */
 const RADIAL = Object.freeze({ size: 400, radius: 142, item: 74, deadZonePx: launcherCore.DEAD_ZONE_PX });
@@ -84,21 +114,52 @@ function availableItems(registry, { ids = ITEM_IDS, ctx = {} } = {}) {
   return out;
 }
 
+function specItem(entry, registry, ctx) {
+  if (entry.extra === true) {
+    // An id main handles itself (the dock answers, the Windows menu): no registry row.
+    return { id: entry.id, label: entry.short || entry.id, group: null, icon: null, short: entry.short || null };
+  }
+  const command = [entry.id, entry.fallback]
+    .filter(Boolean)
+    .map((id) => (registry && typeof registry.byId === "function" ? registry.byId(id) : null))
+    .find(Boolean);
+  return command ? { ...itemFor(command, ctx), short: entry.short || null } : null;
+}
+
 /**
- * The live radial slices, clockwise from the top. A spec entry resolves to its own
- * id, else its fallback; an entry with neither is omitted (and the surviving
- * slices are re-spread evenly, so one missing command never leaves a gap).
+ * The live slices for one page, clockwise from the top. A page also carries doors to
+ * the pages beside it, so every action stays reachable and nothing overlaps.
  */
+function pageSlices(registry, { page = 0, ctx = {} } = {}) {
+  const n = PAGES.length;
+  const index = Math.min(Math.max(0, Math.trunc(Number(page) || 0)), n - 1);
+  const items = [];
+  for (const entry of PAGES[index].spec) {
+    const item = specItem(entry, registry, ctx);
+    if (item) items.push(item);
+  }
+  const door = (to, label) => ({ id: `radial:page:${to}`, label: `${label} ring`, group: "Pages", icon: "grid", short: label, page: to });
+  if (n > 1) {
+    if (index === 0) items.push(door(1, "Fairy ›"));
+    if (index === 1) items.push(door(2, "More ›"), door(0, "‹ Tools"));
+    if (index === 2) items.push(door(1, "‹ Fairy"));
+  }
+  return items.map((item, i) => ({
+    ...item,
+    index: i,
+    key: String(i + 1),
+    angle: launcherCore.sliceAngle(i, items.length),
+    slice: 360 / Math.max(1, items.length),
+  }));
+}
+
+/** The plain (unpaged) slice list for one spec. The live ring uses pageSlices; this
+ *  stays the named entry point for callers that want the tool spec without doors. */
 function radialSlices(registry, { spec = RADIAL_SPEC, ctx = {} } = {}) {
   const items = [];
   for (const entry of spec) {
-    const command = [entry.id, entry.fallback]
-      .filter(Boolean)
-      .map((id) => (registry && typeof registry.byId === "function" ? registry.byId(id) : null))
-      .find(Boolean);
-    // Owner 2026-11-02: "the wheel has too many words and some get cut off" --
-    // a slice shows ONE short word; the hub shows the full label of the hot slice.
-    if (command) items.push({ ...itemFor(command, ctx), short: entry.short || null });
+    const item = specItem(entry, registry, ctx);
+    if (item) items.push(item);
   }
   return items.map((item, index) => ({
     ...item,
@@ -106,6 +167,12 @@ function radialSlices(registry, { spec = RADIAL_SPEC, ctx = {} } = {}) {
     angle: launcherCore.sliceAngle(index, items.length),
     slice: 360 / Math.max(1, items.length),
   }));
+}
+
+/** A page door id -> its page number, else null. */
+function pageFromId(id) {
+  const m = /^radial:page:(\d+)$/.exec(String(id || ""));
+  return m ? Number(m[1]) : null;
 }
 
 /** Width/height of the grid pop-up for `count` cells: 3 columns up to 6, else 4. */
@@ -168,7 +235,7 @@ function radialBounds(cursor, workArea, size = RADIAL.size, margin = 8) {
  * @param {string[]} [opts.ids]
  * @param {Function} [opts.now]
  */
-function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIAL_SPEC, now = Date.now } = {}) {
+function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_IDS, spec = RADIAL_SPEC, now = Date.now } = {}) {
   if (!electron) throw new Error("quick-menu needs electron");
   const { BrowserWindow, ipcMain, screen } = electron;
   let win = null;
@@ -178,6 +245,7 @@ function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIA
   let hold = false;
   let center = null;
   let done = null;
+  let page = 0;
 
   function alive() {
     return Boolean(win && !win.isDestroyed());
@@ -201,16 +269,33 @@ function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIA
     if (alive() && win.isVisible()) win.hide();
   }
 
+  function slicesForPage() {
+    return pageSlices(registry, { page });
+  }
+
+  /** Repaint the SAME open ring on another page (a page door is not an exit). */
+  function showPage(next) {
+    page = Math.min(Math.max(0, Math.trunc(Number(next) || 0)), PAGES.length - 1);
+    if (win && win.webContents && typeof win.webContents.send === "function") win.webContents.send("quick:refresh");
+    return { ok: true, page };
+  }
+
   /** Select the slice under the REAL cursor and run it (the hold release). */
   function releaseSelection() {
     if (mode !== "radial" || !hold) return { ok: true, ignored: true };
-    const slices = radialSlices(registry, { spec });
+    const slices = slicesForPage();
     const cursor = screen.getCursorScreenPoint();
     const index = launcherCore.sliceIndexAt(cursor, center || { x: 0, y: 0 }, slices.length,
       { deadZonePx: RADIAL.deadZonePx });
     if (index == null || !slices[index]) { finish({ cancelled: true }); return { ok: true, cancelled: true }; }
     const chosen = slices[index];
-    try { run(chosen.id); } catch { /* the desk's own runCommand never throws at a caller */ }
+    // A page door keeps the ring up and on the hold: release again to pick.
+    const door = pageFromId(chosen.id);
+    if (door != null) return showPage(door);
+    try {
+      if (EXTRA_IDS.includes(chosen.id)) { if (typeof runExtra === "function") runExtra(chosen.id); }
+      else run(chosen.id);
+    } catch { /* the desk's own runCommand never throws at a caller */ }
     finish({ id: chosen.id });
     return { ok: true, ran: chosen.id };
   }
@@ -222,8 +307,8 @@ function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIA
       if (!fromMenu(event)) return { ok: false, reason: "not the quick menu" };
       if (mode === "radial") {
         return {
-          ok: true, mode, hold,
-          slices: radialSlices(registry, { spec }),
+          ok: true, mode, hold, page, pages: PAGES.map((p) => ({ id: p.id, label: p.label })),
+          slices: slicesForPage(),
           radius: RADIAL.radius, item: RADIAL.item, deadZonePx: RADIAL.deadZonePx, size: RADIAL.size,
         };
       }
@@ -232,10 +317,17 @@ function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIA
     ipcMain.handle("quick:run", (event, rawId) => {
       if (!fromMenu(event)) return { ok: false, reason: "not the quick menu" };
       const id = String(rawId || "");
+      // A page door is a repaint, never an exit.
+      const door = pageFromId(id);
+      if (door != null) return showPage(door);
+      const extra = EXTRA_IDS.includes(id);
       const command = registry && registry.byId ? registry.byId(id) : null;
-      if (!command) return { ok: false, reason: "that command is not available" };
+      if (!extra && !command) return { ok: false, reason: "that command is not available" };
       const wasHold = mode === "radial" && hold;
-      try { run(id); } catch { /* the desk's own runCommand never throws at a caller */ }
+      try {
+        if (extra) { if (typeof runExtra === "function") runExtra(id); }
+        else run(id);
+      } catch { /* the desk's own runCommand never throws at a caller */ }
       if (wasHold) finish({ id }); else hide();
       return { ok: true };
     });
@@ -302,11 +394,12 @@ function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIA
     return { ok: true, bounds };
   }
 
-  /** Open (or hide) the radial ring at the cursor. */
-  function openRadial({ at = null, hold: held = false, onDone = null, force = false } = {}) {
+  /** Open (or hide) the ONE radial ring at a point. `page` picks the first page. */
+  function openRadial({ at = null, hold: held = false, onDone = null, force = false, page: startPage = 0 } = {}) {
     const point = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? at : screen.getCursorScreenPoint();
     const display = screen.getDisplayNearestPoint(point);
-    const slices = radialSlices(registry, { spec });
+    const first = Math.min(Math.max(0, Math.trunc(Number(startPage) || 0)), PAGES.length - 1);
+    const slices = pageSlices(registry, { page: first });
     if (!slices.length) return { ok: false, reason: "no radial actions are available" };
     ensureIpc();
     if (!alive()) create();
@@ -317,6 +410,7 @@ function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIA
     const box = radialBounds(point, display.workArea, RADIAL.size);
     mode = "radial";
     hold = Boolean(held);
+    page = first;
     done = typeof onDone === "function" ? onDone : null;
     center = box.center;
     win.setBounds({ x: box.x, y: box.y, width: box.width, height: box.height });
@@ -324,7 +418,7 @@ function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIA
     win.show();
     win.focus();
     if (win.webContents && !win.webContents.isLoading()) win.webContents.send("quick:refresh");
-    return { ok: true, bounds: box, slices: slices.map((s) => s.id) };
+    return { ok: true, bounds: box, page, slices: slices.map((s) => s.id) };
   }
 
   function openAtCursor() {
@@ -375,6 +469,7 @@ function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIA
 }
 
 module.exports = {
-  ITEM_IDS, RADIAL_SPEC, RADIAL_IDS, RADIAL, CELL, availableItems, itemFor, layout, positionFor,
-  radialBounds, radialSlices, createQuickMenu,
+  ITEM_IDS, RADIAL_SPEC, RADIAL_IDS, FAIRY_SPEC, FAIRY_MORE_SPEC, EXTRA_IDS, PAGES, RADIAL, CELL,
+  availableItems, itemFor, layout, positionFor, radialBounds, radialSlices, pageSlices, pageFromId,
+  createQuickMenu,
 };

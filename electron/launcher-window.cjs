@@ -191,6 +191,8 @@ function createLauncher({
   keyState = null,
   /** How often the physical keys are read (tests make this 1 ms). */
   pollMs = KEYS_POLL_MS,
+  /** ({at, hold, onDone}) => verdict|Promise -- the ONE ring, fairy-first (orbWindow.openRing). */
+  openRing = null,
   // () => Promise<host-context sample>. Started the instant Alt+Space goes DOWN,
   // before showAtCursor() takes focus -- sampled any later, the foreground window
   // is the launcher itself. Null = the empty box stays "Type to search".
@@ -350,28 +352,44 @@ function createLauncher({
     send("launcher:focus");
   }
 
-  /** The HOLD outcome: the ring takes over; its renderer reports the keyup. */
+  /** The HOLD outcome: the ONE ring takes over; its renderer reports the keyup. */
   function enterRadial() {
     clearTimers();
     phase = "radial-hold";
     if (typeof onHoldStart === "function") { try { onHoldStart(); } catch { /* voice optional */ } }
     if (alive()) win.hide();
-    const opened = quickMenu.openRadial({
-      at: screen.getCursorScreenPoint(),
-      hold: true,
-      onDone: () => {
-        phase = "idle"; lastPressAt = pressAt; releasedAt = now();
-        if (typeof onHoldEnd === "function") { try { onHoldEnd(); } catch { /* voice optional */ } }
-      },
-    });
-    if (!opened || !opened.ok) {
-      // No radial, so no keyup will come through it: end the hold here.
+    const done = () => {
+      phase = "idle"; lastPressAt = pressAt; releasedAt = now();
       if (typeof onHoldEnd === "function") { try { onHoldEnd(); } catch { /* voice optional */ } }
-      // No radial actions in this build: a hold is still a usable launcher.
+    };
+    const fallback = () => {
+      // No ring renderer (or it refused): end the hold and be a launcher.
+      if (typeof onHoldEnd === "function") { try { onHoldEnd(); } catch { /* voice optional */ } }
       phase = "idle";
       showAtCursor();
       enterLauncher();
+    };
+    // The ONE ring: the fairy flies to the screen centre and the ring opens around it.
+    if (typeof openRing === "function") {
+      let verdict;
+      try {
+        verdict = openRing({ at: screen.getCursorScreenPoint(), hold: true, onDone: done });
+      } catch {
+        verdict = null;
+      }
+      if (verdict && typeof verdict.then === "function") {
+        verdict.then((r) => { if (!r || r.ok === false) fallback(); }).catch(fallback);
+      } else if (!verdict || verdict.ok === false) {
+        fallback();
+      }
+      return;
     }
+    const opened = quickMenu.openRadial({
+      at: screen.getCursorScreenPoint(),
+      hold: true,
+      onDone: done,
+    });
+    if (!opened || !opened.ok) fallback();
   }
 
   /**

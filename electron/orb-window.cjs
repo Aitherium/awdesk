@@ -67,6 +67,7 @@ const foregroundProbe = require("./foreground-probe.cjs");
 const fairyFlight = require("./fairy-flight.cjs");
 const followFocus = require("./follow-focus.cjs");
 const fairyDrop = require("./fairy-drop.cjs");
+const desktopRight = require("./desktop-right.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -146,6 +147,18 @@ let manualPlacement = false;
 let resolvingDrop = false;
 let pinDocks = new Map();
 let pinDockTimer = null;
+/** The ONE ring (owner 2026-11-23): the fairy flies to the anchor, the ring opens
+ *  around it, and it flies back on release/cancel. The desktop watch is a low-rate
+ *  physical right-button sample; `ringOpen` freezes follow/orbit/hover meanwhile. */
+let ringOpen = false;
+let ringReturn = null;
+let ringOpener = null;
+let extraRunner = null;
+let desktopWatch = null;
+let desktopWasDown = false;
+let lastDesktopRingAt = 0;
+const DESKTOP_WATCH_MS = 120;
+const RING_HOLD_MS = 1200;
 let fgContent = null;
 let fgProbeImpl = null;
 /** Follow-the-focused-window (plan A4): the descriptor the probe last reported, when it
@@ -468,7 +481,7 @@ function allObstacles() {
 async function setDockWindow(win) {
   const ride = alive(win) && win.isVisible() && !win.isMinimized() ? win : null;
   dockWindowId = ride ? ride.id : 0;
-  if (!alive(orbWindow) || dragging) return { ok: false };
+  if (!alive(orbWindow) || dragging || ringOpen) return { ok: false };
   // Hidden fairies stay hidden (owner 2026-11-13): docking never shows them.
   if (ride && !state.visible) return { ok: true, docked: false, why: "the fairies are hidden" };
   if (ride) {
@@ -1080,7 +1093,7 @@ async function applyFollow() {
   }
   if (!state.visible || !alive(orbWindow)) return { act: "none", reason: "the fairy is down" };
   // The owner put it there by hand: follow never moves it again until the next drag.
-  if (manualPlacement || resolvingDrop) return { act: "none", reason: "placed by hand" };
+  if (manualPlacement || resolvingDrop || ringOpen) return { act: "none", reason: "placed by hand" };
   followBusy = true;
   try {
     const decision = followFocus.decideFollow({
@@ -1784,7 +1797,7 @@ function veilPayload() {
   if (!alive(veilWindow)) return null;
   const b = veilWindow.getBounds();
   const local = (p) => ({ x: Math.round(Number(p.x) - b.x), y: Math.round(Number(p.y) - b.y) });
-  const tether = attach && !attach.minimised
+  const tether = attach && !attach.minimised && !ringOpen
     ? (() => {
       const anchor = spiritCore.anchorFor(attach);
       return anchor ? [local(anchor), local(orbCenter())] : null;
@@ -1942,7 +1955,7 @@ function drawVeil() {
   if (!alive(veilWindow)) return;
   const points = trail.slice();
   if (alive(orbWindow)) points.push(orbCenter());
-  if (attach && !attach.minimised) {
+  if (attach && !attach.minimised && !ringOpen) {
     const anchor = spiritCore.anchorFor(attach);
     if (anchor) points.push(anchor);
   }
@@ -1966,10 +1979,15 @@ function showVeil() {
 }
 
 function hideVeil({ force = false } = {}) {
-  // A sub-fairy still out doing work keeps the overlay up; the page animates it.
-  if (!force && toolFlightLegs().length) return;
+  // The accumulated flight trail is never allowed to outlive the flight, even when a
+  // sub-fairy keeps the overlay up (the stale polyline the owner saw).
   trail = [];
   lastVeilKey = "";
+  // A sub-fairy still out doing work keeps the overlay up; the page animates it.
+  if (!force && toolFlightLegs().length) {
+    drawVeil();
+    return;
+  }
   if (alive(veilWindow)) veilWindow.hide();
 }
 
@@ -2557,13 +2575,14 @@ function finishFlight() {
   } else {
     setOrbCenter(done.to);
   }
-  if (!attach && !tripBusy) {
+  // The trail WAS the flight. Clear it on EVERY landing, before deciding whether the
+  // veil stays: hideVeil() returns early while a sub-fairy is still out, which left a
+  // stale polyline with visible joints crossing the desktop (owner screenshots
+  // 2026-11-23). The tether alone keeps a docked attach legible.
+  trail = [];
+  if (!attach && !tripBusy && toolFlightLegs().length === 0) {
     hideVeil();
   } else {
-    // The trail WAS the flight. Leaving it painted while the fairy stays docked drew
-    // a long diagonal across the desktop (owner screenshots 2026-11-23); the tether
-    // alone keeps the attach legible.
-    trail = [];
     drawVeil();
   }
   try { done.resolve({ ok: true, cancelled: done.cancelled }); } catch { /* settled */ }
@@ -2680,6 +2699,174 @@ async function keyState() {
   }
 }
 
+// ── the ONE ring (owner 2026-11-23) ─────────────────────────────────────────
+// Hold Alt+Space: the fairy FLIES to the centre of the display under the cursor and
+// the ring expands around it. Release on a slice runs it; release in the centre (or
+// Esc / click-away) cancels; either way the fairy flies back to its dock or home.
+// The same ring opens on a right-click on the empty desktop (desktop-right.cjs),
+// anchored at the click point. `ringOpen` freezes follow/orbit/hover while it is up.
+
+/** main injects the ring window API (openRadial + releaseSelection) and the handler
+ *  for the ring's own ids. */
+function setRingOpener(api) {
+  ringOpener = api && (typeof api === "function" || typeof api.openRadial === "function") ? api : null;
+  return Boolean(ringOpener);
+}
+function setExtraRunner(fn) {
+  extraRunner = typeof fn === "function" ? fn : null;
+  return Boolean(extraRunner);
+}
+
+/** The display under a point: its work area and its centre (screen DIPs). */
+function displayAt(point) {
+  const { screen } = electron();
+  let display;
+  try { display = screen.getDisplayNearestPoint(point); } catch { display = screen.getPrimaryDisplay(); }
+  const area = (display && display.workArea) || { x: 0, y: 0, width: 1920, height: 1080 };
+  return { area, centre: { x: Math.round(area.x + area.width / 2), y: Math.round(area.y + area.height / 2) } };
+}
+
+/** Snapshot what to fly back to: the attach (if any) else the resting spot. */
+function ringHome() {
+  return {
+    attach: attach && !attach.auto ? { ...attach } : null,
+    auto: Boolean(attach && attach.auto),
+    x: state.x,
+    y: state.y,
+  };
+}
+
+function restoreAfterRing(back) {
+  // A dock (hand or the AitherOS auto-dock) is restored by re-filing to the target;
+  // the follow tick then corrects any move the window made while the ring was up.
+  if (attach && spiritCore.normBounds(attach.bounds)) {
+    void attachTo({ ...attach }, { quiet: true });
+    return;
+  }
+  if (back && back.x != null && back.y != null) {
+    state.x = back.x;
+    state.y = back.y;
+    saveState();
+  }
+  void flyHome(420);
+}
+
+/**
+ * Fly to `at` (default: the centre of the display under the cursor) and open the ONE
+ * ring around the fairy. `hold` = the Alt+Space hold (release selects). Resolves once
+ * the ring is on screen; the returned promise never rejects.
+ */
+async function openRing({ at = null, hold = false, onDone = null, page = 0 } = {}) {
+  if (ringOpen) return { ok: false, reason: "the ring is already up" };
+  if (typeof ringOpener !== "function") return { ok: false, reason: "no ring renderer is wired" };
+  let point = at && Number.isFinite(Number(at.x)) && Number.isFinite(Number(at.y))
+    ? { x: Number(at.x), y: Number(at.y) } : null;
+  if (!point) {
+    try { point = electron().screen.getCursorScreenPoint(); } catch { point = null; }
+  }
+  if (!point) return { ok: false, reason: "no cursor" };
+  const { centre } = displayAt(point);
+  const destination = hold ? centre : point;
+  ringReturn = ringHome();
+  ringOpen = true;
+  clearDropReturn();
+  // No tether/trail while the fairy is at the ring anchor (it would draw a long line
+  // across the desk); the ring is the only thing the owner should see.
+  hideVeil({ force: true });
+  if (flight) { flight.cancelled = true; finishFlight(); }
+  try {
+    await flyTo({ x: destination.x, y: destination.y }, { durationMs: 420 });
+    const api = ringOpener;
+    const openFn = typeof api === "function" ? api : (o) => api.openRadial(o);
+    const opened = openFn({
+      at: destination,
+      hold: Boolean(hold),
+      page,
+      onDone: (result) => {
+        ringOpen = false;
+        const back = ringReturn;
+        ringReturn = null;
+        restoreAfterRing(back);
+        if (typeof onDone === "function") { try { onDone(result); } catch { /* caller */ } }
+      },
+    });
+    // A hold released DURING the fly-out cannot reach the ring's keyup listener. Read
+    // the physical keys once it is up; if they are already up, treat it as a release
+    // (the cursor direction picks, or the centre cancels).
+    if (hold && opened && opened.ok !== false && api && typeof api.releaseSelection === "function") {
+      Promise.resolve().then(() => keyState()).then((k) => {
+        if (ringOpen && k && !k.space && !k.alt) api.releaseSelection();
+      }).catch(() => { /* the ring waits for Esc / click-away */ });
+    }
+    if (!opened || opened.ok === false) {
+      ringOpen = false;
+      const back = ringReturn;
+      ringReturn = null;
+      restoreAfterRing(back);
+      return opened || { ok: false, reason: "the ring did not open" };
+    }
+    return opened;
+  } catch (error) {
+    ringOpen = false;
+    const back = ringReturn;
+    ringReturn = null;
+    restoreAfterRing(back);
+    return { ok: false, error: String((error && error.message) || error) };
+  }
+}
+
+/** The ring's own ids (the dock answers, Windows' menu), run from the ring. */
+function runRingExtra(id) {
+  const what = String(id || "");
+  if (what === "orb.drop.pin") return setDropBehavior("orb", { mode: "pin" });
+  if (what === "orb.drop.timed") return setDropBehavior("orb", { mode: "timed", seconds: 10 });
+  if (what === "orb.drop.return") return setDropBehavior("orb", { mode: "return" });
+  if (typeof extraRunner === "function") return extraRunner(what);
+  return { ok: false, error: `unknown ring row ${what}` };
+}
+
+/**
+ * Watch the empty desktop at a low rate: a fresh right-press over Progman/WorkerW
+ * (class only, Shift up) dismisses Windows' menu and opens the ONE ring at the
+ * click. Apps, files and icons are untouched, and Shift+right-click stays native.
+ * Off until main starts it; near-zero cost because it reads one small sample.
+ */
+function startDesktopWatch() {
+  if (desktopWatch) return false;
+  desktopWatch = setInterval(() => {
+    if (quitting || ringOpen || dragging) return;
+    if (!probe) probe = spiritProbe.createWindowProbe();
+    Promise.resolve()
+      .then(() => probe.desktopRight())
+      .catch(() => null)
+      .then((sample) => {
+        if (quitting || ringOpen) return;
+        const wasDown = desktopWasDown;
+        desktopWasDown = Boolean(sample && sample.down);
+        if (!desktopRight.shouldOpen({ ...(sample || {}), wasDown })) return;
+        if (Date.now() - lastDesktopRingAt < RING_HOLD_MS) return;
+        lastDesktopRingAt = Date.now();
+        const at = { x: sample.x, y: sample.y };
+        // Windows opens its own desktop menu on the press; give it a beat, dismiss it,
+        // then put the ONE ring at the same point. Shift+right-click never reaches here.
+        const timer = setTimeout(() => {
+          Promise.resolve().then(() => probe.escape()).catch(() => null).then(() => {
+            void openRing({ at, hold: false });
+          });
+        }, 60);
+        if (timer.unref) timer.unref();
+      });
+  }, DESKTOP_WATCH_MS);
+  if (desktopWatch.unref) desktopWatch.unref();
+  return true;
+}
+
+function stopDesktopWatch() {
+  if (desktopWatch) { clearInterval(desktopWatch); desktopWatch = null; }
+  desktopWasDown = false;
+}
+
+
 /** What a drop landed on: an external window if one is under the point (its
  *  rect is what the owner sees), else an avatar, else a desk window. */
 async function resolveDropTarget(point) {
@@ -2706,7 +2893,7 @@ function startFollow() {
 async function refreshAttach() {
   // Never yank the orb back to a shoulder while it is flying or working: the
   // tether catches up when the trip is done.
-  if (!attach || flight || tripBusy || nudging) return;
+  if (!attach || flight || tripBusy || nudging || ringOpen) return;
   let bounds = attach.bounds;
   if (attach.kind === "window" && attach.hwnd) {
     if (!probe) probe = spiritProbe.createWindowProbe();
@@ -2777,7 +2964,7 @@ function startOrbit() {
   stopOrbit();
   let lastFront = 0;
   orbitTimer = setInterval(() => {
-    if (!attach || attach.kind !== "avatar" || flight || tripBusy || dragging || nudging) return;
+    if (!attach || attach.kind !== "avatar" || flight || tripBusy || dragging || nudging || ringOpen) return;
     const p = spiritCore.orbitPoint(attach.bounds, Date.now());
     if (!p) return;
     setOrbCenter(p);
@@ -2789,7 +2976,7 @@ function startOrbit() {
 /** A free spirit (not set free by the owner) finds an avatar and starts orbiting it. */
 async function seekAvatar() {
   // A hand-placed fairy is not seeking a body: it stays where the owner put it.
-  if (attach || flight || tripBusy || dragging || nudging || state.freeRoam || manualPlacement || resolvingDrop || !orbVisible()) return;
+  if (attach || flight || tripBusy || dragging || nudging || state.freeRoam || manualPlacement || resolvingDrop || ringOpen || !orbVisible()) return;
   const body = (await attachableTargets()).find((t) => t && t.kind === "avatar");
   if (body) await attachTo(body, { quiet: true });
 }
@@ -2799,7 +2986,7 @@ let hoverTimer = null;
 function startHover() {
   if (hoverTimer) return;
   hoverTimer = setInterval(() => {
-    if (attach || flight || tripBusy || dragging || nudging || resolvingDrop || !orbVisible()) return;
+    if (attach || flight || tripBusy || dragging || nudging || resolvingDrop || ringOpen || !orbVisible()) return;
     if (state.x == null || state.y == null) return;
     const d = spiritCore.hoverOffset(Date.now());
     // The hover circles the RESTING spot: the saved one, kept inside the area the
@@ -4709,7 +4896,7 @@ function dropSettings() {
 // ── drag and click ──────────────────────────────────────────────────────────
 
 function beginDrag() {
-  if (dragging || !alive(orbWindow)) return { ok: true };
+  if (dragging || !alive(orbWindow) || ringOpen) return { ok: true };
   hideTip();
   // A new grab cancels a pending "stay N seconds" return; the placement itself is
   // cleared only when this drag actually drops somewhere (a plain click must not
@@ -5812,6 +5999,9 @@ function stopOrb() {
   clearDropReturn();
   if (pinDockTimer) { clearInterval(pinDockTimer); pinDockTimer = null; }
   pinDocks = new Map();
+  stopDesktopWatch();
+  ringOpen = false;
+  ringReturn = null;
   if (seekTimer) { clearInterval(seekTimer); seekTimer = null; }
   if (hoverTimer) { clearInterval(hoverTimer); hoverTimer = null; }
   if (spriteTimer) { clearInterval(spriteTimer); spriteTimer = null; }
@@ -5982,6 +6172,9 @@ module.exports = {
   __setProbe: (p) => { probe = p; },
   // Alt+Space press detection without stealing the foreground (owner 2026-11-23).
   keyState, warmProbe,
+  // The ONE ring (owner 2026-11-23): fly to the anchor, open the ring, fly back.
+  setRingOpener, setExtraRunner, openRing, runRingExtra, startDesktopWatch, stopDesktopWatch,
+  __ringOpen: () => ringOpen,
   setSwarmAnchor, setSwarmVisible, swarmVisible: () => state.swarm === true,
   setDisplayModeState, displayModeState, displayModeInForce, displayPick,
   fairyBounds: () => (alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null),
@@ -6041,6 +6234,9 @@ module.exports = {
     resolvingDrop = false;
     pinDocks = new Map();
     if (pinDockTimer) { clearInterval(pinDockTimer); pinDockTimer = null; }
+    stopDesktopWatch();
+    ringOpen = false;
+    ringReturn = null;
     fgContent = null;
     followSeen = null;
     followChangedAt = 0;

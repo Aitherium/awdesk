@@ -55,6 +55,10 @@ const PROBE_SCRIPT = [
   // keyup -- stealing focus and sampling the host on EVERY press. Reading the physical
   // key state here lets a hold open the ring without touching the foreground app.
   "  [DllImport(\"user32.dll\")] public static extern short GetAsyncKeyState(int vKey);",
+  // Desktop right-click (owner 2026-11-23): the cursor, the class under it, and one
+  // Escape that dismisses Windows' own desktop menu before our ring takes over.
+  "  [DllImport(\"user32.dll\")] public static extern bool GetCursorPos(out POINT p);",
+  "  [DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);",
   "  [DllImport(\"user32.dll\")] public static extern int GetWindowTextLength(IntPtr hWnd);",
   "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);",
   "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int count);",
@@ -131,6 +135,30 @@ const PROBE_SCRIPT = [
   "      $sp = (([int][AitherWin]::GetAsyncKeyState(32) -band 0x8000) -ne 0)",
   "      $al = (([int][AitherWin]::GetAsyncKeyState(18) -band 0x8000) -ne 0) -or (([int][AitherWin]::GetAsyncKeyState(164) -band 0x8000) -ne 0) -or (([int][AitherWin]::GetAsyncKeyState(165) -band 0x8000) -ne 0)",
   "      $res = @{ ok = $true; space = $sp; alt = $al }",
+  "    } elseif ($req.op -eq 'right') {",
+  // VK_RBUTTON 0x02, VK_SHIFT 0x10. `down` is the button's state NOW; the parent
+  // only acts on the false->true transition, so a held button never reopens the ring.
+  "      $pt = New-Object AitherWin+POINT",
+  "      [void][AitherWin]::GetCursorPos([ref]$pt)",
+  "      $h = [AitherWin]::WindowFromPoint($pt)",
+  "      $root = [AitherWin]::GetAncestor($h, 2)",
+  "      if ($root -ne [IntPtr]::Zero) { $h = $root }",
+  "      $down = (([int][AitherWin]::GetAsyncKeyState(2) -band 0x8000) -ne 0)",
+  "      $shift = (([int][AitherWin]::GetAsyncKeyState(16) -band 0x8000) -ne 0)",
+  "      $res = @{ ok = $true; down = $down; shift = $shift; x = $pt.X; y = $pt.Y; className = [AitherWin]::Class($h) }",
+  "    } elseif ($req.op -eq 'escape') {",
+  // Dismiss the native desktop menu a moment after it opened (VK_ESCAPE 0x1B).
+  "      [AitherWin]::keybd_event(0x1B, 0, 0, [UIntPtr]::Zero)",
+  "      [AitherWin]::keybd_event(0x1B, 0, 2, [UIntPtr]::Zero)",
+  "      $res = @{ ok = $true }",
+  "    } elseif ($req.op -eq 'menu') {",
+  // The ring's "Windows" item: open the native desktop menu at the pointer
+  // (Shift+F10). VK_SHIFT 0x10, VK_F10 0x79.
+  "      [AitherWin]::keybd_event(0x10, 0, 0, [UIntPtr]::Zero)",
+  "      [AitherWin]::keybd_event(0x79, 0, 0, [UIntPtr]::Zero)",
+  "      [AitherWin]::keybd_event(0x79, 0, 2, [UIntPtr]::Zero)",
+  "      [AitherWin]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)",
+  "      $res = @{ ok = $true }",
   "    } elseif ($req.op -eq 'ping') {",
   "      $res = @{ ok = $true; pong = $true }",
   "    } else { $res = @{ ok = $false; error = \"unknown op $($req.op)\" } }",
@@ -392,6 +420,31 @@ function createWindowProbe({
     return { space: answer.space === true, alt: answer.alt === true };
   }
 
+  /** The desktop right-click sample: {down, shift, x, y, className} or null. */
+  async function desktopRight() {
+    const answer = await request({ op: "right" });
+    if (!answer || answer.ok !== true) return null;
+    return {
+      down: answer.down === true,
+      shift: answer.shift === true,
+      x: Math.round(Number(answer.x) || 0),
+      y: Math.round(Number(answer.y) || 0),
+      className: String(answer.className || ""),
+    };
+  }
+
+  /** Dismiss Windows' own desktop menu (one Escape), so the ring can take its place. */
+  async function escape() {
+    const answer = await request({ op: "escape" });
+    return Boolean(answer && answer.ok === true);
+  }
+
+  /** Open Windows' own desktop menu at the pointer (Shift+F10), the ring's "Windows" row. */
+  async function nativeMenu() {
+    const answer = await request({ op: "menu" });
+    return Boolean(answer && answer.ok === true);
+  }
+
   return {
     pointAt,
     rectOf,
@@ -399,6 +452,9 @@ function createWindowProbe({
     taskbars,
     ping,
     keyDown,
+    desktopRight,
+    escape,
+    nativeMenu,
     start,
     stop: () => drop("stopped"),
     get running() { return Boolean(child); },
