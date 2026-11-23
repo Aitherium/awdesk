@@ -295,6 +295,54 @@ test("closing the bubble is final for a line that is up and pinned (the pump mus
   assert.equal(bubble.isVisible(), true, "a new answer reopens the bubble");
 });
 
+test("a second ask QUEUES behind the first and is answered, not refused", async () => {
+  const seen = [];
+  start({
+    askVision: async () => {
+      const n = seen.length + 1;
+      seen.push(`run${n}`);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return { ok: true, text: `answer ${n}`, via: "test" };
+    },
+  });
+  orbWindow.openBubble({ focus: false });
+  const bubble = bubbleWin();
+  const first = invoke("desk:orb-ask", bubble, "text", "first question");
+  const second = invoke("desk:orb-ask", bubble, "text", "second question");
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true, `the second ask must be answered, not refused: ${JSON.stringify(b)}`);
+  assert.deepEqual(seen, ["run1", "run2"], "one at a time, in the order asked");
+  assert.match(b.text, /answer 2/);
+});
+
+test("a region ask freezes the screen with the assistant already HIDDEN", async () => {
+  // The regression (owner 2026-11-23): the region crop carried the fairy's own status
+  // bubble, so "Explain this region" answered with the word "screenshots". The frames
+  // must be grabbed while the orb and bubble are hidden.
+  let visibleAtSnip = null;
+  let saved = null;
+  const capture = {
+    async nativeFrame() { return image(); },
+    lastScreenshot() { return saved; },
+    async startSnip() {
+      const b = bubbleWin();
+      visibleAtSnip = Boolean(b && b.isVisible());
+      saved = path.join(os.tmpdir(), `region-${Date.now()}.png`);
+      fs.writeFileSync(saved, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      return { ok: true, pending: true };
+    },
+  };
+  let asked = 0;
+  start({ capture, askVision: async () => { asked += 1; return { ok: true, text: "A chart.", via: "test" }; } });
+  orbWindow.openBubble({ focus: false });
+  const r = await invoke("desk:orb-ask", bubbleWin(), "region", "");
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(visibleAtSnip, false, "the bubble was still on screen when the region frame was frozen");
+  assert.equal(asked, 1);
+  assert.equal(bubbleWin().isVisible(), true, "the bubble comes back after the snip");
+});
+
 test("hiding the spirit hides the bubble too, and the pump leaves it hidden", async () => {
   start();
   await orbWindow.askScreen();
@@ -331,7 +379,10 @@ test("the orb and bubble are hidden while the screen is captured, then restored"
 
 // ── defect 4 (medium): the guard is set BEFORE the capture await ─────────
 
-test("a second ask is refused immediately, before either one takes a screenshot", async () => {
+// The owner-facing paths (orbAsk, run("ask-screen"), askImage) QUEUE a second
+// ask above this guard. Called directly, two asks still never overlap: the guard
+// refuses the second before it takes a screenshot. Kept as the re-entrancy floor.
+test("the direct-API guard still stops two overlapping asks before either screenshots", async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const capture = captureFake();
