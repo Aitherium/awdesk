@@ -151,3 +151,22 @@ test("no page puts two slices closer than the slice diameter (no overlapping lab
     }
   }
 });
+
+test("a caller's own pages replace the general ring (the fairy's This-fairy page)", () => {
+  const registry = registryWith(["display.mode.fairy"]);
+  const pages = [
+    { id: "self", label: "This fairy", spec: [
+      { id: "ring:card:c1", short: "Card 1", extra: true },
+      { id: "ring:card:c2", short: "Card 2", extra: true },
+    ] },
+    { id: "controls", label: "Controls", spec: [{ id: "display.mode.fairy", short: "Fairy" }] },
+  ];
+  const p0 = pageSlices(registry, { page: 0, pages });
+  assert.deepEqual(p0.map((s) => s.id), ["ring:card:c1", "ring:card:c2", "radial:page:1"]);
+  assert.equal(p0.at(-1).short, "Controls ›");
+  const p1 = pageSlices(registry, { page: 1, pages });
+  assert.deepEqual(p1.map((s) => s.id), ["display.mode.fairy", "radial:page:0"]);
+  assert.equal(p1.at(-1).short, "‹ This fairy");
+  // Extra-only slices carry their own label (no registry row needed).
+  assert.equal(p0[0].label, "Card 1");
+});
