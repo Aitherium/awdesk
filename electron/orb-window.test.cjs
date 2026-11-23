@@ -862,7 +862,9 @@ test("a card that matters flies the fairy to the pointer and shows the whisper b
   const whisper = nudgeWin();
   assert.ok(whisper && whisper.isVisible(), "the whisper is up once the fairy arrived");
   assert.equal(whisper.opts.focusable, false, "the whisper never takes the keyboard");
-  assert.equal(whisper.ignoreMouse, true, "click-through until the pointer is on it");
+  // A shown card must take clicks without waiting for a hover report (owner
+  // 2026-11-23: buttons and the X were dead when that report never arrived).
+  assert.equal(whisper.ignoreMouse, false, "a shown card is clickable at once");
   const w = whisper.getBounds();
   const covers = cursor.x >= w.x && cursor.x <= w.x + w.width && cursor.y >= w.y && cursor.y <= w.y + w.height;
   assert.equal(covers, false, "the whisper does not cover the pointer");
