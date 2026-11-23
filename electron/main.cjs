@@ -8160,6 +8160,16 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         return { ok: false, error: String((error && error.message) || error) };
       }
     });
+    // How long the fairy's asking card stays open (card-stay.cjs, owner 2026-11-22):
+    // the same Settings family as Fairy drops. The idle timeout is OFF by default.
+    ipcMain.handle("desk:settings-set-card", (_event, patch) => {
+      try {
+        const result = orbWindow.setCardSettings(patch && typeof patch === "object" ? patch : {});
+        return { ok: true, fairy: orbWindow.dropSettings(), card: result.card };
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+    });
     ipcMain.handle("desk:settings-set-input", (_event, patch) => {
       try {
         const { write } = require("./cast-config.cjs");

@@ -44,6 +44,15 @@ test("a missing awfind says how to fix it", async () => {
   assert.match(r.error, /awfind is not installed/);
 });
 
+test("a half-installed awfind (script exists, module missing) names the repair lane, not a bare traceback", async () => {
+  const trace = "Traceback (most recent call last):\n  File \"...\", line 2, in <module>\nModuleNotFoundError: No module named 'awfind'";
+  const c = createSearchClient({ execFile: (_c, _a, _o, cb) => cb(Object.assign(new Error("exit 1"), { code: 1 }), "", trace) });
+  const r = await c.search("q", "x");
+  assert.equal(r.ok, false);
+  assert.match(r.error, /pip install -e packages\/awfind/);
+  assert.doesNotMatch(r.error, /^\s*ModuleNotFoundError/);
+});
+
 test("research is a job: started, listed, read back as claims pinned to sources", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "desk-research-"));
   let child;

@@ -532,6 +532,10 @@ function sanitizeState(raw) {
     // cursor (default, for the hold and the desktop right-click alike), or the point
     // the owner clicked / the cursor when the key went down.
     ringAt: src.ringAt === "click" ? "click" : "centre",
+    // How long the fairy's asking card stays open, and where a pinned one stands
+    // (card-stay.cjs, owner 2026-11-22): open until dismissed by default; an idle
+    // timeout exists but is OFF until the owner sets it in Settings > Fairy drops.
+    card: require("./card-stay.cjs").normalizeCard(src.card),
   };
 }
 

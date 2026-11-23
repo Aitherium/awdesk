@@ -135,6 +135,11 @@ contextBridge.exposeInMainWorld("aitherOrb", {
   panelAnswer: (id, key) => ipcRenderer.invoke("desk:panel-answer", String(id || ""), String(key || "")),
   panelSize: (px) => ipcRenderer.invoke("desk:panel-size", Number(px) || 0),
   onPanelView: (fn) => on("orb:panel-view", fn),
+  // The asking card's own pin (card-stay.cjs, owner 2026-11-22): stays open and
+  // draggable; main docks it to the nearest screen corner. Activity restarts the
+  // opt-in idle timeout, which is OFF unless the owner sets one in Settings.
+  pinCard: (pinned) => ipcRenderer.invoke("desk:orb-pin-card", Boolean(pinned)),
+  activity: () => ipcRenderer.invoke("desk:orb-activity"),
   // Right click: a companion's menu (its card) or the orb's; a pick names an item id.
   fairyMenu: (id, agent) => ipcRenderer.invoke("desk:fairy-menu", String(id || ""), String(agent || "")),
   orbMenu: () => ipcRenderer.invoke("desk:orb-menu"),

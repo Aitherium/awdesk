@@ -300,7 +300,7 @@ test("a bubble is never placed off-screen when the orb is in a negative-origin d
 // ── state file ──────────────────────────────────────────────────────────────
 
 test("a saved state is small and sanitized; junk costs settings, not a launch", () => {
-  const off = { tenantCompanion: false, companionsV: 0, swarm: false, cluster: true, reducedMotion: false, neurons: false, follow: true, swarmView: require("./fairy-control.cjs").normalizeView(null), drop: { mode: "pin", seconds: 10 }, dropBy: {}, desktopRing: true, ringAt: "centre" };
+  const off = { tenantCompanion: false, companionsV: 0, swarm: false, cluster: true, reducedMotion: false, neurons: false, follow: true, swarmView: require("./fairy-control.cjs").normalizeView(null), drop: { mode: "pin", seconds: 10 }, dropBy: {}, desktopRing: true, ringAt: "centre", card: { pin: false, mode: "open", idleSeconds: 60, x: null, y: null, corner: null } };
   // Hidden by default (owner 2026-11-13): no file, or a file that never said "visible".
   assert.deepEqual(core.sanitizeState(null), { visible: false, pinned: false, x: null, y: null, freeRoam: false, sounds: true, muteUntil: 0, ownerHid: false, ownerHidIds: [], ...off });
   assert.deepEqual(core.sanitizeState({ visible: false, x: "12.7", y: 400 }), { visible: false, pinned: false, x: 13, y: 400, freeRoam: false, sounds: true, muteUntil: 0, ownerHid: false, ownerHidIds: [], ...off });
@@ -320,6 +320,9 @@ test("a saved state is small and sanitized; junk costs settings, not a launch", 
   assert.equal(core.sanitizeState(null).ringAt, "centre");
   assert.equal(core.sanitizeState({ ringAt: "click" }).ringAt, "click");
   assert.equal(core.sanitizeState({ ringAt: "nonsense" }).ringAt, "centre");
+  // The asking card's stay rule defaults to open-until-dismissed (owner 2026-11-22).
+  assert.deepEqual(core.sanitizeState(null).card, { pin: false, mode: "open", idleSeconds: 60, x: null, y: null, corner: null });
+  assert.equal(core.sanitizeState({ card: { pin: true, mode: "idle", idleSeconds: 30 } }).card.pin, true);
 });
 
 test("fairy sounds default on and turn off only when explicitly false", () => {

@@ -67,6 +67,7 @@ const foregroundProbe = require("./foreground-probe.cjs");
 const fairyFlight = require("./fairy-flight.cjs");
 const followFocus = require("./follow-focus.cjs");
 const fairyDrop = require("./fairy-drop.cjs");
+const cardStay = require("./card-stay.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -213,6 +214,9 @@ let home = null; // {x,y} free resting point (orb CENTRE) captured when attachin
 let tint = spiritCore.tintFor("slot0");
 let hold = null;
 let results = null; // {mode:"find"|"web"|"folder", rows, more, total, query}
+/** New results APPEND here while the card is open (owner 2026-11-22: "new results
+ *  stream into the open card instead of replacing or closing it"). Reset on dismiss. */
+let resultStream = [];
 let tripQueue = spiritCore.createTripQueue();
 let tripLog = spiritCore.createTripLog();
 let tripBusy = false;
@@ -227,6 +231,13 @@ let pendingSlot = null;
 let regionWait = false;
 /** A bubble the owner closed stays closed until something NEW arrives. */
 let suppressed = false;
+/** The asking card is OPEN: the owner has not dismissed it (owner 2026-11-22). This,
+ *  not a live line, is what keeps `bubbleWanted()` true after focus moves away. */
+let cardOpen = false;
+/** Card idle timeout (card-stay.cjs): OFF by default; armed only when the owner sets one. */
+let cardIdleTimer = null;
+/** A pinned card's move settled: dock it after this debounce (ensures one snap per drag). */
+let cardMoveTimer = null;
 /** The fairy has grown into Aither's full avatar (expandToAvatar); transient, never saved. */
 let expanded = false;
 /** Aither's body is up as its OWN surface (main's avatar window, not a grow): the
@@ -512,9 +523,19 @@ function placeOrb() {
 
 function placeBubble() {
   if (!alive(bubbleWindow) || !alive(orbWindow)) return;
+  const size = { width: BUBBLE_SIZE.width, height: bubbleHeight };
+  // A pinned card stands where the owner put it (card-stay.cjs), clamped onto the
+  // display that spot belongs to. Everything else still opens beside the fairy.
+  const card = cardStay.normalizeCard(state.card);
+  if (card.pin && card.x != null && card.y != null) {
+    const at = { x: card.x + size.width / 2, y: card.y + size.height / 2 };
+    const area = workAreaAt(at) || fairyArea(displayForOrb().workArea);
+    const pos = orbCore.clampToWorkArea({ x: card.x, y: card.y }, size, area);
+    bubbleWindow.setBounds({ ...pos, ...size });
+    return;
+  }
   const [x, y] = orbWindow.getPosition();
   const area = fairyArea(displayForOrb().workArea);
-  const size = { width: BUBBLE_SIZE.width, height: bubbleHeight };
   const pos = orbCore.bubblePosition(
     { x, y, width: ORB_SIZE.width, height: ORB_SIZE.height },
     size,
@@ -734,19 +755,35 @@ function ensureBubble() {
   });
   bubbleWindow.setAlwaysOnTop(true, "screen-saver");
   try { bubbleWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch { /* no-op */ }
+  // A pinned card is draggable; an unpinned one stays where the fairy opened it.
+  if (typeof bubbleWindow.setMovable === "function") {
+    try { bubbleWindow.setMovable(cardStay.normalizeCard(state.card).pin); } catch { /* no-op */ }
+  }
   bubbleWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   bubbleWindow.webContents.on("will-navigate", (event) => event.preventDefault());
   bubbleWindow.on("closed", () => { bubbleWindow = null; });
+  // Owner 2026-11-22: losing focus MUST NOT close the card. The old handler closed it
+  // whenever the pointer was off it -- clicking away, another app, or the Snipping
+  // Tool taking focus (so the card was gone before it could be screenshotted). The
+  // card now stays until Esc, the close button, a click on the fairy, or the opt-in
+  // idle timeout (card-stay.cjs, OFF by default).
   bubbleWindow.on("blur", () => {
     drafting = false;
-    // Owner 2026-11-14: it closes when you leave it and click elsewhere -- but never
-    // mid-answer or mid-trip, and never while the pointer is still on it.
-    if (!inflight && !tripBusy && !regionWait && alive(bubbleWindow)
-        && !fairyHoverGuard.inside(cursorPoint(), bubbleWindow.getBounds())) {
-      closeBubble();
-      return;
-    }
     syncBubble();
+  });
+  // A pinned card is dragged by its own grip: when the move settles, it docks to the
+  // nearest screen corner (the same rule a dropped fairy follows) and remembers it.
+  bubbleWindow.on("moved", () => {
+    if (!alive(bubbleWindow)) return;
+    const card = cardStay.normalizeCard(state.card);
+    if (!card.pin) return;
+    // Our own placement (open, resize, clamp) must not re-dock: only a position the
+    // owner moved the window TO (different from the one we saved) is a drag.
+    const [x, y] = bubbleWindow.getPosition();
+    if (card.x === x && card.y === y) return;
+    if (cardMoveTimer) clearTimeout(cardMoveTimer);
+    cardMoveTimer = setTimeout(dockCard, 260);
+    if (cardMoveTimer.unref) cardMoveTimer.unref();
   });
   void bubbleWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "bubble" } });
   return bubbleWindow;
@@ -2050,6 +2087,8 @@ function hideOrb({ auto = false } = {}) {
   }
   releaseHover();
   suppressed = true;
+  cardOpen = false;
+  clearCardIdle();
   pendingSlot = null;
   if (nudging) endNudge("hidden");
   if (alive(bubbleWindow)) bubbleWindow.hide();
@@ -2079,13 +2118,39 @@ function toggleOrb() {
     : showOrb();
 }
 
-/** The bubble is up while it has something to say, an ask or a trip is running,
- *  the owner is typing in it, or it is holding/showing something. Nothing else
- *  keeps it open — and a bubble the owner closed stays closed. */
+/** The bubble is up while the owner has it OPEN (owner 2026-11-22: losing focus or
+ *  moving the pointer away must not close it), or while a line/trip/hold needs it.
+ *  A bubble the owner dismissed stays closed until something NEW arrives. */
 function bubbleWanted() {
   if (suppressed || stoodDownForAvatar || !state.visible) return false;
-  return Boolean(queue.cur) || queue.items.length > 0 || inflight || drafting
+  return cardOpen || Boolean(queue.cur) || queue.items.length > 0 || inflight || drafting
     || regionWait || Boolean(hold) || Boolean(results) || tripBusy;
+}
+
+function clearCardIdle() {
+  if (cardIdleTimer) {
+    clearTimeout(cardIdleTimer);
+    cardIdleTimer = null;
+  }
+}
+
+/** Re-arm the card's opt-in idle timeout (card-stay.cjs). A pinned card never arms;
+ *  the default mode arms nothing at all. */
+function armCardIdle() {
+  clearCardIdle();
+  if (!cardOpen || !alive(bubbleWindow) || !bubbleWindow.isVisible()) return;
+  const { closeAfterMs } = cardStay.decide(state.card);
+  if (closeAfterMs == null) return;
+  cardIdleTimer = setTimeout(() => {
+    cardIdleTimer = null;
+    if (cardOpen && alive(bubbleWindow) && bubbleWindow.isVisible()) closeBubble();
+  }, Math.max(0, closeAfterMs));
+  if (cardIdleTimer.unref) cardIdleTimer.unref();
+}
+
+/** Activity inside the card (typing, pointer, wheel): restart the idle countdown. */
+function touchCard() {
+  if (cardOpen) armCardIdle();
 }
 
 function syncBubble() {
@@ -2095,9 +2160,12 @@ function syncBubble() {
     placeBubble();
     bubbleWindow.showInactive();
     send("orb:line", queue.cur);
+    armCardIdle();
   } else if (!wanted && bubbleWindow.isVisible()) {
     bubbleWindow.hide();
     drafting = false;
+    cardOpen = false;
+    clearCardIdle();
   }
   sendPanel();
   syncPanelPoll();
@@ -2112,10 +2180,14 @@ function openBubble({ focus = false } = {}) {
     sendPanel();
     return { ok: true, suppressed: true };
   }
+  // Opening the card is the owner's "something new": it is no longer suppressed.
+  suppressed = false;
+  cardOpen = true;
   const win = ensureBubble();
   placeBubble();
   if (!win.isVisible()) win.showInactive();
   send("orb:line", queue.cur);
+  armCardIdle();
   if (focus) {
     win.focus();
     try { win.webContents.send("orb:focus"); } catch { /* page loading: focuses on load */ }
@@ -2127,10 +2199,19 @@ function openBubble({ focus = false } = {}) {
 
 function closeBubble() {
   suppressed = true;
+  cardOpen = false;
+  clearCardIdle();
   bubbleMode = null;
   cardChat = null;
   pendingSlot = null;
   drafting = false;
+  // Dismissing the card also dismisses what it was showing: a reopen starts clean
+  // instead of resurrecting results the owner put away (owner 2026-11-22).
+  resultStream = [];
+  if (results) {
+    results = null;
+    send("orb:results", null);
+  }
   if (alive(bubbleWindow)) bubbleWindow.hide();
   sendPanel();
   syncPanelPoll();
@@ -3263,6 +3344,42 @@ function sendResults() {
   send("orb:mode", { mode: bubbleMode });
 }
 
+/**
+ * New results while the card is open APPEND to what it already shows; dismissing the
+ * card is the only thing that clears the list (owner 2026-11-22: "new results stream
+ * into the open card instead of replacing or closing it"). Rows are de-duplicated by
+ * url/target/title, newest last, capped so a long session cannot grow without bound.
+ */
+function publishResults(next) {
+  if (!next) {
+    results = null;
+    resultStream = [];
+    sendResults();
+    return null;
+  }
+  const keyOf = (row) => String((row && (row.url || row.target || row.path || row.title)) || "");
+  if (cardOpen && alive(bubbleWindow) && bubbleWindow.isVisible()) {
+    const seen = new Set(resultStream.map(keyOf).filter(Boolean));
+    for (const row of next.rows || []) {
+      const key = keyOf(row);
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      resultStream.push(row);
+    }
+    resultStream = resultStream.slice(-60);
+  } else {
+    resultStream = (next.rows || []).slice(0, 60);
+  }
+  results = {
+    ...next,
+    rows: resultStream.slice(),
+    total: Math.max(Number(next.total) || 0, resultStream.length),
+  };
+  sendResults();
+  touchCard();
+  return results;
+}
+
 function commandRegistry() {
   return require("./command-registry.cjs");
 }
@@ -3457,8 +3574,7 @@ async function performTrip(trip, windowTarget) {
   if (trip.kind === "folder") {
     const r = await ops.listFolder(trip.target);
     if (!r.ok) return { ok: false, refused: r.refused, line: r.line || r.reason, reason: r.reason };
-    results = { mode: "folder", query: trip.target, rows: r.rows, more: r.more, total: r.total };
-    sendResults();
+    publishResults({ mode: "folder", query: trip.target, rows: r.rows, more: r.more, total: r.total });
     openBubble({ focus: false });
     bubbleMode = null;
     send("orb:mode", { mode: null });
@@ -3517,8 +3633,7 @@ async function performTrip(trip, windowTarget) {
   if (trip.kind === "web") {
     const r = await ops.webSearch(trip.target, { answer: Boolean(trip.question), limit: 12 });
     if (!r.ok) return { ok: false, line: r.line || r.reason, reason: r.reason };
-    results = { mode: "web", query: trip.target, rows: r.rows, more: r.more, total: r.total, answer: r.answer || null };
-    sendResults();
+    publishResults({ mode: "web", query: trip.target, rows: r.rows, more: r.more, total: r.total, answer: r.answer || null });
     openBubble({ focus: false });
     bubbleMode = null;
     send("orb:mode", { mode: null });
@@ -3537,8 +3652,7 @@ async function performTrip(trip, windowTarget) {
   const r = await ops.findFiles(trip.target);
   if (!r.ok) return { ok: false, line: r.reason, reason: r.reason };
   if (!r.rows.length) {
-    results = { mode: "find", query: trip.target, rows: [], more: 0, total: 0 };
-    sendResults();
+    publishResults({ mode: "find", query: trip.target, rows: [], more: 0, total: 0 });
     openBubble({ focus: false });
     bubbleMode = null;
     send("orb:mode", { mode: null });
@@ -3547,8 +3661,7 @@ async function performTrip(trip, windowTarget) {
     speakAnswer(line, trip.slotId, { onlyIfAttached: true });
     return { ok: true, answer: line, rows: [], more: 0, total: 0 };
   }
-  results = { mode: "find", query: trip.target, rows: r.rows, more: r.more, total: r.total };
-  sendResults();
+  publishResults({ mode: "find", query: trip.target, rows: r.rows, more: r.more, total: r.total });
   openBubble({ focus: false });
   bubbleMode = null;
   send("orb:mode", { mode: null });
@@ -3869,11 +3982,14 @@ function currentCounts() {
   });
 }
 
-/** The orb badge: the cards that need the owner. With none, the answers left to read. */
+/** The orb badge: the cards that need the owner. With none, the answers left to read.
+ *  `label` is the ONE visible count's name (owner 2026-11-22: "each number must say
+ *  what it counts"); every other number is behind the hover/ring, never a raw badge. */
 function badgeView(counts = currentCounts()) {
-  if (counts.needYou > 0) return { n: counts.badge, title: fairyCounts.badgeTitle(counts) };
+  if (counts.needYou > 0) return { n: counts.badge, label: "waiting", title: fairyCounts.badgeTitle(counts) };
   return {
     n: counts.unread,
+    label: counts.unread ? "unread" : "",
     title: counts.unread ? `${counts.unread} answer${counts.unread === 1 ? "" : "s"} to read` : "",
   };
 }
@@ -4893,10 +5009,64 @@ function setDropBehavior(agent, patch) {
   return { ok: true, agent: fairyDrop.behaviorKey(agent), drop: next };
 }
 
-/** The Settings page's view: the global default plus per-fairy overrides. */
+/** The Settings page's view: the global default plus per-fairy overrides. The asking
+ *  card's stay rule rides the same family (owner 2026-11-22: "same settings family as
+ *  Settings > Fairy drops"). */
 function dropSettings() {
-  return { drop: { ...(state.drop || fairyDrop.normalizeDrop(null)) }, byAgent: { ...(state.dropBy || {}) } };
+  return {
+    drop: { ...(state.drop || fairyDrop.normalizeDrop(null)) },
+    byAgent: { ...(state.dropBy || {}) },
+    card: cardStay.normalizeCard(state.card),
+  };
 }
+
+// ── the asking card: stay-open rule, pin and dock (card-stay.cjs) ────────────
+/** Settings: how long the card stays open. The idle timeout is OFF by default. */
+function setCardSettings(patch) {
+  const next = cardStay.normalizeCard({ ...(state.card || {}), ...(patch && typeof patch === "object" ? patch : {}) });
+  state = { ...state, card: next };
+  saveState();
+  if (alive(bubbleWindow) && typeof bubbleWindow.setMovable === "function") {
+    try { bubbleWindow.setMovable(next.pin); } catch { /* Windows: no-op on a gone window */ }
+  }
+  armCardIdle();
+  return { ok: true, card: next };
+}
+
+/** The card's pin button: stays open and draggable, and exempt from the idle timeout. */
+function setCardPin(pinned) {
+  const patch = { pin: pinned === true };
+  // Pinning keeps the card exactly where it is; a later drag re-docks it.
+  if (patch.pin && alive(bubbleWindow)) {
+    try {
+      const b = bubbleWindow.getBounds();
+      patch.x = b.x;
+      patch.y = b.y;
+    } catch { /* a gone window: keep the saved spot */ }
+  }
+  const r = setCardSettings(patch);
+  touchCard();
+  return r;
+}
+
+/** A pinned card's drag settled: dock to the nearest screen corner (fairy-drop's rule),
+ *  remember it, and keep the card open. Never moves an unpinned card. */
+function dockCard() {
+  if (!alive(bubbleWindow) || !cardStay.normalizeCard(state.card).pin) return { ok: false };
+  let bounds;
+  try { bounds = bubbleWindow.getBounds(); } catch { return { ok: false }; }
+  const { screen } = electron();
+  let area;
+  try { area = screen.getDisplayMatching(bounds).workArea; } catch { area = displayForOrb().workArea; }
+  const corner = cardStay.dockCorner(area, bounds);
+  const pos = cardStay.dockPosition(area, { width: bounds.width, height: bounds.height }, corner);
+  bubbleWindow.setBounds({ ...bounds, x: pos.x, y: pos.y });
+  state = { ...state, card: cardStay.normalizeCard({ ...state.card, x: pos.x, y: pos.y, corner }) };
+  saveState();
+  touchCard();
+  return { ok: true, x: pos.x, y: pos.y, corner };
+}
+
 
 // ── drag and click ──────────────────────────────────────────────────────────
 
@@ -5031,9 +5201,10 @@ function toggleBubbleFromOrb() {
   if (tripBusy || flight) {
     const r = cancelTrip();
     if (!waiting) return { ...r, visible: Boolean(alive(bubbleWindow) && bubbleWindow.isVisible()) };
-  } else if (!waiting && alive(bubbleWindow) && bubbleWindow.isVisible()) {
-    return closeBubble();
   }
+  // Owner 2026-11-22: a click on the fairy is a DISMISSAL gesture. It used to close
+  // only when no cards were waiting, so an open card could not be put away that way.
+  if (alive(bubbleWindow) && bubbleWindow.isVisible()) return closeBubble();
   // Cards waiting: a LEFT click on the orb opens the waiting queue -- every card, one
   // list (owner 2026-11-12: "make the left-click and right-click interactions
   // better"). A companion fairy's click opens ITS card; the orb is the whole queue.
@@ -5791,6 +5962,8 @@ function handlers() {
         hold,
         holdActions: spiritCore.holdActions(hold, { hasBoard: Boolean(commandRegistry().byId("board.new")) }),
         results,
+        // The asking card's stay rule and pin (card-stay.cjs, owner 2026-11-22).
+        card: cardStay.normalizeCard(state.card),
         trips: { view: spiritCore.logView(tripLog), count: spiritCore.queueCount(tripQueue), line: spiritCore.queueLine(tripQueue) },
         tint: { name: tint.name, css: tint.css },
         attach: publicAttach(),
@@ -5907,8 +6080,17 @@ function handlers() {
       return r;
     }),
     "desk:orb-close": guard(() => closeBubble()),
+    // The asking card's own pin (card-stay.cjs): stays open, drag to move, docks to
+    // the nearest screen corner. Distinct from `desk:orb-pin`, which pins an ANSWER.
+    "desk:orb-pin-card": guard((_sender, pinned) => setCardPin(pinned === true)),
+    // Any activity in the open card restarts its opt-in idle timeout (OFF by default).
+    "desk:orb-activity": guard(() => {
+      touchCard();
+      return { ok: true };
+    }),
     "desk:orb-state": guard((_sender, next) => {
       drafting = Boolean(next && next.drafting);
+      if (drafting) touchCard();
       syncBubble();
       return { ok: true };
     }),
@@ -6167,6 +6349,8 @@ module.exports = {
   // fairy's own answer, and where the two live.
   setDropDefault, setDropBehavior, dropSettings, dropBehaviorFor,
   desktopRingOn, setDesktopRing, ringAtMode, setRingAt,
+  // The asking card (card-stay.cjs, owner 2026-11-22): stay-open rule, pin and dock.
+  setCardSettings, setCardPin, dockCard, cardOpen: () => cardOpen,
   __feedForeground: (fg) => { onForeground(fg); },
   __setFollowChangedAt: (t) => { followChangedAt = Number(t) || 0; },
   __followSeen: () => followSeen,
@@ -6200,6 +6384,10 @@ module.exports = {
     if (dragTimer) { clearInterval(dragTimer); dragTimer = null; }
     if (flightTimer) { clearInterval(flightTimer); flightTimer = null; }
     if (toolFlightTimer) { clearTimeout(toolFlightTimer); toolFlightTimer = null; }
+    if (cardIdleTimer) { clearTimeout(cardIdleTimer); cardIdleTimer = null; }
+    if (cardMoveTimer) { clearTimeout(cardMoveTimer); cardMoveTimer = null; }
+    cardOpen = false;
+    resultStream = [];
     toolFlightPlanner.reset();
     toolFlightPlan = { flights: [], returning: [], hover: [], throttled: [], reducedMotion: false };
     lastVeilKey = "";
