@@ -99,19 +99,34 @@ function saveImage(image) {
 async function captureFrames() {
   const { screen, desktopCapturer } = electron();
   const displays = screen.getAllDisplays();
-  const sources = await desktopCapturer.getSources({
-    types: ["screen"], thumbnailSize: core.thumbnailSizeFor(displays),
-  });
-  const frames = core.matchSources(displays, sources)
-    .map(({ display, source }) => ({ display, image: source.thumbnail }))
-    .filter((f) => f.image && !f.image.isEmpty());
-  // A display desktopCapturer did not return (measured 2026-11-02: a 4K + 1080p
-  // Windows desk got ONE source) is grabbed by GDI instead of borrowing a neighbour's.
+  // GDI FIRST, one grab per display, bound to that display by construction.
+  //
+  // MEASURED 2026-11-23 on the owner's desk: the single display is 3840x2160 at
+  // scaleFactor 1.6 (DIP 2400x1350) and Windows reports desktopCapturer's source
+  // with an EMPTY display_id. matchSources falls back to source ORDER, which is
+  // not guaranteed to match getAllDisplays() -- the 2026-11-02 multi-monitor
+  // incident (one source for a 4K + 1080p desk, the 1080p frame shown on the 4K
+  // screen) is the same fault. nativeFrame takes the display's bounds, converts
+  // to physical pixels itself and returns THAT display's pixels, so a region
+  // crop can never be taken from a neighbour's frame. It is the path the orb's
+  // Screen ask already uses, and a warm grab measured 140-250 ms for 4K.
+  const frames = [];
   for (const display of displays) {
-    if (frames.some((f) => f.display.id === display.id)) continue;
     const image = await nativeFrame(display);
     if (image && !image.isEmpty()) frames.push({ display, image });
   }
+  if (frames.length === displays.length && frames.length > 0) return frames;
+  // Non-Windows (nativeFrame is win32-only) or a display GDI could not grab:
+  // desktopCapturer fills in the displays still missing, never replacing a GDI frame.
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ["screen"], thumbnailSize: core.thumbnailSizeFor(displays),
+    });
+    for (const { display, source } of core.matchSources(displays, sources)) {
+      if (frames.some((f) => f.display.id === display.id)) continue;
+      if (source.thumbnail && !source.thumbnail.isEmpty()) frames.push({ display, image: source.thumbnail });
+    }
+  } catch { /* no capturer: the GDI frames are what we have */ }
   return frames;
 }
 
@@ -192,7 +207,11 @@ function startGrabber() {
 /** Start the warm grabber ahead of the first Print Screen (Windows, several displays). */
 function warmNativeGrabber() {
   if (process.platform !== "win32") return false;
-  try { if (electron().screen.getAllDisplays().length < 2) return false; } catch { return false; }
+  // Warm on EVERY Windows desk, not only multi-monitor ones. MEASURED 2026-11-23:
+  // the first GDI grab (one-shot PowerShell + Add-Type compile) took 4.2 s; the
+  // second, against the resident grabber, 171 ms. The snip now takes its frames
+  // from GDI so a region crop can never come from another display's frame, so this
+  // warm at desk start is what keeps the first region ask from freezing for 4 s.
   return Boolean(startGrabber());
 }
 

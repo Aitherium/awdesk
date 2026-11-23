@@ -2495,6 +2495,27 @@ function releaseAsk() {
   kick();
 }
 
+// ── ask queue ───────────────────────────────────────────────────────────────
+// One ask at a time is the MODEL's constraint, not the owner's. A second
+// question asked while the first is still being answered used to be refused
+// ("One ask at a time — the first answer is still coming", owner 2026-11-23);
+// now it QUEUES and runs the moment the first finishes, in the order asked.
+let askTail = Promise.resolve();
+let askPending = 0; // asks queued or running
+function queueAsk(run) {
+  const queued = askPending > 0;
+  askPending += 1;
+  if (queued) pushStatus("Queued — I'll answer this as soon as the one in progress is done", 120000, 120000);
+  const start = () => run();
+  const result = askTail.then(start, start).finally(() => {
+    askPending = Math.max(0, askPending - 1);
+    if (askPending === 0) dropStatuses();
+    kick();
+  });
+  askTail = result.then(() => {}, () => {});
+  return result;
+}
+
 async function askScreen({ slotId = null } = {}) {
   openBubble({ focus: false });
   if (!claimAsk()) return busyLine();
@@ -2519,17 +2540,23 @@ async function askRegion({ slotId = null } = {}) {
   openBubble({ focus: false });
   if (!claimAsk()) return busyLine();
   regionWait = true;
+  // Hide the assistant for the WHOLE snip and let the hide settle before the grab.
+  // MEASURED 2026-11-23: the frames were captured immediately after hideForCapture(),
+  // whose hide is asynchronous, so the frozen frame could still carry the fairy's own
+  // status bubble ("...Aither Screenshots") and the owner's region ask answered with
+  // the single word "screenshots". askScreen waits CAPTURE_HIDE_MS for exactly this;
+  // askRegion did not. Keeping the bubble hidden until the drag ends also stops it
+  // sitting over the frozen frame the owner is selecting from.
+  const shown = hideForCapture();
   try {
+    await new Promise((resolve) => setTimeout(resolve, CAPTURE_HIDE_MS));
     let before;
     try { before = capture().lastScreenshot(); } catch { before = null; }
-    const shown = hideForCapture();
     let started;
     try {
       started = await capture().startSnip({ mode: "region" });
     } catch (err) {
       started = { ok: false, reason: String((err && err.message) || err) };
-    } finally {
-      restoreAfterCapture(shown);
     }
     if (!started || started.ok !== true) {
       fail(
@@ -2538,7 +2565,7 @@ async function askRegion({ slotId = null } = {}) {
       );
       return { ok: false, error: (started && started.reason) || "snip did not open" };
     }
-    pushStatus("Select the part to explain (this saves a snapshot to Aither Screenshots)", REGION_WAIT_MS, REGION_WAIT_MS);
+    // The overlay's own hint tells the owner to drag; the hidden bubble must not.
     const shot = await waitForNewScreenshot(before, REGION_WAIT_MS);
     if (!shot) {
       dropStatuses();
@@ -2549,6 +2576,7 @@ async function askRegion({ slotId = null } = {}) {
     if (r.ok) speakAnswer(r.text, slotId, { onlyIfAttached: true });
     return r;
   } finally {
+    restoreAfterCapture(shown);
     releaseAsk();
   }
 }
@@ -6094,9 +6122,9 @@ async function orbAsk(what, text, slotId) {
   const asked = String(slotId || "") || null;
   const slot = asked || pendingSlot;
   if (asked || pendingSlot) pendingSlot = null;
-  if (what === "screen") return askScreen({ slotId: slot });
-  if (what === "region") return askRegion({ slotId: slot });
-  if (what === "text") return askText(text, { slotId: slot });
+  if (what === "screen") return queueAsk(() => askScreen({ slotId: slot }));
+  if (what === "region") return queueAsk(() => askRegion({ slotId: slot }));
+  if (what === "text") return queueAsk(() => askText(text, { slotId: slot }));
   // Carry the body remembered when its menu row opened the field: the
   // delegation must not lose the slot between the handler and run().
   if (what === "find") return run("find", { surface: "bubble", arg: text, slotId: slot });
@@ -6437,7 +6465,7 @@ function run(verb, { arg = null, slotId = null } = {}) {
     const use = body || pendingSlot;
     pendingSlot = null;
     showOrb();
-    return askScreen({ slotId: use });
+    return queueAsk(() => askScreen({ slotId: use }));
   }
   if (what === "find") {
     showOrb();
@@ -6481,12 +6509,14 @@ function run(verb, { arg = null, slotId = null } = {}) {
 
 /** For tests and callers that already have an image. */
 async function askImage(imagePath, prompt, question) {
-  if (!claimAsk()) return busyLine();
-  try {
-    return await runAsk(imagePath, prompt, question);
-  } finally {
-    releaseAsk();
-  }
+  return queueAsk(async () => {
+    if (!claimAsk()) return busyLine();
+    try {
+      return await runAsk(imagePath, prompt, question);
+    } finally {
+      releaseAsk();
+    }
+  });
 }
 
 module.exports = {

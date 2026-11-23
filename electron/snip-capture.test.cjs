@@ -43,6 +43,19 @@ test("region math: DIP rect -> device pixels under scaleFactor 1.5 and 2", () =>
     { x: 20, y: 20, width: 40, height: 60 });
 });
 
+test("region math is display-local: a second monitor's offset is never added", () => {
+  // Each overlay owns one display and its frozen frame; the drag rect is local to
+  // that overlay. A 1.6-scaled second display at x=3840 must map DIP (0,0) to
+  // device (0,0) in ITS frame, not to 3840*1.6. This is the multi-monitor rule.
+  const second = { bounds: { x: 3840, y: 0, width: 2400, height: 1350 }, scaleFactor: 1.6 };
+  assert.deepEqual(snip.regionToDevice({ x: 0, y: 0, width: 600, height: 300 }, second,
+    { width: 3840, height: 2160 }), { x: 0, y: 0, width: 960, height: 480 });
+  // The owner's measured geometry (2026-11-23): 4K at scaleFactor 1.6 = 2400x1350 DIP.
+  const primary = { bounds: { x: 0, y: 0, width: 2400, height: 1350 }, scaleFactor: 1.6 };
+  assert.deepEqual(snip.regionToDevice({ x: 600, y: 338, width: 1200, height: 675 }, primary,
+    { width: 3840, height: 2160 }), { x: 960, y: 541, width: 1920, height: 1080 });
+});
+
 test("region math clamps to the frame and refuses an empty crop", () => {
   const d = { bounds: { width: 1000, height: 500 }, scaleFactor: 2 };
   const frame = { width: 2000, height: 1000 };
