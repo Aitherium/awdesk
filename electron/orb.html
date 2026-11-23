@@ -1838,8 +1838,13 @@
     }
     window.addEventListener("mousemove", (e) => {
       const r = box.getBoundingClientRect();
+      // Near the window edge is still "on it": that is the band Windows uses to
+      // resize the card, and it must not be click-through.
+      const nearEdge = e.clientX <= 12 || e.clientY <= 12
+        || e.clientX >= window.innerWidth - 12 || e.clientY >= window.innerHeight - 12;
       setInside(box.classList.contains("on")
-        && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
+        && (nearEdge || (e.clientX >= r.left && e.clientX <= r.right
+          && e.clientY >= r.top && e.clientY <= r.bottom)));
     });
     window.addEventListener("mouseleave", () => setInside(false));
     function button(label, cls, onClick, tip) {

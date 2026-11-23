@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { fairySummary } from './fairy-summary';
 
 describe('fairySummary', () => {
-  it('names the card and what each answer does, from the card facts only', () => {
+  it('says what each answer DOES, from the option consequences only (never the title)', () => {
     const s = fairySummary({
       title: 'Owner terminal wants to send outside the fleet to mcp.example.com (G5)',
       kind: 'approval',
@@ -11,27 +11,36 @@ describe('fairySummary', () => {
         { key: 'approve', label: 'Approve this one', consequence: 'This exact call runs once for this session.' },
       ],
     });
-    expect(s).toBe(
-      'Owner terminal wants to send outside the fleet to mcp.example.com. Deny — The call stays blocked; Approve this one — This exact call runs once for this session.',
-    );
+    expect(s).toBe('Deny — The call stays blocked; Approve this one — This exact call runs once for this session.');
   });
 
-  it('never clips a loud title, and does not repeat a trailing rule code', () => {
-    const long = `Share: ${'a long headline '.repeat(12)}the end`;
-    const s = fairySummary({ title: `${long} (G11)`, options: [{ key: 'a', label: 'Post' }] });
-    expect(s.startsWith('Share:')).toBe(true);
-    expect(s).toContain('the end');
-    expect(s).not.toContain('(G11)');
+  it("never prints a consequence that only repeats its label (the owner's 2026-11-23 card)", () => {
+    const repeated = {
+      title: "Restore Jason's administrator view in GargBot: add role workspace_admin to user jason",
+      options: [
+        { key: 'done', label: 'Done: I added workspace_admin to jason', consequence: 'Done: I added workspace_admin to jason' },
+        { key: 'cannot', label: 'I cannot find the page or it refuses me', consequence: 'I cannot find the page or it refuses me' },
+      ],
+    };
+    expect(fairySummary(repeated)).toBe('');
+    const mixed = {
+      title: "Restore Jason's administrator view in GargBot",
+      options: [
+        { key: 'done', label: 'Done: I added workspace_admin to jason', consequence: 'Done: I added workspace_admin to jason' },
+        { key: 'deny', label: 'Deny', consequence: 'Jason stays a plain member.' },
+      ],
+    };
+    expect(fairySummary(mixed)).toBe('Deny — Jason stays a plain member.');
   });
 
-  it('a credential card says it needs a secret, not how to answer it', () => {
+  it('a credential card says only that it needs a secret', () => {
     expect(fairySummary({ title: 'Proton Bridge refused the stored password', kind: 'credential' })).toBe(
-      'Proton Bridge refused the stored password. It needs a secret; open it to enter it.',
+      'It needs a secret; open it to enter it.',
     );
   });
 
   it('empty and malformed cards produce nothing', () => {
     expect(fairySummary(null)).toBe('');
-    expect(fairySummary({})).toBe('A decision.');
+    expect(fairySummary({})).toBe('');
   });
 });

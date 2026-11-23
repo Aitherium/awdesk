@@ -39,7 +39,24 @@ test("a card docks to the nearest corner of the work area and its saved shape ro
   assert.equal(pos.x, AREA.x + 14);
   assert.equal(pos.y, AREA.y + AREA.height - SIZE.height - 14);
   const saved = stay.normalizeCard({ pin: true, x: pos.x, y: pos.y, corner });
-  assert.deepEqual(saved, { pin: true, mode: "open", idleSeconds: 60, x: pos.x, y: pos.y, corner: "sw" });
+  assert.deepEqual(saved, { pin: true, mode: "open", idleSeconds: 60, x: pos.x, y: pos.y, corner: "sw", width: 420, height: 188, fit: true });
+});
+
+test("the card size is remembered and clamped; fit is on unless turned off", () => {
+  const def = stay.normalizeCard(null);
+  assert.equal(def.width, stay.DEFAULT_WIDTH);
+  assert.equal(def.height, stay.DEFAULT_HEIGHT);
+  assert.equal(def.fit, true);
+  assert.equal(stay.normalizeCard({ width: 100, height: 5 }).width, stay.MIN_WIDTH);
+  assert.equal(stay.normalizeCard({ width: 9999, height: 99999 }).width, stay.MAX_WIDTH);
+  assert.equal(stay.normalizeCard({ width: 9999, height: 99999 }).height, stay.MAX_HEIGHT);
+  assert.equal(stay.normalizeCard({ fit: false }).fit, false);
+  assert.equal(stay.normalizeCard({ width: 640, height: 900, fit: false }).width, 640);
+});
+
+test("the display cap is 70% of the work area", () => {
+  assert.equal(stay.heightCap({ height: 1000 }), 700);
+  assert.equal(stay.heightCap({ height: 200 }), stay.MIN_HEIGHT);
 });
 
 test("a bad saved corner or position is forgotten, never trusted", () => {

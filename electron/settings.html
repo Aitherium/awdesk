@@ -175,6 +175,19 @@
         <input type="number" id="cardSeconds" min="10" max="3600" step="5" style="width:6em">
         <span class="note" style="margin:0">Off by default: the card stays until Esc, the ×, or a click on the fairy</span>
       </div>
+      <div class="row">
+        <label>Card width</label>
+        <input type="number" id="cardWidth" min="320" max="1000" step="10" style="width:6em">
+        <span class="note" style="margin:0">320–1000 px; drag the card's edges any time</span>
+      </div>
+      <div class="row">
+        <label>Card height</label>
+        <input type="number" id="cardHeight" min="140" max="2000" step="10" style="width:6em">
+        <span class="note" style="margin:0">Used when "fit to content" is off; otherwise the card grows to its content</span>
+      </div>
+      <div class="row">
+        <label style="min-width:0"><input type="checkbox" id="cardFit"> Fit the card to its content (up to 70% of the screen)</label>
+      </div>
       <p class="note">Pin on the card keeps it open and lets you drag it; it docks to the nearest screen corner, the same rule a dropped fairy follows.</p>
     </section>
 
@@ -306,15 +319,22 @@
   // The asking card's stay rule (card-stay.cjs, owner 2026-11-22): OFF by default.
   const cardModeSel = document.getElementById("cardMode");
   const cardSecondsEl = document.getElementById("cardSeconds");
+  const cardWidthEl = document.getElementById("cardWidth");
+  const cardHeightEl = document.getElementById("cardHeight");
+  const cardFitEl = document.getElementById("cardFit");
   function renderFairy(f) {
     const d = (f && f.drop) || { mode: "pin", seconds: 10 };
     dropModeSel.value = d.mode;
     dropSecondsEl.value = String(d.seconds || 10);
     dropSecondsEl.disabled = d.mode !== "timed";
-    const c = (f && f.card) || { mode: "open", idleSeconds: 60 };
+    const c = (f && f.card) || { mode: "open", idleSeconds: 60, width: 420, height: 188, fit: true };
     cardModeSel.value = c.mode;
     cardSecondsEl.value = String(c.idleSeconds || 60);
     cardSecondsEl.disabled = c.mode !== "idle";
+    cardWidthEl.value = String(c.width || 420);
+    cardHeightEl.value = String(c.height || 188);
+    cardHeightEl.disabled = c.fit !== false;
+    cardFitEl.checked = c.fit !== false;
   }
   async function saveFairy(patch) {
     const result = await bridge.setFairy(patch);
@@ -353,6 +373,17 @@
     if (!Number.isInteger(secs) || secs < 10 || secs > 3600) { say("card seconds must be 10 to 3600", "err"); return; }
     saveCard({ mode: "idle", idleSeconds: secs });
   });
+  cardWidthEl.addEventListener("change", () => {
+    const px = Math.round(Number(cardWidthEl.value));
+    if (!Number.isInteger(px) || px < 320 || px > 1000) { say("card width must be 320 to 1000", "err"); return; }
+    saveCard({ width: px });
+  });
+  cardHeightEl.addEventListener("change", () => {
+    const px = Math.round(Number(cardHeightEl.value));
+    if (!Number.isInteger(px) || px < 140 || px > 2000) { say("card height must be 140 to 2000", "err"); return; }
+    saveCard({ height: px, fit: false });
+  });
+  cardFitEl.addEventListener("change", () => saveCard({ fit: cardFitEl.checked }));
 
   grantMicBtn.addEventListener("click", async () => {
     try {

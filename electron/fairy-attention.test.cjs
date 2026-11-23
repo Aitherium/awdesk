@@ -218,7 +218,7 @@ test("the voice line drops the 'Claude Code needs you' prefix", () => {
   assert.match(line, /And 2 more after that\.$/);
 });
 
-test("the fairy summary says what the card is and what each answer does, from its own facts", () => {
+test("the fairy summary says what each answer DOES, never repeating the title", () => {
   const c = card({
     title: "Owner terminal wants to send outside the fleet to 127.0.0.1:8182/mcp (G5)",
     options: [
@@ -227,17 +227,43 @@ test("the fairy summary says what the card is and what each answer does, from it
     ],
   });
   assert.equal(fa.fairySummary(c),
-    "Owner terminal wants to send outside the fleet to 127.0.0.1:8182/mcp. "
-    + "Deny — The call stays blocked; Approve this one — This exact call runs once for this session.");
+    "Deny — The call stays blocked; Approve this one — This exact call runs once for this session.");
+});
+
+test("a consequence that only repeats its label is never printed twice", () => {
+  // The owner's exact card (screenshot 2026-11-23 07:28).
+  const repeated = card({
+    title: "Restore Jason's administrator view in GargBot: add role workspace_admin to user jason",
+    options: [
+      { key: "done", label: "Done: I added workspace_admin to jason", consequence: "Done: I added workspace_admin to jason" },
+      { key: "cannot", label: "I cannot find the page or it refuses me", consequence: "I cannot find the page or it refuses me" },
+    ],
+  });
+  assert.equal(fa.fairySummary(repeated), "", "nothing the title does not already say: say nothing");
+  // One repeated option and one that adds a fact: only the distinct one prints.
+  const mixed = card({
+    title: "Restore Jason's administrator view in GargBot",
+    options: [
+      { key: "done", label: "Done: I added workspace_admin to jason", consequence: "Done: I added workspace_admin to jason" },
+      { key: "deny", label: "Deny", consequence: "Jason stays a plain member." },
+    ],
+  });
+  assert.equal(fa.fairySummary(mixed), "Deny — Jason stays a plain member.");
 });
 
 test("the whisper never clips the title and carries the summary above the buttons", () => {
   const long = "Owner terminal wants to send outside the fleet to 127.0.0.1:8182/mcp (G5)";
-  const view = fa.whisperView({ card: card({ title: long }), level: 1 }, NOW);
+  const view = fa.whisperView({
+    card: card({ title: long, options: [
+      { key: "deny", label: "Deny", consequence: "The call stays blocked." },
+      { key: "ok", label: "Approve", consequence: "This call runs once." },
+    ] }),
+    level: 1,
+  }, NOW);
   assert.equal(view.title, long, "the full title, never a 110-char cut");
-  assert.match(view.fairy, /^Owner terminal wants to send/);
+  assert.equal(view.fairy, "Deny — The call stays blocked; Approve — This call runs once.");
   const cred = fa.whisperView({ card: card({ kind: "credential", title: "A secret" }), level: 1 }, NOW);
-  assert.equal(cred.fairy, "", "a credential card is not narrated");
+  assert.equal(cred.fairy, "It needs a secret; open it to enter it.", "a credential card says only that");
 });
 
 test("the whisper offers the card's OWN options (max 3), none for a credential", () => {

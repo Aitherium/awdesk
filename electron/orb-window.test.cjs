@@ -1217,7 +1217,8 @@ test("the whisper grows to fit its full button labels, clamped and kept on scree
   assert.equal(r.ok, true);
   assert.equal(whisper.getBounds().height, 300);
   await invoke("desk:nudge-act", whisper, "size", "5000");
-  assert.equal(whisper.getBounds().height, 560, "clamped");
+  // The cap is 70% of the display's work area, not a fixed 560 px.
+  assert.equal(whisper.getBounds().height, Math.round(2120 * 0.7), "clamped to 70% of the display");
   const b = whisper.getBounds();
   assert.ok(b.y + b.height <= 2120, "kept inside the work area");
   const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
@@ -1225,7 +1226,30 @@ test("the whisper grows to fit its full button labels, clamped and kept on scree
   orbWindow.endNudge("seen", { stay: true });
 });
 
-// ── generated card UI (A2UI v0.9, card-ui.cjs) in the whisper (2026-11-08) ──
+test("the whisper grows to its content, remembers a hand resize, and fit can be re-enabled", async () => {
+  startAttention();
+  orbWindow.setAttentionCards([blockedCard()]);
+  await orbWindow.attentionTick();
+  await wait(1000);
+  const whisper = nudgeWin();
+  // Fit on by default: a 900 px card is 900 px tall, and beyond 70% it stops.
+  assert.equal((await invoke("desk:nudge-act", whisper, "size", "900")).height, 900);
+  assert.equal((await invoke("desk:nudge-act", whisper, "size", "5000")).height, Math.round(2120 * 0.7));
+  // The owner drags an edge: remember the width/height and stop auto-fitting.
+  whisper.setBounds({ x: whisper.bounds.x, y: whisper.bounds.y, width: 700, height: 800 });
+  whisper.emit("resize");
+  assert.equal(orbWindow.state().card.fit, false);
+  assert.equal(orbWindow.state().card.width, 700);
+  assert.equal(orbWindow.state().card.height, 800);
+  assert.equal((await invoke("desk:nudge-act", whisper, "size", "300")).height, 800,
+    "a smaller content measurement does not shrink a hand-sized card");
+  // Settings can turn fit back on (and set a width), applied to the open card.
+  orbWindow.setCardSettings({ fit: true, width: 520 });
+  await wait(20);
+  assert.equal(orbWindow.state().card.fit, true);
+  assert.equal(whisper.getBounds().width, 520, "the configured width applies immediately");
+  orbWindow.endNudge("seen", { stay: true });
+});
 
 /** A raw stored card with a current, valid ui -> the desk shape main hands the fairy. */
 function uiCard(mutateUi = () => {}, id = "d-fair-ui") {

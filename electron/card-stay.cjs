@@ -33,6 +33,16 @@ const DEFAULT_MODE = "open";
 const DEFAULT_IDLE_SECONDS = 60;
 const MIN_IDLE_SECONDS = 10;
 const MAX_IDLE_SECONDS = 3600;
+/** The fairy's card window: grows to its content up to a screen cap unless the
+ *  owner turned "fit to content" off; edges resize it and the size is remembered. */
+const DEFAULT_WIDTH = 420;
+const MIN_WIDTH = 320;
+const MAX_WIDTH = 1000;
+const DEFAULT_HEIGHT = 188;
+const MIN_HEIGHT = 140;
+const MAX_HEIGHT = 2000;
+/** Never taller than this share of the display's work area; scroll beyond it. */
+const CAP_SHARE = 0.7;
 
 function num(v, fallback = 0) {
   const n = Number(v);
@@ -42,6 +52,14 @@ function num(v, fallback = 0) {
 function clampSeconds(v, fallback = DEFAULT_IDLE_SECONDS) {
   const n = Math.round(num(v, fallback));
   return Math.min(MAX_IDLE_SECONDS, Math.max(MIN_IDLE_SECONDS, n));
+}
+
+function clampWidth(v, fallback = DEFAULT_WIDTH) {
+  return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(num(v, fallback))));
+}
+
+function clampHeight(v, fallback = DEFAULT_HEIGHT) {
+  return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.round(num(v, fallback))));
 }
 
 /** The saved/patched shape -> a complete card setting. Unknown values take the default. */
@@ -57,6 +75,11 @@ function normalizeCard(raw) {
     x: Number.isFinite(Number(src.x)) ? Math.round(Number(src.x)) : null,
     y: Number.isFinite(Number(src.y)) ? Math.round(Number(src.y)) : null,
     corner: fairyDrop.CORNERS.includes(src.corner) ? src.corner : null,
+    // The card window. fit = grow to content (capped at 70% of the display); the
+    // width/height are the defaults and the size the owner left it at.
+    width: clampWidth(src.width),
+    height: clampHeight(src.height),
+    fit: src.fit !== false,
   };
 }
 
@@ -93,7 +116,15 @@ function dockPosition(area, size, corner) {
   return fairyDrop.cornerAnchor(area, corner, size);
 }
 
+/** The tallest the card may grow inside `area`: 70% of the display's work area. */
+function heightCap(area) {
+  const h = Number(area && area.height) || 1080;
+  return Math.max(MIN_HEIGHT, Math.round(h * CAP_SHARE));
+}
+
 module.exports = {
   MODES, DEFAULT_MODE, DEFAULT_IDLE_SECONDS, MIN_IDLE_SECONDS, MAX_IDLE_SECONDS,
-  clampSeconds, normalizeCard, decide, label, dockCorner, dockPosition,
+  DEFAULT_WIDTH, MIN_WIDTH, MAX_WIDTH, DEFAULT_HEIGHT, MIN_HEIGHT, MAX_HEIGHT, CAP_SHARE,
+  clampSeconds, clampWidth, clampHeight, normalizeCard, decide, label, dockCorner,
+  dockPosition, heightCap,
 };
