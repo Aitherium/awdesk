@@ -8086,7 +8086,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           const label = command ? commandRegistry.labelOf(command, ctx) : k.id;
           return { ...k, label, dead: deadAccels.has(k.accel) };
         });
-        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings(), neurons: orbWindow.neuronsOn(), display: displaySettingsNow(), fairy: orbWindow.dropSettings(), desktopRing: orbWindow.desktopRingOn() };
+        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings(), neurons: orbWindow.neuronsOn(), display: displaySettingsNow(), fairy: orbWindow.dropSettings(), desktopRing: orbWindow.desktopRingOn(), ringAt: orbWindow.ringAtMode() };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }
@@ -8147,6 +8147,15 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           desktopRightHook.stop();
         }
         return { ok: true, desktopRing: result.desktopRing };
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+    });
+    // "Ring opens at": screen centre (default) or where I click.
+    ipcMain.handle("desk:settings-set-ring-at", (_event, mode) => {
+      try {
+        const result = orbWindow.setRingAt(String(mode || ""));
+        return { ok: true, ringAt: result.ringAt };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }

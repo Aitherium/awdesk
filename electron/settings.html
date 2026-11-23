@@ -155,6 +155,14 @@
         <label style="min-width:0"><input type="checkbox" id="desktopRing"> Right-click the empty desktop opens the ring</label>
       </div>
       <p class="note">Only the desktop background, with no icon under the cursor: apps, files and desktop icons keep their own right-click menu, and Shift+right-click always shows Windows' menu. Turning this off stops the native listener entirely.</p>
+      <div class="row">
+        <label>Ring opens at</label>
+        <select id="ringAt">
+          <option value="centre">Screen centre (default)</option>
+          <option value="click">Where I click (Alt+Space: the cursor)</option>
+        </select>
+      </div>
+      <p class="note">The fairy flies there first for both the Alt+Space hold and the desktop right-click, then expands the ring around itself, and flies back when the ring closes.</p>
     </section>
 
     <section>
@@ -223,6 +231,7 @@
     renderDisplay(res.display);
     renderFairy(res.fairy);
     renderDesktopRing(res.desktopRing);
+    renderRingAt(res.ringAt);
   }
 
   // Desktop overlay (overlay-policy.cjs): three switches, the edge and the dwell.
@@ -301,10 +310,17 @@
     if (result && result.ok) { renderDesktopRing(result.desktopRing); say(result.desktopRing ? "desktop right-click ring on" : "desktop right-click ring off", "ok"); }
     else say("could not save: " + (result && result.error || "unknown"), "err");
   });
+  // "Ring opens at": screen centre (default) or where I click.
+  const ringAtEl = document.getElementById("ringAt");
+  function renderRingAt(mode) { ringAtEl.value = mode === "click" ? "click" : "centre"; }
+  ringAtEl.addEventListener("change", async () => {
+    const result = await bridge.setRingAt(ringAtEl.value);
+    if (result && result.ok) { renderRingAt(result.ringAt); say("ring position saved", "ok"); }
+    else say("could not save: " + (result && result.error || "unknown"), "err");
+  });
   dropSecondsEl.addEventListener("change", () => {
     const secs = Math.round(Number(dropSecondsEl.value));
-    if (!Number.isInteger(secs) || secs < 3 || secs > 600) { say("seconds must be 3 to 600", "err"); return; }
-    saveFairy({ mode: "timed", seconds: secs });
+    if (!Number.isInteger(secs) || secs < 3 || secs > 600) { say("seconds must be 3 to 600", "err"); return; }    saveFairy({ mode: "timed", seconds: secs });
   });
 
   grantMicBtn.addEventListener("click", async () => {

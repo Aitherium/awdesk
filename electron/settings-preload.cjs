@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld("settingsBridge", {
   setFairy: (patch) => ipcRenderer.invoke("desk:settings-set-fairy", patch),
   // The native empty-desktop right-click ring (owner 2026-11-23).
   setDesktopRing: (on) => ipcRenderer.invoke("desk:settings-set-desktop-ring", on === true),
+  // Where the ring opens: "centre" (default) or "click".
+  setRingAt: (mode) => ipcRenderer.invoke("desk:settings-set-ring-at", String(mode || "centre")),
   probeAccel: (accel, excludeId) => ipcRenderer.invoke("desk:settings-probe-accel", accel, excludeId),
   setHotkey: (id, accel) => ipcRenderer.invoke("desk:settings-set-hotkey", id, accel),
   clearHotkey: (id) => ipcRenderer.invoke("desk:settings-set-hotkey", id, ""),

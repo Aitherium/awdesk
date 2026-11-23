@@ -86,6 +86,10 @@ const CAPTURE_TTL_MS = 10 * 60 * 1000;
 // Spirit: the tether follows an attached target at 4 Hz (one rect read), the
 // flight redraws at ~60 Hz, and the trail keeps a short history.
 const FOLLOW_MS = 250;
+/** A tether is a SHORT link to the dock beside the fairy. Beyond this many px (a
+ *  stale attach, a window on the far side of the desk) it is not drawn at all: the
+ *  dashed line across unrelated windows the owner saw was exactly that. */
+const TETHER_MAX_PX = 280;
 /** The orbit around an avatar is drawn at ~30 fps; the body's rect is re-read at FOLLOW_MS. */
 const ORBIT_MS = 33;
 /** How often a free spirit looks for an avatar to orbit (unless the owner set it free). */
@@ -1795,10 +1799,13 @@ function veilPayload() {
   const tether = attach && !attach.minimised && !ringOpen
     ? (() => {
       const anchor = spiritCore.anchorFor(attach);
-      // A stale attach can point off every display; its tether then draws a dashed
-      // line across unrelated windows (owner screenshots 2026-11-23). Only draw a
-      // tether whose anchor is actually on a screen.
-      return anchor && spiritCore.containsPoint(displayUnion(), anchor, 40) ? [local(anchor), local(orbCenter())] : null;
+      // A stale attach can point off every display, or far across the desk; its
+      // dashed tether then crosses unrelated windows (owner screenshots 2026-11-23).
+      // Only a SHORT, on-screen link to the dock beside the fairy is drawn.
+      if (!anchor || !spiritCore.containsPoint(displayUnion(), anchor, 40)) return null;
+      const orb = orbCenter();
+      if (Math.hypot(anchor.x - orb.x, anchor.y - orb.y) > TETHER_MAX_PX) return null;
+      return [local(anchor), local(orb)];
     })()
     : null;
   return {
@@ -1955,7 +1962,12 @@ function drawVeil() {
   if (alive(orbWindow)) points.push(orbCenter());
   if (attach && !attach.minimised && !ringOpen) {
     const anchor = spiritCore.anchorFor(attach);
-    if (anchor && spiritCore.containsPoint(displayUnion(), anchor, 40)) points.push(anchor);
+    const orb = orbCenter();
+    if (anchor
+      && spiritCore.containsPoint(displayUnion(), anchor, 40)
+      && Math.hypot(anchor.x - orb.x, anchor.y - orb.y) <= TETHER_MAX_PX) {
+      points.push(anchor);
+    }
   }
   for (const f of toolFlightLegs()) points.push(f.from, f.to);
   if (!points.length) return;
@@ -2777,9 +2789,10 @@ async function openRing({ at = null, hold = false, onDone = null, page = 0 } = {
   }
   if (!point) return { ok: false, reason: "no cursor" };
   const { centre } = displayAt(point);
-  // Owner's design (2026-11-23): the fairy flies to the CENTRE of the screen under
-  // the cursor for the hold AND the desktop right-click; `point` only picks the display.
-  const destination = centre;
+  // Settings "Ring opens at": the CENTRE of the screen under the cursor (default,
+  // the owner's design, for the hold and the desktop right-click alike) or exactly
+  // where the owner clicked / the cursor when the key went down.
+  const destination = ringAtMode() === "click" ? point : centre;
   ringReturn = ringHome();
   ringOpen = true;
   clearDropReturn();
@@ -4860,6 +4873,17 @@ function setDesktopRing(on) {
   return { ok: true, desktopRing: state.desktopRing };
 }
 
+/** "centre" (default) or "click": where the ring opens. */
+function ringAtMode() {
+  return state.ringAt === "click" ? "click" : "centre";
+}
+
+function setRingAt(mode) {
+  state = { ...state, ringAt: mode === "click" ? "click" : "centre" };
+  saveState();
+  return { ok: true, ringAt: state.ringAt };
+}
+
 /** A fairy's menu: set ONE fairy's answer ("orb" for the main fairy). */
 function setDropBehavior(agent, patch) {
   const current = fairyDrop.behaviorFor(state, agent);
@@ -6142,7 +6166,7 @@ module.exports = {
   // Drop behaviour (fairy-drop.cjs, owner 2026-11-23): the Settings default, one
   // fairy's own answer, and where the two live.
   setDropDefault, setDropBehavior, dropSettings, dropBehaviorFor,
-  desktopRingOn, setDesktopRing,
+  desktopRingOn, setDesktopRing, ringAtMode, setRingAt,
   __feedForeground: (fg) => { onForeground(fg); },
   __setFollowChangedAt: (t) => { followChangedAt = Number(t) || 0; },
   __followSeen: () => followSeen,
