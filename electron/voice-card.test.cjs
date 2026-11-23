@@ -19,9 +19,9 @@ test("the prompt reads the title and numbers every option, marking the recommend
   assert.equal(
     cardPrompt(card),
     "A decision needs you: Restart the scheduler?. Options: one, Restart now, recommended; "
-      + "two, Later tonight; three, Restart now and clear the queue. Say a number, later, or tell me what to do instead.",
+      + "two, Later tonight; three, Restart now and clear the queue. Say Aither, then a number, later, or what to do instead.",
   );
-  assert.match(cardPrompt({ title: "Free text", options: [] }), /Tell me what to do\.$/);
+  assert.match(cardPrompt({ title: "Free text", options: [] }), /Say Aither and what to do\.$/);
 });
 
 test("a number picks that option however it is said", () => {

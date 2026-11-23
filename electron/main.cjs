@@ -1840,6 +1840,10 @@ async function speakAloudNow(
     }
   }
   if (delivered === 0) return { ok: false, reason: "no avatar window to speak from" };
+  // The voice gate's echo clock: audio was handed to the renderer NOW and plays
+  // for durationMs. A capture inside that window (plus room tail) is the desk's
+  // own voice, not the owner.
+  deskSpeakingUntil = Math.max(deskSpeakingUntil, Date.now() + (Number(tts.durationMs) || 0) + 700);
   // The resident's words drive VaM's jaw for the clip's length when it is the body.
   if ((slotId || "slot0") === "slot0") {
     const fwd = vamForwarderOrNull();
@@ -3805,6 +3809,118 @@ function setOpenMic(on, { announce = false } = {}) {
 /** Bring open mic in line with Settings: on exactly when mode=open and unmuted. */
 function applyTalkMode({ announce = false } = {}) {
   setOpenMic(talkMode() === "open" && !micMuted(), { announce });
+}
+
+// ── the voice gate (voice-gate.cjs, owner 2026-11-23) ─────────────────────
+// One decision in front of every microphone path: a transcript becomes a
+// command, a card answer or a steer ONLY with an explicit trigger, owner
+// attribution, a complete utterance and no PC audio playing at the same time.
+// Rejections go to this reviewable log; nothing else sees them.
+const voiceGate = require("./voice-gate.cjs");
+const voiceRejections = voiceGate.createRejectionLog();
+// Audible playback while a sentence was captured is the echo signal. Three
+// sources, all best-effort: the desk's own voice (the common echo), another
+// process's audio the native listener watches, and the speaker endpoint's peak
+// meter polled below. No source is authoritative alone; any one rejects.
+let deskSpeakingUntil = 0;
+let pcAudioPeak = 0;
+let pcAudioPeakAt = 0;
+let pcAudioWatch = null;
+function pcAudioAudible(now = Date.now()) {
+  if (now < deskSpeakingUntil) return true;
+  try { if (audioListener && audioListener.sessionActive) return true; } catch { /* no listener */ }
+  return pcAudioPeak >= 0.02 && now - pcAudioPeakAt < 900;
+}
+function startPcAudioWatch() {
+  if (pcAudioWatch || process.platform !== "win32") return;
+  // The speaker peak is one line on the warm PowerShell helper (~ms once it is
+  // up). 1 s is fine: `pcAudioAudible` holds the last loud sample for 900 ms.
+  pcAudioWatch = setInterval(() => {
+    void require("./system-audio.cjs").getPeak("render")
+      .then((result) => {
+        if (result && result.ok) {
+          pcAudioPeak = Number(result.peak) || 0;
+          pcAudioPeakAt = Date.now();
+        }
+      })
+      .catch(() => { /* the probe is advisory; a dead helper must not break voice */ });
+  }, 1000);
+  pcAudioWatch.unref?.();
+}
+
+/**
+ * A transcript arrived from the renderer (push-to-talk, open mic, one-shot) or
+ * from an ask the desk armed (a decision card). Returns what the surface needs
+ * and NEVER dispatches a line the gate rejected.
+ */
+async function handleVoiceHeard(text, provenance) {
+  const raw = String(text || "");
+  let wakeWord = "";
+  try { wakeWord = String(((require("./desk-settings.cjs").current() || {}).voice || {}).wakeWord || ""); } catch { /* none */ }
+  // A transcript that arrives while a card ask waits is a CARD ANSWER, whatever
+  // armed the microphone: the desk opened it, not the owner's own gesture.
+  let kind;
+  if (voiceAsk.waiting) {
+    kind = "card-answer";
+  } else {
+    const mode = provenance && typeof provenance === "object" ? String(provenance.mode || "") : "";
+    if (mode === "open-mic" || mode === "open") kind = "open-mic";
+    else if (mode === "one-shot") kind = "one-shot";
+    else if (mode === "push-to-talk") kind = "push-to-talk";
+    else kind = openMicOn ? "open-mic" : "push-to-talk";
+  }
+  const verdict = voiceGate.assessVoice({ text: raw, provenance: kind, wakeWord, pcPlaying: pcAudioAudible() });
+  listenState = "idle";
+  refreshTrayMenu();
+  if (!verdict.pass) {
+    if (raw.trim()) {
+      voiceRejections.record({ text: raw, provenance: kind, reasons: verdict.reasons });
+      debugLog("voice rejected", kind, verdict.reasons.join("; "), raw.slice(0, 120));
+      return { ok: true, rejected: true, ignored: verdict.reasons[0], reasons: verdict.reasons };
+    }
+    return { ok: false, error: "nothing was heard" };
+  }
+  const said = verdict.text;
+  if (!said) return { ok: false, error: "nothing was heard" };
+  debugLog("voice heard", kind, said.slice(0, 120));
+  if (voiceAsk.offer(said)) {
+    void speakAloud("Got it.", undefined, undefined, "slot0", "service:awdesk-voice");
+    return { ok: true, text: said, answered: true };
+  }
+  // Voice control (owner 2026-11-13: "record this", "draw", "send to Jason", "open
+  // whiteboard"): a short command runs the desk command; everything else is speech.
+  const spokenCommand = require("./toolkit.cjs").voiceCommand(said);
+  if (spokenCommand) {
+    const toolkit = require("./toolkit.cjs");
+    const ran = await Promise.resolve(toolkit.handles(spokenCommand.id)
+      ? toolkit.run(spokenCommand.id, spokenCommand.arg)
+      : runCommand(spokenCommand.id, spokenCommand.arg, { surface: "voice" }));
+    const failed = ran && ran.ok === false;
+    void speakAloud(failed ? String(ran.error || ran.reason || "That did not work.").slice(0, 160) : "Done.",
+      undefined, undefined, "slot0", "service:awdesk-voice");
+    return { ok: !failed, text: said, command: spokenCommand.id, result: ran };
+  }
+  // Talking to an agent (its fairy was clicked, or it was just grown): the words go to
+  // THAT agent and its answer comes back in its own voice from its own body.
+  try {
+    const routed = await getSwarmHost().handleVoice(said);
+    if (routed) return { ok: true, text: said, agent: routed.agent, reply: routed.reply };
+  } catch (error) {
+    debugLog("swarm voice route failed", error?.message || error);
+  }
+  try {
+    void speakAloud("On it, asking now.", undefined, undefined, "slot0", "service:awdesk-voice");
+    // The Aither Browser has focus: the words are about the page on screen, so the
+    // browser's agent answers with the page as context (shown in its panel too).
+    const result = browserWindow.hasVoiceFocus()
+      ? await browserWindow.voiceAsk(said)
+      : await commandAction(said, { source: "voice" });
+    const spoken = String((result && (result.reply || (result.result && result.result.reply) || result.text || result.summary)) || "").trim();
+    if (spoken) void speakAloud(spoken.slice(0, 800), undefined, undefined, "slot0", "service:awdesk-voice-answer");
+    return { ok: true, text: said, result };
+  } catch (error) {
+    return { ok: false, text: said, error: String((error && error.message) || error) };
+  }
 }
 
 // A click on the avatar (or the hotkey) with the mic muted used to SPEAK "Microphone is
@@ -8129,57 +8245,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // Slice C. The transcript is a COMMAND: commandAction is what the room
     // publisher is attached to, so the owner's words appear in the room and the
     // answer comes back through the avatar's voice.
-    ipcMain.handle("desk:voice-heard", async (_event, text) => {
-      // Optional wake word (cast.json voice.wakeWord): with the open mic on, only words
-      // that start with it are acted on (toolkit-core wakeGate). Push-to-talk passes.
-      let wakeWord = "";
-      try { wakeWord = String(((require("./desk-settings.cjs").current() || {}).voice || {}).wakeWord || ""); } catch { /* none */ }
-      const woke = require("./toolkit-core.cjs").wakeGate(String(text || ""), { wakeWord, openMic: openMicOn });
-      if (!woke.pass && String(text || "").trim()) return { ok: true, ignored: "no wake word" };
-      const said = woke.text;
-      listenState = "idle";
-      refreshTrayMenu();
-      if (!said) return { ok: false, error: "nothing was heard" };
-      debugLog("voice heard", said.slice(0, 120));
-      if (voiceAsk.offer(said)) {
-        void speakAloud("Got it.", undefined, undefined, "slot0", "service:awdesk-voice");
-        return { ok: true, text: said, answered: true };
-      }
-      // Voice control (owner 2026-11-13: "record this", "draw", "send to Jason", "open
-      // whiteboard"): a short command runs the desk command; everything else is speech.
-      const spokenCommand = require("./toolkit.cjs").voiceCommand(said);
-      if (spokenCommand) {
-        const toolkit = require("./toolkit.cjs");
-        const ran = await Promise.resolve(toolkit.handles(spokenCommand.id)
-          ? toolkit.run(spokenCommand.id, spokenCommand.arg)
-          : runCommand(spokenCommand.id, spokenCommand.arg, { surface: "voice" }));
-        const failed = ran && ran.ok === false;
-        void speakAloud(failed ? String(ran.error || ran.reason || "That did not work.").slice(0, 160) : "Done.",
-          undefined, undefined, "slot0", "service:awdesk-voice");
-        return { ok: !failed, text: said, command: spokenCommand.id, result: ran };
-      }
-      // Talking to an agent (its fairy was clicked, or it was just grown): the words go to
-      // THAT agent and its answer comes back in its own voice from its own body.
-      try {
-        const routed = await getSwarmHost().handleVoice(said);
-        if (routed) return { ok: true, text: said, agent: routed.agent, reply: routed.reply };
-      } catch (error) {
-        debugLog("swarm voice route failed", error?.message || error);
-      }
-      try {
-        void speakAloud("On it, asking now.", undefined, undefined, "slot0", "service:awdesk-voice");
-        // The Aither Browser has focus: the words are about the page on screen, so the
-        // browser's agent answers with the page as context (shown in its panel too).
-        const result = browserWindow.hasVoiceFocus()
-          ? await browserWindow.voiceAsk(said)
-          : await commandAction(said, { source: "voice" });
-        const spoken = String((result && (result.reply || (result.result && result.result.reply) || result.text || result.summary)) || "").trim();
-        if (spoken) void speakAloud(spoken.slice(0, 800), undefined, undefined, "slot0", "service:awdesk-voice-answer");
-        return { ok: true, text: said, result };
-      } catch (error) {
-        return { ok: false, text: said, error: String((error && error.message) || error) };
-      }
-    });
+    ipcMain.handle("desk:voice-heard", (_event, text, provenance) => handleVoiceHeard(text, provenance));
     ipcMain.on("desk:voice-listen-state", (_event, state) => {
       const next = String(state || "idle");
       const prev = listenState;
@@ -9076,6 +9142,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           return { ok: true, id, label: commandRegistry.labelOf(command, commandContext()), ...(verdict && typeof verdict === "object" ? { verdict } : {}) };
         },
       },
+      // POST /voice/heard replays a captured line through the SAME gate the
+      // microphone paths use; GET /voice/rejections reads what the gate refused.
+      voiceHandler: ({ text, mode }) => handleVoiceHeard(text, { mode }),
+      voiceRejectionsProvider: (limit) => voiceRejections.recent(limit),
       // awconnect's "Open in Aither Browser": a new tab of the OWNER's, never an
       // agent's -- sending a page here does not hand it to any agent.
       chromeBridge,
@@ -9611,6 +9681,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       },
     });
     if (audioListener) void audioListener.start();
+    startPcAudioWatch();
     if (!audioListener) {
       handleListenerStatus({
         available: false,

@@ -308,6 +308,13 @@ function createBridgeServer({
   commandsHandler = null,
   assistHandler = null,
   assistAuth = null,
+  // The voice gate (voice-gate.cjs). POST /voice/heard {text, mode?} runs the
+  // SAME decision every microphone path runs -- it is how a captured fragment is
+  // replayed against the live desk, and a rejected line never dispatches. GET
+  // /voice/rejections?limit=N reads the reviewable rejection log. Both need the
+  // bearer: the first can reach a command, the second holds owner speech.
+  voiceHandler = null,
+  voiceRejectionsProvider = null,
   // () => {x, y, width, height} of the visible avatar window, or null.
   avatarBoundsProvider = null,
   // () => the room stage's status (who is on stage, queue, spoken), or null.
@@ -635,6 +642,65 @@ function createBridgeServer({
           response.writeHead(error && error.code === "BODY_TOO_LARGE" ? 413 : 500, { "content-type": "application/json" });
           response.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
         });
+      return;
+    }
+
+    // THE VOICE GATE over loopback (voice-gate.cjs, 2026-11-23). A captured
+    // fragment is replayed through the SAME decision every microphone path runs,
+    // so "would this become a command?" is answerable on the live desk without
+    // starting a session. A rejected line goes to the reviewable log and is
+    // never dispatched. Bearer required: an accepted line can reach a command.
+    if (request.url === "/voice/heard" || request.url.startsWith("/voice/rejections")) {
+      const isHeard = request.url === "/voice/heard";
+      if (denyUnlessBearer(request, response, token)) return;
+      if (isHeard) {
+        if (request.method !== "POST") {
+          response.writeHead(405, { allow: "POST" });
+          response.end();
+          return;
+        }
+        if (voiceHandler == null) {
+          response.writeHead(404);
+          response.end();
+          return;
+        }
+        void readJsonBody(request)
+          .then((body) => voiceHandler({
+            text: String(body?.text ?? ""),
+            mode: body?.mode == null ? null : String(body.mode),
+          }))
+          .then((result) => {
+            if (response.headersSent) return;
+            response.writeHead(200, { "content-type": "application/json" });
+            response.end(JSON.stringify(result ?? { ok: true }));
+          })
+          .catch((error) => {
+            if (response.headersSent) return;
+            const status = error?.code === "BODY_TOO_LARGE" ? 413 : error?.code === "INVALID_JSON" ? 400 : 500;
+            response.writeHead(status, { "content-type": "application/json" });
+            response.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+          });
+        return;
+      }
+      if (request.method !== "GET") {
+        response.writeHead(405, { allow: "GET" });
+        response.end();
+        return;
+      }
+      if (voiceRejectionsProvider == null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      try {
+        const url = new URL(`http://127.0.0.1${request.url}`);
+        const limit = Number(url.searchParams.get("limit")) || 50;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ items: voiceRejectionsProvider(limit) }));
+      } catch (error) {
+        response.writeHead(500, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
+      }
       return;
     }
 

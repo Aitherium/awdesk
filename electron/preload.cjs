@@ -131,8 +131,14 @@ contextBridge.exposeInMainWorld("deskBridge", {
     ipcRenderer.invoke("desk:voice-transcribe", audioB64, format ?? "wav"),
   // Slice C: a finished transcript. Main posts it to the company room as the
   // OWNER and runs it as a command, so the answer comes back through the same
-  // mouth the agents speak with.
-  voiceHeard: (text) => ipcRenderer.invoke("desk:voice-heard", String(text || "")),
+  // mouth the agents speak with. `provenance.mode` says how the capture was
+  // triggered (push-to-talk / one-shot / open-mic) so the voice gate can tell
+  // the owner's gesture from a noisy room.
+  voiceHeard: (text, provenance) => ipcRenderer.invoke(
+    "desk:voice-heard",
+    String(text || ""),
+    provenance && typeof provenance === "object" ? { mode: String(provenance.mode || "") } : null,
+  ),
   // A live multi-agent discussion on the stage (discuss.cjs through main's swarmApi):
   // { topic, agents?, rounds? } starts one and answers at once; { op: "stop" | "pause"
   // | "resume" | "state" } controls a running one. Lines speak from the agents' own
