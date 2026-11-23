@@ -68,7 +68,7 @@
      number). A counted badge is a BUTTON: it takes the pointer, wears a ring and a
      chevron, lifts on hover and presses on click -- and clicking it opens the
      decision Inbox (needsYou -> inbox.open). */
-  #badge.on { display: block; pointer-events: auto;
+  #badge.on { display: block; pointer-events: auto; min-width: 34px;
     box-shadow: 0 0 0 1px rgba(255,255,255,0.6), 0 2px 8px rgba(0,0,0,0.55);
     transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease; }
   #badge.on::after { content: "›"; margin-left: 2px; font-weight: 800; opacity: 0.9; }
@@ -76,7 +76,7 @@
      Now there is ONE primary count, and it says what it counts ("waiting"). The
      rest live behind the hover (badge title / fairy tips) and the ring. */
   #badge.on::before { content: attr(data-label); position: absolute; left: 0; right: 0; top: 100%;
-    margin-top: 1px; font: 600 7px/1 var(--font-sans, system-ui); letter-spacing: 0.06em;
+    margin-top: 1px; font: 700 6.5px/1 var(--font-sans, system-ui); letter-spacing: 0;
     text-transform: uppercase; color: #fff; text-align: center; opacity: 0.9;
     text-shadow: 0 1px 2px rgba(0,0,0,0.85); }
   #badge.on:hover, #badge.on:focus-visible {
