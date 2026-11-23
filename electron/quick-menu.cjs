@@ -257,7 +257,10 @@ function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIA
       width: layout(9).width, height: layout(9).height, show: false,
       frame: false, transparent: true, resizable: false, movable: false, minimizable: false,
       maximizable: false, fullscreenable: false, skipTaskbar: true, alwaysOnTop: true,
-      hasShadow: true, backgroundColor: "#00000000",
+      // No native shadow: a transparent always-on-top layered window WITH a shadow makes
+      // DWM composite a blurred layer whenever it is shown (measured 2026-11-23: DWM ~2x
+      // while the ring was up). The CSS ring already carries its own depth.
+      hasShadow: false, backgroundColor: "#00000000",
       webPreferences: {
         preload: path.join(__dirname, "quick-menu-preload.cjs"),
         contextIsolation: true, nodeIntegration: false, sandbox: true,
@@ -354,8 +357,16 @@ function createQuickMenu({ electron, registry, run, ids = ITEM_IDS, spec = RADIA
     ];
   }
 
+  /** Create and load the window HIDDEN, at boot: a global hotkey must not pay a
+   *  page load/creation on the press (owner 2026-11-23: opening the ring lagged). */
+  function warm() {
+    ensureIpc();
+    if (!alive()) create();
+    return Boolean(alive());
+  }
+
   return {
-    open, openAtCursor, openRadial, releaseSelection, toggle, hide, submenuItems, ensureIpc,
+    open, openAtCursor, openRadial, releaseSelection, toggle, hide, submenuItems, ensureIpc, warm,
     isVisible: () => Boolean(alive() && win.isVisible()),
     isRadialHold: () => Boolean(mode === "radial" && hold && alive() && win.isVisible()),
     availableItems: () => availableItems(registry),

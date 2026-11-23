@@ -148,12 +148,24 @@ test("a launcher built without the writing option refuses an assist row instead 
   assert.match(r.error, /not wired/);
 });
 
-test("the press path captures on KEY-DOWN, next to hostContext, before showAtCursor", () => {
+test("the press path samples and captures with the app still focused -- never on a hold", () => {
   const src = fs.readFileSync(path.join(__dirname, "launcher-window.cjs"), "utf8");
-  const press = src.slice(src.indexOf("  function press() {"), src.indexOf("  /** The renderer saw Space/Alt come up. */"));
-  const call = press.indexOf("    showAtCursor();");
-  assert.ok(press.indexOf("pressAssist = assist") > 0 && press.indexOf("pressAssist = assist") < call, "capture starts before the box takes focus");
-  assert.ok(press.indexOf("pressContext = hostContext") < call);
+  const block = (name) => {
+    const at = src.indexOf(`  function ${name}()`);
+    assert.ok(at >= 0, `${name} not found`);
+    const end = src.indexOf("\n  }\n", at);
+    return src.slice(at, end > at ? end : undefined);
+  };
+  // The sample + capture live in ONE place, next to each other.
+  const sample = block("sampleForeground");
+  assert.ok(sample.indexOf("pressAssist = assist") > 0 && sample.indexOf("pressContext = hostContext") > 0);
+  // A TAP samples BEFORE the box takes focus.
+  const tap = block("beginTap");
+  assert.ok(tap.indexOf("sampleForeground()") > 0 && tap.indexOf("sampleForeground()") < tap.indexOf("showAtCursor()"),
+    "the tap samples before showAtCursor");
+  // A HOLD does neither: no launcher window, no host sample (owner 2026-11-23).
+  const hold = block("beginHold");
+  assert.ok(!hold.includes("showAtCursor") && !hold.includes("sampleForeground"));
 });
 
 // ---- the window side ----------------------------------------------------------------------

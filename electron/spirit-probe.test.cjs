@@ -8,6 +8,7 @@ const probe = require("./spirit-probe.cjs");
 
 function answerFor(req) {
   if (req.op === "ping") return { ok: true, pong: true };
+  if (req.op === "keys") return { ok: true, space: true, alt: false };
   if (req.op === "rect") {
     return {
       ok: true,
@@ -123,6 +124,19 @@ test("a probe that does not answer resolves false, never hangs", async () => {
   p.stop();
 });
 
+test("keyDown reads the physical keys so a HOLD never has to steal the foreground", async () => {
+  const child = fakeChild();
+  const p = probe.createWindowProbe({ spawn: () => child, fsImpl: fsRecorder() });
+  const keys = await p.keyDown();
+  assert.deepEqual(keys, { space: true, alt: false });
+  assert.equal(child.stdin.writes.at(-1).op, "keys");
+  p.stop();
+  // A probe that cannot answer says null, so the caller falls back, never sticks.
+  const dead = probe.createWindowProbe({ spawn: () => fakeChild({ answers: false }), fsImpl: fsRecorder(), timeoutMs: 30, startupMs: 30 });
+  assert.equal(await dead.keyDown(), null);
+  dead.stop();
+});
+
 test("pointAt maps a too-small target (a desktop sliver) to null", async () => {
   const child = fakeChild({
     onWrite: () => ({ ok: true, hwnd: 5, title: "sliver", pid: 9, rect: { x: 0, y: 0, width: 12, height: 12 } }),
@@ -191,6 +205,8 @@ test("the script finds the taskbar by class, never by a guessed title", () => {
   // A followed window's minimise is read from Windows itself, not inferred from a rect.
   assert.ok(PROBE_SCRIPT.includes("IsIconic"), "IsIconic is declared and read");
   assert.ok(PROBE_SCRIPT.includes("minimised ="), "the answer carries the minimised flag");
+  assert.ok(PROBE_SCRIPT.includes("GetAsyncKeyState"), "the physical key state is readable");
+  assert.ok(PROBE_SCRIPT.includes("$req.op -eq 'keys'"), "the keys op is answered");
 });
 
 test("a ONE-element tray answer (PowerShell collapses the array) still names the primary", () => {

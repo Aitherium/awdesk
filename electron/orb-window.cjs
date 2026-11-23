@@ -1784,7 +1784,7 @@ function veilPayload() {
   if (!alive(veilWindow)) return null;
   const b = veilWindow.getBounds();
   const local = (p) => ({ x: Math.round(Number(p.x) - b.x), y: Math.round(Number(p.y) - b.y) });
-  const tether = attach
+  const tether = attach && !attach.minimised
     ? (() => {
       const anchor = spiritCore.anchorFor(attach);
       return anchor ? [local(anchor), local(orbCenter())] : null;
@@ -1942,7 +1942,7 @@ function drawVeil() {
   if (!alive(veilWindow)) return;
   const points = trail.slice();
   if (alive(orbWindow)) points.push(orbCenter());
-  if (attach) {
+  if (attach && !attach.minimised) {
     const anchor = spiritCore.anchorFor(attach);
     if (anchor) points.push(anchor);
   }
@@ -2557,8 +2557,15 @@ function finishFlight() {
   } else {
     setOrbCenter(done.to);
   }
-  drawVeil();
-  if (!attach && !tripBusy) hideVeil();
+  if (!attach && !tripBusy) {
+    hideVeil();
+  } else {
+    // The trail WAS the flight. Leaving it painted while the fairy stays docked drew
+    // a long diagonal across the desktop (owner screenshots 2026-11-23); the tether
+    // alone keeps the attach legible.
+    trail = [];
+    drawVeil();
+  }
   try { done.resolve({ ok: true, cancelled: done.cancelled }); } catch { /* settled */ }
   return { ok: true, cancelled: done.cancelled };
 }
@@ -2647,6 +2654,27 @@ async function probeTargetAt(point) {
   if (!probe) probe = spiritProbe.createWindowProbe();
   try {
     return await probe.pointAt(point.x, point.y, { excludePid: process.pid });
+  } catch {
+    return null;
+  }
+}
+
+/** Start the resident window probe now, so a hotkey's first question is cheap. */
+function warmProbe() {
+  if (!probe) probe = spiritProbe.createWindowProbe();
+  try { void probe.ping(); } catch { /* fail-soft: the probe answers null */ }
+  return Boolean(probe);
+}
+
+/**
+ * Is Alt/Space still physically down? The Alt+Space HOLD decides from this instead
+ * of showing a focus-taking window on every press (owner 2026-11-23: the ring made
+ * the whole PC stutter). null = the probe cannot answer; the caller falls back.
+ */
+async function keyState() {
+  if (!probe) probe = spiritProbe.createWindowProbe();
+  try {
+    return await probe.keyDown();
   } catch {
     return null;
   }
@@ -5952,6 +5980,8 @@ module.exports = {
   __refreshTaskbar: () => refreshTaskbar(),
   __swarmBounds: (n) => swarmBounds(n),
   __setProbe: (p) => { probe = p; },
+  // Alt+Space press detection without stealing the foreground (owner 2026-11-23).
+  keyState, warmProbe,
   setSwarmAnchor, setSwarmVisible, swarmVisible: () => state.swarm === true,
   setDisplayModeState, displayModeState, displayModeInForce, displayPick,
   fairyBounds: () => (alive(orbWindow) && orbWindow.isVisible() ? orbWindow.getBounds() : null),
