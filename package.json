@@ -184,6 +184,10 @@
           "to": "native/win32/desk-audio-listener.exe"
         },
         {
+          "from": "native/windows/DeskMouseHook.cs",
+          "to": "native/windows/DeskMouseHook.cs"
+        },
+        {
           "from": "../standalone/bootc/aither-setup.py",
           "to": "aither-setup/aither-setup.py"
         },

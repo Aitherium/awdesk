@@ -227,9 +227,23 @@ const quickMenu = require("./quick-menu.cjs").createQuickMenu({
   // The ring's own ids (the fairy's dock answers, Windows' desktop menu).
   runExtra: (id) => orbWindow.runRingExtra(id),
 });
-// The ONE ring (owner 2026-11-23): the fairy flies to the anchor and the ring opens
+// The ONE ring (owner 2026-11-23): the fairy flies to the centre and the ring opens
 // around it; Alt+Space hold, Ctrl+Alt+Q and the empty-desktop right-click all use it.
 try { orbWindow.setRingOpener(quickMenu); } catch { /* not up yet */ }
+
+// The empty-desktop right-click arrives from the native WH_MOUSE_LL helper
+// (desktop-right-hook.cjs + native/windows/DeskMouseHook.cs). Built lazily with the
+// .NET Framework csc.exe; fail-soft, and OFF when the Settings switch is off.
+let desktopRightHook = null;
+function ensureDesktopRightHook() {
+  if (desktopRightHook) return desktopRightHook;
+  desktopRightHook = require("./desktop-right-hook.cjs").createDesktopRightHook({
+    app,
+    onRight: (point) => { void orbWindow.openRing({ at: point, hold: false }); },
+    log: (line) => console.warn(`[desk] ${line}`),
+  });
+  return desktopRightHook;
+}
 // The intent bar (owner 2026-11-16, intent-bar.cjs): the registry's palette rows as
 // tools with schemas and effects, `>` ranking with pinned + recent, and a sentence
 // planned through MicroScheduler (the local Bonsai only when the platform is down).
@@ -7471,9 +7485,13 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // And the resident window probe the hold/tap check reads: warm it in the
     // background so the first Alt+Space does not pay PowerShell's Add-Type.
     try { orbWindow.warmProbe(); } catch { /* the fairy is not up yet: it warms later */ }
-    // The empty-desktop right-click (owner 2026-11-23): one small physical sample at a
-    // low rate; apps/files/icons and Shift+right-click are never touched.
-    try { orbWindow.startDesktopWatch(); } catch { /* the fairy is not up yet */ }
+    // The empty-desktop right-click (owner 2026-11-23): the NATIVE hook. It only
+    // reports a plain right-press on the desktop background with no icon under the
+    // cursor; apps/files/icons and Shift+right-click pass straight through.
+    if (orbWindow.desktopRingOn()) {
+      const hooked = ensureDesktopRightHook().start();
+      if (!hooked.ok) console.warn(`[desk] desktop ring hook: ${hooked.error}`);
+    }
     // The Copilot key -> this bar (copilot-key.cjs), when the setting is on (default).
     if (intentBarMemory.copilotKey()) {
       const st = copilotKey().start();
@@ -7957,7 +7975,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           const label = command ? commandRegistry.labelOf(command, ctx) : k.id;
           return { ...k, label, dead: deadAccels.has(k.accel) };
         });
-        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings(), neurons: orbWindow.neuronsOn(), display: displaySettingsNow(), fairy: orbWindow.dropSettings() };
+        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings(), neurons: orbWindow.neuronsOn(), display: displaySettingsNow(), fairy: orbWindow.dropSettings(), desktopRing: orbWindow.desktopRingOn() };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }
@@ -8002,6 +8020,22 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       try {
         const result = orbWindow.setDropDefault(patch && typeof patch === "object" ? patch : {});
         return { ok: true, fairy: orbWindow.dropSettings(), drop: result.drop };
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+    });
+    // The desktop right-click ring switch (owner 2026-11-23): start/stop the native
+    // hook with it. Off = the hook is not running at all (no listener, no work).
+    ipcMain.handle("desk:settings-set-desktop-ring", (_event, on) => {
+      try {
+        const result = orbWindow.setDesktopRing(on === true);
+        if (result.desktopRing) {
+          const hooked = ensureDesktopRightHook().start();
+          if (!hooked.ok) return { ok: false, error: hooked.error, desktopRing: result.desktopRing };
+        } else if (desktopRightHook) {
+          desktopRightHook.stop();
+        }
+        return { ok: true, desktopRing: result.desktopRing };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }
@@ -9647,6 +9681,8 @@ app.on("before-quit", () => {
   try { if (copilotKeyInstance) copilotKeyInstance.stop(); } catch { /* not started */ }
   // The orb is always-on-top glass; it leaves with the desk (its timers stop too).
   try { orbWindow.stopOrb(); } catch { /* not started */ }
+  // The native desktop right-click hook leaves too (its stdin close also ends it).
+  try { if (desktopRightHook) desktopRightHook.stop(); } catch { /* not started */ }
   try { if (assistMainInstance) { assistMainInstance.caret.stop(); assistMainInstance.utils.stop(); } } catch { /* no caret worker */ }
   // Windows: a verified installer waiting for this quit runs now, silently, no relaunch.
   deskUpdater?.installOnQuit({ sessionEnding });
