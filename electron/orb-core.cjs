@@ -528,6 +528,10 @@ function sanitizeState(raw) {
     // Right-click on the EMPTY desktop opens the ring (owner 2026-11-23): ON unless
     // explicitly turned off in Settings. The native hook only passes desktop clicks.
     desktopRing: src.desktopRing !== false,
+    // Where the ring opens (owner 2026-11-23): the CENTRE of the display under the
+    // cursor (default, for the hold and the desktop right-click alike), or the point
+    // the owner clicked / the cursor when the key went down.
+    ringAt: src.ringAt === "click" ? "click" : "centre",
   };
 }
 
