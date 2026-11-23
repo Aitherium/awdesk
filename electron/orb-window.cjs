@@ -4724,6 +4724,12 @@ function showWhisper() {
   nudgeSettingBounds = false;
   nudging.shown = true;
   sendNudge("orb:nudge-view", { ...nudging.view, side: nudging.side || "right" });
+  // A SHOWN card always takes clicks. It used to stay click-through until the page
+  // reported a hover, and once #188 moved the scroll to <body> the hover report
+  // stopped arriving: every button and the X went dead (owner 2026-11-23). The
+  // window is sized to the card, so there is no wide margin left to protect;
+  // dismissing the card (nudgeOutcome) puts click-through back.
+  try { win.setIgnoreMouseEvents(false); } catch { /* gone */ }
   if (!win.isVisible()) win.showInactive();
 }
 
@@ -4953,8 +4959,8 @@ async function nudgeAct(action, key) {
     }
   }
   if (what === "hover") {
+    // Hover is informational now: a shown card is always clickable (showWhisper).
     n.hovered = key === true || key === "true";
-    if (alive(nudgeWindow)) nudgeWindow.setIgnoreMouseEvents(!n.hovered, { forward: true });
     return { ok: true };
   }
   if (what === "answer") {
