@@ -1958,11 +1958,14 @@ test("a hidden fairy never docks itself onto the AitherOS window", async () => {
   assert.ok(!orbWin().isVisible());
 });
 
-test("the orb and swarm pages: right click opens the pill menu, hover only dwells a tip, the menu page handles keys", () => {
+test("the orb and swarm pages: right click opens the ONE ring, hover only dwells a tip, the menu page handles keys", () => {
   const html = fs.readFileSync(path.join(__dirname, "orb.html"), "utf8");
   const orb = html.slice(html.indexOf('if (view === "orb")'), html.indexOf('if (view === "swarm")'));
   assert.match(orb, /api\.fairyMenu\(m\.cardId, m\.agent\)/);
-  assert.match(orb, /api\.orbMenu\(\)/);
+  // Owner 2026-11-23: the pill menu is retired into the ONE ring; a right-click on the
+  // fairy must open the ring (the "This fairy" page), never the old api.orbMenu path.
+  assert.match(orb, /else api\.menu\(\)/);
+  assert.doesNotMatch(orb, /api\.orbMenu/, "the retired pill menu is not reachable from a right-click");
   const swarm = html.slice(html.indexOf('if (view === "swarm")'), html.indexOf("// ── the right-click menu"));
   assert.match(swarm, /addEventListener\("contextmenu"[\s\S]*api\.fairyMenu\(hotMate\.id, hotMate\.agent\)/);
   assert.match(swarm, /dwell\.on\(/, "the hover is a dwell, not a peek");
@@ -1977,28 +1980,26 @@ test("the orb and swarm pages: right click opens the pill menu, hover only dwell
   assert.match(preload, /menuPick: \(id\) => ipcRenderer\.invoke\("desk:menu-pick"/);
 });
 
-test("fairy.menu (palette / bridge): the orb's menu is a ring on the fairy, focused, from the keyboard", async () => {
+test("fairy.menu (palette / bridge): the keyboard's door opens the ONE ring on the fairy", async () => {
   startAttention();
   orbWindow.setAttentionCards([]);
   cursor = { x: 5, y: 5 };
-  const r = orbWindow.run("menu");
+  // Owner 2026-11-23: every surface opens the same ring (the keyboard/bridge row
+  // included), on the This-fairy page. The ring's own geometry belongs to quick-menu
+  // and is pinned in quick-menu.test.cjs; here the DOOR is what matters.
+  let opened = null;
+  orbWindow.setRingOpener({
+    openRadial: (o) => { opened = o; if (typeof o.onDone === "function") o.onDone({ closed: true }); return { ok: true }; },
+    isVisible: () => false,
+    hide() {},
+  });
+  const r = await orbWindow.run("menu");
   assert.equal(r.ok, true);
-  assert.equal(r.kind, "orb");
-  const mw = menuWin();
-  assert.ok(mw.isVisible() && mw.focused);
-  const o = orbWin().getBounds();
-  const b = mw.getBounds();
-  const cx = o.x + o.width / 2;
-  const cy = o.y + o.height / 2;
-  // RADIAL (owner 2026-11-20): a square ring CENTRED on the fairy (clamped onto the
-  // work area at an edge), not a column flipped beside it, and never the pointer
-  // when the keyboard opened it.
-  assert.equal(b.width, b.height, "a square ring");
-  assert.ok(cx >= b.x && cx <= b.x + b.width && cy >= b.y && cy <= b.y + b.height,
-    `the fairy sits inside its ring: ${JSON.stringify({ b, cx, cy })}`);
-  const area = displays[0].workArea;
-  assert.ok(b.x >= area.x && b.y >= area.y && b.x + b.width <= area.x + area.width && b.y + b.height <= area.y + area.height,
-    "the ring stays on the work area");
+  assert.ok(opened, "the ring renderer was asked to open");
+  assert.equal(opened.page, 1, "it opens on the This-fairy page");
+  assert.ok(opened.pages.some((p) => p.id === "self"), "with the fairy's own pages");
+  assert.equal(menuWin(), null, "the retired pill menu is not opened");
+  orbWindow.setRingOpener(null);
   const reg = require("./command-registry.cjs");
   const row = reg.byId("fairy.menu");
   assert.equal(row.orb, "menu");
@@ -2007,9 +2008,10 @@ test("fairy.menu (palette / bridge): the orb's menu is a ring on the fairy, focu
 
 test("a menu Windows refused the keyboard (no blur will come) closes itself once nothing touches it", async () => {
   startAttention();
-  orbWindow.setAttentionCards([]);
+  // A CARD's own menu still uses the sheet (only the fairy's own menu became the ring).
+  orbWindow.setAttentionCards([blockedCard({ id: "d-hx", agent: "atlas" })]);
   orbWindow.__setMenuIdleMs(300);
-  orbWindow.run("menu");
+  orbWindow.run("menu", { arg: "d-hx" });
   const mw = menuWin();
   // Live 2026-11-12: Electron still called it focused while Windows kept the keyboard
   // elsewhere, so focus cannot be the test -- the pointer and the keys are.
