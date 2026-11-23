@@ -370,6 +370,10 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
     });
     win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     win.webContents.on("will-navigate", (event) => event.preventDefault());
+    // The orb and the AitherOS surfaces sit at the screen-saver level; a normal
+    // always-on-top ring rendered BEHIND them (found live 2026-11-23: the ring was
+    // "visible" and empty on screen). Same level as the fairy.
+    try { win.setAlwaysOnTop(true, "screen-saver"); } catch { /* older Electron */ }
     // Click-away / focus stolen = close (the native-menu contract). The hold ring
     // gets longer: releasing Alt can move focus on Windows, and the keyup that is
     // still on its way is the selection.
@@ -399,6 +403,7 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
     shownAt = now();
     if (win.isVisible()) { hide(); return { ok: true, closed: true }; }
     win.show();
+    try { win.setAlwaysOnTop(true, "screen-saver"); win.moveTop(); } catch { /* older Electron */ }
     win.focus();
     if (win.webContents && !win.webContents.isLoading()) win.webContents.send("quick:refresh");
     return { ok: true, bounds };
@@ -426,6 +431,7 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
     win.setBounds({ x: box.x, y: box.y, width: box.width, height: box.height });
     shownAt = now();
     win.show();
+    try { win.setAlwaysOnTop(true, "screen-saver"); win.moveTop(); } catch { /* older Electron */ }
     win.focus();
     if (win.webContents && !win.webContents.isLoading()) win.webContents.send("quick:refresh");
     return { ok: true, bounds: box, page, slices: slices.map((s) => s.id) };

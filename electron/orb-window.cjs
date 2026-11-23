@@ -2764,7 +2764,11 @@ async function openRing({ at = null, hold = false, onDone = null, page = 0 } = {
   if (ringOpen) {
     // A leaked session (a close path that skipped onDone) must never wedge the ring.
     const visible = api && typeof api.isVisible === "function" ? api.isVisible() : false;
-    if (visible) return { ok: false, reason: "the ring is already up" };
+    if (visible) {
+      // Pressing the key again closes it (and the fairy goes back).
+      if (typeof api.hide === "function") api.hide();
+      return { ok: true, closed: true };
+    }
     ringOpen = false;
     ringReturn = null;
   }
