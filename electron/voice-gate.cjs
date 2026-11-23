@@ -106,6 +106,28 @@ function fragmentReason(text) {
 }
 
 /**
+ * How a transcript reached us. A waiting card ask makes EVERY transcript its
+ * answer -- the desk armed the microphone, so the next sentence in the room is
+ * not an owner command. Otherwise the trigger the renderer reported decides,
+ * with the open mic's state as the fallback for an old renderer.
+ *
+ * @param {object} input
+ * @param {string} [input.mode]   push-to-talk | one-shot | open-mic | card-answer
+ * @param {boolean} [input.openMic]
+ * @param {boolean} [input.cardWaiting]
+ */
+function normalizeProvenance({ mode = "", openMic = false, cardWaiting = false } = {}) {
+  if (cardWaiting) return "card-answer";
+  const value = String(mode || "");
+  if (value === "open-mic" || value === "open") return "open-mic";
+  if (value === "one-shot") return "one-shot";
+  if (value === "push-to-talk") return "push-to-talk";
+  if (value === "card-answer") return "card-answer";
+  return openMic ? "open-mic" : "push-to-talk";
+}
+
+
+/**
  * The one decision every voice entry point asks.
  *
  * @param {object} input
@@ -240,6 +262,7 @@ module.exports = {
   PROVENANCES,
   assessVoice,
   fragmentReason,
+  normalizeProvenance,
   stripAddress,
   createRejectionLog,
 };

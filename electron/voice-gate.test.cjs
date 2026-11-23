@@ -130,3 +130,21 @@ test("a missing log directory is created, not fatal", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a waiting card ask claims every transcript, whatever the renderer says", () => {
+  assert.equal(
+    gate.normalizeProvenance({ mode: "push-to-talk", cardWaiting: true }),
+    "card-answer",
+  );
+  // The renderer's own labels map one-to-one.
+  assert.equal(gate.normalizeProvenance({ mode: "open" }), "open-mic");
+  assert.equal(gate.normalizeProvenance({ mode: "open-mic" }), "open-mic");
+  assert.equal(gate.normalizeProvenance({ mode: "one-shot" }), "one-shot");
+  assert.equal(gate.normalizeProvenance({ mode: "push-to-talk" }), "push-to-talk");
+  // An explicit card-answer from a replay must not be mistaken for a press.
+  assert.equal(gate.normalizeProvenance({ mode: "card-answer" }), "card-answer");
+  // An old renderer sends nothing: the open mic's own state decides.
+  assert.equal(gate.normalizeProvenance({ openMic: true }), "open-mic");
+  assert.equal(gate.normalizeProvenance({ openMic: false }), "push-to-talk");
+  assert.equal(gate.normalizeProvenance(), "push-to-talk");
+});

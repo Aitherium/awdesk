@@ -3859,16 +3859,11 @@ async function handleVoiceHeard(text, provenance) {
   try { wakeWord = String(((require("./desk-settings.cjs").current() || {}).voice || {}).wakeWord || ""); } catch { /* none */ }
   // A transcript that arrives while a card ask waits is a CARD ANSWER, whatever
   // armed the microphone: the desk opened it, not the owner's own gesture.
-  let kind;
-  if (voiceAsk.waiting) {
-    kind = "card-answer";
-  } else {
-    const mode = provenance && typeof provenance === "object" ? String(provenance.mode || "") : "";
-    if (mode === "open-mic" || mode === "open") kind = "open-mic";
-    else if (mode === "one-shot") kind = "one-shot";
-    else if (mode === "push-to-talk") kind = "push-to-talk";
-    else kind = openMicOn ? "open-mic" : "push-to-talk";
-  }
+  const kind = voiceGate.normalizeProvenance({
+    mode: provenance && typeof provenance === "object" ? provenance.mode : "",
+    openMic: openMicOn,
+    cardWaiting: Boolean(voiceAsk.waiting),
+  });
   const verdict = voiceGate.assessVoice({ text: raw, provenance: kind, wakeWord, pcPlaying: pcAudioAudible() });
   listenState = "idle";
   refreshTrayMenu();
