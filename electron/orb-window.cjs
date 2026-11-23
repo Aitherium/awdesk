@@ -6406,12 +6406,13 @@ function run(verb, { arg = null, slotId = null } = {}) {
   if (what === "neurons") return setNeurons(arg === "on" ? true : arg === "off" ? false : !neuronsOn());
   // The registry's companions.show / companions.hide (palette, jump list, bridge).
   if (what === "show-all" || what === "hide-all") return companionAction(what);
-  // The fairy's menu from the keyboard (palette) or the bridge: the orb's menu, or a
-  // card's menu when `arg` names an open card. Opens beside the fairy.
+  // The fairy's menu from the keyboard (palette) or the bridge: the ONE ring (owner
+  // 2026-11-23 -- every surface opens the same ring), or a card's own menu when `arg`
+  // names an open card.
   if (what === "menu") {
     if (!orbVisible()) showOrb();
     const id = arg == null ? "" : String(arg).trim();
-    return id ? fairyMenuFor(id, "", { atFairy: true }) : orbMenu({ atFairy: true });
+    return id ? fairyMenuFor(id, "", { atFairy: true }) : spiritMenu();
   }
   // What the fairy is showing, as numbers: the bridge's way to check the screen
   // (POST /commands/run {"id":"fairy.counts"}). Opens nothing.
