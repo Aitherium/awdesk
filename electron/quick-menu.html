@@ -75,6 +75,16 @@
     animation: slicein 120ms ease both;
   }
   .slice:nth-child(odd) { animation-delay: 12ms; }
+  /* The consistent number hotkey: every slice carries its digit. */
+  .slice .key {
+    position: absolute; top: -4px; right: -4px; min-width: 15px; height: 15px; padding: 0 3px;
+    border-radius: 8px; background: rgba(124, 196, 255, 0.92); color: #06101f;
+    font: 700 9.5px/15px "Segoe UI", system-ui; text-align: center;
+  }
+  #page {
+    position: absolute; left: 50%; top: calc(50% - 132px); transform: translateX(-50%);
+    font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+  }
   @keyframes slicein { from { opacity: 0; transform: scale(0.7); } to { opacity: 1; transform: scale(1); } }
   .slice:hover, .slice:focus-visible, .slice.hot {
     background: rgba(124, 196, 255, 0.20); border-color: rgba(124, 196, 255, 0.65); outline: none;
@@ -88,6 +98,7 @@
 <div id="menu" role="menu" aria-label="Aither quick menu"></div>
 <div id="radial" role="menu" aria-label="Aither radial menu">
   <div id="ring"></div>
+  <div id="page"></div>
   <div id="hub">release<br>here to<br>cancel</div>
 </div>
 <script>
@@ -95,11 +106,14 @@
   const radial = document.getElementById("radial");
   const ring = document.getElementById("ring");
   const hub = document.getElementById("hub");
+  const pageEl = document.getElementById("page");
   let items = [];
   let slices = [];
   let mode = "grid";
   let hold = false;
   let focusAt = 0;
+  let currentPage = 0;
+  let pages = [];
 
   function renderGrid() {
     menu.replaceChildren();
@@ -139,6 +153,8 @@
       hub.textContent = "No radial\nactions";
       return;
     }
+    const p = pages[currentPage];
+    pageEl.textContent = p ? `${p.label} · ${currentPage + 1}/${pages.length}` : "";
     const radius = 142;
     const cx = window.innerWidth / 2;
     const cy = window.innerHeight / 2;
@@ -158,8 +174,11 @@
       const label = document.createElement("span");
       label.className = "label";
       label.textContent = slice.short || String(slice.label).split(/[\s(…]/)[0];
+      const key = document.createElement("span");
+      key.className = "key";
+      key.textContent = slice.key || String(index + 1);
       button.title = slice.label;
-      button.append(glyph, label);
+      button.append(glyph, label, key);
       button.addEventListener("click", () => choose(slice.id));
       radial.append(button);
     });
@@ -207,6 +226,8 @@
     const reply = await window.aitherQuick.items();
     mode = reply && reply.mode === "radial" ? "radial" : "grid";
     hold = Boolean(reply && reply.hold);
+    currentPage = reply && Number.isFinite(Number(reply.page)) ? Number(reply.page) : 0;
+    pages = reply && Array.isArray(reply.pages) ? reply.pages : [];
     slices = reply && reply.ok && Array.isArray(reply.slices) ? reply.slices : [];
     items = reply && reply.ok && Array.isArray(reply.items) ? reply.items : [];
     document.body.classList.toggle("radial", mode === "radial");
@@ -244,6 +265,12 @@
   });
 
   document.addEventListener("keydown", (event) => {
+    // Consistent number hotkeys: every slice's digit runs it (and a page door pages).
+    if (mode === "radial" && /^[1-9]$/.test(event.key)) {
+      const slice = slices[Number(event.key) - 1];
+      if (slice) { event.preventDefault(); void choose(slice.id); }
+      return;
+    }
     if (event.key === "Escape") { event.preventDefault(); void window.aitherQuick.hide(); return; }
     if (event.key === "ArrowRight") { event.preventDefault(); move(1); return; }
     if (event.key === "ArrowLeft") { event.preventDefault(); move(-1); return; }

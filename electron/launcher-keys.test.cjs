@@ -21,7 +21,7 @@ function stubObject(overrides = {}) {
   });
 }
 
-function harness({ keys = { space: true, alt: true } } = {}) {
+function harness({ keys = { space: true, alt: true }, openRing = null } = {}) {
   const calls = { shown: 0, sampled: 0, captured: 0, start: 0, end: 0 };
   const state = { keys: { ...keys }, radial: null };
   class FakeWindow {
@@ -65,6 +65,7 @@ function harness({ keys = { space: true, alt: true } } = {}) {
     electron, registry: { byId: () => null }, quickMenu, run: async () => ({ ok: true }),
     keyState: async () => (state.keys ? { ...state.keys } : null),
     pollMs: 1,
+    openRing,
     hostContext: () => { calls.sampled += 1; return { ok: true }; },
     assist: { capture: () => { calls.captured += 1; return null; }, group: () => null, choose: () => ({ ok: true }) },
     onHoldStart: () => { calls.start += 1; },
@@ -108,4 +109,17 @@ test("a mute key probe falls back to the old path instead of sticking", async ()
   for (let i = 0; i < 40 && h.calls.shown === 0; i += 1) await wait(25);
   assert.ok(h.calls.shown >= 1, "the fallback shows the launcher");
   assert.equal(h.calls.sampled, 1);
+});
+
+test("a HOLD opens the ONE ring (fairy-first) when the opener is wired", async () => {
+  const rings = [];
+  const h = harness({ openRing: (opts) => { rings.push(opts); return { ok: true }; } });
+  h.launcher.press();
+  await wait(160);
+  await wait(400); // past HOLD_MS
+  assert.equal(rings.length, 1, "the hold did not open the fairy ring");
+  assert.equal(rings[0].hold, true, "the ring must know it is the Alt+Space hold");
+  assert.equal(h.calls.shown, 0, "and no launcher window appeared");
+  rings[0].onDone();
+  assert.equal(h.calls.end, 1, "closing the ring ends push-to-talk");
 });

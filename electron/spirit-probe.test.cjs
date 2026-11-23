@@ -9,6 +9,9 @@ const probe = require("./spirit-probe.cjs");
 function answerFor(req) {
   if (req.op === "ping") return { ok: true, pong: true };
   if (req.op === "keys") return { ok: true, space: true, alt: false };
+  if (req.op === "right") return { ok: true, down: true, shift: false, x: 640, y: 480, className: "WorkerW" };
+  if (req.op === "escape") return { ok: true };
+  if (req.op === "menu") return { ok: true };
   if (req.op === "rect") {
     return {
       ok: true,
@@ -137,6 +140,18 @@ test("keyDown reads the physical keys so a HOLD never has to steal the foregroun
   dead.stop();
 });
 
+test("the desktop right-click sample names the button, Shift, the point and the class", async () => {
+  const child = fakeChild();
+  const p = probe.createWindowProbe({ spawn: () => child, fsImpl: fsRecorder() });
+  assert.deepEqual(await p.desktopRight(), { down: true, shift: false, x: 640, y: 480, className: "WorkerW" });
+  assert.equal(child.stdin.writes.at(-1).op, "right");
+  assert.equal(await p.escape(), true);
+  assert.equal(child.stdin.writes.at(-1).op, "escape");
+  assert.equal(await p.nativeMenu(), true);
+  assert.equal(child.stdin.writes.at(-1).op, "menu");
+  p.stop();
+});
+
 test("pointAt maps a too-small target (a desktop sliver) to null", async () => {
   const child = fakeChild({
     onWrite: () => ({ ok: true, hwnd: 5, title: "sliver", pid: 9, rect: { x: 0, y: 0, width: 12, height: 12 } }),
@@ -207,6 +222,9 @@ test("the script finds the taskbar by class, never by a guessed title", () => {
   assert.ok(PROBE_SCRIPT.includes("minimised ="), "the answer carries the minimised flag");
   assert.ok(PROBE_SCRIPT.includes("GetAsyncKeyState"), "the physical key state is readable");
   assert.ok(PROBE_SCRIPT.includes("$req.op -eq 'keys'"), "the keys op is answered");
+  assert.ok(PROBE_SCRIPT.includes("GetCursorPos") && PROBE_SCRIPT.includes("$req.op -eq 'right'"), "the desktop right sample is answered");
+  assert.ok(PROBE_SCRIPT.includes("keybd_event") && PROBE_SCRIPT.includes("$req.op -eq 'escape'"), "the native menu can be dismissed");
+  assert.ok(PROBE_SCRIPT.includes("$req.op -eq 'menu'"), "the native menu can be opened");
 });
 
 test("a ONE-element tray answer (PowerShell collapses the array) still names the primary", () => {

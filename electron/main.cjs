@@ -224,7 +224,12 @@ const quickMenu = require("./quick-menu.cjs").createQuickMenu({
   electron: require("electron"),
   registry: commandRegistry,
   run: (id) => runCommand(id, undefined, { surface: "shortcut" }),
+  // The ring's own ids (the fairy's dock answers, Windows' desktop menu).
+  runExtra: (id) => orbWindow.runRingExtra(id),
 });
+// The ONE ring (owner 2026-11-23): the fairy flies to the anchor and the ring opens
+// around it; Alt+Space hold, Ctrl+Alt+Q and the empty-desktop right-click all use it.
+try { orbWindow.setRingOpener(quickMenu); } catch { /* not up yet */ }
 // The intent bar (owner 2026-11-16, intent-bar.cjs): the registry's palette rows as
 // tools with schemas and effects, `>` ranking with pinned + recent, and a sentence
 // planned through MicroScheduler (the local Bonsai only when the platform is down).
@@ -294,6 +299,9 @@ const launcher = require("./launcher-window.cjs").createLauncher({
   // never shows the launcher or samples the focused app, which is what made every
   // Alt+Space press stutter (owner 2026-11-23). Null-equivalent (probe mute) = old path.
   keyState: () => orbWindow.keyState(),
+  // A HOLD is the ONE ring: the fairy flies to the screen centre, the ring opens
+  // around it, and it flies back when the key is released (owner 2026-11-23).
+  openRing: (opts) => orbWindow.openRing(opts),
   // Alt+Space opens on what the owner is LOOKING AT (launcher-context.cjs), sampled
   // on key-down, before the overlay takes focus.
   hostContext: () => require("./host-context.cjs").sampleHostContext(),
@@ -5204,7 +5212,9 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     // Radial menu at the cursor: Ctrl+Alt+Q and the HOLD half of Alt+Space (the
     // launcher opens this same ring). Notes/whiteboards and the reversible right-
     // click menu live in their own modules; nothing here invents a second list.
-    case "quick.open": return void quickMenu.openRadial();
+    // The ONE ring at the cursor (Ctrl+Alt+Q, the palette): the fairy flies there and
+    // the ring opens around it, the same ring Alt+Space and the desktop right-click use.
+    case "quick.open": return void orbWindow.openRing({ hold: false });
     case "terminal.open": return void browserWindow.openInternal("terminal", null, { askAgent: browserAskAgent });
     // The local toolkit (toolkit.cjs, owner 2026-11-13): windows, region flow, send,
     // interact mode. Each case returns the module's verdict.
@@ -7461,6 +7471,9 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // And the resident window probe the hold/tap check reads: warm it in the
     // background so the first Alt+Space does not pay PowerShell's Add-Type.
     try { orbWindow.warmProbe(); } catch { /* the fairy is not up yet: it warms later */ }
+    // The empty-desktop right-click (owner 2026-11-23): one small physical sample at a
+    // low rate; apps/files/icons and Shift+right-click are never touched.
+    try { orbWindow.startDesktopWatch(); } catch { /* the fairy is not up yet */ }
     // The Copilot key -> this bar (copilot-key.cjs), when the setting is on (default).
     if (intentBarMemory.copilotKey()) {
       const st = copilotKey().start();

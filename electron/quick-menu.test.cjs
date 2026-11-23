@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { ITEM_IDS, availableItems, layout, positionFor, radialBounds, radialSlices } = require("./quick-menu.cjs");
+const { ITEM_IDS, availableItems, layout, positionFor, radialBounds, radialSlices, pageSlices, pageFromId, PAGES, EXTRA_IDS, RADIAL } = require("./quick-menu.cjs");
 
 /** A registry stand-in that knows only the ids listed. */
 function registryWith(ids) {
@@ -11,8 +11,7 @@ function registryWith(ids) {
   return { byId: (id) => map.get(String(id)) || null };
 }
 
-test("Q1 only ids in the registry render -- a missing parallel-lane command is hidden", () => {
-  const registry = registryWith(["snip.region", "sticky.new", "board.new"]);
+test("Q1 only ids in the registry render -- a missing parallel-lane command is hidden", () => {  const registry = registryWith(["snip.region", "sticky.new", "board.new"]);
   const items = availableItems(registry);
   // Toolkit order (Create before Capture): board, note, then snip.
   assert.deepEqual(items.map((i) => i.id), ["board.new", "sticky.new", "snip.region"]);
@@ -106,4 +105,49 @@ test("Q8 the radial window is centred on the cursor and clamped at an edge", () 
   assert.equal(edge.x, 8);
   assert.equal(edge.y, 8);
   assert.deepEqual(edge.center, { x: 208, y: 208 });
+});
+
+test("the ONE ring is paged: tools + Fairy, fairy controls + More, dock answers", () => {
+  const all = ["snip.region", "record.region", "ink.toggle", "note.new", "board.new",
+    "orb.ask-screen", "desktop.overlay.toggle", "terminal.open", "files.open", "audio.settings",
+    "avatar.from-fairy", "display.mode.fairy", "display.mode.avatar", "display.mode.both",
+    "display.mode.swarm", "chat.open", "osapp.spaces", "console.open"];
+  const registry = registryWith(all);
+  const p0 = pageSlices(registry, { page: 0 });
+  assert.equal(p0.length, 11, "ten tools + the Fairy door");
+  assert.equal(p0.at(-1).id, "radial:page:1");
+  assert.equal(pageFromId(p0.at(-1).id), 1);
+  assert.deepEqual(p0.map((s) => s.key), ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]);
+
+  const p1 = pageSlices(registry, { page: 1 });
+  assert.ok(p1.some((s) => s.id === "avatar.from-fairy"));
+  assert.ok(p1.some((s) => s.id === "display.mode.swarm"));
+  assert.ok(p1.some((s) => s.id === "radial:page:2"), "More opens the dock answers");
+  assert.ok(p1.some((s) => s.id === "radial:page:0"), "back to tools");
+
+  const p2 = pageSlices(registry, { page: 2 });
+  const extras = p2.filter((s) => EXTRA_IDS.includes(s.id)).map((s) => s.id);
+  assert.deepEqual(extras, [...EXTRA_IDS], "the dock answers and Windows' menu are main-run ids");
+  assert.ok(p2.some((s) => s.id === "radial:page:1"));
+  assert.equal(PAGES.length, 3);
+});
+
+test("no page puts two slices closer than the slice diameter (no overlapping labels)", () => {
+  const all = ["snip.region", "record.region", "ink.toggle", "note.new", "board.new",
+    "orb.ask-screen", "desktop.overlay.toggle", "terminal.open", "files.open", "audio.settings",
+    "avatar.from-fairy", "display.mode.fairy", "display.mode.avatar", "display.mode.both",
+    "display.mode.swarm", "chat.open", "osapp.spaces", "console.open"];
+  const registry = registryWith(all);
+  for (let page = 0; page < PAGES.length; page += 1) {
+    const slices = pageSlices(registry, { page });
+    for (let i = 0; i < slices.length; i += 1) {
+      for (let j = i + 1; j < slices.length; j += 1) {
+        const rad = (d) => (d * Math.PI) / 180;
+        const a = rad(slices[i].angle);
+        const b = rad(slices[j].angle);
+        const chord = 2 * RADIAL.radius * Math.abs(Math.sin((b - a) / 2));
+        assert.ok(chord >= RADIAL.item, `page ${page}: slices ${i}/${j} overlap (${chord.toFixed(1)} < ${RADIAL.item})`);
+      }
+    }
+  }
 });
