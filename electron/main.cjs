@@ -7935,7 +7935,7 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
           const label = command ? commandRegistry.labelOf(command, ctx) : k.id;
           return { ...k, label, dead: deadAccels.has(k.accel) };
         });
-        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings(), neurons: orbWindow.neuronsOn(), display: displaySettingsNow() };
+        return { ok: true, voice, input, hotkeys, deadAccels: [...deadAccels], overlay: overlaySettings(), neurons: orbWindow.neuronsOn(), display: displaySettingsNow(), fairy: orbWindow.dropSettings() };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }
@@ -7970,6 +7970,16 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         }
         const result = await applyDisplayMode(String(mode));
         return { ok: true, display: { mode: result.mode, swarm: result.swarm } };
+      } catch (error) {
+        return { ok: false, error: String((error && error.message) || error) };
+      }
+    });
+    // A dropped fairy's behaviour (fairy-drop.cjs, owner 2026-11-23): the global
+    // default the Settings page edits. A per-fairy answer comes from its own menu.
+    ipcMain.handle("desk:settings-set-fairy", (_event, patch) => {
+      try {
+        const result = orbWindow.setDropDefault(patch && typeof patch === "object" ? patch : {});
+        return { ok: true, fairy: orbWindow.dropSettings(), drop: result.drop };
       } catch (error) {
         return { ok: false, error: String((error && error.message) || error) };
       }

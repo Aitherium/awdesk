@@ -79,6 +79,12 @@ test("an answer becomes an attach target, or null when it is not usable", () => 
   assert.equal(probe.targetFromAnswer({ ok: true, pid: 1234, rect: { width: 500, height: 500 } }, { excludePid: 1234 }), null,
     "the spirit never attaches to its own process");
   assert.equal(probe.targetFromAnswer({ ok: true, pid: 1234, rect: { width: 500, height: 500 } }, { excludePid: 99 }).pid, 1234);
+  // A minimised window is still a target (the fairy waits for it to come back),
+  // even though Windows parks its rect far off-screen.
+  const min = probe.targetFromAnswer({ ok: true, hwnd: 9, minimised: true, visible: true, rect: { x: -32000, y: -32000, width: 160, height: 28 } });
+  assert.equal(min.kind, "window");
+  assert.equal(min.minimised, true);
+  assert.equal(probe.targetFromAnswer({ ok: true, rect: { width: 500, height: 500 } }).minimised, false);
 });
 
 test("the probe is ONE hidden PowerShell with a JSON line per request", async () => {
@@ -182,6 +188,9 @@ test("the script finds the taskbar by class, never by a guessed title", () => {
   assert.ok(PROBE_SCRIPT.includes("FindWindow"), "FindWindow is declared");
   assert.ok(PROBE_SCRIPT.includes("Shell_TrayWnd") && PROBE_SCRIPT.includes("Shell_SecondaryTrayWnd"));
   assert.ok(PROBE_SCRIPT.includes("$req.op -eq 'tray'"), "the tray op is answered");
+  // A followed window's minimise is read from Windows itself, not inferred from a rect.
+  assert.ok(PROBE_SCRIPT.includes("IsIconic"), "IsIconic is declared and read");
+  assert.ok(PROBE_SCRIPT.includes("minimised ="), "the answer carries the minimised flag");
 });
 
 test("a ONE-element tray answer (PowerShell collapses the array) still names the primary", () => {

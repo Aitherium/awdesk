@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld("settingsBridge", {
   // Companion display (display-mode.cjs): avatar / fairy / both / swarm, saved in
   // avatar-dock.json with the dock wish (owner 2026-11-20).
   setDisplay: (mode) => ipcRenderer.invoke("desk:settings-set-display", String(mode || "")),
+  // Where a dropped fairy stands and how long it stays (fairy-drop.cjs, owner 2026-11-23).
+  setFairy: (patch) => ipcRenderer.invoke("desk:settings-set-fairy", patch),
   probeAccel: (accel, excludeId) => ipcRenderer.invoke("desk:settings-probe-accel", accel, excludeId),
   setHotkey: (id, accel) => ipcRenderer.invoke("desk:settings-set-hotkey", id, accel),
   clearHotkey: (id) => ipcRenderer.invoke("desk:settings-set-hotkey", id, ""),

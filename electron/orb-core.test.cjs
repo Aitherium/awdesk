@@ -300,7 +300,7 @@ test("a bubble is never placed off-screen when the orb is in a negative-origin d
 // ── state file ──────────────────────────────────────────────────────────────
 
 test("a saved state is small and sanitized; junk costs settings, not a launch", () => {
-  const off = { tenantCompanion: false, companionsV: 0, swarm: false, cluster: true, reducedMotion: false, neurons: false, follow: true, swarmView: require("./fairy-control.cjs").normalizeView(null) };
+  const off = { tenantCompanion: false, companionsV: 0, swarm: false, cluster: true, reducedMotion: false, neurons: false, follow: true, swarmView: require("./fairy-control.cjs").normalizeView(null), drop: { mode: "pin", seconds: 10 }, dropBy: {} };
   // Hidden by default (owner 2026-11-13): no file, or a file that never said "visible".
   assert.deepEqual(core.sanitizeState(null), { visible: false, pinned: false, x: null, y: null, freeRoam: false, sounds: true, muteUntil: 0, ownerHid: false, ownerHidIds: [], ...off });
   assert.deepEqual(core.sanitizeState({ visible: false, x: "12.7", y: 400 }), { visible: false, pinned: false, x: 13, y: 400, freeRoam: false, sounds: true, muteUntil: 0, ownerHid: false, ownerHidIds: [], ...off });
@@ -309,6 +309,10 @@ test("a saved state is small and sanitized; junk costs settings, not a launch", 
   assert.equal(core.sanitizeState({ tenantCompanion: true, companionsV: 1 }).tenantCompanion, true);
   assert.equal(core.sanitizeState({ companionsV: "1" }).companionsV, 1);
   assert.equal(core.sanitizeState({ pinned: true }).pinned, true);
+  // A dropped fairy's behaviour is kept per fairy with a global default.
+  assert.deepEqual(core.sanitizeState(null).drop, { mode: "pin", seconds: 10 });
+  assert.deepEqual(core.sanitizeState({ drop: { mode: "timed", seconds: 15 } }).drop, { mode: "timed", seconds: 15 });
+  assert.deepEqual(core.sanitizeState({ dropBy: { slot7: { mode: "return" }, BAD: { mode: "timed", seconds: 99 }, "": {} } }).dropBy, { slot7: { mode: "return", seconds: 10 }, bad: { mode: "timed", seconds: 99 } });
 });
 
 test("fairy sounds default on and turn off only when explicitly false", () => {

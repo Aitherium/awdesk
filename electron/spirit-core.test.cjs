@@ -137,6 +137,17 @@ test("the dock sits on an avatar's shoulder and a window's top-right", () => {
   assert.match(core.attachLabel({ kind: "avatar", title: "Iris" }), /Iris/);
 });
 
+test("a dropped window docks to the NEAREST corner, and a remembered corner survives a move", () => {
+  const size = { width: 72, height: 72 };
+  const bounds = { x: 0, y: 0, width: 1000, height: 800 };
+  // Dropped bottom-left -> the bottom-left corner, not the old top-right.
+  const sw = core.dockPosition({ kind: "window", bounds }, size, { dropPoint: { x: 120, y: 760 } });
+  assert.deepEqual(sw, { x: 14, y: 800 - 72 - 14 });
+  // The window then moved/resized: the remembered corner moves with it.
+  const moved = core.dockPosition({ kind: "window", bounds: { x: 500, y: 100, width: 600, height: 400 } }, size, { corner: "sw" });
+  assert.deepEqual(moved, { x: 500 + 14, y: 100 + 400 - 72 - 14 });
+});
+
 // ── guardrails ─────────────────────────────────────────────────────────────
 
 test("credentials are refused before anything is opened", () => {

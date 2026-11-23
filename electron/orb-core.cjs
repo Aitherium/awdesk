@@ -521,6 +521,10 @@ function sanitizeState(raw) {
     ownerHid: src.ownerHid === true,
     ownerHidIds: Array.isArray(src.ownerHidIds)
       ? src.ownerHidIds.filter((v) => typeof v === "string" && v.length <= 200).slice(0, 500) : [],
+    // Where a dropped fairy stands and how long it stays (fairy-drop.cjs, owner
+    // 2026-11-23): one global default plus a per-fairy override keyed by agent.
+    drop: require("./fairy-drop.cjs").normalizeDrop(src.drop),
+    dropBy: require("./fairy-drop.cjs").normalizeDropMap(src.dropBy),
   };
 }
 

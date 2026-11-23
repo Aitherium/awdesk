@@ -423,9 +423,9 @@ function joinsCluster(point, center, radius = REJOIN_PX) {
  * The right-click control rows on an agent's fairy.
  *   chat, grow, mute, pin, hide, open session, and the swarm layout menu.
  */
-function controlItems({ label = "", agent = "", muted = false, pinned = false, hasSession = false, canGrow = true } = {}) {
+function controlItems({ label = "", agent = "", muted = false, pinned = false, hasSession = false, canGrow = true, drop = null } = {}) {
   const who = clip(label || agent || "this agent", 24);
-  return [
+  const items = [
     { id: "fc:chat", label: `Chat with ${who}`, hint: "Open a chat with this agent" },
     canGrow
       ? { id: "fc:grow", label: "Grow into an avatar", hint: "This fairy becomes a full avatar on the stage" }
@@ -438,6 +438,13 @@ function controlItems({ label = "", agent = "", muted = false, pinned = false, h
       : { id: "fc:session", label: "Open session", disabled: true, hint: "This agent has no terminal session" },
     { id: "sv:menu", label: "Swarm layout…", hint: "Gather, scatter, one orb, dock to the edge, filter by kind" },
   ];
+  // "When I drop it…" (fairy-drop.cjs, owner 2026-11-23): this fairy's own answer,
+  // separate from the desk-wide default in Settings.
+  if (drop) {
+    items.push({ sep: true });
+    items.push(...require("./fairy-drop.cjs").menuRows(drop));
+  }
+  return items;
 }
 
 const MODE_ROWS = Object.freeze([

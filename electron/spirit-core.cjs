@@ -27,6 +27,8 @@
  *   - which paths are refused as credentials, before anything is opened
  */
 
+const fairyDrop = require("./fairy-drop.cjs");
+
 // ── commands ────────────────────────────────────────────────────────────────
 
 /** What an agent may ask the spirit to do through `spirit.go`. */
@@ -294,15 +296,24 @@ function pickAttachTarget(point, candidates = []) {
   return usable[0];
 }
 
-/** The orb's spot while attached: the avatar's shoulder, or a window's corner. */
-function dockPosition(target, size, { gap = 14 } = {}) {
+/**
+ * The orb's spot while attached: the avatar's shoulder, or a window's corner.
+ *
+ * Owner, 2026-11-23: a drop must dock to the corner NEAREST where it was dropped,
+ * not always the top-right. `dropPoint` names the drop; `corner` is remembered
+ * from that first drop so a window that later moves or resizes keeps the same
+ * corner instead of flipping to whichever is nearest now. With neither, the old
+ * top-right default stands, so explicit attaches behave exactly as before.
+ */
+function dockPosition(target, size, { gap = 14, dropPoint = null, corner = null } = {}) {
   const b = normBounds(target && target.bounds) || { x: 0, y: 0, width: 0, height: 0 };
   const w = num(size && size.width, 72);
   if (target && target.kind === "avatar") {
     // Shoulder: against the right edge, high enough to read as "at the shoulder".
     return { x: Math.round(b.x + b.width - w * 0.55), y: Math.round(b.y + b.height * 0.18) };
   }
-  return { x: Math.round(b.x + b.width - w - gap), y: Math.round(b.y + gap) };
+  const dock = fairyDrop.dockFor(b, size, { dropPoint, corner, gap });
+  return { x: dock.x, y: dock.y };
 }
 
 /**
