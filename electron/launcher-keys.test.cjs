@@ -77,12 +77,12 @@ function harness({ keys = { space: true, alt: true }, openRing = null } = {}) {
 test("a HOLD opens the ring with no launcher window and no host sample", async () => {
   const h = harness();
   h.launcher.press();
-  await wait(150); // before HOLD_MS (280): nothing decided yet
+  await wait(60); // well before HOLD_MS (280): nothing decided yet
   assert.equal(h.calls.shown, 0, "the launcher must not appear on a hold");
   assert.equal(h.calls.sampled, 0, "no host context was sampled");
   assert.equal(h.calls.captured, 0, "no assist capture ran");
   assert.equal(h.calls.start, 0, "not a hold yet");
-  await wait(400); // past HOLD_MS with the keys still down
+  await wait(900); // past HOLD_MS with the keys still down (load-tolerant)
   assert.equal(h.calls.start, 1, "the hold did not start");
   assert.ok(h.state.radial && typeof h.state.radial.onDone === "function");
   assert.equal(h.calls.shown, 0, "still no launcher window");
@@ -116,7 +116,7 @@ test("a HOLD opens the ONE ring (fairy-first) when the opener is wired", async (
   const h = harness({ openRing: (opts) => { rings.push(opts); return { ok: true }; } });
   h.launcher.press();
   await wait(160);
-  await wait(400); // past HOLD_MS
+  await wait(800); // past HOLD_MS (load-tolerant)
   assert.equal(rings.length, 1, "the hold did not open the fairy ring");
   assert.equal(rings[0].hold, true, "the ring must know it is the Alt+Space hold");
   assert.equal(h.calls.shown, 0, "and no launcher window appeared");

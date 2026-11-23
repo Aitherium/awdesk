@@ -151,6 +151,10 @@
         <span class="note" style="margin:0">5, 10, 15 or any seconds</span>
       </div>
       <p class="note">This is the default for every fairy. Each fairy can have its own answer from its right-click menu, under "Dropped:".</p>
+      <div class="row">
+        <label style="min-width:0"><input type="checkbox" id="desktopRing"> Right-click the empty desktop opens the ring</label>
+      </div>
+      <p class="note">Only the desktop background, with no icon under the cursor: apps, files and desktop icons keep their own right-click menu, and Shift+right-click always shows Windows' menu. Turning this off stops the native listener entirely.</p>
     </section>
 
     <section>
@@ -218,6 +222,7 @@
     renderNeurons(res.neurons);
     renderDisplay(res.display);
     renderFairy(res.fairy);
+    renderDesktopRing(res.desktopRing);
   }
 
   // Desktop overlay (overlay-policy.cjs): three switches, the edge and the dwell.
@@ -288,6 +293,14 @@
     else say("could not save: " + (result && result.error || "unknown"), "err");
   }
   dropModeSel.addEventListener("change", () => saveFairy({ mode: dropModeSel.value }));
+  // Desktop right-click ring (native hook, on by default).
+  const desktopRingEl = document.getElementById("desktopRing");
+  function renderDesktopRing(on) { desktopRingEl.checked = on !== false; }
+  desktopRingEl.addEventListener("change", async () => {
+    const result = await bridge.setDesktopRing(desktopRingEl.checked);
+    if (result && result.ok) { renderDesktopRing(result.desktopRing); say(result.desktopRing ? "desktop right-click ring on" : "desktop right-click ring off", "ok"); }
+    else say("could not save: " + (result && result.error || "unknown"), "err");
+  });
   dropSecondsEl.addEventListener("change", () => {
     const secs = Math.round(Number(dropSecondsEl.value));
     if (!Number.isInteger(secs) || secs < 3 || secs > 600) { say("seconds must be 3 to 600", "err"); return; }

@@ -67,7 +67,6 @@ const foregroundProbe = require("./foreground-probe.cjs");
 const fairyFlight = require("./fairy-flight.cjs");
 const followFocus = require("./follow-focus.cjs");
 const fairyDrop = require("./fairy-drop.cjs");
-const desktopRight = require("./desktop-right.cjs");
 
 const ORB_SIZE = Object.freeze({ width: 72, height: 72 });
 const BUBBLE_SIZE = Object.freeze({ width: 392, height: 480 });
@@ -147,18 +146,14 @@ let manualPlacement = false;
 let resolvingDrop = false;
 let pinDocks = new Map();
 let pinDockTimer = null;
-/** The ONE ring (owner 2026-11-23): the fairy flies to the anchor, the ring opens
- *  around it, and it flies back on release/cancel. The desktop watch is a low-rate
- *  physical right-button sample; `ringOpen` freezes follow/orbit/hover meanwhile. */
+/** The ONE ring (owner 2026-11-23): the fairy flies to the centre, the ring opens
+ *  around it, and it flies back on release/cancel. The desktop right-click arrives
+ *  from the native hook (desktop-right-hook.cjs); `ringOpen` freezes follow/orbit/
+ *  hover meanwhile. */
 let ringOpen = false;
 let ringReturn = null;
 let ringOpener = null;
 let extraRunner = null;
-let desktopWatch = null;
-let desktopWasDown = false;
-let lastDesktopRingAt = 0;
-const DESKTOP_WATCH_MS = 120;
-const RING_HOLD_MS = 1200;
 let fgContent = null;
 let fgProbeImpl = null;
 /** Follow-the-focused-window (plan A4): the descriptor the probe last reported, when it
@@ -1800,7 +1795,10 @@ function veilPayload() {
   const tether = attach && !attach.minimised && !ringOpen
     ? (() => {
       const anchor = spiritCore.anchorFor(attach);
-      return anchor ? [local(anchor), local(orbCenter())] : null;
+      // A stale attach can point off every display; its tether then draws a dashed
+      // line across unrelated windows (owner screenshots 2026-11-23). Only draw a
+      // tether whose anchor is actually on a screen.
+      return anchor && spiritCore.containsPoint(displayUnion(), anchor, 40) ? [local(anchor), local(orbCenter())] : null;
     })()
     : null;
   return {
@@ -1957,7 +1955,7 @@ function drawVeil() {
   if (alive(orbWindow)) points.push(orbCenter());
   if (attach && !attach.minimised && !ringOpen) {
     const anchor = spiritCore.anchorFor(attach);
-    if (anchor) points.push(anchor);
+    if (anchor && spiritCore.containsPoint(displayUnion(), anchor, 40)) points.push(anchor);
   }
   for (const f of toolFlightLegs()) points.push(f.from, f.to);
   if (!points.length) return;
@@ -2779,7 +2777,9 @@ async function openRing({ at = null, hold = false, onDone = null, page = 0 } = {
   }
   if (!point) return { ok: false, reason: "no cursor" };
   const { centre } = displayAt(point);
-  const destination = hold ? centre : point;
+  // Owner's design (2026-11-23): the fairy flies to the CENTRE of the screen under
+  // the cursor for the hold AND the desktop right-click; `point` only picks the display.
+  const destination = centre;
   ringReturn = ringHome();
   ringOpen = true;
   clearDropReturn();
@@ -2834,47 +2834,6 @@ function runRingExtra(id) {
   if (what === "orb.drop.return") return setDropBehavior("orb", { mode: "return" });
   if (typeof extraRunner === "function") return extraRunner(what);
   return { ok: false, error: `unknown ring row ${what}` };
-}
-
-/**
- * Watch the empty desktop at a low rate: a fresh right-press over Progman/WorkerW
- * (class only, Shift up) dismisses Windows' menu and opens the ONE ring at the
- * click. Apps, files and icons are untouched, and Shift+right-click stays native.
- * Off until main starts it; near-zero cost because it reads one small sample.
- */
-function startDesktopWatch() {
-  if (desktopWatch) return false;
-  desktopWatch = setInterval(() => {
-    if (quitting || ringOpen || dragging) return;
-    if (!probe) probe = spiritProbe.createWindowProbe();
-    Promise.resolve()
-      .then(() => probe.desktopRight())
-      .catch(() => null)
-      .then((sample) => {
-        if (quitting || ringOpen) return;
-        const wasDown = desktopWasDown;
-        desktopWasDown = Boolean(sample && sample.down);
-        if (!desktopRight.shouldOpen({ ...(sample || {}), wasDown })) return;
-        if (Date.now() - lastDesktopRingAt < RING_HOLD_MS) return;
-        lastDesktopRingAt = Date.now();
-        const at = { x: sample.x, y: sample.y };
-        // Windows opens its own desktop menu on the press; give it a beat, dismiss it,
-        // then put the ONE ring at the same point. Shift+right-click never reaches here.
-        const timer = setTimeout(() => {
-          Promise.resolve().then(() => probe.escape()).catch(() => null).then(() => {
-            void openRing({ at, hold: false });
-          });
-        }, 60);
-        if (timer.unref) timer.unref();
-      });
-  }, DESKTOP_WATCH_MS);
-  if (desktopWatch.unref) desktopWatch.unref();
-  return true;
-}
-
-function stopDesktopWatch() {
-  if (desktopWatch) { clearInterval(desktopWatch); desktopWatch = null; }
-  desktopWasDown = false;
 }
 
 
@@ -4890,6 +4849,17 @@ function setDropDefault(patch) {
   return { ok: true, drop: next };
 }
 
+/** The desktop right-click ring switch (owner 2026-11-23), persisted in orb.json. */
+function desktopRingOn() {
+  return state.desktopRing !== false;
+}
+
+function setDesktopRing(on) {
+  state = { ...state, desktopRing: on !== false };
+  saveState();
+  return { ok: true, desktopRing: state.desktopRing };
+}
+
 /** A fairy's menu: set ONE fairy's answer ("orb" for the main fairy). */
 function setDropBehavior(agent, patch) {
   const current = fairyDrop.behaviorFor(state, agent);
@@ -6010,7 +5980,6 @@ function stopOrb() {
   clearDropReturn();
   if (pinDockTimer) { clearInterval(pinDockTimer); pinDockTimer = null; }
   pinDocks = new Map();
-  stopDesktopWatch();
   ringOpen = false;
   ringReturn = null;
   if (seekTimer) { clearInterval(seekTimer); seekTimer = null; }
@@ -6173,6 +6142,7 @@ module.exports = {
   // Drop behaviour (fairy-drop.cjs, owner 2026-11-23): the Settings default, one
   // fairy's own answer, and where the two live.
   setDropDefault, setDropBehavior, dropSettings, dropBehaviorFor,
+  desktopRingOn, setDesktopRing,
   __feedForeground: (fg) => { onForeground(fg); },
   __setFollowChangedAt: (t) => { followChangedAt = Number(t) || 0; },
   __followSeen: () => followSeen,
@@ -6183,8 +6153,8 @@ module.exports = {
   __setProbe: (p) => { probe = p; },
   // Alt+Space press detection without stealing the foreground (owner 2026-11-23).
   keyState, warmProbe,
-  // The ONE ring (owner 2026-11-23): fly to the anchor, open the ring, fly back.
-  setRingOpener, setExtraRunner, openRing, runRingExtra, startDesktopWatch, stopDesktopWatch,
+  // The ONE ring (owner 2026-11-23): fly to the centre, open the ring, fly back.
+  setRingOpener, setExtraRunner, openRing, runRingExtra,
   __ringOpen: () => ringOpen,
   setSwarmAnchor, setSwarmVisible, swarmVisible: () => state.swarm === true,
   setDisplayModeState, displayModeState, displayModeInForce, displayPick,
@@ -6245,7 +6215,6 @@ module.exports = {
     resolvingDrop = false;
     pinDocks = new Map();
     if (pinDockTimer) { clearInterval(pinDockTimer); pinDockTimer = null; }
-    stopDesktopWatch();
     ringOpen = false;
     ringReturn = null;
     fgContent = null;

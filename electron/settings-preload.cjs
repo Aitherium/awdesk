@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("settingsBridge", {
   setDisplay: (mode) => ipcRenderer.invoke("desk:settings-set-display", String(mode || "")),
   // Where a dropped fairy stands and how long it stays (fairy-drop.cjs, owner 2026-11-23).
   setFairy: (patch) => ipcRenderer.invoke("desk:settings-set-fairy", patch),
+  // The native empty-desktop right-click ring (owner 2026-11-23).
+  setDesktopRing: (on) => ipcRenderer.invoke("desk:settings-set-desktop-ring", on === true),
   probeAccel: (accel, excludeId) => ipcRenderer.invoke("desk:settings-probe-accel", accel, excludeId),
   setHotkey: (id, accel) => ipcRenderer.invoke("desk:settings-set-hotkey", id, accel),
   clearHotkey: (id) => ipcRenderer.invoke("desk:settings-set-hotkey", id, ""),

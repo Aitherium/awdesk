@@ -525,6 +525,9 @@ function sanitizeState(raw) {
     // 2026-11-23): one global default plus a per-fairy override keyed by agent.
     drop: require("./fairy-drop.cjs").normalizeDrop(src.drop),
     dropBy: require("./fairy-drop.cjs").normalizeDropMap(src.dropBy),
+    // Right-click on the EMPTY desktop opens the ring (owner 2026-11-23): ON unless
+    // explicitly turned off in Settings. The native hook only passes desktop clicks.
+    desktopRing: src.desktopRing !== false,
   };
 }
 
