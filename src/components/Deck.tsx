@@ -6,6 +6,7 @@ import { CardUi } from './CardUi';
 import { AtlasSection } from './AtlasSection';
 import { FairyMark } from './FairyMark';
 import { drawableCardUi } from '../deck/card-ui-tree';
+import { fairySummary } from '../deck/fairy-summary';
 import { DeckLinks, canOpenUrl, hasSessionBridge, openDeskUrl, type DeckLinkHandlers } from '../deck/session-context';
 import { endedSessionIds, sessionPill, sessionRowTitle } from '../deck/session-text';
 import { useDeckState } from '../deck/use-deck-state';
@@ -1645,6 +1646,22 @@ export function DecisionRow({
   // The card's generated UI (A2UI v0.9 subset), only when main found it current
   // and valid and it re-checks here; otherwise the buttons below, as always.
   const uiTree = isCredential ? null : drawableCardUi(card);
+  // Owner 2026-11-23: the fairy says what this is and what each answer does, in
+  // one sentence built from the card's own facts, just above the buttons.
+  const fairy = isCredential ? '' : fairySummary(card);
+  const fairyBlock = fairy ? (
+    <div className="deck-fairy">
+      <span className="deck-fairy-glyph" aria-hidden="true">&#10022;</span>
+      <span className="deck-fairy-text">{fairy}</span>
+      <button
+        className="deck-btn deck-btn-xs deck-fairy-read"
+        title="Aither reads this summary out loud"
+        onClick={() => void bridgeDeck()?.action('speak', fairy)}
+      >
+        Read it to me
+      </button>
+    </div>
+  ) : null;
   const answers = isCredential ? (
     <CredentialRow card={card} />
   ) : uiTree ? (
@@ -1721,6 +1738,7 @@ export function DecisionRow({
         <>
           <SessionPanel card={card} nowMs={nowMs} />
           {where ? <p className="deck-card-where" title={where}>{where}</p> : null}
+          {fairyBlock}
           {answers}
           {/* The raiser's own blob, kept one click away: the panel above replaces
               it, but nothing the card said is ever dropped. */}
@@ -1755,6 +1773,7 @@ export function DecisionRow({
               <Markdown text={detail} className="deck-card-detail" />
             </details>
           ) : null}
+          {fairyBlock}
           {answers}
           <SteerBox card={card} />
         </>

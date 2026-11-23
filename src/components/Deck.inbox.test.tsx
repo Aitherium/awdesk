@@ -121,6 +121,23 @@ describe('DecisionRow', () => {
     expect(html).not.toContain('class="deck-card-summary');
   });
 
+  it('the fairy summary sits ABOVE the buttons and can be read aloud', () => {
+    setBridge(true);
+    const html = renderToStaticMarkup(
+      <DecisionRow card={card({ options: [
+        { key: 'look', label: 'I am looking now', recommended: true, consequence: 'Nothing else changes.' },
+        { key: 'later', label: 'Later', recommended: false },
+      ] })} nowMs={NOW} onAnswer={() => {}} />,
+    );
+    const fairyAt = html.indexOf('deck-fairy');
+    const buttonAt = html.indexOf('1. I am looking now');
+    expect(fairyAt).toBeGreaterThan(-1);
+    expect(buttonAt).toBeGreaterThan(fairyAt);
+    expect(html).toContain('AitherOS-Fresh — Desktop canvas layout.');
+    expect(html).toContain('I am looking now — Nothing else changes');
+    expect(html).toContain('Read it to me');
+  });
+
   it('a session card on an OLD main (no deck.session) renders the plain card', () => {
     setBridge(false);
     const html = renderToStaticMarkup(

@@ -8689,6 +8689,14 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
         return true;
       }
       switch (name) {
+        // "Read it to me" on a card's fairy summary: the deck names the exact
+        // sentence it shows; main speaks it through the same voice every line uses.
+        case "speak": {
+          const line = typeof arg === "string" ? arg.trim().slice(0, 1200) : "";
+          if (!line) return false;
+          void speakAloud(line, undefined, undefined, "slot0", "desk:card-read");
+          return true;
+        }
         // The Inbox's "See in Space" and a card row's "in space": arg is the deep link
         // the deck built (src/deck/space-links.ts); openSpaceLink re-builds it or refuses.
         case "space":

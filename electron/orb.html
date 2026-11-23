@@ -416,7 +416,8 @@
 
   /* ── the whisper (376 x 188 window): the card the fairy carries ─────── */
   body.nudge { padding: 10px; }
-  #nudge { position: relative; width: 100%; overflow: hidden; border-radius: 14px;
+  #nudge { position: relative; width: 100%; max-height: calc(100vh - 20px); overflow-y: auto;
+    overflow-x: hidden; border-radius: 14px;
     background: rgba(14,18,27,0.95); border: 1px solid rgba(244,250,255,0.28);
     box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 16px rgba(225,240,255,0.16);
     padding: 9px 12px 9px; opacity: 0; transform: translateX(-12px) scale(0.98);
@@ -463,11 +464,20 @@
   #n-x { border: 0; background: transparent; color: var(--fg-muted, #8b96ab); cursor: pointer; font-size: 12px;
     line-height: 1; padding: 3px 5px; border-radius: 6px; flex: none; }
   #n-x:hover { background: rgba(255,255,255,0.07); color: var(--fg, #e6edf3); }
+  /* Owner 2026-11-23: never clip the title. The card wraps and the whisper
+     scrolls inside its window when the whole card is taller than the screen. */
   #n-title { margin-top: 4px; font-weight: 600; font-size: 13.5px; line-height: 1.3; color: var(--fg, #e6edf3);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    white-space: normal; overflow-wrap: anywhere; }
   #n-old { margin-top: 3px; font-size: 11.5px; font-weight: 600; color: #ffd28a; }
   #n-why { margin-top: 3px; font-size: 11.5px; line-height: 1.35; color: #c4cfe2;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  /* The fairy's ONE plain sentence, above the buttons: what this is and what each
+     answer does. It streams in; the buttons are live from the first frame. */
+  #n-fairy { display: none; margin-top: 7px; padding: 7px 9px; border-radius: 9px;
+    background: rgba(244,250,255,0.06); border: 1px solid rgba(244,250,255,0.14);
+    font-size: 12px; line-height: 1.45; color: #dbe6f5; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #n-fairy.on { display: block; }
+  #n-fairy .n-fairy-glyph { margin-right: 5px; color: var(--tint, #f4faff); }
   /* What the card says (owner 2026-11-08: "give me more fucking info"). */
   #n-sum { margin-top: 6px; font-size: 12px; line-height: 1.4; color: var(--fg, #e6edf3);
     white-space: pre-line; overflow-wrap: anywhere; }
@@ -1780,8 +1790,9 @@
       + '<span id="n-more" title="See everything that is waiting"></span>'
       + '<button id="n-x" title="Later: I will bring it back in an hour">&#10005;</button></div>'
       + '<div id="n-title"></div><div id="n-old"></div><div id="n-need" title="Open the card"></div><div id="n-why"></div>'
+      + '<div id="n-fairy"><span class="n-fairy-glyph">&#10022;</span><span id="n-fairy-text"></span></div>'
       + '<div id="n-ui"></div><div id="n-acts"></div>'
-      + '<div id="n-voice"><button data-act="read" title="Aither reads the card out loud">Read it to me</button>'
+      + '<div id="n-voice"><button data-act="read" title="Aither reads this summary out loud">Read it to me</button>'
       + '<button data-act="talk" title="Say an option, or what to do instead">Answer by voice</button></div>'
       + '<div id="n-extra"><div id="n-sum"></div><ul id="n-facts"></ul><div id="n-alt"></div>'
       + '<div id="n-foot">'
@@ -1797,6 +1808,28 @@
     const actsEl = document.getElementById("n-acts");
     const uiEl = document.getElementById("n-ui");
     const flashEl = document.getElementById("n-flash");
+    const fairyEl = document.getElementById("n-fairy");
+    const fairyTextEl = document.getElementById("n-fairy-text");
+    /** The fairy's one sentence streams in; the buttons below are live meanwhile. */
+    let fairyStream = 0;
+    function streamFairy(text) {
+      if (fairyStream) { window.clearInterval(fairyStream); fairyStream = 0; }
+      const value = String(text || "").trim();
+      fairyEl.classList.toggle("on", Boolean(value));
+      if (!value) { fairyTextEl.textContent = ""; return; }
+      // Set the FULL text first so this render's size call measures the final
+      // card, then reveal it in small chunks (no layout jump, no clipped text).
+      fairyTextEl.textContent = value;
+      window.setTimeout(() => {
+        let i = 0;
+        fairyTextEl.textContent = "";
+        fairyStream = window.setInterval(() => {
+          i = Math.min(value.length, i + 3);
+          fairyTextEl.textContent = value.slice(0, i);
+          if (i >= value.length) { window.clearInterval(fairyStream); fairyStream = 0; }
+        }, 22);
+      }, 40);
+    }
     let inside = false;
     function setInside(next) {
       if (next === inside) return;
@@ -1885,6 +1918,7 @@
       if (!v) {
         box.classList.remove("on", "done");
         setInside(false);
+        streamFairy("");
         if (unmount) window.clearTimeout(unmount);
         unmount = window.setTimeout(finishFade, 320);
         return;
@@ -1906,6 +1940,7 @@
       oldEl.style.display = v.old ? "" : "none";
       titleEl.textContent = v.title || "";
       titleEl.title = v.title || "";
+      streamFairy(v.fairy);
       // ONE line of what is needed, linked to the card.
       needEl.textContent = v.why || `Card ${v.id} needs you`;
       whyEl.textContent = "";
