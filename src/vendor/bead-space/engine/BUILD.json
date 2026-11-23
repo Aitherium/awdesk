@@ -1,6 +1,6 @@
 {
   "built_by": "vendor_bead_space.py via the package's `npm run build:browser`",
-  "bundle_sha256": "0ce64bb3c60975add690fa48a9b6f69256556d307496e5c6aead7a25574c8a1b",
+  "bundle_sha256": "82edffbabdb86098ab582d2fa91db62dbe3060571b6d007800700495ecec3859",
   "inputs": {
     "package-lock.json": "ee94b90f9c78780ce6272d305cb296516dfceb7fb718b1c9e940f12765588500",
     "package.json": "3a324b063804ac4a41745eb329016e4c922ccf8f65f11ffbdbc3fb31b6b06c78",

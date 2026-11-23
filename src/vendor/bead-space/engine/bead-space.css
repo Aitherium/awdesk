@@ -415,7 +415,7 @@
 
 /* Liveness classes a host sets via nodeClass. */
 .bead-space .bs-node.bs-busy {
-  filter: drop-shadow(0 0 10px var(--bs-busy-glow, rgb(94 201 204 / 55%)));
+  filter: drop-shadow(0 0 10px var(--bs-busy-glow, rgb(176 218 255 / 55%)));
 }
 .bead-space .bs-node.bs-cold {
   opacity: 0.38;
@@ -437,11 +437,11 @@
   }
 }
 .bead-space .bs-node.bs-galaxy .bs-planet-core {
-  fill: var(--bs-core-tint, #5ec9cc);
+  fill: var(--bs-core-tint, #B0DAFF);
   fill-opacity: 0.22;
 }
 .bead-space .bs-node.bs-busy {
-  --bs-busy-glow: var(--bs-core-tint, rgb(94 201 204 / 55%));
+  --bs-busy-glow: var(--bs-core-tint, rgb(176 218 255 / 55%));
 }
 /* A galaxy / sun is a smooth glowing disc, not a meteor sprite. */
 .bead-space .bs-node.bs-galaxy .bs-planet-sprite {
