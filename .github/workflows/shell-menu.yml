@@ -1,0 +1,269 @@
+# Moved here from the private AitherOS monorepo 2026-11-23: this repo is public, so
+# windows-latest minutes are free, and native/shell-menu here is the live source
+# (the monorepo built a stale .DEPLOYMENT/awdesk copy on paid hosted minutes).
+name: Build Aither Shell Menu (Win11)
+
+# Builds the native IExplorerCommand DLL, packs the sparse MSIX identity
+# package, signs it, and uploads an installable artifact.
+#
+# No signing secret exists in this repository today, so the default path
+# generates a self-signed certificate in CI and publishes its public .cer next
+# to the package. To use a stable production certificate, add BOTH repository
+# secrets (Settings -> Secrets and variables -> Actions):
+#   AITHER_SHELL_MENU_PFX_BASE64    base64 of a .pfx whose Subject matches
+#                                   Identity/@Publisher in AppxManifest.xml
+#   AITHER_SHELL_MENU_PFX_PASSWORD  that .pfx's password
+# Never commit a .pfx or its password.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'native/shell-menu/**'
+      - '.github/workflows/shell-menu.yml'
+  pull_request:
+    paths:
+      - 'native/shell-menu/**'
+      - '.github/workflows/shell-menu.yml'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up the MSVC x64 and Windows SDK environment
+        run: |
+          # No third-party action: this repository's Actions policy allows only
+          # `actions/*` and verified creators. vcvars64.bat ships with every
+          # Windows runner image and sets INCLUDE/LIB/PATH for cl/rc/link and
+          # the Windows SDK tools (dumpbin, makeappx, signtool).
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "vswhere.exe not found; this runner has no Visual Studio install"
+          }
+          $vsPath = @(& $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath) | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($vsPath)) {
+            throw "No Visual Studio install with the C++ x64 toolset was found"
+          }
+          $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found at $vcvars" }
+          Write-Host "Using $vcvars"
+
+          # `&& set` echoes the environment vcvars64 established. Hand it to
+          # later steps through GITHUB_ENV / GITHUB_PATH (PATH only through the
+          # latter; GITHUB_ENV reserves some names).
+          $vcEnv = @(cmd /c "`"$vcvars`" >nul 2>&1 && set")
+          if ($LASTEXITCODE -ne 0) { throw "vcvars64.bat failed ($LASTEXITCODE)" }
+          foreach ($line in ($vcEnv -split "\r?\n")) {
+            $equals = $line.IndexOf('=')
+            if ($equals -le 0) { continue }
+            $name = $line.Substring(0, $equals)
+            $value = $line.Substring($equals + 1)
+            if ($name -ieq 'PATH') {
+              foreach ($dir in ($value -split ';')) {
+                if ($dir) {
+                  Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append -InputObject $dir
+                }
+              }
+            } elseif ($name -notmatch '^(GITHUB_|RUNNER_|NODE_OPTIONS$)') {
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append -InputObject "$name=$value"
+            }
+          }
+
+      - name: Verify the build tools are on PATH
+        run: |
+          foreach ($tool in 'cl.exe', 'rc.exe', 'link.exe', 'dumpbin.exe', 'makeappx.exe', 'signtool.exe') {
+            $found = Get-Command $tool -ErrorAction SilentlyContinue
+            if (-not $found) { throw "$tool not found on PATH after vcvars64" }
+            "$tool -> $($found.Source)"
+          }
+
+      - name: Compile AitherShellMenu.dll
+        working-directory: native/shell-menu
+        run: |
+          Push-Location src
+          try {
+            rc.exe /nologo /fo aither.res aither.rc
+            if ($LASTEXITCODE -ne 0) { throw "rc.exe failed ($LASTEXITCODE)" }
+          } finally { Pop-Location }
+
+          cl.exe /nologo /std:c++17 /O2 /MT /EHsc /DUNICODE /D_UNICODE /LD `
+            src\ShellMenu.cpp src\aither.res `
+            /link /OUT:AitherShellMenu.dll /MACHINE:X64 /SUBSYSTEM:WINDOWS /DEF:src\exports.def
+          if ($LASTEXITCODE -ne 0) { throw "cl.exe failed ($LASTEXITCODE)" }
+          if (-not (Test-Path AitherShellMenu.dll)) { throw "AitherShellMenu.dll was not produced" }
+          Get-Item AitherShellMenu.dll | Format-List Name, Length
+
+      - name: Compile the per-user Desk.exe launcher stub
+        working-directory: native/shell-menu
+        run: |
+          # The sparse package manifest names Desk.exe; when awdesk runs
+          # unpackaged the ExternalLocation is a per-user folder with no such
+          # file, so the install script copies this stub there.
+          cl.exe /nologo /std:c++17 /O2 /MT /EHsc /DUNICODE /D_UNICODE `
+            src\DeskStub.cpp `
+            /link /OUT:Desk.exe /MACHINE:X64 /SUBSYSTEM:WINDOWS
+          if ($LASTEXITCODE -ne 0) { throw "cl.exe failed for Desk.exe ($LASTEXITCODE)" }
+          if (-not (Test-Path Desk.exe)) { throw "Desk.exe stub was not produced" }
+          Get-Item Desk.exe | Format-List Name, Length
+
+      - name: Verify the DLL is x64 and statically linked
+        working-directory: native/shell-menu
+        run: |
+          $headers = dumpbin.exe /headers AitherShellMenu.dll | Out-String
+          if ($headers -notmatch 'machine \(x64\)') { throw "DLL is not x64" }
+          $dependents = dumpbin.exe /dependents AitherShellMenu.dll | Out-String
+          "--- dependents ---"
+          $dependents
+          foreach ($unwanted in 'VCRUNTIME140.dll', 'MSVCP140.dll', 'api-ms-win-crt') {
+            if ($dependents -match [regex]::Escape($unwanted)) {
+              throw "DLL depends on $unwanted; the /MT static runtime link did not take"
+            }
+          }
+
+          $stubHeaders = dumpbin.exe /headers Desk.exe | Out-String
+          if ($stubHeaders -notmatch 'machine \(x64\)') { throw "Desk.exe stub is not x64" }
+          $stubDependents = dumpbin.exe /dependents Desk.exe | Out-String
+          foreach ($unwanted in 'VCRUNTIME140.dll', 'MSVCP140.dll', 'api-ms-win-crt') {
+            if ($stubDependents -match [regex]::Escape($unwanted)) {
+              throw "Desk.exe stub depends on $unwanted; the /MT link did not take"
+            }
+          }
+
+      - name: Stage and pack the sparse MSIX
+        working-directory: native/shell-menu
+        run: |
+          $stage = Join-Path $PWD 'stage\pkg'
+          $out = Join-Path $PWD 'out'
+          New-Item -ItemType Directory -Path (Join-Path $stage 'Assets') -Force | Out-Null
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          Copy-Item AppxManifest.xml (Join-Path $stage 'AppxManifest.xml') -Force
+
+          Add-Type -AssemblyName System.Drawing
+          $iconPng = Join-Path $env:GITHUB_WORKSPACE 'build\icon.png'
+          if (-not (Test-Path $iconPng)) { throw "Product icon not found at $iconPng" }
+          $source = [System.Drawing.Image]::FromFile($iconPng)
+          try {
+            $assets = @(
+              @{ Size = 44;  Name = 'Square44x44Logo.png' },
+              @{ Size = 50;  Name = 'StoreLogo.png' },
+              @{ Size = 150; Name = 'Square150x150Logo.png' }
+            )
+            foreach ($asset in $assets) {
+              $size = [int]$asset.Size
+              $bitmap = New-Object System.Drawing.Bitmap $size, $size
+              try {
+                $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+                try {
+                  $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                  $graphics.DrawImage($source, 0, 0, $size, $size)
+                } finally { $graphics.Dispose() }
+                $bitmap.Save((Join-Path $stage ('Assets\' + $asset.Name)),
+                  [System.Drawing.Imaging.ImageFormat]::Png)
+              } finally { $bitmap.Dispose() }
+            }
+          } finally { $source.Dispose() }
+
+          # /nv skips validation of manifest file paths: the COM DLL and Desk.exe
+          # live in the external location, not inside the .msix.
+          makeappx.exe pack /o /nv /d $stage /p (Join-Path $out 'AitherShellMenu.msix')
+          if ($LASTEXITCODE -ne 0) { throw "makeappx failed ($LASTEXITCODE)" }
+          Get-Item (Join-Path $out 'AitherShellMenu.msix') | Format-List Name, Length
+
+      - name: Sign the package
+        working-directory: native/shell-menu
+        env:
+          # ws-optional: unset = the step signs with a CI self-signed cert (see header)
+          SHELL_MENU_PFX_BASE64: ${{ secrets.AITHER_SHELL_MENU_PFX_BASE64 }}
+          # ws-optional: read only when AITHER_SHELL_MENU_PFX_BASE64 is set
+          SHELL_MENU_PFX_PASSWORD: ${{ secrets.AITHER_SHELL_MENU_PFX_PASSWORD }}
+        run: |
+          $out = Join-Path $PWD 'out'
+          $msix = Join-Path $out 'AitherShellMenu.msix'
+          $pfx = Join-Path $PWD 'sign.pfx'
+          $useSecret = -not [string]::IsNullOrWhiteSpace($env:SHELL_MENU_PFX_BASE64)
+
+          if ($useSecret) {
+            if ([string]::IsNullOrWhiteSpace($env:SHELL_MENU_PFX_PASSWORD)) {
+              throw "AITHER_SHELL_MENU_PFX_BASE64 is set but AITHER_SHELL_MENU_PFX_PASSWORD is not"
+            }
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SHELL_MENU_PFX_BASE64))
+            $password = $env:SHELL_MENU_PFX_PASSWORD
+            # Constructing X509Certificate2 with the password avoids
+            # Get-PfxCertificate's interactive password prompt.
+            $signingCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+              $pfx, $password,
+              [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
+            Write-Host "Using repository signing certificate: $($signingCert.Subject)"
+          } else {
+            # Deterministic subject: AppxManifest.xml Identity/@Publisher must match it.
+            $password = [Convert]::ToBase64String(
+              (1..24 | ForEach-Object { [byte](Get-Random -Minimum 0 -Maximum 256) }))
+            $signingCert = New-SelfSignedCertificate `
+              -Type Custom `
+              -Subject 'CN=Aither Shell Menu' `
+              -KeyUsage DigitalSignature `
+              -KeyExportPolicy Exportable `
+              -KeyAlgorithm RSA `
+              -KeyLength 2048 `
+              -HashAlgorithm SHA256 `
+              -NotAfter (Get-Date).AddYears(5) `
+              -FriendlyName 'Aither Shell Menu (CI self-signed)' `
+              -CertStoreLocation 'Cert:\CurrentUser\My' `
+              -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}')
+            $secure = ConvertTo-SecureString -String $password -Force -AsPlainText
+            Export-PfxCertificate -Cert $signingCert -FilePath $pfx -Password $secure | Out-Null
+            Write-Host "Generated self-signed certificate: $($signingCert.Subject)"
+          }
+
+          Export-Certificate -Cert $signingCert -FilePath (Join-Path $out 'AitherShellMenu.cer') | Out-Null
+
+          signtool.exe sign /fd SHA256 /f $pfx /p $password $msix
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)" }
+
+          # Publisher in the manifest must equal the certificate Subject or
+          # Add-AppxPackage rejects the package at registration time.
+          [xml]$manifest = Get-Content (Join-Path $PWD 'AppxManifest.xml')
+          $publisher = $manifest.Package.Identity.Publisher
+          $signature = Get-AuthenticodeSignature $msix
+          if (-not $signature.SignerCertificate) { throw "Package has no signer certificate" }
+          if ($signature.SignerCertificate.Subject -ne $publisher) {
+            throw ("Publisher mismatch: manifest has '$publisher' but the signer is " +
+                   "'$($signature.SignerCertificate.Subject)'. Update Identity/@Publisher " +
+                   "in AppxManifest.xml (or use a certificate with the matching subject).")
+          }
+          Write-Host "Signed and verified: $($signature.SignerCertificate.Subject)"
+
+      - name: Assemble the installable artifact
+        working-directory: native/shell-menu
+        run: |
+          $out = Join-Path $PWD 'out'
+          Copy-Item AitherShellMenu.dll $out -Force
+          # The external-location Desk.exe for a per-user (unpackaged) desk.
+          Copy-Item Desk.exe $out -Force
+          Copy-Item Install-AitherShellMenu.ps1 $out -Force
+          Copy-Item README.md $out -Force
+          Get-ChildItem $out -File | Where-Object Name -ne 'SHA256SUMS.txt' | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content (Join-Path $out 'SHA256SUMS.txt') -Encoding ASCII
+          Get-ChildItem $out | Format-Table Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aither-shell-menu-win11
+          path: native/shell-menu/out/
+          if-no-files-found: error
+          retention-days: 30
