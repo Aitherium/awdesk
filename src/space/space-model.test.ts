@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DeckDecision } from '../deck/deck-types';
 import type { UniverseData, UniverseNode } from '../vendor/bead-space/types';
-import { auditDriftOf, buildSpaceModel, deepLinkOf, deepLinkTarget, deskAuditOf, deskCardOf, deskLensOf, mergeOwnBodies, OWN_ROOT_ID } from './space-model';
+import { auditDriftOf, buildSpaceModel, deepLinkOf, deepLinkTarget, deskAuditOf, deskCardOf, deskLensOf, mergeOwnBodies, ownCommandOf, verbRoute, OWN_ROOT_ID } from './space-model';
 
 const AT = '2026-10-15T00:00:00Z';
 
@@ -243,5 +243,21 @@ describe('mergeOwnBodies (his own work joins the platform map)', () => {
   it('no own bodies leaves the platform map exactly as it was', () => {
     expect(mergeOwnBodies(base, { nodes: [] })).toBe(base);
     expect(mergeOwnBodies(base, null)).toBe(base);
+  });
+});
+
+describe('own bodies run the desk registry, not a platform verb', () => {
+  it('an app body carries its registry command as its one verb', () => {
+    const out = mergeOwnBodies(null, { nodes: [{ id: 'app:rooms', title: 'Rooms', meta: { kind: 'app', verb: 'rooms.toggle' } }] })!;
+    const node = out.nodes.find((n) => n.id === 'app:rooms') as unknown as { verbs?: Array<{ id: string }> };
+    expect(node.verbs?.map((v) => v.id)).toEqual(['rooms.toggle']);
+    expect(verbRoute({ meta: { kind: 'app', verb: 'rooms.toggle' } }, 'rooms.toggle')).toBe('desk');
+    expect(verbRoute({ meta: { kind: 'app', verb: 'rooms.toggle' } }, 'unit-start')).toBe('space');
+  });
+
+  it('a platform body is never routed to the desk', () => {
+    expect(ownCommandOf({ meta: { kind: 'service', verb: 'rooms.toggle' } })).toBeNull();
+    expect(verbRoute({ meta: { kind: 'service' } }, 'unit-start')).toBe('space');
+    expect(ownCommandOf(null)).toBeNull();
   });
 });

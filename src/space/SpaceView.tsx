@@ -48,7 +48,7 @@ import { MAX_LEVEL_NODES, beadLevel, clickIntent, normaliseUniverse } from './be
 import type { BeadLevelData } from './bead-level';
 import { contextLine, tooltipLines } from './tooltip';
 import './space.css';
-import { buildSpaceModel, deepLinkOf, deepLinkTarget, deskAuditOf, deskLensOf, mergeOwnBodies } from './space-model';
+import { buildSpaceModel, deepLinkOf, deepLinkTarget, deskAuditOf, deskLensOf, mergeOwnBodies, verbRoute } from './space-model';
 import type { OwnBodies } from './space-model';
 import {
   AUDIT_VERDICTS, LENS_TIERS, VERDICT_COLORS, VERDICT_WORDS, auditSentence, formatMb, lensSentence,
@@ -598,6 +598,20 @@ export default function SpaceView() {
 
   // ---- actions: every one goes to main ----------------------------------------------
   const onVerb = useCallback(async (node: UniverseNode, verb: BeadVerb, opts: { confirmed: boolean }): Promise<VerbResult> => {
+    // An app/window body's ONE verb is the desk's own registry command (rooms.toggle,
+    // pages.open, forge.open ...): the same door the palette and tray use, never a copy.
+    if (verbRoute(node as unknown as { meta?: Record<string, unknown> }, verb.id) === 'desk') {
+      const bridge = (typeof window !== 'undefined' ? window.deskBridge : undefined) as unknown as
+        { runCommand?: (id: string) => Promise<{ ok?: boolean; error?: string }> } | undefined;
+      if (typeof bridge?.runCommand !== 'function') return { ok: false, error: 'this desk build cannot run commands here' };
+      try {
+        const r = await bridge.runCommand(verb.id);
+        void refresh();
+        return r && r.ok ? { ok: true } : { ok: false, error: (r && r.error) || 'the command did not run' };
+      } catch (err) {
+        return { ok: false, error: errorText(err) };
+      }
+    }
     const { space } = bridges();
     if (!space) return { ok: false, error: 'no space bridge' };
     try {
