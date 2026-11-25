@@ -172,7 +172,10 @@ function buildUniverse({ tabs = [], agents = [], routines = [], platform = null,
  * A job that is failing becomes "starved" (the engine draws a slow station); a
  * disabled one is kept and marked, because a paused routine is a decision, not a death.
  */
-function routinesFromJobs(jobs) {
+function routinesFromJobs(doc) {
+  // The real file is {schema, jobs: {...}} (127 jobs on this host, measured 2026-11-24);
+  // the bare map is accepted too so a test and an older host both work.
+  const jobs = doc && typeof doc === "object" && doc.jobs && typeof doc.jobs === "object" ? doc.jobs : doc;
   const out = [];
   for (const [name, j] of Object.entries(jobs && typeof jobs === "object" ? jobs : {})) {
     if (!j || typeof j !== "object") continue;

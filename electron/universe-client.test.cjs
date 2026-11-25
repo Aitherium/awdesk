@@ -130,3 +130,11 @@ test("awrise jobs become stations: failing is starved, disabled is kept and mark
   assert.equal(stations.length, 3);
   assert.equal(stations.find((n) => n.title === "harvest").status, "blocked");
 });
+
+test("the real awrise file is {schema, jobs}: 127 jobs, none mistaken for one", () => {
+  const rows = routinesFromJobs({ schema: "awrise/jobs/1", jobs: {
+    awmine: { enabled: true }, harvest: { consecutive_failures: 2 },
+  } });
+  assert.deepEqual(rows.map((r) => r.name).sort(), ["awmine", "harvest"]);
+  assert.equal(rows.find((r) => r.name === "harvest").state, "starved");
+});
