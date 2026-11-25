@@ -297,6 +297,7 @@ function searchHandlers(c = client(), {
   chat = () => sendToChat,
   action = () => runAction,
   hide = () => hideLauncher(),
+  shareRoom = () => process.env.DESK_SHARE_ROOM || require("./relay-feed.cjs").RELAY_CHANNEL,
   acceptMs,
 } = {}) {
   const guarded = (fn, withSender) => async (event, ...args) => {
@@ -333,6 +334,8 @@ function searchHandlers(c = client(), {
     "desk:search-run": guard((mode, query) => c.search(String(mode), query)),
     "desk:search-images": guard((query) => c.images(query)),
     "desk:search-videos": guard((query) => c.videos(query)),
+    // "Send to room": the company room (relay-feed RELAY_CHANNEL), DESK_SHARE_ROOM overrides.
+    "desk:search-share": guard((item) => c.sendToRoom(item && typeof item === "object" ? item : {}, shareRoom())),
     "desk:research-start": guard((question, depth) => c.startResearch(question, String(depth || "standard"))),
     "desk:research-list": guard(() => c.listResearch()),
     "desk:research-read": guard((id) => c.readResearch(id)),
