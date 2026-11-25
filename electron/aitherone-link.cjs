@@ -192,8 +192,8 @@ function decide(board, remoteUpdatedAt, { prefer = null } = {}) {
  *   base   the Online site (https://app.aitherium.com); its /api/docs/* proxies AitherOne
  *   token  the desk's existing Online session bearer (browser-window onlineToken)
  */
-function createClient({ base, token, fetchImpl }) {
-  async function call(method, path, body) {
+function createDocsCall({ base, token, fetchImpl }) {
+  return async function call(method, path, body) {
     const bearer = await token();
     if (!bearer) return { ok: false, signedOut: true, error: "sign in to AitherOS Online first (the desk's own sign-in)" };
     let res;
@@ -214,11 +214,29 @@ function createClient({ base, token, fetchImpl }) {
         data: (json && json.data) || null };
     }
     return { ok: true, data: json.data || {} };
-  }
+  };
+}
+
+/**
+ * The canvas client. Its HTTP half is createDocsCall, which pages-client.cjs shares,
+ * so a page and a canvas reach AitherOne through one bearer path.
+ */
+function createClient({ base, token, fetchImpl }) {
+  const call = createDocsCall({ base, token, fetchImpl });
   const enc = encodeURIComponent;
   return {
     async create(title, scene) {
       const r = await call("POST", "/api/docs/create", { title, doc_kind: "canvas", content: JSON.stringify(scene) });
+      if (!r.ok) return r;
+      const doc = r.data.doc || {};
+      return doc.doc_id ? { ok: true, docId: doc.doc_id, updatedAt: doc.updated_at || null } : { ok: false, error: "AitherOne made no document" };
+    },
+    /**
+     * A plain AitherOne document (pages-client.cjs). AitherOne accepts only
+     * `doc_kind` "document" or "canvas" -- a page is a document, a board a canvas.
+     */
+    async createDoc(title, docKind, content) {
+      const r = await call("POST", "/api/docs/create", { title, doc_kind: docKind, content });
       if (!r.ok) return r;
       const doc = r.data.doc || {};
       return doc.doc_id ? { ok: true, docId: doc.doc_id, updatedAt: doc.updated_at || null } : { ok: false, error: "AitherOne made no document" };
@@ -306,4 +324,4 @@ function openUrl(base, docId) {
   return new URL(`/workspace/one?tab=canvas&doc=${encodeURIComponent(docId)}`, base).href;
 }
 
-module.exports = { boardToScene, sceneToBoard, parseScene, decide, createClient, sync, openUrl };
+module.exports = { boardToScene, sceneToBoard, parseScene, decide, createDocsCall, createClient, sync, openUrl };
