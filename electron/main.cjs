@@ -2549,7 +2549,19 @@ async function getUniverseBodies() {
     const got = await spaceClient().get();
     platform = got && got.universe ? got.universe : null;
   } catch (error) { degraded.push({ source: "platform", error: String((error && error.message) || error).slice(0, 160) }); }
-  const built = buildUniverse({ tabs, agents, platform });
+  // Routines are STATIONS on the map: the same ~/.aither/awrise/jobs.json the command
+  // centre reads (shapeSchedules), so a starved wake is visible where it runs.
+  let routines = [];
+  try {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const electronApp = require("electron").app;
+    const home = (electronApp && electronApp.getPath ? electronApp.getPath("home") : "") || require("node:os").homedir();
+    const doc = JSON.parse(fs.readFileSync(path.join(home, ".aither", "awrise", "jobs.json"), "utf8"));
+    routines = require("./command-center.cjs").shapeSchedules(doc)
+      .map((s) => ({ name: s.id, state: s.failing ? "starved" : s.enabled ? "idle" : "disabled", lastRun: null }));
+  } catch (error) { degraded.push({ source: "routines", error: String((error && error.message) || error).slice(0, 160) }); }
+  const built = buildUniverse({ tabs, agents, routines, platform });
   return degraded.length ? { ...built, degraded } : built;
 }
 

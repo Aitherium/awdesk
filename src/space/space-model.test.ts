@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DeckDecision } from '../deck/deck-types';
 import type { UniverseData, UniverseNode } from '../vendor/bead-space/types';
-import { auditDriftOf, buildSpaceModel, deepLinkOf, deepLinkTarget, deskAuditOf, deskCardOf, deskLensOf } from './space-model';
+import { auditDriftOf, buildSpaceModel, deepLinkOf, deepLinkTarget, deskAuditOf, deskCardOf, deskLensOf, mergeOwnBodies, ownCommandOf, verbRoute, OWN_ROOT_ID } from './space-model';
 
 const AT = '2026-10-15T00:00:00Z';
 
@@ -210,5 +210,54 @@ describe('deskAuditOf (the audit lens on the desk planets)', () => {
     const m = buildSpaceModel({ ok: true, universe: universe(), source: 'genesis', stale: false,
       error: 'universe route unreachable' }, { decisions: [] });
     expect(m.badge).toBe('direct');
+  });
+});
+
+describe('mergeOwnBodies (his own work joins the platform map)', () => {
+  const base = { nodes: [{ id: 'svc:genesis', title: 'Genesis', cluster: 'platform' }], links: [] } as unknown as UniverseData;
+
+  it('adds the desk root and links every own body to it, leaving the platform untouched', () => {
+    const out = mergeOwnBodies(base, { nodes: [
+      { id: 'app:rooms', title: 'Rooms', cluster: 'apps' },
+      { id: 'win:a', title: 'Rooms tab', cluster: 'windows', assignee: 's1' },
+    ] })!;
+    expect(out.nodes.map((n) => n.id)).toEqual(['svc:genesis', OWN_ROOT_ID, 'app:rooms', 'win:a']);
+    expect(out.nodes.find((n) => n.id === 'svc:genesis')).toEqual(base.nodes[0]);
+    expect(out.links.filter((l) => l.source === OWN_ROOT_ID).map((l) => l.target)).toEqual(['app:rooms', 'win:a']);
+  });
+
+  it('never lets one source redraw another: a colliding id is dropped, not merged', () => {
+    const out = mergeOwnBodies(base, { nodes: [{ id: 'svc:genesis', title: 'IMPOSTOR' }] })!;
+    expect(out.nodes.filter((n) => n.id === 'svc:genesis')).toHaveLength(1);
+    expect(out.nodes.find((n) => n.id === 'svc:genesis')!.title).toBe('Genesis');
+  });
+
+  it('drops a link whose ends are not both on the map', () => {
+    const out = mergeOwnBodies(base, {
+      nodes: [{ id: 'app:pages', title: 'Pages' }],
+      links: [{ source: 'app:pages', target: 'win:gone' }],
+    })!;
+    expect(out.links.some((l) => l.target === 'win:gone')).toBe(false);
+  });
+
+  it('no own bodies leaves the platform map exactly as it was', () => {
+    expect(mergeOwnBodies(base, { nodes: [] })).toBe(base);
+    expect(mergeOwnBodies(base, null)).toBe(base);
+  });
+});
+
+describe('own bodies run the desk registry, not a platform verb', () => {
+  it('an app body carries its registry command as its one verb', () => {
+    const out = mergeOwnBodies(null, { nodes: [{ id: 'app:rooms', title: 'Rooms', meta: { kind: 'app', verb: 'rooms.toggle' } }] })!;
+    const node = out.nodes.find((n) => n.id === 'app:rooms') as unknown as { verbs?: Array<{ id: string }> };
+    expect(node.verbs?.map((v) => v.id)).toEqual(['rooms.toggle']);
+    expect(verbRoute({ meta: { kind: 'app', verb: 'rooms.toggle' } }, 'rooms.toggle')).toBe('desk');
+    expect(verbRoute({ meta: { kind: 'app', verb: 'rooms.toggle' } }, 'unit-start')).toBe('space');
+  });
+
+  it('a platform body is never routed to the desk', () => {
+    expect(ownCommandOf({ meta: { kind: 'service', verb: 'rooms.toggle' } })).toBeNull();
+    expect(verbRoute({ meta: { kind: 'service' } }, 'unit-start')).toBe('space');
+    expect(ownCommandOf(null)).toBeNull();
   });
 });

@@ -48,7 +48,8 @@ import { MAX_LEVEL_NODES, beadLevel, clickIntent, normaliseUniverse } from './be
 import type { BeadLevelData } from './bead-level';
 import { contextLine, tooltipLines } from './tooltip';
 import './space.css';
-import { buildSpaceModel, deepLinkOf, deepLinkTarget, deskAuditOf, deskLensOf } from './space-model';
+import { buildSpaceModel, deepLinkOf, deepLinkTarget, deskAuditOf, deskLensOf, mergeOwnBodies, verbRoute } from './space-model';
+import type { OwnBodies } from './space-model';
 import {
   AUDIT_VERDICTS, LENS_TIERS, VERDICT_COLORS, VERDICT_WORDS, auditSentence, formatMb, lensSentence,
 } from '../vendor/bead-space/space/panel-text';
@@ -62,6 +63,8 @@ const POLL_MS = 20_000;
 
 interface SpaceBridge {
   get(): Promise<SpaceGetResult>;
+  /** The desk's own bodies (apps, windows, agent ships): optional on older builds. */
+  universe?(): Promise<OwnBodies>;
   verb(nodeId: string, verbId: string, confirmed: boolean): Promise<VerbResult>;
   explore(nodeId: string, exploreIndex: number, question?: string): Promise<ExploreResult & { text?: string }>;
 }
@@ -353,11 +356,20 @@ export default function SpaceView() {
   const [engineError, setEngineError] = useState('');
 
   // ---- the universe, polled only while the pane is on screen -----------------------
+  const [own, setOwn] = useState<OwnBodies | null>(null);
   const refresh = useCallback(async () => {
     const { space } = bridges();
     if (!space) {
       setResult({ ok: false, error: 'this desk build has no space bridge' });
       return;
+    }
+    // His OWN work rides beside the platform's: a missing answer dims nothing and the
+    // platform map still draws, so an older build never loses the view it had.
+    if (typeof space.universe === 'function') {
+      try {
+        const bodies = await space.universe();
+        setOwn(bodies && bodies.ok ? bodies : null);
+      } catch { setOwn(null); }
     }
     try {
       const next = await space.get();
@@ -384,7 +396,7 @@ export default function SpaceView() {
 
   const model = useMemo(() => buildSpaceModel(result, deck), [result, deck]);
   // "Infra" and "Infrastructure" become one planet before anything is drawn or selected.
-  const data = useMemo(() => (model.data ? normaliseUniverse(model.data) : null), [model.data]);
+  const data = useMemo(() => mergeOwnBodies(model.data ? normaliseUniverse(model.data) : null, own), [model.data, own]);
   // The profile lens: dims what a tier would NOT keep and sums what it would cost. The
   // audit lens: rings every planet with the fleet audit's verdict and labels its RAM.
   const [lens, setLens] = useState<DeskLensMode>('none');
@@ -586,6 +598,20 @@ export default function SpaceView() {
 
   // ---- actions: every one goes to main ----------------------------------------------
   const onVerb = useCallback(async (node: UniverseNode, verb: BeadVerb, opts: { confirmed: boolean }): Promise<VerbResult> => {
+    // An app/window body's ONE verb is the desk's own registry command (rooms.toggle,
+    // pages.open, forge.open ...): the same door the palette and tray use, never a copy.
+    if (verbRoute(node as unknown as { meta?: Record<string, unknown> }, verb.id) === 'desk') {
+      const bridge = (typeof window !== 'undefined' ? window.deskBridge : undefined) as unknown as
+        { runCommand?: (id: string) => Promise<{ ok?: boolean; error?: string }> } | undefined;
+      if (typeof bridge?.runCommand !== 'function') return { ok: false, error: 'this desk build cannot run commands here' };
+      try {
+        const r = await bridge.runCommand(verb.id);
+        void refresh();
+        return r && r.ok ? { ok: true } : { ok: false, error: (r && r.error) || 'the command did not run' };
+      } catch (err) {
+        return { ok: false, error: errorText(err) };
+      }
+    }
     const { space } = bridges();
     if (!space) return { ok: false, error: 'no space bridge' };
     try {

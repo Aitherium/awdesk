@@ -265,3 +265,72 @@ export function deepLinkTarget(link: DeepLink, model: SpaceModel): string | null
   if (link.focusNext) return model.nextAsks[0]?.nodeId ?? null;
   return null;
 }
+
+/** The desk's OWN bodies (electron/universe-client.cjs), as desk:universe-get answers them. */
+export interface OwnBodies {
+  ok?: boolean;
+  nodes?: Array<{
+    id?: string; title?: string; cluster?: string; status?: string; createdAt?: string;
+    assignee?: string; meta?: Record<string, unknown>;
+  }>;
+  links?: Array<{ source?: string; target?: string; kind?: string }>;
+}
+
+/** The one root the desk's own work hangs under, so it never crowds the platform's ring. */
+export const OWN_ROOT_ID = 'own:desk';
+
+/**
+ * Add the desk's own work to the platform universe: apps, open windows, agent ships and
+ * routine stations, each linked to the "Your desk" root. The platform's nodes are never
+ * rewritten -- an id collision is dropped rather than merged, so a bug in one source
+ * cannot silently redraw another.
+ */
+export function mergeOwnBodies(base: UniverseData | null, own: OwnBodies | null): UniverseData | null {
+  const bodies = own && Array.isArray(own.nodes) ? own.nodes : [];
+  const ownLinks = own && Array.isArray(own.links) ? own.links : [];
+  if (!bodies.length) return base;
+  const out: UniverseData = base
+    ? { ...base, nodes: [...(base.nodes || [])], links: [...(base.links || [])] }
+    : { nodes: [], links: [] } as unknown as UniverseData;
+  const have = new Set((out.nodes || []).map((n) => n && n.id));
+  const asNode = (n: NonNullable<OwnBodies['nodes']>[number]) => ({
+    ...n,
+    id: String(n.id), title: String(n.title || n.id), cluster: String(n.cluster || 'own'),
+  }) as unknown as UniverseData['nodes'][number];
+  if (!have.has(OWN_ROOT_ID)) {
+    out.nodes.push(asNode({ id: OWN_ROOT_ID, title: 'Your desk', cluster: 'own', status: 'active', meta: { kind: 'root' } }));
+    have.add(OWN_ROOT_ID);
+  }
+  for (const n of bodies) {
+    if (!n || !n.id || have.has(String(n.id))) continue;
+    // An app/window body carries the REGISTRY command that opens it, so the panel's one
+    // verb is the desk's own door (verbRoute below) instead of a platform verb.
+    const cmd = ownCommandOf(n);
+    const node = asNode(n);
+    if (cmd) (node as unknown as { verbs?: unknown[] }).verbs = [{ id: cmd, label: n.meta && n.meta.kind === 'routine' ? 'Show' : 'Open' }];
+    out.nodes.push(node);
+    have.add(String(n.id));
+    out.links.push({ source: OWN_ROOT_ID, target: String(n.id), kind: 'parent-child' } as unknown as UniverseData['links'][number]);
+  }
+  for (const l of ownLinks) {
+    if (l && l.source && l.target && have.has(String(l.source)) && have.has(String(l.target))) {
+      out.links.push(l as unknown as UniverseData['links'][number]);
+    }
+  }
+  return out;
+}
+
+const OWN_KINDS = new Set(['app', 'window', 'routine']);
+
+/** The desk-registry command a body carries (its meta.verb), when it is an own body. */
+export function ownCommandOf(node: { meta?: Record<string, unknown> } | null | undefined): string | null {
+  const kind = node && node.meta ? String(node.meta.kind || '') : '';
+  const cmd = node && node.meta ? String(node.meta.verb || '') : '';
+  return OWN_KINDS.has(kind) && cmd ? cmd : null;
+}
+
+/** Which door runs a verb on this body: the desk's registry, or the platform's space verbs. */
+export function verbRoute(node: { meta?: Record<string, unknown> } | null | undefined, verbId: string): 'desk' | 'space' {
+  const cmd = ownCommandOf(node);
+  return cmd && cmd === verbId ? 'desk' : 'space';
+}

@@ -167,6 +167,26 @@ function buildUniverse({ tabs = [], agents = [], routines = [], platform = null,
   return { nodes, links };
 }
 
+/**
+ * The awrise doc (`~/.aither/awrise/jobs.json`) -> routine rows for buildUniverse.
+ * A job that is failing becomes "starved" (the engine draws a slow station); a
+ * disabled one is kept and marked, because a paused routine is a decision, not a death.
+ */
+function routinesFromJobs(jobs) {
+  const out = [];
+  for (const [name, j] of Object.entries(jobs && typeof jobs === "object" ? jobs : {})) {
+    if (!j || typeof j !== "object") continue;
+    const failing = Number(j.consecutive_failures) > 0;
+    out.push({
+      name,
+      state: j.enabled === false ? "disabled" : failing ? "starved" : "idle",
+      lastRun: j.last_finished_at || null,
+      nextDue: j.next_due || null,
+    });
+  }
+  return out;
+}
+
 /** What a source failing must look like: the last good bodies, dimmed -- never an empty map. */
 function dim(last, source, error) {
   if (!isObj(last) || !Array.isArray(last.nodes)) return { nodes: [], links: [], degraded: [{ source, error: str(error) }] };
@@ -177,4 +197,4 @@ function dim(last, source, error) {
   };
 }
 
-module.exports = { buildUniverse, dim, appOfTab, APP_BODIES };
+module.exports = { buildUniverse, dim, appOfTab, APP_BODIES, routinesFromJobs };
