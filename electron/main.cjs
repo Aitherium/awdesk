@@ -4946,7 +4946,9 @@ function trayTemplateNow() {
   // a STATUS line rather than a command, so it is spliced in after the avatar
   // group rather than declared in the registry.
   const voiceRows = voiceTrayItems(latestListenerStatus, app.isPackaged);
-  const appGroupAt = trayTemplate.findIndex((row) => row.label === `About ${PRODUCT_NAME}`);
+  const appGroupAt = trayTemplate.findIndex(
+    (row) => row.label === `About ${PRODUCT_NAME}` || row.label === `Quit ${PRODUCT_NAME}`,
+  );
   // Where the browser extension is (or that it is nowhere) -- same splice as voice.
   // Cloud LLM spend today + the DeepSeek balance; a click opens aither://spend. An
   // absent cloud_spend tool reads "not deployed yet", never "$0.00".
@@ -7606,9 +7608,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       return;
     }
     // Launched again from the Start menu or taskbar: a customer desk brings up its
-    // workspace (the overlay they work in), not an avatar stage they never asked for.
+    // workspace in a full opaque framed application window (no transparent overlay
+    // collisions with Windows desktop icons), not an avatar stage they never asked for.
     if (!handled && !argv.includes("--background")) {
-      if (deskPostureState.customer) showLivingDesktop();
+      if (deskPostureState.customer) showDesktopApp();
       else showOverlay({ focus: true });
     }
   });
@@ -9422,9 +9425,11 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
     // opens at start ONLY when the user turned that on (overlay.autoOpenOnStart, off
     // by default; Do not disturb wins) -- overlay-policy.cjs.
     if (process.argv.includes("--overlay")) showLivingDesktop();
-    // A customer desk opens on its taskbar (customer report 2026-10-20: "when he opens the
-    // Aither app he just wants the taskbar") -- the same surface a second launch brings up.
-    else if (deskPostureState.customer && !startInBackground) showLivingDesktop();
+    // A customer desk opens its workspace in a full opaque framed application window
+    // (customer report 2026-11-25: full app view avoids colliding with Windows desktop
+    // icons/processes while keeping all tenant content; `--overlay` / Ctrl+Shift+D still
+    // opens the transparent overlay on demand).
+    else if (deskPostureState.customer && !startInBackground) showDesktopApp();
     else if (overlayMayRaise(overlayPolicy.TRIGGERS.START)) showLivingDesktop();
     syncEdgeReveal();
     setInterval(syncEdgeReveal, 30_000).unref?.();
