@@ -265,3 +265,51 @@ export function deepLinkTarget(link: DeepLink, model: SpaceModel): string | null
   if (link.focusNext) return model.nextAsks[0]?.nodeId ?? null;
   return null;
 }
+
+/** The desk's OWN bodies (electron/universe-client.cjs), as desk:universe-get answers them. */
+export interface OwnBodies {
+  ok?: boolean;
+  nodes?: Array<{
+    id?: string; title?: string; cluster?: string; status?: string; createdAt?: string;
+    assignee?: string; meta?: Record<string, unknown>;
+  }>;
+  links?: Array<{ source?: string; target?: string; kind?: string }>;
+}
+
+/** The one root the desk's own work hangs under, so it never crowds the platform's ring. */
+export const OWN_ROOT_ID = 'own:desk';
+
+/**
+ * Add the desk's own work to the platform universe: apps, open windows, agent ships and
+ * routine stations, each linked to the "Your desk" root. The platform's nodes are never
+ * rewritten -- an id collision is dropped rather than merged, so a bug in one source
+ * cannot silently redraw another.
+ */
+export function mergeOwnBodies(base: UniverseData | null, own: OwnBodies | null): UniverseData | null {
+  const nodes = Array.isArray(own && own.nodes) ? own.nodes : [];
+  if (!nodes.length) return base;
+  const out: UniverseData = base
+    ? { ...base, nodes: [...(base.nodes || [])], links: [...(base.links || [])] }
+    : { nodes: [], links: [] } as unknown as UniverseData;
+  const have = new Set((out.nodes || []).map((n) => n && n.id));
+  const asNode = (n: NonNullable<OwnBodies['nodes']>[number]) => ({
+    ...n,
+    id: String(n.id), title: String(n.title || n.id), cluster: String(n.cluster || 'own'),
+  }) as unknown as UniverseData['nodes'][number];
+  if (!have.has(OWN_ROOT_ID)) {
+    out.nodes.push(asNode({ id: OWN_ROOT_ID, title: 'Your desk', cluster: 'own', status: 'active', meta: { kind: 'root' } }));
+    have.add(OWN_ROOT_ID);
+  }
+  for (const n of nodes) {
+    if (!n || !n.id || have.has(String(n.id))) continue;
+    out.nodes.push(asNode(n));
+    have.add(String(n.id));
+    out.links.push({ source: OWN_ROOT_ID, target: String(n.id), kind: 'parent-child' } as unknown as UniverseData['links'][number]);
+  }
+  for (const l of Array.isArray(own && own.links) ? own.links : []) {
+    if (l && l.source && l.target && have.has(String(l.source)) && have.has(String(l.target))) {
+      out.links.push(l as unknown as UniverseData['links'][number]);
+    }
+  }
+  return out;
+}
