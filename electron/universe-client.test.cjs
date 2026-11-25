@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildUniverse, dim, appOfTab, APP_BODIES, routinesFromJobs } = require("./universe-client.cjs");
+const { buildUniverse, dim, appOfTab, APP_BODIES, routinesFromJobs, signalsFromPlanes } = require("./universe-client.cjs");
 
 const NOW = () => Date.parse("2026-11-24T20:00:00Z");
 
@@ -137,4 +137,30 @@ test("the real awrise file is {schema, jobs}: 127 jobs, none mistaken for one", 
   } });
   assert.deepEqual(rows.map((r) => r.name).sort(), ["awmine", "harvest"]);
   assert.equal(rows.find((r) => r.name === "harvest").state, "starved");
+});
+
+test("live planes become motion: flux pings, pulse/watch dim, and only on real bodies", () => {
+  const nodes = [{ id: "platform" }, { id: "svc:genesis" }, { id: "app:rooms" }];
+  const planes = {
+    flux: { reads: [{ id: "stats", ok: true, data: { events: 12 } },
+      { id: "services", ok: true, data: { services: ["genesis", "ghost"] } }] },
+    pulse: { reads: [{ id: "disk", ok: true, data: { status: "critical" } }] },
+    watch: { reads: [{ id: "alerts", ok: true, data: { alerts: [{ service: "genesis" }] } }] },
+  };
+  const s = signalsFromPlanes(nodes, planes);
+  assert.deepEqual(s.ping.sort(), ["platform", "svc:genesis"]);
+  assert.deepEqual(s.dim.sort(), ["platform", "svc:genesis"]);
+  assert.equal(s.ping.includes("svc:ghost"), false, "a service not on the map invents no body");
+  assert.equal(s.ping.includes("app:rooms"), false);
+});
+
+test("a plane nobody could read is a NOTE, never silence", () => {
+  const nodes = [{ id: "platform" }];
+  const s = signalsFromPlanes(nodes, {
+    flux: { reads: [{ id: "stats", ok: false, error: "HTTP 502" }] },
+    pulse: { reads: [{ id: "disk", ok: false, error: "no answer" }] },
+  });
+  assert.deepEqual(s.ping, []);
+  assert.equal(s.notes.length, 2);
+  assert.deepEqual(s.notes.map((n) => n.plane).sort(), ["flux", "pulse"]);
 });

@@ -190,6 +190,64 @@ function routinesFromJobs(doc) {
   return out;
 }
 
+/**
+ * The live planes as motion on the map (plane-client.cjs snapshots in, signals out).
+ *
+ *   flux /stats, /services  -> `ping`: a body that just carried work pulses
+ *   pulse /disk/status      -> `dim`: headroom gone squeezes the whole platform
+ *   watch /plugins/alerts   -> `dim`: an alerting plugin dims the service it names
+ *
+ * Only nodes that are ON the map are named, so a signal can never invent a body. A read
+ * that failed is reported in `notes` -- silence about a plane nobody could read is how
+ * a dead observability lane looks healthy.
+ */
+function signalsFromPlanes(nodes, planes = {}) {
+  const ids = new Set((Array.isArray(nodes) ? nodes : []).map((n) => n && n.id).filter(Boolean));
+  const ping = new Set();
+  const dim = new Set();
+  const notes = [];
+  const reads = (planeId) => {
+    const snap = planes[planeId];
+    return snap && Array.isArray(snap.reads) ? snap.reads : [];
+  };
+  const read = (planeId, id) => reads(planeId).find((r) => r && r.id === id);
+
+  const stats = read("flux", "stats");
+  if (stats && stats.ok) {
+    if (ids.has("platform")) ping.add("platform");
+    if (stats.stale) notes.push({ plane: "flux", note: "stats are the last good copy" });
+  } else if (stats) notes.push({ plane: "flux", note: String(stats.error || "unreadable") });
+
+  const services = read("flux", "services");
+  if (services && services.ok && services.data) {
+    const rows = services.data.services || services.data;
+    const names = Array.isArray(rows) ? rows.map((r) => (r && (r.name || r.service)) || r) : Object.keys(rows || {});
+    for (const name of names) {
+      const id = `svc:${String(name).toLowerCase()}`;
+      if (ids.has(id)) ping.add(id);
+    }
+  }
+
+  const disk = read("pulse", "disk");
+  if (disk && disk.ok && disk.data) {
+    const level = String(disk.data.status || disk.data.level || disk.data.state || "ok").toLowerCase();
+    if (level !== "ok" && level !== "healthy" && ids.has("platform")) dim.add("platform");
+  } else if (disk) notes.push({ plane: "pulse", note: String(disk.error || "disk unreadable") });
+
+  const alerts = read("watch", "alerts");
+  if (alerts && alerts.ok && alerts.data) {
+    const list = Array.isArray(alerts.data.alerts) ? alerts.data.alerts : [];
+    for (const a of list) {
+      const who = String((a && (a.service || a.plugin || a.name)) || "").toLowerCase();
+      const id = who ? `svc:${who}` : "";
+      if (id && ids.has(id)) dim.add(id);
+    }
+    if (list.length && ids.has("platform")) dim.add("platform");
+  } else if (alerts) notes.push({ plane: "watch", note: String(alerts.error || "alerts unreadable") });
+
+  return { ping: [...ping], dim: [...dim], notes };
+}
+
 /** What a source failing must look like: the last good bodies, dimmed -- never an empty map. */
 function dim(last, source, error) {
   if (!isObj(last) || !Array.isArray(last.nodes)) return { nodes: [], links: [], degraded: [{ source, error: str(error) }] };
@@ -200,4 +258,4 @@ function dim(last, source, error) {
   };
 }
 
-module.exports = { buildUniverse, dim, appOfTab, APP_BODIES, routinesFromJobs };
+module.exports = { buildUniverse, dim, appOfTab, APP_BODIES, routinesFromJobs, signalsFromPlanes };
