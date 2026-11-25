@@ -2328,6 +2328,21 @@ function runBrowserAction(action, arg, id = tabs.active) {
       pushState();
       libraryChanged();
       return true;
+    case "save-to-page":
+      // pages.save: the tab as an AitherOne page. Private tabs are never captured --
+      // InPrivate's promise is that the page goes nowhere, and a saved document is
+      // somewhere.
+      if (tab.private) {
+        setNotice(id, { kind: "info", text: "InPrivate pages are never saved to AitherOne." });
+        return false;
+      }
+      void saveTabToPage().then((r) => {
+        setNotice(id, r.ok
+          ? { kind: "info", text: "Saved to AitherOne — it is in Workspace › One › Pages." }
+          : { kind: "info", text: `Not saved: ${r.error || "the page could not be read"}` });
+        if (r.ok) pushState();
+      }).catch(() => setNotice(id, { kind: "info", text: "Not saved: AitherOne did not answer." }));
+      return true;
     case "history":
     case "downloads":
     case "bookmarks":
@@ -5921,6 +5936,8 @@ function tabMenu(id) {
   const desktopPin = Boolean(require("./command-registry.cjs").byId("pins.tab")) && Boolean(shellHost);
   const template = [
     { label: "Pin to canvas", enabled: pinnable, click: () => void pinToCanvas(url, title) },
+    { label: "Save to AitherOne page", enabled: Boolean(url) && !tab.private,
+      click: () => { tabs.activate(id); void runBrowserAction("save-to-page", "", id); } },
     { label: "Pin this tab to desktop", enabled: desktopPin && pinnable,
       click: () => shellHost.run("pins.tab", id) },
     { type: "separator" },
@@ -6162,6 +6179,46 @@ async function pinToCanvas(url, title = "") {
   const result = await getCanvas().pin(String(url || ""), String(title || ""));
   if (result.ok) pushState();
   return result.ok ? { ok: true, card: result.pin } : result;
+}
+
+/**
+ * The AitherOne page client (pages-client.cjs): a plain document written through the
+ * same /api/docs/* routes and Online bearer the canvas uses. No second store.
+ */
+let pagesClient = null;
+function getPagesClient() {
+  let base;
+  try { base = internal.onlineUrl(); } catch { base = null; }
+  if (!base) return null;
+  if (!pagesClient || pagesClient.base !== base) {
+    pagesClient = { base, client: require("./aitherone-link.cjs").createClient({
+      base, token: async () => onlineToken(), fetchImpl: (url, init) => electron().net.fetch(url, init) }) };
+  }
+  return pagesClient.client;
+}
+
+/**
+ * Save the ACTIVE tab into AitherOne (one-app plan: "save to page"). The body is the
+ * page's own reading text, the selection first -- the same text "read aloud" uses, so
+ * what lands on the page is what the owner could have copied.
+ */
+async function saveTabToPage() {
+  const view = activeView();
+  if (!alive(view)) return { ok: false, error: "no tab to save" };
+  const wc = view.webContents;
+  if (getWorkspace().blocksRead(tabs.active, "selection")) {
+    return { ok: false, error: "the workspace policy does not let this page be read" };
+  }
+  let text = "";
+  try {
+    text = await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: READ_ALOUD_SCRIPT }]);
+  } catch { text = ""; }
+  const client = getPagesClient();
+  if (!client) return { ok: false, error: "sign in to AitherOS Online first (the desk's own sign-in)" };
+  const title = wc.getTitle() || "";
+  const url = wc.getURL() || "";
+  const markdown = `${text ? `# ${title}\n\n${text}\n` : `# ${title}\n`}`;
+  return require("./pages-client.cjs").savePage(client, { title, markdown, sourceUrl: url });
 }
 
 /** A rail row by what the owner typed: its label (case-insensitive) or its key. */
@@ -6479,6 +6536,13 @@ function browserCommand(verb, arg = "", { askAgent: ask = null, surface = "menu"
       if (!p.web) return { ok: false, error: "0 web pages on screen — only a web page is bookmarked" };
       runBrowserAction("bookmark", null, p.id);
       return { ok: true, bookmarked: Boolean(getLibrary().isBookmarked(p.url)), url: p.url };
+    }
+    case "save-to-page": {
+      const p = ownerPage();
+      if (p.error) return { ok: false, error: p.error };
+      if (p.tab.private) return { ok: false, error: "1 InPrivate page is not saved — its promise is that it goes nowhere" };
+      if (!p.web) return { ok: false, error: "0 web pages on screen — only a web page is saved" };
+      return saveTabToPage();
     }
     case "extension": {
       raise();

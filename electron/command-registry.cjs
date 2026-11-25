@@ -864,6 +864,12 @@ const COMMANDS = Object.freeze([
     browser: "bookmarks", surfaces: ["tray", "palette"],
   }),
   Object.freeze({
+    // The one-app plan (2026-11-24): a tab worth keeping lands in AitherOne as a
+    // page, not just in history. Same Online session, no second store.
+    id: "pages.save", label: "Browser: save this page to AitherOne", menuLabel: "Save to page",
+    group: "browser", browser: "save-to-page", surfaces: ["tray", "palette"],
+  }),
+  Object.freeze({
     id: "browser.bookmark-page", group: "browser", browser: "bookmark", surfaces: ["palette"],
     whySingle: "Acts on the page in the owner's active tab: the star in the browser's toolbar is its button; the palette and Alt+Space `bookmark` are its keyboard paths.",
     label: (ctx = {}) => (ctx.browser && ctx.browser.bookmarked ? "Browser: remove this page's bookmark" : "Browser: bookmark this page"),

@@ -683,6 +683,7 @@ test("every browser capability is a registry row: the palette and Alt+Space reac
     "browser.translate": "translate", "browser.find": "find", "browser.print": "print", "browser.open-edge": "open-edge",
     "browser.bookmark-page": "bookmark", "browser.extension.add": "extension",
     "browser.go": "go", "browser.search": "search", "browser.tab.switch": "tab",
+    "pages.save": "save-to-page",
   };
   const palette = reg.paletteRows({});
   for (const [id, verb] of Object.entries(want)) {
