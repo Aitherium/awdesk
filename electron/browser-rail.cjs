@@ -486,6 +486,9 @@ function normalizeLayout(raw = {}) {
     // Rooms (one-app plan slice 3): the company room docked LEFT of the page, kept open
     // across restarts until the owner closes it. Off until asked for.
     roomsOpen: r.roomsOpen === true,
+    // Which room that pane shows: Relay's company room, or the World (ShadowBroker).
+    // One pane, one sidebar; the source survives a restart like its width.
+    roomsSource: ["world", "net"].includes(r.roomsSource) ? r.roomsSource : "relay",
     roomsWidth: clamp(r.roomsWidth, ROOMS_MIN, ROOMS_MAX, ROOMS_WIDTH),
     // The rest of the layout document (desk-layout.cjs): pane sides, the rail's own
     // arrangement, layer order, presets, detached-window bounds and the canvas boards.
