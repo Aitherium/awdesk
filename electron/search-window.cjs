@@ -332,6 +332,7 @@ function searchHandlers(c = client(), {
   return {
     "desk:search-run": guard((mode, query) => c.search(String(mode), query)),
     "desk:search-images": guard((query) => c.images(query)),
+    "desk:search-videos": guard((query) => c.videos(query)),
     "desk:research-start": guard((question, depth) => c.startResearch(question, String(depth || "standard"))),
     "desk:research-list": guard(() => c.listResearch()),
     "desk:research-read": guard((id) => c.readResearch(id)),
