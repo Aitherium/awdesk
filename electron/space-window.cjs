@@ -243,7 +243,7 @@ function explorePrompt(node, exploreIndex, question) {
  *          openInternal: (paneId: string) => unknown, cards?: () => object[], pendingMs?: number}} deps
  */
 function spaceHandlers({ getControl, client, askAgent, openInternal, cards = () => [], pendingMs = VERB_PENDING_MS,
-  runProfile = null, runUnit = null }) {
+  runProfile = null, runUnit = null, universe = null }) {
   async function nodeOf(nodeId) {
     if (typeof nodeId !== "string" || !nodeId) return null;
     let universe = client.current();
@@ -335,6 +335,18 @@ function spaceHandlers({ getControl, client, askAgent, openInternal, cards = () 
   }
 
   return {
+    // The desk's OWN work as bodies (universe-client.cjs): apps, open windows, agents as
+    // ships, routines as stations. A desk that did not wire a source says so -- an empty
+    // universe and an unwired one must not look the same.
+    "desk:universe-get": async () => {
+      if (typeof universe !== "function") return { ok: false, error: "the universe is not wired in this desk" };
+      try {
+        const built = await universe();
+        return { ok: Boolean(built && Array.isArray(built.nodes)), ...built };
+      } catch (error) {
+        return { ok: false, error: errorText(error) };
+      }
+    },
     "desk:space-get": async () => {
       try {
         return await client.get();

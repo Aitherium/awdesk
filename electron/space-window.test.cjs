@@ -157,6 +157,31 @@ test("desk:space-get never throws across the bridge", async () => {
   assert.deepEqual(await handlers["desk:space-get"](), { ok: false, error: "boom" });
 });
 
+test("desk:universe-get separates 'nothing wire' from 'nothing happening'", async () => {
+  const unwired = spaceHandlers({
+    getControl: () => null, client: { current: () => null, get: async () => ({}) },
+    askAgent: async () => ({}), openInternal: () => false,
+  });
+  assert.deepEqual(await unwired["desk:universe-get"](),
+    { ok: false, error: "the universe is not wired in this desk" });
+
+  const wired = spaceHandlers({
+    getControl: () => null, client: { current: () => null, get: async () => ({}) },
+    askAgent: async () => ({}), openInternal: () => false,
+    universe: async () => ({ nodes: [{ id: "app:rooms" }], links: [] }),
+  });
+  const got = await wired["desk:universe-get"]();
+  assert.equal(got.ok, true);
+  assert.equal(got.nodes.length, 1);
+
+  const broken = spaceHandlers({
+    getControl: () => null, client: { current: () => null, get: async () => ({}) },
+    askAgent: async () => ({}), openInternal: () => false,
+    universe: async () => { throw new Error("sessions boom"); },
+  });
+  assert.deepEqual(await broken["desk:universe-get"](), { ok: false, error: "sessions boom" });
+});
+
 // A credential card whose subject is NOT in the universe: bead-space attachCards draws a
 // virtual moon `secret:<name>` in the renderer only. Explore on it must still work.
 const PROBE_CARD = {
