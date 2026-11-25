@@ -765,6 +765,27 @@ function platformOrigin() {
   return new URL(DEFAULT_HOSTED_URL).origin;
 }
 
+/** The search page: the browser's Home and new tab (one box: search, research, forge). */
+const SEARCH_HOME = "aither://search/";
+
+/**
+ * The browser's home / new-tab address (owner 2026-11-24, one-app plan slice 2): the
+ * search page, so a new tab is search, research, images, videos and Media Forge rather
+ * than a site. DESK_BROWSER_HOME still overrides it; an override the URL policy refuses
+ * falls back to the search page, never to a blank tab.
+ *
+ * Args:
+ *   env: the environment (DESK_BROWSER_HOME).
+ *   sanitize: browser-policy sanitizeUrl, (url) => {ok, url}.
+ */
+function homeUrlFor(env = process.env, sanitize = null) {
+  const override = String((env && env.DESK_BROWSER_HOME) || "").trim();
+  if (!override) return SEARCH_HOME;
+  if (isInternalUrl(override)) return override;
+  const verdict = typeof sanitize === "function" ? sanitize(override) : { ok: false };
+  return verdict && verdict.ok ? verdict.url : SEARCH_HOME;
+}
+
 /** DESK_LEGACY_CONSOLE=1 brings back the old console window (rollback). */
 function legacyConsole(env = process.env) {
   return String((env && env.DESK_LEGACY_CONSOLE) || "") === "1";
@@ -784,7 +805,9 @@ module.exports = {
   PRIVILEGED_SCHEME,
   PROTOCOL,
   SCHEME,
+  SEARCH_HOME,
   SECURITY_HEADERS,
+  homeUrlFor,
   VIEW_PRELOAD,
   adaptHtml,
   allowInternalPermission,

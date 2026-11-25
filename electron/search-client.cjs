@@ -337,6 +337,34 @@ function createSearchClient({
   }
 
   /**
+   * "Send to room" on a result (one-app plan slice 2): one line into a relay room
+   * through the gateway's `relay_send`, never a second store. The URL rides in the
+   * payload too, so an agent in the room can open it. http(s) links only.
+   *
+   * @param {{url: string, title?: string, kind?: string}} item  the result
+   * @param {string} channel  the room, e.g. "#agents"
+   */
+  async function sendToRoom(item, channel) {
+    const url = String((item && item.url) || "").trim();
+    if (!WEB_URL.test(url)) return { ok: false, error: "only a web link can be sent to a room" };
+    const room = String(channel || "").trim();
+    if (!/^#[\w-]{1,64}$/.test(room)) return { ok: false, error: "no room to send to" };
+    const title = cleanQuery(String((item && item.title) || "")).slice(0, 200);
+    const what = ["video", "image", "page"].includes(item && item.kind) ? item.kind : "page";
+    const text = (title ? `${title} - ${url}` : url).slice(0, 600);
+    try {
+      const raw = await callTool("relay_send", {
+        channel: room, text, kind: "MESSAGE", payload: { url, title, source: "aither-search", what },
+      });
+      const data = typeof raw === "string" ? (() => { try { return JSON.parse(raw); } catch { return { ok: true }; } })() : raw;
+      if (data && (data.error || data.ok === false)) return { ok: false, error: String(data.error || "the room refused it") };
+      return { ok: true, channel: room };
+    } catch (error) {
+      return { ok: false, error: String((error && error.message) || error) };
+    }
+  }
+
+  /**
    * Agents, tools, skills, packs and lanes for a task, from the local discovery
    * index (`adk discover query <task> --json --no-live`). `--no-live` keeps it
    * fast enough to run as the owner types; the index already holds the gateway's
@@ -452,7 +480,7 @@ function createSearchClient({
     }
   }
 
-  return { search, images, videos, discover, startResearch, listResearch, readResearch, forgeUrl };
+  return { search, images, videos, sendToRoom, discover, startResearch, listResearch, readResearch, forgeUrl };
 }
 
 module.exports = {

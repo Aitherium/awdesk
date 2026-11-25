@@ -53,13 +53,30 @@
   }
   for (const b of document.querySelectorAll(".modes button")) b.onclick = () => setMode(b.dataset.mode);
 
+  // "Send to room" (one-app plan slice 2): the link goes to the company room via relay_send.
+  function shareButton(item, kind) {
+    const b = el("button", "share", "Send to room");
+    b.type = "button";
+    b.title = "Post this link to the company room";
+    b.onclick = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      b.disabled = true;
+      const r = api.share ? await api.share({ url: item.url, title: item.title, kind }) : { ok: false, error: "not wired" };
+      b.textContent = r && r.ok ? `Sent to ${r.channel}` : "Send to room";
+      b.disabled = Boolean(r && r.ok);
+      if (!(r && r.ok)) status((r && r.error) || "the room did not answer", true);
+    };
+    return b;
+  }
+
   function renderResults(r) {
     const out = $("out");
     out.textContent = "";
     if (r.answer) out.append(el("div", "answer", r.answer));
     for (const row of r.results || []) {
       const box = el("div", "r");
-      box.append(link(row.url, row.title, "t"), el("div", "u", row.url), el("div", "s", row.snippet));
+      box.append(link(row.url, row.title, "t"), el("div", "u", row.url), el("div", "s", row.snippet), shareButton(row, "page"));
       out.append(box);
     }
     status(`${(r.results || []).length} results${r.mode === "deep" ? " (deep)" : ""} for “${r.query}”`);
@@ -84,7 +101,9 @@
       make.type = "button";
       make.title = "Open Media Forge to make something from this";
       make.onclick = (e) => { e.preventDefault(); e.stopPropagation(); void openForge(); };
-      tile.append(a, make);
+      const share = shareButton(img, "image");
+      share.classList.add("onimg");
+      tile.append(a, make, share);
       grid.append(tile);
     }
     out.append(grid);
@@ -109,7 +128,9 @@
       if (v.duration) thumb.append(el("span", "dur", v.duration));
       const source = [v.publisher, v.published].filter(Boolean).join(" · ");
       a.append(thumb, el("div", "vt", v.title), el("div", "vs", source));
-      grid.append(a);
+      const card = el("div", "vcard");
+      card.append(a, shareButton(v, "video"));
+      grid.append(card);
     }
     out.append(grid);
     status(`${(r.videos || []).length} videos for “${r.query}”`);
