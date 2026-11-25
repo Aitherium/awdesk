@@ -43,6 +43,10 @@ const RAIL_MIN = 180;
 const RAIL_MAX = 420;
 const PANEL_MIN = 260;
 const PANEL_MAX = 640;
+/** The Rooms pane (roomsRects): the company room's channel list + one conversation. */
+const ROOMS_MIN = 280;
+const ROOMS_MAX = 720;
+const ROOMS_WIDTH = 380;
 /** The grab strip between rail|page and page|panel: the chrome page draws the handle there. */
 const GUTTER = 6;
 /** The living desktop's taskbar along the bottom (Veil's <Taskbar/>, EDGE_ROOT h-14). */
@@ -166,6 +170,9 @@ const WORKSPACE_PAGES = Object.freeze([
   // route-map door onto the mail view (/workspace/one?tab=mail), which reads the owner's
   // real mailbox (aitheros-mail); the site's RBAC decides who may open it.
   Object.freeze({ path: "/workspace/mail", label: "Mail", hint: "Your inbox: the real mail, unread first", destination: "talk" }),
+  // Pages (one-app plan slice 3, owner 2026-11-24 "slack + notion"): AitherOne's docs,
+  // canvas, brain and roadmap, in the pinned Workspace tab like every row here.
+  Object.freeze({ path: "/workspace/one", label: "Pages", hint: "AitherOne: docs, canvas, brain and roadmap", destination: "work" }),
   Object.freeze({ path: "/workspace/members", label: "Members", hint: "People in your workspace", destination: "work" }),
   Object.freeze({ path: "/workspace/business", label: "BusinessPilot", hint: "Your business, run by agents", destination: "work" }),
   Object.freeze({ path: "/workspace/agents", label: "Managed agents", hint: "Your Aitherium-managed agents", destination: "agents" }),
@@ -323,6 +330,9 @@ function railSections(panes, { activePane = null, signedIn = true, owner = false
     });
   }
   for (const v of VOICE_ROWS) push({ ...v, canonical: v.id, icon: null, active: false, destination: "talk" });
+  // Rooms (one-app plan slice 3): the company room docked left of the page; the row toggles it.
+  push({ kind: "browser", id: "rooms", canonical: "rooms", label: "Rooms", icon: null, active: false,
+    hint: "The company room beside the page: channels, DMs and Aither", destination: "talk" });
   // Online apps BEFORE the osapp.* commands: where both exist for one window (Sprite,
   // Spaces), the app row carries the launch-mode chip and the richer door, so it wins
   // the dedupe and the command collapses into it.
@@ -473,11 +483,37 @@ function normalizeLayout(raw = {}) {
     agentCookieSites: agentCookies.normalizeSites(r.agentCookieSites),
     // The bookmarks bar under the toolbar (Ctrl+Shift+B): off until asked for.
     bookmarksBar: r.bookmarksBar === true,
+    // Rooms (one-app plan slice 3): the company room docked LEFT of the page, kept open
+    // across restarts until the owner closes it. Off until asked for.
+    roomsOpen: r.roomsOpen === true,
+    roomsWidth: clamp(r.roomsWidth, ROOMS_MIN, ROOMS_MAX, ROOMS_WIDTH),
     // The rest of the layout document (desk-layout.cjs): pane sides, the rail's own
     // arrangement, layer order, presets, detached-window bounds and the canvas boards.
     // Same file, one more key -- never a second store. Required here, not at the top:
     // desk-layout requires this module.
     desk: require("./desk-layout.cjs").normalizeDesk(r.desk),
+  };
+}
+
+/**
+ * The Rooms pane's place: a strip on the LEFT of the page area, the page keeps the rest.
+ * The pane never takes more than half the page, and gives way entirely (width 0) when
+ * the page area is too narrow to hold both (a phone-width window keeps its page).
+ *
+ * Args:
+ *   page: the page rect from railLayout().
+ *   opts.open: the owner's roomsOpen pref.
+ *   opts.width: the owner's roomsWidth pref.
+ * Returns {rooms, page}: rooms is {x,y,width:0,...} when it is not shown.
+ */
+function roomsRects(page, { open = false, width = ROOMS_WIDTH } = {}) {
+  const p = page && typeof page === "object" ? page : { x: 0, y: 0, width: 0, height: 0 };
+  const shut = { rooms: { x: p.x, y: p.y, width: 0, height: p.height }, page: { ...p } };
+  if (!open || p.width < ROOMS_MIN * 2 + GUTTER) return shut;
+  const w = Math.min(clamp(width, ROOMS_MIN, ROOMS_MAX, ROOMS_WIDTH), Math.floor((p.width - GUTTER) / 2));
+  return {
+    rooms: { x: p.x, y: p.y, width: w, height: p.height },
+    page: { x: p.x + w + GUTTER, y: p.y, width: p.width - w - GUTTER, height: p.height },
   };
 }
 
@@ -630,6 +666,10 @@ module.exports = {
   DOCK_MAX,
   DOCK_HEIGHT,
   PAGE_MIN_HEIGHT,
+  ROOMS_MAX,
+  ROOMS_MIN,
+  ROOMS_WIDTH,
+  roomsRects,
   dockHeightFor,
   dockHeightFromDrag,
   normalizeLayout,

@@ -78,7 +78,8 @@ test("a hand-edited layout file cannot wedge the window", () => {
       taskbar: true, dock: true, dockOpen: false, dockHeight: rail.DOCK_HEIGHT, overlay: false,
       collapsedSections: ["Apps"], expandedSections: [], railAllSections: false,
       restoreSession: true, translateOffer: true,
-      launchModes: {}, agentCookieSites: [], bookmarksBar: false, desk: require("./desk-layout.cjs").normalizeDesk({}) });
+      launchModes: {}, agentCookieSites: [], bookmarksBar: false, roomsOpen: false, roomsWidth: rail.ROOMS_WIDTH,
+      desk: require("./desk-layout.cjs").normalizeDesk({}) });
   assert.equal(rail.normalizeLayout({ railWidth: null }).railWidth, rail.RAIL_WIDTH, "reset means default, not minimum");
   assert.equal(rail.normalizeLayout({ taskbar: false }).taskbar, false);
   // The more-menu's toggles survive a read (a key missing from normalizeLayout is dropped).
@@ -549,4 +550,47 @@ test("every layout verb the chrome page sends is one main answers", () => {
   // So does the all-tabs button beside + (the way to any tab once the strip scrolls).
   assert.match(html, /api\.tabsMenu\(\)/);
   assert.match(bw, /ipcMain\.handle\("desk:browser-tabs-menu"/);
+});
+
+// ── Rooms + Pages (one-app plan slice 3, owner 2026-11-24 "make slack + notion") ──
+
+test("Rooms takes the left of the page area, and gives it back when closed or too narrow", () => {
+  const page = { x: 254, y: 78, width: 1200, height: 800 };
+  const shut = rail.roomsRects(page, { open: false });
+  assert.equal(shut.rooms.width, 0);
+  assert.deepEqual(shut.page, page);
+  const open = rail.roomsRects(page, { open: true, width: 400 });
+  assert.deepEqual(open.rooms, { x: 254, y: 78, width: 400, height: 800 });
+  assert.equal(open.page.x, 254 + 400 + rail.GUTTER, "the page starts right of the pane and its gutter");
+  assert.equal(open.page.x + open.page.width, page.x + page.width, "the page keeps the right edge");
+  const greedy = rail.roomsRects({ ...page, width: 2400 }, { open: true, width: 99999 });
+  assert.equal(greedy.rooms.width, rail.ROOMS_MAX, "the width is clamped");
+  const narrow = rail.roomsRects({ x: 0, y: 0, width: 500, height: 600 }, { open: true });
+  assert.equal(narrow.rooms.width, 0, "a narrow window keeps its page");
+  const half = rail.roomsRects({ x: 0, y: 0, width: 700, height: 600 }, { open: true, width: 700 });
+  assert.ok(half.rooms.width <= Math.floor((700 - rail.GUTTER) / 2), "never more than half the page");
+});
+
+test("roomsOpen / roomsWidth survive the layout document's normalizer", () => {
+  const n = rail.normalizeLayout({ roomsOpen: true, roomsWidth: 450 });
+  assert.equal(n.roomsOpen, true);
+  assert.equal(n.roomsWidth, 450);
+  const d = rail.normalizeLayout({});
+  assert.equal(d.roomsOpen, false, "off until asked for");
+  assert.equal(d.roomsWidth, rail.ROOMS_WIDTH);
+  assert.equal(rail.normalizeLayout({ roomsOpen: "yes", roomsWidth: 5 }).roomsOpen, false);
+  assert.equal(rail.normalizeLayout({ roomsWidth: 5 }).roomsWidth, rail.ROOMS_MIN, "too narrow: clamped up");
+  assert.equal(rail.normalizeLayout({ roomsWidth: "x" }).roomsWidth, rail.ROOMS_WIDTH, "not a number: the default");
+});
+
+test("the rail carries Rooms (toggles the dock) and Pages (AitherOne in the Workspace tab)", () => {
+  const rows = rail.railSections(PANES).flatMap((sec) => sec.rows);
+  const rooms = rows.find((r) => r.kind === "browser" && r.id === "rooms");
+  assert.ok(rooms, "a Rooms row");
+  assert.ok(rail.WORKSPACE_PAGES.some((p) => p.path === "/workspace/one" && p.label === "Pages"), "a Pages row");
+  assert.equal(rail.isWorkspacePage("/workspace/one"), true, "openWorkspacePage accepts it");
+  const win = require("node:fs").readFileSync(require("node:path").join(__dirname, "browser-window.cjs"), "utf8");
+  assert.match(win, /if \(arg === "rooms"\) return setRoomsOpen\(undefined\)/, "the rail's browser action toggles Rooms");
+  assert.match(win, /new URL\("\/companyroom", internal\.onlineUrl\(\)\)/, "the pane is /companyroom on the Online host");
+  assert.match(win, /createPageView\("hosted", \{ paneId: null, partition \}, partition\)/, "on the Online session");
 });

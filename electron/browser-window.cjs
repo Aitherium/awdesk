@@ -679,6 +679,13 @@ function layout() {
   // A page in full screen (a video) takes the whole window instead (browser-fullscreen.cjs).
   endStaleFullscreen();
   const rects = htmlFullscreen.rects(currentRects(), win.getContentBounds(), tabs.active);
+  // Rooms takes the left of the page area; a page in full screen takes it all back.
+  const pageFullscreen = htmlFullscreen.tab() != null && htmlFullscreen.tab() === tabs.active;
+  const roomsCut = rail.roomsRects(rects.page, {
+    open: Boolean(getPrefs().roomsOpen) && alive(roomsView) && !pageFullscreen, width: getPrefs().roomsWidth,
+  });
+  rects.page = roomsCut.page;
+  if (alive(roomsView)) placeView(roomsView, !viewsAside() && roomsCut.rooms.width > 0, roomsCut.rooms);
   placeFullscreenHint();
   const now = Date.now();
   // A pane in page full screen owns the whole window: the rest of the split hides.
@@ -4121,6 +4128,80 @@ function openWorkspacePage(pagePath) {
   return { ok: true };
 }
 
+// ── Rooms: the company room docked LEFT of the page (one-app plan slice 3) ──────────
+// Owner 2026-11-24: "make slack + notion". The pane is AitherOS Online's own
+// /companyroom SPA (channels, DMs, the Aither DM, the composer) on the Online tab's
+// signed-in partition -- the same session the pinned Online tab rides, never a second
+// sign-in and never a second store. Open/closed and its width live in browser-layout.json
+// (rail.normalizeLayout roomsOpen / roomsWidth) and survive a restart.
+
+let roomsView = null;
+
+/** /companyroom on the Online host (DESK_ONLINE_URL / the tenant's host / the apex). */
+function roomsUrl() {
+  return new URL("/companyroom", internal.onlineUrl()).href;
+}
+
+function ensureRoomsView() {
+  if (alive(roomsView) || !win || win.isDestroyed()) return roomsView;
+  const partition = onlinePartition();
+  const view = createPageView("hosted", { paneId: null, partition }, partition);
+  roomsView = view;
+  const wc = view.webContents;
+  const home = new URL(roomsUrl()).origin;
+  // The pane stays on the room: a link in a message opens as a tab of yours.
+  wc.setWindowOpenHandler(({ url: next }) => {
+    if (/^https?:/i.test(String(next))) openTab("you", next, { activate: true });
+    return { action: "deny" };
+  });
+  wc.on("will-navigate", (event, next) => {
+    let origin = "";
+    try { origin = new URL(String(next)).origin; } catch { /* not a URL */ }
+    if (origin === home) return;
+    event.preventDefault();
+    if (/^https?:/i.test(String(next))) openTab("you", String(next), { activate: true });
+  });
+  wc.on("render-process-gone", () => {
+    if (roomsView !== view) return;
+    roomsView = null;
+    layout();
+  });
+  win.contentView.addChildView(view);
+  // The panel and the taskbar stay above it (their popovers open over the page area).
+  if (alive(panelView)) win.contentView.addChildView(panelView);
+  if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
+  void loadHostedTab(view, roomsUrl()).catch(() => {});
+  return view;
+}
+
+function closeRoomsView() {
+  const view = roomsView;
+  roomsView = null;
+  if (!view) return;
+  try { if (win && !win.isDestroyed()) win.contentView.removeChildView(view); } catch { /* detached */ }
+  try { view.webContents.close(); } catch { /* gone */ }
+}
+
+/**
+ * Show or hide the Rooms pane (`want` undefined toggles). Raises the browser when it
+ * is closed. Remembered in the layout document.
+ */
+function setRoomsOpen(want) {
+  const open = want === undefined ? !getPrefs().roomsOpen : Boolean(want);
+  setPrefs({ roomsOpen: open });
+  if (!win || win.isDestroyed()) createBrowserWindow({ url: null, home: false });
+  if (open) ensureRoomsView();
+  else closeRoomsView();
+  layout();
+  pushState();
+  return { ok: true, open };
+}
+
+/** AitherOne (/workspace/one) in the pinned Workspace tab: the rail's Pages row. */
+function openPages() {
+  return openWorkspacePage("/workspace/one");
+}
+
 /** Media Forge's own UI in a web tab of yours (search-client forgeUrl finds where it runs). */
 async function openForge() {
   const where = await require("./search-window.cjs").client().forgeUrl();
@@ -4721,9 +4802,10 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
     hideFullscreenHint();
     mediaTabs.clear();
     lastLayoutKey = "";
-    for (const view of [...views.values(), panelView, taskbarView, dockView, splitView]) {
+    for (const view of [...views.values(), panelView, taskbarView, dockView, splitView, roomsView]) {
       if (alive(view)) view.webContents.close();
     }
+    roomsView = null;
     dockView = null;
     dockStatus = "off";
     splitView = null;
@@ -4751,6 +4833,8 @@ function createBrowserWindow({ askAgent: ask = null, url = null, home = true } =
   const restored = getPrefs().restoreSession === false ? 0 : restoreSession();
   if (target && target.ok) openTab("you", target.url);
   else if (home && !restored) openTab("you", homeUrl());
+  // Rooms comes back where the owner left it (browser-layout.json roomsOpen).
+  if (getPrefs().roomsOpen) { ensureRoomsView(); layout(); }
   // Sync runs while the browser is open, and only if the owner turned it on.
   try { getSync().start(); } catch { /* sync never blocks the browser */ }
   // The workspace policy: read from userData now, then asked of the platform.
@@ -5319,6 +5403,7 @@ function wireIpc() {
       if (arg === "awconnect") return openAwconnect();
       if (arg === "forge") return openForge();
       if (arg === "read-aloud") return readAloud();
+      if (arg === "rooms") return setRoomsOpen(undefined);
       return { ok: false, error: "unknown browser action" };
     }
     if (action === "menu") {
@@ -6477,6 +6562,11 @@ module.exports = {
   createAssistantPanel,
   createBrowserWindow,
   openOnlineApp,
+  /** Rooms docked left (one-app plan slice 3): toggle / open / close; and the Pages row. */
+  setRoomsOpen,
+  openPages,
+  roomsUrl,
+  __roomsOpenForTest: () => alive(roomsView),
   getGate: () => gate,
   getTabs: () => tabs,
   getState: () => state(),

@@ -747,6 +747,19 @@ const COMMANDS = Object.freeze([
     surfaces: ["palette"],
     whySingle: "A fairy door (More menu); the search page's Media Forge mode opens the same tab.",
   }),
+  // Rooms and Pages (one-app plan slice 3, owner 2026-11-24 "make slack + notion"):
+  // the company room docked left of the browser's page, and AitherOne in the pinned
+  // Workspace tab. Fairy doors (orb-window.cjs DESK_DOORS) and the browser rail.
+  Object.freeze({
+    id: "rooms.toggle", label: "Rooms: the company room beside the page", group: "go", icon: "chat",
+    surfaces: ["palette"],
+    whySingle: "A fairy door (More menu) and the browser rail's Rooms row already toggle it.",
+  }),
+  Object.freeze({
+    id: "pages.open", label: "Pages: AitherOne docs, canvas and roadmap", group: "go", icon: "book",
+    surfaces: ["palette"],
+    whySingle: "A fairy door (More menu) and the browser rail's Pages row already open it.",
+  }),
   // Aither Files (files-window.cjs): the owner's File Explorer replacement --
   // tabs, breadcrumb + address bar, list/grid with thumbnails, preview, new
   // folder / rename / copy / move / delete-to-Recycle-Bin, Send to Aitherium, Ask
