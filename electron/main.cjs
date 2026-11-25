@@ -5244,6 +5244,9 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "search.web.open": return void browserWindow.openInternalUrl("aither://search/?mode=q", { askAgent: browserAskAgent });
     case "research.open": return void browserWindow.openInternalUrl("aither://search/?mode=research", { askAgent: browserAskAgent });
     case "forge.open": return void browserWindow.openInternalUrl("aither://search/?mode=forge", { askAgent: browserAskAgent });
+    // Rooms docked left of the page, and AitherOne (Pages) in the pinned Workspace tab.
+    case "rooms.toggle": return void browserWindow.setRoomsOpen(undefined);
+    case "pages.open": return void browserWindow.openPages();
     case "tunnel.open": return void createTunnelWindow();
     // Alt+Space is ONE key (owner 2026-11-02): the global SHORTCUT gets the tap/hold
     // launcher; a tray/palette click keeps the search page's launcher.

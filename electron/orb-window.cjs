@@ -4072,6 +4072,7 @@ async function receiveDrop({ paths = [], text = "" } = {}) {
 const DESK_DOORS = Object.freeze([
   ["inbox.open", "Notifications"], ["console.open", "Apps"], ["browser.open", "Aither Browser"],
   ["search.web.open", "Search"], ["research.open", "Research"], ["forge.open", "Media Forge"],
+  ["rooms.toggle", "Rooms"], ["pages.open", "Pages"],
   ["chat.open", "Chat"], ["desktop.overlay.toggle", "AitherOS Online"], ["avatar.toggle", "Show avatar"],
 ]);
 function deskDoors(reg) {
