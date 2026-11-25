@@ -381,6 +381,15 @@ test("every command either has a handler or a dynamic submenu", () => {
       assert.ok(fn.includes(`case "${command.browser}":`), `${command.id} names browser verb "${command.browser}" that browserCommand does not run`);
       continue;
     }
+    if (command.aithertab) {
+      // AitherTab (awtab.cjs): mirrors the owner's real browser tabs as stages. The
+      // verb is data on the record; the default branch hands it to awtabCommand.
+      assert.match(body, /command\.aithertab/, "the AitherTab branch is gone");
+      assert.match(body, /awtabCommand\(command\.aithertab/, "nothing routes an AitherTab verb");
+      assert.ok(["ring", "refresh", "on", "off"].includes(command.aithertab),
+        `${command.id} names AitherTab verb "${command.aithertab}" that awtabCommand does not know`);
+      continue;
+    }
     if (command.orb) {
       // The floating ask orb: the default branch hands the verb to orb-window.run,
       // so a new orb row is one record and no case.

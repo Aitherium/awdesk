@@ -226,6 +226,8 @@ const quickMenu = require("./quick-menu.cjs").createQuickMenu({
   run: (id) => runCommand(id, undefined, { surface: "shortcut" }),
   // The ring's own ids (the fairy's dock answers, Windows' desktop menu).
   runExtra: (id) => orbWindow.runRingExtra(id),
+  // AitherTab: a tab picked on the OUTER band opens here, as an owner tab.
+  onAwtabTab: (url) => { try { browserWindow.createBrowserWindow({ url }); } catch { /* pre-window */ } },
 });
 // The ONE ring (owner 2026-11-23): the fairy flies to the centre and the ring opens
 // around it; Alt+Space hold, Ctrl+Alt+Q and the empty-desktop right-click all use it.
@@ -454,6 +456,80 @@ const overlayBrowserHost = require("./overlay-browser-host.cjs");
 const browserPolicy = require("./browser-policy.cjs");
 // Agents driving an owner-approved Chrome tab, through awconnect (chrome-bridge.cjs).
 const chromeBridge = require("./chrome-bridge.cjs").createChromeBridge();
+// AitherTab (awtab.cjs / awtab-bridge.cjs, owner 2026-11-25): the tab groups the
+// owner's Chrome/Edge/Firefox extension reports become STAGES in the Aither Browser.
+// Its own trust class (awtab ids + ~/.aither/awtab-token), never awconnect's list.
+const awtabBridge = require("./awtab-bridge.cjs").createAwtabBridge({
+  apply: (groups) => {
+    const r = browserWindow.applyAwtabGroups(groups);
+    // ONE companion (owner 2026-11-25): the fairy shows a single AitherTab entry.
+    try { orbWindow.setAwtabGroups(groups); } catch { /* the fairy is not up yet */ }
+    return r;
+  },
+  enabled: (browser) => !awtabOff().has(String(browser || "")),
+});
+/** Browsers the owner switched AitherTab off for (persisted in awtab-state.json). */
+function awtabOff() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(app.getPath("userData"), "awtab-state.json"), "utf8"));
+    return new Set(Array.isArray(raw && raw.off) ? raw.off.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+function setAwtabOff(browser, off) {
+  const next = awtabOff();
+  if (off) next.add(String(browser)); else next.delete(String(browser));
+  try {
+    fs.mkdirSync(app.getPath("userData"), { recursive: true });
+    fs.writeFileSync(path.join(app.getPath("userData"), "awtab-state.json"), JSON.stringify({ off: [...next] }));
+  } catch { /* the switch still holds for this run */ }
+  return { ok: true, off: [...next] };
+}
+
+/** The AitherTab verbs a command row may carry: refresh | on | off | groups | ring. */
+function awtabCommand(verb, arg = "") {
+  const what = String(verb || "");
+  const browser = String(arg || "").trim().toLowerCase();
+  const known = ["chrome", "edge", "firefox"];
+  if (what === "refresh") {
+    const r = awtabBridge.queue("refresh", known.includes(browser) ? browser : "");
+    const queued = r.queued || [];
+    return {
+      ok: true,
+      text: queued.length
+        ? `asked ${queued.join(", ")} for a fresh snapshot`
+        : "no browser has reported its tabs yet (load the AitherTab extension)",
+    };
+  }
+  if (what === "off" || what === "on") {
+    const targets = known.includes(browser) ? [browser] : known;
+    for (const b of targets) setAwtabOff(b, what === "off");
+    if (what === "off") for (const b of targets) awtabBridge.drop(b);
+    return { ok: true, text: what === "off" ? `AitherTab stopped mirroring ${targets.join(", ")}` : `AitherTab mirroring ${targets.join(", ")}` };
+  }
+  if (what === "groups") {
+    const groups = awtabBridge.groups();
+    return {
+      ok: true,
+      text: groups.length
+        ? groups.map((g) => `${g.browserLabel} · ${g.name} (${g.tabs.length} tab${g.tabs.length === 1 ? "" : "s"})`).join("\n")
+        : "nothing is mirrored yet",
+      groups: groups.map((g) => ({ key: g.key, name: g.name, browser: g.browser, tabs: g.tabs.length })),
+    };
+  }
+  if (what === "ring") return orbWindow.openAwtabRing({ groups: awtabBridge.groups() });
+  return { ok: false, error: `unknown AitherTab verb ${what}` };
+}
+function readAwtabToken() {
+  try {
+    // main.cjs has no module-level `os` (the file uses require("node:os") inline).
+    const home = require("node:os").homedir();
+    return fs.readFileSync(path.join(home, ".aither", "awtab-token"), "utf8").trim().slice(0, 200);
+  } catch {
+    return "";
+  }
+}
 const {
   createCommandWindow,
   ensureCommandIpc,
@@ -5500,6 +5576,10 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
         // palette and Alt+Space can say why not.
         return browserWindow.browserCommand(command.browser, arg, { askAgent: browserAskAgent, surface });
       }
+      if (command && command.aithertab) {
+        // AitherTab (awtab.cjs): mirror the owner's real browser tabs as stages.
+        return awtabCommand(command.aithertab, arg);
+      }
       if (command && command.orb) {
         // The floating ask orb / spirit: orb-window.cjs owns the windows, the
         // queue, the trips and the vision ladder; a row is data (`orb: "toggle" |
@@ -9183,6 +9263,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       // off the request body (see speakAloud's own doc).
       speakHandler: ({ text, voice, speed, slot }) => speakAloud(text, voice, speed, slot, "bridge:/speak"),
       swarmHandler: (req) => swarmApi(req),
+      // AitherTab: the extension's snapshots -> mirrored stages (counts/status only
+      // ever leave through this bridge; URLs stay in the desk).
+      awtabBridge,
+      awtabToken: readAwtabToken(),
       // The registry over loopback: what `awsh /desk` and `adk desk` list and run.
       // The browser overlay (AitherConnect) -> the same engine as the desk pop-up.
       assistHandler: (req) => assistMain().bridge(req),

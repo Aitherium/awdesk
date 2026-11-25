@@ -2021,6 +2021,33 @@ test("the orb and swarm pages: right click opens the ONE ring, hover only dwells
   assert.match(preload, /menuPick: \(id\) => ipcRenderer\.invoke\("desk:menu-pick"/);
 });
 
+test("AitherTab: ONE fairy carries the mirrored groups, and its click opens the nested ring", async () => {
+  start();
+  const groups = [{
+    key: "k1", browser: "chrome", browserLabel: "Chrome", name: "GitHub", colour: "blue",
+    tabs: [{ url: "https://github.com/a", title: "A" }],
+  }];
+  assert.equal(orbWindow.setAwtabGroups(groups).groups, 1);
+  assert.ok(orbWindow.clusterState().keys.includes("t:aithertab"), "one AitherTab companion, not one per group");
+  let opened = null;
+  orbWindow.setRingOpener({
+    openRadial: (o) => { opened = o; if (typeof o.onDone === "function") o.onDone({ closed: true }); return { ok: true }; },
+    isVisible: () => false,
+    hide() {},
+  });
+  const r = await orbWindow.openAwtabRing();
+  assert.equal(r.ok, true);
+  assert.equal(opened.rings.hub, "AitherTab");
+  assert.equal(opened.rings.groups.length, 1, "the ring carries the groups");
+  assert.equal(opened.rings.groups[0].tabs.length, 1);
+  // A companion fairy click routes here too (a group is not a card).
+  opened = null;
+  await orbWindow.openFairyCard("", "aithertab");
+  assert.ok(opened && opened.rings, "clicking the AitherTab fairy opens the ring");
+  orbWindow.setRingOpener(null);
+  orbWindow.setAwtabGroups([]);
+});
+
 test("fairy.menu (palette / bridge): the keyboard's door opens the ONE ring on the fairy", async () => {
   startAttention();
   orbWindow.setAttentionCards([]);

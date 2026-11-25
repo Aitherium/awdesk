@@ -173,16 +173,23 @@ function agentEntries(presence) {
   return out;
 }
 
+/** The ONE AitherTab companion (awtab.cjs builds it): mirrored browser tab groups. */
+function aithertabEntries(entry) {
+  if (!entry || !entry.key) return [];
+  return [{ ...entry, ...looks(agentFairy.crewFairy(entry.agent || "aithertab")), count: Number(entry.count) || 0 }];
+}
+
 /** Every entry the live sources hold now, decisions first. */
-function liveEntries({ cards = [], sessions = [], presence = [], nowMs = Date.now() } = {}) {
+function liveEntries({ cards = [], sessions = [], presence = [], aithertab = null, nowMs = Date.now() } = {}) {
   return [
     ...decisionEntries(cards, nowMs),
     ...sessionEntries(sessionRows(sessions)),
     ...agentEntries(presence),
+    ...aithertabEntries(aithertab),
   ];
 }
 
-const KIND_RANK = { decision: 0, session: 1, agent: 2 };
+const KIND_RANK = { decision: 0, session: 1, agent: 2, aithertab: 3 };
 const STATE_RANK = { waiting: 0, working: 1, idle: 2 };
 
 function ordered(list) {
@@ -263,6 +270,7 @@ module.exports = {
   sessionRows,
   sessionEntries,
   agentEntries,
+  aithertabEntries,
   liveEntries,
   createReaper,
   collapse,

@@ -21,7 +21,7 @@ test("a fresh document is one stage, active, and the browser always has one", ()
   assert.equal(doc.stages.length, 1);
   assert.equal(doc.active, doc.stages[0].id);
   assert.equal(S.activeStage(doc).id, doc.active);
-  assert.deepEqual(S.list(doc), [{ id: doc.stages[0].id, name: S.DEFAULT_NAME, workspace: "", tabs: 0, active: true }]);
+  assert.deepEqual(S.list(doc), [{ id: doc.stages[0].id, name: S.DEFAULT_NAME, workspace: "", tabs: 0, active: true, mirror: false, origin: null }]);
 });
 
 test("create names a stage uniquely, renames, and refuses a duplicate name", () => {
@@ -399,4 +399,79 @@ test("a split of two tabs on the same address survives a save (twin key)", () =>
   assert.deepStrictEqual(back.tabs, [21, 22]);
   const doc = JSON.parse(JSON.stringify({ tabs }));
   assert.strictEqual(bs.normalizeTabs(doc.tabs).length, 2, "round trip through JSON keeps the twin");
+});
+
+// ── AitherTab: mirrored stages (owner 2026-11-25) ──────────────────────────
+
+const group = (key, name, urls, extra = {}) => ({
+  key,
+  browser: "chrome",
+  browserLabel: "Chrome",
+  name,
+  colour: "blue",
+  tabs: urls.map((url) => ({ url, title: url })),
+  ...extra,
+});
+
+test("syncMirrors creates a mirror stage with its origin and never activates it", () => {
+  let doc = S.defaultDoc();
+  const activeBefore = doc.active;
+  const r = S.syncMirrors(doc, [group("awtab:chrome:Default:g7", "GitHub", ["https://github.com/a", "https://github.com/b"])]);
+  assert.equal(r.created.length, 1);
+  const stage = S.find(r.doc, r.created[0]);
+  assert.equal(stage.name, "Chrome · GitHub");
+  assert.equal(S.isMirror(stage), true);
+  assert.equal(stage.origin.groupKey, "awtab:chrome:Default:g7");
+  assert.equal(stage.tabs.length, 2);
+  assert.equal(r.doc.active, activeBefore, "a mirror never steals the owner's stage");
+  assert.equal(S.list(r.doc).find((s) => s.id === stage.id).mirror, true);
+});
+
+test("syncMirrors updates tabs in place and removes a group that vanished", () => {
+  let doc = S.defaultDoc();
+  let r = S.syncMirrors(doc, [group("k1", "GitHub", ["https://github.com/a"])]);
+  doc = r.doc;
+  const stageId = r.created[0];
+  r = S.syncMirrors(doc, [group("k1", "GitHub", ["https://github.com/a", "https://github.com/b"])]);
+  assert.equal(r.created.length, 0);
+  assert.deepEqual(r.updated, [stageId]);
+  assert.equal(S.find(r.doc, stageId).tabs.length, 2, "updated in place, same stage");
+  doc = r.doc;
+  r = S.syncMirrors(doc, []);
+  assert.deepEqual(r.removed, [stageId], "a vanished group removes its stage");
+  assert.equal(S.find(r.doc, stageId), null);
+});
+
+test("syncMirrors never touches an owner stage, and the active mirror hands over before removal", () => {
+  let doc = S.defaultDoc();
+  const r = S.syncMirrors(doc, [group("k1", "GitHub", ["https://github.com/a"])]);
+  doc = S.setActive(r.doc, r.created[0]).doc;
+  assert.equal(doc.active, r.created[0]);
+  const after = S.syncMirrors(doc, []);
+  assert.deepEqual(after.removed, [r.created[0]]);
+  assert.notEqual(after.doc.active, r.created[0], "the browser left the mirror before it disappeared");
+  assert.equal(after.doc.stages.length, 1);
+  assert.equal(S.isMirror(after.doc.stages[0]), false, "the owner's stage survives");
+});
+
+test("syncMirrors caps mirrors and evicts the oldest before it refuses a live group", () => {
+  let doc = S.defaultDoc();
+  const groups = Array.from({ length: 10 }, (_, i) => group(`k${i}`, `G${i}`, [`https://x/${i}`]));
+  const r = S.syncMirrors(doc, groups, { maxMirrors: 8 });
+  assert.equal(r.created.length, 8);
+  assert.equal(r.doc.stages.length, 9, "owner stage + 8 mirrors");
+  const next = S.syncMirrors(r.doc, groups.slice(2).concat([group("new", "New", ["https://n/1"])]), { maxMirrors: 8 });
+  assert.ok(next.created.length >= 1, "still making room by evicting the oldest mirror");
+  assert.equal(next.doc.stages.filter((s) => !S.isMirror(s)).length, 1, "owner stages were never evicted");
+});
+
+test("a mirror origin round-trips through the file and a foreign origin is refused", () => {
+  let doc = S.defaultDoc();
+  const r = S.syncMirrors(doc, [group("k1", "GitHub", ["https://github.com/a"])]);
+  const raw = JSON.parse(JSON.stringify(r.doc));
+  const back = S.normalizeDoc(raw);
+  const stage = back.stages.find((s) => S.isMirror(s));
+  assert.ok(stage, "the mirror mark survives a save/load");
+  assert.equal(S.normalizeOrigin({ kind: "notawtab", groupKey: "x" }), null);
+  assert.equal(S.normalizeOrigin({ kind: "awtab" }), null, "a mirror without a group key is not one");
 });

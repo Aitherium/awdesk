@@ -170,3 +170,28 @@ test("a caller's own pages replace the general ring (the fairy's This-fairy page
   // Extra-only slices carry their own label (no registry row needed).
   assert.equal(p0[0].label, "Card 1");
 });
+
+// ── AitherTab's nested ring (owner 2026-11-25) ──────────────────────────────
+
+test("ringsView: inner groups carry their tabs, bounded, and nothing nests empty", () => {
+  const Q = require("./quick-menu.cjs");
+  assert.equal(Q.ringsView(null), null, "no groups, no nested ring");
+  assert.equal(Q.ringsView({ groups: [] }), null);
+  const view = Q.ringsView({
+    hub: "AitherTab",
+    groups: [
+      { key: "k1", label: "Chrome · GitHub", colour: "blue", total: 20,
+        tabs: Array.from({ length: 20 }, (_, i) => ({ url: `https://g/${i}`, title: `G${i}` })) },
+      { key: "k2", label: "Edge · News", colour: "grey", total: 1, tabs: [{ url: "https://n/", title: "N" }] },
+    ],
+  });
+  assert.equal(view.hub, "AitherTab");
+  assert.equal(view.inner, Q.RINGS.inner);
+  assert.equal(view.outer, Q.RINGS.outer);
+  assert.equal(view.groups.length, 2);
+  assert.equal(view.groups[0].short, "GitHub", "the browser prefix is dropped from the short label");
+  assert.equal(view.groups[0].total, 20, "the true count is kept even when the band is capped");
+  assert.equal(view.groups[0].tabs.length, Q.RINGS.maxOuter, "the outer band is capped");
+  assert.deepEqual(Object.keys(view.groups[0].tabs[0]).sort(), ["label", "short"],
+    "a tab slice carries no URL to the page");
+});

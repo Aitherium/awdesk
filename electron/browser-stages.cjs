@@ -59,6 +59,7 @@ const DEFAULT_NAME = "Stage 1";
 const OWNER_PARTITION = "persist:aither-browser";
 
 const panesMath = require("./browser-panes.cjs");
+const awtab = require("./awtab.cjs");
 
 const isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
 // eslint-disable-next-line no-control-regex
@@ -285,7 +286,30 @@ function normalizeStage(raw, id) {
     splits: normalizeSplits(s.splits),
     terminals: normalizeTerminals(s.terminals),
     roots: normalizeRoots(s.roots),
+    // AitherTab (owner 2026-11-25): a stage MIRRORED from a real browser's tab group.
+    // Absent on every owner stage, and the only thing syncMirrors() may touch.
+    origin: normalizeOrigin(s.origin),
   };
+}
+
+/** The mirror mark on a stage: {kind:"awtab", groupKey, browser, colour, updatedAt}. */
+function normalizeOrigin(raw, now = 0) {
+  const o = isObj(raw) ? raw : null;
+  if (!o || String(o.kind || "") !== "awtab") return null;
+  const groupKey = cleanText(o.groupKey, 120);
+  if (!groupKey) return null;
+  return {
+    kind: "awtab",
+    groupKey,
+    browser: awtab.BROWSERS.includes(String(o.browser || "")) ? String(o.browser) : "chrome",
+    colour: awtab.COLOURS.includes(String(o.colour || "")) ? String(o.colour) : "grey",
+    updatedAt: Number.isFinite(Number(o.updatedAt)) ? Math.round(Number(o.updatedAt)) : Number(now) || 0,
+  };
+}
+
+/** A stage the AitherTab mirror owns (never edited here as an owner stage). */
+function isMirror(stage) {
+  return Boolean(stage && stage.origin && stage.origin.kind === "awtab");
 }
 
 /**
@@ -354,6 +378,7 @@ function list(doc) {
   const d = normalizeDoc(doc);
   return d.stages.map((s) => ({
     id: s.id, name: s.name, workspace: s.workspace, tabs: s.tabs.length, active: s.id === d.active,
+    mirror: isMirror(s), origin: s.origin || null,
   }));
 }
 
@@ -371,14 +396,14 @@ function uniqueName(d, want) {
  * Make a stage. `at` puts it next to another stage in the switcher (the UI's "new stage
  * after this one"); without it the new stage goes last and becomes the active one.
  */
-function create(doc, { name = "", workspace = "", at = null } = {}) {
+function create(doc, { name = "", workspace = "", at = null, origin = null } = {}) {
   const d = clone(doc);
   if (d.stages.length >= MAX_STAGES) return { ok: false, error: `at most ${MAX_STAGES} stages` };
   const taken = new Set(d.stages.map((s) => Number(s.id.slice(1)) || 0));
   let id = `s${d.nextId}`;
   while (taken.has(Number(id.slice(1)))) id = `s${(d.nextId += 1)}`;
   d.nextId = Math.max(d.nextId + 1, Number(id.slice(1)) + 1);
-  const stage = normalizeStage({ name: uniqueName(d, name), workspace }, id);
+  const stage = normalizeStage({ name: uniqueName(d, name), workspace, origin }, id);
   const index = at ? d.stages.findIndex((s) => s.id === at) : -1;
   if (index >= 0) d.stages.splice(index + 1, 0, stage);
   else d.stages.push(stage);
@@ -459,9 +484,99 @@ function setTabs(doc, id, tabs, opts = {}) {
   return { ok: true, doc: normalizeDoc(d) };
 }
 
-/** What the stage was working with: awsh session ids and file-explorer root ids. */
-function setContext(doc, id, { terminals, roots } = {}) {
+/** Stamp a stage as a mirror (the AitherTab origin mark). */
+function setOrigin(doc, id, origin, { now = Date.now() } = {}) {
   const d = clone(doc);
+  const stage = d.stages.find((s) => s.id === id);
+  if (!stage) return { ok: false, error: `no stage ${id}` };
+  stage.origin = normalizeOrigin({ ...(origin || {}), kind: "awtab" }, now);
+  if (!stage.origin) return { ok: false, error: "not an AitherTab origin" };
+  return { ok: true, doc: normalizeDoc(d) };
+}
+
+/**
+ * Reconcile the mirrored stages with the browser groups AitherTab last saw.
+ *
+ * PURE (no fs, no electron) so `node --test electron/browser-stages.test.cjs` pins it.
+ * Rules the owner set (2026-11-25):
+ *   - a group that vanished removes its stage (and never the stage the browser is in:
+ *     the active mirror hands over to an owner stage first);
+ *   - a mirror stage never ACTIVATES itself -- the owner stays where he is;
+ *   - room comes from the oldest inactive MIRROR, never from an owner stage.
+ *
+ * Returns {doc, created, updated, removed, skipped}.
+ */
+function syncMirrors(doc, groups, { maxMirrors = 8, now = Date.now() } = {}) {
+  let d = normalizeDoc(doc);
+  const plan = (Array.isArray(groups) ? groups : []).slice(0, maxMirrors).map((g) => ({
+    ...g,
+    want: `${g.browserLabel || awtab.browserLabel(g.browser)} · ${g.name}`,
+  }));
+  const current = d.stages.filter(isMirror).map((s) => ({
+    stageId: s.id,
+    key: s.origin.groupKey,
+    name: s.name,
+    colour: s.origin.colour,
+    urls: s.tabs.map((t) => t.url),
+  }));
+  const verdict = awtab.diff(current, plan.map((g) => ({ ...g, name: g.want })));
+  const created = [];
+  const updated = [];
+  const removed = [];
+  const skipped = [];
+
+  for (const stageId of verdict.remove) {
+    const stage = d.stages.find((s) => s.id === stageId);
+    if (!stage) continue;
+    if (d.active === stageId) {
+      const owner = d.stages.find((s) => !isMirror(s) && s.id !== stageId);
+      if (owner) { const a = setActive(d, owner.id); if (a.ok) d = a.doc; }
+    }
+    const r = remove(d, stageId);
+    if (r.ok) { d = r.doc; removed.push(stageId); } else skipped.push({ stageId, reason: r.error });
+  }
+
+  for (const g of verdict.update) {
+    const stage = d.stages.find((s) => s.id === g.stageId);
+    if (!stage) continue;
+    const t = setTabs(d, g.stageId, g.tabs);
+    if (t.ok) d = t.doc;
+    if (stage.name !== g.want) {
+      const n = rename(d, g.stageId, uniqueName(d, g.want));
+      if (n.ok) d = n.doc;
+    }
+    const o = setOrigin(d, g.stageId, { groupKey: g.key, browser: g.browser, colour: g.colour }, { now });
+    if (o.ok) d = o.doc;
+    updated.push(g.stageId);
+  }
+
+  for (const g of verdict.create) {
+    if (d.stages.length >= MAX_STAGES) {
+      const victim = d.stages
+        .filter((s) => isMirror(s) && s.id !== d.active)
+        .sort((a, b) => (a.origin.updatedAt || 0) - (b.origin.updatedAt || 0))[0];
+      if (victim) { const r = remove(d, victim.id); if (r.ok) { d = r.doc; removed.push(victim.id); } }
+    }
+    const activeBefore = d.active;
+    const r = create(d, {
+      name: uniqueName(d, g.want),
+      origin: { kind: "awtab", groupKey: g.key, browser: g.browser, colour: g.colour },
+    });
+    if (!r.ok) { skipped.push({ key: g.key, reason: r.error }); continue; }
+    d = r.doc;
+    const t = setTabs(d, r.stage.id, g.tabs);
+    if (t.ok) d = t.doc;
+    const o = setOrigin(d, r.stage.id, { groupKey: g.key, browser: g.browser, colour: g.colour }, { now });
+    if (o.ok) d = o.doc;
+    if (d.active !== activeBefore) { const a = setActive(d, activeBefore); if (a.ok) d = a.doc; }
+    created.push(r.stage.id);
+  }
+
+  return { doc: normalizeDoc(d), created, updated, removed, skipped };
+}
+
+/** What the stage was working with: awsh session ids and file-explorer root ids. */
+function setContext(doc, id, { terminals, roots } = {}) {  const d = clone(doc);
   const stage = d.stages.find((s) => s.id === id);
   if (!stage) return { ok: false, error: `no stage ${id}` };
   if (terminals !== undefined) stage.terminals = normalizeTerminals(terminals);
@@ -570,6 +685,11 @@ module.exports = {
   assignWorkspace,
   setActive,
   setTabs,
+  // AitherTab (awtab): the mirror mark and the pure reconcile
+  normalizeOrigin,
+  isMirror,
+  setOrigin,
+  syncMirrors,
   setContext,
   setSplits,
   normalizeSplit,

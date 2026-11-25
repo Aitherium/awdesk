@@ -56,6 +56,7 @@ const companionMenu = require("./companion-menu.cjs");
 const fairyOwner = require("./fairy-owner.cjs");
 const fairyCounts = require("./fairy-counts.cjs");
 const fairyCluster = require("./fairy-cluster.cjs");
+const awtab = require("./awtab.cjs");
 const displayMode = require("./display-mode.cjs");
 const orbRadial = require("./orb-radial-menu.cjs");
 const linkOpener = require("./link-opener.cjs");
@@ -116,6 +117,8 @@ let swarmCompanions = [];
 /** Live session rows (Claude Code tabs Map + awsh daemon rows) and which sources read. */
 let clusterSessions = [];
 let clusterOk = { cards: true, sessions: true, presence: true };
+/** AitherTab (awtab.cjs): the mirrored groups last reported — ONE companion, not one per group. */
+let awtabGroups = [];
 const clusterReaper = fairyCluster.createReaper();
 let clusterTotal = 0;
 let clusterLabel = "";
@@ -2923,7 +2926,7 @@ function restoreAfterRing(back) {
  * ring around the fairy. `hold` = the Alt+Space hold (release selects). Resolves once
  * the ring is on screen; the returned promise never rejects.
  */
-async function openRing({ at = null, hold = false, onDone = null, page = 0, fly = true, pages = null } = {}) {
+async function openRing({ at = null, hold = false, onDone = null, page = 0, fly = true, pages = null, rings = null } = {}) {
   const api = ringOpener;
   const openFn = typeof api === "function" ? api
     : (api && typeof api.openRadial === "function" ? (o) => api.openRadial(o) : null);
@@ -2964,6 +2967,7 @@ async function openRing({ at = null, hold = false, onDone = null, page = 0, fly 
       hold: Boolean(hold),
       page,
       ...(Array.isArray(pages) && pages.length ? { pages } : {}),
+      ...(rings && Array.isArray(rings.groups) && rings.groups.length ? { rings } : {}),
       onDone: (result) => {
         ringOpen = false;
         const back = ringReturn;
@@ -4272,6 +4276,7 @@ function speakingNow(nowMs = Date.now()) {
 function currentCompanions(nowMs = Date.now()) {
   const entries = fairyCluster.liveEntries({
     cards: attentionCards, sessions: clusterSessions, presence: agentPresence, nowMs,
+    aithertab: awtab.fairyEntry(awtabGroups, nowMs),
   });
   const { kept } = clusterReaper.reconcile(entries, { nowMs, ok: clusterOk });
   const c = fairyCluster.collapse(kept, fairyCluster.CAP);
@@ -4299,6 +4304,33 @@ function setClusterSessions(sources, { ok = true } = {}) {
   clusterOk = { ...clusterOk, sessions: ok !== false };
   sendFairy();
   return { ok: true, total: clusterTotal };
+}
+
+/**
+ * The AitherTab groups the mirror last reported (awtab.cjs). ONE companion carries
+ * them; the ring holds the groups and expands into a group's tabs (owner 2026-11-25:
+ * "one fairy, this is the reason I wanted rings that can be expanded on").
+ */
+function setAwtabGroups(groups) {
+  awtabGroups = Array.isArray(groups) ? groups : [];
+  sendFairy();
+  return { ok: true, groups: awtabGroups.length };
+}
+
+/** Open the AitherTab ring: inner = groups, outer = the tabs of the group picked. */
+function openAwtabRing({ groups = null } = {}) {
+  const list = Array.isArray(groups) ? groups : awtabGroups;
+  if (!list.length) return { ok: false, reason: "nothing is mirrored yet" };
+  // quick-menu owns the two bands and the local expansion; it needs the tabs too, so
+  // the whole (bounded) group list travels once and no desk round-trip can race a click.
+  const payload = list.slice(0, awtab.MAX_GROUPS).map((g) => ({
+    key: g.key,
+    label: `${g.browserLabel || awtab.browserLabel(g.browser)} · ${g.name}`,
+    colour: g.colour || "grey",
+    tabs: (g.tabs || []).slice(0, awtab.MAX_GROUP_TABS).map((t) => ({ url: t.url, title: t.title })),
+    total: (g.tabs || []).length,
+  }));
+  return openRing({ at: orbCenter(), hold: false, fly: false, rings: { hub: "AitherTab", groups: payload } });
 }
 
 /**
@@ -4543,6 +4575,10 @@ function peekCard(id, { explicit = false } = {}) {
  * an id that is gone falls back to the same agent's newest open card.
  */
 function openFairyCard(id, agent = "") {
+  // The ONE AitherTab companion is not a card: its click opens the nested rings.
+  if (agentFairy.crewKey(agent) === "aithertab" || String(agent || "") === "aithertab") {
+    return openAwtabRing();
+  }
   let card = attentionCards.find((c) => c && c.id === String(id || ""));
   if (!card && agent) {
     const key = agentFairy.crewKey(agent);
@@ -6633,6 +6669,8 @@ module.exports = {
   quietUntil: () => (Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0),
   menuState: () => publicMenu(), __setMenuIdleMs: (ms) => { menuIdleMsOverride = Number(ms) || 0; }, fairy: () => currentFairy(), companions: () => currentCompanions(),
   setPresence, noteAgentPosted, chatWithAgent, setClusterSessions, clusterState, surfaceForCards,
+  // AitherTab: the ONE companion and its nested rings (awtab.cjs).
+  setAwtabGroups, openAwtabRing, __awtabGroups: () => awtabGroups,
   // tool flights: the fairy goes to the window an agent's tool call belongs to
   setReducedMotion, updateToolFlights, flightPlan: () => toolFlightPlan, surfaceRects,
   // visual neurons (neurons-model.cjs): the switch, a step, and the drawn graph
@@ -6720,6 +6758,7 @@ module.exports = {
     swarmCompanions = [];
     clusterSessions = [];
     clusterOk = { cards: true, sessions: true, presence: true };
+    awtabGroups = [];
     clusterReaper.reset();
     autoSurfaced = false;
     ownerHidIds = null;
