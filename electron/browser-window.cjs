@@ -6209,7 +6209,7 @@ async function saveTabToPage() {
   if (getWorkspace().blocksRead(tabs.active, "selection")) {
     return { ok: false, error: "the workspace policy does not let this page be read" };
   }
-  let text = "";
+  let text;
   try {
     text = await wc.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD_ID, [{ code: READ_ALOUD_SCRIPT }]);
   } catch { text = ""; }
