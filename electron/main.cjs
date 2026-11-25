@@ -2562,6 +2562,16 @@ async function getUniverseBodies() {
       .map((s) => ({ name: s.id, state: s.failing ? "starved" : s.enabled ? "idle" : "disabled", lastRun: null }));
   } catch (error) { degraded.push({ source: "routines", error: String((error && error.message) || error).slice(0, 160) }); }
   const built = buildUniverse({ tabs, agents, routines, platform });
+  // The live planes as motion (signalsFromPlanes): Flux pings, Pulse/Watch dim. Read
+  // through the desk's existing plane lane; a plane that will not answer is a note.
+  const planes = {};
+  try {
+    const plane = require("./plane-client.cjs").createPlaneClient({ store: require("./last-good-cache.cjs").deskCache() });
+    for (const id of ["flux", "pulse", "watch"]) {
+      try { planes[id] = await plane.snapshot(id); } catch (error) { degraded.push({ source: id, error: String((error && error.message) || error).slice(0, 160) }); }
+    }
+  } catch (error) { degraded.push({ source: "planes", error: String((error && error.message) || error).slice(0, 160) }); }
+  built.signals = require("./universe-client.cjs").signalsFromPlanes(built.nodes, planes);
   return degraded.length ? { ...built, degraded } : built;
 }
 
