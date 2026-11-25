@@ -2177,7 +2177,10 @@ function openBubble({ focus = false } = {}) {
   // ONE surface (owner 2026-11-20): while the body is up it carries the cards, so no
   // floating ask panel may pop where the fairy used to rest. (showOrb already refuses
   // to raise the orb; without this guard openBubble raised the bubble anyway.)
-  if (expanded || stoodDownForAvatar) {
+  // Stood down because the body carries the cards: no floating panel beside it. But a
+  // stale flag must never eat the owner's click while the fairy IS on screen (owner
+  // 2026-11-25: "what happened to the left click that opens a little text box").
+  if (expanded || (stoodDownForAvatar && !(alive(orbWindow) && orbWindow.isVisible()))) {
     sendPanel();
     return { ok: true, suppressed: true };
   }
@@ -2859,6 +2862,19 @@ function setRingOpener(api) {
   ringOpener = api && (typeof api === "function" || typeof api.openRadial === "function") ? api : null;
   return Boolean(ringOpener);
 }
+
+/** Is a ring ACTUALLY on screen? A session whose close path skipped `onDone` leaves
+ *  `ringOpen` true with no window up: the next open is refused AND a press on the
+ *  fairy was swallowed, so the ask box stopped opening (owner 2026-11-25: "what
+ *  happened to the left click that opens a little text box"). */
+function ringVisible() {
+  const api = ringOpener;
+  try {
+    return Boolean(api && typeof api.isVisible === "function" && api.isVisible());
+  } catch {
+    return false;
+  }
+}
 function setExtraRunner(fn) {
   extraRunner = typeof fn === "function" ? fn : null;
   return Boolean(extraRunner);
@@ -2910,8 +2926,7 @@ async function openRing({ at = null, hold = false, onDone = null, page = 0, fly 
   if (!openFn) return { ok: false, reason: "no ring renderer is wired" };
   if (ringOpen) {
     // A leaked session (a close path that skipped onDone) must never wedge the ring.
-    const visible = api && typeof api.isVisible === "function" ? api.isVisible() : false;
-    if (visible) {
+    if (ringVisible()) {
       // Pressing the key again closes it (and the fairy goes back).
       if (typeof api.hide === "function") api.hide();
       return { ok: true, closed: true };
@@ -5170,8 +5185,9 @@ function moreMenu({ atFairy = false } = {}) {
  *  open THE pill menu: there is one fairy menu. */
 function spiritMenu() {
   // Owner 2026-11-23: the orb's own right-click menu is retired into the ONE ring.
-  // "This fairy" is the page it opens on: one slice per open card, plus every control
-  // the old menu carried (Hide, Dock answers, display, sprite, desk doors, quit).
+  // "This fairy" carries one slice per open card, plus every control the old menu had.
+  // Owner 2026-11-25: "why doesn't it default to tools???" -- it opens on the TOOLS
+  // ring (page 0); this fairy is one door away ("< Tools" / "Controls >").
   hideMenu();
   hideTip();
   return openRing({
@@ -5179,7 +5195,7 @@ function spiritMenu() {
     hold: false,
     fly: false,
     pages: selfRingPages(),
-    page: 1,
+    page: 0,
   });
 }
 
@@ -5318,7 +5334,14 @@ function dockCard() {
 // ── drag and click ──────────────────────────────────────────────────────────
 
 function beginDrag() {
-  if (dragging || !alive(orbWindow) || ringOpen) return { ok: true };
+  if (dragging || !alive(orbWindow)) return { ok: true };
+  // A ring session that is no longer on screen is a LEAK, not a lock: clear it so this
+  // press still becomes a click (the ask box) instead of being swallowed.
+  if (ringOpen && !ringVisible()) {
+    ringOpen = false;
+    ringReturn = null;
+  }
+  if (ringOpen) return { ok: true };
   hideTip();
   // A new grab cancels a pending "stay N seconds" return; the placement itself is
   // cleared only when this drag actually drops somewhere (a plain click must not
@@ -6636,6 +6659,15 @@ module.exports = {
     if (toolFlightTimer) { clearTimeout(toolFlightTimer); toolFlightTimer = null; }
     if (cardIdleTimer) { clearTimeout(cardIdleTimer); cardIdleTimer = null; }
     if (cardMoveTimer) { clearTimeout(cardMoveTimer); cardMoveTimer = null; }
+    // The window-layer session flags a test can leave set (a stand-down, a wedged
+    // ring, a press still open): every test starts from the same clean layer.
+    dragging = null;
+    ringOpen = false;
+    ringReturn = null;
+    ringOpener = null;
+    expanded = false;
+    stoodDownForAvatar = false;
+    suppressed = false;
     cardOpen = false;
     resultStream = [];
     toolFlightPlanner.reset();

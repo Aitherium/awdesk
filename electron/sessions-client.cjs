@@ -38,6 +38,51 @@ function harnessToken() {
 
 const FOCUS_ROOT = process.env.AITHER_FOCUS_DIR || path.join(os.homedir(), ".aither", "focus");
 
+// ── Antigravity (owner 2026-11-25: "fairies don't even send me decisions anymore!
+// they aren't integrated into antigravity!"). The Antigravity plugin
+// (~/.gemini/config/plugins/aitheros) runs awdk's antigravity_hooks.py on every
+// lifecycle event; that adapter writes ONE presence file per live conversation in
+// ~/.aither/antigravity_sessions/<conversationId>.json. The harness daemon does not
+// discover that directory (measured 2026-11-25: :8362/sessions/unified listed 11
+// Claude sessions and zero Antigravity), so the desk reads it here and merges it into
+// the same unified list: those conversations become fairies like any other session.
+const ANTIGRAVITY_DIR = process.env.AITHER_ANTIGRAVITY_SESSIONS
+  || path.join(os.homedir(), ".aither", "antigravity_sessions");
+/** A conversation that wrote no lifecycle event for this long is not "live": the hook
+ *  writes "ready"/"idle" and never deletes the file, so age is the only honest test. */
+const ANTIGRAVITY_LIVE_MS = 90 * 60 * 1000;
+
+/** Antigravity conversations as session rows. Never throws; a missing directory is
+ *  "not integrated here", not an error. */
+function readAntigravitySessions({ dir = ANTIGRAVITY_DIR, now = Date.now(), liveMs = ANTIGRAVITY_LIVE_MS } = {}) {
+  let names = [];
+  try {
+    names = fs.readdirSync(dir).filter((n) => n.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  const rows = [];
+  for (const name of names) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
+      if (!raw || typeof raw !== "object") continue;
+      const id = String(raw.sessionId || raw.id || "").trim();
+      if (!id) continue;
+      const updatedTs = Number(raw.updatedTs) || 0;
+      const updatedMs = updatedTs > 0 ? updatedTs * 1000 : Date.parse(String(raw.updatedAt || ""));
+      if (!Number.isFinite(updatedMs) || now - updatedMs > liveMs) continue;
+      rows.push({
+        ...raw,
+        id,
+        harness: "antigravity",
+        harness_label: raw.harnessLabel || "Antigravity",
+        status: String(raw.status || "ready"),
+      });
+    } catch { /* a half-written file is skipped; the next event rewrites it */ }
+  }
+  return rows;
+}
+
 /** The goal / next step a Claude Code session left behind (written by the
  *  session-focus.py Stop hook as <FOCUS_ROOT>/<project>/<session_id>.json).
  *  A row that says WHAT it was doing is what makes resume pick the right one.
@@ -97,9 +142,22 @@ function withActions(row) {
   return { ...rest, actions, why_not: whyNot };
 }
 
-async function listSessions({ fetchImpl = globalThis.fetch, timeoutMs = 6000 } = {}) {
+async function listSessions({ fetchImpl = globalThis.fetch, timeoutMs = 6000, antigravityDir = ANTIGRAVITY_DIR, now = Date.now() } = {}) {
+  const antigravity = readAntigravitySessions({ dir: antigravityDir, now });
+  const merged = (sessions) => {
+    const ids = new Set(sessions.map((s) => String((s && (s.id || s.session_id)) || "")));
+    return [...sessions, ...antigravity.filter((s) => !ids.has(s.id))];
+  };
+  const noteFor = (sessions, base) => {
+    const extra = antigravity.length ? ` + ${antigravity.length} Antigravity` : "";
+    return `${sessions.length} session(s)${extra}${base ? ` — ${base}` : ""}`;
+  };
   const token = harnessToken();
   if (!token) {
+    if (antigravity.length) {
+      const sessions = merged([]);
+      return { ok: true, sessions, note: noteFor(sessions, "no harness token: Antigravity only") };
+    }
     return { ok: false, sessions: [], note: "no harness token (~/.aither/harness_token) — daemon never ran here?" };
   }
   const controller = new AbortController();
@@ -114,12 +172,18 @@ async function listSessions({ fetchImpl = globalThis.fetch, timeoutMs = 6000 } =
     }
     if (!res.ok) return { ok: false, sessions: [], note: `daemon answered ${res.status}` };
     const body = await res.json();
-    const sessions = withFocus(Array.isArray(body.sessions) ? body.sessions : []).map(withActions);
-    return { ok: true, sessions, note: `${sessions.length} session(s)` };
+    const sessions = merged(withFocus(Array.isArray(body.sessions) ? body.sessions : [])).map(withActions);
+    return { ok: true, sessions, note: noteFor(sessions, "") };
   } catch (error) {
     const why = error && error.name === "AbortError"
       ? `daemon did not answer within ${Math.round(timeoutMs / 1000)}s`
       : "daemon unreachable (start it: adk harness serve)";
+    // A down daemon must not hide a fairy that is working right now: the Antigravity
+    // conversations come from the disk, not from the daemon.
+    if (antigravity.length) {
+      const sessions = merged([]);
+      return { ok: true, sessions, note: noteFor(sessions, why) };
+    }
     return { ok: false, sessions: [], note: why };
   } finally {
     clearTimeout(timer);
@@ -194,4 +258,4 @@ function sessionsBrief(result, { max = 15 } = {}) {
   );
 }
 
-module.exports = { listSessions, tailTranscript, harnessToken, sessionsBrief, focusFor, withFocus, withActions, VERBS, DAEMON };
+module.exports = { listSessions, readAntigravitySessions, ANTIGRAVITY_LIVE_MS, tailTranscript, harnessToken, sessionsBrief, focusFor, withFocus, withActions, VERBS, DAEMON };

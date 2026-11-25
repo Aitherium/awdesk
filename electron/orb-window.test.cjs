@@ -1851,7 +1851,7 @@ test("right click on the orb: inbox, answer window, quiet 1 h (nudges held), set
   orbWindow.setRingOpener({ openRadial: (o) => { openedRing = o; if (typeof o.onDone === "function") o.onDone({ closed: true }); return { ok: true }; }, isVisible: () => false, hide() {} });
   const viaPage = await invoke("desk:spirit-menu", orbWin());
   assert.equal(viaPage.ok, true, "the fairy's right click opens the ONE ring");
-  assert.equal(openedRing.page, 1, "it opens on the This-fairy page");
+  assert.equal(openedRing.page, 0, "it opens on the Tools ring (owner 2026-11-25)");
   assert.ok(openedRing.pages.some((p) => p.id === "self"), "with the fairy's own pages");
   assert.equal(nativeMenuPopups, 0, "the old pill menu is not opened any more");
   orbWindow.setRingOpener(null);
@@ -2020,8 +2020,9 @@ test("fairy.menu (palette / bridge): the keyboard's door opens the ONE ring on t
   orbWindow.setAttentionCards([]);
   cursor = { x: 5, y: 5 };
   // Owner 2026-11-23: every surface opens the same ring (the keyboard/bridge row
-  // included), on the This-fairy page. The ring's own geometry belongs to quick-menu
-  // and is pinned in quick-menu.test.cjs; here the DOOR is what matters.
+  // included). Owner 2026-11-25: it opens on the TOOLS ring, not the This-fairy page.
+  // The ring's own geometry belongs to quick-menu and is pinned in quick-menu.test.cjs;
+  // here the DOOR is what matters.
   let opened = null;
   orbWindow.setRingOpener({
     openRadial: (o) => { opened = o; if (typeof o.onDone === "function") o.onDone({ closed: true }); return { ok: true }; },
@@ -2031,7 +2032,7 @@ test("fairy.menu (palette / bridge): the keyboard's door opens the ONE ring on t
   const r = await orbWindow.run("menu");
   assert.equal(r.ok, true);
   assert.ok(opened, "the ring renderer was asked to open");
-  assert.equal(opened.page, 1, "it opens on the This-fairy page");
+  assert.equal(opened.page, 0, "it opens on the Tools ring (owner 2026-11-25)");
   assert.ok(opened.pages.some((p) => p.id === "self"), "with the fairy's own pages");
   assert.equal(menuWin(), null, "the retired pill menu is not opened");
   orbWindow.setRingOpener(null);
@@ -2039,6 +2040,36 @@ test("fairy.menu (palette / bridge): the keyboard's door opens the ONE ring on t
   const row = reg.byId("fairy.menu");
   assert.equal(row.orb, "menu");
   assert.ok(row.surfaces.includes("palette"));
+});
+
+test("a leaked ring session never eats the fairy's click: the ask box still opens", async () => {
+  start();
+  // The ring reported open but never called onDone (a close path that skipped it) and
+  // its window is off screen. Before the fix this wedged `ringOpen` true: beginDrag
+  // returned early, endDrag never reported a click, and the left click stopped opening
+  // the ask box (owner 2026-11-25: "what happened to the left click that opens a
+  // little text box").
+  orbWindow.setRingOpener({ openRadial: () => ({ ok: true }), isVisible: () => false, hide() {} });
+  const opened = await orbWindow.openRing({ fly: false });
+  assert.equal(opened.ok, true);
+  assert.equal(orbWindow.__ringOpen(), true, "the session is wedged open");
+  orbWindow.beginDrag();
+  const end = await orbWindow.endDrag();
+  assert.equal(end.click, true, "a press that never moved is still a click");
+  assert.equal(orbWindow.__ringOpen(), false, "the leak is cleared, not left to eat every press");
+  orbWindow.setRingOpener(null);
+});
+
+test("a stale stand-down flag does not swallow the click while the fairy is on screen", async () => {
+  start();
+  orbWindow.standDownForAvatar();
+  assert.equal(orbWindow.stoodDown(), true);
+  // The fairy is on screen again without returnFromAvatar (another path showed her):
+  // a click must still be the ask box, never a silent no-op.
+  orbWin().showInactive();
+  const click = await invoke("desk:orb-click", orbWin());
+  assert.equal(click.visible, true);
+  assert.equal(bubbleWin().isVisible(), true, "the ask box opens for a fairy you can see");
 });
 
 test("a menu Windows refused the keyboard (no blur will come) closes itself once nothing touches it", async () => {
