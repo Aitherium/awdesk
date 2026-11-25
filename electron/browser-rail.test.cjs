@@ -79,6 +79,7 @@ test("a hand-edited layout file cannot wedge the window", () => {
       collapsedSections: ["Apps"], expandedSections: [], railAllSections: false,
       restoreSession: true, translateOffer: true,
       launchModes: {}, agentCookieSites: [], bookmarksBar: false, roomsOpen: false, roomsWidth: rail.ROOMS_WIDTH,
+      roomsSource: 'relay',
       desk: require("./desk-layout.cjs").normalizeDesk({}) });
   assert.equal(rail.normalizeLayout({ railWidth: null }).railWidth, rail.RAIL_WIDTH, "reset means default, not minimum");
   assert.equal(rail.normalizeLayout({ taskbar: false }).taskbar, false);
@@ -581,6 +582,12 @@ test("roomsOpen / roomsWidth survive the layout document's normalizer", () => {
   assert.equal(rail.normalizeLayout({ roomsOpen: "yes", roomsWidth: 5 }).roomsOpen, false);
   assert.equal(rail.normalizeLayout({ roomsWidth: 5 }).roomsWidth, rail.ROOMS_MIN, "too narrow: clamped up");
   assert.equal(rail.normalizeLayout({ roomsWidth: "x" }).roomsWidth, rail.ROOMS_WIDTH, "not a number: the default");
+});
+
+test("roomsSource picks the pane's room and survives a restart", () => {
+  assert.equal(rail.normalizeLayout({ roomsSource: "world" }).roomsSource, "world");
+  assert.equal(rail.normalizeLayout({}).roomsSource, "relay", "Relay until asked for the World");
+  assert.equal(rail.normalizeLayout({ roomsSource: "nonsense" }).roomsSource, "relay");
 });
 
 test("the rail carries Rooms (toggles the dock) and Pages (AitherOne in the Workspace tab)", () => {

@@ -756,6 +756,18 @@ const COMMANDS = Object.freeze([
     whySingle: "A fairy door (More menu) and the browser rail's Rooms row already toggle it.",
   }),
   Object.freeze({
+    // One pane, two rooms (owner 2026-11-24: "the super cool chatrooms for relay and
+    // shadowbroker"). Switching is a palette verb, so it needs no new chrome.
+    id: "rooms.relay", label: "Rooms: show Relay (the company room)", group: "go", icon: "chat",
+    surfaces: ["palette"],
+    whySingle: "The pane has one switcher; the palette and Alt+Space `rooms relay` are its keyboard paths.",
+  }),
+  Object.freeze({
+    id: "rooms.world", label: "Rooms: show the World (ShadowBroker board)", group: "go", icon: "globe",
+    surfaces: ["palette"],
+    whySingle: "The pane has one switcher; the palette and Alt+Space `rooms world` are its keyboard paths.",
+  }),
+  Object.freeze({
     id: "pages.open", label: "Pages: AitherOne docs, canvas and roadmap", group: "go", icon: "book",
     surfaces: ["palette"],
     whySingle: "A fairy door (More menu) and the browser rail's Pages row already open it.",

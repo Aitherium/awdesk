@@ -4157,13 +4157,29 @@ function roomsUrl() {
   return new URL("/companyroom", internal.onlineUrl()).href;
 }
 
+/**
+ * The World room: ShadowBroker's own board, in the SAME pane. Owner 2026-11-24: "the
+ * super cool chatrooms for relay and shadowbroker" -- one sidebar, two rooms, not two
+ * windows. ShadowBroker is a hosted app of another project; the desk only frames it
+ * (its frame-ancestors allowlist is what makes that work) and reads its public map
+ * through world-client.cjs.
+ */
+const WORLD_URL = "https://shadowbroker.aitherium.com/";
+
+/** Where the Rooms pane is pointed: the owner's `roomsSource` preference. */
+function roomsTarget() {
+  return getPrefs().roomsSource === "world" ? WORLD_URL : roomsUrl();
+}
+
 function ensureRoomsView() {
   if (alive(roomsView) || !win || win.isDestroyed()) return roomsView;
   const partition = onlinePartition();
   const view = createPageView("hosted", { paneId: null, partition }, partition);
   roomsView = view;
   const wc = view.webContents;
-  const home = new URL(roomsUrl()).origin;
+  // Read per navigation, never captured: switching rooms changes the pane's own origin
+  // and a captured one would treat the new room as a foreign link and tab it away.
+  const homeOrigin = () => { try { return new URL(roomsTarget()).origin; } catch { return ""; } };
   // The pane stays on the room: a link in a message opens as a tab of yours.
   wc.setWindowOpenHandler(({ url: next }) => {
     if (/^https?:/i.test(String(next))) openTab("you", next, { activate: true });
@@ -4172,7 +4188,7 @@ function ensureRoomsView() {
   wc.on("will-navigate", (event, next) => {
     let origin = "";
     try { origin = new URL(String(next)).origin; } catch { /* not a URL */ }
-    if (origin === home) return;
+    if (origin === homeOrigin()) return;
     event.preventDefault();
     if (/^https?:/i.test(String(next))) openTab("you", String(next), { activate: true });
   });
@@ -4185,7 +4201,7 @@ function ensureRoomsView() {
   // The panel and the taskbar stay above it (their popovers open over the page area).
   if (alive(panelView)) win.contentView.addChildView(panelView);
   if (alive(taskbarView)) win.contentView.addChildView(taskbarView);
-  void loadHostedTab(view, roomsUrl()).catch(() => {});
+  void loadHostedTab(view, roomsTarget()).catch(() => {});
   return view;
 }
 
@@ -4210,6 +4226,21 @@ function setRoomsOpen(want) {
   layout();
   pushState();
   return { ok: true, open };
+}
+
+/**
+ * Switch what the Rooms pane is pointed at: "relay" (the company room) or "world"
+ * (ShadowBroker). Opening the Rooms pane if it is closed -- asking for the World and
+ * getting nothing is what an unopened pane looks like.
+ */
+function setRoomsSource(source) {
+  const want = source === "world" ? "world" : "relay";
+  setPrefs({ roomsSource: want });
+  if (!getPrefs().roomsOpen) return setRoomsOpen(true);
+  const view = ensureRoomsView();
+  if (alive(view)) void loadHostedTab(view, roomsTarget()).catch(() => {});
+  pushState();
+  return { ok: true, source: want, url: roomsTarget() };
 }
 
 /** AitherOne (/workspace/one) in the pinned Workspace tab: the rail's Pages row. */
@@ -6628,6 +6659,7 @@ module.exports = {
   openOnlineApp,
   /** Rooms docked left (one-app plan slice 3): toggle / open / close; and the Pages row. */
   setRoomsOpen,
+  setRoomsSource,
   openPages,
   roomsUrl,
   __roomsOpenForTest: () => alive(roomsView),
