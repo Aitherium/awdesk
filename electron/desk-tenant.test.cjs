@@ -213,7 +213,10 @@ test("the shipped modules route the overlay base, browser home, titles and tray 
   assert.doesNotMatch(overlay, /deskTenant\.baseUrl\(/);
   assert.match(overlay, /title: deskTenant\.decorateTitle\("AitherOS Aitheros Online", TENANT\)/);
   const browser = read("browser-window.cjs");
-  assert.match(browser, /deskTenant\.baseUrl\(deskTenant\.currentTenant\(\), "https:\/\/aitherium\.com"\)/);
+  // The browser's home is the search page now (one-app plan slice 2); the tenant's site
+  // is the pinned Online tab, which follows the tenant (followTenant -> internal.onlineUrl).
+  assert.match(browser, /function homeUrl\(\) \{\s*return internal\.homeUrlFor\(/);
+  assert.match(browser, /const target = internal\.onlineUrl\(\);/);
   assert.match(browser, /title: deskTenant\.decorateTitle\("Aither Browser"/);
   const main = read("main.cjs");
   assert.match(main, /deskTenant\.decorateTitle\(badgeTooltip\(/);

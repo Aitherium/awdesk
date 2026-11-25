@@ -373,11 +373,10 @@ gate.on("change", (snap) => {
   }
 });
 
-/** The home page: DESK_BROWSER_HOME, else the tenant's host (desk-tenant.cjs), else the apex. */
+/** The home page / new tab: the search page (aither://search), unless DESK_BROWSER_HOME
+ *  names another. The tenant's site stays the pinned Online tab (followTenant). */
 function homeUrl() {
-  const verdict = policy.sanitizeUrl(process.env.DESK_BROWSER_HOME
-    || deskTenant.baseUrl(deskTenant.currentTenant(), "https://aitherium.com"));
-  return verdict.ok ? verdict.url : "https://aitherium.com/";
+  return internal.homeUrlFor(process.env, (u) => policy.sanitizeUrl(u));
 }
 
 /**

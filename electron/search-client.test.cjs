@@ -143,6 +143,47 @@ test("desk:search-videos reaches videos() from the search page only", async () =
   assert.equal((await h["desk:search-videos"]({ sender: s("https://x.test/") }, "cats")).ok, false);
 });
 
+test("sendToRoom: one relay_send line, web links only, a refusal is an error", async () => {
+  const calls = [];
+  const c = createSearchClient({ callTool: async (name, args) => { calls.push([name, args]); return JSON.stringify({ ok: true }); } });
+  const r = await c.sendToRoom({ url: "https://www.youtube.com/watch?v=abc", title: "Quadlets", kind: "video" }, "#agents");
+  assert.deepEqual(r, { ok: true, channel: "#agents" });
+  assert.equal(calls[0][0], "relay_send");
+  assert.deepEqual(calls[0][1], {
+    channel: "#agents", text: "Quadlets - https://www.youtube.com/watch?v=abc", kind: "MESSAGE",
+    payload: { url: "https://www.youtube.com/watch?v=abc", title: "Quadlets", source: "aither-search", what: "video" },
+  });
+  assert.equal((await c.sendToRoom({ url: "javascript:alert(1)" }, "#agents")).ok, false);
+  assert.equal((await c.sendToRoom({ url: "https://x.test" }, "agents; rm")).ok, false, "a room is a #name");
+  assert.equal(calls.length, 1, "refused items never reach the gateway");
+  const refused = createSearchClient({ callTool: async () => ({ error: "channel does not exist" }) });
+  assert.deepEqual(await refused.sendToRoom({ url: "https://x.test" }, "#nope"), { ok: false, error: "channel does not exist" });
+});
+
+test("desk:search-share sends to the configured room from the search page only", async () => {
+  const s = (url) => ({ getURL: () => url });
+  const seen = [];
+  const h = searchHandlers({ sendToRoom: async (item, room) => { seen.push([item, room]); return { ok: true, channel: room }; } },
+    { shareRoom: () => "#garg" });
+  const item = { url: "https://x.test", title: "x", kind: "page" };
+  assert.deepEqual(await h["desk:search-share"]({ sender: s("aither://search/") }, item), { ok: true, channel: "#garg" });
+  assert.deepEqual(seen, [[item, "#garg"]]);
+  assert.equal((await h["desk:search-share"]({ sender: s("https://evil.test/") }, item)).ok, false);
+});
+
+test("the browser's home and new tab is the search page; DESK_BROWSER_HOME still wins", () => {
+  const { homeUrlFor, SEARCH_HOME } = require("./browser-internal.cjs");
+  const ok = (u) => ({ ok: true, url: u });
+  assert.equal(SEARCH_HOME, "aither://search/");
+  assert.equal(homeUrlFor({}, ok), "aither://search/");
+  assert.equal(homeUrlFor({ DESK_BROWSER_HOME: "https://example.test/" }, ok), "https://example.test/");
+  assert.equal(homeUrlFor({ DESK_BROWSER_HOME: "aither://settings/" }, ok), "aither://settings/");
+  assert.equal(homeUrlFor({ DESK_BROWSER_HOME: "file:///C:/x" }, () => ({ ok: false })), "aither://search/",
+    "a refused override falls back to the search page");
+  const win = fs.readFileSync(path.join(__dirname, "browser-window.cjs"), "utf8");
+  assert.match(win, /function homeUrl\(\) \{\s*return internal\.homeUrlFor\(/, "browser-window reads the one rule");
+});
+
 test("the search page has a Videos mode and opens a mode from ?mode=", () => {
   const html = fs.readFileSync(path.join(__dirname, "search.html"), "utf8");
   const page = fs.readFileSync(path.join(__dirname, "search-page.js"), "utf8");
