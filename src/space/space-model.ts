@@ -286,8 +286,9 @@ export const OWN_ROOT_ID = 'own:desk';
  * cannot silently redraw another.
  */
 export function mergeOwnBodies(base: UniverseData | null, own: OwnBodies | null): UniverseData | null {
-  const nodes = Array.isArray(own && own.nodes) ? own.nodes : [];
-  if (!nodes.length) return base;
+  const bodies = own && Array.isArray(own.nodes) ? own.nodes : [];
+  const ownLinks = own && Array.isArray(own.links) ? own.links : [];
+  if (!bodies.length) return base;
   const out: UniverseData = base
     ? { ...base, nodes: [...(base.nodes || [])], links: [...(base.links || [])] }
     : { nodes: [], links: [] } as unknown as UniverseData;
@@ -300,7 +301,7 @@ export function mergeOwnBodies(base: UniverseData | null, own: OwnBodies | null)
     out.nodes.push(asNode({ id: OWN_ROOT_ID, title: 'Your desk', cluster: 'own', status: 'active', meta: { kind: 'root' } }));
     have.add(OWN_ROOT_ID);
   }
-  for (const n of nodes) {
+  for (const n of bodies) {
     if (!n || !n.id || have.has(String(n.id))) continue;
     // An app/window body carries the REGISTRY command that opens it, so the panel's one
     // verb is the desk's own door (verbRoute below) instead of a platform verb.
@@ -311,7 +312,7 @@ export function mergeOwnBodies(base: UniverseData | null, own: OwnBodies | null)
     have.add(String(n.id));
     out.links.push({ source: OWN_ROOT_ID, target: String(n.id), kind: 'parent-child' } as unknown as UniverseData['links'][number]);
   }
-  for (const l of Array.isArray(own && own.links) ? own.links : []) {
+  for (const l of ownLinks) {
     if (l && l.source && l.target && have.has(String(l.source)) && have.has(String(l.target))) {
       out.links.push(l as unknown as UniverseData['links'][number]);
     }
