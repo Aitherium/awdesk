@@ -5248,6 +5248,7 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "rooms.toggle": return void browserWindow.setRoomsOpen(undefined);
     case "rooms.relay": return void browserWindow.setRoomsSource("relay");
     case "rooms.world": return void browserWindow.setRoomsSource("world");
+    case "rooms.net": return void browserWindow.setRoomsSource("net");
     case "pages.open": return void browserWindow.openPages();
     case "tunnel.open": return void createTunnelWindow();
     // Alt+Space is ONE key (owner 2026-11-02): the global SHORTCUT gets the tap/hold

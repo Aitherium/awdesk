@@ -587,6 +587,7 @@ test("roomsOpen / roomsWidth survive the layout document's normalizer", () => {
 test("roomsSource picks the pane's room and survives a restart", () => {
   assert.equal(rail.normalizeLayout({ roomsSource: "world" }).roomsSource, "world");
   assert.equal(rail.normalizeLayout({}).roomsSource, "relay", "Relay until asked for the World");
+  assert.equal(rail.normalizeLayout({ roomsSource: "net" }).roomsSource, "net", "the AitherNet universe");
   assert.equal(rail.normalizeLayout({ roomsSource: "nonsense" }).roomsSource, "relay");
 });
 

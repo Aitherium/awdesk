@@ -763,6 +763,11 @@ const COMMANDS = Object.freeze([
     whySingle: "The pane has one switcher; the palette and Alt+Space `rooms relay` are its keyboard paths.",
   }),
   Object.freeze({
+    id: "rooms.net", label: "Rooms: show the AitherNet universe (every mesh, live)", group: "go", icon: "globe",
+    surfaces: ["palette"],
+    whySingle: "The pane has one switcher; the palette and Alt+Space `rooms net` are its keyboard paths.",
+  }),
+  Object.freeze({
     id: "rooms.world", label: "Rooms: show the World (ShadowBroker board)", group: "go", icon: "globe",
     surfaces: ["palette"],
     whySingle: "The pane has one switcher; the palette and Alt+Space `rooms world` are its keyboard paths.",

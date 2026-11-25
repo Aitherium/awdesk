@@ -4165,10 +4165,16 @@ function roomsUrl() {
  * through world-client.cjs.
  */
 const WORLD_URL = "https://shadowbroker.aitherium.com/";
+// The AitherNet universe: every mesh, live (Veil /aithernet behind arc.aitherium.com).
+// Public and anonymous by design -- the owner's view is decided by the API on his session.
+const NET_URL = "https://arc.aitherium.com/";
 
 /** Where the Rooms pane is pointed: the owner's `roomsSource` preference. */
 function roomsTarget() {
-  return getPrefs().roomsSource === "world" ? WORLD_URL : roomsUrl();
+  const source = getPrefs().roomsSource;
+  if (source === "world") return WORLD_URL;
+  if (source === "net") return NET_URL;
+  return roomsUrl();
 }
 
 function ensureRoomsView() {
@@ -4234,7 +4240,7 @@ function setRoomsOpen(want) {
  * getting nothing is what an unopened pane looks like.
  */
 function setRoomsSource(source) {
-  const want = source === "world" ? "world" : "relay";
+  const want = source === "world" || source === "net" ? source : "relay";
   setPrefs({ roomsSource: want });
   if (!getPrefs().roomsOpen) return setRoomsOpen(true);
   const view = ensureRoomsView();
