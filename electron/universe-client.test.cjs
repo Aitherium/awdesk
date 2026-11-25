@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildUniverse, dim, appOfTab, APP_BODIES } = require("./universe-client.cjs");
+const { buildUniverse, dim, appOfTab, APP_BODIES, routinesFromJobs } = require("./universe-client.cjs");
 
 const NOW = () => Date.parse("2026-11-24T20:00:00Z");
 
@@ -115,4 +115,18 @@ test("appOfTab reads the desk's own vocabulary", () => {
   assert.equal(appOfTab({ url: "https://aitherium.com/spaces/view" }), "app:spaces");
   assert.equal(appOfTab({ url: "https://aitherium.com/workspaces" }), "app:workspaces");
   assert.equal(appOfTab({ url: "https://news.example/" }), "app:browse");
+});
+
+test("awrise jobs become stations: failing is starved, disabled is kept and marked", () => {
+  const rows = routinesFromJobs({
+    awmine: { enabled: true, last_state: "ok", last_finished_at: "2026-11-24T19:00:00Z" },
+    harvest: { enabled: true, consecutive_failures: 3 },
+    nightly: { enabled: false },
+    junk: "not a job",
+  });
+  assert.deepEqual(rows.map((r) => [r.name, r.state]), [["awmine", "idle"], ["harvest", "starved"], ["nightly", "disabled"]]);
+  const u = buildUniverse({ now: NOW, routines: rows });
+  const stations = u.nodes.filter((n) => n.cluster === "routines");
+  assert.equal(stations.length, 3);
+  assert.equal(stations.find((n) => n.title === "harvest").status, "blocked");
 });
