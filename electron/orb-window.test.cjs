@@ -865,6 +865,12 @@ test("a card that matters flies the fairy to the pointer and shows the whisper b
   // A shown card must take clicks without waiting for a hover report (owner
   // 2026-11-23: buttons and the X were dead when that report never arrived).
   assert.equal(whisper.ignoreMouse, false, "a shown card is clickable at once");
+  // Owner 2026-11-25: a card covering the page is dragged out of the way, and the
+  // spot is remembered so the next one opens clear of it.
+  assert.equal(whisper.opts.movable, true, "the whisper can be dragged");
+  whisper.setBounds({ x: 200, y: 180, width: whisper.bounds.width, height: whisper.bounds.height });
+  whisper.emit("moved");
+  assert.deepEqual(orbWindow.state().whisperAt, { x: 200, y: 180 }, "the dragged spot is remembered");
   const w = whisper.getBounds();
   const covers = cursor.x >= w.x && cursor.x <= w.x + w.width && cursor.y >= w.y && cursor.y <= w.y + w.height;
   assert.equal(covers, false, "the whisper does not cover the pointer");
@@ -2291,7 +2297,25 @@ test("a pinned card becomes draggable and docks to the nearest screen corner", a
   assert.deepEqual({ x: bubble.getBounds().x, y: bubble.getBounds().y }, pos, "docked to the nearest corner");
   assert.deepEqual({ x: orbWindow.state().card.x, y: orbWindow.state().card.y }, pos, "the spot is remembered");
   await invoke("desk:orb-pin-card", bubble, false);
-  assert.equal(bubble.movable, false, "unpinning stops the window dragging");
+  assert.equal(bubble.movable, true, "an unpinned card is still draggable (owner 2026-11-25)");
+});
+
+test("an unpinned card is dragged out of the way and the spot is remembered", async () => {
+  start();
+  orbWindow.openBubble({ focus: true });
+  const bubble = bubbleWin();
+  assert.equal(bubble.movable, true, "every card is draggable, pinned or not");
+  // The owner grabs the card's grip and drops it clear of the page behind.
+  bubble.setBounds({ x: 120, y: 140, width: bubble.bounds.width, height: bubble.bounds.height });
+  bubble.emit("moved");
+  await wait(30);
+  assert.deepEqual({ x: orbWindow.state().card.x, y: orbWindow.state().card.y }, { x: 120, y: 140 },
+    "an unpinned card keeps the exact spot: no corner docking");
+  // The next card opens where the owner last put it.
+  bubbleWin().hide();
+  orbWindow.openBubble({ focus: true });
+  const pos = bubbleWin().getBounds();
+  assert.deepEqual({ x: pos.x, y: pos.y }, { x: 120, y: 140 });
 });
 
 test("new web results append into an open card instead of replacing or closing it", async () => {

@@ -525,10 +525,10 @@ function placeOrb() {
 function placeBubble() {
   if (!alive(bubbleWindow) || !alive(orbWindow)) return;
   const size = { width: BUBBLE_SIZE.width, height: bubbleHeight };
-  // A pinned card stands where the owner put it (card-stay.cjs), clamped onto the
-  // display that spot belongs to. Everything else still opens beside the fairy.
+  // A card stands where the owner left it (card-stay.cjs) -- pinned or not; a spot
+  // saved by a drag outranks "beside the fairy". Clamped onto the display it belongs to.
   const card = cardStay.normalizeCard(state.card);
-  if (card.pin && card.x != null && card.y != null) {
+  if (card.x != null && card.y != null) {
     const at = { x: card.x + size.width / 2, y: card.y + size.height / 2 };
     const area = workAreaAt(at) || fairyArea(displayForOrb().workArea);
     const pos = orbCore.clampToWorkArea({ x: card.x, y: card.y }, size, area);
@@ -756,9 +756,10 @@ function ensureBubble() {
   });
   bubbleWindow.setAlwaysOnTop(true, "screen-saver");
   try { bubbleWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch { /* no-op */ }
-  // A pinned card is draggable; an unpinned one stays where the fairy opened it.
+  // The card is movable whether or not it is pinned (owner 2026-11-25: a card must be
+  // draggable out of the way); pin only adds "stays open" and corner docking.
   if (typeof bubbleWindow.setMovable === "function") {
-    try { bubbleWindow.setMovable(cardStay.normalizeCard(state.card).pin); } catch { /* no-op */ }
+    try { bubbleWindow.setMovable(true); } catch { /* no-op */ }
   }
   bubbleWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   bubbleWindow.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -772,16 +773,19 @@ function ensureBubble() {
     drafting = false;
     syncBubble();
   });
-  // A pinned card is dragged by its own grip: when the move settles, it docks to the
-  // nearest screen corner (the same rule a dropped fairy follows) and remembers it.
+  // The card is dragged by its own grip on EVERY card (owner 2026-11-25: "need ability
+  // to click and drag and move these out of the way"): the new spot is remembered at
+  // once, pinned or not. A PINNED card also docks to the nearest corner when the drag
+  // settles (the same rule a dropped fairy follows).
   bubbleWindow.on("moved", () => {
     if (!alive(bubbleWindow)) return;
     const card = cardStay.normalizeCard(state.card);
-    if (!card.pin) return;
-    // Our own placement (open, resize, clamp) must not re-dock: only a position the
-    // owner moved the window TO (different from the one we saved) is a drag.
+    // Our own placement (open, resize, clamp) must not record a "drag".
     const [x, y] = bubbleWindow.getPosition();
     if (card.x === x && card.y === y) return;
+    state = { ...state, card: cardStay.normalizeCard({ ...card, x, y }) };
+    saveState();
+    if (!card.pin) return;
     if (cardMoveTimer) clearTimeout(cardMoveTimer);
     cardMoveTimer = setTimeout(dockCard, 260);
     if (cardMoveTimer.unref) cardMoveTimer.unref();
@@ -4682,7 +4686,10 @@ function ensureNudge() {
   const size = cardWindowSize();
   nudgeWindow = new BrowserWindow({
     ...size,
-    show: false, frame: false, transparent: true, resizable: true, movable: false,
+    // Draggable (owner 2026-11-25: "click and drag and move these out of the way"):
+    // the whisper covers whatever is behind it, so its header moves it. It still never
+    // takes the keyboard (focusable:false), and a moved spot is remembered below.
+    show: false, frame: false, transparent: true, resizable: true, movable: true,
     minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true,
     // focusable:false -- the whisper NEVER takes the keyboard from what the owner is doing.
     alwaysOnTop: true, hasShadow: false, focusable: false, title: "Aither nudge",
@@ -4711,6 +4718,16 @@ function ensureNudge() {
     state = { ...state, card: cardStay.normalizeCard({ ...state.card, width: b.width, height: b.height, fit: false }) };
     saveState();
   });
+  // The owner dragged the whisper out of the way: remember the spot (state.whisperAt)
+  // so the NEXT card opens clear of whatever it was covering. Our own placement sets
+  // nudgeSettingBounds around setBounds, so only a real drag is remembered.
+  nudgeWindow.on("moved", () => {
+    if (nudgeSettingBounds || !alive(nudgeWindow)) return;
+    const [x, y] = nudgeWindow.getPosition();
+    if (state.whisperAt && state.whisperAt.x === x && state.whisperAt.y === y) return;
+    state = { ...state, whisperAt: { x: Math.round(x), y: Math.round(y) } };
+    saveState();
+  });
   void nudgeWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "nudge" } });
   return nudgeWindow;
 }
@@ -4732,8 +4749,15 @@ function showWhisper() {
   if (!nudging) return;
   cancelNudgeHide();
   const win = ensureNudge();
-  const at = nudging.whisperAt || { x: 0, y: 0 };
   const size = cardWindowSize();
+  // A spot the owner dragged the whisper to wins over the computed one (clamped onto
+  // the display that spot belongs to, so a closed laptop lid cannot strand it).
+  const saved = state.whisperAt && Number.isFinite(Number(state.whisperAt.x)) && Number.isFinite(Number(state.whisperAt.y))
+    ? { x: Math.round(Number(state.whisperAt.x)), y: Math.round(Number(state.whisperAt.y)) }
+    : null;
+  const at = saved
+    ? orbCore.clampToWorkArea(saved, size, workAreaAt(saved) || fairyArea(displayForOrb().workArea))
+    : (nudging.whisperAt || { x: 0, y: 0 });
   nudgeSettingBounds = true;
   win.setBounds({ x: Math.round(at.x), y: Math.round(at.y), ...size });
   nudgeSettingBounds = false;
@@ -5288,7 +5312,7 @@ function setCardSettings(patch) {
   state = { ...state, card: next };
   saveState();
   if (alive(bubbleWindow) && typeof bubbleWindow.setMovable === "function") {
-    try { bubbleWindow.setMovable(next.pin); } catch { /* Windows: no-op on a gone window */ }
+    try { bubbleWindow.setMovable(true); } catch { /* Windows: no-op on a gone window */ }
   }
   armCardIdle();
   // The whisper may be up: apply a new width/height/fit immediately.
