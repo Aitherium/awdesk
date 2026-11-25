@@ -13,10 +13,14 @@
  * (`SHADOWBROKER_PUBLIC_READ_ROUTES`, backend/auth.py): layers, ai/layers, pins,
  * pins/geojson, timemachine snapshots. No key, no write, no agent shell.
  *
- * Measured 2026-11-24: the public host serves `/` but its `/api/*` answers
- * nothing from this desk while `aitheros-shadowbroker-backend` is unhealthy in
- * the fleet -- so every verb reports the host as UNREACHABLE rather than an
- * empty world. An empty map and a dead one must not look the same.
+ * Measured 2026-11-24: the public host served `/` while its `/api/*` answered
+ * nothing and `aitheros-shadowbroker-backend` sat "unhealthy" -- every verb reports
+ * the host as UNREACHABLE rather than an empty world, because an empty map and a
+ * dead one must not look the same. Both were then fixed at the source: the
+ * container's healthcheck ran a `curl` the image does not have (438 straight exit
+ * 125s), and after a restart through the deploy door the public routes answer 200.
+ * The live data is genuinely EMPTY (`{ok, count: 0, layers: []}`) until an operator
+ * defines AI layers or pins, and this client reports that as zero, not as an error.
  *
  * Pure except the injected fetch, so every verb is asserted under node --test.
  */
