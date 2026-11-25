@@ -269,6 +269,10 @@ const PANES = Object.freeze([
     kind: "file", file: "plane-flux.html",
   }),
   Object.freeze({
+    id: "chronicle", label: "Chronicle", hint: "The ledger: recent events, in order", section: "Planes", icon: "book",
+    kind: "file", file: "plane-chronicle.html",
+  }),
+  Object.freeze({
     id: "nexus", label: "Nexus", hint: "Knowledge collections", section: "Planes", icon: "network",
     kind: "file", file: "plane-nexus.html",
   }),

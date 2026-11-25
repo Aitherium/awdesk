@@ -110,6 +110,13 @@ const PLANES = Object.freeze({
   // The distributed fleet (owner, 2026-10-04: "aithermesh / aithernet home LAN and
   // distributed fleet management"): every registered node, what each machine stores,
   // and the network policies in force. Read-only, like every plane.
+  chronicle: Object.freeze({
+    label: "Chronicle", hint: "The append-only ledger: recent events, in order",
+    reads: Object.freeze([
+      serviceRead("Chronicle"),
+      readSpec("events", "Recent events", "chronicle /events"),
+    ]),
+  }),
   mesh: Object.freeze({
     label: "Mesh", hint: "Your machines: nodes, storage, network policy",
     reads: Object.freeze([

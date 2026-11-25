@@ -248,6 +248,30 @@ function signalsFromPlanes(nodes, planes = {}) {
   return { ping: [...ping], dim: [...dim], notes };
 }
 
+/**
+ * Chronicle (the append-only ledger) as a TRAIL on the map: what just happened, in order.
+ *
+ * Each event names a service and an event_type; a body that is on the map gets a trail
+ * point, and an event whose service is not a body is COUNTED (`dropped`), never hidden --
+ * a trail that silently forgets half the system reads as a quiet system.
+ */
+function trailFromEvents(events, nodes) {
+  const ids = new Set((Array.isArray(nodes) ? nodes : []).map((n) => n && n.id).filter(Boolean));
+  const trail = [];
+  let dropped = 0;
+  for (const e of Array.isArray(events) ? events : []) {
+    if (!e || typeof e !== "object") { dropped += 1; continue; }
+    const service = String(e.service || e.source || "").toLowerCase();
+    const type = String((e.data && e.data.event_type) || e.event_type || e.type || "").trim();
+    const body = service ? `svc:${service}` : "";
+    const at = String(e.timestamp || e.at || e.time || "");
+    if (!body || !ids.has(body) || !type) { dropped += 1; continue; }
+    trail.push({ body, at, type, level: String(e.level || "") });
+  }
+  trail.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  return { trail, dropped };
+}
+
 /** What a source failing must look like: the last good bodies, dimmed -- never an empty map. */
 function dim(last, source, error) {
   if (!isObj(last) || !Array.isArray(last.nodes)) return { nodes: [], links: [], degraded: [{ source, error: str(error) }] };
@@ -258,4 +282,4 @@ function dim(last, source, error) {
   };
 }
 
-module.exports = { buildUniverse, dim, appOfTab, APP_BODIES, routinesFromJobs, signalsFromPlanes };
+module.exports = { buildUniverse, dim, appOfTab, APP_BODIES, routinesFromJobs, signalsFromPlanes, trailFromEvents };
