@@ -728,6 +728,25 @@ const COMMANDS = Object.freeze([
     surfaces: ["palette"],
     whySingle: "A Console pane (Data section) already; Alt+Space graph / wiki / context and the palette (Ctrl+K) are its keyboard paths.",
   }),
+  // Search, deep research and Media Forge from the fairy (owner 2026-11-24: "use that
+  // instead of browsing reddit or 4chan"). Each opens aither://search in that mode in
+  // the owner's search tab of the Aither Browser; the fairy's More menu carries them
+  // (orb-window.cjs DESK_DOORS).
+  Object.freeze({
+    id: "search.web.open", label: "Search: web, images and videos…", group: "go", icon: "search",
+    surfaces: ["palette"],
+    whySingle: "A fairy door (More menu) and the browser address bar already reach aither://search.",
+  }),
+  Object.freeze({
+    id: "research.open", label: "Deep research…", group: "go", icon: "search",
+    surfaces: ["palette"],
+    whySingle: "A fairy door (More menu); the search page's Deep research mode is the same page.",
+  }),
+  Object.freeze({
+    id: "forge.open", label: "Media Forge…", group: "go", icon: "image",
+    surfaces: ["palette"],
+    whySingle: "A fairy door (More menu); the search page's Media Forge mode opens the same tab.",
+  }),
   // Aither Files (files-window.cjs): the owner's File Explorer replacement --
   // tabs, breadcrumb + address bar, list/grid with thumbnails, preview, new
   // folder / rename / copy / move / delete-to-Recycle-Bin, Send to Aitherium, Ask

@@ -12,6 +12,7 @@
  *               ~/.aither/awfind.json's url, 127.0.0.1:8114 here): ranked web +
  *               platform results; `answer` reads pages and cites them.
  *   images      gateway MCP `search_images` (keyless image search).
+ *   videos      gateway MCP `search_videos` (keyless video search, same URL rules).
  *   research    `awresearch --output json` -- a cited report: claims, each pinned to
  *               numbered sources. Minutes long, so a JOB: started, listed, read back.
  *   Media Forge its own UI (mediaforge_status -> base) opens as a browser tab.
@@ -29,6 +30,8 @@ const path = require("node:path");
 const { randomBytes } = require("node:crypto");
 
 const MODES = Object.freeze(["q", "deep", "answer"]);
+const WEB_URL = /^https?:\/\//i;
+const SECURE_URL = /^https:\/\//i;
 const MAX_QUERY = 500;
 const SEARCH_TIMEOUT_MS = Object.freeze({ q: 45_000, deep: 120_000, answer: 120_000 });
 const RESEARCH_TIMEOUT_MS = 30 * 60_000;
@@ -305,6 +308,35 @@ function createSearchClient({
   }
 
   /**
+   * Videos from the web: gateway MCP `search_videos` (AitherSearch, keyless). Only
+   * http(s) watch URLs survive and only https thumbnails are shown, the rule images()
+   * keeps. A provider failure (a rate limit) is an error, never "no videos".
+   */
+  async function videos(text) {
+    const q = cleanQuery(text);
+    if (!q) return { ok: false, error: "type something to search for" };
+    try {
+      const raw = await callTool("search_videos", { query: q, limit: 20 });
+      const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+      const list = Array.isArray(data && data.videos) ? data.videos : [];
+      if (data && data.error && !list.length) return { ok: false, error: String(data.error) };
+      const rows = list
+        .filter((v) => WEB_URL.test(String(v.url || "")) && String(v.title || "").trim())
+        .map((v) => ({
+          title: String(v.title),
+          url: String(v.url),
+          thumb: SECURE_URL.test(String(v.thumbnail_url || "")) ? String(v.thumbnail_url) : "",
+          duration: String(v.duration || ""),
+          publisher: String(v.publisher || ""),
+          published: String(v.published || "").slice(0, 10),
+        }));
+      return { ok: true, query: q, videos: rows };
+    } catch (error) {
+      return { ok: false, error: String((error && error.message) || error) };
+    }
+  }
+
+  /**
    * Agents, tools, skills, packs and lanes for a task, from the local discovery
    * index (`adk discover query <task> --json --no-live`). `--no-live` keeps it
    * fast enough to run as the owner types; the index already holds the gateway's
@@ -420,7 +452,7 @@ function createSearchClient({
     }
   }
 
-  return { search, images, discover, startResearch, listResearch, readResearch, forgeUrl };
+  return { search, images, videos, discover, startResearch, listResearch, readResearch, forgeUrl };
 }
 
 module.exports = {

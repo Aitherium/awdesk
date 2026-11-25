@@ -4071,6 +4071,7 @@ async function receiveDrop({ paths = [], text = "" } = {}) {
 /** The bead rail's doors as fairy menu rows; missing ids are skipped. */
 const DESK_DOORS = Object.freeze([
   ["inbox.open", "Notifications"], ["console.open", "Apps"], ["browser.open", "Aither Browser"],
+  ["search.web.open", "Search"], ["research.open", "Research"], ["forge.open", "Media Forge"],
   ["chat.open", "Chat"], ["desktop.overlay.toggle", "AitherOS Online"], ["avatar.toggle", "Show avatar"],
 ]);
 function deskDoors(reg) {

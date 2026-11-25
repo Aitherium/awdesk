@@ -1837,6 +1837,10 @@ test("right click on the orb: inbox, answer window, quiet 1 h (nudges held), set
   for (const id of ["spirit:web", "spirit:ask", "spirit:find", "spirit:attach", "spirit:home", "spirit:sounds", "spirit:sprite", "spirit:teach", "less"]) {
     assert.ok(moreIds.includes(id), `the second page lost ${id}: ${moreIds.join(", ")}`);
   }
+  // Owner 2026-11-24: search, deep research and Media Forge are fairy doors.
+  for (const id of ["door:search.web.open", "door:research.open", "door:forge.open"]) {
+    assert.ok(moreIds.includes(id), `the fairy has no ${id}: ${moreIds.join(", ")}`);
+  }
   assert.equal(nativeMenuPopups, 0, "no native menu was popped: the fairy has ONE menu");
   assert.equal((await invoke("desk:menu-pick", menuWin(), "spirit:sounds")).ok, true, "a row on the second page runs");
   await invoke("desk:orb-menu", orbWin());

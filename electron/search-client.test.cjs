@@ -108,6 +108,53 @@ test("report and result shapes are sanitized", () => {
   assert.equal(cleanQuery("a\u0000b"), "a b");
 });
 
+test("videos: search_videos rows, unsafe URLs dropped, a provider failure is an error", async () => {
+  const calls = [];
+  const c = createSearchClient({
+    callTool: async (name, args) => {
+      calls.push([name, args]);
+      return JSON.stringify({ videos: [
+        { title: "Quadlets in 10 minutes", url: "https://www.youtube.com/watch?v=abc", thumbnail_url: "https://i.ytimg.com/a.jpg",
+          duration: "10:02", publisher: "YouTube", published: "2026-10-01T12:00:00Z" },
+        { title: "no link", url: "javascript:alert(1)" },
+        { title: "", url: "https://x.test/v" },
+        { title: "plain thumb", url: "http://v.test/1", thumbnail_url: "http://insecure.test/t.jpg" },
+      ] });
+    },
+  });
+  const r = await c.videos("podman quadlet");
+  assert.equal(r.ok, true);
+  assert.deepEqual(calls[0], ["search_videos", { query: "podman quadlet", limit: 20 }]);
+  assert.equal(r.videos.length, 2);
+  assert.deepEqual(r.videos[0], { title: "Quadlets in 10 minutes", url: "https://www.youtube.com/watch?v=abc",
+    thumb: "https://i.ytimg.com/a.jpg", duration: "10:02", publisher: "YouTube", published: "2026-10-01" });
+  assert.equal(r.videos[1].thumb, "", "an http thumbnail is not shown");
+  assert.equal((await c.videos("  ")).ok, false);
+  const limited = createSearchClient({ callTool: async () => ({ videos: [], error: "429 rate limited" }) });
+  assert.deepEqual(await limited.videos("x"), { ok: false, error: "429 rate limited" });
+  const thrown = createSearchClient({ callTool: async () => { throw new Error("gateway down"); } });
+  assert.deepEqual(await thrown.videos("x"), { ok: false, error: "gateway down" });
+});
+
+test("desk:search-videos reaches videos() from the search page only", async () => {
+  const s = (url) => ({ getURL: () => url });
+  const h = searchHandlers({ videos: async (q) => ({ ok: true, query: q, videos: [] }) });
+  assert.deepEqual(await h["desk:search-videos"]({ sender: s("aither://search/") }, "cats"), { ok: true, query: "cats", videos: [] });
+  assert.equal((await h["desk:search-videos"]({ sender: s("https://x.test/") }, "cats")).ok, false);
+});
+
+test("the search page has a Videos mode and opens a mode from ?mode=", () => {
+  const html = fs.readFileSync(path.join(__dirname, "search.html"), "utf8");
+  const page = fs.readFileSync(path.join(__dirname, "search-page.js"), "utf8");
+  const preload = fs.readFileSync(path.join(__dirname, "search-preload.cjs"), "utf8");
+  assert.match(html, /data-mode="videos"/);
+  assert.match(page, /function renderVideos\(/);
+  assert.match(page, /api\.videos\(q\)/);
+  assert.match(page, /params\.get\("mode"\)/);
+  assert.match(page, /toforge/, "image results carry the Media Forge action");
+  assert.match(preload, /desk:search-videos/);
+});
+
 test("only aither://search reaches these channels", async () => {
   const s = (url) => ({ getURL: () => url });
   assert.equal(fromSearchPage(s("aither://search/?q=x")), true);

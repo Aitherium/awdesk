@@ -5240,6 +5240,10 @@ function runCommand(id, arg, { surface = "menu", slotId = null } = {}) {
     case "explore.open": return void browserWindow.openInternalUrl(
       require("./explore-verbs.cjs").exploreUrl(arg && typeof arg === "object" ? arg : {}), { askAgent: browserAskAgent });
     case "files.open": return void createFilesWindow();
+    // The fairy's Search / Research / Media Forge doors: aither://search in that mode.
+    case "search.web.open": return void browserWindow.openInternalUrl("aither://search/?mode=q", { askAgent: browserAskAgent });
+    case "research.open": return void browserWindow.openInternalUrl("aither://search/?mode=research", { askAgent: browserAskAgent });
+    case "forge.open": return void browserWindow.openInternalUrl("aither://search/?mode=forge", { askAgent: browserAskAgent });
     case "tunnel.open": return void createTunnelWindow();
     // Alt+Space is ONE key (owner 2026-11-02): the global SHORTCUT gets the tap/hold
     // launcher; a tray/palette click keeps the search page's launcher.

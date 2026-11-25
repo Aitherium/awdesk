@@ -69,6 +69,7 @@
     out.textContent = "";
     const grid = el("div", "grid");
     for (const img of r.images || []) {
+      const tile = el("div", "tile");
       const a = link(img.url, "");
       a.title = img.title;
       const i = document.createElement("img");
@@ -77,10 +78,41 @@
       i.loading = "lazy";
       i.referrerPolicy = "no-referrer";
       a.append(i);
-      grid.append(a);
+      // Media Forge's UI takes no image from a URL today, so this opens it beside the
+      // result; the owner drops the picture in there.
+      const make = el("button", "toforge", "Media Forge");
+      make.type = "button";
+      make.title = "Open Media Forge to make something from this";
+      make.onclick = (e) => { e.preventDefault(); e.stopPropagation(); void openForge(); };
+      tile.append(a, make);
+      grid.append(tile);
     }
     out.append(grid);
     status(`${(r.images || []).length} images for “${r.query}”`);
+  }
+  function renderVideos(r) {
+    const out = $("out");
+    out.textContent = "";
+    const grid = el("div", "vgrid");
+    for (const v of r.videos || []) {
+      const a = link(v.url, "");
+      a.title = v.title;
+      const thumb = el("div", "thumb");
+      if (v.thumb) {
+        const i = document.createElement("img");
+        i.src = v.thumb;
+        i.alt = v.title;
+        i.loading = "lazy";
+        i.referrerPolicy = "no-referrer";
+        thumb.append(i);
+      }
+      if (v.duration) thumb.append(el("span", "dur", v.duration));
+      const source = [v.publisher, v.published].filter(Boolean).join(" · ");
+      a.append(thumb, el("div", "vt", v.title), el("div", "vs", source));
+      grid.append(a);
+    }
+    out.append(grid);
+    status(`${(r.videos || []).length} videos for “${r.query}”`);
   }
 
   // ── research ──
@@ -324,11 +356,12 @@
       $("q").value = "";
       return void showJobs();
     }
-    status(mode === "q" ? "Searching…" : mode === "images" ? "Finding images…" : "Reading pages… (up to a couple of minutes)");
-    const r = mode === "images" ? await api.images(q) : await api.search(mode, q);
+    status(mode === "q" ? "Searching…" : mode === "images" ? "Finding images…" : mode === "videos" ? "Finding videos…"
+      : "Reading pages… (up to a couple of minutes)");
+    const r = mode === "images" ? await api.images(q) : mode === "videos" ? await api.videos(q) : await api.search(mode, q);
     if (mine !== seq) return;
     if (!r || !r.ok) return status((r && r.error) || "search failed", true);
-    if (mode === "images") renderImages(r); else renderResults(r);
+    if (mode === "images") renderImages(r); else if (mode === "videos") renderVideos(r); else renderResults(r);
   };
 
   // aither://search/?q=... (the address bar sends plain words here) runs at once.
@@ -337,6 +370,13 @@
   if (launcher) {
     document.body.classList.add("launcher");
     if (api.onFocus) api.onFocus(() => { $("q").focus(); $("q").select(); });
+  }
+  // ?mode= opens a mode directly (the fairy's Search / Research / Media Forge rows).
+  const asked = params.get("mode");
+  const known = [...document.querySelectorAll(".modes button")].map((b) => b.dataset.mode);
+  if (asked && asked !== "pc" && !launcher && known.includes(asked)) {
+    setMode(asked);
+    if (asked === "forge") void openForge(); // the fairy's Media Forge door: straight to it
   }
   if (params.get("mode") === "pc" || launcher) {
     setMode("pc");
