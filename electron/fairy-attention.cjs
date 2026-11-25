@@ -124,6 +124,16 @@ function createdMs(card) {
  */
 const NOOP_SUGGESTION_LABELS = Object.freeze(["skip", "keep refusing", "keep it scheduled"]);
 
+/** A publish-approval card raised by the publish gate: its options include a
+ *  "post"/"publish" key, or its dedupe key starts with "pubgate:". */
+function isPublishGate(card) {
+  if (!card || typeof card !== "object") return false;
+  const dedupe = lower(card.dedupeKey || card.dedupe_key);
+  if (dedupe.startsWith("pubgate:")) return true;
+  const options = Array.isArray(card.options) ? card.options : [];
+  return options.some((o) => o && /^(post|publish)$/.test(lower(o.key)));
+}
+
 /** The label of the option the card suggests (`defaultKey`), lowercased. */
 function suggestedText(card) {
   const key = lower(card && card.defaultKey);
@@ -142,6 +152,11 @@ function suggestedText(card) {
  * recommendation still escalates: deciding before it passes is the point.
  */
 function noopSuggestion(card) {
+  // A publish gate ("Post / Skip") also defaults to Skip, but the owner is the ONLY
+  // one who can say Post: a drafted customer reply waits on him and nobody else.
+  // Owner 2026-11-23: "why isn't a fairy bothering me for approval?" on d-bffm, a
+  // high-urgency reply to a customer that only glowed. A publish card is never a no-op.
+  if (isPublishGate(card)) return false;
   const label = suggestedText(card);
   return NOOP_SUGGESTION_LABELS.some((noop) => label === noop
     || (label.startsWith(noop) && !/[a-z0-9]/i.test(label.charAt(noop.length))));

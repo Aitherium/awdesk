@@ -37,6 +37,21 @@ test("a 'Noted'-only card is a report: badge only, unless critical", () => {
   assert.equal(fa.importance({ ...report, urgency: "critical" }, NOW), 2);
 });
 
+test("a publish gate (Post / Skip) is never a no-op: a high one comes to the owner", () => {
+  // d-bffm, 2026-11-23: a high-urgency reply to a customer only glowed, because its
+  // default "Skip" read as a no-op. Only the owner can say Post.
+  const gate = card({
+    id: "d-bffm", urgency: "high", dedupeKey: "pubgate:discord_channel+7bbf22186bea7ac6",
+    options: [{ key: "post", label: "Post (DISCORD_CHANNEL)" }, { key: "skip", label: "Skip" }],
+    defaultKey: "skip",
+  });
+  assert.equal(fa.noopSuggestion(gate), false);
+  assert.equal(fa.importance(gate, NOW), 2, "high urgency -> flutters to him");
+  // A plain Skip card that is not a publish gate still rests.
+  const plain = card({ options: [{ key: "go", label: "Go" }, { key: "skip", label: "Skip" }], defaultKey: "skip" });
+  assert.equal(fa.noopSuggestion(plain), true);
+});
+
 test("blocked and credential cards matter; a stale blocked one stops shouting", () => {
   // A session stopped on a card whose own fallback is to stay stopped ("Wait"): top.
   assert.equal(fa.importance(card({ kind: "blocked", blocking: true }), NOW), 3);
