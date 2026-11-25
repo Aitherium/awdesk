@@ -20,7 +20,7 @@ test("every pane resolves to a page that exists", () => {
   const panes = paneSources("http://127.0.0.1:5173");
   // The count is asserted so a pane cannot be DROPPED by an edit that only meant
   // to reorder the rail; bump it deliberately when one is added.
-  assert.equal(panes.length, 37);  // +1 gallery (2026-11-17), +1 explore (2026-11-13), +5 browser library pages (history, bookmarks, downloads, permissions, clear-data; 2026-11-13), +7 plane pages (slice 10), +1 spend, +1 terminal, +1 search, +1 projects, +1 extensions, +1 mesh (2026-10-04), +1 space (2026-10-15), +1 local-ai (2026-10-22), +1 notebooks (2026-10-28), +1 canvas (2026-11-07)
+  assert.equal(panes.length, 38);  // +1 chronicle plane (2026-11-25)  // +1 gallery (2026-11-17), +1 explore (2026-11-13), +5 browser library pages (history, bookmarks, downloads, permissions, clear-data; 2026-11-13), +7 plane pages (slice 10), +1 spend, +1 terminal, +1 search, +1 projects, +1 extensions, +1 mesh (2026-10-04), +1 space (2026-10-15), +1 local-ai (2026-10-22), +1 notebooks (2026-10-28), +1 canvas (2026-11-07)
   for (const pane of panes) {
     if (pane.kind !== "file") continue;
     assert.ok(
@@ -36,7 +36,7 @@ test("the rail is in this exact order -- a drop or a reorder must fail here", ()
   // drops or reshuffles an entry is caught here instead of only downstream.
   assert.deepEqual(PANES.map((p) => p.id),
     ["space", "search", "canvas", "cards", "terminal", "projects", "notebooks", "command", "chat", "sessions", "gallery", "stage", "characters", "cast", "files", "secrets", "explore",
-    "fleet", "ops", "spend", "settings", "extensions", "windows", "bricks", "local-ai", "history", "bookmarks", "downloads", "permissions", "clear-data", "strata", "pulse", "watch", "flux", "nexus", "mesh", "desktop"]);
+    "fleet", "ops", "spend", "settings", "extensions", "windows", "bricks", "local-ai", "history", "bookmarks", "downloads", "permissions", "clear-data", "strata", "pulse", "watch", "flux", "chronicle", "nexus", "mesh", "desktop"]);
   // Each section heading appears ONCE (the rail had CONTROL and PRESENCE twice), and a
   // tab pane follows the pane it is a tab of.
   const rail = PANES.filter((p) => !p.tabOf).map((p) => p.section);
@@ -368,6 +368,7 @@ test("plane pages: every one is a FILE pane whose page the console preload hands
     pulse: ["plane-pulse.html", "./plane-preload.cjs"],
     watch: ["plane-watch.html", "./plane-preload.cjs"],
     flux: ["plane-flux.html", "./plane-preload.cjs"],
+    chronicle: ["plane-chronicle.html", "./plane-preload.cjs"],
     nexus: ["plane-nexus.html", "./plane-preload.cjs"],
   };
   for (const [id, [file, dep]] of Object.entries(want)) {

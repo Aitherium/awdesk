@@ -38,7 +38,7 @@ function fakeFetch(status, body) {
 }
 
 test("the planes exist, each with a service read first", () => {
-  assert.deepEqual(PLANE_IDS, ["strata", "pulse", "watch", "flux", "nexus", "mesh"]);
+  assert.deepEqual(PLANE_IDS, ["strata", "pulse", "watch", "flux", "nexus", "chronicle", "mesh"]);
   for (const id of PLANE_IDS) {
     const first = PLANES[id].reads[0];
     assert.equal(first.id, "service", `${id} starts with its service row`);

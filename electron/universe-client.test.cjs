@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildUniverse, dim, appOfTab, APP_BODIES, routinesFromJobs, signalsFromPlanes } = require("./universe-client.cjs");
+const { buildUniverse, dim, appOfTab, APP_BODIES, routinesFromJobs, signalsFromPlanes, trailFromEvents } = require("./universe-client.cjs");
 
 const NOW = () => Date.parse("2026-11-24T20:00:00Z");
 
@@ -163,4 +163,16 @@ test("a plane nobody could read is a NOTE, never silence", () => {
   assert.deepEqual(s.ping, []);
   assert.equal(s.notes.length, 2);
   assert.deepEqual(s.notes.map((n) => n.plane).sort(), ["flux", "pulse"]);
+});
+
+test("chronicle events become an ordered trail, and an unmapped event is counted not hidden", () => {
+  const nodes = [{ id: "svc:genesis" }, { id: "app:rooms" }];
+  const r = trailFromEvents([
+    { service: "genesis", timestamp: "2026-11-25T10:00:02Z", data: { event_type: "deploy" } },
+    { service: "genesis", timestamp: "2026-11-25T10:00:01Z", data: { event_type: "boot" } },
+    { service: "ghost", timestamp: "2026-11-25T10:00:03Z", data: { event_type: "x" } },
+    { service: "genesis", timestamp: "2026-11-25T10:00:03Z", data: {} },
+  ], nodes);
+  assert.deepEqual(r.trail.map((t) => t.type), ["boot", "deploy"], "oldest first");
+  assert.equal(r.dropped, 2, "no body / no type are counted");
 });

@@ -2567,11 +2567,20 @@ async function getUniverseBodies() {
   const planes = {};
   try {
     const plane = require("./plane-client.cjs").createPlaneClient({ store: require("./last-good-cache.cjs").deskCache() });
-    for (const id of ["flux", "pulse", "watch"]) {
+    for (const id of ["flux", "pulse", "watch", "chronicle"]) {
       try { planes[id] = await plane.snapshot(id); } catch (error) { degraded.push({ source: id, error: String((error && error.message) || error).slice(0, 160) }); }
     }
   } catch (error) { degraded.push({ source: "planes", error: String((error && error.message) || error).slice(0, 160) }); }
-  built.signals = require("./universe-client.cjs").signalsFromPlanes(built.nodes, planes);
+  const uc = require("./universe-client.cjs");
+  built.signals = uc.signalsFromPlanes(built.nodes, planes);
+  // The TRAIL: what just happened, in order (Chronicle's /events through the same plane).
+  const chron = planes.chronicle;
+  const eventsRead = chron && Array.isArray(chron.reads) ? chron.reads.find((r) => r && r.id === "events") : null;
+  if (eventsRead && eventsRead.ok) {
+    const rows = Array.isArray(eventsRead.data) ? eventsRead.data
+      : (eventsRead.data && Array.isArray(eventsRead.data.events) ? eventsRead.data.events : []);
+    built.trail = uc.trailFromEvents(rows, built.nodes);
+  }
   return degraded.length ? { ...built, degraded } : built;
 }
 
@@ -6982,6 +6991,11 @@ function wireConsoleHost(legacy) {
         open: () => createPlaneWindow("flux"),
         close: () => closePlaneWindow("flux"),
         isOpen: () => isPlaneWindowOpen("flux"),
+      },
+      chronicle: {
+        open: () => createPlaneWindow("chronicle"),
+        close: () => closePlaneWindow("chronicle"),
+        isOpen: () => isPlaneWindowOpen("chronicle"),
       },
       mesh: {
         open: () => createPlaneWindow("mesh"),
