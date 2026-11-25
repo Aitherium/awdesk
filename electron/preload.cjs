@@ -104,6 +104,8 @@ contextBridge.exposeInMainWorld("deskBridge", {
   // what runs. Card answers stay on deck.answer / deck.credential.
   space: {
     get: () => ipcRenderer.invoke("desk:space-get"),
+    // The desk's own work as bodies (universe-client.cjs): apps, windows, agent ships.
+    universe: () => ipcRenderer.invoke("desk:universe-get"),
     verb: (nodeId, verbId, confirmed) => ipcRenderer.invoke("desk:space-verb", { nodeId, verbId, confirmed: !!confirmed }),
     explore: (nodeId, exploreIndex, question) =>
       ipcRenderer.invoke("desk:space-explore", { nodeId, exploreIndex, question }),

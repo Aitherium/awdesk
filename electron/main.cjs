@@ -2522,6 +2522,37 @@ function playAudioOnSlot({ slotId = "slot0", audioBase64, volume }) {
   return delivered;
 }
 
+/**
+ * The desk's own work, as bead-space bodies (universe-client.cjs). Every reader is
+ * guarded: one failing source must not take the map down -- it is reported and its
+ * bodies dim (universe.dim), which is the difference between "nothing is happening"
+ * and "we could not look".
+ */
+async function getUniverseBodies() {
+  const { buildUniverse } = require("./universe-client.cjs");
+  const degraded = [];
+  let tabs = [];
+  try {
+    const st = browserWindow.getState();
+    tabs = Array.isArray(st && st.tabs) ? st.tabs : [];
+  } catch (error) { degraded.push({ source: "tabs", error: String((error && error.message) || error).slice(0, 160) }); }
+  let agents = [];
+  try {
+    const live = await require("./sessions-client.cjs").listSessions();
+    agents = (live && Array.isArray(live.sessions) ? live.sessions : [])
+      .map((s) => ({ id: s.id || s.session_id, label: s.label || s.name || s.title || "", kind: "session", state: s.state || s.status || "" }))
+      .filter((s) => s.id);
+    if (live && live.ok === false) degraded.push({ source: "sessions", error: live.note || "the harness daemon did not answer" });
+  } catch (error) { degraded.push({ source: "sessions", error: String((error && error.message) || error).slice(0, 160) }); }
+  let platform = null;
+  try {
+    const got = await spaceClient().get();
+    platform = got && got.universe ? got.universe : null;
+  } catch (error) { degraded.push({ source: "platform", error: String((error && error.message) || error).slice(0, 160) }); }
+  const built = buildUniverse({ tabs, agents, platform });
+  return degraded.length ? { ...built, degraded } : built;
+}
+
 function getSwarmHost() {
   if (swarmHostInstance) return swarmHostInstance;
   const live = require("./agent-roster-live.cjs");
@@ -6734,6 +6765,11 @@ function wireConsoleHost(legacy) {
     runProfile: (argv) => runStackProfiles(argv),
     // unit-start / unit-park (the audit lens): fleet-inventory-distro.py on the fleet host.
     runUnit: (verb, unit) => require("./fleet-control.cjs").runUnitVerb(verb, unit),
+    // The desk's OWN work as bodies (universe-client.cjs, slice 8 of the one-app plan): his
+    // open tabs and windows, the agents working in them as ships, and the platform galaxies
+    // the space pane already reads. A source that fails is reported in `degraded` and its
+    // bodies DIM -- a map that empties itself when one reader breaks is a lie.
+    universe: () => getUniverseBodies(),
   });
   ensureStageIpc(stagePaneImpl());
   // The Cast pane (U03/U07): who appears, and how they sound. Guarded --
