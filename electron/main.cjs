@@ -2555,7 +2555,8 @@ async function getUniverseBodies() {
   try {
     const fs = require("node:fs");
     const path = require("node:path");
-    const home = (electron().app && electron().app.getPath ? electron().app.getPath("home") : "") || require("node:os").homedir();
+    const electronApp = require("electron").app;
+    const home = (electronApp && electronApp.getPath ? electronApp.getPath("home") : "") || require("node:os").homedir();
     const doc = JSON.parse(fs.readFileSync(path.join(home, ".aither", "awrise", "jobs.json"), "utf8"));
     routines = require("./command-center.cjs").shapeSchedules(doc)
       .map((s) => ({ name: s.id, state: s.failing ? "starved" : s.enabled ? "idle" : "disabled", lastRun: null }));
