@@ -81,7 +81,7 @@ test("main.cjs: a customer desk skips the DX12 info process, keeps an empty avat
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "main.cjs"), "utf8");
   assert.match(src, /if \(deskPostureState\.customer\) \{\s*app\.commandLine\.appendSwitch\("disable-gpu-process-for-dx12-info-collection"\);/);
   assert.match(src, /if \(!deskPostureState\.customer \|\| listCharacters\(\)\.length > 0\) showOverlay\(\);/);
-  assert.match(src, /if \(deskPostureState\.customer\) showLivingDesktop\(\);\s*else showOverlay\(\{ focus: true \}\);/);
+  assert.match(src, /if \(deskPostureState\.customer\) showDesktopApp\(\);\s*else showOverlay\(\{ focus: true \}\);/);
   assert.match(src, /if \(!deskPostureState\.throttle\) \{\s*app\.commandLine\.appendSwitch\("disable-renderer-backgrounding"\);/);
 });
 
