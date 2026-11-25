@@ -325,12 +325,30 @@ function installCrashHooks({ app, crashReporter, proc = process, report, homedir
     }));
     app.on("web-contents-created", safe((_e, wc) => {
       let said = false;
+      let lastRecovery = 0;
+      // A renderer that has stopped responding does NOT come back on its own:
+      // Chromium raises this event and then leaves the OS "not responding"
+      // dialog up until the person closes the app by hand (measured
+      // 2026-11-20, a desk hung while Identity answered 503). Reporting it was
+      // never the fix -- recover the window, and keep the report so a repeat
+      // is visible.
+      const RECOVERY_COOLDOWN_MS = 5 * 60 * 1000;
+      wc.on("responsive", safe(() => { said = false; }));
       wc.on("unresponsive", safe(() => {
         if (said) return;
         said = true;
         let url = "";
         try { url = String(wc.getURL()).split(/[?#]/)[0]; } catch { /* */ }
         report("error", "window stopped responding", { extra: { url } });
+        const now = Date.now();
+        // Cooldown: a renderer that hangs again immediately would otherwise
+        // reload forever and look like a crash loop.
+        if (now - lastRecovery < RECOVERY_COOLDOWN_MS) return;
+        lastRecovery = now;
+        try {
+          wc.reload();
+          report("error", "reloaded an unresponsive window", { extra: { url } });
+        } catch { /* destroyed between the event and here */ }
       }));
     }));
     installed.push("render-process-gone", "child-process-gone", "unresponsive");
