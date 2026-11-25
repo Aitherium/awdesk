@@ -52,12 +52,13 @@ function extensionOriginAllowed(origin, env = process.env) {
   return typeof origin === "string" && trustedExtensionOrigins(env).has(origin);
 }
 
-// AitherTab (awtab): its OWN allowlist. A Firefox add-on's origin is
-// moz-extension://<uuid> and changes per install, so Firefox authenticates with the
-// per-install token only; Chromium ids may also be pinned here for convenience.
+// AitherTab (awtab): its OWN allowlist, never the shared one. The mirror now lives
+// INSIDE awconnect (owner 2026-11-25: "i meant in fucking awconnect"), so its pinned and
+// store ids are trusted for THIS route only. A Firefox add-on's origin changes per
+// install, so Firefox still authenticates with the per-install token.
 function awtabOriginsAllowed(env = process.env) {
   const raw = env.AWDESK_AWTAB_EXTENSION_IDS;
-  const ids = raw == null ? [] : String(raw).split(",");
+  const ids = raw == null ? [PINNED_EXTENSION_ID, STORE_EXTENSION_ID] : String(raw).split(",");
   return new Set(
     ids.map((id) => id.trim()).filter((id) => EXTENSION_ID_PATTERN.test(id))
       .map((id) => `chrome-extension://${id}`),
