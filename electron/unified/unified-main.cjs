@@ -9,8 +9,12 @@
  *     ZERO gl.readPixels stalls.
  *   - Default home page: https://aithr.net.
  *   - Bridge server mounted on :47931 (DESK_BRIDGE_PORT) for awsh / awconnect / agents.
- *   - Persistent Stages, Bookmarks/History, Downloads, Widevine CDM, and keyboard shortcuts.
+ *   - Sovereign local voice via awvoice (:8768) + persistent Stages, Bookmarks/History,
+ *     Downloads, Widevine CDM, keyboard shortcuts, and --smoke CI verification.
+ *   - Pass `--legacy` (or AWDESK_LEGACY=1) to fall back to electron/main.cjs if needed.
  */
+
+const USE_LEGACY = process.argv.includes("--legacy") || process.env.AWDESK_LEGACY === "1";
 
 const path = require("node:path");
 const {
@@ -32,12 +36,14 @@ const workbenchLayout = require("./workbench-layout.cjs");
 const { createTabManager } = require("./tab-manager.cjs");
 const { createAgentBridge } = require("./agent-bridge.cjs");
 const { createBrowserStores } = require("./stage-store.cjs");
+const { createVoiceBridge } = require("./voice-bridge.cjs");
 const { createAdblock } = require("../browser-adblock.cjs");
 const { createBridgeServer, DEFAULT_PORT: DEFAULT_BRIDGE_PORT } = require("../bridge-server.cjs");
 const { getWidevine } = require("../browser-widevine.cjs");
 const decisionCards = require("../decision-cards.cjs");
 
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
+const IS_SMOKE = process.argv.includes("--smoke");
 
 let mainWindow = null;
 let shellView = null;
@@ -45,6 +51,7 @@ let tray = null;
 let state = null;
 let tabManager = null;
 let agentBridge = null;
+let voiceBridge = null;
 let stores = null;
 let bridgeServer = null;
 let bridgePort = null;
@@ -269,6 +276,10 @@ function startBridge() {
       mainWindow?.show();
       if (state.mode !== "workbench") applyMode("workbench");
       return { ok: true, mode: state.mode };
+    },
+    speakHandler: async ({ text, voice } = {}) => {
+      if (!voiceBridge) return { ok: false, offline: true };
+      return voiceBridge.speak(text, voice);
     },
   });
 
@@ -500,6 +511,11 @@ function registerIpc() {
   ipcMain.handle("unified:automations-list", () => agentBridge.listAutomations());
   ipcMain.handle("unified:awsh-sessions", () => agentBridge.listAwshSessions());
   ipcMain.handle("unified:models-list", () => agentBridge.listModels());
+  ipcMain.handle("unified:voice-status", () => voiceBridge.status());
+  ipcMain.handle("unified:voice-speak", (_ev, { text, voice }) => voiceBridge.speak(text, voice));
+  ipcMain.handle("unified:voice-transcribe", (_ev, { audioBase64, format }) =>
+    voiceBridge.transcribeBase64(audioBase64, format),
+  );
 
   // Living Desktop (https://aithr.net) host-protocol verbs
   ipcMain.handle("unified:desktop-host-action", (_ev, payload) => {
@@ -564,6 +580,7 @@ function createUnifiedWindow() {
 
   const adblock = createAdblock({ dir: path.join(userData, "adblock") });
   agentBridge = createAgentBridge({ userDataDir: userData });
+  voiceBridge = createVoiceBridge();
   stores = createBrowserStores({
     userDataDir: userData,
     homeUrl: state.homeUrl,
@@ -586,8 +603,12 @@ function createUnifiedWindow() {
     },
   });
 
-  // Restore active stage's persisted tabs (defaults to https://aithr.net on fresh install)
-  tabManager.replaceAllTabs(stores.activeStageTabs());
+  // Restore active stage's persisted tabs (in --smoke, stay offline with about:blank)
+  if (IS_SMOKE) {
+    tabManager.replaceAllTabs([{ url: "about:blank", title: "Smoke", workspace: "", pinned: true }]);
+  } else {
+    tabManager.replaceAllTabs(stores.activeStageTabs());
+  }
 
   mainWindow.on("resize", () => broadcastState());
   mainWindow.on("moved", () => {
@@ -608,48 +629,83 @@ function createUnifiedWindow() {
     shellView.webContents.send("unified:tabs", tabManager.snapshot());
     shellView.webContents.send("unified:decisions", agentBridge.listDecisions());
     shellView.webContents.send("unified:downloads", stores.listDownloads());
-    if (process.argv.includes("--smoke")) {
+    if (IS_SMOKE) {
       const ok = BaseWindow.getAllWindows().length === 1;
-      setTimeout(() => app.exit(ok ? 0 : 1), 250);
+      setTimeout(() => app.exit(ok ? 0 : 1), 200);
     }
   });
 
+  if (IS_SMOKE) {
+    shellView.webContents.on("did-fail-load", (_ev, code, desc) => {
+      console.error(`[unified-smoke] shell failed to load (${code}): ${desc}`);
+      app.exit(1);
+    });
+    const smokeGuard = setTimeout(() => {
+      console.error("[unified-smoke] timed out waiting for shell did-finish-load");
+      app.exit(1);
+    }, 15000);
+    if (typeof smokeGuard.unref === "function") smokeGuard.unref();
+  }
+
   loadShellUrl();
-  buildTray();
-  startBridge();
-
-  // Non-blocking Widevine CDM init for Castlabs Electron
-  try {
-    getWidevine()
-      .ensure()
-      .then((snap) => {
-        widevinePhase = snap?.phase || "ready";
-        broadcastState();
-      })
-      .catch(() => {});
-  } catch { /* non-Castlabs fallback */ }
-
-  decisionPollTimer = setInterval(() => {
-    if (!shellView || shellView.webContents.isDestroyed()) return;
+  if (!IS_SMOKE) {
+    buildTray();
+    startBridge();
+    // Non-blocking Widevine CDM init for Castlabs Electron
     try {
-      shellView.webContents.send("unified:decisions", agentBridge.listDecisions());
-    } catch { /* ignore */ }
-  }, 5000);
+      getWidevine()
+        .ensure()
+        .then((snap) => {
+          widevinePhase = snap?.phase || "ready";
+          broadcastState();
+        })
+        .catch(() => {});
+    } catch { /* non-Castlabs fallback */ }
+
+    decisionPollTimer = setInterval(() => {
+      if (!shellView || shellView.webContents.isDestroyed()) return;
+      try {
+        shellView.webContents.send("unified:decisions", agentBridge.listDecisions());
+      } catch { /* ignore */ }
+    }, 5000);
+  }
 }
 
-app.whenReady().then(() => {
-  registerIpc();
-  createUnifiedWindow();
-  globalShortcut.register("Alt+1", () => { mainWindow?.show(); applyMode("avatar"); });
-  globalShortcut.register("Alt+2", () => { mainWindow?.show(); applyMode("workbench"); });
-  globalShortcut.register("Alt+3", () => { mainWindow?.show(); applyMode("desktop"); });
-});
+if (USE_LEGACY) {
+  require("../main.cjs");
+} else {
+  if (!IS_SMOKE) {
+    const gotLock = app.requestSingleInstanceLock();
+    if (!gotLock) {
+      app.quit();
+    } else {
+      app.on("second-instance", () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      });
+    }
+  }
 
-app.on("will-quit", () => {
-  globalShortcut.unregisterAll();
-  bridgeServer?.close?.().catch?.(() => {});
-});
+  app.whenReady().then(() => {
+    registerIpc();
+    createUnifiedWindow();
+    if (!IS_SMOKE) {
+      try {
+        globalShortcut.register("Alt+1", () => { mainWindow?.show(); applyMode("avatar"); });
+        globalShortcut.register("Alt+2", () => { mainWindow?.show(); applyMode("workbench"); });
+        globalShortcut.register("Alt+3", () => { mainWindow?.show(); applyMode("desktop"); });
+      } catch { /* headless fallback */ }
+    }
+  });
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
-});
+  app.on("will-quit", () => {
+    globalShortcut.unregisterAll();
+    bridgeServer?.close?.().catch?.(() => {});
+  });
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") app.quit();
+  });
+}

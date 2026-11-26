@@ -11,6 +11,7 @@ const layout = require("./workbench-layout.cjs");
 const { createTabManager, partitionForWorkspace, OWNER_PARTITION } = require("./tab-manager.cjs");
 const { createAgentBridge } = require("./agent-bridge.cjs");
 const { createBrowserStores } = require("./stage-store.cjs");
+const { createVoiceBridge } = require("./voice-bridge.cjs");
 
 test("morph-state: defaults to workbench with https://aithr.net and transitions across all 3 modes preserving bounds", () => {
   const display = { x: 0, y: 0, width: 1920, height: 1080 };
@@ -260,7 +261,46 @@ test("agent-bridge: persists conversations, handles offline LLM/swarms honestly,
   }
 });
 
+test("voice-bridge: synthesizes local Kokoro WAV, transcribes base64 STT, and degrades honestly when offline", async () => {
+  const wavBytes = Buffer.from("RIFFfakewav");
+  const okVoice = createVoiceBridge({
+    fetchImpl: async (url) => {
+      if (String(url).includes("/audio/speech")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => "audio/wav" },
+          arrayBuffer: async () => wavBytes.buffer.slice(wavBytes.byteOffset, wavBytes.byteOffset + wavBytes.byteLength),
+        };
+      }
+      if (String(url).includes("/transcribe/base64")) {
+        return { ok: true, status: 200, json: async () => ({ success: true, text: "approve rush" }) };
+      }
+      return { ok: true, status: 200 };
+    },
+  });
+
+  const st = await okVoice.status();
+  assert.equal(st.ok, true);
+  const sp = await okVoice.speak("Hello Aither");
+  assert.equal(sp.ok, true);
+  assert.match(sp.audioDataUrl, /^data:audio\/wav;base64,/);
+  const tr = await okVoice.transcribeBase64("ZmFrZQ==", "wav");
+  assert.equal(tr.ok, true);
+  assert.equal(tr.text, "approve rush");
+
+  const offlineVoice = createVoiceBridge({
+    fetchImpl: async () => { throw new Error("ECONNREFUSED"); },
+  });
+  const offSp = await offlineVoice.speak("Offline test");
+  assert.equal(offSp.ok, false);
+  assert.equal(offSp.offline, true);
+  assert.equal(offSp.fallbackBrowserSpeech, true);
+});
+
 test("architectural invariants: unified shell has 1 BaseWindow, 0 BrowserWindows, 0 readPixels, 0 setIgnoreMouseEvents", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "package.json"), "utf8"));
+  assert.equal(pkg.main, "electron/unified/unified-main.cjs", "package.json main must point to unified-main.cjs");
   const unifiedDir = __dirname;
   const files = fs.readdirSync(unifiedDir).filter((f) => f.endsWith(".cjs") && !f.endsWith(".test.cjs"));
   let baseWindowCount = 0;

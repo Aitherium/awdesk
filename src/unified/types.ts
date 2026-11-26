@@ -268,6 +268,9 @@ export interface UnifiedApi {
   listAutomations: () => Promise<AutomationItem[]>;
   listAwshSessions: () => Promise<{ ok: boolean; sessions: AwshSessionRow[]; offline: boolean }>;
   listModels: () => Promise<ModelsSnapshot>;
+  voiceStatus: () => Promise<{ ok: boolean; offline: boolean; endpoint: string }>;
+  voiceSpeak: (text: string, voice?: string) => Promise<{ ok: boolean; offline?: boolean; fallbackBrowserSpeech?: boolean; audioDataUrl?: string; error?: string }>;
+  voiceTranscribe: (audioBase64: string, format?: string) => Promise<{ ok: boolean; offline?: boolean; text?: string; error?: string }>;
   onState: (fn: (s: ShellState) => void) => () => void;
   onTabs: (fn: (t: TabsSnapshot) => void) => () => void;
   onDecisions: (fn: (d: DecisionsSnapshot) => void) => () => void;

@@ -42,18 +42,30 @@ export const WhisperCard: React.FC<WhisperCardProps> = ({
   const card = cards[safeIdx];
   const moreCount = cards.length - 1;
 
-  const readAloud = () => {
-    setVoiceNote('');
+  const readAloud = async () => {
+    setVoiceNote('Synthesizing via local awvoice…');
+    const text = `${card.title}. ${card.summary || ''}`.trim();
+    const api = typeof window !== 'undefined' ? window.aitherUnified : undefined;
+    if (api?.voiceSpeak) {
+      try {
+        const res = await api.voiceSpeak(text);
+        if (res?.ok && res.audioDataUrl) {
+          const audio = new Audio(res.audioDataUrl);
+          await audio.play();
+          setVoiceNote('Reading via local awvoice (Kokoro)…');
+          return;
+        }
+      } catch { /* fall through to browser speechSynthesis */ }
+    }
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      setVoiceNote('Speech synthesis unavailable in this runtime.');
+      setVoiceNote('Local awvoice (:8768) offline & browser speech unavailable.');
       return;
     }
     try {
       window.speechSynthesis.cancel();
-      const text = `${card.title}. ${card.summary || ''}`.trim();
       const utter = new SpeechSynthesisUtterance(text);
       window.speechSynthesis.speak(utter);
-      setVoiceNote('Reading aloud…');
+      setVoiceNote('Reading via system speech (awvoice :8768 offline)…');
     } catch {
       setVoiceNote('Could not start speech output.');
     }

@@ -28,12 +28,13 @@
     "esbuild@0.28.1": true,
     "fsevents@2.3.3": true
   },
-  "main": "electron/main.cjs",
+  "main": "electron/unified/unified-main.cjs",
   "type": "module",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "dev:unified": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron electron/unified/unified-main.cjs\"",
     "start:unified": "electron electron/unified/unified-main.cjs",
+    "start:legacy": "electron electron/main.cjs",
     "test:unified": "node --test electron/unified/*.test.cjs && vitest run src/unified",
     "build": "tsc -b && vite build",
     "build:pg-only": "node scripts/filter-pg.mjs && npm run build && node scripts/filter-pg.mjs --dist",
