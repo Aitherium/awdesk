@@ -64,6 +64,9 @@ contextBridge.exposeInMainWorld("aitherUnified", {
   listAutomations: () => ipcRenderer.invoke("unified:automations-list"),
   listAwshSessions: () => ipcRenderer.invoke("unified:awsh-sessions"),
   listModels: () => ipcRenderer.invoke("unified:models-list"),
+  voiceStatus: () => ipcRenderer.invoke("unified:voice-status"),
+  voiceSpeak: (text, voice) => ipcRenderer.invoke("unified:voice-speak", { text, voice }),
+  voiceTranscribe: (audioBase64, format) => ipcRenderer.invoke("unified:voice-transcribe", { audioBase64, format }),
 
   // Push events from main
   onState: (fn) => onChannel("unified:state", fn),
