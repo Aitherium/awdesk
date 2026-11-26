@@ -5,7 +5,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const EventEmitter = require("node:events");
-const { createLocalNode, defaultRun, pythonCandidates, childEnv, SUPERVISOR, HARNESS_PORT, MAX_RESTARTS, PIP_TIMEOUT_MS } = require("./local-node.cjs");
+const {
+  createLocalNode, defaultRun, pythonCandidates, childEnv, isAutoStartDisabled,
+  SUPERVISOR, HARNESS_PORT, MAX_RESTARTS, PIP_TIMEOUT_MS,
+} = require("./local-node.cjs");
 
 const DAEMON_ARGV = ["py", "-3", "-m", "adk.server", "--host", "127.0.0.1", "--port", "9001"];
 
@@ -21,15 +24,19 @@ const MODEL_SPEC = {
  * adk.local_model_server; "old" is PyPI 3.8.68, as `pip install awnode` leaves it; false =
  * none), what pip upgrades to, which ports answer.
  */
-function world({ pythons = ["py"], adk = "current", pipOk = true, pipGives = "current", pipTimedOut = false,
-  spec = MODEL_SPEC, specRun = null, up = new Set(), healthyAfterSpawn = true, healthWaitMs = 10 } = {}) {
+function world({ pythons = ["py"], adk = "current", adkCli = false, pipOk = true, pipGives = "current", pipTimedOut = false,
+  spec = MODEL_SPEC, specRun = null, up = new Set(), healthyAfterSpawn = true, healthWaitMs = 10,
+  env = {}, allowed, probe: customProbe = null, spawnThrows = false } = {}) {
   const spawned = [];
   const runs = [];
   const timers = [];
   const children = [];
+  const probes = [];
+  const logs = [];
   const run = async (cmd, args) => {
     runs.push([cmd, ...args]);
     const code = args.join(" ");
+    if (cmd === "adk" && code === "--version") return { code: adkCli ? 0 : 1, stdout: adkCli ? "adk 4.0.0\n" : "" };
     if (code.includes("sys.version_info")) return pythons.includes(cmd) ? { code: 0, stdout: "True\n" } : { code: 9009, stdout: "" };
     if (code.endsWith("-c import adk.local_model_server")) return { code: adk === "current" ? 0 : 1, stdout: "" };
     if (code.endsWith("-c import adk")) return { code: adk ? 0 : 1, stdout: "" };
@@ -46,6 +53,7 @@ function world({ pythons = ["py"], adk = "current", pipOk = true, pipGives = "cu
     return { code: 1, stdout: "" };
   };
   const spawn = (cmd, args, opts) => {
+    if (spawnThrows) throw new Error("ENOENT");
     const child = new EventEmitter();
     child.pid = 1000 + spawned.length;
     child.killed = false;
@@ -58,13 +66,17 @@ function world({ pythons = ["py"], adk = "current", pipOk = true, pipGives = "cu
     }
     return child;
   };
-  const probe = async (url) => up.has(url);
+  const probe = async (url) => {
+    probes.push(url);
+    return customProbe ? customProbe(url) : up.has(url);
+  };
   const node = createLocalNode({
-    spawn, run, probe, platform: "win32", env: { PATH: "x", ELECTRON_RUN_AS_NODE: "1" },
+    spawn, run, probe, platform: "win32", env: { PATH: "x", ELECTRON_RUN_AS_NODE: "1", ...env },
+    allowed, log: (line) => logs.push(line),
     setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout: () => {},
     restartDelayMs: 5, healthWaitMs, pollMs: 1,
   });
-  return { node, spawned, runs, timers, up, children };
+  return { node, spawned, runs, timers, up, children, probes, logs };
 }
 
 async function settle() { for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r)); }
@@ -393,4 +405,140 @@ test("main routes target supervisor to the desk's node supervisor, fenced like e
   const main = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.match(main, /supervisor: \(msg\) => localNode\.call\(msg\)/);
   assert.match(main, /app\.on\("before-quit"[\s\S]*localNode\.stopOwned\(\)/);
+  // Transparent :8362 auto-boot runs inside app.whenReady(), strictly after --smoke and kid-desk early returns.
+  const ready = main.slice(main.indexOf("app.whenReady().then(async () =>"));
+  const smokeIdx = ready.indexOf("if (smokeIsRequested)");
+  const kidIdx = ready.indexOf("if (kidDeskMode().enabled)");
+  const bootIdx = ready.indexOf("localNode.autoBootHarness()");
+  assert.ok(smokeIdx >= 0 && kidIdx > smokeIdx && bootIdx > kidIdx,
+    "autoBootHarness must be wired in app.whenReady() after smoke and kid-desk guards");
+});
+
+/* ── transparent :8362 auto-boot on desktop launch ── */
+
+test("autoBootHarness: skips when :8362/health is already up (adopts not-owned, never spawns or touches Python)", async () => {
+  const w = world({ up: new Set(["http://127.0.0.1:8362/health"]) });
+  const res = await w.node.autoBootHarness();
+  assert.deepEqual(res, { started: false, skipped: true, reason: "already-running" });
+  assert.equal(w.spawned.length, 0, "must not fight an already-running :8362 daemon");
+  assert.equal(w.runs.length, 0, "already healthy: no need to probe Python");
+  assert.deepEqual(w.probes, ["http://127.0.0.1:8362/health"]);
+  const awsh = w.node.status().services.find((s) => s.id === "awsh");
+  assert.deepEqual([awsh.state, awsh.owned], ["running", false]);
+  w.node.stopOwned();
+  assert.equal(w.spawned.length, 0);
+});
+
+test("autoBootHarness: respects opt-out env vars (AITHER_DESK_NO_AUTOSTART, AWDESK_NO_AUTOSTART) and settings", async () => {
+  for (const env of [
+    { AITHER_DESK_NO_AUTOSTART: "1" },
+    { AITHER_DESK_NO_AUTOSTART: "true" },
+    { AWDESK_NO_AUTOSTART: "1" },
+  ]) {
+    const w = world({ env });
+    const res = await w.node.autoBootHarness();
+    assert.deepEqual(res, { started: false, skipped: true, reason: "opted-out" });
+    assert.equal(w.probes.length, 0, "opted out: zero health probes");
+    assert.equal(w.runs.length, 0, "opted out: zero Python probes");
+    assert.equal(w.spawned.length, 0, "opted out: zero spawns");
+  }
+  const bySetting = world({ allowed: () => false });
+  const res = await bySetting.node.autoBootHarness();
+  assert.deepEqual(res, { started: false, skipped: true, reason: "opted-out" });
+  assert.equal(bySetting.probes.length, 0);
+  assert.equal(bySetting.spawned.length, 0);
+
+  // Explicit falsy env values stay enabled; a throwing settings callback fails soft.
+  assert.equal(isAutoStartDisabled({ AITHER_DESK_NO_AUTOSTART: "0" }).disabled, false);
+  assert.equal(isAutoStartDisabled({}, () => { throw new Error("bad config"); }).disabled, false);
+});
+
+test("autoBootHarness: starts :8362 when down, supervises restarts, shares state with start(), stops on quit", async () => {
+  const w = world();
+  const res = await w.node.autoBootHarness();
+  await settle();
+  assert.equal(res.started, true);
+  assert.equal(res.skipped, false);
+  assert.equal(res.reason, "started");
+  assert.deepEqual(w.spawned.map((s) => [s.cmd, ...s.args]), [AWSH_ARGV]);
+  assert.equal(w.spawned[0].opts.env.ELECTRON_RUN_AS_NODE, undefined);
+  assert.ok(!w.runs.some((r) => r.join(" ").includes("pip install")), "auto-boot never runs pip");
+
+  const st = w.node.status();
+  assert.equal(st.state, "stopped", "daemon :9001 was not started, so full node state is still stopped");
+  assert.deepEqual(st.services.find((s) => s.id === "awsh").state, "running");
+  assert.equal(st.services.find((s) => s.id === "awsh").owned, true);
+
+  // Crash -> supervised restart -> returns cleanly to awsh running and overall state not stuck at "starting".
+  w.spawned[0].child.emit("exit", 1);
+  assert.equal(w.node.status().services.find((s) => s.id === "awsh").state, "restarting");
+  w.timers.shift().fn();
+  await settle();
+  assert.equal(w.spawned.length, 2);
+  assert.equal(w.node.status().services.find((s) => s.id === "awsh").state, "running");
+  assert.equal(w.node.status().state, "stopped");
+
+  // Later explicit full start() keeps the already-running owned awsh (no duplicate :8362 spawn).
+  await w.node.start();
+  await settle();
+  assert.equal(w.spawned.filter((s) => s.args.includes("harness")).length, 2, "no duplicate awsh");
+  assert.equal(w.node.status().state, "running");
+
+  // App quit stops owned awsh cleanly.
+  w.node.stopOwned();
+  assert.equal(w.spawned[1].child.killed, true);
+});
+
+test("autoBootHarness: fails soft when adk or Python is absent, or probe/spawn throws; uses standalone adk CLI fallback", async () => {
+  // Python present, adk not installed -> fail soft, never runs pip, supervisor state stays clean.
+  const noAdk = world({ adk: false });
+  const r1 = await noAdk.node.autoBootHarness();
+  assert.deepEqual(r1, { started: false, skipped: true, reason: "no-adk" });
+  assert.equal(noAdk.spawned.length, 0);
+  assert.ok(!noAdk.runs.some((r) => r.join(" ").includes("pip install")));
+  assert.equal(noAdk.node.status().state, "stopped");
+  assert.ok(noAdk.logs.some((l) => /adk not installed/.test(l)));
+
+  // No Python and no adk CLI -> fail soft without polluting state with "no-python".
+  const noPy = world({ pythons: [], adk: false });
+  const r2 = await noPy.node.autoBootHarness();
+  assert.deepEqual(r2, { started: false, skipped: true, reason: "no-adk" });
+  assert.equal(noPy.spawned.length, 0);
+  assert.equal(noPy.node.status().state, "stopped");
+
+  // Standalone adk binary on PATH (e.g. uv tool install) works even without system Python.
+  const cliOnly = world({ pythons: [], adk: false, adkCli: true });
+  const r3 = await cliOnly.node.autoBootHarness();
+  await settle();
+  assert.equal(r3.started, true);
+  assert.deepEqual(cliOnly.spawned.map((s) => [s.cmd, ...s.args]), [
+    ["adk", "harness", "serve", "--host", "127.0.0.1", "--port", "8362"],
+  ]);
+
+  // Throwing probe and throwing spawn both resolve fail-soft and never crash launch.
+  const badProbe = world({ probe: async () => { throw new Error("net down"); } });
+  const r4 = await badProbe.node.autoBootHarness();
+  assert.equal(r4.started, false);
+  assert.equal(r4.reason, "error");
+  assert.ok(badProbe.logs.some((l) => /failed soft/.test(l)));
+
+  const badSpawn = world({ spawnThrows: true });
+  const r5 = await badSpawn.node.autoBootHarness();
+  assert.equal(r5.started, false);
+  assert.equal(r5.reason, "spawn-failed");
+  assert.ok(badSpawn.logs.some((l) => /failed soft/.test(l)));
+});
+
+test("autoBootHarness: bails out cleanly without spawning if stopOwned() fires mid-probe", async () => {
+  let releaseProbe;
+  const w = world({
+    probe: () => new Promise((resolve) => { releaseProbe = resolve; }),
+  });
+  const pending = w.node.autoBootHarness();
+  await settle();
+  w.node.stopOwned();
+  releaseProbe(false);
+  const res = await pending;
+  assert.deepEqual(res, { started: false, skipped: true, reason: "stopped" });
+  assert.equal(w.spawned.length, 0, "must never spawn an orphan after quit");
 });

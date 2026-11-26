@@ -6044,6 +6044,7 @@ setDeskStateProvider(() => ({ ...deckState(), browser: overlayBrowserHost.browse
   // (desk-window-controls.tsx), so an older desk that would refuse them shows no dead button.
   commands: overlayBrowserHost.DESK_COMMANDS }));
 // This computer's local node, started and supervised on the user's click (local-node.cjs).
+// Its :8362 harness daemon (awsh) also auto-boots transparently at launch when installed.
 const localNode = require("./local-node.cjs").createLocalNode({ log: (line) => console.log(`[desk] ${line}`) });
 // AitherOS Online on the desk drives and reads the Aither Browser through the SAME
 // agent dispatcher every MCP browser_* tool uses (gate + tab ownership), and its
@@ -7766,6 +7767,10 @@ if (!smokeIsRequested && !singleInstanceLock(app, process.argv)) {
       startKidDesk();
       return;
     }
+    // Transparent :8362 (awsh harness daemon) auto-boot: non-blocking, skipped when
+    // already healthy, opted out (AITHER_DESK_NO_AUTOSTART=1 / AWDESK_NO_AUTOSTART=1),
+    // or adk is not installed yet. Owned child stops cleanly in before-quit.
+    void localNode.autoBootHarness();
     // Aeon's mood on every body's face (src/hooks/aeonMood.ts).
     startAeonMoodFeed();
     // The resident's body: VRM, or VaM when its persona asks (vam-avatar.cjs).

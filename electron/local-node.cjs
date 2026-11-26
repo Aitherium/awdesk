@@ -56,12 +56,38 @@ const RESTART_WINDOW_MS = 5 * 60 * 1000;
 const RESTART_DELAY_MS = 3000;
 /** pip on a slow or broken index must end; 10 minutes covers a cold wheel download. */
 const PIP_TIMEOUT_MS = 10 * 60 * 1000;
+/** Passive Python/adk probes on desktop launch must never hang startup. */
+const PROBE_TIMEOUT_MS = 10 * 1000;
+/** Env vars that opt out of transparent :8362 harness auto-boot on desktop launch. */
+const AUTOSTART_OPTOUT_ENV = Object.freeze(["AITHER_DESK_NO_AUTOSTART", "AWDESK_NO_AUTOSTART"]);
 /** The newest awdk module this file needs; its absence means awdk is too old. */
 const ADK_PROBE = "import adk.local_model_server";
 const SETUP_URL = "https://aitherium.com/?spawn=setup";
 /** Electron/AppImage leak these into children; a system python must not inherit them. */
 const ENV_DROP = ["ELECTRON_RUN_AS_NODE", "ELECTRON_NO_ATTACH_CONSOLE", "NODE_OPTIONS",
   "PYTHONHOME", "PYTHONPATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "APPDIR", "APPIMAGE"];
+
+/**
+ * True when transparent :8362 auto-boot is opted out via env (`AITHER_DESK_NO_AUTOSTART=1`
+ * or `AWDESK_NO_AUTOSTART=1`) or a user-preference callback returning `false`. Pure/fail-soft.
+ */
+function isAutoStartDisabled(env = process.env, allowed = null) {
+  const e = env && typeof env === "object" ? env : {};
+  for (const key of AUTOSTART_OPTOUT_ENV) {
+    const v = e[key];
+    if (v !== undefined && /^(1|true|yes)$/i.test(String(v).trim())) {
+      return { disabled: true, reason: `env:${key}` };
+    }
+  }
+  if (typeof allowed === "function") {
+    try {
+      if (allowed() === false) return { disabled: true, reason: "settings" };
+    } catch {
+      /* fail soft: a broken settings reader never crashes launch */
+    }
+  }
+  return { disabled: false, reason: "" };
+}
 
 function childEnv(base) {
   const env = { ...(base || {}) };
@@ -131,7 +157,9 @@ function createLocalNode(deps = {}) {
   const run = deps.run || defaultRun(spawn, { setTimeout: deps.setTimeout, clearTimeout: deps.clearTimeout });
   const probe = deps.probe || httpOk;
   const platform = deps.platform || process.platform;
-  const env = childEnv(deps.env || process.env);
+  const rawEnv = deps.env || process.env;
+  const env = childEnv(rawEnv);
+  const adkBin = deps.adkBin || rawEnv.AWDESK_ADK_BIN || "adk";
   const log = deps.log || (() => {});
   const setT = deps.setTimeout || setTimeout;
   const clearT = deps.clearTimeout || clearTimeout;
@@ -144,6 +172,8 @@ function createLocalNode(deps = {}) {
   let message = "";
   let python = null; // [cmd, args]
   let starting = null; // the in-flight start() promise
+  let autoBooting = null; // the in-flight autoBootHarness() promise
+  let stopGen = 0; // bumped by stopOwned() so an in-flight auto-boot never spawns after quit
   /** id -> {id, name, port, health, state, owned, child, argv, cwd, restarts:[], stopping, timer} */
   const services = new Map();
 
@@ -185,12 +215,15 @@ function createLocalNode(deps = {}) {
       message = "";
     } else if (list.some((s) => s.state === "starting" || s.state === "restarting")) {
       state = "starting";
+    } else if (state === "starting") {
+      state = "stopped";
     }
   }
 
   async function findPython() {
     for (const [cmd, pre] of pythonCandidates(platform)) {
-      const r = await run(cmd, [...pre, "-c", "import sys; print(sys.version_info >= (3, 10))"], { env });
+      const r = await run(cmd, [...pre, "-c", "import sys; print(sys.version_info >= (3, 10))"],
+        { env, timeoutMs: PROBE_TIMEOUT_MS });
       if (r.code === 0 && /True/.test(r.stdout)) return [cmd, pre];
     }
     return null;
@@ -206,7 +239,10 @@ function createLocalNode(deps = {}) {
         recompute();
         return;
       }
-      await new Promise((r) => setT(r, pollMs));
+      await new Promise((r) => {
+        const t = setT(r, pollMs);
+        if (t && typeof t.unref === "function") t.unref();
+      });
     }
     if (s.state === "starting" || s.state === "restarting") {
       s.state = "error";
@@ -383,8 +419,109 @@ function createLocalNode(deps = {}) {
     return starting;
   }
 
+  /**
+   * Transparent :8362 (awsh harness daemon) auto-boot on desktop launch.
+   *
+   * Non-blocking and fail-soft:
+   *   1. Opt-out check first (`AITHER_DESK_NO_AUTOSTART=1` / `AWDESK_NO_AUTOSTART=1`
+   *      or `allowed() === false`) -> skip without probing or spawning.
+   *   2. Probe `http://127.0.0.1:8362/health` -> if already responding, adopt as
+   *      not-owned so we never fight an already-running daemon.
+   *   3. Find an installed `adk` (prefer Python >= 3.10 with `import adk`, matching
+   *      `doStart()`; else standalone `adk` CLI on PATH / `AWDESK_ADK_BIN`). Never
+   *      runs `pip install`, never flips global supervisor state to error/no-python,
+   *      and fails soft if Python or `adk` is absent.
+   *   4. Delegate to `ensure(awsh, argv)` for health polling, restart limits, and
+   *      clean `stopOwned()` shutdown on app quit.
+   */
+  async function doAutoBootHarness(opts = {}) {
+    const gen = stopGen;
+    const optEnv = opts.env || rawEnv;
+    const optAllowed = opts.allowed !== undefined ? opts.allowed : deps.allowed;
+    const optOut = isAutoStartDisabled(optEnv, optAllowed);
+    if (optOut.disabled) {
+      log(`local-node: :${HARNESS_PORT} auto-boot skipped (opted out: ${optOut.reason})`);
+      return { started: false, skipped: true, reason: "opted-out" };
+    }
+    if (starting) {
+      log(`local-node: :${HARNESS_PORT} auto-boot skipped (local node start already in progress)`);
+      return { started: false, skipped: true, reason: "start-in-progress" };
+    }
+    const awsh = service("awsh", "awsh", HARNESS_PORT);
+    if (awsh.child && awsh.state !== "error") {
+      return { started: false, skipped: true, reason: "already-managed" };
+    }
+    if (await probe(awsh.health)) {
+      if (stopGen !== gen) return { started: false, skipped: true, reason: "stopped" };
+      awsh.state = "running";
+      if (!awsh.child) {
+        awsh.owned = false;
+        awsh.note = "already running";
+      }
+      recompute();
+      log(`local-node: :${HARNESS_PORT} already healthy; auto-boot skipped`);
+      return { started: false, skipped: true, reason: "already-running" };
+    }
+    if (stopGen !== gen) return { started: false, skipped: true, reason: "stopped" };
+
+    let argv = null;
+    const pyPair = python || await findPython();
+    if (stopGen !== gen) return { started: false, skipped: true, reason: "stopped" };
+    if (pyPair) {
+      python = pyPair;
+      const [py, pre] = pyPair;
+      const hasAdk = await run(py, [...pre, "-c", "import adk"], { env, timeoutMs: PROBE_TIMEOUT_MS });
+      if (stopGen !== gen) return { started: false, skipped: true, reason: "stopped" };
+      if (hasAdk.code === 0) {
+        argv = [py, ...pre, "-m", "adk", "harness", "serve", "--host", "127.0.0.1", "--port", String(HARNESS_PORT)];
+      }
+    }
+    if (!argv) {
+      const cli = await run(adkBin, ["--version"], { env, timeoutMs: PROBE_TIMEOUT_MS });
+      if (stopGen !== gen) return { started: false, skipped: true, reason: "stopped" };
+      if (cli.code === 0) {
+        argv = [adkBin, "harness", "serve", "--host", "127.0.0.1", "--port", String(HARNESS_PORT)];
+      }
+    }
+    if (!argv) {
+      log(`local-node: :${HARNESS_PORT} auto-boot skipped (adk not installed)`);
+      return { started: false, skipped: true, reason: "no-adk" };
+    }
+
+    await ensure(awsh, argv);
+    if (stopGen !== gen) {
+      stopOwned();
+      return { started: false, skipped: true, reason: "stopped" };
+    }
+    if (awsh.owned && awsh.child) {
+      log(`local-node: auto-booted :${HARNESS_PORT} harness daemon (pid ${awsh.child.pid})`);
+      return { started: true, skipped: false, reason: "started", pid: awsh.child.pid };
+    }
+    if (!awsh.owned && awsh.state === "running") {
+      log(`local-node: :${HARNESS_PORT} already healthy; auto-boot skipped`);
+      return { started: false, skipped: true, reason: "already-running" };
+    }
+    log(`local-node: :${HARNESS_PORT} auto-boot failed soft (${awsh.note || "spawn error"})`);
+    return { started: false, skipped: false, reason: "spawn-failed", error: awsh.note || "spawn error" };
+  }
+
+  /** Transparent :8362 auto-boot (idempotent, fail-soft). Never rejects. */
+  function autoBootHarness(opts = {}) {
+    if (!autoBooting) {
+      autoBooting = doAutoBootHarness(opts)
+        .catch((error) => {
+          const msg = String((error && error.message) || error);
+          log(`local-node: :${HARNESS_PORT} auto-boot failed soft (${msg})`);
+          return { started: false, skipped: false, reason: "error", error: msg };
+        })
+        .finally(() => { autoBooting = null; });
+    }
+    return autoBooting;
+  }
+
   /** Stop ONLY what this Desk started. Others' servers are never touched. */
   function stopOwned() {
+    stopGen += 1;
     for (const s of services.values()) {
       if (s.timer) { clearT(s.timer); s.timer = null; }
       if (s.owned && s.child) {
@@ -414,10 +551,10 @@ function createLocalNode(deps = {}) {
     return { ok: false, status: 404, error: `the desk node supervisor has no ${method} ${route}` };
   }
 
-  return { start, stopOwned, status: snapshot, call, _services: services };
+  return { start, autoBootHarness, stopOwned, status: snapshot, call, _services: services };
 }
 
 module.exports = {
-  createLocalNode, defaultRun, pythonCandidates, childEnv,
-  SUPERVISOR, DAEMON_PORT, HARNESS_PORT, MAX_RESTARTS, PIP_TIMEOUT_MS,
+  createLocalNode, defaultRun, pythonCandidates, childEnv, isAutoStartDisabled,
+  SUPERVISOR, DAEMON_PORT, HARNESS_PORT, MAX_RESTARTS, PIP_TIMEOUT_MS, PROBE_TIMEOUT_MS, AUTOSTART_OPTOUT_ENV,
 };
