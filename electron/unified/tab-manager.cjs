@@ -34,6 +34,7 @@ function createTabManager({
   adblock = null,
   stores = null,
   desktopPreloadPath = null,
+  defaultWorkspace = "",
   homeUrl = "https://aithr.net",
   onChange = null,
   onShortcut = null,
@@ -334,7 +335,7 @@ function createTabManager({
     const wanted = new Map();
     if (layoutResult.mode === "desktop" && layoutResult.browserViews.length > 0) {
       if (!desktopView && WebContentsViewCtor) {
-        desktopView = makeView(OWNER_PARTITION, homeUrl, null, { preload: desktopPreloadPath });
+        desktopView = makeView(partitionForWorkspace(defaultWorkspace), homeUrl, null, { preload: desktopPreloadPath });
       }
       if (desktopView) {
         wanted.set(desktopView, layoutResult.browserViews[0]);

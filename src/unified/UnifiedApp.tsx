@@ -321,16 +321,18 @@ export const UnifiedApp: React.FC = () => {
   };
 
   const activeConversation = conversations.find((c) => c.id === activeConvId) || conversations[0] || null;
+  const brand = shell.brandName || 'AitherBrowser';
+  const rootStyle = shell.accent ? ({ '--ab-accent': shell.accent } as React.CSSProperties) : undefined;
 
   // --- MODE 1: SHRUNK AVATAR + CIRCULAR ACTION RAIL + WHISPER CARD (ONE UNIFIED WINDOW!) ---
   if (shell.mode === 'avatar') {
     return (
-      <div className="ab-root ab-root--avatar" data-mode="avatar">
+      <div className="ab-root ab-root--avatar" data-mode="avatar" style={rootStyle}>
         {RESIZE_EDGES.map((edge) => (
           <div key={edge} className={`ab-resize ab-resize--${edge}`} onMouseDown={startEdgeResize(edge)} />
         ))}
         <header className="ab-avatar-bar" onMouseDown={startHeaderDrag}>
-          <span className="ab-avatar-bar__title">Aither · Middle-drag to move · Drag edge to resize</span>
+          <span className="ab-avatar-bar__title">{brand} · Middle-drag to move · Drag edge to resize</span>
           <div className="ab-avatar-bar__btns">
             <button type="button" className="ab-chip" onClick={() => setMode('workbench')} title="Expand to AitherBrowser (Alt+2)">
               Browser
@@ -423,10 +425,13 @@ export const UnifiedApp: React.FC = () => {
     );
   }
 
-  // --- MODE 3: EXPANDED LIVING DESKTOP MODE ---
+  // --- MODE 3: EXPANDED LIVING DESKTOP / CUSTOMER WORKSPACE MODE ---
   if (shell.mode === 'desktop') {
+    const desktopTitle = shell.customer
+      ? `${brand} · ${shell.homeUrl.replace(/^https?:\/\//i, '').replace(/\/$/, '')}`
+      : 'AitherOS Living Desktop · aithr.net';
     return (
-      <div className="ab-root ab-root--desktop" data-mode="desktop">
+      <div className="ab-root ab-root--desktop" data-mode="desktop" style={rootStyle}>
         <header className="ab-desktop-bar">
           <div className="ab-desktop-bar__left">
             <AvatarOrb
@@ -435,9 +440,9 @@ export const UnifiedApp: React.FC = () => {
               waitingCount={decisions.count}
               renderer={shell.avatarRenderer}
               onClick={() => setMode('avatar')}
-              title="Shrink to Avatar (Alt+1)"
+              title="Shrink to Companion (Alt+1)"
             />
-            <span className="ab-desktop-bar__title">AitherOS Living Desktop · aithr.net</span>
+            <span className="ab-desktop-bar__title">{desktopTitle}</span>
           </div>
           <div className="ab-desktop-bar__right">
             {decisions.count > 0 && (
@@ -445,12 +450,22 @@ export const UnifiedApp: React.FC = () => {
                 {decisions.count} Waiting
               </button>
             )}
-            <button type="button" className="ab-chip" onClick={() => setMode('workbench')} title="Shrink to 3-Pane Workbench (Alt+2)">
+            <button type="button" className="ab-chip" onClick={() => setMode('workbench')} title="Workbench (Alt+2)">
               Workbench (Alt+2)
             </button>
-            <button type="button" className="ab-chip" onClick={() => setMode('avatar')} title="Shrink to Avatar (Alt+1)">
-              Shrink to Avatar (Alt+1)
+            <button type="button" className="ab-chip" onClick={() => setMode('avatar')} title="Shrink to Companion (Alt+1)">
+              Shrink (Alt+1)
             </button>
+            {shell.customer && (
+              <>
+                <button type="button" className="ab-win-btn" onClick={() => api?.windowAction('minimize')} aria-label="Minimize">
+                  ─
+                </button>
+                <button type="button" className="ab-win-btn is-close" onClick={() => api?.windowAction('close')} aria-label="Close">
+                  ×
+                </button>
+              </>
+            )}
           </div>
         </header>
         <div className="ab-desktop-canvas-slot" aria-label="Living Desktop WebContentsView host" />
@@ -464,14 +479,14 @@ export const UnifiedApp: React.FC = () => {
   const browserOuter = shell.computed.browserOuter;
 
   return (
-    <div className="ab-root ab-root--workbench" data-mode="workbench">
+    <div className="ab-root ab-root--workbench" data-mode="workbench" style={rootStyle}>
       {RESIZE_EDGES.map((edge) => (
         <div key={edge} className={`ab-resize ab-resize--${edge}`} onMouseDown={startEdgeResize(edge)} />
       ))}
 
       <header className="ab-titlebar" onMouseDown={startHeaderDrag}>
         <div className="ab-titlebar__left">
-          <span className="ab-titlebar__brand">AitherBrowser</span>
+          <span className="ab-titlebar__brand">{brand}</span>
           <span className="ab-titlebar__meta">
             1 window · {tabs.attachedViewCount} view{tabs.attachedViewCount === 1 ? '' : 's'}
             {shell.bridgePort ? ` · :${shell.bridgePort}` : ''}
@@ -512,6 +527,9 @@ export const UnifiedApp: React.FC = () => {
               <LeftRail
                 width={railRect.width}
                 collapsed={shell.layout.railCollapsed}
+                customer={shell.customer}
+                brandName={shell.customer ? brand : 'Aither'}
+                quickWorkspaces={shell.quickWorkspaces}
                 conversations={conversations}
                 activeConversationId={activeConversation?.id || null}
                 automations={automations}
@@ -543,8 +561,8 @@ export const UnifiedApp: React.FC = () => {
                 }}
                 onToggleCollapse={() => api?.updateLayout({ railCollapsed: !shell.layout.railCollapsed })}
                 onMorph={setMode}
-                onOpenHome={() => api?.openTab({ url: shell.homeUrl, title: 'AitherNet', activate: true })}
-                onOpenUrl={(url, title) => api?.openTab({ url, title, activate: true })}
+                onOpenHome={() => api?.openTab({ url: shell.homeUrl, title: brand, workspace: shell.workspaceSlug, activate: true })}
+                onOpenUrl={(url, title, workspace) => api?.openTab({ url, title, workspace: workspace ?? shell.workspaceSlug, activate: true })}
                 onOpenDownload={(filePath, mode) => api?.openDownload(filePath, mode)}
                 onClearDownloads={async () => {
                   if (api) {
