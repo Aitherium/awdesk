@@ -37,6 +37,7 @@ const { createTabManager } = require("./tab-manager.cjs");
 const { createAgentBridge } = require("./agent-bridge.cjs");
 const { createBrowserStores } = require("./stage-store.cjs");
 const { createVoiceBridge } = require("./voice-bridge.cjs");
+const { resolveUnifiedTenant } = require("./tenant-context.cjs");
 const { createAdblock } = require("../browser-adblock.cjs");
 const { createBridgeServer, DEFAULT_PORT: DEFAULT_BRIDGE_PORT } = require("../bridge-server.cjs");
 const { getWidevine } = require("../browser-widevine.cjs");
@@ -49,6 +50,7 @@ let mainWindow = null;
 let shellView = null;
 let tray = null;
 let state = null;
+let tenantCtx = null;
 let tabManager = null;
 let agentBridge = null;
 let voiceBridge = null;
@@ -118,6 +120,11 @@ function broadcastState() {
     bridgePort,
     widevinePhase,
     memoryMb: mem.totalMb,
+    customer: Boolean(tenantCtx?.customer),
+    brandName: tenantCtx?.brandName || "AitherBrowser",
+    accent: tenantCtx?.accent || "#7c8cff",
+    workspaceSlug: tenantCtx?.workspaceSlug || "",
+    quickWorkspaces: tenantCtx?.quickWorkspaces || [],
   };
   try {
     shellView.webContents.send("unified:state", payload);
@@ -224,16 +231,24 @@ function buildTray() {
     const iconPath = path.join(ROOT_DIR, "build", "icon.png");
     const img = nativeImage.createFromPath(iconPath);
     tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
-    tray.setToolTip("AitherBrowser (Unified)");
-    tray.setContextMenu(
-      Menu.buildFromTemplate([
-        { label: "Avatar Mode (Alt+1)", click: () => { mainWindow?.show(); applyMode("avatar"); } },
-        { label: "Workbench — AitherBrowser (Alt+2)", click: () => { mainWindow?.show(); applyMode("workbench"); } },
-        { label: "Living Desktop — aithr.net (Alt+3)", click: () => { mainWindow?.show(); applyMode("desktop"); } },
-        { type: "separator" },
-        { label: "Quit AitherBrowser", click: () => app.quit() },
-      ]),
-    );
+    const label = tenantCtx?.brandName || "AitherBrowser";
+    tray.setToolTip(label);
+    const items = tenantCtx?.customer
+      ? [
+          { label: `Open ${label} (Alt+3)`, click: () => { mainWindow?.show(); applyMode("desktop"); } },
+          { label: `${label} Workbench (Alt+2)`, click: () => { mainWindow?.show(); applyMode("workbench"); } },
+          { label: `Compact Companion (Alt+1)`, click: () => { mainWindow?.show(); applyMode("avatar"); } },
+          { type: "separator" },
+          { label: `Quit ${label}`, click: () => app.quit() },
+        ]
+      : [
+          { label: "Avatar Mode (Alt+1)", click: () => { mainWindow?.show(); applyMode("avatar"); } },
+          { label: "Workbench — AitherBrowser (Alt+2)", click: () => { mainWindow?.show(); applyMode("workbench"); } },
+          { label: "Living Desktop — aithr.net (Alt+3)", click: () => { mainWindow?.show(); applyMode("desktop"); } },
+          { type: "separator" },
+          { label: "Quit AitherBrowser", click: () => app.quit() },
+        ];
+    tray.setContextMenu(Menu.buildFromTemplate(items));
     tray.on("click", () => {
       if (!mainWindow) return;
       if (mainWindow.isVisible()) mainWindow.focus();
@@ -539,7 +554,13 @@ function registerIpc() {
 function createUnifiedWindow() {
   const userData = app.getPath("userData");
   const display = activeDisplayWorkArea();
+  tenantCtx = resolveUnifiedTenant();
   state = morphState.loadState(userData, display);
+  state.homeUrl = tenantCtx.homeUrl;
+  // Customer workspace installs (e.g. GargBot) default to full opaque app window (db1ce5d).
+  if (tenantCtx.customer) {
+    state.mode = "desktop";
+  }
 
   const initialBounds =
     state.mode === "desktop"
@@ -561,7 +582,7 @@ function createUnifiedWindow() {
     roundedCorners: true,
     alwaysOnTop: lim.alwaysOnTop,
     resizable: lim.resizable,
-    title: "AitherBrowser",
+    title: tenantCtx.windowTitle,
   });
 
   shellView = new WebContentsView({
@@ -596,6 +617,7 @@ function createUnifiedWindow() {
     adblock,
     stores,
     desktopPreloadPath: path.join(__dirname, "desktop-preload.cjs"),
+    defaultWorkspace: tenantCtx.workspaceSlug,
     homeUrl: state.homeUrl,
     onShortcut: handleFocusedShortcut,
     onChange: (snap) => {
@@ -606,6 +628,10 @@ function createUnifiedWindow() {
   // Restore active stage's persisted tabs (in --smoke, stay offline with about:blank)
   if (IS_SMOKE) {
     tabManager.replaceAllTabs([{ url: "about:blank", title: "Smoke", workspace: "", pinned: true }]);
+  } else if (tenantCtx.customer) {
+    tabManager.replaceAllTabs([
+      { url: tenantCtx.homeUrl, title: tenantCtx.brandName, workspace: tenantCtx.workspaceSlug, pinned: true },
+    ]);
   } else {
     tabManager.replaceAllTabs(stores.activeStageTabs());
   }

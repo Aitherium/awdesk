@@ -320,6 +320,69 @@ describe('Unified AitherBrowser UI (Slices 1 & 2)', () => {
     expect(html).toContain('Copy');
   });
 
+  it('hides owner-only Swarms/Harness controls in GargBot customer mode and exposes GargBot switcher in owner mode', () => {
+    const customerHtml = renderToStaticMarkup(
+      <LeftRail
+        width={248}
+        collapsed={false}
+        customer
+        brandName="GargBot"
+        quickWorkspaces={[{ slug: 'garg', name: 'GargBot', url: 'https://garg.aitherium.com/', accent: '#e05254' }]}
+        conversations={[]}
+        activeConversationId={null}
+        automations={[]}
+        swarms={[]}
+        swarmsOffline
+        vrmModels={[]}
+        selectedVrm="model-avreg-aither-v2.vrm"
+        waitingCount={0}
+        avatarRenderer="orb2d"
+        onSelectConversation={() => {}}
+        onNewConversation={() => {}}
+        onDeleteConversation={() => {}}
+        onToggleCollapse={() => {}}
+        onMorph={() => {}}
+        onOpenHome={() => {}}
+        onOpenUrl={() => {}}
+        onToggleAvatarRenderer={() => {}}
+        onSelectVrm={() => {}}
+      />,
+    );
+    expect(customerHtml).toContain('GargBot');
+    expect(customerHtml).not.toContain('Harness Sessions');
+    expect(customerHtml).not.toContain('Swarms');
+
+    const ownerProjectsHtml = renderToStaticMarkup(
+      <LeftRail
+        width={248}
+        collapsed={false}
+        customer={false}
+        brandName="Aither"
+        conversations={[]}
+        activeConversationId={null}
+        automations={[]}
+        swarms={[]}
+        swarmsOffline
+        vrmModels={[]}
+        selectedVrm="model-avreg-aither-v2.vrm"
+        waitingCount={0}
+        avatarRenderer="orb2d"
+        initialSection="projects"
+        onSelectConversation={() => {}}
+        onNewConversation={() => {}}
+        onDeleteConversation={() => {}}
+        onToggleCollapse={() => {}}
+        onMorph={() => {}}
+        onOpenHome={() => {}}
+        onOpenUrl={() => {}}
+        onToggleAvatarRenderer={() => {}}
+        onSelectVrm={() => {}}
+      />,
+    );
+    expect(ownerProjectsHtml).toContain('GargBot · garg.aitherium.com');
+    expect(ownerProjectsHtml).toContain('AitherNet · aithr.net');
+  });
+
   it('renders AvatarOrb with waiting badge and on-demand renderer attribute', () => {
     const html = renderToStaticMarkup(<AvatarOrb size="lg" status="waiting" waitingCount={3} renderer="orb2d" />);
     expect(html).toContain('ab-orb--waiting');

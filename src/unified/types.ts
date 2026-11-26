@@ -30,6 +30,13 @@ export interface ComputedLayout {
   dividers: Rect[];
 }
 
+export interface QuickWorkspace {
+  slug: string;
+  name: string;
+  url: string;
+  accent: string;
+}
+
 export interface ShellState {
   mode: MorphMode;
   previousMode: MorphMode;
@@ -42,6 +49,11 @@ export interface ShellState {
   bridgePort?: number | null;
   widevinePhase?: string;
   memoryMb?: number;
+  customer?: boolean;
+  brandName?: string;
+  accent?: string;
+  workspaceSlug?: string;
+  quickWorkspaces?: QuickWorkspace[];
 }
 
 export interface StageSummary {

@@ -12,6 +12,7 @@ const { createTabManager, partitionForWorkspace, OWNER_PARTITION } = require("./
 const { createAgentBridge } = require("./agent-bridge.cjs");
 const { createBrowserStores } = require("./stage-store.cjs");
 const { createVoiceBridge } = require("./voice-bridge.cjs");
+const { resolveUnifiedTenant } = require("./tenant-context.cjs");
 
 test("morph-state: defaults to workbench with https://aithr.net and transitions across all 3 modes preserving bounds", () => {
   const display = { x: 0, y: 0, width: 1920, height: 1080 };
@@ -296,6 +297,36 @@ test("voice-bridge: synthesizes local Kokoro WAV, transcribes base64 STT, and de
   assert.equal(offSp.ok, false);
   assert.equal(offSp.offline, true);
   assert.equal(offSp.fallbackBrowserSpeech, true);
+});
+
+test("tenant-context: boots GargBot customer installs into garg.aitherium.com full app and keeps owner on aithr.net", () => {
+  // Owner default (no tenant)
+  const owner = resolveUnifiedTenant({ tenant: null, env: {} });
+  assert.equal(owner.customer, false);
+  assert.equal(owner.homeUrl, "https://aithr.net");
+  assert.equal(owner.defaultMode, "workbench");
+  assert.equal(owner.workspaceSlug, "");
+  assert.ok(owner.quickWorkspaces.some((w) => w.slug === "garg" && w.url === "https://garg.aitherium.com/"));
+
+  // GargBot customer workspace install
+  const garg = resolveUnifiedTenant({
+    tenant: { host: "garg.aitherium.com", origin: "https://garg.aitherium.com/", name: "GargBot", accent: "#e05254", firstParty: true },
+    env: {},
+  });
+  assert.equal(garg.customer, true);
+  assert.equal(garg.homeUrl, "https://garg.aitherium.com/");
+  assert.equal(garg.defaultMode, "desktop");
+  assert.equal(garg.brandName, "GargBot");
+  assert.equal(garg.accent, "#e05254");
+  assert.equal(garg.workspaceSlug, "garg");
+
+  // Owner peeking into Garg (ownerSwitch: true) stays owner posture
+  const peek = resolveUnifiedTenant({
+    tenant: { host: "garg.aitherium.com", origin: "https://garg.aitherium.com/", name: "GargBot", ownerSwitch: true },
+    env: {},
+  });
+  assert.equal(peek.customer, false);
+  assert.equal(peek.defaultMode, "workbench");
 });
 
 test("architectural invariants: unified shell has 1 BaseWindow, 0 BrowserWindows, 0 readPixels, 0 setIgnoreMouseEvents", () => {

@@ -8,6 +8,7 @@ import type {
   DownloadRow,
   LibrarySnapshot,
   MorphMode,
+  QuickWorkspace,
   SwarmItem,
   VrmModelInfo,
 } from './types';
@@ -15,6 +16,9 @@ import type {
 interface LeftRailProps {
   width: number;
   collapsed: boolean;
+  customer?: boolean;
+  brandName?: string;
+  quickWorkspaces?: QuickWorkspace[];
   conversations: Conversation[];
   activeConversationId: string | null;
   automations: AutomationItem[];
@@ -35,7 +39,7 @@ interface LeftRailProps {
   onToggleCollapse: () => void;
   onMorph: (mode: MorphMode) => void;
   onOpenHome: () => void;
-  onOpenUrl: (url: string, title?: string) => void;
+  onOpenUrl: (url: string, title?: string, workspace?: string) => void;
   onOpenDownload?: (filePath: string, mode?: 'open' | 'folder') => void;
   onClearDownloads?: () => void;
   onToggleAvatarRenderer: () => void;
@@ -53,6 +57,9 @@ function formatAge(ts: number): string {
 export const LeftRail: React.FC<LeftRailProps> = ({
   width,
   collapsed,
+  customer = false,
+  brandName = 'Aither',
+  quickWorkspaces = [],
   conversations,
   activeConversationId,
   automations,
@@ -123,7 +130,7 @@ export const LeftRail: React.FC<LeftRailProps> = ({
           title="Click to shrink to Avatar mode (Alt+1)"
         />
         <div className="ab-rail__avatar-meta">
-          <div className="ab-rail__brand">Aither</div>
+          <div className="ab-rail__brand">{brandName}</div>
           <div className="ab-rail__sub">
             {waitingCount > 0 ? `${waitingCount} waiting on you` : '0% idle GPU · ready'}
           </div>
@@ -137,22 +144,26 @@ export const LeftRail: React.FC<LeftRailProps> = ({
         <button type="button" className="ab-rail__new-btn" onClick={onNewConversation}>
           <span>+</span> New Conversation
         </button>
-        <button
-          type="button"
-          className={`ab-rail__nav-item ${section === 'sessions' ? 'is-active' : ''}`}
-          onClick={() => setSection(section === 'sessions' ? 'conversations' : 'sessions')}
-        >
-          <span>⌘</span> Harness Sessions
-          {awshSessions.length > 0 && <span className="ab-pill">{awshSessions.length}</span>}
-        </button>
-        <button
-          type="button"
-          className={`ab-rail__nav-item ${section === 'swarms' ? 'is-active' : ''}`}
-          onClick={() => setSection(section === 'swarms' ? 'conversations' : 'swarms')}
-        >
-          <span>✦</span> Swarms
-          {swarms.length > 0 && <span className="ab-pill">{swarms.length}</span>}
-        </button>
+        {!customer && (
+          <>
+            <button
+              type="button"
+              className={`ab-rail__nav-item ${section === 'sessions' ? 'is-active' : ''}`}
+              onClick={() => setSection(section === 'sessions' ? 'conversations' : 'sessions')}
+            >
+              <span>⌘</span> Harness Sessions
+              {awshSessions.length > 0 && <span className="ab-pill">{awshSessions.length}</span>}
+            </button>
+            <button
+              type="button"
+              className={`ab-rail__nav-item ${section === 'swarms' ? 'is-active' : ''}`}
+              onClick={() => setSection(section === 'swarms' ? 'conversations' : 'swarms')}
+            >
+              <span>✦</span> Swarms
+              {swarms.length > 0 && <span className="ab-pill">{swarms.length}</span>}
+            </button>
+          </>
+        )}
         <button
           type="button"
           className={`ab-rail__nav-item ${section === 'automations' ? 'is-active' : ''}`}
@@ -309,26 +320,44 @@ export const LeftRail: React.FC<LeftRailProps> = ({
         </div>
       ) : section === 'projects' ? (
         <div className="ab-rail__list">
+          <div className="ab-rail__section-title">Workspaces</div>
+          {(quickWorkspaces.length > 0
+            ? quickWorkspaces
+            : [
+                { slug: '', name: 'AitherNet · aithr.net', url: 'https://aithr.net', accent: '#7c8cff' },
+                { slug: 'garg', name: 'GargBot · garg.aitherium.com', url: 'https://garg.aitherium.com/', accent: '#e05254' },
+              ]
+          ).map((ws) => (
+            <button
+              key={ws.url}
+              type="button"
+              className="ab-rail__conv"
+              onClick={() => onOpenUrl(ws.url, ws.name, ws.slug)}
+              title={`Open ${ws.name} in isolated ${ws.slug ? `persist:aither-work-${ws.slug}` : 'owner'} partition`}
+            >
+              <span className="ab-dot" style={{ background: ws.accent }} />
+              <span className="ab-rail__conv-title">{ws.name}</span>
+              <span className="ab-rail__conv-age">{ws.slug || 'Home'}</span>
+            </button>
+          ))}
           <div className="ab-rail__section-title">Surfaces &amp; Avatar</div>
-          <button type="button" className="ab-rail__conv" onClick={onOpenHome}>
-            <span className="ab-rail__conv-title">aithr.net · AitherNet Live</span>
-            <span className="ab-rail__conv-age">Home</span>
-          </button>
           <button type="button" className="ab-rail__conv" onClick={() => onMorph('desktop')}>
-            <span className="ab-rail__conv-title">Blow Up → Living Desktop</span>
+            <span className="ab-rail__conv-title">Blow Up → Full App View</span>
             <span className="ab-rail__conv-age">Alt+3</span>
           </button>
           <button type="button" className="ab-rail__conv" onClick={() => onMorph('avatar')}>
             <span className="ab-rail__conv-title">Shrink → Avatar + Rail</span>
             <span className="ab-rail__conv-age">Alt+1</span>
           </button>
-          <button type="button" className="ab-rail__conv" onClick={onToggleAvatarRenderer}>
-            <span className="ab-rail__conv-title">
-              Engine: {avatarRenderer === 'orb2d' ? 'Fairy Orb (0% GPU)' : '3D VRM (On-Demand)'}
-            </span>
-            <span className="ab-rail__conv-age">Toggle</span>
-          </button>
-          {vrmModels.length > 0 && (
+          {!customer && (
+            <button type="button" className="ab-rail__conv" onClick={onToggleAvatarRenderer}>
+              <span className="ab-rail__conv-title">
+                Engine: {avatarRenderer === 'orb2d' ? 'Fairy Orb (0% GPU)' : '3D VRM (On-Demand)'}
+              </span>
+              <span className="ab-rail__conv-age">Toggle</span>
+            </button>
+          )}
+          {!customer && vrmModels.length > 0 && (
             <div className="ab-rail__vrm-pick">
               <label className="ab-rail__section-title" htmlFor="ab-rail-vrm-select">
                 VRM Character
