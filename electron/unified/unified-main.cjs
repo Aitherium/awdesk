@@ -95,16 +95,18 @@ function appMemoryStats() {
 }
 
 function broadcastState() {
-  if (!mainWindow || mainWindow.isDestroyed() || !shellView) return null;
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
   const content = mainWindow.getContentBounds();
+  const customerSingleApp = Boolean(tenantCtx?.singleApp);
   const layout = workbenchLayout.computeLayout({
     mode: state.mode,
     width: content.width,
     height: content.height,
     layout: state.layout,
     splitCount: state.layout.browserSplit ? 2 : 1,
+    customerSingleApp,
   });
-  shellView.setBounds(layout.shell);
+  if (shellView && !customerSingleApp) shellView.setBounds(layout.shell);
   if (tabManager) tabManager.syncLayout(layout);
 
   const mem = appMemoryStats();
@@ -126,9 +128,11 @@ function broadcastState() {
     workspaceSlug: tenantCtx?.workspaceSlug || "",
     quickWorkspaces: tenantCtx?.quickWorkspaces || [],
   };
-  try {
-    shellView.webContents.send("unified:state", payload);
-  } catch { /* renderer not ready yet */ }
+  if (shellView && !customerSingleApp) {
+    try {
+      shellView.webContents.send("unified:state", payload);
+    } catch { /* renderer not ready yet */ }
+  }
   return payload;
 }
 
@@ -233,11 +237,9 @@ function buildTray() {
     tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
     const label = tenantCtx?.brandName || "AitherBrowser";
     tray.setToolTip(label);
-    const items = tenantCtx?.customer
+    const items = tenantCtx?.singleApp
       ? [
-          { label: `Open ${label} (Alt+3)`, click: () => { mainWindow?.show(); applyMode("desktop"); } },
-          { label: `${label} Workbench (Alt+2)`, click: () => { mainWindow?.show(); applyMode("workbench"); } },
-          { label: `Compact Companion (Alt+1)`, click: () => { mainWindow?.show(); applyMode("avatar"); } },
+          { label: `Open ${label}`, click: () => { mainWindow?.show(); mainWindow?.focus(); } },
           { type: "separator" },
           { label: `Quit ${label}`, click: () => app.quit() },
         ]
@@ -557,18 +559,21 @@ function createUnifiedWindow() {
   tenantCtx = resolveUnifiedTenant();
   state = morphState.loadState(userData, display);
   state.homeUrl = tenantCtx.homeUrl;
-  // Customer workspace installs (e.g. GargBot) default to full opaque app window (db1ce5d).
-  if (tenantCtx.customer) {
+
+  const isSingleApp = Boolean(tenantCtx.singleApp);
+  if (isSingleApp) {
     state.mode = "desktop";
   }
 
-  const initialBounds =
-    state.mode === "desktop"
+  const initialBounds = isSingleApp
+    ? morphState.clampBounds("workbench", state.boundsByMode.workbench, display)
+    : state.mode === "desktop"
       ? morphState.defaultBoundsFor("desktop", display)
       : morphState.clampBounds(state.mode, state.boundsByMode[state.mode], display);
-  const lim = morphState.MODE_LIMITS[state.mode];
+  const lim = isSingleApp ? morphState.MODE_LIMITS.workbench : morphState.MODE_LIMITS[state.mode];
 
-  // Single opaque BaseWindow -- eliminates Windows DWM layered alpha stalls completely!
+  // Customer single-app mode (e.g. GargBot): native OS framed resizable window,
+  // zero Aither morph/avatar/workbench chrome. Owner mode: frameless 3-morph BaseWindow.
   mainWindow = new BaseWindow({
     x: initialBounds.x,
     y: initialBounds.y,
@@ -576,28 +581,31 @@ function createUnifiedWindow() {
     height: initialBounds.height,
     minWidth: lim.minW,
     minHeight: lim.minH,
-    frame: false,
+    frame: isSingleApp,
+    autoHideMenuBar: isSingleApp,
     transparent: false,
     backgroundColor: "#0a0b0f",
     roundedCorners: true,
-    alwaysOnTop: lim.alwaysOnTop,
-    resizable: lim.resizable,
+    alwaysOnTop: isSingleApp ? false : lim.alwaysOnTop,
+    resizable: isSingleApp ? true : lim.resizable,
     title: tenantCtx.windowTitle,
   });
 
-  shellView = new WebContentsView({
-    webPreferences: {
-      preload: path.join(__dirname, "unified-preload.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  mainWindow.contentView.addChildView(shellView);
-  shellView.webContents.on("before-input-event", (event, input) => {
-    if (input?.type !== "keyDown") return;
-    if (handleFocusedShortcut(input)) event.preventDefault();
-  });
+  if (!isSingleApp) {
+    shellView = new WebContentsView({
+      webPreferences: {
+        preload: path.join(__dirname, "unified-preload.cjs"),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+    mainWindow.contentView.addChildView(shellView);
+    shellView.webContents.on("before-input-event", (event, input) => {
+      if (input?.type !== "keyDown") return;
+      if (handleFocusedShortcut(input)) event.preventDefault();
+    });
+  }
 
   const adblock = createAdblock({ dir: path.join(userData, "adblock") });
   agentBridge = createAgentBridge({ userDataDir: userData });
@@ -638,8 +646,9 @@ function createUnifiedWindow() {
 
   mainWindow.on("resize", () => broadcastState());
   mainWindow.on("moved", () => {
-    if (state.mode === "avatar" || state.mode === "workbench") {
-      state.boundsByMode[state.mode] = mainWindow.getBounds();
+    const key = tenantCtx?.singleApp ? "workbench" : state.mode;
+    if (key === "avatar" || key === "workbench") {
+      state.boundsByMode[key] = mainWindow.getBounds();
       morphState.saveState(userData, state);
     }
   });
@@ -650,33 +659,45 @@ function createUnifiedWindow() {
     mainWindow = null;
   });
 
-  shellView.webContents.on("did-finish-load", () => {
+  if (isSingleApp) {
+    // Pure single-app customer window: attach the full-bleed tenant WebContentsView immediately.
     broadcastState();
-    shellView.webContents.send("unified:tabs", tabManager.snapshot());
-    shellView.webContents.send("unified:decisions", agentBridge.listDecisions());
-    shellView.webContents.send("unified:downloads", stores.listDownloads());
     if (IS_SMOKE) {
       const ok = BaseWindow.getAllWindows().length === 1;
-      setTimeout(() => app.exit(ok ? 0 : 1), 200);
+      setTimeout(() => app.exit(ok ? 0 : 1), 250);
     }
-  });
-
-  if (IS_SMOKE) {
-    shellView.webContents.on("did-fail-load", (_ev, code, desc) => {
-      console.error(`[unified-smoke] shell failed to load (${code}): ${desc}`);
-      app.exit(1);
+  } else {
+    shellView.webContents.on("did-finish-load", () => {
+      broadcastState();
+      shellView.webContents.send("unified:tabs", tabManager.snapshot());
+      shellView.webContents.send("unified:decisions", agentBridge.listDecisions());
+      shellView.webContents.send("unified:downloads", stores.listDownloads());
+      if (IS_SMOKE) {
+        const ok = BaseWindow.getAllWindows().length === 1;
+        setTimeout(() => app.exit(ok ? 0 : 1), 200);
+      }
     });
-    const smokeGuard = setTimeout(() => {
-      console.error("[unified-smoke] timed out waiting for shell did-finish-load");
-      app.exit(1);
-    }, 15000);
-    if (typeof smokeGuard.unref === "function") smokeGuard.unref();
+
+    if (IS_SMOKE) {
+      shellView.webContents.on("did-fail-load", (_ev, code, desc) => {
+        console.error(`[unified-smoke] shell failed to load (${code}): ${desc}`);
+        app.exit(1);
+      });
+      const smokeGuard = setTimeout(() => {
+        console.error("[unified-smoke] timed out waiting for shell did-finish-load");
+        app.exit(1);
+      }, 15000);
+      if (typeof smokeGuard.unref === "function") smokeGuard.unref();
+    }
+
+    loadShellUrl();
   }
 
-  loadShellUrl();
   if (!IS_SMOKE) {
     buildTray();
-    startBridge();
+    if (!isSingleApp || process.env.AWDESK_BRIDGE_ENABLE === "1") {
+      startBridge();
+    }
     // Non-blocking Widevine CDM init for Castlabs Electron
     try {
       getWidevine()
@@ -688,12 +709,14 @@ function createUnifiedWindow() {
         .catch(() => {});
     } catch { /* non-Castlabs fallback */ }
 
-    decisionPollTimer = setInterval(() => {
-      if (!shellView || shellView.webContents.isDestroyed()) return;
-      try {
-        shellView.webContents.send("unified:decisions", agentBridge.listDecisions());
-      } catch { /* ignore */ }
-    }, 5000);
+    if (!isSingleApp) {
+      decisionPollTimer = setInterval(() => {
+        if (!shellView || shellView.webContents.isDestroyed()) return;
+        try {
+          shellView.webContents.send("unified:decisions", agentBridge.listDecisions());
+        } catch { /* ignore */ }
+      }, 5000);
+    }
   }
 }
 
@@ -717,7 +740,7 @@ if (USE_LEGACY) {
   app.whenReady().then(() => {
     registerIpc();
     createUnifiedWindow();
-    if (!IS_SMOKE) {
+    if (!IS_SMOKE && !tenantCtx?.singleApp) {
       try {
         globalShortcut.register("Alt+1", () => { mainWindow?.show(); applyMode("avatar"); });
         globalShortcut.register("Alt+2", () => { mainWindow?.show(); applyMode("workbench"); });

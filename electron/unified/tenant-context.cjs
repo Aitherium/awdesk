@@ -61,6 +61,7 @@ function resolveUnifiedTenant({ tenant = undefined, env = process.env } = {}) {
     homeUrl,
     brandName,
     accent,
+    singleApp: customer,
     defaultMode: customer ? "desktop" : "workbench",
     windowTitle: customer ? brandName : deskTenant.decorateTitle("AitherBrowser", resolved),
     quickWorkspaces: customer

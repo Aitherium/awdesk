@@ -314,11 +314,19 @@ test("tenant-context: boots GargBot customer installs into garg.aitherium.com fu
     env: {},
   });
   assert.equal(garg.customer, true);
+  assert.equal(garg.singleApp, true);
   assert.equal(garg.homeUrl, "https://garg.aitherium.com/");
   assert.equal(garg.defaultMode, "desktop");
   assert.equal(garg.brandName, "GargBot");
   assert.equal(garg.accent, "#e05254");
   assert.equal(garg.workspaceSlug, "garg");
+
+  // Single-app customer layout fills 100% of the window with zero extra chrome
+  const gargLayout = layout.computeLayout({ mode: "desktop", width: 1440, height: 900, customerSingleApp: true });
+  assert.equal(gargLayout.browserChrome, null);
+  assert.equal(gargLayout.rail, null);
+  assert.equal(gargLayout.chat, null);
+  assert.deepEqual(gargLayout.browserViews, [{ x: 0, y: 0, width: 1440, height: 900 }]);
 
   // Owner peeking into Garg (ownerSwitch: true) stays owner posture
   const peek = resolveUnifiedTenant({

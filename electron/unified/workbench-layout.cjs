@@ -49,9 +49,22 @@ function normalizeUrlInput(input, homeUrl = "https://aithr.net") {
  * @param {object} [opts.layout] Persisted layout preferences
  * @param {number} [opts.splitCount] 1 or 2 browser panes visible
  */
-function computeLayout({ mode = "workbench", width = 1440, height = 900, layout = {}, splitCount = 1 } = {}) {
+function computeLayout({ mode = "workbench", width = 1440, height = 900, layout = {}, splitCount = 1, customerSingleApp = false } = {}) {
   const W = Math.max(240, Math.round(Number(width) || 1440));
   const H = Math.max(220, Math.round(Number(height) || 900));
+
+  // Pure single-app customer mode (e.g. GargBot): 100% of window = tenant app, zero extra chrome.
+  if (customerSingleApp) {
+    return {
+      mode: "desktop",
+      shell: { x: 0, y: 0, width: 0, height: 0 },
+      rail: null,
+      chat: null,
+      browserChrome: null,
+      browserViews: [{ x: 0, y: 0, width: W, height: H }],
+      dividers: [],
+    };
+  }
 
   if (mode === "avatar") {
     return {
