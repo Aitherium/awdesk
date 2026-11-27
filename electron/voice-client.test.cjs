@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { voiceSnapshot, listVoices, synthesize } = require("./voice-client.cjs");
+const { voiceSnapshot, listVoices, synthesize, transcribe, transcriptFromTool } = require("./voice-client.cjs");
 
 function fakeCall(calls) {
   return async (name, args) => {
@@ -132,4 +132,48 @@ test("transcribeCloud never dials without a token or a readable clip", async () 
   fsx.unlinkSync(p);
   assert.equal(await transcribeCloud(p, { token: "t", request: fakeHttp(200, '{"text":"x"}', seen) }), null);
   assert.equal(seen.length, 0);
+});
+
+// The gateway lane's answers, as mcp_voice.transcribe_audio writes them. Before the fix
+// each came back wrapped as {note} and the desk ran the JSON as an owner command.
+test("transcribe hands back the words, never the tool's envelope", async () => {
+  const clip = "/app/AitherOS/Library/clip.wav";
+  const cases = [
+    ["Transcription: Thank you.", "Thank you."],
+    ["Transcription: open the whiteboard\n\n(Language: en, Duration: 1.2s)", "open the whiteboard"],
+    ["Transcription: hello\n\n(Language: en)", "hello"],
+    ["Transcription: ", ""],
+    [JSON.stringify({ text: " open the whiteboard ", language: "en" }), "open the whiteboard"],
+  ];
+  for (const [answer, words] of cases) {
+    const calls = [];
+    const got = await transcribe(clip, async (name, args) => {
+      calls.push({ name, args });
+      return answer;
+    });
+    assert.equal(got, words, JSON.stringify(answer));
+    assert.deepEqual(calls, [{ name: "transcribe_audio", args: { audio_path: clip } }]);
+  }
+});
+
+test("anything that is not a transcript is an ERROR string the renderer shows", () => {
+  const answers = [
+    "Error transcribing audio: model not loaded",
+    "Tool 'transcribe_audio' (module: mcp_voice) requires Genesis and is disabled in standalone mode.",
+    JSON.stringify({ error: "voice down" }),
+    JSON.stringify({ note: "Transcription: Thank you." }),
+    "ERROR: gateway timed out",
+    "",
+    null,
+  ];
+  for (const answer of answers) {
+    assert.match(transcriptFromTool(answer), /^ERROR: /, String(answer));
+  }
+  assert.equal(transcriptFromTool(JSON.stringify({ error: "voice down" })), "ERROR: voice down");
+});
+
+test("a long transcript is not cut at 300 characters", () => {
+  const words = Array.from({ length: 120 }, (_, i) => `word${i}`).join(" ");
+  assert.ok(words.length > 300);
+  assert.equal(transcriptFromTool(`Transcription: ${words}`), words);
 });
