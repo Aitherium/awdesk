@@ -148,3 +148,47 @@ test("a waiting card ask claims every transcript, whatever the renderer says", (
   assert.equal(gate.normalizeProvenance({ openMic: false }), "push-to-talk");
   assert.equal(gate.normalizeProvenance(), "push-to-talk");
 });
+
+/**
+ * The three tool envelopes the desk ran as owner commands (desk command history,
+ * source=voice), copied verbatim: a disabled-tool notice (2026-11-17), an empty
+ * transcript (11-19) and Whisper's "Thank you." over silence (11-27). All three passed
+ * checks 1-4: their words neither dangle nor start lowercase.
+ */
+const ENVELOPE_DISABLED_TOOL =
+  "{\"note\":\"Tool 'transcribe_audio' (module: mcp_voice) requires Genesis and is disabled in " +
+  "standalone mode. Reason: Genesis connection failed (TimeoutError): The read operation timed out " +
+  "If Genesis is running, check the health endpoint or increase AITHER_GENESIS_TIMEOUT (current: " +
+  "5.0s). Or set AITHER_API_KEY t\"}";
+const ENVELOPE_EMPTY = "{\"note\":\"Transcription: \"}";
+const ENVELOPE_THANK_YOU = "{\"note\":\"Transcription: Thank you.\"}";
+const REAL_ENVELOPES = [ENVELOPE_DISABLED_TOOL, ENVELOPE_EMPTY, ENVELOPE_THANK_YOU];
+
+test("a tool's JSON envelope is never a command, from any voice entry point", () => {
+  for (const text of REAL_ENVELOPES) {
+    for (const provenance of gate.PROVENANCES) {
+      const verdict = gate.assessVoice({ text, provenance });
+      assert.equal(verdict.pass, false, `${provenance}: ${text.slice(0, 60)}`);
+      assert.equal(verdict.text, "");
+    }
+    const pressed = gate.assessVoice({ text, provenance: "push-to-talk" });
+    assert.deepEqual(pressed.reasons, ["a tool's JSON envelope, not speech"]);
+  }
+});
+
+test("Whisper's filler for silence is dropped even from a push-to-talk press", () => {
+  const fillers = ["Thank you.", "Thanks for watching!", "Thank you very much.", "you", "Bye.",
+    "Aither, thank you."];
+  for (const text of fillers) {
+    const verdict = gate.assessVoice({ text, provenance: "push-to-talk" });
+    assert.equal(verdict.pass, false, text);
+    assert.match(verdict.reasons.join("; "), /Whisper's filler/, text);
+  }
+});
+
+test("a real request that opens with a pleasantry still passes", () => {
+  const text = "Thank you. Now open the whiteboard.";
+  const verdict = gate.assessVoice({ text, provenance: "push-to-talk" });
+  assert.equal(verdict.pass, true, verdict.reasons.join("; "));
+  assert.equal(verdict.text, text);
+});

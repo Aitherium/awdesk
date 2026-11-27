@@ -22,6 +22,8 @@
  *   3. it is a complete utterance, not a fragment cut mid-sentence;
  *   4. the PC was not playing audio while it was captured (a loopback/echo
  *      check, when a playback signal is available).
+ *   5. it is speech: not a tool's JSON envelope that reached the transcript
+ *      slot, and not Whisper's filler for silence ("Thank you.", "you").
  *
  * A card answer is NEVER an owner gesture even when the recorder was armed by
  * the desk: the desk opened the microphone, so the words must still address the
@@ -106,6 +108,35 @@ function fragmentReason(text) {
 }
 
 /**
+ * What Whisper writes over silence, noise or music, never a request: the same phrases
+ * and normalisation as the awvoice brick's WHISPER_PHANTOMS. awvoice also bounds them by
+ * clip length, because a voice CONVERSATION answers a real "thank you"; the desk has no
+ * clip length here, and a lone pleasantry never needs an agent session, so the desk
+ * drops one at any length.
+ */
+const WHISPER_PHANTOMS = new Set([
+  "thank you", "thank you very much", "thanks for watching", "thank you for watching",
+  "please subscribe", "subscribe", "you", "bye", "bye bye", "so", "uh", "um", "hmm",
+  "subtitles by the amaraorg community",
+]);
+
+/** A raw tool answer in the transcript slot: nobody says a JSON object out loud. */
+const ENVELOPE = /^\{\s*"/;
+
+/**
+ * "" when the transcript is speech, else why it is not: a tool's JSON envelope (the
+ * gateway lane's '{"note":"Transcription: Thank you."}' started a full session on
+ * 2026-11-27) or nothing but Whisper's filler for silence.
+ */
+function notSpeechReason(text) {
+  const said = normalize(text);
+  if (ENVELOPE.test(said)) return "a tool's JSON envelope, not speech";
+  const plain = said.toLowerCase().replace(/[^\p{L} ']/gu, "").split(" ").filter(Boolean).join(" ");
+  if (WHISPER_PHANTOMS.has(plain)) return `only Whisper's filler for silence ("${plain}"), not a request`;
+  return "";
+}
+
+/**
  * How a transcript reached us. A waiting card ask makes EVERY transcript its
  * answer -- the desk armed the microphone, so the next sentence in the room is
  * not an owner command. Otherwise the trigger the renderer reported decides,
@@ -186,6 +217,11 @@ function assessVoice({
   // 4. Echo: words captured while the PC was audible are likely the PC's own.
   if (pcPlaying) reasons.push("the PC was playing audio while this was captured");
 
+  // 5. Speech at all: a tool's envelope or Whisper's filler for silence is never a
+  //    command, a card answer or a steer, whatever armed the microphone.
+  const notSpeech = notSpeechReason(addressed ? without : raw);
+  if (notSpeech) reasons.push(notSpeech);
+
   return {
     pass: reasons.length === 0,
     // A rejected transcript is never handed on to a command, a card or a steer.
@@ -260,8 +296,10 @@ function createRejectionLog({
 
 module.exports = {
   PROVENANCES,
+  WHISPER_PHANTOMS,
   assessVoice,
   fragmentReason,
+  notSpeechReason,
   normalizeProvenance,
   stripAddress,
   createRejectionLog,

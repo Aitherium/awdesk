@@ -138,11 +138,36 @@ async function synthesize(text, voice, call = callTool) {
   return parseMaybeJson(out) ?? { note: out.slice(0, 300) };
 }
 
-/** audio file -> transcript. `audioPath` is a HOST path — the desk and the
- *  gateway share the box, so no upload hop is involved. */
+/** The words in a transcribe_audio answer, or an "ERROR: ..." string -- never the
+ *  tool's envelope. The gateway answers in prose (mcp_voice.transcribe_audio):
+ *  "Transcription: <words>" with an optional "(Language: en, Duration: 1.2s)" tail,
+ *  "Error transcribing audio: <why>" on a failure, and its own notice when the tool is
+ *  disabled. The renderer SHOWS an ERROR string and never dispatches it, so anything
+ *  that is not a transcript comes back as one. This lane used to wrap the prose as
+ *  {note}, main stringified it, and the desk ran the result as an owner command: a
+ *  disabled-tool notice (2026-11-17), an empty transcript (11-19) and Whisper's
+ *  "Thank you." over silence (11-27). The wrapper also cut every transcript at 300
+ *  characters. */
+function transcriptFromTool(out) {
+  const parsed = out && typeof out === "object" ? out : parseMaybeJson(String(out ?? "").trim());
+  if (parsed && typeof parsed === "object") {
+    for (const key of ["text", "transcript", "transcription"]) {
+      if (typeof parsed[key] === "string") return parsed[key].trim();
+    }
+    const why = typeof parsed.error === "string" ? parsed.error.trim() : "";
+    return `ERROR: ${(why || JSON.stringify(parsed)).slice(0, 300)}`;
+  }
+  const raw = String(out ?? "").trim();
+  const heard = raw.match(/^Transcription:\s*([\s\S]*?)(?:\s*\(Language:[^)]*\))?$/i);
+  if (heard) return heard[1].trim();
+  if (/^ERROR\b/.test(raw)) return raw.slice(0, 300);
+  return `ERROR: ${raw ? raw.slice(0, 300) : "the transcriber returned nothing"}`;
+}
+
+/** audio file -> the words heard, or an "ERROR: ..." string. `audioPath` is a path the
+ *  GATEWAY can read: main stages the clip into the shared Library bind first. */
 async function transcribe(audioPath, call = callTool) {
-  const out = await call("transcribe_audio", { audio_path: audioPath });
-  return parseMaybeJson(out) ?? { note: out.slice(0, 300) };
+  return transcriptFromTool(await call("transcribe_audio", { audio_path: audioPath }));
 }
 
 /** One read-only awareness call for the deck section: service status +
@@ -164,7 +189,7 @@ async function voiceSnapshot(call = callTool) {
   }
 }
 
-module.exports = { voiceStatus, listVoices, synthesize, transcribe, transcribeHostFile, transcribeCloud, voiceSnapshot };
+module.exports = { voiceStatus, listVoices, synthesize, transcribe, transcriptFromTool, transcribeHostFile, transcribeCloud, voiceSnapshot };
 
 if (require.main === module) {
   // Self-test: read-only. Exit 0 = service up, 1 = service down/unreachable
