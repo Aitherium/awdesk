@@ -90,6 +90,15 @@ const PAGES = Object.freeze([
 /** Ring geometry, in DIPs: the window is a square centred on the cursor. */
 const RADIAL = Object.freeze({ size: 400, radius: 142, item: 74, deadZonePx: launcherCore.DEAD_ZONE_PX });
 
+/**
+ * The NESTED ring (owner 2026-11-25, AitherTab: "one fairy ... rings that can be
+ * expanded on"): the INNER band holds the groups, the OUTER band holds the tabs of the
+ * group the owner picked. Both are on screen at once, and the expansion is LOCAL to the
+ * page (every group's tabs travel in the first payload) so no desk round-trip can race
+ * a click. A two-band ring is click-only: the hold-release direction has no band.
+ */
+const RINGS = Object.freeze({ size: 640, inner: 118, outer: 250, item: 74, maxOuter: 12, maxGroups: 10 });
+
 const CELL = Object.freeze({ width: 132, height: 78, gap: 6, pad: 10 });
 
 /** Labels as the day's context reads them (a command may count things). */
@@ -181,6 +190,30 @@ function pageFromId(id) {
   return m ? Number(m[1]) : null;
 }
 
+/**
+ * PURE: the nested ring's payload as the page renders it — inner groups each carrying
+ * their own (bounded) tabs, so a group pick expands locally with no desk round-trip.
+ * Null when there is nothing to nest (the single ring is used instead).
+ */
+function ringsView(rings, { maxOuter = RINGS.maxOuter, maxGroups = RINGS.maxGroups } = {}) {
+  if (!rings || !Array.isArray(rings.groups) || !rings.groups.length) return null;
+  return {
+    hub: String(rings.hub || "AitherTab"),
+    inner: RINGS.inner,
+    outer: RINGS.outer,
+    maxOuter,
+    groups: rings.groups.slice(0, maxGroups).map((g) => ({
+      key: String(g.key || ""),
+      label: String(g.label || g.name || "Group"),
+      short: String(g.label || g.name || "Group").split(" · ").pop().slice(0, 22),
+      colour: String(g.colour || "grey"),
+      total: Number(g.total) || (Array.isArray(g.tabs) ? g.tabs.length : 0),
+      tabs: (Array.isArray(g.tabs) ? g.tabs : []).slice(0, maxOuter)
+        .map((t) => ({ label: String(t.title || t.url || "Tab").slice(0, 60), short: String(t.title || t.url || "Tab").slice(0, 20) })),
+    })),
+  };
+}
+
 /** Width/height of the grid pop-up for `count` cells: 3 columns up to 6, else 4. */
 function layout(count) {
   const n = Math.max(0, Math.min(64, Number(count) || 0));
@@ -241,7 +274,7 @@ function radialBounds(cursor, workArea, size = RADIAL.size, margin = 8) {
  * @param {string[]} [opts.ids]
  * @param {Function} [opts.now]
  */
-function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_IDS, spec = RADIAL_SPEC, now = Date.now } = {}) {
+function createQuickMenu({ electron, registry, run, runExtra = null, onAwtabTab = null, ids = ITEM_IDS, spec = RADIAL_SPEC, now = Date.now } = {}) {
   if (!electron) throw new Error("quick-menu needs electron");
   const { BrowserWindow, ipcMain, screen } = electron;
   let win = null;
@@ -254,6 +287,10 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
   let page = 0;
   /** The pages this OPEN ring uses (the general ring, or the fairy's own set). */
   let activePages = PAGES;
+  /** {hub, groups:[{key,label,colour,tabs:[{url,title}],total}]} while a NESTED ring is up. */
+  let ringsOpen = null;
+  /** (url) => void — opens a mirrored tab as an owner tab in the Aither Browser. */
+  let openTabUrl = null;
 
   function alive() {
     return Boolean(win && !win.isDestroyed());
@@ -273,6 +310,7 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
     const callback = done;
     done = null;
     hold = false;
+    ringsOpen = null;
     if (alive() && win.isVisible()) win.hide();
     if (callback) {
       try { callback(result); } catch { /* a caller bug stays in the caller */ }
@@ -291,6 +329,34 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
     return pageSlices(registry, { page, pages: activePages });
   }
 
+  /** The nested ring's payload: groups (inner) plus every group's tabs (outer, on pick). */
+  function ringsPayload() {
+    return ringsOpen || null;
+  }
+
+  /** AitherTab ids run from the nested ring: a group EXPANDS (the page repaints the outer
+   *  band); a tab OPENS in the Aither Browser and the ring closes. */
+  function runRings(id) {
+    const what = String(id || "");
+    if (what.startsWith("aithertab:group:")) {
+      // The page already knows every group's tabs; it expands locally and asks nothing.
+      return { ok: true, expand: what.slice("aithertab:group:".length) };
+    }
+    if (what.startsWith("aithertab:tab:")) {
+      const rest = what.slice("aithertab:tab:".length);
+      const cut = rest.lastIndexOf(":");
+      const key = cut > 0 ? rest.slice(0, cut) : "";
+      const index = Number(rest.slice(cut + 1));
+      const group = ringsOpen && ringsOpen.groups.find((g) => g.key === key);
+      const tab = group && Array.isArray(group.tabs) ? group.tabs[index] : null;
+      if (!tab || !tab.url) return { ok: false, reason: "that tab is gone" };
+      try { if (typeof openTabUrl === "function") openTabUrl(tab.url); } catch { /* caller's */ }
+      finish({ id: what, url: tab.url });
+      return { ok: true, ran: what };
+    }
+    return null;
+  }
+
   /** Repaint the SAME open ring on another page (a page door is not an exit). */
   function showPage(next) {
     page = Math.min(Math.max(0, Math.trunc(Number(next) || 0)), activePages.length - 1);
@@ -301,6 +367,8 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
   /** Select the slice under the REAL cursor and run it (the hold release). */
   function releaseSelection() {
     if (mode !== "radial" || !hold) return { ok: true, ignored: true };
+    // A nested ring is click-only: two bands make a release direction ambiguous.
+    if (ringsOpen) return { ok: true, ignored: true };
     const slices = slicesForPage();
     const cursor = screen.getCursorScreenPoint();
     const index = launcherCore.sliceIndexAt(cursor, center || { x: 0, y: 0 }, slices.length,
@@ -328,6 +396,7 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
           ok: true, mode, hold, page, pages: activePages.map((p) => ({ id: p.id, label: p.label })),
           slices: slicesForPage(),
           radius: RADIAL.radius, item: RADIAL.item, deadZonePx: RADIAL.deadZonePx, size: RADIAL.size,
+          ...(ringsOpen ? { rings: ringsPayload() } : {}),
         };
       }
       return { ok: true, mode: "grid", items: availableItems(registry) };
@@ -335,6 +404,11 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
     ipcMain.handle("quick:run", (event, rawId) => {
       if (!fromMenu(event)) return { ok: false, reason: "not the quick menu" };
       const id = String(rawId || "");
+      // AitherTab's nested ring: a group expands (the page repaints), a tab opens.
+      if (ringsOpen && id.startsWith("aithertab:")) {
+        const verdict = runRings(id);
+        return verdict || { ok: false, reason: "unknown AitherTab slice" };
+      }
       // A page door is a repaint, never an exit.
       const door = pageFromId(id);
       if (door != null) return showPage(door);
@@ -421,20 +495,32 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
    * Open (or hide) the ONE radial ring at a point. `page` picks the first page;
    * `pages` replaces the general ring's pages for this open (the fairy's own set).
    */
-  function openRadial({ at = null, hold: held = false, onDone = null, force = false, page: startPage = 0, pages = null } = {}) {
+  function openRadial({ at = null, hold: held = false, onDone = null, force = false, page: startPage = 0, pages = null, rings = null } = {}) {
     const point = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? at : screen.getCursorScreenPoint();
     const display = screen.getDisplayNearestPoint(point);
     activePages = Array.isArray(pages) && pages.length ? pages : PAGES;
+    // A nested ring (AitherTab) carries groups + their tabs; no page door maths applies.
+    ringsOpen = ringsView(rings);
+    openTabUrl = typeof onAwtabTab === "function" ? onAwtabTab : null;
     const first = Math.min(Math.max(0, Math.trunc(Number(startPage) || 0)), activePages.length - 1);
     const slices = pageSlices(registry, { page: first, pages: activePages });
-    if (!slices.length) return { ok: false, reason: "no radial actions are available" };
+    if (!ringsOpen && !slices.length) return { ok: false, reason: "no radial actions are available" };
     ensureIpc();
     if (!alive()) create();
     if (win.isVisible() && mode === "radial" && !force && !held) {
       if (hold) finish({ cancelled: true }); else hide();
       return { ok: true, closed: true };
     }
-    const box = radialBounds(point, display.workArea, RADIAL.size);
+    // A two-band ring needs room: clamp its square to the display and drop to one band
+    // (the paged ring) when the screen cannot hold it.
+    let size = ringsOpen ? RINGS.size : RADIAL.size;
+    const area = display.workArea || { x: 0, y: 0, width: 1920, height: 1080 };
+    if (ringsOpen) {
+      const fits = Math.min(area.width, area.height) - 16;
+      if (fits < RINGS.outer * 2 + RINGS.item) ringsOpen = null;
+      else size = Math.min(size, fits);
+    }
+    const box = radialBounds(point, area, size);
     mode = "radial";
     hold = Boolean(held);
     page = first;
@@ -446,7 +532,7 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
     try { win.setAlwaysOnTop(true, "screen-saver"); win.moveTop(); } catch { /* older Electron */ }
     win.focus();
     if (win.webContents && !win.webContents.isLoading()) win.webContents.send("quick:refresh");
-    return { ok: true, bounds: box, page, slices: slices.map((s) => s.id) };
+    return { ok: true, bounds: box, page, rings: Boolean(ringsOpen), slices: slices.map((s) => s.id) };
   }
 
   function openAtCursor() {
@@ -497,7 +583,7 @@ function createQuickMenu({ electron, registry, run, runExtra = null, ids = ITEM_
 }
 
 module.exports = {
-  ITEM_IDS, RADIAL_SPEC, RADIAL_IDS, FAIRY_SPEC, FAIRY_MORE_SPEC, EXTRA_IDS, PAGES, RADIAL, CELL,
-  availableItems, itemFor, layout, positionFor, radialBounds, radialSlices, pageSlices, pageFromId,
+  ITEM_IDS, RADIAL_SPEC, RADIAL_IDS, FAIRY_SPEC, FAIRY_MORE_SPEC, EXTRA_IDS, PAGES, RADIAL, RINGS, CELL,
+  availableItems, itemFor, layout, positionFor, radialBounds, radialSlices, pageSlices, pageFromId, ringsView,
   createQuickMenu,
 };

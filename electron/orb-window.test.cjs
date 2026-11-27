@@ -865,6 +865,12 @@ test("a card that matters flies the fairy to the pointer and shows the whisper b
   // A shown card must take clicks without waiting for a hover report (owner
   // 2026-11-23: buttons and the X were dead when that report never arrived).
   assert.equal(whisper.ignoreMouse, false, "a shown card is clickable at once");
+  // Owner 2026-11-25: a card covering the page is dragged out of the way, and the
+  // spot is remembered so the next one opens clear of it.
+  assert.equal(whisper.opts.movable, true, "the whisper can be dragged");
+  whisper.setBounds({ x: 200, y: 180, width: whisper.bounds.width, height: whisper.bounds.height });
+  whisper.emit("moved");
+  assert.deepEqual(orbWindow.state().whisperAt, { x: 200, y: 180 }, "the dragged spot is remembered");
   const w = whisper.getBounds();
   const covers = cursor.x >= w.x && cursor.x <= w.x + w.width && cursor.y >= w.y && cursor.y <= w.y + w.height;
   assert.equal(covers, false, "the whisper does not cover the pointer");
@@ -1855,7 +1861,7 @@ test("right click on the orb: inbox, answer window, quiet 1 h (nudges held), set
   orbWindow.setRingOpener({ openRadial: (o) => { openedRing = o; if (typeof o.onDone === "function") o.onDone({ closed: true }); return { ok: true }; }, isVisible: () => false, hide() {} });
   const viaPage = await invoke("desk:spirit-menu", orbWin());
   assert.equal(viaPage.ok, true, "the fairy's right click opens the ONE ring");
-  assert.equal(openedRing.page, 1, "it opens on the This-fairy page");
+  assert.equal(openedRing.page, 0, "it opens on the Tools ring (owner 2026-11-25)");
   assert.ok(openedRing.pages.some((p) => p.id === "self"), "with the fairy's own pages");
   assert.equal(nativeMenuPopups, 0, "the old pill menu is not opened any more");
   orbWindow.setRingOpener(null);
@@ -2019,13 +2025,41 @@ test("the orb and swarm pages: right click opens the ONE ring, hover only dwells
   assert.match(preload, /menuPick: \(id\) => ipcRenderer\.invoke\("desk:menu-pick"/);
 });
 
+test("AitherTab: ONE fairy carries the mirrored groups, and its click opens the nested ring", async () => {
+  start();
+  const groups = [{
+    key: "k1", browser: "chrome", browserLabel: "Chrome", name: "GitHub", colour: "blue",
+    tabs: [{ url: "https://github.com/a", title: "A" }],
+  }];
+  assert.equal(orbWindow.setAwtabGroups(groups).groups, 1);
+  assert.ok(orbWindow.clusterState().keys.includes("t:aithertab"), "one AitherTab companion, not one per group");
+  let opened = null;
+  orbWindow.setRingOpener({
+    openRadial: (o) => { opened = o; if (typeof o.onDone === "function") o.onDone({ closed: true }); return { ok: true }; },
+    isVisible: () => false,
+    hide() {},
+  });
+  const r = await orbWindow.openAwtabRing();
+  assert.equal(r.ok, true);
+  assert.equal(opened.rings.hub, "AitherTab");
+  assert.equal(opened.rings.groups.length, 1, "the ring carries the groups");
+  assert.equal(opened.rings.groups[0].tabs.length, 1);
+  // A companion fairy click routes here too (a group is not a card).
+  opened = null;
+  await orbWindow.openFairyCard("", "aithertab");
+  assert.ok(opened && opened.rings, "clicking the AitherTab fairy opens the ring");
+  orbWindow.setRingOpener(null);
+  orbWindow.setAwtabGroups([]);
+});
+
 test("fairy.menu (palette / bridge): the keyboard's door opens the ONE ring on the fairy", async () => {
   startAttention();
   orbWindow.setAttentionCards([]);
   cursor = { x: 5, y: 5 };
   // Owner 2026-11-23: every surface opens the same ring (the keyboard/bridge row
-  // included), on the This-fairy page. The ring's own geometry belongs to quick-menu
-  // and is pinned in quick-menu.test.cjs; here the DOOR is what matters.
+  // included). Owner 2026-11-25: it opens on the TOOLS ring, not the This-fairy page.
+  // The ring's own geometry belongs to quick-menu and is pinned in quick-menu.test.cjs;
+  // here the DOOR is what matters.
   let opened = null;
   orbWindow.setRingOpener({
     openRadial: (o) => { opened = o; if (typeof o.onDone === "function") o.onDone({ closed: true }); return { ok: true }; },
@@ -2035,7 +2069,7 @@ test("fairy.menu (palette / bridge): the keyboard's door opens the ONE ring on t
   const r = await orbWindow.run("menu");
   assert.equal(r.ok, true);
   assert.ok(opened, "the ring renderer was asked to open");
-  assert.equal(opened.page, 1, "it opens on the This-fairy page");
+  assert.equal(opened.page, 0, "it opens on the Tools ring (owner 2026-11-25)");
   assert.ok(opened.pages.some((p) => p.id === "self"), "with the fairy's own pages");
   assert.equal(menuWin(), null, "the retired pill menu is not opened");
   orbWindow.setRingOpener(null);
@@ -2043,6 +2077,36 @@ test("fairy.menu (palette / bridge): the keyboard's door opens the ONE ring on t
   const row = reg.byId("fairy.menu");
   assert.equal(row.orb, "menu");
   assert.ok(row.surfaces.includes("palette"));
+});
+
+test("a leaked ring session never eats the fairy's click: the ask box still opens", async () => {
+  start();
+  // The ring reported open but never called onDone (a close path that skipped it) and
+  // its window is off screen. Before the fix this wedged `ringOpen` true: beginDrag
+  // returned early, endDrag never reported a click, and the left click stopped opening
+  // the ask box (owner 2026-11-25: "what happened to the left click that opens a
+  // little text box").
+  orbWindow.setRingOpener({ openRadial: () => ({ ok: true }), isVisible: () => false, hide() {} });
+  const opened = await orbWindow.openRing({ fly: false });
+  assert.equal(opened.ok, true);
+  assert.equal(orbWindow.__ringOpen(), true, "the session is wedged open");
+  orbWindow.beginDrag();
+  const end = await orbWindow.endDrag();
+  assert.equal(end.click, true, "a press that never moved is still a click");
+  assert.equal(orbWindow.__ringOpen(), false, "the leak is cleared, not left to eat every press");
+  orbWindow.setRingOpener(null);
+});
+
+test("a stale stand-down flag does not swallow the click while the fairy is on screen", async () => {
+  start();
+  orbWindow.standDownForAvatar();
+  assert.equal(orbWindow.stoodDown(), true);
+  // The fairy is on screen again without returnFromAvatar (another path showed her):
+  // a click must still be the ask box, never a silent no-op.
+  orbWin().showInactive();
+  const click = await invoke("desk:orb-click", orbWin());
+  assert.equal(click.visible, true);
+  assert.equal(bubbleWin().isVisible(), true, "the ask box opens for a fairy you can see");
 });
 
 test("a menu Windows refused the keyboard (no blur will come) closes itself once nothing touches it", async () => {
@@ -2264,7 +2328,25 @@ test("a pinned card becomes draggable and docks to the nearest screen corner", a
   assert.deepEqual({ x: bubble.getBounds().x, y: bubble.getBounds().y }, pos, "docked to the nearest corner");
   assert.deepEqual({ x: orbWindow.state().card.x, y: orbWindow.state().card.y }, pos, "the spot is remembered");
   await invoke("desk:orb-pin-card", bubble, false);
-  assert.equal(bubble.movable, false, "unpinning stops the window dragging");
+  assert.equal(bubble.movable, true, "an unpinned card is still draggable (owner 2026-11-25)");
+});
+
+test("an unpinned card is dragged out of the way and the spot is remembered", async () => {
+  start();
+  orbWindow.openBubble({ focus: true });
+  const bubble = bubbleWin();
+  assert.equal(bubble.movable, true, "every card is draggable, pinned or not");
+  // The owner grabs the card's grip and drops it clear of the page behind.
+  bubble.setBounds({ x: 120, y: 140, width: bubble.bounds.width, height: bubble.bounds.height });
+  bubble.emit("moved");
+  await wait(30);
+  assert.deepEqual({ x: orbWindow.state().card.x, y: orbWindow.state().card.y }, { x: 120, y: 140 },
+    "an unpinned card keeps the exact spot: no corner docking");
+  // The next card opens where the owner last put it.
+  bubbleWin().hide();
+  orbWindow.openBubble({ focus: true });
+  const pos = bubbleWin().getBounds();
+  assert.deepEqual({ x: pos.x, y: pos.y }, { x: 120, y: 140 });
 });
 
 test("new web results append into an open card instead of replacing or closing it", async () => {

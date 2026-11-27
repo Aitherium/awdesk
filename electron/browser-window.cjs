@@ -1420,8 +1420,15 @@ function captureStage(stageId = activeStageId()) {
 /** Open ONE tab descriptor from the document into `stageId` (never activating it). */
 function openSavedTab(stageId, d) {
   const by = d.by === "agent" ? "agent" : "you";
-  return openTab(by, d.url, { stage: stageId, activate: false, pinned: d.pinned, key: d.key || null,
+  const r = openTab(by, d.url, { stage: stageId, activate: false, pinned: d.pinned, key: d.key || null,
     label: d.label || "", hostedPartition: d.kind === "hosted" ? onlinePartition() : null });
+  // A tab opened FOR a mirrored stage is marked, so a refresh closes only what the
+  // mirror opened -- never a tab the owner opened himself (owner 2026-11-25).
+  if (r.ok && browserStages.isMirror(browserStages.find(getStages(), stageId))) {
+    const tab = tabs.get(r.id);
+    if (tab) tab.awtab = { stageId, url: d.url };
+  }
+  return r;
 }
 
 /**
@@ -1465,6 +1472,48 @@ function fillStageShortfall(stageId) {
   else stagesShortfall.delete(stageId);
 }
 
+// ── AitherTab (awtab): stages MIRRORED from a real browser (owner 2026-11-25) ──
+/** How many mirrored stages may exist beside the owner's own (MAX_STAGES is 12). */
+const AWTAB_MAX_MIRRORS = 8;
+
+/**
+ * Bring an ACTIVE mirrored stage's live strip in line with its source group: open the
+ * tabs that arrived, and close only the tabs THIS mirror opened whose address left the
+ * group. A tab the owner opened himself is never touched.
+ */
+function syncActiveMirrorStage(stageId) {
+  const arrangement = browserStages.find(getStages(), stageId);
+  if (!arrangement) return;
+  const want = new Set(arrangement.tabs.map((t) => t.url));
+  const have = new Set();
+  for (const t of [...tabs.tabs]) {
+    if (!t.awtab || t.awtab.stageId !== stageId) continue;
+    const view = viewOf(t.id);
+    const url = view ? view.webContents.getURL() : (discarded.get(t.id) || {}).url || t.awtab.url;
+    if (url && want.has(url)) { have.add(url); continue; }
+    if (url) closeTab(t.id, "you");
+  }
+  for (const d of arrangement.tabs) {
+    if (!have.has(d.url)) openSavedTab(stageId, d);
+  }
+  layout();
+  pushState();
+}
+
+/** The desk's door for the AitherTab extension: apply the groups it last saw. */
+function applyAwtabGroups(groups) {
+  const r = browserStages.syncMirrors(getStages(), groups, { maxMirrors: AWTAB_MAX_MIRRORS });
+  const changed = r.created.length + r.updated.length + r.removed.length;
+  if (!changed) return { ok: true, changed: false };
+  setStages(r.doc);
+  const active = browserStages.find(r.doc, r.doc.active);
+  // The owner's own stage on screen is never disturbed; a mirrored one follows the source.
+  // Before the browser window exists there is nothing to follow: the document is enough.
+  if (alive(win) && browserStages.isMirror(active)) syncActiveMirrorStage(active.id);
+  else pushState();
+  return { ok: true, changed: true, created: r.created.length, updated: r.updated.length, removed: r.removed.length };
+}
+
 /**
  * Make `stageId` the stage on screen: its live tabs if it has any (they were suspended,
  * not closed), its saved tabs if it has never been shown this run, or a home page if it
@@ -1506,7 +1555,9 @@ function switchStage(stageId) {
   const target = browserStages.find(doc, stageId);
   if (!target) return { ok: false, error: `no stage called ${stageId}` };
   if (doc.active === stageId) return { ok: true, changed: false };
-  captureStage(doc.active);
+  // Leaving a MIRRORED stage must not capture its live strip: that would overwrite the
+  // fresh tabs the source browser sent with whatever is open here (AitherTab, 2026-11-25).
+  if (!browserStages.isMirror(browserStages.find(doc, doc.active))) captureStage(doc.active);
   const set = browserStages.setActive(getStages(), stageId);
   if (!set.ok) return set;
   // The outgoing arrangement's split is parked with its tabs (still alive, hidden) BEFORE
@@ -6712,6 +6763,9 @@ module.exports = {
     requestPermission(wc, permission, (ok) => { request = ok; }, { requestingUrl: wc.getURL(), isMainFrame: true }, grant);
     return { owner: grant.owner, request, check: checkPermission(wc, permission, wc.getURL(), { requestingUrl: wc.getURL(), isMainFrame: true }, grant) };
   },
+  /** AitherTab (awtab.cjs): the bridge hands the groups the extension saw here. */
+  applyAwtabGroups,
+  __applyAwtabGroupsForTest: (groups) => applyAwtabGroups(groups),
   /** Sync (browser-sync.cjs): the engine, and for the smoke its menu rows and a local store. */
   getSync,
   __syncMenuForTest: () => syncMenuItems(),

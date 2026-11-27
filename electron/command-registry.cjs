@@ -915,6 +915,26 @@ const COMMANDS = Object.freeze([
     id: "browser.import.passwords", label: "Browser: import passwords from a CSV…", menuLabel: "Import passwords from a CSV…",
     group: "browser", browser: "import-passwords", surfaces: ["tray", "palette"],
   }),
+  // ── AitherTab (awtab.cjs, owner 2026-11-25) ─────────────────────────────
+  // Mirror the owner's real Chrome/Edge/Firefox tabs into Aither Browser as stages.
+  // Ids and labels say AitherTab: the ecosystem already lists an unrelated product
+  // called awtab (Aither World Tab), so the brick name never reaches a menu.
+  Object.freeze({
+    id: "aithertab.ring", whySingle: "a wheel opened from the fairy: it needs a pointer, not a tray row", label: "AitherTab: mirrored tab groups…", menuLabel: "Mirrored tab groups…",
+    group: "browser", aithertab: "ring", surfaces: ["palette"],
+  }),
+  Object.freeze({
+    id: "aithertab.refresh", whySingle: "a one-shot nudge while the extension is live; the tray has Mirror/Stop", label: "AitherTab: mirror my tabs now", menuLabel: "Mirror my tabs now",
+    group: "browser", aithertab: "refresh", surfaces: ["palette"],
+  }),
+  Object.freeze({
+    id: "aithertab.mirror.off", whySingle: "the on/off pair is a preference: one place beats two that can disagree", label: "AitherTab: stop mirroring my browsers", menuLabel: "Stop mirroring",
+    group: "browser", aithertab: "off", surfaces: ["palette"],
+  }),
+  Object.freeze({
+    id: "aithertab.mirror.on", whySingle: "the on/off pair is a preference: one place beats two that can disagree", label: "AitherTab: mirror my browsers again", menuLabel: "Mirror again",
+    group: "browser", aithertab: "on", surfaces: ["palette"],
+  }),
   Object.freeze({
     id: "browser.default", label: "Make Aither your default browser…", menuLabel: "Make Aither the default browser…",
     group: "browser", browser: "default", surfaces: ["tray", "palette"],

@@ -114,6 +114,9 @@
   let focusAt = 0;
   let currentPage = 0;
   let pages = [];
+  /* AitherTab's nested ring (owner 2026-11-25): inner = groups, outer = a group's tabs.
+     The whole payload arrives once; picking a group expands LOCALLY (no desk round-trip). */
+  let rings = null;
 
   function renderGrid() {
     menu.replaceChildren();
@@ -149,6 +152,7 @@
   function renderRadial() {
     document.body.classList.add("radial");
     for (const node of radial.querySelectorAll(".slice")) node.remove();
+    if (rings) { renderRings(); return; }
     if (!slices.length) {
       hub.textContent = "No radial\nactions";
       return;
@@ -187,6 +191,65 @@
     highlightByPointer(lastPointer);
   }
 
+  /**
+   * The two-band AitherTab ring. Inner band: the mirrored groups (keys 1..9). Picking
+   * one repaints the OUTER band with that group's tabs while the groups stay put — the
+   * "rings that can be expanded on" (owner 2026-11-25). Both bands are click-only: the
+   * hold-release direction cannot name a band.
+   */
+  function renderRings() {
+    for (const node of radial.querySelectorAll(".slice")) node.remove();
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    const groups = Array.isArray(rings.groups) ? rings.groups : [];
+    const selected = rings.expanded ? groups.find((g) => g.key === rings.expanded) : null;
+    const add = (slice, radius, index, band, key) => {
+      const angle = -90 + (360 * index) / Math.max(1, slice.of);
+      const rad = (angle * Math.PI) / 180;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `slice ${band}`;
+      button.dataset.index = String(index);
+      button.dataset.id = slice.id;
+      button.dataset.band = band;
+      button.setAttribute("role", "menuitem");
+      button.style.left = `${cx + radius * Math.cos(rad)}px`;
+      button.style.top = `${cy + radius * Math.sin(rad)}px`;
+      if (slice.colour) button.dataset.colour = slice.colour;
+      const glyph = document.createElement("span");
+      glyph.className = "glyph";
+      glyph.textContent = band === "outer" ? "↗" : "▦";
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = slice.short;
+      const keyEl = document.createElement("span");
+      keyEl.className = "key";
+      keyEl.textContent = key;
+      button.title = slice.label;
+      button.append(glyph, label, keyEl);
+      button.addEventListener("click", () => {
+        if (band === "inner") { rings.expanded = slice.groupKey; renderRings(); return; }
+        void choose(slice.id);
+      });
+      radial.append(button);
+    };
+    groups.forEach((g, i) => add({
+      id: `aithertab:group:${g.key}`, groupKey: g.key, label: g.label,
+      short: `${g.short || g.label} (${g.total})`, colour: g.colour, of: groups.length,
+    }, rings.inner, i, "inner", String(i + 1)));
+    const tabs = selected && Array.isArray(selected.tabs) ? selected.tabs : [];
+    tabs.forEach((t, i) => add({
+      id: `aithertab:tab:${selected.key}:${i}`, label: t.label, short: t.short, of: tabs.length,
+    }, rings.outer, i, "outer", String(i + 1)));
+    pageEl.textContent = selected
+      ? `${rings.hub} · ${selected.short}`
+      : `${rings.hub} · ${groups.length} group${groups.length === 1 ? "" : "s"}`;
+    hub.textContent = selected ? selected.label : "pick a group\nto open its tabs";
+    hub.classList.toggle("named", Boolean(selected));
+    const first = radial.querySelector(".slice");
+    if (first) first.focus();
+  }
+
   let lastPointer = null;
   const ID_GLYPHS = {
     "snip.region": "✂", "snip.screen": "✂", "record.region": "●", "record.screen": "●",
@@ -204,13 +267,39 @@
 
   function highlightByPointer(point) {
     lastPointer = point;
-    if (!point || mode !== "radial" || !slices.length) return;
+    if (!point || mode !== "radial") return;
     const cx = window.innerWidth / 2;
     const cy = window.innerHeight / 2;
     const dx = point.x - cx;
     const dy = point.y - cy;
+    const dist = Math.hypot(dx, dy);
+    if (rings) {
+      // Band-aware hover: the same radii the slices were placed on. Inner = groups,
+      // outer = the picked group's tabs; the hub names whatever is under the pointer.
+      const groups = Array.isArray(rings.groups) ? rings.groups : [];
+      const selected = rings.expanded ? groups.find((g) => g.key === rings.expanded) : null;
+      const tabs = selected && Array.isArray(selected.tabs) ? selected.tabs : [];
+      const toIndex = (count) => {
+        if (!count) return -1;
+        const fromTop = (((Math.atan2(dy, dx) * 180) / Math.PI + 90) % 360 + 360) % 360;
+        return Math.round((fromTop * count) / 360) % count;
+      };
+      const inOuter = tabs.length && dist > (rings.inner + rings.outer) / 2;
+      const band = inOuter ? "outer" : (dist >= 36 ? "inner" : "");
+      const index = band === "outer" ? toIndex(tabs.length) : band === "inner" ? toIndex(groups.length) : -1;
+      for (const node of radial.querySelectorAll(".slice")) {
+        node.classList.toggle("hot",
+          node.dataset.band === band && Number(node.dataset.index) === index);
+      }
+      const hot = band === "outer" ? tabs[index] : band === "inner" ? groups[index] : null;
+      hub.textContent = hot
+        ? String(hot.label || hot.short || "").replace(/\s+\(.*\)$/, "")
+        : (selected ? selected.label : "pick a group\nto open its tabs");
+      hub.classList.toggle("named", Boolean(hot));
+      return;
+    }
     let index = -1;
-    if (Math.hypot(dx, dy) >= 36) {
+    if (dist >= 36) {
       const fromTop = (((Math.atan2(dy, dx) * 180) / Math.PI + 90) % 360 + 360) % 360;
       index = Math.round((fromTop * slices.length) / 360) % slices.length;
     }
@@ -230,6 +319,8 @@
     pages = reply && Array.isArray(reply.pages) ? reply.pages : [];
     slices = reply && reply.ok && Array.isArray(reply.slices) ? reply.slices : [];
     items = reply && reply.ok && Array.isArray(reply.items) ? reply.items : [];
+    rings = reply && reply.ok && reply.rings && Array.isArray(reply.rings.groups) && reply.rings.groups.length
+      ? { ...reply.rings, expanded: "" } : null;
     document.body.classList.toggle("radial", mode === "radial");
     if (mode === "radial") { focusAt = 0; renderRadial(); }
     else { menu.hidden = false; renderGrid(); }
@@ -265,6 +356,12 @@
   });
 
   document.addEventListener("keydown", (event) => {
+    // AitherTab's nested ring: a digit expands that group (the outer band appears).
+    if (mode === "radial" && rings && /^[1-9]$/.test(event.key)) {
+      const group = (rings.groups || [])[Number(event.key) - 1];
+      if (group) { event.preventDefault(); rings.expanded = group.key; renderRings(); }
+      return;
+    }
     // Consistent number hotkeys: every slice's digit runs it (and a page door pages).
     if (mode === "radial" && /^[1-9]$/.test(event.key)) {
       const slice = slices[Number(event.key) - 1];

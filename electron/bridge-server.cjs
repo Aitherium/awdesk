@@ -52,6 +52,23 @@ function extensionOriginAllowed(origin, env = process.env) {
   return typeof origin === "string" && trustedExtensionOrigins(env).has(origin);
 }
 
+// AitherTab (awtab): its OWN allowlist, never the shared one. The mirror now lives
+// INSIDE awconnect (owner 2026-11-25: "i meant in fucking awconnect"), so its pinned and
+// store ids are trusted for THIS route only. A Firefox add-on's origin changes per
+// install, so Firefox still authenticates with the per-install token.
+function awtabOriginsAllowed(env = process.env) {
+  const raw = env.AWDESK_AWTAB_EXTENSION_IDS;
+  const ids = raw == null ? [PINNED_EXTENSION_ID, STORE_EXTENSION_ID] : String(raw).split(",");
+  return new Set(
+    ids.map((id) => id.trim()).filter((id) => EXTENSION_ID_PATTERN.test(id))
+      .map((id) => `chrome-extension://${id}`),
+  );
+}
+
+function awtabOriginAllowed(origin, env = process.env) {
+  return typeof origin === "string" && Boolean(origin) && awtabOriginsAllowed(env).has(origin);
+}
+
 // Emotions a caller may name instead of a clip; each maps to a built-in clip.
 const EMOTION_ANIMATIONS = {
   neutral: "IDLE",
@@ -234,14 +251,14 @@ function jsonRpcError(response, status, code, message) {
   );
 }
 
-function readJsonBody(request) {
+function readJsonBody(request, limit = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     let bytes = 0;
     const chunks = [];
 
     request.on("data", (chunk) => {
       bytes += chunk.length;
-      if (bytes > MAX_BODY_BYTES) {
+      if (bytes > limit) {
         const error = new Error("Request body is too large");
         error.code = "BODY_TOO_LARGE";
         reject(error);
@@ -251,7 +268,7 @@ function readJsonBody(request) {
       chunks.push(chunk);
     });
     request.on("end", () => {
-      if (bytes > MAX_BODY_BYTES) return;
+      if (bytes > limit) return;
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       } catch {
@@ -305,6 +322,12 @@ function createBridgeServer({
   // (agents driving an owner-APPROVED Chrome tab). The pinned extension ONLY: a
   // local page or process answering here could feed an agent forged page content.
   chromeBridge = null,
+  // POST /aithertab/push (awtab-bridge.cjs): the AitherTab extension's tab snapshots.
+  // Its OWN trust class -- AWDESK_AWTAB_EXTENSION_IDS ids and/or the per-install token
+  // in `awtabToken`. Never the shared trusted-extension list: mirroring must not
+  // inherit /chrome/*, /commands/run, /desktop/*, /speak or /assist/*.
+  awtabBridge = null,
+  awtabToken = "",
   commandsHandler = null,
   assistHandler = null,
   assistAuth = null,
@@ -701,6 +724,59 @@ function createBridgeServer({
         response.writeHead(500, { "content-type": "application/json" });
         response.end(JSON.stringify({ ok: false, error: error?.message || String(error) }));
       }
+      return;
+    }
+
+    // ── AitherTab (awtab): the mirroring extension's tab snapshots ──────────
+    // Own trust class: the awtab id list and/or the per-install token. POST only
+    // (Chrome sends no Origin on an extension's GET). A snapshot is bigger than the
+    // 64 KiB global cap, so this one route reads up to 512 KiB.
+    if (request.url === "/aithertab/push") {
+      if (request.method !== "POST") {
+        response.writeHead(405, { allow: "POST" });
+        response.end();
+        return;
+      }
+      const presented = String(request.headers["x-aithertab-token"] || "");
+      const tokenOk = Boolean(awtabToken) && presented.length > 0 && presented === awtabToken;
+      if (!tokenOk && !awtabOriginAllowed(origin)) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      if (awtabBridge == null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      readJsonBody(request, 512 * 1024)
+        .then((body) => {
+          const verdict = awtabBridge.push(body);
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify(verdict));
+        })
+        .catch((error) => {
+          const code = error && error.code === "BODY_TOO_LARGE" ? 413 : 400;
+          response.writeHead(code, { "content-type": "application/json" });
+          response.end(JSON.stringify({ ok: false, error: (error && error.message) || String(error) }));
+        });
+      return;
+    }
+    if (request.url === "/aithertab/status" && request.method === "GET") {
+      // Counts only, and only to a caller holding the bridge bearer.
+      const bearer = String(request.headers.authorization || "").replace(/^Bearer\s+/i, "");
+      if (!token || bearer !== token) {
+        response.writeHead(403);
+        response.end();
+        return;
+      }
+      if (awtabBridge == null) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(awtabBridge.status()));
       return;
     }
 

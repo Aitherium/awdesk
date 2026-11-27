@@ -56,6 +56,7 @@ const companionMenu = require("./companion-menu.cjs");
 const fairyOwner = require("./fairy-owner.cjs");
 const fairyCounts = require("./fairy-counts.cjs");
 const fairyCluster = require("./fairy-cluster.cjs");
+const awtab = require("./awtab.cjs");
 const displayMode = require("./display-mode.cjs");
 const orbRadial = require("./orb-radial-menu.cjs");
 const linkOpener = require("./link-opener.cjs");
@@ -116,6 +117,8 @@ let swarmCompanions = [];
 /** Live session rows (Claude Code tabs Map + awsh daemon rows) and which sources read. */
 let clusterSessions = [];
 let clusterOk = { cards: true, sessions: true, presence: true };
+/** AitherTab (awtab.cjs): the mirrored groups last reported — ONE companion, not one per group. */
+let awtabGroups = [];
 const clusterReaper = fairyCluster.createReaper();
 let clusterTotal = 0;
 let clusterLabel = "";
@@ -525,10 +528,10 @@ function placeOrb() {
 function placeBubble() {
   if (!alive(bubbleWindow) || !alive(orbWindow)) return;
   const size = { width: BUBBLE_SIZE.width, height: bubbleHeight };
-  // A pinned card stands where the owner put it (card-stay.cjs), clamped onto the
-  // display that spot belongs to. Everything else still opens beside the fairy.
+  // A card stands where the owner left it (card-stay.cjs) -- pinned or not; a spot
+  // saved by a drag outranks "beside the fairy". Clamped onto the display it belongs to.
   const card = cardStay.normalizeCard(state.card);
-  if (card.pin && card.x != null && card.y != null) {
+  if (card.x != null && card.y != null) {
     const at = { x: card.x + size.width / 2, y: card.y + size.height / 2 };
     const area = workAreaAt(at) || fairyArea(displayForOrb().workArea);
     const pos = orbCore.clampToWorkArea({ x: card.x, y: card.y }, size, area);
@@ -756,9 +759,10 @@ function ensureBubble() {
   });
   bubbleWindow.setAlwaysOnTop(true, "screen-saver");
   try { bubbleWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch { /* no-op */ }
-  // A pinned card is draggable; an unpinned one stays where the fairy opened it.
+  // The card is movable whether or not it is pinned (owner 2026-11-25: a card must be
+  // draggable out of the way); pin only adds "stays open" and corner docking.
   if (typeof bubbleWindow.setMovable === "function") {
-    try { bubbleWindow.setMovable(cardStay.normalizeCard(state.card).pin); } catch { /* no-op */ }
+    try { bubbleWindow.setMovable(true); } catch { /* no-op */ }
   }
   bubbleWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   bubbleWindow.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -772,16 +776,19 @@ function ensureBubble() {
     drafting = false;
     syncBubble();
   });
-  // A pinned card is dragged by its own grip: when the move settles, it docks to the
-  // nearest screen corner (the same rule a dropped fairy follows) and remembers it.
+  // The card is dragged by its own grip on EVERY card (owner 2026-11-25: "need ability
+  // to click and drag and move these out of the way"): the new spot is remembered at
+  // once, pinned or not. A PINNED card also docks to the nearest corner when the drag
+  // settles (the same rule a dropped fairy follows).
   bubbleWindow.on("moved", () => {
     if (!alive(bubbleWindow)) return;
     const card = cardStay.normalizeCard(state.card);
-    if (!card.pin) return;
-    // Our own placement (open, resize, clamp) must not re-dock: only a position the
-    // owner moved the window TO (different from the one we saved) is a drag.
+    // Our own placement (open, resize, clamp) must not record a "drag".
     const [x, y] = bubbleWindow.getPosition();
     if (card.x === x && card.y === y) return;
+    state = { ...state, card: cardStay.normalizeCard({ ...card, x, y }) };
+    saveState();
+    if (!card.pin) return;
     if (cardMoveTimer) clearTimeout(cardMoveTimer);
     cardMoveTimer = setTimeout(dockCard, 260);
     if (cardMoveTimer.unref) cardMoveTimer.unref();
@@ -2177,7 +2184,10 @@ function openBubble({ focus = false } = {}) {
   // ONE surface (owner 2026-11-20): while the body is up it carries the cards, so no
   // floating ask panel may pop where the fairy used to rest. (showOrb already refuses
   // to raise the orb; without this guard openBubble raised the bubble anyway.)
-  if (expanded || stoodDownForAvatar) {
+  // Stood down because the body carries the cards: no floating panel beside it. But a
+  // stale flag must never eat the owner's click while the fairy IS on screen (owner
+  // 2026-11-25: "what happened to the left click that opens a little text box").
+  if (expanded || (stoodDownForAvatar && !(alive(orbWindow) && orbWindow.isVisible()))) {
     sendPanel();
     return { ok: true, suppressed: true };
   }
@@ -2859,6 +2869,19 @@ function setRingOpener(api) {
   ringOpener = api && (typeof api === "function" || typeof api.openRadial === "function") ? api : null;
   return Boolean(ringOpener);
 }
+
+/** Is a ring ACTUALLY on screen? A session whose close path skipped `onDone` leaves
+ *  `ringOpen` true with no window up: the next open is refused AND a press on the
+ *  fairy was swallowed, so the ask box stopped opening (owner 2026-11-25: "what
+ *  happened to the left click that opens a little text box"). */
+function ringVisible() {
+  const api = ringOpener;
+  try {
+    return Boolean(api && typeof api.isVisible === "function" && api.isVisible());
+  } catch {
+    return false;
+  }
+}
 function setExtraRunner(fn) {
   extraRunner = typeof fn === "function" ? fn : null;
   return Boolean(extraRunner);
@@ -2903,15 +2926,14 @@ function restoreAfterRing(back) {
  * ring around the fairy. `hold` = the Alt+Space hold (release selects). Resolves once
  * the ring is on screen; the returned promise never rejects.
  */
-async function openRing({ at = null, hold = false, onDone = null, page = 0, fly = true, pages = null } = {}) {
+async function openRing({ at = null, hold = false, onDone = null, page = 0, fly = true, pages = null, rings = null } = {}) {
   const api = ringOpener;
   const openFn = typeof api === "function" ? api
     : (api && typeof api.openRadial === "function" ? (o) => api.openRadial(o) : null);
   if (!openFn) return { ok: false, reason: "no ring renderer is wired" };
   if (ringOpen) {
     // A leaked session (a close path that skipped onDone) must never wedge the ring.
-    const visible = api && typeof api.isVisible === "function" ? api.isVisible() : false;
-    if (visible) {
+    if (ringVisible()) {
       // Pressing the key again closes it (and the fairy goes back).
       if (typeof api.hide === "function") api.hide();
       return { ok: true, closed: true };
@@ -2945,6 +2967,7 @@ async function openRing({ at = null, hold = false, onDone = null, page = 0, fly 
       hold: Boolean(hold),
       page,
       ...(Array.isArray(pages) && pages.length ? { pages } : {}),
+      ...(rings && Array.isArray(rings.groups) && rings.groups.length ? { rings } : {}),
       onDone: (result) => {
         ringOpen = false;
         const back = ringReturn;
@@ -4255,6 +4278,7 @@ function speakingNow(nowMs = Date.now()) {
 function currentCompanions(nowMs = Date.now()) {
   const entries = fairyCluster.liveEntries({
     cards: attentionCards, sessions: clusterSessions, presence: agentPresence, nowMs,
+    aithertab: awtab.fairyEntry(awtabGroups, nowMs),
   });
   const { kept } = clusterReaper.reconcile(entries, { nowMs, ok: clusterOk });
   const c = fairyCluster.collapse(kept, fairyCluster.CAP);
@@ -4282,6 +4306,33 @@ function setClusterSessions(sources, { ok = true } = {}) {
   clusterOk = { ...clusterOk, sessions: ok !== false };
   sendFairy();
   return { ok: true, total: clusterTotal };
+}
+
+/**
+ * The AitherTab groups the mirror last reported (awtab.cjs). ONE companion carries
+ * them; the ring holds the groups and expands into a group's tabs (owner 2026-11-25:
+ * "one fairy, this is the reason I wanted rings that can be expanded on").
+ */
+function setAwtabGroups(groups) {
+  awtabGroups = Array.isArray(groups) ? groups : [];
+  sendFairy();
+  return { ok: true, groups: awtabGroups.length };
+}
+
+/** Open the AitherTab ring: inner = groups, outer = the tabs of the group picked. */
+function openAwtabRing({ groups = null } = {}) {
+  const list = Array.isArray(groups) ? groups : awtabGroups;
+  if (!list.length) return { ok: false, reason: "nothing is mirrored yet" };
+  // quick-menu owns the two bands and the local expansion; it needs the tabs too, so
+  // the whole (bounded) group list travels once and no desk round-trip can race a click.
+  const payload = list.slice(0, awtab.MAX_GROUPS).map((g) => ({
+    key: g.key,
+    label: `${g.browserLabel || awtab.browserLabel(g.browser)} · ${g.name}`,
+    colour: g.colour || "grey",
+    tabs: (g.tabs || []).slice(0, awtab.MAX_GROUP_TABS).map((t) => ({ url: t.url, title: t.title })),
+    total: (g.tabs || []).length,
+  }));
+  return openRing({ at: orbCenter(), hold: false, fly: false, rings: { hub: "AitherTab", groups: payload } });
 }
 
 /**
@@ -4526,6 +4577,10 @@ function peekCard(id, { explicit = false } = {}) {
  * an id that is gone falls back to the same agent's newest open card.
  */
 function openFairyCard(id, agent = "") {
+  // The ONE AitherTab companion is not a card: its click opens the nested rings.
+  if (agentFairy.crewKey(agent) === "aithertab" || String(agent || "") === "aithertab") {
+    return openAwtabRing();
+  }
   let card = attentionCards.find((c) => c && c.id === String(id || ""));
   if (!card && agent) {
     const key = agentFairy.crewKey(agent);
@@ -4669,7 +4724,10 @@ function ensureNudge() {
   const size = cardWindowSize();
   nudgeWindow = new BrowserWindow({
     ...size,
-    show: false, frame: false, transparent: true, resizable: true, movable: false,
+    // Draggable (owner 2026-11-25: "click and drag and move these out of the way"):
+    // the whisper covers whatever is behind it, so its header moves it. It still never
+    // takes the keyboard (focusable:false), and a moved spot is remembered below.
+    show: false, frame: false, transparent: true, resizable: true, movable: true,
     minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true,
     // focusable:false -- the whisper NEVER takes the keyboard from what the owner is doing.
     alwaysOnTop: true, hasShadow: false, focusable: false, title: "Aither nudge",
@@ -4698,6 +4756,16 @@ function ensureNudge() {
     state = { ...state, card: cardStay.normalizeCard({ ...state.card, width: b.width, height: b.height, fit: false }) };
     saveState();
   });
+  // The owner dragged the whisper out of the way: remember the spot (state.whisperAt)
+  // so the NEXT card opens clear of whatever it was covering. Our own placement sets
+  // nudgeSettingBounds around setBounds, so only a real drag is remembered.
+  nudgeWindow.on("moved", () => {
+    if (nudgeSettingBounds || !alive(nudgeWindow)) return;
+    const [x, y] = nudgeWindow.getPosition();
+    if (state.whisperAt && state.whisperAt.x === x && state.whisperAt.y === y) return;
+    state = { ...state, whisperAt: { x: Math.round(x), y: Math.round(y) } };
+    saveState();
+  });
   void nudgeWindow.loadFile(path.join(__dirname, "orb.html"), { query: { view: "nudge" } });
   return nudgeWindow;
 }
@@ -4719,8 +4787,15 @@ function showWhisper() {
   if (!nudging) return;
   cancelNudgeHide();
   const win = ensureNudge();
-  const at = nudging.whisperAt || { x: 0, y: 0 };
   const size = cardWindowSize();
+  // A spot the owner dragged the whisper to wins over the computed one (clamped onto
+  // the display that spot belongs to, so a closed laptop lid cannot strand it).
+  const saved = state.whisperAt && Number.isFinite(Number(state.whisperAt.x)) && Number.isFinite(Number(state.whisperAt.y))
+    ? { x: Math.round(Number(state.whisperAt.x)), y: Math.round(Number(state.whisperAt.y)) }
+    : null;
+  const at = saved
+    ? orbCore.clampToWorkArea(saved, size, workAreaAt(saved) || fairyArea(displayForOrb().workArea))
+    : (nudging.whisperAt || { x: 0, y: 0 });
   nudgeSettingBounds = true;
   win.setBounds({ x: Math.round(at.x), y: Math.round(at.y), ...size });
   nudgeSettingBounds = false;
@@ -5172,8 +5247,9 @@ function moreMenu({ atFairy = false } = {}) {
  *  open THE pill menu: there is one fairy menu. */
 function spiritMenu() {
   // Owner 2026-11-23: the orb's own right-click menu is retired into the ONE ring.
-  // "This fairy" is the page it opens on: one slice per open card, plus every control
-  // the old menu carried (Hide, Dock answers, display, sprite, desk doors, quit).
+  // "This fairy" carries one slice per open card, plus every control the old menu had.
+  // Owner 2026-11-25: "why doesn't it default to tools???" -- it opens on the TOOLS
+  // ring (page 0); this fairy is one door away ("< Tools" / "Controls >").
   hideMenu();
   hideTip();
   return openRing({
@@ -5181,7 +5257,7 @@ function spiritMenu() {
     hold: false,
     fly: false,
     pages: selfRingPages(),
-    page: 1,
+    page: 0,
   });
 }
 
@@ -5274,7 +5350,7 @@ function setCardSettings(patch) {
   state = { ...state, card: next };
   saveState();
   if (alive(bubbleWindow) && typeof bubbleWindow.setMovable === "function") {
-    try { bubbleWindow.setMovable(next.pin); } catch { /* Windows: no-op on a gone window */ }
+    try { bubbleWindow.setMovable(true); } catch { /* Windows: no-op on a gone window */ }
   }
   armCardIdle();
   // The whisper may be up: apply a new width/height/fit immediately.
@@ -5320,7 +5396,14 @@ function dockCard() {
 // ── drag and click ──────────────────────────────────────────────────────────
 
 function beginDrag() {
-  if (dragging || !alive(orbWindow) || ringOpen) return { ok: true };
+  if (dragging || !alive(orbWindow)) return { ok: true };
+  // A ring session that is no longer on screen is a LEAK, not a lock: clear it so this
+  // press still becomes a click (the ask box) instead of being swallowed.
+  if (ringOpen && !ringVisible()) {
+    ringOpen = false;
+    ringReturn = null;
+  }
+  if (ringOpen) return { ok: true };
   hideTip();
   // A new grab cancels a pending "stay N seconds" return; the placement itself is
   // cleared only when this drag actually drops somewhere (a plain click must not
@@ -6588,6 +6671,8 @@ module.exports = {
   quietUntil: () => (Number(state.muteUntil) > Date.now() ? Number(state.muteUntil) : 0),
   menuState: () => publicMenu(), __setMenuIdleMs: (ms) => { menuIdleMsOverride = Number(ms) || 0; }, fairy: () => currentFairy(), companions: () => currentCompanions(),
   setPresence, noteAgentPosted, chatWithAgent, setClusterSessions, clusterState, surfaceForCards,
+  // AitherTab: the ONE companion and its nested rings (awtab.cjs).
+  setAwtabGroups, openAwtabRing, __awtabGroups: () => awtabGroups,
   // tool flights: the fairy goes to the window an agent's tool call belongs to
   setReducedMotion, updateToolFlights, flightPlan: () => toolFlightPlan, surfaceRects,
   // visual neurons (neurons-model.cjs): the switch, a step, and the drawn graph
@@ -6638,6 +6723,15 @@ module.exports = {
     if (toolFlightTimer) { clearTimeout(toolFlightTimer); toolFlightTimer = null; }
     if (cardIdleTimer) { clearTimeout(cardIdleTimer); cardIdleTimer = null; }
     if (cardMoveTimer) { clearTimeout(cardMoveTimer); cardMoveTimer = null; }
+    // The window-layer session flags a test can leave set (a stand-down, a wedged
+    // ring, a press still open): every test starts from the same clean layer.
+    dragging = null;
+    ringOpen = false;
+    ringReturn = null;
+    ringOpener = null;
+    expanded = false;
+    stoodDownForAvatar = false;
+    suppressed = false;
     cardOpen = false;
     resultStream = [];
     toolFlightPlanner.reset();
@@ -6666,6 +6760,7 @@ module.exports = {
     swarmCompanions = [];
     clusterSessions = [];
     clusterOk = { cards: true, sessions: true, presence: true };
+    awtabGroups = [];
     clusterReaper.reset();
     autoSurfaced = false;
     ownerHidIds = null;

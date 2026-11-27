@@ -6,7 +6,14 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { listSessions, tailTranscript, focusFor, withFocus } = require("./sessions-client.cjs");
+// The desk merges the REAL ~/.aither/antigravity_sessions (Antigravity plugin hooks).
+// A unit test must not see whatever Antigravity is doing on this machine: point the
+// reader at an empty dir BEFORE the module resolves it (read at load).
+const EMPTY_ANTIGRAVITY = path.join(os.tmpdir(), `desk-sessions-test-${process.pid}-empty`);
+fs.mkdirSync(EMPTY_ANTIGRAVITY, { recursive: true });
+process.env.AITHER_ANTIGRAVITY_SESSIONS = EMPTY_ANTIGRAVITY;
+
+const { listSessions, readAntigravitySessions, tailTranscript, focusFor, withFocus } = require("./sessions-client.cjs");
 
 function fakeFetch({ status = 200, body = { sessions: [] }, throws = null } = {}) {
   return async (_url, opts) => {
@@ -68,6 +75,47 @@ test("listSessions: no token anywhere is its own state, never an empty-but-fine 
     if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
     if (savedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedProfile;
   }
+});
+
+test("listSessions: live Antigravity conversations become session rows (owner 2026-11-25)", async () => {
+  process.env.AITHER_HARNESS_TOKEN = "test-token";
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sessions-ag-test-"));
+  const now = Date.now();
+  fs.writeFileSync(path.join(dir, "conv-1.json"), JSON.stringify({
+    sessionId: "conv-1", id: "conv-1", harness: "antigravity", harnessLabel: "Antigravity",
+    cwd: "C:/work", title: "wire the fairy", status: "busy", live: true,
+    updatedAt: new Date(now).toISOString(), updatedTs: now / 1000,
+  }), "utf8");
+  // A conversation that went quiet hours ago is not a fairy any more.
+  fs.writeFileSync(path.join(dir, "conv-old.json"), JSON.stringify({
+    sessionId: "conv-old", id: "conv-old", harness: "antigravity", status: "idle",
+    updatedAt: new Date(now - 3 * 60 * 60 * 1000).toISOString(), updatedTs: (now - 3 * 60 * 60 * 1000) / 1000,
+  }), "utf8");
+  // A half-written file is skipped, never thrown.
+  fs.writeFileSync(path.join(dir, "conv-bad.json"), "{not json", "utf8");
+  try {
+    const fetchImpl = fakeFetch({ body: { sessions: [{ id: "claude-1", title: "tab", status: "working" }] } });
+    const result = await listSessions({ fetchImpl, antigravityDir: dir, now });
+    assert.equal(result.ok, true);
+    const ids = result.sessions.map((s) => s.id).sort();
+    assert.deepEqual(ids, ["claude-1", "conv-1"], "the live Antigravity conversation rides beside the daemon's rows");
+    const ag = result.sessions.find((s) => s.id === "conv-1");
+    assert.equal(ag.harness, "antigravity");
+    assert.equal(ag.harness_label, "Antigravity", "the label parseSessions reads");
+    assert.match(result.note, /1 Antigravity/);
+    // Daemon down: the fairy that is working RIGHT NOW still shows.
+    const down = await listSessions({ fetchImpl: fakeFetch({ throws: new Error("ECONNREFUSED") }), antigravityDir: dir, now });
+    assert.equal(down.ok, true);
+    assert.deepEqual(down.sessions.map((s) => s.id), ["conv-1"]);
+    assert.match(down.note, /daemon unreachable/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    delete process.env.AITHER_HARNESS_TOKEN;
+  }
+});
+
+test("readAntigravitySessions: a missing directory is empty, never an error", () => {
+  assert.deepEqual(readAntigravitySessions({ dir: path.join(os.tmpdir(), "no-such-ag-dir-" + Date.now()) }), []);
 });
 
 test("tailTranscript: returns the LAST lines, and a byte window keeps whole lines", () => {

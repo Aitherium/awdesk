@@ -250,13 +250,13 @@
   #card { width: 100%; max-height: 464px; display: flex; flex-direction: column; overflow: hidden;
     border-radius: 14px; background: var(--bg-elevated, #12161f); border: 1px solid var(--border, #2a3346);
     box-shadow: 0 12px 40px rgba(0,0,0,0.55); }
-  /* A pinned card is dragged by this bar; main docks it to the nearest screen corner
-     when the drag settles (card-stay.cjs). Hidden until the owner pins the card. */
-  #dragbar { display: none; align-items: center; justify-content: center; height: 15px; flex: none;
+  /* Every card is dragged by this bar (owner 2026-11-25: "click and drag and move these
+     out of the way"); a PINNED card also docks to the nearest screen corner when the
+     drag settles (card-stay.cjs). */
+  #dragbar { display: flex; align-items: center; justify-content: center; height: 15px; flex: none;
     color: var(--fg-muted, #8b96ab); font: 11px/15px var(--font-sans, system-ui); letter-spacing: 2px;
     border-bottom: 1px solid var(--border, #2a3346); cursor: grab; user-select: none;
-    -webkit-app-region: drag; }
-  #card.pinned #dragbar { display: flex; }
+    -webkit-app-region: drag; flex: none; }
   #dragbar:active { cursor: grabbing; }
   #head { display: flex; align-items: center; gap: 8px; padding: 10px 12px 6px; }
   #dot { width: 10px; height: 10px; border-radius: 50%; flex: none;
@@ -458,7 +458,12 @@
   @keyframes nglow3 { 0%, 100% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 12px rgba(255,190,100,0.25); }
     50% { box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 28px rgba(255,190,100,0.6); } }
   #n-head { display: flex; align-items: center; gap: 7px; font-size: 10.5px; letter-spacing: 0.05em;
-    text-transform: uppercase; color: var(--fg-muted, #8b96ab); }
+    text-transform: uppercase; color: var(--fg-muted, #8b96ab);
+    /* Owner 2026-11-25: the whisper covers what is behind it, so its header is the
+       handle that moves it out of the way. Buttons stay clickable (no-drag). */
+    -webkit-app-region: drag; cursor: grab; }
+  #n-head:active { cursor: grabbing; }
+  #n-more, #n-x { -webkit-app-region: no-drag; }
   #n-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #fff;
     box-shadow: 0 0 8px rgba(225,240,255,0.9); }
   #nudge.lv3 #n-dot { background: #ffd28a; box-shadow: 0 0 9px rgba(255,190,100,0.95); }
@@ -2058,7 +2063,7 @@
   if (view === "bubble") {
     document.body.innerHTML = `
       <div id="card">
-        <div id="dragbar" title="Drag to move the pinned card (it docks to the nearest corner)">&#8942;&#8942;&#8942;</div>
+        <div id="dragbar" title="Drag to move the card out of the way">&#8942;&#8942;&#8942;</div>
         <div id="ask"><textarea id="q" rows="1" placeholder="Ask about what you see…" aria-label="Ask Aither"></textarea>
           <button id="send" disabled>Send</button></div>
         <div id="actions" role="toolbar" aria-label="Quick actions">
