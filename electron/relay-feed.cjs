@@ -564,12 +564,17 @@ function runAwrelay(args, execFn = spawn) {
  * Never throws and never loses text: an envelope that does not parse (or was cut
  * mid-JSON by a length cap upstream) is still removed from the body, and the
  * kind falls back to the "[kind]" prefix the CLI also writes.
+ *
+ * enveloped is true whenever the fence is present. The awrelay CLI is its only
+ * writer (a human typing into a chat surface never types one), so relay-poller
+ * reads it as: an agent sent this row.
  */
 function splitEnvelope(raw) {
   let text = String(raw || "");
   let kind = "";
   let to = [];
   const fence = text.lastIndexOf("```awrelay");
+  const enveloped = fence >= 0;
   if (fence >= 0) {
     const tail = text.slice(fence + "```awrelay".length).replace(/```\s*$/, "").trim();
     text = text.slice(0, fence).trimEnd();
@@ -587,7 +592,7 @@ function splitEnvelope(raw) {
     if (!kind) kind = prefix[1].toLowerCase();
     text = text.slice(prefix[0].length);
   }
-  return { text, kind, to };
+  return { text, kind, to, enveloped };
 }
 
 /**
@@ -610,7 +615,7 @@ function shapeRows(parsed, channel, limit) {
       : typeof row.text === "string" ? row.text : "";
     // Split BEFORE the length cap: capping first cuts the envelope mid-JSON and
     // leaves half a fenced block in the body.
-    const { text, kind, to } = splitEnvelope(whole);
+    const { text, kind, to, enveloped } = splitEnvelope(whole);
     const author = typeof row.nick === "string" && row.nick ? row.nick
       : typeof row.author === "string" ? row.author : "";
     // Text is required: a reaction/presence event with no body is noise in a
@@ -634,6 +639,10 @@ function shapeRows(parsed, channel, limit) {
       // gated probe as an owner command, spawning a headless session per gate
       // run (RBD004, measured 2026-09-20/21).
       raw: whole.slice(0, 500),
+      // Decided on the WHOLE wire text, before the cap above: a long body pushes
+      // the awrelay fence past 500 chars, and relay-poller must still know that
+      // an agent sent the row (an enveloped #command row needs @desk to run).
+      enveloped,
       kind,
       to,
       at,

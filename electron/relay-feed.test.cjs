@@ -614,3 +614,9 @@ test("gateway rung: an injected transport never falls through to the gateway", a
 function relayFeedModule() {
   return topModule;
 }
+
+test("splitEnvelope reports enveloped: the awrelay CLI fence is how the desk knows an agent sent a row", () => {
+  const sent = topModule.splitEnvelope("[finding] x ```awrelay " + JSON.stringify({ kind: "finding" }) + " ```");
+  assert.deepEqual([sent.enveloped, sent.kind, sent.text], [true, "finding", "x"]);
+  assert.equal(topModule.splitEnvelope("fleet status").enveloped, false);
+});
