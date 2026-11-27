@@ -10,7 +10,9 @@
  * cloud-side and workspace-scoped. The CommandAgent is the local executor;
  * this poller is the missing wire.
  *
- *   #command  every message that is not an ack/finding/alert is a work order
+ *   #command  every message that is not an ack/finding/alert is a work order,
+ *             except an AGENT post (it carries the awrelay CLI fence), which
+ *             must be addressed like #agents
  *   #agents   a message addressed to the desk — "@desk …", "@aither …",
  *             "@awdesk …" or "/do …" — is a work order (the rest is the
  *             sessions coordinating; the desk stays out of it)
@@ -58,6 +60,9 @@ const CHANNELS = Object.freeze({ "#command": "all", "#agents": "addressed" });
 const MIRROR_CHANNEL = "#command";
 const ADDRESS_RE = /^\s*(?:@(?:desk|awdesk|aither)\b[:,]?\s*|\/do\s+)/i;
 const ENVELOPE_RE = /^\s*\[(ack|finding|alert)\]/i;
+// The awrelay CLI appends its routing envelope to every message it sends, as a
+// fenced block (relay-feed splitEnvelope). pickWorkOrders says why that matters.
+const AWRELAY_FENCE = "```awrelay";
 const DEFAULT_INTERVAL_MS = 20_000;
 const SEEN_KEEP = 400;
 
@@ -85,7 +90,21 @@ function pickWorkOrders(rows, { channel, seen, policy = CHANNELS[channel] || "ad
     // A thread reply is a conversation under a message, not a new order.
     if (row.threadId) continue;
     let text = String(row.text);
-    if (policy === "addressed") {
+    // An AGENT post is not an owner order. The awrelay CLI appends its fenced
+    // envelope to every message it sends and a human typing into a chat surface
+    // never writes one, so on a policy "all" channel an enveloped row must be
+    // ADDRESSED (@desk ... or /do ...) exactly like #agents. Author identity
+    // cannot separate them: an agent with no session id posts under the owner
+    // nick. Measured 2026-11-27: six peer status lines on #command (Pushed both
+    // PR fixes via GitHub API ...) each ran as an owner order, one headless
+    // session apiece. shapeRows decides row.enveloped on the whole wire text,
+    // before raw is capped; an unshaped row is tested here, and its fence is cut
+    // off so the envelope never reaches the agent as part of the order.
+    const fence = text.lastIndexOf(AWRELAY_FENCE);
+    if (fence >= 0) text = text.slice(0, fence);
+    const enveloped = row.enveloped === true || fence >= 0
+      || String(row.raw ?? "").includes(AWRELAY_FENCE);
+    if (policy === "addressed" || enveloped) {
       if (!ADDRESS_RE.test(text)) continue;
       text = text.replace(ADDRESS_RE, "");
     }

@@ -180,3 +180,35 @@ test("RBD004: an UNKNOWN bracket is not an envelope -- the guard did not widen",
   const orders = pickWorkOrders(rows, { channel: "#command", seen: new Set() });
   assert.deepEqual(orders.map((o) => o.id), ["o1", "o2"]);
 });
+
+// 2026-11-27: the desk ran six agent status lines from #command as owner orders.
+// Each was sent with the awrelay CLI, so each carried its fenced envelope.
+const CLI_FENCE = "```awrelay";
+const cliEnvelope = () => " " + CLI_FENCE + " " + JSON.stringify({ kind: "message", payload: { to: [] } }) + " ```";
+const cmdWire = (id, content) => ({ id, channel: "#command", nick: "david", content, timestamp: "2026-11-27T14:11:04Z" });
+const cmdOrders = (rows) => pickWorkOrders(rows, { channel: "#command", seen: new Set() }).map((o) => [o.id, o.text]);
+
+test("an awrelay-enveloped status line on #command is an agent post, never an owner order", () => {
+  const shaped = shapeRows([
+    cmdWire("s1", "Pushed both PR fixes via GitHub API: PR #19425 and PR #19404." + cliEnvelope()),
+    // A long body pushes the fence past the 500-char raw cap; enveloped still says so.
+    cmdWire("s2", "x".repeat(600) + cliEnvelope()),
+  ], "#command", 50);
+  assert.deepEqual(shaped.map((r) => r.enveloped), [true, true]);
+  assert.ok(!shaped[1].raw.includes(CLI_FENCE), "precondition: the cap cut the fence off raw");
+  assert.ok(!shaped[0].text.includes(CLI_FENCE), "the panel still shows the sentence alone");
+  assert.deepEqual(cmdOrders(shaped), []);
+});
+
+test("an enveloped #command row runs when addressed, and the fence never reaches the agent", () => {
+  assert.deepEqual(cmdOrders(shapeRows([cmdWire("s3", "@desk fleet status" + cliEnvelope())], "#command", 50)), [["s3", "fleet status"]]);
+  // A caller that hands over unshaped rows is judged on the text it passed.
+  const unshaped = [row("u1", "Opened PR for feat/favorites-rolodex." + cliEnvelope()), row("u2", "/do fleet status" + cliEnvelope())];
+  assert.deepEqual(cmdOrders(unshaped), [["u2", "fleet status"]]);
+});
+
+test("a typed #command order with no envelope still runs unaddressed (the policy stays all)", () => {
+  const shaped = shapeRows([cmdWire("s4", "fleet status")], "#command", 50);
+  assert.equal(shaped[0].enveloped, false);
+  assert.deepEqual(cmdOrders(shaped), [["s4", "fleet status"]]);
+});
